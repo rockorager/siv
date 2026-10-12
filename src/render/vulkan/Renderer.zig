@@ -39,6 +39,7 @@ const pool = @import("pool");
 const vk = @import("vk.zig");
 const c = vk.c;
 const Device = @import("Device.zig");
+const dmabuf = @import("dmabuf.zig");
 const Image = Device.Image;
 const Buffer = Device.Buffer;
 
@@ -324,6 +325,12 @@ glyph_masks: Atlas,
 glyph_colors: Atlas,
 glyph_pos: std.ArrayList(AtlasPos) = .empty,
 textures: std.AutoHashMapUnmanaged(u64, Texture) = .empty,
+/// Bytes of all textures.
+texture_bytes: u64 = 0,
+/// Copies dma-bufs into textures.
+importer: dmabuf.Importer = .{},
+/// A dma-buf was skipped (logged once).
+dmabuf_skipped: bool = false,
 /// Bound where a texture binding is unused.
 dummy: Image = .{},
 
@@ -438,6 +445,7 @@ pub fn destroy(r: *Renderer) void {
     r.glyph_colors.image.deinit(d);
     var it = r.textures.valueIterator();
     while (it.next()) |t| t.image.deinit(d);
+    r.importer.deinit(d);
     r.textures.deinit(gpa);
     r.glyph_pos.deinit(gpa);
     r.glyphs.deinit();
@@ -491,6 +499,7 @@ fn forget(r: *Renderer) void {
         img.deinit(r.device);
     };
     r.textures.clearRetainingCapacity();
+    r.texture_bytes = 0;
 }
 
 /// Waits for all submitted frames.
@@ -1097,10 +1106,17 @@ fn prepareImage(r: *Renderer, img: scene.Image, top: State) Error!void {
     try r.pushInstImage(inst, ref.key);
 }
 
-/// The cached texture for an image, uploading it if new.
+/// The cached texture for an image, uploading it if new. A dma-buf is
+/// imported and copied when the device can; otherwise its pixels are
+/// uploaded, and without pixels it is not drawn (D17).
 fn texture(r: *Renderer, ref: scene.ImageRef) Error!?*Texture {
     const gop = try r.textures.getOrPut(r.gpa, ref.key);
     if (!gop.found_existing) {
+        if (ref.pixels == null and (ref.dmabuf == null or !r.device.dmabuf_import)) {
+            r.textures.removeByPtr(gop.key_ptr);
+            r.skipDmabuf(error.Unsupported);
+            return null;
+        }
         const format: c.VkFormat = switch (ref.format) {
             .rgba8_srgb => c.VK_FORMAT_R8G8B8A8_UNORM,
             .bgra8_srgb, .bgrx8_srgb => c.VK_FORMAT_B8G8R8A8_UNORM,
@@ -1115,13 +1131,45 @@ fn texture(r: *Renderer, ref: scene.ImageRef) Error!?*Texture {
             .rgba16_linear_premul => 1,
             .bgrx8_srgb => 2,
         } };
-        try r.image_uploads.append(r.gpa, ref);
+        r.texture_bytes += textureBytes(ref);
+        const imported = if (ref.dmabuf) |buf| if (r.importer.copy(r.device, buf, ref.width, ref.height, &gop.value_ptr.image)) true else |err| switch (err) {
+            error.Unsupported => false,
+            else => |e| {
+                r.dropTexture(gop.key_ptr, gop.value_ptr);
+                return e;
+            },
+        } else false;
+        if (!imported) {
+            if (ref.pixels == null) {
+                r.dropTexture(gop.key_ptr, gop.value_ptr);
+                r.skipDmabuf(error.Unsupported);
+                return null;
+            }
+            try r.image_uploads.append(r.gpa, ref);
+        }
     } else if (gop.value_ptr.image.width != ref.width or gop.value_ptr.image.height != ref.height) {
         log.warn("image key {d} reused for different pixels", .{ref.key});
     }
     const t = gop.value_ptr;
     t.last_frame = r.frame;
     return t;
+}
+
+fn textureBytes(ref: scene.ImageRef) u64 {
+    return @as(u64, ref.width) * ref.height * ref.format.bytesPerPixel();
+}
+
+/// Forgets a texture no frame has used yet.
+fn dropTexture(r: *Renderer, key: *u64, t: *Texture) void {
+    r.texture_bytes -= @as(u64, t.image.width) * t.image.height * (if (t.format == 1) @as(u64, 8) else 4);
+    t.image.deinit(r.device);
+    r.textures.removeByPtr(key);
+}
+
+fn skipDmabuf(r: *Renderer, err: anyerror) void {
+    if (r.dmabuf_skipped) return;
+    r.dmabuf_skipped = true;
+    log.warn("a dma-buf frame is not drawn: {s} cannot import it ({t}) and it has no mappable pixels", .{ r.device.deviceName(), err });
 }
 
 // Regions ---------------------------------------------------------------------
@@ -1337,15 +1385,35 @@ fn planPools(r: *Renderer) Error!void {
     for ([_]*Atlas{ &r.glyph_masks, &r.glyph_colors }) |a| {
         if (a.image.handle == null) a.image = try Image.init(d, a.shelves.width, a.shelves.height, a.format, c.VK_IMAGE_USAGE_SAMPLED_BIT | c.VK_IMAGE_USAGE_TRANSFER_DST_BIT);
     }
-    // Textures unused for a while go once no frame reads them.
+    // Textures unused for a while go once no frame reads them, and so do
+    // the least recently used ones beyond the budget: every external
+    // video frame is a new texture.
     var it = r.textures.iterator();
     while (it.next()) |e| {
         if (r.frame - e.value_ptr.last_frame > 120) {
-            try r.frames[r.frame % frames_in_flight].garbage.append(r.gpa, e.value_ptr.image);
-            r.textures.removeByPtr(e.key_ptr);
+            try r.retireTexture(e.key_ptr, e.value_ptr);
             it = r.textures.iterator();
         }
     }
+    while (r.texture_bytes > texture_budget) {
+        var oldest: ?std.AutoHashMapUnmanaged(u64, Texture).Entry = null;
+        var all = r.textures.iterator();
+        while (all.next()) |e| {
+            if (e.value_ptr.last_frame == r.frame) continue;
+            if (oldest == null or e.value_ptr.last_frame < oldest.?.value_ptr.last_frame) oldest = e;
+        }
+        const e = oldest orelse break;
+        try r.retireTexture(e.key_ptr, e.value_ptr);
+    }
+}
+
+/// Texture memory kept for images not drawn in the current frame.
+const texture_budget = 256 << 20;
+
+fn retireTexture(r: *Renderer, key: *u64, t: *Texture) Error!void {
+    try r.frames[r.frame % frames_in_flight].garbage.append(r.gpa, t.image);
+    r.texture_bytes -= @as(u64, t.image.width) * t.image.height * (if (t.format == 1) @as(u64, 8) else 4);
+    r.textures.removeByPtr(key);
 }
 
 fn grow(s: *[2]u32, rc: IRect) void {
@@ -1412,7 +1480,7 @@ fn copyUploads(r: *Renderer, base: [*]u8, start: usize) void {
         const u = r.uploads.items[k];
         k += 1;
         const row = @as(usize, ref.width) * ref.format.bytesPerPixel();
-        for (0..ref.height) |y| @memcpy(base[u.offset + y * row ..][0..row], ref.pixels[y * ref.stride ..][0..row]);
+        for (0..ref.height) |y| @memcpy(base[u.offset + y * row ..][0..row], ref.pixels.?[y * ref.stride ..][0..row]);
     }
 }
 

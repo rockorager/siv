@@ -46,6 +46,8 @@ pub const Instance = struct {
     vkGetPhysicalDeviceQueueFamilyProperties: c.PFN_vkGetPhysicalDeviceQueueFamilyProperties = null,
     vkGetPhysicalDeviceMemoryProperties: c.PFN_vkGetPhysicalDeviceMemoryProperties = null,
     vkGetPhysicalDeviceFormatProperties: c.PFN_vkGetPhysicalDeviceFormatProperties = null,
+    vkGetPhysicalDeviceFormatProperties2: c.PFN_vkGetPhysicalDeviceFormatProperties2 = null,
+    vkGetPhysicalDeviceImageFormatProperties2: c.PFN_vkGetPhysicalDeviceImageFormatProperties2 = null,
     vkEnumerateDeviceExtensionProperties: c.PFN_vkEnumerateDeviceExtensionProperties = null,
     vkCreateDevice: c.PFN_vkCreateDevice = null,
     vkGetDeviceProcAddr: c.PFN_vkGetDeviceProcAddr = null,
@@ -125,6 +127,7 @@ pub const Device = struct {
     vkGetSwapchainImagesKHR: c.PFN_vkGetSwapchainImagesKHR = null,
     vkAcquireNextImageKHR: c.PFN_vkAcquireNextImageKHR = null,
     vkQueuePresentKHR: c.PFN_vkQueuePresentKHR = null,
+    vkGetMemoryFdPropertiesKHR: c.PFN_vkGetMemoryFdPropertiesKHR = null,
 };
 
 /// Functions only some devices or instances have; the rest are required.
@@ -143,6 +146,7 @@ const optional = [_][]const u8{
     "vkGetSwapchainImagesKHR",
     "vkAcquireNextImageKHR",
     "vkQueuePresentKHR",
+    "vkGetMemoryFdPropertiesKHR",
 };
 
 fn isOptional(comptime name: []const u8) bool {

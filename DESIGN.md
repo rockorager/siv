@@ -650,6 +650,26 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     the straight span's x term shared, and skips pixels under the casting
     rectangle and where every erf saturates. Vulkan output is within 1/255
     of the CPU golden image.
+  - Composited external dma-bufs (D17) are imported, never sampled in
+    place: each new frame is copied into a texture by a submission of its
+    own that is waited for (`render/vulkan/dmabuf.zig`), so the producer's
+    memory is free once the copy returns and no frame in flight holds an
+    import. With VK_EXT_image_drm_format_modifier the dma-buf becomes an
+    image with its explicit modifier and plane layout (any modifier the
+    driver lists for transfer and dma-buf import); without it, only linear
+    dma-bufs are imported, as a buffer copied at the frame's stride. Both
+    acquire the memory from the foreign queue family and treat foreign
+    images as GENERAL, like wlroots. Opaque XRGB8888 only for now (as for
+    shared memory); YUV needs a sampler Y'CbCr conversion and goes to a
+    subsurface instead. The copy costs one GPU blit per video frame, the
+    price of not tracking which frames in flight sample which import.
+    Verified on lavapipe 26.2 (Nix; Debian's 22.3 lacks the extensions),
+    with a memfd standing in for a linear dma-buf: the imported frame
+    matches the uploaded one exactly, with no validation errors. The
+    modifier path has not run (no driver here offers the extension).
+  - Textures: beyond images unused for 120 frames, the least recently used
+    ones not drawn this frame go once all of them pass 256 MiB, since
+    every external video frame is a new texture.
   - Alternatives for shadows: a layer with a backdrop blur (above); a
     closed form for rounded corners (none exists; known ones such as Evan
     Wallace's approximate the corner and do not keep the area); a nine-

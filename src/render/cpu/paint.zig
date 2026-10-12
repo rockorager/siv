@@ -307,7 +307,7 @@ fn bilinear(im: *const Image, luts: *const color.Luts, q: Point) Pixel {
 /// Premultiplied linear texel at integer coordinates (already clamped).
 pub fn texel(im: *const Image, luts: *const color.Luts, x: i32, y: i32) Pixel {
     const ref = im.ref;
-    const row = ref.pixels + @as(usize, @intCast(y)) * ref.stride;
+    const row = ref.pixels.? + @as(usize, @intCast(y)) * ref.stride;
     switch (ref.format) {
         .rgba8_srgb, .bgra8_srgb, .bgrx8_srgb => {
             const p = row[@as(usize, @intCast(x)) * 4 ..][0..4];

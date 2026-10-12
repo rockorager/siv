@@ -510,7 +510,8 @@ pub const Renderer = struct {
                 },
                 .glyphs => |g| try r.prepareGlyphs(g, m, top.clip, vp),
                 .image => |img| {
-                    if (img.opacity <= 0) continue;
+                    // Pixels only in a dma-buf: nothing to read (D17).
+                    if (img.opacity <= 0 or img.image.pixels == null) continue;
                     const bbox = m.applyRect(img.dst).intersect(top.clip).roundOut().intersect(vp);
                     if (bbox.isEmpty() or img.src.isEmpty() or img.dst.isEmpty()) continue;
                     const inv = m.invert() orelse continue;

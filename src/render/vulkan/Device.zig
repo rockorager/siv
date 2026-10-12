@@ -44,6 +44,13 @@ device_type: c.VkPhysicalDeviceType = c.VK_PHYSICAL_DEVICE_TYPE_OTHER,
 /// The device can present (VK_KHR_swapchain is enabled).
 swapchain: bool = false,
 incremental_present: bool = false,
+/// dma-bufs can be imported (VK_KHR_external_memory_fd and
+/// VK_EXT_external_memory_dma_buf), linear ones at least.
+dmabuf_import: bool = false,
+/// ... with explicit modifiers, tiled too (VK_EXT_image_drm_format_modifier).
+drm_modifiers: bool = false,
+/// VK_EXT_queue_family_foreign.
+queue_foreign: bool = false,
 /// Set once any call reported VK_ERROR_DEVICE_LOST; everything using the
 /// device must fall back (D10).
 lost: bool = false,
@@ -332,6 +339,9 @@ const Candidate = struct {
     score: u32,
     swapchain: bool,
     incremental: bool,
+    dmabuf: bool,
+    modifiers: bool,
+    foreign: bool,
 };
 
 fn selectDevice(d: *Device, gpa: Allocator, options: Options) vk.Error!void {
@@ -350,6 +360,9 @@ fn selectDevice(d: *Device, gpa: Allocator, options: Options) vk.Error!void {
     d.queue_family = chosen.family;
     d.swapchain = chosen.swapchain;
     d.incremental_present = chosen.incremental;
+    d.dmabuf_import = chosen.dmabuf;
+    d.drm_modifiers = chosen.dmabuf and chosen.modifiers;
+    d.queue_foreign = chosen.dmabuf and chosen.foreign;
 
     var props: c.VkPhysicalDeviceProperties = undefined;
     d.vki.vkGetPhysicalDeviceProperties.?(d.physical, &props);
@@ -376,16 +389,19 @@ fn selectDevice(d: *Device, gpa: Allocator, options: Options) vk.Error!void {
         .maintenance4 = c.VK_TRUE,
     };
 
-    var exts: [2][*:0]const u8 = undefined;
+    var exts: [7][*:0]const u8 = undefined;
     var n: u32 = 0;
-    if (d.swapchain) {
-        exts[n] = "VK_KHR_swapchain";
+    for ([_]struct { bool, [*:0]const u8 }{
+        .{ d.swapchain, "VK_KHR_swapchain" },
+        .{ d.swapchain and d.incremental_present, "VK_KHR_incremental_present" },
+        .{ d.dmabuf_import, "VK_KHR_external_memory_fd" },
+        .{ d.dmabuf_import, "VK_EXT_external_memory_dma_buf" },
+        .{ d.drm_modifiers, "VK_EXT_image_drm_format_modifier" },
+        .{ d.queue_foreign, "VK_EXT_queue_family_foreign" },
+    }) |e| if (e[0]) {
+        exts[n] = e[1];
         n += 1;
-        if (d.incremental_present) {
-            exts[n] = "VK_KHR_incremental_present";
-            n += 1;
-        }
-    }
+    };
     const info: c.VkDeviceCreateInfo = .{
         .sType = c.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .pNext = &f13,
@@ -455,11 +471,19 @@ fn evaluate(d: *Device, gpa: Allocator, pd: c.VkPhysicalDevice, options: Options
     var swapchain = false;
     var incremental = false;
     var drm = false;
+    var memory_fd = false;
+    var dmabuf = false;
+    var modifiers = false;
+    var foreign = false;
     for (exts) |e| {
         const en = std.mem.sliceTo(&e.extensionName, 0);
         if (std.mem.eql(u8, en, "VK_KHR_swapchain")) swapchain = true;
         if (std.mem.eql(u8, en, "VK_KHR_incremental_present")) incremental = true;
         if (std.mem.eql(u8, en, "VK_EXT_physical_device_drm")) drm = true;
+        if (std.mem.eql(u8, en, "VK_KHR_external_memory_fd")) memory_fd = true;
+        if (std.mem.eql(u8, en, "VK_EXT_external_memory_dma_buf")) dmabuf = true;
+        if (std.mem.eql(u8, en, "VK_EXT_image_drm_format_modifier")) modifiers = true;
+        if (std.mem.eql(u8, en, "VK_EXT_queue_family_foreign")) foreign = true;
     }
     if (options.wayland_display != null and !swapchain) return null;
 
@@ -477,7 +501,7 @@ fn evaluate(d: *Device, gpa: Allocator, pd: c.VkPhysicalDevice, options: Options
         if (matchesDevice(dp, options.main_device.?)) score += 16;
     }
     log.debug("{s}: score {d}", .{ name, score });
-    return .{ .physical = pd, .family = family, .score = score, .swapchain = swapchain, .incremental = incremental };
+    return .{ .physical = pd, .family = family, .score = score, .swapchain = swapchain, .incremental = incremental, .dmabuf = memory_fd and dmabuf, .modifiers = modifiers, .foreign = foreign };
 }
 
 /// Whether a dev_t (Linux encoding) names the device's primary or render

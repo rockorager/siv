@@ -33,6 +33,7 @@ pub const Glyph = list.Glyph;
 pub const GlyphRun = list.GlyphRun;
 pub const ImageFormat = list.ImageFormat;
 pub const ImageRef = list.ImageRef;
+pub const Dmabuf = list.Dmabuf;
 pub const Filter = list.Filter;
 pub const Image = list.Image;
 pub const BackdropBlur = list.BackdropBlur;

@@ -304,7 +304,9 @@ pub const ImageFormat = enum(u8) {
 /// Pixels owned by the caller. They must stay valid and unchanged while
 /// any display list refers to them.
 pub const ImageRef = struct {
-    pixels: [*]const u8,
+    /// Null when only `dmabuf` holds the pixels: renderers that cannot
+    /// import it draw nothing (D17).
+    pixels: ?[*]const u8,
     width: u32,
     height: u32,
     /// Bytes per row.
@@ -313,6 +315,29 @@ pub const ImageRef = struct {
     /// Unique per pixel content: change it when the pixels change. Keys
     /// backend caches (e.g. Vulkan textures).
     key: u64,
+    /// The same pixels in a dma-buf, which a GPU renderer imports instead
+    /// of uploading `pixels` (D10, D17). Its fds belong to the caller.
+    dmabuf: ?*const Dmabuf = null,
+};
+
+/// A Linux dma-buf: a DRM fourcc format and modifier and up to four
+/// planes. Renderers only read it; the producer owns the fds.
+pub const Dmabuf = struct {
+    /// DRM fourcc, for example XRGB8888 ('XR24').
+    format: u32,
+    modifier: u64,
+    planes: [4]Plane = undefined,
+    plane_count: u8,
+
+    pub const Plane = struct { fd: i32, offset: u32, stride: u32 };
+
+    pub const modifier_linear: u64 = 0;
+    pub const modifier_invalid: u64 = 0x00ff_ffff_ffff_ffff;
+    pub const xrgb8888: u32 = fourcc("XR24");
+
+    pub fn fourcc(comptime code: *const [4]u8) u32 {
+        return std.mem.readInt(u32, code, .little);
+    }
 };
 
 pub const Filter = enum(u8) { nearest, linear };

@@ -126,6 +126,61 @@ test "frames match the CPU renderer, including damage-only frames" {
     try testing.expectEqual(errors, Device.validation_errors.load(.monotonic));
 }
 
+test "dma-buf frames are imported, or skipped without pixels" {
+    const gpa = testing.allocator;
+    const device = try testDevice();
+    defer device.destroy();
+    const errors = Device.validation_errors.load(.monotonic);
+    const r = try Renderer.create(gpa, device, .serial);
+    defer r.destroy();
+    try r.resize(40, 30);
+    // A memfd stands in for a linear dma-buf: lavapipe maps what it
+    // imports, and this machine has no dma-buf exporter. Odd stride and
+    // offset, as decoders pad.
+    const w = 13;
+    const h = 9;
+    const stride = 64;
+    const offset = 128;
+    const fd = try std.posix.memfd_create("siv-dmabuf", 0);
+    defer _ = std.c.close(fd);
+    const mem = try gpa.alloc(u8, offset + stride * h);
+    defer gpa.free(mem);
+    @memset(mem, 0xee);
+    for (0..h) |y| for (0..w) |x| {
+        mem[offset + y * stride + x * 4 ..][0..4].* = .{ @intCast(x * 19), @intCast(y * 27), @intCast(255 - x * 7), 0x11 };
+    };
+    if (std.c.pwrite(fd, mem.ptr, mem.len, 0) != mem.len) return error.Unexpected;
+    var buf: scene.Dmabuf = .{ .format = scene.Dmabuf.xrgb8888, .modifier = scene.Dmabuf.modifier_linear, .plane_count = 1 };
+    buf.planes[0] = .{ .fd = fd, .offset = offset, .stride = stride };
+
+    var b = scene.Builder.init(gpa);
+    defer b.deinit();
+    const want = try gpa.alloc(u8, 40 * 30 * 4);
+    defer gpa.free(want);
+    const got = try gpa.alloc(u8, 40 * 30 * 4);
+    defer gpa.free(got);
+    // The same frame from its pixels, then from the dma-buf alone.
+    for ([_]?[*]const u8{ mem.ptr + offset, null }, [_]u64{ 1, 2 }, [_][]u8{ want, got }) |pixels, key, out| {
+        b.reset();
+        try b.image(.{
+            .image = .{ .pixels = pixels, .width = w, .height = h, .stride = stride, .format = .bgrx8_srgb, .key = key, .dmabuf = if (pixels == null) &buf else null },
+            .src = .xywh(0, 0, w, h),
+            .dst = .xywh(3, 2, w, h),
+            .filter = .nearest,
+        });
+        try r.beginFrame();
+        try r.render(try b.finish(0), .{ .background = .white }, .{ .readback = .{ .pixels = out.ptr, .stride = 40 * 4 } });
+    }
+    if (device.dmabuf_import) {
+        try testing.expectEqualSlices(u8, want, got);
+    } else {
+        // Not drawn: the background only.
+        for (0..40 * 30) |i| try testing.expectEqualSlices(u8, &.{ 255, 255, 255, 255 }, got[i * 4 ..][0..4]);
+        try testing.expect(r.dmabuf_skipped);
+    }
+    try testing.expectEqual(errors, Device.validation_errors.load(.monotonic));
+}
+
 test "device selection matches dma-buf feedback device numbers" {
     // dev_t 226:128 (/dev/dri/renderD128) in the Linux encoding.
     const dev: u64 = (226 << 8) | 128;
