@@ -18,14 +18,14 @@ timed() {
 # makes those tests fail on validation errors. xkb-data provides the
 # keymaps the keyboard tests compile. dbus-daemon and gdbus
 # (libglib2.0-bin) are the D-Bus integration tests' bus and second client;
-# at-spi2-core (the accessibility bus and registry) and python3-pyatspi
-# (libatspi) are the AT-SPI integration tests' stack and client.
+# at-spi2-core (the accessibility bus and registry), python3-pyatspi
+# (libatspi), and orca are the AT-SPI integration tests' stack and clients.
 packages=(
 	ca-certificates curl xz-utils pkg-config
 	libwayland-dev libxkbcommon-dev libfontconfig-dev xkb-data
 	libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers
 	dbus-daemon libglib2.0-bin
-	at-spi2-core python3-pyatspi
+	at-spi2-core python3-pyatspi orca
 )
 
 install_packages() {

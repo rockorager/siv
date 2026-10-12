@@ -1033,6 +1033,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     client: discovery through IsEnabled, the tree with roles, names,
     states, and interfaces, actions, focus, text and extents, editing,
     values, and checked, focused, text, caret, and announcement events.
+    Orca 43 on headless sway turns accessibility on, the bridge joins by
+    itself, and Orca speaks "Orca test frame.", "OK push button.", and
+    "Remember check box not checked." for activation and focus changes
+    (read from its debug log; a stub stands in for X's xkbcomp, which
+    Orca 43 calls at startup).
 - **Alternatives:** AccessKit's Linux adapter (adds a Rust toolchain).
 - **Reverse if:** AccessKit offers a C build without Rust and covers every
   interface listed above.

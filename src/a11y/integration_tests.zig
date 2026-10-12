@@ -3,6 +3,7 @@
 //! with its accessibility bus and at-spi2-registryd, and libatspi through
 //! pyatspi as the assistive technology. The bridge discovers the bus
 //! through org.a11y.Bus once IsEnabled turns on, as in a desktop session.
+//! A second test runs Orca on headless sway and checks what it speaks.
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -261,4 +262,165 @@ test "libatspi reads the tree, acts on it, and hears its events through the regi
     }
     try testing.expectEqual(@as(usize, 1), fx.clicks);
     try testing.expectEqualStrings("abc!", fx.win.node(fx.nodes.editor).data.editor.text.content);
+}
+
+/// sway on its headless backend in the stack's runtime directory: Orca
+/// needs a display connection.
+fn startSway(s: *Stack) !linux.pid_t {
+    const exe = td.findExecutable("sway") orelse return error.SwayNotInstalled;
+    var buf: [128]u8 = undefined;
+    const config = try std.fmt.bufPrintSentinel(&buf, "{s}/sway.conf", .{s.daemon.dir}, 0);
+    try td.writeFile(config, "output HEADLESS-1 mode 1280x720@60Hz\n");
+    var env_bufs: [2][192]u8 = undefined;
+    const env = [_:null]?[*:0]const u8{
+        try std.fmt.bufPrintSentinel(&env_bufs[0], "XDG_RUNTIME_DIR={s}", .{s.daemon.dir}, 0),
+        "PATH=/usr/local/bin:/usr/bin:/bin",
+        "WLR_BACKENDS=headless",
+        "WLR_RENDERER=pixman",
+        "WLR_LIBINPUT_NO_DEVICES=1",
+    };
+    const argv = [_:null]?[*:0]const u8{ exe, "-c", config };
+    const pid = try td.spawn(exe, &argv, &env, null);
+    const sock = try std.fmt.bufPrintSentinel(&env_bufs[1], "{s}/wayland-1", .{s.daemon.dir}, 0);
+    var waited: u32 = 0;
+    while (linux.access(sock, 0) != 0) : (waited += 1) {
+        if (waited > 500) {
+            td.kill(pid);
+            return error.SwayDidNotStart;
+        }
+        td.sleepMs(10);
+    }
+    return pid;
+}
+
+fn readFile(path: [*:0]const u8, out: *std.ArrayList(u8)) !void {
+    out.clearRetainingCapacity();
+    const rc = linux.open(path, .{ .CLOEXEC = true }, 0);
+    if (linux.errno(rc) != .SUCCESS) return;
+    const fd: i32 = @intCast(rc);
+    defer _ = linux.close(fd);
+    var buf: [65536]u8 = undefined;
+    while (true) {
+        const n = linux.read(fd, &buf, buf.len);
+        if (linux.errno(n) != .SUCCESS or n == 0) return;
+        try out.appendSlice(gpa, buf[0..n]);
+    }
+}
+
+test "Orca turns accessibility on, finds the application, and speaks focus changes" {
+    var orca_buf: [256]u8 = undefined;
+    const orca = try std.fmt.bufPrintSentinel(&orca_buf, "{s}", .{td.findExecutable("orca") orelse {
+        std.log.warn("orca is not installed; skipping", .{});
+        return;
+    }}, 0);
+    var s: Stack = undefined;
+    try s.init();
+    defer s.deinit();
+    const sway = try startSway(&s);
+    defer td.kill(sway);
+    var fx: Fixture = undefined;
+    try fx.init(gpa);
+    defer fx.deinit();
+    var bridge: Bridge = undefined;
+    bridge.init(gpa, &s.loop, .{ .app_name = "siv-orca-test", .toolkit_version = "0.1" });
+    defer bridge.deinit();
+    const wid = try bridge.addWindow(fx.win, "Orca test");
+    try bridge.start(&s.session);
+
+    // Orca 43 reads the X keymap with xkbcomp at startup; on Wayland a
+    // stub stands in for it.
+    var buf: [3][192]u8 = undefined;
+    const stub_dir = try std.fmt.bufPrintSentinel(&buf[0], "{s}/stub", .{s.daemon.dir}, 0);
+    _ = linux.mkdir(stub_dir, 0o700);
+    const stub = try std.fmt.bufPrintSentinel(&buf[1], "{s}/xkbcomp", .{stub_dir}, 0);
+    try td.writeFile(stub, "#!/bin/sh\nexit 0\n");
+    _ = linux.chmod(stub, 0o700);
+    var env_bufs: [4][192]u8 = undefined;
+    const env = [_:null]?[*:0]const u8{
+        s.env[0].?,
+        s.env[1].?,
+        "GSETTINGS_BACKEND=memory",
+        try std.fmt.bufPrintSentinel(&env_bufs[0], "HOME={s}", .{s.daemon.dir}, 0),
+        try std.fmt.bufPrintSentinel(&env_bufs[1], "PATH={s}:/usr/local/bin:/usr/bin:/bin", .{stub_dir}, 0),
+        "DISPLAY=:0",
+        "WAYLAND_DISPLAY=wayland-1",
+        "GDK_BACKEND=wayland",
+    };
+    const log_path = try std.fmt.bufPrintSentinel(&buf[2], "{s}/orca.log", .{s.daemon.dir}, 0);
+    // Orca writes its debug file block-buffered; open it line-buffered so
+    // that the test sees each line as Orca logs it.
+    const wrapper =
+        \\import builtins, runpy
+        \\_open = builtins.open
+        \\def line_buffered(f, mode="r", *a, **k):
+        \\    if not a and "b" not in mode and "w" in mode: k.setdefault("buffering", 1)
+        \\    return _open(f, mode, *a, **k)
+        \\builtins.open = line_buffered
+        \\runpy.run_path("/usr/bin/orca", run_name="__main__")
+    ;
+    const argv = [_:null]?[*:0]const u8{ "/usr/bin/python3", "-c", wrapper, "--debug-file", log_path };
+    const out_path = try std.fmt.bufPrintSentinel(&env_bufs[2], "{s}/orca.out", .{s.daemon.dir}, 0);
+    const out_fd: i32 = @intCast(linux.open(out_path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, 0o600));
+    defer _ = linux.close(out_fd);
+    _ = orca;
+    const pid = try td.spawn("/usr/bin/python3", &argv, &env, out_fd);
+    defer td.kill(pid);
+
+    // Orca sets IsEnabled; the bridge connects by itself.
+    var log: std.ArrayList(u8) = .empty;
+    defer log.deinit(gpa);
+    const start_deadline = Loop.now() + 30 * std.time.ns_per_s;
+    while (!(bridge.active() and bridge.embed_call == 0)) {
+        if (Loop.now() > start_deadline) {
+            try readFile(out_path, &log);
+            std.debug.print("the bridge never connected; Orca's output:\n{s}\n", .{log.items[log.items.len -| 4000..]});
+            return error.TestTimeout;
+        }
+        try s.loop.dispatch(50);
+    }
+
+    const Step = struct { node: ui.NodeId, want: []const []const u8 };
+    // Orca speaks a focused control as its name and role (and state).
+    const steps = [_]Step{
+        .{ .node = fx.nodes.button, .want = &.{ "OK", "push button" } },
+        .{ .node = fx.nodes.check, .want = &.{ "Remember", "check box", "not checked" } },
+    };
+    // Orca needs a moment to load its scripts and the application list.
+    const ready_deadline = Loop.now() + 30 * std.time.ns_per_s;
+    while (true) {
+        try s.loop.dispatch(50);
+        try readFile(log_path, &log);
+        if (std.mem.indexOf(u8, log.items, "siv-orca-test") != null) break;
+        if (Loop.now() > ready_deadline) {
+            std.debug.print("Orca never saw the application:\n{s}\n", .{log.items[log.items.len -| 1500..]});
+            return error.TestTimeout;
+        }
+    }
+    bridge.setActive(wid, true);
+    for (steps) |step| {
+        ui.input.setFocus(fx.win, step.node, true);
+        try fx.win.frame();
+        try bridge.update(wid);
+        const deadline = Loop.now() + 10 * std.time.ns_per_s;
+        while (!spoke(log.items, step.want)) {
+            if (Loop.now() > deadline) {
+                std.debug.print("Orca did not say {s}:\n{s}\n", .{ step.want[0], log.items[log.items.len -| 6000..] });
+                return error.TestTimeout;
+            }
+            try s.loop.dispatch(50);
+            try readFile(log_path, &log);
+        }
+    }
+}
+
+/// Whether some "SPEECH OUTPUT" line of Orca's log contains every word.
+fn spoke(log: []const u8, words: []const []const u8) bool {
+    var lines = std.mem.splitScalar(u8, log, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.indexOf(u8, line, "SPEECH OUTPUT: '") == null) continue;
+        for (words) |w| {
+            if (std.mem.indexOf(u8, line, w) == null) break;
+        } else return true;
+    }
+    return false;
 }
