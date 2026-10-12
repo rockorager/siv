@@ -14,6 +14,9 @@
 //!   -Dtest-filter=<text>      only run tests whose name contains <text>
 //!   -fsys=harfbuzz            link the system HarfBuzz instead of building it
 //!   -fsys=sheenbidi           link the system SheenBidi instead of building it
+//!   -fsys=lcms2, libwebp, libavif, dav1d, libjxl
+//!                             link the system image decoders and Little CMS
+//!                             (src/image/build_steps.zig)
 //!
 //! libwayland-client, xkbcommon, and Fontconfig are always system libraries.
 
@@ -79,6 +82,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "wuffs", .module = wuffs },
     });
     const vk = @import("src/render/vulkan/build_steps.zig").add(b, .{ .target = target, .optimize = optimize });
+    const images = @import("src/image/build_steps.zig").add(b, .{ .target = target, .optimize = optimize, .scene = scene });
+    const image = images.image;
     const render_vulkan = ctx.module("src/render/vulkan/vulkan.zig", &.{
         .{ .name = "scene", .module = scene },
         .{ .name = "raster", .module = raster },
@@ -134,6 +139,7 @@ pub fn build(b: *std.Build) void {
     compositor.addImport("integration", not_integration);
     const ui = ctx.module("src/ui/ui.zig", &.{
         .{ .name = "scene", .module = scene },
+        .{ .name = "image", .module = image },
         .{ .name = "raster", .module = raster },
         .{ .name = "text", .module = text },
         .{ .name = "loop", .module = loop },
@@ -166,6 +172,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "scene", .module = scene },
         .{ .name = "raster", .module = raster },
         .{ .name = "text", .module = text },
+        .{ .name = "image", .module = image },
         .{ .name = "render_cpu", .module = render_cpu },
         .{ .name = "render_vulkan", .module = render_vulkan },
         .{ .name = "loop", .module = loop },
@@ -226,7 +233,7 @@ pub fn build(b: *std.Build) void {
         \\Name: siv
         \\Description: GUI toolkit for Wayland
         \\Version: {f}
-        \\Requires.private: wayland-client xkbcommon fontconfig{s}{s}
+        \\Requires.private: wayland-client xkbcommon fontconfig{s}{s}{s}
         \\Libs: -L${{libdir}} -lsiv
         \\Libs.private: -lm -lpthread
         \\Cflags: -I${{includedir}}
@@ -235,6 +242,7 @@ pub fn build(b: *std.Build) void {
         version,
         if (ctx.systemHarfbuzz()) " harfbuzz" else "",
         if (ctx.systemSheenbidi()) " sheenbidi" else "",
+        images.requires,
     }));
     b.getInstallStep().dependOn(&b.addInstallFileWithDir(pc, .lib, "pkgconfig/siv.pc").step);
 
@@ -245,6 +253,7 @@ pub fn build(b: *std.Build) void {
         .{ "text", text },
         .{ "raster", raster },
         .{ "scene", scene },
+        .{ "image", image },
         .{ "render-cpu", render_cpu },
         .{ "render-vulkan", render_vulkan },
         .{ "loop", loop },

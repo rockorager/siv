@@ -24,6 +24,45 @@
             .hash = "N-V-__8AAP5JWgDH1rExLB4QCFqm60SkW51_i6qOXTyhjsWv",
             .lazy = true,
         },
+        // Color management for decoded images (D11, D19): ICC profiles to
+        // the linear working space. MIT. Lazy: skipped with -fsys=lcms2.
+        .lcms2 = .{
+            .url = "https://github.com/mm2/Little-CMS/archive/refs/tags/lcms2.17.tar.gz",
+            .hash = "N-V-__8AAFoTpADc6ISFB0o4tCLbYUI8NXZdYGCpgqAlQrsQ",
+            .lazy = true,
+        },
+        // WebP decoding (D19). BSD-3-Clause. Lazy: skipped with -fsys=libwebp.
+        .libwebp = .{
+            .url = "https://github.com/webmproject/libwebp/archive/refs/tags/v1.5.0.tar.gz",
+            .hash = "N-V-__8AAOM4egDNF1p7XMh92AC7yc-Da9ArradyeGsfMXkm",
+            .lazy = true,
+        },
+        // AV1 decoding for AVIF (D19). BSD-2-Clause. The GitHub mirror of
+        // code.videolan.org/videolan/dav1d. Lazy: skipped with -fsys=dav1d.
+        .dav1d = .{
+            .url = "https://github.com/videolan/dav1d/archive/refs/tags/1.5.1.tar.gz",
+            .hash = "N-V-__8AADyfswC8PUcbSINU_Y8cAc2lKgEqVi6du23wXLMS",
+            .lazy = true,
+        },
+        // AVIF decoding (D19). BSD-2-Clause. Lazy: skipped with -fsys=libavif.
+        .libavif = .{
+            .url = "https://github.com/AOMediaCodec/libavif/archive/refs/tags/v1.3.0.tar.gz",
+            .hash = "N-V-__8AALrIMwFY8GwM-oX2rCUYbENqketjUJByUjoHLhZf",
+            .lazy = true,
+        },
+        // JPEG XL decoding (D19). BSD-3-Clause, with Highway (Apache-2.0 or
+        // BSD-3-Clause); built without the boxes that need Brotli. Lazy:
+        // skipped with -fsys=libjxl.
+        .libjxl = .{
+            .url = "https://github.com/libjxl/libjxl/archive/refs/tags/v0.11.1.tar.gz",
+            .hash = "N-V-__8AAO_HbgBGkewsrsmQxPPUEzKNRtvZGlyafTky-zOf",
+            .lazy = true,
+        },
+        .highway = .{
+            .url = "https://github.com/google/highway/archive/refs/tags/1.2.0.tar.gz",
+            .hash = "N-V-__8AAODLaQBqNvEIfh_2K_DEv5Ivn1EgOsrbhetLQpvS",
+            .lazy = true,
+        },
         // Shader compiler for the Vulkan renderer (D10), built for the host
         // and run at build time; nothing of it ships in libsiv. BSD-3-Clause,
         // BSD-2-Clause, MIT, and Apache-2.0, except the generated parser

@@ -13,7 +13,7 @@ tests).
 ```sh
 zig build                      # zig-out: libsiv.so, libsiv.a, include/siv.h, lib/pkgconfig/siv.pc
 zig build test                 # every module's tests, headless tests, C ABI smoke test
-zig build test-text            # one module: test-abi, test-text, test-raster, test-scene,
+zig build test-text            # one module: test-abi, test-text, test-raster, test-scene, test-image,
                                #   test-render-cpu, test-render-vulkan, test-pool, test-loop,
                                #   test-dbus, test-portal, test-pdf, test-tray, test-platform,
                                #   test-compositor, test-ui, test-a11y, test-app
@@ -39,6 +39,7 @@ zig build bench-text -Doptimize=ReleaseFast   # headless text engine benchmarks
 zig build bench-render-cpu -Doptimize=ReleaseFast  # CPU renderer benchmarks
 zig build -fsys=harfbuzz -fsys=sheenbidi   # link system copies instead of vendored ones
 zig build -fsys=glslang        # compile shaders with the system glslangValidator
+zig build -fsys=lcms2 -fsys=libwebp -fsys=libavif -fsys=dav1d -fsys=libjxl  # system image decoders
 ```
 
 Fetched packages live in `zig-pkg/` (ignored). `zig build --fetch=all`
@@ -56,6 +57,7 @@ owns its directories and does not edit another workstream's files.
 | `text` | `src/text/` | Text engine | `raster`, `harfbuzz`, `sheenbidi`, `fontconfig`, `uucode` |
 | `raster` | `src/raster/` | Rasterizer, display list, CPU renderer | none |
 | `scene` | `src/scene/` | Rasterizer, display list, CPU renderer | `raster` |
+| `image` | `src/image/` | Image decoding | `scene`, `image_c` (wuffs, lcms2, libwebp, libavif, dav1d, libjxl) |
 | `render_cpu` | `src/render/cpu/` | Rasterizer, display list, CPU renderer | `scene`, `raster`, `text`, `harfbuzz`, `pool`, `wuffs` |
 | `render_vulkan` | `src/render/vulkan/` | Vulkan renderer | `scene`, `raster`, `render_cpu`, `pool`, `vulkan`, `shaders` |
 | `loop` | `src/loop/` | Event loop and Wayland platform | `pool` |
@@ -65,7 +67,7 @@ owns its directories and does not edit another workstream's files.
 | `pdf` | `src/pdf/` | Desktop integration | `scene`, `raster`, `render_cpu`, `text`, `harfbuzz_subset` |
 | `platform` | `src/platform/` | Event loop and Wayland platform | `loop`, `wayland`, `xkbcommon` |
 | `compositor` | `src/compositor/` | Compositor thread | `scene`, `raster`, `render_cpu`, `render_vulkan`, `pool`, `loop`, `platform` |
-| `ui` | `src/ui/` | UI core | `scene`, `raster`, `text`, `loop`, `platform`, `compositor` |
+| `ui` | `src/ui/` | UI core | `scene`, `raster`, `text`, `image`, `loop`, `platform`, `compositor` |
 | `a11y` | `src/a11y/` | D-Bus and desktop settings (AT-SPI) | `dbus`, `ui`, `loop`, `raster`, `text` |
 | `app` | `src/app/` | Public C API | `text`, `loop`, `platform`, `compositor`, `ui`, `dbus`, `a11y`, `portal` |
 | `widgets` | `src/widgets/` | Theming and stock widgets | `siv` (the generated C API wrapper) only (D22) |
@@ -93,6 +95,8 @@ commit message. In particular:
     outputs, libsiv.so link setup, ABI tests).
   - `src/render/vulkan/build_steps.zig`: the Vulkan headers module, the
     glslang shader compiler, and the shader list (`shaders/*.glsl`).
+  - `src/image/build_steps.zig`: the image decoders' C sources, generated
+    headers, and `-fsys` options.
 
 ## Conventions
 
