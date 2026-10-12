@@ -447,13 +447,22 @@ test "fuzz message parsing" {
     try std.testing.fuzz(seed, fuzzParse, .{ .corpus = &.{seed} });
 }
 
-/// A message that parses must decode completely.
+/// A message that parses must decode completely. The fixed header is
+/// patched to be consistent with the input's length, so that the fuzzer
+/// spends its time in the header fields and the body.
 fn fuzzParse(_: []const u8, smith: *std.testing.Smith) !void {
     var buf: [4096]u8 align(8) = undefined;
     const data = buf[0..smith.slice(&buf)];
     if (data.len >= fixed_header_len) {
-        const n = Message.frameLength(data[0..fixed_header_len]) catch return;
-        _ = n;
+        data[0] = if (data[0] & 1 == 0) 'l' else 'B';
+        data[3] = 1;
+        const endian: Endian = if (data[0] == 'l') .little else .big;
+        const room: u32 = @intCast(data.len - fixed_header_len);
+        const fields_len = std.mem.readInt(u32, data[12..16], endian) % (room + 1);
+        std.mem.writeInt(u32, data[12..16], fields_len, endian);
+        const body_off = std.mem.alignForward(usize, fixed_header_len + fields_len, 8);
+        if (body_off <= data.len) std.mem.writeInt(u32, data[4..8], @intCast(data.len - body_off), endian);
+        _ = Message.frameLength(data[0..fixed_header_len]) catch {};
     }
     const m = Message.parse(data) catch return;
     var fds: [codec.max_fds]i32 = @splat(-1);
