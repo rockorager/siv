@@ -704,3 +704,137 @@ test "documents register a file and grant permissions" {
     try testing.expectEqualStrings("read", try d.readString());
     try testing.expectEqualStrings("write", try d.readString());
 }
+
+const AppLog = struct {
+    activations: u32 = 0,
+    opened: [2][64]u8 = undefined,
+    opened_lens: [2]usize = .{ 0, 0 },
+    open_count: usize = 0,
+    act: [16]u8 = undefined,
+    act_len: usize = 0,
+    target: [16]u8 = undefined,
+    target_len: usize = 0,
+    token: [32]u8 = undefined,
+    token_len: usize = 0,
+    calls: u32 = 0,
+
+    fn setToken(l: *AppLog, t: []const u8) void {
+        @memcpy(l.token[0..t.len], t);
+        l.token_len = t.len;
+        l.calls += 1;
+    }
+
+    fn activate(ctx: ?*anyopaque, token: []const u8) void {
+        const l: *AppLog = @ptrCast(@alignCast(ctx));
+        l.activations += 1;
+        l.setToken(token);
+    }
+
+    fn open(ctx: ?*anyopaque, uris: *vardict.StringIterator, token: []const u8) void {
+        const l: *AppLog = @ptrCast(@alignCast(ctx));
+        l.open_count = 0;
+        while (uris.next()) |u| : (l.open_count += 1) {
+            @memcpy(l.opened[l.open_count][0..u.len], u);
+            l.opened_lens[l.open_count] = u.len;
+        }
+        l.setToken(token);
+    }
+
+    fn action(ctx: ?*anyopaque, name: []const u8, target: []const u8, token: []const u8) void {
+        const l: *AppLog = @ptrCast(@alignCast(ctx));
+        @memcpy(l.act[0..name.len], name);
+        l.act_len = name.len;
+        @memcpy(l.target[0..target.len], target);
+        l.target_len = target.len;
+        l.setToken(token);
+    }
+
+    fn handler(l: *AppLog) portal.application.Handler {
+        return .{ .ctx = l, .activate = activate, .open = open, .action = action };
+    }
+};
+
+const Forwarded = struct {
+    f: portal.application.Forward = .{ .func = cb },
+    done: bool = false,
+    ok: bool = false,
+
+    fn cb(f: *portal.application.Forward, ok: bool) void {
+        const x: *Forwarded = @fieldParentPtr("f", f);
+        x.done = true;
+        x.ok = ok;
+    }
+
+    fn isDone(x: *Forwarded) bool {
+        return x.done;
+    }
+};
+
+test "application object paths follow the id" {
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings("/org/example/My_App", portal.application.objectPath(&buf, "org.example.My-App").?);
+    try testing.expectEqual(null, portal.application.objectPath(&buf, "noDots"));
+    try testing.expectEqual(null, portal.application.objectPath(&buf, ":1.2"));
+}
+
+test "a second instance forwards activation, URIs, and actions to the first" {
+    var h: Harness = undefined;
+    try h.init(false);
+    defer h.deinit();
+    try h.ready();
+    var log: AppLog = .{};
+    var first: portal.application.Server = .{ .handler = log.handler() };
+    try first.start(&h.app_conn, "org.example.App");
+    defer first.stop();
+    try h.until(&first, struct {
+        fn f(s: *portal.application.Server) bool {
+            return s.owner.state == .primary;
+        }
+    }.f);
+
+    // The second instance's connection.
+    var conn2: dbus.Connection = undefined;
+    try conn2.initFd(gpa, &h.loop, try h.bus.connect(), .{});
+    defer conn2.deinit();
+    var log2: AppLog = .{};
+    var second: portal.application.Server = .{ .handler = log2.handler() };
+    try second.start(&conn2, "org.example.App");
+    defer second.stop();
+    try h.until(&second, struct {
+        fn f(s: *portal.application.Server) bool {
+            return s.owner.state != .requesting and s.owner.state != .idle;
+        }
+    }.f);
+    try testing.expectEqual(dbus.Connection.NameOwner.State.exists, second.owner.state);
+
+    var fw: Forwarded = .{};
+    try fw.f.open(&conn2, "org.example.App", &.{ "file:///a.txt", "https://x/" }, "tok-1");
+    try h.until(&fw, Forwarded.isDone);
+    try testing.expect(fw.ok);
+    try testing.expectEqual(@as(usize, 2), log.open_count);
+    try testing.expectEqualStrings("https://x/", log.opened[1][0..log.opened_lens[1]]);
+    try testing.expectEqualStrings("tok-1", log.token[0..log.token_len]);
+
+    fw = .{};
+    try fw.f.action(&conn2, "org.example.App", "archive", "42", "");
+    try h.until(&fw, Forwarded.isDone);
+    try testing.expectEqualStrings("archive", log.act[0..log.act_len]);
+    try testing.expectEqualStrings("42", log.target[0..log.target_len]);
+    try testing.expectEqual(@as(usize, 0), log.token_len);
+
+    fw = .{};
+    try fw.f.activate(&conn2, "org.example.App", "tok-2");
+    try h.until(&fw, Forwarded.isDone);
+    try testing.expectEqual(@as(u32, 1), log.activations);
+    try testing.expectEqualStrings("tok-2", log.token[0..log.token_len]);
+    // Nothing reached the second instance.
+    try testing.expectEqual(@as(u32, 0), log2.calls);
+
+    // Without a primary, forwarding fails.
+    first.stop();
+    try h.settle();
+    fw = .{};
+    try fw.f.activate(&conn2, "org.example.App", "");
+    try h.until(&fw, Forwarded.isDone);
+    try testing.expect(!fw.ok);
+}

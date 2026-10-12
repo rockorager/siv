@@ -2,6 +2,8 @@
 //! inhibition, global shortcuts, screenshots and screen casts, printing,
 //! and the document portal, as clients of xdg-desktop-portal on siv's
 //! own D-Bus connection. They work the same inside Flatpak and outside.
+//! Also org.freedesktop.Application, for single instance and D-Bus
+//! activation (application.zig).
 //!
 //! Most portal calls follow the request/response pattern (`Request`):
 //! the reply names a request object, and the result arrives later as its
@@ -29,6 +31,7 @@ pub const screenshot = @import("screenshot.zig");
 pub const screencast = @import("screencast.zig");
 pub const global_shortcuts = @import("global_shortcuts.zig");
 pub const documents = @import("documents.zig");
+pub const application = @import("application.zig");
 
 pub const Response = Request.Response;
 pub const Failure = Request.Failure;
@@ -41,6 +44,8 @@ pub const testing = struct {
     /// integration tests.
     pub const Desktop = @import("test_desktop.zig").Desktop;
     pub const Backend = @import("test_desktop.zig").Backend;
+    /// dbus-daemon and process helpers.
+    pub const daemon = @import("dbus").testing.daemon;
 };
 
 test {
