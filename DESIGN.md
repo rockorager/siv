@@ -1692,6 +1692,37 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       qpdf and pdftotext. Hermetic tests read the structure, fonts, and
       ToUnicode maps back.
   - System tray (StatusNotifierItem) is an optional module.
+    - `src/tray` (imports `dbus` and `loop`): optional at run time rather
+      than at build time, so the ABI is the same everywhere: nothing is
+      exported until the application creates an item. One item per
+      application (`SIV_ERROR_BUSY` for a second): the specification
+      fixes its object path, /StatusNotifierItem, and one connection
+      cannot export two objects there.
+    - The item asks for org.kde.StatusNotifierItem-<pid>-<n> and registers
+      that name with org.kde.StatusNotifierWatcher; if the name cannot
+      be had (a Flatpak sandbox may not allow owning it) it registers its
+      object path, which watchers pair with the sender's unique name. It
+      follows the watcher's owner and registers again whenever a watcher
+      appears; `unregistered` events (no watcher, it left, or it refused)
+      let the application show itself another way.
+    - Properties use the specification's change signals (NewIcon,
+      NewTitle, NewToolTip, NewStatus), not PropertiesChanged. Icons are a
+      themed name, an image (sent as ARGB32 in network byte order), or
+      both. KDE's ProvideXdgActivationToken is kept for the next Activate,
+      whose event carries it for `siv_window_activate`. WindowId is 0
+      (X11 only); overlay icons and attention movies are left out.
+    - The menu is com.canonical.dbusmenu version 3 at /MenuBar: entries
+      by application-chosen id with a parent id, kinds normal,
+      separator, check, and radio, and disabled, hidden, and checked
+      states. Changes bump the layout revision with one LayoutUpdated per
+      dispatch; AboutToShow always answers that nothing changed, since
+      the menu is kept current. Only `clicked` events reach the
+      application.
+    - Verified: hermetic tests with a stand-in watcher on the test bus
+      (registration by name, watcher restarts, refusal, every host call,
+      the layout's wire form); `zig build test-integration` reads the
+      item through dbus-daemon with GLib's gdbus (introspection,
+      GetAll, GetLayout, Event, Activate), also through the C API.
   - Images: wuffs (PNG, JPEG, GIF), libwebp, libavif with dav1d, libjxl.
     Decoding is async and decodes to the displayed size.
   - Icons follow the freedesktop icon theme specification, rendered by siv's
