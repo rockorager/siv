@@ -503,10 +503,7 @@ fn scroll(self: *Compositor, s: platform_mod.Scroll) bool {
     if (s.seat >= max_seats) return false;
     const seat = &self.seats[s.seat];
     const w = self.getWindow(s.window) orelse return false;
-    if (seat.mods.ctrl or seat.mods.alt or seat.mods.super) {
-        seat.latch = null;
-        return false;
-    }
+
     var delta: Point = .{ .x = @floatCast(s.dx), .y = @floatCast(s.dy) };
     if (seat.mods.shift and s.source == .wheel and delta.x == 0) delta = .{ .x = delta.y, .y = 0 };
     const gesture = s.source == .finger or s.source == .continuous;
@@ -516,7 +513,7 @@ fn scroll(self: *Compositor, s: platform_mod.Scroll) bool {
     const target: tree_mod.Route = if (gesture and seat.latch != null and seat.latch_window == s.window)
         seat.latch.?
     else
-        w.tree.route(seat.pos, delta);
+        w.tree.routeScroll(seat.pos, delta, seat.mods);
     if (gesture and seat.latch == null) {
         seat.latch = target;
         seat.latch_window = s.window;

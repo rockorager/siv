@@ -13,6 +13,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const raster = @import("raster");
 const scene = @import("scene");
+const platform = @import("platform");
 const update = @import("update.zig");
 const anim = @import("anim.zig");
 
@@ -375,7 +376,14 @@ pub const Tree = struct {
         return true;
     }
 
-    /// Where a pointer scroll by `delta` at `p` (window coordinates) goes.
+    /// Where a pointer scroll by `delta` at `p` (window coordinates) goes,
+    /// with modifiers `mods` held (see `update.Scroll` for the rules).
+    pub fn routeScroll(t: *Tree, p: Point, delta: Point, mods: platform.Mods) Route {
+        if (mods.ctrl or mods.alt or mods.super) return .ui;
+        return t.route(p, delta);
+    }
+
+    /// The modifier-free part of `routeScroll`.
     pub fn route(t: *Tree, p: Point, delta: Point) Route {
         if (t.root == 0) return .ui;
         return switch (t.routeLayer(t.root, p, delta)) {
@@ -755,6 +763,32 @@ test "scroll containers clamp, report, and route input" {
     try f.apply(&.{.{ .set_wheel_region = .{ .layer = 3, .region = .xywh(0, 200, 100, 50) } }});
     try testing.expectEqual(Route.ui, f.tree.route(.{ .x = 50, .y = 10 }, .{ .x = 0, .y = -10 }));
     try testing.expectEqual(Route{ .scroll = 2 }, f.tree.route(.{ .x = 50, .y = 60 }, .{ .x = 0, .y = -10 }));
+}
+
+test "a scroll container's viewport takes scroll input where nothing is drawn" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    // A 100x100 viewport whose only child draws a 20 px strip at its top;
+    // the rest of the viewport is transparent, as is the root.
+    try f.apply(&.{
+        .{ .create = 1 },
+        .{ .create = 2 },
+        .{ .create = 3 },
+        .{ .set_root = 1 },
+        .{ .insert = .{ .layer = 2, .parent = 1 } },
+        .{ .insert = .{ .layer = 3, .parent = 2 } },
+        .{ .set_transform = .{ .layer = 2, .transform = .offset(50, 50) } },
+        .{ .set_scroll = .{ .layer = 2, .scroll = .{ .viewport = .xywh(0, 0, 100, 100), .content = .{ .width = 100, .height = 500 } } } },
+        .{ .set_content = .{ .layer = 3, .content = try f.rect(0, .xywh(0, 0, 100, 20)) } },
+    });
+    const down: Point = .{ .x = 0, .y = 10 };
+    try testing.expectEqual(Route{ .scroll = 2 }, f.tree.route(.{ .x = 100, .y = 120 }, down));
+    try testing.expectEqual(Route{ .scroll = 2 }, f.tree.route(.{ .x = 149, .y = 149 }, down));
+    // Outside the viewport, and with ctrl held, the UI gets it.
+    try testing.expectEqual(Route.ui, f.tree.route(.{ .x = 100, .y = 151 }, down));
+    try testing.expectEqual(Route.ui, f.tree.routeScroll(.{ .x = 100, .y = 120 }, down, .{ .ctrl = true }));
+    try testing.expectEqual(Route{ .scroll = 2 }, f.tree.routeScroll(.{ .x = 100, .y = 120 }, down, .{ .shift = true }));
 }
 
 test "animations sample at frame times and finish" {

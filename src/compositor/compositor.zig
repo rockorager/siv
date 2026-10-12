@@ -12,7 +12,10 @@
 //!         .{ .set_root = 1 },
 //!     });
 //!
-//! and gets `Event`s back on its own loop.
+//! and gets `Event`s back on its own loop. `Compositor` (Compositor.zig) is
+//! the thread and that interface; `Tree` (tree.zig) is a window's layer
+//! tree; `surface.Surface` is the presentation boundary a Vulkan renderer
+//! slots into.
 //!
 //! Imports: scene, raster, render_cpu, pool, loop, platform.
 
@@ -38,9 +41,21 @@ pub const Compositor = @import("Compositor.zig");
 pub const Options = Compositor.Options;
 pub const Backend = Compositor.Backend;
 pub const Sink = Compositor.Sink;
+pub const FrameStats = Compositor.FrameStats;
 pub const surface = @import("surface.zig");
 
+/// A window's layer tree with the compositor's rules (op application,
+/// composition, animation, scroll routing), single-threaded. For tests
+/// that want those rules without a compositor thread.
+pub const Tree = @import("tree.zig").Tree;
+pub const Route = @import("tree.zig").Route;
+
 test {
+    if (comptime @import("integration").enabled) {
+        // `zig build test-integration`: the compositor against sway.
+        _ = @import("integration_tests.zig");
+        return;
+    }
     std.testing.refAllDecls(@This());
     _ = update;
     _ = @import("anim.zig");
