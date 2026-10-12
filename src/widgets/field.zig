@@ -22,7 +22,8 @@ pub const Field = extern struct {
 
 pub export fn siv_text_field(txn: Txn, parent: Node, desc: ?*const siv.TextFieldDesc) Node {
     const d = w.readDesc(siv.TextFieldDesc, desc) orelse return w.fail(txn, .error_invalid_argument);
-    if (@as(u32, @bitCast(d.flags)) & ~@as(u32, 7) != 0) return w.fail(txn, .error_unsupported);
+    if (@as(u32, @bitCast(d.flags)) & ~@as(u32, 15) != 0) return w.fail(txn, .error_unsupported);
+    if (d.flags.styled and d.flags.masked) return w.fail(txn, .error_invalid_argument);
     const text = w.str(d.text, d.text_len) orelse return w.fail(txn, .error_invalid_argument);
     const placeholder = w.str(d.placeholder, d.placeholder_len) orelse return w.fail(txn, .error_invalid_argument);
     const label = w.str(d.label, d.label_len) orelse return w.fail(txn, .error_invalid_argument);
@@ -41,8 +42,69 @@ pub export fn siv_text_field(txn: Txn, parent: Node, desc: ?*const siv.TextField
     _ = c.siv_set_semantics(txn, root, &.{ .label = name.ptr, .label_len = name.len });
     w.onDefault(txn, root, .pointer, onPointer, st);
     w.onDefault(txn, root, .focus, onFocus, st);
+    if (d.flags.styled) w.onDefault(txn, root, .key, onStyleKey, st);
     apply(txn, st);
     return root;
+}
+
+/// Styled-text editors (D22): Ctrl+B, Ctrl+I, and Ctrl+U toggle bold,
+/// italic, and underline. An attribute turns off when all of the
+/// selection has it (or, with nothing selected, the typing style), else
+/// on, as word processors do.
+fn onStyleKey(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) bool {
+    const st: *Field = @ptrCast(@alignCast(ud.?));
+    const e = ev.?;
+    if (st.hdr.disabled or !e.flags.pressed or !e.modifiers.ctrl or e.modifiers.alt or e.modifiers.super) return false;
+    const Attr = enum { bold, italic, underline };
+    const attr: Attr = switch (e.keysym) {
+        'b', 'B' => .bold,
+        'i', 'I' => .italic,
+        'u', 'U' => .underline,
+        else => return false,
+    };
+    const has = struct {
+        fn f(a: Attr, s: siv.TextSpan) bool {
+            return switch (a) {
+                .bold => s.flags.weight and @intFromEnum(s.weight) >= @intFromEnum(siv.FontWeight.semibold),
+                .italic => s.flags.slant and s.slant != .roman,
+                .underline => s.flags.underline,
+            };
+        }
+    }.f;
+    var caret: u32 = 0;
+    var anchor: u32 = 0;
+    if (c.siv_node_get_selection(node, &caret, &anchor) != .ok) return false;
+    const lo = @min(caret, anchor);
+    const hi = @max(caret, anchor);
+    var on = true;
+    if (lo == hi) {
+        var typing: siv.TextSpan = undefined;
+        if (c.siv_node_get_typing_style(node, &typing) != .ok) return false;
+        on = !has(attr, typing);
+    } else {
+        // Off only when every run of the selection has it.
+        var at = lo;
+        var all = true;
+        while (at < hi) {
+            var run: siv.TextSpan = undefined;
+            if (c.siv_node_get_text_run(node, at, &run) != .ok) return false;
+            all = all and has(attr, run);
+            at = @max(run.end, at + 1);
+        }
+        on = !all;
+    }
+    const values: siv.TextSpan = switch (attr) {
+        .bold => .{ .flags = .{ .weight = on }, .weight = .bold },
+        .italic => .{ .flags = .{ .slant = on }, .slant = .italic },
+        .underline => .{ .flags = .{ .underline = on } },
+    };
+    const mask: siv.TextSpanFlags = switch (attr) {
+        .bold => .{ .weight = true },
+        .italic => .{ .slant = true },
+        .underline => .{ .underline = true },
+    };
+    _ = c.siv_editor_format(node, values, mask);
+    return true;
 }
 
 pub fn apply(txn: Txn, st: *Field) void {

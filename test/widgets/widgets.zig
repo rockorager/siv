@@ -545,6 +545,91 @@ test "widgets: text fields are editors with placeholders and themed frames" {
     try testing.expectEqual(@as(f64, 60), (try sem(w.progress)).value.?.now);
 }
 
+test "widgets: styled-text editors show spans and toggle bold, italic, and underline by keys, undoably" {
+    var h: Harness = .{ .golden = "test/golden/widgets" };
+    try h.start(340, 130, null, null);
+    defer h.stop();
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const col = c.siv_flex(txn, c.siv_window_root(h.window), &.{ .axis = .column });
+    _ = c.siv_set_layout(txn, col, &.{ .padding = .{ .start = 12, .end = 12, .top = 12, .bottom = 12 } });
+    _ = c.siv_set_visual(txn, col, &.{ .background_token = .window_bg });
+    const content = "Plain underline struck big red";
+    const field = c.siv_text_field(txn, col, &.{ .text = content, .text_len = content.len, .label = "Notes", .label_len = 5, .flags = .{ .multiline = true, .styled = true }, .rows = 3 });
+    const spans = [_]t.TextSpan{
+        .{ .start = 6, .end = 15, .flags = .{ .underline = true } },
+        .{ .start = 16, .end = 22, .flags = .{ .strikethrough = true } },
+        .{ .start = 23, .end = 26, .flags = .{ .size = true }, .font_size = 22 },
+        .{ .start = 27, .end = 30, .flags = .{ .color = true }, .color = .{ .r = 0.8, .g = 0.1, .b = 0.1, .a = 1 } },
+    };
+    try ok(c.siv_set_text_spans(txn, field, &.{ .spans = &spans, .spans_count = spans.len }));
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try h.expectGolden("styled-text", 340, 130);
+    // Masked fields cannot be styled.
+    try ok(c.siv_txn_begin(h.window, &txn));
+    try testing.expectEqual(t.Node.null, c.siv_text_field(txn, col, &.{ .flags = .{ .masked = true, .styled = true } }));
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
+
+    var run: t.TextSpan = undefined;
+    try ok(c.siv_node_get_text_run(field, 24, &run));
+    try testing.expectEqual([2]u32{ 23, 26 }, [2]u32{ run.start, run.end });
+    try testing.expect(run.flags.size and run.font_size == 22);
+    try ok(c.siv_node_get_text_run(field, 2, &run));
+    try testing.expectEqual([2]u32{ 0, 6 }, [2]u32{ run.start, run.end });
+    try testing.expectEqual(@as(u32, 0), @as(u32, @bitCast(run.flags)));
+
+    // Ctrl+U over "Plain" underlines it; again takes it off; undo puts it
+    // back.
+    try ok(c.siv_node_focus(field));
+    try ok(c.siv_txn_begin(h.window, &txn));
+    try ok(c.siv_set_selection(txn, field, 0, 5));
+    try ok(c.siv_txn_commit(txn));
+    try h.typeKey('u', "", .{ .ctrl = true });
+    try h.settle();
+    try ok(c.siv_node_get_text_run(field, 0, &run));
+    try testing.expect(run.flags.underline and run.end == 5);
+    try h.typeKey('u', "", .{ .ctrl = true });
+    try h.settle();
+    try ok(c.siv_node_get_text_run(field, 0, &run));
+    try testing.expect(!run.flags.underline);
+    try h.typeKey('z', "", .{ .ctrl = true });
+    try h.settle();
+    try ok(c.siv_node_get_text_run(field, 0, &run));
+    try testing.expect(run.flags.underline);
+    // Over a selection only partly underlined, Ctrl+U underlines all of it.
+    try ok(c.siv_txn_begin(h.window, &txn));
+    try ok(c.siv_set_selection(txn, field, 3, 8));
+    try ok(c.siv_txn_commit(txn));
+    try h.typeKey('u', "", .{ .ctrl = true });
+    try h.settle();
+    try ok(c.siv_node_get_text_run(field, 0, &run));
+    try testing.expectEqual([2]u32{ 0, 15 }, [2]u32{ run.start, run.end });
+
+    // With nothing selected, Ctrl+B and Ctrl+I style what is typed next.
+    try ok(c.siv_txn_begin(h.window, &txn));
+    try ok(c.siv_set_selection(txn, field, content.len, content.len));
+    try ok(c.siv_txn_commit(txn));
+    try h.typeKey('b', "", .{ .ctrl = true });
+    try h.typeKey('i', "", .{ .ctrl = true });
+    try h.settle();
+    var typing: t.TextSpan = undefined;
+    try ok(c.siv_node_get_typing_style(field, &typing));
+    try testing.expect(typing.flags.weight and typing.weight == .bold and typing.flags.slant and typing.slant == .italic);
+    try h.typeKey('!', "!", .{});
+    try h.settle();
+    try ok(c.siv_node_get_text_run(field, content.len, &run));
+    try testing.expectEqual([2]u32{ content.len, content.len + 1 }, [2]u32{ run.start, run.end });
+    // It keeps the red of the word before it, adding bold and italic.
+    try testing.expect(run.flags.weight and run.weight == .bold and run.flags.slant and run.flags.color);
+    // Typing keeps the style; Ctrl+B again ends bold for what follows.
+    try h.typeKey('b', "", .{ .ctrl = true });
+    try h.typeKey('?', "?", .{});
+    try h.settle();
+    try ok(c.siv_node_get_text_run(field, content.len + 1, &run));
+    try testing.expect(!run.flags.weight and run.flags.slant);
+}
+
 /// The horizontal travel of the repeating animations the window sent the
 /// compositor for the progress bars under `parent` (their fill is the
 /// first child of the first child).

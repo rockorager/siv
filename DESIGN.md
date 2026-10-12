@@ -851,8 +851,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Text nodes (`src/ui`) reuse a `Layout` built for another width when its
     lines would break the same way (its widest line fits and it was built
     at least as wide), and align lines in the node themselves, so a node
-    that shrinks to its text needs one layout. One style per text node for
-    now.
+    that shrinks to its text needs one layout. A node's style can be
+    overridden over ranges by spans (D22's styled text); each run of
+    equal span style is a style run of the paragraph.
   - Besides the font cache, `ui.Fonts` remembers Fontconfig's fallback
     chain per query (family, weight, slant, language), since sorting fonts
     on every reshape costs milliseconds. It holds font ids, not fonts.
@@ -1246,7 +1247,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     events, and they queue behind an open application transaction like
     input (D15). Masked editors have neither. Copies carry the serial of
     the window's last input, which a compositor may refuse when the
-    window has had none.
+    window has had none. Text attributes (GetAttributes,
+    GetAttributeRun) report the style run at an offset with GTK's names
+    (weight, style, size in points, underline, strikethrough, fg-color),
+    only what the run changes from the node's style; default attributes
+    stay empty.
   - The bridge (`src/a11y`, `a11y.Bridge`) follows org.a11y.Bus on the
     session bus and connects to the accessibility bus only while
     org.a11y.Status IsEnabled or ScreenReaderEnabled is set, so an
@@ -1853,7 +1858,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     timers, popups (D17), the `set_value`, `select`, `close`, and
     `viewport` events, and semantics for items not all in the tree
     (`level`, `position`, `set_size`, `row`, exposed as AT-SPI's
-    posinset, setsize, and rowindex attributes).
+    posinset, setsize, and rowindex attributes), node animations
+    (`siv_set_animation`), the key-repeat timing
+    (`siv_app_get_key_repeat`), and text spans with formatting commands.
   - **Creating:** one builder per widget, a transaction operation like the
     primitive builders (D27): `siv_button(txn, parent, &desc)` appends the
     widget and returns its root node, or 0 once the transaction has failed
@@ -1996,7 +2003,37 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       timestamp, so widgets written in C can do the same.
     - Not built yet: variable row heights, column resizing and sorting,
       and a position among siblings for tree items.
-  - Not built yet elsewhere: the styled-text editor.
+  - **Styled text** is spans on the text and editor primitives, not a
+    document model: `siv_set_text_spans` gives ranges of a node's text
+    their own weight, slant, size, color (literal or themed), underline,
+    and strikethrough over the node's style. Spans are kept normalized
+    (sorted, disjoint, merged, none that change nothing). Each run of
+    equal span style shapes as its own style run (D13), so a color
+    change also splits shaping; decorations are whole-pixel rectangles
+    under or through the run in its color. `siv_node_get_text_run` walks
+    the runs, and AT-SPI exposes them as text attributes (D18).
+    - Editors move spans as the user edits: inserted text takes the
+      typing style, else that of the first replaced character, else
+      that of the character before it, so typing at the end of a bold
+      word stays bold. Undo steps keep the spans before and after, so
+      undo and redo restore styles with the text. `siv_set_text` drops
+      the spans when the text changes; `siv_set_text_spans` itself is
+      not an undo step (an application's syntax highlighting must not
+      fill the history), while `siv_editor_format`, the user's
+      formatting command, is: it restyles the selection as one step
+      with a change event, or with nothing selected sets the typing
+      style, which moving the caret forgets. `siv_node_get_typing_style`
+      tells a toolbar what typing would produce.
+    - The stock styled-text editor is a text field with
+      `SIV_TEXT_FIELD_STYLED`: Ctrl+B, Ctrl+I, and Ctrl+U toggle bold,
+      italic, and underline, off when all of the selection (or the
+      typing style) has the attribute, else on, as word processors do.
+      Masked editors take no spans.
+    - Fonts added with `siv_app_add_font` form a family without weights
+      or slants, so bold and italic need the desktop's fonts through
+      Fontconfig. Not built yet: weights and slants for added families,
+      synthetic bold and oblique when a family lacks them, a family per
+      span, and paragraph styles (alignment, lists).
 - **Non-goal:** a full document model with embedded tables and images.
 
 ### D23. Lua 5.5
