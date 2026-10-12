@@ -747,6 +747,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     cannot take focus without the information a screen reader needs.
   - The tree is rebuilt in full after frames that changed structure,
     layout, semantics, text, or focus; AT-SPI change events will diff it.
+  - AT-SPI objects will be one D-Bus subtree registration (D19) whose
+    lookup maps `/org/a11y/atspi/accessible/<id>` to a semantics node and
+    its interfaces, so exporting the tree costs nothing per node.
 - **Alternatives:** AccessKit's Linux adapter (adds a Rust toolchain).
 - **Reverse if:** AccessKit offers a C build without Rust and covers every
   interface listed above.
@@ -757,9 +760,66 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   desktop settings.
 - **Decision:**
   - D-Bus is implemented natively on the event loop.
+    - `src/dbus` imports only `loop`. A connection is a loop source whose
+      io handler only reads bytes and fds; the dispatch task (a safe
+      point, D5) validates messages in place and runs reply callbacks,
+      signal subscriptions, and method handlers. Writes are queued and
+      sent with one sendmsg per batch from the prepare hook, or at once
+      when the loop is idle. Reading pauses above 8 MiB of undispatched
+      bytes, and one dispatch handles at most 128 messages so frames run
+      between bursts.
+    - Calls are asynchronous only: a blocking call would stall the UI
+      thread. Each call gets one callback with the reply, an error reply,
+      or a failure (timeout, disconnect, fds refused); one timer per
+      connection covers the 25 s default timeouts.
+    - Received messages are validated in full once, like dbus-daemon
+      does, and then decoded as borrowed slices of the receive buffer
+      without copying or allocating. Outgoing messages are checked too
+      (names, required fields, body against signature as it is written),
+      so a bus never disconnects siv for an invalid message.
+    - Authentication is SASL EXTERNAL with the uid as the initial
+      response, pipelined with NEGOTIATE_UNIX_FD, BEGIN, and Hello, so a
+      first call costs one round trip. Only unix sockets (paths and
+      abstract names): TCP can neither pass fds nor use EXTERNAL.
+    - Exported objects are static interface tables registered by
+      pointer. One registration can serve a whole subtree through a
+      lookup function that resolves a node from its path, and lists
+      children for introspection; this is how AT-SPI (D18) publishes a
+      tree of any size with no per-node state in the connection. The
+      connection implements Introspectable, Properties (with
+      PropertiesChanged), and Peer, and checks argument and reply
+      signatures against the declarations.
+    - Subscriptions are match rules sent to the bus (without waiting for
+      the reply) and applied locally; a rule naming a well-known sender
+      follows the name's owner, since signals carry the unique name.
+    - Measured (ReleaseFast, dbus-daemon 1.14, both ends on one loop):
+      20 000 pipelined calls in 0.41 s, of which siv spent 0.2 s of CPU
+      for 80 000 message sends and dispatches; a sequential round trip
+      through the daemon takes 0.1 ms; a reply of 1000 `(so)` structs
+      encodes in 0.1 ms and validates and decodes in 0.05 ms.
+    - Not built yet: org.freedesktop.Application, ObjectManager, the
+      other portals, serving peer-to-peer connections, and reuse of
+      outgoing buffers (each message allocates its header and body).
   - Settings come only from the portal (color scheme, accent, contrast, reduced
     motion, text scale, fonts, cursor theme and size), applied live, with built-
     in defaults when no portal runs.
+    - The client (`dbus.Settings`) reads with ReadAll and follows
+      SettingChanged from the portal's owner only. The standardized
+      org.freedesktop.appearance keys come first; the other settings have
+      no standard key, so GNOME's org.gnome.desktop.interface and
+      org.gnome.desktop.a11y.interface keys (which the GNOME and GTK
+      portal backends expose) come next, then KDE's fonts
+      (org.kde.kdeglobals.General); KDE's portal exposes no cursor or
+      text scale.
+    - Defaults: no color scheme preference, no accent, normal contrast,
+      motion allowed, text scale 1, `sans-serif` 11 pt for UI and
+      document text, `monospace` 11 pt, cursor theme `default` at 24 px.
+      Out-of-range values (text scale outside 0.25–8, cursor size
+      outside 8–512, accent components outside 0–1) count as unset.
+    - The settings are read again when the portal starts or restarts;
+      when it goes away the last values stay. The first read reports
+      `ready` even if nothing changed, so the application can decide when
+      to show its first frame.
   - Portals for files, URIs, notifications, printing, screen capture, global
     shortcuts, and the document portal. No built-in file chooser: the portal is
     the system chooser.
@@ -847,7 +907,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   CPU against Vulkan output. `zig build test` stays hermetic. `zig build
   test-integration` runs the Wayland backend against one real compositor, the
   latest sway on its headless backend, pinned through nixpkgs; other
-  compositors are not part of the test suite.
+  compositors are not part of the test suite. It also runs D-Bus against a
+  private dbus-daemon, with GLib's gdbus as a second client; the hermetic
+  D-Bus tests use an in-process test bus over socketpairs.
 
 ### D25. Project
 
@@ -857,7 +919,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **Packaging:** every C dependency has a build option to use the system copy;
   the build installs pkg-config files.
 - **Security:** continuous fuzzing of every parser (rasterizer inputs, SVG,
-  image decoders, clipboard and drag-and-drop payloads, Wayland input).
+  image decoders, clipboard and drag-and-drop payloads, Wayland input, D-Bus
+  messages, SASL replies, addresses, match rules, and portal font strings).
+  Fuzz targets are `std.testing.fuzz` tests, so `zig build test` runs their
+  corpus and `zig build test-<module> --fuzz -Doptimize=ReleaseSafe` fuzzes
+  them (Zig 0.17's fuzzer finds no coverage in Debug builds).
 - **Budgets enforced in CI:** first frame under 20 ms, input-to-photon within one
   frame, 120 Hz scrolling through a 100k-row virtual list, zero idle CPU and
   wakeups, fixed memory per window.
