@@ -281,7 +281,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     every compositor supports; the 16-bit working space (D11) is converted
     when writing them.
   - CPU frames: one prepare pass on the calling thread (device transforms,
-    flattened paths and strokes, premultiplied paints, glyph placement), then
+    premultiplied paints, glyph placement), path and stroke flattening on
+    the workers, a parallel pass that rasterizes paths up to 512×512 px once
+    into masks (larger paths rasterize per tile from row-binned lines), then
     damaged 64×64 tiles run on workers into a persistent 16-bit linear
     framebuffer and are encoded into the output buffer. Keeping the
     framebuffer makes damage-only frames exact and lets a reused buffer's age

@@ -97,6 +97,26 @@ fn paths(c: *Ctx, b: *scene.Builder) !void {
     }
 }
 
+/// A few large paths with many segments, each spanning most of the frame:
+/// the case where every tile would otherwise walk every line.
+fn largePaths(c: *Ctx, b: *scene.Builder) !void {
+    try b.fillRect(.xywh(0, 0, width, height), .color(.white));
+    for (0..6) |k| {
+        c.pb.reset();
+        const kf: f32 = @floatFromInt(k);
+        const n = 2000;
+        for (0..n) |i| {
+            const a = @as(f32, @floatFromInt(i)) / n * 2 * std.math.pi;
+            const r = 300 + 200 * @sin(a * (7 + kf * 3)) + 40 * @sin(a * 61);
+            const x = 960 + r * 1.6 * @cos(a) + kf * 20;
+            const y = 540 + r * @sin(a);
+            if (i == 0) try c.pb.moveTo(x, y) else try c.pb.lineTo(x, y);
+        }
+        try c.pb.close();
+        try b.fillPath(c.pb.path(), .even_odd, .color(scene.Color.srgb(0.2 + kf * 0.1, 0.4, 0.8 - kf * 0.1, 0.5)));
+    }
+}
+
 fn gradients(_: *Ctx, b: *scene.Builder) !void {
     const stops = [_]scene.Stop{
         .{ .offset = 0, .color = accent },
@@ -126,6 +146,8 @@ const Workload = struct {
     name: []const u8,
     build: *const fn (*Ctx, *scene.Builder) anyerror!void,
     damage: ?raster.IRect = null,
+    /// Redraw nothing: measures the serial prepare pass alone.
+    prepare_only: bool = false,
 };
 
 const workloads = [_]Workload{
@@ -133,6 +155,8 @@ const workloads = [_]Workload{
     .{ .name = "ui hover damage", .build = ui, .damage = .xywh(264, 24, 310, 116) },
     .{ .name = "text screen", .build = textScreen },
     .{ .name = "paths", .build = paths },
+    .{ .name = "paths prepare only", .build = paths, .prepare_only = true },
+    .{ .name = "large paths", .build = largePaths },
     .{ .name = "gradients", .build = gradients },
     .{ .name = "blur panel", .build = blur },
     .{ .name = "blur hover damage", .build = blur, .damage = .xywh(264, 24, 310, 116) },
@@ -177,7 +201,7 @@ pub fn main(init: std.process.Init) !void {
                 b.reset();
                 try w.build(&c, &b);
                 const list = try b.finish(0);
-                const damage: ?[]const raster.IRect = if (w.damage != null and i > 0) &.{w.damage.?} else null;
+                const damage: ?[]const raster.IRect = if (w.prepare_only) &.{} else if (w.damage != null and i > 0) &.{w.damage.?} else null;
                 const start = std.Io.Timestamp.now(io, .awake);
                 try r.render(list, .{ .damage = damage, .target = .{ .pixels = out.ptr, .stride = width * 4, .format = .argb8888 } });
                 const ns = start.durationTo(std.Io.Timestamp.now(io, .awake)).toNanoseconds();

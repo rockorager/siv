@@ -1,19 +1,22 @@
 //! The CPU renderer (D10, D11).
 //!
-//! A frame runs in three steps:
+//! A frame runs in these steps:
 //!
 //! 1. Prepare (calling thread): walk the display list once, resolve device
-//!    transforms and clip bounds, flatten paths and strokes into device-
-//!    space lines, premultiply paints, place glyphs (rasterizing cache
-//!    misses), and cull everything outside the viewport. The result is a
-//!    flat list of ops.
+//!    transforms and clip bounds, premultiply paints, place glyphs
+//!    (rasterizing cache misses), and cull everything outside the viewport.
+//!    The result is a flat list of ops. Paths and strokes are queued, then
+//!    flattened into device-space lines on the workers.
 //! 2. Damage: mark the 64×64 tiles to redraw, widened by backdrop blurs
-//!    whose backdrop changed. Blur backdrops are rendered and blurred first
-//!    (see `renderBlurs`).
-//! 3. Tiles (worker pool): each damaged tile runs the ops into the
-//!    persistent linear 16-bit framebuffer, using per-worker tile buffers
-//!    for isolated layers and coverage masks for clips, then encodes the
-//!    tile into the output buffer.
+//!    whose backdrop changed.
+//! 3. Masks (workers): paths up to 512×512 px that damaged tiles need are
+//!    rasterized once into coverage masks. Larger paths are rasterized per
+//!    tile from lines binned by tile row.
+//! 4. Blur backdrops are rendered and blurred (see `renderBlurs`).
+//! 5. Tiles (workers): each damaged tile runs the ops into the persistent
+//!    linear 16-bit framebuffer, using per-worker tile buffers for isolated
+//!    layers and coverage masks for clips, then encodes the tile into the
+//!    output buffer.
 //!
 //! Each pixel is computed the same way whichever tile or pass computes it,
 //! so redrawing only damage is exact. All per-frame storage is retained:
@@ -73,8 +76,69 @@ const Line = struct { p0: Point, p1: Point };
 const Coverage = union(enum) {
     rect: Rect,
     rounded_rect: struct { rect: Rect, radii: Radii },
-    lines: struct { start: u32, end: u32, rule: FillRule },
+    lines: Lines,
 };
+
+const Lines = struct {
+    start: u32,
+    end: u32,
+    rule: FillRule,
+    /// Lines binned by tile row when they span several rows: row
+    /// `row0 + i` uses Frame.bin_lines[row_ranges[bins + i]]. `no_bins`
+    /// means every tile walks all lines.
+    bins: u32 = no_bins,
+    row0: u32 = 0,
+    rows: u32 = 0,
+    /// Index into Renderer.mask_jobs when the lines are rasterized once
+    /// into a mask before the tile pass, or `no_mask`.
+    mask: u32 = no_mask,
+    /// Which line list holds the lines: a worker's, or `main_list`.
+    list: u8 = main_list,
+};
+
+/// Lines produced on the preparing thread (glyph outlines); geometry
+/// flattened in the parallel pass lives in the worker that made it.
+const main_list: u8 = 255;
+
+/// A shape to flatten (and stroke) in the parallel geometry pass, and
+/// where its coverage goes.
+const GeomJob = struct {
+    shape: scene.Shape,
+    m: Affine,
+    stroke: ?raster.StrokeStyle,
+    rule: FillRule,
+    op: u32,
+    target: Dest,
+    list: u8 = main_list,
+    start: u32 = 0,
+    end: u32 = 0,
+
+    const Dest = enum(u8) { draw, clip, blur };
+};
+
+const no_mask = std.math.maxInt(u32);
+
+/// Paths whose device bounds are at most this many pixels are rasterized
+/// once, in parallel, into a mask that tiles copy from; larger ones are
+/// rasterized per tile from row-binned lines.
+const max_mask_area = 512 * 512;
+
+const MaskJob = struct {
+    rect: IRect,
+    list: u8,
+    start: u32,
+    end: u32,
+    rule: FillRule,
+    needed: bool = false,
+    /// Offset of the rect-sized coverage in Renderer.mask_pixels.
+    offset: usize = 0,
+};
+
+const no_bins = std.math.maxInt(u32);
+
+/// Paths spanning fewer tile rows walk all their lines in each tile;
+/// rejecting a line outside the tile is cheaper than binning it.
+const min_bin_rows = 6;
 
 const Draw = struct {
     bbox: IRect,
@@ -170,9 +234,19 @@ const Worker = struct {
     /// Scratch line for blurs.
     line: std.ArrayList(@Vector(4, f32)) = .empty,
     line2: std.ArrayList(@Vector(4, f32)) = .empty,
+    // Geometry pass.
+    lines: std.ArrayList(Line) = .empty,
+    path: raster.PathBuilder,
+    outline: raster.PathBuilder,
+    stroker: raster.Stroker,
+    failed: bool = false,
 
     fn deinit(w: *Worker, gpa: std.mem.Allocator) void {
         w.raster.deinit();
+        w.lines.deinit(gpa);
+        w.path.deinit();
+        w.outline.deinit();
+        w.stroker.deinit();
         gpa.free(w.base);
         for (w.bufs.items) |b| gpa.free(b);
         for (w.masks.items) |m| gpa.free(m);
@@ -183,7 +257,7 @@ const Worker = struct {
         w.line2.deinit(gpa);
     }
 
-    fn reserve(w: *Worker, gpa: std.mem.Allocator, depth: usize, blur_line: usize) Error!void {
+    fn reserve(w: *Worker, gpa: std.mem.Allocator, depth: usize, blur_line: usize, mask_window: IRect) Error!void {
         if (w.base.len == 0) w.base = try gpa.alloc(Pixel, T * T);
         while (w.bufs.items.len < depth) {
             try w.bufs.ensureUnusedCapacity(gpa, 1);
@@ -197,8 +271,8 @@ const Worker = struct {
         try w.levels.ensureTotalCapacity(gpa, depth + 1);
         try w.line.ensureTotalCapacity(gpa, blur_line);
         try w.line2.ensureTotalCapacity(gpa, blur_line);
-        // Rasterizer windows are at most one tile.
-        try w.raster.begin(.xywh(0, 0, T, T));
+        // Rasterizer windows are at most one tile or the largest mask.
+        try w.raster.begin(.xywh(0, 0, @max(T, mask_window.width()), @max(T, mask_window.height())));
         w.raster.discard();
     }
 };
@@ -221,6 +295,13 @@ pub const Renderer = struct {
     // Per-frame storage, retained across frames.
     ops: std.ArrayList(Op) = .empty,
     lines: std.ArrayList(Line) = .empty,
+    bin_lines: std.ArrayList(u32) = .empty,
+    row_ranges: std.ArrayList([2]u32) = .empty,
+    bin_counts: std.ArrayList(u32) = .empty,
+    mask_jobs: std.ArrayList(MaskJob) = .empty,
+    geom_jobs: std.ArrayList(GeomJob) = .empty,
+    mask_list: std.ArrayList(u32) = .empty,
+    mask_pixels: std.ArrayList(u8) = .empty,
     stops: std.ArrayList(paint_mod.Stop) = .empty,
     placements: std.ArrayList(glyph.Placement) = .empty,
     blurs: std.ArrayList(Blur) = .empty,
@@ -233,8 +314,6 @@ pub const Renderer = struct {
     changed: std.ArrayList(IRect) = .empty,
     stack: std.ArrayList(PrepState) = .empty,
     path: raster.PathBuilder,
-    outline: raster.PathBuilder,
-    stroker: raster.Stroker,
     max_depth: usize = 0,
 
     const PrepState = struct { m: Affine, clip: Rect, op: u32 };
@@ -244,7 +323,7 @@ pub const Renderer = struct {
         errdefer gpa.destroy(r);
         const workers = try gpa.alloc(Worker, @max(1, executor.workers));
         errdefer gpa.free(workers);
-        for (workers) |*w| w.* = .{ .raster = .init(gpa) };
+        for (workers) |*w| w.* = .{ .raster = .init(gpa), .path = .init(gpa), .outline = .init(gpa), .stroker = .init(gpa) };
         r.* = .{
             .gpa = gpa,
             .executor = executor,
@@ -253,8 +332,6 @@ pub const Renderer = struct {
             .glyphs = .init(gpa),
             .workers = workers,
             .path = .init(gpa),
-            .outline = .init(gpa),
-            .stroker = .init(gpa),
         };
         r.luts.init();
         r.contrast.init();
@@ -269,6 +346,13 @@ pub const Renderer = struct {
         r.glyphs.deinit();
         r.ops.deinit(gpa);
         r.lines.deinit(gpa);
+        r.bin_lines.deinit(gpa);
+        r.row_ranges.deinit(gpa);
+        r.bin_counts.deinit(gpa);
+        r.mask_jobs.deinit(gpa);
+        r.geom_jobs.deinit(gpa);
+        r.mask_list.deinit(gpa);
+        r.mask_pixels.deinit(gpa);
         r.stops.deinit(gpa);
         r.placements.deinit(gpa);
         r.blurs.deinit(gpa);
@@ -281,8 +365,6 @@ pub const Renderer = struct {
         r.changed.deinit(gpa);
         r.stack.deinit(gpa);
         r.path.deinit();
-        r.outline.deinit();
-        r.stroker.deinit();
         gpa.destroy(r);
     }
 
@@ -318,7 +400,9 @@ pub const Renderer = struct {
         if (r.width == 0 or r.height == 0) return;
         try r.prepare(list, opts.root);
         try r.markTiles(opts);
-        for (r.workers) |*w| try w.reserve(r.gpa, r.max_depth, r.blurLineLength());
+        const mask_window = try r.planMasks();
+        for (r.workers) |*w| try w.reserve(r.gpa, r.max_depth, r.blurLineLength(), mask_window);
+        r.runMasks();
         try r.renderBlurs(opts.background);
         r.runTiles(opts);
     }
@@ -328,6 +412,11 @@ pub const Renderer = struct {
     fn prepare(r: *Renderer, list: scene.DisplayList, root: Affine) Error!void {
         r.ops.clearRetainingCapacity();
         r.lines.clearRetainingCapacity();
+        r.bin_lines.clearRetainingCapacity();
+        r.row_ranges.clearRetainingCapacity();
+        r.mask_jobs.clearRetainingCapacity();
+        r.geom_jobs.clearRetainingCapacity();
+        for (r.workers) |*w| w.lines.clearRetainingCapacity();
         r.stops.clearRetainingCapacity();
         r.placements.clearRetainingCapacity();
         r.blurs.clearRetainingCapacity();
@@ -371,7 +460,7 @@ pub const Renderer = struct {
                     if (l.clip) |c| {
                         const cb = lm.applyRect(c.shape.bounds());
                         clip_bounds = clip_bounds.intersect(cb);
-                        const cov = try r.coverageFor(c.shape, c.rule, lm);
+                        const cov = try r.coverageFor(c.shape, c.rule, lm, .clip);
                         clip = .{ .scissor = cb.roundOut().intersect(vp), .coverage = cov };
                         if (cov == .rect and isPixelAligned(cov.rect)) clip.?.coverage = null;
                     }
@@ -395,25 +484,15 @@ pub const Renderer = struct {
                     if (f.paint.isInvisible()) continue;
                     const bbox = m.applyRect(f.shape.bounds()).intersect(top.clip).roundOut().intersect(vp);
                     if (bbox.isEmpty()) continue;
-                    const cov = try r.coverageFor(f.shape, f.rule, m);
+                    const cov = try r.coverageFor(f.shape, f.rule, m, .draw);
                     try r.ops.append(r.gpa, .{ .draw = .{ .bbox = bbox, .coverage = cov, .paint = r.preparePaint(f.paint, m) } });
                 },
                 .stroke => |s| {
                     if (s.paint.isInvisible()) continue;
                     const bbox = m.applyRect(s.shape.bounds().outset(s.style.outset())).intersect(top.clip).roundOut().intersect(vp);
                     if (bbox.isEmpty()) continue;
-                    r.path.reset();
-                    try s.shape.toPath(&r.path);
-                    r.outline.reset();
-                    const scale = @max(m.maxScale(), 1e-6);
-                    try r.stroker.stroke(r.path.path(), s.style, raster.default_tolerance / scale, &r.outline);
-                    const start: u32 = @intCast(r.lines.items.len);
-                    try r.flattenInto(r.outline.path(), m);
-                    try r.ops.append(r.gpa, .{ .draw = .{
-                        .bbox = bbox,
-                        .coverage = .{ .lines = .{ .start = start, .end = @intCast(r.lines.items.len), .rule = .nonzero } },
-                        .paint = r.preparePaint(s.paint, m),
-                    } });
+                    const cov = try r.geomJob(s.shape, s.style, .nonzero, m, .draw);
+                    try r.ops.append(r.gpa, .{ .draw = .{ .bbox = bbox, .coverage = cov, .paint = r.preparePaint(s.paint, m) } });
                 },
                 .glyphs => |g| try r.prepareGlyphs(g, m, top.clip, vp),
                 .image => |img| {
@@ -428,7 +507,7 @@ pub const Renderer = struct {
                     const ref = img.image;
                     const sr = img.src.roundOut().intersect(.xywh(0, 0, @intCast(ref.width), @intCast(ref.height)));
                     if (sr.isEmpty()) continue;
-                    const cov = try r.coverageFor(.{ .rect = img.dst }, .nonzero, m);
+                    const cov = try r.coverageFor(.{ .rect = img.dst }, .nonzero, m, .draw);
                     try r.ops.append(r.gpa, .{ .draw = .{ .bbox = bbox, .coverage = cov, .paint = .{ .image = .{
                         .inv = inv.then(to_img),
                         .ref = ref,
@@ -445,7 +524,7 @@ pub const Renderer = struct {
                     if (bbox.isEmpty()) continue;
                     const sigma = @min(b.sigma * @sqrt(@abs(m.determinant())), scene.max_blur_sigma);
                     if (!(sigma > 0)) continue;
-                    const cov = try r.coverageFor(b.shape, .nonzero, m);
+                    const cov = try r.coverageFor(b.shape, .nonzero, m, .blur);
                     const boxes = boxRadii(sigma);
                     try r.blurs.append(r.gpa, .{
                         .op = @intCast(r.ops.items.len),
@@ -458,6 +537,7 @@ pub const Renderer = struct {
                 },
             }
         }
+        try r.runGeometry();
     }
 
     fn isPixelAligned(rc: Rect) bool {
@@ -465,7 +545,7 @@ pub const Renderer = struct {
     }
 
     /// Device-space coverage for a shape drawn through `m`.
-    fn coverageFor(r: *Renderer, shape: scene.Shape, rule: FillRule, m: Affine) Error!Coverage {
+    fn coverageFor(r: *Renderer, shape: scene.Shape, rule: FillRule, m: Affine, target: GeomJob.Dest) Error!Coverage {
         if (m.isAxisAligned()) switch (shape) {
             .rect => |rc| return .{ .rect = m.applyRect(rc) },
             .rounded_rect => |rr| {
@@ -484,25 +564,152 @@ pub const Renderer = struct {
             },
             .path => {},
         };
-        const start: u32 = @intCast(r.lines.items.len);
-        switch (shape) {
-            .path => |p| try r.flattenInto(p, m),
-            else => {
-                r.path.reset();
-                try shape.toPath(&r.path);
-                try r.flattenInto(r.path.path(), m);
-            },
+        return r.geomJob(shape, null, rule, m, target);
+    }
+
+    /// Queues a shape for the geometry pass. The op that will hold its
+    /// coverage is the next one appended.
+    fn geomJob(r: *Renderer, shape: scene.Shape, stroke: ?raster.StrokeStyle, rule: FillRule, m: Affine, target: GeomJob.Dest) Error!Coverage {
+        try r.geom_jobs.append(r.gpa, .{ .shape = shape, .m = m, .stroke = stroke, .rule = rule, .op = @intCast(r.ops.items.len), .target = target });
+        return .{ .lines = .{ .start = 0, .end = 0, .rule = rule } };
+    }
+
+    /// Flattens (and strokes) every queued shape across the workers, then
+    /// bins or masks each result and stores it in its op.
+    fn runGeometry(r: *Renderer) Error!void {
+        if (r.geom_jobs.items.len == 0) return;
+        for (r.workers) |*w| w.failed = false;
+        var job: GeomPass = .{ .r = r, .counter = .{ .count = @intCast(r.geom_jobs.items.len) } };
+        r.executor.run(r.executor.ctx, .{ .ctx = &job, .func = GeomPass.run });
+        for (r.workers) |w| if (w.failed) return error.OutOfMemory;
+        for (r.geom_jobs.items) |g| {
+            const lines: Coverage = .{ .lines = try r.binLines(g.list, g.start, g.end, g.rule) };
+            switch (g.target) {
+                .draw => r.ops.items[g.op].draw.coverage = lines,
+                .clip => r.ops.items[g.op].push.clip.?.coverage = lines,
+                .blur => r.ops.items[g.op].blur.coverage = lines,
+            }
         }
-        return .{ .lines = .{ .start = start, .end = @intCast(r.lines.items.len), .rule = rule } };
+    }
+
+    const GeomPass = struct {
+        r: *Renderer,
+        counter: pool.Counter,
+
+        fn run(ctx: *anyopaque, worker: u32) void {
+            const job: *GeomPass = @ptrCast(@alignCast(ctx));
+            const r = job.r;
+            const w = &r.workers[worker];
+            while (job.counter.take()) |i| {
+                const g = &r.geom_jobs.items[i];
+                g.list = @intCast(worker);
+                g.start = @intCast(w.lines.items.len);
+                produce(r, w, g) catch {
+                    w.failed = true;
+                };
+                g.end = @intCast(w.lines.items.len);
+            }
+        }
+
+        fn produce(r: *Renderer, w: *Worker, g: *const GeomJob) Error!void {
+            var sink: LineSink = .{ .gpa = r.gpa, .lines = &w.lines };
+            if (g.stroke) |style| {
+                w.path.reset();
+                try g.shape.toPath(&w.path);
+                w.outline.reset();
+                const scale = @max(g.m.maxScale(), 1e-6);
+                try w.stroker.stroke(w.path.path(), style, raster.default_tolerance / scale, &w.outline);
+                return raster.flatten(w.outline.path(), g.m, raster.default_tolerance, &sink);
+            }
+            switch (g.shape) {
+                .path => |p| try raster.flatten(p, g.m, raster.default_tolerance, &sink),
+                else => {
+                    w.path.reset();
+                    try g.shape.toPath(&w.path);
+                    try raster.flatten(w.path.path(), g.m, raster.default_tolerance, &sink);
+                },
+            }
+        }
+    };
+
+    fn lineSlice(r: *const Renderer, list: u8, start: u32, end: u32) []const Line {
+        const all = if (list == main_list) r.lines.items else r.workers[list].lines.items;
+        return all[start..end];
     }
 
     fn flattenInto(r: *Renderer, p: raster.Path, m: Affine) Error!void {
-        var sink: LineSink = .{ .r = r };
+        var sink: LineSink = .{ .gpa = r.gpa, .lines = &r.lines };
         try raster.flatten(p, m, raster.default_tolerance, &sink);
     }
 
+    /// Covers lines [start, end of r.lines) and bins them by tile row when
+    /// they span more than one, so a tile only walks the lines that can
+    /// reach it.
+    fn binLines(r: *Renderer, list: u8, start: u32, end: u32, rule: FillRule) Error!Lines {
+        var out: Lines = .{ .start = start, .end = end, .rule = rule, .list = list };
+        const lines = r.lineSlice(list, start, end);
+        // Small paths cost little either way.
+        if (lines.len < 64) return out;
+        const max_row: i32 = @intCast(r.tilesY() - 1);
+        var bounds = Rect.empty;
+        for (lines) |l| bounds = bounds.includePoint(l.p0).includePoint(l.p1);
+        const y_lo = bounds.y0;
+        const y_hi = bounds.y1;
+        const rect = bounds.roundOut().intersect(r.viewport());
+        if (rect.isEmpty()) return out;
+        if (area(rect) <= max_mask_area) {
+            out.mask = @intCast(r.mask_jobs.items.len);
+            try r.mask_jobs.append(r.gpa, .{ .rect = rect, .list = list, .start = start, .end = end, .rule = rule });
+            return out;
+        }
+        // Binning costs a pass over the lines in the serial prepare step;
+        // it pays off only when many lines meet many tile rows.
+        const lo: i32 = @intFromFloat(std.math.clamp(@floor(y_lo / T), 0, @as(f32, @floatFromInt(max_row))));
+        const hi: i32 = @intFromFloat(std.math.clamp(@floor(y_hi / T), 0, @as(f32, @floatFromInt(max_row))));
+        if (hi - lo + 1 < min_bin_rows) return out;
+        const rows: u32 = @intCast(hi - lo + 1);
+        // Counting sort of line indices into rows.
+        try r.bin_counts.resize(r.gpa, rows + 1);
+        @memset(r.bin_counts.items, 0);
+        for (lines) |l| {
+            const a, const b = rowSpan(l, max_row) orelse continue;
+            var row = a;
+            while (row <= b) : (row += 1) r.bin_counts.items[@intCast(row - lo + 1)] += 1;
+        }
+        for (1..rows + 1) |i| r.bin_counts.items[i] += r.bin_counts.items[i - 1];
+        const base: u32 = @intCast(r.bin_lines.items.len);
+        const total = r.bin_counts.items[rows];
+        try r.bin_lines.resize(r.gpa, base + total);
+        out.bins = @intCast(r.row_ranges.items.len);
+        try r.row_ranges.ensureUnusedCapacity(r.gpa, rows);
+        for (0..rows) |i| r.row_ranges.appendAssumeCapacity(.{ base + r.bin_counts.items[i], base + r.bin_counts.items[i + 1] });
+        for (lines, 0..) |l, i| {
+            const a, const b = rowSpan(l, max_row) orelse continue;
+            var row = a;
+            while (row <= b) : (row += 1) {
+                const slot = &r.bin_counts.items[@intCast(row - lo)];
+                r.bin_lines.items[base + slot.*] = start + @as(u32, @intCast(i));
+                slot.* += 1;
+            }
+        }
+        out.row0 = @intCast(lo);
+        out.rows = rows;
+        return out;
+    }
+
+    /// Tile rows a line touches, clamped to the viewport; null if none.
+    fn rowSpan(l: Line, max_row: i32) ?[2]i32 {
+        const y0 = @min(l.p0.y, l.p1.y);
+        const y1 = @max(l.p0.y, l.p1.y);
+        if (!(y1 > 0) or !(y0 < @as(f32, @floatFromInt((max_row + 1) * T)))) return null;
+        const a: i32 = @intFromFloat(@max(@floor(y0 / T), 0));
+        const b: i32 = @intFromFloat(@min(@floor(y1 / T), @as(f32, @floatFromInt(max_row))));
+        return .{ a, b };
+    }
+
     const LineSink = struct {
-        r: *Renderer,
+        gpa: std.mem.Allocator,
+        lines: *std.ArrayList(Line),
         start: Point = .zero,
         last: Point = .zero,
 
@@ -511,7 +718,7 @@ pub const Renderer = struct {
             s.last = p;
         }
         pub fn lineTo(s: *LineSink, p: Point) Error!void {
-            if (s.last.y != p.y) try s.r.lines.append(s.r.gpa, .{ .p0 = s.last, .p1 = p });
+            if (s.last.y != p.y) try s.lines.append(s.gpa, .{ .p0 = s.last, .p1 = p });
             s.last = p;
         }
         pub fn end(s: *LineSink, _: bool) Error!void {
@@ -559,7 +766,7 @@ pub const Renderer = struct {
             try r.flattenInto(r.path.path(), m);
             try r.ops.append(r.gpa, .{ .draw = .{
                 .bbox = bbox,
-                .coverage = .{ .lines = .{ .start = line_start, .end = @intCast(r.lines.items.len), .rule = .nonzero } },
+                .coverage = .{ .lines = try r.binLines(main_list, line_start, @intCast(r.lines.items.len), .nonzero) },
                 .paint = r.preparePaint(g.paint, m),
             } });
         }
@@ -682,6 +889,58 @@ pub const Renderer = struct {
         for (r.blurs.items) |b| n = @max(n, @as(usize, @intCast(@max(b.src.width(), b.src.height()))));
         return n;
     }
+
+    // Masks -----------------------------------------------------------------
+
+    /// Marks the masks that damaged tiles or blur backdrops will read and
+    /// reserves their storage. Returns a window as large as any of them.
+    fn planMasks(r: *Renderer) Error!IRect {
+        r.mask_list.clearRetainingCapacity();
+        var total: usize = 0;
+        var max_w: i32 = 0;
+        var max_h: i32 = 0;
+        for (r.mask_jobs.items, 0..) |*job, i| {
+            job.needed = r.markedBounds(job.rect).isEmpty() == false;
+            if (!job.needed) for (r.blurs.items) |b| {
+                if (!b.need.isEmpty() and b.src.intersects(job.rect)) {
+                    job.needed = true;
+                    break;
+                }
+            };
+            if (!job.needed) continue;
+            job.offset = total;
+            total += area(job.rect);
+            max_w = @max(max_w, job.rect.width());
+            max_h = @max(max_h, job.rect.height());
+            try r.mask_list.append(r.gpa, @intCast(i));
+        }
+        try r.mask_pixels.resize(r.gpa, total);
+        return .xywh(0, 0, max_w, max_h);
+    }
+
+    fn runMasks(r: *Renderer) void {
+        if (r.mask_list.items.len == 0) return;
+        var job: MaskPass = .{ .r = r, .counter = .{ .count = @intCast(r.mask_list.items.len) } };
+        r.executor.run(r.executor.ctx, .{ .ctx = &job, .func = MaskPass.run });
+    }
+
+    const MaskPass = struct {
+        r: *Renderer,
+        counter: pool.Counter,
+
+        fn run(ctx: *anyopaque, worker: u32) void {
+            const job: *MaskPass = @ptrCast(@alignCast(ctx));
+            const r = job.r;
+            const w = &r.workers[worker];
+            while (job.counter.take()) |i| {
+                const m = r.mask_jobs.items[r.mask_list.items[i]];
+                w.raster.begin(m.rect) catch unreachable; // capacity reserved
+                for (r.lineSlice(m.list, m.start, m.end)) |ln| w.raster.addLine(ln.p0, ln.p1);
+                const width: usize = @intCast(m.rect.width());
+                w.raster.finish(m.rule, r.mask_pixels.items[m.offset..][0 .. width * @as(usize, @intCast(m.rect.height()))], width);
+            }
+        }
+    };
 
     // Blur ------------------------------------------------------------------
 
@@ -891,8 +1150,38 @@ pub const Renderer = struct {
             .rect => |rc| coverage.rect(rc, region, dst, T),
             .rounded_rect => |rr| coverage.roundedRect(rr.rect, rr.radii, region, dst, T),
             .lines => |l| {
+                if (l.mask != no_mask) {
+                    const m = r.mask_jobs.items[l.mask];
+                    const mw: usize = @intCast(m.rect.width());
+                    const c = region.intersect(m.rect);
+                    var y = region.y0;
+                    while (y < region.y1) : (y += 1) {
+                        const row = dst[@as(usize, @intCast(y - region.y0)) * T ..][0..@intCast(region.width())];
+                        if (y < c.y0 or y >= c.y1 or c.isEmpty()) {
+                            @memset(row, 0);
+                            continue;
+                        }
+                        const from = r.mask_pixels.items[m.offset + @as(usize, @intCast(y - m.rect.y0)) * mw + @as(usize, @intCast(c.x0 - m.rect.x0)) ..][0..@intCast(c.width())];
+                        const lead: usize = @intCast(c.x0 - region.x0);
+                        @memset(row[0..lead], 0);
+                        @memcpy(row[lead..][0..from.len], from);
+                        @memset(row[lead + from.len ..], 0);
+                    }
+                    return;
+                }
                 w.raster.begin(region) catch unreachable; // capacity reserved
-                for (r.lines.items[l.start..l.end]) |ln| w.raster.addLine(ln.p0, ln.p1);
+                if (l.bins == no_bins) {
+                    for (r.lineSlice(l.list, l.start, l.end)) |ln| w.raster.addLine(ln.p0, ln.p1);
+                } else {
+                    const row: u32 = @intCast(@divFloor(tile.y0, T));
+                    if (row >= l.row0 and row < l.row0 + l.rows) {
+                        const range = r.row_ranges.items[l.bins + row - l.row0];
+                        for (r.bin_lines.items[range[0]..range[1]]) |li| {
+                            const ln = r.lineSlice(l.list, li, li + 1)[0];
+                            w.raster.addLine(ln.p0, ln.p1);
+                        }
+                    }
+                }
                 w.raster.finish(l.rule, dst, T);
             },
         }
@@ -914,11 +1203,27 @@ pub const Renderer = struct {
         }
         r.computeCoverage(w, d.coverage, tile, region, &w.cov);
         if (lv.mask) |m| multiplyMask(&w.cov, m, tile, region);
-        const width: usize = @intCast(region.width());
+        const full: usize = @intCast(region.width());
         var y = region.y0;
         while (y < region.y1) : (y += 1) {
-            const cov = w.cov[@as(usize, @intCast(y - tile.y0)) * T + @as(usize, @intCast(region.x0 - tile.x0)) ..][0..width];
-            const dst = lv.surf.row(region.x0, y)[0..width];
+            var cov = w.cov[@as(usize, @intCast(y - tile.y0)) * T + @as(usize, @intCast(region.x0 - tile.x0)) ..][0..full];
+            var x0 = region.x0;
+            if (d.coverage == .lines and d.coverage.lines.mask == no_mask) {
+                // The rasterizer knows where each row has edges: zero
+                // before them, constant after.
+                const span = w.raster.spans[@intCast(y - region.y0)];
+                if (span[0] > span[1]) continue;
+                const lo: usize = @min(@as(usize, span[0]), full);
+                var hi: usize = @min(@as(usize, span[1]) + 1, full);
+                // Past the last edge coverage is constant; a clip mask may
+                // have zeroed cov[hi] itself, so then keep the whole row.
+                if (hi < full and (lv.mask != null or cov[hi] != 0)) hi = full;
+                if (lo >= hi) continue;
+                cov = cov[lo..hi];
+                x0 += @intCast(lo);
+            }
+            const width = cov.len;
+            const dst = lv.surf.row(x0, y)[0..width];
             switch (d.paint) {
                 .solid => |s| {
                     for (dst, cov) |*px, c| {
@@ -930,7 +1235,7 @@ pub const Renderer = struct {
                 },
                 else => {
                     const shade = w.shade[0..width];
-                    paint_mod.shadeRow(&d.paint, &r.luts, region.x0, y, shade);
+                    paint_mod.shadeRow(&d.paint, &r.luts, x0, y, shade);
                     for (dst, cov, shade) |*px, c, s| {
                         if (c == 255 and s[3] == 65535) {
                             px.* = s;
