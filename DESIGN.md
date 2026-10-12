@@ -921,13 +921,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
         commit on its thread; it only ever completes a finished frame
         early, provided embedders attach finished frames of the size they
         were told.
-      - Clips crop through the viewport's source rectangle only once the
-        embedder reported a frame of the configured size: a source outside
-        its buffer is a protocol error. Until then, and for rotated or
-        translucent placements (shown on their bounding box at full
-        opacity), the surface goes below the window with a hole, so that
-        the window covers what clips hide; parts past the window's edge
-        can show for that time. It is shown in one place only.
+      - Nothing shows outside the window or its clips. The window's
+        bounds clip every external placement (shm frames too), and clips
+        crop through the viewport's source rectangle, snapped inward to
+        wl_fixed's 1/256 grid. That needs a frame of the configured size:
+        a source outside the embedder's buffer is a protocol error. A
+        placement that needs cropping stays unmapped until the embedder
+        reports such a frame, including after each new size; an uncropped
+        one shows at once, scaled to whatever frame it has. Rotated and
+        translucent placements are cropped on their bounding box and go
+        below the window with a hole at full opacity. It is shown in one
+        place only.
       - Hidden placements destroy the `wl_subsurface` role, which unmaps
         the surface without touching its buffer; showing it again creates
         the role anew.

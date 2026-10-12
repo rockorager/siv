@@ -178,8 +178,8 @@ pub const Externals = struct {
     /// Decides promotion for this frame and updates the subsurfaces.
     /// Returns whether a subsurface changed (it applies with the window's
     /// next commit). Externals whose drawing changed are touched in `t`.
-    pub fn place(e: *Externals, p: platform.Platform, window: platform.WindowId, t: *tree_mod.Tree, scale: f64) Allocator.Error!bool {
-        try t.externalPlacements(&e.found);
+    pub fn place(e: *Externals, p: platform.Platform, window: platform.WindowId, t: *tree_mod.Tree, bounds: raster.Rect, scale: f64) Allocator.Error!bool {
+        try t.externalPlacements(&e.found, bounds);
         var changed = false;
         for (e.items.items) |*item| if (item.*) |*x| {
             x.seen = false;
@@ -210,7 +210,7 @@ pub const Externals = struct {
                 .visible = true,
                 .rect = round(f.visible),
                 .below = mode == .below,
-                .source = if (cropped) .{ .x = f.source.x0 * fw, .y = f.source.y0 * fh, .width = f.source.width() * fw, .height = f.source.height() * fh } else null,
+                .source = if (cropped) sourceRect(f.source, fw, fh) else null,
                 .frame = .{
                     .fd = x.frame.?.frame.fd,
                     .offset = x.frame.?.frame.offset,
@@ -258,12 +258,13 @@ pub const Externals = struct {
 
     /// Places an embedder's surface. Nothing can composite its pixels, so
     /// it stays on its subsurface: above the window when it is unobstructed,
-    /// and otherwise below with a hole, so that the window covers what
-    /// clips hide and content painted over it. Clips crop through the
-    /// viewport's source rectangle, but only once the embedder committed a
-    /// frame at the size it was told: a source outside its buffer would be
-    /// a protocol error. Until then (and for rotated or translucent
-    /// placements, shown on their bounding box) the window covers the rest.
+    /// and otherwise below with a hole, so that content painted over it
+    /// shows. The window and clips crop it through the viewport's source
+    /// rectangle (rotated and translucent placements on their bounding box,
+    /// below the window), which needs a frame of the size the embedder was
+    /// told: a source outside its buffer would be a protocol error. A
+    /// placement that needs cropping stays hidden until such a frame
+    /// arrives, so that nothing ever shows outside the window or its clips.
     fn placeSurface(e: *Externals, p: platform.Platform, window: platform.WindowId, t: *tree_mod.Tree, x: *External, f: tree_mod.Found, scale: f64) Allocator.Error!bool {
         const id = f.id;
         const em = &x.embed.?;
@@ -280,22 +281,35 @@ pub const Externals = struct {
             em.told = buffer;
         }
         const cropped = !f.visible.eql(f.rect);
-        const fits = f.promotable and std.meta.eql(em.buffer, em.told);
-        var state: platform.SubsurfaceState = .{ .visible = true, .embed = true, .rect = full };
-        if (cropped and fits) {
-            const bw: f32 = @floatFromInt(em.buffer.width);
-            const bh: f32 = @floatFromInt(em.buffer.height);
-            state.rect = round(f.visible);
-            state.source = .{ .x = f.source.x0 * bw, .y = f.source.y0 * bh, .width = f.source.width() * bw, .height = f.source.height() * bh };
+        const fits = std.meta.eql(em.buffer, em.told);
+        var state: platform.SubsurfaceState = .{ .embed = true };
+        if (!cropped or fits) {
+            state.visible = true;
+            state.rect = full;
+            if (cropped) {
+                state.rect = round(f.visible);
+                state.source = sourceRect(f.source, @floatFromInt(em.buffer.width), @floatFromInt(em.buffer.height));
+            }
+            state.below = !f.promotable or f.covered;
         }
-        state.below = !f.promotable or f.covered or (cropped and !fits);
         const mode: Mode = if (state.below) .below else .above;
-        if (mode != x.mode or !x.shown.visible) t.touchExternal(id);
+        if (mode != x.mode or state.visible != x.shown.visible) t.touchExternal(id);
         x.mode = mode;
         if (std.meta.eql(state, x.shown)) return false;
         p.setSubsurface(window, x.sub.?, &state) catch {};
         x.shown = state;
         return true;
+    }
+
+    /// The part `frac` (0..1 on each axis) of a `w` × `h` buffer, snapped
+    /// inward to wl_fixed's 1/256 grid so that rounding can never put it
+    /// outside the buffer (a protocol error).
+    fn sourceRect(frac: raster.Rect, w: f32, h: f32) @FieldType(platform.SubsurfaceState, "source") {
+        const x0 = @ceil(std.math.clamp(frac.x0 * w, 0, w) * 256) / 256;
+        const y0 = @ceil(std.math.clamp(frac.y0 * h, 0, h) * 256) / 256;
+        const x1 = @floor(std.math.clamp(frac.x1 * w, 0, w) * 256) / 256;
+        const y1 = @floor(std.math.clamp(frac.y1 * h, 0, h) * 256) / 256;
+        return .{ .x = x0, .y = y0, .width = @max(x1 - x0, 1.0 / 256.0), .height = @max(y1 - y0, 1.0 / 256.0) };
     }
 
     fn round(r: raster.Rect) platform.Rect {

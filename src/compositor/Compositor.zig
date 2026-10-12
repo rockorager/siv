@@ -848,7 +848,8 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
     const s: f32 = @floatCast(state.scale.toFloat());
     const root = raster.Affine.scale(s, s);
     // External content: subsurfaces where possible, composited elsewhere.
-    const subsurfaces_changed = w.externals.place(self.platform, w.id, &w.tree, state.scale.toFloat()) catch return self.outOfMemory(w);
+    const bounds = raster.Rect.xywh(0, 0, @floatFromInt(state.width), @floatFromInt(state.height));
+    const subsurfaces_changed = w.externals.place(self.platform, w.id, &w.tree, bounds, state.scale.toFloat()) catch return self.outOfMemory(w);
     w.tree.externals = w.externals.resolver();
     const list = w.tree.compose() catch return self.outOfMemory(w);
     var damage = w.tracker.diff(w.tree.previous(), list, root, vp) catch return self.outOfMemory(w);

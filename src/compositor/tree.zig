@@ -555,11 +555,12 @@ pub const Tree = struct {
 
     /// The externals in the tree, in paint order, with where they are and
     /// whether a subsurface could show them.
-    pub fn externalPlacements(t: *Tree, out: *std.ArrayList(Found)) Allocator.Error!void {
+    /// `bounds` is the window (surface coordinates): nothing shows outside
+    /// it, so it clips every placement.
+    pub fn externalPlacements(t: *Tree, out: *std.ArrayList(Found), bounds: Rect) Allocator.Error!void {
         out.clearRetainingCapacity();
         if (t.root == 0) return;
-        const infinite: Rect = .{ .x0 = -std.math.inf(f32), .y0 = -std.math.inf(f32), .x1 = std.math.inf(f32), .y1 = std.math.inf(f32) };
-        try t.place(out, t.root, .identity, 1, infinite, false);
+        try t.place(out, t.root, .identity, 1, bounds, false);
     }
 
     /// Something painted at `r` (surface coordinates) covers the externals
