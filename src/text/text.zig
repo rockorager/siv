@@ -12,6 +12,8 @@ pub const segmentation = @import("segmentation.zig");
 pub const Boundaries = @import("boundaries.zig");
 pub const bidi = @import("bidi.zig");
 pub const script = @import("script.zig");
+pub const font = @import("font.zig");
+pub const fontconfig = @import("fontconfig.zig");
 
 test {
     std.testing.refAllDecls(@This());
