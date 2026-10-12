@@ -44,5 +44,10 @@ pub const Flags = message.Flags;
 
 test {
     std.testing.refAllDecls(@This());
-    _ = @import("tests.zig");
+    if (comptime @import("integration").enabled) {
+        // `zig build test-integration`: the tests against dbus-daemon.
+        _ = @import("integration_tests.zig");
+    } else {
+        _ = @import("tests.zig");
+    }
 }

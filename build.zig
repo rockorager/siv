@@ -6,7 +6,8 @@
 //!                             the C ABI smoke test
 //!   zig build test-<module>   one module's tests (e.g. test-text)
 //!   zig build test-headless   the headless integration tests
-//!   zig build test-integration  the Wayland backend against headless sway
+//!   zig build test-integration  the Wayland backend against headless sway,
+//!                             D-Bus against dbus-daemon
 //!
 //! Options:
 //!   -Dtest-filter=<text>      only run tests whose name contains <text>
@@ -83,12 +84,14 @@ pub fn build(b: *std.Build) void {
         .{ .name = "wayland", .module = wayland },
         .{ .name = "xkbcommon", .module = xkbcommon },
     };
-    const dbus = ctx.module("src/dbus/dbus.zig", &.{
+    const dbus_imports = [_]std.Build.Module.Import{
         .{ .name = "loop", .module = loop },
-    });
+    };
+    const dbus = ctx.module("src/dbus/dbus.zig", &dbus_imports);
     const platform = ctx.module("src/platform/platform.zig", &platform_imports);
     const not_integration = integrationOption(b, false);
     platform.addImport("integration", not_integration);
+    dbus.addImport("integration", not_integration);
     const compositor_imports = [_]std.Build.Module.Import{
         .{ .name = "scene", .module = scene },
         .{ .name = "raster", .module = raster },
@@ -216,7 +219,7 @@ pub fn build(b: *std.Build) void {
     integration.addImport("integration", integrationOption(b, true));
     const integration_run = b.addRunArtifact(b.addTest(.{ .name = "integration", .root_module = integration, .filters = test_filters }));
     integration_run.has_side_effects = true; // depends on the installed sway
-    const integration_step = b.step("test-integration", "Run the integration tests against headless sway");
+    const integration_step = b.step("test-integration", "Run the integration tests against headless sway and dbus-daemon");
     integration_step.dependOn(&integration_run.step);
     // The compositor thread against sway, through platform.test_sway.
     const compositor_integration = ctx.module("src/compositor/compositor.zig", &compositor_imports);
@@ -224,6 +227,13 @@ pub fn build(b: *std.Build) void {
     const compositor_integration_run = b.addRunArtifact(b.addTest(.{ .name = "compositor-integration", .root_module = compositor_integration, .filters = test_filters }));
     compositor_integration_run.has_side_effects = true;
     integration_step.dependOn(&compositor_integration_run.step);
+    // D-Bus against a private dbus-daemon (src/dbus/integration_tests.zig).
+    const dbus_integration = ctx.module("src/dbus/dbus.zig", &dbus_imports);
+    dbus_integration.addImport("integration", integrationOption(b, true));
+    const dbus_integration_run = b.addRunArtifact(b.addTest(.{ .name = "dbus-integration", .root_module = dbus_integration, .filters = test_filters }));
+    dbus_integration_run.has_side_effects = true; // depends on the installed dbus-daemon
+    integration_step.dependOn(&dbus_integration_run.step);
+    b.step("test-integration-dbus", "Run the D-Bus integration tests against dbus-daemon").dependOn(&dbus_integration_run.step);
 
     // Headless text engine benchmarks. Not part of `test`; build with
     // -Doptimize=ReleaseFast for meaningful numbers.

@@ -15,11 +15,13 @@ timed() {
 # System libraries siv links (D7, D13, D15, D16) and the Vulkan headers and
 # loader the Vulkan renderer will need (D10). mesa-vulkan-drivers provides
 # lavapipe for headless CPU-vs-Vulkan tests. xkb-data provides the keymaps
-# the keyboard tests compile.
+# the keyboard tests compile. dbus-daemon and gdbus (libglib2.0-bin) are
+# the D-Bus integration tests' bus and second client.
 packages=(
 	ca-certificates curl xz-utils pkg-config
 	libwayland-dev libxkbcommon-dev libfontconfig-dev xkb-data
 	libvulkan-dev mesa-vulkan-drivers
+	dbus-daemon libglib2.0-bin
 )
 
 install_packages() {

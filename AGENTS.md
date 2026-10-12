@@ -15,8 +15,10 @@ zig build test-text            # one module: test-abi, test-text, test-raster, t
                                #   test-render-cpu, test-pool, test-loop, test-dbus,
                                #   test-platform, test-compositor, test-ui
 zig build test-headless        # headless integration tests (test/headless.zig)
-zig build test-integration     # Wayland backend against headless sway
-                               #   (not in `test`; .agents/setup installs sway)
+zig build test-integration     # Wayland backend against headless sway, D-Bus against
+                               #   dbus-daemon (not in `test`; .agents/setup installs both)
+zig build test-integration-dbus  # only the D-Bus part
+zig build test-dbus --fuzz -Doptimize=ReleaseSafe  # fuzz a module's parsers
 zig build test-abi             # abi module, generators, Zig wrappers, exported symbols
 zig build test-c               # C programs against the generated headers and shared libraries
 zig build test -Dtest-filter=bidi
