@@ -1671,9 +1671,16 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       functions (D28), and `done` with a `siv_portal_result`. Pages are
       drawn at a dispatch, never inside the call. Text drawn while a font
       is still loading draws every page again once fonts load (three
-      passes at most). Pages are left to right in the default language,
-      use the light variant of the theme (paper is white), and ignore the
-      desktop's text scaling. A page whose drawing fails is blank, as a
+      passes at most). The descriptor's language and direction
+      apply to the pages' text; by default they are the application's:
+      the window's when printing from a window, else the process locale's
+      ($LC_ALL, $LC_MESSAGES, $LANG, as gettext reads them; right to left
+      for languages written in Arabic, Hebrew, Thaana, Syriac, N'Ko, and
+      the like). siv has no application-wide language setting yet (D21),
+      so the locale stands in for it. Pages use the light variant of the
+      theme (paper is white) and ignore the desktop's text scaling.
+      `margin` gives siv_pdf_write's page setup margins, so exported and
+      printed layouts can match. A page whose drawing fails is blank, as a
       canvas would be.
     - Printing: PreparePrint shows the system's dialog (with no settings
       or page setup to start from); its response's page setup is
