@@ -1013,6 +1013,11 @@ pub const Key = struct {
 
 pub const Modifiers = struct { window: WindowId, seat: SeatId, mods: Mods };
 
+/// The seat's key-repeat timing (wl_keyboard.repeat_info): the delay
+/// before a held key repeats and the repeats per second; rate 0 turns
+/// repeating off. Widgets that repeat while held follow it too.
+pub const KeyRepeat = struct { seat: SeatId, delay_ms: u32, rate: u32 };
+
 pub const PointerMotion = struct {
     window: WindowId,
     seat: SeatId,
@@ -1103,6 +1108,7 @@ pub const Event = union(enum) {
     keyboard_leave: Focus,
     key: Key,
     modifiers: Modifiers,
+    key_repeat: KeyRepeat,
     pointer_enter: PointerMotion,
     pointer_leave: Focus,
     pointer_motion: PointerMotion,

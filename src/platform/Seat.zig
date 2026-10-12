@@ -226,6 +226,7 @@ fn onKeyboard(_: *wl.Keyboard, event: wl.Keyboard.Event, seat: *Seat) void {
             seat.repeat_rate = r.rate;
             seat.repeat_delay_ms = r.delay;
             if (r.rate <= 0) seat.stopRepeat();
+            seat.push(.{ .key_repeat = .{ .seat = seat.id, .delay_ms = @intCast(@max(r.delay, 0)), .rate = @intCast(@max(r.rate, 0)) } });
         },
     }
 }
