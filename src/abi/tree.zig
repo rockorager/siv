@@ -50,23 +50,61 @@ pub const CanvasCb = struct {
     user_data: ?*anyopaque,
 };
 
+/// Memory siv_set_data gave a node: a header, then the caller's bytes at
+/// a 16-byte boundary. A node's entries form a list.
+pub const Data = struct {
+    key: usize,
+    size: usize,
+    next: ?*Data = null,
+
+    const header = 32;
+    comptime {
+        std.debug.assert(@sizeOf(Data) <= header);
+    }
+
+    fn create(gpa: std.mem.Allocator, key: usize, size: usize) Error!*Data {
+        const mem = try gpa.alignedAlloc(u8, .@"16", header + size);
+        @memset(mem, 0);
+        const d: *Data = @ptrCast(mem.ptr);
+        d.* = .{ .key = key, .size = size };
+        return d;
+    }
+
+    fn destroy(d: *Data, gpa: std.mem.Allocator) void {
+        const mem: [*]align(16) u8 = @ptrCast(@alignCast(d));
+        gpa.free(mem[0 .. header + d.size]);
+    }
+
+    pub fn bytes(d: *Data) *anyopaque {
+        const mem: [*]align(16) u8 = @ptrCast(@alignCast(d));
+        return mem + header;
+    }
+};
+
 /// Per-node ABI state of one window, indexed by node index.
 pub const Nodes = struct {
     handles: std.ArrayList(u64) = .empty,
     callbacks: std.ArrayList(Slots) = .empty,
+    /// siv_on_default handlers.
+    defaults: std.ArrayList(Slots) = .empty,
     canvases: std.ArrayList(?CanvasCb) = .empty,
+    data: std.ArrayList(?*Data) = .empty,
 
     pub fn deinit(n: *Nodes, gpa: std.mem.Allocator) void {
         n.handles.deinit(gpa);
         n.callbacks.deinit(gpa);
+        n.defaults.deinit(gpa);
         n.canvases.deinit(gpa);
+        n.data.deinit(gpa);
     }
 
     /// Room for `total` nodes, so that `adopt` cannot fail.
     pub fn reserve(n: *Nodes, gpa: std.mem.Allocator, total: usize) Error!void {
         try n.handles.ensureTotalCapacity(gpa, total);
         try n.callbacks.ensureTotalCapacity(gpa, total);
+        try n.defaults.ensureTotalCapacity(gpa, total);
         try n.canvases.ensureTotalCapacity(gpa, total);
+        try n.data.ensureTotalCapacity(gpa, total);
     }
 
     /// Gives a new node a handle. The caller reserved room here and in the
@@ -76,7 +114,9 @@ pub const Nodes = struct {
         while (n.handles.items.len <= i) {
             n.handles.appendAssumeCapacity(0);
             n.callbacks.appendAssumeCapacity(@splat(null));
+            n.defaults.appendAssumeCapacity(@splat(null));
             n.canvases.appendAssumeCapacity(null);
+            n.data.appendAssumeCapacity(null);
         }
         n.handles.items[i] = try self.root.handles.insert(self.gpa(), node_tag, w.index << node_bits | i);
     }
@@ -88,6 +128,18 @@ pub const Nodes = struct {
 
     pub fn slot(n: *Nodes, id: NodeId, kind: ui.HandlerKind) *?Callback {
         return &n.callbacks.items[id.index()][@intFromEnum(kind)];
+    }
+
+    pub fn defaultSlot(n: *Nodes, id: NodeId, kind: ui.HandlerKind) *?Callback {
+        return &n.defaults.items[id.index()][@intFromEnum(kind)];
+    }
+
+    pub fn findData(n: *const Nodes, id: NodeId, key: usize) ?*Data {
+        const i = id.index();
+        if (i >= n.data.items.len) return null;
+        var cur = n.data.items[i];
+        while (cur) |d| : (cur = d.next) if (d.key == key) return d;
+        return null;
     }
 
     pub fn canvas(n: *Nodes, id: NodeId) *?CanvasCb {
@@ -102,10 +154,16 @@ pub const Nodes = struct {
             _ = w.owner.root.handles.remove(n.handles.items[i], node_tag) catch unreachable;
             n.handles.items[i] = 0;
         }
-        for (&n.callbacks.items[i]) |*cb| if (cb.*) |c| {
+        for ([_]*Slots{ &n.callbacks.items[i], &n.defaults.items[i] }) |slots| for (slots) |*cb| if (cb.*) |c| {
             cb.* = null;
             w.owner.release(c.destroy, c.user_data);
         };
+        var data = n.data.items[i];
+        n.data.items[i] = null;
+        while (data) |d| {
+            data = d.next;
+            d.destroy(w.owner.gpa());
+        }
         if (n.canvases.items[i]) |c| {
             n.canvases.items[i] = null;
             w.owner.release(c.destroy, c.user_data);
@@ -117,7 +175,7 @@ pub const Nodes = struct {
     }
 };
 
-const Undo = struct { node: NodeId, kind: ui.HandlerKind, old: ?Callback };
+const Undo = struct { node: NodeId, kind: ui.HandlerKind, default: bool, old: ?Callback };
 
 /// The ABI side of a window's open transaction.
 pub const TxnState = struct {
@@ -133,12 +191,15 @@ pub const TxnState = struct {
     undo: std.ArrayList(Undo) = .empty,
     /// Canvas callback changes, likewise.
     canvas_undo: std.ArrayList(CanvasUndo) = .empty,
+    /// Node data made: freed on abort.
+    data_created: std.ArrayList(struct { node: NodeId, data: *Data }) = .empty,
 
     pub fn deinit(s: *TxnState, gpa: std.mem.Allocator) void {
         s.created.deinit(gpa);
         s.removed.deinit(gpa);
         s.undo.deinit(gpa);
         s.canvas_undo.deinit(gpa);
+        s.data_created.deinit(gpa);
     }
 
     fn finish(s: *TxnState, w: *Window) void {
@@ -149,6 +210,7 @@ pub const TxnState = struct {
         s.removed.clearRetainingCapacity();
         s.undo.clearRetainingCapacity();
         s.canvas_undo.clearRetainingCapacity();
+        s.data_created.clearRetainingCapacity();
     }
 };
 
@@ -163,9 +225,19 @@ pub fn abortState(w: *Window) void {
     while (i > 0) {
         i -= 1;
         const u = s.undo.items[i];
-        const cur = w.nodes.slot(u.node, u.kind);
+        const cur = if (u.default) w.nodes.defaultSlot(u.node, u.kind) else w.nodes.slot(u.node, u.kind);
         if (cur.*) |c| w.owner.release(c.destroy, c.user_data);
         cur.* = u.old;
+    }
+    // Data made by this transaction is first in its node's list.
+    i = s.data_created.items.len;
+    while (i > 0) {
+        i -= 1;
+        const e = s.data_created.items[i];
+        const head = &w.nodes.data.items[e.node.index()];
+        std.debug.assert(head.* == e.data);
+        head.* = e.data.next;
+        e.data.destroy(w.owner.gpa());
     }
     i = s.canvas_undo.items.len;
     while (i > 0) {
@@ -270,6 +342,25 @@ pub export fn siv_txn_abort(txn: t.Txn) t.Result {
     const w = txnWindow(txn) catch |err| return t.resultOf(err);
     abortState(w);
     return .ok;
+}
+
+pub export fn siv_txn_fail(txn: t.Txn, err: t.Result) t.Result {
+    const w = txnWindow(txn) catch |e| return t.resultOf(e);
+    if (w.txn.err) |e| return t.resultOf(e);
+    if (@backingInt(err) >= 0) {
+        w.txn.err = error.InvalidArgument;
+    } else {
+        w.txn.err = switch (err) {
+            .error_out_of_memory => error.OutOfMemory,
+            .error_invalid_handle => error.InvalidHandle,
+            .error_unsupported => error.Unsupported,
+            .error_limit_exceeded => error.LimitExceeded,
+            .error_busy => error.Busy,
+            .error_unavailable => error.Unavailable,
+            else => error.InvalidArgument,
+        };
+    }
+    return t.resultOf(w.txn.err.?);
 }
 
 pub export fn siv_txn_status(txn: t.Txn) t.Result {
@@ -413,6 +504,9 @@ pub export fn siv_set_visual(txn: t.Txn, node: t.Node, desc: ?*const t.VisualDes
             // nothing else (D28).
             v.layer = fl.layer or w.uiWin().node(id).kind == .canvas;
             v.hit_test = !fl.no_hit_test;
+            v.hidden = fl.hidden;
+            v.background_token = try colorToken(d.background_token, true);
+            v.border_token = try colorToken(d.border_token, true);
             w.txn.ut.setVisual(id, v) catch |err| return mapTxn(err);
         }
     }.f, .{ node, desc });
@@ -463,8 +557,9 @@ pub export fn siv_set_semantics(txn: t.Txn, node: t.Node, desc: ?*const t.Semant
                 .pressed = try toggle(d.pressed),
                 .selected = try toggle(d.selected),
                 .expanded = try toggle(d.expanded),
-                .value = if (fl.has_value) .{ .min = d.value_min, .max = d.value_max, .now = d.value_now } else null,
+                .value = if (fl.has_value) .{ .min = d.value_min, .max = d.value_max, .now = d.value_now, .step = d.value_step } else null,
                 .live = if (fl.live_assertive) .assertive else if (fl.live_polite) .polite else .off,
+                .modal = fl.modal,
             }) catch |err| return mapTxn(err);
         }
     }.f, .{ node, desc });
@@ -516,6 +611,8 @@ pub fn textPropsOf(d_ptr: ?*const t.TextStyleDesc) Error!ui.Text {
                 _ => unreachable,
             },
             .color = try color(d.color, .black),
+            .color_token = try colorToken(d.color_token, true),
+            .size_role = @enumFromInt(@backingInt(try runtime.enumValue(t.TextRole, d.size_role))),
         },
         .alignment = switch (try runtime.enumValue(t.TextAlign, d.@"align")) {
             .start => .start,
@@ -607,33 +704,91 @@ pub export fn siv_set_selection(txn: t.Txn, node: t.Node, caret: u32, anchor: u3
     }.f, .{ node, caret, anchor });
 }
 
+pub export fn siv_set_transition(txn: t.Txn, node: t.Node, duration_ms: u32) t.Result {
+    return run(txn, struct {
+        fn f(w: *Window, n: t.Node, ms: u32) Error!void {
+            const id = try nodeIn(w, n);
+            var v = w.uiWin().node(id).visual;
+            v.transition_ms = ms;
+            w.txn.ut.setVisual(id, v) catch |err| return mapTxn(err);
+        }
+    }.f, .{ node, duration_ms });
+}
+
+pub export fn siv_set_placeholder(txn: t.Txn, node: t.Node, text: ?[*]const u8, text_len: usize) t.Result {
+    return run(txn, struct {
+        fn f(w: *Window, n: t.Node, ptr: ?[*]const u8, len: usize) Error!void {
+            const id = try nodeIn(w, n);
+            if (w.uiWin().node(id).kind != .editor) return error.InvalidArgument;
+            w.txn.ut.setPlaceholder(id, try runtime.string(ptr, len)) catch |err| return mapTxn(err);
+        }
+    }.f, .{ node, text, text_len });
+}
+
+pub export fn siv_set_data(txn: t.Txn, node: t.Node, key: ?*anyopaque, size: usize, data: ?*?*anyopaque) t.Result {
+    return run(txn, struct {
+        fn f(w: *Window, n: t.Node, k: ?*anyopaque, sz: usize, out: ?*?*anyopaque) Error!void {
+            const id = try nodeIn(w, n);
+            const dest = try runtime.out(?*anyopaque, out);
+            const kv = @intFromPtr(k orelse return error.InvalidArgument);
+            if (sz == 0 or sz > 1 << 30) return error.InvalidArgument;
+            if (w.nodes.findData(id, kv)) |d| {
+                if (d.size != sz) return error.InvalidArgument;
+                dest.* = d.bytes();
+                return;
+            }
+            const gpa = w.owner.gpa();
+            try w.txn.data_created.ensureUnusedCapacity(gpa, 1);
+            const d = try Data.create(gpa, kv, sz);
+            const head = &w.nodes.data.items[id.index()];
+            d.next = head.*;
+            head.* = d;
+            w.txn.data_created.appendAssumeCapacity(.{ .node = id, .data = d });
+            dest.* = d.bytes();
+        }
+    }.f, .{ node, key, size, data });
+}
+
 pub export fn siv_on(txn: t.Txn, node: t.Node, kind: t.EventType, callback: ?t.EventFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) t.Result {
+    return on(txn, node, kind, callback, destroy, user_data, false);
+}
+
+pub export fn siv_on_default(txn: t.Txn, node: t.Node, kind: t.EventType, callback: ?t.EventFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) t.Result {
+    return on(txn, node, kind, callback, destroy, user_data, true);
+}
+
+fn on(txn: t.Txn, node: t.Node, kind: t.EventType, callback: ?t.EventFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque, default: bool) t.Result {
     const w = txnWindow(txn) catch |err| return t.resultOf(err);
-    const result = run(txn, setHandler, .{ node, kind, callback, destroy, user_data });
+    const result = run(txn, setHandler, .{ node, kind, callback, destroy, user_data, default });
     // With no handler to own it, user_data is released at once; also when
     // the call failed, since the caller handed it over.
     if (callback == null or result != .ok) w.owner.release(destroy, user_data);
     return result;
 }
 
-fn setHandler(w: *Window, node: t.Node, kind: t.EventType, callback: ?t.EventFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) Error!void {
+/// The tree's handler kind for an event type; the C enum lists the same
+/// kinds in the same order.
+fn handlerKind(kind: t.EventType) Error!ui.HandlerKind {
+    _ = try runtime.enumValue(t.EventType, kind);
+    return @enumFromInt(@backingInt(kind));
+}
+
+comptime {
+    for (@typeInfo(ui.HandlerKind).@"enum".field_names, 0..) |name, i| {
+        if (@backingInt(@field(t.EventType, name)) != i) @compileError("siv_event_type does not match ui.HandlerKind at " ++ name);
+    }
+}
+
+fn setHandler(w: *Window, node: t.Node, kind: t.EventType, callback: ?t.EventFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque, default: bool) Error!void {
     const id = try nodeIn(w, node);
-    const hk: ui.HandlerKind = switch (try runtime.enumValue(t.EventType, kind)) {
-        .activate => .activate,
-        .pointer => .pointer,
-        .key => .key,
-        .focus => .focus,
-        .scroll => .scroll,
-        .change => .change,
-        .drop => .drop,
-        .drag => .drag,
-        _ => unreachable,
-    };
+    const k = try handlerKind(kind);
     try w.txn.undo.ensureUnusedCapacity(w.owner.gpa(), 1);
-    const handler: ?ui.Handler = if (callback != null) .{ .func = dispatch, .user = w } else null;
-    w.txn.ut.on(id, hk, handler) catch |err| return mapTxn(err);
-    const s = w.nodes.slot(id, hk);
-    w.txn.undo.appendAssumeCapacity(.{ .node = id, .kind = hk, .old = s.* });
+    const s = if (default) w.nodes.defaultSlot(id, k) else w.nodes.slot(id, k);
+    // The tree calls `dispatch` while either slot has a callback.
+    const other = if (default) w.nodes.slot(id, k).* else w.nodes.defaultSlot(id, k).*;
+    const handler: ?ui.Handler = if (callback != null or other != null) .{ .func = dispatch, .user = w } else null;
+    w.txn.ut.on(id, k, handler) catch |err| return mapTxn(err);
+    w.txn.undo.appendAssumeCapacity(.{ .node = id, .kind = k, .default = default, .old = s.* });
     s.* = if (callback) |cb| .{ .func = cb, .destroy = destroy, .user_data = user_data } else null;
 }
 
@@ -643,26 +798,9 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
     const w: *Window = @ptrCast(@alignCast(user));
     if (w.dead) return false;
     const hk: ui.HandlerKind = switch (event.*) {
-        .activate => .activate,
-        .pointer => .pointer,
-        .key => .key,
-        .focus => .focus,
-        .scroll => .scroll,
-        .change => .change,
-        .drop => .drop,
-        .drag => .drag,
+        inline else => |_, tag| @field(ui.HandlerKind, @tagName(tag)),
     };
-    const cb = w.nodes.slot(id, hk).* orelse return false;
-    var ev: t.Event = .{ .window = @fromBackingInt(w.handle), .type = switch (hk) {
-        .activate => .activate,
-        .pointer => .pointer,
-        .key => .key,
-        .focus => .focus,
-        .scroll => .scroll,
-        .change => .change,
-        .drop => .drop,
-        .drag => .drag,
-    } };
+    var ev: t.Event = .{ .window = @fromBackingInt(w.handle), .type = @fromBackingInt(@intFromEnum(hk)) };
     switch (event.*) {
         .activate => {},
         .pointer => |p| {
@@ -729,11 +867,25 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
             ev.action = dnd.actionTo(d.action);
             ev.flags = .{ .accepted = d.accepted };
         },
+        .set_value => |v| ev.value = v,
     }
+    return deliver(w, id, hk, &ev);
+}
+
+/// Calls the node's siv_on handler for the kind, then, unless it returned
+/// true, its siv_on_default handler.
+fn deliver(w: *Window, id: NodeId, hk: ui.HandlerKind, ev: *const t.Event) bool {
     const self = w.owner;
     self.enter();
     defer self.leave();
-    return cb.func(cb.user_data, @fromBackingInt(w.nodes.handle(id)), &ev);
+    const handle: t.Node = @fromBackingInt(w.nodes.handle(id));
+    if (w.nodes.slot(id, hk).*) |cb| {
+        if (cb.func(cb.user_data, handle, ev)) return true;
+        // The handler may have removed the node or destroyed the window.
+        if (w.dead or w.nodes.handle(id) != @backingInt(handle)) return false;
+    }
+    const d = w.nodes.defaultSlot(id, hk).* orelse return false;
+    return d.func(d.user_data, handle, ev);
 }
 
 /// An editor's text and selection as the application sees them: a masked
@@ -813,6 +965,93 @@ pub export fn siv_node_get_rect(node: t.Node, rect: ?*t.Rect) t.Result {
     }.f(node, rect));
 }
 
+pub export fn siv_node_get_data(node: t.Node, key: ?*anyopaque, data: ?*?*anyopaque) t.Result {
+    return application.wrap(struct {
+        fn f(n: t.Node, k: ?*anyopaque, out: ?*?*anyopaque) Error!void {
+            const w, const id = try lookup(n);
+            const dest = try runtime.out(?*anyopaque, out);
+            const d = w.nodes.findData(id, @intFromPtr(k orelse return error.InvalidArgument));
+            dest.* = if (d) |x| x.bytes() else null;
+        }
+    }.f(node, key, data));
+}
+
+pub export fn siv_node_get_label(node: t.Node, label: ?[*]u8, label_cap: usize, len: ?*usize) t.Result {
+    return application.wrap(struct {
+        fn f(n: t.Node, ptr: ?[*]u8, cap: usize, out: ?*usize) Error!void {
+            const w, const id = try lookup(n);
+            const buf = try runtime.buffer(ptr, cap);
+            const dest = try runtime.out(usize, out);
+            const s = w.uiWin().node(id).semantics.label;
+            const k = @min(s.len, buf.len);
+            @memcpy(buf[0..k], s[0..k]);
+            dest.* = s.len;
+        }
+    }.f(node, label, label_cap, len));
+}
+
+pub export fn siv_node_get_window(node: t.Node, window: ?*t.Window) t.Result {
+    return application.wrap(struct {
+        fn f(n: t.Node, out: ?*t.Window) Error!void {
+            const w, _ = try lookup(n);
+            const dest = try runtime.out(t.Window, out);
+            dest.* = @fromBackingInt(w.handle);
+        }
+    }.f(node, window));
+}
+
+pub export fn siv_node_get_related(node: t.Node, relation: t.Relation, related: ?*t.Node) t.Result {
+    return application.wrap(struct {
+        fn f(n: t.Node, rel: t.Relation, out: ?*t.Node) Error!void {
+            const w, const id = try lookup(n);
+            const dest = try runtime.out(t.Node, out);
+            const un = w.uiWin().node(id);
+            const r: NodeId = switch (try runtime.enumValue(t.Relation, rel)) {
+                .parent => un.parent,
+                .first_child => un.first,
+                .last_child => un.last,
+                .next => un.next,
+                .previous => un.prev,
+                _ => unreachable,
+            };
+            dest.* = if (r == .none) .null else @fromBackingInt(w.nodes.handle(r));
+        }
+    }.f(node, relation, related));
+}
+
+pub export fn siv_node_is_rtl(node: t.Node, rtl: ?*bool) t.Result {
+    return application.wrap(struct {
+        fn f(n: t.Node, out: ?*bool) Error!void {
+            const w, const id = try lookup(n);
+            const dest = try runtime.out(bool, out);
+            const uw = w.uiWin();
+            var cur = id;
+            dest.* = while (cur != .none) : (cur = uw.node(cur).parent) {
+                switch (uw.node(cur).layout.direction) {
+                    .inherit => {},
+                    .ltr => break false,
+                    .rtl => break true,
+                }
+            } else uw.rtl;
+        }
+    }.f(node, rtl));
+}
+
+pub export fn siv_emit(node: t.Node, event: ?*const t.Event, handled: ?*bool) t.Result {
+    return application.wrap(struct {
+        fn f(n: t.Node, e_ptr: ?*const t.Event, out: ?*bool) Error!void {
+            const w, const id = try lookup(n);
+            const dest = try runtime.out(bool, out);
+            var ev = try runtime.readDesc(t.Event, e_ptr);
+            const hk = try handlerKind(ev.type);
+            if (w.owner.painting != 0) return error.Busy;
+            ev.size = @sizeOf(t.Event);
+            ev.window = @fromBackingInt(w.handle);
+            dest.* = deliver(w, id, hk, &ev);
+        }
+    }.f(node, event, handled));
+}
+
 pub export fn siv_node_focus(node: t.Node) t.Result {
     return application.wrap(struct {
         fn f(n: t.Node) Error!void {
@@ -836,6 +1075,23 @@ pub fn color(c: t.Color, zero: scene.Color) Error!scene.Color {
         }
     }.f;
     return .srgb(cl(c.r), cl(c.g), cl(c.b), cl(c.a));
+}
+
+/// A themed color; `none` only where a literal color is the alternative.
+pub fn colorToken(tok: t.ColorToken, none_ok: bool) Error!ui.ColorToken {
+    _ = try runtime.enumValue(t.ColorToken, tok);
+    if (!none_ok and tok == .none) return error.InvalidArgument;
+    return @enumFromInt(@backingInt(tok));
+}
+
+comptime {
+    for (@typeInfo(ui.TextRole).@"enum".field_names, 0..) |name, i| {
+        if (@backingInt(@field(t.TextRole, name)) != i) @compileError("siv_text_role does not match ui.TextRole at " ++ name);
+    }
+    for (@typeInfo(ui.ColorToken).@"enum".field_names, 0..) |name, i| {
+        if (@backingInt(@field(t.ColorToken, name)) != i) @compileError("siv_color_token does not match ui.ColorToken at " ++ name);
+    }
+    if (@typeInfo(t.ColorToken).@"enum".field_names.len != @typeInfo(ui.ColorToken).@"enum".field_names.len) @compileError("siv_color_token has tokens ui.ColorToken lacks");
 }
 
 fn alignment(a: t.Align, auto: ui.Align) Error!ui.Align {

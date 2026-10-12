@@ -24,6 +24,7 @@ const alloc = @import("alloc.zig");
 const tree = @import("tree.zig");
 const canvas = @import("canvas.zig");
 const external = @import("external.zig");
+const loop_mod = @import("loop");
 
 const Root = runtime.Root;
 
@@ -35,6 +36,7 @@ pub const app_tag = api.spec.handleTag("siv_app");
 pub const window_tag = api.spec.handleTag("siv_window");
 pub const txn_tag = api.spec.handleTag("siv_txn");
 pub const node_tag = api.spec.handleTag("siv_node");
+pub const timer_tag = api.spec.handleTag("siv_timer");
 
 /// Windows per application: a node handle's payload holds the window's
 /// index in its top bits (see tree.zig).
@@ -70,6 +72,8 @@ pub const App = struct {
     /// Set before the root is retired, for calls that pin it through an
     /// object handle (`Root.pinOwner`).
     closing: std.atomic.Value(bool),
+    /// By timer index (handle payload); null slots are reused.
+    timers: std.ArrayList(?*Timer),
 
     pub fn gpa(self: *App) std.mem.Allocator {
         return self.root.gpa;
@@ -102,6 +106,43 @@ pub const App = struct {
     pub fn window(handle: u64, tag: u8) Error!*Window {
         const self, const index = try Root.owner(App, app_tag, handle, tag);
         return self.windows.items[index] orelse error.InvalidHandle;
+    }
+};
+
+/// A siv_timer: one loop timer and its C callback.
+pub const Timer = struct {
+    timer: loop_mod.Timer = .{ .func = fire },
+    owner: *App,
+    index: u32,
+    handle: u64,
+    callback: t.PostFn,
+    destroy: ?t.DestroyFn,
+    user_data: ?*anyopaque,
+
+    fn fire(lt: *loop_mod.Timer) void {
+        const tm: *Timer = @fieldParentPtr("timer", lt);
+        const self = tm.owner;
+        tm.forget();
+        self.enter();
+        tm.callback(tm.user_data);
+        self.leave();
+        self.release(tm.destroy, tm.user_data);
+        self.gpa().destroy(tm);
+    }
+
+    fn forget(tm: *Timer) void {
+        const self = tm.owner;
+        _ = self.root.handles.remove(tm.handle, timer_tag) catch unreachable;
+        self.timers.items[tm.index] = null;
+    }
+
+    /// Cancelled, or dropped with the application.
+    fn cancel(tm: *Timer) void {
+        const self = tm.owner;
+        self.app.loop.cancelTimer(&tm.timer);
+        tm.forget();
+        self.release(tm.destroy, tm.user_data);
+        self.gpa().destroy(tm);
     }
 };
 
@@ -186,6 +227,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     self.waiting = .empty;
     self.externals = .{};
     self.closing = .init(false);
+    self.timers = .empty;
     const gpa = self.gpa();
     self.draw = .init(gpa);
     errdefer self.draw.deinit(gpa);
@@ -224,6 +266,8 @@ pub export fn siv_app_destroy(app: t.App) t.Result {
         w.teardown();
     };
     const gpa = self.gpa();
+    for (self.timers.items) |slot| if (slot) |tm| tm.cancel();
+    self.timers.deinit(gpa);
     self.app.fonts.removeListener(self);
     for (self.images.items) |img| if (img) |i| i.release();
     // Runs the destroy-notify of posted work that never ran (D5).
@@ -498,4 +542,51 @@ fn limit(s: t.Size) Error!platform.Size {
 pub export fn siv_window_root(window: t.Window) t.Node {
     const w = App.window(@backingInt(window), window_tag) catch return .null;
     return @fromBackingInt(w.nodes.handle(.root));
+}
+
+// Timers ----------------------------------------------------------------------
+
+pub export fn siv_timer_start(app: t.App, delay_ms: u32, callback: ?t.PostFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque, timer: ?*t.Timer) t.Result {
+    const self = App.get(@backingInt(app)) catch |err| {
+        if (destroy) |d| d(user_data);
+        return t.resultOf(err);
+    };
+    const r = timerStart(self, delay_ms, callback, destroy, user_data, timer);
+    // The call failed: the caller handed user_data over anyway (D2).
+    if (r != .ok) self.release(destroy, user_data);
+    return r;
+}
+
+fn timerStart(self: *App, delay_ms: u32, callback: ?t.PostFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque, out: ?*t.Timer) t.Result {
+    const cb = callback orelse return .error_invalid_argument;
+    const dest = runtime.out(t.Timer, out) catch |err| return t.resultOf(err);
+    const gpa = self.gpa();
+    const index: u32 = for (self.timers.items, 0..) |slot, i| {
+        if (slot == null) break @intCast(i);
+    } else blk: {
+        self.timers.append(gpa, null) catch return .error_out_of_memory;
+        break :blk @intCast(self.timers.items.len - 1);
+    };
+    const tm = gpa.create(Timer) catch return .error_out_of_memory;
+    tm.* = .{ .owner = self, .index = index, .handle = 0, .callback = cb, .destroy = destroy, .user_data = user_data };
+    self.root.handles.ensureUnusedCapacity(gpa) catch {
+        gpa.destroy(tm);
+        return .error_out_of_memory;
+    };
+    const ns = @as(u64, delay_ms) * std.time.ns_per_ms;
+    self.app.loop.startTimer(&tm.timer, loop_mod.Loop.now() + ns, 0) catch {
+        gpa.destroy(tm);
+        return .error_out_of_memory;
+    };
+    tm.handle = self.root.handles.insert(gpa, timer_tag, index) catch unreachable;
+    self.timers.items[index] = tm;
+    dest.* = @fromBackingInt(tm.handle);
+    return .ok;
+}
+
+pub export fn siv_timer_cancel(timer: t.Timer) t.Result {
+    const self, const index = Root.owner(App, app_tag, @backingInt(timer), timer_tag) catch |err| return t.resultOf(err);
+    const tm = self.timers.items[index] orelse return .error_invalid_handle;
+    tm.cancel();
+    return .ok;
 }

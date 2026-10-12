@@ -26,14 +26,20 @@ pub fn ok(r: t.Result) !void {
 pub const Harness = struct {
     app: t.App = .null,
     window: t.Window = .null,
+    /// Where golden images live.
+    golden: []const u8 = golden_dir,
 
     pub fn start(h: *Harness, width: u32, height: u32, on_event: ?t.WindowEventFn, user_data: ?*anyopaque) !void {
+        try h.startWith(.{ .width = width, .height = height, .on_event = on_event, .user_data = user_data });
+    }
+
+    pub fn startWith(h: *Harness, desc: t.WindowDesc) !void {
         // Reduced motion: no caret blinking to race the captures.
         try ok(A.siv_app_create(&.{ .backend = .headless, .flags = .{ .no_system_fonts = true, .reduced_motion = true } }, &h.app));
         const tf = text.font.test_fonts;
         for ([_][]const u8{ tf.latin, tf.arabic, tf.hebrew }) |font| try ok(A.siv_app_add_font(h.app, "Droid", 5, font.ptr, font.len));
         try ok(A.siv_app_set_default_font(h.app, "Droid", 5));
-        try ok(A.siv_window_create(h.app, &.{ .width = width, .height = height, .on_event = on_event, .user_data = user_data }, &h.window));
+        try ok(A.siv_window_create(h.app, &desc, &h.window));
     }
 
     pub fn stop(h: *Harness) void {
@@ -163,12 +169,12 @@ pub const Harness = struct {
         const got = try h.capture();
         defer gpa.free(got);
         try testing.expectEqual(@as(usize, width) * height * 4, got.len);
-        const path = try std.fmt.allocPrint(gpa, "{s}/{s}.png", .{ golden_dir, name });
+        const path = try std.fmt.allocPrint(gpa, "{s}/{s}.png", .{ h.golden, name });
         defer gpa.free(path);
         if (testing.environ.getPosix("SIV_UPDATE_GOLDEN") != null) {
             const bytes = try png.encode(gpa, width, height, got);
             defer gpa.free(bytes);
-            try std.Io.Dir.cwd().createDirPath(io, golden_dir);
+            try std.Io.Dir.cwd().createDirPath(io, h.golden);
             try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = bytes });
             return;
         }
@@ -191,7 +197,7 @@ pub const Harness = struct {
         try std.Io.Dir.cwd().createDirPath(io, failure_dir);
         const actual = try png.encode(gpa, width, height, got);
         defer gpa.free(actual);
-        const out = try std.fmt.allocPrint(gpa, "{s}/abi-{s}-actual.png", .{ failure_dir, name });
+        const out = try std.fmt.allocPrint(gpa, "{s}/{s}-{s}-actual.png", .{ failure_dir, std.fs.path.basename(h.golden), name });
         defer gpa.free(out);
         try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out, .data = actual });
         return error.GoldenMismatch;

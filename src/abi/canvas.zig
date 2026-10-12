@@ -544,7 +544,7 @@ pub export fn siv_draw_text(handle: t.Draw, x: f32, y: f32, width: f32, str: ?[*
                     .font = .{ .handle = face.font, .key = face.key },
                     .size = r.size,
                     .glyphs = glyphs.items,
-                    .paint = .color(props.style.color),
+                    .paint = .color(uw.palette.pick(props.style.color, props.style.color_token)),
                     .bounds = bounds.outset(1),
                 }) catch |err| return mapScene(err);
             };
@@ -660,7 +660,7 @@ const Shaped = struct {
         sh.paragraph = text.ShapedParagraph.init(gpa, sh.scratch.allocator(), &fonts.cache, s, &.{.{
             .end = @intCast(s.len),
             // Desktop text scaling applies to canvas text as to text nodes.
-            .style = .{ .fonts = chain, .size = st.size * @as(f32, @floatCast(self.app.desktop.values.text_scale)), .language = if (lang.len == 0) "und" else lang },
+            .style = .{ .fonts = chain, .size = self.app.palette().textSize(st.size, st.size_role) * @as(f32, @floatCast(self.app.desktop.values.text_scale)), .language = if (lang.len == 0) "und" else lang },
         }}, if (rtl) .auto_rtl else .auto_ltr) catch |err| return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             else => error.InvalidArgument,

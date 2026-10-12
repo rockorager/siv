@@ -26,12 +26,14 @@ pub const canvas = @import("canvas.zig");
 pub const external = @import("external.zig");
 /// Drag and drop.
 pub const dnd = @import("dnd.zig");
+/// Theming: scheme and contrast choices, color overrides.
+pub const theme = @import("theme.zig");
 
 /// The generated wrapper's types, which the exports use.
 pub const types = t;
 
 /// The files that export schema functions.
-const implementations = .{ @This(), application, tree, canvas, external, dnd };
+const implementations = .{ @This(), application, tree, canvas, external, dnd, theme };
 
 const version = build_options.version;
 

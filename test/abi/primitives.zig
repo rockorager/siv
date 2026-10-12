@@ -1,0 +1,259 @@
+//! The public primitives that code built on siv uses (D22): default
+//! handlers, siv_emit, node data, tree navigation, siv_txn_fail, and
+//! timers, through the exports on the headless backend. The application
+//! allocates through hooks over the testing allocator, so node data that
+//! outlives its node shows up as a leak.
+
+const std = @import("std");
+const abi = @import("abi");
+const harness = @import("harness.zig");
+
+const testing = std.testing;
+const t = abi.types;
+const c = t.c;
+const ok = harness.ok;
+const Harness = harness.Harness;
+
+fn hookAlloc(_: ?*anyopaque, size: usize, alignment: usize) callconv(.c) ?*anyopaque {
+    const a = std.mem.Alignment.fromByteUnits(alignment);
+    return testing.allocator.rawAlloc(size, a, @returnAddress());
+}
+
+fn hookFree(_: ?*anyopaque, ptr: ?*anyopaque, size: usize, alignment: usize) callconv(.c) void {
+    const p: [*]u8 = @ptrCast(ptr.?);
+    testing.allocator.rawFree(p[0..size], .fromByteUnits(alignment), @returnAddress());
+}
+
+/// A headless application allocating through the testing allocator.
+fn start(h: *Harness) !void {
+    try ok(c.siv_app_create(&.{
+        .backend = .headless,
+        .flags = .{ .no_system_fonts = true, .reduced_motion = true },
+        .allocator = &.{ .alloc = hookAlloc, .free = hookFree },
+    }, &h.app));
+    try ok(c.siv_window_create(h.app, &.{ .width = 100, .height = 100 }, &h.window));
+}
+
+const Calls = struct {
+    order: [8]u8 = undefined,
+    n: usize = 0,
+    app_returns: bool = false,
+    value: f64 = 0,
+
+    fn add(cs: *Calls, tag: u8) void {
+        cs.order[cs.n] = tag;
+        cs.n += 1;
+    }
+
+    fn app(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) bool {
+        const cs: *Calls = @ptrCast(@alignCast(ud.?));
+        cs.add('a');
+        cs.value = ev.?.value;
+        return cs.app_returns;
+    }
+
+    fn default(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) bool {
+        const cs: *Calls = @ptrCast(@alignCast(ud.?));
+        cs.add('d');
+        cs.value = ev.?.value;
+        return true;
+    }
+};
+
+test "default handlers run after the application's, which can override them" {
+    var h: Harness = .{};
+    try start(&h);
+    defer h.stop();
+    var calls: Calls = .{};
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const n = c.siv_box(txn, c.siv_window_root(h.window));
+    try ok(c.siv_on_default(txn, n, .select, Calls.default, null, &calls));
+    try ok(c.siv_txn_commit(txn));
+
+    // Only a default handler: it runs, and takes the event.
+    var handled = false;
+    try ok(c.siv_emit(n, &.{ .type = .select, .value = 2 }, &handled));
+    try testing.expect(handled);
+    try testing.expectEqualStrings("d", calls.order[0..calls.n]);
+
+    // The application's handler declines: both run, in that order.
+    try ok(c.siv_txn_begin(h.window, &txn));
+    try ok(c.siv_on(txn, n, .select, Calls.app, null, &calls));
+    try ok(c.siv_txn_commit(txn));
+    calls.n = 0;
+    try ok(c.siv_emit(n, &.{ .type = .select, .value = 3 }, &handled));
+    try testing.expectEqualStrings("ad", calls.order[0..calls.n]);
+    try testing.expectEqual(@as(f64, 3), calls.value);
+
+    // It takes the event: the default never runs.
+    calls.n = 0;
+    calls.app_returns = true;
+    try ok(c.siv_emit(n, &.{ .type = .select }, &handled));
+    try testing.expectEqualStrings("a", calls.order[0..calls.n]);
+
+    // An aborted transaction restores the previous default handler.
+    try ok(c.siv_txn_begin(h.window, &txn));
+    try ok(c.siv_on_default(txn, n, .select, null, null, null));
+    try ok(c.siv_txn_abort(txn));
+    calls.n = 0;
+    calls.app_returns = false;
+    try ok(c.siv_emit(n, &.{ .type = .select }, &handled));
+    try testing.expectEqualStrings("ad", calls.order[0..calls.n]);
+    try testing.expectEqual(t.Result.error_unsupported, c.siv_emit(n, &.{ .type = @fromBackingInt(99) }, &handled));
+}
+
+test "default handlers make a node activatable for input" {
+    var h: Harness = .{};
+    try start(&h);
+    defer h.stop();
+    var calls: Calls = .{};
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const n = c.siv_box(txn, c.siv_window_root(h.window));
+    _ = c.siv_set_semantics(txn, n, &.{ .role = .button, .flags = .{ .focusable = true } });
+    try ok(c.siv_on_default(txn, n, .activate, Calls.default, null, &calls));
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try ok(c.siv_node_focus(n));
+    try h.typeKey(0xff0d, "", .{});
+    try h.settle();
+    try testing.expectEqualStrings("d", calls.order[0..calls.n]);
+}
+
+test "node data lives with its node and goes with an aborted transaction" {
+    var h: Harness = .{};
+    try start(&h);
+    defer h.stop();
+    var key_a: u8 = 0;
+    var key_b: u8 = 0;
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const n = c.siv_box(txn, c.siv_window_root(h.window));
+    var p: ?*anyopaque = null;
+    try ok(c.siv_set_data(txn, n, &key_a, 40, &p));
+    const bytes: [*]u8 = @ptrCast(p.?);
+    try testing.expectEqual(@as(usize, 0), @intFromPtr(p) % 16);
+    for (bytes[0..40]) |b| try testing.expectEqual(@as(u8, 0), b);
+    bytes[0] = 7;
+    // The same key and size hands back the same memory; another size fails.
+    var q: ?*anyopaque = null;
+    try ok(c.siv_set_data(txn, n, &key_a, 40, &q));
+    try testing.expectEqual(p, q);
+    try ok(c.siv_set_data(txn, n, &key_b, 8, &q));
+    try testing.expect(p != q);
+    try ok(c.siv_txn_commit(txn));
+    try ok(c.siv_node_get_data(n, &key_a, &q));
+    try testing.expectEqual(@as(u8, 7), @as([*]u8, @ptrCast(q.?))[0]);
+    var none: u8 = 0;
+    try ok(c.siv_node_get_data(n, &none, &q));
+    try testing.expect(q == null);
+
+    // Data made in an aborted transaction is freed; earlier data stays.
+    try ok(c.siv_txn_begin(h.window, &txn));
+    var key_c: u8 = 0;
+    try ok(c.siv_set_data(txn, n, &key_c, 100, &q));
+    try ok(c.siv_txn_abort(txn));
+    try ok(c.siv_node_get_data(n, &key_c, &q));
+    try testing.expect(q == null);
+    try ok(c.siv_node_get_data(n, &key_a, &q));
+    try testing.expectEqual(p, q);
+
+    try ok(c.siv_txn_begin(h.window, &txn));
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_set_data(txn, n, &key_a, 41, &q));
+    try ok(c.siv_txn_abort(txn));
+    // Removing the node frees its data (the testing allocator checks).
+    try ok(c.siv_txn_begin(h.window, &txn));
+    try ok(c.siv_remove(txn, n));
+    try ok(c.siv_txn_commit(txn));
+}
+
+test "tree navigation, labels, direction, and failing a transaction" {
+    var h: Harness = .{};
+    try start(&h);
+    defer h.stop();
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const root = c.siv_window_root(h.window);
+    const a = c.siv_box(txn, root);
+    const b = c.siv_flex(txn, root, null);
+    _ = c.siv_set_layout(txn, b, &.{ .direction = .rtl });
+    const inner = c.siv_box(txn, b);
+    _ = c.siv_set_semantics(txn, inner, &.{ .label = "Inner", .label_len = 5 });
+    // Navigation sees the open transaction's tree.
+    var r: t.Node = .null;
+    try ok(c.siv_node_get_related(a, .next, &r));
+    try testing.expectEqual(b, r);
+    try ok(c.siv_node_get_related(b, .previous, &r));
+    try testing.expectEqual(a, r);
+    try ok(c.siv_node_get_related(inner, .parent, &r));
+    try testing.expectEqual(b, r);
+    try ok(c.siv_node_get_related(root, .last_child, &r));
+    try testing.expectEqual(b, r);
+    try ok(c.siv_node_get_related(inner, .first_child, &r));
+    try testing.expectEqual(t.Node.null, r);
+    var rtl = false;
+    try ok(c.siv_node_is_rtl(inner, &rtl));
+    try testing.expect(rtl);
+    try ok(c.siv_node_is_rtl(a, &rtl));
+    try testing.expect(!rtl);
+    var buf: [8]u8 = undefined;
+    var len: usize = 0;
+    try ok(c.siv_node_get_label(inner, &buf, 3, &len));
+    try testing.expectEqual(@as(usize, 5), len);
+    try testing.expectEqualStrings("Inn", buf[0..3]);
+    var win: t.Window = .null;
+    try ok(c.siv_node_get_window(inner, &win));
+    try testing.expectEqual(h.window, win);
+    // A failed transaction does nothing more and commits nothing.
+    try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_fail(txn, .error_unsupported));
+    try testing.expectEqual(t.Node.null, c.siv_box(txn, root));
+    try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_fail(txn, .error_busy));
+    try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_commit(txn));
+    try testing.expectEqual(t.Result.error_invalid_handle, c.siv_node_get_related(a, .next, &r));
+}
+
+const Ticks = struct {
+    fired: u32 = 0,
+    destroyed: u32 = 0,
+
+    fn fire(ud: ?*anyopaque) callconv(.c) void {
+        const k: *Ticks = @ptrCast(@alignCast(ud.?));
+        k.fired += 1;
+    }
+
+    fn destroy(ud: ?*anyopaque) callconv(.c) void {
+        const k: *Ticks = @ptrCast(@alignCast(ud.?));
+        k.destroyed += 1;
+    }
+};
+
+test "timers fire once after their delay; cancelled ones never" {
+    var h: Harness = .{};
+    try start(&h);
+    defer h.stop();
+    var a: Ticks = .{};
+    var b: Ticks = .{};
+    var ta: t.Timer = .null;
+    var tb: t.Timer = .null;
+    const t0 = @import("loop").Loop.now();
+    try ok(c.siv_timer_start(h.app, 20, Ticks.fire, Ticks.destroy, &a, &ta));
+    try ok(c.siv_timer_start(h.app, 10, Ticks.fire, Ticks.destroy, &b, &tb));
+    try ok(c.siv_timer_cancel(tb));
+    try testing.expectEqual(@as(u32, 1), b.destroyed);
+    while (a.fired == 0) try ok(c.siv_app_dispatch(h.app, 100));
+    const elapsed = @import("loop").Loop.now() - t0;
+    try testing.expect(elapsed >= 20 * std.time.ns_per_ms);
+    try testing.expectEqual(@as(u32, 1), a.destroyed);
+    try testing.expectEqual(@as(u32, 0), b.fired);
+    // A fired timer's handle is gone.
+    try testing.expectEqual(t.Result.error_invalid_handle, c.siv_timer_cancel(ta));
+    // Destroying the application cancels pending timers.
+    var d: Ticks = .{};
+    var td: t.Timer = .null;
+    try ok(c.siv_timer_start(h.app, 10_000, Ticks.fire, Ticks.destroy, &d, &td));
+    h.stop();
+    h.app = .null;
+    try testing.expectEqual(@as(u32, 1), d.destroyed);
+    try testing.expectEqual(@as(u32, 0), d.fired);
+}

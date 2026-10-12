@@ -168,6 +168,38 @@ const toggle_values: []const schema.EnumValue = &.{
     .{ .name = "mixed", .value = 3, .doc = "Partly on." },
 };
 
+const color_token_values = [_]schema.EnumValue{
+    .{ .name = "none", .value = 0, .doc = "Not themed: the literal color applies." },
+    .{ .name = "window_bg", .value = 1, .doc = "Window background." },
+    .{ .name = "window_fg", .value = 2, .doc = "Text on the window background." },
+    .{ .name = "view_bg", .value = 3, .doc = "Background of content views: text fields, lists." },
+    .{ .name = "view_fg", .value = 4, .doc = "Text in views." },
+    .{ .name = "card_bg", .value = 5, .doc = "Raised surfaces: menus, popovers, dialogs." },
+    .{ .name = "card_fg", .value = 6, .doc = "Text on cards." },
+    .{ .name = "muted_fg", .value = 7, .doc = "Secondary text and placeholders." },
+    .{ .name = "disabled_fg", .value = 8, .doc = "Text of disabled controls." },
+    .{ .name = "border", .value = 9, .doc = "Control outlines." },
+    .{ .name = "separator", .value = 10, .doc = "Separators and dividers." },
+    .{ .name = "control_bg", .value = 11, .doc = "Buttons and other controls at rest." },
+    .{ .name = "control_hover", .value = 12, .doc = "Controls under the pointer." },
+    .{ .name = "control_active", .value = 13, .doc = "Pressed controls." },
+    .{ .name = "control_fg", .value = 14, .doc = "Text on controls." },
+    .{ .name = "accent", .value = 15, .doc = "The accent: default buttons, checked controls, progress. Follows the desktop's accent." },
+    .{ .name = "accent_hover", .value = 16, .doc = "The accent under the pointer." },
+    .{ .name = "accent_active", .value = 17, .doc = "The accent pressed." },
+    .{ .name = "accent_fg", .value = 18, .doc = "Text and marks on the accent." },
+    .{ .name = "selection_bg", .value = 19, .doc = "Selected items and text." },
+    .{ .name = "selection_fg", .value = 20, .doc = "Text of selected items." },
+    .{ .name = "focus_ring", .value = 21, .doc = "Keyboard focus rings." },
+    .{ .name = "track", .value = 22, .doc = "Slider, progress, and switch tracks." },
+    .{ .name = "knob", .value = 23, .doc = "Slider thumbs and switch knobs." },
+    .{ .name = "destructive", .value = 24, .doc = "Destructive actions." },
+    .{ .name = "destructive_fg", .value = 25, .doc = "Text on destructive actions." },
+    .{ .name = "scrim", .value = 26, .doc = "The translucent cover behind modal dialogs." },
+    .{ .name = "inverse_bg", .value = 27, .doc = "Toasts and tooltips." },
+    .{ .name = "inverse_fg", .value = 28, .doc = "Text on inverse_bg." },
+};
+
 fn param(comptime name: []const u8, comptime t: schema.Type, comptime doc: []const u8) Param {
     return .{ .name = name, .type = t, .doc = doc };
 }
@@ -344,10 +376,19 @@ pub const decls = [_]Decl{
         f32Field("inset_bottom", "Stack: distance from the bottom, with SIV_LAYOUT_INSET_BOTTOM."),
         .{ .name = "flags", .type = ref("siv_layout_flags"), .doc = "Options." },
     }),
+    enumeration("siv_color_token", "A themed color (D29): resolved from the window's theme when painted, so it follows the desktop's color scheme, contrast, and accent and the application's overrides without the tree changing. none uses the literal color.", &color_token_values),
+    enumeration("siv_text_role", "A themed text size (D29), relative to the desktop's UI font size; follows it live.", &.{
+        .{ .name = "fixed", .value = 0, .doc = "The style's own font_size." },
+        .{ .name = "body", .value = 1, .doc = "The desktop's UI font size (11 pt by default)." },
+        .{ .name = "caption", .value = 2, .doc = "0.85 times body." },
+        .{ .name = "heading", .value = 3, .doc = "1.2 times body." },
+        .{ .name = "title", .value = 4, .doc = "1.5 times body." },
+    }),
     flags("siv_visual_flags", "Appearance options.", &.{
         .{ .name = "clip", .bit = 0, .doc = "Clip descendants to the rounded border box." },
         .{ .name = "layer", .bit = 1, .doc = "Give the node its own compositor layer (D8), for example before animating it." },
         .{ .name = "no_hit_test", .bit = 2, .doc = "Pointer events pass through the node to what is below." },
+        .{ .name = "hidden", .bit = 3, .doc = "The node and its subtree take no space and are not painted, hit, focusable, or in the semantics tree; its state is kept." },
     }),
     descriptor("siv_visual_desc", "A node's appearance. Repaints without layout; does not change opacity or transform.", &.{
         .{ .name = "background", .type = ref("siv_color"), .doc = "Fill of the border box; default transparent." },
@@ -355,6 +396,8 @@ pub const decls = [_]Decl{
         .{ .name = "radius", .type = ref("siv_corners"), .doc = "Corner radii." },
         f32Field("border_width", "Border width, drawn over the padding."),
         .{ .name = "flags", .type = ref("siv_visual_flags"), .doc = "Options." },
+        .{ .name = "background_token", .type = ref("siv_color_token"), .doc = "A themed background that replaces background." },
+        .{ .name = "border_token", .type = ref("siv_color_token"), .doc = "A themed border color that replaces border_color." },
     }),
     value("siv_transform", "A transform in components (D8), so the compositor can animate it. Maps p to translate + origin + rotate(scale * (p - origin)); the identity has scale 1, not 0.", &.{
         f32Field("translate_x", "Horizontal translation."),
@@ -374,6 +417,7 @@ pub const decls = [_]Decl{
         .{ .name = "has_value", .bit = 2, .doc = "value_min, value_max, and value_now apply (sliders, progress)." },
         .{ .name = "live_polite", .bit = 3, .doc = "A live region: changes are announced when the user is idle." },
         .{ .name = "live_assertive", .bit = 4, .doc = "A live region: changes are announced at once. Not with SIV_SEMANTICS_LIVE_POLITE." },
+        .{ .name = "modal", .bit = 5, .doc = "While shown, the pointer reaches only this subtree and Tab stays in it (dialogs)." },
     }),
     descriptor("siv_semantics_desc", "What assistive technology sees, and keyboard behavior (D18). Replaces the node's semantics.", &.{
         .{ .name = "label", .type = .string, .doc = "Accessible name; empty derives it from the text below." },
@@ -387,6 +431,7 @@ pub const decls = [_]Decl{
         .{ .name = "selected", .type = ref("siv_toggle"), .doc = "Items in a selection." },
         .{ .name = "expanded", .type = ref("siv_toggle"), .doc = "Disclosures, tree items, menus." },
         .{ .name = "flags", .type = ref("siv_semantics_flags"), .doc = "Options." },
+        .{ .name = "value_step", .type = .f64, .doc = "The smallest change of the value, for assistive technology; 0 for any." },
     }),
 
     enumeration("siv_axis", "A flex main axis.", &.{
@@ -471,6 +516,8 @@ pub const decls = [_]Decl{
         .{ .name = "slant", .type = ref("siv_font_slant"), .doc = "Default roman." },
         .{ .name = "align", .type = ref("siv_text_align"), .doc = "Default start." },
         .{ .name = "flags", .type = ref("siv_text_flags"), .doc = "Options." },
+        .{ .name = "color_token", .type = ref("siv_color_token"), .doc = "A themed color that replaces color." },
+        .{ .name = "size_role", .type = ref("siv_text_role"), .doc = "A themed size that replaces font_size." },
     }),
     flags("siv_editor_flags", "Editor options.", &.{
         .{ .name = "multiline", .bit = 0, .doc = "Enter inserts a line break and lines wrap; otherwise one line that scrolls to keep the caret visible." },
@@ -497,9 +544,11 @@ pub const decls = [_]Decl{
         .{ .name = "key", .value = 2, .doc = "A key, from the focused node up." },
         .{ .name = "focus", .value = 3, .doc = "The node gained or lost keyboard focus." },
         .{ .name = "scroll", .value = 4, .doc = "Scroll input; bubbles from the node under the pointer. A node with a scroll handler sees scroll input before the compositor scrolls (D8)." },
-        .{ .name = "change", .value = 5, .doc = "The user edited an editor's text; text, caret, and anchor have the new state." },
+        .{ .name = "change", .value = 5, .doc = "The user changed a value: an editor's text (text, caret, and anchor have the new state), or a widget's value (value; for choices such as radio groups and tabs, index too). Delivered to the node only." },
         .{ .name = "drop", .value = 6, .doc = "A drag over a drop target (siv_set_drop_target), not bubbled: phase enter or move (return true to take the drag here), leave, or drop (data holds the data; return true if the node took it). x and y give the position, mime the type the node gets, action the negotiated action, and actions what the source offers." },
         .{ .name = "drag", .value = 7, .doc = "A drag the node started (siv_drag_start) progressed, not bubbled: phase move (the target under the pointer changed, SIV_EVENT_ACCEPTED if it takes the data, action the chosen action), drop (dropped on a target that takes it), or end (action is what the target did, none if cancelled; after a move, delete the data)." },
+        .{ .name = "set_value", .value = 8, .doc = "Assistive technology asks a node with a value (SIV_SEMANTICS_HAS_VALUE) to take value. The handler applies it, clamped and stepped, or ignores it. Delivered to the node only." },
+        .{ .name = "select", .value = 9, .doc = "Widgets: an item was chosen (a menu item) or a view's selection changed; index names the item, count how many are selected. Delivered to the node only." },
     }),
     enumeration("siv_pointer_phase", "What a pointer event reports.", &.{
         .{ .name = "down", .value = 0, .doc = "A button was pressed." },
@@ -551,11 +600,45 @@ pub const decls = [_]Decl{
         .{ .name = "data", .type = array(.u8), .doc = "Drop, phase drop: the dropped data. Valid during the call." },
         .{ .name = "action", .type = ref("siv_drag_action"), .doc = "Drop and drag: the negotiated action." },
         .{ .name = "actions", .type = ref("siv_drag_action_flags"), .doc = "Drop: the actions the source offers." },
+        .{ .name = "value", .type = .f64, .doc = "Change and set_value: the value." },
+        .{ .name = "index", .type = .u32, .doc = "Change: the chosen option of a choice widget. Select: the item." },
+        .{ .name = "count", .type = .u32, .doc = "Select: how many items are selected." },
     }),
     callback("siv_event_fn", "Handles a node event at a safe point on the application's thread (D5). Return true when handled: the event stops bubbling and the default action is skipped.", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node the handler was set on." },
         .{ .name = "event", .type = .{ .desc = "siv_event" }, .doc = "The event, valid during the call." },
     }, .bool),
+    enumeration("siv_relation", "A node's neighbor in the tree, for siv_node_get_related.", &.{
+        .{ .name = "parent", .value = 0, .doc = "Its parent." },
+        .{ .name = "first_child", .value = 1, .doc = "Its first child." },
+        .{ .name = "last_child", .value = 2, .doc = "Its last child." },
+        .{ .name = "next", .value = 3, .doc = "The sibling after it." },
+        .{ .name = "previous", .value = 4, .doc = "The sibling before it." },
+    }),
+    // Theming (D29).
+    enumeration("siv_color_scheme", "The light or dark variant of the theme.", &.{
+        .{ .name = "follow", .value = 0, .doc = "The desktop's preference (light without one)." },
+        .{ .name = "light", .value = 1, .doc = "Light." },
+        .{ .name = "dark", .value = 2, .doc = "Dark." },
+    }),
+    enumeration("siv_contrast", "The normal or high contrast variant of the theme.", &.{
+        .{ .name = "follow", .value = 0, .doc = "The desktop's preference." },
+        .{ .name = "normal", .value = 1, .doc = "Normal contrast." },
+        .{ .name = "high", .value = 2, .doc = "High contrast." },
+    }),
+    descriptor("siv_theme_desc", "The application's theme choices. Replaces earlier choices; color overrides stay.", &.{
+        .{ .name = "scheme", .type = ref("siv_color_scheme"), .doc = "Default follow." },
+        .{ .name = "contrast", .type = ref("siv_contrast"), .doc = "Default follow." },
+    }),
+    enumeration("siv_theme_variant", "Which of the theme's compiled variants a color override applies to.", &.{
+        .{ .name = "all", .value = 0, .doc = "Every variant." },
+        .{ .name = "light", .value = 1, .doc = "Light, normal contrast." },
+        .{ .name = "dark", .value = 2, .doc = "Dark, normal contrast." },
+        .{ .name = "light_high_contrast", .value = 3, .doc = "Light, high contrast." },
+        .{ .name = "dark_high_contrast", .value = 4, .doc = "Dark, high contrast." },
+    }),
+    handle("siv_timer", "A one-shot timer on the application's loop. Valid until it fires or is cancelled.", false),
+
     // Canvases (D28).
     handle("siv_draw", "A drawing context: valid only during the siv_draw_fn call it is passed to.", false),
     handle("siv_image", "Immutable pixels for image nodes and siv_draw_image. Destroying the handle drops the application's reference: nodes and frames that show the image keep it until they stop.", false),
@@ -841,6 +924,7 @@ pub const functions = [_]Function{
     call("siv_txn_commit", "Ends the transaction. If every operation succeeded, all of them take effect in the next frame and SIV_OK is returned. If one failed, the transaction stopped there: later operations did nothing, builders returned 0, and commit discards every change and returns the first error. Either way the handle is invalid afterwards.", &.{txn_param}),
     op("siv_txn_abort", "Ends the transaction and discards every change.", &.{txn_param}),
     op("siv_txn_status", "The transaction's first error, or SIV_OK while every operation has succeeded.", &.{txn_param}),
+    op("siv_txn_fail", "Records an error in the transaction as if an operation had failed, unless one already has: later operations do nothing and siv_txn_commit discards everything. Code built on siv (widgets) reports its own invalid arguments this way. Returns the transaction's status.", &.{ txn_param, .{ .name = "error", .type = ref("siv_result"), .doc = "An error result; SIV_OK is an invalid argument." } }),
 
     builder("siv_box", "Creates a box: children stacked vertically and stretched to its width.", &.{}),
     builder("siv_flex", "Creates a flex container.", &.{.{ .name = "desc", .type = .{ .desc = "siv_flex_desc" }, .doc = "Options; NULL for defaults." }}),
@@ -877,6 +961,19 @@ pub const functions = [_]Function{
         .{ .name = "caret", .type = .u32, .doc = "Caret offset." },
         .{ .name = "anchor", .type = .u32, .doc = "Anchor offset; equal to caret for no selection." },
     }),
+    setter("siv_set_transition", "Makes later changes of the node's opacity and transform animate on the compositor (D8) for duration_ms with an ease-out curve, instead of jumping; reduced motion turns it off (D29). The node needs its own layer for them to apply: give it SIV_VISUAL_LAYER.", &.{.{ .name = "duration_ms", .type = .u32, .doc = "Duration; 0 turns transitions off." }}),
+    setter("siv_set_placeholder", "Sets the text an editor shows, in the theme's muted color, while it is empty. Exposed to assistive technology as the placeholder.", &.{.{ .name = "text", .type = .string, .doc = "UTF-8 without line breaks, copied." }}),
+    setter("siv_on_default", "Sets, or with a NULL callback clears, the node's default handler for one event type: it runs when the node has no siv_on handler for the type or that handler returns false, before siv's own default action, and returns true to stop both bubbling and that action. Widgets, stock or not, put their behavior here, so siv_on stays the application's and returning true from it overrides the widget. Destroy-notify rules as for siv_on.", &.{
+        .{ .name = "type", .type = ref("siv_event_type"), .doc = "The event type." },
+        .{ .name = "callback", .type = ref("siv_event_fn"), .doc = "The handler, or NULL." },
+        .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data; may be NULL." },
+        .{ .name = "user_data", .type = .user_data, .doc = "Passed to callback and destroy." },
+    }),
+    setter("siv_set_data", "Gives the node size bytes of zeroed memory under key, allocated with the application's allocator and 16-byte aligned, for widget state. The node owns it: it is freed when the node is destroyed, or when the transaction that made it aborts. If the node already has data under key of the same size, that memory is returned.", &.{
+        .{ .name = "key", .type = .pointer, .doc = "Any unique address, such as that of a static variable of the caller's." },
+        .{ .name = "size", .type = .usize, .doc = "Bytes; at least 1." },
+        .{ .name = "data", .type = out(.pointer), .doc = "The memory." },
+    }),
     setter("siv_on", "Sets, or with a NULL callback clears, the node's handler for one event type. The replaced handler's destroy-notify runs at commit; the new one's when it is replaced, its node is removed, the transaction is aborted, or the window or application is destroyed. If the call fails, or callback is NULL, destroy runs at once.", &.{
         .{ .name = "type", .type = ref("siv_event_type"), .doc = "The event type." },
         .{ .name = "callback", .type = ref("siv_event_fn"), .doc = "The handler, or NULL." },
@@ -902,6 +999,59 @@ pub const functions = [_]Function{
     call("siv_node_focus", "Moves keyboard focus to a node that can take it (SIV_SEMANTICS_FOCUSABLE, or an editor). Its focus handler runs before this returns.", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
     }),
+    call("siv_node_get_data", "The memory siv_set_data gave the node under key, or NULL.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
+        .{ .name = "key", .type = .pointer, .doc = "The key." },
+        .{ .name = "data", .type = out(.pointer), .doc = "The memory, or NULL." },
+    }),
+    call("siv_node_get_label", "Copies the node's accessible label as siv_set_semantics set it (empty when derived from content).", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
+        .{ .name = "label", .type = .buffer, .doc = "Receives at most label_cap bytes; may be NULL with label_cap 0." },
+        .{ .name = "len", .type = out(.usize), .doc = "The label's full length in bytes." },
+    }),
+    call("siv_node_get_window", "The window a node belongs to.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
+        .{ .name = "window", .type = out(ref("siv_window")), .doc = "Its window." },
+    }),
+    call("siv_node_get_related", "A node's parent, first or last child, or next or previous sibling, as of the latest operation (inside an open transaction too), or 0 when there is none.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
+        .{ .name = "relation", .type = ref("siv_relation"), .doc = "Which neighbor." },
+        .{ .name = "related", .type = out(ref("siv_node")), .doc = "The neighbor, or 0." },
+    }),
+    call("siv_node_is_rtl", "Whether the node lays out right to left (D21): the nearest direction set on it or an ancestor, else the window's, as of the latest operation.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
+        .{ .name = "rtl", .type = out(.bool), .doc = "Right to left." },
+    }),
+    call("siv_emit", "Sends an event to a node's handlers as siv sends input: the siv_on handler, then, unless it returned true, the siv_on_default handler. It does not bubble. This is how widgets report their own events (change, select). Not from a canvas callback (SIV_ERROR_BUSY).", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
+        .{ .name = "event", .type = .{ .desc = "siv_event" }, .doc = "The event; window is filled in." },
+        .{ .name = "handled", .type = out(.bool), .doc = "Whether a handler returned true." },
+    }),
+    // Theming (D29).
+    call("siv_app_set_theme", "Chooses the theme's scheme and contrast instead of following the desktop. Every window repaints if its colors change.", &.{
+        app_param,
+        .{ .name = "desc", .type = .{ .desc = "siv_theme_desc" }, .doc = "Choices; NULL follows the desktop." },
+    }),
+    call("siv_app_set_theme_color", "Overrides a themed color in one variant, or in all of them. Overriding accent also moves the colors derived from it (accent_hover, accent_active, accent_fg, focus_ring, selection), unless they are overridden too. A color of all zeros removes the override.", &.{
+        app_param,
+        .{ .name = "variant", .type = ref("siv_theme_variant"), .doc = "The variant." },
+        .{ .name = "token", .type = ref("siv_color_token"), .doc = "The color; not none." },
+        .{ .name = "color", .type = ref("siv_color"), .doc = "sRGB with straight alpha." },
+    }),
+    call("siv_window_get_color", "A themed color as the window resolves it now, for canvases; they are drawn again when the theme changes.", &.{
+        window_param,
+        .{ .name = "token", .type = ref("siv_color_token"), .doc = "The color; not none." },
+        .{ .name = "color", .type = out(ref("siv_color")), .doc = "sRGB with straight alpha." },
+    }),
+    call("siv_timer_start", "Runs callback(user_data) once, at a safe point on the application's thread (D5) at least delay_ms from now, then destroy(user_data).", &.{
+        app_param,
+        .{ .name = "delay_ms", .type = .u32, .doc = "Delay." },
+        .{ .name = "callback", .type = ref("siv_post_fn"), .doc = "The work." },
+        .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data; may be NULL." },
+        .{ .name = "user_data", .type = .user_data, .doc = "Passed to both." },
+        .{ .name = "timer", .type = out(ref("siv_timer")), .doc = "The timer." },
+    }),
+    op("siv_timer_cancel", "Cancels a timer that has not fired; its destroy-notify runs.", &.{.{ .name = "timer", .type = ref("siv_timer"), .doc = "The timer." }}),
     // Canvases (D28).
     builder("siv_canvas", "Creates a canvas: content the application draws (siv_draw_fn) in its own compositor layer, so redrawing it repaints nothing else.", &.{.{ .name = "desc", .type = .{ .desc = "siv_canvas_desc" }, .doc = "Callbacks and size; NULL for an empty canvas." }}),
     builder("siv_image_view", "Creates an image node: an image fitted into its content box. Its intrinsic size is the image's size in pixels; its role is image.", &.{.{ .name = "desc", .type = .{ .desc = "siv_image_view_desc" }, .doc = "The image and fit; NULL shows nothing." }}),
