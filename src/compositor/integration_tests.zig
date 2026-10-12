@@ -385,7 +385,7 @@ fn droppedDuringStall(h: *Harness, id: WindowId, refresh: u64, op: @FieldType(up
 /// without a Vulkan Wayland device.
 fn startVulkan(h: *Harness, mode: @import("render_vulkan").Swapchain.PresentMode) !WindowId {
     h.renderer = .vulkan;
-    h.vulkan = .{ .present_mode = mode, .validation = true };
+    h.vulkan = .{ .present_mode = mode, .validation = true, .retry_ns = 200 * std.time.ns_per_ms, .pipeline_cache = .none };
     try h.start();
     errdefer h.stop();
     // lavapipe renders on the CPU, as does sway's headless output and
@@ -448,8 +448,8 @@ test "Vulkan windows present on sway in MAILBOX mode, paced by the frame clock" 
     try checkPacing(&h, id, "MAILBOX");
 
     // Device loss (here marked, as VK_ERROR_DEVICE_LOST would): the window
-    // falls back to the CPU renderer and wl_shm and keeps presenting, and
-    // new windows use the CPU renderer.
+    // falls back to the CPU renderer and wl_shm and keeps presenting; the
+    // device is re-created after the backoff and the window switches back.
     const Lose = struct {
         fn f(_: ?*anyopaque, c: *Compositor) void {
             c.vulkan.?.note(error.DeviceLost) catch {};
@@ -465,10 +465,16 @@ test "Vulkan windows present on sway in MAILBOX mode, paced by the frame clock" 
         _ = try h.comp.commit(id, &.{.{ .animate = .{ .layer = 4, .animation = .{ .to = .{ .transform = .offset(30, 30) }, .duration_ns = 100 * std.time.ns_per_ms } } }});
         try h.loop.dispatch(20);
     }
+    const back = Loop.now() + 5 * std.time.ns_per_s;
+    while ((try Probe.read(h.comp, id)).presenter != .vulkan) {
+        if (Loop.now() > back) return error.Timeout;
+        _ = try h.comp.commit(id, &.{.{ .animate = .{ .layer = 4, .animation = .{ .to = .{ .transform = .offset(40, 40) }, .duration_ns = 50 * std.time.ns_per_ms } } }});
+        try h.loop.dispatch(20);
+    }
     try h.settle();
     const second = try h.comp.createWindow(.{});
     try h.settle();
-    try testing.expectEqual(@as(?std.meta.Tag(@import("surface.zig").Surface), .cpu), (try Probe.read(h.comp, second)).presenter);
+    try testing.expectEqual(@as(?std.meta.Tag(@import("surface.zig").Surface), .vulkan), (try Probe.read(h.comp, second)).presenter);
 }
 
 test "Vulkan FIFO: frame clock and presentation feedback stay correct, hidden windows never block" {

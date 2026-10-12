@@ -73,10 +73,16 @@ vulkan_options: VulkanOptions,
 /// pipelines) takes 10 to 100+ ms, longer than a first frame may (D25), so
 /// with a thread it is created on a thread of its own when the first
 /// window opens; windows present with the CPU renderer until it is ready
-/// and then switch. Null until then, and for good once unavailable or
-/// lost.
+/// and then switch. Null until then, for good once unavailable, and
+/// while a lost device is being re-created.
 vulkan: ?*render_vulkan.Device = null,
-vulkan_state: enum { idle, starting, ready, failed } = .idle,
+vulkan_state: enum { idle, starting, ready, failed, lost } = .idle,
+/// The connection the device presents to, kept for re-creating it.
+vulkan_display: ?*anyopaque = null,
+/// A device was lost and is being re-created (D10).
+vulkan_retrying: bool = false,
+vulkan_backoff_ns: u64 = 0,
+vulkan_timer: Timer = .{ .func = onVulkanTimer },
 vulkan_thread: ?std.Thread = null,
 /// Written by the starting thread before it posts `vulkan_remote`.
 vulkan_result: render_vulkan.Error!*render_vulkan.Device = error.Unavailable,
@@ -98,6 +104,10 @@ pub const VulkanOptions = struct {
     present_mode: render_vulkan.Swapchain.PresentMode = .auto,
     /// The validation layer, when installed (tests).
     validation: bool = false,
+    /// First wait before re-creating a lost device; doubles up to a
+    /// minute while attempts fail.
+    retry_ns: u64 = std.time.ns_per_s,
+    pipeline_cache: render_vulkan.Device.PipelineCache = .default,
 };
 
 pub const Backend = union(enum) {
@@ -241,6 +251,7 @@ pub fn create(options: Options) !*Compositor {
         .outbox = outbox,
         .renderer = options.renderer,
         .vulkan_options = options.vulkan,
+        .vulkan_backoff_ns = options.vulkan.retry_ns,
     };
     if (options.thread) {
         self.own_loop = try Loop.init(gpa);
@@ -281,6 +292,7 @@ pub fn destroy(self: *Compositor) void {
     };
     for (self.windows.items) |w| if (w) |win| self.freeWindow(win);
     self.windows.deinit(self.gpa);
+    self.loop.cancelTimer(&self.vulkan_timer);
     // The starting thread uses the display; its posted result may never
     // have run (the loop is gone): take it here.
     if (self.vulkan_thread) |t| {
@@ -688,36 +700,38 @@ fn freeWindow(self: *Compositor, w: *Window) void {
 fn vulkanDevice(self: *Compositor, id: WindowId) ?*render_vulkan.Device {
     if (self.renderer == .cpu) return null;
     switch (self.vulkan_state) {
-        .ready => {
-            const d = self.vulkan.?;
-            if (!d.lost) return d;
-            self.vulkan_state = .failed;
-            return null;
-        },
-        .starting, .failed => return null,
+        .ready => return if (self.vulkan.?.lost) null else self.vulkan,
+        .starting, .failed, .lost => return null,
         .idle => {},
     }
     const target = self.platform.vulkanSurface(id) orelse return null;
+    self.vulkan_display = target.display;
+    self.startVulkan();
+    return if (self.vulkan_state == .ready) self.vulkan else null;
+}
+
+/// Creates the device, on a thread of its own when the compositor has one.
+fn startVulkan(self: *Compositor) void {
     const options: render_vulkan.Device.Options = .{
-        .wayland_display = target.display,
+        .wayland_display = self.vulkan_display,
         .main_device = self.platform.mainDevice(),
         .allow_cpu = self.renderer == .vulkan,
         .validation = self.vulkan_options.validation,
+        .pipeline_cache = self.vulkan_options.pipeline_cache,
     };
     self.vulkan_state = .starting;
     if (self.threaded) {
-        if (std.Thread.spawn(.{}, startVulkan, .{ self, options })) |t| {
+        if (std.Thread.spawn(.{}, createVulkan, .{ self, options })) |t| {
             self.vulkan_thread = t;
-            return null;
+            return;
         } else |_| {}
     }
     // Without a thread (tests), on this one.
     self.vulkan_result = render_vulkan.Device.create(self.gpa, options);
     self.finishVulkan();
-    return if (self.vulkan_state == .ready) self.vulkan else null;
 }
 
-fn startVulkan(self: *Compositor, options: render_vulkan.Device.Options) void {
+fn createVulkan(self: *Compositor, options: render_vulkan.Device.Options) void {
     self.vulkan_result = render_vulkan.Device.create(self.gpa, options);
     self.loop.postRemote(&self.vulkan_remote);
 }
@@ -727,10 +741,6 @@ fn onVulkanReady(r: *Loop.Remote) void {
     if (self.vulkan_thread) |t| t.join();
     self.vulkan_thread = null;
     self.finishVulkan();
-    // Open windows switch at their next frame.
-    if (self.vulkan_state == .ready) for (self.windows.items) |w| if (w) |win| {
-        self.platform.requestFrame(win.id);
-    };
 }
 
 fn finishVulkan(self: *Compositor) void {
@@ -738,14 +748,64 @@ fn finishVulkan(self: *Compositor) void {
         log.info("rendering with Vulkan on {s}", .{d.deviceName()});
         self.vulkan = d;
         self.vulkan_state = .ready;
+        self.vulkan_backoff_ns = self.vulkan_options.retry_ns;
+        // Open windows switch at their next frame.
+        for (self.windows.items) |w| if (w) |win| self.platform.requestFrame(win.id);
     } else |err| {
-        log.info("no Vulkan device ({t}); using the CPU renderer", .{err});
-        self.vulkan_state = .failed;
+        if (self.vulkan_retrying) {
+            log.info("Vulkan device not back yet ({t}); retrying in {d} ms", .{ err, self.vulkan_backoff_ns / std.time.ns_per_ms });
+            self.vulkan_state = .lost;
+            self.loop.startTimer(&self.vulkan_timer, Loop.now() + self.vulkan_backoff_ns, 0) catch {};
+            self.vulkan_backoff_ns = @min(self.vulkan_backoff_ns * 2, max_vulkan_backoff_ns);
+        } else {
+            log.info("no Vulkan device ({t}); using the CPU renderer", .{err});
+            self.vulkan_state = .failed;
+        }
     }
 }
 
+/// Longest wait between attempts to re-create a lost device.
+const max_vulkan_backoff_ns = 60 * std.time.ns_per_s;
+
+/// After device loss (D10): every window moves to the CPU renderer at once
+/// (a lost device presents nothing), the device goes, and re-creating it
+/// is tried with exponential backoff; once it succeeds, windows switch
+/// back at their next frame.
+fn loseVulkan(self: *Compositor) void {
+    for (self.windows.items) |item| if (item) |w| {
+        w.vulkan_tried = false;
+        if (w.surface == .vulkan) {
+            const cpu = surface_mod.Surface.create(self.gpa, self.executor, null) catch continue;
+            w.surface.destroy();
+            self.platform.setExternalPresenter(w.id, false);
+            w.surface = cpu;
+            w.tree.current = null;
+        }
+        self.platform.requestFrame(w.id);
+    };
+    var lost_windows = false;
+    for (self.windows.items) |item| if (item) |w| {
+        if (w.surface == .vulkan) lost_windows = true;
+    };
+    // Out of memory for a CPU surface: try again at the next frame.
+    if (lost_windows) return;
+    self.vulkan.?.destroy();
+    self.vulkan = null;
+    self.vulkan_state = .lost;
+    self.vulkan_retrying = true;
+    log.info("Vulkan device lost; windows use the CPU renderer, retrying in {d} ms", .{self.vulkan_backoff_ns / std.time.ns_per_ms});
+    self.loop.startTimer(&self.vulkan_timer, Loop.now() + self.vulkan_backoff_ns, 0) catch {};
+    self.vulkan_backoff_ns = @min(self.vulkan_backoff_ns * 2, max_vulkan_backoff_ns);
+}
+
+fn onVulkanTimer(timer: *Timer) void {
+    const self: *Compositor = @fieldParentPtr("vulkan_timer", timer);
+    if (self.vulkan_state == .lost) self.startVulkan();
+}
+
 /// Moves a CPU-presented window to Vulkan once the device is ready. Each
-/// window tries once: a window that fell back stays on the CPU.
+/// window tries once per device: a window that fell back for another
+/// reason stays on the CPU until a lost device comes back.
 fn upgradeSurface(self: *Compositor, w: *Window) void {
     if (w.vulkan_tried or w.surface != .cpu) return;
     const device = self.vulkanDevice(w.id) orelse return;
@@ -855,6 +915,7 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
         return;
     }
 
+    if (self.vulkan_state == .ready and self.vulkan.?.lost) self.loseVulkan();
     self.upgradeSurface(w);
     const tick = w.tree.tick(t) catch return self.outOfMemory(w);
     const state = self.platform.window(w.id);

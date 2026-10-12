@@ -574,8 +574,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     channel is within 1/255 of the CPU's except one pixel at 2/255.
     Damage-only frames match full CPU frames, and the validation layer
     reports nothing.
-  - Runtime fallback to CPU on `VK_ERROR_DEVICE_LOST` or GPU removal. Device
-    selection on multi-GPU systems follows dma-buf feedback.
+  - Runtime fallback to CPU on `VK_ERROR_DEVICE_LOST` or GPU removal, and
+    back to Vulkan once a device can be created again. Device selection on
+    multi-GPU systems follows dma-buf feedback.
   - Device selection: Vulkan 1.3 with dynamic rendering, synchronization2,
     Wayland presentation, and the FP16 and FP32 render formats. The
     compositor's main device from linux-dmabuf default feedback (the
@@ -621,11 +622,20 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     present mode, and a second is a protocol error. The same will apply to
     wp_color_management_surface_v1 when siv drives HDR (D11) on a Vulkan
     window: the swapchain's color space must say it, not siv.
-  - Fallback: on device loss or any other swapchain failure, the window's
-    swapchain is destroyed and that same frame presents with the CPU
-    renderer; every other window falls back at its next frame, new windows
-    start on the CPU, and the device is not recreated. Verified on sway by
-    marking the device lost mid-run.
+  - Fallback: on any swapchain failure, the window's swapchain is destroyed
+    and that same frame presents with the CPU renderer. On device loss the
+    window that sees it falls back that frame and, at the next frame of
+    any window, every window moves to the CPU renderer and the device is
+    destroyed. The compositor then re-creates it (on its thread, as at
+    start) after 1 s, doubling the wait after each failed attempt up to
+    60 s, and keeps trying: a removed GPU may come back (an eGPU replugged,
+    a driver reloaded), and an attempt a minute is no idle cost worth
+    saving. Once one succeeds, every window switches back at its next
+    frame. A window whose swapchain failed for another reason stays on
+    the CPU until a device is re-created. Verified on sway by marking the
+    device lost mid-run: the window keeps presenting on the CPU, returns
+    to Vulkan after the backoff, and a window opened afterwards starts on
+    Vulkan.
   - Box shadow contract (`render/cpu/shadow.zig`, mirrored by the Vulkan
     shader): each pixel center maps into the layer's coordinates; the
     shadow shape's Gaussian blur is integrated exactly along x (each row of
