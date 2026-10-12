@@ -477,6 +477,19 @@ pub const decls = [_]Decl{
         .{ .name = "masked", .bit = 1, .doc = "A password field (D15): the text lives in locked memory excluded from core dumps, shows one bullet per character, has no undo or input method, and is hidden from assistive technology. Offsets still index the real text." },
     }),
 
+    // Drag and drop (D19).
+    enumeration("siv_drag_action", "What a drop does with the data.", &.{
+        .{ .name = "none", .value = 0, .doc = "Nothing: no target takes it, or the drag was cancelled." },
+        .{ .name = "copy", .value = 1, .doc = "The target copies the data." },
+        .{ .name = "move", .value = 2, .doc = "The target takes the data and the source deletes it." },
+        .{ .name = "ask", .value = 3, .doc = "The target asks the user after the drop (siv_drop_finish)." },
+    }),
+    .{ .flags = .{ .name = "siv_drag_action_flags", .doc = "A set of drag actions.", .since = v0_1, .value_prefix = "SIV_DRAG_ALLOW_", .bits = &.{
+        .{ .name = "copy", .bit = 0, .doc = "Copy." },
+        .{ .name = "move", .bit = 1, .doc = "Move." },
+        .{ .name = "ask", .bit = 2, .doc = "Ask the user after the drop." },
+    } } },
+
     // Events.
     enumeration("siv_event_type", "Kinds of node events, and the kind a siv_on handler receives.", &.{
         .{ .name = "activate", .value = 0, .doc = "Clicked, or Enter or Space while focused. A node with an activate handler can be pressed." },
@@ -485,6 +498,8 @@ pub const decls = [_]Decl{
         .{ .name = "focus", .value = 3, .doc = "The node gained or lost keyboard focus." },
         .{ .name = "scroll", .value = 4, .doc = "Scroll input; bubbles from the node under the pointer. A node with a scroll handler sees scroll input before the compositor scrolls (D8)." },
         .{ .name = "change", .value = 5, .doc = "The user edited an editor's text; text, caret, and anchor have the new state." },
+        .{ .name = "drop", .value = 6, .doc = "A drag over a drop target (siv_set_drop_target), not bubbled: phase enter or move (return true to take the drag here), leave, or drop (data holds the data; return true if the node took it). x and y give the position, mime the type the node gets, action the negotiated action, and actions what the source offers." },
+        .{ .name = "drag", .value = 7, .doc = "A drag the node started (siv_drag_start) progressed, not bubbled: phase move (the target under the pointer changed, SIV_EVENT_ACCEPTED if it takes the data, action the chosen action), drop (dropped on a target that takes it), or end (action is what the target did, none if cancelled; after a move, delete the data)." },
     }),
     enumeration("siv_pointer_phase", "What a pointer event reports.", &.{
         .{ .name = "down", .value = 0, .doc = "A button was pressed." },
@@ -492,7 +507,9 @@ pub const decls = [_]Decl{
         .{ .name = "move", .value = 2, .doc = "The pointer moved." },
         .{ .name = "enter", .value = 3, .doc = "The pointer entered the node." },
         .{ .name = "leave", .value = 4, .doc = "The pointer left the node." },
-        .{ .name = "cancel", .value = 5, .doc = "The press was taken away (a touch sequence the compositor claimed)." },
+        .{ .name = "cancel", .value = 5, .doc = "The press was taken away (a touch sequence the compositor claimed, or a drag started)." },
+        .{ .name = "drop", .value = 6, .doc = "Drop and drag events: the data was dropped." },
+        .{ .name = "end", .value = 7, .doc = "Drag events: the drag ended." },
     }),
     enumeration("siv_button", "A pointer button.", &.{
         .{ .name = "primary", .value = 0, .doc = "Primary (left)." },
@@ -513,6 +530,7 @@ pub const decls = [_]Decl{
         .{ .name = "repeat", .bit = 1, .doc = "Key: an automatic repeat." },
         .{ .name = "gained", .bit = 2, .doc = "Focus: the node gained focus rather than lost it." },
         .{ .name = "visible", .bit = 3, .doc = "Focus: moved by the keyboard, so it should be visible." },
+        .{ .name = "accepted", .bit = 4, .doc = "Drag: the target under the pointer takes the data." },
     }),
     descriptor("siv_event", "A node event. Filled by siv; fields that do not apply to the type are zero.", &.{
         .{ .name = "window", .type = ref("siv_window"), .doc = "The node's window." },
@@ -529,6 +547,10 @@ pub const decls = [_]Decl{
         f32Field("dy", "Scroll: vertical distance in logical pixels."),
         .{ .name = "caret", .type = .u32, .doc = "Change: caret byte offset." },
         .{ .name = "anchor", .type = .u32, .doc = "Change: selection anchor byte offset." },
+        .{ .name = "mime", .type = .string, .doc = "Drop: the MIME type the node gets. Valid during the call." },
+        .{ .name = "data", .type = array(.u8), .doc = "Drop, phase drop: the dropped data. Valid during the call." },
+        .{ .name = "action", .type = ref("siv_drag_action"), .doc = "Drop and drag: the negotiated action." },
+        .{ .name = "actions", .type = ref("siv_drag_action_flags"), .doc = "Drop: the actions the source offers." },
     }),
     callback("siv_event_fn", "Handles a node event at a safe point on the application's thread (D5). Return true when handled: the event stops bubbling and the default action is skipped.", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node the handler was set on." },
@@ -657,6 +679,24 @@ pub const decls = [_]Decl{
         .{ .name = "height", .type = .u32, .doc = "Height in pixels; at least 1." },
         .{ .name = "stride", .type = .u32, .doc = "Bytes per row; 0 is width * 4." },
         .{ .name = "format", .type = ref("siv_image_format"), .doc = "Default rgba8." },
+    }),
+    descriptor("siv_drop_target_desc", "What a drop target takes (D19).", &.{
+        .{ .name = "mimes", .type = .string, .doc = "MIME types, one per line, preferred first (copied); empty makes the node no drop target." },
+        .{ .name = "actions", .type = ref("siv_drag_action_flags"), .doc = "Actions it takes; 0 is copy." },
+        .{ .name = "preferred", .type = ref("siv_drag_action"), .doc = "The action to ask for when the source offers several; none takes the first of copy, move, and ask both sides allow." },
+    }),
+    flags("siv_drag_flags", "Drag options.", &.{
+        .{ .name = "in_app", .bit = 0, .doc = "Only this application's windows can take the data: other clients see the drag with a private MIME type and never get the data." },
+    }),
+    descriptor("siv_drag_desc", "The data a drag offers, and how.", &.{
+        .{ .name = "mimes", .type = .string, .doc = "MIME types, one per line, preferred first." },
+        .{ .name = "data", .type = array(.u8), .doc = "The data (copied)." },
+        .{ .name = "lengths", .type = array(.usize), .doc = "How many bytes of data each MIME type gets, in order, splitting data; empty gives every type all of data." },
+        .{ .name = "icon", .type = ref("siv_image"), .doc = "Follows the pointer, one image pixel per logical pixel; 0 for none." },
+        .{ .name = "actions", .type = ref("siv_drag_action_flags"), .doc = "Actions the source allows; 0 is copy." },
+        .{ .name = "flags", .type = ref("siv_drag_flags"), .doc = "Options." },
+        f32Field("hotspot_x", "The point of the icon under the pointer, in image pixels."),
+        f32Field("hotspot_y", "The point of the icon under the pointer, in image pixels."),
     }),
     value("siv_text_metrics", "The size of laid-out text.", &.{
         f32Field("width", "Width of the widest line."),
@@ -881,6 +921,21 @@ pub const functions = [_]Function{
         .{ .name = "max_width", .type = .f32, .doc = "Width to wrap at; 0 for none." },
         .{ .name = "style", .type = .{ .desc = "siv_text_style_desc" }, .doc = "Style; NULL for defaults." },
         .{ .name = "metrics", .type = out(ref("siv_text_metrics")), .doc = "The size." },
+    }),
+
+    // Drag and drop (D19).
+    setter("siv_set_drop_target", "Makes a node a drop target: drags carrying one of its MIME types with one of its actions go to its SIV_EVENT_DROP handler, from the topmost node under the pointer up to the nearest such target. Editors take text without one.", &.{.{ .name = "desc", .type = .{ .desc = "siv_drop_target_desc" }, .doc = "What it takes; NULL makes it no drop target." }}),
+    call("siv_drag_start", "Starts a drag from a node while a button or touch press on its window is held, typically from a pointer move handler once the pointer moved far enough. The node gets SIV_EVENT_DRAG events as the drag goes; the node that had the press gets a pointer cancel before this returns. SIV_ERROR_UNAVAILABLE without a press held.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The node the drag starts from." },
+        .{ .name = "desc", .type = .{ .desc = "siv_drag_desc" }, .doc = "The data and options." },
+    }),
+    op("siv_drop_finish", "Ends a drop whose action was ask, once the user chose: copy or move, or none to refuse it. Does nothing if no such drop waits; a new drag over the window refuses a drop still waiting.", &.{
+        window_param,
+        .{ .name = "action", .type = ref("siv_drag_action"), .doc = "The action performed." },
+    }),
+    op("siv_app_set_transfer_limit", "Sets the largest paste or drop accepted, in bytes (16 MiB by default); larger transfers are dropped.", &.{
+        app_param,
+        .{ .name = "bytes", .type = .usize, .doc = "The limit." },
     }),
 
     drawOp("siv_draw_status", "The drawing's first error, or SIV_OK. After an error every drawing call does nothing and the canvas shows nothing this frame.", &.{}),

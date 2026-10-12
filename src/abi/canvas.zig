@@ -717,7 +717,7 @@ pub export fn siv_app_measure_text(app: t.App, str: ?[*]const u8, str_len: usize
 
 // Images ----------------------------------------------------------------------
 
-fn imageOf(self: *App, image: t.Image) Error!*ui.Image {
+pub fn imageOf(self: *App, image: t.Image) Error!*ui.Image {
     const index = try self.root.handles.get(@backingInt(image), image_tag);
     return self.images.items[index] orelse error.InvalidHandle;
 }

@@ -24,12 +24,14 @@ pub const tree = @import("tree.zig");
 pub const canvas = @import("canvas.zig");
 /// External content: submitted frames and embedder surfaces.
 pub const external = @import("external.zig");
+/// Drag and drop.
+pub const dnd = @import("dnd.zig");
 
 /// The generated wrapper's types, which the exports use.
 pub const types = t;
 
 /// The files that export schema functions.
-const implementations = .{ @This(), application, tree, canvas, external };
+const implementations = .{ @This(), application, tree, canvas, external, dnd };
 
 const version = build_options.version;
 

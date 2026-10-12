@@ -20,6 +20,7 @@ const scene = @import("scene");
 const platform = @import("platform");
 const runtime = @import("runtime.zig");
 const application = @import("application.zig");
+const dnd = @import("dnd.zig");
 
 const App = application.App;
 const Window = application.Window;
@@ -624,6 +625,8 @@ fn setHandler(w: *Window, node: t.Node, kind: t.EventType, callback: ?t.EventFn,
         .focus => .focus,
         .scroll => .scroll,
         .change => .change,
+        .drop => .drop,
+        .drag => .drag,
         _ => unreachable,
     };
     try w.txn.undo.ensureUnusedCapacity(w.owner.gpa(), 1);
@@ -646,7 +649,8 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
         .focus => .focus,
         .scroll => .scroll,
         .change => .change,
-        .drop, .drag => return false,
+        .drop => .drop,
+        .drag => .drag,
     };
     const cb = w.nodes.slot(id, hk).* orelse return false;
     var ev: t.Event = .{ .window = @fromBackingInt(w.handle), .type = switch (hk) {
@@ -656,7 +660,8 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
         .focus => .focus,
         .scroll => .scroll,
         .change => .change,
-        .drop, .drag => unreachable,
+        .drop => .drop,
+        .drag => .drag,
     } };
     switch (event.*) {
         .activate => {},
@@ -699,7 +704,31 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
             ev.caret = s.caret;
             ev.anchor = s.anchor;
         },
-        .drop, .drag => unreachable,
+        .drop => |d| {
+            ev.phase = switch (d.phase) {
+                .enter => .enter,
+                .move => .move,
+                .leave => .leave,
+                .drop => .drop,
+            };
+            ev.x = d.x;
+            ev.y = d.y;
+            ev.mime = d.mime.ptr;
+            ev.mime_len = d.mime.len;
+            ev.data = d.data.ptr;
+            ev.data_count = d.data.len;
+            ev.action = dnd.actionTo(d.action);
+            ev.actions = dnd.actionsTo(d.source_actions);
+        },
+        .drag => |d| {
+            ev.phase = switch (d.phase) {
+                .move => .move,
+                .drop => .drop,
+                .end => .end,
+            };
+            ev.action = dnd.actionTo(d.action);
+            ev.flags = .{ .accepted = d.accepted };
+        },
     }
     const self = w.owner;
     self.enter();
