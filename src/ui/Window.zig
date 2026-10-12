@@ -68,6 +68,10 @@ theme_choice: theme.Theme = .{},
 palette: theme.Palette = .{},
 /// The last shown modal node, from the last semantics rebuild.
 modal: NodeId = .none,
+/// Scroll nodes with viewport handlers (some may be gone), and whether
+/// layout changed one's viewport since it was last told.
+viewports: std.ArrayList(NodeId) = .empty,
+viewport_dirty: bool = false,
 /// The application's clipboard, if it has one.
 clipboard: ?*Clipboard = null,
 /// Drag-and-drop requests; without them drags neither start nor drop.
@@ -239,6 +243,8 @@ pub const State = struct {
     chunk_layer: u32 = paint_mod.no_layer,
     /// What the node painted last, in its layer's coordinates.
     bounds: Rect = Rect.empty,
+    /// Scroll nodes with a viewport handler: what it was last told.
+    viewport: ?node_mod.Viewport = null,
 };
 
 pub fn init(gpa: std.mem.Allocator, options: Options) Error!*Window {
@@ -304,6 +310,7 @@ fn deinitStorage(win: *Window) void {
     win.input.deinit(win.gpa);
     win.ime.deinit(win.gpa);
     win.semantics.deinit(win.gpa);
+    win.viewports.deinit(win.gpa);
     win.scratch.deinit();
 }
 
@@ -469,7 +476,7 @@ pub fn markLayers(win: *Window) void {
 pub fn needsFrame(win: *const Window) bool {
     // Semantics alone need no frame: they rebuild on query or with the
     // next frame (`semanticsTree`), so scrolling makes no extra frames.
-    return win.state(.root).needs_layout or win.dirty.layers or win.dirty.props or
+    return win.state(.root).needs_layout or win.dirty.layers or win.dirty.props or win.viewport_dirty or
         win.paint.anyDirty() or win.pending_input.items.len != 0 or win.ime.dirty or win.pending_edits.items.len != 0 or
         win.dnd.pending != null;
 }
@@ -523,8 +530,14 @@ pub fn frame(win: *Window) Error!void {
     win.recycleDead();
     win.replayInput();
     if (win.txn.open) return;
+    // Rows a viewport handler adds are laid out in this frame.
+    win.viewport_dirty = false;
+    win.deliverViewports();
+    if (win.txn.open) return;
     defer _ = win.scratch.reset(.retain_capacity);
+    const laid_out = win.state(.root).needs_layout;
     try layout.run(win);
+    if (laid_out) win.checkViewports();
     if (win.dirty.layers) {
         try win.paint.assign(win);
         win.dirty.layers = false;
@@ -541,6 +554,57 @@ pub fn frame(win: *Window) Error!void {
     // The tree may have changed under a pointer that did not move.
     input_mod.updateCursor(win);
     win.stats.frames += 1;
+}
+
+/// The node's visible region: its logical scroll offset and the size of
+/// its content box.
+pub fn viewportOf(win: *const Window, id: NodeId) node_mod.Viewport {
+    const n = win.node(id);
+    const s = win.state(id);
+    const pad = n.layout.padding;
+    return .{
+        .x = n.data.scroll.offset.x,
+        .y = n.data.scroll.offset.y,
+        .width = @max(0, s.size.w - pad.horizontal()),
+        .height = @max(0, s.size.h - pad.vertical()),
+    };
+}
+
+/// Tells viewport handlers whose node's visible region changed since
+/// they were last told. Handlers run here (D5: a safe point, like replayed
+/// input) and may change the tree.
+pub fn deliverViewports(win: *Window) void {
+    var i: usize = 0;
+    while (i < win.viewports.items.len) {
+        const id = win.viewports.items[i];
+        if (!win.isLive(id) or win.node(id).kind != .scroll or win.node(id).handler(.viewport) == null) {
+            _ = win.viewports.swapRemove(i);
+            continue;
+        }
+        i += 1;
+        // Not laid out yet: there is no viewport to tell of.
+        if (!win.isShown(id) or win.state(id).final == null) continue;
+        const v = win.viewportOf(id);
+        const s = win.state(id);
+        if (s.viewport) |old| if (std.meta.eql(old, v)) continue;
+        s.viewport = v;
+        input_mod.callHandler(win, id, .viewport, &.{ .viewport = v });
+        if (win.txn.open) return;
+    }
+}
+
+/// After layout: a viewport that changed size is told at the next frame.
+fn checkViewports(win: *Window) void {
+    for (win.viewports.items) |id| {
+        if (!win.isLive(id) or win.node(id).kind != .scroll or !win.isShown(id)) continue;
+        const old = win.state(id).viewport orelse {
+            win.viewport_dirty = true;
+            continue;
+        };
+        const v = win.viewportOf(id);
+        if (old.width != v.width or old.height != v.height) win.viewport_dirty = true;
+    }
+    if (win.viewport_dirty) win.requestFrame();
 }
 
 /// Delivers input queued behind a transaction, in order, until a handler
@@ -894,6 +958,7 @@ fn scrolled(win: *Window, layer: compositor.LayerId, offset: Point, seq: u64) vo
     l.scroll_offset = offset;
     win.node(l.owner).data.scroll.offset = paint_mod.logicalScroll(win, l.owner, offset);
     win.dirty.semantics = true;
+    if (win.node(l.owner).handler(.viewport) != null and !win.txn.open) win.deliverViewports();
 }
 
 fn onFontsLoaded(ctx: *anyopaque) void {

@@ -191,6 +191,11 @@ pub fn toLocal(win: *const Window, id: NodeId, p: Point) Point {
 
 // Dispatch -------------------------------------------------------------------
 
+/// Calls a node's handler for one kind, if it has one.
+pub fn callHandler(win: *Window, id: NodeId, kind: node_mod.HandlerKind, event: *const Event) void {
+    _ = call(win, id, kind, event);
+}
+
 fn call(win: *Window, id: NodeId, kind: node_mod.HandlerKind, event: *const Event) bool {
     const h = win.node(id).handler(kind) orelse return false;
     return h.func(h.user, win, id, event);

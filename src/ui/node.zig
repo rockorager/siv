@@ -310,6 +310,13 @@ pub const Semantics = struct {
     level: u8 = 0,
     /// While shown, input and focus stay inside it (dialogs).
     modal: bool = false,
+    /// An item's 1-based position among its set and the set's size, for
+    /// items whose siblings are not all in the tree (virtualized views);
+    /// 0 for none.
+    position: u32 = 0,
+    set_size: u32 = 0,
+    /// A table row's 1-based index among all rows; 0 for none.
+    row: u32 = 0,
 };
 
 pub const Axis = enum(u8) { row, column };
@@ -618,11 +625,18 @@ pub const Event = union(enum) {
     /// Assistive technology asks for a new value of a node with a range
     /// (delivered to the node only). The handler applies it, or not.
     set_value: f64,
+    /// A scroll node's visible region changed: its logical offset or its
+    /// viewport's size (delivered to the node only, at a safe point after
+    /// the compositor scrolled it or at the start of the frame after
+    /// layout changed it).
+    viewport: Viewport,
 };
+
+pub const Viewport = struct { x: f32, y: f32, width: f32, height: f32 };
 
 /// `select` and `close` are never sent by the tree: widgets built on the C
 /// API emit them (`siv_emit`).
-pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll, change, drop, drag, set_value, select, close };
+pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll, change, drop, drag, set_value, select, close, viewport };
 
 /// Runs at a safe point on the UI thread (D5). Returns true when it handled
 /// the event, which stops it bubbling and suppresses the default action.

@@ -51,6 +51,11 @@ pub const Node = struct {
     modal: bool = false,
     /// An empty editor's placeholder text.
     placeholder: []const u8 = "",
+    /// Position in a set and its size, and a table row's index, 1-based;
+    /// 0 for none.
+    position: u32 = 0,
+    set_size: u32 = 0,
+    row: u32 = 0,
 };
 
 pub const Tree = struct {
@@ -157,6 +162,9 @@ pub const Tree = struct {
                 .masked = n.kind == .editor and n.data.editor.editor.masked,
                 .level = sem.level,
                 .modal = sem.modal,
+                .position = sem.position,
+                .set_size = sem.set_size,
+                .row = sem.row,
                 .placeholder = if (n.kind == .editor) n.data.editor.placeholder else "",
             });
         }

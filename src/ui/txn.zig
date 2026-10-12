@@ -376,6 +376,10 @@ pub const Txn = struct {
     pub fn on(t: *Txn, id: NodeId, kind: node_mod.HandlerKind, handler: ?node_mod.Handler) Error!void {
         const n = try t.live(id);
         try t.reserve();
+        if (kind == .viewport and handler != null) {
+            if (std.mem.indexOfScalar(NodeId, t.win.viewports.items, id) == null) try t.win.viewports.append(t.win.gpa, id);
+            t.win.state(id).viewport = null;
+        }
         t.touch(id);
         n.handlers[@intFromEnum(kind)] = handler;
         // Scroll handlers decide which scroll input the UI sees first.
