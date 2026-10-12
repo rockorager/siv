@@ -10,6 +10,8 @@ const std = @import("std");
 pub const line_break = @import("line_break.zig");
 pub const segmentation = @import("segmentation.zig");
 pub const Boundaries = @import("boundaries.zig");
+pub const bidi = @import("bidi.zig");
+pub const script = @import("script.zig");
 
 test {
     std.testing.refAllDecls(@This());
