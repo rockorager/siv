@@ -524,7 +524,9 @@ test "external content: a subsurface when unobstructed, composited otherwise" {
     };
     try testing.expect(released);
 
-    // Something drawn over part of it: composited into the window.
+    // Something drawn over part of it (video controls): the subsurface
+    // goes below the window, which is transparent over it except for the
+    // overlay.
     _ = try h.comp.commit(id, &.{
         .{ .create = 3 },
         .{ .insert = .{ .layer = 3, .parent = 1 } },
@@ -532,15 +534,31 @@ test "external content: a subsurface when unobstructed, composited otherwise" {
     });
     try h.runMs(20);
     subs = hl.subsurfaces(id);
-    try testing.expect(!subs[0].?.visible);
-    try testing.expectEqual(bgra_blue, h.pixel(id, 20, 20));
+    try testing.expect(subs[0].?.visible and subs[0].?.below);
+    try testing.expectEqual([4]u8{ 0, 0, 0, 0 }, h.pixel(id, 20, 20));
     try testing.expectEqual(bgra_red, h.pixel(id, 45, 35));
+    try testing.expectEqual(bgra_white, h.pixel(id, 5, 5));
 
-    // Unobstructed again but translucent: still composited.
+    // Cropped by a rectangular clip: the viewport shows the visible part.
     _ = try h.comp.commit(id, &.{
         .{ .destroy = 3 },
-        .{ .set_opacity = .{ .layer = 2, .opacity = 0.5 } },
+        .{ .set_clip = .{ .layer = 2, .clip = .{ .rect = .xywh(0, 0, 20, 30) } } },
     });
+    try h.runMs(20);
+    subs = hl.subsurfaces(id);
+    try testing.expect(subs[0].?.visible and !subs[0].?.below);
+    try testing.expectEqual(platform.Rect{ .x = 10, .y = 10, .width = 20, .height = 30 }, subs[0].?.rect);
+    try testing.expectEqual(@as(f32, 20), subs[0].?.source.?.width);
+    try testing.expectEqual(@as(f32, 30), subs[0].?.source.?.height);
+    // A rounded clip cannot be cropped that way: composited.
+    _ = try h.comp.commit(id, &.{.{ .set_clip = .{ .layer = 2, .clip = .{ .rect = .xywh(0, 0, 40, 30), .radii = .uniform(8, 8) } } }});
+    try h.runMs(20);
+    try testing.expect(!hl.subsurfaces(id)[0].?.visible);
+    try testing.expectEqual(bgra_blue, h.pixel(id, 20, 20));
+    _ = try h.comp.commit(id, &.{.{ .set_clip = .{ .layer = 2, .clip = null } }});
+
+    // Translucent: composited.
+    _ = try h.comp.commit(id, &.{.{ .set_opacity = .{ .layer = 2, .opacity = 0.5 } }});
     try h.runMs(20);
     try testing.expect(!hl.subsurfaces(id)[0].?.visible);
     const px = h.pixel(id, 20, 20);

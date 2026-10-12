@@ -51,6 +51,7 @@ pub const surface = @import("surface.zig");
 /// composition, animation, scroll routing), single-threaded. For tests
 /// that want those rules without a compositor thread.
 pub const Tree = @import("tree.zig").Tree;
+pub const tree = @import("tree.zig");
 pub const Route = @import("tree.zig").Route;
 
 test {

@@ -42,10 +42,12 @@ pub const Mapped = struct {
     }
 };
 
+const Mode = enum { composited, above, below };
+
 const External = struct {
     frame: ?Mapped = null,
     sub: ?platform.SubsurfaceId = null,
-    promoted: bool = false,
+    mode: Mode = .composited,
     /// What the subsurface was last told.
     shown: platform.SubsurfaceState = .{},
     seen: bool = false,
@@ -113,16 +115,20 @@ pub const Externals = struct {
         return true;
     }
 
-    /// Composition draws only frames that are not on a subsurface.
+    /// Composition draws frames that are not on a subsurface, and holes
+    /// for those below the window.
     pub fn resolver(e: *Externals) tree_mod.Externals {
-        return .{ .ctx = e, .image = image };
+        return .{ .ctx = e, .draw = draw };
     }
 
-    fn image(ctx: *anyopaque, id: ExternalId) ?scene.ImageRef {
+    fn draw(ctx: *anyopaque, id: ExternalId) tree_mod.Draw {
         const e: *Externals = @ptrCast(@alignCast(ctx));
-        const x = e.get(id) orelse return null;
-        if (x.promoted) return null;
-        return if (x.frame) |m| m.image() else null;
+        const x = e.get(id) orelse return .none;
+        return switch (x.mode) {
+            .above => .none,
+            .below => .hole,
+            .composited => if (x.frame) |m| .{ .image = m.image() } else .none,
+        };
     }
 
     /// Decides promotion for this frame and updates the subsurfaces.
@@ -136,15 +142,22 @@ pub const Externals = struct {
         var changed = false;
         for (e.found.items) |f| {
             const x = e.get(f.id) orelse continue;
-            // One external shown twice is composited.
-            const want = f.promotable and x.frame != null and !x.seen;
+            // Above the window when nothing covers it; below with a hole
+            // when something does (the frames are opaque). One external
+            // shown twice is composited.
+            const mode: Mode = if (!f.promotable or x.frame == null or x.seen) .composited else if (f.covered) .below else .above;
             x.seen = true;
-            if (want != x.promoted) t.touchExternal(f.id);
-            x.promoted = want;
-            if (!want) continue;
+            if (mode != x.mode) t.touchExternal(f.id);
+            x.mode = mode;
+            if (mode == .composited) continue;
+            const fw: f32 = @floatFromInt(x.frame.?.frame.width);
+            const fh: f32 = @floatFromInt(x.frame.?.frame.height);
+            const cropped = !f.visible.eql(f.rect);
             const state: platform.SubsurfaceState = .{
                 .visible = true,
-                .rect = round(f.rect),
+                .rect = round(f.visible),
+                .below = mode == .below,
+                .source = if (cropped) .{ .x = f.source.x0 * fw, .y = f.source.y0 * fh, .width = f.source.width() * fw, .height = f.source.height() * fh } else null,
                 .frame = .{
                     .fd = x.frame.?.frame.fd,
                     .offset = x.frame.?.frame.offset,
@@ -156,7 +169,7 @@ pub const Externals = struct {
             };
             if (x.sub == null) x.sub = p.createSubsurface(window) catch {
                 // Without a subsurface, composite it.
-                x.promoted = false;
+                x.mode = .composited;
                 t.touchExternal(f.id);
                 continue;
             };
@@ -167,10 +180,10 @@ pub const Externals = struct {
             }
         }
         for (e.items.items, 0..) |*item, i| if (item.*) |*x| {
-            const keep = x.seen and x.promoted;
+            const keep = x.seen and x.mode != .composited;
             if (!keep) {
-                if (x.promoted) t.touchExternal(@intCast(i + 1));
-                x.promoted = false;
+                if (x.mode != .composited) t.touchExternal(@intCast(i + 1));
+                x.mode = .composited;
                 if (x.sub != null and x.shown.visible) {
                     x.shown = .{};
                     p.setSubsurface(window, x.sub.?, &x.shown) catch {};

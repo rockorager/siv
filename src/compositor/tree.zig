@@ -77,13 +77,23 @@ pub const Route = union(enum) {
     scroll: LayerId,
 };
 
+/// How composition draws an external.
+pub const Draw = union(enum) {
+    /// Nothing: on a subsurface above the window, or no frame yet.
+    none,
+    /// Composite this frame.
+    image: scene.ImageRef,
+    /// On a subsurface below the window: clear the window to transparent
+    /// there, so that the subsurface shows through and what is painted
+    /// later (video controls) composites over it.
+    hole,
+};
+
 /// How composition draws external content: the compositor decides which
 /// externals are on subsurfaces (promoted) and maps the others' frames.
 pub const Externals = struct {
     ctx: *anyopaque,
-    /// The current frame of an external to composite, or null to draw
-    /// nothing (promoted to a subsurface, or no frame yet).
-    image: *const fn (ctx: *anyopaque, id: update.ExternalId) ?scene.ImageRef,
+    draw: *const fn (ctx: *anyopaque, id: update.ExternalId) Draw,
 };
 
 /// An external's placement in the window, from `externalPlacements`.
@@ -92,9 +102,16 @@ pub const Found = struct {
     layer: LayerId,
     /// In surface (logical) coordinates.
     rect: Rect,
-    /// Axis-aligned, fully opaque, inside rectangular clips, and nothing
-    /// painted over it: a subsurface can show it.
+    /// The part the clips leave visible, in surface coordinates.
+    visible: Rect,
+    /// That part as a fraction of the content (0..1 on each axis).
+    source: Rect,
+    /// Axis-aligned with positive scale, fully opaque, and clipped only by
+    /// rectangles, with something left visible: a subsurface can show it.
     promotable: bool,
+    /// Something painted later overlaps it: a subsurface must go below the
+    /// window, with a hole punched in the window's pixels.
+    covered: bool,
 };
 
 pub const Tree = struct {
@@ -549,8 +566,8 @@ pub const Tree = struct {
     /// placed before it.
     fn occlude(out: []Found, r: Rect) void {
         if (r.isEmpty()) return;
-        for (out) |*f| if (!f.rect.intersect(r).isEmpty()) {
-            f.promotable = false;
+        for (out) |*f| if (!f.visible.intersect(r).isEmpty()) {
+            f.covered = true;
         };
     }
 
@@ -567,14 +584,24 @@ pub const Tree = struct {
         if (l.content) |c| occlude(out.items, m.applyRect(c.list.bounds).intersect(clip));
         if (l.external) |pl| {
             const r = m.applyRect(pl.rect);
-            occlude(out.items, r.intersect(clip));
-            const inside = clip.intersect(r).eql(r);
+            const visible = r.intersect(clip);
+            occlude(out.items, visible);
+            const shown = !visible.isEmpty() and r.width() > 0 and r.height() > 0;
             try out.append(t.gpa, .{
                 .id = pl.id,
                 .layer = id,
                 .rect = r,
-                // Rounded or rotated clips could cut it: composite instead.
-                .promotable = m.b == 0 and m.c == 0 and m.a > 0 and m.d > 0 and opacity >= 1 and inside and !round,
+                .visible = if (shown) visible else Rect.empty,
+                .source = if (shown) .{
+                    .x0 = (visible.x0 - r.x0) / r.width(),
+                    .y0 = (visible.y0 - r.y0) / r.height(),
+                    .x1 = (visible.x1 - r.x0) / r.width(),
+                    .y1 = (visible.y1 - r.y0) / r.height(),
+                } else Rect.empty,
+                // Rectangular clips crop through the viewport; rounded or
+                // rotated ones would cut it: composite instead.
+                .promotable = m.b == 0 and m.c == 0 and m.a > 0 and m.d > 0 and opacity >= 1 and shown and !round,
+                .covered = false,
             });
         }
         var cm = m;
@@ -650,13 +677,23 @@ pub const Tree = struct {
             }
             t.include(c.list.bounds);
         }
-        if (l.external) |pl| if (t.externals) |ext| if (ext.image(ext.ctx, pl.id)) |img| {
-            try out.append(t.gpa, .{ .image = .{
-                .image = img,
-                .src = .xywh(0, 0, @floatFromInt(img.width), @floatFromInt(img.height)),
-                .dst = pl.rect,
-            } });
-            t.include(pl.rect);
+        if (l.external) |pl| if (t.externals) |ext| switch (ext.draw(ext.ctx, pl.id)) {
+            .none => {},
+            .image => |img| {
+                try out.append(t.gpa, .{ .image = .{
+                    .image = img,
+                    .src = .xywh(0, 0, @floatFromInt(img.width), @floatFromInt(img.height)),
+                    .dst = pl.rect,
+                } });
+                t.include(pl.rect);
+            },
+            // Enclosing clips limit the hole to the visible part.
+            .hole => {
+                try t.push(out, .{ .blend = .src, .clip = .{ .shape = .{ .rect = pl.rect } } });
+                try out.append(t.gpa, .{ .fill = .{ .shape = .{ .rect = pl.rect }, .paint = .color(.transparent) } });
+                t.include(pl.rect);
+                try t.pop(out);
+            },
         };
         if (l.scroll) |s| {
             try t.push(out, .{
