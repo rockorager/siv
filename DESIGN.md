@@ -597,11 +597,31 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     Down keep a preferred x. A single-line editor scrolls its text to
     keep the caret in view and drops line breaks from typed text.
   - User edits commit through their own transaction and then send the
-    editor a `change` event; while the application holds a transaction
-    open, edits are dropped rather than mixed into it.
-  - Not built yet: text-input-v3 (needs the compositor's `post`, D8),
-    undo, masked fields, caret blinking (a compositor opacity animation
-    of a caret layer), and selection by double click.
+    editor a `change` event. User input is never lost: input that arrives
+    while the application holds a transaction open, and input queued
+    behind it, waits and is replayed in order at the start of the next
+    frame, before layout.
+  - Undo and redo (Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y) keep up to 100 steps
+    per editor. Typing merges into one step per word, and runs of
+    Backspace or Delete merge; undo restores the selection the edit
+    replaced. The history belongs to the text it was recorded on: each
+    text change bumps the editor's revision, and text the application
+    sets makes the history stale, so it is dropped.
+  - Masked editors keep their text in their own mmap'd pages, locked
+    (`mlock`), excluded from core dumps (`MADV_DONTDUMP`), wiped in forked
+    children, and zeroed before unmapping; edits assemble the new text in
+    such pages, and queued key events are zeroed after replay. They show
+    one bullet per code point, so offsets index the bullets. No undo, no
+    word-wise movement or deletion (it would reveal word breaks), and the
+    semantics tree exposes neither the value nor caret offsets. A memlock
+    limit too small for the text is an allocation failure.
+  - The focused editor roots a layer whose child layer holds the caret,
+    so moving the caret is a transform. Each caret change shows it solid
+    and starts a compositor opacity animation that blinks for 10 s and
+    ends visible, so an idle window makes no wakeups (D25); with reduced
+    motion the caret does not blink.
+  - Not built yet: selection by double click, and the text-input-v3 path
+    on `Compositor.post`.
 
 ### D16. Input
 
