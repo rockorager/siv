@@ -40,6 +40,7 @@ const ui = @import("ui");
 const desktop_mod = @import("desktop.zig");
 const a11y = @import("a11y");
 pub const portals = @import("portals.zig");
+pub const lifecycle = @import("lifecycle.zig");
 
 const Loop = loop_mod.Loop;
 const Compositor = compositor.Compositor;
@@ -123,6 +124,7 @@ pub const App = struct {
     /// The AT-SPI bridge runs on the session bus.
     accessible: bool = false,
     portals: portals.Portals = .{},
+    lifecycle: lifecycle.Lifecycle = .{},
     app_id: platform.BoundedString(255) = .{},
     quit_requested: bool = false,
     /// Reported by the next `dispatch`. Unavailable stays.
@@ -152,7 +154,9 @@ pub const App = struct {
         errdefer app.clipboard.deinit();
         // The bus handshake and the settings read proceed while the
         // compositor connects to Wayland below.
-        if (options.desktop_settings or options.accessibility or options.bus_fd != null) app.desktop.start(app, options.bus_address, options.bus_fd, options.desktop_settings, options.app_id);
+        // An application id means portals and D-Bus activation, on any
+        // backend.
+        if (options.desktop_settings or options.accessibility or options.bus_fd != null or options.app_id.len > 0) app.desktop.start(app, options.bus_address, options.bus_fd, options.desktop_settings, options.app_id);
         errdefer app.desktop.deinit(app);
         app.portals.start(app);
         errdefer app.portals.deinit(app);
@@ -188,6 +192,7 @@ pub const App = struct {
             for (app.windows.items) |w| if (w) |win| app.bridge.removeWindow(win.a11y_id);
             app.bridge.deinit();
         }
+        app.lifecycle.deinit(app);
         app.portals.deinit(app);
         app.desktop.deinit(app);
         for (app.windows.items) |w| if (w) |win| win.free();
@@ -326,6 +331,11 @@ pub const App = struct {
             }
             uw.requestFrame();
         };
+    }
+
+    /// Single instance and D-Bus activation (lifecycle.zig).
+    pub fn launch(app: *App, options: lifecycle.LaunchOptions, handler: lifecycle.Handler) lifecycle.Error!void {
+        return lifecycle.launch(app, options, handler);
     }
 
     /// Registers (or replaces) the action `name`, which the desktop can
@@ -735,6 +745,18 @@ pub const Window = struct {
                 p.beginResize(id, a.seat, a.serial, a.edge);
             }
         }.f, Arg{ .seat = win.ui.input.seat, .serial = win.ui.input.press_serial, .edge = edge });
+    }
+
+    /// Focuses the window with an xdg-activation token another
+    /// application passed on (an activation's token); applied once the
+    /// window is mapped.
+    pub fn activate(win: *Window, token: []const u8) Allocator.Error!void {
+        if (token.len == 0) return;
+        try win.platformCall(struct {
+            fn f(p: platform.Platform, id: WindowId, t: []const u8) void {
+                p.activate(id, t);
+            }
+        }.f, token);
     }
 
     pub fn setMaximized(win: *Window, on: bool) Allocator.Error!void {

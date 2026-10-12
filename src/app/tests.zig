@@ -227,6 +227,8 @@ const BusThread = struct {
     thread: std.Thread = undefined,
     stop_flag: std.atomic.Value(bool) = .init(false),
     running: bool = false,
+    /// A second client socket, made before the thread starts.
+    second_fd: i32 = -1,
 
     /// Starts the bus and returns a socket for the application.
     fn start(b: *BusThread) !i32 {
@@ -237,6 +239,7 @@ const BusThread = struct {
         try b.frontend.start();
         while (!b.frontend.owns()) try b.loop.dispatch(10);
         const fd = try b.bus.connect();
+        b.second_fd = try b.bus.connect();
         b.thread = try std.Thread.spawn(.{}, run, .{b});
         b.running = true;
         return fd;
@@ -443,4 +446,105 @@ test "portal calls go out on the application's bus with the window's parent" {
 
     const call = bt.frontend.find("OpenFile").?;
     try testing.expectEqualStrings("wayland:headless-0", call.firstString());
+}
+
+// Lifecycle (D19) -------------------------------------------------------------
+
+const lifecycle = app_mod.lifecycle;
+
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+
+const Activations = struct {
+    count: u32 = 0,
+    kind: lifecycle.Kind = .activate,
+    remote: bool = false,
+    token: [32]u8 = undefined,
+    token_len: usize = 0,
+    uri: [32]u8 = undefined,
+    uri_len: usize = 0,
+
+    fn cb(ctx: ?*anyopaque, a: *const lifecycle.Activation) void {
+        const r: *Activations = @ptrCast(@alignCast(ctx));
+        r.count += 1;
+        r.kind = a.kind;
+        r.remote = a.remote;
+        @memcpy(r.token[0..a.token.len], a.token);
+        r.token_len = a.token.len;
+        if (a.uris.len > 0) {
+            @memcpy(r.uri[0..a.uris[0].len], a.uris[0]);
+            r.uri_len = a.uris[0].len;
+        }
+    }
+};
+
+fn lifecycleApp(fd: i32) !*App {
+    return App.create(testing.allocator, .{
+        .backend = .headless,
+        .system_fonts = false,
+        .threads = 1,
+        .desktop_settings = false,
+        .accessibility = false,
+        .bus_fd = fd,
+        .app_id = "org.example.Life",
+    });
+}
+
+test "the first instance activates; a second forwards its URIs and token to it" {
+    var bt: BusThread = .{};
+    const fd = try bt.start();
+    defer bt.deinit();
+    _ = setenv("XDG_ACTIVATION_TOKEN", "launch-token", 1);
+
+    const first = try lifecycleApp(fd);
+    defer first.destroy();
+    var acts: Activations = .{};
+    try first.launch(.{}, .{ .ctx = &acts, .func = Activations.cb });
+    // Not inside launch.
+    try testing.expectEqual(@as(u32, 0), acts.count);
+    try runUntil(first, &acts, struct {
+        fn f(a: *Activations) bool {
+            return a.count == 1;
+        }
+    }.f);
+    try testing.expectEqual(lifecycle.Role.primary, first.lifecycle.role);
+    try testing.expectEqual(lifecycle.Kind.activate, acts.kind);
+    try testing.expect(!acts.remote);
+    try testing.expectEqualStrings("launch-token", acts.token[0..acts.token_len]);
+    // Taken from the environment so that children do not reuse it.
+    try testing.expect(std.c.getenv("XDG_ACTIVATION_TOKEN") == null);
+    try testing.expectError(error.Busy, first.launch(.{}, .{ .func = Activations.cb }));
+
+    _ = setenv("XDG_ACTIVATION_TOKEN", "second-token", 1);
+    const second = try lifecycleApp(bt.second_fd);
+    defer second.destroy();
+    var none: Activations = .{};
+    try second.launch(.{ .uris = &.{"file:///tmp/x.txt"} }, .{ .ctx = &none, .func = Activations.cb });
+    const deadline = Loop.now() + 10 * std.time.ns_per_s;
+    while (!second.quit_requested) {
+        if (Loop.now() > deadline) return error.Timeout;
+        try first.dispatch(2);
+        try second.dispatch(2);
+    }
+    try runUntil(first, &acts, struct {
+        fn f(a: *Activations) bool {
+            return a.count == 2;
+        }
+    }.f);
+    try testing.expectEqual(lifecycle.Role.secondary, second.lifecycle.role);
+    try testing.expectEqual(@as(u32, 0), none.count);
+    try testing.expectEqual(lifecycle.Kind.open, acts.kind);
+    try testing.expect(acts.remote);
+    try testing.expectEqualStrings("file:///tmp/x.txt", acts.uri[0..acts.uri_len]);
+    try testing.expectEqualStrings("second-token", acts.token[0..acts.token_len]);
+}
+
+test "without an application id every launch is primary, and services wait" {
+    const app = try create(true);
+    defer app.destroy();
+    var acts: Activations = .{};
+    try app.launch(.{ .service = true }, .{ .ctx = &acts, .func = Activations.cb });
+    try testing.expectEqual(lifecycle.Role.primary, app.lifecycle.role);
+    for (0..5) |_| try app.dispatch(1);
+    // Started by D-Bus activation: nothing until the desktop calls.
+    try testing.expectEqual(@as(u32, 0), acts.count);
 }
