@@ -93,6 +93,34 @@ pub const Sink = struct {
     func: *const fn (ctx: ?*anyopaque, event: *const Event) void,
 };
 
+/// Presentation timing of a window, for the inspector (D24) and latency
+/// measurements.
+pub const FrameStats = struct {
+    /// Frames presented.
+    frames: u64 = 0,
+    /// Predicted presentation times of the most recent frames, oldest
+    /// first within the ring; `frames % history.len` is the next slot.
+    history: [128]u64 = @splat(0),
+
+    pub fn last(s: *const FrameStats) u64 {
+        if (s.frames == 0) return 0;
+        return s.history[(s.frames - 1) % s.history.len];
+    }
+};
+
+/// A window's frame statistics. Compositor thread only (inside `call`).
+pub fn frameStats(self: *Compositor, id: WindowId) ?FrameStats {
+    const w = self.getWindow(id) orelse return null;
+    return w.stats;
+}
+
+/// A layer's scroll offset as last composed. Compositor thread only.
+pub fn scrollOffset(self: *Compositor, id: WindowId, layer: LayerId) ?Point {
+    const w = self.getWindow(id) orelse return null;
+    const l = w.tree.get(layer) orelse return null;
+    return l.offset;
+}
+
 /// Code run on the compositor thread by `post` and `call`. It may use
 /// `compositor.platform`, e.g. for Wayland requests the UI owns logically.
 pub const Func = *const fn (ctx: ?*anyopaque, compositor: *Compositor) void;
@@ -143,6 +171,7 @@ const Window = struct {
     /// wait for the UI's layout for it.
     size_serial: u64 = 0,
     size: platform_mod.Size = .{},
+    stats: FrameStats = .{},
     /// Retries a frame when no buffer was free, or starts delayed
     /// animations.
     timer: Timer = .{ .func = onWindowTimer },
@@ -567,7 +596,12 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
         self.outbox.push(.{ .animation_finished = .{ .window = w.id, .layer = fin.layer, .id = fin.id, .property = fin.property } });
     }
     w.tree.finished.clearRetainingCapacity();
-    if (presented and w.seq > w.presented_seq) {
+    if (presented) {
+        w.stats.history[w.stats.frames % w.stats.history.len] = t;
+        w.stats.frames += 1;
+    }
+    // A commit that changed nothing visible is on screen already.
+    if (w.seq > w.presented_seq and (presented or damage.len == 0)) {
         w.presented_seq = w.seq;
         self.outbox.push(.{ .presented = .{ .window = w.id, .seq = w.seq, .present_ns = t } });
     }

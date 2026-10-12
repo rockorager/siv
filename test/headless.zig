@@ -16,4 +16,6 @@ test {
     std.testing.refAllDecls(@This());
     _ = @import("render/golden.zig");
     _ = @import("ui/golden.zig");
+    _ = @import("compositor/golden.zig");
+    _ = @import("compositor/latency.zig");
 }
