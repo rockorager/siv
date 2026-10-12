@@ -37,6 +37,9 @@ refresh_ns: u64,
 epoch_ns: u64,
 /// Text input state each seat last committed (tests read it back).
 text_inputs: [8]TextInputRecord = @splat(.{}),
+/// Simulated clipboard and primary selection per seat.
+selections: [8][2]SimSelection = @splat(@splat(.{})),
+next_source: u32 = 0,
 
 pub const Options = struct {
     refresh_ns: u64 = FrameClock.default_refresh_ns,
@@ -115,7 +118,34 @@ pub const TextInputRecord = struct {
     commits: u32 = 0,
 };
 
+/// One seat's clipboard or primary selection: the current offer (another
+/// client's data, or this client's own source offered back, as Wayland
+/// does) and this client's source.
+const SimSelection = struct {
+    offer: bool = false,
+    /// The offer is this client's source: receiving asks it to send.
+    own: bool = false,
+    mimes: std.ArrayList([]u8) = .empty,
+    data: std.ArrayList(u8) = .empty,
+    source: u32 = 0,
+    source_mimes: std.ArrayList([]u8) = .empty,
+
+    fn clearMimes(list: *std.ArrayList([]u8), gpa: Allocator) void {
+        for (list.items) |m| gpa.free(m);
+        list.clearRetainingCapacity();
+    }
+
+    fn deinit(sel: *SimSelection, gpa: Allocator) void {
+        clearMimes(&sel.mimes, gpa);
+        clearMimes(&sel.source_mimes, gpa);
+        sel.mimes.deinit(gpa);
+        sel.source_mimes.deinit(gpa);
+        sel.data.deinit(gpa);
+    }
+};
+
 pub fn destroy(hl: *Headless) void {
+    for (&hl.selections) |*seat| for (seat) |*sel| sel.deinit(hl.allocator);
     for (hl.windows.items, 0..) |w, i| if (w != null) hl.destroyWindow(@intCast(i));
     hl.windows.deinit(hl.allocator);
     hl.outputs.deinit(hl.allocator);
@@ -265,6 +295,123 @@ pub fn setTextInput(hl: *Headless, seat: SeatId, state: *const platform.TextInpu
     r.state = state.*;
     r.state.surrounding = r.surrounding.slice();
     r.commits += 1;
+}
+
+fn selectionOf(hl: *Headless, seat: SeatId, kind: platform.SelectionKind) ?*SimSelection {
+    if (seat >= hl.selections.len) return null;
+    return &hl.selections[seat][@intFromEnum(kind)];
+}
+
+fn copyMimes(hl: *Headless, list: *std.ArrayList([]u8), mimes: []const []const u8) Error!void {
+    SimSelection.clearMimes(list, hl.allocator);
+    for (mimes) |m| {
+        const c = try hl.allocator.dupe(u8, m);
+        list.append(hl.allocator, c) catch {
+            hl.allocator.free(c);
+            return error.OutOfMemory;
+        };
+    }
+}
+
+pub fn setSelection(hl: *Headless, seat: SeatId, kind: platform.SelectionKind, mimes: []const []const u8, _: u32) Error!u32 {
+    const sel = hl.selectionOf(seat, kind) orelse return error.OutOfMemory;
+    if (sel.source != 0) hl.queue.push(.{ .selection_cancelled = .{ .seat = seat, .kind = kind, .source = sel.source } });
+    sel.source = 0;
+    try hl.copyMimes(&sel.source_mimes, mimes);
+    if (mimes.len == 0) {
+        if (sel.own) {
+            sel.offer = false;
+            sel.own = false;
+            hl.queue.push(.{ .selection = .{ .seat = seat, .kind = kind, .offer = false } });
+        }
+        return 0;
+    }
+    hl.next_source += 1;
+    sel.source = hl.next_source;
+    // The compositor offers the new selection to its client too.
+    try hl.copyMimes(&sel.mimes, mimes);
+    sel.data.clearRetainingCapacity();
+    sel.offer = true;
+    sel.own = true;
+    hl.queue.push(.{ .selection = .{ .seat = seat, .kind = kind, .offer = true } });
+    return sel.source;
+}
+
+pub fn selectionMimes(hl: *Headless, seat: SeatId, kind: platform.SelectionKind) []const []const u8 {
+    const sel = hl.selectionOf(seat, kind) orelse return &.{};
+    return if (sel.offer) sel.mimes.items else &.{};
+}
+
+pub fn receiveSelection(hl: *Headless, seat: SeatId, kind: platform.SelectionKind, mime: []const u8, fd: i32) bool {
+    const sel = hl.selectionOf(seat, kind) orelse {
+        _ = std.os.linux.close(fd);
+        return false;
+    };
+    if (!sel.offer) {
+        _ = std.os.linux.close(fd);
+        return false;
+    }
+    if (sel.own) {
+        const index = for (sel.source_mimes.items, 0..) |m, i| {
+            if (std.mem.eql(u8, m, mime)) break i;
+        } else {
+            _ = std.os.linux.close(fd);
+            return false;
+        };
+        hl.queue.push(.{ .selection_send = .{ .seat = seat, .kind = kind, .source = sel.source, .mime = @intCast(index), .fd = fd } });
+        return true;
+    }
+    // Another client writes its data, possibly more than a pipe holds.
+    const data = hl.allocator.dupe(u8, sel.data.items) catch {
+        _ = std.os.linux.close(fd);
+        return false;
+    };
+    const Writer = struct {
+        fn run(gpa: Allocator, bytes: []u8, out: i32) void {
+            defer gpa.free(bytes);
+            defer _ = std.os.linux.close(out);
+            var done: usize = 0;
+            while (done < bytes.len) {
+                const n = std.os.linux.write(out, bytes[done..].ptr, bytes.len - done);
+                if (std.os.linux.errno(n) != .SUCCESS) return;
+                done += n;
+            }
+        }
+    };
+    const t = std.Thread.spawn(.{}, Writer.run, .{ hl.allocator, data, fd }) catch {
+        hl.allocator.free(data);
+        _ = std.os.linux.close(fd);
+        return false;
+    };
+    t.detach();
+    return true;
+}
+
+/// Simulates another client taking the selection with `data` in `mimes`.
+pub fn offerSelection(hl: *Headless, seat: SeatId, kind: platform.SelectionKind, mimes: []const []const u8, data: []const u8) Error!void {
+    const sel = hl.selectionOf(seat, kind) orelse return error.OutOfMemory;
+    if (sel.source != 0) hl.queue.push(.{ .selection_cancelled = .{ .seat = seat, .kind = kind, .source = sel.source } });
+    sel.source = 0;
+    try hl.copyMimes(&sel.mimes, mimes);
+    sel.data.clearRetainingCapacity();
+    try sel.data.appendSlice(hl.allocator, data);
+    sel.offer = true;
+    sel.own = false;
+    hl.queue.push(.{ .selection = .{ .seat = seat, .kind = kind, .offer = true } });
+}
+
+/// Simulates another client pasting this client's selection in `mime`:
+/// returns the read end of the pipe the client writes to.
+pub fn requestSelection(hl: *Headless, seat: SeatId, kind: platform.SelectionKind, mime: []const u8) !i32 {
+    const sel = hl.selectionOf(seat, kind) orelse return error.NoSelection;
+    if (sel.source == 0) return error.NoSelection;
+    const index = for (sel.source_mimes.items, 0..) |m, i| {
+        if (std.mem.eql(u8, m, mime)) break i;
+    } else return error.NoSuchMime;
+    var fds: [2]i32 = undefined;
+    if (std.os.linux.errno(std.os.linux.pipe2(&fds, .{ .CLOEXEC = true })) != .SUCCESS) return error.SystemResources;
+    hl.queue.push(.{ .selection_send = .{ .seat = seat, .kind = kind, .source = sel.source, .mime = @intCast(index), .fd = fds[1] } });
+    return fds[0];
 }
 
 /// What a seat's text input last committed.

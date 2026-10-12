@@ -14,6 +14,7 @@ pub const xml = [_][]const u8{
     "staging/fifo/fifo-v1.xml",
     "unstable/xdg-decoration/xdg-decoration-unstable-v1.xml",
     "unstable/text-input/text-input-unstable-v3.xml",
+    "unstable/primary-selection/primary-selection-unstable-v1.xml",
 };
 
 /// Globals to bind, each with the highest version siv implements. Code is
@@ -33,4 +34,5 @@ pub const globals = [_]struct { []const u8, u32 }{
     .{ "wp_fifo_manager_v1", 1 },
     .{ "zxdg_decoration_manager_v1", 1 },
     .{ "zwp_text_input_manager_v3", 1 },
+    .{ "zwp_primary_selection_device_manager_v1", 1 },
 };

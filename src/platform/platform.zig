@@ -171,7 +171,55 @@ pub const Platform = union(enum) {
             inline else => |b| b.setTextInput(seat, state),
         }
     }
+
+    // Clipboard and primary selection (D19). The client owning a selection
+    // answers `selection_send` events by writing the data to their fd;
+    // pasting reads another client's offer through a pipe.
+
+    /// Offers data as a seat's selection in `mimes` (copied); `serial` is
+    /// the input event that triggered it. Returns the source's id. No
+    /// mime types clears the selection if this client owns it.
+    pub fn setSelection(p: Platform, seat: SeatId, kind: SelectionKind, mimes: []const []const u8, serial: u32) Error!u32 {
+        return switch (p) {
+            inline else => |b| b.setSelection(seat, kind, mimes, serial),
+        };
+    }
+
+    /// The mime types of the seat's current selection offer, valid until
+    /// the next platform event; empty without an offer.
+    pub fn selectionMimes(p: Platform, seat: SeatId, kind: SelectionKind) []const []const u8 {
+        return switch (p) {
+            inline else => |b| b.selectionMimes(seat, kind),
+        };
+    }
+
+    /// Asks the selection's owner to write `mime` data to `fd`, which the
+    /// platform closes. False without an offer.
+    pub fn receiveSelection(p: Platform, seat: SeatId, kind: SelectionKind, mime: []const u8, fd: i32) bool {
+        return switch (p) {
+            inline else => |b| b.receiveSelection(seat, kind, mime, fd),
+        };
+    }
 };
+
+pub const SelectionKind = enum(u8) {
+    /// Copy and paste (wl_data_device).
+    clipboard,
+    /// The last selected text, pasted with the middle button
+    /// (zwp_primary_selection_v1).
+    primary,
+};
+
+/// The seat's selection changed to a new offer (or none); its mime types
+/// are in `Platform.selectionMimes`.
+pub const Selection = struct { seat: SeatId, kind: SelectionKind, offer: bool };
+
+/// Another client wants this client's selection: write it in the mime
+/// type at index `mime` of `setSelection`'s list to `fd`, then close it.
+pub const SelectionSend = struct { seat: SeatId, kind: SelectionKind, source: u32, mime: u8, fd: i32 };
+
+/// This client's selection source was replaced; drop its data.
+pub const SelectionCancelled = struct { seat: SeatId, kind: SelectionKind, source: u32 };
 
 /// text-input-v3 content purpose.
 pub const ContentPurpose = enum(u32) { normal, alpha, digits, number, phone, url, email, name, password, pin, date, time, datetime, terminal };
@@ -590,6 +638,9 @@ pub const Event = union(enum) {
     text_input_leave: Focus,
     /// Input method changes (text-input-v3).
     text_input: TextInput,
+    selection: Selection,
+    selection_send: SelectionSend,
+    selection_cancelled: SelectionCancelled,
     /// The platform failed: events were lost (OutOfMemory) or the
     /// connection is gone (ConnectionLost, ProtocolError).
     failed: Error,

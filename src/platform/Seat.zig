@@ -12,6 +12,7 @@ const Timer = @import("loop").Timer;
 const Wayland = @import("Wayland.zig");
 const Keyboard = @import("Keyboard.zig");
 const TextInput = @import("TextInput.zig");
+const DataDevice = @import("DataDevice.zig");
 const zwp = @import("wayland").client.zwp;
 const Seat = @This();
 
@@ -26,6 +27,7 @@ pointer: ?*wl.Pointer = null,
 keyboard_proxy: ?*wl.Keyboard = null,
 touch: ?*wl.Touch = null,
 text_input: ?*TextInput = null,
+data: *DataDevice = undefined,
 
 keyboard: Keyboard,
 keyboard_focus: ?WindowId = null,
@@ -63,6 +65,11 @@ pub fn create(backend: *Wayland, id: SeatId, registry: *wl.Registry, name: u32, 
         .keyboard = .{ .context = backend.xkb_context },
     };
     seat.keyboard.setComposeTable(backend.compose_table);
+    seat.data = DataDevice.create(backend, id) catch |err| {
+        backend.allocator.destroy(seat);
+        return err;
+    };
+    seat.data.bind(proxy);
     proxy.setListener(*Seat, onSeat, seat);
     return seat;
 }
@@ -78,6 +85,7 @@ pub fn addTextInput(seat: *Seat, manager: *zwp.TextInputManagerV3) void {
 
 pub fn destroy(seat: *Seat) void {
     if (seat.text_input) |ti| ti.destroy();
+    seat.data.destroy();
     seat.backend.loop.cancelTimer(&seat.repeat_timer);
     seat.setCapabilities(.{});
     seat.keyboard.deinit();

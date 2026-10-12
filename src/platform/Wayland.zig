@@ -29,6 +29,7 @@ const Timer = @import("loop").Timer;
 const shm_buffers = @import("shm.zig");
 pub const Seat = @import("Seat.zig");
 const TextInput = @import("TextInput.zig");
+const DataDevice = @import("DataDevice.zig");
 const Wayland = @This();
 
 const Error = platform.Error;
@@ -55,6 +56,8 @@ fractional_manager: ?*wp.FractionalScaleManagerV1 = null,
 decoration_manager: ?*zxdg.DecorationManagerV1 = null,
 fifo_manager: ?*wp.FifoManagerV1 = null,
 text_input_manager: ?*zwp.TextInputManagerV3 = null,
+data_device_manager: ?*wl.DataDeviceManager = null,
+primary_selection_manager: ?*zwp.PrimarySelectionDeviceManagerV1 = null,
 /// Clock of wp_presentation timestamps; converted to CLOCK_MONOTONIC, the
 /// loop's clock, when it differs (weston uses CLOCK_MONOTONIC_RAW).
 presentation_clock: linux.clockid_t = .MONOTONIC,
@@ -194,6 +197,8 @@ fn teardown(self: *Wayland) void {
     self.seats.deinit(self.allocator);
     self.outputs.deinit(self.allocator);
     if (self.text_input_manager) |m| m.destroy();
+    if (self.primary_selection_manager) |m| m.destroy();
+    if (self.data_device_manager) |m| wlDestroy(m);
     if (self.decoration_manager) |m| m.destroy();
     if (self.fifo_manager) |m| m.destroy();
     if (self.fractional_manager) |m| m.destroy();
@@ -319,6 +324,12 @@ fn addGlobal(self: *Wayland, registry: *wl.Registry, name: u32, interface: []con
         const m = try registry.bind(name, zwp.TextInputManagerV3, version);
         self.text_input_manager = m;
         for (self.seats.items) |s| if (s) |seat| seat.addTextInput(m);
+    } else if (is(interface, wl.DataDeviceManager)) {
+        self.data_device_manager = try registry.bind(name, wl.DataDeviceManager, @min(version, 3));
+        for (self.seats.items) |s| if (s) |seat| seat.data.bind(seat.proxy);
+    } else if (is(interface, zwp.PrimarySelectionDeviceManagerV1)) {
+        self.primary_selection_manager = try registry.bind(name, zwp.PrimarySelectionDeviceManagerV1, version);
+        for (self.seats.items) |s| if (s) |seat| seat.data.bind(seat.proxy);
     } else if (is(interface, wl.Output)) {
         try self.addOutput(registry, name, version);
     } else if (is(interface, wl.Seat)) {
@@ -659,6 +670,29 @@ pub fn setTextInput(self: *Wayland, id: SeatId, state: *const platform.TextInput
     if (id >= self.seats.items.len) return;
     const seat = self.seats.items[id] orelse return;
     if (seat.text_input) |ti| ti.update(state);
+}
+
+fn seatData(self: *Wayland, id: SeatId) ?*DataDevice {
+    if (id >= self.seats.items.len) return null;
+    return if (self.seats.items[id]) |s| s.data else null;
+}
+
+pub fn setSelection(self: *Wayland, id: SeatId, kind: platform.SelectionKind, mimes: []const []const u8, serial: u32) Error!u32 {
+    const dev = self.seatData(id) orelse return error.MissingGlobal;
+    return dev.setSelection(kind, mimes, serial);
+}
+
+pub fn selectionMimes(self: *Wayland, id: SeatId, kind: platform.SelectionKind) []const []const u8 {
+    const dev = self.seatData(id) orelse return &.{};
+    return dev.selectionMimes(kind);
+}
+
+pub fn receiveSelection(self: *Wayland, id: SeatId, kind: platform.SelectionKind, mime: []const u8, fd: i32) bool {
+    const dev = self.seatData(id) orelse {
+        _ = linux.close(fd);
+        return false;
+    };
+    return dev.receiveSelection(kind, mime, fd);
 }
 
 fn seatProxy(self: *Wayland, id: SeatId) ?*wl.Seat {
