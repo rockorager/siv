@@ -120,6 +120,15 @@ pub fn build(b: *std.Build) void {
         .{ .name = "platform", .module = platform },
         .{ .name = "compositor", .module = compositor },
     });
+    const a11y_imports = [_]std.Build.Module.Import{
+        .{ .name = "dbus", .module = dbus },
+        .{ .name = "ui", .module = ui },
+        .{ .name = "loop", .module = loop },
+        .{ .name = "raster", .module = raster },
+        .{ .name = "text", .module = text },
+    };
+    const a11y = ctx.module("src/a11y/a11y.zig", &a11y_imports);
+    a11y.addImport("integration", not_integration);
     const app_imports = [_]std.Build.Module.Import{
         .{ .name = "text", .module = text },
         .{ .name = "loop", .module = loop },
@@ -214,6 +223,7 @@ pub fn build(b: *std.Build) void {
         .{ "platform", platform },
         .{ "compositor", compositor },
         .{ "ui", ui },
+        .{ "a11y", a11y },
         .{ "app", app },
     };
     for (module_tests) |entry| {
@@ -264,6 +274,13 @@ pub fn build(b: *std.Build) void {
     const app_integration_run = b.addRunArtifact(b.addTest(.{ .name = "app-integration", .root_module = app_integration, .filters = test_filters }));
     app_integration_run.has_side_effects = true; // depends on the installed dbus-daemon
     integration_step.dependOn(&app_integration_run.step);
+    // AT-SPI against the real registry and libatspi (src/a11y/integration_tests.zig).
+    const a11y_integration = ctx.module("src/a11y/a11y.zig", &a11y_imports);
+    a11y_integration.addImport("integration", integrationOption(b, true));
+    const a11y_integration_run = b.addRunArtifact(b.addTest(.{ .name = "a11y-integration", .root_module = a11y_integration, .filters = test_filters }));
+    a11y_integration_run.has_side_effects = true; // depends on the installed at-spi2-core
+    integration_step.dependOn(&a11y_integration_run.step);
+    b.step("test-integration-a11y", "Run the AT-SPI integration tests against the registry").dependOn(&a11y_integration_run.step);
 
     // Headless text engine benchmarks. Not part of `test`; build with
     // -Doptimize=ReleaseFast for meaningful numbers.
