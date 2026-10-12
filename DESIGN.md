@@ -573,7 +573,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     every blend mode, blur, COLRv1, and bitmap glyphs; in fact every
     channel is within 1/255 of the CPU's except one pixel at 2/255.
     Damage-only frames match full CPU frames, and the validation layer
-    reports nothing.
+    reports nothing. On RADV (Mesa 26.2.2, Radeon 760M, validation layer
+    1.4.357) every channel of all ten images is within 1/255, with no
+    validation messages.
   - Runtime fallback to CPU on `VK_ERROR_DEVICE_LOST` or GPU removal, and
     back to Vulkan once a device can be created again. Device selection on
     multi-GPU systems follows dma-buf feedback.
@@ -585,7 +587,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     GPUs; then discrete, integrated, and virtual GPUs. CPU implementations
     (lavapipe) are never chosen by default: the CPU renderer is faster
     there and is the oracle. `Compositor.Options.renderer` forces the CPU
-    renderer or accepts CPU implementations (tests).
+    renderer or accepts CPU implementations (tests). Verified on sway with
+    a GPU renderer and lavapipe installed beside RADV: feedback names
+    226:128 (renderD128), which RADV matches (score 19 against
+    lavapipe's 1); on pixman sway RADV cannot present and lavapipe,
+    accepted in tests, is chosen. Not tried on a machine with two GPUs.
   - The device is one per process and is created on a thread of its own
     when the first Wayland window opens (10 ms to find none, 116 ms on
     lavapipe with pipelines, longer than the first-frame budget of D25);
@@ -607,8 +613,16 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     pipeline creation and serializes nothing, so the saving cannot be
     measured in this environment; RADV, ANV, NVK, and NVIDIA serialize
     compiled pipelines, and Mesa drivers also keep their own shader disk
-    cache. None of this touches the D25 first-frame budget, which the CPU
-    renderer meets while the device is created on its thread; the cache
+    cache. RADV (Mesa 26.2.2, Radeon 760M) writes 117 KB. With Mesa's
+    disk cache disabled: 545 to 605 ms without a cache and cold, 32 to
+    36 ms warm. With Mesa's disk cache warm (any earlier run of these
+    shaders): 35 to 90 ms with or without siv's file, so siv's cache
+    pays off only where Mesa's is evicted or disabled (571 to 594 ms
+    down to 36 to 90 ms); a driver update makes both cold. RADV's data
+    differs by a few bytes after each load, so the file is rewritten at
+    each device creation, harmlessly, on the device's thread. None of
+    this touches the D25 first-frame budget, which the CPU renderer
+    meets while the device is created on its thread; the cache
     shortens when windows switch to Vulkan. Verified: a second device
     loads the first one's file (`render/vulkan/tests.zig`).
   - Presentation (`surface.Vulkan`): the platform hands the window's commits
@@ -737,6 +751,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     lavapipe (Mesa 22.3), a 500 ms animation with the UI thread spinning:
     30 presentations, none dropped, one frame rendered per refresh, and
     predictions within 0.6 ms of feedback, in MAILBOX and in FIFO alike.
+    The same on RADV (Radeon 760M) with sway's Vulkan renderer, seven runs
+    per mode: 31 presentations, none dropped, 32 frames rendered, each
+    handed off at most 1.1 to 2.0 ms after it became due, and predictions
+    within 0.6 ms of feedback.
   - Measuring pacing: the frame clock records every presentation from
     feedback and, per frame, when it became due (its frame callback, or
     its start) and when its commit started (siv's hand-off). The tests
