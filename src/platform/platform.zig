@@ -17,6 +17,8 @@ pub const Loop = @import("loop").Loop;
 pub const FrameClock = @import("FrameClock.zig");
 pub const Headless = @import("Headless.zig");
 pub const Wayland = @import("Wayland.zig");
+/// Sway on its headless backend, for other modules' integration tests.
+pub const test_sway = @import("test_sway.zig");
 
 pub const WindowId = u32;
 pub const OutputId = u32;

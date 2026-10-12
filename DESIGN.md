@@ -330,6 +330,42 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     goes on to the nearest scroll node with room as `scroll_by`. Keyboard
     scrolling (arrows, page keys) is `scroll_by` too. Only offsets the
     application sets in a transaction are `scroll_to`.
+  - A frame composes the window's tree into one display list: each layer
+    is a scene layer with its own id, so `scene.damage.Tracker` diffs
+    frames (D9); ids inside content are cleared, and content damage comes
+    from `set_content`. A scroll container wraps its children in a second
+    scene layer (id with bit 31 set, so layer ids stay below 2^31) that
+    clips to the viewport and carries the offset. A reorder damages only
+    the moved layer's old and new bounds. Replaced content is released
+    after the next frame, whose damage tracking still reads the old list.
+  - The presentation boundary is `surface.Surface`: it takes the composed
+    list, device damage, root transform, and background. The CPU backend
+    keeps one renderer per window (so glyph caches are per window too),
+    renders into the platform's wl_shm buffers, re-encodes a reused
+    buffer's age damage from the persistent framebuffer, and reports this
+    frame's damage in buffer pixels. Vulkan becomes a second variant with
+    its own swapchain; the tree, animation, and damage tracking above it
+    do not change.
+  - A frame presents when something is damaged, an animation runs, or the
+    UI asked for a frame (an empty-damage present keeps frame callbacks
+    pacing). `Event.frame` answers `requestFrame` with the time of the
+    frame after the current one, which is when a commit made in response
+    is shown. `presented` reports the first frame with a commit; a commit
+    that changes nothing visible counts as presented at once.
+  - Wheel deltas apply immediately, unsmoothed. Flings start only when a
+    touchpad gesture stops faster than 100 px/s, from the last 100 ms of
+    deltas, and decay with a 325 ms time constant (a first guess). A
+    scroll container is hit anywhere in its viewport, drawn or not.
+  - Measured (`zig build test-headless`, `test-integration` with
+    `SIV_MEASURE=1`, 60 Hz): on headless, key-to-photon with the
+    compositor thread has a median of 7 ms against 7.6 ms rendering on the
+    UI thread (both within one frame). On sway, using presentation
+    feedback while the UI thread sleeps, wheel-to-photon has a median of
+    2.4 ms (ReleaseFast) or 9 ms (Debug). A 500 ms animation while the UI
+    thread spins drops no frames on either backend, at 1280×720 on sway;
+    rendering on the UI thread (headless) misses 23 of the stall's 24
+    vblanks. Input waits behind a frame being rendered on the compositor
+    thread, so a slow frame delays input by up to its render time.
 - **Alternatives:** render on the UI thread (lowest latency when idle, but any
   UI-thread stall drops frames); a plain render thread (adds a handoff without
   independent animation).
