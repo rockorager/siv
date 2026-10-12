@@ -175,6 +175,37 @@ pub const Platform = union(enum) {
         };
     }
 
+    // Subsurfaces (D17): external content shown without copying, above the
+    // window's own content, in sync with the window's commits.
+
+    pub fn createSubsurface(p: Platform, id: WindowId) Error!SubsurfaceId {
+        return switch (p) {
+            inline else => |b| b.createSubsurface(id),
+        };
+    }
+
+    pub fn destroySubsurface(p: Platform, id: WindowId, sub: SubsurfaceId) void {
+        switch (p) {
+            inline else => |b| b.destroySubsurface(id, sub),
+        }
+    }
+
+    /// Shows a frame at a place in the parent, or hides the subsurface.
+    /// Applies with the window's next commit.
+    pub fn setSubsurface(p: Platform, id: WindowId, sub: SubsurfaceId, state: *const SubsurfaceState) Error!void {
+        return switch (p) {
+            inline else => |b| b.setSubsurface(id, sub, state),
+        };
+    }
+
+    /// Commits the window without a new buffer, so that subsurface changes
+    /// apply when its own content did not change.
+    pub fn commitWindow(p: Platform, id: WindowId) void {
+        switch (p) {
+            inline else => |b| b.commitWindow(id),
+        }
+    }
+
     /// Updates a seat's text input (text-input-v3, D15): enables or
     /// disables it and sends the surrounding text, content type, and
     /// cursor rectangle, then commits. Only meaningful while the seat's
@@ -213,6 +244,27 @@ pub const Platform = union(enum) {
             inline else => |b| b.receiveSelection(seat, kind, mime, fd),
         };
     }
+};
+
+pub const SubsurfaceId = u32;
+
+/// Opaque XRGB8888 pixels in mappable shared memory (wl_shm).
+pub const ShmFrame = struct {
+    fd: i32,
+    offset: u32 = 0,
+    width: u32,
+    height: u32,
+    stride: u32,
+    /// Changes when the pixels change.
+    key: u64,
+};
+
+pub const SubsurfaceState = struct {
+    visible: bool = false,
+    /// Position and size in the parent surface (logical); the frame is
+    /// scaled to it.
+    rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+    frame: ?ShmFrame = null,
 };
 
 pub const SelectionKind = enum(u8) {

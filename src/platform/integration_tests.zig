@@ -491,3 +491,34 @@ test "popups are placed by the compositor within the output, then dismissed" {
     backend.destroyWindow(popup);
     try runMs(&h.loop, 50);
 }
+
+test "a subsurface shows an external frame without protocol errors" {
+    var h: Harness = .{};
+    try h.start();
+    defer h.stop();
+    const app = &h.app;
+    const backend = app.backend;
+    const id = try h.mapWindow(.{});
+    const linux = std.os.linux;
+    const fd: i32 = @intCast(linux.memfd_create("siv-ext", linux.MFD.CLOEXEC));
+    defer _ = linux.close(fd);
+    _ = linux.ftruncate(fd, 64 * 48 * 4);
+    const sub = try backend.createSubsurface(id);
+    const state: platform.SubsurfaceState = .{
+        .visible = true,
+        .rect = .{ .x = 20, .y = 30, .width = 128, .height = 96 },
+        .frame = .{ .fd = fd, .width = 64, .height = 48, .stride = 64 * 4, .key = 1 },
+    };
+    try backend.setSubsurface(id, sub, &state);
+    backend.commitWindow(id);
+    try h.animate(3);
+    // Hidden, shown again, then destroyed.
+    try backend.setSubsurface(id, sub, &.{});
+    backend.commitWindow(id);
+    try backend.setSubsurface(id, sub, &state);
+    try h.animate(2);
+    backend.destroySubsurface(id, sub);
+    try h.animate(2);
+    try testing.expect(!backend.dead);
+    try testing.expectEqual(@as(usize, 0), app.count(.failed));
+}

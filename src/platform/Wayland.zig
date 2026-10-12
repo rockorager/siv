@@ -48,6 +48,7 @@ display: *wl.Display,
 registry: *wl.Registry,
 
 compositor: ?*wl.Compositor = null,
+subcompositor: ?*wl.Subcompositor = null,
 shm: ?*wl.Shm = null,
 wm_base: ?*xdg.WmBase = null,
 viewporter: ?*wp.Viewporter = null,
@@ -92,6 +93,25 @@ pub const Output = struct {
     announced: bool = false,
 };
 
+/// A wl_subsurface showing external frames (D17), synchronized with its
+/// parent's commits.
+const Subsurface = struct {
+    surface: *wl.Surface,
+    subsurface: *wl.Subsurface,
+    viewport: ?*wp.Viewport,
+    buffer: ?*wl.Buffer = null,
+    key: u64 = 0,
+    attached: bool = false,
+
+    fn destroy(s: *Subsurface, gpa: Allocator) void {
+        if (s.buffer) |b| b.destroy();
+        if (s.viewport) |v| v.destroy();
+        s.subsurface.destroy();
+        s.surface.destroy();
+        gpa.destroy(s);
+    }
+};
+
 pub const Window = struct {
     backend: *Wayland,
     id: WindowId,
@@ -131,6 +151,7 @@ pub const Window = struct {
     applied_destination: Size = .{},
 
     swapchain: shm_buffers.Swapchain = .{},
+    subsurfaces: std.ArrayList(?*Subsurface) = .empty,
 
     /// Presentation feedback for one commit and the time it was predicted for.
     const Feedback = struct {
@@ -209,6 +230,7 @@ fn teardown(self: *Wayland) void {
     if (self.viewporter) |v| v.destroy();
     if (self.wm_base) |b| b.destroy();
     if (self.shm) |s| if (s.getVersion() >= 2) s.release() else wlDestroy(s);
+    if (self.subcompositor) |c| c.destroy();
     if (self.compositor) |c| wlDestroy(c);
     self.registry.destroy();
     _ = self.display.flush();
@@ -305,6 +327,8 @@ fn is(interface: []const u8, comptime T: type) bool {
 fn addGlobal(self: *Wayland, registry: *wl.Registry, name: u32, interface: []const u8, version: u32) !void {
     if (is(interface, wl.Compositor)) {
         self.compositor = try registry.bind(name, wl.Compositor, version);
+    } else if (is(interface, wl.Subcompositor)) {
+        self.subcompositor = try registry.bind(name, wl.Subcompositor, version);
     } else if (is(interface, wl.Shm)) {
         self.shm = try registry.bind(name, wl.Shm, version);
     } else if (is(interface, xdg.WmBase)) {
@@ -573,6 +597,8 @@ pub fn destroyWindow(self: *Wayland, id: WindowId) void {
     if (w.fractional) |f| f.destroy();
     if (w.viewport) |v| v.destroy();
     if (w.decoration) |d| d.destroy();
+    for (w.subsurfaces.items) |sub| if (sub) |x| x.destroy(self.allocator);
+    w.subsurfaces.deinit(self.allocator);
     if (w.toplevel) |t| t.destroy();
     if (w.popup) |p| p.destroy();
     w.xdg_surface.destroy();
@@ -732,6 +758,67 @@ pub fn setTextInput(self: *Wayland, id: SeatId, state: *const platform.TextInput
     if (id >= self.seats.items.len) return;
     const seat = self.seats.items[id] orelse return;
     if (seat.text_input) |ti| ti.update(state);
+}
+
+pub fn createSubsurface(self: *Wayland, id: WindowId) Error!platform.SubsurfaceId {
+    const w = self.get(id);
+    const sc = self.subcompositor orelse return error.MissingGlobal;
+    const slot = try reserveSlot(Subsurface, self.allocator, &w.subsurfaces);
+    const surface = self.compositor.?.createSurface() catch return error.OutOfMemory;
+    errdefer surface.destroy();
+    const subsurface = sc.getSubsurface(surface, w.surface) catch return error.OutOfMemory;
+    errdefer subsurface.destroy();
+    const viewport = if (self.viewporter) |v| v.getViewport(surface) catch return error.OutOfMemory else null;
+    errdefer if (viewport) |v| v.destroy();
+    // External content never takes input; the window below gets it.
+    const empty = self.compositor.?.createRegion() catch return error.OutOfMemory;
+    surface.setInputRegion(empty);
+    empty.destroy();
+    const s = try self.allocator.create(Subsurface);
+    s.* = .{ .surface = surface, .subsurface = subsurface, .viewport = viewport };
+    w.subsurfaces.items[slot] = s;
+    return @intCast(slot);
+}
+
+pub fn destroySubsurface(self: *Wayland, id: WindowId, sub: platform.SubsurfaceId) void {
+    const w = self.get(id);
+    if (w.subsurfaces.items[sub]) |s| s.destroy(self.allocator);
+    w.subsurfaces.items[sub] = null;
+}
+
+pub fn setSubsurface(self: *Wayland, id: WindowId, sub: platform.SubsurfaceId, state: *const platform.SubsurfaceState) Error!void {
+    const w = self.get(id);
+    const s = w.subsurfaces.items[sub] orelse return;
+    const frame = (if (state.visible) state.frame else null) orelse {
+        if (s.attached) {
+            s.surface.attach(null, 0, 0);
+            s.surface.commit();
+            s.attached = false;
+        }
+        return;
+    };
+    if (s.buffer == null or s.key != frame.key) {
+        const size = @as(usize, frame.offset) + @as(usize, frame.stride) * frame.height;
+        const pool = self.shm.?.createPool(frame.fd, @intCast(size)) catch return error.OutOfMemory;
+        defer pool.destroy();
+        const buffer = pool.createBuffer(@intCast(frame.offset), @intCast(frame.width), @intCast(frame.height), @intCast(frame.stride), .xrgb8888) catch return error.OutOfMemory;
+        if (s.buffer) |old| old.destroy();
+        s.buffer = buffer;
+        s.key = frame.key;
+        s.attached = false;
+    }
+    if (!s.attached) {
+        s.surface.attach(s.buffer, 0, 0);
+        s.surface.damageBuffer(0, 0, std.math.maxInt(i32), std.math.maxInt(i32));
+        s.attached = true;
+    }
+    s.subsurface.setPosition(state.rect.x, state.rect.y);
+    if (s.viewport) |v| v.setDestination(@max(state.rect.width, 1), @max(state.rect.height, 1));
+    s.surface.commit();
+}
+
+pub fn commitWindow(self: *Wayland, id: WindowId) void {
+    self.get(id).surface.commit();
 }
 
 fn seatData(self: *Wayland, id: SeatId) ?*DataDevice {

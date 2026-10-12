@@ -78,6 +78,12 @@ const Window = struct {
     grab: bool = false,
     /// Top-left corner in output coordinates (toplevels at the origin).
     origin: struct { x: i32 = 0, y: i32 = 0 } = .{},
+    /// Subsurface states as applied by the window's commits, and as set
+    /// since (applied by the next commit, like sync subsurfaces).
+    subsurfaces: std.ArrayList(?platform.SubsurfaceState) = .empty,
+    pending_subsurfaces: std.ArrayList(?platform.SubsurfaceState) = .empty,
+    /// Commits without a buffer (`commitWindow`).
+    bare_commits: u32 = 0,
 
     const Slot = struct { pixels: []u8 = &.{}, width: u32 = 0, height: u32 = 0 };
 };
@@ -221,6 +227,44 @@ pub fn createPopup(hl: *Headless, options: platform.PopupOptions) Error!WindowId
     return id;
 }
 
+pub fn createSubsurface(hl: *Headless, id: WindowId) Error!platform.SubsurfaceId {
+    const w = hl.get(id);
+    try w.pending_subsurfaces.append(hl.allocator, .{});
+    errdefer _ = w.pending_subsurfaces.pop();
+    try w.subsurfaces.append(hl.allocator, .{});
+    return @intCast(w.subsurfaces.items.len - 1);
+}
+
+pub fn destroySubsurface(hl: *Headless, id: WindowId, sub: platform.SubsurfaceId) void {
+    const w = hl.get(id);
+    w.subsurfaces.items[sub] = null;
+    w.pending_subsurfaces.items[sub] = null;
+}
+
+pub fn setSubsurface(hl: *Headless, id: WindowId, sub: platform.SubsurfaceId, state: *const platform.SubsurfaceState) Error!void {
+    hl.get(id).pending_subsurfaces.items[sub] = state.*;
+}
+
+pub fn commitWindow(hl: *Headless, id: WindowId) void {
+    const w = hl.get(id);
+    w.bare_commits += 1;
+    applySubsurfaces(w);
+}
+
+fn applySubsurfaces(w: *Window) void {
+    @memcpy(w.subsurfaces.items, w.pending_subsurfaces.items);
+}
+
+/// The window's subsurfaces as its last commit applied them.
+pub fn subsurfaces(hl: *Headless, id: WindowId) []const ?platform.SubsurfaceState {
+    return hl.get(id).subsurfaces.items;
+}
+
+/// How many commits carried no buffer.
+pub fn bareCommits(hl: *Headless, id: WindowId) u32 {
+    return hl.get(id).bare_commits;
+}
+
 /// Whether `id` is `window` or one of its ancestors.
 fn inChain(hl: *Headless, window: WindowId, id: WindowId) bool {
     var cur: ?WindowId = window;
@@ -235,6 +279,8 @@ pub fn destroyWindow(hl: *Headless, id: WindowId) void {
     hl.loop.cancelTimer(&w.ack_timer);
     if (hl.frame_window == w) hl.frame_window = null;
     for (w.slots) |s| hl.allocator.free(s.pixels);
+    w.subsurfaces.deinit(hl.allocator);
+    w.pending_subsurfaces.deinit(hl.allocator);
     hl.queue.purge(id);
     hl.allocator.destroy(w);
     hl.windows.items[id] = null;
@@ -281,6 +327,7 @@ pub fn acquireBuffer(hl: *Headless, id: WindowId) Error!Buffer {
 
 pub fn present(hl: *Headless, id: WindowId, buffer: Buffer, damage: ?[]const Rect) void {
     const w = hl.get(id);
+    applySubsurfaces(w);
     hl.ack(w, true);
     w.front = buffer.slot;
     w.damage = if (damage) |rects| bounds(rects) else .{
@@ -581,6 +628,7 @@ fn runFrame(task: *Loop.Task) void {
 fn ack(hl: *Headless, w: *Window, with_buffer: bool) void {
     const serial = w.ack_serial orelse return;
     w.last_ack = .{ .serial = serial, .with_buffer = with_buffer, .time_ns = Loop.now() };
+    if (!with_buffer) applySubsurfaces(w);
     w.ack_serial = null;
     w.ack_deferred = false;
     w.ack_deadline = null;
