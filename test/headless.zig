@@ -31,4 +31,5 @@ test {
     _ = @import("abi/canvas.zig");
     _ = @import("abi/external.zig");
     _ = @import("abi/dnd.zig");
+    _ = @import("abi/teardown.zig");
 }

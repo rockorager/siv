@@ -1,0 +1,55 @@
+//! Destroying an application through the C API while a window holds an
+//! open transaction, with allocator hooks backed by the testing allocator,
+//! which fills freed memory and reports leaks.
+
+const std = @import("std");
+const abi = @import("abi");
+const harness = @import("harness.zig");
+
+const testing = std.testing;
+const t = abi.types;
+const A = abi.application;
+const T = abi.tree;
+const ok = harness.ok;
+
+fn alloc(_: ?*anyopaque, size: usize, alignment: usize) callconv(.c) ?*anyopaque {
+    const a = std.mem.Alignment.fromByteUnits(alignment);
+    return @ptrCast(testing.allocator.rawAlloc(size, a, @returnAddress()));
+}
+
+fn free(_: ?*anyopaque, ptr: ?*anyopaque, size: usize, alignment: usize) callconv(.c) void {
+    const p: [*]u8 = @ptrCast(ptr.?);
+    testing.allocator.rawFree(p[0..size], .fromByteUnits(alignment), @returnAddress());
+}
+
+test "C API: destroying the application while a window's transaction is open" {
+    const hooks: t.Allocator = .{ .alloc = alloc, .free = free };
+    var app: t.App = .null;
+    try ok(A.siv_app_create(&.{ .allocator = &hooks, .backend = .headless, .flags = .{ .no_system_fonts = true, .reduced_motion = true } }, &app));
+    // One window has presented, the other never has; both hold a
+    // transaction with a new node in it.
+    var windows: [2]t.Window = undefined;
+    try ok(A.siv_window_create(app, &.{ .width = 64, .height = 48 }, &windows[0]));
+    for (0..20) |_| try ok(A.siv_app_dispatch(app, 2));
+    try ok(A.siv_window_create(app, &.{ .width = 64, .height = 48 }, &windows[1]));
+    for (windows) |w| {
+        var txn: t.Txn = undefined;
+        try ok(T.siv_txn_begin(w, &txn));
+        _ = T.siv_box(txn, A.siv_window_root(w));
+    }
+    try ok(A.siv_app_destroy(app));
+}
+
+test "C API: destroying a window while its transaction is open" {
+    const hooks: t.Allocator = .{ .alloc = alloc, .free = free };
+    var app: t.App = .null;
+    try ok(A.siv_app_create(&.{ .allocator = &hooks, .backend = .headless, .flags = .{ .no_system_fonts = true, .reduced_motion = true } }, &app));
+    defer _ = A.siv_app_destroy(app);
+    var w: t.Window = undefined;
+    try ok(A.siv_window_create(app, &.{ .width = 64, .height = 48 }, &w));
+    var txn: t.Txn = undefined;
+    try ok(T.siv_txn_begin(w, &txn));
+    _ = T.siv_box(txn, A.siv_window_root(w));
+    try ok(A.siv_window_destroy(w));
+    try testing.expectEqual(t.Result.error_invalid_handle, T.siv_txn_status(txn));
+}

@@ -20,9 +20,11 @@
 //! events (close requests, configures) also go to the window's listener.
 //!
 //! Destroying a window takes effect at once for the application: no more
-//! events, frames, or listener calls. Its `ui.Window` lives on until the
-//! compositor has released every display list it holds and no event for
-//! it is being delivered.
+//! events, frames, or listener calls. The `Window` and its `ui.Window` live
+//! on until the compositor has released every display list it holds, no
+//! event for it is being delivered, and the loop runs again (the next
+//! dispatch or event delivery, or `App.destroy`), so the caller of
+//! `destroy` may still tear down what it keeps about the window.
 //!
 //! Everything here is for the UI thread, except `post`.
 //!
@@ -505,7 +507,7 @@ pub const Window = struct {
     presented_seq: u64 = 0,
 
     /// Destroys the window (see the module comment). On failure nothing
-    /// changed.
+    /// changed. `win` stays valid until the loop runs again.
     pub fn destroy(win: *Window) Allocator.Error!void {
         if (win.closed) return;
         const app = win.app;
@@ -519,7 +521,8 @@ pub const Window = struct {
         app.zombies.appendAssumeCapacity(win);
         app.open_windows -= 1;
         if (app.open_windows == 0) app.quit();
-        app.freeZombies();
+        // Not freed here even if its lists are home: the caller may still
+        // use it (the C API tears down its handles after this returns).
     }
 
     fn free(win: *Window) void {

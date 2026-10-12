@@ -1402,8 +1402,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     phase and go to the window they name; close requests and configures
     also go to the window's listener. A destroyed window gets no events
     from then on, but its `ui.Window` lives until the compositor has
-    released every display list it holds and no event for it is being
-    delivered, so a handler may destroy its own window.
+    released every display list it holds, no event for it is being
+    delivered, and the loop has run since (the next dispatch or event
+    delivery), so a handler may destroy its own window and the caller of
+    destroy, such as the C API tearing down handles, may still use it.
   - `src/abi` adds only what C needs on top: handles, descriptors, the
     sticky error, and C callbacks. Both stay thin: tree, layout, input,
     and presentation logic never move into them.
