@@ -21,7 +21,8 @@ timed() {
 # at-spi2-core (the accessibility bus and registry), python3-pyatspi
 # (libatspi), and orca are the AT-SPI integration tests' stack and clients.
 # xdg-desktop-portal (with xdg-permission-store) is the portal integration
-# tests' frontend, and pipewire the daemon screen casts connect to.
+# tests' frontend, and pipewire the daemon screen casts connect to. qpdf
+# and poppler-utils check the PDF writer's output independently.
 packages=(
 	ca-certificates curl xz-utils pkg-config
 	libwayland-dev libxkbcommon-dev libfontconfig-dev xkb-data
@@ -29,6 +30,7 @@ packages=(
 	dbus-daemon libglib2.0-bin
 	at-spi2-core python3-pyatspi orca
 	xdg-desktop-portal pipewire
+	qpdf poppler-utils
 )
 
 install_packages() {

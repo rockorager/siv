@@ -448,7 +448,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     and a damaged blur redraws all of it (a 40-card dashboard: 198 ms per
     CPU frame and 194 ms for a hover, against 72 ms and 4 ms analytic).
     Corner radii grow or shrink with the spread (zero stays sharp). PDF:
-    tessellate, or an image (the PDF watch item below).
+    a soft mask image of the blur, clipped to the shape (D19, Printing).
   - Colors are linear light, sRGB primaries, straight alpha. Paints are solid
     colors and linear, two-point conical, and sweep gradients; gradients
     interpolate premultiplied in linear light, and repeat/reflect use the
@@ -474,14 +474,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     is released. Keys come from a process-wide counter with the top bit
     set, apart from the keys producers choose for external frames (D17).
     Decoding to the displayed size on the pool (D19) is not built yet.
+  - Glyph runs may carry their text (`scene.GlyphText`: the bytes and
+    each glyph's cluster offset into them) for output that keeps text,
+    such as PDF's ToUnicode maps; the renderers ignore it.
   - Damage: layers with a nonzero id are matched across lists. A layer's
     version covers everything except its transform and opacity, including
     the order of its child layers. `scene.damage.Tracker` returns device
     rectangles (merged; more than 16 collapse to their bounds).
 - **Alternatives:** pixel-only scene (cannot produce PDF).
-- **Reverse if:** a construct cannot be lowered to all three backends. Watch:
-  PDF has no sweep-gradient shading, so sweeps need a function-based shading
-  or tessellation there.
+- **Reverse if:** a construct cannot be lowered to all three backends. PDF
+  has no sweep-gradient shading; sweeps lower to Coons patch meshes, and
+  box shadows to soft masks (D19, Printing). Backdrop blur has no PDF
+  equivalent and is left out of printed pages.
 
 ### D10. CPU renderer and Vulkan renderer
 
@@ -1602,6 +1606,77 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       activating itself; launched twice, the second forwards its URI and
       token and exits while the first opens it. Hermetic tests run two
       applications on the test bus.
+  - Printing and PDF export: a PDF writer lowers display lists (D9), and
+    printing goes through the Print portal.
+    - The writer is its own module, `src/pdf` (imports `scene`, `raster`,
+      `render_cpu` for the shadow contract, `harfbuzz_subset`, and `text`
+      in tests). PDF 1.7 with Flate streams and a cross-reference table;
+      the same input writes the same bytes (the ID is a hash of the
+      content). Pages are in points with y down from the top-left corner,
+      like display lists.
+    - Layers: transforms and clips are q/cm/W; opacity, blend modes, and
+      forced isolation make a transparency group (a form XObject) drawn
+      with an ExtGState. The W3C blend modes keep their PDF names; the
+      Porter-Duff modes other than source-over draw as Normal, since PDF
+      has no destination operators.
+    - Gradients: linear and radial become axial and radial shadings
+      whose function stitches linear segments, six per stop interval,
+      each end the exact color the renderers compute there (premultiplied
+      linear light, then sRGB), so only the error between samples
+      remains; repeat and reflect are unrolled over the painted area (up
+      to 256 periods), and alpha is a luminosity soft mask. Sweeps are a
+      Coons patch mesh of 96 wedges.
+    - Text: each font is embedded once, as a HarfBuzz subset of the glyphs
+      the document uses (variable fonts instanced at the variation the
+      text was shaped with), as a Type0 font with Identity-H encoding
+      whose codes are the original glyph ids: TrueType as CIDFontType2
+      with a CIDToGIDMap, CFF as an OpenType CIDFontType0 with retained
+      glyph ids. The ToUnicode map comes from the runs' cluster data; the
+      first glyph of a cluster maps to the cluster's whole text (so a
+      ligature copies as its letters), the others to nothing. CFF2 and
+      fonts without outlines draw as paths; color glyphs print as their
+      outlines. The vendored build compiles HarfBuzz's subsetter sources
+      next to the amalgamated core, and -fsys=harfbuzz links the system
+      libharfbuzz-subset.
+    - Images keep their alpha as a soft mask and their filter as
+      /Interpolate; dma-buf frames (D17) have no pixels to read and are
+      left out. Box shadows are an image of the blur from
+      render/cpu/shadow.zig at two samples per point, clipped exactly to
+      outside (inset: inside) the casting shape. Backdrop blur is left
+      out: a page's backdrop is paper.
+    - PDF composites in its blending color space, DeviceRGB, which is
+      sRGB-encoded, not in linear light like the renderers (D11), so
+      translucent paints over other content print darker than on screen
+      (gradient stops themselves match). A linear CalRGB blending space
+      would match, but viewers and printers honor it unevenly.
+    - C API: `siv_print_desc` describes a document for both
+      `siv_pdf_write` (to a file descriptor, A4 by default) and
+      `siv_print`: an optional `begin` that lays out for a
+      `siv_page_setup` (paper size and margins in points, as oriented)
+      and returns the page count, `draw_page` with the canvas drawing
+      functions (D28), and `done` with a `siv_portal_result`. Pages are
+      drawn at a dispatch, never inside the call. Text drawn while a font
+      is still loading draws every page again once fonts load (three
+      passes at most). Pages are left to right in the default language,
+      use the light variant of the theme (paper is white), and ignore the
+      desktop's text scaling. A page whose drawing fails is blank, as a
+      canvas would be.
+    - Printing: PreparePrint shows the system's dialog (with no settings
+      or page setup to start from); its response's page setup is
+      GtkPageSetup's serialization, paper size and margins in millimeters
+      for the portrait paper plus an orientation, which siv turns into the
+      oriented page (landscape: wider than tall, its top the paper's left
+      edge, as GtkPrintContext rotates). The PDF goes to Print in a memfd
+      with the dialog's token. siv draws every page; the print system
+      applies copies, page ranges, and n-up from the settings the
+      portal's backend kept with the token.
+    - Verified: `zig build test-integration-pdf` checks a page of every
+      construct with qpdf --check, pdftotext, pdffonts (embedded, subset,
+      ToUnicode), and colors probed in pdftoppm's rendering; on sway
+      through xdg-desktop-portal 1.16 with the test backend, `siv_print`
+      gets a landscape page setup and the PDF the backend receives passes
+      qpdf and pdftotext. Hermetic tests read the structure, fonts, and
+      ToUnicode maps back.
   - System tray (StatusNotifierItem) is an optional module.
   - Images: wuffs (PNG, JPEG, GIF), libwebp, libavif with dav1d, libjxl.
     Decoding is async and decodes to the displayed size.

@@ -15,8 +15,8 @@ zig build                      # zig-out: libsiv.so, libsiv.a, include/siv.h, li
 zig build test                 # every module's tests, headless tests, C ABI smoke test
 zig build test-text            # one module: test-abi, test-text, test-raster, test-scene,
                                #   test-render-cpu, test-render-vulkan, test-pool, test-loop,
-                               #   test-dbus, test-portal, test-platform, test-compositor, test-ui,
-                               #   test-a11y, test-app
+                               #   test-dbus, test-portal, test-pdf, test-platform, test-compositor,
+                               #   test-ui, test-a11y, test-app
 zig build test-headless        # headless integration tests (test/headless.zig)
 zig build test-integration     # Wayland backend against headless sway, D-Bus against
                                #   dbus-daemon (not in `test`; .agents/setup installs both)
@@ -28,6 +28,7 @@ SIV_SWAY_RENDERER=vulkan zig build test-integration  # sway renders on the GPU: 
 zig build test-integration-dbus  # only the D-Bus part
 zig build test-integration-a11y  # only AT-SPI against the real registry
 zig build test-integration-portal  # only portals against xdg-desktop-portal
+zig build test-integration-pdf  # only PDF output against qpdf and poppler
 zig build test-dbus --fuzz -Doptimize=ReleaseSafe  # fuzz a module's parsers
 zig build test-abi             # abi module, generators, Zig wrappers, exported symbols
 zig build test-c               # C programs against the generated headers and shared libraries
@@ -59,6 +60,7 @@ owns its directories and does not edit another workstream's files.
 | `loop` | `src/loop/` | Event loop and Wayland platform | `pool` |
 | `dbus` | `src/dbus/` | D-Bus and desktop settings | `loop` |
 | `portal` | `src/portal/` | Desktop integration | `dbus`, `loop` |
+| `pdf` | `src/pdf/` | Desktop integration | `scene`, `raster`, `render_cpu`, `text`, `harfbuzz_subset` |
 | `platform` | `src/platform/` | Event loop and Wayland platform | `loop`, `wayland`, `xkbcommon` |
 | `compositor` | `src/compositor/` | Compositor thread | `scene`, `raster`, `render_cpu`, `render_vulkan`, `pool`, `loop`, `platform` |
 | `ui` | `src/ui/` | UI core | `scene`, `raster`, `text`, `loop`, `platform`, `compositor` |
