@@ -213,7 +213,7 @@ pub const Txn = struct {
     /// (or last).
     pub fn create(t: *Txn, parent: NodeId, kind: Kind, before: NodeId) Error!NodeId {
         std.debug.assert(t.open);
-        if (kind == .editor or kind == .external) return error.Unsupported;
+        if (kind == .external) return error.Unsupported;
         _ = try t.container(parent);
         try t.checkBefore(parent, before);
         try t.reserve();
@@ -344,34 +344,76 @@ pub const Txn = struct {
         return n;
     }
 
+    fn textNode(t: *Txn, id: NodeId) Error!*Node {
+        const n = try t.live(id);
+        if (!n.isText()) return error.InvalidNode;
+        return n;
+    }
+
+    /// Sets the text of a text or editor node. An editor's selection is
+    /// kept where it still fits and otherwise moves to the end.
     pub fn setText(t: *Txn, id: NodeId, content: []const u8) Error!void {
-        const n = try t.data(id, .text);
+        const n = try t.textNode(id);
         if (content.len >= std.math.maxInt(u32) or !std.unicode.utf8ValidateSlice(content)) return error.InvalidArgument;
-        if (std.mem.eql(u8, n.data.text.content, content)) return;
+        const d = n.textData();
+        if (std.mem.eql(u8, d.content, content)) return;
         try t.reserve();
         const copy = try t.own(u8, content);
         t.touch(id);
-        t.release(u8, n.data.text.content);
-        n.data.text.content = copy;
+        t.release(u8, d.content);
+        d.content = copy;
+        if (n.kind == .editor) {
+            const e = &n.data.editor;
+            e.caret = charBoundary(copy, e.caret);
+            e.anchor = charBoundary(copy, e.anchor);
+        }
         t.win.markShape(id);
+        t.win.dirty.semantics = true;
+    }
+
+    pub fn setEditor(t: *Txn, id: NodeId, e: node_mod.Editor) Error!void {
+        const n = try t.data(id, .editor);
+        if (std.meta.eql(n.data.editor.editor, e)) return;
+        try t.reserve();
+        t.touch(id);
+        n.data.editor.editor = e;
+        t.win.markLayout(id);
+    }
+
+    /// Moves an editor's caret and selection anchor (byte offsets, snapped
+    /// back to character boundaries). Repaints only.
+    pub fn setSelection(t: *Txn, id: NodeId, caret: u32, anchor: u32, affinity: @import("text").layout.Affinity) Error!void {
+        const n = try t.data(id, .editor);
+        const e = &n.data.editor;
+        const c = charBoundary(e.text.content, caret);
+        const a = charBoundary(e.text.content, anchor);
+        if (e.caret == c and e.anchor == a and e.affinity == affinity) return;
+        try t.reserve();
+        t.touch(id);
+        e.caret = c;
+        e.anchor = a;
+        e.affinity = affinity;
+        t.win.markPaint(id);
+        t.win.dirty.semantics = true;
     }
 
     /// Text style, alignment, and wrapping. Color and alignment only
     /// repaint; wrapping relayouts; anything else reshapes.
     pub fn setTextProps(t: *Txn, id: NodeId, props: node_mod.Text) Error!void {
-        const n = try t.data(id, .text);
+        const n = try t.textNode(id);
         if (!(props.style.size > 0) or !finite(props.style.size)) return error.InvalidArgument;
         try t.reserve();
         const fonts = t.win.fonts;
         const family = try fonts.intern(props.style.family);
         const language = try fonts.intern(props.style.language);
-        const old = n.data.text;
+        const d = n.textData();
+        const old = d.*;
         t.touch(id);
-        n.data.text.props = props;
-        n.data.text.props.style.family = fonts.name(family);
-        n.data.text.props.style.language = fonts.name(language);
-        n.data.text.family = family;
-        n.data.text.language = language;
+        d.props = props;
+        d.props.style.family = fonts.name(family);
+        d.props.style.language = fonts.name(language);
+        d.family = family;
+        d.language = language;
         const os = old.props.style;
         const ns = props.style;
         if (old.family != family or old.language != language or os.size != ns.size or os.weight != ns.weight or os.slant != ns.slant) {
@@ -466,6 +508,13 @@ pub const Txn = struct {
         t.win.markPaint(id);
     }
 };
+
+/// `offset` clamped to `s` and moved back to the start of a UTF-8 sequence.
+fn charBoundary(s: []const u8, offset: u32) u32 {
+    var o: usize = @min(offset, s.len);
+    while (o > 0 and o < s.len and s[o] & 0xc0 == 0x80) o -= 1;
+    return @intCast(o);
+}
 
 pub fn isLayerRoot(v: node_mod.Visual) bool {
     return v.opacity < 1 or !v.transform.eql(.identity) or v.layer;

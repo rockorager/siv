@@ -136,6 +136,10 @@ pub const State = struct {
     text: ?*text_node.Cache = null,
     /// Scroll: the node's offset changed and the compositor must be told.
     scroll_pending: bool = false,
+    /// Editor: horizontal scroll of a single line that keeps the caret in
+    /// view, and the x that vertical caret movement aims for.
+    editor_scroll: f32 = 0,
+    preferred_x: ?f32 = null,
     // Paint.
     paint_dirty: bool = true,
     /// Layer that receives the node's own painting.
@@ -201,9 +205,8 @@ pub fn freeNodeData(gpa: std.mem.Allocator, n: *const Node) void {
     gpa.free(n.semantics.label);
     gpa.free(n.semantics.description);
     switch (n.data) {
-        .text => |t| {
-            gpa.free(t.content);
-        },
+        .text => |t| gpa.free(t.content),
+        .editor => |e| gpa.free(e.text.content),
         .grid => |g| {
             gpa.free(g.columns);
             gpa.free(g.rows);
@@ -298,7 +301,7 @@ pub fn markSubtreeLayout(win: *Window, id: NodeId) void {
         const s = win.state(c);
         s.needs_layout = true;
         s.max_content = -1;
-        if (win.node(c).kind == .text) s.needs_shape = true;
+        if (win.node(c).isText()) s.needs_shape = true;
         win.markSubtreeLayout(c);
     }
 }
@@ -456,7 +459,7 @@ fn scrolled(win: *Window, layer: compositor.LayerId, offset: Point, seq: u64) vo
 fn onFontsLoaded(ctx: *anyopaque) void {
     const win: *Window = @ptrCast(@alignCast(ctx));
     for (win.nodes.items, win.states.items, 0..) |*n, s, i| {
-        if (n.status != .live or n.kind != .text) continue;
+        if (n.status != .live or !n.isText()) continue;
         const c = s.text orelse continue;
         if (c.waiting(win.fonts)) win.markShape(@enumFromInt(i));
     }

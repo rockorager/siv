@@ -39,7 +39,7 @@ pub const Kind = enum(u8) {
     stack,
     /// A paragraph of text. A leaf.
     text,
-    /// Editable text. Not built yet (D15).
+    /// Editable text with a caret and selection (D15). A leaf.
     editor,
     /// A viewport over block-flow children that scroll on the compositor
     /// thread.
@@ -391,7 +391,7 @@ pub const Data = union(Kind) {
     grid: Grid,
     stack: Stack,
     text: TextData,
-    editor: void,
+    editor: EditorData,
     scroll: Scroll,
     image: Image,
     canvas: Canvas,
@@ -402,6 +402,23 @@ pub const Data = union(Kind) {
             inline else => |k| @unionInit(Data, @tagName(k), if (@FieldType(Data, @tagName(k)) == void) {} else .{}),
         };
     }
+};
+
+pub const Editor = struct {
+    /// Enter inserts a line break and lines wrap; otherwise one line that
+    /// scrolls horizontally to keep the caret visible.
+    multiline: bool = false,
+};
+
+/// An editor's text, settings, and selection (byte offsets at grapheme
+/// boundaries; the caret is `caret`, the selection runs to `anchor`).
+pub const EditorData = struct {
+    text: TextData = .{},
+    editor: Editor = .{},
+    caret: u32 = 0,
+    anchor: u32 = 0,
+    /// Which side of a bidi or wrap boundary the caret is drawn on.
+    affinity: text.layout.Affinity = .downstream,
 };
 
 /// Stored text: content and style with interned family and language.
@@ -453,9 +470,12 @@ pub const Event = union(enum) {
     key: Key,
     focus: FocusChange,
     scroll: ScrollDelta,
+    /// The user edited an editor's text (delivered to the editor only,
+    /// after the edit is committed).
+    change,
 };
 
-pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll };
+pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll, change };
 
 /// Runs at a safe point on the UI thread (D5). Returns true when it handled
 /// the event, which stops it bubbling and suppresses the default action.
@@ -496,6 +516,27 @@ pub const Node = struct {
 
     pub fn handler(n: *const Node, kind: HandlerKind) ?Handler {
         return n.handlers[@intFromEnum(kind)];
+    }
+
+    /// The text of a text or editor node.
+    pub fn textData(n: anytype) switch (@TypeOf(n)) {
+        *Node => *TextData,
+        else => *const TextData,
+    } {
+        return switch (n.kind) {
+            .text => &n.data.text,
+            .editor => &n.data.editor.text,
+            else => unreachable,
+        };
+    }
+
+    pub fn isText(n: *const Node) bool {
+        return n.kind == .text or n.kind == .editor;
+    }
+
+    /// Takes keyboard focus: focusable nodes and editors, unless disabled.
+    pub fn canFocus(n: *const Node) bool {
+        return (n.semantics.focusable or n.kind == .editor) and !n.semantics.disabled;
     }
 };
 

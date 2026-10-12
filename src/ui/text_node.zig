@@ -51,7 +51,7 @@ fn shape(win: *Window, id: NodeId) error{OutOfMemory}!*Cache {
     const c = try cache(win, id);
     const s = win.state(id);
     if (!s.needs_shape and c.paragraph != null) return c;
-    const d = &win.node(id).data.text;
+    const d = win.node(id).textData();
     const fonts = win.fonts;
     const style = d.props.style;
     const language = if (d.language != 0) d.language else win.language;
@@ -80,7 +80,9 @@ fn shape(win: *Window, id: NodeId) error{OutOfMemory}!*Cache {
 /// for another width is reused when its lines would break the same way:
 /// its widest line fits and it was built at least as wide.
 pub fn layoutFor(win: *Window, id: NodeId, width: ?f32) error{OutOfMemory}!?*const text.Layout {
-    if (win.node(id).data.text.content.len == 0) return null;
+    // Empty labels take no space; an empty editor still has a caret line.
+    const n = win.node(id);
+    if (n.kind == .text and n.data.text.content.len == 0) return null;
     const c = try shape(win, id);
     if (c.layout) |*l| {
         const built: f32 = c.layout_width orelse std.math.inf(f32);
@@ -111,7 +113,8 @@ pub fn maxContent(win: *Window, id: NodeId) error{OutOfMemory}!f32 {
 /// The node's current layout (after layout ran).
 pub fn current(win: *const Window, id: NodeId) ?*const text.Layout {
     const c = win.state(id).text orelse return null;
-    if (win.node(id).data.text.content.len == 0) return null;
+    const n = win.node(id);
+    if (n.kind == .text and n.data.text.content.len == 0) return null;
     return if (c.layout) |*l| l else null;
 }
 
@@ -127,7 +130,7 @@ pub fn lineShift(win: *const Window, id: NodeId, line: text.layout.Line, content
     // Left edge of the line's content (without hanging whitespace) now.
     const now = if (line.rtl()) aligned_in - line.width else 0;
     const rtl = win.state(id).rtl;
-    const target: f32 = switch (win.node(id).data.text.props.alignment) {
+    const target: f32 = switch (win.node(id).textData().props.alignment) {
         .start => if (rtl) content_width - line.width else 0,
         .end => if (rtl) 0 else content_width - line.width,
         .center => (content_width - line.width) / 2,

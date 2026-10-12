@@ -39,6 +39,10 @@ pub const Node = struct {
     live: node_mod.Live,
     /// Has an activate handler: AT can invoke its action.
     actionable: bool,
+    /// An editor's text, caret, and selection anchor (byte offsets).
+    value_text: []const u8 = "",
+    caret: ?u32 = null,
+    anchor: ?u32 = null,
 };
 
 pub const Tree = struct {
@@ -107,6 +111,7 @@ pub const Tree = struct {
             if (sem.label.len != 0) {
                 try t.names.appendSlice(win.gpa, sem.label);
             } else if (n.kind == .text) {
+                // An editor's text is its value, not its name.
                 try t.names.appendSlice(win.gpa, n.data.text.content);
             } else if (namedFromContent(role)) {
                 try t.contentText(win, id, start);
@@ -120,7 +125,7 @@ pub const Tree = struct {
                 .name_len = @intCast(t.names.items.len - start),
                 .description = sem.description,
                 .bounds = win.windowRect(id),
-                .focusable = sem.focusable and !sem.disabled,
+                .focusable = n.canFocus(),
                 .focused = win.input.focus == id,
                 .disabled = sem.disabled,
                 .checked = sem.checked,
@@ -130,6 +135,9 @@ pub const Tree = struct {
                 .value = sem.value,
                 .live = sem.live,
                 .actionable = n.handler(.activate) != null and !sem.disabled,
+                .value_text = if (n.kind == .editor) n.data.editor.text.content else "",
+                .caret = if (n.kind == .editor) n.data.editor.caret else null,
+                .anchor = if (n.kind == .editor) n.data.editor.anchor else null,
             });
         }
         var it = win.children(id);

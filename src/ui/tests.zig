@@ -127,7 +127,7 @@ test "aborted transactions leave no trace; failed operations have no effect" {
     try testing.expectError(error.InvalidNode, t.move(b, b, .none)); // cycle
     try testing.expectError(error.InvalidNode, t.remove(.root));
     try testing.expectError(error.InvalidArgument, t.setText(label, "\xff"));
-    try testing.expectError(error.Unsupported, t.create(b, .editor, .none));
+    try testing.expectError(error.Unsupported, t.create(b, .external, .none));
     // Frames wait for the transaction.
     const before = f.win.stats.frames;
     try f.win.frame();
@@ -551,4 +551,128 @@ test "configures are acknowledged by the commit with their layout" {
     try f.frame();
     try testing.expectEqual(@as(u64, 9), f.tc.acked_configure);
     try testing.expectEqual(@as(f32, 2), f.win.scale);
+}
+
+const Keys = struct {
+    f: *Fixture,
+    fn press(k: Keys, sym: u32, mods: @import("platform").Mods) void {
+        k.f.win.handlePlatform(&.{ .key = .{ .window = 0, .seat = 0, .keycode = 0, .keysym = sym, .state = .pressed, .mods = mods, .time = 0, .serial = 0 } });
+    }
+    fn typeText(k: Keys, str: []const u8) void {
+        var ev: @import("platform").Key = .{ .window = 0, .seat = 0, .keycode = 0, .keysym = 0x20, .state = .pressed, .mods = .{}, .time = 0, .serial = 0 };
+        @memcpy(ev.text_buf[0..str.len], str);
+        ev.text_len = @intCast(str.len);
+        k.f.win.handlePlatform(&.{ .key = ev });
+    }
+};
+
+fn countChange(user: ?*anyopaque, _: *ui.Window, _: NodeId, ev: *const ui.Event) bool {
+    const n: *usize = @ptrCast(@alignCast(user));
+    if (ev.* == .change) n.* += 1;
+    return true;
+}
+
+test "editor: typing, deleting, selecting, and change events" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 300, .height = 100 });
+    defer f.deinit();
+    var changes: usize = 0;
+    var t = try f.win.begin();
+    const ed = try box(t, .root, .editor, .{ .padding = .all(4), .align_y = .start });
+    try t.on(ed, .change, .{ .func = countChange, .user = &changes });
+    t.commit();
+    try f.frame();
+    // Editors are focusable without asking, and an empty one has a line.
+    try testing.expect(f.rect(ed)[3] > 8 + 10);
+    const k: Keys = .{ .f = &f };
+    k.press(ui.keysym.tab, .{});
+    try testing.expectEqual(ed, f.win.input.focus);
+
+    k.typeText("hello");
+    k.typeText(" world");
+    try f.frame();
+    const e = &f.win.node(ed).data.editor;
+    try testing.expectEqualStrings("hello world", e.text.content);
+    try testing.expectEqual(@as(u32, 11), e.caret);
+    try testing.expectEqual(@as(usize, 2), changes);
+
+    // Ctrl+Backspace deletes a word; Backspace a grapheme.
+    k.press(0xff08, .{ .ctrl = true });
+    try testing.expectEqualStrings("hello ", e.text.content);
+    k.press(0xff08, .{});
+    try testing.expectEqualStrings("hello", e.text.content);
+    // Shift+Left twice selects "lo"; typing replaces it.
+    k.press(ui.keysym.left, .{ .shift = true });
+    k.press(ui.keysym.left, .{ .shift = true });
+    try testing.expectEqual(@as(u32, 3), e.caret);
+    try testing.expectEqual(@as(u32, 5), e.anchor);
+    k.typeText("p!");
+    try testing.expectEqualStrings("help!", e.text.content);
+    // Ctrl+A then Delete clears; single-line editors ignore Enter.
+    k.press('a', .{ .ctrl = true });
+    k.press(0xffff, .{});
+    try testing.expectEqualStrings("", e.text.content);
+    k.typeText("a\nb");
+    try testing.expectEqualStrings("ab", e.text.content);
+    try f.frame();
+    try testing.expectEqualStrings("ab", f.win.semantics.find(.text_input, "").?.value_text);
+    try testing.expectEqual(@as(?u32, 2), f.win.semantics.find(.text_input, "").?.caret);
+
+    // While the application holds a transaction, edits wait for nothing:
+    // they are dropped rather than mixed into it.
+    t = try f.win.begin();
+    k.typeText("x");
+    t.abort();
+    try testing.expectEqualStrings("ab", e.text.content);
+
+    // A click places the caret: left of the text is offset 0.
+    const r = f.win.windowRect(ed);
+    f.win.handlePlatform(&.{ .pointer_motion = .{ .window = 0, .seat = 0, .x = r.x0 + 4, .y = r.y0 + 8 } });
+    f.win.handlePlatform(&.{ .pointer_button = .{ .window = 0, .seat = 0, .button = 0x110, .pressed = true, .time = 0, .serial = 1 } });
+    f.win.handlePlatform(&.{ .pointer_button = .{ .window = 0, .seat = 0, .button = 0x110, .pressed = false, .time = 0, .serial = 2 } });
+    try testing.expectEqual(@as(u32, 0), e.caret);
+    try f.frame();
+}
+
+test "editor: visual movement through right-to-left text; multiline lines" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 300, .height = 200 });
+    defer f.deinit();
+    const t = try f.win.begin();
+    const ed = try box(t, .root, .editor, .{ .align_y = .start });
+    try t.setEditor(ed, .{ .multiline = true });
+    try t.setText(ed, "ab \u{05d0}\u{05d1}");
+    try t.setSelection(ed, 3, 3, .downstream); // before the Hebrew
+    t.commit();
+    try f.frame();
+    const k: Keys = .{ .f = &f };
+    k.press(ui.keysym.tab, .{});
+    const e = &f.win.node(ed).data.editor;
+    // Right moves visually: into the RTL run from its right edge... the
+    // Hebrew is displayed right to left, so after offset 3 (its logical
+    // start, at its right edge) Right reaches the end of the line.
+    k.press(ui.keysym.right, .{});
+    const after_right = e.caret;
+    k.press(ui.keysym.left, .{});
+    try testing.expect(e.caret != after_right);
+    // End goes to the line's right edge, which in this left-to-right line
+    // is the logical start of the Hebrew run; Ctrl+End to the text's end.
+    k.press(ui.keysym.end, .{});
+    try testing.expectEqual(@as(u32, 3), e.caret);
+    k.press(ui.keysym.home, .{});
+    try testing.expectEqual(@as(u32, 0), e.caret);
+    // Enter splits lines; Down and Up move between them.
+    k.press(ui.keysym.end, .{ .ctrl = true });
+    try testing.expectEqual(@as(u32, 7), e.caret);
+    k.press(ui.keysym.@"return", .{});
+    k.typeText("cd");
+    try testing.expectEqualStrings("ab \u{05d0}\u{05d1}\ncd", e.text.content);
+    try f.frame();
+    const one_line = f.rect(ed)[3];
+    k.press(ui.keysym.up, .{});
+    try testing.expect(e.caret <= 7);
+    k.press(ui.keysym.down, .{});
+    try testing.expect(e.caret >= 8);
+    try f.frame();
+    try testing.expectEqual(one_line, f.rect(ed)[3]);
 }

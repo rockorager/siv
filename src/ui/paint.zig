@@ -22,6 +22,9 @@ const compositor = @import("compositor");
 const Window = @import("Window.zig");
 const node_mod = @import("node.zig");
 const text_node = @import("text_node.zig");
+const text = @import("text");
+const editor = @import("editor.zig");
+const layout = @import("layout.zig");
 const isLayerRoot = @import("txn.zig").isLayerRoot;
 
 const NodeId = node_mod.NodeId;
@@ -631,7 +634,11 @@ fn drawNode(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point
         }
     }
     switch (n.kind) {
-        .text => bounds = bounds.unite(try drawText(st, win, nid, b, off)),
+        .text => bounds = bounds.unite(try drawText(st, win, nid, b, off, 0)),
+        .editor => {
+            try drawEditor(st, win, nid, b, off);
+            bounds = bounds.unite(r);
+        },
         .image => bounds = bounds.unite(try drawImage(win, nid, b, off)),
         .canvas => if (n.data.canvas.draw) |draw| {
             try b.pushLayer(.{ .transform = .translate(off.x, off.y), .clip = .{ .shape = .{ .rect = .xywh(0, 0, s.size.w, s.size.h) } } });
@@ -664,15 +671,51 @@ fn growRadii(r: raster.Radii, d: f32) raster.Radii {
     return .{ .tl = f(r.tl, d), .tr = f(r.tr, d), .br = f(r.br, d), .bl = f(r.bl, d) };
 }
 
-fn drawText(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point) DrawError!Rect {
+/// Selection, text, and (when focused) caret, clipped to the content box
+/// and scrolled to keep the caret in view.
+fn drawEditor(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point) DrawError!void {
+    const l = text_node.current(win, nid) orelse return;
+    const n = win.node(nid);
+    const s = win.state(nid);
+    const e = n.data.editor;
+    const pad = n.layout.padding;
+    const cw = s.size.w - pad.horizontal();
+    const box = Rect.xywh(off.x + pad.left(s.rtl), off.y + pad.top, cw, s.size.h - pad.vertical());
+    editor.scrollToCaret(win, nid);
+    const scroll = s.editor_scroll;
+    const focused = win.input.focus == nid;
+    try b.pushLayer(.{ .clip = .{ .shape = .{ .rect = box.outset(layout.caret_width) } } });
+    if (e.caret != e.anchor) {
+        var rects: std.ArrayList(text.layout.Rect) = .empty;
+        defer rects.deinit(win.gpa);
+        try l.selectionRects(win.gpa, @min(e.caret, e.anchor), @max(e.caret, e.anchor), &rects);
+        const color = if (focused) selection_color else selection_color_unfocused;
+        for (rects.items) |r| {
+            const line = l.lines[l.lineAt(r.y + r.height / 2)];
+            const x = box.x0 - scroll + r.x + text_node.lineShift(win, nid, line, cw);
+            try b.fillRect(.xywh(x, box.y0 + r.y, r.width, r.height), .color(color));
+        }
+    }
+    _ = try drawText(st, win, nid, b, off, -scroll);
+    if (focused and !n.semantics.disabled) {
+        const c = editor.caretRect(win, nid, l);
+        try b.fillRect(.xywh(box.x0 - scroll + c.x0, box.y0 + c.y0, c.width(), c.height()), .color(e.text.props.style.color));
+    }
+    try b.popLayer();
+}
+
+pub const selection_color = scene.Color.srgb8(0xbf, 0xdb, 0xfe, 0xff);
+pub const selection_color_unfocused = scene.Color.srgb8(0xe4, 0xe4, 0xe7, 0xff);
+
+fn drawText(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point, dx: f32) DrawError!Rect {
     const l = text_node.current(win, nid) orelse return Rect.empty;
     const n = win.node(nid);
     const s = win.state(nid);
     const pad = n.layout.padding;
     const content_w = s.size.w - pad.horizontal();
-    const ox = off.x + pad.left(s.rtl);
+    const ox = off.x + pad.left(s.rtl) + dx;
     const oy = off.y + pad.top;
-    const color = n.data.text.props.style.color;
+    const color = n.textData().props.style.color;
     var bounds = Rect.empty;
     for (l.lines) |line| {
         const shift = text_node.lineShift(win, nid, line, content_w);

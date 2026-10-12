@@ -29,6 +29,9 @@ const Error = Window.Error;
 
 const inf = std.math.inf(f32);
 
+/// Width of an editor's caret.
+pub const caret_width: f32 = 1.5;
+
 pub const Size = struct {
     w: f32 = 0,
     h: f32 = 0,
@@ -142,10 +145,10 @@ fn compute(win: *Window, id: NodeId, c: Constraints) Error!Size {
         .flex => try flex(win, id, inner, origin),
         .grid => try grid(win, id, inner, origin),
         .stack => try stack(win, id, inner, origin),
-        .text => try textSize(win, id, inner),
+        .text, .editor => try textSize(win, id, inner),
         .image => imageSize(n.data.image, inner),
         .canvas => .{ .w = inner.clampW(n.data.canvas.width), .h = inner.clampH(n.data.canvas.height) },
-        .editor, .external => .{ .w = inner.min_w, .h = inner.min_h },
+        .external => .{ .w = inner.min_w, .h = inner.min_h },
     };
     const size: Size = .{ .w = cc.clampW(content.w + pad.horizontal()), .h = cc.clampH(content.h + pad.vertical()) };
     if (!s.size.eql(size)) {
@@ -233,9 +236,11 @@ pub fn maxContent(win: *Window, id: NodeId) Error!f32 {
             },
             .grid => content = try gridMaxContent(win, id),
             .text => content = try text_node.maxContent(win, id),
+            // Room for the caret after the last character.
+            .editor => content = try text_node.maxContent(win, id) + caret_width,
             .image => content = if (n.data.image.image) |img| @floatFromInt(img.width) else 0,
             .canvas => content = n.data.canvas.width,
-            .editor, .external => {},
+            .external => {},
         }
         break :blk content + l.padding.horizontal();
     };
@@ -764,7 +769,8 @@ fn stack(win: *Window, id: NodeId, inner: Constraints, origin: Point) Error!Size
 // Leaves ---------------------------------------------------------------------
 
 fn textSize(win: *Window, id: NodeId, inner: Constraints) Error!Size {
-    const wrap = win.node(id).data.text.props.wrap;
+    const n = win.node(id);
+    const wrap = if (n.kind == .editor) n.data.editor.editor.multiline and n.data.editor.text.props.wrap else n.data.text.props.wrap;
     const width: ?f32 = if (wrap and std.math.isFinite(inner.max_w)) inner.max_w else null;
     const l = try text_node.layoutFor(win, id, width) orelse return .{ .w = inner.min_w, .h = inner.min_h };
     return .{ .w = if (inner.tightW()) inner.max_w else inner.clampW(l.width), .h = inner.clampH(l.height) };

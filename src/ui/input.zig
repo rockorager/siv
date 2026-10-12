@@ -16,6 +16,7 @@ const platform = @import("platform");
 const Window = @import("Window.zig");
 const node_mod = @import("node.zig");
 const paint = @import("paint.zig");
+const editor = @import("editor.zig");
 
 const NodeId = node_mod.NodeId;
 const Event = node_mod.Event;
@@ -58,6 +59,9 @@ pub const State = struct {
     capture: NodeId = .none,
     /// The activatable node a primary press went to.
     pressed: NodeId = .none,
+    /// An editor whose selection follows the pointer while the primary
+    /// button is held.
+    selecting: NodeId = .none,
     mods: platform.Mods = .{},
 
     pub fn deinit(st: *State, gpa: std.mem.Allocator) void {
@@ -72,6 +76,7 @@ pub const State = struct {
         }
         if (st.capture == id) st.capture = .none;
         if (st.pressed == id) st.pressed = .none;
+        if (st.selecting == id) st.selecting = .none;
         for (st.hover.items, 0..) |h, i| if (h == id) {
             st.hover.shrinkRetainingCapacity(i);
             break;
@@ -85,9 +90,7 @@ pub const State = struct {
 };
 
 pub fn canFocus(win: *const Window, id: NodeId) bool {
-    if (!win.isLive(id)) return false;
-    const n = win.node(id);
-    return n.semantics.focusable and !n.semantics.disabled;
+    return win.isLive(id) and win.node(id).canFocus();
 }
 
 fn activatable(win: *const Window, id: NodeId) bool {
@@ -269,6 +272,7 @@ pub fn handle(win: *Window, event: *const platform.Event) void {
             const target = if (st.capture != .none) st.capture else hitTest(win, st.pointer.?);
             updateHover(win, if (st.capture != .none) hitTest(win, st.pointer.?) else target);
             if (target != .none) _ = bubblePointer(win, target, .move, .primary);
+            if (st.selecting != .none and win.isLive(st.selecting)) editor.pointerDrag(win, st.selecting, st.pointer.?);
         },
         .pointer_leave => {
             updateHover(win, .none);
@@ -324,12 +328,17 @@ fn pointerButton(win: *Window, code: u32, pressed: bool) void {
         var cur = target;
         while (cur != .none and !canFocus(win, cur)) cur = win.node(cur).parent;
         if (cur != .none) setFocus(win, cur, false);
+        if (win.node(target).kind == .editor and canFocus(win, target)) {
+            editor.pointerDown(win, target, p, st.mods.shift);
+            st.selecting = target;
+        }
         cur = target;
         while (cur != .none and win.isLive(cur) and !activatable(win, cur)) cur = win.node(cur).parent;
         st.pressed = cur;
     } else {
         const target = if (st.capture != .none) st.capture else hitTest(win, p);
         st.capture = .none;
+        if (button == .primary) st.selecting = .none;
         const pressed_node = st.pressed;
         st.pressed = .none;
         if (target == .none) return;
@@ -352,6 +361,7 @@ fn key(win: *Window, k: *const platform.Key) void {
         .text = k.text(),
     } };
     if (bubble(win, target, .key, &ev)) return;
+    if (target != .root and win.isLive(target) and win.node(target).kind == .editor and editor.key(win, target, k)) return;
     if (k.state == .released or k.composing) return;
     switch (k.keysym) {
         keysym.tab, keysym.iso_left_tab => traverse(win, k.keysym == keysym.tab and !k.mods.shift),
