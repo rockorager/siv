@@ -974,6 +974,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       placements: `below` (menus: start edge, flip up, slide sideways,
       shrink), `beside` (submenus: end edge, flip to the start side), and
       `tooltip` (centered below). In RTL they mirror.
+    - In the C API (D22), `siv_popup_create` makes a popup window with its
+      tree and `siv_popup_show` maps it, sized to its content unless a
+      size was given; its `close_requested` arrives at the popup's
+      `on_event`.
     - The headless backend places popups with the same rules
       (`platform.positioner.place`: flip, then slide, then resize, per
       axis) against its output and simulates grab dismissal; the sway
@@ -1618,9 +1622,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     primitive first. Primitives added this way: hidden nodes
     (`SIV_VISUAL_HIDDEN`), modal nodes (`SIV_SEMANTICS_MODAL`), the value
     step, editor placeholders, transitions, themed colors and text sizes
-    (D29), default handlers, `siv_emit`, node data, tree navigation
-    (`siv_node_get_related`, `siv_node_get_window`, `siv_node_is_rtl`),
-    `siv_txn_fail`, one-shot timers, and the `set_value` and `select` events.
+    (D29), default handlers and default layouts, `siv_emit`, node data,
+    tree navigation (`siv_node_get_related`, `siv_node_get_window`,
+    `siv_node_get_label`, `siv_node_is_rtl`), `siv_txn_fail`, one-shot
+    timers, popups (D17), and the `set_value`, `select`, and `close`
+    events.
   - **Creating:** one builder per widget, a transaction operation like the
     primitive builders (D27): `siv_button(txn, parent, &desc)` appends the
     widget and returns its root node, or 0 once the transaction has failed
@@ -1652,6 +1658,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     a stock widget never takes a handler slot away from it, and an
     application overrides a behavior by returning true. Widgets report
     their own events with `siv_emit`, which runs the same two slots.
+  - **Layout defaults.** `siv_set_layout` replaces a node's whole layout
+    (D27), which would wipe a widget's padding and least sizes the moment
+    an application positions the widget. So a node can also have a
+    default layout (`siv_set_default_layout`): fields its layout leaves
+    zero take the default's (a size is one field, padding goes side by
+    side, flags combine). Widgets put their metrics there and the
+    application's `siv_set_layout` adds to them. Visuals stay the
+    widget's: it restyles them on hover, press, and state changes.
   - **State lives with the node.** `siv_set_data` gives a node zeroed
     memory under a caller-chosen key, from the application's allocator
     (D2), freed with the node or when the transaction that made it aborts;
@@ -1666,6 +1680,41 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     with a value accept `set_value`: assistive technology sets a range's
     value through AT-SPI's Value interface, which the bridge forwards
     (D18), clamped and stepped by the widget like a key press.
+  - **Popups and overlays.** Menus and popovers are popups (D17) made
+    with the public `siv_popup_create`; dialogs and toasts are overlays
+    in the window's own tree.
+    - A popup is created with its tree but mapped only by
+      `siv_popup_show`, so that its content exists first and it can size
+      to it (the root measured with loose constraints, at most the
+      parent's width): the platform needs a popup's size when it is
+      created. Showing takes the grab with the parent's last press or key
+      serial, so it is called while handling that input; destroying a
+      window destroys its popups first, and popups do not keep the
+      application running.
+    - A menu is a model in the tree (`siv_menu`, or the one inside a
+      `siv_menu_button`): a node that takes no space with one hidden child
+      per item, so items are nodes the application relabels, disables,
+      and removes. `siv_menu_open` builds the popup from the model each
+      time. Choosing reports `select` with the item's position (separators
+      count) after the popup is gone; Up, Down, Home, End, Enter, Space,
+      a mnemonic keysym per item, and Escape work as in WAI-ARIA's menu.
+      Submenus are not built yet.
+    - A popover is a popup whose root is a card with a content part.
+      Dialogs are modal overlays over a parent stack (a scrim and a card
+      with title, text, content, and actions parts) that take focus.
+      Toasts are live regions at the bottom of a parent stack that fade.
+      All three report `close` (Escape, a click outside or on the scrim,
+      a timeout); the default handler closes them, and an application's
+      `siv_on` handler that returns true keeps them.
+    - Parts the application fills are reached with
+      `siv_widget_get_part` (dialog content and actions, popover content,
+      tabs and panels, split panes, a menu button's menu).
+  - Tabs show one panel at a time by hiding the others, so panels keep
+    their state, with roving focus and automatic activation. Split panes
+    are a start pane of a set size, a divider that is a focusable
+    separator with the size as its value, and an end pane taking the
+    rest; the largest size depends on layout, so it reaches assistive
+    technology from the first focus or move.
 - **Non-goal:** a full document model with embedded tables and images.
 
 ### D23. Lua 5.5

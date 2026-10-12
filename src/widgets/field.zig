@@ -48,7 +48,7 @@ pub export fn siv_text_field(txn: Txn, parent: Node, desc: ?*const siv.TextField
 pub fn apply(txn: Txn, st: *Field) void {
     const h = st.hdr;
     const min_h: f32 = if (st.multiline) @as(f32, @floatFromInt(st.rows)) * tk.line_height + 2 * tk.pad_y else tk.control_height;
-    _ = c.siv_set_layout(txn, st.root, &.{
+    _ = c.siv_set_default_layout(txn, st.root, &.{
         .min_width = tk.field_min_width,
         .min_height = min_h,
         .padding = .{ .start = tk.field_pad_x, .end = tk.field_pad_x, .top = tk.pad_y + 1, .bottom = tk.pad_y + 1 },

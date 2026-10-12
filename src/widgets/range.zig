@@ -121,7 +121,7 @@ fn corners(v: f32) siv.Corners {
 }
 
 fn buildSlider(txn: Txn, r: *Range) void {
-    _ = c.siv_set_layout(txn, r.root, &.{ .min_width = tk.slider_min_width, .height = px(tk.slider_height) });
+    _ = c.siv_set_default_layout(txn, r.root, &.{ .min_width = tk.slider_min_width, .height = px(tk.slider_height) });
     const track = c.siv_box(txn, r.root);
     _ = c.siv_set_layout(txn, track, &.{ .height = px(tk.track) });
     _ = c.siv_set_visual(txn, track, &.{ .radius = corners(tk.track / 2), .background_token = .track });
@@ -140,7 +140,7 @@ fn buildSlider(txn: Txn, r: *Range) void {
 }
 
 fn buildProgress(txn: Txn, r: *Range) void {
-    _ = c.siv_set_layout(txn, r.root, &.{ .min_width = tk.progress_min_width, .height = px(tk.progress_height) });
+    _ = c.siv_set_default_layout(txn, r.root, &.{ .min_width = tk.progress_min_width, .height = px(tk.progress_height) });
     _ = c.siv_set_visual(txn, r.root, &.{ .radius = corners(tk.progress_height / 2), .background_token = .track, .flags = .{ .clip = true } });
     const row = c.siv_flex(txn, r.root, &.{ .axis = .row });
     _ = c.siv_set_layout(txn, row, &.{ .height = px(tk.progress_height) });

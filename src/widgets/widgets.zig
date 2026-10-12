@@ -28,13 +28,18 @@ pub const toggle = @import("toggle.zig");
 pub const radio = @import("radio.zig");
 pub const field = @import("field.zig");
 pub const range = @import("range.zig");
+pub const menu = @import("menu.zig");
+pub const dialog = @import("dialog.zig");
+pub const tabs = @import("tabs.zig");
+pub const split = @import("split.zig");
+pub const toast = @import("toast.zig");
 
 const c = siv.c;
 const Node = siv.Node;
 const Txn = siv.Txn;
 
 /// The files that export schema functions, for src/abi/abi.zig.
-pub const implementations = .{ @This(), button, toggle, radio, field, range };
+pub const implementations = .{ @This(), button, toggle, radio, field, range, menu, dialog, tabs, split, toast };
 
 var key_byte: u8 = 0;
 
@@ -54,6 +59,18 @@ pub const Kind = enum(u8) {
     slider,
     spin_button,
     progress_bar,
+    menu,
+    menu_button,
+    menu_item,
+    /// A menu item's row in its popup.
+    menu_row,
+    /// A popover's popup root.
+    popover,
+    dialog,
+    tabs,
+    tab,
+    split_pane,
+    toast,
 };
 
 /// The first field of every widget's state.
@@ -154,6 +171,63 @@ pub fn labelOf(node: Node, buf: []u8) []const u8 {
     return buf[0..end];
 }
 
+pub fn windowOf(node: Node) siv.Window {
+    var win: siv.Window = .null;
+    _ = c.siv_node_get_window(node, &win);
+    return win;
+}
+
+pub fn appOf(window: siv.Window) siv.App {
+    var app: siv.App = .null;
+    _ = c.siv_window_get_app(window, &app);
+    return app;
+}
+
+/// Whether a window handle is still valid (a popup may have been
+/// dismissed).
+pub fn windowAlive(window: siv.Window) bool {
+    return window != .null and appOf(window) != .null;
+}
+
+/// A node handle as callback user data, for callbacks that may outlive
+/// the node (timers, popups): looking the handle up again is safe, since
+/// a stale handle is an error, never another node.
+pub fn handleData(node: Node) ?*anyopaque {
+    return @ptrFromInt(@backingInt(node));
+}
+
+pub fn dataHandle(ud: ?*anyopaque) Node {
+    return @fromBackingInt(@intFromPtr(ud));
+}
+
+pub fn corners(r: f32) siv.Corners {
+    return .{ .top_start = r, .top_end = r, .bottom_end = r, .bottom_start = r };
+}
+
+pub fn px(v: f32) siv.Dimension {
+    return .{ .unit = .px, .value = v };
+}
+
+pub fn color(window: siv.Window, token: siv.ColorToken) siv.Color {
+    var col: siv.Color = .{ .r = 0, .g = 0, .b = 0, .a = 1 };
+    _ = c.siv_window_get_color(window, token, &col);
+    return col;
+}
+
+/// A check mark, or a dash for mixed, stroked in `col` (check boxes and
+/// checkable menu items).
+pub fn drawCheck(draw: siv.Draw, width: f32, height: f32, col: siv.Color, mixed: bool) void {
+    if (mixed) {
+        _ = c.siv_draw_move_to(draw, width * 0.27, height * 0.5);
+        _ = c.siv_draw_line_to(draw, width * 0.73, height * 0.5);
+    } else {
+        _ = c.siv_draw_move_to(draw, width * 0.24, height * 0.53);
+        _ = c.siv_draw_line_to(draw, width * 0.43, height * 0.71);
+        _ = c.siv_draw_line_to(draw, width * 0.77, height * 0.31);
+    }
+    _ = c.siv_draw_stroke(draw, &.{ .width = tokens.check_stroke, .join = .round, .cap = .round }, &.{ .color = col });
+}
+
 pub fn related(node: Node, rel: siv.Relation) Node {
     var out: Node = .null;
     _ = c.siv_node_get_related(node, rel, &out);
@@ -161,8 +235,8 @@ pub fn related(node: Node, rel: siv.Relation) Node {
 }
 
 /// A label's text style.
-pub fn textStyle(color: siv.ColorToken, role: siv.TextRole) siv.TextStyleDesc {
-    return .{ .color_token = color, .size_role = role, .flags = .{ .no_wrap = true } };
+pub fn textStyle(token: siv.ColorToken, role: siv.TextRole) siv.TextStyleDesc {
+    return .{ .color_token = token, .size_role = role, .flags = .{ .no_wrap = true } };
 }
 
 /// Clamps to the range and snaps to min plus multiples of step.
@@ -216,8 +290,22 @@ pub export fn siv_widget_set_label(txn: Txn, node: Node, label: ?[*]const u8, la
         .radio_group => radio.setGroupLabel(txn, @ptrCast(h), s),
         .text_field => field.setLabel(txn, @ptrCast(h), s),
         .slider, .spin_button, .progress_bar => range.setLabel(txn, @ptrCast(h), s),
+        .menu_button => button.setLabel(txn, @ptrCast(h), s),
+        .menu_item => menu.setItemLabel(txn, @ptrCast(h), s),
+        .menu, .popover, .menu_row, .dialog, .tabs, .tab, .split_pane, .toast => setName(txn, h, node, s),
     }
     return c.siv_txn_status(txn);
+}
+
+/// Widgets whose label is only their accessible name.
+fn setName(txn: Txn, h: HeaderPtr, node: Node, s: []const u8) void {
+    switch (h.kind) {
+        .dialog => dialog.setTitle(txn, @ptrCast(h), s),
+        .toast => toast.setText(txn, @ptrCast(h), s),
+        .split_pane => split.setLabel(txn, @ptrCast(h), s),
+        .tabs => tabs.setLabel(txn, @ptrCast(h), s),
+        else => _ = c.siv_set_semantics(txn, node, &.{ .label = s.ptr, .label_len = s.len }),
+    }
 }
 
 pub export fn siv_widget_set_disabled(txn: Txn, node: Node, disabled: bool) siv.Result {
@@ -240,6 +328,11 @@ fn refresh(txn: Txn, h: HeaderPtr) void {
         .radio => radio.apply(txn, @ptrCast(h)),
         .text_field => field.apply(txn, @ptrCast(h)),
         .slider, .spin_button, .progress_bar => range.apply(txn, @ptrCast(h)),
+        .menu_button => button.apply(txn, @ptrCast(h)),
+        .menu_item => {},
+        .tabs => tabs.apply(txn, @ptrCast(h)),
+        .split_pane => split.apply(txn, @ptrCast(h)),
+        .menu, .popover, .menu_row, .dialog, .tab, .toast => {},
     }
 }
 
@@ -247,7 +340,10 @@ pub export fn siv_widget_set_value(txn: Txn, node: Node, value: f64) siv.Result 
     const h = header(node) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
     if (!std.math.isFinite(value)) return c.siv_txn_fail(txn, .error_invalid_argument);
     switch (h.kind) {
-        .button, .text_field, .radio => return c.siv_txn_fail(txn, .error_invalid_argument),
+        .button, .text_field, .radio, .menu, .menu_button, .menu_row, .popover, .dialog, .tab, .toast => return c.siv_txn_fail(txn, .error_invalid_argument),
+        .menu_item => menu.setItemValue(txn, @ptrCast(h), value),
+        .tabs => tabs.select(txn, @ptrCast(h), value),
+        .split_pane => split.setPosition(txn, @ptrCast(h), value),
         .toggle_button => button.setValue(txn, @ptrCast(h), value),
         .check_box, .@"switch" => toggle.setValue(txn, @ptrCast(h), value),
         .radio_group => radio.select(txn, @ptrCast(h), value),
@@ -265,7 +361,10 @@ pub export fn siv_widget_get_value(node: Node, value: ?*f64) siv.Result {
         return if (r != .ok) r else .error_invalid_argument;
     };
     out.* = switch (h.kind) {
-        .button, .text_field, .radio => return .error_invalid_argument,
+        .button, .text_field, .radio, .menu, .menu_button, .menu_row, .popover, .dialog, .tab, .toast => return .error_invalid_argument,
+        .menu_item => menu.itemValue(@ptrCast(h)),
+        .tabs => @floatFromInt(@as(*tabs.Tabs, @ptrCast(h)).selected),
+        .split_pane => @as(*split.Split, @ptrCast(h)).position,
         .toggle_button => button.value(@ptrCast(h)),
         .check_box, .@"switch" => toggle.value(@ptrCast(h)),
         .radio_group => @as(*radio.Group, @ptrCast(h)).selectedValue(),
@@ -280,4 +379,25 @@ pub export fn siv_widget_set_range(txn: Txn, node: Node, min: f64, max: f64, ste
         return c.siv_txn_fail(txn, .error_invalid_argument);
     range.setRange(txn, r, min, max, step);
     return c.siv_txn_status(txn);
+}
+
+pub export fn siv_widget_get_part(node: Node, part: siv.WidgetPart, index: u32, result: ?*Node) siv.Result {
+    const out = result orelse return .error_invalid_argument;
+    const h = header(node) orelse return .error_invalid_argument;
+    const r: Node = switch (part) {
+        .content => switch (h.kind) {
+            .dialog => @as(*dialog.Dialog, @ptrCast(h)).content,
+            .popover => @as(*menu.Popover, @ptrCast(h)).content,
+            else => .null,
+        },
+        .actions => if (h.kind == .dialog) @as(*dialog.Dialog, @ptrCast(h)).actions else .null,
+        .tab, .panel => if (h.kind == .tabs) tabs.part(@ptrCast(h), part == .tab, index) else .null,
+        .start => if (h.kind == .split_pane) @as(*split.Split, @ptrCast(h)).start else .null,
+        .end => if (h.kind == .split_pane) @as(*split.Split, @ptrCast(h)).end else .null,
+        .menu => if (h.kind == .menu_button) @as(*button.Button, @ptrCast(h)).menu else .null,
+        else => return .error_unsupported,
+    };
+    if (r == .null) return .error_invalid_argument;
+    out.* = r;
+    return .ok;
 }

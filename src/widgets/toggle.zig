@@ -135,19 +135,7 @@ pub fn apply(txn: Txn, st: *Toggle) void {
 fn drawMark(ud: ?*anyopaque, node: Node, draw: siv.Draw, width: f32, height: f32) callconv(.c) void {
     const st: *Toggle = @ptrCast(@alignCast(ud.?));
     if (st.state == .off) return;
-    var win: siv.Window = .null;
-    _ = c.siv_node_get_window(node, &win);
-    var color: siv.Color = .{ .r = 1, .g = 1, .b = 1, .a = 1 };
-    _ = c.siv_window_get_color(win, if (st.hdr.disabled) .disabled_fg else .accent_fg, &color);
-    if (st.state == .on) {
-        _ = c.siv_draw_move_to(draw, width * 0.24, height * 0.53);
-        _ = c.siv_draw_line_to(draw, width * 0.43, height * 0.71);
-        _ = c.siv_draw_line_to(draw, width * 0.77, height * 0.31);
-    } else {
-        _ = c.siv_draw_move_to(draw, width * 0.27, height * 0.5);
-        _ = c.siv_draw_line_to(draw, width * 0.73, height * 0.5);
-    }
-    _ = c.siv_draw_stroke(draw, &.{ .width = tk.check_stroke, .join = .round, .cap = .round }, &.{ .color = color });
+    w.drawCheck(draw, width, height, w.color(w.windowOf(node), if (st.hdr.disabled) .disabled_fg else .accent_fg), st.state == .mixed);
 }
 
 pub fn setLabel(txn: Txn, st: *Toggle, label: []const u8) void {

@@ -19,6 +19,10 @@ pub const Button = extern struct {
     on: bool = false,
     root: Node,
     label: Node,
+    /// Menu buttons: the menu.
+    menu: Node = .null,
+    /// Menu buttons: the menu is open.
+    expanded: bool = false,
 };
 
 pub export fn siv_push_button(txn: Txn, parent: Node, desc: ?*const siv.ButtonDesc) Node {
@@ -36,6 +40,46 @@ pub export fn siv_toggle_button(txn: Txn, parent: Node, desc: ?*const siv.Toggle
     return build(txn, parent, .toggle_button, label, .default, d.flags.disabled, d.checked == .on);
 }
 
+pub export fn siv_menu_button(txn: Txn, parent: Node, desc: ?*const siv.ButtonDesc) Node {
+    const d = w.readDesc(siv.ButtonDesc, desc) orelse return w.fail(txn, .error_invalid_argument);
+    if (@backingInt(d.style) < 0 or @backingInt(d.style) > 3) return w.fail(txn, .error_unsupported);
+    if (!validFlags(d.flags)) return w.fail(txn, .error_unsupported);
+    const label = w.str(d.label, d.label_len) orelse return w.fail(txn, .error_invalid_argument);
+    const root = build(txn, parent, .menu_button, label, d.style, d.flags.disabled, false);
+    if (root == .null) return .null;
+    const st = w.stateOf(Button, root, &.{.menu_button}).?;
+    st.menu = @import("menu.zig").createModel(txn, root, label, root);
+    w.onDefault(txn, root, .activate, onMenuActivate, st);
+    w.onDefault(txn, root, .key, onMenuKey, st);
+    return root;
+}
+
+fn onMenuActivate(ud: ?*anyopaque, node: Node, _: ?*const siv.Event) callconv(.c) bool {
+    const st: *Button = @ptrCast(@alignCast(ud.?));
+    if (st.hdr.disabled) return false;
+    _ = c.siv_menu_open(st.menu, node);
+    return true;
+}
+
+/// Down opens the menu too, as in WAI-ARIA's menu button.
+fn onMenuKey(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) bool {
+    const st: *Button = @ptrCast(@alignCast(ud.?));
+    const e = ev.?;
+    if (st.hdr.disabled or !e.flags.pressed or e.keysym != w.keysym.down) return false;
+    _ = c.siv_menu_open(st.menu, node);
+    return true;
+}
+
+/// Shows whether a menu button's menu is open.
+pub fn setExpanded(button: Node, expanded: bool) void {
+    const st = w.stateOf(Button, button, &.{.menu_button}) orelse return;
+    if (st.expanded == expanded) return;
+    st.expanded = expanded;
+    const txn = w.begin(w.windowOf(button)) orelse return;
+    apply(txn, st);
+    _ = w.commit(txn);
+}
+
 pub fn validFlags(f: siv.WidgetFlags) bool {
     return @as(u32, @bitCast(f)) & ~@as(u32, 1) == 0;
 }
@@ -43,7 +87,7 @@ pub fn validFlags(f: siv.WidgetFlags) bool {
 fn build(txn: Txn, parent: Node, kind: w.Kind, label: []const u8, style: siv.ButtonStyle, disabled: bool, on: bool) Node {
     const root = c.siv_flex(txn, parent, &.{ .axis = .row, .justify = .center, .align_items = .center });
     if (root == .null) return .null;
-    _ = c.siv_set_layout(txn, root, &.{
+    _ = c.siv_set_default_layout(txn, root, &.{
         .min_height = tk.control_height,
         .padding = .{ .start = tk.pad_x, .end = tk.pad_x, .top = tk.pad_y, .bottom = tk.pad_y },
     });
@@ -88,6 +132,7 @@ pub fn apply(txn: Txn, st: *Button) void {
     _ = c.siv_set_semantics(txn, st.root, &.{
         .role = if (h.kind == .toggle_button) .toggle_button else .button,
         .pressed = if (h.kind == .toggle_button) (if (st.on) .on else .off) else .unset,
+        .expanded = if (h.kind == .menu_button) (if (st.expanded) .on else .off) else .unset,
         .flags = .{ .focusable = !h.disabled, .disabled = h.disabled },
     });
 }
