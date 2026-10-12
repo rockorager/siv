@@ -572,3 +572,162 @@ test "lifecycle: single instance, forwarding, and D-Bus activation through dbus-
     try testing.expectEqual(@as(c_int, 0), status);
     try waitLog(log, "exit primary SIV_OK\n");
 }
+
+// Menus on popups (D17, D22) ---------------------------------------------------
+
+const MenuLog = struct {
+    selects: u32 = 0,
+    index: u32 = 0,
+
+    fn onSelect(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) bool {
+        const log: *MenuLog = @ptrCast(@alignCast(user_data));
+        log.selects += 1;
+        log.index = event.?.index;
+        return false;
+    }
+};
+
+/// The application's shown popups, in creation order.
+fn shownPopups(app: t.App, out: []*A.Window) !usize {
+    const self = try A.App.get(@backingInt(app));
+    var n: usize = 0;
+    for (self.windows.items) |slot| if (slot) |w| {
+        if (!w.dead and w.parent != null and w.win.shown and n < out.len) {
+            out[n] = w;
+            n += 1;
+        }
+    };
+    return n;
+}
+
+fn waitPopups(app: t.App, count: usize) !void {
+    const deadline = Loop.now() + 10 * std.time.ns_per_s;
+    var ps: [4]*A.Window = undefined;
+    while (true) {
+        const n = try shownPopups(app, &ps);
+        // Shown and placed by the compositor.
+        var placed = n == count;
+        for (ps[0..n]) |p| placed = placed and p.win.state.popup != null and p.win.presented_seq > 0;
+        if (placed) return;
+        if (Loop.now() > deadline) return error.Timeout;
+        try ok(A.siv_app_dispatch(app, 10));
+    }
+}
+
+fn typeKeys(sway: *const Sway, app: t.App, argv: [*:null]const ?[*:0]const u8) !void {
+    const pid = try sway.spawnClient(argv);
+    var status: c_int = 0;
+    while (std.c.waitpid(pid, &status, std.c.W.NOHANG) == 0) try ok(A.siv_app_dispatch(app, 10));
+    try testing.expectEqual(0, status);
+}
+
+test "menus on sway: a click opens a grabbing popup, keys reach it, submenus open beside their item, and a click outside dismisses" {
+    var sway: Sway = .{};
+    try sway.start();
+    defer sway.stop();
+
+    var app: t.App = .null;
+    try ok(A.siv_app_create(&.{ .display = sway.display.ptr, .display_len = sway.display.len, .flags = .{ .no_system_fonts = true, .reduced_motion = true } }, &app));
+    defer _ = A.siv_app_destroy(app);
+    try ok(A.siv_app_add_font(app, "Droid", 5, text.font.test_fonts.latin.ptr, text.font.test_fonts.latin.len));
+    try ok(A.siv_app_set_default_font(app, "Droid", 5));
+    var window: t.Window = .null;
+    try ok(A.siv_window_create(app, &.{ .title = "menus", .title_len = 5 }, &window));
+
+    const c = t.c;
+    var log: MenuLog = .{};
+    var sub_log: MenuLog = .{};
+    var txn: t.Txn = .null;
+    try ok(T.siv_txn_begin(window, &txn));
+    const col = c.siv_flex(txn, A.siv_window_root(window), &.{ .axis = .column, .align_items = .start });
+    _ = c.siv_set_layout(txn, col, &.{ .padding = .{ .start = 20, .top = 20 } });
+    const button = c.siv_menu_button(txn, col, &.{ .label = "File", .label_len = 4 });
+    const recent = c.siv_menu(txn, col, &.{ .label = "Recent", .label_len = 6 });
+    _ = c.siv_menu_item(txn, recent, &.{ .label = "a.txt", .label_len = 5 });
+    _ = c.siv_menu_item(txn, recent, &.{ .label = "b.txt", .label_len = 5 });
+    _ = c.siv_menu_item(txn, button, &.{ .label = "New", .label_len = 3 });
+    _ = c.siv_menu_item(txn, button, &.{ .label = "Recent", .label_len = 6, .submenu = recent });
+    _ = c.siv_menu_item(txn, button, &.{ .label = "Quit", .label_len = 4 });
+    _ = c.siv_on(txn, button, .select, MenuLog.onSelect, null, &log);
+    _ = c.siv_on(txn, recent, .select, MenuLog.onSelect, null, &sub_log);
+    try ok(T.siv_txn_commit(txn));
+    const w = try A.App.window(@backingInt(window), A.window_tag);
+    try dispatchUntil(app, w, struct {
+        fn f(win: *A.Window) bool {
+            return win.win.presented_seq > 0 and win.win.settled() and win.win.ui.width == 1280;
+        }
+    }.f);
+
+    var vp = try VirtualPointer.connect(&sway);
+    defer vp.deinit();
+    try vp.sync();
+    // A keyboard that exists before the menu opens, as on a real seat:
+    // one that appears while a popup holds the grab gets focus on the
+    // toplevel. An idle wtype provides it.
+    const keyboard = try sway.spawnClient(&[_:null]?[*:0]const u8{ "wtype", "-s", "60000" });
+    defer {
+        _ = std.c.kill(keyboard, std.c.SIG.TERM);
+        var status: c_int = 0;
+        _ = std.c.waitpid(keyboard, &status, 0);
+    }
+    try dispatchUntil(app, w, struct {
+        fn f(win: *A.Window) bool {
+            return win.uiWin().input.keyboard;
+        }
+    }.f);
+    var r: t.Rect = undefined;
+    try ok(T.siv_node_get_rect(button, &r));
+    const click = struct {
+        fn at(p: *VirtualPointer, x: f64, y: f64) !void {
+            p.moveTo(@intFromFloat(x), @intFromFloat(y));
+            p.button(0x110, true);
+            p.button(0x110, false);
+            try p.sync();
+        }
+    }.at;
+
+    // A real click opens the menu with a grab, below the button.
+    try click(&vp, r.x + r.width / 2, r.y + r.height / 2);
+    try waitPopups(app, 1);
+    var ps: [4]*A.Window = undefined;
+    _ = try shownPopups(app, &ps);
+    const top = ps[0];
+    const at = top.win.state.popup.?;
+    try testing.expect(@as(f64, @floatFromInt(at.x)) >= r.x - 8 and @as(f64, @floatFromInt(at.x)) <= r.x + r.width);
+    try testing.expect(@as(f64, @floatFromInt(at.y)) >= r.y + r.height - 1);
+
+    // The grab gives the popup the keyboard: Down then Right open the
+    // submenu, focused, beside its item on the end side.
+    try typeKeys(&sway, app, &[_:null]?[*:0]const u8{ "wtype", "-k", "Down", "-k", "Right" });
+    try waitPopups(app, 2);
+    _ = try shownPopups(app, &ps);
+    const sub = ps[1];
+    const sat = sub.win.state.popup.?;
+    try testing.expect(sat.x >= @as(i32, @intFromFloat(top.uiWin().width)) - 8);
+    const sub_tree = try sub.uiWin().semanticsTree();
+    try testing.expectEqualStrings("a.txt", sub_tree.name(sub_tree.focused().?.*));
+
+    // Enter chooses in the submenu and closes the chain.
+    try typeKeys(&sway, app, &[_:null]?[*:0]const u8{ "wtype", "-k", "Return" });
+    try waitPopups(app, 0);
+    try testing.expectEqual(@as(u32, 1), sub_log.selects);
+    try testing.expectEqual(@as(u32, 0), sub_log.index);
+    try testing.expectEqual(@as(u32, 0), log.selects);
+
+    // Hovering the item opens the submenu without a grab under a grabbing
+    // popup; a click outside dismisses the whole chain.
+    try click(&vp, r.x + r.width / 2, r.y + r.height / 2);
+    try waitPopups(app, 1);
+    _ = try shownPopups(app, &ps);
+    const top2 = ps[0];
+    const tree2 = try top2.uiWin().semanticsTree();
+    const item = tree2.find(.menu_item, "Recent").?.bounds;
+    const origin = top2.win.state.popup.?;
+    vp.moveTo(@intFromFloat(@as(f64, @floatFromInt(origin.x)) + (item.x0 + item.x1) / 2), @intFromFloat(@as(f64, @floatFromInt(origin.y)) + (item.y0 + item.y1) / 2));
+    try vp.sync();
+    try waitPopups(app, 2);
+    try click(&vp, 900, 600);
+    try waitPopups(app, 0);
+    try testing.expectEqual(@as(u32, 0), log.selects);
+    try testing.expectEqual(@as(u32, 1), sub_log.selects);
+}
