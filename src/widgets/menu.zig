@@ -31,6 +31,14 @@ pub const Menu = extern struct {
     owner: Node,
     /// The open popup, or null.
     popup: siv.Window = .null,
+    /// The popup took the keyboard (it was opened by a press or key, not
+    /// by hovering over its item).
+    grabbed: bool = false,
+    /// Open as a submenu: the menu it came from and the row there.
+    parent: Node = .null,
+    parent_row: Node = .null,
+    /// The submenu open from this menu, if any.
+    child: Node = .null,
 };
 
 pub const Item = extern struct {
@@ -42,6 +50,7 @@ pub const Item = extern struct {
     root: Node,
     label: Node,
     shortcut: Node,
+    submenu: Node = .null,
 };
 
 /// A menu item's row in an open popup.
@@ -54,6 +63,9 @@ pub const Row = extern struct {
     label: Node,
     shortcut: Node,
     mark: Node = .null,
+    submenu: Node = .null,
+    arrow: Node = .null,
+    focused: bool = false,
 };
 
 pub const Popover = extern struct {
@@ -96,6 +108,10 @@ pub export fn siv_menu_item(txn: Txn, menu_node: Node, desc: ?*const siv.MenuIte
     if (@as(u32, @bitCast(d.flags)) & ~@as(u32, 15) != 0) return w.fail(txn, .error_unsupported);
     const label = w.str(d.label, d.label_len) orelse return w.fail(txn, .error_invalid_argument);
     const shortcut = w.str(d.shortcut, d.shortcut_len) orelse return w.fail(txn, .error_invalid_argument);
+    if (d.submenu != .null) {
+        const sub = w.stateOf(Menu, d.submenu, &.{.menu}) orelse return w.fail(txn, .error_invalid_argument);
+        if (sub.root == m.root) return w.fail(txn, .error_invalid_argument);
+    }
     const root = c.siv_box(txn, m.root);
     if (root == .null) return .null;
     const st = w.create(Item, txn, root) orelse return .null;
@@ -108,6 +124,7 @@ pub export fn siv_menu_item(txn: Txn, menu_node: Node, desc: ?*const siv.MenuIte
         .root = root,
         .label = c.siv_text(txn, root, label.ptr, label.len),
         .shortcut = c.siv_text(txn, root, shortcut.ptr, shortcut.len),
+        .submenu = d.submenu,
     };
     _ = c.siv_set_semantics(txn, root, &.{ .role = if (st.separator) .separator else .menu_item });
     return root;
@@ -141,14 +158,30 @@ fn textOf(node: Node, buf: []u8) []const u8 {
 
 pub export fn siv_menu_open(menu_node: Node, anchor: Node) siv.Result {
     const m = menuOf(menu_node) orelse return .error_invalid_argument;
-    if (w.windowAlive(m.popup)) return .ok;
     const at = if (anchor != .null) anchor else w.related(m.owner, .parent);
+    return openMenu(m, at, null, true, true);
+}
+
+/// Shows `m` in a popup against `at`: below it, or beside it for a
+/// submenu of `parent`. With `grab` the popup takes the keyboard (it
+/// answers a press or key); `focus` focuses its first enabled item.
+fn openMenu(m: *Menu, at: Node, parent: ?*Menu, grab: bool, focus: bool) siv.Result {
+    if (w.windowAlive(m.popup)) {
+        if (!grab or m.grabbed) {
+            if (focus) focusFirst(m);
+            return .ok;
+        }
+        // Opened by hovering, now asked for by a key or press: again, with
+        // the keyboard.
+        closeMenu(m);
+    }
     const parent_window = w.windowOf(at);
     if (parent_window == .null) return .error_invalid_argument;
     var popup: siv.Window = .null;
     var r = c.siv_popup_create(parent_window, &.{
         .anchor = at,
-        .placement = .below,
+        .placement = if (parent != null) .beside else .below,
+        .flags = .{ .no_grab = !grab },
         .user_data = w.handleData(m.root),
         .on_event = onMenuPopupEvent,
     }, &popup);
@@ -171,7 +204,6 @@ pub export fn siv_menu_open(menu_node: Node, anchor: Node) siv.Result {
     const col = c.siv_flex(txn, root, &.{ .axis = .column });
     _ = c.siv_set_layout(txn, col, &.{ .min_width = 180, .padding = .{ .start = 4, .end = 4, .top = 4, .bottom = 4 } });
     _ = c.siv_set_semantics(txn, col, &.{ .role = .menu, .label = name.ptr, .label_len = name.len });
-    var first: Node = .null;
     var index: u32 = 0;
     cur = w.related(m.root, .first_child);
     while (cur != .null) : (cur = w.related(cur, .next)) {
@@ -184,8 +216,7 @@ pub export fn siv_menu_open(menu_node: Node, anchor: Node) siv.Result {
             _ = c.siv_set_semantics(txn, sep, &.{ .role = .separator });
             continue;
         }
-        const row = buildRow(txn, col, m, it, index, checkable, &buf);
-        if (first == .null and !it.hdr.disabled) first = row;
+        _ = buildRow(txn, col, m, it, index, checkable, &buf);
     }
     r = c.siv_txn_commit(txn);
     if (r == .ok) r = c.siv_popup_show(popup);
@@ -194,16 +225,73 @@ pub export fn siv_menu_open(menu_node: Node, anchor: Node) siv.Result {
         return r;
     }
     m.popup = popup;
-    if (first != .null) _ = c.siv_node_focus(first);
-    button.setExpanded(m.owner, true);
+    m.grabbed = grab;
+    m.parent = if (parent) |p| p.root else .null;
+    m.parent_row = if (parent != null) at else .null;
+    if (parent) |p| p.child = m.root;
+    if (focus) focusFirst(m);
+    if (parent == null) button.setExpanded(m.owner, true);
     return .ok;
+}
+
+fn focusFirst(m: *Menu) void {
+    if (!w.windowAlive(m.popup)) return;
+    const col = w.related(c.siv_window_root(m.popup), .first_child);
+    focusStep(col, .first_child, false);
+}
+
+/// Closes a menu's popup, and with it the submenus open from it.
+fn closeMenu(m: *Menu) void {
+    var child = m.child;
+    while (child != .null) {
+        const cm = w.stateOf(Menu, child, &.{.menu}) orelse break;
+        cm.popup = .null;
+        cm.parent = .null;
+        child = cm.child;
+        cm.child = .null;
+    }
+    m.child = .null;
+    if (w.windowAlive(m.popup)) _ = c.siv_window_destroy(m.popup);
+    m.popup = .null;
+    if (m.parent != .null) {
+        if (w.stateOf(Menu, m.parent, &.{.menu})) |p| {
+            if (p.child == m.root) p.child = .null;
+            refreshRow(m.parent_row);
+        }
+        m.parent = .null;
+    } else button.setExpanded(m.owner, false);
+}
+
+/// The menu at the top of a chain of submenus.
+fn rootOf(m: *Menu) *Menu {
+    var cur = m;
+    while (cur.parent != .null) cur = w.stateOf(Menu, cur.parent, &.{.menu}) orelse break;
+    return cur;
+}
+
+/// Opens a row's submenu beside it.
+fn openSubmenu(st: *Row, grab: bool, focus: bool) void {
+    const m = w.stateOf(Menu, st.menu, &.{.menu}) orelse return;
+    const sub = w.stateOf(Menu, st.submenu, &.{.menu}) orelse return;
+    if (m.child != .null and m.child != sub.root) {
+        if (w.stateOf(Menu, m.child, &.{.menu})) |old| closeMenu(old);
+    }
+    _ = openMenu(sub, st.root, m, grab, focus);
+    refreshRow(st.root);
+}
+
+fn refreshRow(row: Node) void {
+    const st = w.stateOf(Row, row, &.{.menu_row}) orelse return;
+    const txn = w.begin(w.windowOf(row)) orelse return;
+    applyRow(txn, st, st.focused);
+    _ = w.commit(txn);
 }
 
 fn buildRow(txn: Txn, col: Node, m: *Menu, it: *Item, index: u32, checkable: bool, buf: []u8) Node {
     const row = c.siv_flex(txn, col, &.{ .axis = .row, .align_items = .center, .gap = tk.gap });
     _ = c.siv_set_layout(txn, row, &.{ .min_height = 28, .padding = .{ .start = 10, .end = 10, .top = 2, .bottom = 2 } });
     const st = w.create(Row, txn, row) orelse return .null;
-    st.* = .{ .hdr = .{ .kind = .menu_row, .disabled = it.hdr.disabled }, .index = index, .item = it.root, .menu = m.root, .root = row, .label = .null, .shortcut = .null };
+    st.* = .{ .hdr = .{ .kind = .menu_row, .disabled = it.hdr.disabled }, .index = index, .item = it.root, .menu = m.root, .root = row, .label = .null, .shortcut = .null, .submenu = it.submenu };
     if (checkable) {
         st.mark = c.siv_canvas(txn, row, &.{ .user_data = st, .draw = drawRowMark, .width = 16, .height = 16 });
     }
@@ -213,6 +301,9 @@ fn buildRow(txn: Txn, col: Node, m: *Menu, it: *Item, index: u32, checkable: boo
     const shortcut = textOf(it.shortcut, buf);
     st.shortcut = c.siv_text(txn, row, shortcut.ptr, shortcut.len);
     _ = c.siv_set_visual(txn, st.shortcut, &.{ .flags = .{ .hidden = shortcut.len == 0 } });
+    if (st.submenu != .null) {
+        st.arrow = c.siv_canvas(txn, row, &.{ .user_data = st, .draw = drawArrow, .width = 12, .height = 16 });
+    }
     w.onDefault(txn, row, .pointer, onRowPointer, st);
     w.onDefault(txn, row, .focus, onRowFocus, st);
     w.onDefault(txn, row, .activate, onRowActivate, st);
@@ -230,6 +321,7 @@ fn applyRow(txn: Txn, st: *Row, focused: bool) void {
     _ = c.siv_set_text_style(txn, st.shortcut, &w.textStyle(if (lit) .selection_fg else .muted_fg, .caption));
     const checkable = if (it) |i| i.checkable else false;
     const checked = if (it) |i| i.checked else false;
+    const open = if (w.stateOf(Menu, st.submenu, &.{.menu})) |sub| w.windowAlive(sub.popup) else false;
     // Named by the label alone: the shortcut is not part of the name.
     var buf: [1024]u8 = undefined;
     const label = if (it) |i| textOf(i.label, &buf) else "";
@@ -238,9 +330,22 @@ fn applyRow(txn: Txn, st: *Row, focused: bool) void {
         .label = label.ptr,
         .label_len = label.len,
         .checked = if (checkable) (if (checked) .on else .off) else .unset,
+        // An item with a submenu is expanded while it is open.
+        .expanded = if (st.submenu == .null) .unset else if (open) .on else .off,
         .flags = .{ .focusable = !disabled, .disabled = disabled },
     });
     if (st.mark != .null) _ = c.siv_invalidate(txn, st.mark);
+}
+
+/// A chevron toward the end edge: the item opens a submenu there.
+fn drawArrow(_: ?*anyopaque, node: Node, draw: siv.Draw, width: f32, height: f32) callconv(.c) void {
+    const dir: f32 = if (w.isRtl(node)) -1 else 1;
+    const cx = width / 2;
+    const cy = height / 2;
+    _ = c.siv_draw_move_to(draw, cx - dir * 2, cy - 4);
+    _ = c.siv_draw_line_to(draw, cx + dir * 2, cy);
+    _ = c.siv_draw_line_to(draw, cx - dir * 2, cy + 4);
+    _ = c.siv_draw_stroke(draw, &.{ .width = 1.5, .join = .round, .cap = .round }, &.{ .color = w.color(w.windowOf(node), .muted_fg) });
 }
 
 fn drawRowMark(ud: ?*anyopaque, node: Node, draw: siv.Draw, width: f32, height: f32) callconv(.c) void {
@@ -261,15 +366,24 @@ pub fn cardVisual(txn: Txn, root: Node) void {
     });
 }
 
+/// Hovering focuses the row, opens its submenu (without the keyboard),
+/// and closes a sibling's.
 fn onRowPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
     const st: *Row = @ptrCast(@alignCast(ud.?));
-    if (ev.?.phase == .enter and !st.hdr.disabled) _ = c.siv_node_focus(st.root);
+    if (ev.?.phase != .enter or st.hdr.disabled) return false;
+    _ = c.siv_node_focus(st.root);
+    if (st.submenu != .null) {
+        openSubmenu(st, false, false);
+    } else if (w.stateOf(Menu, st.menu, &.{.menu})) |m| if (m.child != .null) {
+        if (w.stateOf(Menu, m.child, &.{.menu})) |child| closeMenu(child);
+    };
     return false;
 }
 
 fn onRowFocus(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
     const st: *Row = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
+    st.focused = e.flags.gained;
     const txn = w.begin(e.window) orelse return false;
     applyRow(txn, st, e.flags.gained);
     _ = w.commit(txn);
@@ -279,16 +393,21 @@ fn onRowFocus(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool
 fn onRowActivate(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
     const st: *Row = @ptrCast(@alignCast(ud.?));
     if (st.hdr.disabled) return true;
+    if (st.submenu != .null) {
+        openSubmenu(st, true, true);
+        return true;
+    }
     choose(st.menu, st.item, st.index, ev.?.window);
     return true;
 }
 
-/// Closes the popup, flips a checkable item, and reports the choice.
-fn choose(menu_node: Node, item_node: Node, index: u32, popup: siv.Window) void {
+/// Closes the menu and the menus it opened from, flips a checkable item,
+/// and reports the choice to the menu the item is in.
+fn choose(menu_node: Node, item_node: Node, index: u32, _: siv.Window) void {
     // The row's state goes with the popup: everything needed is a copy.
     const m = w.stateOf(Menu, menu_node, &.{.menu}) orelse return;
     const owner = m.owner;
-    close(m, popup);
+    closeMenu(rootOf(m));
     if (itemOf(item_node)) |it| if (it.checkable) {
         it.checked = !it.checked;
     };
@@ -296,21 +415,27 @@ fn choose(menu_node: Node, item_node: Node, index: u32, popup: siv.Window) void 
     _ = c.siv_emit(owner, &.{ .type = .select, .index = index, .value = @floatFromInt(index), .count = 1 }, &handled);
 }
 
-fn close(m: *Menu, popup: siv.Window) void {
-    _ = c.siv_window_destroy(popup);
-    m.popup = .null;
-    button.setExpanded(m.owner, false);
-}
-
 fn onRowKey(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) bool {
     const st: *Row = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
     if (!e.flags.pressed) return false;
     const k = w.keysym;
+    const forward = if (w.isRtl(node)) k.left else k.right;
     switch (e.keysym) {
-        k.escape => {
+        // Escape and back close a submenu, focus going back to its item;
+        // Escape closes a top menu.
+        k.escape, k.left, k.right => {
             const m = w.stateOf(Menu, st.menu, &.{.menu}) orelse return true;
-            close(m, e.window);
+            if (e.keysym == forward) {
+                if (st.submenu == .null or st.hdr.disabled) return false;
+                openSubmenu(st, true, true);
+            } else if (m.parent != .null) {
+                const row = m.parent_row;
+                closeMenu(m);
+                _ = c.siv_node_focus(row);
+            } else if (e.keysym == k.escape) {
+                closeMenu(m);
+            } else return false;
         },
         k.up, k.down => focusStep(node, if (e.keysym == k.down) .next else .previous, true),
         k.home => focusStep(w.related(node, .parent), .first_child, false),
@@ -333,6 +458,10 @@ fn chooseMnemonic(st: *Row, sym: u32, popup: siv.Window) bool {
         const r = w.stateOf(Row, cur, &.{.menu_row}) orelse continue;
         const it = itemOf(r.item) orelse continue;
         if (it.mnemonic == 0 or r.hdr.disabled or lower(it.mnemonic) != lower(sym)) continue;
+        if (r.submenu != .null) {
+            openSubmenu(r, true, true);
+            return true;
+        }
         choose(r.menu, r.item, r.index, popup);
         return true;
     }
@@ -367,8 +496,9 @@ fn focusStep(from: Node, rel: siv.Relation, wrap: bool) void {
 fn onMenuPopupEvent(ud: ?*anyopaque, _: siv.Window, ev: ?*const siv.WindowEvent) callconv(.c) bool {
     if (ev.?.type != .close_requested) return false;
     if (w.stateOf(Menu, w.dataHandle(ud), &.{.menu})) |m| {
+        // The compositor destroys the popup's children with it.
         m.popup = .null;
-        button.setExpanded(m.owner, false);
+        closeMenu(m);
     }
     return false;
 }

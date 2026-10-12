@@ -509,3 +509,109 @@ test "toasts: announced, closed after their timeout, removed unless kept" {
     const until = @import("loop").Loop.now() + 50 * std.time.ns_per_ms;
     while (@import("loop").Loop.now() < until) try ok(c.siv_app_dispatch(h.app, 10));
 }
+
+/// The application's open popups, innermost last.
+fn openPopups(h: *Harness, out: []t.Window) !usize {
+    const self = try h.internal();
+    var n: usize = 0;
+    for (self.windows.items) |slot| if (slot) |w| {
+        if (w.dead or w.parent == null or !w.win.shown) continue;
+        out[n] = @fromBackingInt(w.handle);
+        n += 1;
+    };
+    return n;
+}
+
+fn focusedName(window: t.Window) ![]const u8 {
+    const w = try A.App.window(@backingInt(window), A.window_tag);
+    const tree = try w.uiWin().semanticsTree();
+    return tree.name((tree.focused() orelse return "").*);
+}
+
+test "menus: submenus open beside their item, by keys, clicks, and hover, mirrored in RTL" {
+    for ([_]bool{ false, true }) |rtl| {
+        var h: Harness = .{};
+        try h.startWith(.{ .width = 400, .height = 300, .flags = .{ .rtl = rtl } });
+        defer h.stop();
+        var log: Log = .{};
+        var sub_log: Log = .{};
+        const txn = try begin(h.window);
+        // At the start edge, so the submenu has room on the end side.
+        const col = c.siv_flex(txn, root(&h), &.{ .axis = .column, .align_items = .start });
+        const button = c.siv_menu_button(txn, col, &.{ .label = "File", .label_len = 4 });
+        const recent = c.siv_menu(txn, col, &.{ .label = "Recent", .label_len = 6 });
+        _ = c.siv_menu_item(txn, recent, &.{ .label = "a.txt", .label_len = 5 });
+        _ = c.siv_menu_item(txn, recent, &.{ .label = "b.txt", .label_len = 5 });
+        _ = c.siv_menu_item(txn, button, &.{ .label = "New", .label_len = 3 });
+        _ = c.siv_menu_item(txn, button, &.{ .label = "Recent", .label_len = 6, .submenu = recent });
+        _ = c.siv_menu_item(txn, button, &.{ .label = "Quit", .label_len = 4 });
+        _ = c.siv_on(txn, button, .select, Log.onSelect, null, &log);
+        _ = c.siv_on(txn, recent, .select, Log.onSelect, null, &sub_log);
+        try ok(c.siv_txn_commit(txn));
+        try h.settle();
+        const forward: u32 = if (rtl) ks.left else ks.right;
+        const back: u32 = if (rtl) ks.right else ks.left;
+        const bc = try center(button);
+
+        var ps: [8]t.Window = undefined;
+        try h.click(bc[0], bc[1]);
+        try h.settle();
+        try testing.expectEqual(@as(usize, 1), try openPopups(&h, &ps));
+        const top = ps[0];
+        try h.typeKeyIn(top, ks.down, "", .{});
+        try h.typeKeyIn(top, forward, "", .{});
+        try h.settle();
+        try testing.expectEqual(@as(usize, 2), try openPopups(&h, &ps));
+        const sub = ps[1];
+        try testing.expectEqualStrings("a.txt", try focusedName(sub));
+        // The item shows it is expanded; the submenu hangs beside it, on
+        // the end side.
+        const tw = try A.App.window(@backingInt(top), A.window_tag);
+        const sw = try A.App.window(@backingInt(sub), A.window_tag);
+        const ttree = try tw.uiWin().semanticsTree();
+        try testing.expectEqual(ui.Toggle.on, ttree.find(.menu_item, "Recent").?.expanded);
+        const at = sw.win.state.popup.?;
+        if (rtl) try testing.expect(at.x < 0) else try testing.expect(at.x >= @as(i32, @intFromFloat(tw.uiWin().width)) - 8);
+        // Back closes the submenu, focus returning to its item.
+        try h.typeKeyIn(sub, back, "", .{});
+        try h.settle();
+        try testing.expectEqual(@as(usize, 1), try openPopups(&h, &ps));
+        try testing.expectEqualStrings("Recent", try focusedName(top));
+        try testing.expectEqual(ui.Toggle.off, (try tw.uiWin().semanticsTree()).find(.menu_item, "Recent").?.expanded);
+        // Enter opens it again; choosing reports on the submenu and closes
+        // the whole chain.
+        try h.typeKeyIn(top, ks.@"return", "", .{});
+        try h.settle();
+        try testing.expectEqual(@as(usize, 2), try openPopups(&h, &ps));
+        try h.typeKeyIn(ps[1], ks.down, "", .{});
+        try h.typeKeyIn(ps[1], ks.@"return", "", .{});
+        try h.settle();
+        try testing.expectEqual(@as(usize, 0), try openPopups(&h, &ps));
+        try testing.expectEqual(@as(u32, 1), sub_log.selects);
+        try testing.expectEqual(@as(u32, 1), sub_log.index);
+        try testing.expectEqual(@as(u32, 0), log.selects);
+        try testing.expectEqual(ui.Toggle.off, (try sem(button)).expanded);
+
+        // Hover opens a submenu without moving focus there, and hovering a
+        // sibling closes it.
+        try h.click(bc[0], bc[1]);
+        try h.settle();
+        _ = try openPopups(&h, &ps);
+        const top2 = ps[0];
+        const t2 = try A.App.window(@backingInt(top2), A.window_tag);
+        const tree2 = try t2.uiWin().semanticsTree();
+        const rr = tree2.find(.menu_item, "Recent").?.bounds;
+        const nr = tree2.find(.menu_item, "New").?.bounds;
+        try h.inject(&.{.{ .pointer_motion = .{ .window = t2.win.id, .seat = 0, .x = (rr.x0 + rr.x1) / 2, .y = (rr.y0 + rr.y1) / 2 } }});
+        try h.settle();
+        try testing.expectEqual(@as(usize, 2), try openPopups(&h, &ps));
+        try testing.expectEqualStrings("Recent", try focusedName(top2));
+        try h.inject(&.{.{ .pointer_motion = .{ .window = t2.win.id, .seat = 0, .x = (nr.x0 + nr.x1) / 2, .y = (nr.y0 + nr.y1) / 2 } }});
+        try h.settle();
+        try testing.expectEqual(@as(usize, 1), try openPopups(&h, &ps));
+        // Escape closes the top menu.
+        try h.typeKeyIn(top2, ks.escape, "", .{});
+        try h.settle();
+        try testing.expectEqual(@as(usize, 0), try openPopups(&h, &ps));
+    }
+}

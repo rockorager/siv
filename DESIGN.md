@@ -1744,7 +1744,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       time. Choosing reports `select` with the item's position (separators
       count) after the popup is gone; Up, Down, Home, End, Enter, Space,
       a mnemonic keysym per item, and Escape work as in WAI-ARIA's menu.
-      Submenus are not built yet.
+      An item can carry a submenu (another `siv_menu`), shown in a popup
+      of the menu's popup, placed beside the item (flipping to the start
+      side without room, mirrored in RTL). Enter, Space, a click, a
+      mnemonic, or the arrow toward the end edge open it with the
+      keyboard, focused on its first item; hovering the item opens it
+      without a grab and without moving focus (a hover has no input
+      serial to grab with), and hovering a sibling closes it. The arrow
+      toward the start edge and Escape close only the submenu and focus
+      its item again. Choosing in a submenu reports `select` on the
+      submenu and closes the whole chain; a click outside dismisses the
+      chain, since the compositor destroys a popup's children with it.
     - A popover is a popup whose root is a card with a content part.
       Dialogs are modal overlays over a parent stack (a scrim and a card
       with title, text, content, and actions parts) that take focus.
@@ -1795,7 +1805,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       timestamp, so widgets written in C can do the same.
     - Not built yet: variable row heights, column resizing and sorting,
       and a position among siblings for tree items.
-  - Not built yet elsewhere: the styled-text editor; submenus; an
+  - Not built yet elsewhere: the styled-text editor; an
     animated indeterminate progress bar (it shows a still bar: a
     repeating compositor animation needs a primitive whose distances
     follow layout); auto-repeat on held spin buttons; and an integration
