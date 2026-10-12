@@ -119,8 +119,9 @@ fn shapeString(win: *Window, id: NodeId, content: []const u8, list: []const node
     while (true) {
         const run = spans.runAt(list, at, len);
         const sp = run.style;
-        const chain = try fonts.chain(.{ .family = d.family, .language = language, .weight = sp.weight orelse style.weight, .slant = sp.slant orelse style.slant });
-        try runs.append(a, .{ .end = run.end, .style = .{ .fonts = chain, .size = if (sp.size) |z| z * scale else size, .language = lang_name } });
+        const run_size = if (sp.size) |z| z * scale else size;
+        const chain = try fonts.chain(.{ .family = d.family, .language = language, .weight = node_mod.cssWeight(style, sp.weight), .slant = sp.slant orelse style.slant, .width = style.width, .size = run_size });
+        try runs.append(a, .{ .end = run.end, .style = .{ .fonts = chain, .size = run_size, .language = lang_name } });
         if (run_styles) |rs| try rs.append(win.gpa, sp);
         if (run.end >= len) break;
         at = run.end;

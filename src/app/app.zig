@@ -293,20 +293,12 @@ pub const App = struct {
         }
     };
 
-    /// Registers a font from bytes (copied) and appends it to `family`'s
-    /// fallback chain, which takes precedence over Fontconfig.
+    /// Adds font data (copied): each face joins `family`, or the family
+    /// its name table gives when `family` is empty, and queries match
+    /// styles within the family (D13). Registered families take
+    /// precedence over Fontconfig.
     pub fn addFont(app: *App, family: []const u8, bytes: []const u8) error{ OutOfMemory, InvalidFont }!void {
-        const fonts = &app.fonts;
-        const name = try fonts.intern(family);
-        const old: []const text.FontId = fonts.families.get(name) orelse &.{};
-        const chain = try app.gpa.alloc(text.FontId, old.len + 1);
-        defer app.gpa.free(chain);
-        // The cache owns the copy, and frees it on failure.
-        const id = fonts.cache.add(try app.gpa.dupe(u8, bytes), 0, .owned) catch |err|
-            return if (err == error.OutOfMemory) error.OutOfMemory else error.InvalidFont;
-        @memcpy(chain[0..old.len], old);
-        chain[old.len] = id;
-        try fonts.register(family, chain);
+        return app.fonts.addFont(family, bytes);
     }
 
     /// Assistive technology started or stopped listening: windows publish

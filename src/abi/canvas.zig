@@ -678,12 +678,13 @@ const Shaped = struct {
         const family = try fonts.intern(st.family);
         var language = try fonts.intern(st.language);
         if (language == 0) language = window_language;
-        const chain = try fonts.chain(.{ .family = family, .language = language, .weight = st.weight, .slant = st.slant });
+        // Desktop text scaling applies to canvas text as to text nodes.
+        const size = self.app.palette().textSize(st.size, st.size_role) * text_scale;
+        const chain = try fonts.chain(.{ .family = family, .language = language, .weight = ui.cssWeight(st, null), .slant = st.slant, .width = st.width, .size = size });
         const lang = fonts.name(language);
         sh.paragraph = text.ShapedParagraph.init(gpa, sh.scratch.allocator(), &fonts.cache, s, &.{.{
             .end = @intCast(s.len),
-            // Desktop text scaling applies to canvas text as to text nodes.
-            .style = .{ .fonts = chain, .size = self.app.palette().textSize(st.size, st.size_role) * text_scale, .language = if (lang.len == 0) "und" else lang },
+            .style = .{ .fonts = chain, .size = size, .language = if (lang.len == 0) "und" else lang },
         }}, if (rtl) .auto_rtl else .auto_ltr) catch |err| return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             else => error.InvalidArgument,

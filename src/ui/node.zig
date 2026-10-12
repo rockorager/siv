@@ -405,13 +405,24 @@ pub const TextAlign = text.layout.Alignment;
 
 pub const Weight = text.fontconfig.Weight;
 pub const Slant = text.fontconfig.Slant;
+pub const Width = text.fontconfig.Width;
+
+/// The CSS weight a style and its span's weight ask for.
+pub fn cssWeight(style: TextStyle, span: ?Weight) u16 {
+    if (span) |w| return @intFromFloat(w.css());
+    return if (style.weight_value != 0) style.weight_value else @intFromFloat(style.weight.css());
+}
 
 pub const TextStyle = struct {
     /// Family name or generic family; empty uses the window default.
     family: []const u8 = "",
     size: f32 = 14,
     weight: Weight = .regular,
+    /// A CSS weight (1..1000) replacing `weight`, for variable fonts; 0
+    /// uses `weight`.
+    weight_value: u16 = 0,
     slant: Slant = .roman,
+    width: Width = .normal,
     color: Color = .black,
     /// BCP 47 language for shaping and font fallback (D21); empty uses the
     /// window's.

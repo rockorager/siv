@@ -583,7 +583,7 @@ pub const Txn = struct {
         d.language = language;
         const os = old.props.style;
         const ns = props.style;
-        if (old.family != family or old.language != language or os.size != ns.size or os.weight != ns.weight or os.slant != ns.slant or os.size_role != ns.size_role) {
+        if (old.family != family or old.language != language or os.size != ns.size or os.weight != ns.weight or os.weight_value != ns.weight_value or os.slant != ns.slant or os.width != ns.width or os.size_role != ns.size_role) {
             t.win.markShape(id);
         } else if (old.props.wrap != props.wrap) {
             t.win.markLayout(id);
