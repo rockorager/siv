@@ -6,7 +6,7 @@
 //! parses and validates messages in place, and runs reply callbacks,
 //! signal subscriptions, and method handlers. Outgoing messages are
 //! queued and written in one sendmsg per batch from the prepare hook,
-//! before the loop sleeps, or right away when the loop is idle.
+//! before the loop sleeps (sending outside an iteration wakes the loop).
 //!
 //! The client pipelines authentication with its first messages (SASL,
 //! then Hello on a bus), so a call made right after `init` costs one round
@@ -79,6 +79,9 @@ owners: List = .{},
 objects: std.StringHashMapUnmanaged(*Object) = .empty,
 machine_id: ?[32]u8 = null,
 hello_serial: u32 = 0,
+/// Buffers of sent messages kept for reuse, so steady traffic allocates
+/// nothing.
+spare: std.ArrayList(std.ArrayList(u8)) = .empty,
 
 pub const Status = enum { authenticating, running, closed };
 
@@ -155,6 +158,8 @@ pub const default_timeout_ms = 25_000;
 /// catches up.
 const read_high_water = 8 << 20;
 const read_chunk = 64 << 10;
+const max_spare = 32;
+const max_spare_capacity = 64 << 10;
 
 // Lifecycle ------------------------------------------------------------------
 
@@ -194,6 +199,7 @@ pub fn initFd(c: *Connection, gpa: Allocator, loop: *Loop, fd: i32, options: Opt
     };
     c.source = .{ .fd = fd, .events = linux.EPOLL.IN, .func = onIo };
     errdefer c.freeBuffers();
+    try c.spare.ensureTotalCapacity(gpa, max_spare);
     var hello_buf: [64]u8 = undefined;
     const hello = auth.clientHello(&hello_buf, linux.getuid(), options.unix_fds);
     try c.out.append(gpa, .{});
@@ -208,9 +214,11 @@ pub fn initFd(c: *Connection, gpa: Allocator, loop: *Loop, fd: i32, options: Opt
 }
 
 /// Closes the connection without running any callback: pending calls are
-/// dropped. Must not be called from one of this connection's callbacks.
+/// dropped, and queued messages that cannot be written at once are lost.
+/// Must not be called from one of this connection's callbacks.
 pub fn deinit(c: *Connection) void {
     std.debug.assert(!c.dispatching);
+    c.flushOut();
     c.loop.removeHook(&c.hook);
     c.loop.unschedule(&c.task);
     c.loop.cancelTimer(&c.timer);
@@ -234,6 +242,8 @@ fn freeBuffers(c: *Connection) void {
     c.out.deinit(c.gpa);
     c.pending.deinit(c.gpa);
     c.objects.deinit(c.gpa);
+    for (c.spare.items) |*b| b.deinit(c.gpa);
+    c.spare.deinit(c.gpa);
 }
 
 /// The unique name the bus assigned, empty until ready.
@@ -268,11 +278,35 @@ const Out = struct {
 };
 
 pub fn methodCall(c: *Connection, destination: ?[]const u8, path: []const u8, interface: ?[]const u8, member: []const u8) Builder {
-    return .init(c.gpa, .{ .type = .method_call, .destination = destination, .path = path, .interface = interface, .member = member });
+    return c.newBuilder(.{ .type = .method_call, .destination = destination, .path = path, .interface = interface, .member = member });
 }
 
 pub fn signal(c: *Connection, path: []const u8, interface: []const u8, member: []const u8) Builder {
-    return .init(c.gpa, .{ .type = .signal, .path = path, .interface = interface, .member = member });
+    return c.newBuilder(.{ .type = .signal, .path = path, .interface = interface, .member = member });
+}
+
+/// A builder whose body reuses a buffer of a sent message.
+pub fn newBuilder(c: *Connection, header: message.Header) Builder {
+    var b: Builder = .init(c.gpa, header);
+    b.body.buf = c.spare.pop() orelse .empty;
+    return b;
+}
+
+fn recycle(c: *Connection, buf: *std.ArrayList(u8)) void {
+    if (buf.capacity == 0 or buf.capacity > max_spare_capacity or c.spare.items.len == c.spare.capacity) {
+        buf.deinit(c.gpa);
+    } else {
+        buf.clearRetainingCapacity();
+        c.spare.appendAssumeCapacity(buf.*);
+    }
+    buf.* = .empty;
+}
+
+/// Frees a message that went out, keeping its buffers.
+fn sent(c: *Connection, o: *Out) void {
+    c.recycle(&o.head);
+    c.recycle(&o.body);
+    o.deinit(c.gpa);
 }
 
 /// A call to the bus itself.
@@ -293,8 +327,8 @@ fn queue(c: *Connection, b: *Builder) Error!u32 {
     const has_fds = b.body.fds.items.len > 0;
     if (has_fds and c.state == .running and !c.unix_fds) return error.FdsNotSupported;
     try c.out.ensureUnusedCapacity(c.gpa, 1);
-    var o: Out = .{};
-    errdefer o.head.deinit(c.gpa);
+    var o: Out = .{ .head = c.spare.pop() orelse .empty };
+    errdefer c.recycle(&o.head);
     const serial = c.nextSerial();
     try message.encodeHeader(c.gpa, &o.head, &b.header, serial, b.body.signature(), b.body.bytes().len, b.body.fds.items.len);
     o.serial = serial;
@@ -319,9 +353,10 @@ pub fn flush(c: *Connection) void {
 }
 
 fn flushIfIdle(c: *Connection) void {
-    // Inside an iteration the prepare hook flushes; outside one nothing
-    // would, and the loop may be about to sleep.
-    if (c.loop.stage == .idle) c.flushOut();
+    // Inside an iteration the prepare hook flushes. Outside one, make the
+    // next iteration run instead of sleeping; a burst of sends still goes
+    // out in one write.
+    if (c.loop.stage == .idle) c.loop.wake();
 }
 
 fn onPrepare(h: *Loop.Hook) void {
@@ -387,7 +422,7 @@ fn flushOut(c: *Connection) void {
                 break;
             }
             n -= rem;
-            o.deinit(c.gpa);
+            c.sent(o);
             c.out_head += 1;
         }
         // Empty messages (none exist on the wire) cannot stall the loop.
@@ -1086,7 +1121,7 @@ pub const Request = struct {
     }
 
     pub fn newReply(r: *const Request) Builder {
-        return .init(r.conn.gpa, .{ .type = .method_return, .destination = r.msg.sender, .reply_serial = r.msg.serial });
+        return r.conn.newBuilder(.{ .type = .method_return, .destination = r.msg.sender, .reply_serial = r.msg.serial });
     }
 
     /// Replies with `values` (a tuple).
@@ -1123,7 +1158,7 @@ pub const Request = struct {
         std.debug.assert(r.state == .pending);
         r.state = .replied;
         if (r.msg.flags.no_reply_expected) return;
-        var b: Builder = .init(r.conn.gpa, .{ .type = .@"error", .destination = r.msg.sender, .reply_serial = r.msg.serial, .error_name = name });
+        var b = r.conn.newBuilder(.{ .type = .@"error", .destination = r.msg.sender, .reply_serial = r.msg.serial, .error_name = name });
         b.body.writeString(text) catch |err| {
             b.deinit();
             return err;
@@ -1150,11 +1185,11 @@ pub const Deferred = struct {
     no_reply: bool,
 
     pub fn newReply(d: *const Deferred, c: *Connection) Builder {
-        return .init(c.gpa, .{ .type = .method_return, .destination = if (d.has_sender) d.sender.slice() else null, .reply_serial = d.serial });
+        return c.newBuilder(.{ .type = .method_return, .destination = if (d.has_sender) d.sender.slice() else null, .reply_serial = d.serial });
     }
 
     pub fn newError(d: *const Deferred, c: *Connection, name: []const u8) Builder {
-        return .init(c.gpa, .{ .type = .@"error", .destination = if (d.has_sender) d.sender.slice() else null, .reply_serial = d.serial, .error_name = name });
+        return c.newBuilder(.{ .type = .@"error", .destination = if (d.has_sender) d.sender.slice() else null, .reply_serial = d.serial, .error_name = name });
     }
 
     /// Sends a reply built with `newReply` or `newError`. Consumes `b`.

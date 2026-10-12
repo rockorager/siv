@@ -954,3 +954,63 @@ test "settings: defaults without a portal, then live values once it starts" {
     try testing.expectEqual(Settings.ColorScheme.no_preference, settings.values.color_scheme);
     try testing.expectEqual(@as(u32, 2), portal.reads);
 }
+
+test "steady calls, replies, and signals allocate nothing after warm-up" {
+    var h: Harness = undefined;
+    try h.init();
+    defer h.deinit();
+    var counting = std.testing.FailingAllocator.init(gpa, .{});
+    const alloc = counting.allocator();
+    var a: Connection = undefined;
+    var b: Connection = undefined;
+    try a.initFd(alloc, &h.loop, try h.bus.connect(), .{});
+    defer a.deinit();
+    try b.initFd(alloc, &h.loop, try h.bus.connect(), .{});
+    defer b.deinit();
+    var calc: Calc = .{};
+    var obj: object.Object = .{ .path = "/calc", .ctx = &calc, .interfaces = &.{&Calc.iface} };
+    try b.exportObject(&obj);
+    var sig: Signals = .{ .sub = .{ .rule = .{ .interface = "org.example.Calc", .member = "Changed" }, .func = Signals.cb } };
+    try a.subscribe(&sig.sub);
+    defer a.unsubscribe(&sig.sub);
+    try h.ready(&a);
+    try h.ready(&b);
+
+    const Round = struct {
+        fn run(hh: *Harness, ca: *Connection, cs: *Connection, s: *Signals, n: usize) !void {
+            const Count = struct {
+                left: usize,
+                fn cb(ctx: ?*anyopaque, _: Connection.Reply) void {
+                    const self: *@This() = @ptrCast(@alignCast(ctx));
+                    self.left -= 1;
+                }
+                fn done(self: *@This()) bool {
+                    return self.left == 0;
+                }
+            };
+            var count: Count = .{ .left = n };
+            const want = s.count + n;
+            for (0..n) |i| {
+                _ = try ca.callMethod(cs.uniqueName(), "/calc", null, "Add", .{ @as(u32, @intCast(i)), @as(u32, 1) }, Count.cb, &count);
+                try cs.emitSignal("/calc", "org.example.Calc", "Changed", .{@as(u32, @intCast(i))});
+            }
+            try hh.until(&count, Count.done);
+            const Want = struct {
+                s: *Signals,
+                want: usize,
+                fn f(x: @This()) bool {
+                    return x.s.count == x.want;
+                }
+            };
+            try hh.until(Want{ .s = s, .want = want }, Want.f);
+        }
+    };
+    // Bursts of 8 calls and 8 signals at a time: the first rounds fill the
+    // buffer pools and tables, the rest must not allocate.
+    for (0..10) |_| try Round.run(&h, &a, &b, &sig, 8);
+    const allocs = counting.allocations;
+    const resizes = counting.resize_index;
+    for (0..50) |_| try Round.run(&h, &a, &b, &sig, 8);
+    try testing.expectEqual(allocs, counting.allocations);
+    try testing.expectEqual(resizes, counting.resize_index);
+}

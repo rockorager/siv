@@ -821,10 +821,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       io handler only reads bytes and fds; the dispatch task (a safe
       point, D5) validates messages in place and runs reply callbacks,
       signal subscriptions, and method handlers. Writes are queued and
-      sent with one sendmsg per batch from the prepare hook, or at once
-      when the loop is idle. Reading pauses above 8 MiB of undispatched
-      bytes, and one dispatch handles at most 128 messages so frames run
-      between bursts.
+      sent with one sendmsg per batch from the prepare hook (a send
+      outside an iteration wakes the loop), and up to 32 of their buffers
+      are reused, so steady traffic allocates nothing (a test holds the
+      connection to that). Reading pauses above 8 MiB of
+      undispatched bytes, and one dispatch handles at most 128 messages
+      so frames run between bursts.
     - Calls are asynchronous only: a blocking call would stall the UI
       thread. Each call gets one callback with the reply, an error reply,
       or a failure (timeout, disconnect, fds refused); one timer per
@@ -855,8 +857,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       through the daemon takes 0.1 ms; a reply of 1000 `(so)` structs
       encodes in 0.1 ms and validates and decodes in 0.05 ms.
     - Not built yet: org.freedesktop.Application, ObjectManager, the
-      other portals, serving peer-to-peer connections, and reuse of
-      outgoing buffers (each message allocates its header and body).
+      other portals, and serving peer-to-peer connections.
   - Settings come only from the portal (color scheme, accent, contrast, reduced
     motion, text scale, fonts, cursor theme and size), applied live, with built-
     in defaults when no portal runs.
