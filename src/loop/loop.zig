@@ -159,6 +159,14 @@ pub const Loop = struct {
         loop.wake();
     }
 
+    /// Whether `dispatch` is running (any phase). Work queued outside an
+    /// iteration needs `wake` (or a scheduled task) to be noticed before
+    /// the loop sleeps; work queued inside one can rely on the prepare
+    /// hooks that end it.
+    pub fn isDispatching(loop: *const Loop) bool {
+        return loop.stage != .idle;
+    }
+
     /// CLOCK_MONOTONIC in nanoseconds, the clock of every loop deadline.
     pub fn now() u64 {
         var ts: linux.timespec = undefined;
@@ -524,6 +532,7 @@ test "phases run in order and io handlers only schedule work" {
         }
         fn onHook(h: *Loop.Hook) void {
             const c: *@This() = @fieldParentPtr("hook", h);
+            testing.expect(c.loop.isDispatching()) catch unreachable;
             c.rec.add('h');
         }
         fn onPost(ctx: ?*anyopaque) void {
@@ -542,8 +551,10 @@ test "phases run in order and io handlers only schedule work" {
     try loop.post(Ctx.onPost, null, &c);
     _ = linux.write(c.pipe[1], "x", 1);
 
+    try testing.expect(!loop.isDispatching());
     try loop.dispatch(1000);
     try testing.expectEqualStrings("itpdfh", c.rec.get());
+    try testing.expect(!loop.isDispatching());
 
     // The late task made the fd readable so an embedder polls again.
     var pfd = [_]linux.pollfd{.{ .fd = loop.fd(), .events = linux.POLL.IN, .revents = 0 }};
