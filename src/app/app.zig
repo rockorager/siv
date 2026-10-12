@@ -123,6 +123,9 @@ pub const App = struct {
     /// The seat's key-repeat timing (platform.KeyRepeat); these defaults
     /// until the compositor reports it.
     key_repeat: platform.KeyRepeat = .{ .seat = 0, .delay_ms = 600, .rate = 25 },
+    /// A press that dismissed popups (`dismissGrabs`): its release is
+    /// dropped too.
+    swallowed: ?struct { window: WindowId, button: u32 } = null,
     bridge: a11y.Bridge = undefined,
     /// The AT-SPI bridge runs on the session bus.
     accessible: bool = false,
@@ -435,6 +438,55 @@ pub const App = struct {
         return app.windows.items[i];
     }
 
+    /// A press on a toplevel while popups over it hold a grab dismisses
+    /// them, topmost first, and is not delivered (nor is its release).
+    /// Compositors dismiss grabs only for clicks on other clients'
+    /// surfaces; one on the application's own toplevel reaches it.
+    fn dismissGrabs(app: *App, win: *Window, serial: u32) bool {
+        if (win.parent != null) return false;
+        var grabs: [16]*Window = undefined;
+        var n: usize = 0;
+        for (app.windows.items) |slot| if (slot) |w| {
+            // Only presses after the one the grab was taken for.
+            const after = @as(i32, @bitCast(serial -% w.grab_serial)) > 0;
+            if (w.grab and after and w.shown and !w.closed and w.toplevel() == win and n < grabs.len) {
+                grabs[n] = w;
+                n += 1;
+            }
+        };
+        if (n == 0) return false;
+        std.mem.sort(*Window, grabs[0..n], {}, struct {
+            fn deeper(_: void, a: *Window, b: *Window) bool {
+                return a.depth() > b.depth();
+            }
+        }.deeper);
+        for (grabs[0..n]) |w| {
+            if (w.closed) continue;
+            if (!w.notify(&.close_requested)) w.destroy() catch |err| app.fail(err);
+        }
+        return true;
+    }
+
+    /// Where keyboard input for `win` goes: the topmost grabbing popup
+    /// over its toplevel, or `win` itself. xdg_popup says the topmost
+    /// grabbing popup has keyboard focus, but some compositors (sway)
+    /// keep sending keys to the toplevel during the grab, so they are
+    /// redirected here, as GTK does.
+    fn keyboardTarget(app: *App, win: *Window) *Window {
+        const top = win.toplevel();
+        var best = win;
+        var best_depth: usize = 0;
+        for (app.windows.items) |slot| if (slot) |w| {
+            if (!w.grab or !w.shown or w.closed or w.toplevel() != top) continue;
+            const depth = w.depth();
+            if (depth > best_depth) {
+                best = w;
+                best_depth = depth;
+            }
+        };
+        return best;
+    }
+
     pub fn fail(app: *App, err: Error) void {
         if (app.failure == null or err == error.Unavailable) app.failure = err;
     }
@@ -506,6 +558,30 @@ pub const App = struct {
                 .exported => |e| if (app.window(e.window)) |win| portals.exported(win, e.handle.slice()),
                 .activation_token => |t| if (app.window(t.window)) |win| portals.tokenArrived(win, t.request, t.token.slice()),
                 .key_repeat => |r| app.key_repeat = r,
+                .pointer_button => |b| if (app.window(b.window)) |win| {
+                    if (b.pressed and app.dismissGrabs(win, b.serial)) {
+                        app.swallowed = .{ .window = b.window, .button = b.button };
+                        return;
+                    }
+                    if (!b.pressed) if (app.swallowed) |sw| if (sw.window == b.window and sw.button == b.button) {
+                        app.swallowed = null;
+                        return;
+                    };
+                    win.handle(ev);
+                },
+                .key, .modifiers => if (app.window(p.window())) |win| {
+                    const target = app.keyboardTarget(win);
+                    if (target == win) return win.handle(ev);
+                    // The popup never got the keyboard's enter.
+                    if (!target.ui.input.keyboard) target.handle(&.{ .platform = .{ .keyboard_enter = .{ .window = target.id, .seat = 0, .serial = 0 } } });
+                    var moved = p.*;
+                    switch (moved) {
+                        .key => |*k| k.window = target.id,
+                        .modifiers => |*m| m.window = target.id,
+                        else => unreachable,
+                    }
+                    target.handle(&.{ .platform = moved });
+                },
                 .close_requested => |id| if (app.window(id)) |win| {
                     if (!win.notify(&.close_requested)) win.destroy() catch |err| app.fail(err);
                 },
@@ -607,6 +683,23 @@ pub const Window = struct {
     parent: ?*Window = null,
     /// False for a popup until `showPopup`.
     shown: bool = true,
+    /// A popup shown with a grab: it takes its toplevel's keyboard input.
+    grab: bool = false,
+    /// The input serial the grab was taken for.
+    grab_serial: u32 = 0,
+
+    fn toplevel(win: *Window) *Window {
+        var w = win;
+        while (w.parent) |p| w = p;
+        return w;
+    }
+
+    fn depth(win: *Window) usize {
+        var n: usize = 0;
+        var w = win;
+        while (w.parent) |p| : (n += 1) w = p;
+        return n;
+    }
 
     /// Destroys the window (see the module comment). On failure nothing
     /// changed. `win` stays valid until the loop runs again. Destroy a
@@ -666,6 +759,8 @@ pub const Window = struct {
         win.id = id;
         win.drag.window = id;
         win.shown = true;
+        win.grab = grab;
+        win.grab_serial = parent.ui.input.serial;
         app.windows.items[id] = win;
         if (app.accessible) win.a11y_id = app.bridge.addWindow(win.ui, "") catch 0;
         win.ui.configure(@floatFromInt(w), @floatFromInt(h), parent.ui.scale);
