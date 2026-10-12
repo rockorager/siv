@@ -522,6 +522,24 @@ pub fn setRtl(win: *Window, rtl: bool) void {
     win.requestFrame();
 }
 
+/// Sets the language of text that does not name its own (D21): such text
+/// shapes again with it, and canvases measure and draw again.
+pub fn setLanguage(win: *Window, language: []const u8) error{OutOfMemory}!void {
+    const id = try win.fonts.intern(language);
+    if (win.language == id) return;
+    win.language = id;
+    for (win.nodes.items, 0..) |*n, i| {
+        if (n.status != .live) continue;
+        const nid: NodeId = @enumFromInt(i);
+        if (n.isText() and n.textData().language == 0) win.markShape(nid);
+        if (n.kind == .canvas) {
+            win.markLayout(nid);
+            win.markPaint(nid);
+        }
+    }
+    win.requestFrame();
+}
+
 // Frames --------------------------------------------------------------------
 
 /// Lays out, repaints, and sends the layer tree. Does nothing while a
