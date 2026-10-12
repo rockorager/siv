@@ -108,6 +108,8 @@ pub const App = struct {
     open_windows: usize = 0,
     reduced_motion: bool = false,
     desktop: desktop_mod.Desktop = .{},
+    /// The theme choices every window follows (D29).
+    theme: ui.Theme = .{},
     /// The application chose the default font family, so the desktop's
     /// does not replace it.
     font_overridden: bool = false,
@@ -277,6 +279,18 @@ pub const App = struct {
         for (app.windows.items) |w| if (w) |win| win.publish();
     }
 
+    /// New theme choices for every window (D29).
+    pub fn setTheme(app: *App, theme: *const ui.Theme) void {
+        app.theme = theme.*;
+        for (app.windows.items) |w| if (w) |win| win.ui.setTheme(&app.theme);
+    }
+
+    /// The palette windows resolve now, for work outside a window (text
+    /// measured for canvases).
+    pub fn palette(app: *const App) ui.theme.Palette {
+        return ui.theme.resolve(&app.theme, app.desktop.values.themeInput());
+    }
+
     /// Overrides the desktop's font (D19) from now on.
     pub fn setDefaultFont(app: *App, family: []const u8) Allocator.Error!void {
         try app.fonts.setDefault(family);
@@ -325,6 +339,7 @@ pub const App = struct {
             .drag = win.drag.host(),
             .reduced_motion = app.reduced_motion,
             .desktop = app.desktop.values,
+            .theme = app.theme,
             .width = @floatFromInt(options.width),
             .height = @floatFromInt(options.height),
             .rtl = options.rtl,

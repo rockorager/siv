@@ -68,8 +68,14 @@ pub const Desktop = struct {
 
 fn desktopOf(v: dbus.Settings.Values) ui.Desktop {
     var out: ui.Desktop = .{};
-    // ui.Desktop has the names and types of the portal's values.
-    inline for (@typeInfo(ui.Desktop).@"struct".field_names) |name| @field(out, name) = @field(v, name);
+    // ui.Desktop has the names of the portal's values, and their types
+    // or enums with the same tags.
+    inline for (@typeInfo(ui.Desktop).@"struct".field_names) |name| {
+        if (comptime std.mem.eql(u8, name, "font_size")) continue;
+        const F = @FieldType(ui.Desktop, name);
+        @field(out, name) = if (@typeInfo(F) == .@"enum") std.meta.stringToEnum(F, @tagName(@field(v, name))).? else @field(v, name);
+    }
+    out.font_size = v.font.size;
     return out;
 }
 
