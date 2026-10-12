@@ -390,3 +390,103 @@ test "input method on the compositor: enable, inline preedit, commit" {
     try testing.expectEqualStrings("Caf\u{e9}", st.surrounding);
     try testing.expectEqual(@as(u32, 5), st.cursor);
 }
+
+fn twoEditors(app: *App) ![2]NodeId {
+    var eds: [2]NodeId = undefined;
+    const t = try app.win.begin();
+    const col = try node(t, .root, .flex, .{ .padding = .all(10) }, .{ .background = panel });
+    try t.setFlex(col, .{ .axis = .column, .gap = 8, .align_items = .start });
+    for (&eds) |*e| e.* = try node(t, col, .editor, .{ .width = .{ .px = 200 }, .padding = .symmetric(6, 4) }, .{ .background = .white });
+    try t.setText(eds[0], "copy this text");
+    t.commit();
+    return eds;
+}
+
+const Sel = struct { kind: platform.SelectionKind, mimes: []const []const u8 = &.{}, data: []const u8 = "", fd: i32 = -1, mime: []const u8 = "" };
+
+fn offer(hl: *platform.Headless, s: *Sel) void {
+    hl.offerSelection(0, s.kind, s.mimes, s.data) catch unreachable;
+}
+
+fn request(hl: *platform.Headless, s: *Sel) void {
+    s.fd = hl.requestSelection(0, s.kind, s.mime) catch -1;
+}
+
+test "clipboard: copy and paste through the platform, and its size limit" {
+    var app: App = undefined;
+    try app.init(testing.allocator, .{ .width = 240, .height = 90 });
+    defer app.deinit();
+    const eds = try twoEditors(&app);
+    try app.settle();
+    // Select "this" and copy it.
+    app.key(ui.keysym.tab, .{});
+    app.key(ui.keysym.home, .{});
+    app.key(ui.keysym.right, .{ .ctrl = true });
+    app.key(ui.keysym.right, .{ .ctrl = true, .shift = true });
+    app.key('c', .{ .ctrl = true });
+    try app.settle();
+    // Another client pastes it: the window writes it into the pipe.
+    var req: Sel = .{ .kind = .clipboard, .mime = "text/plain;charset=utf-8" };
+    app.onHeadless(&req, request);
+    try testing.expect(req.fd >= 0);
+    const got = try app.readAll(req.fd);
+    defer testing.allocator.free(got);
+    try testing.expectEqualStrings(" this", got);
+    // Pasting the window's own copy takes it directly.
+    app.key(ui.keysym.tab, .{});
+    app.key('v', .{ .ctrl = true });
+    try app.settle();
+    try testing.expectEqualStrings(" this", app.win.node(eds[1]).data.editor.text.content);
+
+    // Another client copies more than a pipe holds, with a line break; a
+    // single-line editor gets a space instead.
+    var big: std.ArrayList(u8) = .empty;
+    defer big.deinit(testing.allocator);
+    try big.appendSlice(testing.allocator, "first\nsecond ");
+    for (0..20_000) |_| try big.appendSlice(testing.allocator, "0123456789");
+    var o: Sel = .{ .kind = .clipboard, .mimes = &.{ "image/png", "UTF8_STRING" }, .data = big.items };
+    app.onHeadless(&o, offer);
+    try app.settle();
+    app.key('a', .{ .ctrl = true });
+    app.key('v', .{ .ctrl = true });
+    try app.settle();
+    const pasted = app.win.node(eds[1]).data.editor.text.content;
+    try testing.expectEqual(big.items.len, pasted.len);
+    try testing.expectEqualStrings("first second 0123", pasted[0..17]);
+    // Past the limit, the paste is dropped and the text stays.
+    app.clipboard.limit = 1000;
+    app.key('a', .{ .ctrl = true });
+    app.key('v', .{ .ctrl = true });
+    try app.settle();
+    try testing.expectEqual(big.items.len, app.win.node(eds[1]).data.editor.text.content.len);
+    // Undo removes the paste in one step.
+    app.key('z', .{ .ctrl = true });
+    try app.settle();
+    try testing.expectEqualStrings(" this", app.win.node(eds[1]).data.editor.text.content);
+}
+
+test "primary selection: selecting offers it, the middle button pastes it" {
+    var app: App = undefined;
+    try app.init(testing.allocator, .{ .width = 240, .height = 90 });
+    defer app.deinit();
+    const eds = try twoEditors(&app);
+    try app.settle();
+    app.key(ui.keysym.tab, .{});
+    app.key(ui.keysym.home, .{});
+    app.key(ui.keysym.right, .{ .shift = true, .ctrl = true });
+    try app.settle();
+    var req: Sel = .{ .kind = .primary, .mime = "UTF8_STRING" };
+    app.onHeadless(&req, request);
+    try testing.expect(req.fd >= 0);
+    const got = try app.readAll(req.fd);
+    defer testing.allocator.free(got);
+    try testing.expectEqualStrings("copy", got);
+    // Middle click into the second editor pastes it there.
+    const r = app.win.windowRect(eds[1]);
+    app.inject(.{ .pointer_motion = .{ .window = app.wid, .seat = 0, .x = r.x0 + 10, .y = r.y0 + 8 } });
+    app.inject(.{ .pointer_button = .{ .window = app.wid, .seat = 0, .button = 0x112, .pressed = true, .time = 0, .serial = 9 } });
+    app.inject(.{ .pointer_button = .{ .window = app.wid, .seat = 0, .button = 0x112, .pressed = false, .time = 0, .serial = 10 } });
+    try app.settle();
+    try testing.expectEqualStrings("copy", app.win.node(eds[1]).data.editor.text.content);
+    try testing.expectEqual(eds[1], app.win.input.focus);
+}

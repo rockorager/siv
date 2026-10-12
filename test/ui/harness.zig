@@ -32,6 +32,7 @@ pub const App = struct {
     /// The layer tree as the window committed it (with the compositor's
     /// scroll offsets), for full redraws to compare damaged frames with.
     mirror: compositor.Tree,
+    clipboard: ui.Clipboard,
     last_seq: u64 = 0,
     presented_seq: u64 = 0,
     err: ?anyerror = null,
@@ -67,6 +68,8 @@ pub const App = struct {
         try app.fonts.setDefault("Droid");
         app.mirror = .init(gpa);
         errdefer app.mirror.deinit();
+        app.clipboard = .init(gpa, &app.loop, .{ .ctx = app, .set_selection = setSelection, .receive = receiveSelection });
+        errdefer app.clipboard.deinit();
         app.win = try ui.Window.init(gpa, .{
             .fonts = &app.fonts,
             .sink = .{ .ctx = app, .commit = commit },
@@ -76,6 +79,7 @@ pub const App = struct {
             .scale = @floatFromInt(options.scale),
             .rtl = options.rtl,
             .reduced_motion = true,
+            .clipboard = &app.clipboard,
         });
         errdefer app.win.deinit();
         var output: platform.OutputInfo = .{ .width = 1920, .height = 1080, .refresh_mhz = 60000, .scale = @intCast(options.scale) };
@@ -98,6 +102,7 @@ pub const App = struct {
         app.pool.deinit();
         app.mirror.deinit();
         app.win.deinit();
+        app.clipboard.deinit();
         app.fonts.deinit();
         app.loop.deinit();
     }
@@ -172,8 +177,94 @@ pub const App = struct {
         return c.out;
     }
 
+    // Selection requests run on the compositor thread (D8). `call` blocks
+    // for at most about a frame.
+    fn setSelection(ctx: ?*anyopaque, seat: platform.SeatId, kind: platform.SelectionKind, mimes: []const []const u8, serial: u32) ?u32 {
+        const app: *App = @ptrCast(@alignCast(ctx));
+        const Ctx = struct {
+            seat: platform.SeatId,
+            kind: platform.SelectionKind,
+            mimes: []const []const u8,
+            serial: u32,
+            out: ?u32 = null,
+            fn run(c: ?*anyopaque, comp: *Compositor) void {
+                const s: *@This() = @ptrCast(@alignCast(c));
+                s.out = comp.platform.setSelection(s.seat, s.kind, s.mimes, s.serial) catch null;
+            }
+        };
+        var c: Ctx = .{ .seat = seat, .kind = kind, .mimes = mimes, .serial = serial };
+        app.comp.call(&c, Ctx.run) catch return null;
+        return c.out;
+    }
+
+    fn receiveSelection(ctx: ?*anyopaque, seat: platform.SeatId, kind: platform.SelectionKind, prefs: []const []const u8, fd: i32) bool {
+        const app: *App = @ptrCast(@alignCast(ctx));
+        const Ctx = struct {
+            seat: platform.SeatId,
+            kind: platform.SelectionKind,
+            prefs: []const []const u8,
+            fd: i32,
+            out: bool = false,
+            fn run(c: ?*anyopaque, comp: *Compositor) void {
+                const s: *@This() = @ptrCast(@alignCast(c));
+                const mime = ui.Clipboard.pick(comp.platform.selectionMimes(s.seat, s.kind), s.prefs) orelse {
+                    _ = std.os.linux.close(s.fd);
+                    return;
+                };
+                s.out = comp.platform.receiveSelection(s.seat, s.kind, mime, s.fd);
+            }
+        };
+        var c: Ctx = .{ .seat = seat, .kind = kind, .prefs = prefs, .fd = fd };
+        app.comp.call(&c, Ctx.run) catch {
+            _ = std.os.linux.close(fd);
+            return false;
+        };
+        return c.out;
+    }
+
+    /// Runs `f(headless, ctx)` on the compositor thread.
+    pub fn onHeadless(app: *App, ctx: anytype, comptime f: fn (*platform.Headless, @TypeOf(ctx)) void) void {
+        const C = struct {
+            ctx: @TypeOf(ctx),
+            fn run(c: ?*anyopaque, comp: *Compositor) void {
+                const s: *@This() = @ptrCast(@alignCast(c));
+                f(comp.platform.headless, s.ctx);
+            }
+        };
+        var c: C = .{ .ctx = ctx };
+        app.comp.call(&c, C.run) catch |e| {
+            app.err = e;
+        };
+    }
+
+    /// Reads a pipe to its end while the loop runs (the writer may be this
+    /// application). Caller frees.
+    pub fn readAll(app: *App, fd: i32) ![]u8 {
+        const linux = std.os.linux;
+        defer _ = linux.close(fd);
+        const o_nonblock: usize = @as(u32, @bitCast(linux.O{ .NONBLOCK = true }));
+        _ = linux.fcntl(fd, linux.F.SETFL, linux.fcntl(fd, linux.F.GETFL, 0) | o_nonblock);
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(app.gpa);
+        var guard: usize = 0;
+        while (true) : (guard += 1) {
+            if (guard > 100_000) return error.Timeout;
+            try out.ensureUnusedCapacity(app.gpa, 64 * 1024);
+            const space = out.unusedCapacitySlice();
+            const n = linux.read(fd, space.ptr, space.len);
+            switch (linux.errno(n)) {
+                .SUCCESS => if (n == 0) return out.toOwnedSlice(app.gpa) else {
+                    out.items.len += n;
+                },
+                .AGAIN => try app.loop.dispatch(1),
+                else => return error.ReadFailed,
+            }
+        }
+    }
+
     fn onEvent(ctx: ?*anyopaque, ev: *const compositor.Event) void {
         const app: *App = @ptrCast(@alignCast(ctx));
+        if (ev.* == .platform and app.clipboard.handleEvent(&ev.platform)) return;
         switch (ev.*) {
             .presented => |p| app.presented_seq = @max(app.presented_seq, p.seq),
             .scrolled => |s| if (app.mirror.get(s.layer)) |l| {

@@ -30,6 +30,7 @@ const text_node = @import("text_node.zig");
 const editor_mod = @import("editor.zig");
 const secret = @import("secret.zig");
 const ime_mod = @import("ime.zig");
+pub const Clipboard = @import("clipboard.zig");
 
 const Window = @This();
 
@@ -56,6 +57,13 @@ pending_input: std.ArrayList(platform.Event) = .empty,
 histories: std.AutoHashMapUnmanaged(NodeId, editor_mod.History) = .empty,
 /// From the desktop settings (D19): no caret blinking or other motion.
 reduced_motion: bool = false,
+/// The application's clipboard, if it has one.
+clipboard: ?*Clipboard = null,
+/// Pastes that finished while a transaction was open, applied in order at
+/// the next frame like queued input.
+pending_pastes: std.ArrayList(struct { node: NodeId, text: []u8 }) = .empty,
+/// What this window last offered as the primary selection.
+primary: struct { node: NodeId = .none, lo: u32 = 0, hi: u32 = 0, revision: u32 = 0 } = .{},
 txn: Txn = .{},
 
 /// Logical size and buffer scale, from the last configure.
@@ -105,6 +113,7 @@ pub const Options = struct {
     rtl: bool = false,
     language: []const u8 = "",
     reduced_motion: bool = false,
+    clipboard: ?*Clipboard = null,
 };
 
 /// Window-wide work outstanding for the next frame.
@@ -183,6 +192,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) Error!*Window {
         .scale = options.scale,
         .rtl = options.rtl,
         .reduced_motion = options.reduced_motion,
+        .clipboard = options.clipboard,
         .sink = options.sink,
         .host = options.host,
         .scratch = .init(gpa),
@@ -200,6 +210,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) Error!*Window {
 pub fn deinit(win: *Window) void {
     std.debug.assert(!win.txn.open);
     win.fonts.removeListener(win);
+    if (win.clipboard) |cb| cb.cancel(win);
     win.deinitStorage();
     win.gpa.destroy(win);
 }
@@ -214,6 +225,11 @@ fn deinitStorage(win: *Window) void {
     win.dead.deinit(win.gpa);
     for (win.pending_input.items) |*ev| std.crypto.secureZero(u8, std.mem.asBytes(ev));
     win.pending_input.deinit(win.gpa);
+    for (win.pending_pastes.items) |p| {
+        std.crypto.secureZero(u8, p.text);
+        win.gpa.free(p.text);
+    }
+    win.pending_pastes.deinit(win.gpa);
     var hist = win.histories.valueIterator();
     while (hist.next()) |h| h.deinit(win.gpa);
     win.histories.deinit(win.gpa);
@@ -355,7 +371,7 @@ pub fn needsFrame(win: *const Window) bool {
     // Semantics alone need no frame: they rebuild on query or with the
     // next frame (`semanticsTree`), so scrolling makes no extra frames.
     return win.state(.root).needs_layout or win.dirty.layers or win.dirty.props or
-        win.paint.anyDirty() or win.pending_input.items.len != 0 or win.ime.dirty;
+        win.paint.anyDirty() or win.pending_input.items.len != 0 or win.ime.dirty or win.pending_pastes.items.len != 0;
 }
 
 pub fn requestFrame(win: *Window) void {
@@ -421,6 +437,7 @@ pub fn frame(win: *Window) Error!void {
         win.dirty.semantics = false;
     }
     ime_mod.sync(win);
+    editor_mod.updatePrimary(win);
     win.stats.frames += 1;
 }
 
@@ -437,6 +454,14 @@ fn replayInput(win: *Window) void {
     const rest = win.pending_input.items.len - i;
     std.mem.copyForwards(platform.Event, win.pending_input.items[0..rest], win.pending_input.items[i..]);
     win.pending_input.shrinkRetainingCapacity(rest);
+    while (win.pending_pastes.items.len != 0 and !win.txn.open and win.pending_input.items.len == 0) {
+        const p = win.pending_pastes.orderedRemove(0);
+        defer {
+            std.crypto.secureZero(u8, p.text);
+            win.gpa.free(p.text);
+        }
+        if (win.isLive(p.node) and win.node(p.node).kind == .editor) editor_mod.pasteText(win, p.node, p.text);
+    }
 }
 
 fn recycleDead(win: *Window) void {

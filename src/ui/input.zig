@@ -74,6 +74,10 @@ pub const State = struct {
     clicks: u8 = 0,
     /// The editor selection gesture of the current press.
     gesture: editor.Gesture = .{},
+    /// Seat and serial of the last key or button press, for requests the
+    /// compositor ties to user input (selections).
+    seat: platform.SeatId = 0,
+    serial: u32 = 0,
     mods: platform.Mods = .{},
 
     pub fn deinit(st: *State, gpa: std.mem.Allocator) void {
@@ -294,7 +298,13 @@ pub fn handle(win: *Window, event: *const platform.Event) void {
             updateHover(win, .none);
             st.pointer = null;
         },
-        .pointer_button => |b| pointerButton(win, b.button, b.pressed, b.time),
+        .pointer_button => |b| {
+            if (b.pressed) {
+                st.seat = b.seat;
+                st.serial = b.serial;
+            }
+            pointerButton(win, b.button, b.pressed, b.time);
+        },
         .touch_down => |t| {
             st.pointer = .{ .x = @floatCast(t.x), .y = @floatCast(t.y) };
             pointerButton(win, btn_left, true, t.time);
@@ -348,6 +358,13 @@ fn pointerButton(win: *Window, code: u32, pressed: bool, time: u32) void {
         if (target == .none) return;
         st.capture = target;
         const handled = bubblePointer(win, target, .down, button);
+        // The middle button pastes the primary selection at the pointer.
+        if (!handled and button == .middle and win.isLive(target) and win.node(target).kind == .editor and canFocus(win, target)) {
+            setFocus(win, target, false);
+            editor.pointerDown(win, target, p, false, 1);
+            editor.paste(win, target, .primary);
+            return;
+        }
         if (handled or button != .primary or !win.isLive(target)) return;
         var cur = target;
         while (cur != .none and !canFocus(win, cur)) cur = win.node(cur).parent;
@@ -376,6 +393,10 @@ fn pointerButton(win: *Window, code: u32, pressed: bool, time: u32) void {
 
 fn key(win: *Window, k: *const platform.Key) void {
     const st = &win.input;
+    if (k.state == .pressed) {
+        st.seat = k.seat;
+        st.serial = k.serial;
+    }
     const target = if (st.focus != .none and win.isLive(st.focus)) st.focus else NodeId.root;
     const ev: Event = .{ .key = .{
         .keysym = k.keysym,

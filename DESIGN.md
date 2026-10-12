@@ -728,6 +728,28 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Clipboard and drag-and-drop negotiate MIME types, support primary
     selection, stream through the event loop, and enforce configurable size
     limits.
+    - The platform keeps each seat's wl_data_device and primary selection
+      device on the compositor thread; offers announce their mime types
+      before becoming the selection, and this client's sources forward
+      send requests as `selection_send` events carrying the fd. The UI
+      reaches the platform through `ui.Clipboard.Host` (run with
+      `Compositor.call`).
+    - `ui.Clipboard` is one per application. Copies keep the data and
+      offer the text types (UTF-8 first, then the X11 names); pastes take
+      the first text type the offer has. Pipes are non-blocking and
+      streamed by the UI loop's io phase, and finished pastes are
+      delivered in the dispatch phase (D5). Pastes over the limit (16 MiB
+      by default) are dropped; invalid UTF-8 becomes U+FFFD and NULs are
+      removed. While the application owns a selection, pasting it uses the
+      data directly.
+    - Editors copy with Ctrl+C and Ctrl+Insert, cut with Ctrl+X and
+      Shift+Delete, paste with Ctrl+V and Shift+Insert, and paste the
+      primary selection with the middle button at the pointer. A non-empty
+      selection in the focused editor becomes the primary selection once
+      per frame. Masked editors never copy. A paste is one undo step, and
+      waits behind an open transaction like input; single-line editors
+      turn line breaks into spaces.
+    - Drag and drop offers are refused until drag and drop is built.
   - Lifecycle: `org.freedesktop.Application` activation and single instance.
   - System tray (StatusNotifierItem) is an optional module.
   - Images: wuffs (PNG, JPEG, GIF), libwebp, libavif with dav1d, libjxl.

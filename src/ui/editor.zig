@@ -25,6 +25,7 @@ const keysym = input.keysym;
 
 const backspace: u32 = 0xff08;
 const delete: u32 = 0xffff;
+const insert_key: u32 = 0xff63;
 
 /// The editor's layout for its current text, rebuilt if the text changed
 /// since the last frame.
@@ -489,6 +490,8 @@ pub fn key(win: *Window, id: NodeId, k: *const platform.Key) bool {
         },
         backspace, delete => {
             if (lo != hi) {
+                // Shift+Delete cuts.
+                if (k.keysym == delete and mods.shift) copySelection(win, id, false);
                 replace(win, id, lo, hi, "", .other);
             } else if (k.keysym == backspace) {
                 if (e.caret == 0) return true;
@@ -509,6 +512,17 @@ pub fn key(win: *Window, id: NodeId, k: *const platform.Key) bool {
             if (!mods.ctrl) return typed(win, id, k);
             select(win, id, .{ .offset = len }, 0);
         },
+        'c', 'C', 'x', 'X' => {
+            if (!mods.ctrl) return typed(win, id, k);
+            copySelection(win, id, k.keysym == 'x' or k.keysym == 'X');
+        },
+        'v', 'V' => {
+            if (!mods.ctrl) return typed(win, id, k);
+            paste(win, id, .clipboard);
+        },
+        insert_key => {
+            if (mods.shift) paste(win, id, .clipboard) else if (mods.ctrl) copySelection(win, id, false) else return false;
+        },
         'z', 'Z' => {
             if (!mods.ctrl) return typed(win, id, k);
             _ = undo(win, id, mods.shift);
@@ -520,6 +534,91 @@ pub fn key(win: *Window, id: NodeId, k: *const platform.Key) bool {
         else => return typed(win, id, k),
     }
     return true;
+}
+
+// Clipboard -----------------------------------------------------------------
+
+/// Copies (or cuts) the selection to the clipboard. Masked editors do not
+/// copy.
+pub fn copySelection(win: *Window, id: NodeId, cut: bool) void {
+    const e = data(win, id);
+    const lo, const hi = selection(e);
+    if (lo == hi or e.editor.masked) return;
+    const cb = win.clipboard orelse return;
+    cb.copy(.clipboard, win.input.seat, win.input.serial, e.text.content[lo..hi]) catch return;
+    if (cut) replace(win, id, lo, hi, "", .other);
+}
+
+const Paste = struct {
+    win: *Window,
+    node: NodeId,
+
+    fn done(ctx: *anyopaque, pasted: ?[]const u8) void {
+        const p: *Paste = @ptrCast(@alignCast(ctx));
+        const win = p.win;
+        const node = p.node;
+        win.gpa.destroy(p);
+        const s = pasted orelse return;
+        if (!win.isLive(node) or win.node(node).kind != .editor) return;
+        // Behind an open transaction (or input queued behind one), the
+        // paste waits its turn like input.
+        if (win.txn.open or win.pending_input.items.len != 0 or win.pending_pastes.items.len != 0) {
+            const copy = win.gpa.dupe(u8, s) catch return;
+            win.pending_pastes.append(win.gpa, .{ .node = node, .text = copy }) catch {
+                win.gpa.free(copy);
+                return;
+            };
+            win.requestFrame();
+            return;
+        }
+        pasteText(win, node, s);
+    }
+};
+
+/// Pastes the clipboard or primary selection at the caret.
+pub fn paste(win: *Window, id: NodeId, kind: platform.SelectionKind) void {
+    const cb = win.clipboard orelse return;
+    const p = win.gpa.create(Paste) catch return;
+    p.* = .{ .win = win, .node = id };
+    cb.paste(kind, win.input.seat, win, .{ .ctx = p, .func = Paste.done });
+}
+
+/// Inserts pasted text over the selection, as one undo step. Single-line
+/// editors turn line breaks into spaces.
+pub fn pasteText(win: *Window, id: NodeId, text_: []const u8) void {
+    const e = data(win, id);
+    if (win.node(id).semantics.disabled) return;
+    const a = win.scratch.allocator();
+    const buf = a.alloc(u8, text_.len) catch return;
+    defer std.crypto.secureZero(u8, buf);
+    var n: usize = 0;
+    for (text_, 0..) |c, i| {
+        if (e.editor.multiline) {
+            if (c == '\r' and i + 1 < text_.len and text_[i + 1] == '\n') continue;
+            buf[n] = if (c == '\r') '\n' else c;
+        } else {
+            if (c == '\r' and i + 1 < text_.len and text_[i + 1] == '\n') continue;
+            buf[n] = if (c == '\n' or c == '\r') ' ' else c;
+        }
+        n += 1;
+    }
+    const lo, const hi = selection(e);
+    replace(win, id, lo, hi, buf[0..n], .other);
+}
+
+/// Offers the focused editor's selection as the primary selection when it
+/// changed (once per frame, not on every drag step).
+pub fn updatePrimary(win: *Window) void {
+    const cb = win.clipboard orelse return;
+    const id = win.input.focus;
+    if (id == .none or !win.isLive(id) or win.node(id).kind != .editor) return;
+    const e = data(win, id);
+    const lo, const hi = selection(e);
+    if (lo == hi or e.editor.masked) return;
+    const p = win.primary;
+    if (p.node == id and p.lo == lo and p.hi == hi and p.revision == e.revision) return;
+    win.primary = .{ .node = id, .lo = lo, .hi = hi, .revision = e.revision };
+    cb.copy(.primary, win.input.seat, win.input.serial, e.text.content[lo..hi]) catch {};
 }
 
 fn typed(win: *Window, id: NodeId, k: *const platform.Key) bool {

@@ -61,6 +61,7 @@ pub const Window = @import("Window.zig");
 pub const Txn = @import("txn.zig").Txn;
 pub const TxnError = @import("txn.zig").Error;
 pub const Fonts = @import("fonts.zig");
+pub const Clipboard = @import("clipboard.zig");
 pub const layers = @import("layers.zig");
 pub const Sink = layers.Sink;
 pub const semantics = @import("semantics.zig");
