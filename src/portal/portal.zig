@@ -31,6 +31,7 @@ pub const screenshot = @import("screenshot.zig");
 pub const screencast = @import("screencast.zig");
 pub const global_shortcuts = @import("global_shortcuts.zig");
 pub const documents = @import("documents.zig");
+pub const print = @import("print.zig");
 pub const application = @import("application.zig");
 
 pub const Response = Request.Response;

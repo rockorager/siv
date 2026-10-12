@@ -838,3 +838,92 @@ test "a second instance forwards activation, URIs, and actions to the first" {
     try h.until(&fw, Forwarded.isDone);
     try testing.expect(!fw.ok);
 }
+
+fn printResults(_: *Frontend, call: *const Frontend.Call, w: vardict.Writer) anyerror!void {
+    if (!std.mem.eql(u8, call.member, "PreparePrint")) return;
+    try w.open("settings", "a{sv}");
+    try w.e.beginArray("{sv}");
+    try w.e.endArray();
+    try w.close();
+    // A4 landscape, margins of 10, 20, 30, and 40 mm (top, right, bottom,
+    // left) on the portrait paper, as GtkPageSetup serializes them.
+    try w.open("page-setup", "a{sv}");
+    const ps = try vardict.Writer.begin(w.e);
+    try ps.put("Name", @as([]const u8, "iso_a4"));
+    try ps.put("Width", @as(f64, 210));
+    try ps.put("Height", @as(f64, 297));
+    try ps.put("MarginTop", @as(f64, 10));
+    try ps.put("MarginRight", @as(f64, 20));
+    try ps.put("MarginBottom", @as(f64, 30));
+    try ps.put("MarginLeft", @as(f64, 40));
+    try ps.put("Orientation", @as([]const u8, "landscape"));
+    try ps.end();
+    try w.close();
+    try w.put("token", @as(u32, 9));
+}
+
+const Printed = struct {
+    req: Request = .{ .func = cb },
+    done: bool = false,
+    code: ?Request.Response = null,
+    setup: portal.print.PageSetup = .{ .width = 1, .height = 1 },
+    token: u32 = 0,
+
+    fn cb(r: *Request, outcome: Request.Outcome) void {
+        const p: *Printed = @fieldParentPtr("req", r);
+        p.done = true;
+        if (outcome != .response) return;
+        p.code = outcome.response.code;
+        p.setup = portal.print.PageSetup.of(&outcome.response.results, p.setup);
+        p.token = portal.print.token(&outcome.response.results);
+    }
+
+    fn isDone(p: *Printed) bool {
+        return p.done;
+    }
+};
+
+test "printing prepares a page setup, then sends the PDF with its token" {
+    var h: Harness = undefined;
+    try h.init(true);
+    defer h.deinit();
+    try h.ready();
+    h.frontend.results = printResults;
+    var a: Printed = .{};
+    try portal.print.prepare(&a.req, &h.client, "wayland:w", "Report", .{ .modal = false });
+    try h.until(&a, Printed.isDone);
+    try testing.expectEqual(Request.Response.success, a.code.?);
+    try testing.expectEqual(@as(u32, 9), a.token);
+    const prep = h.frontend.find("PreparePrint").?;
+    try testing.expectEqualStrings("wayland:w", prep.firstString());
+    try testing.expectEqual(false, prep.options().boolean("modal").?);
+    // Landscape: the page is the paper turned, its top the paper's left.
+    const mm = portal.print.PageSetup.points_per_mm;
+    const s = a.setup;
+    try testing.expectApproxEqAbs(@as(f32, @floatCast(297 * mm)), s.width, 1e-3);
+    try testing.expectApproxEqAbs(@as(f32, @floatCast(210 * mm)), s.height, 1e-3);
+    try testing.expectApproxEqAbs(@as(f32, @floatCast(40 * mm)), s.margin_top, 1e-3);
+    try testing.expectApproxEqAbs(@as(f32, @floatCast(10 * mm)), s.margin_right, 1e-3);
+    try testing.expectApproxEqAbs(@as(f32, @floatCast(20 * mm)), s.margin_bottom, 1e-3);
+    try testing.expectApproxEqAbs(@as(f32, @floatCast(30 * mm)), s.margin_left, 1e-3);
+
+    const rc = linux.memfd_create("siv-print-test", linux.MFD.CLOEXEC);
+    const fd: i32 = @intCast(rc);
+    defer _ = linux.close(fd);
+    _ = linux.write(fd, "%PDF-1.7 test", 13);
+    var b: Printed = .{};
+    try portal.print.print(&b.req, &h.client, "wayland:w", "Report", fd, a.token, .{});
+    try h.until(&b, Printed.isDone);
+    const call = h.frontend.find("Print").?;
+    var d = call.decoder();
+    _ = try d.readString();
+    try testing.expectEqualStrings("Report", try d.readString());
+    try testing.expectEqualStrings("%PDF-1.7 test", call.fd_data);
+    try testing.expectEqual(@as(u32, 9), call.options().uint("token").?);
+    try testing.expectEqual(true, call.options().boolean("modal").?);
+}
+
+test "page setups fall back to the default without a usable size" {
+    const default: portal.print.PageSetup = .{ .width = 100, .height = 200 };
+    try testing.expectEqual(default, portal.print.PageSetup.of(&vardict.Reader.empty, default));
+}

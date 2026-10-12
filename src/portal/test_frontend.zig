@@ -40,6 +40,8 @@ pub const Frontend = struct {
         request: []u8,
         /// For calls with fds: the path of the first one.
         fd_path: []u8,
+        /// And its contents, if it is a readable file.
+        fd_data: []u8,
 
         pub fn decoder(c: *const Call) dbus.Decoder {
             return .init(c.body, c.signature, .little, &.{});
@@ -66,7 +68,7 @@ pub const Frontend = struct {
         }
 
         fn deinit(c: *Call) void {
-            inline for (.{ "interface", "member", "sender", "signature", "body", "request", "fd_path" }) |f| gpa.free(@field(c, f));
+            inline for (.{ "interface", "member", "sender", "signature", "body", "request", "fd_path", "fd_data" }) |f| gpa.free(@field(c, f));
         }
     };
 
@@ -145,6 +147,18 @@ pub const Frontend = struct {
         try f.closed.append(gpa, try gpa.dupe(u8, r.path));
     }
 
+    /// A file's contents from offset 0, or nothing (an O_PATH fd, a pipe).
+    fn readFd(fd: i32) ![]u8 {
+        const size = linux.lseek(fd, 0, linux.SEEK.END);
+        if (linux.errno(size) != .SUCCESS or size == 0) return &.{};
+        const data = try gpa.alloc(u8, size);
+        if (linux.pread(fd, data.ptr, data.len, 0) != size) {
+            gpa.free(data);
+            return &.{};
+        }
+        return data;
+    }
+
     fn objectPath(buf: []u8, kind: []const u8, sender: []const u8, token: []const u8) ![]const u8 {
         const out = try std.fmt.bufPrint(buf, "{s}/{s}/{s}/{s}", .{ Client.portal_path, kind, sender[1..], token });
         for (out[Client.portal_path.len + kind.len + 2 ..][0 .. sender.len - 1]) |*ch| {
@@ -165,6 +179,7 @@ pub const Frontend = struct {
             .body = try gpa.dupe(u8, msg.bodyBytes()),
             .request = &.{},
             .fd_path = &.{},
+            .fd_data = &.{},
         };
         errdefer call.deinit();
         if (msg.fds.len > 0) {
@@ -173,6 +188,7 @@ pub const Frontend = struct {
             const proc = try std.fmt.bufPrintSentinel(&pbuf, "/proc/self/fd/{d}", .{msg.fds[0]}, 0);
             const n = linux.readlink(proc, &lbuf, lbuf.len);
             if (linux.errno(n) == .SUCCESS) call.fd_path = try gpa.dupe(u8, lbuf[0..n]);
+            call.fd_data = try readFd(msg.fds[0]);
         }
         const opts = call.options();
         const member = call.member;

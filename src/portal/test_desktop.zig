@@ -54,6 +54,8 @@ pub const Backend = struct {
         member: []u8,
         signature: []u8,
         body: []u8,
+        /// The contents of the call's first fd, if it is a readable file.
+        fd_data: []u8 = &.{},
 
         pub fn decoder(c: *const Call) dbus.Decoder {
             return .init(c.body, c.signature, .little, &.{});
@@ -153,7 +155,7 @@ pub const Backend = struct {
         b.conn.deinit();
         b.loop.deinit();
         for (b.calls.items) |c| {
-            inline for (.{ "interface", "member", "signature", "body" }) |f| gpa.free(@field(c, f));
+            inline for (.{ "interface", "member", "signature", "body", "fd_data" }) |f| gpa.free(@field(c, f));
         }
         b.calls.deinit(gpa);
         for (b.closed.items) |p| gpa.free(p);
@@ -174,6 +176,18 @@ pub const Backend = struct {
         try b.closed.append(gpa, try gpa.dupe(u8, r.path));
     }
 
+    /// A file's contents from offset 0, or nothing.
+    fn readFd(fd: i32) []u8 {
+        const size = linux.lseek(fd, 0, linux.SEEK.END);
+        if (linux.errno(size) != .SUCCESS or size == 0) return &.{};
+        const data = gpa.alloc(u8, size) catch return &.{};
+        if (linux.pread(fd, data.ptr, data.len, 0) != size) {
+            gpa.free(data);
+            return &.{};
+        }
+        return data;
+    }
+
     fn handle(r: *dbus.Request) anyerror!void {
         const b: *Backend = @ptrCast(@alignCast(r.node.ctx));
         const msg = r.msg;
@@ -182,6 +196,7 @@ pub const Backend = struct {
             .member = try gpa.dupe(u8, msg.member.?),
             .signature = try gpa.dupe(u8, msg.signature),
             .body = try gpa.dupe(u8, msg.bodyBytes()),
+            .fd_data = if (msg.fds.len > 0) readFd(msg.fds[0]) else &.{},
         };
         b.mutex.lock();
         const code = b.code;
