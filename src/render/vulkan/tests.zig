@@ -138,3 +138,38 @@ test "device selection matches dma-buf feedback device numbers" {
     dp.renderMinor = 0x12345;
     try testing.expect(Device.matchesDevice(dp, big));
 }
+
+test "the pipeline cache persists across devices, and how much it saves" {
+    const gpa = testing.allocator;
+    // A probe for a device at all.
+    (try testDevice()).destroy();
+    var dir_buf: [64]u8 = undefined;
+    const dir = try std.fmt.bufPrint(&dir_buf, "/tmp/siv-pipeline-cache-{d}", .{std.c.getpid()});
+    defer {
+        var cmd_buf: [96]u8 = undefined;
+        const cmd = std.fmt.bufPrintSentinel(&cmd_buf, "rm -rf {s}", .{dir}, 0) catch unreachable;
+        _ = system(cmd);
+    }
+    var times: [3]u64 = undefined;
+    var loaded: [3]usize = undefined;
+    for ([_]Device.PipelineCache{ .none, .{ .dir = dir }, .{ .dir = dir } }, 0..) |cache, i| {
+        const t0 = now();
+        const d = try Device.create(gpa, .{ .allow_cpu = true, .pipeline_cache = cache });
+        times[i] = now() - t0;
+        loaded[i] = d.cache_loaded;
+        d.destroy();
+    }
+    if (testing.environ.getPosix("SIV_MEASURE") != null) std.debug.print("device creation: {d:.1} ms without a cache, {d:.1} ms cold, {d:.1} ms warm ({d} bytes)\n", .{
+        @as(f64, @floatFromInt(times[0])) / 1e6, @as(f64, @floatFromInt(times[1])) / 1e6, @as(f64, @floatFromInt(times[2])) / 1e6, loaded[2],
+    });
+    try testing.expectEqual(@as(usize, 0), loaded[1]);
+    try testing.expect(loaded[2] > 0);
+}
+
+extern "c" fn system(cmd: [*:0]const u8) c_int;
+
+fn now() u64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(.MONOTONIC, &ts);
+    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+}

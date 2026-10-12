@@ -24,6 +24,10 @@ const log = std.log.scoped(.vulkan);
 
 gpa: Allocator,
 loader: vk.Loader,
+options: Options = .{},
+pipeline_cache: c.VkPipelineCache = null,
+/// Bytes of cache data loaded at creation (0: none, a cold start).
+cache_loaded: usize = 0,
 base: vk.Base = .{},
 vki: vk.Instance = .{},
 vkd: vk.Device = .{},
@@ -71,7 +75,105 @@ pub const Options = struct {
     /// Enable VK_LAYER_KHRONOS_validation when installed. Messages go to
     /// the log; errors also count in `validation_errors`.
     validation: bool = false,
+    pipeline_cache: PipelineCache = .default,
 };
+
+/// Where compiled pipelines persist between runs.
+pub const PipelineCache = union(enum) {
+    /// $XDG_CACHE_HOME/siv/vulkan, or ~/.cache/siv/vulkan.
+    default,
+    /// This directory (created if missing).
+    dir: []const u8,
+    none,
+};
+
+/// The cache file: <dir>/<pipeline cache UUID>-<shader hash>.bin, so a
+/// driver or shader change starts a new file. Null without a cache.
+fn cachePath(d: *Device, buf: []u8) ?[:0]const u8 {
+    var dir_buf: [std.posix.PATH_MAX]u8 = undefined;
+    const dir: []const u8 = switch (d.options.pipeline_cache) {
+        .none => return null,
+        .dir => |p| p,
+        .default => if (std.c.getenv("XDG_CACHE_HOME")) |x| (if (x[0] == '/') std.fmt.bufPrint(&dir_buf, "{s}/siv/vulkan", .{std.mem.span(x)}) catch return null else return null) else if (std.c.getenv("HOME")) |h|
+            std.fmt.bufPrint(&dir_buf, "{s}/.cache/siv/vulkan", .{std.mem.span(h)}) catch return null
+        else
+            return null,
+    };
+    // mkdir -p.
+    var i: usize = 1;
+    while (i <= dir.len) : (i += 1) {
+        if (i < dir.len and dir[i] != '/') continue;
+        var part: [std.posix.PATH_MAX]u8 = undefined;
+        if (i >= part.len) return null;
+        @memcpy(part[0..i], dir[0..i]);
+        part[i] = 0;
+        _ = std.c.mkdir(@ptrCast(&part), 0o700);
+    }
+    var h = std.hash.Wyhash.init(0);
+    for ([_][]const u8{ shaders.quad_vert, shaders.draw_frag, shaders.blur_frag, shaders.encode_frag }) |code| h.update(code);
+    var props: c.VkPhysicalDeviceProperties = undefined;
+    d.vki.vkGetPhysicalDeviceProperties.?(d.physical, &props);
+    return std.fmt.bufPrintSentinel(buf, "{s}/{x}-{x:0>16}.bin", .{ dir, props.pipelineCacheUUID, h.final() }, 0) catch null;
+}
+
+fn openPipelineCache(d: *Device, path: ?[:0]const u8) vk.Error!void {
+    var data: []u8 = &.{};
+    defer d.gpa.free(data);
+    if (path) |p| data = readFile(d.gpa, p) catch &.{};
+    d.cache_loaded = data.len;
+    const info: c.VkPipelineCacheCreateInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+        .initialDataSize = data.len,
+        .pInitialData = if (data.len > 0) data.ptr else null,
+    };
+    // Drivers validate the header and ignore data that is not theirs.
+    if (d.vkd.vkCreatePipelineCache.?(d.device, &info, null, &d.pipeline_cache) != c.VK_SUCCESS) {
+        const empty: c.VkPipelineCacheCreateInfo = .{ .sType = c.VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
+        try vk.call(d.vkd.vkCreatePipelineCache, .{ d.device, &empty, null, &d.pipeline_cache });
+    }
+}
+
+/// Saves the cache when it grew (atomically: a temporary file renamed
+/// over the old one), then drops it: every pipeline exists by now.
+fn closePipelineCache(d: *Device, path: ?[:0]const u8) void {
+    defer {
+        d.vkd.vkDestroyPipelineCache.?(d.device, d.pipeline_cache, null);
+        d.pipeline_cache = null;
+    }
+    const p = path orelse return;
+    var size: usize = 0;
+    if (d.vkd.vkGetPipelineCacheData.?(d.device, d.pipeline_cache, &size, null) != c.VK_SUCCESS or size == 0 or size == d.cache_loaded) return;
+    const data = d.gpa.alloc(u8, size) catch return;
+    defer d.gpa.free(data);
+    if (d.vkd.vkGetPipelineCacheData.?(d.device, d.pipeline_cache, &size, data.ptr) != c.VK_SUCCESS) return;
+    var tmp_buf: [std.posix.PATH_MAX + 8]u8 = undefined;
+    const tmp = std.fmt.bufPrintSentinel(&tmp_buf, "{s}.{d}", .{ p, std.c.getpid() }, 0) catch return;
+    const fd = std.c.open(tmp, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
+    if (fd < 0) return;
+    var written: usize = 0;
+    while (written < size) {
+        const n = std.c.write(fd, data.ptr + written, size - written);
+        if (n <= 0) break;
+        written += @intCast(n);
+    }
+    _ = std.c.close(fd);
+    if (written == size) _ = std.c.rename(tmp, p) else _ = std.c.unlink(tmp);
+}
+
+fn readFile(gpa: Allocator, path: [:0]const u8) ![]u8 {
+    const fd = std.c.open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true });
+    if (fd < 0) return error.NotFound;
+    defer _ = std.c.close(fd);
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var chunk: [64 * 1024]u8 = undefined;
+    while (out.items.len < 64 << 20) {
+        const n = std.c.read(fd, &chunk, chunk.len);
+        if (n <= 0) break;
+        try out.appendSlice(gpa, chunk[0..@intCast(n)]);
+    }
+    return out.toOwnedSlice(gpa);
+}
 
 /// Validation errors reported since start; tests check it stays zero.
 pub var validation_errors: std.atomic.Value(u32) = .init(0);
@@ -94,7 +196,7 @@ pub fn create(gpa: Allocator, options: Options) vk.Error!*Device {
         loader.close();
         return error.OutOfMemory;
     };
-    d.* = .{ .gpa = gpa, .loader = loader };
+    d.* = .{ .gpa = gpa, .loader = loader, .options = options };
     errdefer d.destroy();
     try vk.load(vk.Base, &d.base, loader.getInstanceProcAddr, @as(c.VkInstance, null));
     try d.createInstance(options);
@@ -394,6 +496,7 @@ pub fn matchesDevice(dp: c.VkPhysicalDeviceDrmPropertiesEXT, dev: u64) bool {
 pub const Binding = enum(u32) { insts, paints, stops, clips, luts, kernels, glyph_masks, glyph_colors, masks };
 
 fn createShared(d: *Device) vk.Error!void {
+    var cache_buf: [std.posix.PATH_MAX]u8 = undefined;
     const k = &d.vkd;
     const dev = d.device;
     const sampler_info: c.VkSamplerCreateInfo = .{
@@ -446,6 +549,9 @@ fn createShared(d: *Device) vk.Error!void {
     d.draw_frag = try d.shaderModule(shaders.draw_frag);
     d.blur_frag = try d.shaderModule(shaders.blur_frag);
     d.encode_frag = try d.shaderModule(shaders.encode_frag);
+    const cache_path = d.cachePath(&cache_buf);
+    try d.openPipelineCache(cache_path);
+    defer d.closePipelineCache(cache_path);
     d.draw_pipeline = try d.pipeline(d.draw_frag, fp16, true);
     d.replace_pipeline = try d.pipeline(d.draw_frag, fp16, false);
     d.blur_pipeline = try d.pipeline(d.blur_frag, fp32, false);
@@ -574,7 +680,7 @@ fn pipeline(d: *Device, frag: c.VkShaderModule, format: c.VkFormat, blend: bool)
         .layout = d.pipeline_layout,
     };
     var p: c.VkPipeline = null;
-    try vk.call(d.vkd.vkCreateGraphicsPipelines, .{ d.device, null, 1, &info, null, &p });
+    try vk.call(d.vkd.vkCreateGraphicsPipelines, .{ d.device, d.pipeline_cache, 1, &info, null, &p });
     return p;
 }
 

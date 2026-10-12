@@ -589,8 +589,27 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     when the first Wayland window opens (10 ms to find none, 116 ms on
     lavapipe with pipelines, longer than the first-frame budget of D25);
     windows present with the CPU renderer until it is ready and then
-    switch once. Reverse with a persistent VkPipelineCache if first frames
-    should already be Vulkan.
+    switch once. First frames stay on the CPU even with the pipeline cache
+    below: instance and device creation alone took 15 to 45 ms on lavapipe.
+  - Pipeline cache: a VkPipelineCache persists in
+    `$XDG_CACHE_HOME/siv/vulkan` (else `~/.cache/siv/vulkan`), one file
+    named by the driver's pipelineCacheUUID and a hash of the SPIR-V, so a
+    driver or shader update starts a new file instead of feeding a driver
+    stale data. It is loaded before the pipelines are created, saved after
+    (only when it changed, written to a temporary file and renamed so a
+    crash or a concurrent process never leaves a torn file), and then
+    dropped. `Device.Options.pipeline_cache` names another directory or
+    none (tests). Measured device creation (instance, device, five
+    pipelines) without a cache, cold, and warm: lavapipe 22.3 (Debian) 128,
+    127, 128 ms; lavapipe 26.2 (Nix) 738, 724, 733 ms. Lavapipe's cache
+    holds only its header (32 and 20 bytes): it compiles with LLVM at
+    pipeline creation and serializes nothing, so the saving cannot be
+    measured in this environment; RADV, ANV, NVK, and NVIDIA serialize
+    compiled pipelines, and Mesa drivers also keep their own shader disk
+    cache. None of this touches the D25 first-frame budget, which the CPU
+    renderer meets while the device is created on its thread; the cache
+    shortens when windows switch to Vulkan. Verified: a second device
+    loads the first one's file (`render/vulkan/tests.zig`).
   - Presentation (`surface.Vulkan`): the platform hands the window's commits
     to the swapchain (`setExternalPresenter`); each frame it sets up the
     configure ack, scale, frame callback, and presentation feedback, then

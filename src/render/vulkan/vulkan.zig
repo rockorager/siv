@@ -29,7 +29,7 @@ pub fn testDevice(gpa: std.mem.Allocator) !*Device {
     // Mesa's implicit device-select layer connects to Wayland and X to find
     // the default GPU and complains on stderr when there is neither.
     _ = setenv("NODEVICE_SELECT", "1", 0);
-    return Device.create(gpa, .{ .allow_cpu = true, .validation = true }) catch |e| switch (e) {
+    return Device.create(gpa, .{ .allow_cpu = true, .validation = true, .pipeline_cache = .none }) catch |e| switch (e) {
         error.Unavailable => return error.SkipZigTest,
         else => return e,
     };
