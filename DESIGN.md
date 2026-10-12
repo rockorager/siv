@@ -110,10 +110,37 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     the release that added it. A build check compares the exported symbols,
     versions, and SONAME against the schema. Deprecation rules are written
     down before 1.0.
+  - Every function except `siv_post` (and `siv_version`,
+    `siv_result_name`) is called on the thread that created the root.
+  - `siv_post` racing root destruction: each registry slot has a pin
+    count. `siv_post` pins the root (increment, then recheck the
+    generation, both sequentially consistent), queues its closure, and
+    unpins. `siv_app_destroy` first retires the handle (bumps the
+    generation, so new pins and lookups fail) and waits for the pin count
+    to reach zero, then tears down. So a post either fails with
+    `SIV_ERROR_INVALID_HANDLE` and nothing runs, or its closure is queued
+    before teardown and its destroy-notify runs exactly once. The wait
+    is bounded by one allocation and a lock-free push on the posting
+    thread.
+  - A destroy-notify runs exactly once, when siv drops the user data, and
+    never while a siv callback is running: releases triggered from a
+    callback (a handler replacing itself, a window destroyed from its own
+    handler) are queued until the outermost callback returns. A call that
+    takes a destroy-notify and fails runs it at once, since ownership
+    passed with the call.
+  - Arrays are a const pointer and `<name>_count`; functions that fill
+    caller memory take `char *` and `<name>_cap`, write at most that much,
+    and report the full length, so callers can size a second call.
+  - Callbacks receive event details as size-prefixed structs by pointer
+    (`siv_event`, `siv_window_event`), so events grow like descriptors.
 - **Alternatives:** GObject-style reference-counted objects with
   inheritance; raw pointers; a per-thread "last error" (global state, and
   lost across language boundaries); `libsiv.so.0.<minor>` SONAMEs before 1.0
   (lets 0.x releases coexist, but Zig's build names files by major only).
+  For `siv_post`: reference-counted roots (every call would pay an atomic
+  pair, not only posts); hazard pointers (the same guarantee with more
+  machinery than one counter per slot); a lock per slot (posters would
+  block each other).
 - **Reverse if:** generation checks show up in profiles on hot paths. Then
   check only at the ABI boundary in release builds (internal code already uses
   plain indices; see D20). Use per-minor SONAMEs if distributions need 0.x
@@ -170,8 +197,26 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     missing ones.
   - External surfaces are in the closed set but not built yet; creating
     one fails with `Unsupported`.
+  - At the C ABI (`src/abi/tree.zig`), builders (`siv_flex`, `siv_text`,
+    ...) return the new node's handle directly, as in the example above,
+    and errors are sticky: the first operation that fails records its
+    error in the transaction; every later operation does nothing and
+    returns it (builders return 0), and `siv_txn_commit` discards the
+    whole transaction and returns that error. `siv_txn_status` reads it
+    early. A C program builds a subtree without checking each call and
+    still never commits half of it. Setters return the status too, with
+    warnings for ignored results off.
+  - Node handles are made when a node is created and removed when a
+    committed transaction destroys it, the transaction that created it
+    aborts, or the window goes. Handlers set with `siv_on` are part of the
+    transaction: an abort restores the previous handler and releases the
+    new one; a commit releases the replaced one.
 - **Alternatives:** immediate mode (no stable identity without hashing call
-  sites); a log of operations applied at commit (no reads of pending
+  sites); builders that return `siv_result` with the node through an out
+  parameter (every line of tree-building code becomes a checked call, the
+  usual C idiom drops errors anyway, and a failure midway still leaves
+  the caller to abort); applying the successful operations of a failed
+  transaction (commits a half-built subtree); a log of operations applied at commit (no reads of pending
   state, and cycles and kinds can only be checked at commit, where failure
   is too late); descriptions lowered through several intermediate representations
   (ourokit: description → descriptor → instance → render object).
@@ -191,7 +236,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     paint, present); prepare hooks before sleeping (Wayland flushes here).
     Work scheduled for a phase that already ran waits for the next iteration.
   - `siv_post` takes a callback, a destroy-notify, and user data. Posting
-    allocates a node, so the loop's allocator must be thread-safe.
+    allocates a node, so the loop's allocator must be thread-safe. The
+    destroy-notify runs after the callback, or alone if the application
+    is destroyed first, so it is the one place to free the user data.
   - Worker jobs run on the application's one worker pool (`src/pool`, see
     D6); the loop's wrapper posts each completion to the loop, so `done` runs
     in the dispatch phase.
@@ -866,6 +913,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   internal code uses plain indices. The application coordinator only sequences
   phases; subsystems never move into it. The headless platform backend runs the
   same loop as Wayland.
+  - The coordinator is `src/app`: an `App` owns the UI loop, the worker
+    pool, the fonts, and the compositor; a `Window` pairs a platform
+    window with a `ui.Window`. Compositor events arrive in the dispatch
+    phase and go to the window they name; close requests and configures
+    also go to the window's listener. A destroyed window gets no events
+    from then on, but its `ui.Window` lives until the compositor has
+    released every display list it holds and no event for it is being
+    delivered, so a handler may destroy its own window.
+  - `src/abi` adds only what C needs on top: handles, descriptors, the
+    sticky error, and C callbacks. Both stay thin: tree, layout, input,
+    and presentation logic never move into them.
 - **Alternatives:** ourokit's generation checks everywhere and a coordinator
   that grew to 21.8k lines.
 
@@ -969,6 +1027,46 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   intrinsic queries).
 - **Reverse if:** stock widgets need min-content sizing (for example,
   tables that never wrap words) and cannot get it from explicit sizes.
+
+### D27. Shape of the public API
+
+- **Requirement:** C programs build real UIs with little ceremony, and
+  every binding (D3, D23) gets the same safe defaults.
+- **Decision:**
+  - One builder per primitive (`siv_box`, `siv_flex`, `siv_grid`,
+    `siv_stack`, `siv_text`, `siv_editor`, `siv_scroll`), appending as
+    the last child; `siv_move` reorders. Images, canvases, and external
+    nodes need pixel, drawing, and surface APIs and come later.
+  - Property groups are descriptors where zero is a good default (layout,
+    visual, semantics, text style, flex, grid, stack). Where zero is a
+    meaningful value it is not a descriptor field: opacity and the
+    transform have their own setters (`siv_set_opacity`, and a frozen
+    `siv_transform` value whose identity has scale 1); flex shrink 0 is
+    `SIV_LAYOUT_NO_SHRINK`. Grid lines count from 1 so that 0 is
+    automatic. Colors are sRGB-encoded with straight alpha, as in CSS;
+    siv converts to linear light (D9, D11).
+  - Events go to one handler per node and event type, with
+    `bool (*)(void *user_data, siv_node, const siv_event *)`; returning
+    true stops bubbling and the default action (D16). Changes to the tree
+    from a handler go through a transaction like any other.
+  - A close request goes to the window's `on_event`; unless it returns
+    true, siv destroys the window. `siv_run` returns when `siv_app_quit`
+    is called or the last window is destroyed.
+  - `siv_app_dispatch` reports `SIV_ERROR_UNAVAILABLE` once the display
+    connection is lost and `SIV_ERROR_OUT_OF_MEMORY` once when events
+    were dropped; `SIV_ERROR_BUSY` covers a second transaction on a
+    window and calls that would re-enter the loop from a callback.
+  - Testing input through the C ABI uses the headless backend's
+    injection from Zig (`test/abi`); a public test-input API waits until
+    applications ask for one.
+- **Alternatives:** one generic `siv_node_create(kind)` plus setters (one
+  more call for every node); a descriptor per node kind carrying every
+  property (large structs, most fields unused); presence flags for every
+  field whose zero is meaningful (heavier for every caller than separate
+  setters for the few such properties).
+- **Reverse if:** binding generators or C users need a property that a
+  descriptor cannot default to zero; then split it out as above, never
+  add presence flags across the board.
 
 ## Lessons from ourokit
 

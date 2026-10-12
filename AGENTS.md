@@ -21,6 +21,7 @@ zig build test-integration-dbus  # only the D-Bus part
 zig build test-dbus --fuzz -Doptimize=ReleaseSafe  # fuzz a module's parsers
 zig build test-abi             # abi module, generators, Zig wrappers, exported symbols
 zig build test-c               # C programs against the generated headers and shared libraries
+zig build examples             # build and install the C programs in examples/
 zig build test -Dtest-filter=bidi
 zig build bench-text -Doptimize=ReleaseFast   # headless text engine benchmarks
 zig build bench-render-cpu -Doptimize=ReleaseFast  # CPU renderer benchmarks
