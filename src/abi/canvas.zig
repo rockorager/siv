@@ -695,19 +695,25 @@ const Shaped = struct {
         }
         sh.layout = text.Layout.init(gpa, sh.scratch.allocator(), &fonts.cache, p, .{
             .width = if (width > 0 and props.wrap) width else null,
-            .alignment = props.alignment,
         }) catch |err| return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             else => error.InvalidArgument,
         };
-        // Alignment within a given width, also without wrapping.
-        if (width > 0 and !props.wrap) {
-            const l = &sh.layout.?;
-            for (@constCast(l.lines)) |*line| line.x += switch (props.alignment) {
-                .start => if (line.rtl()) width - l.width else 0,
-                .end => if (line.rtl()) 0 else width - l.width,
-                .center => (width - l.width) / 2,
+        // Lines align by the drawing's direction (the canvas node's, or the
+        // page's), not by each paragraph's own, as text nodes do (D21): an
+        // English line in a right-to-left canvas is flush right, while bidi
+        // ordering within it still follows its text. Within the given width,
+        // also without wrapping; else within the widest line.
+        const l = &sh.layout.?;
+        const box = if (width > 0) width else l.width;
+        for (@constCast(l.lines)) |*line| {
+            const target: f32 = switch (props.alignment) {
+                .start => if (rtl) box - line.width else 0,
+                .end => if (rtl) 0 else box - line.width,
+                .center => (box - line.width) / 2,
             };
+            // Hanging whitespace sits left of a right-to-left line's content.
+            line.x = target - if (line.rtl()) line.advance - line.width else 0;
         }
         return sh;
     }

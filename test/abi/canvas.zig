@@ -82,3 +82,54 @@ test "C API canvas: drawing from C, per-canvas redraws, measured sizes" {
     try testing.expectEqual(old.height, new.height);
     try h.expectGolden("canvas-relabel", 300, 150);
 }
+
+const Hello = struct {
+    fn draw(_: ?*anyopaque, _: t.Node, d: t.Draw, width: f32, _: f32) callconv(.c) void {
+        // Start-aligned across the canvas.
+        _ = C.siv_draw_text(d, 0, 4, width, "Hello", 5, &.{ .font_size = 20 });
+    }
+};
+
+const C = abi.canvas;
+
+/// The leftmost and rightmost columns with ink: the window has no
+/// background, so the text is what is opaque.
+fn inkColumns(px: []const u8, width: usize) [2]usize {
+    var lo: usize = width;
+    var hi: usize = 0;
+    var i: usize = 0;
+    while (i < px.len) : (i += 4) {
+        if (px[i + 3] < 128) continue;
+        const x = (i / 4) % width;
+        lo = @min(lo, x);
+        hi = @max(hi, x);
+    }
+    return .{ lo, hi };
+}
+
+fn helloInk(flags: t.WindowFlags) ![2]usize {
+    var h: Harness = .{};
+    try h.startWith(.{ .width = 200, .height = 40, .flags = flags });
+    defer h.stop();
+    var txn: t.Txn = .null;
+    try ok(t.c.siv_txn_begin(h.window, &txn));
+    _ = C.siv_canvas(txn, t.c.siv_window_root(h.window), &.{ .draw = Hello.draw, .width = 200, .height = 40 });
+    try ok(t.c.siv_txn_commit(txn));
+    try h.settle();
+    const px = try h.capture();
+    defer testing.allocator.free(px);
+    return inkColumns(px, 200);
+}
+
+test "canvas text aligns by the canvas's direction, ordered by its own" {
+    // English in a left-to-right canvas starts at the left edge.
+    const ltr = try helloInk(.{});
+    try testing.expect(ltr[0] < 10);
+    try testing.expect(ltr[1] < 120);
+    // In a right-to-left canvas the same English line (still ordered left
+    // to right) is flush right.
+    const rtl = try helloInk(.{ .rtl = true });
+    try testing.expect(rtl[1] > 190);
+    try testing.expect(rtl[0] > 80);
+    try testing.expectApproxEqAbs(@as(f32, @floatFromInt(ltr[1] - ltr[0])), @as(f32, @floatFromInt(rtl[1] - rtl[0])), 1);
+}
