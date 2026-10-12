@@ -40,8 +40,14 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
         \\  allowed and no terminator is read. NULL with length 0 is the empty
         \\  string. siv copies what it keeps. Strings siv returns with static
         \\  lifetime are NUL-terminated.
+        \\- **Arrays** are a const pointer and a `size_t` count (`<name>_count`);
+        \\  NULL with count 0 is empty. siv copies what it keeps. Functions that
+        \\  fill caller memory take a `char *` and its capacity (`<name>_cap`),
+        \\  write at most that many bytes, and report the full length.
         \\- **Callbacks** take `void *user_data` as their first parameter, passed
-        \\  back unchanged from where the callback was registered.
+        \\  back unchanged from where the callback was registered. A
+        \\  destroy-notify registered with a callback runs exactly once, when
+        \\  siv no longer needs `user_data`.
         \\- **Allocation.** Each root may supply `siv_allocator` hooks, used for
         \\  every allocation made on its behalf.
         \\- **Threads.** Unless documented otherwise, call a function only from the

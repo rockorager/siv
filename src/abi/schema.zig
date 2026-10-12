@@ -17,9 +17,12 @@
 //! - Value structs (`.value`) are frozen forever and may be embedded by value.
 //! - Strings are `Type.string`: a `const char *` and a `size_t` length, so
 //!   embedded NUL is allowed. The library never keeps the caller's pointer.
+//! - Arrays are `Type.array`: a const pointer and a `size_t` count.
 //! - Callbacks take `void *user_data` as their first parameter. In a
-//!   parameter list a callback is followed by its `user_data` parameter; a
-//!   struct with callback fields has one `user_data` field.
+//!   parameter list a callback is followed by its `user_data` parameter,
+//!   or a run of callbacks (a callback and its destroy-notify) by their
+//!   shared `user_data`; a struct with callback fields has one `user_data`
+//!   field.
 //! - Fallible functions return the schema's result enum and write their
 //!   outputs through trailing `Type.out` parameters.
 
@@ -231,6 +234,16 @@ pub const Type = union(enum) {
     /// Parameter only: a pointer the function writes on success. NULL is an
     /// invalid argument.
     out: *const Type,
+    /// A caller-owned array, as two C parameters or fields `<name>` (a
+    /// const pointer to the elements) and `<name>_count`. NULL with count 0
+    /// is empty. Elements are primitives, handles, enums, flags, or value
+    /// structs. The library never keeps the caller's pointer.
+    array: *const Type,
+    /// Function parameter only: memory the function fills, as two C
+    /// parameters `char *<name>` and `size_t <name>_cap`. The function
+    /// writes at most `<name>_cap` bytes and reports the full length
+    /// through an out parameter, so a caller can size a second call.
+    buffer,
 
     pub fn eql(a: Type, b: Type) bool {
         if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
@@ -238,6 +251,7 @@ pub const Type = union(enum) {
             .ref => std.mem.eql(u8, a.ref, b.ref),
             .desc => std.mem.eql(u8, a.desc, b.desc),
             .out => a.out.eql(b.out.*),
+            .array => a.array.eql(b.array.*),
             else => true,
         };
     }
@@ -252,6 +266,13 @@ pub fn out(comptime t: Type) Type {
         const value = t;
     };
     return .{ .out = &T.value };
+}
+
+pub fn array(comptime t: Type) Type {
+    const T = struct {
+        const value = t;
+    };
+    return .{ .array = &T.value };
 }
 
 // Naming. Generators and the runtime derive every name from the schema with
@@ -369,7 +390,8 @@ pub fn validate(s: Schema, lib: std.SemanticVersion) ?Problem {
                     if (std.mem.eql(u8, f.name, "size")) return .{ .where = n, .what = "the size field is implicit" };
                     for (st.fields[0..j]) |g| if (std.mem.eql(u8, g.name, f.name)) return .{ .where = n, .what = "duplicate field" };
                     switch (f.type) {
-                        .void, .static_string, .out => return .{ .where = n, .what = "invalid field type" },
+                        .void, .static_string, .out, .buffer => return .{ .where = n, .what = "invalid field type" },
+                        .array => |e| if (st.kind == .value) return .{ .where = n, .what = "value structs cannot point to arrays" } else if (checkElement(s, e.*)) |p| return .{ .where = n, .what = p },
                         .user_data => user_data += 1,
                         .desc => |dn| if (st.kind == .value) return .{ .where = n, .what = "value structs cannot point to descriptors" } else if (checkKind(s, dn, .desc)) |p| return p,
                         .ref => |rn| {
@@ -418,10 +440,12 @@ fn checkParams(s: Schema, where: []const u8, params: []const Param, allow_out: b
         for (params[0..j]) |q| if (std.mem.eql(u8, q.name, p.name)) return .{ .where = where, .what = "duplicate parameter" };
         switch (p.type) {
             .void, .static_string => return .{ .where = where, .what = "invalid parameter type" },
+            .buffer => if (!allow_out) return .{ .where = where, .what = "callbacks have no buffer parameters" },
+            .array => |e| if (checkElement(s, e.*)) |what| return .{ .where = where, .what = what },
             .out => |o| {
                 if (!allow_out) return .{ .where = where, .what = "callbacks have no out parameters" };
                 switch (o.*) {
-                    .void, .static_string, .out, .desc, .string, .user_data, .pointer => return .{ .where = where, .what = "invalid out parameter type" },
+                    .void, .static_string, .out, .desc, .string, .user_data, .pointer, .array, .buffer => return .{ .where = where, .what = "invalid out parameter type" },
                     .ref => |rn| if (checkKind(s, rn, .any)) |pr| return pr,
                     else => {},
                 }
@@ -432,7 +456,11 @@ fn checkParams(s: Schema, where: []const u8, params: []const Param, allow_out: b
                 if (d == .@"struct" and d.@"struct".kind == .descriptor) return .{ .where = where, .what = "descriptors are passed by pointer (Type.desc)" };
                 if (d == .callback) {
                     if (!allow_out) return .{ .where = where, .what = "callbacks cannot take callbacks" };
-                    if (j + 1 >= params.len or params[j + 1].type != .user_data) return .{ .where = where, .what = "a callback parameter is followed by user_data" };
+                    // A run of callbacks (a callback and its destroy-notify)
+                    // shares the user_data that follows it.
+                    var k = j + 1;
+                    while (k < params.len and isCallback(s, params[k].type)) k += 1;
+                    if (k >= params.len or params[k].type != .user_data) return .{ .where = where, .what = "a callback parameter is followed by user_data" };
                 }
             },
             .user_data => if (allow_out and (j == 0 or !isCallback(s, params[j - 1].type))) return .{ .where = where, .what = "user_data follows a callback parameter" },
@@ -442,9 +470,22 @@ fn checkParams(s: Schema, where: []const u8, params: []const Param, allow_out: b
     return null;
 }
 
+/// Array elements are single C values that need no ownership rules.
+fn checkElement(s: Schema, t: Type) ?[]const u8 {
+    return switch (t) {
+        .bool, .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .f32, .f64, .usize => null,
+        .ref => |rn| if (s.find(rn)) |d| switch (d) {
+            .handle, .@"enum", .flags => null,
+            .@"struct" => |st| if (st.kind == .value) null else "array elements cannot be descriptors",
+            .callback => "array elements cannot be callbacks",
+        } else "unknown array element type",
+        else => "invalid array element type",
+    };
+}
+
 fn checkRet(s: Schema, where: []const u8, t: Type) ?Problem {
     return switch (t) {
-        .string, .desc, .out, .user_data => .{ .where = where, .what = "invalid return type" },
+        .string, .desc, .out, .user_data, .array, .buffer => .{ .where = where, .what = "invalid return type" },
         .pointer => if (s.find(where)) |_| null else .{ .where = where, .what = "only callbacks return pointers" },
         .ref => |rn| if (s.find(rn)) |d| switch (d) {
             .handle, .@"enum", .flags => null,
@@ -514,4 +555,30 @@ test "validate rejects convention violations" {
 
     s.decls = &.{ result, .{ .@"enum" = .{ .name = "x_mode", .doc = "", .since = v01, .values = &.{.{ .name = "a", .value = 1, .doc = "" }} } } };
     try std.testing.expectEqualStrings("enums need a value 0, the default", validate(s, lib).?.what);
+
+    // A callback and its destroy-notify share one user_data.
+    s = base;
+    s.functions = &.{.{ .name = "x_f", .doc = "", .since = v01, .params = &.{
+        .{ .name = "callback", .type = ref("x_fn"), .doc = "" },
+        .{ .name = "destroy", .type = ref("x_fn"), .doc = "" },
+        .{ .name = "user_data", .type = .user_data, .doc = "" },
+    } }};
+    try std.testing.expectEqual(null, validate(s, lib));
+    s.functions = &.{.{ .name = "x_f", .doc = "", .since = v01, .params = &.{
+        .{ .name = "callback", .type = ref("x_fn"), .doc = "" },
+        .{ .name = "destroy", .type = ref("x_fn"), .doc = "" },
+    } }};
+    try std.testing.expectEqualStrings("a callback parameter is followed by user_data", validate(s, lib).?.what);
+
+    s.functions = &.{.{ .name = "x_f", .doc = "", .since = v01, .params = &.{
+        .{ .name = "items", .type = array(.string), .doc = "" },
+    } }};
+    try std.testing.expectEqualStrings("invalid array element type", validate(s, lib).?.what);
+    s.functions = &.{.{ .name = "x_f", .doc = "", .since = v01, .ret = .string }};
+    try std.testing.expectEqualStrings("invalid return type", validate(s, lib).?.what);
+    s.functions = &.{.{ .name = "x_f", .doc = "", .since = v01, .ret = ref("x_result"), .params = &.{
+        .{ .name = "buf", .type = .buffer, .doc = "" },
+        .{ .name = "len", .type = out(.usize), .doc = "" },
+    } }};
+    try std.testing.expectEqual(null, validate(s, lib));
 }

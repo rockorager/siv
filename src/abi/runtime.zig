@@ -82,6 +82,18 @@ pub fn string(ptr: ?[*]const u8, len: usize) Error![]const u8 {
     return p[0..len];
 }
 
+/// An array from C. NULL with count 0 is empty.
+pub fn array(comptime T: type, ptr: ?[*]const T, count: usize) Error![]const T {
+    const p = ptr orelse return if (count == 0) &.{} else error.InvalidArgument;
+    return p[0..count];
+}
+
+/// Caller memory to fill. NULL with capacity 0 asks only for the length.
+pub fn buffer(ptr: ?[*]u8, cap: usize) Error![]u8 {
+    const p = ptr orelse return if (cap == 0) &.{} else error.InvalidArgument;
+    return p[0..cap];
+}
+
 /// An enum value from C: unknown values are unsupported.
 pub fn enumValue(comptime E: type, v: E) Error!E {
     inline for (@typeInfo(E).@"enum".field_values) |value| {

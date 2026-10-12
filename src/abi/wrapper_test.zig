@@ -34,6 +34,7 @@ test "wrapper layouts match the C headers" {
                     inline for (st.fields) |f| {
                         try std.testing.expectEqual(@offsetOf(C, f.name), @offsetOf(Z, f.name));
                         if (f.type == .string) try std.testing.expectEqual(@offsetOf(C, f.name ++ "_len"), @offsetOf(Z, f.name ++ "_len"));
+                        if (f.type == .array) try std.testing.expectEqual(@offsetOf(C, f.name ++ "_count"), @offsetOf(Z, f.name ++ "_count"));
                     }
                 },
             }

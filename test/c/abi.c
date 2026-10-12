@@ -384,11 +384,49 @@ static void test_root_limit(void) {
 	EXPECT(sivtest_context_destroy(roots[0]), SIV_OK);
 }
 
+static void count_call(void *user_data) { ++*(int *)user_data; }
+static void count_destroy(void *user_data) { *(int *)user_data += 100; }
+
+static void test_arrays_buffers_and_destroy_notify(void) {
+	sivtest_context ctx = 0;
+	EXPECT(sivtest_context_create(NULL, &ctx), SIV_OK);
+
+	uint32_t tags[] = {1, 20, 300};
+	sivtest_item item = 0;
+	EXPECT(sivtest_item_create(ctx, SIVTEST_DESC(sivtest_item_desc, .name = "hello", .name_len = 5, .tags = tags, .tags_count = 3), &item), SIV_OK);
+	tags[0] = 1000; /* copied */
+	uint64_t sum = 0;
+	EXPECT(sivtest_item_tag_sum(item, &sum), SIV_OK);
+	CHECK(sum == 321);
+	EXPECT(sivtest_item_create(ctx, SIVTEST_DESC(sivtest_item_desc, .tags = NULL, .tags_count = 2), &item), SIV_ERROR_INVALID_ARGUMENT);
+
+	/* A short buffer gets a prefix and the full length. */
+	char buf[3] = {0};
+	size_t len = 0;
+	EXPECT(sivtest_item_get_name(item, buf, sizeof buf, &len), SIV_OK);
+	CHECK(len == 5 && memcmp(buf, "hel", 3) == 0);
+	EXPECT(sivtest_item_get_name(item, NULL, 0, &len), SIV_OK);
+	CHECK(len == 5);
+	EXPECT(sivtest_item_get_name(item, NULL, 4, &len), SIV_ERROR_INVALID_ARGUMENT);
+
+	/* A destroy-notify runs once, when its hook is replaced or the
+	 * context is destroyed. */
+	int first = 0, second = 0;
+	EXPECT(sivtest_context_set_hook(ctx, count_call, count_destroy, &first), SIV_OK);
+	EXPECT(sivtest_context_run_hook(ctx), SIV_OK);
+	CHECK(first == 1);
+	EXPECT(sivtest_context_set_hook(ctx, count_call, count_destroy, &second), SIV_OK);
+	CHECK(first == 101 && second == 0);
+	EXPECT(sivtest_context_destroy(ctx), SIV_OK);
+	CHECK(second == 100);
+}
+
 int main(void) {
 	test_defaults();
 	test_descriptor_sizes();
 	test_enums_and_flags();
 	test_strings_and_callbacks();
+	test_arrays_buffers_and_destroy_notify();
 	test_handles();
 	test_allocator_hooks();
 	test_allocation_failure();

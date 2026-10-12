@@ -70,6 +70,8 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
                     try w.print("    /// {s}\n", .{f.doc});
                     if (f.type == .string) {
                         try w.print("    {f}: ?[*]const u8 = null,\n    {f}: usize = 0,\n", .{ id(f.name), id(try std.fmt.allocPrint(arena, "{s}_len", .{f.name})) });
+                    } else if (f.type == .array) {
+                        try w.print("    {f}: ?[*]const {s} = null,\n    {f}: usize = 0,\n", .{ id(f.name), try typeName(arena, s, f.type.array.*), id(try std.fmt.allocPrint(arena, "{s}_count", .{f.name})) });
                     } else {
                         try w.print("    {f}: {s} = {s},\n", .{ id(f.name), try typeName(arena, s, f.type), try zero(s, f.type) });
                     }
@@ -137,6 +139,10 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
             if (i > 0) try w.writeAll(", ");
             if (p.type == .string) {
                 try w.print("{f}: []const u8", .{id(p.name)});
+            } else if (p.type == .array) {
+                try w.print("{f}: []const {s}", .{ id(p.name), try typeName(arena, s, p.type.array.*) });
+            } else if (p.type == .buffer) {
+                try w.print("{f}: []u8", .{id(p.name)});
             } else {
                 try w.print("{f}: {s}", .{ id(p.name), try typeName(arena, s, p.type) });
             }
@@ -162,7 +168,7 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
         try w.print("c.{s}(", .{f.name});
         for (f.params, 0..) |p, i| {
             if (i > 0) try w.writeAll(", ");
-            if (p.type == .string) {
+            if (p.type == .string or p.type == .array or p.type == .buffer) {
                 try w.print("{f}.ptr, {f}.len", .{ id(p.name), id(p.name) });
             } else if (ret_out != null and i == f.params.len - 1) {
                 try w.print("&{f}", .{id(p.name)});
@@ -183,6 +189,10 @@ fn writeParams(arena: std.mem.Allocator, w: *Writer, s: Schema, params: []const 
 fn writeParam(arena: std.mem.Allocator, w: *Writer, s: Schema, p: schema.Param, sep: []const u8) !void {
     if (p.type == .string) {
         try w.print("{s}{f}: ?[*]const u8, {f}: usize", .{ sep, id(p.name), id(try std.fmt.allocPrint(arena, "{s}_len", .{p.name})) });
+    } else if (p.type == .array) {
+        try w.print("{s}{f}: ?[*]const {s}, {f}: usize", .{ sep, id(p.name), try typeName(arena, s, p.type.array.*), id(try std.fmt.allocPrint(arena, "{s}_count", .{p.name})) });
+    } else if (p.type == .buffer) {
+        try w.print("{s}{f}: ?[*]u8, {f}: usize", .{ sep, id(p.name), id(try std.fmt.allocPrint(arena, "{s}_cap", .{p.name})) });
     } else {
         try w.print("{s}{f}: {s}", .{ sep, id(p.name), try typeName(arena, s, p.type) });
     }
@@ -197,7 +207,7 @@ fn typeName(arena: std.mem.Allocator, s: Schema, t: Type) ![]const u8 {
             const tn = try std.fmt.allocPrint(arena, "{f}", .{id(schema.zigTypeName(&nbuf, n))});
             break :blk if (s.get(n) == .callback) try std.fmt.allocPrint(arena, "?{s}", .{tn}) else tn;
         },
-        .string => unreachable,
+        .string, .array, .buffer => unreachable,
         .static_string => "[*:0]const u8",
         .user_data, .pointer => "?*anyopaque",
         .desc => |n| try std.fmt.allocPrint(arena, "?*const {f}", .{id(schema.zigTypeName(&nbuf, n))}),
@@ -217,6 +227,6 @@ fn zero(s: Schema, t: Type) ![]const u8 {
             .callback => "null",
         },
         .user_data, .pointer, .desc => "null",
-        .void, .string, .static_string, .out => unreachable,
+        .void, .string, .static_string, .out, .array, .buffer => unreachable,
     };
 }

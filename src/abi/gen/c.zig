@@ -20,10 +20,21 @@ pub const Decl = struct {
 
 /// The C declarations a parameter or field of type `t` named `name` becomes.
 pub fn decls(arena: std.mem.Allocator, t: Type, name: []const u8) ![]const Decl {
-    if (t == .string) return arena.dupe(Decl, &.{
-        .{ .type = "const char *", .name = name },
-        .{ .type = "size_t", .name = try std.fmt.allocPrint(arena, "{s}_len", .{name}) },
-    });
+    switch (t) {
+        .string => return arena.dupe(Decl, &.{
+            .{ .type = "const char *", .name = name },
+            .{ .type = "size_t", .name = try std.fmt.allocPrint(arena, "{s}_len", .{name}) },
+        }),
+        .array => |e| return arena.dupe(Decl, &.{
+            .{ .type = try std.fmt.allocPrint(arena, "const {s} *", .{try typeName(arena, e.*)}), .name = name },
+            .{ .type = "size_t", .name = try std.fmt.allocPrint(arena, "{s}_count", .{name}) },
+        }),
+        .buffer => return arena.dupe(Decl, &.{
+            .{ .type = "char *", .name = name },
+            .{ .type = "size_t", .name = try std.fmt.allocPrint(arena, "{s}_cap", .{name}) },
+        }),
+        else => {},
+    }
     return arena.dupe(Decl, &.{.{ .type = try typeName(arena, t), .name = name }});
 }
 
@@ -44,7 +55,7 @@ pub fn typeName(arena: std.mem.Allocator, t: Type) ![]const u8 {
         .f64 => "double",
         .usize => "size_t",
         .ref => |n| n,
-        .string => unreachable,
+        .string, .array, .buffer => unreachable,
         .static_string => "const char *",
         .user_data, .pointer => "void *",
         .desc => |n| try std.fmt.allocPrint(arena, "const {s} *", .{n}),

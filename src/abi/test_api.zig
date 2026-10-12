@@ -9,6 +9,7 @@ const schema = @import("schema.zig");
 const api = @import("api.zig");
 const ref = schema.ref;
 const out = schema.out;
+const array = schema.array;
 
 const v0_1: schema.Version = .{ .major = 0, .minor = 1 };
 
@@ -55,6 +56,7 @@ pub const spec: schema.Schema = .{
                     // Appended later: callers built against the older, shorter
                     // struct get the default.
                     .{ .name = "weight", .type = .i64, .doc = "Zero means 1.", .since = v0_1 },
+                    .{ .name = "tags", .type = array(.u32), .doc = "Copied.", .since = v0_1 },
                 },
             },
         },
@@ -69,6 +71,8 @@ pub const spec: schema.Schema = .{
             .{ .name = "item", .type = ref("sivtest_item"), .doc = "The item." },
             .{ .name = "name", .type = .string, .doc = "Its name, valid during the call." },
         }, .ret = .bool } },
+        .{ .callback = .{ .name = "sivtest_hook_fn", .doc = "A context's hook.", .since = v0_1 } },
+        .{ .callback = .{ .name = "sivtest_destroy_fn", .doc = "Releases a hook's user_data.", .since = v0_1 } },
     },
     .functions = &.{
         .{ .name = "sivtest_context_create", .doc = "Creates a context.", .since = v0_1, .ret = ref("siv_result"), .params = &.{
@@ -99,6 +103,24 @@ pub const spec: schema.Schema = .{
             .{ .name = "callback", .type = ref("sivtest_visit_fn"), .doc = "Called once per item." },
             .{ .name = "user_data", .type = .user_data, .doc = "Passed to callback." },
             .{ .name = "visited", .type = out(.u32), .doc = "How many items callback saw." },
+        } },
+        .{ .name = "sivtest_item_get_name", .doc = "Copies an item's name.", .since = v0_1, .ret = ref("siv_result"), .params = &.{
+            .{ .name = "item", .type = ref("sivtest_item"), .doc = "The item." },
+            .{ .name = "name", .type = .buffer, .doc = "Receives at most name_cap bytes." },
+            .{ .name = "len", .type = out(.usize), .doc = "The full length of the name." },
+        } },
+        .{ .name = "sivtest_item_tag_sum", .doc = "Sums an item's tags.", .since = v0_1, .ret = ref("siv_result"), .params = &.{
+            .{ .name = "item", .type = ref("sivtest_item"), .doc = "The item." },
+            .{ .name = "sum", .type = out(.u64), .doc = "The sum." },
+        } },
+        .{ .name = "sivtest_context_set_hook", .doc = "Replaces the context's hook. The previous hook's destroy runs; so does this one's when it is replaced or the context is destroyed.", .since = v0_1, .ret = ref("siv_result"), .params = &.{
+            .{ .name = "context", .type = ref("sivtest_context"), .doc = "The context." },
+            .{ .name = "hook", .type = ref("sivtest_hook_fn"), .doc = "The hook; NULL clears it." },
+            .{ .name = "destroy", .type = ref("sivtest_destroy_fn"), .doc = "Releases user_data; may be NULL." },
+            .{ .name = "user_data", .type = .user_data, .doc = "Passed to hook and destroy." },
+        } },
+        .{ .name = "sivtest_context_run_hook", .doc = "Calls the context's hook, if any.", .since = v0_1, .ret = ref("siv_result"), .params = &.{
+            .{ .name = "context", .type = ref("sivtest_context"), .doc = "The context." },
         } },
         .{ .name = "sivtest_context_item_count", .doc = "Number of live items; 0 for an invalid handle.", .since = v0_1, .ret = .u32, .params = &.{
             .{ .name = "context", .type = ref("sivtest_context"), .doc = "The context." },

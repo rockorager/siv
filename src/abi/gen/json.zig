@@ -30,6 +30,8 @@ pub fn write(arena: std.mem.Allocator, w: *std.Io.Writer, s: Schema, version: st
     try field(&j, "descriptor_size_field", "size");
     try field(&j, "descriptor_size_c_type", "size_t");
     try field(&j, "string_length_suffix", "_len");
+    try field(&j, "array_count_suffix", "_count");
+    try field(&j, "buffer_capacity_suffix", "_cap");
     try field(&j, "callback_user_data", "first parameter");
     try field(&j, "enum_c_type", "int32_t");
     try field(&j, "flags_c_type", "uint32_t");
@@ -166,8 +168,12 @@ fn typeValue(arena: std.mem.Allocator, j: *std.json.Stringify, s: Schema, t: Typ
             try j.objectField("type");
             try typeValue(arena, j, s, o.*);
         },
+        .array => |e| {
+            try j.objectField("element");
+            try typeValue(arena, j, s, e.*);
+        },
         else => {},
     }
-    if (t != .string) try field(j, "c_type", try cgen.typeName(arena, t));
+    if (t != .string and t != .array and t != .buffer) try field(j, "c_type", try cgen.typeName(arena, t));
     try j.endObject();
 }

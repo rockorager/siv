@@ -32,6 +32,16 @@ const Context = struct {
     root: Root,
     /// In creation order; a handle's payload is its index here.
     items: std.ArrayList(Item),
+    hook: ?t.HookFn = null,
+    destroy: ?t.DestroyFn = null,
+    user_data: ?*anyopaque = null,
+
+    fn releaseHook(self: *Context) void {
+        if (self.destroy) |d| d(self.user_data);
+        self.hook = null;
+        self.destroy = null;
+        self.user_data = null;
+    }
 };
 
 const Item = struct {
@@ -41,6 +51,7 @@ const Item = struct {
     flags: t.ItemFlags,
     origin: t.Point,
     weight: i64,
+    tags: []u32,
 };
 
 fn wrap(r: Error!void) t.Result {
@@ -58,12 +69,19 @@ fn contextCreate(desc_ptr: ?*const t.ContextDesc, out: ?*t.Context) Error!void {
     const dest = try runtime.out(t.Context, out);
     const self = try Root.create(Context, context_tag, hooks);
     self.items = .empty;
+    self.hook = null;
+    self.destroy = null;
+    self.user_data = null;
     dest.* = @fromBackingInt(self.root.handle);
 }
 
 pub export fn sivtest_context_destroy(context: t.Context) t.Result {
     const self = Root.get(Context, context_tag, @backingInt(context)) catch |err| return t.resultOf(err);
-    for (self.items.items) |item| self.root.gpa.free(item.name);
+    self.releaseHook();
+    for (self.items.items) |item| {
+        self.root.gpa.free(item.name);
+        self.root.gpa.free(item.tags);
+    }
     self.items.deinit(self.root.gpa);
     Root.destroy(Context, self);
     return .ok;
@@ -79,11 +97,14 @@ fn itemCreate(context: t.Context, desc_ptr: ?*const t.ItemDesc, out: ?*t.Item) E
     const name = try runtime.string(desc.name, desc.name_len);
     const shape = try runtime.enumValue(t.Shape, desc.shape);
     const flags = try runtime.flags(t.ItemFlags, desc.flags);
+    const tags = try runtime.array(u32, desc.tags, desc.tags_count);
     const dest = try runtime.out(t.Item, out);
 
     const gpa = self.root.gpa;
     const copy = try gpa.dupe(u8, name);
     errdefer gpa.free(copy);
+    const tags_copy = try gpa.dupe(u32, tags);
+    errdefer gpa.free(tags_copy);
     try self.items.ensureUnusedCapacity(gpa, 1);
     try self.root.handles.ensureUnusedCapacity(gpa);
     // Nothing below can fail.
@@ -95,6 +116,7 @@ fn itemCreate(context: t.Context, desc_ptr: ?*const t.ItemDesc, out: ?*t.Item) E
         .flags = flags,
         .origin = desc.origin,
         .weight = if (desc.weight == 0) 1 else desc.weight,
+        .tags = tags_copy,
     });
     dest.* = @fromBackingInt(handle);
 }
@@ -104,6 +126,7 @@ pub export fn sivtest_item_destroy(item: t.Item) t.Result {
     _ = self.root.handles.remove(@backingInt(item), item_tag) catch unreachable;
     const removed = self.items.orderedRemove(index);
     self.root.gpa.free(removed.name);
+    self.root.gpa.free(removed.tags);
     // Later items moved down by one; repoint their handles.
     for (self.items.items[index..], index..) |moved, i| self.root.handles.set(moved.handle, item_tag, @intCast(i)) catch unreachable;
     return .ok;
@@ -146,4 +169,42 @@ pub export fn sivtest_context_visit(context: t.Context, callback: ?t.VisitFn, us
 pub export fn sivtest_context_item_count(context: t.Context) u32 {
     const self = Root.get(Context, context_tag, @backingInt(context)) catch return 0;
     return @intCast(self.items.items.len);
+}
+
+pub export fn sivtest_item_get_name(item: t.Item, name: ?[*]u8, name_cap: usize, len: ?*usize) t.Result {
+    return wrap(itemGetName(item, name, name_cap, len));
+}
+
+fn itemGetName(item: t.Item, name_ptr: ?[*]u8, name_cap: usize, len: ?*usize) Error!void {
+    const self, const index = try Root.owner(Context, context_tag, @backingInt(item), item_tag);
+    const buf = try runtime.buffer(name_ptr, name_cap);
+    const dest = try runtime.out(usize, len);
+    const name = self.items.items[index].name;
+    const n = @min(name.len, buf.len);
+    @memcpy(buf[0..n], name[0..n]);
+    dest.* = name.len;
+}
+
+pub export fn sivtest_item_tag_sum(item: t.Item, sum: ?*u64) t.Result {
+    const self, const index = Root.owner(Context, context_tag, @backingInt(item), item_tag) catch |err| return t.resultOf(err);
+    const dest = runtime.out(u64, sum) catch |err| return t.resultOf(err);
+    var total: u64 = 0;
+    for (self.items.items[index].tags) |tag| total += tag;
+    dest.* = total;
+    return .ok;
+}
+
+pub export fn sivtest_context_set_hook(context: t.Context, hook: ?t.HookFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) t.Result {
+    const self = Root.get(Context, context_tag, @backingInt(context)) catch |err| return t.resultOf(err);
+    self.releaseHook();
+    self.hook = hook;
+    self.destroy = destroy;
+    self.user_data = user_data;
+    return .ok;
+}
+
+pub export fn sivtest_context_run_hook(context: t.Context) t.Result {
+    const self = Root.get(Context, context_tag, @backingInt(context)) catch |err| return t.resultOf(err);
+    if (self.hook) |h| h(self.user_data);
+    return .ok;
 }
