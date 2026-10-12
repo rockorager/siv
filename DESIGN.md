@@ -254,6 +254,39 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     presentation objects with the configure and frame clock state shared
     under a lock, keeps input on a stalled thread. The cost is one thread
     hop (an eventfd write) per input event.
+  - Pointer scroll goes to the UI first when ctrl, alt, or super is held
+    (zoom and similar bindings), and over wheel regions the UI marks on
+    layers (`set_wheel_region`) for its own scroll and wheel handlers.
+    Otherwise the compositor hit-tests its tree and walks from the
+    topmost hit layer to the root: the first wheel region containing the
+    point sends the event to the UI, the first input-enabled scroll
+    container that can still move in that direction scrolls it. A
+    touchpad gesture keeps its first target until the scroll stops. UI
+    handlers that decline an event pass it on with `scroll_by`, which is
+    relative and so cannot race the compositor's own scrolling. Touch
+    drags go to the UI, which starts flings with `fling`.
+  - Configure acks follow content: configures reach the UI as events
+    with serials, and a commit names the serial its layout answers
+    (`ack_configure`). A configure that changes the logical size is
+    acknowledged with the first frame that includes such a commit, or
+    after 100 ms with the old layout at the new size, so a stalled UI
+    cannot freeze the window. Scale and state changes present at once:
+    vector content needs no new layout to render at a new scale. Not yet
+    effective on Wayland: the platform acknowledges every configure at the
+    end of its forced frame (D12), so until it can leave one unanswered,
+    the ack goes out early with the old buffer still attached.
+  - Every Wayland request the UI owns logically (text-input-v3 state,
+    clipboard and drag-and-drop sources and offers, cursors, popups,
+    window management) is a platform call made on the compositor thread.
+    The UI issues it with `Compositor.post`, which runs a closure there in
+    order with layer commits, so a text-input cursor rectangle or a popup
+    lands in the same frame as the content it belongs to; or with
+    `Compositor.call` when it needs a result (creating a window or popup,
+    reading output info). The UI never touches the display. Replies come
+    back as forwarded platform events. Bulk data (clipboard and
+    drag-and-drop transfers) moves through pipes that the UI reads and
+    writes on its own loop or the worker pool; only the requests that
+    hand over the fds go through the compositor.
 - **Alternatives:** render on the UI thread (lowest latency when idle, but any
   UI-thread stall drops frames); a plain render thread (adds a handoff without
   independent animation).

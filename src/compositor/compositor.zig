@@ -32,8 +32,10 @@ pub const Animation = update.Animation;
 pub const Content = update.Content;
 pub const Op = update.Op;
 pub const Event = update.Event;
+pub const configure_timeout_ns = update.configure_timeout_ns;
 
 test {
     std.testing.refAllDecls(@This());
     _ = update;
+    _ = @import("anim.zig");
 }

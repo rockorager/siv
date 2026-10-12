@@ -39,6 +39,11 @@ pub const WindowId = platform.WindowId;
 
 pub const LayerId = u32;
 
+/// How long a size-changing configure waits for the UI's layout (see
+/// `Op.ack_configure`): about one frame at 10 Hz, well under compositors'
+/// own resize timeouts (sway waits 200 ms).
+pub const configure_timeout_ns: u64 = 100 * std.time.ns_per_ms;
+
 /// Logical size.
 pub const Size = struct {
     width: f32 = 0,
@@ -99,9 +104,21 @@ pub const Clip = struct {
 /// Makes a layer a scroll container. Its children (not its own content)
 /// are translated by minus the scroll offset and clipped to `viewport`.
 /// The offset is owned by the compositor: it changes with pointer scroll
-/// input, `scroll_to`, flings, and scroll animations, is reported in
-/// `Event.scrolled`, and is always clamped to
+/// input, `scroll_to`, `scroll_by`, flings, and scroll animations, is
+/// reported in `Event.scrolled`, and is always clamped to
 /// [0, max(0, content - viewport size)] on each axis.
+///
+/// Pointer scroll routing: the compositor hit-tests the point under the
+/// pointer against the layer tree (topmost layer whose content bounds or
+/// wheel region contain it) and walks from that layer to the root. The
+/// first match decides: a layer with a wheel region containing the point
+/// sends the event to the UI; a scroll container with `input` whose
+/// viewport contains the point and that can still move in the event's
+/// direction scrolls in the compositor. Without a match the event goes to
+/// the UI. Events with ctrl, alt, or super held always go to the UI (zoom
+/// and similar bindings); shift is a plain scroll, with a vertical wheel
+/// scrolling horizontally. A touchpad gesture stays with the target its
+/// first event chose until the scroll stops.
 pub const Scroll = struct {
     /// Visible area, in layer coordinates.
     viewport: Rect,
@@ -194,9 +211,27 @@ pub const Op = union(enum) {
     /// (logical pixels per second), decelerating to a stop. For flings the
     /// UI detects itself, such as touch drags.
     fling: struct { layer: LayerId, velocity: Point },
+    /// Moves a scroll container's offset by `delta`, relative to wherever
+    /// the compositor has it now. For scroll input the UI handled first
+    /// and passes on, without racing the compositor's own scrolling.
+    scroll_by: struct { layer: LayerId, delta: Point },
     animate: struct { layer: LayerId, animation: Animation },
+    /// Pointer scroll events over `region` (layer coordinates, clipped like
+    /// the layer) go to the UI instead of a scroll container below it in
+    /// the tree; see `Scroll`. Null removes the region. A region also makes
+    /// the layer hit-testable where it has no content.
+    set_wheel_region: struct { layer: LayerId, region: ?Rect },
     /// What the window shows behind the root layer. Default transparent.
     set_background: Color,
+    /// This commit's content was laid out for the configure with this
+    /// serial (`Event.configure`). A configure that changes the window's
+    /// logical size is acknowledged with the first frame that includes
+    /// such a commit, so the compositor never sees the new size with the
+    /// old layout. If the UI does not answer within `configure_timeout_ns`,
+    /// the compositor acknowledges with the old layout at the new size so
+    /// that a stalled UI cannot freeze the window. Other configures
+    /// (scale, states) are presented at once.
+    ack_configure: u64,
 
     pub const Insert = struct {
         layer: LayerId,
@@ -218,7 +253,7 @@ pub const Op = union(enum) {
     pub fn validate(op: Op) error{InvalidArgument}!void {
         const ok = switch (op) {
             .create, .destroy, .detach => |id| id != 0,
-            .set_root, .set_background => true,
+            .set_root, .set_background, .ack_configure => true,
             .insert => |i| i.layer != 0 and i.parent != 0 and i.layer != i.parent and i.before != i.layer,
             .set_content => |s| s.layer != 0 and (s.damage == null or finiteRect(s.damage.?)),
             .set_transform => |s| s.layer != 0 and s.transform.finite(),
@@ -227,6 +262,8 @@ pub const Op = union(enum) {
             .set_scroll => |s| s.layer != 0 and (s.scroll == null or validScroll(s.scroll.?)),
             .scroll_to => |s| s.layer != 0 and finitePoint(s.offset),
             .fling => |s| s.layer != 0 and finitePoint(s.velocity),
+            .scroll_by => |s| s.layer != 0 and finitePoint(s.delta),
+            .set_wheel_region => |s| s.layer != 0 and (s.region == null or finiteRect(s.region.?)),
             .animate => |s| s.layer != 0 and validAnimation(s.animation),
         };
         if (!ok) return error.InvalidArgument;
@@ -236,11 +273,14 @@ pub const Op = union(enum) {
 /// What the compositor sends the UI thread, delivered on the UI loop in
 /// its dispatch phase (D5).
 pub const Event = union(enum) {
-    /// A platform event: input, configure, close requests, outputs, and
-    /// failures. Platform `frame` events are the compositor's; the UI gets
-    /// `frame` below instead. Pointer scroll events the compositor consumed
-    /// for a scroll container are not forwarded.
+    /// A platform event: input, close requests, outputs, and failures.
+    /// Platform `frame` and `configure` events are the compositor's; the UI
+    /// gets `frame` and `configure` below instead. Pointer scroll events the
+    /// compositor consumed for a scroll container are not forwarded.
     platform: platform.Event,
+    /// The window's size, scale, states, or decoration changed. Lay out for
+    /// `state` and commit with `ack_configure = serial`. Serials increase.
+    configure: struct { window: WindowId, state: platform.WindowState, serial: u64 },
     /// Answers `requestFrame`: commit now what should be visible at
     /// `time.present_ns`, which is when such a commit will be presented.
     frame: platform.Frame,
@@ -262,7 +302,7 @@ pub const Event = union(enum) {
         return switch (ev.*) {
             .platform => |*p| p.window(),
             .frame => |f| f.window,
-            inline .presented, .scrolled, .animation_finished => |e| e.window,
+            inline .configure, .presented, .scrolled, .animation_finished => |e| e.window,
             .released => null,
         };
     }
