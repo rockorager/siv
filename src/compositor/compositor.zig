@@ -38,4 +38,5 @@ test {
     std.testing.refAllDecls(@This());
     _ = update;
     _ = @import("anim.zig");
+    _ = @import("tree.zig");
 }
