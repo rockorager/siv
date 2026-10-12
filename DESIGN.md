@@ -1781,6 +1781,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     - Not built yet: double-click activation (siv_event has no click
       count), variable row heights, column resizing and sorting, and a
       position among siblings for tree items.
+  - Not built yet elsewhere: the styled-text editor; submenus; an
+    animated indeterminate progress bar (it shows a still bar: a
+    repeating compositor animation needs a primitive whose distances
+    follow layout); auto-repeat on held spin buttons; returning focus to
+    where it was when a dialog closes (no query for the focused node);
+    and an integration test of menus on sway (the headless backend's
+    placement and grab rules are tested).
 - **Non-goal:** a full document model with embedded tables and images.
 
 ### D23. Lua 5.5
