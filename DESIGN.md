@@ -436,8 +436,19 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - A list is a flat command sequence: `push`/`pop` open and close a layer
     (transform, clip, opacity, blend mode, forced isolation); fills (rect,
     rounded rect, or path with nonzero or even-odd), strokes, glyph runs,
-    images, and backdrop blurs draw into the innermost layer. The stack form
-    maps to PDF's q/Q, clipping paths, and transparency groups.
+    images, box shadows, and backdrop blurs draw into the innermost layer.
+    The stack form maps to PDF's q/Q, clipping paths, and transparency
+    groups.
+  - A box shadow (`scene.Shadow`) is CSS box-shadow for a rounded
+    rectangle: offset, Gaussian sigma (half the CSS blur radius), spread,
+    color, outset or inset. Outset shadows are not drawn under their
+    rectangle, inset ones only inside it, so a translucent card does not
+    show its own shadow. Cards, menus, and popups need one each; as a layer
+    with a fill and a backdrop blur every shadow costs an offscreen pass,
+    and a damaged blur redraws all of it (a 40-card dashboard: 198 ms per
+    CPU frame and 194 ms for a hover, against 72 ms and 4 ms analytic).
+    Corner radii grow or shrink with the spread (zero stays sharp). PDF:
+    tessellate, or an image (the PDF watch item below).
   - Colors are linear light, sRGB primaries, straight alpha. Paints are solid
     colors and linear, two-point conical, and sweep gradients; gradients
     interpolate premultiplied in linear light, and repeat/reflect use the
@@ -596,10 +607,25 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     renderer; every other window falls back at its next frame, new windows
     start on the CPU, and the device is not recreated. Verified on sway by
     marking the device lost mid-run.
-  - The display list has no shadow construct, so "analytic shadows" have
-    nothing to draw yet: shadows are an isolated layer with a fill and a
-    backdrop blur, which both renderers draw exactly. An analytic shadow
-    needs a scene command and a CPU implementation first (the oracle).
+  - Box shadow contract (`render/cpu/shadow.zig`, mirrored by the Vulkan
+    shader): each pixel center maps into the layer's coordinates; the
+    shadow shape's Gaussian blur is integrated exactly along x (each row of
+    a rounded rectangle is one span, whose blur is an erf difference) and
+    along y exactly over the straight rows and with a substituted midpoint
+    rule over the corner bands; sigma includes the pixel's own box
+    footprint (variance 1/12), so sharp shadows are antialiased; the
+    casting rectangle's coverage is 0.5 minus its signed distance. erf is
+    Abramowitz and Stegun 7.1.27 (no exponential, error below 5e-4)
+    saturated beyond ±4; the shape's blur keeps its area within 0.25%.
+    The CPU evaluates rows of axis-aligned shadows with the y samples and
+    the straight span's x term shared, and skips pixels under the casting
+    rectangle and where every erf saturates. Vulkan output is within 1/255
+    of the CPU golden image.
+  - Alternatives for shadows: a layer with a backdrop blur (above); a
+    closed form for rounded corners (none exists; known ones such as Evan
+    Wallace's approximate the corner and do not keep the area); a nine-
+    slice texture of a precomputed blur (cheap, but a contract tied to
+    texture resolution and inexact for elliptical or mixed radii).
   - No OpenGL.
 - **Alternatives:** compute-based vector rendering (higher latency and
   complexity than UI needs); Sokol (X11-only window glue, no exportable images);

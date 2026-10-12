@@ -224,6 +224,7 @@ fn replay(b: *scene.Builder, list: scene.DisplayList) scene.Error!void {
         .glyphs => |g| try b.glyphs(g),
         .image => |i| try b.image(i),
         .backdrop_blur => |bb| try b.backdropBlur(bb.shape, bb.sigma),
+        .shadow => |s| try b.shadow(s),
     };
 }
 

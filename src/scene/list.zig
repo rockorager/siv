@@ -336,6 +336,41 @@ pub const BackdropBlur = struct {
     sigma: f32,
 };
 
+/// A box shadow of a rounded rectangle, like CSS box-shadow: the
+/// rectangle offset, grown by `spread` (shrunk for inset shadows), and
+/// blurred with a Gaussian of `sigma`, in `color`. An outset shadow is not
+/// drawn under the rectangle itself; an inset one is drawn only inside it.
+///
+/// The exact contract both renderers implement (D9, D10) is in
+/// `render/cpu/shadow.zig`: the blurred shape is integrated exactly along
+/// x and piecewise along y, evaluated at pixel centers mapped into the
+/// layer's coordinates, with the pixel's own footprint folded into sigma.
+pub const Shadow = struct {
+    /// The rectangle casting the shadow, in the layer's coordinates.
+    shape: RoundedRect,
+    offset: Point = .zero,
+    /// Gaussian standard deviation (half the CSS blur radius).
+    sigma: f32 = 0,
+    spread: f32 = 0,
+    color: Color,
+    inset: bool = false,
+
+    /// Beyond this many sigmas from its shape a shadow is not drawn.
+    pub const reach: f32 = 4;
+    /// Extra margin (in layer units) for the pixel footprint's blur.
+    pub const margin: f32 = 1;
+
+    /// Where the shadow may draw, in the layer's coordinates.
+    pub fn bounds(s: Shadow) Rect {
+        if (s.inset) return s.shape.rect;
+        const r = s.shape.rect;
+        const moved: Rect = .{ .x0 = r.x0 + s.offset.x, .y0 = r.y0 + s.offset.y, .x1 = r.x1 + s.offset.x, .y1 = r.y1 + s.offset.y };
+        const grown = moved.outset(s.spread);
+        if (grown.isEmpty()) return Rect.empty;
+        return grown.outset(reach * s.sigma + margin);
+    }
+};
+
 pub const Command = union(enum(u8)) {
     push: Push,
     pop,
@@ -344,6 +379,7 @@ pub const Command = union(enum(u8)) {
     glyphs: GlyphRun,
     image: Image,
     backdrop_blur: BackdropBlur,
+    shadow: Shadow,
 };
 
 /// Largest blur sigma, in device pixels after transforms. Larger values
@@ -465,6 +501,22 @@ pub const Builder = struct {
         i.opacity = std.math.clamp(i.opacity, 0, 1);
         try b.commands.append(b.gpa, .{ .image = i });
         b.include(i.dst);
+    }
+
+    pub fn shadow(b: *Builder, s: Shadow) Error!void {
+        if (!finiteRect(s.shape.rect) or !std.math.isFinite(s.offset.x) or !std.math.isFinite(s.offset.y) or
+            !(s.sigma >= 0) or !std.math.isFinite(s.sigma) or !std.math.isFinite(s.spread) or s.shape.rect.isEmpty())
+            return error.InvalidArgument;
+        inline for (.{ "tl", "tr", "br", "bl" }) |f| {
+            const p = @field(s.shape.radii, f);
+            if (!std.math.isFinite(p.x) or !std.math.isFinite(p.y)) return error.InvalidArgument;
+        }
+        var out = s;
+        out.shape.radii = s.shape.radii.fit(s.shape.rect);
+        out.sigma = @min(s.sigma, max_blur_sigma * 4);
+        try b.commands.append(b.gpa, .{ .shadow = out });
+        const bb = out.bounds();
+        if (!bb.isEmpty()) b.include(bb);
     }
 
     pub fn backdropBlur(b: *Builder, shape: Shape, sigma: f32) Error!void {
@@ -636,6 +688,21 @@ pub const CountingAllocator = struct {
         self.child.rawFree(memory, alignment, ra);
     }
 };
+
+test "shadows validate their inputs and bound their ink" {
+    var b = Builder.init(testing.allocator);
+    defer b.deinit();
+    const card: RoundedRect = .{ .rect = .xywh(10, 10, 40, 20), .radii = .uniform(30, 30) };
+    try b.shadow(.{ .shape = card, .offset = .{ .x = 0, .y = 4 }, .sigma = 3, .spread = 2, .color = .black });
+    const list = try b.finish(0);
+    // Radii fit the rectangle; bounds reach 4 sigma plus the spread and a
+    // pixel margin beyond the moved shape.
+    try testing.expectEqual(@as(f32, 10), list.commands[0].shadow.shape.radii.tl.y);
+    try testing.expectEqual(Rect{ .x0 = 10 - 2 - 13, .y0 = 14 - 2 - 13, .x1 = 50 + 2 + 13, .y1 = 34 + 2 + 13 }, list.bounds);
+    try testing.expectEqual(card.rect, (Shadow{ .shape = card, .sigma = 3, .color = .black, .inset = true }).bounds());
+    try testing.expectError(error.InvalidArgument, b.shadow(.{ .shape = card, .sigma = -1, .color = .black }));
+    try testing.expectError(error.InvalidArgument, b.shadow(.{ .shape = .{ .rect = .xywh(0, 0, 0, 5), .radii = .{} }, .color = .black }));
+}
 
 test "color conversions round trip" {
     for (0..256) |i| {

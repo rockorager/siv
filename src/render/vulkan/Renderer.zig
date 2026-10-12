@@ -734,6 +734,7 @@ fn prepare(r: *Renderer, list: scene.DisplayList, root: Affine) Error!void {
                 try r.pushInst(inst);
             },
             .glyphs => |g| try r.prepareGlyphs(g, top),
+            .shadow => {}, // drawn by the next commit
             .image => |img| try r.prepareImage(img, top),
             .backdrop_blur => |b| {
                 const bbox = m.applyRect(b.shape.bounds()).intersect(top.clip).roundOut().intersect(vp);

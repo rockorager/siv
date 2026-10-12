@@ -35,6 +35,7 @@ pub const Luts = color.Luts;
 pub const Executor = @import("pool").Executor;
 
 pub const glyph = @import("glyph.zig");
+pub const shadow = @import("shadow.zig");
 
 test {
     std.testing.refAllDecls(@This());
@@ -44,4 +45,5 @@ test {
     _ = @import("paint.zig");
     _ = @import("coverage.zig");
     _ = glyph;
+    _ = shadow;
 }

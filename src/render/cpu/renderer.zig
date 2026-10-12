@@ -31,6 +31,7 @@ const paint_mod = @import("paint.zig");
 const coverage = @import("coverage.zig");
 const pool = @import("pool");
 const glyph = @import("glyph.zig");
+const shadow = @import("shadow.zig");
 
 const Point = raster.Point;
 const Rect = raster.Rect;
@@ -171,6 +172,15 @@ const PushOp = struct {
     clip: ?Clip,
 };
 
+const ShadowOp = struct {
+    bbox: IRect,
+    prep: shadow.Prepared,
+    color: Pixel,
+    /// `shadow.Row.column` for each column of bbox, in Renderer.shadow_cols,
+    /// when the transform is axis-aligned.
+    cols: ?u32,
+};
+
 const BlurOp = struct {
     bbox: IRect,
     coverage: Coverage,
@@ -184,6 +194,7 @@ const Op = union(enum) {
     /// Index of the matching push op.
     pop: u32,
     blur: BlurOp,
+    shadow: ShadowOp,
 };
 
 const Blur = struct {
@@ -303,6 +314,7 @@ pub const Renderer = struct {
     mask_list: std.ArrayList(u32) = .empty,
     mask_pixels: std.ArrayList(u8) = .empty,
     stops: std.ArrayList(paint_mod.Stop) = .empty,
+    shadow_cols: std.ArrayList(f32) = .empty,
     placements: std.ArrayList(glyph.Placement) = .empty,
     blurs: std.ArrayList(Blur) = .empty,
     blur_src: std.ArrayList(Pixel) = .empty,
@@ -354,6 +366,7 @@ pub const Renderer = struct {
         r.mask_list.deinit(gpa);
         r.mask_pixels.deinit(gpa);
         r.stops.deinit(gpa);
+        r.shadow_cols.deinit(gpa);
         r.placements.deinit(gpa);
         r.blurs.deinit(gpa);
         r.blur_src.deinit(gpa);
@@ -418,6 +431,7 @@ pub const Renderer = struct {
         r.geom_jobs.clearRetainingCapacity();
         for (r.workers) |*w| w.lines.clearRetainingCapacity();
         r.stops.clearRetainingCapacity();
+        r.shadow_cols.clearRetainingCapacity();
         r.placements.clearRetainingCapacity();
         r.blurs.clearRetainingCapacity();
         r.stack.clearRetainingCapacity();
@@ -518,6 +532,20 @@ pub const Renderer = struct {
                         .filter = img.filter,
                         .opacity16 = color.toU16(img.opacity),
                     } } } });
+                },
+                .shadow => |sh| {
+                    if (sh.color.a <= 0) continue;
+                    const bbox = m.applyRect(sh.bounds()).intersect(top.clip).roundOut().intersect(vp);
+                    if (bbox.isEmpty()) continue;
+                    const prep = shadow.prepare(sh, m) orelse continue;
+                    var cols: ?u32 = null;
+                    if (prep.inv.b == 0 and prep.inv.c == 0 and !prep.shape.isEmpty()) {
+                        cols = @intCast(r.shadow_cols.items.len);
+                        try r.shadow_cols.ensureUnusedCapacity(r.gpa, @intCast(bbox.width()));
+                        var x = bbox.x0;
+                        while (x < bbox.x1) : (x += 1) r.shadow_cols.appendAssumeCapacity(shadow.Row.column(&prep, @as(f32, @floatFromInt(x)) + 0.5));
+                    }
+                    try r.ops.append(r.gpa, .{ .shadow = .{ .bbox = bbox, .prep = prep, .color = paint_mod.solid(sh.color, 1), .cols = cols } });
                 },
                 .backdrop_blur => |b| {
                     const bbox = m.applyRect(b.shape.bounds()).intersect(top.clip).roundOut().intersect(vp);
@@ -1157,6 +1185,7 @@ pub const Renderer = struct {
                 .draw => |*d| r.runDraw(w, lv, tile, d),
                 .glyphs => |*g| r.runGlyphs(w, lv, tile, g),
                 .blur => |*b| r.runBlur(w, lv, tile, b),
+                .shadow => |*s| r.runShadow(lv, tile, s),
             }
         }
         return w.levels.items[w.levels.items.len - 1].surf;
@@ -1329,6 +1358,30 @@ pub const Renderer = struct {
         }
     }
 
+    fn runShadow(r: *Renderer, lv: *const Level, tile: IRect, s: *const ShadowOp) void {
+        const region = lv.scissor.intersect(s.bbox);
+        if (region.isEmpty()) return;
+        const width: usize = @intCast(region.width());
+        var y = region.y0;
+        while (y < region.y1) : (y += 1) {
+            const dst = lv.surf.row(region.x0, y)[0..width];
+            const clip_row: ?[]const u8 = if (lv.mask) |m| m[@as(usize, @intCast(y - tile.y0)) * T + @as(usize, @intCast(region.x0 - tile.x0)) ..][0..width] else null;
+            const py = @as(f32, @floatFromInt(y)) + 0.5;
+            const row = shadow.Row.init(&s.prep, py);
+            const col0: usize = if (s.cols) |cols| cols + @as(usize, @intCast(region.x0 - s.bbox.x0)) else 0;
+            for (dst, 0..) |*px, xi| {
+                const x = @as(f32, @floatFromInt(region.x0 + @as(i32, @intCast(xi)))) + 0.5;
+                const a = if (row) |*rw|
+                    rw.alphaWith(x, if (s.cols != null) r.shadow_cols.items[col0 + xi] else 0)
+                else
+                    shadow.alpha(&s.prep, x, py);
+                var cov16: u32 = color.toU16(a);
+                if (clip_row) |cr| cov16 = color.div65535(cov16 * (@as(u32, cr[xi]) * 257));
+                if (cov16 != 0) blend.srcOver(px, s.color, cov16);
+            }
+        }
+    }
+
     fn runBlur(r: *Renderer, w: *Worker, lv: *const Level, tile: IRect, b: *const BlurOp) void {
         const blur = r.blurs.items[b.index];
         const region = lv.scissor.intersect(b.bbox).intersect(blur.need);
@@ -1476,6 +1529,7 @@ fn buildScene(b: *scene.Builder, pb: *raster.PathBuilder, frame: u32, image: sce
     };
     try b.fillRect(.xywh(0, 0, 200, 150), .{ .gradient = .{ .geometry = .{ .linear = .{ .p0 = .zero, .p1 = .{ .x = 200, .y = 150 } } }, .stops = &stops } });
     try b.pushLayer(.{ .id = 1, .version = frame, .transform = .translate(20 + f * 7, 30) });
+    try b.shadow(.{ .shape = .{ .rect = .xywh(0, 0, 60, 40), .radii = .uniform(10, 10) }, .offset = .{ .x = 0, .y = 4 }, .sigma = 5, .color = scene.Color.black.withAlpha(0.4) });
     try b.fillRoundedRect(.xywh(0, 0, 60, 40), .uniform(10, 10), .color(.srgb8(0xff, 0xff, 0xff, 0xc0)));
     try b.popLayer();
     try b.pushLayer(.{ .id = 2, .opacity = 0.6, .clip = .{ .shape = .{ .rounded_rect = .{ .rect = .xywh(90, 10, 100, 80), .radii = .uniform(16, 16) } } } });

@@ -36,6 +36,7 @@ pub const ImageRef = list.ImageRef;
 pub const Filter = list.Filter;
 pub const Image = list.Image;
 pub const BackdropBlur = list.BackdropBlur;
+pub const Shadow = list.Shadow;
 pub const Command = list.Command;
 pub const DisplayList = list.DisplayList;
 pub const Builder = list.Builder;

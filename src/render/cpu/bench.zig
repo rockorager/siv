@@ -24,6 +24,7 @@ const Ctx = struct {
     pb: raster.PathBuilder,
     glyphs: std.ArrayList(scene.Glyph) = .empty,
     frame: u32 = 0,
+    shadows: bool = false,
 };
 
 fn label(c: *Ctx, b: *scene.Builder, str: []const u8, x: f32, y: f32, size: f32, color: scene.Color) !void {
@@ -67,6 +68,7 @@ fn ui(c: *Ctx, b: *scene.Builder) !void {
         const y = 24 + @as(f32, @floatFromInt(i / 5)) * 130;
         const hovered = i == 0 and c.frame % 2 == 1;
         try b.pushLayer(.{ .id = @intCast(i + 1), .version = if (i == 0) c.frame else 0 });
+        if (c.shadows) try b.shadow(.{ .shape = .{ .rect = .xywh(x, y, 310, 116), .radii = .uniform(10, 10) }, .offset = .{ .x = 0, .y = 4 }, .sigma = 6, .color = scene.Color.black.withAlpha(0.25) });
         try b.fillRoundedRect(.xywh(x, y, 310, 116), .uniform(10, 10), .color(if (hovered) scene.Color.srgb8(0xe0, 0xe7, 0xff, 0xff) else card));
         try b.stroke(.{ .rounded_rect = .{ .rect = .xywh(x + 0.5, y + 0.5, 309, 115), .radii = .uniform(10, 10) } }, .{ .width = 1 }, .color(scene.Color.srgb8(0xe4, 0xe4, 0xe7, 0xff)));
         try label(c, b, "Quarterly revenue", x + 16, y + 30, 16, ink);
@@ -75,6 +77,13 @@ fn ui(c: *Ctx, b: *scene.Builder) !void {
         try label(c, b, "Details", x + 38, y + 93, 13, .white);
         try b.popLayer();
     }
+}
+
+/// The dashboard with a box shadow under every card.
+fn uiShadows(c: *Ctx, b: *scene.Builder) !void {
+    c.shadows = true;
+    defer c.shadows = false;
+    try ui(c, b);
 }
 
 fn paths(c: *Ctx, b: *scene.Builder) !void {
@@ -153,6 +162,8 @@ const Workload = struct {
 const workloads = [_]Workload{
     .{ .name = "ui full", .build = ui },
     .{ .name = "ui hover damage", .build = ui, .damage = .xywh(264, 24, 310, 116) },
+    .{ .name = "ui shadows", .build = uiShadows },
+    .{ .name = "shadow hover damage", .build = uiShadows, .damage = .xywh(254, 14, 330, 140) },
     .{ .name = "text screen", .build = textScreen },
     .{ .name = "paths", .build = paths },
     .{ .name = "paths prepare only", .build = paths, .prepare_only = true },
