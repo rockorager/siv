@@ -67,10 +67,16 @@ windows: std.ArrayList(?*Win) = .empty,
 cleanup: Loop.Task = .{ .func = onCleanup },
 /// Scratch for one call or one update.
 arena: std.heap.ArenaAllocator,
+/// Application.GetLocale's answer: the application's language (D21) as a
+/// POSIX locale name.
+locale_buf: [64]u8 = undefined,
+locale_len: u8 = 0,
 
 pub const Options = struct {
     app_name: []const u8 = "",
     toolkit_version: []const u8 = "",
+    /// The application's BCP 47 language (D21); empty is "C".
+    language: []const u8 = "",
     /// Called at a safe point when publishing starts or stops, so that
     /// the application can skip `update` while nobody listens.
     on_active: ?*const fn (ctx: ?*anyopaque, active: bool) void = null,
@@ -83,8 +89,32 @@ pub const WindowId = u32;
 
 pub fn init(b: *Bridge, gpa: Allocator, loop: *Loop, options: Options) void {
     b.* = .{ .gpa = gpa, .loop = loop, .options = options, .arena = .init(gpa) };
+    b.setLanguage(options.language);
     b.object = .{ .path = atspi.accessible_prefix, .ctx = b, .subtree = .{ .lookup = lookup } };
     b.cache = .{ .path = "/org/a11y/atspi/cache", .ctx = b, .interfaces = &.{&iface.cache} };
+}
+
+/// Sets the application's language (BCP 47), which Application.GetLocale
+/// reports as a POSIX locale name: "ar-EG" is "ar_EG", a script subtag
+/// is dropped, and empty is "C".
+pub fn setLanguage(b: *Bridge, language: []const u8) void {
+    var it = std.mem.tokenizeAny(u8, language, "-_");
+    var w: std.Io.Writer = .fixed(&b.locale_buf);
+    const lang = it.next() orelse "C";
+    w.writeAll(lang) catch {};
+    while (it.next()) |sub| {
+        // A region: two letters or three digits.
+        if (sub.len == 2 or (sub.len == 3 and std.ascii.isDigit(sub[0]))) {
+            w.writeByte('_') catch {};
+            for (sub) |c| w.writeByte(std.ascii.toUpper(c)) catch {};
+            break;
+        }
+    }
+    b.locale_len = @intCast(w.end);
+}
+
+pub fn locale(b: *const Bridge) []const u8 {
+    return b.locale_buf[0..b.locale_len];
 }
 
 /// Disconnects and frees everything. Windows still added are dropped.

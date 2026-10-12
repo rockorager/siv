@@ -1820,7 +1820,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     follow the application's, also when it changes: their text shapes
     again with the new language tag and their layout mirrors. Popups take
     their parent window's when created. Printed documents default to the
-    window they are printed from, else to the application (D19).
+    window they are printed from, else to the application (D19). AT-SPI's
+    Application.GetLocale reports the application's language as a POSIX
+    name ("ar-EG" is "ar_EG"; "C" when there is none), following
+    `siv_app_set_language` (D18).
   - Canvas text (`siv_draw_text`) aligns the same way: each paragraph's
     base direction comes from its text for bidi ordering, but start and
     end alignment follow the canvas node's direction (a page's, when

@@ -410,3 +410,18 @@ test "setting Value.CurrentValue asks the node's handler for the value" {
     try testing.expectEqual(@as(f64, 5), got);
     try testing.expectEqual(@as(f64, 0.5), try (try h.get(slider, atspi.iface.value, "MinimumIncrement")).read(f64));
 }
+
+test "Application.GetLocale reports the application's language" {
+    var h: Harness = undefined;
+    try h.init();
+    defer h.deinit();
+    var r = try h.call(atspi.root_path, atspi.iface.application, "GetLocale", .{@as(u32, 0)});
+    try testing.expectEqualStrings("C", try r.read([]const u8));
+    h.bridge.setLanguage("ar-EG");
+    r = try h.call(atspi.root_path, atspi.iface.application, "GetLocale", .{@as(u32, 0)});
+    try testing.expectEqualStrings("ar_EG", try r.read([]const u8));
+    // POSIX names have no script: the region follows the language.
+    h.bridge.setLanguage("sr-Latn-rs");
+    r = try h.call(atspi.root_path, atspi.iface.application, "GetLocale", .{@as(u32, 0)});
+    try testing.expectEqualStrings("sr_RS", try r.read([]const u8));
+}

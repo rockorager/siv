@@ -182,7 +182,7 @@ pub const App = struct {
         app.portals.start(app);
         errdefer app.portals.deinit(app);
         if (options.accessibility and app.desktop.connected) {
-            app.bridge.init(gpa, &app.loop, .{ .app_name = options.name, .toolkit_version = options.toolkit_version, .on_active = onAccessibilityActive, .ctx = app });
+            app.bridge.init(gpa, &app.loop, .{ .app_name = options.name, .toolkit_version = options.toolkit_version, .language = app.fonts.name(app.language), .on_active = onAccessibilityActive, .ctx = app });
             if (app.bridge.start(&app.desktop.bus)) {
                 app.accessible = true;
             } else |_| app.bridge.deinit();
@@ -396,6 +396,7 @@ pub const App = struct {
     /// application lay out and shape their text again (D21).
     pub fn setLocale(app: *App, language: []const u8, rtl: ?bool) Allocator.Error!void {
         try app.applyLocale(language, rtl);
+        if (app.accessible) app.bridge.setLanguage(app.fonts.name(app.language));
         for (app.windows.items) |w| if (w) |win| {
             if (win.follows_language) win.ui.setLanguage(app.fonts.name(app.language)) catch |err| return err;
             if (win.follows_direction) win.ui.setRtl(app.rtl);

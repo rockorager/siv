@@ -374,7 +374,8 @@ pub const application: Interface = .{
 };
 
 fn getLocale(r: *Request) anyerror!void {
-    try r.reply(.{std.mem.span(std.c.getenv("LANG") orelse "C")});
+    const b: *Bridge = @ptrCast(@alignCast(r.node.ctx));
+    try r.reply(.{b.locale()});
 }
 
 fn getBusAddress(r: *Request) anyerror!void {
