@@ -324,6 +324,25 @@ pub const Platform = union(enum) {
         };
     }
 
+    // Pointer cursors (D16). Each window has a cursor shape, shown while a
+    // pointer is over it: through cursor-shape-v1 when the compositor
+    // offers it, otherwise from the cursor theme at the window's scale.
+
+    /// The cursor shown while a pointer is over the window.
+    pub fn setCursor(p: Platform, id: WindowId, shape: CursorShape) void {
+        switch (p) {
+            inline else => |b| b.setCursor(id, shape),
+        }
+    }
+
+    /// The XCursor theme and size (logical pixels) for themed cursors,
+    /// from the desktop settings (D19). `name` is copied.
+    pub fn setCursorTheme(p: Platform, name: []const u8, size: u32) void {
+        switch (p) {
+            inline else => |b| b.setCursorTheme(name, size),
+        }
+    }
+
     // Drag and drop (D19). A drag over one of this client's windows is an
     // offer named by a per-seat id in `drag_enter`; the requests below
     // name it and do nothing once it is gone. This client's own drags are
@@ -371,6 +390,63 @@ pub const Platform = union(enum) {
         switch (p) {
             inline else => |b| b.finishDrag(seat, offer, action),
         }
+    }
+};
+
+/// Pointer cursor shapes: the CSS cursor names, numbered as in
+/// cursor-shape-v1, and a hidden cursor.
+pub const CursorShape = enum(u8) {
+    hidden = 0,
+    default = 1,
+    context_menu,
+    help,
+    pointer,
+    progress,
+    wait,
+    cell,
+    crosshair,
+    text,
+    vertical_text,
+    alias,
+    copy,
+    move,
+    no_drop,
+    not_allowed,
+    grab,
+    grabbing,
+    e_resize,
+    n_resize,
+    ne_resize,
+    nw_resize,
+    s_resize,
+    se_resize,
+    sw_resize,
+    w_resize,
+    ew_resize,
+    ns_resize,
+    nesw_resize,
+    nwse_resize,
+    col_resize,
+    row_resize,
+    all_scroll,
+    zoom_in,
+    zoom_out,
+    /// From cursor-shape-v1 version 2.
+    dnd_ask,
+    all_resize,
+
+    /// The resize cursor for a window edge (client-side decorations).
+    pub fn ofEdge(e: Edge) CursorShape {
+        return switch (e) {
+            .top => .n_resize,
+            .bottom => .s_resize,
+            .left => .w_resize,
+            .right => .e_resize,
+            .top_left => .nw_resize,
+            .top_right => .ne_resize,
+            .bottom_left => .sw_resize,
+            .bottom_right => .se_resize,
+        };
     }
 };
 
@@ -1111,6 +1187,8 @@ test {
         std.testing.refAllDecls(@This());
         // Instantiates every forwarding call for both backends.
         std.testing.refAllDecls(Platform);
+        _ = @import("xcursor.zig");
+        _ = @import("cursor.zig");
     }
 }
 

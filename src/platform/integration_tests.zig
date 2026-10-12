@@ -840,3 +840,102 @@ test "drag and drop between two clients: negotiation, transfer, finish" {
         }
     }.f);
 }
+
+test "cursors: cursor-shape-v1 shapes, then themed and animated cursors" {
+    const linux = std.os.linux;
+    var h: Harness = .{};
+    try h.start();
+    defer h.stop();
+    const app = &h.app;
+    const id = try h.mapWindow(.{});
+    try testing.expect(app.backend.cursor_shape_manager != null);
+
+    var vp = try VirtualPointer.connect(&h.sway);
+    defer vp.deinit();
+    try vp.sync();
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            const seat = a.backend.seats.items[0] orelse return false;
+            return seat.pointer != null;
+        }
+    }.f);
+    _ = app.backend.display.roundtrip();
+    vp.moveTo(200, 200);
+    try vp.sync();
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.count(.pointer_enter) >= 1;
+        }
+    }.f);
+    const seat = app.backend.seats.items[0].?;
+    try testing.expect(seat.shape_device != null);
+    // Every shape, including version 2's (mapped on older compositors),
+    // is accepted: an unknown shape would be a protocol error.
+    for (std.enums.values(platform.CursorShape)) |s| {
+        app.backend.setCursor(id, s);
+        _ = app.backend.display.roundtrip();
+    }
+    try runMs(&h.loop, 50);
+
+    // Without cursor-shape-v1: themed cursors from a theme of our own, an
+    // animated wait cursor among them.
+    seat.shape_device.?.destroy();
+    seat.shape_device = null;
+    app.backend.cursor_shape_manager.?.destroy();
+    app.backend.cursor_shape_manager = null;
+    const dir = "/tmp/siv-cursor-theme-test";
+    _ = linux.mkdir(dir, 0o700);
+    _ = linux.mkdir(dir ++ "/siv-test", 0o700);
+    _ = linux.mkdir(dir ++ "/siv-test/cursors", 0o700);
+    defer {
+        for ([_][*:0]const u8{ dir ++ "/siv-test/cursors/left_ptr", dir ++ "/siv-test/cursors/text", dir ++ "/siv-test/cursors/wait" }) |f| _ = linux.unlink(f);
+        _ = linux.rmdir(dir ++ "/siv-test/cursors");
+        _ = linux.rmdir(dir ++ "/siv-test");
+        _ = linux.rmdir(dir);
+    }
+    const xcursor = @import("xcursor.zig");
+    const files = [_]struct { [*:0]const u8, []const u8 }{
+        .{ dir ++ "/siv-test/cursors/left_ptr", try xcursor.encodeForTest(testing.allocator, &.{ .{ .nominal = 24, .width = 24, .height = 24, .xhot = 2, .yhot = 2 }, .{ .nominal = 48, .width = 48, .height = 48, .xhot = 4, .yhot = 4 } }) },
+        .{ dir ++ "/siv-test/cursors/text", try xcursor.encodeForTest(testing.allocator, &.{.{ .nominal = 24, .width = 12, .height = 24, .xhot = 6, .yhot = 12 }}) },
+        .{ dir ++ "/siv-test/cursors/wait", try xcursor.encodeForTest(testing.allocator, &.{ .{ .nominal = 24, .width = 24, .height = 24, .delay = 20 }, .{ .nominal = 24, .width = 24, .height = 24, .delay = 20, .color = 0xffffffff } }) },
+    };
+    for (files) |f| {
+        defer testing.allocator.free(f[1]);
+        const fd: i32 = @intCast(linux.openat(linux.AT.FDCWD, f[0], .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o600));
+        _ = linux.write(fd, f[1].ptr, f[1].len);
+        _ = linux.close(fd);
+    }
+    app.backend.cursor_theme.path = .{};
+    app.backend.cursor_theme.path.add(dir);
+    app.backend.setCursorTheme("siv-test", 24);
+    // A shape the theme lacks falls back to the default arrow.
+    app.backend.setCursor(id, .text);
+    try testing.expect(seat.cursor_surface != null);
+    app.backend.setCursor(id, .crosshair);
+    try testing.expect(seat.cursor_anim == null);
+    app.backend.setCursor(id, .wait);
+    try testing.expect(seat.cursor_anim != null);
+    try runUntil(&h.loop, seat, struct {
+        fn f(s: *Seat) bool {
+            return s.cursor_frame != 0;
+        }
+    }.f);
+    // At scale 1 the theme's 24 px images of the arrow.
+    app.backend.setCursor(id, .default);
+    var found = false;
+    for (app.backend.cursor_theme.loaded.items) |l| found = found or (l.shape == .default and l.nominal == 24);
+    try testing.expect(found);
+    // At scale 2 the window's cursor is loaded again from the 48 px images.
+    try h.sway.command("output HEADLESS-1 scale 2");
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.watched().state.scale.v120 == 240;
+        }
+    }.f);
+    found = false;
+    for (app.backend.cursor_theme.loaded.items) |l| found = found or (l.shape == .default and l.nominal == 48);
+    try testing.expect(found);
+    try runMs(&h.loop, 50);
+    _ = app.backend.display.roundtrip();
+    try testing.expect(!app.closed);
+}

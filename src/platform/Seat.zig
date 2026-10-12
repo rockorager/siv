@@ -13,7 +13,9 @@ const Wayland = @import("Wayland.zig");
 const Keyboard = @import("Keyboard.zig");
 const TextInput = @import("TextInput.zig");
 const DataDevice = @import("DataDevice.zig");
+const cursor = @import("cursor.zig");
 const zwp = @import("wayland").client.zwp;
+const wp = @import("wayland").client.wp;
 const Seat = @This();
 
 const WindowId = platform.WindowId;
@@ -40,6 +42,19 @@ repeat_key: platform.Key = undefined,
 pointer_focus: ?WindowId = null,
 scroll: platform.Scroll = undefined,
 scrolling: bool = false,
+
+/// Serial of the pointer's last enter, which cursor requests name.
+enter_serial: u32 = 0,
+/// cursor-shape-v1 for the pointer, if the compositor offers it.
+shape_device: ?*wp.CursorShapeDeviceV1 = null,
+/// Otherwise a surface showing themed cursor images, scaled with a
+/// viewport when there is one.
+cursor_surface: ?*wl.Surface = null,
+cursor_viewport: ?*wp.Viewport = null,
+/// The animated cursor being shown, and its frame.
+cursor_anim: ?*cursor.Loaded = null,
+cursor_frame: usize = 0,
+cursor_timer: Timer = .{ .func = onCursorFrame },
 
 points: [max_points]Point = @splat(.{}),
 
@@ -87,6 +102,9 @@ pub fn destroy(seat: *Seat) void {
     if (seat.text_input) |ti| ti.destroy();
     seat.data.destroy();
     seat.backend.loop.cancelTimer(&seat.repeat_timer);
+    seat.backend.loop.cancelTimer(&seat.cursor_timer);
+    if (seat.cursor_viewport) |v| v.destroy();
+    if (seat.cursor_surface) |c| c.destroy();
     seat.setCapabilities(.{});
     seat.keyboard.deinit();
     if (seat.proxy.getVersion() >= 5) seat.proxy.release() else seat.proxy.destroy();
@@ -127,9 +145,13 @@ fn setCapabilities(seat: *Seat, caps: wl.Seat.Capability) void {
         if (seat.proxy.getPointer()) |p| {
             p.setListener(*Seat, onPointer, seat);
             seat.pointer = p;
+            seat.addShapeDevice();
         } else |_| seat.backend.queue.fail(error.OutOfMemory);
     } else if (!caps.pointer and seat.pointer != null) {
         const p = seat.pointer.?;
+        if (seat.shape_device) |d| d.destroy();
+        seat.shape_device = null;
+        seat.stopCursorAnimation();
         if (v3) p.release() else p.destroy();
         seat.pointer = null;
         seat.scrolling = false;
@@ -260,6 +282,8 @@ fn onPointer(_: *wl.Pointer, event: wl.Pointer.Event, seat: *Seat) void {
         .enter => |e| {
             const window = Wayland.windowOf(e.surface) orelse return;
             seat.pointer_focus = window;
+            seat.enter_serial = e.serial;
+            seat.applyCursor();
             seat.push(.{ .pointer_enter = .{
                 .window = window,
                 .seat = seat.id,
@@ -270,6 +294,7 @@ fn onPointer(_: *wl.Pointer, event: wl.Pointer.Event, seat: *Seat) void {
         },
         .leave => |e| {
             seat.flushScroll();
+            seat.stopCursorAnimation();
             const window = seat.pointer_focus orelse return;
             seat.pointer_focus = null;
             seat.push(.{ .pointer_leave = .{ .window = window, .seat = seat.id, .serial = e.serial } });
@@ -346,6 +371,92 @@ fn onPointer(_: *wl.Pointer, event: wl.Pointer.Event, seat: *Seat) void {
             }
         },
     }
+}
+
+// Cursors -------------------------------------------------------------------
+
+/// Gets the pointer's cursor-shape device once both exist.
+pub fn addShapeDevice(seat: *Seat) void {
+    if (seat.shape_device != null) return;
+    const m = seat.backend.cursor_shape_manager orelse return;
+    const p = seat.pointer orelse return;
+    seat.shape_device = m.getPointer(p) catch return seat.backend.queue.fail(error.OutOfMemory);
+}
+
+/// Shows the cursor of the window under the pointer.
+pub fn applyCursor(seat: *Seat) void {
+    const b = seat.backend;
+    const p = seat.pointer orelse return;
+    const id = seat.pointer_focus orelse return;
+    if (id >= b.windows.items.len) return;
+    const w = b.windows.items[id] orelse return;
+    seat.stopCursorAnimation();
+    const shape = w.cursor;
+    if (shape == .hidden) return p.setCursor(seat.enter_serial, null, 0, 0);
+    if (seat.shape_device) |d| {
+        const s = if (d.getVersion() >= 2) shape else cursor.v1Shape(shape);
+        return d.setShape(seat.enter_serial, @enumFromInt(@intFromEnum(s)));
+    }
+    // Themed: images of the theme's size times the window's scale.
+    const theme = &b.cursor_theme;
+    const px: u32 = @intFromFloat(@ceil(@as(f64, @floatFromInt(theme.size)) * w.state.scale.toFloat()));
+    const loaded = theme.get(b.shm.?, shape, px) orelse theme.get(b.shm.?, .default, px) orelse return;
+    seat.showFrame(loaded, 0);
+    if (loaded.frames.len > 1) {
+        seat.cursor_anim = loaded;
+        seat.scheduleCursorFrame();
+    }
+}
+
+fn showFrame(seat: *Seat, loaded: *cursor.Loaded, index: usize) void {
+    const b = seat.backend;
+    const p = seat.pointer orelse return;
+    const surface = seat.cursor_surface orelse blk: {
+        const s = b.compositor.?.createSurface() catch return b.queue.fail(error.OutOfMemory);
+        seat.cursor_surface = s;
+        if (b.viewporter) |v| seat.cursor_viewport = v.getViewport(s) catch null;
+        break :blk s;
+    };
+    const f = loaded.frames[index];
+    // Images of the nominal size show at the theme's logical size.
+    const size: f64 = @floatFromInt(b.cursor_theme.size);
+    const nominal: f64 = @floatFromInt(@max(loaded.nominal, 1));
+    var hx: i32 = undefined;
+    var hy: i32 = undefined;
+    if (seat.cursor_viewport) |v| {
+        const k = size / nominal;
+        v.setDestination(@max(1, @as(i32, @intFromFloat(@round(@as(f64, @floatFromInt(f.width)) * k)))), @max(1, @as(i32, @intFromFloat(@round(@as(f64, @floatFromInt(f.height)) * k)))));
+        hx = @intFromFloat(@round(@as(f64, @floatFromInt(f.xhot)) * k));
+        hy = @intFromFloat(@round(@as(f64, @floatFromInt(f.yhot)) * k));
+    } else {
+        const scale: i32 = @max(1, @as(i32, @intFromFloat(@round(nominal / size))));
+        if (surface.getVersion() >= 3) surface.setBufferScale(scale);
+        hx = @divTrunc(@as(i32, @intCast(f.xhot)), scale);
+        hy = @divTrunc(@as(i32, @intCast(f.yhot)), scale);
+    }
+    p.setCursor(seat.enter_serial, surface, hx, hy);
+    surface.attach(f.buffer, 0, 0);
+    if (surface.getVersion() >= 4) surface.damageBuffer(0, 0, std.math.maxInt(i32), std.math.maxInt(i32)) else surface.damage(0, 0, std.math.maxInt(i32), std.math.maxInt(i32));
+    surface.commit();
+    seat.cursor_frame = index;
+}
+
+fn scheduleCursorFrame(seat: *Seat) void {
+    const l = seat.cursor_anim orelse return;
+    const delay: u64 = @max(l.frames[seat.cursor_frame].delay, 10);
+    seat.backend.loop.startTimer(&seat.cursor_timer, Loop.now() + delay * std.time.ns_per_ms, 0) catch {};
+}
+
+fn onCursorFrame(timer: *Timer) void {
+    const seat: *Seat = @fieldParentPtr("cursor_timer", timer);
+    const l = seat.cursor_anim orelse return;
+    seat.showFrame(l, (seat.cursor_frame + 1) % l.frames.len);
+    seat.scheduleCursorFrame();
+}
+
+pub fn stopCursorAnimation(seat: *Seat) void {
+    seat.cursor_anim = null;
+    seat.backend.loop.cancelTimer(&seat.cursor_timer);
 }
 
 fn addV120(s: *platform.Scroll, axis: wl.Pointer.Axis, v: i32) void {

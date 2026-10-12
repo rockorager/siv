@@ -30,6 +30,7 @@ const shm_buffers = @import("shm.zig");
 pub const Seat = @import("Seat.zig");
 const TextInput = @import("TextInput.zig");
 const DataDevice = @import("DataDevice.zig");
+const cursor = @import("cursor.zig");
 const Wayland = @This();
 
 const Error = platform.Error;
@@ -72,6 +73,9 @@ dmabuf_buffers: std.ArrayList(*DmabufBuffer) = .empty,
 text_input_manager: ?*zwp.TextInputManagerV3 = null,
 data_device_manager: ?*wl.DataDeviceManager = null,
 primary_selection_manager: ?*zwp.PrimarySelectionDeviceManagerV1 = null,
+cursor_shape_manager: ?*wp.CursorShapeManagerV1 = null,
+/// Themed cursors, without cursor-shape-v1.
+cursor_theme: cursor.Theme,
 /// Clock of wp_presentation timestamps; converted to CLOCK_MONOTONIC, the
 /// loop's clock, when it differs (weston uses CLOCK_MONOTONIC_RAW).
 presentation_clock: linux.clockid_t = .MONOTONIC,
@@ -194,6 +198,8 @@ pub const Window = struct {
 
     swapchain: shm_buffers.Swapchain = .{},
     subsurfaces: std.ArrayList(?*Subsurface) = .empty,
+    /// Shown while a pointer is over the window.
+    cursor: platform.CursorShape = .default,
 
     /// Presentation feedback for one commit and the time it was predicted for.
     const Feedback = struct {
@@ -229,6 +235,7 @@ pub fn create(loop: *Loop, allocator: Allocator, sink: platform.Sink, options: O
         .display = display,
         .registry = registry,
         .xkb_context = context,
+        .cursor_theme = .init(allocator),
         .compose_table = xkb.xkb_compose_table_new_from_locale(context, composeLocale(), xkb.XKB_COMPOSE_COMPILE_NO_FLAGS),
         .source = .{ .fd = display.getFd(), .events = linux.EPOLL.IN, .func = onReadable },
     };
@@ -258,6 +265,8 @@ pub fn destroy(self: *Wayland) void {
 fn teardown(self: *Wayland) void {
     for (self.windows.items, 0..) |w, i| if (w != null) self.destroyWindow(@intCast(i));
     for (self.seats.items) |s| if (s) |seat| seat.destroy();
+    self.cursor_theme.deinit();
+    if (self.cursor_shape_manager) |m| m.destroy();
     for (self.outputs.items) |o| if (o) |out| self.destroyOutput(out);
     self.windows.deinit(self.allocator);
     self.seats.deinit(self.allocator);
@@ -418,6 +427,9 @@ fn addGlobal(self: *Wayland, registry: *wl.Registry, name: u32, interface: []con
     } else if (is(interface, zwp.PrimarySelectionDeviceManagerV1)) {
         self.primary_selection_manager = try registry.bind(name, zwp.PrimarySelectionDeviceManagerV1, version);
         for (self.seats.items) |s| if (s) |seat| seat.data.bind(seat.proxy);
+    } else if (is(interface, wp.CursorShapeManagerV1)) {
+        self.cursor_shape_manager = try registry.bind(name, wp.CursorShapeManagerV1, @min(version, 2));
+        for (self.seats.items) |s| if (s) |seat| seat.addShapeDevice();
     } else if (is(interface, wl.Output)) {
         try self.addOutput(registry, name, version);
     } else if (is(interface, wl.Seat)) {
@@ -1149,6 +1161,24 @@ pub fn receiveSelection(self: *Wayland, id: SeatId, kind: platform.SelectionKind
     return dev.receiveSelection(kind, mime, fd);
 }
 
+pub fn setCursor(self: *Wayland, id: WindowId, shape: platform.CursorShape) void {
+    const w = self.get(id);
+    if (w.cursor == shape) return;
+    w.cursor = shape;
+    self.reapplyCursors(id);
+}
+
+pub fn setCursorTheme(self: *Wayland, name: []const u8, size: u32) void {
+    if (!self.cursor_theme.set(name, size)) return;
+    for (self.seats.items) |s| if (s) |seat| if (seat.pointer_focus != null and seat.shape_device == null) seat.applyCursor();
+}
+
+/// Shows the window's cursor again on the seats over it: it changed, or
+/// a themed one must be loaded for a new scale.
+fn reapplyCursors(self: *Wayland, id: WindowId) void {
+    for (self.seats.items) |s| if (s) |seat| if (seat.pointer_focus == id) seat.applyCursor();
+}
+
 pub fn startDrag(self: *Wayland, id: WindowId, seat: SeatId, serial: u32, mimes: []const []const u8, actions: platform.DragActions, icon: ?*const platform.DragIcon) Error!u32 {
     const dev = self.seatData(seat) orelse return error.MissingGlobal;
     return dev.startDrag(self.get(id).surface, mimes, actions, icon, serial);
@@ -1194,7 +1224,9 @@ fn onXdgSurface(_: *xdg.Surface, event: xdg.Surface.Event, w: *Window) void {
             next.popup = p.popup;
             next.scale = computeScale(w);
             const changed = !w.configured or !std.meta.eql(next, w.state);
+            const rescaled = next.scale.v120 != w.state.scale.v120;
             w.state = next;
+            if (rescaled) w.backend.reapplyCursors(w.id);
             w.configured = true;
             w.ack_serial = c.serial;
             w.clock.configured = true;
@@ -1398,6 +1430,7 @@ fn updateScale(w: *Window) void {
     const scale = computeScale(w);
     if (scale.v120 == w.state.scale.v120) return;
     w.state.scale = scale;
+    w.backend.reapplyCursors(w.id);
     if (!w.configured) return;
     w.backend.queue.push(.{ .configure = .{ .window = w.id, .state = w.state } });
     w.clock.request();

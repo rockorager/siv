@@ -46,6 +46,10 @@ dmabuf_formats: std.ArrayList([2]u64) = .empty,
 drags: [8]SimDrag = @splat(.{}),
 next_offer: u32 = 0,
 pointers: [8]SimPointer = @splat(.{}),
+/// Cursor requests that changed a window's cursor, and the theme.
+cursor_changes: u32 = 0,
+cursor_theme: platform.BoundedString(64) = .{},
+cursor_size: u32 = 0,
 
 pub const Options = struct {
     refresh_ns: u64 = FrameClock.default_refresh_ns,
@@ -90,6 +94,7 @@ const Window = struct {
     pending_subsurfaces: std.ArrayList(?platform.SubsurfaceState) = .empty,
     /// Commits without a buffer (`commitWindow`).
     bare_commits: u32 = 0,
+    cursor: platform.CursorShape = .default,
 
     const Slot = struct { pixels: []u8 = &.{}, width: u32 = 0, height: u32 = 0 };
 };
@@ -512,6 +517,22 @@ pub fn beginResize(_: *Headless, _: WindowId, _: SeatId, _: u32, _: platform.Edg
 pub fn showWindowMenu(_: *Headless, _: WindowId, _: SeatId, _: u32, _: i32, _: i32) void {}
 pub fn setWindowGeometry(_: *Headless, _: WindowId, _: Rect) void {}
 pub fn setRegion(_: *Headless, _: WindowId, _: platform.Region, _: ?[]const Rect) Error!void {}
+
+pub fn setCursor(hl: *Headless, id: WindowId, shape: platform.CursorShape) void {
+    const w = hl.get(id);
+    if (w.cursor != shape) hl.cursor_changes += 1;
+    w.cursor = shape;
+}
+
+pub fn setCursorTheme(hl: *Headless, name: []const u8, size: u32) void {
+    hl.cursor_theme.set(name);
+    hl.cursor_size = size;
+}
+
+/// The window's cursor as last set.
+pub fn cursorOf(hl: *Headless, id: WindowId) platform.CursorShape {
+    return hl.get(id).cursor;
+}
 
 pub fn setTextInput(hl: *Headless, seat: SeatId, state: *const platform.TextInputState) void {
     if (seat >= hl.text_inputs.len) return;

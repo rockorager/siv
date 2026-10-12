@@ -16,6 +16,9 @@ pub const xml = [_][]const u8{
     "unstable/text-input/text-input-unstable-v3.xml",
     "unstable/primary-selection/primary-selection-unstable-v1.xml",
     "stable/linux-dmabuf/linux-dmabuf-v1.xml",
+    "staging/cursor-shape/cursor-shape-v1.xml",
+    // Only for an interface cursor-shape-v1 refers to; no tablet support yet.
+    "stable/tablet/tablet-v2.xml",
 };
 
 /// Globals to bind, each with the highest version siv implements. Code is
@@ -38,4 +41,5 @@ pub const globals = [_]struct { []const u8, u32 }{
     .{ "zwp_primary_selection_device_manager_v1", 1 },
     // Only for the compositor's main device (default feedback, D10).
     .{ "zwp_linux_dmabuf_v1", 4 },
+    .{ "wp_cursor_shape_manager_v1", 2 },
 };
