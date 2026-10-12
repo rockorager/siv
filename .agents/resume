@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Runs each time an orb starts or wakes. Keep it fast and idempotent.
+set -euo pipefail
+
+# Zig's resolver rejects /etc/resolv.conf when its last line has no trailing
+# newline (as the orb writes it), which breaks zig fetch and package fetches.
+if [[ -s /etc/resolv.conf && -n $(tail -c1 /etc/resolv.conf) ]]; then
+	echo | sudo tee -a /etc/resolv.conf >/dev/null
+fi

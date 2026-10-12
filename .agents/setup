@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Prepares a fresh Amp orb (Debian 12) to build and test siv.
+# Idempotent: a warm orb skips downloads and package installs.
+set -euo pipefail
+
+ZIG_VERSION=0.16.0
+
+step() { printf '==> %s\n' "$*"; }
+timed() {
+	local start=$SECONDS
+	"$@"
+	printf '    (%ss)\n' "$((SECONDS - start))"
+}
+
+# System libraries siv links (D7, D13, D15, D16) and the Vulkan headers and
+# loader the Vulkan renderer will need (D10). mesa-vulkan-drivers provides
+# lavapipe for headless CPU-vs-Vulkan tests.
+packages=(
+	ca-certificates curl xz-utils pkg-config
+	libwayland-dev libxkbcommon-dev libfontconfig-dev
+	libvulkan-dev mesa-vulkan-drivers
+)
+
+install_packages() {
+	local missing=()
+	for p in "${packages[@]}"; do
+		dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'install ok installed' || missing+=("$p")
+	done
+	if ((${#missing[@]})); then
+		step "apt-get install ${missing[*]}"
+		sudo apt-get update -qq
+		sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${missing[@]}"
+	else
+		step "system packages already installed"
+	fi
+}
+
+install_zig() {
+	local dir=/opt/zig-$ZIG_VERSION
+	if [[ ! -x $dir/zig ]]; then
+		local arch sha
+		arch=$(uname -m)
+		case $arch in
+		x86_64) sha=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00 ;;
+		aarch64) sha=ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17 ;;
+		*) echo "unsupported architecture: $arch" >&2; exit 1 ;;
+		esac
+		local name=zig-$arch-linux-$ZIG_VERSION
+		local tmp
+		tmp=$(mktemp -d)
+		step "download $name"
+		curl -fsSL "https://ziglang.org/download/$ZIG_VERSION/$name.tar.xz" -o "$tmp/zig.tar.xz"
+		echo "$sha  $tmp/zig.tar.xz" | sha256sum -c --quiet
+		sudo mkdir -p "$dir"
+		sudo tar -xJf "$tmp/zig.tar.xz" -C "$dir" --strip-components=1
+		rm -rf "$tmp"
+	else
+		step "zig $ZIG_VERSION already installed"
+	fi
+	sudo ln -sfn "$dir/zig" /usr/local/bin/zig
+}
+
+# Fetch pinned packages and warm the Zig caches (libc++, compiler-rt, the
+# vendored C libraries) so the first build in a thread is incremental.
+build_once() {
+	step "zig build"
+	zig build
+}
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+.agents/resume # repairs /etc/resolv.conf for Zig's resolver
+timed install_packages
+timed install_zig
+timed build_once
+zig version
