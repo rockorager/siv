@@ -97,7 +97,9 @@ pub const Window = struct {
     id: WindowId,
     surface: *wl.Surface,
     xdg_surface: *xdg.Surface,
-    toplevel: *xdg.Toplevel,
+    /// The role: a toplevel, or a popup.
+    toplevel: ?*xdg.Toplevel = null,
+    popup: ?*xdg.Popup = null,
     decoration: ?*zxdg.ToplevelDecorationV1 = null,
     viewport: ?*wp.Viewport = null,
     fractional: ?*wp.FractionalScaleV1 = null,
@@ -144,6 +146,7 @@ pub const Window = struct {
         bounds: ?Size = null,
         capabilities: platform.WmCapabilities = .{},
         decoration: platform.Decoration = .client,
+        popup: @FieldType(WindowState, "popup") = null,
     };
 };
 
@@ -499,6 +502,64 @@ pub fn createWindow(self: *Wayland, options: platform.WindowOptions) Error!Windo
     return w.id;
 }
 
+/// An xdg_popup placed by an xdg_positioner; the grab, if any, is taken
+/// before the first commit as the protocol requires.
+pub fn createPopup(self: *Wayland, options: platform.PopupOptions) Error!WindowId {
+    const parent = self.get(options.parent);
+    const pos = options.positioner;
+    const slot = try reserveSlot(Window, self.allocator, &self.windows);
+    const surface = self.compositor.?.createSurface() catch return error.OutOfMemory;
+    errdefer surface.destroy();
+    const xdg_surface = self.wm_base.?.getXdgSurface(surface) catch return error.OutOfMemory;
+    errdefer xdg_surface.destroy();
+    const positioner = self.wm_base.?.createPositioner() catch return error.OutOfMemory;
+    defer positioner.destroy();
+    positioner.setSize(@intCast(@max(pos.width, 1)), @intCast(@max(pos.height, 1)));
+    const ar = pos.anchor_rect;
+    positioner.setAnchorRect(ar.x, ar.y, @max(ar.width, 1), @max(ar.height, 1));
+    positioner.setAnchor(@enumFromInt(@intFromEnum(pos.anchor)));
+    positioner.setGravity(@enumFromInt(@intFromEnum(pos.gravity)));
+    positioner.setConstraintAdjustment(@bitCast(pos.adjustment));
+    positioner.setOffset(pos.offset_x, pos.offset_y);
+    const popup = xdg_surface.getPopup(parent.xdg_surface, positioner) catch return error.OutOfMemory;
+    errdefer popup.destroy();
+    const w = try self.allocator.create(Window);
+    errdefer self.allocator.destroy(w);
+    w.* = .{
+        .backend = self,
+        .id = @intCast(slot),
+        .surface = surface,
+        .xdg_surface = xdg_surface,
+        .popup = popup,
+        .default_size = .{ .width = pos.width, .height = pos.height },
+    };
+    if (self.fractional_manager != null and self.viewporter != null) {
+        w.fractional = self.fractional_manager.?.getFractionalScale(surface) catch return error.OutOfMemory;
+        w.viewport = self.viewporter.?.getViewport(surface) catch return error.OutOfMemory;
+    }
+    if (self.fifo_manager) |m| w.fifo = m.getFifo(surface) catch return error.OutOfMemory;
+    surface.setListener(*Window, onSurface, w);
+    xdg_surface.setListener(*Window, onXdgSurface, w);
+    popup.setListener(*Window, onPopup, w);
+    if (w.fractional) |f| f.setListener(*Window, onFractionalScale, w);
+    if (options.grab) |g| if (self.seatProxy(g.seat)) |seat| popup.grab(seat, g.serial);
+    surface.commit();
+    self.windows.items[slot] = w;
+    return w.id;
+}
+
+fn onPopup(_: *xdg.Popup, event: xdg.Popup.Event, w: *Window) void {
+    switch (event) {
+        .configure => |c| {
+            w.pending.width = @intCast(@max(c.width, 0));
+            w.pending.height = @intCast(@max(c.height, 0));
+            w.pending.popup = .{ .x = c.x, .y = c.y };
+        },
+        .popup_done => w.backend.queue.push(.{ .close_requested = w.id }),
+        .repositioned => {},
+    }
+}
+
 pub fn destroyWindow(self: *Wayland, id: WindowId) void {
     const w = self.get(id);
     if (self.frame_window == w) self.frame_window = null;
@@ -512,7 +573,8 @@ pub fn destroyWindow(self: *Wayland, id: WindowId) void {
     if (w.fractional) |f| f.destroy();
     if (w.viewport) |v| v.destroy();
     if (w.decoration) |d| d.destroy();
-    w.toplevel.destroy();
+    if (w.toplevel) |t| t.destroy();
+    if (w.popup) |p| p.destroy();
     w.xdg_surface.destroy();
     w.swapchain.deinit();
     w.surface.destroy();
@@ -601,7 +663,7 @@ pub fn present(self: *Wayland, id: WindowId, buffer: Buffer, damage: ?[]const Re
 }
 
 pub fn setTitle(self: *Wayland, id: WindowId, title: []const u8) void {
-    setString(self.get(id).toplevel, xdg.Toplevel.setTitle, title);
+    setString(self.get(id).toplevel orelse return, xdg.Toplevel.setTitle, title);
 }
 
 /// Sends a string request, truncating at a UTF-8 boundary to keep it on
@@ -614,38 +676,38 @@ fn setString(toplevel: *xdg.Toplevel, comptime request: anytype, s: []const u8) 
 }
 
 pub fn setMaximized(self: *Wayland, id: WindowId, maximized: bool) void {
-    const t = self.get(id).toplevel;
+    const t = self.get(id).toplevel orelse return;
     if (maximized) t.setMaximized() else t.unsetMaximized();
 }
 
 pub fn setFullscreen(self: *Wayland, id: WindowId, fullscreen: bool) void {
-    const t = self.get(id).toplevel;
+    const t = self.get(id).toplevel orelse return;
     if (fullscreen) t.setFullscreen(null) else t.unsetFullscreen();
 }
 
 pub fn setMinimized(self: *Wayland, id: WindowId) void {
-    self.get(id).toplevel.setMinimized();
+    if (self.get(id).toplevel) |t| t.setMinimized();
 }
 
 pub fn setSizeLimits(self: *Wayland, id: WindowId, min: Size, max: Size) void {
-    const t = self.get(id).toplevel;
+    const t = self.get(id).toplevel orelse return;
     t.setMinSize(@intCast(min.width), @intCast(min.height));
     t.setMaxSize(@intCast(max.width), @intCast(max.height));
 }
 
 pub fn beginMove(self: *Wayland, id: WindowId, seat: SeatId, serial: u32) void {
     const s = self.seatProxy(seat) orelse return;
-    self.get(id).toplevel.move(s, serial);
+    if (self.get(id).toplevel) |t| t.move(s, serial);
 }
 
 pub fn beginResize(self: *Wayland, id: WindowId, seat: SeatId, serial: u32, edge: platform.Edge) void {
     const s = self.seatProxy(seat) orelse return;
-    self.get(id).toplevel.resize(s, serial, @enumFromInt(@intFromEnum(edge)));
+    if (self.get(id).toplevel) |t| t.resize(s, serial, @enumFromInt(@intFromEnum(edge)));
 }
 
 pub fn showWindowMenu(self: *Wayland, id: WindowId, seat: SeatId, serial: u32, x: i32, y: i32) void {
     const s = self.seatProxy(seat) orelse return;
-    self.get(id).toplevel.showWindowMenu(s, serial, x, y);
+    if (self.get(id).toplevel) |t| t.showWindowMenu(s, serial, x, y);
 }
 
 pub fn setWindowGeometry(self: *Wayland, id: WindowId, g: Rect) void {
@@ -711,6 +773,7 @@ fn onXdgSurface(_: *xdg.Surface, event: xdg.Surface.Event, w: *Window) void {
             next.bounds = p.bounds;
             next.capabilities = p.capabilities;
             next.decoration = p.decoration;
+            next.popup = p.popup;
             next.scale = computeScale(w);
             const changed = !w.configured or !std.meta.eql(next, w.state);
             w.state = next;

@@ -73,6 +73,11 @@ const Window = struct {
     ack_deferred: bool = false,
     ack_deadline: ?u64 = null,
     ack_timer: Timer = .{ .func = onAckTimeout },
+    /// Popups: the parent window, and whether it holds a grab.
+    parent: ?WindowId = null,
+    grab: bool = false,
+    /// Top-left corner in output coordinates (toplevels at the origin).
+    origin: struct { x: i32 = 0, y: i32 = 0 } = .{},
 
     const Slot = struct { pixels: []u8 = &.{}, width: u32 = 0, height: u32 = 0 };
 };
@@ -188,6 +193,39 @@ pub fn createWindow(hl: *Headless, options: platform.WindowOptions) Error!Window
     // Like a compositor: the initial configure, answered by a frame.
     hl.sendConfigure(w);
     return w.id;
+}
+
+/// Places the popup with `platform.positioner.place` against the first
+/// output, like a compositor would.
+pub fn createPopup(hl: *Headless, options: platform.PopupOptions) Error!WindowId {
+    const parent = hl.get(options.parent);
+    const out = hl.output(0);
+    const scale: i32 = if (out) |o| @max(o.scale, 1) else 1;
+    const area: platform.positioner.Rect = .{
+        .x = -parent.origin.x,
+        .y = -parent.origin.y,
+        .width = if (out) |o| @divTrunc(o.width, scale) else std.math.maxInt(i16),
+        .height = if (out) |o| @divTrunc(o.height, scale) else std.math.maxInt(i16),
+    };
+    const r = platform.positioner.place(options.positioner, area);
+    const id = try hl.createWindow(.{ .width = @intCast(r.width), .height = @intCast(r.height) });
+    const w = hl.get(id);
+    w.parent = options.parent;
+    w.grab = options.grab != null;
+    w.origin = .{ .x = parent.origin.x + r.x, .y = parent.origin.y + r.y };
+    w.state.popup = .{ .x = r.x, .y = r.y };
+    // The configure createWindow queued carries the placement.
+    for (hl.queue.items.items) |*ev| if (ev.* == .configure and ev.configure.window == id) {
+        ev.configure.state = w.state;
+    };
+    return id;
+}
+
+/// Whether `id` is `window` or one of its ancestors.
+fn inChain(hl: *Headless, window: WindowId, id: WindowId) bool {
+    var cur: ?WindowId = window;
+    while (cur) |c| : (cur = hl.get(c).parent) if (c == id) return true;
+    return false;
 }
 
 pub fn destroyWindow(hl: *Headless, id: WindowId) void {
@@ -457,6 +495,24 @@ pub fn requestClose(hl: *Headless, id: WindowId) void {
 
 /// Delivers an input event in the dispatch phase, like a seat would.
 pub fn inject(hl: *Headless, event: platform.Event) void {
+    // A press outside the chain of a grabbing popup dismisses the popups
+    // and goes nowhere else, as a compositor's popup grab does.
+    if (event == .pointer_button and event.pointer_button.pressed) {
+        const target = event.pointer_button.window;
+        var dismissed = false;
+        var i = hl.windows.items.len;
+        while (i > 0) {
+            i -= 1;
+            const w = hl.windows.items[i] orelse continue;
+            // Presses in the popup or its child popups keep it open; the
+            // parent window is outside the grab.
+            if (!w.grab or (target < hl.windows.items.len and hl.windows.items[target] != null and hl.inChain(target, w.id))) continue;
+            w.grab = false;
+            hl.queue.push(.{ .close_requested = w.id });
+            dismissed = true;
+        }
+        if (dismissed) return;
+    }
     hl.queue.push(event);
 }
 

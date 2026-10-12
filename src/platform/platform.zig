@@ -15,6 +15,8 @@ const Allocator = std.mem.Allocator;
 pub const Loop = @import("loop").Loop;
 
 pub const FrameClock = @import("FrameClock.zig");
+pub const positioner = @import("positioner.zig");
+pub const Positioner = positioner.Positioner;
 pub const Headless = @import("Headless.zig");
 pub const Wayland = @import("Wayland.zig");
 /// Sway on its headless backend, for other modules' integration tests.
@@ -32,6 +34,17 @@ pub const Platform = union(enum) {
     pub fn createWindow(p: Platform, options: WindowOptions) Error!WindowId {
         return switch (p) {
             inline else => |b| b.createWindow(options),
+        };
+    }
+
+    /// Creates a popup (an xdg_popup, D17) placed by `options.positioner`
+    /// relative to its parent. Its configure carries the placement the
+    /// compositor chose (`WindowState.popup`); when the compositor
+    /// dismisses it (a grab ended), a `close_requested` event follows.
+    /// Destroy popups before their parent, topmost first.
+    pub fn createPopup(p: Platform, options: PopupOptions) Error!WindowId {
+        return switch (p) {
+            inline else => |b| b.createPopup(options),
         };
     }
 
@@ -383,6 +396,15 @@ pub const Decoration = enum {
     server,
 };
 
+pub const PopupOptions = struct {
+    parent: WindowId,
+    positioner: Positioner,
+    /// Takes an explicit grab for this input event (a press or key):
+    /// keyboard focus moves to the popup, and input outside the popup
+    /// chain dismisses it. Without it, the popup is passive (a tooltip).
+    grab: ?struct { seat: SeatId, serial: u32 } = null,
+};
+
 pub const WindowOptions = struct {
     title: []const u8 = "",
     app_id: []const u8 = "",
@@ -430,6 +452,9 @@ pub const WindowState = struct {
     capabilities: WmCapabilities = .{},
     /// Largest useful logical size, if the compositor says.
     bounds: ?Size = null,
+    /// Popups: where the compositor placed it, relative to the parent's
+    /// surface, with the size above.
+    popup: ?struct { x: i32, y: i32 } = null,
 
     pub fn bufferWidth(s: WindowState) u32 {
         return s.scale.apply(s.width);

@@ -455,3 +455,39 @@ test "output hotplug" {
     try testing.expectEqual(added, app.last(.output_removed).?.output_removed);
     try testing.expect(app.backend.output(added) == null);
 }
+
+test "popups are placed by the compositor within the output, then dismissed" {
+    var h: Harness = .{};
+    try h.start();
+    defer h.stop();
+    const app = &h.app;
+    const backend = app.backend;
+    const id = try h.mapWindow(.{});
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.last_buffer.width == 1280;
+        }
+    }.f);
+    // Anchored near the bottom right corner: sway must flip it above the
+    // anchor and slide it left to keep it on the output.
+    const popup = try backend.createPopup(.{ .parent = id, .positioner = .{
+        .width = 200,
+        .height = 100,
+        .anchor_rect = .{ .x = 1200, .y = 690, .width = 40, .height = 10 },
+    } });
+    app.watch = popup;
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.frames_of[a.watch] >= 1;
+        }
+    }.f);
+    const st = backend.windowState(popup);
+    const pos = st.popup.?;
+    try testing.expectEqual(@as(u32, 200), st.width);
+    try testing.expectEqual(@as(u32, 100), st.height);
+    try testing.expect(pos.y + 100 <= 690);
+    try testing.expect(pos.x + 200 <= 1280);
+    try testing.expectEqual(Size{ .width = 200, .height = 100 }, app.buffer_of[popup]);
+    backend.destroyWindow(popup);
+    try runMs(&h.loop, 50);
+}
