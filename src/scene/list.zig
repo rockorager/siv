@@ -212,6 +212,10 @@ pub const Layer = struct {
     transform: Affine = .identity,
     opacity: f32 = 1,
     blend: BlendMode = .src_over,
+    /// Composite the layer as a group even at full opacity with
+    /// source-over, so that blend modes inside it only see its own content
+    /// (a PDF isolated transparency group). Needed for COLRv1 composites.
+    isolate: bool = false,
     /// Clip in this layer's coordinates.
     clip: ?Clip = null,
     /// What changed since the previous version with the same id, in layer
@@ -220,7 +224,7 @@ pub const Layer = struct {
 
     /// True when the layer needs its own buffer to composite correctly.
     pub fn isIsolated(l: Layer) bool {
-        return l.opacity < 1 or l.blend != .src_over;
+        return l.isolate or l.opacity < 1 or l.blend != .src_over;
     }
 };
 
@@ -247,12 +251,14 @@ pub const Stroke = struct {
 
 /// A font as the text engine provides it.
 pub const Font = struct {
-    /// The hb_font_t* that owns outlines and color paint. The text engine
-    /// owns it; it must outlive every display list that refers to it and
-    /// every renderer glyph cache entry (see the renderer's evictFont).
+    /// The hb_font_t* that owns outlines and color paint, at any scale (the
+    /// renderer rescales to `GlyphRun.size`) and never mutated by the
+    /// renderer. The text engine owns it; it must outlive every display
+    /// list that refers to it.
     handle: *anyopaque,
-    /// Unique per font object (face plus variations) and never reused in
-    /// the process; it keys glyph caches.
+    /// Identifies the glyphs: equal keys must mean identical outlines and
+    /// color paint (same face data, variations, and palette), e.g. a
+    /// content hash. It keys glyph caches.
     key: u64,
 };
 
