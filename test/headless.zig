@@ -36,4 +36,5 @@ test {
     _ = @import("abi/primitives.zig");
     _ = @import("widgets/widgets.zig");
     _ = @import("abi/cursor.zig");
+    _ = @import("abi/portal.zig");
 }

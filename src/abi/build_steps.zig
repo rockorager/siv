@@ -185,6 +185,7 @@ pub fn add(b: *std.Build, o: Options) void {
                 .{ .name = "platform", .module = o.abi.import_table.get("platform").? },
                 .{ .name = "text", .module = o.abi.import_table.get("text").? },
                 .{ .name = "loop", .module = o.abi.import_table.get("loop").? },
+                .{ .name = "portal", .module = o.abi.import_table.get("portal").? },
             },
         }),
         .filters = o.test_filters,

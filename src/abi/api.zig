@@ -240,6 +240,8 @@ const blend_values: [blend_names.len]schema.EnumValue = blk: {
     break :blk vs;
 };
 
+const desktop = @import("api_desktop.zig");
+
 pub const decls = [_]Decl{
     result,
     alloc_fn,
@@ -266,6 +268,7 @@ pub const decls = [_]Decl{
         .{ .name = "backend", .type = ref("siv_backend"), .doc = "Default Wayland." },
         .{ .name = "flags", .type = ref("siv_app_flags"), .doc = "Options." },
         .{ .name = "name", .type = .string, .doc = "The application's name, as assistive technology shows it (D18)." },
+        .{ .name = "app_id", .type = .string, .doc = "The application id: reverse DNS, the name of its .desktop file without the extension. Windows default to it, and portals and D-Bus activation use it (D19)." },
     }),
     callback("siv_post_fn", "Work posted with siv_post; runs on the application's thread.", &.{}, .void),
     callback("siv_destroy_fn", "Releases user_data once siv no longer needs it. Runs exactly once, on the application's thread, never while a siv callback is running.", &.{}, .void),
@@ -1287,8 +1290,8 @@ pub const spec: schema.Schema = .{
     .source = "src/abi/api.zig",
     .doc = "siv: a GUI toolkit for Wayland.",
     .result = "siv_result",
-    .decls = &decls,
-    .functions = &functions,
+    .decls = &(decls ++ desktop.decls),
+    .functions = &(functions ++ desktop.functions),
 };
 
 /// Encodes a version as (major << 16) | (minor << 8) | patch.

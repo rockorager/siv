@@ -30,12 +30,14 @@ pub const dnd = @import("dnd.zig");
 pub const theme = @import("theme.zig");
 /// Pointer cursors.
 pub const cursor = @import("cursor.zig");
+/// Desktop portals and application actions.
+pub const portal = @import("portal.zig");
 
 /// The generated wrapper's types, which the exports use.
 pub const types = t;
 
 /// The files that export schema functions.
-const implementations = .{ @This(), application, tree, canvas, external, dnd, theme, cursor } ++ @import("widgets").implementations;
+const implementations = .{ @This(), application, tree, canvas, external, dnd, theme, cursor, portal } ++ @import("widgets").implementations;
 
 const version = build_options.version;
 

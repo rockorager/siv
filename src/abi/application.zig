@@ -25,6 +25,7 @@ const tree = @import("tree.zig");
 const canvas = @import("canvas.zig");
 const external = @import("external.zig");
 const loop_mod = @import("loop");
+const portal = @import("portal.zig");
 
 const Root = runtime.Root;
 
@@ -74,6 +75,8 @@ pub const App = struct {
     closing: std.atomic.Value(bool),
     /// By timer index (handle payload); null slots are reused.
     timers: std.ArrayList(?*Timer),
+    /// Portal requests, choosers, and actions (D19).
+    desktop: portal.State,
 
     pub fn gpa(self: *App) std.mem.Allocator {
         return self.root.gpa;
@@ -214,6 +217,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     const backend = try runtime.enumValue(t.Backend, desc.backend);
     const flags = try runtime.flags(t.AppFlags, desc.flags);
     const name = try runtime.string(desc.name, desc.name_len);
+    const app_id = try runtime.string(desc.app_id, desc.app_id_len);
     const dest = try runtime.out(t.App, out);
 
     const self = try Root.create(App, app_tag, hooks);
@@ -228,6 +232,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     self.externals = .{};
     self.closing = .init(false);
     self.timers = .empty;
+    self.desktop = .{};
     const gpa = self.gpa();
     self.draw = .init(gpa);
     errdefer self.draw.deinit(gpa);
@@ -248,6 +253,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
         .accessibility = backend == .wayland,
         .name = name,
         .toolkit_version = toolkit_version,
+        .app_id = app_id,
     }) catch |err| return mapAppError(err);
     errdefer self.app.destroy();
     try self.app.fonts.addListener(.{ .ctx = self, .func = canvas.onFontsLoaded });
@@ -261,6 +267,8 @@ pub export fn siv_app_destroy(app: t.App) t.Result {
     // invalid.
     self.closing.store(true, .seq_cst);
     self.root.retire();
+    // Before the windows, whose destruction would start waiting requests.
+    portal.teardown(self);
     for (self.windows.items) |slot| if (slot) |w| {
         w.win.destroy() catch {};
         w.teardown();
