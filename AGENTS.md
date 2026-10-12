@@ -5,7 +5,7 @@ update it in the same change when a decision changes.
 
 ## Build and test
 
-Requires Zig 0.16.0 and the development packages for libwayland-client,
+Requires Zig 0.17.0 and the development packages for libwayland-client,
 xkbcommon, and Fontconfig (`.agents/setup` installs them on Debian).
 
 ```sh
@@ -20,9 +20,7 @@ zig build -fsys=harfbuzz -fsys=sheenbidi   # link system copies instead of vendo
 ```
 
 Fetched packages live in `zig-pkg/` (ignored). `zig build --fetch=all`
-fetches everything, including lazy dependencies; in an empty Zig cache, run
-`mkdir -p ~/.cache/zig/tmp` first (Zig 0.16.0 bug with .zip packages, see
-the `ucd` entry in build.zig.zon).
+fetches everything, including lazy dependencies.
 
 ## Module ownership
 

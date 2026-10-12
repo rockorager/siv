@@ -381,7 +381,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 
 - **License:** MIT. Every dependency is MIT, BSD, or Apache-2.0; binaries ship a
   NOTICES file.
-- **Toolchain:** Zig 0.16.
+- **Toolchain:** Zig 0.17.
 - **Packaging:** every C dependency has a build option to use the system copy;
   the build installs pkg-config files.
 - **Security:** continuous fuzzing of every parser (rasterizer inputs, SVG,

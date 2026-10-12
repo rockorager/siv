@@ -48,6 +48,7 @@ pub fn build(b: *std.Build) void {
         .build_config_path = b.path("src/text/uucode_config.zig"),
     }).module("uucode");
     const wayland = waylandModule(ctx);
+    const ucd = b.dependency("ucd", .{});
 
     // siv modules. Imports between them are the allowed dependency edges;
     // see AGENTS.md before adding one.
@@ -84,7 +85,7 @@ pub fn build(b: *std.Build) void {
 
     // Unicode conformance data for the text tests, embedded with
     // @embedFile("<name>"). Property files can be added the same way.
-    if (b.lazyDependency("ucd", .{})) |ucd| for ([_][]const u8{
+    for ([_][]const u8{
         "auxiliary/GraphemeBreakTest.txt",
         "auxiliary/WordBreakTest.txt",
         "auxiliary/LineBreakTest.txt",
@@ -92,7 +93,7 @@ pub fn build(b: *std.Build) void {
         "BidiCharacterTest.txt",
     }) |sub_path| {
         text.addAnonymousImport(std.fs.path.basename(sub_path), .{ .root_source_file = ucd.path(sub_path) });
-    };
+    }
 
     // libsiv. The root module only pulls in the ABI exports.
     const root = ctx.module("src/siv.zig", &.{.{ .name = "abi", .module = abi }});

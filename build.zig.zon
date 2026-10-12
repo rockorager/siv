@@ -2,7 +2,7 @@
     .name = .siv,
     .version = "0.1.0",
     .fingerprint = 0xa4af0bfc42868501, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         // Shaping (D13, D14). MIT. Lazy: skipped with -fsys=harfbuzz.
         .harfbuzz = .{
@@ -17,34 +17,23 @@
             .lazy = true,
         },
         // Unicode properties and grapheme breaking (D13). MIT.
-        // Commit 9d55524 is the head of the zig-0.16 branch (Unicode 18.0.0).
+        // Commit 1fb7343 is the head of main (Zig 0.17, Unicode 18.0.0).
         .uucode = .{
-            .url = "https://github.com/jacobsandlund/uucode/archive/9d55524551411b493cca41ca06363625d90aff1e.tar.gz",
-            .hash = "uucode-0.2.0-ZZjBPuuFVgC8YZ8eld4fOKsZANLIhTFMzULQxhkLi1C7",
+            .url = "https://github.com/jacobsandlund/uucode/archive/1fb73433bba5d93366c57f23ff2e9d7939746500.tar.gz",
+            .hash = "uucode-0.2.0-ZZjBPm6FVgBcY-79AHV8ckQj86z0JwOyVyj89VeZrEiv",
         },
         // Unicode Character Database 18.0.0, matching uucode. Unicode License
         // v3 (permissive, data files only; uucode ships the same data).
         // Property files for siv's UAX #14 and UAX #29 scanners and the
         // official conformance tests.
-        //
-        // Lazy only to work around a Zig 0.16.0 bug: fetching a .zip fails
-        // with "failed to create temporary zip file: FileNotFound" when the
-        // global cache has no tmp/ directory (ziglang/zig#31964, fixed in
-        // 0.17). Lazy packages are fetched after the build runner is built,
-        // which creates that directory. `zig build --fetch=all` fetches it
-        // first, so run `mkdir -p ~/.cache/zig/tmp` before it in an empty cache.
         .ucd = .{
             .url = "https://www.unicode.org/Public/18.0.0/ucd/UCD.zip",
             .hash = "N-V-__8AANHxWwIt4EQAd6ed2GJB3LAy6HBNZO-fmag0ZqR4",
-            .lazy = true,
         },
         // libwayland-client bindings and protocol scanner (D7). MIT.
-        // Commit 23839e4 is the last before zig-wayland moved to Zig 0.17
-        // (v0.7.0). v0.6.0 cannot parse comments inside descriptions, which
-        // the pinned wayland-protocols uses.
         .wayland = .{
-            .url = "https://codeberg.org/ifreund/zig-wayland/archive/23839e41161de025d71ce082561ecba1c5331281.tar.gz",
-            .hash = "wayland-0.7.0-dev-lQa1kl38AQC-kQolS5D4jV1GJ2rH2jv1VWHr14YLVnyn",
+            .url = "https://codeberg.org/ifreund/zig-wayland/archive/v0.7.0.tar.gz",
+            .hash = "wayland-0.7.0-lQa1kuP8AQD5dW7_o-VKLVD_QbqXe7Zob78r2su7Pyex",
         },
         // Protocol XML is pinned rather than taken from the system so that
         // staging protocols (fifo, commit-timing, color-management) exist on

@@ -9,7 +9,7 @@ siv is in the design stage. See [DESIGN.md](DESIGN.md) for the decisions so far.
 
 ## Building
 
-Requires Zig 0.16.0 and the development packages for libwayland-client,
+Requires Zig 0.17.0 and the development packages for libwayland-client,
 xkbcommon, and Fontconfig.
 
 ```sh
