@@ -56,7 +56,8 @@ fn shape(win: *Window, id: NodeId) error{OutOfMemory}!*Cache {
     const style = d.props.style;
     const language = if (d.language != 0) d.language else win.language;
     const chain = try fonts.chain(.{ .family = d.family, .language = language, .weight = style.weight, .slant = style.slant });
-    const content = d.content;
+    const n = win.node(id);
+    const content = if (n.kind == .editor) try @import("editor.zig").displayText(win, id, win.scratch.allocator()) else d.content;
     var p = text.ShapedParagraph.init(win.gpa, win.scratch.allocator(), &fonts.cache, content, &.{.{
         .end = @intCast(content.len),
         .style = .{ .fonts = chain, .size = style.size, .language = if (fonts.name(language).len == 0) "und" else fonts.name(language) },

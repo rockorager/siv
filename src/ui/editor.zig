@@ -49,10 +49,48 @@ fn contentWidth(win: *const Window, id: NodeId) f32 {
     return win.state(id).size.w - win.node(id).layout.padding.horizontal();
 }
 
+/// The text shaped and shown: the content, with an input method's preedit
+/// at the caret.
+pub fn displayText(win: *const Window, id: NodeId, a: std.mem.Allocator) error{OutOfMemory}![]const u8 {
+    const e = data(win, id);
+    const pre = win.ime.preeditFor(id) orelse return e.text.content;
+    const c = e.caret;
+    return std.mem.concat(a, u8, &.{ e.text.content[0..c], pre, e.text.content[c..] });
+}
+
+/// The caret's offset in the shown text: inside the preedit while there
+/// is one.
+pub fn displayCaret(win: *const Window, id: NodeId) u32 {
+    const e = data(win, id);
+    const pre = win.ime.preeditFor(id) orelse return e.caret;
+    const at: u32 = @intCast(std.math.clamp(win.ime.cursor_begin, 0, @as(i32, @intCast(pre.len))));
+    return e.caret + at;
+}
+
+/// The preedit's range in the shown text, to underline.
+pub fn preeditRange(win: *const Window, id: NodeId) ?[2]u32 {
+    const pre = win.ime.preeditFor(id) orelse return null;
+    const c = data(win, id).caret;
+    return .{ c, c + @as(u32, @intCast(pre.len)) };
+}
+
+/// Applies an input method commit: deletes `before` and `after` bytes
+/// around the selection, replaces the selection with `str`.
+pub fn imeCommit(win: *Window, id: NodeId, before: u32, after: u32, str: []const u8) void {
+    const e = data(win, id);
+    const content = e.text.content;
+    const lo, const hi = selection(e);
+    var start = lo -| before;
+    while (start > 0 and start < content.len and content[start] & 0xc0 == 0x80) start -= 1;
+    var end = @min(@as(u32, @intCast(content.len)), hi + after);
+    while (end < content.len and content[end] & 0xc0 == 0x80) end += 1;
+    replace(win, id, start, end, str, if (start == end) .typing else .other);
+}
+
 /// The caret rectangle in content coordinates (before editor scrolling).
 pub fn caretRect(win: *const Window, id: NodeId, l: *const Layout) Rect {
     const e = data(win, id);
-    const c = l.caret(.{ .offset = e.caret, .affinity = e.affinity });
+    const c = l.caret(.{ .offset = displayCaret(win, id), .affinity = e.affinity });
     const x = c.x + text_node.lineShift(win, id, l.lines[c.line], contentWidth(win, id));
     return .xywh(x, c.top, layout.caret_width, c.height);
 }
@@ -91,6 +129,7 @@ fn positionAt(win: *Window, id: NodeId, local: Point) ?Position {
 /// A primary press at a window point: places the caret (extends the
 /// selection with shift).
 pub fn pointerDown(win: *Window, id: NodeId, p: Point, extend: bool) void {
+    if (win.ime.preeditFor(id) != null) @import("ime.zig").reset(win);
     const pos = positionAt(win, id, input.toLocal(win, id, p)) orelse return;
     const e = data(win, id);
     select(win, id, pos, if (extend) e.anchor else pos.offset);
@@ -351,6 +390,9 @@ pub fn key(win: *Window, id: NodeId, k: *const platform.Key) bool {
     if (k.state == .released or k.composing) return false;
     const n = win.node(id);
     if (n.semantics.disabled) return false;
+    // The input method owns the keyboard while it composes; keys that
+    // still arrive must not edit around its preedit.
+    if (win.ime.preeditFor(id) != null) return k.keysym != keysym.tab and k.keysym != keysym.iso_left_tab;
     const e = data(win, id);
     const l = fresh(win, id) orelse return false;
     const mods = k.mods;

@@ -76,6 +76,9 @@ const Fixture = struct {
     comp: Comp,
     win: *ui.Window,
     frames_requested: usize = 0,
+    /// Text input states the window sent, with their surrounding text.
+    text_inputs: std.ArrayList(@import("platform").TextInputState) = .empty,
+    surroundings: std.ArrayList([]u8) = .empty,
 
     fn init(f: *Fixture, options: struct { width: f32 = 200, height: f32 = 100, rtl: bool = false }) !void {
         f.* = .{ .fonts = try .init(testing.allocator), .comp = .{ .tree = .init(testing.allocator) }, .win = undefined };
@@ -91,7 +94,7 @@ const Fixture = struct {
         f.win = try ui.Window.init(testing.allocator, .{
             .fonts = &f.fonts,
             .sink = f.comp.sink(),
-            .host = .{ .ctx = f, .request_frame = requested },
+            .host = .{ .ctx = f, .request_frame = requested, .text_input = textInput },
             .width = options.width,
             .height = options.height,
             .rtl = options.rtl,
@@ -103,7 +106,20 @@ const Fixture = struct {
         f.frames_requested += 1;
     }
 
+    fn textInput(ctx: ?*anyopaque, seat: @import("platform").SeatId, state: *const @import("platform").TextInputState) void {
+        const f: *Fixture = @ptrCast(@alignCast(ctx));
+        std.debug.assert(seat == 0);
+        const copy = testing.allocator.dupe(u8, state.surrounding) catch unreachable;
+        f.surroundings.append(testing.allocator, copy) catch unreachable;
+        var st = state.*;
+        st.surrounding = copy;
+        f.text_inputs.append(testing.allocator, st) catch unreachable;
+    }
+
     fn deinit(f: *Fixture) void {
+        for (f.surroundings.items) |b| testing.allocator.free(b);
+        f.surroundings.deinit(testing.allocator);
+        f.text_inputs.deinit(testing.allocator);
         // The compositor goes first; then nothing refers to the builders.
         f.comp.deinit();
         f.win.deinit();
@@ -302,12 +318,25 @@ test "text wraps; width changes relayout without reshaping; style color only rep
     try testing.expectEqual(builds + 1, f.win.stats.layer_builds);
     try testing.expectEqual(@as(u64, 1), f.win.stats.shapes);
 
+    // New text in a node whose size cannot change still repaints.
+    t = try f.win.begin();
+    const fixed = try box(t, col, .text, .{ .width = .{ .px = 100 }, .height = .{ .px = 20 } });
+    try t.setText(fixed, "abc");
+    t.commit();
+    try f.frame();
+    const before = f.win.stats.layer_builds;
+    t = try f.win.begin();
+    try t.setText(fixed, "xyz");
+    t.commit();
+    try f.frame();
+    try testing.expectEqual(before + 1, f.win.stats.layer_builds);
+
     // Size: reshapes.
     t = try f.win.begin();
     try t.setTextProps(label, .{ .style = .{ .size = 20 } });
     t.commit();
     try f.frame();
-    try testing.expectEqual(@as(u64, 2), f.win.stats.shapes);
+    try testing.expectEqual(@as(u64, 4), f.win.stats.shapes);
 }
 
 test "clean subtrees are not laid out again" {
@@ -876,4 +905,97 @@ test "caret blinks on the compositor, stops by itself, and not with reduced moti
 fn findAnimate(ops: []const compositor.Op, layer: compositor.LayerId) ?compositor.Animation {
     for (ops) |op| if (op == .animate and op.animate.layer == layer) return op.animate.animation;
     return null;
+}
+
+fn imeEvent(f: *Fixture, ev: @import("platform").TextInput) void {
+    f.win.handlePlatform(&.{ .text_input = ev });
+}
+
+fn imeText(buf: []u8, s: []const u8) u16 {
+    @memcpy(buf[0..s.len], s);
+    return @intCast(s.len);
+}
+
+test "input method: enable, preedit inline, commit with undo, masked fields stay out" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 300, .height = 100 });
+    defer f.deinit();
+    var t = try f.win.begin();
+    const ed = try box(t, .root, .editor, .{ .align_y = .start });
+    const pw = try box(t, .root, .editor, .{ .align_y = .end });
+    try t.setEditor(pw, .{ .masked = true });
+    t.commit();
+    try f.frame();
+    const k: Keys = .{ .f = &f };
+    k.press(ui.keysym.tab, .{});
+    try f.frame();
+    // No text input has entered the window: nothing is sent.
+    try testing.expectEqual(@as(usize, 0), f.text_inputs.items.len);
+    f.win.handlePlatform(&.{ .text_input_enter = .{ .window = 0, .seat = 0, .serial = 0 } });
+    try f.frame();
+    try testing.expectEqual(@as(usize, 1), f.text_inputs.items.len);
+    const first = f.text_inputs.items[0];
+    try testing.expect(first.enabled);
+    try testing.expectEqualStrings("", first.surrounding);
+    try testing.expect(first.cursor_rect.height > 10);
+
+    // A preedit shows inline but is not text.
+    var ev: @import("platform").TextInput = .{ .window = 0, .seat = 0 };
+    ev.preedit_len = imeText(&ev.preedit_buf, "ka");
+    ev.cursor_begin = 2;
+    ev.cursor_end = 2;
+    imeEvent(&f, ev);
+    try f.frame();
+    const e = &f.win.node(ed).data.editor;
+    try testing.expectEqualStrings("", e.text.content);
+    try testing.expectEqualStrings("ka", f.win.state(ed).text.?.paragraph.?.text);
+    const moved = f.text_inputs.items[f.text_inputs.items.len - 1];
+    try testing.expect(moved.cursor_rect.x > first.cursor_rect.x);
+    // Editing keys wait while it composes.
+    k.typeText("q");
+    try testing.expectEqualStrings("", e.text.content);
+
+    // The commit replaces the preedit and becomes text and an undo step.
+    ev = .{ .window = 0, .seat = 0 };
+    ev.commit_len = imeText(&ev.commit_buf, "\u{304b}");
+    imeEvent(&f, ev);
+    try f.frame();
+    try testing.expectEqualStrings("\u{304b}", e.text.content);
+    try testing.expectEqualStrings("\u{304b}", f.win.state(ed).text.?.paragraph.?.text);
+    const after = f.text_inputs.items[f.text_inputs.items.len - 1];
+    try testing.expectEqualStrings("\u{304b}", after.surrounding);
+    try testing.expectEqual(@as(u32, 3), after.cursor);
+    try testing.expect(after.from_input_method);
+    // Surrounding deletion with the caret at the end: one byte back, then
+    // the commit.
+    k.typeText("ab");
+    ev = .{ .window = 0, .seat = 0, .delete_before = 1 };
+    ev.commit_len = imeText(&ev.commit_buf, "Z");
+    imeEvent(&f, ev);
+    try testing.expectEqualStrings("\u{304b}aZ", e.text.content);
+    // Undo: the replacement, then the commit and the typing after it,
+    // which merge into one step like typing.
+    k.press('z', .{ .ctrl = true });
+    try testing.expectEqualStrings("\u{304b}ab", e.text.content);
+    k.press('z', .{ .ctrl = true });
+    try testing.expectEqualStrings("", e.text.content);
+
+    // A masked field turns the input method off; input methods never see
+    // passwords.
+    k.press(ui.keysym.tab, .{});
+    try testing.expectEqual(pw, f.win.input.focus);
+    try f.frame();
+    const off = f.text_inputs.items[f.text_inputs.items.len - 1];
+    try testing.expect(!off.enabled);
+    try testing.expectEqualStrings("", off.surrounding);
+    ev = .{ .window = 0, .seat = 0 };
+    ev.commit_len = imeText(&ev.commit_buf, "leak");
+    imeEvent(&f, ev);
+    try testing.expectEqualStrings("", f.win.secretOf(pw));
+    // After the text input leaves, nothing more is sent.
+    const sent = f.text_inputs.items.len;
+    f.win.handlePlatform(&.{ .text_input_leave = .{ .window = 0, .seat = 0, .serial = 0 } });
+    k.press(ui.keysym.tab, .{});
+    try f.frame();
+    try testing.expectEqual(sent, f.text_inputs.items.len);
 }

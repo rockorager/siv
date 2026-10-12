@@ -620,8 +620,22 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     and starts a compositor opacity animation that blinks for 10 s and
     ends visible, so an idle window makes no wakeups (D25); with reduced
     motion the caret does not blink.
-  - Not built yet: selection by double click, and the text-input-v3 path
-    on `Compositor.post`.
+  - Input methods (`src/ui/ime.zig`, `src/platform/TextInput.zig`): when
+    a seat's text input enters the window and a non-masked editor has
+    focus, the window enables it and, after each frame, sends what changed
+    (surrounding text of up to 1000 bytes each side of the selection,
+    caret and anchor, multiline hint, caret rectangle in surface
+    coordinates) through `Host.text_input`, which the application runs on
+    the compositor thread with `Compositor.post`, in order with layer
+    commits (D8). The platform collects preedit, commit, and deletion until
+    `done` and queues them as one event, splitting commits longer than 128
+    bytes at character boundaries (a preedit that long is cut, since it
+    is only shown). Commits and deletions edit the editor and join its
+    undo history like typing; the preedit is shaped inline at the caret,
+    underlined, and is never part of the text. Editing keys that still
+    arrive while the input method composes are ignored; a click resets
+    the preedit. Masked editors keep the input method disabled.
+  - Not built yet: selection by double click.
 
 ### D16. Input
 

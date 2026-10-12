@@ -9,6 +9,7 @@ const std = @import("std");
 const scene = @import("scene");
 const text = @import("text");
 const ui = @import("ui");
+const platform = @import("platform");
 const png = @import("../render/png.zig");
 const App = @import("harness.zig").App;
 
@@ -344,4 +345,48 @@ test "editors: selection, caret, horizontal scrolling, and RTL" {
     try testing.expect(app.win.state(eds[1]).editor_scroll > 0);
     try expectDamageExact(&app);
     try expectGolden(&app, "editors");
+}
+
+test "input method on the compositor: enable, inline preedit, commit" {
+    var app: App = undefined;
+    try app.init(testing.allocator, .{ .width = 200, .height = 50 });
+    defer app.deinit();
+    var ed: NodeId = undefined;
+    {
+        const t = try app.win.begin();
+        const col = try node(t, .root, .box, .{ .padding = .all(10) }, .{ .background = panel });
+        ed = try node(t, col, .editor, .{ .padding = .symmetric(6, 4) }, .{ .background = .white, .border_width = 1, .border_color = border, .radius = .all(4) });
+        try t.setText(ed, "Caf");
+        try t.setSelection(ed, 3, 3, .downstream);
+        t.commit();
+    }
+    try app.settle();
+    app.inject(.{ .text_input_enter = .{ .window = app.wid, .seat = 0, .serial = 0 } });
+    app.key(ui.keysym.tab, .{});
+    try app.settle();
+    var st = try app.textInputState();
+    try testing.expect(st.enabled);
+    try testing.expectEqualStrings("Caf", st.surrounding);
+    try testing.expectEqual(@as(u32, 3), st.cursor);
+    testing.allocator.free(st.surrounding);
+
+    var pre: platform.TextInput = .{ .window = app.wid, .seat = 0, .cursor_begin = 2, .cursor_end = 2 };
+    @memcpy(pre.preedit_buf[0..2], "\u{e9}");
+    pre.preedit_len = 2;
+    app.inject(.{ .text_input = pre });
+    try app.settle();
+    try testing.expectEqualStrings("Caf", app.win.node(ed).data.editor.text.content);
+    try expectDamageExact(&app);
+    try expectGolden(&app, "ime-preedit");
+
+    var done: platform.TextInput = .{ .window = app.wid, .seat = 0 };
+    @memcpy(done.commit_buf[0..2], "\u{e9}");
+    done.commit_len = 2;
+    app.inject(.{ .text_input = done });
+    try app.settle();
+    try testing.expectEqualStrings("Caf\u{e9}", app.win.node(ed).data.editor.text.content);
+    st = try app.textInputState();
+    defer testing.allocator.free(st.surrounding);
+    try testing.expectEqualStrings("Caf\u{e9}", st.surrounding);
+    try testing.expectEqual(@as(u32, 5), st.cursor);
 }

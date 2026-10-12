@@ -17,6 +17,7 @@ const Window = @import("Window.zig");
 const node_mod = @import("node.zig");
 const paint = @import("paint.zig");
 const editor = @import("editor.zig");
+const ime = @import("ime.zig");
 
 const NodeId = node_mod.NodeId;
 const Event = node_mod.Event;
@@ -210,6 +211,7 @@ pub fn setFocus(win: *Window, id: NodeId, visible: bool) void {
         win.markPaint(id);
         if (old != id) _ = call(win, id, .focus, &.{ .focus = .{ .gained = true, .visible = visible } });
     }
+    ime.focusChanged(win);
     win.requestFrame();
 }
 
@@ -298,6 +300,7 @@ pub fn handle(win: *Window, event: *const platform.Event) void {
         .scroll => |s| scroll(win, @floatCast(s.dx), @floatCast(s.dy), s.v120_x, s.v120_y),
         .key => |k| key(win, &k),
         .modifiers => |m| st.mods = m.mods,
+        .text_input_enter, .text_input_leave, .text_input => ime.handle(win, event),
         .keyboard_enter => {
             st.keyboard = true;
             if (st.focus != .none) win.markPaint(st.focus);

@@ -75,5 +75,6 @@ test {
     _ = @import("text_node.zig");
     _ = @import("editor.zig");
     _ = @import("secret.zig");
+    _ = @import("ime.zig");
     _ = @import("tests.zig");
 }

@@ -70,7 +70,7 @@ pub const App = struct {
         app.win = try ui.Window.init(gpa, .{
             .fonts = &app.fonts,
             .sink = .{ .ctx = app, .commit = commit },
-            .host = .{ .ctx = app, .request_frame = requestFrame },
+            .host = .{ .ctx = app, .request_frame = requestFrame, .text_input = textInput },
             .width = @floatFromInt(options.width),
             .height = @floatFromInt(options.height),
             .scale = @floatFromInt(options.scale),
@@ -117,6 +117,59 @@ pub const App = struct {
         app.comp.requestFrame(app.wid) catch |e| {
             app.err = e;
         };
+    }
+
+    /// Text input requests run on the compositor thread, in order with
+    /// commits (D8). The request owns a copy of the surrounding text.
+    fn textInput(ctx: ?*anyopaque, seat: platform.SeatId, state: *const platform.TextInputState) void {
+        const app: *App = @ptrCast(@alignCast(ctx));
+        const Req = struct {
+            gpa: std.mem.Allocator,
+            seat: platform.SeatId,
+            state: platform.TextInputState,
+            fn run(c: ?*anyopaque, comp: *Compositor) void {
+                const r: *@This() = @ptrCast(@alignCast(c));
+                comp.platform.setTextInput(r.seat, &r.state);
+                destroy(c);
+            }
+            fn destroy(c: ?*anyopaque) void {
+                const r: *@This() = @ptrCast(@alignCast(c));
+                r.gpa.free(r.state.surrounding);
+                r.gpa.destroy(r);
+            }
+        };
+        const r = app.gpa.create(Req) catch |e| {
+            app.err = e;
+            return;
+        };
+        const copy = app.gpa.dupe(u8, state.surrounding) catch |e| {
+            app.gpa.destroy(r);
+            app.err = e;
+            return;
+        };
+        r.* = .{ .gpa = app.gpa, .seat = seat, .state = state.* };
+        r.state.surrounding = copy;
+        app.comp.post(r, Req.run, Req.destroy) catch |e| {
+            Req.destroy(r);
+            app.err = e;
+        };
+    }
+
+    /// What seat 0's text input last committed on the platform.
+    pub fn textInputState(app: *App) !struct { enabled: bool, surrounding: []u8, cursor: u32, commits: u32, rect: platform.Rect } {
+        const Ctx = struct {
+            gpa: std.mem.Allocator,
+            out: anyerror!@typeInfo(@typeInfo(@TypeOf(textInputState)).@"fn".return_type.?).error_union.payload = error.OutOfMemory,
+            fn run(c: ?*anyopaque, comp: *Compositor) void {
+                const s: *@This() = @ptrCast(@alignCast(c));
+                const rec = comp.platform.headless.textInput(0);
+                const copy = s.gpa.dupe(u8, rec.state.surrounding) catch return;
+                s.out = .{ .enabled = rec.state.enabled, .surrounding = copy, .cursor = rec.state.cursor, .commits = rec.commits, .rect = rec.state.cursor_rect };
+            }
+        };
+        var c: Ctx = .{ .gpa = app.gpa };
+        try app.comp.call(&c, Ctx.run);
+        return c.out;
     }
 
     fn onEvent(ctx: ?*anyopaque, ev: *const compositor.Event) void {

@@ -145,7 +145,11 @@ fn compute(win: *Window, id: NodeId, c: Constraints) Error!Size {
         .flex => try flex(win, id, inner, origin),
         .grid => try grid(win, id, inner, origin),
         .stack => try stack(win, id, inner, origin),
-        .text, .editor => try textSize(win, id, inner),
+        .text, .editor => blk: {
+            // New glyphs can keep the same size; repaint regardless.
+            win.markPaint(id);
+            break :blk try textSize(win, id, inner);
+        },
         .image => imageSize(n.data.image, inner),
         .canvas => .{ .w = inner.clampW(n.data.canvas.width), .h = inner.clampH(n.data.canvas.height) },
         .external => .{ .w = inner.min_w, .h = inner.min_h },

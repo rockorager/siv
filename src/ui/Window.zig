@@ -29,6 +29,7 @@ const semantics_mod = @import("semantics.zig");
 const text_node = @import("text_node.zig");
 const editor_mod = @import("editor.zig");
 const secret = @import("secret.zig");
+const ime_mod = @import("ime.zig");
 
 const Window = @This();
 
@@ -76,6 +77,7 @@ dirty: Dirty = .{},
 scratch: std.heap.ArenaAllocator,
 paint: paint_mod.State = .{},
 input: input_mod.State = .{},
+ime: ime_mod.State = .{},
 semantics: semantics_mod.Tree = .{},
 stats: Stats = .{},
 
@@ -84,8 +86,13 @@ pub const Host = struct {
     ctx: ?*anyopaque = null,
     /// Asks for a frame; the owner calls `frame` when it comes.
     request_frame: *const fn (ctx: ?*anyopaque) void = noop,
+    /// Sends a seat's text input state (text-input-v3). Run it on the
+    /// compositor thread with `Compositor.post` and
+    /// `Platform.setTextInput`, copying `state.surrounding`.
+    text_input: *const fn (ctx: ?*anyopaque, seat: platform.SeatId, state: *const platform.TextInputState) void = noopTextInput,
 
     fn noop(_: ?*anyopaque) void {}
+    fn noopTextInput(_: ?*anyopaque, _: platform.SeatId, _: *const platform.TextInputState) void {}
 };
 
 pub const Options = struct {
@@ -213,6 +220,7 @@ fn deinitStorage(win: *Window) void {
     win.txn.deinit(win.gpa);
     win.paint.deinit(win.gpa);
     win.input.deinit(win.gpa);
+    win.ime.deinit(win.gpa);
     win.semantics.deinit(win.gpa);
     win.scratch.deinit();
 }
@@ -347,7 +355,7 @@ pub fn needsFrame(win: *const Window) bool {
     // Semantics alone need no frame: they rebuild on query or with the
     // next frame (`semanticsTree`), so scrolling makes no extra frames.
     return win.state(.root).needs_layout or win.dirty.layers or win.dirty.props or
-        win.paint.anyDirty() or win.pending_input.items.len != 0;
+        win.paint.anyDirty() or win.pending_input.items.len != 0 or win.ime.dirty;
 }
 
 pub fn requestFrame(win: *Window) void {
@@ -412,6 +420,7 @@ pub fn frame(win: *Window) Error!void {
         try win.semantics.rebuild(win);
         win.dirty.semantics = false;
     }
+    ime_mod.sync(win);
     win.stats.frames += 1;
 }
 

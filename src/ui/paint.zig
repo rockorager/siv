@@ -746,7 +746,17 @@ fn drawEditor(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Poi
     const scroll = s.editor_scroll;
     const focused = win.input.focus == nid;
     try b.pushLayer(.{ .clip = .{ .shape = .{ .rect = box.outset(layout.caret_width) } } });
-    if (e.caret != e.anchor) {
+    if (editor.preeditRange(win, nid)) |range| {
+        // The preedit is underlined; the selection waits behind it.
+        var rects: std.ArrayList(text.layout.Rect) = .empty;
+        defer rects.deinit(win.gpa);
+        try l.selectionRects(win.gpa, range[0], range[1], &rects);
+        for (rects.items) |r| {
+            const line = l.lines[l.lineAt(r.y + r.height / 2)];
+            const x = box.x0 - scroll + r.x + text_node.lineShift(win, nid, line, cw);
+            try b.fillRect(.xywh(x, box.y0 + r.y + r.height - 1.5, r.width, 1), .color(e.text.props.style.color));
+        }
+    } else if (e.caret != e.anchor) {
         var rects: std.ArrayList(text.layout.Rect) = .empty;
         defer rects.deinit(win.gpa);
         try l.selectionRects(win.gpa, @min(e.caret, e.anchor), @max(e.caret, e.anchor), &rects);
