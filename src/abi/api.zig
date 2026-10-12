@@ -785,6 +785,7 @@ pub const decls = [_]Decl{
         .{ .name = "multiline", .bit = 0, .doc = "A text area: Enter inserts a line break and lines wrap." },
         .{ .name = "masked", .bit = 1, .doc = "A password field (SIV_EDITOR_MASKED)." },
         .{ .name = "disabled", .bit = 2, .doc = "Shown dimmed; not focusable." },
+        .{ .name = "styled", .bit = 3, .doc = "A styled-text editor (D22): Ctrl+B, Ctrl+I, and Ctrl+U toggle bold, italic, and underline over the selection, or for what is typed next, as undoable steps (siv_editor_format); the styles are the editor's text spans (siv_node_get_text_run, siv_set_text_spans). Not with masked." },
     }),
     descriptor("siv_text_field_desc", "A framed editor: a text field, or with SIV_TEXT_FIELD_MULTILINE a text area.", &.{
         .{ .name = "text", .type = .string, .doc = "Initial text, copied." },
