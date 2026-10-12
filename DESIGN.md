@@ -473,7 +473,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     and the pixels are freed when the last list that can still be shown
     is released. Keys come from a process-wide counter with the top bit
     set, apart from the keys producers choose for external frames (D17).
-    Decoding to the displayed size on the pool (D19) is not built yet.
+    Decoded images (D19) are `rgba8_srgb`, or `rgba16_linear_premul`
+    when scaled, color managed, or deeper than 8 bits; an animation's
+    frames share one `ui.Image` with a key per frame.
   - Glyph runs may carry their text (`scene.GlyphText`: the bytes and
     each glyph's cluster offset into them) for output that keeps text,
     such as PDF's ToUnicode maps; the renderers ignore it.
@@ -1773,6 +1775,61 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       GetAll, GetLayout, Event, Activate), also through the C API.
   - Images: wuffs (PNG, JPEG, GIF), libwebp, libavif with dav1d, libjxl.
     Decoding is async and decodes to the displayed size.
+    - `src/image` (`image.decode`) takes a whole file and returns frames;
+      `ui.Image.load` runs it on the worker pool (reading a path there
+      too) and delivers the image in the dispatch phase (D5), and
+      `siv_image_load` exposes that with a callback and destroy-notify.
+      Every decoder sits behind a small C interface of siv's own
+      (`src/image/*.h`), so `-fsys` builds (lcms2, libwebp, libavif,
+      dav1d, libjxl) and vendored ones share siv's code; the shims also
+      build against Debian 12's older libavif 0.11 and libjxl 0.7.
+    - Vendored builds: wuffs is a second copy beside the CPU renderer's
+      glyph decoder, its external symbols renamed (`wuffs_rename.h`);
+      dav1d builds its C paths only (its assembly needs nasm, which the
+      build does without; slower, never wrong), with meson's generated
+      headers written by the build; libavif uses the part of libyuv it
+      bundles; libjxl builds its decoder with Highway, without the boxes
+      and JPEG reconstruction that need Brotli and without a CMS, since
+      it renders XYB to linear sRGB itself and siv converts ICC profiles.
+      The decoders' internal memory comes from the C allocator, as
+      HarfBuzz's does; decoded pixels come from siv's allocator (D2).
+    - Size: images larger than the bounds the caller gives (logical
+      pixels times the window's scale, which then divides the pixel size
+      into the image's logical size) are scaled down frame by frame while
+      decoding, by area averaging in premultiplied linear light, so only
+      the displayed size is kept; never up. Peak memory is one canvas at
+      the file's size: none of these decoders scales while decoding
+      except libwebp, and DCT scaling of JPEGs waits for a decoder that
+      offers it. Limits: 64 megapixels per frame, 256 MiB for all frames
+      (an animation over it keeps its first frame), 512 MiB files.
+    - Color (D11): an embedded RGB ICC profile converts through Little
+      CMS to linear light with sRGB primaries, unless it is sRGB (matrix
+      and curves within rounding), which keeps 8-bit pixels as they are;
+      gray and CMYK profiles are ignored. AVIF and JPEG XL color given as
+      CICP converts by transfer function (sRGB, BT.709, gamma, linear,
+      PQ, HLG) and primaries (BT.2020 and Display P3 to sRGB). PQ and HLG
+      map reference white (203 cd/m²) to 1 and clip above it, and wide
+      gamuts clip to sRGB, until HDR and wide-gamut output exist. 8-bit
+      sRGB images at their own size stay `rgba8_srgb`; everything else
+      is `rgba16_linear_premul`.
+    - Animation (GIF, APNG, WebP, AVIF sequences, JPEG XL): every frame is
+      decoded up front at the displayed size, composited by the decoder.
+      Image nodes play them on a timer of the window's loop that fires
+      only when a frame changes, repainting only the node's layer; delays
+      of 10 ms or less show for 100 ms, as in browsers; a finite loop
+      count ends on the last frame. With reduced motion an animation
+      shows its first frame, as canvases always do.
+    - The fuzz target (`zig build test-image --fuzz`) feeds every decoder
+      through `decode`. Zig's fuzzer only reads coverage from Zig code
+      (clang's PC table for C does not match the one it expects), so the
+      C decoders run uninstrumented: crashes and undefined behavior in
+      them are caught (ReleaseSafe traps it in C too), but coverage does
+      not guide mutation inside them; their upstreams fuzz them on
+      OSS-Fuzz. wuffs builds without `-fsanitize=function`, which traps
+      its type-erased vtable calls, and dav1d's `qm.c` without
+      array-bounds checks, on which clang crashes. Not yet: progressive
+      display while loading, and a test of an animated JPEG XL (ffmpeg
+      here writes only still ones).
   - Icons follow the freedesktop icon theme specification, rendered by siv's
     SVG parser for the subset icon themes use.
 
@@ -2147,6 +2204,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Display lists hold their own reference to every image they draw,
     from image nodes or canvases, until the compositor releases them, so
     destroying a `siv_image` affects only future draws.
+  - Images come from pixels (`siv_image_create`) or files
+    (`siv_image_load`, D19), which decode on a worker thread and arrive
+    in a callback with a handle the application owns.
   - `siv_image` handles hold one reference to a `ui.Image`; image nodes
     and display lists hold their own, so destroying the handle never
     pulls pixels from under a frame. Canvases draw images by handle, so
