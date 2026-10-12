@@ -88,11 +88,20 @@ pub fn spawn(exe: [*:0]const u8, argv: [*:null]const ?[*:0]const u8, envp: [*:nu
     linux.exit_group(127);
 }
 
-/// Terminates a spawned process with its whole group and reaps it.
+/// Terminates a spawned process with its whole group and reaps it,
+/// killing it outright if it is still alive after a second.
 pub fn kill(pid: linux.pid_t) void {
     _ = std.c.kill(-pid, .TERM);
     var status: c_int = 0;
-    _ = std.c.waitpid(pid, &status, 0);
+    var waited: u32 = 0;
+    while (std.c.waitpid(pid, &status, std.c.W.NOHANG) == 0) : (waited += 1) {
+        if (waited == 100) {
+            _ = std.c.kill(-pid, .KILL);
+            _ = std.c.waitpid(pid, &status, 0);
+            break;
+        }
+        sleepMs(10);
+    }
     _ = std.c.kill(-pid, .KILL);
 }
 
