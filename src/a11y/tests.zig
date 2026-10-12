@@ -304,6 +304,46 @@ test "actions, focus, text, and editing reach the window" {
     const at = try (try h.call(label, atspi.iface.text, "GetOffsetAtPoint", .{ e5[0] + 1, e5[1] + 1, @as(u32, 1) })).read(i32);
     try testing.expectEqual(@as(i32, 5), at);
 
+    // Styled ranges are text attributes, by character offsets: "wörld" is
+    // bytes 6..12, characters 6..11.
+    var t = try h.win.begin();
+    try t.setSpans(h.nodes.label, &.{.{ .start = 6, .end = 12, .style = .{ .weight = .bold, .underline = true } }});
+    t.commit();
+    const Run = struct {
+        keys: [4][]const u8 = undefined,
+        values: [4][]const u8 = undefined,
+        count: usize = 0,
+        range: [2]i32 = .{ 0, 0 },
+
+        fn of(reply: anytype) !@This() {
+            var out: @This() = .{};
+            var rd = reply.decoder();
+            const attrs = try rd.beginArray();
+            while (attrs.next(&rd)) : (out.count += 1) {
+                try rd.beginDictEntry();
+                out.keys[out.count] = try rd.readString();
+                out.values[out.count] = try rd.readString();
+                try rd.endDictEntry();
+            }
+            try rd.endArray(attrs);
+            out.range = .{ try rd.readInt32(), try rd.readInt32() };
+            return out;
+        }
+    };
+    var styled_reply = try h.call(label, atspi.iface.text, "GetAttributeRun", .{ @as(i32, 8), false });
+    const styled = try Run.of(&styled_reply);
+    try testing.expectEqual(@as(usize, 2), styled.count);
+    try testing.expectEqualStrings("weight", styled.keys[0]);
+    try testing.expectEqualStrings("700", styled.values[0]);
+    try testing.expectEqualStrings("underline", styled.keys[1]);
+    try testing.expectEqualStrings("single", styled.values[1]);
+    try testing.expectEqual([2]i32{ 6, 11 }, styled.range);
+    // Before it, the unstyled stretch has none.
+    var plain_reply = try h.call(label, atspi.iface.text, "GetAttributes", .{@as(i32, 1)});
+    const plain = try Run.of(&plain_reply);
+    try testing.expectEqual(@as(usize, 0), plain.count);
+    try testing.expectEqual([2]i32{ 0, 6 }, plain.range);
+
     const ed = h.path(h.nodes.editor, &buf);
     try testing.expectEqual(@as(i32, 3), try (try h.get(ed, atspi.iface.text, "CharacterCount")).read(i32));
     try testing.expect(try (try h.call(ed, atspi.iface.editable_text, "InsertText", .{ @as(i32, 1), "XYZ", @as(i32, 2) })).read(bool));

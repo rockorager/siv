@@ -721,17 +721,62 @@ fn getAttributeValue(r: *Request) anyerror!void {
 
 /// No text attributes yet: one run covering the text.
 fn getTextAttributes(r: *Request) anyerror!void {
-    const x = try nodeObj(r);
-    var m = r.newReply();
-    errdefer m.deinit();
-    try m.body.beginArray("{ss}");
-    try m.body.endArray();
-    try m.body.writeAll(.{ @as(i32, 0), @as(i32, @intCast(textutil.charCount(x.text()))) });
-    try r.sendReply(&m);
+    var d = r.args();
+    const offset = try d.read(i32);
+    try attributeRun(r, offset);
 }
 
 fn getAttributeRun(r: *Request) anyerror!void {
-    try getTextAttributes(r);
+    var d = r.args();
+    const offset, _ = try d.readAll(struct { i32, bool });
+    try attributeRun(r, offset);
+}
+
+/// The attributes of the style run (D22) at character `offset` and its
+/// character range, named as GTK names them: only what the run changes
+/// from the node's style.
+fn attributeRun(r: *Request, offset: i32) anyerror!void {
+    const x = try nodeObj(r);
+    const s = x.text();
+    const len = textutil.charCount(s);
+    var m = r.newReply();
+    errdefer m.deinit();
+    try m.body.beginArray("{ss}");
+    var start: u32 = 0;
+    var end: u32 = len;
+    if (x.live()) if (ui.access.textRun(x.w.ui, x.id(), @intCast(textutil.byteOf(s, offset)))) |run| {
+        start = textutil.charCount(s[0..@min(run.start, s.len)]);
+        end = textutil.charCount(s[0..@min(run.end, s.len)]);
+        const st = run.style;
+        var buf: [32]u8 = undefined;
+        if (st.weight) |w| try entry(&m.body, "weight", switch (w) {
+            .thin => "100",
+            .light => "300",
+            .regular => "400",
+            .medium => "500",
+            .semibold => "600",
+            .bold => "700",
+            .black => "900",
+        });
+        if (st.slant) |sl| try entry(&m.body, "style", @tagName(sl));
+        if (st.size) |z| try entry(&m.body, "size", try std.fmt.bufPrint(&buf, "{d}", .{z * 0.75}));
+        if (st.underline) try entry(&m.body, "underline", "single");
+        if (st.strikethrough) try entry(&m.body, "strikethrough", "true");
+        if (st.color != null or st.color_token != .none) {
+            const c = x.w.ui.palette.pick(st.color orelse .black, st.color_token);
+            const u16s = struct {
+                fn f(linear: f32) u32 {
+                    const v = std.math.clamp(linear, 0, 1);
+                    const srgb = if (v <= 0.0031308) 12.92 * v else 1.055 * std.math.pow(f32, v, 1.0 / 2.4) - 0.055;
+                    return @intFromFloat(@round(srgb * 65535));
+                }
+            }.f;
+            try entry(&m.body, "fg-color", try std.fmt.bufPrint(&buf, "{d},{d},{d}", .{ u16s(c.r), u16s(c.g), u16s(c.b) }));
+        }
+    };
+    try m.body.endArray();
+    try m.body.writeAll(.{ @as(i32, @intCast(start)), @as(i32, @intCast(end)) });
+    try r.sendReply(&m);
 }
 
 fn getDefaultAttributes(r: *Request) anyerror!void {
