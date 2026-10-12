@@ -93,6 +93,14 @@ pub fn build(b: *std.Build) void {
         .{ .name = "loop", .module = loop },
         .{ .name = "platform", .module = platform },
     });
+    const ui = ctx.module("src/ui/ui.zig", &.{
+        .{ .name = "scene", .module = scene },
+        .{ .name = "raster", .module = raster },
+        .{ .name = "text", .module = text },
+        .{ .name = "loop", .module = loop },
+        .{ .name = "platform", .module = platform },
+        .{ .name = "compositor", .module = compositor },
+    });
     const internal = [_]std.Build.Module.Import{
         .{ .name = "pool", .module = pool },
         .{ .name = "scene", .module = scene },
@@ -102,6 +110,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "loop", .module = loop },
         .{ .name = "platform", .module = platform },
         .{ .name = "compositor", .module = compositor },
+        .{ .name = "ui", .module = ui },
     };
     const abi = ctx.module("src/abi/abi.zig", &internal);
     abi.addImport("build_options", build_options);
@@ -171,6 +180,7 @@ pub fn build(b: *std.Build) void {
         .{ "loop", loop },
         .{ "platform", platform },
         .{ "compositor", compositor },
+        .{ "ui", ui },
     };
     for (module_tests) |entry| {
         const name, const module = entry;

@@ -1,0 +1,554 @@
+//! Tests of the UI module through its public interface: transactions,
+//! layout, layers, input, and semantics. Pixel output is tested in
+//! test/ui (headless golden images).
+
+const std = @import("std");
+const text = @import("text");
+const scene = @import("scene");
+const compositor = @import("compositor");
+const ui = @import("ui.zig");
+const paint = @import("paint.zig");
+
+const testing = std.testing;
+const NodeId = ui.NodeId;
+
+/// A window on the test compositor with the Droid test fonts.
+const Fixture = struct {
+    fonts: ui.Fonts,
+    tc: ui.TestCompositor,
+    win: *ui.Window,
+    frames_requested: usize = 0,
+
+    fn init(f: *Fixture, options: struct { width: f32 = 200, height: f32 = 100, rtl: bool = false }) !void {
+        f.* = .{ .fonts = try .init(testing.allocator), .tc = .init(testing.allocator), .win = undefined };
+        errdefer f.fonts.deinit();
+        const tf = text.font.test_fonts;
+        const chain = [_]text.FontId{
+            try f.fonts.cache.add(tf.latin, 0, .borrowed),
+            try f.fonts.cache.add(tf.arabic, 0, .borrowed),
+            try f.fonts.cache.add(tf.hebrew, 0, .borrowed),
+        };
+        try f.fonts.register("Droid", &chain);
+        try f.fonts.setDefault("Droid");
+        f.win = try ui.Window.init(testing.allocator, .{
+            .fonts = &f.fonts,
+            .sink = f.tc.sink(),
+            .host = .{ .ctx = f, .request_frame = requested },
+            .width = options.width,
+            .height = options.height,
+            .rtl = options.rtl,
+        });
+    }
+
+    fn requested(ctx: ?*anyopaque) void {
+        const f: *Fixture = @ptrCast(@alignCast(ctx));
+        f.frames_requested += 1;
+    }
+
+    fn deinit(f: *Fixture) void {
+        f.win.deinit();
+        f.tc.deinit();
+        f.fonts.deinit();
+    }
+
+    /// Runs a frame and hands released builders back, like the
+    /// compositor's events would.
+    fn frame(f: *Fixture) !void {
+        try f.win.frame();
+        _ = try f.tc.flatten();
+        for (f.tc.released.items) |b| try f.win.handleEvent(&.{ .released = b });
+        f.tc.released.clearRetainingCapacity();
+        for (f.tc.reports.items) |r| try f.win.handleEvent(&.{ .scrolled = .{ .window = 0, .layer = r.layer, .offset = r.offset, .seq = r.seq } });
+        f.tc.reports.clearRetainingCapacity();
+    }
+
+    fn rect(f: *Fixture, id: NodeId) [4]f32 {
+        const r = f.win.windowRect(id);
+        return .{ r.x0, r.y0, r.width(), r.height() };
+    }
+};
+
+fn box(t: *ui.Txn, parent: NodeId, kind: ui.Kind, layout: ui.Layout) !NodeId {
+    const id = try t.create(parent, kind, .none);
+    try t.setLayout(id, layout);
+    return id;
+}
+
+test "flex row distributes free space and mirrors in RTL" {
+    for ([_]bool{ false, true }) |rtl| {
+        var f: Fixture = undefined;
+        try f.init(.{ .width = 300, .height = 100, .rtl = rtl });
+        defer f.deinit();
+        const t = try f.win.begin();
+        const row = try box(t, .root, .flex, .{ .padding = .{ .start = 10, .end = 20, .top = 5, .bottom = 5 } });
+        try t.setFlex(row, .{ .gap = 10, .align_items = .start });
+        const a = try box(t, row, .box, .{ .width = .{ .px = 50 }, .height = .{ .px = 20 } });
+        const b = try box(t, row, .box, .{ .width = .{ .px = 30 }, .height = .{ .px = 40 }, .grow = 1 });
+        const c = try box(t, row, .box, .{ .width = .{ .px = 30 }, .height = .{ .px = 10 }, .grow = 3, .align_y = .end });
+        t.commit();
+        try f.frame();
+        // 300 - 30 padding - 20 gaps - 110 bases = 140 free: b +35, c +105.
+        // The root stretches the row to the window.
+        try testing.expectEqual([4]f32{ 0, 0, 300, 100 }, f.rect(row));
+        if (!rtl) {
+            try testing.expectEqual([4]f32{ 10, 5, 50, 20 }, f.rect(a));
+            try testing.expectEqual([4]f32{ 70, 5, 65, 40 }, f.rect(b));
+            try testing.expectEqual([4]f32{ 145, 85, 135, 10 }, f.rect(c));
+        } else {
+            // Start is the right edge; padding start (10) is on the right.
+            try testing.expectEqual([4]f32{ 240, 5, 50, 20 }, f.rect(a));
+            try testing.expectEqual([4]f32{ 165, 5, 65, 40 }, f.rect(b));
+            try testing.expectEqual([4]f32{ 20, 85, 135, 10 }, f.rect(c));
+        }
+    }
+}
+
+test "aborted transactions leave no trace; failed operations have no effect" {
+    var f: Fixture = undefined;
+    try f.init(.{});
+    defer f.deinit();
+    var t = try f.win.begin();
+    const a = try box(t, .root, .box, .{ .height = .{ .px = 10 } });
+    const label = try t.create(a, .text, .none);
+    try t.setText(label, "kept");
+    t.commit();
+    try f.frame();
+
+    t = try f.win.begin();
+    try testing.expectError(error.TransactionOpen, f.win.begin());
+    const b = try box(t, .root, .flex, .{});
+    _ = try t.create(b, .text, .none);
+    try t.setText(label, "replaced");
+    try t.setLayout(a, .{ .height = .{ .px = 50 } });
+    try t.move(label, b, .none);
+    try t.remove(a);
+    // Rejected operations change nothing.
+    try testing.expectError(error.InvalidNode, t.create(label, .box, .none)); // under a leaf
+    try testing.expectError(error.InvalidNode, t.move(b, b, .none)); // cycle
+    try testing.expectError(error.InvalidNode, t.remove(.root));
+    try testing.expectError(error.InvalidArgument, t.setText(label, "\xff"));
+    try testing.expectError(error.Unsupported, t.create(b, .editor, .none));
+    // Frames wait for the transaction.
+    const before = f.win.stats.frames;
+    try f.win.frame();
+    try testing.expectEqual(before, f.win.stats.frames);
+    t.abort();
+
+    try testing.expectEqual(a, f.win.node(.root).first);
+    try testing.expectEqual(a, f.win.node(.root).last);
+    try testing.expectEqual(label, f.win.node(a).first);
+    try testing.expectEqualStrings("kept", f.win.node(label).data.text.content);
+    try testing.expectEqual(@as(f32, 10), f.win.node(a).layout.height.px);
+    try testing.expect(!f.win.isLive(b));
+    try f.frame();
+    try testing.expectEqual(@as(f32, 10), f.rect(a)[3]);
+    // A committed removal frees the subtree's slots after the next frame.
+    t = try f.win.begin();
+    try t.remove(a);
+    t.commit();
+    try testing.expect(!f.win.isLive(label));
+    try f.frame();
+    t = try f.win.begin();
+    const reused = try t.create(.root, .box, .none);
+    t.commit();
+    try testing.expect(reused == a or reused == label);
+}
+
+test "box flows vertically; stack aligns and insets; grid tracks" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 400, .height = 300 });
+    defer f.deinit();
+    const t = try f.win.begin();
+    const outer = try box(t, .root, .stack, .{});
+    try t.setStack(outer, .{ .align_x = .start, .align_y = .start });
+    // Box: shrinks to its widest child; children stretch to it unless aligned.
+    const col = try box(t, outer, .box, .{ .padding = .all(4) });
+    const wide = try box(t, col, .box, .{ .width = .{ .px = 80 }, .height = .{ .px = 10 } });
+    const stretched = try box(t, col, .box, .{ .height = .{ .px = 5 } });
+    const centered = try box(t, col, .box, .{ .width = .{ .px = 20 }, .height = .{ .px = 5 }, .align_x = .center });
+    // Stack child pinned to the bottom end corner.
+    const pinned = try box(t, outer, .box, .{ .width = .{ .px = 30 }, .height = .{ .px = 20 }, .inset = .{ .end = 5, .bottom = 10 } });
+    // Grid: 50px, auto, 1fr columns in 300px.
+    const g = try box(t, outer, .grid, .{ .width = .{ .px = 300 }, .inset = .{ .start = 0, .top = 100 } });
+    try t.setGrid(g, .{ .columns = &.{ .{ .px = 50 }, .auto, .{ .fr = 1 } }, .column_gap = 10, .row_gap = 2 });
+    var cells: [5]NodeId = undefined;
+    for (&cells) |*c| c.* = try box(t, g, .box, .{ .height = .{ .px = 8 } });
+    try t.setLayout(cells[1], .{ .width = .{ .px = 20 }, .height = .{ .px = 8 } });
+    try t.setLayout(cells[3], .{ .height = .{ .px = 20 }, .column_span = 2 });
+    t.commit();
+    try f.frame();
+
+    try testing.expectEqual([4]f32{ 0, 0, 88, 28 }, f.rect(col));
+    try testing.expectEqual([4]f32{ 4, 4, 80, 10 }, f.rect(wide));
+    try testing.expectEqual([4]f32{ 4, 14, 80, 5 }, f.rect(stretched));
+    try testing.expectEqual([4]f32{ 34, 19, 20, 5 }, f.rect(centered));
+    try testing.expectEqual([4]f32{ 365, 270, 30, 20 }, f.rect(pinned));
+    // Column 2 is auto: its widest single-span item is cells[1] (20 wide).
+    // fr gets the rest: 300 - 50 - 20 - 20 gaps = 210. Items stretch.
+    try testing.expectEqual([4]f32{ 0, 100, 50, 8 }, f.rect(cells[0]));
+    try testing.expectEqual([4]f32{ 60, 100, 20, 8 }, f.rect(cells[1]));
+    try testing.expectEqual([4]f32{ 90, 100, 210, 8 }, f.rect(cells[2]));
+    // cells[3] spans two columns of the second row, cells[4] follows it.
+    try testing.expectEqual([4]f32{ 0, 110, 80, 20 }, f.rect(cells[3]));
+    try testing.expectEqual([4]f32{ 90, 110, 210, 8 }, f.rect(cells[4]));
+}
+
+test "grid columns run right to left in RTL" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 100, .height = 50, .rtl = true });
+    defer f.deinit();
+    const t = try f.win.begin();
+    const g = try box(t, .root, .grid, .{});
+    try t.setGrid(g, .{ .columns = &.{ .{ .px = 30 }, .{ .fr = 1 } } });
+    const first = try box(t, g, .box, .{});
+    const second = try box(t, g, .box, .{});
+    t.commit();
+    try f.frame();
+    try testing.expectEqual([4]f32{ 70, 0, 30, 50 }, f.rect(first));
+    try testing.expectEqual([4]f32{ 0, 0, 70, 50 }, f.rect(second));
+}
+
+test "text wraps; width changes relayout without reshaping; style color only repaints" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 400, .height = 200 });
+    defer f.deinit();
+    var t = try f.win.begin();
+    const col = try box(t, .root, .box, .{});
+    const label = try box(t, col, .text, .{ .align_x = .start });
+    try t.setText(label, "The quick brown fox jumps over the lazy dog");
+    t.commit();
+    try f.frame();
+    const one_line = f.rect(label);
+    try testing.expect(one_line[2] < 400 and one_line[2] > 100);
+    try testing.expectEqual(@as(u64, 1), f.win.stats.shapes);
+
+    // Narrower: wraps into more lines, same paragraph.
+    f.win.configure(120, 200, 1);
+    try f.frame();
+    const wrapped = f.rect(label);
+    try testing.expect(wrapped[2] <= 120);
+    try testing.expect(wrapped[3] >= 3 * one_line[3]);
+    try testing.expectEqual(@as(u64, 1), f.win.stats.shapes);
+
+    // Color: no layout at all, one layer repaint.
+    const layouts = f.win.stats.layouts;
+    const builds = f.win.stats.layer_builds;
+    t = try f.win.begin();
+    try t.setTextProps(label, .{ .style = .{ .color = .white } });
+    t.commit();
+    try f.frame();
+    try testing.expectEqual(layouts, f.win.stats.layouts);
+    try testing.expectEqual(builds + 1, f.win.stats.layer_builds);
+    try testing.expectEqual(@as(u64, 1), f.win.stats.shapes);
+
+    // Size: reshapes.
+    t = try f.win.begin();
+    try t.setTextProps(label, .{ .style = .{ .size = 20 } });
+    t.commit();
+    try f.frame();
+    try testing.expectEqual(@as(u64, 2), f.win.stats.shapes);
+}
+
+test "clean subtrees are not laid out again" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 400, .height = 400 });
+    defer f.deinit();
+    var t = try f.win.begin();
+    const col = try box(t, .root, .flex, .{});
+    try t.setFlex(col, .{ .axis = .column });
+    var rows: [20]NodeId = undefined;
+    for (&rows) |*r| {
+        r.* = try box(t, col, .flex, .{ .padding = .all(2) });
+        for (0..3) |_| _ = try box(t, r.*, .box, .{ .width = .{ .px = 10 }, .height = .{ .px = 10 } });
+    }
+    t.commit();
+    try f.frame();
+    const first = f.win.stats.layouts;
+    try testing.expect(first >= 81);
+
+    // A paint-only change: no layout.
+    t = try f.win.begin();
+    try t.setVisual(rows[5], .{ .background = .black });
+    t.commit();
+    try f.frame();
+    try testing.expectEqual(first, f.win.stats.layouts);
+
+    // One leaf grows: its row, the column, and the root relayout. Siblings
+    // keep their caches (their constraints did not change).
+    t = try f.win.begin();
+    try t.setLayout(f.win.node(rows[7]).first, .{ .width = .{ .px = 10 }, .height = .{ .px = 30 } });
+    t.commit();
+    try f.frame();
+    const delta = f.win.stats.layouts - first;
+    try testing.expect(delta <= 6);
+    try testing.expectEqual(@as(f32, 34), f.rect(rows[7])[3]);
+}
+
+test "scroll content scrolls on the compositor; offsets are logical" {
+    for ([_]bool{ false, true }) |rtl| {
+        var f: Fixture = undefined;
+        try f.init(.{ .width = 100, .height = 100, .rtl = rtl });
+        defer f.deinit();
+        var t = try f.win.begin();
+        const sc = try box(t, .root, .scroll, .{ .padding = .all(5) });
+        try t.setScroll(sc, .{ .axis = .both });
+        const content = try box(t, sc, .box, .{ .width = .{ .px = 300 }, .height = .{ .px = 500 } });
+        t.commit();
+        try f.frame();
+        // The scroll container is a layer with the content box as viewport.
+        const li = f.win.state(sc).own_layer;
+        const l = f.tc.layers.get(li + 1).?;
+        try testing.expectEqual(@as(f32, 90), l.scroll.?.viewport.width());
+        try testing.expectEqual(@as(f32, 300), l.scroll.?.content.width);
+        // Logical offset 0 shows the start edge: in RTL the content's right.
+        try testing.expectEqual(@as(f32, if (rtl) 210 else 0), l.offset.x);
+        try testing.expectEqual([4]f32{ if (rtl) -205 else 5, 5, 300, 500 }, f.rect(content));
+
+        // The compositor scrolls by itself and reports it.
+        const layouts = f.win.stats.layouts;
+        const off = f.tc.scrollBy(li + 1, .{ .x = if (rtl) -10 else 10, .y = 30 });
+        try f.win.handleEvent(&.{ .scrolled = .{ .window = 0, .layer = li + 1, .offset = off, .seq = f.tc.seq } });
+        try testing.expectEqual(@as(f32, 10), f.win.node(sc).data.scroll.offset.x);
+        try testing.expectEqual(@as(f32, 30), f.win.node(sc).data.scroll.offset.y);
+        try f.frame();
+        try testing.expectEqual(layouts, f.win.stats.layouts);
+        try testing.expectEqual(@as(f32, 5 - 30), f.rect(content)[1]);
+
+        // A programmatic scroll is a scroll_to, without layout or paint.
+        const builds = f.win.stats.layer_builds;
+        t = try f.win.begin();
+        try t.setScroll(sc, .{ .axis = .both, .offset = .{ .x = 0, .y = 1000 } });
+        t.commit();
+        try f.frame();
+        try testing.expectEqual(builds, f.win.stats.layer_builds);
+        try testing.expectEqual(@as(f32, 410), f.tc.layers.get(li + 1).?.offset.y);
+        // A stale report (from before the scroll_to) is ignored.
+        try f.win.handleEvent(&.{ .scrolled = .{ .window = 0, .layer = li + 1, .offset = .{ .x = 0, .y = 3 }, .seq = 1 } });
+        try testing.expectEqual(@as(f32, 1000), f.win.node(sc).data.scroll.offset.y);
+    }
+}
+
+test "opacity animates as a layer property; content repaints only its layer" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 200, .height = 200 });
+    defer f.deinit();
+    var t = try f.win.begin();
+    const col = try box(t, .root, .box, .{});
+    const a = try box(t, col, .box, .{ .height = .{ .px = 50 } });
+    try t.setVisual(a, .{ .background = .black });
+    const faded = try box(t, col, .box, .{ .height = .{ .px = 50 } });
+    try t.setVisual(faded, .{ .background = .white, .opacity = 0.5 });
+    const after = try box(t, col, .box, .{ .height = .{ .px = 50 } });
+    try t.setVisual(after, .{ .background = .black });
+    t.commit();
+    f.tc.keep_log = true;
+    try f.frame();
+    // Root, the faded node's layer, and a chunk for what follows it.
+    try testing.expectEqual(@as(usize, 3), f.tc.layers.count());
+    const fl = f.win.state(faded).own_layer + 1;
+    const root = f.tc.get(f.tc.root);
+    try testing.expectEqualSlices(u32, &.{ fl, f.win.state(after).layer + 1 }, root.children.items);
+    try testing.expectEqual(@as(f32, 50), f.tc.get(fl).transform.translate.y);
+    try testing.expectEqual(@as(f32, 0.5), f.tc.get(fl).opacity);
+
+    // Opacity change: one op, no content.
+    f.tc.log.clearRetainingCapacity();
+    t = try f.win.begin();
+    try t.setVisual(faded, .{ .background = .white, .opacity = 0.25 });
+    t.commit();
+    try f.frame();
+    try testing.expectEqual(@as(usize, 1), f.tc.log.items.len);
+    try testing.expectEqual(@as(f32, 0.25), f.tc.log.items[0].set_opacity.opacity);
+
+    // Background of the first box: only the root layer repaints, with the
+    // box as damage.
+    f.tc.log.clearRetainingCapacity();
+    t = try f.win.begin();
+    try t.setVisual(a, .{ .background = .white });
+    t.commit();
+    try f.frame();
+    try testing.expectEqual(@as(usize, 1), f.tc.log.items.len);
+    const sc = f.tc.log.items[0].set_content;
+    try testing.expectEqual(f.tc.root, sc.layer);
+    try testing.expect(sc.damage.?.eql(.xywh(0, 0, 200, 50)));
+}
+
+fn countActivate(user: ?*anyopaque, _: *ui.Window, _: NodeId, ev: *const ui.Event) bool {
+    const n: *usize = @ptrCast(@alignCast(user));
+    if (ev.* == .activate) n.* += 1;
+    return true;
+}
+
+test "pointer presses activate; Tab moves focus; Enter activates" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 200, .height = 100 });
+    defer f.deinit();
+    var clicks: [2]usize = .{ 0, 0 };
+    var t = try f.win.begin();
+    const row = try box(t, .root, .flex, .{});
+    try t.setFlex(row, .{ .align_items = .start });
+    var buttons: [2]NodeId = undefined;
+    for (&buttons, &clicks, 0..) |*b, *c, i| {
+        b.* = try box(t, row, .box, .{ .padding = .all(4) });
+        try t.setSemantics(b.*, .{ .role = .button, .focusable = true });
+        try t.on(b.*, .activate, .{ .func = countActivate, .user = c });
+        const label = try t.create(b.*, .text, .none);
+        try t.setText(label, if (i == 0) "OK" else "Cancel");
+    }
+    t.commit();
+    try f.frame();
+
+    // Press and release over the label inside the first button.
+    const r = f.win.windowRect(buttons[0]);
+    const p: [2]f64 = .{ r.x0 + 8, r.y0 + 8 };
+    try testing.expectEqual(f.win.node(buttons[0]).first, ui.input.hitTest(f.win, .{ .x = @floatCast(p[0]), .y = @floatCast(p[1]) }));
+    f.win.handlePlatform(&.{ .pointer_motion = .{ .window = 0, .seat = 0, .x = p[0], .y = p[1] } });
+    f.win.handlePlatform(&.{ .pointer_button = .{ .window = 0, .seat = 0, .button = 0x110, .pressed = true, .time = 0, .serial = 1 } });
+    try testing.expectEqual(buttons[0], f.win.input.focus);
+    try testing.expect(!f.win.input.focus_visible);
+    f.win.handlePlatform(&.{ .pointer_button = .{ .window = 0, .seat = 0, .button = 0x110, .pressed = false, .time = 0, .serial = 2 } });
+    try testing.expectEqual(@as(usize, 1), clicks[0]);
+
+    // Released elsewhere: no activation.
+    f.win.handlePlatform(&.{ .pointer_button = .{ .window = 0, .seat = 0, .button = 0x110, .pressed = true, .time = 0, .serial = 3 } });
+    f.win.handlePlatform(&.{ .pointer_motion = .{ .window = 0, .seat = 0, .x = 190, .y = 90 } });
+    f.win.handlePlatform(&.{ .pointer_button = .{ .window = 0, .seat = 0, .button = 0x110, .pressed = false, .time = 0, .serial = 4 } });
+    try testing.expectEqual(@as(usize, 1), clicks[0]);
+
+    // Keyboard: Tab to the second button, Enter activates it.
+    const tab: @import("platform").Key = .{ .window = 0, .seat = 0, .keycode = 23, .keysym = ui.keysym.tab, .state = .pressed, .mods = .{}, .time = 0, .serial = 5 };
+    f.win.handlePlatform(&.{ .key = tab });
+    try testing.expectEqual(buttons[1], f.win.input.focus);
+    try testing.expect(f.win.input.focus_visible);
+    var enter = tab;
+    enter.keysym = ui.keysym.@"return";
+    f.win.handlePlatform(&.{ .key = enter });
+    try testing.expectEqual(@as(usize, 1), clicks[1]);
+    // Shift+Tab wraps backwards; Tab again wraps forwards.
+    var back = tab;
+    back.mods.shift = true;
+    f.win.handlePlatform(&.{ .key = back });
+    try testing.expectEqual(buttons[0], f.win.input.focus);
+    f.win.handlePlatform(&.{ .key = back });
+    try testing.expectEqual(buttons[1], f.win.input.focus);
+
+    // Disabling the focused button drops focus at commit.
+    t = try f.win.begin();
+    try t.setSemantics(buttons[1], .{ .role = .button, .focusable = true, .disabled = true });
+    t.commit();
+    try testing.expectEqual(NodeId.none, f.win.input.focus);
+    try f.frame();
+}
+
+test "semantics: roles, names from content, states, and pruning" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 200, .height = 100 });
+    defer f.deinit();
+    const t = try f.win.begin();
+    const group = try box(t, .root, .flex, .{}); // generic: pruned
+    const button = try box(t, group, .box, .{});
+    try t.setSemantics(button, .{ .role = .button, .focusable = true, .pressed = .on });
+    const inner = try box(t, button, .flex, .{});
+    const a = try t.create(inner, .text, .none);
+    try t.setText(a, "Save");
+    const b = try t.create(inner, .text, .none);
+    try t.setText(b, "file");
+    const deco = try t.create(group, .text, .none);
+    try t.setText(deco, "decoration");
+    try t.setSemantics(deco, .{ .role = .none });
+    const labelled = try box(t, group, .box, .{ .width = .{ .px = 10 }, .height = .{ .px = 10 } });
+    try t.setSemantics(labelled, .{ .role = .image, .label = "Logo" });
+    t.commit();
+    try f.frame();
+
+    const sem = &f.win.semantics;
+    const window = sem.nodes.items[0];
+    try testing.expectEqual(ui.Role.window, window.role);
+    var top = sem.children(0);
+    const bi = top.next().?;
+    const btn = sem.nodes.items[bi];
+    try testing.expectEqual(ui.Role.button, btn.role);
+    try testing.expectEqualStrings("Save file", sem.name(btn));
+    try testing.expectEqual(ui.Toggle.on, btn.pressed);
+    try testing.expect(btn.focusable and !btn.focused);
+    // The button's labels are its children; the decoration is gone.
+    var kids = sem.children(bi);
+    try testing.expectEqualStrings("Save", sem.name(sem.nodes.items[kids.next().?]));
+    try testing.expectEqualStrings("file", sem.name(sem.nodes.items[kids.next().?]));
+    try testing.expectEqual(null, kids.next());
+    const logo = sem.nodes.items[top.next().?];
+    try testing.expectEqual(ui.Role.image, logo.role);
+    try testing.expectEqualStrings("Logo", sem.name(logo));
+    try testing.expectEqual(null, top.next());
+    try testing.expect(sem.find(.label, "decoration") == null);
+    try testing.expectEqual(f.win.windowRect(button).x0, sem.find(.button, "Save file").?.bounds.x0);
+}
+
+fn takeScroll(user: ?*anyopaque, _: *ui.Window, _: NodeId, ev: *const ui.Event) bool {
+    const total: *f32 = @ptrCast(@alignCast(user));
+    if (ev.* != .scroll) return false;
+    // Takes upward scrolling only; passes the rest on.
+    if (ev.scroll.dy >= 0) return false;
+    total.* += ev.scroll.dy;
+    return true;
+}
+
+test "scroll handlers get wheel regions; declined input passes on as scroll_by" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 100, .height = 100 });
+    defer f.deinit();
+    var taken: f32 = 0;
+    const t = try f.win.begin();
+    const sc = try box(t, .root, .scroll, .{});
+    // The compositor hit-tests content, so the viewport needs some.
+    try t.setVisual(sc, .{ .background = .white });
+    const content = try box(t, sc, .box, .{ .height = .{ .px = 400 } });
+    const knob = try box(t, content, .box, .{ .width = .{ .px = 20 }, .height = .{ .px = 20 } });
+    try t.on(knob, .scroll, .{ .func = takeScroll, .user = &taken });
+    t.commit();
+    try f.frame();
+    // The knob has its own layer with a wheel region over its box.
+    const kl = f.tc.get(f.win.state(knob).own_layer + 1);
+    try testing.expect(kl.wheel.?.eql(.xywh(0, 0, 20, 20)));
+    try testing.expectEqual(ui.TestCompositor.Route.ui, f.tc.route(.{ .x = 10, .y = 10 }, .{ .x = 0, .y = 40 }, .{}));
+    const sl = f.win.state(sc).own_layer + 1;
+    try testing.expectEqual(sl, f.tc.route(.{ .x = 50, .y = 50 }, .{ .x = 0, .y = 40 }, .{}).scroll);
+    try testing.expectEqual(ui.TestCompositor.Route.ui, f.tc.route(.{ .x = 50, .y = 50 }, .{ .x = 0, .y = 40 }, .{ .ctrl = true }));
+
+    // Over the knob: up is the handler's...
+    f.win.handlePlatform(&.{ .pointer_motion = .{ .window = 0, .seat = 0, .x = 10, .y = 10 } });
+    f.win.handlePlatform(&.{ .scroll = .{ .window = 0, .seat = 0, .dy = -10 } });
+    try testing.expectEqual(@as(f32, -10), taken);
+    // ...down passes on to the scroll node as scroll_by.
+    f.win.handlePlatform(&.{ .scroll = .{ .window = 0, .seat = 0, .dy = 40 } });
+    try f.frame();
+    try testing.expectEqual(@as(f32, 40), f.tc.get(sl).offset.y);
+    try testing.expectEqual(@as(f32, 40), f.win.node(sc).data.scroll.offset.y);
+    // Ctrl+wheel that no handler takes goes nowhere.
+    f.win.handlePlatform(&.{ .modifiers = .{ .window = 0, .seat = 0, .mods = .{ .ctrl = true } } });
+    f.win.handlePlatform(&.{ .scroll = .{ .window = 0, .seat = 0, .dy = 40 } });
+    try f.frame();
+    try testing.expectEqual(@as(f32, 40), f.tc.get(sl).offset.y);
+}
+
+test "configures are acknowledged by the commit with their layout" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 100, .height = 100 });
+    defer f.deinit();
+    try f.frame();
+    var state: @import("platform").WindowState = .{ .width = 150, .height = 80 };
+    try f.win.handleEvent(&.{ .configure = .{ .window = 0, .state = state, .serial = 7 } });
+    try testing.expectEqual(@as(u64, 0), f.tc.acked_configure);
+    try f.frame();
+    try testing.expectEqual(@as(u64, 7), f.tc.acked_configure);
+    try testing.expectEqual([4]f32{ 0, 0, 150, 80 }, f.rect(.root));
+    // A configure that changes nothing is still acknowledged.
+    try f.win.handleEvent(&.{ .configure = .{ .window = 0, .state = state, .serial = 8 } });
+    try f.frame();
+    try testing.expectEqual(@as(u64, 8), f.tc.acked_configure);
+    state.scale = .int(2);
+    try f.win.handleEvent(&.{ .configure = .{ .window = 0, .state = state, .serial = 9 } });
+    try f.frame();
+    try testing.expectEqual(@as(u64, 9), f.tc.acked_configure);
+    try testing.expectEqual(@as(f32, 2), f.win.scale);
+}

@@ -1,0 +1,742 @@
+//! Lowering the tree into compositor layers (D8, D9).
+//!
+//! Layers: the root; every node with opacity below 1, a transform, or a
+//! layer hint; every clipping node with layers below it (so its clip
+//! applies to them); and every scroll node, whose layer is a compositor
+//! scroll container (its decoration is the container's own content) with
+//! one child layer for the scrolled content. Content painted after a child
+//! layer, in the same parent, goes into a "chunk" layer that follows it,
+//! so paint order survives without the compositor knowing about nodes.
+//!
+//! Each layer's content is a display list in the coordinates of the node
+//! that roots it. Only layers whose nodes changed are repainted; their
+//! damage is the old and new bounds of the nodes that changed. Moving,
+//! fading, or transforming a layer root, and scrolling, change layer
+//! properties only. Layer ids are layer indices plus one, reused after
+//! the layer is destroyed (the compositor's contract, D20).
+
+const std = @import("std");
+const raster = @import("raster");
+const scene = @import("scene");
+const compositor = @import("compositor");
+const Window = @import("Window.zig");
+const node_mod = @import("node.zig");
+const text_node = @import("text_node.zig");
+const isLayerRoot = @import("txn.zig").isLayerRoot;
+
+const NodeId = node_mod.NodeId;
+const Point = raster.Point;
+const Rect = raster.Rect;
+const Op = compositor.Op;
+const Error = Window.Error;
+
+pub const no_layer: u32 = std.math.maxInt(u32);
+
+/// The color of keyboard focus rings.
+pub const focus_ring_color = scene.Color.srgb8(0x25, 0x63, 0xeb, 0xff);
+pub const focus_ring_width: f32 = 2;
+
+const LayerKind = enum { root, node, scroll_content, chunk };
+
+const Layer = struct {
+    kind: LayerKind,
+    owner: NodeId,
+    /// Assignment pass that claimed it; older means dead.
+    pass: u32,
+    parent: u32,
+    // What the compositor has.
+    created: bool = false,
+    sent_parent: u32 = no_layer,
+    transform: compositor.Transform = .identity,
+    opacity: f32 = 1,
+    clip: ?compositor.Clip = null,
+    scroll: ?compositor.Scroll = null,
+    /// Sequence of the last `scroll_to`, to ignore older `scrolled` reports.
+    scroll_seq: u64 = 0,
+    /// The compositor's offset as last sent or reported.
+    scroll_offset: Point = .zero,
+    wheel: ?Rect = null,
+    // Content.
+    dirty: bool = true,
+    subtree_dirty: bool = false,
+    full_damage: bool = true,
+    damage: Rect = Rect.empty,
+    builder: ?*scene.Builder = null,
+    /// Clip entries open in `builder` while it is built.
+    open: std.ArrayList(u32) = .empty,
+    version: u32 = 0,
+};
+
+pub const ScrollBy = struct { node: NodeId, delta: Point };
+
+const ClipEntry = struct {
+    serial: u32,
+    shape: scene.Shape,
+    /// Intersection with the enclosing clips (for bounds).
+    rect: Rect,
+};
+
+pub const State = struct {
+    layers: std.ArrayList(Layer) = .empty,
+    free: std.ArrayList(u32) = .empty,
+    /// Live layers, parents before children, in paint order.
+    order: std.ArrayList(u32) = .empty,
+    /// Builders the compositor released, ready for reuse.
+    builders: std.ArrayList(*scene.Builder) = .empty,
+    /// Every builder this window made, freed with it.
+    all_builders: std.ArrayList(*scene.Builder) = .empty,
+    ops: std.ArrayList(Op) = .empty,
+    /// Scroll input to pass on to the compositor at the next commit.
+    scroll_by: std.ArrayList(ScrollBy) = .empty,
+    clips: std.ArrayList(ClipEntry) = .empty,
+    glyphs: std.ArrayList(scene.Glyph) = .empty,
+    pass: u32 = 0,
+    serial: u32 = 0,
+    root_sent: bool = false,
+    dirty_count: u32 = 0,
+
+    pub fn init(st: *State, win: *Window) Error!void {
+        try st.layers.append(win.gpa, .{ .kind = .root, .owner = .root, .pass = 0, .parent = no_layer });
+        st.dirty_count = 1;
+        win.state(.root).own_layer = 0;
+        win.state(.root).layer = 0;
+    }
+
+    pub fn deinit(st: *State, gpa: std.mem.Allocator) void {
+        for (st.layers.items) |*l| l.open.deinit(gpa);
+        st.layers.deinit(gpa);
+        st.free.deinit(gpa);
+        st.order.deinit(gpa);
+        for (st.all_builders.items) |b| {
+            b.deinit();
+            gpa.destroy(b);
+        }
+        st.all_builders.deinit(gpa);
+        st.builders.deinit(gpa);
+        st.ops.deinit(gpa);
+        st.scroll_by.deinit(gpa);
+        st.clips.deinit(gpa);
+        st.glyphs.deinit(gpa);
+    }
+
+    pub fn markLayer(st: *State, index: u32) void {
+        if (index == no_layer or index >= st.layers.items.len) return;
+        const l = &st.layers.items[index];
+        if (!l.dirty) {
+            l.dirty = true;
+            st.dirty_count += 1;
+        }
+    }
+
+    /// Adds `r` (layer coordinates) to a layer's damage.
+    pub fn damage(st: *State, index: u32, r: Rect) void {
+        if (index == no_layer or index >= st.layers.items.len or r.isEmpty()) return;
+        st.markLayer(index);
+        const l = &st.layers.items[index];
+        l.damage = l.damage.unite(r);
+    }
+
+    pub fn anyDirty(st: *const State) bool {
+        return st.dirty_count != 0;
+    }
+
+    /// A builder the compositor no longer reads.
+    pub fn released(st: *State, gpa: std.mem.Allocator, b: *scene.Builder) void {
+        st.builders.append(gpa, b) catch {
+            // Keep it in all_builders; it is freed with the window.
+        };
+    }
+
+    // Assignment ----------------------------------------------------------
+
+    /// Decides which nodes root layers and which layer each node paints
+    /// into, and queues the structural ops.
+    pub fn assign(st: *State, win: *Window) Error!void {
+        const gpa = win.gpa;
+        const a = win.scratch.allocator();
+        const flags = try a.alloc(Flags, win.nodes.items.len);
+        _ = scan(win, .root, flags);
+
+        st.pass +%= 1;
+        st.order.clearRetainingCapacity();
+        st.layers.items[0].pass = st.pass;
+        try st.order.append(gpa, 0);
+        var cur: Cursor = .{ .layer = 0 };
+        var it = win.children(.root);
+        while (it.next()) |ch| try st.visit(win, flags, ch, 0, &cur);
+
+        // Structural ops: move survivors out of dying parents, destroy the
+        // dead, create the new, then insert everything in paint order.
+        try st.ops.ensureUnusedCapacity(gpa, 2 * st.layers.items.len + 1);
+        for (st.order.items) |i| {
+            const l = &st.layers.items[i];
+            if (l.created and l.sent_parent != l.parent and l.sent_parent != no_layer) {
+                st.ops.appendAssumeCapacity(.{ .detach = id(i) });
+                l.sent_parent = no_layer;
+            }
+        }
+        for (st.layers.items, 0..) |*l, i| {
+            if (l.pass == st.pass or l.kind == .root) continue;
+            if (l.pass == 0 and !l.created) continue; // free slot
+            const parent_dead = l.sent_parent != no_layer and st.layers.items[l.sent_parent].pass != st.pass;
+            if (l.created and !parent_dead) st.ops.appendAssumeCapacity(.{ .destroy = id(@intCast(i)) });
+            if (l.dirty) st.dirty_count -= 1;
+            l.open.deinit(gpa);
+            l.* = .{ .kind = .chunk, .owner = .none, .pass = 0, .parent = no_layer, .dirty = false };
+            try st.free.append(gpa, @intCast(i));
+        }
+        for (st.order.items) |i| {
+            const l = &st.layers.items[i];
+            if (!l.created) {
+                st.ops.appendAssumeCapacity(.{ .create = id(i) });
+                l.created = true;
+            }
+        }
+        try st.ops.ensureUnusedCapacity(gpa, st.order.items.len + 1);
+        for (st.order.items[1..]) |i| {
+            const l = &st.layers.items[i];
+            st.ops.appendAssumeCapacity(.{ .insert = .{ .layer = id(i), .parent = id(l.parent) } });
+            l.sent_parent = l.parent;
+        }
+        if (!st.root_sent) {
+            st.ops.appendAssumeCapacity(.{ .set_root = id(0) });
+            st.root_sent = true;
+        }
+        win.dirty.props = true;
+    }
+
+    const Flags = packed struct(u8) {
+        /// Some descendant roots a layer.
+        layer_below: bool = false,
+        _: u7 = 0,
+    };
+
+    /// Returns the flags a node contributes to its ancestors.
+    fn scan(win: *Window, nid: NodeId, flags: []Flags) Flags {
+        var f: Flags = .{};
+        var it = win.children(nid);
+        while (it.next()) |ch| {
+            const cf = scan(win, ch, flags);
+            f.layer_below = f.layer_below or cf.layer_below;
+        }
+        flags[nid.index()] = f;
+        return .{ .layer_below = f.layer_below or ownsLayer(win, nid, f) };
+    }
+
+    /// Nodes with scroll handlers root a layer so that their wheel region
+    /// sends scroll input over them to the UI first (D8).
+    fn ownsLayer(win: *const Window, nid: NodeId, f: Flags) bool {
+        const n = win.node(nid);
+        return nid == .root or n.kind == .scroll or isLayerRoot(n.visual) or (n.visual.clip and f.layer_below) or
+            n.handler(.scroll) != null;
+    }
+
+    const Cursor = struct {
+        layer: u32,
+        /// Content from here on follows this node's layer subtree.
+        after: NodeId = .none,
+    };
+
+    fn visit(st: *State, win: *Window, flags: []const Flags, nid: NodeId, container: u32, cur: *Cursor) Error!void {
+        const s = win.state(nid);
+        const n = win.node(nid);
+        if (ownsLayer(win, nid, flags[nid.index()])) {
+            const l = try st.claim(win, &s.own_layer, .node, nid, container);
+            st.setLayer(win, nid, l);
+            var inner_container = l;
+            if (n.kind == .scroll) {
+                inner_container = try st.claim(win, &s.content_layer, .scroll_content, nid, l);
+            }
+            var inner: Cursor = .{ .layer = inner_container };
+            var it = win.children(nid);
+            while (it.next()) |ch| try st.visit(win, flags, ch, inner_container, &inner);
+            cur.after = nid;
+            return;
+        }
+        if (cur.after != .none) {
+            const owner = cur.after;
+            cur.layer = try st.claim(win, &win.state(owner).chunk_layer, .chunk, owner, container);
+            cur.after = .none;
+        }
+        st.setLayer(win, nid, cur.layer);
+        var it = win.children(nid);
+        while (it.next()) |ch| try st.visit(win, flags, ch, container, cur);
+    }
+
+    fn claim(st: *State, win: *Window, slot: *u32, kind: LayerKind, owner: NodeId, parent: u32) Error!u32 {
+        const gpa = win.gpa;
+        try st.order.ensureUnusedCapacity(gpa, 1);
+        if (slot.* != no_layer and slot.* < st.layers.items.len) {
+            const l = &st.layers.items[slot.*];
+            if (l.kind == kind and l.owner == owner and l.pass != st.pass and l.pass != 0) {
+                l.pass = st.pass;
+                l.parent = parent;
+                st.order.appendAssumeCapacity(slot.*);
+                return slot.*;
+            }
+        }
+        const index: u32 = if (st.free.pop()) |i| i else blk: {
+            try st.layers.append(gpa, undefined);
+            break :blk @intCast(st.layers.items.len - 1);
+        };
+        st.layers.items[index] = .{ .kind = kind, .owner = owner, .pass = st.pass, .parent = parent };
+        st.dirty_count += 1;
+        st.order.appendAssumeCapacity(index);
+        slot.* = index;
+        return index;
+    }
+
+    fn setLayer(st: *State, win: *Window, nid: NodeId, l: u32) void {
+        const s = win.state(nid);
+        if (s.layer == l) return;
+        st.damage(s.layer, s.bounds);
+        s.layer = l;
+        s.paint_dirty = true;
+        st.markLayer(l);
+    }
+
+    // Content -------------------------------------------------------------
+
+    /// Repaints the layers whose content changed and queues their content.
+    pub fn build(st: *State, win: *Window) Error!void {
+        if (st.dirty_count == 0) return;
+        const gpa = win.gpa;
+        for (st.order.items) |i| st.layers.items[i].subtree_dirty = st.layers.items[i].dirty;
+        var k = st.order.items.len;
+        while (k > 1) {
+            k -= 1;
+            const l = st.layers.items[st.order.items[k]];
+            if (l.subtree_dirty) st.layers.items[l.parent].subtree_dirty = true;
+        }
+        try st.ops.ensureUnusedCapacity(gpa, st.dirty_count);
+        for (st.order.items) |i| {
+            const l = &st.layers.items[i];
+            if (!l.dirty) continue;
+            const b = st.builders.pop() orelse blk: {
+                try st.all_builders.ensureUnusedCapacity(gpa, 1);
+                const nb = try gpa.create(scene.Builder);
+                nb.* = .init(gpa);
+                st.all_builders.appendAssumeCapacity(nb);
+                break :blk nb;
+            };
+            b.reset();
+            l.builder = b;
+            l.open.clearRetainingCapacity();
+        }
+        st.clips.clearRetainingCapacity();
+        try st.builders.ensureTotalCapacity(gpa, st.all_builders.items.len);
+        errdefer for (st.order.items) |i| {
+            const l = &st.layers.items[i];
+            if (l.builder) |b| {
+                st.builders.appendAssumeCapacity(b);
+                l.builder = null;
+            }
+        };
+        try st.paintTree(win, .root, .zero, 0);
+
+        for (st.order.items) |i| {
+            const l = &st.layers.items[i];
+            const b = l.builder orelse continue;
+            for (l.open.items) |_| b.popLayer() catch |e| return oom(e);
+            l.open.clearRetainingCapacity();
+            l.version +%= 1;
+            const list = b.finish(l.version) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => unreachable,
+            };
+            st.ops.appendAssumeCapacity(.{ .set_content = .{
+                .layer = id(i),
+                .content = .{ .list = list, .builder = b },
+                .damage = if (l.full_damage) null else if (l.damage.isEmpty()) Rect.xywh(0, 0, 0, 0) else l.damage,
+            } });
+            l.builder = null;
+            l.dirty = false;
+            l.full_damage = false;
+            l.damage = Rect.empty;
+            win.stats.layer_builds += 1;
+        }
+        st.dirty_count = 0;
+    }
+
+    fn paintTree(st: *State, win: *Window, nid: NodeId, off: Point, level: usize) Error!void {
+        const n = win.node(nid);
+        const s = win.state(nid);
+        if (st.ownsLayerNow(win, nid)) {
+            const l = s.own_layer;
+            if (!st.layers.items[l].subtree_dirty) return;
+            const lvl = st.clips.items.len;
+            try st.paintNode(win, nid, .zero, lvl);
+            const child_level = st.clips.items.len;
+            var it = win.children(nid);
+            while (it.next()) |ch| try st.paintTree(win, ch, win.state(ch).pos, child_level);
+            return;
+        }
+        try st.paintNode(win, nid, off, level);
+        const clipped = n.visual.clip;
+        if (clipped) try st.pushClip(win, nid, off);
+        var it = win.children(nid);
+        while (it.next()) |ch| {
+            const cp = win.state(ch).pos;
+            try st.paintTree(win, ch, .{ .x = off.x + cp.x, .y = off.y + cp.y }, level);
+        }
+        if (clipped) _ = st.clips.pop();
+    }
+
+    fn pushClip(st: *State, win: *Window, nid: NodeId, off: Point) Error!void {
+        const s = win.state(nid);
+        const r = Rect.xywh(off.x, off.y, s.size.w, s.size.h);
+        const v = win.node(nid).visual;
+        const shape: scene.Shape = if (v.radius.isZero()) .{ .rect = r } else .{ .rounded_rect = .{ .rect = r, .radii = v.radius.physical(s.rtl) } };
+        const outer = if (st.clips.items.len != 0) st.clips.items[st.clips.items.len - 1].rect else infinite;
+        st.serial +%= 1;
+        try st.clips.append(win.gpa, .{ .serial = st.serial, .shape = shape, .rect = outer.intersect(r) });
+    }
+
+    /// Brings a layer's open clips in line with the clip stack from `level`.
+    fn syncClips(st: *State, win: *Window, l: *Layer, level: usize) Error!void {
+        const want = st.clips.items[level..];
+        var common: usize = 0;
+        while (common < l.open.items.len and common < want.len and l.open.items[common] == want[common].serial) common += 1;
+        const b = l.builder.?;
+        while (l.open.items.len > common) {
+            b.popLayer() catch |e| return oom(e);
+            _ = l.open.pop();
+        }
+        for (want[common..]) |e| {
+            try l.open.append(win.gpa, e.serial);
+            b.pushLayer(.{ .clip = .{ .shape = e.shape } }) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => unreachable,
+            };
+        }
+    }
+
+    fn paintNode(st: *State, win: *Window, nid: NodeId, off: Point, level: usize) Error!void {
+        const s = win.state(nid);
+        const l = &st.layers.items[s.layer];
+        if (l.builder == null) return;
+        try st.syncClips(win, l, level);
+        const b = l.builder.?;
+        const bounds = drawNode(st, win, nid, b, off) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => Rect.empty, // invalid canvas content: drawn as nothing
+        };
+        const clip = if (st.clips.items.len > level) st.clips.items[st.clips.items.len - 1].rect else infinite;
+        var clipped = bounds.intersect(clip);
+        if (clipped.isEmpty()) clipped = Rect.empty;
+        if (s.paint_dirty or !clipped.eql(s.bounds)) {
+            l.damage = l.damage.unite(s.bounds).unite(clipped);
+        }
+        s.bounds = clipped;
+        s.paint_dirty = false;
+    }
+
+    // Properties ----------------------------------------------------------
+
+    /// Queues property changes and programmatic scrolls, then commits
+    /// everything queued this frame.
+    pub fn emit(st: *State, win: *Window) Error!void {
+        const gpa = win.gpa;
+        var scroll_layers: std.ArrayList(u32) = .empty;
+        if (win.dirty.props or st.ops.items.len != 0) {
+            try st.ops.ensureUnusedCapacity(gpa, 6 * st.order.items.len + st.scroll_by.items.len + 1);
+            for (st.order.items) |i| {
+                const l = &st.layers.items[i];
+                const p = props(st, win, l.*);
+                if (!l.transform.eql(p.transform)) {
+                    st.ops.appendAssumeCapacity(.{ .set_transform = .{ .layer = id(i), .transform = p.transform } });
+                    l.transform = p.transform;
+                }
+                if (l.opacity != p.opacity) {
+                    st.ops.appendAssumeCapacity(.{ .set_opacity = .{ .layer = id(i), .opacity = p.opacity } });
+                    l.opacity = p.opacity;
+                }
+                if (!std.meta.eql(l.clip, p.clip)) {
+                    st.ops.appendAssumeCapacity(.{ .set_clip = .{ .layer = id(i), .clip = p.clip } });
+                    l.clip = p.clip;
+                }
+                if (!std.meta.eql(l.scroll, p.scroll)) {
+                    st.ops.appendAssumeCapacity(.{ .set_scroll = .{ .layer = id(i), .scroll = p.scroll } });
+                    l.scroll = p.scroll;
+                }
+                if (!std.meta.eql(l.wheel, p.wheel)) {
+                    st.ops.appendAssumeCapacity(.{ .set_wheel_region = .{ .layer = id(i), .region = p.wheel } });
+                    l.wheel = p.wheel;
+                }
+                if (l.kind == .node and win.node(l.owner).kind == .scroll) {
+                    const s = win.state(l.owner);
+                    const phys = scrollTranslation(win, l.owner);
+                    // In RTL the start edge is at the far end of the content,
+                    // so the offset follows the content width.
+                    if (s.scroll_pending or (s.rtl and phys.x != l.scroll_offset.x)) {
+                        st.ops.appendAssumeCapacity(.{ .scroll_to = .{ .layer = id(i), .offset = phys } });
+                        l.scroll_offset = phys;
+                        s.scroll_pending = false;
+                        try scroll_layers.append(win.scratch.allocator(), i);
+                    }
+                }
+            }
+        }
+        // Scroll input the UI passed on, relative to wherever the
+        // compositor has the offset now.
+        try st.ops.ensureUnusedCapacity(gpa, st.scroll_by.items.len + 1);
+        for (st.scroll_by.items) |sb| {
+            if (!win.isLive(sb.node) or !st.ownsLayerNow(win, sb.node)) continue;
+            st.ops.appendAssumeCapacity(.{ .scroll_by = .{ .layer = id(win.state(sb.node).own_layer), .delta = sb.delta } });
+        }
+        st.scroll_by.clearRetainingCapacity();
+        if (win.configure_serial) |serial| {
+            st.ops.appendAssumeCapacity(.{ .ack_configure = serial });
+            win.configure_serial = null;
+        }
+        if (st.ops.items.len == 0) return;
+        defer st.ops.clearRetainingCapacity();
+        const seq = try win.sink.commit(win.sink.ctx, st.ops.items);
+        for (scroll_layers.items) |i| st.layers.items[i].scroll_seq = seq;
+    }
+
+    const Props = struct {
+        transform: compositor.Transform = .identity,
+        opacity: f32 = 1,
+        clip: ?compositor.Clip = null,
+        scroll: ?compositor.Scroll = null,
+        wheel: ?Rect = null,
+    };
+
+    fn props(st: *const State, win: *const Window, l: Layer) Props {
+        switch (l.kind) {
+            .chunk => return .{},
+            .scroll_content => {
+                const s = win.state(l.owner);
+                const pad = win.node(l.owner).layout.padding;
+                return .{ .transform = .offset(pad.left(s.rtl), pad.top) };
+            },
+            .root, .node => {
+                const n = win.node(l.owner);
+                const s = win.state(l.owner);
+                var t = n.visual.transform;
+                if (l.kind == .node) {
+                    const off = st.offsetInContainer(win, l.owner);
+                    t.translate.x += off.x;
+                    t.translate.y += off.y;
+                }
+                var p: Props = .{ .transform = t, .opacity = n.visual.opacity };
+                if (n.visual.clip) p.clip = .{ .rect = .xywh(0, 0, s.size.w, s.size.h), .radii = n.visual.radius.physical(s.rtl) };
+                if (n.kind == .scroll) {
+                    const pad = n.layout.padding;
+                    p.scroll = .{
+                        .viewport = .xywh(pad.left(s.rtl), pad.top, @max(0, s.size.w - pad.horizontal()), @max(0, s.size.h - pad.vertical())),
+                        .content = .{ .width = s.content.w, .height = s.content.h },
+                    };
+                }
+                if (n.handler(.scroll) != null) p.wheel = .xywh(0, 0, s.size.w, s.size.h);
+                return p;
+            },
+        }
+    }
+
+    /// Whether the node roots a layer in the current assignment.
+    pub fn ownsLayerNow(st: *const State, win: *const Window, nid: NodeId) bool {
+        const l = win.state(nid).own_layer;
+        if (l == no_layer or l >= st.layers.items.len) return false;
+        const layer = st.layers.items[l];
+        return layer.owner == nid and layer.pass == st.pass and (layer.kind == .node or layer.kind == .root);
+    }
+
+    /// A layer root's position in its parent layer's coordinates.
+    fn offsetInContainer(st: *const State, win: *const Window, nid: NodeId) Point {
+        var p = win.state(nid).pos;
+        var cur = win.node(nid).parent;
+        while (cur != .none) : (cur = win.node(cur).parent) {
+            const cs = win.state(cur);
+            if (st.ownsLayerNow(win, cur)) break;
+            p.x += cs.pos.x;
+            p.y += cs.pos.y;
+        }
+        return p;
+    }
+};
+
+fn oom(err: scene.Error) Error {
+    return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        // The UI only emits balanced, finite commands.
+        else => unreachable,
+    };
+}
+
+fn id(index: u32) compositor.LayerId {
+    return index + 1;
+}
+
+/// The layer index of a compositor layer id.
+pub fn indexOf(layer: compositor.LayerId) u32 {
+    return layer - 1;
+}
+
+const infinite: Rect = .{ .x0 = -std.math.inf(f32), .y0 = -std.math.inf(f32), .x1 = std.math.inf(f32), .y1 = std.math.inf(f32) };
+
+/// Largest physical scroll offset of a scroll node.
+pub fn maxScroll(win: *const Window, nid: NodeId) Point {
+    const s = win.state(nid);
+    const pad = win.node(nid).layout.padding;
+    return .{
+        .x = @max(0, s.content.w - (s.size.w - pad.horizontal())),
+        .y = @max(0, s.content.h - (s.size.h - pad.vertical())),
+    };
+}
+
+/// A scroll node's offset in physical content coordinates (how far its
+/// content is moved up and left), clamped. In RTL, logical offset 0 shows
+/// the right edge of the content.
+pub fn scrollTranslation(win: *const Window, nid: NodeId) Point {
+    const n = win.node(nid);
+    if (n.kind != .scroll) return .zero;
+    const max = maxScroll(win, nid);
+    const off = n.data.scroll.offset;
+    const lx = std.math.clamp(off.x, 0, max.x);
+    return .{ .x = if (win.state(nid).rtl) max.x - lx else lx, .y = std.math.clamp(off.y, 0, max.y) };
+}
+
+/// The logical offset for a physical one reported by the compositor.
+pub fn logicalScroll(win: *const Window, nid: NodeId, physical: Point) Point {
+    const max = maxScroll(win, nid);
+    return .{ .x = if (win.state(nid).rtl) max.x - physical.x else physical.x, .y = physical.y };
+}
+
+// Drawing --------------------------------------------------------------------
+
+const DrawError = scene.Error;
+
+/// Draws a node's own content (not its children) at `off`; returns its
+/// bounds in the builder's coordinates.
+fn drawNode(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point) DrawError!Rect {
+    const n = win.node(nid);
+    const s = win.state(nid);
+    const v = n.visual;
+    const r = Rect.xywh(off.x, off.y, s.size.w, s.size.h);
+    const radii = v.radius.physical(s.rtl);
+    const rounded = !v.radius.isZero();
+    var bounds = Rect.empty;
+    if (v.background.a > 0 and !r.isEmpty()) {
+        if (rounded) try b.fillRoundedRect(r, radii, .color(v.background)) else try b.fillRect(r, .color(v.background));
+        bounds = bounds.unite(r);
+    }
+    if (v.border_width > 0 and v.border_color.a > 0) {
+        const hw = v.border_width / 2;
+        const inset: Rect = .{ .x0 = r.x0 + hw, .y0 = r.y0 + hw, .x1 = r.x1 - hw, .y1 = r.y1 - hw };
+        if (!inset.isEmpty()) {
+            try b.stroke(.{ .rounded_rect = .{ .rect = inset, .radii = shrinkRadii(radii, hw) } }, .{ .width = v.border_width }, .color(v.border_color));
+            bounds = bounds.unite(r);
+        }
+    }
+    switch (n.kind) {
+        .text => bounds = bounds.unite(try drawText(st, win, nid, b, off)),
+        .image => bounds = bounds.unite(try drawImage(win, nid, b, off)),
+        .canvas => if (n.data.canvas.draw) |draw| {
+            try b.pushLayer(.{ .transform = .translate(off.x, off.y), .clip = .{ .shape = .{ .rect = .xywh(0, 0, s.size.w, s.size.h) } } });
+            try draw(n.data.canvas.user, b, s.size.w, s.size.h);
+            try b.popLayer();
+            bounds = bounds.unite(r);
+        },
+        else => {},
+    }
+    if (win.input.focus == nid and win.input.focus_visible) {
+        const g = focus_ring_width;
+        const ring = r.outset(g / 2 + 1);
+        try b.stroke(.{ .rounded_rect = .{ .rect = ring, .radii = growRadii(radii, g / 2 + 1) } }, .{ .width = g }, .color(focus_ring_color));
+        bounds = bounds.unite(ring.outset(g / 2));
+    }
+    return bounds;
+}
+
+fn shrinkRadii(r: raster.Radii, d: f32) raster.Radii {
+    return growRadii(r, -d);
+}
+
+fn growRadii(r: raster.Radii, d: f32) raster.Radii {
+    const f = struct {
+        fn g(p: Point, dd: f32) Point {
+            if (p.x == 0 and p.y == 0) return p;
+            return .{ .x = @max(0, p.x + dd), .y = @max(0, p.y + dd) };
+        }
+    }.g;
+    return .{ .tl = f(r.tl, d), .tr = f(r.tr, d), .br = f(r.br, d), .bl = f(r.bl, d) };
+}
+
+fn drawText(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point) DrawError!Rect {
+    const l = text_node.current(win, nid) orelse return Rect.empty;
+    const n = win.node(nid);
+    const s = win.state(nid);
+    const pad = n.layout.padding;
+    const content_w = s.size.w - pad.horizontal();
+    const ox = off.x + pad.left(s.rtl);
+    const oy = off.y + pad.top;
+    const color = n.data.text.props.style.color;
+    var bounds = Rect.empty;
+    for (l.lines) |line| {
+        const shift = text_node.lineShift(win, nid, line, content_w);
+        for (l.lineRuns(line)) |run| {
+            const face = win.fonts.cache.face(run.font) orelse continue;
+            st.glyphs.clearRetainingCapacity();
+            var rb = Rect.empty;
+            for (l.runGlyphs(run)) |g| {
+                const x = ox + shift + line.x + g.x;
+                const y = oy + line.baseline + g.y;
+                try st.glyphs.append(win.gpa, .{ .id = g.id, .x = x, .y = y });
+                if (face.glyphBounds(g.id, run.size)) |gb| rb = rb.unite(.xywh(x + gb.x, y + gb.y, gb.width, gb.height));
+            }
+            if (rb.isEmpty()) continue;
+            rb = rb.outset(1);
+            try b.glyphs(.{
+                .font = .{ .handle = face.font, .key = face.key },
+                .size = run.size,
+                .glyphs = st.glyphs.items,
+                .paint = .color(color),
+                .bounds = rb,
+            });
+            bounds = bounds.unite(rb);
+        }
+    }
+    return bounds;
+}
+
+fn drawImage(win: *Window, nid: NodeId, b: *scene.Builder, off: Point) DrawError!Rect {
+    const n = win.node(nid);
+    const img = n.data.image;
+    const ref = img.image orelse return Rect.empty;
+    const s = win.state(nid);
+    const pad = n.layout.padding;
+    const box = Rect.xywh(off.x + pad.left(s.rtl), off.y + pad.top, s.size.w - pad.horizontal(), s.size.h - pad.vertical());
+    if (box.isEmpty()) return Rect.empty;
+    const iw: f32 = @floatFromInt(ref.width);
+    const ih: f32 = @floatFromInt(ref.height);
+    var src = Rect.xywh(0, 0, iw, ih);
+    var dst = box;
+    switch (img.fit) {
+        .fill => {},
+        .contain, .none => {
+            const k = if (img.fit == .none) 1 else @min(box.width() / iw, box.height() / ih);
+            const w = iw * k;
+            const h = ih * k;
+            dst = .xywh(box.x0 + (box.width() - w) / 2, box.y0 + (box.height() - h) / 2, w, h);
+            if (img.fit == .none) {
+                // Crop what does not fit.
+                const vis = dst.intersect(box);
+                src = .xywh(vis.x0 - dst.x0, vis.y0 - dst.y0, vis.width(), vis.height());
+                dst = vis;
+            }
+        },
+        .cover => {
+            const k = @max(box.width() / iw, box.height() / ih);
+            const w = box.width() / k;
+            const h = box.height() / k;
+            src = .xywh((iw - w) / 2, (ih - h) / 2, w, h);
+        },
+    }
+    const mirror = img.mirror and s.rtl;
+    if (mirror) try b.pushLayer(.{ .transform = raster.Affine.translate(-(dst.x0 + dst.x1) / 2, 0).then(.scale(-1, 1)).then(.translate((dst.x0 + dst.x1) / 2, 0)) });
+    try b.image(.{ .image = ref, .src = src, .dst = dst, .filter = img.filter });
+    if (mirror) try b.popLayer();
+    return dst;
+}

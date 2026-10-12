@@ -1,0 +1,77 @@
+//! The retained UI on the UI thread (D4, D8, D18, D21): a tree of the
+//! closed primitive set changed through atomic transactions, one-way
+//! constraint layout with per-node caches, text nodes on the text engine,
+//! hit testing, pointer and keyboard routing, focus, a mandatory semantics
+//! tree, RTL mirroring, and lowering into layers for the compositor thread.
+//!
+//!     var win = try ui.Window.init(gpa, .{ .fonts = &fonts, .sink = sink });
+//!     const t = try win.begin();
+//!     const row = try t.create(.root, .flex, .none);
+//!     try t.setFlex(row, .{ .gap = 8 });
+//!     const label = try t.create(row, .text, .none);
+//!     try t.setText(label, "Hello");
+//!     t.commit();
+//!
+//! Nodes are plain indices (D20); ABI handles wrap them in src/abi.
+//!
+//! Imports: scene, raster, text, loop, platform, compositor.
+
+const std = @import("std");
+
+const node = @import("node.zig");
+pub const NodeId = node.NodeId;
+pub const Kind = node.Kind;
+pub const Node = node.Node;
+pub const Dimension = node.Dimension;
+pub const Edges = node.Edges;
+pub const Align = node.Align;
+pub const Direction = node.Direction;
+pub const Insets = node.Insets;
+pub const Layout = node.Layout;
+pub const Corners = node.Corners;
+pub const Visual = node.Visual;
+pub const Transform = node.Transform;
+pub const Role = node.Role;
+pub const Toggle = node.Toggle;
+pub const Live = node.Live;
+pub const Range = node.Range;
+pub const Semantics = node.Semantics;
+pub const Axis = node.Axis;
+pub const Justify = node.Justify;
+pub const Flex = node.Flex;
+pub const Track = node.Track;
+pub const Grid = node.Grid;
+pub const Stack = node.Stack;
+pub const ScrollAxis = node.ScrollAxis;
+pub const Scroll = node.Scroll;
+pub const TextAlign = node.TextAlign;
+pub const TextStyle = node.TextStyle;
+pub const Text = node.Text;
+pub const Fit = node.Fit;
+pub const Image = node.Image;
+pub const Canvas = node.Canvas;
+pub const Event = node.Event;
+pub const HandlerKind = node.HandlerKind;
+pub const Handler = node.Handler;
+pub const Pointer = node.Pointer;
+pub const Key = node.Key;
+
+pub const Window = @import("Window.zig");
+pub const Txn = @import("txn.zig").Txn;
+pub const TxnError = @import("txn.zig").Error;
+pub const Fonts = @import("fonts.zig");
+pub const layers = @import("layers.zig");
+pub const Sink = layers.Sink;
+pub const TestCompositor = layers.TestCompositor;
+pub const semantics = @import("semantics.zig");
+pub const input = @import("input.zig");
+pub const keysym = input.keysym;
+
+test {
+    std.testing.refAllDecls(@This());
+    _ = node;
+    _ = @import("layout.zig");
+    _ = @import("paint.zig");
+    _ = @import("text_node.zig");
+    _ = @import("tests.zig");
+}

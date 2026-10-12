@@ -1,0 +1,429 @@
+//! Hit testing, pointer and keyboard routing, and focus.
+//!
+//! Pointer events go to the topmost hit-testable node under the pointer
+//! (or the node that captured the pointer with a button press) and bubble
+//! to its ancestors until a handler returns true. Keyboard events go to the
+//! focused node and bubble the same way. Default actions run for events
+//! nobody handled: a primary press focuses the nearest focusable ancestor,
+//! a release over the pressed node activates it, Tab and Shift+Tab move
+//! focus in tree order, Enter and Space activate the focused node, and
+//! scroll input scrolls the nearest scroll node the compositor left to the
+//! UI (D8).
+
+const std = @import("std");
+const raster = @import("raster");
+const platform = @import("platform");
+const Window = @import("Window.zig");
+const node_mod = @import("node.zig");
+const paint = @import("paint.zig");
+
+const NodeId = node_mod.NodeId;
+const Event = node_mod.Event;
+const Point = raster.Point;
+
+/// XKB keysyms the defaults use.
+pub const keysym = struct {
+    pub const tab: u32 = 0xff09;
+    pub const iso_left_tab: u32 = 0xfe20;
+    pub const @"return": u32 = 0xff0d;
+    pub const kp_enter: u32 = 0xff8d;
+    pub const space: u32 = 0x0020;
+    pub const home: u32 = 0xff50;
+    pub const left: u32 = 0xff51;
+    pub const up: u32 = 0xff52;
+    pub const right: u32 = 0xff53;
+    pub const down: u32 = 0xff54;
+    pub const page_up: u32 = 0xff55;
+    pub const page_down: u32 = 0xff56;
+    pub const end: u32 = 0xff57;
+};
+
+const btn_left = 0x110;
+const btn_right = 0x111;
+const btn_middle = 0x112;
+
+/// Pixels per wheel detent and per arrow key when the UI scrolls.
+pub const line_step: f32 = 40;
+
+pub const State = struct {
+    focus: NodeId = .none,
+    /// Focus came from the keyboard, so it shows a ring.
+    focus_visible: bool = false,
+    /// The window has keyboard focus.
+    keyboard: bool = false,
+    /// Nodes under the pointer, root first.
+    hover: std.ArrayList(NodeId) = .empty,
+    pointer: ?Point = null,
+    /// The node a press went to; it receives the pointer until release.
+    capture: NodeId = .none,
+    /// The activatable node a primary press went to.
+    pressed: NodeId = .none,
+    mods: platform.Mods = .{},
+
+    pub fn deinit(st: *State, gpa: std.mem.Allocator) void {
+        st.hover.deinit(gpa);
+    }
+
+    /// A node was removed.
+    pub fn forget(st: *State, win: *Window, id: NodeId) void {
+        if (st.focus == id) {
+            st.focus = .none;
+            win.dirty.semantics = true;
+        }
+        if (st.capture == id) st.capture = .none;
+        if (st.pressed == id) st.pressed = .none;
+        for (st.hover.items, 0..) |h, i| if (h == id) {
+            st.hover.shrinkRetainingCapacity(i);
+            break;
+        };
+    }
+
+    /// After a commit: focus leaves nodes that can no longer take it.
+    pub fn afterCommit(st: *State, win: *Window) void {
+        if (st.focus != .none and !canFocus(win, st.focus)) setFocus(win, .none, false);
+    }
+};
+
+pub fn canFocus(win: *const Window, id: NodeId) bool {
+    if (!win.isLive(id)) return false;
+    const n = win.node(id);
+    return n.semantics.focusable and !n.semantics.disabled;
+}
+
+fn activatable(win: *const Window, id: NodeId) bool {
+    const n = win.node(id);
+    return n.handler(.activate) != null and !n.semantics.disabled;
+}
+
+// Hit testing ----------------------------------------------------------------
+
+/// The topmost hit-testable node at a window point, or none.
+pub fn hitTest(win: *const Window, p: Point) NodeId {
+    return hit(win, .root, p) orelse .none;
+}
+
+fn hit(win: *const Window, id: NodeId, parent_p: Point) ?NodeId {
+    const n = win.node(id);
+    const s = win.state(id);
+    var p: Point = .{ .x = parent_p.x - s.pos.x, .y = parent_p.y - s.pos.y };
+    if (!n.visual.transform.eql(.identity)) {
+        const inv = n.visual.transform.affine().invert() orelse return null;
+        p = inv.apply(p);
+    }
+    const inside = p.x >= 0 and p.y >= 0 and p.x < s.size.w and p.y < s.size.h;
+    if ((n.visual.clip or n.kind == .scroll) and !inside) return null;
+    var cp = p;
+    if (n.kind == .scroll) {
+        const pad = n.layout.padding;
+        if (p.x < pad.left(s.rtl) or p.x >= s.size.w - (if (s.rtl) pad.start else pad.end) or p.y < pad.top or p.y >= s.size.h - pad.bottom) {
+            return if (n.visual.hit_test) id else null;
+        }
+        const t = paint.scrollTranslation(win, id);
+        cp = .{ .x = p.x - pad.left(s.rtl) + t.x, .y = p.y - pad.top + t.y };
+    }
+    var c = n.last;
+    while (c != .none) : (c = win.node(c).prev) {
+        if (hit(win, c, cp)) |h| return h;
+    }
+    if (inside and n.visual.hit_test) return id;
+    return null;
+}
+
+/// A window point in a node's coordinates (translations and transforms).
+pub fn toLocal(win: *const Window, id: NodeId, p: Point) Point {
+    const parent = win.node(id).parent;
+    var q = if (parent == .none) p else blk: {
+        var pp = toLocal(win, parent, p);
+        const pn = win.node(parent);
+        if (pn.kind == .scroll) {
+            const ps = win.state(parent);
+            const t = paint.scrollTranslation(win, parent);
+            pp = .{ .x = pp.x - pn.layout.padding.left(ps.rtl) + t.x, .y = pp.y - pn.layout.padding.top + t.y };
+        }
+        break :blk pp;
+    };
+    const s = win.state(id);
+    q = .{ .x = q.x - s.pos.x, .y = q.y - s.pos.y };
+    const t = win.node(id).visual.transform;
+    if (!t.eql(.identity)) if (t.affine().invert()) |inv| {
+        q = inv.apply(q);
+    };
+    return q;
+}
+
+// Dispatch -------------------------------------------------------------------
+
+fn call(win: *Window, id: NodeId, kind: node_mod.HandlerKind, event: *const Event) bool {
+    const h = win.node(id).handler(kind) orelse return false;
+    return h.func(h.user, win, id, event);
+}
+
+/// Bubbles a pointer event from `target`; coordinates are made local to
+/// each node. Returns true if a handler took it.
+fn bubblePointer(win: *Window, target: NodeId, phase: node_mod.PointerPhase, button: node_mod.Button) bool {
+    const p = win.input.pointer orelse return false;
+    var cur = target;
+    while (cur != .none and win.isLive(cur)) {
+        const local = toLocal(win, cur, p);
+        const ev: Event = .{ .pointer = .{ .phase = phase, .x = local.x, .y = local.y, .button = button, .mods = win.input.mods } };
+        if (call(win, cur, .pointer, &ev)) return true;
+        if (!win.isLive(cur)) return false;
+        cur = win.node(cur).parent;
+    }
+    return false;
+}
+
+fn bubble(win: *Window, target: NodeId, kind: node_mod.HandlerKind, ev: *const Event) bool {
+    var cur = target;
+    while (cur != .none and win.isLive(cur)) {
+        if (call(win, cur, kind, ev)) return true;
+        if (!win.isLive(cur)) return false;
+        cur = win.node(cur).parent;
+    }
+    return false;
+}
+
+/// Sends `activate` to a node.
+pub fn activate(win: *Window, id: NodeId) void {
+    if (!win.isLive(id) or !activatable(win, id)) return;
+    _ = call(win, id, .activate, &.activate);
+}
+
+/// Moves keyboard focus (none clears it).
+pub fn setFocus(win: *Window, id: NodeId, visible: bool) void {
+    const st = &win.input;
+    const old = st.focus;
+    if (old == id and st.focus_visible == visible) return;
+    st.focus = id;
+    st.focus_visible = visible;
+    win.dirty.semantics = true;
+    if (old != .none and win.isLive(old)) {
+        win.markPaint(old);
+        if (old != id) _ = call(win, old, .focus, &.{ .focus = .{ .gained = false, .visible = visible } });
+    }
+    if (id != .none and win.isLive(id) and win.input.focus == id) {
+        win.markPaint(id);
+        if (old != id) _ = call(win, id, .focus, &.{ .focus = .{ .gained = true, .visible = visible } });
+    }
+    win.requestFrame();
+}
+
+/// Moves focus to the next (or previous) focusable node in tree order,
+/// wrapping around.
+pub fn traverse(win: *Window, forward: bool) void {
+    const a = win.scratch.allocator();
+    defer _ = win.scratch.reset(.retain_capacity);
+    var list: std.ArrayList(NodeId) = .empty;
+    collectFocusable(win, .root, a, &list) catch return;
+    if (list.items.len == 0) return;
+    const cur = std.mem.indexOfScalar(NodeId, list.items, win.input.focus);
+    const next: usize = if (cur) |i|
+        (if (forward) (i + 1) % list.items.len else (i + list.items.len - 1) % list.items.len)
+    else if (forward) 0 else list.items.len - 1;
+    setFocus(win, list.items[next], true);
+}
+
+fn collectFocusable(win: *const Window, id: NodeId, a: std.mem.Allocator, out: *std.ArrayList(NodeId)) !void {
+    if (canFocus(win, id)) try out.append(a, id);
+    var it = win.children(id);
+    while (it.next()) |c| try collectFocusable(win, c, a, out);
+}
+
+fn updateHover(win: *Window, target: NodeId) void {
+    const st = &win.input;
+    const a = win.scratch.allocator();
+    defer _ = win.scratch.reset(.retain_capacity);
+    var path: std.ArrayList(NodeId) = .empty;
+    var cur = target;
+    while (cur != .none) : (cur = win.node(cur).parent) path.append(a, cur) catch return;
+    std.mem.reverse(NodeId, path.items);
+    var common: usize = 0;
+    while (common < st.hover.items.len and common < path.items.len and st.hover.items[common] == path.items[common]) common += 1;
+    // Leave the old path innermost first, then enter outermost first.
+    var i = st.hover.items.len;
+    while (i > common) {
+        i -= 1;
+        const id = st.hover.items[i];
+        if (win.isLive(id)) _ = callPointer(win, id, .leave);
+    }
+    st.hover.shrinkRetainingCapacity(common);
+    for (path.items[common..]) |id| {
+        st.hover.append(win.gpa, id) catch return;
+        if (win.isLive(id)) _ = callPointer(win, id, .enter);
+    }
+}
+
+fn callPointer(win: *Window, id: NodeId, phase: node_mod.PointerPhase) bool {
+    const p = win.input.pointer orelse Point.zero;
+    const local = toLocal(win, id, p);
+    return call(win, id, .pointer, &.{ .pointer = .{ .phase = phase, .x = local.x, .y = local.y, .mods = win.input.mods } });
+}
+
+// Platform events ------------------------------------------------------------
+
+pub fn handle(win: *Window, event: *const platform.Event) void {
+    const st = &win.input;
+    switch (event.*) {
+        .pointer_enter, .pointer_motion => |m| {
+            st.pointer = .{ .x = @floatCast(m.x), .y = @floatCast(m.y) };
+            const target = if (st.capture != .none) st.capture else hitTest(win, st.pointer.?);
+            updateHover(win, if (st.capture != .none) hitTest(win, st.pointer.?) else target);
+            if (target != .none) _ = bubblePointer(win, target, .move, .primary);
+        },
+        .pointer_leave => {
+            updateHover(win, .none);
+            st.pointer = null;
+        },
+        .pointer_button => |b| pointerButton(win, b.button, b.pressed),
+        .touch_down => |t| {
+            st.pointer = .{ .x = @floatCast(t.x), .y = @floatCast(t.y) };
+            pointerButton(win, btn_left, true);
+        },
+        .touch_motion => |t| {
+            st.pointer = .{ .x = @floatCast(t.x), .y = @floatCast(t.y) };
+            if (st.capture != .none) _ = bubblePointer(win, st.capture, .move, .primary);
+        },
+        .touch_up => pointerButton(win, btn_left, false),
+        .touch_cancel => {
+            if (st.capture != .none) _ = bubblePointer(win, st.capture, .cancel, .primary);
+            st.capture = .none;
+            st.pressed = .none;
+        },
+        .scroll => |s| scroll(win, @floatCast(s.dx), @floatCast(s.dy), s.v120_x, s.v120_y),
+        .key => |k| key(win, &k),
+        .modifiers => |m| st.mods = m.mods,
+        .keyboard_enter => {
+            st.keyboard = true;
+            if (st.focus != .none) win.markPaint(st.focus);
+            win.requestFrame();
+        },
+        .keyboard_leave => {
+            st.keyboard = false;
+            if (st.focus != .none) win.markPaint(st.focus);
+            win.requestFrame();
+        },
+        else => {},
+    }
+}
+
+fn pointerButton(win: *Window, code: u32, pressed: bool) void {
+    const st = &win.input;
+    const p = st.pointer orelse return;
+    const button: node_mod.Button = switch (code) {
+        btn_left => .primary,
+        btn_right => .secondary,
+        btn_middle => .middle,
+        else => .other,
+    };
+    if (pressed) {
+        const target = hitTest(win, p);
+        if (target == .none) return;
+        st.capture = target;
+        const handled = bubblePointer(win, target, .down, button);
+        if (handled or button != .primary or !win.isLive(target)) return;
+        var cur = target;
+        while (cur != .none and !canFocus(win, cur)) cur = win.node(cur).parent;
+        if (cur != .none) setFocus(win, cur, false);
+        cur = target;
+        while (cur != .none and win.isLive(cur) and !activatable(win, cur)) cur = win.node(cur).parent;
+        st.pressed = cur;
+    } else {
+        const target = if (st.capture != .none) st.capture else hitTest(win, p);
+        st.capture = .none;
+        const pressed_node = st.pressed;
+        st.pressed = .none;
+        if (target == .none) return;
+        const handled = bubblePointer(win, target, .up, button);
+        if (handled or button != .primary or pressed_node == .none) return;
+        // Activate only when released over the pressed node.
+        const over = hitTest(win, p);
+        if (over != .none and win.isLive(pressed_node) and win.isAncestor(pressed_node, over)) activate(win, pressed_node);
+    }
+}
+
+fn key(win: *Window, k: *const platform.Key) void {
+    const st = &win.input;
+    const target = if (st.focus != .none and win.isLive(st.focus)) st.focus else NodeId.root;
+    const ev: Event = .{ .key = .{
+        .keysym = k.keysym,
+        .pressed = k.state != .released,
+        .repeat = k.state == .repeated,
+        .mods = k.mods,
+        .text = k.text(),
+    } };
+    if (bubble(win, target, .key, &ev)) return;
+    if (k.state == .released or k.composing) return;
+    switch (k.keysym) {
+        keysym.tab, keysym.iso_left_tab => traverse(win, k.keysym == keysym.tab and !k.mods.shift),
+        keysym.@"return", keysym.kp_enter, keysym.space => if (st.focus != .none and k.state == .pressed) activate(win, st.focus),
+        keysym.up, keysym.down, keysym.page_up, keysym.page_down, keysym.home, keysym.end, keysym.left, keysym.right => {
+            const s = nearestScroll(win, target) orelse return;
+            const view_h = win.state(s).size.h;
+            const max = paint.maxScroll(win, s);
+            const off = paint.scrollTranslation(win, s);
+            const delta: Point = switch (k.keysym) {
+                keysym.up => .{ .x = 0, .y = -line_step },
+                keysym.down => .{ .x = 0, .y = line_step },
+                keysym.page_up => .{ .x = 0, .y = -view_h * 0.9 },
+                keysym.page_down => .{ .x = 0, .y = view_h * 0.9 },
+                keysym.home => .{ .x = 0, .y = -off.y },
+                keysym.end => .{ .x = 0, .y = max.y - off.y },
+                keysym.left => .{ .x = -line_step, .y = 0 },
+                keysym.right => .{ .x = line_step, .y = 0 },
+                else => unreachable,
+            };
+            scrollBy(win, s, delta);
+        },
+        else => {},
+    }
+}
+
+fn nearestScroll(win: *const Window, from: NodeId) ?NodeId {
+    var cur = from;
+    while (cur != .none) : (cur = win.node(cur).parent) if (win.node(cur).kind == .scroll) return cur;
+    return null;
+}
+
+/// Passes scroll input on to the compositor as `scroll_by` (physical
+/// pixels): relative, so it cannot race the compositor's own scrolling.
+/// The offset changes when the compositor reports it.
+pub fn scrollBy(win: *Window, id: NodeId, delta: Point) void {
+    win.paint.scroll_by.append(win.gpa, .{ .node = id, .delta = delta }) catch return;
+    win.dirty.props = true;
+    win.requestFrame();
+}
+
+/// Scroll input the compositor forwarded: over a wheel region, with a
+/// modifier held, or with nothing for it to scroll. Scroll handlers see it
+/// first, from the node under the pointer up; otherwise, without ctrl,
+/// alt, or super, the nearest scroll node with room scrolls.
+fn scroll(win: *Window, dx_px: f32, dy_px: f32, v120_x: i32, v120_y: i32) void {
+    const p = win.input.pointer orelse return;
+    const target = hitTest(win, p);
+    if (target == .none) return;
+    var dx = dx_px;
+    var dy = dy_px;
+    if (dx == 0 and v120_x != 0) dx = @as(f32, @floatFromInt(v120_x)) / 120 * line_step;
+    if (dy == 0 and v120_y != 0) dy = @as(f32, @floatFromInt(v120_y)) / 120 * line_step;
+    const ev: Event = .{ .scroll = .{ .dx = dx, .dy = dy } };
+    if (bubble(win, target, .scroll, &ev)) return;
+    const mods = win.input.mods;
+    if (mods.ctrl or mods.alt or mods.super) return;
+    // Shift turns a vertical wheel horizontal, as in the compositor.
+    if (mods.shift and dx == 0) {
+        dx = dy;
+        dy = 0;
+    }
+    var cur: NodeId = if (win.isLive(target)) target else return;
+    while (cur != .none) : (cur = win.node(cur).parent) {
+        const n = win.node(cur);
+        if (n.kind != .scroll) continue;
+        const max = paint.maxScroll(win, cur);
+        const off = paint.scrollTranslation(win, cur);
+        const can_x = n.data.scroll.axis != .vertical and ((dx > 0 and off.x < max.x) or (dx < 0 and off.x > 0));
+        const can_y = n.data.scroll.axis != .horizontal and ((dy > 0 and off.y < max.y) or (dy < 0 and off.y > 0));
+        if (!can_x and !can_y) continue;
+        scrollBy(win, cur, .{ .x = if (can_x) dx else 0, .y = if (can_y) dy else 0 });
+        return;
+    }
+}
