@@ -312,10 +312,14 @@ test "dialogs: modal over the window, focused, closed by Escape or the scrim" {
     try h.start(400, 300, null, null);
     defer h.stop();
     var log: Log = .{};
-    const txn = try begin(h.window);
+    var txn = try begin(h.window);
     background(txn, &h);
     const behind = c.siv_push_button(txn, root(&h), &.{ .label = "Behind", .label_len = 6 });
     _ = c.siv_set_layout(txn, behind, &.{ .align_x = .start, .align_y = .start });
+    try ok(c.siv_txn_commit(txn));
+    // The opener has focus when the dialog appears.
+    try ok(c.siv_node_focus(behind));
+    txn = try begin(h.window);
     const dialog = c.siv_dialog(txn, root(&h), &.{ .title = "Discard changes?", .title_len = 16, .text = "Your edits will be lost.", .text_len = 24 });
     var actions: t.Node = .null;
     try ok(c.siv_widget_get_part(dialog, .actions, 0, &actions));
@@ -335,7 +339,9 @@ test "dialogs: modal over the window, focused, closed by Escape or the scrim" {
         try h.settle();
         try testing.expectEqual(try idOf(want), try focusedIn(h.window));
     }
-    // The button behind cannot be clicked: the press lands on the scrim.
+    // The button behind can neither be clicked (the press lands on the
+    // scrim) nor focused.
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_node_focus(behind));
     log.keep = true;
     const bc = try center(behind);
     try h.click(bc[0], bc[1]);
@@ -350,8 +356,7 @@ test "dialogs: modal over the window, focused, closed by Escape or the scrim" {
     try h.settle();
     var gone: t.Rect = undefined;
     try testing.expectEqual(t.Result.error_invalid_handle, c.siv_node_get_rect(dialog, &gone));
-    try h.click(bc[0], bc[1]);
-    try h.settle();
+    // Focus is back on the opener.
     try testing.expectEqual(try idOf(behind), try focusedIn(h.window));
 }
 
