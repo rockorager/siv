@@ -822,3 +822,361 @@ fn outputRefresh(w: *const Window) u64 {
 test {
     std.testing.refAllDecls(@This());
 }
+
+// Tests against a real compositor --------------------------------------------
+
+const testing = std.testing;
+const Compositor = @import("test_compositor.zig").Compositor;
+const VirtualPointer = @import("test_compositor.zig").VirtualPointer;
+
+/// Answers every frame with a solid buffer and records what it saw.
+const TestApp = struct {
+    backend: *Wayland = undefined,
+    events: std.ArrayList(platform.Event) = .empty,
+    frames: usize = 0,
+    frame_times: std.ArrayList(u64) = .empty,
+    /// The frame clock's inputs when each frame began.
+    frame_basis: std.ArrayList(struct { begin: u64, last_present: ?u64, refresh: u64 }) = .empty,
+    last_buffer: Size = .{},
+    animate: bool = false,
+    closed: bool = false,
+
+    fn deinit(app: *TestApp) void {
+        app.events.deinit(testing.allocator);
+        app.frame_times.deinit(testing.allocator);
+        app.frame_basis.deinit(testing.allocator);
+    }
+
+    fn sink(app: *TestApp) platform.Sink {
+        return .{ .ctx = app, .func = onEvent };
+    }
+
+    fn onEvent(ctx: ?*anyopaque, ev: *const platform.Event) void {
+        const app: *TestApp = @ptrCast(@alignCast(ctx));
+        switch (ev.*) {
+            .frame => |f| {
+                app.frames += 1;
+                app.frame_times.append(testing.allocator, f.time.present_ns) catch unreachable;
+                const clock = app.backend.get(f.window).clock;
+                app.frame_basis.append(testing.allocator, .{
+                    .begin = Loop.now(),
+                    .last_present = clock.last_present_ns,
+                    .refresh = clock.refresh_ns,
+                }) catch unreachable;
+                const buf = app.backend.acquireBuffer(f.window) catch |err| std.debug.panic("acquire: {t}", .{err});
+                @memset(std.mem.bytesAsSlice(u32, buf.pixels), 0xff2266aa);
+                app.last_buffer = .{ .width = buf.width, .height = buf.height };
+                app.backend.present(f.window, buf, null);
+                if (app.animate) app.backend.requestFrame(f.window);
+            },
+            .close_requested => |id| {
+                app.closed = true;
+                app.backend.destroyWindow(id);
+            },
+            .failed => |err| std.debug.panic("platform failed: {t}", .{err}),
+            else => {},
+        }
+        app.events.append(testing.allocator, ev.*) catch unreachable;
+    }
+
+    fn count(app: *const TestApp, tag: std.meta.Tag(platform.Event)) usize {
+        var n: usize = 0;
+        for (app.events.items) |e| n += @intFromBool(e == tag);
+        return n;
+    }
+
+    fn last(app: *const TestApp, tag: std.meta.Tag(platform.Event)) ?platform.Event {
+        var i = app.events.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (app.events.items[i] == tag) return app.events.items[i];
+        }
+        return null;
+    }
+};
+
+fn runUntil(loop: *Loop, ctx: anytype, comptime cond: fn (@TypeOf(ctx)) bool) !void {
+    const deadline = Loop.now() + 5 * std.time.ns_per_s;
+    while (!cond(ctx)) {
+        if (Loop.now() > deadline) return error.Timeout;
+        try loop.dispatch(50);
+    }
+}
+
+const Harness = struct {
+    compositor: Compositor,
+    loop: Loop = undefined,
+    app: TestApp = .{},
+
+    fn start(h: *Harness) !void {
+        try h.compositor.start();
+        errdefer h.compositor.stop();
+        h.loop = try Loop.init(testing.allocator);
+        errdefer h.loop.deinit();
+        h.app.backend = try Wayland.create(&h.loop, testing.allocator, h.app.sink(), .{ .display = h.compositor.display });
+    }
+
+    fn stop(h: *Harness) void {
+        h.app.backend.destroy();
+        h.loop.deinit();
+        h.app.deinit();
+        h.compositor.stop();
+    }
+
+    /// Creates a window and waits until its first frame was presented.
+    fn mapWindow(h: *Harness, options: platform.WindowOptions) !WindowId {
+        const id = try h.app.backend.createWindow(options);
+        try runUntil(&h.loop, &h.app, struct {
+            fn f(a: *TestApp) bool {
+                return a.frames >= 1;
+            }
+        }.f);
+        return id;
+    }
+};
+
+test "sway: outputs, configure, decorations, frame clock, scale, close" {
+    var h: Harness = .{ .compositor = .{ .kind = .sway } };
+    try h.start();
+    defer h.stop();
+    const app = &h.app;
+    const backend = app.backend;
+
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.count(.output_added) >= 1;
+        }
+    }.f);
+    const out = backend.output(app.last(.output_added).?.output_added).?;
+    try testing.expectEqualStrings("HEADLESS-1", out.name.slice());
+    try testing.expectEqual(@as(i32, 1280), out.width);
+
+    const id = try h.mapWindow(.{ .title = "siv test", .decoration = .server });
+    // The first configure lets the client choose (640x480 by default); once
+    // mapped, sway tiles the only window over the whole output.
+    try testing.expectEqual(@as(u32, 640), app.last(.configure).?.configure.state.width);
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.last_buffer.width == 1280;
+        }
+    }.f);
+    const state = backend.windowState(id);
+    try testing.expectEqual(@as(u32, 1280), state.width);
+    try testing.expectEqual(@as(u32, 720), state.height);
+    try testing.expectEqual(platform.Decoration.server, state.decoration);
+    try testing.expect(state.states.activated);
+    try testing.expectEqual(Size{ .width = 1280, .height = 720 }, app.last_buffer);
+
+    // Animate: one frame per frame callback, each predicted later than the
+    // last. (wlroots 0.15 headless sends no presentation feedback; see the
+    // weston test for that.)
+    app.animate = true;
+    backend.requestFrame(id);
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.frames >= 12;
+        }
+    }.f);
+    app.animate = false;
+    const times = app.frame_times.items;
+    for (times[times.len - 6 ..], times[times.len - 7 .. times.len - 1]) |b, a| try testing.expect(b > a);
+    // The refresh estimate comes from the output mode.
+    try testing.expectEqual(@as(u64, 1_000_000_000_000 / @as(u64, @intCast(out.refresh_mhz))), backend.get(id).clock.refresh_ns);
+
+    // Integer output scale (sway 1.7 has no fractional-scale-v1): the
+    // window reconfigures and renders twice as many pixels.
+    try h.compositor.command("output HEADLESS-1 scale 2");
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.last_buffer.width == 2 * a.backend.windows.items[0].?.state.width and
+                a.backend.windows.items[0].?.state.scale.v120 == 240;
+        }
+    }.f);
+    try testing.expectEqual(@as(u32, 640), backend.windowState(id).width);
+    try testing.expect(app.count(.output_changed) >= 1);
+
+    try h.compositor.command("kill");
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.closed;
+        }
+    }.f);
+}
+
+test "weston: presentation feedback drives the frame clock" {
+    var h: Harness = .{ .compositor = .{ .kind = .weston } };
+    try h.start();
+    defer h.stop();
+    const app = &h.app;
+    const backend = app.backend;
+    const id = try h.mapWindow(.{});
+    app.animate = true;
+    backend.requestFrame(id);
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.frames >= 20;
+        }
+    }.f);
+    app.animate = false;
+
+    const clock = &backend.get(id).clock;
+    // Weston stamps presentation with CLOCK_MONOTONIC_RAW; siv converts it
+    // to the loop's clock, so the last presentation is recent.
+    try testing.expectEqual(linux.clockid_t.MONOTONIC_RAW, backend.presentation_clock);
+    const last = clock.last_present_ns.?;
+    const now = Loop.now();
+    try testing.expect(last <= now + std.time.ns_per_ms and now - last < 200 * std.time.ns_per_ms);
+    try testing.expect(clock.refresh_ns > 15 * std.time.ns_per_ms and clock.refresh_ns < 18 * std.time.ns_per_ms);
+
+    // Once feedback arrives, each frame is predicted for the first refresh
+    // cycle after the last presentation that is still in the future.
+    // (Weston's headless output presents on a timer rather than a real
+    // vblank, so the actual cadence is not checked.)
+    var predicted_from_feedback: usize = 0;
+    for (app.frame_times.items, app.frame_basis.items) |t, basis| {
+        const last_present = basis.last_present orelse continue;
+        try testing.expect(t > basis.begin);
+        try testing.expectEqual(@as(u64, 0), (t - last_present) % basis.refresh);
+        try testing.expect(t - basis.begin <= basis.refresh);
+        predicted_from_feedback += 1;
+    }
+    try testing.expect(predicted_from_feedback >= 10);
+}
+
+test "sway: pointer, scrolling, keyboard text and repeat, touch" {
+    var h: Harness = .{ .compositor = .{ .kind = .sway } };
+    try h.start();
+    defer h.stop();
+    const app = &h.app;
+    const id = try h.mapWindow(.{});
+
+    var vp = try VirtualPointer.connect(&h.compositor);
+    defer vp.deinit();
+    // The virtual device gives the seat its pointer capability.
+    try vp.sync();
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            const seat = a.backend.seats.items[0] orelse return false;
+            return seat.pointer != null;
+        }
+    }.f);
+    vp.moveTo(100, 120);
+    vp.button(0x110, true);
+    vp.button(0x110, false);
+    vp.wheel(15, 1);
+    try vp.sync();
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.count(.scroll) >= 1 and a.count(.pointer_button) >= 2;
+        }
+    }.f);
+    const motion = app.last(.pointer_motion) orelse app.last(.pointer_enter).?;
+    const pos = switch (motion) {
+        .pointer_motion, .pointer_enter => |m| m,
+        else => unreachable,
+    };
+    try testing.expectEqual(id, pos.window);
+    try testing.expectEqual(@as(f64, 100), pos.x);
+    try testing.expectEqual(@as(f64, 120), pos.y);
+    const button = app.last(.pointer_button).?.pointer_button;
+    try testing.expectEqual(@as(u32, 0x110), button.button); // BTN_LEFT
+    try testing.expect(!button.pressed);
+    const scroll = app.last(.scroll).?.scroll;
+    try testing.expectEqual(platform.ScrollSource.wheel, scroll.source);
+    try testing.expectEqual(@as(i32, 120), scroll.v120_y); // one detent down
+    try testing.expectEqual(@as(f64, 15), scroll.dy);
+    try testing.expectEqual(@as(f64, 0), scroll.dx);
+
+    // Text through wtype's virtual keyboard and the keymap it uploads, then
+    // a key held past the repeat delay (sway: 600 ms at 25 Hz). The first
+    // pause lets the seat gain its keyboard before keys arrive.
+    const wtype = try h.compositor.spawnClient(&[_:null]?[*:0]const u8{ "wtype", "-s", "300", "hé", "-P", "x", "-s", "900", "-p", "x" });
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            const l = a.last(.key) orelse return false;
+            return l.key.state == .released and l.key.keysym == 'x';
+        }
+    }.f);
+    try h.compositor.wait(wtype);
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(testing.allocator);
+    for (app.events.items) |e| if (e == .key and e.key.state == .pressed) try text.appendSlice(testing.allocator, e.key.text());
+    try testing.expectEqualStrings("héx", text.items);
+    try testing.expect(app.count(.keyboard_enter) >= 1);
+
+    var repeats: usize = 0;
+    for (app.events.items) |e| {
+        if (e == .key and e.key.state == .repeated) {
+            try testing.expectEqualStrings("x", e.key.text());
+            repeats += 1;
+        }
+    }
+    // About (900 - 600) ms at 25 Hz; allow for scheduling slack.
+    try testing.expect(repeats >= 3 and repeats <= 12);
+
+    // Sway 1.7 cannot inject touch, so feed wl_touch events for the real
+    // surface to the seat's listener. Two contacts in one frame, then a
+    // frame with a move, a shape change, and a lift.
+    const seat = app.backend.seats.items[0].?;
+    const surface = app.backend.get(id).surface;
+    const touch: *wl.Touch = @ptrFromInt(0x1000); // the listener ignores it
+    const fx = wl.Fixed.fromDouble;
+    const before = app.events.items.len;
+    Seat.onTouch(touch, .{ .down = .{ .serial = 5, .time = 1, .surface = surface, .id = 7, .x = fx(10), .y = fx(20) } }, seat);
+    Seat.onTouch(touch, .{ .down = .{ .serial = 6, .time = 1, .surface = surface, .id = 8, .x = fx(30), .y = fx(40) } }, seat);
+    Seat.onTouch(touch, .frame, seat);
+    Seat.onTouch(touch, .{ .motion = .{ .time = 2, .id = 7, .x = fx(11), .y = fx(21) } }, seat);
+    Seat.onTouch(touch, .{ .shape = .{ .id = 7, .major = fx(6), .minor = fx(4) } }, seat);
+    Seat.onTouch(touch, .{ .up = .{ .serial = 9, .time = 2, .id = 8 } }, seat);
+    Seat.onTouch(touch, .frame, seat);
+    try h.loop.dispatch(0);
+    var touch_events: std.ArrayList(platform.Event) = .empty;
+    defer touch_events.deinit(testing.allocator);
+    for (app.events.items[before..]) |e| switch (e) {
+        .touch_down, .touch_motion, .touch_up, .touch_frame, .touch_cancel => try touch_events.append(testing.allocator, e),
+        else => {},
+    };
+    const got = touch_events.items;
+    const tags = [_]std.meta.Tag(platform.Event){ .touch_down, .touch_down, .touch_frame, .touch_motion, .touch_up, .touch_frame };
+    try testing.expectEqual(tags.len, got.len);
+    for (tags, got) |tag, e| try testing.expectEqual(tag, std.meta.activeTag(e));
+    try testing.expectEqual(@as(i32, 7), got[0].touch_down.id);
+    try testing.expectEqual(id, got[0].touch_down.window);
+    try testing.expectEqual(@as(f64, 11), got[3].touch_motion.x);
+    try testing.expectEqual(@as(f64, 6), got[3].touch_motion.major);
+    try testing.expectEqual(@as(i32, 8), got[4].touch_up.id);
+    try testing.expectEqual(@as(f64, 30), got[4].touch_up.x);
+}
+
+test "sway: output hotplug" {
+    var h: Harness = .{ .compositor = .{ .kind = .sway } };
+    try h.start();
+    defer h.stop();
+    const app = &h.app;
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.count(.output_added) == 1;
+        }
+    }.f);
+
+    try h.compositor.command("create_output");
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.count(.output_added) == 2;
+        }
+    }.f);
+    const added = app.last(.output_added).?.output_added;
+    try testing.expectEqualStrings("HEADLESS-2", app.backend.output(added).?.name.slice());
+
+    // Sway 1.7 has no command that removes a wl_output global (disabling
+    // keeps it), so deliver the global_remove sway would send on unplug.
+    const backend = app.backend;
+    onRegistry(backend.registry, .{ .global_remove = .{ .name = backend.outputs.items[added].?.global } }, backend);
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.count(.output_removed) == 1;
+        }
+    }.f);
+    try testing.expectEqual(added, app.last(.output_removed).?.output_removed);
+    try testing.expect(app.backend.output(added) == null);
+}

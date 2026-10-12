@@ -14,11 +14,13 @@ timed() {
 
 # System libraries siv links (D7, D13, D15, D16) and the Vulkan headers and
 # loader the Vulkan renderer will need (D10). mesa-vulkan-drivers provides
-# lavapipe for headless CPU-vs-Vulkan tests.
+# lavapipe for headless CPU-vs-Vulkan tests. sway, weston, and wtype run
+# headless for the Wayland platform tests, which skip without them.
 packages=(
 	ca-certificates curl xz-utils pkg-config
 	libwayland-dev libxkbcommon-dev libfontconfig-dev
 	libvulkan-dev mesa-vulkan-drivers
+	sway weston wtype
 )
 
 install_packages() {
