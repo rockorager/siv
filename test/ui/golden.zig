@@ -90,9 +90,13 @@ fn form(win: *ui.Window) !Form {
 }
 
 fn expectGolden(app: *App, name: []const u8) !void {
+    return expectGoldenOf(app, app.wid, name);
+}
+
+fn expectGoldenOf(app: *App, wid: platform.WindowId, name: []const u8) !void {
     const gpa = testing.allocator;
     const io = testing.io;
-    const img = try app.presented();
+    const img = try app.presentedOf(wid);
     const got = img.rgba;
     defer gpa.free(got);
     const path = try std.fmt.allocPrint(gpa, "{s}/{s}.png", .{ golden_dir, name });
@@ -489,4 +493,80 @@ test "primary selection: selecting offers it, the middle button pastes it" {
     try app.settle();
     try testing.expectEqualStrings("copy", app.win.node(eds[1]).data.editor.text.content);
     try testing.expectEqual(eds[1], app.win.input.focus);
+}
+
+fn menu(win: *ui.Window) ![3]NodeId {
+    var items: [3]NodeId = undefined;
+    const t = try win.begin();
+    const col = try node(t, .root, .flex, .{ .padding = .all(4) }, .{ .background = .white, .border_width = 1, .border_color = border, .radius = .all(6) });
+    try t.setFlex(col, .{ .axis = .column });
+    try t.setSemantics(col, .{ .role = .menu });
+    for (&items, [_][]const u8{ "Open", "Save as\u{2026}", "Quit" }) |*it, name| {
+        it.* = try node(t, col, .box, .{ .padding = .symmetric(10, 4) }, .{ .radius = .all(4) });
+        try t.setSemantics(it.*, .{ .role = .menu_item, .focusable = true });
+        _ = try label(t, it.*, name, .{ .size = 13, .color = ink }, .{});
+    }
+    t.commit();
+    return items;
+}
+
+test "popups: placed below their button, flipped at the edge, keyboard, dismissed by outside presses" {
+    for ([_]bool{ false, true }) |rtl| {
+        var app: App = undefined;
+        // The output is the window's size, so a popup below the button
+        // must flip above it.
+        try app.init(testing.allocator, .{ .width = 240, .height = 160, .rtl = rtl, .output_width = 240, .output_height = 160 });
+        defer app.deinit();
+        var button: NodeId = undefined;
+        var near_bottom: NodeId = undefined;
+        {
+            const t = try app.win.begin();
+            const col = try node(t, .root, .stack, .{ .padding = .all(10) }, .{ .background = panel });
+            button = try node(t, col, .box, .{ .padding = .symmetric(12, 6), .align_x = .start, .align_y = .start }, .{ .background = blue, .radius = .all(6) });
+            try t.setSemantics(button, .{ .role = .button, .focusable = true });
+            _ = try label(t, button, "File", .{ .color = .white }, .{});
+            near_bottom = try node(t, col, .box, .{ .width = .{ .px = 60 }, .height = .{ .px = 20 }, .inset = .{ .end = 0, .bottom = 0 } }, .{ .background = blue });
+            t.commit();
+        }
+        try app.settle();
+        const br = app.win.windowRect(button);
+        app.click(br.x0 + 5, br.y0 + 5);
+        try app.settle();
+
+        const p = try app.openPopup(button, 120, 90, .below, true);
+        const items = try menu(p.win);
+        try app.settle();
+        var st = try app.windowState(p.wid);
+        // Below the button, at its start edge (the right edge in RTL).
+        try testing.expectEqual(@as(i32, @intFromFloat(@ceil(br.y1))), st.popup.?.y);
+        if (rtl) {
+            try testing.expectEqual(@as(i32, @intFromFloat(@ceil(br.x1))) - 120, st.popup.?.x);
+        } else {
+            try testing.expectEqual(@as(i32, @intFromFloat(@floor(br.x0))), st.popup.?.x);
+        }
+        if (!rtl) try expectGoldenOf(&app, p.wid, "popup-menu");
+        // The grab gives it the keyboard: Tab moves through its items.
+        const k: platform.Key = .{ .window = p.wid, .seat = 0, .keycode = 0, .keysym = ui.keysym.tab, .state = .pressed, .mods = .{}, .time = 0, .serial = 20 };
+        app.inject(.{ .key = k });
+        try app.settle();
+        try testing.expectEqual(items[0], p.win.input.focus);
+        // A press outside dismisses it and reaches nothing else.
+        const focus_before = app.win.input.focus;
+        app.inject(.{ .pointer_motion = .{ .window = app.wid, .seat = 0, .x = 200, .y = 10 } });
+        app.inject(.{ .pointer_button = .{ .window = app.wid, .seat = 0, .button = 0x110, .pressed = true, .time = 0, .serial = 21 } });
+        try app.settle();
+        try testing.expect(p.closed);
+        try testing.expectEqual(focus_before, app.win.input.focus);
+        p.close();
+        try app.settle();
+
+        // From the bottom of the output it opens above instead.
+        const q = try app.openPopup(near_bottom, 100, 60, .below, false);
+        _ = try menu(q.win);
+        try app.settle();
+        st = try app.windowState(q.wid);
+        const nr = app.win.windowRect(near_bottom);
+        try testing.expectEqual(@as(i32, @intFromFloat(@floor(nr.y0))) - 60, st.popup.?.y);
+        q.close();
+    }
 }

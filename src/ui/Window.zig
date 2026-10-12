@@ -488,6 +488,61 @@ pub fn forget(win: *Window, id: NodeId) void {
     win.paint.damage(s.layer, s.bounds);
 }
 
+/// Where a popup goes relative to the node it belongs to. Horizontal sides
+/// are logical: in RTL, `below` hangs from the node's right edge and
+/// `beside` opens to its left (D21).
+pub const PopupPlacement = enum {
+    /// Menus and combo boxes: below, aligned at the start edge; flips
+    /// above and slides sideways to stay on the output.
+    below,
+    /// Submenus: beside the end edge, top-aligned; flips to the start side.
+    beside,
+    /// Tooltips: centered below.
+    tooltip,
+};
+
+/// An xdg_positioner for a popup of `width` x `height` anchored to `id`
+/// (its window rectangle, rounded out).
+pub fn popupPositioner(win: *const Window, id: NodeId, width: u32, height: u32, placement: PopupPlacement) platform.Positioner {
+    const r = win.windowRect(id);
+    const x0: i32 = @intFromFloat(@floor(r.x0));
+    const y0: i32 = @intFromFloat(@floor(r.y0));
+    const anchor_rect: platform.positioner.Rect = .{
+        .x = x0,
+        .y = y0,
+        .width = @as(i32, @intFromFloat(@ceil(r.x1))) - x0,
+        .height = @as(i32, @intFromFloat(@ceil(r.y1))) - y0,
+    };
+    const rtl = win.state(id).rtl;
+    return switch (placement) {
+        .below => .{
+            .width = width,
+            .height = height,
+            .anchor_rect = anchor_rect,
+            .anchor = if (rtl) .bottom_right else .bottom_left,
+            .gravity = if (rtl) .bottom_left else .bottom_right,
+            .adjustment = .{ .flip_y = true, .slide_x = true, .resize_y = true },
+        },
+        .beside => .{
+            .width = width,
+            .height = height,
+            .anchor_rect = anchor_rect,
+            .anchor = if (rtl) .top_left else .top_right,
+            .gravity = if (rtl) .bottom_left else .bottom_right,
+            .adjustment = .{ .flip_x = true, .slide_y = true, .resize_y = true },
+        },
+        .tooltip => .{
+            .width = width,
+            .height = height,
+            .anchor_rect = anchor_rect,
+            .anchor = .bottom,
+            .gravity = .bottom,
+            .adjustment = .{ .flip_y = true, .slide_x = true },
+            .offset_y = 4,
+        },
+    };
+}
+
 /// The semantics tree, rebuilt first if anything it shows changed since.
 /// Nodes laid out by the last frame keep its bounds.
 pub fn semanticsTree(win: *Window) Error!*const semantics_mod.Tree {

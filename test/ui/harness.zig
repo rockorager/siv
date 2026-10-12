@@ -35,6 +35,7 @@ pub const App = struct {
     clipboard: ui.Clipboard,
     last_seq: u64 = 0,
     presented_seq: u64 = 0,
+    popups: std.ArrayList(*Popup) = .empty,
     err: ?anyerror = null,
 
     pub const Options = struct {
@@ -42,13 +43,80 @@ pub const App = struct {
         height: u32 = 240,
         scale: u32 = 1,
         rtl: bool = false,
+        output_width: i32 = 1920,
+        output_height: i32 = 1080,
     };
+
+    /// A popup window and its own ui.Window (D17).
+    pub const Popup = struct {
+        app: *App,
+        wid: platform.WindowId,
+        win: *ui.Window,
+        closed: bool = false,
+
+        fn commit(ctx: ?*anyopaque, ops: []const compositor.Op) error{OutOfMemory}!u64 {
+            const p: *Popup = @ptrCast(@alignCast(ctx));
+            const seq = p.app.comp.commit(p.wid, ops) catch |e| switch (e) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => std.debug.panic("invalid ops: {t}", .{e}),
+            };
+            p.app.last_seq = @max(p.app.last_seq, seq);
+            return seq;
+        }
+
+        fn requestFrame(ctx: ?*anyopaque) void {
+            const p: *Popup = @ptrCast(@alignCast(ctx));
+            p.app.comp.requestFrame(p.wid) catch |e| {
+                p.app.err = e;
+            };
+        }
+
+        pub fn close(p: *Popup) void {
+            const app = p.app;
+            for (app.popups.items, 0..) |q, i| if (q == p) {
+                _ = app.popups.orderedRemove(i);
+                break;
+            };
+            app.comp.destroyWindow(p.wid) catch {};
+            p.win.deinit();
+            app.gpa.destroy(p);
+        }
+    };
+
+    /// Opens a popup anchored to `node` of the main window, with a grab
+    /// for the last press if `grab`.
+    pub fn openPopup(app: *App, node: ui.NodeId, width: u32, height: u32, placement: ui.Window.PopupPlacement, grab: bool) !*Popup {
+        const p = try app.gpa.create(Popup);
+        errdefer app.gpa.destroy(p);
+        p.* = .{ .app = app, .wid = undefined, .win = undefined };
+        p.win = try ui.Window.init(app.gpa, .{
+            .fonts = &app.fonts,
+            .sink = .{ .ctx = p, .commit = Popup.commit },
+            .host = .{ .ctx = p, .request_frame = Popup.requestFrame },
+            .width = @floatFromInt(width),
+            .height = @floatFromInt(height),
+            .scale = app.win.scale,
+            .rtl = app.win.rtl,
+            .reduced_motion = true,
+            .clipboard = &app.clipboard,
+        });
+        errdefer p.win.deinit();
+        try app.popups.append(app.gpa, p);
+        errdefer _ = app.popups.pop();
+        p.wid = try app.comp.createPopup(.{
+            .parent = app.wid,
+            .positioner = app.win.popupPositioner(node, width, height, placement),
+            .grab = if (grab) .{ .seat = app.win.input.seat, .serial = app.win.input.serial } else null,
+        });
+        return p;
+    }
 
     /// `app` must not move afterwards.
     pub fn init(app: *App, gpa: std.mem.Allocator, options: Options) !void {
         app.gpa = gpa;
         app.last_seq = 0;
         app.presented_seq = 0;
+        app.popups = .empty;
         app.err = null;
         app.wid = 0;
         app.loop = try Loop.init(std.heap.smp_allocator);
@@ -82,7 +150,7 @@ pub const App = struct {
             .clipboard = &app.clipboard,
         });
         errdefer app.win.deinit();
-        var output: platform.OutputInfo = .{ .width = 1920, .height = 1080, .refresh_mhz = 60000, .scale = @intCast(options.scale) };
+        var output: platform.OutputInfo = .{ .width = options.output_width, .height = options.output_height, .refresh_mhz = 60000, .scale = @intCast(options.scale) };
         output.name.set("HEADLESS-1");
         app.comp = try Compositor.create(.{
             .allocator = gpa,
@@ -96,6 +164,8 @@ pub const App = struct {
     }
 
     pub fn deinit(app: *App) void {
+        while (app.popups.items.len != 0) app.popups.items[app.popups.items.len - 1].close();
+        app.popups.deinit(app.gpa);
         // The compositor first: afterwards nothing refers to the window's
         // builders.
         app.comp.destroy();
@@ -275,8 +345,20 @@ pub const App = struct {
             },
             else => {},
         }
-        if (ev.* == .released and !app.win.ownsBuilder(ev.released)) return;
-        if (ev.window()) |w| if (w != app.wid) return;
+        if (ev.* == .released) {
+            for (app.popups.items) |p| if (p.win.ownsBuilder(ev.released)) return p.win.handleEvent(ev) catch {};
+            if (!app.win.ownsBuilder(ev.released)) return;
+        }
+        if (ev.window()) |w| if (w != app.wid) {
+            for (app.popups.items) |p| if (p.wid == w) {
+                if (ev.* == .platform and ev.platform == .close_requested) p.closed = true;
+                if (ev.* == .presented) app.presented_seq = @max(app.presented_seq, ev.presented.seq);
+                p.win.handleEvent(ev) catch |e| {
+                    app.err = e;
+                };
+            };
+            return;
+        };
         app.win.handleEvent(ev) catch |e| {
             app.err = e;
         };
@@ -292,8 +374,10 @@ pub const App = struct {
             const before = app.presented_seq;
             try app.loop.dispatch(2);
             if (app.err) |e| return e;
+            var popups_busy = false;
+            for (app.popups.items) |p| popups_busy = popups_busy or p.win.needsFrame();
             const busy = app.presented_seq != before or app.presented_seq < app.last_seq or
-                app.win.needsFrame() or app.fonts.loading() or app.win.txn.open;
+                app.win.needsFrame() or app.fonts.loading() or app.win.txn.open or popups_busy;
             idle = if (busy) 0 else idle + 1;
         }
     }
@@ -332,6 +416,25 @@ pub const App = struct {
     /// The presented frame as RGBA bytes (caller frees `rgba`), and the
     /// bounding box of its damage.
     pub fn presented(app: *App) !Presented {
+        return app.presentedOf(app.wid);
+    }
+
+    /// The popup's (or any window's) presented frame and placement.
+    pub fn windowState(app: *App, wid: platform.WindowId) !platform.WindowState {
+        const Ctx = struct {
+            wid: platform.WindowId,
+            out: platform.WindowState = .{},
+            fn run(c: ?*anyopaque, comp: *Compositor) void {
+                const s: *@This() = @ptrCast(@alignCast(c));
+                s.out = comp.platform.window(s.wid).*;
+            }
+        };
+        var c: Ctx = .{ .wid = wid };
+        try app.comp.call(&c, Ctx.run);
+        return c.out;
+    }
+
+    pub fn presentedOf(app: *App, wid: platform.WindowId) !Presented {
         const Ctx = struct {
             gpa: std.mem.Allocator,
             wid: platform.WindowId,
@@ -350,7 +453,7 @@ pub const App = struct {
                 s.out = .{ .rgba = rgba, .width = img.width, .height = img.height, .damage = img.damage };
             }
         };
-        var c: Ctx = .{ .gpa = app.gpa, .wid = app.wid };
+        var c: Ctx = .{ .gpa = app.gpa, .wid = wid };
         try app.comp.call(&c, Ctx.run);
         return c.out;
     }

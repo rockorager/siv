@@ -683,6 +683,22 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     window menu). Applications may opt into client-side for header-bar layouts.
   - Every menu, tooltip, and combobox is an `xdg_popup` with positioner
     constraints and grabs.
+    - A popup is a window of its own (`Platform.createPopup`,
+      `Compositor.createPopup`) with its own layer tree and its own
+      `ui.Window`; its configure reports where the compositor placed it.
+      A grab, taken for the press or key that opened it, gives it the
+      keyboard; when the compositor dismisses it (`popup_done`), it gets
+      `close_requested`, and the dismissing press goes nowhere else.
+    - `ui.Window.popupPositioner` anchors a popup to a node with logical
+      placements: `below` (menus: start edge, flip up, slide sideways,
+      shrink), `beside` (submenus: end edge, flip to the start side), and
+      `tooltip` (centered below). In RTL they mirror.
+    - The headless backend places popups with the same rules
+      (`platform.positioner.place`: flip, then slide, then resize, per
+      axis) against its output and simulates grab dismissal; the sway
+      integration tests check real placement.
+    - Not yet: `xdg_popup.reposition` and reactive positioners for popups
+      that follow a moving anchor.
   - External GPU content is a scene node. When the node is axis-aligned,
     rectangularly clipped, and opaque or topmost, it is promoted to a subsurface
     (zero-copy, `wp_viewporter`, compositor color management). Otherwise its
