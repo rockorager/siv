@@ -175,6 +175,15 @@ pub const Platform = union(enum) {
         };
     }
 
+    /// Moves a popup with a new positioner (xdg_popup.reposition); a
+    /// configure with the new placement follows. For anchors that move,
+    /// such as a completion list following the caret.
+    pub fn repositionPopup(p: Platform, id: WindowId, pos: Positioner) void {
+        switch (p) {
+            inline else => |b| b.repositionPopup(id, pos),
+        }
+    }
+
     // Subsurfaces (D17): external content shown without copying, above the
     // window's own content, in sync with the window's commits.
 

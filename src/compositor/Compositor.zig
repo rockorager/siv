@@ -329,6 +329,31 @@ pub fn createPopup(self: *Compositor, options: platform_mod.PopupOptions) !Windo
     return id;
 }
 
+/// Moves a popup with a new positioner, in order with commits; its new
+/// placement arrives as a configure.
+pub fn repositionPopup(self: *Compositor, window: WindowId, pos: platform_mod.Positioner) Allocator.Error!void {
+    const Ctx = struct {
+        gpa: Allocator,
+        window: WindowId,
+        pos: platform_mod.Positioner,
+        fn run(ctx: ?*anyopaque, comp: *Compositor) void {
+            const s: *@This() = @ptrCast(@alignCast(ctx));
+            if (comp.getWindow(s.window) != null) comp.platform.repositionPopup(s.window, s.pos);
+            free(ctx);
+        }
+        fn free(ctx: ?*anyopaque) void {
+            const s: *@This() = @ptrCast(@alignCast(ctx));
+            s.gpa.destroy(s);
+        }
+    };
+    const ctx = try self.gpa.create(Ctx);
+    ctx.* = .{ .gpa = self.gpa, .window = window, .pos = pos };
+    self.post(ctx, Ctx.run, Ctx.free) catch |err| {
+        self.gpa.destroy(ctx);
+        return err;
+    };
+}
+
 /// Creates an external content slot in a window (D17). Show it with
 /// `Op.set_external` and feed it frames with `setExternalFrame`.
 pub fn createExternal(self: *Compositor, window: WindowId) !update.ExternalId {

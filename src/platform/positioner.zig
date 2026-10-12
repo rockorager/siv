@@ -34,6 +34,9 @@ pub const Positioner = struct {
     adjustment: Adjustment = .{ .flip_y = true, .slide_x = true, .resize_y = true },
     offset_x: i32 = 0,
     offset_y: i32 = 0,
+    /// Have the compositor place the popup again when the parent moves or
+    /// changes size (xdg_positioner.set_reactive).
+    reactive: bool = false,
 };
 
 fn hside(e: Edge) i2 {

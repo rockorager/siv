@@ -49,6 +49,7 @@ registry: *wl.Registry,
 
 compositor: ?*wl.Compositor = null,
 subcompositor: ?*wl.Subcompositor = null,
+reposition_token: u32 = 0,
 shm: ?*wl.Shm = null,
 wm_base: ?*xdg.WmBase = null,
 viewporter: ?*wp.Viewporter = null,
@@ -538,15 +539,8 @@ pub fn createPopup(self: *Wayland, options: platform.PopupOptions) Error!WindowI
     errdefer surface.destroy();
     const xdg_surface = self.wm_base.?.getXdgSurface(surface) catch return error.OutOfMemory;
     errdefer xdg_surface.destroy();
-    const positioner = self.wm_base.?.createPositioner() catch return error.OutOfMemory;
+    const positioner = try self.makePositioner(pos);
     defer positioner.destroy();
-    positioner.setSize(@intCast(@max(pos.width, 1)), @intCast(@max(pos.height, 1)));
-    const ar = pos.anchor_rect;
-    positioner.setAnchorRect(ar.x, ar.y, @max(ar.width, 1), @max(ar.height, 1));
-    positioner.setAnchor(@enumFromInt(@intFromEnum(pos.anchor)));
-    positioner.setGravity(@enumFromInt(@intFromEnum(pos.gravity)));
-    positioner.setConstraintAdjustment(@bitCast(pos.adjustment));
-    positioner.setOffset(pos.offset_x, pos.offset_y);
     const popup = xdg_surface.getPopup(parent.xdg_surface, positioner) catch return error.OutOfMemory;
     errdefer popup.destroy();
     const w = try self.allocator.create(Window);
@@ -572,6 +566,30 @@ pub fn createPopup(self: *Wayland, options: platform.PopupOptions) Error!WindowI
     surface.commit();
     self.windows.items[slot] = w;
     return w.id;
+}
+
+fn makePositioner(self: *Wayland, pos: platform.Positioner) Error!*xdg.Positioner {
+    const positioner = self.wm_base.?.createPositioner() catch return error.OutOfMemory;
+    positioner.setSize(@intCast(@max(pos.width, 1)), @intCast(@max(pos.height, 1)));
+    const ar = pos.anchor_rect;
+    positioner.setAnchorRect(ar.x, ar.y, @max(ar.width, 1), @max(ar.height, 1));
+    positioner.setAnchor(@enumFromInt(@intFromEnum(pos.anchor)));
+    positioner.setGravity(@enumFromInt(@intFromEnum(pos.gravity)));
+    positioner.setConstraintAdjustment(@bitCast(pos.adjustment));
+    positioner.setOffset(pos.offset_x, pos.offset_y);
+    if (pos.reactive and positioner.getVersion() >= 3) positioner.setReactive();
+    return positioner;
+}
+
+pub fn repositionPopup(self: *Wayland, id: WindowId, pos: platform.Positioner) void {
+    const w = self.get(id);
+    const popup = w.popup orelse return;
+    // Needs xdg_wm_base 3; older compositors keep the first placement.
+    if (popup.getVersion() < 3) return;
+    const positioner = self.makePositioner(pos) catch return self.queue.fail(error.OutOfMemory);
+    defer positioner.destroy();
+    self.reposition_token +%= 1;
+    popup.reposition(positioner, self.reposition_token);
 }
 
 fn onPopup(_: *xdg.Popup, event: xdg.Popup.Event, w: *Window) void {

@@ -488,6 +488,21 @@ test "popups are placed by the compositor within the output, then dismissed" {
     try testing.expect(pos.y + 100 <= 690);
     try testing.expect(pos.x + 200 <= 1280);
     try testing.expectEqual(Size{ .width = 200, .height = 100 }, app.buffer_of[popup]);
+
+    // Moved to a new anchor in the open area: placed exactly below it.
+    backend.repositionPopup(popup, .{
+        .width = 200,
+        .height = 100,
+        .anchor_rect = .{ .x = 100, .y = 100, .width = 40, .height = 10 },
+        .anchor = .bottom_left,
+        .gravity = .bottom_right,
+    });
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            const p = a.backend.windowState(a.watch).popup orelse return false;
+            return p.x == 100 and p.y == 110;
+        }
+    }.f);
     backend.destroyWindow(popup);
     try runMs(&h.loop, 50);
 }

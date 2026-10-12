@@ -205,15 +205,7 @@ pub fn createWindow(hl: *Headless, options: platform.WindowOptions) Error!Window
 /// output, like a compositor would.
 pub fn createPopup(hl: *Headless, options: platform.PopupOptions) Error!WindowId {
     const parent = hl.get(options.parent);
-    const out = hl.output(0);
-    const scale: i32 = if (out) |o| @max(o.scale, 1) else 1;
-    const area: platform.positioner.Rect = .{
-        .x = -parent.origin.x,
-        .y = -parent.origin.y,
-        .width = if (out) |o| @divTrunc(o.width, scale) else std.math.maxInt(i16),
-        .height = if (out) |o| @divTrunc(o.height, scale) else std.math.maxInt(i16),
-    };
-    const r = platform.positioner.place(options.positioner, area);
+    const r = platform.positioner.place(options.positioner, hl.popupArea(parent));
     const id = try hl.createWindow(.{ .width = @intCast(r.width), .height = @intCast(r.height) });
     const w = hl.get(id);
     w.parent = options.parent;
@@ -263,6 +255,29 @@ pub fn subsurfaces(hl: *Headless, id: WindowId) []const ?platform.SubsurfaceStat
 /// How many commits carried no buffer.
 pub fn bareCommits(hl: *Headless, id: WindowId) u32 {
     return hl.get(id).bare_commits;
+}
+
+pub fn repositionPopup(hl: *Headless, id: WindowId, pos: platform.Positioner) void {
+    const w = hl.get(id);
+    const parent = hl.get(w.parent orelse return);
+    const r = platform.positioner.place(pos, hl.popupArea(parent));
+    w.origin = .{ .x = parent.origin.x + r.x, .y = parent.origin.y + r.y };
+    w.state.popup = .{ .x = r.x, .y = r.y };
+    w.state.width = @intCast(r.width);
+    w.state.height = @intCast(r.height);
+    hl.sendConfigure(w);
+}
+
+/// Where popups of `parent` may go: the first output, in its coordinates.
+fn popupArea(hl: *Headless, parent: *const Window) platform.positioner.Rect {
+    const out = hl.output(0);
+    const scale: i32 = if (out) |o| @max(o.scale, 1) else 1;
+    return .{
+        .x = -parent.origin.x,
+        .y = -parent.origin.y,
+        .width = if (out) |o| @divTrunc(o.width, scale) else std.math.maxInt(i16),
+        .height = if (out) |o| @divTrunc(o.height, scale) else std.math.maxInt(i16),
+    };
 }
 
 /// Whether `id` is `window` or one of its ancestors.

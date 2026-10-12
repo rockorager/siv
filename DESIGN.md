@@ -746,8 +746,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       (`platform.positioner.place`: flip, then slide, then resize, per
       axis) against its output and simulates grab dismissal; the sway
       integration tests check real placement.
-    - Not yet: `xdg_popup.reposition` and reactive positioners for popups
-      that follow a moving anchor.
+    - A popup whose anchor moves (a completion list following the caret,
+      a menu whose button scrolled) is moved with a new positioner
+      (`Compositor.repositionPopup`, `xdg_popup.reposition`, in order with
+      commits); the new placement arrives as a configure. A positioner
+      can be `reactive`, so the compositor places the popup again when the
+      parent moves or resizes. Both need `xdg_wm_base` 3; on older
+      compositors a popup keeps its first placement, so the caller closes
+      and reopens it if the move matters.
   - External GPU content is a scene node. When the node is axis-aligned,
     rectangularly clipped, and opaque or topmost, it is promoted to a subsurface
     (zero-copy, `wp_viewporter`, compositor color management). Otherwise its
