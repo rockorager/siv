@@ -999,3 +999,48 @@ test "input method: enable, preedit inline, commit with undo, masked fields stay
     try f.frame();
     try testing.expectEqual(sent, f.text_inputs.items.len);
 }
+
+test "editor: double click selects a word, triple a paragraph, dragging extends by them" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 400, .height = 100 });
+    defer f.deinit();
+    const t = try f.win.begin();
+    const ed = try box(t, .root, .editor, .{ .align_y = .start });
+    try t.setEditor(ed, .{ .multiline = true });
+    try t.setText(ed, "hello brave new world\nsecond line");
+    t.commit();
+    try f.frame();
+    const e = &f.win.node(ed).data.editor;
+    const l = @import("text_node.zig").current(f.win, ed).?;
+    const line0 = l.lines[0];
+    // The middle of "brave" and of "world" on the first line.
+    const bx = line0.x + (l.caret(.{ .offset = 6 }).x + l.caret(.{ .offset = 11 }).x) / 2;
+    const wx = (l.caret(.{ .offset = 16 }).x + l.caret(.{ .offset = 21 }).x) / 2;
+    const y = line0.top + line0.height / 2;
+    const P = struct {
+        fn press(fx: *Fixture, x: f32, yy: f32, time: u32, down: bool) void {
+            fx.win.handlePlatform(&.{ .pointer_motion = .{ .window = 0, .seat = 0, .x = x, .y = yy } });
+            fx.win.handlePlatform(&.{ .pointer_button = .{ .window = 0, .seat = 0, .button = 0x110, .pressed = down, .time = time, .serial = 0 } });
+        }
+    };
+    P.press(&f, bx, y, 1000, true);
+    P.press(&f, bx, y, 1010, false);
+    try testing.expectEqual(e.caret, e.anchor);
+    P.press(&f, bx, y, 1100, true);
+    try testing.expectEqual(@as(u32, 6), @min(e.caret, e.anchor));
+    try testing.expectEqual(@as(u32, 11), @max(e.caret, e.anchor));
+    // Dragging to "world" extends by whole words.
+    f.win.handlePlatform(&.{ .pointer_motion = .{ .window = 0, .seat = 0, .x = wx, .y = y } });
+    try testing.expectEqual(@as(u32, 6), e.anchor);
+    try testing.expectEqual(@as(u32, 21), e.caret);
+    P.press(&f, wx, y, 1150, false);
+    // A third press in time (back where the clicks started) selects the paragraph.
+    P.press(&f, bx, y, 1200, true);
+    P.press(&f, bx, y, 1210, false);
+    try testing.expectEqual(@as(u32, 0), e.anchor);
+    try testing.expectEqual(@as(u32, 21), e.caret);
+    // Too late for a multi-click: back to a caret.
+    P.press(&f, bx, y, 2000, true);
+    P.press(&f, bx, y, 2010, false);
+    try testing.expectEqual(e.caret, e.anchor);
+}

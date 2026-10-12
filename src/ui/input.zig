@@ -47,6 +47,11 @@ const btn_middle = 0x112;
 /// Pixels per arrow key when the UI scrolls.
 pub const line_step: f32 = 40;
 
+/// Presses this close in time and space count as one multi-click. Fixed
+/// until the desktop settings portal supplies them (D19).
+pub const multi_click_ms: u32 = 400;
+pub const multi_click_px: f32 = 4;
+
 pub const State = struct {
     focus: NodeId = .none,
     /// Focus came from the keyboard, so it shows a ring.
@@ -63,6 +68,12 @@ pub const State = struct {
     /// An editor whose selection follows the pointer while the primary
     /// button is held.
     selecting: NodeId = .none,
+    /// Multi-click detection: the last primary press and the count so far.
+    last_press_ms: u32 = 0,
+    last_press_at: Point = .zero,
+    clicks: u8 = 0,
+    /// The editor selection gesture of the current press.
+    gesture: editor.Gesture = .{},
     mods: platform.Mods = .{},
 
     pub fn deinit(st: *State, gpa: std.mem.Allocator) void {
@@ -166,10 +177,11 @@ fn call(win: *Window, id: NodeId, kind: node_mod.HandlerKind, event: *const Even
 /// each node. Returns true if a handler took it.
 fn bubblePointer(win: *Window, target: NodeId, phase: node_mod.PointerPhase, button: node_mod.Button) bool {
     const p = win.input.pointer orelse return false;
+    const clicks: u8 = if (button == .primary and (phase == .down or phase == .up)) @max(win.input.clicks, 1) else 1;
     var cur = target;
     while (cur != .none and win.isLive(cur)) {
         const local = toLocal(win, cur, p);
-        const ev: Event = .{ .pointer = .{ .phase = phase, .x = local.x, .y = local.y, .button = button, .mods = win.input.mods } };
+        const ev: Event = .{ .pointer = .{ .phase = phase, .x = local.x, .y = local.y, .button = button, .mods = win.input.mods, .clicks = clicks } };
         if (call(win, cur, .pointer, &ev)) return true;
         if (!win.isLive(cur)) return false;
         cur = win.node(cur).parent;
@@ -282,16 +294,16 @@ pub fn handle(win: *Window, event: *const platform.Event) void {
             updateHover(win, .none);
             st.pointer = null;
         },
-        .pointer_button => |b| pointerButton(win, b.button, b.pressed),
+        .pointer_button => |b| pointerButton(win, b.button, b.pressed, b.time),
         .touch_down => |t| {
             st.pointer = .{ .x = @floatCast(t.x), .y = @floatCast(t.y) };
-            pointerButton(win, btn_left, true);
+            pointerButton(win, btn_left, true, t.time);
         },
         .touch_motion => |t| {
             st.pointer = .{ .x = @floatCast(t.x), .y = @floatCast(t.y) };
             if (st.capture != .none) _ = bubblePointer(win, st.capture, .move, .primary);
         },
-        .touch_up => pointerButton(win, btn_left, false),
+        .touch_up => |t| pointerButton(win, btn_left, false, t.time),
         .touch_cancel => {
             if (st.capture != .none) _ = bubblePointer(win, st.capture, .cancel, .primary);
             st.capture = .none;
@@ -315,7 +327,7 @@ pub fn handle(win: *Window, event: *const platform.Event) void {
     }
 }
 
-fn pointerButton(win: *Window, code: u32, pressed: bool) void {
+fn pointerButton(win: *Window, code: u32, pressed: bool, time: u32) void {
     const st = &win.input;
     const p = st.pointer orelse return;
     const button: node_mod.Button = switch (code) {
@@ -324,6 +336,13 @@ fn pointerButton(win: *Window, code: u32, pressed: bool) void {
         btn_middle => .middle,
         else => .other,
     };
+    if (pressed and button == .primary) {
+        const near = @abs(p.x - st.last_press_at.x) <= multi_click_px and @abs(p.y - st.last_press_at.y) <= multi_click_px;
+        const soon = st.clicks != 0 and time -% st.last_press_ms <= multi_click_ms;
+        st.clicks = if (near and soon) @min(st.clicks, 2) + 1 else 1;
+        st.last_press_ms = time;
+        st.last_press_at = p;
+    }
     if (pressed) {
         const target = hitTest(win, p);
         if (target == .none) return;
@@ -334,7 +353,7 @@ fn pointerButton(win: *Window, code: u32, pressed: bool) void {
         while (cur != .none and !canFocus(win, cur)) cur = win.node(cur).parent;
         if (cur != .none) setFocus(win, cur, false);
         if (win.node(target).kind == .editor and canFocus(win, target)) {
-            editor.pointerDown(win, target, p, st.mods.shift);
+            editor.pointerDown(win, target, p, st.mods.shift, st.clicks);
             st.selecting = target;
         }
         cur = target;

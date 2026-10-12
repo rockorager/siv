@@ -456,6 +456,9 @@ pub const Pointer = struct {
     y: f32,
     button: Button = .primary,
     mods: Mods = .{},
+    /// Presses in quick succession at about the same place: 2 for a double
+    /// click, 3 for a triple click (on `down` and `up`).
+    clicks: u8 = 1,
 };
 
 pub const Key = struct {

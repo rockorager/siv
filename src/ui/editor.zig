@@ -126,19 +126,75 @@ fn positionAt(win: *Window, id: NodeId, local: Point) ?Position {
     return l.hitTest(x - text_node.lineShift(win, id, line, contentWidth(win, id)), y);
 }
 
+/// What a multi-click selects, and what dragging after it extends by.
+pub const Unit = enum { grapheme, word, paragraph };
+
+/// The selection a press started: its unit and the range it selected,
+/// which dragging keeps selected.
+pub const Gesture = struct { unit: Unit = .grapheme, start: u32 = 0, end: u32 = 0 };
+
+/// The word (or run of spaces or punctuation, UAX #29) at an offset.
+fn wordAt(l: *const Layout, offset: u32) [2]u32 {
+    const words = l.paragraph.words.boundaries;
+    const len: u32 = @intCast(l.paragraph.text.len);
+    var start = words.atOrBefore(offset) orelse 0;
+    if (start == len and len > 0) start = words.before(len) orelse 0;
+    return .{ start, words.after(start) orelse len };
+}
+
+/// The paragraph at an offset, without its separator.
+fn paragraphAt(l: *const Layout, offset: u32) [2]u32 {
+    const p = l.paragraph.paragraphs[l.paragraph.paragraphAt(offset)];
+    return .{ p.start, p.contentEnd() };
+}
+
+fn unitAt(l: *const Layout, unit: Unit, offset: u32) [2]u32 {
+    return switch (unit) {
+        .grapheme => .{ offset, offset },
+        .word => wordAt(l, offset),
+        .paragraph => paragraphAt(l, offset),
+    };
+}
+
 /// A primary press at a window point: places the caret (extends the
-/// selection with shift).
-pub fn pointerDown(win: *Window, id: NodeId, p: Point, extend: bool) void {
+/// selection with shift); a double click selects a word, a triple click
+/// a paragraph.
+pub fn pointerDown(win: *Window, id: NodeId, p: Point, extend: bool, clicks: u8) void {
     if (win.ime.preeditFor(id) != null) @import("ime.zig").reset(win);
     const pos = positionAt(win, id, input.toLocal(win, id, p)) orelse return;
     const e = data(win, id);
-    select(win, id, pos, if (extend) e.anchor else pos.offset);
+    const unit: Unit = switch (clicks) {
+        0, 1 => .grapheme,
+        2 => .word,
+        else => .paragraph,
+    };
+    // Masked text has no words to show.
+    const effective: Unit = if (e.editor.masked and unit == .word) .paragraph else unit;
+    if (effective == .grapheme or extend) {
+        win.input.gesture = .{ .unit = .grapheme, .start = pos.offset, .end = pos.offset };
+        select(win, id, pos, if (extend) e.anchor else pos.offset);
+        return;
+    }
+    const l = fresh(win, id) orelse return;
+    const r = unitAt(l, effective, pos.offset);
+    win.input.gesture = .{ .unit = effective, .start = r[0], .end = r[1] };
+    win.state(id).preferred_x = null;
+    setSelection(win, id, r[1], r[0], .upstream);
 }
 
-/// Dragging with the button held extends the selection.
+/// Dragging with the button held extends the selection, by the unit the
+/// press selected.
 pub fn pointerDrag(win: *Window, id: NodeId, p: Point) void {
     const pos = positionAt(win, id, input.toLocal(win, id, p)) orelse return;
-    select(win, id, pos, data(win, id).anchor);
+    const g = win.input.gesture;
+    if (g.unit == .grapheme) return select(win, id, pos, data(win, id).anchor);
+    const l = fresh(win, id) orelse return;
+    const r = unitAt(l, g.unit, pos.offset);
+    if (r[0] < g.start) {
+        setSelection(win, id, r[0], g.end, .downstream);
+    } else {
+        setSelection(win, id, @max(r[1], g.end), g.start, .upstream);
+    }
 }
 
 fn select(win: *Window, id: NodeId, pos: Position, anchor: u32) void {

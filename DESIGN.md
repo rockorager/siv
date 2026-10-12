@@ -639,7 +639,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     underlined, and is never part of the text. Editing keys that still
     arrive while the input method composes are ignored; a click resets
     the preedit. Masked editors keep the input method disabled.
-  - Not built yet: selection by double click.
+  - A double click selects the word (UAX #29 segment) under the pointer,
+    a triple click its paragraph, and dragging after either extends by
+    whole words or paragraphs. Presses count as one multi-click within
+    400 ms and 4 px until the settings portal supplies the desktop's
+    values (D19); pointer events report the count to handlers. Masked
+    editors select everything on a double click.
 
 ### D16. Input
 
