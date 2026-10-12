@@ -1,14 +1,16 @@
 //! Desktop settings from the portal (D19): color scheme, accent color,
-//! contrast, reduced motion, text scale, fonts, and cursor theme and size,
-//! read from org.freedesktop.portal.Settings and followed live through
+//! contrast, reduced motion, text scale, fonts, cursor theme and size,
+//! double-click time, and caret blinking, read from
+//! org.freedesktop.portal.Settings and followed live through
 //! SettingChanged. Without a portal the built-in defaults stay in effect.
 //!
 //! The standardized org.freedesktop.appearance keys come first. The rest
-//! has no standard key, so the GNOME keys (org.gnome.desktop.interface and
-//! org.gnome.desktop.a11y.interface, which xdg-desktop-portal-gnome and
-//! -gtk expose) come next, then KDE's fonts (org.kde.kdeglobals.General,
-//! from xdg-desktop-portal-kde). A setting no source provides takes its
-//! default.
+//! has no standard key, so the GNOME keys (org.gnome.desktop.interface,
+//! org.gnome.desktop.a11y.interface, and
+//! org.gnome.desktop.peripherals.mouse, which xdg-desktop-portal-gnome and
+//! -gtk expose) come next, then KDE's (org.kde.kdeglobals.General and
+//! .KDE, from xdg-desktop-portal-kde, as strings). A setting no source
+//! provides takes its default.
 //!
 //! When the portal starts or restarts, the settings are read again. When
 //! it goes away, the last values stay.
@@ -39,8 +41,10 @@ pub const portal_interface = "org.freedesktop.portal.Settings";
 const ns_appearance = "org.freedesktop.appearance";
 const ns_gnome = "org.gnome.desktop.interface";
 const ns_gnome_a11y = "org.gnome.desktop.a11y.interface";
+const ns_gnome_mouse = "org.gnome.desktop.peripherals.mouse";
 const ns_kde = "org.kde.kdeglobals.General";
-const namespaces = [_][]const u8{ ns_appearance, ns_gnome, ns_gnome_a11y, ns_kde };
+const ns_kde_kde = "org.kde.kdeglobals.KDE";
+const namespaces = [_][]const u8{ ns_appearance, ns_gnome, ns_gnome_a11y, ns_gnome_mouse, ns_kde, ns_kde_kde };
 
 pub const ColorScheme = enum { no_preference, dark, light };
 pub const Contrast = enum { normal, high };
@@ -106,6 +110,14 @@ pub const Values = struct {
     cursor_theme: Text(64) = .init("default"),
     /// In logical pixels.
     cursor_size: u32 = 24,
+    /// Most time between the clicks of a double click, in milliseconds.
+    double_click_ms: u32 = 400,
+    /// Whether the text caret blinks.
+    cursor_blink: bool = true,
+    /// One whole blink cycle, shown and hidden, in milliseconds.
+    cursor_blink_ms: u32 = 1200,
+    /// The caret stops blinking after this many seconds without input.
+    cursor_blink_timeout_s: u32 = 10,
 };
 
 /// Which values changed.
@@ -120,7 +132,10 @@ pub const Changed = packed struct(u16) {
     monospace_font: bool = false,
     cursor_theme: bool = false,
     cursor_size: bool = false,
-    _: u6 = 0,
+    double_click: bool = false,
+    /// Any of the three caret blink values.
+    cursor_blink: bool = false,
+    _: u4 = 0,
 
     pub fn any(c: Changed) bool {
         return @as(u16, @bitCast(c)) != 0;
@@ -142,8 +157,15 @@ pub const Raw = struct {
     gnome_monospace_font: ?Font = null,
     gnome_cursor_theme: ?Text(64) = null,
     gnome_cursor_size: ?i64 = null,
+    gnome_double_click: ?i64 = null,
+    gnome_cursor_blink: ?bool = null,
+    gnome_cursor_blink_time: ?i64 = null,
+    gnome_cursor_blink_timeout: ?i64 = null,
     kde_font: ?Font = null,
     kde_fixed: ?Font = null,
+    kde_double_click: ?i64 = null,
+    /// Milliseconds per cycle; 0 means no blinking.
+    kde_cursor_blink_rate: ?i64 = null,
 
     /// Applies one setting; unknown keys and values of the wrong type
     /// are ignored. `d` is positioned on the value inside its variant.
@@ -176,9 +198,23 @@ pub const Raw = struct {
                 r.gnome_cursor_theme = if (s.len > 0) .init(s) else null;
             } else if (eq(u8, key, "cursor-size")) {
                 r.gnome_cursor_size = readInt(value_sig, d);
+            } else if (eq(u8, key, "cursor-blink")) {
+                r.gnome_cursor_blink = readBool(value_sig, d);
+            } else if (eq(u8, key, "cursor-blink-time")) {
+                r.gnome_cursor_blink_time = readInt(value_sig, d);
+            } else if (eq(u8, key, "cursor-blink-timeout")) {
+                r.gnome_cursor_blink_timeout = readInt(value_sig, d);
             }
         } else if (eq(u8, namespace, ns_gnome_a11y)) {
             if (eq(u8, key, "high-contrast")) r.gnome_high_contrast = readBool(value_sig, d);
+        } else if (eq(u8, namespace, ns_gnome_mouse)) {
+            if (eq(u8, key, "double-click")) r.gnome_double_click = readInt(value_sig, d);
+        } else if (eq(u8, namespace, ns_kde_kde)) {
+            if (eq(u8, key, "DoubleClickInterval")) {
+                r.kde_double_click = readIntString(value_sig, d);
+            } else if (eq(u8, key, "CursorBlinkRate")) {
+                r.kde_cursor_blink_rate = readIntString(value_sig, d);
+            }
         } else if (eq(u8, namespace, ns_kde)) {
             if (eq(u8, key, "font")) {
                 r.kde_font = parseQtFont(readString(value_sig, d) orelse return);
@@ -206,9 +242,25 @@ pub const Raw = struct {
         v.monospace_font = r.gnome_monospace_font orelse r.kde_fixed orelse def.monospace_font;
         v.cursor_theme = r.gnome_cursor_theme orelse def.cursor_theme;
         v.cursor_size = if (r.gnome_cursor_size) |s| (if (s >= 8 and s <= 512) @intCast(s) else def.cursor_size) else def.cursor_size;
+        v.double_click_ms = inRange(r.gnome_double_click, 100, 5000) orelse inRange(r.kde_double_click, 100, 5000) orelse def.double_click_ms;
+        v.cursor_blink = r.gnome_cursor_blink orelse if (r.kde_cursor_blink_rate) |k| k != 0 else def.cursor_blink;
+        v.cursor_blink_ms = inRange(r.gnome_cursor_blink_time, 100, 10_000) orelse inRange(r.kde_cursor_blink_rate, 100, 10_000) orelse def.cursor_blink_ms;
+        v.cursor_blink_timeout_s = inRange(r.gnome_cursor_blink_timeout, 1, 86_400) orelse def.cursor_blink_timeout_s;
         return v;
     }
 };
+
+fn inRange(v: ?i64, min: u32, max: u32) ?u32 {
+    const x = v orelse return null;
+    return if (x >= min and x <= max) @intCast(x) else null;
+}
+
+/// An integer, or a string holding one (KDE's portal sends strings).
+fn readIntString(sig: []const u8, d: *codec.Decoder) ?i64 {
+    if (!std.mem.eql(u8, sig, "s")) return readInt(sig, d);
+    const s = d.readString() catch return null;
+    return std.fmt.parseInt(i64, std.mem.trim(u8, s, " "), 10) catch null;
+}
 
 fn readUint(sig: []const u8, d: *codec.Decoder) ?u32 {
     const v = readInt(sig, d) orelse return null;
@@ -463,6 +515,9 @@ fn update(s: *Settings, always: bool) void {
         .monospace_font = !old.monospace_font.eql(new.monospace_font),
         .cursor_theme = !old.cursor_theme.eql(&new.cursor_theme),
         .cursor_size = old.cursor_size != new.cursor_size,
+        .double_click = old.double_click_ms != new.double_click_ms,
+        .cursor_blink = old.cursor_blink != new.cursor_blink or old.cursor_blink_ms != new.cursor_blink_ms or
+            old.cursor_blink_timeout_s != new.cursor_blink_timeout_s,
     };
     if (!changed.any() and !always) return;
     if (s.on_change) |f| f(s.ctx, s, changed);
@@ -534,6 +589,35 @@ test "precedence and defaults" {
     try testing.expectEqualStrings("Cantarell", v.font.family.slice());
     try testing.expectEqual(@as(u32, 24), v.cursor_size);
     try testing.expectEqual(@as(f64, 1.25), v.text_scale);
+}
+
+test "double-click and caret blink: GNOME, then KDE, then defaults" {
+    var raw: Raw = .{};
+    var v = raw.resolve();
+    try testing.expectEqual(@as(u32, 400), v.double_click_ms);
+    try testing.expect(v.cursor_blink);
+    try testing.expectEqual(@as(u32, 1200), v.cursor_blink_ms);
+    try testing.expectEqual(@as(u32, 10), v.cursor_blink_timeout_s);
+    // KDE: a blink rate of 0 turns blinking off and keeps the default
+    // period.
+    raw.kde_double_click = 250;
+    raw.kde_cursor_blink_rate = 0;
+    v = raw.resolve();
+    try testing.expectEqual(@as(u32, 250), v.double_click_ms);
+    try testing.expect(!v.cursor_blink);
+    try testing.expectEqual(@as(u32, 1200), v.cursor_blink_ms);
+    raw.kde_cursor_blink_rate = 800;
+    try testing.expectEqual(@as(u32, 800), raw.resolve().cursor_blink_ms);
+    // GNOME wins; out-of-range values fall through.
+    raw.gnome_double_click = 600;
+    raw.gnome_cursor_blink = true;
+    raw.gnome_cursor_blink_time = 50;
+    raw.gnome_cursor_blink_timeout = 0;
+    v = raw.resolve();
+    try testing.expectEqual(@as(u32, 600), v.double_click_ms);
+    try testing.expect(v.cursor_blink);
+    try testing.expectEqual(@as(u32, 800), v.cursor_blink_ms);
+    try testing.expectEqual(@as(u32, 10), v.cursor_blink_timeout_s);
 }
 
 test "Text truncates at a UTF-8 boundary" {

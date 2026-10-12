@@ -67,11 +67,15 @@ pub const FakePortal = struct {
             .{ .key = "text-scaling-factor", .value = .{ .d = 1.5 } },
             // Contradicts reduced-motion above; the standard key wins.
             .{ .key = "enable-animations", .value = .{ .b = true } },
+            .{ .key = "cursor-blink-time", .value = .{ .i = 1000 } },
         };
+        const mouse = [_]E{.{ .key = "double-click", .value = .{ .i = 300 } }};
+        // KDE's portal sends kdeglobals entries as strings.
+        const kde = [_]E{.{ .key = "CursorBlinkRate", .value = .{ .s = "0" } }};
         var b = r.newReply();
         errdefer b.deinit();
         try b.body.beginArray("{sa{sv}}");
-        for ([_]struct { []const u8, []const E }{ .{ "org.freedesktop.appearance", &appearance }, .{ "org.gnome.desktop.interface", &gnome } }) |ns| {
+        for ([_]struct { []const u8, []const E }{ .{ "org.freedesktop.appearance", &appearance }, .{ "org.gnome.desktop.interface", &gnome }, .{ "org.gnome.desktop.peripherals.mouse", &mouse }, .{ "org.kde.kdeglobals.KDE", &kde } }) |ns| {
             try b.body.beginDictEntry();
             try b.body.writeString(ns[0]);
             try b.body.beginArray("{sv}");

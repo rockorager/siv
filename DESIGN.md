@@ -916,21 +916,30 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     - Not built yet: org.freedesktop.Application, ObjectManager, the
       other portals, and serving peer-to-peer connections.
   - Settings come only from the portal (color scheme, accent, contrast, reduced
-    motion, text scale, fonts, cursor theme and size), applied live, with built-
-    in defaults when no portal runs.
+    motion, text scale, fonts, cursor theme and size, double-click time,
+    caret blinking), applied live, with built-in defaults when no portal
+    runs.
     - The client (`dbus.Settings`) reads with ReadAll and follows
       SettingChanged from the portal's owner only. The standardized
       org.freedesktop.appearance keys come first; the other settings have
       no standard key, so GNOME's org.gnome.desktop.interface and
       org.gnome.desktop.a11y.interface keys (which the GNOME and GTK
-      portal backends expose) come next, then KDE's fonts
-      (org.kde.kdeglobals.General); KDE's portal exposes no cursor or
-      text scale.
+      portal backends expose) come next, with
+      org.gnome.desktop.peripherals.mouse for the double-click time, then
+      KDE's fonts (org.kde.kdeglobals.General) and its double-click
+      interval and caret blink rate (org.kde.kdeglobals.KDE, sent as
+      strings; a rate of 0 turns blinking off); KDE's portal exposes no
+      cursor or text scale. No portal backend exposes a double-click
+      distance; it stays a toolkit default (D15).
     - Defaults: no color scheme preference, no accent, normal contrast,
       motion allowed, text scale 1, `sans-serif` 11 pt for UI and
-      document text, `monospace` 11 pt, cursor theme `default` at 24 px.
-      Out-of-range values (text scale outside 0.25–8, cursor size
-      outside 8–512, accent components outside 0–1) count as unset.
+      document text, `monospace` 11 pt, cursor theme `default` at 24 px,
+      double click within 400 ms, the caret blinking with a 1.2 s cycle
+      for 10 s after input (GTK's defaults). Out-of-range values (text
+      scale outside 0.25–8, cursor size outside 8–512, accent components
+      outside 0–1, double-click time outside 100–5000 ms, blink cycle
+      outside 100–10000 ms, blink timeout outside 1 s–1 day) count as
+      unset.
     - The settings are read again when the portal starts or restarts;
       when it goes away the last values stay. The first read reports
       `ready` even if nothing changed, so the application can decide when
