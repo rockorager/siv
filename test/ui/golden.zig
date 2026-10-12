@@ -307,3 +307,39 @@ fn writeFont(buf: []u8, bytes: []const u8) ![:0]const u8 {
     }
     return path;
 }
+
+test "editors: selection, caret, horizontal scrolling, and RTL" {
+    var app: App = undefined;
+    try app.init(testing.allocator, .{ .width = 240, .height = 130 });
+    defer app.deinit();
+    var eds: [3]NodeId = undefined;
+    {
+        const t = try app.win.begin();
+        const col = try node(t, .root, .flex, .{ .padding = .all(10) }, .{ .background = panel });
+        try t.setFlex(col, .{ .axis = .column, .gap = 8, .align_items = .start });
+        const field: ui.Visual = .{ .background = .white, .border_width = 1, .border_color = border, .radius = .all(4) };
+        eds[0] = try node(t, col, .editor, .{ .width = .{ .px = 200 }, .padding = .symmetric(6, 4) }, field);
+        try t.setText(eds[0], "Hello wide world");
+        // A narrow field whose text overflows: it scrolls to the caret.
+        eds[1] = try node(t, col, .editor, .{ .width = .{ .px = 110 }, .padding = .symmetric(6, 4) }, field);
+        try t.setText(eds[1], "A rather long line of text");
+        try t.setSelection(eds[1], 26, 26, .downstream);
+        // Right to left: the field mirrors and the text starts at the right.
+        eds[2] = try node(t, col, .editor, .{ .width = .{ .px = 200 }, .padding = .symmetric(6, 4), .direction = .rtl }, field);
+        try t.setText(eds[2], "\u{05e9}\u{05dc}\u{05d5}\u{05dd} \u{05e2}\u{05d5}\u{05dc}\u{05dd}");
+        try t.setSelection(eds[2], 9, 17, .downstream);
+        t.commit();
+    }
+    try app.settle();
+    // Click into the first field after "wide", then shift+End selects the rest.
+    const r = app.win.windowRect(eds[0]);
+    app.click(r.x0 + 6 + 66, r.y0 + 10);
+    app.key(ui.keysym.end, .{ .shift = true });
+    try app.settle();
+    const e = app.win.node(eds[0]).data.editor;
+    try testing.expectEqual(@as(u32, 16), e.caret);
+    try testing.expect(e.anchor > 6 and e.anchor < 16);
+    try testing.expect(app.win.state(eds[1]).editor_scroll > 0);
+    try expectDamageExact(&app);
+    try expectGolden(&app, "editors");
+}

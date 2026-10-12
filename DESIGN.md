@@ -168,8 +168,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Derived state (dirty flags, layout caches, layer assignment) is kept
     outside the copies; an abort can leave extra dirty flags, never
     missing ones.
-  - The editor and external surfaces are in the closed set but not built
-    yet; creating them fails with `Unsupported`.
+  - External surfaces are in the closed set but not built yet; creating
+    one fails with `Unsupported`.
 - **Alternatives:** immediate mode (no stable identity without hashing call
   sites); a log of operations applied at commit (no reads of pending
   state, and cycles and kinds can only be checked at commit, where failure
@@ -554,6 +554,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   and bidi levels. IME uses `text-input-v3`; xkbcommon compose sequences work
   without an IME. Masked fields keep values in locked, dump-excluded memory with
   no undo or IME.
+  - The editor node (`src/ui/editor.zig`) stores only its text, caret,
+    anchor, and caret affinity; movement, hit testing, and selection
+    rectangles come from the `Layout`. Arrows move visually, Ctrl+arrows
+    by words, Home and End to the line's edges in reading order, Up and
+    Down keep a preferred x. A single-line editor scrolls its text to
+    keep the caret in view and drops line breaks from typed text.
+  - User edits commit through their own transaction and then send the
+    editor a `change` event; while the application holds a transaction
+    open, edits are dropped rather than mixed into it.
+  - Not built yet: text-input-v3 (needs the compositor's `post`, D8),
+    undo, masked fields, caret blinking (a compositor opacity animation
+    of a caret layer), and selection by double click.
 
 ### D16. Input
 
