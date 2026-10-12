@@ -152,7 +152,7 @@ fn compute(win: *Window, id: NodeId, c: Constraints) Error!Size {
         },
         .image => imageSize(n.data.image, inner),
         .canvas => .{ .w = inner.clampW(n.data.canvas.width), .h = inner.clampH(n.data.canvas.height) },
-        .external => .{ .w = inner.min_w, .h = inner.min_h },
+        .external => imageSize(.{ .image = intrinsic(n.data.external) }, inner),
     };
     const size: Size = .{ .w = cc.clampW(content.w + pad.horizontal()), .h = cc.clampH(content.h + pad.vertical()) };
     if (!s.size.eql(size)) {
@@ -244,7 +244,7 @@ pub fn maxContent(win: *Window, id: NodeId) Error!f32 {
             .editor => content = try text_node.maxContent(win, id) + caret_width,
             .image => content = if (n.data.image.image) |img| @floatFromInt(img.width) else 0,
             .canvas => content = n.data.canvas.width,
-            .external => {},
+            .external => content = n.data.external.width,
         }
         break :blk content + l.padding.horizontal();
     };
@@ -778,6 +778,13 @@ fn textSize(win: *Window, id: NodeId, inner: Constraints) Error!Size {
     const width: ?f32 = if (wrap and std.math.isFinite(inner.max_w)) inner.max_w else null;
     const l = try text_node.layoutFor(win, id, width) orelse return .{ .w = inner.min_w, .h = inner.min_h };
     return .{ .w = if (inner.tightW()) inner.max_w else inner.clampW(l.width), .h = inner.clampH(l.height) };
+}
+
+/// An external's intrinsic size as a stand-in image (only its size is
+/// used).
+fn intrinsic(x: node_mod.External) ?@import("scene").ImageRef {
+    if (x.width < 1 or x.height < 1) return null;
+    return .{ .pixels = undefined, .width = @intFromFloat(x.width), .height = @intFromFloat(x.height), .stride = @as(u32, @intFromFloat(x.width)) * 4, .format = .bgrx8_srgb, .key = 0 };
 }
 
 fn imageSize(img: node_mod.Image, inner: Constraints) Size {

@@ -568,7 +568,8 @@ pub fn handleEvent(win: *Window, event: *const compositor.Event) Error!void {
         .frame => try win.frame(),
         .scrolled => |s| win.scrolled(s.layer, s.offset, s.seq),
         .released => |b| win.paint.released(win.gpa, b),
-        .presented, .animation_finished => {},
+        // External frames belong to their producer, not the window.
+        .presented, .animation_finished, .external_released => {},
     }
 }
 

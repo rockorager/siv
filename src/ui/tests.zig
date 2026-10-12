@@ -204,7 +204,6 @@ test "aborted transactions leave no trace; failed operations have no effect" {
     try testing.expectError(error.InvalidNode, t.move(b, b, .none)); // cycle
     try testing.expectError(error.InvalidNode, t.remove(.root));
     try testing.expectError(error.InvalidArgument, t.setText(label, "\xff"));
-    try testing.expectError(error.Unsupported, t.create(b, .external, .none));
     // Frames wait for the transaction.
     const before = f.win.stats.frames;
     try f.win.frame();

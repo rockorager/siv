@@ -393,6 +393,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     colors and linear, two-point conical, and sweep gradients; gradients
     interpolate premultiplied in linear light, and repeat/reflect use the
     stop range as the period (CSS, COLRv1).
+  - Image formats include opaque `bgrx8_srgb`, the XRGB8888 layout
+    external video frames arrive in (D17).
   - Layer blend modes are the COLRv1 set (Porter-Duff and the W3C blend
     modes), because color glyphs lower into display lists. Modes that touch
     the destination where the source is transparent affect the layer's whole
@@ -704,6 +706,26 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     (zero-copy, `wp_viewporter`, compositor color management). Otherwise its
     dma-buf is imported as a texture. Embedders can receive a `wl_surface*` for
     their own Vulkan, EGL, GStreamer, or libmpv rendering.
+    - Built so far, for CPU frames: a producer creates an external slot in
+      a window (`Compositor.createExternal`) and submits opaque XRGB8888
+      frames in shared memory (`setExternalFrame`, from any thread; the
+      compositor duplicates the fd and maps it). The UI's `external` node
+      roots a layer and places the slot in its content box
+      (`Op.set_external`), fitted to the content's aspect ratio.
+    - Each frame the compositor finds every placement's surface rectangle
+      and promotes it when the layer's transform is axis-aligned with
+      positive scale, its opacity is 1, its clips are rectangular and
+      contain it, and nothing painted later overlaps it (topmost). Promoted
+      frames go to a synchronized `wl_subsurface` as a wl_shm buffer from
+      the producer's own memory (no copy), scaled with `wp_viewport`;
+      others are drawn as images (`bgrx8_srgb`). Changing between the two
+      redraws the layer. A new frame that changes only a subsurface costs a
+      bare commit, not a present. Replaced frames are released
+      (`Event.external_released`) after the next frame.
+    - Not yet: dma-buf frames and their import as textures (with the
+      Vulkan renderer), promotion below the window with a punched hole for
+      opaque content under other content, cropping by clips through the
+      viewport source rectangle, and handing embedders a `wl_surface*`.
   - Fractional scale, preferred buffer scale, output hotplug, `xdg-activation`,
     idle inhibit, `xdg-dialog`, toplevel icons, and session restore.
 

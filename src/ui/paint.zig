@@ -59,6 +59,7 @@ const Layer = struct {
     /// The compositor's offset as last sent or reported.
     scroll_offset: Point = .zero,
     wheel: ?Rect = null,
+    external: ?compositor.ExternalPlacement = null,
     /// Caret layers: what the content shows, and what the running blink
     /// started from (it restarts when this changes).
     caret_h: f32 = 0,
@@ -242,7 +243,7 @@ pub const State = struct {
     fn ownsLayer(win: *const Window, nid: NodeId, f: Flags) bool {
         const n = win.node(nid);
         return nid == .root or n.kind == .scroll or isLayerRoot(n.visual) or (n.visual.clip and f.layer_below) or
-            n.handler(.scroll) != null or hasCaret(win, nid);
+            n.handler(.scroll) != null or hasCaret(win, nid) or n.kind == .external;
     }
 
     /// The focused editor roots a layer with its caret in a child layer, so
@@ -472,7 +473,7 @@ pub const State = struct {
         const gpa = win.gpa;
         var scroll_layers: std.ArrayList(u32) = .empty;
         if (win.dirty.props or st.ops.items.len != 0) {
-            try st.ops.ensureUnusedCapacity(gpa, 8 * st.order.items.len + st.scroll_by.items.len + 1);
+            try st.ops.ensureUnusedCapacity(gpa, 9 * st.order.items.len + st.scroll_by.items.len + 1);
             for (st.order.items) |i| {
                 const l = &st.layers.items[i];
                 const p = props(st, win, l.*);
@@ -495,6 +496,10 @@ pub const State = struct {
                 if (!std.meta.eql(l.wheel, p.wheel)) {
                     st.ops.appendAssumeCapacity(.{ .set_wheel_region = .{ .layer = id(i), .region = p.wheel } });
                     l.wheel = p.wheel;
+                }
+                if (!std.meta.eql(l.external, p.external)) {
+                    st.ops.appendAssumeCapacity(.{ .set_external = .{ .layer = id(i), .external = p.external } });
+                    l.external = p.external;
                 }
                 if (l.kind == .caret) {
                     // Any caret change shows it solid, then blinks for a
@@ -558,6 +563,7 @@ pub const State = struct {
         clip: ?compositor.Clip = null,
         scroll: ?compositor.Scroll = null,
         wheel: ?Rect = null,
+        external: ?compositor.ExternalPlacement = null,
     };
 
     fn props(st: *const State, win: *const Window, l: Layer) Props {
@@ -594,6 +600,12 @@ pub const State = struct {
                     };
                 }
                 if (n.handler(.scroll) != null) p.wheel = .xywh(0, 0, s.size.w, s.size.h);
+                if (n.kind == .external) {
+                    p.external = externalPlacement(win, l.owner);
+                    // Covering content overflows its box: clip it there (and
+                    // composite it, since a subsurface cannot be cropped).
+                    if (n.data.external.fit == .cover and p.clip == null) p.clip = .{ .rect = .xywh(0, 0, s.size.w, s.size.h) };
+                }
                 return p;
             },
         }
@@ -671,6 +683,30 @@ pub fn logicalScroll(win: *const Window, nid: NodeId, physical: Point) Point {
 // Drawing --------------------------------------------------------------------
 
 const DrawError = scene.Error;
+
+/// Where an external node shows its content: its content box, fitted to
+/// the content's aspect ratio.
+fn externalPlacement(win: *const Window, nid: NodeId) ?compositor.ExternalPlacement {
+    const n = win.node(nid);
+    const x = n.data.external;
+    if (x.id == 0) return null;
+    const s = win.state(nid);
+    const pad = n.layout.padding;
+    const box = Rect.xywh(pad.left(s.rtl), pad.top, s.size.w - pad.horizontal(), s.size.h - pad.vertical());
+    if (box.isEmpty()) return null;
+    var r = box;
+    if (x.width >= 1 and x.height >= 1 and x.fit != .fill) {
+        const k = switch (x.fit) {
+            .contain => @min(box.width() / x.width, box.height() / x.height),
+            .cover => @max(box.width() / x.width, box.height() / x.height),
+            .none, .fill => 1,
+        };
+        const w = x.width * k;
+        const h = x.height * k;
+        r = .xywh(box.x0 + (box.width() - w) / 2, box.y0 + (box.height() - h) / 2, w, h);
+    }
+    return .{ .id = x.id, .rect = r };
+}
 
 /// Draws a node's own content (not its children) at `off`; returns its
 /// bounds in the builder's coordinates.

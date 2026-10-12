@@ -27,8 +27,6 @@ pub const Error = error{
     InvalidNode,
     /// A value is out of range (NaN, negative sizes, invalid UTF-8).
     InvalidArgument,
-    /// The kind is not implemented yet.
-    Unsupported,
 };
 
 /// The most nodes one operation touches (a move: the node, both parents,
@@ -239,7 +237,6 @@ pub const Txn = struct {
     /// (or last).
     pub fn create(t: *Txn, parent: NodeId, kind: Kind, before: NodeId) Error!NodeId {
         std.debug.assert(t.open);
-        if (kind == .external) return error.Unsupported;
         _ = try t.container(parent);
         try t.checkBefore(parent, before);
         try t.reserve();
@@ -551,6 +548,17 @@ pub const Txn = struct {
         n.data.canvas = c;
         if (old.width != c.width or old.height != c.height) t.win.markLayout(id);
         t.win.markPaint(id);
+    }
+
+    pub fn setExternal(t: *Txn, id: NodeId, x: node_mod.External) Error!void {
+        const n = try t.data(id, .external);
+        if (!(x.width >= 0) or !(x.height >= 0) or !finite(x.width) or !finite(x.height)) return error.InvalidArgument;
+        try t.reserve();
+        t.touch(id);
+        const old = n.data.external;
+        n.data.external = x;
+        if (old.width != x.width or old.height != x.height or old.fit != x.fit) t.win.markLayout(id);
+        t.win.dirty.props = true;
     }
 
     /// Repaints a canvas (its content changed).

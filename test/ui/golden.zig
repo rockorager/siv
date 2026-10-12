@@ -10,6 +10,7 @@ const scene = @import("scene");
 const text = @import("text");
 const ui = @import("ui");
 const platform = @import("platform");
+const compositor = @import("compositor");
 const png = @import("../render/png.zig");
 const App = @import("harness.zig").App;
 
@@ -569,4 +570,91 @@ test "popups: placed below their button, flipped at the edge, keyboard, dismisse
         try testing.expectEqual(@as(i32, @intFromFloat(@floor(nr.y0))) - 60, st.popup.?.y);
         q.close();
     }
+}
+
+const Video = struct {
+    fd: i32,
+    pixels: []u8,
+    frame: compositor.ExternalFrame,
+    promoted: bool = false,
+
+    fn init(w: u32, h: u32) !Video {
+        const linux = std.os.linux;
+        const fd: i32 = @intCast(linux.memfd_create("siv-video", linux.MFD.CLOEXEC));
+        const pixels = try testing.allocator.alloc(u8, w * h * 4);
+        for (0..h) |y| for (0..w) |x| {
+            pixels[(y * w + x) * 4 ..][0..4].* = .{ @intCast(x * 255 / w), @intCast(y * 255 / h), 0x40, 0 };
+        };
+        _ = linux.ftruncate(fd, @intCast(pixels.len));
+        _ = linux.pwrite(fd, pixels.ptr, pixels.len, 0);
+        return .{ .fd = fd, .pixels = pixels, .frame = .{ .fd = fd, .width = w, .height = h, .stride = w * 4, .key = 7 } };
+    }
+
+    fn deinit(v: *Video) void {
+        _ = std.os.linux.close(v.fd);
+        testing.allocator.free(v.pixels);
+    }
+
+    /// For the harness's full redraw: the frame unless a subsurface shows it.
+    fn image(ctx: *anyopaque, _: compositor.ExternalId) ?scene.ImageRef {
+        const v: *Video = @ptrCast(@alignCast(ctx));
+        if (v.promoted) return null;
+        return .{ .pixels = v.pixels.ptr, .width = v.frame.width, .height = v.frame.height, .stride = v.frame.stride, .format = .bgrx8_srgb, .key = 7 };
+    }
+};
+
+fn subsurfaceOf(app: *App) ?platform.SubsurfaceState {
+    const S = struct {
+        wid: platform.WindowId,
+        out: ?platform.SubsurfaceState = null,
+        fn f(hl: *platform.Headless, s: *@This()) void {
+            const subs = hl.subsurfaces(s.wid);
+            s.out = if (subs.len != 0) subs[0] else null;
+        }
+    };
+    var s: S = .{ .wid = app.wid };
+    app.onHeadless(&s, S.f);
+    return s.out;
+}
+
+test "external content: a subsurface while unobstructed, composited under an overlay" {
+    var app: App = undefined;
+    try app.init(testing.allocator, .{ .width = 240, .height = 160 });
+    defer app.deinit();
+    var video = try Video.init(64, 36);
+    defer video.deinit();
+    const ext = try app.comp.createExternal(app.wid);
+    try app.comp.setExternalFrame(app.wid, ext, video.frame);
+    app.mirror.externals = .{ .ctx = &video, .image = Video.image };
+    var player: NodeId = undefined;
+    {
+        const t = try app.win.begin();
+        const col = try node(t, .root, .stack, .{ .padding = .all(10) }, .{ .background = panel });
+        try t.setStack(col, .{ .align_x = .stretch, .align_y = .stretch });
+        player = try node(t, col, .external, .{}, .{ .background = ink });
+        try t.setExternal(player, .{ .id = ext, .width = 16, .height = 9 });
+        t.commit();
+    }
+    try app.settle();
+    // 220x140 box, 16:9 content letterboxed: 220x123.75 centered.
+    const sub = subsurfaceOf(&app).?;
+    try testing.expect(sub.visible);
+    try testing.expectEqual(@as(i32, 10), sub.rect.x);
+    try testing.expectEqual(@as(i32, 220), sub.rect.width);
+    try testing.expectEqual(@as(u64, 7), sub.frame.?.key);
+    video.promoted = true;
+    try expectDamageExact(&app);
+
+    // A translucent badge over the corner: composited, in the window.
+    {
+        const t = try app.win.begin();
+        const badge = try node(t, app.win.node(.root).first, .box, .{ .width = .{ .px = 60 }, .height = .{ .px = 24 }, .inset = .{ .end = 16, .top = 30 } }, .{ .background = red, .radius = .all(12), .opacity = 0.8 });
+        _ = badge;
+        t.commit();
+    }
+    try app.settle();
+    try testing.expect(!subsurfaceOf(&app).?.visible);
+    video.promoted = false;
+    try expectDamageExact(&app);
+    try expectGolden(&app, "external-composited");
 }

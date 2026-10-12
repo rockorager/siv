@@ -51,6 +51,7 @@ pub const Fit = node.Fit;
 pub const Image = node.Image;
 pub const Canvas = node.Canvas;
 pub const Editor = node.Editor;
+pub const External = node.External;
 pub const Event = node.Event;
 pub const HandlerKind = node.HandlerKind;
 pub const Handler = node.Handler;

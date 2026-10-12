@@ -48,7 +48,9 @@ pub const Kind = enum(u8) {
     image,
     /// Content the application draws into a display list. A leaf.
     canvas,
-    /// A surface rendered elsewhere (D17). Not built yet.
+    /// Content rendered elsewhere, such as video (D17): frames go to the
+    /// compositor, which shows them on a subsurface or composites them.
+    /// A leaf.
     external,
 
     pub fn isLeaf(k: Kind) bool {
@@ -60,7 +62,8 @@ pub const Kind = enum(u8) {
 
     pub fn defaultRole(k: Kind) Role {
         return switch (k) {
-            .box, .flex, .grid, .stack, .canvas, .external => .generic,
+            .box, .flex, .grid, .stack, .canvas => .generic,
+            .external => .image,
             .text => .label,
             .editor => .text_input,
             .scroll => .scroll_area,
@@ -395,13 +398,23 @@ pub const Data = union(Kind) {
     scroll: Scroll,
     image: Image,
     canvas: Canvas,
-    external: void,
+    external: External,
 
     pub fn default(kind: Kind) Data {
         return switch (kind) {
             inline else => |k| @unionInit(Data, @tagName(k), if (@FieldType(Data, @tagName(k)) == void) {} else .{}),
         };
     }
+};
+
+pub const External = struct {
+    /// From `compositor.Compositor.createExternal` for this window; 0
+    /// shows nothing.
+    id: u32 = 0,
+    /// Intrinsic size (the content's aspect ratio).
+    width: f32 = 0,
+    height: f32 = 0,
+    fit: Fit = .contain,
 };
 
 pub const Editor = struct {
