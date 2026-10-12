@@ -53,7 +53,7 @@ owns its directories and does not edit another workstream's files.
 | `platform` | `src/platform/` | Event loop and Wayland platform | `loop`, `wayland`, `xkbcommon` |
 | `compositor` | `src/compositor/` | Compositor thread | `scene`, `raster`, `render_cpu`, `render_vulkan`, `pool`, `loop`, `platform` |
 | `ui` | `src/ui/` | UI core | `scene`, `raster`, `text`, `loop`, `platform`, `compositor` |
-| `app` | `src/app/` | Public C API | `text`, `loop`, `platform`, `compositor`, `ui` |
+| `app` | `src/app/` | Public C API | `text`, `loop`, `platform`, `compositor`, `ui`, `dbus` |
 
 Shared files have no single owner: `build.zig`, `build.zig.zon`,
 `src/siv.zig`, `test/`, `.agents/`, and this file. Change them only when your

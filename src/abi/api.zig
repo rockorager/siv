@@ -210,6 +210,7 @@ pub const decls = [_]Decl{
     flags("siv_app_flags", "Application options.", &.{
         .{ .name = "no_system_fonts", .bit = 0, .doc = "Do not use Fontconfig; only families added with siv_app_add_font resolve." },
         .{ .name = "reduced_motion", .bit = 1, .doc = "No caret blinking or other motion, whatever the desktop settings say." },
+        .{ .name = "no_desktop_settings", .bit = 2, .doc = "Do not follow the desktop's settings (D19); use the built-in defaults. The headless backend never follows them, so tests do not depend on the desktop." },
     }),
     descriptor("siv_app_desc", "Options for siv_app_create.", &.{
         .{ .name = "allocator", .type = .{ .desc = "siv_allocator" }, .doc = "Allocator hooks for everything the application allocates, on any thread; NULL for the C library allocator." },
@@ -705,7 +706,7 @@ pub const functions = [_]Function{
         .{ .name = "family", .type = .string, .doc = "Family name." },
         .{ .name = "data", .type = array(.u8), .doc = "An OpenType or TrueType font." },
     }),
-    call("siv_app_set_default_font", "Sets the family used by text styles that name none (default sans-serif).", &.{
+    call("siv_app_set_default_font", "Sets the family used by text styles that name none. By default it is the desktop's font (D19), else sans-serif; once set here, the desktop's no longer replaces it.", &.{
         app_param,
         .{ .name = "family", .type = .string, .doc = "Family name." },
     }),

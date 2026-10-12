@@ -1076,10 +1076,33 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       focus rings and, at 30% alpha, focused selections; without one the
       toolkit's blue stays. An application's own reduced-motion flag
       applies whatever the desktop says.
-    - Not wired yet in `src/app`: copying the values into `ui.Desktop`
-      for every window and setting the default font family on the shared
-      `ui.Fonts`. The font size, color scheme, contrast, and cursor theme
-      wait for the theme and stock widgets (D22) and pointer cursors.
+    - `src/app/desktop.zig` starts the bus connection and the Settings
+      client in `App.create` before the compositor connects to Wayland,
+      copies the values into every window's `ui.Desktop` (new windows
+      start with them) on the first read and on every change, and makes
+      the desktop font the default family of the shared `ui.Fonts`,
+      unless the application chose one (`siv_app_set_default_font`), as
+      its reduced-motion flag also wins. A new default family or text
+      scale reshapes text in the default family and measures and redraws
+      canvases, whose text follows the text scale too (D28).
+    - First frames wait by holding the compositor's frame events: a
+      window whose frame arrives before the settings is asked for a frame
+      again once they are ready, 100 ms after `App.create` passed, or the
+      bus disconnected. Without a session bus nothing waits. The headless
+      backend does not read the settings (tests stay independent of the
+      desktop); `SIV_APP_NO_DESKTOP_SETTINGS` opts a Wayland application
+      out.
+    - Measured end to end (`zig build test-integration`, `SIV_MEASURE=1`;
+      headless backend, private dbus-daemon, a stand-in portal on its own
+      thread), from `App.create` to the first presented frame: median
+      3.5 ms with settings against 3.0 ms without (ReleaseFast), 8.3 ms
+      against 7.9 ms (Debug); the settings are ready 2.8 ms (7 ms) after
+      `App.create`, mostly because they are read in the first dispatch
+      after the application has created its window. A portal that never
+      answers delays the first frame to 100–102 ms. The test fails above
+      20 ms.
+    - The font size, color scheme, contrast, and cursor theme wait for
+      the theme and stock widgets (D22) and pointer cursors.
   - Portals for files, URIs, notifications, printing, screen capture, global
     shortcuts, and the document portal. No built-in file chooser: the portal is
     the system chooser.

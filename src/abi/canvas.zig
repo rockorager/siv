@@ -658,7 +658,8 @@ const Shaped = struct {
         const lang = fonts.name(language);
         sh.paragraph = text.ShapedParagraph.init(gpa, sh.scratch.allocator(), &fonts.cache, s, &.{.{
             .end = @intCast(s.len),
-            .style = .{ .fonts = chain, .size = st.size, .language = if (lang.len == 0) "und" else lang },
+            // Desktop text scaling applies to canvas text as to text nodes.
+            .style = .{ .fonts = chain, .size = st.size * @as(f32, @floatCast(self.app.desktop.values.text_scale)), .language = if (lang.len == 0) "und" else lang },
         }}, if (rtl) .auto_rtl else .auto_ltr) catch |err| return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             else => error.InvalidArgument,

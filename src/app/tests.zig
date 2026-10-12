@@ -19,6 +19,7 @@ fn create(thread: bool) !*App {
         .system_fonts = false,
         .threads = 2,
         .compositor_thread = thread,
+        .desktop_settings = false,
     });
 }
 

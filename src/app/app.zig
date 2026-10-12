@@ -13,7 +13,8 @@
 //!     Compositor thread: platform, layer trees, presentation
 //!
 //! An `App` owns the UI loop, the worker pool (D6), the fonts, the
-//! clipboard (D19), and the compositor (D8). Each `Window` pairs a platform window on the
+//! clipboard and the desktop settings (D19, desktop.zig), and the
+//! compositor (D8). Each `Window` pairs a platform window on the
 //! compositor with a `ui.Window`. Compositor events arrive in the loop's
 //! dispatch phase (D5) and go to the window they name; window-level
 //! events (close requests, configures) also go to the window's listener.
@@ -25,7 +26,7 @@
 //!
 //! Everything here is for the UI thread, except `post`.
 //!
-//! Imports: ui, compositor, platform, loop, text.
+//! Imports: ui, compositor, platform, loop, text, dbus.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -34,6 +35,7 @@ const loop_mod = @import("loop");
 const platform = @import("platform");
 const compositor = @import("compositor");
 const ui = @import("ui");
+const desktop_mod = @import("desktop.zig");
 
 const Loop = loop_mod.Loop;
 const Compositor = compositor.Compositor;
@@ -69,8 +71,13 @@ pub const Options = struct {
     /// Run the compositor on its own thread (D8). Without one it runs on
     /// the UI loop, for deterministic tests.
     compositor_thread: bool = true,
-    /// No caret blinking or other motion in any window.
+    /// No caret blinking or other motion in any window, whatever the
+    /// desktop settings say.
     reduced_motion: bool = false,
+    /// Follow the portal's desktop settings (D19).
+    desktop_settings: bool = true,
+    /// The bus for them; null is the session bus.
+    bus_address: ?[]const u8 = null,
 };
 
 pub const App = struct {
@@ -89,6 +96,10 @@ pub const App = struct {
     delivering: u32 = 0,
     open_windows: usize = 0,
     reduced_motion: bool = false,
+    desktop: desktop_mod.Desktop = .{},
+    /// The application chose the default font family, so the desktop's
+    /// does not replace it.
+    font_overridden: bool = false,
     quit_requested: bool = false,
     /// Reported by the next `dispatch`. Unavailable stays.
     failure: ?Error = null,
@@ -114,6 +125,10 @@ pub const App = struct {
         if (options.system_fonts) app.fonts.database = text.fontconfig.Database.init() catch null;
         app.clipboard = .init(gpa, &app.loop, .{ .ctx = app, .set_selection = setSelection, .receive = receiveSelection });
         errdefer app.clipboard.deinit();
+        // The bus handshake and the settings read proceed while the
+        // compositor connects to Wayland below.
+        if (options.desktop_settings) app.desktop.start(app, options.bus_address);
+        errdefer app.desktop.deinit(app);
         app.comp = Compositor.create(.{
             .allocator = gpa,
             .executor = app.pool.executor(),
@@ -131,10 +146,11 @@ pub const App = struct {
     /// Tears everything down. Posted closures that have not run get their
     /// destroy function instead (D5). Not from inside `dispatch`.
     pub fn destroy(app: *App) void {
-        std.debug.assert(app.loop.stage == .idle);
+        std.debug.assert(!app.loop.isDispatching());
         const gpa = app.gpa;
         // Nothing reads the windows' display lists or fonts after this.
         app.comp.destroy();
+        app.desktop.deinit(app);
         for (app.windows.items) |w| if (w) |win| win.free();
         for (app.zombies.items) |win| win.free();
         app.windows.deinit(gpa);
@@ -149,7 +165,7 @@ pub const App = struct {
     /// Runs one loop iteration (D6). `timeout_ms` bounds the wait: -1
     /// blocks until there is work, 0 never blocks.
     pub fn dispatch(app: *App, timeout_ms: i32) Error!void {
-        if (app.loop.stage != .idle) return error.Busy;
+        if (app.loop.isDispatching()) return error.Busy;
         app.loop.dispatch(timeout_ms) catch return error.Unavailable;
         app.freeZombies();
         if (app.failure) |err| {
@@ -160,7 +176,7 @@ pub const App = struct {
 
     /// Dispatches until `quit` is called or the last window is destroyed.
     pub fn run(app: *App) Error!void {
-        if (app.loop.stage != .idle) return error.Busy;
+        if (app.loop.isDispatching()) return error.Busy;
         app.quit_requested = false;
         while (!app.quit_requested) try app.dispatch(-1);
     }
@@ -228,8 +244,29 @@ pub const App = struct {
         try fonts.register(family, chain);
     }
 
+    /// Overrides the desktop's font (D19) from now on.
     pub fn setDefaultFont(app: *App, family: []const u8) Allocator.Error!void {
         try app.fonts.setDefault(family);
+        app.font_overridden = true;
+        app.refreshText();
+    }
+
+    /// The default font family or the text scale changed: text in the
+    /// default family reshapes, and canvases measure and draw again.
+    pub fn refreshText(app: *App) void {
+        for (app.windows.items) |w| if (w) |win| {
+            const uw = win.ui;
+            for (uw.nodes.items, 0..) |*n, i| {
+                if (n.status != .live) continue;
+                const id: ui.NodeId = @enumFromInt(i);
+                if (n.isText() and n.textData().family == 0) uw.markShape(id);
+                if (n.kind == .canvas) {
+                    uw.markLayout(id);
+                    uw.markPaint(id);
+                }
+            }
+            uw.requestFrame();
+        };
     }
 
     pub fn createWindow(app: *App, options: WindowOptions, listener: Listener) Error!*Window {
@@ -253,6 +290,7 @@ pub const App = struct {
             .host = .{ .ctx = win, .request_frame = Window.requestFrame, .text_input = Window.textInput },
             .clipboard = &app.clipboard,
             .reduced_motion = app.reduced_motion,
+            .desktop = app.desktop.values,
             .width = @floatFromInt(options.width),
             .height = @floatFromInt(options.height),
             .rtl = options.rtl,
@@ -269,7 +307,7 @@ pub const App = struct {
         return app.windows.items[i];
     }
 
-    fn fail(app: *App, err: Error) void {
+    pub fn fail(app: *App, err: Error) void {
         if (app.failure == null or err == error.Unavailable) app.failure = err;
     }
 
@@ -347,6 +385,10 @@ pub const App = struct {
                 win.handle(ev);
                 if (!win.closed) _ = win.notify(&.{ .configure = .{ .old = old, .new = c.state } });
             },
+            // First frames wait for the desktop settings (desktop.zig).
+            .frame => |f| if (app.window(f.window)) |win| {
+                if (app.desktop.waiting) win.frame_held = true else win.handle(ev);
+            },
             .presented => |p| if (app.window(p.window)) |win| {
                 win.presented_seq = p.seq;
                 win.handle(ev);
@@ -401,6 +443,8 @@ pub const Window = struct {
     /// As of the last configure.
     state: platform.WindowState = .{},
     closed: bool = false,
+    /// A frame event arrived while the desktop settings were awaited.
+    frame_held: bool = false,
     /// Last layer commit, and the last one presented.
     committed_seq: u64 = 0,
     presented_seq: u64 = 0,
@@ -445,6 +489,13 @@ pub const Window = struct {
         };
         win.committed_seq = seq;
         return seq;
+    }
+
+    /// Asks again for a frame held for the desktop settings.
+    pub fn releaseFrame(win: *Window) void {
+        if (!win.frame_held) return;
+        win.frame_held = false;
+        requestFrame(win);
     }
 
     fn requestFrame(ctx: ?*anyopaque) void {
@@ -559,6 +610,12 @@ pub const Window = struct {
 };
 
 test {
+    if (comptime @import("integration").enabled) {
+        // `zig build test-integration`: desktop settings via dbus-daemon.
+        _ = @import("integration_tests.zig");
+        return;
+    }
     std.testing.refAllDecls(@This());
+    _ = @import("desktop.zig");
     _ = @import("tests.zig");
 }

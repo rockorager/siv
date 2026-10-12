@@ -187,6 +187,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
         .display = if (display_z) |d| d.ptr else null,
         .system_fonts = !flags.no_system_fonts,
         .reduced_motion = flags.reduced_motion,
+        .desktop_settings = backend == .wayland and !flags.no_desktop_settings,
     }) catch |err| return mapAppError(err);
     errdefer self.app.destroy();
     try self.app.fonts.addListener(.{ .ctx = self, .func = canvas.onFontsLoaded });
@@ -195,7 +196,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
 
 pub export fn siv_app_destroy(app: t.App) t.Result {
     const self = App.get(@backingInt(app)) catch |err| return t.resultOf(err);
-    if (self.depth != 0 or self.app.loop.stage != .idle) return .error_busy;
+    if (self.depth != 0 or self.app.loop.isDispatching()) return .error_busy;
     // From here no thread can post, and every handle is invalid.
     self.root.retire();
     for (self.windows.items) |slot| if (slot) |w| {

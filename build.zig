@@ -120,13 +120,16 @@ pub fn build(b: *std.Build) void {
         .{ .name = "platform", .module = platform },
         .{ .name = "compositor", .module = compositor },
     });
-    const app = ctx.module("src/app/app.zig", &.{
+    const app_imports = [_]std.Build.Module.Import{
         .{ .name = "text", .module = text },
         .{ .name = "loop", .module = loop },
         .{ .name = "platform", .module = platform },
         .{ .name = "compositor", .module = compositor },
         .{ .name = "ui", .module = ui },
-    });
+        .{ .name = "dbus", .module = dbus },
+    };
+    const app = ctx.module("src/app/app.zig", &app_imports);
+    app.addImport("integration", not_integration);
     const internal = [_]std.Build.Module.Import{
         .{ .name = "pool", .module = pool },
         .{ .name = "scene", .module = scene },
@@ -255,6 +258,12 @@ pub fn build(b: *std.Build) void {
     dbus_integration_run.has_side_effects = true; // depends on the installed dbus-daemon
     integration_step.dependOn(&dbus_integration_run.step);
     b.step("test-integration-dbus", "Run the D-Bus integration tests against dbus-daemon").dependOn(&dbus_integration_run.step);
+    // The application's desktop settings against dbus-daemon.
+    const app_integration = ctx.module("src/app/app.zig", &app_imports);
+    app_integration.addImport("integration", integrationOption(b, true));
+    const app_integration_run = b.addRunArtifact(b.addTest(.{ .name = "app-integration", .root_module = app_integration, .filters = test_filters }));
+    app_integration_run.has_side_effects = true; // depends on the installed dbus-daemon
+    integration_step.dependOn(&app_integration_run.step);
 
     // Headless text engine benchmarks. Not part of `test`; build with
     // -Doptimize=ReleaseFast for meaningful numbers.
