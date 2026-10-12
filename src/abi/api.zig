@@ -261,6 +261,8 @@ pub const decls = [_]Decl{
         .{ .name = "no_system_fonts", .bit = 0, .doc = "Do not use Fontconfig; only families added with siv_app_add_font resolve." },
         .{ .name = "reduced_motion", .bit = 1, .doc = "No caret blinking or other motion, whatever the desktop settings say." },
         .{ .name = "no_desktop_settings", .bit = 2, .doc = "Do not follow the desktop's settings (D19); use the built-in defaults. The headless backend never follows them, and never publishes to assistive technology, so tests do not depend on the desktop." },
+        .{ .name = "ltr", .bit = 3, .doc = "Lay out left to right whatever the language (D21). Without ltr or rtl, the direction is the language's." },
+        .{ .name = "rtl", .bit = 4, .doc = "Lay out right to left whatever the language (D21)." },
     }),
     descriptor("siv_app_desc", "Options for siv_app_create.", &.{
         .{ .name = "allocator", .type = .{ .desc = "siv_allocator" }, .doc = "Allocator hooks for everything the application allocates, on any thread; NULL for the C library allocator." },
@@ -269,6 +271,7 @@ pub const decls = [_]Decl{
         .{ .name = "flags", .type = ref("siv_app_flags"), .doc = "Options." },
         .{ .name = "name", .type = .string, .doc = "The application's name, as assistive technology shows it (D18)." },
         .{ .name = "app_id", .type = .string, .doc = "The application id: reverse DNS, the name of its .desktop file without the extension. Windows default to it, and portals and D-Bus activation use it (D19)." },
+        .{ .name = "language", .type = .string, .doc = "BCP 47 language of the application's text (D21), for shaping, font fallback, and the default direction; windows and printed documents follow it unless they set their own. Empty is the process locale's ($LC_ALL, $LC_MESSAGES, $LANG); the headless backend has none, so tests do not depend on the environment." },
     }),
     callback("siv_post_fn", "Work posted with siv_post; runs on the application's thread.", &.{}, .void),
     callback("siv_destroy_fn", "Releases user_data once siv no longer needs it. Runs exactly once, on the application's thread, never while a siv callback is running.", &.{}, .void),
@@ -300,7 +303,8 @@ pub const decls = [_]Decl{
     }),
     flags("siv_window_flags", "Window options.", &.{
         .{ .name = "client_decorations", .bit = 0, .doc = "Prefer drawing decorations in the application (header bars) over the compositor's." },
-        .{ .name = "rtl", .bit = 1, .doc = "Lay out right to left; nodes inherit the direction (D21)." },
+        .{ .name = "rtl", .bit = 1, .doc = "Lay out right to left; nodes inherit the direction (D21). Without rtl or ltr, the window follows the application's direction, also when it changes." },
+        .{ .name = "ltr", .bit = 2, .doc = "Lay out left to right." },
     }),
     enumeration("siv_window_event_type", "What a siv_window_event reports.", &.{
         .{ .name = "close_requested", .value = 0, .doc = "The user asked to close the window. Return true to keep it; otherwise siv destroys it." },
@@ -322,7 +326,7 @@ pub const decls = [_]Decl{
     descriptor("siv_window_desc", "Options for siv_window_create.", &.{
         .{ .name = "title", .type = .string, .doc = "Title." },
         .{ .name = "app_id", .type = .string, .doc = "Application id for the desktop (reverse DNS, matching the .desktop file)." },
-        .{ .name = "language", .type = .string, .doc = "BCP 47 language of the window's text, for shaping and font fallback." },
+        .{ .name = "language", .type = .string, .doc = "BCP 47 language of the window's text, for shaping and font fallback; empty follows the application's language, also when it changes." },
         .{ .name = "user_data", .type = .user_data, .doc = "Passed to on_event and destroy." },
         .{ .name = "on_event", .type = ref("siv_window_event_fn"), .doc = "Receives the window's events; NULL destroys the window on a close request." },
         .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data when the window is destroyed." },
@@ -1120,6 +1124,15 @@ pub const functions = [_]Function{
     call("siv_app_set_default_font", "Sets the family used by text styles that name none. By default it is the desktop's font (D19), else sans-serif; once set here, the desktop's no longer replaces it.", &.{
         app_param,
         .{ .name = "family", .type = .string, .doc = "Family name." },
+    }),
+    call("siv_app_set_language", "Changes the application's language and direction (D21). Windows that follow the application shape their text again and mirror their layout; documents printed later default to them.", &.{
+        app_param,
+        .{ .name = "language", .type = .string, .doc = "BCP 47 language; empty is the process locale's." },
+        .{ .name = "direction", .type = ref("siv_direction"), .doc = "Left to right or right to left; inherit is the direction the language is written in." },
+    }),
+    call("siv_app_is_rtl", "Whether the application lays out right to left (D21).", &.{
+        app_param,
+        .{ .name = "rtl", .type = out(.bool), .doc = "Right to left." },
     }),
 
     // Windows.

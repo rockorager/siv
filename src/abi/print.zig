@@ -4,8 +4,7 @@
 //! portal (`portal.print`) after its dialog chose the page setup.
 //!
 //! Pages have the document's direction and language, defaulting to the
-//! application's: the window's when printing from one, else the process
-//! locale's. Pages are drawn at a dispatch, never inside the call that
+//! window's when printing from one, else the application's (D21). Pages are drawn at a dispatch, never inside the call that
 //! started the job. Text drawn while a font is still loading draws the document again
 //! once fonts finish loading (canvas.onFontsLoaded), a few times at most.
 //! Destroying the application drops unfinished jobs and runs their
@@ -269,72 +268,19 @@ fn failed(self: *App, d: *const t.PrintDesc, err: Error) t.Result {
     return t.resultOf(err);
 }
 
-/// The application's language and direction where a document names
-/// none: the window's, else the process locale's.
+/// The document's language and direction, defaulting to the window's
+/// when printing from one, else the application's (D21).
 fn documentText(self: *App, d: *const t.PrintDesc, window: ?*app_mod.Window) Error!struct { u32, bool } {
     const direction = try runtime.enumValue(t.Direction, d.direction);
     const language = try runtime.string(d.language, d.language_len);
-    const fonts = &self.app.fonts;
-    var lang_id = try fonts.intern(language);
-    var locale_buf: [64]u8 = undefined;
-    const locale = localeLanguage(&locale_buf);
-    if (lang_id == 0) lang_id = if (window) |w| w.ui.language else try fonts.intern(locale);
+    var lang_id = try self.app.fonts.intern(language);
+    if (lang_id == 0) lang_id = if (window) |w| w.ui.language else self.app.language;
     const rtl = switch (direction) {
         .ltr => false,
         .rtl => true,
-        else => if (window) |w| w.ui.rtl else languageIsRtl(locale),
+        else => if (window) |w| w.ui.rtl else self.app.rtl,
     };
     return .{ lang_id, rtl };
-}
-
-/// The BCP 47 tag of the process locale ($LC_ALL, $LC_MESSAGES, $LANG,
-/// as gettext reads them): "ar_EG.UTF-8@x" is "ar-EG"; "" for C and POSIX.
-pub fn localeLanguage(buf: []u8) []const u8 {
-    for ([_][*:0]const u8{ "LC_ALL", "LC_MESSAGES", "LANG" }) |name| {
-        const v = std.mem.span(std.c.getenv(name) orelse continue);
-        if (v.len == 0) continue;
-        return localeTag(buf, v);
-    }
-    return "";
-}
-
-fn localeTag(buf: []u8, locale: []const u8) []const u8 {
-    const end = std.mem.indexOfAny(u8, locale, ".@") orelse locale.len;
-    const base = locale[0..end];
-    if (std.mem.eql(u8, base, "C") or std.mem.eql(u8, base, "POSIX") or base.len > buf.len) return "";
-    for (base, buf[0..base.len]) |c, *o| o.* = if (c == '_') '-' else c;
-    return buf[0..base.len];
-}
-
-/// Whether text in a language is written right to left: by its script
-/// subtag if it has one, else by the languages whose usual script is.
-pub fn languageIsRtl(tag: []const u8) bool {
-    var it = std.mem.tokenizeAny(u8, tag, "-_");
-    const lang = it.next() orelse return false;
-    while (it.next()) |sub| if (sub.len == 4) {
-        for ([_][]const u8{ "Arab", "Hebr", "Thaa", "Syrc", "Nkoo", "Adlm", "Rohg", "Mand", "Samr" }) |s| {
-            if (std.ascii.eqlIgnoreCase(sub, s)) return true;
-        }
-        return false;
-    };
-    for ([_][]const u8{ "ar", "arc", "ckb", "dv", "fa", "he", "iw", "ks", "lrc", "mzn", "nqo", "pnb", "ps", "sd", "syr", "ug", "ur", "yi" }) |l| {
-        if (std.ascii.eqlIgnoreCase(lang, l)) return true;
-    }
-    return false;
-}
-
-test "locale languages and their direction" {
-    var buf: [32]u8 = undefined;
-    try std.testing.expectEqualStrings("ar-EG", localeTag(&buf, "ar_EG.UTF-8@x"));
-    try std.testing.expectEqualStrings("", localeTag(&buf, "C.UTF-8"));
-    try std.testing.expectEqualStrings("he", localeTag(&buf, "he"));
-    try std.testing.expect(languageIsRtl("ar-EG"));
-    try std.testing.expect(languageIsRtl("he"));
-    try std.testing.expect(!languageIsRtl("en-US"));
-    try std.testing.expect(!languageIsRtl(""));
-    // The script decides: Azerbaijani in Arabic script, Uyghur in Latin.
-    try std.testing.expect(languageIsRtl("az-Arab-IR"));
-    try std.testing.expect(!languageIsRtl("ug-Latn"));
 }
 
 fn newJob(self: *App, d: *const t.PrintDesc, default: PageSetup, fd: i32, window: ?*app_mod.Window) Error!*Job {

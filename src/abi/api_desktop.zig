@@ -332,8 +332,8 @@ pub const decls = [_]Decl{
         .{ .name = "width", .type = .f32, .doc = "siv_pdf_write: the paper's width in points; 0 with height 0 is A4. siv_print: the paper to assume if the dialog names none." },
         .{ .name = "height", .type = .f32, .doc = "The paper's height in points." },
         .{ .name = "flags", .type = ref("siv_print_flags"), .doc = "Options." },
-        .{ .name = "language", .type = .string, .doc = "BCP 47 language of the pages' text, for shaping and font fallback; empty is the application's: the window's for siv_print with a window, else the process locale's ($LC_ALL, $LC_MESSAGES, $LANG)." },
-        .{ .name = "direction", .type = ref("siv_direction"), .doc = "The pages' direction, which siv_draw_text aligns and orders text by; inherit is the application's: the window's for siv_print with a window, else the direction of the process locale's language." },
+        .{ .name = "language", .type = .string, .doc = "BCP 47 language of the pages' text, for shaping and font fallback; empty is the window's for siv_print with a window, else the application's (siv_app_desc.language)." },
+        .{ .name = "direction", .type = ref("siv_direction"), .doc = "The pages' direction, which siv_draw_text aligns and orders text by; inherit is the window's for siv_print with a window, else the application's." },
         .{ .name = "margin", .type = .f32, .doc = "siv_pdf_write: the margins siv_page_setup reports, in points, on every side. siv_print: the margins to assume if the dialog names none." },
     }),
 

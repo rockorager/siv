@@ -236,3 +236,41 @@ test "pages follow the document's direction" {
     try testing.expect(try writeAligned(&h, .rtl) > 250);
     try testing.expectEqual(t.Result.error_invalid_argument, P.siv_pdf_write(h.app, &.{ .draw_page = Aligned.drawPage, .margin = 400 }, 1));
 }
+
+test "the application's language and direction reach windows and documents" {
+    const c = t.c;
+    var bad: t.App = .null;
+    try testing.expectEqual(t.Result.error_invalid_argument, A.siv_app_create(&.{ .backend = .headless, .flags = .{ .ltr = true, .rtl = true } }, &bad));
+
+    var h: harness.Harness = .{};
+    try ok(A.siv_app_create(&.{ .backend = .headless, .flags = .{ .no_system_fonts = true }, .language = "he-IL", .language_len = 5 }, &h.app));
+    defer h.stop();
+    const tf = @import("text").font.test_fonts;
+    try ok(A.siv_app_add_font(h.app, "Droid", 5, tf.latin.ptr, tf.latin.len));
+    try ok(A.siv_app_set_default_font(h.app, "Droid", 5));
+    var rtl = false;
+    try ok(c.siv_app_is_rtl(h.app, &rtl));
+    try testing.expect(rtl);
+    var follows: t.Window = .null;
+    var own: t.Window = .null;
+    try ok(A.siv_window_create(h.app, &.{}, &follows));
+    try ok(A.siv_window_create(h.app, &.{ .flags = .{ .ltr = true } }, &own));
+    try ok(c.siv_node_is_rtl(c.siv_window_root(follows), &rtl));
+    try testing.expect(rtl);
+    try ok(c.siv_node_is_rtl(c.siv_window_root(own), &rtl));
+    try testing.expect(!rtl);
+
+    // Documents default to the application's direction: digits, which
+    // have none of their own, end at the right margin.
+    h.window = follows;
+    try testing.expect(try writeAligned(&h, .inherit) > 250);
+
+    // Switching to English mirrors the following window back.
+    try ok(c.siv_app_set_language(h.app, "en", 2, .inherit));
+    try ok(c.siv_app_is_rtl(h.app, &rtl));
+    try testing.expect(!rtl);
+    try ok(c.siv_node_is_rtl(c.siv_window_root(follows), &rtl));
+    try testing.expect(!rtl);
+    try testing.expectApproxEqAbs(@as(f32, 20), try writeAligned(&h, .inherit), 0.5);
+    try testing.expectEqual(t.Result.error_unsupported, c.siv_app_set_language(h.app, "en", 2, @enumFromInt(7)));
+}

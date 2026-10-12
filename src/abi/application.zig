@@ -238,6 +238,8 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     const flags = try runtime.flags(t.AppFlags, desc.flags);
     const name = try runtime.string(desc.name, desc.name_len);
     const app_id = try runtime.string(desc.app_id, desc.app_id_len);
+    const language = try runtime.string(desc.language, desc.language_len);
+    if (flags.ltr and flags.rtl) return error.InvalidArgument;
     const dest = try runtime.out(t.App, out);
 
     const self = try Root.create(App, app_tag, hooks);
@@ -274,6 +276,8 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
         .name = name,
         .toolkit_version = toolkit_version,
         .app_id = app_id,
+        .language = language,
+        .rtl = if (flags.rtl) true else if (flags.ltr) false else null,
     }) catch |err| return mapAppError(err);
     errdefer self.app.destroy();
     try self.app.fonts.addListener(.{ .ctx = self, .func = canvas.onFontsLoaded });
@@ -366,6 +370,29 @@ pub export fn siv_app_set_default_font(app: t.App, family: ?[*]const u8, family_
     return .ok;
 }
 
+pub export fn siv_app_set_language(app: t.App, language: ?[*]const u8, language_len: usize, direction: t.Direction) t.Result {
+    return wrap(struct {
+        fn f(a: t.App, p: ?[*]const u8, n: usize, d: t.Direction) Error!void {
+            const self = try App.get(@backingInt(a));
+            const lang = try runtime.string(p, n);
+            const dir = try runtime.enumValue(t.Direction, d);
+            if (std.mem.indexOfScalar(u8, lang, 0) != null) return error.InvalidArgument;
+            try self.app.setLocale(lang, switch (dir) {
+                .ltr => false,
+                .rtl => true,
+                else => null,
+            });
+        }
+    }.f(app, language, language_len, direction));
+}
+
+pub export fn siv_app_is_rtl(app: t.App, rtl: ?*bool) t.Result {
+    const self = App.get(@backingInt(app)) catch |err| return t.resultOf(err);
+    const dest = runtime.out(bool, rtl) catch |err| return t.resultOf(err);
+    dest.* = self.app.rtl;
+    return .ok;
+}
+
 pub export fn siv_app_get_key_repeat(app: t.App, delay_ms: ?*u32, interval_ms: ?*u32) t.Result {
     const self = App.get(@backingInt(app)) catch |err| return t.resultOf(err);
     const delay = runtime.out(u32, delay_ms) catch |err| return t.resultOf(err);
@@ -391,6 +418,7 @@ fn windowCreate(app: t.App, desc_ptr: ?*const t.WindowDesc, out: ?*t.Window) Err
     const app_id = try runtime.string(desc.app_id, desc.app_id_len);
     const language = try runtime.string(desc.language, desc.language_len);
     const flags = try runtime.flags(t.WindowFlags, desc.flags);
+    if (flags.ltr and flags.rtl) return error.InvalidArgument;
     const initial = try runtime.flags(t.WindowStates, desc.states);
     const dest = try runtime.out(t.Window, out);
 
@@ -418,7 +446,7 @@ fn windowCreate(app: t.App, desc_ptr: ?*const t.WindowDesc, out: ?*t.Window) Err
         .width = if (desc.width == 0) 640 else desc.width,
         .height = if (desc.height == 0) 480 else desc.height,
         .client_decorations = flags.client_decorations,
-        .rtl = flags.rtl,
+        .rtl = if (flags.rtl) true else if (flags.ltr) false else null,
         .language = language,
     }, .{ .ctx = w, .func = onWindowEvent }) catch |err| return mapAppError(err);
     errdefer w.win.destroy() catch {};
