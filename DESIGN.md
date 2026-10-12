@@ -1011,6 +1011,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       A grab, taken for the press or key that opened it, gives it the
       keyboard; when the compositor dismisses it (`popup_done`), it gets
       `close_requested`, and the dismissing press goes nowhere else.
+    - Compositors differ in two ways the coordinator (`src/app`) evens
+      out. xdg_popup gives the topmost grabbing popup keyboard focus, but
+      sway (1.12) keeps sending keys to the toplevel during the grab, so
+      keys and modifiers for a window go to its topmost grabbing popup,
+      which gets a keyboard enter if it never had one (GTK does the
+      same). And a compositor dismisses a grab only for presses on other
+      clients' surfaces, so a press on the application's own toplevel,
+      newer than the press the grab was taken for, dismisses its
+      grabbing popups topmost first and goes nowhere else, nor does its
+      release; a press on a popup of the chain (a hover-opened submenu)
+      is delivered.
     - `ui.Window.popupPositioner` anchors a popup to a node with logical
       placements: `below` (menus: start edge, flip up, slide sideways,
       shrink), `beside` (submenus: end edge, flip to the start side), and
@@ -1022,7 +1033,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     - The headless backend places popups with the same rules
       (`platform.positioner.place`: flip, then slide, then resize, per
       axis) against its output and simulates grab dismissal; the sway
-      integration tests check real placement.
+      integration tests check real placement, and a menu test there opens
+      a menu with a real click, drives it and a submenu (opened by keys
+      and, without a grab, by hover) with a virtual keyboard, and
+      dismisses it with a click on the toplevel.
     - A popup whose anchor moves (a completion list following the caret,
       a menu whose button scrolled) is moved with a new positioner
       (`Compositor.repositionPopup`, `xdg_popup.reposition`, in order with
@@ -1890,9 +1904,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       timestamp, so widgets written in C can do the same.
     - Not built yet: variable row heights, column resizing and sorting,
       and a position among siblings for tree items.
-  - Not built yet elsewhere: the styled-text editor; and an integration
-    test of menus on sway (the headless backend's placement and grab
-    rules are tested).
+  - Not built yet elsewhere: the styled-text editor.
 - **Non-goal:** a full document model with embedded tables and images.
 
 ### D23. Lua 5.5

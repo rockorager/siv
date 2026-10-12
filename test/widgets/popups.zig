@@ -236,6 +236,7 @@ test "menus: a context menu opens against any node; disabled items cannot be cho
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     try h.click(20, 20);
+    try h.settle();
     try ok(c.siv_menu_open(menu, target));
     try h.settle();
     const popup = (try openPopup(&h)).?;
@@ -257,6 +258,7 @@ test "menus: a context menu opens against any node; disabled items cannot be cho
     try ok(c.siv_widget_set_label(txn, copy, "Duplicate", 9));
     try ok(c.siv_txn_commit(txn));
     try h.click(20, 20);
+    try h.settle();
     try ok(c.siv_menu_open(menu, target));
     try h.settle();
     const p2 = (try openPopup(&h)).?;
@@ -277,6 +279,7 @@ test "popovers: content the application builds, closed by Escape unless kept" {
     try h.settle();
     const ac = try center(anchor);
     try h.click(ac[0], ac[1]);
+    try h.settle();
     var popup: t.Window = .null;
     var content: t.Node = .null;
     try ok(c.siv_popover_create(anchor, &.{ .label = "Details", .label_len = 7 }, &popup, &content));
@@ -526,6 +529,34 @@ fn focusedName(window: t.Window) ![]const u8 {
     const w = try A.App.window(@backingInt(window), A.window_tag);
     const tree = try w.uiWin().semanticsTree();
     return tree.name((tree.focused() orelse return "").*);
+}
+
+test "menus: keys the compositor sends the toplevel during a grab go to the topmost grabbing popup" {
+    var h: Harness = .{};
+    try h.start(300, 200, null, null);
+    defer h.stop();
+    var log: Log = .{};
+    const txn = try begin(h.window);
+    const col = c.siv_flex(txn, root(&h), &.{ .axis = .column, .align_items = .start });
+    const button = c.siv_menu_button(txn, col, &.{ .label = "File", .label_len = 4 });
+    _ = c.siv_menu_item(txn, button, &.{ .label = "New", .label_len = 3 });
+    _ = c.siv_menu_item(txn, button, &.{ .label = "Open", .label_len = 4 });
+    _ = c.siv_on(txn, button, .select, Log.onSelect, null, &log);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    const bc = try center(button);
+    try h.click(bc[0], bc[1]);
+    try h.settle();
+    const popup = (try openPopup(&h)).?;
+    // As sway does: the keyboard focus stays on the toplevel.
+    try h.typeKey(ks.down, "", .{});
+    try h.settle();
+    try testing.expectEqualStrings("Open", try focusedName(popup));
+    try h.typeKey(ks.@"return", "", .{});
+    try h.settle();
+    try testing.expect((try openPopup(&h)) == null);
+    try testing.expectEqual(@as(u32, 1), log.selects);
+    try testing.expectEqual(@as(u32, 1), log.index);
 }
 
 test "menus: submenus open beside their item, by keys, clicks, and hover, mirrored in RTL" {
