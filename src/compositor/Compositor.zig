@@ -292,7 +292,7 @@ pub fn createWindow(self: *Compositor, options: platform_mod.WindowOptions) !Win
         result: anyerror!WindowId = error.OutOfMemory,
         fn run(ctx: ?*anyopaque, comp: *Compositor) void {
             const s: *@This() = @ptrCast(@alignCast(ctx));
-            s.result = comp.openWindow(s.options);
+            s.result = comp.openSurface(.{ .toplevel = s.options });
         }
     };
     var ctx: Ctx = .{ .options = options };
@@ -300,6 +300,26 @@ pub fn createWindow(self: *Compositor, options: platform_mod.WindowOptions) !Win
     const id = try ctx.result;
     // The batch being delivered may hold events for an earlier window
     // with this id. (Pending ones were purged when it closed.)
+    self.outbox.purgeBatch(id);
+    return id;
+}
+
+/// Creates a popup window (D17) placed relative to its parent; see
+/// `platform.Platform.createPopup`. It behaves like any window: its
+/// configure arrives as an event, and the UI commits layers to it. When the
+/// compositor dismisses it, a `close_requested` platform event follows.
+pub fn createPopup(self: *Compositor, options: platform_mod.PopupOptions) !WindowId {
+    const Ctx = struct {
+        options: platform_mod.PopupOptions,
+        result: anyerror!WindowId = error.OutOfMemory,
+        fn run(ctx: ?*anyopaque, comp: *Compositor) void {
+            const s: *@This() = @ptrCast(@alignCast(ctx));
+            s.result = comp.openSurface(.{ .popup = s.options });
+        }
+    };
+    var ctx: Ctx = .{ .options = options };
+    try self.call(&ctx, Ctx.run);
+    const id = try ctx.result;
     self.outbox.purgeBatch(id);
     return id;
 }
@@ -417,12 +437,15 @@ fn getWindow(self: *Compositor, id: WindowId) ?*Window {
     return self.windows.items[id];
 }
 
-fn openWindow(self: *Compositor, options: platform_mod.WindowOptions) !WindowId {
+fn openSurface(self: *Compositor, role: union(enum) { toplevel: platform_mod.WindowOptions, popup: platform_mod.PopupOptions }) !WindowId {
     const w = try self.gpa.create(Window);
     errdefer self.gpa.destroy(w);
     const surface = try surface_mod.Surface.create(self.gpa, self.executor);
     errdefer surface.destroy();
-    const id = try self.platform.createWindow(options);
+    const id = switch (role) {
+        .toplevel => |o| try self.platform.createWindow(o),
+        .popup => |o| try self.platform.createPopup(o),
+    };
     errdefer self.platform.destroyWindow(id);
     if (id >= self.windows.items.len) try self.windows.appendNTimes(self.gpa, null, id + 1 - self.windows.items.len);
     w.* = .{
