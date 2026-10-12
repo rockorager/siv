@@ -13,6 +13,7 @@ const update_mod = @import("update.zig");
 const tree_mod = @import("tree.zig");
 
 const ExternalId = update_mod.ExternalId;
+const ReleaseHook = update_mod.ExternalReleaseHook;
 
 pub const Mapped = struct {
     frame: update_mod.ExternalFrame,
@@ -53,6 +54,8 @@ const External = struct {
     seen: bool = false,
     /// An embedder renders into the subsurface's own wl_surface.
     embed: ?Embed = null,
+    /// Receives released frames on this thread instead of the UI.
+    hook: ?ReleaseHook = null,
 };
 
 /// An embedder's surface: the size it was told to render at, and what it
@@ -78,15 +81,35 @@ pub const Externals = struct {
     /// New sizes for embedders, sent after the frame.
     configures: std.ArrayList(Configure) = .empty,
 
-    pub const Retired = struct { id: ExternalId, mapped: Mapped };
+    pub const Retired = struct {
+        id: ExternalId,
+        mapped: Mapped,
+        hook: ?ReleaseHook = null,
+        /// The slot is gone: drop the hook after this release.
+        last: bool = false,
+    };
 
     pub fn init(gpa: Allocator) Externals {
         return .{ .gpa = gpa };
     }
 
+    /// Frames still held are released (no frame reads them any more) and
+    /// hooks dropped.
     pub fn deinit(e: *Externals) void {
-        for (e.items.items) |item| if (item) |x| if (x.frame) |m| m.deinit();
-        for (e.retired.items) |r| r.mapped.deinit();
+        for (e.items.items) |item| if (item) |x| {
+            if (x.frame) |m| {
+                if (x.hook) |h| h.released(h.ctx, m.frame.key);
+                m.deinit();
+            }
+            if (x.hook) |h| h.dropped(h.ctx);
+        };
+        for (e.retired.items) |r| {
+            if (r.hook) |h| {
+                h.released(h.ctx, r.mapped.frame.key);
+                if (r.last) h.dropped(h.ctx);
+            }
+            r.mapped.deinit();
+        }
         e.items.deinit(e.gpa);
         e.found.deinit(e.gpa);
         e.retired.deinit(e.gpa);
@@ -134,12 +157,36 @@ pub const Externals = struct {
     pub fn destroy(e: *Externals, p: platform.Platform, window: platform.WindowId, id: ExternalId) void {
         const x = e.get(id) orelse return;
         if (x.sub) |sub| p.destroySubsurface(window, sub);
-        if (x.frame) |m| e.retire(id, m);
+        if (x.frame) |m| {
+            e.retireLast(id, m, x.hook);
+        } else if (x.hook) |h| h.dropped(h.ctx);
         e.items.items[id - 1] = null;
     }
 
-    fn retire(e: *Externals, id: ExternalId, m: Mapped) void {
-        e.retired.append(e.gpa, .{ .id = id, .mapped = m }) catch m.deinit();
+    /// Sets (or with null clears) where a slot's released frames go.
+    pub fn setHook(e: *Externals, id: ExternalId, hook: ?ReleaseHook) bool {
+        const x = e.get(id) orelse return false;
+        x.hook = hook;
+        return true;
+    }
+
+    fn retire(e: *Externals, id: ExternalId, m: Mapped, hook: ?ReleaseHook) void {
+        e.retired.append(e.gpa, .{ .id = id, .mapped = m, .hook = hook }) catch {
+            // Released early rather than leaked; nothing has shown it
+            // since the frame that replaced it was taken.
+            if (hook) |h| h.released(h.ctx, m.frame.key);
+            m.deinit();
+        };
+    }
+
+    fn retireLast(e: *Externals, id: ExternalId, m: Mapped, hook: ?ReleaseHook) void {
+        e.retired.append(e.gpa, .{ .id = id, .mapped = m, .hook = hook, .last = true }) catch {
+            if (hook) |h| {
+                h.released(h.ctx, m.frame.key);
+                h.dropped(h.ctx);
+            }
+            m.deinit();
+        };
     }
 
     /// Takes a new frame (owning its fd). False if the id is unknown or
@@ -153,7 +200,7 @@ pub const Externals = struct {
             _ = linux.close(frame.fd);
             return false;
         };
-        if (x.frame) |old| e.retire(id, old);
+        if (x.frame) |old| e.retire(id, old, x.hook);
         x.frame = m;
         return true;
     }
@@ -321,7 +368,10 @@ pub const Externals = struct {
     /// After a frame: frames retired before it are no longer read.
     pub fn endFrame(e: *Externals, release: anytype) void {
         for (e.retired.items) |r| {
-            release.external(r.id, r.mapped.frame.key);
+            if (r.hook) |h| {
+                h.released(h.ctx, r.mapped.frame.key);
+                if (r.last) h.dropped(h.ctx);
+            } else release.external(r.id, r.mapped.frame.key);
             r.mapped.deinit();
         }
         e.retired.clearRetainingCapacity();

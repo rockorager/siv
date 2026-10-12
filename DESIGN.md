@@ -1366,13 +1366,29 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     embedder a `wl_display *` and `wl_surface *` (the only pointers in
     the API) and report the size to render at, with the embedder
     contract spelled out in `siv_external_create_surface`'s
-    documentation. Slot calls are for the application's thread like the
-    rest; a decoder or renderer thread hands frames over with
-    `siv_post`. A window takes its slots with it.
+    documentation. A window takes its slots with it.
+  - Producers must not wait on the UI thread (D8): `siv_external_submit`
+    and `siv_external_surface_committed` work from any thread and go
+    straight to the compositor's inbox, and a frame slot's `release`
+    callback runs on the compositor thread (quick, calling at most
+    `siv_external_submit` and `siv_post`), so a decoder recycles its
+    buffers while the UI thread is blocked; then the slot's
+    destroy-notify waits for its last frame's release and runs on the
+    application's thread. Without `release`, releases arrive as events
+    on the application's thread. Creating and destroying slots stays on
+    the application's thread. Slot handles are therefore not in the
+    root's handle table (which the UI thread grows): they index a slot
+    array under a mutex with generations of their own, and any-thread
+    calls pin the root through the object handle (`Registry.pinOwner`)
+    after checking a `closing` flag that destruction sets before
+    retiring the root. Each function's threading is in the header.
+  - Display lists hold their own reference to every image they draw,
+    from image nodes or canvases, until the compositor releases them, so
+    destroying a `siv_image` affects only future draws.
   - `siv_image` handles hold one reference to a `ui.Image`; image nodes
     and display lists hold their own, so destroying the handle never
     pulls pixels from under a frame. Canvases draw images by handle, so
-    an application keeps the handles of images it draws.
+    an application keeps the handles of images it may still draw.
   - Property groups are descriptors where zero is a good default (layout,
     visual, semantics, text style, flex, grid, stack). Where zero is a
     meaningful value it is not a descriptor field: opacity and the

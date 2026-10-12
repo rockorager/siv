@@ -65,8 +65,11 @@ pub const App = struct {
     /// By image index (handle payload); null slots are reused.
     images: std.ArrayList(?*ui.Image),
     waiting: std.ArrayList(canvas.Waiting),
-    /// By external slot index (handle payload); null slots are reused.
-    externals: std.ArrayList(?*external.External),
+    /// External slots, which other threads use too (external.zig).
+    externals: external.Slots,
+    /// Set before the root is retired, for calls that pin it through an
+    /// object handle (`Root.pinOwner`).
+    closing: std.atomic.Value(bool),
 
     pub fn gpa(self: *App) std.mem.Allocator {
         return self.root.gpa;
@@ -181,7 +184,8 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     self.painting = 0;
     self.images = .empty;
     self.waiting = .empty;
-    self.externals = .empty;
+    self.externals = .{};
+    self.closing = .init(false);
     const gpa = self.gpa();
     self.draw = .init(gpa);
     errdefer self.draw.deinit(gpa);
@@ -211,7 +215,9 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
 pub export fn siv_app_destroy(app: t.App) t.Result {
     const self = App.get(@backingInt(app)) catch |err| return t.resultOf(err);
     if (self.depth != 0 or self.app.loop.isDispatching()) return .error_busy;
-    // From here no thread can post, and every handle is invalid.
+    // From here no thread can post or submit, and every handle is
+    // invalid.
+    self.closing.store(true, .seq_cst);
     self.root.retire();
     for (self.windows.items) |slot| if (slot) |w| {
         w.win.destroy() catch {};

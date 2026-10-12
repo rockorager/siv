@@ -183,6 +183,7 @@ const Msg = union(enum) {
     post: struct { func: Func, destroy: ?*const fn (?*anyopaque) void, ctx: ?*anyopaque },
     external_frame: struct { window: WindowId, id: update.ExternalId, frame: update.ExternalFrame },
     destroy_external: struct { window: WindowId, id: update.ExternalId },
+    external_hook: struct { window: WindowId, id: update.ExternalId, hook: ?update.ExternalReleaseHook },
     external_committed: struct { window: WindowId, id: update.ExternalId, width: u32, height: u32 },
     stop,
 };
@@ -275,6 +276,7 @@ pub fn destroy(self: *Compositor) void {
     for ([_]*Inbox{ &self.processing, &self.inbox }) |in| for (in.msgs.items) |m| switch (m) {
         .post => |p| if (p.destroy) |d| d(p.ctx),
         .external_frame => |f| _ = std.os.linux.close(f.frame.fd),
+        .external_hook => |eh| if (eh.hook) |h| h.dropped(h.ctx),
         else => {},
     };
     for (self.windows.items) |w| if (w) |win| self.freeWindow(win);
@@ -471,6 +473,15 @@ pub fn externalSurfaceCommitted(self: *Compositor, window: WindowId, id: update.
     return self.send(.{ .external_committed = .{ .window = window, .id = id, .width = width, .height = height } });
 }
 
+/// Sends a slot's released frames to `hook` on the compositor thread
+/// instead of `Event.external_released` (null goes back to the event).
+/// The hook's `dropped` runs once the slot is gone and its last frame
+/// released, or at once if the slot or window does not exist. Any
+/// thread; in order with frames sent after it.
+pub fn setExternalReleaseHook(self: *Compositor, window: WindowId, id: update.ExternalId, hook: ?update.ExternalReleaseHook) Allocator.Error!void {
+    return self.send(.{ .external_hook = .{ .window = window, .id = id, .hook = hook } });
+}
+
 /// Removes an external slot; its frame is released after the next frame.
 pub fn destroyExternal(self: *Compositor, window: WindowId, id: update.ExternalId) Allocator.Error!void {
     return self.send(.{ .destroy_external = .{ .window = window, .id = id } });
@@ -579,6 +590,9 @@ fn drain(self: *Compositor) void {
         .external_committed => |ec| if (self.getWindow(ec.window)) |w| {
             if (w.externals.surfaceCommitted(ec.id, ec.width, ec.height)) self.platform.requestFrame(ec.window);
         },
+        .external_hook => |eh| if (self.getWindow(eh.window)) |w| {
+            if (!w.externals.setHook(eh.id, eh.hook)) if (eh.hook) |h| h.dropped(h.ctx);
+        } else if (eh.hook) |h| h.dropped(h.ctx),
         .destroy_external => |d| if (self.getWindow(d.window)) |w| {
             w.externals.destroy(self.platform, d.window, d.id);
             w.tree.touchExternal(d.id);

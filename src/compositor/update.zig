@@ -194,6 +194,20 @@ pub const ExternalFrame = struct {
     key: u64,
 };
 
+/// Takes a slot's released frames on the compositor thread, instead of
+/// `Event.external_released` on the UI thread, so that a producer gets
+/// its memory back however busy the UI is (D8). Both functions run on
+/// the compositor thread (or on the thread destroying the compositor)
+/// and must return quickly.
+pub const ExternalReleaseHook = struct {
+    ctx: ?*anyopaque,
+    /// No frame reads the frame with this key any more.
+    released: *const fn (ctx: ?*anyopaque, key: u64) void,
+    /// The slot is gone and its last frame released: nothing calls this
+    /// hook again.
+    dropped: *const fn (ctx: ?*anyopaque) void,
+};
+
 /// Where a layer shows external content: in `rect`, in layer
 /// coordinates, above the layer's own content and below its children.
 pub const ExternalPlacement = struct {

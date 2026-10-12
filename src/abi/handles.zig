@@ -135,6 +135,21 @@ pub const Registry = struct {
         return p;
     }
 
+    /// The root of type `root_tag` that owns an object handle, kept from
+    /// being retired until `unpin(handle)`. Object handles do not carry
+    /// the root's generation, so the caller must check that the root is
+    /// not being destroyed (a flag it sets before `retire`) and check the
+    /// handle against the root's own records.
+    pub fn pinOwner(r: *Registry, handle: u64, root_tag: u8) Error!*anyopaque {
+        if (handle == 0) return error.InvalidHandle;
+        const slot = &r.slots[Fields.decode(handle).root];
+        _ = slot.pins.fetchAdd(1, .seq_cst);
+        errdefer _ = slot.pins.fetchSub(1, .release);
+        const p = slot.root.load(.acquire) orelse return error.InvalidHandle;
+        if (slot.tag.load(.monotonic) != root_tag) return error.InvalidHandle;
+        return p;
+    }
+
     pub fn unpin(r: *Registry, handle: u64) void {
         _ = r.slots[Fields.decode(handle).root].pins.fetchSub(1, .release);
     }

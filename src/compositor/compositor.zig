@@ -38,6 +38,7 @@ pub const Event = update.Event;
 pub const ExternalId = update.ExternalId;
 pub const ExternalFrame = update.ExternalFrame;
 pub const ExternalPlacement = update.ExternalPlacement;
+pub const ExternalReleaseHook = update.ExternalReleaseHook;
 pub const configure_timeout_ns = update.configure_timeout_ns;
 
 pub const Compositor = @import("Compositor.zig");

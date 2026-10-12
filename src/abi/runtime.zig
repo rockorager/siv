@@ -167,6 +167,13 @@ pub const Root = struct {
         return @ptrCast(@alignCast(try handles.registry.pin(handle, tag)));
     }
 
+    /// The T that owns an object handle, from any thread, kept alive
+    /// until `unpin(handle)` (see `Registry.pinOwner` for what the caller
+    /// must check).
+    pub fn pinOwner(comptime T: type, root_tag: u8, handle: u64) Error!*T {
+        return @ptrCast(@alignCast(try handles.registry.pinOwner(handle, root_tag)));
+    }
+
     pub fn unpin(handle: u64) void {
         handles.registry.unpin(handle);
     }

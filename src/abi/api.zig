@@ -666,7 +666,7 @@ pub const decls = [_]Decl{
     // External content (D17).
     handle("siv_external", "A slot in a window for content rendered outside siv: frames a producer submits, or a wl_surface an embedder renders into. External nodes (siv_external_view) show it.", false),
     enumeration("siv_external_event_type", "What a siv_external_event reports.", &.{
-        .{ .name = "released", .value = 0, .doc = "Frames: no frame reads the frame with this key any more; its memory may be reused." },
+        .{ .name = "released", .value = 0, .doc = "Frames: no frame reads the frame with this key any more; its memory may be reused. Only for slots without a release callback." },
         .{ .name = "configure", .value = 1, .doc = "Surfaces: render frames of buffer_width x buffer_height pixels from now on, and one soon even if nothing else changed." },
     }),
     descriptor("siv_external_event", "An external slot's event. Filled by siv.", &.{
@@ -682,10 +682,15 @@ pub const decls = [_]Decl{
         .{ .name = "external", .type = ref("siv_external"), .doc = "The slot." },
         .{ .name = "event", .type = .{ .desc = "siv_external_event" }, .doc = "The event, valid during the call." },
     }, .void),
+    callback("siv_external_release_fn", "Gets a frame slot's memory back: no frame reads the frame with this key any more. Runs on siv's compositor thread, not the application's, so that a producer recycles its buffers however busy the application's thread is (D8): it must return quickly and may call only siv_external_submit and siv_post.", &.{
+        .{ .name = "external", .type = ref("siv_external"), .doc = "The slot." },
+        .{ .name = "key", .type = .u64, .doc = "The released frame's key." },
+    }, .void),
     descriptor("siv_external_desc", "Options for an external slot.", &.{
-        .{ .name = "user_data", .type = .user_data, .doc = "Passed to on_event and destroy." },
-        .{ .name = "on_event", .type = ref("siv_external_event_fn"), .doc = "Receives releases or configures; may be NULL." },
-        .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data when the slot or its window is destroyed." },
+        .{ .name = "user_data", .type = .user_data, .doc = "Passed to on_event, release, and destroy." },
+        .{ .name = "on_event", .type = ref("siv_external_event_fn"), .doc = "Receives configures, and releases when release is NULL, on the application's thread; may be NULL." },
+        .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data when the slot or its window is destroyed (later with release; see there), on the application's thread." },
+        .{ .name = "release", .type = ref("siv_external_release_fn"), .doc = "Frame slots: receives releases on the compositor thread instead of on_event. Then destroy runs only after the slot is destroyed and its last frame released, and user_data must stay valid until then." },
     }),
     enumeration("siv_external_format", "Pixel layout of submitted external frames.", &.{
         .{ .name = "xrgb8888", .value = 0, .doc = "B, G, R, X bytes (XRGB8888 in memory), opaque, sRGB-encoded." },
@@ -856,7 +861,7 @@ pub const functions = [_]Function{
         .{ .name = "desc", .type = .{ .desc = "siv_image_desc" }, .doc = "The pixels." },
         .{ .name = "image", .type = out(ref("siv_image")), .doc = "The new image." },
     }),
-    op("siv_image_destroy", "Releases the application's reference to an image. Nodes and frames that still show it keep its pixels until they stop.", &.{.{ .name = "image", .type = ref("siv_image"), .doc = "The image." }}),
+    op("siv_image_destroy", "Releases the application's reference to an image. Image nodes that show it, and every display list that drew it (from a node or siv_draw_image), hold references of their own until the compositor releases the list, so this affects only future draws: frames already drawn keep showing it. Canvases draw images by handle, so keep the handle while a canvas may draw it.", &.{.{ .name = "image", .type = ref("siv_image"), .doc = "The image." }}),
     call("siv_app_measure_text", "Lays out text as siv_draw_text would and reports its size. Fonts still loading count as missing (their glyphs come from fallback fonts); once they load, canvases that drew with them are drawn again.", &.{
         app_param,
         .{ .name = "text", .type = .string, .doc = "UTF-8." },
@@ -877,7 +882,7 @@ pub const functions = [_]Function{
     drawOp("siv_draw_ellipse", "Adds the ellipse inscribed in a rectangle as a closed subpath.", &.{param("rect", ref("siv_rect"), "The bounding rectangle.")}),
     drawOp("siv_draw_fill", "Fills the current path.", &.{ .{ .name = "paint", .type = .{ .desc = "siv_paint_desc" }, .doc = "Paint; NULL for black." }, param("flags", ref("siv_fill_flags"), "Options.") }),
     drawOp("siv_draw_stroke", "Strokes the current path.", &.{ .{ .name = "stroke", .type = .{ .desc = "siv_stroke_desc" }, .doc = "Stroke; NULL for 1 px solid." }, .{ .name = "paint", .type = .{ .desc = "siv_paint_desc" }, .doc = "Paint; NULL for black." } }),
-    drawOp("siv_draw_image", "Draws part of an image into a rectangle.", &.{
+    drawOp("siv_draw_image", "Draws part of an image into a rectangle. The canvas's display list holds a reference to the image until the compositor releases it, so destroying the image's handle later does not affect what is on screen.", &.{
         param("image", ref("siv_image"), "The image."),
         param("dst", ref("siv_rect"), "Where it goes."),
         param("src", ref("siv_rect"), "The part to draw, in image pixels; all zero is the whole image."),
@@ -898,31 +903,31 @@ pub const functions = [_]Function{
     drawOp("siv_draw_push_blend", "Opens a layer composited with a blend mode, as an isolated group.", &.{param("mode", ref("siv_blend_mode"), "The blend mode.")}),
     drawOp("siv_draw_pop", "Closes the innermost open layer. Layers still open when the draw callback returns are closed then.", &.{}),
     // External content (D17).
-    call("siv_external_create", "Creates a slot for frames the application submits (siv_external_submit), such as decoded video. The compositor promotes it to a subsurface when nothing covers it (D17).", &.{
+    call("siv_external_create", "Creates a slot for frames the application submits (siv_external_submit), such as decoded video. The compositor promotes it to a subsurface when nothing covers it (D17). Application's thread.", &.{
         window_param,
         .{ .name = "desc", .type = .{ .desc = "siv_external_desc" }, .doc = "Callbacks; NULL for none." },
         .{ .name = "external", .type = out(ref("siv_external")), .doc = "The slot." },
     }),
-    call("siv_external_create_surface", "Creates a slot backed by a wl_surface that the application renders into with its own Vulkan, EGL, GStreamer, or libmpv (D17), on a synchronized subsurface of the window. The embedder contract: render frames of the size the configure event gives; after committing each frame, call siv_external_surface_committed, and the window's next commit shows it (frame callbacks on the surface fire only then, so a swap interval of 1 waits for it); never set a viewport, buffer scale, or listener on the surface; the wl_display is siv's connection, used by siv's compositor thread, so use it only through an event queue of one's own (wl_display_create_queue, a proxy wrapper of the display, wl_display_dispatch_queue), as Mesa's EGL and Vulkan do, and never dispatch or round-trip its default queue.", &.{
+    call("siv_external_create_surface", "Creates a slot backed by a wl_surface that the application renders into with its own Vulkan, EGL, GStreamer, or libmpv (D17), on a synchronized subsurface of the window. The embedder contract: render frames of the size the configure event gives; after committing each frame, call siv_external_surface_committed, and the window's next commit shows it (frame callbacks on the surface fire only then, so a swap interval of 1 waits for it); never set a viewport, buffer scale, or listener on the surface; the wl_display is siv's connection, used by siv's compositor thread, so use it only through an event queue of one's own (wl_display_create_queue, a proxy wrapper of the display, wl_display_dispatch_queue), as Mesa's EGL and Vulkan do, and never dispatch or round-trip its default queue. Application's thread.", &.{
         window_param,
         .{ .name = "desc", .type = .{ .desc = "siv_external_desc" }, .doc = "Callbacks; on_event receives configures." },
         .{ .name = "external", .type = out(ref("siv_external")), .doc = "The slot." },
     }),
-    call("siv_external_get_wayland", "The wl_display * and wl_surface * of a slot made with siv_external_create_surface. Both are NULL on the headless backend.", &.{
+    call("siv_external_get_wayland", "The wl_display * and wl_surface * of a slot made with siv_external_create_surface. Both are NULL on the headless backend. Any thread.", &.{
         .{ .name = "external", .type = ref("siv_external"), .doc = "A surface slot." },
         .{ .name = "display", .type = out(.pointer), .doc = "The wl_display *." },
         .{ .name = "surface", .type = out(.pointer), .doc = "The wl_surface *." },
     }),
-    call("siv_external_submit", "Shows a new frame in a frame slot. The previous frame is reported released once no frame reads it; until then its pixels must not change.", &.{
+    call("siv_external_submit", "Shows a new frame in a frame slot. Any thread, even while the application's thread is busy: the frame goes straight to the compositor thread, in order with other frames of the slot. The previous frame is reported released once no frame reads it; until then its pixels must not change.", &.{
         .{ .name = "external", .type = ref("siv_external"), .doc = "A frame slot." },
         .{ .name = "frame", .type = .{ .desc = "siv_external_frame_desc" }, .doc = "The frame." },
     }),
-    call("siv_external_surface_committed", "Tells siv that the embedder committed a frame of width x height buffer pixels to a surface slot.", &.{
+    call("siv_external_surface_committed", "Tells siv that the embedder committed a frame of width x height buffer pixels to a surface slot. Any thread, like siv_external_submit.", &.{
         .{ .name = "external", .type = ref("siv_external"), .doc = "A surface slot." },
         .{ .name = "width", .type = .u32, .doc = "Buffer width." },
         .{ .name = "height", .type = .u32, .doc = "Buffer height." },
     }),
-    op("siv_external_destroy", "Destroys a slot; its frame or surface goes after the next frame. Nodes that show it show nothing.", &.{.{ .name = "external", .type = ref("siv_external"), .doc = "The slot." }}),
+    op("siv_external_destroy", "Destroys a slot; its frame or surface goes after the next frame. Nodes that show it show nothing. Application's thread; other threads' calls with the handle fail with SIV_ERROR_INVALID_HANDLE from now on.", &.{.{ .name = "external", .type = ref("siv_external"), .doc = "The slot." }}),
     builder("siv_external_view", "Creates an external node: a slot's content fitted into its content box, in a layer of its own. Its role is image.", &.{
         .{ .name = "external", .type = ref("siv_external"), .doc = "A slot of the same window; 0 shows nothing." },
         .{ .name = "size", .type = ref("siv_size"), .doc = "Intrinsic size: the content's size or aspect ratio; zero sizes it by layout alone." },

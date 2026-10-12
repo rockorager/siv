@@ -164,3 +164,98 @@ test "C API external: an embedder surface is configured to its node's size" {
     try testing.expectEqual(1, log.destroyed);
     try testing.expectEqual(t.Result.error_invalid_handle, X.siv_external_get_wayland(ext, &display, &surface));
 }
+
+test "C API external: a producer thread submits and gets frames back while the UI thread is blocked" {
+    var h: Harness = .{};
+    try h.start(100, 60, null, null);
+    defer h.stop();
+
+    const Producer = struct {
+        ext: t.External = .null,
+        fd: i32,
+        released: std.atomic.Value(u64) = .init(0),
+        last_key: std.atomic.Value(u64) = .init(0),
+        wrong_thread: std.atomic.Value(bool) = .init(false),
+        destroyed: std.atomic.Value(u32) = .init(0),
+        /// Releases that came as events on the UI thread instead.
+        ui_releases: u32 = 0,
+        ui_thread: std.Thread.Id,
+
+        failed: ?anyerror = null,
+        fn onEvent(user_data: ?*anyopaque, _: t.External, event: ?*const t.ExternalEvent) callconv(.c) void {
+            const p: *@This() = @ptrCast(@alignCast(user_data));
+            if (event.?.type == .released) p.ui_releases += 1;
+        }
+
+        fn onRelease(user_data: ?*anyopaque, _: t.External, key: u64) callconv(.c) void {
+            const p: *@This() = @ptrCast(@alignCast(user_data));
+            if (std.Thread.getCurrentId() == p.ui_thread) p.wrong_thread.store(true, .seq_cst);
+            _ = p.released.fetchAdd(1, .seq_cst);
+            p.last_key.store(key, .seq_cst);
+        }
+
+        fn onDestroy(user_data: ?*anyopaque) callconv(.c) void {
+            const p: *@This() = @ptrCast(@alignCast(user_data));
+            _ = p.destroyed.fetchAdd(1, .seq_cst);
+        }
+
+        /// Submits frames 2..11, each after the one before it came back.
+        fn run(p: *@This()) void {
+            p.produce() catch |err| {
+                p.failed = err;
+            };
+        }
+
+        fn produce(p: *@This()) !void {
+            var key: u64 = 2;
+            while (key <= 11) : (key += 1) {
+                try ok(X.siv_external_submit(p.ext, &.{ .fd = p.fd, .width = 2, .height = 1, .key = key }));
+                // Frame key - 1 is released once frame key is on screen.
+                const deadline = @import("loop").Loop.now() + 5 * std.time.ns_per_s;
+                while (p.released.load(.seq_cst) < key - 1) {
+                    if (@import("loop").Loop.now() > deadline) return error.Timeout;
+                    std.Thread.yield() catch {};
+                }
+            }
+        }
+    };
+
+    const red = [4]u8{ 0, 0, 0xff, 0 };
+    const fd = try frameFd(red, red);
+    defer _ = linux.close(fd);
+    var p: Producer = .{ .fd = fd, .ui_thread = std.Thread.getCurrentId() };
+    try ok(X.siv_external_create(h.window, &.{ .on_event = Producer.onEvent, .release = Producer.onRelease, .destroy = Producer.onDestroy, .user_data = &p }, &p.ext));
+    var txn: t.Txn = .null;
+    try ok(T.siv_txn_begin(h.window, &txn));
+    const view = X.siv_external_view(txn, A.siv_window_root(h.window), p.ext, .{ .width = 2, .height = 1 }, .fill);
+    _ = T.siv_set_layout(txn, view, &.{ .width = .{ .unit = .px, .value = 80 }, .height = .{ .unit = .px, .value = 40 } });
+    try ok(T.siv_txn_commit(txn));
+    try ok(X.siv_external_submit(p.ext, &.{ .fd = fd, .width = 2, .height = 1, .key = 1 }));
+    try h.settle();
+
+    // The UI thread blocks in join, dispatching nothing, while the
+    // producer runs ten frames through the compositor.
+    const thread = try std.Thread.spawn(.{}, Producer.run, .{&p});
+    thread.join();
+    if (p.failed) |err| return err;
+    try testing.expectEqual(10, p.released.load(.seq_cst));
+    try testing.expectEqual(10, p.last_key.load(.seq_cst));
+    try testing.expect(!p.wrong_thread.load(.seq_cst));
+    try testing.expectEqual(@as(u64, 11), (try h.subsurface()).?.frame.?.key);
+
+    // Releases did not go through the UI thread's events.
+    try h.settle();
+    try testing.expectEqual(0, p.ui_releases);
+
+    // Destroying the slot: the last frame comes back, then the
+    // destroy-notify runs on the application's thread.
+    try ok(X.siv_external_destroy(p.ext));
+    try testing.expectEqual(t.Result.error_invalid_handle, X.siv_external_submit(p.ext, &.{ .fd = fd, .width = 2, .height = 1, .key = 12 }));
+    var waited: usize = 0;
+    while (p.destroyed.load(.seq_cst) == 0) : (waited += 1) {
+        if (waited > 2000) return error.Timeout;
+        try ok(A.siv_app_dispatch(h.app, 5));
+    }
+    try testing.expectEqual(11, p.released.load(.seq_cst));
+    try testing.expectEqual(11, p.last_key.load(.seq_cst));
+}
