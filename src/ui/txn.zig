@@ -576,6 +576,14 @@ pub const Txn = struct {
         _ = try t.live(id);
         t.win.markPaint(id);
     }
+
+    /// Lays a canvas out again, asking its measure callback, and repaints
+    /// it (its size depends on content that changed).
+    pub fn remeasure(t: *Txn, id: NodeId) Error!void {
+        _ = try t.data(id, .canvas);
+        t.win.markLayout(id);
+        t.win.markPaint(id);
+    }
 };
 
 /// `offset` clamped to `s` and moved back to the start of a UTF-8 sequence.

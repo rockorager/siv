@@ -51,6 +51,7 @@ pub const Fit = node.Fit;
 pub const Image = @import("image.zig").Image;
 pub const ImageView = node.ImageView;
 pub const Canvas = node.Canvas;
+pub const CanvasSize = node.CanvasSize;
 pub const Editor = node.Editor;
 pub const External = node.External;
 pub const Event = node.Event;

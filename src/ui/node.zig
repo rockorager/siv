@@ -382,13 +382,21 @@ pub const ImageView = struct {
 
 pub const Canvas = struct {
     /// Draws the content in the node's coordinates (0, 0)–(width, height).
-    /// Runs on the UI thread while the node's layer repaints.
-    draw: ?*const fn (user: ?*anyopaque, b: *scene.Builder, width: f32, height: f32) scene.Error!void = null,
+    /// Runs on the UI thread in the frame phase while the node's layer
+    /// repaints, so it must not change the tree. On error the node draws
+    /// nothing.
+    draw: ?*const fn (user: ?*anyopaque, win: *Window, node: NodeId, b: *scene.Builder, width: f32, height: f32) scene.Error!void = null,
+    /// Sizes the content within the constraints during layout (maxima may
+    /// be infinite); the result is clamped to them. Null uses `width` and
+    /// `height`. Must not change the tree. `Txn.remeasure` asks again.
+    measure: ?*const fn (user: ?*anyopaque, win: *Window, node: NodeId, min_w: f32, max_w: f32, min_h: f32, max_h: f32) CanvasSize = null,
     user: ?*anyopaque = null,
-    /// Intrinsic size.
+    /// Intrinsic size without `measure`.
     width: f32 = 0,
     height: f32 = 0,
 };
+
+pub const CanvasSize = struct { width: f32 = 0, height: f32 = 0 };
 
 /// Kind-specific data. Text content and grid tracks are owned by the tree.
 pub const Data = union(Kind) {

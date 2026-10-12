@@ -28,6 +28,7 @@ const input_mod = @import("input.zig");
 const semantics_mod = @import("semantics.zig");
 const text_node = @import("text_node.zig");
 const editor_mod = @import("editor.zig");
+const Image = @import("image.zig").Image;
 const secret = @import("secret.zig");
 const ime_mod = @import("ime.zig");
 pub const Clipboard = @import("clipboard.zig");
@@ -602,6 +603,13 @@ pub fn ownsBuilder(win: *const Window, b: *const scene.Builder) bool {
 /// `Compositor.destroyWindow`, the window may be freed once this holds.
 pub fn buildersHome(win: *const Window) bool {
     return win.paint.builders.items.len == win.paint.all_builders.items.len;
+}
+
+/// Keeps `img` alive while the display list in `b` can be shown, for
+/// canvases that draw images (the builder passed to `Canvas.draw`).
+/// Takes a reference of its own.
+pub fn holdImage(win: *Window, b: *scene.Builder, img: *Image) error{OutOfMemory}!void {
+    try paint_mod.holdImage(win.gpa, b, img);
 }
 
 /// A forwarded platform event for this window: pointer, keyboard, touch,

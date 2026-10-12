@@ -151,7 +151,7 @@ fn compute(win: *Window, id: NodeId, c: Constraints) Error!Size {
             break :blk try textSize(win, id, inner);
         },
         .image => imageSize(if (n.data.image.image) |img| .{ img.width, img.height } else null, inner),
-        .canvas => .{ .w = inner.clampW(n.data.canvas.width), .h = inner.clampH(n.data.canvas.height) },
+        .canvas => canvasSize(win, id, inner),
         .external => imageSize(intrinsic(n.data.external), inner),
     };
     const size: Size = .{ .w = cc.clampW(content.w + pad.horizontal()), .h = cc.clampH(content.h + pad.vertical()) };
@@ -243,7 +243,7 @@ pub fn maxContent(win: *Window, id: NodeId) Error!f32 {
             // Room for the caret after the last character.
             .editor => content = try text_node.maxContent(win, id) + caret_width,
             .image => content = if (n.data.image.image) |img| @floatFromInt(img.width) else 0,
-            .canvas => content = n.data.canvas.width,
+            .canvas => content = canvasSize(win, id, .{}).w,
             .external => content = n.data.external.width,
         }
         break :blk content + l.padding.horizontal();
@@ -796,4 +796,14 @@ fn imageSize(wh: ?[2]u32, inner: Constraints) Size {
     if (inner.tightH()) return .{ .w = inner.clampW(inner.max_h * iw / ih), .h = inner.max_h };
     const k = @min(1, @min(inner.max_w / iw, inner.max_h / ih));
     return .{ .w = inner.clampW(iw * k), .h = inner.clampH(ih * k) };
+}
+
+/// A canvas's size within `c`: from its measure callback, else its
+/// intrinsic size.
+fn canvasSize(win: *Window, id: NodeId, c: Constraints) Size {
+    const cv = win.node(id).data.canvas;
+    const s: node_mod.CanvasSize = if (cv.measure) |m| m(cv.user, win, id, c.min_w, c.max_w, c.min_h, c.max_h) else .{ .width = cv.width, .height = cv.height };
+    const w = if (std.math.isFinite(s.width)) @max(0, s.width) else 0;
+    const h = if (std.math.isFinite(s.height)) @max(0, s.height) else 0;
+    return .{ .w = c.clampW(w), .h = c.clampH(h) };
 }

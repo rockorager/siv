@@ -102,6 +102,13 @@ const Slot = struct {
     }
 };
 
+/// See `Window.holdImage`.
+pub fn holdImage(gpa: std.mem.Allocator, b: *scene.Builder, img: *Image) error{OutOfMemory}!void {
+    const images = &Slot.of(b).images;
+    try images.ensureUnusedCapacity(gpa, 1);
+    images.appendAssumeCapacity(img.retain());
+}
+
 pub const State = struct {
     layers: std.ArrayList(Layer) = .empty,
     free: std.ArrayList(u32) = .empty,
@@ -772,7 +779,11 @@ fn drawNode(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point
         .image => bounds = bounds.unite(try drawImage(win, nid, b, off)),
         .canvas => if (n.data.canvas.draw) |draw| {
             try b.pushLayer(.{ .transform = .translate(off.x, off.y), .clip = .{ .shape = .{ .rect = .xywh(0, 0, s.size.w, s.size.h) } } });
-            try draw(n.data.canvas.user, b, s.size.w, s.size.h);
+            // Keep the builder balanced when the content fails.
+            draw(n.data.canvas.user, win, nid, b, s.size.w, s.size.h) catch |err| {
+                b.popLayer() catch {};
+                return err;
+            };
             try b.popLayer();
             bounds = bounds.unite(r);
         },
