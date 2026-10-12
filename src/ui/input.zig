@@ -49,7 +49,9 @@ pub const line_step: f32 = 40;
 
 /// Presses this close in time and space count as one multi-click. Fixed
 /// until the desktop settings portal supplies them (D19).
-pub const multi_click_ms: u32 = 400;
+/// How far the pointer may travel between the presses of a multi-click.
+/// No desktop exposes this through the portal, so it is a toolkit
+/// default; the time comes from `Window.desktop`.
 pub const multi_click_px: f32 = 4;
 
 pub const State = struct {
@@ -348,7 +350,7 @@ fn pointerButton(win: *Window, code: u32, pressed: bool, time: u32) void {
     };
     if (pressed and button == .primary) {
         const near = @abs(p.x - st.last_press_at.x) <= multi_click_px and @abs(p.y - st.last_press_at.y) <= multi_click_px;
-        const soon = st.clicks != 0 and time -% st.last_press_ms <= multi_click_ms;
+        const soon = st.clicks != 0 and time -% st.last_press_ms <= win.desktop.double_click_ms;
         st.clicks = if (near and soon) @min(st.clicks, 2) + 1 else 1;
         st.last_press_ms = time;
         st.last_press_at = p;

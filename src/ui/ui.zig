@@ -60,6 +60,7 @@ pub const Pointer = node.Pointer;
 pub const Key = node.Key;
 
 pub const Window = @import("Window.zig");
+pub const Desktop = Window.Desktop;
 pub const Txn = @import("txn.zig").Txn;
 pub const TxnError = @import("txn.zig").Error;
 pub const Fonts = @import("fonts.zig");

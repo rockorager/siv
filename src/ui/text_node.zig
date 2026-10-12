@@ -60,7 +60,7 @@ fn shape(win: *Window, id: NodeId) error{OutOfMemory}!*Cache {
     const content = if (n.kind == .editor) try @import("editor.zig").displayText(win, id, win.scratch.allocator()) else d.content;
     var p = text.ShapedParagraph.init(win.gpa, win.scratch.allocator(), &fonts.cache, content, &.{.{
         .end = @intCast(content.len),
-        .style = .{ .fonts = chain, .size = style.size, .language = if (fonts.name(language).len == 0) "und" else fonts.name(language) },
+        .style = .{ .fonts = chain, .size = style.size * @as(f32, @floatCast(win.desktop.text_scale)), .language = if (fonts.name(language).len == 0) "und" else fonts.name(language) },
     }}, if (s.rtl) .auto_rtl else .auto_ltr) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         // Validated when the text was set.

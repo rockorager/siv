@@ -727,9 +727,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     limit too small for the text is an allocation failure.
   - The focused editor roots a layer whose child layer holds the caret,
     so moving the caret is a transform. Each caret change shows it solid
-    and starts a compositor opacity animation that blinks for 10 s and
-    ends visible, so an idle window makes no wakeups (D25); with reduced
-    motion the caret does not blink.
+    and starts a compositor opacity animation that blinks for the
+    desktop's blink timeout and ends visible, so an idle window makes no
+    wakeups (D25). The cycle and timeout come from the desktop settings
+    (D19, GTK's 1.2 s for 10 s by default); with reduced motion, or
+    blinking turned off, the caret does not blink.
   - Input methods (`src/ui/ime.zig`, `src/platform/TextInput.zig`): when
     a seat's text input enters the window and a non-masked editor has
     focus, the window enables it and, after each frame, sends what changed
@@ -748,8 +750,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - A double click selects the word (UAX #29 segment) under the pointer,
     a triple click its paragraph, and dragging after either extends by
     whole words or paragraphs. Presses count as one multi-click within
-    400 ms and 4 px until the settings portal supplies the desktop's
-    values (D19); pointer events report the count to handlers. Masked
+    the desktop's double-click time (D19, 400 ms by default) and 4 px; no
+    portal backend exposes a distance, so that stays a toolkit default.
+    Pointer events report the count to handlers. Masked
     editors select everything on a double click.
 
 ### D16. Input
@@ -955,6 +958,19 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       is 0.3 ms (ReleaseFast) to 0.7 ms (Debug), and the test fails above
       20 ms. A round trip to a real xdg-desktop-portal 1.16 (without a
       settings backend) took 0.4–0.5 ms in the same setup.
+    - The UI follows the settings through `ui.Desktop` (reduced motion,
+      accent color, text scale, double-click time, caret blink cycle and
+      timeout), whose fields have the names and types of
+      `dbus.Settings.Values`, applied per window with
+      `ui.Window.setDesktop`: a text scale change reshapes text, an accent
+      change repaints, and carets restart their blink. The accent draws
+      focus rings and, at 30% alpha, focused selections; without one the
+      toolkit's blue stays. An application's own reduced-motion flag
+      applies whatever the desktop says.
+    - Not wired yet in `src/app`: copying the values into `ui.Desktop`
+      for every window and setting the default font family on the shared
+      `ui.Fonts`. The font size, color scheme, contrast, and cursor theme
+      wait for the theme and stock widgets (D22) and pointer cursors.
   - Portals for files, URIs, notifications, printing, screen capture, global
     shortcuts, and the document portal. No built-in file chooser: the portal is
     the system chooser.

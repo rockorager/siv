@@ -891,7 +891,7 @@ test "caret blinks on the compositor, stops by itself, and not with reduced moti
     try testing.expectEqual(requested, f.frames_requested);
     try testing.expect(!f.win.needsFrame());
     // Reduced motion: the running blink is cancelled and none starts.
-    f.win.setReducedMotion(true);
+    f.win.setDesktop(.{ .reduced_motion = true });
     try f.frame();
     try testing.expect(findAnimate(f.comp.log.items, caret) == null);
     try testing.expectEqual(@as(f32, 1), f.comp.log.items[0].set_opacity.opacity);
@@ -1042,6 +1042,71 @@ test "editor: double click selects a word, triple a paragraph, dragging extends 
     P.press(&f, bx, y, 2000, true);
     P.press(&f, bx, y, 2010, false);
     try testing.expectEqual(e.caret, e.anchor);
+    // A slower desktop double-click time makes the same gap a double click.
+    f.win.setDesktop(.{ .double_click_ms = 1000 });
+    P.press(&f, bx, y, 2600, true);
+    try testing.expectEqual(@as(u32, 6), @min(e.caret, e.anchor));
+    try testing.expectEqual(@as(u32, 11), @max(e.caret, e.anchor));
+}
+
+test "desktop settings: blink timing, text scale, and the accent color" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 300, .height = 100 });
+    defer f.deinit();
+    const t = try f.win.begin();
+    const col = try box(t, .root, .flex, .{});
+    try t.setFlex(col, .{ .axis = .column, .align_items = .start });
+    const ed = try box(t, col, .editor, .{});
+    try t.setText(ed, "abc");
+    const label = try box(t, col, .text, .{});
+    try t.setText(label, "Label");
+    t.commit();
+    try f.frame();
+    f.comp.keep_log = true;
+    const k: Keys = .{ .f = &f };
+    k.press(ui.keysym.tab, .{});
+    try f.frame();
+    const caret = f.win.state(ed).content_layer + 1;
+    // GTK's defaults: a 1.2 s cycle for 10 s, ending visible.
+    var a = findAnimate(f.comp.log.items, caret).?;
+    try testing.expectEqual(@as(u64, 600 * std.time.ns_per_ms), a.duration_ns);
+    try testing.expectEqual(@as(u32, 16), a.iterations);
+
+    f.comp.log.clearRetainingCapacity();
+    f.win.setDesktop(.{ .cursor_blink_ms = 1000, .cursor_blink_timeout_s = 3 });
+    try f.frame();
+    a = findAnimate(f.comp.log.items, caret).?;
+    try testing.expectEqual(@as(u64, 500 * std.time.ns_per_ms), a.duration_ns);
+    try testing.expectEqual(@as(u32, 6), a.iterations);
+    // Blinking off: the caret goes solid and stays.
+    f.comp.log.clearRetainingCapacity();
+    f.win.setDesktop(.{ .cursor_blink = false });
+    try f.frame();
+    try testing.expect(findAnimate(f.comp.log.items, caret) == null);
+    try testing.expectEqual(@as(f32, 1), f.comp.get(caret).opacity);
+
+    // Text scale reshapes text at the new size and lays it out again.
+    const h1 = f.win.windowRect(label).height();
+    const shapes = f.win.stats.shapes;
+    f.win.setDesktop(.{ .text_scale = 2 });
+    try f.frame();
+    try testing.expectEqual(shapes + 2, f.win.stats.shapes);
+    try testing.expectApproxEqAbs(2 * h1, f.win.windowRect(label).height(), 1);
+
+    // The accent draws the focus ring.
+    const accent: [3]f64 = .{ 0.5, 0.25, 0.75 };
+    f.win.setDesktop(.{ .accent_color = accent });
+    try f.frame();
+    const want = scene.Color.srgb(0.5, 0.25, 0.75, 1);
+    var found = false;
+    for (f.comp.tree.layers.items) |l| {
+        if (!l.alive) continue;
+        const c = l.content orelse continue;
+        for (c.list.commands) |cmd| if (cmd == .stroke and std.meta.eql(cmd.stroke.paint, scene.Paint.color(want))) {
+            found = true;
+        };
+    }
+    try testing.expect(found);
 }
 
 test "images: the tree and each display list that draws one hold a reference" {

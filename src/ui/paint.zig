@@ -167,6 +167,14 @@ pub const State = struct {
         l.damage = l.damage.unite(r);
     }
 
+    /// Repaints every layer in full (the accent color changed).
+    pub fn repaintAll(st: *State) void {
+        for (st.order.items) |i| {
+            st.layers.items[i].full_damage = true;
+            st.markLayer(i);
+        }
+    }
+
     pub fn restartBlink(st: *State) void {
         st.blink_epoch +%= 1;
     }
@@ -528,21 +536,23 @@ pub const State = struct {
                     // Any caret change shows it solid, then blinks for a
                     // while on the compositor and stops, so an idle window
                     // makes no wakeups (D25). No blinking with reduced
-                    // motion.
+                    // motion or when the desktop turned blinking off.
                     const e = win.node(l.owner).data.editor;
                     var hasher = std.hash.Wyhash.init(st.blink_epoch);
-                    std.hash.autoHash(&hasher, .{ e.caret, e.anchor, e.revision, win.reduced_motion });
+                    std.hash.autoHash(&hasher, .{ e.caret, e.anchor, e.revision });
                     const key = hasher.final() | 1;
                     if (key != l.blink_key) {
                         l.blink_key = key;
                         st.ops.appendAssumeCapacity(.{ .set_opacity = .{ .layer = id(i), .opacity = 1 } });
                         l.opacity = 1;
-                        if (!win.reduced_motion) st.ops.appendAssumeCapacity(.{ .animate = .{ .layer = id(i), .animation = .{
+                        const d = win.desktop;
+                        const half_ns = @as(u64, @max(d.cursor_blink_ms, 2) / 2) * std.time.ns_per_ms;
+                        if (!win.reducedMotion() and d.cursor_blink) st.ops.appendAssumeCapacity(.{ .animate = .{ .layer = id(i), .animation = .{
                             .to = .{ .opacity = 0 },
                             .from = .{ .opacity = 1 },
-                            .duration_ns = blink_half_period_ns,
-                            .start_ns = @import("loop").Loop.now() + blink_half_period_ns,
-                            .iterations = blink_iterations,
+                            .duration_ns = half_ns,
+                            .start_ns = @import("loop").Loop.now() + half_ns,
+                            .iterations = blinkHalves(d),
                             .alternate = true,
                             .easing = .ease_in_out,
                         } } });
@@ -771,7 +781,7 @@ fn drawNode(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point
     if (win.input.focus == nid and win.input.focus_visible) {
         const g = focus_ring_width;
         const ring = r.outset(g / 2 + 1);
-        try b.stroke(.{ .rounded_rect = .{ .rect = ring, .radii = growRadii(radii, g / 2 + 1) } }, .{ .width = g }, .color(focus_ring_color));
+        try b.stroke(.{ .rounded_rect = .{ .rect = ring, .radii = growRadii(radii, g / 2 + 1) } }, .{ .width = g }, .color(focusRingColor(win)));
         bounds = bounds.unite(ring.outset(g / 2));
     }
     return bounds;
@@ -819,7 +829,7 @@ fn drawEditor(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Poi
         var rects: std.ArrayList(text.layout.Rect) = .empty;
         defer rects.deinit(win.gpa);
         try l.selectionRects(win.gpa, @min(e.caret, e.anchor), @max(e.caret, e.anchor), &rects);
-        const color = if (focused) selection_color else selection_color_unfocused;
+        const color = if (focused) selectionColor(win) else selection_color_unfocused;
         for (rects.items) |r| {
             const line = l.lines[l.lineAt(r.y + r.height / 2)];
             const x = box.x0 - scroll + r.x + text_node.lineShift(win, nid, line, cw);
@@ -830,10 +840,12 @@ fn drawEditor(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Poi
     try b.popLayer();
 }
 
-/// Half a blink (visible to hidden), and how many halves run before the
-/// caret stays solid: 10 s, ending visible.
-pub const blink_half_period_ns: u64 = 500 * std.time.ns_per_ms;
-pub const blink_iterations: u32 = 20;
+/// How many halves of a blink (visible to hidden or back) fit in the
+/// timeout: an even number, so the caret ends visible.
+fn blinkHalves(d: Window.Desktop) u32 {
+    const halves = @as(u64, d.cursor_blink_timeout_s) * 2000 / @max(d.cursor_blink_ms, 1);
+    return @intCast(@max(2, @min(halves, 1 << 20) & ~@as(u64, 1)));
+}
 
 /// A focused editor's caret height and color.
 fn caretLook(win: *Window, nid: NodeId) struct { f32, scene.Color } {
@@ -844,6 +856,22 @@ fn caretLook(win: *Window, nid: NodeId) struct { f32, scene.Color } {
 
 pub const selection_color = scene.Color.srgb8(0xbf, 0xdb, 0xfe, 0xff);
 pub const selection_color_unfocused = scene.Color.srgb8(0xe4, 0xe4, 0xe7, 0xff);
+
+fn accent(win: *const Window) ?scene.Color {
+    const a = win.desktop.accent_color orelse return null;
+    return .srgb(@floatCast(a[0]), @floatCast(a[1]), @floatCast(a[2]), 1);
+}
+
+/// The desktop's accent, or the toolkit's blue.
+fn focusRingColor(win: *const Window) scene.Color {
+    return accent(win) orelse focus_ring_color;
+}
+
+/// A focused selection: the accent as a tint over the background.
+fn selectionColor(win: *const Window) scene.Color {
+    const a = accent(win) orelse return selection_color;
+    return a.withAlpha(0.3);
+}
 
 fn drawText(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point, dx: f32) DrawError!Rect {
     const l = text_node.current(win, nid) orelse return Rect.empty;

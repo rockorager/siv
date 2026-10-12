@@ -55,8 +55,10 @@ dead: std.ArrayList(NodeId) = .empty,
 pending_input: std.ArrayList(platform.Event) = .empty,
 /// Undo histories of editors, by node.
 histories: std.AutoHashMapUnmanaged(NodeId, editor_mod.History) = .empty,
-/// From the desktop settings (D19): no caret blinking or other motion.
-reduced_motion: bool = false,
+/// The application turned motion off, whatever the desktop says.
+force_reduced_motion: bool = false,
+/// Desktop settings (D19), from `setDesktop`.
+desktop: Desktop = .{},
 /// The application's clipboard, if it has one.
 clipboard: ?*Clipboard = null,
 /// Pastes that finished while a transaction was open, applied in order at
@@ -112,8 +114,30 @@ pub const Options = struct {
     scale: f32 = 1,
     rtl: bool = false,
     language: []const u8 = "",
+    /// No caret blinking or other motion, whatever `desktop` says.
     reduced_motion: bool = false,
+    desktop: Desktop = .{},
     clipboard: ?*Clipboard = null,
+};
+
+/// The desktop settings the UI follows (D19). The fields have the names
+/// and types of `dbus.Settings.Values`, so the application copies them
+/// from there and applies them with `setDesktop`. The defaults are GTK's.
+pub const Desktop = struct {
+    /// No caret blinking or other motion.
+    reduced_motion: bool = false,
+    /// sRGB components in [0, 1] for the focus ring and selection, or null
+    /// for the toolkit's blue.
+    accent_color: ?[3]f64 = null,
+    /// Multiplies every text size.
+    text_scale: f64 = 1.0,
+    /// Most time between the presses of a double or triple click.
+    double_click_ms: u32 = 400,
+    cursor_blink: bool = true,
+    /// One whole blink cycle, shown and hidden, in milliseconds.
+    cursor_blink_ms: u32 = 1200,
+    /// The caret stops blinking, visible, this long after it last moved.
+    cursor_blink_timeout_s: u32 = 10,
 };
 
 /// Window-wide work outstanding for the next frame.
@@ -191,7 +215,8 @@ pub fn init(gpa: std.mem.Allocator, options: Options) Error!*Window {
         .height = options.height,
         .scale = options.scale,
         .rtl = options.rtl,
-        .reduced_motion = options.reduced_motion,
+        .force_reduced_motion = options.reduced_motion,
+        .desktop = options.desktop,
         .clipboard = options.clipboard,
         .sink = options.sink,
         .host = options.host,
@@ -609,13 +634,25 @@ pub fn secretOf(win: *const Window, id: NodeId) []const u8 {
     return win.node(id).data.editor.secret;
 }
 
-/// Turns caret blinking and other motion off or on (desktop settings).
-pub fn setReducedMotion(win: *Window, on: bool) void {
-    if (win.reduced_motion == on) return;
-    win.reduced_motion = on;
+/// Applies new desktop settings: text reshapes if its scale changed,
+/// carets restart their blink, and accent changes repaint.
+pub fn setDesktop(win: *Window, d: Desktop) void {
+    const old = win.desktop;
+    if (std.meta.eql(old, d)) return;
+    win.desktop = d;
+    if (!(d.text_scale > 0) or !std.math.isFinite(d.text_scale)) win.desktop.text_scale = 1;
+    if (win.desktop.text_scale != old.text_scale) {
+        for (win.nodes.items, 0..) |n, i| if (n.status == .live and n.isText()) win.markShape(@enumFromInt(i));
+    }
+    if (!std.meta.eql(old.accent_color, d.accent_color)) win.paint.repaintAll();
     win.paint.restartBlink();
     win.dirty.props = true;
     win.requestFrame();
+}
+
+/// Whether motion (caret blinking, animations) is off.
+pub fn reducedMotion(win: *const Window) bool {
+    return win.force_reduced_motion or win.desktop.reduced_motion;
 }
 
 /// The compositor scrolled a container. Reports older than the UI's own
