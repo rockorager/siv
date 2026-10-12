@@ -476,6 +476,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     Decoded images (D19) are `rgba8_srgb`, or `rgba16_linear_premul`
     when scaled, color managed, or deeper than 8 bits; an animation's
     frames share one `ui.Image` with a key per frame.
+  - Synthetic bold and oblique (D13) need nothing in the list: they live
+    in the face's HarfBuzz font, which `scene.Font` names, and its key
+    differs from the plain face's.
   - Glyph runs may carry their text (`scene.GlyphText`: the bytes and
     each glyph's cluster offset into them) for output that keeps text,
     such as PDF's ToUnicode maps; the renderers ignore it.
@@ -856,9 +859,58 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     that shrinks to its text needs one layout. A node's style can be
     overridden over ranges by spans (D22's styled text); each run of
     equal span style is a style run of the paragraph.
-  - Besides the font cache, `ui.Fonts` remembers Fontconfig's fallback
-    chain per query (family, weight, slant, language), since sorting fonts
-    on every reshape costs milliseconds. It holds font ids, not fonts.
+  - Besides the font cache, `ui.Fonts` remembers the fallback chain per
+    query (family, weight, slant, width, language), since sorting fonts
+    on every reshape costs milliseconds, and per size for chains with an
+    opsz axis. It holds font ids, not fonts; the chains are dropped when
+    a family changes, and the sized ones when a font finishes loading
+    (it may turn out to have an opsz axis).
+  - Families of fonts the application adds (`siv_app_add_font`,
+    `text.family`): every face of the data (each face of a collection)
+    joins the named family, or the family its name table gives
+    (typographic family, else font family) when the name is empty. Each
+    face describes itself from its data (`text.font.Description`):
+    weight (OS/2 usWeightClass), width (usWidthClass), italic (fsSelection
+    or macStyle), slant (post italicAngle), and for variable fonts the
+    wght, wdth, ital, slnt, and opsz axis ranges. A query ranks a
+    family's faces by CSS Fonts 4 font matching (width, then slant, then
+    weight, a variable face covering its whole range; ties keep the
+    order faces were added in, so faces of one style added for different
+    scripts form a fallback chain) and instances each for the style:
+    axes set to the requested values (clamped; an italic or oblique
+    request uses ital=1, else slnt at -14 degrees, CSS's oblique angle),
+    synthetic bold when the request is semibold or bolder and the face
+    stays lighter than semibold (as browsers do), and a synthetic oblique
+    when the face cannot slant at all. The whole family stays in the
+    chain, best first, so a grapheme the chosen face lacks still finds a
+    face of the family.
+  - Instances are faces of their own in the font cache
+    (`FontCache.instance`): the base's bytes, other axis values, or
+    synthetic styles, created once and found again by value, with their
+    own content key for glyph caches. Synthetic styles are baked into the
+    instance's HarfBuzz font (`hb_font_set_synthetic_bold`, not in place,
+    and `hb_font_set_synthetic_slant`), so shaping advances, outlines,
+    extents, and color paint all carry them, and every consumer that
+    draws from the font (the CPU glyph cache, which the Vulkan renderer
+    uploads from, outlines drawn as paths, PDF, D19) shows the same
+    glyphs. Bold adds 1/24 em of stroke horizontally and vertically and
+    widens advances by as much: FreeType's FT_GlyphSlot_Embolden
+    strength, which Cairo and Pango use. The oblique shear is tan 14°,
+    CSS's default oblique angle. Fontconfig fonts keep Fontconfig's own
+    matching; its synthetic-style rules (FC_EMBOLDEN and the FC_MATRIX
+    shear from 90-synthetic.conf) become the same instance styles.
+  - Optical size: every ready face with an opsz axis (added or from
+    Fontconfig) is instanced at the run's size in logical pixels after
+    text scaling, as CSS's font-optical-sizing does with CSS pixels,
+    rather than in points (OpenType's nominal unit; 1 pt = 4/3 px, D29)
+    or device pixels: the design's size should follow the size the
+    reader is asked to read, which the output scale does not change, and
+    browsers set it the same way, so fonts tuned for the web look as
+    their designers tested them. Sizes are rounded to 1/64 px, clamped to
+    the axis, and the axis default needs no instance.
+  - Weights in text styles are the named steps (thin to black) or any
+    CSS weight from 1 to 1000 (`weight_value`), which a variable face's
+    wght axis takes as it is; spans keep the named steps.
 - **Alternatives:** Pango (GLib dependency, blocking font load, single-threaded
   layout objects); libraqm (no wrapping or fallback); Parley (Rust toolchain);
   kb_text_shape (no cluster mapping, so no editing).
@@ -906,6 +958,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     heavier. Advances and line widths are unchanged.
   - Runs under rotation, skew, non-uniform scale, or above 256 px draw their
     outlines as paths; color glyphs lose their colors there.
+  - Synthetic bold and oblique (D13) arrive in the face's HarfBuzz font,
+    so the glyph cache draws them like any face, keyed by the instance's
+    own key, with stem darkening and x-height snapping on top. The
+    Vulkan renderer uploads the same bitmaps, so both renderers match
+    (`test/golden/render/families.png`, including a rotated run drawn as
+    outlines).
 - **Alternatives:** FreeType with hinting.
 - **Reverse if:** a side-by-side comparison with FreeType-hinted text (Inter and
   Noto at 11–13 px on 1× displays) shows unacceptable softness that the
@@ -1696,7 +1754,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       first glyph of a cluster maps to the cluster's whole text (so a
       ligature copies as its letters), the others to nothing. CFF2 and
       fonts without outlines draw as paths; color glyphs print as their
-      outlines. The vendored build compiles HarfBuzz's subsetter sources
+      outlines. Faces with synthetic bold or oblique (D13) draw as paths
+      from the same HarfBuzz outlines the renderers rasterize, so print
+      and screen agree, with the embedded subset as invisible text (render
+      mode 3) over them for search and copy; an embedded font program
+      would print the face without its synthetic style, and fill-and-
+      stroke (render mode 2) with a skewed text matrix only approximates
+      HarfBuzz's emboldening. The vendored build compiles HarfBuzz's subsetter sources
       next to the amalgamated core, and -fsys=harfbuzz links the system
       libharfbuzz-subset.
     - Images keep their alpha as a soft mask and their filter as
@@ -2086,11 +2150,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       italic, and underline, off when all of the selection (or the
       typing style) has the attribute, else on, as word processors do.
       Masked editors take no spans.
-    - Fonts added with `siv_app_add_font` form a family without weights
-      or slants, so bold and italic need the desktop's fonts through
-      Fontconfig. Not built yet: weights and slants for added families,
-      synthetic bold and oblique when a family lacks them, a family per
-      span, and paragraph styles (alignment, lists).
+    - Fonts added with `siv_app_add_font` form families whose styles are
+      matched per span and synthesized where missing (D13), so bold and
+      italic spans show with any font. Not built yet: a family per span,
+      and paragraph styles (alignment, lists).
 - **Non-goal:** a full document model with embedded tables and images.
 
 ### D23. Lua 5.5
