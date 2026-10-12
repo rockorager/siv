@@ -112,12 +112,15 @@ pub fn build(b: *std.Build) void {
         .{ .name = "loop", .module = loop },
     };
     const portal = ctx.module("src/portal/portal.zig", &portal_imports);
+    // The tray imports what the portals do.
+    const tray = ctx.module("src/tray/tray.zig", &portal_imports);
     const platform = ctx.module("src/platform/platform.zig", &platform_imports);
     const not_integration = integrationOption(b, false);
     platform.addImport("integration", not_integration);
     dbus.addImport("integration", not_integration);
     portal.addImport("integration", not_integration);
     pdf.addImport("integration", not_integration);
+    tray.addImport("integration", not_integration);
     const compositor_imports = [_]std.Build.Module.Import{
         .{ .name = "scene", .module = scene },
         .{ .name = "raster", .module = raster },
@@ -172,6 +175,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "app", .module = app },
         .{ .name = "portal", .module = portal },
         .{ .name = "pdf", .module = pdf },
+        .{ .name = "tray", .module = tray },
     };
     // Stock widgets (D22) import only the generated C API wrapper, which
     // src/abi/build_steps.zig adds as `siv`.
@@ -247,6 +251,7 @@ pub fn build(b: *std.Build) void {
         .{ "dbus", dbus },
         .{ "portal", portal },
         .{ "pdf", pdf },
+        .{ "tray", tray },
         .{ "platform", platform },
         .{ "compositor", compositor },
         .{ "ui", ui },
@@ -309,6 +314,13 @@ pub fn build(b: *std.Build) void {
     pdf_integration_run.has_side_effects = true; // depends on the installed qpdf and poppler-utils
     integration_step.dependOn(&pdf_integration_run.step);
     b.step("test-integration-pdf", "Run the PDF integration tests against qpdf and poppler").dependOn(&pdf_integration_run.step);
+    // The tray against dbus-daemon and gdbus (src/tray/integration_tests.zig).
+    const tray_integration = ctx.module("src/tray/tray.zig", &portal_imports);
+    tray_integration.addImport("integration", integrationOption(b, true));
+    const tray_integration_run = b.addRunArtifact(b.addTest(.{ .name = "tray-integration", .root_module = tray_integration, .filters = test_filters }));
+    tray_integration_run.has_side_effects = true; // depends on the installed dbus-daemon and gdbus
+    integration_step.dependOn(&tray_integration_run.step);
+    b.step("test-integration-tray", "Run the tray integration tests against dbus-daemon").dependOn(&tray_integration_run.step);
     // The application's desktop settings against dbus-daemon.
     const app_integration = ctx.module("src/app/app.zig", &app_imports);
     app_integration.addImport("integration", integrationOption(b, true));
