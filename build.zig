@@ -68,6 +68,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "scene", .module = scene },
         .{ .name = "raster", .module = raster },
         .{ .name = "text", .module = text },
+        .{ .name = "harfbuzz", .module = harfbuzz },
     });
     const loop = ctx.module("src/loop/loop.zig", &.{});
     const platform = ctx.module("src/platform/platform.zig", &.{
