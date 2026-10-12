@@ -207,6 +207,11 @@ pub const Window = struct {
     /// The xdg-foreign export, and its handle once the compositor sent it.
     exported: ?*zxdg.ExportedV2 = null,
     export_handle: ?platform.Handle = null,
+    /// A buffer was committed: the window is mapped.
+    mapped: bool = false,
+    /// An activation asked for before the window was mapped, sent once
+    /// it is (compositors ignore activating an unmapped surface).
+    pending_activation: ?platform.Handle = null,
 
     /// Presentation feedback for one commit and the time it was predicted for.
     const Feedback = struct {
@@ -843,6 +848,7 @@ pub fn present(self: *Wayland, id: WindowId, buffer: Buffer, damage: ?[]const Re
     surface.commit();
     sb.busy = true;
     if (w.frame_callback != null) w.clock.committed();
+    self.mappedNow(w);
 }
 
 /// The wl_display and the window's wl_surface, for a Vulkan swapchain.
@@ -881,6 +887,7 @@ pub fn presentExternal(self: *Wayland, id: WindowId, commit: platform.ExternalCo
     // and apply with the next commit.
     try commit.func(commit.ctx);
     if (w.frame_callback != null) w.clock.committed();
+    self.mappedNow(w);
 }
 
 /// Everything a frame's commit carries besides its buffer and damage: the
@@ -1298,12 +1305,30 @@ fn onToken(proxy: *xdg.ActivationTokenV1, event: xdg.ActivationTokenV1.Event, t:
 }
 
 pub fn activate(self: *Wayland, id: WindowId, token: []const u8) void {
-    const activation = self.activation orelse return;
-    if (token.len == 0 or token.len >= 256) return;
+    if (self.activation == null or token.len == 0 or token.len >= 256) return;
+    const w = self.get(id);
+    var handle: platform.Handle = .{};
+    handle.set(token);
+    if (!w.mapped) {
+        w.pending_activation = handle;
+        return;
+    }
+    self.sendActivation(w, handle.slice());
+}
+
+fn sendActivation(self: *Wayland, w: *Window, token: []const u8) void {
     var buf: [256]u8 = undefined;
     @memcpy(buf[0..token.len], token);
     buf[token.len] = 0;
-    activation.activate(buf[0..token.len :0], self.get(id).surface);
+    self.activation.?.activate(buf[0..token.len :0], w.surface);
+}
+
+fn mappedNow(self: *Wayland, w: *Window) void {
+    if (w.mapped) return;
+    w.mapped = true;
+    const t = w.pending_activation orelse return;
+    w.pending_activation = null;
+    self.sendActivation(w, t.slice());
 }
 
 fn seatProxy(self: *Wayland, id: SeatId) ?*wl.Seat {
