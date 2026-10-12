@@ -288,6 +288,10 @@ test "pointer, scrolling, keyboard text and repeat, touch" {
             return seat.pointer != null;
         }
     }.f);
+    // The virtual pointer is another connection: make sure sway has
+    // processed our get_pointer before it sends input, or the input goes
+    // to no pointer.
+    _ = app.backend.display.roundtrip();
     vp.moveTo(100, 120);
     vp.button(0x110, true);
     vp.button(0x110, false);
