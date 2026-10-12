@@ -24,6 +24,16 @@
             .hash = "N-V-__8AAP5JWgDH1rExLB4QCFqm60SkW51_i6qOXTyhjsWv",
             .lazy = true,
         },
+        // Shader compiler for the Vulkan renderer (D10), built for the host
+        // and run at build time; nothing of it ships in libsiv. BSD-3-Clause,
+        // BSD-2-Clause, MIT, and Apache-2.0, except the generated parser
+        // (GPL-3.0 with the Bison exception, which covers its use here).
+        // Lazy: skipped with -fsys=glslang.
+        .glslang = .{
+            .url = "https://github.com/KhronosGroup/glslang/archive/refs/tags/16.6.0.tar.gz",
+            .hash = "N-V-__8AAMmpvgL92dJGQdndHv_3KUj32P-C6QWT83-1-lEM",
+            .lazy = true,
+        },
         // Unicode properties and grapheme breaking (D13). MIT.
         // Commit 1fb7343 is the head of main (Zig 0.17, Unicode 18.0.0).
         .uucode = .{

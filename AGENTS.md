@@ -6,14 +6,16 @@ update it in the same change when a decision changes.
 ## Build and test
 
 Requires Zig 0.17.0 and the development packages for libwayland-client,
-xkbcommon, and Fontconfig (`.agents/setup` installs them on Debian).
+xkbcommon, Fontconfig, and the Vulkan headers (`.agents/setup` installs
+them on Debian, with lavapipe and the validation layer for the Vulkan
+tests).
 
 ```sh
 zig build                      # zig-out: libsiv.so, libsiv.a, include/siv.h, lib/pkgconfig/siv.pc
 zig build test                 # every module's tests, headless tests, C ABI smoke test
 zig build test-text            # one module: test-abi, test-text, test-raster, test-scene,
-                               #   test-render-cpu, test-pool, test-loop, test-dbus,
-                               #   test-platform, test-compositor, test-ui, test-app
+                               #   test-render-cpu, test-render-vulkan, test-pool, test-loop,
+                               #   test-dbus, test-platform, test-compositor, test-ui, test-app
 zig build test-headless        # headless integration tests (test/headless.zig)
 zig build test-integration     # Wayland backend against headless sway, D-Bus against
                                #   dbus-daemon (not in `test`; .agents/setup installs both)
@@ -26,6 +28,7 @@ zig build test -Dtest-filter=bidi
 zig build bench-text -Doptimize=ReleaseFast   # headless text engine benchmarks
 zig build bench-render-cpu -Doptimize=ReleaseFast  # CPU renderer benchmarks
 zig build -fsys=harfbuzz -fsys=sheenbidi   # link system copies instead of vendored ones
+zig build -fsys=glslang        # compile shaders with the system glslangValidator
 ```
 
 Fetched packages live in `zig-pkg/` (ignored). `zig build --fetch=all`
@@ -44,6 +47,7 @@ owns its directories and does not edit another workstream's files.
 | `raster` | `src/raster/` | Rasterizer, display list, CPU renderer | none |
 | `scene` | `src/scene/` | Rasterizer, display list, CPU renderer | `raster` |
 | `render_cpu` | `src/render/cpu/` | Rasterizer, display list, CPU renderer | `scene`, `raster`, `text`, `harfbuzz`, `pool`, `wuffs` |
+| `render_vulkan` | `src/render/vulkan/` | Vulkan renderer | `scene`, `raster`, `render_cpu`, `pool`, `vulkan`, `shaders` |
 | `loop` | `src/loop/` | Event loop and Wayland platform | `pool` |
 | `dbus` | `src/dbus/` | D-Bus and desktop settings | `loop` |
 | `platform` | `src/platform/` | Event loop and Wayland platform | `loop`, `wayland`, `xkbcommon` |
@@ -69,6 +73,8 @@ commit message. In particular:
     installed under the prefix.
   - `src/abi/build_steps.zig`: the ABI part of the build graph (generated
     outputs, libsiv.so link setup, ABI tests).
+  - `src/render/vulkan/build_steps.zig`: the Vulkan headers module, the
+    glslang shader compiler, and the shader list (`shaders/*.glsl`).
 
 ## Conventions
 
@@ -77,7 +83,8 @@ commit message. In particular:
 - Internal code uses plain indices; generation-checked handles exist only in
   `src/abi/` (D20).
 - C headers are translated by the build (`addTranslateC`), not `@cImport`.
-  The C modules are `harfbuzz`, `sheenbidi`, `fontconfig`, `xkbcommon`, and `wuffs`.
+  The C modules are `harfbuzz`, `sheenbidi`, `fontconfig`, `xkbcommon`,
+  `wuffs`, and `vulkan` (headers only; libvulkan is loaded at run time).
 - Unicode data files for tests are embedded by name:
   `@embedFile("LineBreakTest.txt")`. The list is in `build.zig`.
 - Vendored C code is compiled with `-fvisibility=hidden`; libsiv.so exports
@@ -93,4 +100,6 @@ commit message. In particular:
   `src/abi/` knows about handles.
 - Headless tests (test/headless.zig) may import every internal module; they
   run the real loop on the headless backend and compare CPU golden images
-  (D24). Golden images go under `test/golden/<area>/`.
+  (D24). Golden images go under `test/golden/<area>/`. The Vulkan renderer
+  is diffed against the same images on any Vulkan 1.3 device (lavapipe in
+  orbs) and skipped without one; validation errors fail the tests.

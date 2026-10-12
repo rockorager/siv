@@ -76,6 +76,15 @@ pub fn build(b: *std.Build) void {
         .{ .name = "pool", .module = pool },
         .{ .name = "wuffs", .module = wuffs },
     });
+    const vk = @import("src/render/vulkan/build_steps.zig").add(b, .{ .target = target, .optimize = optimize });
+    const render_vulkan = ctx.module("src/render/vulkan/vulkan.zig", &.{
+        .{ .name = "scene", .module = scene },
+        .{ .name = "raster", .module = raster },
+        .{ .name = "render_cpu", .module = render_cpu },
+        .{ .name = "pool", .module = pool },
+        .{ .name = "vulkan", .module = vk.vulkan },
+        .{ .name = "shaders", .module = vk.shaders },
+    });
     const loop = ctx.module("src/loop/loop.zig", &.{
         .{ .name = "pool", .module = pool },
     });
@@ -123,6 +132,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "raster", .module = raster },
         .{ .name = "text", .module = text },
         .{ .name = "render_cpu", .module = render_cpu },
+        .{ .name = "render_vulkan", .module = render_vulkan },
         .{ .name = "loop", .module = loop },
         .{ .name = "platform", .module = platform },
         .{ .name = "compositor", .module = compositor },
@@ -194,6 +204,7 @@ pub fn build(b: *std.Build) void {
         .{ "raster", raster },
         .{ "scene", scene },
         .{ "render-cpu", render_cpu },
+        .{ "render-vulkan", render_vulkan },
         .{ "loop", loop },
         .{ "dbus", dbus },
         .{ "platform", platform },

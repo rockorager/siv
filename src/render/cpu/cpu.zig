@@ -21,6 +21,8 @@ pub const Renderer = renderer.Renderer;
 pub const Options = renderer.Options;
 pub const Target = renderer.Target;
 pub const tile_size = renderer.tile_size;
+/// Box radii of the backdrop blur contract, shared with Vulkan.
+pub const boxRadii = renderer.boxRadii;
 
 const color = @import("color.zig");
 pub const Format = color.Format;

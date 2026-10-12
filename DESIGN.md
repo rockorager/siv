@@ -509,6 +509,51 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Vulkan 1.3 (dynamic rendering, synchronization2): instanced quads, analytic
     rounded rectangles and shadows, glyph and image atlases. Presentation uses
     the standard Vulkan Wayland swapchain.
+  - Vulkan frames (`src/render/vulkan`) mirror CPU frames: the same prepare
+    walk (transforms, clip bounds, culling) produces one instance per draw
+    in a storage buffer, drawn as instanced quads by one fragment shader
+    that evaluates the CPU renderer's formulas at pixel centers (coverage,
+    gradients, the CPU's 8-bit bilinear image filter, blend modes, text
+    contrast tables). Rectangles and rounded rectangles under axis-aligned
+    transforms are analytic; every other shape (paths, strokes, clip paths,
+    rotated rectangles, transformed glyph runs) is rasterized on the worker
+    pool by the shared rasterizer into R8 mask pages (layers of one array
+    image), only where damage needs it, so paths match the coverage
+    contract exactly. Glyphs come from the CPU glyph cache (D14) through an
+    R8 and an RGBA16 atlas. Isolated layers render into per-depth FP16
+    images and composite back with fixed-function source-over, or for other
+    blend modes against a copy of their backdrop. A backdrop blur copies its
+    backdrop and runs the CPU's separable passes in FP32.
+  - The working image is a persistent FP16 image, so damage-only frames are
+    exact as on the CPU. Damage is widened like the CPU's where a blur's
+    backdrop changed, then each damage region grows until it holds the
+    backdrop of every blur it meets, so blurs read only pixels drawn in the
+    same pass (pixels outside the damage redraw identically). Every frame
+    encodes the whole working image into the target with the CPU's transfer
+    tables and dither, so swapchain images need no buffer age.
+  - Descriptors: storage buffers and the atlases in one set per frame, and a
+    second set of two textures per draw that needs one (images, layers,
+    backdrops); image draws batch per image. No descriptor indexing:
+    lavapipe (Mesa 22.3, the test device) has none.
+  - libvulkan is loaded with dlopen, so libsiv has no link dependency on it
+    and starts on machines without a loader.
+  - Shaders are GLSL compiled to SPIR-V 1.6 on every build by glslang 16.6
+    built from the source pinned in build.zig.zon (`-fsys=glslang` runs the
+    system glslangValidator), so the SPIR-V always derives from the tree and
+    from one compiler on every host. Alternatives: checked-in SPIR-V
+    (drifts from its source without a regeneration step and a check that
+    needs the compiler anyway); shaderc, DXC, Slang, or Tint (larger C++
+    builds wrapping the same work); Zig's SPIR-V backend (experimental, with
+    no image fetch or descriptor helpers in std). glslang's generated parser
+    is GPL-3.0 with the Bison exception; it runs only at build time and
+    nothing of it ships. Cost: about 80 s on a cold build (glslang is built
+    in Debug; optimized builds exceeded 7 GiB with four jobs). Reverse if
+    Zig's SPIR-V backend compiles these shaders into SPIR-V that drivers
+    accept.
+  - Verified (`zig build test-headless`, lavapipe): every CPU golden image
+    in test/golden/render matches within the golden tolerance, including
+    every blend mode, blur, COLRv1, and bitmap glyphs, and damage-only
+    frames match full CPU frames; the validation layer reports nothing.
   - Runtime fallback to CPU on `VK_ERROR_DEVICE_LOST` or GPU removal. Device
     selection on multi-GPU systems follows dma-buf feedback.
   - No OpenGL.
