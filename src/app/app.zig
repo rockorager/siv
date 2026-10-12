@@ -360,7 +360,7 @@ pub const App = struct {
         var i: usize = 0;
         while (i < app.zombies.items.len) {
             const win = app.zombies.items[i];
-            if (win.ui.paint.builders.items.len == win.ui.paint.all_builders.items.len) {
+            if (win.ui.buildersHome()) {
                 _ = app.zombies.swapRemove(i);
                 win.free();
             } else i += 1;
