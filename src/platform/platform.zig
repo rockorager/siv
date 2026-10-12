@@ -330,8 +330,7 @@ pub const Key = struct {
     seat: SeatId,
     /// XKB keycode (evdev code + 8).
     keycode: u32,
-    /// XKB keysym after composition; 0 while a compose sequence is in
-    /// progress or when it was cancelled.
+    /// XKB keysym; the composed keysym when a compose sequence completes.
     keysym: u32,
     state: State,
     mods: Mods,
@@ -531,6 +530,8 @@ pub const EventQueue = struct {
 
 test {
     std.testing.refAllDecls(@This());
+    // Instantiates every forwarding call for both backends.
+    std.testing.refAllDecls(Platform);
 }
 
 test "fractional scale rounds half away from zero" {
