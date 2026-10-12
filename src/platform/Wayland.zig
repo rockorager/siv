@@ -102,6 +102,8 @@ const Subsurface = struct {
     buffer: ?*wl.Buffer = null,
     key: u64 = 0,
     attached: bool = false,
+    below: bool = false,
+    source: @FieldType(platform.SubsurfaceState, "source") = null,
 
     fn destroy(s: *Subsurface, gpa: Allocator) void {
         if (s.buffer) |b| b.destroy();
@@ -813,7 +815,20 @@ pub fn setSubsurface(self: *Wayland, id: WindowId, sub: platform.SubsurfaceId, s
         s.attached = true;
     }
     s.subsurface.setPosition(state.rect.x, state.rect.y);
-    if (s.viewport) |v| v.setDestination(@max(state.rect.width, 1), @max(state.rect.height, 1));
+    if (state.below != s.below) {
+        if (state.below) s.subsurface.placeBelow(w.surface) else s.subsurface.placeAbove(w.surface);
+        s.below = state.below;
+    }
+    if (s.viewport) |v| {
+        if (!std.meta.eql(state.source, s.source)) {
+            const minus_one = wl.Fixed.fromInt(-1);
+            if (state.source) |src| {
+                v.setSource(wl.Fixed.fromDouble(src.x), wl.Fixed.fromDouble(src.y), wl.Fixed.fromDouble(src.width), wl.Fixed.fromDouble(src.height));
+            } else v.setSource(minus_one, minus_one, minus_one, minus_one);
+            s.source = state.source;
+        }
+        v.setDestination(@max(state.rect.width, 1), @max(state.rect.height, 1));
+    }
     s.surface.commit();
 }
 

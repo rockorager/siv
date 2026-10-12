@@ -261,10 +261,16 @@ pub const ShmFrame = struct {
 
 pub const SubsurfaceState = struct {
     visible: bool = false,
-    /// Position and size in the parent surface (logical); the frame is
-    /// scaled to it.
+    /// Position and size in the parent surface (logical); the frame (or
+    /// its `source` part) is scaled to it.
     rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
     frame: ?ShmFrame = null,
+    /// The part of the frame to show, in buffer pixels (wp_viewport's
+    /// source rectangle); null shows all of it.
+    source: ?struct { x: f32, y: f32, width: f32, height: f32 } = null,
+    /// Below the parent surface, showing through its transparent pixels,
+    /// instead of above it.
+    below: bool = false,
 };
 
 pub const SelectionKind = enum(u8) {

@@ -512,6 +512,16 @@ test "a subsurface shows an external frame without protocol errors" {
     try backend.setSubsurface(id, sub, &state);
     backend.commitWindow(id);
     try h.animate(3);
+    // Below the window, cropped through the viewport.
+    var cropped = state;
+    cropped.below = true;
+    cropped.source = .{ .x = 8, .y = 4, .width = 32, .height = 24 };
+    try backend.setSubsurface(id, sub, &cropped);
+    try h.animate(2);
+    cropped.below = false;
+    cropped.source = null;
+    try backend.setSubsurface(id, sub, &cropped);
+    try h.animate(2);
     // Hidden, shown again, then destroyed.
     try backend.setSubsurface(id, sub, &.{});
     backend.commitWindow(id);
