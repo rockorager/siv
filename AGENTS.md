@@ -13,7 +13,7 @@ zig build                      # zig-out: libsiv.so, libsiv.a, include/siv.h, li
 zig build test                 # every module's tests, headless tests, C ABI smoke test
 zig build test-text            # one module: test-abi, test-text, test-raster, test-scene,
                                #   test-render-cpu, test-pool, test-loop, test-dbus,
-                               #   test-platform, test-compositor, test-ui
+                               #   test-platform, test-compositor, test-ui, test-app
 zig build test-headless        # headless integration tests (test/headless.zig)
 zig build test-integration     # Wayland backend against headless sway, D-Bus against
                                #   dbus-daemon (not in `test`; .agents/setup installs both)
@@ -48,6 +48,7 @@ owns its directories and does not edit another workstream's files.
 | `platform` | `src/platform/` | Event loop and Wayland platform | `loop`, `wayland`, `xkbcommon` |
 | `compositor` | `src/compositor/` | Compositor thread | `scene`, `raster`, `render_cpu`, `pool`, `loop`, `platform` |
 | `ui` | `src/ui/` | UI core | `scene`, `raster`, `text`, `loop`, `platform`, `compositor` |
+| `app` | `src/app/` | Public C API | `scene`, `text`, `loop`, `platform`, `compositor`, `ui` |
 
 Shared files have no single owner: `build.zig`, `build.zig.zon`,
 `src/siv.zig`, `test/`, `.agents/`, and this file. Change them only when your

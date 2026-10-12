@@ -1,0 +1,472 @@
+//! The application coordinator (D20): it creates the subsystems of one
+//! application, connects them, and sequences their phases. Nothing else
+//! lives here; the tree, layout, input, and presentation stay in their
+//! modules.
+//!
+//!     ┌────────────────────── UI thread ──────────────────────┐
+//!     │ Loop: poll → io → timers → dispatch → frame → prepare │
+//!     │             posted closures, compositor events ─┐     │
+//!     │  ui.Window ◀── handleEvent ── App.onEvent ◀─────┘     │
+//!     │      │ layer ops (Sink)                               │
+//!     └──────┼────────────────────────────────────────────────┘
+//!            ▼
+//!     Compositor thread: platform, layer trees, presentation
+//!
+//! An `App` owns the UI loop, the worker pool (D6), the fonts, and the
+//! compositor (D8). Each `Window` pairs a platform window on the
+//! compositor with a `ui.Window`. Compositor events arrive in the loop's
+//! dispatch phase (D5) and go to the window they name; window-level
+//! events (close requests, configures) also go to the window's listener.
+//!
+//! Destroying a window takes effect at once for the application: no more
+//! events, frames, or listener calls. Its `ui.Window` lives on until the
+//! compositor has released every display list it holds and no event for
+//! it is being delivered.
+//!
+//! Everything here is for the UI thread, except `post`.
+//!
+//! Imports: ui, compositor, platform, loop, pool, text.
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const text = @import("text");
+const loop_mod = @import("loop");
+const platform = @import("platform");
+const compositor = @import("compositor");
+const ui = @import("ui");
+
+const Loop = loop_mod.Loop;
+const Compositor = compositor.Compositor;
+const WindowId = platform.WindowId;
+
+pub const Error = error{
+    OutOfMemory,
+    /// No display server could be reached, it lacks a required protocol,
+    /// the connection was lost, or a system call failed.
+    Unavailable,
+    /// The loop is already dispatching (a callback called back in).
+    Busy,
+};
+
+pub const Backend = enum {
+    /// Wayland.
+    wayland,
+    /// The headless backend: the same loop and presentation, no display
+    /// server (D20, D24).
+    headless,
+};
+
+pub const Options = struct {
+    backend: Backend = .wayland,
+    /// Wayland socket name or path; null uses $WAYLAND_DISPLAY.
+    display: ?[*:0]const u8 = null,
+    headless: platform.Headless.Options = .{},
+    /// Resolve font families with Fontconfig. Without it only families
+    /// registered from bytes (`addFont`) resolve.
+    system_fonts: bool = true,
+    /// Worker threads; 0 uses one per CPU.
+    threads: u32 = 0,
+    /// Run the compositor on its own thread (D8). Without one it runs on
+    /// the UI loop, for deterministic tests.
+    compositor_thread: bool = true,
+};
+
+pub const App = struct {
+    /// Every allocation of the application; thread-safe (D2).
+    gpa: Allocator,
+    loop: Loop,
+    pool: loop_mod.Pool,
+    fonts: ui.Fonts,
+    comp: *Compositor,
+    /// Live windows by platform window id.
+    windows: std.ArrayList(?*Window) = .empty,
+    /// Destroyed windows waiting for their display lists to come back.
+    zombies: std.ArrayList(*Window) = .empty,
+    /// Nesting of compositor event delivery.
+    delivering: u32 = 0,
+    open_windows: usize = 0,
+    quit_requested: bool = false,
+    /// Reported by the next `dispatch`. Unavailable stays.
+    failure: ?Error = null,
+
+    pub fn create(gpa: Allocator, options: Options) Error!*App {
+        const app = try gpa.create(App);
+        errdefer gpa.destroy(app);
+        app.* = .{
+            .gpa = gpa,
+            .loop = Loop.init(gpa) catch return error.Unavailable,
+            .pool = undefined,
+            .fonts = undefined,
+            .comp = undefined,
+        };
+        errdefer app.loop.deinit();
+        app.pool = .init(&app.loop, gpa, if (options.threads != 0) options.threads else loop_mod.Pool.defaultThreadCount());
+        errdefer app.pool.deinit();
+        app.fonts = try .init(gpa);
+        errdefer app.fonts.deinit();
+        app.fonts.pool = &app.pool;
+        if (options.system_fonts) app.fonts.database = text.fontconfig.Database.init() catch null;
+        app.comp = Compositor.create(.{
+            .allocator = gpa,
+            .executor = app.pool.executor(),
+            .ui_loop = &app.loop,
+            .sink = .{ .ctx = app, .func = onEvent },
+            .backend = switch (options.backend) {
+                .wayland => .{ .wayland = .{ .display = options.display } },
+                .headless => .{ .headless = options.headless },
+            },
+            .thread = options.compositor_thread,
+        }) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable;
+        return app;
+    }
+
+    /// Tears everything down. Posted closures that have not run get their
+    /// destroy function instead (D5). Not from inside `dispatch`.
+    pub fn destroy(app: *App) void {
+        std.debug.assert(app.loop.stage == .idle);
+        const gpa = app.gpa;
+        // Nothing reads the windows' display lists or fonts after this.
+        app.comp.destroy();
+        for (app.windows.items) |w| if (w) |win| win.free();
+        for (app.zombies.items) |win| win.free();
+        app.windows.deinit(gpa);
+        app.zombies.deinit(gpa);
+        app.fonts.deinit();
+        app.pool.deinit();
+        app.loop.deinit();
+        gpa.destroy(app);
+    }
+
+    /// Runs one loop iteration (D6). `timeout_ms` bounds the wait: -1
+    /// blocks until there is work, 0 never blocks.
+    pub fn dispatch(app: *App, timeout_ms: i32) Error!void {
+        if (app.loop.stage != .idle) return error.Busy;
+        app.loop.dispatch(timeout_ms) catch return error.Unavailable;
+        app.freeZombies();
+        if (app.failure) |err| {
+            if (err != error.Unavailable) app.failure = null;
+            return err;
+        }
+    }
+
+    /// Dispatches until `quit` is called or the last window is destroyed.
+    pub fn run(app: *App) Error!void {
+        if (app.loop.stage != .idle) return error.Busy;
+        app.quit_requested = false;
+        while (!app.quit_requested) try app.dispatch(-1);
+    }
+
+    /// Makes `run` return after the current iteration.
+    pub fn quit(app: *App) void {
+        app.quit_requested = true;
+        app.loop.wake();
+    }
+
+    /// The epoll fd; readable whenever `dispatch(0)` has work (D6).
+    pub fn fd(app: *const App) i32 {
+        return app.loop.fd();
+    }
+
+    pub const PostFn = *const fn (ctx: ?*anyopaque) void;
+
+    /// Runs `func(ctx)` on the UI thread in the dispatch phase, then
+    /// `destroy(ctx)`. If the application is destroyed first, only
+    /// `destroy(ctx)` runs (D5). Safe from any thread while the
+    /// application exists.
+    pub fn post(app: *App, func: PostFn, destroy_fn: ?PostFn, ctx: ?*anyopaque) Allocator.Error!void {
+        const p = try app.gpa.create(Posted);
+        p.* = .{ .func = func, .destroy = destroy_fn, .ctx = ctx, .gpa = app.gpa };
+        app.loop.postRemote(&p.remote);
+    }
+
+    const Posted = struct {
+        remote: Loop.Remote = .{ .func = invoke, .cancel = drop },
+        func: PostFn,
+        destroy: ?PostFn,
+        ctx: ?*anyopaque,
+        gpa: Allocator,
+
+        fn invoke(r: *Loop.Remote) void {
+            const p: *Posted = @fieldParentPtr("remote", r);
+            const func, const destroy_fn, const ctx = .{ p.func, p.destroy, p.ctx };
+            p.gpa.destroy(p);
+            func(ctx);
+            if (destroy_fn) |d| d(ctx);
+        }
+
+        fn drop(r: *Loop.Remote) void {
+            const p: *Posted = @fieldParentPtr("remote", r);
+            const destroy_fn, const ctx = .{ p.destroy, p.ctx };
+            p.gpa.destroy(p);
+            if (destroy_fn) |d| d(ctx);
+        }
+    };
+
+    /// Registers a font from bytes (copied) and appends it to `family`'s
+    /// fallback chain, which takes precedence over Fontconfig.
+    pub fn addFont(app: *App, family: []const u8, bytes: []const u8) error{ OutOfMemory, InvalidFont }!void {
+        const fonts = &app.fonts;
+        const name = try fonts.intern(family);
+        const old: []const text.FontId = fonts.families.get(name) orelse &.{};
+        const chain = try app.gpa.alloc(text.FontId, old.len + 1);
+        defer app.gpa.free(chain);
+        const copy = try app.gpa.dupe(u8, bytes);
+        // The cache owns the copy once it accepts it.
+        const id = fonts.cache.add(copy, 0, .owned) catch |err| {
+            app.gpa.free(copy);
+            return if (err == error.OutOfMemory) error.OutOfMemory else error.InvalidFont;
+        };
+        @memcpy(chain[0..old.len], old);
+        chain[old.len] = id;
+        try fonts.register(family, chain);
+    }
+
+    pub fn setDefaultFont(app: *App, family: []const u8) Allocator.Error!void {
+        try app.fonts.setDefault(family);
+    }
+
+    pub fn createWindow(app: *App, options: WindowOptions, listener: Listener) Error!*Window {
+        const gpa = app.gpa;
+        try app.zombies.ensureUnusedCapacity(gpa, 1);
+        const win = try gpa.create(Window);
+        errdefer gpa.destroy(win);
+        const id = app.comp.createWindow(.{
+            .title = options.title,
+            .app_id = options.app_id,
+            .width = options.width,
+            .height = options.height,
+            .decoration = if (options.client_decorations) .client else .server,
+        }) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable;
+        errdefer app.comp.destroyWindow(id) catch {};
+        if (id >= app.windows.items.len) try app.windows.appendNTimes(gpa, null, id + 1 - app.windows.items.len);
+        win.* = .{ .app = app, .id = id, .ui = undefined, .listener = listener };
+        win.ui = try ui.Window.init(gpa, .{
+            .fonts = &app.fonts,
+            .sink = .{ .ctx = win, .commit = Window.commit },
+            .host = .{ .ctx = win, .request_frame = Window.requestFrame },
+            .width = @floatFromInt(options.width),
+            .height = @floatFromInt(options.height),
+            .rtl = options.rtl,
+            .language = options.language,
+        });
+        app.windows.items[id] = win;
+        app.open_windows += 1;
+        return win;
+    }
+
+    fn window(app: *App, id: ?WindowId) ?*Window {
+        const i = id orelse return null;
+        if (i >= app.windows.items.len) return null;
+        return app.windows.items[i];
+    }
+
+    fn fail(app: *App, err: Error) void {
+        if (app.failure == null or err == error.Unavailable) app.failure = err;
+    }
+
+    /// Compositor events, in the UI loop's dispatch phase.
+    fn onEvent(ctx: ?*anyopaque, ev: *const compositor.Event) void {
+        const app: *App = @ptrCast(@alignCast(ctx));
+        app.delivering += 1;
+        defer {
+            app.delivering -= 1;
+            app.freeZombies();
+        }
+        switch (ev.*) {
+            .released => |b| {
+                for (app.windows.items) |w| if (w) |win| if (win.ui.ownsBuilder(b)) return win.handle(ev);
+                for (app.zombies.items) |win| if (win.ui.ownsBuilder(b)) return win.handle(ev);
+            },
+            .platform => |*p| switch (p.*) {
+                .failed => |err| app.fail(if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable),
+                .close_requested => |id| if (app.window(id)) |win| {
+                    if (!win.notify(&.close_requested)) win.destroy() catch |err| app.fail(err);
+                },
+                else => if (app.window(p.window())) |win| win.handle(ev),
+            },
+            .configure => |c| if (app.window(c.window)) |win| {
+                const old = win.state;
+                win.state = c.state;
+                win.handle(ev);
+                if (!win.closed) _ = win.notify(&.{ .configure = .{ .old = old, .new = c.state } });
+            },
+            .presented => |p| if (app.window(p.window)) |win| {
+                win.presented_seq = p.seq;
+                win.handle(ev);
+            },
+            else => if (app.window(ev.window())) |win| win.handle(ev),
+        }
+    }
+
+    fn freeZombies(app: *App) void {
+        if (app.delivering != 0) return;
+        var i: usize = 0;
+        while (i < app.zombies.items.len) {
+            const win = app.zombies.items[i];
+            if (win.ui.paint.builders.items.len == win.ui.paint.all_builders.items.len) {
+                _ = app.zombies.swapRemove(i);
+                win.free();
+            } else i += 1;
+        }
+    }
+};
+
+pub const WindowOptions = struct {
+    title: []const u8 = "",
+    app_id: []const u8 = "",
+    /// Logical size used when the compositor lets the client choose.
+    width: u32 = 640,
+    height: u32 = 480,
+    client_decorations: bool = false,
+    rtl: bool = false,
+    /// BCP 47 language of the window's text.
+    language: []const u8 = "",
+};
+
+pub const WindowEvent = union(enum) {
+    /// The user asked to close the window. Unless the listener returns
+    /// true, the window is destroyed.
+    close_requested,
+    /// New size, scale, or states; the tree has already been told.
+    configure: struct { old: platform.WindowState, new: platform.WindowState },
+};
+
+pub const Listener = struct {
+    ctx: ?*anyopaque = null,
+    func: ?*const fn (ctx: ?*anyopaque, win: *Window, event: *const WindowEvent) bool = null,
+};
+
+pub const Window = struct {
+    app: *App,
+    id: WindowId,
+    ui: *ui.Window,
+    listener: Listener,
+    /// As of the last configure.
+    state: platform.WindowState = .{},
+    closed: bool = false,
+    /// Last layer commit, and the last one presented.
+    committed_seq: u64 = 0,
+    presented_seq: u64 = 0,
+
+    /// Destroys the window (see the module comment). On failure nothing
+    /// changed.
+    pub fn destroy(win: *Window) Allocator.Error!void {
+        if (win.closed) return;
+        const app = win.app;
+        try app.zombies.ensureUnusedCapacity(app.gpa, 1);
+        try app.comp.destroyWindow(win.id);
+        win.closed = true;
+        if (win.ui.txn.open) win.ui.txn.abort();
+        app.windows.items[win.id] = null;
+        app.zombies.appendAssumeCapacity(win);
+        app.open_windows -= 1;
+        if (app.open_windows == 0) app.quit();
+        app.freeZombies();
+    }
+
+    fn free(win: *Window) void {
+        if (win.ui.txn.open) win.ui.txn.abort();
+        win.ui.deinit();
+        win.app.gpa.destroy(win);
+    }
+
+    fn handle(win: *Window, ev: *const compositor.Event) void {
+        win.ui.handleEvent(ev) catch |err| win.app.fail(err);
+    }
+
+    fn notify(win: *Window, ev: *const WindowEvent) bool {
+        const f = win.listener.func orelse return false;
+        return f(win.listener.ctx, win, ev);
+    }
+
+    fn commit(ctx: ?*anyopaque, ops: []const compositor.Op) error{OutOfMemory}!u64 {
+        const win: *Window = @ptrCast(@alignCast(ctx));
+        const seq = win.app.comp.commit(win.id, ops) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            // The tree only emits valid ops.
+            else => unreachable,
+        };
+        win.committed_seq = seq;
+        return seq;
+    }
+
+    fn requestFrame(ctx: ?*anyopaque) void {
+        const win: *Window = @ptrCast(@alignCast(ctx));
+        if (win.closed) return;
+        win.app.comp.requestFrame(win.id) catch win.app.fail(error.OutOfMemory);
+    }
+
+    /// Whether everything committed has been presented and the tree has
+    /// no frame pending.
+    pub fn settled(win: *const Window) bool {
+        return win.presented_seq >= win.committed_seq and !win.ui.needsFrame() and !win.ui.txn.open;
+    }
+
+    pub fn setTitle(win: *Window, title: []const u8) Allocator.Error!void {
+        try win.platformCall(struct {
+            fn f(p: platform.Platform, id: WindowId, s: []const u8) void {
+                p.setTitle(id, s);
+            }
+        }.f, title);
+    }
+
+    pub fn setMaximized(win: *Window, on: bool) Allocator.Error!void {
+        try win.platformCall(platform.Platform.setMaximized, on);
+    }
+
+    pub fn setFullscreen(win: *Window, on: bool) Allocator.Error!void {
+        try win.platformCall(platform.Platform.setFullscreen, on);
+    }
+
+    pub fn minimize(win: *Window) Allocator.Error!void {
+        try win.platformCall(struct {
+            fn f(p: platform.Platform, id: WindowId, _: void) void {
+                p.setMinimized(id);
+            }
+        }.f, {});
+    }
+
+    pub const Limits = struct { min: platform.Size, max: platform.Size };
+
+    pub fn setSizeLimits(win: *Window, min: platform.Size, max: platform.Size) Allocator.Error!void {
+        try win.platformCall(struct {
+            fn f(p: platform.Platform, id: WindowId, l: Limits) void {
+                p.setSizeLimits(id, l.min, l.max);
+            }
+        }.f, Limits{ .min = min, .max = max });
+    }
+
+    /// Runs `func(platform, id, arg)` on the compositor thread, in order
+    /// with layer commits (D8). A string argument is copied.
+    fn platformCall(win: *Window, comptime func: anytype, arg: anytype) Allocator.Error!void {
+        const Arg = @TypeOf(arg);
+        const gpa = win.app.gpa;
+        const Closure = struct {
+            gpa: Allocator,
+            id: WindowId,
+            arg: Arg,
+
+            fn run(ctx: ?*anyopaque, comp: *Compositor) void {
+                const c: *@This() = @ptrCast(@alignCast(ctx));
+                func(comp.platform, c.id, c.arg);
+                drop(ctx);
+            }
+
+            fn drop(ctx: ?*anyopaque) void {
+                const c: *@This() = @ptrCast(@alignCast(ctx));
+                if (Arg == []const u8) c.gpa.free(c.arg);
+                c.gpa.destroy(c);
+            }
+        };
+        const c = try gpa.create(Closure);
+        errdefer gpa.destroy(c);
+        c.* = .{ .gpa = gpa, .id = win.id, .arg = if (Arg == []const u8) try gpa.dupe(u8, arg) else arg };
+        errdefer if (Arg == []const u8) gpa.free(c.arg);
+        try win.app.comp.post(c, Closure.run, Closure.drop);
+    }
+};
+
+test {
+    std.testing.refAllDecls(@This());
+    _ = @import("tests.zig");
+}
