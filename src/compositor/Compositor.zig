@@ -183,6 +183,7 @@ const Msg = union(enum) {
     post: struct { func: Func, destroy: ?*const fn (?*anyopaque) void, ctx: ?*anyopaque },
     external_frame: struct { window: WindowId, id: update.ExternalId, frame: update.ExternalFrame },
     destroy_external: struct { window: WindowId, id: update.ExternalId },
+    external_committed: struct { window: WindowId, id: update.ExternalId, width: u32, height: u32 },
     stop,
 };
 
@@ -423,6 +424,53 @@ pub fn createExternal(self: *Compositor, window: WindowId) !update.ExternalId {
     return ctx.result;
 }
 
+/// An external slot whose content the caller renders itself into a
+/// `wl_surface` (EGL, Vulkan WSI, GStreamer), shown on a synchronized
+/// subsurface (D17). Show it with `Op.set_external` like any external.
+///
+/// The embedder renders frames of the size `Event.external_configure`
+/// gives and, after committing each one, calls
+/// `externalSurfaceCommitted`; the window's next commit shows it (frame
+/// callbacks on the surface fire only then, so a swap interval of 1 waits
+/// for it). It must not set a viewport, buffer scale, or listener on the
+/// surface. The display is the compositor thread's connection: use it
+/// from another thread only through an event queue of one's own
+/// (`wl_display_create_queue`, a proxy wrapper of the display, and
+/// `wl_display_dispatch_queue`), as Mesa's EGL and Vulkan do, and never
+/// dispatch or round-trip the default queue. `display` and `surface` are
+/// null on the headless backend.
+pub fn createExternalSurface(self: *Compositor, window: WindowId) !ExternalSurface {
+    const Ctx = struct {
+        window: WindowId,
+        result: anyerror!ExternalSurface = error.InvalidWindow,
+        fn run(ctx: ?*anyopaque, comp: *Compositor) void {
+            const s: *@This() = @ptrCast(@alignCast(ctx));
+            const w = comp.getWindow(s.window) orelse return;
+            const id, const es = w.externals.createSurface(comp.platform, s.window) catch |err| {
+                s.result = err;
+                return;
+            };
+            s.result = .{ .id = id, .display = es.display, .surface = es.surface };
+        }
+    };
+    var ctx: Ctx = .{ .window = window };
+    try self.call(&ctx, Ctx.run);
+    return ctx.result;
+}
+
+pub const ExternalSurface = struct {
+    id: update.ExternalId,
+    /// `wl_display*` and `wl_surface*`.
+    display: ?*anyopaque,
+    surface: ?*anyopaque,
+};
+
+/// The embedder of an external surface committed a frame of
+/// `width` × `height` buffer pixels. Any thread.
+pub fn externalSurfaceCommitted(self: *Compositor, window: WindowId, id: update.ExternalId, width: u32, height: u32) Allocator.Error!void {
+    return self.send(.{ .external_committed = .{ .window = window, .id = id, .width = width, .height = height } });
+}
+
 /// Removes an external slot; its frame is released after the next frame.
 pub fn destroyExternal(self: *Compositor, window: WindowId, id: update.ExternalId) Allocator.Error!void {
     return self.send(.{ .destroy_external = .{ .window = window, .id = id } });
@@ -527,6 +575,9 @@ fn drain(self: *Compositor) void {
             }
         } else {
             _ = std.os.linux.close(f.frame.fd);
+        },
+        .external_committed => |ec| if (self.getWindow(ec.window)) |w| {
+            if (w.externals.surfaceCommitted(ec.id, ec.width, ec.height)) self.platform.requestFrame(ec.window);
         },
         .destroy_external => |d| if (self.getWindow(d.window)) |w| {
             w.externals.destroy(self.platform, d.window, d.id);
@@ -797,7 +848,7 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
     const s: f32 = @floatCast(state.scale.toFloat());
     const root = raster.Affine.scale(s, s);
     // External content: subsurfaces where possible, composited elsewhere.
-    const subsurfaces_changed = w.externals.place(self.platform, w.id, &w.tree) catch return self.outOfMemory(w);
+    const subsurfaces_changed = w.externals.place(self.platform, w.id, &w.tree, state.scale.toFloat()) catch return self.outOfMemory(w);
     w.tree.externals = w.externals.resolver();
     const list = w.tree.compose() catch return self.outOfMemory(w);
     var damage = w.tracker.diff(w.tree.previous(), list, root, vp) catch return self.outOfMemory(w);
@@ -838,6 +889,15 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
             r.comp.outbox.push(.{ .external_released = .{ .window = r.window, .id = id, .key = key } });
         }
     }{ .comp = self, .window = w.id });
+    for (w.externals.configures.items) |cf| self.outbox.push(.{ .external_configure = .{
+        .window = w.id,
+        .id = cf.id,
+        .width = cf.width,
+        .height = cf.height,
+        .buffer_width = cf.buffer_width,
+        .buffer_height = cf.buffer_height,
+    } });
+    w.externals.configures.clearRetainingCapacity();
 
     for (w.tree.scrolled.items) |id| {
         const l = &w.tree.layers.items[id];

@@ -37,6 +37,8 @@ pub const App = struct {
     presented_seq: u64 = 0,
     popups: std.ArrayList(*Popup) = .empty,
     err: ?anyerror = null,
+    /// The last size an embedder was told to render at.
+    external_configure: ?@FieldType(compositor.Event, "external_configure") = null,
 
     pub const Options = struct {
         width: u32 = 320,
@@ -117,6 +119,7 @@ pub const App = struct {
         app.last_seq = 0;
         app.presented_seq = 0;
         app.popups = .empty;
+        app.external_configure = null;
         app.err = null;
         app.wid = 0;
         app.loop = try Loop.init(std.heap.smp_allocator);
@@ -343,6 +346,7 @@ pub const App = struct {
             .platform => |p| if (p == .failed) {
                 app.err = p.failed;
             },
+            .external_configure => |cf| app.external_configure = cf,
             else => {},
         }
         if (ev.* == .released) {

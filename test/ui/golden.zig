@@ -672,6 +672,105 @@ fn subsurfaceOf(app: *App) ?platform.SubsurfaceState {
     return s.out;
 }
 
+/// Draws the holes the compositor punches for an embedder's surface below
+/// the window, for the harness's full redraws.
+const Embedded = struct {
+    app: *App,
+
+    fn draw(ctx: *anyopaque, _: compositor.ExternalId) compositor.tree.Draw {
+        const e: *Embedded = @ptrCast(@alignCast(ctx));
+        const sub = subsurfaceOf(e.app) orelse return .none;
+        return if (sub.visible and sub.below) .hole else .none;
+    }
+};
+
+fn bareCommitsOf(app: *App) u32 {
+    const S = struct {
+        wid: platform.WindowId,
+        out: u32 = 0,
+        fn f(hl: *platform.Headless, s: *@This()) void {
+            s.out = hl.bareCommits(s.wid);
+        }
+    };
+    var s: S = .{ .wid = app.wid };
+    app.onHeadless(&s, S.f);
+    return s.out;
+}
+
+test "embedded surfaces: told their size, shown on commit, cropped once a frame fits, hidden" {
+    var app: App = undefined;
+    try app.init(testing.allocator, .{ .width = 240, .height = 160, .scale = 2 });
+    defer app.deinit();
+    var embedded: Embedded = .{ .app = &app };
+    app.mirror.externals = .{ .ctx = &embedded, .draw = Embedded.draw };
+    const es = try app.comp.createExternalSurface(app.wid);
+    try testing.expect(es.display == null and es.surface == null);
+    var clip: NodeId = undefined;
+    var player: NodeId = undefined;
+    {
+        const t = try app.win.begin();
+        const root = try node(t, .root, .stack, .{ .padding = .all(10) }, .{ .background = panel });
+        try t.setStack(root, .{ .align_x = .start, .align_y = .start });
+        // Only the top half of the 120x80 player shows in the scroll view.
+        clip = try node(t, root, .scroll, .{ .width = .{ .px = 120 }, .height = .{ .px = 40 } }, .{});
+        player = try node(t, clip, .external, .{ .width = .{ .px = 120 }, .height = .{ .px = 80 } }, .{});
+        try t.setExternal(player, .{ .id = es.id, .fit = .fill });
+        t.commit();
+    }
+    try app.settle();
+    // Told its size in logical and buffer pixels (scale 2).
+    const cf = app.external_configure.?;
+    try testing.expectEqual(es.id, cf.id);
+    try testing.expectEqual([4]u32{ 120, 80, 240, 160 }, [4]u32{ cf.width, cf.height, cf.buffer_width, cf.buffer_height });
+    // No frame of that size yet: whole, below the window, which covers
+    // the clipped half and is transparent over the rest.
+    var sub = subsurfaceOf(&app).?;
+    try testing.expect(sub.visible and sub.embed and sub.below and sub.source == null);
+    try testing.expectEqual(platform.Rect{ .x = 10, .y = 10, .width = 120, .height = 80 }, sub.rect);
+    try expectDamageExact(&app);
+
+    // A frame of the right size: from then on the viewport crops it and
+    // it goes above the window (repainting the window without the hole).
+    try app.comp.externalSurfaceCommitted(app.wid, es.id, 240, 160);
+    try app.settle();
+    sub = subsurfaceOf(&app).?;
+    try testing.expect(sub.visible and !sub.below);
+    try testing.expectEqual(platform.Rect{ .x = 10, .y = 10, .width = 120, .height = 40 }, sub.rect);
+    try testing.expectEqual(@as(f32, 80), sub.source.?.height);
+    try testing.expectEqual(@as(f32, 240), sub.source.?.width);
+    try expectDamageExact(&app);
+    // The next frame changes nothing else: a bare commit shows it.
+    const bare = bareCommitsOf(&app);
+    const presented = app.presented_seq;
+    try app.comp.externalSurfaceCommitted(app.wid, es.id, 240, 160);
+    try app.settle();
+    try testing.expectEqual(bare + 1, bareCommitsOf(&app));
+    try testing.expectEqual(presented, app.presented_seq);
+
+    // A new size: told again, and no source until a frame of it arrives
+    // (the old source could fall outside the new buffer).
+    {
+        const t = try app.win.begin();
+        try t.setLayout(player, .{ .width = .{ .px = 100 }, .height = .{ .px = 80 } });
+        t.commit();
+    }
+    try app.settle();
+    try testing.expectEqual(@as(u32, 200), app.external_configure.?.buffer_width);
+    sub = subsurfaceOf(&app).?;
+    try testing.expect(sub.below and sub.source == null);
+    try expectDamageExact(&app);
+
+    // Gone: hidden.
+    {
+        const t = try app.win.begin();
+        try t.remove(player);
+        t.commit();
+    }
+    try app.settle();
+    try testing.expect(!subsurfaceOf(&app).?.visible);
+    try expectDamageExact(&app);
+}
+
 test "external content: above the window, below it with a hole under controls, composited when translucent" {
     var app: App = undefined;
     try app.init(testing.allocator, .{ .width = 240, .height = 160 });

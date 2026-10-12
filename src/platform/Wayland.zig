@@ -102,18 +102,24 @@ pub const Output = struct {
 /// parent's commits.
 const Subsurface = struct {
     surface: *wl.Surface,
-    subsurface: *wl.Subsurface,
+    /// Null while an embedder's surface is hidden: without the role it is
+    /// unmapped, and its buffer stays the embedder's.
+    subsurface: ?*wl.Subsurface,
     viewport: ?*wp.Viewport,
+    /// An embedder renders into `surface` (`createEmbedSurface`).
+    embed: bool = false,
     buffer: ?*wl.Buffer = null,
     key: u64 = 0,
     attached: bool = false,
     below: bool = false,
     source: @FieldType(platform.SubsurfaceState, "source") = null,
+    /// The viewport destination an embedder's surface was given.
+    dest: [2]i32 = .{ 0, 0 },
 
     fn destroy(s: *Subsurface, gpa: Allocator) void {
         if (s.buffer) |b| b.destroy();
         if (s.viewport) |v| v.destroy();
-        s.subsurface.destroy();
+        if (s.subsurface) |sub| sub.destroy();
         s.surface.destroy();
         gpa.destroy(s);
     }
@@ -874,6 +880,16 @@ pub fn createSubsurface(self: *Wayland, id: WindowId) Error!platform.SubsurfaceI
     return @intCast(slot);
 }
 
+pub fn createEmbedSurface(self: *Wayland, id: WindowId) Error!platform.EmbedSurface {
+    const sub = try self.createSubsurface(id);
+    const s = self.get(id).subsurfaces.items[sub].?;
+    s.embed = true;
+    // Hidden until it has a place.
+    s.subsurface.?.destroy();
+    s.subsurface = null;
+    return .{ .sub = sub, .display = self.display, .surface = s.surface };
+}
+
 pub fn destroySubsurface(self: *Wayland, id: WindowId, sub: platform.SubsurfaceId) void {
     const w = self.get(id);
     if (w.subsurfaces.items[sub]) |s| s.destroy(self.allocator);
@@ -883,6 +899,7 @@ pub fn destroySubsurface(self: *Wayland, id: WindowId, sub: platform.SubsurfaceI
 pub fn setSubsurface(self: *Wayland, id: WindowId, sub: platform.SubsurfaceId, state: *const platform.SubsurfaceState) Error!void {
     const w = self.get(id);
     const s = w.subsurfaces.items[sub] orelse return;
+    if (s.embed) return self.setEmbedSurface(w, s, state);
     const frame = (if (state.visible) state.frame else null) orelse {
         if (s.attached) {
             s.surface.attach(null, 0, 0);
@@ -906,9 +923,9 @@ pub fn setSubsurface(self: *Wayland, id: WindowId, sub: platform.SubsurfaceId, s
         s.surface.damageBuffer(0, 0, std.math.maxInt(i32), std.math.maxInt(i32));
         s.attached = true;
     }
-    s.subsurface.setPosition(state.rect.x, state.rect.y);
+    s.subsurface.?.setPosition(state.rect.x, state.rect.y);
     if (state.below != s.below) {
-        if (state.below) s.subsurface.placeBelow(w.surface) else s.subsurface.placeAbove(w.surface);
+        if (state.below) s.subsurface.?.placeBelow(w.surface) else s.subsurface.?.placeAbove(w.surface);
         s.below = state.below;
     }
     if (s.viewport) |v| {
@@ -922,6 +939,48 @@ pub fn setSubsurface(self: *Wayland, id: WindowId, sub: platform.SubsurfaceId, s
         v.setDestination(@max(state.rect.width, 1), @max(state.rect.height, 1));
     }
     s.surface.commit();
+}
+
+/// Places an embedder's surface. Position and stacking apply with the
+/// window's commit. The viewport's source and destination are the
+/// surface's own state, so when they change the surface is committed here
+/// too; being synchronized, it applies with the window's commit as well.
+/// That commit may fall between the embedder's attach and commit on its
+/// thread, which is harmless as long as it attaches only finished frames
+/// of the size it was told (D17).
+fn setEmbedSurface(self: *Wayland, w: *Window, s: *Subsurface, state: *const platform.SubsurfaceState) Error!void {
+    if (!state.visible) {
+        if (s.subsurface) |sub| sub.destroy();
+        s.subsurface = null;
+        return;
+    }
+    const sub = s.subsurface orelse blk: {
+        const sub = self.subcompositor.?.getSubsurface(s.surface, w.surface) catch return error.OutOfMemory;
+        s.subsurface = sub;
+        s.below = false;
+        break :blk sub;
+    };
+    sub.setPosition(state.rect.x, state.rect.y);
+    if (state.below != s.below) {
+        if (state.below) sub.placeBelow(w.surface) else sub.placeAbove(w.surface);
+        s.below = state.below;
+    }
+    if (s.viewport) |v| {
+        const source_changed = !std.meta.eql(state.source, s.source);
+        if (source_changed) {
+            const minus_one = wl.Fixed.fromInt(-1);
+            if (state.source) |src| {
+                v.setSource(wl.Fixed.fromDouble(src.x), wl.Fixed.fromDouble(src.y), wl.Fixed.fromDouble(src.width), wl.Fixed.fromDouble(src.height));
+            } else v.setSource(minus_one, minus_one, minus_one, minus_one);
+            s.source = state.source;
+        }
+        const dest: [2]i32 = .{ @max(state.rect.width, 1), @max(state.rect.height, 1) };
+        if (!std.meta.eql(dest, s.dest) or source_changed) {
+            v.setDestination(dest[0], dest[1]);
+            s.dest = dest;
+            s.surface.commit();
+        }
+    }
 }
 
 pub fn commitWindow(self: *Wayland, id: WindowId) void {

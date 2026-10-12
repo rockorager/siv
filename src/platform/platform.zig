@@ -193,6 +193,16 @@ pub const Platform = union(enum) {
         };
     }
 
+    /// A subsurface whose content an embedder renders into its own
+    /// `wl_surface`, for example with EGL or Vulkan (D17). The platform
+    /// positions it and scales it (`setSubsurface` ignores `frame` and
+    /// `source`) but never attaches a buffer or commits it.
+    pub fn createEmbedSurface(p: Platform, id: WindowId) Error!EmbedSurface {
+        return switch (p) {
+            inline else => |b| b.createEmbedSurface(id),
+        };
+    }
+
     pub fn destroySubsurface(p: Platform, id: WindowId, sub: SubsurfaceId) void {
         switch (p) {
             inline else => |b| b.destroySubsurface(id, sub),
@@ -300,6 +310,14 @@ pub const Platform = union(enum) {
 
 pub const SubsurfaceId = u32;
 
+pub const EmbedSurface = struct {
+    sub: SubsurfaceId,
+    /// The `wl_display*` and the subsurface's `wl_surface*`; null on the
+    /// headless backend.
+    display: ?*anyopaque = null,
+    surface: ?*anyopaque = null,
+};
+
 /// Opaque XRGB8888 pixels in mappable shared memory (wl_shm).
 pub const ShmFrame = struct {
     fd: i32,
@@ -323,6 +341,8 @@ pub const SubsurfaceState = struct {
     /// Below the parent surface, showing through its transparent pixels,
     /// instead of above it.
     below: bool = false,
+    /// An embedder renders the content (`createEmbedSurface`).
+    embed: bool = false,
 };
 
 pub const SelectionKind = enum(u8) {

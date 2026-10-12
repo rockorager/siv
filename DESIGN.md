@@ -899,8 +899,47 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       A new frame that changes only a subsurface costs a bare commit, not a
       present. Replaced frames are released (`Event.external_released`)
       after the next frame.
+    - Embedders that render themselves (EGL, Vulkan WSI, GStreamer, an
+      application drawing libmpv's GL output) get a `wl_surface*` of their
+      own and the `wl_display*` (`Compositor.createExternalSurface`), on a
+      synchronized `wl_subsurface` placed like any external. siv owns its
+      position, stacking, and `wp_viewport`; the embedder owns its buffers.
+      - Size: `Event.external_configure` gives the placement's logical size
+        and the buffer size to render (times the window's scale); the
+        embedder renders a frame of that size soon after, even if nothing
+        else changed, because the viewport scales whatever it attaches.
+      - Frames: after committing one, the embedder calls
+        `externalSurfaceCommitted` with its buffer size, from any thread;
+        the window's next frame commits (a bare commit if nothing else
+        changed), and only then does the synchronized frame show and its
+        frame callback fire, so a swap interval of 1 paces itself to it.
+        Synchronized rather than desynchronized so that moves, crops, and
+        resizes apply in the same commit as the UI around them.
+      - When the viewport's source or destination changes, siv commits the
+        embedder's surface itself (the state is cached until the window's
+        commit). That commit can fall between the embedder's attach and
+        commit on its thread; it only ever completes a finished frame
+        early, provided embedders attach finished frames of the size they
+        were told.
+      - Clips crop through the viewport's source rectangle only once the
+        embedder reported a frame of the configured size: a source outside
+        its buffer is a protocol error. Until then, and for rotated or
+        translucent placements (shown on their bounding box at full
+        opacity), the surface goes below the window with a hole, so that
+        the window covers what clips hide; parts past the window's edge
+        can show for that time. It is shown in one place only.
+      - Hidden placements destroy the `wl_subsurface` role, which unmaps
+        the surface without touching its buffer; showing it again creates
+        the role anew.
+      - Threads: the display is the compositor thread's connection, which
+        reads with `wl_display_prepare_read`, so other threads may use it
+        through an event queue of their own (`wl_display_create_queue`, a
+        proxy wrapper of the display, `wl_display_dispatch_queue`), as
+        Mesa's EGL and Vulkan do. Embedders must never dispatch or
+        round-trip the default queue, and must not set a listener, a
+        viewport, or a buffer scale on the surface.
     - Not yet: dma-buf frames and their import as textures (with the
-      Vulkan renderer), and handing embedders a `wl_surface*`.
+      Vulkan renderer), and external nodes in the C API.
   - Fractional scale, preferred buffer scale, output hotplug, `xdg-activation`,
     idle inhibit, `xdg-dialog`, toplevel icons, and session restore.
 

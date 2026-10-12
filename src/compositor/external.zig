@@ -51,7 +51,23 @@ const External = struct {
     /// What the subsurface was last told.
     shown: platform.SubsurfaceState = .{},
     seen: bool = false,
+    /// An embedder renders into the subsurface's own wl_surface.
+    embed: ?Embed = null,
 };
+
+/// An embedder's surface: the size it was told to render at, and what it
+/// says it committed.
+const Embed = struct {
+    told: Size = .{},
+    /// The buffer size of its last committed frame.
+    buffer: Size = .{},
+    /// A frame was committed since the window's last commit.
+    committed: bool = false,
+};
+
+const Size = struct { width: u32 = 0, height: u32 = 0 };
+
+pub const Configure = struct { id: ExternalId, width: u32, height: u32, buffer_width: u32, buffer_height: u32 };
 
 pub const Externals = struct {
     gpa: Allocator,
@@ -59,6 +75,8 @@ pub const Externals = struct {
     found: std.ArrayList(tree_mod.Found) = .empty,
     /// Frames replaced or removed since the last frame; released after it.
     retired: std.ArrayList(Retired) = .empty,
+    /// New sizes for embedders, sent after the frame.
+    configures: std.ArrayList(Configure) = .empty,
 
     pub const Retired = struct { id: ExternalId, mapped: Mapped };
 
@@ -72,6 +90,7 @@ pub const Externals = struct {
         e.items.deinit(e.gpa);
         e.found.deinit(e.gpa);
         e.retired.deinit(e.gpa);
+        e.configures.deinit(e.gpa);
     }
 
     fn get(e: *Externals, id: ExternalId) ?*External {
@@ -86,6 +105,30 @@ pub const Externals = struct {
         };
         try e.items.append(e.gpa, .{});
         return @intCast(e.items.items.len);
+    }
+
+    /// An external whose content an embedder renders into a wl_surface of
+    /// its own (`Platform.createEmbedSurface`); hidden until placed.
+    pub fn createSurface(e: *Externals, p: platform.Platform, window: platform.WindowId) !struct { ExternalId, platform.EmbedSurface } {
+        const id = try e.create();
+        errdefer e.items.items[id - 1] = null;
+        const es = try p.createEmbedSurface(window);
+        const x = e.get(id).?;
+        x.sub = es.sub;
+        x.embed = .{};
+        x.mode = .above;
+        x.shown = .{ .embed = true };
+        return .{ id, es };
+    }
+
+    /// The embedder committed a frame of this size; the window's next
+    /// commit shows it.
+    pub fn surfaceCommitted(e: *Externals, id: ExternalId, width: u32, height: u32) bool {
+        const x = e.get(id) orelse return false;
+        const em = &(x.embed orelse return false);
+        em.buffer = .{ .width = width, .height = height };
+        em.committed = true;
+        return true;
     }
 
     pub fn destroy(e: *Externals, p: platform.Platform, window: platform.WindowId, id: ExternalId) void {
@@ -124,6 +167,7 @@ pub const Externals = struct {
     fn draw(ctx: *anyopaque, id: ExternalId) tree_mod.Draw {
         const e: *Externals = @ptrCast(@alignCast(ctx));
         const x = e.get(id) orelse return .none;
+        if (x.embed != null and !x.shown.visible) return .none;
         return switch (x.mode) {
             .above => .none,
             .below => .hole,
@@ -134,14 +178,23 @@ pub const Externals = struct {
     /// Decides promotion for this frame and updates the subsurfaces.
     /// Returns whether a subsurface changed (it applies with the window's
     /// next commit). Externals whose drawing changed are touched in `t`.
-    pub fn place(e: *Externals, p: platform.Platform, window: platform.WindowId, t: *tree_mod.Tree) Allocator.Error!bool {
+    pub fn place(e: *Externals, p: platform.Platform, window: platform.WindowId, t: *tree_mod.Tree, scale: f64) Allocator.Error!bool {
         try t.externalPlacements(&e.found);
+        var changed = false;
         for (e.items.items) |*item| if (item.*) |*x| {
             x.seen = false;
+            if (x.embed) |*em| if (em.committed) {
+                em.committed = false;
+                changed = true;
+            };
         };
-        var changed = false;
         for (e.found.items) |f| {
             const x = e.get(f.id) orelse continue;
+            if (x.embed != null) {
+                if (x.seen) continue; // shown once
+                changed = (try e.placeSurface(p, window, t, x, f, scale)) or changed;
+                continue;
+            }
             // Above the window when nothing covers it; below with a hole
             // when something does (the frames are opaque). One external
             // shown twice is composited.
@@ -180,6 +233,15 @@ pub const Externals = struct {
             }
         }
         for (e.items.items, 0..) |*item, i| if (item.*) |*x| {
+            if (x.embed != null) {
+                if (!x.seen and x.shown.visible) {
+                    x.shown.visible = false;
+                    p.setSubsurface(window, x.sub.?, &x.shown) catch {};
+                    t.touchExternal(@intCast(i + 1));
+                    changed = true;
+                }
+                continue;
+            }
             const keep = x.seen and x.mode != .composited;
             if (!keep) {
                 if (x.mode != .composited) t.touchExternal(@intCast(i + 1));
@@ -192,6 +254,48 @@ pub const Externals = struct {
             }
         };
         return changed;
+    }
+
+    /// Places an embedder's surface. Nothing can composite its pixels, so
+    /// it stays on its subsurface: above the window when it is unobstructed,
+    /// and otherwise below with a hole, so that the window covers what
+    /// clips hide and content painted over it. Clips crop through the
+    /// viewport's source rectangle, but only once the embedder committed a
+    /// frame at the size it was told: a source outside its buffer would be
+    /// a protocol error. Until then (and for rotated or translucent
+    /// placements, shown on their bounding box) the window covers the rest.
+    fn placeSurface(e: *Externals, p: platform.Platform, window: platform.WindowId, t: *tree_mod.Tree, x: *External, f: tree_mod.Found, scale: f64) Allocator.Error!bool {
+        const id = f.id;
+        const em = &x.embed.?;
+        const full = round(f.rect);
+        if (f.visible.isEmpty() or full.width <= 0 or full.height <= 0) return false; // hidden after the loop
+        x.seen = true;
+        const size: Size = .{ .width = @intCast(full.width), .height = @intCast(full.height) };
+        const buffer: Size = .{
+            .width = @intFromFloat(@max(1, @round(@as(f64, @floatFromInt(size.width)) * scale))),
+            .height = @intFromFloat(@max(1, @round(@as(f64, @floatFromInt(size.height)) * scale))),
+        };
+        if (!std.meta.eql(buffer, em.told)) {
+            try e.configures.append(e.gpa, .{ .id = id, .width = size.width, .height = size.height, .buffer_width = buffer.width, .buffer_height = buffer.height });
+            em.told = buffer;
+        }
+        const cropped = !f.visible.eql(f.rect);
+        const fits = f.promotable and std.meta.eql(em.buffer, em.told);
+        var state: platform.SubsurfaceState = .{ .visible = true, .embed = true, .rect = full };
+        if (cropped and fits) {
+            const bw: f32 = @floatFromInt(em.buffer.width);
+            const bh: f32 = @floatFromInt(em.buffer.height);
+            state.rect = round(f.visible);
+            state.source = .{ .x = f.source.x0 * bw, .y = f.source.y0 * bh, .width = f.source.width() * bw, .height = f.source.height() * bh };
+        }
+        state.below = !f.promotable or f.covered or (cropped and !fits);
+        const mode: Mode = if (state.below) .below else .above;
+        if (mode != x.mode or !x.shown.visible) t.touchExternal(id);
+        x.mode = mode;
+        if (std.meta.eql(state, x.shown)) return false;
+        p.setSubsurface(window, x.sub.?, &state) catch {};
+        x.shown = state;
+        return true;
     }
 
     fn round(r: raster.Rect) platform.Rect {

@@ -227,6 +227,14 @@ pub fn createSubsurface(hl: *Headless, id: WindowId) Error!platform.SubsurfaceId
     return @intCast(w.subsurfaces.items.len - 1);
 }
 
+pub fn createEmbedSurface(hl: *Headless, id: WindowId) Error!platform.EmbedSurface {
+    const sub = try hl.createSubsurface(id);
+    const w = hl.get(id);
+    w.subsurfaces.items[sub].?.embed = true;
+    w.pending_subsurfaces.items[sub].?.embed = true;
+    return .{ .sub = sub };
+}
+
 pub fn destroySubsurface(hl: *Headless, id: WindowId, sub: platform.SubsurfaceId) void {
     const w = hl.get(id);
     w.subsurfaces.items[sub] = null;

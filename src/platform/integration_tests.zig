@@ -507,6 +507,155 @@ test "popups are placed by the compositor within the output, then dismissed" {
     try runMs(&h.loop, 50);
 }
 
+extern fn wl_proxy_create_wrapper(proxy: *anyopaque) ?*anyopaque;
+extern fn wl_proxy_wrapper_destroy(wrapper: *anyopaque) void;
+
+/// What an embedder does on its own thread with the display and surface
+/// it was handed: everything through an event queue of its own, as Mesa's
+/// EGL and Vulkan do. It attaches shm frames and waits for their frame
+/// callbacks.
+const Embedder = struct {
+    display: *wl.Display,
+    surface: *wl.Surface,
+    queue: *wl.EventQueue = undefined,
+    /// The display and surface as proxies whose new objects use `queue`.
+    display_q: *wl.Display = undefined,
+    surface_q: *wl.Surface = undefined,
+    shm: ?*wl.Shm = null,
+    buffer: ?*wl.Buffer = null,
+    fd: i32 = -1,
+    frames_done: std.atomic.Value(u32) = .init(0),
+    committed: std.atomic.Value(u32) = .init(0),
+    /// Frames to commit, one after each callback.
+    frames: u32 = 3,
+    failed: std.atomic.Value(bool) = .init(false),
+
+    fn run(e: *Embedder) void {
+        e.body() catch e.failed.store(true, .release);
+    }
+
+    fn body(e: *Embedder) !void {
+        e.queue = try e.display.createQueue();
+        defer e.queue.destroy();
+        e.display_q = @ptrCast(wl_proxy_create_wrapper(e.display) orelse return error.OutOfMemory);
+        defer wl_proxy_wrapper_destroy(e.display_q);
+        @as(*wl.Proxy, @ptrCast(e.display_q)).setQueue(e.queue);
+        e.surface_q = @ptrCast(wl_proxy_create_wrapper(e.surface) orelse return error.OutOfMemory);
+        defer wl_proxy_wrapper_destroy(e.surface_q);
+        @as(*wl.Proxy, @ptrCast(e.surface_q)).setQueue(e.queue);
+
+        const registry = try e.display_q.getRegistry();
+        defer registry.destroy();
+        registry.setListener(*Embedder, onGlobal, e);
+        if (e.display.roundtripQueue(e.queue) != .SUCCESS) return error.Roundtrip;
+        const shm = e.shm orelse return error.NoShm;
+        defer shm.destroy();
+        const linux = std.os.linux;
+        e.fd = @intCast(linux.memfd_create("siv-embed", linux.MFD.CLOEXEC));
+        defer _ = linux.close(e.fd);
+        _ = linux.ftruncate(e.fd, 64 * 36 * 4);
+        const pool = try shm.createPool(e.fd, 64 * 36 * 4);
+        e.buffer = try pool.createBuffer(0, 64, 36, 64 * 4, .xrgb8888);
+        pool.destroy();
+        defer e.buffer.?.destroy();
+
+        var done: u32 = 0;
+        while (done < e.frames) : (done += 1) {
+            const cb = try e.surface_q.frame();
+            var fired = false;
+            cb.setListener(*bool, onDone, &fired);
+            e.surface.attach(e.buffer, 0, 0);
+            e.surface.damageBuffer(0, 0, 64, 36);
+            e.surface.commit();
+            _ = e.committed.fetchAdd(1, .release);
+            const deadline = Loop.now() + 5 * std.time.ns_per_s;
+            while (!fired) {
+                if (Loop.now() > deadline) return error.Timeout;
+                try e.dispatchOnce();
+            }
+            _ = e.frames_done.fetchAdd(1, .release);
+        }
+    }
+
+    /// Reads and dispatches this queue's events, waiting up to 50 ms.
+    fn dispatchOnce(e: *Embedder) !void {
+        while (!e.display.prepareReadQueue(e.queue)) _ = e.display.dispatchQueuePending(e.queue);
+        _ = e.display.flush();
+        var pfd = [_]std.posix.pollfd{.{ .fd = e.display.getFd(), .events = std.posix.POLL.IN, .revents = 0 }};
+        if ((std.posix.poll(&pfd, 50) catch 0) > 0) {
+            if (e.display.readEvents() != .SUCCESS) return error.ReadFailed;
+        } else e.display.cancelRead();
+        _ = e.display.dispatchQueuePending(e.queue);
+    }
+
+    fn onGlobal(registry: *wl.Registry, event: wl.Registry.Event, e: *Embedder) void {
+        switch (event) {
+            .global => |g| if (std.mem.orderZ(u8, g.interface, wl.Shm.interface.name) == .eq) {
+                e.shm = registry.bind(g.name, wl.Shm, 1) catch null;
+            },
+            .global_remove => {},
+        }
+    }
+
+    fn onDone(cb: *wl.Callback, _: wl.Callback.Event, fired: *bool) void {
+        cb.destroy();
+        fired.* = true;
+    }
+};
+
+test "an embedder renders into its own surface from its own thread" {
+    var h: Harness = .{};
+    try h.start();
+    defer h.stop();
+    const app = &h.app;
+    const backend = app.backend;
+    const id = try h.mapWindow(.{});
+    const es = try backend.createEmbedSurface(id);
+    var e: Embedder = .{ .display = @ptrCast(es.display.?), .surface = @ptrCast(es.surface.?) };
+    // Placed (and so mapped) before the embedder's first frame.
+    var state: platform.SubsurfaceState = .{ .visible = true, .embed = true, .rect = .{ .x = 20, .y = 30, .width = 128, .height = 72 } };
+    try backend.setSubsurface(id, es.sub, &state);
+    backend.commitWindow(id);
+    const thread = try std.Thread.spawn(.{}, Embedder.run, .{&e});
+    // Each committed frame shows with the window's next commit, and only
+    // then does its frame callback fire.
+    var shown: u32 = 0;
+    const deadline = Loop.now() + 10 * std.time.ns_per_s;
+    while (e.frames_done.load(.acquire) < e.frames and !e.failed.load(.acquire)) {
+        if (Loop.now() > deadline) break;
+        const c = e.committed.load(.acquire);
+        if (c > shown) {
+            shown = c;
+            if (c == 2) {
+                // Cropped through the viewport and moved below the window
+                // between frames.
+                state.below = true;
+                state.source = .{ .x = 8, .y = 4, .width = 32, .height = 18 };
+                state.rect.width = 64;
+                state.rect.height = 36;
+                try backend.setSubsurface(id, es.sub, &state);
+            }
+            backend.commitWindow(id);
+        }
+        try h.loop.dispatch(10);
+    }
+    thread.join();
+    try testing.expect(!e.failed.load(.acquire));
+    try testing.expectEqual(e.frames, e.frames_done.load(.acquire));
+    // Hidden (the role goes; the embedder's buffer stays), shown again,
+    // then destroyed.
+    try backend.setSubsurface(id, es.sub, &.{ .embed = true });
+    backend.commitWindow(id);
+    try h.animate(2);
+    try backend.setSubsurface(id, es.sub, &state);
+    backend.commitWindow(id);
+    try h.animate(2);
+    backend.destroySubsurface(id, es.sub);
+    try h.animate(2);
+    try testing.expect(!backend.dead);
+    try testing.expectEqual(@as(usize, 0), app.count(.failed));
+}
+
 test "a subsurface shows an external frame without protocol errors" {
     var h: Harness = .{};
     try h.start();

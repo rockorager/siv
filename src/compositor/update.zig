@@ -330,6 +330,12 @@ pub const Event = union(enum) {
     /// No frame reads this external frame any more; its producer may
     /// reuse the memory. Delivered to the producer's sink like the rest.
     external_released: struct { window: WindowId, id: ExternalId, key: u64 },
+    /// An embedder's surface (`Compositor.createExternalSurface`) has a new
+    /// size: render frames of `buffer_width` × `buffer_height` pixels
+    /// from now on (its logical size times the window's scale), and
+    /// render one soon even if nothing else changed, since the new size
+    /// applies with the surface's next commit.
+    external_configure: struct { window: WindowId, id: ExternalId, width: u32, height: u32, buffer_width: u32, buffer_height: u32 },
 
     /// The window an event is about, if any. `released` belongs to no
     /// window: it must be delivered even after the window is gone.
@@ -337,7 +343,7 @@ pub const Event = union(enum) {
         return switch (ev.*) {
             .platform => |*p| p.window(),
             .frame => |f| f.window,
-            inline .configure, .presented, .scrolled, .animation_finished, .external_released => |e| e.window,
+            inline .configure, .presented, .scrolled, .animation_finished, .external_released, .external_configure => |e| e.window,
             .released => null,
         };
     }
