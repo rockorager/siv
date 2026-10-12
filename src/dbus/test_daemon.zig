@@ -123,6 +123,16 @@ pub fn findExecutable(name: []const u8) ?[*:0]const u8 {
     return null;
 }
 
+/// A helper program that distributions install outside PATH, in
+/// /usr/libexec (Debian, Fedora) or /usr/lib (Arch), written into `buf`.
+pub fn findLibexec(buf: []u8, name: []const u8) ?[:0]const u8 {
+    for ([_][]const u8{ "/usr/libexec", "/usr/lib" }) |dir| {
+        const full = std.fmt.bufPrintSentinel(buf, "{s}/{s}", .{ dir, name }, 0) catch return null;
+        if (linux.access(full, 1) == 0) return full;
+    }
+    return null;
+}
+
 pub fn writeFile(path: [*:0]const u8, data: []const u8) !void {
     const rc = linux.openat(linux.AT.FDCWD, path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, 0o600);
     if (linux.errno(rc) != .SUCCESS) return error.WriteFailed;

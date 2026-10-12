@@ -34,14 +34,18 @@ const client_script =
     \\    time.sleep(0.02)
     \\if not app:
     \\    print("NOAPP", flush=True); sys.exit(1)
-    \\print("APP", app.getRoleName(), app.get_toolkit_name(), flush=True)
+    \\def role(o):
+    \\    # Newer libatspi (2.60) names ATSPI_ROLE_PUSH_BUTTON "button".
+    \\    r = o.getRoleName()
+    \\    return "push button" if r == "button" else r
+    \\print("APP", role(app), app.get_toolkit_name(), flush=True)
     \\def dump(o, depth):
     \\    st = sorted(pyatspi.stateToString(s) for s in o.getState().getStates())
-    \\    print("NODE", depth, o.getRoleName(), repr(o.name), ",".join(st), ",".join(o.get_interfaces()), flush=True)
+    \\    print("NODE", depth, role(o), repr(o.name), ",".join(st), ",".join(o.get_interfaces()), flush=True)
     \\    for c in o: dump(c, depth + 1)
     \\dump(app, 0)
-    \\def find_role(role):
-    \\    return pyatspi.findDescendant(app, lambda x: x.getRoleName() == role)
+    \\def find_role(r):
+    \\    return pyatspi.findDescendant(app, lambda x: role(x) == r)
     \\b = find_role("push button")
     \\a = b.queryAction()
     \\print("ACTION", a.getName(0), a.doAction(0), flush=True)
@@ -90,11 +94,15 @@ const Stack = struct {
         // The launcher keeps IsEnabled in GSettings; without a dconf
         // service it must stay in memory.
         s.env[3] = "GSETTINGS_BACKEND=memory";
-        const launcher = "/usr/libexec/at-spi-bus-launcher";
-        if (linux.access(launcher, 1) != 0) {
+        // Where at-spi2-core defaults to dbus-broker (Arch), its launcher
+        // activates the registry through systemd user units, which a
+        // private bus does not have.
+        s.env[4] = "ATSPI_DBUS_IMPLEMENTATION=dbus-daemon";
+        var launcher_buf: [64]u8 = undefined;
+        const launcher = td.findLibexec(&launcher_buf, "at-spi-bus-launcher") orelse {
             std.log.err("at-spi2-core is not installed; run .agents/setup", .{});
             return error.AtspiNotInstalled;
-        }
+        };
         const argv = [_:null]?[*:0]const u8{ launcher, "--launch-immediately" };
         s.launcher = try td.spawn(launcher, &argv, &s.env, null);
         try s.session.init(gpa, &s.loop, s.daemon.address, .{});

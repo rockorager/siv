@@ -257,11 +257,15 @@ const atspi_script =
     \\    time.sleep(0.02)
     \\if not app:
     \\    print("NOAPP", flush=True); sys.exit(1)
-    \\print("APP", app.getRoleName(), app.get_toolkit_name(), flush=True)
+    \\def role(o):
+    \\    # Newer libatspi (2.60) names ATSPI_ROLE_PUSH_BUTTON "button".
+    \\    r = o.getRoleName()
+    \\    return "push button" if r == "button" else r
+    \\print("APP", role(app), app.get_toolkit_name(), flush=True)
     \\for w in app:
-    \\    print("WINDOW", w.getRoleName(), repr(w.name), flush=True)
-    \\    for c in w: print("CHILD", c.getRoleName(), repr(c.name), flush=True)
-    \\b = pyatspi.findDescendant(app, lambda x: x.getRoleName() == "push button")
+    \\    print("WINDOW", role(w), repr(w.name), flush=True)
+    \\    for c in w: print("CHILD", role(c), repr(c.name), flush=True)
+    \\b = pyatspi.findDescendant(app, lambda x: role(x) == "push button")
     \\print("ACTION", b.queryAction().doAction(0), flush=True)
     \\print("DONE", flush=True)
     \\
@@ -283,8 +287,9 @@ test "assistive technology finds the application's windows and acts on them" {
     env[1] = try std.fmt.bufPrintSentinel(&env_bufs[1], "XDG_RUNTIME_DIR={s}", .{daemon.dir}, 0);
     env[2] = "PATH=/usr/bin:/bin";
     env[3] = "GSETTINGS_BACKEND=memory";
-    const launcher = "/usr/libexec/at-spi-bus-launcher";
-    if (linux.access(launcher, 1) != 0) return error.AtspiNotInstalled;
+    env[4] = "ATSPI_DBUS_IMPLEMENTATION=dbus-daemon"; // not dbus-broker (Arch's default), which needs systemd
+    var launcher_buf: [64]u8 = undefined;
+    const launcher = td.findLibexec(&launcher_buf, "at-spi-bus-launcher") orelse return error.AtspiNotInstalled;
     const launcher_pid = try td.spawn(launcher, &[_:null]?[*:0]const u8{ launcher, "--launch-immediately" }, &env, null);
     defer {
         td.kill(launcher_pid);
