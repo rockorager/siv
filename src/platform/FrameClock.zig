@@ -24,6 +24,9 @@ waiting: bool = false,
 refresh_ns: u64 = default_refresh_ns,
 /// CLOCK_MONOTONIC time of the most recent presentation, if known.
 last_present_ns: ?u64 = null,
+/// How much later than predicted the most recent frame was presented
+/// (negative if earlier), when its prediction is known.
+last_error_ns: ?i64 = null,
 
 pub const default_refresh_ns: u64 = 16_666_667;
 
@@ -67,12 +70,14 @@ pub fn done(c: *FrameClock) void {
     c.waiting = false;
 }
 
-/// Presentation feedback for a committed frame. `refresh_ns` of 0 means
-/// unknown (variable refresh) and keeps the current estimate.
-pub fn presented(c: *FrameClock, time_ns: u64, refresh_ns: u64) void {
+/// Presentation feedback for a committed frame that was predicted for
+/// `predicted_ns`, if known. `refresh_ns` of 0 means unknown (variable
+/// refresh) and keeps the current estimate.
+pub fn presented(c: *FrameClock, time_ns: u64, refresh_ns: u64, predicted_ns: ?u64) void {
     if (c.last_present_ns) |last| if (time_ns < last) return; // out of order
     c.last_present_ns = time_ns;
     if (refresh_ns != 0) c.refresh_ns = refresh_ns;
+    c.last_error_ns = if (predicted_ns) |p| @as(i64, @intCast(time_ns)) - @as(i64, @intCast(p)) else null;
 }
 
 /// The next presentation time after `now_ns`: the first refresh cycle after
@@ -124,15 +129,16 @@ test "prediction follows presentation feedback" {
     var c: FrameClock = .{ .configured = true };
     try testing.expectEqual(@as(u64, 1000 + default_refresh_ns), c.predict(1000));
 
-    c.presented(10_000_000, 8_000_000); // 125 Hz
+    c.presented(10_000_000, 8_000_000, 9_000_000); // 125 Hz, 1 ms late
+    try testing.expectEqual(@as(?i64, 1_000_000), c.last_error_ns);
     // Just after a presentation the next vblank is one cycle later.
     try testing.expectEqual(@as(u64, 18_000_000), c.predict(10_000_001));
     // Exactly on a vblank, the frame can only make the following one.
     try testing.expectEqual(@as(u64, 26_000_000), c.predict(18_000_000));
     try testing.expectEqual(@as(u64, 34_000_000), c.predict(27_000_000));
     // Stale feedback is ignored; unknown refresh keeps the estimate.
-    c.presented(9_000_000, 1);
-    c.presented(12_000_000, 0);
+    c.presented(9_000_000, 1, null);
+    c.presented(12_000_000, 0, null);
     try testing.expectEqual(@as(u64, 8_000_000), c.refresh_ns);
     c.request();
     try testing.expectEqual(@as(u64, 20_000_000), c.begin(13_000_000).present_ns);

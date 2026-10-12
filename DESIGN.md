@@ -345,6 +345,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     refresh comes from the output mode until feedback arrives). Presentation
     timestamps on another clock (weston uses `CLOCK_MONOTONIC_RAW`) are
     converted to `CLOCK_MONOTONIC`, the loop's clock.
+  - With `fifo-v1`, each animation frame waits for the previous commit's
+    barrier so that no frame replaces one that was never shown; answers to
+    configures do not wait. With `commit-timing-v1`, each commit carries its
+    predicted presentation time, so it is never shown before the time its
+    animations were sampled for.
 - **Alternatives:** fixed-rate timers.
 - **Reverse if:** never. Early risk: confirm frame callbacks and presentation
   feedback behave correctly alongside Mesa's FIFO present mode.
@@ -535,7 +540,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   socket the target opens only when an environment variable enables it (tree,
   properties, semantics, layout overlays, repaint flashing, frame timing). Tests
   run the real loop on the headless backend, compare CPU golden images, and diff
-  CPU against Vulkan output.
+  CPU against Vulkan output. `zig build test` stays hermetic; `zig build
+  test-compositor` runs the Wayland backend against real compositors on their
+  headless backends, one matrix entry per compositor, pinned through nixpkgs.
 
 ### D25. Project
 

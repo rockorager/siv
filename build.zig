@@ -6,6 +6,8 @@
 //!                             the C ABI smoke test
 //!   zig build test-<module>   one module's tests (e.g. test-text)
 //!   zig build test-headless   the headless integration tests
+//!   zig build test-compositor the platform tests against real headless
+//!                             compositors (src/platform/compositors.zig)
 //!
 //! Options:
 //!   -Dtest-filter=<text>      only run tests whose name contains <text>
@@ -18,6 +20,7 @@ const std = @import("std");
 const Scanner = @import("wayland").Scanner;
 const zon = @import("build.zig.zon");
 const wayland_protocols = @import("src/platform/protocols.zig");
+const compositors = @import("src/platform/compositors.zig");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -75,11 +78,13 @@ pub fn build(b: *std.Build) void {
     const loop = ctx.module("src/loop/loop.zig", &.{
         .{ .name = "pool", .module = pool },
     });
-    const platform = ctx.module("src/platform/platform.zig", &.{
+    const platform_imports = [_]std.Build.Module.Import{
         .{ .name = "loop", .module = loop },
         .{ .name = "wayland", .module = wayland },
         .{ .name = "xkbcommon", .module = xkbcommon },
-    });
+    };
+    const platform = ctx.module("src/platform/platform.zig", &platform_imports);
+    platform.addImport("compositor", compositorOption(b, null));
     const internal = [_]std.Build.Module.Import{
         .{ .name = "pool", .module = pool },
         .{ .name = "scene", .module = scene },
@@ -178,6 +183,19 @@ pub fn build(b: *std.Build) void {
     b.step("test-headless", "Run the headless integration tests").dependOn(&headless_run.step);
     test_step.dependOn(&headless_run.step);
 
+    // Platform tests against real compositors on their headless backends,
+    // one run per entry in src/platform/compositors.zig. Not part of `test`.
+    const compositor_step = b.step("test-compositor", "Run the platform tests against real headless compositors");
+    for (compositors.matrix) |entry| {
+        const module = ctx.module("src/platform/platform.zig", &platform_imports);
+        module.addImport("compositor", compositorOption(b, entry.name));
+        const t = b.addTest(.{ .name = b.fmt("compositor-{s}", .{entry.name}), .root_module = module, .filters = test_filters });
+        const run = b.addRunArtifact(t);
+        run.has_side_effects = true; // depends on the installed compositor
+        b.step(b.fmt("test-compositor-{s}", .{entry.name}), b.fmt("Run the platform tests against {s}", .{entry.name})).dependOn(&run.step);
+        compositor_step.dependOn(&run.step);
+    }
+
     // Headless text engine benchmarks. Not part of `test`; build with
     // -Doptimize=ReleaseFast for meaningful numbers.
     const bench_text = b.addExecutable(.{
@@ -246,6 +264,14 @@ const Ctx = struct {
         });
     }
 };
+
+/// Which compositor the platform module's compositor tests target; null
+/// leaves them out.
+fn compositorOption(b: *std.Build, name: ?[]const u8) *std.Build.Module {
+    const options = b.addOptions();
+    options.addOption(?[]const u8, "name", name);
+    return options.createModule();
+}
 
 /// Flags for vendored C and C++ sources. Symbols stay hidden so libsiv.so
 /// exports only the siv ABI.

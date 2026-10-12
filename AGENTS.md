@@ -14,6 +14,8 @@ zig build test                 # every module's tests, headless tests, C ABI smo
 zig build test-text            # one module: test-abi, test-text, test-raster, test-scene,
                                #   test-render-cpu, test-pool, test-loop, test-platform
 zig build test-headless        # headless integration tests (test/headless.zig)
+zig build test-compositor      # platform tests against real headless compositors
+                               #   (not in `test`; .agents/setup installs them)
 zig build test-abi             # abi module, generators, Zig wrappers, exported symbols
 zig build test-c               # C programs against the generated headers and shared libraries
 zig build test -Dtest-filter=bidi
@@ -54,6 +56,7 @@ commit message. In particular:
   so that `-fsys` builds do not download it.
 - **Owner-controlled build inputs** that need no `build.zig` edit:
   - `src/platform/protocols.zig`: Wayland protocol XML and global versions.
+  - `src/platform/compositors.zig`: the `test-compositor` matrix.
   - `src/text/uucode_config.zig`: Unicode properties compiled into tables.
   - `src/abi/gen.zig`: everything it writes to its install directory is
     installed under the prefix.

@@ -529,9 +529,14 @@ pub const EventQueue = struct {
 };
 
 test {
-    std.testing.refAllDecls(@This());
-    // Instantiates every forwarding call for both backends.
-    std.testing.refAllDecls(Platform);
+    if (comptime @import("compositor").name != null) {
+        // `zig build test-compositor`: only the real-compositor tests.
+        _ = @import("compositor_tests.zig");
+    } else {
+        std.testing.refAllDecls(@This());
+        // Instantiates every forwarding call for both backends.
+        std.testing.refAllDecls(Platform);
+    }
 }
 
 test "fractional scale rounds half away from zero" {

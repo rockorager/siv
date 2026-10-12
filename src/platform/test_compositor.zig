@@ -1,15 +1,15 @@
-//! Test harness: a real compositor running headless in a private runtime
-//! directory. Sway (wlroots) has IPC for scripted input, output changes,
-//! and window management; weston delivers presentation feedback, which
-//! wlroots 0.15's headless backend does not. Tests skip when the compositor
-//! is not installed.
+//! Test harness for compositor_tests.zig: a compositor from compositors.zig
+//! running headless in a private runtime directory, sway's IPC for scripted
+//! input, outputs, and windows, and a virtual pointer. Tests skip when the
+//! compositor is not installed (.agents/compositors.nix pins them).
 
 const std = @import("std");
 const linux = std.os.linux;
 const wl = @import("wayland").client.wl;
+const compositors = @import("compositors.zig");
 
 pub const Compositor = struct {
-    kind: Kind,
+    entry: compositors.Entry,
     dir_buf: [64]u8 = undefined,
     dir: [:0]const u8 = "",
     display_buf: [96]u8 = undefined,
@@ -17,39 +17,36 @@ pub const Compositor = struct {
     display: [:0]const u8 = "",
     pid: linux.pid_t = 0,
 
-    pub const Kind = enum { sway, weston };
-
     var counter: u32 = 0;
 
-    /// Starts the compositor with one 1280x720 output and waits for its
-    /// sockets.
+    /// Starts the compositor and waits for its socket (and sway's IPC).
     pub fn start(s: *Compositor) !void {
-        const exe = findExecutable(@tagName(s.kind)) orelse return error.SkipZigTest;
+        const e = s.entry;
+        const exe = findExecutable(e.argv[0]) orelse return error.SkipZigTest;
         counter += 1;
-        s.dir = try std.fmt.bufPrintSentinel(&s.dir_buf, "/tmp/siv-{t}-{d}-{d}", .{ s.kind, linux.getpid(), counter }, 0);
+        s.dir = try std.fmt.bufPrintSentinel(&s.dir_buf, "/tmp/siv-{s}-{d}-{d}", .{ e.name, linux.getpid(), counter }, 0);
         _ = linux.mkdir(s.dir, 0o700);
+        if (e.config) |text| {
+            var config_buf: [128]u8 = undefined;
+            try writeFile(try std.fmt.bufPrintSentinel(&config_buf, "{s}/config", .{s.dir}, 0), text);
+        }
 
-        var config_buf: [128]u8 = undefined;
-        const config = try std.fmt.bufPrintSentinel(&config_buf, "{s}/config", .{s.dir}, 0);
-        try writeFile(config,
-            \\output HEADLESS-1 mode 1280x720 position 0 0
-            \\default_border none
-            \\
-        );
+        // argv with {dir} substituted.
+        var arg_bufs: [16][256]u8 = undefined;
+        var argv: [16:null]?[*:0]const u8 = @splat(null);
+        std.debug.assert(e.argv.len < argv.len);
+        argv[0] = exe;
+        for (e.argv[1..], 1..) |arg, i| {
+            const n = std.mem.replacementSize(u8, arg, "{dir}", s.dir);
+            _ = std.mem.replace(u8, arg, "{dir}", s.dir, &arg_bufs[i]);
+            arg_bufs[i][n] = 0;
+            argv[i] = arg_bufs[i][0..n :0];
+        }
         var env: Env = .{};
         try env.init(s.dir);
         var log_buf: [128]u8 = undefined;
         const log = try std.fmt.bufPrintSentinel(&log_buf, "{s}/log", .{s.dir}, 0);
-        const sway_argv = [_:null]?[*:0]const u8{ exe, "-c", config };
-        const weston_argv = [_:null]?[*:0]const u8{
-            exe,                       "--no-config",          "--backend=headless-backend.so",
-            "--shell=desktop-shell.so","--socket=wayland-1",   "--width=1280",
-            "--height=720",            "--idle-time=0",        "--use-pixman",
-        };
-        s.pid = try spawn(exe, switch (s.kind) {
-            .sway => &sway_argv,
-            .weston => &weston_argv,
-        }, &env.ptrs, log);
+        s.pid = try spawn(exe, &argv, &env.ptrs, log);
         errdefer s.stop();
 
         s.display = try std.fmt.bufPrintSentinel(&s.display_buf, "{s}/wayland-1", .{s.dir}, 0);
@@ -58,7 +55,7 @@ pub const Compositor = struct {
             if (waited > 500) return error.CompositorDidNotStart;
             sleepMs(10);
         }
-        if (s.kind != .sway) return;
+        if (!std.mem.eql(u8, e.name, "sway")) return;
         // IPC may accept connections slightly after the socket file appears.
         while (true) : (waited += 1) {
             _ = s.command("nop") catch {
@@ -72,9 +69,12 @@ pub const Compositor = struct {
 
     pub fn stop(s: *Compositor) void {
         if (s.pid != 0) {
-            _ = std.c.kill(s.pid, .TERM);
+            // The compositor leads its own process group, which includes
+            // helpers such as mutter's session bus.
+            _ = std.c.kill(-s.pid, .TERM);
             var status: c_int = 0;
             _ = std.c.waitpid(s.pid, &status, 0);
+            _ = std.c.kill(-s.pid, .KILL);
             s.pid = 0;
         }
         // Remove the runtime directory.
@@ -96,7 +96,7 @@ pub const Compositor = struct {
 
     /// Runs a sway command (RUN_COMMAND) and fails unless it succeeded.
     pub fn command(s: *const Compositor, cmd: []const u8) !void {
-        std.debug.assert(s.kind == .sway);
+        std.debug.assert(std.mem.eql(u8, s.entry.name, "sway"));
         const fd_rc = linux.socket(linux.AF.UNIX, linux.SOCK.STREAM | linux.SOCK.CLOEXEC, 0);
         if (linux.errno(fd_rc) != .SUCCESS) return error.IpcFailed;
         const fd: i32 = @intCast(fd_rc);
@@ -163,6 +163,7 @@ fn spawn(exe: [*:0]const u8, argv: [*:null]const ?[*:0]const u8, envp: [*:null]c
     if (linux.errno(rc) != .SUCCESS) return error.SpawnFailed;
     if (rc != 0) return @intCast(rc);
     // Child: only async-signal-safe system calls until exec.
+    _ = linux.setsid();
     _ = linux.prctl(@intFromEnum(linux.PR.SET_PDEATHSIG), @intFromEnum(linux.SIG.KILL), 0, 0, 0);
     if (log) |l| {
         const fd = linux.openat(linux.AT.FDCWD, l, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o600);

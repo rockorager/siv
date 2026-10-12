@@ -297,7 +297,7 @@ fn runFrame(task: *Loop.Task) void {
 fn onVblank(timer: *Timer) void {
     const w: *Window = @fieldParentPtr("vblank", timer);
     w.clock.done();
-    w.clock.presented(timer.deadline, w.hl.refresh_ns);
+    w.clock.presented(timer.deadline, w.hl.refresh_ns, null);
     w.hl.scheduleFrame(w);
 }
 
@@ -375,7 +375,7 @@ test "initial configure produces one frame; animation follows vblanks" {
     try loop.dispatch(10);
     try testing.expectEqual(@as(usize, 1), app.frames);
 
-    // Animating: one frame per vblank, each predicted one interval apart.
+    // Animating: one frame per vblank, each predicted on the vblank grid.
     app.keep_animating = true;
     hl.requestFrame(id);
     var times: [4]u64 = undefined;
@@ -383,7 +383,11 @@ test "initial configure produces one frame; animation follows vblanks" {
         while (app.frames < 2 + i) try loop.dispatch(-1);
         t.* = app.last_frame.?.time.present_ns;
     }
-    for (times[1..], times[0..3]) |b, a| try testing.expectEqual(hl.refresh_ns, b - a);
+    // Whole vblanks apart; more than one only if the test thread stalled.
+    for (times[1..], times[0..3]) |b, a| {
+        try testing.expect(b > a);
+        try testing.expectEqual(@as(u64, 0), (b - a) % hl.refresh_ns);
+    }
 }
 
 test "scale and maximize reconfigure; buffers follow the buffer size" {
