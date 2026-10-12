@@ -11,6 +11,12 @@
 //!
 //! Fonts PDF cannot embed (CFF2 outlines) are drawn as paths. Color
 //! glyphs print in their outline (monochrome) where they have one.
+//!
+//! Synthetic bold and oblique (D13) live in the HarfBuzz font, whose
+//! outlines the renderers draw; an embedded font program would print the
+//! face without them. Such runs are drawn as paths from the same outlines,
+//! so the page shows what the screen does, with the embedded font as
+//! invisible text (render mode 3) over them for search and copy.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -31,6 +37,8 @@ const Entry = struct {
     /// The Type0 font, reserved at first use and written by `write`.
     obj: u32,
     kind: Kind,
+    /// Synthetic bold or oblique: drawn as paths under invisible text.
+    synthetic: bool,
     used: std.AutoArrayHashMapUnmanaged(u32, void) = .empty,
     /// Text by glyph id, owned.
     text: std.AutoHashMapUnmanaged(u32, []u8) = .empty,
@@ -64,7 +72,11 @@ pub const Fonts = struct {
         try f.entries.ensureUnusedCapacity(f.gpa, 1);
         const e = try f.gpa.create(Entry);
         errdefer f.gpa.destroy(e);
-        e.* = .{ .font = hb.hb_font_reference(hf).?, .key = font.key, .obj = if (kind == .outlines) 0 else try w.reserve(), .kind = kind };
+        var x: f32 = 0;
+        var y: f32 = 0;
+        hb.hb_font_get_synthetic_bold(hf, &x, &y, null);
+        const synthetic = x != 0 or y != 0 or hb.hb_font_get_synthetic_slant(hf) != 0;
+        e.* = .{ .font = hb.hb_font_reference(hf).?, .key = font.key, .obj = if (kind == .outlines) 0 else try w.reserve(), .kind = kind, .synthetic = synthetic };
         f.entries.appendAssumeCapacity(e);
         return e;
     }
@@ -76,6 +88,13 @@ pub const Fonts = struct {
         if (e.kind == .outlines) return outlines(c, e, run);
         try record(f.gpa, e, run);
         try c.res.fonts.put(f.gpa, e.obj, {});
+        if (e.synthetic) {
+            try outlines(c, e, run);
+            try c.print("q\nBT\n/F{d} {f} Tf\n3 Tr\n", .{ e.obj, num(run.size) });
+            for (run.glyphs) |g| try c.print("1 0 0 -1 {f} {f} Tm <{X:0>4}> Tj\n", .{ num(g.x), num(g.y), g.id & 0xffff });
+            try c.print("ET\nQ\n", .{});
+            return;
+        }
         try c.print("q\n", .{});
         const gradient = run.paint == .gradient;
         if (!gradient) try c.color(run.paint.solid, false);

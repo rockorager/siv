@@ -152,3 +152,53 @@ test "clusters give their text to their first glyph" {
     try testing.expect(std.mem.indexOf(u8, cmap, std.fmt.bufPrint(&buf, "<{X:0>4}> <0078>", .{x_gid}) catch unreachable) != null);
     try testing.expect(std.mem.indexOf(u8, cmap, std.fmt.bufPrint(&buf, "<{X:0>4}>", .{i_gid}) catch unreachable) == null);
 }
+
+test "synthetic styles print as their outlines under invisible text" {
+    var fonts: text.FontCache = .init(gpa);
+    defer fonts.deinit();
+    const regular = try fonts.add(text.font.test_fonts.siv_regular, 0, .borrowed);
+    const bold = fonts.face(try fonts.instance(regular, .{ .synthetic = .{ .bold = text.font.Synthetic.bold_strength } })).?;
+    var gid: u32 = 0;
+    _ = hb.hb_font_get_nominal_glyph(@ptrCast(bold.font), 'I', &gid);
+    var b: scene.Builder = .init(gpa);
+    defer b.deinit();
+    try b.glyphs(.{
+        .font = .{ .handle = bold.font, .key = bold.key },
+        .size = 100,
+        .glyphs = &.{.{ .id = gid, .x = 10, .y = 80 }},
+        .paint = .color(.black),
+        .bounds = .{ .x0 = 0, .y0 = 0, .x1 = 50, .y1 = 100 },
+        .text = .{ .bytes = "I", .clusters = &.{0} },
+    });
+    var w = try Writer.init(gpa, .{});
+    defer w.deinit();
+    try w.addPage(50, 100, try b.finish(0));
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    try w.finish(&aw.writer);
+    var p = try Parsed.parse(aw.written());
+    defer p.deinit();
+    const page = for (p.objects.items) |o| {
+        if (std.mem.indexOf(u8, o, "/Type /Page ") != null) break o;
+    } else return error.NoPage;
+    const ops = try p.stream(try ref(page, "/Contents "));
+    defer gpa.free(ops);
+    // The stem's outline: 90 units wide at 1/10 px per unit, plus 1/24 em
+    // of emboldening (42 units).
+    var lo: f32 = std.math.inf(f32);
+    var hi: f32 = -std.math.inf(f32);
+    var lines = std.mem.splitScalar(u8, ops, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.endsWith(u8, line, " m") and !std.mem.endsWith(u8, line, " l")) continue;
+        var nums: [2]f32 = undefined;
+        var it = std.mem.tokenizeScalar(u8, line[0 .. line.len - 2], ' ');
+        for (&nums) |*n| n.* = try std.fmt.parseFloat(f32, it.next().?);
+        lo = @min(lo, nums[0]);
+        hi = @max(hi, nums[0]);
+    }
+    try testing.expectApproxEqAbs(13.2, hi - lo, 0.05);
+    // The text is still there, invisible, in the embedded font.
+    try testing.expect(std.mem.indexOf(u8, ops, "3 Tr\n") != null);
+    try testing.expect(std.mem.indexOf(u8, ops, " Tj\n") != null);
+    try testing.expect(std.mem.indexOf(u8, ops, "f\n") != null);
+}
