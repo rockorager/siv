@@ -1313,7 +1313,60 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       per frame. Masked editors never copy. A paste is one undo step, and
       waits behind an open transaction like input; single-line editors
       turn line breaks into spaces.
-    - Drag and drop offers are refused until drag and drop is built.
+    - Drag and drop (`src/ui/dnd.zig`): the platform keeps each seat's
+      drag offer (the offer over one of this client's surfaces) with a
+      per-seat id, and this client's drag source with its icon surface,
+      on the compositor thread; the UI names offers by id in
+      `Compositor.post` requests (accept, receive, finish), so a request
+      for an offer that is gone does nothing. A compositor may report the
+      drag leaving after the drop; the platform keeps the offer until
+      the UI finishes it.
+    - Drop targets are nodes with a `DropTarget` (mime types, one per
+      line and preferred first; actions; a preferred action) and a `drop`
+      handler. A drag goes to the nearest drop target under the pointer,
+      from the topmost node up, whose types and actions meet the
+      drag's; that node alone sees `enter` and `move` and takes the drag
+      by returning true. A node that refuses does not pass the drag to
+      its ancestors: the nearest target that can take the data decides,
+      as a list decides between its rows. Drop events do not bubble.
+      Editors take text without a target of their own (unless masked or
+      disabled): the text goes in at the drop point, sanitized like a
+      paste, as one undo step.
+    - The answer (the type, the node's actions, its preferred action)
+      goes to the source on every change; the compositor's choice comes
+      back as `drag_actions` and is delivered as another `move`. On a
+      drop siv reads the whole payload in the node's type through a
+      pipe on the UI loop, up to the clipboard's limit (one limit for
+      pastes and drops, `siv_app_set_transfer_limit`), and then delivers
+      `drop` with the bytes; a drop over the limit, or one whose node
+      went away, is refused and the node hears `leave`. Streaming large
+      drops to the application waits for one that needs it. A drop that
+      completes while a transaction is open waits for the next frame,
+      like input. A taken drop finishes with the negotiated action;
+      with `ask` the application asks the user and calls
+      `Window.finishDrop` (`siv_drop_finish`), and a new drag over the
+      window refuses a drop still waiting.
+    - Drags start from a node while a button or touch press on its
+      window is held (`Window.startDrag`, with the press's serial; the
+      node that had the press gets a pointer `cancel`, since the
+      compositor sends no release). The data, copied, lives in the
+      clipboard for the drag's life and is written to whoever asks; its
+      node gets `drag` events (the target under the pointer and the
+      action, the drop, and the end with the action performed, after
+      which a move deletes the data). Icons are `ui.Image`s at one image
+      pixel per logical pixel; rendering a node into an icon waits for
+      a renderer the UI thread can use.
+    - Drags this client starts and drops on itself skip the pipe: the
+      offer is marked `own` and the data comes from the clipboard. In-app
+      drags (`in_app`) still use a real wl_data_source, offering only a
+      private mime type, rather than a source-less drag: other clients
+      see a type they never take and never get data, and the end of the
+      drag is reported however it ends (a source-less drag dropped
+      outside the client reports nothing).
+    - The headless backend simulates other clients' drags, this client's
+      drags following injected pointer input across its windows, and
+      drops on other clients; the sway integration test drags between
+      two clients with the virtual pointer.
   - Lifecycle: `org.freedesktop.Application` activation and single instance.
   - System tray (StatusNotifierItem) is an optional module.
   - Images: wuffs (PNG, JPEG, GIF), libwebp, libavif with dav1d, libjxl.
@@ -1508,6 +1561,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - `SIV_APP_REDUCED_MOTION` turns off caret blinking and other motion
     whatever the desktop settings say, for kiosks and for tests that
     compare frames.
+  - Drag and drop: `siv_set_drop_target` and the `SIV_EVENT_DROP`
+    handler; `siv_drag_start` from a pointer handler with
+    `SIV_EVENT_DRAG` events; `siv_drop_finish` for `ask`. Mime lists are
+    one string with one type per line, and a drag's data is one array
+    split by `lengths`, because schema arrays hold only fixed-size
+    elements (D3); both stay plain C.
   - Testing input through the C ABI uses the headless backend's
     injection from Zig (`test/abi`); a public test-input API waits until
     applications ask for one.
