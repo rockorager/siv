@@ -34,9 +34,16 @@ pub const Op = update.Op;
 pub const Event = update.Event;
 pub const configure_timeout_ns = update.configure_timeout_ns;
 
+pub const Compositor = @import("Compositor.zig");
+pub const Options = Compositor.Options;
+pub const Backend = Compositor.Backend;
+pub const Sink = Compositor.Sink;
+pub const surface = @import("surface.zig");
+
 test {
     std.testing.refAllDecls(@This());
     _ = update;
     _ = @import("anim.zig");
     _ = @import("tree.zig");
+    _ = @import("tests.zig");
 }

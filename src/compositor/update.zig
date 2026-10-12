@@ -108,8 +108,8 @@ pub const Clip = struct {
 /// [0, max(0, content - viewport size)] on each axis.
 ///
 /// Pointer scroll routing: the compositor hit-tests the point under the
-/// pointer against the layer tree (topmost layer whose content bounds or
-/// wheel region contain it) and walks from that layer to the root. The
+/// pointer against the layer tree (topmost layer whose content bounds,
+/// wheel region, or scroll viewport contain it) and walks from that layer to the root. The
 /// first match decides: a layer with a wheel region containing the point
 /// sends the event to the UI; a scroll container with `input` whose
 /// viewport contains the point and that can still move in the event's

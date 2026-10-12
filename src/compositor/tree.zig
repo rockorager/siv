@@ -404,8 +404,9 @@ pub const Tree = struct {
         }
         const wheel = if (l.wheel) |w| contains(w, p) else false;
         if (hit == .miss) {
+            // A scroll container is hit anywhere in its viewport.
             const on_content = if (l.content) |c| contains(c.list.bounds, p) else false;
-            if (!on_content and !wheel) return .miss;
+            if (!on_content and !wheel and !(l.scroll != null and in_viewport)) return .miss;
             hit = .pending;
         }
         if (hit != .pending) return hit;
