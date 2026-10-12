@@ -31,8 +31,11 @@
             .hash = "N-V-__8AANHxWwIt4EQAd6ed2GJB3LAy6HBNZO-fmag0ZqR4",
         },
         // libwayland-client bindings and protocol scanner (D7). MIT.
+        // Fetched from the GitHub mirror of codeberg.org/ifreund/zig-wayland,
+        // which is unreachable from some build hosts (Amp orbs); the content
+        // and hash are identical.
         .wayland = .{
-            .url = "https://codeberg.org/ifreund/zig-wayland/archive/v0.7.0.tar.gz",
+            .url = "https://github.com/ifreund/zig-wayland/archive/refs/tags/v0.7.0.tar.gz",
             .hash = "wayland-0.7.0-lQa1kuP8AQD5dW7_o-VKLVD_QbqXe7Zob78r2su7Pyex",
         },
         // Protocol XML is pinned rather than taken from the system so that
