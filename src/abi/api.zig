@@ -695,14 +695,27 @@ pub const decls = [_]Decl{
     enumeration("siv_external_format", "Pixel layout of submitted external frames.", &.{
         .{ .name = "xrgb8888", .value = 0, .doc = "B, G, R, X bytes (XRGB8888 in memory), opaque, sRGB-encoded." },
     }),
-    descriptor("siv_external_frame_desc", "One frame of external content in shared memory.", &.{
+    enumeration("siv_external_memory", "Where an external frame's pixels are.", &.{
+        .{ .name = "shm", .value = 0, .doc = "Shared memory the compositor can map, such as a memfd." },
+        .{ .name = "dmabuf", .value = 1, .doc = "A Linux dma-buf, for example from a video decoder or another GPU API. Shown once its implicit fences signal. The compositor promotes it to a subsurface when the Wayland compositor accepts its format and modifier; otherwise siv's Vulkan renderer imports it, and without Vulkan only a linear XRGB8888 dma-buf is drawn (read through a mapping), any other is not drawn but still released (D17)." },
+    }),
+    value("siv_external_plane", "A dma-buf plane after the first.", &.{
+        .{ .name = "fd", .type = .i32, .doc = "The plane's dma-buf; siv duplicates it." },
+        .{ .name = "offset", .type = .u32, .doc = "Byte offset of the plane." },
+        .{ .name = "stride", .type = .u32, .doc = "Bytes per row." },
+    }),
+    descriptor("siv_external_frame_desc", "One frame of external content in shared memory or a dma-buf.", &.{
         .{ .name = "key", .type = .u64, .doc = "Identifies the pixels; change it whenever they change. Released frames are reported by key." },
-        .{ .name = "fd", .type = .i32, .doc = "Shared memory the compositor can map, such as a memfd. siv duplicates it; the caller keeps its own." },
+        .{ .name = "fd", .type = .i32, .doc = "Shared memory the compositor can map, such as a memfd, or the dma-buf of the first plane. siv duplicates it; the caller keeps its own." },
         .{ .name = "offset", .type = .u32, .doc = "Byte offset of the first row." },
         .{ .name = "width", .type = .u32, .doc = "Width in pixels." },
         .{ .name = "height", .type = .u32, .doc = "Height in pixels." },
         .{ .name = "stride", .type = .u32, .doc = "Bytes per row; 0 is width * 4." },
         .{ .name = "format", .type = ref("siv_external_format"), .doc = "Default xrgb8888." },
+        .{ .name = "modifier", .type = .u64, .doc = "dma-buf: the DRM format modifier (0 is linear)." },
+        .{ .name = "memory", .type = ref("siv_external_memory"), .doc = "Default shm." },
+        .{ .name = "drm_format", .type = .u32, .doc = "dma-buf: the DRM fourcc, for formats siv_external_format lacks (such as NV12 for promotion); 0 follows format." },
+        .{ .name = "planes", .type = array(ref("siv_external_plane")), .doc = "dma-buf: planes after the first (fd, offset, stride), at most three; copied." },
     }),
 };
 

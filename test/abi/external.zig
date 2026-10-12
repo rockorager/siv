@@ -125,6 +125,24 @@ test "C API external: submitted frames show, and replaced ones are released" {
     try testing.expectEqual(t.Result.error_invalid_argument, X.siv_external_get_wayland(ext, &d, &s));
     try testing.expectEqual(t.Result.error_invalid_argument, X.siv_external_submit(ext, &.{ .fd = fd2, .width = 0, .height = 1, .key = 3 }));
     try testing.expectEqual(t.Result.error_invalid_argument, X.siv_external_surface_committed(ext, 2, 1));
+    // dma-buf frames: shared memory has no modifier, and a dma-buf at most
+    // four planes.
+    try testing.expectEqual(t.Result.error_invalid_argument, X.siv_external_submit(ext, &.{ .fd = fd2, .width = 2, .height = 1, .key = 3, .modifier = 1 }));
+    const planes: [4]t.ExternalPlane = @splat(.{ .fd = fd2, .offset = 0, .stride = 8 });
+    try testing.expectEqual(t.Result.error_invalid_argument, X.siv_external_submit(ext, &.{ .fd = fd2, .width = 2, .height = 1, .key = 3, .memory = .dmabuf, .planes = &planes, .planes_count = 4 }));
+    // A linear XRGB8888 dma-buf (a memfd stands in) shows like shared
+    // memory on the CPU renderer.
+    try ok(X.siv_external_submit(ext, &.{ .fd = fd1, .width = 2, .height = 1, .key = 5, .memory = .dmabuf }));
+    waited = 0;
+    while (log.releases < 2) : (waited += 1) {
+        if (waited > 2000) return error.Timeout;
+        try ok(A.siv_app_dispatch(h.app, 5));
+    }
+    try testing.expectEqual(2, log.released[1]);
+    img = try h.capture();
+    const l2 = pixel(img, 100, 10, 20);
+    testing.allocator.free(img);
+    try testing.expectEqual(l, l2);
 
     try ok(X.siv_external_destroy(ext));
     try testing.expectEqual(1, log.destroyed);

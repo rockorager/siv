@@ -15,6 +15,7 @@ const std = @import("std");
 const t = @import("siv");
 const ui = @import("ui");
 const compositor = @import("compositor");
+const scene = @import("scene");
 const platform = @import("platform");
 const runtime = @import("runtime.zig");
 const handles = @import("handles.zig");
@@ -220,12 +221,27 @@ pub export fn siv_external_submit(external: t.External, frame: ?*const t.Externa
             if (x.surface != null) return error.InvalidArgument;
             const d = try runtime.readDesc(t.ExternalFrameDesc, ptr);
             _ = try runtime.enumValue(t.ExternalFormat, d.format);
+            const memory = try runtime.enumValue(t.ExternalMemory, d.memory);
             if (d.width == 0 or d.height == 0 or d.fd < 0 or d.width > 1 << 15 or d.height > 1 << 15) return error.InvalidArgument;
             const stride = if (d.stride == 0) d.width * 4 else d.stride;
-            if (stride < d.width * 4) return error.InvalidArgument;
+            const planes = try runtime.array(t.ExternalPlane, d.planes, d.planes_count);
+            var dmabuf: ?scene.Dmabuf = null;
+            if (memory == .dmabuf) {
+                if (planes.len > 3) return error.InvalidArgument;
+                var buf: scene.Dmabuf = .{ .format = if (d.drm_format != 0) d.drm_format else scene.Dmabuf.xrgb8888, .modifier = d.modifier, .plane_count = @intCast(planes.len + 1) };
+                buf.planes[0] = .{ .fd = d.fd, .offset = d.offset, .stride = stride };
+                for (planes, 1..) |pl, i| {
+                    if (pl.fd < 0) return error.InvalidArgument;
+                    buf.planes[i] = .{ .fd = pl.fd, .offset = pl.offset, .stride = pl.stride };
+                }
+                dmabuf = buf;
+            } else {
+                // Shared memory: one XRGB8888 plane.
+                if (planes.len > 0 or d.drm_format != 0 or d.modifier != 0 or stride < d.width * 4) return error.InvalidArgument;
+            }
             // Straight to the compositor: thread-safe, and in order with
             // the slot's other messages.
-            self.app.comp.setExternalFrame(x.platform_window, x.id, .{ .fd = d.fd, .offset = d.offset, .width = d.width, .height = d.height, .stride = stride, .key = d.key }) catch |err|
+            self.app.comp.setExternalFrame(x.platform_window, x.id, .{ .fd = d.fd, .offset = d.offset, .width = d.width, .height = d.height, .stride = stride, .key = d.key, .dmabuf = dmabuf }) catch |err|
                 return mapApp(err);
         }
     }.f, .{frame}));
