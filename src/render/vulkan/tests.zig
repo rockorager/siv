@@ -49,6 +49,14 @@ fn expectMatch(r: *Renderer, cpu: *render_cpu.Renderer, list: scene.DisplayList,
     }
 }
 
+/// An opaque XRGB8888 image whose ignored fourth byte varies (external
+/// video frames, D17).
+var bgrx: [8 * 8 * 4]u8 = blk: {
+    var px: [8 * 8 * 4]u8 = undefined;
+    for (0..64) |i| px[i * 4 ..][0..4].* = .{ @intCast(i * 4), 0x80, @intCast(255 - i * 4), @intCast(i * 37 % 256) };
+    break :blk px;
+};
+
 fn buildScene(b: *scene.Builder, pb: *raster.PathBuilder, frame: u32) !scene.DisplayList {
     b.reset();
     const f: f32 = @floatFromInt(frame);
@@ -69,6 +77,11 @@ fn buildScene(b: *scene.Builder, pb: *raster.PathBuilder, frame: u32) !scene.Dis
     try b.pushLayer(.{ .id = 4, .blend = .multiply });
     try b.fillRect(.xywh(150, 100, 40, 40), .color(.srgb8(0xff, 0x40, 0x40, 0xff)));
     try b.popLayer();
+    try b.image(.{
+        .image = .{ .pixels = &bgrx, .width = 8, .height = 8, .stride = 32, .format = .bgrx8_srgb, .key = 7 },
+        .src = .xywh(0, 0, 8, 8),
+        .dst = .xywh(110, 110, 30, 30),
+    });
     try b.pushLayer(.{ .id = 5 });
     try b.backdropBlur(.{ .rounded_rect = .{ .rect = .xywh(10, 95, 90, 45), .radii = .uniform(8, 8) } }, 4);
     try b.fillRect(.xywh(10, 95, 90, 45), .color(.srgb8(0xff, 0xff, 0xff, 0x30)));

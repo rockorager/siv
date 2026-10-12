@@ -559,8 +559,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     accept.
   - Verified (`zig build test-headless`, lavapipe): every CPU golden image
     in test/golden/render matches within the golden tolerance, including
-    every blend mode, blur, COLRv1, and bitmap glyphs, and damage-only
-    frames match full CPU frames; the validation layer reports nothing.
+    every blend mode, blur, COLRv1, and bitmap glyphs; in fact every
+    channel is within 1/255 of the CPU's except one pixel at 2/255.
+    Damage-only frames match full CPU frames, and the validation layer
+    reports nothing.
   - Runtime fallback to CPU on `VK_ERROR_DEVICE_LOST` or GPU removal. Device
     selection on multi-GPU systems follows dma-buf feedback.
   - Device selection: Vulkan 1.3 with dynamic rendering, synchronization2,
