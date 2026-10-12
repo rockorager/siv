@@ -17,8 +17,9 @@ pub const ShmBuffer = struct {
     height: u32,
     stride: u32,
     busy: bool = false,
-    /// No longer in a swapchain: destroy when released.
-    retired: bool = false,
+    /// Replaced after a resize but still held by the compositor: the
+    /// swapchain whose `retired` list holds it until release.
+    retired_from: ?*Swapchain = null,
 
     fn create(allocator: Allocator, shm: *wl.Shm, width: u32, height: u32) platform.Error!*ShmBuffer {
         const stride = width * 4;
@@ -57,7 +58,11 @@ pub const ShmBuffer = struct {
         switch (event) {
             .release => {
                 self.busy = false;
-                if (self.retired) self.destroy();
+                const sc = self.retired_from orelse return;
+                for (&sc.retired) |*slot| if (slot.* == self) {
+                    slot.* = null;
+                };
+                self.destroy();
             },
         }
     }
@@ -65,12 +70,31 @@ pub const ShmBuffer = struct {
 
 pub const Swapchain = struct {
     slots: [3]?*ShmBuffer = @splat(null),
+    /// Buffers of a stale size awaiting release. Their memory must outlive
+    /// the swapchain only until it is deinitialized.
+    retired: [6]?*ShmBuffer = @splat(null),
 
     pub fn deinit(sc: *Swapchain) void {
         for (&sc.slots) |*slot| if (slot.*) |b| {
             b.destroy();
             slot.* = null;
         };
+        for (&sc.retired) |*slot| if (slot.*) |b| {
+            b.destroy();
+            slot.* = null;
+        };
+    }
+
+    fn retire(sc: *Swapchain, b: *ShmBuffer) void {
+        if (!b.busy) return b.destroy();
+        for (&sc.retired) |*slot| if (slot.* == null) {
+            slot.* = b;
+            b.retired_from = sc;
+            return;
+        };
+        // Too many resizes in flight: destroying a busy buffer is allowed;
+        // the compositor keeps showing what it already has.
+        b.destroy();
     }
 
     /// A free buffer of the given size, creating or replacing one if needed.
@@ -79,7 +103,7 @@ pub const Swapchain = struct {
         for (&sc.slots) |*slot| if (slot.*) |b| {
             if (b.width == width and b.height == height) continue;
             slot.* = null;
-            if (b.busy) b.retired = true else b.destroy();
+            sc.retire(b);
         };
         for (sc.slots, 0..) |slot, i| if (slot) |b| {
             if (!b.busy) return view(b, i);
