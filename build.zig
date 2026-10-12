@@ -42,11 +42,12 @@ pub fn build(b: *std.Build) void {
         \\#include <xkbcommon/xkbcommon-compose.h>
         \\
     );
-    const uucode = b.dependency("uucode", .{
+    const uucode_dep = b.dependency("uucode", .{
         .target = target,
         .optimize = optimize,
         .build_config_path = b.path("src/text/uucode_config.zig"),
-    }).module("uucode");
+    });
+    const uucode = uucode_dep.module("uucode");
     const wayland = waylandModule(ctx);
     const ucd = b.dependency("ucd", .{});
 
@@ -93,6 +94,18 @@ pub fn build(b: *std.Build) void {
         "BidiCharacterTest.txt",
     }) |sub_path| {
         text.addAnonymousImport(std.fs.path.basename(sub_path), .{ .root_source_file = ucd.path(sub_path) });
+    }
+    // Property files that src/text/uucode_config.zig compiles into uucode's
+    // tables (Line_Break, Word_Break, Script, Script_Extensions). The table
+    // generator embeds them by the same basename.
+    for ([_][]const u8{
+        "LineBreak.txt",
+        "auxiliary/WordBreakProperty.txt",
+        "Scripts.txt",
+        "ScriptExtensions.txt",
+        "PropertyValueAliases.txt",
+    }) |sub_path| {
+        uucode_dep.module("uucode_gen_build_config").addAnonymousImport(std.fs.path.basename(sub_path), .{ .root_source_file = ucd.path(sub_path) });
     }
 
     // libsiv. The root module only pulls in the ABI exports.
@@ -263,7 +276,9 @@ fn sheenbidiModule(ctx: Ctx) *std.Build.Module {
         m.addIncludePath(dep.path("Source"));
         m.addCSourceFile(.{
             .file = dep.path("Source/SheenBidi.c"),
-            .flags = c_flags ++ &[_][]const u8{ "-std=c11", "-DSB_CONFIG_UNITY" },
+            // The native scratch allocator keeps a thread-local buffer that
+            // is never freed; siv has no global state (D2).
+            .flags = c_flags ++ &[_][]const u8{ "-std=c11", "-DSB_CONFIG_UNITY", "-DSB_CONFIG_DISABLE_SCRATCH_MEMORY" },
         });
         break :blk m;
     } else tc.createModule();
