@@ -269,10 +269,12 @@ fn getAttributes(r: *Request) anyerror!void {
         .root => {},
         .node => |x| {
             const n = x.n();
-            if (n.level != 0) {
-                var buf: [4]u8 = undefined;
-                try entry(&m.body, "level", std.fmt.bufPrint(&buf, "{d}", .{n.level}) catch unreachable);
-            }
+            var buf: [12]u8 = undefined;
+            if (n.level != 0) try entry(&m.body, "level", std.fmt.bufPrint(&buf, "{d}", .{n.level}) catch unreachable);
+            // Items of virtualized views: where they are among all items.
+            if (n.position != 0) try entry(&m.body, "posinset", std.fmt.bufPrint(&buf, "{d}", .{n.position}) catch unreachable);
+            if (n.set_size != 0) try entry(&m.body, "setsize", std.fmt.bufPrint(&buf, "{d}", .{n.set_size}) catch unreachable);
+            if (n.row != 0) try entry(&m.body, "rowindex", std.fmt.bufPrint(&buf, "{d}", .{n.row}) catch unreachable);
             if (n.live != .off) {
                 const v = if (n.live == .polite) "polite" else "assertive";
                 try entry(&m.body, "live", v);

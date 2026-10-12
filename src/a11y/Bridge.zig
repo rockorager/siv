@@ -575,6 +575,10 @@ pub const SNode = struct {
     text: Str,
     /// Heading level or tree item depth, 0 for none.
     level: u8,
+    /// Position in a set, its size, and a table row's index; 0 for none.
+    position: u32 = 0,
+    set_size: u32 = 0,
+    row: u32 = 0,
     caret: ?u32,
     anchor: ?u32,
     bounds: Rect,
@@ -748,6 +752,9 @@ pub const Win = struct {
                 .masked = n.masked,
                 .has_text = has_text,
                 .level = n.level,
+                .position = n.position,
+                .set_size = n.set_size,
+                .row = n.row,
             };
             sn.text = if (editor)
                 try addStr(gpa, s, n.value_text)
