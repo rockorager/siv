@@ -154,8 +154,26 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   siv_on(t, button, SIV_ACTIVATE, on_click, user);
   siv_txn_commit(t);
   ```
+  - The tree lives in `src/ui` (`Window`), one per window. Operations apply
+    to the tree at once, so later operations and queries in the same
+    transaction see them; frames do not run while a transaction is open.
+    The first change to a node in a transaction copies its committed
+    state, and `abort` restores the copies. Each operation allocates
+    before it changes anything, so a failed operation has no effect and
+    `commit` cannot fail. One transaction per window is open at a time.
+  - Nodes are always created under a parent (no orphans to leak), and
+    removing a node destroys its subtree at commit. Removed slots are
+    recycled only after the next frame, so a node index held while events
+    are dispatched never names a different node.
+  - Derived state (dirty flags, layout caches, layer assignment) is kept
+    outside the copies; an abort can leave extra dirty flags, never
+    missing ones.
+  - The editor and external surfaces are in the closed set but not built
+    yet; creating them fails with `Unsupported`.
 - **Alternatives:** immediate mode (no stable identity without hashing call
-  sites); descriptions lowered through several intermediate representations
+  sites); a log of operations applied at commit (no reads of pending
+  state, and cycles and kinds can only be checked at commit, where failure
+  is too late); descriptions lowered through several intermediate representations
   (ourokit: description → descriptor → instance → render object).
 - **Reverse if:** binding authors cannot express common UIs without a diffing
   layer; then ship the diffing helper, not a second tree.
@@ -286,6 +304,32 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     drag-and-drop transfers) moves through pipes that the UI reads and
     writes on its own loop or the worker pool; only the requests that
     hand over the fds go through the compositor.
+  - Lowering (`src/ui/paint.zig`): layers are the root, every node with
+    opacity below 1, a transform, or a layer hint, every clipping node
+    with layers below it (so its clip, a layer property, applies to them),
+    and every scroll node. A scroll node's layer is the scroll container,
+    with its decoration as the container's own (unscrolled) content and
+    one child layer for the scrolled content. Content painted after a
+    child layer in the same parent goes into a "chunk" layer after it, so
+    paint order survives without node knowledge in the compositor. Layer
+    ids are layer indices plus one.
+  - Each layer's content is a display list in the coordinates of the node
+    that roots it. Only layers whose nodes changed are repainted, and their
+    `SetContent.damage` is the old and new painted bounds of the nodes that
+    changed. Moving, fading, or transforming a layer root, and scrolling,
+    send properties only.
+  - Scroll offsets are logical in the tree (in RTL, offset 0 shows the
+    right end of the content) and physical in layer ops. When the content
+    of an RTL scroll node changes width, the UI sends `scroll_to` so the
+    start edge stays in view.
+  - A node with a scroll handler roots its own layer with a wheel region
+    over its box, so scroll input over it reaches the UI first. Scroll
+    input the UI gets (wheel regions, modifiers held, nothing to scroll in
+    the compositor) bubbles through scroll handlers from the node under
+    the pointer; if none takes it, and no ctrl, alt, or super is held, it
+    goes on to the nearest scroll node with room as `scroll_by`. Keyboard
+    scrolling (arrows, page keys) is `scroll_by` too. Only offsets the
+    application sets in a transaction are `scroll_to`.
 - **Alternatives:** render on the UI thread (lowest latency when idle, but any
   UI-thread stall drops frames); a plain render thread (adds a handoff without
   independent animation).
@@ -459,6 +503,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     split at GDEF caret positions, else evenly.
   - Not yet built: tab stops (a tab is four spaces wide), breaking inside an
     overlong word, hyphenation, and Knuth–Plass.
+  - Text nodes (`src/ui`) reuse a `Layout` built for another width when its
+    lines would break the same way (its widest line fits and it was built
+    at least as wide), and align lines in the node themselves, so a node
+    that shrinks to its text needs one layout. One style per text node for
+    now.
+  - Besides the font cache, `ui.Fonts` remembers Fontconfig's fallback
+    chain per query (family, weight, slant, language), since sorting fonts
+    on every reshape costs milliseconds. It holds font ids, not fonts.
 - **Alternatives:** Pango (GLib dependency, blocking font load, single-threaded
   layout objects); libraqm (no wrapping or fallback); Parley (Rust toolchain);
   kb_text_shape (no cluster mapping, so no editing).
@@ -514,6 +566,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Key text omits C0 control characters and DEL; the keysym identifies those
     keys. A key that continues or cancels a compose sequence is delivered
     with `composing` set and no text, so shortcuts still see it.
+  - Routing (`src/ui/input.zig`): pointer events go to the topmost
+    hit-testable node (or the node a button press went to, until release)
+    and bubble to the root until a handler returns true; keyboard events
+    start at the focused node. Unhandled events get default actions: a
+    primary press focuses the nearest focusable ancestor, a release over
+    the pressed node activates it, Tab and Shift+Tab move focus in tree
+    order (logical, so the same in RTL), Enter and Space activate the
+    focused node, and arrow and page keys scroll the nearest scroll node.
+    Touch drives the primary pointer until gestures exist.
+  - Focus moved by the keyboard shows a ring drawn by the core (2 px,
+    outside the node), so keyboard-only use works without widget code;
+    focus from a pointer press shows none. Theming will set its color.
 
 ### D17. Windows, popups, decorations, external content
 
@@ -541,6 +605,16 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   siv implements AT-SPI itself over its D-Bus implementation, including text,
   value, action, and selection interfaces, live-region announcements, and caret
   tracking. Tests query the semantics tree.
+  - Primitives default to a role (containers `generic`, text `label`,
+    scroll `scroll_area`, image `image`). Role `none`, and `generic` nodes
+    that are neither labelled nor focusable, are left out of the semantics
+    tree with their children promoted. Buttons, links, checkboxes, list
+    items, and similar roles without a label take their name from their
+    descendants' text.
+  - Focusability and disabled state are semantic properties, so a node
+    cannot take focus without the information a screen reader needs.
+  - The tree is rebuilt in full after frames that changed structure,
+    layout, semantics, text, or focus; AT-SPI change events will diff it.
 - **Alternatives:** AccessKit's Linux adapter (adds a Rust toolchain).
 - **Reverse if:** AccessKit offers a C build without Rust and covers every
   interface listed above.
@@ -585,6 +659,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   locale-aware number and date formatting generated from CLDR data, RTL
   mirroring of the whole UI (start/end everywhere, mirrored icons), and locale
   language tags passed into shaping.
+  - Every horizontal property is logical: padding, insets, corner radii,
+    alignment, flex rows, grid columns, and scroll offsets. Nodes inherit
+    the window's direction unless they set their own.
+  - Text aligns by its node's direction, so an English label in an RTL
+    window is flush right; each paragraph's bidi base direction is still
+    detected from its text, defaulting to the node's direction.
+  - Image nodes can mirror in RTL (directional icons).
 
 ### D22. Stock widgets
 
@@ -626,6 +707,44 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **Budgets enforced in CI:** first frame under 20 ms, input-to-photon within one
   frame, 120 Hz scrolling through a 100k-row virtual list, zero idle CPU and
   wakeups, fixed memory per window.
+
+### D26. Layout
+
+- **Requirement:** layout of large trees costs time proportional to what
+  changed, never more than linear, with predictable results across box,
+  flex, grid, stack, and scroll containers.
+- **Decision:** one-way constraint layout in `src/ui/layout.zig`.
+  Constraints (minimum and maximum width and height) go down, sizes come
+  up, parents place children.
+  - Text is horizontal only, so widths never depend on heights. A
+    container that sizes to its content asks its children for their
+    max-content width (computed bottom-up and cached per node) instead of
+    laying them out twice; each child is laid out once with its final
+    width, and again only to stretch it vertically.
+  - Each node caches the constraints of its last layout (its children's
+    positions are valid for those) and its last two sizes. A node laid out
+    tight at the size its last layout chose reuses that layout. Changing a
+    node marks it and its ancestors; clean subtrees cost one comparison.
+  - Containers size to their content within their constraints. Stretch
+    alignment, the default in boxes, flex cross axes, and grids, fills
+    only children without an explicit size; flex free space and fr tracks
+    exist only when the container is larger than its content (stretched,
+    sized, or given a minimum).
+  - Box is block flow: children stacked vertically and stretched to its
+    width. Flex has an axis, gap, grow, shrink weighted by base size,
+    justification, cross alignment, and wrapping. Grid has px, fr, and
+    auto tracks, row-major auto placement, spans, and auto tracks that
+    share leftover definite space; with indefinite space fr tracks size to
+    their content in proportion. Stack overlays children with alignment or
+    insets. Scroll lays out like a box in an unbounded content area.
+  - There is no min-content size and no margin; gaps and padding space
+    things. Borders draw over the padding and do not affect layout.
+- **Alternatives:** CSS block, flex, and grid in full (intrinsic min and
+  max sizes per axis, margins, multiple layout passes); Flutter's model
+  without intrinsic widths (shrink-wrapping needs explicit, quadratic
+  intrinsic queries).
+- **Reverse if:** stock widgets need min-content sizing (for example,
+  tables that never wrap words) and cannot get it from explicit sizes.
 
 ## Lessons from ourokit
 
