@@ -42,6 +42,10 @@ selections: [8][2]SimSelection = @splat(@splat(.{})),
 next_source: u32 = 0,
 /// dma-buf formats and modifiers subsurfaces accept (tests add them).
 dmabuf_formats: std.ArrayList([2]u64) = .empty,
+/// Simulated drag and drop per seat, and where each seat's pointer is.
+drags: [8]SimDrag = @splat(.{}),
+next_offer: u32 = 0,
+pointers: [8]SimPointer = @splat(.{}),
 
 pub const Options = struct {
     refresh_ns: u64 = FrameClock.default_refresh_ns,
@@ -157,8 +161,59 @@ const SimSelection = struct {
     }
 };
 
+const SimPointer = struct { window: ?WindowId = null, x: f64 = 0, y: f64 = 0 };
+
+/// One seat's drag and drop as the simulated compositor sees it: the
+/// offer over one of this client's windows (another client's drag, or
+/// this client's own), how the client answered it, and this client's
+/// drag source.
+pub const SimDrag = struct {
+    /// The offer's id; 0 when no drag is over a window of this client.
+    offer: u32 = 0,
+    window: WindowId = 0,
+    own: bool = false,
+    /// Another client's drag: its mime types, data (the same for every
+    /// type), and actions.
+    mimes: std.ArrayList([]u8) = .empty,
+    data: std.ArrayList(u8) = .empty,
+    source_actions: platform.DragActions = .{},
+    /// The client's answer: the mime type it accepts (an index into the
+    /// offer's types), the actions it takes, and the one it prefers.
+    accepted: ?usize = null,
+    actions: platform.DragActions = .{},
+    preferred: platform.DragAction = .none,
+    /// The action negotiated from both sides.
+    action: platform.DragAction = .none,
+    dropped: bool = false,
+    /// How the client ended the last dropped offer: the action it
+    /// performed, or none if it refused the drop.
+    result: ?platform.DragAction = null,
+    /// This client's drag source (0 when none) and what it offers.
+    source: u32 = 0,
+    source_mimes: std.ArrayList([]u8) = .empty,
+    own_actions: platform.DragActions = .{},
+    icon: ?struct { width: u32, height: u32, hotspot_x: i32, hotspot_y: i32 } = null,
+    /// This client's drag is over another client's window.
+    outside: bool = false,
+
+    fn deinit(d: *SimDrag, gpa: Allocator) void {
+        SimSelection.clearMimes(&d.mimes, gpa);
+        SimSelection.clearMimes(&d.source_mimes, gpa);
+        d.mimes.deinit(gpa);
+        d.source_mimes.deinit(gpa);
+        d.data.deinit(gpa);
+    }
+
+    pub fn acceptedMime(d: *const SimDrag) ?[]const u8 {
+        const list = if (d.own) d.source_mimes.items else d.mimes.items;
+        const i = d.accepted orelse return null;
+        return if (i < list.len) list[i] else null;
+    }
+};
+
 pub fn destroy(hl: *Headless) void {
     for (&hl.selections) |*seat| for (seat) |*sel| sel.deinit(hl.allocator);
+    for (&hl.drags) |*d| d.deinit(hl.allocator);
     for (hl.windows.items, 0..) |w, i| if (w != null) hl.destroyWindow(@intCast(i));
     hl.windows.deinit(hl.allocator);
     hl.outputs.deinit(hl.allocator);
@@ -359,6 +414,10 @@ pub fn destroyWindow(hl: *Headless, id: WindowId) void {
     hl.loop.cancelTimer(&w.vblank);
     hl.loop.cancelTimer(&w.ack_timer);
     if (hl.frame_window == w) hl.frame_window = null;
+    for (&hl.drags, 0..) |*d, seat| if (d.offer != 0 and d.window == id) hl.endOffer(@intCast(seat), d);
+    for (&hl.pointers) |*p| if (p.window == id) {
+        p.window = null;
+    };
     for (w.slots) |s| hl.allocator.free(s.pixels);
     w.subsurfaces.deinit(hl.allocator);
     w.pending_subsurfaces.deinit(hl.allocator);
@@ -528,17 +587,25 @@ pub fn receiveSelection(hl: *Headless, seat: SeatId, kind: platform.SelectionKin
         return true;
     }
     // Another client writes its data, possibly more than a pipe holds.
-    const data = hl.allocator.dupe(u8, sel.data.items) catch {
+    return hl.writeAsync(sel.data.items, fd);
+}
+
+/// Writes `bytes` (copied) to `fd` on a thread of its own, as another
+/// client would, and closes it.
+fn writeAsync(hl: *Headless, bytes: []const u8, fd: i32) bool {
+    const data = hl.allocator.dupe(u8, bytes) catch {
         _ = std.os.linux.close(fd);
         return false;
     };
     const Writer = struct {
-        fn run(gpa: Allocator, bytes: []u8, out: i32) void {
-            defer gpa.free(bytes);
+        fn run(gpa: Allocator, buf: []u8, out: i32) void {
+            // Freed before the reader sees the end of the data, so a test
+            // that reads to the end leaks nothing.
             defer _ = std.os.linux.close(out);
+            defer gpa.free(buf);
             var done: usize = 0;
-            while (done < bytes.len) {
-                const n = std.os.linux.write(out, bytes[done..].ptr, bytes.len - done);
+            while (done < buf.len) {
+                const n = std.os.linux.write(out, buf[done..].ptr, buf.len - done);
                 if (std.os.linux.errno(n) != .SUCCESS) return;
                 done += n;
             }
@@ -578,6 +645,247 @@ pub fn requestSelection(hl: *Headless, seat: SeatId, kind: platform.SelectionKin
     if (std.os.linux.errno(std.os.linux.pipe2(&fds, .{ .CLOEXEC = true })) != .SUCCESS) return error.SystemResources;
     hl.queue.push(.{ .selection_send = .{ .seat = seat, .kind = kind, .source = sel.source, .mime = @intCast(index), .fd = fds[1] } });
     return fds[0];
+}
+
+// Drag and drop -------------------------------------------------------------
+
+fn dragOf(hl: *Headless, seat: SeatId) ?*SimDrag {
+    return if (seat < hl.drags.len) &hl.drags[seat] else null;
+}
+
+/// The seat's offer if it is `offer`.
+fn dragOffer(hl: *Headless, seat: SeatId, offer: u32) ?*SimDrag {
+    const d = hl.dragOf(seat) orelse return null;
+    return if (d.offer != 0 and d.offer == offer) d else null;
+}
+
+pub fn startDrag(hl: *Headless, _: WindowId, seat: SeatId, _: u32, mimes: []const []const u8, actions: platform.DragActions, icon: ?*const platform.DragIcon) Error!u32 {
+    const d = hl.dragOf(seat) orelse return error.MissingGlobal;
+    try hl.copyMimes(&d.source_mimes, mimes);
+    if (d.source != 0) hl.queue.push(.{ .drag_source = .{ .seat = seat, .source = d.source, .phase = .cancelled } });
+    hl.endOffer(seat, d);
+    hl.next_source += 1;
+    d.source = hl.next_source;
+    d.own_actions = actions;
+    d.outside = false;
+    d.icon = if (icon) |i| .{ .width = i.width, .height = i.height, .hotspot_x = i.hotspot_x, .hotspot_y = i.hotspot_y } else null;
+    // The pointer leaves the window for the drag, which enters the window
+    // under the pointer at once.
+    const p = hl.pointers[seat];
+    if (p.window) |w| {
+        hl.queue.push(.{ .pointer_leave = .{ .window = w, .seat = seat, .serial = 0 } });
+        hl.enterOwn(seat, d, w, p.x, p.y);
+    }
+    return d.source;
+}
+
+fn enterOwn(hl: *Headless, seat: SeatId, d: *SimDrag, window: WindowId, x: f64, y: f64) void {
+    hl.next_offer += 1;
+    d.offer = hl.next_offer;
+    d.window = window;
+    d.own = true;
+    d.accepted = null;
+    d.actions = .{};
+    d.preferred = .none;
+    d.action = .none;
+    d.dropped = false;
+    hl.queue.push(.{ .drag_enter = .{ .window = window, .seat = seat, .offer = d.offer, .x = x, .y = y, .source_actions = d.own_actions, .own = true } });
+}
+
+/// Forgets the offer over this client's window (a leave without event).
+fn endOffer(_: *Headless, _: SeatId, d: *SimDrag) void {
+    d.offer = 0;
+    d.accepted = null;
+    d.dropped = false;
+}
+
+/// Ends this client's drag: its source learns the outcome and the
+/// pointer comes back to the window under it.
+fn endSource(hl: *Headless, seat: SeatId, d: *SimDrag, action: platform.DragAction) void {
+    if (d.source == 0) return;
+    hl.queue.push(.{ .drag_source = .{ .seat = seat, .source = d.source, .phase = if (action == .none) .cancelled else .finished, .action = action } });
+    d.source = 0;
+    d.outside = false;
+    const p = hl.pointers[seat];
+    if (p.window) |w| hl.queue.push(.{ .pointer_enter = .{ .window = w, .seat = seat, .x = p.x, .y = p.y } });
+}
+
+pub fn dragMimes(hl: *Headless, seat: SeatId, offer: u32) []const []const u8 {
+    const d = hl.dragOffer(seat, offer) orelse return &.{};
+    return if (d.own) d.source_mimes.items else d.mimes.items;
+}
+
+pub fn acceptDrag(hl: *Headless, seat: SeatId, offer: u32, mime: ?[]const u8, actions: platform.DragActions, preferred: platform.DragAction) void {
+    const d = hl.dragOffer(seat, offer) orelse return;
+    if (d.dropped) return;
+    const list = if (d.own) d.source_mimes.items else d.mimes.items;
+    d.accepted = if (mime) |m| for (list, 0..) |own, i| {
+        if (std.mem.eql(u8, own, m)) break i;
+    } else null else null;
+    d.actions = actions;
+    d.preferred = preferred;
+    const source = if (d.own) d.own_actions else d.source_actions;
+    const action: platform.DragAction = if (d.accepted == null) .none else platform.DragActions.negotiate(source, actions, preferred);
+    if (d.own) hl.queue.push(.{ .drag_source = .{ .seat = seat, .source = d.source, .phase = .target, .accepted = d.accepted != null } });
+    if (action == d.action) return;
+    d.action = action;
+    hl.queue.push(.{ .drag_actions = .{ .window = d.window, .seat = seat, .offer = d.offer, .source_actions = source, .action = action } });
+    if (d.own) hl.queue.push(.{ .drag_source = .{ .seat = seat, .source = d.source, .phase = .action, .action = action } });
+}
+
+pub fn receiveDrag(hl: *Headless, seat: SeatId, offer: u32, mime: []const u8, fd: i32) bool {
+    const d = hl.dragOffer(seat, offer) orelse {
+        _ = std.os.linux.close(fd);
+        return false;
+    };
+    if (!d.own) return hl.writeAsync(d.data.items, fd);
+    for (d.source_mimes.items, 0..) |m, i| if (std.mem.eql(u8, m, mime)) {
+        hl.queue.push(.{ .drag_send = .{ .seat = seat, .source = d.source, .mime = @intCast(i), .fd = fd } });
+        return true;
+    };
+    _ = std.os.linux.close(fd);
+    return false;
+}
+
+pub fn finishDrag(hl: *Headless, seat: SeatId, offer: u32, action: platform.DragAction) void {
+    const d = hl.dragOffer(seat, offer) orelse return;
+    if (!d.dropped) {
+        hl.endOffer(seat, d);
+        return;
+    }
+    const done: platform.DragAction = if (action == .ask) .none else action;
+    d.result = done;
+    const own = d.own;
+    hl.endOffer(seat, d);
+    if (own) hl.endSource(seat, d, done);
+}
+
+/// Simulates another client's drag entering `window` at (x, y), offering
+/// `data` in each of `mimes` with `actions`.
+pub fn offerDrag(hl: *Headless, seat: SeatId, window: WindowId, mimes: []const []const u8, data: []const u8, actions: platform.DragActions, x: f64, y: f64) Error!void {
+    const d = hl.dragOf(seat) orelse return error.OutOfMemory;
+    try hl.copyMimes(&d.mimes, mimes);
+    d.data.clearRetainingCapacity();
+    try d.data.appendSlice(hl.allocator, data);
+    d.source_actions = actions;
+    d.result = null;
+    hl.next_offer += 1;
+    d.offer = hl.next_offer;
+    d.window = window;
+    d.own = false;
+    d.accepted = null;
+    d.actions = .{};
+    d.preferred = .none;
+    d.action = .none;
+    d.dropped = false;
+    hl.queue.push(.{ .drag_enter = .{ .window = window, .seat = seat, .offer = d.offer, .x = x, .y = y, .source_actions = actions } });
+}
+
+/// Moves another client's drag within the window it is over.
+pub fn moveDrag(hl: *Headless, seat: SeatId, x: f64, y: f64) void {
+    const d = hl.dragOf(seat) orelse return;
+    if (d.offer == 0 or d.dropped) return;
+    hl.queue.push(.{ .drag_motion = .{ .window = d.window, .seat = seat, .x = x, .y = y } });
+}
+
+/// The drag over this client's window leaves it (to another client, or
+/// it was cancelled).
+pub fn leaveDrag(hl: *Headless, seat: SeatId) void {
+    const d = hl.dragOf(seat) orelse return;
+    if (d.offer == 0 or d.dropped) return;
+    hl.queue.push(.{ .drag_leave = .{ .window = d.window, .seat = seat, .offer = d.offer } });
+    hl.endOffer(seat, d);
+    if (d.source != 0) d.outside = true;
+}
+
+/// The user drops the drag over this client's window. As compositors do,
+/// a drag no target accepted with an action is cancelled instead.
+pub fn dropDrag(hl: *Headless, seat: SeatId) void {
+    const d = hl.dragOf(seat) orelse return;
+    if (d.offer == 0 or d.dropped) return;
+    if (d.accepted == null or d.action == .none) {
+        hl.queue.push(.{ .drag_leave = .{ .window = d.window, .seat = seat, .offer = d.offer } });
+        d.result = .none;
+        hl.endOffer(seat, d);
+        if (d.own) hl.endSource(seat, d, .none);
+        return;
+    }
+    d.dropped = true;
+    hl.queue.push(.{ .drag_drop = .{ .window = d.window, .seat = seat, .offer = d.offer, .source_actions = if (d.own) d.own_actions else d.source_actions, .action = d.action } });
+    if (d.own) hl.queue.push(.{ .drag_source = .{ .seat = seat, .source = d.source, .phase = .dropped } });
+}
+
+/// Simulates another client's window taking this client's drag, which
+/// left this client's windows (`leaveDrag`): the client accepts `mime`
+/// with `action` and the user drops it there. Returns the read end of the
+/// pipe the data comes through; null (and the drag cancelled) without a
+/// mime type.
+pub fn dropOutside(hl: *Headless, seat: SeatId, mime: ?[]const u8, action: platform.DragAction) !?i32 {
+    const d = hl.dragOf(seat) orelse return error.NoDrag;
+    if (d.source == 0 or !d.outside) return error.NoDrag;
+    const m = mime orelse {
+        hl.endSource(seat, d, .none);
+        return null;
+    };
+    const index = for (d.source_mimes.items, 0..) |own, i| {
+        if (std.mem.eql(u8, own, m)) break i;
+    } else return error.NoSuchMime;
+    hl.queue.push(.{ .drag_source = .{ .seat = seat, .source = d.source, .phase = .target, .accepted = true } });
+    hl.queue.push(.{ .drag_source = .{ .seat = seat, .source = d.source, .phase = .action, .action = action } });
+    hl.queue.push(.{ .drag_source = .{ .seat = seat, .source = d.source, .phase = .dropped } });
+    var fds: [2]i32 = undefined;
+    if (std.os.linux.errno(std.os.linux.pipe2(&fds, .{ .CLOEXEC = true })) != .SUCCESS) return error.SystemResources;
+    hl.queue.push(.{ .drag_send = .{ .seat = seat, .source = d.source, .mime = @intCast(index), .fd = fds[1] } });
+    return fds[0];
+}
+
+/// The other client finishes the drop `dropOutside` started.
+pub fn finishOutside(hl: *Headless, seat: SeatId, action: platform.DragAction) void {
+    const d = hl.dragOf(seat) orelse return;
+    if (d.outside) hl.endSource(seat, d, action);
+}
+
+/// The seat's drag and drop state.
+pub fn drag(hl: *const Headless, seat: SeatId) *const SimDrag {
+    return &hl.drags[seat];
+}
+
+/// Pointer input while this client's drag is under way: the compositor
+/// turns motion into drag motion and the release into the drop, and
+/// sends no pointer events. Returns whether it consumed the event.
+fn dragInput(hl: *Headless, event: platform.Event) bool {
+    switch (event) {
+        .pointer_enter, .pointer_motion => |m| {
+            if (m.seat >= hl.pointers.len) return false;
+            hl.pointers[m.seat] = .{ .window = m.window, .x = m.x, .y = m.y };
+            const d = &hl.drags[m.seat];
+            if (d.source == 0) return false;
+            if (d.offer != 0 and d.window == m.window) {
+                if (!d.dropped) hl.queue.push(.{ .drag_motion = .{ .window = m.window, .seat = m.seat, .x = m.x, .y = m.y, .time = m.time } });
+                return true;
+            }
+            if (d.offer != 0) {
+                if (d.dropped) return true;
+                hl.queue.push(.{ .drag_leave = .{ .window = d.window, .seat = m.seat, .offer = d.offer } });
+            }
+            hl.enterOwn(m.seat, d, m.window, m.x, m.y);
+            d.outside = false;
+            return true;
+        },
+        .pointer_leave => |l| {
+            if (l.seat >= hl.pointers.len) return false;
+            hl.pointers[l.seat].window = null;
+            return hl.drags[l.seat].source != 0;
+        },
+        .pointer_button => |b| {
+            if (b.seat >= hl.pointers.len) return false;
+            const d = &hl.drags[b.seat];
+            if (d.source == 0) return false;
+            if (!b.pressed and d.offer != 0) hl.dropDrag(b.seat);
+            return true;
+        },
+        else => return false,
+    }
 }
 
 /// What a seat's text input last committed.
@@ -623,6 +931,7 @@ pub fn requestClose(hl: *Headless, id: WindowId) void {
 
 /// Delivers an input event in the dispatch phase, like a seat would.
 pub fn inject(hl: *Headless, event: platform.Event) void {
+    if (hl.dragInput(event)) return;
     // A press outside the chain of a grabbing popup dismisses the popups
     // and goes nowhere else, as a compositor's popup grab does.
     if (event == .pointer_button and event.pointer_button.pressed) {
@@ -924,4 +1233,117 @@ test "close, input injection, and output hotplug arrive in the dispatch phase" {
     try testing.expectEqual(@as(i32, 2), hl.output(out).?.scale);
     hl.removeOutput(out);
     try testing.expect(hl.output(out) == null);
+}
+
+test "drags from other clients and from this client negotiate, transfer, and finish" {
+    var loop = try Loop.init(testing.allocator);
+    defer loop.deinit();
+    const Rec = struct {
+        events: std.ArrayList(platform.Event) = .empty,
+        seen: usize = 0,
+        fn onEvent(ctx: ?*anyopaque, ev: *const platform.Event) void {
+            const r: *@This() = @ptrCast(@alignCast(ctx));
+            if (ev.* == .frame or ev.* == .configure) return;
+            r.events.append(testing.allocator, ev.*) catch unreachable;
+        }
+        /// Events since the last call; valid until the next dispatch.
+        fn take(r: *@This()) []platform.Event {
+            const new = r.events.items[r.seen..];
+            r.seen = r.events.items.len;
+            return new;
+        }
+    };
+    var rec: Rec = .{};
+    defer rec.events.deinit(testing.allocator);
+    const hl = try create(&loop, testing.allocator, .{ .ctx = &rec, .func = Rec.onEvent }, .{});
+    defer hl.destroy();
+    const a = try hl.createWindow(.{});
+    const b = try hl.createWindow(.{});
+    try loop.dispatch(0);
+    _ = rec.take();
+
+    // Another client's drag: refused, then accepted with move preferred
+    // from a copy-or-move source, dropped, read, finished.
+    try hl.offerDrag(0, a, &.{ "text/uri-list", "text/plain" }, "file:///x", .{ .copy = true, .move = true }, 5, 6);
+    try loop.dispatch(0);
+    var evs = rec.take();
+    try testing.expectEqual(@as(usize, 1), evs.len);
+    const offer = evs[0].drag_enter.offer;
+    try testing.expect(!evs[0].drag_enter.own);
+    try testing.expectEqual(@as(usize, 2), hl.dragMimes(0, offer).len);
+    hl.acceptDrag(0, offer, "text/plain", .{ .copy = true, .move = true, .ask = true }, .move);
+    hl.dropDrag(0);
+    try loop.dispatch(0);
+    evs = rec.take();
+    try testing.expectEqual(platform.DragAction.move, evs[0].drag_actions.action);
+    try testing.expectEqual(platform.DragAction.move, evs[1].drag_drop.action);
+    var fds: [2]i32 = undefined;
+    _ = std.os.linux.pipe2(&fds, .{ .CLOEXEC = true });
+    try testing.expect(hl.receiveDrag(0, offer, "text/plain", fds[1]));
+    var buf: [32]u8 = undefined;
+    var n: usize = 0;
+    while (true) {
+        const r = std.os.linux.read(fds[0], buf[n..].ptr, buf.len - n);
+        if (std.os.linux.errno(r) != .SUCCESS or r == 0) break;
+        n += r;
+    }
+    _ = std.os.linux.close(fds[0]);
+    try testing.expectEqualStrings("file:///x", buf[0..n]);
+    hl.finishDrag(0, offer, .move);
+    try testing.expectEqual(@as(?platform.DragAction, .move), hl.drag(0).result);
+    // Requests for a finished offer do nothing.
+    try testing.expectEqual(@as(usize, 0), hl.dragMimes(0, offer).len);
+
+    // A drop nobody accepted is cancelled: a leave, no drop.
+    try hl.offerDrag(0, a, &.{"image/png"}, "", .{ .copy = true }, 1, 1);
+    hl.dropDrag(0);
+    try loop.dispatch(0);
+    evs = rec.take();
+    try testing.expect(evs[0] == .drag_enter and evs[1] == .drag_leave);
+    try testing.expectEqual(@as(?platform.DragAction, .none), hl.drag(0).result);
+
+    // This client's drag: started over window a, it enters a at once,
+    // follows the pointer to b, and drops there.
+    hl.inject(.{ .pointer_motion = .{ .window = a, .seat = 0, .x = 10, .y = 10 } });
+    try loop.dispatch(0);
+    _ = rec.take();
+    const src = try hl.startDrag(a, 0, 1, &.{"application/x-row"}, .{ .move = true }, null);
+    hl.inject(.{ .pointer_motion = .{ .window = b, .seat = 0, .x = 20, .y = 30 } });
+    try loop.dispatch(0);
+    evs = rec.take();
+    try testing.expect(evs[0] == .pointer_leave);
+    try testing.expect(evs[1].drag_enter.own and evs[1].drag_enter.window == a);
+    try testing.expect(evs[2] == .drag_leave);
+    try testing.expectEqual(b, evs[3].drag_enter.window);
+    const own_offer = evs[3].drag_enter.offer;
+    hl.acceptDrag(0, own_offer, "application/x-row", .{ .copy = true, .move = true }, .copy);
+    hl.inject(.{ .pointer_button = .{ .window = b, .seat = 0, .button = 0x110, .pressed = false, .time = 0, .serial = 2 } });
+    try loop.dispatch(0);
+    evs = rec.take();
+    // Copy is not offered: move.
+    try testing.expectEqual(platform.DragAction.move, hl.drag(0).action);
+    try testing.expect(evs[evs.len - 2] == .drag_drop);
+    try testing.expectEqual(platform.DragSource.Phase.dropped, evs[evs.len - 1].drag_source.phase);
+    hl.finishDrag(0, own_offer, .move);
+    try loop.dispatch(0);
+    evs = rec.take();
+    try testing.expectEqual(src, evs[0].drag_source.source);
+    try testing.expectEqual(platform.DragSource.Phase.finished, evs[0].drag_source.phase);
+    try testing.expectEqual(platform.DragAction.move, evs[0].drag_source.action);
+    try testing.expectEqual(b, evs[1].pointer_enter.window);
+
+    // Dragged out to another client, which reads it and finishes.
+    _ = try hl.startDrag(b, 0, 3, &.{ "text/plain", "UTF8_STRING" }, .{ .copy = true }, null);
+    hl.leaveDrag(0);
+    const fd = (try hl.dropOutside(0, "UTF8_STRING", .copy)).?;
+    _ = std.os.linux.close(fd);
+    try loop.dispatch(0);
+    evs = rec.take();
+    const send = evs[evs.len - 1].drag_send;
+    try testing.expectEqual(@as(u8, 1), send.mime);
+    _ = std.os.linux.close(send.fd);
+    hl.finishOutside(0, .copy);
+    try loop.dispatch(0);
+    evs = rec.take();
+    try testing.expectEqual(platform.DragSource.Phase.finished, evs[0].drag_source.phase);
 }

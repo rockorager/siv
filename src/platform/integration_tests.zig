@@ -700,3 +700,143 @@ test "a subsurface shows an external frame without protocol errors" {
     try testing.expect(!backend.dead);
     try testing.expectEqual(@as(usize, 0), app.count(.failed));
 }
+
+test "drag and drop between two clients: negotiation, transfer, finish" {
+    const linux = std.os.linux;
+    var h: Harness = .{};
+    try h.start();
+    defer h.stop();
+    const src = &h.app;
+    // A second client on the same loop takes the drop.
+    var dst: TestApp = .{};
+    defer dst.deinit();
+    dst.backend = try Wayland.create(&h.loop, testing.allocator, dst.sink(), .{ .display = h.sway.display });
+    defer dst.backend.destroy();
+
+    const a = try h.mapWindow(.{});
+    const b = try dst.backend.createWindow(.{});
+    dst.watch = b;
+    try runUntil(&h.loop, &dst, struct {
+        fn f(app: *TestApp) bool {
+            return app.frames_of[app.watch] >= 1;
+        }
+    }.f);
+    // Sway tiles the two windows side by side.
+    try runUntil(&h.loop, src, struct {
+        fn f(app: *TestApp) bool {
+            return app.last_buffer.width == 640;
+        }
+    }.f);
+
+    var vp = try VirtualPointer.connect(&h.sway);
+    defer vp.deinit();
+    try vp.sync();
+    try runUntil(&h.loop, src, struct {
+        fn f(app: *TestApp) bool {
+            const seat = app.backend.seats.items[0] orelse return false;
+            return seat.pointer != null;
+        }
+    }.f);
+    _ = src.backend.display.roundtrip();
+    _ = dst.backend.display.roundtrip();
+    vp.moveTo(100, 100);
+    vp.button(0x110, true);
+    try vp.sync();
+    try runUntil(&h.loop, src, struct {
+        fn f(app: *TestApp) bool {
+            const l = app.last(.pointer_button) orelse return false;
+            return l.pointer_button.pressed;
+        }
+    }.f);
+    const press = src.last(.pointer_button).?.pointer_button;
+
+    // The source starts a drag with an icon; the drag enters its own
+    // window first.
+    var icon_px: [16 * 16 * 4]u8 = undefined;
+    @memset(&icon_px, 0x80);
+    const icon: platform.DragIcon = .{ .pixels = &icon_px, .width = 16, .height = 16, .stride = 64, .hotspot_x = 8, .hotspot_y = 8 };
+    const source = try src.backend.startDrag(a, 0, press.serial, &.{ "application/x-siv-test", "text/plain;charset=utf-8" }, .{ .copy = true, .move = true }, &icon);
+    try runUntil(&h.loop, src, struct {
+        fn f(app: *TestApp) bool {
+            return app.count(.drag_enter) >= 1;
+        }
+    }.f);
+    const own = src.last(.drag_enter).?.drag_enter;
+    try testing.expect(own.own);
+    try testing.expectEqual(a, own.window);
+
+    // Over the other client's window: it sees the types and actions, and
+    // takes text with move.
+    vp.moveTo(900, 300);
+    vp.moveTo(910, 310);
+    try vp.sync();
+    try runUntil(&h.loop, &dst, struct {
+        fn f(app: *TestApp) bool {
+            return app.count(.drag_enter) >= 1 and app.count(.drag_motion) >= 1;
+        }
+    }.f);
+    const enter = dst.last(.drag_enter).?.drag_enter;
+    try testing.expect(!enter.own);
+    try testing.expectEqual(b, enter.window);
+    try testing.expect(enter.source_actions.copy and enter.source_actions.move and !enter.source_actions.ask);
+    const mimes = dst.backend.dragMimes(0, enter.offer);
+    try testing.expectEqual(@as(usize, 2), mimes.len);
+    try testing.expectEqualStrings("text/plain;charset=utf-8", mimes[1]);
+    dst.backend.acceptDrag(0, enter.offer, "text/plain;charset=utf-8", .{ .copy = true, .move = true }, .move);
+    try runUntil(&h.loop, &dst, struct {
+        fn f(app: *TestApp) bool {
+            const l = app.last(.drag_actions) orelse return false;
+            return l.drag_actions.action == .move;
+        }
+    }.f);
+    try runUntil(&h.loop, src, struct {
+        fn f(app: *TestApp) bool {
+            const l = app.last(.drag_source) orelse return false;
+            return l.drag_source.phase == .action and l.drag_source.action == .move;
+        }
+    }.f);
+
+    // The drop: the target reads the text through a pipe the source
+    // writes, then finishes with move.
+    vp.button(0x110, false);
+    try vp.sync();
+    try runUntil(&h.loop, &dst, struct {
+        fn f(app: *TestApp) bool {
+            return app.count(.drag_drop) >= 1;
+        }
+    }.f);
+    try testing.expectEqual(platform.DragAction.move, dst.last(.drag_drop).?.drag_drop.action);
+    var fds: [2]i32 = undefined;
+    try testing.expectEqual(linux.E.SUCCESS, linux.errno(linux.pipe2(&fds, .{ .CLOEXEC = true })));
+    try testing.expect(dst.backend.receiveDrag(0, enter.offer, "text/plain;charset=utf-8", fds[1]));
+    try runUntil(&h.loop, src, struct {
+        fn f(app: *TestApp) bool {
+            return app.count(.drag_send) >= 1;
+        }
+    }.f);
+    const send = src.last(.drag_send).?.drag_send;
+    try testing.expectEqual(source, send.source);
+    try testing.expectEqual(@as(u8, 1), send.mime);
+    _ = linux.write(send.fd, "dragged", 7);
+    _ = linux.close(send.fd);
+    var buf: [16]u8 = undefined;
+    const n = linux.read(fds[0], &buf, buf.len);
+    _ = linux.close(fds[0]);
+    try testing.expectEqualStrings("dragged", buf[0..n]);
+    dst.backend.finishDrag(0, enter.offer, .move);
+    try runUntil(&h.loop, src, struct {
+        fn f(app: *TestApp) bool {
+            const l = app.last(.drag_source) orelse return false;
+            return l.drag_source.phase == .finished;
+        }
+    }.f);
+    try testing.expectEqual(platform.DragAction.move, src.last(.drag_source).?.drag_source.action);
+    // The pointer comes back to the window under it.
+    vp.moveTo(920, 320);
+    try vp.sync();
+    try runUntil(&h.loop, &dst, struct {
+        fn f(app: *TestApp) bool {
+            return app.count(.pointer_enter) >= 1 or app.count(.pointer_motion) >= 1;
+        }
+    }.f);
+}

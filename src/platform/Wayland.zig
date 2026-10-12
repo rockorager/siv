@@ -1148,6 +1148,32 @@ pub fn receiveSelection(self: *Wayland, id: SeatId, kind: platform.SelectionKind
     return dev.receiveSelection(kind, mime, fd);
 }
 
+pub fn startDrag(self: *Wayland, id: WindowId, seat: SeatId, serial: u32, mimes: []const []const u8, actions: platform.DragActions, icon: ?*const platform.DragIcon) Error!u32 {
+    const dev = self.seatData(seat) orelse return error.MissingGlobal;
+    return dev.startDrag(self.get(id).surface, mimes, actions, icon, serial);
+}
+
+pub fn dragMimes(self: *Wayland, seat: SeatId, offer: u32) []const []const u8 {
+    const dev = self.seatData(seat) orelse return &.{};
+    return dev.dragMimes(offer);
+}
+
+pub fn acceptDrag(self: *Wayland, seat: SeatId, offer: u32, mime: ?[]const u8, actions: platform.DragActions, preferred: platform.DragAction) void {
+    if (self.seatData(seat)) |dev| dev.acceptDrag(offer, mime, actions, preferred);
+}
+
+pub fn receiveDrag(self: *Wayland, seat: SeatId, offer: u32, mime: []const u8, fd: i32) bool {
+    const dev = self.seatData(seat) orelse {
+        _ = linux.close(fd);
+        return false;
+    };
+    return dev.receiveDrag(offer, mime, fd);
+}
+
+pub fn finishDrag(self: *Wayland, seat: SeatId, offer: u32, action: platform.DragAction) void {
+    if (self.seatData(seat)) |dev| dev.finishDrag(offer, action);
+}
+
 fn seatProxy(self: *Wayland, id: SeatId) ?*wl.Seat {
     if (id >= self.seats.items.len) return null;
     return if (self.seats.items[id]) |s| s.proxy else null;

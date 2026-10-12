@@ -323,6 +323,169 @@ pub const Platform = union(enum) {
             inline else => |b| b.receiveSelection(seat, kind, mime, fd),
         };
     }
+
+    // Drag and drop (D19). A drag over one of this client's windows is an
+    // offer named by a per-seat id in `drag_enter`; the requests below
+    // name it and do nothing once it is gone. This client's own drags are
+    // sources: their data is requested with `drag_send` events and their
+    // outcome reported with `drag_source` events.
+
+    /// Starts a drag from `window` offering `mimes` (copied) with
+    /// `actions`, for the button or touch press `serial` that is still
+    /// held. Returns the source's id. `icon` follows the pointer.
+    pub fn startDrag(p: Platform, id: WindowId, seat: SeatId, serial: u32, mimes: []const []const u8, actions: DragActions, icon: ?*const DragIcon) Error!u32 {
+        return switch (p) {
+            inline else => |b| b.startDrag(id, seat, serial, mimes, actions, icon),
+        };
+    }
+
+    /// The mime types of a drag offer, valid until the next platform
+    /// event; empty once the offer is gone.
+    pub fn dragMimes(p: Platform, seat: SeatId, offer: u32) []const []const u8 {
+        return switch (p) {
+            inline else => |b| b.dragMimes(seat, offer),
+        };
+    }
+
+    /// Tells the source whether the drop target under the pointer takes
+    /// the offer (in `mime`; null refuses it) and with which actions. The
+    /// compositor answers with a `drag_actions` event.
+    pub fn acceptDrag(p: Platform, seat: SeatId, offer: u32, mime: ?[]const u8, actions: DragActions, preferred: DragAction) void {
+        switch (p) {
+            inline else => |b| b.acceptDrag(seat, offer, mime, actions, preferred),
+        }
+    }
+
+    /// Asks the source to write `mime` data to `fd`, which the platform
+    /// closes. False once the offer is gone.
+    pub fn receiveDrag(p: Platform, seat: SeatId, offer: u32, mime: []const u8, fd: i32) bool {
+        return switch (p) {
+            inline else => |b| b.receiveDrag(seat, offer, mime, fd),
+        };
+    }
+
+    /// Ends a dropped offer: the target performed `action` (copy or move),
+    /// or refused the drop (none). Also ends an offer that was not
+    /// dropped, refusing it.
+    pub fn finishDrag(p: Platform, seat: SeatId, offer: u32, action: DragAction) void {
+        switch (p) {
+            inline else => |b| b.finishDrag(seat, offer, action),
+        }
+    }
+};
+
+/// Drag-and-drop actions (wl_data_device_manager.dnd_action).
+pub const DragActions = packed struct(u8) {
+    copy: bool = false,
+    move: bool = false,
+    /// The target asks the user which action to take after the drop.
+    ask: bool = false,
+    _: u5 = 0,
+
+    pub fn has(a: DragActions, action: DragAction) bool {
+        return switch (action) {
+            .none => false,
+            .copy => a.copy,
+            .move => a.move,
+            .ask => a.ask,
+        };
+    }
+
+    pub fn of(action: DragAction) DragActions {
+        return .{ .copy = action == .copy, .move = action == .move, .ask = action == .ask };
+    }
+
+    pub fn intersect(a: DragActions, b: DragActions) DragActions {
+        return @bitCast(@as(u8, @bitCast(a)) & @as(u8, @bitCast(b)));
+    }
+
+    pub fn none(a: DragActions) bool {
+        return !a.copy and !a.move and !a.ask;
+    }
+
+    /// The action a compositor chooses for a source offering `source` and
+    /// a target taking `target` that prefers `preferred`: the preferred
+    /// one if both sides allow it, else the first of copy, move, and ask
+    /// that both allow.
+    pub fn negotiate(source: DragActions, target: DragActions, preferred: DragAction) DragAction {
+        const both = source.intersect(target);
+        if (both.has(preferred)) return preferred;
+        if (both.copy) return .copy;
+        if (both.move) return .move;
+        if (both.ask) return .ask;
+        return .none;
+    }
+};
+
+pub const DragAction = enum(u8) { none, copy, move, ask };
+
+/// A drag icon: premultiplied ARGB8888 pixels (B, G, R, A bytes), copied
+/// by `startDrag`. The hotspot, in buffer pixels, is the point under the
+/// pointer; `scale` is the buffer scale.
+pub const DragIcon = struct {
+    pixels: []const u8,
+    width: u32,
+    height: u32,
+    stride: u32,
+    hotspot_x: i32 = 0,
+    hotspot_y: i32 = 0,
+    scale: u32 = 1,
+};
+
+/// A drag entered one of this client's windows. Its mime types are in
+/// `Platform.dragMimes`. `own` drags come from this client's own source.
+pub const DragEnter = struct {
+    window: WindowId,
+    seat: SeatId,
+    offer: u32,
+    x: f64,
+    y: f64,
+    serial: u32 = 0,
+    source_actions: DragActions = .{},
+    own: bool = false,
+};
+
+pub const DragMotion = struct { window: WindowId, seat: SeatId, x: f64, y: f64, time: u32 = 0 };
+
+/// The drag left the window, or was dropped on it, or (`drag_actions`)
+/// the actions changed: the source's, or the one the compositor chose
+/// for the drop target's answer.
+pub const DragOffer = struct {
+    window: WindowId,
+    seat: SeatId,
+    offer: u32,
+    source_actions: DragActions = .{},
+    action: DragAction = .none,
+};
+
+/// Another client (or this one) wants data of this client's drag: write
+/// it in the mime type at index `mime` of `startDrag`'s list to `fd`,
+/// then close it.
+pub const DragSend = struct { seat: SeatId, source: u32, mime: u8, fd: i32 };
+
+/// The progress of this client's drag.
+pub const DragSource = struct {
+    seat: SeatId,
+    source: u32,
+    phase: Phase,
+    /// `action`: the action the compositor chose; `finished`: the action
+    /// the target performed.
+    action: DragAction = .none,
+    /// `target`: a drop target takes one of the mime types.
+    accepted: bool = false,
+
+    pub const Phase = enum {
+        /// The target under the pointer accepted or refused the data.
+        target,
+        /// The compositor chose an action.
+        action,
+        /// The user dropped the data on a target that took it.
+        dropped,
+        /// The target is done; if the action was move, delete the data.
+        finished,
+        /// The drag ended without a drop, or the target refused it.
+        cancelled,
+    };
 };
 
 pub const SubsurfaceId = u32;
@@ -842,6 +1005,17 @@ pub const Event = union(enum) {
     selection_send: SelectionSend,
     selection_cancelled: SelectionCancelled,
     subsurface_released: SubsurfaceReleased,
+    /// Drag and drop over a window: a drag entered it, moved, left, was
+    /// dropped, or its actions changed. After a drop the offer stays until
+    /// `finishDrag`, even if the compositor reports the drag leaving.
+    drag_enter: DragEnter,
+    drag_motion: DragMotion,
+    drag_leave: DragOffer,
+    drag_drop: DragOffer,
+    drag_actions: DragOffer,
+    /// This client's drag: data requests and progress.
+    drag_send: DragSend,
+    drag_source: DragSource,
     /// The platform failed: events were lost (OutOfMemory) or the
     /// connection is gone (ConnectionLost, ProtocolError).
     failed: Error,

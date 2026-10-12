@@ -96,6 +96,7 @@ pub fn destroy(seat: *Seat) void {
 /// Drops references to a destroyed window.
 pub fn forgetWindow(seat: *Seat, id: WindowId) void {
     if (seat.text_input) |ti| ti.forgetWindow(id);
+    seat.data.forgetWindow(id);
     if (seat.keyboard_focus == id) {
         seat.keyboard_focus = null;
         seat.stopRepeat();
