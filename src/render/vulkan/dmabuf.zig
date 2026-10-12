@@ -77,7 +77,14 @@ pub const Importer = struct {
         var src: Source = .{};
         defer src.deinit(d);
         if (d.drm_modifiers and buf.modifier != scene.Dmabuf.modifier_invalid) {
-            try src.importImage(d, buf, fmt, width, height);
+            src.importImage(d, buf, fmt, width, height) catch |e| {
+                // Drivers reject linear images whose stride or offset
+                // breaks their alignment (RADV wants 256 bytes); a buffer
+                // copy takes any whole-pixel layout.
+                if (e != error.Unsupported or buf.modifier != scene.Dmabuf.modifier_linear) return e;
+                src.deinit(d);
+                try src.importBuffer(d, buf, width, height);
+            };
         } else if (buf.modifier == scene.Dmabuf.modifier_linear) {
             try src.importBuffer(d, buf, width, height);
         } else return error.Unsupported;

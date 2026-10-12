@@ -134,51 +134,83 @@ test "dma-buf frames are imported, or skipped without pixels" {
     const r = try Renderer.create(gpa, device, .serial);
     defer r.destroy();
     try r.resize(40, 30);
-    // A memfd stands in for a linear dma-buf: lavapipe maps what it
-    // imports, and this machine has no dma-buf exporter. Odd stride and
-    // offset, as decoders pad.
     const w = 13;
     const h = 9;
-    const stride = 64;
-    const offset = 128;
-    const fd = try std.posix.memfd_create("siv-dmabuf", 0);
-    defer _ = std.c.close(fd);
-    const mem = try gpa.alloc(u8, offset + stride * h);
-    defer gpa.free(mem);
-    @memset(mem, 0xee);
-    for (0..h) |y| for (0..w) |x| {
-        mem[offset + y * stride + x * 4 ..][0..4].* = .{ @intCast(x * 19), @intCast(y * 27), @intCast(255 - x * 7), 0x11 };
-    };
-    if (std.c.pwrite(fd, mem.ptr, mem.len, 0) != mem.len) return error.Unexpected;
-    var buf: scene.Dmabuf = .{ .format = scene.Dmabuf.xrgb8888, .modifier = scene.Dmabuf.modifier_linear, .plane_count = 1 };
-    buf.planes[0] = .{ .fd = fd, .offset = offset, .stride = stride };
+    // A 256-byte aligned layout, which drivers with explicit modifiers
+    // import as an image, and a decoder's odd stride and offset, which
+    // RADV's image path rejects and a buffer copy takes.
+    for ([_][2]u32{ .{ 256, 256 }, .{ 64, 128 } }, 0..) |layout, n| {
+        const stride, const offset = layout;
+        const mem = try gpa.alloc(u8, offset + stride * h);
+        defer gpa.free(mem);
+        @memset(mem, 0xee);
+        for (0..h) |y| for (0..w) |x| {
+            mem[offset + y * stride + x * 4 ..][0..4].* = .{ @intCast(x * 19), @intCast(y * 27), @intCast(255 - x * 7), 0x11 };
+        };
+        // A real dma-buf over a memfd where /dev/udmabuf opens; otherwise
+        // the memfd stands in, which only CPU implementations (lavapipe,
+        // which maps what it imports) accept.
+        const udmabuf = udmabufFrom(mem);
+        if (udmabuf == null and device.dmabuf_import and device.device_type != @import("vk.zig").c.VK_PHYSICAL_DEVICE_TYPE_CPU) return error.SkipZigTest;
+        const fd = udmabuf orelse fd: {
+            const memfd = try std.posix.memfd_create("siv-dmabuf", 0);
+            if (std.c.pwrite(memfd, mem.ptr, mem.len, 0) != mem.len) return error.Unexpected;
+            break :fd memfd;
+        };
+        defer _ = std.c.close(fd);
+        var buf: scene.Dmabuf = .{ .format = scene.Dmabuf.xrgb8888, .modifier = scene.Dmabuf.modifier_linear, .plane_count = 1 };
+        buf.planes[0] = .{ .fd = fd, .offset = offset, .stride = stride };
 
-    var b = scene.Builder.init(gpa);
-    defer b.deinit();
-    const want = try gpa.alloc(u8, 40 * 30 * 4);
-    defer gpa.free(want);
-    const got = try gpa.alloc(u8, 40 * 30 * 4);
-    defer gpa.free(got);
-    // The same frame from its pixels, then from the dma-buf alone.
-    for ([_]?[*]const u8{ mem.ptr + offset, null }, [_]u64{ 1, 2 }, [_][]u8{ want, got }) |pixels, key, out| {
-        b.reset();
-        try b.image(.{
-            .image = .{ .pixels = pixels, .width = w, .height = h, .stride = stride, .format = .bgrx8_srgb, .key = key, .dmabuf = if (pixels == null) &buf else null },
-            .src = .xywh(0, 0, w, h),
-            .dst = .xywh(3, 2, w, h),
-            .filter = .nearest,
-        });
-        try r.beginFrame();
-        try r.render(try b.finish(0), .{ .background = .white }, .{ .readback = .{ .pixels = out.ptr, .stride = 40 * 4 } });
-    }
-    if (device.dmabuf_import) {
-        try testing.expectEqualSlices(u8, want, got);
-    } else {
-        // Not drawn: the background only.
-        for (0..40 * 30) |i| try testing.expectEqualSlices(u8, &.{ 255, 255, 255, 255 }, got[i * 4 ..][0..4]);
-        try testing.expect(r.dmabuf_skipped);
+        var b = scene.Builder.init(gpa);
+        defer b.deinit();
+        const want = try gpa.alloc(u8, 40 * 30 * 4);
+        defer gpa.free(want);
+        const got = try gpa.alloc(u8, 40 * 30 * 4);
+        defer gpa.free(got);
+        // The same frame from its pixels, then from the dma-buf alone.
+        for ([_]?[*]const u8{ mem.ptr + offset, null }, [_]u64{ 1, 2 }, [_][]u8{ want, got }) |pixels, key, out| {
+            b.reset();
+            try b.image(.{
+                .image = .{ .pixels = pixels, .width = w, .height = h, .stride = stride, .format = .bgrx8_srgb, .key = key + 2 * n, .dmabuf = if (pixels == null) &buf else null },
+                .src = .xywh(0, 0, w, h),
+                .dst = .xywh(3, 2, w, h),
+                .filter = .nearest,
+            });
+            try r.beginFrame();
+            try r.render(try b.finish(0), .{ .background = .white }, .{ .readback = .{ .pixels = out.ptr, .stride = 40 * 4 } });
+        }
+        if (device.dmabuf_import) {
+            try testing.expectEqualSlices(u8, want, got);
+        } else {
+            // Not drawn: the background only.
+            for (0..40 * 30) |i| try testing.expectEqualSlices(u8, &.{ 255, 255, 255, 255 }, got[i * 4 ..][0..4]);
+            try testing.expect(r.dmabuf_skipped);
+        }
     }
     try testing.expectEqual(errors, Device.validation_errors.load(.monotonic));
+}
+
+/// A dma-buf holding `bytes` (udmabuf over a sealed memfd), or null where
+/// /dev/udmabuf is missing or not accessible.
+fn udmabufFrom(bytes: []const u8) ?std.posix.fd_t {
+    const linux = std.os.linux;
+    const size = std.mem.alignForward(usize, bytes.len, std.heap.page_size_min);
+    const memfd_rc = linux.memfd_create("siv-udmabuf", linux.MFD.ALLOW_SEALING | linux.MFD.CLOEXEC);
+    if (linux.errno(memfd_rc) != .SUCCESS) return null;
+    const memfd: i32 = @intCast(memfd_rc);
+    defer _ = linux.close(memfd);
+    if (linux.ftruncate(memfd, @intCast(size)) != 0) return null;
+    if (std.c.pwrite(memfd, bytes.ptr, bytes.len, 0) != bytes.len) return null;
+    if (linux.fcntl(memfd, linux.F.ADD_SEALS, linux.F.SEAL_SHRINK) != 0) return null;
+    const dev_rc = linux.open("/dev/udmabuf", .{ .ACCMODE = .RDWR, .CLOEXEC = true }, 0);
+    if (linux.errno(dev_rc) != .SUCCESS) return null;
+    const dev: i32 = @intCast(dev_rc);
+    defer _ = linux.close(dev);
+    const Create = extern struct { memfd: u32, flags: u32, offset: u64, size: u64 };
+    var create: Create = .{ .memfd = @intCast(memfd), .flags = 1, .offset = 0, .size = size }; // UDMABUF_FLAGS_CLOEXEC
+    const rc = linux.ioctl(dev, 0x40187542, @intFromPtr(&create)); // UDMABUF_CREATE: _IOW('u', 0x42, Create)
+    if (linux.errno(rc) != .SUCCESS) return null;
+    return @intCast(rc);
 }
 
 test "device selection matches dma-buf feedback device numbers" {

@@ -657,16 +657,21 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     import. With VK_EXT_image_drm_format_modifier the dma-buf becomes an
     image with its explicit modifier and plane layout (any modifier the
     driver lists for transfer and dma-buf import); without it, only linear
-    dma-bufs are imported, as a buffer copied at the frame's stride. Both
-    acquire the memory from the foreign queue family and treat foreign
-    images as GENERAL, like wlroots. Opaque XRGB8888 only for now (as for
-    shared memory); YUV needs a sampler Y'CbCr conversion and goes to a
-    subsurface instead. The copy costs one GPU blit per video frame, the
-    price of not tracking which frames in flight sample which import.
-    Verified on lavapipe 26.2 (Nix; Debian's 22.3 lacks the extensions),
-    with a memfd standing in for a linear dma-buf: the imported frame
-    matches the uploaded one exactly, with no validation errors. The
-    modifier path has not run (no driver here offers the extension).
+    dma-bufs are imported, as a buffer copied at the frame's stride. A
+    linear dma-buf the driver rejects as an image (RADV wants stride and
+    offset aligned to 256 bytes; decoders and other GPUs pad less) is
+    copied as a buffer too. Both acquire the memory from the foreign
+    queue family and treat foreign images as GENERAL, like wlroots.
+    Opaque XRGB8888 only for now (as for shared memory); YUV needs a
+    sampler Y'CbCr conversion and goes to a subsurface instead. The copy
+    costs one GPU blit per video frame, the price of not tracking which
+    frames in flight sample which import. Verified on lavapipe 26.2 (Nix;
+    Debian's 22.3 lacks the extensions), with a memfd standing in for a
+    linear dma-buf, and on RADV (Mesa 26.2.2, Radeon 760M) with a real
+    dma-buf from udmabuf: an aligned frame through the explicit-modifier
+    image, an odd stride and offset through the buffer copy. Each
+    imported frame matches the uploaded one exactly, with no validation
+    errors.
   - Textures: beyond images unused for 120 frames, the least recently used
     ones not drawn this frame go once all of them pass 256 MiB, since
     every external video frame is a new texture.
