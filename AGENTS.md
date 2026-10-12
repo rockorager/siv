@@ -58,7 +58,7 @@ owns its directories and does not edit another workstream's files.
 | `raster` | `src/raster/` | Rasterizer, display list, CPU renderer | none |
 | `scene` | `src/scene/` | Rasterizer, display list, CPU renderer | `raster` |
 | `image` | `src/image/` | Image decoding | `scene`, `image_c` (wuffs, lcms2, libwebp, libavif, dav1d, libjxl) |
-| `render_cpu` | `src/render/cpu/` | Rasterizer, display list, CPU renderer | `scene`, `raster`, `text`, `harfbuzz`, `pool`, `wuffs` |
+| `render_cpu` | `src/render/cpu/` | Rasterizer, display list, CPU renderer | `scene`, `raster`, `text`, `harfbuzz`, `pool`, `image` |
 | `render_vulkan` | `src/render/vulkan/` | Vulkan renderer | `scene`, `raster`, `render_cpu`, `pool`, `vulkan`, `shaders` |
 | `loop` | `src/loop/` | Event loop and Wayland platform | `pool` |
 | `dbus` | `src/dbus/` | D-Bus and desktop settings | `loop` |
@@ -106,7 +106,8 @@ commit message. In particular:
   `src/abi/` (D20).
 - C headers are translated by the build (`addTranslateC`), not `@cImport`.
   The C modules are `harfbuzz`, `sheenbidi`, `fontconfig`, `xkbcommon`,
-  `wuffs`, and `vulkan` (headers only; libvulkan is loaded at run time).
+  `image_c` (the image decoders), and `vulkan` (headers only; libvulkan
+  is loaded at run time).
 - Unicode data files for tests are embedded by name:
   `@embedFile("LineBreakTest.txt")`. The list is in `build.zig`.
 - Vendored C code is compiled with `-fvisibility=hidden`; libsiv.so exports

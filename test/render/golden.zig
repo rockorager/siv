@@ -538,7 +538,8 @@ fn sbixFont(gpa: std.mem.Allocator) ![]u8 {
     return out.toOwnedSlice(gpa);
 }
 
-/// CBDT/sbix bitmap glyphs: PNG decoded by wuffs, box-filtered to size.
+/// CBDT/sbix bitmap glyphs: PNG decoded by the image module, box-filtered
+/// to size.
 fn bitmaps(c: *Ctx, b: *Builder) !void {
     if (c.sbix == null) {
         c.sbix_bytes = try sbixFont(c.gpa);

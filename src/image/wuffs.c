@@ -18,7 +18,6 @@
 #define WUFFS_CONFIG__MODULE__JPEG
 #define WUFFS_CONFIG__MODULE__LZW
 #define WUFFS_CONFIG__MODULE__GIF
-#include "wuffs_rename.h"
 #include "wuffs-v0.4.c"
 
 #include "wuffs.h"

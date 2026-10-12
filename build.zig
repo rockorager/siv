@@ -43,7 +43,6 @@ pub fn build(b: *std.Build) void {
     const harfbuzz = harfbuzzModule(ctx);
     const harfbuzz_subset = harfbuzzSubsetModule(ctx, harfbuzz);
     const sheenbidi = sheenbidiModule(ctx);
-    const wuffs = wuffsModule(ctx);
     const fontconfig = systemCModule(ctx, "fontconfig", "#include <fontconfig/fontconfig.h>\n");
     const xkbcommon = systemCModule(ctx, "xkbcommon",
         \\#include <xkbcommon/xkbcommon.h>
@@ -73,17 +72,17 @@ pub fn build(b: *std.Build) void {
         .{ .name = "fontconfig", .module = fontconfig },
         .{ .name = "uucode", .module = uucode },
     });
+    const images = @import("src/image/build_steps.zig").add(b, .{ .target = target, .optimize = optimize, .scene = scene });
+    const image = images.image;
     const render_cpu = ctx.module("src/render/cpu/cpu.zig", &.{
         .{ .name = "scene", .module = scene },
         .{ .name = "raster", .module = raster },
         .{ .name = "text", .module = text },
         .{ .name = "harfbuzz", .module = harfbuzz },
         .{ .name = "pool", .module = pool },
-        .{ .name = "wuffs", .module = wuffs },
+        .{ .name = "image", .module = image },
     });
     const vk = @import("src/render/vulkan/build_steps.zig").add(b, .{ .target = target, .optimize = optimize });
-    const images = @import("src/image/build_steps.zig").add(b, .{ .target = target, .optimize = optimize, .scene = scene });
-    const image = images.image;
     const render_vulkan = ctx.module("src/render/vulkan/vulkan.zig", &.{
         .{ .name = "scene", .module = scene },
         .{ .name = "raster", .module = raster },
@@ -546,22 +545,6 @@ fn harfbuzzSubsetModule(ctx: Ctx, harfbuzz: *std.Build.Module) *std.Build.Module
         });
         break :blk m;
     } else tc.createModule();
-    m.pic = true;
-    return m;
-}
-
-/// wuffs image decoding (D14, D19) behind siv's small C interface in
-/// src/render/cpu/image_decode.h. wuffs ships only as a single C file, so
-/// there is no -fsys option.
-fn wuffsModule(ctx: Ctx) *std.Build.Module {
-    const b = ctx.b;
-    const tc = ctx.translate("wuffs", "#include \"image_decode.h\"\n");
-    tc.addIncludePath(b.path("src/render/cpu"));
-    const m = tc.createModule();
-    if (b.lazyDependency("wuffs", .{})) |dep| {
-        m.addIncludePath(dep.path("release/c"));
-        m.addCSourceFile(.{ .file = b.path("src/render/cpu/image_decode.c"), .flags = c_flags ++ &[_][]const u8{"-std=c99"} });
-    }
     m.pic = true;
     return m;
 }

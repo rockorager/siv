@@ -922,7 +922,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **Requirement:** identical CPU and Vulkan output, color glyphs, variable fonts.
 - **Decision:** glyph outlines and COLRv1 paint go through HarfBuzz's draw and
   paint APIs into siv's coverage rasterizer, shared with paths. CBDT/sbix emoji
-  decode through wuffs. Glyphs are cached by face, glyph, pixel size, and 1/4-
+  decode through the image module (D19). Glyphs are cached by face, glyph, pixel size, and 1/4-
   pixel horizontal phase; Vulkan uploads CPU-rasterized coverage. Without
   hinting, baselines (and ideally x-heights) snap to pixels, small sizes get
   slight stem darkening, and text coverage gets a contrast correction. No LCD
@@ -932,9 +932,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     recreated. Color glyphs also key on the foreground color.
   - COLRv0/v1 paint lowers into a display list that the CPU renderer draws
     into a 16-bit bitmap; Vulkan uploads the same bitmaps. CBDT/sbix PNGs
-    arrive through the same paint callbacks, decode with wuffs (behind
-    `src/render/cpu/image_decode.h`, which the D19 image pipeline can
-    share), and are box-filtered to their device size in linear light.
+    arrive through the same paint callbacks and decode through the D19
+    image module (`render_cpu` imports `image`), straight to their device
+    size, box-filtered in linear light; one wuffs serves both.
   - At 32 px and below the x-height is scaled vertically to a whole pixel,
     rounding up from a fraction of 0.375 as FreeType's autohinter does
     (−8% to +12%). Stem darkening adds 0.25 px of stroke at 10 px and below,
@@ -1847,9 +1847,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       (`src/image/*.h`), so `-fsys` builds (lcms2, libwebp, libavif,
       dav1d, libjxl) and vendored ones share siv's code; the shims also
       build against Debian 12's older libavif 0.11 and libjxl 0.7.
-    - Vendored builds: wuffs is a second copy beside the CPU renderer's
-      glyph decoder, its external symbols renamed (`wuffs_rename.h`);
-      dav1d builds its C paths only (its assembly needs nasm, which the
+    - Vendored builds: wuffs is built once, here, and also decodes the
+      CPU renderer's bitmap glyphs (D14); dav1d builds its C paths only (its assembly needs nasm, which the
       build does without; slower, never wrong), with meson's generated
       headers written by the build; libavif uses the part of libyuv it
       bundles; libjxl builds its decoder with Highway, without the boxes

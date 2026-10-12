@@ -3,7 +3,8 @@
 //!
 //! - Outline glyphs come from hb_font_draw_glyph into a raster.PathBuilder
 //!   and are rasterized into 8-bit masks.
-//! - Color glyphs (COLRv0/v1, and CBDT/sbix bitmaps decoded by wuffs) come
+//! - Color glyphs (COLRv0/v1, and CBDT/sbix bitmaps decoded by the image
+//!   module) come
 //!   from hb_font_paint_glyph, which is
 //!   lowered into a scene display list (layers for transforms, clips, and
 //!   composite groups; gradient fills) and rendered by a CPU renderer into a
@@ -24,7 +25,7 @@ const raster = @import("raster");
 const scene = @import("scene");
 /// The HarfBuzz bindings, for callers that build fonts for glyph runs.
 pub const hb = @import("harfbuzz");
-const wuffs = @import("wuffs");
+const image_mod = @import("image");
 const color = @import("color.zig");
 const renderer_mod = @import("renderer.zig");
 const Pixel = color.Pixel;
@@ -569,15 +570,27 @@ const Paint = struct {
         var len: c_uint = 0;
         const bytes = hb.hb_blob_get_data(blob, &len);
         if (bytes == null or len == 0) return 0;
-        var img: wuffs.siv_image = undefined;
-        if (wuffs.siv_image_decode(bytes, len, max_bitmap_pixels, &img) != wuffs.SIV_IMAGE_OK) return 0;
-        defer wuffs.siv_image_free(&img);
-
         const fw: f32 = @floatFromInt(@abs(ext.width));
         const fh: f32 = @floatFromInt(@abs(ext.height));
-        const tw: u32 = @intFromFloat(std.math.clamp(@round(fw * p.scale), 1, @as(f32, @floatFromInt(img.width))));
-        const th: u32 = @intFromFloat(std.math.clamp(@round(fh * p.scale), 1, @as(f32, @floatFromInt(img.height))));
         const c = p.c;
+        // Decoded straight to the device size (never larger than the
+        // bitmap), box-filtered in linear light.
+        const img = image_mod.decode(c.gpa, bytes[0..len], .{
+            .max_width = @intFromFloat(std.math.clamp(@round(fw * p.scale), 1, 1 << 16)),
+            .max_height = @intFromFloat(std.math.clamp(@round(fh * p.scale), 1, 1 << 16)),
+            .max_pixels = max_bitmap_pixels,
+            .first_frame = true,
+            .linear = true,
+        }) catch |e| switch (e) {
+            error.OutOfMemory => |oom| {
+                p.check(oom);
+                return 1;
+            },
+            else => return 0,
+        };
+        defer img.deinit(c.gpa);
+        const tw = img.width;
+        const th = img.height;
         c.images.ensureUnusedCapacity(c.gpa, 1) catch |e| {
             p.check(e);
             return 1;
@@ -587,7 +600,7 @@ const Paint = struct {
             return 1;
         };
         c.images.appendAssumeCapacity(px);
-        boxResample(img.pixels[0 .. @as(usize, img.width) * img.height * 4], img.width, img.height, px, tw, th);
+        @memcpy(std.mem.sliceAsBytes(px), img.frames[0].pixels);
 
         // Image rows run down from the top edge at y_bearing (font space
         // is y up).
@@ -626,39 +639,6 @@ fn isColorGlyph(font: *hb.hb_font_t, face: ?*hb.hb_face_t, glyph: u32) bool {
 /// Area-weighted resample of straight-alpha sRGB RGBA8 into linear
 /// premultiplied pixels, for downscaling bitmap glyphs (sizes equal to the
 /// source copy through).
-pub fn boxResample(src: []const u8, sw: u32, sh: u32, dst: []Pixel, dw: u32, dh: u32) void {
-    const sx = @as(f32, @floatFromInt(sw)) / @as(f32, @floatFromInt(dw));
-    const sy = @as(f32, @floatFromInt(sh)) / @as(f32, @floatFromInt(dh));
-    for (0..dh) |ty| {
-        const y0 = @as(f32, @floatFromInt(ty)) * sy;
-        const y1 = y0 + sy;
-        for (0..dw) |tx| {
-            const x0 = @as(f32, @floatFromInt(tx)) * sx;
-            const x1 = x0 + sx;
-            var acc: @Vector(4, f32) = @splat(0);
-            var yi: usize = @intFromFloat(@floor(y0));
-            while (@as(f32, @floatFromInt(yi)) < y1 and yi < sh) : (yi += 1) {
-                const wy = @min(@as(f32, @floatFromInt(yi + 1)), y1) - @max(@as(f32, @floatFromInt(yi)), y0);
-                var xi: usize = @intFromFloat(@floor(x0));
-                while (@as(f32, @floatFromInt(xi)) < x1 and xi < sw) : (xi += 1) {
-                    const wx = @min(@as(f32, @floatFromInt(xi + 1)), x1) - @max(@as(f32, @floatFromInt(xi)), x0);
-                    const p = src[(yi * sw + xi) * 4 ..][0..4];
-                    const a = @as(f32, @floatFromInt(p[3])) / 255;
-                    const lin: @Vector(4, f32) = .{
-                        color.srgbToLinear(@as(f32, @floatFromInt(p[0])) / 255) * a,
-                        color.srgbToLinear(@as(f32, @floatFromInt(p[1])) / 255) * a,
-                        color.srgbToLinear(@as(f32, @floatFromInt(p[2])) / 255) * a,
-                        a,
-                    };
-                    acc += lin * @as(@Vector(4, f32), @splat(wx * wy));
-                }
-            }
-            acc /= @as(@Vector(4, f32), @splat(sx * sy));
-            dst[ty * dw + tx] = .{ color.toU16(@min(acc[0], acc[3])), color.toU16(@min(acc[1], acc[3])), color.toU16(@min(acc[2], acc[3])), color.toU16(acc[3]) };
-        }
-    }
-}
-
 fn fromHb(c: hb.hb_color_t) scene.Color {
     return scene.Color.srgb8(@truncate(c >> 8), @truncate(c >> 16), @truncate(c >> 24), @truncate(c));
 }
@@ -817,12 +797,4 @@ test "embolden grows a square by d on each side" {
     embolden(&ccw, &.{4}, 0.5);
     try std.testing.expectApproxEqAbs(@as(f32, -0.5), ccw[0].x, 1e-5);
     try std.testing.expectApproxEqAbs(@as(f32, 4.5), ccw[2].y, 1e-5);
-}
-
-test "box resample averages in linear light" {
-    // Black and white columns average to linear 0.5, not sRGB 0.5.
-    const src = [_]u8{ 0, 0, 0, 255, 255, 255, 255, 255 };
-    var dst: [1]Pixel = undefined;
-    boxResample(&src, 2, 1, &dst, 1, 1);
-    try std.testing.expectEqual(Pixel{ 32768, 32768, 32768, 65535 }, dst[0]);
 }
