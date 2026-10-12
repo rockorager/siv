@@ -615,7 +615,13 @@ fn onRowPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bo
                     }
                 }
             }
-            moveCursor(v, r.index, e.window, e.modifiers, e.modifiers.ctrl and v.selection == .multiple);
+            const index = r.index;
+            moveCursor(v, index, e.window, e.modifiers, e.modifiers.ctrl and v.selection == .multiple);
+            // A double click activates the item, like Enter.
+            if (e.clicks == 2 and !e.modifiers.ctrl and !e.modifiers.shift) {
+                var handled = false;
+                _ = c.siv_emit(v.root, &.{ .type = .activate, .index = @intCast(index), .value = @floatFromInt(index) }, &handled);
+            }
             return true;
         },
         else => return false,

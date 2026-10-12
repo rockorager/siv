@@ -263,6 +263,13 @@ test "list view: keyboard cursor, single and multiple selection, activation" {
     try h.settle();
     try testing.expectEqual(@as(u32, 3), m.index);
     try testing.expectEqual(@as(u32, 1), m.selected);
+    // A double click activates the item under it.
+    const acts = m.activations;
+    try h.click(100, 4 * 32 + 16);
+    try h.click(100, 4 * 32 + 16);
+    try h.settle();
+    try testing.expectEqual(acts + 1, m.activations);
+    try testing.expectEqual(@as(u32, 4), m.index);
     // Shrinking the count drops selection past the end.
     var txn = try begin(h.window);
     try ok(c.siv_view_set_selected(txn, list, 50, true));
