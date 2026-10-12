@@ -14,4 +14,5 @@ const text = @import("text");
 
 test {
     std.testing.refAllDecls(@This());
+    _ = @import("render/golden.zig");
 }
