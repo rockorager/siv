@@ -383,3 +383,30 @@ test "window activation and titles" {
     try testing.expect(h.events.has("ChildrenChanged:remove:0:"));
     try testing.expectEqual(@as(i32, 0), try (try h.get(atspi.root_path, atspi.iface.accessible, "ChildCount")).read(i32));
 }
+
+fn takeValue(user: ?*anyopaque, _: *ui.Window, _: ui.NodeId, ev: *const ui.Event) bool {
+    const v: *f64 = @ptrCast(@alignCast(user));
+    v.* = ev.set_value;
+    return true;
+}
+
+test "setting Value.CurrentValue asks the node's handler for the value" {
+    var h: Harness = undefined;
+    try h.init();
+    defer h.deinit();
+    var buf: [96]u8 = undefined;
+    const slider = h.path(h.nodes.slider, &buf);
+    try testing.expectEqual(@as(f64, 0), try (try h.get(slider, atspi.iface.value, "MinimumIncrement")).read(f64));
+    // Without a set_value handler, nobody takes it.
+    const props = "org.freedesktop.DBus.Properties";
+    try testing.expectError(error.CallFailed, h.call(slider, props, "Set", .{ atspi.iface.value, "CurrentValue", dbus.variant(@as(f64, 5)) }));
+    var got: f64 = -1;
+    var t = try h.win.begin();
+    try t.on(h.nodes.slider, .set_value, .{ .func = takeValue, .user = &got });
+    try t.setSemantics(h.nodes.slider, .{ .role = .slider, .label = "Volume", .value = .{ .min = 0, .max = 10, .now = 3, .step = 0.5 } });
+    t.commit();
+    try h.frame();
+    _ = try h.call(slider, props, "Set", .{ atspi.iface.value, "CurrentValue", dbus.variant(@as(f64, 5)) });
+    try testing.expectEqual(@as(f64, 5), got);
+    try testing.expectEqual(@as(f64, 0.5), try (try h.get(slider, atspi.iface.value, "MinimumIncrement")).read(f64));
+}
