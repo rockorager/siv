@@ -392,3 +392,28 @@ test "on its own thread, the compositor keeps animating while the UI thread is s
         }
     }.f);
 }
+
+test "posted closures run on the compositor in order with commits" {
+    var h: Harness = .{};
+    try h.start(true);
+    defer h.stop();
+    const id = try h.window();
+    const Title = struct {
+        fn set(ctx: ?*anyopaque, comp: *Compositor) void {
+            const t: *const []const u8 = @ptrCast(@alignCast(ctx));
+            comp.platform.setTitle(0, t.*);
+        }
+        fn read(ctx: ?*anyopaque, comp: *Compositor) void {
+            const out: *[]const u8 = @ptrCast(@alignCast(ctx));
+            out.* = comp.platform.headless.title(0);
+        }
+    };
+    var first: []const u8 = "first";
+    var second: []const u8 = "second";
+    try h.comp.post(@ptrCast(&first), Title.set, null);
+    _ = try h.comp.commit(id, &.{.{ .set_opacity = .{ .layer = 1, .opacity = 0.5 } }});
+    try h.comp.post(@ptrCast(&second), Title.set, null);
+    var got: []const u8 = "";
+    try h.comp.call(@ptrCast(&got), Title.read);
+    try testing.expectEqualStrings("second", got);
+}
