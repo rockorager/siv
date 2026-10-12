@@ -132,7 +132,7 @@ pub fn destroy(d: *Device) void {
 /// Records a failure; device loss marks the device lost for good.
 pub fn note(d: *Device, err: vk.Error) vk.Error {
     if (err == error.DeviceLost and !d.lost) {
-        log.err("device lost: {s}", .{d.deviceName()});
+        log.warn("device lost: {s}", .{d.deviceName()});
         d.lost = true;
     }
     return err;

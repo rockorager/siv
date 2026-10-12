@@ -21,6 +21,7 @@ pub const vk = @import("vk.zig");
 pub const Error = vk.Error;
 pub const Device = @import("Device.zig");
 pub const Renderer = @import("Renderer.zig");
+pub const Swapchain = @import("Swapchain.zig");
 
 /// A device for tests: any Vulkan 1.3 device, lavapipe included, with
 /// validation when the layer is installed; error.SkipZigTest without one.
