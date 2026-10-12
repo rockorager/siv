@@ -277,6 +277,7 @@ pub fn build(b: *std.Build) void {
         .abi = abi,
         .shared = shared,
         .test_step = test_step,
+        .integration_step = integration_step,
     });
 }
 

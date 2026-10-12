@@ -14,6 +14,8 @@ pub const Options = struct {
     abi: *std.Build.Module,
     shared: *std.Build.Step.Compile,
     test_step: *std.Build.Step,
+    /// `zig build test-integration`: tests against headless sway.
+    integration_step: *std.Build.Step,
 };
 
 pub fn add(b: *std.Build, o: Options) void {
@@ -142,6 +144,42 @@ pub fn add(b: *std.Build, o: Options) void {
         run.expectExitCode(0);
         test_c.dependOn(&run.step);
     }
+
+    // Example programs (examples/*.c): `zig build examples` installs them;
+    // `zig build test` compiles them, so they keep up with the API.
+    const examples = b.step("examples", "Build the C example programs");
+    for ([_][]const u8{ "hello", "todo", "embed" }) |name| {
+        const exe = b.addExecutable(.{
+            .name = name,
+            .root_module = b.createModule(.{ .target = o.target, .optimize = o.optimize, .link_libc = true }),
+        });
+        exe.root_module.addCSourceFile(.{ .file = b.path(b.fmt("examples/{s}.c", .{name})), .flags = &.{ "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-Wall", "-Wextra", "-Werror" } });
+        exe.root_module.addIncludePath(installed.path(b, "include"));
+        exe.root_module.linkLibrary(o.shared);
+        examples.dependOn(&b.addInstallArtifact(exe, .{}).step);
+        test_c.dependOn(&exe.step);
+    }
+
+    // The public API against sway (integration_tests.zig). Not in `test`.
+    const integration = b.addTest(.{
+        .name = "abi-integration",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/abi/integration_tests.zig"),
+            .target = o.target,
+            .optimize = o.optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "abi", .module = o.abi },
+                .{ .name = "platform", .module = o.abi.import_table.get("platform").? },
+                .{ .name = "text", .module = o.abi.import_table.get("text").? },
+                .{ .name = "loop", .module = o.abi.import_table.get("loop").? },
+            },
+        }),
+        .filters = o.test_filters,
+    });
+    const integration_run = b.addRunArtifact(integration);
+    integration_run.has_side_effects = true; // depends on the installed sway
+    o.integration_step.dependOn(&integration_run.step);
 
     o.test_step.dependOn(test_abi);
     o.test_step.dependOn(test_c);
