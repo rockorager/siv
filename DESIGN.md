@@ -935,13 +935,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       when it goes away the last values stay. The first read reports
       `ready` even if nothing changed, so the application can decide when
       to show its first frame.
-    - Not wired yet: the application (`src/app`) should own one session
-      bus connection and one Settings client and apply the values
-      (reduced motion, fonts, theme). Open: whether the first frame waits
-      for `ready`. Without waiting, a dark-theme user sees a light first
-      frame; a running portal answers within milliseconds, but one being
-      activated can take far longer, so a wait needs a cap (100 ms is a
-      first guess).
+    - The application owns one session bus connection and one Settings
+      client, started at application creation in parallel with the
+      Wayland connection. The first frame waits for `ready`, at most
+      100 ms (a portal being activated can take far longer), so a
+      dark-theme user never sees a light first frame. The typical cost
+      must fit D25's 20 ms first-frame budget: measured (`zig build
+      test-integration-dbus`, `SIV_MEASURE=1`) from connecting to the
+      session bus to the portal's answer through dbus-daemon, the median
+      is 0.3 ms (ReleaseFast) to 0.7 ms (Debug), and the test fails above
+      20 ms. A round trip to a real xdg-desktop-portal 1.16 (without a
+      settings backend) took 0.4–0.5 ms in the same setup.
   - Portals for files, URIs, notifications, printing, screen capture, global
     shortcuts, and the document portal. No built-in file chooser: the portal is
     the system chooser.

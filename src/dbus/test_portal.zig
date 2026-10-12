@@ -37,6 +37,7 @@ pub const FakePortal = struct {
     }
 
     pub fn owns(p: *FakePortal) bool {
+
         return p.owner.state == .primary;
     }
 

@@ -539,3 +539,44 @@ test "GLib's gdbus calls exported methods and reads introspection" {
         }
     }
 }
+
+fn measuring() bool {
+    return testing.environ.getPosix("SIV_MEASURE") != null;
+}
+
+test "settings are ready well within the first-frame budget" {
+    // D19: the first frame waits for the settings (at most 100 ms), so
+    // their typical cost, from connecting to the session bus to the
+    // portal's answer, must fit D25's 20 ms first-frame budget.
+    var h: Harness = undefined;
+    try h.init();
+    defer h.deinit();
+    var portal_conn: Connection = undefined;
+    try h.connect(&portal_conn);
+    defer portal_conn.deinit();
+    var portal: FakePortal = .{ .conn = &portal_conn };
+    try portal.start();
+    try h.until(&portal, FakePortal.owns);
+
+    var samples: [25]u64 = undefined;
+    for (&samples) |*sample| {
+        const t0 = Loop.now();
+        var app: Connection = undefined;
+        try app.init(gpa, &h.loop, h.daemon.address, .{});
+        defer app.deinit();
+        var settings: Settings = undefined;
+        try settings.init(&app, .{});
+        defer settings.deinit();
+        try h.until(&settings, struct {
+            fn f(s: *Settings) bool {
+                return s.ready;
+            }
+        }.f);
+        sample.* = Loop.now() - t0;
+        try testing.expectEqual(Settings.ColorScheme.dark, settings.values.color_scheme);
+    }
+    std.mem.sort(u64, &samples, {}, std.sort.asc(u64));
+    const median = samples[samples.len / 2];
+    if (measuring()) std.debug.print("\nsettings ready after connecting: median {d} us, max {d} us\n", .{ median / 1000, samples[samples.len - 1] / 1000 });
+    try testing.expect(median < 20 * std.time.ns_per_ms);
+}
