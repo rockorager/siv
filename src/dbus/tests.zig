@@ -858,3 +858,99 @@ test "peer-to-peer connections need no bus" {
     while (!Ready.ready) try loop.dispatch(100);
     try testing.expectEqualStrings("", c.uniqueName());
 }
+
+const Settings = @import("Settings.zig");
+const FakePortal = @import("test_portal.zig").FakePortal;
+const Observer = @import("test_portal.zig").Observer;
+
+test "settings: defaults without a portal, then live values once it starts" {
+    var h: Harness = undefined;
+    try h.init();
+    defer h.deinit();
+    var app: Connection = undefined;
+    var portal_conn: Connection = undefined;
+    try h.connect(&app, .{});
+    defer app.deinit();
+    try h.connect(&portal_conn, .{});
+    defer portal_conn.deinit();
+
+    var obs: Observer = .{};
+    var settings: Settings = undefined;
+    try settings.init(&app, .{ .on_change = Observer.cb, .ctx = &obs });
+    defer settings.deinit();
+    try h.until(&settings, struct {
+        fn f(s: *Settings) bool {
+            return s.ready;
+        }
+    }.f);
+    // No portal: ready with the defaults, reported once.
+    try testing.expectEqual(@as(usize, 1), obs.calls);
+    try testing.expect(!obs.last.any());
+    try testing.expectEqual(Settings.ColorScheme.no_preference, settings.values.color_scheme);
+    try testing.expectEqualStrings("sans-serif", settings.values.font.family.slice());
+
+    // The portal appears: the client reads everything.
+    var portal: FakePortal = .{ .conn = &portal_conn };
+    try portal.start();
+    try h.until(&obs, struct {
+        fn f(o: *Observer) bool {
+            return o.calls == 2;
+        }
+    }.f);
+    try testing.expectEqualStrings("org.freedesktop.appearance,org.gnome.desktop.interface,org.gnome.desktop.a11y.interface,org.kde.kdeglobals.General", portal.askedFor());
+    const v = settings.values;
+    try testing.expectEqual(Settings.ColorScheme.dark, v.color_scheme);
+    try testing.expectEqual([3]f64{ 0.2, 0.4, 0.8 }, v.accent_color.?);
+    try testing.expect(v.reduced_motion);
+    try testing.expectEqual(@as(f64, 1.5), v.text_scale);
+    try testing.expectEqualStrings("Cantarell", v.font.family.slice());
+    try testing.expectEqualStrings("Cantarell", v.document_font.family.slice());
+    try testing.expectEqualStrings("Source Code Pro", v.monospace_font.family.slice());
+    try testing.expectEqualStrings("Adwaita", v.cursor_theme.slice());
+    try testing.expectEqual(@as(u32, 32), v.cursor_size);
+    try testing.expect(obs.last.color_scheme and obs.last.accent_color and obs.last.cursor_size and !obs.last.contrast);
+
+    // Live changes.
+    try portal.change("org.freedesktop.appearance", "color-scheme", .{ .u = 2 });
+    try h.until(&obs, struct {
+        fn f(o: *Observer) bool {
+            return o.calls == 3;
+        }
+    }.f);
+    try testing.expectEqual(Settings.ColorScheme.light, settings.values.color_scheme);
+    try testing.expectEqual(Settings.Changed{ .color_scheme = true }, obs.last);
+
+    // An out-of-range accent clears it; an unknown key changes nothing.
+    try portal.change("org.example", "x", .{ .u = 1 });
+    try portal.change("org.freedesktop.appearance", "accent-color", .{ .rgb = .{ 2, 0, 0 } });
+    try h.until(&obs, struct {
+        fn f(o: *Observer) bool {
+            return o.calls == 4;
+        }
+    }.f);
+    try testing.expect(settings.values.accent_color == null);
+    try testing.expectEqual(Settings.Changed{ .accent_color = true }, obs.last);
+
+    // The same signal from another connection is not the portal's.
+    var other_conn: Connection = undefined;
+    try h.connect(&other_conn, .{});
+    defer other_conn.deinit();
+    var impostor: FakePortal = .{ .conn = &other_conn };
+    try impostor.change("org.freedesktop.appearance", "color-scheme", .{ .u = 1 });
+    try h.settle();
+    try testing.expectEqual(Settings.ColorScheme.light, settings.values.color_scheme);
+
+    // The portal restarting is read again; going away keeps the values.
+    portal.stop();
+    try h.settle();
+    try testing.expectEqual(@as(usize, 4), obs.calls);
+    portal.color_scheme = 0;
+    try portal.start();
+    try h.until(&obs, struct {
+        fn f(o: *Observer) bool {
+            return o.calls == 5;
+        }
+    }.f);
+    try testing.expectEqual(Settings.ColorScheme.no_preference, settings.values.color_scheme);
+    try testing.expectEqual(@as(u32, 2), portal.reads);
+}

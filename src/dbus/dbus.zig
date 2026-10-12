@@ -16,6 +16,7 @@ pub const address = @import("address.zig");
 pub const match = @import("match.zig");
 pub const object = @import("object.zig");
 pub const Connection = @import("Connection.zig");
+pub const Settings = @import("Settings.zig");
 
 pub const Interface = object.Interface;
 pub const Method = object.Method;
