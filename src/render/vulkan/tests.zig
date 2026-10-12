@@ -213,6 +213,142 @@ fn udmabufFrom(bytes: []const u8) ?std.posix.fd_t {
     return @intCast(rc);
 }
 
+test "tiled dma-bufs are imported with their explicit modifier" {
+    const vk = @import("vk.zig");
+    const c = vk.c;
+    const gpa = testing.allocator;
+    const device = try testDevice();
+    defer device.destroy();
+    if (!device.drm_modifiers) return error.SkipZigTest;
+    const errors = Device.validation_errors.load(.monotonic);
+    const d = device;
+    const fmt = c.VK_FORMAT_B8G8R8A8_UNORM;
+    const w = 37;
+    const h = 23;
+
+    // A single-plane tiled modifier the device can export, as a producer
+    // on this GPU would use.
+    var mods: [64]c.VkDrmFormatModifierPropertiesEXT = undefined;
+    var list: c.VkDrmFormatModifierPropertiesListEXT = .{ .sType = c.VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT, .drmFormatModifierCount = mods.len, .pDrmFormatModifierProperties = &mods };
+    var fp: c.VkFormatProperties2 = .{ .sType = c.VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2, .pNext = &list };
+    d.vki.vkGetPhysicalDeviceFormatProperties2.?(d.physical, fmt, &fp);
+    const transfer = c.VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | c.VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    const modifier = for (mods[0..@min(list.drmFormatModifierCount, mods.len)]) |m| {
+        if (m.drmFormatModifier != scene.Dmabuf.modifier_linear and m.drmFormatModifierPlaneCount == 1 and m.drmFormatModifierTilingFeatures & transfer == transfer) break m.drmFormatModifier;
+    } else return error.SkipZigTest;
+
+    // The producer's image, exported as a dma-buf.
+    const mod_list: c.VkImageDrmFormatModifierListCreateInfoEXT = .{ .sType = c.VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT, .drmFormatModifierCount = 1, .pDrmFormatModifiers = &modifier };
+    const external: c.VkExternalMemoryImageCreateInfo = .{ .sType = c.VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO, .pNext = &mod_list, .handleTypes = c.VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT };
+    var image: c.VkImage = null;
+    try vk.call(d.vkd.vkCreateImage, .{ d.device, &c.VkImageCreateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .pNext = &external,
+        .imageType = c.VK_IMAGE_TYPE_2D,
+        .format = fmt,
+        .extent = .{ .width = w, .height = h, .depth = 1 },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = c.VK_SAMPLE_COUNT_1_BIT,
+        .tiling = c.VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT,
+        .usage = c.VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = c.VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED,
+    }, null, &image });
+    defer d.vkd.vkDestroyImage.?(d.device, image, null);
+    var reqs: c.VkMemoryRequirements = undefined;
+    d.vkd.vkGetImageMemoryRequirements.?(d.device, image, &reqs);
+    const dedicated: c.VkMemoryDedicatedAllocateInfo = .{ .sType = c.VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, .image = image };
+    const export_info: c.VkExportMemoryAllocateInfo = .{ .sType = c.VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO, .pNext = &dedicated, .handleTypes = c.VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT };
+    var memory: c.VkDeviceMemory = null;
+    try vk.call(d.vkd.vkAllocateMemory, .{ d.device, &c.VkMemoryAllocateInfo{ .sType = c.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &export_info, .allocationSize = reqs.size, .memoryTypeIndex = @ctz(reqs.memoryTypeBits) }, null, &memory });
+    defer d.vkd.vkFreeMemory.?(d.device, memory, null);
+    try vk.call(d.vkd.vkBindImageMemory, .{ d.device, image, memory, 0 });
+
+    // Filled from a pattern by a copy, then released to the foreign queue.
+    const pixels = try gpa.alloc(u8, w * h * 4);
+    defer gpa.free(pixels);
+    for (0..h) |y| for (0..w) |x| {
+        pixels[(y * w + x) * 4 ..][0..4].* = .{ @intCast(x * 6), @intCast(y * 11), @intCast(255 - x * 5), 0x22 };
+    };
+    var staging = try Device.Buffer.init(d, pixels.len, c.VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+    defer staging.deinit(d);
+    @memcpy(staging.mapped.?[0..pixels.len], pixels);
+    var pool_handle: c.VkCommandPool = null;
+    try vk.call(d.vkd.vkCreateCommandPool, .{ d.device, &c.VkCommandPoolCreateInfo{ .sType = c.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .queueFamilyIndex = d.queue_family }, null, &pool_handle });
+    defer d.vkd.vkDestroyCommandPool.?(d.device, pool_handle, null);
+    var cmd: c.VkCommandBuffer = null;
+    try vk.call(d.vkd.vkAllocateCommandBuffers, .{ d.device, &c.VkCommandBufferAllocateInfo{ .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool_handle, .level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1 }, &cmd });
+    try vk.call(d.vkd.vkBeginCommandBuffer, .{ cmd, &c.VkCommandBufferBeginInfo{ .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO } });
+    var barrier: c.VkImageMemoryBarrier2 = .{
+        .sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .dstStageMask = c.VK_PIPELINE_STAGE_2_COPY_BIT,
+        .dstAccessMask = c.VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .oldLayout = c.VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .srcQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED,
+        .image = image,
+        .subresourceRange = Device.color_range,
+    };
+    d.vkd.vkCmdPipelineBarrier2.?(cmd, &c.VkDependencyInfo{ .sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier });
+    d.vkd.vkCmdCopyBufferToImage.?(cmd, staging.handle, image, c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c.VkBufferImageCopy{ .imageSubresource = Device.color_layers, .imageExtent = .{ .width = w, .height = h, .depth = 1 } });
+    barrier = .{
+        .sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = c.VK_PIPELINE_STAGE_2_COPY_BIT,
+        .srcAccessMask = c.VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .oldLayout = c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = c.VK_IMAGE_LAYOUT_GENERAL,
+        .srcQueueFamilyIndex = d.queue_family,
+        .dstQueueFamilyIndex = if (d.queue_foreign) c.VK_QUEUE_FAMILY_FOREIGN_EXT else c.VK_QUEUE_FAMILY_EXTERNAL,
+        .image = image,
+        .subresourceRange = Device.color_range,
+    };
+    d.vkd.vkCmdPipelineBarrier2.?(cmd, &c.VkDependencyInfo{ .sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier });
+    try vk.call(d.vkd.vkEndCommandBuffer, .{cmd});
+    const cmd_info: c.VkCommandBufferSubmitInfo = .{ .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cmd };
+    try vk.call(d.vkd.vkQueueSubmit2, .{ d.queue, 1, &c.VkSubmitInfo2{ .sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = 1, .pCommandBufferInfos = &cmd_info }, null });
+    try vk.call(d.vkd.vkDeviceWaitIdle, .{d.device});
+
+    // What a producer sends: the fd, the modifier, and the plane layout.
+    const get_fd: c.PFN_vkGetMemoryFdKHR = @ptrCast(d.vki.vkGetDeviceProcAddr.?(d.device, "vkGetMemoryFdKHR"));
+    const get_modifier: c.PFN_vkGetImageDrmFormatModifierPropertiesEXT = @ptrCast(d.vki.vkGetDeviceProcAddr.?(d.device, "vkGetImageDrmFormatModifierPropertiesEXT"));
+    var fd: c_int = -1;
+    try vk.call(get_fd, .{ d.device, &c.VkMemoryGetFdInfoKHR{ .sType = c.VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = memory, .handleType = c.VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT }, &fd });
+    defer _ = std.c.close(fd);
+    var mod_props: c.VkImageDrmFormatModifierPropertiesEXT = .{ .sType = c.VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_PROPERTIES_EXT };
+    try vk.call(get_modifier, .{ d.device, image, &mod_props });
+    const get_layout: c.PFN_vkGetImageSubresourceLayout = @ptrCast(d.vki.vkGetDeviceProcAddr.?(d.device, "vkGetImageSubresourceLayout"));
+    var layout: c.VkSubresourceLayout = undefined;
+    get_layout.?(d.device, image, &c.VkImageSubresource{ .aspectMask = c.VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT }, &layout);
+    var buf: scene.Dmabuf = .{ .format = scene.Dmabuf.xrgb8888, .modifier = mod_props.drmFormatModifier, .plane_count = 1 };
+    buf.planes[0] = .{ .fd = fd, .offset = @intCast(layout.offset), .stride = @intCast(layout.rowPitch) };
+
+    const r = try Renderer.create(gpa, d, .serial);
+    defer r.destroy();
+    try r.resize(50, 30);
+    var b = scene.Builder.init(gpa);
+    defer b.deinit();
+    const want = try gpa.alloc(u8, 50 * 30 * 4);
+    defer gpa.free(want);
+    const got = try gpa.alloc(u8, 50 * 30 * 4);
+    defer gpa.free(got);
+    for ([_]?[*]const u8{ pixels.ptr, null }, [_]u64{ 1, 2 }, [_][]u8{ want, got }) |px, key, out| {
+        b.reset();
+        try b.image(.{
+            .image = .{ .pixels = px, .width = w, .height = h, .stride = w * 4, .format = .bgrx8_srgb, .key = key, .dmabuf = if (px == null) &buf else null },
+            .src = .xywh(0, 0, w, h),
+            .dst = .xywh(5, 4, w, h),
+            .filter = .nearest,
+        });
+        try r.beginFrame();
+        try r.render(try b.finish(0), .{ .background = .white }, .{ .readback = .{ .pixels = out.ptr, .stride = 50 * 4 } });
+    }
+    try testing.expect(!r.dmabuf_skipped);
+    try testing.expectEqualSlices(u8, want, got);
+    try testing.expectEqual(errors, Device.validation_errors.load(.monotonic));
+}
+
 test "device selection matches dma-buf feedback device numbers" {
     // dev_t 226:128 (/dev/dri/renderD128) in the Linux encoding.
     const dev: u64 = (226 << 8) | 128;

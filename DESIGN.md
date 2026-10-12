@@ -669,9 +669,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     Debian's 22.3 lacks the extensions), with a memfd standing in for a
     linear dma-buf, and on RADV (Mesa 26.2.2, Radeon 760M) with a real
     dma-buf from udmabuf: an aligned frame through the explicit-modifier
-    image, an odd stride and offset through the buffer copy. Each
-    imported frame matches the uploaded one exactly, with no validation
-    errors.
+    image, an odd stride and offset through the buffer copy; and a tiled
+    image the same GPU exported (GFX11 64 KiB R_X swizzle, modifier
+    0x0200000010401b04) through its explicit modifier and plane layout.
+    Each imported frame matches the uploaded one exactly, with no
+    validation errors.
   - Textures: beyond images unused for 120 frames, the least recently used
     ones not drawn this frame go once all of them pass 256 MiB, since
     every external video frame is a new texture.
