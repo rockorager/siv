@@ -321,8 +321,7 @@ fn wuffsModule(ctx: Ctx) *std.Build.Module {
     tc.addIncludePath(b.path("src/render/cpu"));
     const m = tc.createModule();
     if (b.lazyDependency("wuffs", .{})) |dep| {
-        // The GitHub archive keeps its top-level directory.
-        m.addIncludePath(dep.path("wuffs-mirror-release-c-0.4.0-alpha.10/release/c"));
+        m.addIncludePath(dep.path("release/c"));
         m.addCSourceFile(.{ .file = b.path("src/render/cpu/image_decode.c"), .flags = c_flags ++ &[_][]const u8{"-std=c99"} });
     }
     m.pic = true;

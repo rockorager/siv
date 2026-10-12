@@ -21,7 +21,7 @@
         // Lazy, like the other vendored C code.
         .wuffs = .{
             .url = "https://github.com/google/wuffs-mirror-release-c/archive/refs/tags/v0.4.0-alpha.10.tar.gz",
-            .hash = "N-V-__8AAP5JWgCtkdvKRXLvAmjjqpizkxlQlrChvRLfDXgI",
+            .hash = "N-V-__8AAP5JWgDH1rExLB4QCFqm60SkW51_i6qOXTyhjsWv",
             .lazy = true,
         },
         // Unicode properties and grapheme breaking (D13). MIT.
