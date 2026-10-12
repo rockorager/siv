@@ -95,6 +95,7 @@ const Window = struct {
     /// Commits without a buffer (`commitWindow`).
     bare_commits: u32 = 0,
     cursor: platform.CursorShape = .default,
+    activated_with: platform.Handle = .{},
 
     const Slot = struct { pixels: []u8 = &.{}, width: u32 = 0, height: u32 = 0 };
 };
@@ -429,6 +430,39 @@ pub fn destroyWindow(hl: *Headless, id: WindowId) void {
     hl.queue.purge(id);
     hl.allocator.destroy(w);
     hl.windows.items[id] = null;
+}
+
+// Desktop integration: exports and activation tokens are simulated, so
+// that portal and activation plumbing runs in hermetic tests.
+
+/// Handles are "headless-<window>"; popups cannot be exported.
+pub fn exportToplevel(hl: *Headless, id: WindowId) void {
+    var handle: platform.Handle = .{};
+    if (hl.get(id).parent == null) {
+        var buf: [32]u8 = undefined;
+        handle.set(std.fmt.bufPrint(&buf, "headless-{d}", .{id}) catch unreachable);
+    }
+    hl.queue.push(.{ .exported = .{ .window = id, .handle = handle } });
+}
+
+/// Tokens are "headless-token-<request>"; a serial of 0 (no input) gets
+/// none, as compositors refuse tokens without user input.
+pub fn requestActivationToken(hl: *Headless, id: WindowId, request: u32, _: SeatId, serial: u32, _: []const u8) void {
+    var token: platform.Handle = .{};
+    if (serial != 0) {
+        var buf: [48]u8 = undefined;
+        token.set(std.fmt.bufPrint(&buf, "headless-token-{d}", .{request}) catch unreachable);
+    }
+    hl.queue.push(.{ .activation_token = .{ .window = id, .request = request, .token = token } });
+}
+
+pub fn activate(hl: *Headless, id: WindowId, token: []const u8) void {
+    hl.get(id).activated_with.set(token);
+}
+
+/// The token the window was last activated with.
+pub fn activationToken(hl: *Headless, id: WindowId) []const u8 {
+    return hl.get(id).activated_with.slice();
 }
 
 pub fn windowState(hl: *Headless, id: WindowId) *const WindowState {

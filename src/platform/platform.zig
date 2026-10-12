@@ -391,6 +391,36 @@ pub const Platform = union(enum) {
             inline else => |b| b.finishDrag(seat, offer, action),
         }
     }
+
+    // Desktop integration (D19).
+
+    /// Exports a toplevel with xdg-foreign-v2 so that other clients can
+    /// parent their dialogs to it. An `exported` event follows with the
+    /// handle (at once if the window was exported before); the export
+    /// lasts as long as the window.
+    pub fn exportToplevel(p: Platform, id: WindowId) void {
+        switch (p) {
+            inline else => |b| b.exportToplevel(id),
+        }
+    }
+
+    /// Asks for an xdg-activation token to hand to another application,
+    /// so that it may take focus: tied to the input event `serial` on
+    /// `seat`, and to the window, which should have focus. An
+    /// `activation_token` event with `request` follows.
+    pub fn requestActivationToken(p: Platform, id: WindowId, request: u32, seat: SeatId, serial: u32, app_id: []const u8) void {
+        switch (p) {
+            inline else => |b| b.requestActivationToken(id, request, seat, serial, app_id),
+        }
+    }
+
+    /// Activates (focuses) a window with a token another application
+    /// passed on (xdg-activation, $XDG_ACTIVATION_TOKEN).
+    pub fn activate(p: Platform, id: WindowId, token: []const u8) void {
+        switch (p) {
+            inline else => |b| b.activate(id, token),
+        }
+    }
 };
 
 /// Pointer cursor shapes: the CSS cursor names, numbered as in
@@ -565,6 +595,19 @@ pub const DragSource = struct {
 };
 
 pub const SubsurfaceId = u32;
+
+/// A handle string from the compositor: an xdg-foreign export handle or
+/// an xdg-activation token.
+pub const Handle = BoundedString(256);
+
+/// The window's toplevel was exported (xdg-foreign-v2): other clients,
+/// such as a portal's dialogs, can name it with `handle`. Empty when the
+/// compositor cannot export.
+pub const Exported = struct { window: WindowId, handle: Handle };
+
+/// An xdg-activation token for `request` (`Platform.requestActivationToken`);
+/// empty when the compositor offers no activation.
+pub const ActivationToken = struct { window: WindowId, request: u32, token: Handle };
 
 pub const EmbedSurface = struct {
     sub: SubsurfaceId,
@@ -1092,6 +1135,8 @@ pub const Event = union(enum) {
     /// This client's drag: data requests and progress.
     drag_send: DragSend,
     drag_source: DragSource,
+    exported: Exported,
+    activation_token: ActivationToken,
     /// The platform failed: events were lost (OutOfMemory) or the
     /// connection is gone (ConnectionLost, ProtocolError).
     failed: Error,

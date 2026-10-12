@@ -76,6 +76,10 @@ primary_selection_manager: ?*zwp.PrimarySelectionDeviceManagerV1 = null,
 cursor_shape_manager: ?*wp.CursorShapeManagerV1 = null,
 /// Themed cursors, without cursor-shape-v1.
 cursor_theme: cursor.Theme,
+exporter: ?*zxdg.ExporterV2 = null,
+activation: ?*xdg.ActivationV1 = null,
+/// Activation tokens requested and not yet done.
+tokens: std.ArrayList(*TokenRequest) = .empty,
 /// Clock of wp_presentation timestamps; converted to CLOCK_MONOTONIC, the
 /// loop's clock, when it differs (weston uses CLOCK_MONOTONIC_RAW).
 presentation_clock: linux.clockid_t = .MONOTONIC,
@@ -200,6 +204,9 @@ pub const Window = struct {
     subsurfaces: std.ArrayList(?*Subsurface) = .empty,
     /// Shown while a pointer is over the window.
     cursor: platform.CursorShape = .default,
+    /// The xdg-foreign export, and its handle once the compositor sent it.
+    exported: ?*zxdg.ExportedV2 = null,
+    export_handle: ?platform.Handle = null,
 
     /// Presentation feedback for one commit and the time it was predicted for.
     const Feedback = struct {
@@ -264,6 +271,13 @@ pub fn destroy(self: *Wayland) void {
 
 fn teardown(self: *Wayland) void {
     for (self.windows.items, 0..) |w, i| if (w != null) self.destroyWindow(@intCast(i));
+    for (self.tokens.items) |t| {
+        t.proxy.destroy();
+        self.allocator.destroy(t);
+    }
+    self.tokens.deinit(self.allocator);
+    if (self.exporter) |m| m.destroy();
+    if (self.activation) |m| m.destroy();
     for (self.seats.items) |s| if (s) |seat| seat.destroy();
     self.cursor_theme.deinit();
     if (self.cursor_shape_manager) |m| m.destroy();
@@ -430,6 +444,10 @@ fn addGlobal(self: *Wayland, registry: *wl.Registry, name: u32, interface: []con
     } else if (is(interface, wp.CursorShapeManagerV1)) {
         self.cursor_shape_manager = try registry.bind(name, wp.CursorShapeManagerV1, @min(version, 2));
         for (self.seats.items) |s| if (s) |seat| seat.addShapeDevice();
+    } else if (is(interface, zxdg.ExporterV2)) {
+        self.exporter = try registry.bind(name, zxdg.ExporterV2, 1);
+    } else if (is(interface, xdg.ActivationV1)) {
+        self.activation = try registry.bind(name, xdg.ActivationV1, 1);
     } else if (is(interface, wl.Output)) {
         try self.addOutput(registry, name, version);
     } else if (is(interface, wl.Seat)) {
@@ -771,6 +789,7 @@ pub fn destroyWindow(self: *Wayland, id: WindowId) void {
         self.retireDmabuf(x);
         x.destroy(self.allocator);
     };
+    if (w.exported) |e| e.destroy();
     w.subsurfaces.deinit(self.allocator);
     if (w.toplevel) |t| t.destroy();
     if (w.popup) |p| p.destroy();
@@ -1203,6 +1222,88 @@ pub fn receiveDrag(self: *Wayland, seat: SeatId, offer: u32, mime: []const u8, f
 
 pub fn finishDrag(self: *Wayland, seat: SeatId, offer: u32, action: platform.DragAction) void {
     if (self.seatData(seat)) |dev| dev.finishDrag(offer, action);
+}
+
+// Desktop integration (D19) ---------------------------------------------------
+
+pub fn exportToplevel(self: *Wayland, id: WindowId) void {
+    const w = self.get(id);
+    if (w.export_handle) |h| return self.queue.push(.{ .exported = .{ .window = id, .handle = h } });
+    if (w.exported != null) return; // the handle is on its way
+    const none: platform.Event = .{ .exported = .{ .window = id, .handle = .{} } };
+    // Only toplevels can be exported.
+    if (w.toplevel == null) return self.queue.push(none);
+    const exporter = self.exporter orelse return self.queue.push(none);
+    const e = exporter.exportToplevel(w.surface) catch return self.queue.push(none);
+    e.setListener(*Window, onExported, w);
+    w.exported = e;
+}
+
+fn onExported(_: *zxdg.ExportedV2, event: zxdg.ExportedV2.Event, w: *Window) void {
+    switch (event) {
+        .handle => |h| {
+            var handle: platform.Handle = .{};
+            handle.set(std.mem.span(h.handle));
+            w.export_handle = handle;
+            w.backend.queue.push(.{ .exported = .{ .window = w.id, .handle = handle } });
+        },
+    }
+}
+
+const TokenRequest = struct {
+    backend: *Wayland,
+    proxy: *xdg.ActivationTokenV1,
+    window: WindowId,
+    request: u32,
+};
+
+pub fn requestActivationToken(self: *Wayland, id: WindowId, request: u32, seat: SeatId, serial: u32, app_id: []const u8) void {
+    const none: platform.Event = .{ .activation_token = .{ .window = id, .request = request, .token = .{} } };
+    const activation = self.activation orelse return self.queue.push(none);
+    self.tokens.ensureUnusedCapacity(self.allocator, 1) catch return self.queue.push(none);
+    const t = self.allocator.create(TokenRequest) catch return self.queue.push(none);
+    const proxy = activation.getActivationToken() catch {
+        self.allocator.destroy(t);
+        return self.queue.push(none);
+    };
+    t.* = .{ .backend = self, .proxy = proxy, .window = id, .request = request };
+    proxy.setListener(*TokenRequest, onToken, t);
+    if (self.seatProxy(seat)) |s| if (serial != 0) proxy.setSerial(serial, s);
+    if (app_id.len > 0 and app_id.len < 256) {
+        var buf: [256]u8 = undefined;
+        @memcpy(buf[0..app_id.len], app_id);
+        buf[app_id.len] = 0;
+        proxy.setAppId(buf[0..app_id.len :0]);
+    }
+    if (self.windows.items[id]) |w| proxy.setSurface(w.surface);
+    proxy.commit();
+    self.tokens.appendAssumeCapacity(t);
+}
+
+fn onToken(proxy: *xdg.ActivationTokenV1, event: xdg.ActivationTokenV1.Event, t: *TokenRequest) void {
+    switch (event) {
+        .done => |d| {
+            const self = t.backend;
+            var token: platform.Handle = .{};
+            token.set(std.mem.span(d.token));
+            self.queue.push(.{ .activation_token = .{ .window = t.window, .request = t.request, .token = token } });
+            proxy.destroy();
+            for (self.tokens.items, 0..) |x, i| if (x == t) {
+                _ = self.tokens.swapRemove(i);
+                break;
+            };
+            self.allocator.destroy(t);
+        },
+    }
+}
+
+pub fn activate(self: *Wayland, id: WindowId, token: []const u8) void {
+    const activation = self.activation orelse return;
+    if (token.len == 0 or token.len >= 256) return;
+    var buf: [256]u8 = undefined;
+    @memcpy(buf[0..token.len], token);
+    buf[token.len] = 0;
+    activation.activate(buf[0..token.len :0], self.get(id).surface);
 }
 
 fn seatProxy(self: *Wayland, id: SeatId) ?*wl.Seat {

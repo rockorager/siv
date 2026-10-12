@@ -19,6 +19,8 @@ pub const xml = [_][]const u8{
     "staging/cursor-shape/cursor-shape-v1.xml",
     // Only for an interface cursor-shape-v1 refers to; no tablet support yet.
     "stable/tablet/tablet-v2.xml",
+    "unstable/xdg-foreign/xdg-foreign-unstable-v2.xml",
+    "staging/xdg-activation/xdg-activation-v1.xml",
 };
 
 /// Globals to bind, each with the highest version siv implements. Code is
@@ -42,4 +44,8 @@ pub const globals = [_]struct { []const u8, u32 }{
     // Only for the compositor's main device (default feedback, D10).
     .{ "zwp_linux_dmabuf_v1", 4 },
     .{ "wp_cursor_shape_manager_v1", 2 },
+    // Parent window handles for portal dialogs (D19).
+    .{ "zxdg_exporter_v2", 1 },
+    // Focus handoff between applications (D17, D19).
+    .{ "xdg_activation_v1", 1 },
 };

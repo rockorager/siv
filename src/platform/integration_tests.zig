@@ -939,3 +939,80 @@ test "cursors: cursor-shape-v1 shapes, then themed and animated cursors" {
     _ = app.backend.display.roundtrip();
     try testing.expect(!app.closed);
 }
+
+test "toplevels export xdg-foreign handles and activation tokens hand focus over" {
+    var h: Harness = .{};
+    try h.start();
+    defer h.stop();
+    const app = &h.app;
+    const backend = app.backend;
+    try testing.expect(backend.exporter != null and backend.activation != null);
+    const first = try h.mapWindow(.{ .title = "first" });
+
+    backend.exportToplevel(first);
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.count(.exported) >= 1;
+        }
+    }.f);
+    const handle = app.last(.exported).?.exported;
+    try testing.expectEqual(first, handle.window);
+    try testing.expect(handle.handle.len > 0);
+    // A second export answers at once with the same handle.
+    backend.exportToplevel(first);
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.count(.exported) >= 2;
+        }
+    }.f);
+    try testing.expectEqualStrings(handle.handle.slice(), app.last(.exported).?.exported.handle.slice());
+
+    // A click gives the serial sway ties the token to; the token then
+    // activates a second window, which sway focuses.
+    var vp = try VirtualPointer.connect(&h.sway);
+    defer vp.deinit();
+    try vp.sync();
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            const seat = a.backend.seats.items[0] orelse return false;
+            return seat.pointer != null;
+        }
+    }.f);
+    _ = backend.display.roundtrip();
+    vp.moveTo(100, 100);
+    vp.button(0x110, true);
+    vp.button(0x110, false);
+    try vp.sync();
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.count(.pointer_button) >= 2;
+        }
+    }.f);
+    const press = app.last(.pointer_button).?.pointer_button;
+    const second = try h.mapWindow(.{ .title = "second" });
+    // Sway focuses a new window; give focus back to the first one. Sway
+    // only marks activated windows urgent unless told to focus them.
+    try h.sway.command("[title=\"first\"] focus");
+    try h.sway.command("focus_on_window_activation focus");
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return !a.backend.windowState(1).states.activated;
+        }
+    }.f);
+    backend.requestActivationToken(first, 7, press.seat, press.serial, "org.example.Test");
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.count(.activation_token) >= 1;
+        }
+    }.f);
+    const token = app.last(.activation_token).?.activation_token;
+    try testing.expectEqual(@as(u32, 7), token.request);
+    try testing.expect(token.token.len > 0);
+    backend.activate(second, token.token.slice());
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.backend.windowState(1).states.activated;
+        }
+    }.f);
+    try testing.expectEqual(@as(WindowId, 1), second);
+}
