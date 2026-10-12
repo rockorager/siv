@@ -126,7 +126,11 @@ const Blur = struct {
     op: u32,
     bbox: IRect,
     sigma: f32,
+    /// How far the blur reads from an output pixel.
     radius: i32,
+    /// Box radii for large sigmas (three box passes approximate the
+    /// Gaussian); null for an exact Gaussian kernel of radius ceil(3σ).
+    boxes: ?[3]usize,
     /// Output pixels needed this frame, and the backdrop region they read.
     need: IRect = .empty,
     src: IRect = .empty,
@@ -226,6 +230,7 @@ pub const Renderer = struct {
     kernel: std.ArrayList(f32) = .empty,
     tiles: std.ArrayList(u8) = .empty,
     tile_list: std.ArrayList(u32) = .empty,
+    changed: std.ArrayList(IRect) = .empty,
     stack: std.ArrayList(PrepState) = .empty,
     path: raster.PathBuilder,
     outline: raster.PathBuilder,
@@ -273,6 +278,7 @@ pub const Renderer = struct {
         r.kernel.deinit(gpa);
         r.tiles.deinit(gpa);
         r.tile_list.deinit(gpa);
+        r.changed.deinit(gpa);
         r.stack.deinit(gpa);
         r.path.deinit();
         r.outline.deinit();
@@ -440,11 +446,13 @@ pub const Renderer = struct {
                     const sigma = @min(b.sigma * @sqrt(@abs(m.determinant())), scene.max_blur_sigma);
                     if (!(sigma > 0)) continue;
                     const cov = try r.coverageFor(b.shape, .nonzero, m);
+                    const boxes = boxRadii(sigma);
                     try r.blurs.append(r.gpa, .{
                         .op = @intCast(r.ops.items.len),
                         .bbox = bbox,
                         .sigma = sigma,
-                        .radius = @intFromFloat(@ceil(3 * sigma)),
+                        .radius = if (boxes) |bx| @intCast(bx[0] + bx[1] + bx[2]) else @intFromFloat(@ceil(3 * sigma)),
+                        .boxes = boxes,
                     });
                     try r.ops.append(r.gpa, .{ .blur = .{ .bbox = bbox, .coverage = cov, .index = @intCast(r.blurs.items.len - 1) } });
                 },
@@ -587,19 +595,6 @@ pub const Renderer = struct {
         }
     }
 
-    fn anyMarked(r: *const Renderer, rect: IRect) bool {
-        const c = rect.intersect(r.viewport());
-        if (c.isEmpty()) return false;
-        var ty: i32 = @divFloor(c.y0, T);
-        while (ty <= @divFloor(c.y1 - 1, T)) : (ty += 1) {
-            var tx: i32 = @divFloor(c.x0, T);
-            while (tx <= @divFloor(c.x1 - 1, T)) : (tx += 1) {
-                if (r.tiles.items[@as(u32, @intCast(ty)) * r.tilesX() + @as(u32, @intCast(tx))] & tile_render != 0) return true;
-            }
-        }
-        return false;
-    }
-
     /// Bounding box of the render-marked tiles inside `rect`.
     fn markedBounds(r: *const Renderer, rect: IRect) IRect {
         const c = rect.intersect(r.viewport());
@@ -627,8 +622,19 @@ pub const Renderer = struct {
         }
         // A blur whose backdrop changed changes everywhere it is drawn.
         // Blurs are in paint order, so one forward pass catches chains.
-        for (r.blurs.items) |b| {
-            if (r.anyMarked(b.bbox.outset(b.radius))) r.markRect(b.bbox, tile_render);
+        // Test against the changed pixels, not whole tiles: redrawn tiles
+        // reproduce unchanged pixels exactly.
+        if (r.blurs.items.len > 0) {
+            r.changed.clearRetainingCapacity();
+            if (opts.damage) |rects| try r.changed.appendSlice(r.gpa, rects) else try r.changed.append(r.gpa, r.viewport());
+            for (r.blurs.items) |b| {
+                const reach = b.bbox.outset(b.radius);
+                for (r.changed.items) |d| if (d.intersects(reach)) {
+                    r.markRect(b.bbox, tile_render);
+                    try r.changed.append(r.gpa, b.bbox);
+                    break;
+                };
+            }
         }
         for (opts.encode) |e| r.markRect(e, tile_encode);
         // Each blur must produce what damaged tiles and later blurs' backdrops
@@ -658,12 +664,12 @@ pub const Renderer = struct {
             tmp_max = @max(tmp_max, @as(usize, @intCast(b.src.height())) * @as(usize, @intCast(b.need.width())));
             b.result = results;
             results += area(b.need);
-            kernel = @max(kernel, @as(usize, @intCast(2 * b.radius + 1)));
+            if (b.boxes == null) kernel = @max(kernel, @as(usize, @intCast(2 * b.radius + 1)));
         }
         try r.blur_src.resize(r.gpa, src_max);
         try r.blur_tmp.resize(r.gpa, tmp_max);
         try r.blur_results.resize(r.gpa, results);
-        try r.kernel.resize(r.gpa, kernel);
+        try r.kernel.resize(r.gpa, @max(kernel, 1));
     }
 
     fn area(rc: IRect) usize {
@@ -700,8 +706,8 @@ pub const Renderer = struct {
             region.counter.count = @intCast(r.tile_list.items.len);
             r.executor.run(r.executor.ctx, .{ .ctx = &region, .func = RegionJob.run });
 
-            // Gaussian kernel.
-            const kr: usize = @intCast(b.radius);
+            // Gaussian kernel (unused for box blurs).
+            const kr: usize = if (b.boxes == null) @intCast(b.radius) else 0;
             const kernel = r.kernel.items[0 .. 2 * kr + 1];
             var sum: f32 = 0;
             for (kernel, 0..) |*w, i| {
@@ -773,7 +779,7 @@ pub const Renderer = struct {
                     const row = r.blur_src.items[i * sw ..][0..sw];
                     for (line, row) |*l, p| l.* = toF(p);
                     const out = w.line2.items.ptr[0..sw];
-                    convolve(line, job.kernel, out, nx0, nw);
+                    blurLine(b, line, job.kernel, out, nx0, nw);
                     @memcpy(r.blur_tmp.items[i * nw ..][0..nw], out[nx0..][0..nw]);
                 } else {
                     // Column i of tmp → result column i, rows of `need`.
@@ -781,7 +787,7 @@ pub const Renderer = struct {
                     for (line, 0..) |*l, y| l.* = r.blur_tmp.items[y * nw + i];
                     const out = w.line2.items.ptr[0..sh];
                     const nh: usize = @intCast(b.need.height());
-                    convolve(line, job.kernel, out, ny0, nh);
+                    blurLine(b, line, job.kernel, out, ny0, nh);
                     for (0..nh) |y| r.blur_results.items[b.result + y * nw + i] = fromF(out[ny0 + y]);
                 }
             }
@@ -895,6 +901,17 @@ pub const Renderer = struct {
     fn runDraw(r: *Renderer, w: *Worker, lv: *const Level, tile: IRect, d: *const Draw) void {
         const region = lv.scissor.intersect(d.bbox);
         if (region.isEmpty()) return;
+        if (d.coverage == .rect and lv.mask == null) {
+            // Fully covered interior: no coverage pass.
+            const rc = d.coverage.rect;
+            const inner = (IRect{
+                .x0 = @intFromFloat(@max(@ceil(rc.x0), -1e9)),
+                .y0 = @intFromFloat(@max(@ceil(rc.y0), -1e9)),
+                .x1 = @intFromFloat(@min(@floor(rc.x1), 1e9)),
+                .y1 = @intFromFloat(@min(@floor(rc.y1), 1e9)),
+            }).intersect(region);
+            if (inner.eql(region)) return r.fillFull(w, lv, region, &d.paint);
+        }
         r.computeCoverage(w, d.coverage, tile, region, &w.cov);
         if (lv.mask) |m| multiplyMask(&w.cov, m, tile, region);
         const width: usize = @intCast(region.width());
@@ -915,7 +932,31 @@ pub const Renderer = struct {
                     const shade = w.shade[0..width];
                     paint_mod.shadeRow(&d.paint, &r.luts, region.x0, y, shade);
                     for (dst, cov, shade) |*px, c, s| {
-                        if (c != 0) blend.srcOver(px, s, @as(u32, c) * 257);
+                        if (c == 255 and s[3] == 65535) {
+                            px.* = s;
+                        } else if (c != 0) blend.srcOver(px, s, @as(u32, c) * 257);
+                    }
+                },
+            }
+        }
+    }
+
+    fn fillFull(r: *Renderer, w: *Worker, lv: *const Level, region: IRect, paint: *const Paint) void {
+        const width: usize = @intCast(region.width());
+        var y = region.y0;
+        while (y < region.y1) : (y += 1) {
+            const dst = lv.surf.row(region.x0, y)[0..width];
+            switch (paint.*) {
+                .solid => |s| {
+                    if (s[3] == 65535) {
+                        @memset(dst, s);
+                    } else for (dst) |*px| blend.srcOver(px, s, 65535);
+                },
+                else => {
+                    const shade = w.shade[0..width];
+                    paint_mod.shadeRow(paint, &r.luts, region.x0, y, shade);
+                    for (dst, shade) |*px, s| {
+                        if (s[3] == 65535) px.* = s else blend.srcOver(px, s, 65535);
                     }
                 },
             }
@@ -1031,6 +1072,49 @@ inline fn fromF(v: @Vector(4, f32)) Pixel {
     // Premultiplied validity.
     inline for (0..3) |i| out[i] = @min(out[i], out[3]);
     return out;
+}
+
+/// Box radii for three box passes approximating a Gaussian of `sigma`
+/// (Kovesi), or null below sigma 2 where an exact kernel is cheap. This is
+/// part of the rendering contract the Vulkan blur must match.
+pub fn boxRadii(sigma: f32) ?[3]usize {
+    if (sigma <= 2) return null;
+    const n = 3.0;
+    const ideal = @sqrt(12 * sigma * sigma / n + 1);
+    var wl: i32 = @intFromFloat(@floor(ideal));
+    if (@mod(wl, 2) == 0) wl -= 1;
+    const wu = wl + 2;
+    const wlf: f32 = @floatFromInt(wl);
+    const m: i32 = @intFromFloat(@round((12 * sigma * sigma - n * wlf * wlf - 4 * n * wlf - 3 * n) / (-4 * wlf - 4)));
+    var out: [3]usize = undefined;
+    for (&out, 0..) |*r, i| r.* = @intCast(@divFloor((if (@as(i32, @intCast(i)) < m) wl else wu) - 1, 2));
+    return out;
+}
+
+/// Blurs `line` (clamped at its ends) and leaves output pixels [from,
+/// from + n) in `out`. Box blurs use `line` as scratch.
+fn blurLine(b: *const Blur, line: []@Vector(4, f32), kernel: []const f32, out: []@Vector(4, f32), from: usize, n: usize) void {
+    const boxes = b.boxes orelse return convolve(line, kernel, out, from, n);
+    boxPass(line, out, boxes[0]);
+    boxPass(out, line, boxes[1]);
+    boxPass(line, out, boxes[2]);
+}
+
+/// Running-sum box filter of radius r with clamp-to-edge.
+fn boxPass(in: []const @Vector(4, f32), out: []@Vector(4, f32), r: usize) void {
+    const len = in.len;
+    const last: isize = @intCast(len - 1);
+    const scale: @Vector(4, f32) = @splat(1 / @as(f32, @floatFromInt(2 * r + 1)));
+    var acc: @Vector(4, f32) = @splat(0);
+    const ri: isize = @intCast(r);
+    var k: isize = -ri;
+    while (k <= ri) : (k += 1) acc += in[@intCast(std.math.clamp(k, 0, last))];
+    for (0..len) |i| {
+        out[i] = acc * scale;
+        const ii: isize = @intCast(i);
+        acc += in[@intCast(std.math.clamp(ii + ri + 1, 0, last))];
+        acc -= in[@intCast(std.math.clamp(ii - ri, 0, last))];
+    }
 }
 
 /// out[i] for i in [from, from + n) = sum_k kernel[k] * in[clamp(i + k - r)].
@@ -1174,4 +1258,15 @@ test "steady-state frames allocate nothing" {
         try r.render(list, .{ .target = .{ .pixels = &out, .stride = 200 * 4, .format = .argb8888 } });
     }
     try testing.expectEqual(@as(usize, 0), counting.count);
+}
+
+test "box radii approximate the Gaussian variance" {
+    for ([_]f32{ 2.5, 4, 10, 20, 64 }) |sigma| {
+        const bx = boxRadii(sigma).?;
+        // A box of radius r has variance r(r + 1)/3; variances add.
+        var v: f32 = 0;
+        for (bx) |r| v += @as(f32, @floatFromInt(r * (r + 1))) / 3;
+        try testing.expectApproxEqRel(sigma * sigma, v, 0.1);
+    }
+    try testing.expect(boxRadii(1.5) == null);
 }

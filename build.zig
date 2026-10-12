@@ -180,6 +180,18 @@ pub fn build(b: *std.Build) void {
     });
     b.step("bench-text", "Run the text engine benchmarks").dependOn(&b.addRunArtifact(bench_text).step);
 
+    // CPU renderer benchmarks, likewise not part of `test`.
+    const bench_render_cpu = b.addExecutable(.{
+        .name = "bench-render-cpu",
+        .root_module = ctx.module("src/render/cpu/bench.zig", &.{
+            .{ .name = "raster", .module = raster },
+            .{ .name = "scene", .module = scene },
+            .{ .name = "text", .module = text },
+            .{ .name = "render_cpu", .module = render_cpu },
+        }),
+    });
+    b.step("bench-render-cpu", "Run the CPU renderer benchmarks").dependOn(&b.addRunArtifact(bench_render_cpu).step);
+
     // Generated headers and bindings, libsiv.so link setup (SONAME, symbol
     // versions), the `siv` Zig module, and the abi, ABI library, and C
     // tests (D2, D3). Owned by the ABI workstream.

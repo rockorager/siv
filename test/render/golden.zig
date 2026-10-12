@@ -14,6 +14,7 @@ const std = @import("std");
 const raster = @import("raster");
 const scene = @import("scene");
 const render_cpu = @import("render_cpu");
+const text_engine = @import("text");
 const png = @import("png.zig");
 const hb = render_cpu.glyph.hb;
 
@@ -33,8 +34,11 @@ const Ctx = struct {
     checker: [32 * 32 * 4]u8 = undefined,
     ramp: [64 * 8]render_cpu.Pixel = undefined,
     glyphs: std.ArrayList(scene.Glyph) = .empty,
+    /// Fonts for the text-engine scene; display lists refer to its faces.
+    fonts: ?text_engine.FontCache = null,
 
     fn deinit(c: *Ctx) void {
+        if (c.fonts) |*f| f.deinit();
         c.pb.deinit();
         c.roboto.deinit();
         c.colr.deinit();
@@ -350,6 +354,67 @@ fn colr(c: *Ctx, b: *Builder) !void {
         });
         i += 1;
     }
+    // A few glyphs large: linear, sweep, radial, composite, layers.
+    for ([_]u32{ 6, 10, 92, 116, 175 }, 0..) |id, k| {
+        const x: f32 = 8 + @as(f32, @floatFromInt(k)) * 78;
+        const y: f32 = 400;
+        try b.glyphs(.{
+            .font = c.colr.handle(),
+            .size = 72,
+            .glyphs = &.{.{ .id = id, .x = x, .y = y }},
+            .paint = .color(blue),
+            .bounds = .{ .x0 = x - 72, .y0 = y - 144, .x1 = x + 144, .y1 = y + 72 },
+        });
+    }
+}
+
+/// The text engine end to end: a wrapped bidi paragraph with font
+/// fallback, lowered from text.Layout into display-list glyph runs.
+fn paragraph(c: *Ctx, b: *Builder) !void {
+    const gpa = c.gpa;
+    if (c.fonts == null) c.fonts = .init(gpa);
+    const cache = &c.fonts.?;
+    const tf = text_engine.font.test_fonts;
+    const fonts = [_]text_engine.FontId{
+        try cache.add(tf.latin, 0, .borrowed),
+        try cache.add(tf.arabic, 0, .borrowed),
+        try cache.add(tf.hebrew, 0, .borrowed),
+    };
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const str = "Rendering text through siv: \u{05e9}\u{05dc}\u{05d5}\u{05dd} and \u{0645}\u{0631}\u{062d}\u{0628}\u{0627} wrap across lines, shaped by HarfBuzz and drawn by the CPU renderer.";
+    var para = try text_engine.ShapedParagraph.init(gpa, arena.allocator(), cache, str, &.{.{
+        .end = @intCast(str.len),
+        .style = .{ .fonts = &fonts, .size = 15 },
+    }}, .auto_ltr);
+    defer para.deinit();
+    var layout = try text_engine.Layout.init(gpa, arena.allocator(), cache, &para, .{ .width = 260 });
+    defer layout.deinit();
+
+    const origin_x: f32 = 12;
+    const origin_y: f32 = 10;
+    try b.fillRect(.xywh(origin_x, origin_y, 260, layout.height), .color(Color.srgb8(0xee, 0xf2, 0xff, 0xff)));
+    for (layout.lines) |line| {
+        for (layout.lineRuns(line)) |run| {
+            const face = cache.face(run.font).?;
+            c.glyphs.clearRetainingCapacity();
+            var bounds = Rect.empty;
+            for (layout.runGlyphs(run)) |g| {
+                const x = origin_x + line.x + g.x;
+                const y = origin_y + line.baseline + g.y;
+                try c.glyphs.append(gpa, .{ .id = g.id, .x = x, .y = y });
+                if (face.glyphBounds(g.id, run.size)) |gb| bounds = bounds.unite(.xywh(x + gb.x, y + gb.y, gb.width, gb.height));
+            }
+            if (bounds.isEmpty()) continue;
+            try b.glyphs(.{
+                .font = .{ .handle = face.font, .key = face.key },
+                .size = run.size,
+                .glyphs = c.glyphs.items,
+                .paint = .color(ink),
+                .bounds = bounds.outset(1),
+            });
+        }
+    }
 }
 
 const Case = struct {
@@ -366,7 +431,8 @@ const cases = [_]Case{
     .{ .name = "images", .width = 400, .height = 210, .build = images },
     .{ .name = "blur", .width = 400, .height = 200, .build = blur },
     .{ .name = "text", .width = 400, .height = 260, .build = textScene },
-    .{ .name = "colr", .width = 400, .height = 330, .build = colr },
+    .{ .name = "colr", .width = 400, .height = 410, .build = colr },
+    .{ .name = "paragraph", .width = 284, .height = 84, .build = paragraph },
 };
 
 test "golden images" {

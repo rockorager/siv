@@ -18,6 +18,7 @@ zig build test-abi             # abi module, generators, Zig wrappers, exported 
 zig build test-c               # C programs against the generated headers and shared libraries
 zig build test -Dtest-filter=bidi
 zig build bench-text -Doptimize=ReleaseFast   # headless text engine benchmarks
+zig build bench-render-cpu -Doptimize=ReleaseFast  # CPU renderer benchmarks
 zig build -fsys=harfbuzz -fsys=sheenbidi   # link system copies instead of vendored ones
 ```
 
