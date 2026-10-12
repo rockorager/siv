@@ -1688,12 +1688,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       drawn at a dispatch, never inside the call. Text drawn while a font
       is still loading draws every page again once fonts load (three
       passes at most). The descriptor's language and direction
-      apply to the pages' text; by default they are the application's:
-      the window's when printing from a window, else the process locale's
-      ($LC_ALL, $LC_MESSAGES, $LANG, as gettext reads them; right to left
-      for languages written in Arabic, Hebrew, Thaana, Syriac, N'Ko, and
-      the like). siv has no application-wide language setting yet (D21),
-      so the locale stands in for it. Pages use the light variant of the
+      apply to the pages' text; by default they are the window's when
+      printing from a window, else the application's (D21). Pages use the light variant of the
       theme (paper is white) and ignore the desktop's text scaling.
       `margin` gives siv_pdf_write's page setup margins, so exported and
       printed layouts can match. A page whose drawing fails is blank, as a
@@ -1790,6 +1786,21 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     window is flush right; each paragraph's bidi base direction is still
     detected from its text, defaulting to the node's direction.
   - Image nodes can mirror in RTL (directional icons).
+  - The application has a language and a direction (`siv_app_desc.language`,
+    the `ltr`/`rtl` flags, `siv_app_set_language`): by default the
+    process locale's ($LC_ALL, $LC_MESSAGES, $LANG, as gettext reads
+    them) and the direction its language is written in (by script
+    subtag, else by language: Arabic, Hebrew, Persian, Urdu, ...). The
+    headless backend reads no locale, so tests do not depend on the
+    environment. Windows that set no language or direction of their own
+    follow the application's, also when it changes: their text shapes
+    again with the new language tag and their layout mirrors. Popups take
+    their parent window's when created. Printed documents default to the
+    window they are printed from, else to the application (D19).
+  - Canvas text (`siv_draw_text`) aligns the same way: each paragraph's
+    base direction comes from its text for bidi ordering, but start and
+    end alignment follow the canvas node's direction (a page's, when
+    printing).
 
 ### D22. Stock widgets
 
