@@ -42,6 +42,14 @@ pub const Header = message.Header;
 pub const Type = message.Type;
 pub const Flags = message.Flags;
 
+/// Test doubles for other modules' tests: an in-process bus and a
+/// stand-in settings portal. Not for production use.
+pub const testing = struct {
+    pub const TestBus = @import("TestBus.zig");
+    pub const FakePortal = @import("test_portal.zig").FakePortal;
+    pub const daemon = @import("test_daemon.zig");
+};
+
 test {
     std.testing.refAllDecls(@This());
     if (comptime @import("integration").enabled) {

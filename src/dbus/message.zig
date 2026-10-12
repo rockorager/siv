@@ -104,7 +104,7 @@ pub fn encodeHeader(
     const start = out.items.len;
     try out.ensureUnusedCapacity(gpa, 256);
     const fixed = try out.addManyAsArray(gpa, fixed_header_len);
-    fixed[0..4].* = .{ 'l', @intFromEnum(h.type), @bitCast(h.flags), 1 };
+    fixed[0..4].* = .{ 'l', @backingInt(h.type), @bitCast(h.flags), 1 };
     std.mem.writeInt(u32, fixed[4..8], @intCast(body_len), .little);
     std.mem.writeInt(u32, fixed[8..12], serial, .little);
 
@@ -120,7 +120,7 @@ pub fn encodeHeader(
         }
         fn field(w: @This(), f: Field, s: []const u8) !void {
             try w.pad(8);
-            try w.out.appendSlice(w.gpa, &.{ @intFromEnum(f), 1, f.typeCode().?, 0 });
+            try w.out.appendSlice(w.gpa, &.{ @backingInt(f), 1, f.typeCode().?, 0 });
             if (f == .signature) {
                 try w.out.append(w.gpa, @intCast(s.len));
             } else {
@@ -134,7 +134,7 @@ pub fn encodeHeader(
         }
         fn int(w: @This(), f: Field, v: u32) !void {
             try w.pad(8);
-            try w.out.appendSlice(w.gpa, &.{ @intFromEnum(f), 1, 'u', 0 });
+            try w.out.appendSlice(w.gpa, &.{ @backingInt(f), 1, 'u', 0 });
             var b: [4]u8 = undefined;
             std.mem.writeInt(u32, &b, v, .little);
             try w.out.appendSlice(w.gpa, &b);
@@ -203,7 +203,7 @@ pub const Message = struct {
         var m: Message = .{
             .data = data,
             .endian = endian,
-            .type = @enumFromInt(data[1]),
+            .type = @fromBackingInt(@intCast(data[1])),
             .flags = @bitCast(data[2]),
             .serial = std.mem.readInt(u32, data[8..12], endian),
             .body_offset = 0,
@@ -217,7 +217,7 @@ pub const Message = struct {
         while (v.off < fields_end) {
             v.off = try alignZero(data[0..fields_end], v.off, 8);
             if (v.off >= fields_end) return error.InvalidMessage;
-            const code: Field = @enumFromInt(data[v.off]);
+            const code: Field = @fromBackingInt(@intCast(data[v.off]));
             v.off += 1;
             // The variant's signature, then its value.
             const vs_start = v.off;
@@ -226,7 +226,7 @@ pub const Message = struct {
             sig.validateSingle(vs) catch return error.InvalidMessage;
             if (code.typeCode()) |expected| {
                 if (vs.len != 1 or vs[0] != expected) return error.InvalidMessage;
-                const bit = @as(u16, 1) << @intCast(@intFromEnum(code));
+                const bit = @as(u16, 1) << @intCast(@backingInt(code));
                 if (seen & bit != 0) return error.InvalidMessage;
                 seen |= bit;
             }

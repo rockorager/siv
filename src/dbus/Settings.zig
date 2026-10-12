@@ -344,10 +344,10 @@ pub fn parsePangoFont(s: []const u8) ?Font {
 
 fn styleWeight(word: []const u8) ?u16 {
     const table = [_]struct { []const u8, u16 }{
-        .{ "Thin", 100 },        .{ "Ultra-Light", 200 }, .{ "Extra-Light", 200 }, .{ "Light", 300 },
-        .{ "Semi-Light", 350 },  .{ "Book", 380 },        .{ "Regular", 400 },     .{ "Medium", 500 },
-        .{ "Semi-Bold", 600 },   .{ "Demi-Bold", 600 },   .{ "Bold", 700 },        .{ "Ultra-Bold", 800 },
-        .{ "Extra-Bold", 800 },  .{ "Heavy", 900 },       .{ "Black", 900 },       .{ "Ultra-Heavy", 1000 },
+        .{ "Thin", 100 },       .{ "Ultra-Light", 200 }, .{ "Extra-Light", 200 }, .{ "Light", 300 },
+        .{ "Semi-Light", 350 }, .{ "Book", 380 },        .{ "Regular", 400 },     .{ "Medium", 500 },
+        .{ "Semi-Bold", 600 },  .{ "Demi-Bold", 600 },   .{ "Bold", 700 },        .{ "Ultra-Bold", 800 },
+        .{ "Extra-Bold", 800 }, .{ "Heavy", 900 },       .{ "Black", 900 },       .{ "Ultra-Heavy", 1000 },
     };
     for (table) |e| if (std.ascii.eqlIgnoreCase(word, e[0])) return @min(e[1], 900);
     return null;

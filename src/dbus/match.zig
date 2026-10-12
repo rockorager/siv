@@ -89,7 +89,7 @@ pub const Rule = struct {
         if (r.path_namespace) |v| if (!names.isObjectPath(v)) return error.InvalidRule;
         if (r.path != null and r.path_namespace != null) return error.InvalidRule;
         if (r.destination) |v| if (!names.isUniqueName(v)) return error.InvalidRule;
-        if (r.type) |t| if (@intFromEnum(t) < 1 or @intFromEnum(t) > 4) return error.InvalidRule;
+        if (r.type) |t| if (@backingInt(t) < 1 or @backingInt(t) > 4) return error.InvalidRule;
         for (r.args) |a| {
             if (a.index >= max_args) return error.InvalidRule;
             if (a.kind == .namespace and (a.index != 0 or !names.isBusName(a.value) and !names.isMemberName(a.value))) return error.InvalidRule;
