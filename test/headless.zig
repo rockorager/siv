@@ -38,4 +38,5 @@ test {
     _ = @import("abi/cursor.zig");
     _ = @import("abi/portal.zig");
     _ = @import("widgets/popups.zig");
+    _ = @import("widgets/views.zig");
 }

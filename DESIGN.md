@@ -1657,8 +1657,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     (D29), default handlers and default layouts, `siv_emit`, node data,
     tree navigation (`siv_node_get_related`, `siv_node_get_window`,
     `siv_node_get_label`, `siv_node_is_rtl`), `siv_txn_fail`, one-shot
-    timers, popups (D17), and the `set_value`, `select`, and `close`
-    events.
+    timers, popups (D17), the `set_value`, `select`, `close`, and
+    `viewport` events, and semantics for items not all in the tree
+    (`level`, `position`, `set_size`, `row`, exposed as AT-SPI's
+    posinset, setsize, and rowindex attributes).
   - **Creating:** one builder per widget, a transaction operation like the
     primitive builders (D27): `siv_button(txn, parent, &desc)` appends the
     widget and returns its root node, or 0 once the transaction has failed
@@ -1747,6 +1749,38 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     separator with the size as its value, and an end pane taking the
     rest; the largest size depends on layout, so it reaches assistive
     technology from the first focus or move.
+  - **Virtualized views** (lists, trees, tables, grids) make nodes only
+    for the rows in view plus eight rows of overscan, from a pool.
+    - The viewport primitive: a scroll node's `viewport` handler hears of
+      its offset and size at safe points (D5): when the compositor reports
+      that it scrolled (D8), and at the start of the frame after a layout
+      changed its size, before layout, so rows a handler binds show in
+      that frame. The compositor scrolls without waiting for the UI
+      thread, so rows reach newly exposed space one UI frame later; the
+      overscan hides that at ordinary speeds.
+    - Rows are positioned children of a stack as tall as every row (in
+      grids also inset from the start edge, so they mirror in RTL). Moving
+      the range reassigns rows that left it to items that entered it and
+      calls the application's bind callback inside the view's
+      transaction, with a recycled flag so it updates rather than
+      rebuilds. A rebind of everything (`siv_view_refresh`, a new count,
+      a tree changing shape) keeps each row at its index, so focus stays
+      put. The views take fixed row heights (and fixed cell sizes in
+      grids): positions are arithmetic, never measured.
+    - Selection is a bitset in node data, resized with the count (node
+      data of another size replaces the old and keeps what fits); none,
+      single, or multiple with Ctrl, Shift, and Ctrl+A. The cursor's row is
+      the focused node (roving focus) and stays bound out of view. Trees
+      keep their visible items flattened in node data, inserting and
+      removing rows (and shifting selection bits) as items expand and
+      collapse, asking the application's children and child callbacks
+      only for items that become visible.
+    - Rows carry their position among all items and the set's size (rows
+      of tables their row index, tree items their level), since most of
+      their siblings have no node.
+    - Not built yet: double-click activation (siv_event has no click
+      count), variable row heights, column resizing and sorting, and a
+      position among siblings for tree items.
 - **Non-goal:** a full document model with embedded tables and images.
 
 ### D23. Lua 5.5
