@@ -160,6 +160,26 @@ pub const Window = struct {
     user_data: ?*anyopaque,
     nodes: tree.Nodes = .{},
     txn: tree.TxnState = .{},
+    /// Popups: the window they belong to, and how siv_popup_show places
+    /// them.
+    parent: ?*Window = null,
+    popup: Popup = .{},
+
+    pub const Popup = struct {
+        anchor: ui.NodeId = .root,
+        placement: app_mod.Window.Placement = .below,
+        width: u32 = 0,
+        height: u32 = 0,
+        grab: bool = true,
+    };
+
+    /// Destroys the window after its popups, which go first (D17).
+    pub fn destroyTree(w: *Window) app_mod.Error!void {
+        for (w.owner.windows.items) |slot| if (slot) |child| if (child.parent == w) try child.destroyTree();
+        if (w.dead) return;
+        w.win.destroy() catch return error.OutOfMemory;
+        w.teardown();
+    }
 
     pub fn uiWin(w: *Window) *ui.Window {
         return w.win.ui;
@@ -270,8 +290,7 @@ pub export fn siv_app_destroy(app: t.App) t.Result {
     // Before the windows, whose destruction would start waiting requests.
     portal.teardown(self);
     for (self.windows.items) |slot| if (slot) |w| {
-        w.win.destroy() catch {};
-        w.teardown();
+        w.destroyTree() catch {};
     };
     const gpa = self.gpa();
     for (self.timers.items) |slot| if (slot) |tm| tm.cancel();
@@ -419,10 +438,7 @@ fn onWindowEvent(ctx: ?*anyopaque, _: *app_mod.Window, ev: *const app_mod.Window
             // Unhandled: destroyed here, like siv_window_destroy, so that
             // handles and callbacks go with it. Without memory to do so the
             // window stays open.
-            if (!kept and !w.dead) {
-                w.win.destroy() catch return true;
-                w.teardown();
-            }
+            if (!kept and !w.dead) w.destroyTree() catch return true;
             return true;
         },
         .configure => |c| {
@@ -483,8 +499,7 @@ fn states(s: platform.WindowStates) u32 {
 pub export fn siv_window_destroy(window: t.Window) t.Result {
     const w = App.window(@backingInt(window), window_tag) catch |err| return t.resultOf(err);
     if (w.owner.painting != 0) return .error_busy;
-    w.win.destroy() catch return .error_out_of_memory;
-    w.teardown();
+    w.destroyTree() catch return .error_out_of_memory;
     return .ok;
 }
 
@@ -596,5 +611,76 @@ pub export fn siv_timer_cancel(timer: t.Timer) t.Result {
     const self, const index = Root.owner(App, app_tag, @backingInt(timer), timer_tag) catch |err| return t.resultOf(err);
     const tm = self.timers.items[index] orelse return .error_invalid_handle;
     tm.cancel();
+    return .ok;
+}
+
+// Popups ----------------------------------------------------------------------
+
+pub export fn siv_popup_create(parent: t.Window, desc: ?*const t.PopupDesc, popup: ?*t.Window) t.Result {
+    return wrap(popupCreate(parent, desc, popup));
+}
+
+fn popupCreate(parent: t.Window, desc_ptr: ?*const t.PopupDesc, out: ?*t.Window) Error!void {
+    const pw = try App.window(@backingInt(parent), window_tag);
+    const self = pw.owner;
+    if (self.painting != 0) return error.Busy;
+    const desc = try runtime.readDesc(t.PopupDesc, desc_ptr);
+    const flags = try runtime.flags(t.PopupFlags, desc.flags);
+    const placement: app_mod.Window.Placement = switch (try runtime.enumValue(t.PopupPlacement, desc.placement)) {
+        .below => .below,
+        .beside => .beside,
+        .tooltip => .tooltip,
+        _ => unreachable,
+    };
+    const anchor: ui.NodeId = if (desc.anchor == .null) .root else try tree.nodeIn(pw, desc.anchor);
+    const dest = try runtime.out(t.Window, out);
+
+    const gpa = self.gpa();
+    const index: u32 = for (self.windows.items, 0..) |slot, i| {
+        if (slot == null) break @intCast(i);
+    } else blk: {
+        if (self.windows.items.len >= max_windows) return error.LimitExceeded;
+        try self.windows.append(gpa, null);
+        break :blk @intCast(self.windows.items.len - 1);
+    };
+    const w = try gpa.create(Window);
+    errdefer gpa.destroy(w);
+    w.* = .{
+        .owner = self,
+        .index = index,
+        .handle = 0,
+        .win = undefined,
+        .on_event = desc.on_event,
+        .destroy = desc.destroy,
+        .user_data = desc.user_data,
+        .parent = pw,
+        .popup = .{ .anchor = anchor, .placement = placement, .width = desc.width, .height = desc.height, .grab = !flags.no_grab },
+    };
+    errdefer w.nodes.deinit(gpa);
+    try w.nodes.reserve(gpa, 1);
+    try self.root.handles.ensureUnusedCapacity(gpa);
+    w.handle = try self.root.handles.insert(gpa, window_tag, index);
+    errdefer _ = self.root.handles.remove(w.handle, window_tag) catch unreachable;
+    try self.root.handles.ensureUnusedCapacity(gpa);
+    w.win = self.app.createPopup(pw.win, .{ .ctx = w, .func = onWindowEvent }) catch |err| return mapAppError(err);
+    w.nodes.adopt(self, w, .root) catch unreachable;
+    self.windows.items[index] = w;
+    dest.* = @fromBackingInt(w.handle);
+}
+
+pub export fn siv_popup_show(popup: t.Window) t.Result {
+    const w = App.window(@backingInt(popup), window_tag) catch |err| return t.resultOf(err);
+    if (w.owner.painting != 0 or w.txn.handle != 0) return .error_busy;
+    const pw = w.parent orelse return .error_invalid_argument;
+    const p = w.popup;
+    const anchor: ui.NodeId = if (pw.uiWin().isLive(p.anchor)) p.anchor else .root;
+    w.win.showPopup(anchor, p.placement, p.width, p.height, p.grab) catch |err| return t.resultOf(mapAppError(err));
+    return .ok;
+}
+
+pub export fn siv_window_get_app(window: t.Window, app: ?*t.App) t.Result {
+    const w = App.window(@backingInt(window), window_tag) catch |err| return t.resultOf(err);
+    const dest = runtime.out(t.App, app) catch |err| return t.resultOf(err);
+    dest.* = @fromBackingInt(w.owner.root.handle);
     return .ok;
 }

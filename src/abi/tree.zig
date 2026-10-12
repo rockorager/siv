@@ -89,8 +89,12 @@ pub const Nodes = struct {
     defaults: std.ArrayList(Slots) = .empty,
     canvases: std.ArrayList(?CanvasCb) = .empty,
     data: std.ArrayList(?*Data) = .empty,
+    /// Nodes with a siv_set_default_layout, by index: the application's
+    /// and the default layout, merged into the node's layout.
+    layouts: std.AutoHashMapUnmanaged(u32, LayoutPair) = .empty,
 
     pub fn deinit(n: *Nodes, gpa: std.mem.Allocator) void {
+        n.layouts.deinit(gpa);
         n.handles.deinit(gpa);
         n.callbacks.deinit(gpa);
         n.defaults.deinit(gpa);
@@ -158,6 +162,7 @@ pub const Nodes = struct {
             cb.* = null;
             w.owner.release(c.destroy, c.user_data);
         };
+        _ = n.layouts.remove(i);
         var data = n.data.items[i];
         n.data.items[i] = null;
         while (data) |d| {
@@ -193,8 +198,11 @@ pub const TxnState = struct {
     canvas_undo: std.ArrayList(CanvasUndo) = .empty,
     /// Node data made: freed on abort.
     data_created: std.ArrayList(struct { node: NodeId, data: *Data }) = .empty,
+    /// Layout pairs changed, to restore on abort.
+    layout_undo: std.ArrayList(LayoutUndo) = .empty,
 
     pub fn deinit(s: *TxnState, gpa: std.mem.Allocator) void {
+        s.layout_undo.deinit(gpa);
         s.created.deinit(gpa);
         s.removed.deinit(gpa);
         s.undo.deinit(gpa);
@@ -211,10 +219,14 @@ pub const TxnState = struct {
         s.undo.clearRetainingCapacity();
         s.canvas_undo.clearRetainingCapacity();
         s.data_created.clearRetainingCapacity();
+        s.layout_undo.clearRetainingCapacity();
     }
 };
 
 pub const CanvasUndo = struct { node: NodeId, old: ?CanvasCb };
+
+pub const LayoutPair = struct { app: t.LayoutDesc = .{}, default: t.LayoutDesc = .{} };
+pub const LayoutUndo = struct { node: NodeId, old: ?LayoutPair };
 
 /// Aborts the window's open transaction, if any (also after the tree's
 /// own transaction was aborted, as when the window is destroyed).
@@ -228,6 +240,14 @@ pub fn abortState(w: *Window) void {
         const cur = if (u.default) w.nodes.defaultSlot(u.node, u.kind) else w.nodes.slot(u.node, u.kind);
         if (cur.*) |c| w.owner.release(c.destroy, c.user_data);
         cur.* = u.old;
+    }
+    i = s.layout_undo.items.len;
+    while (i > 0) {
+        i -= 1;
+        const u = s.layout_undo.items[i];
+        if (u.old) |old| {
+            w.nodes.layouts.putAssumeCapacity(u.node.index(), old);
+        } else _ = w.nodes.layouts.remove(u.node.index());
     }
     // Data made by this transaction is first in its node's list.
     i = s.data_created.items.len;
@@ -480,11 +500,61 @@ pub export fn siv_remove(txn: t.Txn, node: t.Node) t.Result {
 
 pub export fn siv_set_layout(txn: t.Txn, node: t.Node, desc: ?*const t.LayoutDesc) t.Result {
     return run(txn, struct {
-        fn f(w: *Window, n: t.Node, d: ?*const t.LayoutDesc) Error!void {
+        fn f(w: *Window, n: t.Node, d_ptr: ?*const t.LayoutDesc) Error!void {
             const id = try nodeIn(w, n);
-            w.txn.ut.setLayout(id, try layoutOf(d)) catch |err| return mapTxn(err);
+            const d = try runtime.readDesc(t.LayoutDesc, d_ptr);
+            const pair = w.nodes.layouts.get(id.index()) orelse {
+                w.txn.ut.setLayout(id, try layoutOf(&d)) catch |err| return mapTxn(err);
+                return;
+            };
+            try setLayoutPair(w, id, .{ .app = d, .default = pair.default });
         }
     }.f, .{ node, desc });
+}
+
+pub export fn siv_set_default_layout(txn: t.Txn, node: t.Node, desc: ?*const t.LayoutDesc) t.Result {
+    return run(txn, struct {
+        fn f(w: *Window, n: t.Node, d_ptr: ?*const t.LayoutDesc) Error!void {
+            const id = try nodeIn(w, n);
+            const d = try runtime.readDesc(t.LayoutDesc, d_ptr);
+            const app = if (w.nodes.layouts.get(id.index())) |p| p.app else t.LayoutDesc{};
+            try setLayoutPair(w, id, .{ .app = app, .default = d });
+        }
+    }.f, .{ node, desc });
+}
+
+/// Lays the node out with the application's layout over the default one,
+/// remembering both for later changes to either.
+fn setLayoutPair(w: *Window, id: NodeId, pair: LayoutPair) Error!void {
+    const gpa = w.owner.gpa();
+    const merged = mergeLayout(pair.app, pair.default);
+    const layout = try layoutOf(&merged);
+    try w.txn.layout_undo.ensureUnusedCapacity(gpa, 1);
+    try w.nodes.layouts.ensureUnusedCapacity(gpa, 1);
+    w.txn.ut.setLayout(id, layout) catch |err| return mapTxn(err);
+    w.txn.layout_undo.appendAssumeCapacity(.{ .node = id, .old = w.nodes.layouts.get(id.index()) });
+    w.nodes.layouts.putAssumeCapacity(id.index(), pair);
+}
+
+/// Each field the application left zero takes the default's value; a
+/// dimension counts as one field, edges side by side, flags combine.
+fn mergeLayout(app: t.LayoutDesc, default: t.LayoutDesc) t.LayoutDesc {
+    var out = app;
+    const info = @typeInfo(t.LayoutDesc).@"struct";
+    inline for (info.field_names, info.field_types) |name, T| {
+        if (comptime std.mem.eql(u8, name, "size")) continue;
+        const a = @field(app, name);
+        const d = @field(default, name);
+        @field(out, name) = if (T == t.Edges) .{
+            .start = if (a.start != 0) a.start else d.start,
+            .end = if (a.end != 0) a.end else d.end,
+            .top = if (a.top != 0) a.top else d.top,
+            .bottom = if (a.bottom != 0) a.bottom else d.bottom,
+        } else if (T == t.LayoutFlags)
+            @bitCast(@as(u32, @bitCast(a)) | @as(u32, @bitCast(d)))
+        else if (std.mem.allEqual(u8, std.mem.asBytes(&a), 0)) d else a;
+    }
+    return out;
 }
 
 pub export fn siv_set_visual(txn: t.Txn, node: t.Node, desc: ?*const t.VisualDesc) t.Result {

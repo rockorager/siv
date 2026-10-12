@@ -257,3 +257,47 @@ test "timers fire once after their delay; cancelled ones never" {
     try testing.expectEqual(@as(u32, 1), d.destroyed);
     try testing.expectEqual(@as(u32, 0), d.fired);
 }
+
+test "default layouts fill the fields the application's layout leaves zero" {
+    var h: Harness = .{};
+    try start(&h);
+    defer h.stop();
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const col = c.siv_flex(txn, c.siv_window_root(h.window), &.{ .axis = .column, .align_items = .start });
+    const n = c.siv_box(txn, col);
+    try ok(c.siv_set_default_layout(txn, n, &.{
+        .width = .{ .unit = .px, .value = 40 },
+        .height = .{ .unit = .px, .value = 30 },
+        .padding = .{ .start = 5, .end = 5 },
+    }));
+    // The application's width wins; its zero height and padding do not.
+    try ok(c.siv_set_layout(txn, n, &.{ .width = .{ .unit = .px, .value = 70 }, .padding = .{ .top = 2 } }));
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    var r: t.Rect = undefined;
+    try ok(c.siv_node_get_rect(n, &r));
+    try testing.expectEqual(t.Rect{ .x = 0, .y = 0, .width = 70, .height = 30 }, r);
+    const w, const id = try abi.tree.lookup(n);
+    const pad = w.uiWin().node(id).layout.padding;
+    try testing.expectEqual(@as(f32, 5), pad.start);
+    try testing.expectEqual(@as(f32, 2), pad.top);
+
+    // New defaults keep the application's layout; an abort restores both.
+    try ok(c.siv_txn_begin(h.window, &txn));
+    try ok(c.siv_set_default_layout(txn, n, &.{ .height = .{ .unit = .px, .value = 50 } }));
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try ok(c.siv_node_get_rect(n, &r));
+    try testing.expectEqual(t.Rect{ .x = 0, .y = 0, .width = 70, .height = 50 }, r);
+    try ok(c.siv_txn_begin(h.window, &txn));
+    try ok(c.siv_set_layout(txn, n, &.{ .height = .{ .unit = .px, .value = 10 } }));
+    try ok(c.siv_set_default_layout(txn, n, null));
+    try ok(c.siv_txn_abort(txn));
+    try ok(c.siv_txn_begin(h.window, &txn));
+    try ok(c.siv_set_layout(txn, n, &.{ .width = .{ .unit = .px, .value = 20 } }));
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try ok(c.siv_node_get_rect(n, &r));
+    try testing.expectEqual(t.Rect{ .x = 0, .y = 0, .width = 20, .height = 50 }, r);
+}

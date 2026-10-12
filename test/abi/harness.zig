@@ -55,15 +55,19 @@ pub const Harness = struct {
     }
 
     /// Dispatches until every commit is presented and nothing is pending.
+    /// Every shown window (popups too) has presented what it committed.
     pub fn settle(h: *Harness) !void {
         const self = try h.internal();
-        const w = try h.win();
         const deadline = Loop.now() + 10 * std.time.ns_per_s;
         var idle: usize = 0;
         while (idle < 3) {
             if (Loop.now() > deadline) return error.Timeout;
             try ok(A.siv_app_dispatch(h.app, 2));
-            const busy = w.win.presented_seq == 0 or !w.win.settled() or self.app.fonts.loading();
+            var busy = self.app.fonts.loading();
+            for (self.windows.items) |slot| if (slot) |w| {
+                if (w.dead or !w.win.shown) continue;
+                busy = busy or w.win.presented_seq == 0 or !w.win.settled();
+            };
             idle = if (busy) 0 else idle + 1;
         }
     }
@@ -83,7 +87,12 @@ pub const Harness = struct {
     }
 
     pub fn click(h: *Harness, x: f64, y: f64) !void {
-        const id = (try h.win()).win.id;
+        return h.clickIn(h.window, x, y);
+    }
+
+    /// A click at window coordinates of `window` (a popup, say).
+    pub fn clickIn(h: *Harness, window: t.Window, x: f64, y: f64) !void {
+        const id = (try A.App.window(@backingInt(window), A.window_tag)).win.id;
         try h.inject(&.{
             .{ .pointer_motion = .{ .window = id, .seat = 0, .x = x, .y = y } },
             .{ .pointer_button = .{ .window = id, .seat = 0, .button = 0x110, .pressed = true, .time = 0, .serial = 1 } },
@@ -92,7 +101,11 @@ pub const Harness = struct {
     }
 
     pub fn typeKey(h: *Harness, keysym: u32, chars: []const u8, mods: platform.Mods) !void {
-        const id = (try h.win()).win.id;
+        return h.typeKeyIn(h.window, keysym, chars, mods);
+    }
+
+    pub fn typeKeyIn(h: *Harness, window: t.Window, keysym: u32, chars: []const u8, mods: platform.Mods) !void {
+        const id = (try A.App.window(@backingInt(window), A.window_tag)).win.id;
         var k: platform.Key = .{ .window = id, .seat = 0, .keycode = 0, .keysym = keysym, .state = .pressed, .mods = mods, .time = 0, .serial = 3 };
         @memcpy(k.text_buf[0..chars.len], chars);
         k.text_len = @intCast(chars.len);
@@ -103,6 +116,11 @@ pub const Harness = struct {
     }
 
     pub fn capture(h: *Harness) ![]u8 {
+        return h.captureOf(h.window);
+    }
+
+    /// What a window of the application presented last (a popup, say).
+    pub fn captureOf(h: *Harness, window: t.Window) ![]u8 {
         const self = try h.internal();
         const Ctx = struct {
             id: platform.WindowId,
@@ -121,7 +139,7 @@ pub const Harness = struct {
                 c.out = out;
             }
         };
-        var ctx: Ctx = .{ .id = (try h.win()).win.id };
+        var ctx: Ctx = .{ .id = (try A.App.window(@backingInt(window), A.window_tag)).win.id };
         try self.app.comp.call(&ctx, Ctx.run);
         return ctx.out;
     }
@@ -164,9 +182,13 @@ pub const Harness = struct {
     }
 
     pub fn expectGolden(h: *Harness, name: []const u8, width: u32, height: u32) !void {
+        return h.expectGoldenOf(h.window, name, width, height);
+    }
+
+    pub fn expectGoldenOf(h: *Harness, window: t.Window, name: []const u8, width: u32, height: u32) !void {
         const gpa = testing.allocator;
         const io = testing.io;
-        const got = try h.capture();
+        const got = try h.captureOf(window);
         defer gpa.free(got);
         try testing.expectEqual(@as(usize, width) * height * 4, got.len);
         const path = try std.fmt.allocPrint(gpa, "{s}/{s}.png", .{ h.golden, name });

@@ -336,6 +336,25 @@ pub const decls = [_]Decl{
         .{ .name = "states", .type = ref("siv_window_states"), .doc = "Ask for these states at once; only maximized and fullscreen apply." },
     }),
 
+    enumeration("siv_popup_placement", "Where a popup goes relative to its anchor (D17). Horizontal sides are logical: they mirror in right-to-left layouts.", &.{
+        .{ .name = "below", .value = 0, .doc = "Menus and combo boxes: below the anchor at its start edge; flips above and slides sideways to stay on the output." },
+        .{ .name = "beside", .value = 1, .doc = "Submenus: beside the anchor's end edge, top-aligned; flips to the start side." },
+        .{ .name = "tooltip", .value = 2, .doc = "Tooltips: centered below the anchor." },
+    }),
+    flags("siv_popup_flags", "Popup options.", &.{
+        .{ .name = "no_grab", .bit = 0, .doc = "A passive popup (a tooltip): it takes no keyboard focus and clicks outside do not dismiss it." },
+    }),
+    descriptor("siv_popup_desc", "Options for siv_popup_create.", &.{
+        .{ .name = "anchor", .type = ref("siv_node"), .doc = "A node of the parent window the popup is placed against; 0 is its root." },
+        .{ .name = "user_data", .type = .user_data, .doc = "Passed to on_event and destroy." },
+        .{ .name = "on_event", .type = ref("siv_window_event_fn"), .doc = "Receives the popup's events: close_requested when the compositor dismissed it (a click outside); NULL destroys it then." },
+        .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data when the popup is destroyed." },
+        .{ .name = "width", .type = .u32, .doc = "Logical width; 0 sizes it to its content when shown." },
+        .{ .name = "height", .type = .u32, .doc = "Logical height; 0 sizes it to its content when shown." },
+        .{ .name = "placement", .type = ref("siv_popup_placement"), .doc = "Default below." },
+        .{ .name = "flags", .type = ref("siv_popup_flags"), .doc = "Options." },
+    }),
+
     // Layout and style.
     enumeration("siv_unit", "The unit of a siv_dimension.", &.{
         .{ .name = "auto", .value = 0, .doc = "From the content; the value is ignored." },
@@ -582,6 +601,7 @@ pub const decls = [_]Decl{
         .{ .name = "drag", .value = 7, .doc = "A drag the node started (siv_drag_start) progressed, not bubbled: phase move (the target under the pointer changed, SIV_EVENT_ACCEPTED if it takes the data, action the chosen action), drop (dropped on a target that takes it), or end (action is what the target did, none if cancelled; after a move, delete the data)." },
         .{ .name = "set_value", .value = 8, .doc = "Assistive technology asks a node with a value (SIV_SEMANTICS_HAS_VALUE) to take value. The handler applies it, clamped and stepped, or ignores it. Delivered to the node only." },
         .{ .name = "select", .value = 9, .doc = "Widgets: an item was chosen (a menu item) or a view's selection changed; index names the item, count how many are selected. Delivered to the node only." },
+        .{ .name = "close", .value = 10, .doc = "Widgets: a dialog, popover, or toast asks to close (Escape, a click outside it, its timeout). Its default handler closes it; return true from siv_on to keep it. Delivered to the node only." },
     }),
     enumeration("siv_pointer_phase", "What a pointer event reports.", &.{
         .{ .name = "down", .value = 0, .doc = "A button was pressed." },
@@ -712,6 +732,58 @@ pub const decls = [_]Decl{
     flags("siv_range_flags", "Range widget options.", &.{
         .{ .name = "disabled", .bit = 0, .doc = "Shown dimmed; neither focusable nor operable." },
         .{ .name = "indeterminate", .bit = 1, .doc = "Progress bars: progress is unknown; the value is ignored." },
+    }),
+    enumeration("siv_widget_part", "A part of a stock widget that the application fills or handles, for siv_widget_get_part.", &.{
+        .{ .name = "content", .value = 0, .doc = "Dialogs and popovers: the container for their content." },
+        .{ .name = "actions", .value = 1, .doc = "Dialogs: the row for their buttons, at the end edge." },
+        .{ .name = "tab", .value = 2, .doc = "Tabs: the tab at index." },
+        .{ .name = "panel", .value = 3, .doc = "Tabs: the panel at index." },
+        .{ .name = "start", .value = 4, .doc = "Split panes: the pane at the start (or top)." },
+        .{ .name = "end", .value = 5, .doc = "Split panes: the pane at the end (or bottom)." },
+        .{ .name = "menu", .value = 6, .doc = "Menu buttons: their menu, for siv_menu_item and siv_menu_open." },
+    }),
+    descriptor("siv_menu_desc", "A menu: items added with siv_menu_item and shown in a popup by siv_menu_open.", &.{
+        .{ .name = "label", .type = .string, .doc = "The menu's accessible name, copied." },
+    }),
+    flags("siv_menu_item_flags", "Menu item options.", &.{
+        .{ .name = "separator", .bit = 0, .doc = "A separator line instead of an item; the label is ignored." },
+        .{ .name = "disabled", .bit = 1, .doc = "Shown dimmed and cannot be chosen." },
+        .{ .name = "checkable", .bit = 2, .doc = "Shows a check mark when its value is 1 (siv_widget_set_value)." },
+        .{ .name = "checked", .bit = 3, .doc = "Checkable and checked." },
+    }),
+    descriptor("siv_menu_item_desc", "A menu item.", &.{
+        .{ .name = "label", .type = .string, .doc = "The label, copied." },
+        .{ .name = "shortcut", .type = .string, .doc = "A key binding to show at the end edge, copied; siv does not bind it." },
+        .{ .name = "flags", .type = ref("siv_menu_item_flags"), .doc = "Options." },
+        .{ .name = "mnemonic", .type = .u32, .doc = "A keysym that chooses the item while its menu is open, letters in either case; 0 for none." },
+    }),
+    descriptor("siv_popover_desc", "A popover: a card in a popup next to its anchor.", &.{
+        .{ .name = "label", .type = .string, .doc = "Accessible name, copied." },
+        .{ .name = "placement", .type = ref("siv_popup_placement"), .doc = "Default below." },
+        .{ .name = "flags", .type = ref("siv_popup_flags"), .doc = "SIV_POPUP_NO_GRAB for a passive popover that neither takes the keyboard nor closes on clicks outside." },
+    }),
+    descriptor("siv_dialog_desc", "A modal dialog over its parent (a stack such as the window's root).", &.{
+        .{ .name = "title", .type = .string, .doc = "The title, shown and used as the accessible name, copied." },
+        .{ .name = "text", .type = .string, .doc = "A message under the title, copied; may be empty." },
+    }),
+    descriptor("siv_tabs_desc", "Tabs: a tab list over panels, added with siv_tab.", &.{
+        .{ .name = "label", .type = .string, .doc = "The tab list's accessible name, copied." },
+    }),
+    descriptor("siv_split_desc", "A split pane: two panes and a divider the user drags.", &.{
+        .{ .name = "axis", .type = ref("siv_axis"), .doc = "row puts the panes side by side, column one above the other." },
+        f32Field("position", "The start pane's size in logical pixels; 0 is 200."),
+        f32Field("min_start", "The start pane's least size."),
+        f32Field("min_end", "The end pane's least size."),
+        .{ .name = "label", .type = .string, .doc = "The divider's accessible name, copied." },
+    }),
+    flags("siv_toast_flags", "Toast options.", &.{
+        .{ .name = "assertive", .bit = 0, .doc = "Announced at once (an alert) rather than when the user is idle." },
+        .{ .name = "persistent", .bit = 1, .doc = "Never times out." },
+    }),
+    descriptor("siv_toast_desc", "A brief message at the bottom of its parent (a stack such as the window's root).", &.{
+        .{ .name = "text", .type = .string, .doc = "The message, copied." },
+        .{ .name = "timeout_ms", .type = .u32, .doc = "How long it shows; 0 is 4000." },
+        .{ .name = "flags", .type = ref("siv_toast_flags"), .doc = "Options." },
     }),
     descriptor("siv_range_desc", "A slider, spin button, or progress bar. With min equal to max the range is 0 to 100.", &.{
         .{ .name = "label", .type = .string, .doc = "Accessible name, copied." },
@@ -993,6 +1065,16 @@ pub const functions = [_]Function{
         .{ .name = "min", .type = ref("siv_size"), .doc = "Smallest size." },
         .{ .name = "max", .type = ref("siv_size"), .doc = "Largest size." },
     }),
+    call("siv_popup_create", "Creates a popup of a window (an xdg_popup, D17): a window with its own tree that is mapped by siv_popup_show, once its content is built, so that it can size to it. Destroying the parent destroys its popups first.", &.{
+        window_param,
+        .{ .name = "desc", .type = .{ .desc = "siv_popup_desc" }, .doc = "Anchor, placement, size, and callbacks; NULL anchors below the parent's root." },
+        .{ .name = "popup", .type = out(ref("siv_window")), .doc = "The popup: a window handle." },
+    }),
+    call("siv_popup_show", "Maps a popup made by siv_popup_create, placed against its anchor as it is now. Unless SIV_POPUP_NO_GRAB was given, it takes the keyboard for the parent's last press or key, so call it while handling one. SIV_ERROR_BUSY if it is shown already or its transaction is open.", &.{.{ .name = "popup", .type = ref("siv_window"), .doc = "The popup." }}),
+    call("siv_window_get_app", "The application a window belongs to.", &.{
+        window_param,
+        .{ .name = "app", .type = out(ref("siv_app")), .doc = "The application." },
+    }),
     .{
         .name = "siv_window_root",
         .doc = "The window's root node: a stack that fills the window. Returns 0 for an invalid handle.",
@@ -1026,7 +1108,8 @@ pub const functions = [_]Function{
         .{ .name = "before", .type = ref("siv_node"), .doc = "A child of parent, or 0." },
     }),
     setter("siv_remove", "Removes a node and its subtree; their handles stay valid until commit.", &.{}),
-    setter("siv_set_layout", "Sets a node's layout.", &.{.{ .name = "desc", .type = .{ .desc = "siv_layout_desc" }, .doc = "The layout; NULL for defaults." }}),
+    setter("siv_set_layout", "Sets a node's layout. Fields left zero take the node's default layout (siv_set_default_layout), if it has one.", &.{.{ .name = "desc", .type = .{ .desc = "siv_layout_desc" }, .doc = "The layout; NULL for defaults." }}),
+    setter("siv_set_default_layout", "Sets a node's default layout: fields that the node's siv_set_layout leaves zero take their values from it (a size counts as one field, padding side by side, flags combine). Widgets, stock or not, give their padding and least sizes here, so an application's siv_set_layout on a widget positions and sizes it without undoing them.", &.{.{ .name = "desc", .type = .{ .desc = "siv_layout_desc" }, .doc = "The defaults; NULL for none." }}),
     setter("siv_set_visual", "Sets a node's appearance.", &.{.{ .name = "desc", .type = .{ .desc = "siv_visual_desc" }, .doc = "The appearance; NULL for defaults." }}),
     setter("siv_set_opacity", "Sets a node's opacity. Below 1 the node gets its own layer, and changes only update it (D8).", &.{.{ .name = "opacity", .type = .f32, .doc = "From 0 (invisible) to 1." }}),
     setter("siv_set_transform", "Sets a node's transform. A non-identity transform gives the node its own layer.", &.{.{ .name = "transform", .type = ref("siv_transform"), .doc = "The transform." }}),
@@ -1154,6 +1237,42 @@ pub const functions = [_]Function{
     builder("siv_slider", "Creates a horizontal slider: dragging, arrow, Page, Home, and End keys, and assistive technology change its value and report SIV_EVENT_CHANGE. Its role is slider.", &.{.{ .name = "desc", .type = .{ .desc = "siv_range_desc" }, .doc = "Range and value; NULL for 0 to 100." }}),
     builder("siv_spin_button", "Creates a spin button: a number field with decrement and increment buttons. Up and Down step, Page Up and Page Down page, typing a number and pressing Enter or leaving the field sets it; each change reports SIV_EVENT_CHANGE. Its field has the role spin_button.", &.{.{ .name = "desc", .type = .{ .desc = "siv_range_desc" }, .doc = "Range and value; NULL for 0 to 100." }}),
     builder("siv_progress_bar", "Creates a progress bar. Its role is progress_bar.", &.{.{ .name = "desc", .type = .{ .desc = "siv_range_desc" }, .doc = "Range and value; NULL for 0 to 100." }}),
+    builder("siv_menu", "Creates a menu: a node that takes no space and holds the items added with siv_menu_item. siv_menu_open shows them in a popup; choosing one reports SIV_EVENT_SELECT with its index on the menu.", &.{.{ .name = "desc", .type = .{ .desc = "siv_menu_desc" }, .doc = "Options; NULL for defaults." }}),
+    builder("siv_menu_button", "Creates a button that opens its menu (SIV_WIDGET_PART_MENU) below it. Add items with siv_menu_item on the button; choosing one reports SIV_EVENT_SELECT with its index on the button. Its role is button, expanded while the menu is open.", &.{.{ .name = "desc", .type = .{ .desc = "siv_button_desc" }, .doc = "Label and style; NULL for defaults." }}),
+    .{
+        .name = "siv_menu_item",
+        .doc = "Appends an item to a menu or menu button and returns it, or 0 if the transaction has failed. siv_widget_set_label, siv_widget_set_disabled, and (for checkable items) siv_widget_set_value apply to it; siv_remove removes it.",
+        .since = v0_1,
+        .params = &.{ txn_param, .{ .name = "menu", .type = ref("siv_node"), .doc = "A menu or menu button." }, .{ .name = "desc", .type = .{ .desc = "siv_menu_item_desc" }, .doc = "The item." } },
+        .ret = ref("siv_node"),
+    },
+    call("siv_menu_open", "Shows a menu in a popup below anchor, focused on its first enabled item. Up and Down move, Enter and Space choose, Escape and clicks outside close. Call it while handling the press or key that opens it; outside a transaction.", &.{
+        .{ .name = "menu", .type = ref("siv_node"), .doc = "A menu or menu button." },
+        .{ .name = "anchor", .type = ref("siv_node"), .doc = "The node to place it against; 0 is the menu's parent." },
+    }),
+    call("siv_popover_create", "Creates a popover against anchor: a popup with a themed card whose content the application builds in a transaction on the popup, then maps with siv_popup_show. Escape and clicks outside report SIV_EVENT_CLOSE on the content node; unless a handler keeps it, the popup is destroyed.", &.{
+        .{ .name = "anchor", .type = ref("siv_node"), .doc = "The node to place it against." },
+        .{ .name = "desc", .type = .{ .desc = "siv_popover_desc" }, .doc = "Options; NULL for defaults." },
+        .{ .name = "popup", .type = out(ref("siv_window")), .doc = "The popup window." },
+        .{ .name = "content", .type = out(ref("siv_node")), .doc = "The container for the content." },
+    }),
+    builder("siv_dialog", "Creates a modal dialog over parent: a scrim and a card with the title, the text, a content part, and an actions part (siv_widget_get_part). Input and Tab stay inside it and focus moves to it. Escape and clicks on the scrim report SIV_EVENT_CLOSE on the dialog; unless a handler keeps it, it is removed. Its role is dialog.", &.{.{ .name = "desc", .type = .{ .desc = "siv_dialog_desc" }, .doc = "Title and text." }}),
+    builder("siv_tabs", "Creates tabs: a tab list over panels, added with siv_tab. The value is the selected tab's index; choosing one (click, arrow keys, Home, End) shows its panel and reports SIV_EVENT_CHANGE with value and index. Only the selected tab is in the Tab order.", &.{.{ .name = "desc", .type = .{ .desc = "siv_tabs_desc" }, .doc = "Options; NULL for defaults." }}),
+    .{
+        .name = "siv_tab",
+        .doc = "Appends a tab and returns its panel, a box for its content, or 0 if the transaction has failed. The first tab starts selected.",
+        .since = v0_1,
+        .params = &.{ txn_param, .{ .name = "tabs", .type = ref("siv_node"), .doc = "Tabs." }, .{ .name = "label", .type = .string, .doc = "The tab's label, copied." } },
+        .ret = ref("siv_node"),
+    },
+    builder("siv_split_pane", "Creates a split pane: start and end panes (siv_widget_get_part) with a divider between them. Dragging the divider or pressing arrow keys, Home, or End on it moves it; the value is the start pane's size, reported with SIV_EVENT_CHANGE. The divider's role is separator with that value.", &.{.{ .name = "desc", .type = .{ .desc = "siv_split_desc" }, .doc = "Axis and position; NULL for side by side at 200." }}),
+    builder("siv_toast", "Shows a toast: a brief message in the inverse colors at the bottom of parent, announced to assistive technology. When it times out it reports SIV_EVENT_CLOSE; unless a handler keeps it, it fades out and is removed.", &.{.{ .name = "desc", .type = .{ .desc = "siv_toast_desc" }, .doc = "The message." }}),
+    call("siv_widget_get_part", "A part of a stock widget, such as a dialog's content or a split pane's panes, as of the latest operation.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The widget." },
+        .{ .name = "part", .type = ref("siv_widget_part"), .doc = "Which part." },
+        .{ .name = "index", .type = .u32, .doc = "Tabs and panels: which one." },
+        .{ .name = "result", .type = out(ref("siv_node")), .doc = "The part." },
+    }),
     setter("siv_widget_set_label", "Sets a stock widget's label: the text of buttons, toggles, check boxes, switches, and radios, and the accessible name of the others.", &.{.{ .name = "label", .type = .string, .doc = "Copied." }}),
     setter("siv_widget_set_disabled", "Enables or disables a stock widget: disabled widgets are dimmed, leave the Tab order, and ignore input.", &.{.{ .name = "disabled", .type = .bool, .doc = "Disabled." }}),
     setter("siv_widget_set_value", "Sets a stock widget's value without reporting SIV_EVENT_CHANGE: 0 or 1 for toggles (0.5 is a check box's mixed state), the selected index for choices (-1 for none), the number for ranges (clamped and stepped).", &.{.{ .name = "value", .type = .f64, .doc = "The value." }}),
