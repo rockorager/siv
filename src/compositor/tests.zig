@@ -417,3 +417,54 @@ test "posted closures run on the compositor in order with commits" {
     try h.comp.call(@ptrCast(&got), Title.read);
     try testing.expectEqualStrings("second", got);
 }
+
+test "a frame request with nothing new presents nothing" {
+    var h: Harness = .{};
+    try h.start(false);
+    defer h.stop();
+    const id = try h.window();
+    try h.runMs(10);
+    const frames = h.comp.frameStats(id).?.frames;
+    const ui_frames = h.count(.frame);
+    // The UI asks for a frame and commits nothing, then an empty commit.
+    try h.comp.requestFrame(id);
+    try h.run(&h, struct {
+        fn f(x: *Harness) bool {
+            return x.count(.frame) >= 1;
+        }
+    }.f);
+    try testing.expect(h.count(.frame) > ui_frames);
+    const seq = try h.comp.commit(id, &.{.{ .set_opacity = .{ .layer = 1, .opacity = 1 } }});
+    try h.runMs(20);
+    try testing.expectEqual(frames, h.comp.frameStats(id).?.frames);
+    // The empty commit still counts as presented: it is on screen already.
+    try testing.expect(h.last(.presented).?.presented.seq >= seq);
+    // A real change presents.
+    _ = try h.comp.commit(id, &.{.{ .set_opacity = .{ .layer = 1, .opacity = 0.5 } }});
+    try h.runMs(20);
+    try testing.expectEqual(frames + 1, h.comp.frameStats(id).?.frames);
+}
+
+test "discrete wheel steps without a distance scroll like Wayland wheels" {
+    var h: Harness = .{};
+    try h.start(false);
+    defer h.stop();
+    const id = try h.window();
+    _ = try h.comp.commit(id, &.{
+        .{ .create = 2 },
+        .{ .create = 3 },
+        .{ .insert = .{ .layer = 2, .parent = 1 } },
+        .{ .insert = .{ .layer = 3, .parent = 2 } },
+        .{ .set_scroll = .{ .layer = 2, .scroll = .{ .viewport = .xywh(0, 0, 100, 40), .content = .{ .width = 100, .height = 200 } } } },
+        .{ .set_content = .{ .layer = 3, .content = try h.rect(.xywh(0, 0, 100, 200), blue) } },
+    });
+    const hl = h.headless();
+    hl.inject(.{ .pointer_motion = .{ .window = id, .seat = 0, .x = 50, .y = 20 } });
+    hl.inject(.{ .scroll = .{ .window = id, .seat = 0, .v120_y = 240, .source = .wheel } });
+    try h.run(&h, struct {
+        fn f(x: *Harness) bool {
+            return x.count(.scrolled) >= 1;
+        }
+    }.f);
+    try testing.expectEqual(@as(f32, 2 * platform.Scroll.detent_px), h.last(.scrolled).?.scrolled.offset.y);
+}

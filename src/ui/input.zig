@@ -44,7 +44,7 @@ const btn_left = 0x110;
 const btn_right = 0x111;
 const btn_middle = 0x112;
 
-/// Pixels per wheel detent and per arrow key when the UI scrolls.
+/// Pixels per arrow key when the UI scrolls.
 pub const line_step: f32 = 40;
 
 pub const State = struct {
@@ -416,10 +416,9 @@ fn scroll(win: *Window, dx_px: f32, dy_px: f32, v120_x: i32, v120_y: i32) void {
     const p = win.input.pointer orelse return;
     const target = hitTest(win, p);
     if (target == .none) return;
-    var dx = dx_px;
-    var dy = dy_px;
-    if (dx == 0 and v120_x != 0) dx = @as(f32, @floatFromInt(v120_x)) / 120 * line_step;
-    if (dy == 0 and v120_y != 0) dy = @as(f32, @floatFromInt(v120_y)) / 120 * line_step;
+    const d = (platform.Scroll{ .window = 0, .seat = 0, .dx = dx_px, .dy = dy_px, .v120_x = v120_x, .v120_y = v120_y }).delta();
+    var dx: f32 = @floatCast(d.x);
+    var dy: f32 = @floatCast(d.y);
     const ev: Event = .{ .scroll = .{ .dx = dx, .dy = dy } };
     if (bubble(win, target, .scroll, &ev)) return;
     const mods = win.input.mods;

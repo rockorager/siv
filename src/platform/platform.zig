@@ -507,6 +507,19 @@ pub const ScrollSource = enum { unknown, wheel, finger, continuous, wheel_tilt }
 
 /// One pointer frame of scrolling.
 pub const Scroll = struct {
+    /// Logical pixels per wheel detent (120 v120 units) for events that
+    /// carry only discrete steps, matching wl_pointer's legacy axis value.
+    pub const detent_px: f64 = 15;
+
+    /// The scroll distance in logical pixels, from the high-resolution
+    /// steps when the event has no continuous distance on an axis.
+    pub fn delta(s: Scroll) struct { x: f64, y: f64 } {
+        return .{
+            .x = if (s.dx != 0) s.dx else @as(f64, @floatFromInt(s.v120_x)) / 120 * detent_px,
+            .y = if (s.dy != 0) s.dy else @as(f64, @floatFromInt(s.v120_y)) / 120 * detent_px,
+        };
+    }
+
     window: WindowId,
     seat: SeatId,
     time: u32 = 0,

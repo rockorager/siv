@@ -504,7 +504,9 @@ fn scroll(self: *Compositor, s: platform_mod.Scroll) bool {
     const seat = &self.seats[s.seat];
     const w = self.getWindow(s.window) orelse return false;
 
-    var delta: Point = .{ .x = @floatCast(s.dx), .y = @floatCast(s.dy) };
+    // Wheel events may carry only discrete v120 steps.
+    const d = s.delta();
+    var delta: Point = .{ .x = @floatCast(d.x), .y = @floatCast(d.y) };
     if (seat.mods.shift and s.source == .wheel and delta.x == 0) delta = .{ .x = delta.y, .y = 0 };
     const gesture = s.source == .finger or s.source == .continuous;
     const stop = s.stop_x or s.stop_y;
@@ -564,8 +566,15 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
     const all = [_]IRect{vp};
     if (w.tree.background_changed) damage = &all;
 
+    // Present only what changed: a UI frame request with nothing new or a
+    // commit that changed nothing visible costs no buffer. A pending
+    // configure ack is committed by the platform at the end of the frame;
+    // a present that found no free buffer was retried with the previous
+    // list forgotten, so its damage is the whole window. Running
+    // animations keep presenting even when a frame shows no change (a
+    // scroll clamped at its end), because their frame callbacks pace them.
     var presented = false;
-    if (damage.len > 0 or w.ui_frame or tick.active) {
+    if (damage.len > 0 or tick.active) {
         presented = w.surface.present(self.platform, w.id, .{
             .list = list,
             .damage = damage,

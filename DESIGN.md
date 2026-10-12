@@ -304,6 +304,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     drag-and-drop transfers) moves through pipes that the UI reads and
     writes on its own loop or the worker pool; only the requests that
     hand over the fds go through the compositor.
+  - A frame presents only when it has damage or an animation is running
+    (whose frame callbacks pace it, even when a step shows nothing new).
+    A UI frame request or a commit that changes nothing visible costs no
+    buffer; a pending configure ack goes out as a bare commit (D12).
   - Lowering (`src/ui/paint.zig`): layers are the root, every node with
     opacity below 1, a transform, or a layer hint, every clipping node
     with layers below it (so its clip, a layer property, applies to them),
@@ -645,6 +649,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   xkbcommon with compose, `text-input-v3`, pointer constraints and relative
   motion on request, and keyboard-shortcut inhibition on request. Kinetic
   scrolling is implemented in the toolkit using the scroll-stop event.
+  - Wheel events that carry only high-resolution steps (`v120`) scroll
+    15 logical pixels per detent, wl_pointer's legacy axis value, in the
+    compositor and the UI alike (`platform.Scroll.delta`).
   - Key text omits C0 control characters and DEL; the keysym identifies those
     keys. A key that continues or cancels a compose sequence is delivered
     with `composing` set and no text, so shortcuts still see it.
