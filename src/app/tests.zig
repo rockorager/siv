@@ -548,3 +548,34 @@ test "without an application id every launch is primary, and services wait" {
     // Started by D-Bus activation: nothing until the desktop calls.
     try testing.expectEqual(@as(u32, 0), acts.count);
 }
+
+test "windows follow the application's language and direction unless they set their own" {
+    const app = try App.create(testing.allocator, .{
+        .backend = .headless,
+        .headless = .{ .refresh_ns = std.time.ns_per_ms },
+        .system_fonts = false,
+        .threads = 2,
+        .compositor_thread = false,
+        .desktop_settings = false,
+        .accessibility = false,
+        .language = "ar-EG",
+    });
+    defer app.destroy();
+    // Arabic is written right to left.
+    try testing.expect(app.rtl);
+    const follows = try app.createWindow(.{}, .{});
+    const own = try app.createWindow(.{ .rtl = false, .language = "en" }, .{});
+    try testing.expect(follows.ui.rtl);
+    try testing.expectEqualStrings("ar-EG", app.fonts.name(follows.ui.language));
+    try testing.expect(!own.ui.rtl);
+
+    try app.setLocale("de", null);
+    try testing.expect(!app.rtl);
+    try testing.expect(!follows.ui.rtl);
+    try testing.expectEqualStrings("de", app.fonts.name(follows.ui.language));
+    try testing.expectEqualStrings("en", app.fonts.name(own.ui.language));
+    // A direction set against the language's.
+    try app.setLocale("de", true);
+    try testing.expect(follows.ui.rtl);
+    try testing.expect(!own.ui.rtl);
+}

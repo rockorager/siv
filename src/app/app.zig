@@ -41,6 +41,7 @@ const desktop_mod = @import("desktop.zig");
 const a11y = @import("a11y");
 pub const portals = @import("portals.zig");
 pub const lifecycle = @import("lifecycle.zig");
+pub const locale = @import("locale.zig");
 
 const Loop = loop_mod.Loop;
 const Compositor = compositor.Compositor;
@@ -96,6 +97,11 @@ pub const Options = struct {
     name: []const u8 = "",
     /// siv's version, as assistive technology reports it.
     toolkit_version: []const u8 = "",
+    /// BCP 47 language of the application's text (D21); empty is the
+    /// process locale's (none on the headless backend).
+    language: []const u8 = "",
+    /// Right to left; null is the direction `language` is written in.
+    rtl: ?bool = null,
 };
 
 pub const App = struct {
@@ -132,6 +138,13 @@ pub const App = struct {
     portals: portals.Portals = .{},
     lifecycle: lifecycle.Lifecycle = .{},
     app_id: platform.BoundedString(255) = .{},
+    /// The application's language (interned in `fonts`) and direction,
+    /// which windows follow unless they set their own (D21).
+    language: u32 = 0,
+    rtl: bool = false,
+    /// An empty language is the process locale's; on the headless backend
+    /// it stays empty, so tests do not depend on the environment.
+    process_locale: bool = true,
     quit_requested: bool = false,
     /// Reported by the next `dispatch`. Unavailable stays.
     failure: ?Error = null,
@@ -155,6 +168,8 @@ pub const App = struct {
         app.fonts = try .init(gpa);
         errdefer app.fonts.deinit();
         app.fonts.pool = &app.pool;
+        app.process_locale = options.backend != .headless;
+        try app.applyLocale(options.language, options.rtl);
         if (options.system_fonts) app.fonts.database = text.fontconfig.Database.init() catch null;
         app.clipboard = .init(gpa, &app.loop, .{ .ctx = app, .set_selection = setSelection, .receive = receiveSelection });
         errdefer app.clipboard.deinit();
@@ -368,6 +383,25 @@ pub const App = struct {
         a.func(a.ctx, name, target, activation_token);
     }
 
+    /// Resolves and keeps the application's language and direction.
+    fn applyLocale(app: *App, language: []const u8, rtl: ?bool) Allocator.Error!void {
+        var buf: [64]u8 = undefined;
+        const lang = if (language.len > 0 or !app.process_locale) language else locale.processLanguage(&buf);
+        app.language = try app.fonts.intern(lang);
+        app.rtl = rtl orelse locale.isRtl(lang);
+    }
+
+    /// Changes the application's language (empty: the process locale's)
+    /// and direction (null: the language's). Windows that follow the
+    /// application lay out and shape their text again (D21).
+    pub fn setLocale(app: *App, language: []const u8, rtl: ?bool) Allocator.Error!void {
+        try app.applyLocale(language, rtl);
+        for (app.windows.items) |w| if (w) |win| {
+            if (win.follows_language) win.ui.setLanguage(app.fonts.name(app.language)) catch |err| return err;
+            if (win.follows_direction) win.ui.setRtl(app.rtl);
+        };
+    }
+
     pub fn createWindow(app: *App, options: WindowOptions, listener: Listener) Error!*Window {
         const gpa = app.gpa;
         try app.zombies.ensureUnusedCapacity(gpa, 1);
@@ -382,7 +416,7 @@ pub const App = struct {
         }) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable;
         errdefer app.comp.destroyWindow(id) catch {};
         if (id >= app.windows.items.len) try app.windows.appendNTimes(gpa, null, id + 1 - app.windows.items.len);
-        win.* = .{ .app = app, .id = id, .ui = undefined, .listener = listener, .drag = .{ .comp = app.comp, .window = id, .gpa = gpa } };
+        win.* = .{ .app = app, .id = id, .ui = undefined, .listener = listener, .drag = .{ .comp = app.comp, .window = id, .gpa = gpa }, .follows_language = options.language.len == 0, .follows_direction = options.rtl == null };
         win.ui = try ui.Window.init(gpa, .{
             .fonts = &app.fonts,
             .sink = .{ .ctx = win, .commit = Window.commit },
@@ -394,8 +428,8 @@ pub const App = struct {
             .theme = app.theme,
             .width = @floatFromInt(options.width),
             .height = @floatFromInt(options.height),
-            .rtl = options.rtl,
-            .language = options.language,
+            .rtl = options.rtl orelse app.rtl,
+            .language = if (options.language.len > 0) options.language else app.fonts.name(app.language),
         });
         if (app.accessible) win.a11y_id = app.bridge.addWindow(win.ui, options.title) catch |err| blk: {
             app.fail(if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable);
@@ -635,8 +669,10 @@ pub const WindowOptions = struct {
     width: u32 = 640,
     height: u32 = 480,
     client_decorations: bool = false,
-    rtl: bool = false,
-    /// BCP 47 language of the window's text.
+    /// Right to left; null follows the application's direction.
+    rtl: ?bool = null,
+    /// BCP 47 language of the window's text; empty follows the
+    /// application's language.
     language: []const u8 = "",
 };
 
@@ -679,6 +715,10 @@ pub const Window = struct {
     /// Last layer commit, and the last one presented.
     committed_seq: u64 = 0,
     presented_seq: u64 = 0,
+    /// The window follows the application's language and direction
+    /// (`App.setLocale`). Popups take their parent's when created.
+    follows_language: bool = true,
+    follows_direction: bool = true,
     /// Popups: the window they belong to.
     parent: ?*Window = null,
     /// False for a popup until `showPopup`.
