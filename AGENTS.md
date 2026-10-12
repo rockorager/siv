@@ -58,6 +58,10 @@ owns its directories and does not edit another workstream's files.
 | `ui` | `src/ui/` | UI core | `scene`, `raster`, `text`, `loop`, `platform`, `compositor` |
 | `a11y` | `src/a11y/` | D-Bus and desktop settings (AT-SPI) | `dbus`, `ui`, `loop`, `raster`, `text` |
 | `app` | `src/app/` | Public C API | `text`, `loop`, `platform`, `compositor`, `ui`, `dbus`, `a11y` |
+| `widgets` | `src/widgets/` | Theming and stock widgets | `siv` (the generated C API wrapper) only (D22) |
+
+The theming workstream also owns `src/ui/theme.zig` (D29). Stock widgets
+use only the public C API; when one needs more, add a public primitive.
 
 Shared files have no single owner: `build.zig`, `build.zig.zon`,
 `src/siv.zig`, `test/`, `.agents/`, and this file. Change them only when your

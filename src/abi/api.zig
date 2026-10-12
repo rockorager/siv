@@ -639,6 +639,58 @@ pub const decls = [_]Decl{
     }),
     handle("siv_timer", "A one-shot timer on the application's loop. Valid until it fires or is cancelled.", false),
 
+    // Stock widgets (D22).
+    flags("siv_widget_flags", "Widget options.", &.{
+        .{ .name = "disabled", .bit = 0, .doc = "Shown dimmed; neither focusable nor operable." },
+    }),
+    enumeration("siv_button_style", "How a button looks.", &.{
+        .{ .name = "default", .value = 0, .doc = "A bordered control." },
+        .{ .name = "primary", .value = 1, .doc = "Filled with the accent: the suggested action." },
+        .{ .name = "flat", .value = 2, .doc = "No border or fill until hovered (toolbars)." },
+        .{ .name = "destructive", .value = 3, .doc = "Filled with the destructive color." },
+    }),
+    descriptor("siv_button_desc", "A push button.", &.{
+        .{ .name = "label", .type = .string, .doc = "The label, copied; also the accessible name." },
+        .{ .name = "style", .type = ref("siv_button_style"), .doc = "Default default." },
+        .{ .name = "flags", .type = ref("siv_widget_flags"), .doc = "Options." },
+    }),
+    descriptor("siv_toggle_desc", "A toggle button, check box, or switch.", &.{
+        .{ .name = "label", .type = .string, .doc = "The label, copied; also the accessible name." },
+        .{ .name = "checked", .type = ref("siv_toggle"), .doc = "Initial state; unset is off. Mixed only for check boxes." },
+        .{ .name = "flags", .type = ref("siv_widget_flags"), .doc = "Options." },
+    }),
+    descriptor("siv_radio_group_desc", "A group of radio buttons, added with siv_radio. The first one starts selected.", &.{
+        .{ .name = "label", .type = .string, .doc = "The group's accessible name, copied." },
+        .{ .name = "axis", .type = ref("siv_axis"), .doc = "How the radios are arranged; default row." },
+        .{ .name = "flags", .type = ref("siv_widget_flags"), .doc = "Options." },
+    }),
+    flags("siv_text_field_flags", "Text field options.", &.{
+        .{ .name = "multiline", .bit = 0, .doc = "A text area: Enter inserts a line break and lines wrap." },
+        .{ .name = "masked", .bit = 1, .doc = "A password field (SIV_EDITOR_MASKED)." },
+        .{ .name = "disabled", .bit = 2, .doc = "Shown dimmed; not focusable." },
+    }),
+    descriptor("siv_text_field_desc", "A framed editor: a text field, or with SIV_TEXT_FIELD_MULTILINE a text area.", &.{
+        .{ .name = "text", .type = .string, .doc = "Initial text, copied." },
+        .{ .name = "placeholder", .type = .string, .doc = "Shown while empty, copied." },
+        .{ .name = "label", .type = .string, .doc = "Accessible name, copied; empty uses the placeholder." },
+        .{ .name = "flags", .type = ref("siv_text_field_flags"), .doc = "Options." },
+        .{ .name = "rows", .type = .u32, .doc = "Text areas: the least height in lines; 0 is 3." },
+    }),
+    flags("siv_range_flags", "Range widget options.", &.{
+        .{ .name = "disabled", .bit = 0, .doc = "Shown dimmed; neither focusable nor operable." },
+        .{ .name = "indeterminate", .bit = 1, .doc = "Progress bars: progress is unknown; the value is ignored." },
+    }),
+    descriptor("siv_range_desc", "A slider, spin button, or progress bar. With min equal to max the range is 0 to 100.", &.{
+        .{ .name = "label", .type = .string, .doc = "Accessible name, copied." },
+        .{ .name = "min", .type = .f64, .doc = "Smallest value." },
+        .{ .name = "max", .type = .f64, .doc = "Largest value." },
+        .{ .name = "value", .type = .f64, .doc = "Initial value, clamped." },
+        .{ .name = "step", .type = .f64, .doc = "Values are min plus multiples of step, and arrow keys move by it; 0 is continuous for sliders (arrows move a hundredth) and 1 for spin buttons." },
+        .{ .name = "page", .type = .f64, .doc = "What Page Up and Page Down move; 0 is ten steps." },
+        .{ .name = "digits", .type = .u32, .doc = "Spin buttons: decimals shown." },
+        .{ .name = "flags", .type = ref("siv_range_flags"), .doc = "Options." },
+    }),
+
     // Canvases (D28).
     handle("siv_draw", "A drawing context: valid only during the siv_draw_fn call it is passed to.", false),
     handle("siv_image", "Immutable pixels for image nodes and siv_draw_image. Destroying the handle drops the application's reference: nodes and frames that show the image keep it until they stop.", false),
@@ -1052,6 +1104,35 @@ pub const functions = [_]Function{
         .{ .name = "timer", .type = out(ref("siv_timer")), .doc = "The timer." },
     }),
     op("siv_timer_cancel", "Cancels a timer that has not fired; its destroy-notify runs.", &.{.{ .name = "timer", .type = ref("siv_timer"), .doc = "The timer." }}),
+    // Stock widgets (D22).
+    builder("siv_push_button", "Creates a push button: siv_on SIV_EVENT_ACTIVATE runs when it is clicked or activated by Enter, Space, or assistive technology. Its role is button.", &.{.{ .name = "desc", .type = .{ .desc = "siv_button_desc" }, .doc = "Label and style; NULL for an empty default button." }}),
+    builder("siv_toggle_button", "Creates a button that stays pressed: activating it flips its value (0 or 1) and reports SIV_EVENT_CHANGE. Its role is toggle_button.", &.{.{ .name = "desc", .type = .{ .desc = "siv_toggle_desc" }, .doc = "Label and state; NULL for defaults." }}),
+    builder("siv_check_box", "Creates a check box with its label: activating it flips its value (0 or 1; 0.5 is mixed) and reports SIV_EVENT_CHANGE. Its role is checkbox.", &.{.{ .name = "desc", .type = .{ .desc = "siv_toggle_desc" }, .doc = "Label and state; NULL for defaults." }}),
+    builder("siv_switch", "Creates a switch with its label: activating it flips its value (0 or 1) and reports SIV_EVENT_CHANGE. Its role is switch; the knob slides unless motion is reduced.", &.{.{ .name = "desc", .type = .{ .desc = "siv_toggle_desc" }, .doc = "Label and state; NULL for defaults." }}),
+    builder("siv_radio_group", "Creates a radio group; add options with siv_radio. Its value is the selected option's index (-1 for none); choosing one reports SIV_EVENT_CHANGE with value and index on the group. Arrow keys move the selection; only the selected radio is in the Tab order. Its role is group.", &.{.{ .name = "desc", .type = .{ .desc = "siv_radio_group_desc" }, .doc = "Options; NULL for defaults." }}),
+    .{
+        .name = "siv_radio",
+        .doc = "Appends an option to a radio group and returns it, or 0 if the transaction has failed. Its role is radio.",
+        .since = v0_1,
+        .params = &.{ txn_param, .{ .name = "group", .type = ref("siv_node"), .doc = "A radio group." }, .{ .name = "label", .type = .string, .doc = "The option's label, copied." } },
+        .ret = ref("siv_node"),
+    },
+    builder("siv_text_field", "Creates a framed editor and returns the editor itself, so editor functions and SIV_EVENT_CHANGE apply. Its role is text_input.", &.{.{ .name = "desc", .type = .{ .desc = "siv_text_field_desc" }, .doc = "Text and options; NULL for an empty field." }}),
+    builder("siv_slider", "Creates a horizontal slider: dragging, arrow, Page, Home, and End keys, and assistive technology change its value and report SIV_EVENT_CHANGE. Its role is slider.", &.{.{ .name = "desc", .type = .{ .desc = "siv_range_desc" }, .doc = "Range and value; NULL for 0 to 100." }}),
+    builder("siv_spin_button", "Creates a spin button: a number field with decrement and increment buttons. Up and Down step, Page Up and Page Down page, typing a number and pressing Enter or leaving the field sets it; each change reports SIV_EVENT_CHANGE. Its field has the role spin_button.", &.{.{ .name = "desc", .type = .{ .desc = "siv_range_desc" }, .doc = "Range and value; NULL for 0 to 100." }}),
+    builder("siv_progress_bar", "Creates a progress bar. Its role is progress_bar.", &.{.{ .name = "desc", .type = .{ .desc = "siv_range_desc" }, .doc = "Range and value; NULL for 0 to 100." }}),
+    setter("siv_widget_set_label", "Sets a stock widget's label: the text of buttons, toggles, check boxes, switches, and radios, and the accessible name of the others.", &.{.{ .name = "label", .type = .string, .doc = "Copied." }}),
+    setter("siv_widget_set_disabled", "Enables or disables a stock widget: disabled widgets are dimmed, leave the Tab order, and ignore input.", &.{.{ .name = "disabled", .type = .bool, .doc = "Disabled." }}),
+    setter("siv_widget_set_value", "Sets a stock widget's value without reporting SIV_EVENT_CHANGE: 0 or 1 for toggles (0.5 is a check box's mixed state), the selected index for choices (-1 for none), the number for ranges (clamped and stepped).", &.{.{ .name = "value", .type = .f64, .doc = "The value." }}),
+    setter("siv_widget_set_range", "Sets the range of a slider, spin button, or progress bar; the value is clamped into it. With min equal to max the range is 0 to 100.", &.{
+        .{ .name = "min", .type = .f64, .doc = "Smallest value." },
+        .{ .name = "max", .type = .f64, .doc = "Largest value." },
+        .{ .name = "step", .type = .f64, .doc = "Step, as in siv_range_desc." },
+    }),
+    call("siv_widget_get_value", "A stock widget's value, as siv_widget_set_value takes it.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "A stock widget's root (for text fields: the field)." },
+        .{ .name = "value", .type = out(.f64), .doc = "The value." },
+    }),
     // Canvases (D28).
     builder("siv_canvas", "Creates a canvas: content the application draws (siv_draw_fn) in its own compositor layer, so redrawing it repaints nothing else.", &.{.{ .name = "desc", .type = .{ .desc = "siv_canvas_desc" }, .doc = "Callbacks and size; NULL for an empty canvas." }}),
     builder("siv_image_view", "Creates an image node: an image fitted into its content box. Its intrinsic size is the image's size in pixels; its role is image.", &.{.{ .name = "desc", .type = .{ .desc = "siv_image_view_desc" }, .doc = "The image and fit; NULL shows nothing." }}),

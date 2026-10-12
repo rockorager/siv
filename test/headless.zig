@@ -33,4 +33,5 @@ test {
     _ = @import("abi/dnd.zig");
     _ = @import("abi/teardown.zig");
     _ = @import("abi/primitives.zig");
+    _ = @import("widgets/widgets.zig");
 }

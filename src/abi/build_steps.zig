@@ -12,6 +12,8 @@ pub const Options = struct {
     test_filters: []const []const u8,
     /// The abi module; gets the generated wrapper as its `siv` import.
     abi: *std.Build.Module,
+    /// The stock widgets (D22), which import only the generated wrapper.
+    widgets: *std.Build.Module,
     shared: *std.Build.Step.Compile,
     test_step: *std.Build.Step,
     /// `zig build test-integration`: tests against headless sway.
@@ -42,7 +44,9 @@ pub fn add(b: *std.Build, o: Options) void {
         .optimize = o.optimize,
     });
     wrapper.linkLibrary(o.shared);
-    o.abi.addImport("siv", b.createModule(.{ .root_source_file = installed.path(b, "share/siv/siv.zig") }));
+    const siv_module = b.createModule(.{ .root_source_file = installed.path(b, "share/siv/siv.zig") });
+    o.abi.addImport("siv", siv_module);
+    o.widgets.addImport("siv", siv_module);
 
     // libsiv.so exports exactly the schema's functions (D2). Zig 0.16's
     // self-hosted ELF linker ignores version scripts, so link with LLD.
@@ -151,7 +155,7 @@ pub fn add(b: *std.Build, o: Options) void {
     // Example programs (examples/*.c): `zig build examples` installs them;
     // `zig build test` compiles them, so they keep up with the API.
     const examples = b.step("examples", "Build the C example programs");
-    for ([_][]const u8{ "hello", "todo", "embed", "gauge" }) |name| {
+    for ([_][]const u8{ "hello", "todo", "embed", "gauge", "widgets" }) |name| {
         const exe = b.addExecutable(.{
             .name = name,
             .root_module = b.createModule(.{ .target = o.target, .optimize = o.optimize, .link_libc = true }),

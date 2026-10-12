@@ -927,7 +927,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     Touch drives the primary pointer until gestures exist.
   - Focus moved by the keyboard shows a ring drawn by the core (2 px,
     outside the node), so keyboard-only use works without widget code;
-    focus from a pointer press shows none. Theming will set its color.
+    focus from a pointer press shows none. Its color is the theme's
+    `focus_ring` (D29).
 
 ### D17. Windows, popups, decorations, external content
 
@@ -1144,9 +1145,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     nodes with an activate handler (one action, named like GTK's for the
     role: click, toggle, jump, activate); Text for text nodes, editors,
     and text roles; EditableText for unmasked enabled editors; Value for
-    nodes with a range (read-only: setting a value needs a widget
-    handler); Selection for lists, trees, tab lists, menus, tables, and
-    combo boxes, where selecting a child activates it.
+    nodes with a range, whose MinimumIncrement is the semantics' step and
+    whose CurrentValue is writable: setting it sends the node a
+    `set_value` event (`ui.input.setValue`), which a widget applies
+    clamped and stepped (D22) or refuses, and the change reaches the
+    client through the next update like any other; Selection for lists,
+    trees, tab lists, menus, tables, and combo boxes, where selecting a
+    child activates it. Modal nodes have the modal state.
   - Roles follow ARIA's AT-SPI mapping where siv's roles are ARIA's;
     switches are toggle buttons, since the switch role (at-spi2-core 2.56)
     is newer than current registries and screen readers. Text offsets are
@@ -1266,13 +1271,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       settings backend) took 0.4–0.5 ms in the same setup.
     - The UI follows the settings through `ui.Desktop` (reduced motion,
       accent color, text scale, double-click time, caret blink cycle and
-      timeout), whose fields have the names and types of
-      `dbus.Settings.Values`, applied per window with
-      `ui.Window.setDesktop`: a text scale change reshapes text, an accent
-      change repaints, and carets restart their blink. The accent draws
-      focus rings and, at 30% alpha, focused selections; without one the
-      toolkit's blue stays. An application's own reduced-motion flag
-      applies whatever the desktop says.
+      timeout, color scheme, contrast, and the UI font's size), whose
+      fields have the names of `dbus.Settings.Values` and their types or
+      enums with the same tags, applied per window with
+      `ui.Window.setDesktop`: a text scale change reshapes text, theme
+      changes repaint (D29), and carets restart their blink. The accent
+      draws focus rings and focused selections through the theme; without
+      one the toolkit's blue stays. An application's own reduced-motion
+      flag applies whatever the desktop says.
     - `src/app/desktop.zig` starts the bus connection and the Settings
       client in `App.create` before the compositor connects to Wayland,
       copies the values into every window's `ui.Desktop` (new windows
@@ -1298,8 +1304,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       after the application has created its window. A portal that never
       answers delays the first frame to 100–102 ms. The test fails above
       20 ms.
-    - The font size, color scheme, contrast, and cursor theme wait for
-      the theme and stock widgets (D22) and pointer cursors.
+    - The color scheme, contrast, accent, and font size drive the theme
+      (D29); the cursor theme waits for pointer cursors.
   - Portals for files, URIs, notifications, printing, screen capture, global
     shortcuts, and the document portal. No built-in file chooser: the portal is
     the system chooser.
@@ -1436,7 +1442,64 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   table, and grid with selection models, menus, popovers, dialogs, tabs, split
   panes, sliders, spin buttons, progress, toasts. Theming uses compiled design
   tokens plus runtime overrides, follows the portal accent and color scheme, and
-  includes a high-contrast variant. Animation respects reduced motion.
+  includes a high-contrast variant (D29). Animation respects reduced motion.
+  - **The boundary is enforced by the build.** `src/widgets` imports only
+    `siv`, the generated Zig wrapper of the C ABI (D3); its exports are
+    schema functions like any other, checked against the schema by
+    `src/abi/abi.zig`. A stock widget therefore can do nothing that a
+    widget written in C, Lua, or Rust against `siv.h` cannot. When a widget
+    needs something the API lacks, the capability becomes a public
+    primitive first. Primitives added this way: hidden nodes
+    (`SIV_VISUAL_HIDDEN`), modal nodes (`SIV_SEMANTICS_MODAL`), the value
+    step, editor placeholders, transitions, themed colors and text sizes
+    (D29), default handlers, `siv_emit`, node data, tree navigation
+    (`siv_node_get_related`, `siv_node_get_window`, `siv_node_is_rtl`),
+    `siv_txn_fail`, one-shot timers, and the `set_value` and `select` events.
+  - **Creating:** one builder per widget, a transaction operation like the
+    primitive builders (D27): `siv_button(txn, parent, &desc)` appends the
+    widget and returns its root node, or 0 once the transaction has failed
+    (sticky errors, D4; a widget reports its own invalid arguments with
+    `siv_txn_fail`). The root is an ordinary node: layout, `siv_move`,
+    `siv_remove`, and semantics overrides apply to it, and removing it
+    removes the widget. Parts that hold several items are built item by
+    item with child builders (`siv_radio` under a radio group), so items
+    are nodes too and no descriptor needs an array of strings, which the
+    schema cannot express. Text fields and areas return the editor node
+    itself, so every editor function (text, selection, change events)
+    works on them unchanged.
+  - **Driving:** a few functions cover every widget instead of setters per
+    widget kind: `siv_widget_set_label`, `siv_widget_set_disabled`,
+    `siv_widget_set_value` and `siv_widget_get_value`, and
+    `siv_widget_set_range`. A widget's value is one double: 0 or 1 for
+    toggles (0.5 is mixed), the chosen index for choices, the number for
+    ranges. They are transaction operations, so a value change lands in
+    the same frame as the tree changes around it.
+  - **Events** go through `siv_on` on the returned node, as for
+    primitives: `activate` for buttons, `change` with `value` (and `index`
+    for choices) when the user or assistive technology changed the value,
+    `select` with `index` for menus and views. Setting a value from the
+    application does not report it.
+  - **Behavior lives in default handlers.** A widget installs its pointer,
+    key, activate, focus, and `set_value` handling with `siv_on_default`,
+    which runs only when the node has no `siv_on` handler of that type or
+    it returned false. So `siv_on` stays the application's on every node,
+    a stock widget never takes a handler slot away from it, and an
+    application overrides a behavior by returning true. Widgets report
+    their own events with `siv_emit`, which runs the same two slots.
+  - **State lives with the node.** `siv_set_data` gives a node zeroed
+    memory under a caller-chosen key, from the application's allocator
+    (D2), freed with the node or when the transaction that made it aborts;
+    `siv_node_get_data` finds it again from the handle. Widget handlers
+    get that memory as their user data and need no destroy-notify.
+  - **Keyboard, semantics, RTL:** every widget root is focusable with the
+    ARIA role of its kind (a radio group is a `group` of `radio`s, a switch
+    a `switch`), takes its name from its label text (D18), and exposes its
+    checked, pressed, selected, or value state. Arrow keys follow WAI-ARIA
+    practice and swap in right-to-left layouts (`siv_node_is_rtl`); layout
+    is logical (D21), so positions mirror without widget code. Widgets
+    with a value accept `set_value`: assistive technology sets a range's
+    value through AT-SPI's Value interface, which the bridge forwards
+    (D18), clamped and stepped by the widget like a key press.
 - **Non-goal:** a full document model with embedded tables and images.
 
 ### D23. Lua 5.5
@@ -1564,7 +1627,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Events go to one handler per node and event type, with
     `bool (*)(void *user_data, siv_node, const siv_event *)`; returning
     true stops bubbling and the default action (D16). Changes to the tree
-    from a handler go through a transaction like any other.
+    from a handler go through a transaction like any other. A second
+    slot, `siv_on_default`, holds widget behavior and runs only when the
+    first is empty or declines (D22); `siv_emit` sends an event to both.
   - A close request goes to the window's `on_event`; unless it returns
     true, siv destroys the window. `siv_run` returns when `siv_app_quit`
     is called or the last window is destroyed.
@@ -1660,6 +1725,59 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   spending real time in the replay copy or in reshaping text; then draw
   straight into the layer's builder with a rollback point, and cache
   shaped text per canvas.
+
+### D29. Theming
+
+- **Requirement:** every application follows the desktop's color scheme,
+  contrast, accent, and font size live, including a high-contrast variant,
+  with compiled defaults that applications can override at run time, and
+  without the application rebuilding its tree when the desktop changes.
+- **Decision:** themed values are public primitives that nodes reference
+  and siv resolves when it paints and shapes, not values widgets copy in.
+  - Tokens (`siv_color_token`, `ui.theme.ColorToken`): window, view, and
+    card surfaces and their text, muted and disabled text, borders and
+    separators, control rest, hover, and pressed fills and their text, the
+    accent with its hover and pressed shades and the text on it,
+    selections, focus rings, tracks and knobs, destructive actions, the
+    modal scrim, and inverse surfaces for toasts. Visual descriptors take
+    `background_token` and `border_token` and text styles `color_token`,
+    each replacing the literal color when set. Text styles take a
+    `size_role` (body, caption, heading, title) relative to the desktop's
+    UI font size (11 pt by default, 1 pt = 4/3 logical px), multiplied by
+    the text scale like every size.
+  - Four compiled variants (light, dark, and high contrast of each), picked
+    by the portal's color scheme and contrast unless the application fixes
+    either (`siv_app_set_theme`). The portal's accent replaces `accent`,
+    and the derived tokens follow it: hover and pressed shades mixed 12%
+    and 24% toward black (white in dark variants), the text on it black or
+    white by WCAG contrast, focus rings, and selections (30% of the accent
+    over the view background, or the accent itself in high contrast).
+    Application overrides (`siv_app_set_theme_color`, per variant or all)
+    apply last; overriding the accent also moves what derives from it.
+  - Each window resolves a palette (`ui.theme.Palette`) from the desktop
+    values and the application's choices, which the coordinator passes to
+    every window like the desktop settings (D19). A changed palette
+    repaints every layer and redraws canvases; a changed body size
+    reshapes text that has a size role and measures canvases again. The
+    core's own colors come from it too: focus rings, editor selections,
+    and placeholders, so the core and stock widgets agree. Canvases read
+    resolved colors with `siv_window_get_color`.
+  - Metrics (spacing, radii, control heights) are compiled design tokens
+    of the widget library (`src/widgets/tokens.zig`); colors and text
+    sizes are the runtime part.
+  - Motion: `siv_set_transition` makes later changes of a node's own
+    opacity and transform animate on the compositor (D8) with an ease-out
+    curve; moves from layout do not animate, and neither does the first
+    value. Reduced motion, from the desktop or `SIV_APP_REDUCED_MOTION`,
+    turns transitions into jumps, so widgets get it right by construction.
+- **Alternatives:** widgets copying resolved colors into the tree and
+  rebuilding on theme changes (every widget library would need a theme
+  listener and the tree churns on every desktop change); CSS-like style
+  sheets with selectors (a second system to match and cascade, far more
+  than tokens need); a theme per window (applications want one look).
+- **Reverse if:** applications need per-subtree themes (an always-dark
+  sidebar); then let a node carry a palette that its subtree resolves
+  against.
 
 ## Lessons from ourokit
 

@@ -154,8 +154,12 @@ pub fn build(b: *std.Build) void {
         .{ .name = "ui", .module = ui },
         .{ .name = "app", .module = app },
     };
+    // Stock widgets (D22) import only the generated C API wrapper, which
+    // src/abi/build_steps.zig adds as `siv`.
+    const widgets = ctx.module("src/widgets/widgets.zig", &.{});
     const abi = ctx.module("src/abi/abi.zig", &internal);
     abi.addImport("build_options", build_options);
+    abi.addImport("widgets", widgets);
 
     // Unicode conformance data for the text tests, embedded with
     // @embedFile("<name>"). Property files can be added the same way.
@@ -328,6 +332,7 @@ pub fn build(b: *std.Build) void {
         .build_options = build_options,
         .test_filters = test_filters,
         .abi = abi,
+        .widgets = widgets,
         .shared = shared,
         .test_step = test_step,
         .integration_step = integration_step,
