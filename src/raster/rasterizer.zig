@@ -65,6 +65,9 @@ pub const Rasterizer = struct {
     /// Rows that received area, [row_min, row_max).
     row_min: u32 = 0,
     row_max: u32 = 0,
+    /// Per row, the first and last cell that received area, so resolving
+    /// coverage skips the empty and constant parts of each row.
+    spans: [][2]u32 = &.{},
 
     pub fn init(gpa: std.mem.Allocator) Rasterizer {
         return .{ .gpa = gpa };
@@ -72,6 +75,7 @@ pub const Rasterizer = struct {
 
     pub fn deinit(r: *Rasterizer) void {
         r.gpa.free(r.cells);
+        r.gpa.free(r.spans);
         r.* = undefined;
     }
 
@@ -89,6 +93,12 @@ pub const Rasterizer = struct {
             r.gpa.free(r.cells);
             r.cells = cells;
         }
+        if (h > r.spans.len) {
+            const spans = try r.gpa.alloc([2]u32, h);
+            r.gpa.free(r.spans);
+            r.spans = spans;
+        }
+        @memset(r.spans[0..h], .{ std.math.maxInt(u32), 0 });
         r.window = window;
         r.width = w;
         r.height = h;
@@ -192,6 +202,9 @@ pub const Rasterizer = struct {
             const x0i: usize = @intFromFloat(x0floor);
             const x1ceil = @ceil(x1);
             const x1i: usize = @intFromFloat(x1ceil);
+            const span = &r.spans[y];
+            span[0] = @min(span[0], @as(u32, @intCast(x0i)));
+            span[1] = @max(span[1], @as(u32, @intCast(@max(x1i, x0i + 1))));
             if (x1i <= x0i + 1) {
                 // The segment stays within one cell in this row.
                 const xmf = 0.5 * (x + xnext) - x0floor;
@@ -231,8 +244,13 @@ pub const Rasterizer = struct {
                 continue;
             }
             const cells = r.cells[y * r.stride ..][0..r.stride];
+            const span = r.spans[y];
+            if (span[0] > span[1]) {
+                @memset(dst, 0);
+                continue;
+            }
             switch (rule) {
-                inline else => |ct_rule| accumulateRow(ct_rule, cells, dst),
+                inline else => |ct_rule| accumulateRow(ct_rule, cells, dst, span[0], span[1] + 1),
             }
         }
         r.row_min = r.height;
@@ -259,15 +277,49 @@ pub const Rasterizer = struct {
     }
 };
 
-fn accumulateRow(comptime rule: FillRule, cells: []f32, dst: []u8) void {
+/// Resolves one row whose nonzero cells lie in [lo, hi): zero before, a
+/// running sum inside (eight cells at a time), and the final constant after.
+/// Clears the cells it read.
+fn accumulateRow(comptime rule: FillRule, cells: []f32, dst: []u8, lo: usize, hi: usize) void {
+    const w = dst.len;
+    const start = @min(lo, w);
+    const end = @min(hi, w);
+    @memset(dst[0..start], 0);
     var acc: f32 = 0;
-    for (dst, cells[0..dst.len]) |*o, *c| {
-        acc += c.*;
-        c.* = 0;
-        o.* = coverageByte(rule, acc);
+    var x = start;
+    const V = @Vector(8, f32);
+    const zero: V = @splat(0);
+    while (x + 8 <= end) : (x += 8) {
+        var v: V = cells[x..][0..8].*;
+        // In-register prefix sum.
+        v += @shuffle(f32, v, zero, [8]i32{ -1, 0, 1, 2, 3, 4, 5, 6 });
+        v += @shuffle(f32, v, zero, [8]i32{ -1, -1, 0, 1, 2, 3, 4, 5 });
+        v += @shuffle(f32, v, zero, [8]i32{ -1, -1, -1, -1, 0, 1, 2, 3 });
+        v += @as(V, @splat(acc));
+        acc = v[7];
+        dst[x..][0..8].* = coverageBytes(rule, v);
     }
-    // Spare cells past the right edge.
-    for (cells[dst.len..]) |*c| c.* = 0;
+    while (x < end) : (x += 1) {
+        acc += cells[x];
+        dst[x] = coverageByte(rule, acc);
+    }
+    // Area beyond the window's right edge is in cells w and w + 1 and
+    // never affects visible pixels.
+    if (end < w) @memset(dst[end..w], coverageByte(rule, acc));
+    @memset(cells[@min(lo, cells.len)..@min(hi, cells.len)], 0);
+}
+
+inline fn coverageBytes(comptime rule: FillRule, acc: @Vector(8, f32)) @Vector(8, u8) {
+    const V = @Vector(8, f32);
+    var v = @abs(acc);
+    switch (rule) {
+        .nonzero => v = @min(v, @as(V, @splat(1))),
+        .even_odd => {
+            v = v - @as(V, @splat(2)) * @floor(v * @as(V, @splat(0.5)));
+            v = @select(f32, v > @as(V, @splat(1)), @as(V, @splat(2)) - v, v);
+        },
+    }
+    return @intFromFloat(v * @as(V, @splat(255)) + @as(V, @splat(0.5)));
 }
 
 pub inline fn coverageByte(comptime rule: FillRule, acc: f32) u8 {
