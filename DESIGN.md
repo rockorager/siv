@@ -173,6 +173,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     Work scheduled for a phase that already ran waits for the next iteration.
   - `siv_post` takes a callback, a destroy-notify, and user data. Posting
     allocates a node, so the loop's allocator must be thread-safe.
+  - Worker jobs run on the application's one worker pool (`src/pool`, see
+    D6); the loop's wrapper posts each completion to the loop, so `done` runs
+    in the dispatch phase.
   - Destroying the application never runs pending posted closures or worker
     completions, since teardown has begun; it calls their destroy-notify (or
     a job's cancel function) so they can release what they own.
@@ -194,6 +197,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     embedder only needs to poll it and call `siv_app_dispatch(0)`. An idle
     loop with no armed timers blocks indefinitely.
   - Worker threads start on demand up to a limit and block when idle.
+  - One worker pool per application, shared by file I/O, decode, and raster
+    tiles, so the loop and the renderer never oversubscribe the CPU. It has
+    two modes on the same threads and queue: async jobs (completions
+    delivered by the loop, D5) and blocking fork-join, in which the calling
+    thread also runs the job and helpers that have not started when it
+    finishes are dropped, so fork-join never waits behind queued I/O.
 - **Alternatives:** io_uring. Rejected: a GUI client issues tens of syscalls per
   frame, so batching gains are negligible; Docker's default seccomp profile
   blocks io_uring, Android and ChromeOS disable it, and seccomp sandboxes cannot
@@ -219,6 +228,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **Decision:** one compositor thread per process owns a layer tree and all
   presentation. It runs scrolling and transform/opacity animations
   independently. The UI thread sends layer updates, not whole frames.
+  The compositor thread renders CPU tiles through the application pool's
+  fork-join mode and works on tiles itself, so it never blocks on the loop.
 - **Alternatives:** render on the UI thread (lowest latency when idle, but any
   UI-thread stall drops frames); a plain render thread (adds a handoff without
   independent animation).
@@ -276,8 +287,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     framebuffer makes damage-only frames exact and lets a reused buffer's age
     damage be re-encoded without redrawing.
   - The renderer takes a fork-join `Executor` (run one job on N workers and
-    wait), not the loop's completion-based pool, because it runs on the
-    compositor thread (D8). `render_cpu.ThreadPool` implements it.
+    wait). The application pool provides it (D6); `Executor.serial` renders
+    inline, e.g. for color glyph bitmaps.
   - Coverage contract shared with Vulkan: exact box coverage for
     rectangles; rounded corners clamp(0.5 − d, 0, 1) at pixel centers,
     limited by box coverage; paths exact-area coverage after flattening to

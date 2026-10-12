@@ -14,6 +14,7 @@ const std = @import("std");
 const raster = @import("raster");
 const scene = @import("scene");
 const render_cpu = @import("render_cpu");
+const pool = @import("pool");
 const text_engine = @import("text");
 const png = @import("png.zig");
 const hb = render_cpu.glyph.hb;
@@ -446,9 +447,9 @@ test "golden images" {
         .colr = .init(@embedFile("../golden/fonts/test_glyphs-glyf_colr_1.ttf"), 2),
     };
     defer ctx.deinit();
-    const pool = try render_cpu.ThreadPool.create(gpa, 4);
-    defer pool.destroy();
-    const r = try render_cpu.Renderer.create(gpa, pool.executor());
+    var workers = pool.Pool.init(gpa, 3);
+    defer workers.deinit();
+    const r = try render_cpu.Renderer.create(gpa, workers.executor());
     defer r.destroy();
     var b = Builder.init(gpa);
     defer b.deinit();

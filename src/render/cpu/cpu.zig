@@ -3,7 +3,7 @@
 //! for wl_shm buffers. Only damaged tiles are redrawn. It is the golden-
 //! image oracle for the Vulkan renderer.
 //!
-//!     const r = try Renderer.create(gpa, pool.executor());
+//!     const r = try Renderer.create(gpa, app_pool.executor());
 //!     try r.resize(width, height);
 //!     try r.render(list, .{ .damage = rects, .target = .{
 //!         .pixels = shm_bytes, .stride = stride, .format = .argb8888,
@@ -28,9 +28,9 @@ pub const Pixel = color.Pixel;
 pub const encodeRow = color.encodeRow;
 pub const Luts = color.Luts;
 
-pub const pool = @import("pool.zig");
-pub const Executor = pool.Executor;
-pub const ThreadPool = pool.ThreadPool;
+/// Rendering runs on the application's worker pool through this fork-join
+/// contract (see the `pool` module); `Executor.serial` renders inline.
+pub const Executor = @import("pool").Executor;
 
 pub const glyph = @import("glyph.zig");
 
@@ -41,7 +41,5 @@ test {
     _ = @import("blend.zig");
     _ = @import("paint.zig");
     _ = @import("coverage.zig");
-    _ = pool;
     _ = glyph;
 }
-

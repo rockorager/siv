@@ -11,6 +11,7 @@ const raster = @import("raster");
 const scene = @import("scene");
 const text = @import("text");
 const render_cpu = @import("render_cpu");
+const pool_mod = @import("pool");
 const hb = render_cpu.glyph.hb;
 
 const width = 1920;
@@ -164,9 +165,10 @@ pub fn main(init: std.process.Init) !void {
     for (workloads) |w| {
         var times: [2]f64 = undefined;
         for ([_]u32{ 1, cpus }, 0..) |n, k| {
-            const pool = try render_cpu.ThreadPool.create(gpa, n);
-            defer pool.destroy();
-            const r = try render_cpu.Renderer.create(gpa, pool.executor());
+            // n workers in total: the caller plus n - 1 pool threads.
+            var workers = pool_mod.Pool.init(gpa, @max(n, 2) - 1);
+            defer workers.deinit();
+            const r = try render_cpu.Renderer.create(gpa, if (n == 1) .serial else workers.executor());
             defer r.destroy();
             try r.resize(width, height);
             var samples: [30]f64 = undefined;

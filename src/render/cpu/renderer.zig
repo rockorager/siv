@@ -26,7 +26,7 @@ const color = @import("color.zig");
 const blend = @import("blend.zig");
 const paint_mod = @import("paint.zig");
 const coverage = @import("coverage.zig");
-const pool = @import("pool.zig");
+const pool = @import("pool");
 const glyph = @import("glyph.zig");
 
 const Point = raster.Point;
@@ -1211,8 +1211,8 @@ test "damage-only frames match full redraws, serial and threaded" {
     defer pb.deinit();
     var tracker = scene.damage.Tracker.init(testing.allocator);
     defer tracker.deinit();
-    const tp = try pool.ThreadPool.create(testing.allocator, 4);
-    defer tp.destroy();
+    var tp = pool.Pool.init(testing.allocator, 3);
+    defer tp.deinit();
 
     const inc = try Renderer.create(testing.allocator, tp.executor());
     defer inc.destroy();
@@ -1246,8 +1246,8 @@ test "steady-state frames allocate nothing" {
     defer b.deinit();
     var pb = raster.PathBuilder.init(gpa);
     defer pb.deinit();
-    const tp = try pool.ThreadPool.create(gpa, 3);
-    defer tp.destroy();
+    var tp = pool.Pool.init(gpa, 2);
+    defer tp.deinit();
     const r = try Renderer.create(gpa, tp.executor());
     defer r.destroy();
     try r.resize(200, 150);

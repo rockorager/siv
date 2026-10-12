@@ -53,6 +53,7 @@ pub fn build(b: *std.Build) void {
 
     // siv modules. Imports between them are the allowed dependency edges;
     // see AGENTS.md before adding one.
+    const pool = ctx.module("src/pool/pool.zig", &.{});
     const raster = ctx.module("src/raster/raster.zig", &.{});
     const scene = ctx.module("src/scene/scene.zig", &.{
         .{ .name = "raster", .module = raster },
@@ -69,14 +70,18 @@ pub fn build(b: *std.Build) void {
         .{ .name = "raster", .module = raster },
         .{ .name = "text", .module = text },
         .{ .name = "harfbuzz", .module = harfbuzz },
+        .{ .name = "pool", .module = pool },
     });
-    const loop = ctx.module("src/loop/loop.zig", &.{});
+    const loop = ctx.module("src/loop/loop.zig", &.{
+        .{ .name = "pool", .module = pool },
+    });
     const platform = ctx.module("src/platform/platform.zig", &.{
         .{ .name = "loop", .module = loop },
         .{ .name = "wayland", .module = wayland },
         .{ .name = "xkbcommon", .module = xkbcommon },
     });
     const internal = [_]std.Build.Module.Import{
+        .{ .name = "pool", .module = pool },
         .{ .name = "scene", .module = scene },
         .{ .name = "raster", .module = raster },
         .{ .name = "text", .module = text },
@@ -144,6 +149,7 @@ pub fn build(b: *std.Build) void {
     // Tests.
     const test_step = b.step("test", "Run all tests");
     const module_tests = [_]struct { []const u8, *std.Build.Module }{
+        .{ "pool", pool },
         .{ "text", text },
         .{ "raster", raster },
         .{ "scene", scene },
@@ -188,6 +194,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "scene", .module = scene },
             .{ .name = "text", .module = text },
             .{ .name = "render_cpu", .module = render_cpu },
+            .{ .name = "pool", .module = pool },
         }),
     });
     b.step("bench-render-cpu", "Run the CPU renderer benchmarks").dependOn(&b.addRunArtifact(bench_render_cpu).step);

@@ -1,31 +1,21 @@
-//! Worker pool for blocking work: file I/O, image decode, raster tiles
-//! (D6, D10, D19). A job's `run` executes on a worker thread; its `done`
-//! executes on the loop thread in the dispatch phase, so completions are
-//! safe points like every other callback (D5).
+//! The loop's view of the application worker pool (D5, D6): async jobs
+//! whose `done` runs on the loop thread in the dispatch phase, so
+//! completions are safe points like every other callback. The threads and
+//! queue are the shared `pool` module's, which the renderer also uses for
+//! fork-join tiles through `executor()` (D10), so the application has one
+//! pool and never oversubscribes the CPU.
 //!
-//! Threads start on demand, up to `max_threads`, and idle workers block on a
-//! condition variable, so an idle pool costs nothing. Jobs are intrusive and
-//! submitting one does not allocate.
+//! Jobs are intrusive and submitting one does not allocate.
 
 const std = @import("std");
 const linux = std.os.linux;
-const c = std.c;
 const Allocator = std.mem.Allocator;
+const shared = @import("pool");
 const Loop = @import("loop.zig").Loop;
 const Pool = @This();
 
 loop: *Loop,
-allocator: Allocator,
-max_threads: u32,
-
-mutex: c.pthread_mutex_t = .{},
-cond: c.pthread_cond_t = .{},
-head: ?*Job = null,
-tail: ?*Job = null,
-queued: u32 = 0,
-idle: u32 = 0,
-stopping: bool = false,
-threads: std.ArrayList(std.Thread) = .empty,
+workers: shared.Pool,
 
 pub const Job = struct {
     /// Runs on a worker thread.
@@ -37,11 +27,29 @@ pub const Job = struct {
     /// dropped it while queued, or the loop was deinitialized before
     /// delivering its completion. Must only release resources.
     cancel: ?*const fn (*Job) void = null,
+    /// Loop-thread view: queued from `submit` until `done` or `cancel`.
     state: State = .idle,
-    next: ?*Job = null,
+    loop: *Loop = undefined,
+    inner: shared.Job = .{ .run = innerRun, .complete = innerComplete, .cancel = innerCancel },
     remote: Loop.Remote = .{ .func = complete, .cancel = drop },
 
     pub const State = enum { idle, queued, running };
+
+    fn innerRun(inner: *shared.Job) void {
+        const job: *Job = @fieldParentPtr("inner", inner);
+        job.run(job);
+    }
+
+    fn innerComplete(inner: *shared.Job) void {
+        const job: *Job = @fieldParentPtr("inner", inner);
+        // The loop thread may free the job as soon as it is posted.
+        job.loop.postRemote(&job.remote);
+    }
+
+    fn innerCancel(inner: *shared.Job) void {
+        const job: *Job = @fieldParentPtr("inner", inner);
+        drop(&job.remote);
+    }
 
     fn complete(r: *Loop.Remote) void {
         const job: *Job = @fieldParentPtr("remote", r);
@@ -57,129 +65,44 @@ pub const Job = struct {
 };
 
 pub fn init(loop: *Loop, allocator: Allocator, max_threads: u32) Pool {
-    std.debug.assert(max_threads > 0);
-    return .{ .loop = loop, .allocator = allocator, .max_threads = max_threads };
+    return .{ .loop = loop, .workers = .init(allocator, max_threads) };
 }
 
 /// The number of online CPUs, a reasonable `max_threads`.
-pub fn defaultThreadCount() u32 {
-    return @intCast(std.math.clamp(std.Thread.getCpuCount() catch 1, 1, 64));
-}
+pub const defaultThreadCount = shared.defaultThreadCount;
 
 /// Cancels queued jobs (see `Job.cancel`), waits for running jobs, and
 /// joins the workers. Completions of jobs that finished are still delivered
 /// by the loop, or cancelled when it is deinitialized.
 pub fn deinit(pool: *Pool) void {
-    pool.lock();
-    pool.stopping = true;
-    var dropped = pool.head;
-    pool.head = null;
-    pool.tail = null;
-    pool.queued = 0;
-    _ = c.pthread_cond_broadcast(&pool.cond);
-    pool.unlock();
-    while (dropped) |job| {
-        dropped = job.next;
-        Job.drop(&job.remote);
-    }
-    for (pool.threads.items) |t| t.join();
-    pool.threads.deinit(pool.allocator);
-    _ = c.pthread_cond_destroy(&pool.cond);
-    _ = c.pthread_mutex_destroy(&pool.mutex);
+    pool.workers.deinit();
     pool.* = undefined;
 }
 
-pub const SubmitError = error{SystemResources} || Allocator.Error;
+pub const SubmitError = shared.Pool.SubmitError;
 
 /// Queues `job`. It must not be queued or running already.
 pub fn submit(pool: *Pool, job: *Job) SubmitError!void {
     std.debug.assert(job.state == .idle);
-    pool.lock();
-    defer pool.unlock();
-    std.debug.assert(!pool.stopping);
+    job.loop = pool.loop;
     job.state = .queued;
-    job.next = null;
-    if (pool.tail) |t| t.next = job else pool.head = job;
-    pool.tail = job;
-    pool.queued += 1;
-
-    if (pool.queued > pool.idle and pool.threads.items.len < pool.max_threads) {
-        pool.spawnLocked() catch |err| {
-            // Existing workers will get to it eventually; without any, the
-            // job could never run.
-            if (pool.threads.items.len == 0) {
-                pool.removeLocked(job);
-                return err;
-            }
-        };
-    }
-    _ = c.pthread_cond_signal(&pool.cond);
+    pool.workers.submit(&job.inner) catch |err| {
+        job.state = .idle;
+        return err;
+    };
 }
 
 /// Removes a queued job before it starts. Returns false if it is running or
 /// already finished, in which case `done` is still delivered.
 pub fn cancel(pool: *Pool, job: *Job) bool {
-    pool.lock();
-    defer pool.unlock();
-    if (job.state != .queued) return false;
-    pool.removeLocked(job);
+    if (!pool.workers.cancel(&job.inner)) return false;
+    job.state = .idle;
     return true;
 }
 
-fn removeLocked(pool: *Pool, job: *Job) void {
-    var prev: ?*Job = null;
-    var it = pool.head;
-    while (it) |j| : ({
-        prev = j;
-        it = j.next;
-    }) {
-        if (j != job) continue;
-        if (prev) |p| p.next = j.next else pool.head = j.next;
-        if (pool.tail == j) pool.tail = prev;
-        pool.queued -= 1;
-        job.state = .idle;
-        job.next = null;
-        return;
-    }
-}
-
-fn spawnLocked(pool: *Pool) SubmitError!void {
-    try pool.threads.ensureUnusedCapacity(pool.allocator, 1);
-    const t = std.Thread.spawn(.{}, worker, .{pool}) catch return error.SystemResources;
-    pool.threads.appendAssumeCapacity(t);
-}
-
-fn worker(pool: *Pool) void {
-    pool.lock();
-    while (true) {
-        while (pool.head == null and !pool.stopping) {
-            pool.idle += 1;
-            _ = c.pthread_cond_wait(&pool.cond, &pool.mutex);
-            pool.idle -= 1;
-        }
-        if (pool.stopping) break;
-        const job = pool.head.?;
-        pool.head = job.next;
-        if (pool.head == null) pool.tail = null;
-        pool.queued -= 1;
-        job.state = .running;
-        pool.unlock();
-
-        job.run(job);
-        // The loop thread may free the job as soon as it is posted.
-        pool.loop.postRemote(&job.remote);
-
-        pool.lock();
-    }
-    pool.unlock();
-}
-
-fn lock(pool: *Pool) void {
-    _ = c.pthread_mutex_lock(&pool.mutex);
-}
-
-fn unlock(pool: *Pool) void {
-    _ = c.pthread_mutex_unlock(&pool.mutex);
+/// Fork-join on the same threads, for the renderer (D10).
+pub fn executor(pool: *Pool) shared.Executor {
+    return pool.workers.executor();
 }
 
 /// Reads a whole file on a worker. `path` must stay valid until `on_done`
@@ -283,7 +206,7 @@ test "jobs run on workers and complete on the loop thread" {
         try testing.expect(w.worker_thread != std.Thread.getCurrentId());
         try testing.expectEqual(Job.State.idle, w.job.state);
     }
-    try testing.expect(pool.threads.items.len <= 3);
+    try testing.expect(pool.workers.threads.items.len <= 3);
 }
 
 test "cancel removes a queued job" {
