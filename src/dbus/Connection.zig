@@ -356,7 +356,7 @@ fn flushIfIdle(c: *Connection) void {
     // Inside an iteration the prepare hook flushes. Outside one, make the
     // next iteration run instead of sleeping; a burst of sends still goes
     // out in one write.
-    if (c.loop.stage == .idle) c.loop.wake();
+    if (!c.loop.isDispatching()) c.loop.wake();
 }
 
 fn onPrepare(h: *Loop.Hook) void {
