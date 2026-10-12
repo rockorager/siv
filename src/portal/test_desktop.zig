@@ -410,7 +410,7 @@ pub const Desktop = struct {
         d.daemon.stop();
         if (d.log_fd >= 0) _ = linux.close(d.log_fd);
         d.log_fd = -1;
-        if (std.c.getenv("SIV_KEEP_PORTAL_DIR") == null) removeTree(d.dir);
+        if (std.c.getenv("SIV_KEEP_PORTAL_DIR") == null) td.removeTree(d.dir);
     }
 
     pub fn hasPipewire(d: *const Desktop) bool {
@@ -431,12 +431,3 @@ pub const Desktop = struct {
     }
 };
 
-fn removeTree(dir: []const u8) void {
-    var buf: [256]u8 = undefined;
-    const cmd = std.fmt.bufPrintSentinel(&buf, "rm -rf -- '{s}'", .{dir}, 0) catch return;
-    const argv = [_:null]?[*:0]const u8{ "/bin/sh", "-c", cmd };
-    const envp = [_:null]?[*:0]const u8{"PATH=/usr/bin:/bin"};
-    const pid = td.spawn("/bin/sh", &argv, &envp, null) catch return;
-    var status: c_int = 0;
-    _ = std.c.waitpid(pid, &status, 0);
-}

@@ -291,12 +291,7 @@ test "assistive technology finds the application's windows and acts on them" {
     var launcher_buf: [64]u8 = undefined;
     const launcher = td.findLibexec(&launcher_buf, "at-spi-bus-launcher") orelse return error.AtspiNotInstalled;
     const launcher_pid = try td.spawn(launcher, &[_:null]?[*:0]const u8{ launcher, "--launch-immediately" }, &env, null);
-    defer {
-        td.kill(launcher_pid);
-        var buf: [128]u8 = undefined;
-        if (std.fmt.bufPrintSentinel(&buf, "{s}/at-spi/bus", .{daemon.dir}, 0)) |path| _ = linux.unlink(path) else |_| {}
-        if (std.fmt.bufPrintSentinel(&buf, "{s}/at-spi", .{daemon.dir}, 0)) |path| _ = linux.rmdir(path) else |_| {}
-    }
+    defer td.kill(launcher_pid);
 
     const app = try App.create(gpa, .{
         .backend = .headless,
@@ -337,7 +332,6 @@ test "assistive technology finds the application's windows and acts on them" {
     var path_buf: [128]u8 = undefined;
     const script = try std.fmt.bufPrintSentinel(&path_buf, "{s}/client.py", .{daemon.dir}, 0);
     try td.writeFile(script, atspi_script);
-    defer _ = linux.unlink(script);
     var fds: [2]i32 = undefined;
     _ = linux.pipe2(&fds, .{ .CLOEXEC = true });
     const pid = try td.spawn("/usr/bin/python3", &[_:null]?[*:0]const u8{ "/usr/bin/python3", script, "siv-app-a11y-test" }, &env, fds[1]);

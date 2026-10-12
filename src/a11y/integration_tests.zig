@@ -127,9 +127,6 @@ const Stack = struct {
     fn deinit(s: *Stack) void {
         s.session.deinit();
         td.kill(s.launcher);
-        var buf: [128]u8 = undefined;
-        if (std.fmt.bufPrintSentinel(&buf, "{s}/at-spi/bus", .{s.daemon.dir}, 0)) |p| _ = linux.unlink(p) else |_| {}
-        if (std.fmt.bufPrintSentinel(&buf, "{s}/at-spi", .{s.daemon.dir}, 0)) |p| _ = linux.rmdir(p) else |_| {}
         s.daemon.stop();
         s.loop.deinit();
     }

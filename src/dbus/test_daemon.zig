@@ -66,14 +66,23 @@ pub const Daemon = struct {
             kill(d.pid);
             d.pid = 0;
         }
-        var path_buf: [128]u8 = undefined;
-        for ([_][]const u8{ "bus", "bus.conf" }) |name| {
-            const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/{s}", .{ d.dir, name }, 0) catch continue;
-            _ = linux.unlink(path);
-        }
-        _ = linux.rmdir(d.dir);
+        // With whatever the tests put there (client scripts, an
+        // accessibility bus's socket, Orca's home).
+        removeTree(d.dir);
     }
 };
+
+/// Removes a test's private directory and everything in it.
+pub fn removeTree(dir: []const u8) void {
+    if (dir.len == 0) return;
+    var buf: [256]u8 = undefined;
+    const cmd = std.fmt.bufPrintSentinel(&buf, "rm -rf -- '{s}'", .{dir}, 0) catch return;
+    const argv = [_:null]?[*:0]const u8{ "/bin/sh", "-c", cmd };
+    const envp = [_:null]?[*:0]const u8{"PATH=/usr/bin:/bin"};
+    const pid = spawn("/bin/sh", &argv, &envp, null) catch return;
+    var status: c_int = 0;
+    _ = std.c.waitpid(pid, &status, 0);
+}
 
 /// Forks and execs `exe` as the leader of a new process group, dying with
 /// the test. `output` becomes the child's stdout and stderr; without it
