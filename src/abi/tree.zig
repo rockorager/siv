@@ -801,6 +801,46 @@ pub export fn siv_set_transition(txn: t.Txn, node: t.Node, duration_ms: u32) t.R
     }.f, .{ node, duration_ms });
 }
 
+pub export fn siv_set_animation(txn: t.Txn, node: t.Node, desc: ?*const t.AnimationDesc) t.Result {
+    return run(txn, struct {
+        fn f(w: *Window, n: t.Node, d_ptr: ?*const t.AnimationDesc) Error!void {
+            const id = try nodeIn(w, n);
+            const d = try runtime.readDesc(t.AnimationDesc, d_ptr);
+            const fl = try runtime.flags(t.AnimationFlags, d.flags);
+            var v = w.uiWin().node(id).visual;
+            v.animation = .{
+                .property = switch (try runtime.enumValue(t.AnimationProperty, d.property)) {
+                    .none => .none,
+                    .opacity => .opacity,
+                    .translate_x => .translate_x,
+                    .translate_y => .translate_y,
+                    .scale => .scale,
+                    .rotate => .rotate,
+                    _ => unreachable,
+                },
+                .easing = switch (try runtime.enumValue(t.Easing, d.easing)) {
+                    .ease => .ease,
+                    .linear => .linear,
+                    .ease_in => .ease_in,
+                    .ease_out => .ease_out,
+                    .ease_in_out => .ease_in_out,
+                    _ => unreachable,
+                },
+                .from = d.from,
+                .to = d.to,
+                .duration_ms = d.duration_ms,
+                .delay_ms = d.delay_ms,
+                .iterations = d.iterations,
+                .alternate = fl.alternate,
+                .relative = fl.relative,
+                .mirror = fl.mirror_rtl,
+            };
+            if (v.animation.property == .none) v.animation = .{};
+            w.txn.ut.setVisual(id, v) catch |err| return mapTxn(err);
+        }
+    }.f, .{ node, desc });
+}
+
 pub export fn siv_set_placeholder(txn: t.Txn, node: t.Node, text: ?[*]const u8, text_len: usize) t.Result {
     return run(txn, struct {
         fn f(w: *Window, n: t.Node, ptr: ?[*]const u8, len: usize) Error!void {
