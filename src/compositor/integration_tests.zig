@@ -1,9 +1,10 @@
 //! The compositor thread against sway running headless (`zig build
 //! test-integration`): real wl_shm presentation, configure acks that
 //! follow content, and timing from wp_presentation feedback while the UI
-//! thread is stalled; and the same through a Vulkan swapchain on lavapipe
-//! in MAILBOX and FIFO present modes (D10, D12). Print the measurements
-//! with SIV_MEASURE=1.
+//! thread is stalled; the same through a Vulkan swapchain in MAILBOX and
+//! FIFO present modes (D10, D12); and dma-buf external frames (D17), which
+//! need sway on a GPU (SIV_SWAY_RENDERER=vulkan) and /dev/udmabuf, and for
+//! fence gating vgem. Print the measurements with SIV_MEASURE=1.
 //!
 //! Tests named "pacing: ..." count dropped frames end to end. On lavapipe
 //! and sway's pixman renderer every frame is CPU work, so other processes
@@ -573,4 +574,224 @@ test "pacing: Vulkan FIFO: frame clock and presentation feedback stay correct, h
         try h.loop.dispatch(20);
     }
     try h.settle();
+}
+
+// dma-buf external frames (D17) -----------------------------------------------
+
+/// A dma-buf holding an opaque w x h XRGB8888 frame of one color: udmabuf
+/// over a sealed memfd. Null where /dev/udmabuf does not open.
+fn udmabufFrame(w: u32, ht: u32, bgrx: [4]u8, key: u64) !?update.ExternalFrame {
+    const linux = std.os.linux;
+    const stride = w * 4;
+    const size = std.mem.alignForward(usize, stride * ht, std.heap.page_size_min);
+    const memfd: i32 = @intCast(linux.memfd_create("siv-udmabuf", linux.MFD.ALLOW_SEALING | linux.MFD.CLOEXEC));
+    defer _ = linux.close(memfd);
+    _ = linux.ftruncate(memfd, @intCast(size));
+    const pixels = try testing.allocator.alloc(u8, stride * ht);
+    defer testing.allocator.free(pixels);
+    for (0..w * ht) |i| pixels[i * 4 ..][0..4].* = bgrx;
+    _ = linux.pwrite(memfd, pixels.ptr, pixels.len, 0);
+    _ = linux.fcntl(memfd, linux.F.ADD_SEALS, linux.F.SEAL_SHRINK);
+    const dev_rc = linux.open("/dev/udmabuf", .{ .ACCMODE = .RDWR, .CLOEXEC = true }, 0);
+    if (linux.errno(dev_rc) != .SUCCESS) return null;
+    defer _ = linux.close(@intCast(dev_rc));
+    var create = extern struct { memfd: u32, flags: u32, offset: u64, size: u64 }{ .memfd = @intCast(memfd), .flags = 1, .offset = 0, .size = size }; // UDMABUF_FLAGS_CLOEXEC
+    const rc = linux.ioctl(@intCast(dev_rc), 0x40187542, @intFromPtr(&create)); // UDMABUF_CREATE
+    if (linux.errno(rc) != .SUCCESS) return null;
+    const fd: i32 = @intCast(rc);
+    var f: update.ExternalFrame = .{ .fd = fd, .width = w, .height = ht, .stride = stride, .key = key };
+    f.dmabuf = .{ .format = scene.Dmabuf.xrgb8888, .modifier = scene.Dmabuf.modifier_linear, .plane_count = 1 };
+    f.dmabuf.?.planes[0] = .{ .fd = fd, .offset = 0, .stride = stride };
+    return f;
+}
+
+/// An unsignaled fence that the test signals: vgem's (the kernel's virtual
+/// GEM driver, `modprobe vgem`), as a sync_file. Null without vgem.
+const VgemFence = struct {
+    drm: i32,
+    fence: u32,
+    sync_file: i32,
+
+    fn create() ?VgemFence {
+        const linux = std.os.linux;
+        // vgem's primary node: dumb buffers need one.
+        var path_buf: [64]u8 = undefined;
+        var link_buf: [256]u8 = undefined;
+        const drm: i32 = for (0..16) |n| {
+            const sys = std.fmt.bufPrintSentinel(&path_buf, "/sys/class/drm/card{d}/device", .{n}, 0) catch unreachable;
+            const len = linux.readlink(sys, &link_buf, link_buf.len);
+            if (linux.errno(len) != .SUCCESS or !std.mem.endsWith(u8, link_buf[0..len], "/vgem")) continue;
+            const dev = std.fmt.bufPrintSentinel(&path_buf, "/dev/dri/card{d}", .{n}, 0) catch unreachable;
+            const rc = linux.open(dev, .{ .ACCMODE = .RDWR, .CLOEXEC = true }, 0);
+            if (linux.errno(rc) != .SUCCESS) return null;
+            break @intCast(rc);
+        } else return null;
+        errdefer _ = linux.close(drm);
+        var dumb = extern struct { height: u32, width: u32, bpp: u32, flags: u32 = 0, handle: u32 = 0, pitch: u32 = 0, size: u64 = 0 }{ .height = 1, .width = 1024, .bpp = 32 };
+        if (linux.errno(linux.ioctl(drm, 0xc02064b2, @intFromPtr(&dumb))) != .SUCCESS) return null; // DRM_IOCTL_MODE_CREATE_DUMB
+        var attach = extern struct { handle: u32, flags: u32, out_fence: u32 = 0, pad: u32 = 0 }{ .handle = dumb.handle, .flags = 1 }; // VGEM_FENCE_WRITE
+        if (linux.errno(linux.ioctl(drm, 0xc0106441, @intFromPtr(&attach))) != .SUCCESS) return null; // DRM_IOCTL_VGEM_FENCE_ATTACH
+        var prime = extern struct { handle: u32, flags: u32, fd: i32 = -1 }{ .handle = dumb.handle, .flags = 0o2000000 }; // O_CLOEXEC
+        if (linux.errno(linux.ioctl(drm, 0xc00c642d, @intFromPtr(&prime))) != .SUCCESS) return null; // DRM_IOCTL_PRIME_HANDLE_TO_FD
+        defer _ = linux.close(prime.fd);
+        // The fences a reader waits for: the write fence just attached.
+        var sync = extern struct { flags: u32, fd: i32 = -1 }{ .flags = 1 }; // DMA_BUF_SYNC_READ
+        if (linux.errno(linux.ioctl(prime.fd, 0xc0086202, @intFromPtr(&sync))) != .SUCCESS) return null; // DMA_BUF_IOCTL_EXPORT_SYNC_FILE
+        return .{ .drm = drm, .fence = attach.out_fence, .sync_file = sync.fd };
+    }
+
+    /// Makes `dmabuf`'s pending writes wait for the fence, as a GPU
+    /// producer's driver would (Mesa's WSI does the same).
+    fn gate(v: VgemFence, dmabuf: i32) !void {
+        var import = extern struct { flags: u32, fd: i32 }{ .flags = 2, .fd = v.sync_file }; // DMA_BUF_SYNC_WRITE
+        if (std.os.linux.errno(std.os.linux.ioctl(dmabuf, 0x40086203, @intFromPtr(&import))) != .SUCCESS) return error.Unexpected; // DMA_BUF_IOCTL_IMPORT_SYNC_FILE
+    }
+
+    fn signal(v: VgemFence) void {
+        var arg = extern struct { fence: u32, flags: u32 = 0 }{ .fence = v.fence };
+        _ = std.os.linux.ioctl(v.drm, 0x40086442, @intFromPtr(&arg)); // DRM_IOCTL_VGEM_FENCE_SIGNAL
+    }
+
+    fn deinit(v: VgemFence) void {
+        v.signal();
+        _ = std.os.linux.close(v.sync_file);
+        _ = std.os.linux.close(v.drm);
+    }
+};
+
+/// The window's subsurface for external content as the platform last set
+/// it up, and whether sway still holds the wl_buffer of frame `key`.
+const SubProbe = struct {
+    window: WindowId,
+    key: u64,
+    shown: u64 = 0,
+    dmabuf: bool = false,
+    attached: bool = false,
+    busy: bool = false,
+
+    fn f(ctx: ?*anyopaque, c: *Compositor) void {
+        const p: *SubProbe = @ptrCast(@alignCast(ctx));
+        const w = c.platform.wayland.get(p.window);
+        for (w.subsurfaces.items) |s| if (s) |sub| {
+            p.shown = sub.key;
+            p.dmabuf = sub.dmabuf != null;
+            p.attached = sub.attached;
+        };
+        p.busy = c.platform.wayland.dmabufBusy(p.window, p.key);
+    }
+
+    fn read(comp: *Compositor, window: WindowId, key: u64) !SubProbe {
+        var p: SubProbe = .{ .window = window, .key = key };
+        try comp.call(&p, f);
+        return p;
+    }
+
+    /// Dispatches until frame `key` is attached.
+    fn waitShown(h: *Harness, window: WindowId, key: u64) !void {
+        const deadline = Loop.now() + 3 * std.time.ns_per_s;
+        while (true) {
+            const p = try read(h.comp, window, key);
+            if (p.shown == key and p.attached and p.dmabuf) return;
+            if (Loop.now() > deadline) return error.Timeout;
+            try h.loop.dispatch(10);
+        }
+    }
+};
+
+fn dispatchMs(h: *Harness, ms: u64) !void {
+    const until = Loop.now() + ms * std.time.ns_per_ms;
+    while (Loop.now() < until) try h.loop.dispatch(10);
+}
+
+fn waitReleased(h: *Harness, key: u64) !void {
+    const deadline = Loop.now() + 3 * std.time.ns_per_s;
+    while (!wasReleased(h, key)) {
+        if (Loop.now() > deadline) return error.Timeout;
+        try h.loop.dispatch(10);
+    }
+}
+
+test "dma-buf frames on sway: promoted, shown once their fences signal, released after sway lets go" {
+    var h: Harness = .{};
+    try h.start();
+    defer h.stop();
+    const id = try h.comp.createWindow(.{});
+    const tiled = Loop.now() + 10 * std.time.ns_per_s;
+    while (h.size.width != 1280) {
+        if (Loop.now() > tiled) return error.Timeout;
+        try h.loop.dispatch(10);
+    }
+    try h.settle();
+    // Only a GPU renderer offers linux-dmabuf (SIV_SWAY_RENDERER=vulkan).
+    const Supports = struct {
+        yes: bool = false,
+        fn f(ctx: ?*anyopaque, c: *Compositor) void {
+            const s: *@This() = @ptrCast(@alignCast(ctx));
+            s.yes = c.platform.wayland.supportsDmabuf(scene.Dmabuf.xrgb8888, scene.Dmabuf.modifier_linear);
+        }
+    };
+    var supports: Supports = .{};
+    try h.comp.call(&supports, Supports.f);
+    if (!supports.yes) return error.SkipZigTest;
+    // 64 px rows: 256 bytes, the stride RADV's import wants.
+    var frames: [3]update.ExternalFrame = undefined;
+    for (&frames, 0..) |*f, i| f.* = (try udmabufFrame(64, 48, .{ 0x40, @intCast(i * 0x60), 0xff, 0 }, i + 1)) orelse return error.SkipZigTest;
+    defer for (frames) |f| f.close();
+
+    // Topmost and opaque: promoted to a subsurface, as a dma-buf
+    // wl_buffer (create_immed).
+    const ext = try h.comp.createExternal(id);
+    try h.comp.setExternalFrame(id, ext, frames[0]);
+    h.seq = try h.comp.commit(id, &.{
+        .{ .create = 5 },
+        .{ .insert = .{ .layer = 5, .parent = 1 } },
+        .{ .set_transform = .{ .layer = 5, .transform = .offset(100, 80) } },
+        .{ .set_external = .{ .layer = 5, .external = .{ .id = ext, .rect = .xywh(0, 0, 128, 96) } } },
+    });
+    try h.settle();
+    try SubProbe.waitShown(&h, id, 1);
+
+    // A frame whose writes are pending stays off screen until its fence
+    // signals, and the frame before stays.
+    if (VgemFence.create()) |vgem| {
+        defer vgem.deinit();
+        try vgem.gate(frames[1].fd);
+        try h.comp.setExternalFrame(id, ext, frames[1]);
+        try dispatchMs(&h, 200);
+        try testing.expectEqual(@as(u64, 1), (try SubProbe.read(h.comp, id, 1)).shown);
+        try testing.expect(!wasReleased(&h, 1));
+        vgem.signal();
+    } else {
+        std.log.warn("vgem is not loaded; fence gating not checked", .{});
+        try h.comp.setExternalFrame(id, ext, frames[1]);
+    }
+    try SubProbe.waitShown(&h, id, 2);
+    try waitReleased(&h, 1);
+
+    // A replaced frame goes back to the producer only after sway released
+    // its wl_buffer: with sway stopped, frame 3 replaces frame 2 on siv's
+    // side, but frame 2 stays in use until sway runs again.
+    _ = std.c.kill(h.sway.pid, .STOP);
+    var stopped = true;
+    defer if (stopped) {
+        _ = std.c.kill(h.sway.pid, .CONT);
+    };
+    try h.comp.setExternalFrame(id, ext, frames[2]);
+    try SubProbe.waitShown(&h, id, 3);
+    try dispatchMs(&h, 100);
+    try testing.expect((try SubProbe.read(h.comp, id, 2)).busy);
+    try testing.expect(!wasReleased(&h, 2));
+    _ = std.c.kill(h.sway.pid, .CONT);
+    stopped = false;
+    try waitReleased(&h, 2);
+    try testing.expect(!(try SubProbe.read(h.comp, id, 2)).busy);
+
+    try testing.expect(!wasReleased(&h, 3));
+    try h.comp.destroyExternal(id, ext);
+    try waitReleased(&h, 3);
+}
+
+fn wasReleased(h: *const Harness, key: u64) bool {
+    for (h.events.items) |e| if (e == .external_released and e.external_released.key == key) return true;
+    return false;
 }
