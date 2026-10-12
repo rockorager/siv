@@ -136,7 +136,7 @@ test "node data lives with its node and goes with an aborted transaction" {
     try testing.expectEqual(@as(usize, 0), @intFromPtr(p) % 16);
     for (bytes[0..40]) |b| try testing.expectEqual(@as(u8, 0), b);
     bytes[0] = 7;
-    // The same key and size hands back the same memory; another size fails.
+    // The same key and size hands back the same memory.
     var q: ?*anyopaque = null;
     try ok(c.siv_set_data(txn, n, &key_a, 40, &q));
     try testing.expectEqual(p, q);
@@ -159,9 +159,20 @@ test "node data lives with its node and goes with an aborted transaction" {
     try ok(c.siv_node_get_data(n, &key_a, &q));
     try testing.expectEqual(p, q);
 
+    // Another size replaces the memory, keeping the bytes that fit; an
+    // abort puts the old memory back.
     try ok(c.siv_txn_begin(h.window, &txn));
-    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_set_data(txn, n, &key_a, 41, &q));
+    try ok(c.siv_set_data(txn, n, &key_a, 64, &q));
+    try testing.expectEqual(@as(u8, 7), @as([*]u8, @ptrCast(q.?))[0]);
+    try testing.expectEqual(@as(u8, 0), @as([*]u8, @ptrCast(q.?))[63]);
     try ok(c.siv_txn_abort(txn));
+    try ok(c.siv_node_get_data(n, &key_a, &q));
+    try testing.expectEqual(p, q);
+    try ok(c.siv_txn_begin(h.window, &txn));
+    try ok(c.siv_set_data(txn, n, &key_a, 8, &q));
+    try ok(c.siv_txn_commit(txn));
+    try ok(c.siv_node_get_data(n, &key_a, &q));
+    try testing.expectEqual(@as(u8, 7), @as([*]u8, @ptrCast(q.?))[0]);
     // Removing the node frees its data (the testing allocator checks).
     try ok(c.siv_txn_begin(h.window, &txn));
     try ok(c.siv_remove(txn, n));

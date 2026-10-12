@@ -196,8 +196,9 @@ pub const TxnState = struct {
     undo: std.ArrayList(Undo) = .empty,
     /// Canvas callback changes, likewise.
     canvas_undo: std.ArrayList(CanvasUndo) = .empty,
-    /// Node data made: freed on abort.
-    data_created: std.ArrayList(struct { node: NodeId, data: *Data }) = .empty,
+    /// Node data made (replacing `old`, if any): freed on abort, and `old`
+    /// restored; on commit `old` is freed.
+    data_created: std.ArrayList(struct { node: NodeId, data: *Data, old: ?*Data = null }) = .empty,
     /// Layout pairs changed, to restore on abort.
     layout_undo: std.ArrayList(LayoutUndo) = .empty,
 
@@ -249,15 +250,17 @@ pub fn abortState(w: *Window) void {
             w.nodes.layouts.putAssumeCapacity(u.node.index(), old);
         } else _ = w.nodes.layouts.remove(u.node.index());
     }
-    // Data made by this transaction is first in its node's list.
     i = s.data_created.items.len;
     while (i > 0) {
         i -= 1;
         const e = s.data_created.items[i];
         const head = &w.nodes.data.items[e.node.index()];
-        std.debug.assert(head.* == e.data);
-        head.* = e.data.next;
+        unlinkData(head, e.data);
         e.data.destroy(w.owner.gpa());
+        if (e.old) |old| {
+            old.next = head.*;
+            head.* = old;
+        }
     }
     i = s.canvas_undo.items.len;
     while (i > 0) {
@@ -272,8 +275,17 @@ pub fn abortState(w: *Window) void {
     s.finish(w);
 }
 
+fn unlinkData(head: *?*Data, d: *Data) void {
+    var link = head;
+    while (link.*) |cur| : (link = &cur.next) if (cur == d) {
+        link.* = cur.next;
+        return;
+    };
+}
+
 fn commitState(w: *Window) void {
     const s = &w.txn;
+    for (s.data_created.items) |e| if (e.old) |old| old.destroy(w.owner.gpa());
     for (s.removed.items) |id| forgetSubtree(w, id);
     for (s.undo.items) |u| if (u.old) |c| w.owner.release(c.destroy, c.user_data);
     for (s.canvas_undo.items) |u| if (u.old) |c| w.owner.release(c.destroy, c.user_data);
@@ -630,6 +642,10 @@ pub export fn siv_set_semantics(txn: t.Txn, node: t.Node, desc: ?*const t.Semant
                 .value = if (fl.has_value) .{ .min = d.value_min, .max = d.value_max, .now = d.value_now, .step = d.value_step } else null,
                 .live = if (fl.live_assertive) .assertive else if (fl.live_polite) .polite else .off,
                 .modal = fl.modal,
+                .level = @intCast(@min(d.level, 255)),
+                .position = d.position,
+                .set_size = d.set_size,
+                .row = d.row,
             }) catch |err| return mapTxn(err);
         }
     }.f, .{ node, desc });
@@ -802,18 +818,25 @@ pub export fn siv_set_data(txn: t.Txn, node: t.Node, key: ?*anyopaque, size: usi
             const dest = try runtime.out(?*anyopaque, out);
             const kv = @intFromPtr(k orelse return error.InvalidArgument);
             if (sz == 0 or sz > 1 << 30) return error.InvalidArgument;
-            if (w.nodes.findData(id, kv)) |d| {
-                if (d.size != sz) return error.InvalidArgument;
+            const old = w.nodes.findData(id, kv);
+            if (old) |d| if (d.size == sz) {
                 dest.* = d.bytes();
                 return;
-            }
+            };
             const gpa = w.owner.gpa();
             try w.txn.data_created.ensureUnusedCapacity(gpa, 1);
             const d = try Data.create(gpa, kv, sz);
             const head = &w.nodes.data.items[id.index()];
+            // Another size replaces the memory, keeping what fits; the old
+            // memory goes at commit.
+            if (old) |o| {
+                const keep = @min(o.size, sz);
+                @memcpy(@as([*]u8, @ptrCast(d.bytes()))[0..keep], @as([*]const u8, @ptrCast(o.bytes()))[0..keep]);
+                unlinkData(head, o);
+            }
             d.next = head.*;
             head.* = d;
-            w.txn.data_created.appendAssumeCapacity(.{ .node = id, .data = d });
+            w.txn.data_created.appendAssumeCapacity(.{ .node = id, .data = d, .old = old });
             dest.* = d.bytes();
         }
     }.f, .{ node, key, size, data });
@@ -938,6 +961,12 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
             ev.flags = .{ .accepted = d.accepted };
         },
         .set_value => |v| ev.value = v,
+        .viewport => |v| {
+            ev.x = v.x;
+            ev.y = v.y;
+            ev.width = v.width;
+            ev.height = v.height;
+        },
     }
     return deliver(w, id, hk, &ev);
 }

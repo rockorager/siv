@@ -470,6 +470,10 @@ pub const decls = [_]Decl{
         .{ .name = "expanded", .type = ref("siv_toggle"), .doc = "Disclosures, tree items, menus." },
         .{ .name = "flags", .type = ref("siv_semantics_flags"), .doc = "Options." },
         .{ .name = "value_step", .type = .f64, .doc = "The smallest change of the value, for assistive technology; 0 for any." },
+        .{ .name = "level", .type = .u32, .doc = "A heading's level or a tree item's depth, from 1 (at most 255); 0 for none." },
+        .{ .name = "position", .type = .u32, .doc = "An item's position in its set, from 1, for sets not all in the tree (virtualized views); 0 for none." },
+        .{ .name = "set_size", .type = .u32, .doc = "The size of that set; 0 for none." },
+        .{ .name = "row", .type = .u32, .doc = "A table row's index among all rows, from 1; 0 for none." },
     }),
 
     enumeration("siv_axis", "A flex main axis.", &.{
@@ -602,6 +606,7 @@ pub const decls = [_]Decl{
         .{ .name = "set_value", .value = 8, .doc = "Assistive technology asks a node with a value (SIV_SEMANTICS_HAS_VALUE) to take value. The handler applies it, clamped and stepped, or ignores it. Delivered to the node only." },
         .{ .name = "select", .value = 9, .doc = "Widgets: an item was chosen (a menu item) or a view's selection changed; index names the item, count how many are selected. Delivered to the node only." },
         .{ .name = "close", .value = 10, .doc = "Widgets: a dialog, popover, or toast asks to close (Escape, a click outside it, its timeout). Its default handler closes it; return true from siv_on to keep it. Delivered to the node only." },
+        .{ .name = "viewport", .value = 11, .doc = "A scroll node's visible region changed: x and y are its scroll offset (logical, D21), width and height the size of its viewport. Delivered to the scroll node only, at a safe point: after the compositor scrolled it (D8), or at the start of the frame after its offset or size changed, before layout, so nodes a handler adds show in that frame. Virtualized views build the rows they show from it." },
     }),
     enumeration("siv_pointer_phase", "What a pointer event reports.", &.{
         .{ .name = "down", .value = 0, .doc = "A button was pressed." },
@@ -656,6 +661,8 @@ pub const decls = [_]Decl{
         .{ .name = "value", .type = .f64, .doc = "Change and set_value: the value." },
         .{ .name = "index", .type = .u32, .doc = "Change: the chosen option of a choice widget. Select: the item." },
         .{ .name = "count", .type = .u32, .doc = "Select: how many items are selected." },
+        f32Field("width", "Viewport: the viewport's width."),
+        f32Field("height", "Viewport: the viewport's height."),
     }),
     callback("siv_event_fn", "Handles a node event at a safe point on the application's thread (D5). Return true when handled: the event stops bubbling and the default action is skipped.", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node the handler was set on." },
@@ -784,6 +791,42 @@ pub const decls = [_]Decl{
         .{ .name = "text", .type = .string, .doc = "The message, copied." },
         .{ .name = "timeout_ms", .type = .u32, .doc = "How long it shows; 0 is 4000." },
         .{ .name = "flags", .type = ref("siv_toast_flags"), .doc = "Options." },
+    }),
+    enumeration("siv_selection_mode", "How many items of a view can be selected.", &.{
+        .{ .name = "none", .value = 0, .doc = "None: the view only has a cursor." },
+        .{ .name = "single", .value = 1, .doc = "One at a time: the cursor's item." },
+        .{ .name = "multiple", .value = 2, .doc = "Any number: Ctrl toggles one, Shift extends a range, Ctrl+A selects all." },
+    }),
+    callback("siv_bind_fn", "Fills a view's row for an item, inside the view's transaction: add and change nodes under row with txn, and do not begin another. Views call it only for the rows they show, as they come into view. A recycled row still holds what an earlier bind put in it, for another item, to update or replace.", &.{
+        .{ .name = "txn", .type = ref("siv_txn"), .doc = "The view's open transaction." },
+        .{ .name = "row", .type = ref("siv_node"), .doc = "The container to fill: a box, or for tables a grid with the columns' tracks." },
+        .{ .name = "item", .type = .u64, .doc = "Lists, tables, and grids: the item's index. Trees: the item's id." },
+        .{ .name = "index", .type = .u32, .doc = "The row's position among the view's rows." },
+        .{ .name = "depth", .type = .u32, .doc = "Trees: the item's depth, 0 at the top." },
+        .{ .name = "recycled", .type = .bool, .doc = "The row showed another item before." },
+    }, .void),
+    callback("siv_tree_count_fn", "The number of children of a tree view's item.", &.{
+        .{ .name = "parent", .type = .u64, .doc = "An item's id, or 0 for the top level." },
+    }, .u32),
+    callback("siv_tree_child_fn", "The id of a child of a tree view's item: unique and nonzero.", &.{
+        .{ .name = "parent", .type = .u64, .doc = "An item's id, or 0 for the top level." },
+        .{ .name = "index", .type = .u32, .doc = "Which child, from 0." },
+    }, .u64),
+    descriptor("siv_view_desc", "A virtualized view: only the rows in view exist as nodes, filled by bind as they scroll in.", &.{
+        .{ .name = "label", .type = .string, .doc = "The view's accessible name, copied." },
+        .{ .name = "user_data", .type = .user_data, .doc = "Passed to the callbacks and destroy." },
+        .{ .name = "bind", .type = ref("siv_bind_fn"), .doc = "Fills rows." },
+        .{ .name = "children", .type = ref("siv_tree_count_fn"), .doc = "Trees: counts an item's children." },
+        .{ .name = "child", .type = ref("siv_tree_child_fn"), .doc = "Trees: an item's child." },
+        .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data when the view is removed." },
+        .{ .name = "count", .type = .u32, .doc = "Lists, tables, and grids: the number of items." },
+        f32Field("item_height", "Every row's height, or every cell's in a grid; 0 is 32."),
+        f32Field("item_width", "Grids: every cell's width; 0 is 96."),
+        .{ .name = "selection", .type = ref("siv_selection_mode"), .doc = "Default none." },
+    }),
+    descriptor("siv_column_desc", "A table column.", &.{
+        .{ .name = "title", .type = .string, .doc = "The header, copied." },
+        .{ .name = "width", .type = ref("siv_track"), .doc = "The column's track; auto is 1 fr." },
     }),
     descriptor("siv_range_desc", "A slider, spin button, or progress bar. With min equal to max the range is 0 to 100.", &.{
         .{ .name = "label", .type = .string, .doc = "Accessible name, copied." },
@@ -1137,7 +1180,7 @@ pub const functions = [_]Function{
         .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data; may be NULL." },
         .{ .name = "user_data", .type = .user_data, .doc = "Passed to callback and destroy." },
     }),
-    setter("siv_set_data", "Gives the node size bytes of zeroed memory under key, allocated with the application's allocator and 16-byte aligned, for widget state. The node owns it: it is freed when the node is destroyed, or when the transaction that made it aborts. If the node already has data under key of the same size, that memory is returned.", &.{
+    setter("siv_set_data", "Gives the node size bytes of zeroed memory under key, allocated with the application's allocator and 16-byte aligned, for widget state. The node owns it: it is freed when the node is destroyed, or when the transaction that made it aborts. If the node already has data under key of the same size, that memory is returned; of another size, it is replaced by memory of the new size that keeps the bytes that fit (the old memory is freed at commit, or kept if the transaction aborts).", &.{
         .{ .name = "key", .type = .pointer, .doc = "Any unique address, such as that of a static variable of the caller's." },
         .{ .name = "size", .type = .usize, .doc = "Bytes; at least 1." },
         .{ .name = "data", .type = out(.pointer), .doc = "The memory." },
@@ -1272,6 +1315,38 @@ pub const functions = [_]Function{
         .{ .name = "part", .type = ref("siv_widget_part"), .doc = "Which part." },
         .{ .name = "index", .type = .u32, .doc = "Tabs and panels: which one." },
         .{ .name = "result", .type = out(ref("siv_node")), .doc = "The part." },
+    }),
+    builder("siv_list_view", "Creates a virtualized list: a vertical scroll of rows of item_height, bound as they come into view, so a list of millions costs what is on screen. The cursor moves with Up, Down, Page Up, Page Down, Home, and End and keeps its row in view and focused; Space and clicks select (with Ctrl and Shift in multiple mode), reporting SIV_EVENT_SELECT with the cursor's index and the number selected; Enter reports SIV_EVENT_ACTIVATE with the index. Its role is list, its rows' list_item. siv_widget_get_value is the cursor's index, -1 for none.", &.{.{ .name = "desc", .type = .{ .desc = "siv_view_desc" }, .doc = "Items, callbacks, and selection." }}),
+    builder("siv_tree_view", "Creates a virtualized tree: rows of the visible items, indented by depth, with the children and child callbacks walked as items expand. Keys as in a list, and Right (Left in RTL) expands an item or moves to its first child, Left collapses it or moves to its parent; clicking the disclosure toggles it. Its role is tree, its rows' tree_item with level and expanded state.", &.{.{ .name = "desc", .type = .{ .desc = "siv_view_desc" }, .doc = "Callbacks and selection." }}),
+    builder("siv_table_view", "Creates a virtualized table: a header of columns (siv_table_column) over rows like a list's, each a grid with the columns' tracks that bind fills with one cell per column. Its role is table, its rows' row, header cells column_header.", &.{.{ .name = "desc", .type = .{ .desc = "siv_view_desc" }, .doc = "Items, callbacks, and selection." }}),
+    builder("siv_grid_view", "Creates a virtualized grid of item_width by item_height cells, as many per row as fit, in reading order (mirrored in RTL). Arrow keys move in two dimensions. Its role is list.", &.{.{ .name = "desc", .type = .{ .desc = "siv_view_desc" }, .doc = "Items, callbacks, and selection." }}),
+    .{
+        .name = "siv_table_column",
+        .doc = "Appends a column to a table view and returns its header cell, or 0 if the transaction has failed. Add columns before the rows are bound.",
+        .since = v0_1,
+        .params = &.{ txn_param, .{ .name = "table", .type = ref("siv_node"), .doc = "A table view." }, .{ .name = "desc", .type = .{ .desc = "siv_column_desc" }, .doc = "The column." } },
+        .ret = ref("siv_node"),
+    },
+    setter("siv_view_set_count", "Sets the number of items of a list, table, or grid view; for a tree, reads the top level again. Rows in view are bound again; selection past the end is dropped.", &.{.{ .name = "count", .type = .u32, .doc = "Items." }}),
+    setter("siv_view_refresh", "Binds the rows in view again, after their items changed.", &.{}),
+    setter("siv_view_set_selected", "Selects or deselects the item at a row index, without reporting it. In single mode, selecting one deselects the rest and moves the cursor to it.", &.{
+        .{ .name = "index", .type = .u32, .doc = "The row index." },
+        .{ .name = "selected", .type = .bool, .doc = "Selected." },
+    }),
+    setter("siv_view_set_expanded", "Expands or collapses the tree item at a row index.", &.{
+        .{ .name = "index", .type = .u32, .doc = "The row index." },
+        .{ .name = "expanded", .type = .bool, .doc = "Expanded." },
+    }),
+    setter("siv_view_scroll_to", "Scrolls a view so that the row at index is in view.", &.{.{ .name = "index", .type = .u32, .doc = "The row index." }}),
+    call("siv_view_is_selected", "Whether the item at a row index is selected.", &.{
+        .{ .name = "view", .type = ref("siv_node"), .doc = "A view." },
+        .{ .name = "index", .type = .u32, .doc = "The row index." },
+        .{ .name = "selected", .type = out(.bool), .doc = "Selected." },
+    }),
+    call("siv_view_get_item", "The item at a row index: its index, or for trees its id.", &.{
+        .{ .name = "view", .type = ref("siv_node"), .doc = "A view." },
+        .{ .name = "index", .type = .u32, .doc = "The row index." },
+        .{ .name = "item", .type = out(.u64), .doc = "The item." },
     }),
     setter("siv_widget_set_label", "Sets a stock widget's label: the text of buttons, toggles, check boxes, switches, and radios, and the accessible name of the others.", &.{.{ .name = "label", .type = .string, .doc = "Copied." }}),
     setter("siv_widget_set_disabled", "Enables or disables a stock widget: disabled widgets are dimmed, leave the Tab order, and ignore input.", &.{.{ .name = "disabled", .type = .bool, .doc = "Disabled." }}),
