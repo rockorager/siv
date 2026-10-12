@@ -741,8 +741,9 @@ test "large messages and many pipelined calls" {
     try b.exportObject(&obj);
     try h.ready(&b);
 
-    // A 3 MiB string crosses many reads and partial writes.
-    const big = try gpa.alloc(u8, 3 << 20);
+    // A 12 MiB string crosses many reads and partial writes, and the
+    // pause in reading above 8 MiB of undispatched bytes.
+    const big = try gpa.alloc(u8, 12 << 20);
     defer gpa.free(big);
     for (big, 0..) |*x, i| x.* = 'a' + @as(u8, @intCast(i % 26));
     const Big = struct {

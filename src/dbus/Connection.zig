@@ -585,7 +585,9 @@ fn compact(c: *Connection) void {
         c.in_fds.clearRetainingCapacity();
         c.in_fds_head = 0;
     }
-    if (c.read_paused and c.in.items.len < read_high_water / 2 and c.fd >= 0) {
+    // Dispatch has taken every complete message (or is scheduled to take
+    // more); a partial one, however large, needs more bytes.
+    if (c.read_paused and !c.task.scheduled() and c.fd >= 0) {
         c.read_paused = false;
         c.setEvents(c.wantsOut());
     }
