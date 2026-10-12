@@ -13,6 +13,9 @@ const uint COV_RECT = 1u;
 const uint COV_RRECT = 2u;
 const uint COV_MASK = 3u;
 const uint COV_GLYPH = 4u;
+// An analytic box shadow (render/cpu/shadow.zig), 16-bit; two paint
+// records from aux.
+const uint COV_SHADOW = 5u;
 
 // Paint kinds.
 const uint PAINT_SOLID = 0u;

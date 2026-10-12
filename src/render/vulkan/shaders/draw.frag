@@ -89,6 +89,92 @@ float clipCoverage(uint index, vec2 px) {
     return m;
 }
 
+// Box shadows (render/cpu/shadow.zig, formula for formula) -------------------
+
+float erfAS(float x) {
+    float a = abs(x);
+    if (a >= 4.0) return x < 0.0 ? -1.0 : 1.0;
+    float d = 1.0 + a * (0.278393 + a * (0.230389 + a * (0.000972 + a * 0.078108)));
+    float d2 = d * d;
+    float y = 1.0 - 1.0 / (d2 * d2);
+    return x < 0.0 ? -y : y;
+}
+
+float cornerInset(float dy, float ry) {
+    float d = dy / ry;
+    return 1.0 - sqrt(max(0.0, 1.0 - d * d));
+}
+
+// The row [xl, xr] of rounded rect r (radii tl, tr in g1; br, bl in g2).
+vec2 rowSpan(vec4 r, vec4 g1, vec4 g2, float y) {
+    float xl = r.x;
+    float xr = r.z;
+    if (g1.y > 0.0 && y < r.y + g1.y) xl = max(xl, r.x + g1.x * cornerInset(r.y + g1.y - y, g1.y));
+    if (g2.w > 0.0 && y > r.w - g2.w) xl = max(xl, r.x + g2.z * cornerInset(y - (r.w - g2.w), g2.w));
+    if (g1.w > 0.0 && y < r.y + g1.w) xr = min(xr, r.z - g1.z * cornerInset(r.y + g1.w - y, g1.w));
+    if (g2.y > 0.0 && y > r.w - g2.y) xr = min(xr, r.z - g2.x * cornerInset(y - (r.w - g2.y), g2.y));
+    return vec2(xl, xr);
+}
+
+float shadowBand(vec4 r, vec4 g1, vec4 g2, float sigma, float k, vec2 q, float edge, float height, float a, float b) {
+    if (!(a < b) || height == 0.0) return 0.0;
+    const float half_pi = 3.14159265358979323846 / 2.0;
+    float ua = acos(clamp(1.0 - (a - edge) / height, -1.0, 1.0)) / half_pi;
+    float ub = acos(clamp(1.0 - (b - edge) / height, -1.0, 1.0)) / half_pi;
+    int n = int(clamp(ceil(2.0 * (b - a) / sigma), 4.0, 16.0));
+    float du = (ub - ua) / float(n);
+    float norm = 1.0 / (sigma * sqrt(2.0 * 3.14159265358979323846));
+    float sum = 0.0;
+    for (int i = 0; i < n; i++) {
+        float u = ua + (float(i) + 0.5) * du;
+        float y = edge + height * (1.0 - cos(u * half_pi));
+        vec2 sp = rowSpan(r, g1, g2, y);
+        if (!(sp.y > sp.x)) continue;
+        float dy = abs(height * sin(u * half_pi) * half_pi * du);
+        float t = q.y - y;
+        sum += exp(-t * t * (k * k)) * norm * dy * 0.5 * (erfAS((q.x - sp.x) * k) - erfAS((q.x - sp.y) * k));
+    }
+    return sum;
+}
+
+float shadowBlurred(vec4 r, vec4 g1, vec4 g2, float sigma, vec2 q) {
+    const float reach = 4.0;
+    float k = 1.0 / (sigma * 1.41421356237309504880);
+    float lo = max(r.y, q.y - reach * sigma);
+    float hi = min(r.w, q.y + reach * sigma);
+    if (!(lo < hi)) return 0.0;
+    float c1 = min(r.y + max(g1.y, g1.w), r.w);
+    float c2 = max(r.w - max(g2.w, g2.y), c1);
+    float sum = 0.0;
+    float mlo = max(lo, c1);
+    float mhi = min(hi, c2);
+    if (mlo < mhi) sum += 0.25 * (erfAS((q.x - r.x) * k) - erfAS((q.x - r.z) * k)) * (erfAS((q.y - mlo) * k) - erfAS((q.y - mhi) * k));
+    sum += shadowBand(r, g1, g2, sigma, k, q, r.y, c1 - r.y, lo, min(hi, c1));
+    sum += shadowBand(r, g1, g2, sigma, k, q, r.w, c2 - r.w, max(lo, c2), hi);
+    return sum;
+}
+
+float shadowDistance(vec4 r, vec4 g1, vec4 g2, vec2 q) {
+    if (g1.x > 0.0 && g1.y > 0.0 && q.x < r.x + g1.x && q.y < r.y + g1.y) return ellipseDistance(q - vec2(r.x + g1.x, r.y + g1.y), g1.xy);
+    if (g1.z > 0.0 && g1.w > 0.0 && q.x > r.z - g1.z && q.y < r.y + g1.w) return ellipseDistance(q - vec2(r.z - g1.z, r.y + g1.w), g1.zw);
+    if (g2.x > 0.0 && g2.y > 0.0 && q.x > r.z - g2.x && q.y > r.w - g2.y) return ellipseDistance(q - vec2(r.z - g2.x, r.w - g2.y), g2.xy);
+    if (g2.z > 0.0 && g2.w > 0.0 && q.x < r.x + g2.z && q.y > r.w - g2.w) return ellipseDistance(q - vec2(r.x + g2.z, r.w - g2.w), g2.zw);
+    float dx = max(r.x - q.x, q.x - r.z);
+    float dy = max(r.y - q.y, q.y - r.w);
+    if (dx > 0.0 && dy > 0.0) return sqrt(dx * dx + dy * dy);
+    return max(dx, dy);
+}
+
+// rec0: inverse (inv0, inv1.xy), scale (inv1.z), sigma (inv1.w), the
+// casting rect (geo0), the blurred rect (geo1), inset and empty (meta.xy);
+// rec1: casting radii (inv0, inv1), blurred radii (geo0, geo1).
+float shadowAlpha(PaintRec a, PaintRec b, vec2 p) {
+    vec2 q = vec2(a.inv0.x * p.x + a.inv0.z * p.y + a.inv1.x, a.inv0.y * p.x + a.inv0.w * p.y + a.inv1.y);
+    float c = clamp(0.5 - a.inv1.z * shadowDistance(a.geo0, b.inv0, b.inv1, q), 0.0, 1.0);
+    float bl = a.meta.y != 0u ? 0.0 : shadowBlurred(a.geo1, b.geo0, b.geo1, a.inv1.w, q);
+    return a.meta.x != 0u ? c * (1.0 - bl) : bl * (1.0 - c);
+}
+
 // Paints ----------------------------------------------------------------------
 
 vec4 toPixel(vec4 c) {
@@ -349,7 +435,11 @@ void main() {
 
     // Coverage, 16 bits (0..65535).
     uint cov16;
-    if (it.cov == COV_GLYPH) {
+    if (it.cov == COV_SHADOW) {
+        cov16 = uint(clamp(shadowAlpha(paints[it.aux], paints[it.aux + 1u], pos), 0.0, 1.0) * 65535.0 + 0.5);
+        if (it.clip != 0u) cov16 = div65535(cov16 * (uint(clipCoverage(it.clip, px)) * 257u));
+        if (cov16 == 0u) discard;
+    } else if (it.cov == COV_GLYPH) {
         uint a = uint(glyphCoverage(it.tex, px));
         if (a == 0u) discard;
         cov16 = luts[uint(it.tex.w) * 256u + a];

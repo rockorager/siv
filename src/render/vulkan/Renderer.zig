@@ -135,6 +135,7 @@ const cov_rect = 1;
 const cov_rrect = 2;
 const cov_mask = 3;
 const cov_glyph = 4;
+const cov_shadow = 5;
 
 const paint_solid = 0;
 const paint_linear = 1;
@@ -734,7 +735,7 @@ fn prepare(r: *Renderer, list: scene.DisplayList, root: Affine) Error!void {
                 try r.pushInst(inst);
             },
             .glyphs => |g| try r.prepareGlyphs(g, top),
-            .shadow => {}, // drawn by the next commit
+            .shadow => |sh| try r.prepareShadow(sh, top),
             .image => |img| try r.prepareImage(img, top),
             .backdrop_blur => |b| {
                 const bbox = m.applyRect(b.shape.bounds()).intersect(top.clip).roundOut().intersect(vp);
@@ -1034,6 +1035,40 @@ fn atlasPos(r: *Renderer, index: u32, e: glyph.Entry) Error!?AtlasPos {
     pos.* = .{ .x = @intCast(at[0]), .y = @intCast(at[1]) };
     try r.glyph_uploads.append(r.gpa, index);
     return pos.*;
+}
+
+fn prepareShadow(r: *Renderer, sh: scene.Shadow, top: State) Error!void {
+    if (sh.color.a <= 0) return;
+    const bbox = top.m.applyRect(sh.bounds()).intersect(top.clip).roundOut().intersect(r.viewport());
+    const quad = bbox.intersect(top.scissor);
+    if (quad.isEmpty()) return;
+    const p = render_cpu.shadow.prepare(sh, top.m) orelse return;
+    const empty = p.shape.isEmpty();
+    const shape: Rect = if (empty) .xywh(0, 0, 0, 0) else p.shape;
+    const cr = p.cast_radii;
+    const sr = p.radii;
+    try r.paints.appendSlice(r.gpa, &.{
+        .{
+            .inv0 = .{ p.inv.a, p.inv.b, p.inv.c, p.inv.d },
+            .inv1 = .{ p.inv.e, p.inv.f, p.scale, p.sigma },
+            .geo0 = .{ p.cast.x0, p.cast.y0, p.cast.x1, p.cast.y1 },
+            .geo1 = .{ shape.x0, shape.y0, shape.x1, shape.y1 },
+            .meta = .{ @intFromBool(p.inset), @intFromBool(empty), 0, 0 },
+        },
+        .{
+            .inv0 = .{ cr.tl.x, cr.tl.y, cr.tr.x, cr.tr.y },
+            .inv1 = .{ cr.br.x, cr.br.y, cr.bl.x, cr.bl.y },
+            .geo0 = .{ sr.tl.x, sr.tl.y, sr.tr.x, sr.tr.y },
+            .geo1 = .{ sr.br.x, sr.br.y, sr.bl.x, sr.bl.y },
+        },
+    });
+    try r.pushInst(.{
+        .quad = irect(quad),
+        .cov = cov_shadow,
+        .aux = @intCast(r.paints.items.len - 2),
+        .clip = top.chain,
+        .color = solid(sh.color),
+    });
 }
 
 fn prepareImage(r: *Renderer, img: scene.Image, top: State) Error!void {

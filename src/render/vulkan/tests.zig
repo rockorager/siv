@@ -66,6 +66,7 @@ fn buildScene(b: *scene.Builder, pb: *raster.PathBuilder, frame: u32) !scene.Dis
     };
     try b.fillRect(.xywh(0, 0, 200, 150), .{ .gradient = .{ .geometry = .{ .linear = .{ .p0 = .zero, .p1 = .{ .x = 200, .y = 150 } } }, .stops = &stops } });
     try b.pushLayer(.{ .id = 1, .version = frame, .transform = .translate(20 + f * 7, 30) });
+    try b.shadow(.{ .shape = .{ .rect = .xywh(0, 0, 60, 40), .radii = .uniform(10, 10) }, .offset = .{ .x = 0, .y = 4 }, .sigma = 5, .color = scene.Color.black.withAlpha(0.4) });
     try b.fillRoundedRect(.xywh(0, 0, 60, 40), .uniform(10, 10), .color(.srgb8(0xff, 0xff, 0xff, 0xc0)));
     try b.popLayer();
     try b.pushLayer(.{ .id = 2, .opacity = 0.6, .clip = .{ .shape = .{ .rounded_rect = .{ .rect = .xywh(90, 10, 100, 80), .radii = .uniform(16, 16) } } } });
