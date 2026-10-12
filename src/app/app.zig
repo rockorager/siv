@@ -120,6 +120,9 @@ pub const App = struct {
     /// The application chose the default font family, so the desktop's
     /// does not replace it.
     font_overridden: bool = false,
+    /// The seat's key-repeat timing (platform.KeyRepeat); these defaults
+    /// until the compositor reports it.
+    key_repeat: platform.KeyRepeat = .{ .seat = 0, .delay_ms = 600, .rate = 25 },
     bridge: a11y.Bridge = undefined,
     /// The AT-SPI bridge runs on the session bus.
     accessible: bool = false,
@@ -502,6 +505,7 @@ pub const App = struct {
                 .failed => |err| app.fail(if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable),
                 .exported => |e| if (app.window(e.window)) |win| portals.exported(win, e.handle.slice()),
                 .activation_token => |t| if (app.window(t.window)) |win| portals.tokenArrived(win, t.request, t.token.slice()),
+                .key_repeat => |r| app.key_repeat = r,
                 .close_requested => |id| if (app.window(id)) |win| {
                     if (!win.notify(&.close_requested)) win.destroy() catch |err| app.fail(err);
                 },
