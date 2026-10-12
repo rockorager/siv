@@ -1157,7 +1157,8 @@ pub export fn siv_node_focus(node: t.Node) t.Result {
             const w, const id = try lookup(n);
             if (w.owner.painting != 0) return error.Busy;
             const uw = w.uiWin();
-            if (!uw.node(id).canFocus()) return error.InvalidArgument;
+            // Hidden nodes and nodes outside an active modal node too.
+            if (!ui.input.canFocus(uw, id)) return error.InvalidArgument;
             ui.input.setFocus(uw, id, false);
         }
     }.f(node));
