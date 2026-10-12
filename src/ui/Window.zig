@@ -642,6 +642,17 @@ pub fn popupPositioner(win: *const Window, id: NodeId, width: u32, height: u32, 
     };
 }
 
+/// The size the content wants with no limit, for windows that size to
+/// their content (popups): the root measured with loose constraints, its
+/// width at most `max_width`.
+pub fn preferredSize(win: *Window, max_width: f32) Error!Size {
+    if (win.txn.open) return .{ .w = win.width, .h = win.height };
+    win.state(.root).rtl = win.rtl;
+    const sz = try layout.measure(win, .root, .{ .max_w = max_width });
+    _ = win.scratch.reset(.retain_capacity);
+    return sz;
+}
+
 /// The semantics tree, rebuilt first if anything it shows changed since.
 /// Nodes laid out by the last frame keep its bounds.
 pub fn semanticsTree(win: *Window) Error!*const semantics_mod.Tree {

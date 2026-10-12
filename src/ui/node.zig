@@ -620,9 +620,9 @@ pub const Event = union(enum) {
     set_value: f64,
 };
 
-/// `select` is never sent by the tree: widgets built on the C API emit it
-/// (`siv_emit`).
-pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll, change, drop, drag, set_value, select };
+/// `select` and `close` are never sent by the tree: widgets built on the C
+/// API emit them (`siv_emit`).
+pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll, change, drop, drag, set_value, select, close };
 
 /// Runs at a safe point on the UI thread (D5). Returns true when it handled
 /// the event, which stops it bubbling and suppresses the default action.

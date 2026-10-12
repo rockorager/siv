@@ -189,7 +189,7 @@ pub const compiled: [4][token_count]Color = .{
         .control_active = 0xd4d4d8, .control_fg = 0x18181b, .accent = 0x2563eb, .accent_hover = 0x1d4ed8,
         .accent_active = 0x1e40af, .accent_fg = 0xffffff, .selection_bg = 0xbfdbfe, .selection_fg = 0x18181b,
         .focus_ring = 0x2563eb, .track = 0xd4d4d8, .knob = 0xffffff, .destructive = 0xdc2626,
-        .destructive_fg = 0xffffff, .scrim = 0x00000066, .inverse_bg = 0x27272a, .inverse_fg = 0xfafafa,
+        .destructive_fg = 0xffffff, .scrim = .{ 0x000000, 0x66 }, .inverse_bg = 0x27272a, .inverse_fg = 0xfafafa,
     }),
     palette(.{
         .window_bg = 0x18181b, .window_fg = 0xf4f4f5, .view_bg = 0x09090b, .view_fg = 0xf4f4f5,
@@ -198,7 +198,7 @@ pub const compiled: [4][token_count]Color = .{
         .control_active = 0x52525b, .control_fg = 0xf4f4f5, .accent = 0x2563eb, .accent_hover = 0x3b82f6,
         .accent_active = 0x1d4ed8, .accent_fg = 0xffffff, .selection_bg = 0x1e3a8a, .selection_fg = 0xf4f4f5,
         .focus_ring = 0x3b82f6, .track = 0x3f3f46, .knob = 0xf4f4f5, .destructive = 0xdc2626,
-        .destructive_fg = 0xffffff, .scrim = 0x00000099, .inverse_bg = 0xf4f4f5, .inverse_fg = 0x18181b,
+        .destructive_fg = 0xffffff, .scrim = .{ 0x000000, 0x99 }, .inverse_bg = 0xf4f4f5, .inverse_fg = 0x18181b,
     }),
     palette(.{
         .window_bg = 0xffffff, .window_fg = 0x000000, .view_bg = 0xffffff, .view_fg = 0x000000,
@@ -207,7 +207,7 @@ pub const compiled: [4][token_count]Color = .{
         .control_active = 0xc2c2c2, .control_fg = 0x000000, .accent = 0x0040c0, .accent_hover = 0x002f8f,
         .accent_active = 0x00226b, .accent_fg = 0xffffff, .selection_bg = 0x0040c0, .selection_fg = 0xffffff,
         .focus_ring = 0x000000, .track = 0x595959, .knob = 0xffffff, .destructive = 0xa00000,
-        .destructive_fg = 0xffffff, .scrim = 0x000000b3, .inverse_bg = 0x000000, .inverse_fg = 0xffffff,
+        .destructive_fg = 0xffffff, .scrim = .{ 0x000000, 0xb3 }, .inverse_bg = 0x000000, .inverse_fg = 0xffffff,
     }),
     palette(.{
         .window_bg = 0x000000, .window_fg = 0xffffff, .view_bg = 0x000000, .view_fg = 0xffffff,
@@ -216,24 +216,27 @@ pub const compiled: [4][token_count]Color = .{
         .control_active = 0x404040, .control_fg = 0xffffff, .accent = 0x7cb4ff, .accent_hover = 0xa3caff,
         .accent_active = 0xc7ddff, .accent_fg = 0x000000, .selection_bg = 0x7cb4ff, .selection_fg = 0x000000,
         .focus_ring = 0xffff00, .track = 0xa6a6a6, .knob = 0x000000, .destructive = 0xff7070,
-        .destructive_fg = 0x000000, .scrim = 0x000000b3, .inverse_bg = 0xffffff, .inverse_fg = 0x000000,
+        .destructive_fg = 0x000000, .scrim = .{ 0x000000, 0xb3 }, .inverse_bg = 0xffffff, .inverse_fg = 0x000000,
     }),
 };
 
-/// Hex colors per token: 0xRRGGBB opaque, or 0xRRGGBBAA when the value
-/// exceeds 24 bits.
+/// Colors per token: 0xRRGGBB opaque, or .{ 0xRRGGBB, alpha }.
 fn palette(comptime hex: anytype) [token_count]Color {
     @setEvalBranchQuota(1_000_000);
     var out: [token_count]Color = undefined;
     out[0] = .transparent;
     for (@typeInfo(ColorToken).@"enum".field_names[1..], 1..) |name, i| {
-        const v: u32 = @field(hex, name);
-        out[i] = if (v > 0xffffff)
-            .srgb8(@truncate(v >> 24), @truncate(v >> 16), @truncate(v >> 8), @truncate(v))
-        else
-            .srgb8(@truncate(v >> 16), @truncate(v >> 8), @truncate(v), 0xff);
+        const f = @field(hex, name);
+        const v: u32, const a: u8 = if (@typeInfo(@TypeOf(f)) == .@"struct") .{ f[0], f[1] } else .{ f, 0xff };
+        out[i] = .srgb8(@truncate(v >> 16), @truncate(v >> 8), @truncate(v), a);
     }
     return out;
+}
+
+test "translucent tokens keep their color and alpha" {
+    const scrim = compiled[0][@intFromEnum(ColorToken.scrim)];
+    try std.testing.expect(scrim.r == 0 and scrim.g == 0 and scrim.b == 0);
+    try std.testing.expectApproxEqAbs(@as(f32, 0x66) / 255, scrim.a, 1e-6);
 }
 
 test "variants follow the desktop unless the application fixes them" {
