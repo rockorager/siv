@@ -57,6 +57,10 @@ presentation: ?*wp.Presentation = null,
 fractional_manager: ?*wp.FractionalScaleManagerV1 = null,
 decoration_manager: ?*zxdg.DecorationManagerV1 = null,
 fifo_manager: ?*wp.FifoManagerV1 = null,
+dmabuf: ?*zwp.LinuxDmabufV1 = null,
+dmabuf_feedback: ?*zwp.LinuxDmabufFeedbackV1 = null,
+/// The compositor's main device (dev_t) from dma-buf default feedback.
+main_device: ?u64 = null,
 text_input_manager: ?*zwp.TextInputManagerV3 = null,
 data_device_manager: ?*wl.DataDeviceManager = null,
 primary_selection_manager: ?*zwp.PrimarySelectionDeviceManagerV1 = null,
@@ -127,6 +131,8 @@ pub const Window = struct {
     viewport: ?*wp.Viewport = null,
     fractional: ?*wp.FractionalScaleV1 = null,
     fifo: ?*wp.FifoV1 = null,
+    /// A Vulkan swapchain commits the surface (`presentExternal`).
+    external: bool = false,
 
     state: WindowState = .{},
     pending: Pending = .{},
@@ -228,6 +234,8 @@ fn teardown(self: *Wayland) void {
     if (self.data_device_manager) |m| wlDestroy(m);
     if (self.decoration_manager) |m| m.destroy();
     if (self.fifo_manager) |m| m.destroy();
+    if (self.dmabuf_feedback) |f| f.destroy();
+    if (self.dmabuf) |m| m.destroy();
     if (self.fractional_manager) |m| m.destroy();
     if (self.presentation) |p| p.destroy();
     if (self.viewporter) |v| v.destroy();
@@ -350,6 +358,15 @@ fn addGlobal(self: *Wayland, registry: *wl.Registry, name: u32, interface: []con
         self.decoration_manager = try registry.bind(name, zxdg.DecorationManagerV1, version);
     } else if (is(interface, wp.FifoManagerV1)) {
         self.fifo_manager = try registry.bind(name, wp.FifoManagerV1, version);
+    } else if (is(interface, zwp.LinuxDmabufV1)) {
+        // Default feedback (version 4) names the main device; siv sends no
+        // dma-bufs itself.
+        if (version < 4) return;
+        const m = try registry.bind(name, zwp.LinuxDmabufV1, 4);
+        self.dmabuf = m;
+        const fb = try m.getDefaultFeedback();
+        fb.setListener(*Wayland, onDmabufFeedback, self);
+        self.dmabuf_feedback = fb;
     } else if (is(interface, zwp.TextInputManagerV3)) {
         const m = try registry.bind(name, zwp.TextInputManagerV3, version);
         self.text_input_manager = m;
@@ -375,6 +392,17 @@ fn reserveSlot(comptime T: type, allocator: Allocator, list: *std.ArrayList(?*T)
     for (list.items, 0..) |item, i| if (item == null) return i;
     try list.append(allocator, null);
     return list.items.len - 1;
+}
+
+fn onDmabufFeedback(_: *zwp.LinuxDmabufFeedbackV1, event: zwp.LinuxDmabufFeedbackV1.Event, self: *Wayland) void {
+    switch (event) {
+        .main_device => |e| {
+            const bytes = e.device.slice(u8);
+            if (bytes.len == @sizeOf(u64)) self.main_device = std.mem.readInt(u64, bytes[0..8], @import("builtin").cpu.arch.endian());
+        },
+        .format_table => |e| _ = linux.close(e.fd),
+        else => {},
+    }
 }
 
 fn onWmBase(base: *xdg.WmBase, event: xdg.WmBase.Event, _: *Wayland) void {
@@ -662,6 +690,60 @@ pub fn present(self: *Wayland, id: WindowId, buffer: Buffer, damage: ?[]const Re
     const w = self.get(id);
     const sb = w.swapchain.get(buffer.slot);
     const surface = w.surface;
+    self.beforeCommit(w);
+    surface.attach(sb.buffer, 0, 0);
+    const all = [_]Rect{.{ .x = 0, .y = 0, .width = std.math.maxInt(i32), .height = std.math.maxInt(i32) }};
+    for (damage orelse &all) |r| {
+        if (surface.getVersion() >= 4) surface.damageBuffer(r.x, r.y, r.width, r.height) else surface.damage(0, 0, all[0].width, all[0].height);
+    }
+    surface.commit();
+    sb.busy = true;
+    if (w.frame_callback != null) w.clock.committed();
+}
+
+/// The wl_display and the window's wl_surface, for a Vulkan swapchain.
+pub fn vulkanSurface(self: *Wayland, id: WindowId) ?platform.VulkanSurface {
+    return .{ .display = self.display, .surface = self.get(id).surface };
+}
+
+pub fn mainDevice(self: *Wayland) ?u64 {
+    return self.main_device;
+}
+
+/// Hands the window's commits to a Vulkan swapchain, or takes them back.
+/// While external, the window has no wp_fifo_v1: Mesa's WSI creates one for
+/// every swapchain (since Mesa 25), and a second is a protocol error.
+pub fn setExternalPresenter(self: *Wayland, id: WindowId, on: bool) void {
+    const w = self.get(id);
+    if (w.external == on) return;
+    w.external = on;
+    if (on) {
+        if (w.fifo) |f| f.destroy();
+        w.fifo = null;
+    } else if (self.fifo_manager) |m| {
+        w.fifo = m.getFifo(w.surface) catch null;
+    }
+}
+
+pub fn frameCallbackPending(self: *Wayland, id: WindowId) bool {
+    return self.get(id).frame_callback != null;
+}
+
+pub fn presentExternal(self: *Wayland, id: WindowId, commit: platform.ExternalCommit) anyerror!void {
+    const w = self.get(id);
+    std.debug.assert(w.external);
+    self.beforeCommit(w);
+    // On failure nothing was committed; the requests above stay pending
+    // and apply with the next commit.
+    try commit.func(commit.ctx);
+    if (w.frame_callback != null) w.clock.committed();
+}
+
+/// Everything a frame's commit carries besides its buffer and damage: the
+/// configure ack, the viewport or buffer scale, the frame callback, FIFO
+/// barriers, and presentation feedback.
+fn beforeCommit(self: *Wayland, w: *Window) void {
+    const surface = w.surface;
     const answers_configure = w.ack_serial != null;
     ackPending(w);
 
@@ -676,11 +758,6 @@ pub fn present(self: *Wayland, id: WindowId, buffer: Buffer, damage: ?[]const Re
         setBufferScale(w, @intCast(w.state.scale.v120 / 120));
     }
 
-    surface.attach(sb.buffer, 0, 0);
-    const all = [_]Rect{.{ .x = 0, .y = 0, .width = std.math.maxInt(i32), .height = std.math.maxInt(i32) }};
-    for (damage orelse &all) |r| {
-        if (surface.getVersion() >= 4) surface.damageBuffer(r.x, r.y, r.width, r.height) else surface.damage(0, 0, all[0].width, all[0].height);
-    }
     if (w.frame_callback == null) {
         if (surface.frame()) |cb| {
             cb.setListener(*Window, onFrameDone, w);
@@ -703,9 +780,6 @@ pub fn present(self: *Wayland, id: WindowId, buffer: Buffer, damage: ?[]const Re
         break;
     };
     w.frame_target_ns = null;
-    surface.commit();
-    sb.busy = true;
-    if (w.frame_callback != null) w.clock.committed();
 }
 
 pub fn setTitle(self: *Wayland, id: WindowId, title: []const u8) void {

@@ -207,6 +207,49 @@ pub const Platform = union(enum) {
         };
     }
 
+    /// The Wayland objects a Vulkan swapchain presents to (D10). Null on
+    /// the headless backend.
+    pub fn vulkanSurface(p: Platform, id: WindowId) ?VulkanSurface {
+        return switch (p) {
+            inline else => |b| b.vulkanSurface(id),
+        };
+    }
+
+    /// The compositor's main device (a dev_t) from dma-buf feedback, which
+    /// picks the GPU on multi-GPU systems (D10). Null if unknown.
+    pub fn mainDevice(p: Platform) ?u64 {
+        return switch (p) {
+            inline else => |b| b.mainDevice(),
+        };
+    }
+
+    /// Hands the window's commits to an external presenter (a Vulkan
+    /// swapchain on `vulkanSurface`), or takes them back before presenting
+    /// buffers again.
+    pub fn setExternalPresenter(p: Platform, id: WindowId, on: bool) void {
+        switch (p) {
+            inline else => |b| b.setExternalPresenter(id, on),
+        }
+    }
+
+    /// The window's last commit still awaits its frame callback.
+    pub fn frameCallbackPending(p: Platform, id: WindowId) bool {
+        return switch (p) {
+            inline else => |b| b.frameCallbackPending(id),
+        };
+    }
+
+    /// Like `present`, for a window with an external presenter: sets up
+    /// everything the frame clock needs (configure ack, scale, frame
+    /// callback, presentation feedback) and then runs `commit`, which must
+    /// commit the surface once (vkQueuePresentKHR), so that all of it lands
+    /// in that commit. Call from a `frame` event. Returns commit's error.
+    pub fn presentExternal(p: Platform, id: WindowId, commit: ExternalCommit) anyerror!void {
+        return switch (p) {
+            inline else => |b| b.presentExternal(id, commit),
+        };
+    }
+
     /// Commits the window without a new buffer, so that subsurface changes
     /// apply when its own content did not change.
     pub fn commitWindow(p: Platform, id: WindowId) void {
@@ -534,6 +577,15 @@ pub const WindowState = struct {
 
 /// Pixels to render a frame into: premultiplied ARGB8888, stored as B, G, R,
 /// A bytes (little-endian 0xAARRGGBB words).
+/// A `wl_display *` and a window's `wl_surface *`.
+pub const VulkanSurface = struct { display: *anyopaque, surface: *anyopaque };
+
+/// The commit of an external presenter (see `Platform.presentExternal`).
+pub const ExternalCommit = struct {
+    ctx: *anyopaque,
+    func: *const fn (ctx: *anyopaque) anyerror!void,
+};
+
 pub const Buffer = struct {
     pixels: []u8,
     width: u32,

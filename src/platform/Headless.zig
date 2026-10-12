@@ -237,6 +237,25 @@ pub fn setSubsurface(hl: *Headless, id: WindowId, sub: platform.SubsurfaceId, st
     hl.get(id).pending_subsurfaces.items[sub] = state.*;
 }
 
+/// No Wayland objects: windows present through `acquireBuffer` only.
+pub fn vulkanSurface(_: *Headless, _: WindowId) ?platform.VulkanSurface {
+    return null;
+}
+
+pub fn mainDevice(_: *Headless) ?u64 {
+    return null;
+}
+
+pub fn setExternalPresenter(_: *Headless, _: WindowId, _: bool) void {}
+
+pub fn frameCallbackPending(hl: *Headless, id: WindowId) bool {
+    return hl.get(id).clock.waiting;
+}
+
+pub fn presentExternal(_: *Headless, _: WindowId, _: platform.ExternalCommit) anyerror!void {
+    return error.Unsupported; // vulkanSurface is null, so nothing presents externally
+}
+
 pub fn commitWindow(hl: *Headless, id: WindowId) void {
     const w = hl.get(id);
     w.bare_commits += 1;
