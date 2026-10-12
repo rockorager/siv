@@ -31,6 +31,7 @@ pub const Stroke = list.Stroke;
 pub const Font = list.Font;
 pub const Glyph = list.Glyph;
 pub const GlyphRun = list.GlyphRun;
+pub const GlyphText = list.GlyphText;
 pub const ImageFormat = list.ImageFormat;
 pub const ImageRef = list.ImageRef;
 pub const Dmabuf = list.Dmabuf;

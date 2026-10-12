@@ -279,6 +279,16 @@ pub const GlyphRun = struct {
     paint: Paint,
     /// Must contain all ink of the run; used for culling and damage.
     bounds: Rect,
+    /// The text the glyphs show, for output that keeps text (PDF's
+    /// ToUnicode maps); the renderers ignore it.
+    text: ?GlyphText = null,
+};
+
+/// The text of a glyph run: `clusters[i]` is the byte offset in `bytes`
+/// of the cluster glyph `i` belongs to (HarfBuzz's cluster values).
+pub const GlyphText = struct {
+    bytes: []const u8,
+    clusters: []const u32,
 };
 
 pub const ImageFormat = enum(u8) {
@@ -514,6 +524,12 @@ pub const Builder = struct {
         var r = run;
         r.glyphs = try b.arena.allocator().dupe(Glyph, run.glyphs);
         r.paint = try b.copyPaint(run.paint);
+        if (run.text) |t| {
+            if (t.clusters.len != run.glyphs.len) return error.InvalidArgument;
+            for (t.clusters) |c| if (c > t.bytes.len) return error.InvalidArgument;
+            const a = b.arena.allocator();
+            r.text = .{ .bytes = try a.dupe(u8, t.bytes), .clusters = try a.dupe(u32, t.clusters) };
+        }
         try b.commands.append(b.gpa, .{ .glyphs = r });
         b.include(r.bounds);
     }
