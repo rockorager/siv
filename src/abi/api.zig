@@ -1147,6 +1147,11 @@ pub const functions = [_]Function{
         .{ .name = "popup", .type = out(ref("siv_window")), .doc = "The popup: a window handle." },
     }),
     call("siv_popup_show", "Maps a popup made by siv_popup_create, placed against its anchor as it is now. Unless SIV_POPUP_NO_GRAB was given, it takes the keyboard for the parent's last press or key, so call it while handling one. SIV_ERROR_BUSY if it is shown already or its transaction is open.", &.{.{ .name = "popup", .type = ref("siv_window"), .doc = "The popup." }}),
+    call("siv_app_get_key_repeat", "The desktop's key-repeat timing, which widgets that repeat while held (spin buttons, scroll arrows) follow too: the delay before the first repeat and the interval between repeats, from the compositor once it reports them (600 and 40 ms until then).", &.{
+        app_param,
+        .{ .name = "delay_ms", .type = out(.u32), .doc = "Delay before the first repeat." },
+        .{ .name = "interval_ms", .type = out(.u32), .doc = "Interval between repeats; 0 when held keys do not repeat." },
+    }),
     call("siv_window_get_app", "The application a window belongs to.", &.{
         window_param,
         .{ .name = "app", .type = out(ref("siv_app")), .doc = "The application." },

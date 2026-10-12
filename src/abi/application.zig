@@ -366,6 +366,17 @@ pub export fn siv_app_set_default_font(app: t.App, family: ?[*]const u8, family_
     return .ok;
 }
 
+pub export fn siv_app_get_key_repeat(app: t.App, delay_ms: ?*u32, interval_ms: ?*u32) t.Result {
+    const self = App.get(@backingInt(app)) catch |err| return t.resultOf(err);
+    const delay = runtime.out(u32, delay_ms) catch |err| return t.resultOf(err);
+    const interval = runtime.out(u32, interval_ms) catch |err| return t.resultOf(err);
+    const r = self.app.key_repeat;
+    delay.* = r.delay_ms;
+    // At least 1 ms: a rate above 1000 cannot repeat faster than that.
+    interval.* = if (r.rate == 0) 0 else @max(1000 / r.rate, 1);
+    return .ok;
+}
+
 // Windows ---------------------------------------------------------------------
 
 pub export fn siv_window_create(app: t.App, desc: ?*const t.WindowDesc, window: ?*t.Window) t.Result {
