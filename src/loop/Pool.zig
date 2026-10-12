@@ -33,9 +33,13 @@ pub const Job = struct {
     /// Runs on the loop thread after `run` returns. The job may be freed or
     /// resubmitted from here.
     done: *const fn (*Job) void,
+    /// Runs instead of `done` when the job will never complete: `Pool.deinit`
+    /// dropped it while queued, or the loop was deinitialized before
+    /// delivering its completion. Must only release resources.
+    cancel: ?*const fn (*Job) void = null,
     state: State = .idle,
     next: ?*Job = null,
-    remote: Loop.Remote = .{ .func = complete },
+    remote: Loop.Remote = .{ .func = complete, .cancel = drop },
 
     pub const State = enum { idle, queued, running };
 
@@ -43,6 +47,12 @@ pub const Job = struct {
         const job: *Job = @fieldParentPtr("remote", r);
         job.state = .idle;
         job.done(job);
+    }
+
+    fn drop(r: *Loop.Remote) void {
+        const job: *Job = @fieldParentPtr("remote", r);
+        job.state = .idle;
+        if (job.cancel) |f| f(job);
     }
 };
 
@@ -56,20 +66,22 @@ pub fn defaultThreadCount() u32 {
     return @intCast(std.math.clamp(std.Thread.getCpuCount() catch 1, 1, 64));
 }
 
-/// Drops queued jobs without running them, waits for running jobs, and
+/// Cancels queued jobs (see `Job.cancel`), waits for running jobs, and
 /// joins the workers. Completions of jobs that finished are still delivered
-/// by the loop.
+/// by the loop, or cancelled when it is deinitialized.
 pub fn deinit(pool: *Pool) void {
     pool.lock();
     pool.stopping = true;
-    while (pool.head) |job| {
-        pool.head = job.next;
-        job.state = .idle;
-    }
+    var dropped = pool.head;
+    pool.head = null;
     pool.tail = null;
     pool.queued = 0;
     _ = c.pthread_cond_broadcast(&pool.cond);
     pool.unlock();
+    while (dropped) |job| {
+        dropped = job.next;
+        Job.drop(&job.remote);
+    }
     for (pool.threads.items) |t| t.join();
     pool.threads.deinit(pool.allocator);
     _ = c.pthread_cond_destroy(&pool.cond);
@@ -309,6 +321,49 @@ test "cancel removes a queued job" {
     while (!first.finished) try loop.dispatch(-1);
     try testing.expect(!second.finished);
     try testing.expectEqual(Job.State.idle, second.job.state);
+}
+
+test "deinit cancels queued jobs and undelivered completions" {
+    var loop = try Loop.init(std.heap.smp_allocator);
+    var pool = Pool.init(&loop, testing.allocator, 1);
+
+    const Gate = struct {
+        job: Job = .{ .run = run, .done = done, .cancel = cancelled },
+        open: std.atomic.Value(bool) = .init(false),
+        started: std.atomic.Value(bool) = .init(false),
+        outcome: enum { none, done, cancelled } = .none,
+        fn run(job: *Job) void {
+            const g: *@This() = @fieldParentPtr("job", job);
+            g.started.store(true, .release);
+            while (!g.open.load(.acquire)) std.atomic.spinLoopHint();
+        }
+        fn done(job: *Job) void {
+            const g: *@This() = @fieldParentPtr("job", job);
+            g.outcome = .done;
+        }
+        fn cancelled(job: *Job) void {
+            const g: *@This() = @fieldParentPtr("job", job);
+            g.outcome = .cancelled;
+        }
+        fn openLater(g: *@This()) void {
+            var ts: std.os.linux.timespec = .{ .sec = 0, .nsec = 20 * std.time.ns_per_ms };
+            _ = std.os.linux.nanosleep(&ts, null);
+            g.open.store(true, .release);
+        }
+    };
+    // The first job occupies the only worker; the second stays queued.
+    var first: Gate = .{};
+    var second: Gate = .{};
+    try pool.submit(&first.job);
+    try pool.submit(&second.job);
+    while (!first.started.load(.acquire)) std.atomic.spinLoopHint();
+    const opener = try std.Thread.spawn(.{}, Gate.openLater, .{&first});
+    pool.deinit(); // waits for the first job, cancels the second
+    opener.join();
+    try testing.expectEqual(.cancelled, second.outcome);
+    try testing.expectEqual(.none, first.outcome);
+    loop.deinit(); // the first job's completion was never dispatched
+    try testing.expectEqual(.cancelled, first.outcome);
 }
 
 test "ReadFile reads on a worker" {

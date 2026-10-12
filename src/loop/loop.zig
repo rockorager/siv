@@ -75,11 +75,15 @@ pub const Loop = struct {
         return .{ .allocator = allocator, .epfd = epfd, .wake_fd = wake_fd, .timer_fd = timer_fd };
     }
 
-    /// Runs closures that were posted but not yet dispatched, so that the
-    /// resources they own are released, then closes the loop's fds. Worker
-    /// pools must be deinitialized first.
+    /// Closes the loop. Work posted but not yet dispatched never runs; its
+    /// `cancel` function, if any, releases what it owns. Worker pools must be
+    /// deinitialized first.
     pub fn deinit(loop: *Loop) void {
-        loop.runRemote();
+        var fifo = loop.takeRemote();
+        while (fifo) |r| {
+            fifo = r.next;
+            if (r.cancel) |cancel| cancel(r);
+        }
         loop.timers.deinit(loop.allocator);
         closeFd(loop.timer_fd);
         closeFd(loop.wake_fd);
@@ -346,9 +350,12 @@ pub const Loop = struct {
     // Cross-thread work ----------------------------------------------------
 
     /// Work handed to the loop from any thread, embedded in its owner. `func`
-    /// runs in the dispatch phase, in posting order.
+    /// runs in the dispatch phase, in posting order. If the loop is
+    /// deinitialized first, `cancel` runs instead so that the owner can
+    /// release resources; application code must not run from it.
     pub const Remote = struct {
         func: *const fn (*Remote) void,
+        cancel: ?*const fn (*Remote) void = null,
         next: ?*Remote = null,
     };
 
@@ -364,8 +371,9 @@ pub const Loop = struct {
     }
 
     const Posted = struct {
-        remote: Remote = .{ .func = invoke },
+        remote: Remote = .{ .func = invoke, .cancel = drop },
         func: *const fn (?*anyopaque) void,
+        destroy: ?*const fn (?*anyopaque) void,
         ctx: ?*anyopaque,
         allocator: Allocator,
 
@@ -375,17 +383,31 @@ pub const Loop = struct {
             allocator.destroy(p);
             func(ctx);
         }
+
+        fn drop(r: *Remote) void {
+            const p: *Posted = @fieldParentPtr("remote", r);
+            const destroy, const ctx, const allocator = .{ p.destroy, p.ctx, p.allocator };
+            allocator.destroy(p);
+            if (destroy) |d| d(ctx);
+        }
     };
 
-    /// Runs `func(ctx)` on the loop thread in the dispatch phase. Safe from
+    /// Runs `func(ctx)` on the loop thread in the dispatch phase. If the loop
+    /// is deinitialized before that, `destroy(ctx)` runs instead. Safe from
     /// any thread; the loop's allocator must then be thread-safe.
-    pub fn post(loop: *Loop, func: *const fn (?*anyopaque) void, ctx: ?*anyopaque) Allocator.Error!void {
+    pub fn post(
+        loop: *Loop,
+        func: *const fn (?*anyopaque) void,
+        destroy: ?*const fn (?*anyopaque) void,
+        ctx: ?*anyopaque,
+    ) Allocator.Error!void {
         const p = try loop.allocator.create(Posted);
-        p.* = .{ .func = func, .ctx = ctx, .allocator = loop.allocator };
+        p.* = .{ .func = func, .destroy = destroy, .ctx = ctx, .allocator = loop.allocator };
         loop.postRemote(&p.remote);
     }
 
-    fn runRemote(loop: *Loop) void {
+    /// Takes every posted item, oldest first.
+    fn takeRemote(loop: *Loop) ?*Remote {
         var list = loop.remote_head.swap(null, .acquire);
         // The stack is newest first; reverse it into posting order.
         var fifo: ?*Remote = null;
@@ -394,6 +416,11 @@ pub const Loop = struct {
             r.next = fifo;
             fifo = r;
         }
+        return fifo;
+    }
+
+    fn runRemote(loop: *Loop) void {
+        var fifo = loop.takeRemote();
         while (fifo) |r| {
             fifo = r.next;
             r.func(r);
@@ -512,7 +539,7 @@ test "phases run in order and io handlers only schedule work" {
     loop.addHook(&c.hook);
 
     try loop.startTimer(&c.timer, 0, 0); // already expired
-    try loop.post(Ctx.onPost, &c);
+    try loop.post(Ctx.onPost, null, &c);
     _ = linux.write(c.pipe[1], "x", 1);
 
     try loop.dispatch(1000);
@@ -589,7 +616,7 @@ test "post from other threads runs every closure once in the dispatch phase" {
             s.count += 1; // loop thread only
         }
         fn producer(l: *Loop, s: *@This()) void {
-            for (0..per_thread) |_| l.post(bump, s) catch unreachable;
+            for (0..per_thread) |_| l.post(bump, null, s) catch unreachable;
         }
     };
     var shared: Shared = .{};
@@ -599,6 +626,29 @@ test "post from other threads runs every closure once in the dispatch phase" {
     for (threads) |t| t.join();
     try loop.dispatch(0);
     try testing.expectEqual(threads.len * per_thread, shared.count);
+}
+
+test "deinit cancels posted closures instead of running them" {
+    var loop = try Loop.init(testing.allocator);
+    const Counts = struct {
+        ran: usize = 0,
+        destroyed: usize = 0,
+        fn run(ctx: ?*anyopaque) void {
+            const c: *@This() = @ptrCast(@alignCast(ctx));
+            c.ran += 1;
+        }
+        fn destroy(ctx: ?*anyopaque) void {
+            const c: *@This() = @ptrCast(@alignCast(ctx));
+            c.destroyed += 1;
+        }
+    };
+    var counts: Counts = .{};
+    try loop.post(Counts.run, Counts.destroy, &counts);
+    try loop.post(Counts.run, null, &counts); // no destroy: just freed
+    try loop.post(Counts.run, Counts.destroy, &counts);
+    loop.deinit(); // the testing allocator checks the nodes were freed
+    try testing.expectEqual(@as(usize, 0), counts.ran);
+    try testing.expectEqual(@as(usize, 2), counts.destroyed);
 }
 
 test "unscheduling a task from an earlier task in the same batch" {
