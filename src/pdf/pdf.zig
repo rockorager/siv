@@ -15,6 +15,14 @@ const std = @import("std");
 pub const Writer = @import("Writer.zig");
 pub const content = @import("content.zig");
 
+/// Test helpers for other modules' tests. Not for production use.
+pub const testing = struct {
+    /// Reads back a written PDF's objects and streams.
+    pub const Parsed = @import("test_parse.zig").Parsed;
+    pub const dictInt = @import("test_parse.zig").dictInt;
+    pub const ref = @import("test_parse.zig").ref;
+};
+
 /// A4 in points.
 pub const a4: struct { width: f32, height: f32 } = .{ .width = 595.2756, .height = 841.8898 };
 
