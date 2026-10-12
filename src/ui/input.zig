@@ -80,6 +80,8 @@ pub const State = struct {
     /// compositor ties to user input (selections).
     seat: platform.SeatId = 0,
     serial: u32 = 0,
+    /// Serial of the last button or touch press, which starts drags.
+    press_serial: u32 = 0,
     mods: platform.Mods = .{},
 
     pub fn deinit(st: *State, gpa: std.mem.Allocator) void {
@@ -181,7 +183,7 @@ fn call(win: *Window, id: NodeId, kind: node_mod.HandlerKind, event: *const Even
 
 /// Bubbles a pointer event from `target`; coordinates are made local to
 /// each node. Returns true if a handler took it.
-fn bubblePointer(win: *Window, target: NodeId, phase: node_mod.PointerPhase, button: node_mod.Button) bool {
+pub fn bubblePointer(win: *Window, target: NodeId, phase: node_mod.PointerPhase, button: node_mod.Button) bool {
     const p = win.input.pointer orelse return false;
     const clicks: u8 = if (button == .primary and (phase == .down or phase == .up)) @max(win.input.clicks, 1) else 1;
     var cur = target;
@@ -304,10 +306,13 @@ pub fn handle(win: *Window, event: *const platform.Event) void {
             if (b.pressed) {
                 st.seat = b.seat;
                 st.serial = b.serial;
+                st.press_serial = b.serial;
             }
             pointerButton(win, b.button, b.pressed, b.time);
         },
         .touch_down => |t| {
+            st.seat = t.seat;
+            st.press_serial = t.serial;
             st.pointer = .{ .x = @floatCast(t.x), .y = @floatCast(t.y) };
             pointerButton(win, btn_left, true, t.time);
         },
@@ -325,6 +330,7 @@ pub fn handle(win: *Window, event: *const platform.Event) void {
         .key => |k| key(win, &k),
         .modifiers => |m| st.mods = m.mods,
         .text_input_enter, .text_input_leave, .text_input => ime.handle(win, event),
+        .drag_enter, .drag_motion, .drag_leave, .drag_drop, .drag_actions => @import("dnd.zig").handle(win, event),
         .keyboard_enter => {
             st.keyboard = true;
             if (st.focus != .none) win.markPaint(st.focus);

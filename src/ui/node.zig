@@ -501,6 +501,79 @@ pub const FocusChange = struct {
 
 pub const ScrollDelta = struct { dx: f32, dy: f32 };
 
+pub const DragAction = @import("platform").DragAction;
+pub const DragActions = @import("platform").DragActions;
+
+/// Makes a node a drop target (D19): drags carrying one of its mime types
+/// with one of its actions go to its `drop` handler.
+pub const DropTarget = struct {
+    /// Mime types it takes, one per line, preferred first (copied). Empty
+    /// makes the node no drop target.
+    mimes: []const u8 = "",
+    actions: DragActions = .{ .copy = true },
+    /// The action to ask for when the source offers several; none takes
+    /// the first of copy, move, and ask that both sides allow.
+    preferred: DragAction = .none,
+
+    /// The first of the target's mime types that `offered` contains (the
+    /// element of `offered`).
+    pub fn match(t: DropTarget, offered: []const []const u8) ?[]const u8 {
+        var it = std.mem.tokenizeScalar(u8, t.mimes, '\n');
+        while (it.next()) |m| for (offered) |o| if (std.mem.eql(u8, o, m)) return o;
+        return null;
+    }
+};
+
+pub const DropPhase = enum(u8) {
+    /// The drag moved onto the node. Return true to take it here.
+    enter,
+    /// The drag moved over the node, or its action changed. Return true
+    /// to take it here.
+    move,
+    /// The drag left the node, was dropped elsewhere, or the data could
+    /// not be read.
+    leave,
+    /// The data was dropped on the node: `data` holds it. Return true if
+    /// the node took it.
+    drop,
+};
+
+/// A drag over a drop target (`DropTarget`).
+pub const Drop = struct {
+    phase: DropPhase,
+    /// In the node's coordinates.
+    x: f32,
+    y: f32,
+    /// The action negotiated with the source; on `drop` with `ask` the
+    /// application asks the user and calls `Window.finishDrop`.
+    action: DragAction = .none,
+    /// The actions the source offers.
+    source_actions: DragActions = .{},
+    /// The mime type the node gets, the first of its own the drag offers.
+    mime: []const u8 = "",
+    /// `drop`: the data, valid during the call.
+    data: []const u8 = "",
+};
+
+pub const DragPhase = enum(u8) {
+    /// The target under the pointer took or refused the data, or the
+    /// action changed.
+    move,
+    /// The user dropped the data on a target that takes it.
+    drop,
+    /// The drag ended: the target performed `action`; none if the drag was
+    /// cancelled or refused. After a move, delete the data.
+    end,
+};
+
+/// Progress of a drag a node started (`Window.startDrag`).
+pub const Drag = struct {
+    phase: DragPhase,
+    action: DragAction = .none,
+    /// `move`: the target under the pointer takes the data.
+    accepted: bool = false,
+};
+
 pub const Event = union(enum) {
     /// Clicked, or Enter/Space while focused.
     activate,
@@ -511,9 +584,13 @@ pub const Event = union(enum) {
     /// The user edited an editor's text (delivered to the editor only,
     /// after the edit is committed).
     change,
+    /// A drag over a drop target (not bubbled).
+    drop: Drop,
+    /// A drag the node started progressed (not bubbled).
+    drag: Drag,
 };
 
-pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll, change };
+pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll, change, drop, drag };
 
 /// Runs at a safe point on the UI thread (D5). Returns true when it handled
 /// the event, which stops it bubbling and suppresses the default action.
@@ -538,6 +615,7 @@ pub const Node = struct {
     semantics: Semantics = .{},
     data: Data,
     handlers: [handler_count]?Handler = @splat(null),
+    drop: DropTarget = .{},
 
     pub const Status = enum(u8) {
         /// On the free list (`next` links it).

@@ -652,6 +652,18 @@ pub fn paste(win: *Window, id: NodeId, kind: platform.SelectionKind) void {
     cb.paste(kind, win.input.seat, win, .{ .ctx = p, .func = Paste.done });
 }
 
+/// Inserts dropped text at a window point, as one undo step, and selects
+/// it.
+pub fn dropText(win: *Window, id: NodeId, p: Point, text_: []const u8) void {
+    const pos = positionAt(win, id, input.toLocal(win, id, p)) orelse return;
+    const before = data(win, id).text.content.len;
+    setSelection(win, id, pos.offset, pos.offset, .downstream);
+    replaceRange(win, id, pos.offset, pos.offset, text_);
+    const e = data(win, id);
+    const added: u32 = @intCast(e.text.content.len -| before);
+    if (added != 0) setSelection(win, id, pos.offset + added, pos.offset, .downstream);
+}
+
 /// Inserts pasted text over the selection, as one undo step.
 pub fn pasteText(win: *Window, id: NodeId, text_: []const u8) void {
     const lo, const hi = selection(data(win, id));

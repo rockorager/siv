@@ -32,6 +32,7 @@ const Image = @import("image.zig").Image;
 const secret = @import("secret.zig");
 const ime_mod = @import("ime.zig");
 pub const Clipboard = @import("clipboard.zig");
+const dnd_mod = @import("dnd.zig");
 
 const Window = @This();
 
@@ -62,6 +63,9 @@ force_reduced_motion: bool = false,
 desktop: Desktop = .{},
 /// The application's clipboard, if it has one.
 clipboard: ?*Clipboard = null,
+/// Drag-and-drop requests; without them drags neither start nor drop.
+drag_host: ?dnd_mod.Host = null,
+dnd: dnd_mod.State = .{},
 /// Pastes and assistive technology edits that arrived while a transaction
 /// was open, applied in order at the next frame like queued input.
 pending_edits: std.ArrayList(editor_mod.Pending) = .empty,
@@ -119,6 +123,8 @@ pub const Options = struct {
     reduced_motion: bool = false,
     desktop: Desktop = .{},
     clipboard: ?*Clipboard = null,
+    /// Drag and drop (`dnd.CompositorHost`); needs `clipboard` too.
+    drag: ?dnd_mod.Host = null,
 };
 
 /// The desktop settings the UI follows (D19). The fields have the names
@@ -219,6 +225,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) Error!*Window {
         .force_reduced_motion = options.reduced_motion,
         .desktop = options.desktop,
         .clipboard = options.clipboard,
+        .drag_host = options.drag,
         .sink = options.sink,
         .host = options.host,
         .scratch = .init(gpa),
@@ -236,7 +243,12 @@ pub fn init(gpa: std.mem.Allocator, options: Options) Error!*Window {
 pub fn deinit(win: *Window) void {
     std.debug.assert(!win.txn.open);
     win.fonts.removeListener(win);
-    if (win.clipboard) |cb| cb.cancel(win);
+    win.dnd.deinit(win);
+    if (win.clipboard) |cb| {
+        cb.cancel(win);
+        cb.cancel(&win.dnd);
+        cb.forgetWindow(win);
+    }
     win.deinitStorage();
     win.gpa.destroy(win);
 }
@@ -268,6 +280,7 @@ fn deinitStorage(win: *Window) void {
 pub fn freeNodeData(gpa: std.mem.Allocator, n: *const Node) void {
     gpa.free(n.semantics.label);
     gpa.free(n.semantics.description);
+    gpa.free(n.drop.mimes);
     switch (n.data) {
         .text => |t| gpa.free(t.content),
         .editor => |e| {
@@ -395,7 +408,8 @@ pub fn needsFrame(win: *const Window) bool {
     // Semantics alone need no frame: they rebuild on query or with the
     // next frame (`semanticsTree`), so scrolling makes no extra frames.
     return win.state(.root).needs_layout or win.dirty.layers or win.dirty.props or
-        win.paint.anyDirty() or win.pending_input.items.len != 0 or win.ime.dirty or win.pending_edits.items.len != 0;
+        win.paint.anyDirty() or win.pending_input.items.len != 0 or win.ime.dirty or win.pending_edits.items.len != 0 or
+        win.dnd.pending != null;
 }
 
 pub fn requestFrame(win: *Window) void {
@@ -481,6 +495,7 @@ fn replayInput(win: *Window) void {
     while (win.pending_edits.items.len != 0 and !win.txn.open and win.pending_input.items.len == 0) {
         editor_mod.apply(win, win.pending_edits.orderedRemove(0));
     }
+    if (!win.txn.open and win.pending_input.items.len == 0 and win.pending_edits.items.len == 0) dnd_mod.flush(win);
 }
 
 fn recycleDead(win: *Window) void {
@@ -499,6 +514,7 @@ fn recycleDead(win: *Window) void {
 /// layers. Called by the transaction at commit, before they are marked dead.
 pub fn forget(win: *Window, id: NodeId) void {
     win.input.forget(win, id);
+    dnd_mod.forget(win, id);
     if (win.histories.fetchRemove(id)) |kv| {
         var h = kv.value;
         h.deinit(win.gpa);
@@ -626,6 +642,107 @@ pub fn handlePlatform(win: *Window, event: *const platform.Event) void {
         return;
     }
     input_mod.handle(win, event);
+}
+
+pub const DragOptions = struct {
+    /// The data in each mime type it is offered in, preferred first
+    /// (copied).
+    items: []const Clipboard.DragItem,
+    actions: platform.DragActions = .{ .copy = true },
+    /// Only this application's windows can take it.
+    in_app: bool = false,
+    /// Follows the pointer, one image pixel per logical pixel, with the
+    /// hotspot (in image pixels) under the pointer.
+    icon: ?*Image = null,
+    hotspot_x: f32 = 0,
+    hotspot_y: f32 = 0,
+};
+
+pub const DragError = error{
+    OutOfMemory,
+    /// No items, no actions, an invalid mime type, or no such node.
+    InvalidArgument,
+    /// No button or touch is held on the window, or no platform to drag
+    /// with.
+    Unavailable,
+};
+
+/// Starts a drag from `id` while a button or touch press on the window is
+/// held, typically from a pointer `move` handler once the pointer moved
+/// far enough. `id` gets `drag` events as it progresses; after a `move`
+/// it deletes the data. The pointer belongs to the drag from now on: the
+/// node that had the press gets a pointer `cancel` before this returns.
+pub fn startDrag(win: *Window, id: NodeId, o: DragOptions) DragError!void {
+    const host = win.drag_host orelse return error.Unavailable;
+    const cb = win.clipboard orelse return error.Unavailable;
+    if (!win.isLive(id) or o.items.len == 0 or o.actions.none()) return error.InvalidArgument;
+    for (o.items) |item| {
+        if (item.mime.len == 0) return error.InvalidArgument;
+        for (item.mime) |c| if (c <= ' ' or c >= 0x7f) return error.InvalidArgument;
+    }
+    if (win.input.capture == .none) return error.Unavailable;
+    var out = try cb.copyDrag(o.items);
+    errdefer cb.freeDrag(out);
+    defer _ = win.scratch.reset(.retain_capacity);
+    var icon: platform.DragIcon = undefined;
+    if (o.icon) |img| icon = try dragIcon(win.scratch.allocator(), img, o.hotspot_x, o.hotspot_y);
+    const mimes: []const []const u8 = if (o.in_app) &.{dnd_mod.in_app_mime} else out.mimes;
+    const st = &win.input;
+    const source = host.start(host.ctx, st.seat, st.press_serial, mimes, o.actions, if (o.icon != null) &icon else null) orelse return error.Unavailable;
+    out.seat = st.seat;
+    out.source = source;
+    out.actions = o.actions;
+    out.in_app = o.in_app;
+    out.origin = win;
+    out.node = id;
+    cb.adoptDrag(out);
+    // The compositor sends no pointer events during the drag, not even the
+    // release: the press is taken away.
+    const capture = st.capture;
+    st.capture = .none;
+    st.pressed = .none;
+    st.selecting = .none;
+    _ = input_mod.bubblePointer(win, capture, .cancel, .primary);
+}
+
+/// An image as a drag icon: premultiplied, sRGB-encoded BGRA.
+fn dragIcon(a: std.mem.Allocator, img: *const Image, hx: f32, hy: f32) error{OutOfMemory}!platform.DragIcon {
+    const w = img.width;
+    const h = img.height;
+    const px = try a.alloc(u8, @as(usize, w) * h * 4);
+    for (0..h) |y| for (0..w) |x| {
+        const src = img.pixels[y * img.stride + x * img.format.bytesPerPixel() ..];
+        var rgba: [4]u8 = switch (img.format) {
+            .rgba8_srgb => src[0..4].*,
+            .bgra8_srgb => .{ src[2], src[1], src[0], src[3] },
+            .bgrx8_srgb => .{ src[2], src[1], src[0], 255 },
+            .rgba16_linear_premul => blk: {
+                const c = std.mem.bytesAsSlice(u16, src[0..8]);
+                const alpha: f32 = @as(f32, @floatFromInt(c[3])) / 65535;
+                var out: [4]u8 = undefined;
+                for (0..3) |i| {
+                    const lin = if (alpha > 0) @as(f32, @floatFromInt(c[i])) / 65535 / alpha else 0;
+                    out[i] = @intFromFloat(@round(std.math.clamp(srgbEncode(lin), 0, 1) * 255));
+                }
+                out[3] = @intFromFloat(@round(alpha * 255));
+                break :blk out;
+            },
+        };
+        const alpha: u32 = rgba[3];
+        for (rgba[0..3]) |*ch| ch.* = @intCast((@as(u32, ch.*) * alpha + 127) / 255);
+        px[(y * w + x) * 4 ..][0..4].* = .{ rgba[2], rgba[1], rgba[0], rgba[3] };
+    };
+    return .{ .pixels = px, .width = w, .height = h, .stride = w * 4, .hotspot_x = @intFromFloat(@round(hx)), .hotspot_y = @intFromFloat(@round(hy)) };
+}
+
+fn srgbEncode(l: f32) f32 {
+    return if (l <= 0.0031308) l * 12.92 else 1.055 * std.math.pow(f32, l, 1.0 / 2.4) - 0.055;
+}
+
+/// Resolves a drop whose action was `ask` (`ui.Drop.action`): copy or
+/// move as the user chose, or none to refuse it.
+pub fn finishDrop(win: *Window, action: platform.DragAction) void {
+    dnd_mod.finishDrop(win, action);
 }
 
 /// The contents of a masked editor (locked memory; do not copy it into

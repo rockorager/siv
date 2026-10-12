@@ -314,12 +314,13 @@ pub const App = struct {
         }) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable;
         errdefer app.comp.destroyWindow(id) catch {};
         if (id >= app.windows.items.len) try app.windows.appendNTimes(gpa, null, id + 1 - app.windows.items.len);
-        win.* = .{ .app = app, .id = id, .ui = undefined, .listener = listener };
+        win.* = .{ .app = app, .id = id, .ui = undefined, .listener = listener, .drag = .{ .comp = app.comp, .window = id, .gpa = gpa } };
         win.ui = try ui.Window.init(gpa, .{
             .fonts = &app.fonts,
             .sink = .{ .ctx = win, .commit = Window.commit },
             .host = .{ .ctx = win, .request_frame = Window.requestFrame, .text_input = Window.textInput },
             .clipboard = &app.clipboard,
+            .drag = win.drag.host(),
             .reduced_motion = app.reduced_motion,
             .desktop = app.desktop.values,
             .width = @floatFromInt(options.width),
@@ -395,7 +396,8 @@ pub const App = struct {
     /// Compositor events, in the UI loop's dispatch phase.
     fn onEvent(ctx: ?*anyopaque, ev: *const compositor.Event) void {
         const app: *App = @ptrCast(@alignCast(ctx));
-        // Selection events belong to the application, not a window.
+        // Selection and drag source events belong to the application,
+        // not a window.
         if (ev.* == .platform and app.clipboard.handleEvent(&ev.platform)) return;
         app.delivering += 1;
         defer {
@@ -489,6 +491,8 @@ pub const Window = struct {
     id: WindowId,
     ui: *ui.Window,
     listener: Listener,
+    /// Drag-and-drop requests on the compositor thread.
+    drag: ui.dnd.CompositorHost,
     /// As of the last configure.
     state: platform.WindowState = .{},
     closed: bool = false,

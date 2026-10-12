@@ -33,6 +33,7 @@ pub const App = struct {
     /// scroll offsets), for full redraws to compare damaged frames with.
     mirror: compositor.Tree,
     clipboard: ui.Clipboard,
+    drag: ui.dnd.CompositorHost = undefined,
     last_seq: u64 = 0,
     presented_seq: u64 = 0,
     popups: std.ArrayList(*Popup) = .empty,
@@ -141,6 +142,8 @@ pub const App = struct {
         errdefer app.mirror.deinit();
         app.clipboard = .init(gpa, &app.loop, .{ .ctx = app, .set_selection = setSelection, .receive = receiveSelection });
         errdefer app.clipboard.deinit();
+        // The compositor exists before any drag can start.
+        app.drag = .{ .comp = undefined, .window = 0, .gpa = gpa };
         app.win = try ui.Window.init(gpa, .{
             .fonts = &app.fonts,
             .sink = .{ .ctx = app, .commit = commit },
@@ -151,6 +154,7 @@ pub const App = struct {
             .rtl = options.rtl,
             .reduced_motion = true,
             .clipboard = &app.clipboard,
+            .drag = app.drag.host(),
         });
         errdefer app.win.deinit();
         var output: platform.OutputInfo = .{ .width = options.output_width, .height = options.output_height, .refresh_mhz = 60000, .scale = @intCast(options.scale) };
@@ -164,6 +168,8 @@ pub const App = struct {
             .thread = false,
         });
         app.wid = try app.comp.createWindow(.{ .width = options.width, .height = options.height });
+        app.drag.comp = app.comp;
+        app.drag.window = app.wid;
     }
 
     pub fn deinit(app: *App) void {

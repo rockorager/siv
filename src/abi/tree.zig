@@ -646,6 +646,7 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
         .focus => .focus,
         .scroll => .scroll,
         .change => .change,
+        .drop, .drag => return false,
     };
     const cb = w.nodes.slot(id, hk).* orelse return false;
     var ev: t.Event = .{ .window = @fromBackingInt(w.handle), .type = switch (hk) {
@@ -655,6 +656,7 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
         .focus => .focus,
         .scroll => .scroll,
         .change => .change,
+        .drop, .drag => unreachable,
     } };
     switch (event.*) {
         .activate => {},
@@ -697,6 +699,7 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
             ev.caret = s.caret;
             ev.anchor = s.anchor;
         },
+        .drop, .drag => unreachable,
     }
     const self = w.owner;
     self.enter();

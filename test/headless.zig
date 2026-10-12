@@ -24,6 +24,7 @@ test {
     _ = @import("render/golden.zig");
     _ = @import("render/vulkan.zig");
     _ = @import("ui/golden.zig");
+    _ = @import("ui/dnd.zig");
     _ = @import("compositor/golden.zig");
     _ = @import("compositor/latency.zig");
     _ = @import("abi/golden.zig");

@@ -365,6 +365,21 @@ pub const Txn = struct {
         t.win.dirty.semantics = true;
     }
 
+    /// Makes the node a drop target (D19), or with no mime types stops it
+    /// being one. Mime types are printable ASCII without spaces, one per
+    /// line.
+    pub fn setDropTarget(t: *Txn, id: NodeId, target: node_mod.DropTarget) Error!void {
+        const n = try t.live(id);
+        for (target.mimes) |c| if (c != '\n' and (c <= ' ' or c >= 0x7f)) return error.InvalidArgument;
+        if (target.mimes.len != 0 and target.actions.none()) return error.InvalidArgument;
+        try t.reserve();
+        const mimes = try t.own(u8, target.mimes);
+        t.touch(id);
+        t.release(u8, n.drop.mimes);
+        n.drop = target;
+        n.drop.mimes = mimes;
+    }
+
     fn data(t: *Txn, id: NodeId, kind: Kind) Error!*Node {
         const n = try t.live(id);
         if (n.kind != kind) return error.InvalidNode;

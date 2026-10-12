@@ -8,13 +8,22 @@
 //! loop up to a size limit. While this application owns a selection,
 //! pasting it takes the data directly.
 //!
-//! Selection events belong to no window: the application passes them to
-//! `handleEvent` once, not through every window.
+//! Drag and drop moves data the same way (dnd.zig routes drags over a
+//! window's nodes): drops are read here as raw bytes, and the data of this
+//! application's drag lives here while the drag lasts, written to whoever
+//! asks for it.
+//!
+//! Selection and drag source events belong to no window: the application
+//! passes them to `handleEvent` once, not through every window.
 
 const std = @import("std");
 const linux = std.os.linux;
 const platform = @import("platform");
 const Loop = @import("loop").Loop;
+
+const Window = @import("Window.zig");
+const NodeId = @import("node.zig").NodeId;
+const dnd = @import("dnd.zig");
 
 const Clipboard = @This();
 const Kind = platform.SelectionKind;
@@ -32,6 +41,38 @@ transfers: std.ArrayList(*Transfer) = .empty,
 /// the io phase, where application code must not run.
 ready: std.ArrayList(Ready) = .empty,
 task: Loop.Task = .{ .func = deliver },
+/// This application's drag, while it lasts.
+drag: ?DragOut = null,
+
+/// The data of this application's drag: mime types and data in offer
+/// order (copied), and the node that started it, which hears how it goes.
+pub const DragOut = struct {
+    seat: platform.SeatId,
+    source: u32,
+    mimes: []const []const u8,
+    data: []const []const u8,
+    actions: platform.DragActions,
+    /// Offered to other clients under a private mime type only.
+    in_app: bool,
+    origin: ?*Window,
+    node: NodeId,
+
+    fn free(d: DragOut, gpa: std.mem.Allocator) void {
+        for (d.mimes) |m| gpa.free(m);
+        for (d.data) |b| {
+            std.crypto.secureZero(u8, @constCast(b));
+            gpa.free(b);
+        }
+        gpa.free(d.mimes);
+        gpa.free(d.data);
+    }
+
+    /// The data in `mime`.
+    pub fn dataFor(d: *const DragOut, mime: []const u8) ?[]const u8 {
+        for (d.mimes, d.data) |m, b| if (std.mem.eql(u8, m, mime)) return b;
+        return null;
+    }
+};
 
 const Ready = struct { done: Done, owner: ?*anyopaque, text: ?[]u8 };
 
@@ -62,12 +103,14 @@ pub const Done = struct {
     func: *const fn (ctx: *anyopaque, data: ?[]const u8) void,
 };
 
-const Transfer = struct {
+pub const Transfer = struct {
     cb: *Clipboard,
     source: Loop.Source,
     direction: enum { read, write },
     buf: std.ArrayList(u8) = .empty,
     written: usize = 0,
+    /// A read of bytes as they are, not text.
+    raw: bool = false,
     done: ?Done = null,
     /// Whose paste it is, to cancel when it goes away.
     owner: ?*anyopaque = null,
@@ -94,6 +137,70 @@ pub fn deinit(cb: *Clipboard) void {
     }
     cb.ready.deinit(cb.gpa);
     for (&cb.owned) |*o| cb.dropOwned(o);
+    if (cb.drag) |d| d.free(cb.gpa);
+    cb.drag = null;
+}
+
+/// A window is going away: its drag, if any, reports to nobody.
+pub fn forgetWindow(cb: *Clipboard, win: *Window) void {
+    if (cb.drag) |*d| if (d.origin == win) {
+        d.origin = null;
+    };
+}
+
+/// Copies `items` (mime type and data pairs) for a drag. The caller
+/// starts it and hands the result to `adoptDrag`, or frees it.
+pub fn copyDrag(cb: *Clipboard, items: []const DragItem) error{OutOfMemory}!DragOut {
+    const gpa = cb.gpa;
+    const mimes = try gpa.alloc([]const u8, items.len);
+    errdefer gpa.free(mimes);
+    const data = try gpa.alloc([]const u8, items.len);
+    errdefer gpa.free(data);
+    var n: usize = 0;
+    errdefer for (0..n) |i| {
+        gpa.free(mimes[i]);
+        gpa.free(data[i]);
+    };
+    while (n < items.len) : (n += 1) {
+        mimes[n] = try gpa.dupe(u8, items[n].mime);
+        data[n] = gpa.dupe(u8, items[n].data) catch |err| {
+            gpa.free(mimes[n]);
+            return err;
+        };
+    }
+    return .{ .seat = 0, .source = 0, .mimes = mimes, .data = data, .actions = .{}, .in_app = false, .origin = null, .node = .none };
+}
+
+pub const DragItem = struct { mime: []const u8, data: []const u8 };
+
+/// Makes `d` this application's drag, replacing the previous one, whose
+/// node hears that it ended.
+pub fn adoptDrag(cb: *Clipboard, d: DragOut) void {
+    const old = cb.drag;
+    cb.drag = d;
+    if (old) |o| {
+        o.free(cb.gpa);
+        if (o.origin) |win| dnd.notifySource(win, o.node, .{ .phase = .end });
+    }
+}
+
+pub fn freeDrag(cb: *Clipboard, d: DragOut) void {
+    d.free(cb.gpa);
+}
+
+/// Reads bytes as they are from `fd` (another client writes them), up to
+/// the limit. `done` runs in the dispatch phase with the bytes, or null
+/// on failure or above the limit. Returns the transfer, to `abort` it.
+pub fn receive(cb: *Clipboard, fd: i32, owner: ?*anyopaque, done: Done) ?*Transfer {
+    nonblocking(fd);
+    const t = cb.start(fd, .read, owner, done) orelse return null;
+    t.raw = true;
+    return t;
+}
+
+/// Ends a transfer as failed.
+pub fn abort(cb: *Clipboard, t: *Transfer) void {
+    cb.finish(t, false);
 }
 
 fn dropOwned(cb: *Clipboard, o: *?Owned) void {
@@ -181,18 +288,48 @@ pub fn handleEvent(cb: *Clipboard, event: *const platform.Event) bool {
                 _ = linux.close(s.fd);
                 return true;
             }
-            nonblocking(s.fd);
-            const t = cb.start(s.fd, .write, null, null) orelse return true;
-            t.buf.appendSlice(cb.gpa, o.data) catch {
-                cb.finish(t, false);
+            cb.send(s.fd, o.data);
+        },
+        .drag_send => |s| {
+            const d = cb.drag orelse {
+                _ = linux.close(s.fd);
                 return true;
             };
-            // Write what fits now; the loop does the rest.
-            onReady(&t.source, linux.EPOLL.OUT);
+            // An in-app drag's private type has no data to give away.
+            if (d.source != s.source or d.seat != s.seat or d.in_app or s.mime >= d.data.len) {
+                _ = linux.close(s.fd);
+                return true;
+            }
+            cb.send(s.fd, d.data[s.mime]);
+        },
+        .drag_source => |s| {
+            const d = cb.drag orelse return true;
+            if (d.source != s.source or d.seat != s.seat) return true;
+            const ev: @import("node.zig").Drag = switch (s.phase) {
+                .target => .{ .phase = .move, .accepted = s.accepted, .action = s.action },
+                .action => .{ .phase = .move, .accepted = true, .action = s.action },
+                .dropped => .{ .phase = .drop },
+                .finished => .{ .phase = .end, .action = s.action },
+                .cancelled => .{ .phase = .end },
+            };
+            if (ev.phase == .end) {
+                d.free(cb.gpa);
+                cb.drag = null;
+            }
+            if (d.origin) |win| dnd.notifySource(win, d.node, ev);
         },
         else => return false,
     }
     return true;
+}
+
+/// Writes `data` (copied) to `fd` without blocking, then closes it.
+fn send(cb: *Clipboard, fd: i32, data: []const u8) void {
+    nonblocking(fd);
+    const t = cb.start(fd, .write, null, null) orelse return;
+    t.buf.appendSlice(cb.gpa, data) catch return cb.finish(t, false);
+    // Write what fits now; the loop does the rest.
+    onReady(&t.source, linux.EPOLL.OUT);
 }
 
 fn nonblocking(fd: i32) void {
@@ -236,7 +373,7 @@ fn finish(cb: *Clipboard, t: *Transfer, ok: bool) void {
         break;
     };
     if (t.done) |d| {
-        const text = if (ok and t.direction == .read) sanitize(cb.gpa, t.buf.items) catch null else null;
+        const text = if (!ok or t.direction != .read) null else if (t.raw) cb.gpa.dupe(u8, t.buf.items) catch null else sanitize(cb.gpa, t.buf.items) catch null;
         cb.ready.append(cb.gpa, .{ .done = d, .owner = t.owner, .text = text }) catch {
             cb.freeText(text);
         };
@@ -300,7 +437,7 @@ fn onReady(source: *Loop.Source, events: u32) void {
 
 /// Valid UTF-8, with each invalid sequence replaced by U+FFFD and NUL
 /// bytes dropped.
-fn sanitize(gpa: std.mem.Allocator, bytes: []const u8) error{OutOfMemory}![]u8 {
+pub fn sanitize(gpa: std.mem.Allocator, bytes: []const u8) error{OutOfMemory}![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
     try out.ensureTotalCapacity(gpa, bytes.len);
@@ -323,4 +460,19 @@ test "sanitize keeps valid text and replaces the rest" {
     defer std.testing.allocator.free(s);
     try std.testing.expectEqualStrings("a\u{fffd}b\u{e9}", s);
     try std.testing.expectEqualStrings("UTF8_STRING", pick(&.{ "image/png", "UTF8_STRING", "text/plain" }, &text_mimes).?);
+}
+
+test "fuzz: pasted and dropped text sanitizes to valid UTF-8 without NULs" {
+    try std.testing.fuzz({}, fuzzSanitize, .{ .corpus = &.{ "plain", "a\xffb\x00\xc3", "\xf0\x9f\x98\x80\xed\xa0\x80" } });
+}
+
+fn fuzzSanitize(_: void, smith: *std.testing.Smith) !void {
+    var buf: [1024]u8 = undefined;
+    const input = buf[0..smith.slice(&buf)];
+    const out = try sanitize(std.testing.allocator, input);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(out));
+    try std.testing.expect(std.mem.indexOfScalar(u8, out, 0) == null);
+    // Valid input without NULs comes out unchanged.
+    if (std.unicode.utf8ValidateSlice(input) and std.mem.indexOfScalar(u8, input, 0) == null) try std.testing.expectEqualStrings(input, out);
 }
