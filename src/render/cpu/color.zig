@@ -44,20 +44,25 @@ pub const Format = enum(u32) {
     }
 };
 
-/// Lookup tables for transfer functions. About 130 KiB; build once per
+/// Lookup tables for transfer functions. About 260 KiB; build once per
 /// renderer.
 pub const Luts = struct {
     /// sRGB-encoded byte to linear u16.
     srgb8_to_linear: [256]u16,
     /// Linear u16 to sRGB-encoded u16.
     linear_to_srgb16: [65536]u16,
+    /// Linear u16 to sRGB-encoded 8-bit values in 8.8 fixed point, for
+    /// dithering opaque pixels with one lookup per channel.
+    linear_to_srgb8_8: [65536]u16,
 
     pub fn init(l: *Luts) void {
         for (&l.srgb8_to_linear, 0..) |*v, i| {
             v.* = toU16(srgbToLinear(@as(f32, @floatFromInt(i)) / 255));
         }
-        for (&l.linear_to_srgb16, 0..) |*v, i| {
-            v.* = toU16(linearToSrgb(@as(f32, @floatFromInt(i)) / 65535));
+        for (&l.linear_to_srgb16, &l.linear_to_srgb8_8, 0..) |*v, *v8, i| {
+            const e = linearToSrgb(@as(f32, @floatFromInt(i)) / 65535);
+            v.* = toU16(e);
+            v8.* = @intFromFloat(std.math.clamp(e, 0, 1) * 255 * 256 + 0.5);
         }
     }
 };
@@ -125,6 +130,18 @@ fn encodeRowT(comptime f: Format, luts: *const Luts, src: []const Pixel, x: i32,
     const dither_row = &bayer8[@as(usize, @intCast(@mod(y, 8)))];
     for (src, 0..) |p, i| {
         const px = out[i * bpp ..][0..bpp];
+        if (comptime bpp == 4 and f != .argb2101010 and f != .xrgb2101010) {
+            if (p[3] == 65535 or !has_alpha) {
+                // Opaque: one lookup, the dither offset, and a shift.
+                const d: u32 = dither_row[@as(usize, @intCast(@mod(x + @as(i32, @intCast(i)), 8)))];
+                const bias = (2 * d + 1) * 2;
+                const r: u8 = @intCast(@min((@as(u32, luts.linear_to_srgb8_8[p[0]]) + bias) >> 8, 255));
+                const g: u8 = @intCast(@min((@as(u32, luts.linear_to_srgb8_8[p[1]]) + bias) >> 8, 255));
+                const b: u8 = @intCast(@min((@as(u32, luts.linear_to_srgb8_8[p[2]]) + bias) >> 8, 255));
+                px.* = if (f == .argb8888 or f == .xrgb8888) .{ b, g, r, 0xff } else .{ r, g, b, 0xff };
+                continue;
+            }
+        }
         const e = encodePixel(luts, p, has_alpha);
         switch (f) {
             .argb8888, .xrgb8888, .abgr8888, .xbgr8888 => {

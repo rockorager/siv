@@ -70,13 +70,107 @@ pub fn shadeRow(p: *const Paint, luts: *const color.Luts, x0: i32, y: i32, out: 
     }
 }
 
+const lanes = 8;
+const V = @Vector(lanes, f32);
+const B = @Vector(lanes, bool);
+
+/// Gradients shade eight pixels at a time: the parameter t, its validity,
+/// and the extend mode run in vector registers; the stop lookup is exact
+/// per lane (`colorAt` semantics), so results match the scalar formulas.
 fn shadeGradient(g: *const Gradient, x0: i32, y: i32, out: []Pixel) void {
     const py = @as(f32, @floatFromInt(y)) + 0.5;
-    for (out, 0..) |*o, i| {
-        const px = @as(f32, @floatFromInt(x0 + @as(i32, @intCast(i)))) + 0.5;
-        const q = g.inv.apply(.{ .x = px, .y = py });
-        o.* = if (gradientT(g.geometry, q)) |t| toPixel(colorAt(g.stops, g.extend, t)) else .{ 0, 0, 0, 0 };
+    const iota: V = std.simd.iota(f32, lanes);
+    const inv = g.inv;
+    var i: usize = 0;
+    while (i < out.len) : (i += lanes) {
+        const px = iota + @as(V, @splat(@as(f32, @floatFromInt(x0)) + @as(f32, @floatFromInt(i)) + 0.5));
+        const qx = px * @as(V, @splat(inv.a)) + @as(V, @splat(inv.c * py + inv.e));
+        const qy = px * @as(V, @splat(inv.b)) + @as(V, @splat(inv.d * py + inv.f));
+        var t: V = undefined;
+        var valid: B = @splat(true);
+        switch (g.geometry) {
+            .linear => |l| {
+                const dx = l.p1.x - l.p0.x;
+                const dy = l.p1.y - l.p0.y;
+                const dd = dx * dx + dy * dy;
+                if (dd == 0) {
+                    valid = @splat(false);
+                    t = @splat(0);
+                } else {
+                    t = ((qx - @as(V, @splat(l.p0.x))) * @as(V, @splat(dx)) + (qy - @as(V, @splat(l.p0.y))) * @as(V, @splat(dy))) / @as(V, @splat(dd));
+                }
+            },
+            .radial => |r| radialT(r, qx, qy, &t, &valid),
+            .sweep => {
+                // atan2 has no vector form in std; sweeps are rare.
+                const ax: [lanes]f32 = qx;
+                const ay: [lanes]f32 = qy;
+                var ta: [lanes]f32 = undefined;
+                var va: [lanes]bool = undefined;
+                for (0..lanes) |k| {
+                    const v = gradientT(g.geometry, .{ .x = ax[k], .y = ay[k] });
+                    ta[k] = v orelse 0;
+                    va[k] = v != null;
+                }
+                t = ta;
+                valid = va;
+            },
+        }
+        const n = @min(lanes, out.len - i);
+        const stops = g.stops;
+        const ok: [lanes]bool = valid;
+        if (stops.len == 1 or stops[stops.len - 1].offset <= stops[0].offset) {
+            const ta: [lanes]f32 = t;
+            for (0..n) |k| out[i + k] = if (ok[k]) toPixel(colorAt(stops, g.extend, ta[k])) else .{ 0, 0, 0, 0 };
+            continue;
+        }
+        const te: [lanes]f32 = extendT(stops[0].offset, stops[stops.len - 1].offset, g.extend, t);
+        for (0..n) |k| out[i + k] = if (ok[k]) toPixel(colorInRange(stops, te[k])) else .{ 0, 0, 0, 0 };
     }
+}
+
+fn radialT(r: anytype, qx: V, qy: V, t: *V, valid: *B) void {
+    const cdx = r.c1.x - r.c0.x;
+    const cdy = r.c1.y - r.c0.y;
+    const dr = r.r1 - r.r0;
+    const a = cdx * cdx + cdy * cdy - dr * dr;
+    const pdx = qx - @as(V, @splat(r.c0.x));
+    const pdy = qy - @as(V, @splat(r.c0.y));
+    const b = pdx * @as(V, @splat(cdx)) + pdy * @as(V, @splat(cdy)) + @as(V, @splat(r.r0 * dr));
+    const c = pdx * pdx + pdy * pdy - @as(V, @splat(r.r0 * r.r0));
+    const zero: V = @splat(0);
+    if (@abs(a) < 1e-6 * @max(1, cdx * cdx + cdy * cdy + dr * dr)) {
+        const tt = c / (@as(V, @splat(2)) * b);
+        t.* = tt;
+        valid.* = @as(B, b != zero) & (@as(V, @splat(r.r0)) + tt * @as(V, @splat(dr)) >= zero);
+        return;
+    }
+    const disc = b * b - @as(V, @splat(a)) * c;
+    const sq = @sqrt(@max(disc, zero));
+    const t1 = (b + sq) / @as(V, @splat(a));
+    const t2 = (b - sq) / @as(V, @splat(a));
+    const hi = @max(t1, t2);
+    const lo = @min(t1, t2);
+    const hi_ok = @as(V, @splat(r.r0)) + hi * @as(V, @splat(dr)) >= zero;
+    const lo_ok = @as(V, @splat(r.r0)) + lo * @as(V, @splat(dr)) >= zero;
+    t.* = @select(f32, hi_ok, hi, lo);
+    valid.* = @as(B, disc >= zero) & (hi_ok | lo_ok);
+}
+
+/// Applies the extend mode, mapping t into [lo, hi] (hi > lo).
+fn extendT(lo: f32, hi: f32, extend: scene.Extend, t: V) V {
+    const span = hi - lo;
+    const vlo: V = @splat(lo);
+    const vspan: V = @splat(span);
+    return switch (extend) {
+        .pad => @min(@max(t, vlo), @as(V, @splat(hi))),
+        .repeat => vlo + (t - vlo) - vspan * @floor((t - vlo) / vspan),
+        .reflect => blk: {
+            const two: V = @splat(2 * span);
+            const u = (t - vlo) - two * @floor((t - vlo) / two);
+            break :blk vlo + @select(f32, u > vspan, two - u, u);
+        },
+    };
 }
 
 /// The gradient parameter at q (gradient space), or null where the
@@ -144,6 +238,12 @@ pub fn colorAt(stops: []const Stop, extend: scene.Extend, t_in: f32) F4 {
             t = lo + (if (u > span) 2 * span - u else u);
         },
     }
+    return colorInRange(stops, t);
+}
+
+/// Color at t already inside [first, last] offset.
+fn colorInRange(stops: []const Stop, t: f32) F4 {
+    const n = stops.len;
     var i: usize = 1;
     while (i < n - 1 and stops[i].offset < t) : (i += 1) {}
     const a = stops[i - 1];
@@ -193,14 +293,14 @@ fn bilinear(im: *const Image, luts: *const color.Luts, q: Point) Pixel {
     const iy1 = clampI(fv + 1, im.y0, im.y1);
     const wx: u32 = @intFromFloat(std.math.clamp(u - fu, 0, 1) * 256);
     const wy: u32 = @intFromFloat(std.math.clamp(v - fv, 0, 1) * 256);
-    const V = @Vector(4, u32);
-    const t00: V = texel(im, luts, ix, iy);
-    const t10: V = texel(im, luts, ix1, iy);
-    const t01: V = texel(im, luts, ix, iy1);
-    const t11: V = texel(im, luts, ix1, iy1);
-    const top = t00 * @as(V, @splat(256 - wx)) + t10 * @as(V, @splat(wx));
-    const bot = t01 * @as(V, @splat(256 - wx)) + t11 * @as(V, @splat(wx));
-    const r = (top * @as(V, @splat(256 - wy)) + bot * @as(V, @splat(wy)) + @as(V, @splat(32768))) >> @splat(16);
+    const U4 = @Vector(4, u32);
+    const t00: U4 = texel(im, luts, ix, iy);
+    const t10: U4 = texel(im, luts, ix1, iy);
+    const t01: U4 = texel(im, luts, ix, iy1);
+    const t11: U4 = texel(im, luts, ix1, iy1);
+    const top = t00 * @as(U4, @splat(256 - wx)) + t10 * @as(U4, @splat(wx));
+    const bot = t01 * @as(U4, @splat(256 - wx)) + t11 * @as(U4, @splat(wx));
+    const r = (top * @as(U4, @splat(256 - wy)) + bot * @as(U4, @splat(wy)) + @as(U4, @splat(32768))) >> @splat(16);
     return color.narrow(r);
 }
 
