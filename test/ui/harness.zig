@@ -147,7 +147,7 @@ pub const App = struct {
         app.win = try ui.Window.init(gpa, .{
             .fonts = &app.fonts,
             .sink = .{ .ctx = app, .commit = commit },
-            .host = .{ .ctx = app, .request_frame = requestFrame, .text_input = textInput },
+            .host = .{ .ctx = app, .request_frame = requestFrame, .text_input = textInput, .set_cursor = setCursor },
             .width = @floatFromInt(options.width),
             .height = @floatFromInt(options.height),
             .scale = @floatFromInt(options.scale),
@@ -199,6 +199,33 @@ pub const App = struct {
     fn requestFrame(ctx: ?*anyopaque) void {
         const app: *App = @ptrCast(@alignCast(ctx));
         app.comp.requestFrame(app.wid) catch |e| {
+            app.err = e;
+        };
+    }
+
+    fn setCursor(ctx: ?*anyopaque, shape: ui.CursorShape) void {
+        const app: *App = @ptrCast(@alignCast(ctx));
+        const Req = struct {
+            gpa: std.mem.Allocator,
+            wid: platform.WindowId,
+            shape: ui.CursorShape,
+            fn run(c: ?*anyopaque, comp: *Compositor) void {
+                const r: *@This() = @ptrCast(@alignCast(c));
+                comp.platform.setCursor(r.wid, r.shape);
+                destroy(c);
+            }
+            fn destroy(c: ?*anyopaque) void {
+                const r: *@This() = @ptrCast(@alignCast(c));
+                r.gpa.destroy(r);
+            }
+        };
+        const r = app.gpa.create(Req) catch |e| {
+            app.err = e;
+            return;
+        };
+        r.* = .{ .gpa = app.gpa, .wid = app.wid, .shape = shape };
+        app.comp.post(r, Req.run, Req.destroy) catch |e| {
+            Req.destroy(r);
             app.err = e;
         };
     }

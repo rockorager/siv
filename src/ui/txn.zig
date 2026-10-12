@@ -398,6 +398,15 @@ pub const Txn = struct {
         n.drop.mimes = mimes;
     }
 
+    /// Sets the pointer cursor over the node (D16), or with null inherits
+    /// its parent's.
+    pub fn setCursor(t: *Txn, id: NodeId, shape: ?node_mod.CursorShape) Error!void {
+        const n = try t.live(id);
+        try t.reserve();
+        t.touch(id);
+        n.cursor = shape;
+    }
+
     fn data(t: *Txn, id: NodeId, kind: Kind) Error!*Node {
         const n = try t.live(id);
         if (n.kind != kind) return error.InvalidNode;

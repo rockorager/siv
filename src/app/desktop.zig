@@ -16,6 +16,7 @@ const dbus = @import("dbus");
 const ui = @import("ui");
 const loop_mod = @import("loop");
 const app_mod = @import("app.zig");
+const compositor = @import("compositor");
 
 const Loop = loop_mod.Loop;
 const Timer = loop_mod.Timer;
@@ -86,6 +87,7 @@ fn onChange(ctx: ?*anyopaque, s: *dbus.Settings, changed: dbus.Settings.Changed)
     if (first) d.ready_ns = Loop.now();
     d.values = desktopOf(s.values);
     for (app.windows.items) |w| if (w) |win| win.ui.setDesktop(d.values);
+    if (first or changed.cursor_theme or changed.cursor_size) setCursorTheme(app, s.values.cursor_theme.slice(), s.values.cursor_size);
     var refresh = changed.text_scale;
     if ((first or changed.font) and !app.font_overridden) {
         app.fonts.setDefault(s.values.font.family.slice()) catch app.fail(error.OutOfMemory);
@@ -93,6 +95,33 @@ fn onChange(ctx: ?*anyopaque, s: *dbus.Settings, changed: dbus.Settings.Changed)
     }
     if (refresh) app.refreshText();
     release(app);
+}
+
+/// Themed cursors (D16) follow the desktop's theme and size, on the
+/// compositor thread.
+fn setCursorTheme(app: *App, name: []const u8, size: u32) void {
+    const Req = struct {
+        gpa: std.mem.Allocator,
+        name: [64]u8,
+        len: usize,
+        size: u32,
+        fn run(c: ?*anyopaque, comp: *compositor.Compositor) void {
+            const r: *@This() = @ptrCast(@alignCast(c));
+            comp.platform.setCursorTheme(r.name[0..r.len], r.size);
+            drop(c);
+        }
+        fn drop(c: ?*anyopaque) void {
+            const r: *@This() = @ptrCast(@alignCast(c));
+            r.gpa.destroy(r);
+        }
+    };
+    const r = app.gpa.create(Req) catch return app.fail(error.OutOfMemory);
+    r.* = .{ .gpa = app.gpa, .name = undefined, .len = @min(name.len, 64), .size = size };
+    @memcpy(r.name[0..r.len], name[0..r.len]);
+    app.comp.post(r, Req.run, Req.drop) catch {
+        Req.drop(r);
+        app.fail(error.OutOfMemory);
+    };
 }
 
 fn onBusEvent(ctx: ?*anyopaque, _: *dbus.Connection, event: dbus.Connection.Event) void {

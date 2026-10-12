@@ -334,7 +334,7 @@ pub const App = struct {
         win.ui = try ui.Window.init(gpa, .{
             .fonts = &app.fonts,
             .sink = .{ .ctx = win, .commit = Window.commit },
-            .host = .{ .ctx = win, .request_frame = Window.requestFrame, .text_input = Window.textInput },
+            .host = .{ .ctx = win, .request_frame = Window.requestFrame, .text_input = Window.textInput, .set_cursor = Window.setCursor },
             .clipboard = &app.clipboard,
             .drag = win.drag.host(),
             .reduced_motion = app.reduced_motion,
@@ -664,6 +664,33 @@ pub const Window = struct {
                 p.setTitle(id, s);
             }
         }.f, title);
+    }
+
+    fn setCursor(ctx: ?*anyopaque, shape: ui.CursorShape) void {
+        const win: *Window = @ptrCast(@alignCast(ctx));
+        if (win.closed) return;
+        win.platformCall(platform.Platform.setCursor, shape) catch win.app.fail(error.OutOfMemory);
+    }
+
+    /// Starts an interactive move of the window, for client-side
+    /// decorations (D17), during the press that is still held.
+    pub fn beginMove(win: *Window) Allocator.Error!void {
+        const Arg = struct { seat: platform.SeatId, serial: u32 };
+        try win.platformCall(struct {
+            fn f(p: platform.Platform, id: WindowId, a: Arg) void {
+                p.beginMove(id, a.seat, a.serial);
+            }
+        }.f, Arg{ .seat = win.ui.input.seat, .serial = win.ui.input.press_serial });
+    }
+
+    /// Starts an interactive resize from an edge, like `beginMove`.
+    pub fn beginResize(win: *Window, edge: platform.Edge) Allocator.Error!void {
+        const Arg = struct { seat: platform.SeatId, serial: u32, edge: platform.Edge };
+        try win.platformCall(struct {
+            fn f(p: platform.Platform, id: WindowId, a: Arg) void {
+                p.beginResize(id, a.seat, a.serial, a.edge);
+            }
+        }.f, Arg{ .seat = win.ui.input.seat, .serial = win.ui.input.press_serial, .edge = edge });
     }
 
     pub fn setMaximized(win: *Window, on: bool) Allocator.Error!void {

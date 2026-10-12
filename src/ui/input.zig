@@ -106,6 +106,9 @@ pub const State = struct {
     /// After a commit: focus leaves nodes that can no longer take it.
     pub fn afterCommit(st: *State, win: *Window) void {
         if (st.focus != .none and !canFocus(win, st.focus)) setFocus(win, .none, false);
+        // Cursors change without a frame; layout changes update it after
+        // the next one.
+        updateCursor(win);
     }
 };
 
@@ -301,6 +304,27 @@ fn updateHover(win: *Window, target: NodeId) void {
     }
 }
 
+/// Sends the platform the cursor for the pointer's place: the window's
+/// override, else that of the node the pointer is captured by or over,
+/// or of its nearest ancestor that sets one. Enabled editors show the text
+/// cursor by default.
+pub fn updateCursor(win: *Window) void {
+    const st = &win.input;
+    const p = st.pointer orelse return;
+    const shape = win.cursor_override orelse blk: {
+        var cur = if (st.capture != .none and win.isLive(st.capture)) st.capture else hitTest(win, p);
+        while (cur != .none) : (cur = win.node(cur).parent) {
+            const n = win.node(cur);
+            if (n.cursor) |c| break :blk c;
+            if (n.kind == .editor and n.canFocus()) break :blk .text;
+        }
+        break :blk .default;
+    };
+    if (shape == win.cursor_shown) return;
+    win.cursor_shown = shape;
+    win.host.set_cursor(win.host.ctx, shape);
+}
+
 fn callPointer(win: *Window, id: NodeId, phase: node_mod.PointerPhase) bool {
     const p = win.input.pointer orelse Point.zero;
     const local = toLocal(win, id, p);
@@ -318,6 +342,7 @@ pub fn handle(win: *Window, event: *const platform.Event) void {
             updateHover(win, if (st.capture != .none) hitTest(win, st.pointer.?) else target);
             if (target != .none) _ = bubblePointer(win, target, .move, .primary);
             if (st.selecting != .none and win.isLive(st.selecting)) editor.pointerDrag(win, st.selecting, st.pointer.?);
+            updateCursor(win);
         },
         .pointer_leave => {
             updateHover(win, .none);
@@ -330,6 +355,8 @@ pub fn handle(win: *Window, event: *const platform.Event) void {
                 st.press_serial = b.serial;
             }
             pointerButton(win, b.button, b.pressed, b.time);
+            // A release ends the capture that chose the cursor.
+            updateCursor(win);
         },
         .touch_down => |t| {
             st.seat = t.seat;

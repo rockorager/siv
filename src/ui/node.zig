@@ -525,6 +525,9 @@ pub const FocusChange = struct {
 
 pub const ScrollDelta = struct { dx: f32, dy: f32 };
 
+/// A pointer cursor shape (D16).
+pub const CursorShape = @import("platform").CursorShape;
+
 pub const DragAction = @import("platform").DragAction;
 pub const DragActions = @import("platform").DragActions;
 
@@ -645,6 +648,9 @@ pub const Node = struct {
     data: Data,
     handlers: [handler_count]?Handler = @splat(null),
     drop: DropTarget = .{},
+    /// The pointer cursor over the node and its descendants that set
+    /// none; null inherits (editors show the text cursor).
+    cursor: ?CursorShape = null,
 
     pub const Status = enum(u8) {
         /// On the free list (`next` links it).

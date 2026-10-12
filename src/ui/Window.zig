@@ -73,6 +73,11 @@ clipboard: ?*Clipboard = null,
 /// Drag-and-drop requests; without them drags neither start nor drop.
 drag_host: ?dnd_mod.Host = null,
 dnd: dnd_mod.State = .{},
+/// A cursor for the whole window over every node's, such as a busy
+/// cursor; null for none.
+cursor_override: ?node_mod.CursorShape = null,
+/// The cursor last sent to the platform.
+cursor_shown: node_mod.CursorShape = .default,
 /// Pastes and assistive technology edits that arrived while a transaction
 /// was open, applied in order at the next frame like queued input.
 pending_edits: std.ArrayList(editor_mod.Pending) = .empty,
@@ -112,9 +117,13 @@ pub const Host = struct {
     /// compositor thread with `Compositor.post` and
     /// `Platform.setTextInput`, copying `state.surrounding`.
     text_input: *const fn (ctx: ?*anyopaque, seat: platform.SeatId, state: *const platform.TextInputState) void = noopTextInput,
+    /// Sets the window's pointer cursor (D16). Run it on the compositor
+    /// thread with `Compositor.post` and `Platform.setCursor`.
+    set_cursor: *const fn (ctx: ?*anyopaque, shape: node_mod.CursorShape) void = noopCursor,
 
     fn noop(_: ?*anyopaque) void {}
     fn noopTextInput(_: ?*anyopaque, _: platform.SeatId, _: *const platform.TextInputState) void {}
+    fn noopCursor(_: ?*anyopaque, _: node_mod.CursorShape) void {}
 };
 
 pub const Options = struct {
@@ -529,6 +538,8 @@ pub fn frame(win: *Window) Error!void {
     }
     ime_mod.sync(win);
     editor_mod.updatePrimary(win);
+    // The tree may have changed under a pointer that did not move.
+    input_mod.updateCursor(win);
     win.stats.frames += 1;
 }
 
@@ -790,6 +801,13 @@ fn dragIcon(a: std.mem.Allocator, img: *const Image, hx: f32, hy: f32) error{Out
 
 fn srgbEncode(l: f32) f32 {
     return if (l <= 0.0031308) l * 12.92 else 1.055 * std.math.pow(f32, l, 1.0 / 2.4) - 0.055;
+}
+
+/// Shows `shape` over the whole window, whatever the nodes under the
+/// pointer set (a busy cursor), or with null stops.
+pub fn setCursorOverride(win: *Window, shape: ?node_mod.CursorShape) void {
+    win.cursor_override = shape;
+    input_mod.updateCursor(win);
 }
 
 /// Resolves a drop whose action was `ask` (`ui.Drop.action`): copy or

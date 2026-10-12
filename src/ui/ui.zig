@@ -59,6 +59,7 @@ pub const HandlerKind = node.HandlerKind;
 pub const Handler = node.Handler;
 pub const Pointer = node.Pointer;
 pub const Key = node.Key;
+pub const CursorShape = node.CursorShape;
 pub const DropTarget = node.DropTarget;
 pub const Drop = node.Drop;
 pub const DropPhase = node.DropPhase;
