@@ -764,22 +764,31 @@ pub export fn siv_image_create(app: t.App, desc: ?*const t.ImageDesc, image: ?*t
                 _ => unreachable,
             };
             const dest = try runtime.out(t.Image, out);
-            const gpa = self.gpa();
-            const index: u32 = for (self.images.items, 0..) |slot, i| {
-                if (slot == null) break @intCast(i);
-            } else blk: {
-                try self.images.append(gpa, null);
-                break :blk @intCast(self.images.items.len - 1);
-            };
-            try self.root.handles.ensureUnusedCapacity(gpa);
-            const img = ui.Image.create(gpa, .{ .pixels = pixels, .width = d.width, .height = d.height, .stride = d.stride, .format = format }) catch |err| return switch (err) {
+            const img = ui.Image.create(self.gpa(), .{ .pixels = pixels, .width = d.width, .height = d.height, .stride = d.stride, .format = format }) catch |err| return switch (err) {
                 error.OutOfMemory => error.OutOfMemory,
                 error.InvalidArgument => error.InvalidArgument,
             };
-            self.images.items[index] = img;
-            dest.* = @fromBackingInt(self.root.handles.insert(gpa, image_tag, index) catch unreachable);
+            dest.* = adoptImage(self, img) catch |err| {
+                img.release();
+                return err;
+            };
         }
     }.f(app, desc, image));
+}
+
+/// Gives an image a handle; the handle takes over its reference. On
+/// failure the caller still holds it.
+pub fn adoptImage(self: *App, img: *ui.Image) Error!t.Image {
+    const gpa = self.gpa();
+    const index: u32 = for (self.images.items, 0..) |slot, i| {
+        if (slot == null) break @intCast(i);
+    } else blk: {
+        try self.images.append(gpa, null);
+        break :blk @intCast(self.images.items.len - 1);
+    };
+    try self.root.handles.ensureUnusedCapacity(gpa);
+    self.images.items[index] = img;
+    return @fromBackingInt(self.root.handles.insert(gpa, image_tag, index) catch unreachable);
 }
 
 pub export fn siv_image_destroy(image: t.Image) t.Result {

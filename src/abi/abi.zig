@@ -36,12 +36,14 @@ pub const portal = @import("portal.zig");
 pub const print = @import("print.zig");
 /// The system tray.
 pub const tray = @import("tray.zig");
+/// Decoding images.
+pub const image_load = @import("image_load.zig");
 
 /// The generated wrapper's types, which the exports use.
 pub const types = t;
 
 /// The files that export schema functions.
-const implementations = .{ @This(), application, tree, canvas, external, dnd, theme, cursor, portal, print, tray } ++ @import("widgets").implementations;
+const implementations = .{ @This(), application, tree, canvas, external, dnd, theme, cursor, portal, print, tray, image_load } ++ @import("widgets").implementations;
 
 const version = build_options.version;
 

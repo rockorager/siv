@@ -1040,6 +1040,21 @@ pub const decls = [_]Decl{
         f32Field("hotspot_x", "The point of the icon under the pointer, in image pixels."),
         f32Field("hotspot_y", "The point of the icon under the pointer, in image pixels."),
     }),
+    flags("siv_image_load_flags", "Image loading options.", &.{
+        .{ .name = "first_frame", .bit = 0, .doc = "Decode only the first frame of an animation." },
+    }),
+    descriptor("siv_image_load_desc", "What siv_image_load decodes, and at what size (D19).", &.{
+        .{ .name = "data", .type = array(.u8), .doc = "The file's bytes (copied), or empty to read path." },
+        .{ .name = "path", .type = .string, .doc = "A file to read on a worker thread when data is empty." },
+        f32Field("max_width", "The largest logical width it is shown at; 0 is unbounded. Larger images decode straight to that size, keeping their aspect ratio; smaller ones keep theirs."),
+        f32Field("max_height", "The largest logical height it is shown at; 0 is unbounded."),
+        f32Field("scale", "Pixels per logical pixel, the window's buffer scale (siv_window_get_scale), so that the image is sharp; 0 is 1. The image's logical size is its pixel size divided by it."),
+        .{ .name = "flags", .type = ref("siv_image_load_flags"), .doc = "Options." },
+    }),
+    callback("siv_image_load_fn", "Receives a loaded image on the application's thread (D5). On SIV_OK image is a new handle the application owns (siv_image_destroy); otherwise it is 0 and result says why: SIV_ERROR_UNSUPPORTED for formats siv does not decode, SIV_ERROR_INVALID_ARGUMENT for damaged files, SIV_ERROR_LIMIT_EXCEEDED for images over 64 megapixels, SIV_ERROR_UNAVAILABLE when the file could not be read.", &.{
+        .{ .name = "result", .type = ref("siv_result"), .doc = "SIV_OK or the failure." },
+        .{ .name = "image", .type = ref("siv_image"), .doc = "The image, or 0." },
+    }, .void),
     value("siv_text_metrics", "The size of laid-out text.", &.{
         f32Field("width", "Width of the widest line."),
         f32Field("height", "Height of all lines."),
@@ -1460,6 +1475,21 @@ pub const functions = [_]Function{
         app_param,
         .{ .name = "desc", .type = .{ .desc = "siv_image_desc" }, .doc = "The pixels." },
         .{ .name = "image", .type = out(ref("siv_image")), .doc = "The new image." },
+    }),
+    call("siv_image_load", "Decodes PNG, APNG, JPEG, GIF, WebP, AVIF, or JPEG XL on a worker thread (D19), straight to the size it is shown at, with embedded color profiles converted to siv's linear working space, and calls callback with the image, then destroy. If the application is destroyed first, only destroy runs. Image nodes play animated images, unless motion is reduced; canvases draw their first frame.", &.{
+        app_param,
+        .{ .name = "desc", .type = .{ .desc = "siv_image_load_desc" }, .doc = "The file and size." },
+        .{ .name = "callback", .type = ref("siv_image_load_fn"), .doc = "Receives the image." },
+        .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data; may be NULL." },
+        .{ .name = "user_data", .type = .user_data, .doc = "Passed to both." },
+    }),
+    call("siv_image_get_size", "An image's logical size: its pixel size divided by the scale it was loaded for.", &.{
+        .{ .name = "image", .type = ref("siv_image"), .doc = "The image." },
+        .{ .name = "size", .type = out(ref("siv_size")), .doc = "The size." },
+    }),
+    call("siv_image_get_frame_count", "How many frames an image has: 1 unless it is animated.", &.{
+        .{ .name = "image", .type = ref("siv_image"), .doc = "The image." },
+        .{ .name = "count", .type = out(.u32), .doc = "The number of frames." },
     }),
     op("siv_image_destroy", "Releases the application's reference to an image. Image nodes that show it, and every display list that drew it (from a node or siv_draw_image), hold references of their own until the compositor releases the list, so this affects only future draws: frames already drawn keep showing it. Canvases draw images by handle, so keep the handle while a canvas may draw it.", &.{.{ .name = "image", .type = ref("siv_image"), .doc = "The image." }}),
     call("siv_app_measure_text", "Lays out text as siv_draw_text would and reports its size. Fonts still loading count as missing (their glyphs come from fallback fonts); once they load, canvases that drew with them are drawn again.", &.{
