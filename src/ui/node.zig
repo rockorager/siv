@@ -514,9 +514,14 @@ pub const Pointer = struct {
     /// Presses in quick succession at about the same place: 2 for a double
     /// click, 3 for a triple click (on `down` and `up`).
     clicks: u8 = 1,
+    /// Timestamp of the latest pointer button or key input, in
+    /// milliseconds (the platform's clock).
+    time: u32 = 0,
 };
 
 pub const Key = struct {
+    /// The input's timestamp in milliseconds.
+    time: u32 = 0,
     keysym: u32,
     pressed: bool,
     repeat: bool = false,

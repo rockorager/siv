@@ -1790,9 +1790,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     - Rows carry their position among all items and the set's size (rows
       of tables their row index, tree items their level), since most of
       their siblings have no node.
-    - Not built yet: double-click activation (siv_event has no click
-      count), variable row heights, column resizing and sorting, and a
-      position among siblings for tree items.
+    - A double click on a row activates it, like Enter: `siv_event`
+      carries the click count of primary presses and the input's
+      timestamp, so widgets written in C can do the same.
+    - Not built yet: variable row heights, column resizing and sorting,
+      and a position among siblings for tree items.
   - Not built yet elsewhere: the styled-text editor; submenus; an
     animated indeterminate progress bar (it shows a still bar: a
     repeating compositor animation needs a primitive whose distances

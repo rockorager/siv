@@ -74,6 +74,8 @@ pub const State = struct {
     last_press_ms: u32 = 0,
     last_press_at: Point = .zero,
     clicks: u8 = 0,
+    /// Timestamp of the latest button or key input.
+    time: u32 = 0,
     /// The editor selection gesture of the current press.
     gesture: editor.Gesture = .{},
     /// Seat and serial of the last key or button press, for requests the
@@ -262,7 +264,7 @@ pub fn bubblePointer(win: *Window, target: NodeId, phase: node_mod.PointerPhase,
     var cur = target;
     while (cur != .none and win.isLive(cur)) {
         const local = toLocal(win, cur, p);
-        const ev: Event = .{ .pointer = .{ .phase = phase, .x = local.x, .y = local.y, .button = button, .mods = win.input.mods, .clicks = clicks } };
+        const ev: Event = .{ .pointer = .{ .phase = phase, .x = local.x, .y = local.y, .button = button, .mods = win.input.mods, .clicks = clicks, .time = win.input.time } };
         if (call(win, cur, .pointer, &ev)) return true;
         if (!win.isLive(cur)) return false;
         cur = win.node(cur).parent;
@@ -458,6 +460,7 @@ pub fn handle(win: *Window, event: *const platform.Event) void {
 }
 
 fn pointerButton(win: *Window, code: u32, pressed: bool, time: u32) void {
+    win.input.time = time;
     const st = &win.input;
     const p = st.pointer orelse return;
     const button: node_mod.Button = switch (code) {
@@ -520,7 +523,9 @@ fn key(win: *Window, k: *const platform.Key) void {
     // Without focus, keys go to the active modal node (Escape closes a
     // dialog), or the root.
     const target = if (st.focus != .none and win.isLive(st.focus)) st.focus else modalRoot(win);
+    st.time = k.time;
     const ev: Event = .{ .key = .{
+        .time = k.time,
         .keysym = k.keysym,
         .pressed = k.state != .released,
         .repeat = k.state == .repeated,
