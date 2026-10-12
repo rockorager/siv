@@ -990,6 +990,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     recycled node index never answers for an old object. The application
     also exports org.a11y.atspi.Cache, so libatspi reads the whole tree
     with one call.
+  - The application coordinator (`src/app`) starts the bridge on its
+    session bus connection (D19) at creation, adds each window with its
+    title, calls `update` after each of its frames, forwards title
+    changes and activation from configures, and removes the window when
+    it is destroyed. The headless backend never publishes, so tests stay
+    independent of the desktop; `zig build test-integration` checks the
+    wiring end to end against the real registry and libatspi.
   - Each window keeps a snapshot of what it last published. The
     application calls `update` after each frame of the window; when the
     tree's generation changed, the bridge builds a new snapshot, diffs it

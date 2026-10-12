@@ -20,6 +20,7 @@ fn create(thread: bool) !*App {
         .threads = 2,
         .compositor_thread = thread,
         .desktop_settings = false,
+        .accessibility = false,
     });
 }
 

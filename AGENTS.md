@@ -55,7 +55,7 @@ owns its directories and does not edit another workstream's files.
 | `compositor` | `src/compositor/` | Compositor thread | `scene`, `raster`, `render_cpu`, `render_vulkan`, `pool`, `loop`, `platform` |
 | `ui` | `src/ui/` | UI core | `scene`, `raster`, `text`, `loop`, `platform`, `compositor` |
 | `a11y` | `src/a11y/` | D-Bus and desktop settings (AT-SPI) | `dbus`, `ui`, `loop`, `raster`, `text` |
-| `app` | `src/app/` | Public C API | `text`, `loop`, `platform`, `compositor`, `ui`, `dbus` |
+| `app` | `src/app/` | Public C API | `text`, `loop`, `platform`, `compositor`, `ui`, `dbus`, `a11y` |
 
 Shared files have no single owner: `build.zig`, `build.zig.zon`,
 `src/siv.zig`, `test/`, `.agents/`, and this file. Change them only when your

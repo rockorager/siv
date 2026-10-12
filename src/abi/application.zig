@@ -18,6 +18,7 @@ const app_mod = @import("app");
 const ui = @import("ui");
 const platform = @import("platform");
 const api = @import("api.zig");
+const build_options = @import("build_options");
 const runtime = @import("runtime.zig");
 const alloc = @import("alloc.zig");
 const tree = @import("tree.zig");
@@ -27,6 +28,8 @@ const external = @import("external.zig");
 const Root = runtime.Root;
 
 pub const Error = runtime.Error || error{ Busy, Unavailable };
+
+const toolkit_version = std.fmt.comptimePrint("{d}.{d}.{d}", .{ build_options.version.major, build_options.version.minor, build_options.version.patch });
 
 pub const app_tag = api.spec.handleTag("siv_app");
 pub const window_tag = api.spec.handleTag("siv_window");
@@ -166,6 +169,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     if (std.mem.indexOfScalar(u8, display, 0) != null) return error.InvalidArgument;
     const backend = try runtime.enumValue(t.Backend, desc.backend);
     const flags = try runtime.flags(t.AppFlags, desc.flags);
+    const name = try runtime.string(desc.name, desc.name_len);
     const dest = try runtime.out(t.App, out);
 
     const self = try Root.create(App, app_tag, hooks);
@@ -193,6 +197,11 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
         .system_fonts = !flags.no_system_fonts,
         .reduced_motion = flags.reduced_motion,
         .desktop_settings = backend == .wayland and !flags.no_desktop_settings,
+        // Mandatory on a display (D18); the headless backend stays
+        // independent of the desktop.
+        .accessibility = backend == .wayland,
+        .name = name,
+        .toolkit_version = toolkit_version,
     }) catch |err| return mapAppError(err);
     errdefer self.app.destroy();
     try self.app.fonts.addListener(.{ .ctx = self, .func = canvas.onFontsLoaded });

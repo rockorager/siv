@@ -1,6 +1,7 @@
-//! Desktop settings for the application (D19): one session bus connection
-//! and one portal Settings client, started at application creation in
-//! parallel with the Wayland connection. Their values go into every
+//! The application's session bus connection, and desktop settings on it
+//! (D19): one portal Settings client, started at application creation in
+//! parallel with the Wayland connection. The AT-SPI bridge (D18) shares
+//! the connection. Their values go into every
 //! window's `ui.Desktop` at startup and on every change, and the desktop
 //! font becomes the default family.
 //!
@@ -25,7 +26,10 @@ pub const first_frame_wait_ns: u64 = 100 * std.time.ns_per_ms;
 pub const Desktop = struct {
     bus: dbus.Connection = undefined,
     settings: dbus.Settings = undefined,
+    /// The session bus is connected.
     connected: bool = false,
+    /// The Settings client runs.
+    reading: bool = false,
     /// First frames are held until the settings are ready.
     waiting: bool = false,
     timer: Timer = .{ .func = onTimeout },
@@ -35,18 +39,17 @@ pub const Desktop = struct {
     started_ns: u64 = 0,
     ready_ns: ?u64 = null,
 
-    /// Connects to the session bus (or `address`) and starts reading.
-    /// Failures leave the defaults in effect.
-    pub fn start(d: *Desktop, app: *App, address: ?[]const u8) void {
+    /// Connects to the session bus (or `address`) and, with `settings`,
+    /// starts reading them. Failures leave the defaults in effect.
+    pub fn start(d: *Desktop, app: *App, address: ?[]const u8, settings: bool) void {
         d.started_ns = Loop.now();
         var buf: [256]u8 = undefined;
         const addr = address orelse dbus.address.session(&buf) orelse return;
         d.bus.init(app.gpa, &app.loop, addr, .{ .on_event = onBusEvent, .ctx = app }) catch return;
-        d.settings.init(&d.bus, .{ .on_change = onChange, .ctx = app }) catch {
-            d.bus.deinit();
-            return;
-        };
         d.connected = true;
+        if (!settings) return;
+        d.settings.init(&d.bus, .{ .on_change = onChange, .ctx = app }) catch return;
+        d.reading = true;
         app.loop.startTimer(&d.timer, d.started_ns + first_frame_wait_ns, 0) catch {
             // Without a timeout, do not wait at all.
             return;
@@ -56,9 +59,9 @@ pub const Desktop = struct {
 
     pub fn deinit(d: *Desktop, app: *App) void {
         app.loop.cancelTimer(&d.timer);
-        if (!d.connected) return;
-        d.settings.deinit();
-        d.bus.deinit();
+        if (d.reading) d.settings.deinit();
+        if (d.connected) d.bus.deinit();
+        d.reading = false;
         d.connected = false;
     }
 };

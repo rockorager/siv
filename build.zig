@@ -136,6 +136,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "compositor", .module = compositor },
         .{ .name = "ui", .module = ui },
         .{ .name = "dbus", .module = dbus },
+        .{ .name = "a11y", .module = a11y },
     };
     const app = ctx.module("src/app/app.zig", &app_imports);
     app.addImport("integration", not_integration);

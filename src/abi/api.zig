@@ -210,13 +210,14 @@ pub const decls = [_]Decl{
     flags("siv_app_flags", "Application options.", &.{
         .{ .name = "no_system_fonts", .bit = 0, .doc = "Do not use Fontconfig; only families added with siv_app_add_font resolve." },
         .{ .name = "reduced_motion", .bit = 1, .doc = "No caret blinking or other motion, whatever the desktop settings say." },
-        .{ .name = "no_desktop_settings", .bit = 2, .doc = "Do not follow the desktop's settings (D19); use the built-in defaults. The headless backend never follows them, so tests do not depend on the desktop." },
+        .{ .name = "no_desktop_settings", .bit = 2, .doc = "Do not follow the desktop's settings (D19); use the built-in defaults. The headless backend never follows them, and never publishes to assistive technology, so tests do not depend on the desktop." },
     }),
     descriptor("siv_app_desc", "Options for siv_app_create.", &.{
         .{ .name = "allocator", .type = .{ .desc = "siv_allocator" }, .doc = "Allocator hooks for everything the application allocates, on any thread; NULL for the C library allocator." },
         .{ .name = "display", .type = .string, .doc = "Wayland socket name or path; empty uses $WAYLAND_DISPLAY." },
         .{ .name = "backend", .type = ref("siv_backend"), .doc = "Default Wayland." },
         .{ .name = "flags", .type = ref("siv_app_flags"), .doc = "Options." },
+        .{ .name = "name", .type = .string, .doc = "The application's name, as assistive technology shows it (D18)." },
     }),
     callback("siv_post_fn", "Work posted with siv_post; runs on the application's thread.", &.{}, .void),
     callback("siv_destroy_fn", "Releases user_data once siv no longer needs it. Runs exactly once, on the application's thread, never while a siv callback is running.", &.{}, .void),

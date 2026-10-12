@@ -1,9 +1,10 @@
-//! Desktop settings against a private dbus-daemon (`zig build
-//! test-integration`): a stand-in portal answers on its own thread, the
-//! first frame waits for its answer (or 100 ms), values reach every
-//! window and follow changes live, and the first frame's cost with
-//! settings fits D25's 20 ms budget. Print the numbers with
-//! SIV_MEASURE=1.
+//! The session bus against a private dbus-daemon (`zig build
+//! test-integration`). Desktop settings: a stand-in portal answers on its
+//! own thread, the first frame waits for its answer (or 100 ms), values
+//! reach every window and follow changes live, and the first frame's cost
+//! with settings fits D25's 20 ms budget (print the numbers with
+//! SIV_MEASURE=1). Accessibility: libatspi, through the real AT-SPI
+//! registry, finds the application's windows and acts on them.
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -15,83 +16,13 @@ const loop_mod = @import("loop");
 const Loop = loop_mod.Loop;
 const App = app_mod.App;
 const Settings = dbus.Settings;
+const td = dbus.testing.daemon;
+const Daemon = td.Daemon;
 const gpa = testing.allocator;
 
 fn measuring() bool {
     return testing.environ.getPosix("SIV_MEASURE") != null;
 }
-
-fn sleepMs(ms: u64) void {
-    var ts: std.c.timespec = .{ .sec = 0, .nsec = @intCast(ms * std.time.ns_per_ms) };
-    _ = std.c.nanosleep(&ts, null);
-}
-
-/// dbus-daemon with a private configuration.
-const Daemon = struct {
-    dir_buf: [64]u8 = undefined,
-    dir: [:0]const u8 = "",
-    addr_buf: [96]u8 = undefined,
-    address: [:0]const u8 = "",
-    pid: linux.pid_t = 0,
-
-    fn start(d: *Daemon) !void {
-        d.dir = try std.fmt.bufPrintSentinel(&d.dir_buf, "/tmp/siv-app-dbus-{d}", .{linux.getpid()}, 0);
-        _ = linux.mkdir(d.dir, 0o700);
-        var config_buf: [128]u8 = undefined;
-        const config = try std.fmt.bufPrintSentinel(&config_buf, "{s}/bus.conf", .{d.dir}, 0);
-        var text_buf: [1024]u8 = undefined;
-        const text = try std.fmt.bufPrint(&text_buf,
-            \\<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
-            \\ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
-            \\<busconfig>
-            \\  <type>session</type>
-            \\  <listen>unix:path={s}/bus</listen>
-            \\  <auth>EXTERNAL</auth>
-            \\  <policy context="default">
-            \\    <allow send_destination="*" eavesdrop="true"/>
-            \\    <allow eavesdrop="true"/>
-            \\    <allow own="*"/>
-            \\  </policy>
-            \\</busconfig>
-            \\
-        , .{d.dir});
-        const fd: i32 = @intCast(linux.open(config, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o600));
-        if (fd < 0) return error.WriteFailed;
-        _ = linux.write(fd, text.ptr, text.len);
-        _ = linux.close(fd);
-        d.address = try std.fmt.bufPrintSentinel(&d.addr_buf, "unix:path={s}/bus", .{d.dir}, 0);
-        var arg_buf: [160]u8 = undefined;
-        const config_arg = try std.fmt.bufPrintSentinel(&arg_buf, "--config-file={s}", .{config}, 0);
-        const argv = [_:null]?[*:0]const u8{ "dbus-daemon", "--nofork", "--nopidfile", config_arg };
-        const envp = [_:null]?[*:0]const u8{"PATH=/usr/bin:/bin"};
-        const pid = std.c.fork();
-        if (pid == 0) {
-            _ = std.c.execve("/usr/bin/dbus-daemon", &argv, &envp);
-            std.c._exit(127);
-        }
-        if (pid < 0) return error.SpawnFailed;
-        d.pid = pid;
-        var waited: u32 = 0;
-        while (linux.access(d.address["unix:path=".len..], 0) != 0) : (waited += 1) {
-            if (waited > 500) return error.DbusDaemonDidNotStart;
-            sleepMs(10);
-        }
-    }
-
-    fn stop(d: *Daemon) void {
-        if (d.pid != 0) {
-            _ = std.c.kill(d.pid, .TERM);
-            var status: c_int = 0;
-            _ = std.c.waitpid(d.pid, &status, 0);
-        }
-        var path_buf: [128]u8 = undefined;
-        for ([_][]const u8{ "bus", "bus.conf" }) |name| {
-            const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/{s}", .{ d.dir, name }, 0) catch continue;
-            _ = linux.unlink(path);
-        }
-        _ = linux.rmdir(d.dir);
-    }
-};
 
 /// A stand-in for xdg-desktop-portal's Settings, on a thread of its own.
 const Portal = struct {
@@ -198,6 +129,7 @@ fn open(address: ?[]const u8, settings: bool) !Started {
         .system_fonts = false,
         .threads = 2,
         .desktop_settings = settings,
+        .accessibility = false,
         .bus_address = address,
     });
     errdefer app.destroy();
@@ -309,4 +241,132 @@ test "without a bus there is nothing to wait for" {
     const t = try firstFrame(s);
     try testing.expect(!s.app.desktop.connected);
     try testing.expect(t < 100 * std.time.ns_per_ms);
+}
+
+const atspi_script =
+    \\import sys, time, pyatspi
+    \\name = sys.argv[1]
+    \\def find():
+    \\    for a in pyatspi.Registry.getDesktop(0):
+    \\        if a is not None and a.name == name:
+    \\            return a
+    \\app = None
+    \\for i in range(250):
+    \\    app = find()
+    \\    if app: break
+    \\    time.sleep(0.02)
+    \\if not app:
+    \\    print("NOAPP", flush=True); sys.exit(1)
+    \\print("APP", app.getRoleName(), app.get_toolkit_name(), flush=True)
+    \\for w in app:
+    \\    print("WINDOW", w.getRoleName(), repr(w.name), flush=True)
+    \\    for c in w: print("CHILD", c.getRoleName(), repr(c.name), flush=True)
+    \\b = pyatspi.findDescendant(app, lambda x: x.getRoleName() == "push button")
+    \\print("ACTION", b.queryAction().doAction(0), flush=True)
+    \\print("DONE", flush=True)
+    \\
+;
+
+fn onClick(user: ?*anyopaque, _: *@import("ui").Window, _: @import("ui").NodeId, _: *const @import("ui").Event) bool {
+    const clicks: *u32 = @ptrCast(@alignCast(user));
+    clicks.* += 1;
+    return true;
+}
+
+test "assistive technology finds the application's windows and acts on them" {
+    var daemon: Daemon = .{};
+    try daemon.start();
+    defer daemon.stop();
+    var env_bufs: [2][192]u8 = undefined;
+    var env: [5:null]?[*:0]const u8 = @splat(null);
+    env[0] = try std.fmt.bufPrintSentinel(&env_bufs[0], "DBUS_SESSION_BUS_ADDRESS={s}", .{daemon.address}, 0);
+    env[1] = try std.fmt.bufPrintSentinel(&env_bufs[1], "XDG_RUNTIME_DIR={s}", .{daemon.dir}, 0);
+    env[2] = "PATH=/usr/bin:/bin";
+    env[3] = "GSETTINGS_BACKEND=memory";
+    const launcher = "/usr/libexec/at-spi-bus-launcher";
+    if (linux.access(launcher, 1) != 0) return error.AtspiNotInstalled;
+    const launcher_pid = try td.spawn(launcher, &[_:null]?[*:0]const u8{ launcher, "--launch-immediately" }, &env, null);
+    defer {
+        td.kill(launcher_pid);
+        var buf: [128]u8 = undefined;
+        if (std.fmt.bufPrintSentinel(&buf, "{s}/at-spi/bus", .{daemon.dir}, 0)) |path| _ = linux.unlink(path) else |_| {}
+        if (std.fmt.bufPrintSentinel(&buf, "{s}/at-spi", .{daemon.dir}, 0)) |path| _ = linux.rmdir(path) else |_| {}
+    }
+
+    const app = try App.create(gpa, .{
+        .backend = .headless,
+        .headless = .{ .refresh_ns = std.time.ns_per_ms },
+        .system_fonts = false,
+        .threads = 2,
+        .desktop_settings = false,
+        .bus_address = daemon.address,
+        .name = "siv-app-a11y-test",
+        .toolkit_version = "0.1",
+    });
+    defer app.destroy();
+    try testing.expect(app.accessible);
+    try app.addFont("Droid", @import("text").font.test_fonts.latin);
+    try app.setDefaultFont("Droid");
+    const win = try app.createWindow(.{ .title = "Hello window", .width = 120, .height = 80 }, .{});
+    var clicks: u32 = 0;
+    const t = try win.ui.begin();
+    const button = try t.create(.root, .box, .none);
+    try t.setSemantics(button, .{ .role = .button, .focusable = true });
+    try t.on(button, .activate, .{ .func = onClick, .user = &clicks });
+    const label = try t.create(button, .text, .none);
+    try t.setText(label, "OK");
+    t.commit();
+
+    // Turn accessibility on as a screen reader would, once the launcher
+    // owns its name.
+    var deadline = Loop.now() + 5 * std.time.ns_per_s;
+    while (!app.bridge.active()) {
+        if (Loop.now() > deadline) return error.Timeout;
+        var b = app.desktop.bus.methodCall("org.a11y.Bus", "/org/a11y/bus", "org.freedesktop.DBus.Properties", "Set");
+        try b.body.writeAll(.{ "org.a11y.Status", "IsEnabled", dbus.variant(true) });
+        _ = try app.desktop.bus.send(&b);
+        const until = Loop.now() + 100 * std.time.ns_per_ms;
+        while (Loop.now() < until and !app.bridge.active()) try app.dispatch(10);
+    }
+
+    var path_buf: [128]u8 = undefined;
+    const script = try std.fmt.bufPrintSentinel(&path_buf, "{s}/client.py", .{daemon.dir}, 0);
+    try td.writeFile(script, atspi_script);
+    defer _ = linux.unlink(script);
+    var fds: [2]i32 = undefined;
+    _ = linux.pipe2(&fds, .{ .CLOEXEC = true });
+    const pid = try td.spawn("/usr/bin/python3", &[_:null]?[*:0]const u8{ "/usr/bin/python3", script, "siv-app-a11y-test" }, &env, fds[1]);
+    defer td.kill(pid);
+    _ = linux.close(fds[1]);
+    defer _ = linux.close(fds[0]);
+    _ = linux.fcntl(fds[0], linux.F.SETFL, linux.SOCK.NONBLOCK);
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    deadline = Loop.now() + 20 * std.time.ns_per_s;
+    while (true) {
+        if (Loop.now() > deadline) return error.Timeout;
+        try app.dispatch(10);
+        var buf: [4096]u8 = undefined;
+        const n = linux.read(fds[0], &buf, buf.len);
+        if (linux.errno(n) == .AGAIN) continue;
+        if (linux.errno(n) != .SUCCESS or n == 0) break;
+        try out.appendSlice(gpa, buf[0..n]);
+    }
+    for ([_][]const u8{
+        "APP application siv",
+        "WINDOW frame 'Hello window'",
+        "CHILD push button 'OK'",
+        "ACTION True",
+        "DONE",
+    }) |want| if (std.mem.indexOf(u8, out.items, want) == null) {
+        std.debug.print("missing {s} in client output:\n{s}\n", .{ want, out.items });
+        return error.TestExpectedEqual;
+    };
+    // The action ran in a dispatch at a safe point.
+    deadline = Loop.now() + 5 * std.time.ns_per_s;
+    while (clicks == 0) {
+        if (Loop.now() > deadline) return error.Timeout;
+        try app.dispatch(10);
+    }
+    try testing.expectEqual(1, clicks);
 }

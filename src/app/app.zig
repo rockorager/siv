@@ -26,7 +26,7 @@
 //!
 //! Everything here is for the UI thread, except `post`.
 //!
-//! Imports: ui, compositor, platform, loop, text, dbus.
+//! Imports: ui, compositor, platform, loop, text, dbus, a11y.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -36,6 +36,7 @@ const platform = @import("platform");
 const compositor = @import("compositor");
 const ui = @import("ui");
 const desktop_mod = @import("desktop.zig");
+const a11y = @import("a11y");
 
 const Loop = loop_mod.Loop;
 const Compositor = compositor.Compositor;
@@ -76,8 +77,16 @@ pub const Options = struct {
     reduced_motion: bool = false,
     /// Follow the portal's desktop settings (D19).
     desktop_settings: bool = true,
-    /// The bus for them; null is the session bus.
+    /// Publish the windows' semantics to assistive technology over
+    /// AT-SPI (D18), while it listens.
+    accessibility: bool = true,
+    /// The session bus for desktop settings and accessibility; null finds
+    /// it from the environment.
     bus_address: ?[]const u8 = null,
+    /// The application's name for assistive technology.
+    name: []const u8 = "",
+    /// siv's version, as assistive technology reports it.
+    toolkit_version: []const u8 = "",
 };
 
 pub const App = struct {
@@ -100,6 +109,9 @@ pub const App = struct {
     /// The application chose the default font family, so the desktop's
     /// does not replace it.
     font_overridden: bool = false,
+    bridge: a11y.Bridge = undefined,
+    /// The AT-SPI bridge runs on the session bus.
+    accessible: bool = false,
     quit_requested: bool = false,
     /// Reported by the next `dispatch`. Unavailable stays.
     failure: ?Error = null,
@@ -127,8 +139,15 @@ pub const App = struct {
         errdefer app.clipboard.deinit();
         // The bus handshake and the settings read proceed while the
         // compositor connects to Wayland below.
-        if (options.desktop_settings) app.desktop.start(app, options.bus_address);
+        if (options.desktop_settings or options.accessibility) app.desktop.start(app, options.bus_address, options.desktop_settings);
         errdefer app.desktop.deinit(app);
+        if (options.accessibility and app.desktop.connected) {
+            app.bridge.init(gpa, &app.loop, .{ .app_name = options.name, .toolkit_version = options.toolkit_version, .on_active = onAccessibilityActive, .ctx = app });
+            if (app.bridge.start(&app.desktop.bus)) {
+                app.accessible = true;
+            } else |_| app.bridge.deinit();
+        }
+        errdefer if (app.accessible) app.bridge.deinit();
         app.comp = Compositor.create(.{
             .allocator = gpa,
             .executor = app.pool.executor(),
@@ -150,6 +169,10 @@ pub const App = struct {
         const gpa = app.gpa;
         // Nothing reads the windows' display lists or fonts after this.
         app.comp.destroy();
+        if (app.accessible) {
+            for (app.windows.items) |w| if (w) |win| app.bridge.removeWindow(win.a11y_id);
+            app.bridge.deinit();
+        }
         app.desktop.deinit(app);
         for (app.windows.items) |w| if (w) |win| win.free();
         for (app.zombies.items) |win| win.free();
@@ -244,6 +267,14 @@ pub const App = struct {
         try fonts.register(family, chain);
     }
 
+    /// Assistive technology started or stopped listening: windows publish
+    /// their semantics while it listens.
+    fn onAccessibilityActive(ctx: ?*anyopaque, active: bool) void {
+        const app: *App = @ptrCast(@alignCast(ctx));
+        if (!active) return;
+        for (app.windows.items) |w| if (w) |win| win.publish();
+    }
+
     /// Overrides the desktop's font (D19) from now on.
     pub fn setDefaultFont(app: *App, family: []const u8) Allocator.Error!void {
         try app.fonts.setDefault(family);
@@ -296,6 +327,10 @@ pub const App = struct {
             .rtl = options.rtl,
             .language = options.language,
         });
+        if (app.accessible) win.a11y_id = app.bridge.addWindow(win.ui, options.title) catch |err| blk: {
+            app.fail(if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable);
+            break :blk 0;
+        };
         app.windows.items[id] = win;
         app.open_windows += 1;
         return win;
@@ -383,11 +418,15 @@ pub const App = struct {
                 const old = win.state;
                 win.state = c.state;
                 win.handle(ev);
+                if (app.accessible and old.states.activated != c.state.states.activated) app.bridge.setActive(win.a11y_id, c.state.states.activated);
                 if (!win.closed) _ = win.notify(&.{ .configure = .{ .old = old, .new = c.state } });
             },
             // First frames wait for the desktop settings (desktop.zig).
             .frame => |f| if (app.window(f.window)) |win| {
-                if (app.desktop.waiting) win.frame_held = true else win.handle(ev);
+                if (app.desktop.waiting) win.frame_held = true else {
+                    win.handle(ev);
+                    win.publish();
+                }
             },
             .external_released => |x| if (app.window(x.window)) |win| {
                 _ = win.notify(&.{ .external_released = .{ .id = x.id, .key = x.key } });
@@ -455,6 +494,8 @@ pub const Window = struct {
     closed: bool = false,
     /// A frame event arrived while the desktop settings were awaited.
     frame_held: bool = false,
+    /// The window in the AT-SPI bridge, or 0.
+    a11y_id: a11y.Bridge.WindowId = 0,
     /// Last layer commit, and the last one presented.
     committed_seq: u64 = 0,
     presented_seq: u64 = 0,
@@ -467,6 +508,8 @@ pub const Window = struct {
         try app.zombies.ensureUnusedCapacity(app.gpa, 1);
         try app.comp.destroyWindow(win.id);
         win.closed = true;
+        if (app.accessible) app.bridge.removeWindow(win.a11y_id);
+        win.a11y_id = 0;
         if (win.ui.txn.open) win.ui.txn.abort();
         app.windows.items[win.id] = null;
         app.zombies.appendAssumeCapacity(win);
@@ -580,7 +623,20 @@ pub const Window = struct {
         return win.presented_seq >= win.committed_seq and !win.ui.needsFrame() and !win.ui.txn.open;
     }
 
+    /// Publishes the semantics tree after a frame, if assistive technology
+    /// listens and it changed (D18).
+    fn publish(win: *Window) void {
+        const app = win.app;
+        if (!app.accessible or win.a11y_id == 0 or win.closed) return;
+        app.bridge.update(win.a11y_id) catch |err| app.fail(if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable);
+    }
+
     pub fn setTitle(win: *Window, title: []const u8) Allocator.Error!void {
+        if (win.app.accessible) win.app.bridge.setTitle(win.a11y_id, title) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            // Published with the next update.
+            else => {},
+        };
         try win.platformCall(struct {
             fn f(p: platform.Platform, id: WindowId, s: []const u8) void {
                 p.setTitle(id, s);
