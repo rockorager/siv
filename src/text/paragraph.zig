@@ -298,10 +298,26 @@ const Builder = struct {
         var selections: std.ArrayList(Selection) = .empty;
         var start = item.start;
         while (start < item.end) {
-            const end = @min(item.end, p.graphemes.after(start).?);
+            var end = @min(item.end, p.graphemes.after(start).?);
             const presentation = emojiPresentation(p.text[start..end]);
             const mismatched = if (presentation) |wanted| primary_face.color != (wanted == .emoji) else false;
-            const chosen = if (!bad[start - item.start] and !mismatched) primary else try self.choose(item, start, end, primary, presentation);
+            const chosen = if (!bad[start - item.start] and !mismatched) primary else chosen: {
+                if (presentation == null) {
+                    // A stretch of unrenderable graphemes (a word in another
+                    // script) goes to the first font that renders all of it.
+                    var stretch_end = end;
+                    while (stretch_end < item.end and bad[stretch_end - item.start]) {
+                        const next = @min(item.end, p.graphemes.after(stretch_end).?);
+                        if (emojiPresentation(p.text[stretch_end..next]) != null) break;
+                        stretch_end = next;
+                    }
+                    if (stretch_end > end) if (try self.chooseStretch(item, start, stretch_end, primary)) |id| {
+                        end = stretch_end;
+                        break :chosen id;
+                    };
+                }
+                break :chosen try self.choose(item, start, end, primary, presentation);
+            };
             if (selections.items.len != 0 and selections.items[selections.items.len - 1].font == chosen) {
                 selections.items[selections.items.len - 1].end = end;
             } else {
@@ -317,6 +333,27 @@ const Builder = struct {
             if (hasNotdef(p.text, self.probe.items)) self.missing = true;
             try self.appendRun(item, selection.font, selection.start, selection.end, self.probe.items);
         }
+    }
+
+    /// The first ready font that renders all of `start..end`, if any.
+    fn chooseStretch(self: *Builder, item: Item, start: u32, end: u32, primary: FontId) !?FontId {
+        const p = self.paragraph;
+        const base = firstCodepoint(p.text[start..end]);
+        var glyphs: std.ArrayList(Glyph) = .empty;
+        var wanted_one = false;
+        for (p.styles[item.style].fonts) |id| {
+            if (id == primary or !self.cache.mayCover(id, base)) continue;
+            const face = self.cache.face(id) orelse {
+                if (!wanted_one) try self.want(id);
+                wanted_one = true;
+                continue;
+            };
+            glyphs.clearRetainingCapacity();
+            try self.shaper.shape(self.scratch, self.request(item, face, start, end), &glyphs);
+            if (glyphs.items.len != 0 and !hasNotdef(p.text, glyphs.items)) return id;
+            return null; // the best candidate fails somewhere: go grapheme by grapheme
+        }
+        return null;
     }
 
     /// Picks a font for one grapheme the primary font could not render.
@@ -627,6 +664,18 @@ test "pending fonts are wanted, not read; missing glyphs are reported" {
     try std.testing.expectEqualSlices(FontId, &.{pending}, p.wanted);
     try std.testing.expect(p.missing); // no ready font has Han
     try std.testing.expectEqual(fixture.latin, p.runs[0].font);
+
+    // A pending fallback ahead of a ready one: render with the ready font
+    // now, and ask for the pending one, which ranks higher.
+    const chain = [_]FontId{ fixture.latin, pending, fixture.hebrew };
+    var hebrew = try ShapedParagraph.init(std.testing.allocator, fixture.arena.allocator(), &fixture.cache, "Hi שלום", &.{.{
+        .end = "Hi שלום".len,
+        .style = .{ .fonts = &chain, .size = 12 },
+    }}, .auto_ltr);
+    defer hebrew.deinit();
+    try std.testing.expectEqualSlices(FontId, &.{pending}, hebrew.wanted);
+    try std.testing.expect(!hebrew.missing);
+    try std.testing.expectEqual(fixture.hebrew, hebrew.runs[hebrew.runs.len - 1].font);
 }
 
 test "segments measure the advance between opportunities" {
