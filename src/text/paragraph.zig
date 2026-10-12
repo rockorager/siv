@@ -450,22 +450,45 @@ fn isHanging(cp: u21) bool {
     };
 }
 
+/// Where the hanging whitespace before `end` begins, not before `start`.
+pub fn hangingStart(text: []const u8, start: u32, end: u32) u32 {
+    var offset = end;
+    while (offset > start) {
+        var cp_start = offset - 1;
+        while (text[cp_start] & 0xc0 == 0x80) cp_start -= 1;
+        if (!isHanging(firstCodepoint(text[cp_start..]))) break;
+        offset = cp_start;
+    }
+    return offset;
+}
+
+/// UAX #14 opportunities plus a mandatory break at every bidi paragraph end
+/// (Bidi_Class B characters such as U+001C are not all hard line breaks),
+/// so that no line spans two paragraphs.
+fn opportunities(scratch: std.mem.Allocator, p: *const ShapedParagraph) ![]line_break.Opportunity {
+    const found = try line_break.analyze(scratch, p.text);
+    var merged: std.ArrayList(line_break.Opportunity) = try .initCapacity(scratch, found.len + p.paragraphs.len);
+    var next_paragraph: usize = 0;
+    for (found) |opportunity| {
+        while (next_paragraph < p.paragraphs.len and p.paragraphs[next_paragraph].end <= opportunity.offset) : (next_paragraph += 1) {
+            const end = p.paragraphs[next_paragraph].end;
+            if (end < opportunity.offset) merged.appendAssumeCapacity(.{ .offset = end, .mandatory = true });
+        }
+        const at_paragraph_end = next_paragraph > 0 and p.paragraphs[next_paragraph - 1].end == opportunity.offset;
+        merged.appendAssumeCapacity(.{ .offset = opportunity.offset, .mandatory = opportunity.mandatory or at_paragraph_end });
+    }
+    return merged.items;
+}
+
 /// Measures the segments between line-break opportunities.
 fn measure(a: std.mem.Allocator, scratch: std.mem.Allocator, p: *const ShapedParagraph) ![]Segment {
-    const opportunities = try line_break.analyze(scratch, p.text);
-    const segments = try a.alloc(Segment, opportunities.len);
-    const hanging_start = try scratch.alloc(u32, opportunities.len);
+    const breaks = try opportunities(scratch, p);
+    const segments = try a.alloc(Segment, breaks.len);
+    const hanging_start = try scratch.alloc(u32, breaks.len);
     var previous: u32 = 0;
-    for (segments, opportunities, hanging_start) |*segment, opportunity, *hang| {
+    for (segments, breaks, hanging_start) |*segment, opportunity, *hang| {
         segment.* = .{ .end = opportunity.offset, .mandatory = opportunity.mandatory, .advance = 0, .trailing = 0, .unsafe = false };
-        var start = opportunity.offset;
-        while (start > previous) {
-            var cp_start = start - 1;
-            while (p.text[cp_start] & 0xc0 == 0x80) cp_start -= 1;
-            if (!isHanging(firstCodepoint(p.text[cp_start..]))) break;
-            start = cp_start;
-        }
-        hang.* = start;
+        hang.* = hangingStart(p.text, previous, opportunity.offset);
         previous = opportunity.offset;
     }
 
