@@ -18,4 +18,5 @@ test {
     _ = @import("ui/golden.zig");
     _ = @import("compositor/golden.zig");
     _ = @import("compositor/latency.zig");
+    _ = @import("abi/golden.zig");
 }

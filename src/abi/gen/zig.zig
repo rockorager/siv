@@ -137,14 +137,15 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
         try w.print("\n/// {s}\npub fn {f}(", .{ f.doc, id(schema.zigFnName(&nbuf, f.name)) });
         for (params, 0..) |p, i| {
             if (i > 0) try w.writeAll(", ");
+            const pn = try argName(arena, s, p.name);
             if (p.type == .string) {
-                try w.print("{f}: []const u8", .{id(p.name)});
+                try w.print("{f}: []const u8", .{id(pn)});
             } else if (p.type == .array) {
-                try w.print("{f}: []const {s}", .{ id(p.name), try typeName(arena, s, p.type.array.*) });
+                try w.print("{f}: []const {s}", .{ id(pn), try typeName(arena, s, p.type.array.*) });
             } else if (p.type == .buffer) {
-                try w.print("{f}: []u8", .{id(p.name)});
+                try w.print("{f}: []u8", .{id(pn)});
             } else {
-                try w.print("{f}: {s}", .{ id(p.name), try typeName(arena, s, p.type) });
+                try w.print("{f}: {s}", .{ id(pn), try typeName(arena, s, p.type) });
             }
         }
         try w.writeAll(") ");
@@ -156,7 +157,7 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
             try w.writeAll(try typeName(arena, s, f.ret));
         }
         try w.writeAll(" {\n");
-        if (ret_out) |o| try w.print("    var {f}: {s} = undefined;\n", .{ id(o.name), try typeName(arena, s, o.type.out.*) });
+        if (ret_out) |o| try w.print("    var {f}: {s} = undefined;\n", .{ id(try argName(arena, s, o.name)), try typeName(arena, s, o.type.out.*) });
         try w.writeAll("    ");
         if (fallible) {
             try w.writeAll("try check(");
@@ -168,18 +169,29 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
         try w.print("c.{s}(", .{f.name});
         for (f.params, 0..) |p, i| {
             if (i > 0) try w.writeAll(", ");
+            const pn = try argName(arena, s, p.name);
             if (p.type == .string or p.type == .array or p.type == .buffer) {
-                try w.print("{f}.ptr, {f}.len", .{ id(p.name), id(p.name) });
+                try w.print("{f}.ptr, {f}.len", .{ id(pn), id(pn) });
             } else if (ret_out != null and i == f.params.len - 1) {
-                try w.print("&{f}", .{id(p.name)});
+                try w.print("&{f}", .{id(pn)});
             } else {
-                try w.print("{f}", .{id(p.name)});
+                try w.print("{f}", .{id(pn)});
             }
         }
         try w.writeAll(if (fallible or f.ret == .static_string) "));\n" else ");\n");
-        if (ret_out) |o| try w.print("    return {f};\n", .{id(o.name)});
+        if (ret_out) |o| try w.print("    return {f};\n", .{id(try argName(arena, s, o.name))});
         try w.writeAll("}\n");
     }
+}
+
+/// A parameter name in an idiomatic function, renamed when it would
+/// shadow one of the wrapper's own declarations (Zig forbids shadowing).
+fn argName(arena: std.mem.Allocator, s: Schema, name: []const u8) ![]const u8 {
+    var nbuf: [128]u8 = undefined;
+    const reserved = [_][]const u8{ "std", "c", "signatures", "check", "resultOf", "header_version" };
+    for (reserved) |r| if (std.mem.eql(u8, r, name)) return std.fmt.allocPrint(arena, "{s}_arg", .{name});
+    for (s.functions) |f| if (std.mem.eql(u8, schema.zigFnName(&nbuf, f.name), name)) return std.fmt.allocPrint(arena, "{s}_arg", .{name});
+    return name;
 }
 
 fn writeParams(arena: std.mem.Allocator, w: *Writer, s: Schema, params: []const schema.Param) !void {

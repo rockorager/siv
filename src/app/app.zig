@@ -25,7 +25,7 @@
 //!
 //! Everything here is for the UI thread, except `post`.
 //!
-//! Imports: ui, compositor, platform, loop, pool, text.
+//! Imports: ui, compositor, platform, loop, text.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -167,7 +167,8 @@ pub const App = struct {
         return app.loop.fd();
     }
 
-    pub const PostFn = *const fn (ctx: ?*anyopaque) void;
+    /// C calling convention, so that the C ABI passes its callbacks on.
+    pub const PostFn = *const fn (ctx: ?*anyopaque) callconv(.c) void;
 
     /// Runs `func(ctx)` on the UI thread in the dispatch phase, then
     /// `destroy(ctx)`. If the application is destroyed first, only
@@ -210,12 +211,9 @@ pub const App = struct {
         const old: []const text.FontId = fonts.families.get(name) orelse &.{};
         const chain = try app.gpa.alloc(text.FontId, old.len + 1);
         defer app.gpa.free(chain);
-        const copy = try app.gpa.dupe(u8, bytes);
-        // The cache owns the copy once it accepts it.
-        const id = fonts.cache.add(copy, 0, .owned) catch |err| {
-            app.gpa.free(copy);
+        // The cache owns the copy, and frees it on failure.
+        const id = fonts.cache.add(try app.gpa.dupe(u8, bytes), 0, .owned) catch |err|
             return if (err == error.OutOfMemory) error.OutOfMemory else error.InvalidFont;
-        };
         @memcpy(chain[0..old.len], old);
         chain[old.len] = id;
         try fonts.register(family, chain);

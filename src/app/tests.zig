@@ -3,7 +3,6 @@
 
 const std = @import("std");
 const testing = std.testing;
-const scene = @import("scene");
 const platform = @import("platform");
 const compositor = @import("compositor");
 const ui = @import("ui");
@@ -177,11 +176,11 @@ test "posted closures run on the loop thread, then their destroy; at teardown on
     const Counts = struct {
         runs: std.atomic.Value(u32) = .init(0),
         destroys: std.atomic.Value(u32) = .init(0),
-        fn run(ctx: ?*anyopaque) void {
+        fn run(ctx: ?*anyopaque) callconv(.c) void {
             const c: *@This() = @ptrCast(@alignCast(ctx));
             _ = c.runs.fetchAdd(1, .seq_cst);
         }
-        fn destroy(ctx: ?*anyopaque) void {
+        fn destroy(ctx: ?*anyopaque) callconv(.c) void {
             const c: *@This() = @ptrCast(@alignCast(ctx));
             _ = c.destroys.fetchAdd(1, .seq_cst);
         }

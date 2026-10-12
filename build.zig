@@ -116,7 +116,6 @@ pub fn build(b: *std.Build) void {
         .{ .name = "platform", .module = platform },
         .{ .name = "compositor", .module = compositor },
         .{ .name = "ui", .module = ui },
-        .{ .name = "scene", .module = scene },
     });
     const internal = [_]std.Build.Module.Import{
         .{ .name = "pool", .module = pool },

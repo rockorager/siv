@@ -2,7 +2,8 @@
 //! Their parameter and return types come from the generated Zig wrapper
 //! (`siv`), which matches the generated header; the comptime block below
 //! checks every export against its schema signature. Exports go through
-//! runtime.zig for argument checking, roots, and handles.
+//! runtime.zig for argument checking, roots, and handles. The application
+//! and windows are in application.zig, the tree in tree.zig.
 //!
 //! Imports: every internal module, build_options, siv (generated).
 
@@ -15,6 +16,16 @@ const api = @import("api.zig");
 pub const runtime = @import("runtime.zig");
 pub const handles = @import("handles.zig");
 pub const alloc = @import("alloc.zig");
+/// The application, its loop, and windows.
+pub const application = @import("application.zig");
+/// Transactions, nodes, and node events.
+pub const tree = @import("tree.zig");
+
+/// The generated wrapper's types, which the exports use.
+pub const types = t;
+
+/// The files that export schema functions.
+const implementations = .{ @This(), application, tree };
 
 const version = build_options.version;
 
@@ -43,8 +54,13 @@ comptime {
     @setEvalBranchQuota(100_000);
     if (schema.validate(api.spec, version)) |p| @compileError(api.spec.source ++ ": " ++ p.where ++ ": " ++ p.what);
     for (api.spec.functions) |f| {
-        if (!@hasDecl(@This(), f.name)) @compileError("schema function not exported: " ++ f.name);
-        if (@TypeOf(@field(@This(), f.name)) != @field(t.signatures, f.name)) @compileError("export does not match its schema signature: " ++ f.name);
+        var found = false;
+        for (implementations) |impl| if (@hasDecl(impl, f.name)) {
+            if (found) @compileError("schema function exported twice: " ++ f.name);
+            found = true;
+            if (@TypeOf(@field(impl, f.name)) != @field(t.signatures, f.name)) @compileError("export does not match its schema signature: " ++ f.name);
+        };
+        if (!found) @compileError("schema function not exported: " ++ f.name);
     }
     runtime.checkDescriptors(t);
 }

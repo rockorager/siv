@@ -124,11 +124,12 @@ pub fn add(b: *std.Build, o: Options) void {
     test_abi.dependOn(&b.addRunArtifact(wrapper_tests).step);
 
     // C programs against the generated headers and the shared libraries.
-    for ([_]struct { []const u8, *std.Build.Step.Compile, std.Build.LazyPath }{
-        .{ "test/c/smoke.c", o.shared, installed.path(b, "include") },
-        .{ "test/c/abi.c", test_lib, private },
+    for ([_]struct { []const u8, *std.Build.Step.Compile, std.Build.LazyPath, ?std.Build.LazyPath }{
+        .{ "test/c/smoke.c", o.shared, installed.path(b, "include"), null },
+        .{ "test/c/abi.c", test_lib, private, null },
+        .{ "test/c/app.c", o.shared, installed.path(b, "include"), b.path("src/text/testdata/DroidSans.ttf") },
     }) |entry| {
-        const src, const lib, const include = entry;
+        const src, const lib, const include, const arg = entry;
         const exe = b.addExecutable(.{
             .name = std.fs.path.stem(src),
             .root_module = b.createModule(.{ .target = o.target, .optimize = o.optimize, .link_libc = true }),
@@ -137,6 +138,7 @@ pub fn add(b: *std.Build, o: Options) void {
         exe.root_module.addIncludePath(include);
         exe.root_module.linkLibrary(lib);
         const run = b.addRunArtifact(exe);
+        if (arg) |a| run.addFileArg(a);
         run.expectExitCode(0);
         test_c.dependOn(&run.step);
     }
