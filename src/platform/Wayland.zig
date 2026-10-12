@@ -61,6 +61,14 @@ dmabuf: ?*zwp.LinuxDmabufV1 = null,
 dmabuf_feedback: ?*zwp.LinuxDmabufFeedbackV1 = null,
 /// The compositor's main device (dev_t) from dma-buf default feedback.
 main_device: ?u64 = null,
+/// Its format table (format, padding, modifier entries), mapped.
+dmabuf_table: []align(std.heap.page_size_min) const u8 = &.{},
+/// (format, modifier) pairs of every tranche, sorted, and those of the
+/// feedback still arriving.
+dmabuf_formats: std.ArrayList(FormatModifier) = .empty,
+dmabuf_pending: std.ArrayList(FormatModifier) = .empty,
+/// Every dma-buf wl_buffer not yet released (D17).
+dmabuf_buffers: std.ArrayList(*DmabufBuffer) = .empty,
 text_input_manager: ?*zwp.TextInputManagerV3 = null,
 data_device_manager: ?*wl.DataDeviceManager = null,
 primary_selection_manager: ?*zwp.PrimarySelectionDeviceManagerV1 = null,
@@ -81,6 +89,23 @@ compose_table: ?*xkb.struct_xkb_compose_table = null,
 source: Loop.Source,
 hook: Loop.Hook = .{ .func = prepare },
 dead: bool = false,
+
+const FormatModifier = struct { format: u32, modifier: u64 };
+
+/// A dma-buf frame's wl_buffer. The producer's frame is in use until the
+/// compositor releases every wl_buffer made from it, so each lives until
+/// its release even after a subsurface replaces it. A buffer is attached
+/// once: showing a frame again after hiding it makes a new one, so that a
+/// release always means the end of one attachment.
+const DmabufBuffer = struct {
+    backend: *Wayland,
+    buffer: *wl.Buffer,
+    window: WindowId,
+    key: u64,
+    /// No subsurface shows it any more.
+    retired: bool = false,
+    released: bool = false,
+};
 
 pub const Options = struct {
     /// Socket name or path; null uses $WAYLAND_DISPLAY.
@@ -109,6 +134,8 @@ const Subsurface = struct {
     /// An embedder renders into `surface` (`createEmbedSurface`).
     embed: bool = false,
     buffer: ?*wl.Buffer = null,
+    /// `buffer` is this dma-buf's.
+    dmabuf: ?*DmabufBuffer = null,
     key: u64 = 0,
     attached: bool = false,
     below: bool = false,
@@ -242,6 +269,14 @@ fn teardown(self: *Wayland) void {
     if (self.fifo_manager) |m| m.destroy();
     if (self.dmabuf_feedback) |f| f.destroy();
     if (self.dmabuf) |m| m.destroy();
+    for (self.dmabuf_buffers.items) |b| {
+        b.buffer.destroy();
+        self.allocator.destroy(b);
+    }
+    self.dmabuf_buffers.deinit(self.allocator);
+    self.dmabuf_formats.deinit(self.allocator);
+    self.dmabuf_pending.deinit(self.allocator);
+    if (self.dmabuf_table.len > 0) _ = linux.munmap(self.dmabuf_table.ptr, self.dmabuf_table.len);
     if (self.fractional_manager) |m| m.destroy();
     if (self.presentation) |p| p.destroy();
     if (self.viewporter) |v| v.destroy();
@@ -365,8 +400,8 @@ fn addGlobal(self: *Wayland, registry: *wl.Registry, name: u32, interface: []con
     } else if (is(interface, wp.FifoManagerV1)) {
         self.fifo_manager = try registry.bind(name, wp.FifoManagerV1, version);
     } else if (is(interface, zwp.LinuxDmabufV1)) {
-        // Default feedback (version 4) names the main device; siv sends no
-        // dma-bufs itself.
+        // Default feedback (version 4) names the main device and the
+        // formats external dma-buf frames may have on subsurfaces.
         if (version < 4) return;
         const m = try registry.bind(name, zwp.LinuxDmabufV1, 4);
         self.dmabuf = m;
@@ -406,9 +441,78 @@ fn onDmabufFeedback(_: *zwp.LinuxDmabufFeedbackV1, event: zwp.LinuxDmabufFeedbac
             const bytes = e.device.slice(u8);
             if (bytes.len == @sizeOf(u64)) self.main_device = std.mem.readInt(u64, bytes[0..8], @import("builtin").cpu.arch.endian());
         },
-        .format_table => |e| _ = linux.close(e.fd),
+        .format_table => |e| {
+            defer _ = linux.close(e.fd);
+            if (self.dmabuf_table.len > 0) _ = linux.munmap(self.dmabuf_table.ptr, self.dmabuf_table.len);
+            self.dmabuf_table = &.{};
+            const rc = linux.mmap(null, e.size, .{ .READ = true }, .{ .TYPE = .PRIVATE }, e.fd, 0);
+            if (e.size == 0 or linux.errno(rc) != .SUCCESS) return;
+            self.dmabuf_table = @as([*]align(std.heap.page_size_min) const u8, @ptrFromInt(rc))[0..e.size];
+        },
+        .tranche_formats => |e| for (e.indices.slice(u16)) |i| {
+            if (@as(usize, i) * 16 + 16 > self.dmabuf_table.len) continue;
+            const entry = self.dmabuf_table[@as(usize, i) * 16 ..][0..16];
+            const native = @import("builtin").cpu.arch.endian();
+            self.dmabuf_pending.append(self.allocator, .{ .format = std.mem.readInt(u32, entry[0..4], native), .modifier = std.mem.readInt(u64, entry[8..16], native) }) catch {};
+        },
+        .done => {
+            std.mem.swap(std.ArrayList(FormatModifier), &self.dmabuf_formats, &self.dmabuf_pending);
+            self.dmabuf_pending.clearRetainingCapacity();
+            std.mem.sort(FormatModifier, self.dmabuf_formats.items, {}, lessFormat);
+        },
         else => {},
     }
+}
+
+fn lessFormat(_: void, a: FormatModifier, b: FormatModifier) bool {
+    return if (a.format != b.format) a.format < b.format else a.modifier < b.modifier;
+}
+
+pub fn supportsDmabuf(self: *Wayland, format: u32, modifier: u64) bool {
+    const key: FormatModifier = .{ .format = format, .modifier = modifier };
+    return std.sort.binarySearch(FormatModifier, self.dmabuf_formats.items, key, struct {
+        fn order(k: FormatModifier, item: FormatModifier) std.math.Order {
+            if (k.format != item.format) return std.math.order(k.format, item.format);
+            return std.math.order(k.modifier, item.modifier);
+        }
+    }.order) != null;
+}
+
+fn onDmabufRelease(_: *wl.Buffer, _: wl.Buffer.Event, b: *DmabufBuffer) void {
+    b.released = true;
+    if (b.retired) b.backend.finishDmabuf(b);
+}
+
+/// A subsurface stops showing its dma-buf buffer, which then lives until
+/// released.
+fn retireDmabuf(self: *Wayland, s: *Subsurface) void {
+    const b = s.dmabuf orelse return;
+    s.dmabuf = null;
+    s.buffer = null;
+    s.key = 0;
+    s.attached = false;
+    b.retired = true;
+    if (b.released) self.finishDmabuf(b);
+}
+
+/// Destroys a released, retired buffer, and tells the compositor thread
+/// once no buffer of the frame remains in use.
+fn finishDmabuf(self: *Wayland, b: *DmabufBuffer) void {
+    const window, const key = .{ b.window, b.key };
+    for (self.dmabuf_buffers.items, 0..) |x, i| if (x == b) {
+        _ = self.dmabuf_buffers.swapRemove(i);
+        break;
+    };
+    b.buffer.destroy();
+    self.allocator.destroy(b);
+    if (!self.dmabufBusy(window, key)) self.queue.push(.{ .subsurface_released = .{ .window = window, .key = key } });
+}
+
+/// Whether the compositor may still read the window's dma-buf frame with
+/// this key.
+pub fn dmabufBusy(self: *Wayland, window: WindowId, key: u64) bool {
+    for (self.dmabuf_buffers.items) |b| if (b.window == window and b.key == key and !(b.retired and b.released)) return true;
+    return false;
 }
 
 fn onWmBase(base: *xdg.WmBase, event: xdg.WmBase.Event, _: *Wayland) void {
@@ -651,7 +755,10 @@ pub fn destroyWindow(self: *Wayland, id: WindowId) void {
     if (w.fractional) |f| f.destroy();
     if (w.viewport) |v| v.destroy();
     if (w.decoration) |d| d.destroy();
-    for (w.subsurfaces.items) |sub| if (sub) |x| x.destroy(self.allocator);
+    for (w.subsurfaces.items) |sub| if (sub) |x| {
+        self.retireDmabuf(x);
+        x.destroy(self.allocator);
+    };
     w.subsurfaces.deinit(self.allocator);
     if (w.toplevel) |t| t.destroy();
     if (w.popup) |p| p.destroy();
@@ -892,7 +999,10 @@ pub fn createEmbedSurface(self: *Wayland, id: WindowId) Error!platform.EmbedSurf
 
 pub fn destroySubsurface(self: *Wayland, id: WindowId, sub: platform.SubsurfaceId) void {
     const w = self.get(id);
-    if (w.subsurfaces.items[sub]) |s| s.destroy(self.allocator);
+    if (w.subsurfaces.items[sub]) |s| {
+        self.retireDmabuf(s);
+        s.destroy(self.allocator);
+    }
     w.subsurfaces.items[sub] = null;
 }
 
@@ -905,16 +1015,44 @@ pub fn setSubsurface(self: *Wayland, id: WindowId, sub: platform.SubsurfaceId, s
             s.surface.attach(null, 0, 0);
             s.surface.commit();
             s.attached = false;
+            // Shown again, it gets a new buffer.
+            self.retireDmabuf(s);
         }
         return;
     };
     if (s.buffer == null or s.key != frame.key) {
-        const size = @as(usize, frame.offset) + @as(usize, frame.stride) * frame.height;
-        const pool = self.shm.?.createPool(frame.fd, @intCast(size)) catch return error.OutOfMemory;
-        defer pool.destroy();
-        const buffer = pool.createBuffer(@intCast(frame.offset), @intCast(frame.width), @intCast(frame.height), @intCast(frame.stride), .xrgb8888) catch return error.OutOfMemory;
-        if (s.buffer) |old| old.destroy();
+        const buffer = if (frame.dmabuf) |d| blk: {
+            const params = (self.dmabuf orelse return error.MissingGlobal).createParams() catch return error.OutOfMemory;
+            defer params.destroy();
+            for (d.planes[0..d.plane_count], 0..) |pl, i| params.add(pl.fd, @intCast(i), pl.offset, pl.stride, @truncate(d.modifier >> 32), @truncate(d.modifier));
+            // The compositor advertised the format and modifier
+            // (`supportsDmabuf`); a buffer it still cannot import is a
+            // protocol error, as with Mesa's WSI.
+            break :blk params.createImmed(@intCast(frame.width), @intCast(frame.height), d.format, .{}) catch return error.OutOfMemory;
+        } else blk: {
+            const size = @as(usize, frame.offset) + @as(usize, frame.stride) * frame.height;
+            const pool = self.shm.?.createPool(frame.fd, @intCast(size)) catch return error.OutOfMemory;
+            defer pool.destroy();
+            break :blk pool.createBuffer(@intCast(frame.offset), @intCast(frame.width), @intCast(frame.height), @intCast(frame.stride), .xrgb8888) catch return error.OutOfMemory;
+        };
+        var tracked: ?*DmabufBuffer = null;
+        if (frame.dmabuf != null) {
+            const b = self.allocator.create(DmabufBuffer) catch {
+                buffer.destroy();
+                return error.OutOfMemory;
+            };
+            b.* = .{ .backend = self, .buffer = buffer, .window = id, .key = frame.key };
+            self.dmabuf_buffers.append(self.allocator, b) catch {
+                self.allocator.destroy(b);
+                buffer.destroy();
+                return error.OutOfMemory;
+            };
+            buffer.setListener(*DmabufBuffer, onDmabufRelease, b);
+            tracked = b;
+        }
+        if (s.dmabuf != null) self.retireDmabuf(s) else if (s.buffer) |old| old.destroy();
         s.buffer = buffer;
+        s.dmabuf = tracked;
         s.key = frame.key;
         s.attached = false;
     }

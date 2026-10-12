@@ -40,6 +40,8 @@ text_inputs: [8]TextInputRecord = @splat(.{}),
 /// Simulated clipboard and primary selection per seat.
 selections: [8][2]SimSelection = @splat(@splat(.{})),
 next_source: u32 = 0,
+/// dma-buf formats and modifiers subsurfaces accept (tests add them).
+dmabuf_formats: std.ArrayList([2]u64) = .empty,
 
 pub const Options = struct {
     refresh_ns: u64 = FrameClock.default_refresh_ns,
@@ -160,6 +162,7 @@ pub fn destroy(hl: *Headless) void {
     for (hl.windows.items, 0..) |w, i| if (w != null) hl.destroyWindow(@intCast(i));
     hl.windows.deinit(hl.allocator);
     hl.outputs.deinit(hl.allocator);
+    hl.dmabuf_formats.deinit(hl.allocator);
     hl.queue.deinit();
     hl.allocator.destroy(hl);
 }
@@ -237,8 +240,10 @@ pub fn createEmbedSurface(hl: *Headless, id: WindowId) Error!platform.EmbedSurfa
 
 pub fn destroySubsurface(hl: *Headless, id: WindowId, sub: platform.SubsurfaceId) void {
     const w = hl.get(id);
+    const shown = [_]?platform.SubsurfaceState{ w.subsurfaces.items[sub], w.pending_subsurfaces.items[sub] };
     w.subsurfaces.items[sub] = null;
     w.pending_subsurfaces.items[sub] = null;
+    for (shown) |st| if (dmabufKey(st)) |key| releaseDmabuf(w, key);
 }
 
 pub fn setSubsurface(hl: *Headless, id: WindowId, sub: platform.SubsurfaceId, state: *const platform.SubsurfaceState) Error!void {
@@ -270,8 +275,42 @@ pub fn commitWindow(hl: *Headless, id: WindowId) void {
     applySubsurfaces(w);
 }
 
+/// Applies pending subsurface states. Like a compositor, it releases a
+/// dma-buf frame as soon as no state shows it.
 fn applySubsurfaces(w: *Window) void {
+    for (w.subsurfaces.items, w.pending_subsurfaces.items) |old, new| {
+        const key = dmabufKey(old) orelse continue;
+        if (dmabufKey(new) != key) releaseDmabuf(w, key);
+    }
     @memcpy(w.subsurfaces.items, w.pending_subsurfaces.items);
+}
+
+fn dmabufKey(state: ?platform.SubsurfaceState) ?u64 {
+    const st = state orelse return null;
+    if (!st.visible) return null;
+    const f = st.frame orelse return null;
+    return if (f.dmabuf != null) f.key else null;
+}
+
+fn releaseDmabuf(w: *Window, key: u64) void {
+    if (!w.hl.dmabufBusy(w.id, key)) w.hl.queue.push(.{ .subsurface_released = .{ .window = w.id, .key = key } });
+}
+
+/// Lets subsurfaces show dma-bufs of this format and modifier.
+pub fn addDmabufFormat(hl: *Headless, format: u32, modifier: u64) Allocator.Error!void {
+    try hl.dmabuf_formats.append(hl.allocator, .{ format, modifier });
+}
+
+pub fn supportsDmabuf(hl: *Headless, format: u32, modifier: u64) bool {
+    for (hl.dmabuf_formats.items) |f| if (f[0] == format and f[1] == modifier) return true;
+    return false;
+}
+
+/// Whether an applied state shows the dma-buf frame (pending ones count
+/// once applied).
+pub fn dmabufBusy(hl: *Headless, id: WindowId, key: u64) bool {
+    for (hl.get(id).subsurfaces.items) |st| if (dmabufKey(st) == key) return true;
+    return false;
 }
 
 /// The window's subsurfaces as its last commit applied them.

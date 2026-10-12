@@ -217,6 +217,23 @@ pub const Platform = union(enum) {
         };
     }
 
+    /// Whether subsurfaces can show dma-bufs of this DRM format and
+    /// modifier (linux-dmabuf feedback's format table).
+    pub fn supportsDmabuf(p: Platform, format: u32, modifier: u64) bool {
+        return switch (p) {
+            inline else => |b| b.supportsDmabuf(format, modifier),
+        };
+    }
+
+    /// Whether the compositor may still read the window's dma-buf frame
+    /// with this key, which a subsurface showed. When it stops, a
+    /// `subsurface_released` event follows.
+    pub fn dmabufBusy(p: Platform, id: WindowId, key: u64) bool {
+        return switch (p) {
+            inline else => |b| b.dmabufBusy(id, key),
+        };
+    }
+
     /// The Wayland objects a Vulkan swapchain presents to (D10). Null on
     /// the headless backend.
     pub fn vulkanSurface(p: Platform, id: WindowId) ?VulkanSurface {
@@ -318,7 +335,8 @@ pub const EmbedSurface = struct {
     surface: ?*anyopaque = null,
 };
 
-/// Opaque XRGB8888 pixels in mappable shared memory (wl_shm).
+/// Opaque XRGB8888 pixels in mappable shared memory (wl_shm), or a
+/// dma-buf (D17).
 pub const ShmFrame = struct {
     fd: i32,
     offset: u32 = 0,
@@ -327,7 +345,25 @@ pub const ShmFrame = struct {
     stride: u32,
     /// Changes when the pixels change.
     key: u64,
+    /// Instead of shared memory (then `fd`, `offset`, and `stride` are
+    /// ignored): shown as a linux-dmabuf wl_buffer, released with a
+    /// `subsurface_released` event once the compositor lets it go.
+    dmabuf: ?Dmabuf = null,
 };
+
+/// A Linux dma-buf: DRM fourcc format and modifier, one to four planes.
+pub const Dmabuf = struct {
+    format: u32,
+    modifier: u64,
+    planes: [4]Plane = undefined,
+    plane_count: u8,
+
+    pub const Plane = struct { fd: i32, offset: u32, stride: u32 };
+};
+
+/// The compositor no longer reads a dma-buf frame that a subsurface
+/// showed: its wl_buffer was released after being replaced.
+pub const SubsurfaceReleased = struct { window: WindowId, key: u64 };
 
 pub const SubsurfaceState = struct {
     visible: bool = false,
@@ -805,6 +841,7 @@ pub const Event = union(enum) {
     selection: Selection,
     selection_send: SelectionSend,
     selection_cancelled: SelectionCancelled,
+    subsurface_released: SubsurfaceReleased,
     /// The platform failed: events were lost (OutOfMemory) or the
     /// connection is gone (ConnectionLost, ProtocolError).
     failed: Error,
