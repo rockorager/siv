@@ -27,7 +27,7 @@ const Builder = scene.Builder;
 const golden_dir = "test/golden/render";
 const failure_dir = ".zig-cache/golden-failures";
 
-const Ctx = struct {
+pub const Ctx = struct {
     gpa: std.mem.Allocator,
     pb: raster.PathBuilder,
     roboto: Font,
@@ -41,7 +41,7 @@ const Ctx = struct {
     sbix: ?Font = null,
     sbix_bytes: []u8 = &.{},
 
-    fn deinit(c: *Ctx) void {
+    pub fn deinit(c: *Ctx) void {
         if (c.fonts) |*f| f.deinit();
         if (c.sbix) |f| f.deinit();
         c.gpa.free(c.sbix_bytes);
@@ -52,12 +52,12 @@ const Ctx = struct {
     }
 };
 
-const Font = struct {
+pub const Font = struct {
     font: *hb.hb_font_t,
     key: u64,
     upem: f32,
 
-    fn init(data: []const u8, key: u64) Font {
+    pub fn init(data: []const u8, key: u64) Font {
         const blob = hb.hb_blob_create(data.ptr, @intCast(data.len), hb.HB_MEMORY_MODE_READONLY, null, null);
         defer hb.hb_blob_destroy(blob);
         const face = hb.hb_face_create(blob, 0);
@@ -526,14 +526,14 @@ fn bitmaps(c: *Ctx, b: *Builder) !void {
     }
 }
 
-const Case = struct {
+pub const Case = struct {
     name: []const u8,
     width: u32,
     height: u32,
     build: *const fn (*Ctx, *Builder) anyerror!void,
 };
 
-const cases = [_]Case{
+pub const cases = [_]Case{
     .{ .name = "shapes", .width = 400, .height = 200, .build = shapes },
     .{ .name = "gradients", .width = 400, .height = 340, .build = gradients },
     .{ .name = "layers", .width = 400, .height = 340, .build = layers },
@@ -596,7 +596,7 @@ test "golden images" {
 
 /// Allows the rounding noise different CPUs can produce: every channel
 /// within 3, and at most 0.5% of pixels off by more than 1.
-fn compare(gpa: std.mem.Allocator, io: std.Io, case: Case, want: png.Image, got: []const u8) !bool {
+pub fn compare(gpa: std.mem.Allocator, io: std.Io, case: Case, want: png.Image, got: []const u8) !bool {
     if (want.width != case.width or want.height != case.height) {
         std.debug.print("golden {s}: size {d}x{d}, expected {d}x{d}\n", .{ case.name, case.width, case.height, want.width, want.height });
         return false;

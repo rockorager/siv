@@ -15,6 +15,7 @@ const text = @import("text");
 test {
     std.testing.refAllDecls(@This());
     _ = @import("render/golden.zig");
+    _ = @import("render/vulkan.zig");
     _ = @import("ui/golden.zig");
     _ = @import("compositor/golden.zig");
     _ = @import("compositor/latency.zig");
