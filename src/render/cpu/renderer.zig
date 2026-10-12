@@ -582,6 +582,7 @@ pub const Renderer = struct {
         var job: GeomPass = .{ .r = r, .counter = .{ .count = @intCast(r.geom_jobs.items.len) } };
         r.executor.run(r.executor.ctx, .{ .ctx = &job, .func = GeomPass.run });
         for (r.workers) |w| if (w.failed) return error.OutOfMemory;
+        try r.equalizeWorkers();
         for (r.geom_jobs.items) |g| {
             const lines: Coverage = .{ .lines = try r.binLines(g.list, g.start, g.end, g.rule) };
             switch (g.target) {
@@ -589,6 +590,24 @@ pub const Renderer = struct {
                 .clip => r.ops.items[g.op].push.clip.?.coverage = lines,
                 .blur => r.ops.items[g.op].blur.coverage = lines,
             }
+        }
+    }
+
+    /// Grows every worker's geometry buffers to what any one worker would
+    /// need for this frame's work, so that a later frame allocates nothing
+    /// however the executor hands out the work: the line list to all the
+    /// lines this frame made (one worker may make all of them next time),
+    /// and the per-shape scratch to the largest any worker has needed.
+    fn equalizeWorkers(r: *Renderer) Error!void {
+        var lines: usize = 0;
+        for (r.workers) |w| lines += w.lines.items.len;
+        // Precise: rounding up would let one worker overshoot the rest,
+        // which would then chase it every frame.
+        for (r.workers) |*w| try w.lines.ensureTotalCapacityPrecise(r.gpa, lines);
+        inline for (.{ .{ "path", "verbs" }, .{ "path", "points" }, .{ "outline", "verbs" }, .{ "outline", "points" }, .{ "stroker", "pts" }, .{ "stroker", "piece" }, .{ "stroker", "first_piece" } }) |f| {
+            var most: usize = 0;
+            for (r.workers) |*w| most = @max(most, @field(@field(w, f[0]), f[1]).capacity);
+            for (r.workers) |*w| try @field(@field(w, f[0]), f[1]).ensureTotalCapacityPrecise(r.gpa, most);
         }
     }
 
@@ -1559,6 +1578,48 @@ test "steady-state frames allocate nothing" {
     var out: [200 * 150 * 4]u8 = undefined;
     for (0..3) |frame| {
         if (frame == 2) counting.count = 0;
+        const list = try buildScene(&b, &pb, 1, img);
+        try r.render(list, .{ .target = .{ .pixels = &out, .stride = 200 * 4, .format = .argb8888 } });
+    }
+    try testing.expectEqual(@as(usize, 0), counting.count);
+}
+
+/// Runs every fork-join on one chosen worker index, on the calling
+/// thread: the most uneven split of work a pool can produce.
+const OneWorker = struct {
+    index: u32 = 0,
+
+    fn executor(o: *OneWorker, workers: u32) Executor {
+        return .{ .ctx = o, .workers = workers, .run = run };
+    }
+
+    fn run(ctx: ?*anyopaque, task: Executor.Task) void {
+        const o: *OneWorker = @ptrCast(@alignCast(ctx));
+        task.func(task.ctx, o.index);
+    }
+};
+
+test "steady-state frames allocate nothing when another worker gets the work" {
+    var img_buf: [16 * 16 * 4]u8 = undefined;
+    const img = checker(&img_buf, 16, 16);
+    var counting: scene.CountingAllocator = .{ .child = testing.allocator };
+    const gpa = counting.allocator();
+    var b = scene.Builder.init(gpa);
+    defer b.deinit();
+    var pb = raster.PathBuilder.init(gpa);
+    defer pb.deinit();
+    var one: OneWorker = .{};
+    const r = try Renderer.create(gpa, one.executor(3));
+    defer r.destroy();
+    try r.resize(200, 150);
+    var out: [200 * 150 * 4]u8 = undefined;
+    // Worker 0 does all the work while the renderer warms up; then worker
+    // 2, which has never run, does it all.
+    for (0..3) |frame| {
+        if (frame == 2) {
+            one.index = 2;
+            counting.count = 0;
+        }
         const list = try buildScene(&b, &pb, 1, img);
         try r.render(list, .{ .target = .{ .pixels = &out, .stride = 200 * 4, .format = .argb8888 } });
     }

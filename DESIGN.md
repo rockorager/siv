@@ -492,6 +492,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - The renderer takes a fork-join `Executor` (run one job on N workers and
     wait). The application pool provides it (D6); `Executor.serial` renders
     inline, e.g. for color glyph bitmaps.
+  - Which worker gets which work changes from frame to frame, so after the
+    geometry pass every worker's buffers grow to what any one worker
+    would need: its line list to all the lines the frame made, its path
+    and stroke scratch to the largest any worker has used (exactly, since
+    rounding up would ratchet). A frame like an earlier one then allocates
+    nothing even if one worker that never ran does all of it, which a
+    test forces with an executor that runs every job on one chosen worker.
   - Coverage contract shared with Vulkan: exact box coverage for
     rectangles; rounded corners clamp(0.5 − d, 0, 1) at pixel centers,
     limited by box coverage; paths exact-area coverage after flattening to
