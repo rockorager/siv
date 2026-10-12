@@ -105,20 +105,6 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(shared);
     b.installArtifact(static);
 
-    // Generated headers and bindings (D3). The generator writes a tree that
-    // is installed under the prefix as is (include/siv.h, ...).
-    const gen = b.addExecutable(.{
-        .name = "siv-abi-gen",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/abi/gen.zig"),
-            .target = b.graph.host,
-            .imports = &.{.{ .name = "build_options", .module = build_options }},
-        }),
-    });
-    const gen_run = b.addRunArtifact(gen);
-    const generated = gen_run.addOutputDirectoryArg("generated");
-    b.installDirectory(.{ .source_dir = generated, .install_dir = .prefix, .install_subdir = "" });
-
     const pc = b.addWriteFiles().add("siv.pc", b.fmt(
         \\prefix=${{pcfiledir}}/../..
         \\libdir=${{prefix}}/lib
@@ -142,7 +128,6 @@ pub fn build(b: *std.Build) void {
     // Tests.
     const test_step = b.step("test", "Run all tests");
     const module_tests = [_]struct { []const u8, *std.Build.Module }{
-        .{ "abi", abi },
         .{ "text", text },
         .{ "raster", raster },
         .{ "scene", scene },
@@ -171,19 +156,19 @@ pub fn build(b: *std.Build) void {
     b.step("test-headless", "Run the headless integration tests").dependOn(&headless_run.step);
     test_step.dependOn(&headless_run.step);
 
-    // C ABI smoke test: a C program built against the generated header and
-    // the shared library.
-    const c_smoke = b.addExecutable(.{
-        .name = "c-abi-smoke",
-        .root_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true }),
+    // Generated headers and bindings, libsiv.so link setup (SONAME, symbol
+    // versions), the `siv` Zig module, and the abi, ABI library, and C
+    // tests (D2, D3). Owned by the ABI workstream.
+    @import("src/abi/build_steps.zig").add(b, .{
+        .target = target,
+        .optimize = optimize,
+        .version = version,
+        .build_options = build_options,
+        .test_filters = test_filters,
+        .abi = abi,
+        .shared = shared,
+        .test_step = test_step,
     });
-    c_smoke.root_module.addCSourceFile(.{ .file = b.path("test/c/smoke.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic" } });
-    c_smoke.root_module.addIncludePath(generated.path(b, "include"));
-    c_smoke.root_module.linkLibrary(shared);
-    const c_smoke_run = b.addRunArtifact(c_smoke);
-    c_smoke_run.expectExitCode(0);
-    b.step("test-c", "Run the C ABI smoke test").dependOn(&c_smoke_run.step);
-    test_step.dependOn(&c_smoke_run.step);
 }
 
 const Ctx = struct {

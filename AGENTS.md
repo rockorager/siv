@@ -14,7 +14,8 @@ zig build test                 # every module's tests, headless tests, C ABI smo
 zig build test-text            # one module: test-abi, test-text, test-raster, test-scene,
                                #   test-render-cpu, test-loop, test-platform
 zig build test-headless        # headless integration tests (test/headless.zig)
-zig build test-c               # C program against the generated header and libsiv.so
+zig build test-abi             # abi module, generators, Zig wrappers, exported symbols
+zig build test-c               # C programs against the generated headers and shared libraries
 zig build test -Dtest-filter=bidi
 zig build -fsys=harfbuzz -fsys=sheenbidi   # link system copies instead of vendored ones
 ```
@@ -51,8 +52,10 @@ commit message. In particular:
 - **Owner-controlled build inputs** that need no `build.zig` edit:
   - `src/platform/protocols.zig`: Wayland protocol XML and global versions.
   - `src/text/uucode_config.zig`: Unicode properties compiled into tables.
-  - `src/abi/gen.zig`: everything it writes to its output directory is
+  - `src/abi/gen.zig`: everything it writes to its install directory is
     installed under the prefix.
+  - `src/abi/build_steps.zig`: the ABI part of the build graph (generated
+    outputs, libsiv.so link setup, ABI tests).
 
 ## Conventions
 
@@ -65,7 +68,16 @@ commit message. In particular:
 - Unicode data files for tests are embedded by name:
   `@embedFile("LineBreakTest.txt")`. The list is in `build.zig`.
 - Vendored C code is compiled with `-fvisibility=hidden`; libsiv.so exports
-  only the `siv_` ABI.
+  only the `siv_` ABI. A generated version script enforces this, so
+  libsiv.so links with LLVM and LLD (Zig's self-hosted ELF linker ignores
+  version scripts); `test-abi` fails if any other symbol is exported.
+- **Adding a C function:** describe it in `src/abi/api.zig` (conventions in
+  `src/abi/schema.zig` and D2), then export it from `src/abi/` with the
+  generated wrapper's types (`@import("siv")`), going through
+  `src/abi/runtime.zig` for descriptors, strings, handles, and errors. The
+  build fails if an export is missing or its signature differs from the
+  schema. Subsystems expose plain Zig APIs with internal indices; only
+  `src/abi/` knows about handles.
 - Headless tests (test/headless.zig) may import every internal module; they
   run the real loop on the headless backend and compare CPU golden images
   (D24). Golden images go under `test/golden/<area>/`.

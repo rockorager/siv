@@ -71,28 +71,64 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   bindings must stay correct across versions.
 - **Decision:**
   - Objects are generation-checked `uint64_t` handles, never pointers. A stale
-    handle is a detectable error.
-  - Every descriptor struct begins with its size. Zero means default, so callers
-    use designated initializers.
-  - Strings are pointer and length; embedded NUL is allowed.
-  - No global state; multiple applications per process are allowed.
+    handle is a detectable error. Layout: type tag (8 bits, never 0, so a
+    mistyped handle fails), root slot (10), generation (22), index (24).
+    Objects belong to a root (the application); destroying the root
+    invalidates every handle it issued.
+  - Every descriptor struct begins with `size_t size`. Zero means default, so
+    callers use designated initializers (`SIV_DESC(type, .field = v)` sets the
+    size). Descriptors are passed by pointer (NULL means all defaults), are
+    never embedded by value, only grow by appending fields, and have no
+    padding. A smaller size (older headers) gets defaults for the missing
+    fields; a larger size (newer headers) is accepted only if the unknown
+    bytes are zero, otherwise `SIV_ERROR_UNSUPPORTED`; a size that ends inside
+    a field is invalid. Value structs (points, colors) are frozen forever.
+  - Strings are pointer and length; embedded NUL is allowed. siv copies what
+    it keeps. Static strings siv returns are also NUL-terminated.
+  - Callbacks take `void *user_data` as their first parameter; a callback
+    parameter is followed by its `user_data`.
+  - Fallible functions return `siv_result` (0 is success, errors negative),
+    write outputs through trailing pointers only on success, and have no
+    effect when they fail. Unknown enum values and flag bits are
+    `SIV_ERROR_UNSUPPORTED`.
+  - No global state; multiple applications per process are allowed. The one
+    process-wide structure is a fixed, lock-free table of 1024 root slots
+    that lets any handle be validated without its root. It holds no
+    configuration and needs no initialization.
   - Allocation failure is an error result at every call, never an abort.
-    Applications may supply allocator hooks.
-  - SONAME versioning, symbol versioning, and semantic versioning. Deprecation
-    rules are written down before 1.0.
+    Applications may supply allocator hooks (`siv_allocator`: alloc and free
+    with size and alignment, plus user data) per root; every allocation for
+    that root, including the root itself, goes through them.
+  - SONAME versioning, symbol versioning, and semantic versioning. The SONAME
+    is `libsiv.so.<major>`. A generated version script exports exactly the
+    schema's functions and hides everything else (including sanitizer
+    runtimes). Before 1.0 every symbol carries the node of the current minor
+    release (`SIV_0.1`), so a program linked against 0.1 fails to load
+    against 0.2 instead of misbehaving; from 1.0 a symbol keeps the node of
+    the release that added it. A build check compares the exported symbols,
+    versions, and SONAME against the schema. Deprecation rules are written
+    down before 1.0.
 - **Alternatives:** GObject-style reference-counted objects with
-  inheritance; raw pointers.
+  inheritance; raw pointers; a per-thread "last error" (global state, and
+  lost across language boundaries); `libsiv.so.0.<minor>` SONAMEs before 1.0
+  (lets 0.x releases coexist, but Zig's build names files by major only).
 - **Reverse if:** generation checks show up in profiles on hot paths. Then
   check only at the ABI boundary in release builds (internal code already uses
-  plain indices; see D20).
+  plain indices; see D20). Use per-minor SONAMEs if distributions need 0.x
+  releases installed side by side.
 
 ### D3. One API schema generates every binding
 
 - **Requirement:** the C header, Zig wrapper, Lua binding, documentation, and
   third-party bindings must never drift.
-- **Decision:** a Zig schema describes every type and function. Build steps
+- **Decision:** a Zig schema (`src/abi/api.zig`, format in
+  `src/abi/schema.zig`) describes every type and function. Build steps
   generate `siv.h`, the Zig wrapper, the Lua binding, reference documentation,
-  and a published JSON description for external generators.
+  a published JSON description for external generators, and the linker
+  version script. libsiv's own exports use the generated Zig wrapper's types
+  and are checked at compile time against the schema signatures, so the
+  implementation cannot drift either. A test-only library built from a second
+  schema exercises every construct through the same pipeline.
 - **Alternatives:** hand-written header with bindings derived from it; GObject
   Introspection.
 - **Reverse if:** the schema cannot express a needed ABI construct without
