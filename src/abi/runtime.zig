@@ -139,6 +139,13 @@ pub const Root = struct {
         return self;
     }
 
+    /// Makes the root's handle and every handle it issued invalid, and
+    /// waits for threads that pinned it (`pin`) to leave. Call before
+    /// tearing down what pinned callers use; `destroy` does it too.
+    pub fn retire(self: *Root) void {
+        handles.registry.retire(self.handle);
+    }
+
     /// Unregisters and frees a T made by `create`. Its handle and every
     /// object handle it issued become invalid. T's other resources must be
     /// freed first.
@@ -152,6 +159,16 @@ pub const Root = struct {
     /// The T a root handle names.
     pub fn get(comptime T: type, tag: u8, handle: u64) Error!*T {
         return @ptrCast(@alignCast(try handles.registry.root(handle, tag)));
+    }
+
+    /// The T a root handle names, from any thread, kept alive until
+    /// `unpin`: destroying it waits (see `retire`).
+    pub fn pin(comptime T: type, tag: u8, handle: u64) Error!*T {
+        return @ptrCast(@alignCast(try handles.registry.pin(handle, tag)));
+    }
+
+    pub fn unpin(handle: u64) void {
+        handles.registry.unpin(handle);
     }
 
     /// The T that owns an object handle, and the object's payload.

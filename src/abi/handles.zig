@@ -72,6 +72,9 @@ pub const Registry = struct {
         /// Handle type of the root, so that a library with several root
         /// types never casts a root to the wrong one.
         tag: std.atomic.Value(u8) = .init(0),
+        /// Threads between `pin` and `unpin` on this slot; `retire` waits
+        /// for them to leave.
+        pins: std.atomic.Value(u32) = .init(0),
     };
 
     /// Claims a slot for the root at `ptr` and returns its handle.
@@ -93,11 +96,47 @@ pub const Registry = struct {
     /// Releases a root's slot. Its handle and every handle of its objects
     /// become invalid.
     pub fn unregister(r: *Registry, handle: u64) void {
+        r.retire(handle);
+        r.release(handle);
+    }
+
+    /// Invalidates a root's handle (and every handle of its objects), then
+    /// waits until no thread holds a `pin` on it. Afterwards no other
+    /// thread can reach the root, so it can be torn down; `release` frees
+    /// the slot once it is gone. Calling it twice is harmless.
+    pub fn retire(r: *Registry, handle: u64) void {
         const slot = &r.slots[Fields.decode(handle).root];
-        // A stale generation makes concurrent lookups fail before the slot
-        // is reused.
-        _ = slot.generation.fetchAdd(1, .release);
-        slot.root.store(null, .release);
+        // A stale generation makes concurrent lookups and pins fail before
+        // the slot is reused. Sequentially consistent with the pin count,
+        // so that either a pinning thread sees the new generation or this
+        // thread sees its pin.
+        _ = slot.generation.fetchAdd(1, .seq_cst);
+        while (slot.pins.load(.seq_cst) != 0) std.Thread.yield() catch {};
+    }
+
+    /// Frees a retired root's slot for reuse.
+    pub fn release(r: *Registry, handle: u64) void {
+        r.slots[Fields.decode(handle).root].root.store(null, .release);
+    }
+
+    /// The root a root handle names, kept from being retired until
+    /// `unpin`. Safe from any thread while the root is being destroyed on
+    /// another: either this fails or the destruction waits. Hold a pin
+    /// only briefly (`retire` spins).
+    pub fn pin(r: *Registry, handle: u64, tag: u8) Error!*anyopaque {
+        const f = Fields.decode(handle);
+        if (f.type != tag or f.index != 0) return error.InvalidHandle;
+        const slot = &r.slots[f.root];
+        _ = slot.pins.fetchAdd(1, .seq_cst);
+        errdefer _ = slot.pins.fetchSub(1, .release);
+        if (@as(u22, @truncate(slot.generation.load(.seq_cst))) != f.generation) return error.InvalidHandle;
+        const p = slot.root.load(.acquire) orelse return error.InvalidHandle;
+        if (slot.tag.load(.monotonic) != tag) return error.InvalidHandle;
+        return p;
+    }
+
+    pub fn unpin(r: *Registry, handle: u64) void {
+        _ = r.slots[Fields.decode(handle).root].pins.fetchSub(1, .release);
     }
 
     /// The root a root handle names.
@@ -318,4 +357,31 @@ test "a reused registry slot does not revive old handles" {
     try std.testing.expectError(error.InvalidHandle, r.root(first, 1));
     try std.testing.expectEqual(@as(*anyopaque, &x), try r.root(second, 1));
     r.unregister(second);
+}
+
+test "retire waits for pins, and pins after retire fail" {
+    var r: Registry = .{};
+    var x: u8 = 0;
+    const h = try r.register(1, &x);
+    try std.testing.expectEqual(@as(*anyopaque, &x), try r.pin(h, 1));
+    try std.testing.expectError(error.InvalidHandle, r.pin(h, 2));
+
+    const Retirer = struct {
+        fn run(reg: *Registry, handle: u64, done: *std.atomic.Value(bool)) void {
+            reg.retire(handle);
+            done.store(true, .seq_cst);
+        }
+    };
+    var done: std.atomic.Value(bool) = .init(false);
+    const thread = try std.Thread.spawn(.{}, Retirer.run, .{ &r, h, &done });
+    // The retiring thread cannot finish while the pin is held.
+    var spins: usize = 0;
+    while (spins < 1000) : (spins += 1) std.Thread.yield() catch {};
+    try std.testing.expect(!done.load(.seq_cst));
+    r.unpin(h);
+    thread.join();
+    try std.testing.expect(done.load(.seq_cst));
+    try std.testing.expectError(error.InvalidHandle, r.pin(h, 1));
+    try std.testing.expectError(error.InvalidHandle, r.root(h, 1));
+    r.release(h);
 }
