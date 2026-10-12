@@ -942,7 +942,7 @@ pub const value: Interface = .{
         .{ .name = "MinimumValue", .signature = "d", .get = valueMin },
         .{ .name = "MaximumValue", .signature = "d", .get = valueMax },
         .{ .name = "MinimumIncrement", .signature = "d", .get = valueIncrement },
-        .{ .name = "CurrentValue", .signature = "d", .get = valueNow },
+        .{ .name = "CurrentValue", .signature = "d", .access = .readwrite, .get = valueNow, .set = setValueNow },
         .{ .name = "Text", .signature = "s", .get = propEmpty },
     },
 };
@@ -961,8 +961,17 @@ fn valueMax(ctx: PropertyContext, out: *Encoder) anyerror!void {
 }
 
 fn valueIncrement(ctx: PropertyContext, out: *Encoder) anyerror!void {
-    _ = try rangeOf(ctx);
-    try out.writeDouble(0);
+    try out.writeDouble((try rangeOf(ctx)).step);
+}
+
+/// Setting the value asks the node's widget for it (`set_value`), which
+/// clamps and steps it, or refuses; the change reaches assistive
+/// technology through the tree's next update like any other.
+fn setValueNow(ctx: PropertyContext, in: *dbus.Decoder) anyerror!void {
+    const x = try propNode(ctx);
+    const v = try in.readDouble();
+    if (x.n().value == null or !x.live()) return error.AccessDenied;
+    if (!ui.input.setValue(x.w.ui, x.id(), v)) return error.AccessDenied;
 }
 
 fn valueNow(ctx: PropertyContext, out: *Encoder) anyerror!void {

@@ -810,6 +810,7 @@ pub const Win = struct {
             if (!n.disabled) s = s.with(.editable);
         }
         if (n.role == .slider) s = s.with(.horizontal);
+        if (n.modal) s = s.with(.modal);
         if (n.role == .window) {
             s = s.with(.resizable);
             if (w.active) s = s.with(.active);

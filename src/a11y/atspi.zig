@@ -184,6 +184,7 @@ pub const State = enum(u6) {
     focusable = 11,
     focused = 12,
     horizontal = 14,
+    modal = 16,
     multi_line = 17,
     pressed = 20,
     resizable = 21,
