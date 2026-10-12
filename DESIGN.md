@@ -278,6 +278,26 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Hyphenation from Liang patterns (check each pattern file's license); an
     optional Knuth–Plass breaker for document views.
   - Horizontal text only; vertical CJK is a non-goal.
+  - The font cache never reads files. Fonts enter with caller-supplied bytes or
+    as pending Fontconfig sources; shaping skips pending fonts and lists the
+    ones it wanted, and the text node loads them on the worker pool and
+    rebuilds its `ShapedParagraph`. A style's fallback chain is Fontconfig's
+    coverage-trimmed sort for the query.
+  - Fallback probes only fonts whose cmap (or Fontconfig charset, when
+    pending) has the grapheme's first code point. A stretch of unrenderable
+    graphemes goes to the first font that renders all of it, else grapheme by
+    grapheme. Emoji presentation (UTS #51) prefers color or text faces.
+  - SheenBidi resolves levels once per text; L1 and L2 run in siv on the stored
+    levels and bidi classes, so no SheenBidi object outlives the analysis.
+  - Line_Break, Word_Break, Script, and Script_Extensions are uucode extension
+    fields built from the pinned UCD. Grapheme clusters keep uucode's one
+    tailoring: an emoji modifier not after a modifier base is its own cluster.
+  - One `hb_font_t` per face at font-unit scale, scaled per run, so sizes cost
+    nothing. `ptem`-dependent shaping (`trak`) is not applied.
+  - The cluster map is two caret stops per grapheme in visual order; ligatures
+    split at GDEF caret positions, else evenly.
+  - Not yet built: tab stops (a tab is four spaces wide), breaking inside an
+    overlong word, hyphenation, and Knuth–Plass.
 - **Alternatives:** Pango (GLib dependency, blocking font load, single-threaded
   layout objects); libraqm (no wrapping or fallback); Parley (Rust toolchain);
   kb_text_shape (no cluster mapping, so no editing).
