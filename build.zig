@@ -85,6 +85,14 @@ pub fn build(b: *std.Build) void {
     };
     const platform = ctx.module("src/platform/platform.zig", &platform_imports);
     platform.addImport("integration", integrationOption(b, false));
+    const compositor = ctx.module("src/compositor/compositor.zig", &.{
+        .{ .name = "scene", .module = scene },
+        .{ .name = "raster", .module = raster },
+        .{ .name = "render_cpu", .module = render_cpu },
+        .{ .name = "pool", .module = pool },
+        .{ .name = "loop", .module = loop },
+        .{ .name = "platform", .module = platform },
+    });
     const internal = [_]std.Build.Module.Import{
         .{ .name = "pool", .module = pool },
         .{ .name = "scene", .module = scene },
@@ -93,6 +101,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "render_cpu", .module = render_cpu },
         .{ .name = "loop", .module = loop },
         .{ .name = "platform", .module = platform },
+        .{ .name = "compositor", .module = compositor },
     };
     const abi = ctx.module("src/abi/abi.zig", &internal);
     abi.addImport("build_options", build_options);
@@ -161,6 +170,7 @@ pub fn build(b: *std.Build) void {
         .{ "render-cpu", render_cpu },
         .{ "loop", loop },
         .{ "platform", platform },
+        .{ "compositor", compositor },
     };
     for (module_tests) |entry| {
         const name, const module = entry;

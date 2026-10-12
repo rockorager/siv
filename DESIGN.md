@@ -38,16 +38,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
                       ▼
 ┌───────────────────────────────────────────────────┐
 │ UI thread                                         │
-│ event loop (epoll) · libwayland · input · focus   │
+│ event loop (epoll) · input routing · focus        │
 │ retained tree · layout · text · semantics (a11y)  │
 │ stock widgets · D-Bus · portals                   │
-└──────┬──────────────────────────────┬─────────────┘
-       │ layer updates                │ worker pool:
-       ▼                              │ decode, file I/O,
-┌──────────────────────────────┐      │ raster tiles
+└──────┬───────────────────▲──────────┬─────────────┘
+       │ layer updates     │ events   │ worker pool:
+       ▼                   │          │ decode, file I/O,
+┌──────────────────────────┴───┐      │ raster tiles
 │ Compositor thread            │      │
-│ layer tree · scroll and      │◀─────┘
-│ transform/opacity animation  │
+│ libwayland · layer tree      │◀─────┘
+│ scroll and transform/opacity │
+│ animation                    │
 │ CPU renderer │ Vulkan        │
 │ wl_shm       │ swapchain     │
 └──────────────────────────────┘
@@ -230,6 +231,29 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   independently. The UI thread sends layer updates, not whole frames.
   The compositor thread renders CPU tiles through the application pool's
   fork-join mode and works on tiles itself, so it never blocks on the loop.
+  - Layer updates (`src/compositor/update.zig`): each window has a tree of
+    layers with UI-chosen ids (plain indices, D20). The UI commits batches
+    of ops (create, destroy, insert, detach, set content, transform,
+    opacity, clip, scroll container, scroll to, fling, animate,
+    background), applied atomically between frames. Content is a display
+    list whose builder moves to the compositor and comes back in a
+    `released` event once no frame reads it.
+  - Transforms are components (translate, scale, rotation about an
+    origin), not matrices, so that animations interpolate them; skew
+    belongs inside content.
+  - Scroll offsets belong to the compositor: it scrolls containers on
+    pointer input and flings by itself and reports `scrolled` events with
+    the last applied commit's sequence number, so the UI can ignore
+    reports older than its own `scroll_to`.
+  - The platform (the Wayland connection, or the headless backend) runs
+    on the compositor thread's own loop, and the compositor forwards
+    input, configure, and output events to the UI loop. Presenting while
+    the UI thread is stalled needs frame callbacks, buffer releases, and
+    presentation feedback dispatched off the UI thread, and scrolling on
+    input needs the input too. The alternative, a second event queue for
+    presentation objects with the configure and frame clock state shared
+    under a lock, keeps input on a stalled thread. The cost is one thread
+    hop (an eventfd write) per input event.
 - **Alternatives:** render on the UI thread (lowest latency when idle, but any
   UI-thread stall drops frames); a plain render thread (adds a handoff without
   independent animation).

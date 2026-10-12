@@ -12,7 +12,8 @@ xkbcommon, and Fontconfig (`.agents/setup` installs them on Debian).
 zig build                      # zig-out: libsiv.so, libsiv.a, include/siv.h, lib/pkgconfig/siv.pc
 zig build test                 # every module's tests, headless tests, C ABI smoke test
 zig build test-text            # one module: test-abi, test-text, test-raster, test-scene,
-                               #   test-render-cpu, test-pool, test-loop, test-platform
+                               #   test-render-cpu, test-pool, test-loop, test-platform,
+                               #   test-compositor
 zig build test-headless        # headless integration tests (test/headless.zig)
 zig build test-integration     # Wayland backend against headless sway
                                #   (not in `test`; .agents/setup installs sway)
@@ -42,6 +43,7 @@ owns its directories and does not edit another workstream's files.
 | `render_cpu` | `src/render/cpu/` | Rasterizer, display list, CPU renderer | `scene`, `raster`, `text`, `harfbuzz`, `pool`, `wuffs` |
 | `loop` | `src/loop/` | Event loop and Wayland platform | `pool` |
 | `platform` | `src/platform/` | Event loop and Wayland platform | `loop`, `wayland`, `xkbcommon` |
+| `compositor` | `src/compositor/` | Compositor thread | `scene`, `raster`, `render_cpu`, `pool`, `loop`, `platform` |
 
 Shared files have no single owner: `build.zig`, `build.zig.zon`,
 `src/siv.zig`, `test/`, `.agents/`, and this file. Change them only when your
