@@ -857,6 +857,7 @@ pub fn presentExternal(self: *Wayland, id: WindowId, commit: platform.ExternalCo
 /// barriers, and presentation feedback.
 fn beforeCommit(self: *Wayland, w: *Window) void {
     const surface = w.surface;
+    w.clock.handedOff(Loop.now());
     const answers_configure = w.ack_serial != null;
     ackPending(w);
 
@@ -1297,7 +1298,7 @@ fn onFrameDone(cb: *wl.Callback, event: wl.Callback.Event, w: *Window) void {
         .done => {
             cb.destroy();
             w.frame_callback = null;
-            w.clock.done();
+            w.clock.doneAt(Loop.now());
             // Until presentation feedback arrives, trust the output mode.
             if (w.clock.last_present_ns == null) w.clock.refresh_ns = outputRefresh(w);
             scheduleFrame(w);

@@ -27,6 +27,29 @@ last_present_ns: ?u64 = null,
 /// How much later than predicted the most recent frame was presented
 /// (negative if earlier), when its prediction is known.
 last_error_ns: ?i64 = null,
+/// When the frame being produced became due: the frame callback it waited
+/// for, or else when it began.
+due_ns: u64 = 0,
+/// A frame callback that arrived while a frame was wanted, if the frame
+/// has not begun yet.
+callback_ns: ?u64 = null,
+/// Pacing record of the most recent frames, for measuring it: every
+/// presentation from feedback (exact, unlike sampling `last_present_ns`)
+/// and how long siv took from each frame being due to handing it to the
+/// compositor. Entry `n % len` is the nth.
+presents: [history_len]u64 = @splat(0),
+presents_count: u64 = 0,
+handoffs: [history_len]Handoff = @splat(.{}),
+handoffs_count: u64 = 0,
+
+pub const history_len = 64;
+
+pub const Handoff = struct {
+    /// When the frame became due (`due_ns`).
+    due_ns: u64 = 0,
+    /// When its commit started: siv's work for it is done.
+    at_ns: u64 = 0,
+};
 
 pub const default_refresh_ns: u64 = 16_666_667;
 
@@ -57,7 +80,16 @@ pub fn begin(c: *FrameClock, now_ns: u64) Time {
     std.debug.assert(c.ready());
     c.wanted = false;
     c.forced = false;
+    c.due_ns = c.callback_ns orelse now_ns;
+    c.callback_ns = null;
     return .{ .present_ns = c.predict(now_ns), .interval_ns = c.refresh_ns };
+}
+
+/// The current frame's commit starts: siv's work for it is done, and what
+/// remains is the presentation engine's and the compositor's.
+pub fn handedOff(c: *FrameClock, now_ns: u64) void {
+    c.handoffs[c.handoffs_count % history_len] = .{ .due_ns = c.due_ns, .at_ns = now_ns };
+    c.handoffs_count += 1;
 }
 
 /// The frame was committed with a frame callback.
@@ -70,12 +102,20 @@ pub fn done(c: *FrameClock) void {
     c.waiting = false;
 }
 
+/// `done`, at `now_ns`: a wanted frame is due from now.
+pub fn doneAt(c: *FrameClock, now_ns: u64) void {
+    if (c.wanted) c.callback_ns = now_ns;
+    c.done();
+}
+
 /// Presentation feedback for a committed frame that was predicted for
 /// `predicted_ns`, if known. `refresh_ns` of 0 means unknown (variable
 /// refresh) and keeps the current estimate.
 pub fn presented(c: *FrameClock, time_ns: u64, refresh_ns: u64, predicted_ns: ?u64) void {
     if (c.last_present_ns) |last| if (time_ns < last) return; // out of order
     c.last_present_ns = time_ns;
+    c.presents[c.presents_count % history_len] = time_ns;
+    c.presents_count += 1;
     if (refresh_ns != 0) c.refresh_ns = refresh_ns;
     c.last_error_ns = if (predicted_ns) |p| @as(i64, @intCast(time_ns)) - @as(i64, @intCast(p)) else null;
 }

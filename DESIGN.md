@@ -730,6 +730,20 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     lavapipe (Mesa 22.3), a 500 ms animation with the UI thread spinning:
     30 presentations, none dropped, one frame rendered per refresh, and
     predictions within 0.6 ms of feedback, in MAILBOX and in FIFO alike.
+  - Measuring pacing: the frame clock records every presentation from
+    feedback and, per frame, when it became due (its frame callback, or
+    its start) and when its commit started (siv's hand-off). The tests
+    count drops from that record, not by sampling the last presentation
+    (a sampling thread that oversleeps a refresh under load reports drops
+    that never happened), and assert that siv hands every frame off within
+    a refresh of it becoming due: 0.5 to 1.3 ms for Vulkan here. With four
+    busy CPU loops beside the test, frames still drop while hand-offs stay
+    under 0.7 ms: the time goes to lavapipe rasterizing on the contended
+    CPUs, which Mesa's software WSI waits for in vkQueuePresentKHR (25 to
+    37 ms), and to sway's pixman repaint. That is inherent to a software
+    GPU, so the end-to-end drop tests ("pacing: ...") run in a binary of
+    their own after the rest of `zig build test-integration`, or alone with
+    `zig build test-integration-pacing`.
   - Mesa's FIFO without `fifo-v1` (every release before 25.0) waits for the
     previous commit's frame callback inside vkQueuePresentKHR, with no
     timeout. A configure forces a frame even while a callback is

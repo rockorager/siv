@@ -4,6 +4,14 @@
 //! thread is stalled; and the same through a Vulkan swapchain on lavapipe
 //! in MAILBOX and FIFO present modes (D10, D12). Print the measurements
 //! with SIV_MEASURE=1.
+//!
+//! Tests named "pacing: ..." count dropped frames end to end. On lavapipe
+//! and sway's pixman renderer every frame is CPU work, so other processes
+//! make frames late whatever siv does: they run in their own binary, alone,
+//! after the other integration tests (`pacing-integration`, also `zig
+//! build test-integration-pacing`), and are skipped here. What siv controls
+//! (handing each frame off well before its predicted presentation, one
+//! frame per refresh, predictions that follow feedback) they assert too.
 
 const std = @import("std");
 const testing = std.testing;
@@ -17,6 +25,14 @@ const Compositor = @import("Compositor.zig");
 const pool = @import("pool");
 
 const Loop = loop_mod.Loop;
+
+/// Whether this is the binary for "pacing: ..." tests.
+const pacing = @import("integration").pacing;
+
+/// Skips a test outside the binary it belongs to.
+fn only(comptime pacing_test: bool) !void {
+    if (pacing != pacing_test) return error.SkipZigTest;
+}
 const Event = update.Event;
 const WindowId = platform.WindowId;
 
@@ -172,6 +188,7 @@ const Probe = struct {
     /// Presented minus predicted time of the latest frame with feedback.
     error_ns: ?i64 = null,
     callback_pending: bool = false,
+    clock: platform.FrameClock = .{},
 
     fn f(ctx: ?*anyopaque, c: *Compositor) void {
         const p: *Probe = @ptrCast(@alignCast(ctx));
@@ -186,6 +203,7 @@ const Probe = struct {
         p.state = w.state;
         p.presenter = c.presenter(p.window);
         p.error_ns = w.clock.last_error_ns;
+        p.clock = w.clock;
         p.callback_pending = w.frame_callback != null;
         const cpu = w.swapchain.slots;
         for (cpu) |slot| if (slot) |b| {
@@ -201,6 +219,7 @@ const Probe = struct {
 };
 
 test "windows map with content laid out for their configured size" {
+    try only(false);
     var h: Harness = .{};
     try h.start();
     defer h.stop();
@@ -234,7 +253,8 @@ test "windows map with content laid out for their configured size" {
     try h.settle();
 }
 
-test "scrolling and animation stay smooth on sway while the UI thread is stalled" {
+test "pacing: scrolling and animation stay smooth on sway while the UI thread is stalled" {
+    try only(true);
     var h: Harness = .{};
     try h.start();
     defer h.stop();
@@ -326,8 +346,13 @@ test "scrolling and animation stay smooth on sway while the UI thread is stalled
         .easing = .linear,
     } });
     if (measuring()) {
-        std.debug.print("sway: 500 ms animations, UI thread spinning: card {d} presentations, {d} dropped; full-window scroll {d} presentations, {d} dropped\n", .{ slide.presentations, slide.dropped, scroll.presentations, scroll.dropped });
+        std.debug.print("sway: 500 ms animations, UI thread spinning: card {d} presentations, {d} dropped, handed off at most {d:.2} ms after due; full-window scroll {d} presentations, {d} dropped, at most {d:.2} ms\n", .{
+            slide.presentations,  slide.dropped,  @as(f64, @floatFromInt(slide.max_latency_ns)) / 1e6,
+            scroll.presentations, scroll.dropped, @as(f64, @floatFromInt(scroll.max_latency_ns)) / 1e6,
+        });
     }
+    // Debug builds of the CPU renderer take most of a refresh here.
+    if (@import("builtin").mode != .debug) try testing.expectEqual(@as(usize, 0), slide.late_handoffs);
     try testing.expect(slide.presentations >= anim_ns / refresh - 3);
     try testing.expectEqual(@as(usize, 0), slide.dropped);
     if (@import("builtin").mode != .debug) try testing.expectEqual(@as(usize, 0), scroll.dropped);
@@ -336,48 +361,56 @@ test "scrolling and animation stay smooth on sway while the UI thread is stalled
 const anim_ns = 500 * std.time.ns_per_ms;
 
 /// Runs `op` (an animation of `anim_ns`) while this thread, the UI
-/// thread, spins; a helper thread records every presentation timestamp
-/// from feedback. Each whole extra refresh between two is a dropped frame.
-fn droppedDuringStall(h: *Harness, id: WindowId, refresh: u64, op: @FieldType(update.Op, "animate")) !struct { presentations: usize, dropped: usize } {
-    const Watch = struct {
-        stop: std.atomic.Value(bool) = .init(false),
-        times: [256]u64 = undefined,
-        len: usize = 0,
-        fn run(w: *@This(), comp: *Compositor, window: WindowId) void {
-            var last: u64 = 0;
-            while (!w.stop.load(.acquire) and w.len < w.times.len) {
-                sleepNs(1 * std.time.ns_per_ms);
-                const p = Probe.read(comp, window) catch return;
-                const t = p.presented orelse continue;
-                if (t != last) {
-                    w.times[w.len] = t;
-                    w.len += 1;
-                    last = t;
-                }
-            }
-        }
-    };
-    var watch: Watch = .{};
+/// thread, spins, and reads the frame clock's record of the window's
+/// presentations (from feedback) and hand-offs during it.
+fn droppedDuringStall(h: *Harness, id: WindowId, refresh: u64, op: @FieldType(update.Op, "animate")) !Pacing {
     _ = try h.comp.commit(id, &.{.{ .animate = op }});
     try h.settle();
     const start = Loop.now();
-    const watcher = try std.Thread.spawn(.{}, Watch.run, .{ &watch, h.comp, id });
     spinNs(anim_ns);
-    watch.stop.store(true, .release);
-    watcher.join();
-    // The first timestamp read may predate the animation.
-    var first: usize = 0;
-    while (first < watch.len and watch.times[first] < start) first += 1;
-    const times = watch.times[first..watch.len];
-    var dropped: usize = 0;
-    if (times.len > 1) for (times[1..], times[0 .. times.len - 1]) |b, a| {
-        dropped += @intCast((b - a + refresh / 2) / refresh - 1);
-    };
+    const end = Loop.now();
+    const clock = (try Probe.read(h.comp, id)).clock;
     // Let the animation finish before the next one.
     sleepNs(50 * std.time.ns_per_ms);
     try h.loop.dispatch(0);
-    return .{ .presentations = times.len, .dropped = dropped };
+    return .measure(clock, refresh, start, end);
 }
+
+const Pacing = struct {
+    presentations: usize = 0,
+    /// Refreshes without a presentation between two presentations.
+    dropped: usize = 0,
+    /// Frames siv took more than a refresh to hand off once due (its
+    /// frame callback, or its start): siv's own budget (D12). Shorter
+    /// is no proof of a met deadline (the compositor's callback may come
+    /// late), which is why dropped frames are counted too.
+    late_handoffs: usize = 0,
+    /// The longest any frame took.
+    max_latency_ns: u64 = 0,
+
+    fn measure(clock: platform.FrameClock, refresh: u64, start: u64, end: u64) Pacing {
+        const n = platform.FrameClock.history_len;
+        var r: Pacing = .{};
+        var prev: ?u64 = null;
+        var i = clock.presents_count -| n;
+        while (i < clock.presents_count) : (i += 1) {
+            const t = clock.presents[i % n];
+            if (t < start or t > end) continue;
+            r.presentations += 1;
+            if (prev) |a| r.dropped += @intCast((t - a + refresh / 2) / refresh - 1);
+            prev = t;
+        }
+        i = clock.handoffs_count -| n;
+        while (i < clock.handoffs_count) : (i += 1) {
+            const ho = clock.handoffs[i % n];
+            if (ho.due_ns < start or ho.at_ns > end) continue;
+            const latency = ho.at_ns - ho.due_ns;
+            r.max_latency_ns = @max(r.max_latency_ns, latency);
+            if (latency > refresh) r.late_handoffs += 1;
+        }
+        return r;
+    }
+};
 
 // Vulkan presentation (D10, D12) ----------------------------------------------
 
@@ -429,10 +462,13 @@ fn checkPacing(h: *Harness, id: WindowId, label: []const u8) !void {
     } });
     const after = try Probe.read(h.comp, id);
     const frames = after.frames - before.frames;
-    if (measuring()) std.debug.print("sway, Vulkan {s}: 500 ms animation, UI thread spinning: {d} frames rendered, {d} presentations, {d} dropped, last prediction error {d:.2} ms, refresh {d:.2} ms\n", .{
-        label,                                                  frames,                                 r.presentations, r.dropped,
-        @as(f64, @floatFromInt(after.error_ns orelse 0)) / 1e6, @as(f64, @floatFromInt(refresh)) / 1e6,
+    if (measuring()) std.debug.print("sway, Vulkan {s}: 500 ms animation, UI thread spinning: {d} frames rendered, {d} presentations, {d} dropped, frames handed off at most {d:.2} ms after due, last prediction error {d:.2} ms, refresh {d:.2} ms\n", .{
+        label,                                           frames,                                                 r.presentations,                        r.dropped,
+        @as(f64, @floatFromInt(r.max_latency_ns)) / 1e6, @as(f64, @floatFromInt(after.error_ns orelse 0)) / 1e6, @as(f64, @floatFromInt(refresh)) / 1e6,
     });
+    // siv met every frame's deadline; then, running alone, so did lavapipe
+    // and sway.
+    try testing.expectEqual(@as(usize, 0), r.late_handoffs);
     try testing.expect(r.presentations >= anim_ns / refresh - 3);
     try testing.expectEqual(@as(usize, 0), r.dropped);
     // Frames follow the frame clock: no more than one per refresh.
@@ -441,7 +477,8 @@ fn checkPacing(h: *Harness, id: WindowId, label: []const u8) !void {
     try testing.expect(@abs(err) <= @as(i64, @intCast(refresh)));
 }
 
-test "Vulkan windows present on sway in MAILBOX mode, paced by the frame clock" {
+test "pacing: Vulkan windows present on sway in MAILBOX mode, paced by the frame clock" {
+    try only(true);
     var h: Harness = .{};
     const id = try startVulkan(&h, .auto);
     defer h.stop();
@@ -477,7 +514,8 @@ test "Vulkan windows present on sway in MAILBOX mode, paced by the frame clock" 
     try testing.expectEqual(@as(?std.meta.Tag(@import("surface.zig").Surface), .vulkan), (try Probe.read(h.comp, second)).presenter);
 }
 
-test "Vulkan FIFO: frame clock and presentation feedback stay correct, hidden windows never block" {
+test "pacing: Vulkan FIFO: frame clock and presentation feedback stay correct, hidden windows never block" {
+    try only(true);
     var h: Harness = .{};
     const id = try startVulkan(&h, .fifo);
     defer h.stop();

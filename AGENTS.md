@@ -19,6 +19,8 @@ zig build test-text            # one module: test-abi, test-text, test-raster, t
 zig build test-headless        # headless integration tests (test/headless.zig)
 zig build test-integration     # Wayland backend against headless sway, D-Bus against
                                #   dbus-daemon (not in `test`; .agents/setup installs both)
+zig build test-integration-pacing  # only its frame pacing tests, which it runs
+                               #   last and alone (dropped frames are CPU work)
 zig build test-integration-dbus  # only the D-Bus part
 zig build test-integration-a11y  # only AT-SPI against the real registry
 zig build test-dbus --fuzz -Doptimize=ReleaseSafe  # fuzz a module's parsers
