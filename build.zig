@@ -169,6 +169,14 @@ pub fn build(b: *std.Build) void {
     b.step("test-headless", "Run the headless integration tests").dependOn(&headless_run.step);
     test_step.dependOn(&headless_run.step);
 
+    // Headless text engine benchmarks. Not part of `test`; build with
+    // -Doptimize=ReleaseFast for meaningful numbers.
+    const bench_text = b.addExecutable(.{
+        .name = "bench-text",
+        .root_module = ctx.module("src/text/bench.zig", &.{.{ .name = "text", .module = text }}),
+    });
+    b.step("bench-text", "Run the text engine benchmarks").dependOn(&b.addRunArtifact(bench_text).step);
+
     // Generated headers and bindings, libsiv.so link setup (SONAME, symbol
     // versions), the `siv` Zig module, and the abi, ABI library, and C
     // tests (D2, D3). Owned by the ABI workstream.
