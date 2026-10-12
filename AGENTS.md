@@ -15,7 +15,8 @@ zig build                      # zig-out: libsiv.so, libsiv.a, include/siv.h, li
 zig build test                 # every module's tests, headless tests, C ABI smoke test
 zig build test-text            # one module: test-abi, test-text, test-raster, test-scene,
                                #   test-render-cpu, test-render-vulkan, test-pool, test-loop,
-                               #   test-dbus, test-platform, test-compositor, test-ui, test-a11y, test-app
+                               #   test-dbus, test-portal, test-platform, test-compositor, test-ui,
+                               #   test-a11y, test-app
 zig build test-headless        # headless integration tests (test/headless.zig)
 zig build test-integration     # Wayland backend against headless sway, D-Bus against
                                #   dbus-daemon (not in `test`; .agents/setup installs both)
@@ -23,6 +24,7 @@ zig build test-integration-pacing  # only its frame pacing tests, which it runs
                                #   last and alone (dropped frames are CPU work)
 zig build test-integration-dbus  # only the D-Bus part
 zig build test-integration-a11y  # only AT-SPI against the real registry
+zig build test-integration-portal  # only portals against xdg-desktop-portal
 zig build test-dbus --fuzz -Doptimize=ReleaseSafe  # fuzz a module's parsers
 zig build test-abi             # abi module, generators, Zig wrappers, exported symbols
 zig build test-c               # C programs against the generated headers and shared libraries
@@ -53,11 +55,12 @@ owns its directories and does not edit another workstream's files.
 | `render_vulkan` | `src/render/vulkan/` | Vulkan renderer | `scene`, `raster`, `render_cpu`, `pool`, `vulkan`, `shaders` |
 | `loop` | `src/loop/` | Event loop and Wayland platform | `pool` |
 | `dbus` | `src/dbus/` | D-Bus and desktop settings | `loop` |
+| `portal` | `src/portal/` | Desktop integration | `dbus`, `loop` |
 | `platform` | `src/platform/` | Event loop and Wayland platform | `loop`, `wayland`, `xkbcommon` |
 | `compositor` | `src/compositor/` | Compositor thread | `scene`, `raster`, `render_cpu`, `render_vulkan`, `pool`, `loop`, `platform` |
 | `ui` | `src/ui/` | UI core | `scene`, `raster`, `text`, `loop`, `platform`, `compositor` |
 | `a11y` | `src/a11y/` | D-Bus and desktop settings (AT-SPI) | `dbus`, `ui`, `loop`, `raster`, `text` |
-| `app` | `src/app/` | Public C API | `text`, `loop`, `platform`, `compositor`, `ui`, `dbus`, `a11y` |
+| `app` | `src/app/` | Public C API | `text`, `loop`, `platform`, `compositor`, `ui`, `dbus`, `a11y`, `portal` |
 | `widgets` | `src/widgets/` | Theming and stock widgets | `siv` (the generated C API wrapper) only (D22) |
 
 The theming workstream also owns `src/ui/theme.zig` (D29). Stock widgets

@@ -98,10 +98,16 @@ pub fn build(b: *std.Build) void {
         .{ .name = "loop", .module = loop },
     };
     const dbus = ctx.module("src/dbus/dbus.zig", &dbus_imports);
+    const portal_imports = [_]std.Build.Module.Import{
+        .{ .name = "dbus", .module = dbus },
+        .{ .name = "loop", .module = loop },
+    };
+    const portal = ctx.module("src/portal/portal.zig", &portal_imports);
     const platform = ctx.module("src/platform/platform.zig", &platform_imports);
     const not_integration = integrationOption(b, false);
     platform.addImport("integration", not_integration);
     dbus.addImport("integration", not_integration);
+    portal.addImport("integration", not_integration);
     const compositor_imports = [_]std.Build.Module.Import{
         .{ .name = "scene", .module = scene },
         .{ .name = "raster", .module = raster },
@@ -226,6 +232,7 @@ pub fn build(b: *std.Build) void {
         .{ "render-vulkan", render_vulkan },
         .{ "loop", loop },
         .{ "dbus", dbus },
+        .{ "portal", portal },
         .{ "platform", platform },
         .{ "compositor", compositor },
         .{ "ui", ui },
@@ -274,6 +281,13 @@ pub fn build(b: *std.Build) void {
     dbus_integration_run.has_side_effects = true; // depends on the installed dbus-daemon
     integration_step.dependOn(&dbus_integration_run.step);
     b.step("test-integration-dbus", "Run the D-Bus integration tests against dbus-daemon").dependOn(&dbus_integration_run.step);
+    // Portal clients against xdg-desktop-portal (src/portal/integration_tests.zig).
+    const portal_integration = ctx.module("src/portal/portal.zig", &portal_imports);
+    portal_integration.addImport("integration", integrationOption(b, true));
+    const portal_integration_run = b.addRunArtifact(b.addTest(.{ .name = "portal-integration", .root_module = portal_integration, .filters = test_filters }));
+    portal_integration_run.has_side_effects = true; // depends on the installed xdg-desktop-portal
+    integration_step.dependOn(&portal_integration_run.step);
+    b.step("test-integration-portal", "Run the portal integration tests against xdg-desktop-portal").dependOn(&portal_integration_run.step);
     // The application's desktop settings against dbus-daemon.
     const app_integration = ctx.module("src/app/app.zig", &app_imports);
     app_integration.addImport("integration", integrationOption(b, true));

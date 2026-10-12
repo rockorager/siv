@@ -20,12 +20,15 @@ timed() {
 # (libglib2.0-bin) are the D-Bus integration tests' bus and second client;
 # at-spi2-core (the accessibility bus and registry), python3-pyatspi
 # (libatspi), and orca are the AT-SPI integration tests' stack and clients.
+# xdg-desktop-portal (with xdg-permission-store) is the portal integration
+# tests' frontend, and pipewire the daemon screen casts connect to.
 packages=(
 	ca-certificates curl xz-utils pkg-config
 	libwayland-dev libxkbcommon-dev libfontconfig-dev xkb-data
 	libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers
 	dbus-daemon libglib2.0-bin
 	at-spi2-core python3-pyatspi orca
+	xdg-desktop-portal pipewire
 )
 
 install_packages() {
