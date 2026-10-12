@@ -396,9 +396,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     keeps one renderer per window (so glyph caches are per window too),
     renders into the platform's wl_shm buffers, re-encodes a reused
     buffer's age damage from the persistent framebuffer, and reports this
-    frame's damage in buffer pixels. Vulkan becomes a second variant with
-    its own swapchain; the tree, animation, and damage tracking above it
-    do not change.
+    frame's damage in buffer pixels. The Vulkan backend (D10) is the
+    second variant, with its own swapchain on the same wl_surface; the
+    tree, animation, and damage tracking above it do not change.
   - A frame presents when something is damaged, an animation runs, or the
     UI asked for a frame (an empty-damage present keeps frame callbacks
     pacing). `Event.frame` answers `requestFrame` with the time of the
@@ -563,6 +563,41 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     frames match full CPU frames; the validation layer reports nothing.
   - Runtime fallback to CPU on `VK_ERROR_DEVICE_LOST` or GPU removal. Device
     selection on multi-GPU systems follows dma-buf feedback.
+  - Device selection: Vulkan 1.3 with dynamic rendering, synchronization2,
+    Wayland presentation, and the FP16 and FP32 render formats. The
+    compositor's main device from linux-dmabuf default feedback (the
+    platform binds `zwp_linux_dmabuf_v1` version 4 only for it) wins,
+    matched through VK_EXT_physical_device_drm, so buffers never cross
+    GPUs; then discrete, integrated, and virtual GPUs. CPU implementations
+    (lavapipe) are never chosen by default: the CPU renderer is faster
+    there and is the oracle. `Compositor.Options.renderer` forces the CPU
+    renderer or accepts CPU implementations (tests).
+  - The device is one per process and is created on a thread of its own
+    when the first Wayland window opens (10 ms to find none, 116 ms on
+    lavapipe with pipelines, longer than the first-frame budget of D25);
+    windows present with the CPU renderer until it is ready and then
+    switch once. Reverse with a persistent VkPipelineCache if first frames
+    should already be Vulkan.
+  - Presentation (`surface.Vulkan`): the platform hands the window's commits
+    to the swapchain (`setExternalPresenter`); each frame it sets up the
+    configure ack, scale, frame callback, and presentation feedback, then
+    vkQueuePresentKHR commits them with the image, so the frame clock (D12)
+    works as with wl_shm. Damage goes out through VK_KHR_incremental_present.
+    The present mode is MAILBOX (Mesa always offers it), FIFO otherwise;
+    see D12 for why. A window presented through Vulkan has no wp_fifo_v1 of
+    siv's: Mesa (since 25.0) creates one for every swapchain in every
+    present mode, and a second is a protocol error. The same will apply to
+    wp_color_management_surface_v1 when siv drives HDR (D11) on a Vulkan
+    window: the swapchain's color space must say it, not siv.
+  - Fallback: on device loss or any other swapchain failure, the window's
+    swapchain is destroyed and that same frame presents with the CPU
+    renderer; every other window falls back at its next frame, new windows
+    start on the CPU, and the device is not recreated. Verified on sway by
+    marking the device lost mid-run.
+  - The display list has no shadow construct, so "analytic shadows" have
+    nothing to draw yet: shadows are an isolated layer with a fill and a
+    backdrop blur, which both renderers draw exactly. An analytic shadow
+    needs a scene command and a CPU implementation first (the oracle).
   - No OpenGL.
 - **Alternatives:** compute-based vector rendering (higher latency and
   complexity than UI needs); Sokol (X11-only window glue, no exportable images);
@@ -612,10 +647,24 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     has an update-time estimate) it schedules the wakeup at about target +
     now, so a window never maps or freezes mid-animation.
 - **Alternatives:** fixed-rate timers; `commit-timing-v1` on every commit.
+  - Vulkan windows (D10) keep this clock: the platform requests the frame
+    callback and presentation feedback before vkQueuePresentKHR, so they
+    land in the swapchain's commit. Measured on sway 1.12 headless with
+    lavapipe (Mesa 22.3), a 500 ms animation with the UI thread spinning:
+    30 presentations, none dropped, one frame rendered per refresh, and
+    predictions within 0.6 ms of feedback, in MAILBOX and in FIFO alike.
+  - Mesa's FIFO without `fifo-v1` (every release before 25.0) waits for the
+    previous commit's frame callback inside vkQueuePresentKHR, with no
+    timeout. A configure forces a frame even while a callback is
+    outstanding, so a hidden window that gets two configures blocked the
+    compositor thread for as long as it stayed hidden (3 s in the test,
+    `zig build test-integration`). Vulkan windows therefore present in
+    MAILBOX, which never blocks, and in FIFO skip a present while their own
+    frame callback for the previous commit is pending: the compositor sends
+    both callbacks of a commit together, and the platform still
+    acknowledges the configure with a bare commit.
 - **Reverse if:** never. Use `commit-timing-v1` for frames scheduled beyond the
-  next refresh (media with timestamps) once mutter fixes the stall. Early risk:
-  confirm frame callbacks and presentation feedback behave correctly alongside
-  Mesa's FIFO present mode.
+  next refresh (media with timestamps) once mutter fixes the stall.
 
 ### D13. Text engine
 
@@ -1287,7 +1336,9 @@ text algorithms.
 
 ## Early risks
 
-1. Frame clock behavior alongside Mesa's FIFO present mode (D12).
+1. Frame clock behavior alongside Mesa's FIFO present mode (D12). Resolved:
+   the clock works with Vulkan swapchains; old Mesa's FIFO can block a
+   hidden window's present, so siv uses MAILBOX and guards FIFO.
 2. Unhinted text quality on 1× displays (D14).
 3. Standard swapchain limits on resize synchronization and frame timing (D10).
 

@@ -105,6 +105,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "scene", .module = scene },
         .{ .name = "raster", .module = raster },
         .{ .name = "render_cpu", .module = render_cpu },
+        .{ .name = "render_vulkan", .module = render_vulkan },
         .{ .name = "pool", .module = pool },
         .{ .name = "loop", .module = loop },
         .{ .name = "platform", .module = platform },

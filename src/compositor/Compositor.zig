@@ -20,6 +20,7 @@ const scene = @import("scene");
 const platform_mod = @import("platform");
 const loop_mod = @import("loop");
 const render_cpu = @import("render_cpu");
+const render_vulkan = @import("render_vulkan");
 const update = @import("update.zig");
 const anim = @import("anim.zig");
 const tree_mod = @import("tree.zig");
@@ -66,8 +67,38 @@ outbox: *Outbox,
 windows: std.ArrayList(?*Window) = .empty,
 seats: [max_seats]Seat = @splat(.{}),
 released: std.ArrayList(*scene.Builder) = .empty,
+renderer: Renderer,
+vulkan_options: VulkanOptions,
+/// The process's Vulkan device (D10). Creating it (instance, device,
+/// pipelines) takes 10 to 100+ ms, longer than a first frame may (D25), so
+/// with a thread it is created on a thread of its own when the first
+/// window opens; windows present with the CPU renderer until it is ready
+/// and then switch. Null until then, and for good once unavailable or
+/// lost.
+vulkan: ?*render_vulkan.Device = null,
+vulkan_state: enum { idle, starting, ready, failed } = .idle,
+vulkan_thread: ?std.Thread = null,
+/// Written by the starting thread before it posts `vulkan_remote`.
+vulkan_result: render_vulkan.Error!*render_vulkan.Device = error.Unavailable,
+vulkan_remote: Loop.Remote = .{ .func = onVulkanReady },
 
 const max_seats = 8;
+
+/// Which renderer presents windows (D10).
+pub const Renderer = enum {
+    /// Vulkan on a suitable GPU (never a CPU implementation such as
+    /// lavapipe: the CPU renderer beats it), else the CPU renderer.
+    auto,
+    cpu,
+    /// Vulkan on any device, lavapipe included, else the CPU renderer.
+    vulkan,
+};
+
+pub const VulkanOptions = struct {
+    present_mode: render_vulkan.Swapchain.PresentMode = .auto,
+    /// The validation layer, when installed (tests).
+    validation: bool = false,
+};
 
 pub const Backend = union(enum) {
     wayland: platform_mod.Wayland.Options,
@@ -86,6 +117,8 @@ pub const Options = struct {
     /// Run on a thread of its own (D8). Without one, everything runs on
     /// `ui_loop`.
     thread: bool = true,
+    renderer: Renderer = .auto,
+    vulkan: VulkanOptions = .{},
 };
 
 /// Receives compositor events on the UI thread.
@@ -113,6 +146,12 @@ pub const FrameStats = struct {
 pub fn frameStats(self: *Compositor, id: WindowId) ?FrameStats {
     const w = self.getWindow(id) orelse return null;
     return w.stats;
+}
+
+/// Which renderer presents a window. Compositor thread only.
+pub fn presenter(self: *Compositor, id: WindowId) ?std.meta.Tag(surface_mod.Surface) {
+    const w = self.getWindow(id) orelse return null;
+    return w.surface;
 }
 
 /// A layer's scroll offset as last composed. Compositor thread only.
@@ -175,6 +214,8 @@ const Window = struct {
     size_serial: u64 = 0,
     size: platform_mod.Size = .{},
     stats: FrameStats = .{},
+    /// The window has had its chance at a Vulkan surface.
+    vulkan_tried: bool = false,
     externals: external_mod.Externals,
     /// Retries a frame when no buffer was free, or starts delayed
     /// animations.
@@ -196,6 +237,8 @@ pub fn create(options: Options) !*Compositor {
         .ui_loop = options.ui_loop,
         .threaded = options.thread,
         .outbox = outbox,
+        .renderer = options.renderer,
+        .vulkan_options = options.vulkan,
     };
     if (options.thread) {
         self.own_loop = try Loop.init(gpa);
@@ -235,6 +278,15 @@ pub fn destroy(self: *Compositor) void {
     };
     for (self.windows.items) |w| if (w) |win| self.freeWindow(win);
     self.windows.deinit(self.gpa);
+    // The starting thread uses the display; its posted result may never
+    // have run (the loop is gone): take it here.
+    if (self.vulkan_thread) |t| {
+        t.join();
+        if (self.vulkan_state == .starting) {
+            if (self.vulkan_result) |d| d.destroy() else |_| {}
+        }
+    }
+    if (self.vulkan) |d| d.destroy();
     self.destroyPlatform();
     if (self.threaded) self.own_loop.deinit();
     self.inbox.deinit(self.gpa);
@@ -519,19 +571,22 @@ fn getWindow(self: *Compositor, id: WindowId) ?*Window {
 fn openSurface(self: *Compositor, role: union(enum) { toplevel: platform_mod.WindowOptions, popup: platform_mod.PopupOptions }) !WindowId {
     const w = try self.gpa.create(Window);
     errdefer self.gpa.destroy(w);
-    const surface = try surface_mod.Surface.create(self.gpa, self.executor);
-    errdefer surface.destroy();
     const id = switch (role) {
         .toplevel => |o| try self.platform.createWindow(o),
         .popup => |o| try self.platform.createPopup(o),
     };
     errdefer self.platform.destroyWindow(id);
+    const device = self.vulkanDevice(id);
+    const vulkan: ?surface_mod.VulkanOptions = if (device) |d| .{ .device = d, .present_mode = self.vulkan_options.present_mode } else null;
+    const surface = try surface_mod.Surface.create(self.gpa, self.executor, vulkan);
+    errdefer surface.destroy();
     if (id >= self.windows.items.len) try self.windows.appendNTimes(self.gpa, null, id + 1 - self.windows.items.len);
     w.* = .{
         .id = id,
         .tree = .init(self.gpa),
         .tracker = .init(self.gpa),
         .surface = surface,
+        .vulkan_tried = device != null,
         .externals = .init(self.gpa),
         .compositor = self,
     };
@@ -544,8 +599,9 @@ fn closeWindow(self: *Compositor, w: *Window) void {
     self.released.clearRetainingCapacity();
     w.tree.collectAll(&self.released) catch {};
     for (self.released.items) |b| self.outbox.push(.{ .released = b });
-    self.platform.destroyWindow(id);
+    // A swapchain refers to the window's surface: free it first.
     self.freeWindow(w);
+    self.platform.destroyWindow(id);
     self.windows.items[id] = null;
     self.outbox.purge(id);
     for (&self.seats) |*s| if (s.window == id) {
@@ -560,6 +616,80 @@ fn freeWindow(self: *Compositor, w: *Window) void {
     w.tracker.deinit();
     w.surface.destroy();
     self.gpa.destroy(w);
+}
+
+/// The Vulkan device for window `id` if it is ready, starting its
+/// creation on first use; null while windows use the CPU renderer.
+fn vulkanDevice(self: *Compositor, id: WindowId) ?*render_vulkan.Device {
+    if (self.renderer == .cpu) return null;
+    switch (self.vulkan_state) {
+        .ready => {
+            const d = self.vulkan.?;
+            if (!d.lost) return d;
+            self.vulkan_state = .failed;
+            return null;
+        },
+        .starting, .failed => return null,
+        .idle => {},
+    }
+    const target = self.platform.vulkanSurface(id) orelse return null;
+    const options: render_vulkan.Device.Options = .{
+        .wayland_display = target.display,
+        .main_device = self.platform.mainDevice(),
+        .allow_cpu = self.renderer == .vulkan,
+        .validation = self.vulkan_options.validation,
+    };
+    self.vulkan_state = .starting;
+    if (self.threaded) {
+        if (std.Thread.spawn(.{}, startVulkan, .{ self, options })) |t| {
+            self.vulkan_thread = t;
+            return null;
+        } else |_| {}
+    }
+    // Without a thread (tests), on this one.
+    self.vulkan_result = render_vulkan.Device.create(self.gpa, options);
+    self.finishVulkan();
+    return if (self.vulkan_state == .ready) self.vulkan else null;
+}
+
+fn startVulkan(self: *Compositor, options: render_vulkan.Device.Options) void {
+    self.vulkan_result = render_vulkan.Device.create(self.gpa, options);
+    self.loop.postRemote(&self.vulkan_remote);
+}
+
+fn onVulkanReady(r: *Loop.Remote) void {
+    const self: *Compositor = @fieldParentPtr("vulkan_remote", r);
+    if (self.vulkan_thread) |t| t.join();
+    self.vulkan_thread = null;
+    self.finishVulkan();
+    // Open windows switch at their next frame.
+    if (self.vulkan_state == .ready) for (self.windows.items) |w| if (w) |win| {
+        self.platform.requestFrame(win.id);
+    };
+}
+
+fn finishVulkan(self: *Compositor) void {
+    if (self.vulkan_result) |d| {
+        log.info("rendering with Vulkan on {s}", .{d.deviceName()});
+        self.vulkan = d;
+        self.vulkan_state = .ready;
+    } else |err| {
+        log.info("no Vulkan device ({t}); using the CPU renderer", .{err});
+        self.vulkan_state = .failed;
+    }
+}
+
+/// Moves a CPU-presented window to Vulkan once the device is ready. Each
+/// window tries once: a window that fell back stays on the CPU.
+fn upgradeSurface(self: *Compositor, w: *Window) void {
+    if (w.vulkan_tried or w.surface != .cpu) return;
+    const device = self.vulkanDevice(w.id) orelse return;
+    w.vulkan_tried = true;
+    const next = surface_mod.Surface.create(self.gpa, self.executor, .{ .device = device, .present_mode = self.vulkan_options.present_mode }) catch return;
+    if (next != .vulkan) return next.destroy();
+    w.surface.destroy();
+    w.surface = next;
+    w.tree.current = null; // redraw everything
 }
 
 fn releaseAll(self: *Compositor, builders: []const *scene.Builder) void {
@@ -660,6 +790,7 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
         return;
     }
 
+    self.upgradeSurface(w);
     const tick = w.tree.tick(t) catch return self.outOfMemory(w);
     const state = self.platform.window(w.id);
     const vp = IRect.xywh(0, 0, @intCast(state.bufferWidth()), @intCast(state.bufferHeight()));

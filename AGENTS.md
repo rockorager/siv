@@ -51,7 +51,7 @@ owns its directories and does not edit another workstream's files.
 | `loop` | `src/loop/` | Event loop and Wayland platform | `pool` |
 | `dbus` | `src/dbus/` | D-Bus and desktop settings | `loop` |
 | `platform` | `src/platform/` | Event loop and Wayland platform | `loop`, `wayland`, `xkbcommon` |
-| `compositor` | `src/compositor/` | Compositor thread | `scene`, `raster`, `render_cpu`, `pool`, `loop`, `platform` |
+| `compositor` | `src/compositor/` | Compositor thread | `scene`, `raster`, `render_cpu`, `render_vulkan`, `pool`, `loop`, `platform` |
 | `ui` | `src/ui/` | UI core | `scene`, `raster`, `text`, `loop`, `platform`, `compositor` |
 | `app` | `src/app/` | Public C API | `text`, `loop`, `platform`, `compositor`, `ui` |
 
