@@ -1321,8 +1321,16 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - One builder per primitive (`siv_box`, `siv_flex`, `siv_grid`,
     `siv_stack`, `siv_text`, `siv_editor`, `siv_scroll`), appending as
     the last child; `siv_move` reorders. Image nodes (`siv_image_view`)
-    and canvases (`siv_canvas`, D28) are in; external nodes wait for the
-    embedder API (D17).
+    and canvases (`siv_canvas`, D28) are in, and so are external nodes
+    (`siv_external_view`) over `siv_external` slots (D17): frame slots
+    take shared-memory frames (`siv_external_submit`) and report each
+    replaced frame's key when no frame reads it; surface slots hand the
+    embedder a `wl_display *` and `wl_surface *` (the only pointers in
+    the API) and report the size to render at, with the embedder
+    contract spelled out in `siv_external_create_surface`'s
+    documentation. Slot calls are for the application's thread like the
+    rest; a decoder or renderer thread hands frames over with
+    `siv_post`. A window takes its slots with it.
   - `siv_image` handles hold one reference to a `ui.Image`; image nodes
     and display lists hold their own, so destroying the handle never
     pulls pixels from under a frame. Canvases draw images by handle, so

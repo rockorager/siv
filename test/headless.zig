@@ -28,4 +28,5 @@ test {
     _ = @import("compositor/latency.zig");
     _ = @import("abi/golden.zig");
     _ = @import("abi/canvas.zig");
+    _ = @import("abi/external.zig");
 }

@@ -137,6 +137,26 @@ pub const Harness = struct {
         return ctx.out;
     }
 
+    /// The window's first subsurface (external content promoted out of
+    /// the window's buffer), if any.
+    pub fn subsurface(h: *Harness) !?platform.SubsurfaceState {
+        const self = try h.internal();
+        const Ctx = struct {
+            id: platform.WindowId,
+            out: ?platform.SubsurfaceState = null,
+            fn run(ctx: ?*anyopaque, comp: *compositor.Compositor) void {
+                const c: *@This() = @ptrCast(@alignCast(ctx));
+                for (comp.platform.headless.subsurfaces(c.id)) |sub| if (sub) |st| {
+                    c.out = st;
+                    return;
+                };
+            }
+        };
+        var ctx: Ctx = .{ .id = (try h.win()).win.id };
+        try self.app.comp.call(&ctx, Ctx.run);
+        return ctx.out;
+    }
+
     pub fn expectGolden(h: *Harness, name: []const u8, width: u32, height: u32) !void {
         const gpa = testing.allocator;
         const io = testing.io;

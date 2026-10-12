@@ -389,6 +389,12 @@ pub const App = struct {
             .frame => |f| if (app.window(f.window)) |win| {
                 if (app.desktop.waiting) win.frame_held = true else win.handle(ev);
             },
+            .external_released => |x| if (app.window(x.window)) |win| {
+                _ = win.notify(&.{ .external_released = .{ .id = x.id, .key = x.key } });
+            },
+            .external_configure => |x| if (app.window(x.window)) |win| {
+                _ = win.notify(&.{ .external_configure = .{ .id = x.id, .width = x.width, .height = x.height, .buffer_width = x.buffer_width, .buffer_height = x.buffer_height } });
+            },
             .presented => |p| if (app.window(p.window)) |win| {
                 win.presented_seq = p.seq;
                 win.handle(ev);
@@ -428,6 +434,10 @@ pub const WindowEvent = union(enum) {
     close_requested,
     /// New size, scale, or states; the tree has already been told.
     configure: struct { old: platform.WindowState, new: platform.WindowState },
+    /// No frame reads an external frame any more (D17).
+    external_released: struct { id: compositor.ExternalId, key: u64 },
+    /// An embedder's surface has a new size.
+    external_configure: struct { id: compositor.ExternalId, width: u32, height: u32, buffer_width: u32, buffer_height: u32 },
 };
 
 pub const Listener = struct {
@@ -489,6 +499,31 @@ pub const Window = struct {
         };
         win.committed_seq = seq;
         return seq;
+    }
+
+    // External content (D17): slots the tree shows with external nodes.
+
+    /// A slot for frames a producer submits (`setExternalFrame`).
+    pub fn createExternal(win: *Window) Error!compositor.ExternalId {
+        return win.app.comp.createExternal(win.id) catch |err| if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable;
+    }
+
+    /// A slot backed by a `wl_surface` an embedder renders into.
+    pub fn createExternalSurface(win: *Window) Error!Compositor.ExternalSurface {
+        return win.app.comp.createExternalSurface(win.id) catch |err| if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable;
+    }
+
+    /// Shows a new frame in a slot; the fd is duplicated.
+    pub fn setExternalFrame(win: *Window, id: compositor.ExternalId, frame: compositor.ExternalFrame) Error!void {
+        win.app.comp.setExternalFrame(win.id, id, frame) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable;
+    }
+
+    pub fn externalSurfaceCommitted(win: *Window, id: compositor.ExternalId, width: u32, height: u32) Allocator.Error!void {
+        try win.app.comp.externalSurfaceCommitted(win.id, id, width, height);
+    }
+
+    pub fn destroyExternal(win: *Window, id: compositor.ExternalId) Allocator.Error!void {
+        try win.app.comp.destroyExternal(win.id, id);
     }
 
     /// Asks again for a frame held for the desktop settings.

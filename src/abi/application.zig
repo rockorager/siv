@@ -22,6 +22,7 @@ const runtime = @import("runtime.zig");
 const alloc = @import("alloc.zig");
 const tree = @import("tree.zig");
 const canvas = @import("canvas.zig");
+const external = @import("external.zig");
 
 const Root = runtime.Root;
 
@@ -61,6 +62,8 @@ pub const App = struct {
     /// By image index (handle payload); null slots are reused.
     images: std.ArrayList(?*ui.Image),
     waiting: std.ArrayList(canvas.Waiting),
+    /// By external slot index (handle payload); null slots are reused.
+    externals: std.ArrayList(?*external.External),
 
     pub fn gpa(self: *App) std.mem.Allocator {
         return self.root.gpa;
@@ -125,6 +128,7 @@ pub const Window = struct {
         const self = w.owner;
         tree.abortState(w);
         w.nodes.releaseAll(w);
+        external.forgetWindow(w);
         _ = self.root.handles.remove(w.handle, window_tag) catch unreachable;
         self.windows.items[w.index] = null;
         self.release(w.destroy, w.user_data);
@@ -173,6 +177,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     self.painting = 0;
     self.images = .empty;
     self.waiting = .empty;
+    self.externals = .empty;
     const gpa = self.gpa();
     self.draw = .init(gpa);
     errdefer self.draw.deinit(gpa);
@@ -215,6 +220,7 @@ pub export fn siv_app_destroy(app: t.App) t.Result {
     self.draw.deinit(gpa);
     self.images.deinit(gpa);
     self.waiting.deinit(gpa);
+    self.externals.deinit(gpa);
     Root.destroy(App, self);
     return .ok;
 }
@@ -368,6 +374,21 @@ fn onWindowEvent(ctx: ?*anyopaque, _: *app_mod.Window, ev: *const app_mod.Window
                 var e = windowEvent(.states_changed, c.new);
                 _ = cb(w.user_data, handle, &e);
             }
+            return false;
+        },
+        .external_released => |x| {
+            external.deliver(w, x.id, .{ .type = .released, .key = x.key });
+            return false;
+        },
+        .external_configure => |x| {
+            external.deliver(w, x.id, .{
+                .type = .configure,
+                .width = x.width,
+                .height = x.height,
+                .buffer_width = x.buffer_width,
+                .buffer_height = x.buffer_height,
+                .scale = @floatCast(w.win.state.scale.toFloat()),
+            });
             return false;
         },
     }

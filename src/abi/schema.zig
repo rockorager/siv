@@ -227,7 +227,8 @@ pub const Type = union(enum) {
     static_string,
     /// `void *`, passed back to callbacks unchanged.
     user_data,
-    /// `void *` to memory, as in the allocator hooks.
+    /// `void *` to memory or to a foreign object, as in the allocator hooks
+    /// or a `wl_surface *` handed to an embedder (an out parameter).
     pointer,
     /// A descriptor, by const pointer. NULL means all defaults.
     desc: []const u8,
@@ -445,7 +446,7 @@ fn checkParams(s: Schema, where: []const u8, params: []const Param, allow_out: b
             .out => |o| {
                 if (!allow_out) return .{ .where = where, .what = "callbacks have no out parameters" };
                 switch (o.*) {
-                    .void, .static_string, .out, .desc, .string, .user_data, .pointer, .array, .buffer => return .{ .where = where, .what = "invalid out parameter type" },
+                    .void, .static_string, .out, .desc, .string, .user_data, .array, .buffer => return .{ .where = where, .what = "invalid out parameter type" },
                     .ref => |rn| if (checkKind(s, rn, .any)) |pr| return pr,
                     else => {},
                 }
