@@ -408,6 +408,11 @@ pub const Editor = struct {
     /// Enter inserts a line break and lines wrap; otherwise one line that
     /// scrolls horizontally to keep the caret visible.
     multiline: bool = false,
+    /// A password field: the text lives in locked memory excluded from
+    /// core dumps (`Window.secretOf`), shows as one bullet per code point,
+    /// has no undo or input method, and is hidden from assistive
+    /// technology.
+    masked: bool = false,
 };
 
 /// An editor's text, settings, and selection (byte offsets at grapheme
@@ -419,6 +424,12 @@ pub const EditorData = struct {
     anchor: u32 = 0,
     /// Which side of a bidi or wrap boundary the caret is drawn on.
     affinity: text.layout.Affinity = .downstream,
+    /// Counts text changes, so undo history knows when the application
+    /// replaced the text underneath it.
+    revision: u32 = 0,
+    /// Masked: the real text, in locked memory. `text.content` holds the
+    /// bullets that are shaped and displayed, and offsets index those.
+    secret: []const u8 = "",
 };
 
 /// Stored text: content and style with interned family and language.

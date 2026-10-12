@@ -618,12 +618,21 @@ test "editor: typing, deleting, selecting, and change events" {
     try testing.expectEqualStrings("ab", f.win.semantics.find(.text_input, "").?.value_text);
     try testing.expectEqual(@as(?u32, 2), f.win.semantics.find(.text_input, "").?.caret);
 
-    // While the application holds a transaction, edits wait for nothing:
-    // they are dropped rather than mixed into it.
+    // Input that arrives while the application holds a transaction open
+    // is queued, never mixed in or lost, and replays in order at the next
+    // frame, including keys that arrive after the transaction ends.
     t = try f.win.begin();
     k.typeText("x");
-    t.abort();
+    k.press(ui.keysym.left, .{});
+    k.typeText("y");
     try testing.expectEqualStrings("ab", e.text.content);
+    try t.setLayout(ed, .{ .padding = .all(4), .align_y = .start });
+    t.abort();
+    k.typeText("z");
+    try testing.expectEqualStrings("ab", e.text.content);
+    try f.frame();
+    try testing.expectEqualStrings("abyzx", e.text.content);
+    try testing.expectEqual(@as(usize, 0), f.win.pending_input.items.len);
 
     // A click places the caret: left of the text is offset 0.
     const r = f.win.windowRect(ed);
@@ -675,4 +684,137 @@ test "editor: visual movement through right-to-left text; multiline lines" {
     try testing.expect(e.caret >= 8);
     try f.frame();
     try testing.expectEqual(one_line, f.rect(ed)[3]);
+}
+
+test "editor: undo and redo merge typing and deleting; app edits reset history" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 300, .height = 100 });
+    defer f.deinit();
+    var t = try f.win.begin();
+    const ed = try box(t, .root, .editor, .{ .align_y = .start });
+    t.commit();
+    try f.frame();
+    const k: Keys = .{ .f = &f };
+    k.press(ui.keysym.tab, .{});
+    const e = &f.win.node(ed).data.editor;
+    for ([_][]const u8{ "o", "n", "e", " ", "t", "w", "o" }) |c| k.typeText(c);
+    try testing.expectEqualStrings("one two", e.text.content);
+    // Typing is one step per word (a space starts the next one).
+    k.press('z', .{ .ctrl = true });
+    try testing.expectEqualStrings("one", e.text.content);
+    k.press('z', .{ .ctrl = true });
+    try testing.expectEqualStrings("", e.text.content);
+    k.press('z', .{ .ctrl = true, .shift = true });
+    try testing.expectEqualStrings("one", e.text.content);
+    k.press('y', .{ .ctrl = true });
+    try testing.expectEqualStrings("one two", e.text.content);
+    // Backspaces merge; undo restores them and the caret.
+    k.press(0xff08, .{});
+    k.press(0xff08, .{});
+    try testing.expectEqualStrings("one t", e.text.content);
+    k.press('z', .{ .ctrl = true });
+    try testing.expectEqualStrings("one two", e.text.content);
+    try testing.expectEqual(@as(u32, 7), e.caret);
+    // A selection replaced by typing undoes to the selection.
+    k.press(ui.keysym.left, .{ .shift = true, .ctrl = true });
+    k.typeText("2");
+    try testing.expectEqualStrings("one 2", e.text.content);
+    k.press('z', .{ .ctrl = true });
+    try testing.expectEqualStrings("one two", e.text.content);
+    try testing.expectEqual(@as(u32, 4), e.caret);
+    try testing.expectEqual(@as(u32, 7), e.anchor);
+    // Text the application sets is not the user's to undo.
+    t = try f.win.begin();
+    try t.setText(ed, "replaced");
+    t.commit();
+    k.press('z', .{ .ctrl = true });
+    try testing.expectEqualStrings("replaced", e.text.content);
+    try f.frame();
+}
+
+test "masked editor: locked secret, bullets, no undo, nothing for assistive technology" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 300, .height = 100 });
+    defer f.deinit();
+    var t = try f.win.begin();
+    const ed = try box(t, .root, .editor, .{ .align_y = .start });
+    try t.setText(ed, "pre");
+    try t.setEditor(ed, .{ .masked = true });
+    try t.setSemantics(ed, .{ .label = "Password" });
+    t.commit();
+    try f.frame();
+    const e = &f.win.node(ed).data.editor;
+    try testing.expectEqualStrings("pre", f.win.secretOf(ed));
+    try testing.expectEqualStrings("\u{2022}\u{2022}\u{2022}", e.text.content);
+    const k: Keys = .{ .f = &f };
+    k.press(ui.keysym.tab, .{});
+    k.typeText("\u{e9}!");
+    k.press(ui.keysym.left, .{});
+    k.press(0xff08, .{}); // removes the é
+    try testing.expectEqualStrings("pre!", f.win.secretOf(ed));
+    try testing.expectEqual(@as(usize, 4 * 3), e.text.content.len);
+    // The secret sits at the start of its own page (locked, not in the heap).
+    try testing.expectEqual(@as(usize, 0), @intFromPtr(f.win.secretOf(ed).ptr) % std.heap.page_size_min);
+    k.press('z', .{ .ctrl = true });
+    try testing.expectEqualStrings("pre!", f.win.secretOf(ed));
+    try f.frame();
+    const sem = f.win.semantics.find(.text_input, "Password").?;
+    try testing.expect(sem.masked);
+    try testing.expectEqualStrings("", sem.value_text);
+    try testing.expectEqual(@as(?u32, null), sem.caret);
+    // Unmasking moves the text back to ordinary memory.
+    t = try f.win.begin();
+    try t.setEditor(ed, .{});
+    t.commit();
+    try testing.expectEqualStrings("pre!", e.text.content);
+    try testing.expectEqual(@as(usize, 0), f.win.secretOf(ed).len);
+    try f.frame();
+}
+
+test "caret blinks on the compositor, stops by itself, and not with reduced motion" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 300, .height = 100 });
+    defer f.deinit();
+    const t = try f.win.begin();
+    const ed = try box(t, .root, .editor, .{ .align_y = .start });
+    t.commit();
+    try f.frame();
+    f.tc.keep_log = true;
+    const k: Keys = .{ .f = &f };
+    k.press(ui.keysym.tab, .{});
+    try f.frame();
+    // Focus gives the editor a layer with the caret in a child layer.
+    const caret = f.win.state(ed).content_layer + 1;
+    try testing.expectEqual(f.win.state(ed).own_layer + 1, f.tc.get(caret).parent);
+    const a = findAnimate(f.tc.log.items, caret).?;
+    try testing.expectEqual(@as(f32, 0), a.to.opacity);
+    try testing.expect(a.iterations != 0 and a.iterations % 2 == 0 and a.alternate); // ends visible
+    // Typing moves the caret (a transform) and restarts the blink; the
+    // editor's text layer repaints, the caret's content does not.
+    f.tc.log.clearRetainingCapacity();
+    k.typeText("a");
+    try f.frame();
+    try testing.expect(findAnimate(f.tc.log.items, caret) != null);
+    for (f.tc.log.items) |op| if (op == .set_content) try testing.expect(op.set_content.layer != caret);
+    // Idle: a frame with nothing new sends nothing, and nothing asks for one.
+    f.tc.log.clearRetainingCapacity();
+    const requested = f.frames_requested;
+    try f.frame();
+    try testing.expectEqual(@as(usize, 0), f.tc.log.items.len);
+    try testing.expectEqual(requested, f.frames_requested);
+    try testing.expect(!f.win.needsFrame());
+    // Reduced motion: the running blink is cancelled and none starts.
+    f.win.setReducedMotion(true);
+    try f.frame();
+    try testing.expect(findAnimate(f.tc.log.items, caret) == null);
+    try testing.expectEqual(@as(f32, 1), f.tc.log.items[0].set_opacity.opacity);
+    f.tc.log.clearRetainingCapacity();
+    k.typeText("b");
+    try f.frame();
+    try testing.expect(findAnimate(f.tc.log.items, caret) == null);
+}
+
+fn findAnimate(ops: []const compositor.Op, layer: compositor.LayerId) ?compositor.Animation {
+    for (ops) |op| if (op == .animate and op.animate.layer == layer) return op.animate.animation;
+    return null;
 }

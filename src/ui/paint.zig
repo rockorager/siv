@@ -39,7 +39,7 @@ pub const no_layer: u32 = std.math.maxInt(u32);
 pub const focus_ring_color = scene.Color.srgb8(0x25, 0x63, 0xeb, 0xff);
 pub const focus_ring_width: f32 = 2;
 
-const LayerKind = enum { root, node, scroll_content, chunk };
+const LayerKind = enum { root, node, scroll_content, chunk, caret };
 
 const Layer = struct {
     kind: LayerKind,
@@ -59,6 +59,11 @@ const Layer = struct {
     /// The compositor's offset as last sent or reported.
     scroll_offset: Point = .zero,
     wheel: ?Rect = null,
+    /// Caret layers: what the content shows, and what the running blink
+    /// started from (it restarts when this changes).
+    caret_h: f32 = 0,
+    caret_color: scene.Color = .transparent,
+    blink_key: u64 = 0,
     // Content.
     dirty: bool = true,
     subtree_dirty: bool = false,
@@ -95,6 +100,8 @@ pub const State = struct {
     glyphs: std.ArrayList(scene.Glyph) = .empty,
     pass: u32 = 0,
     serial: u32 = 0,
+    /// Bumped to restart caret blinks (settings changed).
+    blink_epoch: u32 = 0,
     root_sent: bool = false,
     dirty_count: u32 = 0,
 
@@ -137,6 +144,10 @@ pub const State = struct {
         st.markLayer(index);
         const l = &st.layers.items[index];
         l.damage = l.damage.unite(r);
+    }
+
+    pub fn restartBlink(st: *State) void {
+        st.blink_epoch +%= 1;
     }
 
     pub fn anyDirty(st: *const State) bool {
@@ -231,7 +242,13 @@ pub const State = struct {
     fn ownsLayer(win: *const Window, nid: NodeId, f: Flags) bool {
         const n = win.node(nid);
         return nid == .root or n.kind == .scroll or isLayerRoot(n.visual) or (n.visual.clip and f.layer_below) or
-            n.handler(.scroll) != null;
+            n.handler(.scroll) != null or hasCaret(win, nid);
+    }
+
+    /// The focused editor roots a layer with its caret in a child layer, so
+    /// the caret moves and blinks as layer properties.
+    fn hasCaret(win: *const Window, nid: NodeId) bool {
+        return win.input.focus == nid and win.node(nid).kind == .editor;
     }
 
     const Cursor = struct {
@@ -253,6 +270,7 @@ pub const State = struct {
             var inner: Cursor = .{ .layer = inner_container };
             var it = win.children(nid);
             while (it.next()) |ch| try st.visit(win, flags, ch, inner_container, &inner);
+            if (hasCaret(win, nid)) _ = try st.claim(win, &s.content_layer, .caret, nid, l);
             cur.after = nid;
             return;
         }
@@ -302,6 +320,16 @@ pub const State = struct {
 
     /// Repaints the layers whose content changed and queues their content.
     pub fn build(st: *State, win: *Window) Error!void {
+        for (st.order.items) |i| {
+            const l = &st.layers.items[i];
+            if (l.kind != .caret) continue;
+            const h, const color = caretLook(win, l.owner);
+            if (h != l.caret_h or !std.meta.eql(color, l.caret_color)) {
+                l.caret_h = h;
+                l.caret_color = color;
+                st.markLayer(i);
+            }
+        }
         if (st.dirty_count == 0) return;
         const gpa = win.gpa;
         for (st.order.items) |i| st.layers.items[i].subtree_dirty = st.layers.items[i].dirty;
@@ -340,6 +368,8 @@ pub const State = struct {
         for (st.order.items) |i| {
             const l = &st.layers.items[i];
             const b = l.builder orelse continue;
+            if (l.kind == .caret and l.caret_h > 0)
+                b.fillRect(.xywh(0, 0, layout.caret_width, l.caret_h), .color(l.caret_color)) catch |e| return oom(e);
             for (l.open.items) |_| b.popLayer() catch |e| return oom(e);
             l.open.clearRetainingCapacity();
             l.version +%= 1;
@@ -442,7 +472,7 @@ pub const State = struct {
         const gpa = win.gpa;
         var scroll_layers: std.ArrayList(u32) = .empty;
         if (win.dirty.props or st.ops.items.len != 0) {
-            try st.ops.ensureUnusedCapacity(gpa, 6 * st.order.items.len + st.scroll_by.items.len + 1);
+            try st.ops.ensureUnusedCapacity(gpa, 8 * st.order.items.len + st.scroll_by.items.len + 1);
             for (st.order.items) |i| {
                 const l = &st.layers.items[i];
                 const p = props(st, win, l.*);
@@ -465,6 +495,30 @@ pub const State = struct {
                 if (!std.meta.eql(l.wheel, p.wheel)) {
                     st.ops.appendAssumeCapacity(.{ .set_wheel_region = .{ .layer = id(i), .region = p.wheel } });
                     l.wheel = p.wheel;
+                }
+                if (l.kind == .caret) {
+                    // Any caret change shows it solid, then blinks for a
+                    // while on the compositor and stops, so an idle window
+                    // makes no wakeups (D25). No blinking with reduced
+                    // motion.
+                    const e = win.node(l.owner).data.editor;
+                    var hasher = std.hash.Wyhash.init(st.blink_epoch);
+                    std.hash.autoHash(&hasher, .{ e.caret, e.anchor, e.revision, win.reduced_motion });
+                    const key = hasher.final() | 1;
+                    if (key != l.blink_key) {
+                        l.blink_key = key;
+                        st.ops.appendAssumeCapacity(.{ .set_opacity = .{ .layer = id(i), .opacity = 1 } });
+                        l.opacity = 1;
+                        if (!win.reduced_motion) st.ops.appendAssumeCapacity(.{ .animate = .{ .layer = id(i), .animation = .{
+                            .to = .{ .opacity = 0 },
+                            .from = .{ .opacity = 1 },
+                            .duration_ns = blink_half_period_ns,
+                            .start_ns = @import("loop").Loop.now() + blink_half_period_ns,
+                            .iterations = blink_iterations,
+                            .alternate = true,
+                            .easing = .ease_in_out,
+                        } } });
+                    }
                 }
                 if (l.kind == .node and win.node(l.owner).kind == .scroll) {
                     const s = win.state(l.owner);
@@ -509,6 +563,13 @@ pub const State = struct {
     fn props(st: *const State, win: *const Window, l: Layer) Props {
         switch (l.kind) {
             .chunk => return .{},
+            .caret => {
+                const l_ = text_node.current(win, l.owner) orelse return .{};
+                const n = win.node(l.owner);
+                const s = win.state(l.owner);
+                const c = editor.caretRect(win, l.owner, l_);
+                return .{ .transform = .offset(n.layout.padding.left(s.rtl) - s.editor_scroll + c.x0, n.layout.padding.top + c.y0) };
+            },
             .scroll_content => {
                 const s = win.state(l.owner);
                 const pad = win.node(l.owner).layout.padding;
@@ -697,11 +758,19 @@ fn drawEditor(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Poi
         }
     }
     _ = try drawText(st, win, nid, b, off, -scroll);
-    if (focused and !n.semantics.disabled) {
-        const c = editor.caretRect(win, nid, l);
-        try b.fillRect(.xywh(box.x0 - scroll + c.x0, box.y0 + c.y0, c.width(), c.height()), .color(e.text.props.style.color));
-    }
     try b.popLayer();
+}
+
+/// Half a blink (visible to hidden), and how many halves run before the
+/// caret stays solid: 10 s, ending visible.
+pub const blink_half_period_ns: u64 = 500 * std.time.ns_per_ms;
+pub const blink_iterations: u32 = 20;
+
+/// A focused editor's caret height and color.
+fn caretLook(win: *Window, nid: NodeId) struct { f32, scene.Color } {
+    const l = text_node.current(win, nid) orelse return .{ 0, .transparent };
+    const c = editor.caretRect(win, nid, l);
+    return .{ c.height(), win.node(nid).data.editor.text.props.style.color };
 }
 
 pub const selection_color = scene.Color.srgb8(0xbf, 0xdb, 0xfe, 0xff);

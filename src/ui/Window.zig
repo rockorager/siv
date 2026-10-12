@@ -27,6 +27,8 @@ const layers = @import("layers.zig");
 const input_mod = @import("input.zig");
 const semantics_mod = @import("semantics.zig");
 const text_node = @import("text_node.zig");
+const editor_mod = @import("editor.zig");
+const secret = @import("secret.zig");
 
 const Window = @This();
 
@@ -45,6 +47,14 @@ states: std.ArrayList(State) = .empty,
 free_head: NodeId = .none,
 /// Removed nodes waiting for the next frame to be recycled.
 dead: std.ArrayList(NodeId) = .empty,
+/// Input that arrived while the application held a transaction open (or
+/// behind such input), replayed in order at the next frame: user input is
+/// never lost.
+pending_input: std.ArrayList(platform.Event) = .empty,
+/// Undo histories of editors, by node.
+histories: std.AutoHashMapUnmanaged(NodeId, editor_mod.History) = .empty,
+/// From the desktop settings (D19): no caret blinking or other motion.
+reduced_motion: bool = false,
 txn: Txn = .{},
 
 /// Logical size and buffer scale, from the last configure.
@@ -193,6 +203,11 @@ fn deinitStorage(win: *Window) void {
     win.nodes.deinit(win.gpa);
     win.states.deinit(win.gpa);
     win.dead.deinit(win.gpa);
+    for (win.pending_input.items) |*ev| std.crypto.secureZero(u8, std.mem.asBytes(ev));
+    win.pending_input.deinit(win.gpa);
+    var hist = win.histories.valueIterator();
+    while (hist.next()) |h| h.deinit(win.gpa);
+    win.histories.deinit(win.gpa);
     win.txn.deinit(win.gpa);
     win.paint.deinit(win.gpa);
     win.input.deinit(win.gpa);
@@ -206,7 +221,10 @@ pub fn freeNodeData(gpa: std.mem.Allocator, n: *const Node) void {
     gpa.free(n.semantics.description);
     switch (n.data) {
         .text => |t| gpa.free(t.content),
-        .editor => |e| gpa.free(e.text.content),
+        .editor => |e| {
+            gpa.free(e.text.content);
+            secret.free(e.secret);
+        },
         .grid => |g| {
             gpa.free(g.columns);
             gpa.free(g.rows);
@@ -325,7 +343,7 @@ pub fn markLayers(win: *Window) void {
 /// Whether a frame has work to do.
 pub fn needsFrame(win: *const Window) bool {
     return win.state(.root).needs_layout or win.dirty.layers or win.dirty.props or
-        win.dirty.semantics or win.paint.anyDirty();
+        win.dirty.semantics or win.paint.anyDirty() or win.pending_input.items.len != 0;
 }
 
 pub fn requestFrame(win: *Window) void {
@@ -375,6 +393,8 @@ pub fn setRtl(win: *Window, rtl: bool) void {
 pub fn frame(win: *Window) Error!void {
     if (win.txn.open) return;
     win.recycleDead();
+    win.replayInput();
+    if (win.txn.open) return;
     defer _ = win.scratch.reset(.retain_capacity);
     try layout.run(win);
     if (win.dirty.layers) {
@@ -389,6 +409,21 @@ pub fn frame(win: *Window) Error!void {
         win.dirty.semantics = false;
     }
     win.stats.frames += 1;
+}
+
+/// Delivers input queued behind a transaction, in order, until a handler
+/// leaves a transaction open again.
+fn replayInput(win: *Window) void {
+    var i: usize = 0;
+    while (i < win.pending_input.items.len and !win.txn.open) : (i += 1) {
+        const ev = win.pending_input.items[i];
+        // Key text may belong to a masked field.
+        std.crypto.secureZero(u8, std.mem.asBytes(&win.pending_input.items[i]));
+        input_mod.handle(win, &ev);
+    }
+    const rest = win.pending_input.items.len - i;
+    std.mem.copyForwards(platform.Event, win.pending_input.items[0..rest], win.pending_input.items[i..]);
+    win.pending_input.shrinkRetainingCapacity(rest);
 }
 
 fn recycleDead(win: *Window) void {
@@ -407,6 +442,10 @@ fn recycleDead(win: *Window) void {
 /// layers. Called by the transaction at commit, before they are marked dead.
 pub fn forget(win: *Window, id: NodeId) void {
     win.input.forget(win, id);
+    if (win.histories.fetchRemove(id)) |kv| {
+        var h = kv.value;
+        h.deinit(win.gpa);
+    }
     const s = win.state(id);
     win.paint.damage(s.layer, s.bounds);
 }
@@ -439,7 +478,32 @@ pub fn ownsBuilder(win: *const Window, b: *const scene.Builder) bool {
 /// A forwarded platform event for this window: pointer, keyboard, touch,
 /// and scroll input the compositor did not consume.
 pub fn handlePlatform(win: *Window, event: *const platform.Event) void {
+    if (win.txn.open or win.pending_input.items.len != 0) {
+        win.pending_input.append(win.gpa, event.*) catch {
+            // Out of memory: deliver now rather than drop it; edits that
+            // need a transaction are then lost, which only OOM can cause.
+            input_mod.handle(win, event);
+            return;
+        };
+        win.requestFrame();
+        return;
+    }
     input_mod.handle(win, event);
+}
+
+/// The contents of a masked editor (locked memory; do not copy it into
+/// ordinary memory).
+pub fn secretOf(win: *const Window, id: NodeId) []const u8 {
+    return win.node(id).data.editor.secret;
+}
+
+/// Turns caret blinking and other motion off or on (desktop settings).
+pub fn setReducedMotion(win: *Window, on: bool) void {
+    if (win.reduced_motion == on) return;
+    win.reduced_motion = on;
+    win.paint.restartBlink();
+    win.dirty.props = true;
+    win.requestFrame();
 }
 
 /// The compositor scrolled a container. Reports older than the UI's own

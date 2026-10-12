@@ -200,6 +200,8 @@ pub fn setFocus(win: *Window, id: NodeId, visible: bool) void {
     st.focus = id;
     st.focus_visible = visible;
     win.dirty.semantics = true;
+    // A focused editor's caret is a layer.
+    if ((old != .none and win.isLive(old) and win.node(old).kind == .editor) or (id != .none and win.node(id).kind == .editor)) win.markLayers();
     if (old != .none and win.isLive(old)) {
         win.markPaint(old);
         if (old != id) _ = call(win, old, .focus, &.{ .focus = .{ .gained = false, .visible = visible } });

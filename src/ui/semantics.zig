@@ -43,6 +43,8 @@ pub const Node = struct {
     value_text: []const u8 = "",
     caret: ?u32 = null,
     anchor: ?u32 = null,
+    /// A password field: its value is never exposed.
+    masked: bool = false,
 };
 
 pub const Tree = struct {
@@ -116,6 +118,7 @@ pub const Tree = struct {
             } else if (namedFromContent(role)) {
                 try t.contentText(win, id, start);
             }
+            const editor = n.kind == .editor and !n.data.editor.editor.masked;
             try t.nodes.append(win.gpa, .{
                 .node = id,
                 .role = role,
@@ -135,9 +138,12 @@ pub const Tree = struct {
                 .value = sem.value,
                 .live = sem.live,
                 .actionable = n.handler(.activate) != null and !sem.disabled,
-                .value_text = if (n.kind == .editor) n.data.editor.text.content else "",
-                .caret = if (n.kind == .editor) n.data.editor.caret else null,
-                .anchor = if (n.kind == .editor) n.data.editor.anchor else null,
+                // A masked editor exposes neither its text nor, through
+                // caret offsets, its length.
+                .value_text = if (editor) n.data.editor.text.content else "",
+                .caret = if (editor) n.data.editor.caret else null,
+                .anchor = if (editor) n.data.editor.anchor else null,
+                .masked = n.kind == .editor and n.data.editor.editor.masked,
             });
         }
         var it = win.children(id);

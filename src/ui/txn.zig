@@ -13,6 +13,7 @@
 const std = @import("std");
 const node_mod = @import("node.zig");
 const Window = @import("Window.zig");
+const secret = @import("secret.zig");
 
 const NodeId = node_mod.NodeId;
 const Node = node_mod.Node;
@@ -39,12 +40,15 @@ const Snapshot = struct { id: NodeId, node: Node };
 const Alloc = struct {
     bytes: []u8,
     alignment: std.mem.Alignment,
+    /// Locked memory from secret.zig.
+    secret: bool = false,
 
     fn of(comptime T: type, slice: []const T) Alloc {
         return .{ .bytes = @constCast(std.mem.sliceAsBytes(slice)), .alignment = .of(T) };
     }
 
     fn free(a: Alloc, gpa: std.mem.Allocator) void {
+        if (a.secret) return secret.free(a.bytes);
         if (a.bytes.len != 0) gpa.rawFree(a.bytes, a.alignment, @returnAddress());
     }
 };
@@ -149,6 +153,28 @@ pub const Txn = struct {
         const copy = try t.win.gpa.dupe(T, slice);
         t.allocs.appendAssumeCapacity(.of(T, copy));
         return copy;
+    }
+
+    /// Copies `bytes` into locked memory the tree will own.
+    fn ownSecret(t: *Txn, bytes: []const u8) Error![]const u8 {
+        try t.allocs.ensureUnusedCapacity(t.win.gpa, 1);
+        try t.frees.ensureUnusedCapacity(t.win.gpa, 2);
+        const copy = try secret.dupe(bytes);
+        t.allocs.appendAssumeCapacity(.{ .bytes = @constCast(copy), .alignment = .@"1", .secret = true });
+        return copy;
+    }
+
+    fn releaseSecret(t: *Txn, bytes: []const u8) void {
+        if (bytes.len != 0) t.frees.appendAssumeCapacity(.{ .bytes = @constCast(bytes), .alignment = .@"1", .secret = true });
+    }
+
+    /// One bullet per code point of `s`.
+    fn bullets(t: *Txn, s: []const u8) Error![]const u8 {
+        const n = std.unicode.utf8CountCodepoints(s) catch unreachable;
+        const a = t.win.scratch.allocator();
+        const out = try a.alloc(u8, n * bullet.len);
+        for (0..n) |i| @memcpy(out[i * bullet.len ..][0..bullet.len], bullet);
+        return out;
     }
 
     /// `slice` is no longer referenced once the transaction commits.
@@ -356,27 +382,52 @@ pub const Txn = struct {
         const n = try t.textNode(id);
         if (content.len >= std.math.maxInt(u32) or !std.unicode.utf8ValidateSlice(content)) return error.InvalidArgument;
         const d = n.textData();
-        if (std.mem.eql(u8, d.content, content)) return;
+        const masked = n.kind == .editor and n.data.editor.editor.masked;
+        if (std.mem.eql(u8, if (masked) n.data.editor.secret else d.content, content)) return;
         try t.reserve();
-        const copy = try t.own(u8, content);
+        const shown = if (masked) try t.bullets(content) else content;
+        const copy = try t.own(u8, shown);
+        const hidden = if (masked) try t.ownSecret(content) else "";
         t.touch(id);
         t.release(u8, d.content);
         d.content = copy;
         if (n.kind == .editor) {
             const e = &n.data.editor;
+            if (masked) {
+                t.releaseSecret(e.secret);
+                e.secret = hidden;
+            }
             e.caret = charBoundary(copy, e.caret);
             e.anchor = charBoundary(copy, e.anchor);
+            e.revision +%= 1;
         }
         t.win.markShape(id);
         t.win.dirty.semantics = true;
     }
 
+    /// Masking moves the text into locked memory (and unmasking back) and
+    /// counts as a text change.
     pub fn setEditor(t: *Txn, id: NodeId, e: node_mod.Editor) Error!void {
         const n = try t.data(id, .editor);
-        if (std.meta.eql(n.data.editor.editor, e)) return;
+        const ed = &n.data.editor;
+        if (std.meta.eql(ed.editor, e)) return;
         try t.reserve();
-        t.touch(id);
-        n.data.editor.editor = e;
+        if (ed.editor.masked != e.masked) {
+            const plain = if (ed.editor.masked) ed.secret else ed.text.content;
+            const shown = try t.own(u8, if (e.masked) try t.bullets(plain) else plain);
+            const hidden = if (e.masked) try t.ownSecret(plain) else "";
+            t.touch(id);
+            t.release(u8, ed.text.content);
+            t.releaseSecret(ed.secret);
+            ed.text.content = shown;
+            ed.secret = hidden;
+            ed.caret = @intCast(shown.len);
+            ed.anchor = ed.caret;
+            ed.revision +%= 1;
+            t.win.markShape(id);
+            t.win.dirty.semantics = true;
+        } else t.touch(id);
+        ed.editor = e;
         t.win.markLayout(id);
     }
 
@@ -515,6 +566,9 @@ fn charBoundary(s: []const u8, offset: u32) u32 {
     while (o > 0 and o < s.len and s[o] & 0xc0 == 0x80) o -= 1;
     return @intCast(o);
 }
+
+/// What a masked editor shows for each code point.
+pub const bullet = "\u{2022}";
 
 pub fn isLayerRoot(v: node_mod.Visual) bool {
     return v.opacity < 1 or !v.transform.eql(.identity) or v.layer;
