@@ -20,12 +20,14 @@ pub const alloc = @import("alloc.zig");
 pub const application = @import("application.zig");
 /// Transactions, nodes, and node events.
 pub const tree = @import("tree.zig");
+/// Canvases, drawing, and images.
+pub const canvas = @import("canvas.zig");
 
 /// The generated wrapper's types, which the exports use.
 pub const types = t;
 
 /// The files that export schema functions.
-const implementations = .{ @This(), application, tree };
+const implementations = .{ @This(), application, tree, canvas };
 
 const version = build_options.version;
 

@@ -289,6 +289,7 @@ pub fn build(b: *std.Build) void {
         .shared = shared,
         .test_step = test_step,
         .integration_step = integration_step,
+        .headless = headless,
     });
 }
 

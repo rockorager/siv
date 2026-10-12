@@ -41,20 +41,31 @@ pub const Callback = struct {
 
 const Slots = [handler_count]?Callback;
 
+/// A canvas's C callbacks (canvas.zig).
+pub const CanvasCb = struct {
+    draw: ?t.DrawFn,
+    measure: ?t.MeasureFn,
+    destroy: ?t.DestroyFn,
+    user_data: ?*anyopaque,
+};
+
 /// Per-node ABI state of one window, indexed by node index.
 pub const Nodes = struct {
     handles: std.ArrayList(u64) = .empty,
     callbacks: std.ArrayList(Slots) = .empty,
+    canvases: std.ArrayList(?CanvasCb) = .empty,
 
     pub fn deinit(n: *Nodes, gpa: std.mem.Allocator) void {
         n.handles.deinit(gpa);
         n.callbacks.deinit(gpa);
+        n.canvases.deinit(gpa);
     }
 
     /// Room for `total` nodes, so that `adopt` cannot fail.
     pub fn reserve(n: *Nodes, gpa: std.mem.Allocator, total: usize) Error!void {
         try n.handles.ensureTotalCapacity(gpa, total);
         try n.callbacks.ensureTotalCapacity(gpa, total);
+        try n.canvases.ensureTotalCapacity(gpa, total);
     }
 
     /// Gives a new node a handle. The caller reserved room here and in the
@@ -64,6 +75,7 @@ pub const Nodes = struct {
         while (n.handles.items.len <= i) {
             n.handles.appendAssumeCapacity(0);
             n.callbacks.appendAssumeCapacity(@splat(null));
+            n.canvases.appendAssumeCapacity(null);
         }
         n.handles.items[i] = try self.root.handles.insert(self.gpa(), node_tag, w.index << node_bits | i);
     }
@@ -75,6 +87,10 @@ pub const Nodes = struct {
 
     pub fn slot(n: *Nodes, id: NodeId, kind: ui.HandlerKind) *?Callback {
         return &n.callbacks.items[id.index()][@intFromEnum(kind)];
+    }
+
+    pub fn canvas(n: *Nodes, id: NodeId) *?CanvasCb {
+        return &n.canvases.items[id.index()];
     }
 
     /// The node is gone: its handle and callbacks too.
@@ -89,6 +105,10 @@ pub const Nodes = struct {
             cb.* = null;
             w.owner.release(c.destroy, c.user_data);
         };
+        if (n.canvases.items[i]) |c| {
+            n.canvases.items[i] = null;
+            w.owner.release(c.destroy, c.user_data);
+        }
     }
 
     pub fn releaseAll(n: *Nodes, w: *Window) void {
@@ -110,11 +130,14 @@ pub const TxnState = struct {
     removed: std.ArrayList(NodeId) = .empty,
     /// Handler changes, to restore on abort and release on commit.
     undo: std.ArrayList(Undo) = .empty,
+    /// Canvas callback changes, likewise.
+    canvas_undo: std.ArrayList(CanvasUndo) = .empty,
 
     pub fn deinit(s: *TxnState, gpa: std.mem.Allocator) void {
         s.created.deinit(gpa);
         s.removed.deinit(gpa);
         s.undo.deinit(gpa);
+        s.canvas_undo.deinit(gpa);
     }
 
     fn finish(s: *TxnState, w: *Window) void {
@@ -124,8 +147,11 @@ pub const TxnState = struct {
         s.created.clearRetainingCapacity();
         s.removed.clearRetainingCapacity();
         s.undo.clearRetainingCapacity();
+        s.canvas_undo.clearRetainingCapacity();
     }
 };
+
+pub const CanvasUndo = struct { node: NodeId, old: ?CanvasCb };
 
 /// Aborts the window's open transaction, if any (also after the tree's
 /// own transaction was aborted, as when the window is destroyed).
@@ -140,6 +166,14 @@ pub fn abortState(w: *Window) void {
         if (cur.*) |c| w.owner.release(c.destroy, c.user_data);
         cur.* = u.old;
     }
+    i = s.canvas_undo.items.len;
+    while (i > 0) {
+        i -= 1;
+        const u = s.canvas_undo.items[i];
+        const cur = w.nodes.canvas(u.node);
+        if (cur.*) |c| w.owner.release(c.destroy, c.user_data);
+        cur.* = u.old;
+    }
     if (w.uiWin().txn.open) s.ut.abort();
     for (s.created.items) |id| w.nodes.forget(w, id);
     s.finish(w);
@@ -149,6 +183,7 @@ fn commitState(w: *Window) void {
     const s = &w.txn;
     for (s.removed.items) |id| forgetSubtree(w, id);
     for (s.undo.items) |u| if (u.old) |c| w.owner.release(c.destroy, c.user_data);
+    for (s.canvas_undo.items) |u| if (u.old) |c| w.owner.release(c.destroy, c.user_data);
     s.ut.commit();
     s.finish(w);
 }
@@ -159,7 +194,7 @@ fn forgetSubtree(w: *Window, id: NodeId) void {
     w.nodes.forget(w, id);
 }
 
-fn mapTxn(err: ui.TxnError) Error {
+pub fn mapTxn(err: ui.TxnError) Error {
     return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         error.InvalidNode, error.InvalidArgument => error.InvalidArgument,
@@ -171,14 +206,14 @@ fn txnWindow(txn: t.Txn) Error!*Window {
 }
 
 /// The node a handle names in `w`.
-fn nodeIn(w: *Window, node: t.Node) Error!NodeId {
+pub fn nodeIn(w: *Window, node: t.Node) Error!NodeId {
     const payload = try w.owner.root.handles.get(@backingInt(node), node_tag);
     if (payload >> node_bits != w.index) return error.InvalidHandle;
     return @enumFromInt(payload & (max_nodes - 1));
 }
 
 /// Runs a transaction operation under the sticky-error rule.
-fn run(txn: t.Txn, comptime f: anytype, args: anytype) t.Result {
+pub fn run(txn: t.Txn, comptime f: anytype, args: anytype) t.Result {
     const w = txnWindow(txn) catch |err| return t.resultOf(err);
     if (w.txn.err) |e| return t.resultOf(e);
     @call(.auto, f, .{w} ++ args) catch |err| {
@@ -189,7 +224,7 @@ fn run(txn: t.Txn, comptime f: anytype, args: anytype) t.Result {
 }
 
 /// Runs a builder under the sticky-error rule.
-fn build(txn: t.Txn, comptime f: anytype, args: anytype) t.Node {
+pub fn build(txn: t.Txn, comptime f: anytype, args: anytype) t.Node {
     const w = txnWindow(txn) catch return .null;
     if (w.txn.err != null) return .null;
     const id = @call(.auto, f, .{w} ++ args) catch |err| {
@@ -208,7 +243,7 @@ pub export fn siv_txn_begin(window: t.Window, txn: ?*t.Txn) t.Result {
 fn txnBegin(window: t.Window, out: ?*t.Txn) Error!void {
     const w = try App.window(@backingInt(window), application.window_tag);
     const dest = try runtime.out(t.Txn, out);
-    if (w.txn.handle != 0) return error.Busy;
+    if (w.txn.handle != 0 or w.owner.painting != 0) return error.Busy;
     const self = w.owner;
     try self.root.handles.ensureUnusedCapacity(self.gpa());
     const ut = w.uiWin().begin() catch |err| return switch (err) {
@@ -243,7 +278,7 @@ pub export fn siv_txn_status(txn: t.Txn) t.Result {
 
 // Builders --------------------------------------------------------------------
 
-fn create(w: *Window, parent: t.Node, kind: ui.Kind) Error!NodeId {
+pub fn create(w: *Window, parent: t.Node, kind: ui.Kind) Error!NodeId {
     const p = try nodeIn(w, parent);
     const uw = w.uiWin();
     if (uw.free_head == .none and uw.nodes.items.len >= max_nodes) return error.LimitExceeded;
@@ -373,7 +408,9 @@ pub export fn siv_set_visual(txn: t.Txn, node: t.Node, desc: ?*const t.VisualDes
             v.radius = .{ .top_start = d.radius.top_start, .top_end = d.radius.top_end, .bottom_end = d.radius.bottom_end, .bottom_start = d.radius.bottom_start };
             for ([_]f32{ v.radius.top_start, v.radius.top_end, v.radius.bottom_end, v.radius.bottom_start }) |r| if (!(r >= 0) or !std.math.isFinite(r)) return error.InvalidArgument;
             v.clip = fl.clip;
-            v.layer = fl.layer;
+            // A canvas keeps its own layer, so redrawing it repaints
+            // nothing else (D28).
+            v.layer = fl.layer or w.uiWin().node(id).kind == .canvas;
             v.hit_test = !fl.no_hit_test;
             w.txn.ut.setVisual(id, v) catch |err| return mapTxn(err);
         }
@@ -443,44 +480,50 @@ pub export fn siv_set_text(txn: t.Txn, node: t.Node, text: ?[*]const u8, text_le
 
 pub export fn siv_set_text_style(txn: t.Txn, node: t.Node, desc: ?*const t.TextStyleDesc) t.Result {
     return run(txn, struct {
-        fn f(w: *Window, n: t.Node, d_ptr: ?*const t.TextStyleDesc) Error!void {
+        fn f(w: *Window, n: t.Node, d: ?*const t.TextStyleDesc) Error!void {
             const id = try nodeIn(w, n);
-            const d = try runtime.readDesc(t.TextStyleDesc, d_ptr);
-            const fl = try runtime.flags(t.TextFlags, d.flags);
-            if (!(d.font_size >= 0) or d.font_size > 1 << 16) return error.InvalidArgument;
-            w.txn.ut.setTextProps(id, .{
-                .style = .{
-                    .family = try runtime.string(d.family, d.family_len),
-                    .language = try runtime.string(d.language, d.language_len),
-                    .size = if (d.font_size == 0) 14 else @floatCast(d.font_size),
-                    .weight = switch (try runtime.enumValue(t.FontWeight, d.weight)) {
-                        .regular => .regular,
-                        .thin => .thin,
-                        .light => .light,
-                        .medium => .medium,
-                        .semibold => .semibold,
-                        .bold => .bold,
-                        .black => .black,
-                        _ => unreachable,
-                    },
-                    .slant = switch (try runtime.enumValue(t.FontSlant, d.slant)) {
-                        .roman => .roman,
-                        .italic => .italic,
-                        .oblique => .oblique,
-                        _ => unreachable,
-                    },
-                    .color = try color(d.color, .black),
-                },
-                .alignment = switch (try runtime.enumValue(t.TextAlign, d.@"align")) {
-                    .start => .start,
-                    .end => .end,
-                    .center => .center,
-                    _ => unreachable,
-                },
-                .wrap = !fl.no_wrap,
-            }) catch |err| return mapTxn(err);
+            w.txn.ut.setTextProps(id, try textPropsOf(d)) catch |err| return mapTxn(err);
         }
     }.f, .{ node, desc });
+}
+
+/// A siv_text_style_desc as the tree's text properties. Strings point
+/// into the caller's memory.
+pub fn textPropsOf(d_ptr: ?*const t.TextStyleDesc) Error!ui.Text {
+    const d = try runtime.readDesc(t.TextStyleDesc, d_ptr);
+    const fl = try runtime.flags(t.TextFlags, d.flags);
+    if (!(d.font_size >= 0) or d.font_size > 1 << 16) return error.InvalidArgument;
+    return .{
+        .style = .{
+            .family = try runtime.string(d.family, d.family_len),
+            .language = try runtime.string(d.language, d.language_len),
+            .size = if (d.font_size == 0) 14 else @floatCast(d.font_size),
+            .weight = switch (try runtime.enumValue(t.FontWeight, d.weight)) {
+                .regular => .regular,
+                .thin => .thin,
+                .light => .light,
+                .medium => .medium,
+                .semibold => .semibold,
+                .bold => .bold,
+                .black => .black,
+                _ => unreachable,
+            },
+            .slant = switch (try runtime.enumValue(t.FontSlant, d.slant)) {
+                .roman => .roman,
+                .italic => .italic,
+                .oblique => .oblique,
+                _ => unreachable,
+            },
+            .color = try color(d.color, .black),
+        },
+        .alignment = switch (try runtime.enumValue(t.TextAlign, d.@"align")) {
+            .start => .start,
+            .end => .end,
+            .center => .center,
+            _ => unreachable,
+        },
+        .wrap = !fl.no_wrap,
+    };
 }
 
 pub export fn siv_set_flex(txn: t.Txn, node: t.Node, desc: ?*const t.FlexDesc) t.Result {
@@ -690,7 +733,7 @@ fn modifiers(m: platform.Mods) t.Modifiers {
 // Queries ---------------------------------------------------------------------
 
 /// The window and node a handle names, outside any transaction.
-fn lookup(node: t.Node) Error!struct { *Window, NodeId } {
+pub fn lookup(node: t.Node) Error!struct { *Window, NodeId } {
     const self, const payload = try runtime.Root.owner(App, application.app_tag, @backingInt(node), node_tag);
     const w = self.windows.items[payload >> node_bits] orelse return error.InvalidHandle;
     return .{ w, @enumFromInt(payload & (max_nodes - 1)) };
@@ -742,6 +785,7 @@ pub export fn siv_node_focus(node: t.Node) t.Result {
     return application.wrap(struct {
         fn f(n: t.Node) Error!void {
             const w, const id = try lookup(n);
+            if (w.owner.painting != 0) return error.Busy;
             const uw = w.uiWin();
             if (!uw.node(id).canFocus()) return error.InvalidArgument;
             ui.input.setFocus(uw, id, false);
@@ -751,7 +795,7 @@ pub export fn siv_node_focus(node: t.Node) t.Result {
 
 // Conversions -----------------------------------------------------------------
 
-fn color(c: t.Color, zero: scene.Color) Error!scene.Color {
+pub fn color(c: t.Color, zero: scene.Color) Error!scene.Color {
     for ([_]f32{ c.r, c.g, c.b, c.a }) |v| if (!std.math.isFinite(v)) return error.InvalidArgument;
     if (c.r == 0 and c.g == 0 and c.b == 0 and c.a == 0) return zero;
     const cl = struct {

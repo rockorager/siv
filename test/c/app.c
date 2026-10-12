@@ -118,6 +118,32 @@ static bool on_window(void *user_data, siv_window window, const siv_window_event
 	return false;
 }
 
+static int canvas_draws;
+static siv_draw last_draw;
+
+static void count_draw(void *user_data, siv_node node, siv_draw d, float w, float h) {
+	(void)user_data;
+	(void)node;
+	canvas_draws++;
+	last_draw = d;
+	siv_draw_rect(d, (siv_rect){0, 0, w, h});
+	siv_draw_fill(d, NULL, 0);
+}
+
+static siv_size fixed_measure(void *user_data, siv_node node, const siv_constraints *c) {
+	(void)node;
+	(*(int *)user_data)++;
+	return (siv_size){c->max_width < 50 ? c->max_width : 50, 20};
+}
+
+/* Dispatches until the counter changes. */
+static bool wait_for(siv_app app, int *counter, int from) {
+	for (int i = 0; i < 2000 && *counter == from; i++) {
+		if (siv_app_dispatch(app, 5) != SIV_OK) return false;
+	}
+	return *counter != from;
+}
+
 /* Dispatches until the node has been laid out (a frame ran). */
 static bool wait_for_layout(siv_app app, siv_node node) {
 	for (int i = 0; i < 2000; i++) {
@@ -266,12 +292,60 @@ static void test_app(const unsigned char *font, size_t font_len) {
 	CHECK(atomic_load(&handler_counts.destroys) == 3);
 	EXPECT(siv_node_get_text(caption, buf, sizeof buf, &len), SIV_ERROR_INVALID_HANDLE);
 
+	/* Canvases: measured and drawn from the loop; images; text metrics. */
+	struct counts canvas_counts = {0};
+	int measures = 0;
+	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
+	siv_node canvas = siv_canvas(txn, column, SIV_DESC(siv_canvas_desc, .draw = count_draw, .measure = fixed_measure, .user_data = &measures));
+	CHECK(canvas != 0);
+	EXPECT(siv_txn_commit(txn), SIV_OK);
+	CHECK(wait_for(app, &canvas_draws, 0));
+	CHECK(measures > 0);
+	EXPECT(siv_node_get_rect(canvas, &rect), SIV_OK);
+	/* Stretched across the column; the height is what measure chose. */
+	CHECK(rect.width > 50 && rect.height == 20);
+	EXPECT(siv_draw_move_to(last_draw, 0, 0), SIV_ERROR_INVALID_HANDLE);
+	int drawn = canvas_draws;
+	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
+	EXPECT(siv_invalidate(txn, canvas), SIV_OK);
+	EXPECT(siv_txn_commit(txn), SIV_OK);
+	CHECK(wait_for(app, &canvas_draws, drawn));
+	/* Replacing the callbacks releases the old user data at commit. */
+	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
+	EXPECT(siv_set_canvas(txn, canvas, SIV_DESC(siv_canvas_desc, .draw = count_draw, .destroy = on_destroy, .user_data = &canvas_counts, .width = 10, .height = 10)), SIV_OK);
+	EXPECT(siv_set_canvas(txn, label, NULL), SIV_ERROR_INVALID_ARGUMENT);
+	EXPECT(siv_txn_abort(txn), SIV_OK);
+	CHECK(atomic_load(&canvas_counts.destroys) == 1);
+	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
+	EXPECT(siv_set_canvas(txn, canvas, SIV_DESC(siv_canvas_desc, .draw = count_draw, .destroy = on_destroy, .user_data = &canvas_counts, .width = 10, .height = 10)), SIV_OK);
+	EXPECT(siv_txn_commit(txn), SIV_OK);
+	CHECK(atomic_load(&canvas_counts.destroys) == 1);
+
+	const uint8_t px[8] = {255, 0, 0, 255, 0, 0, 255, 255};
+	siv_image image = 0;
+	EXPECT(siv_image_create(app, SIV_DESC(siv_image_desc, .pixels = px, .pixels_count = 8, .width = 2, .height = 1), &image), SIV_OK);
+	EXPECT(siv_image_create(app, SIV_DESC(siv_image_desc, .pixels = px, .pixels_count = 7, .width = 2, .height = 1), &image), SIV_ERROR_INVALID_ARGUMENT);
+	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
+	siv_node view = siv_image_view(txn, column, SIV_DESC(siv_image_view_desc, .image = image, .fit = SIV_FIT_COVER));
+	CHECK(view != 0);
+	EXPECT(siv_txn_commit(txn), SIV_OK);
+	EXPECT(siv_image_destroy(image), SIV_OK);
+	EXPECT(siv_image_destroy(image), SIV_ERROR_INVALID_HANDLE);
+
+	siv_text_metrics metrics = {0};
+	EXPECT(siv_app_measure_text(app, "Hello", 5, 0, SIV_DESC(siv_text_style_desc, .font_size = 20), &metrics), SIV_OK);
+	CHECK(metrics.width > 20 && metrics.height >= 20 && metrics.baseline > 0 && metrics.baseline < metrics.height);
+	siv_text_metrics wrapped = {0};
+	EXPECT(siv_app_measure_text(app, "Hello Hello Hello", 17, 60, NULL, &wrapped), SIV_OK);
+	CHECK(wrapped.width <= 60 && wrapped.height > metrics.height);
+
 	/* An open transaction and the window's handlers go with the window. */
 	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
 	EXPECT(siv_on(txn, label, SIV_EVENT_TYPE_POINTER, on_activate, on_destroy, &handler_counts), SIV_OK);
 	CHECK(log.destroyed == 0);
 	EXPECT(siv_window_destroy(window), SIV_OK);
 	CHECK(log.destroyed == 1);
+	CHECK(atomic_load(&canvas_counts.destroys) == 2);
 	CHECK(atomic_load(&handler_counts.destroys) == 4);
 	CHECK(atomic_load(&counts.destroys) == 50);
 	EXPECT(siv_txn_commit(txn), SIV_ERROR_INVALID_HANDLE);

@@ -21,6 +21,7 @@ const api = @import("api.zig");
 const runtime = @import("runtime.zig");
 const alloc = @import("alloc.zig");
 const tree = @import("tree.zig");
+const canvas = @import("canvas.zig");
 
 const Root = runtime.Root;
 
@@ -53,6 +54,13 @@ pub const App = struct {
     pending: std.ArrayList(Release),
     /// Windows destroyed while `depth` was nonzero.
     dead: std.ArrayList(*Window),
+    /// Nesting of canvas measure and draw callbacks, during which the tree
+    /// must not change.
+    painting: u32,
+    draw: canvas.DrawState,
+    /// By image index (handle payload); null slots are reused.
+    images: std.ArrayList(?*ui.Image),
+    waiting: std.ArrayList(canvas.Waiting),
 
     pub fn gpa(self: *App) std.mem.Allocator {
         return self.root.gpa;
@@ -162,7 +170,12 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     self.depth = 0;
     self.pending = .empty;
     self.dead = .empty;
+    self.painting = 0;
+    self.images = .empty;
+    self.waiting = .empty;
     const gpa = self.gpa();
+    self.draw = .init(gpa);
+    errdefer self.draw.deinit(gpa);
     const display_z: ?[:0]u8 = if (display.len == 0) null else try gpa.dupeSentinel(u8, display, 0);
     defer if (display_z) |d| gpa.free(d);
     self.app = app_mod.App.create(gpa, .{
@@ -175,6 +188,8 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
         .system_fonts = !flags.no_system_fonts,
         .reduced_motion = flags.reduced_motion,
     }) catch |err| return mapAppError(err);
+    errdefer self.app.destroy();
+    try self.app.fonts.addListener(.{ .ctx = self, .func = canvas.onFontsLoaded });
     dest.* = @fromBackingInt(self.root.handle);
 }
 
@@ -188,12 +203,17 @@ pub export fn siv_app_destroy(app: t.App) t.Result {
         w.teardown();
     };
     const gpa = self.gpa();
+    self.app.fonts.removeListener(self);
+    for (self.images.items) |img| if (img) |i| i.release();
     // Runs the destroy-notify of posted work that never ran (D5).
     self.app.destroy();
     while (self.dead.pop()) |w| w.free();
     self.windows.deinit(gpa);
     self.pending.deinit(gpa);
     self.dead.deinit(gpa);
+    self.draw.deinit(gpa);
+    self.images.deinit(gpa);
+    self.waiting.deinit(gpa);
     Root.destroy(App, self);
     return .ok;
 }
@@ -261,6 +281,7 @@ pub export fn siv_window_create(app: t.App, desc: ?*const t.WindowDesc, window: 
 
 fn windowCreate(app: t.App, desc_ptr: ?*const t.WindowDesc, out: ?*t.Window) Error!void {
     const self = try App.get(@backingInt(app));
+    if (self.painting != 0) return error.Busy;
     const desc = try runtime.readDesc(t.WindowDesc, desc_ptr);
     const title = try runtime.string(desc.title, desc.title_len);
     const app_id = try runtime.string(desc.app_id, desc.app_id_len);
@@ -372,6 +393,7 @@ fn states(s: platform.WindowStates) u32 {
 
 pub export fn siv_window_destroy(window: t.Window) t.Result {
     const w = App.window(@backingInt(window), window_tag) catch |err| return t.resultOf(err);
+    if (w.owner.painting != 0) return .error_busy;
     w.win.destroy() catch return .error_out_of_memory;
     w.teardown();
     return .ok;

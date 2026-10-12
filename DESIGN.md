@@ -1148,8 +1148,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **Decision:**
   - One builder per primitive (`siv_box`, `siv_flex`, `siv_grid`,
     `siv_stack`, `siv_text`, `siv_editor`, `siv_scroll`), appending as
-    the last child; `siv_move` reorders. Images, canvases, and external
-    nodes need pixel, drawing, and surface APIs and come later.
+    the last child; `siv_move` reorders. Image nodes (`siv_image_view`)
+    and canvases (`siv_canvas`, D28) are in; external nodes wait for the
+    embedder API (D17).
+  - `siv_image` handles hold one reference to a `ui.Image`; image nodes
+    and display lists hold their own, so destroying the handle never
+    pulls pixels from under a frame. Canvases draw images by handle, so
+    an application keeps the handles of images it draws.
   - Property groups are descriptors where zero is a good default (layout,
     visual, semantics, text style, flex, grid, stack). Where zero is a
     meaningful value it is not a descriptor field: opacity and the
@@ -1185,6 +1190,72 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **Reverse if:** binding generators or C users need a property that a
   descriptor cannot default to zero; then split it out as above, never
   add presence flags across the board.
+
+### D28. Canvases: custom drawing from C
+
+- **Requirement:** custom widgets (charts, dials, editors of their own)
+  draw arbitrary vector content from any language, size themselves, and
+  cost nothing to keep on screen.
+- **Decision:**
+  - A canvas node has three callbacks in `siv_canvas_desc`: `measure`
+    (constraints in, size out) during layout, `draw` during paint, and
+    a destroy-notify. Both run in the frame phase, which D5 makes a safe
+    point, but in the middle of layout and painting, so while they run
+    calls that would change the tree or re-enter the loop
+    (`siv_txn_begin`, window creation and destruction, `siv_node_focus`,
+    dispatch) return `SIV_ERROR_BUSY`. Queries and `siv_post` work.
+  - `measure` is asked once with an unbounded width for the preferred
+    (max-content) width and once with the final constraints, like any
+    leaf in D26; without it the intrinsic `width` and `height` apply.
+    `siv_invalidate` redraws a canvas; `siv_invalidate_size` measures it
+    again first. Both are transaction operations, so a redraw lands in
+    the same frame as the tree changes around it.
+  - Damage per canvas: every canvas roots its own compositor layer (D8),
+    so redrawing one repaints and damages only its box and calls no
+    other canvas's draw; moving, scrolling, or fading it sends layer
+    properties only. Finer damage inside one canvas waits for a widget
+    that needs it.
+  - The drawing API mirrors the display list (D9) rather than adding a
+    model of its own: a current path (move, line, quadratic, cubic,
+    arc, rect, rounded rect, ellipse, close) consumed by fill, stroke,
+    clip, and backdrop blur unless `KEEP_PATH` is set; paints are solid
+    colors and linear, radial, and sweep gradients in sRGB, interpolated
+    in linear light; strokes have width, joins, caps, miter limit, and
+    dashes; images with source and destination rectangles, opacity, and
+    nearest or bilinear sampling; text shaped with the application's
+    fonts and fallback (D13), aligned and optionally wrapped in a width,
+    and measured with `siv_app_measure_text`. Layers are explicit
+    pushes, one per effect (transform, clip, opacity, blend mode), closed
+    with `siv_draw_pop`; layers left open close when `draw` returns. A
+    path that is a single rect or rounded rect stays a rect shape, so
+    the renderer keeps exact box coverage.
+  - `siv_draw` is a handle valid only during the call it is passed to.
+    Drawing errors are sticky like a transaction's (D4): after the first
+    failure every call does nothing, and the canvas shows nothing that
+    frame, never half a drawing. To make that possible the callback draws
+    into a scratch builder, which is replayed into the canvas's layer
+    only when everything succeeded; draws happen only on invalidation, so
+    the copy is cheap.
+  - Text drawn while a font is still loading uses fallback glyphs and
+    marks the canvas; it is drawn again when a font finishes, as text
+    nodes are reshaped (D13). Canvas text is shaped on every draw; the
+    font cache stays the only cache.
+  - The tree side (`ui.Canvas`) passes the window and node to its
+    callbacks, has the `measure` hook, keeps its builder balanced when
+    a draw fails, and `Window.holdImage` lets a canvas's list keep the
+    images it draws alive until the compositor releases it.
+- **Alternatives:** recording content into the tree in a transaction
+  (no callbacks during paint, but every resize needs an application
+  round trip and a re-record, and measuring needs callbacks anyway); a
+  cairo-style API with a current transform and saved states (a second
+  state model on top of the display list's layers, and transforms would
+  have to be applied to geometry on the UI thread); path objects as
+  handles (lifetimes to manage for a cost only measurements would
+  justify).
+- **Reverse if:** profiles show canvases redrawn every frame (animation)
+  spending real time in the replay copy or in reshaping text; then draw
+  straight into the layer's builder with a rollback point, and cache
+  shaped text per canvas.
 
 ## Lessons from ourokit
 

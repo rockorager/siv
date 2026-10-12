@@ -16,6 +16,9 @@ pub const Options = struct {
     test_step: *std.Build.Step,
     /// `zig build test-integration`: tests against headless sway.
     integration_step: *std.Build.Step,
+    /// The headless tests, which link C code that uses the generated
+    /// header (test/abi/canvas.zig).
+    headless: *std.Build.Step.Compile,
 };
 
 pub fn add(b: *std.Build, o: Options) void {
@@ -148,7 +151,7 @@ pub fn add(b: *std.Build, o: Options) void {
     // Example programs (examples/*.c): `zig build examples` installs them;
     // `zig build test` compiles them, so they keep up with the API.
     const examples = b.step("examples", "Build the C example programs");
-    for ([_][]const u8{ "hello", "todo", "embed" }) |name| {
+    for ([_][]const u8{ "hello", "todo", "embed", "gauge" }) |name| {
         const exe = b.addExecutable(.{
             .name = name,
             .root_module = b.createModule(.{ .target = o.target, .optimize = o.optimize, .link_libc = true }),
@@ -159,6 +162,11 @@ pub fn add(b: *std.Build, o: Options) void {
         examples.dependOn(&b.addInstallArtifact(exe, .{}).step);
         test_c.dependOn(&exe.step);
     }
+
+    // C drawing code that the headless canvas tests call: it uses the
+    // exports in the test binary itself.
+    o.headless.root_module.addCSourceFile(.{ .file = b.path("test/c/canvas_scene.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" } });
+    o.headless.root_module.addIncludePath(installed.path(b, "include"));
 
     // The public API against sway (integration_tests.zig). Not in `test`.
     const integration = b.addTest(.{

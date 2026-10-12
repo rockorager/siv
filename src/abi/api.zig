@@ -168,6 +168,30 @@ const toggle_values: []const schema.EnumValue = &.{
     .{ .name = "mixed", .value = 3, .doc = "Partly on." },
 };
 
+fn param(comptime name: []const u8, comptime t: schema.Type, comptime doc: []const u8) Param {
+    return .{ .name = name, .type = t, .doc = doc };
+}
+
+const draw_param: Param = .{ .name = "draw", .type = ref("siv_draw"), .doc = "The drawing context of the running siv_draw_fn." };
+
+/// A drawing operation: errors are sticky like a transaction's.
+fn drawOp(comptime name: []const u8, comptime doc: []const u8, comptime params: []const Param) Function {
+    return op(name, doc ++ " Returns the drawing's status (see siv_draw_status).", &([_]Param{draw_param} ++ params[0..params.len].*));
+}
+
+const blend_names = [_][]const u8{
+    "normal",   "multiply", "screen", "overlay", "darken",  "lighten",    "color_dodge", "color_burn",
+    "hard_light", "soft_light", "difference", "exclusion", "hue", "saturation", "color",   "luminosity",
+    "clear",    "src",      "dst",    "dst_over", "src_in", "dst_in",     "src_out",     "dst_out",
+    "src_atop", "dst_atop", "xor",    "plus",
+};
+
+const blend_values: [blend_names.len]schema.EnumValue = blk: {
+    var vs: [blend_names.len]schema.EnumValue = undefined;
+    for (blend_names, 0..) |n, i| vs[i] = .{ .name = n, .value = i, .doc = if (i == 0) "Source over: the default." else "The " ++ n ++ " operator." };
+    break :blk vs;
+};
+
 pub const decls = [_]Decl{
     result,
     alloc_fn,
@@ -508,6 +532,135 @@ pub const decls = [_]Decl{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node the handler was set on." },
         .{ .name = "event", .type = .{ .desc = "siv_event" }, .doc = "The event, valid during the call." },
     }, .bool),
+    // Canvases (D28).
+    handle("siv_draw", "A drawing context: valid only during the siv_draw_fn call it is passed to.", false),
+    handle("siv_image", "Immutable pixels for image nodes and siv_draw_image. Destroying the handle drops the application's reference: nodes and frames that show the image keep it until they stop.", false),
+    descriptor("siv_constraints", "The sizes a canvas may take, from layout. A maximum may be INFINITY.", &.{
+        f32Field("min_width", "Smallest width."),
+        f32Field("max_width", "Largest width, or INFINITY."),
+        f32Field("min_height", "Smallest height."),
+        f32Field("max_height", "Largest height, or INFINITY."),
+    }),
+    callback("siv_measure_fn", "Sizes a canvas during layout, in the frame phase (D5, D26). Asked with an unbounded width for the canvas's preferred width, then with its final constraints; the result is clamped to them. Must not change the tree: transactions, window changes, and focus return SIV_ERROR_BUSY.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The canvas." },
+        .{ .name = "constraints", .type = .{ .desc = "siv_constraints" }, .doc = "The sizes allowed, valid during the call." },
+    }, ref("siv_size")),
+    callback("siv_draw_fn", "Draws a canvas's content in its coordinates, (0, 0) to (width, height), in the frame phase when the canvas was invalidated or resized (D5). Must not change the tree. The content is clipped to the canvas.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The canvas." },
+        .{ .name = "draw", .type = ref("siv_draw"), .doc = "The drawing context, valid during the call." },
+        .{ .name = "width", .type = .f32, .doc = "The canvas's width." },
+        .{ .name = "height", .type = .f32, .doc = "The canvas's height." },
+    }, .void),
+    descriptor("siv_canvas_desc", "A canvas's callbacks and intrinsic size.", &.{
+        .{ .name = "user_data", .type = .user_data, .doc = "Passed to draw, measure, and destroy." },
+        .{ .name = "draw", .type = ref("siv_draw_fn"), .doc = "Draws the content; NULL draws nothing." },
+        .{ .name = "measure", .type = ref("siv_measure_fn"), .doc = "Sizes the canvas; NULL uses width and height." },
+        .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data when the callbacks are replaced or the canvas is destroyed." },
+        f32Field("width", "Intrinsic width without measure."),
+        f32Field("height", "Intrinsic height without measure."),
+    }),
+    value("siv_radii", "Physical corner radii of a rounded rectangle in a canvas.", &.{
+        f32Field("top_left", "Top left."),
+        f32Field("top_right", "Top right."),
+        f32Field("bottom_right", "Bottom right."),
+        f32Field("bottom_left", "Bottom left."),
+    }),
+    value("siv_affine", "A 2D affine transform: x' = a x + c y + e, y' = b x + d y + f. The identity is a = d = 1.", &.{
+        f32Field("a", "Row 1, column 1."),
+        f32Field("b", "Row 2, column 1."),
+        f32Field("c", "Row 1, column 2."),
+        f32Field("d", "Row 2, column 2."),
+        f32Field("e", "Horizontal translation."),
+        f32Field("f", "Vertical translation."),
+    }),
+    enumeration("siv_paint_type", "What a siv_paint_desc paints with.", &.{
+        .{ .name = "solid", .value = 0, .doc = "color." },
+        .{ .name = "linear", .value = 1, .doc = "A linear gradient from (x0, y0) to (x1, y1)." },
+        .{ .name = "radial", .value = 2, .doc = "A two-point conical gradient from the circle (x0, y0, r0) to (x1, y1, r1)." },
+        .{ .name = "sweep", .value = 3, .doc = "A sweep gradient around (x0, y0), clockwise from start_angle to end_angle (radians from +x)." },
+    }),
+    enumeration("siv_extend", "How a gradient continues past its stops.", &.{
+        .{ .name = "pad", .value = 0, .doc = "The end colors continue." },
+        .{ .name = "repeat", .value = 1, .doc = "The stops repeat." },
+        .{ .name = "reflect", .value = 2, .doc = "The stops repeat, mirrored every other time." },
+    }),
+    value("siv_gradient_stop", "A gradient color stop.", &.{
+        f32Field("offset", "Position along the gradient, usually 0 to 1; non-decreasing."),
+        .{ .name = "color", .type = ref("siv_color"), .doc = "Color." },
+    }),
+    descriptor("siv_paint_desc", "A fill or stroke paint, in the coordinates of the current layer. Gradients interpolate in linear light (D9). NULL, or all zero, is opaque black.", &.{
+        .{ .name = "stops", .type = array(ref("siv_gradient_stop")), .doc = "Gradient stops (copied); at least one for gradients." },
+        .{ .name = "color", .type = ref("siv_color"), .doc = "Solid color; all zero is opaque black." },
+        f32Field("x0", "Gradient start point or sweep center."),
+        f32Field("y0", "Gradient start point or sweep center."),
+        f32Field("x1", "Gradient end point."),
+        f32Field("y1", "Gradient end point."),
+        f32Field("r0", "Radial: start radius."),
+        f32Field("r1", "Radial: end radius."),
+        f32Field("start_angle", "Sweep: angle of the first stop."),
+        f32Field("end_angle", "Sweep: angle of the last stop."),
+        .{ .name = "type", .type = ref("siv_paint_type"), .doc = "Default solid." },
+        .{ .name = "extend", .type = ref("siv_extend"), .doc = "Default pad." },
+    }),
+    enumeration("siv_line_join", "How stroke segments join.", &.{
+        .{ .name = "miter", .value = 0, .doc = "Sharp, up to the miter limit." },
+        .{ .name = "round", .value = 1, .doc = "Rounded." },
+        .{ .name = "bevel", .value = 2, .doc = "Cut off." },
+    }),
+    enumeration("siv_line_cap", "How open stroke ends look.", &.{
+        .{ .name = "butt", .value = 0, .doc = "Flat at the end point." },
+        .{ .name = "round", .value = 1, .doc = "Rounded past the end point." },
+        .{ .name = "square", .value = 2, .doc = "Square past the end point." },
+    }),
+    flags("siv_fill_flags", "Options for filling or clipping to the current path.", &.{
+        .{ .name = "even_odd", .bit = 0, .doc = "Use the even-odd rule instead of nonzero winding." },
+        .{ .name = "keep_path", .bit = 1, .doc = "Keep the current path afterwards instead of clearing it." },
+    }),
+    flags("siv_stroke_flags", "Stroke options.", &.{
+        .{ .name = "keep_path", .bit = 0, .doc = "Keep the current path afterwards instead of clearing it." },
+    }),
+    descriptor("siv_stroke_desc", "How the current path is stroked. NULL is a 1 px solid stroke.", &.{
+        .{ .name = "dashes", .type = array(.f32), .doc = "Alternating on and off lengths (copied); empty is solid." },
+        f32Field("width", "Line width; 0 is 1."),
+        f32Field("miter_limit", "Ratio beyond which a miter join becomes a bevel; 0 is 4."),
+        f32Field("dash_offset", "Distance into the dash pattern at the start."),
+        .{ .name = "join", .type = ref("siv_line_join"), .doc = "Default miter." },
+        .{ .name = "cap", .type = ref("siv_line_cap"), .doc = "Default butt." },
+        .{ .name = "flags", .type = ref("siv_stroke_flags"), .doc = "Options." },
+    }),
+    enumeration("siv_blend_mode", "How a layer composites onto what is below it (the COLRv1 set, D9).", &blend_values),
+    enumeration("siv_image_format", "Pixel layout of siv_image_desc.pixels.", &.{
+        .{ .name = "rgba8", .value = 0, .doc = "8-bit sRGB-encoded R, G, B, A bytes, straight alpha." },
+        .{ .name = "bgra8", .value = 1, .doc = "8-bit sRGB-encoded B, G, R, A bytes, straight alpha." },
+        .{ .name = "bgrx8", .value = 2, .doc = "8-bit sRGB-encoded B, G, R bytes and an ignored byte: opaque." },
+    }),
+    flags("siv_image_flags", "How an image is shown.", &.{
+        .{ .name = "nearest", .bit = 0, .doc = "Sample the nearest pixel (pixel art) instead of bilinear." },
+        .{ .name = "mirror_rtl", .bit = 1, .doc = "Image nodes: mirror horizontally in right-to-left layouts (directional icons, D21)." },
+    }),
+    enumeration("siv_fit", "How an image node fits its image into its content box.", &.{
+        .{ .name = "contain", .value = 0, .doc = "Scaled to fit inside, centered, keeping its aspect ratio." },
+        .{ .name = "cover", .value = 1, .doc = "Scaled to cover, centered and cropped, keeping its aspect ratio." },
+        .{ .name = "fill", .value = 2, .doc = "Stretched to the box." },
+        .{ .name = "none", .value = 3, .doc = "At its size, centered and cropped." },
+    }),
+    descriptor("siv_image_view_desc", "What an image node shows.", &.{
+        .{ .name = "image", .type = ref("siv_image"), .doc = "The image; 0 shows nothing. The node keeps it alive." },
+        .{ .name = "fit", .type = ref("siv_fit"), .doc = "Default contain." },
+        .{ .name = "flags", .type = ref("siv_image_flags"), .doc = "Options." },
+    }),
+    descriptor("siv_image_desc", "Pixels for siv_image_create.", &.{
+        .{ .name = "pixels", .type = array(.u8), .doc = "Rows of pixels, copied; at least stride * (height - 1) + width * 4 bytes." },
+        .{ .name = "width", .type = .u32, .doc = "Width in pixels; at least 1." },
+        .{ .name = "height", .type = .u32, .doc = "Height in pixels; at least 1." },
+        .{ .name = "stride", .type = .u32, .doc = "Bytes per row; 0 is width * 4." },
+        .{ .name = "format", .type = ref("siv_image_format"), .doc = "Default rgba8." },
+    }),
+    value("siv_text_metrics", "The size of laid-out text.", &.{
+        f32Field("width", "Width of the widest line."),
+        f32Field("height", "Height of all lines."),
+        f32Field("baseline", "Distance from the top to the first line's baseline."),
+    }),
 };
 
 pub const functions = [_]Function{
@@ -653,6 +806,59 @@ pub const functions = [_]Function{
     call("siv_node_focus", "Moves keyboard focus to a node that can take it (SIV_SEMANTICS_FOCUSABLE, or an editor). Its focus handler runs before this returns.", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
     }),
+    // Canvases (D28).
+    builder("siv_canvas", "Creates a canvas: content the application draws (siv_draw_fn) in its own compositor layer, so redrawing it repaints nothing else.", &.{.{ .name = "desc", .type = .{ .desc = "siv_canvas_desc" }, .doc = "Callbacks and size; NULL for an empty canvas." }}),
+    builder("siv_image_view", "Creates an image node: an image fitted into its content box. Its intrinsic size is the image's size in pixels; its role is image.", &.{.{ .name = "desc", .type = .{ .desc = "siv_image_view_desc" }, .doc = "The image and fit; NULL shows nothing." }}),
+    setter("siv_set_image_view", "Sets what an image node shows.", &.{.{ .name = "desc", .type = .{ .desc = "siv_image_view_desc" }, .doc = "The image and fit; NULL shows nothing." }}),
+    setter("siv_set_canvas", "Replaces a canvas's callbacks and intrinsic size; it is measured and drawn again. The old destroy-notify runs at commit.", &.{.{ .name = "desc", .type = .{ .desc = "siv_canvas_desc" }, .doc = "Callbacks and size; NULL for none." }}),
+    setter("siv_invalidate", "Draws a canvas again at the next frame. Only the canvas's layer is repainted and damaged.", &.{}),
+    setter("siv_invalidate_size", "Measures a canvas again (its size depends on content that changed), lays out what depends on it, and draws it again.", &.{}),
+    call("siv_image_create", "Copies pixels into an image for siv_draw_image.", &.{
+        app_param,
+        .{ .name = "desc", .type = .{ .desc = "siv_image_desc" }, .doc = "The pixels." },
+        .{ .name = "image", .type = out(ref("siv_image")), .doc = "The new image." },
+    }),
+    op("siv_image_destroy", "Releases the application's reference to an image. Nodes and frames that still show it keep its pixels until they stop.", &.{.{ .name = "image", .type = ref("siv_image"), .doc = "The image." }}),
+    call("siv_app_measure_text", "Lays out text as siv_draw_text would and reports its size. Fonts still loading count as missing (their glyphs come from fallback fonts); once they load, canvases that drew with them are drawn again.", &.{
+        app_param,
+        .{ .name = "text", .type = .string, .doc = "UTF-8." },
+        .{ .name = "max_width", .type = .f32, .doc = "Width to wrap at; 0 for none." },
+        .{ .name = "style", .type = .{ .desc = "siv_text_style_desc" }, .doc = "Style; NULL for defaults." },
+        .{ .name = "metrics", .type = out(ref("siv_text_metrics")), .doc = "The size." },
+    }),
+
+    drawOp("siv_draw_status", "The drawing's first error, or SIV_OK. After an error every drawing call does nothing and the canvas shows nothing this frame.", &.{}),
+    drawOp("siv_draw_move_to", "Starts a new subpath of the current path at (x, y).", &.{ param("x", .f32, "X."), param("y", .f32, "Y.") }),
+    drawOp("siv_draw_line_to", "Adds a line to (x, y).", &.{ param("x", .f32, "X."), param("y", .f32, "Y.") }),
+    drawOp("siv_draw_quad_to", "Adds a quadratic Bézier curve through control point (cx, cy) to (x, y).", &.{ param("cx", .f32, "Control x."), param("cy", .f32, "Control y."), param("x", .f32, "X."), param("y", .f32, "Y.") }),
+    drawOp("siv_draw_cubic_to", "Adds a cubic Bézier curve to (x, y).", &.{ param("c1x", .f32, "First control x."), param("c1y", .f32, "First control y."), param("c2x", .f32, "Second control x."), param("c2y", .f32, "Second control y."), param("x", .f32, "X."), param("y", .f32, "Y.") }),
+    drawOp("siv_draw_arc", "Adds a circular arc around (cx, cy), clockwise on screen from start_angle to end_angle (counterclockwise if end_angle is smaller), joined to the current point by a line.", &.{ param("cx", .f32, "Center x."), param("cy", .f32, "Center y."), param("radius", .f32, "Radius."), param("start_angle", .f32, "Start, in radians from +x."), param("end_angle", .f32, "End, in radians from +x.") }),
+    drawOp("siv_draw_close", "Closes the current subpath.", &.{}),
+    drawOp("siv_draw_rect", "Adds a rectangle as a closed subpath.", &.{param("rect", ref("siv_rect"), "The rectangle.")}),
+    drawOp("siv_draw_rounded_rect", "Adds a rounded rectangle as a closed subpath.", &.{ param("rect", ref("siv_rect"), "The rectangle."), param("radii", ref("siv_radii"), "Corner radii.") }),
+    drawOp("siv_draw_ellipse", "Adds the ellipse inscribed in a rectangle as a closed subpath.", &.{param("rect", ref("siv_rect"), "The bounding rectangle.")}),
+    drawOp("siv_draw_fill", "Fills the current path.", &.{ .{ .name = "paint", .type = .{ .desc = "siv_paint_desc" }, .doc = "Paint; NULL for black." }, param("flags", ref("siv_fill_flags"), "Options.") }),
+    drawOp("siv_draw_stroke", "Strokes the current path.", &.{ .{ .name = "stroke", .type = .{ .desc = "siv_stroke_desc" }, .doc = "Stroke; NULL for 1 px solid." }, .{ .name = "paint", .type = .{ .desc = "siv_paint_desc" }, .doc = "Paint; NULL for black." } }),
+    drawOp("siv_draw_image", "Draws part of an image into a rectangle.", &.{
+        param("image", ref("siv_image"), "The image."),
+        param("dst", ref("siv_rect"), "Where it goes."),
+        param("src", ref("siv_rect"), "The part to draw, in image pixels; all zero is the whole image."),
+        param("opacity", .f32, "From 0 to 1."),
+        param("flags", ref("siv_image_flags"), "Options (nearest)."),
+    }),
+    drawOp("siv_draw_text", "Draws text with its layout box's top left at (x, y): shaped, bidi-ordered, with font fallback, one paragraph per line break (D13).", &.{
+        param("x", .f32, "Left edge of the layout box."),
+        param("y", .f32, "Top edge of the layout box."),
+        param("width", .f32, "Width to wrap and align in; 0 for none."),
+        .{ .name = "text", .type = .string, .doc = "UTF-8." },
+        .{ .name = "style", .type = .{ .desc = "siv_text_style_desc" }, .doc = "Style; NULL for defaults." },
+    }),
+    drawOp("siv_draw_backdrop_blur", "Blurs what was drawn before under the current path, like CSS backdrop-filter (D9).", &.{ param("sigma", .f32, "Standard deviation, up to 64."), param("flags", ref("siv_fill_flags"), "Options (keep_path).") }),
+    drawOp("siv_draw_push_transform", "Opens a layer whose content is transformed. Close it with siv_draw_pop.", &.{param("transform", ref("siv_affine"), "Maps the layer's coordinates into the enclosing ones.")}),
+    drawOp("siv_draw_push_clip", "Opens a layer clipped to the current path.", &.{param("flags", ref("siv_fill_flags"), "Options.")}),
+    drawOp("siv_draw_push_opacity", "Opens a layer composited with an opacity, as a group.", &.{param("opacity", .f32, "From 0 to 1.")}),
+    drawOp("siv_draw_push_blend", "Opens a layer composited with a blend mode, as an isolated group.", &.{param("mode", ref("siv_blend_mode"), "The blend mode.")}),
+    drawOp("siv_draw_pop", "Closes the innermost open layer. Layers still open when the draw callback returns are closed then.", &.{}),
 };
 
 pub const spec: schema.Schema = .{
