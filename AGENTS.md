@@ -22,6 +22,9 @@ zig build test-integration     # Wayland backend against headless sway, D-Bus ag
                                #   dbus-daemon (not in `test`; .agents/setup installs both)
 zig build test-integration-pacing  # only its frame pacing tests, which it runs
                                #   last and alone (dropped frames are CPU work)
+SIV_SWAY_RENDERER=vulkan zig build test-integration  # sway renders on the GPU: linux-dmabuf,
+                               #   hardware Vulkan presentation, dma-buf frames (gles2 works
+                               #   too; with vgem loaded, set WLR_RENDER_DRM_DEVICE as well)
 zig build test-integration-dbus  # only the D-Bus part
 zig build test-integration-a11y  # only AT-SPI against the real registry
 zig build test-integration-portal  # only portals against xdg-desktop-portal

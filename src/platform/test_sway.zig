@@ -132,8 +132,8 @@ pub const Sway = struct {
 
 /// Environment for children: a headless wlroots in the private directory.
 const Env = struct {
-    bufs: [4][160]u8 = undefined,
-    ptrs: [8:null]?[*:0]const u8 = @splat(null),
+    bufs: [6][160]u8 = undefined,
+    ptrs: [9:null]?[*:0]const u8 = @splat(null),
 
     fn init(env: *Env, dir: []const u8) !void {
         const vars = [_][]const u8{ "XDG_RUNTIME_DIR={s}", "SWAYSOCK={s}/ipc.sock", "WAYLAND_DISPLAY={s}/wayland-1" };
@@ -141,10 +141,16 @@ const Env = struct {
         const path = std.c.getenv("PATH") orelse "/usr/bin:/bin";
         env.ptrs[3] = try std.fmt.bufPrintSentinel(&env.bufs[3], "PATH={s}", .{path}, 0);
         env.ptrs[4] = "WLR_BACKENDS=headless";
-        env.ptrs[5] = "WLR_RENDERER=pixman";
+        // SIV_SWAY_RENDERER=gles2 or vulkan renders on a GPU's render
+        // node, which brings linux-dmabuf and hardware Vulkan presentation;
+        // pixman (the default) needs no GPU. WLR_RENDER_DRM_DEVICE picks
+        // the node where wlroots would pick the wrong one (vgem's).
+        const renderer = std.c.getenv("SIV_SWAY_RENDERER") orelse "pixman";
+        env.ptrs[5] = try std.fmt.bufPrintSentinel(&env.bufs[4], "WLR_RENDERER={s}", .{renderer}, 0);
         env.ptrs[6] = "WLR_LIBINPUT_NO_DEVICES=1";
         // wtype decodes its arguments as UTF-8.
         env.ptrs[7] = "LC_ALL=C.UTF-8";
+        if (std.c.getenv("WLR_RENDER_DRM_DEVICE")) |node| env.ptrs[8] = try std.fmt.bufPrintSentinel(&env.bufs[5], "WLR_RENDER_DRM_DEVICE={s}", .{node}, 0);
     }
 };
 
