@@ -14,6 +14,15 @@ pub const message = @import("message.zig");
 pub const auth = @import("auth.zig");
 pub const address = @import("address.zig");
 pub const match = @import("match.zig");
+pub const object = @import("object.zig");
+pub const Connection = @import("Connection.zig");
+
+pub const Interface = object.Interface;
+pub const Method = object.Method;
+pub const Property = object.Property;
+pub const Object = object.Object;
+pub const Node = object.Node;
+pub const Request = Connection.Request;
 
 pub const Encoder = codec.Encoder;
 pub const Decoder = codec.Decoder;
@@ -34,4 +43,5 @@ pub const Flags = message.Flags;
 
 test {
     std.testing.refAllDecls(@This());
+    _ = @import("tests.zig");
 }
