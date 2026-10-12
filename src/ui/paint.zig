@@ -1050,34 +1050,35 @@ fn drawImage(win: *Window, nid: NodeId, b: *scene.Builder, off: Point) DrawError
     const n = win.node(nid);
     const img = n.data.image;
     const image = img.image orelse return Rect.empty;
-    const ref = image.sceneRef();
     const s = win.state(nid);
+    const ref = image.frameRef(s.frame);
     const pad = n.layout.padding;
     const box = Rect.xywh(off.x + pad.left(s.rtl), off.y + pad.top, s.size.w - pad.horizontal(), s.size.h - pad.vertical());
     if (box.isEmpty()) return Rect.empty;
-    const iw: f32 = @floatFromInt(ref.width);
-    const ih: f32 = @floatFromInt(ref.height);
-    var src = Rect.xywh(0, 0, iw, ih);
+    // Layout is in logical pixels, the source rectangle in image pixels.
+    const lw, const lh = image.logicalSize();
+    const scale = image.scale;
+    var src = Rect.xywh(0, 0, @floatFromInt(ref.width), @floatFromInt(ref.height));
     var dst = box;
     switch (img.fit) {
         .fill => {},
         .contain, .none => {
-            const k = if (img.fit == .none) 1 else @min(box.width() / iw, box.height() / ih);
-            const w = iw * k;
-            const h = ih * k;
+            const k = if (img.fit == .none) 1 else @min(box.width() / lw, box.height() / lh);
+            const w = lw * k;
+            const h = lh * k;
             dst = .xywh(box.x0 + (box.width() - w) / 2, box.y0 + (box.height() - h) / 2, w, h);
             if (img.fit == .none) {
                 // Crop what does not fit.
                 const vis = dst.intersect(box);
-                src = .xywh(vis.x0 - dst.x0, vis.y0 - dst.y0, vis.width(), vis.height());
+                src = .xywh((vis.x0 - dst.x0) * scale, (vis.y0 - dst.y0) * scale, vis.width() * scale, vis.height() * scale);
                 dst = vis;
             }
         },
         .cover => {
-            const k = @max(box.width() / iw, box.height() / ih);
+            const k = @max(box.width() / lw, box.height() / lh);
             const w = box.width() / k;
             const h = box.height() / k;
-            src = .xywh((iw - w) / 2, (ih - h) / 2, w, h);
+            src = .xywh((lw - w) / 2 * scale, (lh - h) / 2 * scale, w * scale, h * scale);
         },
     }
     const mirror = img.mirror and s.rtl;

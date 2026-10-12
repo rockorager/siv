@@ -155,6 +155,7 @@ pub const App = struct {
             .reduced_motion = true,
             .clipboard = &app.clipboard,
             .drag = app.drag.host(),
+            .loop = &app.loop,
         });
         errdefer app.win.deinit();
         var output: platform.OutputInfo = .{ .width = options.output_width, .height = options.output_height, .refresh_mhz = 60000, .scale = @intCast(options.scale) };

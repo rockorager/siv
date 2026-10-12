@@ -424,6 +424,7 @@ pub const App = struct {
             .host = .{ .ctx = win, .request_frame = Window.requestFrame, .text_input = Window.textInput, .set_cursor = Window.setCursor },
             .clipboard = &app.clipboard,
             .drag = win.drag.host(),
+            .loop = &app.loop,
             .reduced_motion = app.reduced_motion,
             .desktop = app.desktop.values,
             .theme = app.theme,

@@ -17,6 +17,7 @@ const scene = @import("scene");
 const text = @import("text");
 const platform = @import("platform");
 const compositor = @import("compositor");
+const loop_mod = @import("loop");
 
 const node_mod = @import("node.zig");
 const Fonts = @import("fonts.zig");
@@ -82,6 +83,12 @@ dnd: dnd_mod.State = .{},
 cursor_override: ?node_mod.CursorShape = null,
 /// The cursor last sent to the platform.
 cursor_shown: node_mod.CursorShape = .default,
+/// The loop animated images are timed on; without it they show their
+/// first frame.
+loop: ?*loop_mod.Loop = null,
+/// Image nodes showing animations, and the timer of their next frame.
+animating: std.ArrayList(NodeId) = .empty,
+anim_timer: loop_mod.Timer = .{ .func = onAnimTimer },
 /// Pastes and assistive technology edits that arrived while a transaction
 /// was open, applied in order at the next frame like queued input.
 pending_edits: std.ArrayList(editor_mod.Pending) = .empty,
@@ -146,6 +153,8 @@ pub const Options = struct {
     clipboard: ?*Clipboard = null,
     /// Drag and drop (`dnd.CompositorHost`); needs `clipboard` too.
     drag: ?dnd_mod.Host = null,
+    /// Times animated images.
+    loop: ?*loop_mod.Loop = null,
 };
 
 /// The desktop settings the UI follows (D19). The fields have the names
@@ -233,6 +242,11 @@ pub const State = struct {
     preferred_x: ?f32 = null,
     // Paint.
     paint_dirty: bool = true,
+    /// Image: the animation frame shown, when the next is due (loop
+    /// time), and the times it has played through.
+    frame: u32 = 0,
+    frame_due: u64 = 0,
+    played: u32 = 0,
     /// Layer that receives the node's own painting.
     layer: u32 = paint_mod.no_layer,
     /// Layer the node roots.
@@ -263,6 +277,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) Error!*Window {
         .palette = theme.resolve(&options.theme, options.desktop.themeInput()),
         .clipboard = options.clipboard,
         .drag_host = options.drag,
+        .loop = options.loop,
         .sink = options.sink,
         .host = options.host,
         .scratch = .init(gpa),
@@ -280,6 +295,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) Error!*Window {
 pub fn deinit(win: *Window) void {
     std.debug.assert(!win.txn.open);
     win.fonts.removeListener(win);
+    if (win.loop) |l| l.cancelTimer(&win.anim_timer);
     win.dnd.deinit(win);
     if (win.clipboard) |cb| {
         cb.cancel(win);
@@ -312,6 +328,7 @@ fn deinitStorage(win: *Window) void {
     win.semantics.deinit(win.gpa);
     win.viewports.deinit(win.gpa);
     win.modals.deinit(win.gpa);
+    win.animating.deinit(win.gpa);
     win.scratch.deinit();
 }
 
@@ -899,6 +916,86 @@ fn dragIcon(a: std.mem.Allocator, img: *const Image, hx: f32, hy: f32) error{Out
 
 fn srgbEncode(l: f32) f32 {
     return if (l <= 0.0031308) l * 12.92 else 1.055 * std.math.pow(f32, l, 1.0 / 2.4) - 0.055;
+}
+
+// Animated images -------------------------------------------------------------
+
+/// Delays this short are a GIF quirk that browsers show at 100 ms.
+fn frameDelay(ms: u32) u64 {
+    return @as(u64, if (ms <= 10) 100 else ms) * std.time.ns_per_ms;
+}
+
+fn animatedImage(win: *const Window, id: NodeId) ?*Image {
+    if (!win.isLive(id) or win.node(id).kind != .image) return null;
+    const img = win.node(id).data.image.image orelse return null;
+    return if (img.frames.len > 1) img else null;
+}
+
+/// Starts playing a node's animated image from its first frame. Called
+/// by the transaction that shows it.
+pub fn animateImage(win: *Window, id: NodeId) void {
+    const s = win.state(id);
+    s.frame = 0;
+    s.played = 0;
+    if (win.loop == null) return;
+    const img = win.animatedImage(id) orelse return;
+    s.frame_due = loop_mod.Loop.now() + frameDelay(img.frames[0].delay_ms);
+    if (std.mem.indexOfScalar(NodeId, win.animating.items, id) == null) {
+        win.animating.append(win.gpa, id) catch return;
+    }
+    win.armAnimation();
+}
+
+fn armAnimation(win: *Window) void {
+    const loop = win.loop orelse return;
+    var due: ?u64 = null;
+    for (win.animating.items) |id| due = @min(due orelse std.math.maxInt(u64), win.state(id).frame_due);
+    if (due) |d| loop.startTimer(&win.anim_timer, d, 0) catch {} else loop.cancelTimer(&win.anim_timer);
+}
+
+/// Advances the animations whose next frame is due; with reduced motion
+/// they stop on their first frame.
+fn onAnimTimer(timer: *loop_mod.Timer) void {
+    const win: *Window = @fieldParentPtr("anim_timer", timer);
+    const now = loop_mod.Loop.now();
+    const still = win.reducedMotion();
+    var i: usize = 0;
+    while (i < win.animating.items.len) {
+        const id = win.animating.items[i];
+        const img = win.animatedImage(id) orelse {
+            _ = win.animating.swapRemove(i);
+            continue;
+        };
+        const s = win.state(id);
+        if (still) {
+            if (s.frame != 0) win.markPaint(id);
+            s.frame = 0;
+            _ = win.animating.swapRemove(i);
+            continue;
+        }
+        var done = false;
+        while (s.frame_due <= now) {
+            if (s.frame + 1 == img.frames.len) {
+                s.played += 1;
+                // The last loop ends on the last frame.
+                if (img.loops != 0 and s.played >= img.loops) {
+                    done = true;
+                    break;
+                }
+                s.frame = 0;
+            } else s.frame += 1;
+            // Far behind (a stalled loop): continue from now.
+            s.frame_due = @max(s.frame_due, now -| frameDelay(img.frames[s.frame].delay_ms)) + frameDelay(img.frames[s.frame].delay_ms);
+            win.markPaint(id);
+        }
+        if (done) {
+            _ = win.animating.swapRemove(i);
+            continue;
+        }
+        i += 1;
+    }
+    win.requestFrame();
+    win.armAnimation();
 }
 
 /// Shows `shape` over the whole window, whatever the nodes under the

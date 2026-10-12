@@ -658,10 +658,11 @@ pub const Txn = struct {
         if (view.image) |img| t.allocs.appendAssumeCapacity(.{ .image = img.retain() });
         if (old.image) |img| t.frees.appendAssumeCapacity(.{ .image = img });
         n.data.image = view;
-        const ow, const oh = if (old.image) |r| .{ r.width, r.height } else .{ 0, 0 };
-        const nw, const nh = if (view.image) |r| .{ r.width, r.height } else .{ 0, 0 };
-        if (ow != nw or oh != nh or old.fit != view.fit) t.win.markLayout(id);
+        const os: [2]f32 = if (old.image) |r| r.logicalSize() else .{ 0, 0 };
+        const ns: [2]f32 = if (view.image) |r| r.logicalSize() else .{ 0, 0 };
+        if (os[0] != ns[0] or os[1] != ns[1] or old.fit != view.fit) t.win.markLayout(id);
         t.win.markPaint(id);
+        if (view.image) |img| if (img.frames.len > 1) t.win.animateImage(id);
     }
 
     pub fn setCanvas(t: *Txn, id: NodeId, c: node_mod.Canvas) Error!void {
