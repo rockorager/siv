@@ -83,6 +83,9 @@ pub fn build(b: *std.Build) void {
         .{ .name = "wayland", .module = wayland },
         .{ .name = "xkbcommon", .module = xkbcommon },
     };
+    const dbus = ctx.module("src/dbus/dbus.zig", &.{
+        .{ .name = "loop", .module = loop },
+    });
     const platform = ctx.module("src/platform/platform.zig", &platform_imports);
     const not_integration = integrationOption(b, false);
     platform.addImport("integration", not_integration);
@@ -181,6 +184,7 @@ pub fn build(b: *std.Build) void {
         .{ "scene", scene },
         .{ "render-cpu", render_cpu },
         .{ "loop", loop },
+        .{ "dbus", dbus },
         .{ "platform", platform },
         .{ "compositor", compositor },
         .{ "ui", ui },
