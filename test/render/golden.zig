@@ -526,6 +526,42 @@ fn bitmaps(c: *Ctx, b: *Builder) !void {
     }
 }
 
+/// Analytic box shadows (D9): outset, inset, spread both ways, sharp and
+/// large blurs, per-corner and elliptical radii, a translucent card that
+/// shows the shadow is not under it, a clip, and a rotated, scaled layer.
+fn shadows(_: *Ctx, b: *Builder) !void {
+    const shade = Color.black.withAlpha(0.35);
+    const Card = struct { r: Rect, radii: raster.Radii, s: scene.Shadow };
+    const cards = [_]Card{
+        .{ .r = .xywh(20, 20, 100, 60), .radii = .uniform(16, 16), .s = .{ .shape = undefined, .offset = .{ .x = 0, .y = 6 }, .sigma = 8, .color = shade } },
+        .{ .r = .xywh(150, 20, 100, 60), .radii = .{}, .s = .{ .shape = undefined, .offset = .{ .x = 3, .y = 3 }, .sigma = 2, .color = shade } },
+        .{ .r = .xywh(280, 20, 100, 60), .radii = .{ .tl = .{ .x = 30, .y = 12 }, .tr = .{ .x = 4, .y = 4 }, .br = .{ .x = 20, .y = 20 }, .bl = .{ .x = 0, .y = 0 } }, .s = .{ .shape = undefined, .spread = 6, .sigma = 4, .color = blue.withAlpha(0.5) } },
+        .{ .r = .xywh(20, 120, 100, 60), .radii = .uniform(10, 10), .s = .{ .shape = undefined, .offset = .{ .x = 6, .y = 6 }, .sigma = 0, .color = shade } },
+        .{ .r = .xywh(150, 120, 100, 60), .radii = .uniform(12, 12), .s = .{ .shape = undefined, .offset = .{ .x = 0, .y = 14 }, .spread = -10, .sigma = 10, .color = Color.black.withAlpha(0.6) } },
+        .{ .r = .xywh(290, 120, 80, 50), .radii = .uniform(25, 25), .s = .{ .shape = undefined, .sigma = 24, .color = orange.withAlpha(0.8) } },
+    };
+    for (cards, 0..) |cd, i| {
+        var sh = cd.s;
+        sh.shape = .{ .rect = cd.r, .radii = cd.radii };
+        try b.shadow(sh);
+        const fill = if (i == 3) Color.white.withAlpha(0.5) else Color.white;
+        try b.fillRoundedRect(cd.r, cd.radii, .color(fill));
+    }
+    // Inset shadows: a pressed well, and one whose spread fills the shape.
+    try b.fillRoundedRect(.xywh(20, 210, 100, 60), .uniform(14, 14), .color(Color.srgb8(0xe4, 0xe4, 0xe7, 0xff)));
+    try b.shadow(.{ .shape = .{ .rect = .xywh(20, 210, 100, 60), .radii = .uniform(14, 14) }, .offset = .{ .x = 0, .y = 4 }, .sigma = 5, .spread = 2, .color = Color.black.withAlpha(0.5), .inset = true });
+    try b.shadow(.{ .shape = .{ .rect = .xywh(140, 215, 40, 50), .radii = .uniform(8, 8) }, .spread = 30, .sigma = 3, .color = green, .inset = true });
+    // A clip cuts the shadow off.
+    try b.pushLayer(.{ .clip = .{ .shape = .{ .rect = .xywh(190, 200, 70, 90) } } });
+    try b.shadow(.{ .shape = .{ .rect = .xywh(200, 215, 80, 50), .radii = .uniform(6, 6) }, .offset = .{ .x = -4, .y = 4 }, .sigma = 6, .color = pink });
+    try b.popLayer();
+    // Rotated and scaled: the shadow turns and scales with its card.
+    try b.pushLayer(.{ .transform = Affine.rotate(0.3).then(.scale(1.3, 1.3)).then(.translate(330, 240)) });
+    try b.shadow(.{ .shape = .{ .rect = .xywh(-30, -18, 60, 36), .radii = .uniform(8, 8) }, .offset = .{ .x = 0, .y = 5 }, .sigma = 5, .color = shade });
+    try b.fillRoundedRect(.xywh(-30, -18, 60, 36), .uniform(8, 8), .color(Color.white));
+    try b.popLayer();
+}
+
 pub const Case = struct {
     name: []const u8,
     width: u32,
@@ -543,6 +579,7 @@ pub const cases = [_]Case{
     .{ .name = "colr", .width = 400, .height = 410, .build = colr },
     .{ .name = "paragraph", .width = 284, .height = 84, .build = paragraph },
     .{ .name = "bitmaps", .width = 240, .height = 130, .build = bitmaps },
+    .{ .name = "shadows", .width = 400, .height = 300, .build = shadows },
 };
 
 test "golden images" {
