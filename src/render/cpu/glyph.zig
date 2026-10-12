@@ -3,7 +3,8 @@
 //!
 //! - Outline glyphs come from hb_font_draw_glyph into a raster.PathBuilder
 //!   and are rasterized into 8-bit masks.
-//! - Color glyphs (COLRv0/v1) come from hb_font_paint_glyph, which is
+//! - Color glyphs (COLRv0/v1, and CBDT/sbix bitmaps decoded by wuffs) come
+//!   from hb_font_paint_glyph, which is
 //!   lowered into a scene display list (layers for transforms, clips, and
 //!   composite groups; gradient fills) and rendered by a CPU renderer into a
 //!   16-bit linear premultiplied bitmap. The same lowering serves Vulkan,
@@ -23,6 +24,7 @@ const raster = @import("raster");
 const scene = @import("scene");
 /// The HarfBuzz bindings, for callers that build fonts for glyph runs.
 pub const hb = @import("harfbuzz");
+const wuffs = @import("wuffs");
 const color = @import("color.zig");
 const renderer_mod = @import("renderer.zig");
 const Pixel = color.Pixel;
@@ -90,6 +92,8 @@ pub const Cache = struct {
     builder: ?scene.Builder = null,
     sub: ?*renderer_mod.Renderer = null,
     stops: std.ArrayList(scene.Stop) = .empty,
+    /// Bitmap glyph images for the glyph being rasterized.
+    images: std.ArrayList([]Pixel) = .empty,
 
     pub fn init(gpa: std.mem.Allocator) Cache {
         return .{ .gpa = gpa, .rasterizer = .init(gpa), .path = .init(gpa) };
@@ -105,6 +109,8 @@ pub const Cache = struct {
         c.contour_points.deinit(c.gpa);
         c.contour_ends.deinit(c.gpa);
         c.stops.deinit(c.gpa);
+        c.freeImages();
+        c.images.deinit(c.gpa);
         if (c.draw_funcs) |f| hb.hb_draw_funcs_destroy(f);
         if (c.paint_funcs) |f| hb.hb_paint_funcs_destroy(f);
         if (c.builder) |*b| b.deinit();
@@ -189,7 +195,7 @@ pub const Cache = struct {
 
     fn add(c: *Cache, key: Key, font: *hb.hb_font_t, px_size: f32, y_scale: f32, fg: scene.Color) Error!u32 {
         const face = hb.hb_font_get_face(font);
-        if (hb.hb_ot_color_glyph_has_paint(face, key.glyph) != 0 or hb.hb_ot_color_glyph_get_layers(face, key.glyph, 0, null, null) > 0) {
+        if (isColorGlyph(font, face, key.glyph)) {
             const index = try c.push(.{ .kind = .redirect, .left = 0, .top = 0, .width = 0, .height = 0, .offset = 0 });
             try c.map.put(c.gpa, key, index);
             var ck = key;
@@ -333,7 +339,8 @@ pub const Cache = struct {
         const b = &c.builder.?;
         b.reset();
         const funcs = try c.ensurePaintFuncs();
-        var ctx: Paint = .{ .c = c, .b = b };
+        defer c.freeImages();
+        var ctx: Paint = .{ .c = c, .b = b, .scale = m.a };
         hb.hb_font_paint_glyph(font, key.glyph, funcs, &ctx, 0, hbColor(fg));
         // Unbalanced output from a malformed font: close what is open.
         while (ctx.depth > 0) : (ctx.depth -= 1) b.popLayer() catch break;
@@ -348,6 +355,11 @@ pub const Cache = struct {
         const offset = c.colors.items.len;
         try c.colors.appendSlice(c.gpa, sub.pixels());
         return c.push(.{ .kind = .color, .left = window.x0, .top = window.y0, .width = w, .height = h, .offset = offset });
+    }
+
+    fn freeImages(c: *Cache) void {
+        for (c.images.items) |img| c.gpa.free(img);
+        c.images.clearRetainingCapacity();
     }
 
     fn ensurePaintFuncs(c: *Cache) Error!*hb.hb_paint_funcs_t {
@@ -365,6 +377,7 @@ pub const Cache = struct {
         hb.hb_paint_funcs_set_radial_gradient_func(f, Paint.radialGradient, null, null);
         hb.hb_paint_funcs_set_sweep_gradient_func(f, Paint.sweepGradient, null, null);
         hb.hb_paint_funcs_set_push_group_for_func(f, Paint.pushGroupFor, null, null);
+        hb.hb_paint_funcs_set_image_func(f, Paint.image, null, null);
         hb.hb_paint_funcs_set_pop_group_func(f, Paint.popGroup, null, null);
         hb.hb_paint_funcs_make_immutable(f);
         c.paint_funcs = f;
@@ -418,6 +431,8 @@ const paint_everywhere: Rect = .{ .x0 = -1e6, .y0 = -1e6, .x1 = 1e6, .y1 = 1e6 }
 const Paint = struct {
     c: *Cache,
     b: *scene.Builder,
+    /// Device pixels per font unit, to size bitmap glyphs.
+    scale: f32,
     depth: u32 = 0,
     err: ?Error = null,
     clip_path: ?raster.PathBuilder = null,
@@ -543,6 +558,49 @@ const Paint = struct {
         ctx(data).gradient(line, .{ .sweep = .{ .center = .{ .x = x0, .y = y0 }, .start_angle = a0, .end_angle = a1 } });
     }
 
+    /// CBDT and sbix bitmaps arrive as PNG data positioned by `extents` in
+    /// font units. They are decoded, box-filtered to their device size, and
+    /// drawn as an image.
+    fn image(_: ?*hb.hb_paint_funcs_t, data: ?*anyopaque, blob: ?*hb.hb_blob_t, _: c_uint, _: c_uint, format: hb.hb_tag_t, _: f32, extents: [*c]hb.hb_glyph_extents_t, _: ?*anyopaque) callconv(.c) hb.hb_bool_t {
+        const p = ctx(data);
+        if (format != hb.HB_PAINT_IMAGE_FORMAT_PNG or extents == null) return 0;
+        const ext = extents.*;
+        if (ext.width == 0 or ext.height == 0) return 1;
+        var len: c_uint = 0;
+        const bytes = hb.hb_blob_get_data(blob, &len);
+        if (bytes == null or len == 0) return 0;
+        var img: wuffs.siv_image = undefined;
+        if (wuffs.siv_image_decode(bytes, len, max_bitmap_pixels, &img) != wuffs.SIV_IMAGE_OK) return 0;
+        defer wuffs.siv_image_free(&img);
+
+        const fw: f32 = @floatFromInt(@abs(ext.width));
+        const fh: f32 = @floatFromInt(@abs(ext.height));
+        const tw: u32 = @intFromFloat(std.math.clamp(@round(fw * p.scale), 1, @as(f32, @floatFromInt(img.width))));
+        const th: u32 = @intFromFloat(std.math.clamp(@round(fh * p.scale), 1, @as(f32, @floatFromInt(img.height))));
+        const c = p.c;
+        c.images.ensureUnusedCapacity(c.gpa, 1) catch |e| {
+            p.check(e);
+            return 1;
+        };
+        const px = c.gpa.alloc(Pixel, @as(usize, tw) * th) catch |e| {
+            p.check(e);
+            return 1;
+        };
+        c.images.appendAssumeCapacity(px);
+        boxResample(img.pixels[0 .. @as(usize, img.width) * img.height * 4], img.width, img.height, px, tw, th);
+
+        // Image rows run down from the top edge at y_bearing (font space
+        // is y up).
+        p.pushLayer(.{ .transform = .{ .a = 1, .d = -1, .e = @floatFromInt(ext.x_bearing), .f = @floatFromInt(ext.y_bearing) } });
+        p.check(p.b.image(.{
+            .image = .{ .pixels = @ptrCast(px.ptr), .width = tw, .height = th, .stride = tw * 8, .format = .rgba16_linear_premul, .key = 0 },
+            .src = .xywh(0, 0, @floatFromInt(tw), @floatFromInt(th)),
+            .dst = .xywh(0, 0, fw, fh),
+        }));
+        pop(null, data, null);
+        return 1;
+    }
+
     fn pushGroupFor(_: ?*hb.hb_paint_funcs_t, data: ?*anyopaque, mode: hb.hb_paint_composite_mode_t, _: ?*anyopaque) callconv(.c) void {
         const m: u8 = @intCast(@min(@as(c_uint, @intCast(mode)), @intFromEnum(scene.BlendMode.luminosity)));
         ctx(data).pushLayer(.{ .isolate = true, .blend = @enumFromInt(m) });
@@ -552,6 +610,54 @@ const Paint = struct {
         pop(funcs, data, user);
     }
 };
+
+/// Largest bitmap glyph image decoded.
+const max_bitmap_pixels = 4096 * 4096;
+
+fn isColorGlyph(font: *hb.hb_font_t, face: ?*hb.hb_face_t, glyph: u32) bool {
+    if (hb.hb_ot_color_glyph_has_paint(face, glyph) != 0) return true;
+    if (hb.hb_ot_color_glyph_get_layers(face, glyph, 0, null, null) > 0) return true;
+    if (hb.hb_ot_color_has_png(face) == 0) return false;
+    const blob = hb.hb_ot_color_glyph_reference_png(font, glyph);
+    defer hb.hb_blob_destroy(blob);
+    return hb.hb_blob_get_length(blob) > 0;
+}
+
+/// Area-weighted resample of straight-alpha sRGB RGBA8 into linear
+/// premultiplied pixels, for downscaling bitmap glyphs (sizes equal to the
+/// source copy through).
+pub fn boxResample(src: []const u8, sw: u32, sh: u32, dst: []Pixel, dw: u32, dh: u32) void {
+    const sx = @as(f32, @floatFromInt(sw)) / @as(f32, @floatFromInt(dw));
+    const sy = @as(f32, @floatFromInt(sh)) / @as(f32, @floatFromInt(dh));
+    for (0..dh) |ty| {
+        const y0 = @as(f32, @floatFromInt(ty)) * sy;
+        const y1 = y0 + sy;
+        for (0..dw) |tx| {
+            const x0 = @as(f32, @floatFromInt(tx)) * sx;
+            const x1 = x0 + sx;
+            var acc: @Vector(4, f32) = @splat(0);
+            var yi: usize = @intFromFloat(@floor(y0));
+            while (@as(f32, @floatFromInt(yi)) < y1 and yi < sh) : (yi += 1) {
+                const wy = @min(@as(f32, @floatFromInt(yi + 1)), y1) - @max(@as(f32, @floatFromInt(yi)), y0);
+                var xi: usize = @intFromFloat(@floor(x0));
+                while (@as(f32, @floatFromInt(xi)) < x1 and xi < sw) : (xi += 1) {
+                    const wx = @min(@as(f32, @floatFromInt(xi + 1)), x1) - @max(@as(f32, @floatFromInt(xi)), x0);
+                    const p = src[(yi * sw + xi) * 4 ..][0..4];
+                    const a = @as(f32, @floatFromInt(p[3])) / 255;
+                    const lin: @Vector(4, f32) = .{
+                        color.srgbToLinear(@as(f32, @floatFromInt(p[0])) / 255) * a,
+                        color.srgbToLinear(@as(f32, @floatFromInt(p[1])) / 255) * a,
+                        color.srgbToLinear(@as(f32, @floatFromInt(p[2])) / 255) * a,
+                        a,
+                    };
+                    acc += lin * @as(@Vector(4, f32), @splat(wx * wy));
+                }
+            }
+            acc /= @as(@Vector(4, f32), @splat(sx * sy));
+            dst[ty * dw + tx] = .{ color.toU16(@min(acc[0], acc[3])), color.toU16(@min(acc[1], acc[3])), color.toU16(@min(acc[2], acc[3])), color.toU16(acc[3]) };
+        }
+    }
+}
 
 fn fromHb(c: hb.hb_color_t) scene.Color {
     return scene.Color.srgb8(@truncate(c >> 8), @truncate(c >> 16), @truncate(c >> 24), @truncate(c));
@@ -697,4 +803,12 @@ test "embolden grows a square by d on each side" {
     embolden(&ccw, &.{4}, 0.5);
     try std.testing.expectApproxEqAbs(@as(f32, -0.5), ccw[0].x, 1e-5);
     try std.testing.expectApproxEqAbs(@as(f32, 4.5), ccw[2].y, 1e-5);
+}
+
+test "box resample averages in linear light" {
+    // Black and white columns average to linear 0.5, not sRGB 0.5.
+    const src = [_]u8{ 0, 0, 0, 255, 255, 255, 255, 255 };
+    var dst: [1]Pixel = undefined;
+    boxResample(&src, 2, 1, &dst, 1, 1);
+    try std.testing.expectEqual(Pixel{ 32768, 32768, 32768, 65535 }, dst[0]);
 }

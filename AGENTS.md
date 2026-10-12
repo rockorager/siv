@@ -39,7 +39,7 @@ owns its directories and does not edit another workstream's files.
 | `text` | `src/text/` | Text engine | `raster`, `harfbuzz`, `sheenbidi`, `fontconfig`, `uucode` |
 | `raster` | `src/raster/` | Rasterizer, display list, CPU renderer | none |
 | `scene` | `src/scene/` | Rasterizer, display list, CPU renderer | `raster` |
-| `render_cpu` | `src/render/cpu/` | Rasterizer, display list, CPU renderer | `scene`, `raster`, `text`, `harfbuzz`, `pool` |
+| `render_cpu` | `src/render/cpu/` | Rasterizer, display list, CPU renderer | `scene`, `raster`, `text`, `harfbuzz`, `pool`, `wuffs` |
 | `loop` | `src/loop/` | Event loop and Wayland platform | `pool` |
 | `platform` | `src/platform/` | Event loop and Wayland platform | `loop`, `wayland`, `xkbcommon` |
 
@@ -70,7 +70,7 @@ commit message. In particular:
 - Internal code uses plain indices; generation-checked handles exist only in
   `src/abi/` (D20).
 - C headers are translated by the build (`addTranslateC`), not `@cImport`.
-  The C modules are `harfbuzz`, `sheenbidi`, `fontconfig`, and `xkbcommon`.
+  The C modules are `harfbuzz`, `sheenbidi`, `fontconfig`, `xkbcommon`, and `wuffs`.
 - Unicode data files for tests are embedded by name:
   `@embedFile("LineBreakTest.txt")`. The list is in `build.zig`.
 - Vendored C code is compiled with `-fvisibility=hidden`; libsiv.so exports

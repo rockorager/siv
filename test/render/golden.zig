@@ -37,9 +37,14 @@ const Ctx = struct {
     glyphs: std.ArrayList(scene.Glyph) = .empty,
     /// Fonts for the text-engine scene; display lists refer to its faces.
     fonts: ?text_engine.FontCache = null,
+    /// A generated sbix bitmap font and its bytes.
+    sbix: ?Font = null,
+    sbix_bytes: []u8 = &.{},
 
     fn deinit(c: *Ctx) void {
         if (c.fonts) |*f| f.deinit();
+        if (c.sbix) |f| f.deinit();
+        c.gpa.free(c.sbix_bytes);
         c.pb.deinit();
         c.roboto.deinit();
         c.colr.deinit();
@@ -418,6 +423,109 @@ fn paragraph(c: *Ctx, b: *Builder) !void {
     }
 }
 
+/// Builds a minimal sbix font: glyph 1 is a 64x64 PNG (a face with a
+/// translucent halo) in a 64 ppem strike with 64 units per em. No suitable
+/// bitmap font is available under a license siv accepts (D25).
+fn sbixFont(gpa: std.mem.Allocator) ![]u8 {
+    const n = 64;
+    var rgba: [n * n * 4]u8 = undefined;
+    for (0..n) |y| for (0..n) |x| {
+        const dx = @as(f32, @floatFromInt(x)) + 0.5 - 32;
+        const dy = @as(f32, @floatFromInt(y)) + 0.5 - 32;
+        const d = @sqrt(dx * dx + dy * dy);
+        const eye = (@abs(dx) > 7 and @abs(dx) < 13 and dy > -14 and dy < -4);
+        const mouth = (d > 14 and d < 19 and dy > 6);
+        const p = rgba[(y * n + x) * 4 ..][0..4];
+        if (d < 24) {
+            p.* = if (eye or mouth) .{ 0x5a, 0x32, 0x10, 0xff } else .{ 0xff, 0xc8, 0x2c, 0xff };
+        } else if (d < 31) {
+            p.* = .{ 0xff, 0x60, 0x20, @intFromFloat(255 * (31 - d) / 7) };
+        } else p.* = .{ 0, 0, 0, 0 };
+    };
+    const image = try png.encode(gpa, n, n, &rgba);
+    defer gpa.free(image);
+
+    var head: [54]u8 = @splat(0);
+    std.mem.writeInt(u32, head[0..4], 0x00010000, .big);
+    std.mem.writeInt(u32, head[12..16], 0x5F0F3CF5, .big);
+    std.mem.writeInt(u16, head[18..20], 64, .big); // unitsPerEm
+    var maxp: [6]u8 = undefined;
+    std.mem.writeInt(u32, maxp[0..4], 0x00005000, .big);
+    std.mem.writeInt(u16, maxp[4..6], 2, .big);
+
+    var sbix: std.ArrayList(u8) = .empty;
+    defer sbix.deinit(gpa);
+    const w = struct {
+        fn int(l: *std.ArrayList(u8), a: std.mem.Allocator, comptime T: type, v: T) !void {
+            var b: [@sizeOf(T)]u8 = undefined;
+            std.mem.writeInt(T, &b, v, .big);
+            try l.appendSlice(a, &b);
+        }
+    };
+    try w.int(&sbix, gpa, u16, 1); // version
+    try w.int(&sbix, gpa, u16, 1); // flags
+    try w.int(&sbix, gpa, u32, 1); // strikes
+    try w.int(&sbix, gpa, u32, 12); // strike offset
+    // Strike: ppem, ppi, glyph data offsets (3 for 2 glyphs).
+    const glyph1 = 4 + 3 * 4;
+    try w.int(&sbix, gpa, u16, 64);
+    try w.int(&sbix, gpa, u16, 72);
+    try w.int(&sbix, gpa, u32, glyph1);
+    try w.int(&sbix, gpa, u32, glyph1);
+    try w.int(&sbix, gpa, u32, @intCast(glyph1 + 8 + image.len));
+    try w.int(&sbix, gpa, i16, 0); // origin x
+    try w.int(&sbix, gpa, i16, -8); // origin y: 8 units below the baseline
+    try sbix.appendSlice(gpa, "png ");
+    try sbix.appendSlice(gpa, image);
+
+    const tables = [_]struct { []const u8, []const u8 }{ .{ "head", &head }, .{ "maxp", &maxp }, .{ "sbix", sbix.items } };
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try w.int(&out, gpa, u32, 0x00010000);
+    try w.int(&out, gpa, u16, tables.len);
+    try w.int(&out, gpa, u16, 32);
+    try w.int(&out, gpa, u16, 1);
+    try w.int(&out, gpa, u16, 16);
+    var offset: u32 = @intCast(12 + 16 * tables.len);
+    for (tables) |t| {
+        try out.appendSlice(gpa, t[0]);
+        try w.int(&out, gpa, u32, 0);
+        try w.int(&out, gpa, u32, offset);
+        try w.int(&out, gpa, u32, @intCast(t[1].len));
+        offset += @intCast((t[1].len + 3) & ~@as(usize, 3));
+    }
+    for (tables) |t| {
+        try out.appendSlice(gpa, t[1]);
+        while (out.items.len % 4 != 0) try out.append(gpa, 0);
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+/// CBDT/sbix bitmap glyphs: PNG decoded by wuffs, box-filtered to size.
+fn bitmaps(c: *Ctx, b: *Builder) !void {
+    if (c.sbix == null) {
+        c.sbix_bytes = try sbixFont(c.gpa);
+        c.sbix = .init(c.sbix_bytes, 3);
+    }
+    const f = c.sbix.?;
+    try b.fillRect(.xywh(0, 0, 240, 130), .color(Color.srgb8(0x18, 0x18, 0x1b, 0xff)));
+    const sizes = [_]f32{ 12, 16, 24, 32, 48, 64 };
+    var x: f32 = 8;
+    for (sizes) |size| {
+        // The second row is offset by a quarter pixel (another phase).
+        for ([_]f32{ 58, 120 }, [_]f32{ 0, 0.25 }) |y, dx| {
+            try b.glyphs(.{
+                .font = f.handle(),
+                .size = size,
+                .glyphs = &.{.{ .id = 1, .x = x + dx, .y = y }},
+                .paint = .color(ink),
+                .bounds = .{ .x0 = x - 2, .y0 = y - size * 1.2, .x1 = x + size * 1.2, .y1 = y + size * 0.3 },
+            });
+        }
+        x += size + 4;
+    }
+}
+
 const Case = struct {
     name: []const u8,
     width: u32,
@@ -434,6 +542,7 @@ const cases = [_]Case{
     .{ .name = "text", .width = 400, .height = 260, .build = textScene },
     .{ .name = "colr", .width = 400, .height = 410, .build = colr },
     .{ .name = "paragraph", .width = 284, .height = 84, .build = paragraph },
+    .{ .name = "bitmaps", .width = 240, .height = 130, .build = bitmaps },
 };
 
 test "golden images" {

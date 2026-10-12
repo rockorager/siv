@@ -16,6 +16,14 @@
             .hash = "N-V-__8AAIgBOAH6cmnBI9dBvLckCCTjAdqq4CChOBleYvO_",
             .lazy = true,
         },
+        // Image decoding (D14 CBDT/sbix glyphs, D19). Apache-2.0 or MIT.
+        // The single-file C release; there is no system library to link.
+        // Lazy, like the other vendored C code.
+        .wuffs = .{
+            .url = "https://github.com/google/wuffs-mirror-release-c/archive/refs/tags/v0.4.0-alpha.10.tar.gz",
+            .hash = "N-V-__8AAP5JWgCtkdvKRXLvAmjjqpizkxlQlrChvRLfDXgI",
+            .lazy = true,
+        },
         // Unicode properties and grapheme breaking (D13). MIT.
         // Commit 1fb7343 is the head of main (Zig 0.17, Unicode 18.0.0).
         .uucode = .{

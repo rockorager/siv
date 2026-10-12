@@ -413,7 +413,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     face content hash, so it never needs invalidation when faces are
     recreated. Color glyphs also key on the foreground color.
   - COLRv0/v1 paint lowers into a display list that the CPU renderer draws
-    into a 16-bit bitmap; Vulkan uploads the same bitmaps.
+    into a 16-bit bitmap; Vulkan uploads the same bitmaps. CBDT/sbix PNGs
+    arrive through the same paint callbacks, decode with wuffs (behind
+    `src/render/cpu/image_decode.h`, which the D19 image pipeline can
+    share), and are box-filtered to their device size in linear light.
   - At 32 px and below the x-height is scaled vertically to a whole pixel
     (at most ±8%). Stem darkening adds 0.25 px of stroke at 10 px and below,
     falling to none at 18 px. Both are first guesses for the evaluation
