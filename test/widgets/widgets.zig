@@ -476,6 +476,47 @@ test "widgets: spin buttons step, page, and parse what was typed" {
     try h.click(dc[0], dc[1]);
     try h.settle();
     try testing.expectEqual(@as(f64, 98), try value(w.spin));
+
+    // Held, it steps at once, then repeats with the seat's key-repeat
+    // timing (100 ms, then 20 ms) until released.
+    const wid = (try h.win()).win.id;
+    try h.inject(&.{
+        .{ .key_repeat = .{ .seat = 0, .delay_ms = 100, .rate = 50 } },
+        .{ .pointer_button = .{ .window = wid, .seat = 0, .button = 0x110, .pressed = true, .time = 10, .serial = 5 } },
+    });
+    try h.settle();
+    try testing.expect(try value(w.spin) <= 97);
+    try dispatchFor(&h, 300);
+    const held = try value(w.spin);
+    // About ten repeats; at least a few however loaded the machine, and
+    // never more than the timing allows.
+    try testing.expect(held <= 94 and held >= 97 - 11);
+    try h.inject(&.{.{ .pointer_button = .{ .window = wid, .seat = 0, .button = 0x110, .pressed = false, .time = 400, .serial = 6 } }});
+    try h.settle();
+    const released = try value(w.spin);
+    try dispatchFor(&h, 100);
+    try testing.expectEqual(released, try value(w.spin));
+
+    // Without key repeat a press steps once.
+    try h.inject(&.{
+        .{ .key_repeat = .{ .seat = 0, .delay_ms = 100, .rate = 0 } },
+        .{ .pointer_button = .{ .window = wid, .seat = 0, .button = 0x110, .pressed = true, .time = 500, .serial = 7 } },
+    });
+    try dispatchFor(&h, 200);
+    try testing.expectEqual(released - 1, try value(w.spin));
+    try h.inject(&.{.{ .pointer_button = .{ .window = wid, .seat = 0, .button = 0x110, .pressed = false, .time = 700, .serial = 8 } }});
+    try h.settle();
+    var delay: u32 = 0;
+    var interval: u32 = 1;
+    try ok(c.siv_app_get_key_repeat(h.app, &delay, &interval));
+    try testing.expectEqual([2]u32{ 100, 0 }, [2]u32{ delay, interval });
+}
+
+/// Runs the application's loop for about `ms`, timers included.
+fn dispatchFor(h: *Harness, ms: u64) !void {
+    const Loop = @import("loop").Loop;
+    const end = Loop.now() + ms * std.time.ns_per_ms;
+    while (Loop.now() < end) try ok(c.siv_app_dispatch(h.app, 5));
 }
 
 test "widgets: text fields are editors with placeholders and themed frames" {

@@ -41,6 +41,10 @@ pub const Range = extern struct {
     inc: Node = .null,
     dec_label: Node = .null,
     inc_label: Node = .null,
+    /// Spin buttons: while a button is held, the timer of its next step
+    /// and the step's direction (-1 or 1; 0 when nothing is held).
+    repeat: siv.Timer = .null,
+    repeat_dir: f64 = 0,
 
     /// Arrow keys move this far.
     fn keyStep(r: *const Range) f64 {
@@ -383,10 +387,15 @@ fn onIncrement(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) boo
     return true;
 }
 
+/// Pressing a button steps at once and, while it stays held, again after
+/// the desktop's key-repeat delay and then at its rate, like a held arrow
+/// key. Handling the press keeps the release from activating the button,
+/// which is left to the keyboard and assistive technology.
 fn onSpinPointer(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) bool {
     const r: *Range = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
-    if (r.hdr.disabled or (e.phase != .enter and e.phase != .leave and e.phase != .down and e.phase != .up)) return false;
+    if (r.hdr.disabled or (e.phase != .enter and e.phase != .leave and e.phase != .down and e.phase != .up and e.phase != .cancel)) return false;
+    if (e.phase != .down or e.button != .primary) stopRepeat(r);
     const txn = w.begin(e.window) orelse return false;
     const bg: siv.ColorToken = switch (e.phase) {
         .enter, .up => .control_hover,
@@ -395,7 +404,42 @@ fn onSpinPointer(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c
     };
     _ = c.siv_set_visual(txn, node, &.{ .radius = corners(tk.radius), .border_width = tk.border, .border_token = .border, .background_token = bg });
     _ = w.commit(txn);
-    return false;
+    if (e.phase != .down or e.button != .primary) return false;
+    r.repeat_dir = if (node == r.dec) -1 else 1;
+    var delay: u32 = 0;
+    var interval: u32 = 0;
+    _ = c.siv_app_get_key_repeat(w.appOf(e.window), &delay, &interval);
+    repeatStep(r, e.window, if (interval == 0) null else delay);
+    return true;
+}
+
+/// Steps in the held direction, then waits `next_ms` for the next step
+/// unless the value reached its end.
+fn repeatStep(r: *Range, window: siv.Window, next_ms: ?u32) void {
+    userSet(r, window, r.value + r.repeat_dir * r.keyStep());
+    const end = if (r.repeat_dir < 0) r.value <= r.min else r.value >= r.max;
+    const ms = next_ms orelse return stopRepeat(r);
+    if (end) return stopRepeat(r);
+    _ = c.siv_timer_start(w.appOf(window), ms, onRepeat, null, w.handleData(r.root), &r.repeat);
+}
+
+fn onRepeat(ud: ?*anyopaque) callconv(.c) void {
+    const root = w.dataHandle(ud);
+    const r = w.stateOf(Range, root, &.{.spin_button}) orelse return;
+    r.repeat = .null;
+    if (r.repeat_dir == 0) return;
+    if (r.hdr.disabled) return stopRepeat(r);
+    var delay: u32 = 0;
+    var interval: u32 = 0;
+    const window = w.windowOf(root);
+    _ = c.siv_app_get_key_repeat(w.appOf(window), &delay, &interval);
+    repeatStep(r, window, if (interval == 0) null else interval);
+}
+
+fn stopRepeat(r: *Range) void {
+    r.repeat_dir = 0;
+    if (r.repeat != .null) _ = c.siv_timer_cancel(r.repeat);
+    r.repeat = .null;
 }
 
 /// Leaving the field takes what was typed.

@@ -1726,6 +1726,16 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     with a value accept `set_value`: assistive technology sets a range's
     value through AT-SPI's Value interface, which the bridge forwards
     (D18), clamped and stepped by the widget like a key press.
+  - **Held buttons repeat like held keys.** A spin button's decrement
+    and increment buttons step on press and, while held, again after the
+    seat's key-repeat delay and then at its rate, stopping on release,
+    leave, cancel, or at the range's end. The timing is the compositor's
+    `wl_keyboard.repeat_info`, which the platform reports as an event and
+    `siv_app_get_key_repeat` exposes, so widgets written in C repeat the
+    same way; it is a query, not a desktop setting pushed into windows,
+    since only widgets that start a repeat need it. The press is handled,
+    so the release does not activate the button as well; activation
+    stays for assistive technology.
   - **Popups and overlays.** Menus and popovers are popups (D17) made
     with the public `siv_popup_create`; dialogs and toasts are overlays
     in the window's own tree.
@@ -1805,9 +1815,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       timestamp, so widgets written in C can do the same.
     - Not built yet: variable row heights, column resizing and sorting,
       and a position among siblings for tree items.
-  - Not built yet elsewhere: the styled-text editor; auto-repeat on
-    held spin buttons; and an integration test of menus on sway (the
-    headless backend's placement and grab rules are tested).
+  - Not built yet elsewhere: the styled-text editor; and an integration
+    test of menus on sway (the headless backend's placement and grab
+    rules are tested).
 - **Non-goal:** a full document model with embedded tables and images.
 
 ### D23. Lua 5.5
