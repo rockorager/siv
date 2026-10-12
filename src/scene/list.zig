@@ -286,13 +286,16 @@ pub const ImageFormat = enum(u8) {
     rgba8_srgb,
     /// 8-bit sRGB-encoded B, G, R, A bytes, straight alpha.
     bgra8_srgb,
+    /// 8-bit sRGB-encoded B, G, R bytes and an ignored fourth byte:
+    /// opaque (XRGB8888 in memory, as external video frames come).
+    bgrx8_srgb,
     /// 16-bit linear-light R, G, B, A, premultiplied, native endian. The
     /// renderers' working format.
     rgba16_linear_premul,
 
     pub fn bytesPerPixel(f: ImageFormat) u32 {
         return switch (f) {
-            .rgba8_srgb, .bgra8_srgb => 4,
+            .rgba8_srgb, .bgra8_srgb, .bgrx8_srgb => 4,
             .rgba16_linear_premul => 8,
         };
     }

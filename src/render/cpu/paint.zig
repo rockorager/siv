@@ -309,10 +309,10 @@ pub fn texel(im: *const Image, luts: *const color.Luts, x: i32, y: i32) Pixel {
     const ref = im.ref;
     const row = ref.pixels + @as(usize, @intCast(y)) * ref.stride;
     switch (ref.format) {
-        .rgba8_srgb, .bgra8_srgb => {
+        .rgba8_srgb, .bgra8_srgb, .bgrx8_srgb => {
             const p = row[@as(usize, @intCast(x)) * 4 ..][0..4];
             const r, const b = if (ref.format == .rgba8_srgb) .{ p[0], p[2] } else .{ p[2], p[0] };
-            const a16: u32 = @as(u32, p[3]) * 257;
+            const a16: u32 = if (ref.format == .bgrx8_srgb) 65535 else @as(u32, p[3]) * 257;
             return .{
                 @intCast(color.div65535(@as(u32, luts.srgb8_to_linear[r]) * a16)),
                 @intCast(color.div65535(@as(u32, luts.srgb8_to_linear[p[1]]) * a16)),
