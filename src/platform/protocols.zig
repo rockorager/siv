@@ -13,6 +13,7 @@ pub const xml = [_][]const u8{
     "staging/fractional-scale/fractional-scale-v1.xml",
     "staging/fifo/fifo-v1.xml",
     "unstable/xdg-decoration/xdg-decoration-unstable-v1.xml",
+    "unstable/text-input/text-input-unstable-v3.xml",
 };
 
 /// Globals to bind, each with the highest version siv implements. Code is
@@ -31,4 +32,5 @@ pub const globals = [_]struct { []const u8, u32 }{
     .{ "wp_fractional_scale_manager_v1", 1 },
     .{ "wp_fifo_manager_v1", 1 },
     .{ "zxdg_decoration_manager_v1", 1 },
+    .{ "zwp_text_input_manager_v3", 1 },
 };

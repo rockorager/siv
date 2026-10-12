@@ -35,6 +35,8 @@ frame_window: ?*Window = null,
 outputs: std.ArrayList(?platform.OutputInfo) = .empty,
 refresh_ns: u64,
 epoch_ns: u64,
+/// Text input state each seat last committed (tests read it back).
+text_inputs: [8]TextInputRecord = @splat(.{}),
 
 pub const Options = struct {
     refresh_ns: u64 = FrameClock.default_refresh_ns,
@@ -104,6 +106,14 @@ pub fn create(loop: *Loop, allocator: Allocator, sink: platform.Sink, options: O
     _ = try hl.addOutput(options.output);
     return hl;
 }
+
+/// A seat's last committed text input state; `surrounding` is a copy.
+pub const TextInputRecord = struct {
+    state: platform.TextInputState = .{},
+    surrounding: platform.BoundedString(platform.TextInputState.max_surrounding) = .{},
+    /// Commits so far (the protocol's serial).
+    commits: u32 = 0,
+};
 
 pub fn destroy(hl: *Headless) void {
     for (hl.windows.items, 0..) |w, i| if (w != null) hl.destroyWindow(@intCast(i));
@@ -247,6 +257,20 @@ pub fn beginResize(_: *Headless, _: WindowId, _: SeatId, _: u32, _: platform.Edg
 pub fn showWindowMenu(_: *Headless, _: WindowId, _: SeatId, _: u32, _: i32, _: i32) void {}
 pub fn setWindowGeometry(_: *Headless, _: WindowId, _: Rect) void {}
 pub fn setRegion(_: *Headless, _: WindowId, _: platform.Region, _: ?[]const Rect) Error!void {}
+
+pub fn setTextInput(hl: *Headless, seat: SeatId, state: *const platform.TextInputState) void {
+    if (seat >= hl.text_inputs.len) return;
+    const r = &hl.text_inputs[seat];
+    r.surrounding.set(state.surrounding);
+    r.state = state.*;
+    r.state.surrounding = r.surrounding.slice();
+    r.commits += 1;
+}
+
+/// What a seat's text input last committed.
+pub fn textInput(hl: *const Headless, seat: SeatId) *const TextInputRecord {
+    return &hl.text_inputs[seat];
+}
 
 fn fillOutput(hl: *Headless, id: WindowId) void {
     const w = hl.get(id);

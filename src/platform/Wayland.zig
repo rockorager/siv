@@ -20,6 +20,7 @@ const wl = wayland.client.wl;
 const xdg = wayland.client.xdg;
 const wp = wayland.client.wp;
 const zxdg = wayland.client.zxdg;
+const zwp = wayland.client.zwp;
 const xkb = @import("xkbcommon");
 const platform = @import("platform.zig");
 const Loop = platform.Loop;
@@ -27,6 +28,7 @@ const FrameClock = platform.FrameClock;
 const Timer = @import("loop").Timer;
 const shm_buffers = @import("shm.zig");
 pub const Seat = @import("Seat.zig");
+const TextInput = @import("TextInput.zig");
 const Wayland = @This();
 
 const Error = platform.Error;
@@ -52,6 +54,7 @@ presentation: ?*wp.Presentation = null,
 fractional_manager: ?*wp.FractionalScaleManagerV1 = null,
 decoration_manager: ?*zxdg.DecorationManagerV1 = null,
 fifo_manager: ?*wp.FifoManagerV1 = null,
+text_input_manager: ?*zwp.TextInputManagerV3 = null,
 /// Clock of wp_presentation timestamps; converted to CLOCK_MONOTONIC, the
 /// loop's clock, when it differs (weston uses CLOCK_MONOTONIC_RAW).
 presentation_clock: linux.clockid_t = .MONOTONIC,
@@ -190,6 +193,7 @@ fn teardown(self: *Wayland) void {
     self.windows.deinit(self.allocator);
     self.seats.deinit(self.allocator);
     self.outputs.deinit(self.allocator);
+    if (self.text_input_manager) |m| m.destroy();
     if (self.decoration_manager) |m| m.destroy();
     if (self.fifo_manager) |m| m.destroy();
     if (self.fractional_manager) |m| m.destroy();
@@ -311,12 +315,17 @@ fn addGlobal(self: *Wayland, registry: *wl.Registry, name: u32, interface: []con
         self.decoration_manager = try registry.bind(name, zxdg.DecorationManagerV1, version);
     } else if (is(interface, wp.FifoManagerV1)) {
         self.fifo_manager = try registry.bind(name, wp.FifoManagerV1, version);
+    } else if (is(interface, zwp.TextInputManagerV3)) {
+        const m = try registry.bind(name, zwp.TextInputManagerV3, version);
+        self.text_input_manager = m;
+        for (self.seats.items) |s| if (s) |seat| seat.addTextInput(m);
     } else if (is(interface, wl.Output)) {
         try self.addOutput(registry, name, version);
     } else if (is(interface, wl.Seat)) {
         const slot = try reserveSlot(Seat, self.allocator, &self.seats);
         const seat = try Seat.create(self, @intCast(slot), registry, name, version);
         self.seats.items[slot] = seat;
+        if (self.text_input_manager) |m| seat.addTextInput(m);
     }
 }
 
@@ -644,6 +653,12 @@ pub fn setRegion(self: *Wayland, id: WindowId, kind: platform.Region, rects: ?[]
         .input => w.surface.setInputRegion(region),
         .@"opaque" => w.surface.setOpaqueRegion(region),
     }
+}
+
+pub fn setTextInput(self: *Wayland, id: SeatId, state: *const platform.TextInputState) void {
+    if (id >= self.seats.items.len) return;
+    const seat = self.seats.items[id] orelse return;
+    if (seat.text_input) |ti| ti.update(state);
 }
 
 fn seatProxy(self: *Wayland, id: SeatId) ?*wl.Seat {

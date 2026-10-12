@@ -161,6 +161,117 @@ pub const Platform = union(enum) {
             inline else => |b| b.setRegion(id, .@"opaque", region),
         };
     }
+
+    /// Updates a seat's text input (text-input-v3, D15): enables or
+    /// disables it and sends the surrounding text, content type, and
+    /// cursor rectangle, then commits. Only meaningful while the seat's
+    /// text input has entered a window (`text_input_enter`).
+    pub fn setTextInput(p: Platform, seat: SeatId, state: *const TextInputState) void {
+        switch (p) {
+            inline else => |b| b.setTextInput(seat, state),
+        }
+    }
+};
+
+/// text-input-v3 content purpose.
+pub const ContentPurpose = enum(u32) { normal, alpha, digits, number, phone, url, email, name, password, pin, date, time, datetime, terminal };
+
+/// text-input-v3 content hints.
+pub const ContentHint = packed struct(u32) {
+    completion: bool = false,
+    spellcheck: bool = false,
+    auto_capitalization: bool = false,
+    lowercase: bool = false,
+    uppercase: bool = false,
+    titlecase: bool = false,
+    hidden_text: bool = false,
+    sensitive_data: bool = false,
+    latin: bool = false,
+    multiline: bool = false,
+    _: u22 = 0,
+};
+
+/// What a client tells the input method about the focused text field.
+pub const TextInputState = struct {
+    enabled: bool = false,
+    /// Text around the cursor, at most `max_surrounding` bytes, valid
+    /// during the call.
+    surrounding: []const u8 = "",
+    /// Byte offsets into `surrounding`.
+    cursor: u32 = 0,
+    anchor: u32 = 0,
+    /// The input method caused this change (it applied a commit).
+    from_input_method: bool = false,
+    hint: ContentHint = .{},
+    purpose: ContentPurpose = .normal,
+    /// The caret, in surface coordinates.
+    cursor_rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+
+    /// The protocol's limit on surrounding text.
+    pub const max_surrounding = 4000;
+};
+
+/// Text-input changes the input method sent with one `done`. Apply in
+/// order: replace the preedit, delete around the cursor, insert the commit
+/// text, then show the new preedit. A commit longer than `max_text` comes
+/// in several events; all but the last have `more` set, the first carries
+/// the deletion, and the last the preedit.
+pub const TextInput = struct {
+    window: WindowId,
+    seat: SeatId,
+    serial: u32 = 0,
+    /// Bytes to delete before and after the cursor (excluding a selection).
+    delete_before: u32 = 0,
+    delete_after: u32 = 0,
+    commit_buf: [max_text]u8 = undefined,
+    commit_len: u16 = 0,
+    preedit_buf: [max_text]u8 = undefined,
+    preedit_len: u16 = 0,
+    /// Cursor range in the preedit, in bytes; both -1 hides the cursor.
+    cursor_begin: i32 = 0,
+    cursor_end: i32 = 0,
+    more: bool = false,
+
+    pub const max_text = 128;
+
+    pub fn commit(t: *const TextInput) []const u8 {
+        return t.commit_buf[0..t.commit_len];
+    }
+
+    pub fn preedit(t: *const TextInput) []const u8 {
+        return t.preedit_buf[0..t.preedit_len];
+    }
+
+    /// Splits one `done` into events; `emit` gets each in order.
+    pub fn split(window: WindowId, seat: SeatId, serial: u32, delete_before: u32, delete_after: u32, commit_text: []const u8, preedit_text: []const u8, cursor_begin: i32, cursor_end: i32, ctx: anytype, comptime emit: fn (@TypeOf(ctx), TextInput) void) void {
+        var rest = commit_text;
+        var first = true;
+        while (true) {
+            var ev: TextInput = .{ .window = window, .seat = seat, .serial = serial };
+            if (first) {
+                ev.delete_before = delete_before;
+                ev.delete_after = delete_after;
+            }
+            var n = @min(rest.len, max_text);
+            while (n < rest.len and n > 0 and rest[n] & 0xc0 == 0x80) n -= 1;
+            @memcpy(ev.commit_buf[0..n], rest[0..n]);
+            ev.commit_len = @intCast(n);
+            rest = rest[n..];
+            ev.more = rest.len != 0;
+            if (!ev.more) {
+                // A preedit too long to show is cut at a character boundary.
+                var m = @min(preedit_text.len, max_text);
+                while (m < preedit_text.len and m > 0 and preedit_text[m] & 0xc0 == 0x80) m -= 1;
+                @memcpy(ev.preedit_buf[0..m], preedit_text[0..m]);
+                ev.preedit_len = @intCast(m);
+                ev.cursor_begin = if (cursor_begin > m) @intCast(m) else cursor_begin;
+                ev.cursor_end = if (cursor_end > m) @intCast(m) else cursor_end;
+            }
+            emit(ctx, ev);
+            first = false;
+            if (!ev.more) return;
+        }
+    }
 };
 
 pub const Error = error{
@@ -461,6 +572,11 @@ pub const Event = union(enum) {
     touch_frame: SeatId,
     /// The compositor took over the touch sequence; forget every point.
     touch_cancel: SeatId,
+    /// The seat's text input (input method) focuses the window, or leaves.
+    text_input_enter: Focus,
+    text_input_leave: Focus,
+    /// Input method changes (text-input-v3).
+    text_input: TextInput,
     /// The platform failed: events were lost (OutOfMemory) or the
     /// connection is gone (ConnectionLost, ProtocolError).
     failed: Error,
@@ -557,6 +673,28 @@ test {
         // Instantiates every forwarding call for both backends.
         std.testing.refAllDecls(Platform);
     }
+}
+
+test "text input commits split at character boundaries" {
+    const Rec = struct {
+        events: [8]TextInput = undefined,
+        n: usize = 0,
+        fn add(r: *@This(), ev: TextInput) void {
+            r.events[r.n] = ev;
+            r.n += 1;
+        }
+    };
+    var r: Rec = .{};
+    var long: [200]u8 = undefined;
+    for (&long, 0..) |*c, i| c.* = if (i % 2 == 0) 0xc3 else 0xa9; // é repeated
+    TextInput.split(1, 0, 5, 2, 0, &long, "ab", 1, 1, &r, Rec.add);
+    try std.testing.expectEqual(@as(usize, 2), r.n);
+    try std.testing.expectEqual(@as(usize, 128), r.events[0].commit().len);
+    try std.testing.expect(r.events[0].more and !r.events[1].more);
+    try std.testing.expectEqual(@as(u32, 2), r.events[0].delete_before);
+    try std.testing.expectEqual(@as(u32, 0), r.events[1].delete_before);
+    try std.testing.expectEqualStrings("ab", r.events[1].preedit());
+    try std.testing.expectEqual(@as(usize, 200), r.events[0].commit().len + r.events[1].commit().len);
 }
 
 test "fractional scale rounds half away from zero" {

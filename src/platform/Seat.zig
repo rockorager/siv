@@ -11,6 +11,8 @@ const Loop = platform.Loop;
 const Timer = @import("loop").Timer;
 const Wayland = @import("Wayland.zig");
 const Keyboard = @import("Keyboard.zig");
+const TextInput = @import("TextInput.zig");
+const zwp = @import("wayland").client.zwp;
 const Seat = @This();
 
 const WindowId = platform.WindowId;
@@ -23,6 +25,7 @@ proxy: *wl.Seat,
 pointer: ?*wl.Pointer = null,
 keyboard_proxy: ?*wl.Keyboard = null,
 touch: ?*wl.Touch = null,
+text_input: ?*TextInput = null,
 
 keyboard: Keyboard,
 keyboard_focus: ?WindowId = null,
@@ -64,7 +67,17 @@ pub fn create(backend: *Wayland, id: SeatId, registry: *wl.Registry, name: u32, 
     return seat;
 }
 
+/// Creates the seat's text input once the manager is known.
+pub fn addTextInput(seat: *Seat, manager: *zwp.TextInputManagerV3) void {
+    if (seat.text_input != null) return;
+    seat.text_input = TextInput.create(seat.backend, manager, seat.id, seat.proxy) catch {
+        seat.backend.queue.fail(error.OutOfMemory);
+        return;
+    };
+}
+
 pub fn destroy(seat: *Seat) void {
+    if (seat.text_input) |ti| ti.destroy();
     seat.backend.loop.cancelTimer(&seat.repeat_timer);
     seat.setCapabilities(.{});
     seat.keyboard.deinit();
@@ -74,6 +87,7 @@ pub fn destroy(seat: *Seat) void {
 
 /// Drops references to a destroyed window.
 pub fn forgetWindow(seat: *Seat, id: WindowId) void {
+    if (seat.text_input) |ti| ti.forgetWindow(id);
     if (seat.keyboard_focus == id) {
         seat.keyboard_focus = null;
         seat.stopRepeat();
