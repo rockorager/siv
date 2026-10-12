@@ -12,6 +12,13 @@ const render_cpu = @import("render_cpu");
 const scene = @import("scene");
 const text = @import("text");
 
+// test/c/canvas_scene.c, linked into this binary, calls the exports, so
+// they must be emitted even when a test filter skips every test that
+// uses them.
+comptime {
+    _ = abi;
+}
+
 test {
     std.testing.refAllDecls(@This());
     _ = @import("render/golden.zig");
