@@ -4,9 +4,11 @@
 const std = @import("std");
 const linux = std.os.linux;
 
-/// dbus-daemon with a private configuration: no service activation, every
-/// name and message allowed.
+/// dbus-daemon with a private configuration: every name and message
+/// allowed, and service activation only from `service_dir`.
 pub const Daemon = struct {
+    /// A directory of D-Bus service files to activate services from.
+    service_dir: ?[]const u8 = null,
     dir_buf: [64]u8 = undefined,
     dir: [:0]const u8 = "",
     addr_buf: [96]u8 = undefined,
@@ -25,6 +27,8 @@ pub const Daemon = struct {
         _ = linux.mkdir(d.dir, 0o700);
         var config_buf: [128]u8 = undefined;
         const config = try std.fmt.bufPrintSentinel(&config_buf, "{s}/bus.conf", .{d.dir}, 0);
+        var service_buf: [192]u8 = undefined;
+        const services = if (d.service_dir) |dir| try std.fmt.bufPrint(&service_buf, "<servicedir>{s}</servicedir>", .{dir}) else "";
         var text_buf: [1024]u8 = undefined;
         try writeFile(config, try std.fmt.bufPrint(&text_buf,
             \\<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
@@ -33,6 +37,7 @@ pub const Daemon = struct {
             \\  <type>session</type>
             \\  <listen>unix:path={s}/bus</listen>
             \\  <auth>EXTERNAL</auth>
+            \\  {s}
             \\  <policy context="default">
             \\    <allow send_destination="*" eavesdrop="true"/>
             \\    <allow eavesdrop="true"/>
@@ -40,7 +45,7 @@ pub const Daemon = struct {
             \\  </policy>
             \\</busconfig>
             \\
-        , .{d.dir}));
+        , .{ d.dir, services }));
         d.address = try std.fmt.bufPrintSentinel(&d.addr_buf, "unix:path={s}/bus", .{d.dir}, 0);
         var config_arg_buf: [160]u8 = undefined;
         const config_arg = try std.fmt.bufPrintSentinel(&config_arg_buf, "--config-file={s}", .{config}, 0);
