@@ -116,8 +116,13 @@ pub const Loop = struct {
             switch (ev.data.ptr) {
                 0 => {}, // source removed earlier in this phase
                 wake_tag => {
-                    loop.wake_pending.store(false, .seq_cst);
+                    // Drain first: a wake between clearing the flag and
+                    // draining would lose its write and leave the flag
+                    // set, and no later wake would write again. One
+                    // between draining and clearing writes nothing; what
+                    // it signaled runs later in this iteration.
                     drainFd(loop.wake_fd);
+                    loop.wake_pending.store(false, .seq_cst);
                 },
                 timer_tag => drainFd(loop.timer_fd),
                 else => |ptr| {
@@ -687,4 +692,67 @@ test "unscheduling a task from an earlier task in the same batch" {
     try loop.dispatch(0);
     try testing.expectEqualStrings("1", c.rec.get());
     try testing.expect(!c.second.scheduled());
+}
+
+test "a wake that races the loop draining an earlier one is not lost" {
+    // The window is between two instructions of `dispatch`, so this only
+    // makes it likely: a producer posts one closure at a time while
+    // another thread keeps the loop iterating on a pipe, as Wayland
+    // traffic does on the compositor thread. Then, with the loop idle,
+    // one more post must wake it.
+    var loop = try Loop.init(std.heap.smp_allocator);
+    defer loop.deinit();
+    const Shared = struct {
+        loop: *Loop,
+        count: std.atomic.Value(usize) = .init(0),
+        stop: std.atomic.Value(bool) = .init(false),
+        pipe: [2]i32 = undefined,
+        source: Loop.Source = undefined,
+
+        fn bump(ctx: ?*anyopaque) void {
+            const s: *@This() = @ptrCast(@alignCast(ctx));
+            _ = s.count.fetchAdd(1, .seq_cst);
+        }
+        fn producer(s: *@This()) void {
+            var prng = std.Random.DefaultPrng.init(1);
+            for (0..50_000) |_| {
+                const before = s.count.load(.seq_cst);
+                s.loop.post(bump, null, s) catch unreachable;
+                while (s.count.load(.seq_cst) == before) std.atomic.spinLoopHint();
+                for (0..prng.random().uintLessThan(u32, 2000)) |_| std.atomic.spinLoopHint();
+            }
+            s.stop.store(true, .seq_cst);
+        }
+        fn noise(s: *@This()) void {
+            while (!s.stop.load(.seq_cst)) {
+                _ = linux.write(s.pipe[1], "x", 1);
+                for (0..500) |_| std.atomic.spinLoopHint();
+            }
+        }
+        fn onPipe(src: *Loop.Source, _: u32) void {
+            var buf: [256]u8 = undefined;
+            _ = linux.read(src.fd, &buf, buf.len);
+        }
+    };
+    var s: Shared = .{ .loop = &loop };
+    if (linux.errno(linux.pipe2(&s.pipe, .{ .NONBLOCK = true, .CLOEXEC = true })) != .SUCCESS) return error.Unexpected;
+    defer for (s.pipe) |fd| closeFd(fd);
+    s.source = .{ .fd = s.pipe[0], .events = linux.EPOLL.IN, .func = Shared.onPipe };
+    try loop.addSource(&s.source);
+    const threads = [_]std.Thread{ try std.Thread.spawn(.{}, Shared.producer, .{&s}), try std.Thread.spawn(.{}, Shared.noise, .{&s}) };
+    while (!s.stop.load(.seq_cst)) try loop.dispatch(100);
+    for (threads) |t| t.join();
+    try loop.dispatch(0);
+    try loop.dispatch(0);
+
+    const t = try std.Thread.spawn(.{}, struct {
+        fn f(sh: *Shared) void {
+            sh.loop.post(Shared.bump, null, sh) catch unreachable;
+        }
+    }.f, .{&s});
+    defer t.join();
+    const before = s.count.load(.seq_cst);
+    const start = Loop.now();
+    while (s.count.load(.seq_cst) == before) try loop.dispatch(2000);
+    try testing.expect(Loop.now() - start < std.time.ns_per_s);
 }
