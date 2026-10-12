@@ -1336,13 +1336,18 @@ test "hidden nodes take no space, paint nothing, and leave focus, hit testing, a
     _ = a;
 }
 
-test "modal nodes keep the pointer and Tab inside them" {
+test "modal nodes keep focus and the pointer inside, and give focus back when they go" {
     var f: Fixture = undefined;
     try f.init(.{ .width = 200, .height = 200 });
     defer f.deinit();
     var t = try f.win.begin();
     const outside = try box(t, .root, .box, .{ .width = .{ .px = 50 }, .height = .{ .px = 50 } });
     try t.setSemantics(outside, .{ .role = .button, .focusable = true });
+    t.commit();
+    try f.frame();
+    ui.input.setFocus(f.win, outside, true);
+
+    t = try f.win.begin();
     const dialog = try box(t, .root, .box, .{ .width = .{ .px = 100 }, .height = .{ .px = 100 }, .align_x = .end, .align_y = .end });
     try t.setSemantics(dialog, .{ .role = .dialog, .modal = true });
     const first = try box(t, dialog, .box, .{ .height = .{ .px = 20 } });
@@ -1351,21 +1356,48 @@ test "modal nodes keep the pointer and Tab inside them" {
     try t.setSemantics(second, .{ .role = .button, .focusable = true });
     t.commit();
     try f.frame();
+    // Focus moved in on its own, and stays in.
+    try testing.expectEqual(first, f.win.input.focus);
     try testing.expectEqual(NodeId.none, ui.input.hitTest(f.win, .{ .x = 10, .y = 10 }));
     try testing.expectEqual(first, ui.input.hitTest(f.win, .{ .x = 150, .y = 110 }));
+    try testing.expect(!ui.input.canFocus(f.win, outside));
     const keys: Keys = .{ .f = &f };
-    for ([_]NodeId{ first, second, first }) |want| {
+    for ([_]NodeId{ second, first, second }) |want| {
         keys.press(ui.keysym.tab, .{});
         try testing.expectEqual(want, f.win.input.focus);
     }
     try testing.expect((try f.win.semanticsTree()).find(.dialog, "").?.modal);
 
-    // Without the modal flag, everything is reachable again.
+    // A dialog over the dialog, then each goes: focus returns to where it
+    // was before each, with the ring it had.
     t = try f.win.begin();
-    try t.setSemantics(dialog, .{ .role = .dialog });
+    const inner = try box(t, .root, .box, .{ .width = .{ .px = 40 }, .height = .{ .px = 40 } });
+    try t.setSemantics(inner, .{ .role = .dialog, .modal = true, .focusable = true });
+    t.commit();
+    try testing.expectEqual(inner, f.win.input.focus);
+    try testing.expect(!ui.input.canFocus(f.win, first));
+    t = try f.win.begin();
+    try t.remove(inner);
+    t.commit();
+    try testing.expectEqual(second, f.win.input.focus);
+    t = try f.win.begin();
+    try t.remove(dialog);
     t.commit();
     try f.frame();
+    try testing.expectEqual(outside, f.win.input.focus);
+    try testing.expect(f.win.input.focus_visible);
     try testing.expectEqual(outside, ui.input.hitTest(f.win, .{ .x = 10, .y = 10 }));
+
+    // Hiding a modal node gives focus back too.
+    t = try f.win.begin();
+    const sheet = try box(t, .root, .box, .{});
+    try t.setSemantics(sheet, .{ .role = .dialog, .modal = true, .focusable = true });
+    t.commit();
+    try testing.expectEqual(sheet, f.win.input.focus);
+    t = try f.win.begin();
+    try t.setVisual(sheet, .{ .hidden = true });
+    t.commit();
+    try testing.expectEqual(outside, f.win.input.focus);
 }
 
 test "transitions animate a node's own opacity and transform, not its first value; reduced motion jumps" {

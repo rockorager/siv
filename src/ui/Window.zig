@@ -66,8 +66,8 @@ desktop: Desktop = .{},
 theme_choice: theme.Theme = .{},
 /// Themed colors and sizes, resolved from `desktop` and `theme_choice`.
 palette: theme.Palette = .{},
-/// The last shown modal node, from the last semantics rebuild.
-modal: NodeId = .none,
+/// Nodes made modal, in that order (some may be gone or no longer modal).
+modals: std.ArrayList(NodeId) = .empty,
 /// Scroll nodes with viewport handlers (some may be gone), and whether
 /// layout changed one's viewport since it was last told.
 viewports: std.ArrayList(NodeId) = .empty,
@@ -311,6 +311,7 @@ fn deinitStorage(win: *Window) void {
     win.ime.deinit(win.gpa);
     win.semantics.deinit(win.gpa);
     win.viewports.deinit(win.gpa);
+    win.modals.deinit(win.gpa);
     win.scratch.deinit();
 }
 

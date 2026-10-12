@@ -954,6 +954,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     outside the node), so keyboard-only use works without widget code;
     focus from a pointer press shows none. Its color is the theme's
     `focus_ring` (D29).
+  - Modal nodes (`SIV_SEMANTICS_MODAL`, dialogs) contain focus: the
+    active one is the shown modal node made modal last; while it exists
+    the pointer reaches only its subtree, Tab cycles inside it, nodes
+    outside cannot take focus (`siv_node_focus` refuses them), and keys
+    with nothing focused go to it. A modal node that appears without
+    focus inside takes it (its first focusable node) after the commit.
+    When focus enters a modal node from outside, the node that had it is
+    remembered on a stack, and when the modal node goes (removed, hidden,
+    or no longer modal) focus returns to it, with the ring it had, if it
+    can still take focus. Nested dialogs unwind in order. The stack lives
+    in the core, not the dialog widget, so it works however the dialog
+    is closed.
   - Pointer cursors: each node may set a cursor shape (the CSS names, as
     cursor-shape-v1 numbers them, and hidden), inherited by descendants
     that set none; enabled editors show the text cursor. The cursor is
@@ -1784,10 +1796,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Not built yet elsewhere: the styled-text editor; submenus; an
     animated indeterminate progress bar (it shows a still bar: a
     repeating compositor animation needs a primitive whose distances
-    follow layout); auto-repeat on held spin buttons; returning focus to
-    where it was when a dialog closes (no query for the focused node);
-    and an integration test of menus on sway (the headless backend's
-    placement and grab rules are tested).
+    follow layout); auto-repeat on held spin buttons; and an integration
+    test of menus on sway (the headless backend's placement and grab
+    rules are tested).
 - **Non-goal:** a full document model with embedded tables and images.
 
 ### D23. Lua 5.5

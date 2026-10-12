@@ -359,6 +359,12 @@ pub const Txn = struct {
         if (sem.value) |r| if (!(r.min <= r.max) or !std.math.isFinite(r.now) or !(r.step >= 0) or !std.math.isFinite(r.step)) return error.InvalidArgument;
         if (!std.unicode.utf8ValidateSlice(sem.label) or !std.unicode.utf8ValidateSlice(sem.description)) return error.InvalidArgument;
         try t.reserve();
+        if (sem.modal and !n.semantics.modal) {
+            // Made modal last, it is the active modal while shown.
+            const ms = &t.win.modals;
+            if (std.mem.indexOfScalar(NodeId, ms.items, id)) |i| _ = ms.orderedRemove(i);
+            try ms.append(t.win.gpa, id);
+        }
         const label = try t.own(u8, sem.label);
         const description = try t.own(u8, sem.description);
         t.touch(id);

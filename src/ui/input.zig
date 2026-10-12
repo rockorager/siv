@@ -83,9 +83,15 @@ pub const State = struct {
     /// Serial of the last button or touch press, which starts drags.
     press_serial: u32 = 0,
     mods: platform.Mods = .{},
+    /// Modal nodes focus entered, innermost last, each with the node that
+    /// had focus before it, which gets it back when the modal goes.
+    modals: std.ArrayList(ModalEntry) = .empty,
+
+    pub const ModalEntry = struct { modal: NodeId, opener: NodeId, visible: bool };
 
     pub fn deinit(st: *State, gpa: std.mem.Allocator) void {
         st.hover.deinit(gpa);
+        st.modals.deinit(gpa);
     }
 
     /// A node was removed.
@@ -103,8 +109,30 @@ pub const State = struct {
         };
     }
 
-    /// After a commit: focus leaves nodes that can no longer take it.
+    /// After a commit: focus returns from modal nodes that went away to
+    /// where it was before them, moves into a modal node that appeared,
+    /// and leaves nodes that can no longer take it.
     pub fn afterCommit(st: *State, win: *Window) void {
+        var k: usize = 0;
+        while (k < win.modals.items.len) {
+            if (win.isLive(win.modals.items[k])) k += 1 else _ = win.modals.orderedRemove(k);
+        }
+        var back: ?ModalEntry = null;
+        while (st.modals.items.len != 0) {
+            const top = st.modals.items[st.modals.items.len - 1];
+            if (modalActive(win, top.modal)) break;
+            back = st.modals.pop();
+        }
+        if (back) |b| {
+            const lost = st.focus == .none or !canFocus(win, st.focus);
+            if (lost) setFocus(win, if (canFocus(win, b.opener)) b.opener else .none, b.visible);
+        }
+        const m = modalRoot(win);
+        if (m != .root and (st.focus == .none or !win.isAncestor(m, st.focus))) {
+            // A modal node appeared without focus inside it: it takes focus,
+            // and gives it back when it goes.
+            setFocus(win, firstFocusable(win, m), st.focus_visible);
+        }
         if (st.focus != .none and !canFocus(win, st.focus)) setFocus(win, .none, false);
         // Cursors change without a frame; layout changes update it after
         // the next one.
@@ -112,15 +140,40 @@ pub const State = struct {
     }
 };
 
+/// Whether a node takes focus: focusable, enabled, shown, and inside the
+/// active modal node, if there is one.
 pub fn canFocus(win: *const Window, id: NodeId) bool {
-    return win.isLive(id) and win.node(id).canFocus() and win.isShown(id);
+    if (!(win.isLive(id) and win.node(id).canFocus() and win.isShown(id))) return false;
+    const m = modalRoot(win);
+    return m == .root or win.isAncestor(m, id);
 }
 
-/// The shown modal node input stays inside, or the root.
+fn modalActive(win: *const Window, id: NodeId) bool {
+    return win.isLive(id) and win.node(id).semantics.modal and win.isShown(id);
+}
+
+/// The active modal node input stays inside, or the root: the shown modal
+/// node made modal last.
 pub fn modalRoot(win: *const Window) NodeId {
-    const m = win.modal;
-    if (m != .none and win.isLive(m) and win.node(m).semantics.modal and win.isShown(m)) return m;
+    var i = win.modals.items.len;
+    while (i > 0) {
+        i -= 1;
+        const m = win.modals.items[i];
+        if (modalActive(win, m)) return m;
+    }
     return .root;
+}
+
+/// The first node in tree order under `id` (itself included) that takes
+/// focus, or none.
+pub fn firstFocusable(win: *const Window, id: NodeId) NodeId {
+    if (canFocus(win, id)) return id;
+    var it = win.shown(id);
+    while (it.next()) |c| {
+        const f = firstFocusable(win, c);
+        if (f != .none) return f;
+    }
+    return .none;
 }
 
 fn activatable(win: *const Window, id: NodeId) bool {
@@ -247,6 +300,12 @@ pub fn setFocus(win: *Window, id: NodeId, visible: bool) void {
     const st = &win.input;
     const old = st.focus;
     if (old == id and st.focus_visible == visible) return;
+    // Focus entering a modal node from outside remembers where it was.
+    const m = modalRoot(win);
+    if (m != .root and id != .none and win.isAncestor(m, id) and (old == .none or !win.isLive(old) or !win.isAncestor(m, old))) {
+        const known = st.modals.items.len != 0 and st.modals.items[st.modals.items.len - 1].modal == m;
+        if (!known) st.modals.append(win.gpa, .{ .modal = m, .opener = old, .visible = st.focus_visible }) catch {};
+    }
     st.focus = id;
     st.focus_visible = visible;
     win.dirty.semantics = true;
@@ -458,7 +517,9 @@ fn key(win: *Window, k: *const platform.Key) void {
         st.seat = k.seat;
         st.serial = k.serial;
     }
-    const target = if (st.focus != .none and win.isLive(st.focus)) st.focus else NodeId.root;
+    // Without focus, keys go to the active modal node (Escape closes a
+    // dialog), or the root.
+    const target = if (st.focus != .none and win.isLive(st.focus)) st.focus else modalRoot(win);
     const ev: Event = .{ .key = .{
         .keysym = k.keysym,
         .pressed = k.state != .released,

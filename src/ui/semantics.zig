@@ -108,7 +108,6 @@ pub const Tree = struct {
         t.nodes.clearRetainingCapacity();
         t.names.clearRetainingCapacity();
         t.generation += 1;
-        win.modal = .none;
         try t.visit(win, .root, none);
     }
 
@@ -116,7 +115,6 @@ pub const Tree = struct {
         const n = win.node(id);
         const sem = n.semantics;
         const role = n.role();
-        if (sem.modal) win.modal = id;
         const included = switch (role) {
             .none => false,
             .generic => sem.label.len != 0 or sem.focusable,
