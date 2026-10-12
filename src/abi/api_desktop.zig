@@ -1,8 +1,7 @@
 //! The desktop integration part of the API schema (D19): portals,
-//! application actions, lifecycle, printing and PDF, and (later) the
-//! tray.
+//! application actions, lifecycle, printing and PDF, and the tray.
 //! api.zig appends these declarations and functions to its own; the
-//! conventions are schema.zig's. Implemented in portal.zig and print.zig.
+//! conventions are schema.zig's. Implemented in portal.zig, print.zig, and tray.zig.
 
 const schema = @import("schema.zig");
 const ref = schema.ref;
@@ -334,6 +333,77 @@ pub const decls = [_]Decl{
         .{ .name = "height", .type = .f32, .doc = "The paper's height in points." },
         .{ .name = "flags", .type = ref("siv_print_flags"), .doc = "Options." },
     }),
+
+    // The tray.
+    handle("siv_tray_item", "A system tray icon (StatusNotifierItem) with an optional menu. One per application."),
+    enumeration("siv_tray_status", "How prominently the desktop shows a tray item.", &.{
+        .{ .name = "active", .value = 0, .doc = "Shown." },
+        .{ .name = "passive", .value = 1, .doc = "Nothing needs the user; the desktop may hide it." },
+        .{ .name = "needs_attention", .value = 2, .doc = "Shown with the attention icon." },
+    }),
+    enumeration("siv_tray_category", "What a tray item is about.", &.{
+        .{ .name = "application_status", .value = 0, .doc = "The application's status." },
+        .{ .name = "communications", .value = 1, .doc = "Messages and calls." },
+        .{ .name = "system_services", .value = 2, .doc = "A system service." },
+        .{ .name = "hardware", .value = 3, .doc = "Hardware." },
+    }),
+    flags("siv_tray_flags", "Tray item options.", &.{
+        .{ .name = "item_is_menu", .bit = 0, .doc = "Activating the item shows its menu instead of sending activate." },
+    }),
+    enumeration("siv_tray_event_type", "What a siv_tray_event reports.", &.{
+        .{ .name = "registered", .value = 0, .doc = "The desktop's tray accepted the item: it may be shown." },
+        .{ .name = "unregistered", .value = 1, .doc = "No tray runs, or it went away or refused the item: show the application another way. It registers again when a tray appears." },
+        .{ .name = "activate", .value = 2, .doc = "The item was activated (clicked); x and y are screen coordinates if the desktop knows them, and activation_token lets a window take focus (siv_window_activate)." },
+        .{ .name = "secondary_activate", .value = 3, .doc = "Secondary activation (a middle click)." },
+        .{ .name = "context_menu", .value = 4, .doc = "The desktop asks for a context menu, for an item without menu entries." },
+        .{ .name = "scroll", .value = 5, .doc = "A scroll over the item by delta steps." },
+        .{ .name = "menu", .value = 6, .doc = "The menu entry menu_item was clicked." },
+    }),
+    flags("siv_tray_event_flags", "Details of a tray event.", &.{
+        .{ .name = "horizontal", .bit = 0, .doc = "Scroll: horizontal, not vertical." },
+    }),
+    descriptor("siv_tray_event", "A tray event. Filled by siv; strings are valid during the call.", &.{
+        .{ .name = "activation_token", .type = .string, .doc = "Activate: an xdg-activation token from the desktop, or empty." },
+        .{ .name = "type", .type = ref("siv_tray_event_type"), .doc = "What happened." },
+        .{ .name = "x", .type = .i32, .doc = "Activations and context menus: the screen position, or 0." },
+        .{ .name = "y", .type = .i32, .doc = "The screen position, or 0." },
+        .{ .name = "delta", .type = .i32, .doc = "Scroll: the steps." },
+        .{ .name = "menu_item", .type = .u32, .doc = "Menu: the entry's id." },
+        .{ .name = "flags", .type = ref("siv_tray_event_flags"), .doc = "Details." },
+    }),
+    callback("siv_tray_fn", "Receives tray events at safe points on the application's thread (D5).", &.{
+        p("item", ref("siv_tray_item"), "The item."),
+        p("event", .{ .desc = "siv_tray_event" }, "The event, valid during the call."),
+    }, .void),
+    descriptor("siv_tray_item_desc", "A tray item.", &.{
+        .{ .name = "id", .type = .string, .doc = "Identifies the item to the desktop across runs; empty uses the application id." },
+        .{ .name = "title", .type = .string, .doc = "The item's name, such as the application's." },
+        .{ .name = "icon_name", .type = .string, .doc = "A themed icon name; siv_tray_item_set_icon can add an image." },
+        .{ .name = "user_data", .type = .user_data, .doc = "Passed to on_event and destroy." },
+        .{ .name = "on_event", .type = ref("siv_tray_fn"), .doc = "Receives events; may be NULL." },
+        .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data when the item is destroyed." },
+        .{ .name = "category", .type = ref("siv_tray_category"), .doc = "Default application status." },
+        .{ .name = "flags", .type = ref("siv_tray_flags"), .doc = "Options." },
+    }),
+    enumeration("siv_tray_menu_item_kind", "What a tray menu entry is.", &.{
+        .{ .name = "normal", .value = 0, .doc = "A command, or a submenu once entries are added to it." },
+        .{ .name = "separator", .value = 1, .doc = "A separator." },
+        .{ .name = "check", .value = 2, .doc = "A check box." },
+        .{ .name = "radio", .value = 3, .doc = "A radio button." },
+    }),
+    flags("siv_tray_menu_item_flags", "Tray menu entry state.", &.{
+        .{ .name = "disabled", .bit = 0, .doc = "Shown but not clickable." },
+        .{ .name = "hidden", .bit = 1, .doc = "Not shown." },
+        .{ .name = "checked", .bit = 2, .doc = "Check and radio entries: checked." },
+    }),
+    descriptor("siv_tray_menu_item_desc", "An entry of a tray item's menu.", &.{
+        .{ .name = "label", .type = .string, .doc = "The label, with a mnemonic underscore." },
+        .{ .name = "icon_name", .type = .string, .doc = "A themed icon name, or empty." },
+        .{ .name = "id", .type = .u32, .doc = "Identifies the entry: nonzero, below 2^31." },
+        .{ .name = "parent", .type = .u32, .doc = "The entry it is in, or 0 for the top level." },
+        .{ .name = "kind", .type = ref("siv_tray_menu_item_kind"), .doc = "Default normal." },
+        .{ .name = "flags", .type = ref("siv_tray_menu_item_flags"), .doc = "State." },
+    }),
 };
 
 pub const functions = [_]Function{
@@ -504,6 +574,35 @@ pub const functions = [_]Function{
         parent_param,
         p("desc", .{ .desc = "siv_print_desc" }, "The document."),
     }),
+
+    call("siv_tray_item_create", "Shows a tray icon (D19): an org.kde.StatusNotifierItem registered with the desktop's tray, with a com.canonical.dbusmenu menu. Events say whether a tray shows it. SIV_ERROR_UNAVAILABLE without a session bus, SIV_ERROR_BUSY if the application has one already.", &.{
+        app_param,
+        p("desc", .{ .desc = "siv_tray_item_desc" }, "The item."),
+        p("item", out(ref("siv_tray_item")), "The item."),
+    }),
+    call("siv_tray_item_set_title", "Sets the item's title.", &.{ p("item", ref("siv_tray_item"), "The item."), p("title", .string, "The title.") }),
+    call("siv_tray_item_set_status", "Sets how prominently the item shows.", &.{ p("item", ref("siv_tray_item"), "The item."), p("status", ref("siv_tray_status"), "The status.") }),
+    call("siv_tray_item_set_icon", "Sets the icon: a themed name, an image, or both; the desktop prefers the name when its theme has it. Images with 8-bit pixels are sent; others are SIV_ERROR_UNSUPPORTED.", &.{
+        p("item", ref("siv_tray_item"), "The item."),
+        p("icon_name", .string, "A themed icon name, or empty."),
+        p("image", ref("siv_image"), "An image, or 0."),
+    }),
+    call("siv_tray_item_set_attention_icon", "Sets the icon shown with SIV_TRAY_STATUS_NEEDS_ATTENTION, as siv_tray_item_set_icon.", &.{
+        p("item", ref("siv_tray_item"), "The item."),
+        p("icon_name", .string, "A themed icon name, or empty."),
+        p("image", ref("siv_image"), "An image, or 0."),
+    }),
+    call("siv_tray_item_set_tooltip", "Sets the tooltip.", &.{
+        p("item", ref("siv_tray_item"), "The item."),
+        p("title", .string, "Its title."),
+        p("body", .string, "Its text, which desktops may show with simple markup."),
+    }),
+    call("siv_tray_item_set_menu_item", "Adds a menu entry, or replaces the one with its id. New entries go after their siblings. SIV_ERROR_INVALID_ARGUMENT if the parent does not exist or is inside the entry.", &.{
+        p("item", ref("siv_tray_item"), "The item."),
+        p("desc", .{ .desc = "siv_tray_menu_item_desc" }, "The entry."),
+    }),
+    op("siv_tray_item_remove_menu_item", "Removes a menu entry and the entries in it.", &.{ p("item", ref("siv_tray_item"), "The item."), p("id", .u32, "The entry.") }),
+    op("siv_tray_item_destroy", "Removes the item from the tray and destroys it.", &.{p("item", ref("siv_tray_item"), "The item.")}),
 
     call("siv_document_export", "Makes a file available to sandboxed applications through the document portal; the result's uri is its path there and id its document id.", &([_]Param{
         app_param,

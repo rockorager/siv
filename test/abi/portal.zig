@@ -238,3 +238,14 @@ test "launching without an application id is a primary instance that activates o
     }
     try testing.expectEqual(@as(u32, 1), l.destroys);
 }
+
+test "tray items need a session bus; handles die with their item" {
+    var h: harness.Harness = .{};
+    try h.start(64, 48, null, null);
+    defer h.stop();
+    var item: t.TrayItem = .null;
+    try testing.expectEqual(t.Result.error_unavailable, abi.tray.siv_tray_item_create(h.app, &.{ .id = "org.example.Tray", .id_len = 16 }, &item));
+    try testing.expectEqual(t.Result.error_unsupported, abi.tray.siv_tray_item_create(h.app, &.{ .category = @enumFromInt(9) }, &item));
+    try testing.expectEqual(t.Result.error_invalid_handle, abi.tray.siv_tray_item_destroy(@fromBackingInt(12345)));
+    try testing.expectEqual(t.Result.error_invalid_handle, abi.tray.siv_tray_item_set_title(.null, "x", 1));
+}

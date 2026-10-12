@@ -18,6 +18,7 @@ const runtime = @import("runtime.zig");
 const application = @import("application.zig");
 const api = @import("api.zig");
 const print = @import("print.zig");
+const tray = @import("tray.zig");
 
 const App = application.App;
 const Error = application.Error;
@@ -46,6 +47,8 @@ pub const State = struct {
     launch: ?Launch = null,
     /// Documents being printed or written as PDF (print.zig).
     prints: print.State = .{},
+    /// The tray item (tray.zig).
+    tray: tray.State = .{},
 };
 
 const Launch = struct { on_activate: ?t.ActivateFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque };
@@ -68,6 +71,7 @@ pub fn teardown(self: *App) void {
     const st = &self.desktop;
     const gpa = self.gpa();
     print.teardown(self);
+    tray.teardown(self);
     while (st.ops.popFirst()) |n| {
         const o: *Op = @fieldParentPtr("node", n);
         o.stop();

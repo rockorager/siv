@@ -443,6 +443,108 @@ test "printing through the public API: the Print portal's dialog, then the PDF" 
     try testing.expect(std.mem.indexOf(u8, info.output, "841.89 x 595.2") != null);
 }
 
+// The tray (D19) ------------------------------------------------------------------
+
+const TrayLog = struct {
+    unregistered: u32 = 0,
+    activated: u32 = 0,
+    menu: u32 = 0,
+    destroyed: u32 = 0,
+
+    fn onEvent(user_data: ?*anyopaque, _: t.TrayItem, event: ?*const t.TrayEvent) callconv(.c) void {
+        const log: *TrayLog = @ptrCast(@alignCast(user_data));
+        const e = event.?;
+        switch (e.type) {
+            .unregistered => log.unregistered += 1,
+            .activate => log.activated += 1,
+            .menu => log.menu = e.menu_item,
+            else => {},
+        }
+    }
+
+    fn onDestroy(user_data: ?*anyopaque) callconv(.c) void {
+        const log: *TrayLog = @ptrCast(@alignCast(user_data));
+        log.destroyed += 1;
+    }
+};
+
+/// Runs gdbus against `address` while the application keeps dispatching,
+/// and returns its output.
+fn gdbusOutput(app: t.App, address: []const u8, args: []const [*:0]const u8, buf: []u8) ![]const u8 {
+    const linux = std.os.linux;
+    const exe = td.findExecutable("gdbus") orelse return error.GdbusNotInstalled;
+    var argv: [16:null]?[*:0]const u8 = @splat(null);
+    argv[0] = exe;
+    for (args, 1..) |a, i| argv[i] = a;
+    var env_buf: [256]u8 = undefined;
+    const envp = [_:null]?[*:0]const u8{ "PATH=/usr/bin:/bin", try std.fmt.bufPrintSentinel(&env_buf, "DBUS_SESSION_BUS_ADDRESS={s}", .{address}, 0) };
+    const out: i32 = @intCast(linux.memfd_create("siv-gdbus", linux.MFD.CLOEXEC));
+    defer _ = linux.close(out);
+    const pid = try td.spawn(exe, &argv, &envp, out);
+    var status: c_int = 0;
+    const deadline = Loop.now() + 10 * std.time.ns_per_s;
+    while (std.c.waitpid(pid, &status, std.c.W.NOHANG) == 0) {
+        if (Loop.now() > deadline) return error.Timeout;
+        try ok(A.siv_app_dispatch(app, 10));
+    }
+    const n = linux.pread(out, buf.ptr, buf.len, 0);
+    const output = buf[0..if (linux.errno(n) == .SUCCESS) n else 0];
+    if (status != 0) {
+        std.debug.print("gdbus failed: {s}\n", .{output});
+        return error.GdbusFailed;
+    }
+    return output;
+}
+
+test "a tray item through the public API over dbus-daemon, driven by gdbus" {
+    var daemon: td.Daemon = .{};
+    try daemon.start();
+    defer daemon.stop();
+    _ = setenv("DBUS_SESSION_BUS_ADDRESS", daemon.address.ptr, 1);
+    defer _ = unsetenv("DBUS_SESSION_BUS_ADDRESS");
+
+    // The headless backend connects the session bus for an application id.
+    var app: t.App = .null;
+    try ok(A.siv_app_create(&.{ .backend = .headless, .flags = .{ .no_system_fonts = true }, .app_id = "org.example.Tray", .app_id_len = 16 }, &app));
+    defer _ = A.siv_app_destroy(app);
+    var log: TrayLog = .{};
+    var item: t.TrayItem = .null;
+    try ok(abi.tray.siv_tray_item_create(app, &.{ .title = "Example", .title_len = 7, .icon_name = "mail-unread", .icon_name_len = 11, .on_event = TrayLog.onEvent, .destroy = TrayLog.onDestroy, .user_data = &log }, &item));
+    var second: t.TrayItem = .null;
+    try testing.expectEqual(t.Result.error_busy, abi.tray.siv_tray_item_create(app, null, &second));
+    try ok(abi.tray.siv_tray_item_set_menu_item(item, &.{ .id = 7, .label = "Quit", .label_len = 4 }));
+    try testing.expectEqual(t.Result.error_invalid_argument, abi.tray.siv_tray_item_set_menu_item(item, &.{ .id = 8, .parent = 99 }));
+    // A 1x1 red image becomes an ARGB pixmap.
+    const px = [_]u8{ 255, 0, 0, 255 };
+    var image: t.Image = .null;
+    try ok(abi.canvas.siv_image_create(app, &.{ .pixels = &px, .pixels_count = 4, .width = 1, .height = 1 }, &image));
+    try ok(abi.tray.siv_tray_item_set_icon(item, "mail-unread", 11, image));
+    try ok(abi.tray.siv_tray_item_set_status(item, .needs_attention));
+    // No tray runs on this bus.
+    try dispatchUntil(app, &log, struct {
+        fn f(l: *TrayLog) bool {
+            return l.unregistered == 1;
+        }
+    }.f);
+
+    const self = try A.App.get(@backingInt(app));
+    var name_buf: [64]u8 = undefined;
+    const name = try std.fmt.bufPrintSentinel(&name_buf, "{s}", .{self.desktop.tray.item.?.item.owner.name}, 0);
+    var buf: [8192]u8 = undefined;
+    const props = try gdbusOutput(app, daemon.address, &.{ "call", "--session", "--dest", name, "--object-path", "/StatusNotifierItem", "--method", "org.freedesktop.DBus.Properties.GetAll", "org.kde.StatusNotifierItem" }, &buf);
+    try testing.expect(std.mem.indexOf(u8, props, "'Id': <'org.example.Tray'>") != null);
+    try testing.expect(std.mem.indexOf(u8, props, "'Status': <'NeedsAttention'>") != null);
+    try testing.expect(std.mem.indexOf(u8, props, "[(1, 1, [byte 0xff, 0xff, 0x00, 0x00])]") != null);
+    _ = try gdbusOutput(app, daemon.address, &.{ "call", "--session", "--dest", name, "--object-path", "/MenuBar", "--method", "com.canonical.dbusmenu.Event", "7", "clicked", "<0>", "0" }, &buf);
+    try testing.expectEqual(@as(u32, 7), log.menu);
+    _ = try gdbusOutput(app, daemon.address, &.{ "call", "--session", "--dest", name, "--object-path", "/StatusNotifierItem", "--method", "org.kde.StatusNotifierItem.Activate", "0", "0" }, &buf);
+    try testing.expectEqual(@as(u32, 1), log.activated);
+
+    try ok(abi.tray.siv_tray_item_destroy(item));
+    try testing.expectEqual(@as(u32, 1), log.destroyed);
+    try testing.expectEqual(t.Result.error_invalid_handle, abi.tray.siv_tray_item_destroy(item));
+}
+
 // Lifecycle (D19) -----------------------------------------------------------------
 
 const helpers = @import("helpers");
