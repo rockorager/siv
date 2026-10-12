@@ -271,10 +271,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     acknowledged with the first frame that includes such a commit, or
     after 100 ms with the old layout at the new size, so a stalled UI
     cannot freeze the window. Scale and state changes present at once:
-    vector content needs no new layout to render at a new scale. Not yet
-    effective on Wayland: the platform acknowledges every configure at the
-    end of its forced frame (D12), so until it can leave one unanswered,
-    the ack goes out early with the old buffer still attached.
+    vector content needs no new layout to render at a new scale. The
+    platform's `deferConfigure` (D12) holds the ack and enforces the
+    timeout.
   - Every Wayland request the UI owns logically (text-input-v3 state,
     clipboard and drag-and-drop sources and offers, cursors, popups,
     window management) is a platform call made on the compositor thread.
@@ -397,7 +396,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - A frame runs when the application wants one and no frame callback is
     outstanding. A configure always forces a frame, even while suspended or
     waiting on a callback; if the application presents nothing, siv still
-    acknowledges the configure and commits.
+    acknowledges the configure and commits, unless the frame defers it
+    (`deferConfigure`): then the next present acknowledges it, or, after
+    100 ms, a forced frame that cannot defer again. Both backends behave
+    the same; the compositor defers size changes until the UI's layout for
+    them arrives (D8).
   - The predicted time is the first refresh after the last presentation that
     is still in the future (now plus one refresh before any feedback; the
     refresh comes from the output mode until feedback arrives). Presentation

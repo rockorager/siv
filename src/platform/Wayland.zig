@@ -24,6 +24,7 @@ const xkb = @import("xkbcommon");
 const platform = @import("platform.zig");
 const Loop = platform.Loop;
 const FrameClock = platform.FrameClock;
+const Timer = @import("loop").Timer;
 const shm_buffers = @import("shm.zig");
 pub const Seat = @import("Seat.zig");
 const Wayland = @This();
@@ -101,6 +102,11 @@ pub const Window = struct {
     default_size: Size,
     configured: bool = false,
     ack_serial: ?u32 = null,
+    /// The sink deferred the pending configure in the current frame.
+    ack_deferred: bool = false,
+    /// When a deferred configure must be acknowledged anyway.
+    ack_deadline: ?u64 = null,
+    ack_timer: Timer = .{ .func = onAckTimeout },
 
     clock: FrameClock = .{},
     frame_task: Loop.Task = .{ .func = runFrame },
@@ -479,6 +485,7 @@ pub fn destroyWindow(self: *Wayland, id: WindowId) void {
     for (self.seats.items) |s| if (s) |seat| seat.forgetWindow(id);
     self.queue.purge(id);
     self.loop.unschedule(&w.frame_task);
+    self.loop.cancelTimer(&w.ack_timer);
     for (w.feedbacks) |f| if (f.proxy) |fb| fb.destroy();
     if (w.frame_callback) |cb| cb.destroy();
     if (w.fifo) |f| f.destroy();
@@ -501,6 +508,21 @@ pub fn requestFrame(self: *Wayland, id: WindowId) void {
     const w = self.get(id);
     w.clock.request();
     scheduleFrame(w);
+}
+
+pub fn deferConfigure(self: *Wayland, id: WindowId) bool {
+    const w = self.get(id);
+    if (w.ack_serial == null) return false;
+    const now = Loop.now();
+    if (w.ack_deadline) |d| {
+        if (now >= d) return false;
+    } else {
+        const d = now + platform.configure_timeout_ns;
+        self.loop.startTimer(&w.ack_timer, d, 0) catch return false;
+        w.ack_deadline = d;
+    }
+    w.ack_deferred = true;
+    return true;
 }
 
 pub fn acquireBuffer(self: *Wayland, id: WindowId) Error!Buffer {
@@ -791,12 +813,14 @@ fn runFrame(task: *Loop.Task) void {
     const time = w.clock.begin(Loop.now());
     self.frame_window = w;
     w.frame_target_ns = time.present_ns;
+    w.ack_deferred = false;
     self.queue.sink.send(&.{ .frame = .{ .window = w.id, .time = time } });
     if (self.frame_window == null) return; // destroyed by the sink
     self.frame_window = null;
     w.frame_target_ns = null;
-    // A configure must be acknowledged even if the frame showed nothing.
-    if (w.ack_serial != null) {
+    // A configure must be acknowledged even if the frame showed nothing,
+    // unless the sink deferred it.
+    if (w.ack_serial != null and !w.ack_deferred) {
         ackPending(w);
         w.surface.commit();
     }
@@ -810,6 +834,16 @@ fn ackPending(w: *Window) void {
     const serial = w.ack_serial orelse return;
     w.xdg_surface.ackConfigure(serial);
     w.ack_serial = null;
+    w.ack_deferred = false;
+    w.ack_deadline = null;
+    w.backend.loop.cancelTimer(&w.ack_timer);
+}
+
+/// A deferred configure ran out of time: force a frame that answers it.
+fn onAckTimeout(timer: *Timer) void {
+    const w: *Window = @fieldParentPtr("ack_timer", timer);
+    w.clock.force();
+    scheduleFrame(w);
 }
 
 fn setBufferScale(w: *Window, scale: i32) void {

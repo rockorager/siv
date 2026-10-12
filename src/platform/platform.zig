@@ -60,6 +60,20 @@ pub const Platform = union(enum) {
         };
     }
 
+    /// Leaves the configure this frame answers unacknowledged, for a sink
+    /// that has no content laid out for it yet. Call from a `frame` event
+    /// instead of presenting. The next `present` acknowledges it. If none
+    /// comes within `configure_timeout_ns` of the first deferral, the
+    /// window gets a forced frame in which this returns false, and the
+    /// configure is acknowledged with or without a new buffer, so a
+    /// stalled sink cannot freeze the window. Also false when no configure
+    /// is pending.
+    pub fn deferConfigure(p: Platform, id: WindowId) bool {
+        return switch (p) {
+            inline else => |b| b.deferConfigure(id),
+        };
+    }
+
     /// Shows `buffer`. `damage` is in buffer pixels; null damages all.
     pub fn present(p: Platform, id: WindowId, buffer: Buffer, damage: ?[]const Rect) void {
         switch (p) {
@@ -162,6 +176,10 @@ pub const Error = error{
 };
 
 pub const Size = struct { width: u32 = 0, height: u32 = 0 };
+
+/// How long a configure may stay unacknowledged after `deferConfigure`;
+/// well under compositors' own resize timeouts (sway waits 200 ms).
+pub const configure_timeout_ns: u64 = 100 * std.time.ns_per_ms;
 
 pub const Rect = struct { x: i32, y: i32, width: i32, height: i32 };
 

@@ -29,6 +29,10 @@ const TestApp = struct {
     watch: WindowId = 0,
     animate: bool = false,
     closed: bool = false,
+    /// Defer configures instead of answering them with a buffer.
+    hold_configures: bool = false,
+    deferred: usize = 0,
+    refused: usize = 0,
 
     fn deinit(app: *TestApp) void {
         app.events.deinit(testing.allocator);
@@ -54,6 +58,11 @@ const TestApp = struct {
                     .refresh = clock.refresh_ns,
                     .last_error = clock.last_error_ns,
                 }) catch unreachable;
+                if (app.hold_configures and app.backend.get(f.window).ack_serial != null) {
+                    if (app.backend.deferConfigure(f.window)) app.deferred += 1 else app.refused += 1;
+                    app.events.append(testing.allocator, ev.*) catch unreachable;
+                    return;
+                }
                 const buf = app.backend.acquireBuffer(f.window) catch |err| std.debug.panic("acquire: {t}", .{err});
                 @memset(std.mem.bytesAsSlice(u32, buf.pixels), 0xff2266aa);
                 app.last_buffer = .{ .width = buf.width, .height = buf.height };
@@ -365,6 +374,56 @@ test "pointer, scrolling, keyboard text and repeat, touch" {
     try testing.expectEqual(@as(f64, 6), got[3].touch_motion.major);
     try testing.expectEqual(@as(i32, 8), got[4].touch_up.id);
     try testing.expectEqual(@as(f64, 30), got[4].touch_up.x);
+}
+
+test "a deferred configure is acked by the next present or after the timeout" {
+    var h: Harness = .{};
+    try h.start();
+    defer h.stop();
+    const app = &h.app;
+    const id = try h.mapWindow(.{});
+    const w = app.backend.get(id);
+
+    // Floating the window resizes it; the configure stays unanswered.
+    app.hold_configures = true;
+    try h.sway.command("floating enable, resize set 400 300");
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.deferred >= 1;
+        }
+    }.f);
+    try testing.expect(w.ack_serial != null);
+    // The next present acknowledges it, at the new size.
+    app.hold_configures = false;
+    app.backend.requestFrame(id);
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.watched().ack_serial == null;
+        }
+    }.f);
+    try testing.expectEqual(@as(usize, 0), app.refused);
+    try testing.expectEqual(Size{ .width = w.state.bufferWidth(), .height = w.state.bufferHeight() }, app.buffer_of[id]);
+
+    // A resize that is never answered is acknowledged anyway after the
+    // timeout, from a forced frame that refuses to defer again.
+    app.hold_configures = true;
+    const deferred = app.deferred;
+    try h.sway.command("resize set 300 200");
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.deferred > 1;
+        }
+    }.f);
+    const start = Loop.now();
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.watched().ack_serial == null;
+        }
+    }.f);
+    try testing.expect(app.deferred > deferred);
+    try testing.expectEqual(@as(usize, 1), app.refused);
+    try testing.expect(Loop.now() - start < 2 * platform.configure_timeout_ns);
+    try testing.expectEqual(@as(u32, 300), w.state.width);
 }
 
 test "output hotplug" {

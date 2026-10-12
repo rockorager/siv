@@ -4,7 +4,9 @@
 //! hotplug) and read back presented pixels for golden images.
 //!
 //! Frame callbacks complete at simulated vblanks: multiples of `refresh_ns`
-//! from backend creation, timed with loop timers.
+//! from backend creation, timed with loop timers. Configures carry serials
+//! and are acknowledged like on Wayland: by a present, at the end of the
+//! frame that answers them unless deferred, or when a deferral times out.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -27,6 +29,9 @@ loop: *Loop,
 allocator: Allocator,
 queue: platform.EventQueue,
 windows: std.ArrayList(?*Window) = .empty,
+/// The window whose frame event is being delivered; cleared if the sink
+/// destroys it.
+frame_window: ?*Window = null,
 outputs: std.ArrayList(?platform.OutputInfo) = .empty,
 refresh_ns: u64,
 epoch_ns: u64,
@@ -56,8 +61,24 @@ const Window = struct {
     /// Slot shown on the simulated screen.
     front: ?u8 = null,
     damage: ?Rect = null,
+    /// Serial of the last configure sent, and of the one awaiting an ack.
+    configure_serial: u32 = 0,
+    ack_serial: ?u32 = null,
+    last_ack: ?Ack = null,
+    ack_deferred: bool = false,
+    ack_deadline: ?u64 = null,
+    ack_timer: Timer = .{ .func = onAckTimeout },
 
     const Slot = struct { pixels: []u8 = &.{}, width: u32 = 0, height: u32 = 0 };
+};
+
+/// How a configure was acknowledged.
+pub const Ack = struct {
+    serial: u32,
+    /// With a presented buffer, rather than a bare commit.
+    with_buffer: bool,
+    /// CLOCK_MONOTONIC time of the ack.
+    time_ns: u64,
 };
 
 /// Presented pixels, in the format of `platform.Buffer`.
@@ -133,6 +154,8 @@ pub fn destroyWindow(hl: *Headless, id: WindowId) void {
     const w = hl.get(id);
     hl.loop.unschedule(&w.frame_task);
     hl.loop.cancelTimer(&w.vblank);
+    hl.loop.cancelTimer(&w.ack_timer);
+    if (hl.frame_window == w) hl.frame_window = null;
     for (w.slots) |s| hl.allocator.free(s.pixels);
     hl.queue.purge(id);
     hl.allocator.destroy(w);
@@ -147,6 +170,21 @@ pub fn requestFrame(hl: *Headless, id: WindowId) void {
     const w = hl.get(id);
     w.clock.request();
     hl.scheduleFrame(w);
+}
+
+pub fn deferConfigure(hl: *Headless, id: WindowId) bool {
+    const w = hl.get(id);
+    if (w.ack_serial == null) return false;
+    const now = Loop.now();
+    if (w.ack_deadline) |d| {
+        if (now >= d) return false;
+    } else {
+        const d = now + platform.configure_timeout_ns;
+        hl.loop.startTimer(&w.ack_timer, d, 0) catch return false;
+        w.ack_deadline = d;
+    }
+    w.ack_deferred = true;
+    return true;
 }
 
 pub fn acquireBuffer(hl: *Headless, id: WindowId) Error!Buffer {
@@ -165,6 +203,7 @@ pub fn acquireBuffer(hl: *Headless, id: WindowId) Error!Buffer {
 
 pub fn present(hl: *Headless, id: WindowId, buffer: Buffer, damage: ?[]const Rect) void {
     const w = hl.get(id);
+    hl.ack(w, true);
     w.front = buffer.slot;
     w.damage = if (damage) |rects| bounds(rects) else .{
         .x = 0,
@@ -269,6 +308,16 @@ pub fn presented(hl: *Headless, id: WindowId) ?Image {
     return .{ .pixels = s.pixels, .width = s.width, .height = s.height, .stride = s.width * 4, .damage = w.damage };
 }
 
+/// How the window's last acknowledged configure was answered.
+pub fn lastAck(hl: *Headless, id: WindowId) ?Ack {
+    return hl.get(id).last_ack;
+}
+
+/// Serial of the configure awaiting an ack, if any.
+pub fn pendingConfigure(hl: *Headless, id: WindowId) ?u32 {
+    return hl.get(id).ack_serial;
+}
+
 /// The window's title as last set.
 pub fn title(hl: *Headless, id: WindowId) []const u8 {
     return hl.get(id).title.slice();
@@ -277,6 +326,8 @@ pub fn title(hl: *Headless, id: WindowId) []const u8 {
 // Frames ------------------------------------------------------------------
 
 fn sendConfigure(hl: *Headless, w: *Window) void {
+    w.configure_serial += 1;
+    w.ack_serial = w.configure_serial;
     hl.queue.push(.{ .configure = .{ .window = w.id, .state = w.state } });
     w.clock.configured = true;
     w.clock.force();
@@ -290,8 +341,30 @@ fn scheduleFrame(hl: *Headless, w: *Window) void {
 fn runFrame(task: *Loop.Task) void {
     const w: *Window = @fieldParentPtr("frame_task", task);
     if (!w.clock.ready()) return;
+    const hl = w.hl;
     const time = w.clock.begin(Loop.now());
-    w.hl.queue.sink.send(&.{ .frame = .{ .window = w.id, .time = time } });
+    hl.frame_window = w;
+    w.ack_deferred = false;
+    hl.queue.sink.send(&.{ .frame = .{ .window = w.id, .time = time } });
+    if (hl.frame_window == null) return; // destroyed by the sink
+    hl.frame_window = null;
+    if (!w.ack_deferred) hl.ack(w, false);
+}
+
+fn ack(hl: *Headless, w: *Window, with_buffer: bool) void {
+    const serial = w.ack_serial orelse return;
+    w.last_ack = .{ .serial = serial, .with_buffer = with_buffer, .time_ns = Loop.now() };
+    w.ack_serial = null;
+    w.ack_deferred = false;
+    w.ack_deadline = null;
+    hl.loop.cancelTimer(&w.ack_timer);
+}
+
+/// A deferred configure ran out of time: force a frame that answers it.
+fn onAckTimeout(timer: *Timer) void {
+    const w: *Window = @fieldParentPtr("ack_timer", timer);
+    w.clock.force();
+    w.hl.scheduleFrame(w);
 }
 
 fn onVblank(timer: *Timer) void {
@@ -412,6 +485,66 @@ test "scale and maximize reconfigure; buffers follow the buffer size" {
     try testing.expect(s.states.maximized);
     try testing.expectEqual(@as(u32, 1920), s.width);
     try testing.expectEqual(@as(u32, 2400), hl.presented(id).?.width);
+}
+
+test "a deferred configure is acked by the next present or after the timeout" {
+    var loop = try Loop.init(testing.allocator);
+    defer loop.deinit();
+    const App = struct {
+        hl: *Headless = undefined,
+        /// Defer configures instead of presenting.
+        hold: bool = true,
+        frames: usize = 0,
+        deferred: usize = 0,
+        refused: usize = 0,
+
+        fn onEvent(ctx: ?*anyopaque, ev: *const platform.Event) void {
+            const app: *@This() = @ptrCast(@alignCast(ctx));
+            const f = switch (ev.*) {
+                .frame => |f| f,
+                else => return,
+            };
+            app.frames += 1;
+            if (app.hold) {
+                if (app.hl.deferConfigure(f.window)) app.deferred += 1 else app.refused += 1;
+                return;
+            }
+            const buf = app.hl.acquireBuffer(f.window) catch unreachable;
+            app.hl.present(f.window, buf, null);
+        }
+    };
+    var app: App = .{};
+    const hl = try create(&loop, testing.allocator, .{ .ctx = &app, .func = App.onEvent }, .{});
+    defer hl.destroy();
+    app.hl = hl;
+
+    // The initial configure's frame defers; nothing is acknowledged.
+    const id = try hl.createWindow(.{ .width = 40, .height = 30 });
+    try loop.dispatch(0);
+    try testing.expectEqual(@as(usize, 1), app.deferred);
+    try testing.expectEqual(@as(?u32, 1), hl.pendingConfigure(id));
+    try testing.expect(hl.lastAck(id) == null);
+    // The next present acknowledges it with its buffer.
+    app.hold = false;
+    hl.requestFrame(id);
+    try loop.dispatch(0);
+    try testing.expectEqual(@as(?u32, null), hl.pendingConfigure(id));
+    try testing.expectEqual(Ack{ .serial = 1, .with_buffer = true, .time_ns = hl.lastAck(id).?.time_ns }, hl.lastAck(id).?);
+    try testing.expect(!hl.deferConfigure(id));
+
+    // A resize the sink never answers: deferred until the timeout, then a
+    // forced frame refuses the deferral and the configure is acknowledged
+    // without a buffer.
+    app.hold = true;
+    const start = Loop.now();
+    hl.configure(id, .{ .width = 80, .height = 60 }, null);
+    while (hl.pendingConfigure(id) != null) try loop.dispatch(-1);
+    const ack_info = hl.lastAck(id).?;
+    try testing.expectEqual(@as(u32, 2), ack_info.serial);
+    try testing.expect(!ack_info.with_buffer);
+    try testing.expect(ack_info.time_ns - start >= platform.configure_timeout_ns);
+    try testing.expectEqual(@as(usize, 2), app.deferred);
+    try testing.expectEqual(@as(usize, 1), app.refused);
 }
 
 test "close, input injection, and output hotplug arrive in the dispatch phase" {

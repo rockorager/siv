@@ -40,9 +40,8 @@ pub const WindowId = platform.WindowId;
 pub const LayerId = u32;
 
 /// How long a size-changing configure waits for the UI's layout (see
-/// `Op.ack_configure`): about one frame at 10 Hz, well under compositors'
-/// own resize timeouts (sway waits 200 ms).
-pub const configure_timeout_ns: u64 = 100 * std.time.ns_per_ms;
+/// `Op.ack_configure`); the platform enforces it.
+pub const configure_timeout_ns = platform.configure_timeout_ns;
 
 /// Logical size.
 pub const Size = struct {
