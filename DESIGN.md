@@ -233,8 +233,32 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   clips, layers with opacity, 2D affine transforms, and backdrop blur. Steady-
   state frames allocate nothing. Paint-only changes skip layout. Damage is
   tracked per layer.
+  - A list is a flat command sequence: `push`/`pop` open and close a layer
+    (transform, clip, opacity, blend mode, forced isolation); fills (rect,
+    rounded rect, or path with nonzero or even-odd), strokes, glyph runs,
+    images, and backdrop blurs draw into the innermost layer. The stack form
+    maps to PDF's q/Q, clipping paths, and transparency groups.
+  - Colors are linear light, sRGB primaries, straight alpha. Paints are solid
+    colors and linear, two-point conical, and sweep gradients; gradients
+    interpolate premultiplied in linear light, and repeat/reflect use the
+    stop range as the period (CSS, COLRv1).
+  - Layer blend modes are the COLRv1 set (Porter-Duff and the W3C blend
+    modes), because color glyphs lower into display lists. Modes that touch
+    the destination where the source is transparent affect the layer's whole
+    clip.
+  - A backdrop blur blurs everything drawn before it in the nearest isolated
+    layer, like CSS backdrop-filter.
+  - Builders copy paths, stops, and glyphs into an arena that is reset per
+    frame slot. Image pixels and fonts are referenced; their keys change when
+    content changes and key backend caches.
+  - Damage: layers with a nonzero id are matched across lists. A layer's
+    version covers everything except its transform and opacity, including
+    the order of its child layers. `scene.damage.Tracker` returns device
+    rectangles (merged; more than 16 collapse to their bounds).
 - **Alternatives:** pixel-only scene (cannot produce PDF).
-- **Reverse if:** a construct cannot be lowered to all three backends.
+- **Reverse if:** a construct cannot be lowered to all three backends. Watch:
+  PDF has no sweep-gradient shading, so sweeps need a function-based shading
+  or tessellation there.
 
 ### D10. CPU renderer and Vulkan renderer
 
@@ -245,6 +269,29 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     golden-image oracle. Presented buffers are premultiplied ARGB8888, which
     every compositor supports; the 16-bit working space (D11) is converted
     when writing them.
+  - CPU frames: one prepare pass on the calling thread (device transforms,
+    flattened paths and strokes, premultiplied paints, glyph placement), then
+    damaged 64×64 tiles run on workers into a persistent 16-bit linear
+    framebuffer and are encoded into the output buffer. Keeping the
+    framebuffer makes damage-only frames exact and lets a reused buffer's age
+    damage be re-encoded without redrawing.
+  - The renderer takes a fork-join `Executor` (run one job on N workers and
+    wait), not the loop's completion-based pool, because it runs on the
+    compositor thread (D8). `render_cpu.ThreadPool` implements it.
+  - Coverage contract shared with Vulkan: exact box coverage for
+    rectangles; rounded corners clamp(0.5 − d, 0, 1) at pixel centers,
+    limited by box coverage; paths exact-area coverage after flattening to
+    1/40 px, quantized to 8 bits.
+  - Backdrop blur: render the backdrop region with the preceding commands on
+    the same tile grid, blur it separably (an exact Gaussian up to σ = 2,
+    three box passes above), clamp at the surface edge, and widen damage
+    where changed pixels reach the backdrop.
+  - Output: ARGB/XRGB/ABGR/XBGR 8888, 2101010, and 16161616, sRGB-encoded
+    and premultiplied in encoded space. 8- and 10-bit outputs get an 8×8
+    ordered dither anchored to device coordinates.
+  - Golden images live in test/golden/render and are compared with a small
+    tolerance (every channel within 3/255, at most 0.5% of pixels off by more
+    than 1) to absorb cross-CPU rounding.
   - Vulkan 1.3 (dynamic rendering, synchronization2): instanced quads, analytic
     rounded rectangles and shadows, glyph and image atlases. Presentation uses
     the standard Vulkan Wayland swapchain.
@@ -263,6 +310,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **Decision:** linear-light working space (FP16 on Vulkan, 16-bit on CPU) and
   `wp_color_management_v1` for HDR and wide gamut. Text coverage gets a
   perceptual correction, because users compare text with gamma-space Linux text.
+  - The text correction maps coverage so that linear blending reproduces
+    gamma-space blending against a contrasting background (white behind
+    dark text, black behind light text), from a table per foreground
+    luminance (16 levels). Color glyphs are not corrected.
 - **Alternatives:** gamma-space blending everywhere (incorrect gradients and
   alpha); pure linear text (looks thin).
 - **Reverse if:** user testing prefers uncorrected linear text.
@@ -342,6 +393,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   hinting, baselines (and ideally x-heights) snap to pixels, small sizes get
   slight stem darkening, and text coverage gets a contrast correction. No LCD
   subpixel antialiasing.
+  - The glyph cache belongs to the renderer and keys on the text engine's
+    face content hash, so it never needs invalidation when faces are
+    recreated. Color glyphs also key on the foreground color.
+  - COLRv0/v1 paint lowers into a display list that the CPU renderer draws
+    into a 16-bit bitmap; Vulkan uploads the same bitmaps.
+  - At 32 px and below the x-height is scaled vertically to a whole pixel
+    (at most ±8%). Stem darkening adds 0.25 px of stroke at 10 px and below,
+    falling to none at 18 px. Both are first guesses for the evaluation
+    below.
+  - Runs under rotation, skew, non-uniform scale, or above 256 px draw their
+    outlines as paths; color glyphs lose their colors there.
 - **Alternatives:** FreeType with hinting.
 - **Reverse if:** a side-by-side comparison with FreeType-hinted text (Inter and
   Noto at 11–13 px on 1× displays) shows unacceptable softness that the
