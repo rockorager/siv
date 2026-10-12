@@ -3,8 +3,10 @@
 //! which the `pdf` module writes; siv_print hands the PDF to the Print
 //! portal (`portal.print`) after its dialog chose the page setup.
 //!
-//! Pages are drawn at a dispatch, never inside the call that started the
-//! job. Text drawn while a font is still loading draws the document again
+//! Pages have the document's direction and language, defaulting to the
+//! application's: the window's when printing from one, else the process
+//! locale's. Pages are drawn at a dispatch, never inside the call that
+//! started the job. Text drawn while a font is still loading draws the document again
 //! once fonts finish loading (canvas.onFontsLoaded), a few times at most.
 //! Destroying the application drops unfinished jobs and runs their
 //! destroy-notifies.
@@ -65,6 +67,9 @@ const Job = struct {
     page_count: u32,
     setup: PageSetup,
     modal: bool,
+    /// The pages' direction and interned language (Fonts names).
+    rtl: bool = false,
+    language: u32 = 0,
     /// siv_pdf_write's destination; -1 for printing.
     fd: i32,
     window: ?*app_mod.Window = null,
@@ -222,6 +227,8 @@ const Job = struct {
         d.depth = 0;
         d.window = null;
         d.node = .none;
+        d.page_rtl = j.rtl;
+        d.page_language = j.language;
         d.wanted_fonts = false;
         defer d.dropImages(gpa);
         try self.root.handles.ensureUnusedCapacity(gpa);
@@ -262,14 +269,90 @@ fn failed(self: *App, d: *const t.PrintDesc, err: Error) t.Result {
     return t.resultOf(err);
 }
 
-fn newJob(self: *App, d: *const t.PrintDesc, default: PageSetup, fd: i32) Error!*Job {
+/// The application's language and direction where a document names
+/// none: the window's, else the process locale's.
+fn documentText(self: *App, d: *const t.PrintDesc, window: ?*app_mod.Window) Error!struct { u32, bool } {
+    const direction = try runtime.enumValue(t.Direction, d.direction);
+    const language = try runtime.string(d.language, d.language_len);
+    const fonts = &self.app.fonts;
+    var lang_id = try fonts.intern(language);
+    var locale_buf: [64]u8 = undefined;
+    const locale = localeLanguage(&locale_buf);
+    if (lang_id == 0) lang_id = if (window) |w| w.ui.language else try fonts.intern(locale);
+    const rtl = switch (direction) {
+        .ltr => false,
+        .rtl => true,
+        else => if (window) |w| w.ui.rtl else languageIsRtl(locale),
+    };
+    return .{ lang_id, rtl };
+}
+
+/// The BCP 47 tag of the process locale ($LC_ALL, $LC_MESSAGES, $LANG,
+/// as gettext reads them): "ar_EG.UTF-8@x" is "ar-EG"; "" for C and POSIX.
+pub fn localeLanguage(buf: []u8) []const u8 {
+    for ([_][*:0]const u8{ "LC_ALL", "LC_MESSAGES", "LANG" }) |name| {
+        const v = std.mem.span(std.c.getenv(name) orelse continue);
+        if (v.len == 0) continue;
+        return localeTag(buf, v);
+    }
+    return "";
+}
+
+fn localeTag(buf: []u8, locale: []const u8) []const u8 {
+    const end = std.mem.indexOfAny(u8, locale, ".@") orelse locale.len;
+    const base = locale[0..end];
+    if (std.mem.eql(u8, base, "C") or std.mem.eql(u8, base, "POSIX") or base.len > buf.len) return "";
+    for (base, buf[0..base.len]) |c, *o| o.* = if (c == '_') '-' else c;
+    return buf[0..base.len];
+}
+
+/// Whether text in a language is written right to left: by its script
+/// subtag if it has one, else by the languages whose usual script is.
+pub fn languageIsRtl(tag: []const u8) bool {
+    var it = std.mem.tokenizeAny(u8, tag, "-_");
+    const lang = it.next() orelse return false;
+    while (it.next()) |sub| if (sub.len == 4) {
+        for ([_][]const u8{ "Arab", "Hebr", "Thaa", "Syrc", "Nkoo", "Adlm", "Rohg", "Mand", "Samr" }) |s| {
+            if (std.ascii.eqlIgnoreCase(sub, s)) return true;
+        }
+        return false;
+    };
+    for ([_][]const u8{ "ar", "arc", "ckb", "dv", "fa", "he", "iw", "ks", "lrc", "mzn", "nqo", "pnb", "ps", "sd", "syr", "ug", "ur", "yi" }) |l| {
+        if (std.ascii.eqlIgnoreCase(lang, l)) return true;
+    }
+    return false;
+}
+
+test "locale languages and their direction" {
+    var buf: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("ar-EG", localeTag(&buf, "ar_EG.UTF-8@x"));
+    try std.testing.expectEqualStrings("", localeTag(&buf, "C.UTF-8"));
+    try std.testing.expectEqualStrings("he", localeTag(&buf, "he"));
+    try std.testing.expect(languageIsRtl("ar-EG"));
+    try std.testing.expect(languageIsRtl("he"));
+    try std.testing.expect(!languageIsRtl("en-US"));
+    try std.testing.expect(!languageIsRtl(""));
+    // The script decides: Azerbaijani in Arabic script, Uyghur in Latin.
+    try std.testing.expect(languageIsRtl("az-Arab-IR"));
+    try std.testing.expect(!languageIsRtl("ug-Latn"));
+}
+
+fn newJob(self: *App, d: *const t.PrintDesc, default: PageSetup, fd: i32, window: ?*app_mod.Window) Error!*Job {
     const title = try runtime.string(d.title, d.title_len);
     const fl = try runtime.flags(t.PrintFlags, d.flags);
     const draw_page = d.draw_page orelse return error.InvalidArgument;
+    const language, const rtl = try documentText(self, d, window);
     var setup = default;
     if (d.width != 0 or d.height != 0) {
         if (!(std.math.isFinite(d.width) and std.math.isFinite(d.height) and d.width > 0 and d.height > 0 and d.width <= 14400 and d.height <= 14400)) return error.InvalidArgument;
         setup = .{ .width = d.width, .height = d.height };
+    }
+    if (d.margin != 0) {
+        if (!(std.math.isFinite(d.margin) and d.margin > 0 and 2 * d.margin < @min(setup.width, setup.height))) return error.InvalidArgument;
+        setup.margin_top = d.margin;
+        setup.margin_right = d.margin;
+        setup.margin_bottom = d.margin;
+        setup.margin_left = d.margin;
     }
     const gpa = self.gpa();
     const j = try gpa.create(Job);
@@ -285,6 +368,9 @@ fn newJob(self: *App, d: *const t.PrintDesc, default: PageSetup, fd: i32) Error!
         .page_count = d.page_count,
         .setup = setup,
         .modal = !fl.not_modal,
+        .rtl = rtl,
+        .language = language,
+        .window = window,
         .fd = fd,
         .stage = .render,
     };
@@ -309,7 +395,7 @@ pub export fn siv_pdf_write(app: t.App, desc: ?*const t.PrintDesc, fd: i32) t.Re
     if (fd < 0) return failed(self, &d, error.InvalidArgument);
     const dup = linux.fcntl(fd, linux.F.DUPFD_CLOEXEC, 0);
     if (linux.errno(dup) != .SUCCESS) return failed(self, &d, error.InvalidArgument);
-    const j = newJob(self, &d, a4, @intCast(dup)) catch |err| {
+    const j = newJob(self, &d, a4, @intCast(dup), null) catch |err| {
         _ = linux.close(@intCast(dup));
         return failed(self, &d, err);
     };
@@ -326,8 +412,7 @@ pub export fn siv_print(app: t.App, window: t.Window, desc: ?*const t.PrintDesc)
         if (w.owner != self) return failed(self, &d, error.InvalidArgument);
         win = w.win;
     }
-    const j = newJob(self, &d, a4, -1) catch |err| return failed(self, &d, err);
-    j.window = win;
+    const j = newJob(self, &d, a4, -1, win) catch |err| return failed(self, &d, err);
     self.desktop.prints.jobs.append(&j.node);
     if (self.app.portals.get() == null) {
         j.end(.unavailable);

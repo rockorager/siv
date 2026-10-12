@@ -53,6 +53,9 @@ pub const DrawState = struct {
     images: std.ArrayList(*ui.Image) = .empty,
     /// The canvas's window, or null for a page (print.zig).
     window: ?*Window = null,
+    /// A page's direction and interned language (print.zig).
+    page_rtl: bool = false,
+    page_language: u32 = 0,
     node: NodeId = .none,
     /// Fonts were still loading when text was drawn.
     wanted_fonts: bool = false,
@@ -531,11 +534,11 @@ pub export fn siv_draw_text(handle: t.Draw, x: f32, y: f32, width: f32, str: ?[*
             if (wd < 0) return error.InvalidArgument;
             const s = try runtime.string(ptr, len);
             const props = try tree.textPropsOf(sd);
-            // Pages (print.zig) are left to right in the default language,
-            // in the light theme, without the desktop's text scaling.
+            // Pages (print.zig) have the document's direction and language
+            // and the light theme, without the desktop's text scaling.
             const uw: ?*ui.Window = if (d.window) |w| w.uiWin() else null;
             const scale: f32 = if (uw != null) @floatCast(self.app.desktop.values.text_scale) else 1;
-            var shaped = try Shaped.init(self, s, props, wd, if (uw) |u| u.state(d.node).rtl else false, if (uw) |u| u.language else 0, scale);
+            var shaped = try Shaped.init(self, s, props, wd, if (uw) |u| u.state(d.node).rtl else d.page_rtl, if (uw) |u| u.language else d.page_language, scale);
             defer shaped.deinit();
             if (shaped.wanted) d.wanted_fonts = true;
             const l = shaped.layout orelse return;

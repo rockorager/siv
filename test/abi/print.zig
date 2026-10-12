@@ -177,3 +177,62 @@ test "rejected documents run their destroy-notify; pending ones go with the appl
     try testing.expectEqual(@as(u32, 5), doc.destroys);
     try testing.expectEqual(@as(u32, 0), doc.results);
 }
+
+const Aligned = struct {
+    finished: bool = false,
+
+    fn drawPage(_: ?*anyopaque, draw: t.Draw, _: u32, setup: ?*const t.PageSetup) callconv(.c) void {
+        const s = setup.?;
+        // Start-aligned across the page between the margins. Digits have
+        // no direction of their own: the paragraph takes the page's.
+        _ = C.siv_draw_text(draw, s.margin_left, s.margin_top, s.width - s.margin_left - s.margin_right, "42", 2, &.{ .font_size = 12 });
+    }
+
+    fn done(user_data: ?*anyopaque, _: ?*const t.PortalResult) callconv(.c) void {
+        const a: *Aligned = @ptrCast(@alignCast(user_data));
+        a.finished = true;
+    }
+};
+
+/// The x of the first glyph a PDF draws (its first Tm).
+fn firstGlyphX(bytes: []const u8) !f32 {
+    var p = try pdf.testing.Parsed.parse(bytes);
+    defer p.deinit();
+    for (p.objects.items) |o| {
+        if (std.mem.indexOf(u8, o, "/Type /Page ") == null) continue;
+        const ops = try p.stream(try pdf.testing.ref(o, "/Contents "));
+        defer testing.allocator.free(ops);
+        var lines = std.mem.splitScalar(u8, ops, '\n');
+        while (lines.next()) |line| {
+            if (!std.mem.startsWith(u8, line, "1 0 0 -1 ") or std.mem.indexOf(u8, line, " Tm ") == null) continue;
+            var it = std.mem.tokenizeScalar(u8, line[9..], ' ');
+            return std.fmt.parseFloat(f32, it.next().?);
+        }
+    }
+    return error.NoText;
+}
+
+fn writeAligned(h: *harness.Harness, direction: t.Direction) !f32 {
+    const fd = try memfd();
+    defer _ = linux.close(fd);
+    var a: Aligned = .{};
+    try ok(P.siv_pdf_write(h.app, &.{ .user_data = &a, .page_count = 1, .width = 300, .height = 200, .margin = 20, .draw_page = Aligned.drawPage, .done = Aligned.done, .direction = direction, .language = "he", .language_len = 2 }, fd));
+    for (0..200) |_| {
+        if (a.finished) break;
+        try ok(A.siv_app_dispatch(h.app, 5));
+    }
+    const bytes = try readAll(fd);
+    defer testing.allocator.free(bytes);
+    return firstGlyphX(bytes);
+}
+
+test "pages follow the document's direction" {
+    var h: harness.Harness = .{};
+    try h.start(64, 48, null, null);
+    defer h.stop();
+    // Left to right, text starts at the left margin; right to left, it
+    // ends at the right one.
+    try testing.expectApproxEqAbs(@as(f32, 20), try writeAligned(&h, .ltr), 0.5);
+    try testing.expect(try writeAligned(&h, .rtl) > 250);
+    try testing.expectEqual(t.Result.error_invalid_argument, P.siv_pdf_write(h.app, &.{ .draw_page = Aligned.drawPage, .margin = 400 }, 1));
+}
