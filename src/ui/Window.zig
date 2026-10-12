@@ -97,6 +97,7 @@ pub const Options = struct {
     scale: f32 = 1,
     rtl: bool = false,
     language: []const u8 = "",
+    reduced_motion: bool = false,
 };
 
 /// Window-wide work outstanding for the next frame.
@@ -174,6 +175,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) Error!*Window {
         .height = options.height,
         .scale = options.scale,
         .rtl = options.rtl,
+        .reduced_motion = options.reduced_motion,
         .sink = options.sink,
         .host = options.host,
         .scratch = .init(gpa),
@@ -342,8 +344,10 @@ pub fn markLayers(win: *Window) void {
 
 /// Whether a frame has work to do.
 pub fn needsFrame(win: *const Window) bool {
+    // Semantics alone need no frame: they rebuild on query or with the
+    // next frame (`semanticsTree`), so scrolling makes no extra frames.
     return win.state(.root).needs_layout or win.dirty.layers or win.dirty.props or
-        win.dirty.semantics or win.paint.anyDirty() or win.pending_input.items.len != 0;
+        win.paint.anyDirty() or win.pending_input.items.len != 0;
 }
 
 pub fn requestFrame(win: *Window) void {
@@ -450,6 +454,16 @@ pub fn forget(win: *Window, id: NodeId) void {
     win.paint.damage(s.layer, s.bounds);
 }
 
+/// The semantics tree, rebuilt first if anything it shows changed since.
+/// Nodes laid out by the last frame keep its bounds.
+pub fn semanticsTree(win: *Window) Error!*const semantics_mod.Tree {
+    if (win.dirty.semantics) {
+        try win.semantics.rebuild(win);
+        win.dirty.semantics = false;
+    }
+    return &win.semantics;
+}
+
 // Events --------------------------------------------------------------------
 
 /// Handles an event the compositor sent for this window (D8): platform
@@ -517,7 +531,6 @@ fn scrolled(win: *Window, layer: compositor.LayerId, offset: Point, seq: u64) vo
     l.scroll_offset = offset;
     win.node(l.owner).data.scroll.offset = paint_mod.logicalScroll(win, l.owner, offset);
     win.dirty.semantics = true;
-    win.requestFrame();
 }
 
 fn onFontsLoaded(ctx: *anyopaque) void {

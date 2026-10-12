@@ -6,21 +6,79 @@ const std = @import("std");
 const text = @import("text");
 const scene = @import("scene");
 const compositor = @import("compositor");
+const raster = @import("raster");
 const ui = @import("ui.zig");
 const paint = @import("paint.zig");
 
 const testing = std.testing;
 const NodeId = ui.NodeId;
 
-/// A window on the test compositor with the Droid test fonts.
+const CompLayer = std.meta.Elem(@FieldType(@FieldType(compositor.Tree, "layers"), "items"));
+
+/// Stands in for the compositor thread: a compositor.Tree that applies
+/// the window's ops under the compositor's own rules, with a log of them.
+const Comp = struct {
+    tree: compositor.Tree,
+    log: std.ArrayList(compositor.Op) = .empty,
+    keep_log: bool = false,
+    seq: u64 = 0,
+
+    fn sink(c: *Comp) ui.Sink {
+        return .{ .ctx = c, .commit = commitFn };
+    }
+
+    fn commitFn(ctx: ?*anyopaque, ops: []const compositor.Op) error{OutOfMemory}!u64 {
+        const c: *Comp = @ptrCast(@alignCast(ctx));
+        if (c.keep_log) try c.log.appendSlice(testing.allocator, ops);
+        c.seq += 1;
+        for (ops) |op| {
+            op.validate() catch std.debug.panic("invalid op {any}", .{op});
+            if (!try c.tree.apply(op)) std.debug.panic("op does not fit the tree: {any}", .{op});
+        }
+        return c.seq;
+    }
+
+    fn get(c: *Comp, id: compositor.LayerId) *CompLayer {
+        return c.tree.get(id).?;
+    }
+
+    fn count(c: *Comp) usize {
+        var n: usize = 0;
+        for (c.tree.layers.items) |l| n += @intFromBool(l.alive);
+        return n;
+    }
+
+    fn children(c: *Comp, id: compositor.LayerId, buf: []compositor.LayerId) []compositor.LayerId {
+        var n: usize = 0;
+        var ch = c.get(id).first;
+        while (ch != 0) : (ch = c.get(ch).next) {
+            buf[n] = ch;
+            n += 1;
+        }
+        return buf[0..n];
+    }
+
+    /// Scrolls as pointer input over the container would.
+    fn scrollBy(c: *Comp, id: compositor.LayerId, delta: raster.Point) raster.Point {
+        _ = c.tree.scrollBy(id, delta) catch unreachable;
+        return c.get(id).offset;
+    }
+
+    fn deinit(c: *Comp) void {
+        c.tree.deinit();
+        c.log.deinit(testing.allocator);
+    }
+};
+
+/// A window on the stand-in compositor with the Droid test fonts.
 const Fixture = struct {
     fonts: ui.Fonts,
-    tc: ui.TestCompositor,
+    comp: Comp,
     win: *ui.Window,
     frames_requested: usize = 0,
 
     fn init(f: *Fixture, options: struct { width: f32 = 200, height: f32 = 100, rtl: bool = false }) !void {
-        f.* = .{ .fonts = try .init(testing.allocator), .tc = .init(testing.allocator), .win = undefined };
+        f.* = .{ .fonts = try .init(testing.allocator), .comp = .{ .tree = .init(testing.allocator) }, .win = undefined };
         errdefer f.fonts.deinit();
         const tf = text.font.test_fonts;
         const chain = [_]text.FontId{
@@ -32,7 +90,7 @@ const Fixture = struct {
         try f.fonts.setDefault("Droid");
         f.win = try ui.Window.init(testing.allocator, .{
             .fonts = &f.fonts,
-            .sink = f.tc.sink(),
+            .sink = f.comp.sink(),
             .host = .{ .ctx = f, .request_frame = requested },
             .width = options.width,
             .height = options.height,
@@ -46,20 +104,23 @@ const Fixture = struct {
     }
 
     fn deinit(f: *Fixture) void {
+        // The compositor goes first; then nothing refers to the builders.
+        f.comp.deinit();
         f.win.deinit();
-        f.tc.deinit();
         f.fonts.deinit();
     }
 
-    /// Runs a frame and hands released builders back, like the
-    /// compositor's events would.
+    /// Runs a frame, composes like the compositor's frame does, and hands
+    /// back released builders and scroll reports as its events would.
     fn frame(f: *Fixture) !void {
         try f.win.frame();
-        _ = try f.tc.flatten();
-        for (f.tc.released.items) |b| try f.win.handleEvent(&.{ .released = b });
-        f.tc.released.clearRetainingCapacity();
-        for (f.tc.reports.items) |r| try f.win.handleEvent(&.{ .scrolled = .{ .window = 0, .layer = r.layer, .offset = r.offset, .seq = r.seq } });
-        f.tc.reports.clearRetainingCapacity();
+        _ = try f.comp.tree.compose();
+        for (f.comp.tree.endFrame()) |b| try f.win.handleEvent(&.{ .released = b });
+        for (f.comp.tree.scrolled.items) |id| {
+            f.comp.get(id).scrolled = false;
+            try f.win.handleEvent(&.{ .scrolled = .{ .window = 0, .layer = id, .offset = f.comp.get(id).offset, .seq = f.comp.seq } });
+        }
+        f.comp.tree.scrolled.clearRetainingCapacity();
     }
 
     fn rect(f: *Fixture, id: NodeId) [4]f32 {
@@ -297,7 +358,7 @@ test "scroll content scrolls on the compositor; offsets are logical" {
         try f.frame();
         // The scroll container is a layer with the content box as viewport.
         const li = f.win.state(sc).own_layer;
-        const l = f.tc.layers.get(li + 1).?;
+        const l = f.comp.get(li + 1);
         try testing.expectEqual(@as(f32, 90), l.scroll.?.viewport.width());
         try testing.expectEqual(@as(f32, 300), l.scroll.?.content.width);
         // Logical offset 0 shows the start edge: in RTL the content's right.
@@ -306,8 +367,8 @@ test "scroll content scrolls on the compositor; offsets are logical" {
 
         // The compositor scrolls by itself and reports it.
         const layouts = f.win.stats.layouts;
-        const off = f.tc.scrollBy(li + 1, .{ .x = if (rtl) -10 else 10, .y = 30 });
-        try f.win.handleEvent(&.{ .scrolled = .{ .window = 0, .layer = li + 1, .offset = off, .seq = f.tc.seq } });
+        const off = f.comp.scrollBy(li + 1, .{ .x = if (rtl) -10 else 10, .y = 30 });
+        try f.win.handleEvent(&.{ .scrolled = .{ .window = 0, .layer = li + 1, .offset = off, .seq = f.comp.seq } });
         try testing.expectEqual(@as(f32, 10), f.win.node(sc).data.scroll.offset.x);
         try testing.expectEqual(@as(f32, 30), f.win.node(sc).data.scroll.offset.y);
         try f.frame();
@@ -321,7 +382,7 @@ test "scroll content scrolls on the compositor; offsets are logical" {
         t.commit();
         try f.frame();
         try testing.expectEqual(builds, f.win.stats.layer_builds);
-        try testing.expectEqual(@as(f32, 410), f.tc.layers.get(li + 1).?.offset.y);
+        try testing.expectEqual(@as(f32, 410), f.comp.get(li + 1).offset.y);
         // A stale report (from before the scroll_to) is ignored.
         try f.win.handleEvent(&.{ .scrolled = .{ .window = 0, .layer = li + 1, .offset = .{ .x = 0, .y = 3 }, .seq = 1 } });
         try testing.expectEqual(@as(f32, 1000), f.win.node(sc).data.scroll.offset.y);
@@ -341,35 +402,35 @@ test "opacity animates as a layer property; content repaints only its layer" {
     const after = try box(t, col, .box, .{ .height = .{ .px = 50 } });
     try t.setVisual(after, .{ .background = .black });
     t.commit();
-    f.tc.keep_log = true;
+    f.comp.keep_log = true;
     try f.frame();
     // Root, the faded node's layer, and a chunk for what follows it.
-    try testing.expectEqual(@as(usize, 3), f.tc.layers.count());
+    try testing.expectEqual(@as(usize, 3), f.comp.count());
     const fl = f.win.state(faded).own_layer + 1;
-    const root = f.tc.get(f.tc.root);
-    try testing.expectEqualSlices(u32, &.{ fl, f.win.state(after).layer + 1 }, root.children.items);
-    try testing.expectEqual(@as(f32, 50), f.tc.get(fl).transform.translate.y);
-    try testing.expectEqual(@as(f32, 0.5), f.tc.get(fl).opacity);
+    var buf: [8]u32 = undefined;
+    try testing.expectEqualSlices(u32, &.{ fl, f.win.state(after).layer + 1 }, f.comp.children(f.comp.tree.root, &buf));
+    try testing.expectEqual(@as(f32, 50), f.comp.get(fl).transform.translate.y);
+    try testing.expectEqual(@as(f32, 0.5), f.comp.get(fl).opacity);
 
     // Opacity change: one op, no content.
-    f.tc.log.clearRetainingCapacity();
+    f.comp.log.clearRetainingCapacity();
     t = try f.win.begin();
     try t.setVisual(faded, .{ .background = .white, .opacity = 0.25 });
     t.commit();
     try f.frame();
-    try testing.expectEqual(@as(usize, 1), f.tc.log.items.len);
-    try testing.expectEqual(@as(f32, 0.25), f.tc.log.items[0].set_opacity.opacity);
+    try testing.expectEqual(@as(usize, 1), f.comp.log.items.len);
+    try testing.expectEqual(@as(f32, 0.25), f.comp.log.items[0].set_opacity.opacity);
 
     // Background of the first box: only the root layer repaints, with the
     // box as damage.
-    f.tc.log.clearRetainingCapacity();
+    f.comp.log.clearRetainingCapacity();
     t = try f.win.begin();
     try t.setVisual(a, .{ .background = .white });
     t.commit();
     try f.frame();
-    try testing.expectEqual(@as(usize, 1), f.tc.log.items.len);
-    const sc = f.tc.log.items[0].set_content;
-    try testing.expectEqual(f.tc.root, sc.layer);
+    try testing.expectEqual(@as(usize, 1), f.comp.log.items.len);
+    const sc = f.comp.log.items[0].set_content;
+    try testing.expectEqual(f.comp.tree.root, sc.layer);
     try testing.expect(sc.damage.?.eql(.xywh(0, 0, 200, 50)));
 }
 
@@ -500,20 +561,18 @@ test "scroll handlers get wheel regions; declined input passes on as scroll_by" 
     var taken: f32 = 0;
     const t = try f.win.begin();
     const sc = try box(t, .root, .scroll, .{});
-    // The compositor hit-tests content, so the viewport needs some.
-    try t.setVisual(sc, .{ .background = .white });
     const content = try box(t, sc, .box, .{ .height = .{ .px = 400 } });
     const knob = try box(t, content, .box, .{ .width = .{ .px = 20 }, .height = .{ .px = 20 } });
     try t.on(knob, .scroll, .{ .func = takeScroll, .user = &taken });
     t.commit();
     try f.frame();
     // The knob has its own layer with a wheel region over its box.
-    const kl = f.tc.get(f.win.state(knob).own_layer + 1);
+    const kl = f.comp.get(f.win.state(knob).own_layer + 1);
     try testing.expect(kl.wheel.?.eql(.xywh(0, 0, 20, 20)));
-    try testing.expectEqual(ui.TestCompositor.Route.ui, f.tc.route(.{ .x = 10, .y = 10 }, .{ .x = 0, .y = 40 }, .{}));
+    try testing.expectEqual(compositor.Route.ui, f.comp.tree.routeScroll(.{ .x = 10, .y = 10 }, .{ .x = 0, .y = 40 }, .{}));
     const sl = f.win.state(sc).own_layer + 1;
-    try testing.expectEqual(sl, f.tc.route(.{ .x = 50, .y = 50 }, .{ .x = 0, .y = 40 }, .{}).scroll);
-    try testing.expectEqual(ui.TestCompositor.Route.ui, f.tc.route(.{ .x = 50, .y = 50 }, .{ .x = 0, .y = 40 }, .{ .ctrl = true }));
+    try testing.expectEqual(sl, f.comp.tree.routeScroll(.{ .x = 50, .y = 50 }, .{ .x = 0, .y = 40 }, .{}).scroll);
+    try testing.expectEqual(compositor.Route.ui, f.comp.tree.routeScroll(.{ .x = 50, .y = 50 }, .{ .x = 0, .y = 40 }, .{ .ctrl = true }));
 
     // Over the knob: up is the handler's...
     f.win.handlePlatform(&.{ .pointer_motion = .{ .window = 0, .seat = 0, .x = 10, .y = 10 } });
@@ -522,13 +581,13 @@ test "scroll handlers get wheel regions; declined input passes on as scroll_by" 
     // ...down passes on to the scroll node as scroll_by.
     f.win.handlePlatform(&.{ .scroll = .{ .window = 0, .seat = 0, .dy = 40 } });
     try f.frame();
-    try testing.expectEqual(@as(f32, 40), f.tc.get(sl).offset.y);
+    try testing.expectEqual(@as(f32, 40), f.comp.get(sl).offset.y);
     try testing.expectEqual(@as(f32, 40), f.win.node(sc).data.scroll.offset.y);
     // Ctrl+wheel that no handler takes goes nowhere.
     f.win.handlePlatform(&.{ .modifiers = .{ .window = 0, .seat = 0, .mods = .{ .ctrl = true } } });
     f.win.handlePlatform(&.{ .scroll = .{ .window = 0, .seat = 0, .dy = 40 } });
     try f.frame();
-    try testing.expectEqual(@as(f32, 40), f.tc.get(sl).offset.y);
+    try testing.expectEqual(@as(f32, 40), f.comp.get(sl).offset.y);
 }
 
 test "configures are acknowledged by the commit with their layout" {
@@ -538,18 +597,18 @@ test "configures are acknowledged by the commit with their layout" {
     try f.frame();
     var state: @import("platform").WindowState = .{ .width = 150, .height = 80 };
     try f.win.handleEvent(&.{ .configure = .{ .window = 0, .state = state, .serial = 7 } });
-    try testing.expectEqual(@as(u64, 0), f.tc.acked_configure);
+    try testing.expectEqual(@as(u64, 0), f.comp.tree.acked_configure);
     try f.frame();
-    try testing.expectEqual(@as(u64, 7), f.tc.acked_configure);
+    try testing.expectEqual(@as(u64, 7), f.comp.tree.acked_configure);
     try testing.expectEqual([4]f32{ 0, 0, 150, 80 }, f.rect(.root));
     // A configure that changes nothing is still acknowledged.
     try f.win.handleEvent(&.{ .configure = .{ .window = 0, .state = state, .serial = 8 } });
     try f.frame();
-    try testing.expectEqual(@as(u64, 8), f.tc.acked_configure);
+    try testing.expectEqual(@as(u64, 8), f.comp.tree.acked_configure);
     state.scale = .int(2);
     try f.win.handleEvent(&.{ .configure = .{ .window = 0, .state = state, .serial = 9 } });
     try f.frame();
-    try testing.expectEqual(@as(u64, 9), f.tc.acked_configure);
+    try testing.expectEqual(@as(u64, 9), f.comp.tree.acked_configure);
     try testing.expectEqual(@as(f32, 2), f.win.scale);
 }
 
@@ -779,39 +838,39 @@ test "caret blinks on the compositor, stops by itself, and not with reduced moti
     const ed = try box(t, .root, .editor, .{ .align_y = .start });
     t.commit();
     try f.frame();
-    f.tc.keep_log = true;
+    f.comp.keep_log = true;
     const k: Keys = .{ .f = &f };
     k.press(ui.keysym.tab, .{});
     try f.frame();
     // Focus gives the editor a layer with the caret in a child layer.
     const caret = f.win.state(ed).content_layer + 1;
-    try testing.expectEqual(f.win.state(ed).own_layer + 1, f.tc.get(caret).parent);
-    const a = findAnimate(f.tc.log.items, caret).?;
+    try testing.expectEqual(f.win.state(ed).own_layer + 1, f.comp.get(caret).parent);
+    const a = findAnimate(f.comp.log.items, caret).?;
     try testing.expectEqual(@as(f32, 0), a.to.opacity);
     try testing.expect(a.iterations != 0 and a.iterations % 2 == 0 and a.alternate); // ends visible
     // Typing moves the caret (a transform) and restarts the blink; the
     // editor's text layer repaints, the caret's content does not.
-    f.tc.log.clearRetainingCapacity();
+    f.comp.log.clearRetainingCapacity();
     k.typeText("a");
     try f.frame();
-    try testing.expect(findAnimate(f.tc.log.items, caret) != null);
-    for (f.tc.log.items) |op| if (op == .set_content) try testing.expect(op.set_content.layer != caret);
+    try testing.expect(findAnimate(f.comp.log.items, caret) != null);
+    for (f.comp.log.items) |op| if (op == .set_content) try testing.expect(op.set_content.layer != caret);
     // Idle: a frame with nothing new sends nothing, and nothing asks for one.
-    f.tc.log.clearRetainingCapacity();
+    f.comp.log.clearRetainingCapacity();
     const requested = f.frames_requested;
     try f.frame();
-    try testing.expectEqual(@as(usize, 0), f.tc.log.items.len);
+    try testing.expectEqual(@as(usize, 0), f.comp.log.items.len);
     try testing.expectEqual(requested, f.frames_requested);
     try testing.expect(!f.win.needsFrame());
     // Reduced motion: the running blink is cancelled and none starts.
     f.win.setReducedMotion(true);
     try f.frame();
-    try testing.expect(findAnimate(f.tc.log.items, caret) == null);
-    try testing.expectEqual(@as(f32, 1), f.tc.log.items[0].set_opacity.opacity);
-    f.tc.log.clearRetainingCapacity();
+    try testing.expect(findAnimate(f.comp.log.items, caret) == null);
+    try testing.expectEqual(@as(f32, 1), f.comp.log.items[0].set_opacity.opacity);
+    f.comp.log.clearRetainingCapacity();
     k.typeText("b");
     try f.frame();
-    try testing.expect(findAnimate(f.tc.log.items, caret) == null);
+    try testing.expect(findAnimate(f.comp.log.items, caret) == null);
 }
 
 fn findAnimate(ops: []const compositor.Op, layer: compositor.LayerId) ?compositor.Animation {

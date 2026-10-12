@@ -63,7 +63,6 @@ pub const TxnError = @import("txn.zig").Error;
 pub const Fonts = @import("fonts.zig");
 pub const layers = @import("layers.zig");
 pub const Sink = layers.Sink;
-pub const TestCompositor = layers.TestCompositor;
 pub const semantics = @import("semantics.zig");
 pub const input = @import("input.zig");
 pub const keysym = input.keysym;

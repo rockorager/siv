@@ -91,9 +91,9 @@ fn form(win: *ui.Window) !Form {
 fn expectGolden(app: *App, name: []const u8) !void {
     const gpa = testing.allocator;
     const io = testing.io;
-    const got = try app.snapshot();
+    const img = try app.presented();
+    const got = img.rgba;
     defer gpa.free(got);
-    const img = app.hl.presented(app.wid).?;
     const path = try std.fmt.allocPrint(gpa, "{s}/{s}.png", .{ golden_dir, name });
     defer gpa.free(path);
     if (testing.environ.getPosix("SIV_UPDATE_GOLDEN") != null) {
@@ -137,11 +137,11 @@ fn absDiff(a: u8, b: u8) u8 {
 
 /// The presented frame (drawn with damage only) equals a full redraw.
 fn expectDamageExact(app: *App) !void {
-    const got = try app.snapshot();
-    defer testing.allocator.free(got);
-    const full = try app.fullRender();
+    const got = try app.presented();
+    defer testing.allocator.free(got.rgba);
+    const full = try app.fullRender(got.width, got.height);
     defer testing.allocator.free(full);
-    try testing.expectEqualSlices(u8, full, got);
+    try testing.expectEqualSlices(u8, full, got.rgba);
 }
 
 test "form: layout, text, focus ring, and a translucent layer (LTR and RTL)" {
@@ -219,10 +219,11 @@ test "clicks toggle through a handler; paint-only changes damage only what chang
     // No layout; the presented damage is the checkbox (and its focus-free
     // neighbourhood), not the window.
     try testing.expectEqual(layouts, app.win.stats.layouts);
-    try testing.expectEqual(@as(usize, 1), app.damage.items.len);
-    const d = app.damage.items[0];
-    try testing.expect(d.x0 >= @as(i32, @intFromFloat(r.x0)) - 2 and d.x1 <= @as(i32, @intFromFloat(r.x1)) + 2);
-    try testing.expect(d.y0 >= @as(i32, @intFromFloat(r.y0)) - 2 and d.y1 <= @as(i32, @intFromFloat(r.y1)) + 2);
+    const img = try app.presented();
+    testing.allocator.free(img.rgba);
+    const d = img.damage.?;
+    try testing.expect(d.x >= @as(i32, @intFromFloat(r.x0)) - 2 and d.x + d.width <= @as(i32, @intFromFloat(r.x1)) + 2);
+    try testing.expect(d.y >= @as(i32, @intFromFloat(r.y0)) - 2 and d.y + d.height <= @as(i32, @intFromFloat(r.y1)) + 2);
     try expectDamageExact(&app);
     try expectGolden(&app, "form-checked");
 }
@@ -252,16 +253,17 @@ test "scrolling on the compositor at 2x: no layout, no repaint, exact damage" {
     const builds = app.win.stats.layer_builds;
     const r = app.win.windowRect(list);
     app.inject(.{ .pointer_motion = .{ .window = app.wid, .seat = 0, .x = r.x0 + 20, .y = r.y0 + 20 } });
-    app.inject(.{ .scroll = .{ .window = app.wid, .seat = 0, .v120_y = 120 * 2, .source = .wheel } });
+    app.inject(.{ .scroll = .{ .window = app.wid, .seat = 0, .dy = 80, .v120_y = 120 * 2, .source = .wheel } });
     try app.settle();
     try testing.expectEqual(@as(f32, 80), app.win.node(list).data.scroll.offset.y);
     try testing.expectEqual(layouts, app.win.stats.layouts);
     try testing.expectEqual(builds, app.win.stats.layer_builds);
     // Damage stays inside the viewport (device pixels at 2x).
-    for (app.damage.items) |d| {
-        try testing.expect(d.y0 >= @as(i32, @intFromFloat(r.y0 * 2)) - 1);
-        try testing.expect(d.y1 <= @as(i32, @intFromFloat(r.y1 * 2)) + 1);
-    }
+    const img = try app.presented();
+    testing.allocator.free(img.rgba);
+    const d = img.damage.?;
+    try testing.expect(d.y >= @as(i32, @intFromFloat(r.y0 * 2)) - 1);
+    try testing.expect(d.y + d.height <= @as(i32, @intFromFloat(r.y1 * 2)) + 1);
     try expectDamageExact(&app);
     try expectGolden(&app, "scroll-2x");
     // Hit testing follows the compositor's offset.

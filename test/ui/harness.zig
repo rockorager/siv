@@ -1,11 +1,12 @@
 //! A headless application for UI tests (D24): the real loop, worker pool,
-//! and headless platform; a ui.Window; and ui.TestCompositor standing in
-//! for the compositor thread, flattened into the CPU renderer with
-//! per-layer damage and presented with buffer-age damage.
+//! and compositor (D8) on the headless backend, and a ui.Window committing
+//! to it. The compositor runs without a thread of its own here, so every
+//! test is deterministic; its own tests cover the thread.
 //!
-//! Like the compositor (D8), the harness scrolls scroll containers that
-//! take input itself and reports `scrolled`; other scroll input and all
-//! other platform events go to the window.
+//! Input is injected into the platform on the compositor, which routes it
+//! like real input: it scrolls scroll containers itself and forwards the
+//! rest to the window. Caret blinking is off (reduced motion), so frames
+//! do not depend on time.
 
 const std = @import("std");
 const raster = @import("raster");
@@ -14,32 +15,25 @@ const text = @import("text");
 const loop_mod = @import("loop");
 const platform = @import("platform");
 const render_cpu = @import("render_cpu");
+const compositor = @import("compositor");
 const ui = @import("ui");
 
 const Loop = loop_mod.Loop;
-const IRect = raster.IRect;
+const Compositor = compositor.Compositor;
 
 pub const App = struct {
     gpa: std.mem.Allocator,
     loop: Loop,
     pool: loop_mod.Pool,
     fonts: ui.Fonts,
-    tc: ui.TestCompositor,
-    hl: *platform.Headless,
+    comp: *Compositor,
     win: *ui.Window,
     wid: platform.WindowId = 0,
-    renderer: *render_cpu.Renderer,
-    tracker: scene.damage.Tracker,
-    prev: ?scene.DisplayList = null,
-    /// Damage of the previous present, re-encoded into the next buffer
-    /// (the headless backend alternates two buffers).
-    prev_damage: std.ArrayList(IRect) = .empty,
-    /// Device damage of the last present.
-    damage: std.ArrayList(IRect) = .empty,
-    presents: usize = 0,
-    pointer: raster.Point = .zero,
-    mods: platform.Mods = .{},
-    configure_serial: u64 = 0,
+    /// The layer tree as the window committed it (with the compositor's
+    /// scroll offsets), for full redraws to compare damaged frames with.
+    mirror: compositor.Tree,
+    last_seq: u64 = 0,
+    presented_seq: u64 = 0,
     err: ?anyerror = null,
 
     pub const Options = struct {
@@ -52,6 +46,10 @@ pub const App = struct {
     /// `app` must not move afterwards.
     pub fn init(app: *App, gpa: std.mem.Allocator, options: Options) !void {
         app.gpa = gpa;
+        app.last_seq = 0;
+        app.presented_seq = 0;
+        app.err = null;
+        app.wid = 0;
         app.loop = try Loop.init(std.heap.smp_allocator);
         errdefer app.loop.deinit();
         app.pool = .init(&app.loop, gpa, 3);
@@ -67,147 +65,108 @@ pub const App = struct {
         };
         try app.fonts.register("Droid", &chain);
         try app.fonts.setDefault("Droid");
-        app.tc = .init(gpa);
-        errdefer app.tc.deinit();
-        app.renderer = try render_cpu.Renderer.create(gpa, app.pool.executor());
-        errdefer app.renderer.destroy();
-        app.tracker = .init(gpa);
-        errdefer app.tracker.deinit();
-        app.prev = null;
-        app.prev_damage = .empty;
-        app.damage = .empty;
-        app.presents = 0;
-        app.pointer = .zero;
-        app.mods = .{};
-        app.configure_serial = 0;
-        app.err = null;
-        app.wid = 0;
+        app.mirror = .init(gpa);
+        errdefer app.mirror.deinit();
         app.win = try ui.Window.init(gpa, .{
             .fonts = &app.fonts,
-            .sink = app.tc.sink(),
+            .sink = .{ .ctx = app, .commit = commit },
             .host = .{ .ctx = app, .request_frame = requestFrame },
             .width = @floatFromInt(options.width),
             .height = @floatFromInt(options.height),
             .scale = @floatFromInt(options.scale),
             .rtl = options.rtl,
+            .reduced_motion = true,
         });
         errdefer app.win.deinit();
         var output: platform.OutputInfo = .{ .width = 1920, .height = 1080, .refresh_mhz = 60000, .scale = @intCast(options.scale) };
         output.name.set("HEADLESS-1");
-        app.hl = try platform.Headless.create(&app.loop, gpa, .{ .ctx = app, .func = onEvent }, .{
-            .refresh_ns = std.time.ns_per_ms,
-            .output = output,
+        app.comp = try Compositor.create(.{
+            .allocator = gpa,
+            .executor = app.pool.executor(),
+            .ui_loop = &app.loop,
+            .sink = .{ .ctx = app, .func = onEvent },
+            .backend = .{ .headless = .{ .refresh_ns = std.time.ns_per_ms, .output = output } },
+            .thread = false,
         });
-        app.wid = try app.hl.createWindow(.{ .width = options.width, .height = options.height });
+        app.wid = try app.comp.createWindow(.{ .width = options.width, .height = options.height });
     }
 
     pub fn deinit(app: *App) void {
-        app.hl.destroy();
+        // The compositor first: afterwards nothing refers to the window's
+        // builders.
+        app.comp.destroy();
         app.pool.deinit();
+        app.mirror.deinit();
         app.win.deinit();
-        app.tc.deinit();
         app.fonts.deinit();
-        app.tracker.deinit();
-        app.renderer.destroy();
-        app.prev_damage.deinit(app.gpa);
-        app.damage.deinit(app.gpa);
         app.loop.deinit();
+    }
+
+    fn commit(ctx: ?*anyopaque, ops: []const compositor.Op) error{OutOfMemory}!u64 {
+        const app: *App = @ptrCast(@alignCast(ctx));
+        for (ops) |op| _ = try app.mirror.apply(op);
+        app.last_seq = app.comp.commit(app.wid, ops) catch |e| switch (e) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => std.debug.panic("invalid ops: {t}", .{e}),
+        };
+        return app.last_seq;
     }
 
     fn requestFrame(ctx: ?*anyopaque) void {
         const app: *App = @ptrCast(@alignCast(ctx));
-        app.hl.requestFrame(app.wid);
+        app.comp.requestFrame(app.wid) catch |e| {
+            app.err = e;
+        };
     }
 
-    fn onEvent(ctx: ?*anyopaque, ev: *const platform.Event) void {
+    fn onEvent(ctx: ?*anyopaque, ev: *const compositor.Event) void {
         const app: *App = @ptrCast(@alignCast(ctx));
         switch (ev.*) {
-            .frame => app.present() catch |e| {
-                app.err = e;
+            .presented => |p| app.presented_seq = @max(app.presented_seq, p.seq),
+            .scrolled => |s| if (app.mirror.get(s.layer)) |l| {
+                l.offset = s.offset;
             },
-            .configure => |c| {
-                // The compositor numbers configures for acknowledgement.
-                app.configure_serial += 1;
-                app.win.handleEvent(&.{ .configure = .{ .window = c.window, .state = c.state, .serial = app.configure_serial } }) catch |e| {
-                    app.err = e;
-                };
+            .platform => |p| if (p == .failed) {
+                app.err = p.failed;
             },
-            .modifiers => |m| {
-                app.mods = m.mods;
-                app.win.handlePlatform(ev);
-            },
-            .pointer_enter, .pointer_motion => |m| {
-                app.pointer = .{ .x = @floatCast(m.x), .y = @floatCast(m.y) };
-                app.win.handlePlatform(ev);
-            },
-            .scroll => |s| {
-                const step: f32 = ui.input.line_step / 120;
-                const delta: raster.Point = .{
-                    .x = if (s.dx != 0) @floatCast(s.dx) else @as(f32, @floatFromInt(s.v120_x)) * step,
-                    .y = if (s.dy != 0) @floatCast(s.dy) else @as(f32, @floatFromInt(s.v120_y)) * step,
-                };
-                if (app.tc.route(app.pointer, delta, app.mods) == .scroll) {
-                    const layer = app.tc.route(app.pointer, delta, app.mods).scroll;
-                    const offset = app.tc.scrollBy(layer, delta);
-                    app.win.handleEvent(&.{ .scrolled = .{ .window = app.wid, .layer = layer, .offset = offset, .seq = app.tc.seq } }) catch |e| {
-                        app.err = e;
-                    };
-                    app.hl.requestFrame(app.wid);
-                } else app.win.handlePlatform(ev);
-            },
-            else => if (ev.window() == app.wid) app.win.handlePlatform(ev),
+            else => {},
         }
+        if (ev.* == .released and !app.win.ownsBuilder(ev.released)) return;
+        if (ev.window()) |w| if (w != app.wid) return;
+        app.win.handleEvent(ev) catch |e| {
+            app.err = e;
+        };
     }
 
-    fn present(app: *App) !void {
-        try app.win.frame();
-        const list = try app.tc.flatten();
-        for (app.tc.released.items) |b| try app.win.handleEvent(&.{ .released = b });
-        app.tc.released.clearRetainingCapacity();
-        for (app.tc.reports.items) |r| try app.win.handleEvent(&.{ .scrolled = .{ .window = app.wid, .layer = r.layer, .offset = r.offset, .seq = r.seq } });
-        app.tc.reports.clearRetainingCapacity();
-        const buf = try app.hl.acquireBuffer(app.wid);
-        try app.renderer.resize(buf.width, buf.height);
-        const s = app.win.scale;
-        const root = raster.Affine.scale(s, s);
-        const rects = try app.tracker.diff(app.prev, list, root, app.renderer.viewport());
-        app.damage.clearRetainingCapacity();
-        try app.damage.appendSlice(app.gpa, rects);
-        try app.renderer.render(list, .{
-            .root = root,
-            .damage = app.damage.items,
-            .background = .white,
-            .target = .{ .pixels = buf.pixels.ptr, .stride = buf.stride, .format = .argb8888 },
-            .encode = app.prev_damage.items,
-        });
-        var prects: std.ArrayList(platform.Rect) = .empty;
-        defer prects.deinit(app.gpa);
-        for (app.damage.items) |r| try prects.append(app.gpa, .{ .x = r.x0, .y = r.y0, .width = r.width(), .height = r.height() });
-        app.hl.present(app.wid, buf, if (prects.items.len == 0) &.{} else prects.items);
-        app.prev = list;
-        app.prev_damage.clearRetainingCapacity();
-        try app.prev_damage.appendSlice(app.gpa, app.damage.items);
-        app.presents += 1;
-    }
-
-    /// Runs the loop until nothing is pending: frames presented, fonts
-    /// loaded.
+    /// Runs the loop until nothing is pending: everything committed is
+    /// presented, no frame is wanted, fonts are loaded.
     pub fn settle(app: *App) !void {
         var idle: usize = 0;
         var guard: usize = 0;
         while (idle < 3) : (guard += 1) {
             if (guard > 2000) return error.Timeout;
-            const before = app.presents;
+            const before = app.presented_seq;
             try app.loop.dispatch(2);
             if (app.err) |e| return e;
-            const busy = app.presents != before or app.win.needsFrame() or app.fonts.loading() or app.win.txn.open;
+            const busy = app.presented_seq != before or app.presented_seq < app.last_seq or
+                app.win.needsFrame() or app.fonts.loading() or app.win.txn.open;
             idle = if (busy) 0 else idle + 1;
         }
     }
 
-    /// Injects a platform event as the compositor would forward it.
+    /// Injects a platform event on the compositor, as the seat would.
     pub fn inject(app: *App, ev: platform.Event) void {
-        app.hl.inject(ev);
+        const Ctx = struct {
+            ev: platform.Event,
+            fn run(ctx: ?*anyopaque, comp: *Compositor) void {
+                const s: *@This() = @ptrCast(@alignCast(ctx));
+                comp.platform.headless.inject(s.ev);
+            }
+        };
+        var c: Ctx = .{ .ev = ev };
+        app.comp.call(&c, Ctx.run) catch |e| {
+            app.err = e;
+        };
     }
 
     pub fn click(app: *App, x: f64, y: f64) void {
@@ -224,27 +183,46 @@ pub const App = struct {
         app.inject(.{ .key = up });
     }
 
-    /// The presented frame as RGBA bytes (caller frees).
-    pub fn snapshot(app: *App) ![]u8 {
-        const img = app.hl.presented(app.wid) orelse return error.NothingPresented;
-        const out = try app.gpa.alloc(u8, @as(usize, img.width) * img.height * 4);
-        for (0..img.height) |y| for (0..img.width) |x| {
-            const p = img.pixels[y * img.stride + x * 4 ..][0..4];
-            out[(y * img.width + x) * 4 ..][0..4].* = .{ p[2], p[1], p[0], p[3] };
+    const Presented = struct { rgba: []u8, width: u32, height: u32, damage: ?platform.Rect };
+
+    /// The presented frame as RGBA bytes (caller frees `rgba`), and the
+    /// bounding box of its damage.
+    pub fn presented(app: *App) !Presented {
+        const Ctx = struct {
+            gpa: std.mem.Allocator,
+            wid: platform.WindowId,
+            out: anyerror!Presented = error.NothingPresented,
+            fn run(ctx: ?*anyopaque, comp: *Compositor) void {
+                const s: *@This() = @ptrCast(@alignCast(ctx));
+                const img = comp.platform.headless.presented(s.wid) orelse return;
+                const rgba = s.gpa.alloc(u8, @as(usize, img.width) * img.height * 4) catch |e| {
+                    s.out = e;
+                    return;
+                };
+                for (0..img.height) |y| for (0..img.width) |x| {
+                    const p = img.pixels[y * img.stride + x * 4 ..][0..4];
+                    rgba[(y * img.width + x) * 4 ..][0..4].* = .{ p[2], p[1], p[0], p[3] };
+                };
+                s.out = .{ .rgba = rgba, .width = img.width, .height = img.height, .damage = img.damage };
+            }
         };
-        return out;
+        var c: Ctx = .{ .gpa = app.gpa, .wid = app.wid };
+        try app.comp.call(&c, Ctx.run);
+        return c.out;
     }
 
-    /// Renders the current layer tree from scratch, for comparing with the
-    /// incrementally damaged frame. RGBA bytes; caller frees.
-    pub fn fullRender(app: *App) ![]u8 {
-        const img = app.hl.presented(app.wid) orelse return error.NothingPresented;
+    /// Renders the committed layer tree from scratch at the presented size.
+    /// RGBA bytes; caller frees.
+    pub fn fullRender(app: *App, width: u32, height: u32) ![]u8 {
+        const list = try app.mirror.compose();
+        // The mirror releases nothing: the compositor owns the builders.
+        _ = app.mirror.endFrame();
         const r = try render_cpu.Renderer.create(app.gpa, app.pool.executor());
         defer r.destroy();
-        try r.resize(img.width, img.height);
-        const out = try app.gpa.alloc(u8, @as(usize, img.width) * img.height * 4);
+        try r.resize(width, height);
+        const out = try app.gpa.alloc(u8, @as(usize, width) * height * 4);
         const s = app.win.scale;
-        try r.render(app.prev.?, .{ .root = .scale(s, s), .background = .white, .target = .{ .pixels = out.ptr, .stride = img.width * 4, .format = .abgr8888 } });
+        try r.render(list, .{ .root = .scale(s, s), .background = app.mirror.background, .target = .{ .pixels = out.ptr, .stride = width * 4, .format = .abgr8888 } });
         return out;
     }
 };
