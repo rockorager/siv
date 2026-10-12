@@ -973,9 +973,55 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     input (D15). Masked editors have neither. Copies carry the serial of
     the window's last input, which a compositor may refuse when the
     window has had none.
-  - AT-SPI objects will be one D-Bus subtree registration (D19) whose
-    lookup maps `/org/a11y/atspi/accessible/<id>` to a semantics node and
-    its interfaces, so exporting the tree costs nothing per node.
+  - The bridge (`src/a11y`, `a11y.Bridge`) follows org.a11y.Bus on the
+    session bus and connects to the accessibility bus only while
+    org.a11y.Status IsEnabled or ScreenReaderEnabled is set, so an
+    application nobody inspects pays nothing ($AT_SPI_BUS_ADDRESS
+    overrides discovery). It embeds itself in the registry with
+    Socket.Embed and drops everything when accessibility turns off.
+  - All objects are one D-Bus subtree registration (D19). The application
+    is `/org/a11y/atspi/accessible/root`; a node is
+    `.../<window>_<node>_<generation>`, resolved from the path on each
+    call. A node's generation changes when it leaves the tree, so a
+    recycled node index never answers for an old object. The application
+    also exports org.a11y.atspi.Cache, so libatspi reads the whole tree
+    with one call.
+  - Each window keeps a snapshot of what it last published. The
+    application calls `update` after each frame of the window; when the
+    tree's generation changed, the bridge builds a new snapshot, diffs it
+    (children, names, descriptions, roles, states, values, text, caret,
+    selection, live regions), emits the events, and swaps. Calls are
+    answered from the snapshot, so answers and events agree. Removals
+    are reported before additions; a reorder without a change of children
+    sends nothing.
+  - Interfaces per node: Accessible and Component always; Action for
+    nodes with an activate handler (one action, named like GTK's for the
+    role: click, toggle, jump, activate); Text for text nodes, editors,
+    and text roles; EditableText for unmasked enabled editors; Value for
+    nodes with a range (read-only: setting a value needs a widget
+    handler); Selection for lists, trees, tab lists, menus, tables, and
+    combo boxes, where selecting a child activates it.
+  - Roles follow ARIA's AT-SPI mapping where siv's roles are ARIA's;
+    switches are toggle buttons, since the switch role (at-spi2-core 2.56)
+    is newer than current registries and screen readers. Text offsets are
+    characters, converted from siv's UTF-8 byte offsets.
+  - Events: ChildrenChanged, PropertyChange (name, description, role,
+    value), StateChanged (focus gained after every loss), TextChanged,
+    TextCaretMoved, TextSelectionChanged, and Announcement for a live
+    region whose text changes or that gains content, with live and
+    container-live attributes on the region. Window Activate and
+    Deactivate come from the application (`setActive`, from the
+    toplevel's activated state), as do titles (`setTitle`) for windows
+    whose root has no label.
+  - Coordinates: a Wayland client does not know where it is on the
+    screen, so screen coordinates are window coordinates, as in GTK 4.
+    Magnifiers that follow the caret get its rectangle in the window
+    from Text.GetCharacterExtents.
+  - Verified (`zig build test-integration-a11y`) against at-spi2-core
+    2.46's bus launcher and registry with libatspi (pyatspi) as the
+    client: discovery through IsEnabled, the tree with roles, names,
+    states, and interfaces, actions, focus, text and extents, editing,
+    values, and checked, focused, text, caret, and announcement events.
 - **Alternatives:** AccessKit's Linux adapter (adds a Rust toolchain).
 - **Reverse if:** AccessKit offers a C build without Rust and covers every
   interface listed above.
@@ -1203,8 +1249,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   test-integration` runs the Wayland backend against one real compositor, the
   latest sway on its headless backend, pinned through nixpkgs; other
   compositors are not part of the test suite. It also runs D-Bus against a
-  private dbus-daemon, with GLib's gdbus as a second client; the hermetic
-  D-Bus tests use an in-process test bus over socketpairs.
+  private dbus-daemon, with GLib's gdbus as a second client, and AT-SPI
+  against at-spi2-core's bus launcher and registry with libatspi as the
+  client; the hermetic D-Bus and AT-SPI tests use an in-process test bus
+  over socketpairs.
 
 ### D25. Project
 
