@@ -315,3 +315,133 @@ test "portals through the public API on sway: parented dialogs, OpenURI, notific
     }.f);
     try testing.expectEqualStrings("42", log.target[0..log.target_len]);
 }
+
+// Lifecycle (D19) -----------------------------------------------------------------
+
+const helpers = @import("helpers");
+const td = portal.testing.daemon;
+
+extern "c" fn realpath(path: [*:0]const u8, resolved: [*]u8) ?[*:0]u8;
+
+/// The lifecycle helper (test/c/lifecycle.c) and the libsiv it links, as
+/// absolute paths.
+const Helper = struct {
+    exe_buf: [4096]u8 = undefined,
+    lib_buf: [4096]u8 = undefined,
+    exe: [:0]const u8 = "",
+    lib_dir: []const u8 = "",
+
+    fn init(h: *Helper) !void {
+        var z: [4096]u8 = undefined;
+        h.exe = std.mem.span(realpath(try std.fmt.bufPrintSentinel(&z, "{s}", .{helpers.lifecycle}, 0), &h.exe_buf) orelse return error.HelperNotFound);
+        const lib = std.mem.span(realpath(try std.fmt.bufPrintSentinel(&z, "{s}", .{helpers.libsiv}, 0), &h.lib_buf) orelse return error.HelperNotFound);
+        h.lib_dir = std.fs.path.dirname(lib).?;
+    }
+};
+
+fn readLog(path: [:0]const u8, buf: []u8) []const u8 {
+    const linux = std.os.linux;
+    const rc = linux.open(path, .{ .CLOEXEC = true }, 0);
+    if (linux.errno(rc) != .SUCCESS) return "";
+    const fd: i32 = @intCast(rc);
+    defer _ = linux.close(fd);
+    var n: usize = 0;
+    while (n < buf.len) {
+        const r = linux.read(fd, buf[n..].ptr, buf.len - n);
+        if (linux.errno(r) != .SUCCESS or r == 0) break;
+        n += r;
+    }
+    return buf[0..n];
+}
+
+fn waitLog(path: [:0]const u8, what: []const u8) !void {
+    const deadline = Loop.now() + 10 * std.time.ns_per_s;
+    var buf: [4096]u8 = undefined;
+    while (std.mem.indexOf(u8, readLog(path, &buf), what) == null) {
+        if (Loop.now() > deadline) {
+            std.debug.print("log so far:\n{s}\n", .{readLog(path, &buf)});
+            return error.Timeout;
+        }
+        td.sleepMs(10);
+    }
+}
+
+/// Runs gdbus (GLib, an independent client) against the private bus and
+/// waits for it.
+fn gdbus(address: []const u8, args: []const [*:0]const u8) !void {
+    const exe = td.findExecutable("gdbus") orelse return error.GdbusNotInstalled;
+    var argv: [16:null]?[*:0]const u8 = @splat(null);
+    argv[0] = exe;
+    for (args, 1..) |a, i| argv[i] = a;
+    var env_buf: [256]u8 = undefined;
+    const envp = [_:null]?[*:0]const u8{ "PATH=/usr/bin:/bin", try std.fmt.bufPrintSentinel(&env_buf, "DBUS_SESSION_BUS_ADDRESS={s}", .{address}, 0) };
+    const pid = try td.spawn(exe, &argv, &envp, null);
+    var status: c_int = 0;
+    _ = std.c.waitpid(pid, &status, 0);
+    if (status != 0) return error.GdbusFailed;
+}
+
+test "lifecycle: single instance, forwarding, and D-Bus activation through dbus-daemon" {
+    var helper: Helper = .{};
+    try helper.init();
+    var dir_buf: [64]u8 = undefined;
+    const dir = try std.fmt.bufPrintSentinel(&dir_buf, "/tmp/siv-life-{d}", .{std.os.linux.getpid()}, 0);
+    _ = std.os.linux.mkdir(dir, 0o700);
+    var log_buf: [96]u8 = undefined;
+    const log = try std.fmt.bufPrintSentinel(&log_buf, "{s}/log", .{dir}, 0);
+    var svc_buf: [96]u8 = undefined;
+    const svc = try std.fmt.bufPrintSentinel(&svc_buf, "{s}/org.siv.Test.Lifecycle.service", .{dir}, 0);
+    var svc_text: [8192 + 512]u8 = undefined;
+    try td.writeFile(svc, try std.fmt.bufPrint(&svc_text,
+        \\[D-BUS Service]
+        \\Name=org.siv.Test.Lifecycle
+        \\Exec=/usr/bin/env LD_LIBRARY_PATH={s} {s} --service --log={s}
+        \\
+    , .{ helper.lib_dir, helper.exe, log }));
+    defer {
+        _ = std.os.linux.unlink(log);
+        _ = std.os.linux.unlink(svc);
+        _ = std.os.linux.rmdir(dir);
+    }
+
+    var daemon: td.Daemon = .{ .service_dir = dir };
+    try daemon.start();
+    defer daemon.stop();
+
+    // D-Bus activation: calling Activate starts the service, which answers
+    // instead of activating by itself.
+    try gdbus(daemon.address, &.{ "call", "--session", "--dest", "org.siv.Test.Lifecycle", "--object-path", "/org/siv/Test/Lifecycle", "--method", "org.freedesktop.Application.Activate", "{'activation-token': <'tok-dbus'>}" });
+    try waitLog(log, "activate remote token=tok-dbus\n");
+    try gdbus(daemon.address, &.{ "call", "--session", "--dest", "org.siv.Test.Lifecycle", "--object-path", "/org/siv/Test/Lifecycle", "--method", "org.freedesktop.Application.Open", "['file:///tmp/a.txt']", "{}" });
+    try waitLog(log, "open remote token= file:///tmp/a.txt\n");
+    try gdbus(daemon.address, &.{ "call", "--session", "--dest", "org.siv.Test.Lifecycle", "--object-path", "/org/siv/Test/Lifecycle", "--method", "org.freedesktop.Application.ActivateAction", "quit", "[<'now'>]", "{}" });
+    try waitLog(log, "action quit now\nexit primary SIV_OK\n");
+    var buf: [4096]u8 = undefined;
+    // The service never activated by itself.
+    try testing.expect(std.mem.indexOf(u8, readLog(log, &buf), "launch") == null);
+
+    // Launched twice: the second forwards its URI and token, then exits.
+    var env: [3][300]u8 = undefined;
+    const base = [_]?[*:0]const u8{
+        "PATH=/usr/bin:/bin",
+        try std.fmt.bufPrintSentinel(&env[0], "DBUS_SESSION_BUS_ADDRESS={s}", .{daemon.address}, 0),
+        try std.fmt.bufPrintSentinel(&env[1], "LD_LIBRARY_PATH={s}", .{helper.lib_dir}, 0),
+    };
+    var log_arg_buf: [128]u8 = undefined;
+    const log_arg = try std.fmt.bufPrintSentinel(&log_arg_buf, "--log={s}", .{log}, 0);
+    const first_env = base ++ [_:null]?[*:0]const u8{"XDG_ACTIVATION_TOKEN=first"};
+    const first = try td.spawn(helper.exe, &[_:null]?[*:0]const u8{ helper.exe, log_arg }, &first_env, null);
+    try waitLog(log, "activate launch token=first\n");
+    const second_env = base ++ [_:null]?[*:0]const u8{"XDG_ACTIVATION_TOKEN=second"};
+    const second = try td.spawn(helper.exe, &[_:null]?[*:0]const u8{ helper.exe, log_arg, "file:///tmp/b.txt" }, &second_env, null);
+    var status: c_int = 0;
+    _ = std.c.waitpid(second, &status, 0);
+    try testing.expectEqual(@as(c_int, 0), status);
+    try waitLog(log, "open remote token=second file:///tmp/b.txt\n");
+    try waitLog(log, "exit secondary SIV_OK\n");
+    // GLib sees the interface.
+    try gdbus(daemon.address, &.{ "call", "--session", "--dest", "org.siv.Test.Lifecycle", "--object-path", "/org/siv/Test/Lifecycle", "--method", "org.freedesktop.Application.ActivateAction", "quit", "[]", "{}" });
+    _ = std.c.waitpid(first, &status, 0);
+    try testing.expectEqual(@as(c_int, 0), status);
+    try waitLog(log, "exit primary SIV_OK\n");
+}

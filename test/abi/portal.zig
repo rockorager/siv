@@ -175,3 +175,66 @@ test "actions are replaced and removed with their destroy-notify, and inhibition
     try testing.expectEqual(@as(u32, 5), log.destroys);
     try testing.expectEqual(@as(u32, 0), log.results);
 }
+
+const Launches = struct {
+    activations: u32 = 0,
+    destroys: u32 = 0,
+    kind: t.ActivationType = .open,
+    source: t.ActivationSource = .remote,
+    uris: usize = 0,
+    tokens: u32 = 0,
+    token_len: usize = 99,
+
+    fn onActivate(user_data: ?*anyopaque, _: t.App, a: ?*const t.Activation) callconv(.c) void {
+        const l: *Launches = @ptrCast(@alignCast(user_data));
+        l.activations += 1;
+        l.kind = a.?.type;
+        l.source = a.?.source;
+        l.uris = a.?.uris_count;
+    }
+
+    fn onDestroy(user_data: ?*anyopaque) callconv(.c) void {
+        const l: *Launches = @ptrCast(@alignCast(user_data));
+        l.destroys += 1;
+    }
+
+    fn onToken(user_data: ?*anyopaque, result: ?*const t.PortalResult) callconv(.c) void {
+        const l: *Launches = @ptrCast(@alignCast(user_data));
+        l.tokens += 1;
+        l.token_len = result.?.token_len;
+    }
+};
+
+test "launching without an application id is a primary instance that activates once" {
+    var l: Launches = .{};
+    {
+        var h: harness.Harness = .{};
+        try h.start(64, 48, null, null);
+        defer h.stop();
+        var instance: t.Instance = .pending;
+        try ok(P.siv_app_get_instance(h.app, &instance));
+        try testing.expectEqual(t.Instance.none, instance);
+        const uris = [_]t.Uri{.{ .uri = "file:///a", .uri_len = 9 }};
+        try ok(P.siv_app_launch(h.app, &.{ .uris = &uris, .uris_count = 1, .on_activate = Launches.onActivate, .destroy = Launches.onDestroy, .user_data = &l }));
+        try ok(P.siv_app_get_instance(h.app, &instance));
+        try testing.expectEqual(t.Instance.primary, instance);
+        // At the next dispatch, not inside the call.
+        try testing.expectEqual(@as(u32, 0), l.activations);
+        try dispatch(&h, 2);
+        try testing.expectEqual(@as(u32, 1), l.activations);
+        try testing.expectEqual(t.ActivationType.open, l.kind);
+        try testing.expectEqual(t.ActivationSource.launch, l.source);
+        try testing.expectEqual(@as(usize, 1), l.uris);
+        var other: Launches = .{};
+        try testing.expectEqual(t.Result.error_busy, P.siv_app_launch(h.app, &.{ .on_activate = Launches.onActivate, .destroy = Launches.onDestroy, .user_data = &other }));
+        try testing.expectEqual(@as(u32, 1), other.destroys);
+
+        // No input yet: the compositor gives no token.
+        try ok(P.siv_window_request_activation_token(h.window, Launches.onToken, null, &l));
+        try dispatch(&h, 3);
+        try testing.expectEqual(@as(u32, 1), l.tokens);
+        try testing.expectEqual(@as(usize, 0), l.token_len);
+        try ok(P.siv_window_activate(h.window, "some-token", 10));
+    }
+    try testing.expectEqual(@as(u32, 1), l.destroys);
+}

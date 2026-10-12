@@ -78,6 +78,7 @@ pub const decls = [_]Decl{
         .{ .name = "color", .type = ref("siv_color"), .doc = "siv_pick_color: the color picked." },
         .{ .name = "response", .type = ref("siv_portal_response"), .doc = "How the request ended." },
         .{ .name = "count", .type = .u32, .doc = "siv_file_chooser_show: how many files or folders were chosen." },
+        .{ .name = "token", .type = .string, .doc = "siv_window_request_activation_token: the token, empty if the compositor gave none." },
     }),
     callback("siv_portal_fn", "Receives the result of a portal request at a safe point on the application's thread (D5).", &.{
         p("result", .{ .desc = "siv_portal_result" }, "The result, valid during the call."),
@@ -240,6 +241,47 @@ pub const decls = [_]Decl{
         .{ .name = "height", .type = .i32, .doc = "Size in logical pixels; 0 if unknown." },
     }),
 
+    // Lifecycle.
+    value("siv_uri", "A URI.", &.{
+        .{ .name = "uri", .type = .string, .doc = "The URI." },
+    }),
+    flags("siv_launch_flags", "How an application launches.", &.{
+        .{ .name = "service", .bit = 0, .doc = "Started by D-Bus activation (the Exec line of the application's D-Bus service file passes an argument saying so): wait for the desktop's call instead of activating." },
+        .{ .name = "multiple_instances", .bit = 1, .doc = "Allow several instances: every launch is primary, and nothing is exported on the bus." },
+    }),
+    enumeration("siv_activation_type", "What an activation asks for.", &.{
+        .{ .name = "activate", .value = 0, .doc = "Show the application (a window)." },
+        .{ .name = "open", .value = 1, .doc = "Open the URIs." },
+    }),
+    enumeration("siv_activation_source", "Where an activation came from.", &.{
+        .{ .name = "launch", .value = 0, .doc = "This launch." },
+        .{ .name = "remote", .value = 1, .doc = "Another instance, or the desktop over D-Bus." },
+    }),
+    descriptor("siv_activation", "An activation. Filled by siv; valid during the call.", &.{
+        .{ .name = "uris", .type = array(ref("siv_uri")), .doc = "Open: the URIs." },
+        .{ .name = "activation_token", .type = .string, .doc = "An xdg-activation token: pass it to siv_window_activate for the window the activation shows. Empty if there is none." },
+        .{ .name = "type", .type = ref("siv_activation_type"), .doc = "What to do." },
+        .{ .name = "source", .type = ref("siv_activation_source"), .doc = "Where it came from." },
+    }),
+    callback("siv_activate_fn", "Handles an activation at a safe point on the application's thread (D5): typically creates or presents a window.", &.{
+        p("app", ref("siv_app"), "The application."),
+        p("activation", .{ .desc = "siv_activation" }, "The activation, valid during the call."),
+    }, .void),
+    descriptor("siv_launch_desc", "How an application launches (siv_app_launch).", &.{
+        .{ .name = "uris", .type = array(ref("siv_uri")), .doc = "URIs to open, such as files from the command line (copied)." },
+        .{ .name = "user_data", .type = .user_data, .doc = "Passed to on_activate and destroy." },
+        .{ .name = "on_activate", .type = ref("siv_activate_fn"), .doc = "Handles activations." },
+        .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data when the application is destroyed." },
+        .{ .name = "flags", .type = ref("siv_launch_flags"), .doc = "Options." },
+        .{ .name = "idle_timeout_ms", .type = .u32, .doc = "Services: siv_run returns when no window is open this long after an activation; 0 waits forever." },
+    }),
+    enumeration("siv_instance", "What this process is, after siv_app_launch.", &.{
+        .{ .name = "none", .value = 0, .doc = "siv_app_launch was not called." },
+        .{ .name = "pending", .value = 1, .doc = "Waiting for the bus to say whether another instance runs." },
+        .{ .name = "primary", .value = 2, .doc = "The instance that serves the application: activations come here." },
+        .{ .name = "secondary", .value = 3, .doc = "Another instance runs: this launch was forwarded to it, and siv_run returns." },
+    }),
+
     // The document portal.
     flags("siv_document_permissions", "What another application may do with an exported document.", &.{
         .{ .name = "read", .bit = 0, .doc = "Read it." },
@@ -398,6 +440,25 @@ pub const functions = [_]Function{
         p("fd", out(.i32), "The file descriptor."),
     }),
     op("siv_screencast_destroy", "Stops and destroys a cast; an untaken PipeWire fd is closed.", &.{p("screencast", ref("siv_screencast"), "The cast.")}),
+
+    call("siv_app_launch", "Launches the application as a single instance (D19): the first instance to own the application id (siv_app_desc.app_id) on the session bus is primary and gets its activation (on_activate, at the next dispatch, with $XDG_ACTIVATION_TOKEN's token, which is removed from the environment) and every later one, from other instances and from the desktop over org.freedesktop.Application (D-Bus activation for DBusActivatable desktop files). A later instance forwards its activation, or its URIs, to the primary instead, and siv_run returns (SIV_ERROR_UNAVAILABLE if forwarding failed). Without an application id or a session bus, every launch is primary. Once per application (SIV_ERROR_BUSY).", &.{
+        app_param,
+        p("desc", .{ .desc = "siv_launch_desc" }, "The activation handler and URIs."),
+    }),
+    call("siv_app_get_instance", "Whether this process is the primary instance.", &.{
+        app_param,
+        p("instance", out(ref("siv_instance")), "The instance."),
+    }),
+    op("siv_window_activate", "Asks the compositor to focus the window with an xdg-activation token another application passed on (siv_activation.activation_token); for a window not shown yet, once it is.", &.{
+        p("window", ref("siv_window"), "The window."),
+        p("token", .string, "The token; empty does nothing."),
+    }),
+    call("siv_window_request_activation_token", "Asks for an xdg-activation token tied to the window's last input, to pass to an application this one starts ($XDG_ACTIVATION_TOKEN) so that it may take focus. The result's token is empty when the compositor gives none.", &.{
+        p("window", ref("siv_window"), "The window."),
+        result_callback[0],
+        result_callback[1],
+        result_callback[2],
+    }),
 
     call("siv_document_export", "Makes a file available to sandboxed applications through the document portal; the result's uri is its path there and id its document id.", &([_]Param{
         app_param,

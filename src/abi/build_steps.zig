@@ -172,6 +172,20 @@ pub fn add(b: *std.Build, o: Options) void {
     o.headless.root_module.addCSourceFile(.{ .file = b.path("test/c/canvas_scene.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" } });
     o.headless.root_module.addIncludePath(installed.path(b, "include"));
 
+    // A single-instance C application that the lifecycle integration test
+    // launches, also through D-Bus activation (test/c/lifecycle.c).
+    const lifecycle = b.addExecutable(.{
+        .name = "lifecycle",
+        .root_module = b.createModule(.{ .target = o.target, .optimize = o.optimize, .link_libc = true }),
+    });
+    lifecycle.root_module.addCSourceFile(.{ .file = b.path("test/c/lifecycle.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic" } });
+    lifecycle.root_module.addIncludePath(installed.path(b, "include"));
+    lifecycle.root_module.linkLibrary(o.shared);
+    test_c.dependOn(&lifecycle.step);
+    const helpers = b.addOptions();
+    helpers.addOptionPath("lifecycle", lifecycle.getEmittedBin());
+    helpers.addOptionPath("libsiv", o.shared.getEmittedBin());
+
     // The public API against sway (integration_tests.zig). Not in `test`.
     const integration = b.addTest(.{
         .name = "abi-integration",
@@ -186,6 +200,7 @@ pub fn add(b: *std.Build, o: Options) void {
                 .{ .name = "text", .module = o.abi.import_table.get("text").? },
                 .{ .name = "loop", .module = o.abi.import_table.get("loop").? },
                 .{ .name = "portal", .module = o.abi.import_table.get("portal").? },
+                .{ .name = "helpers", .module = helpers.createModule() },
             },
         }),
         .filters = o.test_filters,

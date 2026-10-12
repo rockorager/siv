@@ -41,7 +41,11 @@ pub const State = struct {
     /// Registered actions by name; the coordinator's registry points at
     /// these.
     actions: std.StringHashMapUnmanaged(*ActionEntry) = .empty,
+    /// siv_app_launch's handler.
+    launch: ?Launch = null,
 };
+
+const Launch = struct { on_activate: ?t.ActivateFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque };
 
 fn Slots(comptime T: type) type {
     return struct {
@@ -82,6 +86,8 @@ pub fn teardown(self: *App) void {
         gpa.destroy(e.value_ptr.*);
     }
     st.actions.deinit(gpa);
+    if (st.launch) |l| self.release(l.destroy, l.user_data);
+    st.launch = null;
 }
 
 /// The window a parent handle names, or null for 0.
@@ -155,7 +161,7 @@ const Op = struct {
     permissions: portal.documents.Permissions = .{},
     doc_flags: portal.documents.Flags = .{},
 
-    const Kind = enum { open_uri, screenshot, pick_color, document };
+    const Kind = enum { open_uri, screenshot, pick_color, document, token };
 
     fn stop(o: *Op) void {
         o.parent.cancel();
@@ -189,6 +195,7 @@ const Op = struct {
 
     fn onToken(tk: *Token, token: []const u8) void {
         const o: *Op = @fieldParentPtr("token", tk);
+        if (o.kind == .token) return o.finish(.{ .response = .success, .token = token.ptr, .token_len = token.len });
         const n = @min(token.len, o.token_text.len);
         @memcpy(o.token_text[0..n], token[0..n]);
         o.token_len = n;
@@ -213,7 +220,7 @@ const Op = struct {
                 break :blk portal.screenshot.screenshot(&o.req, client, id, .{ .interactive = f.interactive, .modal = !f.not_modal });
             },
             .pick_color => portal.screenshot.pickColor(&o.req, client, id),
-            .document => unreachable,
+            .document, .token => unreachable,
         };
         r catch |err| o.fail(mapStart(err));
     }
@@ -252,6 +259,8 @@ fn newOp(self: *App, kind: Op.Kind, window: t.Window, cb: ?t.PortalFn, destroy: 
 fn launch(o: *Op) void {
     const self = o.self;
     self.desktop.ops.append(&o.node);
+    // Activation tokens come from the compositor, not a portal.
+    if (o.kind == .token) return app_mod.portals.tokenFor(self.app, o.window.?, &o.token);
     if (self.app.portals.get() == null) return self.app.loop.schedule(&o.task, .dispatch);
     switch (o.kind) {
         .open_uri => if (o.window) |w| app_mod.portals.tokenFor(self.app, w, &o.token) else app_mod.portals.parentOf(self.app, null, &o.parent),
@@ -262,6 +271,7 @@ fn launch(o: *Op) void {
             path_buf[o.text.len] = 0;
             o.doc.start(self.app.portals.get().?, path_buf[0..o.text.len :0], o.app_id, o.permissions, o.doc_flags) catch |err| o.fail(mapStart(err));
         },
+        .token => unreachable,
         else => app_mod.portals.parentOf(self.app, o.window, &o.parent),
     }
 }
@@ -1149,5 +1159,84 @@ fn destroyCast(self: *App, index: u32) void {
 pub export fn siv_screencast_destroy(screencast: t.Screencast) t.Result {
     const self, const index, _ = castOf(screencast) catch |err| return t.resultOf(err);
     destroyCast(self, index);
+    return .ok;
+}
+
+// Lifecycle -----------------------------------------------------------------------
+
+fn onActivate(ctx: ?*anyopaque, a: *const app_mod.lifecycle.Activation) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const l = self.desktop.launch orelse return;
+    const f = l.on_activate orelse return;
+    var buf: [64]t.Uri = undefined;
+    const n = @min(a.uris.len, buf.len);
+    var list: std.ArrayList(t.Uri) = .empty;
+    defer list.deinit(self.gpa());
+    const uris: []t.Uri = if (a.uris.len <= buf.len) buf[0..n] else blk: {
+        list.resize(self.gpa(), a.uris.len) catch break :blk buf[0..n];
+        break :blk list.items;
+    };
+    for (uris, a.uris[0..uris.len]) |*u, s| u.* = .{ .uri = s.ptr, .uri_len = s.len };
+    var ev: t.Activation = .{
+        .uris = uris.ptr,
+        .uris_count = uris.len,
+        .activation_token = a.token.ptr,
+        .activation_token_len = a.token.len,
+        .type = if (a.kind == .open) .open else .activate,
+        .source = if (a.remote) .remote else .launch,
+    };
+    self.enter();
+    defer self.leave();
+    f(l.user_data, @fromBackingInt(self.root.handle), &ev);
+}
+
+pub export fn siv_app_launch(app: t.App, desc: ?*const t.LaunchDesc) t.Result {
+    const d = runtime.readDesc(t.LaunchDesc, desc) catch |err| return t.resultOf(err);
+    const self = App.get(@backingInt(app)) catch |err| return failed(null, d.destroy, d.user_data, err);
+    const r = struct {
+        fn f(s: *App, dd: t.LaunchDesc) Error!void {
+            if (s.painting != 0 or s.desktop.launch != null) return error.Busy;
+            const raw = try runtime.array(t.Uri, dd.uris, dd.uris_count);
+            const fl = try runtime.flags(t.LaunchFlags, dd.flags);
+            const gpa = s.gpa();
+            const uris = try gpa.alloc([]const u8, raw.len);
+            defer gpa.free(uris);
+            for (raw, uris) |ru, *u| u.* = try runtime.string(ru.uri, ru.uri_len);
+            s.desktop.launch = .{ .on_activate = dd.on_activate, .destroy = dd.destroy, .user_data = dd.user_data };
+            errdefer s.desktop.launch = null;
+            s.app.launch(.{ .uris = uris, .service = fl.service, .multiple_instances = fl.multiple_instances, .idle_timeout_ms = dd.idle_timeout_ms }, .{ .ctx = s, .func = onActivate }) catch |err| return switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                error.Busy => error.Busy,
+            };
+        }
+    }.f(self, d);
+    r catch |err| return failed(self, d.destroy, d.user_data, err);
+    return .ok;
+}
+
+pub export fn siv_app_get_instance(app: t.App, instance: ?*t.Instance) t.Result {
+    const self = App.get(@backingInt(app)) catch |err| return t.resultOf(err);
+    const dest = runtime.out(t.Instance, instance) catch |err| return t.resultOf(err);
+    dest.* = switch (self.app.lifecycle.role) {
+        .none => .none,
+        .pending => .pending,
+        .primary => .primary,
+        .secondary => .secondary,
+    };
+    return .ok;
+}
+
+pub export fn siv_window_activate(window: t.Window, token: ?[*]const u8, token_len: usize) t.Result {
+    const w = App.window(@backingInt(window), application.window_tag) catch |err| return t.resultOf(err);
+    const s = runtime.string(token, token_len) catch |err| return t.resultOf(err);
+    w.win.activate(s) catch return .error_out_of_memory;
+    return .ok;
+}
+
+pub export fn siv_window_request_activation_token(window: t.Window, callback: ?t.PortalFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) t.Result {
+    const w = App.window(@backingInt(window), application.window_tag) catch |err| return failed(null, destroy, user_data, err);
+    const self = w.owner;
+    const o = newOp(self, .token, window, callback, destroy, user_data) catch |err| return failed(self, destroy, user_data, err);
+    launch(o);
     return .ok;
 }
