@@ -1805,12 +1805,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       timestamp, so widgets written in C can do the same.
     - Not built yet: variable row heights, column resizing and sorting,
       and a position among siblings for tree items.
-  - Not built yet elsewhere: the styled-text editor; an
-    animated indeterminate progress bar (it shows a still bar: a
-    repeating compositor animation needs a primitive whose distances
-    follow layout); auto-repeat on held spin buttons; and an integration
-    test of menus on sway (the headless backend's placement and grab
-    rules are tested).
+  - Not built yet elsewhere: the styled-text editor; auto-repeat on
+    held spin buttons; and an integration test of menus on sway (the
+    headless backend's placement and grab rules are tested).
 - **Non-goal:** a full document model with embedded tables and images.
 
 ### D23. Lua 5.5
@@ -2082,6 +2079,19 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     curve; moves from layout do not animate, and neither does the first
     value. Reduced motion, from the desktop or `SIV_APP_REDUCED_MOTION`,
     turns transitions into jumps, so widgets get it right by construction.
+  - Repeating motion: `siv_set_animation` runs one animation of a
+    node's opacity, x or y translation, scale, or rotation on the
+    compositor, finite or repeating, applied on top of the node's own
+    value. Values are resolved when properties are sent: translations
+    can be relative to the node's size and mirror in RTL, so distances
+    follow layout without the application's thread doing anything per
+    frame (D25). The animation runs only while the node has a layer and
+    motion is not reduced: hiding the node destroys its layer and with
+    it the animation, showing starts it over, and reduced motion sends
+    the node's own value, which cancels it. Changes of the node's size,
+    own value, or direction send it again from the start. Indeterminate
+    progress sweeps its fill across the track this way; with reduced
+    motion it is a still bar at the start.
 - **Alternatives:** widgets copying resolved colors into the tree and
   rebuilding on theme changes (every widget library would need a theme
   listener and the tree churns on every desktop change); CSS-like style

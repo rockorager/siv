@@ -504,6 +504,79 @@ test "widgets: text fields are editors with placeholders and themed frames" {
     try testing.expectEqual(@as(f64, 60), (try sem(w.progress)).value.?.now);
 }
 
+/// The horizontal travel of the repeating animations the window sent the
+/// compositor for the progress bars under `parent` (their fill is the
+/// first child of the first child).
+fn sweeps(h: *Harness, parent: t.Node, out: []f32) !usize {
+    _ = h;
+    const uw, const pid = try uiId(parent);
+    var n: usize = 0;
+    var it = uw.node(pid).first;
+    while (it != .none) : (it = uw.node(it).next) {
+        const fill = uw.node(uw.node(it).first).first;
+        const li = uw.state(fill).own_layer;
+        if (li >= uw.paint.layers.items.len) continue;
+        const l = uw.paint.layers.items[li];
+        if (l.owner != fill) continue;
+        const a = l.anim orelse continue;
+        if (a.iterations != 0) continue;
+        out[n] = a.to.transform.translate.x - a.from.?.transform.translate.x;
+        n += 1;
+    }
+    return n;
+}
+
+test "widgets: indeterminate progress sweeps on the compositor while shown, mirrored in RTL, not with reduced motion" {
+    for ([_]bool{ false, true }) |rtl| {
+        var h: Harness = .{ .reduced_motion = false };
+        try h.startWith(.{ .width = 300, .height = 100, .flags = .{ .rtl = rtl } });
+        defer h.stop();
+        var txn: t.Txn = .null;
+        try ok(c.siv_txn_begin(h.window, &txn));
+        const holder = c.siv_box(txn, c.siv_window_root(h.window));
+        const busy = c.siv_progress_bar(txn, holder, &.{ .label = "Working", .label_len = 7, .flags = .{ .indeterminate = true } });
+        _ = c.siv_set_layout(txn, busy, &.{ .width = .{ .unit = .px, .value = 200 } });
+        try ok(c.siv_txn_commit(txn));
+        try h.settle();
+        var travel: [4]f32 = undefined;
+        try testing.expectEqual(@as(usize, 1), try sweeps(&h, holder, &travel));
+        // The 60 px bar runs from just before the start edge to just past
+        // the end: 200 + 60 px toward the end.
+        try testing.expectApproxEqAbs(@as(f32, if (rtl) -260 else 260), travel[0], 0.01);
+
+        // Hidden, it stops; shown again, it starts over.
+        try ok(c.siv_txn_begin(h.window, &txn));
+        _ = c.siv_set_visual(txn, holder, &.{ .flags = .{ .hidden = true } });
+        try ok(c.siv_txn_commit(txn));
+        try h.settle();
+        try testing.expectEqual(@as(usize, 0), try sweeps(&h, holder, &travel));
+        try ok(c.siv_txn_begin(h.window, &txn));
+        _ = c.siv_set_visual(txn, holder, null);
+        try ok(c.siv_txn_commit(txn));
+        try h.settle();
+        try testing.expectEqual(@as(usize, 1), try sweeps(&h, holder, &travel));
+
+        // Determinate progress has nothing running.
+        try ok(c.siv_txn_begin(h.window, &txn));
+        _ = c.siv_progress_bar(txn, holder, &.{ .label = "Upload", .label_len = 6, .value = 40 });
+        try ok(c.siv_txn_commit(txn));
+        try h.settle();
+        try testing.expectEqual(@as(usize, 1), try sweeps(&h, holder, &travel));
+    }
+    // Reduced motion: a still bar at the start.
+    var h: Harness = .{};
+    try h.start(300, 100, null, null);
+    defer h.stop();
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const holder = c.siv_box(txn, c.siv_window_root(h.window));
+    _ = c.siv_progress_bar(txn, holder, &.{ .flags = .{ .indeterminate = true } });
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    var travel: [1]f32 = undefined;
+    try testing.expectEqual(@as(usize, 0), try sweeps(&h, holder, &travel));
+}
+
 test "theme: overrides, derived accents, and resolved colors" {
     var h: Harness = .{};
     try h.start(100, 100, null, null);

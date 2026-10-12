@@ -216,7 +216,21 @@ pub fn apply(txn: Txn, r: *Range) void {
                 _ = c.siv_set_semantics(txn, b[0], &.{ .role = .button, .flags = .{ .disabled = off } });
             }
         },
-        else => _ = c.siv_set_visual(txn, r.fill, &.{ .radius = corners(tk.progress_height / 2), .background_token = if (h.disabled) .disabled_fg else .accent }),
+        else => {
+            _ = c.siv_set_visual(txn, r.fill, &.{ .radius = corners(tk.progress_height / 2), .background_token = if (h.disabled) .disabled_fg else .accent });
+            // Unknown progress: the fill sweeps from beyond the start edge
+            // to beyond the end on the compositor, repeating; the track
+            // clips it. Reduced motion or hiding leaves it still at the
+            // start.
+            _ = c.siv_set_animation(txn, r.fill, if (r.indeterminate) &.{
+                .property = .translate_x,
+                .easing = .ease_in_out,
+                .from = -1,
+                .to = 1 / tk.indeterminate_share,
+                .duration_ms = tk.indeterminate_ms,
+                .flags = .{ .relative = true, .mirror_rtl = true },
+            } else null);
+        },
     }
     var buf: [1024]u8 = undefined;
     const label = w.labelOf(r.target, &buf);

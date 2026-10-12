@@ -35,6 +35,8 @@ pub const progress_height: f32 = 6;
 pub const progress_min_width: f32 = 120;
 /// Indeterminate progress: the share of the track the bar fills.
 pub const indeterminate_share: f32 = 0.3;
+/// One sweep of indeterminate progress across the track.
+pub const indeterminate_ms: u32 = 1500;
 
 pub const field_min_width: f32 = 160;
 pub const spin_field_width: f32 = 64;
