@@ -714,18 +714,22 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       (`Op.set_external`), fitted to the content's aspect ratio.
     - Each frame the compositor finds every placement's surface rectangle
       and promotes it when the layer's transform is axis-aligned with
-      positive scale, its opacity is 1, its clips are rectangular and
-      contain it, and nothing painted later overlaps it (topmost). Promoted
-      frames go to a synchronized `wl_subsurface` as a wl_shm buffer from
-      the producer's own memory (no copy), scaled with `wp_viewport`;
-      others are drawn as images (`bgrx8_srgb`). Changing between the two
-      redraws the layer. A new frame that changes only a subsurface costs a
-      bare commit, not a present. Replaced frames are released
-      (`Event.external_released`) after the next frame.
+      positive scale, its opacity is 1, and its clips are rectangles.
+      Promoted frames go to a synchronized `wl_subsurface` as a wl_shm
+      buffer from the producer's own memory (no copy), scaled with
+      `wp_viewport` and cropped to the clips through its source rectangle.
+      If nothing painted later overlaps it, the subsurface is above the
+      window. If something does (video controls), it goes below the window
+      and composition punches a hole: the window is cleared to transparent
+      over the visible part (a `src`-blend layer), so the opaque frame
+      shows through and the later content composites over it there.
+      Rounded or rotated clips, other transforms, and opacity composite the
+      frame as an image (`bgrx8_srgb`). Changing modes redraws the layer.
+      A new frame that changes only a subsurface costs a bare commit, not a
+      present. Replaced frames are released (`Event.external_released`)
+      after the next frame.
     - Not yet: dma-buf frames and their import as textures (with the
-      Vulkan renderer), promotion below the window with a punched hole for
-      opaque content under other content, cropping by clips through the
-      viewport source rectangle, and handing embedders a `wl_surface*`.
+      Vulkan renderer), and handing embedders a `wl_surface*`.
   - Fractional scale, preferred buffer scale, output hotplug, `xdg-activation`,
     idle inhibit, `xdg-dialog`, toplevel icons, and session restore.
 

@@ -576,7 +576,7 @@ const Video = struct {
     fd: i32,
     pixels: []u8,
     frame: compositor.ExternalFrame,
-    promoted: bool = false,
+    mode: enum { above, below, composited } = .composited,
 
     fn init(w: u32, h: u32) !Video {
         const linux = std.os.linux;
@@ -595,11 +595,14 @@ const Video = struct {
         testing.allocator.free(v.pixels);
     }
 
-    /// For the harness's full redraw: the frame unless a subsurface shows it.
-    fn image(ctx: *anyopaque, _: compositor.ExternalId) ?scene.ImageRef {
+    /// For the harness's full redraw, drawn as the compositor decided.
+    fn draw(ctx: *anyopaque, _: compositor.ExternalId) compositor.tree.Draw {
         const v: *Video = @ptrCast(@alignCast(ctx));
-        if (v.promoted) return null;
-        return .{ .pixels = v.pixels.ptr, .width = v.frame.width, .height = v.frame.height, .stride = v.frame.stride, .format = .bgrx8_srgb, .key = 7 };
+        return switch (v.mode) {
+            .above => .none,
+            .below => .hole,
+            .composited => .{ .image = .{ .pixels = v.pixels.ptr, .width = v.frame.width, .height = v.frame.height, .stride = v.frame.stride, .format = .bgrx8_srgb, .key = 7 } },
+        };
     }
 };
 
@@ -617,7 +620,7 @@ fn subsurfaceOf(app: *App) ?platform.SubsurfaceState {
     return s.out;
 }
 
-test "external content: a subsurface while unobstructed, composited under an overlay" {
+test "external content: above the window, below it with a hole under controls, composited when translucent" {
     var app: App = undefined;
     try app.init(testing.allocator, .{ .width = 240, .height = 160 });
     defer app.deinit();
@@ -625,7 +628,7 @@ test "external content: a subsurface while unobstructed, composited under an ove
     defer video.deinit();
     const ext = try app.comp.createExternal(app.wid);
     try app.comp.setExternalFrame(app.wid, ext, video.frame);
-    app.mirror.externals = .{ .ctx = &video, .image = Video.image };
+    app.mirror.externals = .{ .ctx = &video, .draw = Video.draw };
     var player: NodeId = undefined;
     {
         const t = try app.win.begin();
@@ -642,19 +645,34 @@ test "external content: a subsurface while unobstructed, composited under an ove
     try testing.expectEqual(@as(i32, 10), sub.rect.x);
     try testing.expectEqual(@as(i32, 220), sub.rect.width);
     try testing.expectEqual(@as(u64, 7), sub.frame.?.key);
-    video.promoted = true;
+    try testing.expect(!sub.below);
+    video.mode = .above;
     try expectDamageExact(&app);
 
-    // A translucent badge over the corner: composited, in the window.
+    // Controls over the corner keep the zero-copy path: the subsurface goes
+    // below the window, which is transparent over the video except for
+    // the controls.
     {
         const t = try app.win.begin();
-        const badge = try node(t, app.win.node(.root).first, .box, .{ .width = .{ .px = 60 }, .height = .{ .px = 24 }, .inset = .{ .end = 16, .top = 30 } }, .{ .background = red, .radius = .all(12), .opacity = 0.8 });
-        _ = badge;
+        _ = try node(t, app.win.node(.root).first, .box, .{ .width = .{ .px = 60 }, .height = .{ .px = 24 }, .inset = .{ .end = 16, .top = 30 } }, .{ .background = red, .radius = .all(12), .opacity = 0.8 });
+        t.commit();
+    }
+    try app.settle();
+    const below = subsurfaceOf(&app).?;
+    try testing.expect(below.visible and below.below);
+    video.mode = .below;
+    try expectDamageExact(&app);
+    try expectGolden(&app, "external-hole");
+
+    // Translucent video: composited into the window.
+    {
+        const t = try app.win.begin();
+        try t.setVisual(player, .{ .background = ink, .opacity = 0.9 });
         t.commit();
     }
     try app.settle();
     try testing.expect(!subsurfaceOf(&app).?.visible);
-    video.promoted = false;
+    video.mode = .composited;
     try expectDamageExact(&app);
     try expectGolden(&app, "external-composited");
 }
