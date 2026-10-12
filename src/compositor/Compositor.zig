@@ -286,7 +286,7 @@ pub fn destroy(self: *Compositor) void {
     // Undelivered closures release what they own.
     for ([_]*Inbox{ &self.processing, &self.inbox }) |in| for (in.msgs.items) |m| switch (m) {
         .post => |p| if (p.destroy) |d| d(p.ctx),
-        .external_frame => |f| _ = std.os.linux.close(f.frame.fd),
+        .external_frame => |f| f.frame.close(),
         .external_hook => |eh| if (eh.hook) |h| h.dropped(h.ctx),
         else => {},
     };
@@ -503,14 +503,46 @@ pub fn destroyExternal(self: *Compositor, window: WindowId, id: update.ExternalI
 /// duplicated; the producer keeps its own. The previous frame is released
 /// (`Event.external_released`) once no frame reads it.
 pub fn setExternalFrame(self: *Compositor, window: WindowId, id: update.ExternalId, frame: update.ExternalFrame) !void {
-    const rc = std.os.linux.fcntl(frame.fd, std.os.linux.F.DUPFD_CLOEXEC, 0);
-    if (std.os.linux.errno(rc) != .SUCCESS) return error.SystemResources;
     var own = frame;
-    own.fd = @intCast(rc);
+    own.fd = try dupFd(frame.fd);
+    if (own.dmabuf) |*d| {
+        if (d.plane_count < 1 or d.plane_count > 4) {
+            _ = std.os.linux.close(own.fd);
+            return error.InvalidFrame;
+        }
+        d.planes[0] = .{ .fd = own.fd, .offset = frame.offset, .stride = frame.stride };
+        for (d.planes[1..d.plane_count], 1..) |*p, i| p.fd = dupFd(p.fd) catch |err| {
+            d.plane_count = @intCast(i);
+            own.close();
+            return err;
+        };
+    }
     self.send(.{ .external_frame = .{ .window = window, .id = id, .frame = own } }) catch |err| {
-        _ = std.os.linux.close(own.fd);
+        own.close();
         return err;
     };
+}
+
+/// Sends released external frames to the UI thread.
+const ReleaseTo = struct {
+    comp: *Compositor,
+    window: WindowId,
+    pub fn external(r: ReleaseTo, id: update.ExternalId, key: u64) void {
+        r.comp.outbox.push(.{ .external_released = .{ .window = r.window, .id = id, .key = key } });
+    }
+};
+
+/// A dma-buf frame's fences signaled: it is current now.
+fn onExternalReady(ctx: *anyopaque, id: update.ExternalId) void {
+    const w: *Window = @ptrCast(@alignCast(ctx));
+    w.tree.touchExternal(id);
+    w.compositor.platform.requestFrame(w.id);
+}
+
+fn dupFd(fd: i32) error{SystemResources}!i32 {
+    const rc = std.os.linux.fcntl(fd, std.os.linux.F.DUPFD_CLOEXEC, 0);
+    if (std.os.linux.errno(rc) != .SUCCESS) return error.SystemResources;
+    return @intCast(rc);
 }
 
 /// Destroys a window. Its content comes back in `released` events;
@@ -667,6 +699,8 @@ fn openSurface(self: *Compositor, role: union(enum) { toplevel: platform_mod.Win
         .externals = .init(self.gpa),
         .compositor = self,
     };
+    w.externals.loop = self.loop;
+    w.externals.on_ready = .{ .ctx = w, .func = onExternalReady };
     self.windows.items[id] = w;
     return id;
 }
@@ -852,6 +886,10 @@ fn onPlatformEvent(ctx: ?*anyopaque, ev: *const platform_mod.Event) void {
             self.seats[m.seat].mods = m.mods;
         },
         .scroll => |s| if (self.scroll(s)) return,
+        .subsurface_released => |r| {
+            if (self.getWindow(r.window)) |w| w.externals.subsurfaceReleased(r.key, ReleaseTo{ .comp = self, .window = w.id });
+            return;
+        },
         else => {},
     }
     self.outbox.push(.{ .platform = ev.* });
@@ -958,13 +996,7 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
     // Subsurface changes apply with the window's commit.
     if (subsurfaces_changed and !presented) self.platform.commitWindow(w.id);
     self.releaseAll(w.tree.endFrame());
-    w.externals.endFrame(struct {
-        comp: *Compositor,
-        window: WindowId,
-        pub fn external(r: @This(), id: update.ExternalId, key: u64) void {
-            r.comp.outbox.push(.{ .external_released = .{ .window = r.window, .id = id, .key = key } });
-        }
-    }{ .comp = self, .window = w.id });
+    w.externals.endFrame(self.platform, w.id, ReleaseTo{ .comp = self, .window = w.id });
     for (w.externals.configures.items) |cf| self.outbox.push(.{ .external_configure = .{
         .window = w.id,
         .id = cf.id,

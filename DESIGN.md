@@ -1017,8 +1017,54 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
         Mesa's EGL and Vulkan do. Embedders must never dispatch or
         round-trip the default queue, and must not set a listener, a
         viewport, or a buffer scale on the surface.
-    - Not yet: dma-buf frames and their import as textures (with the
-      Vulkan renderer), and external nodes in the C API.
+    - dma-buf frames: a producer submits a dma-buf instead of shared
+      memory (`ExternalFrame.dmabuf`; in C, `siv_external_frame_desc`'s
+      `memory`, `modifier`, `drm_format`, and `planes`): a DRM fourcc and
+      modifier and one to four planes, whose fds the compositor
+      duplicates.
+      - Readiness: a frame becomes current only once its implicit fences
+        signal. The compositor thread watches the dma-buf in its loop
+        (a dma-buf polls readable when its writes are done) and keeps
+        showing the previous frame meanwhile, so neither it nor a renderer
+        waits on the producer's GPU and nothing needs a sync_file. A newer
+        frame replaces one still pending, which is then released unshown.
+      - Promotion: as for shared memory, plus the Wayland compositor must
+        take the format and modifier: the platform reads linux-dmabuf
+        default feedback's format table and tranches
+        (`Platform.supportsDmabuf`) and creates the wl_buffer with
+        `create_immed` (a buffer the compositor advertised but still
+        cannot import is a protocol error, as with Mesa's WSI). Any format
+        the compositor takes is promoted, YUV included.
+      - Release: a promoted frame is in use until the compositor lets go,
+        which can be after siv replaces it (scan-out, or a repaint still
+        reading it), so it is released only when every wl_buffer made from
+        it has had `wl_buffer.release` (`Event.subsurface_released`,
+        `Platform.dmabufBusy`). Each wl_buffer is attached once: showing a
+        frame again after hiding it makes a new one, so a release always
+        ends one attachment (re-attaching a buffer whose release may be in
+        flight would make the release ambiguous).
+      - Composited (not promotable, or a format the compositor does not
+        take): the Vulkan renderer imports it (D10). Without Vulkan, the
+        CPU renderer reads it through a mapping only when it is linear,
+        single-plane XRGB8888 (bracketed by `DMA_BUF_IOCTL_SYNC`). Any
+        other dma-buf (tiled, YUV, or another RGB format) is not drawn
+        there, is still released as usual, and is logged once. Rejection
+        rather than readback: reading tiled or YUV layouts on the CPU
+        means detiling each vendor's modifiers and converting color, and
+        mappings of device memory read at a fraction of RAM speed; the
+        windows that hit it are the rare ones without Vulkan whose
+        compositor will not take the buffer either.
+      - Verified on the headless backend (`compositor/tests.zig`): a
+        linear dma-buf is read like shared memory, a tiled one is not drawn
+        but released, a format the compositor takes is promoted, a frame
+        with pending writes waits for them (a pipe stands in for its
+        fences), and promoted frames are released after the compositor's
+        release. Not verified here: linux-dmabuf against a real
+        compositor (headless sway with pixman advertises no
+        `zwp_linux_dmabuf_v1`, and the orb has no DRM device or dma-buf
+        exporter), so the format-table parsing and `create_immed` path
+        have run on no compositor yet.
+    - Not yet: external nodes in the C API.
   - Fractional scale, preferred buffer scale, output hotplug, `xdg-activation`,
     idle inhibit, `xdg-dialog`, toplevel icons, and session restore.
 

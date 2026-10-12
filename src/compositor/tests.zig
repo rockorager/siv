@@ -569,3 +569,81 @@ test "external content: a subsurface when unobstructed, composited otherwise" {
     try testing.expect(hl.subsurfaces(id)[0].?.visible);
     try testing.expectEqual(bgra_white, h.pixel(id, 20, 20));
 }
+
+fn wasReleased(h: *const Harness, key: u64) bool {
+    for (h.events.items) |e| if (e == .external_released and e.external_released.key == key) return true;
+    return false;
+}
+
+/// `memfdFrame` described as a dma-buf (a memfd maps like a linear one).
+fn dmabufFrame(w: u32, ht: u32, bgrx: [4]u8, key: u64, modifier: u64) !update.ExternalFrame {
+    var f = try memfdFrame(w, ht, bgrx, key);
+    f.dmabuf = .{ .format = scene.Dmabuf.xrgb8888, .modifier = modifier, .plane_count = 1 };
+    return f;
+}
+
+test "external dma-buf frames: promoted when the compositor takes them, read or rejected otherwise" {
+    var h: Harness = .{};
+    try h.start(false);
+    defer h.stop();
+    const id = try h.window();
+    const hl = h.headless();
+    const ext = try h.comp.createExternal(id);
+    // No dma-buf formats yet: composited, and a linear XRGB8888 dma-buf is
+    // read through a mapping like shared memory.
+    const red_frame = try dmabufFrame(40, 30, .{ 0, 0, 0xff, 0 }, 1, scene.Dmabuf.modifier_linear);
+    defer _ = std.os.linux.close(red_frame.fd);
+    try h.comp.setExternalFrame(id, ext, red_frame);
+    _ = try h.comp.commit(id, &.{
+        .{ .create = 2 },
+        .{ .insert = .{ .layer = 2, .parent = 1 } },
+        .{ .set_transform = .{ .layer = 2, .transform = .offset(10, 10) } },
+        .{ .set_external = .{ .layer = 2, .external = .{ .id = ext, .rect = .xywh(0, 0, 40, 30) } } },
+    });
+    try h.runMs(20);
+    try testing.expectEqual(@as(usize, 0), hl.subsurfaces(id).len);
+    try testing.expectEqual(bgra_red, h.pixel(id, 20, 20));
+
+    // A tiled one cannot be read without Vulkan: not drawn, still released.
+    const tiled = try dmabufFrame(40, 30, .{ 0xff, 0, 0, 0 }, 2, 0x0100000000000001); // I915_FORMAT_MOD_X_TILED
+    defer _ = std.os.linux.close(tiled.fd);
+    try h.comp.setExternalFrame(id, ext, tiled);
+    try h.runMs(20);
+    try testing.expectEqual(bgra_white, h.pixel(id, 20, 20));
+    try testing.expect(wasReleased(&h, 1));
+
+    // The compositor takes linear XRGB8888: promoted, as a dma-buf.
+    try hl.addDmabufFormat(scene.Dmabuf.xrgb8888, scene.Dmabuf.modifier_linear);
+    const green_frame = try dmabufFrame(40, 30, .{ 0, 0xff, 0, 0 }, 3, scene.Dmabuf.modifier_linear);
+    defer _ = std.os.linux.close(green_frame.fd);
+    try h.comp.setExternalFrame(id, ext, green_frame);
+    try h.runMs(20);
+    var subs = hl.subsurfaces(id);
+    try testing.expect(subs[0].?.visible);
+    try testing.expectEqual(@as(u64, 3), subs[0].?.frame.?.key);
+    try testing.expect(subs[0].?.frame.?.dmabuf != null);
+    try testing.expect(wasReleased(&h, 2));
+
+    // A frame whose writes are still pending (a pipe stands in for a
+    // dma-buf with unsignaled fences) is not shown until they are done.
+    var pipe: [2]i32 = undefined;
+    if (std.os.linux.errno(std.os.linux.pipe2(&pipe, .{ .CLOEXEC = true })) != .SUCCESS) return error.SkipZigTest;
+    defer _ = std.os.linux.close(pipe[0]);
+    defer _ = std.os.linux.close(pipe[1]);
+    var busy: update.ExternalFrame = .{ .fd = pipe[0], .width = 40, .height = 30, .stride = 160, .key = 4 };
+    busy.dmabuf = .{ .format = scene.Dmabuf.xrgb8888, .modifier = scene.Dmabuf.modifier_linear, .plane_count = 1 };
+    try h.comp.setExternalFrame(id, ext, busy);
+    try h.runMs(40);
+    try testing.expectEqual(@as(u64, 3), hl.subsurfaces(id)[0].?.frame.?.key);
+    try testing.expect(!wasReleased(&h, 3));
+    _ = std.os.linux.write(pipe[1], "x", 1);
+    try h.runMs(40);
+    subs = hl.subsurfaces(id);
+    try testing.expectEqual(@as(u64, 4), subs[0].?.frame.?.key);
+    // The promoted frame it replaced goes back once the compositor let go
+    // of it.
+    try testing.expect(wasReleased(&h, 3));
+    try h.comp.destroyExternal(id, ext);
+    try h.runMs(20);
+    try testing.expect(wasReleased(&h, 4));
+}

@@ -179,10 +179,10 @@ pub const Animation = struct {
 pub const ExternalId = u32;
 
 /// One frame of external content: opaque XRGB8888 pixels (B, G, R, X
-/// bytes) in shared memory the compositor can map, such as a memfd. The
-/// compositor duplicates `fd`; the producer may close its copy, but must
-/// not change the pixels until `Event.external_released` reports the
-/// frame's key.
+/// bytes) in shared memory the compositor can map, such as a memfd, or a
+/// dma-buf. The compositor duplicates the fds; the producer may close its
+/// copies, but must not change the pixels until `Event.external_released`
+/// reports the frame's key.
 pub const ExternalFrame = struct {
     fd: i32,
     offset: u32 = 0,
@@ -192,6 +192,17 @@ pub const ExternalFrame = struct {
     stride: u32,
     /// Changes whenever the pixels change.
     key: u64,
+    /// A dma-buf instead of shared memory (D17); its first plane is `fd`,
+    /// `offset`, and `stride`. Shown once its implicit fences signal.
+    dmabuf: ?scene.Dmabuf = null,
+
+    /// Closes every fd the frame holds.
+    pub fn close(f: ExternalFrame) void {
+        _ = std.os.linux.close(f.fd);
+        if (f.dmabuf) |d| for (d.planes[1..d.plane_count]) |p| {
+            _ = std.os.linux.close(p.fd);
+        };
+    }
 };
 
 /// Takes a slot's released frames on the compositor thread, instead of

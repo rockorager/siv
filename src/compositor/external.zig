@@ -1,7 +1,15 @@
 //! External content of one window (D17) on the compositor thread: frames
-//! mapped from their shared memory, and the decision each frame whether a
-//! subsurface shows them without copying (promotion) or the frame is
-//! composited like an image (the fallback).
+//! mapped from their shared memory or held as dma-bufs, and the decision
+//! each frame whether a subsurface shows them without copying (promotion)
+//! or the frame is composited like an image (the fallback).
+//!
+//! dma-buf frames become current once their implicit fences signal (the
+//! fd polls readable), so neither the compositor nor a renderer waits on a
+//! producer's GPU. A subsurface shows one when the compositor's dma-buf
+//! feedback lists its format and modifier; a frame it showed is released
+//! only once the compositor has let go of its wl_buffers. Composited, the
+//! Vulkan renderer imports it; without Vulkan, a linear XRGB8888 one is
+//! mapped and read (DMA_BUF_IOCTL_SYNC); any other is not drawn.
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -11,42 +19,114 @@ const raster = @import("raster");
 const platform = @import("platform");
 const update_mod = @import("update.zig");
 const tree_mod = @import("tree.zig");
+const Loop = @import("loop").Loop;
+
+const log = std.log.scoped(.compositor);
 
 const ExternalId = update_mod.ExternalId;
 const ReleaseHook = update_mod.ExternalReleaseHook;
 
 pub const Mapped = struct {
     frame: update_mod.ExternalFrame,
-    /// The mapping, from the frame's offset rounded down to a page.
-    map: []align(std.heap.page_size_min) u8,
-    pixels: [*]const u8,
+    /// The mapping, from the frame's offset rounded down to a page. Shared
+    /// memory is mapped at once; a dma-buf only when composited, if it is
+    /// linear XRGB8888, and null otherwise.
+    map: ?[]align(std.heap.page_size_min) u8 = null,
+    pixels: ?[*]const u8 = null,
+    /// A dma-buf: its description for renderers, at a stable address.
+    dmabuf: ?*scene.Dmabuf = null,
+    map_tried: bool = false,
+    /// A subsurface showed it: its release waits for the compositor's.
+    promoted: bool = false,
 
-    /// Maps `frame` (its fd is ours to keep and close).
-    pub fn init(frame: update_mod.ExternalFrame) !Mapped {
+    /// Takes `frame` (its fds are ours to keep and close) and maps it if
+    /// it is in shared memory.
+    pub fn init(gpa: Allocator, frame: update_mod.ExternalFrame) !Mapped {
+        if (frame.width == 0 or frame.height == 0) return error.InvalidFrame;
+        if (frame.dmabuf) |d| {
+            if (d.plane_count < 1 or d.plane_count > 4) return error.InvalidFrame;
+            const copy = try gpa.create(scene.Dmabuf);
+            copy.* = d;
+            return .{ .frame = frame, .dmabuf = copy, .map_tried = !mappable(frame) };
+        }
+        if (frame.stride < frame.width * 4) return error.InvalidFrame;
+        var m: Mapped = .{ .frame = frame, .map_tried = true };
+        try m.mapPixels();
+        return m;
+    }
+
+    pub fn deinit(m: Mapped, gpa: Allocator) void {
+        if (m.map) |map| {
+            if (m.dmabuf != null) dmabufSync(m.frame.fd, dma_buf_sync_end);
+            _ = linux.munmap(map.ptr, map.len);
+        }
+        if (m.dmabuf) |d| gpa.destroy(d);
+        m.frame.close();
+    }
+
+    /// CPU renderers can read single-plane linear XRGB8888 dma-bufs.
+    fn mappable(frame: update_mod.ExternalFrame) bool {
+        const d = frame.dmabuf.?;
+        return d.format == scene.Dmabuf.xrgb8888 and d.modifier == scene.Dmabuf.modifier_linear and d.plane_count == 1 and frame.stride >= frame.width * 4;
+    }
+
+    fn mapPixels(m: *Mapped) !void {
+        const frame = m.frame;
         const page = std.heap.page_size_min;
         const start = frame.offset / page * page;
         const len = frame.offset - start + @as(usize, frame.stride) * frame.height;
-        if (frame.width == 0 or frame.height == 0 or frame.stride < frame.width * 4) return error.InvalidFrame;
         const rc = linux.mmap(null, len, .{ .READ = true }, .{ .TYPE = .SHARED }, frame.fd, @intCast(start));
         if (linux.errno(rc) != .SUCCESS) return error.MapFailed;
         const ptr: [*]align(page) u8 = @ptrFromInt(rc);
-        return .{ .frame = frame, .map = ptr[0..len], .pixels = ptr + (frame.offset - start) };
+        m.map = ptr[0..len];
+        m.pixels = ptr + (frame.offset - start);
     }
 
-    pub fn deinit(m: Mapped) void {
-        _ = linux.munmap(m.map.ptr, m.map.len);
-        _ = linux.close(m.frame.fd);
+    fn image(m: *Mapped) scene.ImageRef {
+        if (!m.map_tried) {
+            m.map_tried = true;
+            // CPU access to a dma-buf is bracketed by DMA_BUF_IOCTL_SYNC,
+            // which also keeps caches coherent; the end comes at unmap.
+            if (m.mapPixels()) dmabufSync(m.frame.fd, dma_buf_sync_start) else |_| {}
+        }
+        return .{ .pixels = m.pixels, .width = m.frame.width, .height = m.frame.height, .stride = m.frame.stride, .format = .bgrx8_srgb, .key = m.frame.key, .dmabuf = m.dmabuf };
     }
+};
 
-    fn image(m: Mapped) scene.ImageRef {
-        return .{ .pixels = m.pixels, .width = m.frame.width, .height = m.frame.height, .stride = m.frame.stride, .format = .bgrx8_srgb, .key = m.frame.key };
-    }
+// DMA_BUF_IOCTL_SYNC (linux/dma-buf.h): _IOW('b', 0, struct { u64 flags }).
+const dma_buf_ioctl_sync: u32 = 0x40086200;
+const dma_buf_sync_read: u64 = 1;
+const dma_buf_sync_start: u64 = 0 | dma_buf_sync_read;
+const dma_buf_sync_end: u64 = 4 | dma_buf_sync_read;
+
+/// Fails harmlessly on fds that are not dma-bufs (memfds in tests).
+fn dmabufSync(fd: i32, flags: u64) void {
+    var arg: u64 = flags;
+    _ = linux.ioctl(fd, dma_buf_ioctl_sync, @intFromPtr(&arg));
+}
+
+/// Whether the fd's pending writes are done (a dma-buf polls readable once
+/// its implicit write fences signal; other files always do).
+fn ready(fd: i32) bool {
+    var fds = [_]linux.pollfd{.{ .fd = fd, .events = linux.POLL.IN, .revents = 0 }};
+    const rc = linux.poll(&fds, 1, 0);
+    return linux.errno(rc) != .SUCCESS or rc != 0;
+}
+
+/// A dma-buf frame waiting for its fences, watched by the loop.
+const Pending = struct {
+    source: Loop.Source,
+    externals: *Externals,
+    id: ExternalId,
+    mapped: Mapped,
 };
 
 const Mode = enum { composited, above, below };
 
 const External = struct {
     frame: ?Mapped = null,
+    /// The next frame, until its fences signal.
+    pending: ?*Pending = null,
     sub: ?platform.SubsurfaceId = null,
     mode: Mode = .composited,
     /// What the subsurface was last told.
@@ -74,12 +154,23 @@ pub const Configure = struct { id: ExternalId, width: u32, height: u32, buffer_w
 
 pub const Externals = struct {
     gpa: Allocator,
+    /// Watches pending dma-buf frames; without it they show at once.
+    loop: ?*Loop = null,
+    /// Told when a pending frame becomes current (the caller redraws).
+    on_ready: ?Ready = null,
     items: std.ArrayList(?External) = .empty,
     found: std.ArrayList(tree_mod.Found) = .empty,
     /// Frames replaced or removed since the last frame; released after it.
     retired: std.ArrayList(Retired) = .empty,
     /// New sizes for embedders, sent after the frame.
     configures: std.ArrayList(Configure) = .empty,
+    /// Retired frames a subsurface showed, until the compositor releases
+    /// them (`subsurfaceReleased`).
+    waiting: std.ArrayList(Retired) = .empty,
+    /// A composited dma-buf had no pixels to read (logged once).
+    unmappable_logged: bool = false,
+
+    pub const Ready = struct { ctx: *anyopaque, func: *const fn (ctx: *anyopaque, id: ExternalId) void };
 
     pub const Retired = struct {
         id: ExternalId,
@@ -97,23 +188,34 @@ pub const Externals = struct {
     /// hooks dropped.
     pub fn deinit(e: *Externals) void {
         for (e.items.items) |item| if (item) |x| {
+            if (x.pending) |pd| {
+                if (x.hook) |h| h.released(h.ctx, pd.mapped.frame.key);
+                e.dropPending(pd);
+            }
             if (x.frame) |m| {
                 if (x.hook) |h| h.released(h.ctx, m.frame.key);
-                m.deinit();
+                m.deinit(e.gpa);
             }
             if (x.hook) |h| h.dropped(h.ctx);
         };
-        for (e.retired.items) |r| {
+        for ([_][]Retired{ e.retired.items, e.waiting.items }) |list| for (list) |r| {
             if (r.hook) |h| {
                 h.released(h.ctx, r.mapped.frame.key);
                 if (r.last) h.dropped(h.ctx);
             }
-            r.mapped.deinit();
-        }
+            r.mapped.deinit(e.gpa);
+        };
         e.items.deinit(e.gpa);
         e.found.deinit(e.gpa);
         e.retired.deinit(e.gpa);
+        e.waiting.deinit(e.gpa);
         e.configures.deinit(e.gpa);
+    }
+
+    fn dropPending(e: *Externals, pd: *Pending) void {
+        if (e.loop) |l| l.removeSource(&pd.source);
+        pd.mapped.deinit(e.gpa);
+        e.gpa.destroy(pd);
     }
 
     fn get(e: *Externals, id: ExternalId) ?*External {
@@ -157,6 +259,12 @@ pub const Externals = struct {
     pub fn destroy(e: *Externals, p: platform.Platform, window: platform.WindowId, id: ExternalId) void {
         const x = e.get(id) orelse return;
         if (x.sub) |sub| p.destroySubsurface(window, sub);
+        if (x.pending) |pd| {
+            if (e.loop) |l| l.removeSource(&pd.source);
+            e.retire(id, pd.mapped, x.hook);
+            e.gpa.destroy(pd);
+            x.pending = null;
+        }
         if (x.frame) |m| {
             e.retireLast(id, m, x.hook);
         } else if (x.hook) |h| h.dropped(h.ctx);
@@ -175,7 +283,7 @@ pub const Externals = struct {
             // Released early rather than leaked; nothing has shown it
             // since the frame that replaced it was taken.
             if (hook) |h| h.released(h.ctx, m.frame.key);
-            m.deinit();
+            m.deinit(e.gpa);
         };
     }
 
@@ -185,24 +293,74 @@ pub const Externals = struct {
                 h.released(h.ctx, m.frame.key);
                 h.dropped(h.ctx);
             }
-            m.deinit();
+            m.deinit(e.gpa);
         };
     }
 
-    /// Takes a new frame (owning its fd). False if the id is unknown or
-    /// the frame cannot be mapped.
+    /// Takes a new frame (owning its fds). True if it is current now;
+    /// false if the id is unknown, the frame cannot be mapped, or it is a
+    /// dma-buf still being written (`on_ready` follows once it is done).
     pub fn setFrame(e: *Externals, id: ExternalId, frame: update_mod.ExternalFrame) bool {
         const x = e.get(id) orelse {
-            _ = linux.close(frame.fd);
+            frame.close();
             return false;
         };
-        const m = Mapped.init(frame) catch {
-            _ = linux.close(frame.fd);
+        const m = Mapped.init(e.gpa, frame) catch {
+            frame.close();
             return false;
         };
+        // A newer frame replaces one still pending, which was never shown.
+        if (x.pending) |pd| {
+            if (e.loop) |l| l.removeSource(&pd.source);
+            e.retire(id, pd.mapped, x.hook);
+            e.gpa.destroy(pd);
+            x.pending = null;
+        }
+        if (m.dmabuf != null and !ready(frame.fd)) if (e.loop) |l| {
+            if (e.gpa.create(Pending)) |pd| {
+                pd.* = .{ .source = .{ .fd = frame.fd, .events = linux.EPOLL.IN, .func = onPendingReady }, .externals = e, .id = id, .mapped = m };
+                if (l.addSource(&pd.source)) {
+                    x.pending = pd;
+                    return false;
+                } else |_| e.gpa.destroy(pd);
+            } else |_| {}
+            // Unwatchable: shown now.
+        };
+        e.makeCurrent(id, x, m);
+        return true;
+    }
+
+    fn makeCurrent(e: *Externals, id: ExternalId, x: *External, m: Mapped) void {
         if (x.frame) |old| e.retire(id, old, x.hook);
         x.frame = m;
-        return true;
+    }
+
+    fn onPendingReady(source: *Loop.Source, _: u32) void {
+        const pd: *Pending = @fieldParentPtr("source", source);
+        const e = pd.externals;
+        const id = pd.id;
+        const x = e.get(id).?;
+        e.loop.?.removeSource(source);
+        x.pending = null;
+        e.makeCurrent(id, x, pd.mapped);
+        e.gpa.destroy(pd);
+        if (e.on_ready) |r| r.func(r.ctx, id);
+    }
+
+    /// The compositor let go of a dma-buf frame a subsurface showed
+    /// (`platform.Event.subsurface_released`): release it if it was
+    /// waiting for that.
+    pub fn subsurfaceReleased(e: *Externals, key: u64, release: anytype) void {
+        var i: usize = 0;
+        while (i < e.waiting.items.len) {
+            const r = e.waiting.items[i];
+            if (r.mapped.frame.key != key) {
+                i += 1;
+                continue;
+            }
+            _ = e.waiting.swapRemove(i);
+            releaseRetired(e.gpa, r, release);
+        }
     }
 
     /// Composition draws frames that are not on a subsurface, and holes
@@ -218,7 +376,14 @@ pub const Externals = struct {
         return switch (x.mode) {
             .above => .none,
             .below => .hole,
-            .composited => if (x.frame) |m| .{ .image = m.image() } else .none,
+            .composited => if (x.frame) |*m| blk: {
+                const ref = m.image();
+                if (ref.pixels == null and !e.unmappable_logged) {
+                    e.unmappable_logged = true;
+                    log.info("composited dma-buf frames that cannot be mapped draw only where Vulkan imports them", .{});
+                }
+                break :blk .{ .image = ref };
+            } else .none,
         };
     }
 
@@ -245,7 +410,9 @@ pub const Externals = struct {
             // Above the window when nothing covers it; below with a hole
             // when something does (the frames are opaque). One external
             // shown twice is composited.
-            const mode: Mode = if (!f.promotable or x.frame == null or x.seen) .composited else if (f.covered) .below else .above;
+            // A dma-buf only if the compositor takes its format and modifier.
+            const takes = if (x.frame) |m| if (m.frame.dmabuf) |d| p.supportsDmabuf(d.format, d.modifier) else true else false;
+            const mode: Mode = if (!f.promotable or !takes or x.seen) .composited else if (f.covered) .below else .above;
             x.seen = true;
             if (mode != x.mode) t.touchExternal(f.id);
             x.mode = mode;
@@ -265,6 +432,7 @@ pub const Externals = struct {
                     .height = x.frame.?.frame.height,
                     .stride = x.frame.?.frame.stride,
                     .key = x.frame.?.frame.key,
+                    .dmabuf = if (x.frame.?.dmabuf) |d| toPlatform(d.*) else null,
                 },
             };
             if (x.sub == null) x.sub = p.createSubsurface(window) catch {
@@ -278,6 +446,7 @@ pub const Externals = struct {
                 x.shown = state;
                 changed = true;
             }
+            x.frame.?.promoted = true;
         }
         for (e.items.items, 0..) |*item, i| if (item.*) |*x| {
             if (x.embed != null) {
@@ -365,15 +534,29 @@ pub const Externals = struct {
         return .{ .x = x0, .y = y0, .width = @as(i32, @intFromFloat(@round(r.x1))) - x0, .height = @as(i32, @intFromFloat(@round(r.y1))) - y0 };
     }
 
-    /// After a frame: frames retired before it are no longer read.
-    pub fn endFrame(e: *Externals, release: anytype) void {
+    /// After a frame: frames retired before it are no longer read by siv;
+    /// those a subsurface showed wait until the compositor is done too.
+    pub fn endFrame(e: *Externals, p: platform.Platform, window: platform.WindowId, release: anytype) void {
         for (e.retired.items) |r| {
-            if (r.hook) |h| {
-                h.released(h.ctx, r.mapped.frame.key);
-                if (r.last) h.dropped(h.ctx);
-            } else release.external(r.id, r.mapped.frame.key);
-            r.mapped.deinit();
+            if (r.mapped.promoted and p.dmabufBusy(window, r.mapped.frame.key)) {
+                if (e.waiting.append(e.gpa, r)) continue else |_| {} // released early rather than leaked
+            }
+            releaseRetired(e.gpa, r, release);
         }
         e.retired.clearRetainingCapacity();
     }
+
+    fn releaseRetired(gpa: Allocator, r: Retired, release: anytype) void {
+        if (r.hook) |h| {
+            h.released(h.ctx, r.mapped.frame.key);
+            if (r.last) h.dropped(h.ctx);
+        } else release.external(r.id, r.mapped.frame.key);
+        r.mapped.deinit(gpa);
+    }
 };
+
+fn toPlatform(d: scene.Dmabuf) platform.Dmabuf {
+    var out: platform.Dmabuf = .{ .format = d.format, .modifier = d.modifier, .plane_count = d.plane_count };
+    for (d.planes[0..d.plane_count], 0..) |pl, i| out.planes[i] = .{ .fd = pl.fd, .offset = pl.offset, .stride = pl.stride };
+    return out;
+}
