@@ -731,8 +731,15 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   perceptual correction, because users compare text with gamma-space Linux text.
   - The text correction maps coverage so that linear blending reproduces
     gamma-space blending against a contrasting background (white behind
-    dark text, black behind light text), from a table per foreground
-    luminance (16 levels). Color glyphs are not corrected.
+    dark text; #181818, a dark theme's background, behind light text),
+    from a table per foreground luminance (16 levels). Color glyphs are
+    not corrected.
+  - Light text first assumed black behind it. On real dark backgrounds
+    that thinned it by about a tenth at half coverage. Measured against a
+    GTK 4.22 app at 11–13 px (D14), GTK's light and dark text carry the
+    same ink (it blends in sRGB), but siv's light text carried 7% less
+    than its dark text and looked dim. With #181818 the two match, and
+    dark text is unchanged.
 - **Alternatives:** gamma-space blending everywhere (incorrect gradients and
   alpha); pure linear text (looks thin).
 - **Reverse if:** user testing prefers uncorrected linear text.
@@ -873,10 +880,27 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     arrive through the same paint callbacks, decode with wuffs (behind
     `src/render/cpu/image_decode.h`, which the D19 image pipeline can
     share), and are box-filtered to their device size in linear light.
-  - At 32 px and below the x-height is scaled vertically to a whole pixel
-    (at most ±8%). Stem darkening adds 0.25 px of stroke at 10 px and below,
-    falling to none at 18 px. Both are first guesses for the evaluation
-    below.
+  - At 32 px and below the x-height is scaled vertically to a whole pixel,
+    rounding up from a fraction of 0.375 as FreeType's autohinter does
+    (−8% to +12%). Stem darkening adds 0.25 px of stroke at 10 px and below,
+    falling to none at 18 px.
+  - Evaluation, October 2026: Inter 4.1 and Noto Sans at 11–13 px on a 1×
+    output, against FreeType (the font's hinting and the light
+    autohinter) and a GTK 4.22 app on headless sway with GTK's default
+    rendering (hintslight, grayscale, subpixel positions). siv kept even
+    spacing and sharp one-pixel stems where FreeType's hinted spacing is
+    uneven; its dark text carried 1.06–1.28× GTK's ink (visible coverage
+    summed over a strip) and looked good. Light text looked dim and soft
+    at 11–12 px, most in Noto Sans: the
+    D11 table assumed black behind it, and Noto Sans at 12 px rounded its
+    x-height from 6.43 down to 6 px where GTK rounds it up to 7. The
+    table now assumes #181818 and the x-height rounds up from 0.375
+    (it used to round to nearest, within ±8%), which lifts light text to
+    1.16–1.27× GTK's ink, the same as dark text, and gives Noto Sans at
+    12 px GTK's x-height in both schemes (its dark text goes from 1.06×
+    to 1.23×, in line with the other sizes). Stem darkening stays: it
+    applies to every foreground, and more of it would make dark text
+    heavier. Advances and line widths are unchanged.
   - Runs under rotation, skew, non-uniform scale, or above 256 px draw their
     outlines as paths; color glyphs lose their colors there.
 - **Alternatives:** FreeType with hinting.

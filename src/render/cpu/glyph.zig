@@ -682,7 +682,10 @@ fn rgba8(c: scene.Color) u32 {
 }
 
 /// Vertical scale that puts the x-height on a whole pixel at text sizes,
-/// so the tops of lowercase letters are crisp. Bounded to ±8%.
+/// so the tops of lowercase letters are crisp. Rounds up from a fraction of
+/// 0.375, like FreeType's autohinter (which GTK's default hintslight uses):
+/// Noto Sans at 12 px gets a 7 px x-height (+8.8%) instead of 6 (-6.7%),
+/// as in GTK. Bounded to -8%..+12%.
 pub fn xHeightScale(font: *hb.hb_font_t, px_size: f32) f32 {
     if (px_size > 32) return 1;
     var pos: hb.hb_position_t = 0;
@@ -693,12 +696,13 @@ pub fn xHeightScale(font: *hb.hb_font_t, px_size: f32) f32 {
     if (ys == 0) return 1;
     const xh = @as(f32, @floatFromInt(pos)) * px_size / @as(f32, @floatFromInt(ys));
     if (xh < 2) return 1;
-    return std.math.clamp(@round(xh) / xh, 0.92, 1.08);
+    return std.math.clamp(@floor(xh + 0.625) / xh, 0.92, 1.12);
 }
 
 /// Stem darkening for small unhinted sizes: total stroke width added, in
-/// pixels. Tuned conservatively; D14's evaluation against hinted FreeType
-/// output decides the final curve.
+/// pixels. It applies to every foreground, and dark text at 11-13 px is
+/// already heavier than GTK's (D14), so light text gets its weight from
+/// ContrastLuts instead.
 pub fn stemDarkening(px_size: f32) f32 {
     const max: f32 = 0.25;
     const full: f32 = 10;
@@ -751,15 +755,19 @@ fn outward(dir: Point, sign: f32) Point {
 /// Coverage correction for text composited in linear light (D11): maps
 /// coverage so that text looks as it does with gamma-space blending, which
 /// Linux users compare against. Indexed by the foreground's encoded
-/// luminance, assuming a contrasting background.
+/// luminance, assuming a contrasting background: white behind dark text,
+/// and a dark theme's background (#181818, near siv's #18181b) behind light
+/// text. Assuming black there thinned light text on real dark backgrounds
+/// by about a tenth at half coverage.
 pub const ContrastLuts = struct {
     pub const levels = 16;
+    const dark_bg: f32 = 24.0 / 255.0;
     tables: [levels][256]u16,
 
     pub fn init(l: *ContrastLuts) void {
         for (&l.tables, 0..) |*t, i| {
             const fe = @as(f32, @floatFromInt(i)) / (levels - 1);
-            const be: f32 = if (fe < 0.5) 1 else 0;
+            const be: f32 = if (fe < 0.5) 1 else dark_bg;
             const f = scene.srgbToLinear(fe);
             const bg = scene.srgbToLinear(be);
             for (t, 0..) |*v, a| {
@@ -787,6 +795,12 @@ test "contrast tables" {
         try std.testing.expectEqual(@as(u16, 0), t[0]);
         try std.testing.expectEqual(@as(u16, 65535), t[255]);
     }
+    // White text at half coverage on #181818, blended in linear light,
+    // lands where gamma-space blending puts it.
+    const c = @as(f32, @floatFromInt(l.tables[levels_last][128])) / 65535;
+    const bg = scene.srgbToLinear(24.0 / 255.0);
+    const want = (128 + (255 - 128) * @as(f32, 0x18) / 255) / 255;
+    try std.testing.expectApproxEqAbs(want, scene.linearToSrgb(c + (1 - c) * bg), 0.003);
 }
 
 const levels_last = ContrastLuts.levels - 1;
