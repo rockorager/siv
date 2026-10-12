@@ -481,6 +481,22 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     version covers everything except its transform and opacity, including
     the order of its child layers. `scene.damage.Tracker` returns device
     rectangles (merged; more than 16 collapse to their bounds).
+  - PDF output composites in sRGB, not linear light. PDF blends in a
+    transparency group's color space, so declaring a linear-light space
+    (an ICCBased profile with sRGB primaries and identity curves, or
+    CalRGB with gamma 1) on the page and group XObjects, with colors given
+    in it, would make printed translucency match the screen. Measured
+    with 50% blue over white (linear blending gives sRGB 187, sRGB
+    blending 127): Ghostscript 10.0 honors it (187), and with it the
+    cups-filters paths that render with Ghostscript (gstoraster, and
+    pdftops, whose default renderer is Ghostscript's ps2write); Poppler
+    22.12 (Splash and Cairo, so pdftoppm, pdftoraster, Evince, Okular),
+    MuPDF 1.21, and pdf.js 4.10 ignore it (127). Device colors drawn in
+    such a group are converted by Ghostscript too. So viewers and
+    previews would disagree with Ghostscript prints of the same file;
+    siv keeps DeviceRGB and sRGB compositing everywhere, so every reader
+    shows the same thing. Revisit when Poppler and pdf.js blend in the
+    group's space.
 - **Alternatives:** pixel-only scene (cannot produce PDF).
 - **Reverse if:** a construct cannot be lowered to all three backends. PDF
   has no sweep-gradient shading; sweeps lower to Coons patch meshes, and
@@ -1661,8 +1677,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     - PDF composites in its blending color space, DeviceRGB, which is
       sRGB-encoded, not in linear light like the renderers (D11), so
       translucent paints over other content print darker than on screen
-      (gradient stops themselves match). A linear CalRGB blending space
-      would match, but viewers and printers honor it unevenly.
+      (gradient stops themselves match). A linear-light blending space
+      would match, but only Ghostscript honors it (measurements in D9).
     - C API: `siv_print_desc` describes a document for both
       `siv_pdf_write` (to a file descriptor, A4 by default) and
       `siv_print`: an optional `begin` that lays out for a
