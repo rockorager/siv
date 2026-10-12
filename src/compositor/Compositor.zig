@@ -24,6 +24,7 @@ const update = @import("update.zig");
 const anim = @import("anim.zig");
 const tree_mod = @import("tree.zig");
 const surface_mod = @import("surface.zig");
+const external_mod = @import("external.zig");
 
 const Loop = loop_mod.Loop;
 const Timer = loop_mod.Timer;
@@ -141,6 +142,8 @@ const Msg = union(enum) {
     destroy_window: WindowId,
     call: *Call,
     post: struct { func: Func, destroy: ?*const fn (?*anyopaque) void, ctx: ?*anyopaque },
+    external_frame: struct { window: WindowId, id: update.ExternalId, frame: update.ExternalFrame },
+    destroy_external: struct { window: WindowId, id: update.ExternalId },
     stop,
 };
 
@@ -172,6 +175,7 @@ const Window = struct {
     size_serial: u64 = 0,
     size: platform_mod.Size = .{},
     stats: FrameStats = .{},
+    externals: external_mod.Externals,
     /// Retries a frame when no buffer was free, or starts delayed
     /// animations.
     timer: Timer = .{ .func = onWindowTimer },
@@ -226,6 +230,7 @@ pub fn destroy(self: *Compositor) void {
     // Undelivered closures release what they own.
     for ([_]*Inbox{ &self.processing, &self.inbox }) |in| for (in.msgs.items) |m| switch (m) {
         .post => |p| if (p.destroy) |d| d(p.ctx),
+        .external_frame => |f| _ = std.os.linux.close(f.frame.fd),
         else => {},
     };
     for (self.windows.items) |w| if (w) |win| self.freeWindow(win);
@@ -324,6 +329,42 @@ pub fn createPopup(self: *Compositor, options: platform_mod.PopupOptions) !Windo
     return id;
 }
 
+/// Creates an external content slot in a window (D17). Show it with
+/// `Op.set_external` and feed it frames with `setExternalFrame`.
+pub fn createExternal(self: *Compositor, window: WindowId) !update.ExternalId {
+    const Ctx = struct {
+        window: WindowId,
+        result: anyerror!update.ExternalId = error.InvalidWindow,
+        fn run(ctx: ?*anyopaque, comp: *Compositor) void {
+            const s: *@This() = @ptrCast(@alignCast(ctx));
+            const w = comp.getWindow(s.window) orelse return;
+            s.result = w.externals.create();
+        }
+    };
+    var ctx: Ctx = .{ .window = window };
+    try self.call(&ctx, Ctx.run);
+    return ctx.result;
+}
+
+/// Removes an external slot; its frame is released after the next frame.
+pub fn destroyExternal(self: *Compositor, window: WindowId, id: update.ExternalId) Allocator.Error!void {
+    return self.send(.{ .destroy_external = .{ .window = window, .id = id } });
+}
+
+/// Shows a new frame of external content, from any thread. The fd is
+/// duplicated; the producer keeps its own. The previous frame is released
+/// (`Event.external_released`) once no frame reads it.
+pub fn setExternalFrame(self: *Compositor, window: WindowId, id: update.ExternalId, frame: update.ExternalFrame) !void {
+    const rc = std.os.linux.fcntl(frame.fd, std.os.linux.F.DUPFD_CLOEXEC, 0);
+    if (std.os.linux.errno(rc) != .SUCCESS) return error.SystemResources;
+    var own = frame;
+    own.fd = @intCast(rc);
+    self.send(.{ .external_frame = .{ .window = window, .id = id, .frame = own } }) catch |err| {
+        _ = std.os.linux.close(own.fd);
+        return err;
+    };
+}
+
 /// Destroys a window. Its content comes back in `released` events;
 /// other events for it are dropped.
 pub fn destroyWindow(self: *Compositor, window: WindowId) Allocator.Error!void {
@@ -402,6 +443,19 @@ fn drain(self: *Compositor) void {
             self.closeWindow(w);
         },
         .post => |p| p.func(p.ctx, self),
+        .external_frame => |f| if (self.getWindow(f.window)) |w| {
+            if (w.externals.setFrame(f.id, f.frame)) {
+                w.tree.touchExternal(f.id);
+                self.platform.requestFrame(f.window);
+            }
+        } else {
+            _ = std.os.linux.close(f.frame.fd);
+        },
+        .destroy_external => |d| if (self.getWindow(d.window)) |w| {
+            w.externals.destroy(self.platform, d.window, d.id);
+            w.tree.touchExternal(d.id);
+            self.platform.requestFrame(d.window);
+        },
         .call => |cl| {
             cl.func(cl.ctx, self);
             _ = c.pthread_mutex_lock(&self.mutex);
@@ -453,6 +507,7 @@ fn openSurface(self: *Compositor, role: union(enum) { toplevel: platform_mod.Win
         .tree = .init(self.gpa),
         .tracker = .init(self.gpa),
         .surface = surface,
+        .externals = .init(self.gpa),
         .compositor = self,
     };
     self.windows.items[id] = w;
@@ -475,6 +530,7 @@ fn closeWindow(self: *Compositor, w: *Window) void {
 
 fn freeWindow(self: *Compositor, w: *Window) void {
     self.loop.cancelTimer(&w.timer);
+    w.externals.deinit();
     w.tree.deinit();
     w.tracker.deinit();
     w.surface.destroy();
@@ -584,6 +640,9 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
     const vp = IRect.xywh(0, 0, @intCast(state.bufferWidth()), @intCast(state.bufferHeight()));
     const s: f32 = @floatCast(state.scale.toFloat());
     const root = raster.Affine.scale(s, s);
+    // External content: subsurfaces where possible, composited elsewhere.
+    const subsurfaces_changed = w.externals.place(self.platform, w.id, &w.tree) catch return self.outOfMemory(w);
+    w.tree.externals = w.externals.resolver();
     const list = w.tree.compose() catch return self.outOfMemory(w);
     var damage = w.tracker.diff(w.tree.previous(), list, root, vp) catch return self.outOfMemory(w);
     const all = [_]IRect{vp};
@@ -613,7 +672,16 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
             self.loop.startTimer(&w.timer, Loop.now() + f.time.interval_ns / 2, 0) catch {};
         }
     }
+    // Subsurface changes apply with the window's commit.
+    if (subsurfaces_changed and !presented) self.platform.commitWindow(w.id);
     self.releaseAll(w.tree.endFrame());
+    w.externals.endFrame(struct {
+        comp: *Compositor,
+        window: WindowId,
+        pub fn external(r: @This(), id: update.ExternalId, key: u64) void {
+            r.comp.outbox.push(.{ .external_released = .{ .window = r.window, .id = id, .key = key } });
+        }
+    }{ .comp = self, .window = w.id });
 
     for (w.tree.scrolled.items) |id| {
         const l = &w.tree.layers.items[id];

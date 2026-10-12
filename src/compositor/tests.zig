@@ -468,3 +468,86 @@ test "discrete wheel steps without a distance scroll like Wayland wheels" {
     }.f);
     try testing.expectEqual(@as(f32, 2 * platform.Scroll.detent_px), h.last(.scrolled).?.scrolled.offset.y);
 }
+
+/// A memfd holding an opaque w x h frame of one BGRX color.
+fn memfdFrame(w: u32, h: u32, bgrx: [4]u8, key: u64) !update.ExternalFrame {
+    const linux = std.os.linux;
+    const fd: i32 = @intCast(linux.memfd_create("siv-test-frame", linux.MFD.CLOEXEC));
+    const size = w * h * 4;
+    _ = linux.ftruncate(fd, size);
+    const pixels = try testing.allocator.alloc(u8, size);
+    defer testing.allocator.free(pixels);
+    for (0..w * h) |i| pixels[i * 4 ..][0..4].* = bgrx;
+    _ = linux.pwrite(fd, pixels.ptr, size, 0);
+    return .{ .fd = fd, .width = w, .height = h, .stride = w * 4, .key = key };
+}
+
+test "external content: a subsurface when unobstructed, composited otherwise" {
+    var h: Harness = .{};
+    try h.start(false);
+    defer h.stop();
+    const id = try h.window();
+    const ext = try h.comp.createExternal(id);
+    const red_frame = try memfdFrame(40, 30, .{ 0, 0, 0xff, 0 }, 1);
+    defer _ = std.os.linux.close(red_frame.fd);
+    try h.comp.setExternalFrame(id, ext, red_frame);
+    _ = try h.comp.commit(id, &.{
+        .{ .create = 2 },
+        .{ .insert = .{ .layer = 2, .parent = 1 } },
+        .{ .set_transform = .{ .layer = 2, .transform = .offset(10, 10) } },
+        .{ .set_external = .{ .layer = 2, .external = .{ .id = ext, .rect = .xywh(0, 0, 40, 30) } } },
+    });
+    try h.runMs(20);
+    const hl = h.headless();
+    // Promoted: on a subsurface at its place, not in the window's pixels.
+    var subs = hl.subsurfaces(id);
+    try testing.expectEqual(@as(usize, 1), subs.len);
+    try testing.expect(subs[0].?.visible);
+    try testing.expectEqual(platform.Rect{ .x = 10, .y = 10, .width = 40, .height = 30 }, subs[0].?.rect);
+    try testing.expectEqual(bgra_white, h.pixel(id, 20, 20));
+
+    // A new frame changes only the subsurface: no present, a bare commit.
+    const frames = h.comp.frameStats(id).?.frames;
+    const bare = hl.bareCommits(id);
+    const blue_frame = try memfdFrame(40, 30, .{ 0xff, 0, 0, 0 }, 2);
+    defer _ = std.os.linux.close(blue_frame.fd);
+    try h.comp.setExternalFrame(id, ext, blue_frame);
+    try h.runMs(20);
+    subs = hl.subsurfaces(id);
+    try testing.expectEqual(@as(u64, 2), subs[0].?.frame.?.key);
+    try testing.expectEqual(frames, h.comp.frameStats(id).?.frames);
+    try testing.expect(hl.bareCommits(id) > bare);
+    // The replaced frame was released.
+    var released = false;
+    for (h.events.items) |e| if (e == .external_released and e.external_released.key == 1) {
+        released = true;
+    };
+    try testing.expect(released);
+
+    // Something drawn over part of it: composited into the window.
+    _ = try h.comp.commit(id, &.{
+        .{ .create = 3 },
+        .{ .insert = .{ .layer = 3, .parent = 1 } },
+        .{ .set_content = .{ .layer = 3, .content = try h.rect(.xywh(40, 30, 20, 20), red) } },
+    });
+    try h.runMs(20);
+    subs = hl.subsurfaces(id);
+    try testing.expect(!subs[0].?.visible);
+    try testing.expectEqual(bgra_blue, h.pixel(id, 20, 20));
+    try testing.expectEqual(bgra_red, h.pixel(id, 45, 35));
+
+    // Unobstructed again but translucent: still composited.
+    _ = try h.comp.commit(id, &.{
+        .{ .destroy = 3 },
+        .{ .set_opacity = .{ .layer = 2, .opacity = 0.5 } },
+    });
+    try h.runMs(20);
+    try testing.expect(!hl.subsurfaces(id)[0].?.visible);
+    const px = h.pixel(id, 20, 20);
+    try testing.expect(px[0] > 0x80 and px[2] > 0x80 and px[1] > 0x80); // blue over white
+    // Opaque again: back on the subsurface.
+    _ = try h.comp.commit(id, &.{.{ .set_opacity = .{ .layer = 2, .opacity = 1 } }});
+    try h.runMs(20);
+    try testing.expect(hl.subsurfaces(id)[0].?.visible);
+    try testing.expectEqual(bgra_white, h.pixel(id, 20, 20));
+}

@@ -51,6 +51,7 @@ pub const Layer = struct {
     scroll: ?update.Scroll = null,
     offset: Point = .zero,
     wheel: ?Rect = null,
+    external: ?update.ExternalPlacement = null,
     content: ?update.Content = null,
 
     /// Scene layer versions (D9) and damage since the last composition.
@@ -76,8 +77,30 @@ pub const Route = union(enum) {
     scroll: LayerId,
 };
 
+/// How composition draws external content: the compositor decides which
+/// externals are on subsurfaces (promoted) and maps the others' frames.
+pub const Externals = struct {
+    ctx: *anyopaque,
+    /// The current frame of an external to composite, or null to draw
+    /// nothing (promoted to a subsurface, or no frame yet).
+    image: *const fn (ctx: *anyopaque, id: update.ExternalId) ?scene.ImageRef,
+};
+
+/// An external's placement in the window, from `externalPlacements`.
+pub const Found = struct {
+    id: update.ExternalId,
+    layer: LayerId,
+    /// In surface (logical) coordinates.
+    rect: Rect,
+    /// Axis-aligned, fully opaque, inside rectangular clips, and nothing
+    /// painted over it: a subsurface can show it.
+    promotable: bool,
+};
+
 pub const Tree = struct {
     gpa: Allocator,
+    /// Set by the compositor before `compose`.
+    externals: ?Externals = null,
     layers: std.ArrayList(Layer) = .empty,
     root: LayerId = 0,
     background: scene.Color = .transparent,
@@ -253,6 +276,12 @@ pub const Tree = struct {
             .set_background => |c| {
                 if (!c.eql(t.background)) t.background_changed = true;
                 t.background = c;
+            },
+            .set_external => |s| {
+                const l = t.get(s.layer) orelse return t.reject(op, "no such layer");
+                l.external = s.external;
+                l.version +%= 1;
+                l.damage_all = true;
             },
             .ack_configure => |serial| t.acked_configure = @max(t.acked_configure, serial),
         }
@@ -498,6 +527,66 @@ pub const Tree = struct {
         return .{ .commands = t.lists[c].items, .version = 0 };
     }
 
+    /// Marks the layers showing external `id` changed (a new frame, or
+    /// promotion changed how it is drawn).
+    pub fn touchExternal(t: *Tree, id: update.ExternalId) void {
+        for (t.layers.items) |*l| if (l.alive) if (l.external) |pl| if (pl.id == id) {
+            l.version +%= 1;
+            l.damage_all = true;
+        };
+    }
+
+    /// The externals in the tree, in paint order, with where they are and
+    /// whether a subsurface could show them.
+    pub fn externalPlacements(t: *Tree, out: *std.ArrayList(Found)) Allocator.Error!void {
+        out.clearRetainingCapacity();
+        if (t.root == 0) return;
+        const infinite: Rect = .{ .x0 = -std.math.inf(f32), .y0 = -std.math.inf(f32), .x1 = std.math.inf(f32), .y1 = std.math.inf(f32) };
+        try t.place(out, t.root, .identity, 1, infinite, false);
+    }
+
+    /// Something painted at `r` (surface coordinates) covers the externals
+    /// placed before it.
+    fn occlude(out: []Found, r: Rect) void {
+        if (r.isEmpty()) return;
+        for (out) |*f| if (!f.rect.intersect(r).isEmpty()) {
+            f.promotable = false;
+        };
+    }
+
+    fn place(t: *Tree, out: *std.ArrayList(Found), id: LayerId, parent: Affine, parent_opacity: f32, parent_clip: Rect, parent_round: bool) Allocator.Error!void {
+        const l = &t.layers.items[id];
+        const m = l.transform.affine().then(parent);
+        const opacity = parent_opacity * l.opacity;
+        var clip = parent_clip;
+        var round = parent_round;
+        if (l.clip) |c| {
+            clip = clip.intersect(m.applyRect(c.rect));
+            round = round or !c.radii.eql(.{}) or !m.isAxisAligned();
+        }
+        if (l.content) |c| occlude(out.items, m.applyRect(c.list.bounds).intersect(clip));
+        if (l.external) |pl| {
+            const r = m.applyRect(pl.rect);
+            occlude(out.items, r.intersect(clip));
+            const inside = clip.intersect(r).eql(r);
+            try out.append(t.gpa, .{
+                .id = pl.id,
+                .layer = id,
+                .rect = r,
+                // Rounded or rotated clips could cut it: composite instead.
+                .promotable = m.b == 0 and m.c == 0 and m.a > 0 and m.d > 0 and opacity >= 1 and inside and !round,
+            });
+        }
+        var cm = m;
+        var child_clip = clip;
+        if (l.scroll) |s| {
+            child_clip = clip.intersect(m.applyRect(s.viewport));
+            cm = Affine.translate(-l.offset.x, -l.offset.y).then(m);
+        }
+        var child = l.first;
+        while (child != 0) : (child = t.layers.items[child].next) try t.place(out, child, cm, opacity, child_clip, round);
+    }
+
     /// Composes the tree into a display list in window coordinates. Valid
     /// until the next call.
     pub fn compose(t: *Tree) Allocator.Error!scene.DisplayList {
@@ -561,6 +650,14 @@ pub const Tree = struct {
             }
             t.include(c.list.bounds);
         }
+        if (l.external) |pl| if (t.externals) |ext| if (ext.image(ext.ctx, pl.id)) |img| {
+            try out.append(t.gpa, .{ .image = .{
+                .image = img,
+                .src = .xywh(0, 0, @floatFromInt(img.width), @floatFromInt(img.height)),
+                .dst = pl.rect,
+            } });
+            t.include(pl.rect);
+        };
         if (l.scroll) |s| {
             try t.push(out, .{
                 .id = id | scroll_bit,

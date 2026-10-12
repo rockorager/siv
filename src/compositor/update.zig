@@ -174,6 +174,33 @@ pub const Animation = struct {
     alternate: bool = false,
 };
 
+/// External content (D17): pixels another component renders, such as
+/// video. Ids are per window, from `Compositor.createExternal`.
+pub const ExternalId = u32;
+
+/// One frame of external content: opaque XRGB8888 pixels (B, G, R, X
+/// bytes) in shared memory the compositor can map, such as a memfd. The
+/// compositor duplicates `fd`; the producer may close its copy, but must
+/// not change the pixels until `Event.external_released` reports the
+/// frame's key.
+pub const ExternalFrame = struct {
+    fd: i32,
+    offset: u32 = 0,
+    width: u32,
+    height: u32,
+    /// Bytes per row.
+    stride: u32,
+    /// Changes whenever the pixels change.
+    key: u64,
+};
+
+/// Where a layer shows external content: in `rect`, in layer
+/// coordinates, above the layer's own content and below its children.
+pub const ExternalPlacement = struct {
+    id: ExternalId,
+    rect: Rect,
+};
+
 /// Display-list content of a layer. See the module comment for ownership.
 pub const Content = struct {
     list: scene.DisplayList,
@@ -222,6 +249,11 @@ pub const Op = union(enum) {
     set_wheel_region: struct { layer: LayerId, region: ?Rect },
     /// What the window shows behind the root layer. Default transparent.
     set_background: Color,
+    /// Shows external content in a layer (null removes it). When the
+    /// layer is axis-aligned, fully opaque, rectangularly clipped around
+    /// the content, and nothing is drawn over it, the frames go to a
+    /// subsurface without copying; otherwise they are composited.
+    set_external: struct { layer: LayerId, external: ?ExternalPlacement },
     /// This commit's content was laid out for the configure with this
     /// serial (`Event.configure`). A configure that changes the window's
     /// logical size is acknowledged with the first frame that includes
@@ -263,6 +295,7 @@ pub const Op = union(enum) {
             .fling => |s| s.layer != 0 and finitePoint(s.velocity),
             .scroll_by => |s| s.layer != 0 and finitePoint(s.delta),
             .set_wheel_region => |s| s.layer != 0 and (s.region == null or finiteRect(s.region.?)),
+            .set_external => |s| s.layer != 0 and (s.external == null or (s.external.?.id != 0 and finiteRect(s.external.?.rect))),
             .animate => |s| s.layer != 0 and validAnimation(s.animation),
         };
         if (!ok) return error.InvalidArgument;
@@ -294,6 +327,9 @@ pub const Event = union(enum) {
     /// No frame reads this builder's list any more; the UI may reset or
     /// free it and the fonts and images it referred to.
     released: *scene.Builder,
+    /// No frame reads this external frame any more; its producer may
+    /// reuse the memory. Delivered to the producer's sink like the rest.
+    external_released: struct { window: WindowId, id: ExternalId, key: u64 },
 
     /// The window an event is about, if any. `released` belongs to no
     /// window: it must be delivered even after the window is gone.
@@ -301,7 +337,7 @@ pub const Event = union(enum) {
         return switch (ev.*) {
             .platform => |*p| p.window(),
             .frame => |f| f.window,
-            inline .configure, .presented, .scrolled, .animation_finished => |e| e.window,
+            inline .configure, .presented, .scrolled, .animation_finished, .external_released => |e| e.window,
             .released => null,
         };
     }

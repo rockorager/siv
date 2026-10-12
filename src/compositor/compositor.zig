@@ -35,6 +35,9 @@ pub const Animation = update.Animation;
 pub const Content = update.Content;
 pub const Op = update.Op;
 pub const Event = update.Event;
+pub const ExternalId = update.ExternalId;
+pub const ExternalFrame = update.ExternalFrame;
+pub const ExternalPlacement = update.ExternalPlacement;
 pub const configure_timeout_ns = update.configure_timeout_ns;
 
 pub const Compositor = @import("Compositor.zig");
@@ -60,5 +63,6 @@ test {
     _ = update;
     _ = @import("anim.zig");
     _ = @import("tree.zig");
+    _ = @import("external.zig");
     _ = @import("tests.zig");
 }
