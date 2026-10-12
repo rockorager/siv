@@ -929,6 +929,30 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     outside the node), so keyboard-only use works without widget code;
     focus from a pointer press shows none. Its color is the theme's
     `focus_ring` (D29).
+  - Pointer cursors: each node may set a cursor shape (the CSS names, as
+    cursor-shape-v1 numbers them, and hidden), inherited by descendants
+    that set none; enabled editors show the text cursor. The cursor is
+    that of the node the pointer is captured by (a press keeps a split
+    handle's resize cursor while the pointer leaves it) or over. A
+    window-wide override wins over every node, for busy states. The UI
+    resolves it after pointer input, commits, and frames (the tree can
+    change under a still pointer) and sends the platform a change only.
+  - The platform keeps a cursor per window and shows it on every
+    pointer enter: through cursor-shape-v1 when the compositor offers it
+    (version 2's shapes fall back to copy and move on version 1),
+    otherwise from the XCursor theme (`src/platform/xcursor.zig`, a parser
+    with a fuzz target, and the theme search path with `Inherits`) at the
+    desktop's theme and size (D19) times the window's scale: the closest
+    nominal size, shown at the theme's logical size through a viewport
+    (an integer buffer scale without viewporter), animated with the
+    file's delays. Shapes a theme lacks show its arrow. Themed cursors
+    load on first use per shape and pixel size, on the compositor thread:
+    measured (Debug) 60–150 µs for Adwaita's arrow, text, and 60-frame
+    wait cursor through the `default` theme's inheritance, so it does
+    not go to the worker pool unless a theme proves slower.
+  - Client-side decorations resize from edge nodes that set a resize
+    cursor and call `siv_window_begin_resize` (or `begin_move`) from a
+    pointer down handler, with that press's serial.
 
 ### D17. Windows, popups, decorations, external content
 
@@ -1305,7 +1329,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       answers delays the first frame to 100–102 ms. The test fails above
       20 ms.
     - The color scheme, contrast, accent, and font size drive the theme
-      (D29); the cursor theme waits for pointer cursors.
+      (D29); the cursor theme and size go to the platform for themed
+      cursors (D16).
   - Portals for files, URIs, notifications, printing, screen capture, global
     shortcuts, and the document portal. No built-in file chooser: the portal is
     the system chooser.
