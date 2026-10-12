@@ -14,13 +14,12 @@ timed() {
 
 # System libraries siv links (D7, D13, D15, D16) and the Vulkan headers and
 # loader the Vulkan renderer will need (D10). mesa-vulkan-drivers provides
-# lavapipe for headless CPU-vs-Vulkan tests. sway, weston, and wtype run
-# headless for the Wayland platform tests, which skip without them.
+# lavapipe for headless CPU-vs-Vulkan tests. xkb-data provides the keymaps
+# the keyboard tests compile.
 packages=(
 	ca-certificates curl xz-utils pkg-config
-	libwayland-dev libxkbcommon-dev libfontconfig-dev
+	libwayland-dev libxkbcommon-dev libfontconfig-dev xkb-data
 	libvulkan-dev mesa-vulkan-drivers
-	sway weston wtype
 )
 
 install_packages() {
@@ -62,6 +61,48 @@ install_zig() {
 	sudo ln -sfn "$dir/zig" /usr/local/bin/zig
 }
 
+# Nix, single-user, only to fetch the pinned compositors below from the
+# binary cache. Debian 12's sway 1.7 (wlroots 0.15) lacks the protocols the
+# compositor tests cover, and building current wlroots and sway needs newer
+# meson, wayland, and pixman than Debian ships.
+NIX_VERSION=2.35.2
+
+install_nix() {
+	if [[ -x $HOME/.nix-profile/bin/nix-build ]]; then
+		step "nix already installed"
+		return
+	fi
+	local arch sha
+	arch=$(uname -m)
+	case $arch in
+	x86_64) sha=0c3960a9792331a22081c3c7a5d8465db9b17c50b3acdf18587fa4c6f2cb1158 ;;
+	aarch64) sha=4d0302a2910f5eec1c33b8deef634f04899a75737e7001ec49908d003ae5efda ;;
+	*) echo "unsupported architecture: $arch" >&2; exit 1 ;;
+	esac
+	local name=nix-$NIX_VERSION-$arch-linux
+	local tmp
+	tmp=$(mktemp -d)
+	step "download $name"
+	curl -fsSL "https://releases.nixos.org/nix/nix-$NIX_VERSION/$name.tar.xz" -o "$tmp/nix.tar.xz"
+	echo "$sha  $tmp/nix.tar.xz" | sha256sum -c --quiet
+	tar -xJf "$tmp/nix.tar.xz" -C "$tmp"
+	sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /nix
+	"$tmp/$name/install" --no-daemon --no-channel-add --no-modify-profile >/dev/null
+	rm -rf "$tmp"
+}
+
+# Compositors for `zig build test-compositor`, pinned in compositors.nix and
+# linked into /usr/local/bin where the tests find them.
+install_compositors() {
+	local out=$HOME/.local/state/siv-compositors
+	step "nix-build .agents/compositors.nix"
+	mkdir -p "$(dirname "$out")"
+	"$HOME/.nix-profile/bin/nix-build" .agents/compositors.nix -o "$out" >/dev/null
+	for exe in sway swaymsg wtype; do
+		sudo ln -sfn "$out/bin/$exe" "/usr/local/bin/$exe"
+	done
+}
+
 # Fetch pinned packages and warm the Zig caches (libc++, compiler-rt, the
 # vendored C libraries) so the first build in a thread is incremental.
 build_once() {
@@ -73,5 +114,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 .agents/resume # repairs /etc/resolv.conf for Zig's resolver
 timed install_packages
 timed install_zig
+timed install_nix
+timed install_compositors
 timed build_once
 zig version
