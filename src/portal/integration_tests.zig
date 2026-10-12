@@ -388,6 +388,9 @@ test "global shortcuts through xdg-desktop-portal" {
     var h: Harness = .{};
     try h.start();
     defer h.stop();
+    // Newer xdg-desktop-portal (1.22) binds shortcuts only for an app id,
+    // which host applications register.
+    try Client.register(&h.conn, test_desktop.test_app_id);
     h.desktop.backend.setResponse(0, bindResults);
     var k: Keys = .{};
     try k.g.bind(&h.client, "", &.{.{ .id = "toggle", .description = "Toggle", .preferred_trigger = "CTRL+ALT+t" }});

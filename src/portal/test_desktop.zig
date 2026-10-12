@@ -277,6 +277,9 @@ pub const Backend = struct {
 };
 
 /// The whole desktop: bus, permission store, portal, backend, handler.
+/// An application id with a desktop file, for portals that want one.
+pub const test_app_id = "org.siv.Test";
+
 pub const Desktop = struct {
     daemon: td.Daemon = .{},
     backend: Backend = .{},
@@ -290,11 +293,11 @@ pub const Desktop = struct {
     var counter: u32 = 0;
 
     pub fn start(d: *Desktop) !void {
-        const portal = "/usr/libexec/xdg-desktop-portal";
-        if (linux.access(portal, 1) != 0) {
+        var portal_buf: [64]u8 = undefined;
+        const portal = td.findLibexec(&portal_buf, "xdg-desktop-portal") orelse {
             std.log.err("xdg-desktop-portal is not installed; run .agents/setup", .{});
             return error.PortalNotInstalled;
-        }
+        };
         try d.daemon.start();
         errdefer d.daemon.stop();
         counter += 1;
@@ -322,6 +325,15 @@ pub const Desktop = struct {
             \\MimeType=x-scheme-handler/sivtest;text/plain;application/octet-stream;
             \\
         , .{d.dir}));
+        // The app id tests register (`Client.register`): the portal wants
+        // its desktop file.
+        try td.writeFile(try std.fmt.bufPrintSentinel(&buf, "{s}/data/applications/" ++ test_app_id ++ ".desktop", .{d.dir}, 0),
+            \\[Desktop Entry]
+            \\Type=Application
+            \\Name=siv test
+            \\Exec=/bin/true
+            \\
+        );
         try td.writeFile(try std.fmt.bufPrintSentinel(&buf, "{s}/config/mimeapps.list", .{d.dir}, 0),
             \\[Default Applications]
             \\x-scheme-handler/sivtest=siv-test-handler.desktop
@@ -349,8 +361,8 @@ pub const Desktop = struct {
         const log = try std.fmt.bufPrintSentinel(&buf, "{s}/portal.log", .{d.dir}, 0);
         const rc = linux.open(log, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, 0o600);
         if (linux.errno(rc) == .SUCCESS) d.log_fd = @intCast(rc);
-        const store = "/usr/libexec/xdg-permission-store";
-        if (linux.access(store, 1) == 0) {
+        var store_buf: [64]u8 = undefined;
+        if (td.findLibexec(&store_buf, "xdg-permission-store")) |store| {
             d.store_pid = try td.spawn(store, &[_:null]?[*:0]const u8{ store, "--replace" }, &envp, if (d.log_fd >= 0) d.log_fd else null);
             try d.waitName("org.freedesktop.impl.portal.PermissionStore");
         }
