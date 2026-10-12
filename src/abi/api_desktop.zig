@@ -1,7 +1,8 @@
 //! The desktop integration part of the API schema (D19): portals,
-//! application actions, and (later) lifecycle, printing, and the tray.
+//! application actions, lifecycle, printing and PDF, and (later) the
+//! tray.
 //! api.zig appends these declarations and functions to its own; the
-//! conventions are schema.zig's. Implemented in portal.zig.
+//! conventions are schema.zig's. Implemented in portal.zig and print.zig.
 
 const schema = @import("schema.zig");
 const ref = schema.ref;
@@ -300,6 +301,39 @@ pub const decls = [_]Decl{
         .{ .name = "permissions", .type = ref("siv_document_permissions"), .doc = "What app_id may do." },
         .{ .name = "flags", .type = ref("siv_document_flags"), .doc = "Options." },
     }),
+
+    // Printing and PDF.
+    descriptor("siv_page_setup", "The paper pages are laid out on, in points (1/72 inch) with y down from its top-left corner, as oriented: landscape paper is wider than tall. Filled by siv.", &.{
+        .{ .name = "width", .type = .f32, .doc = "The paper's width." },
+        .{ .name = "height", .type = .f32, .doc = "The paper's height." },
+        .{ .name = "margin_top", .type = .f32, .doc = "The margins the printer or the user chose; content outside them may not print." },
+        .{ .name = "margin_right", .type = .f32, .doc = "Right margin." },
+        .{ .name = "margin_bottom", .type = .f32, .doc = "Bottom margin." },
+        .{ .name = "margin_left", .type = .f32, .doc = "Left margin." },
+    }),
+    callback("siv_print_begin_fn", "Lays a document out for a page setup at a safe point on the application's thread (D5), before its pages are drawn.", &.{
+        p("setup", .{ .desc = "siv_page_setup" }, "The page setup, valid during the call."),
+    }, .u32),
+    callback("siv_print_page_fn", "Draws one page of a document at a safe point on the application's thread (D5), with the siv_draw_* functions as a canvas does. Text keeps its characters (searchable and copyable in the PDF); colors are the light theme's.", &.{
+        p("draw", ref("siv_draw"), "Valid during the call."),
+        p("page", .u32, "The page, from 0."),
+        p("setup", .{ .desc = "siv_page_setup" }, "The page setup, valid during the call."),
+    }, .void),
+    flags("siv_print_flags", "Printing options.", &.{
+        .{ .name = "not_modal", .bit = 0, .doc = "siv_print: do not make the dialog modal to the window." },
+    }),
+    descriptor("siv_print_desc", "A document to print or write as PDF: its pages, drawn on demand.", &.{
+        .{ .name = "title", .type = .string, .doc = "The document's title: the PDF's, and the print job's name." },
+        .{ .name = "user_data", .type = .user_data, .doc = "Passed to the callbacks." },
+        .{ .name = "begin", .type = ref("siv_print_begin_fn"), .doc = "Returns the number of pages for the page setup; NULL uses page_count." },
+        .{ .name = "draw_page", .type = ref("siv_print_page_fn"), .doc = "Draws a page. Required." },
+        .{ .name = "done", .type = ref("siv_portal_fn"), .doc = "Receives the outcome; the result's count is the number of pages. May be NULL." },
+        .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data after done ran or the application was destroyed." },
+        .{ .name = "page_count", .type = .u32, .doc = "The number of pages when begin is NULL." },
+        .{ .name = "width", .type = .f32, .doc = "siv_pdf_write: the paper's width in points; 0 with height 0 is A4. siv_print: the paper to assume if the dialog names none." },
+        .{ .name = "height", .type = .f32, .doc = "The paper's height in points." },
+        .{ .name = "flags", .type = ref("siv_print_flags"), .doc = "Options." },
+    }),
 };
 
 pub const functions = [_]Function{
@@ -458,6 +492,17 @@ pub const functions = [_]Function{
         result_callback[0],
         result_callback[1],
         result_callback[2],
+    }),
+
+    call("siv_pdf_write", "Writes a document as PDF (D9) to a file descriptor, which is duplicated: at the next dispatch the pages are drawn, waiting for fonts that are still loading, and written; then done gets success, or failed if writing failed. Text is embedded as font subsets with its characters. Fails without starting (and runs destroy) if draw_page is NULL or fd is negative.", &.{
+        app_param,
+        p("desc", .{ .desc = "siv_print_desc" }, "The document."),
+        p("fd", .i32, "Where to write, from its current offset."),
+    }),
+    call("siv_print", "Prints a document through the Print portal (D19): the system's print dialog asks for the printer and page setup, then the pages are drawn for that page setup as a PDF the print system receives. done gets success when the job was handed over, cancelled if the user cancelled, or unavailable without a portal. The print system applies copies and page ranges itself.", &.{
+        app_param,
+        parent_param,
+        p("desc", .{ .desc = "siv_print_desc" }, "The document."),
     }),
 
     call("siv_document_export", "Makes a file available to sandboxed applications through the document portal; the result's uri is its path there and id its document id.", &([_]Param{

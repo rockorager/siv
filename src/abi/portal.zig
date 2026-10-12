@@ -17,6 +17,7 @@ const loop_mod = @import("loop");
 const runtime = @import("runtime.zig");
 const application = @import("application.zig");
 const api = @import("api.zig");
+const print = @import("print.zig");
 
 const App = application.App;
 const Error = application.Error;
@@ -43,6 +44,8 @@ pub const State = struct {
     actions: std.StringHashMapUnmanaged(*ActionEntry) = .empty,
     /// siv_app_launch's handler.
     launch: ?Launch = null,
+    /// Documents being printed or written as PDF (print.zig).
+    prints: print.State = .{},
 };
 
 const Launch = struct { on_activate: ?t.ActivateFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque };
@@ -64,6 +67,7 @@ fn Slots(comptime T: type) type {
 pub fn teardown(self: *App) void {
     const st = &self.desktop;
     const gpa = self.gpa();
+    print.teardown(self);
     while (st.ops.popFirst()) |n| {
         const o: *Op = @fieldParentPtr("node", n);
         o.stop();

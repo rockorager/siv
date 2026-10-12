@@ -51,7 +51,8 @@ pub const DrawState = struct {
     depth: u32 = 0,
     /// Images drawn, each with a reference until the list is handed over.
     images: std.ArrayList(*ui.Image) = .empty,
-    window: *Window = undefined,
+    /// The canvas's window, or null for a page (print.zig).
+    window: ?*Window = null,
     node: NodeId = .none,
     /// Fonts were still loading when text was drawn.
     wanted_fonts: bool = false,
@@ -67,13 +68,13 @@ pub const DrawState = struct {
         d.path.deinit();
     }
 
-    fn dropImages(d: *DrawState, gpa: std.mem.Allocator) void {
+    pub fn dropImages(d: *DrawState, gpa: std.mem.Allocator) void {
         _ = gpa;
         for (d.images.items) |img| img.release();
         d.images.clearRetainingCapacity();
     }
 
-    fn clearPath(d: *DrawState) void {
+    pub fn clearPath(d: *DrawState) void {
         d.path.reset();
         d.simple = null;
         d.open = false;
@@ -214,6 +215,14 @@ fn drawCanvas(user: ?*anyopaque, uw: *ui.Window, id: NodeId, b: *scene.Builder, 
     try replay(b, list);
 }
 
+/// The palette pages draw with: the light variant of the application's
+/// theme, for paper.
+pub fn lightPalette(self: *App) ui.theme.Palette {
+    var theme = self.app.theme;
+    theme.scheme = .light;
+    return ui.theme.resolve(&theme, self.app.desktop.values.themeInput());
+}
+
 /// Copies a finished list into another builder.
 fn replay(b: *scene.Builder, list: scene.DisplayList) scene.Error!void {
     for (list.commands) |cmd| switch (cmd) {
@@ -228,7 +237,7 @@ fn replay(b: *scene.Builder, list: scene.DisplayList) scene.Error!void {
     };
 }
 
-fn mapScene(err: scene.Error) Error {
+pub fn mapScene(err: scene.Error) Error {
     return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         error.InvalidPath, error.InvalidArgument, error.Unbalanced => error.InvalidArgument,
@@ -239,6 +248,7 @@ fn mapScene(err: scene.Error) Error {
 /// again (dispatch phase).
 pub fn onFontsLoaded(ctx: *anyopaque) void {
     const self: *App = @ptrCast(@alignCast(ctx));
+    @import("print.zig").onFontsLoaded(self);
     for (self.waiting.items) |wt| {
         const w = (if (wt.window < self.windows.items.len) self.windows.items[wt.window] else null) orelse continue;
         const uw = w.uiWin();
@@ -521,22 +531,30 @@ pub export fn siv_draw_text(handle: t.Draw, x: f32, y: f32, width: f32, str: ?[*
             if (wd < 0) return error.InvalidArgument;
             const s = try runtime.string(ptr, len);
             const props = try tree.textPropsOf(sd);
-            const uw = d.window.uiWin();
-            var shaped = try Shaped.init(self, s, props, wd, uw.state(d.node).rtl, uw.language);
+            // Pages (print.zig) are left to right in the default language,
+            // in the light theme, without the desktop's text scaling.
+            const uw: ?*ui.Window = if (d.window) |w| w.uiWin() else null;
+            const scale: f32 = if (uw != null) @floatCast(self.app.desktop.values.text_scale) else 1;
+            var shaped = try Shaped.init(self, s, props, wd, if (uw) |u| u.state(d.node).rtl else false, if (uw) |u| u.language else 0, scale);
             defer shaped.deinit();
             if (shaped.wanted) d.wanted_fonts = true;
             const l = shaped.layout orelse return;
+            const palette = if (uw) |u| u.palette else lightPalette(self);
             var glyphs: std.ArrayList(scene.Glyph) = .empty;
             defer glyphs.deinit(self.gpa());
+            var clusters: std.ArrayList(u32) = .empty;
+            defer clusters.deinit(self.gpa());
             const cache = &self.app.fonts.cache;
             for (l.lines) |line| for (l.lineRuns(line)) |r| {
                 const face = cache.face(r.font) orelse continue;
                 glyphs.clearRetainingCapacity();
+                clusters.clearRetainingCapacity();
                 var bounds = Rect.empty;
                 for (l.runGlyphs(r)) |g| {
                     const gx = px + line.x + g.x;
                     const gy = py + line.baseline + g.y;
                     try glyphs.append(self.gpa(), .{ .id = g.id, .x = gx, .y = gy });
+                    try clusters.append(self.gpa(), std.math.clamp(g.cluster, r.start, r.end) - r.start);
                     if (face.glyphBounds(g.id, r.size)) |gb| bounds = bounds.unite(.xywh(gx + gb.x, gy + gb.y, gb.width, gb.height));
                 }
                 if (bounds.isEmpty()) continue;
@@ -544,8 +562,10 @@ pub export fn siv_draw_text(handle: t.Draw, x: f32, y: f32, width: f32, str: ?[*
                     .font = .{ .handle = face.font, .key = face.key },
                     .size = r.size,
                     .glyphs = glyphs.items,
-                    .paint = .color(uw.palette.pick(props.style.color, props.style.color_token)),
+                    .paint = .color(palette.pick(props.style.color, props.style.color_token)),
                     .bounds = bounds.outset(1),
+                    // The characters, for PDF output.
+                    .text = .{ .bytes = s[r.start..r.end], .clusters = clusters.items },
                 }) catch |err| return mapScene(err);
             };
         }
@@ -644,7 +664,7 @@ const Shaped = struct {
     /// Fonts were still loading; their loads were requested.
     wanted: bool = false,
 
-    fn init(self: *App, s: []const u8, props: ui.Text, width: f32, rtl: bool, window_language: u32) Error!Shaped {
+    fn init(self: *App, s: []const u8, props: ui.Text, width: f32, rtl: bool, window_language: u32, text_scale: f32) Error!Shaped {
         if (!std.unicode.utf8ValidateSlice(s) or s.len >= std.math.maxInt(u32)) return error.InvalidArgument;
         const gpa = self.gpa();
         var sh: Shaped = .{ .scratch = .init(gpa) };
@@ -660,7 +680,7 @@ const Shaped = struct {
         sh.paragraph = text.ShapedParagraph.init(gpa, sh.scratch.allocator(), &fonts.cache, s, &.{.{
             .end = @intCast(s.len),
             // Desktop text scaling applies to canvas text as to text nodes.
-            .style = .{ .fonts = chain, .size = self.app.palette().textSize(st.size, st.size_role) * @as(f32, @floatCast(self.app.desktop.values.text_scale)), .language = if (lang.len == 0) "und" else lang },
+            .style = .{ .fonts = chain, .size = self.app.palette().textSize(st.size, st.size_role) * text_scale, .language = if (lang.len == 0) "und" else lang },
         }}, if (rtl) .auto_rtl else .auto_ltr) catch |err| return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             else => error.InvalidArgument,
@@ -704,7 +724,7 @@ pub export fn siv_app_measure_text(app: t.App, str: ?[*]const u8, str_len: usize
             if (!std.math.isFinite(mw) or mw < 0) return error.InvalidArgument;
             const props = try tree.textPropsOf(sd);
             const dest = try runtime.out(t.TextMetrics, out);
-            var shaped = try Shaped.init(self, s, props, mw, false, 0);
+            var shaped = try Shaped.init(self, s, props, mw, false, 0, @floatCast(self.app.desktop.values.text_scale));
             defer shaped.deinit();
             const l = shaped.layout orelse {
                 dest.* = .{ .width = 0, .height = 0, .baseline = 0 };

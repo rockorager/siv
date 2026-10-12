@@ -316,6 +316,133 @@ test "portals through the public API on sway: parented dialogs, OpenURI, notific
     try testing.expectEqualStrings("42", log.target[0..log.target_len]);
 }
 
+// Printing (D9, D19) --------------------------------------------------------------
+
+fn printResults(call: *const PortalBackend.Call, w: portal.vardict.Writer) anyerror!void {
+    if (!std.mem.eql(u8, call.member, "PreparePrint")) return;
+    try w.open("settings", "a{sv}");
+    const st = try portal.vardict.Writer.begin(w.e);
+    try st.put("printer", @as([]const u8, "Test Printer"));
+    try st.end();
+    try w.close();
+    try w.open("page-setup", "a{sv}");
+    const ps = try portal.vardict.Writer.begin(w.e);
+    try ps.put("Name", @as([]const u8, "iso_a4"));
+    try ps.put("Width", @as(f64, 210));
+    try ps.put("Height", @as(f64, 297));
+    inline for (.{ "MarginTop", "MarginRight", "MarginBottom", "MarginLeft" }) |k| try ps.put(k, @as(f64, 6.35));
+    try ps.put("Orientation", @as([]const u8, "landscape"));
+    try ps.end();
+    try w.close();
+    try w.put("token", @as(u32, 5));
+}
+
+const Printing = struct {
+    done: u32 = 0,
+    response: t.PortalResponse = .failed,
+    pages: u32 = 0,
+    width: f32 = 0,
+
+    fn begin(user_data: ?*anyopaque, setup: ?*const t.PageSetup) callconv(.c) u32 {
+        const p: *Printing = @ptrCast(@alignCast(user_data));
+        p.width = setup.?.width;
+        return 2;
+    }
+
+    fn drawPage(_: ?*anyopaque, draw: t.Draw, page: u32, setup: ?*const t.PageSetup) callconv(.c) void {
+        const s = setup.?;
+        const words: []const u8 = if (page == 0) "Printed by siv" else "Second sheet";
+        _ = abi.canvas.siv_draw_text(draw, s.margin_left, s.margin_top, 0, words.ptr, words.len, &.{ .font_size = 24 });
+    }
+
+    fn onDone(user_data: ?*anyopaque, result: ?*const t.PortalResult) callconv(.c) void {
+        const p: *Printing = @ptrCast(@alignCast(user_data));
+        p.done += 1;
+        p.response = result.?.response;
+        p.pages = result.?.count;
+    }
+};
+
+/// Runs a tool (poppler, qpdf) on a file and returns its exit status and
+/// output in `buf`.
+fn runTool(name: []const u8, args: []const [*:0]const u8, buf: []u8) !struct { status: c_int, output: []const u8 } {
+    const linux = std.os.linux;
+    const exe = td.findExecutable(name) orelse return error.SkipZigTest;
+    var argv: [8:null]?[*:0]const u8 = @splat(null);
+    argv[0] = exe;
+    for (args, 1..) |a, i| argv[i] = a;
+    const envp = [_:null]?[*:0]const u8{ "PATH=/usr/bin:/bin", "LC_ALL=C.UTF-8" };
+    const out: i32 = @intCast(linux.memfd_create("siv-tool", linux.MFD.CLOEXEC));
+    defer _ = linux.close(out);
+    const pid = try td.spawn(exe, &argv, &envp, out);
+    var status: c_int = 0;
+    _ = std.c.waitpid(pid, &status, 0);
+    const n = linux.pread(out, buf.ptr, buf.len, 0);
+    return .{ .status = status, .output = buf[0..if (linux.errno(n) == .SUCCESS) n else 0] };
+}
+
+test "printing through the public API: the Print portal's dialog, then the PDF" {
+    var sway: Sway = .{};
+    try sway.start();
+    defer sway.stop();
+    var desktop: PortalDesktop = .{};
+    try desktop.start();
+    defer desktop.stop();
+    _ = setenv("DBUS_SESSION_BUS_ADDRESS", desktop.daemon.address.ptr, 1);
+    defer _ = unsetenv("DBUS_SESSION_BUS_ADDRESS");
+
+    var app: t.App = .null;
+    try ok(A.siv_app_create(&.{ .display = sway.display.ptr, .display_len = sway.display.len, .flags = .{ .no_system_fonts = true }, .app_id = "org.example.Printing", .app_id_len = 20 }, &app));
+    defer _ = A.siv_app_destroy(app);
+    const latin = text.font.test_fonts.latin;
+    try ok(A.siv_app_add_font(app, "Droid", 5, latin.ptr, latin.len));
+    try ok(A.siv_app_set_default_font(app, "Droid", 5));
+    var window: t.Window = .null;
+    try ok(A.siv_window_create(app, &.{ .title = "printing", .title_len = 8 }, &window));
+    const w = try A.App.window(@backingInt(window), A.window_tag);
+    try dispatchUntil(app, w, struct {
+        fn f(win: *A.Window) bool {
+            return win.win.presented_seq > 0;
+        }
+    }.f);
+
+    desktop.backend.setResponse(0, printResults);
+    var printing: Printing = .{};
+    try ok(abi.print.siv_print(app, window, &.{ .title = "Report", .title_len = 6, .user_data = &printing, .begin = Printing.begin, .draw_page = Printing.drawPage, .done = Printing.onDone }));
+    try dispatchUntil(app, &printing, struct {
+        fn f(p: *Printing) bool {
+            return p.done == 1;
+        }
+    }.f);
+    try testing.expectEqual(t.PortalResponse.success, printing.response);
+    try testing.expectEqual(@as(u32, 2), printing.pages);
+    // Landscape A4 in points.
+    try testing.expectApproxEqAbs(@as(f32, 841.89), printing.width, 0.01);
+
+    const prepare = desktop.backend.find("Print", "PreparePrint").?;
+    try testing.expect(std.mem.startsWith(u8, prepare.string(1), "wayland:"));
+    try testing.expectEqualStrings("Report", prepare.string(2));
+    const call = desktop.backend.find("Print", "Print").?;
+    try testing.expectEqual(@as(u32, 5), call.options().uint("token").?);
+    try testing.expect(std.mem.startsWith(u8, call.fd_data, "%PDF-1.7"));
+
+    // The PDF the print system got, by independent readers.
+    var path_buf: [64]u8 = undefined;
+    const path = try std.fmt.bufPrintSentinel(&path_buf, "/tmp/siv-print-{d}.pdf", .{std.os.linux.getpid()}, 0);
+    try td.writeFile(path, call.fd_data);
+    defer _ = std.os.linux.unlink(path);
+    var buf: [4096]u8 = undefined;
+    const check = try runTool("qpdf", &.{ "--check", path }, &buf);
+    if (check.status != 0) std.debug.print("{s}\n", .{check.output});
+    try testing.expectEqual(@as(c_int, 0), check.status);
+    const words = try runTool("pdftotext", &.{ path, "-" }, &buf);
+    try testing.expect(std.mem.indexOf(u8, words.output, "Printed by siv") != null);
+    try testing.expect(std.mem.indexOf(u8, words.output, "Second sheet") != null);
+    const info = try runTool("pdfinfo", &.{path}, &buf);
+    try testing.expect(std.mem.indexOf(u8, info.output, "Report") != null);
+    try testing.expect(std.mem.indexOf(u8, info.output, "841.89 x 595.2") != null);
+}
+
 // Lifecycle (D19) -----------------------------------------------------------------
 
 const helpers = @import("helpers");
