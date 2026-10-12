@@ -878,6 +878,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       when it goes away the last values stay. The first read reports
       `ready` even if nothing changed, so the application can decide when
       to show its first frame.
+    - Not wired yet: the application (`src/app`) should own one session
+      bus connection and one Settings client and apply the values
+      (reduced motion, fonts, theme). Open: whether the first frame waits
+      for `ready`. Without waiting, a dark-theme user sees a light first
+      frame; a running portal answers within milliseconds, but one being
+      activated can take far longer, so a wait needs a cap (100 ms is a
+      first guess).
   - Portals for files, URIs, notifications, printing, screen capture, global
     shortcuts, and the document portal. No built-in file chooser: the portal is
     the system chooser.
