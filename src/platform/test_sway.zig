@@ -1,15 +1,12 @@
-//! Test harness for compositor_tests.zig: a compositor from compositors.zig
-//! running headless in a private runtime directory, sway's IPC for scripted
-//! input, outputs, and windows, and a virtual pointer. Tests skip when the
-//! compositor is not installed (.agents/compositors.nix pins them).
+//! Harness for integration_tests.zig: sway on its headless backend in a
+//! private runtime directory, its IPC for scripted input, outputs, and
+//! windows, and a virtual pointer. .agents/sway.nix pins the release.
 
 const std = @import("std");
 const linux = std.os.linux;
 const wl = @import("wayland").client.wl;
-const compositors = @import("compositors.zig");
 
-pub const Compositor = struct {
-    entry: compositors.Entry,
+pub const Sway = struct {
     dir_buf: [64]u8 = undefined,
     dir: [:0]const u8 = "",
     display_buf: [96]u8 = undefined,
@@ -19,47 +16,41 @@ pub const Compositor = struct {
 
     var counter: u32 = 0;
 
-    /// Starts the compositor and waits for its socket (and sway's IPC).
-    pub fn start(s: *Compositor) !void {
-        const e = s.entry;
-        const exe = findExecutable(e.argv[0]) orelse return error.SkipZigTest;
+    /// Starts sway with one 1280x720 output at 60 Hz and waits for its
+    /// sockets.
+    pub fn start(s: *Sway) !void {
+        const exe = findExecutable("sway") orelse {
+            std.log.err("sway is not installed; run .agents/setup", .{});
+            return error.SwayNotInstalled;
+        };
         counter += 1;
-        s.dir = try std.fmt.bufPrintSentinel(&s.dir_buf, "/tmp/siv-{s}-{d}-{d}", .{ e.name, linux.getpid(), counter }, 0);
+        s.dir = try std.fmt.bufPrintSentinel(&s.dir_buf, "/tmp/siv-sway-{d}-{d}", .{ linux.getpid(), counter }, 0);
         _ = linux.mkdir(s.dir, 0o700);
-        if (e.config) |text| {
-            var config_buf: [128]u8 = undefined;
-            try writeFile(try std.fmt.bufPrintSentinel(&config_buf, "{s}/config", .{s.dir}, 0), text);
-        }
-
-        // argv with {dir} substituted.
-        var arg_bufs: [16][256]u8 = undefined;
-        var argv: [16:null]?[*:0]const u8 = @splat(null);
-        std.debug.assert(e.argv.len < argv.len);
-        argv[0] = exe;
-        for (e.argv[1..], 1..) |arg, i| {
-            const n = std.mem.replacementSize(u8, arg, "{dir}", s.dir);
-            _ = std.mem.replace(u8, arg, "{dir}", s.dir, &arg_bufs[i]);
-            arg_bufs[i][n] = 0;
-            argv[i] = arg_bufs[i][0..n :0];
-        }
+        var config_buf: [128]u8 = undefined;
+        const config = try std.fmt.bufPrintSentinel(&config_buf, "{s}/config", .{s.dir}, 0);
+        try writeFile(config,
+            \\output HEADLESS-1 mode 1280x720@60Hz position 0 0
+            \\default_border none
+            \\
+        );
         var env: Env = .{};
         try env.init(s.dir);
         var log_buf: [128]u8 = undefined;
         const log = try std.fmt.bufPrintSentinel(&log_buf, "{s}/log", .{s.dir}, 0);
+        const argv = [_:null]?[*:0]const u8{ exe, "-c", config };
         s.pid = try spawn(exe, &argv, &env.ptrs, log);
         errdefer s.stop();
 
         s.display = try std.fmt.bufPrintSentinel(&s.display_buf, "{s}/wayland-1", .{s.dir}, 0);
         var waited: u32 = 0;
         while (linux.access(s.display, 0) != 0) : (waited += 1) {
-            if (waited > 500) return error.CompositorDidNotStart;
+            if (waited > 500) return error.SwayDidNotStart;
             sleepMs(10);
         }
-        if (!std.mem.eql(u8, e.name, "sway")) return;
         // IPC may accept connections slightly after the socket file appears.
         while (true) : (waited += 1) {
             _ = s.command("nop") catch {
-                if (waited > 500) return error.CompositorDidNotStart;
+                if (waited > 500) return error.SwayDidNotStart;
                 sleepMs(10);
                 continue;
             };
@@ -67,10 +58,10 @@ pub const Compositor = struct {
         }
     }
 
-    pub fn stop(s: *Compositor) void {
+    pub fn stop(s: *Sway) void {
         if (s.pid != 0) {
-            // The compositor leads its own process group, which includes
-            // helpers such as mutter's session bus.
+            // Sway leads its own process group, which includes anything it
+            // spawned.
             _ = std.c.kill(-s.pid, .TERM);
             var status: c_int = 0;
             _ = std.c.waitpid(s.pid, &status, 0);
@@ -86,7 +77,7 @@ pub const Compositor = struct {
         _ = std.c.waitpid(pid, &status, 0);
     }
 
-    fn ipcPath(s: *const Compositor) [:0]const u8 {
+    fn ipcPath(s: *const Sway) [:0]const u8 {
         const S = struct {
             var buf: [128]u8 = undefined;
         };
@@ -95,8 +86,7 @@ pub const Compositor = struct {
     }
 
     /// Runs a sway command (RUN_COMMAND) and fails unless it succeeded.
-    pub fn command(s: *const Compositor, cmd: []const u8) !void {
-        std.debug.assert(std.mem.eql(u8, s.entry.name, "sway"));
+    pub fn command(s: *const Sway, cmd: []const u8) !void {
         const fd_rc = linux.socket(linux.AF.UNIX, linux.SOCK.STREAM | linux.SOCK.CLOEXEC, 0);
         if (linux.errno(fd_rc) != .SUCCESS) return error.IpcFailed;
         const fd: i32 = @intCast(fd_rc);
@@ -125,15 +115,15 @@ pub const Compositor = struct {
         }
     }
 
-    /// Starts a Wayland client (such as wtype) against this compositor.
-    pub fn spawnClient(s: *const Compositor, argv: [*:null]const ?[*:0]const u8) !linux.pid_t {
-        const exe = findExecutable(std.mem.span(argv[0].?)) orelse return error.SkipZigTest;
+    /// Starts a Wayland client (such as wtype) against this sway.
+    pub fn spawnClient(s: *const Sway, argv: [*:null]const ?[*:0]const u8) !linux.pid_t {
+        const exe = findExecutable(std.mem.span(argv[0].?)) orelse return error.ClientNotInstalled;
         var env: Env = .{};
         try env.init(s.dir);
         return spawn(exe, argv, &env.ptrs, null);
     }
 
-    pub fn wait(_: *const Compositor, pid: linux.pid_t) !void {
+    pub fn wait(_: *const Sway, pid: linux.pid_t) !void {
         var status: c_int = 0;
         _ = std.c.waitpid(pid, &status, 0);
         if (status != 0) return error.ClientFailed;
@@ -262,7 +252,7 @@ pub const VirtualPointer = struct {
         pub const generated_version = 1;
     };
 
-    pub fn connect(c: *const Compositor) !VirtualPointer {
+    pub fn connect(c: *const Sway) !VirtualPointer {
         const display = try wl.Display.connect(c.display);
         errdefer display.disconnect();
         const registry = try display.getRegistry();
@@ -280,7 +270,7 @@ pub const VirtualPointer = struct {
         };
         var found: Found = .{};
         registry.setListener(*Found, Found.onGlobal, &found);
-        if (display.roundtrip() != .SUCCESS or found.manager == 0) return error.SkipZigTest;
+        if (display.roundtrip() != .SUCCESS or found.manager == 0) return error.NoVirtualPointer;
         const manager: *wl.Proxy = @ptrCast(try registry.bind(found.manager, Manager, 1));
         var args = [_]wl.Argument{ .{ .o = null }, .{ .o = null } };
         const pointer = manager.marshal(0, &pointer_interface, 1, .{}, &args) orelse return error.OutOfMemory;

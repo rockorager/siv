@@ -51,7 +51,6 @@ presentation: ?*wp.Presentation = null,
 fractional_manager: ?*wp.FractionalScaleManagerV1 = null,
 decoration_manager: ?*zxdg.DecorationManagerV1 = null,
 fifo_manager: ?*wp.FifoManagerV1 = null,
-commit_timing_manager: ?*wp.CommitTimingManagerV1 = null,
 /// Clock of wp_presentation timestamps; converted to CLOCK_MONOTONIC, the
 /// loop's clock, when it differs (weston uses CLOCK_MONOTONIC_RAW).
 presentation_clock: linux.clockid_t = .MONOTONIC,
@@ -96,7 +95,6 @@ pub const Window = struct {
     viewport: ?*wp.Viewport = null,
     fractional: ?*wp.FractionalScaleV1 = null,
     fifo: ?*wp.FifoV1 = null,
-    commit_timer: ?*wp.CommitTimerV1 = null,
 
     state: WindowState = .{},
     pending: Pending = .{},
@@ -188,7 +186,6 @@ fn teardown(self: *Wayland) void {
     self.outputs.deinit(self.allocator);
     if (self.decoration_manager) |m| m.destroy();
     if (self.fifo_manager) |m| m.destroy();
-    if (self.commit_timing_manager) |m| m.destroy();
     if (self.fractional_manager) |m| m.destroy();
     if (self.presentation) |p| p.destroy();
     if (self.viewporter) |v| v.destroy();
@@ -308,8 +305,6 @@ fn addGlobal(self: *Wayland, registry: *wl.Registry, name: u32, interface: []con
         self.decoration_manager = try registry.bind(name, zxdg.DecorationManagerV1, version);
     } else if (is(interface, wp.FifoManagerV1)) {
         self.fifo_manager = try registry.bind(name, wp.FifoManagerV1, version);
-    } else if (is(interface, wp.CommitTimingManagerV1)) {
-        self.commit_timing_manager = try registry.bind(name, wp.CommitTimingManagerV1, version);
     } else if (is(interface, wl.Output)) {
         try self.addOutput(registry, name, version);
     } else if (is(interface, wl.Seat)) {
@@ -445,7 +440,6 @@ pub fn createWindow(self: *Wayland, options: platform.WindowOptions) Error!Windo
         .default_size = .{ .width = options.width, .height = options.height },
     };
     errdefer {
-        if (w.commit_timer) |t| t.destroy();
         if (w.fifo) |f| f.destroy();
         if (w.decoration) |d| d.destroy();
         if (w.viewport) |v| v.destroy();
@@ -459,7 +453,6 @@ pub fn createWindow(self: *Wayland, options: platform.WindowOptions) Error!Windo
         w.decoration = m.getToplevelDecoration(toplevel) catch return error.OutOfMemory;
     }
     if (self.fifo_manager) |m| w.fifo = m.getFifo(surface) catch return error.OutOfMemory;
-    if (self.commit_timing_manager) |m| w.commit_timer = m.getTimer(surface) catch return error.OutOfMemory;
 
     surface.setListener(*Window, onSurface, w);
     xdg_surface.setListener(*Window, onXdgSurface, w);
@@ -488,7 +481,6 @@ pub fn destroyWindow(self: *Wayland, id: WindowId) void {
     self.loop.unschedule(&w.frame_task);
     for (w.feedbacks) |f| if (f.proxy) |fb| fb.destroy();
     if (w.frame_callback) |cb| cb.destroy();
-    if (w.commit_timer) |t| t.destroy();
     if (w.fifo) |f| f.destroy();
     if (w.fractional) |f| f.destroy();
     if (w.viewport) |v| v.destroy();
@@ -552,12 +544,7 @@ pub fn present(self: *Wayland, id: WindowId, buffer: Buffer, damage: ?[]const Re
         if (!answers_configure) f.waitBarrier();
         f.setBarrier();
     }
-    // Commit timing: not shown before the time the frame was rendered for.
     const target = w.frame_target_ns;
-    if (w.commit_timer) |t| if (target) |ns| if (fromMonotonic(self.presentation_clock, ns)) |c| {
-        const sec = c / std.time.ns_per_s;
-        t.setTimestamp(@truncate(sec >> 32), @truncate(sec), @intCast(c % std.time.ns_per_s));
-    };
     if (self.presentation) |p| for (&w.feedbacks) |*slot| if (slot.proxy == null) {
         if (p.feedback(surface)) |fb| {
             fb.setListener(*Window, onFeedback, w);
@@ -797,16 +784,6 @@ fn toMonotonic(clock: linux.clockid_t, ns: u64) ?u64 {
     return if (t > 0) @intCast(t) else null;
 }
 
-/// The inverse of `toMonotonic`.
-fn fromMonotonic(clock: linux.clockid_t, ns: u64) ?u64 {
-    if (clock == .MONOTONIC) return ns;
-    var ts: linux.timespec = undefined;
-    if (linux.errno(linux.clock_gettime(clock, &ts)) != .SUCCESS) return null;
-    const clock_now: i128 = @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
-    const t = @as(i128, ns) - Loop.now() + clock_now;
-    return if (t > 0) @intCast(t) else null;
-}
-
 fn runFrame(task: *Loop.Task) void {
     const w: *Window = @fieldParentPtr("frame_task", task);
     if (!w.clock.ready()) return;
@@ -885,7 +862,18 @@ test "presentation timestamps convert between clocks" {
     const mono = toMonotonic(.MONOTONIC_RAW, raw).?;
     const now = Loop.now();
     try std.testing.expect(mono <= now and now - mono < std.time.ns_per_ms);
-    const back = fromMonotonic(.MONOTONIC_RAW, mono).?;
-    try std.testing.expect(@abs(@as(i64, @intCast(back)) - @as(i64, @intCast(raw))) < std.time.ns_per_ms);
     try std.testing.expectEqual(@as(?u64, 12345), toMonotonic(.MONOTONIC, 12345));
+}
+
+test "commits carry no commit-timing timestamps" {
+    // Regression guard. Mutter 50 holds a timed commit until its frame clock
+    // reaches the target, but when the last presentation lacks the vsync
+    // flag (headless outputs, or before it has an update-time estimate) it
+    // extrapolates from time 0 and schedules the wakeup at about target +
+    // now, so the window never maps or freezes mid-animation. siv's target
+    // is always the next refresh, which a timestamp cannot improve; re-add
+    // commit-timing-v1 only for frames scheduled further ahead.
+    for (@import("protocols.zig").globals) |global| {
+        try std.testing.expect(!std.mem.eql(u8, global[0], "wp_commit_timing_manager_v1"));
+    }
 }

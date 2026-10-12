@@ -529,9 +529,9 @@ pub const EventQueue = struct {
 };
 
 test {
-    if (comptime @import("compositor").name != null) {
-        // `zig build test-compositor`: only the real-compositor tests.
-        _ = @import("compositor_tests.zig");
+    if (comptime @import("integration").enabled) {
+        // `zig build test-integration`: the tests against sway.
+        _ = @import("integration_tests.zig");
     } else {
         std.testing.refAllDecls(@This());
         // Instantiates every forwarding call for both backends.

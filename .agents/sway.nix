@@ -1,6 +1,6 @@
-# Compositors for `zig build test-compositor` (src/platform/compositors.zig),
-# from a pinned nixpkgs so that every orb runs the same releases. Only cached
-# derivations are used (no overrides), so setup downloads instead of builds.
+# Sway for `zig build test-integration`, from a pinned nixpkgs so that every
+# orb runs the same release. Only cached derivations are used (no overrides),
+# so setup downloads instead of builds.
 #
 # To update: pick a nixos-unstable commit, then
 #   nix-prefetch-url --unpack https://github.com/NixOS/nixpkgs/archive/<rev>.tar.gz
@@ -12,9 +12,9 @@ let
   }) { config = { }; overlays = [ ]; };
 in
 pkgs.buildEnv {
-  name = "siv-test-compositors";
+  name = "siv-sway";
   paths = [
     pkgs.sway-unwrapped # sway 1.12, wlroots 0.20
-    pkgs.wtype # virtual keyboard input for sway
+    pkgs.wtype # virtual keyboard input
   ];
 }

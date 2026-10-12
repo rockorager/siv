@@ -334,8 +334,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **Requirement:** animations land on the presented frame; no wasted frames.
 - **Decision:** one frame clock per surface driven by frame callbacks and
   presentation feedback, sampling animations at the predicted presentation time.
-  Use `fifo-v1` and `commit-timing-v1` where available; tearing control is
-  opt-in. Suspended or occluded surfaces produce no frames.
+  Use `fifo-v1` where available; tearing control is opt-in. Suspended or occluded surfaces produce no frames.
   - A frame runs when the application wants one and no frame callback is
     outstanding. A configure always forces a frame, even while suspended or
     waiting on a callback; if the application presents nothing, siv still
@@ -347,12 +346,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     converted to `CLOCK_MONOTONIC`, the loop's clock.
   - With `fifo-v1`, each animation frame waits for the previous commit's
     barrier so that no frame replaces one that was never shown; answers to
-    configures do not wait. With `commit-timing-v1`, each commit carries its
-    predicted presentation time, so it is never shown before the time its
-    animations were sampled for.
-- **Alternatives:** fixed-rate timers.
-- **Reverse if:** never. Early risk: confirm frame callbacks and presentation
-  feedback behave correctly alongside Mesa's FIFO present mode.
+    configures do not wait.
+  - `commit-timing-v1` is not used. Frames target the next refresh, which a
+    timestamp cannot improve, and mutter 50 stalls timed commits: when its
+    last presentation lacks the vsync flag (headless outputs, or before it
+    has an update-time estimate) it schedules the wakeup at about target +
+    now, so a window never maps or freezes mid-animation.
+- **Alternatives:** fixed-rate timers; `commit-timing-v1` on every commit.
+- **Reverse if:** never. Use `commit-timing-v1` for frames scheduled beyond the
+  next refresh (media with timestamps) once mutter fixes the stall. Early risk:
+  confirm frame callbacks and presentation feedback behave correctly alongside
+  Mesa's FIFO present mode.
 
 ### D13. Text engine
 
@@ -543,9 +547,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   socket the target opens only when an environment variable enables it (tree,
   properties, semantics, layout overlays, repaint flashing, frame timing). Tests
   run the real loop on the headless backend, compare CPU golden images, and diff
-  CPU against Vulkan output. `zig build test` stays hermetic; `zig build
-  test-compositor` runs the Wayland backend against real compositors on their
-  headless backends, one matrix entry per compositor, pinned through nixpkgs.
+  CPU against Vulkan output. `zig build test` stays hermetic. `zig build
+  test-integration` runs the Wayland backend against one real compositor, the
+  latest sway on its headless backend, pinned through nixpkgs; other
+  compositors are not part of the test suite.
 
 ### D25. Project
 

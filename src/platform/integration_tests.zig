@@ -1,6 +1,6 @@
-//! Platform tests against a real compositor running headless, one run per
-//! entry in compositors.zig (`zig build test-compositor`). They are left out
-//! of `zig build test`, which stays hermetic.
+//! Integration tests: the Wayland backend against sway running headless
+//! (`zig build test-integration`). They are left out of `zig build test`,
+//! which stays hermetic.
 
 const std = @import("std");
 const testing = std.testing;
@@ -9,17 +9,11 @@ const platform = @import("platform.zig");
 const Loop = platform.Loop;
 const Wayland = @import("Wayland.zig");
 const Seat = @import("Seat.zig");
-const Compositor = @import("test_compositor.zig").Compositor;
-const VirtualPointer = @import("test_compositor.zig").VirtualPointer;
-const compositors = @import("compositors.zig");
+const Sway = @import("test_sway.zig").Sway;
+const VirtualPointer = @import("test_sway.zig").VirtualPointer;
 const Size = platform.Size;
 const Scale = platform.Scale;
 const WindowId = platform.WindowId;
-
-/// The matrix entry this run targets.
-const entry = for (compositors.matrix) |e| {
-    if (std.mem.eql(u8, e.name, @import("compositor").name.?)) break e;
-} else unreachable;
 
 const TestApp = struct {
     backend: *Wayland = undefined,
@@ -116,23 +110,23 @@ fn runMs(loop: *Loop, ms: u64) !void {
 }
 
 const Harness = struct {
-    compositor: Compositor = .{ .entry = entry },
+    sway: Sway = .{},
     loop: Loop = undefined,
     app: TestApp = .{},
 
     fn start(h: *Harness) !void {
-        try h.compositor.start();
-        errdefer h.compositor.stop();
+        try h.sway.start();
+        errdefer h.sway.stop();
         h.loop = try Loop.init(testing.allocator);
         errdefer h.loop.deinit();
-        h.app.backend = try Wayland.create(&h.loop, testing.allocator, h.app.sink(), .{ .display = h.compositor.display });
+        h.app.backend = try Wayland.create(&h.loop, testing.allocator, h.app.sink(), .{ .display = h.sway.display });
     }
 
     fn stop(h: *Harness) void {
         h.app.backend.destroy();
         h.loop.deinit();
         h.app.deinit();
-        h.compositor.stop();
+        h.sway.stop();
     }
 
     /// Creates a window and waits until its first frame was presented.
@@ -164,50 +158,7 @@ const Harness = struct {
     }
 };
 
-/// Skips unless the matrix entry is `name`, for tests that script one
-/// compositor.
-fn require(name: []const u8) !void {
-    if (!std.mem.eql(u8, entry.name, name)) return error.SkipZigTest;
-}
-
-test "a window maps, and frames follow presentation feedback" {
-    var h: Harness = .{};
-    try h.start();
-    defer h.stop();
-    const app = &h.app;
-    const backend = app.backend;
-    try runUntil(&h.loop, app, struct {
-        fn f(a: *TestApp) bool {
-            return a.count(.output_added) >= 1;
-        }
-    }.f);
-    const id = try h.mapWindow(.{ .title = "siv test" });
-    const w = backend.get(id);
-    try testing.expectEqual(backend.fifo_manager != null, w.fifo != null);
-    try testing.expectEqual(backend.commit_timing_manager != null, w.commit_timer != null);
-    try h.animate(20);
-
-    if (backend.presentation == null) return;
-    const last = w.clock.last_present_ns.?;
-    const now = Loop.now();
-    // Converted to the loop's clock if the compositor uses another one.
-    try testing.expect(last <= now + std.time.ns_per_ms and now - last < 200 * std.time.ns_per_ms);
-    try expectPredictionsFromFeedback(app, 10);
-
-    if (w.commit_timer == null) return;
-    // Commit timing holds each frame until the time it was rendered for, so
-    // none is presented early (allowing for clock conversion rounding).
-    var measured: usize = 0;
-    for (app.frame_basis.items) |basis| {
-        const err = basis.last_error orelse continue;
-        try testing.expect(err > -100 * std.time.ns_per_us);
-        measured += 1;
-    }
-    try testing.expect(measured >= 10);
-}
-
-test "sway: configure, server-side decorations, refresh, close" {
-    try require("sway");
+test "configure, server-side decorations, frame clock, close" {
     var h: Harness = .{};
     try h.start();
     defer h.stop();
@@ -240,13 +191,17 @@ test "sway: configure, server-side decorations, refresh, close" {
     try testing.expect(state.states.activated);
     try testing.expectEqual(Size{ .width = 1280, .height = 720 }, app.last_buffer);
 
-    // wlroots' headless output presents on a 60 Hz timer and reports it.
-    try h.animate(10);
+    // wlroots' headless output presents on a 60 Hz timer and reports it;
+    // frames are predicted from that feedback.
+    try h.animate(20);
     const clock = &backend.get(id).clock;
-    try testing.expect(clock.last_present_ns != null);
+    const last = clock.last_present_ns.?;
+    const now = Loop.now();
+    try testing.expect(last <= now + std.time.ns_per_ms and now - last < 200 * std.time.ns_per_ms);
     try testing.expect(clock.refresh_ns > 16 * std.time.ns_per_ms and clock.refresh_ns < 17 * std.time.ns_per_ms);
+    try expectPredictionsFromFeedback(app, 10);
 
-    try h.compositor.command("kill");
+    try h.sway.command("kill");
     try runUntil(&h.loop, app, struct {
         fn f(a: *TestApp) bool {
             return a.closed;
@@ -266,8 +221,7 @@ fn expectPredictionsFromFeedback(app: *const TestApp, min: usize) !void {
     try testing.expect(predicted_from_feedback >= min);
 }
 
-test "sway: fractional scale with viewporter, and preferred buffer scale" {
-    try require("sway");
+test "fractional scale with viewporter, and preferred buffer scale" {
     var h: Harness = .{};
     try h.start();
     defer h.stop();
@@ -285,7 +239,7 @@ test "sway: fractional scale with viewporter, and preferred buffer scale" {
     const int_id = try integer;
     try testing.expect(backend.get(int_id).fractional == null);
 
-    try h.compositor.command("output HEADLESS-1 scale 1.5");
+    try h.sway.command("output HEADLESS-1 scale 1.5");
     try runUntil(&h.loop, app, struct {
         fn f(a: *TestApp) bool {
             const w0 = a.backend.get(0);
@@ -308,15 +262,14 @@ test "sway: fractional scale with viewporter, and preferred buffer scale" {
     try testing.expectEqual(@as(i32, 2), backend.get(int_id).preferred_buffer_scale);
 }
 
-test "sway: pointer, scrolling, keyboard text and repeat, touch" {
-    try require("sway");
+test "pointer, scrolling, keyboard text and repeat, touch" {
     var h: Harness = .{};
     try h.start();
     defer h.stop();
     const app = &h.app;
     const id = try h.mapWindow(.{});
 
-    var vp = try VirtualPointer.connect(&h.compositor);
+    var vp = try VirtualPointer.connect(&h.sway);
     defer vp.deinit();
     // The virtual device gives the seat its pointer capability.
     try vp.sync();
@@ -356,14 +309,14 @@ test "sway: pointer, scrolling, keyboard text and repeat, touch" {
     // Text through wtype's virtual keyboard and the keymap it uploads, then
     // a key held past the repeat delay (sway: 600 ms at 25 Hz). The first
     // pause lets the seat gain its keyboard before keys arrive.
-    const wtype = try h.compositor.spawnClient(&[_:null]?[*:0]const u8{ "wtype", "-s", "300", "hé", "-P", "x", "-s", "900", "-p", "x" });
+    const wtype = try h.sway.spawnClient(&[_:null]?[*:0]const u8{ "wtype", "-s", "300", "hé", "-P", "x", "-s", "900", "-p", "x" });
     try runUntil(&h.loop, app, struct {
         fn f(a: *TestApp) bool {
             const l = a.last(.key) orelse return false;
             return l.key.state == .released and l.key.keysym == 'x';
         }
     }.f);
-    try h.compositor.wait(wtype);
+    try h.sway.wait(wtype);
     var text: std.ArrayList(u8) = .empty;
     defer text.deinit(testing.allocator);
     for (app.events.items) |e| if (e == .key and e.key.state == .pressed) try text.appendSlice(testing.allocator, e.key.text());
@@ -380,7 +333,7 @@ test "sway: pointer, scrolling, keyboard text and repeat, touch" {
     // About (900 - 600) ms at 25 Hz; allow for scheduling slack.
     try testing.expect(repeats >= 3 and repeats <= 12);
 
-    // None of the headless compositors can inject touch, so feed wl_touch
+    // Sway cannot inject touch on its headless backend, so feed wl_touch
     // events for the real surface to the seat's listener. Two contacts in
     // one frame, then a frame with a move, a shape change, and a lift.
     const seat = app.backend.seats.items[0].?;
@@ -414,8 +367,7 @@ test "sway: pointer, scrolling, keyboard text and repeat, touch" {
     try testing.expectEqual(@as(f64, 30), got[4].touch_up.x);
 }
 
-test "sway: output hotplug" {
-    try require("sway");
+test "output hotplug" {
     var h: Harness = .{};
     try h.start();
     defer h.stop();
@@ -426,7 +378,7 @@ test "sway: output hotplug" {
         }
     }.f);
 
-    try h.compositor.command("create_output");
+    try h.sway.command("create_output");
     try runUntil(&h.loop, app, struct {
         fn f(a: *TestApp) bool {
             return a.count(.output_added) == 2;
@@ -435,7 +387,7 @@ test "sway: output hotplug" {
     const added = app.last(.output_added).?.output_added;
     try testing.expectEqualStrings("HEADLESS-2", app.backend.output(added).?.name.slice());
 
-    try h.compositor.command("output HEADLESS-2 unplug");
+    try h.sway.command("output HEADLESS-2 unplug");
     try runUntil(&h.loop, app, struct {
         fn f(a: *TestApp) bool {
             return a.count(.output_removed) == 1;

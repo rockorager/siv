@@ -12,7 +12,6 @@ pub const xml = [_][]const u8{
     "stable/presentation-time/presentation-time.xml",
     "staging/fractional-scale/fractional-scale-v1.xml",
     "staging/fifo/fifo-v1.xml",
-    "staging/commit-timing/commit-timing-v1.xml",
     "unstable/xdg-decoration/xdg-decoration-unstable-v1.xml",
 };
 
@@ -31,6 +30,5 @@ pub const globals = [_]struct { []const u8, u32 }{
     .{ "wp_presentation", 2 },
     .{ "wp_fractional_scale_manager_v1", 1 },
     .{ "wp_fifo_manager_v1", 1 },
-    .{ "wp_commit_timing_manager_v1", 1 },
     .{ "zxdg_decoration_manager_v1", 1 },
 };

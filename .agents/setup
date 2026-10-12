@@ -61,9 +61,9 @@ install_zig() {
 	sudo ln -sfn "$dir/zig" /usr/local/bin/zig
 }
 
-# Nix, single-user, only to fetch the pinned compositors below from the
-# binary cache. Debian 12's sway 1.7 (wlroots 0.15) lacks the protocols the
-# compositor tests cover, and building current wlroots and sway needs newer
+# Nix, single-user, only to fetch the pinned sway below from the binary
+# cache. Debian 12's sway 1.7 (wlroots 0.15) lacks the protocols the
+# integration tests cover, and building current wlroots and sway needs newer
 # meson, wayland, and pixman than Debian ships.
 NIX_VERSION=2.35.2
 
@@ -91,13 +91,13 @@ install_nix() {
 	rm -rf "$tmp"
 }
 
-# Compositors for `zig build test-compositor`, pinned in compositors.nix and
-# linked into /usr/local/bin where the tests find them.
-install_compositors() {
-	local out=$HOME/.local/state/siv-compositors
-	step "nix-build .agents/compositors.nix"
+# Sway for `zig build test-integration`, pinned in sway.nix and linked into
+# /usr/local/bin where the tests find it.
+install_sway() {
+	local out=$HOME/.local/state/siv-sway
+	step "nix-build .agents/sway.nix"
 	mkdir -p "$(dirname "$out")"
-	"$HOME/.nix-profile/bin/nix-build" .agents/compositors.nix -o "$out" >/dev/null
+	"$HOME/.nix-profile/bin/nix-build" .agents/sway.nix -o "$out" >/dev/null
 	for exe in sway swaymsg wtype; do
 		sudo ln -sfn "$out/bin/$exe" "/usr/local/bin/$exe"
 	done
@@ -115,6 +115,6 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 timed install_packages
 timed install_zig
 timed install_nix
-timed install_compositors
+timed install_sway
 timed build_once
 zig version
