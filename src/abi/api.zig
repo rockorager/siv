@@ -595,6 +595,27 @@ pub const decls = [_]Decl{
         .{ .name = "color_token", .type = ref("siv_color_token"), .doc = "A themed color that replaces color." },
         .{ .name = "size_role", .type = ref("siv_text_role"), .doc = "A themed size that replaces font_size." },
     }),
+    flags("siv_text_span_flags", "Which attributes a styled range sets.", &.{
+        .{ .name = "weight", .bit = 0, .doc = "weight applies." },
+        .{ .name = "slant", .bit = 1, .doc = "slant applies." },
+        .{ .name = "size", .bit = 2, .doc = "font_size applies." },
+        .{ .name = "color", .bit = 3, .doc = "color, or color_token when set, applies." },
+        .{ .name = "underline", .bit = 4, .doc = "Underlined." },
+        .{ .name = "strikethrough", .bit = 5, .doc = "Struck through." },
+    }),
+    value("siv_text_span", "A styled range of a text or editor node (D22): attributes that replace the node's style over start..end. Attributes whose flag is clear keep the node's.", &.{
+        .{ .name = "start", .type = .u32, .doc = "First byte, at a character boundary." },
+        .{ .name = "end", .type = .u32, .doc = "Byte after the last, at a character boundary or the end of the text." },
+        .{ .name = "flags", .type = ref("siv_text_span_flags"), .doc = "Which attributes apply." },
+        .{ .name = "weight", .type = ref("siv_font_weight"), .doc = "Weight, with SIV_TEXT_SPAN_WEIGHT. Fonts the application added have no weights: weights and slants come from the desktop's fonts." },
+        .{ .name = "slant", .type = ref("siv_font_slant"), .doc = "Slant, with SIV_TEXT_SPAN_SLANT." },
+        .{ .name = "color_token", .type = ref("siv_color_token"), .doc = "A themed color, with SIV_TEXT_SPAN_COLOR; none uses color." },
+        f32Field("font_size", "Size in logical pixels, with SIV_TEXT_SPAN_SIZE; greater than 0."),
+        .{ .name = "color", .type = ref("siv_color"), .doc = "Text and decoration color, with SIV_TEXT_SPAN_COLOR." },
+    }),
+    descriptor("siv_text_spans_desc", "Styled ranges of a text or editor node.", &.{
+        .{ .name = "spans", .type = array(ref("siv_text_span")), .doc = "Ranges in order, not overlapping (copied); empty ranges and ones that set nothing are dropped, and equal neighbors merge." },
+    }),
     flags("siv_editor_flags", "Editor options.", &.{
         .{ .name = "multiline", .bit = 0, .doc = "Enter inserts a line break and lines wrap; otherwise one line that scrolls to keep the caret visible." },
         .{ .name = "masked", .bit = 1, .doc = "A password field (D15): the text lives in locked memory excluded from core dumps, shows one bullet per character, has no undo or input method, and is hidden from assistive technology. Offsets still index the real text." },
@@ -1225,6 +1246,7 @@ pub const functions = [_]Function{
     }),
     setter("siv_set_transition", "Makes later changes of the node's opacity and transform animate on the compositor (D8) for duration_ms with an ease-out curve, instead of jumping; reduced motion turns it off (D29). The node needs its own layer for them to apply: give it SIV_VISUAL_LAYER.", &.{.{ .name = "duration_ms", .type = .u32, .doc = "Duration; 0 turns transitions off." }}),
     setter("siv_set_animation", "Runs an animation of one property of the node on the compositor (D8), which gives the node its own layer: repeating ones, such as an indeterminate progress bar, cost the application's thread nothing per frame. It runs while the node is shown and motion is not reduced (D29); otherwise, and once stopped, the node shows its own value. Hiding the node stops it and showing it starts it over, as do changes of the node's size (for relative translations), own opacity or transform, or the animation. A finite animation holds its last value until one of those changes.", &.{.{ .name = "desc", .type = .{ .desc = "siv_animation_desc" }, .doc = "The animation; NULL stops it." }}),
+    setter("siv_set_text_spans", "Replaces the styled ranges of a text or editor node (D22): weight, slant, size, color, underline, and strikethrough over parts of its text, shaped as runs of their own and exposed to assistive technology as text attributes. siv_set_text clears them when the text changes; an editor moves them as the user edits, and typed text takes the style of the character before it (or the typing style, siv_editor_format). Masked editors take none (SIV_ERROR_INVALID_ARGUMENT).", &.{.{ .name = "desc", .type = .{ .desc = "siv_text_spans_desc" }, .doc = "The ranges; NULL clears them." }}),
     setter("siv_set_placeholder", "Sets the text an editor shows, in the theme's muted color, while it is empty. Exposed to assistive technology as the placeholder.", &.{.{ .name = "text", .type = .string, .doc = "UTF-8 without line breaks, copied." }}),
     setter("siv_on_default", "Sets, or with a NULL callback clears, the node's default handler for one event type: it runs when the node has no siv_on handler for the type or that handler returns false, before siv's own default action, and returns true to stop both bubbling and that action. Widgets, stock or not, put their behavior here, so siv_on stays the application's and returning true from it overrides the widget. Destroy-notify rules as for siv_on.", &.{
         .{ .name = "type", .type = ref("siv_event_type"), .doc = "The event type." },
@@ -1249,6 +1271,20 @@ pub const functions = [_]Function{
         .{ .name = "node", .type = ref("siv_node"), .doc = "A text or editor node." },
         .{ .name = "text", .type = .buffer, .doc = "Receives at most text_cap bytes; may be NULL with text_cap 0." },
         .{ .name = "len", .type = out(.usize), .doc = "The text's full length in bytes." },
+    }),
+    call("siv_node_get_text_run", "The style run of a text or editor node at a byte offset, as of the latest operation: the styled range containing it, or the unstyled stretch around it (flags 0). Walk the text by asking again at the run's end.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "A text or editor node." },
+        .{ .name = "offset", .type = .u32, .doc = "Byte offset; clamped to the text." },
+        .{ .name = "run", .type = out(ref("siv_text_span")), .doc = "The run." },
+    }),
+    call("siv_node_get_typing_style", "The style an editor's typed text takes now: its typing style, else that of the first selected character, else that of the character before the caret. start and end are 0. For toolbars that show the current style.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "An editor node." },
+        .{ .name = "style", .type = out(ref("siv_text_span")), .doc = "The style." },
+    }),
+    call("siv_editor_format", "A user's formatting command on an editor (D22), like Ctrl+B in a styled-text editor: sets the attributes in mask to those of values over the selection, as one undo step, followed by a change event; with nothing selected, makes them the typing style until the caret moves. An attribute in mask whose flag is clear in values goes back to the node's style. Not inside an open transaction of the window (SIV_ERROR_BUSY).", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "An editor node, not masked." },
+        .{ .name = "values", .type = ref("siv_text_span"), .doc = "The attributes; start and end are ignored." },
+        .{ .name = "mask", .type = ref("siv_text_span_flags"), .doc = "Which attributes to set." },
     }),
     call("siv_node_get_selection", "An editor's caret and selection anchor (byte offsets).", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "An editor node." },

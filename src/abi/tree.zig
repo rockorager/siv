@@ -841,6 +841,125 @@ pub export fn siv_set_animation(txn: t.Txn, node: t.Node, desc: ?*const t.Animat
     }.f, .{ node, desc });
 }
 
+/// A siv_text_span's attributes as a span style.
+fn spanStyleOf(sp: t.TextSpan) Error!ui.SpanStyle {
+    const fl = try runtime.flags(t.TextSpanFlags, sp.flags);
+    var out: ui.SpanStyle = .{ .underline = fl.underline, .strikethrough = fl.strikethrough };
+    if (fl.weight) out.weight = switch (try runtime.enumValue(t.FontWeight, sp.weight)) {
+        .regular => .regular,
+        .thin => .thin,
+        .light => .light,
+        .medium => .medium,
+        .semibold => .semibold,
+        .bold => .bold,
+        .black => .black,
+        _ => unreachable,
+    };
+    if (fl.slant) out.slant = switch (try runtime.enumValue(t.FontSlant, sp.slant)) {
+        .roman => .roman,
+        .italic => .italic,
+        .oblique => .oblique,
+        _ => unreachable,
+    };
+    if (fl.size) {
+        if (!(sp.font_size > 0) or sp.font_size > 1 << 16) return error.InvalidArgument;
+        out.size = sp.font_size;
+    }
+    if (fl.color) {
+        out.color_token = try colorToken(sp.color_token, true);
+        out.color = try color(sp.color, .black);
+    }
+    return out;
+}
+
+/// A span style as a siv_text_span over start..end.
+fn textSpanOf(start: u32, end: u32, st: ui.SpanStyle) t.TextSpan {
+    var out: t.TextSpan = .{ .start = start, .end = end, .flags = .{ .underline = st.underline, .strikethrough = st.strikethrough }, .weight = .regular, .slant = .roman, .color_token = .none, .font_size = 0, .color = .{ .r = 0, .g = 0, .b = 0, .a = 0 } };
+    if (st.weight) |wt| {
+        out.flags.weight = true;
+        out.weight = switch (wt) {
+            .regular => .regular,
+            .thin => .thin,
+            .light => .light,
+            .medium => .medium,
+            .semibold => .semibold,
+            .bold => .bold,
+            .black => .black,
+        };
+    }
+    if (st.slant) |sl| {
+        out.flags.slant = true;
+        out.slant = switch (sl) {
+            .roman => .roman,
+            .italic => .italic,
+            .oblique => .oblique,
+        };
+    }
+    if (st.size) |z| {
+        out.flags.size = true;
+        out.font_size = z;
+    }
+    if (st.color != null or st.color_token != .none) {
+        out.flags.color = true;
+        out.color_token = @fromBackingInt(@intFromEnum(st.color_token));
+        if (st.color) |c| out.color = .{ .r = scene.linearToSrgb(c.r), .g = scene.linearToSrgb(c.g), .b = scene.linearToSrgb(c.b), .a = c.a };
+    }
+    return out;
+}
+
+pub export fn siv_set_text_spans(txn: t.Txn, node: t.Node, desc: ?*const t.TextSpansDesc) t.Result {
+    return run(txn, struct {
+        fn f(w: *Window, n: t.Node, d_ptr: ?*const t.TextSpansDesc) Error!void {
+            const id = try nodeIn(w, n);
+            const d = try runtime.readDesc(t.TextSpansDesc, d_ptr);
+            const in = try runtime.array(t.TextSpan, d.spans, d.spans_count);
+            const list = try w.uiWin().scratch.allocator().alloc(ui.Span, in.len);
+            for (in, list) |sp, *o| o.* = .{ .start = sp.start, .end = sp.end, .style = try spanStyleOf(sp) };
+            w.txn.ut.setSpans(id, list) catch |err| return mapTxn(err);
+        }
+    }.f, .{ node, desc });
+}
+
+pub export fn siv_node_get_text_run(node: t.Node, offset: u32, out: ?*t.TextSpan) t.Result {
+    return application.wrap(struct {
+        fn f(n: t.Node, o: u32, dest_ptr: ?*t.TextSpan) Error!void {
+            const w, const id = try lookup(n);
+            const dest = try runtime.out(t.TextSpan, dest_ptr);
+            const r = ui.access.textRun(w.uiWin(), id, o) orelse return error.InvalidArgument;
+            dest.* = textSpanOf(r.start, r.end, r.style);
+        }
+    }.f(node, offset, out));
+}
+
+pub export fn siv_node_get_typing_style(node: t.Node, out: ?*t.TextSpan) t.Result {
+    return application.wrap(struct {
+        fn f(n: t.Node, dest_ptr: ?*t.TextSpan) Error!void {
+            const w, const id = try lookup(n);
+            const dest = try runtime.out(t.TextSpan, dest_ptr);
+            const uw = w.uiWin();
+            if (uw.node(id).kind != .editor) return error.InvalidArgument;
+            dest.* = textSpanOf(0, 0, ui.access.typingStyle(uw, id));
+        }
+    }.f(node, out));
+}
+
+pub export fn siv_editor_format(node: t.Node, values: t.TextSpan, mask: t.TextSpanFlags) t.Result {
+    return application.wrap(struct {
+        fn f(n: t.Node, v: t.TextSpan, m: t.TextSpanFlags) Error!void {
+            const w, const id = try lookup(n);
+            if (w.owner.painting != 0) return error.Busy;
+            const uw = w.uiWin();
+            const un = uw.node(id);
+            if (un.kind != .editor or un.data.editor.editor.masked) return error.InvalidArgument;
+            const fl = try runtime.flags(t.TextSpanFlags, m);
+            const style = try spanStyleOf(v);
+            if (uw.txn.open) return error.Busy;
+            if (!ui.access.format(uw, id, style, .{ .weight = fl.weight, .slant = fl.slant, .size = fl.size, .color = fl.color, .underline = fl.underline, .strikethrough = fl.strikethrough }))
+                return error.OutOfMemory;
+        }
+    }.f(node, values, mask));
+}
+
 pub export fn siv_set_placeholder(txn: t.Txn, node: t.Node, text: ?[*]const u8, text_len: usize) t.Result {
     return run(txn, struct {
         fn f(w: *Window, n: t.Node, ptr: ?[*]const u8, len: usize) Error!void {
