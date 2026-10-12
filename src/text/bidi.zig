@@ -64,7 +64,7 @@ pub const Analysis = struct {
 
 /// Resolves paragraphs and embedding levels. Empty text has one empty
 /// paragraph. `text` must be valid UTF-8 shorter than 4 GiB.
-pub fn analyze(allocator: std.mem.Allocator, text: []const u8, direction: BaseDirection) !Analysis {
+pub fn analyze(allocator: std.mem.Allocator, text: []const u8, direction: BaseDirection) error{OutOfMemory}!Analysis {
     const levels = try allocator.alloc(u8, text.len);
     errdefer allocator.free(levels);
     const classes = try allocator.alloc(LineClass, text.len);
@@ -102,10 +102,10 @@ pub fn analyze(allocator: std.mem.Allocator, text: []const u8, direction: BaseDi
         var length: sb.SBUInteger = 0;
         var separator: sb.SBUInteger = 0;
         sb.SBAlgorithmGetParagraphBoundary(algorithm, offset, text.len - offset, &length, &separator);
-        if (length == 0 or length > text.len - offset) return error.InvalidBidiResult;
+        std.debug.assert(length != 0 and length <= text.len - offset);
         const paragraph = sb.SBAlgorithmCreateParagraph(algorithm, offset, length, direction.sheenbidi()) orelse return error.OutOfMemory;
         defer sb.SBParagraphRelease(paragraph);
-        if (sb.SBParagraphGetLength(paragraph) != length) return error.InvalidBidiResult;
+        std.debug.assert(sb.SBParagraphGetLength(paragraph) == length);
         @memcpy(levels[offset..][0..length], sb.SBParagraphGetLevelsPtr(paragraph)[0..length]);
         try paragraphs.append(allocator, .{
             .start = @intCast(offset),
