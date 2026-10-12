@@ -864,6 +864,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     cannot take focus without the information a screen reader needs.
   - The tree is rebuilt in full after frames that changed structure,
     layout, semantics, text, or focus; AT-SPI change events will diff it.
+    `semantics.Tree.generation` counts rebuilds, so an unchanged tree is
+    skipped without diffing. Headings (and tree items) carry a `level`.
+  - Text and editing for the Text and EditableText interfaces
+    (`ui.access`): character rectangles, the offset at a point, and visual
+    line ranges, in window coordinates with byte offsets into the node's
+    text (an editor's preedit is shown but not counted, and its scrolling
+    applies); and replace, select, copy or cut, and paste-at for editors.
+    The edits take the user's path, so they are undo steps with change
+    events, and they queue behind an open application transaction like
+    input (D15). Masked editors have neither. Copies carry the serial of
+    the window's last input, which a compositor may refuse when the
+    window has had none.
   - AT-SPI objects will be one D-Bus subtree registration (D19) whose
     lookup maps `/org/a11y/atspi/accessible/<id>` to a semantics node and
     its interfaces, so exporting the tree costs nothing per node.

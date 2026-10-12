@@ -541,12 +541,85 @@ pub fn key(win: *Window, id: NodeId, k: *const platform.Key) bool {
 /// Copies (or cuts) the selection to the clipboard. Masked editors do not
 /// copy.
 pub fn copySelection(win: *Window, id: NodeId, cut: bool) void {
+    const lo, const hi = selection(data(win, id));
+    copyRange(win, id, lo, hi, cut);
+}
+
+/// Copies `lo..hi` to the clipboard, and with `cut` deletes it. Masked
+/// editors never copy.
+pub fn copyRange(win: *Window, id: NodeId, lo: u32, hi: u32, cut: bool) void {
     const e = data(win, id);
-    const lo, const hi = selection(e);
     if (lo == hi or e.editor.masked) return;
     const cb = win.clipboard orelse return;
     cb.copy(.clipboard, win.input.seat, win.input.serial, e.text.content[lo..hi]) catch return;
     if (cut) replace(win, id, lo, hi, "", .other);
+}
+
+/// An edit that arrived while the application held a transaction open
+/// (or behind input queued for that reason), applied in order at the
+/// next frame like queued input. Offsets are checked again then, since
+/// the text may have changed; an edit that no longer fits is dropped.
+pub const Pending = struct {
+    node: NodeId,
+    edit: union(enum) {
+        /// Pasted text, inserted over the selection.
+        paste: []u8,
+        replace: struct { start: u32, end: u32, text: []u8 },
+        select: struct { caret: u32, anchor: u32 },
+        copy: struct { start: u32, end: u32, cut: bool },
+        /// Paste the clipboard at an offset.
+        paste_at: u32,
+    },
+
+    pub fn deinit(p: Pending, gpa: std.mem.Allocator) void {
+        const owned: []u8 = switch (p.edit) {
+            .paste => |t| t,
+            .replace => |r| r.text,
+            else => return,
+        };
+        std.crypto.secureZero(u8, owned);
+        gpa.free(owned);
+    }
+};
+
+/// Whether an edit must wait its turn behind an open transaction or
+/// queued input.
+pub fn mustQueue(win: *const Window) bool {
+    return win.txn.open or win.pending_input.items.len != 0 or win.pending_edits.items.len != 0;
+}
+
+/// Queues `p`, which the queue then owns.
+pub fn queue(win: *Window, p: Pending) error{OutOfMemory}!void {
+    win.pending_edits.append(win.gpa, p) catch |err| {
+        p.deinit(win.gpa);
+        return err;
+    };
+    win.requestFrame();
+}
+
+/// Whether `start..end` is a range of whole code points in `s`.
+pub fn validRange(s: []const u8, start: u32, end: u32) bool {
+    if (start > end or end > s.len) return false;
+    for ([_]u32{ start, end }) |o| if (o < s.len and s[o] & 0xc0 == 0x80) return false;
+    return true;
+}
+
+/// Applies a queued edit to the editor, if it still exists and fits.
+pub fn apply(win: *Window, p: Pending) void {
+    defer p.deinit(win.gpa);
+    if (!win.isLive(p.node) or win.node(p.node).kind != .editor) return;
+    const content = data(win, p.node).text.content;
+    switch (p.edit) {
+        .paste => |t| pasteText(win, p.node, t),
+        .replace => |r| if (validRange(content, r.start, r.end)) replaceRange(win, p.node, r.start, r.end, r.text),
+        .select => |s| if (validRange(content, @min(s.caret, s.anchor), @max(s.caret, s.anchor)))
+            setSelection(win, p.node, s.caret, s.anchor, .downstream),
+        .copy => |c| if (validRange(content, c.start, c.end)) copyRange(win, p.node, c.start, c.end, c.cut),
+        .paste_at => |o| if (validRange(content, o, o)) {
+            setSelection(win, p.node, o, o, .downstream);
+            paste(win, p.node, .clipboard);
+        },
+    }
 }
 
 const Paste = struct {
@@ -562,13 +635,9 @@ const Paste = struct {
         if (!win.isLive(node) or win.node(node).kind != .editor) return;
         // Behind an open transaction (or input queued behind one), the
         // paste waits its turn like input.
-        if (win.txn.open or win.pending_input.items.len != 0 or win.pending_pastes.items.len != 0) {
+        if (mustQueue(win)) {
             const copy = win.gpa.dupe(u8, s) catch return;
-            win.pending_pastes.append(win.gpa, .{ .node = node, .text = copy }) catch {
-                win.gpa.free(copy);
-                return;
-            };
-            win.requestFrame();
+            queue(win, .{ .node = node, .edit = .{ .paste = copy } }) catch {};
             return;
         }
         pasteText(win, node, s);
@@ -583,9 +652,16 @@ pub fn paste(win: *Window, id: NodeId, kind: platform.SelectionKind) void {
     cb.paste(kind, win.input.seat, win, .{ .ctx = p, .func = Paste.done });
 }
 
-/// Inserts pasted text over the selection, as one undo step. Single-line
-/// editors turn line breaks into spaces.
+/// Inserts pasted text over the selection, as one undo step.
 pub fn pasteText(win: *Window, id: NodeId, text_: []const u8) void {
+    const lo, const hi = selection(data(win, id));
+    replaceRange(win, id, lo, hi, text_);
+}
+
+/// Replaces `lo..hi` with `text_` as one undo step, as a paste does:
+/// single-line editors turn line breaks into spaces. Disabled editors do
+/// not change.
+pub fn replaceRange(win: *Window, id: NodeId, lo: u32, hi: u32, text_: []const u8) void {
     const e = data(win, id);
     if (win.node(id).semantics.disabled) return;
     const a = win.scratch.allocator();
@@ -602,7 +678,6 @@ pub fn pasteText(win: *Window, id: NodeId, text_: []const u8) void {
         }
         n += 1;
     }
-    const lo, const hi = selection(e);
     replace(win, id, lo, hi, buf[0..n], .other);
 }
 

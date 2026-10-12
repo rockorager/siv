@@ -1153,3 +1153,139 @@ test "images: the tree and each display list that draws one hold a reference" {
     try f.frame();
     try testing.expectEqual(@as(u32, 1), refs(img));
 }
+
+test "access: character rectangles, hit testing, and lines in window coordinates" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 300, .height = 120 });
+    defer f.deinit();
+    const access = ui.access;
+    var t = try f.win.begin();
+    const col = try box(t, .root, .flex, .{ .padding = .all(10) });
+    try t.setFlex(col, .{ .axis = .column, .align_items = .start, .gap = 4 });
+    const latin = try box(t, col, .text, .{});
+    try t.setText(latin, "abc");
+    const hebrew = try box(t, col, .text, .{});
+    try t.setText(hebrew, "\u{5d0}\u{5d1}\u{5d2}");
+    const ed = try box(t, col, .editor, .{ .width = .{ .px = 280 } });
+    try t.setEditor(ed, .{ .multiline = true });
+    try t.setText(ed, "hello\nworld");
+    const narrow = try box(t, col, .editor, .{ .width = .{ .px = 60 } });
+    try t.setText(narrow, "a long single line that scrolls");
+    t.commit();
+    try f.frame();
+
+    // Left to right, inside the node, and back from their centers.
+    const box_l = f.win.windowRect(latin);
+    var prev_x1 = box_l.x0;
+    for (0..3) |i| {
+        const r = access.characterRect(f.win, latin, @intCast(i)).?;
+        try testing.expect(r.width() > 1 and r.x0 >= prev_x1 - 0.01 and r.y0 >= box_l.y0 and r.y1 <= box_l.y1 + 0.01);
+        prev_x1 = r.x1;
+        const c: raster.Point = .{ .x = r.x0 + r.width() * 0.25, .y = (r.y0 + r.y1) / 2 };
+        try testing.expectEqual(@as(?u32, @intCast(i)), access.offsetAt(f.win, latin, c));
+    }
+    // The end has a zero-width rectangle after the last character.
+    const end = access.characterRect(f.win, latin, 3).?;
+    try testing.expectEqual(end.x0, end.x1);
+    try testing.expectApproxEqAbs(prev_x1, end.x0, 0.01);
+    try testing.expect(access.characterRect(f.win, latin, 4) == null);
+    // Right to left: the first character is the rightmost.
+    const h0 = access.characterRect(f.win, hebrew, 0).?;
+    const h1 = access.characterRect(f.win, hebrew, 2).?;
+    try testing.expect(h0.x0 >= h1.x1 - 0.01);
+
+    // Lines: with their line break, on the second line, and the end.
+    try testing.expectEqual([2]u32{ 0, 6 }, access.lineRange(f.win, ed, 2).?);
+    try testing.expectEqual([2]u32{ 6, 11 }, access.lineRange(f.win, ed, 8).?);
+    try testing.expectEqual([2]u32{ 6, 11 }, access.lineRange(f.win, ed, 11).?);
+    const w = access.characterRect(f.win, ed, 6).?;
+    try testing.expect(w.y0 >= access.characterRect(f.win, ed, 0).?.y1 - 0.01);
+
+    // A scrolled editor: the caret at the end is in view, and so is the
+    // last character's rectangle.
+    const k: Keys = .{ .f = &f };
+    k.press(ui.keysym.tab, .{});
+    k.press(ui.keysym.tab, .{});
+    try testing.expectEqual(narrow, f.win.input.focus);
+    k.press(ui.keysym.end, .{});
+    try f.frame();
+    try testing.expect(f.win.state(narrow).editor_scroll > 0);
+    const nb = f.win.windowRect(narrow);
+    const len: u32 = @intCast(f.win.node(narrow).data.editor.text.content.len);
+    const last = access.characterRect(f.win, narrow, len - 1).?;
+    try testing.expect(last.x0 >= nb.x0 and last.x1 <= nb.x1 + 0.01);
+    try testing.expect(access.characterRect(f.win, narrow, 0).?.x1 < nb.x0);
+
+    // A preedit is shown but not counted: "b" moves right past it, and a
+    // point inside it is where it sits.
+    k.press(ui.keysym.tab, .{ .shift = true });
+    try testing.expectEqual(ed, f.win.input.focus);
+    k.press(ui.keysym.home, .{ .ctrl = true });
+    k.press(ui.keysym.right, .{});
+    const before = access.characterRect(f.win, ed, 1).?;
+    var ev: @import("platform").TextInput = .{ .window = 0, .seat = 0 };
+    f.win.handlePlatform(&.{ .text_input_enter = .{ .window = 0, .seat = 0, .serial = 0 } });
+    ev.preedit_len = imeText(&ev.preedit_buf, "XYZ");
+    imeEvent(&f, ev);
+    try f.frame();
+    const after = access.characterRect(f.win, ed, 1).?;
+    try testing.expect(after.x0 > before.x0 + 10);
+    try testing.expectEqual(@as(?u32, 1), access.offsetAt(f.win, ed, .{ .x = (before.x0 + after.x0) / 2, .y = (after.y0 + after.y1) / 2 }));
+    try testing.expectEqual([2]u32{ 0, 6 }, access.lineRange(f.win, ed, 1).?);
+}
+
+test "access: edits take the user's path, queue behind a transaction, and skip masked fields" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 300, .height = 100 });
+    defer f.deinit();
+    const access = ui.access;
+    var changes: usize = 0;
+    var t = try f.win.begin();
+    const ed = try box(t, .root, .editor, .{ .align_y = .start });
+    try t.setText(ed, "hello world");
+    try t.on(ed, .change, .{ .func = countChange, .user = &changes });
+    const pw = try box(t, .root, .editor, .{ .align_y = .end });
+    try t.setEditor(pw, .{ .masked = true });
+    const heading = try box(t, .root, .text, .{});
+    try t.setText(heading, "Title");
+    try t.setSemantics(heading, .{ .role = .heading, .level = 2 });
+    t.commit();
+    try f.frame();
+    const e = &f.win.node(ed).data.editor;
+    const gen = f.win.semantics.generation;
+
+    try access.replaceText(f.win, ed, 6, 11, "there\nfriend");
+    try testing.expectEqualStrings("hello there friend", e.text.content);
+    try testing.expectEqual(@as(usize, 1), changes);
+    try testing.expectEqual(@as(u32, 18), e.caret);
+    try access.setSelection(f.win, ed, 0, 5);
+    try testing.expectEqual(@as(u32, 0), e.caret);
+    try testing.expectEqual(@as(u32, 5), e.anchor);
+    // One undo step, like a paste.
+    const k: Keys = .{ .f = &f };
+    k.press(ui.keysym.tab, .{});
+    k.press('z', .{ .ctrl = true });
+    try testing.expectEqualStrings("hello world", e.text.content);
+
+    // Behind an application transaction the edit waits, then applies.
+    t = try f.win.begin();
+    try access.replaceText(f.win, ed, 0, 5, "howdy");
+    try testing.expectEqualStrings("hello world", e.text.content);
+    t.commit();
+    try f.frame();
+    try testing.expectEqualStrings("howdy world", e.text.content);
+    try testing.expect(f.win.semantics.generation > gen);
+    const settled = f.win.semantics.generation;
+    try f.frame();
+    _ = try f.win.semanticsTree();
+    try testing.expectEqual(settled, f.win.semantics.generation);
+
+    try testing.expectError(error.InvalidArgument, access.replaceText(f.win, ed, 3, 99, ""));
+    try testing.expectError(error.InvalidArgument, access.replaceText(f.win, ed, 4, 2, ""));
+    try testing.expectError(error.InvalidArgument, access.replaceText(f.win, ed, 0, 0, "\xff"));
+    try testing.expectError(error.InvalidNode, access.replaceText(f.win, pw, 0, 0, "x"));
+    try testing.expectError(error.InvalidNode, access.copyText(f.win, pw, 0, 0, false));
+    try testing.expect(access.characterRect(f.win, pw, 0) == null);
+    const sem = try f.win.semanticsTree();
+    try testing.expectEqual(@as(u8, 2), sem.find(.heading, "Title").?.level);
+}

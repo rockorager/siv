@@ -291,6 +291,8 @@ pub const Semantics = struct {
     expanded: Toggle = .unset,
     value: ?Range = null,
     live: Live = .off,
+    /// Heading level, or a tree item's depth (1 is the top); 0 for none.
+    level: u8 = 0,
 };
 
 pub const Axis = enum(u8) { row, column };

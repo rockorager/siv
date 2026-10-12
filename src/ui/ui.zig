@@ -69,6 +69,7 @@ pub const layers = @import("layers.zig");
 pub const Sink = layers.Sink;
 pub const semantics = @import("semantics.zig");
 pub const input = @import("input.zig");
+pub const access = @import("access.zig");
 pub const keysym = input.keysym;
 
 test {

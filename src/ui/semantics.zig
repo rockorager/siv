@@ -45,11 +45,15 @@ pub const Node = struct {
     anchor: ?u32 = null,
     /// A password field: its value is never exposed.
     masked: bool = false,
+    /// Heading level, or a tree item's depth (1 is the top); 0 for none.
+    level: u8 = 0,
 };
 
 pub const Tree = struct {
     nodes: std.ArrayList(Node) = .empty,
     names: std.ArrayList(u8) = .empty,
+    /// Counts rebuilds: an unchanged count means an unchanged tree.
+    generation: u64 = 0,
 
     pub fn deinit(t: *Tree, gpa: std.mem.Allocator) void {
         t.nodes.deinit(gpa);
@@ -94,6 +98,7 @@ pub const Tree = struct {
     pub fn rebuild(t: *Tree, win: *Window) Window.Error!void {
         t.nodes.clearRetainingCapacity();
         t.names.clearRetainingCapacity();
+        t.generation += 1;
         try t.visit(win, .root, none);
     }
 
@@ -144,6 +149,7 @@ pub const Tree = struct {
                 .caret = if (editor) n.data.editor.caret else null,
                 .anchor = if (editor) n.data.editor.anchor else null,
                 .masked = n.kind == .editor and n.data.editor.editor.masked,
+                .level = sem.level,
             });
         }
         var it = win.children(id);

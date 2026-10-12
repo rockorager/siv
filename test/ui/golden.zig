@@ -507,6 +507,14 @@ test "clipboard: copy and paste through the platform, and its size limit" {
     app.key('z', .{ .ctrl = true });
     try app.settle();
     try testing.expectEqualStrings(" this", app.win.node(eds[1]).data.editor.text.content);
+
+    // Assistive technology cuts a range and pastes it at an offset.
+    try ui.access.copyText(app.win, eds[0], 0, 5, true);
+    try app.settle();
+    try testing.expectEqualStrings("this text", app.win.node(eds[0]).data.editor.text.content);
+    try ui.access.pasteText(app.win, eds[1], 0);
+    try app.settle();
+    try testing.expectEqualStrings("copy  this", app.win.node(eds[1]).data.editor.text.content);
 }
 
 test "primary selection: selecting offers it, the middle button pastes it" {
