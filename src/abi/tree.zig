@@ -914,9 +914,12 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
             ev.modifiers = modifiers(p.mods);
             ev.x = p.x;
             ev.y = p.y;
+            ev.clicks = p.clicks;
+            ev.time = p.time;
         },
         .key => |k| {
             ev.keysym = k.keysym;
+            ev.time = k.time;
             ev.modifiers = modifiers(k.mods);
             ev.flags = .{ .pressed = k.pressed, .repeat = k.repeat };
             ev.text = k.text.ptr;

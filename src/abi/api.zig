@@ -663,6 +663,8 @@ pub const decls = [_]Decl{
         .{ .name = "count", .type = .u32, .doc = "Select: how many items are selected." },
         f32Field("width", "Viewport: the viewport's width."),
         f32Field("height", "Viewport: the viewport's height."),
+        .{ .name = "clicks", .type = .u32, .doc = "Pointer, phase down or up of the primary button: 1 for a click, 2 for a double click, 3 for a triple click, within the desktop's double-click time and a few pixels (D15)." },
+        .{ .name = "time", .type = .u32, .doc = "Pointer and key: the input's timestamp in milliseconds, on the compositor's clock." },
     }),
     callback("siv_event_fn", "Handles a node event at a safe point on the application's thread (D5). Return true when handled: the event stops bubbling and the default action is skipped.", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node the handler was set on." },
