@@ -765,6 +765,7 @@ pub const decls = [_]Decl{
         .{ .name = "shortcut", .type = .string, .doc = "A key binding to show at the end edge, copied; siv does not bind it." },
         .{ .name = "flags", .type = ref("siv_menu_item_flags"), .doc = "Options." },
         .{ .name = "mnemonic", .type = .u32, .doc = "A keysym that chooses the item while its menu is open, letters in either case; 0 for none." },
+        .{ .name = "submenu", .type = ref("siv_node"), .doc = "A menu (siv_menu) the item opens beside itself, instead of being chosen: on hover, Enter, Space, a click, or the arrow toward the end edge; the arrow toward the start edge and Escape close it again. Choosing in it reports SIV_EVENT_SELECT on the submenu and closes every menu of the chain; 0 for none." },
     }),
     descriptor("siv_popover_desc", "A popover: a card in a popup next to its anchor.", &.{
         .{ .name = "label", .type = .string, .doc = "Accessible name, copied." },
