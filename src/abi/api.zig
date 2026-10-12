@@ -161,6 +161,22 @@ const role_values: [roles.len + 1]schema.EnumValue = blk: {
     break :blk vs;
 };
 
+const cursor_names = [_][]const u8{
+    "default",     "context_menu", "help",        "pointer",     "progress",    "wait",        "cell",        "crosshair",
+    "text",        "vertical_text", "alias",      "copy",        "move",        "no_drop",     "not_allowed", "grab",
+    "grabbing",    "e_resize",    "n_resize",    "ne_resize",   "nw_resize",   "s_resize",    "se_resize",   "sw_resize",
+    "w_resize",    "ew_resize",   "ns_resize",   "nesw_resize", "nwse_resize", "col_resize",  "row_resize",  "all_scroll",
+    "zoom_in",     "zoom_out",    "dnd_ask",     "all_resize",
+};
+
+const cursor_values: [cursor_names.len + 2]schema.EnumValue = blk: {
+    var vs: [cursor_names.len + 2]schema.EnumValue = undefined;
+    vs[0] = .{ .name = "auto", .value = 0, .doc = "Nodes: the parent's cursor (editors show text). Windows: no override." };
+    for (cursor_names, 1..) |n, i| vs[i] = .{ .name = n, .value = i, .doc = "The CSS " ++ n ++ " cursor." };
+    vs[cursor_names.len + 1] = .{ .name = "hidden", .value = cursor_names.len + 1, .doc = "No cursor." };
+    break :blk vs;
+};
+
 const toggle_values: []const schema.EnumValue = &.{
     .{ .name = "unset", .value = 0, .doc = "The state does not apply." },
     .{ .name = "off", .value = 1, .doc = "Off." },
@@ -522,6 +538,20 @@ pub const decls = [_]Decl{
     flags("siv_editor_flags", "Editor options.", &.{
         .{ .name = "multiline", .bit = 0, .doc = "Enter inserts a line break and lines wrap; otherwise one line that scrolls to keep the caret visible." },
         .{ .name = "masked", .bit = 1, .doc = "A password field (D15): the text lives in locked memory excluded from core dumps, shows one bullet per character, has no undo or input method, and is hidden from assistive technology. Offsets still index the real text." },
+    }),
+
+    // Pointer cursors (D16).
+    enumeration("siv_cursor", "A pointer cursor shape, named as in CSS. Shown through the compositor's cursor-shape-v1 when it offers it, else from the desktop's cursor theme at its size and the window's scale.", &cursor_values),
+    enumeration("siv_window_edge", "A window edge or corner, for resizing from client-side decorations.", &.{
+        .{ .name = "none", .value = 0, .doc = "No edge." },
+        .{ .name = "top", .value = 1, .doc = "Top." },
+        .{ .name = "bottom", .value = 2, .doc = "Bottom." },
+        .{ .name = "left", .value = 4, .doc = "Left." },
+        .{ .name = "top_left", .value = 5, .doc = "Top left." },
+        .{ .name = "bottom_left", .value = 6, .doc = "Bottom left." },
+        .{ .name = "right", .value = 8, .doc = "Right." },
+        .{ .name = "top_right", .value = 9, .doc = "Top right." },
+        .{ .name = "bottom_right", .value = 10, .doc = "Bottom right." },
     }),
 
     // Drag and drop (D19).
@@ -1152,6 +1182,18 @@ pub const functions = [_]Function{
         .{ .name = "max_width", .type = .f32, .doc = "Width to wrap at; 0 for none." },
         .{ .name = "style", .type = .{ .desc = "siv_text_style_desc" }, .doc = "Style; NULL for defaults." },
         .{ .name = "metrics", .type = out(ref("siv_text_metrics")), .doc = "The size." },
+    }),
+
+    // Pointer cursors (D16).
+    setter("siv_set_cursor", "Sets the pointer cursor over a node and its descendants that set none. While a press is held the cursor stays that of the node that got it.", &.{.{ .name = "cursor", .type = ref("siv_cursor"), .doc = "The cursor; auto inherits." }}),
+    op("siv_window_set_cursor", "Shows a cursor over the whole window whatever its nodes set, such as SIV_CURSOR_PROGRESS while the application is busy; auto stops.", &.{
+        window_param,
+        .{ .name = "cursor", .type = ref("siv_cursor"), .doc = "The cursor." },
+    }),
+    call("siv_window_begin_move", "Starts moving the window interactively, for client-side decorations: call from a pointer down handler, while the press is held.", &.{window_param}),
+    call("siv_window_begin_resize", "Starts resizing the window interactively from an edge, like siv_window_begin_move. Show the matching resize cursor on the edge's node (siv_set_cursor).", &.{
+        window_param,
+        .{ .name = "edge", .type = ref("siv_window_edge"), .doc = "The edge or corner; not none." },
     }),
 
     // Drag and drop (D19).

@@ -35,4 +35,5 @@ test {
     _ = @import("abi/teardown.zig");
     _ = @import("abi/primitives.zig");
     _ = @import("widgets/widgets.zig");
+    _ = @import("abi/cursor.zig");
 }

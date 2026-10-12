@@ -28,12 +28,14 @@ pub const external = @import("external.zig");
 pub const dnd = @import("dnd.zig");
 /// Theming: scheme and contrast choices, color overrides.
 pub const theme = @import("theme.zig");
+/// Pointer cursors.
+pub const cursor = @import("cursor.zig");
 
 /// The generated wrapper's types, which the exports use.
 pub const types = t;
 
 /// The files that export schema functions.
-const implementations = .{ @This(), application, tree, canvas, external, dnd, theme } ++ @import("widgets").implementations;
+const implementations = .{ @This(), application, tree, canvas, external, dnd, theme, cursor } ++ @import("widgets").implementations;
 
 const version = build_options.version;
 
