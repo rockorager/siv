@@ -400,6 +400,32 @@ pub const App = struct {
         return win;
     }
 
+    /// A popup of `parent` (D17): its own tree, shown with
+    /// `Window.showPopup` once its content is built, so that it can size
+    /// to it. Until then the compositor knows nothing of it.
+    pub fn createPopup(app: *App, parent: *Window, listener: Listener) Error!*Window {
+        const gpa = app.gpa;
+        try app.zombies.ensureUnusedCapacity(gpa, 1);
+        const win = try gpa.create(Window);
+        errdefer gpa.destroy(win);
+        win.* = .{ .app = app, .id = 0, .ui = undefined, .listener = listener, .drag = .{ .comp = app.comp, .window = 0, .gpa = gpa }, .parent = parent, .shown = false };
+        win.ui = try ui.Window.init(gpa, .{
+            .fonts = &app.fonts,
+            .sink = .{ .ctx = win, .commit = Window.commit },
+            .host = .{ .ctx = win, .request_frame = Window.requestFrame, .text_input = Window.textInput },
+            .clipboard = &app.clipboard,
+            .reduced_motion = app.reduced_motion,
+            .desktop = app.desktop.values,
+            .theme = app.theme,
+            .width = 1,
+            .height = 1,
+            .scale = parent.ui.scale,
+            .rtl = parent.ui.rtl,
+            .language = app.fonts.name(parent.ui.language),
+        });
+        return win;
+    }
+
     fn window(app: *App, id: ?WindowId) ?*Window {
         const i = id orelse return null;
         if (i >= app.windows.items.len) return null;
@@ -573,13 +599,24 @@ pub const Window = struct {
     /// Last layer commit, and the last one presented.
     committed_seq: u64 = 0,
     presented_seq: u64 = 0,
+    /// Popups: the window they belong to.
+    parent: ?*Window = null,
+    /// False for a popup until `showPopup`.
+    shown: bool = true,
 
     /// Destroys the window (see the module comment). On failure nothing
-    /// changed. `win` stays valid until the loop runs again.
+    /// changed. `win` stays valid until the loop runs again. Destroy a
+    /// window's popups before it.
     pub fn destroy(win: *Window) Allocator.Error!void {
         if (win.closed) return;
         const app = win.app;
         try app.zombies.ensureUnusedCapacity(app.gpa, 1);
+        if (!win.shown) {
+            win.closed = true;
+            if (win.ui.txn.open) win.ui.txn.abort();
+            app.zombies.appendAssumeCapacity(win);
+            return;
+        }
         try app.comp.destroyWindow(win.id);
         win.closed = true;
         if (app.accessible) app.bridge.removeWindow(win.a11y_id);
@@ -588,10 +625,46 @@ pub const Window = struct {
         app.windows.items[win.id] = null;
         portals.windowClosed(win);
         app.zombies.appendAssumeCapacity(win);
+        // Popups do not keep the application running.
+        if (win.parent != null) return;
         app.open_windows -= 1;
         if (app.open_windows == 0) app.quit();
         // Not freed here even if its lists are home: the caller may still
         // use it (the C API tears down its handles after this returns).
+    }
+
+    pub const Placement = ui.Window.PopupPlacement;
+
+    /// Shows a popup made by `App.createPopup`, anchored to a node of its
+    /// parent. A zero width or height sizes it to its content, at most
+    /// the parent's width. With `grab`, it takes the keyboard for the
+    /// parent's last press or key, and a click outside dismisses it.
+    pub fn showPopup(win: *Window, anchor: ui.NodeId, placement: Placement, width: u32, height: u32, grab: bool) Error!void {
+        const app = win.app;
+        const parent = win.parent orelse return error.Unavailable;
+        if (win.shown or win.closed or parent.closed or !parent.shown) return error.Busy;
+        var w = width;
+        var h = height;
+        if (w == 0 or h == 0) {
+            const sz = try win.ui.preferredSize(parent.ui.width);
+            if (w == 0) w = @intFromFloat(@max(1, @ceil(sz.w)));
+            if (h == 0) h = @intFromFloat(@max(1, @ceil(sz.h)));
+        }
+        var pos = parent.ui.popupPositioner(if (parent.ui.isLive(anchor)) anchor else .root, w, h, placement);
+        pos.reactive = true;
+        const id = app.comp.createPopup(.{
+            .parent = parent.id,
+            .positioner = pos,
+            .grab = if (grab) .{ .seat = parent.ui.input.seat, .serial = parent.ui.input.serial } else null,
+        }) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable;
+        errdefer app.comp.destroyWindow(id) catch {};
+        if (id >= app.windows.items.len) try app.windows.appendNTimes(app.gpa, null, id + 1 - app.windows.items.len);
+        win.id = id;
+        win.drag.window = id;
+        win.shown = true;
+        app.windows.items[id] = win;
+        if (app.accessible) win.a11y_id = app.bridge.addWindow(win.ui, "") catch 0;
+        win.ui.configure(@floatFromInt(w), @floatFromInt(h), parent.ui.scale);
     }
 
     fn free(win: *Window) void {
@@ -654,7 +727,7 @@ pub const Window = struct {
 
     fn requestFrame(ctx: ?*anyopaque) void {
         const win: *Window = @ptrCast(@alignCast(ctx));
-        if (win.closed) return;
+        if (win.closed or !win.shown) return;
         win.app.comp.requestFrame(win.id) catch win.app.fail(error.OutOfMemory);
     }
 
@@ -663,7 +736,7 @@ pub const Window = struct {
     /// copy of the surrounding text.
     fn textInput(ctx: ?*anyopaque, seat: platform.SeatId, state: *const platform.TextInputState) void {
         const win: *Window = @ptrCast(@alignCast(ctx));
-        if (win.closed) return;
+        if (win.closed or !win.shown) return;
         const gpa = win.app.gpa;
         const Req = struct {
             gpa: Allocator,
@@ -792,6 +865,7 @@ pub const Window = struct {
     }
 
     fn platformCall(win: *Window, comptime func: anytype, arg: anytype) Allocator.Error!void {
+        if (!win.shown) return;
         const Arg = @TypeOf(arg);
         const gpa = win.app.gpa;
         const Closure = struct {
