@@ -1106,6 +1106,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     - Not yet: external nodes in the C API.
   - Fractional scale, preferred buffer scale, output hotplug, `xdg-activation`,
     idle inhibit, `xdg-dialog`, toplevel icons, and session restore.
+    - Built: xdg-foreign-v2 exports of toplevels (portal dialog parents,
+      D19) and xdg-activation-v1 tokens and activation. Sway marks an
+      activated window urgent unless `focus_on_window_activation focus`;
+      the integration test sets it.
 
 ### D18. Accessibility
 
@@ -1251,8 +1255,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       for 80 000 message sends and dispatches; a sequential round trip
       through the daemon takes 0.1 ms; a reply of 1000 `(so)` structs
       encodes in 0.1 ms and validates and decodes in 0.05 ms.
-    - Not built yet: org.freedesktop.Application, ObjectManager, the
-      other portals, and serving peer-to-peer connections.
+    - Not built yet: org.freedesktop.Application, ObjectManager, and
+      serving peer-to-peer connections.
   - Settings come only from the portal (color scheme, accent, contrast, reduced
     motion, text scale, fonts, cursor theme and size, double-click time,
     caret blinking), applied live, with built-in defaults when no portal
@@ -1334,6 +1338,87 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Portals for files, URIs, notifications, printing, screen capture, global
     shortcuts, and the document portal. No built-in file chooser: the portal is
     the system chooser.
+    - The clients are their own module, `src/portal` (imports `dbus` and
+      `loop`), on the application's session bus connection; `src/dbus`
+      stays the protocol and the Settings client. They work the same in
+      Flatpak and outside it; what differs is handled in one place each
+      (below).
+    - Requests (`portal.Request`): the client picks `handle_token`, so the
+      request path (/org/freedesktop/portal/desktop/request/SENDER/TOKEN)
+      is known before the call, and subscribes to its Response first,
+      with the portal's name as sender, so no response is missed or
+      spoofed. A call made before the bus answered Hello waits for the
+      unique name. If a portal replies with another path (before 0.9),
+      the subscription moves there. Cancelling sends Request.Close. Error
+      replies that mean the service, interface, or method is missing are
+      `unavailable`; other errors and a lost bus are `failed`. Sessions
+      (screen cast, global shortcuts) are the same with
+      `session_handle_token` and Session.Closed.
+    - Parent windows: "wayland:<handle>" from exporting the toplevel with
+      xdg-foreign-v2 (`Platform.exportToplevel`), made on the compositor
+      thread the first time a window needs one and kept for the window's
+      lifetime rather than per dialog (GTK unexports after each dialog;
+      the handle is an unguessable token, and one export per window costs
+      nothing more). Without the protocol, for popups, and without a
+      window the parent is "", and the dialog is just not modal. A window
+      destroyed while its export is on the way releases the waiting
+      requests with "". The headless backend exports "headless-<id>".
+    - Local files open by descriptor: `siv_open_uri` sends a file:// URI
+      to OpenFile (or OpenDirectory for show-in-folder) with an O_PATH fd,
+      O_RDWR when writable, because the portal refuses file URIs from
+      sandboxed applications and checks the fd's writability.
+    - Application ids: inside Flatpak (/.flatpak-info) the portal knows
+      it. A host application with an id (`siv_app_desc.app_id`) sends
+      org.freedesktop.host.portal.Registry.Register (xdg-desktop-portal
+      1.19 and later) right after connecting, before the Settings read,
+      since Register must precede every other call; older portals' errors
+      are ignored, and they derive the id from the systemd scope.
+    - Activation tokens: requests that open another application
+      (OpenURI) carry an xdg-activation token for the window's last key or
+      button serial, so the opened application may take focus
+      (`Platform.requestActivationToken`).
+    - Notifications: actions are application actions (`siv_app_add_action`,
+      shared with org.freedesktop.Application, see Lifecycle), sent as
+      "app.<name>", GLib's convention, which desktops that activate
+      applications over D-Bus expect; ActionInvoked strips the prefix.
+      Targets are strings. Version 2 keys (display hints) are sent only
+      when the portal's Notification version, read at startup, allows
+      them: version 1 portals refuse unknown keys.
+    - Inhibit lasts until the handle is destroyed, which closes the
+      request. The portal answers only once the desktop applied it and
+      never when it allowed none of the flags, so nothing waits for it.
+    - Screen casts hand the application the PipeWire remote fd and the
+      streams' node ids and geometry; siv does not link PipeWire. Restore
+      tokens round-trip through the descriptor and a getter.
+    - Global shortcuts bind through one session per handle; triggers the
+      desktop describes are kept per shortcut and updated on
+      ShortcutsChanged.
+    - Documents: `siv_document_export` registers a file (AddFull) with
+      permissions for another application and reports its path in the
+      document portal's mount.
+    - C API: one-shot requests (OpenURI, screenshot, pick color, document
+      export) take a `siv_portal_fn` that receives a `siv_portal_result`;
+      the file chooser, inhibitions, global shortcuts, and screen casts
+      are handles built up and then shown or started. Callbacks never run
+      inside the call that started the request: without a session bus
+      (the headless backend has none) the result is `unavailable` at the
+      next dispatch. Destroying the application cancels pending requests
+      and runs their destroy-notifies, before the windows go so that no
+      request starts during teardown.
+    - Verified (`zig build test-integration-portal`, and the C API on
+      sway): Debian's xdg-desktop-portal 1.16 with
+      xdg-permission-store, a PipeWire daemon, and a backend of siv's own
+      implementing the impl interfaces, so the frontend's option
+      validation and forwarding are real: file chooser options and
+      results, cancellation, screenshots and colors, OpenURI launching a
+      .desktop handler for URIs and for files by fd, show-in-folder
+      through org.freedesktop.FileManager1, notifications with
+      ActionInvoked forwarded back, inhibition released by Request.Close,
+      global shortcut sessions and Activated, and a screen cast to a real
+      PipeWire fd. On sway the backend receives "wayland:<handle>" from a
+      real xdg-foreign export. 1.16 drops OpenFile's current_folder
+      (version 4 of the interface, 1.18) and has no Registry. The
+      hermetic tests use a stand-in frontend on the test bus.
   - Clipboard and drag-and-drop negotiate MIME types, support primary
     selection, stream through the event loop, and enforce configurable size
     limits.
@@ -1545,8 +1630,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   compositors are not part of the test suite. It also runs D-Bus against a
   private dbus-daemon, with GLib's gdbus as a second client, and AT-SPI
   against at-spi2-core's bus launcher and registry with libatspi as the
-  client; the hermetic D-Bus and AT-SPI tests use an in-process test bus
-  over socketpairs.
+  client, and portals against xdg-desktop-portal with a backend of siv's
+  own behind it; the hermetic D-Bus, AT-SPI, and portal tests use an
+  in-process test bus over socketpairs.
 
 ### D25. Project
 
