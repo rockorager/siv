@@ -211,3 +211,236 @@ test "posted closures run on the loop thread, then their destroy; at teardown on
     try testing.expectEqual(100, counts.runs.load(.seq_cst));
     try testing.expectEqual(101, counts.destroys.load(.seq_cst));
 }
+
+// Portals (D19) -----------------------------------------------------------------
+
+const dbus = @import("dbus");
+const portal = @import("portal");
+const portals = app_mod.portals;
+
+/// A test bus with a stand-in portal frontend, on a thread of its own.
+const BusThread = struct {
+    loop: Loop = undefined,
+    bus: dbus.testing.TestBus = undefined,
+    conn: dbus.Connection = undefined,
+    frontend: portal.testing.Frontend = undefined,
+    thread: std.Thread = undefined,
+    stop_flag: std.atomic.Value(bool) = .init(false),
+    running: bool = false,
+
+    /// Starts the bus and returns a socket for the application.
+    fn start(b: *BusThread) !i32 {
+        b.loop = try Loop.init(std.heap.smp_allocator);
+        b.bus = .init(testing.allocator, &b.loop);
+        try b.conn.initFd(testing.allocator, &b.loop, try b.bus.connect(), .{});
+        b.frontend = .{ .conn = &b.conn };
+        try b.frontend.start();
+        while (!b.frontend.owns()) try b.loop.dispatch(10);
+        const fd = try b.bus.connect();
+        b.thread = try std.Thread.spawn(.{}, run, .{b});
+        b.running = true;
+        return fd;
+    }
+
+    fn run(b: *BusThread) void {
+        while (!b.stop_flag.load(.acquire)) b.loop.dispatch(-1) catch return;
+    }
+
+    /// Stops the thread; the frontend's records can be read afterwards.
+    fn stop(b: *BusThread) void {
+        if (!b.running) return;
+        b.running = false;
+        b.stop_flag.store(true, .release);
+        b.loop.wake();
+        b.thread.join();
+    }
+
+    fn deinit(b: *BusThread) void {
+        b.stop();
+        b.frontend.deinit();
+        b.conn.deinit();
+        b.bus.deinit();
+        b.loop.deinit();
+    }
+};
+
+const ParentRecord = struct {
+    parent: portals.Parent = .{ .func = cb },
+    id: [64]u8 = undefined,
+    len: usize = 0,
+    done: bool = false,
+
+    fn cb(p: *portals.Parent, id: []const u8) void {
+        const r: *ParentRecord = @fieldParentPtr("parent", p);
+        @memcpy(r.id[0..id.len], id);
+        r.len = id.len;
+        r.done = true;
+    }
+
+    fn isDone(r: *ParentRecord) bool {
+        return r.done;
+    }
+
+    fn slice(r: *const ParentRecord) []const u8 {
+        return r.id[0..r.len];
+    }
+};
+
+const TokenRecord = struct {
+    token: portals.Token = .{ .func = cb },
+    text: [64]u8 = undefined,
+    len: usize = 0,
+    done: bool = false,
+
+    fn cb(t: *portals.Token, token: []const u8) void {
+        const r: *TokenRecord = @fieldParentPtr("token", t);
+        @memcpy(r.text[0..token.len], token);
+        r.len = token.len;
+        r.done = true;
+    }
+
+    fn isDone(r: *TokenRecord) bool {
+        return r.done;
+    }
+};
+
+test "portal dialogs get parent window identifiers from exports" {
+    const app = try create(true);
+    defer app.destroy();
+    const win = try app.createWindow(.{}, .{});
+    var a: ParentRecord = .{};
+    portals.parentOf(app, win, &a.parent);
+    try runUntil(app, &a, ParentRecord.isDone);
+    try testing.expectEqualStrings("wayland:headless-0", a.slice());
+    // Known now: answered at once.
+    var b: ParentRecord = .{};
+    portals.parentOf(app, win, &b.parent);
+    try testing.expect(b.done);
+    try testing.expectEqualStrings("wayland:headless-0", b.slice());
+    // No window, no parent.
+    var c: ParentRecord = .{};
+    portals.parentOf(app, null, &c.parent);
+    try testing.expectEqualStrings("", c.slice());
+    // A window destroyed while its export is on the way: no parent.
+    const other = try app.createWindow(.{}, .{});
+    var d: ParentRecord = .{};
+    portals.parentOf(app, other, &d.parent);
+    try testing.expect(!d.done);
+    try other.destroy();
+    try testing.expect(d.done);
+    try testing.expectEqualStrings("", d.slice());
+}
+
+test "activation tokens need the window's last input" {
+    const app = try create(true);
+    defer app.destroy();
+    const win = try app.createWindow(.{ .width = 64, .height = 48 }, .{});
+    try runUntil(app, win, settled);
+    var none: TokenRecord = .{};
+    portals.tokenFor(app, win, &none.token);
+    try runUntil(app, &none, TokenRecord.isDone);
+    try testing.expectEqual(@as(usize, 0), none.len);
+
+    try onHeadless(app, win.id, struct {
+        fn f(hl: *platform.Headless, id: platform.WindowId) void {
+            hl.inject(.{ .pointer_motion = .{ .window = id, .seat = 0, .x = 10, .y = 10 } });
+            hl.inject(.{ .pointer_button = .{ .window = id, .seat = 0, .button = 0x110, .pressed = true, .time = 0, .serial = 5 } });
+        }
+    }.f);
+    try runUntil(app, win, struct {
+        fn f(w: *Window) bool {
+            return w.ui.input.serial == 5;
+        }
+    }.f);
+    var tok: TokenRecord = .{};
+    portals.tokenFor(app, win, &tok.token);
+    try runUntil(app, &tok, TokenRecord.isDone);
+    try testing.expect(std.mem.startsWith(u8, tok.text[0..tok.len], "headless-token-"));
+}
+
+const ChooserRecord = struct {
+    req: portal.Request = .{ .func = cb },
+    parent: portals.Parent = .{ .func = withParent },
+    app: *App,
+    done: bool = false,
+    code: ?portal.Response = null,
+
+    fn withParent(p: *portals.Parent, id: []const u8) void {
+        const r: *ChooserRecord = @fieldParentPtr("parent", p);
+        portal.file_chooser.start(&r.req, r.app.portals.get().?, id, .{ .title = "Pick" }) catch unreachable;
+    }
+
+    fn cb(req: *portal.Request, outcome: portal.Request.Outcome) void {
+        const r: *ChooserRecord = @fieldParentPtr("req", req);
+        r.done = true;
+        r.code = switch (outcome) {
+            .response => |res| res.code,
+            .failed => null,
+        };
+    }
+
+    fn isDone(r: *ChooserRecord) bool {
+        return r.done;
+    }
+};
+
+const ActionRecord = struct {
+    count: u32 = 0,
+    target: [16]u8 = undefined,
+    target_len: usize = 0,
+
+    fn cb(ctx: ?*anyopaque, name: []const u8, target: []const u8, _: []const u8) void {
+        const r: *ActionRecord = @ptrCast(@alignCast(ctx));
+        std.debug.assert(std.mem.eql(u8, name, "archive"));
+        r.count += 1;
+        @memcpy(r.target[0..target.len], target);
+        r.target_len = target.len;
+    }
+
+    fn got(r: *ActionRecord) bool {
+        return r.count > 0;
+    }
+};
+
+test "portal calls go out on the application's bus with the window's parent" {
+    var bt: BusThread = .{};
+    const fd = try bt.start();
+    defer bt.deinit();
+    const app = try App.create(testing.allocator, .{
+        .backend = .headless,
+        .system_fonts = false,
+        .threads = 2,
+        .desktop_settings = false,
+        .accessibility = false,
+        .bus_fd = fd,
+        .app_id = "org.example.Test",
+    });
+    defer app.destroy();
+    try testing.expect(app.portals.get() != null);
+    const win = try app.createWindow(.{}, .{});
+
+    var r: ChooserRecord = .{ .app = app };
+    portals.parentOf(app, win, &r.parent);
+    try runUntil(app, &r, ChooserRecord.isDone);
+    try testing.expectEqual(portal.Response.success, r.code.?);
+
+    // Notification buttons invoke application actions ("app." prefix).
+    var rec: ActionRecord = .{};
+    try app.addAction("archive", .{ .ctx = &rec, .func = ActionRecord.cb });
+    var params = [_]dbus.Variant([]const u8){dbus.variant(@as([]const u8, "42"))};
+    // The frontend's connection belongs to the bus thread; post the
+    // signal there by stopping it first.
+    bt.stop();
+    try bt.frontend.emit(portal.notification.interface, "ActionInvoked", .{ @as([]const u8, "n1"), @as([]const u8, "app.archive"), @as([]const dbus.Variant([]const u8), &params) });
+    bt.conn.flush();
+    try bt.loop.dispatch(0);
+    bt.stop_flag.store(false, .release);
+    bt.thread = try std.Thread.spawn(.{}, BusThread.run, .{&bt});
+    bt.running = true;
+    try runUntil(app, &rec, ActionRecord.got);
+    try testing.expectEqualStrings("42", rec.target[0..rec.target_len]);
+    bt.stop();
+
+    const call = bt.frontend.find("OpenFile").?;
+    try testing.expectEqualStrings("wayland:headless-0", call.firstString());
+}

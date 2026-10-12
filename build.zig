@@ -144,6 +144,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "ui", .module = ui },
         .{ .name = "dbus", .module = dbus },
         .{ .name = "a11y", .module = a11y },
+        .{ .name = "portal", .module = portal },
     };
     const app = ctx.module("src/app/app.zig", &app_imports);
     app.addImport("integration", not_integration);

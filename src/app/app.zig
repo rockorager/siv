@@ -28,7 +28,7 @@
 //!
 //! Everything here is for the UI thread, except `post`.
 //!
-//! Imports: ui, compositor, platform, loop, text, dbus, a11y.
+//! Imports: ui, compositor, platform, loop, text, dbus, a11y, portal.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -39,6 +39,7 @@ const compositor = @import("compositor");
 const ui = @import("ui");
 const desktop_mod = @import("desktop.zig");
 const a11y = @import("a11y");
+pub const portals = @import("portals.zig");
 
 const Loop = loop_mod.Loop;
 const Compositor = compositor.Compositor;
@@ -85,6 +86,11 @@ pub const Options = struct {
     /// The session bus for desktop settings and accessibility; null finds
     /// it from the environment.
     bus_address: ?[]const u8 = null,
+    /// A connected socket to the session bus instead (tests); taken over.
+    bus_fd: ?i32 = null,
+    /// The application id (reverse DNS, the .desktop file's name): the
+    /// default window app id, and the id portals and D-Bus activation use.
+    app_id: []const u8 = "",
     /// The application's name for assistive technology.
     name: []const u8 = "",
     /// siv's version, as assistive technology reports it.
@@ -116,6 +122,8 @@ pub const App = struct {
     bridge: a11y.Bridge = undefined,
     /// The AT-SPI bridge runs on the session bus.
     accessible: bool = false,
+    portals: portals.Portals = .{},
+    app_id: platform.BoundedString(255) = .{},
     quit_requested: bool = false,
     /// Reported by the next `dispatch`. Unavailable stays.
     failure: ?Error = null,
@@ -132,6 +140,7 @@ pub const App = struct {
             .comp = undefined,
             .reduced_motion = options.reduced_motion,
         };
+        app.app_id.set(options.app_id);
         errdefer app.loop.deinit();
         app.pool = .init(&app.loop, gpa, if (options.threads != 0) options.threads else loop_mod.Pool.defaultThreadCount());
         errdefer app.pool.deinit();
@@ -143,8 +152,10 @@ pub const App = struct {
         errdefer app.clipboard.deinit();
         // The bus handshake and the settings read proceed while the
         // compositor connects to Wayland below.
-        if (options.desktop_settings or options.accessibility) app.desktop.start(app, options.bus_address, options.desktop_settings);
+        if (options.desktop_settings or options.accessibility or options.bus_fd != null) app.desktop.start(app, options.bus_address, options.bus_fd, options.desktop_settings, options.app_id);
         errdefer app.desktop.deinit(app);
+        app.portals.start(app);
+        errdefer app.portals.deinit(app);
         if (options.accessibility and app.desktop.connected) {
             app.bridge.init(gpa, &app.loop, .{ .app_name = options.name, .toolkit_version = options.toolkit_version, .on_active = onAccessibilityActive, .ctx = app });
             if (app.bridge.start(&app.desktop.bus)) {
@@ -177,6 +188,7 @@ pub const App = struct {
             for (app.windows.items) |w| if (w) |win| app.bridge.removeWindow(win.a11y_id);
             app.bridge.deinit();
         }
+        app.portals.deinit(app);
         app.desktop.deinit(app);
         for (app.windows.items) |w| if (w) |win| win.free();
         for (app.zombies.items) |win| win.free();
@@ -316,6 +328,30 @@ pub const App = struct {
         };
     }
 
+    /// Registers (or replaces) the action `name`, which the desktop can
+    /// invoke through notifications and D-Bus activation (portals.zig).
+    pub fn addAction(app: *App, name: []const u8, action: portals.Action) Allocator.Error!void {
+        const gop = try app.portals.registry.getOrPut(app.gpa, name);
+        if (!gop.found_existing) {
+            gop.key_ptr.* = app.gpa.dupe(u8, name) catch |err| {
+                app.portals.registry.removeByPtr(gop.key_ptr);
+                return err;
+            };
+        }
+        gop.value_ptr.* = action;
+    }
+
+    pub fn removeAction(app: *App, name: []const u8) void {
+        const kv = app.portals.registry.fetchRemove(name) orelse return;
+        app.gpa.free(kv.key);
+    }
+
+    /// Runs the action `name` if it is registered.
+    pub fn invokeAction(app: *App, name: []const u8, target: []const u8, activation_token: []const u8) void {
+        const a = app.portals.registry.get(name) orelse return;
+        a.func(a.ctx, name, target, activation_token);
+    }
+
     pub fn createWindow(app: *App, options: WindowOptions, listener: Listener) Error!*Window {
         const gpa = app.gpa;
         try app.zombies.ensureUnusedCapacity(gpa, 1);
@@ -323,7 +359,7 @@ pub const App = struct {
         errdefer gpa.destroy(win);
         const id = app.comp.createWindow(.{
             .title = options.title,
-            .app_id = options.app_id,
+            .app_id = if (options.app_id.len > 0) options.app_id else app.app_id.slice(),
             .width = options.width,
             .height = options.height,
             .decoration = if (options.client_decorations) .client else .server,
@@ -428,6 +464,8 @@ pub const App = struct {
             },
             .platform => |*p| switch (p.*) {
                 .failed => |err| app.fail(if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable),
+                .exported => |e| if (app.window(e.window)) |win| portals.exported(win, e.handle.slice()),
+                .activation_token => |t| if (app.window(t.window)) |win| portals.tokenArrived(win, t.request, t.token.slice()),
                 .close_requested => |id| if (app.window(id)) |win| {
                     if (!win.notify(&.close_requested)) win.destroy() catch |err| app.fail(err);
                 },
@@ -517,6 +555,11 @@ pub const Window = struct {
     frame_held: bool = false,
     /// The window in the AT-SPI bridge, or 0.
     a11y_id: a11y.Bridge.WindowId = 0,
+    /// The xdg-foreign export for portal dialogs (portals.zig).
+    export_state: enum { none, pending, done } = .none,
+    export_handle: platform.Handle = .{},
+    parent_waiters: std.DoublyLinkedList = .{},
+    token_waiters: std.DoublyLinkedList = .{},
     /// Last layer commit, and the last one presented.
     committed_seq: u64 = 0,
     presented_seq: u64 = 0,
@@ -533,6 +576,7 @@ pub const Window = struct {
         win.a11y_id = 0;
         if (win.ui.txn.open) win.ui.txn.abort();
         app.windows.items[win.id] = null;
+        portals.windowClosed(win);
         app.zombies.appendAssumeCapacity(win);
         app.open_windows -= 1;
         if (app.open_windows == 0) app.quit();
@@ -721,6 +765,10 @@ pub const Window = struct {
 
     /// Runs `func(platform, id, arg)` on the compositor thread, in order
     /// with layer commits (D8). A string argument is copied.
+    pub fn platformRequest(win: *Window, comptime func: anytype, arg: anytype) Allocator.Error!void {
+        return win.platformCall(func, arg);
+    }
+
     fn platformCall(win: *Window, comptime func: anytype, arg: anytype) Allocator.Error!void {
         const Arg = @TypeOf(arg);
         const gpa = win.app.gpa;

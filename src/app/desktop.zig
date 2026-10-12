@@ -13,6 +13,7 @@
 
 const std = @import("std");
 const dbus = @import("dbus");
+const portal = @import("portal");
 const ui = @import("ui");
 const loop_mod = @import("loop");
 const app_mod = @import("app.zig");
@@ -40,14 +41,25 @@ pub const Desktop = struct {
     started_ns: u64 = 0,
     ready_ns: ?u64 = null,
 
-    /// Connects to the session bus (or `address`) and, with `settings`,
-    /// starts reading them. Failures leave the defaults in effect.
-    pub fn start(d: *Desktop, app: *App, address: ?[]const u8, settings: bool) void {
+    /// Connects to the session bus (or `address`, or the connected socket
+    /// `fd`) and, with `settings`, starts reading them. Failures leave the
+    /// defaults in effect. A host application registers its `app_id` with
+    /// the portal first, as xdg-desktop-portal requires (portals.zig).
+    pub fn start(d: *Desktop, app: *App, address: ?[]const u8, fd: ?i32, settings: bool, app_id: []const u8) void {
         d.started_ns = Loop.now();
-        var buf: [256]u8 = undefined;
-        const addr = address orelse dbus.address.session(&buf) orelse return;
-        d.bus.init(app.gpa, &app.loop, addr, .{ .on_event = onBusEvent, .ctx = app }) catch return;
+        const options: dbus.Connection.Options = .{ .on_event = onBusEvent, .ctx = app };
+        if (fd) |f| {
+            d.bus.initFd(app.gpa, &app.loop, f, options) catch {
+                _ = std.os.linux.close(f);
+                return;
+            };
+        } else {
+            var buf: [256]u8 = undefined;
+            const addr = address orelse dbus.address.session(&buf) orelse return;
+            d.bus.init(app.gpa, &app.loop, addr, options) catch return;
+        }
         d.connected = true;
+        portal.Client.register(&d.bus, app_id) catch {};
         if (!settings) return;
         d.settings.init(&d.bus, .{ .on_change = onChange, .ctx = app }) catch return;
         d.reading = true;
@@ -126,6 +138,7 @@ fn setCursorTheme(app: *App, name: []const u8, size: u32) void {
 
 fn onBusEvent(ctx: ?*anyopaque, _: *dbus.Connection, event: dbus.Connection.Event) void {
     const app: *App = @ptrCast(@alignCast(ctx));
+    app.portals.connectionEvent(event == .ready);
     // Without a bus the settings never come; stop waiting for them.
     if (event == .disconnected) release(app);
 }
