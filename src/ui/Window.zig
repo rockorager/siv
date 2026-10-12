@@ -255,6 +255,7 @@ pub fn freeNodeData(gpa: std.mem.Allocator, n: *const Node) void {
             gpa.free(g.columns);
             gpa.free(g.rows);
         },
+        .image => |v| if (v.image) |img| img.release(),
         else => {},
     }
 }

@@ -9,6 +9,7 @@ const scene = @import("scene");
 const text = @import("text");
 const compositor = @import("compositor");
 const Window = @import("Window.zig");
+const Image = @import("image.zig").Image;
 
 pub const Point = raster.Point;
 pub const Rect = raster.Rect;
@@ -367,10 +368,10 @@ pub const Text = struct {
 
 pub const Fit = enum(u8) { fill, contain, cover, none };
 
-pub const Image = struct {
-    /// Pixels are borrowed and must stay valid while the node shows them;
-    /// change `key` when they change.
-    image: ?scene.ImageRef = null,
+/// How an image node shows its image.
+pub const ImageView = struct {
+    /// The node holds a reference while it shows the image.
+    image: ?*Image = null,
     fit: Fit = .contain,
     filter: scene.Filter = .linear,
     /// Mirror horizontally in right-to-left layouts (directional icons).
@@ -396,7 +397,7 @@ pub const Data = union(Kind) {
     text: TextData,
     editor: EditorData,
     scroll: Scroll,
-    image: Image,
+    image: ImageView,
     canvas: Canvas,
     external: External,
 

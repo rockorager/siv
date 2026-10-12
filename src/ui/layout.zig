@@ -150,9 +150,9 @@ fn compute(win: *Window, id: NodeId, c: Constraints) Error!Size {
             win.markPaint(id);
             break :blk try textSize(win, id, inner);
         },
-        .image => imageSize(n.data.image, inner),
+        .image => imageSize(if (n.data.image.image) |img| .{ img.width, img.height } else null, inner),
         .canvas => .{ .w = inner.clampW(n.data.canvas.width), .h = inner.clampH(n.data.canvas.height) },
-        .external => imageSize(.{ .image = intrinsic(n.data.external) }, inner),
+        .external => imageSize(intrinsic(n.data.external), inner),
     };
     const size: Size = .{ .w = cc.clampW(content.w + pad.horizontal()), .h = cc.clampH(content.h + pad.vertical()) };
     if (!s.size.eql(size)) {
@@ -780,17 +780,17 @@ fn textSize(win: *Window, id: NodeId, inner: Constraints) Error!Size {
     return .{ .w = if (inner.tightW()) inner.max_w else inner.clampW(l.width), .h = inner.clampH(l.height) };
 }
 
-/// An external's intrinsic size as a stand-in image (only its size is
-/// used).
-fn intrinsic(x: node_mod.External) ?@import("scene").ImageRef {
+/// An external's intrinsic size, if it has one.
+fn intrinsic(x: node_mod.External) ?[2]u32 {
     if (x.width < 1 or x.height < 1) return null;
-    return .{ .pixels = undefined, .width = @intFromFloat(x.width), .height = @intFromFloat(x.height), .stride = @as(u32, @intFromFloat(x.width)) * 4, .format = .bgrx8_srgb, .key = 0 };
+    return .{ @intFromFloat(x.width), @intFromFloat(x.height) };
 }
 
-fn imageSize(img: node_mod.Image, inner: Constraints) Size {
-    const ref = img.image orelse return .{ .w = inner.min_w, .h = inner.min_h };
-    const iw: f32 = @floatFromInt(ref.width);
-    const ih: f32 = @floatFromInt(ref.height);
+/// The size of content with intrinsic size `wh`, scaled down to fit.
+fn imageSize(wh: ?[2]u32, inner: Constraints) Size {
+    const dims = wh orelse return .{ .w = inner.min_w, .h = inner.min_h };
+    const iw: f32 = @floatFromInt(dims[0]);
+    const ih: f32 = @floatFromInt(dims[1]);
     if (inner.tightW() and inner.tightH()) return .{ .w = inner.max_w, .h = inner.max_h };
     if (inner.tightW()) return .{ .w = inner.max_w, .h = inner.clampH(inner.max_w * ih / iw) };
     if (inner.tightH()) return .{ .w = inner.clampW(inner.max_h * iw / ih), .h = inner.max_h };

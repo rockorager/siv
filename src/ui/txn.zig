@@ -14,6 +14,7 @@ const std = @import("std");
 const node_mod = @import("node.zig");
 const Window = @import("Window.zig");
 const secret = @import("secret.zig");
+const Image = @import("image.zig").Image;
 
 const NodeId = node_mod.NodeId;
 const Node = node_mod.Node;
@@ -36,16 +37,19 @@ const max_touched = 8;
 const Snapshot = struct { id: NodeId, node: Node };
 
 const Alloc = struct {
-    bytes: []u8,
-    alignment: std.mem.Alignment,
+    bytes: []u8 = &.{},
+    alignment: std.mem.Alignment = .@"1",
     /// Locked memory from secret.zig.
     secret: bool = false,
+    /// A reference to drop instead of memory to free.
+    image: ?*Image = null,
 
     fn of(comptime T: type, slice: []const T) Alloc {
         return .{ .bytes = @constCast(std.mem.sliceAsBytes(slice)), .alignment = .of(T) };
     }
 
     fn free(a: Alloc, gpa: std.mem.Allocator) void {
+        if (a.image) |img| return img.release();
         if (a.secret) return secret.free(a.bytes);
         if (a.bytes.len != 0) gpa.rawFree(a.bytes, a.alignment, @returnAddress());
     }
@@ -526,16 +530,22 @@ pub const Txn = struct {
         }
     }
 
-    pub fn setImage(t: *Txn, id: NodeId, img: node_mod.Image) Error!void {
+    /// The node takes a reference to `view.image`; the caller keeps its own.
+    pub fn setImage(t: *Txn, id: NodeId, view: node_mod.ImageView) Error!void {
         const n = try t.data(id, .image);
-        if (img.image) |ref| if (ref.width == 0 or ref.height == 0 or ref.stride < ref.width * ref.format.bytesPerPixel()) return error.InvalidArgument;
         try t.reserve();
+        try t.allocs.ensureUnusedCapacity(t.win.gpa, 1);
+        try t.frees.ensureUnusedCapacity(t.win.gpa, 1);
         t.touch(id);
         const old = n.data.image;
-        n.data.image = img;
+        // The new reference is dropped if the transaction aborts, the old
+        // one once it commits.
+        if (view.image) |img| t.allocs.appendAssumeCapacity(.{ .image = img.retain() });
+        if (old.image) |img| t.frees.appendAssumeCapacity(.{ .image = img });
+        n.data.image = view;
         const ow, const oh = if (old.image) |r| .{ r.width, r.height } else .{ 0, 0 };
-        const nw, const nh = if (img.image) |r| .{ r.width, r.height } else .{ 0, 0 };
-        if (ow != nw or oh != nh or old.fit != img.fit) t.win.markLayout(id);
+        const nw, const nh = if (view.image) |r| .{ r.width, r.height } else .{ 0, 0 };
+        if (ow != nw or oh != nh or old.fit != view.fit) t.win.markLayout(id);
         t.win.markPaint(id);
     }
 

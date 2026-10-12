@@ -205,6 +205,45 @@ fn activateCheck(user: ?*anyopaque, win: *ui.Window, id: NodeId, ev: *const ui.E
     return true;
 }
 
+test "images: copied at creation, still shown after the creator lets go, mirrored in RTL" {
+    for ([_]bool{ false, true }) |rtl| {
+        var app: App = undefined;
+        try app.init(testing.allocator, .{ .width = 160, .height = 60, .rtl = rtl });
+        defer app.deinit();
+        // An arrow pointing to the start edge: red tip, blue shaft.
+        var px: [8 * 4 * 4]u8 = undefined;
+        for (0..4) |y| for (0..8) |x| {
+            const tip = x < 2 or (x < 4 and (y == 1 or y == 2));
+            px[(y * 8 + x) * 4 ..][0..4].* = if (tip) .{ 0xdc, 0x26, 0x26, 0xff } else .{ 0x25, 0x63, 0xeb, 0xff };
+        };
+        const img = try ui.Image.create(testing.allocator, .{ .pixels = &px, .width = 8, .height = 4 });
+        var row: NodeId = undefined;
+        {
+            const t = try app.win.begin();
+            row = try node(t, .root, .flex, .{ .padding = .all(10) }, .{ .background = panel });
+            try t.setFlex(row, .{ .gap = 10 });
+            const a = try node(t, row, .image, .{ .width = .{ .px = 64 }, .height = .{ .px = 32 } }, .{});
+            try t.setImage(a, .{ .image = img, .filter = .nearest, .mirror = true });
+            const b = try node(t, row, .image, .{ .width = .{ .px = 40 }, .height = .{ .px = 40 } }, .{});
+            try t.setImage(b, .{ .image = img, .filter = .nearest, .fit = .cover });
+            t.commit();
+        }
+        // The tree has its own references and its own copy of the pixels.
+        img.release();
+        @memset(&px, 0);
+        try app.settle();
+        try expectGolden(&app, if (rtl) "image-rtl" else "image-ltr");
+        // Removed, the last display list showing them is released and the
+        // testing allocator sees the pixels freed.
+        {
+            const t = try app.win.begin();
+            try t.remove(row);
+            t.commit();
+        }
+        try app.settle();
+    }
+}
+
 test "clicks toggle through a handler; paint-only changes damage only what changed" {
     var app: App = undefined;
     try app.init(testing.allocator, .{ .width = 320, .height = 240 });

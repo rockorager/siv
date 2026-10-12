@@ -1043,3 +1043,48 @@ test "editor: double click selects a word, triple a paragraph, dragging extends 
     P.press(&f, bx, y, 2010, false);
     try testing.expectEqual(e.caret, e.anchor);
 }
+
+test "images: the tree and each display list that draws one hold a reference" {
+    var f: Fixture = undefined;
+    try f.init(.{});
+    defer f.deinit();
+    const px: [16]u8 = @splat(0xff);
+    const img = try ui.Image.create(testing.allocator, .{ .pixels = &px, .width = 2, .height = 2 });
+    defer img.release();
+    const refs = struct {
+        fn of(i: *ui.Image) u32 {
+            return i.refs.load(.monotonic);
+        }
+    }.of;
+
+    // An aborted transaction drops the reference it took.
+    var t = try f.win.begin();
+    var node = try t.create(.root, .image, .none);
+    try t.setImage(node, .{ .image = img });
+    try testing.expectEqual(@as(u32, 2), refs(img));
+    t.abort();
+    try testing.expectEqual(@as(u32, 1), refs(img));
+
+    t = try f.win.begin();
+    node = try t.create(.root, .image, .none);
+    try t.setImage(node, .{ .image = img });
+    // Setting it again in the same transaction keeps one reference.
+    try t.setImage(node, .{ .image = img, .fit = .cover });
+    t.commit();
+    try testing.expectEqual(@as(u32, 2), refs(img));
+    try f.win.frame();
+    // Painted: the display list on its way to the compositor holds one.
+    try testing.expectEqual(@as(u32, 3), refs(img));
+    try testing.expect(!f.win.buildersHome());
+    _ = try f.comp.tree.compose();
+    for (f.comp.tree.endFrame()) |b| try f.win.handleEvent(&.{ .released = b });
+
+    // Removed: the compositor still shows the old list until the next
+    // frame replaces it, so the pixels stay until it is released.
+    t = try f.win.begin();
+    try t.remove(node);
+    t.commit();
+    try testing.expectEqual(@as(u32, 2), refs(img));
+    try f.frame();
+    try testing.expectEqual(@as(u32, 1), refs(img));
+}

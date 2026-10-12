@@ -26,6 +26,7 @@ const text = @import("text");
 const editor = @import("editor.zig");
 const layout = @import("layout.zig");
 const isLayerRoot = @import("txn.zig").isLayerRoot;
+const Image = @import("image.zig").Image;
 
 const NodeId = node_mod.NodeId;
 const Point = raster.Point;
@@ -85,6 +86,22 @@ const ClipEntry = struct {
     rect: Rect,
 };
 
+/// A builder and the images its display list draws: it holds a reference
+/// to each until the compositor releases the list or it is reset.
+const Slot = struct {
+    builder: scene.Builder,
+    images: std.ArrayList(*Image) = .empty,
+
+    fn of(b: *scene.Builder) *Slot {
+        return @fieldParentPtr("builder", b);
+    }
+
+    fn dropImages(slot: *Slot) void {
+        for (slot.images.items) |img| img.release();
+        slot.images.clearRetainingCapacity();
+    }
+};
+
 pub const State = struct {
     layers: std.ArrayList(Layer) = .empty,
     free: std.ArrayList(u32) = .empty,
@@ -119,8 +136,11 @@ pub const State = struct {
         st.free.deinit(gpa);
         st.order.deinit(gpa);
         for (st.all_builders.items) |b| {
+            const slot = Slot.of(b);
+            slot.dropImages();
+            slot.images.deinit(gpa);
             b.deinit();
-            gpa.destroy(b);
+            gpa.destroy(slot);
         }
         st.all_builders.deinit(gpa);
         st.builders.deinit(gpa);
@@ -157,6 +177,7 @@ pub const State = struct {
 
     /// A builder the compositor no longer reads.
     pub fn released(st: *State, gpa: std.mem.Allocator, b: *scene.Builder) void {
+        Slot.of(b).dropImages();
         st.builders.append(gpa, b) catch {
             // Keep it in all_builders; it is freed with the window.
         };
@@ -346,12 +367,13 @@ pub const State = struct {
             if (!l.dirty) continue;
             const b = st.builders.pop() orelse blk: {
                 try st.all_builders.ensureUnusedCapacity(gpa, 1);
-                const nb = try gpa.create(scene.Builder);
-                nb.* = .init(gpa);
-                st.all_builders.appendAssumeCapacity(nb);
-                break :blk nb;
+                const slot = try gpa.create(Slot);
+                slot.* = .{ .builder = .init(gpa) };
+                st.all_builders.appendAssumeCapacity(&slot.builder);
+                break :blk &slot.builder;
             };
             b.reset();
+            Slot.of(b).dropImages();
             l.builder = b;
             l.open.clearRetainingCapacity();
         }
@@ -360,6 +382,7 @@ pub const State = struct {
         errdefer for (st.order.items) |i| {
             const l = &st.layers.items[i];
             if (l.builder) |b| {
+                Slot.of(b).dropImages();
                 st.builders.appendAssumeCapacity(b);
                 l.builder = null;
             }
@@ -862,7 +885,8 @@ fn drawText(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point
 fn drawImage(win: *Window, nid: NodeId, b: *scene.Builder, off: Point) DrawError!Rect {
     const n = win.node(nid);
     const img = n.data.image;
-    const ref = img.image orelse return Rect.empty;
+    const image = img.image orelse return Rect.empty;
+    const ref = image.sceneRef();
     const s = win.state(nid);
     const pad = n.layout.padding;
     const box = Rect.xywh(off.x + pad.left(s.rtl), off.y + pad.top, s.size.w - pad.horizontal(), s.size.h - pad.vertical());
@@ -894,7 +918,11 @@ fn drawImage(win: *Window, nid: NodeId, b: *scene.Builder, off: Point) DrawError
     }
     const mirror = img.mirror and s.rtl;
     if (mirror) try b.pushLayer(.{ .transform = raster.Affine.translate(-(dst.x0 + dst.x1) / 2, 0).then(.scale(-1, 1)).then(.translate((dst.x0 + dst.x1) / 2, 0)) });
+    // The list keeps the pixels alive until the compositor releases it.
+    const images = &Slot.of(b).images;
+    try images.ensureUnusedCapacity(win.gpa, 1);
     try b.image(.{ .image = ref, .src = src, .dst = dst, .filter = img.filter });
+    images.appendAssumeCapacity(image.retain());
     if (mirror) try b.popLayer();
     return dst;
 }

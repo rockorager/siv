@@ -453,6 +453,16 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Builders copy paths, stops, and glyphs into an arena that is reset per
     frame slot. Image pixels and fonts are referenced; their keys change when
     content changes and key backend caches.
+  - In the UI, image pixels belong to siv (D2): `ui.Image.create` copies
+    them into immutable storage, reference counted from any thread. An
+    image node holds a reference (taken and dropped with its transaction:
+    abort drops the new one, commit the old), and each display list that
+    draws the image holds one in its builder until the compositor
+    releases the list. So the creator may release its reference at once,
+    and the pixels are freed when the last list that can still be shown
+    is released. Keys come from a process-wide counter with the top bit
+    set, apart from the keys producers choose for external frames (D17).
+    Decoding to the displayed size on the pool (D19) is not built yet.
   - Damage: layers with a nonzero id are matched across lists. A layer's
     version covers everything except its transform and opacity, including
     the order of its child layers. `scene.damage.Tracker` returns device
