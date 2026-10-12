@@ -699,6 +699,8 @@ pub fn textPropsOf(d_ptr: ?*const t.TextStyleDesc) Error!ui.Text {
             .color = try color(d.color, .black),
             .color_token = try colorToken(d.color_token, true),
             .size_role = @enumFromInt(@backingInt(try runtime.enumValue(t.TextRole, d.size_role))),
+            .width = try widthOf(d.width),
+            .weight_value = if (d.weight_value <= 1000) @intCast(d.weight_value) else return error.InvalidArgument,
         },
         .alignment = switch (try runtime.enumValue(t.TextAlign, d.@"align")) {
             .start => .start,
@@ -707,6 +709,21 @@ pub fn textPropsOf(d_ptr: ?*const t.TextStyleDesc) Error!ui.Text {
             _ => unreachable,
         },
         .wrap = !fl.no_wrap,
+    };
+}
+
+fn widthOf(w: t.FontWidth) Error!ui.FontWidth {
+    return switch (try runtime.enumValue(t.FontWidth, w)) {
+        .normal => .normal,
+        .ultra_condensed => .ultra_condensed,
+        .extra_condensed => .extra_condensed,
+        .condensed => .condensed,
+        .semi_condensed => .semi_condensed,
+        .semi_expanded => .semi_expanded,
+        .expanded => .expanded,
+        .extra_expanded => .extra_expanded,
+        .ultra_expanded => .ultra_expanded,
+        _ => unreachable,
     };
 }
 
