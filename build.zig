@@ -38,6 +38,7 @@ pub fn build(b: *std.Build) void {
     // both its translated header and, when vendored, its compiled sources, so
     // that it lands in every artifact that imports it, including libsiv.a.
     const harfbuzz = harfbuzzModule(ctx);
+    const harfbuzz_subset = harfbuzzSubsetModule(ctx, harfbuzz);
     const sheenbidi = sheenbidiModule(ctx);
     const wuffs = wuffsModule(ctx);
     const fontconfig = systemCModule(ctx, "fontconfig", "#include <fontconfig/fontconfig.h>\n");
@@ -86,6 +87,14 @@ pub fn build(b: *std.Build) void {
         .{ .name = "vulkan", .module = vk.vulkan },
         .{ .name = "shaders", .module = vk.shaders },
     });
+    const pdf_imports = [_]std.Build.Module.Import{
+        .{ .name = "scene", .module = scene },
+        .{ .name = "raster", .module = raster },
+        .{ .name = "render_cpu", .module = render_cpu },
+        .{ .name = "text", .module = text },
+        .{ .name = "harfbuzz_subset", .module = harfbuzz_subset },
+    };
+    const pdf = ctx.module("src/pdf/pdf.zig", &pdf_imports);
     const loop = ctx.module("src/loop/loop.zig", &.{
         .{ .name = "pool", .module = pool },
     });
@@ -108,6 +117,7 @@ pub fn build(b: *std.Build) void {
     platform.addImport("integration", not_integration);
     dbus.addImport("integration", not_integration);
     portal.addImport("integration", not_integration);
+    pdf.addImport("integration", not_integration);
     const compositor_imports = [_]std.Build.Module.Import{
         .{ .name = "scene", .module = scene },
         .{ .name = "raster", .module = raster },
@@ -235,6 +245,7 @@ pub fn build(b: *std.Build) void {
         .{ "loop", loop },
         .{ "dbus", dbus },
         .{ "portal", portal },
+        .{ "pdf", pdf },
         .{ "platform", platform },
         .{ "compositor", compositor },
         .{ "ui", ui },
@@ -290,6 +301,13 @@ pub fn build(b: *std.Build) void {
     portal_integration_run.has_side_effects = true; // depends on the installed xdg-desktop-portal
     integration_step.dependOn(&portal_integration_run.step);
     b.step("test-integration-portal", "Run the portal integration tests against xdg-desktop-portal").dependOn(&portal_integration_run.step);
+    // PDF output checked by qpdf and poppler (src/pdf/integration_tests.zig).
+    const pdf_integration = ctx.module("src/pdf/pdf.zig", &pdf_imports);
+    pdf_integration.addImport("integration", integrationOption(b, true));
+    const pdf_integration_run = b.addRunArtifact(b.addTest(.{ .name = "pdf-integration", .root_module = pdf_integration, .filters = test_filters }));
+    pdf_integration_run.has_side_effects = true; // depends on the installed qpdf and poppler-utils
+    integration_step.dependOn(&pdf_integration_run.step);
+    b.step("test-integration-pdf", "Run the PDF integration tests against qpdf and poppler").dependOn(&pdf_integration_run.step);
     // The application's desktop settings against dbus-daemon.
     const app_integration = ctx.module("src/app/app.zig", &app_imports);
     app_integration.addImport("integration", integrationOption(b, true));
@@ -436,6 +454,66 @@ fn harfbuzzModule(ctx: Ctx) *std.Build.Module {
         m.link_libcpp = true;
         m.addCSourceFile(.{
             .file = dep.path("src/harfbuzz.cc"),
+            .flags = c_flags ++ &[_][]const u8{
+                "-std=c++17",
+                "-fno-exceptions",
+                "-fno-rtti",
+                "-fno-threadsafe-statics",
+                "-DHAVE_PTHREAD=1",
+            },
+        });
+        break :blk m;
+    } else tc.createModule();
+    m.pic = true;
+    return m;
+}
+
+/// HarfBuzz's subsetter, for embedding font subsets in PDF (D9, D19). Its
+/// translated header includes hb.h too, so the PDF writer needs only this
+/// module. The vendored build compiles the subsetter's own sources next to
+/// the amalgamated core in the `harfbuzz` module, which it imports so that
+/// the core is linked too. -fsys=harfbuzz links the system
+/// libharfbuzz-subset.
+fn harfbuzzSubsetModule(ctx: Ctx, harfbuzz: *std.Build.Module) *std.Build.Module {
+    const b = ctx.b;
+    const tc = ctx.translate("harfbuzz_subset",
+        \\#include <hb.h>
+        \\#include <hb-ot.h>
+        \\#include <hb-subset.h>
+        \\
+    );
+    if (ctx.systemHarfbuzz()) {
+        tc.linkSystemLibrary("harfbuzz-subset", .{});
+        return tc.createModule();
+    }
+    const m = if (b.lazyDependency("harfbuzz", .{})) |dep| blk: {
+        tc.addIncludePath(dep.path("src"));
+        const m = tc.createModule();
+        m.link_libcpp = true;
+        m.addImport("harfbuzz", harfbuzz);
+        // The files harfbuzz-subset.cc adds to harfbuzz.cc.
+        m.addCSourceFiles(.{
+            .root = dep.path("src"),
+            .files = &.{
+                "graph/gsubgpos-context.cc",
+                "hb-depend.cc",
+                "hb-subset-cff-common.cc",
+                "hb-subset-cff1.cc",
+                "hb-subset-cff2.cc",
+                "hb-subset-input.cc",
+                "hb-subset-instancer-iup.cc",
+                "hb-subset-instancer-solver.cc",
+                "hb-subset-plan-layout.cc",
+                "hb-subset-plan-var.cc",
+                "hb-subset-plan.cc",
+                "hb-subset-serialize.cc",
+                "hb-subset-table-cff.cc",
+                "hb-subset-table-color.cc",
+                "hb-subset-table-layout.cc",
+                "hb-subset-table-other.cc",
+                "hb-subset-table-var.cc",
+                "hb-subset.cc",
+            },
             .flags = c_flags ++ &[_][]const u8{
                 "-std=c++17",
                 "-fno-exceptions",
