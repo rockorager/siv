@@ -423,6 +423,43 @@ fn paragraph(c: *Ctx, b: *Builder) !void {
     }
 }
 
+/// Synthetic bold and oblique (D13) and variable instances, from faces of
+/// the text engine's cache: on the glyph cache's path, small (with stem
+/// darkening), and rotated (drawn as outlines).
+fn families(c: *Ctx, b: *Builder) !void {
+    const gpa = c.gpa;
+    if (c.fonts == null) c.fonts = .init(gpa);
+    const cache = &c.fonts.?;
+    const Synthetic = text_engine.font.Synthetic;
+    const roboto = try cache.add(@embedFile("../golden/fonts/Roboto-Regular.ttf"), 0, .borrowed);
+    const styles = [_]Synthetic{ .{}, .{ .bold = Synthetic.bold_strength }, .{ .slant = Synthetic.oblique_slant }, .{ .bold = Synthetic.bold_strength, .slant = Synthetic.oblique_slant } };
+    for (styles, 0..) |style, i| {
+        const f = try faceFont(cache, try cache.instance(roboto, .{ .synthetic = style }));
+        const y = 30 + @as(f32, @floatFromInt(i)) * 28;
+        try text(c, b, f, "Hamburgefonstiv", 12, y, 20, .color(ink));
+        try text(c, b, f, "Hamburgefonstiv 11px", 200, y, 11, .color(blue));
+    }
+    // Rotated: outlines as paths, synthetic styles included.
+    try b.pushLayer(.{ .transform = Affine.rotate(-0.15).then(.translate(200, 150)) });
+    try text(c, b, try faceFont(cache, try cache.instance(roboto, .{ .synthetic = styles[3] })), "Rotated", 0, 0, 22, .color(orange));
+    try b.popLayer();
+    // The variable test font's I, H, O, and n at wght 100, 400, 700, and
+    // 900, then condensed, and its opsz instances at the same size.
+    const vf = try cache.add(text_engine.font.test_fonts.siv_variable, 0, .borrowed);
+    const instances = [_]text_engine.font.Instance{ .{ .wght = 100 }, .{}, .{ .wght = 700 }, .{ .wght = 900 }, .{ .wdth = 75 }, .{ .opsz = 8 }, .{ .opsz = 72 } };
+    var x: f32 = 12;
+    for (instances) |inst| {
+        const f = try faceFont(cache, try cache.instance(vf, inst));
+        try text(c, b, f, "HIOn", x, 190, 24, .color(ink));
+        x += 54;
+    }
+}
+
+fn faceFont(cache: *text_engine.FontCache, id: text_engine.FontId) !Font {
+    const face = cache.face(id).?;
+    return .{ .font = @ptrCast(face.font), .key = face.key, .upem = @floatFromInt(face.upem) };
+}
+
 /// Builds a minimal sbix font: glyph 1 is a 64x64 PNG (a face with a
 /// translucent halo) in a 64 ppem strike with 64 units per em. No suitable
 /// bitmap font is available under a license siv accepts (D25).
@@ -580,6 +617,7 @@ pub const cases = [_]Case{
     .{ .name = "paragraph", .width = 284, .height = 84, .build = paragraph },
     .{ .name = "bitmaps", .width = 240, .height = 130, .build = bitmaps },
     .{ .name = "shadows", .width = 400, .height = 300, .build = shadows },
+    .{ .name = "families", .width = 400, .height = 210, .build = families },
 };
 
 test "golden images" {

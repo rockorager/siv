@@ -554,13 +554,16 @@ test "widgets: styled-text editors show spans and toggle bold, italic, and under
     const col = c.siv_flex(txn, c.siv_window_root(h.window), &.{ .axis = .column });
     _ = c.siv_set_layout(txn, col, &.{ .padding = .{ .start = 12, .end = 12, .top = 12, .bottom = 12 } });
     _ = c.siv_set_visual(txn, col, &.{ .background_token = .window_bg });
-    const content = "Plain underline struck big red";
+    const content = "Plain underline struck bold italic big red";
     const field = c.siv_text_field(txn, col, &.{ .text = content, .text_len = content.len, .label = "Notes", .label_len = 5, .flags = .{ .multiline = true, .styled = true }, .rows = 3 });
     const spans = [_]t.TextSpan{
         .{ .start = 6, .end = 15, .flags = .{ .underline = true } },
         .{ .start = 16, .end = 22, .flags = .{ .strikethrough = true } },
-        .{ .start = 23, .end = 26, .flags = .{ .size = true }, .font_size = 22 },
-        .{ .start = 27, .end = 30, .flags = .{ .color = true }, .color = .{ .r = 0.8, .g = 0.1, .b = 0.1, .a = 1 } },
+        // The test font has no bold or italic: they are synthetic (D13).
+        .{ .start = 23, .end = 27, .flags = .{ .weight = true }, .weight = .bold },
+        .{ .start = 28, .end = 34, .flags = .{ .slant = true }, .slant = .italic },
+        .{ .start = 35, .end = 38, .flags = .{ .size = true }, .font_size = 22 },
+        .{ .start = 39, .end = 42, .flags = .{ .color = true }, .color = .{ .r = 0.8, .g = 0.1, .b = 0.1, .a = 1 } },
     };
     try ok(c.siv_set_text_spans(txn, field, &.{ .spans = &spans, .spans_count = spans.len }));
     try ok(c.siv_txn_commit(txn));
@@ -572,8 +575,8 @@ test "widgets: styled-text editors show spans and toggle bold, italic, and under
     try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
 
     var run: t.TextSpan = undefined;
-    try ok(c.siv_node_get_text_run(field, 24, &run));
-    try testing.expectEqual([2]u32{ 23, 26 }, [2]u32{ run.start, run.end });
+    try ok(c.siv_node_get_text_run(field, 36, &run));
+    try testing.expectEqual([2]u32{ 35, 38 }, [2]u32{ run.start, run.end });
     try testing.expect(run.flags.size and run.font_size == 22);
     try ok(c.siv_node_get_text_run(field, 2, &run));
     try testing.expectEqual([2]u32{ 0, 6 }, [2]u32{ run.start, run.end });

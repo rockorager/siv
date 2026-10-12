@@ -41,4 +41,5 @@ test {
     _ = @import("widgets/views.zig");
     _ = @import("abi/print.zig");
     _ = @import("abi/image.zig");
+    _ = @import("abi/fonts.zig");
 }
