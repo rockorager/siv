@@ -173,6 +173,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
         },
         .display = if (display_z) |d| d.ptr else null,
         .system_fonts = !flags.no_system_fonts,
+        .reduced_motion = flags.reduced_motion,
     }) catch |err| return mapAppError(err);
     dest.* = @fromBackingInt(self.root.handle);
 }

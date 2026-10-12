@@ -25,6 +25,7 @@ const App = application.App;
 const Window = application.Window;
 const Error = application.Error;
 const NodeId = ui.NodeId;
+const EditorData = @FieldType(@FieldType(ui.Node, "data"), "editor");
 const node_tag = application.node_tag;
 const txn_tag = application.txn_tag;
 
@@ -309,7 +310,7 @@ pub export fn siv_editor(txn: t.Txn, parent: t.Node, flags: t.EditorFlags) t.Nod
         fn f(w: *Window, p: t.Node, fl: t.EditorFlags) Error!NodeId {
             const e = try runtime.flags(t.EditorFlags, fl);
             const id = try create(w, p, .editor);
-            w.txn.ut.setEditor(id, .{ .multiline = e.multiline }) catch |err| return mapTxn(err);
+            w.txn.ut.setEditor(id, .{ .multiline = e.multiline, .masked = e.masked }) catch |err| return mapTxn(err);
             return id;
         }
     }.f, .{ parent, flags });
@@ -539,7 +540,7 @@ pub export fn siv_set_editor_flags(txn: t.Txn, node: t.Node, flags: t.EditorFlag
         fn f(w: *Window, n: t.Node, fl: t.EditorFlags) Error!void {
             const id = try nodeIn(w, n);
             const e = try runtime.flags(t.EditorFlags, fl);
-            w.txn.ut.setEditor(id, .{ .multiline = e.multiline }) catch |err| return mapTxn(err);
+            w.txn.ut.setEditor(id, .{ .multiline = e.multiline, .masked = e.masked }) catch |err| return mapTxn(err);
         }
     }.f, .{ node, flags });
 }
@@ -548,7 +549,16 @@ pub export fn siv_set_selection(txn: t.Txn, node: t.Node, caret: u32, anchor: u3
     return run(txn, struct {
         fn f(w: *Window, n: t.Node, c: u32, a: u32) Error!void {
             const id = try nodeIn(w, n);
-            w.txn.ut.setSelection(id, c, a, .downstream) catch |err| return mapTxn(err);
+            const un = w.uiWin().node(id);
+            if (un.kind != .editor) return error.InvalidArgument;
+            const e = &un.data.editor;
+            const masked = e.editor.masked;
+            w.txn.ut.setSelection(
+                id,
+                if (masked) maskedOffset(e.secret, e.text.content, c) else c,
+                if (masked) maskedOffset(e.secret, e.text.content, a) else a,
+                .downstream,
+            ) catch |err| return mapTxn(err);
         }
     }.f, .{ node, caret, anchor });
 }
@@ -638,16 +648,39 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
         },
         .change => {
             const e = &uw.node(id).data.editor;
-            ev.text = e.text.content.ptr;
-            ev.text_len = e.text.content.len;
-            ev.caret = e.caret;
-            ev.anchor = e.anchor;
+            const s = editorText(e);
+            ev.text = s.text.ptr;
+            ev.text_len = s.text.len;
+            ev.caret = s.caret;
+            ev.anchor = s.anchor;
         },
     }
     const self = w.owner;
     self.enter();
     defer self.leave();
     return cb.func(cb.user_data, @fromBackingInt(w.nodes.handle(id)), &ev);
+}
+
+/// An editor's text and selection as the application sees them: a masked
+/// editor's real text, with offsets into it rather than into its bullets.
+fn editorText(e: *const EditorData) struct { text: []const u8, caret: u32, anchor: u32 } {
+    if (!e.editor.masked) return .{ .text = e.text.content, .caret = e.caret, .anchor = e.anchor };
+    return .{
+        .text = e.secret,
+        .caret = maskedOffset(e.text.content, e.secret, e.caret),
+        .anchor = maskedOffset(e.text.content, e.secret, e.anchor),
+    };
+}
+
+/// The offset in `to` after as many code points as `from` has before
+/// `offset`. A masked editor's bullets and real text have the same count.
+fn maskedOffset(from: []const u8, to: []const u8, offset: u32) u32 {
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < @min(offset, from.len)) : (n += 1) i += std.unicode.utf8ByteSequenceLength(from[i]) catch 1;
+    var j: usize = 0;
+    while (n > 0 and j < to.len) : (n -= 1) j += std.unicode.utf8ByteSequenceLength(to[j]) catch 1;
+    return @intCast(@min(j, to.len));
 }
 
 fn modifiers(m: platform.Mods) t.Modifiers {
@@ -671,7 +704,7 @@ pub export fn siv_node_get_text(node: t.Node, text: ?[*]u8, text_cap: usize, len
             const dest = try runtime.out(usize, out);
             const un = w.uiWin().node(id);
             if (!un.isText()) return error.InvalidArgument;
-            const content = un.textData().content;
+            const content = if (un.kind == .editor) editorText(&un.data.editor).text else un.textData().content;
             const k = @min(content.len, buf.len);
             @memcpy(buf[0..k], content[0..k]);
             dest.* = content.len;
@@ -687,8 +720,9 @@ pub export fn siv_node_get_selection(node: t.Node, caret: ?*u32, anchor: ?*u32) 
             const da = try runtime.out(u32, a);
             const un = w.uiWin().node(id);
             if (un.kind != .editor) return error.InvalidArgument;
-            dc.* = un.data.editor.caret;
-            da.* = un.data.editor.anchor;
+            const s = editorText(&un.data.editor);
+            dc.* = s.caret;
+            da.* = s.anchor;
         }
     }.f(node, caret, anchor));
 }

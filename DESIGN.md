@@ -914,8 +914,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   phases; subsystems never move into it. The headless platform backend runs the
   same loop as Wayland.
   - The coordinator is `src/app`: an `App` owns the UI loop, the worker
-    pool, the fonts, and the compositor; a `Window` pairs a platform
-    window with a `ui.Window`. Compositor events arrive in the dispatch
+    pool, the fonts, the clipboard, and the compositor; a `Window` pairs a
+    platform window with a `ui.Window`, and runs its text-input requests
+    on the compositor thread (D8). Compositor events arrive in the dispatch
     phase and go to the window they name; close requests and configures
     also go to the window's listener. A destroyed window gets no events
     from then on, but its `ui.Window` lives until the compositor has
@@ -1056,6 +1057,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     connection is lost and `SIV_ERROR_OUT_OF_MEMORY` once when events
     were dropped; `SIV_ERROR_BUSY` covers a second transaction on a
     window and calls that would re-enter the loop from a callback.
+  - Masked editors (D15) are an editor flag. Their text and offsets reach
+    the application as the real text, never the bullets shown.
+  - `SIV_APP_REDUCED_MOTION` turns off caret blinking and other motion
+    whatever the desktop settings say, for kiosks and for tests that
+    compare frames.
   - Testing input through the C ABI uses the headless backend's
     injection from Zig (`test/abi`); a public test-input API waits until
     applications ask for one.

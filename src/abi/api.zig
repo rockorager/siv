@@ -185,6 +185,7 @@ pub const decls = [_]Decl{
     }),
     flags("siv_app_flags", "Application options.", &.{
         .{ .name = "no_system_fonts", .bit = 0, .doc = "Do not use Fontconfig; only families added with siv_app_add_font resolve." },
+        .{ .name = "reduced_motion", .bit = 1, .doc = "No caret blinking or other motion, whatever the desktop settings say." },
     }),
     descriptor("siv_app_desc", "Options for siv_app_create.", &.{
         .{ .name = "allocator", .type = .{ .desc = "siv_allocator" }, .doc = "Allocator hooks for everything the application allocates, on any thread; NULL for the C library allocator." },
@@ -447,6 +448,7 @@ pub const decls = [_]Decl{
     }),
     flags("siv_editor_flags", "Editor options.", &.{
         .{ .name = "multiline", .bit = 0, .doc = "Enter inserts a line break and lines wrap; otherwise one line that scrolls to keep the caret visible." },
+        .{ .name = "masked", .bit = 1, .doc = "A password field (D15): the text lives in locked memory excluded from core dumps, shows one bullet per character, has no undo or input method, and is hidden from assistive technology. Offsets still index the real text." },
     }),
 
     // Events.

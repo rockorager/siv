@@ -12,8 +12,8 @@
 //!            ▼
 //!     Compositor thread: platform, layer trees, presentation
 //!
-//! An `App` owns the UI loop, the worker pool (D6), the fonts, and the
-//! compositor (D8). Each `Window` pairs a platform window on the
+//! An `App` owns the UI loop, the worker pool (D6), the fonts, the
+//! clipboard (D19), and the compositor (D8). Each `Window` pairs a platform window on the
 //! compositor with a `ui.Window`. Compositor events arrive in the loop's
 //! dispatch phase (D5) and go to the window they name; window-level
 //! events (close requests, configures) also go to the window's listener.
@@ -69,6 +69,8 @@ pub const Options = struct {
     /// Run the compositor on its own thread (D8). Without one it runs on
     /// the UI loop, for deterministic tests.
     compositor_thread: bool = true,
+    /// No caret blinking or other motion in any window.
+    reduced_motion: bool = false,
 };
 
 pub const App = struct {
@@ -77,6 +79,7 @@ pub const App = struct {
     loop: Loop,
     pool: loop_mod.Pool,
     fonts: ui.Fonts,
+    clipboard: ui.Clipboard,
     comp: *Compositor,
     /// Live windows by platform window id.
     windows: std.ArrayList(?*Window) = .empty,
@@ -85,6 +88,7 @@ pub const App = struct {
     /// Nesting of compositor event delivery.
     delivering: u32 = 0,
     open_windows: usize = 0,
+    reduced_motion: bool = false,
     quit_requested: bool = false,
     /// Reported by the next `dispatch`. Unavailable stays.
     failure: ?Error = null,
@@ -97,7 +101,9 @@ pub const App = struct {
             .loop = Loop.init(gpa) catch return error.Unavailable,
             .pool = undefined,
             .fonts = undefined,
+            .clipboard = undefined,
             .comp = undefined,
+            .reduced_motion = options.reduced_motion,
         };
         errdefer app.loop.deinit();
         app.pool = .init(&app.loop, gpa, if (options.threads != 0) options.threads else loop_mod.Pool.defaultThreadCount());
@@ -106,6 +112,8 @@ pub const App = struct {
         errdefer app.fonts.deinit();
         app.fonts.pool = &app.pool;
         if (options.system_fonts) app.fonts.database = text.fontconfig.Database.init() catch null;
+        app.clipboard = .init(gpa, &app.loop, .{ .ctx = app, .set_selection = setSelection, .receive = receiveSelection });
+        errdefer app.clipboard.deinit();
         app.comp = Compositor.create(.{
             .allocator = gpa,
             .executor = app.pool.executor(),
@@ -131,6 +139,7 @@ pub const App = struct {
         for (app.zombies.items) |win| win.free();
         app.windows.deinit(gpa);
         app.zombies.deinit(gpa);
+        app.clipboard.deinit();
         app.fonts.deinit();
         app.pool.deinit();
         app.loop.deinit();
@@ -241,7 +250,9 @@ pub const App = struct {
         win.ui = try ui.Window.init(gpa, .{
             .fonts = &app.fonts,
             .sink = .{ .ctx = win, .commit = Window.commit },
-            .host = .{ .ctx = win, .request_frame = Window.requestFrame },
+            .host = .{ .ctx = win, .request_frame = Window.requestFrame, .text_input = Window.textInput },
+            .clipboard = &app.clipboard,
+            .reduced_motion = app.reduced_motion,
             .width = @floatFromInt(options.width),
             .height = @floatFromInt(options.height),
             .rtl = options.rtl,
@@ -262,9 +273,57 @@ pub const App = struct {
         if (app.failure == null or err == error.Unavailable) app.failure = err;
     }
 
+    // Selection requests run on the compositor thread (D8); `call` blocks
+    // for at most about a frame.
+
+    fn setSelection(ctx: ?*anyopaque, seat: platform.SeatId, kind: platform.SelectionKind, mimes: []const []const u8, serial: u32) ?u32 {
+        const app: *App = @ptrCast(@alignCast(ctx));
+        const Ctx = struct {
+            seat: platform.SeatId,
+            kind: platform.SelectionKind,
+            mimes: []const []const u8,
+            serial: u32,
+            out: ?u32 = null,
+            fn run(c: ?*anyopaque, comp: *Compositor) void {
+                const s: *@This() = @ptrCast(@alignCast(c));
+                s.out = comp.platform.setSelection(s.seat, s.kind, s.mimes, s.serial) catch null;
+            }
+        };
+        var c: Ctx = .{ .seat = seat, .kind = kind, .mimes = mimes, .serial = serial };
+        app.comp.call(&c, Ctx.run) catch return null;
+        return c.out;
+    }
+
+    fn receiveSelection(ctx: ?*anyopaque, seat: platform.SeatId, kind: platform.SelectionKind, prefs: []const []const u8, pipe_fd: i32) bool {
+        const app: *App = @ptrCast(@alignCast(ctx));
+        const Ctx = struct {
+            seat: platform.SeatId,
+            kind: platform.SelectionKind,
+            prefs: []const []const u8,
+            fd: i32,
+            out: bool = false,
+            fn run(c: ?*anyopaque, comp: *Compositor) void {
+                const s: *@This() = @ptrCast(@alignCast(c));
+                const mime = ui.Clipboard.pick(comp.platform.selectionMimes(s.seat, s.kind), s.prefs) orelse {
+                    _ = std.os.linux.close(s.fd);
+                    return;
+                };
+                s.out = comp.platform.receiveSelection(s.seat, s.kind, mime, s.fd);
+            }
+        };
+        var c: Ctx = .{ .seat = seat, .kind = kind, .prefs = prefs, .fd = pipe_fd };
+        app.comp.call(&c, Ctx.run) catch {
+            _ = std.os.linux.close(pipe_fd);
+            return false;
+        };
+        return c.out;
+    }
+
     /// Compositor events, in the UI loop's dispatch phase.
     fn onEvent(ctx: ?*anyopaque, ev: *const compositor.Event) void {
         const app: *App = @ptrCast(@alignCast(ctx));
+        // Selection events belong to the application, not a window.
+        if (ev.* == .platform and app.clipboard.handleEvent(&ev.platform)) return;
         app.delivering += 1;
         defer {
             app.delivering -= 1;
@@ -392,6 +451,41 @@ pub const Window = struct {
         const win: *Window = @ptrCast(@alignCast(ctx));
         if (win.closed) return;
         win.app.comp.requestFrame(win.id) catch win.app.fail(error.OutOfMemory);
+    }
+
+    /// Text input state for the input method (text-input-v3), set on the
+    /// compositor thread in order with commits (D8). The request owns a
+    /// copy of the surrounding text.
+    fn textInput(ctx: ?*anyopaque, seat: platform.SeatId, state: *const platform.TextInputState) void {
+        const win: *Window = @ptrCast(@alignCast(ctx));
+        if (win.closed) return;
+        const gpa = win.app.gpa;
+        const Req = struct {
+            gpa: Allocator,
+            seat: platform.SeatId,
+            state: platform.TextInputState,
+            fn run(c: ?*anyopaque, comp: *Compositor) void {
+                const r: *@This() = @ptrCast(@alignCast(c));
+                comp.platform.setTextInput(r.seat, &r.state);
+                drop(c);
+            }
+            fn drop(c: ?*anyopaque) void {
+                const r: *@This() = @ptrCast(@alignCast(c));
+                r.gpa.free(r.state.surrounding);
+                r.gpa.destroy(r);
+            }
+        };
+        const r = gpa.create(Req) catch return win.app.fail(error.OutOfMemory);
+        const copy = gpa.dupe(u8, state.surrounding) catch {
+            gpa.destroy(r);
+            return win.app.fail(error.OutOfMemory);
+        };
+        r.* = .{ .gpa = gpa, .seat = seat, .state = state.* };
+        r.state.surrounding = copy;
+        win.app.comp.post(r, Req.run, Req.drop) catch {
+            Req.drop(r);
+            win.app.fail(error.OutOfMemory);
+        };
     }
 
     /// Whether everything committed has been presented and the tree has

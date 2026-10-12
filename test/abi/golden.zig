@@ -32,7 +32,8 @@ const Harness = struct {
     window: t.Window = .null,
 
     fn start(h: *Harness, width: u32, height: u32, on_event: ?t.WindowEventFn, user_data: ?*anyopaque) !void {
-        try ok(A.siv_app_create(&.{ .backend = .headless, .flags = .{ .no_system_fonts = true } }, &h.app));
+        // Reduced motion: no caret blinking to race the captures.
+        try ok(A.siv_app_create(&.{ .backend = .headless, .flags = .{ .no_system_fonts = true, .reduced_motion = true } }, &h.app));
         const tf = text.font.test_fonts;
         for ([_][]const u8{ tf.latin, tf.arabic, tf.hebrew }) |font| try ok(A.siv_app_add_font(h.app, "Droid", 5, font.ptr, font.len));
         try ok(A.siv_app_set_default_font(h.app, "Droid", 5));
@@ -341,9 +342,10 @@ test "C API: a form built through the exports renders, and input reaches C callb
     try ok(T.siv_node_get_text(log.label, &buf, buf.len, &len));
     try testing.expectEqualStrings("Count: 1", buf[0..len]);
     const w = try h.win();
-    try testing.expect(w.win.ui.semantics.find(.button, "Count: 1") != null);
-    try testing.expect(w.win.ui.semantics.find(.checkbox, "Notify") != null);
-    try testing.expect(w.win.ui.semantics.find(.heading, "Settings") != null);
+    const sem = try w.win.ui.semanticsTree();
+    try testing.expect(sem.find(.button, "Count: 1") != null);
+    try testing.expect(sem.find(.checkbox, "Notify") != null);
+    try testing.expect(sem.find(.heading, "Settings") != null);
 
     // Pointer events carry node coordinates.
     const cx, const cy = try center(form.check);
@@ -480,4 +482,50 @@ test "C API: siv_post races siv_app_destroy without losing a destroy-notify" {
         // destroyed, or destroyed with the application.
         try testing.expectEqual(counts.posted.load(.seq_cst), counts.released.load(.seq_cst));
     }
+}
+
+test "C API: a masked editor reports its real text and offsets" {
+    const Seen = struct {
+        text: [16]u8 = undefined,
+        len: usize = 0,
+        caret: u32 = 0,
+        fn onChange(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) bool {
+            const seen: *@This() = @ptrCast(@alignCast(user_data));
+            const e = event.?;
+            seen.len = e.text_len;
+            @memcpy(seen.text[0..e.text_len], e.text.?[0..e.text_len]);
+            seen.caret = e.caret;
+            return true;
+        }
+    };
+    var h: Harness = .{};
+    try h.start(120, 40, null, null);
+    defer h.stop();
+    var seen: Seen = .{};
+    var txn: t.Txn = .null;
+    try ok(T.siv_txn_begin(h.window, &txn));
+    const editor = T.siv_editor(txn, A.siv_window_root(h.window), .{ .masked = true });
+    _ = T.siv_on(txn, editor, .change, Seen.onChange, null, &seen);
+    try ok(T.siv_txn_commit(txn));
+    try ok(T.siv_node_focus(editor));
+    try h.settle();
+    try h.typeKey(0xe9, "\u{e9}", .{});
+    try h.typeKey('x', "x", .{});
+    try h.settle();
+    try testing.expectEqualStrings("\u{e9}x", seen.text[0..seen.len]);
+    try testing.expectEqual(3, seen.caret);
+    var buf: [16]u8 = undefined;
+    var len: usize = 0;
+    try ok(T.siv_node_get_text(editor, &buf, buf.len, &len));
+    try testing.expectEqualStrings("\u{e9}x", buf[0..len]);
+
+    // Offsets index the real text: after the two-byte é.
+    try ok(T.siv_txn_begin(h.window, &txn));
+    _ = T.siv_set_selection(txn, editor, 2, 2);
+    try ok(T.siv_txn_commit(txn));
+    var caret: u32 = 0;
+    var anchor: u32 = 0;
+    try ok(T.siv_node_get_selection(editor, &caret, &anchor));
+    try testing.expectEqual(2, caret);
+    try testing.expectEqual(2, anchor);
 }
