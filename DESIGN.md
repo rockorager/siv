@@ -303,6 +303,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     background), applied atomically between frames. Content is a display
     list whose builder moves to the compositor and comes back in a
     `released` event once no frame reads it.
+    `ui.Window.buildersHome` reports when all of a window's builders have
+    come back, so its owner knows when the window can be freed.
   - Transforms are components (translate, scale, rotation about an
     origin), not matrices, so that animations interpolate them; skew
     belongs inside content.

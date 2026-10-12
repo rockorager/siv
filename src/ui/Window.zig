@@ -579,6 +579,13 @@ pub fn ownsBuilder(win: *const Window, b: *const scene.Builder) bool {
     return false;
 }
 
+/// Whether the compositor has released every display list this window
+/// sent it (each came back in `Event.released`). After
+/// `Compositor.destroyWindow`, the window may be freed once this holds.
+pub fn buildersHome(win: *const Window) bool {
+    return win.paint.builders.items.len == win.paint.all_builders.items.len;
+}
+
 /// A forwarded platform event for this window: pointer, keyboard, touch,
 /// and scroll input the compositor did not consume.
 pub fn handlePlatform(win: *Window, event: *const platform.Event) void {
