@@ -1255,8 +1255,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       for 80 000 message sends and dispatches; a sequential round trip
       through the daemon takes 0.1 ms; a reply of 1000 `(so)` structs
       encodes in 0.1 ms and validates and decodes in 0.05 ms.
-    - Not built yet: org.freedesktop.Application, ObjectManager, and
-      serving peer-to-peer connections.
+    - Not built yet: ObjectManager and serving peer-to-peer
+      connections.
   - Settings come only from the portal (color scheme, accent, contrast, reduced
     motion, text scale, fonts, cursor theme and size, double-click time,
     caret blinking), applied live, with built-in defaults when no portal
@@ -1498,6 +1498,62 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       drops on other clients; the sway integration test drags between
       two clients with the virtual pointer.
   - Lifecycle: `org.freedesktop.Application` activation and single instance.
+    - The application id (`siv_app_desc.app_id`, reverse DNS, the
+      .desktop file's name) is the bus name and, with dots as slashes and
+      dashes as underscores, the object path (`portal.application`).
+      Setting one connects the session bus on any backend, headless too.
+    - `siv_app_launch` asks for the name without queueing. The owner is
+      primary: it serves Activate, Open, and ActivateAction, and unless
+      launched by D-Bus activation it activates itself (or opens its
+      URIs) at the next dispatch, never inside the call. An instance that
+      finds the name taken is secondary: it forwards Activate or Open,
+      with its activation token, and `siv_run` returns
+      (`SIV_ERROR_UNAVAILABLE` if the primary did not answer). Without an
+      id, a bus, or with `SIV_LAUNCH_MULTIPLE_INSTANCES`, every launch is
+      primary. The application creates its windows in `on_activate`, as
+      with GApplication, so a secondary never shows one.
+    - Asynchronous like every D-Bus call (above): the instance is known
+      when the name request answers, so `siv_app_get_instance` reports
+      `pending` until then, rather than a blocking register call.
+    - Actions: ActivateAction runs the application actions notifications
+      use (portals, above), with the first parameter if it is a string.
+    - Activation tokens: the launcher's $XDG_ACTIVATION_TOKEN goes with
+      the first activation (or is forwarded) and is removed from the
+      environment so children do not reuse it; remote activations carry
+      platform data's "activation-token" (or X11's "desktop-startup-id").
+      `siv_window_activate` hands it to xdg-activation; for a window not
+      mapped yet the platform holds it until the first buffer, since
+      compositors ignore activating unmapped surfaces.
+      `siv_window_request_activation_token` gets one for applications the
+      application starts itself.
+    - Services: D-Bus activation starts the process through the D-Bus
+      service file's Exec line; siv cannot see the command line, so the
+      application passes `SIV_LAUNCH_SERVICE` when its own argument says
+      so, and then waits for the desktop's call. `idle_timeout_ms` ends a
+      service that shows no window after an activation.
+    - Desktop files: for D-Bus activation, install
+      `org.example.App.desktop` with `DBusActivatable=true` (keep `Exec`
+      for launchers that ignore it) and a D-Bus service file
+      `$datadir/dbus-1/services/org.example.App.service`:
+
+      ```ini
+      [D-BUS Service]
+      Name=org.example.App
+      Exec=/usr/bin/example --service
+      ```
+
+      Desktop actions (`[Desktop Action quit]`) of a DBusActivatable
+      application are invoked as ActivateAction with the action's name,
+      so name them like the application actions. `StartupNotify=true`
+      tells launchers to pass an activation token. Windows use the
+      application id as their app id, which compositors match against
+      the .desktop file.
+    - Verified (`zig build test-integration`): a C program
+      (test/c/lifecycle.c) started by dbus-daemon's activation when GLib's
+      gdbus calls Activate, answering Open and ActivateAction without
+      activating itself; launched twice, the second forwards its URI and
+      token and exits while the first opens it. Hermetic tests run two
+      applications on the test bus.
   - System tray (StatusNotifierItem) is an optional module.
   - Images: wuffs (PNG, JPEG, GIF), libwebp, libavif with dav1d, libjxl.
     Decoding is async and decodes to the displayed size.
