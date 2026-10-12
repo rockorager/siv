@@ -98,7 +98,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Allocation failure is an error result at every call, never an abort.
     Applications may supply allocator hooks (`siv_allocator`: alloc and free
     with size and alignment, plus user data) per root; every allocation for
-    that root, including the root itself, goes through them.
+    that root, including the root itself, goes through them. The hooks must
+    be thread-safe: `siv_post` allocates on the calling thread (D5).
   - SONAME versioning, symbol versioning, and semantic versioning. The SONAME
     is `libsiv.so.<major>`. A generated version script exports exactly the
     schema's functions and hides everything else (including sanitizer
@@ -165,8 +166,19 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **Decision:** I/O and platform events only update state and mark work
   runnable. Application callbacks run at a defined phase of the loop.
   `siv_post` is the only call that is safe from any thread.
+  - Each loop iteration runs, in order: poll; io (fd handlers, which only
+    read, update state, and schedule tasks); timers; dispatch (closures from
+    `siv_post`, worker-pool completions, then dispatch tasks); frame (layout,
+    paint, present); prepare hooks before sleeping (Wayland flushes here).
+    Work scheduled for a phase that already ran waits for the next iteration.
+  - `siv_post` takes a callback, a destroy-notify, and user data. Posting
+    allocates a node, so the loop's allocator must be thread-safe.
+  - Destroying the application never runs pending posted closures or worker
+    completions, since teardown has begun; it calls their destroy-notify (or
+    a job's cancel function) so they can release what they own.
 - **Alternatives:** callbacks from arbitrary threads (forces locking on every
-  caller).
+  caller); running pending closures at teardown (runs application code
+  against a half-destroyed application).
 - **Reverse if:** never.
 
 ### D6. Embeddable event loop: epoll
@@ -177,6 +189,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   deadlines from a userspace timer heap. `siv_app_fd()` and
   `siv_app_dispatch(timeout)` embed it; `siv_run()` owns it. File I/O runs on the
   worker pool.
+  - The loop fd stays readable while any work is pending (the eventfd is
+    written when work is scheduled for a phase that already ran), so an
+    embedder only needs to poll it and call `siv_app_dispatch(0)`. An idle
+    loop with no armed timers blocks indefinitely.
+  - Worker threads start on demand up to a limit and block when idle.
 - **Alternatives:** io_uring. Rejected: a GUI client issues tens of syscalls per
   frame, so batching gains are negligible; Docker's default seccomp profile
   blocks io_uring, Android and ChromeOS disable it, and seccomp sandboxes cannot
@@ -225,7 +242,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   Vulkan, and high performance where the GPU is available.
 - **Decision:**
   - CPU: tiled across the worker pool, presented through `wl_shm`. It is the
-    golden-image oracle.
+    golden-image oracle. Presented buffers are premultiplied ARGB8888, which
+    every compositor supports; the 16-bit working space (D11) is converted
+    when writing them.
   - Vulkan 1.3 (dynamic rendering, synchronization2): instanced quads, analytic
     rounded rectangles and shadows, glyph and image atlases. Presentation uses
     the standard Vulkan Wayland swapchain.
@@ -255,6 +274,15 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   presentation feedback, sampling animations at the predicted presentation time.
   Use `fifo-v1` and `commit-timing-v1` where available; tearing control is
   opt-in. Suspended or occluded surfaces produce no frames.
+  - A frame runs when the application wants one and no frame callback is
+    outstanding. A configure always forces a frame, even while suspended or
+    waiting on a callback; if the application presents nothing, siv still
+    acknowledges the configure and commits.
+  - The predicted time is the first refresh after the last presentation that
+    is still in the future (now plus one refresh before any feedback; the
+    refresh comes from the output mode until feedback arrives). Presentation
+    timestamps on another clock (weston uses `CLOCK_MONOTONIC_RAW`) are
+    converted to `CLOCK_MONOTONIC`, the loop's clock.
 - **Alternatives:** fixed-rate timers.
 - **Reverse if:** never. Early risk: confirm frame callbacks and presentation
   feedback behave correctly alongside Mesa's FIFO present mode.
@@ -336,6 +364,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   xkbcommon with compose, `text-input-v3`, pointer constraints and relative
   motion on request, and keyboard-shortcut inhibition on request. Kinetic
   scrolling is implemented in the toolkit using the scroll-stop event.
+  - Key text omits C0 control characters and DEL; the keysym identifies those
+    keys. A key that continues or cancels a compose sequence is delivered
+    with `composing` set and no text, so shortcuts still see it.
 
 ### D17. Windows, popups, decorations, external content
 
