@@ -31,6 +31,8 @@ pub const Layout = node.Layout;
 pub const Corners = node.Corners;
 pub const Visual = node.Visual;
 pub const Animation = node.Animation;
+pub const Span = node.Span;
+pub const SpanStyle = node.SpanStyle;
 pub const Transform = node.Transform;
 pub const Role = node.Role;
 pub const Toggle = node.Toggle;
@@ -94,6 +96,7 @@ test {
     _ = @import("paint.zig");
     _ = @import("text_node.zig");
     _ = @import("editor.zig");
+    _ = @import("spans.zig");
     _ = @import("secret.zig");
     _ = @import("ime.zig");
     _ = @import("tests.zig");

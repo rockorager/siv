@@ -15,6 +15,7 @@ const node_mod = @import("node.zig");
 const Window = @import("Window.zig");
 const secret = @import("secret.zig");
 const Image = @import("image.zig").Image;
+const spans_mod = @import("spans.zig");
 
 const NodeId = node_mod.NodeId;
 const Node = node_mod.Node;
@@ -443,11 +444,16 @@ pub const Txn = struct {
         const shown = if (masked) try t.bullets(content) else content;
         const copy = try t.own(u8, shown);
         const hidden = if (masked) try t.ownSecret(content) else "";
+        try t.frees.ensureUnusedCapacity(t.win.gpa, 3);
         t.touch(id);
         t.release(u8, d.content);
         d.content = copy;
+        // New text: the old ranges mean nothing in it.
+        t.release(node_mod.Span, d.spans);
+        d.spans = &.{};
         if (n.kind == .editor) {
             const e = &n.data.editor;
+            e.typing = null;
             if (masked) {
                 t.releaseSecret(e.secret);
                 e.secret = hidden;
@@ -458,6 +464,39 @@ pub const Txn = struct {
         }
         t.win.markShape(id);
         t.win.dirty.semantics = true;
+    }
+
+    /// Replaces the styled ranges of a text or editor node (D22). They
+    /// must be sorted, disjoint, and at character boundaries; empty and
+    /// default ones are dropped and equal neighbors merged. Masked editors
+    /// take none.
+    pub fn setSpans(t: *Txn, id: NodeId, list: []const node_mod.Span) Error!void {
+        const n = try t.textNode(id);
+        const d = n.textData();
+        if (n.kind == .editor and n.data.editor.editor.masked and list.len != 0) return error.InvalidArgument;
+        if (!spans_mod.valid(d.content, list)) return error.InvalidArgument;
+        for (list) |sp| if (sp.style.size) |sz| if (!(sz > 0) or !finite(sz)) return error.InvalidArgument;
+        var norm: std.ArrayList(node_mod.Span) = .empty;
+        try norm.appendSlice(t.win.scratch.allocator(), list);
+        spans_mod.normalize(&norm);
+        if (spansEql(d.spans, norm.items)) return;
+        try t.reserve();
+        const copy = try t.own(node_mod.Span, norm.items);
+        t.touch(id);
+        t.release(node_mod.Span, d.spans);
+        d.spans = copy;
+        t.win.markShape(id);
+        t.win.dirty.semantics = true;
+    }
+
+    /// Sets the style an editor's typed text takes until the caret moves.
+    pub fn setTypingStyle(t: *Txn, id: NodeId, style: ?node_mod.SpanStyle) Error!void {
+        const n = try t.data(id, .editor);
+        const e = &n.data.editor;
+        if (std.meta.eql(e.typing, style)) return;
+        try t.reserve();
+        t.touch(id);
+        e.typing = style;
     }
 
     /// Masking moves the text into locked memory (and unmasking back) and
@@ -471,11 +510,17 @@ pub const Txn = struct {
             const plain = if (ed.editor.masked) ed.secret else ed.text.content;
             const shown = try t.own(u8, if (e.masked) try t.bullets(plain) else plain);
             const hidden = if (e.masked) try t.ownSecret(plain) else "";
+            try t.frees.ensureUnusedCapacity(t.win.gpa, 3);
             t.touch(id);
             t.release(u8, ed.text.content);
             t.releaseSecret(ed.secret);
             ed.text.content = shown;
             ed.secret = hidden;
+            if (e.masked) {
+                t.release(node_mod.Span, ed.text.spans);
+                ed.text.spans = &.{};
+                ed.typing = null;
+            }
             ed.caret = @intCast(shown.len);
             ed.anchor = ed.caret;
             ed.revision +%= 1;
@@ -511,6 +556,7 @@ pub const Txn = struct {
         if (e.caret == c and e.anchor == a and e.affinity == affinity) return;
         try t.reserve();
         t.touch(id);
+        if (e.caret != c or e.anchor != a) e.typing = null;
         e.caret = c;
         e.anchor = a;
         e.affinity = affinity;
@@ -667,6 +713,12 @@ pub const bullet = "\u{2022}";
 
 pub fn isLayerRoot(v: node_mod.Visual) bool {
     return v.opacity < 1 or !v.transform.eql(.identity) or v.layer or v.animation.property != .none;
+}
+
+fn spansEql(a: []const node_mod.Span, b: []const node_mod.Span) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |x, y| if (x.start != y.start or x.end != y.end or !x.style.eql(y.style)) return false;
+    return true;
 }
 
 fn finite(v: f32) bool {

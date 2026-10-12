@@ -8,6 +8,7 @@ const text = @import("text");
 const Window = @import("Window.zig");
 const node_mod = @import("node.zig");
 const Fonts = @import("fonts.zig");
+const spans = @import("spans.zig");
 
 const NodeId = node_mod.NodeId;
 
@@ -20,12 +21,21 @@ pub const Cache = struct {
     serial: u32 = 0,
     /// An editor's placeholder, shaped in the same style, unwrapped.
     placeholder: ?struct { paragraph: text.ShapedParagraph, layout: text.Layout } = null,
+    /// The span style of each of the paragraph's styles (by index), for
+    /// colors and decorations at paint time.
+    run_styles: std.ArrayList(node_mod.SpanStyle) = .empty,
 
     pub fn destroy(c: *Cache, gpa: std.mem.Allocator) void {
         if (c.layout) |*l| l.deinit();
         if (c.paragraph) |*p| p.deinit();
         c.dropPlaceholder();
+        c.run_styles.deinit(gpa);
         gpa.destroy(c);
+    }
+
+    /// The span style of a glyph run's style index.
+    pub fn runStyle(c: *const Cache, style: u32) node_mod.SpanStyle {
+        return if (style < c.run_styles.items.len) c.run_styles.items[style] else .{};
     }
 
     fn dropPlaceholder(c: *Cache) void {
@@ -64,12 +74,20 @@ fn shape(win: *Window, id: NodeId) error{OutOfMemory}!*Cache {
     if (!s.needs_shape and c.paragraph != null) return c;
     const d = win.node(id).textData();
     const fonts = win.fonts;
-    const style = d.props.style;
-    const language = if (d.language != 0) d.language else win.language;
-    const chain = try fonts.chain(.{ .family = d.family, .language = language, .weight = style.weight, .slant = style.slant });
     const n = win.node(id);
-    const content = if (n.kind == .editor) try @import("editor.zig").displayText(win, id, win.scratch.allocator()) else d.content;
-    var p = try shapeString(win, id, chain, content);
+    const a = win.scratch.allocator();
+    var content = d.content;
+    var list = d.spans;
+    if (n.kind == .editor) {
+        content = try @import("editor.zig").displayText(win, id, a);
+        // The preedit sits at the caret in the style typing would give it.
+        if (content.len != d.content.len) {
+            const e = n.data.editor;
+            list = try spans.replaced(a, d.spans, e.caret, e.caret, @intCast(content.len - d.content.len), e.typing orelse spans.inherited(d.spans, e.caret));
+        }
+    }
+    try c.run_styles.ensureTotalCapacity(win.gpa, 2 * list.len + 1);
+    var p = try shapeString(win, id, content, list, &c.run_styles);
     errdefer p.deinit();
     c.dropLayout();
     c.dropPlaceholder();
@@ -82,16 +100,32 @@ fn shape(win: *Window, id: NodeId) error{OutOfMemory}!*Cache {
     return c;
 }
 
-fn shapeString(win: *Window, id: NodeId, chain: []const text.FontId, content: []const u8) error{OutOfMemory}!text.ShapedParagraph {
+/// Shapes `content` in the node's style with `list`'s spans over it, one
+/// style per run of equal span style; `run_styles` gets each run's span
+/// style.
+fn shapeString(win: *Window, id: NodeId, content: []const u8, list: []const node_mod.Span, run_styles: ?*std.ArrayList(node_mod.SpanStyle)) error{OutOfMemory}!text.ShapedParagraph {
     const d = win.node(id).textData();
     const fonts = win.fonts;
     const style = d.props.style;
     const language = if (d.language != 0) d.language else win.language;
-    const size = win.palette.textSize(style.size, style.size_role) * @as(f32, @floatCast(win.desktop.text_scale));
-    return text.ShapedParagraph.init(win.gpa, win.scratch.allocator(), &fonts.cache, content, &.{.{
-        .end = @intCast(content.len),
-        .style = .{ .fonts = chain, .size = size, .language = if (fonts.name(language).len == 0) "und" else fonts.name(language) },
-    }}, if (win.state(id).rtl) .auto_rtl else .auto_ltr) catch |err| switch (err) {
+    const lang_name = if (fonts.name(language).len == 0) "und" else fonts.name(language);
+    const scale: f32 = @floatCast(win.desktop.text_scale);
+    const size = win.palette.textSize(style.size, style.size_role) * scale;
+    const len: u32 = @intCast(content.len);
+    var runs: std.ArrayList(text.StyleRun) = .empty;
+    const a = win.scratch.allocator();
+    if (run_styles) |rs| rs.clearRetainingCapacity();
+    var at: u32 = 0;
+    while (true) {
+        const run = spans.runAt(list, at, len);
+        const sp = run.style;
+        const chain = try fonts.chain(.{ .family = d.family, .language = language, .weight = sp.weight orelse style.weight, .slant = sp.slant orelse style.slant });
+        try runs.append(a, .{ .end = run.end, .style = .{ .fonts = chain, .size = if (sp.size) |z| z * scale else size, .language = lang_name } });
+        if (run_styles) |rs| try rs.append(win.gpa, sp);
+        if (run.end >= len) break;
+        at = run.end;
+    }
+    return text.ShapedParagraph.init(win.gpa, a, &fonts.cache, content, runs.items, if (win.state(id).rtl) .auto_rtl else .auto_ltr) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         // Validated when the text was set.
         error.InvalidUtf8, error.TextTooLong, error.InvalidStyles => unreachable,
@@ -104,12 +138,8 @@ pub fn placeholder(win: *Window, id: NodeId) error{OutOfMemory}!?*const text.Lay
     const c = win.state(id).text orelse return null;
     if (c.placeholder) |*ph| return &ph.layout;
     const n = win.node(id);
-    const d = n.textData();
-    const style = d.props.style;
-    const language = if (d.language != 0) d.language else win.language;
-    const chain = try win.fonts.chain(.{ .family = d.family, .language = language, .weight = style.weight, .slant = style.slant });
     // The layout points at the paragraph, so it goes in place first.
-    c.placeholder = .{ .paragraph = try shapeString(win, id, chain, n.data.editor.placeholder), .layout = undefined };
+    c.placeholder = .{ .paragraph = try shapeString(win, id, n.data.editor.placeholder, &.{}, null), .layout = undefined };
     const ph = &c.placeholder.?;
     if (ph.paragraph.wanted.len != 0) win.fonts.request(ph.paragraph.wanted);
     ph.layout = text.Layout.init(win.gpa, win.scratch.allocator(), &win.fonts.cache, &ph.paragraph, .{ .alignment = .start }) catch |err| {

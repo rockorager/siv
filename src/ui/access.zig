@@ -21,6 +21,7 @@ const Window = @import("Window.zig");
 const node_mod = @import("node.zig");
 const text_node = @import("text_node.zig");
 const editor = @import("editor.zig");
+const spans = @import("spans.zig");
 
 const NodeId = node_mod.NodeId;
 const Point = raster.Point;
@@ -118,6 +119,23 @@ pub fn characterRect(win: *const Window, id: NodeId, offset: u32) ?Rect {
     const dx = g.origin.x + g.shift(lead.line);
     return .{ .x0 = dx + x0, .y0 = g.origin.y + lead.top, .x1 = dx + x1, .y1 = g.origin.y + lead.top + lead.height };
 }
+
+/// The style run of a text or editor node containing byte `offset`: a
+/// span (D22) or the unstyled stretch around it, in the node's current
+/// text. Null for other nodes and masked editors.
+pub fn textRun(win: *const Window, id: NodeId, offset: u32) ?node_mod.Span {
+    if (!win.isLive(id)) return null;
+    const n = win.node(id);
+    if (!n.isText()) return null;
+    if (n.kind == .editor and n.data.editor.editor.masked) return null;
+    const d = n.textData();
+    const len: u32 = @intCast(d.content.len);
+    return spans.runAt(d.spans, @min(offset, len), len);
+}
+
+/// Formatting commands on editors and the typing style (D22).
+pub const format = editor.format;
+pub const typingStyle = editor.typingStyle;
 
 /// The offset nearest a window point (a caret position), or null if the
 /// node has no text geometry.

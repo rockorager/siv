@@ -518,6 +518,10 @@ pub const EditorData = struct {
     secret: []const u8 = "",
     /// Shown, in the muted color, while the text is empty.
     placeholder: []const u8 = "",
+    /// The style typed text takes (a formatting command with nothing
+    /// selected), until the caret moves; null takes the style of the
+    /// character before the caret.
+    typing: ?SpanStyle = null,
 };
 
 /// Stored text: content and style with interned family and language.
@@ -527,6 +531,65 @@ pub const TextData = struct {
     /// Interned `props.style.family` and `language` (Fonts names).
     family: u32 = 0,
     language: u32 = 0,
+    /// Styled ranges over `props.style` (D22's styled text): sorted, not
+    /// overlapping, not empty, at character boundaries, none with the
+    /// default style, and neighbors with equal styles merged.
+    spans: []const Span = &.{},
+};
+
+/// What a span changes in its node's style; null and false keep the
+/// node's.
+pub const SpanStyle = struct {
+    weight: ?Weight = null,
+    slant: ?Slant = null,
+    /// Logical pixels, scaled like the node's size by the desktop's text
+    /// scale.
+    size: ?f32 = null,
+    color: ?Color = null,
+    /// A themed color (D29), replacing `color`.
+    color_token: ColorToken = .none,
+    underline: bool = false,
+    strikethrough: bool = false,
+
+    pub fn isDefault(s: SpanStyle) bool {
+        return std.meta.eql(s, SpanStyle{});
+    }
+
+    pub fn eql(a: SpanStyle, b: SpanStyle) bool {
+        return std.meta.eql(a, b);
+    }
+
+    /// Which attributes a style change sets.
+    pub const Mask = packed struct(u8) {
+        weight: bool = false,
+        slant: bool = false,
+        size: bool = false,
+        color: bool = false,
+        underline: bool = false,
+        strikethrough: bool = false,
+        _: u2 = 0,
+    };
+
+    /// `s` with the attributes in `mask` taken from `values`.
+    pub fn patched(s: SpanStyle, values: SpanStyle, mask: Mask) SpanStyle {
+        var out = s;
+        if (mask.weight) out.weight = values.weight;
+        if (mask.slant) out.slant = values.slant;
+        if (mask.size) out.size = values.size;
+        if (mask.color) {
+            out.color = values.color;
+            out.color_token = values.color_token;
+        }
+        if (mask.underline) out.underline = values.underline;
+        if (mask.strikethrough) out.strikethrough = values.strikethrough;
+        return out;
+    }
+};
+
+pub const Span = struct {
+    start: u32,
+    end: u32,
+    style: SpanStyle,
 };
 
 // Events --------------------------------------------------------------------

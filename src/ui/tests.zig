@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const text = @import("text");
+const text_node = @import("text_node.zig");
 const scene = @import("scene");
 const compositor = @import("compositor");
 const raster = @import("raster");
@@ -816,6 +817,75 @@ test "editor: undo and redo merge typing and deleting; app edits reset history" 
     t.commit();
     k.press('z', .{ .ctrl = true });
     try testing.expectEqualStrings("replaced", e.text.content);
+    try f.frame();
+}
+
+test "styled text: spans shape as runs, follow edits, format as undo steps, and set the typing style" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 300, .height = 100 });
+    defer f.deinit();
+    var t = try f.win.begin();
+    const ed = try box(t, .root, .editor, .{ .align_y = .start });
+    try t.setText(ed, "one two");
+    const bold: ui.SpanStyle = .{ .weight = .bold };
+    try t.setSpans(ed, &.{.{ .start = 4, .end = 7, .style = bold }});
+    // Not at a character boundary, overlapping, or out of order: refused.
+    try testing.expectError(error.InvalidArgument, t.setSpans(ed, &.{.{ .start = 4, .end = 9, .style = bold }}));
+    try testing.expectError(error.InvalidArgument, t.setSpans(ed, &.{ .{ .start = 4, .end = 6, .style = bold }, .{ .start = 5, .end = 7, .style = bold } }));
+    t.commit();
+    try f.frame();
+    const e = &f.win.node(ed).data.editor;
+    const shaped = struct {
+        fn sizes(fx: *Fixture, id: NodeId) ![]const text.Style {
+            _ = try text_node.layoutFor(fx.win, id, null);
+            return fx.win.state(id).text.?.paragraph.?.styles;
+        }
+    };
+    // The bold word is a style run of its own.
+    try testing.expectEqual(@as(usize, 2), (try shaped.sizes(&f, ed)).len);
+    try testing.expectEqual(bold, f.win.state(ed).text.?.runStyle(1));
+
+    const k: Keys = .{ .f = &f };
+    k.press(ui.keysym.tab, .{});
+    k.press(ui.keysym.end, .{});
+    // Typed text takes the style of the character before it.
+    k.typeText("s");
+    try testing.expectEqualStrings("one twos", e.text.content);
+    try testing.expectEqualDeep(&[_]ui.Span{.{ .start = 4, .end = 8, .style = bold }}, e.text.spans);
+    // Underline "one": a step of its own that undo and redo replay.
+    k.press(ui.keysym.home, .{});
+    k.press(ui.keysym.right, .{ .shift = true, .ctrl = true });
+    try testing.expect(ui.access.format(f.win, ed, .{ .underline = true }, .{ .underline = true }));
+    const formatted = [_]ui.Span{ .{ .start = 0, .end = 3, .style = .{ .underline = true } }, .{ .start = 4, .end = 8, .style = bold } };
+    try testing.expectEqualDeep(&formatted, e.text.spans);
+    k.press('z', .{ .ctrl = true });
+    try testing.expectEqualDeep(&[_]ui.Span{.{ .start = 4, .end = 8, .style = bold }}, e.text.spans);
+    try testing.expectEqual(@as(u32, 3), @max(e.caret, e.anchor)); // selection back
+    k.press('z', .{ .ctrl = true, .shift = true });
+    try testing.expectEqualDeep(&formatted, e.text.spans);
+    // Undoing the typing takes its span part back too.
+    k.press('z', .{ .ctrl = true });
+    k.press('z', .{ .ctrl = true });
+    try testing.expectEqualStrings("one two", e.text.content);
+    try testing.expectEqualDeep(&[_]ui.Span{.{ .start = 4, .end = 7, .style = bold }}, e.text.spans);
+
+    // With nothing selected, formatting sets the typing style, which the
+    // next typed text takes and a caret move forgets.
+    k.press(ui.keysym.home, .{});
+    try testing.expect(ui.access.format(f.win, ed, .{ .slant = .italic }, .{ .slant = true }));
+    try testing.expectEqual(ui.SpanStyle{ .slant = .italic }, ui.access.typingStyle(f.win, ed));
+    k.typeText("A");
+    k.typeText("B");
+    try testing.expectEqualDeep(&[_]ui.Span{ .{ .start = 0, .end = 2, .style = .{ .slant = .italic } }, .{ .start = 6, .end = 9, .style = bold } }, e.text.spans);
+    try testing.expect(ui.access.format(f.win, ed, .{}, .{ .slant = true }));
+    k.press(ui.keysym.end, .{});
+    try testing.expectEqual(bold, ui.access.typingStyle(f.win, ed));
+    try f.frame();
+    // Text the application sets drops the spans.
+    t = try f.win.begin();
+    try t.setText(ed, "plain");
+    t.commit();
+    try testing.expectEqual(@as(usize, 0), e.text.spans.len);
     try f.frame();
 }
 

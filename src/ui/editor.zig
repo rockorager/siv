@@ -15,6 +15,7 @@ const input = @import("input.zig");
 const layout = @import("layout.zig");
 const secret = @import("secret.zig");
 const bullet = @import("txn.zig").bullet;
+const spans = @import("spans.zig");
 
 const NodeId = node_mod.NodeId;
 const Point = raster.Point;
@@ -220,6 +221,8 @@ pub const Record = enum {
     deleting,
     /// Anything else is a step of its own.
     other,
+    /// A formatting command (`format`): styles change, the text does not.
+    format,
     /// Undo and redo themselves.
     none,
 };
@@ -235,8 +238,14 @@ fn replace(win: *Window, id: NodeId, start: u32, end: u32, insert: []const u8, r
     const removed = a.dupe(u8, old[start..end]) catch return;
     const content = std.mem.concat(a, u8, &.{ old[0..start], insert, old[end..] }) catch return;
     const caret: u32 = @intCast(start + insert.len);
-    if (!commitEdit(win, id, content, caret)) return;
-    if (record != .none) remember(win, id, before, .{ .start = start, .removed = removed, .inserted = insert, .kind = record });
+    // Inserted text takes the typing style, else that of the first
+    // replaced character, else that of the character before (D22).
+    const style = e.typing orelse if (start < end) spans.styleAt(e.text.spans, start) else spans.inherited(e.text.spans, start);
+    const spans_before = e.text.spans;
+    const spans_after = spans.replaced(a, spans_before, start, end, @intCast(insert.len), style) catch return;
+    const kept_before = a.dupe(node_mod.Span, spans_before) catch return;
+    if (!commitEdit(win, id, content, caret, spans_after)) return;
+    if (record != .none) remember(win, id, before, .{ .start = start, .removed = removed, .inserted = insert, .kind = record, .spans_before = kept_before, .spans_after = spans_after });
     changed(win, id);
 }
 
@@ -255,7 +264,7 @@ fn replaceMasked(win: *Window, id: NodeId, start: u32, end: u32, insert: []const
     @memcpy(plain[b_start + insert.len ..], old[b_end..]);
     const inserted_cps = std.unicode.utf8CountCodepoints(insert) catch return;
     const caret: u32 = @intCast((cp_start + inserted_cps) * bullet.len);
-    if (!commitEdit(win, id, plain, caret)) return;
+    if (!commitEdit(win, id, plain, caret, &.{})) return;
     changed(win, id);
 }
 
@@ -266,9 +275,13 @@ fn byteOfCodepoint(s: []const u8, cp: usize) usize {
     return i;
 }
 
-fn commitEdit(win: *Window, id: NodeId, content: []const u8, caret: u32) bool {
+fn commitEdit(win: *Window, id: NodeId, content: []const u8, caret: u32, styled: []const node_mod.Span) bool {
     const t = win.begin() catch return false;
     t.setText(id, content) catch {
+        t.abort();
+        return false;
+    };
+    t.setSpans(id, styled) catch {
         t.abort();
         return false;
     };
@@ -302,10 +315,15 @@ pub const Edit = struct {
     /// Selection before the edit, restored by undo.
     caret: u32 = 0,
     anchor: u32 = 0,
+    /// Styled ranges before and after the edit (D22).
+    spans_before: []const node_mod.Span = &.{},
+    spans_after: []const node_mod.Span = &.{},
 
     fn deinit(ed: Edit, gpa: std.mem.Allocator) void {
         gpa.free(ed.removed);
         gpa.free(ed.inserted);
+        gpa.free(ed.spans_before);
+        gpa.free(ed.spans_after);
     }
 };
 
@@ -367,6 +385,12 @@ fn remember(win: *Window, id: NodeId, before: Snapshot, edit: Edit) void {
             else
                 std.mem.concat(gpa, u8, &.{ last.removed, edit.removed });
             const m = merged catch return h.clear(gpa);
+            const after = gpa.dupe(node_mod.Span, edit.spans_after) catch {
+                gpa.free(m);
+                return h.clear(gpa);
+            };
+            gpa.free(last.spans_after);
+            last.spans_after = after;
             if (typing) {
                 gpa.free(last.inserted);
                 last.inserted = m;
@@ -378,16 +402,22 @@ fn remember(win: *Window, id: NodeId, before: Snapshot, edit: Edit) void {
             return;
         }
     }
-    const removed = gpa.dupe(u8, edit.removed) catch return h.clear(gpa);
-    const inserted = gpa.dupe(u8, edit.inserted) catch {
-        gpa.free(removed);
+    var owned: Edit = .{ .start = edit.start, .removed = &.{}, .inserted = &.{}, .kind = edit.kind, .caret = before.caret, .anchor = before.anchor };
+    owned.removed = gpa.dupe(u8, edit.removed) catch return h.clear(gpa);
+    owned.inserted = gpa.dupe(u8, edit.inserted) catch {
+        owned.deinit(gpa);
+        return h.clear(gpa);
+    };
+    owned.spans_before = gpa.dupe(node_mod.Span, edit.spans_before) catch {
+        owned.deinit(gpa);
+        return h.clear(gpa);
+    };
+    owned.spans_after = gpa.dupe(node_mod.Span, edit.spans_after) catch {
+        owned.deinit(gpa);
         return h.clear(gpa);
     };
     if (h.undo.items.len == max_undo) h.undo.orderedRemove(0).deinit(gpa);
-    h.undo.append(gpa, .{ .start = edit.start, .removed = removed, .inserted = inserted, .kind = edit.kind, .caret = before.caret, .anchor = before.anchor }) catch {
-        gpa.free(removed);
-        gpa.free(inserted);
-    };
+    h.undo.append(gpa, owned) catch owned.deinit(gpa);
 }
 
 /// Undoes (or redoes) the last step. Returns whether there was one.
@@ -414,7 +444,7 @@ pub fn undo(win: *Window, id: NodeId, redo: bool) bool {
         from.appendAssumeCapacity(ed);
         return false;
     };
-    if (!commitEdit(win, id, content, @intCast(ed.start + back.len))) {
+    if (!commitEdit(win, id, content, @intCast(ed.start + back.len), if (redo) ed.spans_after else ed.spans_before)) {
         from.appendAssumeCapacity(ed);
         return false;
     }
@@ -424,6 +454,51 @@ pub fn undo(win: *Window, id: NodeId, redo: bool) bool {
     h.revision = data(win, id).revision;
     changed(win, id);
     return true;
+}
+
+/// A formatting command (D22): sets the attributes in `mask` to those of
+/// `values` over the selection, as one undo step followed by a change
+/// event, or with nothing selected makes them the typing style until the
+/// caret moves. Masked editors take no styles.
+pub fn format(win: *Window, id: NodeId, values: node_mod.SpanStyle, mask: node_mod.SpanStyle.Mask) bool {
+    const e = data(win, id);
+    if (e.editor.masked) return false;
+    const lo, const hi = selection(e);
+    const t = win.begin() catch return false;
+    if (lo == hi) {
+        t.setTypingStyle(id, typingStyle(win, id).patched(values, mask)) catch {
+            t.abort();
+            return false;
+        };
+        t.commit();
+        return true;
+    }
+    const a = win.scratch.allocator();
+    const before = a.dupe(node_mod.Span, e.text.spans) catch {
+        t.abort();
+        return false;
+    };
+    const after = spans.restyled(a, before, @intCast(e.text.content.len), lo, hi, values, mask) catch {
+        t.abort();
+        return false;
+    };
+    const snap: Snapshot = .{ .caret = e.caret, .anchor = e.anchor, .revision = e.revision };
+    t.setSpans(id, after) catch {
+        t.abort();
+        return false;
+    };
+    t.commit();
+    remember(win, id, snap, .{ .start = lo, .removed = "", .inserted = "", .kind = .format, .spans_before = before, .spans_after = after });
+    changed(win, id);
+    return true;
+}
+
+/// The style typed text would take now.
+pub fn typingStyle(win: *const Window, id: NodeId) node_mod.SpanStyle {
+    const e = data(win, id);
+    if (e.typing) |ty| return ty;
+    const lo, const hi = selection(e);
+    return if (lo < hi) spans.styleAt(e.text.spans, lo) else spans.inherited(e.text.spans, lo);
 }
 
 fn selection(e: *const node_mod.EditorData) struct { u32, u32 } {

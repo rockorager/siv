@@ -992,20 +992,44 @@ fn drawText(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point
 }
 
 /// Draws a text layout's glyphs with its box's top left at (ox, oy).
-/// Lines are aligned like the node's when `nid` is given.
+/// Lines are aligned like the node's when `nid` is given, whose spans
+/// (D22) give runs their colors and decorations.
 fn drawLayout(st: *State, win: *Window, l: *const text.Layout, b: *scene.Builder, ox: f32, oy: f32, content_w: f32, color: scene.Color, nid: ?NodeId) DrawError!Rect {
     var bounds = Rect.empty;
+    const cache = if (nid) |n| win.state(n).text else null;
     for (l.lines) |line| {
         const shift = if (nid) |n| text_node.lineShift(win, n, line, content_w) else 0;
         for (l.lineRuns(line)) |run| {
             const face = win.fonts.cache.face(run.font) orelse continue;
+            const own = if (cache) |c| (if (c.layout) |*cl| cl == l else false) else false;
+            const sp: node_mod.SpanStyle = if (own) cache.?.runStyle(run.style) else .{};
+            const run_color = if (sp.color_token != .none) win.palette.color(sp.color_token) else sp.color orelse color;
             st.glyphs.clearRetainingCapacity();
             var rb = Rect.empty;
+            var x0: f32 = std.math.inf(f32);
+            var x1: f32 = -std.math.inf(f32);
+            const baseline = oy + line.baseline;
             for (l.runGlyphs(run)) |g| {
                 const x = ox + shift + line.x + g.x;
-                const y = oy + line.baseline + g.y;
+                const y = baseline + g.y;
+                x0 = @min(x0, x);
+                x1 = @max(x1, x + g.advance);
                 try st.glyphs.append(win.gpa, .{ .id = g.id, .x = x, .y = y });
                 if (face.glyphBounds(g.id, run.size)) |gb| rb = rb.unite(.xywh(x + gb.x, y + gb.y, gb.width, gb.height));
+            }
+            // Underline below the baseline, strikethrough through the
+            // middle of lowercase letters; about a sixteenth of the size
+            // thick, at least a pixel.
+            if ((sp.underline or sp.strikethrough) and x1 > x0) {
+                // Whole device pixels, so the lines stay crisp.
+                const k: f32 = @floatCast(win.scale);
+                const thick = @max(1, @round(run.size / 16 * k)) / k;
+                for ([_]struct { bool, f32 }{ .{ sp.underline, baseline + run.size / 10 }, .{ sp.strikethrough, baseline - run.size * 0.28 } }) |deco| {
+                    if (!deco[0]) continue;
+                    const r = Rect.xywh(x0, @round((deco[1] - thick / 2) * k) / k, x1 - x0, thick);
+                    try b.fillRect(r, .color(run_color));
+                    bounds = bounds.unite(r);
+                }
             }
             if (rb.isEmpty()) continue;
             rb = rb.outset(1);
@@ -1013,7 +1037,7 @@ fn drawLayout(st: *State, win: *Window, l: *const text.Layout, b: *scene.Builder
                 .font = .{ .handle = face.font, .key = face.key },
                 .size = run.size,
                 .glyphs = st.glyphs.items,
-                .paint = .color(color),
+                .paint = .color(run_color),
                 .bounds = rb,
             });
             bounds = bounds.unite(rb);
