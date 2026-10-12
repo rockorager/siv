@@ -71,6 +71,9 @@ const Layer = struct {
     /// from layout.
     props_sent: bool = false,
     own_transform: compositor.Transform = .identity,
+    /// The owner's animation as last sent (with `start_ns` 0); it is sent
+    /// again, restarting, when what it resolves to changes.
+    anim: ?compositor.Animation = null,
     // Content.
     dirty: bool = true,
     subtree_dirty: bool = false,
@@ -516,7 +519,7 @@ pub const State = struct {
         const gpa = win.gpa;
         var scroll_layers: std.ArrayList(u32) = .empty;
         if (win.dirty.props or st.ops.items.len != 0) {
-            try st.ops.ensureUnusedCapacity(gpa, 9 * st.order.items.len + st.scroll_by.items.len + 1);
+            try st.ops.ensureUnusedCapacity(gpa, 11 * st.order.items.len + st.scroll_by.items.len + 1);
             for (st.order.items) |i| {
                 const l = &st.layers.items[i];
                 const p = props(st, win, l.*);
@@ -526,18 +529,41 @@ pub const State = struct {
                 const owner_visual = if (l.kind == .node or l.kind == .root) win.node(l.owner).visual else null;
                 const ms: u32 = if (owner_visual) |v| (if (win.reducedMotion()) 0 else v.transition_ms) else 0;
                 const own_t = if (owner_visual) |v| v.transform else compositor.Transform.identity;
-                if (!l.transform.eql(p.transform)) {
+                // A running animation (D29) owns its property: changes of
+                // the base value send it again instead.
+                const anim = if (owner_visual) |v| animationOf(win, l.owner, v.animation, p) else null;
+                const anim_prop: ?compositor.Property = if (anim) |a| std.meta.activeTag(a.to) else null;
+                if (!l.transform.eql(p.transform) and anim_prop == .transform) {
+                    l.transform = p.transform;
+                } else if (!l.transform.eql(p.transform)) {
                     if (ms != 0 and l.props_sent and !own_t.eql(l.own_transform)) {
                         st.ops.appendAssumeCapacity(.{ .animate = .{ .layer = id(i), .animation = transition(.{ .transform = p.transform }, ms) } });
                     } else st.ops.appendAssumeCapacity(.{ .set_transform = .{ .layer = id(i), .transform = p.transform } });
                     l.transform = p.transform;
                 }
                 l.own_transform = own_t;
-                if (l.opacity != p.opacity) {
+                if (l.opacity != p.opacity and anim_prop == .opacity) {
+                    l.opacity = p.opacity;
+                } else if (l.opacity != p.opacity) {
                     if (ms != 0 and l.props_sent) {
                         st.ops.appendAssumeCapacity(.{ .animate = .{ .layer = id(i), .animation = transition(.{ .opacity = p.opacity }, ms) } });
                     } else st.ops.appendAssumeCapacity(.{ .set_opacity = .{ .layer = id(i), .opacity = p.opacity } });
                     l.opacity = p.opacity;
+                }
+                if (!std.meta.eql(l.anim, anim)) {
+                    // Setting a property cancels its animation.
+                    if (l.anim) |old| if (anim_prop != std.meta.activeTag(old.to)) switch (old.to) {
+                        .transform => st.ops.appendAssumeCapacity(.{ .set_transform = .{ .layer = id(i), .transform = p.transform } }),
+                        .opacity => st.ops.appendAssumeCapacity(.{ .set_opacity = .{ .layer = id(i), .opacity = p.opacity } }),
+                        .scroll => unreachable,
+                    };
+                    if (anim) |a| {
+                        var started = a;
+                        const delay = win.node(l.owner).visual.animation.delay_ms;
+                        if (delay != 0) started.start_ns = @import("loop").Loop.now() + @as(u64, delay) * std.time.ns_per_ms;
+                        st.ops.appendAssumeCapacity(.{ .animate = .{ .layer = id(i), .animation = started } });
+                    }
+                    l.anim = anim;
                 }
                 l.props_sent = true;
                 if (!std.meta.eql(l.clip, p.clip)) {
@@ -612,6 +638,51 @@ pub const State = struct {
         defer st.ops.clearRetainingCapacity();
         const seq = try win.sink.commit(win.sink.ctx, st.ops.items);
         for (scroll_layers.items) |i| st.layers.items[i].scroll_seq = seq;
+    }
+
+    /// What a node's animation sends to the compositor, from its base
+    /// properties `p`; null when it does not run.
+    fn animationOf(win: *Window, nid: NodeId, a: node_mod.Animation, p: Props) ?compositor.Animation {
+        if (a.property == .none or win.reducedMotion()) return null;
+        const s = win.state(nid);
+        const flip: f32 = if (a.mirror and s.rtl) -1 else 1;
+        const size = s.size;
+        const at = struct {
+            fn f(base: Props, sz: layout.Size, an: node_mod.Animation, value: f32, fl: f32) compositor.Value {
+                const v = if (an.property == .translate_x or an.property == .rotate) value * fl else value;
+                var t = base.transform;
+                const center: Point = .{ .x = sz.w / 2, .y = sz.h / 2 };
+                switch (an.property) {
+                    .none => unreachable,
+                    .opacity => return .{ .opacity = std.math.clamp(base.opacity * v, 0, 1) },
+                    .translate_x => t.translate.x += if (an.relative) v * sz.w else v,
+                    .translate_y => t.translate.y += if (an.relative) v * sz.h else v,
+                    .scale => {
+                        t.scale = .{ .x = t.scale.x * v, .y = t.scale.y * v };
+                        t.origin = center;
+                    },
+                    .rotate => {
+                        t.rotate += v;
+                        t.origin = center;
+                    },
+                }
+                return .{ .transform = t };
+            }
+        }.f;
+        return .{
+            .to = at(p, size, a, a.to, flip),
+            .from = at(p, size, a, a.from, flip),
+            .duration_ns = @as(u64, a.duration_ms) * std.time.ns_per_ms,
+            .easing = switch (a.easing) {
+                .ease => .ease,
+                .linear => .linear,
+                .ease_in => .ease_in,
+                .ease_out => .ease_out,
+                .ease_in_out => .ease_in_out,
+            },
+            .iterations = a.iterations,
+            .alternate = a.alternate,
+        };
     }
 
     const Props = struct {

@@ -319,7 +319,8 @@ pub const Txn = struct {
 
     pub fn setVisual(t: *Txn, id: NodeId, v: node_mod.Visual) Error!void {
         const n = try t.live(id);
-        if (!finite(v.opacity) or !finite(v.border_width) or v.border_width < 0 or !finiteTransform(v.transform))
+        if (!finite(v.opacity) or !finite(v.border_width) or v.border_width < 0 or !finiteTransform(v.transform) or
+            !finite(v.animation.from) or !finite(v.animation.to))
             return error.InvalidArgument;
         const old = n.visual;
         if (std.meta.eql(old, v)) return;
@@ -329,7 +330,8 @@ pub const Txn = struct {
         n.visual.opacity = std.math.clamp(v.opacity, 0, 1);
         const win = t.win;
         if (isLayerRoot(old) != isLayerRoot(n.visual) or old.clip != v.clip) win.markLayers();
-        if (old.opacity != n.visual.opacity or !old.transform.eql(v.transform)) win.dirty.props = true;
+        if (old.opacity != n.visual.opacity or !old.transform.eql(v.transform) or !std.meta.eql(old.animation, v.animation))
+            win.dirty.props = true;
         if (!std.meta.eql(old.background, v.background) or old.border_width != v.border_width or
             !std.meta.eql(old.border_color, v.border_color) or !std.meta.eql(old.radius, v.radius) or old.clip != v.clip or
             old.background_token != v.background_token or old.border_token != v.border_token)
@@ -664,7 +666,7 @@ fn charBoundary(s: []const u8, offset: u32) u32 {
 pub const bullet = "\u{2022}";
 
 pub fn isLayerRoot(v: node_mod.Visual) bool {
-    return v.opacity < 1 or !v.transform.eql(.identity) or v.layer;
+    return v.opacity < 1 or !v.transform.eql(.identity) or v.layer or v.animation.property != .none;
 }
 
 fn finite(v: f32) bool {

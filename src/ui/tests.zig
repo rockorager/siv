@@ -1434,6 +1434,83 @@ test "transitions animate a node's own opacity and transform, not its first valu
     }
 }
 
+test "animations run on the compositor while shown, follow size and base, and stop with reduced motion" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 200, .height = 200 });
+    defer f.deinit();
+    var t = try f.win.begin();
+    const col = try box(t, .root, .box, .{ .align_y = .start, .align_x = .start });
+    const n = try box(t, col, .box, .{ .width = .{ .px = 40 }, .height = .{ .px = 10 } });
+    try t.setVisual(n, .{ .background = .black, .transform = .offset(5, 0), .animation = .{
+        .property = .translate_x,
+        .from = -1,
+        .to = 2.5,
+        .relative = true,
+        .duration_ms = 1500,
+        .easing = .linear,
+    } });
+    t.commit();
+    f.comp.keep_log = true;
+    try f.frame();
+    const layer = f.win.state(n).own_layer + 1;
+    var a = findAnimate(f.comp.log.items, layer).?;
+    // Relative to the node's width, on top of its own transform.
+    try testing.expectEqual(@as(f32, 5 - 40), a.from.?.transform.translate.x);
+    try testing.expectEqual(@as(f32, 5 + 100), a.to.transform.translate.x);
+    try testing.expectEqual(@as(u32, 0), a.iterations);
+    try testing.expectEqual(@as(u64, 1500 * std.time.ns_per_ms), a.duration_ns);
+    for (f.comp.log.items) |op| if (op == .set_transform) try testing.expect(op.set_transform.layer != layer);
+
+    // An unrelated frame sends nothing; a new size sends it again.
+    f.comp.log.clearRetainingCapacity();
+    f.win.requestFrame();
+    try f.frame();
+    try testing.expect(findAnimate(f.comp.log.items, layer) == null);
+    t = try f.win.begin();
+    try t.setLayout(n, .{ .width = .{ .px = 60 }, .height = .{ .px = 10 } });
+    t.commit();
+    try f.frame();
+    a = findAnimate(f.comp.log.items, f.win.state(n).own_layer + 1).?;
+    try testing.expectEqual(@as(f32, 5 + 150), a.to.transform.translate.x);
+
+    // Hidden, the layer goes and the animation with it; shown, it starts
+    // again on a new layer.
+    var v = f.win.node(n).visual;
+    const before = f.win.state(n).own_layer + 1;
+    f.comp.log.clearRetainingCapacity();
+    t = try f.win.begin();
+    v.hidden = true;
+    try t.setVisual(n, v);
+    t.commit();
+    try f.frame();
+    var destroyed = false;
+    for (f.comp.log.items) |op| destroyed = destroyed or (op == .destroy and op.destroy == before);
+    try testing.expect(destroyed);
+    f.comp.log.clearRetainingCapacity();
+    t = try f.win.begin();
+    v.hidden = false;
+    try t.setVisual(n, v);
+    t.commit();
+    try f.frame();
+    try testing.expect(findAnimate(f.comp.log.items, f.win.state(n).own_layer + 1) != null);
+
+    // Reduced motion cancels it by setting the node's own transform.
+    f.comp.log.clearRetainingCapacity();
+    var d = f.win.desktop;
+    d.reduced_motion = true;
+    f.win.setDesktop(d);
+    try f.frame();
+    const shown = f.win.state(n).own_layer + 1;
+    try testing.expect(findAnimate(f.comp.log.items, shown) == null);
+    var reset = false;
+    for (f.comp.log.items) |op| if (op == .set_transform and op.set_transform.layer == shown) {
+        reset = true;
+        try testing.expectEqual(@as(f32, 5), op.set_transform.transform.translate.x - f.win.state(n).pos.x);
+    };
+    try testing.expect(reset);
+    try testing.expect(f.comp.get(shown).anims[0] == null);
+}
+
 test "theme: tokens resolve at paint time and follow the desktop's scheme, contrast, accent, and font size" {
     var f: Fixture = undefined;
     try f.init(.{ .width = 200, .height = 100 });

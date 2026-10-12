@@ -30,6 +30,7 @@ pub const Insets = node.Insets;
 pub const Layout = node.Layout;
 pub const Corners = node.Corners;
 pub const Visual = node.Visual;
+pub const Animation = node.Animation;
 pub const Transform = node.Transform;
 pub const Role = node.Role;
 pub const Toggle = node.Toggle;

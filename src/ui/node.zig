@@ -227,6 +227,39 @@ pub const Visual = struct {
     /// Changes to opacity and transform animate over this long on the
     /// compositor (ease-out), unless motion is reduced.
     transition_ms: u32 = 0,
+    /// A running animation of one property on the compositor; one that
+    /// runs gives the node its own layer.
+    animation: Animation = .{},
+};
+
+/// An animation the compositor runs on a node's layer (D29): repeating
+/// ones such as indeterminate progress cost the UI thread nothing. It
+/// runs while the node has a layer and motion is not reduced: hiding the
+/// node stops it and showing it starts it again; with reduced motion the
+/// node shows its own value.
+pub const Animation = struct {
+    property: Property = .none,
+    /// Values at the start and end of an iteration: opacity, a translation
+    /// in pixels (or, if `relative`, in multiples of the node's width or
+    /// height), a scale factor, or a clockwise rotation in radians. They
+    /// apply on top of the node's own opacity (multiplying it) and
+    /// transform; scale and rotation keep the node's center fixed.
+    from: f32 = 0,
+    to: f32 = 0,
+    duration_ms: u32 = 0,
+    delay_ms: u32 = 0,
+    /// 0 repeats until the animation is replaced or stopped.
+    iterations: u32 = 0,
+    easing: Easing = .ease,
+    /// Every other iteration runs backwards.
+    alternate: bool = false,
+    relative: bool = false,
+    /// Translations along x and rotations flip in right-to-left layouts
+    /// (D21).
+    mirror: bool = false,
+
+    pub const Property = enum(u8) { none, opacity, translate_x, translate_y, scale, rotate };
+    pub const Easing = enum(u8) { ease, linear, ease_in, ease_out, ease_in_out };
 };
 
 /// Accessibility roles (D18). Every node has one; primitives default to
