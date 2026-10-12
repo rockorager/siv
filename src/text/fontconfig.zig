@@ -15,17 +15,19 @@ pub const Weight = enum {
     bold,
     black,
 
-    fn value(self: Weight) c_int {
+    /// The CSS weight.
+    pub fn css(self: Weight) f32 {
         return switch (self) {
-            .thin => fc.FC_WEIGHT_THIN,
-            .light => fc.FC_WEIGHT_LIGHT,
-            .regular => fc.FC_WEIGHT_REGULAR,
-            .medium => fc.FC_WEIGHT_MEDIUM,
-            .semibold => fc.FC_WEIGHT_SEMIBOLD,
-            .bold => fc.FC_WEIGHT_BOLD,
-            .black => fc.FC_WEIGHT_BLACK,
+            .thin => 100,
+            .light => 300,
+            .regular => 400,
+            .medium => 500,
+            .semibold => 600,
+            .bold => 700,
+            .black => 900,
         };
     }
+
 };
 
 pub const Slant = enum {
@@ -42,13 +44,57 @@ pub const Slant = enum {
     }
 };
 
+/// Font width (CSS font-stretch keywords).
+pub const Width = enum {
+    ultra_condensed,
+    extra_condensed,
+    condensed,
+    semi_condensed,
+    normal,
+    semi_expanded,
+    expanded,
+    extra_expanded,
+    ultra_expanded,
+
+    /// Percent of normal, as CSS and OS/2 usWidthClass define them.
+    pub fn percent(self: Width) f32 {
+        return switch (self) {
+            .ultra_condensed => 50,
+            .extra_condensed => 62.5,
+            .condensed => 75,
+            .semi_condensed => 87.5,
+            .normal => 100,
+            .semi_expanded => 112.5,
+            .expanded => 125,
+            .extra_expanded => 150,
+            .ultra_expanded => 200,
+        };
+    }
+
+    fn value(self: Width) c_int {
+        return switch (self) {
+            .ultra_condensed => fc.FC_WIDTH_ULTRACONDENSED,
+            .extra_condensed => fc.FC_WIDTH_EXTRACONDENSED,
+            .condensed => fc.FC_WIDTH_CONDENSED,
+            .semi_condensed => fc.FC_WIDTH_SEMICONDENSED,
+            .normal => fc.FC_WIDTH_NORMAL,
+            .semi_expanded => fc.FC_WIDTH_SEMIEXPANDED,
+            .expanded => fc.FC_WIDTH_EXPANDED,
+            .extra_expanded => fc.FC_WIDTH_EXTRAEXPANDED,
+            .ultra_expanded => fc.FC_WIDTH_ULTRAEXPANDED,
+        };
+    }
+};
+
 pub const Query = struct {
     /// A family name or a generic family such as "sans-serif".
     family: []const u8,
     /// BCP 47 language tag; selects language-appropriate fallbacks (D21).
     language: ?[]const u8 = null,
-    weight: Weight = .regular,
+    /// CSS weight (1..1000).
+    weight: f32 = 400,
     slant: Slant = .roman,
+    width: Width = .normal,
     /// Pixel size, for fonts with size-specific designs.
     size: ?f64 = null,
 };
@@ -77,8 +123,9 @@ pub const Database = struct {
         const family = try allocator.dupeSentinel(u8, query.family, 0);
         defer allocator.free(family);
         if (fc.FcPatternAddString(pattern, fc.FC_FAMILY, family.ptr) == 0 or
-            fc.FcPatternAddInteger(pattern, fc.FC_WEIGHT, query.weight.value()) == 0 or
-            fc.FcPatternAddInteger(pattern, fc.FC_SLANT, query.slant.value()) == 0)
+            fc.FcPatternAddDouble(pattern, fc.FC_WEIGHT, fc.FcWeightFromOpenTypeDouble(query.weight)) == 0 or
+            fc.FcPatternAddInteger(pattern, fc.FC_SLANT, query.slant.value()) == 0 or
+            fc.FcPatternAddInteger(pattern, fc.FC_WIDTH, query.width.value()) == 0)
             return error.OutOfMemory;
         if (query.language) |language| {
             const z = try allocator.dupeSentinel(u8, language, 0);
@@ -107,10 +154,20 @@ pub const Database = struct {
             _ = fc.FcPatternGetString(prepared, fc.FC_FONT_VARIATIONS, 0, &variations);
             var charset: ?*fc.FcCharSet = null;
             _ = fc.FcPatternGetCharSet(prepared, fc.FC_CHARSET, 0, &charset);
+            // Fontconfig's synthetic-style rules (90-synthetic.conf) ask
+            // for emboldening and a shear when the face lacks the style.
+            var synthetic: font.Synthetic = .{};
+            var embolden: fc.FcBool = fc.FcFalse;
+            if (fc.FcPatternGetBool(prepared, fc.FC_EMBOLDEN, 0, &embolden) == fc.FcResultMatch and embolden != fc.FcFalse)
+                synthetic.bold = font.Synthetic.bold_strength;
+            var matrix: [*c]fc.FcMatrix = null;
+            if (fc.FcPatternGetMatrix(prepared, fc.FC_MATRIX, 0, &matrix) == fc.FcResultMatch and matrix != null and matrix.*.xy != 0)
+                synthetic.slant = @floatCast(matrix.*.xy);
             const id = try cache.addPending(.{
                 .path = std.mem.span(@as([*:0]const u8, @ptrCast(file))),
                 .index = @bitCast(index),
                 .variations = if (variations != null) std.mem.span(@as([*:0]const u8, @ptrCast(variations))) else "",
+                .synthetic = synthetic,
             }, charset);
             if (std.mem.indexOfScalar(font.FontId, ids.items, id) == null) try ids.append(allocator, id);
         }
@@ -136,4 +193,31 @@ test "generic sans-serif resolves to an ordered fallback chain" {
     const again = try database.candidates(std.testing.allocator, &cache, .{ .family = "sans-serif", .language = "en" });
     defer std.testing.allocator.free(again);
     try std.testing.expectEqualSlices(font.FontId, ids, again);
+}
+
+test "Fontconfig's synthetic-style rules reach the pending font" {
+    var database = Database.init() catch return error.SkipZigTest;
+    defer database.deinit();
+    var cache: font.FontCache = .init(std.testing.allocator);
+    defer cache.deinit();
+    const ids = database.candidates(std.testing.allocator, &cache, .{ .family = "sans-serif", .weight = 700, .slant = .italic }) catch |err| switch (err) {
+        error.NoFonts => return error.SkipZigTest,
+        else => return err,
+    };
+    defer std.testing.allocator.free(ids);
+    // What Fontconfig itself says about its best match.
+    const pattern = fc.FcNameParse("sans-serif:bold:italic").?;
+    defer fc.FcPatternDestroy(pattern);
+    _ = fc.FcConfigSubstitute(database.config, pattern, fc.FcMatchPattern);
+    fc.FcDefaultSubstitute(pattern);
+    var result: fc.FcResult = undefined;
+    const best = fc.FcFontMatch(database.config, pattern, &result) orelse return error.SkipZigTest;
+    defer fc.FcPatternDestroy(best);
+    var embolden: fc.FcBool = fc.FcFalse;
+    _ = fc.FcPatternGetBool(best, fc.FC_EMBOLDEN, 0, &embolden);
+    var matrix: [*c]fc.FcMatrix = null;
+    const shear: f32 = if (fc.FcPatternGetMatrix(best, fc.FC_MATRIX, 0, &matrix) == fc.FcResultMatch) @floatCast(matrix.*.xy) else 0;
+    const synthetic = cache.source(ids[0]).synthetic;
+    try std.testing.expectEqual(shear, synthetic.slant);
+    try std.testing.expectEqual(embolden != fc.FcFalse, synthetic.bold != 0);
 }

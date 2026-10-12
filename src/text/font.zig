@@ -36,6 +36,131 @@ pub const Metrics = struct {
     }
 };
 
+/// Synthetic styles for a family that lacks a weight or slant (D13): baked
+/// into the face's HarfBuzz font, so its outlines, advances, and extents
+/// carry them wherever the font is drawn (CPU and Vulkan glyph caches,
+/// PDF output).
+pub const Synthetic = struct {
+    /// Extra stroke added around outlines, in ems, horizontally and
+    /// vertically; advances grow by the same amount. 0 is none.
+    bold: f32 = 0,
+    /// Horizontal shear (the tangent of the angle, leaning right). 0 is
+    /// none.
+    slant: f32 = 0,
+
+    /// FreeType's emboldening strength (FT_GlyphSlot_Embolden), which
+    /// Pango and Cairo use for synthetic bold.
+    pub const bold_strength: f32 = 1.0 / 24.0;
+    /// CSS's default oblique angle, 14 degrees.
+    pub const oblique_slant: f32 = 0.24932800284318068;
+
+    pub fn eql(a: Synthetic, b: Synthetic) bool {
+        return a.bold == b.bold and a.slant == b.slant;
+    }
+};
+
+/// Axis values set on a face's HarfBuzz font, on top of its variation
+/// string, and synthetic styles: a face instance (`FontCache.instance`).
+pub const Instance = struct {
+    wght: ?f32 = null,
+    wdth: ?f32 = null,
+    slnt: ?f32 = null,
+    ital: ?f32 = null,
+    opsz: ?f32 = null,
+    synthetic: Synthetic = .{},
+
+    pub fn eql(a: Instance, b: Instance) bool {
+        return a.wght == b.wght and a.wdth == b.wdth and a.slnt == b.slnt and a.ital == b.ital and a.opsz == b.opsz and
+            a.synthetic.eql(b.synthetic);
+    }
+
+    pub fn isDefault(self: Instance) bool {
+        return self.eql(.{});
+    }
+
+    fn variations(self: Instance, out: *[5]hb.hb_variation_t) []hb.hb_variation_t {
+        var n: usize = 0;
+        inline for (.{ "wght", "wdth", "slnt", "ital", "opsz" }) |name| if (@field(self, name)) |v| {
+            out[n] = .{ .tag = tag(name), .value = v };
+            n += 1;
+        };
+        return out[0..n];
+    }
+
+    fn hash(self: Instance, hasher: *std.hash.Wyhash) void {
+        inline for (.{ "wght", "wdth", "slnt", "ital", "opsz" }) |name| {
+            const v: f32 = @field(self, name) orelse std.math.nan(f32);
+            hasher.update(std.mem.asBytes(&v));
+        }
+        hasher.update(std.mem.asBytes(&self.synthetic.bold));
+        hasher.update(std.mem.asBytes(&self.synthetic.slant));
+    }
+};
+
+pub fn tag(comptime name: *const [4]u8) u32 {
+    return @as(u32, name[0]) << 24 | @as(u32, name[1]) << 16 | @as(u32, name[2]) << 8 | name[3];
+}
+
+/// A range of style values a face covers: one value for static faces, the
+/// axis range for variable ones.
+pub const Axis = struct {
+    min: f32,
+    default: f32,
+    max: f32,
+
+    pub fn point(v: f32) Axis {
+        return .{ .min = v, .default = v, .max = v };
+    }
+
+    pub fn contains(self: Axis, v: f32) bool {
+        return v >= self.min and v <= self.max;
+    }
+
+    pub fn clamp(self: Axis, v: f32) f32 {
+        return std.math.clamp(v, self.min, self.max);
+    }
+};
+
+/// What a face's data says about its style (D13), for matching styles
+/// within a family.
+pub const Description = struct {
+    /// CSS weight (OS/2 usWeightClass, or the wght axis).
+    weight: Axis,
+    /// Width in percent of normal (OS/2 usWidthClass, or the wdth axis).
+    width: Axis,
+    /// An italic design (OS/2 fsSelection or head macStyle), or the ital
+    /// axis.
+    italic: Axis,
+    /// Slant in degrees, counter-clockwise, so negative leans right (post
+    /// italicAngle, or the slnt axis).
+    slant: Axis,
+    /// The opsz axis of a variable font, in its units (D13 sets it from the
+    /// text size in pixels).
+    opsz: ?Axis,
+    /// Which of the above are variation axes.
+    axes: struct { wght: bool = false, wdth: bool = false, ital: bool = false, slnt: bool = false } = .{},
+
+    fn read(font: *hb.hb_font_t) Description {
+        const face = hb.hb_font_get_face(font);
+        var d: Description = undefined;
+        d.axes = .{};
+        d.opsz = null;
+        inline for (.{ .{ "weight", "wght", hb.HB_STYLE_TAG_WEIGHT }, .{ "width", "wdth", hb.HB_STYLE_TAG_WIDTH }, .{ "italic", "ital", hb.HB_STYLE_TAG_ITALIC }, .{ "slant", "slnt", hb.HB_STYLE_TAG_SLANT_ANGLE } }) |entry| {
+            var info: hb.hb_ot_var_axis_info_t = undefined;
+            if (hb.hb_ot_var_find_axis_info(face, tag(entry[1]), &info) != 0) {
+                @field(d, entry[0]) = .{ .min = info.min_value, .default = info.default_value, .max = info.max_value };
+                @field(d.axes, entry[1]) = true;
+            } else {
+                @field(d, entry[0]) = .point(hb.hb_style_get_value(font, entry[2]));
+            }
+        }
+        var info: hb.hb_ot_var_axis_info_t = undefined;
+        if (hb.hb_ot_var_find_axis_info(face, tag("opsz"), &info) != 0)
+            d.opsz = .{ .min = info.min_value, .default = info.default_value, .max = info.max_value };
+        return d;
+    }
+};
+
 /// A loaded face. Its HarfBuzz font is at the default scale (font units, y
 /// up) and is never mutated after creation, so renderers may draw from it.
 pub const Face = struct {
@@ -49,6 +174,10 @@ pub const Face = struct {
     ascender: i32,
     descender: i32,
     line_gap: i32,
+    /// The face's styles, read from its data.
+    description: Description,
+    /// The variation string and instance values it was created with.
+    instance: Instance,
 
     /// Pixels per font unit at `size` pixels per em.
     pub fn scale(self: *const Face, size: f32) f32 {
@@ -84,7 +213,19 @@ pub const Face = struct {
         };
     }
 
-    fn init(bytes: []const u8, index: u32, variations: []const u8) !Face {
+    /// The family name in the face's name table: the typographic family
+    /// (name ID 16), else the font family (ID 1). Empty if it has none.
+    pub fn familyName(self: *const Face, buf: []u8) []const u8 {
+        const face = hb.hb_font_get_face(self.font);
+        for ([_]hb.hb_ot_name_id_t{ hb.HB_OT_NAME_ID_TYPOGRAPHIC_FAMILY, hb.HB_OT_NAME_ID_FONT_FAMILY }) |id| {
+            // English, or the first name there is.
+            var len: c_uint = @intCast(buf.len);
+            if (hb.hb_ot_name_get_utf8(face, id, null, &len, buf.ptr) != 0) return buf[0..len];
+        }
+        return "";
+    }
+
+    fn init(bytes: []const u8, index: u32, variations: []const u8, instance: Instance) !Face {
         if (bytes.len > std.math.maxInt(c_uint)) return error.InvalidFont;
         const blob = hb.hb_blob_create(bytes.ptr, @intCast(bytes.len), hb.HB_MEMORY_MODE_READONLY, null, null) orelse return error.OutOfMemory;
         defer hb.hb_blob_destroy(blob);
@@ -105,6 +246,12 @@ pub const Face = struct {
             if (hb.hb_variation_from_string(token.ptr, @intCast(token.len), &variation) == 0) return error.InvalidVariations;
             hb.hb_font_set_variation(font, variation.tag, variation.value);
         }
+        var extra: [5]hb.hb_variation_t = undefined;
+        for (instance.variations(&extra)) |v| hb.hb_font_set_variation(font, v.tag, v.value);
+        const description: Description = .read(font);
+        const synthetic = instance.synthetic;
+        if (synthetic.bold != 0) hb.hb_font_set_synthetic_bold(font, synthetic.bold, synthetic.bold, 0);
+        if (synthetic.slant != 0) hb.hb_font_set_synthetic_slant(font, synthetic.slant);
         hb.hb_font_make_immutable(font);
 
         var extents: hb.hb_font_extents_t = undefined;
@@ -113,6 +260,7 @@ pub const Face = struct {
         hasher.update(bytes);
         hasher.update(std.mem.asBytes(&index));
         hasher.update(variations);
+        instance.hash(&hasher);
         return .{
             .font = font,
             .upem = upem,
@@ -122,6 +270,8 @@ pub const Face = struct {
             .ascender = extents.ascender,
             .descender = extents.descender,
             .line_gap = extents.line_gap,
+            .description = description,
+            .instance = instance,
         };
     }
 
@@ -137,6 +287,9 @@ pub const Source = struct {
     index: u32 = 0,
     /// Fontconfig variation settings, e.g. "wght=700".
     variations: []const u8 = "",
+    /// Fontconfig's synthetic emboldening and shear (FC_EMBOLDEN and
+    /// FC_MATRIX, set by its synthetic-style rules).
+    synthetic: Synthetic = .{},
 };
 
 pub const State = enum { pending, ready, failed };
@@ -153,6 +306,9 @@ const Entry = struct {
     /// Fontconfig's coverage, owned; lets shaping skip pending fonts that
     /// cannot help.
     charset: ?*fc.FcCharSet = null,
+    /// Instances: the font whose bytes they share (never an instance).
+    base: ?FontId = null,
+    instance: Instance = .{},
 };
 
 pub const FontCache = struct {
@@ -171,7 +327,8 @@ pub const FontCache = struct {
 
     fn release(self: *FontCache, entry: *Entry) void {
         if (entry.state == .ready) entry.face.deinit();
-        if (entry.ownership == .owned) self.gpa.free(entry.bytes);
+        // Instances borrow their base's bytes.
+        if (entry.ownership == .owned and entry.base == null) self.gpa.free(entry.bytes);
         if (entry.charset) |charset| fc.FcCharSetDestroy(charset);
         self.gpa.free(entry.path);
         self.gpa.free(entry.variations);
@@ -181,9 +338,44 @@ pub const FontCache = struct {
     pub fn add(self: *FontCache, bytes: []const u8, index: u32, ownership: Ownership) !FontId {
         errdefer if (ownership == .owned) self.gpa.free(bytes);
         try self.entries.ensureUnusedCapacity(self.gpa, 1);
-        const loaded: Face = try .init(bytes, index, "");
+        const loaded: Face = try .init(bytes, index, "", .{});
         self.entries.appendAssumeCapacity(.{ .state = .ready, .face = loaded, .bytes = bytes, .ownership = ownership, .index = index });
         return @enumFromInt(self.entries.items.len - 1);
+    }
+
+    /// The number of faces in font data (a collection has several), 0 if
+    /// it is not a font.
+    pub fn faceCount(bytes: []const u8) u32 {
+        if (bytes.len > std.math.maxInt(c_uint)) return 0;
+        const blob = hb.hb_blob_create(bytes.ptr, @intCast(bytes.len), hb.HB_MEMORY_MODE_READONLY, null, null) orelse return 0;
+        defer hb.hb_blob_destroy(blob);
+        return hb.hb_face_count(blob);
+    }
+
+    /// A ready font with other axis values or synthetic styles: `instance`
+    /// replaces the font's own (a Fontconfig variation string still
+    /// applies beneath it). Sharing the font's bytes, an instance is
+    /// created once and found again; the default instance is the font.
+    pub fn instance(self: *FontCache, id: FontId, inst: Instance) !FontId {
+        const base = self.entries.items[@intFromEnum(id)].base orelse id;
+        // A copy: growing the list moves entries.
+        const root = self.entries.items[@intFromEnum(base)];
+        std.debug.assert(root.state == .ready);
+        if (inst.eql(root.instance)) return base;
+        for (self.entries.items, 0..) |entry, i| {
+            if (entry.base == base and entry.instance.eql(inst)) return @enumFromInt(i);
+        }
+        try self.entries.ensureUnusedCapacity(self.gpa, 1);
+        const variations = try self.gpa.dupe(u8, root.variations);
+        errdefer self.gpa.free(variations);
+        const loaded: Face = try .init(root.bytes, root.index, variations, inst);
+        self.entries.appendAssumeCapacity(.{ .state = .ready, .face = loaded, .bytes = root.bytes, .variations = variations, .index = root.index, .base = base, .instance = inst });
+        return @enumFromInt(self.entries.items.len - 1);
+    }
+
+    /// The instance values a font was created with.
+    pub fn instanceOf(self: *const FontCache, id: FontId) Instance {
+        return self.entries.items[@intFromEnum(id)].instance;
     }
 
     /// Registers a font whose bytes the caller will read later. Registering
@@ -197,14 +389,14 @@ pub const FontCache = struct {
         const variations = try self.gpa.dupe(u8, src.variations);
         errdefer self.gpa.free(variations);
         const copy = if (charset) |c| fc.FcCharSetCopy(@constCast(c)) orelse return error.OutOfMemory else null;
-        self.entries.appendAssumeCapacity(.{ .state = .pending, .path = path, .variations = variations, .index = src.index, .charset = copy });
+        self.entries.appendAssumeCapacity(.{ .state = .pending, .path = path, .variations = variations, .index = src.index, .charset = copy, .instance = .{ .synthetic = src.synthetic } });
         return @enumFromInt(self.entries.items.len - 1);
     }
 
     pub fn find(self: *const FontCache, src: Source) ?FontId {
         for (self.entries.items, 0..) |entry, i| {
-            if (entry.index == src.index and std.mem.eql(u8, entry.path, src.path) and
-                std.mem.eql(u8, entry.variations, src.variations)) return @enumFromInt(i);
+            if (entry.base == null and entry.index == src.index and std.mem.eql(u8, entry.path, src.path) and
+                std.mem.eql(u8, entry.variations, src.variations) and entry.instance.synthetic.eql(src.synthetic)) return @enumFromInt(i);
         }
         return null;
     }
@@ -214,7 +406,7 @@ pub const FontCache = struct {
     pub fn load(self: *FontCache, id: FontId, bytes: []const u8, ownership: Ownership) !void {
         const entry = &self.entries.items[@intFromEnum(id)];
         std.debug.assert(entry.state == .pending);
-        entry.face = Face.init(bytes, entry.index, entry.variations) catch |err| {
+        entry.face = Face.init(bytes, entry.index, entry.variations, entry.instance) catch |err| {
             if (ownership == .owned) self.gpa.free(bytes);
             if (err == error.OutOfMemory) return err;
             entry.state = .failed;
@@ -236,7 +428,7 @@ pub const FontCache = struct {
 
     pub fn source(self: *const FontCache, id: FontId) Source {
         const entry = &self.entries.items[@intFromEnum(id)];
-        return .{ .path = entry.path, .index = entry.index, .variations = entry.variations };
+        return .{ .path = entry.path, .index = entry.index, .variations = entry.variations, .synthetic = entry.instance.synthetic };
     }
 
     /// The face of a ready font.
@@ -267,6 +459,16 @@ pub const test_fonts = struct {
     pub const latin = @embedFile("testdata/DroidSans.ttf");
     pub const arabic = @embedFile("testdata/DroidSansArabic.ttf");
     pub const hebrew = @embedFile("testdata/DroidSansHebrew-Regular.ttf");
+    /// Generated by testdata/make_test_fonts.py (part of siv, MIT): space,
+    /// H, I, O, and n in family "SivTest" (static Regular, Bold, Italic)
+    /// and "SivTest VF" (wght 100..900, wdth 75..125, opsz 8..72, slnt
+    /// -12..0). The I's advance is 2 side bearings plus a stem: the stem
+    /// is 90 units at wght 400 (30 at 100, 156 at 700, 200 at 900); the
+    /// side bearing 60 at opsz 14 (80 at 8 and below, 30 at 72).
+    pub const siv_regular = @embedFile("testdata/SivTest-Regular.ttf");
+    pub const siv_bold = @embedFile("testdata/SivTest-Bold.ttf");
+    pub const siv_italic = @embedFile("testdata/SivTest-Italic.ttf");
+    pub const siv_variable = @embedFile("testdata/SivTest-VF.ttf");
 };
 
 test "faces from bytes, metrics, and coverage" {
