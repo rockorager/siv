@@ -1289,3 +1289,222 @@ test "access: edits take the user's path, queue behind a transaction, and skip m
     const sem = try f.win.semanticsTree();
     try testing.expectEqual(@as(u8, 2), sem.find(.heading, "Title").?.level);
 }
+
+test "hidden nodes take no space, paint nothing, and leave focus, hit testing, and semantics" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 200, .height = 200 });
+    defer f.deinit();
+    var t = try f.win.begin();
+    const row = try box(t, .root, .flex, .{});
+    try t.setFlex(row, .{ .gap = 10 });
+    const a = try box(t, row, .box, .{ .width = .{ .px = 30 }, .height = .{ .px = 30 } });
+    const b = try box(t, row, .box, .{ .width = .{ .px = 40 }, .height = .{ .px = 30 } });
+    const inner = try box(t, b, .box, .{ .height = .{ .px = 10 } });
+    try t.setSemantics(inner, .{ .role = .button, .label = "Inner", .focusable = true });
+    try t.setVisual(b, .{ .background = .black });
+    const c = try box(t, row, .box, .{ .width = .{ .px = 50 }, .height = .{ .px = 30 } });
+    t.commit();
+    try f.frame();
+    try testing.expectEqual(@as(f32, 90), f.rect(c)[0]);
+    ui.input.setFocus(f.win, inner, true);
+    try testing.expect((try f.win.semanticsTree()).find(.button, "Inner") != null);
+
+    f.comp.keep_log = true;
+    t = try f.win.begin();
+    try t.setVisual(b, .{ .background = .black, .hidden = true });
+    t.commit();
+    try f.frame();
+    // No space (and one gap fewer), focus gone, not hit, not exposed.
+    try testing.expectEqual(@as(f32, 40), f.rect(c)[0]);
+    try testing.expectEqual(NodeId.none, f.win.input.focus);
+    try testing.expectEqual(row, ui.input.hitTest(f.win, .{ .x = 35, .y = 5 }));
+    try testing.expect((try f.win.semanticsTree()).find(.button, "Inner") == null);
+    try testing.expect(!ui.input.canFocus(f.win, inner));
+    // Its old bounds are damaged in the layer it painted into.
+    var damaged = false;
+    for (f.comp.log.items) |op| if (op == .set_content) {
+        if (op.set_content.damage) |d| damaged = damaged or d.intersect(.xywh(40, 0, 40, 30)).width() > 0;
+    };
+    try testing.expect(damaged);
+
+    t = try f.win.begin();
+    try t.setVisual(b, .{ .background = .black });
+    t.commit();
+    try f.frame();
+    try testing.expectEqual(@as(f32, 90), f.rect(c)[0]);
+    try testing.expect(ui.input.canFocus(f.win, inner));
+    _ = a;
+}
+
+test "modal nodes keep the pointer and Tab inside them" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 200, .height = 200 });
+    defer f.deinit();
+    var t = try f.win.begin();
+    const outside = try box(t, .root, .box, .{ .width = .{ .px = 50 }, .height = .{ .px = 50 } });
+    try t.setSemantics(outside, .{ .role = .button, .focusable = true });
+    const dialog = try box(t, .root, .box, .{ .width = .{ .px = 100 }, .height = .{ .px = 100 }, .align_x = .end, .align_y = .end });
+    try t.setSemantics(dialog, .{ .role = .dialog, .modal = true });
+    const first = try box(t, dialog, .box, .{ .height = .{ .px = 20 } });
+    try t.setSemantics(first, .{ .role = .button, .focusable = true });
+    const second = try box(t, dialog, .box, .{ .height = .{ .px = 20 } });
+    try t.setSemantics(second, .{ .role = .button, .focusable = true });
+    t.commit();
+    try f.frame();
+    try testing.expectEqual(NodeId.none, ui.input.hitTest(f.win, .{ .x = 10, .y = 10 }));
+    try testing.expectEqual(first, ui.input.hitTest(f.win, .{ .x = 150, .y = 110 }));
+    const keys: Keys = .{ .f = &f };
+    for ([_]NodeId{ first, second, first }) |want| {
+        keys.press(ui.keysym.tab, .{});
+        try testing.expectEqual(want, f.win.input.focus);
+    }
+    try testing.expect((try f.win.semanticsTree()).find(.dialog, "").?.modal);
+
+    // Without the modal flag, everything is reachable again.
+    t = try f.win.begin();
+    try t.setSemantics(dialog, .{ .role = .dialog });
+    t.commit();
+    try f.frame();
+    try testing.expectEqual(outside, ui.input.hitTest(f.win, .{ .x = 10, .y = 10 }));
+}
+
+test "transitions animate a node's own opacity and transform, not its first value; reduced motion jumps" {
+    for ([_]bool{ false, true }) |reduced| {
+        var f: Fixture = undefined;
+        try f.init(.{ .width = 200, .height = 200 });
+        defer f.deinit();
+        f.win.force_reduced_motion = reduced;
+        var t = try f.win.begin();
+        const n = try box(t, .root, .box, .{ .width = .{ .px = 20 }, .height = .{ .px = 20 } });
+        try t.setVisual(n, .{ .background = .black, .layer = true, .transition_ms = 150 });
+        t.commit();
+        f.comp.keep_log = true;
+        try f.frame();
+        for (f.comp.log.items) |op| try testing.expect(op != .animate);
+        f.comp.log.clearRetainingCapacity();
+        t = try f.win.begin();
+        try t.setVisual(n, .{ .background = .black, .layer = true, .transition_ms = 150, .opacity = 0.5, .transform = .offset(30, 0) });
+        t.commit();
+        try f.frame();
+        var animated: usize = 0;
+        var set: usize = 0;
+        for (f.comp.log.items) |op| switch (op) {
+            .animate => |a| {
+                animated += 1;
+                try testing.expectEqual(@as(u64, 150 * std.time.ns_per_ms), a.animation.duration_ns);
+                try testing.expect(a.animation.from == null);
+            },
+            .set_opacity, .set_transform => set += 1,
+            else => {},
+        };
+        try testing.expectEqual(@as(usize, if (reduced) 0 else 2), animated);
+        try testing.expectEqual(@as(usize, if (reduced) 2 else 0), set);
+    }
+}
+
+test "theme: tokens resolve at paint time and follow the desktop's scheme, contrast, accent, and font size" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 200, .height = 100 });
+    defer f.deinit();
+    var t = try f.win.begin();
+    const col = try box(t, .root, .box, .{ .align_y = .start });
+    const panel = try box(t, col, .box, .{ .height = .{ .px = 50 } });
+    try t.setVisual(panel, .{ .background = .white, .background_token = .window_bg });
+    const label = try t.create(col, .text, .none);
+    try t.setText(label, "Theme");
+    try t.setTextProps(label, .{ .style = .{ .size = 10, .size_role = .body, .color_token = .window_fg } });
+    t.commit();
+    try f.frame();
+    const fill = struct {
+        fn of(comp: *Comp) ?scene.Color {
+            const root = comp.get(comp.tree.root);
+            for (root.content.?.list.commands) |cmd| if (cmd == .fill) return cmd.fill.paint.solid;
+            return null;
+        }
+    }.of;
+    const theme = ui.theme;
+    try testing.expect(fill(&f.comp).?.eql(theme.compiled[0][@intFromEnum(ui.ColorToken.window_bg)]));
+    const h_body = f.rect(label)[3];
+
+    f.win.setDesktop(.{ .color_scheme = .dark });
+    try f.frame();
+    try testing.expect(fill(&f.comp).?.eql(theme.compiled[1][@intFromEnum(ui.ColorToken.window_bg)]));
+    f.win.setDesktop(.{ .color_scheme = .dark, .contrast = .high });
+    try f.frame();
+    try testing.expectEqual(theme.Variant.dark_high_contrast, f.win.palette.variant);
+    try testing.expect(fill(&f.comp).?.eql(.black));
+
+    // The application's choices win over the desktop's.
+    var choice: ui.Theme = .{ .scheme = .light, .contrast = .normal };
+    choice.overrides[0][@intFromEnum(ui.ColorToken.window_bg)] = .srgb(1, 0, 0, 1);
+    f.win.setTheme(&choice);
+    try f.frame();
+    try testing.expect(fill(&f.comp).?.eql(.srgb(1, 0, 0, 1)));
+
+    // Text with a size role follows the desktop's font size.
+    const shapes = f.win.stats.shapes;
+    f.win.setDesktop(.{ .font_size = 22 });
+    try f.frame();
+    try testing.expectEqual(shapes + 1, f.win.stats.shapes);
+    try testing.expect(f.rect(label)[3] > 1.8 * h_body);
+}
+
+test "editor placeholders show while empty and are exposed to assistive technology" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 200, .height = 100 });
+    defer f.deinit();
+    var t = try f.win.begin();
+    const ed = try t.create(.root, .editor, .none);
+    try t.setPlaceholder(ed, "Search");
+    try testing.expectError(error.InvalidArgument, t.setPlaceholder(ed, "two\nlines"));
+    t.commit();
+    try f.frame();
+    const glyphRuns = struct {
+        fn count(comp: *Comp) usize {
+            var n: usize = 0;
+            for (comp.tree.layers.items) |l| {
+                if (!l.alive) continue;
+                const c = l.content orelse continue;
+                for (c.list.commands) |cmd| n += @intFromBool(cmd == .glyphs);
+            }
+            return n;
+        }
+    }.count;
+    try testing.expect(glyphRuns(&f.comp) > 0);
+    try testing.expectEqualStrings("Search", (try f.win.semanticsTree()).find(.text_input, "").?.placeholder);
+    t = try f.win.begin();
+    try t.setText(ed, " ");
+    t.commit();
+    try f.frame();
+    // A space shapes to nothing visible: the placeholder is gone.
+    try testing.expectEqual(@as(usize, 0), glyphRuns(&f.comp));
+}
+
+fn takeValue(user: ?*anyopaque, _: *ui.Window, _: NodeId, ev: *const ui.Event) bool {
+    const v: *f64 = @ptrCast(@alignCast(user));
+    v.* = ev.set_value;
+    return true;
+}
+
+test "set_value goes to nodes with a range, unless disabled" {
+    var f: Fixture = undefined;
+    try f.init(.{});
+    defer f.deinit();
+    var got: f64 = -1;
+    var t = try f.win.begin();
+    const s = try box(t, .root, .box, .{});
+    try t.setSemantics(s, .{ .role = .slider, .value = .{ .min = 0, .max = 10, .now = 2, .step = 1 } });
+    try t.on(s, .set_value, .{ .func = takeValue, .user = &got });
+    const plain = try box(t, .root, .box, .{});
+    try t.on(plain, .set_value, .{ .func = takeValue, .user = &got });
+    t.commit();
+    try testing.expect(ui.input.setValue(f.win, s, 7));
+    try testing.expectEqual(@as(f64, 7), got);
+    try testing.expect(!ui.input.setValue(f.win, plain, 3));
+    try testing.expect(!ui.input.setValue(f.win, s, std.math.nan(f64)));
+    t = try f.win.begin();
+    try t.setSemantics(s, .{ .role = .slider, .disabled = true, .value = .{ .min = 0, .max = 10, .now = 2 } });
+    t.commit();
+    try testing.expect(!ui.input.setValue(f.win, s, 4));
+    try testing.expectEqual(@as(f64, 7), got);
+}

@@ -66,6 +66,11 @@ const Layer = struct {
     caret_h: f32 = 0,
     caret_color: scene.Color = .transparent,
     blink_key: u64 = 0,
+    /// Properties were sent once, and the owner's own transform then:
+    /// transitions animate changes of it, not the first value or moves
+    /// from layout.
+    props_sent: bool = false,
+    own_transform: compositor.Transform = .identity,
     // Content.
     dirty: bool = true,
     subtree_dirty: bool = false,
@@ -213,7 +218,7 @@ pub const State = struct {
         st.layers.items[0].pass = st.pass;
         try st.order.append(gpa, 0);
         var cur: Cursor = .{ .layer = 0 };
-        var it = win.children(.root);
+        var it = win.shown(.root);
         while (it.next()) |ch| try st.visit(win, flags, ch, 0, &cur);
 
         // Structural ops: move survivors out of dying parents, destroy the
@@ -265,7 +270,7 @@ pub const State = struct {
     /// Returns the flags a node contributes to its ancestors.
     fn scan(win: *Window, nid: NodeId, flags: []Flags) Flags {
         var f: Flags = .{};
-        var it = win.children(nid);
+        var it = win.shown(nid);
         while (it.next()) |ch| {
             const cf = scan(win, ch, flags);
             f.layer_below = f.layer_below or cf.layer_below;
@@ -305,7 +310,7 @@ pub const State = struct {
                 inner_container = try st.claim(win, &s.content_layer, .scroll_content, nid, l);
             }
             var inner: Cursor = .{ .layer = inner_container };
-            var it = win.children(nid);
+            var it = win.shown(nid);
             while (it.next()) |ch| try st.visit(win, flags, ch, inner_container, &inner);
             if (hasCaret(win, nid)) _ = try st.claim(win, &s.content_layer, .caret, nid, l);
             cur.after = nid;
@@ -317,7 +322,7 @@ pub const State = struct {
             cur.after = .none;
         }
         st.setLayer(win, nid, cur.layer);
-        var it = win.children(nid);
+        var it = win.shown(nid);
         while (it.next()) |ch| try st.visit(win, flags, ch, container, cur);
     }
 
@@ -439,14 +444,14 @@ pub const State = struct {
             const lvl = st.clips.items.len;
             try st.paintNode(win, nid, .zero, lvl);
             const child_level = st.clips.items.len;
-            var it = win.children(nid);
+            var it = win.shown(nid);
             while (it.next()) |ch| try st.paintTree(win, ch, win.state(ch).pos, child_level);
             return;
         }
         try st.paintNode(win, nid, off, level);
         const clipped = n.visual.clip;
         if (clipped) try st.pushClip(win, nid, off);
-        var it = win.children(nid);
+        var it = win.shown(nid);
         while (it.next()) |ch| {
             const cp = win.state(ch).pos;
             try st.paintTree(win, ch, .{ .x = off.x + cp.x, .y = off.y + cp.y }, level);
@@ -515,14 +520,26 @@ pub const State = struct {
             for (st.order.items) |i| {
                 const l = &st.layers.items[i];
                 const p = props(st, win, l.*);
+                // Transitions (D29): the node's own opacity and transform
+                // changes animate on the compositor unless motion is
+                // reduced.
+                const owner_visual = if (l.kind == .node or l.kind == .root) win.node(l.owner).visual else null;
+                const ms: u32 = if (owner_visual) |v| (if (win.reducedMotion()) 0 else v.transition_ms) else 0;
+                const own_t = if (owner_visual) |v| v.transform else compositor.Transform.identity;
                 if (!l.transform.eql(p.transform)) {
-                    st.ops.appendAssumeCapacity(.{ .set_transform = .{ .layer = id(i), .transform = p.transform } });
+                    if (ms != 0 and l.props_sent and !own_t.eql(l.own_transform)) {
+                        st.ops.appendAssumeCapacity(.{ .animate = .{ .layer = id(i), .animation = transition(.{ .transform = p.transform }, ms) } });
+                    } else st.ops.appendAssumeCapacity(.{ .set_transform = .{ .layer = id(i), .transform = p.transform } });
                     l.transform = p.transform;
                 }
+                l.own_transform = own_t;
                 if (l.opacity != p.opacity) {
-                    st.ops.appendAssumeCapacity(.{ .set_opacity = .{ .layer = id(i), .opacity = p.opacity } });
+                    if (ms != 0 and l.props_sent) {
+                        st.ops.appendAssumeCapacity(.{ .animate = .{ .layer = id(i), .animation = transition(.{ .opacity = p.opacity }, ms) } });
+                    } else st.ops.appendAssumeCapacity(.{ .set_opacity = .{ .layer = id(i), .opacity = p.opacity } });
                     l.opacity = p.opacity;
                 }
+                l.props_sent = true;
                 if (!std.meta.eql(l.clip, p.clip)) {
                     st.ops.appendAssumeCapacity(.{ .set_clip = .{ .layer = id(i), .clip = p.clip } });
                     l.clip = p.clip;
@@ -673,6 +690,11 @@ pub const State = struct {
     }
 };
 
+/// A transition to `to` from whatever the layer shows.
+fn transition(to: compositor.Value, ms: u32) compositor.Animation {
+    return .{ .to = to, .duration_ns = @as(u64, ms) * std.time.ns_per_ms, .easing = .ease_out };
+}
+
 fn oom(err: scene.Error) Error {
     return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
@@ -758,15 +780,17 @@ fn drawNode(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point
     const radii = v.radius.physical(s.rtl);
     const rounded = !v.radius.isZero();
     var bounds = Rect.empty;
-    if (v.background.a > 0 and !r.isEmpty()) {
-        if (rounded) try b.fillRoundedRect(r, radii, .color(v.background)) else try b.fillRect(r, .color(v.background));
+    const background = win.palette.pick(v.background, v.background_token);
+    const border_color = win.palette.pick(v.border_color, v.border_token);
+    if (background.a > 0 and !r.isEmpty()) {
+        if (rounded) try b.fillRoundedRect(r, radii, .color(background)) else try b.fillRect(r, .color(background));
         bounds = bounds.unite(r);
     }
-    if (v.border_width > 0 and v.border_color.a > 0) {
+    if (v.border_width > 0 and border_color.a > 0) {
         const hw = v.border_width / 2;
         const inset: Rect = .{ .x0 = r.x0 + hw, .y0 = r.y0 + hw, .x1 = r.x1 - hw, .y1 = r.y1 - hw };
         if (!inset.isEmpty()) {
-            try b.stroke(.{ .rounded_rect = .{ .rect = inset, .radii = shrinkRadii(radii, hw) } }, .{ .width = v.border_width }, .color(v.border_color));
+            try b.stroke(.{ .rounded_rect = .{ .rect = inset, .radii = shrinkRadii(radii, hw) } }, .{ .width = v.border_width }, .color(border_color));
             bounds = bounds.unite(r);
         }
     }
@@ -834,21 +858,31 @@ fn drawEditor(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Poi
         for (rects.items) |r| {
             const line = l.lines[l.lineAt(r.y + r.height / 2)];
             const x = box.x0 - scroll + r.x + text_node.lineShift(win, nid, line, cw);
-            try b.fillRect(.xywh(x, box.y0 + r.y + r.height - 1.5, r.width, 1), .color(e.text.props.style.color));
+            try b.fillRect(.xywh(x, box.y0 + r.y + r.height - 1.5, r.width, 1), .color(textColor(win, &e.text.props.style)));
         }
     } else if (e.caret != e.anchor) {
         var rects: std.ArrayList(text.layout.Rect) = .empty;
         defer rects.deinit(win.gpa);
         try l.selectionRects(win.gpa, @min(e.caret, e.anchor), @max(e.caret, e.anchor), &rects);
-        const color = if (focused) selectionColor(win) else selection_color_unfocused;
+        const color = if (focused) win.palette.color(.selection_bg) else win.palette.color(.control_hover);
         for (rects.items) |r| {
             const line = l.lines[l.lineAt(r.y + r.height / 2)];
             const x = box.x0 - scroll + r.x + text_node.lineShift(win, nid, line, cw);
             try b.fillRect(.xywh(x, box.y0 + r.y, r.width, r.height), .color(color));
         }
     }
-    _ = try drawText(st, win, nid, b, off, -scroll);
+    if (e.text.content.len == 0 and e.placeholder.len != 0 and editor.preeditRange(win, nid) == null) {
+        _ = try drawPlaceholder(st, win, nid, b, box);
+    } else _ = try drawText(st, win, nid, b, off, -scroll);
     try b.popLayer();
+}
+
+/// An empty editor's placeholder, in the muted color, at the start edge.
+fn drawPlaceholder(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, box: Rect) DrawError!Rect {
+    const l = (text_node.placeholder(win, nid) catch return Rect.empty) orelse return Rect.empty;
+    const s = win.state(nid);
+    const dx = if (s.rtl) box.width() - l.width else 0;
+    return drawLayout(st, win, l, b, box.x0 + dx, box.y0, box.width(), win.palette.color(.muted_fg), null);
 }
 
 /// How many halves of a blink (visible to hidden or back) fit in the
@@ -862,26 +896,17 @@ fn blinkHalves(d: Window.Desktop) u32 {
 fn caretLook(win: *Window, nid: NodeId) struct { f32, scene.Color } {
     const l = text_node.current(win, nid) orelse return .{ 0, .transparent };
     const c = editor.caretRect(win, nid, l);
-    return .{ c.height(), win.node(nid).data.editor.text.props.style.color };
+    return .{ c.height(), textColor(win, &win.node(nid).data.editor.text.props.style) };
 }
 
-pub const selection_color = scene.Color.srgb8(0xbf, 0xdb, 0xfe, 0xff);
-pub const selection_color_unfocused = scene.Color.srgb8(0xe4, 0xe4, 0xe7, 0xff);
-
-fn accent(win: *const Window) ?scene.Color {
-    const a = win.desktop.accent_color orelse return null;
-    return .srgb(@floatCast(a[0]), @floatCast(a[1]), @floatCast(a[2]), 1);
+/// A text style's color, themed or literal (D29).
+pub fn textColor(win: *const Window, style: *const node_mod.TextStyle) scene.Color {
+    return win.palette.pick(style.color, style.color_token);
 }
 
-/// The desktop's accent, or the toolkit's blue.
+/// The theme's focus ring: the desktop's accent, or the toolkit's blue.
 fn focusRingColor(win: *const Window) scene.Color {
-    return accent(win) orelse focus_ring_color;
-}
-
-/// A focused selection: the accent as a tint over the background.
-fn selectionColor(win: *const Window) scene.Color {
-    const a = accent(win) orelse return selection_color;
-    return a.withAlpha(0.3);
+    return win.palette.color(.focus_ring);
 }
 
 fn drawText(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point, dx: f32) DrawError!Rect {
@@ -892,10 +917,15 @@ fn drawText(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point
     const content_w = s.size.w - pad.horizontal();
     const ox = off.x + pad.left(s.rtl) + dx;
     const oy = off.y + pad.top;
-    const color = n.textData().props.style.color;
+    return drawLayout(st, win, l, b, ox, oy, content_w, textColor(win, &n.textData().props.style), nid);
+}
+
+/// Draws a text layout's glyphs with its box's top left at (ox, oy).
+/// Lines are aligned like the node's when `nid` is given.
+fn drawLayout(st: *State, win: *Window, l: *const text.Layout, b: *scene.Builder, ox: f32, oy: f32, content_w: f32, color: scene.Color, nid: ?NodeId) DrawError!Rect {
     var bounds = Rect.empty;
     for (l.lines) |line| {
-        const shift = text_node.lineShift(win, nid, line, content_w);
+        const shift = if (nid) |n| text_node.lineShift(win, n, line, content_w) else 0;
         for (l.lineRuns(line)) |run| {
             const face = win.fonts.cache.face(run.font) orelse continue;
             st.glyphs.clearRetainingCapacity();

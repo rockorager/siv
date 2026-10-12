@@ -10,6 +10,10 @@ const text = @import("text");
 const compositor = @import("compositor");
 const Window = @import("Window.zig");
 const Image = @import("image.zig").Image;
+const theme = @import("theme.zig");
+
+pub const ColorToken = theme.ColorToken;
+pub const TextRole = theme.TextRole;
 
 pub const Point = raster.Point;
 pub const Rect = raster.Rect;
@@ -213,6 +217,16 @@ pub const Visual = struct {
     layer: bool = false,
     /// Whether pointer events can target the node.
     hit_test: bool = true,
+    /// Themed colors (D29) that replace `background` and `border_color`
+    /// when set, resolved at paint time.
+    background_token: ColorToken = .none,
+    border_token: ColorToken = .none,
+    /// The node and its subtree are not laid out, painted, hit, focused,
+    /// or in the semantics tree.
+    hidden: bool = false,
+    /// Changes to opacity and transform animate over this long on the
+    /// compositor (ease-out), unless motion is reduced.
+    transition_ms: u32 = 0,
 };
 
 /// Accessibility roles (D18). Every node has one; primitives default to
@@ -270,8 +284,9 @@ pub const Toggle = enum(u8) { unset, off, on, mixed };
 
 pub const Live = enum(u8) { off, polite, assertive };
 
-/// A numeric value (sliders, progress).
-pub const Range = struct { min: f64 = 0, max: f64 = 1, now: f64 = 0 };
+/// A numeric value (sliders, progress). `step` is the smallest change
+/// the widget makes, or 0 for any.
+pub const Range = struct { min: f64 = 0, max: f64 = 1, now: f64 = 0, step: f64 = 0 };
 
 /// What assistive technology sees, and keyboard behavior. Strings are
 /// copied.
@@ -293,6 +308,8 @@ pub const Semantics = struct {
     live: Live = .off,
     /// Heading level, or a tree item's depth (1 is the top); 0 for none.
     level: u8 = 0,
+    /// While shown, input and focus stay inside it (dialogs).
+    modal: bool = false,
 };
 
 pub const Axis = enum(u8) { row, column };
@@ -359,6 +376,11 @@ pub const TextStyle = struct {
     /// BCP 47 language for shaping and font fallback (D21); empty uses the
     /// window's.
     language: []const u8 = "",
+    /// A themed color (D29) replacing `color` when set.
+    color_token: ColorToken = .none,
+    /// A themed size relative to the desktop font, replacing `size` unless
+    /// `fixed`.
+    size_role: TextRole = .fixed,
 };
 
 pub const Text = struct {
@@ -454,6 +476,8 @@ pub const EditorData = struct {
     /// Masked: the real text, in locked memory. `text.content` holds the
     /// bullets that are shaped and displayed, and offsets index those.
     secret: []const u8 = "",
+    /// Shown, in the muted color, while the text is empty.
+    placeholder: []const u8 = "",
 };
 
 /// Stored text: content and style with interned family and language.
@@ -588,9 +612,14 @@ pub const Event = union(enum) {
     drop: Drop,
     /// A drag the node started progressed (not bubbled).
     drag: Drag,
+    /// Assistive technology asks for a new value of a node with a range
+    /// (delivered to the node only). The handler applies it, or not.
+    set_value: f64,
 };
 
-pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll, change, drop, drag };
+/// `select` is never sent by the tree: widgets built on the C API emit it
+/// (`siv_emit`).
+pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll, change, drop, drag, set_value, select };
 
 /// Runs at a safe point on the UI thread (D5). Returns true when it handled
 /// the event, which stops it bubbling and suppresses the default action.

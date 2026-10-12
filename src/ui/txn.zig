@@ -331,14 +331,32 @@ pub const Txn = struct {
         if (isLayerRoot(old) != isLayerRoot(n.visual) or old.clip != v.clip) win.markLayers();
         if (old.opacity != n.visual.opacity or !old.transform.eql(v.transform)) win.dirty.props = true;
         if (!std.meta.eql(old.background, v.background) or old.border_width != v.border_width or
-            !std.meta.eql(old.border_color, v.border_color) or !std.meta.eql(old.radius, v.radius) or old.clip != v.clip)
+            !std.meta.eql(old.border_color, v.border_color) or !std.meta.eql(old.radius, v.radius) or old.clip != v.clip or
+            old.background_token != v.background_token or old.border_token != v.border_token)
             win.markPaint(id);
         if (old.hit_test != v.hit_test) win.markLayers();
+        if (old.hidden != v.hidden) {
+            // Hidden subtrees take no space and paint nothing; what they
+            // painted is damaged now, since no layer visits them.
+            if (v.hidden) hideSubtree(win, id);
+            win.markLayout(id);
+            win.markSubtreeLayout(id);
+            win.markLayers();
+        }
+    }
+
+    fn hideSubtree(win: *Window, id: NodeId) void {
+        const s = win.state(id);
+        win.paint.damage(s.layer, s.bounds);
+        s.bounds = .empty;
+        s.paint_dirty = true;
+        var it = win.children(id);
+        while (it.next()) |c| hideSubtree(win, c);
     }
 
     pub fn setSemantics(t: *Txn, id: NodeId, sem: node_mod.Semantics) Error!void {
         const n = try t.live(id);
-        if (sem.value) |r| if (!(r.min <= r.max) or !std.math.isFinite(r.now)) return error.InvalidArgument;
+        if (sem.value) |r| if (!(r.min <= r.max) or !std.math.isFinite(r.now) or !(r.step >= 0) or !std.math.isFinite(r.step)) return error.InvalidArgument;
         if (!std.unicode.utf8ValidateSlice(sem.label) or !std.unicode.utf8ValidateSlice(sem.description)) return error.InvalidArgument;
         try t.reserve();
         const label = try t.own(u8, sem.label);
@@ -447,6 +465,21 @@ pub const Txn = struct {
         t.win.markLayout(id);
     }
 
+    /// Sets the text an empty editor shows in the muted color.
+    pub fn setPlaceholder(t: *Txn, id: NodeId, text: []const u8) Error!void {
+        const n = try t.data(id, .editor);
+        if (!std.unicode.utf8ValidateSlice(text) or std.mem.indexOfAny(u8, text, "\r\n") != null) return error.InvalidArgument;
+        const e = &n.data.editor;
+        if (std.mem.eql(u8, e.placeholder, text)) return;
+        try t.reserve();
+        const copy = try t.own(u8, text);
+        t.touch(id);
+        t.release(u8, e.placeholder);
+        e.placeholder = copy;
+        t.win.markShape(id);
+        t.win.dirty.semantics = true;
+    }
+
     /// Moves an editor's caret and selection anchor (byte offsets, snapped
     /// back to character boundaries). Repaints only.
     pub fn setSelection(t: *Txn, id: NodeId, caret: u32, anchor: u32, affinity: @import("text").layout.Affinity) Error!void {
@@ -483,7 +516,7 @@ pub const Txn = struct {
         d.language = language;
         const os = old.props.style;
         const ns = props.style;
-        if (old.family != family or old.language != language or os.size != ns.size or os.weight != ns.weight or os.slant != ns.slant) {
+        if (old.family != family or old.language != language or os.size != ns.size or os.weight != ns.weight or os.slant != ns.slant or os.size_role != ns.size_role) {
             t.win.markShape(id);
         } else if (old.props.wrap != props.wrap) {
             t.win.markLayout(id);

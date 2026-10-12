@@ -110,7 +110,14 @@ pub const State = struct {
 };
 
 pub fn canFocus(win: *const Window, id: NodeId) bool {
-    return win.isLive(id) and win.node(id).canFocus();
+    return win.isLive(id) and win.node(id).canFocus() and win.isShown(id);
+}
+
+/// The shown modal node input stays inside, or the root.
+pub fn modalRoot(win: *const Window) NodeId {
+    const m = win.modal;
+    if (m != .none and win.isLive(m) and win.node(m).semantics.modal and win.isShown(m)) return m;
+    return .root;
 }
 
 fn activatable(win: *const Window, id: NodeId) bool {
@@ -122,11 +129,16 @@ fn activatable(win: *const Window, id: NodeId) bool {
 
 /// The topmost hit-testable node at a window point, or none.
 pub fn hitTest(win: *const Window, p: Point) NodeId {
-    return hit(win, .root, p) orelse .none;
+    const h = hit(win, .root, p) orelse return .none;
+    // Outside a modal node, the pointer reaches nothing.
+    const m = modalRoot(win);
+    if (m != .root and !win.isAncestor(m, h)) return .none;
+    return h;
 }
 
 fn hit(win: *const Window, id: NodeId, parent_p: Point) ?NodeId {
     const n = win.node(id);
+    if (n.visual.hidden) return null;
     const s = win.state(id);
     var p: Point = .{ .x = parent_p.x - s.pos.x, .y = parent_p.y - s.pos.y };
     if (!n.visual.transform.eql(.identity)) {
@@ -213,6 +225,15 @@ pub fn activate(win: *Window, id: NodeId) void {
     _ = call(win, id, .activate, &.activate);
 }
 
+/// Asks a node with a range for a new value, as assistive technology
+/// does (D18). Returns whether a handler took it.
+pub fn setValue(win: *Window, id: NodeId, value: f64) bool {
+    if (!win.isLive(id) or !std.math.isFinite(value)) return false;
+    const n = win.node(id);
+    if (n.semantics.value == null or n.semantics.disabled) return false;
+    return call(win, id, .set_value, &.{ .set_value = value });
+}
+
 /// Moves keyboard focus (none clears it).
 pub fn setFocus(win: *Window, id: NodeId, visible: bool) void {
     const st = &win.input;
@@ -241,7 +262,7 @@ pub fn traverse(win: *Window, forward: bool) void {
     const a = win.scratch.allocator();
     defer _ = win.scratch.reset(.retain_capacity);
     var list: std.ArrayList(NodeId) = .empty;
-    collectFocusable(win, .root, a, &list) catch return;
+    collectFocusable(win, modalRoot(win), a, &list) catch return;
     if (list.items.len == 0) return;
     const cur = std.mem.indexOfScalar(NodeId, list.items, win.input.focus);
     const next: usize = if (cur) |i|
@@ -252,7 +273,7 @@ pub fn traverse(win: *Window, forward: bool) void {
 
 fn collectFocusable(win: *const Window, id: NodeId, a: std.mem.Allocator, out: *std.ArrayList(NodeId)) !void {
     if (canFocus(win, id)) try out.append(a, id);
-    var it = win.children(id);
+    var it = win.shown(id);
     while (it.next()) |c| try collectFocusable(win, c, a, out);
 }
 

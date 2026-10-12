@@ -217,11 +217,11 @@ pub fn maxContent(win: *Window, id: NodeId) Error!f32 {
         var content: f32 = 0;
         switch (n.kind) {
             .box, .scroll => {
-                var it = win.children(id);
+                var it = win.shown(id);
                 while (it.next()) |ch| content = @max(content, try maxContent(win, ch));
             },
             .stack => {
-                var it = win.children(id);
+                var it = win.shown(id);
                 while (it.next()) |ch| {
                     const in = win.node(ch).layout.inset;
                     content = @max(content, try maxContent(win, ch) + (in.start orelse 0) + (in.end orelse 0));
@@ -229,7 +229,7 @@ pub fn maxContent(win: *Window, id: NodeId) Error!f32 {
             },
             .flex => {
                 const f = n.data.flex;
-                var it = win.children(id);
+                var it = win.shown(id);
                 var count: f32 = 0;
                 while (it.next()) |ch| {
                     const m = try maxContent(win, ch);
@@ -258,7 +258,7 @@ pub fn maxContent(win: *Window, id: NodeId) Error!f32 {
 fn fitWidth(win: *Window, id: NodeId, inner: Constraints) Error!f32 {
     if (inner.tightW()) return inner.max_w;
     var w: f32 = 0;
-    var it = win.children(id);
+    var it = win.shown(id);
     while (it.next()) |ch| w = @max(w, try maxContent(win, ch));
     return inner.clampW(w);
 }
@@ -311,7 +311,7 @@ fn block(win: *Window, id: NodeId, inner: Constraints, origin: Point) Error!Size
 /// Children stacked vertically in width `cw`; returns their height.
 fn stackBlock(win: *Window, id: NodeId, cw: f32, rtl: bool, origin: Point) Error!f32 {
     var y: f32 = 0;
-    var it = win.children(id);
+    var it = win.shown(id);
     while (it.next()) |ch| {
         const a = resolveAlign(win.node(ch).layout.align_x, .stretch);
         const sz = try place(win, ch, widthFor(win, ch, a, cw));
@@ -331,7 +331,7 @@ fn scroll(win: *Window, id: NodeId, inner: Constraints) Error!Size {
     const vw = try fitWidth(win, id, inner);
     var content_w = vw;
     if (axis != .vertical) {
-        var it = win.children(id);
+        var it = win.shown(id);
         while (it.next()) |ch| content_w = @max(content_w, try maxContent(win, ch));
     }
     const h = try stackBlock(win, id, content_w, s.rtl, .zero);
@@ -361,7 +361,7 @@ fn flex(win: *Window, id: NodeId, inner: Constraints, origin: Point) Error!Size 
     const a = win.scratch.allocator();
 
     var count: usize = 0;
-    var it = win.children(id);
+    var it = win.shown(id);
     while (it.next()) |_| count += 1;
     const items = try a.alloc(FlexItem, count);
 
@@ -372,7 +372,7 @@ fn flex(win: *Window, id: NodeId, inner: Constraints, origin: Point) Error!Size 
     const column_w: f32 = if (row) 0 else try fitWidth(win, id, inner);
 
     // Base sizes.
-    it = win.children(id);
+    it = win.shown(id);
     var i: usize = 0;
     while (it.next()) |ch| : (i += 1) {
         const l = win.node(ch).layout;
@@ -512,13 +512,13 @@ fn placeItems(win: *Window, id: NodeId) Error!struct { items: []GridItem, cols: 
     const g = win.node(id).data.grid;
     const a = win.scratch.allocator();
     var count: usize = 0;
-    var it = win.children(id);
+    var it = win.shown(id);
     while (it.next()) |_| count += 1;
     const items = try a.alloc(GridItem, count);
     var cols: usize = @max(g.columns.len, 1);
     var rows: usize = g.rows.len;
     var occupied: std.AutoHashMapUnmanaged(u32, void) = .empty;
-    it = win.children(id);
+    it = win.shown(id);
     var i: usize = 0;
     while (it.next()) |ch| : (i += 1) {
         const l = win.node(ch).layout;
@@ -721,7 +721,7 @@ fn stack(win: *Window, id: NodeId, inner: Constraints, origin: Point) Error!Size
     var cw: f32 = inner.max_w;
     if (!inner.tightW()) {
         var w: f32 = 0;
-        var it = win.children(id);
+        var it = win.shown(id);
         while (it.next()) |ch| if (!win.node(ch).layout.inset.any()) {
             w = @max(w, try maxContent(win, ch));
         };
@@ -729,7 +729,7 @@ fn stack(win: *Window, id: NodeId, inner: Constraints, origin: Point) Error!Size
     }
     // Flowing children decide the height.
     var ch_h: f32 = 0;
-    var it = win.children(id);
+    var it = win.shown(id);
     while (it.next()) |ch| {
         const l = win.node(ch).layout;
         if (l.inset.any()) continue;
@@ -739,7 +739,7 @@ fn stack(win: *Window, id: NodeId, inner: Constraints, origin: Point) Error!Size
         ch_h = @max(ch_h, (try place(win, ch, c)).h);
     }
     const height = inner.clampH(ch_h);
-    it = win.children(id);
+    it = win.shown(id);
     while (it.next()) |ch| {
         const l = win.node(ch).layout;
         const in = l.inset;

@@ -69,6 +69,10 @@ pub const DragActions = node.DragActions;
 
 pub const Window = @import("Window.zig");
 pub const Desktop = Window.Desktop;
+pub const theme = @import("theme.zig");
+pub const ColorToken = theme.ColorToken;
+pub const TextRole = theme.TextRole;
+pub const Theme = theme.Theme;
 pub const Txn = @import("txn.zig").Txn;
 pub const TxnError = @import("txn.zig").Error;
 pub const Fonts = @import("fonts.zig");

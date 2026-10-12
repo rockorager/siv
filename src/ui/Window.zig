@@ -33,6 +33,7 @@ const secret = @import("secret.zig");
 const ime_mod = @import("ime.zig");
 pub const Clipboard = @import("clipboard.zig");
 const dnd_mod = @import("dnd.zig");
+pub const theme = @import("theme.zig");
 
 const Window = @This();
 
@@ -61,6 +62,12 @@ histories: std.AutoHashMapUnmanaged(NodeId, editor_mod.History) = .empty,
 force_reduced_motion: bool = false,
 /// Desktop settings (D19), from `setDesktop`.
 desktop: Desktop = .{},
+/// The application's theme choices (D29), from `setTheme`.
+theme_choice: theme.Theme = .{},
+/// Themed colors and sizes, resolved from `desktop` and `theme_choice`.
+palette: theme.Palette = .{},
+/// The last shown modal node, from the last semantics rebuild.
+modal: NodeId = .none,
 /// The application's clipboard, if it has one.
 clipboard: ?*Clipboard = null,
 /// Drag-and-drop requests; without them drags neither start nor drop.
@@ -122,6 +129,7 @@ pub const Options = struct {
     /// No caret blinking or other motion, whatever `desktop` says.
     reduced_motion: bool = false,
     desktop: Desktop = .{},
+    theme: theme.Theme = .{},
     clipboard: ?*Clipboard = null,
     /// Drag and drop (`dnd.CompositorHost`); needs `clipboard` too.
     drag: ?dnd_mod.Host = null,
@@ -145,6 +153,18 @@ pub const Desktop = struct {
     cursor_blink_ms: u32 = 1200,
     /// The caret stops blinking, visible, this long after it last moved.
     cursor_blink_timeout_s: u32 = 10,
+    /// The theme's scheme and contrast follow these (D29).
+    color_scheme: ColorScheme = .no_preference,
+    contrast: Contrast = .normal,
+    /// The UI font's size in points; themed text sizes follow it.
+    font_size: f64 = 11,
+
+    pub const ColorScheme = enum { no_preference, dark, light };
+    pub const Contrast = enum { normal, high };
+
+    pub fn themeInput(d: Desktop) theme.DesktopInput {
+        return .{ .dark = d.color_scheme == .dark, .high_contrast = d.contrast == .high, .accent = d.accent_color, .font_pt = d.font_size };
+    }
 };
 
 /// Window-wide work outstanding for the next frame.
@@ -224,6 +244,8 @@ pub fn init(gpa: std.mem.Allocator, options: Options) Error!*Window {
         .rtl = options.rtl,
         .force_reduced_motion = options.reduced_motion,
         .desktop = options.desktop,
+        .theme_choice = options.theme,
+        .palette = theme.resolve(&options.theme, options.desktop.themeInput()),
         .clipboard = options.clipboard,
         .drag_host = options.drag,
         .sink = options.sink,
@@ -285,6 +307,7 @@ pub fn freeNodeData(gpa: std.mem.Allocator, n: *const Node) void {
         .text => |t| gpa.free(t.content),
         .editor => |e| {
             gpa.free(e.text.content);
+            gpa.free(e.placeholder);
             secret.free(e.secret);
         },
         .grid => |g| {
@@ -326,6 +349,36 @@ pub const Children = struct {
 
 pub fn children(win: *const Window, id: NodeId) Children {
     return .{ .win = win, .cur = win.node(id).first };
+}
+
+/// Children that are not hidden: what layout, painting, hit testing,
+/// focus, and semantics see.
+pub const Shown = struct {
+    win: *const Window,
+    cur: NodeId,
+
+    pub fn next(it: *Shown) ?NodeId {
+        while (it.cur != .none) {
+            const id = it.cur;
+            const n = it.win.node(id);
+            it.cur = n.next;
+            if (!n.visual.hidden) return id;
+        }
+        return null;
+    }
+};
+
+pub fn shown(win: *const Window, id: NodeId) Shown {
+    return .{ .win = win, .cur = win.node(id).first };
+}
+
+/// Whether neither the node nor an ancestor is hidden.
+pub fn isShown(win: *const Window, id: NodeId) bool {
+    var cur = id;
+    while (cur != .none) : (cur = win.node(cur).parent) {
+        if (win.node(cur).visual.hidden) return false;
+    }
+    return true;
 }
 
 pub fn isAncestor(win: *const Window, ancestor: NodeId, id: NodeId) bool {
@@ -752,7 +805,7 @@ pub fn secretOf(win: *const Window, id: NodeId) []const u8 {
 }
 
 /// Applies new desktop settings: text reshapes if its scale changed,
-/// carets restart their blink, and accent changes repaint.
+/// carets restart their blink, and theme changes repaint (D29).
 pub fn setDesktop(win: *Window, d: Desktop) void {
     const old = win.desktop;
     if (std.meta.eql(old, d)) return;
@@ -761,10 +814,39 @@ pub fn setDesktop(win: *Window, d: Desktop) void {
     if (win.desktop.text_scale != old.text_scale) {
         for (win.nodes.items, 0..) |n, i| if (n.status == .live and n.isText()) win.markShape(@enumFromInt(i));
     }
-    if (!std.meta.eql(old.accent_color, d.accent_color)) win.paint.repaintAll();
+    win.applyPalette();
     win.paint.restartBlink();
     win.dirty.props = true;
     win.requestFrame();
+}
+
+/// Applies the application's theme choices (D29).
+pub fn setTheme(win: *Window, t: *const theme.Theme) void {
+    win.theme_choice = t.*;
+    win.applyPalette();
+    win.requestFrame();
+}
+
+/// Resolves the palette again: changed colors repaint every layer and
+/// redraw canvases; a changed body size reshapes text with a size role.
+fn applyPalette(win: *Window) void {
+    const p = theme.resolve(&win.theme_choice, win.desktop.themeInput());
+    const old = win.palette;
+    win.palette = p;
+    const colors = !p.eqlColors(&old);
+    const size = p.body_px != old.body_px;
+    if (!colors and !size) return;
+    if (colors) win.paint.repaintAll();
+    for (win.nodes.items, 0..) |n, i| {
+        if (n.status != .live) continue;
+        const id: NodeId = @enumFromInt(i);
+        if (n.kind == .canvas) {
+            // Canvases draw themed colors and measure themed text.
+            if (size) win.markLayout(id);
+            win.markPaint(id);
+        }
+        if (size and n.isText() and n.textData().props.style.size_role != .fixed) win.markShape(id);
+    }
 }
 
 /// Whether motion (caret blinking, animations) is off.

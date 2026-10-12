@@ -47,6 +47,10 @@ pub const Node = struct {
     masked: bool = false,
     /// Heading level, or a tree item's depth (1 is the top); 0 for none.
     level: u8 = 0,
+    /// Input stays inside it while it is shown (dialogs).
+    modal: bool = false,
+    /// An empty editor's placeholder text.
+    placeholder: []const u8 = "",
 };
 
 pub const Tree = struct {
@@ -99,6 +103,7 @@ pub const Tree = struct {
         t.nodes.clearRetainingCapacity();
         t.names.clearRetainingCapacity();
         t.generation += 1;
+        win.modal = .none;
         try t.visit(win, .root, none);
     }
 
@@ -106,6 +111,7 @@ pub const Tree = struct {
         const n = win.node(id);
         const sem = n.semantics;
         const role = n.role();
+        if (sem.modal) win.modal = id;
         const included = switch (role) {
             .none => false,
             .generic => sem.label.len != 0 or sem.focusable,
@@ -150,16 +156,18 @@ pub const Tree = struct {
                 .anchor = if (editor) n.data.editor.anchor else null,
                 .masked = n.kind == .editor and n.data.editor.editor.masked,
                 .level = sem.level,
+                .modal = sem.modal,
+                .placeholder = if (n.kind == .editor) n.data.editor.placeholder else "",
             });
         }
-        var it = win.children(id);
+        var it = win.shown(id);
         while (it.next()) |c| try t.visit(win, c, me);
         if (included) t.nodes.items[me].end = @intCast(t.nodes.items.len);
     }
 
     /// Descendant text, space-separated: the name of a button or link.
     fn contentText(t: *Tree, win: *Window, id: NodeId, name_start: usize) Window.Error!void {
-        var it = win.children(id);
+        var it = win.shown(id);
         while (it.next()) |c| {
             const n = win.node(c);
             if (n.role() == .none) continue;

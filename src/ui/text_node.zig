@@ -18,11 +18,22 @@ pub const Cache = struct {
     layout_width: ?f32 = null,
     /// `Fonts.serial` when the paragraph was shaped.
     serial: u32 = 0,
+    /// An editor's placeholder, shaped in the same style, unwrapped.
+    placeholder: ?struct { paragraph: text.ShapedParagraph, layout: text.Layout } = null,
 
     pub fn destroy(c: *Cache, gpa: std.mem.Allocator) void {
         if (c.layout) |*l| l.deinit();
         if (c.paragraph) |*p| p.deinit();
+        c.dropPlaceholder();
         gpa.destroy(c);
+    }
+
+    fn dropPlaceholder(c: *Cache) void {
+        if (c.placeholder) |*ph| {
+            ph.layout.deinit();
+            ph.paragraph.deinit();
+        }
+        c.placeholder = null;
     }
 
     /// The paragraph wanted fonts and some font finished loading since.
@@ -58,16 +69,10 @@ fn shape(win: *Window, id: NodeId) error{OutOfMemory}!*Cache {
     const chain = try fonts.chain(.{ .family = d.family, .language = language, .weight = style.weight, .slant = style.slant });
     const n = win.node(id);
     const content = if (n.kind == .editor) try @import("editor.zig").displayText(win, id, win.scratch.allocator()) else d.content;
-    var p = text.ShapedParagraph.init(win.gpa, win.scratch.allocator(), &fonts.cache, content, &.{.{
-        .end = @intCast(content.len),
-        .style = .{ .fonts = chain, .size = style.size * @as(f32, @floatCast(win.desktop.text_scale)), .language = if (fonts.name(language).len == 0) "und" else fonts.name(language) },
-    }}, if (s.rtl) .auto_rtl else .auto_ltr) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        // Validated when the text was set.
-        error.InvalidUtf8, error.TextTooLong, error.InvalidStyles => unreachable,
-    };
+    var p = try shapeString(win, id, chain, content);
     errdefer p.deinit();
     c.dropLayout();
+    c.dropPlaceholder();
     if (c.paragraph) |*old| old.deinit();
     c.paragraph = p;
     c.serial = fonts.serial;
@@ -75,6 +80,47 @@ fn shape(win: *Window, id: NodeId) error{OutOfMemory}!*Cache {
     win.stats.shapes += 1;
     if (p.wanted.len != 0) fonts.request(p.wanted);
     return c;
+}
+
+fn shapeString(win: *Window, id: NodeId, chain: []const text.FontId, content: []const u8) error{OutOfMemory}!text.ShapedParagraph {
+    const d = win.node(id).textData();
+    const fonts = win.fonts;
+    const style = d.props.style;
+    const language = if (d.language != 0) d.language else win.language;
+    const size = win.palette.textSize(style.size, style.size_role) * @as(f32, @floatCast(win.desktop.text_scale));
+    return text.ShapedParagraph.init(win.gpa, win.scratch.allocator(), &fonts.cache, content, &.{.{
+        .end = @intCast(content.len),
+        .style = .{ .fonts = chain, .size = size, .language = if (fonts.name(language).len == 0) "und" else fonts.name(language) },
+    }}, if (win.state(id).rtl) .auto_rtl else .auto_ltr) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        // Validated when the text was set.
+        error.InvalidUtf8, error.TextTooLong, error.InvalidStyles => unreachable,
+    };
+}
+
+/// An editor's placeholder, laid out on one line, after layout shaped the
+/// editor's own text.
+pub fn placeholder(win: *Window, id: NodeId) error{OutOfMemory}!?*const text.Layout {
+    const c = win.state(id).text orelse return null;
+    if (c.placeholder) |*ph| return &ph.layout;
+    const n = win.node(id);
+    const d = n.textData();
+    const style = d.props.style;
+    const language = if (d.language != 0) d.language else win.language;
+    const chain = try win.fonts.chain(.{ .family = d.family, .language = language, .weight = style.weight, .slant = style.slant });
+    // The layout points at the paragraph, so it goes in place first.
+    c.placeholder = .{ .paragraph = try shapeString(win, id, chain, n.data.editor.placeholder), .layout = undefined };
+    const ph = &c.placeholder.?;
+    if (ph.paragraph.wanted.len != 0) win.fonts.request(ph.paragraph.wanted);
+    ph.layout = text.Layout.init(win.gpa, win.scratch.allocator(), &win.fonts.cache, &ph.paragraph, .{ .alignment = .start }) catch |err| {
+        ph.paragraph.deinit();
+        c.placeholder = null;
+        return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => unreachable,
+        };
+    };
+    return &ph.layout;
 }
 
 /// A layout that is valid for `width` (null: unwrapped). A layout built
