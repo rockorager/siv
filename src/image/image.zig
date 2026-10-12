@@ -60,6 +60,9 @@ pub const Options = struct {
     max_bytes: usize = 256 << 20,
     /// Decode only the first frame of an animation.
     first_frame: bool = false,
+    /// Always produce `rgba16_linear_premul`, also for 8-bit sRGB images
+    /// at their own size.
+    linear: bool = false,
 };
 
 pub const Error = error{
@@ -315,7 +318,7 @@ pub fn decode(gpa: Allocator, bytes: []const u8, options: Options) Error!Image {
     if (src.width == 0 or src.height == 0) return error.InvalidImage;
     if (@as(u64, src.width) * src.height > options.max_pixels) return error.TooLarge;
 
-    var conv = try Converter.init(gpa, src, fitSize(src.width, src.height, options.max_width, options.max_height));
+    var conv = try Converter.init(gpa, src, fitSize(src.width, src.height, options.max_width, options.max_height), options.linear);
     defer conv.deinit(gpa);
 
     const src_bpp: usize = if (src.depth == .rgba8) 4 else 8;
@@ -380,7 +383,7 @@ const Converter = struct {
     hrow: []f32 = &.{},
     acc: []f32 = &.{},
 
-    fn init(gpa: Allocator, src: Source, size: [2]u32) Error!Converter {
+    fn init(gpa: Allocator, src: Source, size: [2]u32, linear: bool) Error!Converter {
         var conv: Converter = .{
             .sw = src.width,
             .sh = src.height,
@@ -410,7 +413,7 @@ const Converter = struct {
             if ((p.primaries == 1 or p.primaries == 2) and p.transfer == 13) color = .srgb;
         }
         const scaled = conv.dw != conv.sw or conv.dh != conv.sh;
-        if (color == .srgb and src.depth == .rgba8 and !scaled) {
+        if (color == .srgb and src.depth == .rgba8 and !scaled and !linear) {
             conv.format = .rgba8_srgb;
             return conv;
         }
