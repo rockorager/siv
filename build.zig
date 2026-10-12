@@ -53,8 +53,10 @@ pub fn build(b: *std.Build) void {
 
     // siv modules. Imports between them are the allowed dependency edges;
     // see AGENTS.md before adding one.
-    const scene = ctx.module("src/scene/scene.zig", &.{});
     const raster = ctx.module("src/raster/raster.zig", &.{});
+    const scene = ctx.module("src/scene/scene.zig", &.{
+        .{ .name = "raster", .module = raster },
+    });
     const text = ctx.module("src/text/text.zig", &.{
         .{ .name = "raster", .module = raster },
         .{ .name = "harfbuzz", .module = harfbuzz },
