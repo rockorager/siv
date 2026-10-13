@@ -99,6 +99,10 @@ pub const Options = struct {
     /// for the whole paragraph, evening out their fill, instead of
     /// greedily.
     optimal: bool = false,
+    /// Whether text ending with a hard break gets the empty line after it.
+    /// A block of a longer text (`blocks.zig`) other than the last has
+    /// none: the next block's first line follows.
+    final_line: bool = true,
 };
 
 /// A glyph positioned relative to its line's origin: x from the line's
@@ -225,6 +229,7 @@ pub const Layout = struct {
         break_words: bool = false,
         hyphenate: bool = false,
         optimal: bool = true,
+        final_line: bool = true,
         tab_stops: []const TabStop = &.{},
         /// One per bidi paragraph, plus the line after a final break.
         styles: []const ParagraphStyle = &.{},
@@ -256,16 +261,39 @@ pub const Layout = struct {
             .break_words = options.break_words,
             .hyphenation = if (options.hyphenate) options.hyphenation else null,
             .tabs = std.mem.indexOfScalar(u8, paragraph.text, '\t') != null,
+            .final_line = options.final_line,
         };
         defer builder.shaper.deinit();
         if (options.optimal and options.width != null) try builder.breakOptimal() else try builder.breakLines();
-        self.lines = builder.lines.items;
-        self.runs = builder.runs.items;
-        self.glyphs = builder.glyphs.items;
-        self.carets = builder.carets.items;
         builder.position(options);
+        try self.keep(&builder);
+        errdefer self.freeArrays();
         try self.finish(options, builder.styles);
         return self;
+    }
+
+    /// Copies the builder's lists out at their exact sizes, outside the
+    /// arena: an arena grows by half again what it holds, which left more
+    /// than half of a long text's memory unused. `deinit` frees them.
+    fn keep(self: *Layout, builder: *const Builder) !void {
+        const gpa = self.arena.child_allocator;
+        errdefer self.freeArrays();
+        self.lines = try gpa.dupe(Line, builder.lines.items);
+        self.runs = try gpa.dupe(GlyphRun, builder.runs.items);
+        self.glyphs = try gpa.dupe(PositionedGlyph, builder.glyphs.items);
+        self.carets = try gpa.dupe(Caret, builder.carets.items);
+    }
+
+    fn freeArrays(self: *Layout) void {
+        const gpa = self.arena.child_allocator;
+        gpa.free(self.lines);
+        gpa.free(self.runs);
+        gpa.free(self.glyphs);
+        gpa.free(self.carets);
+        self.lines = &.{};
+        self.runs = &.{};
+        self.glyphs = &.{};
+        self.carets = &.{};
     }
 
     /// Width, height, and what the layout was built with.
@@ -282,6 +310,7 @@ pub const Layout = struct {
             .break_words = options.break_words,
             .hyphenate = options.hyphenate,
             .optimal = options.optimal,
+            .final_line = options.final_line,
             .tab_stops = try a.dupe(TabStop, options.tab_stops),
             .styles = try a.dupe(ParagraphStyle, styles),
         };
@@ -303,7 +332,7 @@ pub const Layout = struct {
         if (!std.math.isFinite(width) or width < 0) return error.InvalidWidth;
         const b = old.built;
         if (old.paragraph.text.len != r.old_len or old.paragraph.paragraphs.len != r.old_paragraphs or options.optimal or b.optimal or
-            b.width != width or b.alignment != options.alignment or b.break_words != options.break_words or b.hyphenate != options.hyphenate or
+            b.final_line != options.final_line or b.width != width or b.alignment != options.alignment or b.break_words != options.break_words or b.hyphenate != options.hyphenate or
             b.tab_stops.len != options.tab_stops.len)
             return init(gpa, scratch, cache, paragraph, options);
         for (b.tab_stops, options.tab_stops) |x, y| if (!std.meta.eql(x, y)) return init(gpa, scratch, cache, paragraph, options);
@@ -327,9 +356,9 @@ pub const Layout = struct {
             .break_words = options.break_words,
             .hyphenation = if (options.hyphenate) options.hyphenation else null,
             .tabs = std.mem.indexOfScalar(u8, paragraph.text, '\t') != null,
+            .final_line = options.final_line,
         };
         defer builder.shaper.deinit();
-        const a = builder.a;
 
         // The kept lines at each end, and where their arrays start.
         var head: usize = 0;
@@ -345,10 +374,11 @@ pub const Layout = struct {
         }.at;
         const head_end = runEnd(old, head);
         const tail_start = runEnd(old, tail);
-        try builder.lines.appendSlice(a, old.lines[0..head]);
-        try builder.runs.appendSlice(a, old.runs[0..head_end[0]]);
-        try builder.glyphs.appendSlice(a, old.glyphs[0..head_end[1]]);
-        try builder.carets.appendSlice(a, old.carets[0..head_end[2]]);
+        const lists = builder.scratch;
+        try builder.lines.appendSlice(lists, old.lines[0..head]);
+        try builder.runs.appendSlice(lists, old.runs[0..head_end[0]]);
+        try builder.glyphs.appendSlice(lists, old.glyphs[0..head_end[1]]);
+        try builder.carets.appendSlice(lists, old.carets[0..head_end[2]]);
 
         // The redone paragraphs.
         const segments = paragraph.segments;
@@ -379,7 +409,7 @@ pub const Layout = struct {
             l.run_end = shift(l.run_end, dr);
             l.caret_start = shift(l.caret_start, dc);
             l.caret_end = shift(l.caret_end, dc);
-            try builder.lines.append(a, l);
+            try builder.lines.append(lists, l);
         }
         for (old.runs[tail_start[0]..]) |run| {
             var x = run;
@@ -387,21 +417,21 @@ pub const Layout = struct {
             x.end = shift(x.end, delta);
             x.glyph_start = shift(x.glyph_start, dg);
             x.glyph_end = shift(x.glyph_end, dg);
-            try builder.runs.append(a, x);
+            try builder.runs.append(lists, x);
         }
-        try builder.glyphs.ensureUnusedCapacity(a, old.glyphs.len - tail_start[1]);
+        try builder.glyphs.ensureUnusedCapacity(lists, old.glyphs.len - tail_start[1]);
         for (old.glyphs[tail_start[1]..]) |g| {
             var x = g;
             x.cluster = shift(x.cluster, delta);
             builder.glyphs.appendAssumeCapacity(x);
         }
-        try builder.carets.ensureUnusedCapacity(a, old.carets.len - tail_start[2]);
+        try builder.carets.ensureUnusedCapacity(lists, old.carets.len - tail_start[2]);
         for (old.carets[tail_start[2]..]) |c| {
             var x = c;
             x.offset = shift(x.offset, delta);
             builder.carets.appendAssumeCapacity(x);
         }
-        if (r.new_end == paragraph.text.len and builder.endsWithBreak()) {
+        if (r.new_end == paragraph.text.len and builder.final_line and builder.endsWithBreak()) {
             const len: u32 = @intCast(paragraph.text.len);
             try builder.emitLine(len, len, &.{}, builder.frame(len), null);
         }
@@ -430,15 +460,14 @@ pub const Layout = struct {
             // Only the line after a final break followed.
             _ = builder.positionRange(options, mid_end, builder.lines.items.len, place);
         }
-        self.lines = builder.lines.items;
-        self.runs = builder.runs.items;
-        self.glyphs = builder.glyphs.items;
-        self.carets = builder.carets.items;
+        try self.keep(&builder);
+        errdefer self.freeArrays();
         try self.finish(options, styles);
         return self;
     }
 
     pub fn deinit(self: *Layout) void {
+        self.freeArrays();
         self.arena.deinit();
         self.* = undefined;
     }
@@ -468,6 +497,7 @@ pub const Layout = struct {
     pub const moveVertical = cursor.moveVertical;
     pub const selectionRects = cursor.selectionRects;
     pub const lineAt = cursor.lineAt;
+    pub const lineEdge = cursor.lineEdge;
 };
 
 /// A contiguous part of one shaped run on a line, with its glyphs (the
@@ -494,6 +524,11 @@ const Builder = struct {
     hyphenation: ?*hyphen_.Hyphenation,
     /// The text has a tab, so segments need measuring where they fall.
     tabs: bool,
+    /// `Options.final_line`.
+    final_line: bool = true,
+    /// The lists below grow in scratch memory and are copied into the
+    /// layout's arena at their final size: grown in the arena, every
+    /// outgrown buffer stayed (about half the memory of a long text).
     lines: std.ArrayList(Line) = .empty,
     runs: std.ArrayList(GlyphRun) = .empty,
     glyphs: std.ArrayList(PositionedGlyph) = .empty,
@@ -647,7 +682,7 @@ const Builder = struct {
     fn breakLines(self: *Builder) !void {
         try self.breakRange(0, self.p.segments.len, 0);
         // The position after a final hard break, and empty text, need a line.
-        if (self.lines.items.len == 0 or self.endsWithBreak()) {
+        if (self.lines.items.len == 0 or (self.final_line and self.endsWithBreak())) {
             const len: u32 = @intCast(self.p.text.len);
             try self.emitLine(len, len, &.{}, self.frame(len), null);
         }
@@ -949,7 +984,7 @@ const Builder = struct {
             try self.emitLine(start, end, pieces, f, c[b].hyphen);
             a = b;
         }
-        if (self.lines.items.len == 0 or self.endsWithBreak()) {
+        if (self.lines.items.len == 0 or (self.final_line and self.endsWithBreak())) {
             const len: u32 = @intCast(p.text.len);
             try self.emitLine(len, len, &.{}, self.frame(len), null);
         }
@@ -1084,7 +1119,7 @@ const Builder = struct {
             const part_x = pen;
             const glyph_start: u32 = @intCast(self.glyphs.items.len);
             for (part.glyphs) |glyph| {
-                try self.glyphs.append(self.a, .{ .id = glyph.id, .x = pen + glyph.x_offset, .y = glyph.y_offset, .advance = glyph.advance, .cluster = glyph.cluster });
+                try self.glyphs.append(self.scratch, .{ .id = glyph.id, .x = pen + glyph.x_offset, .y = glyph.y_offset, .advance = glyph.advance, .cluster = glyph.cluster });
                 pen += glyph.advance;
             }
             try self.appendCarets(part, run, face, style.size, part_x);
@@ -1100,7 +1135,7 @@ const Builder = struct {
                 }
             }
             if (part.glyphs.len == 0) continue;
-            try self.runs.append(self.a, .{
+            try self.runs.append(self.scratch, .{
                 .font = run.font,
                 .size = style.size,
                 .style = run.style,
@@ -1111,12 +1146,12 @@ const Builder = struct {
                 .glyph_end = @intCast(self.glyphs.items.len),
             });
         }
-        if (self.carets.items.len == caret_start) try self.carets.append(self.a, .{ .offset = start, .x = 0, .affinity = .downstream });
+        if (self.carets.items.len == caret_start) try self.carets.append(self.scratch, .{ .offset = start, .x = 0, .affinity = .downstream });
         if (hyphen) |hy| {
             // At the visual end of the (left-to-right) line, after its
             // last caret stop: it is shown, not text.
             const at: u32 = @intCast(self.glyphs.items.len);
-            try self.glyphs.append(self.a, .{ .id = hy.id, .x = pen, .y = 0, .advance = hy.advance, .cluster = hy.cluster });
+            try self.glyphs.append(self.scratch, .{ .id = hy.id, .x = pen, .y = 0, .advance = hy.advance, .cluster = hy.cluster });
             pen += hy.advance;
             const merge = self.runs.items.len > run_start and blk: {
                 const last = self.runs.items[self.runs.items.len - 1];
@@ -1125,7 +1160,7 @@ const Builder = struct {
             if (merge) {
                 self.runs.items[self.runs.items.len - 1].glyph_end = at + 1;
             } else {
-                try self.runs.append(self.a, .{ .font = hy.font, .size = hy.size, .style = hy.style, .start = hy.cluster, .end = end, .rtl = false, .glyph_start = at, .glyph_end = at + 1 });
+                try self.runs.append(self.scratch, .{ .font = hy.font, .size = hy.size, .style = hy.style, .start = hy.cluster, .end = end, .rtl = false, .glyph_start = at, .glyph_end = at + 1 });
             }
         }
 
@@ -1135,7 +1170,7 @@ const Builder = struct {
         for (self.glyphs.items[glyph_start_line..]) |glyph| {
             if (glyph.cluster >= hang) hanging += glyph.advance;
         }
-        try self.lines.append(self.a, .{
+        try self.lines.append(self.scratch, .{
             .start = start,
             .end = end,
             .paragraph = paragraph_index,
@@ -1222,11 +1257,11 @@ const Builder = struct {
                 const g_start = nthBoundary(graphemes, group_start, logical);
                 const g_end = @min(graphemes.after(g_start) orelse group_end, group_end);
                 if (rtl) {
-                    try self.carets.append(self.a, .{ .offset = g_end, .x = edge_left, .affinity = .upstream });
-                    try self.carets.append(self.a, .{ .offset = g_start, .x = edge_right, .affinity = .downstream });
+                    try self.carets.append(self.scratch, .{ .offset = g_end, .x = edge_left, .affinity = .upstream });
+                    try self.carets.append(self.scratch, .{ .offset = g_start, .x = edge_right, .affinity = .downstream });
                 } else {
-                    try self.carets.append(self.a, .{ .offset = g_start, .x = edge_left, .affinity = .downstream });
-                    try self.carets.append(self.a, .{ .offset = g_end, .x = edge_right, .affinity = .upstream });
+                    try self.carets.append(self.scratch, .{ .offset = g_start, .x = edge_left, .affinity = .downstream });
+                    try self.carets.append(self.scratch, .{ .offset = g_end, .x = edge_right, .affinity = .upstream });
                 }
                 edge_left = edge_right;
             }

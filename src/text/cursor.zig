@@ -99,7 +99,8 @@ pub fn lineAt(self: *const Layout, y: f32) u32 {
     return @intCast(low -| 1);
 }
 
-fn nearest(stops: []const Caret, x: f32) u32 {
+/// The stop closest to `x` among a line's stops.
+pub fn nearest(stops: []const Caret, x: f32) u32 {
     var low: usize = 0;
     var high = stops.len;
     while (low < high) {
@@ -186,7 +187,8 @@ pub fn moveVisual(self: *const Layout, position: Position, direction: Direction)
 
 pub const Boundary = enum { start, end };
 
-fn lineEdge(self: *const Layout, line_index: u32, boundary: Boundary) Position {
+/// The start or end, in reading order, of line `line_index`.
+pub fn lineEdge(self: *const Layout, line_index: u32, boundary: Boundary) Position {
     const line = self.lines[line_index];
     const stops = self.lineCarets(line);
     const left = (boundary == .start) != line.rtl();

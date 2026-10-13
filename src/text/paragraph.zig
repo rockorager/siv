@@ -158,10 +158,14 @@ pub const ShapedParagraph = struct {
         };
         defer builder.shaper.deinit();
         for (self.paragraphs, 0..) |paragraph, index| try builder.itemize(@intCast(index), paragraph);
-        self.runs = builder.runs.items;
-        self.glyphs = builder.glyphs.items;
+        // Grown in scratch memory, kept at their final size; the glyphs,
+        // most of a long text's memory, outside the arena, which grows by
+        // half again what it holds (`deinit` frees them).
+        self.runs = try a.dupe(Run, builder.runs.items);
+        self.glyphs = try gpa.dupe(Glyph, builder.glyphs.items);
+        errdefer gpa.free(self.glyphs);
         self.missing = builder.missing;
-        self.wanted = builder.wanted.items;
+        self.wanted = try a.dupe(FontId, builder.wanted.items);
         self.segments = try measure(a, scratch, &self);
         self.reused = null;
         return self;
@@ -287,7 +291,8 @@ pub const ShapedParagraph = struct {
         while (run_rest < old.runs.len and old.runs[run_rest].paragraph <= last) run_rest += 1;
         const glyph_first: u32 = if (run_first < old.runs.len) old.runs[run_first].glyph_start else @intCast(old.glyphs.len);
         const glyph_rest: u32 = if (run_rest < old.runs.len) old.runs[run_rest].glyph_start else @intCast(old.glyphs.len);
-        const glyphs = try a.alloc(Glyph, glyph_first + mid.glyphs.len + (old.glyphs.len - glyph_rest));
+        const glyphs = try gpa.alloc(Glyph, glyph_first + mid.glyphs.len + (old.glyphs.len - glyph_rest));
+        errdefer gpa.free(glyphs);
         @memcpy(glyphs[0..glyph_first], old.glyphs[0..glyph_first]);
         for (glyphs[glyph_first..][0..mid.glyphs.len], mid.glyphs) |*out, in| {
             out.* = in;
@@ -353,6 +358,7 @@ pub const ShapedParagraph = struct {
     }
 
     pub fn deinit(self: *ShapedParagraph) void {
+        self.arena.child_allocator.free(self.glyphs);
         self.arena.deinit();
         self.* = undefined;
     }
@@ -394,7 +400,7 @@ fn firstEndAfter(comptime T: type, items: []const T, offset: u32, ctx: anytype, 
     return @intCast(@min(low, items.len - 1));
 }
 
-fn validateStyles(text: []const u8, styles: []const StyleRun) !void {
+pub fn validateStyles(text: []const u8, styles: []const StyleRun) !void {
     if (styles.len == 0 or styles[styles.len - 1].end != text.len) return error.InvalidStyles;
     var previous: u32 = 0;
     for (styles, 0..) |run, i| {
@@ -448,7 +454,7 @@ const Builder = struct {
     }
 
     fn want(self: *Builder, id: FontId) !void {
-        if (std.mem.indexOfScalar(FontId, self.wanted.items, id) == null) try self.wanted.append(self.a, id);
+        if (std.mem.indexOfScalar(FontId, self.wanted.items, id) == null) try self.wanted.append(self.scratch, id);
     }
 
     fn request(self: *Builder, item: Item, face: *const font_.Face, start: u32, end: u32) shape_.Request {
@@ -471,9 +477,9 @@ const Builder = struct {
 
     fn appendRun(self: *Builder, item: Item, id: FontId, start: u32, end: u32, glyphs: []const Glyph) !void {
         const glyph_start: u32 = @intCast(self.glyphs.items.len);
-        try self.glyphs.appendSlice(self.a, glyphs);
+        try self.glyphs.appendSlice(self.scratch, glyphs);
         if (self.cache.face(id)) |face| hideControls(self.paragraph.text, face, item.paragraph, self.glyphs.items[glyph_start..], self.paragraph.styles[item.style].size);
-        try self.runs.append(self.a, .{
+        try self.runs.append(self.scratch, .{
             .start = start,
             .end = end,
             .paragraph = item.paragraph,
