@@ -61,4 +61,5 @@ pub fn main(init: std.process.Init) !void {
 
 test {
     _ = @import("gen/map.zig");
+    _ = @import("gen/c.zig");
 }

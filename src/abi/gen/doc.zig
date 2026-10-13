@@ -53,12 +53,17 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
         \\  siv no longer needs `user_data`.
         \\- **Allocation.** Each root may supply `siv_allocator` hooks, used for
         \\  every allocation made on its behalf.
-        \\- **Threads.** Unless documented otherwise, call a function only from the
-        \\  thread that owns the root.
+        \\- **Threads.** Call a function only from the thread that created the
+        \\  root, unless it is marked *Any thread*. Callbacks run on that thread at
+        \\  safe points of its loop, unless marked *Runs on a worker thread* or
+        \\  *Runs on the compositor thread*. The JSON description gives the same as
+        \\  each function's and callback's `thread`.
         \\- **Versions.** The SONAME is `lib{[name]s}.so.<major>`. Every symbol is
         \\  versioned; before 1.0 each minor release has its own version node, so a
         \\  program linked against 0.1 fails to load against 0.2 instead of
-        \\  misbehaving.
+        \\  misbehaving. From 1.0 nothing is removed within a major version;
+        \\  deprecated functions (marked so, with their replacement) keep working
+        \\  until the next one.
         \\
         \\## Types
         \\
@@ -96,6 +101,7 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
                 try w.print("typedef {s} (*{s})(", .{ try cgen.typeName(arena, cb.ret), cb.name });
                 try cgen.paramList(arena, w, true, cb.params);
                 try w.writeAll(");\n```\n");
+                if (cgen.threadNote(cb.thread)) |note| try w.print("\n*{s}*\n", .{note[0 .. note.len - 1]});
                 if (cb.params.len > 0) {
                     try w.writeAll("\n| Parameter | |\n| --- | --- |\n");
                     for (cb.params) |p| try w.print("| `{s}` | {s} |\n", .{ p.name, p.doc });
@@ -106,7 +112,10 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
 
     try w.writeAll("\n## Functions\n");
     for (s.functions) |f| {
-        try w.print("\n### `{s}`\n\n{s} *Since {d}.{d}.*\n\n```c\n", .{ f.name, f.doc, f.since.major, f.since.minor });
+        try w.print("\n### `{s}`\n\n{s} *Since {d}.{d}.*", .{ f.name, f.doc, f.since.major, f.since.minor });
+        if (cgen.threadNote(f.thread)) |note| try w.print(" *{s}*", .{note[0 .. note.len - 1]});
+        if (f.deprecated) |d| try w.print(" **Deprecated since {d}.{d}:** use `{s}`.", .{ d.since.major, d.since.minor, d.replacement });
+        try w.writeAll("\n\n```c\n");
         try cgen.prototype(arena, w, f);
         try w.writeAll(";\n```\n");
         if (f.params.len > 0) {

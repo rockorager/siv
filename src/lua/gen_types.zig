@@ -222,6 +222,7 @@ fn writeFunType(w: *Writer, s: Schema, cb: schema.Callback) !void {
 
 fn writeFunction(w: *Writer, s: Schema, f: schema.Function, method: bool) !void {
     try writeDoc(w, f.doc);
+    if (f.deprecated) |d| try w.print("---@deprecated Since {d}.{d}: use {s}.\n", .{ d.since.major, d.since.minor, m.luaName(s, d.replacement) });
     const async_param = m.asyncParam(s, f);
     if (async_param != null) try w.writeAll("--- Without a callback, waits for the result in a coroutine (siv.spawn).\n");
     if (s.isResult(f.ret)) {

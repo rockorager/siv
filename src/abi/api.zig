@@ -39,6 +39,7 @@ pub const alloc_fn: schema.Decl = .{ .callback = .{
     .name = "siv_alloc_fn",
     .doc = "Allocates size bytes aligned to alignment (a power of two). Returns NULL on failure.",
     .since = v0_1,
+    .thread = .any,
     .params = &.{
         .{ .name = "size", .type = .usize, .doc = "Bytes to allocate; never 0." },
         .{ .name = "alignment", .type = .usize, .doc = "Required alignment in bytes." },
@@ -48,6 +49,7 @@ pub const alloc_fn: schema.Decl = .{ .callback = .{
 
 pub const free_fn: schema.Decl = .{ .callback = .{
     .name = "siv_free_fn",
+    .thread = .any,
     .doc = "Frees memory returned by the matching siv_alloc_fn. size and alignment are the values it was allocated with.",
     .since = v0_1,
     .params = &.{
@@ -112,6 +114,20 @@ fn f32Field(comptime name: []const u8, comptime doc: []const u8) schema.Field {
 }
 
 const result_ref = ref("siv_result");
+
+/// A function any thread may call (D2).
+fn anyThread(comptime f: Function) Function {
+    var g = f;
+    g.thread = .any;
+    return g;
+}
+
+/// A callback that runs on another thread than the application's.
+fn onThread(comptime thread: schema.Thread, comptime d: Decl) Decl {
+    var c = d;
+    c.callback.thread = thread;
+    return c;
+}
 
 /// A fallible function.
 fn call(comptime name: []const u8, comptime doc: []const u8, comptime params: []const Param) Function {
@@ -292,7 +308,7 @@ pub const decls = [_]Decl{
     }),
     callback("siv_post_fn", "Work posted with siv_post; runs on the application's thread.", &.{}, .void),
     callback("siv_destroy_fn", "Releases user_data once siv no longer needs it. Runs exactly once, on the application's thread, never while a siv callback is running.", &.{}, .void),
-    callback("siv_work_fn", "A job's work (siv_job_start): runs on a worker thread, where it may call only siv_post.", &.{}, .void),
+    onThread(.worker, callback("siv_work_fn", "A job's work (siv_job_start): runs on a worker thread, where it may call only siv_post.", &.{}, .void)),
 
     value("siv_size", "A logical size.", &.{ f32Field("width", "Width in logical pixels."), f32Field("height", "Height in logical pixels.") }),
     value("siv_rect", "A logical rectangle.", &.{
@@ -1465,10 +1481,10 @@ pub const decls = [_]Decl{
         .{ .name = "external", .type = ref("siv_external"), .doc = "The slot." },
         .{ .name = "event", .type = .{ .desc = "siv_external_event" }, .doc = "The event, valid during the call." },
     }, .void),
-    callback("siv_external_release_fn", "Gets a frame slot's memory back: no frame reads the frame with this key any more. Runs on siv's compositor thread, not the application's, so that a producer recycles its buffers however busy the application's thread is (D8): it must return quickly and may call only siv_external_submit and siv_post.", &.{
+    onThread(.compositor, callback("siv_external_release_fn", "Gets a frame slot's memory back: no frame reads the frame with this key any more. Runs on siv's compositor thread, not the application's, so that a producer recycles its buffers however busy the application's thread is (D8): it must return quickly and may call only siv_external_submit and siv_post.", &.{
         .{ .name = "external", .type = ref("siv_external"), .doc = "The slot." },
         .{ .name = "key", .type = .u64, .doc = "The released frame's key." },
-    }, .void),
+    }, .void)),
     descriptor("siv_external_desc", "Options for an external slot.", &.{
         .{ .name = "user_data", .type = .user_data, .doc = "Passed to on_event, release, and destroy." },
         .{ .name = "on_event", .type = ref("siv_external_event_fn"), .doc = "Receives configures, and releases when release is NULL, on the application's thread; may be NULL." },
@@ -1513,10 +1529,12 @@ pub const functions = [_]Function{
         .name = "siv_version",
         .doc = "Returns the version of the loaded library, encoded as SIV_MAKE_VERSION(major, minor, patch).",
         .since = v0_1,
+        .thread = .any,
         .ret = .u32,
     },
     .{
         .name = "siv_result_name",
+        .thread = .any,
         .doc = "Returns the name of a result code, such as \"SIV_ERROR_OUT_OF_MEMORY\", or \"SIV_RESULT_UNKNOWN\" for a value this version does not define.",
         .since = v0_1,
         .params = &.{.{ .name = "result", .type = ref("siv_result"), .doc = "Any value." }},
@@ -1539,12 +1557,12 @@ pub const functions = [_]Function{
     }),
     call("siv_run", "Dispatches until siv_app_quit is called or the last window is destroyed.", &.{app_param}),
     op("siv_app_quit", "Makes the running siv_run return after the current iteration.", &.{app_param}),
-    call("siv_post", "Runs callback(user_data) on the application's thread at its next dispatch, then destroy(user_data). Safe from any thread, even while the application is being destroyed: either the call fails with SIV_ERROR_INVALID_HANDLE and nothing runs, or destroy runs exactly once (alone, if the application is destroyed first). Allocates with the application's allocator on the calling thread.", &.{
+    anyThread(call("siv_post", "Runs callback(user_data) on the application's thread at its next dispatch, then destroy(user_data). Safe even while the application is being destroyed: either the call fails with SIV_ERROR_INVALID_HANDLE and nothing runs, or destroy runs exactly once (alone, if the application is destroyed first). Allocates with the application's allocator on the calling thread.", &.{
         app_param,
         .{ .name = "callback", .type = ref("siv_post_fn"), .doc = "The work." },
         .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data; may be NULL." },
         .{ .name = "user_data", .type = .user_data, .doc = "Passed to both." },
-    }),
+    })),
     call("siv_app_add_font", "Adds a font file's bytes (copied) to a family (D13): every face of a collection, each with the weight, width, slant, and variation axes its data gives. Text styles pick the face that matches their weight, slant, and width best (CSS font matching), set a variable face's axes to them and its opsz axis to the text size in logical pixels, and synthesize bold and oblique where the family lacks them. Faces of the same style form a fallback chain in the order they were added. Families added here take precedence over Fontconfig.", &.{
         app_param,
         .{ .name = "family", .type = .string, .doc = "Family name; empty uses each face's own (its typographic family name)." },
@@ -2118,20 +2136,20 @@ pub const functions = [_]Function{
         .{ .name = "desc", .type = .{ .desc = "siv_external_desc" }, .doc = "Callbacks; on_event receives configures." },
         .{ .name = "external", .type = out(ref("siv_external")), .doc = "The slot." },
     }),
-    call("siv_external_get_wayland", "The wl_display * and wl_surface * of a slot made with siv_external_create_surface. Both are NULL on the headless backend. Any thread.", &.{
+    anyThread(call("siv_external_get_wayland", "The wl_display * and wl_surface * of a slot made with siv_external_create_surface. Both are NULL on the headless backend.", &.{
         .{ .name = "external", .type = ref("siv_external"), .doc = "A surface slot." },
         .{ .name = "display", .type = out(.pointer), .doc = "The wl_display *." },
         .{ .name = "surface", .type = out(.pointer), .doc = "The wl_surface *." },
-    }),
-    call("siv_external_submit", "Shows a new frame in a frame slot. Any thread, even while the application's thread is busy: the frame goes straight to the compositor thread, in order with other frames of the slot. The previous frame is reported released once no frame reads it; until then its pixels must not change.", &.{
+    })),
+    anyThread(call("siv_external_submit", "Shows a new frame in a frame slot, even while the application's thread is busy: the frame goes straight to the compositor thread, in order with other frames of the slot. The previous frame is reported released once no frame reads it; until then its pixels must not change.", &.{
         .{ .name = "external", .type = ref("siv_external"), .doc = "A frame slot." },
         .{ .name = "frame", .type = .{ .desc = "siv_external_frame_desc" }, .doc = "The frame." },
-    }),
-    call("siv_external_surface_committed", "Tells siv that the embedder committed a frame of width x height buffer pixels to a surface slot. Any thread, like siv_external_submit.", &.{
+    })),
+    anyThread(call("siv_external_surface_committed", "Tells siv that the embedder committed a frame of width x height buffer pixels to a surface slot.", &.{
         .{ .name = "external", .type = ref("siv_external"), .doc = "A surface slot." },
         .{ .name = "width", .type = .u32, .doc = "Buffer width." },
         .{ .name = "height", .type = .u32, .doc = "Buffer height." },
-    }),
+    })),
     op("siv_external_destroy", "Destroys a slot; its frame or surface goes after the next frame. Nodes that show it show nothing. Application's thread; other threads' calls with the handle fail with SIV_ERROR_INVALID_HANDLE from now on.", &.{.{ .name = "external", .type = ref("siv_external"), .doc = "The slot." }}),
     builder("siv_external_view", "Creates an external node: a slot's content fitted into its content box, in a layer of its own. Its role is image.", &.{.{ .name = "desc", .type = .{ .desc = "siv_external_view_desc" }, .doc = "The slot, size, and fit; NULL shows nothing." }}),
     setter("siv_set_external_view", "Sets what an external node shows.", &.{.{ .name = "desc", .type = .{ .desc = "siv_external_view_desc" }, .doc = "The slot, size, and fit; NULL shows nothing." }}),

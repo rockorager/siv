@@ -155,6 +155,11 @@ fn itemSetName(item: t.Item, name_ptr: ?[*]const u8, name_len: usize) Error!void
     it.name = copy;
 }
 
+/// Deprecated in the schema: it still works (D2).
+pub export fn sivtest_item_rename(item: t.Item, name: ?[*]const u8, name_len: usize) t.Result {
+    return sivtest_item_set_name(item, name, name_len);
+}
+
 pub export fn sivtest_context_visit(context: t.Context, callback: ?t.VisitFn, user_data: ?*anyopaque, visited: ?*u32) t.Result {
     const self = Root.get(Context, context_tag, @backingInt(context)) catch |err| return t.resultOf(err);
     const cb = callback orelse return .error_invalid_argument;

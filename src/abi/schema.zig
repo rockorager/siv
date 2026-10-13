@@ -193,6 +193,8 @@ pub const Callback = struct {
     /// Parameters after the implicit leading `void *user_data`.
     params: []const Param = &.{},
     ret: Type = .void,
+    /// The thread it runs on.
+    thread: Thread = .app,
 };
 
 pub const Function = struct {
@@ -205,6 +207,30 @@ pub const Function = struct {
     /// warns. Turn off for teardown functions, where the only error is an
     /// invalid handle.
     must_use: bool = true,
+    /// Which threads may call it (D2, D5).
+    thread: Thread = .app,
+    /// Set when a better function replaces it (D2's deprecation rules):
+    /// it keeps working until the next major release.
+    deprecated: ?Deprecation = null,
+};
+
+pub const Thread = enum {
+    /// The thread that created the root (the application's thread); for
+    /// callbacks, at a safe point on it (D5).
+    app,
+    /// Any thread.
+    any,
+    /// Callbacks only: a worker thread of the root's pool.
+    worker,
+    /// Callbacks only: siv's compositor thread (D8).
+    compositor,
+};
+
+pub const Deprecation = struct {
+    /// The release that deprecated it.
+    since: Version,
+    /// The function to use instead, which must exist.
+    replacement: []const u8,
 };
 
 pub const Param = struct {
@@ -440,6 +466,19 @@ pub fn validate(s: Schema, lib: std.SemanticVersion) ?Problem {
         if (f.since.order(current) == .gt) return .{ .where = f.name, .what = "since is newer than the library version" };
         if (checkParams(s, f.name, f.params, true)) |p| return p;
         if (checkRet(s, f.name, f.ret)) |p| return p;
+        switch (f.thread) {
+            .app, .any => {},
+            .worker, .compositor => return .{ .where = f.name, .what = "functions are called on the application's thread or any thread" },
+        }
+        if (f.deprecated) |d| {
+            if (d.since.order(f.since) == .lt or d.since.order(current) == .gt) return .{ .where = f.name, .what = "deprecated outside the function's lifetime" };
+            if (std.mem.eql(u8, d.replacement, f.name)) return .{ .where = f.name, .what = "a deprecated function replaces itself" };
+            for (s.functions) |g| {
+                if (!std.mem.eql(u8, g.name, d.replacement)) continue;
+                if (g.deprecated != null) return .{ .where = f.name, .what = "a deprecated function's replacement is deprecated" };
+                break;
+            } else return .{ .where = f.name, .what = "a deprecated function's replacement does not exist" };
+        }
         var seen_out = false;
         for (f.params) |p| {
             if (p.type == .out) {
@@ -563,6 +602,15 @@ test "validate rejects convention violations" {
 
     s.functions = &.{.{ .name = "y_f", .doc = "", .since = v01 }};
     try std.testing.expectEqualStrings("function name lacks the schema prefix", validate(s, lib).?.what);
+
+    s.functions = &.{.{ .name = "x_f", .doc = "", .since = v01, .deprecated = .{ .since = v01, .replacement = "x_g" } }};
+    try std.testing.expectEqualStrings("a deprecated function's replacement does not exist", validate(s, lib).?.what);
+    s.functions = &.{ .{ .name = "x_f", .doc = "", .since = v01, .deprecated = .{ .since = v01, .replacement = "x_g" } }, .{ .name = "x_g", .doc = "", .since = v01 } };
+    try std.testing.expectEqual(null, validate(s, lib));
+    s.functions = &.{.{ .name = "x_f", .doc = "", .since = v01, .deprecated = .{ .since = .{ .major = 0, .minor = 2 }, .replacement = "x_f" } }};
+    try std.testing.expectEqualStrings("deprecated outside the function's lifetime", validate(s, lib).?.what);
+    s.functions = &.{.{ .name = "x_f", .doc = "", .since = v01, .thread = .worker }};
+    try std.testing.expectEqualStrings("functions are called on the application's thread or any thread", validate(s, lib).?.what);
 
     s = base;
     s.decls = &.{ result, cb, .{ .@"struct" = .{ .name = "x_desc", .doc = "", .since = v01, .kind = .descriptor, .fields = &.{

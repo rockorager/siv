@@ -129,10 +129,69 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     release (`SIV_0.1`), so a program linked against 0.1 fails to load
     against 0.2 instead of misbehaving; from 1.0 a symbol keeps the node of
     the release that added it. A build check compares the exported symbols,
-    versions, and SONAME against the schema. Deprecation rules are written
-    down before 1.0.
+    versions, and SONAME against the schema.
+  - **Versioning and deprecation.** The rules that hold before and after
+    1.0, written down before 1.0 as this decision promised:
+    - `siv_version()` reports the loaded library and `SIV_VERSION` the
+      header. Every declaration, field, enum value, flag, and function in
+      the schema records the release that added it (`since`), and the
+      JSON carries it, so a generator can target a minimum version.
+    - **0.x.** A minor release may change anything; every symbol carries
+      that minor release's node (`SIV_0.<minor>`), so a program built
+      against an older one refuses to load rather than misbehave. Patch
+      releases (0.x.y) change no signature, layout, or documented
+      behavior. Renames and removals take effect at once, without
+      deprecated aliases: an alias would carry the new node as well and
+      save no binary, and every second name is one more for bindings to
+      carry to 1.0. Each one is listed in D30 with what replaces it.
+    - **From 1.0, within a major version,** nothing is removed or renamed,
+      and no signature, layout, or documented meaning changes: functions,
+      types, enum values, flag bits, descriptor fields, and value structs
+      stay. What may be added: functions (with the node of the release
+      that adds them, `SIV_1.<minor>`), descriptor fields at the end,
+      enum values, flag bits, meanings for reserved fields, callbacks in
+      descriptors. A program built against 1.n runs on every 1.m with m
+      at least n. One built against 1.m that uses something newer than
+      1.n fails detectably on 1.n: a missing symbol version when it loads,
+      for functions; `SIV_ERROR_UNSUPPORTED`, for descriptor fields, enum
+      values, and flag bits the older library does not know (the
+      descriptor rules above).
+    - **Deprecation.** A function with a better replacement is marked in
+      the schema (`Function.deprecated`: the release and the replacement,
+      which must exist). The header declares it with
+      `SIV_DEPRECATED("use siv_x")`, a compiler warning that
+      `SIV_NO_DEPRECATED_WARNINGS` silences; the reference, the JSON, and
+      the Lua annotations (`---@deprecated`) say so, and the Lua binding
+      keeps binding it. It keeps working, as documented, for the rest of
+      the major version, and the next major release removes it.
+      Deprecations come in minor releases, never in patch releases. Types,
+      fields, and enum values are deprecated in their documentation the
+      same way and stay until the next major release.
+    - **Behavior.** Making code do what its documentation says is a fix;
+      changing documented behavior is a break, held for a major release
+      unless security requires it.
+    - **Major releases** change the SONAME (`libsiv.so.2`) and the node
+      prefix (`SIV_2.0`), so the old and new libraries install side by
+      side and every binary keeps the one it was built against.
+    - `libsiv-lua` follows libsiv's version and these rules: its names,
+      tables, and errors derive from the schema (D23).
+    - Enforced today: exports, symbol versions, and the SONAME match the
+      schema, deprecated functions name a replacement that exists, and
+      `since` is never newer than the library. Not built yet: from 1.0,
+      a check that compares the schema with the last release's published
+      JSON and fails on removals, changed signatures, and moved or
+      retyped fields; until there is a release, there is nothing to
+      compare with.
   - Every function except `siv_post` (and `siv_version`,
-    `siv_result_name`) is called on the thread that created the root.
+    `siv_result_name`, and the external content producer calls of D27)
+    is called on the thread that created the root. The schema says which
+    (`Function.thread`: the application's thread or any; a callback's
+    `thread`: the application's thread at a safe point, a worker, the
+    compositor thread, or any for allocator hooks), so the header's
+    comments, the reference, the JSON (`thread`), and the Lua mapping,
+    which refuses to bind a callback that runs off the application's
+    thread, follow one source instead of prose in each function's
+    documentation (D30). The header opens with these conventions.
   - `siv_post` racing root destruction: each registry slot has a pin
     count. `siv_post` pins the root (increment, then recheck the
     generation, both sequentially consistent), queues its closure, and
@@ -3580,6 +3639,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | `siv_radio(txn, group, &siv_radio_desc)` (D22) | `siv_radio(txn, group, label)` | items grow options (a disabled radio now, its `flags`) without new functions |
   | `siv_tab(txn, tabs, &siv_tab_desc)` (D22) | `siv_tab(txn, tabs, label)` | likewise (an icon, a close button) |
   | `siv_external_view(txn, parent, &siv_external_view_desc)` and `siv_set_external_view` (D27) | slot, size, and fit as arguments | like `siv_image_view`; the Lua builder takes an `external_view` property |
+  | `thread` on schema functions and callbacks; the header's conventions comment (D2) | "Any thread." in prose | binding generators (a Rust `Send` bound, a Lua check) read it instead of parsing documentation |
+  | `deprecated` on schema functions, `SIV_DEPRECATED` (D2) | — | the deprecation rules D2 promised before 1.0, with the mechanism that carries them out |
 - **Reverse if:** a binding cannot express one of these without special
   cases; then the schema needs a construct, not an exception.
 

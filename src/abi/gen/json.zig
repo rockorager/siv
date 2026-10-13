@@ -33,6 +33,7 @@ pub fn write(arena: std.mem.Allocator, w: *std.Io.Writer, s: Schema, version: st
     try field(&j, "array_count_suffix", "_count");
     try field(&j, "buffer_capacity_suffix", "_cap");
     try field(&j, "callback_user_data", "first parameter");
+    try field(&j, "default_thread", "app");
     try field(&j, "enum_c_type", "int32_t");
     try field(&j, "flags_c_type", "uint32_t");
     try j.endObject();
@@ -95,6 +96,7 @@ pub fn write(arena: std.mem.Allocator, w: *std.Io.Writer, s: Schema, version: st
                 try j.endArray();
                 try j.objectField("return");
                 try typeValue(arena, &j, s, cb.ret);
+                try field(&j, "thread", @tagName(cb.thread));
             },
         }
         try j.endObject();
@@ -111,6 +113,14 @@ pub fn write(arena: std.mem.Allocator, w: *std.Io.Writer, s: Schema, version: st
         try field(&j, "symbol_version", try arena.dupe(u8, schema.versionNode(&buf, s, version, f)));
         try field(&j, "fallible", s.isResult(f.ret));
         if (s.isResult(f.ret)) try field(&j, "must_use", f.must_use);
+        try field(&j, "thread", @tagName(f.thread));
+        if (f.deprecated) |d| {
+            try j.objectField("deprecated");
+            try j.beginObject();
+            try field(&j, "since", try since(arena, d.since));
+            try field(&j, "replacement", d.replacement);
+            try j.endObject();
+        }
         try j.objectField("params");
         try j.beginArray();
         for (f.params) |p| try member(arena, &j, s, p.name, p.type, p.doc, null, false);

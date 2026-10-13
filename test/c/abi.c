@@ -205,6 +205,14 @@ static void test_strings_and_callbacks(void) {
 	char unterminated[4] = {'q', 'r', 's', 't'};
 	EXPECT(sivtest_item_set_name(b, unterminated, 2), SIV_OK);
 
+	/* A deprecated function keeps working (D2); its declaration warns, which
+	 * -Werror would make an error here without the pragma. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+	EXPECT(sivtest_item_rename(b, "zz", 2), SIV_OK);
+#pragma GCC diagnostic pop
+	EXPECT(sivtest_item_set_name(b, unterminated, 2), SIV_OK);
+
 	struct visit_log log = {0};
 	uint32_t visited = 0;
 	EXPECT(sivtest_context_visit(ctx, record, &log, &visited), SIV_OK);

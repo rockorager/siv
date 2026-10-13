@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const schema = @import("../schema.zig");
+const cgen = @import("c.zig");
 const Schema = schema.Schema;
 const Type = schema.Type;
 const Writer = std.Io.Writer;
@@ -104,7 +105,10 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
     }
     try w.writeAll("};\n\n/// The C functions.\npub const c = struct {\n");
     for (s.functions) |f| {
-        try w.print("    /// {s}\n    pub extern fn {s}(", .{ f.doc, f.name });
+        try w.print("    /// {s}\n", .{f.doc});
+        if (cgen.threadNote(f.thread)) |note| try w.print("    /// {s}\n", .{note});
+        if (f.deprecated) |d| try w.print("    /// Deprecated since {d}.{d}: use {s}.\n", .{ d.since.major, d.since.minor, d.replacement });
+        try w.print("    pub extern fn {s}(", .{f.name});
         try writeParams(arena, w, s, f.params);
         try w.print(") {s};\n", .{try typeName(arena, s, f.ret)});
     }

@@ -40,7 +40,8 @@ const Param = schema.Param;
 const Type = schema.Type;
 
 /// Functions the binding leaves out, with the reason. Checked against the
-/// schema at compile time.
+/// schema at compile time, which also rejects any bound callback that
+/// runs off the application's thread (the schema's `thread`).
 pub const unbound = [_]struct { []const u8, []const u8 }{
     .{ "siv_set_data", "raw node memory under a pointer key; Lua keeps state in tables" },
     .{ "siv_node_get_data", "raw node memory under a pointer key; Lua keeps state in tables" },
@@ -295,6 +296,10 @@ pub fn validate(comptime s: Schema) ?[]const u8 {
                 if (isDestroy(f.type)) destroy = true else if (isCallback(s, f.type) and !isUnboundField(st.name, f.name)) callbacks = true;
             }
             if (callbacks and !destroy and !std.mem.eql(u8, st.name, "siv_allocator")) return "a struct with callbacks lacks a destroy-notify";
+            // A Lua state runs on the application's thread only (D23).
+            // siv_allocator is only reached through an unbound field.
+            if (!std.mem.eql(u8, st.name, "siv_allocator")) for (st.fields) |f| if (isCallback(s, f.type) and !isUnboundField(st.name, f.name) and s.get(f.type.ref).callback.thread != .app)
+                return "a bound struct field is a callback that runs off the application's thread";
         },
         else => {},
     };
@@ -310,7 +315,10 @@ pub fn validate(comptime s: Schema) ?[]const u8 {
         var destroys: usize = 0;
         for (f.params, 0..) |p, j| {
             switch (role(s, f, j)) {
-                .callback => callbacks += 1,
+                .callback => {
+                    callbacks += 1;
+                    if (s.get(p.type.ref).callback.thread != .app) return "a bound function takes a callback that runs off the application's thread";
+                },
                 .hidden => if (isDestroy(p.type)) {
                     destroys += 1;
                 },

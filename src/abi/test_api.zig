@@ -98,6 +98,10 @@ pub const spec: schema.Schema = .{
             .{ .name = "item", .type = ref("sivtest_item"), .doc = "The item." },
             .{ .name = "name", .type = .string, .doc = "Copied; embedded NUL allowed." },
         } },
+        .{ .name = "sivtest_item_rename", .doc = "Replaces an item's name, as sivtest_item_set_name does.", .since = v0_1, .ret = ref("siv_result"), .deprecated = .{ .since = v0_1, .replacement = "sivtest_item_set_name" }, .params = &.{
+            .{ .name = "item", .type = ref("sivtest_item"), .doc = "The item." },
+            .{ .name = "name", .type = .string, .doc = "Copied." },
+        } },
         .{ .name = "sivtest_context_visit", .doc = "Calls callback for each visible item until it returns false.", .since = v0_1, .ret = ref("siv_result"), .params = &.{
             .{ .name = "context", .type = ref("sivtest_context"), .doc = "The context." },
             .{ .name = "callback", .type = ref("sivtest_visit_fn"), .doc = "Called once per item." },

@@ -91,7 +91,30 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
 
     try w.print(
         \\/* Generated from {[source]s} by src/abi/gen.zig. Do not edit. */
-        \\/* {[doc]s} */
+        \\/* {[doc]s}
+        \\ *
+        \\ * Conventions (DESIGN.md, D2):
+        \\ * - Objects are uint64_t handles; 0 is none. A destroyed, stale, or
+        \\ *   mistyped handle is {[up]s}_ERROR_INVALID_HANDLE, never a crash.
+        \\ * - Functions that can fail return a result: 0 is {[up]s}_OK, errors are
+        \\ *   negative. They write their trailing out parameters only on success
+        \\ *   and have no effect when they fail. Transaction operations record
+        \\ *   their first error in the transaction, which commit reports.
+        \\ * - Descriptors (structs beginning with size_t size) are passed by
+        \\ *   pointer: {[up]s}_DESC sets the size, zero fields are defaults, and NULL
+        \\ *   is all defaults. Structs without a size are frozen values.
+        \\ * - Strings are a pointer and a length (UTF-8, embedded NUL allowed);
+        \\ *   arrays are a pointer and a _count; the library copies what it keeps.
+        \\ *   Buffers it fills are a pointer and a _cap, and it reports the full
+        \\ *   length so that a second call can size them.
+        \\ * - Callbacks take user_data first. A destroy-notify runs exactly once,
+        \\ *   when the library lets go of user_data, also when the call that took
+        \\ *   it fails, and never while one of its callbacks is running.
+        \\ * - Threads: call every function on the thread that created the root
+        \\ *   object, except those documented "Any thread". Callbacks run on that
+        \\ *   thread at safe points of its loop, except those documented
+        \\ *   otherwise.
+        \\ */
         \\#ifndef {[up]s}_H
         \\#define {[up]s}_H
         \\
@@ -115,6 +138,14 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
         \\#define {[up]s}_NODISCARD __attribute__((warn_unused_result))
         \\#else
         \\#define {[up]s}_NODISCARD
+        \\#endif
+        \\
+        \\/* Marks deprecated functions: they work until the next major release,
+        \\ * which removes them. Define {[up]s}_NO_DEPRECATED_WARNINGS to silence it. */
+        \\#if (defined(__GNUC__) || defined(__clang__)) && !defined({[up]s}_NO_DEPRECATED_WARNINGS)
+        \\#define {[up]s}_DEPRECATED(msg) __attribute__((deprecated(msg)))
+        \\#else
+        \\#define {[up]s}_DEPRECATED(msg)
         \\#endif
         \\
         \\/* A pointer to a descriptor with its size set and the given fields;
@@ -163,6 +194,7 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
                 try w.print("}} {s};\n", .{st.name});
             },
             .callback => |cb| {
+                if (threadNote(cb.thread)) |note| try w.print("/* {s} */\n", .{note});
                 try w.print("typedef {s}", .{try typeName(arena, cb.ret)});
                 if (!std.mem.endsWith(u8, try typeName(arena, cb.ret), "*")) try w.writeAll(" ");
                 try w.print("(*{s})(", .{cb.name});
@@ -175,9 +207,12 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
     for (s.functions) |f| {
         try w.writeAll("\n");
         try w.print("/**\n * {s}\n", .{f.doc});
+        if (threadNote(f.thread)) |note| try w.print(" * {s}\n", .{note});
+        if (f.deprecated) |d| try w.print(" * Deprecated since {d}.{d}: use {s}.\n", .{ d.since.major, d.since.minor, d.replacement });
         if (f.params.len > 0) try w.writeAll(" *\n");
         for (f.params) |p| try w.print(" * {s}: {s}\n", .{ p.name, p.doc });
         try w.writeAll(" */\n");
+        if (f.deprecated) |d| try w.print("{s}_DEPRECATED(\"use {s}\") ", .{ up, d.replacement });
         if (s.isResult(f.ret) and f.must_use) try w.print("{s}_NODISCARD ", .{up});
         try prototype(arena, w, f);
         try w.writeAll(";\n");
@@ -192,6 +227,28 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
         \\#endif /* {s}_H */
         \\
     , .{up});
+}
+
+test "deprecated functions warn and name their replacement" {
+    const test_api = @import("../test_api.zig");
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var w: Writer.Allocating = .init(arena.allocator());
+    try write(arena.allocator(), &w.writer, test_api.spec, .{ .major = 0, .minor = 1, .patch = 0 });
+    const h = w.written();
+    try std.testing.expect(std.mem.indexOf(u8, h, "SIVTEST_DEPRECATED(\"use sivtest_item_set_name\") SIVTEST_NODISCARD siv_result sivtest_item_rename(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, h, " * Deprecated since 0.1: use sivtest_item_set_name.\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, h, "#define SIVTEST_DEPRECATED(msg) __attribute__((deprecated(msg)))") != null);
+}
+
+/// What the documentation says about a thread other than the root's.
+pub fn threadNote(thread: schema.Thread) ?[]const u8 {
+    return switch (thread) {
+        .app => null,
+        .any => "Any thread.",
+        .worker => "Runs on a worker thread.",
+        .compositor => "Runs on the compositor thread.",
+    };
 }
 
 fn comment(w: *Writer, indent: []const u8, text: []const u8) !void {
