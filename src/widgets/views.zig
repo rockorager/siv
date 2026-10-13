@@ -117,6 +117,9 @@ const TreeRow = extern struct {
     id: u64,
     depth: u32,
     flags: packed struct(u32) { expanded: bool = false, parent: bool = false, _: u30 = 0 },
+    /// Its position among its parent's children, and their number.
+    position: u32,
+    siblings: u32,
 };
 
 var selection_key: u8 = 0;
@@ -275,15 +278,15 @@ fn reserveTree(txn: Txn, v: *View, n: u32) ?[*]TreeRow {
     return @ptrCast(@alignCast(p.?));
 }
 
-fn treeRow(v: *const View, parent: u64, i: u32, depth: u32) TreeRow {
+fn treeRow(v: *const View, parent: u64, i: u32, siblings: u32, depth: u32) TreeRow {
     const id = v.child.?(v.user_data, parent, i);
-    return .{ .id = id, .depth = depth, .flags = .{ .parent = v.children.?(v.user_data, id) != 0 } };
+    return .{ .id = id, .depth = depth, .flags = .{ .parent = v.children.?(v.user_data, id) != 0 }, .position = i, .siblings = siblings };
 }
 
 fn buildTop(txn: Txn, v: *View) bool {
     const n = v.children.?(v.user_data, 0);
     const rows = reserveTree(txn, v, n) orelse return false;
-    for (0..n) |i| rows[i] = treeRow(v, 0, @intCast(i), 0);
+    for (0..n) |i| rows[i] = treeRow(v, 0, @intCast(i), n, 0);
     v.count = n;
     if (v.cursor >= @as(i64, n)) v.cursor = -1;
     v.anchor = v.cursor;
@@ -325,7 +328,7 @@ fn setExpanded(txn: Txn, v: *View, at: u32, on: bool) void {
     if (on) {
         const k = v.children.?(v.user_data, r.id);
         const rows = insertRows(txn, v, at, k) orelse return;
-        for (0..k) |i| rows[at + 1 + i] = treeRow(v, r.id, @intCast(i), r.depth + 1);
+        for (0..k) |i| rows[at + 1 + i] = treeRow(v, r.id, @intCast(i), k, r.depth + 1);
         rows[at].flags.expanded = true;
     } else {
         var end = at + 1;
@@ -547,10 +550,11 @@ fn applyRow(txn: Txn, v: *View, r: *Row) void {
         .selected = if (v.selection == .none) .unset else if (sel) .on else .off,
         .expanded = if (tr) |t| (if (!t.flags.parent) .unset else if (t.flags.expanded) .on else .off) else .unset,
         .flags = .{ .focusable = stop and !v.hdr.disabled, .disabled = v.hdr.disabled },
-        // Only the rows in view exist: their place among all items.
+        // Only the rows in view exist: their place among all items, or
+        // a tree item's among its siblings.
         .level = if (tr) |t| t.depth + 1 else 0,
-        .position = if (v.mode == .list or v.mode == .grid) i + 1 else 0,
-        .set_size = if (v.mode == .table or v.mode == .tree) 0 else v.count,
+        .position = if (tr) |t| t.position + 1 else if (v.mode == .list or v.mode == .grid) i + 1 else 0,
+        .set_size = if (tr) |t| t.siblings else if (v.mode == .table) 0 else v.count,
         .row = if (v.mode == .table) i + 1 else 0,
     });
     if (r.disclosure != .null) _ = c.siv_invalidate(txn, r.disclosure);
