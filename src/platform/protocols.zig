@@ -48,9 +48,9 @@ pub const wlr_xml = [_][]const u8{
     wlr_root ++ "unstable/wlr-foreign-toplevel-management-unstable-v1.xml",
 };
 
-/// GitLab's archive keeps its top directory (a pax header beside it stops
-/// the fetch from stripping it); it names the commit build.zig.zon pins.
-const wlr_root = "wlr-protocols-bf4fc79abc359eea5a0edec0ac6d4a2b2955f82a/";
+/// The fetch strips GitLab's archive's top directory, as it does any
+/// archive's single top directory.
+const wlr_root = "";
 
 /// Globals to bind, each with the highest version siv implements. Code is
 /// generated for each global and every interface reachable from it at that
