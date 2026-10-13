@@ -48,7 +48,7 @@ class Sway:
         self.dir = f"/tmp/gpui-compare-{os.getpid()}-{now()}"
         os.makedirs(self.dir, mode=0o700)
         with open(os.path.join(self.dir, "config"), "w") as f:
-            f.write("output HEADLESS-1 mode 1280x800@60Hz position 0 0 scale 1\n"
+            f.write("output * mode 1280x800@60Hz position 0 0 scale 1\n"
                     "default_border none\ndefault_floating_border none\n"
                     "focus_follows_mouse no\n")
         self.env = {
@@ -60,6 +60,10 @@ class Sway:
         }
         senv = dict(self.env, WLR_BACKENDS="headless", WLR_RENDERER=renderer, WLR_LIBINPUT_NO_DEVICES="1",
                     WLR_RENDER_DRM_DEVICE="/dev/dri/renderD128")
+        if os.environ.get("GC_KMS"):
+            # A KMS output with real vblank timing: sway's DRM backend on
+            # the KMS device named (vkms, say), rendering on the GPU.
+            senv.update(WLR_BACKENDS="drm", WLR_DRM_DEVICES=os.environ["GC_KMS"], LIBSEAT_BACKEND="noop")
         del senv["WAYLAND_DISPLAY"]
         self.log = open(os.path.join(self.dir, "sway.log"), "w")
         self.proc = subprocess.Popen(["sway", "-c", os.path.join(self.dir, "config")], env=senv,
@@ -297,6 +301,8 @@ class Run:
         self.screenshot = screenshot
         app_scenario = "gallery" if scenario == "resize" else scenario
         env = dict(self.sway.env, LD_PRELOAD=os.path.join(OUT, "presshim.so"), PRESSHIM_LOG=self.log_path)
+        # SIV_* variables reach the program (for experiments).
+        env.update({k: v for k, v in os.environ.items() if k.startswith("SIV_")})
         self.app_log = open(os.path.join(self.sway.dir, "app.log"), "w")
         t0 = now()
         self.app = subprocess.Popen(PROGRAMS[toolkit] + [app_scenario], env=env, stdout=self.app_log, stderr=subprocess.STDOUT)

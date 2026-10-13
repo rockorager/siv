@@ -274,6 +274,15 @@ const Window = struct {
     stats: FrameStats = .{},
     /// The window has had its chance at a Vulkan surface.
     vulkan_tried: bool = false,
+    /// A popup of this window that has not shown its first frame yet: this
+    /// window's frames wait for it until `hold_until` (loop time), so the
+    /// response to the input that opened it and the popup reach the
+    /// display server together and show in one refresh.
+    hold_for: ?WindowId = null,
+    hold_until: u64 = 0,
+    /// A popup's parent, and whether the popup presented a frame yet.
+    parent: ?WindowId = null,
+    shown: bool = false,
     externals: external_mod.Externals,
     /// Retries a frame when no buffer was free, or starts delayed
     /// animations.
@@ -732,7 +741,14 @@ fn openSurface(self: *Compositor, role: union(enum) { toplevel: platform_mod.Win
         .popup => |o| try self.platform.createPopup(o),
     };
     errdefer self.platform.destroyWindow(id);
-    const device = self.vulkanDevice(id);
+    // Small popups (menus, tooltips) present with the CPU renderer: they
+    // draw in a fraction of a millisecond, and creating a swapchain for
+    // each opened menu took about 2 ms before its first frame.
+    const small_popup = switch (role) {
+        .popup => |o| @as(u64, o.positioner.width) * o.positioner.height <= max_cpu_popup_area,
+        .toplevel => false,
+    };
+    const device = if (small_popup) null else self.vulkanDevice(id);
     const vulkan: ?surface_mod.VulkanOptions = if (device) |d| .{ .device = d, .present_mode = self.vulkan_options.present_mode } else null;
     const surface = try surface_mod.Surface.create(self.gpa, self.executor, vulkan);
     errdefer surface.destroy();
@@ -742,9 +758,14 @@ fn openSurface(self: *Compositor, role: union(enum) { toplevel: platform_mod.Win
         .tree = .init(self.gpa),
         .tracker = .init(self.gpa),
         .surface = surface,
-        .vulkan_tried = device != null,
+        .vulkan_tried = device != null or small_popup,
         .externals = .init(self.gpa),
         .compositor = self,
+    };
+    if (role == .popup) if (self.getWindow(role.popup.parent)) |parent| {
+        w.parent = parent.id;
+        parent.hold_for = id;
+        parent.hold_until = Loop.now() + max_popup_hold_ns;
     };
     w.externals.loop = self.loop;
     w.externals.on_ready = .{ .ctx = w, .func = onExternalReady };
@@ -754,6 +775,7 @@ fn openSurface(self: *Compositor, role: union(enum) { toplevel: platform_mod.Win
 
 fn closeWindow(self: *Compositor, w: *Window) void {
     const id = w.id;
+    self.releaseHold(w, null);
     self.released.clearRetainingCapacity();
     w.tree.collectAll(&self.released) catch {};
     for (self.released.items) |b| self.outbox.push(.{ .released = b });
@@ -990,10 +1012,42 @@ fn scroll(self: *Compositor, s: platform_mod.Scroll) bool {
     return true;
 }
 
+/// Logical area of popups that present with the CPU renderer.
+const max_cpu_popup_area = 512 * 512;
+/// Longest a window waits for a popup's first frame.
+const max_popup_hold_ns = 50 * std.time.ns_per_ms;
+
+/// Lets a popup's parent present again: at once, with `time`, right
+/// after the popup's first frame, or at its next frame.
+fn releaseHold(self: *Compositor, popup: *Window, time: ?platform_mod.FrameClock.Time) void {
+    const pid = popup.parent orelse return;
+    const parent = self.getWindow(pid) orelse return;
+    if (parent.hold_for != popup.id) return;
+    parent.hold_for = null;
+    // In the same loop iteration, so both commits go out in one flush (a
+    // Vulkan present flushes the connection): the display server takes
+    // them together and shows them in one refresh. Presented apart, the
+    // parent's commit showed at once and the popup's a refresh later.
+    if (time) |t| self.renderFrame(.{ .window = pid, .time = t }) else self.platform.requestFrame(pid);
+}
+
 fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
     const w = self.getWindow(f.window) orelse return;
     const t = f.time.present_ns;
     const next: platform_mod.FrameClock.Time = .{ .present_ns = t + f.time.interval_ns, .interval_ns = f.time.interval_ns };
+
+    // Held for a popup's first frame (see `Window.hold_for`).
+    if (w.hold_for) |_| {
+        if (Loop.now() < w.hold_until) {
+            if (!w.timer.armed()) self.loop.startTimer(&w.timer, w.hold_until, 0) catch {};
+            if (w.ui_frame) {
+                w.ui_frame = false;
+                self.outbox.push(.{ .frame = .{ .window = w.id, .time = next } });
+            }
+            return;
+        }
+        w.hold_for = null;
+    }
 
     // A new size waits for the UI's layout for it, within the timeout.
     if (w.tree.acked_configure < w.size_serial and self.platform.deferConfigure(w.id)) {
@@ -1071,6 +1125,10 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
     if (presented) {
         w.stats.history[w.stats.frames % w.stats.history.len] = t;
         w.stats.frames += 1;
+        if (!w.shown) {
+            w.shown = true;
+            self.releaseHold(w, f.time);
+        }
     }
     // A commit that changed nothing visible is on screen already.
     if (w.seq > w.presented_seq and (presented or damage.len == 0)) {

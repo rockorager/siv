@@ -166,6 +166,57 @@ test "the first frame waits for the UI's layout and acks with it" {
     try testing.expectEqual(bgra_red, h.pixel(id, 50, 40));
 }
 
+test "a window's frames wait for its popup's first frame, then show with it" {
+    var h: Harness = .{};
+    try h.start(false);
+    defer h.stop();
+    const parent = try h.window();
+    const pop = try h.comp.createPopup(.{ .parent = parent, .positioner = .{ .width = 40, .height = 30, .anchor_rect = .{ .x = 10, .y = 10, .width = 20, .height = 10 } } });
+    // The response to the input that opened it, before the popup has drawn.
+    const seq = try h.comp.commit(parent, &.{.{ .set_content = .{ .layer = 1, .content = try h.rect(.xywh(0, 0, 100, 80), red) } }});
+    try h.runMs(10);
+    try testing.expectEqual(bgra_white, h.pixel(parent, 50, 40));
+    // The popup's first frame; the parent's goes in the same iteration.
+    const cf = h.last(.configure).?.configure;
+    try testing.expectEqual(pop, cf.window);
+    _ = try h.comp.commit(pop, &.{
+        .{ .create = 1 },
+        .{ .set_content = .{ .layer = 1, .content = try h.rect(.xywh(0, 0, 40, 30), blue) } },
+        .{ .set_root = 1 },
+        .{ .ack_configure = cf.serial },
+    });
+    try h.run(&h, struct {
+        fn f(x: *Harness) bool {
+            var windows: u2 = 0;
+            for (x.events.items) |e| if (e == .presented and e.presented.seq > 1) {
+                windows |= @as(u2, 1) << @intCast(e.presented.window);
+            };
+            return windows == 3;
+        }
+    }.f);
+    try testing.expectEqual(bgra_red, h.pixel(parent, 50, 40));
+    try testing.expectEqual(bgra_blue, h.pixel(pop, 20, 15));
+    // Both presentations carry the same frame time.
+    var popup_ns: ?u64 = null;
+    var parent_ns: ?u64 = null;
+    for (h.events.items) |e| if (e == .presented) {
+        if (e.presented.window == pop and popup_ns == null) popup_ns = e.presented.present_ns;
+        if (e.presented.window == parent and e.presented.seq == seq) parent_ns = e.presented.present_ns;
+    };
+    try testing.expectEqual(popup_ns.?, parent_ns.?);
+
+    // A popup that never draws holds its parent only so long.
+    const start = Loop.now();
+    _ = try h.comp.createPopup(.{ .parent = parent, .positioner = .{ .width = 40, .height = 30, .anchor_rect = .{ .x = 10, .y = 10, .width = 20, .height = 10 } } });
+    _ = try h.comp.commit(parent, &.{.{ .set_content = .{ .layer = 1, .content = try h.rect(.xywh(0, 0, 100, 80), blue) } }});
+    try h.run(&h, struct {
+        fn f(x: *Harness) bool {
+            return std.mem.eql(u8, &x.pixel(0, 50, 40), &bgra_blue);
+        }
+    }.f);
+    try testing.expect(Loop.now() - start >= 40 * std.time.ns_per_ms);
+}
+
 test "a resize the UI never answers is shown after the timeout" {
     var h: Harness = .{};
     try h.start(false);

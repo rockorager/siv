@@ -1432,6 +1432,22 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       A grab, taken for the press or key that opened it, gives it the
       keyboard; when the compositor dismisses it (`popup_done`), it gets
       `close_requested`, and the dismissing press goes nowhere else.
+    - A popup and its parent's response to the input that opened it show
+      in one refresh. The protocol makes a popup's first buffer wait for
+      its configure (a round trip), so it cannot be committed with the
+      parent's frame; instead the parent's frames wait (up to 50 ms) until
+      the popup's first frame, and the parent's is rendered right after it
+      in the same loop iteration, so both commits leave in one flush (a
+      Vulkan present flushes the connection) and the compositor takes them
+      together. Popups up to 512×512 logical pixels present with the CPU
+      renderer: creating a swapchain for each menu opened took about 2 ms
+      before its first frame. Measured on the gallery's menu button (sway
+      1.12, 60 Hz), click to menu shown, median of 20: headless output
+      19.5 ms before, 5.7 ms after, popup and parent in the same refresh 0
+      and 15 times in 20; on a KMS output with real vblank (vkms) 30.5 ms
+      before, 19.6 ms after, same refresh 0 and 17 times. The parent's
+      own response to such a click comes about as much later (headless
+      3.1 to 5.9 ms), since it waits for the popup.
     - Compositors differ in two ways the coordinator (`src/app`) evens
       out. xdg_popup gives the topmost grabbing popup keyboard focus, but
       sway (1.12) keeps sending keys to the toplevel during the grab, so
