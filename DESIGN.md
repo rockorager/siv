@@ -2015,7 +2015,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     (`level`, `position`, `set_size`, `row`, exposed as AT-SPI's
     posinset, setsize, and rowindex attributes), node animations
     (`siv_set_animation`), the key-repeat timing
-    (`siv_app_get_key_repeat`), and text spans with formatting commands.
+    (`siv_app_get_key_repeat`), text spans with formatting commands, and
+    a column header's sort order and a cell's column (`sort` and
+    `column`, AT-SPI's sort and colindex attributes, as browsers expose
+    aria-sort and aria-colindex).
   - **Creating:** one builder per widget, a transaction operation like the
     primitive builders (D27): `siv_button(txn, parent, &desc)` appends the
     widget and returns its root node, or 0 once the transaction has failed
@@ -2140,8 +2143,24 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       transaction, with a recycled flag so it updates rather than
       rebuilds. A rebind of everything (`siv_view_refresh`, a new count,
       a tree changing shape) keeps each row at its index, so focus stays
-      put. The views take fixed row heights (and fixed cell sizes in
-      grids): positions are arithmetic, never measured.
+      put. Positions are arithmetic, never measured: rows of lists,
+      trees, and tables have `item_height`, or each the height the
+      application's height callback gives (grids keep fixed cells).
+      With the callback the rows' tops are prefix sums (f64) in node
+      data, rebuilt when the rows change (a new count, a refresh, a tree
+      item expanding or collapsing: one call per row, linear like the
+      selection bits and tree rows that change with them) and never while
+      scrolling; the range in view is found by bisection, and Page Up and
+      Page Down move by the view's height. The content's height is the
+      sum, so the compositor scrolls variable rows as it scrolls fixed
+      ones. Alternative: rows sized by their own layout (measured after
+      a frame, estimated before). A row's height would be known only
+      after it was laid out, so rows below it would move after the
+      compositor had already scrolled them into view, needing scroll
+      anchoring and showing a frame of wrong positions; applications
+      that size rows by text measure it with `siv_app_measure_text`.
+      Reverse if applications need rows sized by content they cannot
+      measure, such as embedded widgets.
     - Selection is a bitset in node data, resized with the count (node
       data of another size replaces the old and keeps what fits); none,
       single, or multiple with Ctrl, Shift, and Ctrl+A. The cursor's row is
@@ -2156,8 +2175,28 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     - A double click on a row activates it, like Enter: `siv_event`
       carries the click count of primary presses and the input's
       timestamp, so widgets written in C can do the same.
-    - Not built yet: variable row heights, column resizing and sorting,
-      and a position among siblings for tree items.
+    - Table columns sort and resize. A sortable header (`siv_column_desc`
+      flag) reports `sort` with the column and direction (ascending
+      first, then flipping) on a click, Enter, or Space; the header shows
+      the order, with an arrow and the semantics' `sort`, only when the
+      application's handler returns true, so a header never claims an
+      order the items do not have (`siv_view_set_sort` sets it without a
+      report). Each resizable column has a handle at its header cell's end
+      edge: dragging it moves the edge, and it is a separator whose value
+      is the width (stepped to 8 px, at least the column's `min_width`),
+      like a split pane's divider, so assistive technology resizes the
+      column through the Value interface. A resized column becomes a px
+      track; the others keep theirs. The user's resizes report `change`
+      on the header cell (drags when released).
+    - The header is one Tab stop with roving focus: Left and Right
+      (mirrored in RTL) move between header cells, Home and End to the
+      ends, Ctrl+Left and Ctrl+Right narrow and widen the focused column,
+      Down enters the rows, and Up from the first row returns. Handles
+      are not focusable: one per column would add a Tab stop per column,
+      or a second roving order inside the header, and the keys on the
+      header cell cover the keyboard.
+    - Not built yet: a position among siblings for tree items, column
+      reordering, and cells of their own sizes in grids.
   - **Styled text** is spans on the text and editor primitives, not a
     document model: `siv_set_text_spans` gives ranges of a node's text
     their own weight, slant, size, color (literal or themed), underline,
