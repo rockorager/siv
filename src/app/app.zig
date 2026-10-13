@@ -452,6 +452,9 @@ pub const App = struct {
             .rtl = options.rtl orelse app.rtl,
             .language = if (options.language.len > 0) options.language else app.fonts.name(app.language),
         });
+        // The first frame waits for the icons it shows as long as it may
+        // wait for the settings (D19).
+        win.ui.icon_wait_until = Loop.now() + desktop_mod.first_frame_wait_ns;
         if (app.accessible) win.a11y_id = app.bridge.addWindow(win.ui, options.title) catch |err| blk: {
             app.fail(if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable);
             break :blk 0;

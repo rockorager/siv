@@ -131,9 +131,13 @@ fn cpuNow() u64 {
 }
 
 fn open(address: ?[]const u8, settings: bool) !Started {
+    return openWith(gpa, address, settings);
+}
+
+fn openWith(allocator: std.mem.Allocator, address: ?[]const u8, settings: bool) !Started {
     const t0 = Loop.now();
     const cpu0 = cpuNow();
-    const app = try App.create(gpa, .{
+    const app = try App.create(allocator, .{
         .backend = .headless,
         .headless = .{ .refresh_ns = std.time.ns_per_ms },
         .system_fonts = false,
@@ -249,6 +253,56 @@ test "a portal that does not answer delays the first frame by at most 100 ms" {
     try testing.expect(s.app.desktop.ready_ns == null);
     // The defaults are in effect.
     try testing.expect(!s.win.ui.desktop.reduced_motion);
+}
+
+/// What a file manager's first frame shows: toolbar, places, and file
+/// type icons of the installed Adwaita theme.
+const first_icons = [_][]const u8{
+    "go-previous-symbolic",  "go-next-symbolic",       "go-up-symbolic",     "view-grid-symbolic",
+    "edit-find-symbolic",    "open-menu-symbolic",     "user-home-symbolic", "folder-documents-symbolic",
+    "folder-download-symbolic", "folder-music-symbolic", "folder-pictures-symbolic", "user-trash-symbolic",
+    "folder",                "text-x-generic",         "image-x-generic",    "audio-x-generic",
+    "video-x-generic",       "application-x-executable", "package-x-generic", "x-office-document",
+};
+
+test "the first frame waits for the icons it shows" {
+    std.Io.Dir.cwd().access(testing.io, "/usr/share/icons/Adwaita/index.theme", .{}) catch return error.SkipZigTest;
+    var daemon: Daemon = .{};
+    try daemon.start();
+    defer daemon.stop();
+    var portal: Portal = .{};
+    try portal.start(daemon.address);
+    defer portal.stop();
+
+    // From App.create: the settings and the first frame, with icons
+    // (none are left loading when it commits) and without. With the
+    // general-purpose allocator an application uses: the testing
+    // allocator's bookkeeping makes each load ten times slower.
+    const fast = std.heap.smp_allocator;
+    var frames: [9]u64 = undefined;
+    var settings: [9]u64 = undefined;
+    var plain: [9]u64 = undefined;
+    for (&frames, &settings, &plain) |*f, *st, *p| {
+        const s = try openWith(fast, daemon.address, true);
+        defer s.app.destroy();
+        const txn = try s.win.ui.begin();
+        const row = try txn.create(.root, .flex, .none);
+        try txn.setFlex(row, .{ .wrap = true });
+        for (first_icons, 0..) |name, i| {
+            const img = try txn.create(row, .image, .none);
+            try txn.setImage(img, .{ .icon = name, .icon_size = if (i < 12) 16 else 48 });
+        }
+        txn.commit();
+        f.* = try firstFrame(s);
+        st.* = s.app.desktop.ready_ns.? - s.app.desktop.started_ns;
+        try testing.expect(!s.app.icons.loading());
+        for (first_icons, 0..) |name, i| try testing.expect(!s.app.icons.pending(name, if (i < 12) 16 else 48, 1, false));
+        const b = try openWith(fast, daemon.address, true);
+        defer b.app.destroy();
+        p.* = try firstFrame(b);
+    }
+    if (measuring()) std.debug.print("\nfirst frame from App.create with {d} Adwaita icons: median {d} us (settings after {d} us), {d} us without icons\n", .{ first_icons.len, median(&frames) / 1000, median(&settings) / 1000, median(&plain) / 1000 });
+    try testing.expect(median(&frames) < 100 * std.time.ns_per_ms);
 }
 
 test "without a bus there is nothing to wait for" {
