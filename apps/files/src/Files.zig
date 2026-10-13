@@ -222,9 +222,7 @@ fn deinit(self: *Files) void {
     gpa.free(self.path);
     gpa.free(self.home);
     self.places.deinit();
-    const on_closed = self.opts.on_closed;
     gpa.destroy(self);
-    _ = on_closed;
 }
 
 fn onWindowEvent(ud: ?*anyopaque, _: siv.Window, ev: ?*const siv.WindowEvent) callconv(.c) bool {

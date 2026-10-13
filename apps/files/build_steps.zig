@@ -39,8 +39,13 @@ pub fn add(b: *std.Build, o: Options) void {
             .imports = &.{.{ .name = "siv", .module = wrapper }},
         }),
     });
+    // Installed next to libsiv.so in zig-out (or a prefix), and found
+    // there.
+    exe.root_module.addRPathSpecial("$ORIGIN/../lib");
     const install = b.addInstallArtifact(exe, .{});
-    b.step("files", "Build the file manager (apps/files)").dependOn(&install.step);
+    const files_step = b.step("files", "Build the file manager (apps/files)");
+    files_step.dependOn(&install.step);
+    files_step.dependOn(b.getInstallStep());
     const run = b.addRunArtifact(exe);
     run.addPassthruArgs();
     b.step("run-files", "Run the file manager").dependOn(&run.step);

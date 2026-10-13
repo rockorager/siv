@@ -81,9 +81,21 @@ Measurements are in [Numbers](#numbers) at the end.
    `SIV_POPUP_AT_RECT`, and `siv_menu_open_at(menu, node, x, y)` (commit
    "abi, widgets: open popups and menus at a point of a node", D17).
 
+8. **Every thread of the host process carried 256 KiB of libsiv's
+   thread-local storage.** The file manager's inotify thread, started with
+   a 512 KiB stack, failed with EINVAL in the real binary (linked to
+   libsiv.so) though not in the tests (linked statically). libsiv.so had a
+   256 KiB TLS segment: Zig's per-thread alternative signal stack, which a
+   library with no crash handler never uses, and which glibc reserves in
+   every thread of the process, including the host's. *Fixed:* libsiv sets
+   `std_options.signal_stack_size = null`, and the export check fails the
+   build above 4 KiB of TLS (commit "abi: keep libsiv's thread-local
+   storage small", D2). Programs built with Zig still carry Zig's own
+   256 KiB unless they do the same (the app does not need to).
+
 ## Open API questions
 
-8. **One return value means both "stop bubbling" and "skip the default
+9. **One return value means both "stop bubbling" and "skip the default
    action".** The DOM separates `stopPropagation` from `preventDefault`;
    siv's `bool` return conflates them. The app's window-wide shortcut
    handler (on the root) sees every key typed into the search field, the
@@ -94,7 +106,7 @@ Measurements are in [Numbers](#numbers) at the end.
    without cancelling the default action? Should siv expose the focused
    node (`siv_window_get_focus`) and whether a node is an editor?
 
-9. **A press on a selected item collapses a multiple selection at once.**
+10. **A press on a selected item collapses a multiple selection at once.**
    File managers keep the selection on press so that a drag carries all
    of it, and collapse it on release without a drag. The stock view
    selects on press; the app intercepts presses on already selected items
@@ -102,20 +114,20 @@ Measurements are in [Numbers](#numbers) at the end.
    itself. Should views defer the collapse to the release when the item
    is selected?
 
-10. **No way to watch a file descriptor.** inotify for the shown folder
+11. **No way to watch a file descriptor.** inotify for the shown folder
     needs a descriptor in the event loop, but the public loop takes none:
     `siv_app_fd` embeds siv in another loop, not the reverse. The app runs
     a thread blocked in poll(2) that `siv_post`s changes
     (`src/Watcher.zig`). A `siv_app_watch_fd(app, fd, events, callback)`
     would remove the thread and the cross-thread lifetime handling.
 
-11. **Long jobs share the pool with decoding and rendering.** A copy of a
+12. **Long jobs share the pool with decoding and rendering.** A copy of a
     large tree occupies a worker for its whole length; several copies at
     once leave thumbnails queued behind them, and fork-join rendering
     falls back to the compositor thread alone. Blocking I/O may want a
     lane of its own, or a cap on how many workers jobs take.
 
-12. **Image loads cannot be cancelled or prioritised.** The grid asks for
+13. **Image loads cannot be cancelled or prioritised.** The grid asks for
     thumbnails of the cells it binds; scrolling quickly past thousands of
     images would decode all of them. The app keeps its own queue (newest
     first, three in flight, older requests dropped) and reads the
@@ -124,17 +136,17 @@ Measurements are in [Numbers](#numbers) at the end.
     notes JPEG DCT scaling is not done yet), so a 12-megapixel photo
     costs ~50 MB and tens of ms per thumbnail.
 
-13. **No frame-presented event.** Measuring startup to first frame, or
+14. **No frame-presented event.** Measuring startup to first frame, or
     knowing that a change reached the screen, is impossible from the
     public API: windows report close, resize, scale, and states only. The
     benchmark and tests read siv's internals (`presented_seq`).
 
-14. **No text truncation.** Long file names need an ellipsis (one line in
+15. **No text truncation.** Long file names need an ellipsis (one line in
     the table, two in the grid). Text nodes wrap or not, nothing else; the
     app clips the cell, which cuts names mid-glyph with no indication.
     `siv_text_flags` could grow `ellipsize` and a line limit.
 
-15. **Formatted numbers in right-to-left layouts need marks.** A date
+16. **Formatted numbers in right-to-left layouts need marks.** A date
     "2026-10-13 14:05" in an RTL table shows its two runs of digits
     swapped, because a paragraph's base direction comes from its first
     strong character and digits have none (D21). The app prefixes U+200E;
@@ -142,12 +154,12 @@ Measurements are in [Numbers](#numbers) at the end.
     "\u200e2026-10-13"). A per-text base direction separate from the
     layout direction (which also flips alignment) would be cleaner.
 
-16. **Selection changes do not say what changed.** `select` reports the
+17. **Selection changes do not say what changed.** `select` reports the
     cursor and the count; the status line needs the selected items' total
     size, so the app reads the whole bitset on every change (cheap now,
     item 6).
 
-17. **Views expose neither their rows nor a way to focus the cursor.**
+18. **Views expose neither their rows nor a way to focus the cursor.**
     Opening the context menu with the keyboard (Menu, Shift+F10) at the
     cursor's row means walking the view's subtree for the row whose node
     data the app set; focusing the view means a depth-first search for its
@@ -155,26 +167,26 @@ Measurements are in [Numbers](#numbers) at the end.
 
 ## Noted
 
-18. **Keysyms are not in siv.h.** Every program writes out XKB keysym
+19. **Keysyms are not in siv.h.** Every program writes out XKB keysym
     numbers (`apps/files/src/keys.zig`; src/widgets has its own table).
 
-19. **Icons.** DESIGN.md (D19) says icons follow the freedesktop icon
+20. **Icons.** DESIGN.md (D19) says icons follow the freedesktop icon
     theme specification and render through siv's SVG parser, but neither
     exists yet: there is no way to load a themed icon by name. The app
     draws its icons on canvases with paths in theme colors
     (`src/icons.zig`), which keeps them sharp and themed but means every
     application redraws the folder icon.
 
-20. **Push buttons take a label only.** Back, Forward, Up, and the view
+21. **Push buttons take a label only.** Back, Forward, Up, and the view
     toggle are text buttons; an icon button would need a custom canvas
     widget with its own focus, press, and activate handling.
 
-21. **Menu items are reached by walking the menu's children.** Setting a
+22. **Menu items are reached by walking the menu's children.** Setting a
     check mark or disabling an item needs its node; the builder returns
     it, but an application that builds menus from tables keeps an index
     and walks `siv_node_get_related` to find it again.
 
-22. **Fields must precede declarations in a Zig struct** (Zig 0.17), so an
+23. **Fields must precede declarations in a Zig struct** (Zig 0.17), so an
     application's state struct cannot keep a field next to the functions
     that use it. Not siv's, but every Zig program meets it.
 
