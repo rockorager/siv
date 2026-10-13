@@ -7,13 +7,20 @@
 //! made from the installed files when the test runs. Debian packages:
 //! adwaita-icon-theme, breeze-icon-theme, librsvg2-bin (.agents/setup).
 //!
-//! siv composites in linear light (D11) and librsvg in sRGB, so the
-//! reference's pixels are composited over white in linear light, as siv
-//! does; what remains is coverage rounding at edges and the blending of
-//! overlapping translucent shapes. An icon differs when more than 2% of
-//! its pixels are off by more than 24 of 255 in some channel.
+//! siv composites in linear light (D11) and librsvg in sRGB. Two
+//! comparisons:
 //!
-//! With SIV_ICON_DIFFS=DIR, the worst icons' renderings go to DIR.
+//! - Geometry: siv's display list with its colors moved to sRGB-encoded
+//!   values, so the CPU renderer blends as librsvg does, against the
+//!   reference over white. Only the lowering and coverage differ here,
+//!   so this is the strict check of the SVG renderer.
+//! - As drawn: siv's output, linear blending and all, against the
+//!   reference composited over white in linear light. Translucent parts
+//!   of an icon over other parts blend differently, which D19 records.
+//!
+//! An icon differs when more than 2% of its pixels are off by more than
+//! 24 of 255 in some channel. With SIV_ICON_DIFFS=DIR, the renderings
+//! of the icons that differ most in geometry go to DIR (siv left).
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -27,13 +34,13 @@ const png = @import("png");
 const gpa = std.testing.allocator;
 const size = 32;
 
-const Theme = struct { name: []const u8, dir: []const u8, max_different: f32 };
+const Theme = struct { name: []const u8, dir: []const u8, max_geometry: f32, max_drawn: f32 };
 
 /// Measured on Debian 12's adwaita-icon-theme 43 and breeze-icon-theme
 /// 5.103 (October 2026); the bounds leave room for other versions.
 const themes = [_]Theme{
-    .{ .name = "Adwaita", .dir = "/usr/share/icons/Adwaita/scalable", .max_different = 0.01 },
-    .{ .name = "Breeze", .dir = "/usr/share/icons/breeze", .max_different = 0.03 },
+    .{ .name = "Adwaita", .dir = "/usr/share/icons/Adwaita/scalable", .max_geometry = 0.01, .max_drawn = 0.01 },
+    .{ .name = "Breeze", .dir = "/usr/share/icons/breeze", .max_geometry = 0.03, .max_drawn = 0.3 },
 };
 
 test "real icon themes match librsvg" {
@@ -65,6 +72,7 @@ test "real icon themes match librsvg" {
 
         var drawn: usize = 0;
         var different: usize = 0;
+        var geometry: usize = 0;
         var unparsed: usize = 0;
         var worst: [8]struct { score: f32 = 0, file: []const u8 = "" } = @splat(.{});
         for (files.items) |file| {
@@ -88,46 +96,85 @@ test "real icon themes match librsvg" {
             try r.render(list, .{ .background = .white, .target = .{ .pixels = &out, .stride = size * 4, .format = .abgr8888 } });
             drawn += 1;
 
-            const want = overWhite(reference);
-            var off: usize = 0;
-            for (0..size * size) |i| {
-                var d: u8 = 0;
-                for (0..3) |ch| d = @max(d, absDiff(out[i * 4 + ch], want[i * 4 + ch]));
-                if (d > 24) off += 1;
-            }
-            const score = @as(f32, @floatFromInt(off)) / (size * size);
-            if (score > 0.02) different += 1;
+            const want = overWhite(reference, true);
+            if (differing(&out, &want) > 0.02) different += 1;
+
+            // Blending in sRGB: encoded colors, decoded output.
+            encodeColors(list);
+            try r.render(list, .{ .background = .white, .target = .{ .pixels = &out, .stride = size * 4, .format = .abgr8888 } });
+            for (0..size * size) |i| for (0..3) |ch| {
+                out[i * 4 + ch] = @intFromFloat(@round(scene.srgbToLinear(@as(f32, @floatFromInt(out[i * 4 + ch])) / 255) * 255));
+            };
+            const flat = overWhite(reference, false);
+            const score = differing(&out, &flat);
+            if (score > 0.02) geometry += 1;
             // Keep the worst few.
             var k: usize = worst.len;
             while (k > 0 and worst[k - 1].score < score) k -= 1;
             if (k < worst.len) {
                 std.mem.copyBackwards(@TypeOf(worst[0]), worst[k + 1 ..], worst[k .. worst.len - 1]);
                 worst[k] = .{ .score = score, .file = file };
-                if (diffs_dir) |dir| try writePair(dir, k, theme.name, &out, &want);
+                if (diffs_dir) |dir| try writePair(dir, k, theme.name, &out, &flat);
             }
         }
-        const share = @as(f32, @floatFromInt(different)) / @as(f32, @floatFromInt(@max(drawn, 1)));
-        std.debug.print("{s}: {d} icons drawn, {d} differ ({d:.2}%), {d} not parsed\n", .{ theme.name, drawn, different, share * 100, unparsed });
+        const n: f32 = @floatFromInt(@max(drawn, 1));
+        const share_geometry = @as(f32, @floatFromInt(geometry)) / n;
+        const share_drawn = @as(f32, @floatFromInt(different)) / n;
+        std.debug.print("{s}: {d} icons drawn, {d} not parsed; {d} differ in geometry ({d:.2}%), {d} as drawn ({d:.2}%)\n", .{ theme.name, drawn, unparsed, geometry, share_geometry * 100, different, share_drawn * 100 });
         for (worst) |w| if (w.score > 0) std.debug.print("  {d:.1}% {s}\n", .{ w.score * 100, w.file });
         try std.testing.expectEqual(@as(usize, 0), unparsed);
-        try std.testing.expect(share <= theme.max_different);
+        try std.testing.expect(share_geometry <= theme.max_geometry);
+        try std.testing.expect(share_drawn <= theme.max_drawn);
     }
     if (!any) return error.SkipZigTest;
 }
 
 /// The reference's straight-alpha sRGB pixels over white, blended in
-/// linear light.
-fn overWhite(rgba: []const u8) [size * size * 4]u8 {
+/// linear light (as siv blends) or in sRGB.
+fn overWhite(rgba: []const u8, linear: bool) [size * size * 4]u8 {
     var out: [size * size * 4]u8 = undefined;
     for (0..size * size) |i| {
         const a = @as(f32, @floatFromInt(rgba[i * 4 + 3])) / 255;
         for (0..3) |ch| {
-            const c = scene.srgbToLinear(@as(f32, @floatFromInt(rgba[i * 4 + ch])) / 255);
-            out[i * 4 + ch] = @intFromFloat(@round(scene.linearToSrgb(c * a + (1 - a)) * 255));
+            const v = @as(f32, @floatFromInt(rgba[i * 4 + ch])) / 255;
+            const blended = if (linear) scene.linearToSrgb(scene.srgbToLinear(v) * a + (1 - a)) else v * a + (1 - a);
+            out[i * 4 + ch] = @intFromFloat(@round(blended * 255));
         }
         out[i * 4 + 3] = 255;
     }
     return out;
+}
+
+/// The share of pixels off by more than 24 of 255 in some channel.
+fn differing(got: []const u8, want: []const u8) f32 {
+    var off: usize = 0;
+    for (0..size * size) |i| {
+        var d: u8 = 0;
+        for (0..3) |ch| d = @max(d, absDiff(got[i * 4 + ch], want[i * 4 + ch]));
+        if (d > 24) off += 1;
+    }
+    return @as(f32, @floatFromInt(off)) / (size * size);
+}
+
+/// Replaces a list's linear colors with their sRGB encodings, so the
+/// renderer's linear blending blends encoded values as librsvg does.
+fn encodeColors(list: scene.DisplayList) void {
+    const enc = struct {
+        fn color(c: *scene.Color) void {
+            c.* = .{ .r = scene.linearToSrgb(c.r), .g = scene.linearToSrgb(c.g), .b = scene.linearToSrgb(c.b), .a = c.a };
+        }
+        fn paint(p: *scene.Paint) void {
+            switch (p.*) {
+                .solid => |*c| color(c),
+                .gradient => |g| for (@constCast(g.stops)) |*s| color(&s.color),
+            }
+        }
+    };
+    for (@constCast(list.commands)) |*cmd| switch (cmd.*) {
+        .fill => |*f| enc.paint(&f.paint),
+        .stroke => |*st| enc.paint(&st.paint),
+        else => {},
+    };
 }
 
 fn absDiff(a: u8, b: u8) u8 {

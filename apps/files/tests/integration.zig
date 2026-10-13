@@ -252,7 +252,7 @@ test "on sway with a screen reader: rows, cells, places, focus, and announcement
         .display_len = sway.display.len,
         .name = "siv-files-test",
         .name_len = 14,
-        .flags = .{ .no_system_fonts = true, .reduced_motion = true, .no_desktop_settings = true },
+        .flags = .{ .no_system_fonts = true, .no_system_icons = true, .reduced_motion = true, .no_desktop_settings = true },
     }, &app.app));
     defer _ = A.siv_app_destroy(app.app);
     const tf = text.font.test_fonts;
@@ -266,6 +266,7 @@ test "on sway with a screen reader: rows, cells, places, focus, and announcement
         .data_home = fx.path,
         .thumbnails = false,
         .watch = true,
+        .icon_dir = "apps/files/icons",
     });
     try app.ready();
 

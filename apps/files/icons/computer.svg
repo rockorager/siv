@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+<!-- The file manager's own icon (apps/files), shown when the icon theme has none. -->
+<style type="text/css" id="current-color-scheme">
+.ColorScheme-Text { color:#18181b; } .ColorScheme-Highlight { color:#2563eb; }
+.ColorScheme-HighlightedText { color:#ffffff; } .ColorScheme-ViewBackground { color:#ffffff; }
+</style>
+<rect class="ColorScheme-Text" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" x="1.5" y="2.5" width="13" height="9" rx="1"/>
+<path class="ColorScheme-Text" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" d="M5 14H11"/>
+</svg>

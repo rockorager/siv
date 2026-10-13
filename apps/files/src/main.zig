@@ -75,6 +75,9 @@ pub fn main(init: std.process.Init) !u8 {
     if (theme != .follow) _ = c.siv_app_set_theme(app, &.{ .scheme = theme });
 
     opts.on_closed = quit;
+    // Installed with the executable: <prefix>/share/siv-files/icons.
+    var icon_buf: [4096]u8 = undefined;
+    opts.icon_dir = iconDir(&icon_buf);
     const files = Files.create(app, opts) catch |err| {
         std.debug.print("siv-files: cannot open a window: {s}\n", .{@errorName(err)});
         return 1;
@@ -93,6 +96,17 @@ pub fn main(init: std.process.Init) !u8 {
         return 1;
     }
     return 0;
+}
+
+/// share/siv-files/icons beside the executable's bin directory.
+fn iconDir(buf: []u8) ?[]const u8 {
+    const linux = std.os.linux;
+    var exe: [4096]u8 = undefined;
+    const n = linux.readlink("/proc/self/exe", &exe, exe.len);
+    if (linux.errno(n) != .SUCCESS) return null;
+    const bin = std.fs.path.dirname(exe[0..n]) orelse return null;
+    const prefix = std.fs.path.dirname(bin) orelse return null;
+    return std.fmt.bufPrint(buf, "{s}/share/siv-files/icons", .{prefix}) catch null;
 }
 
 /// The local time zone's offset from UTC now, in seconds, from libc.

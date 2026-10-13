@@ -133,7 +133,7 @@ pub const Harness = struct {
     }
 
     pub fn start(h: *Harness, s: Start) !void {
-        try ok(A.siv_app_create(&.{ .backend = .headless, .flags = .{ .no_system_fonts = true, .reduced_motion = true, .rtl = s.rtl } }, &h.app));
+        try ok(A.siv_app_create(&.{ .backend = .headless, .flags = .{ .no_system_fonts = true, .no_system_icons = true, .reduced_motion = true, .rtl = s.rtl } }, &h.app));
         const tf = text.font.test_fonts;
         for ([_][]const u8{ tf.latin, tf.arabic, tf.hebrew }) |font| try ok(A.siv_app_add_font(h.app, "Droid", 5, font.ptr, font.len));
         try ok(A.siv_app_set_default_font(h.app, "Droid", 5));
@@ -148,6 +148,8 @@ pub const Harness = struct {
             .height = s.height,
             .mode = s.mode,
             .thumbnails = s.thumbnails,
+            // Only the application's own icons, never the system's.
+            .icon_dir = "apps/files/icons",
             .watch = s.watch,
             .on_closed = onClosed,
         });
@@ -196,7 +198,7 @@ pub const Harness = struct {
             if (Loop.now() > deadline) return error.Timeout;
             try ok(A.siv_app_dispatch(h.app, 2));
             const cb = &self.app.clipboard;
-            var busy = self.app.fonts.loading() or cb.transfers.items.len != 0 or cb.ready.items.len != 0;
+            var busy = self.app.fonts.loading() or self.app.icons.loading() or cb.transfers.items.len != 0 or cb.ready.items.len != 0;
             if (h.files) |fl| busy = busy or fl.loading != null or (fl.ops.items.len != 0 and !h.ignore_ops) or fl.thumbs.busy() or fl.reload_timer != .null or fl.thumbs.notify_timer != .null;
             for (self.windows.items) |slot| if (slot) |w| {
                 if (w.dead or !w.win.shown) continue;

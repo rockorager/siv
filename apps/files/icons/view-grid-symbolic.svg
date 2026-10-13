@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+<!-- The file manager's own icon (apps/files), shown when the icon theme has none. -->
+<path fill="#2e3436" d="M1 1H7V7H1ZM9 1H15V7H9ZM1 9H7V15H1ZM9 9H15V15H9Z"/>
+</svg>

@@ -45,6 +45,8 @@ pub fn add(b: *std.Build, o: Options) void {
     const install = b.addInstallArtifact(exe, .{});
     const files_step = b.step("files", "Build the file manager (apps/files)");
     files_step.dependOn(&install.step);
+    // Its own icons, for names the icon theme lacks (main.zig finds them).
+    files_step.dependOn(&b.addInstallDirectory(.{ .source_dir = b.path("apps/files/icons"), .install_dir = .prefix, .install_subdir = "share/siv-files/icons" }).step);
     files_step.dependOn(b.getInstallStep());
     const run = b.addRunArtifact(exe);
     run.addPassthruArgs();

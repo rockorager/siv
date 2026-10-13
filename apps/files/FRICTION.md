@@ -237,6 +237,28 @@ Measurements are in [Numbers](#numbers) at the end.
     `select` reports (commit "widgets: find a menu item by its position",
     D22). The app's child walk is a one-line call.
 
+20. **Icons.** DESIGN.md (D19) said icons follow the freedesktop icon
+    theme specification and render through siv's SVG parser, but neither
+    existed: the app drew its icons on canvases with paths in theme
+    colors, so every application would redraw the folder icon. *Fixed:*
+    image nodes show a themed icon by name (`siv_image_view_desc.icon`),
+    looked up in the desktop's icon theme and loaded on the worker pool
+    (commits "svg, icon: ...", "ui: vector images, and themed icons in
+    image nodes", "abi: icons through the C API", D19). Rows, grid cells,
+    and places name their icons (`src/icons.zig`: `folder`,
+    `text-x-generic`, `user-home`, with fallbacks); the app's own SVGs in
+    `apps/files/icons` (its former canvas drawings, recolored by the
+    theme through KDE's color scheme classes) fill in names a theme
+    lacks and are all the tests see.
+
+21. **Push buttons took a label only.** Back, Forward, Up, and the view
+    toggle were text buttons; an icon button would have needed a custom
+    canvas widget. *Fixed:* buttons take an icon, alone with the label as
+    the accessible name (`SIV_WIDGET_ICON_ONLY`), and
+    `siv_widget_set_icon` changes it with the view toggle's label
+    (commit "widgets: icons in push, toggle, and menu buttons and menu
+    items", D22).
+
 24. **A descriptor cannot end in one 4-byte field.** Descriptors have no
     padding (D2), so appending a single `uint32_t` or enum to one whose
     size is a multiple of 8 fails the build ("trailing padding; append a
@@ -268,19 +290,6 @@ None: every question this work raised has been decided and is fixed
 above. What is left is noted below.
 
 ## Noted
-
-20. **Icons.** DESIGN.md (D19) says icons follow the freedesktop icon
-    theme specification and render through siv's SVG parser, but neither
-    exists yet: there is no way to load a themed icon by name. The app
-    draws its icons on canvases with paths in theme colors
-    (`src/icons.zig`), which keeps them sharp and themed but means every
-    application redraws the folder icon. Another thread owns icon
-    themes, the SVG renderer, and icon buttons.
-
-21. **Push buttons take a label only.** Back, Forward, Up, and the view
-    toggle are text buttons; an icon button would need a custom canvas
-    widget with its own focus, press, and activate handling. Left to the
-    icon thread with item 20.
 
 23. **Fields must precede declarations in a Zig struct** (Zig 0.17), so an
     application's state struct cannot keep a field next to the functions

@@ -46,6 +46,9 @@ pub const Options = struct {
     window_flags: siv.WindowFlags = .{},
     /// Called when the window is gone, so `main` can quit.
     on_closed: ?*const fn (*Files) void = null,
+    /// The application's own icons (apps/files/icons), searched after
+    /// the icon theme for the names it lacks.
+    icon_dir: ?[]const u8 = null,
 };
 
 gpa: Allocator,
@@ -175,6 +178,7 @@ pub fn create(app: siv.App, opts: Options) !*Files {
         .mode = opts.mode,
         .thumbs = .init(gpa, app),
     };
+    if (opts.icon_dir) |dir| try siv.check(c.siv_app_add_icon_path(app, dir.ptr, dir.len));
     self.thumbs.enabled = opts.thumbnails;
     self.thumbs.on_ready = thumbReady;
     self.thumbs.ctx = self;
@@ -287,11 +291,18 @@ fn text(txn: Txn, parent: Node, s: []const u8, token: siv.ColorToken, role: siv.
     return n;
 }
 
-fn iconCanvas(txn: Txn, parent: Node, size: f32, ud: ?*anyopaque, draw: siv.DrawFn) Node {
-    const n = c.siv_canvas(txn, parent, &.{ .user_data = ud, .draw = draw, .width = size, .height = size });
+/// An image node for a themed icon (D19), decorative: rows are named by
+/// their text.
+fn iconView(txn: Txn, parent: Node, size: f32) Node {
+    const n = c.siv_image_view(txn, parent, &.{ .icon_size = size });
     _ = c.siv_set_layout(txn, n, &.{ .width = px(size), .height = px(size), .flags = .{ .no_shrink = true }, .align_y = .center });
     _ = c.siv_set_semantics(txn, n, &.{ .role = .none });
     return n;
+}
+
+fn setIcon(txn: Txn, node: Node, icon: icons.Icon, size: f32) void {
+    const n = icons.names(icon);
+    _ = c.siv_set_image_view(txn, node, &.{ .icon = n.ptr, .icon_len = n.len, .icon_size = size, .color_token = .view_fg });
 }
 
 fn build(self: *Files) !void {
@@ -308,9 +319,10 @@ fn build(self: *Files) !void {
     const bar = c.siv_flex(txn, column, &.{ .axis = .row, .gap = 6, .align_items = .center });
     _ = c.siv_set_layout(txn, bar, &.{ .padding = .{ .start = 8, .end = 8, .top = 6, .bottom = 6 } });
     _ = c.siv_set_semantics(txn, bar, &.{ .role = .toolbar, .label = "Navigation", .label_len = 10 });
-    self.back_btn = c.siv_push_button(txn, bar, &.{ .label = "Back", .label_len = 4, .style = .flat });
-    self.fwd_btn = c.siv_push_button(txn, bar, &.{ .label = "Forward", .label_len = 7, .style = .flat });
-    self.up_btn = c.siv_push_button(txn, bar, &.{ .label = "Up", .label_len = 2, .style = .flat });
+    const icon_only: siv.WidgetFlags = .{ .icon_only = true };
+    self.back_btn = c.siv_push_button(txn, bar, &.{ .label = "Back", .label_len = 4, .style = .flat, .icon = "go-previous-symbolic", .icon_len = 20, .flags = icon_only });
+    self.fwd_btn = c.siv_push_button(txn, bar, &.{ .label = "Forward", .label_len = 7, .style = .flat, .icon = "go-next-symbolic", .icon_len = 16, .flags = icon_only });
+    self.up_btn = c.siv_push_button(txn, bar, &.{ .label = "Up", .label_len = 2, .style = .flat, .icon = "go-up-symbolic", .icon_len = 14, .flags = icon_only });
     _ = c.siv_on(txn, self.back_btn, .activate, onBack, null, self);
     _ = c.siv_on(txn, self.fwd_btn, .activate, onForward, null, self);
     _ = c.siv_on(txn, self.up_btn, .activate, onUp, null, self);
@@ -333,7 +345,7 @@ fn build(self: *Files) !void {
     _ = c.siv_on(txn, self.search, .key, onSearchKey, null, self);
     _ = c.siv_on(txn, self.search, .focus, onEditorFocus, null, self);
 
-    self.mode_btn = c.siv_push_button(txn, bar, &.{ .label = "Grid", .label_len = 4, .style = .flat });
+    self.mode_btn = c.siv_push_button(txn, bar, &.{ .label = "Grid", .label_len = 4, .style = .flat, .icon = "view-grid-symbolic", .icon_len = 18, .flags = icon_only });
     _ = c.siv_on(txn, self.mode_btn, .activate, onToggleMode, null, self);
 
     const menu_btn = c.siv_menu_button(txn, bar, &.{ .label = "Menu", .label_len = 4, .style = .flat });
@@ -534,6 +546,8 @@ fn applyMode(self: *Files) !void {
     _ = c.siv_set_visual(txn, self.grid, &.{ .flags = .{ .hidden = self.mode != .grid } });
     const label = if (self.mode == .list) "Grid" else "List";
     _ = c.siv_widget_set_label(txn, self.mode_btn, label.ptr, label.len);
+    const icon = if (self.mode == .list) "view-grid-symbolic" else "view-list-symbolic";
+    _ = c.siv_widget_set_icon(txn, self.mode_btn, icon.ptr, icon.len);
     self.syncAppMenu(txn);
     try siv.check(c.siv_txn_commit(txn));
 }
@@ -578,14 +592,6 @@ fn rowParts(txn: Txn, row: Node) ?*RowParts {
     return @ptrCast(@alignCast(p));
 }
 
-fn drawRowIcon(ud: ?*anyopaque, node: Node, d: siv.Draw, w: f32, h: f32) callconv(.c) void {
-    const parts: *RowParts = @ptrCast(@alignCast(ud.?));
-    const self = parts.files orelse return;
-    const l = &(self.listing orelse return);
-    if (parts.entry >= l.entries.len) return;
-    icons.draw(.of(l.entries[parts.entry].category), node, d, w, h);
-}
-
 fn bindRow(ud: ?*anyopaque, txn: Txn, row: Node, item: u64, _: u32, _: u32, _: bool) callconv(.c) void {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     const parts = rowParts(txn, row) orelse return;
@@ -598,7 +604,7 @@ fn bindRow(ud: ?*anyopaque, txn: Txn, row: Node, item: u64, _: u32, _: u32, _: b
         parts.files = self;
         const name_cell = c.siv_flex(txn, row, &.{ .axis = .row, .gap = 8, .align_items = .center });
         _ = c.siv_set_visual(txn, name_cell, &.{ .flags = .{ .clip = true } });
-        parts.icon = iconCanvas(txn, name_cell, 18, parts, drawRowIcon);
+        parts.icon = iconView(txn, name_cell, 18);
         parts.name = text(txn, name_cell, "", .view_fg, .body);
         _ = c.siv_set_layout(txn, parts.name, &.{ .grow = 1, .basis = px(0) });
         parts.size = text(txn, row, "", .muted_fg, .body);
@@ -625,7 +631,7 @@ fn bindRow(ud: ?*anyopaque, txn: Txn, row: Node, item: u64, _: u32, _: u32, _: b
     _ = c.siv_set_text(txn, parts.modified, t.ptr, t.len);
     const kind = e.category.label();
     _ = c.siv_set_text(txn, parts.kind, kind.ptr, kind.len);
-    _ = c.siv_invalidate(txn, parts.icon);
+    setIcon(txn, parts.icon, .of(e.category), 18);
     self.bindDropTarget(txn, row, e);
     self.bindRename(txn, parts, entry);
 }
@@ -645,7 +651,7 @@ fn bindCell(ud: ?*anyopaque, txn: Txn, cell: Node, item: u64, _: u32, _: u32, _:
         _ = c.siv_set_visual(txn, col, &.{ .flags = .{ .clip = true } });
         const pic = c.siv_stack(txn, col, &.{ .align_x = .center, .align_y = .center });
         _ = c.siv_set_layout(txn, pic, &.{ .width = px(64), .height = px(64), .flags = .{ .no_shrink = true } });
-        parts.icon = iconCanvas(txn, pic, 56, parts, drawRowIcon);
+        parts.icon = iconView(txn, pic, 56);
         parts.image = c.siv_image_view(txn, pic, &.{ .fit = .contain });
         _ = c.siv_set_layout(txn, parts.image, &.{ .width = px(64), .height = px(64) });
         _ = c.siv_set_visual(txn, parts.image, &.{ .flags = .{ .hidden = true } });
@@ -659,7 +665,7 @@ fn bindCell(ud: ?*anyopaque, txn: Txn, cell: Node, item: u64, _: u32, _: u32, _:
     }
     parts.entry = entry;
     _ = c.siv_set_text(txn, parts.name, l.name(e).ptr, l.name(e).len);
-    _ = c.siv_invalidate(txn, parts.icon);
+    setIcon(txn, parts.icon, .of(e.category), 56);
     // A thumbnail when there is one; otherwise the icon, and ask for it.
     const img = if (e.kind == .file and model.thumbnailable(l.name(e))) self.thumbs.get(l.path, l.name(e), e.mtime) else null;
     if (img) |image| {
@@ -691,13 +697,6 @@ fn thumbReady(ctx: ?*anyopaque) void {
 
 // Places ------------------------------------------------------------------------------
 
-fn drawPlaceIcon(ud: ?*anyopaque, node: Node, d: siv.Draw, w: f32, h: f32) callconv(.c) void {
-    const parts: *PlaceParts = @ptrCast(@alignCast(ud.?));
-    const self = parts.files orelse return;
-    if (parts.index >= self.places.items.items.len) return;
-    icons.draw(self.places.items.items[parts.index].icon, node, d, w, h);
-}
-
 fn bindPlace(ud: ?*anyopaque, txn: Txn, row: Node, item: u64, _: u32, _: u32, _: bool) callconv(.c) void {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     var p: ?*anyopaque = null;
@@ -708,7 +707,7 @@ fn bindPlace(ud: ?*anyopaque, txn: Txn, row: Node, item: u64, _: u32, _: u32, _:
     if (parts.files == null) {
         parts.files = self;
         const flex = c.siv_flex(txn, row, &.{ .axis = .row, .gap = 8, .align_items = .center });
-        parts.icon = iconCanvas(txn, flex, 18, parts, drawPlaceIcon);
+        parts.icon = iconView(txn, flex, 18);
         parts.label = text(txn, flex, "", .view_fg, .body);
         const drop = "text/uri-list";
         _ = c.siv_set_drop_target(txn, row, &.{ .mimes = drop, .mimes_len = drop.len, .actions = .{ .copy = true, .move = true }, .preferred = .copy });
@@ -717,7 +716,7 @@ fn bindPlace(ud: ?*anyopaque, txn: Txn, row: Node, item: u64, _: u32, _: u32, _:
     parts.index = @intCast(item);
     const pl = self.places.items.items[parts.index];
     _ = c.siv_set_text(txn, parts.label, pl.label.ptr, pl.label.len);
-    _ = c.siv_invalidate(txn, parts.icon);
+    setIcon(txn, parts.icon, pl.icon, 18);
 }
 
 fn onPlaceSelect(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
