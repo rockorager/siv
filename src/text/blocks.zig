@@ -451,6 +451,10 @@ pub const ShapedText = struct {
     /// while building it; blocks shaped later report theirs to the
     /// residency.
     wanted: []FontId,
+    /// The text's one style, when it has one (a copy): an edit keeps
+    /// every block outside the change without comparing styles block by
+    /// block, which cost 2 ms a keystroke for 12,800 blocks.
+    only_style: ?Style = null,
 
     /// Shapes `text` with `styles` (as `ShapedParagraph.init` takes them)
     /// in blocks: all of them, or those within `options.eager_bytes`.
@@ -544,7 +548,8 @@ pub const ShapedText = struct {
         defer tmp.deinit();
         var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(gpa);
-        const ctx: Ctx = .{ .gpa = gpa, .scratch = scratch, .tmp = &tmp, .cache = cache, .text = text, .buf = &buf, .styles = styles, .direction = direction, .options = options };
+        const uniform = styles.len == 1 and if (old.only_style) |o| sameStyle(o, styles[0].style) else false;
+        const ctx: Ctx = .{ .gpa = gpa, .scratch = scratch, .tmp = &tmp, .cache = cache, .text = text, .buf = &buf, .styles = styles, .direction = direction, .options = options, .uniform = uniform };
 
         // Blocks before the change: kept unless it touches their end.
         var i: usize = 0;
@@ -593,6 +598,10 @@ pub const ShapedText = struct {
         self.gpa.free(self.style_firsts);
         self.gpa.free(self.paragraph_starts);
         self.gpa.free(self.wanted);
+        if (self.only_style) |st| {
+            self.gpa.free(st.fonts);
+            self.gpa.free(st.language);
+        }
         self.* = undefined;
     }
 
@@ -709,12 +718,14 @@ pub const ShapedText = struct {
         styles: []const StyleRun,
         direction: bidi.BaseDirection,
         options: Options,
+        /// The old text and this one have the same one style.
+        uniform: bool = false,
 
         /// Appends `b`, now at `start`, if its styles are still the text's
         /// there; else its bytes again (unchanged), shaped if `b` was.
         fn keepOrRedo(ctx: Ctx, list: *std.ArrayList(*ShapedBlock), b: *ShapedBlock, start: usize) BuildError!void {
             try list.ensureUnusedCapacity(ctx.scratch, 1);
-            if (sameStyles(b, ctx.styles, start)) {
+            if ((ctx.uniform and b.styles.len == 1) or sameStyles(b, ctx.styles, start)) {
                 list.appendAssumeCapacity(b.retain());
                 return;
             }
@@ -817,8 +828,19 @@ pub const ShapedText = struct {
         }
         starts[list.len] = at;
         paragraph_starts[list.len] = paragraphs;
+        var only_style: ?Style = null;
+        if (styles.len == 1) {
+            const fonts = try gpa.dupe(FontId, styles[0].style.fonts);
+            errdefer gpa.free(fonts);
+            only_style = .{ .fonts = fonts, .size = styles[0].style.size, .language = try gpa.dupe(u8, styles[0].style.language) };
+        }
+        errdefer if (only_style) |st| {
+            gpa.free(st.fonts);
+            gpa.free(st.language);
+        };
         // The list's references move into the result.
         return .{
+            .only_style = only_style,
             .gpa = gpa,
             .blocks = blocks,
             .starts = starts,
@@ -964,6 +986,10 @@ fn styleIndex(styles: []const StyleRun, offset: usize) usize {
     return @min(low, styles.len - 1);
 }
 
+fn sameStyle(a: Style, b: Style) bool {
+    return a.size == b.size and std.mem.eql(FontId, a.fonts, b.fonts) and std.mem.eql(u8, a.language, b.language);
+}
+
 /// Whether the text's styles over `b`'s bytes, at `start`, are `b`'s.
 fn sameStyles(b: *const ShapedBlock, styles: []const StyleRun, start: usize) bool {
     const blen = b.text.len;
@@ -1098,6 +1124,41 @@ fn runStyleAt(runs: []const ParagraphRun, start: u32) ParagraphStyle {
     return style;
 }
 
+/// An old layout's blocks, found by their shaped block: those an edit
+/// kept at the start and the end pair up by index, the rest by a map.
+const Reusable = struct {
+    old: []const *LayoutBlock = &.{},
+    /// Blocks `0..head` of both, and the last `tail` of each, are the
+    /// same shaped blocks.
+    head: usize = 0,
+    tail: usize = 0,
+    new_len: usize = 0,
+    middle: std.AutoHashMapUnmanaged(*ShapedBlock, *LayoutBlock) = .empty,
+
+    fn init(r: *Reusable, scratch: Allocator, old: []const *LayoutBlock, new: []const *ShapedBlock) error{OutOfMemory}!void {
+        r.old = old;
+        r.new_len = new.len;
+        const m = @min(old.len, new.len);
+        while (r.head < m and old[r.head].shaped == new[r.head]) r.head += 1;
+        while (r.tail < m - r.head and old[old.len - 1 - r.tail].shaped == new[new.len - 1 - r.tail]) r.tail += 1;
+        const rest = old[r.head .. old.len - r.tail];
+        try r.middle.ensureTotalCapacity(scratch, @intCast(rest.len));
+        for (rest) |lb| r.middle.putAssumeCapacity(lb.shaped, lb);
+    }
+
+    /// The old block of shaped block `sb`, the new text's block `i` or
+    /// one it was reshaped from.
+    fn get(r: *const Reusable, i: usize, sb: *ShapedBlock) ?*LayoutBlock {
+        if (r.old.len == 0) return null;
+        if (i < r.head and r.old[i].shaped == sb) return r.old[i];
+        if (i >= r.new_len - r.tail) {
+            const lb = r.old[r.old.len - (r.new_len - i)];
+            if (lb.shaped == sb) return lb;
+        }
+        return r.middle.get(sb);
+    }
+};
+
 /// Texts of up to this many blocks keep every block's positioned glyphs.
 const eager_glyph_blocks = 4;
 
@@ -1136,12 +1197,11 @@ pub const TextLayout = struct {
         if (options.width) |w| if (!std.math.isFinite(w) or w < 0) return error.InvalidWidth;
         for (options.tab_stops) |stop| if (!std.math.isFinite(stop.position)) return error.InvalidWidth;
         const n = shaped.blocks.len;
-        // Old blocks by their shaped block.
-        var reusable: std.AutoHashMapUnmanaged(*ShapedBlock, *LayoutBlock) = .empty;
-        if (old) |o| {
-            try reusable.ensureTotalCapacity(scratch, @intCast(o.blocks.len));
-            for (o.blocks) |lb| reusable.putAssumeCapacity(lb.shaped, lb);
-        }
+        // Old blocks by their shaped block. An edit keeps the blocks before
+        // and after it in order, so those pair up by walking both ends;
+        // only the blocks between go in a map.
+        var reusable: Reusable = .{};
+        if (old) |o| try reusable.init(scratch, o.blocks, shaped.blocks);
         const blocks = try gpa.alloc(*LayoutBlock, n);
         var made: usize = 0;
         errdefer {
@@ -1159,11 +1219,20 @@ pub const TextLayout = struct {
             const last = i + 1 == n;
             // Its paragraph runs: those covering s..e (and e itself for the
             // line after a final break).
-            var local: std.ArrayList(ParagraphRun) = .empty;
+            var local_buf: [4]ParagraphRun = undefined;
+            var local: std.ArrayList(ParagraphRun) = .initBuffer(&local_buf);
             while (run_index + 1 < runs.len and runs[run_index].end <= s) run_index += 1;
             var k = run_index;
             while (k < runs.len) : (k += 1) {
-                try local.append(scratch, .{ .end = @intCast(@min(runs[k].end, e) - @min(s, runs[k].end)), .style = runs[k].style });
+                const run: ParagraphRun = .{ .end = @intCast(@min(runs[k].end, e) - @min(s, runs[k].end)), .style = runs[k].style };
+                if (local.items.len == local.capacity) {
+                    // More than a few runs: on to the scratch allocator.
+                    var grown: std.ArrayList(ParagraphRun) = .empty;
+                    try grown.ensureTotalCapacity(scratch, local.items.len * 4);
+                    grown.appendSliceAssumeCapacity(local.items);
+                    local = grown;
+                }
+                local.appendAssumeCapacity(run);
                 if (runs[k].end > e or (runs[k].end == e and !last)) break;
             }
             var block_options = options;
@@ -1172,9 +1241,9 @@ pub const TextLayout = struct {
             // Only painting reads positioned glyphs: a long text keeps
             // them for the blocks it paints (`withGlyphs`), and for a
             // block reshaped from one it painted.
-            const from: ?*const Layout = if (sb.from) |f| (if (reusable.get(@constCast(f))) |o| (if (o.layout) |*l| l else null) else null) else null;
+            const from: ?*const Layout = if (sb.from) |f| (if (reusable.get(i, @constCast(f))) |o| (if (o.layout) |*l| l else null) else null) else null;
             block_options.glyphs = n <= eager_glyph_blocks or (if (from) |f| f.built.glyphs else false);
-            if (reusable.get(sb)) |lb| if (compatible(lb, block_options)) {
+            if (reusable.get(i, sb)) |lb| if (compatible(lb, block_options)) {
                 blocks[i] = lb.retain();
                 kept[i] = !lb.measured;
                 made += 1;
@@ -2050,3 +2119,6 @@ test "estimates move only the blocks after a measured one" {
     const pos = try text.hitTest(10, y);
     try std.testing.expect(pos.offset > shaped.starts[last - 1]);
 }
+
+
+
