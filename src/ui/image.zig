@@ -206,6 +206,8 @@ pub const Image = struct {
         decode: image_mod.Options = .{},
         /// Pixels per logical pixel; the decode bounds are in pixels.
         scale: f32 = 1,
+        /// Order among queued pool jobs: higher first.
+        priority: i64 = 0,
     };
 
     /// Called with the image (the callee owns the reference) or why it
@@ -218,26 +220,31 @@ pub const Image = struct {
     };
 
     /// Reads (for a path) and decodes an image on the worker pool, without
-    /// blocking the loop. The source is copied.
-    pub fn load(pool: *loop_mod.Pool, gpa: std.mem.Allocator, source: Source, options: LoadOptions, done: LoadDone) error{OutOfMemory}!void {
+    /// blocking the loop. The source is copied. The returned load is valid
+    /// until `done` runs or it is cancelled.
+    pub fn load(pool: *loop_mod.Pool, gpa: std.mem.Allocator, source: Source, options: LoadOptions, done: LoadDone) error{OutOfMemory}!*Loading {
         const l = try gpa.create(Load);
         errdefer gpa.destroy(l);
         const copy = try gpa.dupe(u8, switch (source) {
             inline else => |b| b,
         });
         l.* = .{ .gpa = gpa, .pool = pool, .source = copy, .is_path = source == .path, .options = options, .done = done };
+        l.job.priority = options.priority;
         pool.submit(&l.job) catch {
             gpa.free(copy);
             return error.OutOfMemory;
         };
+        return l;
     }
+
+    pub const Loading = Load;
 };
 
 /// Files larger than this are not images siv decodes.
 const max_file = 512 << 20;
 
 const Load = struct {
-    job: loop_mod.Pool.Job = .{ .run = run, .done = finish, .cancel = cancel },
+    job: loop_mod.Pool.Job = .{ .run = run, .done = finish, .cancel = cancelled },
     gpa: std.mem.Allocator,
     pool: *loop_mod.Pool,
     source: []u8,
@@ -245,6 +252,19 @@ const Load = struct {
     options: Image.LoadOptions,
     done: Image.LoadDone,
     result: Image.LoadError!*Image = error.InvalidImage,
+    /// Cancelled while decoding: the result is dropped.
+    dropped: bool = false,
+
+    /// Stops the load: a queued one never decodes; one being decoded is
+    /// dropped when done. Only `done.destroy` runs, now or then.
+    pub fn cancel(l: *Load) void {
+        if (l.pool.cancel(&l.job)) return cancelled(&l.job);
+        l.dropped = true;
+    }
+
+    pub fn setPriority(l: *Load, priority: i64) void {
+        l.pool.setPriority(&l.job, priority);
+    }
 
     fn run(job: *loop_mod.Pool.Job) void {
         const l: *Load = @fieldParentPtr("job", job);
@@ -275,6 +295,7 @@ const Load = struct {
 
     fn finish(job: *loop_mod.Pool.Job) void {
         const l: *Load = @fieldParentPtr("job", job);
+        if (l.dropped) return cancelled(job);
         const done = l.done;
         const result = l.result;
         l.free();
@@ -282,7 +303,7 @@ const Load = struct {
         if (done.destroy) |d| d(done.ctx);
     }
 
-    fn cancel(job: *loop_mod.Pool.Job) void {
+    fn cancelled(job: *loop_mod.Pool.Job) void {
         const l: *Load = @fieldParentPtr("job", job);
         if (l.result) |img| img.release() else |_| {}
         const done = l.done;
@@ -348,7 +369,7 @@ test "decoded animations keep their frames; loads run on the pool" {
     };
     var rec: Rec = .{};
     // 16 × 16, three frames, shown at scale 2.
-    try Image.load(&pool, gpa, .{ .bytes = @embedFile("testdata/anim.gif") }, .{ .scale = 2 }, .{ .ctx = &rec, .func = Rec.done, .destroy = Rec.destroy });
+    _ = try Image.load(&pool, gpa, .{ .bytes = @embedFile("testdata/anim.gif") }, .{ .scale = 2 }, .{ .ctx = &rec, .func = Rec.done, .destroy = Rec.destroy });
     while (!rec.destroyed) try loop.dispatch(-1);
     const img = rec.img.?;
     defer img.release();
@@ -358,7 +379,7 @@ test "decoded animations keep their frames; loads run on the pool" {
     try std.testing.expectEqual(img.pixels.ptr, img.frameRef(0).pixels);
 
     var bad: Rec = .{};
-    try Image.load(&pool, gpa, .{ .path = "/nonexistent/siv.png" }, .{}, .{ .ctx = &bad, .func = Rec.done, .destroy = Rec.destroy });
+    _ = try Image.load(&pool, gpa, .{ .path = "/nonexistent/siv.png" }, .{}, .{ .ctx = &bad, .func = Rec.done, .destroy = Rec.destroy });
     while (!bad.destroyed) try loop.dispatch(-1);
     try std.testing.expectEqual(@as(?Image.LoadError, error.ReadFailed), bad.err);
 }

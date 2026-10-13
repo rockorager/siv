@@ -902,6 +902,10 @@ pub const decls = [_]Decl{
         .{ .name = "dark_high_contrast", .value = 4, .doc = "Dark, high contrast." },
     }),
     handle("siv_timer", "A one-shot timer on the application's loop. Valid until it fires or is cancelled.", false),
+    flags("siv_job_flags", "How a job runs.", &.{
+        .{ .name = "compute", .bit = 0, .doc = "CPU-bound work (decoding, layout of a large document, hashing): run it on the compute workers, beside siv's image decoding and tile rendering, at most one per CPU. Without it a job is blocking work, which waits (file I/O, a network file system, copying a tree) and runs on a lane of threads of its own, so it never holds a worker that decoding and rendering need." },
+    }),
+    handle("siv_image_request", "A pending siv_image_load. Valid until its callback runs or it is cancelled.", false),
     handle("siv_watch", "A file descriptor the application's loop watches (siv_app_watch_fd). Valid until siv_watch_destroy or the application's destruction.", false),
     flags("siv_watch_flags", "Readiness of a watched file descriptor.", &.{
         .{ .name = "readable", .bit = 0, .doc = "Data to read (EPOLLIN)." },
@@ -1234,6 +1238,7 @@ pub const decls = [_]Decl{
         f32Field("max_height", "The largest logical height it is shown at; 0 is unbounded."),
         f32Field("scale", "Pixels per logical pixel, the window's buffer scale (siv_window_get_scale), so that the image is sharp; 0 is 1. The image's logical size is its pixel size divided by it."),
         .{ .name = "flags", .type = ref("siv_image_load_flags"), .doc = "Options." },
+        .{ .name = "priority", .type = .i64, .doc = "Order among loads that wait for a worker: higher first, and in the order asked within one priority; 0 is the default. A grid of thumbnails gives later requests higher numbers so that the cells scrolled to come first, and lowers those scrolled past (siv_image_request_set_priority)." },
     }),
     callback("siv_image_load_fn", "Receives a loaded image on the application's thread (D5). On SIV_OK image is a new handle the application owns (siv_image_destroy); otherwise it is 0 and result says why: SIV_ERROR_UNSUPPORTED for formats siv does not decode, SIV_ERROR_INVALID_ARGUMENT for damaged files, SIV_ERROR_LIMIT_EXCEEDED for images over 64 megapixels, SIV_ERROR_UNAVAILABLE when the file could not be read.", &.{
         .{ .name = "result", .type = ref("siv_result"), .doc = "SIV_OK or the failure." },
@@ -1603,8 +1608,9 @@ pub const functions = [_]Function{
         .{ .name = "events", .type = ref("siv_watch_flags"), .doc = "Readable, writable, both, or neither (only hangup and error)." },
     }),
     op("siv_watch_destroy", "Stops watching the descriptor (which stays open) and runs the destroy-notify. Safe from the watch's own callback.", &.{.{ .name = "watch", .type = ref("siv_watch"), .doc = "The watch." }}),
-    call("siv_job_start", "Runs work(user_data) on the application's worker pool (D6), the threads siv decodes images and renders tiles on, then done(user_data) at a safe point on the application's thread (D5), then destroy(user_data). For blocking work such as file I/O: work runs on another thread and may call only siv_post. A job cannot be stopped once it runs; long jobs check a flag of their own. Destroying the application waits for running jobs and drops queued ones: then only destroy runs.", &.{
+    call("siv_job_start", "Runs work(user_data) on the application's worker pool (D6), then done(user_data) at a safe point on the application's thread (D5), then destroy(user_data). Work runs on another thread and may call only siv_post. By default a job is blocking work, such as file I/O, and runs on the pool's blocking lane (up to 8 at once, the rest queued in order); SIV_JOB_COMPUTE puts CPU-bound work on the compute workers that decode images and render tiles. A job cannot be stopped once it runs; long jobs check a flag of their own. Destroying the application waits for running jobs and drops queued ones: then only destroy runs.", &.{
         app_param,
+        .{ .name = "flags", .type = ref("siv_job_flags"), .doc = "Blocking (0) or compute." },
         .{ .name = "work", .type = ref("siv_work_fn"), .doc = "The work, on a worker thread." },
         .{ .name = "done", .type = ref("siv_post_fn"), .doc = "Runs after work on the application's thread; may be NULL." },
         .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data; may be NULL." },
@@ -1757,12 +1763,18 @@ pub const functions = [_]Function{
         .{ .name = "desc", .type = .{ .desc = "siv_image_desc" }, .doc = "The pixels." },
         .{ .name = "image", .type = out(ref("siv_image")), .doc = "The new image." },
     }),
-    call("siv_image_load", "Decodes PNG, APNG, JPEG, GIF, WebP, AVIF, or JPEG XL on a worker thread (D19), straight to the size it is shown at, with embedded color profiles converted to siv's linear working space, and calls callback with the image, then destroy. If the application is destroyed first, only destroy runs. Image nodes play animated images, unless motion is reduced; canvases draw their first frame. Animations with more than 32 MiB of frames at that size keep their file instead and decode a few frames ahead while they play.", &.{
+    op("siv_image_request_cancel", "Cancels a pending load: one still waiting is never decoded, and one being decoded is dropped when done. Its callback never runs; destroy runs now or once the decode returns.", &.{.{ .name = "request", .type = ref("siv_image_request"), .doc = "The load." }}),
+    call("siv_image_request_set_priority", "Changes the priority of a pending load (see siv_image_load_desc); one waiting for a worker moves to its new place.", &.{
+        .{ .name = "request", .type = ref("siv_image_request"), .doc = "The load." },
+        .{ .name = "priority", .type = .i64, .doc = "Higher first." },
+    }),
+    call("siv_image_load", "Decodes PNG, APNG, JPEG, GIF, WebP, AVIF, or JPEG XL on a worker thread (D19), straight to the size it is shown at, with embedded color profiles converted to siv's linear working space, and calls callback with the image, then destroy. If the load is cancelled or the application is destroyed first, only destroy runs. Loads wait for a compute worker in priority order (see siv_image_load_desc). Image nodes play animated images, unless motion is reduced; canvases draw their first frame. Animations with more than 32 MiB of frames at that size keep their file instead and decode a few frames ahead while they play.", &.{
         app_param,
         .{ .name = "desc", .type = .{ .desc = "siv_image_load_desc" }, .doc = "The file and size." },
         .{ .name = "callback", .type = ref("siv_image_load_fn"), .doc = "Receives the image." },
         .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data; may be NULL." },
         .{ .name = "user_data", .type = .user_data, .doc = "Passed to both." },
+        .{ .name = "request", .type = out(ref("siv_image_request")), .doc = "The pending load, to cancel or reprioritize; valid until callback runs." },
     }),
     call("siv_image_get_size", "An image's logical size: its pixel size divided by the scale it was loaded for.", &.{
         .{ .name = "image", .type = ref("siv_image"), .doc = "The image." },

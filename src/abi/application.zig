@@ -78,6 +78,9 @@ pub const App = struct {
     timers: std.ArrayList(?*Timer),
     /// By watch index (handle payload); null slots are reused.
     watches: std.ArrayList(?*watch.Watch),
+    /// Pending image loads by index (handle payload); null slots are
+    /// reused. The pool owns them until they complete or are dropped.
+    image_requests: std.ArrayList(?*@import("image_load.zig").Request),
     /// Portal requests, choosers, and actions (D19).
     desktop: portal.State,
 
@@ -260,6 +263,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     self.closing = .init(false);
     self.timers = .empty;
     self.watches = .empty;
+    self.image_requests = .empty;
     self.desktop = .{};
     const gpa = self.gpa();
     self.draw = .init(gpa);
@@ -311,6 +315,8 @@ pub export fn siv_app_destroy(app: t.App) t.Result {
     for (self.images.items) |img| if (img) |i| i.release();
     // Runs the destroy-notify of posted work that never ran (D5).
     self.app.destroy();
+    // Dropped loads forgot their handles in app.destroy.
+    self.image_requests.deinit(gpa);
     while (self.dead.pop()) |w| w.free();
     self.windows.deinit(gpa);
     self.pending.deinit(gpa);
@@ -744,22 +750,24 @@ const Job = struct {
     }
 };
 
-pub export fn siv_job_start(app: t.App, work: ?t.WorkFn, done: ?t.PostFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) t.Result {
+pub export fn siv_job_start(app: t.App, flags: t.JobFlags, work: ?t.WorkFn, done: ?t.PostFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) t.Result {
     const self = App.get(@backingInt(app)) catch |err| {
         if (destroy) |d| d(user_data);
         return t.resultOf(err);
     };
-    const r = jobStart(self, work, done, destroy, user_data);
+    const r = jobStart(self, flags, work, done, destroy, user_data);
     // The call failed: the caller handed user_data over anyway (D2).
     if (r != .ok) self.release(destroy, user_data);
     return r;
 }
 
-fn jobStart(self: *App, work: ?t.WorkFn, done: ?t.PostFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) t.Result {
+fn jobStart(self: *App, flags: t.JobFlags, work: ?t.WorkFn, done: ?t.PostFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) t.Result {
+    const fl = runtime.flags(t.JobFlags, flags) catch |err| return t.resultOf(err);
     const w = work orelse return .error_invalid_argument;
     const gpa = self.gpa();
     const j = gpa.create(Job) catch return .error_out_of_memory;
     j.* = .{ .owner = self, .work = w, .callback = done, .destroy = destroy, .user_data = user_data };
+    j.job.class = if (fl.compute) .compute else .blocking;
     self.app.pool.submit(&j.job) catch |err| {
         gpa.destroy(j);
         return switch (err) {

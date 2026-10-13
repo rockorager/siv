@@ -35,7 +35,8 @@ const Loaded = struct {
 
 fn load(app: t.App, desc: t.ImageLoadDesc) !Loaded {
     var l: Loaded = .{};
-    try ok(I.siv_image_load(app, &desc, Loaded.done, Loaded.destroy, &l));
+    var req: t.ImageRequest = .null;
+    try ok(I.siv_image_load(app, &desc, Loaded.done, Loaded.destroy, &l, &req));
     var guard: usize = 0;
     while (!l.destroyed) : (guard += 1) {
         if (guard > 5000) return error.Timeout;
@@ -90,7 +91,8 @@ test "C API images: load from a path and from bytes, play an animation" {
     try testing.expectEqual(t.Image.null, bad.image);
     const missing = try load(h.app, .{ .path = "/nonexistent.png", .path_len = 16 });
     try testing.expectEqual(t.Result.error_unavailable, missing.result.?);
-    try testing.expectEqual(t.Result.error_invalid_argument, I.siv_image_load(h.app, &.{}, Loaded.done, null, null));
+    var req: t.ImageRequest = .null;
+    try testing.expectEqual(t.Result.error_invalid_argument, I.siv_image_load(h.app, &.{}, Loaded.done, null, null, &req));
 
     // The animation plays in an image node: red, then green after 100 ms,
     // then blue after 300 ms.
@@ -107,4 +109,71 @@ test "C API images: load from a path and from bytes, play an animation" {
     try wait(h.app, 200);
     try h.settle();
     try testing.expectEqual([4]u8{ 0, 0, 255, 255 }, try pixel(&h, 5, 5, 64));
+}
+
+const Ordered = struct {
+    tag: u8,
+    log: *std.ArrayList(u8),
+    destroyed: bool = false,
+
+    fn done(user: ?*anyopaque, result: t.Result, image: t.Image) callconv(.c) void {
+        const o: *Ordered = @ptrCast(@alignCast(user));
+        o.log.append(testing.allocator, o.tag) catch unreachable;
+        if (result == .ok) _ = C.siv_image_destroy(image);
+    }
+
+    fn destroy(user: ?*anyopaque) callconv(.c) void {
+        const o: *Ordered = @ptrCast(@alignCast(user));
+        o.destroyed = true;
+    }
+};
+
+const Gate = struct {
+    open: std.atomic.Value(bool) = .init(false),
+    started: std.atomic.Value(bool) = .init(false),
+
+    fn work(user: ?*anyopaque) callconv(.c) void {
+        const g: *Gate = @ptrCast(@alignCast(user));
+        g.started.store(true, .release);
+        while (!g.open.load(.acquire)) std.Thread.yield() catch {};
+    }
+};
+
+test "C API images: loads wait in priority order, and cancelled ones never call back" {
+    var h: Harness = .{};
+    try ok(A.siv_app_create(&.{ .backend = .headless, .flags = .{ .no_system_fonts = true } }, &h.app));
+    defer h.stop();
+    // One compute worker, held by a job, so that the loads queue.
+    (try A.App.get(@backingInt(h.app))).app.pool.workers.max_threads = 1;
+    var gate: Gate = .{};
+    try ok(A.siv_job_start(h.app, .{ .compute = true }, Gate.work, null, null, &gate));
+    while (!gate.started.load(.acquire)) std.Thread.yield() catch {};
+    // A blocking job still runs meanwhile: it has a lane of its own.
+    var blocking: Gate = .{};
+    blocking.open.store(true, .release);
+    try ok(A.siv_job_start(h.app, .{}, Gate.work, null, null, &blocking));
+    while (!blocking.started.load(.acquire)) std.Thread.yield() catch {};
+
+    var log: std.ArrayList(u8) = .empty;
+    defer log.deinit(testing.allocator);
+    const png = @embedFile("testdata/rgba.png");
+    var loads = [_]Ordered{ .{ .tag = 'a', .log = &log }, .{ .tag = 'b', .log = &log }, .{ .tag = 'c', .log = &log }, .{ .tag = 'd', .log = &log } };
+    const priorities = [_]i64{ 1, 3, 2, 5 };
+    var reqs: [4]t.ImageRequest = undefined;
+    for (&loads, priorities, &reqs) |*l, p, *r| {
+        try ok(I.siv_image_load(h.app, &.{ .data = png, .data_count = png.len, .priority = p }, Ordered.done, Ordered.destroy, l, r));
+    }
+    try ok(I.siv_image_request_cancel(reqs[3]));
+    try testing.expect(loads[3].destroyed);
+    try testing.expectEqual(t.Result.error_invalid_handle, I.siv_image_request_cancel(reqs[3]));
+    try ok(I.siv_image_request_set_priority(reqs[0], 4));
+    gate.open.store(true, .release);
+    var guard: usize = 0;
+    while (!(loads[0].destroyed and loads[1].destroyed and loads[2].destroyed)) : (guard += 1) {
+        if (guard > 5000) return error.Timeout;
+        try ok(A.siv_app_dispatch(h.app, 2));
+    }
+    try testing.expectEqualStrings("abc", log.items);
+    // Handles end with their callback.
+    try testing.expectEqual(t.Result.error_invalid_handle, I.siv_image_request_set_priority(reqs[0], 1));
 }

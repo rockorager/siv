@@ -13,7 +13,9 @@
 //! - A callback parameter is a Lua function; its destroy-notify and
 //!   user_data are the binding's. Functions taking a one-shot completion
 //!   (`async_callbacks`) are asynchronous: the prelude waits for them in
-//!   a coroutine when no function is given.
+//!   a coroutine when no function is given. Given one, they return their
+//!   out values (an image load's request, to cancel it); waiting drops
+//!   them.
 //! - Descriptors are tables; value structs are tables with named or
 //!   positional fields.
 //! - A Lua function returning an enum to a callback returns its name, an
@@ -68,7 +70,7 @@ pub const owned = [_]struct { []const u8, []const u8 }{
     .{ "siv_tray_item", "siv_tray_item_destroy" },
 };
 
-pub const borrowed = [_][]const u8{ "siv_window", "siv_txn", "siv_node", "siv_timer", "siv_watch", "siv_draw", "siv_external" };
+pub const borrowed = [_][]const u8{ "siv_window", "siv_txn", "siv_node", "siv_timer", "siv_watch", "siv_image_request", "siv_draw", "siv_external" };
 
 /// Functions whose out handle is a new object the caller owns (when its
 /// type is `owned`).
@@ -315,9 +317,6 @@ pub fn validate(comptime s: Schema) ?[]const u8 {
         }
         if (callbacks > 1) return "a function takes more than one callback";
         if (callbacks == 1 and destroys != 1) return "a function's callback lacks a destroy-notify";
-        if (asyncParam(s, f)) |_| {
-            for (f.params) |p| if (p.type == .out) return "an asynchronous function has out parameters";
-        }
     }
     return null;
 }

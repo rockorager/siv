@@ -382,7 +382,8 @@ test "jobs run on a worker thread, then done and destroy on the application's" {
     try start(&h);
     defer h.stop();
     var jobs: [8]Work = @splat(.{});
-    for (&jobs) |*j| try ok(c.siv_job_start(h.app, Work.work, Work.finish, Work.destroy, j));
+    // Half blocking, half compute: both lanes deliver the same way.
+    for (&jobs, 0..) |*j, i| try ok(c.siv_job_start(h.app, .{ .compute = i % 2 == 1 }, Work.work, Work.finish, Work.destroy, j));
     // Nothing completes inside the call.
     for (jobs) |j| try testing.expectEqual(@as(u32, 0), j.done);
     const deadline = @import("loop").Loop.now() + 10 * std.time.ns_per_s;
@@ -399,12 +400,14 @@ test "jobs run on a worker thread, then done and destroy on the application's" {
     }
     // Without work the call fails and hands user_data back at once.
     var bad: Work = .{};
-    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_job_start(h.app, null, Work.finish, Work.destroy, &bad));
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_job_start(h.app, .{}, null, Work.finish, Work.destroy, &bad));
     try testing.expectEqual(@as(u32, 1), bad.destroyed);
+    try testing.expectEqual(t.Result.error_unsupported, c.siv_job_start(h.app, @bitCast(@as(u32, 0x80)), Work.work, Work.finish, Work.destroy, &bad));
+    try testing.expectEqual(@as(u32, 2), bad.destroyed);
     // Destroying the application waits for a running job and runs only
     // its destroy-notify.
     var slow: Work = .{ .delay_ms = 50 };
-    try ok(c.siv_job_start(h.app, Work.work, Work.finish, Work.destroy, &slow));
+    try ok(c.siv_job_start(h.app, .{}, Work.work, Work.finish, Work.destroy, &slow));
     while (!slow.started.load(.acquire)) std.atomic.spinLoopHint();
     h.stop();
     h.app = .null;

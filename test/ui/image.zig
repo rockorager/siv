@@ -34,7 +34,7 @@ test "a streamed animation plays frame by frame and loops" {
     // Red, green, blue, 16 × 16, shown for 100, 200, and 300 ms, looping;
     // a budget of one frame streams it.
     var loaded: Loaded = .{};
-    try ui.Image.load(&app.pool, app.gpa, .{ .path = "src/image/testdata/anim.gif" }, .{
+    _ = try ui.Image.load(&app.pool, app.gpa, .{ .path = "src/image/testdata/anim.gif" }, .{
         .decode = .{ .max_bytes = 16 * 16 * 4 },
     }, .{ .ctx = &loaded, .func = Loaded.func });
     while (!loaded.done) try app.loop.dispatch(-1);

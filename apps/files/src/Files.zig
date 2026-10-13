@@ -835,7 +835,7 @@ fn startLoad(self: *Files) void {
     self.load_gen +%= 1;
     l.* = .{ .files = self, .gpa = gpa, .path = p, .gen = self.load_gen, .sort = self.sort };
     self.loading = l;
-    if (c.siv_job_start(self.app, Load.work, Load.done, Load.destroy, l) != .ok) {
+    if (c.siv_job_start(self.app, .{}, Load.work, Load.done, Load.destroy, l) != .ok) {
         // The destroy-notify ran already.
         self.loading = null;
     }
@@ -2069,7 +2069,7 @@ pub fn startOp(self: *Files, kind: fsops.Kind, sources: []const []const u8, dest
         return;
     };
     self.op_jobs.append(gpa, j) catch {};
-    if (c.siv_job_start(self.app, OpJob.work, OpJob.done, OpJob.destroy, j) != .ok) {
+    if (c.siv_job_start(self.app, .{}, OpJob.work, OpJob.done, OpJob.destroy, j) != .ok) {
         _ = self.ops.pop();
         _ = self.op_jobs.pop();
         return;

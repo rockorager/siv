@@ -250,7 +250,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     is destroyed first, so it is the one place to free the user data.
   - Worker jobs run on the application's one worker pool (`src/pool`, see
     D6); the loop's wrapper posts each completion to the loop, so `done` runs
-    in the dispatch phase.
+    in the dispatch phase. A job is compute work or blocking work, which
+    run on separate threads (D6); either way its completion is a safe
+    point.
   - Destroying the application never runs pending posted closures or worker
     completions, since teardown has begun; it calls their destroy-notify (or
     a job's cancel function) so they can release what they own.
@@ -278,6 +280,22 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     delivered by the loop, D5) and blocking fork-join, in which the calling
     thread also runs the job and helpers that have not started when it
     finishes are dropped, so fork-join never waits behind queued I/O.
+  - Two classes of job, on separate threads of the one pool. Compute
+    jobs (decoding, fork-join tiles, `SIV_JOB_COMPUTE`) run on at most one
+    worker per CPU, highest priority first and in submission order within
+    a priority; fork-join helpers go before every queued job, so tiles
+    never queue behind decodes (D8). Blocking jobs (file reads,
+    application jobs by default) run on a lane of up to 8 threads of
+    their own that never take compute work, so a copy of a large tree
+    waiting on a disk or a network file system cannot hold a worker that
+    decoding or rendering needs; the lane may be wider than the CPU
+    because its threads mostly wait. Found by the file manager in
+    `apps/files`, where several copies at once left thumbnails queued
+    and fork-join rendering on the compositor thread alone.
+    Alternatives: a cap on how many workers application jobs take (still
+    oversubscribes when they compute, and still blocks decodes behind
+    them up to the cap); a thread per blocking job (unbounded threads
+    for a burst of small reads).
   - Applications use the same pool through `siv_job_start`: `work` on a
     worker thread, then `done` and the destroy-notify at a safe point
     (D5). A file manager reading a folder of 100 000 entries or copying
@@ -326,6 +344,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   independently. The UI thread sends layer updates, not whole frames.
   The compositor thread renders CPU tiles through the application pool's
   fork-join mode and works on tiles itself, so it never blocks on the loop.
+  Its helpers jump the compute queue, and blocking I/O has threads of its
+  own (D6), so neither queued decodes nor long application jobs keep
+  helpers from joining.
   - Layer updates (`src/compositor/update.zig`): each window has a tree of
     layers with UI-chosen ids (plain indices, D20). The UI commits batches
     of ops (create, destroy, insert, detach, set content, transform,
@@ -2074,6 +2095,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       `ui.Image.load` runs it on the worker pool (reading a path there
       too) and delivers the image in the dispatch phase (D5), and
       `siv_image_load` exposes that with a callback and destroy-notify.
+      Each load returns a `siv_image_request` and takes a priority, which
+      orders it among queued compute jobs (D6): cancelling one that waits
+      means it never decodes, and one being decoded is dropped when it
+      returns; either way only the destroy-notify runs. A grid of
+      thumbnails asks newest first and cancels what scrolled out of
+      view, so scrolling past thousands of photos decodes only those
+      shown. Found by the file manager in `apps/files`, which kept its
+      own queue, three in flight, to avoid decoding everything it bound.
       Every decoder sits behind a small C interface of siv's own
       (`src/image/*.h`), so `-fsys` builds (lcms2, libwebp, libavif,
       dav1d, libjxl) and vendored ones share siv's code; the shims also
@@ -2643,7 +2672,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     (`local image = app:image_load{ path = p }`). Outside a coroutine,
     without a callback, they raise. `siv.spawn(fn)` starts a coroutine
     and `app:sleep(ms)` waits on a one-shot timer. The completion
-    resumes the coroutine from its callback, at a safe point (D5).
+    resumes the coroutine from its callback, at a safe point (D5). Given
+    a callback, they return their out values (an image load's request,
+    to cancel it); waiting drops them. Event handlers return `true` for
+    handled or a `siv_event_result` name (`"stop"`, `"prevent"`).
   - **Hot reload.** `siv-lua --watch` (`SIV_LUA_WATCH`) runs the main
     chunk again when it or a Lua module it required changes. A thread
     blocks on inotify for their directories and, after 50 ms without

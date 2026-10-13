@@ -179,6 +179,7 @@ fn pump(t: *Thumbs) void {
             return;
         };
         slot.state = .loading;
+        var request: siv.ImageRequest = .null;
         const res = c.siv_image_load(t.app, &.{
             .path = path.ptr,
             .path_len = path.len,
@@ -186,7 +187,7 @@ fn pump(t: *Thumbs) void {
             .max_height = size,
             .scale = t.scale,
             .flags = .{ .first_frame = true },
-        }, Request.done, Request.free, r);
+        }, Request.done, Request.free, r, &request);
         if (res != .ok) {
             _ = t.in_flight.pop();
             slot.state = .failed;

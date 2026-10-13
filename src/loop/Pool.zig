@@ -27,6 +27,11 @@ pub const Job = struct {
     /// dropped it while queued, or the loop was deinitialized before
     /// delivering its completion. Must only release resources.
     cancel: ?*const fn (*Job) void = null,
+    /// The threads that run it (see the pool module): compute workers,
+    /// or the blocking lane for work that waits on I/O.
+    class: shared.Job.Class = .compute,
+    /// Compute jobs: higher runs first (`setPriority` while queued).
+    priority: i64 = 0,
     /// Loop-thread view: queued from `submit` until `done` or `cancel`.
     state: State = .idle,
     loop: *Loop = undefined,
@@ -86,6 +91,8 @@ pub fn submit(pool: *Pool, job: *Job) SubmitError!void {
     std.debug.assert(job.state == .idle);
     job.loop = pool.loop;
     job.state = .queued;
+    job.inner.class = job.class;
+    job.inner.priority = job.priority;
     pool.workers.submit(&job.inner) catch |err| {
         job.state = .idle;
         return err;
@@ -100,6 +107,12 @@ pub fn cancel(pool: *Pool, job: *Job) bool {
     return true;
 }
 
+/// Changes a job's priority; a queued job moves to its new place.
+pub fn setPriority(pool: *Pool, job: *Job, priority: i64) void {
+    job.priority = priority;
+    pool.workers.setPriority(&job.inner, priority);
+}
+
 /// Fork-join on the same threads, for the renderer (D10).
 pub fn executor(pool: *Pool) shared.Executor {
     return pool.workers.executor();
@@ -109,7 +122,7 @@ pub fn executor(pool: *Pool) shared.Executor {
 /// runs on the loop thread; `allocator` must be thread-safe and owns
 /// `result` afterwards.
 pub const ReadFile = struct {
-    job: Job = .{ .run = run, .done = done },
+    job: Job = .{ .run = run, .done = done, .class = .blocking },
     path: [:0]const u8,
     allocator: Allocator,
     max_bytes: usize = std.math.maxInt(usize),

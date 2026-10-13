@@ -16,6 +16,13 @@
 //! condition variable, so an idle pool costs nothing. Jobs are intrusive and
 //! submitting one does not allocate.
 //!
+//! Jobs have a class. Compute jobs (decoding, tiles, the default) run on
+//! those workers, highest `priority` first and in submission order within a
+//! priority; fork-join helpers go before every queued job. Blocking jobs
+//! (file I/O that may wait on a disk or a network file system, copying a
+//! tree) run on a lane of threads of their own, up to `max_blocking`, so a
+//! long copy never takes a worker that decoding or rendering needs.
+//!
 //! Imports: none.
 
 const std = @import("std");
@@ -25,15 +32,12 @@ const Allocator = std.mem.Allocator;
 pub const Pool = struct {
     allocator: Allocator,
     max_threads: u32,
+    max_blocking: u32 = default_max_blocking,
 
     mutex: c.pthread_mutex_t = .{},
-    cond: c.pthread_cond_t = .{},
-    head: ?*Job = null,
-    tail: ?*Job = null,
-    queued: u32 = 0,
-    idle: u32 = 0,
     stopping: bool = false,
     threads: std.ArrayList(std.Thread) = .empty,
+    lanes: [2]Lane = .{ .{}, .{} },
 
     /// Serializes fork-join calls; helpers live in `helpers`.
     fork_mutex: c.pthread_mutex_t = .{},
@@ -46,27 +50,86 @@ pub const Pool = struct {
         return .{ .allocator = allocator, .max_threads = max_threads };
     }
 
+    /// Blocking jobs that may run at once. They mostly wait, so the lane
+    /// may be wider than the CPU.
+    pub const default_max_blocking = 8;
+
+    /// One queue and its threads: compute or blocking.
+    const Lane = struct {
+        cond: c.pthread_cond_t = .{},
+        head: ?*Job = null,
+        tail: ?*Job = null,
+        queued: u32 = 0,
+        idle: u32 = 0,
+        threads: u32 = 0,
+
+        /// Inserts after the last job of at least its priority.
+        fn insert(lane: *Lane, job: *Job) void {
+            job.next = null;
+            if (lane.tail == null or lane.tail.?.priority >= job.priority) {
+                if (lane.tail) |t| t.next = job else lane.head = job;
+                lane.tail = job;
+            } else if (lane.head.?.priority < job.priority) {
+                job.next = lane.head;
+                lane.head = job;
+            } else {
+                var it = lane.head.?;
+                while (it.next.?.priority >= job.priority) it = it.next.?;
+                job.next = it.next;
+                it.next = job;
+            }
+            lane.queued += 1;
+        }
+
+        fn remove(lane: *Lane, job: *Job) bool {
+            var prev: ?*Job = null;
+            var it = lane.head;
+            while (it) |j| : ({
+                prev = j;
+                it = j.next;
+            }) {
+                if (j != job) continue;
+                if (prev) |p| p.next = j.next else lane.head = j.next;
+                if (lane.tail == j) lane.tail = prev;
+                lane.queued -= 1;
+                job.next = null;
+                return true;
+            }
+            return false;
+        }
+    };
+
+    fn laneOf(pool: *Pool, job: *const Job) *Lane {
+        return &pool.lanes[@intFromEnum(job.class)];
+    }
+
     /// Cancels queued jobs (see `Job.cancel`), waits for running jobs, and
     /// joins the workers. Not to be called while a fork-join is running.
     pub fn deinit(pool: *Pool) void {
         pool.lock();
         pool.stopping = true;
-        var dropped = pool.head;
-        pool.head = null;
-        pool.tail = null;
-        pool.queued = 0;
-        _ = c.pthread_cond_broadcast(&pool.cond);
+        var dropped: [2]?*Job = undefined;
+        for (&pool.lanes, &dropped) |*lane, *d| {
+            d.* = lane.head;
+            lane.head = null;
+            lane.tail = null;
+            lane.queued = 0;
+            _ = c.pthread_cond_broadcast(&lane.cond);
+        }
         pool.unlock();
-        while (dropped) |job| {
-            dropped = job.next;
-            job.state = .idle;
-            job.next = null;
-            if (job.cancel) |f| f(job);
+        for (dropped) |first| {
+            var it = first;
+            while (it) |job| {
+                it = job.next;
+                job.state = .idle;
+                job.next = null;
+                if (job.cancel) |f| f(job);
+            }
         }
         for (pool.threads.items) |t| t.join();
         pool.threads.deinit(pool.allocator);
         pool.allocator.free(pool.helpers);
-        _ = c.pthread_cond_destroy(&pool.cond);
+        for (&pool.lanes) |*lane| _ = c.pthread_cond_destroy(&lane.cond);
         _ = c.pthread_mutex_destroy(&pool.mutex);
         _ = c.pthread_cond_destroy(&pool.fork_done);
         _ = c.pthread_mutex_destroy(&pool.fork_mutex);
@@ -85,23 +148,22 @@ pub const Pool = struct {
     fn submitLocked(pool: *Pool, job: *Job) SubmitError!void {
         std.debug.assert(job.state == .idle);
         std.debug.assert(!pool.stopping);
+        const lane = pool.laneOf(job);
         job.state = .queued;
-        job.next = null;
-        if (pool.tail) |t| t.next = job else pool.head = job;
-        pool.tail = job;
-        pool.queued += 1;
+        lane.insert(job);
 
-        if (pool.queued > pool.idle and pool.threads.items.len < pool.max_threads) {
-            pool.spawnLocked() catch |err| {
+        const max = if (job.class == .compute) pool.max_threads else pool.max_blocking;
+        if (lane.queued > lane.idle and lane.threads < max) {
+            pool.spawnLocked(job.class) catch |err| {
                 // Existing workers will get to it eventually; without any,
                 // the job could never run.
-                if (pool.threads.items.len == 0) {
+                if (lane.threads == 0) {
                     pool.removeLocked(job);
                     return err;
                 }
             };
         }
-        _ = c.pthread_cond_signal(&pool.cond);
+        _ = c.pthread_cond_signal(&lane.cond);
     }
 
     /// Removes a queued job before it starts. Returns false if it is
@@ -112,6 +174,18 @@ pub const Pool = struct {
         if (job.state != .queued) return false;
         pool.removeLocked(job);
         return true;
+    }
+
+    /// Changes a job's priority; a queued job moves to its new place.
+    pub fn setPriority(pool: *Pool, job: *Job, priority: i64) void {
+        pool.lock();
+        defer pool.unlock();
+        if (job.state == .queued) {
+            const lane = pool.laneOf(job);
+            _ = lane.remove(job);
+            job.priority = priority;
+            lane.insert(job);
+        } else job.priority = priority;
     }
 
     /// Runs `func(ctx, worker)` on the calling thread (worker 0) and on up
@@ -133,6 +207,7 @@ pub const Pool = struct {
         for (pool.helpers) |*h| {
             h.ctx = ctx;
             h.func = func;
+            h.job.priority = std.math.maxInt(i64);
             pool.submitLocked(&h.job) catch break;
             submitted += 1;
         }
@@ -164,41 +239,29 @@ pub const Pool = struct {
     }
 
     fn removeLocked(pool: *Pool, job: *Job) void {
-        var prev: ?*Job = null;
-        var it = pool.head;
-        while (it) |j| : ({
-            prev = j;
-            it = j.next;
-        }) {
-            if (j != job) continue;
-            if (prev) |p| p.next = j.next else pool.head = j.next;
-            if (pool.tail == j) pool.tail = prev;
-            pool.queued -= 1;
-            job.state = .idle;
-            job.next = null;
-            return;
-        }
+        if (pool.laneOf(job).remove(job)) job.state = .idle;
     }
 
-    fn spawnLocked(pool: *Pool) SubmitError!void {
+    fn spawnLocked(pool: *Pool, class: Job.Class) SubmitError!void {
         try pool.threads.ensureUnusedCapacity(pool.allocator, 1);
-        const t = std.Thread.spawn(.{}, worker, .{pool}) catch return error.SystemResources;
+        const t = std.Thread.spawn(.{}, worker, .{ pool, &pool.lanes[@intFromEnum(class)] }) catch return error.SystemResources;
         pool.threads.appendAssumeCapacity(t);
+        pool.lanes[@intFromEnum(class)].threads += 1;
     }
 
-    fn worker(pool: *Pool) void {
+    fn worker(pool: *Pool, lane: *Lane) void {
         pool.lock();
         while (true) {
-            while (pool.head == null and !pool.stopping) {
-                pool.idle += 1;
-                _ = c.pthread_cond_wait(&pool.cond, &pool.mutex);
-                pool.idle -= 1;
+            while (lane.head == null and !pool.stopping) {
+                lane.idle += 1;
+                _ = c.pthread_cond_wait(&lane.cond, &pool.mutex);
+                lane.idle -= 1;
             }
             if (pool.stopping) break;
-            const job = pool.head.?;
-            pool.head = job.next;
-            if (pool.head == null) pool.tail = null;
-            pool.queued -= 1;
+            const job = lane.head.?;
+            lane.head = job.next;
+            if (lane.head == null) lane.tail = null;
+            lane.queued -= 1;
             job.state = .running;
             pool.unlock();
 
@@ -254,10 +317,22 @@ pub const Job = struct {
     /// Runs instead of `run` and `complete` when `Pool.deinit` drops the
     /// job while queued. Must only release resources.
     cancel: ?*const fn (*Job) void = null,
+    /// Which threads run it. Set before submitting.
+    class: Class = .compute,
+    /// Compute jobs: higher runs first. Change it while queued with
+    /// `Pool.setPriority`.
+    priority: i64 = 0,
     state: State = .idle,
     next: ?*Job = null,
 
     pub const State = enum { idle, queued, running };
+
+    pub const Class = enum(u1) {
+        /// CPU work: decoding, tiles, the default.
+        compute,
+        /// Work that waits: file I/O, copying, network file systems.
+        blocking,
+    };
 };
 
 /// Run one function on N workers and wait: the contract renderers use, so
@@ -426,4 +501,85 @@ test "cancel and deinit drop queued jobs" {
     pool.deinit();
     try testing.expectEqual(@as(u8, 0), second.outcome.load(.acquire));
     try testing.expect(third.outcome.load(.acquire) != 0);
+}
+
+test "compute jobs run by priority, in order within one" {
+    var pool = Pool.init(testing.allocator, 1);
+    defer pool.deinit();
+    const Rec = struct {
+        job: Job = .{ .run = run, .complete = complete },
+        open: *std.atomic.Value(bool),
+        order: *[8]u8,
+        n: *std.atomic.Value(u32),
+        tag: u8,
+        done: std.atomic.Value(bool) = .init(false),
+        fn run(job: *Job) void {
+            const r: *@This() = @fieldParentPtr("job", job);
+            while (!r.open.load(.acquire)) std.atomic.spinLoopHint();
+            r.order[r.n.fetchAdd(1, .monotonic)] = r.tag;
+        }
+        fn complete(job: *Job) void {
+            const r: *@This() = @fieldParentPtr("job", job);
+            r.done.store(true, .release);
+        }
+    };
+    var open: std.atomic.Value(bool) = .init(false);
+    var order: [8]u8 = undefined;
+    var n: std.atomic.Value(u32) = .init(0);
+    // The first job holds the one worker while the rest queue.
+    var gate: Rec = .{ .open = &open, .order = &order, .n = &n, .tag = 'g' };
+    try pool.submit(&gate.job);
+    while (pool.lanes[0].queued != 0) std.atomic.spinLoopHint();
+    var jobs = [_]Rec{
+        .{ .open = &open, .order = &order, .n = &n, .tag = 'a' },
+        .{ .open = &open, .order = &order, .n = &n, .tag = 'b' },
+        .{ .open = &open, .order = &order, .n = &n, .tag = 'c' },
+        .{ .open = &open, .order = &order, .n = &n, .tag = 'd' },
+        .{ .open = &open, .order = &order, .n = &n, .tag = 'e' },
+    };
+    const priorities = [_]i64{ 0, 5, 0, 9, -1 };
+    for (&jobs, priorities) |*j, p| {
+        j.job.priority = p;
+        try pool.submit(&j.job);
+    }
+    // Raised while queued: 'e' goes before 'b'.
+    pool.setPriority(&jobs[4].job, 7);
+    open.store(true, .release);
+    for (&jobs) |*j| while (!j.done.load(.acquire)) std.atomic.spinLoopHint();
+    try testing.expectEqualStrings("gdebac", order[0..6]);
+}
+
+test "blocking jobs never take the compute workers" {
+    var pool = Pool.init(testing.allocator, 1);
+    pool.max_blocking = 2;
+    defer pool.deinit();
+    const Gate = struct {
+        job: Job = .{ .run = run, .complete = complete },
+        open: *std.atomic.Value(bool),
+        done: std.atomic.Value(bool) = .init(false),
+        fn run(job: *Job) void {
+            const g: *@This() = @fieldParentPtr("job", job);
+            while (!g.open.load(.acquire)) std.atomic.spinLoopHint();
+        }
+        fn complete(job: *Job) void {
+            const g: *@This() = @fieldParentPtr("job", job);
+            g.done.store(true, .release);
+        }
+    };
+    var open: std.atomic.Value(bool) = .init(false);
+    var always: std.atomic.Value(bool) = .init(true);
+    // Three copies waiting on a slow disk: two run, one queues.
+    var slow = [_]Gate{ .{ .open = &open }, .{ .open = &open }, .{ .open = &open } };
+    for (&slow) |*g| {
+        g.job.class = .blocking;
+        try pool.submit(&g.job);
+    }
+    // Decoding still gets its worker.
+    var decode: Gate = .{ .open = &always };
+    try pool.submit(&decode.job);
+    while (!decode.done.load(.acquire)) std.atomic.spinLoopHint();
+    try testing.expectEqual(@as(u32, 2), pool.lanes[1].threads);
+    try testing.expectEqual(@as(u32, 1), pool.lanes[0].threads);
+    open.store(true, .release);
+    for (&slow) |*g| while (!g.done.load(.acquire)) std.atomic.spinLoopHint();
 }
