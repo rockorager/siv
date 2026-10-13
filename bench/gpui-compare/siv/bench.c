@@ -45,26 +45,26 @@ static void set_status(siv_window window, const char *what) {
 	if (siv_txn_commit(txn) != SIV_OK) fprintf(stderr, "status update failed\n");
 }
 
-static bool on_button(void *user_data, siv_node node, const siv_event *event) {
+static siv_event_result on_button(void *user_data, siv_node node, const siv_event *event) {
 	(void)node;
 	set_status(event->window, user_data);
-	return true;
+	return SIV_EVENT_RESULT_HANDLED;
 }
 
 static const char *menu_items[] = {"New", "Open", "Save", "Save As", "Close", "Quit"};
 
-static bool on_menu(void *user_data, siv_node node, const siv_event *event) {
+static siv_event_result on_menu(void *user_data, siv_node node, const siv_event *event) {
 	(void)user_data, (void)node;
 	set_status(event->window, menu_items[event->index % 6]);
-	return true;
+	return SIV_EVENT_RESULT_HANDLED;
 }
 
-static bool on_list_select(void *user_data, siv_node node, const siv_event *event) {
+static siv_event_result on_list_select(void *user_data, siv_node node, const siv_event *event) {
 	(void)user_data, (void)node;
 	char what[32];
 	snprintf(what, sizeof what, "Item %u", event->index + 1);
 	set_status(event->window, what);
-	return true;
+	return SIV_EVENT_RESULT_HANDLED;
 }
 
 static void bind_item(void *user_data, siv_txn txn, siv_node row, uint64_t item, uint32_t index, uint32_t depth, bool recycled) {
