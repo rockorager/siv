@@ -20,6 +20,7 @@ pub const script = @import("script.zig");
 pub const font = @import("font.zig");
 pub const fontconfig = @import("fontconfig.zig");
 pub const family = @import("family.zig");
+pub const hyphen = @import("hyphen.zig");
 pub const shape = @import("shape.zig");
 pub const paragraph = @import("paragraph.zig");
 pub const layout = @import("layout.zig");

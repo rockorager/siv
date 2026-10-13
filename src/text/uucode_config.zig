@@ -67,6 +67,7 @@ pub const tables: []const config.Table = &.{
         "is_emoji_modifier",
         "is_emoji_modifier_base",
         "bidi_paired_bracket",
+        "simple_lowercase_mapping",
     } },
     .{ .fields = &.{ "iso_script", "script_extensions" } },
 };
