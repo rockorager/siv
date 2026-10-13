@@ -248,6 +248,7 @@ fn addNasm(b: *std.Build, dep: *std.Build.Dependency) *std.Build.Step.Compile {
         \\#define HAVE_INTTYPES_H 1
         \\#define HAVE_ISASCII 1
         \\#define HAVE_ISCNTRL 1
+        \\#define HAVE_MEMPCPY 1
         \\#define HAVE_MMAP 1
         \\#define HAVE_PATHCONF 1
         \\#define HAVE_REALPATH 1
@@ -299,6 +300,7 @@ fn addNasm(b: *std.Build, dep: *std.Build.Dependency) *std.Build.Step.Compile {
         \\#define WORDS_LITTLEENDIAN 1
         \\#endif
         \\#define typeof __typeof
+        \\#define _GNU_SOURCE 1
         \\#include "config/unconfig.h"
         \\
     );
