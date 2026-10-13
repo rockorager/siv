@@ -1274,11 +1274,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     to 292 MiB (gpui 434), first frame in 216 ms (gpui 469). A jump to
     the end or a search result shows in 4 to 6 ms, 9 to 13 ms the first
     time, which shapes a few blocks again (gpui 8 ms, 22 ms at most). A
-    keystroke in the logs costs 27 ms (gpui 3.6): the editor's text is
-    one buffer that an edit copies (D15), and finding what an edit
-    changed compares the texts block by block, both linear in the size;
-    a rope for the node's text and the edit's range passed to shaping
-    would remove both. Alternatives: no
+    keystroke in the logs cost 27 ms (gpui 3.6): the editor's text was
+    one buffer that an edit copied, and finding what an edit changed
+    compared the texts block by block; the text is a rope now, and the
+    change comes from it (D15), 5.3 ms. Alternatives: no
     budget, laying out only the blocks shown each frame, as gpui does
     (the editor's queries then cost a layout every time, and the
     scrollbar is an estimate for good); a budget per text (an
@@ -1627,8 +1626,16 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     (`ShapedText.initEdit`), which compares and builds only the blocks
     it touches, copying their bytes out of the rope a block at a time.
     Before, the node's text was one buffer: each edit copied all of it,
-    and shaping compared all of it with the old blocks, 27 ms a
-    keystroke in 100 MB (gpui 3.6). The queries keep their meaning:
+    and shaping compared all of it with the old blocks. Measured
+    (bench/gpui-compare round 5, five runs): a keystroke in 100 MB of
+    logs 26.9 ms to 5.3 ms (gpui 3.5), in the 1.4 MB document 3.4 to
+    2.8 ms (gpui 3.5); memory unchanged. What is left at 100 MB is
+    bookkeeping per block, 12,800 of them (the new text's arrays of
+    offsets, restacking heights), and laying out the edited block;
+    two linear passes that remained in it went: comparing every kept
+    block's styles with the text's (a text with one style keeps it,
+    `ShapedText.only_style`) and finding old layouts through a map of
+    every block (the blocks an edit kept pair up from both ends). The queries keep their meaning:
     `siv_node_get_text` copies the text into the caller's buffer and
     returns its length; `siv_node_get_text_range` copies a piece from an
     offset, so a long text is read (searched, saved) without a buffer

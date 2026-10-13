@@ -159,24 +159,28 @@ static siv_event_result on_editor_key(void *user_data, siv_node node, const siv_
 	}
 #endif
 	if (event->keysym != SIV_KEY_F3) return SIV_EVENT_RESULT_PASS;
-	static char *buf;
-	static size_t cap;
-	size_t len = 0;
-	if (siv_node_get_text(node, buf, cap, &len) != SIV_OK) return SIV_EVENT_RESULT_HANDLED;
-	if (len + 1 > cap) {
-		free(buf);
-		cap = len + 1 + (len >> 3);
-		buf = malloc(cap);
-		if (siv_node_get_text(node, buf, cap, &len) != SIV_OK) return SIV_EVENT_RESULT_HANDLED;
+	/* The text in pieces of 1 MiB, overlapping by the needle's length
+	 * less one, so that a hit across two pieces is found. */
+	enum { piece = 1 << 20 };
+	static char buf[piece + 1];
+	const size_t needle = strlen(DOC_NEEDLE);
+	size_t len = 0, from = 0;
+	int found = 0;
+	uint32_t at = 0;
+	for (;;) {
+		if (siv_node_get_text_range(node, (uint32_t)from, buf, piece, &len) != SIV_OK) return SIV_EVENT_RESULT_HANDLED;
+		size_t got = from < len ? (len - from < piece ? len - from : piece) : 0;
+		buf[got] = 0;
+		const char *hit = strstr(buf, DOC_NEEDLE);
+		if (hit) {
+			found = 1;
+			at = (uint32_t)(from + (size_t)(hit - buf));
+			break;
+		}
+		if (from + got >= len) break;
+		from += got - (needle - 1);
 	}
-	buf[len] = 0;
-	const char *hit = strstr(buf, DOC_NEEDLE);
-	uint32_t at = hit ? (uint32_t)(hit - buf) : 0;
-	/* An application searching now and then does not keep a copy. */
-	free(buf);
-	buf = NULL;
-	cap = 0;
-	if (!hit) return SIV_EVENT_RESULT_HANDLED;
+	if (!found) return SIV_EVENT_RESULT_HANDLED;
 	siv_txn txn;
 	if (siv_txn_begin(event->window, &txn) != SIV_OK) return SIV_EVENT_RESULT_HANDLED;
 	siv_set_selection(txn, node, at + (uint32_t)strlen(DOC_NEEDLE), at);

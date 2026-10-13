@@ -106,7 +106,8 @@ load average in every result.
 Ctrl+End and Ctrl+Home move the caret to the end or the start and show
 it. F3 searches the text for a word that occurs once, three quarters of
 the way through (`DOC_NEEDLE`), puts the caret there, and shows it: siv
-copies the editor's text (`siv_node_get_text`, freed after) and calls
+reads the editor's text in pieces of 1 MiB (`siv_node_get_text_range`;
+round 4 copied it whole with `siv_node_get_text`) and calls
 `siv_set_selection`, whose editor scrolls to its caret (D15); gpui
 searches its paragraphs and calls `ListState::scroll_to_reveal_item`.
 siv before round 4 could not show a caret's offset: its build
@@ -249,7 +250,8 @@ for 5 s, so an idle siv window keeps 8 (gpui keeps 27).
   blocks that are not painted (30 MiB less), and part of that went to
   the heaps of the workers that shape in the background. Round 4 bounds
   it (89 MiB at the end of the scenario, below).
-- **Keystrokes in 100 MB** cost 27 ms against 3.6 (round 4, below).
+- **Keystrokes in 100 MB** cost 27 ms against 3.6 in round 4, 5.3
+  against 3.5 since round 5 (below).
 
 ### Profiling and fixes
 
@@ -319,6 +321,28 @@ compares the old and new text block by block to find what changed
 one paragraph string. siv's search copies the text out
 (`siv_node_get_text`), 100 MB per search; gpui searches its strings in
 place and is still slower, scanning a million of them.
+
+### Round 5: the editor's text in a rope
+
+`results/round5.md` (five runs each; before is round 4, `2e4e5bb`):
+
+| Scenario | Metric | siv before | siv after | gpui |
+| --- | --- | --- | --- | --- |
+| text | key to photon (median / max) | 3.36 / 4.98 ms | 2.79 / 4.22 ms | 3.53 / 19.3 ms |
+| text | RSS at the end | 88.6 MiB | 88.3 MiB | 82.7 MiB |
+| text | search result jump (median) | 5.59 ms | 5.45 ms | 8.49 ms |
+| logs | key to photon (median / max) | 26.9 / 27.9 ms | 5.28 / 7.25 ms | 3.50 / 18.7 ms |
+| logs | RSS after start / at the end | 284 / 292 MiB | 285 / 289 MiB | 434 / 434 MiB |
+| logs | search result jump (median) | 21.0 ms | 19.0 ms | 37.4 ms |
+
+A keystroke copied the editor's whole text and compared all of it with
+the old blocks; now the text is a rope whose edits share all but the
+leaves they touch, and shaping gets what changed from the ropes and
+builds only the blocks it reaches (D15). What is left in 100 MB, 2.5 ms
+over the document, is bookkeeping per block (12,800 of them): the new
+text's arrays of block offsets, and stacking the blocks' heights; and
+laying out the edited block. Search reads the text in pieces
+(`siv_node_get_text_range`, D30) instead of copying all of it.
 
 ### siv bugs found by the bench, and their fixes
 
