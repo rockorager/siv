@@ -3509,6 +3509,30 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   client, and portals against xdg-desktop-portal with a backend of siv's
   own behind it; the hermetic D-Bus, AT-SPI, and portal tests use an
   in-process test bus over socketpairs.
+  - Protocols sway 1.12 lacks (xdg-dialog-v1, xdg-toplevel-icon-v1,
+    xdg-session-management-v1; D17) are covered by the headless tests
+    (`test/abi/windows.zig`: dialogs, icons, session restore through the
+    C API) and, on sway, by a platform test that they degrade cleanly (a
+    dialog is a toplevel with a parent, no icon sizes, an `unavailable`
+    session). They were also checked by
+    hand against labwc (headless wlroots: dialogs and icons) and KWin
+    6.7.5 (all three; KWin asks for 96 px icons and restores a second
+    run's windows), which are not in the suite. To repeat it: build
+    `pkgs.labwc` and `pkgs.kdePackages.kwin` from the nixpkgs revision
+    `.agents/sway.nix` pins (a copy of it with those two paths, then
+    `nix-build`); start labwc with `XDG_RUNTIME_DIR` set to a private
+    directory, `WLR_BACKENDS=headless WLR_RENDERER=pixman
+    WLR_LIBINPUT_NO_DEVICES=1`, and KWin with `dbus-run-session --
+    kwin_wayland --virtual --no-lockscreen --socket wayland-k`; then copy
+    the sway window-features test in `src/platform/integration_tests.zig`
+    into a scratch test that connects to that socket
+    (`Wayland.create(..., .{ .display = path })`), run it with `zig
+    build test-integration -Dtest-filter=<its name>`, and check that it
+    reports no protocol errors, that the dialog has its role, the icon
+    sizes the compositor asked for, and on KWin that a second run given
+    the first run's session id gets `window_restored`. The check found
+    the two session bugs fixed in D17 (destroy order and a sync before
+    disconnecting).
   - Not built yet: the inspector. The counters it would show exist
     (`ui.Window`'s, the compositor's presentation timing), and tests and
     benchmarks read them.
