@@ -454,12 +454,18 @@ pub const Renderer = struct {
 
         var i: usize = 0;
         const cmds = list.commands;
+        // A layer that composites as its one draw (scene.foldedOpacity)
+        // is pushed without isolation, and that draw replaces the next
+        // command.
+        var folded: ?scene.Command = null;
         while (i < cmds.len) : (i += 1) {
             const top = r.stack.items[r.stack.items.len - 1];
             const m = top.m;
-            switch (cmds[i]) {
+            const cmd = if (folded) |f| f else cmds[i];
+            folded = null;
+            switch (cmd) {
                 .push => |p| {
-                    const l = p.layer;
+                    var l = p.layer;
                     const lm = l.transform.then(m);
                     const invisible = l.opacity <= 0 and !l.blend.isUnbounded();
                     const unbounded = std.math.isInf(p.bounds.x0) or std.math.isInf(p.bounds.x1);
@@ -477,6 +483,10 @@ pub const Renderer = struct {
                         const cov = try r.coverageFor(c.shape, c.rule, lm, .clip);
                         clip = .{ .scissor = cb.roundOut().intersect(vp), .coverage = cov };
                         if (cov == .rect and isPixelAligned(cov.rect)) clip.?.coverage = null;
+                    }
+                    if (scene.foldedOpacity(cmds, i)) |f| {
+                        folded = f;
+                        l.opacity = 1;
                     }
                     try r.ops.append(r.gpa, .{ .push = .{
                         .bbox = bbox,
@@ -1577,6 +1587,35 @@ test "solid rectangle is exact across tiles" {
     try testing.expectEqual(Pixel{ 0, 0, 0, 0 }, px[50 * 150 + 70]);
     // Half coverage: coverage is 8-bit (128/255).
     try testing.expectEqual(Pixel{ 128 * 257, 128 * 257, 128 * 257, 128 * 257 }, px[10 * 150 + 10]);
+}
+
+test "a translucent layer of one draw renders as that draw composited as a group" {
+    var img_buf: [16 * 16 * 4]u8 = undefined;
+    const img = checker(&img_buf, 16, 16);
+    var b = scene.Builder.init(testing.allocator);
+    defer b.deinit();
+    const folded = try Renderer.create(testing.allocator, .serial);
+    defer folded.destroy();
+    const grouped = try Renderer.create(testing.allocator, .serial);
+    defer grouped.destroy();
+    for ([_]*Renderer{ folded, grouped }, [_]bool{ false, true }) |r, isolate| {
+        try r.resize(120, 60);
+        b.reset();
+        try b.fillRect(.xywh(0, 0, 120, 60), .color(.srgb8(0x30, 0x60, 0x90, 0xff)));
+        const clip: scene.Clip = .{ .shape = .{ .rounded_rect = .{ .rect = .xywh(4, 4, 30, 30), .radii = .uniform(6, 6) } } };
+        try b.pushLayer(.{ .opacity = 0.37, .isolate = isolate, .clip = clip, .transform = .translate(0.5, 0) });
+        try b.fillRoundedRect(.xywh(2, 2, 40, 40), .uniform(9, 9), .color(.srgb8(0xff, 0x80, 0x10, 0xc0)));
+        try b.popLayer();
+        try b.pushLayer(.{ .opacity = 0.6, .isolate = isolate });
+        try b.image(.{ .image = img, .src = .xywh(0, 0, 16, 16), .dst = .xywh(50, 5, 32, 32) });
+        try b.popLayer();
+        try b.pushLayer(.{ .opacity = 0.5, .isolate = isolate });
+        try b.shadow(.{ .shape = .{ .rect = .xywh(90, 10, 20, 20), .radii = .uniform(4, 4) }, .sigma = 3, .color = .black });
+        try b.popLayer();
+        try r.render(try b.finish(0), .{});
+    }
+    // The same up to the rounding of the group's 16-bit buffer.
+    for (folded.pixels(), grouped.pixels()) |a, g| for (a, g) |x, y| try testing.expect(@abs(@as(i32, x) - y) <= 2);
 }
 
 test "damage-only frames match full redraws, serial and threaded" {

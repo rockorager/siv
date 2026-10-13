@@ -576,6 +576,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     images and composite back with fixed-function source-over, or for other
     blend modes against a copy of their backdrop. A backdrop blur copies its
     backdrop and runs the CPU's separable passes in FP32.
+  - Both renderers skip the group buffer of a layer that is isolated only
+    for its opacity and holds one fill or stroke with a solid paint, one
+    image, or one box shadow (`scene.foldedOpacity`): that draw with its
+    alpha multiplied by the opacity composites exactly as the group does,
+    up to the group buffer's rounding. A layer per faded or animated box
+    (D8 gives every animated node one) then costs a draw instead of an
+    offscreen pass: 2,560 cells fading on the compositor took 18.7 ms of
+    GPU time per frame on RADV, and 0.9 ms after.
   - The working image is a persistent FP16 image, so damage-only frames are
     exact as on the CPU. Damage is widened like the CPU's where a blur's
     backdrop changed, then each damage region grows until it holds the

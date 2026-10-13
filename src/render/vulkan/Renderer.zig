@@ -664,12 +664,17 @@ fn prepare(r: *Renderer, list: scene.DisplayList, root: Affine) Error!void {
     try r.stack.append(gpa, .{ .m = root, .clip = vp.toRect(), .scissor = vp, .chain = 0, .layer = null, .depth = 0 });
     var i: usize = 0;
     const cmds = list.commands;
+    // A layer that composites as its one draw (scene.foldedOpacity) is
+    // pushed without isolation, and that draw replaces the next command.
+    var folded: ?scene.Command = null;
     while (i < cmds.len) : (i += 1) {
         const top = r.stack.items[r.stack.items.len - 1];
         const m = top.m;
-        switch (cmds[i]) {
+        const cmd = if (folded) |f| f else cmds[i];
+        folded = null;
+        switch (cmd) {
             .push => |p| {
-                const l = p.layer;
+                var l = p.layer;
                 const lm = l.transform.then(m);
                 const invisible = l.opacity <= 0 and !l.blend.isUnbounded();
                 const unbounded = std.math.isInf(p.bounds.x0) or std.math.isInf(p.bounds.x1);
@@ -694,6 +699,10 @@ fn prepare(r: *Renderer, list: scene.DisplayList, root: Affine) Error!void {
                     continue;
                 }
                 var state: State = .{ .m = lm, .clip = clip_bounds, .scissor = scissor, .chain = chain, .layer = top.layer, .depth = top.depth };
+                if (scene.foldedOpacity(cmds, i)) |f| {
+                    folded = f;
+                    l.opacity = 1;
+                }
                 if (l.isIsolated()) {
                     if (top.depth >= max_layer_depth) {
                         log.warn("isolated layers nested deeper than {d}; skipped", .{max_layer_depth});

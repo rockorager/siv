@@ -40,6 +40,7 @@ pub const Image = list.Image;
 pub const BackdropBlur = list.BackdropBlur;
 pub const Shadow = list.Shadow;
 pub const Command = list.Command;
+pub const foldedOpacity = list.foldedOpacity;
 pub const DisplayList = list.DisplayList;
 pub const Builder = list.Builder;
 pub const Error = list.Error;
