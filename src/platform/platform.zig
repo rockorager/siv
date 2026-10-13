@@ -444,6 +444,97 @@ pub const Platform = union(enum) {
             inline else => |b| b.inhibitShortcuts(id, on),
         }
     }
+
+    // Window features (D17).
+
+    /// Sets the toplevel's icon (xdg-toplevel-icon-v1): a theme name the
+    /// compositor looks up, and square images it uses when it cannot
+    /// (copied); null resets the default icon. False when the compositor
+    /// offers no toplevel icons.
+    pub fn setIcon(p: Platform, id: WindowId, icon: ?*const ToplevelIcon) bool {
+        return switch (p) {
+            inline else => |b| b.setIcon(id, icon),
+        };
+    }
+
+    /// The icon sizes (logical pixels) the compositor prefers, valid until
+    /// the next platform event; empty without a preference.
+    pub fn iconSizes(p: Platform) []const u32 {
+        return switch (p) {
+            inline else => |b| b.iconSizes(),
+        };
+    }
+
+    /// Keeps the session from going idle (screen blanking, locking) while
+    /// the window is visible (idle-inhibit-unstable-v1). Counted: each
+    /// `true` needs a `false`. Returns false, changing nothing, when the
+    /// compositor offers no idle inhibition.
+    pub fn inhibitIdle(p: Platform, id: WindowId, on: bool) bool {
+        return switch (p) {
+            inline else => |b| b.inhibitIdle(id, on),
+        };
+    }
+
+    /// Joins a session (xdg-session-management-v1) so that the compositor
+    /// remembers windows that have a session name and restores them: the
+    /// one named by `id`, or a new one when it is empty or unknown. A
+    /// `session` event follows (`unavailable` without the protocol).
+    /// Windows created afterwards with a session name are restored before
+    /// they map; earlier ones are added.
+    pub fn startSession(p: Platform, reason: SessionReason, id: []const u8) void {
+        switch (p) {
+            inline else => |b| b.startSession(reason, id),
+        }
+    }
+
+    /// Leaves the session and asks the compositor to forget it.
+    pub fn removeSession(p: Platform) void {
+        switch (p) {
+            inline else => |b| b.removeSession(),
+        }
+    }
+};
+
+/// A toplevel icon: a name from the icon theme and images of it.
+pub const ToplevelIcon = struct {
+    name: []const u8 = "",
+    images: []const IconImage = &.{},
+};
+
+/// A square icon image: premultiplied ARGB8888 (B, G, R, A bytes), `size`
+/// buffer pixels wide and high, for `scale`.
+pub const IconImage = struct {
+    pixels: []const u8,
+    size: u32,
+    scale: u32 = 1,
+};
+
+/// Why an application joins a session, which may decide how much the
+/// compositor restores.
+pub const SessionReason = enum(u8) {
+    /// Started by the user, from a launcher.
+    launch,
+    /// Started again after a crash of the application or compositor.
+    recover,
+    /// Started as part of restoring the user's session.
+    restore,
+};
+
+pub const SessionEvent = struct {
+    kind: Kind,
+    /// `created`: the session's id, to pass to `startSession` next time.
+    id: Handle = .{},
+
+    pub const Kind = enum(u8) {
+        /// A new session: nothing was restored.
+        created,
+        /// The session was found; windows with known names are restored.
+        restored,
+        /// Another client took the session over; it is gone here.
+        replaced,
+        /// The compositor offers no session management.
+        unavailable,
+    };
 };
 
 pub const PointerConstraint = enum(u8) {
@@ -920,6 +1011,15 @@ pub const PopupOptions = struct {
 pub const WindowOptions = struct {
     title: []const u8 = "",
     app_id: []const u8 = "",
+    /// The toplevel this window belongs to (xdg_toplevel.set_parent): the
+    /// compositor keeps it above its parent, as for a dialog.
+    parent: ?WindowId = null,
+    /// With a parent: a modal dialog (xdg-dialog-v1), which compositors
+    /// may show attached to the parent while keeping input from it.
+    modal: bool = false,
+    /// The window's name in the session (`startSession`), unique among the
+    /// application's windows; empty keeps it out of the session.
+    session_name: []const u8 = "",
     /// Logical size used when the compositor lets the client choose.
     width: u32 = 640,
     height: u32 = 480,
@@ -1342,6 +1442,11 @@ pub const Event = union(enum) {
     pointer_constraint: ConstraintState,
     relative_motion: RelativeMotion,
     shortcuts_inhibit: InhibitState,
+    /// The session joined, was found, or was taken over (`startSession`).
+    session: SessionEvent,
+    /// The compositor restored the window from the session (its size,
+    /// place, and states), before its first configure.
+    window_restored: WindowId,
     /// The seat's text input (input method) focuses the window, or leaves.
     text_input_enter: Focus,
     text_input_leave: Focus,
@@ -1370,7 +1475,7 @@ pub const Event = union(enum) {
 
     pub fn window(ev: *const Event) ?WindowId {
         return switch (ev.*) {
-            .close_requested => |w| w,
+            .close_requested, .window_restored => |w| w,
             inline else => |payload| if (comptime hasWindow(@TypeOf(payload))) payload.window else null,
         };
     }

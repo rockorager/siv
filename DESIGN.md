@@ -1813,8 +1813,70 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       and xdg-activation-v1 tokens and activation. Sway marks an
       activated window urgent unless `focus_on_window_activation focus`;
       the integration test sets it.
-    - Not built yet: idle inhibit through the protocol (the portal's
-      Inhibit is, D19), `xdg-dialog`, toplevel icons, and session restore.
+    - Native dialogs: a window created with a parent
+      (`siv_window_desc.parent`, xdg_toplevel.set_parent) stays above it,
+      and with `SIV_WINDOW_MODAL` is modal (xdg-dialog-v1 where offered,
+      so compositors can attach and dim it). siv keeps input from the
+      parent while a modal dialog is shown, on every compositor: button
+      presses, keys, scrolling, touch, gestures, tablets, input-method
+      text, and relative motion for the parent and its popups go
+      nowhere, while motion, focus, and modifiers still arrive. Without
+      that, modality would depend on the compositor (sway 1.12 has no
+      xdg-dialog). A dialog is destroyed with its parent, before it, as
+      popups are. When to use which: siv's in-window dialog (`siv_dialog`,
+      a modal node, D22) is the default, since it looks and behaves the
+      same everywhere, follows the window, and needs nothing from the
+      compositor; a native dialog suits content that should move on its
+      own, be larger than its parent, or outlive a glance (preferences,
+      properties, a second document view). Reverse if compositors
+      without xdg-dialog become rare and native dialogs prove the better
+      default.
+    - Window icons (`siv_window_set_icon`, xdg-toplevel-icon-v1): a
+      themed name, an image, or both. A name goes to the compositor at
+      once; siv also loads it through the icon module (`ui.Icons`, so the
+      application's own icon directories count) once, at the largest
+      size the compositor prefers, and sends it drawn at each preferred
+      size (32, 48, 64, and 128 without a preference) times the window's
+      integer scale, for compositors that cannot find the name, as for
+      icons only the application installs or Flatpak applications. Vector
+      images are drawn at each size, others sent once at their own size,
+      centered in a square (the protocol takes square wl_shm buffers).
+      The icon object and its buffers are kept until replaced: the
+      protocol needs the buffers for as long as the icon exists and the
+      icon until a commit applies it, for which a mapped window commits at
+      once. A newer call drops icon loads still on the way.
+    - Session restore (xdg-session-management-v1):
+      `siv_app_start_session` joins the session an earlier run's
+      `created` event named, or a new one, with a reason (launch,
+      recover, restore), and windows with a `session_name` (unique, the
+      same every run) created afterwards are restored before they map
+      (`restore_toplevel`, so before the first commit), reported by a
+      `restored` window event; windows that already exist are added.
+      Sessions are the application's to keep: siv returns the id and
+      never stores it. A repeated name is skipped with a warning instead
+      of the protocol error; ids and names longer than 255 bytes are
+      refused. `siv_app_remove_session` asks the compositor to forget it;
+      without the protocol the callback gets `unavailable`. The headless
+      backend keeps sessions process-wide, as a compositor outlives its
+      clients, so a test restores a window in a second application.
+    - Idle inhibition: the portal's Inhibit (D19) and idle-inhibit-
+      unstable-v1 behind one call, `siv_inhibit`. The rule: an inhibition
+      of idling alone for a window uses the compositor's protocol when it
+      has one, since it holds exactly while the window is visible (a
+      video, a presentation, a game), needs no portal or D-Bus, and ends
+      with the window; anything else (logout, user switching, suspend, or
+      idling without a window, as for a download or music) goes to the
+      portal, the only path for those, as does idling on compositors
+      without the protocol. The platform counts inhibitions per window
+      and keeps one inhibitor while any is held. Verified on sway 1.12
+      with an ext-idle-notify client: with the window inhibiting, the
+      seat never goes idle within a 300 ms timeout; without, it does.
+    - Sway 1.12 offers none of xdg-dialog, xdg-toplevel-icon, or session
+      management, so the integration test checks that they degrade
+      (a dialog is a toplevel with a parent, setting an icon reports it
+      unsupported, a session `unavailable`) without protocol errors;
+      their behavior is tested on the headless backend through the C
+      API.
 
 ### D18. Accessibility
 

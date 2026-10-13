@@ -340,3 +340,99 @@ pub const VirtualPointer = struct {
         if (vp.display.roundtrip() != .SUCCESS) return error.ConnectionLost;
     }
 };
+
+/// An ext-idle-notify-v1 client on its own connection: tells whether the
+/// session went idle, to check idle inhibitors. The protocol is not among
+/// the ones siv generates bindings for, so it is described here by hand.
+pub const IdleWatch = struct {
+    display: *wl.Display,
+    notification: *wl.Proxy,
+    idle: bool = false,
+
+    const notifier_interface: wl.Interface = .{
+        .name = "ext_idle_notifier_v1",
+        .version = 1,
+        .method_count = 2,
+        .methods = &[_]wl.Message{
+            .{ .name = "destroy", .signature = "", .types = null },
+            .{ .name = "get_idle_notification", .signature = "nuo", .types = &[_]?*const wl.Interface{ &notification_interface, null, wl.Seat.interface } },
+        },
+        .event_count = 0,
+        .events = null,
+    };
+    const notification_interface: wl.Interface = .{
+        .name = "ext_idle_notification_v1",
+        .version = 1,
+        .method_count = 1,
+        .methods = &[_]wl.Message{.{ .name = "destroy", .signature = "", .types = null }},
+        .event_count = 2,
+        .events = &[_]wl.Message{
+            .{ .name = "idled", .signature = "", .types = null },
+            .{ .name = "resumed", .signature = "", .types = null },
+        },
+    };
+    const Notifier = opaque {
+        pub const interface = &notifier_interface;
+        pub const generated_version = 1;
+    };
+
+    /// Watches for `timeout_ms` without input on sway's seat. Call on a
+    /// stable address: the listener points back at it.
+    pub fn connect(w: *IdleWatch, c: *const Sway, timeout_ms: u32) !void {
+        const display = try wl.Display.connect(c.display);
+        errdefer display.disconnect();
+        const registry = try display.getRegistry();
+        defer registry.destroy();
+        const Found = struct {
+            notifier: u32 = 0,
+            seat: u32 = 0,
+            fn onGlobal(_: *wl.Registry, event: wl.Registry.Event, found: *@This()) void {
+                switch (event) {
+                    .global => |g| {
+                        const name = std.mem.span(g.interface);
+                        if (std.mem.eql(u8, name, "ext_idle_notifier_v1")) found.notifier = g.name;
+                        if (std.mem.eql(u8, name, "wl_seat") and found.seat == 0) found.seat = g.name;
+                    },
+                    .global_remove => {},
+                }
+            }
+        };
+        var found: Found = .{};
+        registry.setListener(*Found, Found.onGlobal, &found);
+        if (display.roundtrip() != .SUCCESS or found.notifier == 0 or found.seat == 0) return error.NoIdleNotifier;
+        const notifier: *wl.Proxy = @ptrCast(try registry.bind(found.notifier, Notifier, 1));
+        defer _ = notifier.marshal(0, null, 1, .{ .destroy = true }, null);
+        const seat = try registry.bind(found.seat, wl.Seat, 1);
+        defer seat.destroy();
+        var args = [_]wl.Argument{ .{ .o = null }, .{ .u = timeout_ms }, .{ .o = @ptrCast(seat) } };
+        const n = notifier.marshal(1, &notification_interface, 1, .{}, &args) orelse return error.OutOfMemory;
+        w.* = .{ .display = display, .notification = n };
+        n.addDispatcher(dispatch, null, w);
+        if (display.roundtrip() != .SUCCESS) return error.ConnectionLost;
+    }
+
+    fn dispatch(_: ?*const anyopaque, proxy: *wl.Proxy, opcode: u32, _: *const wl.Message, _: [*]wl.Argument) callconv(.c) c_int {
+        // The proxy's user data is the watch. idled is 0, resumed 1.
+        const w: *IdleWatch = @ptrCast(@alignCast(proxy.getUserData().?));
+        w.idle = opcode == 0;
+        return 0;
+    }
+
+    /// Reads events for `ms` and returns whether the session is idle.
+    pub fn idleAfter(w: *IdleWatch, ms: u64) !bool {
+        const deadline = std.time.ns_per_ms * ms;
+        var waited: u64 = 0;
+        while (waited < deadline) : (waited += 10 * std.time.ns_per_ms) {
+            if (w.display.roundtrip() != .SUCCESS) return error.ConnectionLost;
+            sleepMs(10);
+        }
+        if (w.display.roundtrip() != .SUCCESS) return error.ConnectionLost;
+        return w.idle;
+    }
+
+    pub fn deinit(w: *IdleWatch) void {
+        _ = w.notification.marshal(0, null, 1, .{ .destroy = true }, null);
+        _ = w.display.roundtrip();
+        w.display.disconnect();
+    }
+};

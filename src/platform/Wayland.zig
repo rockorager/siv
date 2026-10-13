@@ -79,6 +79,15 @@ tablet_manager: ?*zwp.TabletManagerV2 = null,
 pointer_constraints: ?*zwp.PointerConstraintsV1 = null,
 relative_manager: ?*zwp.RelativePointerManagerV1 = null,
 shortcuts_manager: ?*zwp.KeyboardShortcutsInhibitManagerV1 = null,
+idle_manager: ?*zwp.IdleInhibitManagerV1 = null,
+dialog_manager: ?*xdg.WmDialogV1 = null,
+icon_manager: ?*xdg.ToplevelIconManagerV1 = null,
+/// Icon sizes the compositor prefers, and those still arriving.
+icon_sizes: std.ArrayList(u32) = .empty,
+icon_sizes_pending: std.ArrayList(u32) = .empty,
+session_manager: ?*xdg.SessionManagerV1 = null,
+/// The session joined (`startSession`), if any.
+session: ?*xdg.SessionV1 = null,
 /// Themed cursors, without cursor-shape-v1.
 cursor_theme: cursor.Theme,
 exporter: ?*zxdg.ExporterV2 = null,
@@ -165,6 +174,19 @@ const Subsurface = struct {
     }
 };
 
+/// A toplevel icon object and the buffers it holds.
+const Icon = struct {
+    proxy: *xdg.ToplevelIconV1,
+    buffers: [max_icon_images]?*wl.Buffer = @splat(null),
+
+    fn destroy(icon: Icon) void {
+        icon.proxy.destroy();
+        for (icon.buffers) |b| if (b) |buf| buf.destroy();
+    }
+};
+
+const max_icon_images = 16;
+
 pub const Window = struct {
     backend: *Wayland,
     id: WindowId,
@@ -221,6 +243,16 @@ pub const Window = struct {
     /// each seat holds the protocol objects.
     constraint: platform.ConstraintOptions = .{},
     inhibit_shortcuts: bool = false,
+    /// Toplevels: the modal dialog role (xdg-dialog-v1), the icon set last
+    /// with its buffers (kept until replaced: buffers must outlive the icon
+    /// object, which must outlive the commit that applies it), idle
+    /// inhibition with its count, and the window's session object and name.
+    dialog: ?*xdg.DialogV1 = null,
+    icon: ?Icon = null,
+    idle: ?*zwp.IdleInhibitorV1 = null,
+    idle_count: u32 = 0,
+    session: ?*xdg.ToplevelSessionV1 = null,
+    session_name: platform.BoundedString(255) = .{},
 
     /// Presentation feedback for one commit and the time it was predicted for.
     const Feedback = struct {
@@ -300,6 +332,13 @@ fn teardown(self: *Wayland) void {
     if (self.pointer_constraints) |m| m.destroy();
     if (self.relative_manager) |m| m.destroy();
     if (self.shortcuts_manager) |m| m.destroy();
+    if (self.idle_manager) |m| m.destroy();
+    if (self.dialog_manager) |m| m.destroy();
+    if (self.icon_manager) |m| m.destroy();
+    self.icon_sizes.deinit(self.allocator);
+    self.icon_sizes_pending.deinit(self.allocator);
+    if (self.session) |x| x.destroy();
+    if (self.session_manager) |m| m.destroy();
     for (self.outputs.items) |o| if (o) |out| self.destroyOutput(out);
     self.windows.deinit(self.allocator);
     self.seats.deinit(self.allocator);
@@ -473,6 +512,16 @@ fn addGlobal(self: *Wayland, registry: *wl.Registry, name: u32, interface: []con
         self.relative_manager = try registry.bind(name, zwp.RelativePointerManagerV1, 1);
     } else if (is(interface, zwp.KeyboardShortcutsInhibitManagerV1)) {
         self.shortcuts_manager = try registry.bind(name, zwp.KeyboardShortcutsInhibitManagerV1, 1);
+    } else if (is(interface, zwp.IdleInhibitManagerV1)) {
+        self.idle_manager = try registry.bind(name, zwp.IdleInhibitManagerV1, 1);
+    } else if (is(interface, xdg.WmDialogV1)) {
+        self.dialog_manager = try registry.bind(name, xdg.WmDialogV1, 1);
+    } else if (is(interface, xdg.ToplevelIconManagerV1)) {
+        const m = try registry.bind(name, xdg.ToplevelIconManagerV1, 1);
+        m.setListener(*Wayland, onIconManager, self);
+        self.icon_manager = m;
+    } else if (is(interface, xdg.SessionManagerV1)) {
+        self.session_manager = try registry.bind(name, xdg.SessionManagerV1, 1);
     } else if (is(interface, zwp.PointerGesturesV1)) {
         self.gestures = try registry.bind(name, zwp.PointerGesturesV1, @min(version, 3));
         for (self.seats.items) |s| if (s) |seat| seat.addGestures();
@@ -724,6 +773,16 @@ pub fn createWindow(self: *Wayland, options: platform.WindowOptions) Error!Windo
     }
     if (options.title.len > 0) setString(toplevel, xdg.Toplevel.setTitle, options.title);
     if (options.app_id.len > 0) setString(toplevel, xdg.Toplevel.setAppId, options.app_id);
+    if (options.parent) |pid| if (self.get(pid).toplevel) |pt| {
+        toplevel.setParent(pt);
+        if (options.modal) if (self.dialog_manager) |m| {
+            w.dialog = m.getXdgDialog(toplevel) catch null;
+            if (w.dialog) |d| d.setModal();
+        };
+    };
+    // Restored before the first commit, as the protocol requires.
+    w.session_name.set(options.session_name);
+    if (self.session != null) self.addToSession(w, true);
     // The initial commit without a buffer asks for the first configure.
     surface.commit();
     self.windows.items[slot] = w;
@@ -823,6 +882,10 @@ pub fn destroyWindow(self: *Wayland, id: WindowId) void {
         x.destroy(self.allocator);
     };
     if (w.exported) |e| e.destroy();
+    if (w.dialog) |d| d.destroy();
+    if (w.icon) |i| i.destroy();
+    if (w.idle) |i| i.destroy();
+    if (w.session) |x| x.destroy();
     w.subsurfaces.deinit(self.allocator);
     if (w.toplevel) |t| t.destroy();
     if (w.popup) |p| p.destroy();
@@ -1247,6 +1310,177 @@ pub fn inhibitShortcuts(self: *Wayland, id: WindowId, on: bool) void {
     if (w.inhibit_shortcuts == on) return;
     w.inhibit_shortcuts = on;
     for (self.seats.items) |s| if (s) |seat| seat.applyInhibitor(w);
+}
+
+// Window features (D17) ------------------------------------------------------
+
+fn onIconManager(_: *xdg.ToplevelIconManagerV1, event: xdg.ToplevelIconManagerV1.Event, self: *Wayland) void {
+    switch (event) {
+        .icon_size => |e| if (e.size > 0) self.icon_sizes_pending.append(self.allocator, @intCast(e.size)) catch self.queue.fail(error.OutOfMemory),
+        .done => {
+            std.mem.swap(std.ArrayList(u32), &self.icon_sizes, &self.icon_sizes_pending);
+            self.icon_sizes_pending.clearRetainingCapacity();
+        },
+    }
+}
+
+pub fn iconSizes(self: *Wayland) []const u32 {
+    return self.icon_sizes.items;
+}
+
+pub fn setIcon(self: *Wayland, id: WindowId, icon: ?*const platform.ToplevelIcon) bool {
+    const m = self.icon_manager orelse return false;
+    const w = self.get(id);
+    const toplevel = w.toplevel orelse return false;
+    var made: ?Icon = null;
+    if (icon) |ic| made = self.makeIcon(ic) catch |err| {
+        self.queue.fail(if (err == error.OutOfMemory) error.OutOfMemory else error.SystemResources);
+        return true;
+    };
+    m.setIcon(toplevel, if (made) |i| i.proxy else null);
+    // The old icon and its buffers go once the new one is set.
+    if (w.icon) |old| old.destroy();
+    w.icon = made;
+    // Icons apply with the next commit; a mapped window's frames may be
+    // far off.
+    if (w.mapped) self.commitWindow(id);
+    return true;
+}
+
+/// An icon object with the name and one wl_shm buffer per image, all in
+/// one pool.
+fn makeIcon(self: *Wayland, icon: *const platform.ToplevelIcon) !Icon {
+    const proxy = try self.icon_manager.?.createIcon();
+    var out: Icon = .{ .proxy = proxy };
+    errdefer out.destroy();
+    if (icon.name.len > 0) {
+        var buf: platform.BoundedString(1023) = .{};
+        buf.set(icon.name);
+        buf.buf[buf.len] = 0;
+        proxy.setName(buf.buf[0..buf.len :0]);
+    }
+    const images = icon.images[0..@min(icon.images.len, max_icon_images)];
+    var total: usize = 0;
+    for (images) |img| total += @as(usize, img.size) * img.size * 4;
+    if (total == 0) return out;
+    if (total > std.math.maxInt(i32)) return error.SystemResources;
+    const fd_rc = linux.memfd_create("siv-toplevel-icon", linux.MFD.CLOEXEC);
+    if (linux.errno(fd_rc) != .SUCCESS) return error.SystemResources;
+    const fd: i32 = @intCast(fd_rc);
+    defer _ = linux.close(fd);
+    if (linux.errno(linux.ftruncate(fd, @intCast(total))) != .SUCCESS) return error.SystemResources;
+    const addr = linux.mmap(null, total, .{ .READ = true, .WRITE = true }, .{ .TYPE = .SHARED }, fd, 0);
+    if (linux.errno(addr) != .SUCCESS) return error.SystemResources;
+    const mem: [*]u8 = @ptrFromInt(addr);
+    defer _ = linux.munmap(mem, total);
+    const pool = try self.shm.?.createPool(fd, @intCast(total));
+    defer pool.destroy();
+    var offset: usize = 0;
+    for (images, 0..) |img, i| {
+        const bytes = @as(usize, img.size) * img.size * 4;
+        @memcpy(mem[offset..][0..bytes], img.pixels[0..bytes]);
+        const b = try pool.createBuffer(@intCast(offset), @intCast(img.size), @intCast(img.size), @intCast(img.size * 4), .argb8888);
+        out.buffers[i] = b;
+        proxy.addBuffer(b, @intCast(@max(img.scale, 1)));
+        offset += bytes;
+    }
+    return out;
+}
+
+pub fn inhibitIdle(self: *Wayland, id: WindowId, on: bool) bool {
+    const m = self.idle_manager orelse return false;
+    const w = self.get(id);
+    if (on) {
+        w.idle_count += 1;
+        if (w.idle == null) w.idle = m.createInhibitor(w.surface) catch blk: {
+            self.queue.fail(error.OutOfMemory);
+            break :blk null;
+        };
+    } else if (w.idle_count > 0) {
+        w.idle_count -= 1;
+        if (w.idle_count == 0) if (w.idle) |i| {
+            i.destroy();
+            w.idle = null;
+        };
+    }
+    return true;
+}
+
+pub fn startSession(self: *Wayland, reason: platform.SessionReason, id: []const u8) void {
+    const m = self.session_manager orelse return self.queue.push(.{ .session = .{ .kind = .unavailable } });
+    if (self.session) |old| old.destroy();
+    for (self.windows.items) |w| if (w) |win| if (win.session) |x| {
+        x.destroy();
+        win.session = null;
+    };
+    var buf: platform.BoundedString(4000) = .{};
+    buf.set(id);
+    buf.buf[buf.len] = 0;
+    const r: xdg.SessionManagerV1.Reason = switch (reason) {
+        .launch => .launch,
+        .recover => .recover,
+        .restore => .session_restore,
+    };
+    const session = m.getSession(r, if (id.len > 0) buf.buf[0..buf.len :0] else null) catch return self.queue.fail(error.OutOfMemory);
+    session.setListener(*Wayland, onSession, self);
+    self.session = session;
+    // Windows that are already mapped can only be added.
+    for (self.windows.items) |w| if (w) |win| self.addToSession(win, false);
+}
+
+pub fn removeSession(self: *Wayland) void {
+    const session = self.session orelse return;
+    for (self.windows.items) |w| if (w) |win| if (win.session) |x| {
+        x.destroy();
+        win.session = null;
+    };
+    session.remove();
+    self.session = null;
+}
+
+/// Adds a toplevel with a session name to the session, restoring it when
+/// `restore` (before its first commit). Names already in use are skipped,
+/// since a repeated name is a protocol error.
+fn addToSession(self: *Wayland, w: *Window, restore: bool) void {
+    const session = self.session orelse return;
+    const toplevel = w.toplevel orelse return;
+    if (w.session_name.len == 0 or w.session != null) return;
+    for (self.windows.items) |o| if (o) |other| if (other != w and other.session != null and std.mem.eql(u8, other.session_name.slice(), w.session_name.slice())) {
+        std.log.scoped(.wayland).warn("session name '{s}' is in use by another window", .{w.session_name.slice()});
+        return;
+    };
+    var buf: [256]u8 = undefined;
+    @memcpy(buf[0..w.session_name.len], w.session_name.slice());
+    buf[w.session_name.len] = 0;
+    const name = buf[0..w.session_name.len :0];
+    const x = (if (restore) session.restoreToplevel(toplevel, name) else session.addToplevel(toplevel, name)) catch return self.queue.fail(error.OutOfMemory);
+    x.setListener(*Window, onToplevelSession, w);
+    w.session = x;
+}
+
+fn onSession(_: *xdg.SessionV1, event: xdg.SessionV1.Event, self: *Wayland) void {
+    var ev: platform.SessionEvent = .{ .kind = switch (event) {
+        .created => .created,
+        .restored => .restored,
+        .replaced => .replaced,
+    } };
+    if (event == .created) ev.id.set(std.mem.span(event.created.session_id));
+    if (event == .replaced) {
+        // The session and its toplevel objects are inert now.
+        for (self.windows.items) |w| if (w) |win| if (win.session) |x| {
+            x.destroy();
+            win.session = null;
+        };
+        if (self.session) |x| x.destroy();
+        self.session = null;
+    }
+    self.queue.push(.{ .session = ev });
+}
+
+fn onToplevelSession(_: *xdg.ToplevelSessionV1, event: xdg.ToplevelSessionV1.Event, w: *Window) void {
+    switch (event) {
+        .restored => w.backend.queue.push(.{ .window_restored = w.id }),
+    }
 }
 
 pub fn startDrag(self: *Wayland, id: WindowId, seat: SeatId, serial: u32, mimes: []const []const u8, actions: platform.DragActions, icon: ?*const platform.DragIcon) Error!u32 {

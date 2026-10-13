@@ -84,6 +84,27 @@ pub const decls = [_]Decl{
         p("result", .{ .desc = "siv_portal_result" }, "The result, valid during the call."),
     }, .void),
 
+    // Session restore.
+    enumeration("siv_session_reason", "Why the application starts a session, which may decide how much the compositor restores.", &.{
+        .{ .name = "launch", .value = 0, .doc = "Started by the user, from a launcher: compositors restore sizes and places." },
+        .{ .name = "recover", .value = 1, .doc = "Started again after the application or the compositor crashed: compositors may restore more, such as workspaces and stacking." },
+        .{ .name = "restore", .value = 2, .doc = "Started as part of restoring the user's session." },
+    }),
+    enumeration("siv_session_event_type", "What a siv_session_event reports.", &.{
+        .{ .name = "created", .value = 0, .doc = "A new session: nothing was restored. session_id is its id, to save and pass to siv_app_start_session next time." },
+        .{ .name = "restored", .value = 1, .doc = "The session was found: windows created from now on with a session name it knows are restored. Its id stays the same." },
+        .{ .name = "replaced", .value = 2, .doc = "Another instance took the session over; it is gone here." },
+        .{ .name = "unavailable", .value = 3, .doc = "The compositor offers no session management; windows open as usual." },
+    }),
+    descriptor("siv_session_event", "A session event. Filled by siv; strings are valid during the call.", &.{
+        .{ .name = "session_id", .type = .string, .doc = "Created: the session's id." },
+        .{ .name = "type", .type = ref("siv_session_event_type"), .doc = "What happened." },
+        .{ .name = "reserved0", .type = .u32, .doc = "Reserved; zero.", .reserved = true },
+    }),
+    callback("siv_session_fn", "Receives session events at safe points on the application's thread (D5).", &.{
+        p("event", .{ .desc = "siv_session_event" }, "The event, valid during the call."),
+    }, .void),
+
     flags("siv_open_uri_flags", "Options for siv_open_uri.", &.{
         .{ .name = "ask", .bit = 0, .doc = "Let the user choose the application even if there is a default." },
         .{ .name = "writable", .bit = 1, .doc = "A local file: let the application write to it." },
@@ -435,7 +456,16 @@ pub const functions = [_]Function{
         p("user_data", .user_data, "Passed to both."),
     }),
     op("siv_app_remove_action", "Removes an application action; its destroy-notify runs.", &.{ app_param, p("name", .string, "The action's name.") }),
-    call("siv_inhibit", "Keeps the session from logging out, switching users, suspending, or going idle, as the desktop allows, until the handle is destroyed. Without a portal it does nothing.", &.{
+    call("siv_app_start_session", "Joins a session (D17, xdg-session-management): the compositor remembers the size, place, and states of windows with a session name (siv_window_desc.session_name), and restores them in the next run that joins the same session, before they map. Start it before creating the windows to restore; windows that already exist are only remembered. Replaces the application's earlier session and its callback.", &.{
+        app_param,
+        p("session_id", .string, "The id a created event gave in an earlier run, or empty for a new session; an unknown id starts a new one."),
+        p("reason", ref("siv_session_reason"), "Why the application is starting."),
+        p("callback", ref("siv_session_fn"), "Receives the session's events; may be NULL."),
+        p("destroy", ref("siv_destroy_fn"), "Releases user_data when the session ends or the application is destroyed; may be NULL."),
+        p("user_data", .user_data, "Passed to both."),
+    }),
+    op("siv_app_remove_session", "Leaves the session and has the compositor forget it, as when the user closes the application for good.", &.{app_param}),
+    call("siv_inhibit", "Keeps the session from logging out, switching users, suspending, or going idle, as the desktop allows, until the handle is destroyed (D17). An inhibition of idling alone for a window goes through the compositor (idle-inhibit) when it offers that: it holds while the window is visible, which is what a video or presentation in it needs, and works without a portal. Everything else, and idling without that protocol, goes through the portal; without one it does nothing.", &.{
         app_param,
         parent_param,
         p("flags", ref("siv_inhibit_flags"), "What to inhibit; at least one."),

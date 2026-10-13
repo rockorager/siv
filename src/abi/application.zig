@@ -170,6 +170,12 @@ pub const Window = struct {
     /// them.
     parent: ?*Window = null,
     popup: Popup = .{},
+    /// Native dialogs: the window they belong to (siv_window_desc.parent),
+    /// destroyed with it.
+    dialog_parent: ?*Window = null,
+    /// Bumped by each siv_window_set_icon, so icon loads still on the way
+    /// for an older one are dropped.
+    icon_generation: u32 = 0,
 
     pub const Popup = struct {
         anchor: ui.NodeId = .root,
@@ -183,7 +189,7 @@ pub const Window = struct {
 
     /// Destroys the window after its popups, which go first (D17).
     pub fn destroyTree(w: *Window) app_mod.Error!void {
-        for (w.owner.windows.items) |slot| if (slot) |child| if (child.parent == w) try child.destroyTree();
+        for (w.owner.windows.items) |slot| if (slot) |child| if (child.parent == w or child.dialog_parent == w) try child.destroyTree();
         if (w.dead) return;
         w.win.destroy() catch return error.OutOfMemory;
         w.teardown();
@@ -485,6 +491,15 @@ fn windowCreate(app: t.App, desc_ptr: ?*const t.WindowDesc, out: ?*t.Window) Err
     const flags = try runtime.flags(t.WindowFlags, desc.flags);
     if (flags.ltr and flags.rtl) return error.InvalidArgument;
     const initial = try runtime.flags(t.WindowStates, desc.states);
+    const session_name = try runtime.string(desc.session_name, desc.session_name_len);
+    if (session_name.len > 255 or std.mem.indexOfScalar(u8, session_name, 0) != null) return error.InvalidArgument;
+    // A dialog's parent: a toplevel of this application.
+    const parent: ?*Window = if (desc.parent == .null) null else blk: {
+        const pw = try App.window(@backingInt(desc.parent), window_tag);
+        if (pw.owner != self or pw.dead or pw.parent != null) return error.InvalidArgument;
+        break :blk pw;
+    };
+    if (flags.modal and parent == null) return error.InvalidArgument;
     const dest = try runtime.out(t.Window, out);
 
     const gpa = self.gpa();
@@ -497,7 +512,7 @@ fn windowCreate(app: t.App, desc_ptr: ?*const t.WindowDesc, out: ?*t.Window) Err
     };
     const w = try gpa.create(Window);
     errdefer gpa.destroy(w);
-    w.* = .{ .owner = self, .index = index, .handle = 0, .win = undefined, .on_event = desc.on_event, .destroy = desc.destroy, .user_data = desc.user_data };
+    w.* = .{ .owner = self, .index = index, .handle = 0, .win = undefined, .on_event = desc.on_event, .destroy = desc.destroy, .user_data = desc.user_data, .dialog_parent = parent };
     errdefer w.nodes.deinit(gpa);
     try w.nodes.reserve(gpa, 1);
     try self.root.handles.ensureUnusedCapacity(gpa);
@@ -513,6 +528,9 @@ fn windowCreate(app: t.App, desc_ptr: ?*const t.WindowDesc, out: ?*t.Window) Err
         .client_decorations = flags.client_decorations,
         .rtl = if (flags.rtl) true else if (flags.ltr) false else null,
         .language = language,
+        .parent = if (parent) |pw| pw.win else null,
+        .modal = flags.modal,
+        .session_name = session_name,
     }, .{ .ctx = w, .func = onWindowEvent }) catch |err| return mapAppError(err);
     errdefer w.win.destroy() catch {};
     if (desc.min_width != 0 or desc.min_height != 0 or desc.max_width != 0 or desc.max_height != 0) {
@@ -578,11 +596,12 @@ fn onWindowEvent(ctx: ?*anyopaque, _: *app_mod.Window, ev: *const app_mod.Window
             _ = cb(w.user_data, handle, &e);
             return false;
         },
-        .pointer_constraint, .shortcuts_inhibit => {
+        .pointer_constraint, .shortcuts_inhibit, .restored => {
             const cb = w.on_event orelse return false;
             const kind: t.WindowEventType = switch (ev.*) {
                 .pointer_constraint => |c| if (c.active) .pointer_constrained else .pointer_unconstrained,
                 .shortcuts_inhibit => |on| if (on) .shortcuts_inhibited else .shortcuts_restored,
+                .restored => .restored,
                 else => unreachable,
             };
             var e = windowEvent(kind, w.win.state);

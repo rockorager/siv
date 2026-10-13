@@ -137,6 +137,8 @@ pub const App = struct {
     /// The seat's key-repeat timing (platform.KeyRepeat); these defaults
     /// until the compositor reports it.
     key_repeat: platform.KeyRepeat = .{ .seat = 0, .delay_ms = 600, .rate = 25 },
+    /// Receives session events (`startSession`).
+    session_listener: SessionListener = .{},
     /// A press that dismissed popups (`dismissGrabs`): its release is
     /// dropped too.
     swallowed: ?struct { window: WindowId, button: u32 } = null,
@@ -427,10 +429,13 @@ pub const App = struct {
             .width = options.width,
             .height = options.height,
             .decoration = if (options.client_decorations) .client else .server,
+            .parent = if (options.parent) |p| p.id else null,
+            .modal = options.modal,
+            .session_name = options.session_name,
         }) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable;
         errdefer app.comp.destroyWindow(id) catch {};
         if (id >= app.windows.items.len) try app.windows.appendNTimes(gpa, null, id + 1 - app.windows.items.len);
-        win.* = .{ .app = app, .id = id, .ui = undefined, .listener = listener, .drag = .{ .comp = app.comp, .window = id, .gpa = gpa }, .follows_language = options.language.len == 0, .follows_direction = options.rtl == null };
+        win.* = .{ .app = app, .id = id, .ui = undefined, .listener = listener, .drag = .{ .comp = app.comp, .window = id, .gpa = gpa }, .follows_language = options.language.len == 0, .follows_direction = options.rtl == null, .owner = options.parent, .modal = options.parent != null and options.modal };
         win.ui = try ui.Window.init(gpa, .{
             .fonts = &app.fonts,
             .icons = &app.icons,
@@ -608,7 +613,7 @@ pub const App = struct {
                 for (app.windows.items) |w| if (w) |win| if (win.ui.ownsBuilder(b)) return win.handle(ev);
                 for (app.zombies.items) |win| if (win.ui.ownsBuilder(b)) return win.handle(ev);
             },
-            .platform => |*p| switch (p.*) {
+            .platform => |*p| if (blockedByModal(app, p)) {} else switch (p.*) {
                 .failed => |err| app.fail(if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable),
                 .exported => |e| if (app.window(e.window)) |win| portals.exported(win, e.handle.slice()),
                 .activation_token => |t| if (app.window(t.window)) |win| portals.tokenArrived(win, t.request, t.token.slice()),
@@ -647,6 +652,10 @@ pub const App = struct {
                 .shortcuts_inhibit => |i| if (app.window(i.window)) |win| {
                     _ = win.notify(&.{ .shortcuts_inhibit = i.active });
                 },
+                .session => |e| if (app.session_listener.func) |f| f(app.session_listener.ctx, &e),
+                .window_restored => |id| if (app.window(id)) |win| {
+                    _ = win.notify(&.restored);
+                },
                 else => if (app.window(p.window())) |win| win.handle(ev),
             },
             .configure => |c| if (app.window(c.window)) |win| {
@@ -678,6 +687,62 @@ pub const App = struct {
         }
     }
 
+    /// Input for a window with a shown modal dialog goes nowhere, on any
+    /// compositor (D17); motion, focus, and modifiers still arrive.
+    fn blockedByModal(app: *App, ev: *const platform.Event) bool {
+        switch (ev.*) {
+            .pointer_button, .key, .scroll, .touch_down, .touch_motion, .touch_up, .gesture, .tablet_tool, .tablet_pad, .text_input, .relative_motion => {},
+            else => return false,
+        }
+        const win = app.window(ev.window()) orelse return false;
+        const top = win.toplevel();
+        for (app.windows.items) |w| if (w) |d| if (d.modal and !d.closed and d.owner == top) return true;
+        return false;
+    }
+
+    /// Joins a session so that the compositor restores windows with a
+    /// session name (D17); `listener` gets its events. See
+    /// `platform.Platform.startSession`.
+    pub fn startSession(app: *App, reason: platform.SessionReason, id: []const u8, listener: SessionListener) Allocator.Error!void {
+        app.session_listener = listener;
+        const Req = struct {
+            reason: platform.SessionReason,
+            id: []const u8,
+            fn run(ctx: ?*anyopaque, comp: *Compositor) void {
+                const r: *@This() = @ptrCast(@alignCast(ctx));
+                comp.platform.startSession(r.reason, r.id);
+            }
+        };
+        var r: Req = .{ .reason = reason, .id = id };
+        try app.comp.call(&r, Req.run);
+    }
+
+    /// Leaves the session and has the compositor forget it.
+    pub fn removeSession(app: *App) Allocator.Error!void {
+        try app.comp.call(null, struct {
+            fn run(_: ?*anyopaque, comp: *Compositor) void {
+                comp.platform.removeSession();
+            }
+        }.run);
+    }
+
+    /// The icon sizes the compositor prefers, copied into `out`.
+    pub fn iconSizes(app: *App, out: []u32) Allocator.Error![]u32 {
+        const Req = struct {
+            out: []u32,
+            n: usize = 0,
+            fn run(ctx: ?*anyopaque, comp: *Compositor) void {
+                const r: *@This() = @ptrCast(@alignCast(ctx));
+                const sizes = comp.platform.iconSizes();
+                r.n = @min(sizes.len, r.out.len);
+                @memcpy(r.out[0..r.n], sizes[0..r.n]);
+            }
+        };
+        var r: Req = .{ .out = out };
+        try app.comp.call(&r, Req.run);
+        return out[0..r.n];
+    }
+
     fn freeZombies(app: *App) void {
         if (app.delivering != 0) return;
         var i: usize = 0;
@@ -703,6 +768,15 @@ pub const WindowOptions = struct {
     /// BCP 47 language of the window's text; empty follows the
     /// application's language.
     language: []const u8 = "",
+    /// The window this one belongs to, as a dialog (D17): the compositor
+    /// keeps it above that window.
+    parent: ?*Window = null,
+    /// With a parent: a modal dialog. The compositor may keep input from
+    /// the parent (xdg-dialog-v1); siv does on every compositor.
+    modal: bool = false,
+    /// The window's name in the session (`App.startSession`), unique among
+    /// the application's windows; empty keeps it out of the session.
+    session_name: []const u8 = "",
 };
 
 pub const WindowEvent = union(enum) {
@@ -723,6 +797,14 @@ pub const WindowEvent = union(enum) {
     pointer_constraint: platform.ConstraintState,
     /// The compositor passes its shortcuts to the window, or stopped.
     shortcuts_inhibit: bool,
+    /// The compositor restored the window from the session, before its
+    /// first configure.
+    restored,
+};
+
+pub const SessionListener = struct {
+    ctx: ?*anyopaque = null,
+    func: ?*const fn (ctx: ?*anyopaque, event: *const platform.SessionEvent) void = null,
 };
 
 pub const Listener = struct {
@@ -764,6 +846,10 @@ pub const Window = struct {
     grab: bool = false,
     /// The input serial the grab was taken for.
     grab_serial: u32 = 0,
+    /// Dialogs: the window they belong to, and whether they are modal,
+    /// which keeps input from it.
+    owner: ?*Window = null,
+    modal: bool = false,
 
     fn toplevel(win: *Window) *Window {
         var w = win;
@@ -793,6 +879,10 @@ pub const Window = struct {
         }
         try app.comp.destroyWindow(win.id);
         win.closed = true;
+        // Dialogs that outlive it belong to nothing.
+        for (app.windows.items) |w| if (w) |d| if (d.owner == win) {
+            d.owner = null;
+        };
         if (app.accessible) app.bridge.removeWindow(win.a11y_id);
         win.a11y_id = 0;
         if (win.ui.txn.open) win.ui.txn.abort();
@@ -982,6 +1072,44 @@ pub const Window = struct {
     /// the window has focus (D16); `shortcuts_inhibit` events follow.
     pub fn inhibitShortcuts(win: *Window, on: bool) Allocator.Error!void {
         try win.platformCall(platform.Platform.inhibitShortcuts, on);
+    }
+
+    /// Sets the toplevel's icon (D17): a theme name and square images,
+    /// copied; null resets it. False when the compositor offers no
+    /// toplevel icons.
+    pub fn setIcon(win: *Window, icon: ?*const platform.ToplevelIcon) Allocator.Error!bool {
+        if (win.closed or !win.shown) return false;
+        const Req = struct {
+            id: WindowId,
+            icon: ?*const platform.ToplevelIcon,
+            out: bool = false,
+            fn run(ctx: ?*anyopaque, comp: *Compositor) void {
+                const r: *@This() = @ptrCast(@alignCast(ctx));
+                r.out = comp.platform.setIcon(r.id, r.icon);
+            }
+        };
+        var r: Req = .{ .id = win.id, .icon = icon };
+        try win.app.comp.call(&r, Req.run);
+        return r.out;
+    }
+
+    /// Keeps the session from going idle while the window is visible
+    /// (D17, idle-inhibit-unstable-v1), counted. False, changing nothing,
+    /// when the compositor offers no idle inhibition.
+    pub fn inhibitIdle(win: *Window, on: bool) Allocator.Error!bool {
+        if (win.closed or !win.shown) return false;
+        const Req = struct {
+            id: WindowId,
+            on: bool,
+            out: bool = false,
+            fn run(ctx: ?*anyopaque, comp: *Compositor) void {
+                const r: *@This() = @ptrCast(@alignCast(ctx));
+                r.out = comp.platform.inhibitIdle(r.id, r.on);
+            }
+        };
+        var r: Req = .{ .id = win.id, .on = on };
+        try win.app.comp.call(&r, Req.run);
+        return r.out;
     }
 
     fn setCursor(ctx: ?*anyopaque, shape: ui.CursorShape) void {

@@ -347,6 +347,7 @@ pub const decls = [_]Decl{
         .{ .name = "client_decorations", .bit = 0, .doc = "Prefer drawing decorations in the application (header bars) over the compositor's." },
         .{ .name = "rtl", .bit = 1, .doc = "Lay out right to left; nodes inherit the direction (D21). Without rtl or ltr, the window follows the application's direction, also when it changes." },
         .{ .name = "ltr", .bit = 2, .doc = "Lay out left to right." },
+        .{ .name = "modal", .bit = 3, .doc = "With a parent: a modal dialog. Input to the parent (and its popups) goes nowhere while the dialog is shown, on every compositor; compositors that offer xdg-dialog may also attach it to the parent and dim it." },
     }),
     enumeration("siv_window_event_type", "What a siv_window_event reports.", &.{
         .{ .name = "close_requested", .value = 0, .doc = "The user asked to close the window. Return true to keep it; otherwise siv destroys it." },
@@ -358,6 +359,7 @@ pub const decls = [_]Decl{
         .{ .name = "pointer_unconstrained", .value = 6, .doc = "The compositor deactivated the pointer constraint (the user switched away, or it was ended). Unless it was persistent, it is gone: set it again to get it back." },
         .{ .name = "shortcuts_inhibited", .value = 7, .doc = "The compositor sends the window its own shortcuts as keys (siv_window_inhibit_shortcuts), while the window has keyboard focus." },
         .{ .name = "shortcuts_restored", .value = 8, .doc = "The compositor handles its shortcuts again (the user overrode the inhibition, or it was ended)." },
+        .{ .name = "restored", .value = 9, .doc = "The compositor restored the window's size, place, and states from the session (siv_app_start_session, session_name), before its first resize. Sent at most once, soon after creation." },
     }),
     enumeration("siv_pointer_constraint", "What a pointer constraint does (D16).", &.{
         .{ .name = "none", .value = 0, .doc = "No constraint." },
@@ -397,6 +399,8 @@ pub const decls = [_]Decl{
         .{ .name = "max_height", .type = .u32, .doc = "Largest height; 0 is none." },
         .{ .name = "flags", .type = ref("siv_window_flags"), .doc = "Options." },
         .{ .name = "states", .type = ref("siv_window_states"), .doc = "Ask for these states at once; only maximized and fullscreen apply." },
+        .{ .name = "parent", .type = ref("siv_window"), .doc = "A window this one belongs to, as a native dialog (D17): the compositor keeps it above that window; with SIV_WINDOW_MODAL, it is modal. 0 for none. siv_dialog makes dialogs inside a window instead. Destroying the parent destroys it first." },
+        .{ .name = "session_name", .type = .string, .doc = "The window's name in the session (siv_app_start_session), the same on every run and unique among the application's windows, such as \"main\" or a document's path; empty keeps it out of the session. A window created after the session started is restored by the compositor before it maps if the session knows its name." },
     }),
 
     enumeration("siv_popup_placement", "Where a popup goes relative to its anchor (D17). Horizontal sides are logical: they mirror in right-to-left layouts.", &.{
@@ -2046,6 +2050,11 @@ pub const functions = [_]Function{
         .{ .name = "node", .type = ref("siv_node"), .doc = "A node of the window; 0 is the root, the whole window." },
         .{ .name = "kind", .type = ref("siv_pointer_constraint"), .doc = "Lock, confine, or none." },
         .{ .name = "flags", .type = ref("siv_pointer_constraint_flags"), .doc = "Options." },
+    }),
+    call("siv_window_set_icon", "Sets the window's icon, as task switchers and docks show it (D17, xdg-toplevel-icon): a themed name, an image, or both. A name alone is also drawn from the icon theme by siv (siv_app_add_icon_path's directories included) at the sizes the compositor asks for, for compositors that cannot find it, such as for icons that only the application installs. Empty name and 0 image reset the default icon (the .desktop file's). SIV_ERROR_UNSUPPORTED when the compositor offers no toplevel icons.", &.{
+        window_param,
+        .{ .name = "icon_name", .type = .string, .doc = "A themed icon name, or empty." },
+        .{ .name = "image", .type = ref("siv_image"), .doc = "An image, or 0; vector images are drawn at each size, others shown at their own size." },
     }),
     call("siv_window_inhibit_shortcuts", "Asks the compositor to send the window its own shortcuts (Super combinations, workspace switching) as keys while it has keyboard focus, for remote desktops, virtual machines, and terminals that forward keys (D16). The compositor decides; shortcuts_inhibited and shortcuts_restored window events report it.", &.{
         window_param,

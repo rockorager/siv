@@ -50,9 +50,16 @@ pointers: [8]SimPointer = @splat(.{}),
 cursor_changes: u32 = 0,
 cursor_theme: platform.BoundedString(64) = .{},
 cursor_size: u32 = 0,
+icon_sizes: []const u32,
+/// The session joined (an index into `sessions`), and whether it was
+/// found rather than created.
+session: ?usize = null,
+session_restored: bool = false,
 
 pub const Options = struct {
     refresh_ns: u64 = FrameClock.default_refresh_ns,
+    /// Icon sizes the simulated compositor prefers (`iconSizes`).
+    icon_sizes: []const u32 = &.{ 32, 64 },
     /// The initial output. Windows take its integer scale.
     output: platform.OutputInfo = defaultOutput(),
 };
@@ -101,6 +108,13 @@ const Window = struct {
     constraint: platform.ConstraintOptions = .{},
     constraint_active: bool = false,
     inhibit_shortcuts: bool = false,
+    /// Toplevels: the parent and modality asked for, the icon set last
+    /// (its name and image sizes), idle inhibitions, and the session name.
+    toplevel_parent: ?WindowId = null,
+    modal: bool = false,
+    icon: ?struct { name: platform.BoundedString(255) = .{}, sizes: [16]u32 = @splat(0), count: u8 = 0 } = null,
+    idle_count: u32 = 0,
+    session_name: platform.BoundedString(255) = .{},
 
     const Slot = struct { pixels: []u8 = &.{}, width: u32 = 0, height: u32 = 0 };
 };
@@ -133,6 +147,7 @@ pub fn create(loop: *Loop, allocator: Allocator, sink: platform.Sink, options: O
         .queue = .{ .loop = loop, .allocator = allocator, .sink = sink },
         .refresh_ns = options.refresh_ns,
         .epoch_ns = Loop.now(),
+        .icon_sizes = options.icon_sizes,
     };
     _ = try hl.addOutput(options.output);
     return hl;
@@ -264,7 +279,12 @@ pub fn createWindow(hl: *Headless, options: platform.WindowOptions) Error!Window
         },
     };
     w.title.set(options.title);
+    w.toplevel_parent = options.parent;
+    w.modal = options.parent != null and options.modal;
+    w.session_name.set(options.session_name);
     hl.windows.items[slot] = w;
+    // A known name is restored before the first configure.
+    if (hl.session != null and w.session_name.len > 0 and hl.sessionWindow(w.session_name.slice(), true)) hl.queue.push(.{ .window_restored = w.id });
     // Like a compositor: the initial configure, answered by a frame.
     hl.sendConfigure(w);
     return w.id;
@@ -500,6 +520,118 @@ pub fn inhibitShortcuts(hl: *Headless, id: WindowId, on: bool) void {
     if (w.inhibit_shortcuts == on) return;
     w.inhibit_shortcuts = on;
     hl.queue.push(.{ .shortcuts_inhibit = .{ .window = id, .seat = 0, .active = on } });
+}
+
+// Window features (D17) -------------------------------------------------------
+
+pub fn iconSizes(hl: *Headless) []const u32 {
+    return hl.icon_sizes;
+}
+
+pub fn setIcon(hl: *Headless, id: WindowId, icon: ?*const platform.ToplevelIcon) bool {
+    const w = hl.get(id);
+    const ic = icon orelse {
+        w.icon = null;
+        return true;
+    };
+    w.icon = .{};
+    w.icon.?.name.set(ic.name);
+    for (ic.images[0..@min(ic.images.len, 16)], 0..) |img, i| {
+        std.debug.assert(img.pixels.len >= @as(usize, img.size) * img.size * 4);
+        w.icon.?.sizes[i] = img.size;
+        w.icon.?.count += 1;
+    }
+    return true;
+}
+
+/// The icon a window set last: its name and image sizes.
+pub fn iconOf(hl: *Headless, id: WindowId) ?struct { name: []const u8, sizes: []const u32 } {
+    const w = hl.get(id);
+    const ic = &(w.icon orelse return null);
+    return .{ .name = ic.name.slice(), .sizes = ic.sizes[0..ic.count] };
+}
+
+/// A window's parent and whether it asked to be modal.
+pub fn dialogOf(hl: *Headless, id: WindowId) struct { parent: ?WindowId, modal: bool } {
+    const w = hl.get(id);
+    return .{ .parent = w.toplevel_parent, .modal = w.modal };
+}
+
+pub fn inhibitIdle(hl: *Headless, id: WindowId, on: bool) bool {
+    const w = hl.get(id);
+    if (on) w.idle_count += 1 else w.idle_count -|= 1;
+    return true;
+}
+
+/// Whether a window inhibits idling.
+pub fn idleInhibited(hl: *Headless, id: WindowId) bool {
+    return hl.get(id).idle_count > 0;
+}
+
+/// The simulated compositor's session storage: process-wide, as a real
+/// compositor's outlives its clients, so that a test restores a session
+/// in a second application. Allocated from the page allocator and kept.
+const SessionStore = struct {
+    mutex: std.c.pthread_mutex_t = .{},
+    sessions: std.ArrayList(StoredSession) = .empty,
+    next: u32 = 1,
+
+    const StoredSession = struct { id: platform.Handle = .{}, names: std.ArrayList(platform.BoundedString(255)) = .empty };
+};
+var session_store: SessionStore = .{};
+
+pub fn startSession(hl: *Headless, _: platform.SessionReason, id: []const u8) void {
+    const st = &session_store;
+    _ = std.c.pthread_mutex_lock(&st.mutex);
+    defer _ = std.c.pthread_mutex_unlock(&st.mutex);
+    const gpa = std.heap.page_allocator;
+    for (st.sessions.items, 0..) |*x, i| if (id.len > 0 and std.mem.eql(u8, x.id.slice(), id)) {
+        hl.session = i;
+        hl.session_restored = true;
+        hl.queue.push(.{ .session = .{ .kind = .restored } });
+        return;
+    };
+    var x: SessionStore.StoredSession = .{};
+    var buf: [32]u8 = undefined;
+    x.id.set(std.fmt.bufPrint(&buf, "headless-session-{d}", .{st.next}) catch unreachable);
+    st.next += 1;
+    st.sessions.append(gpa, x) catch return hl.queue.fail(error.OutOfMemory);
+    hl.session = st.sessions.items.len - 1;
+    hl.session_restored = false;
+    var ev: platform.SessionEvent = .{ .kind = .created };
+    ev.id = x.id;
+    hl.queue.push(.{ .session = ev });
+    // Windows that exist are added.
+    for (hl.windows.items) |w| if (w) |win| if (win.session_name.len > 0) {
+        _ = std.c.pthread_mutex_unlock(&st.mutex);
+        _ = hl.sessionWindow(win.session_name.slice(), false);
+        _ = std.c.pthread_mutex_lock(&st.mutex);
+    };
+}
+
+pub fn removeSession(hl: *Headless) void {
+    const i = hl.session orelse return;
+    const st = &session_store;
+    _ = std.c.pthread_mutex_lock(&st.mutex);
+    defer _ = std.c.pthread_mutex_unlock(&st.mutex);
+    st.sessions.items[i].id.set("");
+    st.sessions.items[i].names.clearRetainingCapacity();
+    hl.session = null;
+}
+
+/// Records a window name in the session; returns whether a restored
+/// session knew it (and `restore` asked for it).
+fn sessionWindow(hl: *Headless, name: []const u8, restore: bool) bool {
+    const i = hl.session orelse return false;
+    const st = &session_store;
+    _ = std.c.pthread_mutex_lock(&st.mutex);
+    defer _ = std.c.pthread_mutex_unlock(&st.mutex);
+    const x = &st.sessions.items[i];
+    for (x.names.items) |n| if (std.mem.eql(u8, n.slice(), name)) return restore and hl.session_restored;
+    var n: platform.BoundedString(255) = .{};
+    n.set(name);
+    x.names.append(std.heap.page_allocator, n) catch hl.queue.fail(error.OutOfMemory);
+    return false;
 }
 
 pub fn windowState(hl: *Headless, id: WindowId) *const WindowState {

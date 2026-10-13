@@ -12,6 +12,7 @@ const Seat = @import("Seat.zig");
 const Tablet = @import("Tablet.zig");
 const Sway = @import("test_sway.zig").Sway;
 const VirtualPointer = @import("test_sway.zig").VirtualPointer;
+const IdleWatch = @import("test_sway.zig").IdleWatch;
 const Size = platform.Size;
 const Scale = platform.Scale;
 const WindowId = platform.WindowId;
@@ -602,6 +603,40 @@ test "pointer lock with relative motion, and shortcut inhibition, granted by swa
     app.backend.inhibitShortcuts(id, false);
     try h.loop.dispatch(0);
     try testing.expect(!app.last(.shortcuts_inhibit).?.shortcuts_inhibit.active);
+}
+
+test "window features on sway: idle inhibition holds idling off; dialogs, icons, and sessions degrade" {
+    var h: Harness = .{};
+    try h.start();
+    defer h.stop();
+    const app = &h.app;
+    const id = try h.mapWindow(.{ .title = "Main", .session_name = "main" });
+
+    // Sway 1.12 has no xdg-dialog, toplevel icons, or session management:
+    // a dialog is a toplevel with a parent, and the others say so.
+    const dialog = try h.mapWindow(.{ .title = "Dialog", .parent = id, .modal = true });
+    try testing.expect(app.backend.get(dialog).dialog == null);
+    try testing.expect(!app.backend.setIcon(id, &.{ .name = "folder" }));
+    try testing.expectEqual(@as(usize, 0), app.backend.iconSizes().len);
+    app.backend.startSession(.launch, "");
+    try h.loop.dispatch(0);
+    try testing.expectEqual(platform.SessionEvent.Kind.unavailable, app.last(.session).?.session.kind);
+    app.backend.destroyWindow(dialog);
+
+    // Idle inhibition is real: with a visible window inhibiting, sway
+    // never reports the seat idle; without, it does after the timeout.
+    var watch: IdleWatch = undefined;
+    try watch.connect(&h.sway, 300);
+    defer watch.deinit();
+    try testing.expect(app.backend.inhibitIdle(id, true));
+    _ = app.backend.display.roundtrip();
+    try testing.expect(!try watch.idleAfter(800));
+    try testing.expect(app.backend.inhibitIdle(id, false));
+    _ = app.backend.display.roundtrip();
+    try testing.expect(try watch.idleAfter(800));
+    // The connection survived every request.
+    _ = app.backend.display.roundtrip();
+    try testing.expectEqual(@as(usize, 0), app.count(.failed));
 }
 
 test "a deferred configure is acked by the next present or after the timeout" {

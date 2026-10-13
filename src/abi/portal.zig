@@ -13,6 +13,7 @@ const linux = std.os.linux;
 const t = @import("siv");
 const app_mod = @import("app");
 const portal = @import("portal");
+const platform = @import("platform");
 const loop_mod = @import("loop");
 const runtime = @import("runtime.zig");
 const application = @import("application.zig");
@@ -49,7 +50,11 @@ pub const State = struct {
     prints: print.State = .{},
     /// The tray item (tray.zig).
     tray: tray.State = .{},
+    /// siv_app_start_session's callback.
+    session: ?SessionCallback = null,
 };
+
+const SessionCallback = struct { callback: ?t.SessionFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque };
 
 const Launch = struct { on_activate: ?t.ActivateFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque };
 
@@ -96,6 +101,8 @@ pub fn teardown(self: *App) void {
     st.actions.deinit(gpa);
     if (st.launch) |l| self.release(l.destroy, l.user_data);
     st.launch = null;
+    if (st.session) |x| self.release(x.destroy, x.user_data);
+    st.session = null;
 }
 
 /// The window a parent handle names, or null for 0.
@@ -481,6 +488,9 @@ const Inhibition = struct {
     handle: u64 = 0,
     flags: portal.inhibit.Flags,
     reason: []u8,
+    /// Idling inhibited through the compositor for this window instead of
+    /// the portal (D17).
+    window: t.Window = .null,
     parent: Parent = .{ .func = onParent },
     req: portal.Request = .{ .func = onResponse },
     started: bool = false,
@@ -515,14 +525,27 @@ pub export fn siv_inhibit(app: t.App, window: t.Window, flags: t.InhibitFlags, r
             x.* = .{ .self = self, .flags = .{ .logout = fl.logout, .user_switch = fl.user_switch, .suspend_ = fl.@"suspend", .idle = fl.idle }, .reason = try dupe(self, r) };
             x.handle = self.root.handles.insert(gpa, inhibition_tag, index) catch unreachable;
             st.inhibitions.items.items[index] = x;
-            if (self.app.portals.get() != null) app_mod.portals.parentOf(self.app, win, &x.parent);
             dest.* = @fromBackingInt(x.handle);
+            // Idling alone for a window: the compositor's idle inhibition
+            // when it has one; it holds while the window is visible.
+            const idle_only: t.InhibitFlags = .{ .idle = true };
+            if (win != null and @as(u32, @bitCast(fl)) == @as(u32, @bitCast(idle_only))) {
+                if (win.?.inhibitIdle(true) catch false) {
+                    x.window = wnd;
+                    return;
+                }
+            }
+            if (self.app.portals.get() != null) app_mod.portals.parentOf(self.app, win, &x.parent);
         }
     }.f(app, window, flags, reason, reason_len, out));
 }
 
 fn destroyInhibition(self: *App, index: u32) void {
     const x = self.desktop.inhibitions.items.items[index].?;
+    // A window that is gone took its inhibitor with it.
+    if (x.window != .null) if (App.window(@backingInt(x.window), application.window_tag)) |w| {
+        if (!w.dead) _ = w.win.inhibitIdle(false) catch {};
+    } else |_| {};
     x.parent.cancel();
     // Closing the request ends the inhibition, answered or not.
     if (x.started) x.req.cancel();
@@ -536,6 +559,66 @@ pub export fn siv_inhibition_destroy(inhibition: t.Inhibition) t.Result {
     const self, const index = runtime.Root.owner(App, application.app_tag, @backingInt(inhibition), inhibition_tag) catch |err| return t.resultOf(err);
     destroyInhibition(self, index);
     return .ok;
+}
+
+// Session restore -----------------------------------------------------------------
+
+pub export fn siv_app_start_session(app: t.App, session_id: ?[*]const u8, session_id_len: usize, reason: t.SessionReason, callback: ?t.SessionFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) t.Result {
+    const self = App.get(@backingInt(app)) catch |err| {
+        if (destroy) |d| d(user_data);
+        return t.resultOf(err);
+    };
+    startSession(self, session_id, session_id_len, reason, callback, destroy, user_data) catch |err| {
+        self.release(destroy, user_data);
+        return t.resultOf(err);
+    };
+    return .ok;
+}
+
+fn startSession(self: *App, id_ptr: ?[*]const u8, id_len: usize, reason: t.SessionReason, callback: ?t.SessionFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) Error!void {
+    const id = try runtime.string(id_ptr, id_len);
+    if (id.len > 255 or std.mem.indexOfScalar(u8, id, 0) != null) return error.InvalidArgument;
+    const r: platform.SessionReason = switch (try runtime.enumValue(t.SessionReason, reason)) {
+        .launch => .launch,
+        .recover => .recover,
+        .restore => .restore,
+        _ => unreachable,
+    };
+    const st = &self.desktop;
+    if (st.session) |old| self.release(old.destroy, old.user_data);
+    st.session = .{ .callback = callback, .destroy = destroy, .user_data = user_data };
+    try self.app.startSession(r, id, .{ .ctx = self, .func = onSession });
+}
+
+fn onSession(ctx: ?*anyopaque, ev: *const platform.SessionEvent) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const x = self.desktop.session orelse return;
+    const cb = x.callback orelse return;
+    const id = ev.id.slice();
+    var e: t.SessionEvent = .{
+        .type = switch (ev.kind) {
+            .created => .created,
+            .restored => .restored,
+            .replaced => .replaced,
+            .unavailable => .unavailable,
+        },
+        .session_id = id.ptr,
+        .session_id_len = id.len,
+    };
+    self.enter();
+    defer self.leave();
+    cb(x.user_data, &e);
+}
+
+pub export fn siv_app_remove_session(app: t.App) t.Result {
+    return application.wrap(struct {
+        fn f(a: t.App) Error!void {
+            const self = try App.get(@backingInt(a));
+            try self.app.removeSession();
+            if (self.desktop.session) |x| self.release(x.destroy, x.user_data);
+            self.desktop.session = null;
+        }
+    }.f(app));
 }
 
 // The file chooser ----------------------------------------------------------------
