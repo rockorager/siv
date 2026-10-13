@@ -101,12 +101,9 @@ static siv_node build_gallery(siv_txn txn, siv_node root) {
 	siv_on(txn, check, SIV_EVENT_TYPE_CHANGE, on_button, NULL, "Toggled");
 
 	/* Views draw their own frame: view background, border, radius 6. */
-	/* A flex frame: a list view in a plain box loses its size at the
-	 * second layout (README.md, siv bugs found). */
-	siv_node frame = siv_flex(txn, c, SIV_DESC(siv_flex_desc, .axis = SIV_AXIS_COLUMN));
-	siv_set_layout(txn, frame, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_PX, 320}, .height = {SIV_UNIT_PX, 320}));
-	siv_node list = siv_list_view(txn, frame, SIV_DESC(siv_view_desc, .label = S("Items"), .bind = bind_item, .count = 50, .item_height = 32,
-	                                                   .selection = SIV_SELECTION_MODE_SINGLE));
+	siv_node list = siv_list_view(txn, c, SIV_DESC(siv_view_desc, .label = S("Items"), .bind = bind_item, .count = 50, .item_height = 32,
+	                                               .selection = SIV_SELECTION_MODE_SINGLE));
+	siv_set_layout(txn, list, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_PX, 320}, .height = {SIV_UNIT_PX, 320}, .max_height = 320));
 	siv_on(txn, list, SIV_EVENT_TYPE_SELECT, on_list_select, NULL, NULL);
 
 	status = siv_text(txn, c, S("Last action: none"));

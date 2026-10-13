@@ -229,16 +229,24 @@ scenario (`run.py --perf`), and measured with `run.py` before and after.
 | `10ac961` widgets: tell binds a row from the pool is recycled | rows reused from the pool were reported fresh; binds stacked a second set of children (duplicated, overlapping rows while scrolling) | correctness; list CPU/frame 2.42 → 2.39 ms |
 | `a672139` text: measure each glyph run's ink when laying it out | 22% of a keystroke asking every glyph for its bounds when painting | text key 28 → 22 ms |
 
-### siv bugs found and not fixed here
+### siv bugs found by the bench, and their fixes
 
-- Flex `grow` ignores `max_height` (and `max_width`): a grown item is not
-  clamped (`src/ui/layout.zig`), so the gallery's list needed a fixed
-  frame.
-- A list view in a plain box is sized at the first layout and collapses
-  to nothing at the next one, so incremental layout disagrees with a full
-  one; in a flex column it keeps its size.
-- After the compositor scrolls a list under a still pointer, the row
-  that was hovered keeps its highlight until the pointer moves.
-- Once, at startup, siv aborted with "LLVM ERROR: inconsistency in
-  registered CommandLine options" (two LLVM copies in one process, from
-  Mesa); it did not happen again in about 300 runs.
+- Flex `grow` and `shrink` ignored `max_*` and `min_*` sizes, so the
+  gallery's list needed a fixed frame. Fixed in `6becf70` (CSS flexbox's
+  freezing of clamped items); the gallery now puts the list straight in
+  its column.
+- "A list view in a plain box collapses at the second layout" was a
+  misreading: a list view in a plain box of `auto` height is zero high
+  from the first layout on, and the frame that seemed to lose it was the
+  flex-grow bug above. A fractional height against a box of definite
+  height now resolves (`c32c25a`, from the file manager's work), and a
+  views test keeps it so.
+- After the compositor scrolled a list under a still pointer, the row
+  that was hovered kept its highlight until the pointer moved. Fixed in
+  `8366bb6`: the UI hit-tests the still pointer again after a scroll.
+- "LLVM ERROR: inconsistency in registered CommandLine options" came from
+  one libLLVM (pulled in by RADV), not two: the bench's error path
+  returned from `main` while the device thread was still running
+  libLLVM's static constructors, and `exit` ran their destructors under
+  them. Fixed in `8dd0a3e`: `exit` waits for a starting device thread
+  (DESIGN D10).
