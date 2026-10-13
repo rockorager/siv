@@ -150,6 +150,22 @@ fn itemOf(node: Node) ?*Item {
     return w.stateOf(Item, node, &.{.menu_item});
 }
 
+pub export fn siv_menu_get_item(menu_node: Node, index: u32, item: ?*Node) siv.Result {
+    const out = item orelse return .error_invalid_argument;
+    const m = menuOf(menu_node) orelse return .error_invalid_argument;
+    var i: u32 = 0;
+    var cur = w.related(m.root, .first_child);
+    while (cur != .null) : (cur = w.related(cur, .next)) {
+        if (itemOf(cur) == null) continue;
+        if (i == index) {
+            out.* = cur;
+            return .ok;
+        }
+        i += 1;
+    }
+    return .error_invalid_argument;
+}
+
 fn textOf(node: Node, buf: []u8) []const u8 {
     var len: usize = 0;
     if (c.siv_node_get_text(node, buf.ptr, buf.len, &len) != .ok) return "";

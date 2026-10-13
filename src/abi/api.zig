@@ -1677,6 +1677,11 @@ pub const functions = [_]Function{
         .{ .name = "x", .type = .f32, .doc = "Horizontal position in anchor, from its left edge, as pointer events report it." },
         .{ .name = "y", .type = .f32, .doc = "Vertical position in anchor, from its top edge." },
     }),
+    call("siv_menu_get_item", "A menu's item by its position, as siv_menu_item added it (separators count), as of the latest operation: for setting a check mark, a label, or the disabled state of menus built from tables (siv_widget_set_value, siv_widget_set_label, siv_widget_set_disabled). SIV_ERROR_INVALID_ARGUMENT past the last item.", &.{
+        .{ .name = "menu", .type = ref("siv_node"), .doc = "A menu or menu button." },
+        .{ .name = "index", .type = .u32, .doc = "The item's position, from 0." },
+        .{ .name = "item", .type = out(ref("siv_node")), .doc = "The item." },
+    }),
     call("siv_popover_create", "Creates a popover against anchor: a popup with a themed card whose content the application builds in a transaction on the popup, then maps with siv_popup_show. Escape and clicks outside report SIV_EVENT_CLOSE on the content node; unless a handler keeps it, the popup is destroyed.", &.{
         .{ .name = "anchor", .type = ref("siv_node"), .doc = "The node to place it against." },
         .{ .name = "desc", .type = .{ .desc = "siv_popover_desc" }, .doc = "Options; NULL for defaults." },

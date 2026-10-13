@@ -233,6 +233,12 @@ test "menus: a context menu opens against any node; disabled items cannot be cho
     _ = c.siv_menu_item(txn, menu, &.{ .label = "Cut", .label_len = 3, .flags = .{ .disabled = true } });
     const copy = c.siv_menu_item(txn, menu, &.{ .label = "Copy", .label_len = 4 });
     _ = c.siv_on(txn, menu, .select, Log.onSelect, null, &log);
+    // Items by position, in the transaction that added them too.
+    var second: t.Node = .null;
+    try ok(c.siv_menu_get_item(menu, 1, &second));
+    try testing.expectEqual(copy, second);
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_menu_get_item(menu, 2, &second));
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_menu_get_item(target, 0, &second));
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     try h.click(20, 20);

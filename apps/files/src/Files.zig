@@ -497,15 +497,9 @@ const app_menu_items = [_]MenuSpec{
 
 /// The menu item node at `index` of a menu.
 fn menuItem(menu: Node, index: usize) Node {
-    var cur: Node = .null;
-    _ = c.siv_node_get_related(menu, .first_child, &cur);
-    var i: usize = 0;
-    while (cur != .null and i < index) : (i += 1) {
-        var next: Node = .null;
-        _ = c.siv_node_get_related(cur, .next, &next);
-        cur = next;
-    }
-    return cur;
+    var item: Node = .null;
+    _ = c.siv_menu_get_item(menu, @intCast(index), &item);
+    return item;
 }
 
 fn appMenu(self: *Files) Node {

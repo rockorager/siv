@@ -2421,6 +2421,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       time. Choosing reports `select` with the item's position (separators
       count) after the popup is gone; Up, Down, Home, End, Enter, Space,
       a mnemonic keysym per item, and Escape work as in WAI-ARIA's menu.
+      `siv_menu_get_item` finds an item by that same position, so an
+      application that builds menus from tables checks and disables items
+      by index; found by the file manager in `apps/files`, which walked
+      the menu's children to do it.
       An item can carry a submenu (another `siv_menu`), shown in a popup
       of the menu's popup, placed beside the item (flipping to the start
       side without room, mirrored in RTL). Enter, Space, a click, a
