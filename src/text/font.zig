@@ -178,6 +178,9 @@ pub const Face = struct {
     description: Description,
     /// The variation string and instance values it was created with.
     instance: Instance,
+    glyph_count: u32,
+    /// Ink extents by glyph id, filled on first use (see `glyphBounds`).
+    extents: std.atomic.Value(?[*]std.atomic.Value(u64)) = .init(null),
 
     /// Pixels per font unit at `size` pixels per em.
     pub fn scale(self: *const Face, size: f32) f32 {
@@ -201,9 +204,31 @@ pub const Face = struct {
 
     /// Ink bounds of a glyph in pixels at `size`, y down, relative to the
     /// glyph origin. Null for glyphs without outlines.
+    ///
+    /// HarfBuzz computes extents from the outline, applying gvar deltas
+    /// for variable fonts, which made it most of the cost of painting
+    /// text. Each face remembers them per glyph in font units, packed as
+    /// four i16 into an atomic word, so that any thread may fill and read
+    /// the table without a lock (racing writers store the same value).
     pub fn glyphBounds(self: *const Face, glyph: u32, size: f32) ?struct { x: f32, y: f32, width: f32, height: f32 } {
         var extents: hb.hb_glyph_extents_t = undefined;
-        if (hb.hb_font_get_glyph_extents(self.font, glyph, &extents) == 0) return null;
+        const table = self.extentsTable();
+        const slot = if (table != null and glyph < self.glyph_count) &table.?[glyph] else null;
+        const cached = if (slot) |sl| sl.load(.monotonic) else extents_unknown;
+        if (cached == extents_none) return null;
+        if (cached != extents_unknown) {
+            extents = .{
+                .x_bearing = @as(i16, @bitCast(@as(u16, @truncate(cached)))),
+                .y_bearing = @as(i16, @bitCast(@as(u16, @truncate(cached >> 16)))),
+                .width = @as(i16, @bitCast(@as(u16, @truncate(cached >> 32)))),
+                .height = @as(i16, @bitCast(@as(u16, @truncate(cached >> 48)))),
+            };
+        } else if (hb.hb_font_get_glyph_extents(self.font, glyph, &extents) == 0) {
+            if (slot) |sl| sl.store(extents_none, .monotonic);
+            return null;
+        } else if (slot) |sl| {
+            if (packExtents(extents)) |packed_| sl.store(packed_, .monotonic);
+        }
         const s = self.scale(size);
         return .{
             .x = @as(f32, @floatFromInt(extents.x_bearing)) * s,
@@ -223,6 +248,19 @@ pub const Face = struct {
             if (hb.hb_ot_name_get_utf8(face, id, null, &len, buf.ptr) != 0) return buf[0..len];
         }
         return "";
+    }
+
+    /// The glyph extents table, allocated on first use.
+    fn extentsTable(self: *const Face) ?[*]std.atomic.Value(u64) {
+        if (self.extents.load(.acquire)) |t| return t;
+        const fresh = std.heap.page_allocator.alloc(std.atomic.Value(u64), self.glyph_count) catch return null;
+        @memset(fresh, .init(extents_unknown));
+        const mutable: *Face = @constCast(self);
+        if (mutable.extents.cmpxchgStrong(null, fresh.ptr, .acq_rel, .acquire)) |won| {
+            std.heap.page_allocator.free(fresh);
+            return won;
+        }
+        return fresh.ptr;
     }
 
     fn init(bytes: []const u8, index: u32, variations: []const u8, instance: Instance) !Face {
@@ -272,13 +310,30 @@ pub const Face = struct {
             .line_gap = extents.line_gap,
             .description = description,
             .instance = instance,
+            .glyph_count = hb.hb_face_get_glyph_count(face),
         };
     }
 
     fn deinit(self: *Face) void {
+        if (self.extents.load(.acquire)) |t| std.heap.page_allocator.free(t[0..self.glyph_count]);
         hb.hb_font_destroy(self.font);
     }
 };
+
+/// `Face.extents` entries: not computed yet, and no outline. Neither is a
+/// packing of extents that fit in i16 (both have x_bearing -32768).
+const extents_unknown: u64 = 0x8000;
+const extents_none: u64 = 0x1_8000;
+
+fn packExtents(e: hb.hb_glyph_extents_t) ?u64 {
+    const fields = [_]i32{ e.x_bearing, e.y_bearing, e.width, e.height };
+    var out: u64 = 0;
+    for (fields, 0..) |f, i| {
+        if (f <= std.math.minInt(i16) or f > std.math.maxInt(i16)) return null;
+        out |= @as(u64, @as(u16, @bitCast(@as(i16, @intCast(f))))) << @intCast(16 * i);
+    }
+    return out;
+}
 
 /// Where a pending font's bytes live, for the caller to read.
 pub const Source = struct {
@@ -484,6 +539,17 @@ test "faces from bytes, metrics, and coverage" {
     try std.testing.expect(m.ascent > 10 and m.ascent < 20 and m.descent > 2 and m.descent < 8);
     const bounds = face.glyphBounds(36, 16).?; // some outline glyph
     try std.testing.expect(bounds.width > 0 and bounds.height > 0);
+    // Remembered extents (negative bearings included) match HarfBuzz's.
+    for (0..face.glyph_count) |g| {
+        var e: hb.hb_glyph_extents_t = undefined;
+        const has = hb.hb_font_get_glyph_extents(face.font, @intCast(g), &e) != 0;
+        for (0..2) |_| {
+            const b = face.glyphBounds(@intCast(g), 1000);
+            try std.testing.expectEqual(has, b != null);
+            if (b) |v| try std.testing.expectEqual(@as(f32, @floatFromInt(e.x_bearing)) * face.scale(1000), v.x);
+            if (b) |v| try std.testing.expectEqual(@as(f32, @floatFromInt(-e.height)) * face.scale(1000), v.height);
+        }
+    }
 
     try std.testing.expectError(error.InvalidFont, cache.add("not a font", 0, .borrowed));
 }
