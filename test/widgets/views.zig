@@ -321,6 +321,13 @@ test "tree view: expanding and collapsing, keys mirrored in RTL" {
         tree = try uw.semanticsTree();
         try testing.expectEqual(ui.Toggle.on, tree.find(.tree_item, "Item 1000").?.expanded);
         try testing.expectEqual(@as(u8, 2), tree.find(.tree_item, "Node 2001").?.level);
+        // Tree items say where they are among their siblings: "2 of 4,
+        // level 2".
+        try testing.expectEqual(@as(u32, 2), tree.find(.tree_item, "Node 2001").?.position);
+        try testing.expectEqual(@as(u32, 4), tree.find(.tree_item, "Node 2001").?.set_size);
+        try testing.expectEqual(@as(u32, 1), tree.find(.tree_item, "Item 1000").?.position);
+        try testing.expectEqual(@as(u32, 3), tree.find(.tree_item, "Item 1000").?.set_size);
+        try testing.expectEqual(@as(u32, 2), tree.find(.tree_item, "Item 1001").?.position);
         try h.typeKey(forward, "", .{});
         try h.typeKey(ks.down, "", .{});
         try h.typeKey(forward, "", .{});

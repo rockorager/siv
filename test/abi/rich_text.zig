@@ -9,6 +9,7 @@
 const std = @import("std");
 const abi = @import("abi");
 const text = @import("text");
+const ui = @import("ui");
 const harness = @import("harness.zig");
 
 const testing = std.testing;
@@ -66,7 +67,7 @@ test "rich text: families per span, paragraph styles, tab stops, and broken word
     _ = c.siv_set_paragraph_spans(txn, doc, &.{ .spans = &paras, .spans_count = paras.len });
 
     // Tab stops line columns up across lines.
-    const stops = [_]f32{ 90, 170 };
+    const stops = [_]t.TabStop{ .{ .position = 90 }, .{ .position = 170 } };
     const table = label(txn, col, "Name\tSize\tKind\nsiv.h\t12 KB\tHeader\nlibsiv.so\t2 MB\tLibrary");
     _ = c.siv_set_text_style(txn, table, &.{ .tab_stops = &stops, .tab_stops_count = stops.len });
 
@@ -101,7 +102,7 @@ test "rich text: families per span, paragraph styles, tab stops, and broken word
     _ = c.siv_set_paragraph_spans(txn, doc, &.{ .spans = &negative, .spans_count = 1 });
     try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
     try ok(c.siv_txn_begin(h.window, &txn));
-    const unsorted = [_]f32{ 50, 20 };
+    const unsorted = [_]t.TabStop{ .{ .position = 50 }, .{ .position = 20 } };
     _ = c.siv_set_text_style(txn, table, &.{ .tab_stops = &unsorted, .tab_stops_count = 2 });
     try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
     try ok(c.siv_txn_begin(h.window, &txn));
@@ -117,7 +118,7 @@ test "rich text: families per span, paragraph styles, tab stops, and broken word
     try ok(c.siv_app_measure_text(h.app, "a\nb", 3, 0, &.{ .font_size = 20, .line_spacing = 2 }, &double));
     try testing.expectApproxEqAbs(2 * single.height, double.height, 0.01);
     var tabbed: t.TextMetrics = undefined;
-    const stop = [_]f32{200};
+    const stop = [_]t.TabStop{.{ .position = 200 }};
     try ok(c.siv_app_measure_text(h.app, "a\tb", 3, 0, &.{ .font_size = 20, .tab_stops = &stop, .tab_stops_count = 1 }, &tabbed));
     try testing.expect(tabbed.width > 200 and tabbed.width < 220);
 }
@@ -168,4 +169,63 @@ test "styled-text editors align paragraphs by keys, undoably" {
     try ok(c.siv_editor_format_paragraph(field, .{ .flags = .{ .indent = true }, .indent_start = 12 }, .{ .indent = true }));
     try ok(c.siv_node_get_paragraph(field, 5, &para));
     try testing.expect(para.flags.indent and para.indent_start == 12 and para.@"align" == .end);
+}
+
+test "typesetting: justified, hyphenated, total-fit paragraphs and aligned tab stops" {
+    var h: Harness = .{};
+    try h.start(360, 300, null, null);
+    defer h.stop();
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const root = c.siv_window_root(h.window);
+    _ = c.siv_set_visual(txn, root, &.{ .background = .{ .r = 1, .g = 1, .b = 1, .a = 1 } });
+    const col = c.siv_flex(txn, root, &.{ .axis = .column, .gap = 12 });
+    _ = c.siv_set_layout(txn, col, &.{ .padding = .{ .start = 10, .end = 10, .top = 10, .bottom = 10 } });
+    const prose = "Hyphenation and justification typeset paragraphs evenly: the total-fit breaker considers every opportunity, including hyphenation points, before choosing lines.";
+    const doc = label(txn, col, prose);
+    _ = c.siv_set_layout(txn, doc, &.{ .width = .{ .unit = .px, .value = 220 } });
+    _ = c.siv_set_text_style(txn, doc, &.{ .language = "en-US", .language_len = 5, .@"align" = .justify, .flags = .{ .hyphenate = true, .optimal_breaks = true } });
+    const stops = [_]t.TabStop{ .{ .position = 120, .@"align" = .center }, .{ .position = 220, .@"align" = .decimal }, .{ .position = 330, .@"align" = .end } };
+    const table = label(txn, col, "Item\tQty\tPrice\tNote\nPaper\t12\t3.50\tA4\nInk\t2\t24.99\tblack");
+    _ = c.siv_set_text_style(txn, table, &.{ .tab_stops = &stops, .tab_stops_count = stops.len });
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try h.expectGolden("typesetting", 360, 300);
+
+    // Justified lines but the last fill the width; some line ends with a
+    // hyphen, so it ends inside a word.
+    const uw, const id = try uiOf(doc);
+    const l = ui.text_node.current(uw, id).?;
+    try testing.expect(l.lines.len >= 4);
+    var hyphenated = false;
+    for (l.lines[0 .. l.lines.len - 1]) |line| {
+        try testing.expectApproxEqAbs(@as(f32, 220), line.width, 0.01);
+        const prev = prose[line.end - 1];
+        if (std.ascii.isAlphabetic(prev) and std.ascii.isAlphabetic(prose[line.end])) hyphenated = true;
+    }
+    try testing.expect(hyphenated);
+    try testing.expect(l.lines[l.lines.len - 1].width < 219);
+
+    // An application's patterns for a language without built-in ones.
+    try ok(c.siv_app_add_hyphenation(h.app, &.{ .language = "x-test", .language_len = 6, .patterns = "a1b", .patterns_len = 3, .left_min = 1, .right_min = 1 }));
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_app_add_hyphenation(h.app, &.{ .language = "x-bad", .language_len = 5, .patterns = "1", .patterns_len = 1 }));
+    var m: t.TextMetrics = undefined;
+    var whole: t.TextMetrics = undefined;
+    try ok(c.siv_app_measure_text(h.app, "abababab", 8, 0, &.{ .language = "x-test", .language_len = 6, .font_size = 20 }, &whole));
+    try ok(c.siv_app_measure_text(h.app, "abababab", 8, whole.width / 2, &.{ .language = "x-test", .language_len = 6, .font_size = 20, .flags = .{ .hyphenate = true } }, &m));
+    try testing.expect(m.height > 1.5 * whole.height);
+    try testing.expect(m.width <= whole.width / 2 + 0.01);
+    // Without hyphenation the word stays on one line.
+    try ok(c.siv_app_measure_text(h.app, "abababab", 8, whole.width / 2, &.{ .language = "x-test", .language_len = 6, .font_size = 20 }, &m));
+    try testing.expectApproxEqAbs(whole.height, m.height, 0.01);
+    // Tab stops must increase.
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const bad = [_]t.TabStop{ .{ .position = 50 }, .{ .position = 50 } };
+    _ = c.siv_set_text_style(txn, table, &.{ .tab_stops = &bad, .tab_stops_count = 2 });
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
+}
+
+fn uiOf(n: t.Node) !struct { *ui.Window, ui.NodeId } {
+    const w, const id = try abi.tree.lookup(n);
+    return .{ w.uiWin(), id };
 }
