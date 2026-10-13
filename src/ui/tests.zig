@@ -181,6 +181,29 @@ test "flex row distributes free space and mirrors in RTL" {
     }
 }
 
+test "flex items grow and shrink only to their max and min sizes" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 100, .height = 400 });
+    defer f.deinit();
+    const t = try f.win.begin();
+    const col = try box(t, .root, .flex, .{ .width = .{ .px = 100 } });
+    try t.setFlex(col, .{ .axis = .column });
+    // 400 - 150 = 250 free, 125 each, but a stops at 150: b takes the rest.
+    const a = try box(t, col, .box, .{ .height = .{ .px = 100 }, .grow = 1, .max_height = 150 });
+    const b = try box(t, col, .box, .{ .height = .{ .px = 50 }, .grow = 1 });
+    // 160 into 100 is 30 too much each, but c stops at its min of 70.
+    const row = try box(t, col, .flex, .{ .height = .{ .px = 0 }, .width = .{ .px = 100 } });
+    try t.setFlex(row, .{});
+    const c = try box(t, row, .box, .{ .width = .{ .px = 80 }, .height = .{ .px = 10 }, .min_width = 70 });
+    const d = try box(t, row, .box, .{ .width = .{ .px = 80 }, .height = .{ .px = 10 } });
+    t.commit();
+    try f.frame();
+    try testing.expectEqual([4]f32{ 0, 0, 100, 150 }, f.rect(a));
+    try testing.expectEqual([4]f32{ 0, 150, 100, 250 }, f.rect(b));
+    try testing.expectEqual(@as(f32, 70), f.rect(c)[2]);
+    try testing.expectEqual(@as(f32, 30), f.rect(d)[2]);
+}
+
 test "aborted transactions leave no trace; failed operations have no effect" {
     var f: Fixture = undefined;
     try f.init(.{});

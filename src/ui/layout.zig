@@ -355,7 +355,9 @@ const FlexItem = struct {
     grow: f32,
     shrink: f32,
     min: f32,
+    max: f32,
     align_: Align,
+    frozen: bool = false,
 };
 
 fn flex(win: *Window, id: NodeId, inner: Constraints, origin: Point) Error!Size {
@@ -392,6 +394,7 @@ fn flex(win: *Window, id: NodeId, inner: Constraints, origin: Point) Error!Size 
             .grow = l.grow,
             .shrink = l.shrink,
             .min = if (row) l.min_width else l.min_height,
+            .max = if (row) l.max_width else l.max_height,
             .align_ = al,
         };
     }
@@ -421,17 +424,8 @@ fn flex(win: *Window, id: NodeId, inner: Constraints, origin: Point) Error!Size 
     // Resolve main sizes and lay out.
     for (lines.items) |*ln| {
         const line = items[ln.start..ln.end];
-        const free = main_size - lineMain(line, f.gap);
-        var grow: f32 = 0;
-        var shrink: f32 = 0;
-        for (line) |item| {
-            grow += item.grow;
-            shrink += item.shrink * item.base;
-        }
+        resolveLengths(line, main_size, f.gap);
         for (line) |*item| {
-            item.main = item.base;
-            if (free > 0 and grow > 0) item.main += free * item.grow / grow;
-            if (free < 0 and shrink > 0) item.main = @max(item.min, item.base + free * item.shrink * item.base / shrink);
             const cross_space = if (row) (if (cross_tight) inner.max_h else inf) else column_w;
             const sz = try place(win, item.id, itemConstraints(win, item.id, row, item.main, item.align_, cross_space));
             item.cross = if (row) sz.h else sz.w;
@@ -492,6 +486,46 @@ fn flex(win: *Window, id: NodeId, inner: Constraints, origin: Point) Error!Size 
         cross_pos += ln.cross + line_gap;
     }
     return if (row) .{ .w = main_size, .h = cross_size } else .{ .w = cross_size, .h = main_size };
+}
+
+/// Main sizes of a line's items: free space goes by grow or shrink
+/// weights, and items that a share would push past their min or max size
+/// are frozen there while the rest is shared again (CSS Flexbox 9.7). A
+/// share was not clamped to the max before, so a growing list view with a
+/// max height filled its column.
+fn resolveLengths(line: []FlexItem, main_size: f32, gap: f32) void {
+    const growing = lineMain(line, gap) < main_size;
+    for (line) |*item| {
+        item.main = item.base;
+        item.frozen = if (growing) item.grow == 0 else item.shrink == 0;
+    }
+    if (lineMain(line, gap) == main_size) return;
+    for (0..line.len + 1) |_| {
+        var used: f32 = 0;
+        var weights: f32 = 0;
+        for (line, 0..) |item, k| {
+            used += (if (item.frozen) item.main else item.base) + if (k > 0) gap else 0;
+            if (!item.frozen) weights += if (growing) item.grow else item.shrink * item.base;
+        }
+        if (!(weights > 0)) break;
+        const free = main_size - used;
+        var violation: f32 = 0;
+        for (line) |*item| {
+            if (item.frozen) continue;
+            const share = free * (if (growing) item.grow else item.shrink * item.base) / weights;
+            const target = item.base + share;
+            item.main = @max(item.min, @min(target, item.max));
+            violation += item.main - target;
+        }
+        if (violation == 0) break;
+        // Freeze the min violators when clamping added space, the max
+        // violators when it took some away.
+        for (line) |*item| {
+            if (item.frozen) continue;
+            const target = item.base + free * (if (growing) item.grow else item.shrink * item.base) / weights;
+            if ((violation > 0 and item.main > target) or (violation < 0 and item.main < target)) item.frozen = true;
+        }
+    }
 }
 
 fn lineMain(line: []const FlexItem, gap: f32) f32 {
