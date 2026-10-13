@@ -256,6 +256,11 @@ pub fn snap(v: f64, min: f64, max: f64, step: f64) f64 {
     return x;
 }
 
+/// A handler result from whether the widget handled the event.
+pub fn resultOf(yes: bool) siv.EventResult {
+    return if (yes) .handled else .pass;
+}
+
 // Keysyms the widgets handle.
 pub const keysym = siv.Key;
 

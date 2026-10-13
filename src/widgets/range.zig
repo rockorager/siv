@@ -293,17 +293,17 @@ fn userSet(r: *Range, window: siv.Window, v: f64) void {
     w.emitChange(r.root, r.value, 0);
 }
 
-fn onSetValue(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onSetValue(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const r: *Range = @ptrCast(@alignCast(ud.?));
-    if (r.hdr.disabled) return false;
+    if (r.hdr.disabled) return .pass;
     userSet(r, ev.?.window, ev.?.value);
-    return true;
+    return .handled;
 }
 
-fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const r: *Range = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
-    if (r.hdr.disabled or !e.flags.pressed) return false;
+    if (r.hdr.disabled or !e.flags.pressed) return .pass;
     const k = w.keysym;
     const rtl = w.isRtl(r.root);
     const target: f64 = switch (e.keysym) {
@@ -315,21 +315,21 @@ fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
             if (r.hdr.kind == .spin_button) {
                 if (e.keysym == k.@"return" or e.keysym == k.kp_enter) {
                     commitText(r, e.window);
-                    return true;
+                    return .handled;
                 }
-                return false;
+                return .pass;
             }
             break :blk switch (e.keysym) {
                 k.right => if (rtl) r.value - r.keyStep() else r.value + r.keyStep(),
                 k.left => if (rtl) r.value + r.keyStep() else r.value - r.keyStep(),
                 k.home => r.min,
                 k.end => r.max,
-                else => return false,
+                else => return .pass,
             };
         },
     };
     userSet(r, e.window, target);
-    return true;
+    return .handled;
 }
 
 /// Where the pointer is along the track, as a value.
@@ -343,10 +343,10 @@ fn valueAt(r: *const Range, x: f32) f64 {
     return r.min + f * (r.max - r.min);
 }
 
-fn onSliderPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onSliderPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const r: *Range = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
-    if (r.hdr.disabled) return false;
+    if (r.hdr.disabled) return .pass;
     switch (e.phase) {
         .down => if (e.button == .primary) {
             r.dragging = true;
@@ -364,7 +364,7 @@ fn onSliderPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c)
         else => {},
     }
     // The core still focuses the slider on the press (D16).
-    return false;
+    return .pass;
 }
 
 fn restyle(r: *Range, window: siv.Window) void {
@@ -373,30 +373,30 @@ fn restyle(r: *Range, window: siv.Window) void {
     _ = w.commit(txn);
 }
 
-fn onDecrement(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onDecrement(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const r: *Range = @ptrCast(@alignCast(ud.?));
-    if (r.hdr.disabled) return false;
+    if (r.hdr.disabled) return .pass;
     userSet(r, ev.?.window, r.value - r.keyStep());
-    return true;
+    return .handled;
 }
 
-fn onIncrement(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onIncrement(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const r: *Range = @ptrCast(@alignCast(ud.?));
-    if (r.hdr.disabled) return false;
+    if (r.hdr.disabled) return .pass;
     userSet(r, ev.?.window, r.value + r.keyStep());
-    return true;
+    return .handled;
 }
 
 /// Pressing a button steps at once and, while it stays held, again after
 /// the desktop's key-repeat delay and then at its rate, like a held arrow
 /// key. Handling the press keeps the release from activating the button,
 /// which is left to the keyboard and assistive technology.
-fn onSpinPointer(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onSpinPointer(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const r: *Range = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
-    if (r.hdr.disabled or (e.phase != .enter and e.phase != .leave and e.phase != .down and e.phase != .up and e.phase != .cancel)) return false;
+    if (r.hdr.disabled or (e.phase != .enter and e.phase != .leave and e.phase != .down and e.phase != .up and e.phase != .cancel)) return .pass;
     if (e.phase != .down or e.button != .primary) stopRepeat(r);
-    const txn = w.begin(e.window) orelse return false;
+    const txn = w.begin(e.window) orelse return .pass;
     const bg: siv.ColorToken = switch (e.phase) {
         .enter, .up => .control_hover,
         .down => .control_active,
@@ -404,13 +404,13 @@ fn onSpinPointer(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c
     };
     _ = c.siv_set_visual(txn, node, &.{ .radius = corners(tk.radius), .border_width = tk.border, .border_token = .border, .background_token = bg });
     _ = w.commit(txn);
-    if (e.phase != .down or e.button != .primary) return false;
+    if (e.phase != .down or e.button != .primary) return .pass;
     r.repeat_dir = if (node == r.dec) -1 else 1;
     var delay: u32 = 0;
     var interval: u32 = 0;
     _ = c.siv_app_get_key_repeat(w.appOf(e.window), &delay, &interval);
     repeatStep(r, e.window, if (interval == 0) null else delay);
-    return true;
+    return .handled;
 }
 
 /// Steps in the held direction, then waits `next_ms` for the next step
@@ -443,11 +443,11 @@ fn stopRepeat(r: *Range) void {
 }
 
 /// Leaving the field takes what was typed.
-fn onFieldFocus(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onFieldFocus(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const r: *Range = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
     if (!e.flags.gained) commitText(r, e.window);
-    return false;
+    return .pass;
 }
 
 /// Parses the field: a number sets the value (clamped and stepped), and

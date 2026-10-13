@@ -913,6 +913,13 @@ fn Invoke(comptime name: []const u8, comptime slot: c_int, comptime R: type, com
                     switch (cb.ret) {
                         .bool => return c.lua_toboolean(Ls, -1) != 0,
                         .ref => |r| {
+                            // An enum also takes a boolean, true for 1
+                            // (mapping.zig): handlers return true for
+                            // handled.
+                            if (comptime Info(r).d == .@"enum") {
+                                if (c.lua_type(Ls, -1) == lua.tboolean) return @enumFromInt(c.lua_toboolean(Ls, -1));
+                                return readScalar(&ctx, -1, cb.ret, R, w);
+                            }
                             // A value struct: a table, or its fields as
                             // several return values.
                             if (c.lua_type(Ls, -nret) == lua.ttable) return readValue(&ctx, -nret, r, w);

@@ -36,19 +36,19 @@ const Log = struct {
     resizes: u32 = 0,
     closes: u32 = 0,
 
-    fn onActivate(user_data: ?*anyopaque, _: t.Node, _: ?*const t.Event) callconv(.c) bool {
+    fn onActivate(user_data: ?*anyopaque, _: t.Node, _: ?*const t.Event) callconv(.c) t.EventResult {
         const log: *Log = @ptrCast(@alignCast(user_data));
         log.clicks += 1;
-        return true;
+        return .handled;
     }
 
-    fn onChange(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) bool {
+    fn onChange(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) t.EventResult {
         const log: *Log = @ptrCast(@alignCast(user_data));
         const e = event.?;
         log.changes += 1;
         log.text_len = @min(e.text_len, log.text.len);
         @memcpy(log.text[0..log.text_len], e.text.?[0..log.text_len]);
-        return true;
+        return .handled;
     }
 
     fn onWindow(user_data: ?*anyopaque, _: t.Window, event: ?*const t.WindowEvent) callconv(.c) bool {
@@ -692,11 +692,11 @@ const MenuLog = struct {
     selects: u32 = 0,
     index: u32 = 0,
 
-    fn onSelect(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) bool {
+    fn onSelect(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) t.EventResult {
         const log: *MenuLog = @ptrCast(@alignCast(user_data));
         log.selects += 1;
         log.index = event.?.index;
-        return false;
+        return .pass;
     }
 };
 

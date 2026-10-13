@@ -97,9 +97,6 @@ load_error: ?model.ReadError = null,
 history: std.ArrayList([]u8) = .empty,
 history_pos: usize = 0,
 
-/// Focus is in an editor (search, location, rename): its keys are text,
-/// not shortcuts.
-editing: bool = false,
 /// The item being renamed, by entry index, and its editor.
 renaming: ?u32 = null,
 rename_editor: Node = .null,
@@ -739,10 +736,10 @@ fn bindPlace(ud: ?*anyopaque, txn: Txn, row: Node, item: u64, _: u32, _: u32, _:
     _ = c.siv_invalidate(txn, parts.icon);
 }
 
-fn onPlaceSelect(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onPlaceSelect(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     const i = ev.?.index;
-    if (i >= self.places.items.items.len) return true;
+    if (i >= self.places.items.items.len) return .handled;
     const path = self.places.items.items[i].path;
     if (!std.mem.eql(u8, path, self.path)) {
         // The trash folder may not exist yet.
@@ -751,7 +748,7 @@ fn onPlaceSelect(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) b
         }
         self.navigate(path, .push);
     }
-    return true;
+    return .handled;
 }
 
 fn syncSidebar(self: *Files, txn: Txn) void {
@@ -1198,10 +1195,10 @@ fn addCrumb(self: *Files, txn: Txn, label: []const u8, depth: u32, rtl: bool, se
 }
 var crumb_key: u8 = 0;
 
-fn onCrumb(ud: ?*anyopaque, node: Node, _: ?*const siv.Event) callconv(.c) bool {
+fn onCrumb(ud: ?*anyopaque, node: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     var p: ?*anyopaque = null;
-    if (c.siv_node_get_data(node, &crumb_key, &p) != .ok or p == null) return true;
+    if (c.siv_node_get_data(node, &crumb_key, &p) != .ok or p == null) return .handled;
     const depth = @as(*u32, @ptrCast(@alignCast(p))).*;
     const under_home = std.mem.startsWith(u8, self.path, self.home) and
         (self.path.len == self.home.len or self.path[self.home.len] == '/');
@@ -1213,27 +1210,27 @@ fn onCrumb(ud: ?*anyopaque, node: Node, _: ?*const siv.Event) callconv(.c) bool 
     }
     const target = if (end == 0) "/" else self.path[0..end];
     var buf: [linux.PATH_MAX]u8 = undefined;
-    const copy = std.fmt.bufPrint(&buf, "{s}", .{target}) catch return true;
+    const copy = std.fmt.bufPrint(&buf, "{s}", .{target}) catch return .handled;
     self.navigate(copy, .push);
-    return true;
+    return .handled;
 }
 
-fn onBack(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) bool {
+fn onBack(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     self.goBack();
-    return true;
+    return .handled;
 }
 
-fn onForward(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) bool {
+fn onForward(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     self.goForward();
-    return true;
+    return .handled;
 }
 
-fn onUp(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) bool {
+fn onUp(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     self.goUp();
-    return true;
+    return .handled;
 }
 
 pub fn goBack(self: *Files) void {
@@ -1263,10 +1260,10 @@ pub fn goUp(self: *Files) void {
 
 // Opening -----------------------------------------------------------------------------
 
-fn onActivateItem(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onActivateItem(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     self.openItem(ev.?.index, false);
-    return true;
+    return .handled;
 }
 
 /// Opens a view item: folders in place, files with their default
@@ -1297,7 +1294,7 @@ fn onOpened(ud: ?*anyopaque, result: ?*const siv.PortalResult) callconv(.c) void
 
 // Sorting and searching ----------------------------------------------------------------
 
-fn onSort(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onSort(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     const key: model.SortKey = switch (ev.?.index) {
         0 => .name,
@@ -1306,7 +1303,7 @@ fn onSort(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
         else => .type,
     };
     self.setSort(.{ .key = key, .descending = ev.?.value < 0 });
-    return true;
+    return .handled;
 }
 
 pub fn setSort(self: *Files, s: model.Sort) void {
@@ -1324,12 +1321,12 @@ pub fn setSort(self: *Files, s: model.Sort) void {
     _ = commit(txn);
 }
 
-fn onSearchChange(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onSearchChange(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
     const s = if (e.text) |p| p[0..e.text_len] else "";
     self.setQuery(s);
-    return true;
+    return .handled;
 }
 
 pub fn setQuery(self: *Files, q: []const u8) void {
@@ -1345,45 +1342,44 @@ pub fn setQuery(self: *Files, q: []const u8) void {
     }
 }
 
-fn onSearchKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onSearchKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
-    if (!e.flags.pressed) return false;
+    if (!e.flags.pressed) return .pass;
     switch (e.keysym) {
         .escape => {
-            const txn = self.begin() orelse return true;
+            const txn = self.begin() orelse return .handled;
             _ = c.siv_set_text(txn, self.search, "", 0);
             _ = commit(txn);
             self.setQuery("");
             self.focusView();
-            return true;
+            return .handled;
         },
         .down, .@"return", .kp_enter => {
             self.focusView();
-            return true;
+            return .handled;
         },
-        else => return false,
+        else => return .pass,
     }
 }
 
-fn onEditorFocus(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onEditorFocus(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     const gained = ev.?.flags.gained;
-    self.editing = gained;
     // Leaving the location field shows the breadcrumbs again.
     if (!gained and node == self.location) self.showLocation(false);
-    return false;
+    return .pass;
 }
 
-fn onLocationKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onLocationKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
-    if (!e.flags.pressed) return false;
+    if (!e.flags.pressed) return .pass;
     switch (e.keysym) {
         .escape => {
             self.showLocation(false);
             self.focusView();
-            return true;
+            return .handled;
         },
         .@"return", .kp_enter => {
             var buf: [linux.PATH_MAX]u8 = undefined;
@@ -1401,9 +1397,9 @@ fn onLocationKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) b
             self.showLocation(false);
             if (t.len != 0) self.navigate(t, .push);
             self.focusView();
-            return true;
+            return .handled;
         },
-        else => return false,
+        else => return .pass,
     }
 }
 
@@ -1421,10 +1417,10 @@ pub fn showLocation(self: *Files, show: bool) void {
 
 // Selection and status ----------------------------------------------------------------
 
-fn onSelect(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) bool {
+fn onSelect(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     self.updateStatus();
-    return true;
+    return .handled;
 }
 
 pub fn selectAll(self: *Files) void {
@@ -1481,132 +1477,132 @@ pub fn toast(self: *Files, msg: []const u8, assertive: bool) void {
 
 // Keyboard ----------------------------------------------------------------------------
 
-fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
-    if (!e.flags.pressed) return false;
+    if (!e.flags.pressed) return .pass;
     const m = e.modifiers;
     const ctrl = m.ctrl and !m.alt;
     // Shortcuts that work everywhere, editors included.
     if (ctrl) switch (@intFromEnum(e.keysym)) {
         'l', 'L' => {
             self.showLocation(true);
-            return true;
+            return .handled;
         },
         'f', 'F' => {
             _ = c.siv_node_focus(self.search);
-            return true;
+            return .handled;
         },
         'w', 'W', 'q', 'Q' => {
             self.close();
-            return true;
+            return .handled;
         },
         else => {},
     };
     if (m.alt and !m.ctrl) switch (e.keysym) {
         .left => {
             self.goBack();
-            return true;
+            return .handled;
         },
         .right => {
             self.goForward();
-            return true;
+            return .handled;
         },
         .up => {
             self.goUp();
-            return true;
+            return .handled;
         },
         .home => {
             var buf: [linux.PATH_MAX]u8 = undefined;
-            self.navigate(std.fmt.bufPrint(&buf, "{s}", .{self.home}) catch return true, .push);
-            return true;
+            self.navigate(std.fmt.bufPrint(&buf, "{s}", .{self.home}) catch return .handled, .push);
+            return .handled;
         },
         else => {},
     };
     switch (e.keysym) {
         .back => {
             self.goBack();
-            return true;
+            return .handled;
         },
         .forward => {
             self.goForward();
-            return true;
+            return .handled;
         },
         .f5 => {
             self.reload();
-            return true;
+            return .handled;
         },
         else => {},
     }
     // The rest act on files; in an editor they are the editor's keys.
-    if (self.editing) return false;
+    if (self.inEditor()) return .pass;
     if (ctrl) switch (@intFromEnum(e.keysym)) {
         'a', 'A' => {
             self.selectAll();
-            return true;
+            return .handled;
         },
         'c', 'C' => {
             self.copySelection(false);
-            return true;
+            return .handled;
         },
         'x', 'X' => {
             self.copySelection(true);
-            return true;
+            return .handled;
         },
         'v', 'V' => {
             self.paste();
-            return true;
+            return .handled;
         },
         'h', 'H' => {
             self.setShowHidden(!self.show_hidden);
-            return true;
+            return .handled;
         },
         'r', 'R' => {
             self.reload();
-            return true;
+            return .handled;
         },
         '1' => {
             self.setMode(.list);
-            return true;
+            return .handled;
         },
         '2' => {
             self.setMode(.grid);
-            return true;
+            return .handled;
         },
         'n', 'N' => if (m.shift) {
             self.newFolder();
-            return true;
+            return .handled;
         },
         else => {},
     };
     switch (e.keysym) {
         .backspace => {
             self.goUp();
-            return true;
+            return .handled;
         },
         .f2 => {
             self.renameCursor();
-            return true;
+            return .handled;
         },
         .delete => {
             if (m.shift) self.confirmDelete() else self.trashSelection();
-            return true;
+            return .handled;
         },
         .menu => {
             self.openContextMenuAtCursor();
-            return true;
+            return .handled;
         },
         .f10 => if (m.shift) {
             self.openContextMenuAtCursor();
-            return true;
+            return .handled;
         },
         .escape => {
             const view = self.activeView();
-            const txn = self.begin() orelse return true;
+            const txn = self.begin() orelse return .handled;
             self.clearSelection(txn, view);
             _ = commit(txn);
             self.updateStatus();
-            return true;
+            return .handled;
         },
         else => {},
     }
@@ -1615,17 +1611,25 @@ fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
         const t = e.text.?[0..e.text_len];
         if (t[0] >= 0x20 and t[0] != 0x7f and !(t.len == 1 and t[0] == ' ')) {
             var buf: [512]u8 = undefined;
-            const q = std.fmt.bufPrint(&buf, "{s}{s}", .{ self.query.items, t }) catch return true;
-            const txn = self.begin() orelse return true;
+            const q = std.fmt.bufPrint(&buf, "{s}{s}", .{ self.query.items, t }) catch return .handled;
+            const txn = self.begin() orelse return .handled;
             _ = c.siv_set_text(txn, self.search, q.ptr, q.len);
             _ = c.siv_set_selection(txn, self.search, @intCast(q.len), @intCast(q.len));
-            if (!commit(txn)) return true;
+            if (!commit(txn)) return .handled;
             self.setQuery(q);
             _ = c.siv_node_focus(self.search);
-            return true;
+            return .handled;
         }
     }
-    return false;
+    return .pass;
+}
+
+/// Whether keyboard focus is in one of the app's editors (search,
+/// location, rename), whose keys are text rather than shortcuts.
+fn inEditor(self: *Files) bool {
+    var focus: Node = .null;
+    _ = c.siv_window_get_focus(self.window, &focus);
+    return focus != .null and (focus == self.search or focus == self.location or focus == self.rename_editor);
 }
 
 pub fn setShowHidden(self: *Files, on: bool) void {
@@ -1638,15 +1642,15 @@ pub fn setShowHidden(self: *Files, on: bool) void {
     _ = commit(txn);
 }
 
-fn onToggleMode(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) bool {
+fn onToggleMode(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     self.setMode(if (self.mode == .list) .grid else .list);
-    return true;
+    return .handled;
 }
 
-fn onAppMenu(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onAppMenu(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
-    if (ev.?.index >= app_menu_items.len) return true;
+    if (ev.?.index >= app_menu_items.len) return .handled;
     switch (@as(AppAction, @enumFromInt(ev.?.index))) {
         .new_folder => self.newFolder(),
         .hidden => self.setShowHidden(!self.show_hidden),
@@ -1658,7 +1662,7 @@ fn onAppMenu(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool 
         .close => self.close(),
         else => {},
     }
-    return true;
+    return .handled;
 }
 
 pub fn setTheme(self: *Files, scheme: siv.ColorScheme) void {
@@ -1671,19 +1675,19 @@ pub fn setTheme(self: *Files, scheme: siv.ColorScheme) void {
 
 // Context menu ----------------------------------------------------------------------
 
-fn onRowPointer(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onRowPointer(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const parts: *RowParts = @ptrCast(@alignCast(ud.?));
-    const self = parts.files orelse return false;
+    const self = parts.files orelse return .pass;
     const e = ev.?;
     switch (e.phase) {
         .down => {
             if (e.button == .secondary) {
                 // A right click on an unselected item selects only it.
-                const vi = self.viewIndexOfEntry(parts.entry) orelse return true;
+                const vi = self.viewIndexOfEntry(parts.entry) orelse return .handled;
                 var on = false;
                 _ = c.siv_view_is_selected(self.activeView(), vi, &on);
                 if (!on) {
-                    const txn = self.begin() orelse return true;
+                    const txn = self.begin() orelse return .handled;
                     self.clearSelection(txn, self.activeView());
                     _ = c.siv_view_set_selected(txn, self.activeView(), vi, true);
                     _ = c.siv_widget_set_value(txn, self.activeView(), @floatFromInt(vi));
@@ -1691,9 +1695,9 @@ fn onRowPointer(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c)
                     self.updateStatus();
                 }
                 self.openContextMenu(node, e.x, e.y, true);
-                return true;
+                return .handled;
             }
-            if (e.button != .primary) return false;
+            if (e.button != .primary) return .pass;
             self.dragArm(node, e, parts.entry);
             // A press on an item of a larger selection keeps the selection,
             // so that the drag carries all of it; the view would select
@@ -1701,53 +1705,53 @@ fn onRowPointer(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c)
             const plain = !e.modifiers.ctrl and !e.modifiers.shift and e.clicks == 1;
             if (plain and self.isSelected(parts.entry) and self.selectionCount() > 1) {
                 self.drag_kept = true;
-                return true;
+                return .handled;
             }
-            return false;
+            return .pass;
         },
         .move => {
             self.dragMove(node, e);
-            return false;
+            return .pass;
         },
         .up => {
             self.drag_armed = false;
             if (self.drag_kept) {
                 self.drag_kept = false;
                 // No drag happened: now select only this item.
-                const vi = self.viewIndexOfEntry(parts.entry) orelse return true;
-                const txn = self.begin() orelse return true;
+                const vi = self.viewIndexOfEntry(parts.entry) orelse return .handled;
+                const txn = self.begin() orelse return .handled;
                 self.clearSelection(txn, self.activeView());
                 _ = c.siv_view_set_selected(txn, self.activeView(), vi, true);
                 _ = c.siv_widget_set_value(txn, self.activeView(), @floatFromInt(vi));
                 _ = commit(txn);
                 self.focusView();
                 self.updateStatus();
-                return true;
+                return .handled;
             }
-            return false;
+            return .pass;
         },
         .cancel => {
             self.drag_armed = false;
             self.drag_kept = false;
-            return false;
+            return .pass;
         },
-        else => return false,
+        else => return .pass,
     }
 }
 
-fn onContentPointer(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onContentPointer(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
     if (e.phase == .down and e.button == .secondary) {
         // Empty space: actions on the folder.
-        const txn = self.begin() orelse return true;
+        const txn = self.begin() orelse return .handled;
         self.clearSelection(txn, self.activeView());
         _ = commit(txn);
         self.updateStatus();
         self.openContextMenu(node, e.x, e.y, false);
-        return true;
+        return .handled;
     }
-    return false;
+    return .pass;
 }
 
 fn isSelected(self: *Files, entry: u32) bool {
@@ -1833,11 +1837,11 @@ pub fn openContextMenu(self: *Files, node: Node, x: f32, y: f32, on_items: bool)
     _ = c.siv_menu_open_at(self.context, node, x, y);
 }
 
-fn onContextSelect(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onContextSelect(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
-    if (ev.?.index >= context_items.len) return true;
+    if (ev.?.index >= context_items.len) return .handled;
     self.runContextAction(@enumFromInt(ev.?.index));
-    return true;
+    return .handled;
 }
 
 pub fn runContextAction(self: *Files, action: ContextAction) void {
@@ -1917,30 +1921,29 @@ fn bindRename(self: *Files, txn: Txn, parts: *RowParts, entry: u32) void {
     }
 }
 
-fn onRenameKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onRenameKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
-    if (!e.flags.pressed) return false;
+    if (!e.flags.pressed) return .pass;
     switch (e.keysym) {
         .@"return", .kp_enter => {
             self.finishRename(true);
-            return true;
+            return .handled;
         },
         .escape => {
             self.finishRename(false);
-            return true;
+            return .handled;
         },
-        // The view's row would take these (FRICTION.md): they belong to
-        // the editor.
-        else => return false,
+        // The rest are the editor's: neither the row nor the window's
+        // shortcuts see them, and the editor still types them.
+        else => return .stop,
     }
 }
 
-fn onRenameFocus(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onRenameFocus(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
-    self.editing = ev.?.flags.gained;
     if (!ev.?.flags.gained and self.renaming != null) self.finishRename(true);
-    return false;
+    return .pass;
 }
 
 fn cancelRename(self: *Files) void {
@@ -1961,7 +1964,6 @@ fn finishRename(self: *Files, apply: bool) void {
     const txn = self.begin() orelse return;
     _ = c.siv_view_refresh(txn, self.activeView());
     _ = commit(txn);
-    self.editing = false;
     self.focusView();
     if (!apply or std.mem.eql(u8, new, old_copy)) return;
     fsops.rename(self.path, old_copy, new) catch |err| {
@@ -2039,25 +2041,25 @@ fn closeDialog(self: *Files) void {
     self.dialog = .null;
 }
 
-fn onDialogClose(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) bool {
+fn onDialogClose(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     self.closeDialog();
-    return true;
+    return .handled;
 }
 
-fn onDialogCancel(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) bool {
+fn onDialogCancel(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     self.closeDialog();
-    return true;
+    return .handled;
 }
 
-fn onDialogDelete(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) bool {
+fn onDialogDelete(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     self.closeDialog();
-    const paths = self.selectedPaths() catch return true;
+    const paths = self.selectedPaths() catch return .handled;
     defer self.freePaths(paths);
     self.startOp(.delete, paths, "");
-    return true;
+    return .handled;
 }
 
 const OpJob = struct {
@@ -2115,10 +2117,10 @@ fn onOpsTimer(ud: ?*anyopaque) callconv(.c) void {
     if (self.ops.items.len != 0) _ = c.siv_timer_start(self.app, 100, onOpsTimer, null, self, &self.ops_timer);
 }
 
-fn onCancelOps(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) bool {
+fn onCancelOps(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     for (self.ops.items) |op| op.cancel.store(true, .release);
-    return true;
+    return .handled;
 }
 
 fn opFinished(self: *Files, op: *fsops.Op) void {
@@ -2407,33 +2409,33 @@ fn acceptDrop(self: *Files, ev: *const siv.Event, dest: []const u8) bool {
     }
 }
 
-fn onDrop(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onDrop(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     var buf: [linux.PATH_MAX]u8 = undefined;
-    const dest = std.fmt.bufPrint(&buf, "{s}", .{self.path}) catch return false;
-    return self.acceptDrop(ev.?, dest);
+    const dest = std.fmt.bufPrint(&buf, "{s}", .{self.path}) catch return .pass;
+    return if (self.acceptDrop(ev.?, dest)) .handled else .pass;
 }
 
-fn onRowDrop(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onRowDrop(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const parts: *RowParts = @ptrCast(@alignCast(ud.?));
-    const self = parts.files orelse return false;
-    const l = &(self.listing orelse return false);
-    if (parts.entry >= l.entries.len or l.entries[parts.entry].kind != .dir) return false;
+    const self = parts.files orelse return .pass;
+    const l = &(self.listing orelse return .pass);
+    if (parts.entry >= l.entries.len or l.entries[parts.entry].kind != .dir) return .pass;
     var buf: [linux.PATH_MAX]u8 = undefined;
-    const dest = model.join(&buf, l.path, l.name(l.entries[parts.entry])) orelse return false;
-    return self.acceptDrop(ev.?, dest);
+    const dest = model.join(&buf, l.path, l.name(l.entries[parts.entry])) orelse return .pass;
+    return if (self.acceptDrop(ev.?, dest)) .handled else .pass;
 }
 
-fn onPlaceDrop(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onPlaceDrop(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const parts: *PlaceParts = @ptrCast(@alignCast(ud.?));
-    const self = parts.files orelse return false;
-    if (parts.index >= self.places.items.items.len) return false;
+    const self = parts.files orelse return .pass;
+    if (parts.index >= self.places.items.items.len) return .pass;
     const pl = self.places.items.items[parts.index];
     var buf: [linux.PATH_MAX]u8 = undefined;
-    const dest = std.fmt.bufPrint(&buf, "{s}", .{pl.path}) catch return false;
+    const dest = std.fmt.bufPrint(&buf, "{s}", .{pl.path}) catch return .pass;
     // Dropping on the trash moves there.
     if (pl.icon == .trash and ev.?.phase == .drop) {
-        const data = if (ev.?.data) |p| p[0..ev.?.data_count] else return false;
+        const data = if (ev.?.data) |p| p[0..ev.?.data_count] else return .pass;
         var paths: std.ArrayList([]const u8) = .empty;
         defer {
             for (paths.items) |p| self.gpa.free(p);
@@ -2446,7 +2448,7 @@ fn onPlaceDrop(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) boo
             paths.append(self.gpa, self.gpa.dupe(u8, p) catch continue) catch {};
         }
         if (paths.items.len != 0) self.startOp(.trash, paths.items, "");
-        return true;
+        return .handled;
     }
-    return self.acceptDrop(ev.?, dest);
+    return if (self.acceptDrop(ev.?, dest)) .handled else .pass;
 }

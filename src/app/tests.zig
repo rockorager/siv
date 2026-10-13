@@ -146,10 +146,10 @@ test "a window destroyed from its own event handler lives until its lists come b
     defer app.destroy();
     const win = try app.createWindow(.{ .width = 64, .height = 48 }, .{});
     const Handler = struct {
-        fn onActivate(user: ?*anyopaque, _: *ui.Window, _: ui.NodeId, _: *const ui.Event) bool {
+        fn onActivate(user: ?*anyopaque, _: *ui.Window, _: ui.NodeId, _: *const ui.Event) ui.HandlerResult {
             const w: *Window = @ptrCast(@alignCast(user));
             w.destroy() catch unreachable;
-            return true;
+            return .handled;
         }
     };
     const t = try win.ui.begin();

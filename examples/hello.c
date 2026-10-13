@@ -16,13 +16,13 @@ struct counter {
 /* Runs on the application's thread when the button is clicked or
  * activated from the keyboard. Changes to the tree go through a
  * transaction; they are shown at the next frame. */
-static bool on_click(void *user_data, siv_node node, const siv_event *event) {
+static siv_event_result on_click(void *user_data, siv_node node, const siv_event *event) {
 	(void)node;
 	struct counter *c = user_data;
 	char text[32];
 	int len = snprintf(text, sizeof text, "Clicked %d time%s", ++c->clicks, c->clicks == 1 ? "" : "s");
 	siv_txn txn;
-	if (siv_txn_begin(event->window, &txn) != SIV_OK) return false;
+	if (siv_txn_begin(event->window, &txn) != SIV_OK) return SIV_EVENT_RESULT_PASS;
 	siv_set_text(txn, c->label, text, (size_t)len);
 	return siv_txn_commit(txn) == SIV_OK;
 }

@@ -46,18 +46,18 @@ const Log = struct {
     destroyed: u32 = 0,
 
     /// Counts the click and relabels the button from inside the callback.
-    fn onActivate(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) bool {
+    fn onActivate(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) t.EventResult {
         const log: *Log = @ptrCast(@alignCast(user_data));
         log.clicks += 1;
         var buf: [32]u8 = undefined;
         const label = std.fmt.bufPrint(&buf, "Count: {d}", .{log.clicks}) catch unreachable;
         var txn: t.Txn = .null;
-        if (T.siv_txn_begin(event.?.window, &txn) != .ok) return false;
+        if (T.siv_txn_begin(event.?.window, &txn) != .ok) return .pass;
         _ = T.siv_set_text(txn, log.label, label.ptr, label.len);
-        return T.siv_txn_commit(txn) == .ok;
+        return if (T.siv_txn_commit(txn) == .ok) .handled else .pass;
     }
 
-    fn onChange(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) bool {
+    fn onChange(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) t.EventResult {
         const log: *Log = @ptrCast(@alignCast(user_data));
         const e = event.?;
         std.debug.assert(e.type == .change);
@@ -65,35 +65,35 @@ const Log = struct {
         log.last_len = e.text_len;
         @memcpy(log.last_text[0..e.text_len], e.text.?[0..e.text_len]);
         log.caret = e.caret;
-        return true;
+        return .handled;
     }
 
-    fn onFocus(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) bool {
+    fn onFocus(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) t.EventResult {
         const log: *Log = @ptrCast(@alignCast(user_data));
         if (event.?.flags.gained) log.focus_gained += 1 else log.focus_lost += 1;
-        return false;
+        return .pass;
     }
 
-    fn onKey(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) bool {
+    fn onKey(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) t.EventResult {
         const log: *Log = @ptrCast(@alignCast(user_data));
         if (event.?.flags.pressed) log.keys += 1;
-        return false;
+        return .pass;
     }
 
-    fn onScroll(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) bool {
+    fn onScroll(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) t.EventResult {
         const log: *Log = @ptrCast(@alignCast(user_data));
         log.scroll_dy += event.?.dy;
-        return true;
+        return .handled;
     }
 
-    fn onPointer(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) bool {
+    fn onPointer(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) t.EventResult {
         const log: *Log = @ptrCast(@alignCast(user_data));
         const e = event.?;
         if (e.phase == .down) {
             log.pointer_downs += 1;
             log.down_x = e.x;
         }
-        return false;
+        return .pass;
     }
 
     fn onWindow(user_data: ?*anyopaque, _: t.Window, event: ?*const t.WindowEvent) callconv(.c) bool {
@@ -264,12 +264,12 @@ test "C API: destroying the window from its own handler defers releases until th
         released: u32 = 0,
         running: bool = false,
 
-        fn onActivate(user_data: ?*anyopaque, _: t.Node, _: ?*const t.Event) callconv(.c) bool {
+        fn onActivate(user_data: ?*anyopaque, _: t.Node, _: ?*const t.Event) callconv(.c) t.EventResult {
             const c: *@This() = @ptrCast(@alignCast(user_data));
             c.running = true;
             defer c.running = false;
             _ = A.siv_window_destroy(c.h.window);
-            return false;
+            return .pass;
         }
 
         fn onDestroy(user_data: ?*anyopaque) callconv(.c) void {
@@ -342,13 +342,13 @@ test "C API: a masked editor reports its real text and offsets" {
         text: [16]u8 = undefined,
         len: usize = 0,
         caret: u32 = 0,
-        fn onChange(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) bool {
+        fn onChange(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) t.EventResult {
             const seen: *@This() = @ptrCast(@alignCast(user_data));
             const e = event.?;
             seen.len = e.text_len;
             @memcpy(seen.text[0..e.text_len], e.text.?[0..e.text_len]);
             seen.caret = e.caret;
-            return true;
+            return .handled;
         }
     };
     var h: Harness = .{};

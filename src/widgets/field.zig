@@ -54,10 +54,10 @@ pub export fn siv_text_field(txn: Txn, parent: Node, desc: ?*const siv.TextField
 /// the selected paragraphs left, centered, right, and justified (D13);
 /// left in a left-to-right editor and right in a right-to-left one go
 /// back to the editor's own alignment.
-fn onStyleKey(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onStyleKey(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const st: *Field = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
-    if (st.hdr.disabled or !e.flags.pressed or !e.modifiers.ctrl or e.modifiers.alt or e.modifiers.super) return false;
+    if (st.hdr.disabled or !e.flags.pressed or !e.modifiers.ctrl or e.modifiers.alt or e.modifiers.super) return .pass;
     const key: u32 = @bitCast(@intFromEnum(e.keysym));
     switch (key) {
         'l', 'L', 'e', 'E', 'r', 'R', 'j', 'J' => {
@@ -72,7 +72,7 @@ fn onStyleKey(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) b
                 else => right,
             };
             _ = c.siv_editor_format_paragraph(node, .{ .flags = .{ .@"align" = a != .start }, .@"align" = a }, .{ .@"align" = true });
-            return true;
+            return .handled;
         },
         else => {},
     }
@@ -81,7 +81,7 @@ fn onStyleKey(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) b
         'b', 'B' => .bold,
         'i', 'I' => .italic,
         'u', 'U' => .underline,
-        else => return false,
+        else => return .pass,
     };
     const has = struct {
         fn f(a: Attr, s: siv.TextSpan) bool {
@@ -94,13 +94,13 @@ fn onStyleKey(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) b
     }.f;
     var caret: u32 = 0;
     var anchor: u32 = 0;
-    if (c.siv_node_get_selection(node, &caret, &anchor) != .ok) return false;
+    if (c.siv_node_get_selection(node, &caret, &anchor) != .ok) return .pass;
     const lo = @min(caret, anchor);
     const hi = @max(caret, anchor);
     var on = true;
     if (lo == hi) {
         var typing: siv.TextSpan = undefined;
-        if (c.siv_node_get_typing_style(node, &typing) != .ok) return false;
+        if (c.siv_node_get_typing_style(node, &typing) != .ok) return .pass;
         on = !has(attr, typing);
     } else {
         // Off only when every run of the selection has it.
@@ -108,7 +108,7 @@ fn onStyleKey(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) b
         var all = true;
         while (at < hi) {
             var run: siv.TextSpan = undefined;
-            if (c.siv_node_get_text_run(node, at, &run) != .ok) return false;
+            if (c.siv_node_get_text_run(node, at, &run) != .ok) return .pass;
             all = all and has(attr, run);
             at = @max(run.end, at + 1);
         }
@@ -125,7 +125,7 @@ fn onStyleKey(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) b
         .underline => .{ .underline = true },
     };
     _ = c.siv_editor_format(node, values, mask);
-    return true;
+    return .handled;
 }
 
 pub fn apply(txn: Txn, st: *Field) void {
@@ -153,18 +153,18 @@ pub fn setLabel(txn: Txn, st: *Field, label: []const u8) void {
     _ = c.siv_set_semantics(txn, st.root, &.{ .label = label.ptr, .label_len = label.len, .flags = .{ .disabled = st.hdr.disabled } });
 }
 
-fn onPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const st: *Field = @ptrCast(@alignCast(ud.?));
     _ = button.feedback(&st.hdr, ev.?);
-    return false;
+    return .pass;
 }
 
-fn onFocus(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onFocus(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const st: *Field = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
     st.focused = e.flags.gained;
-    const txn = w.begin(e.window) orelse return false;
+    const txn = w.begin(e.window) orelse return .pass;
     apply(txn, st);
     _ = w.commit(txn);
-    return false;
+    return .pass;
 }

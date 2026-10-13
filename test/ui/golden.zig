@@ -182,12 +182,12 @@ test "form: layout, text, focus ring, and a translucent layer (LTR and RTL)" {
     }
 }
 
-fn activateCheck(user: ?*anyopaque, win: *ui.Window, id: NodeId, ev: *const ui.Event) bool {
+fn activateCheck(user: ?*anyopaque, win: *ui.Window, id: NodeId, ev: *const ui.Event) ui.HandlerResult {
     _ = user;
-    if (ev.* != .activate) return false;
+    if (ev.* != .activate) return .pass;
     const n = win.node(id);
     const on = n.semantics.checked != .on;
-    const t = win.begin() catch return false;
+    const t = win.begin() catch return .pass;
     var sem = n.semantics;
     sem.checked = if (on) .on else .off;
     var v = n.visual;
@@ -195,14 +195,14 @@ fn activateCheck(user: ?*anyopaque, win: *ui.Window, id: NodeId, ev: *const ui.E
     v.border_color = if (on) blue else border;
     t.setSemantics(id, sem) catch {
         t.abort();
-        return false;
+        return .pass;
     };
     t.setVisual(id, v) catch {
         t.abort();
-        return false;
+        return .pass;
     };
     t.commit();
-    return true;
+    return .handled;
 }
 
 test "images: copied at creation, still shown after the creator lets go, mirrored in RTL" {

@@ -731,6 +731,8 @@ pub const Pointer = struct {
     time: u32 = 0,
     /// The node the event was delivered to first, before bubbling.
     target: NodeId = .none,
+    /// A handler on the way here prevented the default action.
+    prevented: bool = false,
 };
 
 pub const Key = struct {
@@ -743,6 +745,8 @@ pub const Key = struct {
     text: []const u8 = "",
     /// The node the event was delivered to first (the focused node).
     target: NodeId = .none,
+    /// A handler on the way here prevented the default action.
+    prevented: bool = false,
 };
 
 pub const FocusChange = struct {
@@ -751,7 +755,7 @@ pub const FocusChange = struct {
     visible: bool,
 };
 
-pub const ScrollDelta = struct { dx: f32, dy: f32, target: NodeId = .none };
+pub const ScrollDelta = struct { dx: f32, dy: f32, target: NodeId = .none, prevented: bool = false };
 
 /// A pointer cursor shape (D16).
 pub const CursorShape = @import("platform").CursorShape;
@@ -859,10 +863,32 @@ pub const Viewport = struct { x: f32, y: f32, width: f32, height: f32 };
 /// on the C API emit them (`siv_emit`).
 pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll, change, drop, drag, set_value, select, close, viewport, sort };
 
-/// Runs at a safe point on the UI thread (D5). Returns true when it handled
-/// the event, which stops it bubbling and suppresses the default action.
+/// What a handler did with an event: whether it stops bubbling and
+/// whether it prevents the default action (later default handlers and the
+/// tree's own default actions). The values match `siv_event_result`.
+pub const Result = enum(u2) {
+    pass,
+    handled,
+    stop,
+    prevent,
+
+    pub fn stops(r: Result) bool {
+        return r == .handled or r == .stop;
+    }
+
+    pub fn prevents(r: Result) bool {
+        return r == .handled or r == .prevent;
+    }
+
+    pub fn of(stop: bool, prevent: bool) Result {
+        if (stop) return if (prevent) .handled else .stop;
+        return if (prevent) .prevent else .pass;
+    }
+};
+
+/// Runs at a safe point on the UI thread (D5).
 pub const Handler = struct {
-    func: *const fn (user: ?*anyopaque, win: *Window, node: NodeId, event: *const Event) bool,
+    func: *const fn (user: ?*anyopaque, win: *Window, node: NodeId, event: *const Event) Result,
     user: ?*anyopaque = null,
 };
 

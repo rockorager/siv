@@ -376,37 +376,37 @@ pub fn cardVisual(txn: Txn, root: Node) void {
 
 /// Hovering focuses the row, opens its submenu (without the keyboard),
 /// and closes a sibling's.
-fn onRowPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onRowPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const st: *Row = @ptrCast(@alignCast(ud.?));
-    if (ev.?.phase != .enter or st.hdr.disabled) return false;
+    if (ev.?.phase != .enter or st.hdr.disabled) return .pass;
     _ = c.siv_node_focus(st.root);
     if (st.submenu != .null) {
         openSubmenu(st, false, false);
     } else if (w.stateOf(Menu, st.menu, &.{.menu})) |m| if (m.child != .null) {
         if (w.stateOf(Menu, m.child, &.{.menu})) |child| closeMenu(child);
     };
-    return false;
+    return .pass;
 }
 
-fn onRowFocus(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onRowFocus(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const st: *Row = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
     st.focused = e.flags.gained;
-    const txn = w.begin(e.window) orelse return false;
+    const txn = w.begin(e.window) orelse return .pass;
     applyRow(txn, st, e.flags.gained);
     _ = w.commit(txn);
-    return false;
+    return .pass;
 }
 
-fn onRowActivate(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onRowActivate(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const st: *Row = @ptrCast(@alignCast(ud.?));
-    if (st.hdr.disabled) return true;
+    if (st.hdr.disabled) return .handled;
     if (st.submenu != .null) {
         openSubmenu(st, true, true);
-        return true;
+        return .handled;
     }
     choose(st.menu, st.item, st.index, ev.?.window);
-    return true;
+    return .handled;
 }
 
 /// Closes the menu and the menus it opened from, flips a checkable item,
@@ -423,19 +423,19 @@ fn choose(menu_node: Node, item_node: Node, index: u32, _: siv.Window) void {
     _ = c.siv_emit(owner, &.{ .type = .select, .index = index, .value = @floatFromInt(index), .count = 1 }, &handled);
 }
 
-fn onRowKey(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onRowKey(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const st: *Row = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
-    if (!e.flags.pressed) return false;
+    if (!e.flags.pressed) return .pass;
     const k = w.keysym;
     const forward = if (w.isRtl(node)) k.left else k.right;
     switch (e.keysym) {
         // Escape and back close a submenu, focus going back to its item;
         // Escape closes a top menu.
         k.escape, k.left, k.right => {
-            const m = w.stateOf(Menu, st.menu, &.{.menu}) orelse return true;
+            const m = w.stateOf(Menu, st.menu, &.{.menu}) orelse return .handled;
             if (e.keysym == forward) {
-                if (st.submenu == .null or st.hdr.disabled) return false;
+                if (st.submenu == .null or st.hdr.disabled) return .pass;
                 openSubmenu(st, true, true);
             } else if (m.parent != .null) {
                 const row = m.parent_row;
@@ -443,14 +443,14 @@ fn onRowKey(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) boo
                 _ = c.siv_node_focus(row);
             } else if (e.keysym == k.escape) {
                 closeMenu(m);
-            } else return false;
+            } else return .pass;
         },
         k.up, k.down => focusStep(node, if (e.keysym == k.down) .next else .previous, true),
         k.home => focusStep(w.related(node, .parent), .first_child, false),
         k.end => focusStep(w.related(node, .parent), .last_child, false),
-        else => return chooseMnemonic(st, @bitCast(@intFromEnum(e.keysym)), e.window),
+        else => return w.resultOf(chooseMnemonic(st, @bitCast(@intFromEnum(e.keysym)), e.window)),
     }
-    return true;
+    return .handled;
 }
 
 /// A key that is an enabled item's mnemonic chooses it.
@@ -558,18 +558,18 @@ fn askClose(st: *Popover) bool {
     return handled;
 }
 
-fn onPopoverKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onPopoverKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const st: *Popover = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
-    if (!e.flags.pressed or e.keysym != w.keysym.escape) return false;
+    if (!e.flags.pressed or e.keysym != w.keysym.escape) return .pass;
     _ = askClose(st);
-    return true;
+    return .handled;
 }
 
-fn onPopoverClose(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) bool {
+fn onPopoverClose(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
     const st: *Popover = @ptrCast(@alignCast(ud.?));
     _ = c.siv_window_destroy(st.popup);
-    return true;
+    return .handled;
 }
 
 /// Dismissed by the compositor: kept only if the application's close

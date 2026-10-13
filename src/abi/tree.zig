@@ -1250,9 +1250,9 @@ fn setHandler(w: *Window, node: t.Node, kind: t.EventType, callback: ?t.EventFn,
 
 /// Every node handler set through the ABI: finds the C callback and calls
 /// it with the event in C form.
-fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Event) bool {
+fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Event) ui.HandlerResult {
     const w: *Window = @ptrCast(@alignCast(user));
-    if (w.dead) return false;
+    if (w.dead) return .pass;
     const hk: ui.HandlerKind = switch (event.*) {
         inline else => |_, tag| @field(ui.HandlerKind, @tagName(tag)),
     };
@@ -1279,13 +1279,14 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
             ev.y = p.y;
             ev.clicks = p.clicks;
             ev.time = p.time;
+            ev.flags.prevented = p.prevented;
             if (p.target != .none and uw.isLive(p.target)) ev.target = @fromBackingInt(w.nodes.handle(p.target));
         },
         .key => |k| {
             ev.keysym = @enumFromInt(@as(i32, @bitCast(k.keysym)));
             ev.time = k.time;
             ev.modifiers = modifiers(k.mods);
-            ev.flags = .{ .pressed = k.pressed, .repeat = k.repeat };
+            ev.flags = .{ .pressed = k.pressed, .repeat = k.repeat, .prevented = k.prevented };
             ev.text = k.text.ptr;
             ev.text_len = k.text.len;
             if (k.target != .none and uw.isLive(k.target)) ev.target = @fromBackingInt(w.nodes.handle(k.target));
@@ -1294,6 +1295,7 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
         .scroll => |s| {
             ev.dx = s.dx;
             ev.dy = s.dy;
+            ev.flags.prevented = s.prevented;
             if (s.target != .none and uw.isLive(s.target)) ev.target = @fromBackingInt(w.nodes.handle(s.target));
         },
         .change => {
@@ -1340,20 +1342,36 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
     return deliver(w, id, hk, &ev);
 }
 
-/// Calls the node's siv_on handler for the kind, then, unless it returned
-/// true, its siv_on_default handler.
-fn deliver(w: *Window, id: NodeId, hk: ui.HandlerKind, ev: *const t.Event) bool {
+/// A handler's result from C. Values this version does not know count
+/// as handled, as any nonzero value did when handlers returned bool.
+fn handlerResult(r: t.EventResult) ui.HandlerResult {
+    return switch (r) {
+        .pass => .pass,
+        .stop => .stop,
+        .prevent => .prevent,
+        else => .handled,
+    };
+}
+
+/// Calls the node's siv_on handler for the kind, then, unless it or a
+/// handler before it prevented the default action, its siv_on_default
+/// handler.
+fn deliver(w: *Window, id: NodeId, hk: ui.HandlerKind, ev: *const t.Event) ui.HandlerResult {
     const self = w.owner;
     self.enter();
     defer self.leave();
     const handle: t.Node = @fromBackingInt(w.nodes.handle(id));
+    var first: ui.HandlerResult = .pass;
     if (w.nodes.slot(id, hk).*) |cb| {
-        if (cb.func(cb.user_data, handle, ev)) return true;
+        first = handlerResult(cb.func(cb.user_data, handle, ev));
+        if (first.prevents()) return first;
         // The handler may have removed the node or destroyed the window.
-        if (w.dead or w.nodes.handle(id) != @backingInt(handle)) return false;
+        if (w.dead or w.nodes.handle(id) != @backingInt(handle)) return first;
     }
-    const d = w.nodes.defaultSlot(id, hk).* orelse return false;
-    return d.func(d.user_data, handle, ev);
+    if (ev.flags.prevented) return first;
+    const d = w.nodes.defaultSlot(id, hk).* orelse return first;
+    const r = handlerResult(d.func(d.user_data, handle, ev));
+    return .of(first.stops() or r.stops(), r.prevents());
 }
 
 /// An editor's text and selection as the application sees them: a masked
@@ -1515,7 +1533,7 @@ pub export fn siv_emit(node: t.Node, event: ?*const t.Event, handled: ?*bool) t.
             if (w.owner.painting != 0) return error.Busy;
             ev.size = @sizeOf(t.Event);
             ev.window = @fromBackingInt(w.handle);
-            dest.* = deliver(w, id, hk, &ev);
+            dest.* = deliver(w, id, hk, &ev) != .pass;
         }
     }.f(node, event, handled));
 }
@@ -1531,6 +1549,18 @@ pub export fn siv_node_focus(node: t.Node) t.Result {
             ui.input.setFocus(uw, id, false);
         }
     }.f(node));
+}
+
+pub export fn siv_window_get_focus(window: t.Window, node: ?*t.Node) t.Result {
+    return application.wrap(struct {
+        fn f(win: t.Window, out: ?*t.Node) Error!void {
+            const w = try App.window(@backingInt(win), application.window_tag);
+            const dest = try runtime.out(t.Node, out);
+            const uw = w.uiWin();
+            const id = uw.input.focus;
+            dest.* = if (id != .none and uw.isLive(id)) @fromBackingInt(w.nodes.handle(id)) else .null;
+        }
+    }.f(window, node));
 }
 
 // Conversions -----------------------------------------------------------------

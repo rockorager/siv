@@ -356,7 +356,7 @@ fn deliver(win: *Window, id: NodeId, ev: node_mod.Drop) bool {
     e.y = local.y;
     e.action = st.action;
     e.source_actions = st.source_actions;
-    return h.func(h.user, win, id, &.{ .drop = e });
+    return h.func(h.user, win, id, &.{ .drop = e }) != .pass;
 }
 
 fn leaveTarget(win: *Window) void {

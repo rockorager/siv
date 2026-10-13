@@ -1201,8 +1201,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     had written out its own keysym table.
   - Routing (`src/ui/input.zig`): pointer events go to the topmost
     hit-testable node (or the node a button press went to, until release)
-    and bubble to the root until a handler returns true; keyboard events
-    start at the focused node. Unhandled events get default actions: a
+    and bubble to the root until a handler stops them; keyboard events
+    start at the focused node. Default actions run unless a handler
+    prevented them: a
     primary press focuses the nearest focusable ancestor, a release over
     the pressed node activates it, Tab and Shift+Tab move focus in tree
     order (logical, so the same in RTL), Enter and Space activate the
@@ -1211,12 +1212,27 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Every pointer, key, and scroll event names its target, the node it
     was delivered to first (`siv_event.target`), so a handler on an
     ancestor tells its own events from a descendant's: a list row ignores
-    keys aimed at an editor inside it (renaming the item in place), where
-    returning true would also cancel the editor's typing, since one return
-    value both stops bubbling and skips the default action. A primary
-    press in an editor is the editor's: its release activates no ancestor.
-    Found by the file manager in `apps/files`, whose rename field lost
-    every space to the row's selection keys.
+    keys aimed at an editor inside it (renaming the item in place). A
+    primary press in an editor is the editor's: its release activates no
+    ancestor. Found by the file manager in `apps/files`, whose rename
+    field lost every space to the row's selection keys.
+  - A handler's result (`siv_event_result`) makes two separate requests,
+    as the DOM's `stopPropagation` and `preventDefault` do: `stop` keeps
+    the event from the ancestors, `prevent` skips the default actions
+    (the node's `siv_on_default` handler, those of the nodes above, and
+    siv's own: typing, focusing, activating, Tab), `handled` is both,
+    and `pass` neither. Once prevented, the event bubbles on with
+    `SIV_EVENT_PREVENTED`. It is one enum rather than two flag bits so
+    that a C handler returning `true` still means handled. So an editor
+    can keep its keys from the window's shortcuts (`stop`) and still type
+    them, and an application can veto a press's focus change without
+    hiding the press from ancestors (`prevent`). `siv_window_get_focus`
+    names the focused node, where key events start. Found by the file
+    manager in `apps/files`, whose window-wide shortcuts saw every key
+    typed into its search, location, and rename fields: with one
+    `bool`, it had to track focus on each editor to leave Backspace to
+    them. Alternative: two flag bits (a C `return true` would then mean
+    stop alone, silently changing behavior).
   - Focus moved by the keyboard shows a ring drawn by the core (2 px,
     outside the node), so keyboard-only use works without widget code;
     focus from a pointer press shows none. Its color is the theme's
@@ -2255,9 +2271,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - **Behavior lives in default handlers.** A widget installs its pointer,
     key, activate, focus, and `set_value` handling with `siv_on_default`,
     which runs only when the node has no `siv_on` handler of that type or
-    it returned false. So `siv_on` stays the application's on every node,
-    a stock widget never takes a handler slot away from it, and an
-    application overrides a behavior by returning true. Widgets report
+    it returned pass or stop, and nothing below prevented the default.
+    So `siv_on` stays the application's on every node, a stock widget
+    never takes a handler slot away from it, and an application overrides
+    a behavior by returning handled or prevent. Widgets report
     their own events with `siv_emit`, which runs the same two slots.
   - **Layout defaults.** `siv_set_layout` replaces a node's whole layout
     (D27), which would wipe a widget's padding and least sizes the moment

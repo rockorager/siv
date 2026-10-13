@@ -21,6 +21,7 @@ const ime = @import("ime.zig");
 
 const NodeId = node_mod.NodeId;
 const Event = node_mod.Event;
+const Result = node_mod.Result;
 const Point = raster.Point;
 
 /// XKB keysyms the defaults use.
@@ -253,35 +254,50 @@ pub fn callHandler(win: *Window, id: NodeId, kind: node_mod.HandlerKind, event: 
     _ = call(win, id, kind, event);
 }
 
-fn call(win: *Window, id: NodeId, kind: node_mod.HandlerKind, event: *const Event) bool {
-    const h = win.node(id).handler(kind) orelse return false;
+fn call(win: *Window, id: NodeId, kind: node_mod.HandlerKind, event: *const Event) Result {
+    const h = win.node(id).handler(kind) orelse return .pass;
     return h.func(h.user, win, id, event);
 }
 
 /// Bubbles a pointer event from `target`; coordinates are made local to
-/// each node. Returns true if a handler took it.
-pub fn bubblePointer(win: *Window, target: NodeId, phase: node_mod.PointerPhase, button: node_mod.Button) bool {
-    const p = win.input.pointer orelse return false;
+/// each node. Returns whether a handler stopped it and whether one
+/// prevented the default action.
+pub fn bubblePointer(win: *Window, target: NodeId, phase: node_mod.PointerPhase, button: node_mod.Button) Result {
+    const p = win.input.pointer orelse return .pass;
     const clicks: u8 = if (button == .primary and (phase == .down or phase == .up)) @max(win.input.clicks, 1) else 1;
+    var prevented = false;
     var cur = target;
     while (cur != .none and win.isLive(cur)) {
         const local = toLocal(win, cur, p);
-        const ev: Event = .{ .pointer = .{ .phase = phase, .x = local.x, .y = local.y, .button = button, .mods = win.input.mods, .clicks = clicks, .time = win.input.time, .target = target } };
-        if (call(win, cur, .pointer, &ev)) return true;
-        if (!win.isLive(cur)) return false;
+        const ev: Event = .{ .pointer = .{ .phase = phase, .x = local.x, .y = local.y, .button = button, .mods = win.input.mods, .clicks = clicks, .time = win.input.time, .target = target, .prevented = prevented } };
+        const r = call(win, cur, .pointer, &ev);
+        prevented = prevented or r.prevents();
+        if (r.stops() or !win.isLive(cur)) return .of(r.stops(), prevented);
         cur = win.node(cur).parent;
     }
-    return false;
+    return .of(false, prevented);
 }
 
-fn bubble(win: *Window, target: NodeId, kind: node_mod.HandlerKind, ev: *const Event) bool {
+/// Bubbles a key or scroll event from `target`. Once a handler prevents
+/// the default action, the nodes above see the event marked prevented.
+fn bubble(win: *Window, target: NodeId, kind: node_mod.HandlerKind, event: Event) Result {
+    var ev = event;
+    var prevented = false;
     var cur = target;
     while (cur != .none and win.isLive(cur)) {
-        if (call(win, cur, kind, ev)) return true;
-        if (!win.isLive(cur)) return false;
+        const r = call(win, cur, kind, &ev);
+        if (r.prevents() and !prevented) {
+            prevented = true;
+            switch (ev) {
+                .key => |*k| k.prevented = true,
+                .scroll => |*s| s.prevented = true,
+                else => {},
+            }
+        }
+        if (r.stops() or !win.isLive(cur)) return .of(r.stops(), prevented);
         cur = win.node(cur).parent;
     }
-    return false;
+    return .of(false, prevented);
 }
 
 /// Sends `activate` to a node.
@@ -296,7 +312,7 @@ pub fn setValue(win: *Window, id: NodeId, value: f64) bool {
     if (!win.isLive(id) or !std.math.isFinite(value)) return false;
     const n = win.node(id);
     if (n.semantics.value == null or n.semantics.disabled) return false;
-    return call(win, id, .set_value, &.{ .set_value = value });
+    return call(win, id, .set_value, &.{ .set_value = value }) != .pass;
 }
 
 /// Moves keyboard focus (none clears it).
@@ -375,12 +391,12 @@ fn updateHover(win: *Window, target: NodeId) void {
     while (i > common) {
         i -= 1;
         const id = st.hover.items[i];
-        if (win.isLive(id)) _ = callPointer(win, id, .leave);
+        if (win.isLive(id)) callPointer(win, id, .leave);
     }
     st.hover.shrinkRetainingCapacity(common);
     for (path.items[common..]) |id| {
         st.hover.append(win.gpa, id) catch return;
-        if (win.isLive(id)) _ = callPointer(win, id, .enter);
+        if (win.isLive(id)) callPointer(win, id, .enter);
     }
 }
 
@@ -405,10 +421,10 @@ pub fn updateCursor(win: *Window) void {
     win.host.set_cursor(win.host.ctx, shape);
 }
 
-fn callPointer(win: *Window, id: NodeId, phase: node_mod.PointerPhase) bool {
+fn callPointer(win: *Window, id: NodeId, phase: node_mod.PointerPhase) void {
     const p = win.input.pointer orelse Point.zero;
     const local = toLocal(win, id, p);
-    return call(win, id, .pointer, &.{ .pointer = .{ .phase = phase, .x = local.x, .y = local.y, .mods = win.input.mods } });
+    _ = call(win, id, .pointer, &.{ .pointer = .{ .phase = phase, .x = local.x, .y = local.y, .mods = win.input.mods } });
 }
 
 // Platform events ------------------------------------------------------------
@@ -494,7 +510,7 @@ fn pointerButton(win: *Window, code: u32, pressed: bool, time: u32) void {
         const target = hitTest(win, p);
         if (target == .none) return;
         st.capture = target;
-        const handled = bubblePointer(win, target, .down, button);
+        const handled = bubblePointer(win, target, .down, button).prevents();
         // The middle button pastes the primary selection at the pointer.
         if (!handled and button == .middle and win.isLive(target) and win.node(target).kind == .editor and canFocus(win, target)) {
             setFocus(win, target, false);
@@ -524,7 +540,7 @@ fn pointerButton(win: *Window, code: u32, pressed: bool, time: u32) void {
         const pressed_node = st.pressed;
         st.pressed = .none;
         if (target == .none) return;
-        const handled = bubblePointer(win, target, .up, button);
+        const handled = bubblePointer(win, target, .up, button).prevents();
         if (handled or button != .primary or pressed_node == .none) return;
         // Activate only when released over the pressed node.
         const over = hitTest(win, p);
@@ -551,7 +567,7 @@ fn key(win: *Window, k: *const platform.Key) void {
         .text = k.text(),
         .target = target,
     } };
-    if (bubble(win, target, .key, &ev)) return;
+    if (bubble(win, target, .key, ev).prevents()) return;
     if (target != .root and win.isLive(target) and win.node(target).kind == .editor and editor.key(win, target, k)) return;
     if (k.state == .released or k.composing) return;
     switch (k.keysym) {
@@ -606,7 +622,7 @@ fn scroll(win: *Window, dx_px: f32, dy_px: f32, v120_x: i32, v120_y: i32) void {
     var dx: f32 = @floatCast(d.x);
     var dy: f32 = @floatCast(d.y);
     const ev: Event = .{ .scroll = .{ .dx = dx, .dy = dy, .target = target } };
-    if (bubble(win, target, .scroll, &ev)) return;
+    if (bubble(win, target, .scroll, ev).prevents()) return;
     const mods = win.input.mods;
     if (mods.ctrl or mods.alt or mods.super) return;
     // Shift turns a vertical wheel horizontal, as in the compositor.

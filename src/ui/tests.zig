@@ -510,10 +510,10 @@ test "opacity animates as a layer property; content repaints only its layer" {
     try testing.expect(sc.damage.?.eql(.xywh(0, 0, 200, 50)));
 }
 
-fn countActivate(user: ?*anyopaque, _: *ui.Window, _: NodeId, ev: *const ui.Event) bool {
+fn countActivate(user: ?*anyopaque, _: *ui.Window, _: NodeId, ev: *const ui.Event) ui.HandlerResult {
     const n: *usize = @ptrCast(@alignCast(user));
     if (ev.* == .activate) n.* += 1;
-    return true;
+    return .handled;
 }
 
 test "pointer presses activate; Tab moves focus; Enter activates" {
@@ -621,13 +621,13 @@ test "semantics: roles, names from content, states, and pruning" {
     try testing.expectEqual(f.win.windowRect(button).x0, sem.find(.button, "Save file").?.bounds.x0);
 }
 
-fn takeScroll(user: ?*anyopaque, _: *ui.Window, _: NodeId, ev: *const ui.Event) bool {
+fn takeScroll(user: ?*anyopaque, _: *ui.Window, _: NodeId, ev: *const ui.Event) ui.HandlerResult {
     const total: *f32 = @ptrCast(@alignCast(user));
-    if (ev.* != .scroll) return false;
+    if (ev.* != .scroll) return .pass;
     // Takes upward scrolling only; passes the rest on.
-    if (ev.scroll.dy >= 0) return false;
+    if (ev.scroll.dy >= 0) return .pass;
     total.* += ev.scroll.dy;
-    return true;
+    return .handled;
 }
 
 test "scroll handlers get wheel regions; declined input passes on as scroll_by" {
@@ -701,10 +701,10 @@ const Keys = struct {
     }
 };
 
-fn countChange(user: ?*anyopaque, _: *ui.Window, _: NodeId, ev: *const ui.Event) bool {
+fn countChange(user: ?*anyopaque, _: *ui.Window, _: NodeId, ev: *const ui.Event) ui.HandlerResult {
     const n: *usize = @ptrCast(@alignCast(user));
     if (ev.* == .change) n.* += 1;
-    return true;
+    return .handled;
 }
 
 test "editor: typing, deleting, selecting, and change events" {
@@ -1799,10 +1799,10 @@ test "editor placeholders show while empty and are exposed to assistive technolo
     try testing.expectEqual(@as(usize, 0), glyphRuns(&f.comp));
 }
 
-fn takeValue(user: ?*anyopaque, _: *ui.Window, _: NodeId, ev: *const ui.Event) bool {
+fn takeValue(user: ?*anyopaque, _: *ui.Window, _: NodeId, ev: *const ui.Event) ui.HandlerResult {
     const v: *f64 = @ptrCast(@alignCast(user));
     v.* = ev.set_value;
-    return true;
+    return .handled;
 }
 
 test "set_value goes to nodes with a range, unless disabled" {

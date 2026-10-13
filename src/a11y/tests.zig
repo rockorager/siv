@@ -506,10 +506,10 @@ test "window activation and titles" {
     try testing.expectEqual(@as(i32, 0), try (try h.get(atspi.root_path, atspi.iface.accessible, "ChildCount")).read(i32));
 }
 
-fn takeValue(user: ?*anyopaque, _: *ui.Window, _: ui.NodeId, ev: *const ui.Event) bool {
+fn takeValue(user: ?*anyopaque, _: *ui.Window, _: ui.NodeId, ev: *const ui.Event) ui.HandlerResult {
     const v: *f64 = @ptrCast(@alignCast(user));
     v.* = ev.set_value;
-    return true;
+    return .handled;
 }
 
 test "setting Value.CurrentValue asks the node's handler for the value" {

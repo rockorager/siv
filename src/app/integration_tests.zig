@@ -289,10 +289,10 @@ const atspi_script =
     \\
 ;
 
-fn onClick(user: ?*anyopaque, _: *@import("ui").Window, _: @import("ui").NodeId, _: *const @import("ui").Event) bool {
+fn onClick(user: ?*anyopaque, _: *@import("ui").Window, _: @import("ui").NodeId, _: *const @import("ui").Event) @import("ui").HandlerResult {
     const clicks: *u32 = @ptrCast(@alignCast(user));
     clicks.* += 1;
-    return true;
+    return .handled;
 }
 
 test "assistive technology finds the application's windows and acts on them" {

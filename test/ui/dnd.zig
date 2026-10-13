@@ -35,7 +35,7 @@ const Rec = struct {
         return .{ .func = onEvent, .user = r };
     }
 
-    fn onEvent(user: ?*anyopaque, win: *ui.Window, id: NodeId, ev: *const ui.Event) bool {
+    fn onEvent(user: ?*anyopaque, win: *ui.Window, id: NodeId, ev: *const ui.Event) ui.HandlerResult {
         const r: *Rec = @ptrCast(@alignCast(user));
         switch (ev.*) {
             .drop => |d| {
@@ -44,7 +44,7 @@ const Rec = struct {
                     if (std.mem.eql(u8, m, d.mime)) break m;
                 } else "";
                 r.drops.append(testing.allocator, .{ .phase = d.phase, .x = d.x, .y = d.y, .action = d.action, .mime = mime, .data = testing.allocator.dupe(u8, d.data) catch unreachable }) catch unreachable;
-                return r.take;
+                return if (r.take) .handled else .pass;
             },
             .drag => |d| r.drags.append(testing.allocator, d) catch unreachable,
             .pointer => |p| if (p.phase == .down or p.phase == .up or p.phase == .cancel) {
@@ -54,11 +54,11 @@ const Rec = struct {
                 win.startDrag(id, o) catch |e| {
                     r.start_err = e;
                 };
-                return true;
+                return .handled;
             },
             else => {},
         }
-        return false;
+        return .pass;
     }
 
     fn phases(r: *const Rec, buf: []ui.DropPhase) []ui.DropPhase {

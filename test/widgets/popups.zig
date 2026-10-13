@@ -37,27 +37,27 @@ const Log = struct {
     keep: bool = false,
     node: t.Node = .null,
 
-    fn onSelect(ud: ?*anyopaque, node: t.Node, ev: ?*const t.Event) callconv(.c) bool {
+    fn onSelect(ud: ?*anyopaque, node: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
         const log: *Log = @ptrCast(@alignCast(ud.?));
         log.selects += 1;
         log.index = ev.?.index;
         log.node = node;
-        return true;
+        return .handled;
     }
 
-    fn onChange(ud: ?*anyopaque, node: t.Node, ev: ?*const t.Event) callconv(.c) bool {
+    fn onChange(ud: ?*anyopaque, node: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
         const log: *Log = @ptrCast(@alignCast(ud.?));
         log.changes += 1;
         log.value = ev.?.value;
         log.node = node;
-        return true;
+        return .handled;
     }
 
-    fn onClose(ud: ?*anyopaque, node: t.Node, _: ?*const t.Event) callconv(.c) bool {
+    fn onClose(ud: ?*anyopaque, node: t.Node, _: ?*const t.Event) callconv(.c) t.EventResult {
         const log: *Log = @ptrCast(@alignCast(ud.?));
         log.closes += 1;
         log.node = node;
-        return log.keep;
+        return if (log.keep) .handled else .pass;
     }
 };
 

@@ -179,37 +179,37 @@ fn choose(st: *Radio, window: siv.Window, focus: bool) void {
     if (changed) w.emitChange(g.root, g.selectedValue(), index);
 }
 
-fn onPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const st: *Radio = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
-    const g = groupOf(st) orelse return false;
-    if (g.hdr.disabled) return false;
+    const g = groupOf(st) orelse return .pass;
+    if (g.hdr.disabled) return .pass;
     if (button.feedback(&st.hdr, e)) {
-        const txn = w.begin(e.window) orelse return false;
+        const txn = w.begin(e.window) orelse return .pass;
         apply(txn, st);
         _ = w.commit(txn);
     }
-    return false;
+    return .pass;
 }
 
-fn onActivate(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onActivate(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const st: *Radio = @ptrCast(@alignCast(ud.?));
-    const g = groupOf(st) orelse return false;
-    if (st.hdr.disabled or g.hdr.disabled) return false;
+    const g = groupOf(st) orelse return .pass;
+    if (st.hdr.disabled or g.hdr.disabled) return .pass;
     choose(st, ev.?.window, false);
-    return true;
+    return .handled;
 }
 
 /// Arrows select and focus the next or previous enabled radio, wrapping.
-fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const st: *Radio = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
-    if (!e.flags.pressed) return false;
+    if (!e.flags.pressed) return .pass;
     const dir = w.arrowDirection(e.keysym, w.isRtl(st.root));
-    if (dir == 0) return false;
-    const g = groupOf(st) orelse return false;
+    if (dir == 0) return .pass;
+    const g = groupOf(st) orelse return .pass;
     const n = count(g);
-    if (n == 0 or g.hdr.disabled) return true;
+    if (n == 0 or g.hdr.disabled) return .handled;
     var i = indexOf(st);
     var tries: u32 = 0;
     while (tries < n) : (tries += 1) {
@@ -220,5 +220,5 @@ fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
             break;
         }
     }
-    return true;
+    return .handled;
 }

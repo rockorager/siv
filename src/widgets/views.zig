@@ -209,8 +209,8 @@ fn create(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc, mode: Mode) Node {
     return root;
 }
 
-fn never(_: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) bool {
-    return false;
+fn never(_: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
+    return .pass;
 }
 
 fn viewOf(node: Node) ?*View {
@@ -785,48 +785,48 @@ fn moveHeaderFocus(v: *View, k: u32, window: siv.Window) void {
 
 /// A sortable header asks the application to sort: ascending first, then
 /// flipping; the header shows it once the application's handler accepts.
-fn onHeaderActivate(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onHeaderActivate(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const col: *Column = @ptrCast(@alignCast(ud.?));
-    const v = viewOf(col.view) orelse return false;
-    if (v.hdr.disabled) return false;
+    const v = viewOf(col.view) orelse return .pass;
+    if (v.hdr.disabled) return .pass;
     const next: siv.Sort = if (col.sort == .ascending) .descending else .ascending;
     var handled = false;
     _ = c.siv_emit(v.root, &.{ .type = .sort, .index = col.index, .value = if (next == .ascending) 1 else -1 }, &handled);
-    const txn = w.begin(ev.?.window) orelse return true;
+    const txn = w.begin(ev.?.window) orelse return .handled;
     v.header_focus = col.index;
     if (handled) setSort(txn, v, col.index, next) else applyHeader(txn, v);
     _ = w.commit(txn);
-    return true;
+    return .handled;
 }
 
-fn onHeaderFocus(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onHeaderFocus(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const col: *Column = @ptrCast(@alignCast(ud.?));
-    const v = viewOf(col.view) orelse return false;
+    const v = viewOf(col.view) orelse return .pass;
     // Widths from layout reach the handles' values.
     if (ev.?.flags.gained) {
-        const txn = w.begin(ev.?.window) orelse return false;
+        const txn = w.begin(ev.?.window) orelse return .pass;
         applyHeader(txn, v);
         _ = w.commit(txn);
     }
-    return false;
+    return .pass;
 }
 
 /// Left and Right (mirrored in RTL) move between header cells, Home and
 /// End to the first and last; Ctrl with them narrows and widens the
 /// column; Down goes to the rows. Enter and Space sort through the
 /// activate handler.
-fn onHeaderKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onHeaderKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const col: *Column = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
-    const v = viewOf(col.view) orelse return false;
-    if (!e.flags.pressed or v.hdr.disabled) return false;
+    const v = viewOf(col.view) orelse return .pass;
+    if (!e.flags.pressed or v.hdr.disabled) return .pass;
     const k = w.keysym;
     const rtl = w.isRtl(v.root);
     const forward = (e.keysym == k.right) != rtl;
     switch (e.keysym) {
         k.left, k.right => {
             if (e.modifiers.ctrl) {
-                if (col.fixed) return true;
+                if (col.fixed) return .handled;
                 userResize(v, col, e.window, columnWidth(v, col) + if (forward) resize_step else -resize_step, true);
             } else if (forward) {
                 moveHeaderFocus(v, col.index + 1, e.window);
@@ -837,45 +837,45 @@ fn onHeaderKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) boo
         k.home => moveHeaderFocus(v, 0, e.window),
         k.end => moveHeaderFocus(v, v.column_count -| 1, e.window),
         k.down => {
-            if (v.count == 0) return true;
+            if (v.count == 0) return .handled;
             moveCursor(v, if (v.cursor >= 0) v.cursor else 0, e.window, .{}, false);
         },
-        else => return false,
+        else => return .pass,
     }
-    return true;
+    return .handled;
 }
 
 /// Dragging a handle moves the column's end edge with the pointer;
 /// `grab` is where in the handle it was pressed.
-fn onHandlePointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onHandlePointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const col: *Column = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
-    const v = viewOf(col.view) orelse return false;
-    if (v.hdr.disabled) return false;
+    const v = viewOf(col.view) orelse return .pass;
+    if (v.hdr.disabled) return .pass;
     switch (e.phase) {
         .down => {
-            if (e.button != .primary) return false;
+            if (e.button != .primary) return .pass;
             col.dragging = true;
             col.grab = e.x;
             restyleHeader(v, e.window);
-            return true;
+            return .handled;
         },
         .move => if (col.dragging) {
             // Window coordinates from the last layout, so that moves
             // arriving before the next frame do not add up.
             var cell: siv.Rect = undefined;
             var handle: siv.Rect = undefined;
-            if (c.siv_node_get_rect(col.cell, &cell) != .ok or c.siv_node_get_rect(col.handle, &handle) != .ok) return false;
+            if (c.siv_node_get_rect(col.cell, &cell) != .ok or c.siv_node_get_rect(col.handle, &handle) != .ok) return .pass;
             const left = handle.x + e.x - col.grab;
             const width = if (w.isRtl(v.root)) cell.x + cell.width - left else left + handle_width - cell.x;
             userResize(v, col, e.window, width, false);
-            return true;
+            return .handled;
         },
         .up, .cancel => if (col.dragging) {
             col.dragging = false;
             restyleHeader(v, e.window);
             w.emitChange(col.cell, columnWidth(v, col), col.index);
-            return true;
+            return .handled;
         },
         .enter, .leave => {
             col.hdr.hover = e.phase == .enter;
@@ -883,16 +883,16 @@ fn onHandlePointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c)
         },
         else => {},
     }
-    return false;
+    return .pass;
 }
 
-fn onHandleSetValue(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onHandleSetValue(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const col: *Column = @ptrCast(@alignCast(ud.?));
-    const v = viewOf(col.view) orelse return false;
-    if (v.hdr.disabled) return false;
+    const v = viewOf(col.view) orelse return .pass;
+    if (v.hdr.disabled) return .pass;
     const width: f32 = @floatCast(@round(ev.?.value / resize_step) * resize_step);
     userResize(v, col, ev.?.window, width, true);
-    return true;
+    return .handled;
 }
 
 fn restyleHeader(v: *View, window: siv.Window) void {
@@ -974,36 +974,36 @@ fn focusCursor(v: *View) void {
     }
 }
 
-fn onViewport(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onViewport(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const v: *View = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
     v.view_y = e.y;
     v.view_w = e.width;
     v.view_h = e.height;
-    const txn = w.begin(e.window) orelse return false;
+    const txn = w.begin(e.window) orelse return .pass;
     update(txn, v);
     _ = w.commit(txn);
-    return true;
+    return .handled;
 }
 
-fn onRowPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onRowPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const r: *Row = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
-    const v = viewOf(r.view) orelse return false;
-    if (v.hdr.disabled or r.index < 0) return false;
+    const v = viewOf(r.view) orelse return .pass;
+    if (v.hdr.disabled or r.index < 0) return .pass;
     switch (e.phase) {
         .enter, .leave => {
             r.hdr.hover = e.phase == .enter;
-            const txn = w.begin(e.window) orelse return false;
+            const txn = w.begin(e.window) orelse return .pass;
             applyRow(txn, v, r);
             _ = w.commit(txn);
-            return false;
+            return .pass;
         },
         .down => {
-            if (e.button != .primary) return false;
+            if (e.button != .primary) return .pass;
             // A press in an editor inside the row (renaming an item) is
             // the editor's: it places the caret, and focus stays there.
-            if (e.target != r.root and isEditor(e.target)) return false;
+            if (e.target != r.root and isEditor(e.target)) return .pass;
             // The disclosure toggles the item instead of selecting it.
             if (v.mode == .tree and r.disclosure != .null) {
                 var rr: siv.Rect = undefined;
@@ -1012,7 +1012,7 @@ fn onRowPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bo
                     const x = rr.x + e.x;
                     if (x >= dr.x and x < dr.x + dr.width) {
                         toggleExpanded(v, @intCast(r.index), e.window);
-                        return true;
+                        return .handled;
                     }
                 }
             }
@@ -1023,9 +1023,9 @@ fn onRowPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bo
                 var handled = false;
                 _ = c.siv_emit(v.root, &.{ .type = .activate, .index = @intCast(index), .value = @floatFromInt(index) }, &handled);
             }
-            return true;
+            return .handled;
         },
-        else => return false,
+        else => return .pass,
     }
 }
 
@@ -1046,23 +1046,23 @@ fn toggleExpanded(v: *View, at: u32, window: siv.Window) void {
 }
 
 /// Assistive technology's SelectChild activates a row: it selects it.
-fn onRowActivate(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onRowActivate(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const r: *Row = @ptrCast(@alignCast(ud.?));
-    const v = viewOf(r.view) orelse return false;
-    if (v.hdr.disabled or r.index < 0) return false;
+    const v = viewOf(r.view) orelse return .pass;
+    if (v.hdr.disabled or r.index < 0) return .pass;
     moveCursor(v, r.index, ev.?.window, .{}, false);
-    return true;
+    return .handled;
 }
 
-fn onRowKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onRowKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const r: *Row = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
-    const v = viewOf(r.view) orelse return false;
-    if (!e.flags.pressed or v.hdr.disabled or v.count == 0) return false;
+    const v = viewOf(r.view) orelse return .pass;
+    if (!e.flags.pressed or v.hdr.disabled or v.count == 0) return .pass;
     // Keys for a focused node inside the row (an editor renaming the item,
     // a button) are that node's: Space types a space, arrows move the
     // caret.
-    if (e.target != r.root) return false;
+    if (e.target != r.root) return .pass;
     const k = w.keysym;
     const cur: i64 = if (v.cursor >= 0) v.cursor else r.index;
     const per: i64 = if (v.mode == .grid) v.columns else 1;
@@ -1085,11 +1085,11 @@ fn onRowKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
             switch (v.mode) {
                 .grid => moveCursor(v, if (forward) cur + 1 else cur - 1, e.window, e.modifiers, false),
                 .tree => treeKey(v, @intCast(cur), forward, e.window),
-                else => return false,
+                else => return .pass,
             }
         },
         k.space => {
-            if (v.selection == .none) return false;
+            if (v.selection == .none) return .pass;
             moveCursor(v, cur, e.window, .{}, v.selection == .multiple and e.modifiers.ctrl);
         },
         k.@"return", k.kp_enter => {
@@ -1097,15 +1097,15 @@ fn onRowKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
             _ = c.siv_emit(v.root, &.{ .type = .activate, .index = @intCast(cur), .value = @floatFromInt(cur) }, &handled);
         },
         @as(siv.Key, @enumFromInt('a')), @as(siv.Key, @enumFromInt('A')) => {
-            if (!e.modifiers.ctrl or v.selection != .multiple) return false;
-            const txn = w.begin(e.window) orelse return true;
+            if (!e.modifiers.ctrl or v.selection != .multiple) return .pass;
+            const txn = w.begin(e.window) orelse return .handled;
             for (0..v.count) |i| setSelected(v, @intCast(i), true);
             applyAll(txn, v);
             if (w.commit(txn)) emitSelect(v);
         },
-        else => return false,
+        else => return .pass,
     }
-    return true;
+    return .handled;
 }
 
 /// Forward expands a collapsed item or moves to its first child; back

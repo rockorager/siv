@@ -52,28 +52,28 @@ static void set_value(struct gauge *g, float v) {
 }
 
 /* The angle of the pointer around the center sets the value. */
-static bool on_pointer(void *user_data, siv_node node, const siv_event *e) {
+static siv_event_result on_pointer(void *user_data, siv_node node, const siv_event *e) {
 	struct gauge *g = user_data;
 	if (e->phase == SIV_POINTER_PHASE_DOWN) g->dragging = true;
 	if (e->phase == SIV_POINTER_PHASE_UP || e->phase == SIV_POINTER_PHASE_CANCEL) g->dragging = false;
-	if (!g->dragging) return false;
+	if (!g->dragging) return SIV_EVENT_RESULT_PASS;
 	siv_rect box;
-	if (siv_node_get_rect(node, &box) != SIV_OK) return false;
+	if (siv_node_get_rect(node, &box) != SIV_OK) return SIV_EVENT_RESULT_PASS;
 	float a = atan2f(e->y - box.height / 2, e->x - box.width / 2) - 0.75f * PI;
 	while (a < 0) a += 2 * PI;
 	if (a > 1.5f * PI) a = a > 1.75f * PI ? 0 : 1.5f * PI;
 	set_value(g, a / (1.5f * PI));
-	return true;
+	return SIV_EVENT_RESULT_HANDLED;
 }
 
-static bool on_key(void *user_data, siv_node node, const siv_event *e) {
+static siv_event_result on_key(void *user_data, siv_node node, const siv_event *e) {
 	(void)node;
 	struct gauge *g = user_data;
-	if (!(e->flags & SIV_EVENT_PRESSED)) return false;
+	if (!(e->flags & SIV_EVENT_PRESSED)) return SIV_EVENT_RESULT_PASS;
 	if (e->keysym == SIV_KEY_LEFT) set_value(g, g->value - 0.05f);
 	else if (e->keysym == SIV_KEY_RIGHT) set_value(g, g->value + 0.05f);
-	else return false;
-	return true;
+	else return SIV_EVENT_RESULT_PASS;
+	return SIV_EVENT_RESULT_HANDLED;
 }
 
 int main(void) {

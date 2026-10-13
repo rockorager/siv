@@ -24,10 +24,10 @@ static const siv_color muted = {0.44f, 0.44f, 0.48f, 1};
 
 /* Clicking an item removes it. Its user data is freed by the
  * destroy-notify once the item's node is gone. */
-static bool on_item_click(void *user_data, siv_node node, const siv_event *event) {
+static siv_event_result on_item_click(void *user_data, siv_node node, const siv_event *event) {
 	struct app *a = *(struct app **)user_data;
 	siv_txn txn;
-	if (siv_txn_begin(event->window, &txn) != SIV_OK) return false;
+	if (siv_txn_begin(event->window, &txn) != SIV_OK) return SIV_EVENT_RESULT_PASS;
 	siv_remove(txn, node);
 	a->items--;
 	return siv_txn_commit(txn) == SIV_OK;
@@ -51,31 +51,31 @@ static void add_item(struct app *a, siv_txn txn, const char *text, size_t len) {
 }
 
 /* Enter in the editor adds its text as an item and clears it. */
-static bool on_editor_key(void *user_data, siv_node node, const siv_event *event) {
+static siv_event_result on_editor_key(void *user_data, siv_node node, const siv_event *event) {
 	struct app *a = user_data;
-	if (event->keysym != SIV_KEY_RETURN || !(event->flags & SIV_EVENT_PRESSED)) return false;
+	if (event->keysym != SIV_KEY_RETURN || !(event->flags & SIV_EVENT_PRESSED)) return SIV_EVENT_RESULT_PASS;
 	char text[256];
 	size_t len = 0;
-	if (siv_node_get_text(node, text, sizeof text, &len) != SIV_OK || len == 0) return true;
+	if (siv_node_get_text(node, text, sizeof text, &len) != SIV_OK || len == 0) return SIV_EVENT_RESULT_HANDLED;
 	if (len > sizeof text) len = sizeof text;
 	siv_txn txn;
-	if (siv_txn_begin(a->window, &txn) != SIV_OK) return true;
+	if (siv_txn_begin(a->window, &txn) != SIV_OK) return SIV_EVENT_RESULT_HANDLED;
 	add_item(a, txn, text, len);
 	siv_set_text(txn, node, "", 0);
 	siv_set_text(txn, a->status, "", 0);
 	siv_result r = siv_txn_commit(txn);
 	if (r != SIV_OK) fprintf(stderr, "adding an item failed: %s\n", siv_result_name(r));
-	return true;
+	return SIV_EVENT_RESULT_HANDLED;
 }
 
 /* The editor's change event carries its new text. */
-static bool on_editor_change(void *user_data, siv_node node, const siv_event *event) {
+static siv_event_result on_editor_change(void *user_data, siv_node node, const siv_event *event) {
 	(void)node;
 	struct app *a = user_data;
 	char status[64];
 	int n = snprintf(status, sizeof status, "%zu bytes typed", event->text_len);
 	siv_txn txn;
-	if (siv_txn_begin(a->window, &txn) != SIV_OK) return false;
+	if (siv_txn_begin(a->window, &txn) != SIV_OK) return SIV_EVENT_RESULT_PASS;
 	siv_set_text(txn, a->status, status, (size_t)n);
 	return siv_txn_commit(txn) == SIV_OK;
 }

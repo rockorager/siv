@@ -778,6 +778,7 @@ pub const decls = [_]Decl{
         .{ .name = "gained", .bit = 2, .doc = "Focus: the node gained focus rather than lost it." },
         .{ .name = "visible", .bit = 3, .doc = "Focus: moved by the keyboard, so it should be visible." },
         .{ .name = "accepted", .bit = 4, .doc = "Drag: the target under the pointer takes the data." },
+        .{ .name = "prevented", .bit = 5, .doc = "Bubbling events: a handler on the way here (on the target or a node between) prevented the default action (SIV_EVENT_RESULT_PREVENT), so no siv_on_default handler runs any more and siv takes no default action." },
     }),
     enumeration("siv_key", "An XKB keysym (D16), as key events report it. Every keysym is valid, not only the named ones: a key that types a character reports its Unicode code point below 0x100 (0x61 for a, 0x41 for Shift+A) and 0x01000000 plus the code point above. The named keys are those applications commonly bind.", &.{
         .{ .name = "none", .value = 0, .doc = "No key (NoSymbol): the event is not a key event." },
@@ -859,10 +860,16 @@ pub const decls = [_]Decl{
         .{ .name = "time", .type = .u32, .doc = "Pointer and key: the input's timestamp in milliseconds, on the compositor's clock." },
         .{ .name = "target", .type = ref("siv_node"), .doc = "Pointer, key, and scroll: the node the event was delivered to first, before bubbling (the node under the pointer or holding its press, the focused node), so a handler on an ancestor can tell its own events from those of a descendant, such as an editor in a list row. Other events: the node itself." },
     }),
-    callback("siv_event_fn", "Handles a node event at a safe point on the application's thread (D5). Return true when handled: the event stops bubbling and the default action is skipped.", &.{
+    enumeration("siv_event_result", "What a handler did with an event: two independent requests, to stop bubbling and to prevent the default action, in one value. The default actions are the node's siv_on_default handler, those of the nodes it would bubble to, and siv's own (an editor typing the key, a press focusing and activating, Tab moving focus). For events that do not bubble, any result but pass counts as handled. In C, returning true still means handled and false pass.", &.{
+        .{ .name = "pass", .value = 0, .doc = "Not handled: the event bubbles on and the default action runs." },
+        .{ .name = "handled", .value = 1, .doc = "Handled: stop bubbling and prevent the default action." },
+        .{ .name = "stop", .value = 2, .doc = "Stop bubbling only: ancestors do not see the event, but the default action runs, so an editor still types a key that a handler kept from the window's shortcuts." },
+        .{ .name = "prevent", .value = 3, .doc = "Prevent the default action only: the event bubbles on with SIV_EVENT_PREVENTED set." },
+    }),
+    callback("siv_event_fn", "Handles a node event at a safe point on the application's thread (D5), and says whether it stops bubbling and whether the default action runs.", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node the handler was set on." },
         .{ .name = "event", .type = .{ .desc = "siv_event" }, .doc = "The event, valid during the call." },
-    }, .bool),
+    }, ref("siv_event_result")),
     enumeration("siv_relation", "A node's neighbor in the tree, for siv_node_get_related.", &.{
         .{ .name = "parent", .value = 0, .doc = "Its parent." },
         .{ .name = "first_child", .value = 1, .doc = "Its first child." },
@@ -1389,6 +1396,10 @@ pub const functions = [_]Function{
         .{ .name = "delay_ms", .type = out(.u32), .doc = "Delay before the first repeat." },
         .{ .name = "interval_ms", .type = out(.u32), .doc = "Interval between repeats; 0 when held keys do not repeat." },
     }),
+    call("siv_window_get_focus", "The node that has keyboard focus in the window, as of the latest operation, or 0 when none has. Key events start there.", &.{
+        window_param,
+        .{ .name = "node", .type = out(ref("siv_node")), .doc = "The focused node, or 0." },
+    }),
     call("siv_window_get_app", "The application a window belongs to.", &.{
         window_param,
         .{ .name = "app", .type = out(ref("siv_app")), .doc = "The application." },
@@ -1451,7 +1462,7 @@ pub const functions = [_]Function{
     setter("siv_set_animation", "Runs an animation of one property of the node on the compositor (D8), which gives the node its own layer: repeating ones, such as an indeterminate progress bar, cost the application's thread nothing per frame. It runs while the node is shown and motion is not reduced (D29); otherwise, and once stopped, the node shows its own value. Hiding the node stops it and showing it starts it over, as do changes of the node's size (for relative translations), own opacity or transform, or the animation. A finite animation holds its last value until one of those changes.", &.{.{ .name = "desc", .type = .{ .desc = "siv_animation_desc" }, .doc = "The animation; NULL stops it." }}),
     setter("siv_set_text_spans", "Replaces the styled ranges of a text or editor node (D22): weight, slant, size, color, underline, and strikethrough over parts of its text, shaped as runs of their own and exposed to assistive technology as text attributes. siv_set_text clears them when the text changes; an editor moves them as the user edits, and typed text takes the style of the character before it (or the typing style, siv_editor_format). Masked editors take none (SIV_ERROR_INVALID_ARGUMENT).", &.{.{ .name = "desc", .type = .{ .desc = "siv_text_spans_desc" }, .doc = "The ranges; NULL clears them." }}),
     setter("siv_set_placeholder", "Sets the text an editor shows, in the theme's muted color, while it is empty. Exposed to assistive technology as the placeholder.", &.{.{ .name = "text", .type = .string, .doc = "UTF-8 without line breaks, copied." }}),
-    setter("siv_on_default", "Sets, or with a NULL callback clears, the node's default handler for one event type: it runs when the node has no siv_on handler for the type or that handler returns false, before siv's own default action, and returns true to stop both bubbling and that action. Widgets, stock or not, put their behavior here, so siv_on stays the application's and returning true from it overrides the widget. Destroy-notify rules as for siv_on.", &.{
+    setter("siv_on_default", "Sets, or with a NULL callback clears, the node's default handler for one event type: it runs when the node has no siv_on handler for the type or that handler returns pass or stop, and no handler before it prevented the default action, before siv's own default action, and returns what it did as siv_on handlers do. Widgets, stock or not, put their behavior here, so siv_on stays the application's and returning handled or prevent from it overrides the widget. Destroy-notify rules as for siv_on.", &.{
         .{ .name = "type", .type = ref("siv_event_type"), .doc = "The event type." },
         .{ .name = "callback", .type = ref("siv_event_fn"), .doc = "The handler, or NULL." },
         .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data; may be NULL." },
@@ -1535,10 +1546,10 @@ pub const functions = [_]Function{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
         .{ .name = "rtl", .type = out(.bool), .doc = "Right to left." },
     }),
-    call("siv_emit", "Sends an event to a node's handlers as siv sends input: the siv_on handler, then, unless it returned true, the siv_on_default handler. It does not bubble. This is how widgets report their own events (change, select). Not from a canvas callback (SIV_ERROR_BUSY).", &.{
+    call("siv_emit", "Sends an event to a node's handlers as siv sends input: the siv_on handler, then, unless it returned handled or prevent, the siv_on_default handler. It does not bubble. This is how widgets report their own events (change, select). Not from a canvas callback (SIV_ERROR_BUSY).", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
         .{ .name = "event", .type = .{ .desc = "siv_event" }, .doc = "The event; window is filled in." },
-        .{ .name = "handled", .type = out(.bool), .doc = "Whether a handler returned true." },
+        .{ .name = "handled", .type = out(.bool), .doc = "Whether a handler returned anything but pass." },
     }),
     // Theming (D29).
     call("siv_app_set_theme", "Chooses the theme's scheme and contrast instead of following the desktop. Every window repaints if its colors change.", &.{

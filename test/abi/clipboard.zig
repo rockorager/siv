@@ -119,14 +119,14 @@ const plain = "/tmp/a b\n/tmp/c";
 const Copier = struct {
     result: t.Result = .error_busy,
 
-    fn onKey(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) bool {
+    fn onKey(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
         const s: *Copier = @ptrCast(@alignCast(ud.?));
-        if (!ev.?.flags.pressed) return false;
+        if (!ev.?.flags.pressed) return .pass;
         const mimes = "text/uri-list\ntext/plain;charset=utf-8";
         const data = uris ++ plain;
         const lengths = [_]usize{ uris.len, plain.len };
         s.result = capi.siv_clipboard_write_data(ev.?.window, .clipboard, &.{ .mimes = mimes, .mimes_len = mimes.len, .data = data, .data_count = data.len, .lengths = &lengths, .lengths_count = 2 });
-        return true;
+        return .handled;
     }
 };
 

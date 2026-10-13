@@ -74,19 +74,19 @@ const Model = struct {
         }
     }
 
-    fn onSelect(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) bool {
+    fn onSelect(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
         const m: *Model = @ptrCast(@alignCast(ud.?));
         m.selects += 1;
         m.index = ev.?.index;
         m.selected = ev.?.count;
-        return true;
+        return .handled;
     }
 
-    fn onActivate(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) bool {
+    fn onActivate(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
         const m: *Model = @ptrCast(@alignCast(ud.?));
         m.activations += 1;
         m.index = ev.?.index;
-        return true;
+        return .handled;
     }
 
     fn destroy(ud: ?*anyopaque) callconv(.c) void {
@@ -401,12 +401,12 @@ const Targets = struct {
     key_target: t.Node = .null,
     keys: u32 = 0,
 
-    fn onKey(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) bool {
+    fn onKey(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
         const s: *Targets = @ptrCast(@alignCast(ud.?));
-        if (!ev.?.flags.pressed) return false;
+        if (!ev.?.flags.pressed) return .pass;
         s.key_target = ev.?.target;
         s.keys += 1;
-        return false;
+        return .pass;
     }
 };
 
@@ -746,19 +746,19 @@ const Sorter = struct {
     widths: u32 = 0,
     width: f64 = 0,
 
-    fn onSort(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) bool {
+    fn onSort(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
         const s: *Sorter = @ptrCast(@alignCast(ud.?));
         s.sorts += 1;
         s.column = ev.?.index;
         s.value = ev.?.value;
-        return s.accept[ev.?.index];
+        return if (s.accept[ev.?.index]) .handled else .pass;
     }
 
-    fn onWidth(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) bool {
+    fn onWidth(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
         const s: *Sorter = @ptrCast(@alignCast(ud.?));
         s.widths += 1;
         s.width = ev.?.value;
-        return true;
+        return .handled;
     }
 };
 

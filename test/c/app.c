@@ -93,11 +93,11 @@ static void *post_from_thread(void *arg) {
 	return NULL;
 }
 
-static bool on_activate(void *user_data, siv_node node, const siv_event *event) {
+static siv_event_result on_activate(void *user_data, siv_node node, const siv_event *event) {
 	(void)user_data;
 	(void)node;
 	(void)event;
-	return true;
+	return SIV_EVENT_RESULT_HANDLED;
 }
 
 struct window_log {

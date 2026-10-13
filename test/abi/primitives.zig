@@ -45,18 +45,18 @@ const Calls = struct {
         cs.n += 1;
     }
 
-    fn app(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) bool {
+    fn app(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
         const cs: *Calls = @ptrCast(@alignCast(ud.?));
         cs.add('a');
         cs.value = ev.?.value;
-        return cs.app_returns;
+        return if (cs.app_returns) .handled else .pass;
     }
 
-    fn default(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) bool {
+    fn default(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
         const cs: *Calls = @ptrCast(@alignCast(ud.?));
         cs.add('d');
         cs.value = ev.?.value;
-        return true;
+        return .handled;
     }
 };
 
@@ -119,6 +119,83 @@ test "default handlers make a node activatable for input" {
     try h.typeKey(0xff0d, "", .{});
     try h.settle();
     try testing.expectEqualStrings("d", calls.order[0..calls.n]);
+}
+
+const Keys = struct {
+    inner: t.EventResult = .pass,
+    root_keys: u32 = 0,
+    root_prevented: bool = false,
+
+    fn onInner(ud: ?*anyopaque, _: t.Node, _: ?*const t.Event) callconv(.c) t.EventResult {
+        const k: *Keys = @ptrCast(@alignCast(ud.?));
+        return k.inner;
+    }
+
+    fn onRoot(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
+        const k: *Keys = @ptrCast(@alignCast(ud.?));
+        if (!ev.?.flags.pressed) return .pass;
+        k.root_keys += 1;
+        k.root_prevented = ev.?.flags.prevented;
+        return .pass;
+    }
+};
+
+test "handlers stop bubbling and prevent the default action separately" {
+    var h: Harness = .{};
+    try h.start(100, 100, null, null);
+    defer h.stop();
+    var keys: Keys = .{};
+    var txn: t.Txn = .null;
+    const root = c.siv_window_root(h.window);
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const box = c.siv_box(txn, root);
+    const editor = c.siv_editor(txn, box, .{});
+    try ok(c.siv_on(txn, root, .key, Keys.onRoot, null, &keys));
+    try ok(c.siv_on(txn, box, .key, Keys.onInner, null, &keys));
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    var focus: t.Node = .null;
+    try ok(c.siv_window_get_focus(h.window, &focus));
+    try testing.expectEqual(t.Node.null, focus);
+    try ok(c.siv_node_focus(editor));
+    try ok(c.siv_window_get_focus(h.window, &focus));
+    try testing.expectEqual(editor, focus);
+
+    var buf: [16]u8 = undefined;
+    var len: usize = 0;
+    // Stop: the root never sees the key, the editor still types it.
+    keys.inner = .stop;
+    try h.typeKey('a', "a", .{});
+    try h.settle();
+    try testing.expectEqual(0, keys.root_keys);
+    try ok(c.siv_node_get_text(editor, &buf, buf.len, &len));
+    try testing.expectEqualStrings("a", buf[0..len]);
+
+    // Prevent: the root sees it marked prevented, the editor does not type.
+    keys.inner = .prevent;
+    try h.typeKey('b', "b", .{});
+    try h.settle();
+    try testing.expectEqual(1, keys.root_keys);
+    try testing.expect(keys.root_prevented);
+    try ok(c.siv_node_get_text(editor, &buf, buf.len, &len));
+    try testing.expectEqualStrings("a", buf[0..len]);
+
+    // Pass: both.
+    keys.inner = .pass;
+    try h.typeKey('c', "c", .{});
+    try h.settle();
+    try testing.expectEqual(2, keys.root_keys);
+    try testing.expect(!keys.root_prevented);
+    try ok(c.siv_node_get_text(editor, &buf, buf.len, &len));
+    try testing.expectEqualStrings("ac", buf[0..len]);
+
+    // Handled: neither.
+    keys.inner = .handled;
+    try h.typeKey('d', "d", .{});
+    try h.settle();
+    try testing.expectEqual(2, keys.root_keys);
+    try ok(c.siv_node_get_text(editor, &buf, buf.len, &len));
+    try testing.expectEqualStrings("ac", buf[0..len]);
 }
 
 test "node data lives with its node and goes with an aborted transaction" {

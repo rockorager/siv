@@ -207,7 +207,10 @@ fn writeFunType(w: *Writer, s: Schema, cb: schema.Callback) !void {
     switch (cb.ret) {
         .void => {},
         .bool => try w.writeAll(": boolean?"),
-        .ref => |r| try w.print(": siv.{s}.value|number, number?", .{m.stem(s, r)}),
+        .ref => |r| if (s.get(r) == .@"enum")
+            try w.print(": siv.{s}|boolean?", .{m.stem(s, r)})
+        else
+            try w.print(": siv.{s}.value|number, number?", .{m.stem(s, r)}),
         else => {
             try w.writeAll(": ");
             try writeType(w, s, cb.ret, .output);

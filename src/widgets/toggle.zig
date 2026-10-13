@@ -158,25 +158,25 @@ pub fn setValue(txn: Txn, st: *Toggle, v: f64) void {
     apply(txn, st);
 }
 
-fn onPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const st: *Toggle = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
     if (button.feedback(&st.hdr, e)) {
-        const txn = w.begin(e.window) orelse return false;
+        const txn = w.begin(e.window) orelse return .pass;
         apply(txn, st);
         _ = w.commit(txn);
     }
-    return false;
+    return .pass;
 }
 
 /// Flips the state; mixed becomes on.
-fn onActivate(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onActivate(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const st: *Toggle = @ptrCast(@alignCast(ud.?));
-    if (st.hdr.disabled) return false;
-    const txn = w.begin(ev.?.window) orelse return false;
+    if (st.hdr.disabled) return .pass;
+    const txn = w.begin(ev.?.window) orelse return .pass;
     st.state = if (st.state == .on) .off else .on;
     apply(txn, st);
-    if (!w.commit(txn)) return true;
+    if (!w.commit(txn)) return .handled;
     w.emitChange(node, value(st), 0);
-    return true;
+    return .handled;
 }

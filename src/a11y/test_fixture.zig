@@ -36,10 +36,10 @@ pub fn deinit(f: *Fixture) void {
     f.fonts.deinit();
 }
 
-fn onActivate(user: ?*anyopaque, _: *ui.Window, _: NodeId, ev: *const ui.Event) bool {
+fn onActivate(user: ?*anyopaque, _: *ui.Window, _: NodeId, ev: *const ui.Event) ui.HandlerResult {
     const self: *Fixture = @ptrCast(@alignCast(user));
     if (ev.* == .activate) self.clicks += 1;
-    return true;
+    return .handled;
 }
 
 fn buildTree(f: *Fixture) !void {

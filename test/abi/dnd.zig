@@ -30,7 +30,7 @@ const Rec = struct {
     start: ?*const t.DragDesc = null,
     start_result: t.Result = .ok,
 
-    fn onEvent(user: ?*anyopaque, node: t.Node, ev: ?*const t.Event) callconv(.c) bool {
+    fn onEvent(user: ?*anyopaque, node: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
         const r: *Rec = @ptrCast(@alignCast(user));
         const e = ev.?;
         switch (e.type) {
@@ -46,7 +46,7 @@ const Rec = struct {
                     @memcpy(r.mime[0..e.mime_len], e.mime.?[0..e.mime_len]);
                     r.mime_len = e.mime_len;
                 }
-                return true;
+                return .handled;
             },
             .pointer => {
                 if (e.phase == .down or e.phase == .up or e.phase == .cancel) r.pressed = e.phase == .down;
@@ -54,9 +54,9 @@ const Rec = struct {
                     r.start = null;
                     r.start_result = D.siv_drag_start(node, d);
                 };
-                return false;
+                return .pass;
             },
-            else => return false,
+            else => return .pass,
         }
     }
 };

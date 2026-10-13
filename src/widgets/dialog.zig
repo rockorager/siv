@@ -77,33 +77,33 @@ fn askClose(root: Node) void {
     _ = c.siv_emit(root, &.{ .type = .close }, &handled);
 }
 
-fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const st: *Dialog = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
-    if (!e.flags.pressed or e.keysym != w.keysym.escape) return false;
+    if (!e.flags.pressed or e.keysym != w.keysym.escape) return .pass;
     askClose(st.root);
-    return true;
+    return .handled;
 }
 
 /// A press on the scrim, outside the card, asks to close.
-fn onPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const st: *Dialog = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
-    if (e.phase != .down or e.button != .primary) return false;
+    if (e.phase != .down or e.button != .primary) return .pass;
     var root: siv.Rect = undefined;
     var card: siv.Rect = undefined;
-    if (c.siv_node_get_rect(st.root, &root) != .ok or c.siv_node_get_rect(st.card, &card) != .ok) return false;
+    if (c.siv_node_get_rect(st.root, &root) != .ok or c.siv_node_get_rect(st.card, &card) != .ok) return .pass;
     const x = root.x + e.x;
     const y = root.y + e.y;
-    if (x >= card.x and x < card.x + card.width and y >= card.y and y < card.y + card.height) return false;
+    if (x >= card.x and x < card.x + card.width and y >= card.y and y < card.y + card.height) return .pass;
     askClose(st.root);
-    return true;
+    return .handled;
 }
 
-fn onClose(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onClose(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     _ = ud;
-    const txn = w.begin(ev.?.window) orelse return false;
+    const txn = w.begin(ev.?.window) orelse return .pass;
     _ = c.siv_remove(txn, node);
     _ = w.commit(txn);
-    return true;
+    return .handled;
 }

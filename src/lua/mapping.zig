@@ -16,6 +16,9 @@
 //!   a coroutine when no function is given.
 //! - Descriptors are tables; value structs are tables with named or
 //!   positional fields.
+//! - A Lua function returning an enum to a callback returns its name, an
+//!   integer, or a boolean (true for 1, false or nil for 0), so an event
+//!   handler returns true for handled, "stop", or "prevent".
 
 const std = @import("std");
 /// src/abi/api.zig, or the abi module that holds it when the binding is

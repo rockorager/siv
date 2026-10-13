@@ -68,10 +68,10 @@ pub export fn siv_split_pane(txn: Txn, parent: Node, desc: ?*const siv.SplitDesc
 
 /// The largest position depends on layout: it is exposed again when the
 /// divider gains focus, as well as whenever it moves.
-fn onFocus(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onFocus(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const st: *Split = @ptrCast(@alignCast(ud.?));
     if (ev.?.flags.gained) restyle(st, ev.?.window);
-    return false;
+    return .pass;
 }
 
 /// The largest position the panes allow, from the last layout.
@@ -145,10 +145,10 @@ fn restyle(st: *Split, window: siv.Window) void {
 
 /// Dragging moves the divider with the pointer: `grab` is where in the
 /// divider it was pressed, so the divider stays under it.
-fn onPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const st: *Split = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
-    if (st.hdr.disabled) return false;
+    if (st.hdr.disabled) return .pass;
     const along = if (st.vertical) e.y else e.x;
     switch (e.phase) {
         .down => if (e.button == .primary) {
@@ -161,7 +161,7 @@ fn onPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool 
             // arriving before the next frame do not add up twice.
             var root: siv.Rect = undefined;
             var div: siv.Rect = undefined;
-            if (c.siv_node_get_rect(st.root, &root) != .ok or c.siv_node_get_rect(st.divider, &div) != .ok) return false;
+            if (c.siv_node_get_rect(st.root, &root) != .ok or c.siv_node_get_rect(st.divider, &div) != .ok) return .pass;
             const pos: f64 = if (st.vertical)
                 div.y + e.y - st.grab - root.y
             else if (w.isRtl(st.root))
@@ -180,32 +180,32 @@ fn onPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool 
         },
         else => {},
     }
-    return false;
+    return .pass;
 }
 
-fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const st: *Split = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
-    if (st.hdr.disabled or !e.flags.pressed) return false;
+    if (st.hdr.disabled or !e.flags.pressed) return .pass;
     const k = w.keysym;
     const rtl = !st.vertical and w.isRtl(st.root);
     const step: f64 = key_step;
     const target: f64 = switch (e.keysym) {
-        k.left => if (st.vertical) return false else if (rtl) st.position + step else st.position - step,
-        k.right => if (st.vertical) return false else if (rtl) st.position - step else st.position + step,
-        k.up => if (!st.vertical) return false else st.position - step,
-        k.down => if (!st.vertical) return false else st.position + step,
+        k.left => if (st.vertical) return .pass else if (rtl) st.position + step else st.position - step,
+        k.right => if (st.vertical) return .pass else if (rtl) st.position - step else st.position + step,
+        k.up => if (!st.vertical) return .pass else st.position - step,
+        k.down => if (!st.vertical) return .pass else st.position + step,
         k.home => st.min_start,
         k.end => maxPosition(st),
-        else => return false,
+        else => return .pass,
     };
     userSet(st, e.window, target);
-    return true;
+    return .handled;
 }
 
-fn onSetValue(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onSetValue(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const st: *Split = @ptrCast(@alignCast(ud.?));
-    if (st.hdr.disabled) return false;
+    if (st.hdr.disabled) return .pass;
     userSet(st, ev.?.window, ev.?.value);
-    return true;
+    return .handled;
 }

@@ -69,6 +69,7 @@ pub const External = node.External;
 pub const Event = node.Event;
 pub const HandlerKind = node.HandlerKind;
 pub const Handler = node.Handler;
+pub const HandlerResult = node.Result;
 pub const Pointer = node.Pointer;
 pub const Key = node.Key;
 pub const CursorShape = node.CursorShape;

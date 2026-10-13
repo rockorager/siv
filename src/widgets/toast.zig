@@ -66,16 +66,16 @@ fn onTimeout(ud: ?*anyopaque) callconv(.c) void {
 }
 
 /// Fades out, then the removal timer takes it away.
-fn onClose(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) bool {
+fn onClose(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const st: *Toast = @ptrCast(@alignCast(ud.?));
-    if (st.closing) return true;
-    const txn = w.begin(ev.?.window) orelse return false;
+    if (st.closing) return .handled;
+    const txn = w.begin(ev.?.window) orelse return .pass;
     st.closing = true;
     _ = c.siv_set_opacity(txn, node, 0);
-    if (!w.commit(txn)) return false;
+    if (!w.commit(txn)) return .pass;
     var timer: siv.Timer = .null;
     _ = c.siv_timer_start(w.appOf(ev.?.window), tk.motion_ms, onRemove, null, w.handleData(node), &timer);
-    return true;
+    return .handled;
 }
 
 fn onRemove(ud: ?*anyopaque) callconv(.c) void {

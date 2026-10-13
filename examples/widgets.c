@@ -19,38 +19,38 @@ struct form {
 
 /* Every widget with a value reports it in event->value; choices also put
  * the chosen index in event->index. */
-static bool on_volume(void *user_data, siv_node node, const siv_event *event) {
+static siv_event_result on_volume(void *user_data, siv_node node, const siv_event *event) {
 	(void)node;
 	struct form *f = user_data;
 	char text[32];
 	int len = snprintf(text, sizeof text, "Volume: %.0f", event->value);
 	siv_txn txn;
-	if (siv_txn_begin(event->window, &txn) != SIV_OK) return false;
+	if (siv_txn_begin(event->window, &txn) != SIV_OK) return SIV_EVENT_RESULT_PASS;
 	siv_set_text(txn, f->volume_label, text, (size_t)len);
 	/* Setting a value from the application does not report a change. */
 	siv_widget_set_value(txn, f->progress, event->value);
 	return siv_txn_commit(txn) == SIV_OK;
 }
 
-static bool on_change(void *user_data, siv_node node, const siv_event *event) {
+static siv_event_result on_change(void *user_data, siv_node node, const siv_event *event) {
 	(void)node;
 	printf("%s: %g (index %u)\n", (const char *)user_data, event->value, event->index);
-	return true;
+	return SIV_EVENT_RESULT_HANDLED;
 }
 
-static bool on_dark(void *user_data, siv_node node, const siv_event *event) {
+static siv_event_result on_dark(void *user_data, siv_node node, const siv_event *event) {
 	(void)node;
 	siv_app app = *(siv_app *)user_data;
 	/* The theme follows the desktop unless the application chooses. */
 	return siv_app_set_theme(app, SIV_DESC(siv_theme_desc, .scheme = event->value != 0 ? SIV_COLOR_SCHEME_DARK : SIV_COLOR_SCHEME_FOLLOW)) == SIV_OK;
 }
 
-static bool on_save(void *user_data, siv_node node, const siv_event *event) {
+static siv_event_result on_save(void *user_data, siv_node node, const siv_event *event) {
 	(void)user_data;
 	(void)node;
 	(void)event;
 	puts("saved");
-	return true;
+	return SIV_EVENT_RESULT_HANDLED;
 }
 
 int main(void) {
