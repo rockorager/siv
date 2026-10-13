@@ -269,9 +269,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 
   ```c
   siv_txn *t = siv_txn_begin(win);
-  siv_node row = siv_flex(t, root, &(siv_flex_desc){ .axis = SIV_ROW, .gap = 8 });
+  siv_node row = siv_flex(t, root, SIV_DESC(siv_flex_desc, .axis = SIV_AXIS_ROW, .gap = 8));
   siv_text(t, row, "Hello", 5);
-  siv_on(t, button, SIV_ACTIVATE, on_click, user);
+  siv_on(t, button, SIV_EVENT_TYPE_ACTIVATE, on_click, NULL, user);
   siv_txn_commit(t);
   ```
   - The tree lives in `src/ui` (`Window`), one per window. Operations apply
@@ -288,8 +288,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Derived state (dirty flags, layout caches, layer assignment) is kept
     outside the copies; an abort can leave extra dirty flags, never
     missing ones.
-  - External surfaces are in the closed set but not built yet; creating
-    one fails with `Unsupported`.
+  - External nodes, the last of the closed set, are built (D17, D27):
+    `siv_external_view` over a slot of shared-memory or dma-buf frames,
+    or a `wl_surface` the embedder renders into.
   - At the C ABI (`src/abi/tree.zig`), builders (`siv_flex`, `siv_text`,
     ...) return the new node's handle directly, as in the example above,
     and errors are sticky: the first operation that fails records its
@@ -1049,7 +1050,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     feedback (Vulkan), and a wheel-to-photon median within two refreshes
     plus 2 ms.
   - Applications see presentation too: each window reports
-    `SIV_WINDOW_EVENT_PRESENTED` when a frame with everything committed
+    `SIV_WINDOW_EVENT_TYPE_PRESENTED` when a frame with everything committed
     so far reaches the display server, with the commit count it shows,
     the predicted presentation time, and the commit time (CLOCK_MONOTONIC).
     It rides on the compositor's existing "presented" message, so it
@@ -1800,13 +1801,20 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
         replaced frame stays in use until sway runs again and releases
         it. A translucent placement composites through the Vulkan
         renderer's explicit-modifier import there too.
-    - Not yet: external nodes in the C API.
+    - External nodes are in the C API (D27): `siv_external_view` over
+      `siv_external_create` and `siv_external_create_surface` slots.
   - Fractional scale, preferred buffer scale, output hotplug, `xdg-activation`,
     idle inhibit, `xdg-dialog`, toplevel icons, and session restore.
-    - Built: xdg-foreign-v2 exports of toplevels (portal dialog parents,
-      D19) and xdg-activation-v1 tokens and activation. Sway marks an
+    - Built: fractional scale (`wp_fractional_scale_v1` with
+      `wp_viewporter`), else `wl_surface`'s preferred buffer scale, else
+      the scale of the outputs a window is on, with outputs added and
+      removed as the compositor announces them (`src/platform/Wayland.zig`);
+      xdg-foreign-v2 exports of toplevels (portal dialog parents, D19);
+      and xdg-activation-v1 tokens and activation. Sway marks an
       activated window urgent unless `focus_on_window_activation focus`;
       the integration test sets it.
+    - Not built yet: idle inhibit through the protocol (the portal's
+      Inhibit is, D19), `xdg-dialog`, toplevel icons, and session restore.
 
 ### D18. Accessibility
 
@@ -3302,6 +3310,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   client, and portals against xdg-desktop-portal with a backend of siv's
   own behind it; the hermetic D-Bus, AT-SPI, and portal tests use an
   in-process test bus over socketpairs.
+  - Not built yet: the inspector. The counters it would show exist
+    (`ui.Window`'s, the compositor's presentation timing), and tests and
+    benchmarks read them.
 
 ### D25. Project
 
@@ -3359,9 +3370,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   Fuzz targets are `std.testing.fuzz` tests, so `zig build test` runs their
   corpus and `zig build test-<module> --fuzz -Doptimize=ReleaseSafe` fuzzes
   them (Zig 0.17's fuzzer finds no coverage in Debug builds).
-- **Budgets enforced in CI:** first frame under 20 ms, input-to-photon within one
+- **Budgets:** first frame under 20 ms, input-to-photon within one
   frame, 120 Hz scrolling through a 100k-row virtual list, zero idle CPU and
-  wakeups, fixed memory per window.
+  wakeups, fixed memory per window. Not built yet: CI to enforce them.
+  Today the `bench-*` steps measure them on demand (`bench-pacing` checks
+  D12's thresholds and fails past them).
 
 ### D26. Layout
 
@@ -3675,6 +3688,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | `siv_node_emit` | `siv_emit` | calls on a node outside a transaction are `siv_node_*` (Lua `node:emit` as before) |
   | `siv_pointer_button`, `SIV_POINTER_BUTTON_*` | `siv_button`, `SIV_BUTTON_*` | `siv_button_desc` and `siv_button_style` are the push button widget's; the event field is still `button` |
   | reserved fields in `siv_text_span`, `siv_paragraph_span`, `siv_tab_stop`, `siv_text_metrics` (D2) | — | frozen value structs that will plausibly grow; descriptors grow by appending |
+
+  Statements this document made that were no longer true are fixed where
+  they stood: external nodes are built and in the C API (D4, D17);
+  fractional and preferred buffer scale and output hotplug are built
+  (D17); the inspector and CI are not (D24, D25); D4's example used
+  constants and a `siv_on` signature that no longer exist, D22 called
+  `siv_push_button` `siv_button`, and D12 and the file manager's log
+  misspelled `SIV_WINDOW_EVENT_TYPE_PRESENTED`.
 - **Reverse if:** a binding cannot express one of these without special
   cases; then the schema needs a construct, not an exception.
 

@@ -174,7 +174,7 @@ Measurements are in [Numbers](#numbers) at the end.
     knowing that a change reached the screen, is impossible from the
     public API: windows report close, resize, scale, and states only. The
     benchmark and tests read siv's internals (`presented_seq`).
-    *Fixed:* `SIV_WINDOW_EVENT_PRESENTED` with the commit count shown, the
+    *Fixed:* `SIV_WINDOW_EVENT_TYPE_PRESENTED` with the commit count shown, the
     predicted presentation time, and the commit time (commit "abi, app:
     report presented frames to applications", D12). The app records its
     first frame and its first frame with rows from it, and the benchmark
@@ -324,7 +324,7 @@ above. What is left is noted below.
 
 `zig build bench-files -Doptimize=ReleaseFast` on this orb (x86-64,
 headless backend, CPU renderer), October 2026. Frame times come from the
-app's `SIV_WINDOW_EVENT_PRESENTED` events (commit time of the first
+app's `SIV_WINDOW_EVENT_TYPE_PRESENTED` events (commit time of the first
 presented frame, and of the first presented after the listing arrived);
 the first round read siv's internals and waited for the window to settle.
 
