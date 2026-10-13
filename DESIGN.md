@@ -355,7 +355,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     D6); the loop's wrapper posts each completion to the loop, so `done` runs
     in the dispatch phase. A job is compute work or blocking work, which
     run on separate threads (D6); either way its completion is a safe
-    point.
+    point. Pool threads come and go (started for a burst of jobs, gone
+    after 5 s idle, D6), so nothing may rely on a job running on a
+    particular or long-lived thread: thread-local state does not survive
+    between jobs.
   - Destroying the application never runs pending posted closures or worker
     completions, since teardown has begun; it calls their destroy-notify (or
     a job's cancel function) so they can release what they own.
@@ -376,7 +379,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     written when work is scheduled for a phase that already ran), so an
     embedder only needs to poll it and call `siv_app_dispatch(0)`. An idle
     loop with no armed timers blocks indefinitely.
-  - Worker threads start on demand up to a limit and block when idle.
+  - Worker threads start on demand up to a limit, block when idle, and
+    exit after 5 s without work (`Pool.idle_timeout_ns`), in both lanes
+    below. A burst (an icon theme read at startup filled the blocking
+    lane's 8 threads; a fork-join starts a compute worker per CPU) left
+    an idle window with 27 threads, 7 after the timeout (the UI and
+    compositor threads, and Mesa's shader cache threads). Starting one
+    again costs tens of microseconds, once per burst.
   - One worker pool per application, shared by file I/O, decode, and raster
     tiles, so the loop and the renderer never oversubscribe the CPU. It has
     two modes on the same threads and queue: async jobs (completions

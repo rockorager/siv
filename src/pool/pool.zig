@@ -13,8 +13,10 @@
 //!   nothing is allocated or queued per item.
 //!
 //! Threads start on demand, up to `max_threads`, and idle workers block on a
-//! condition variable, so an idle pool costs nothing. Jobs are intrusive and
-//! submitting one does not allocate.
+//! condition variable, so an idle pool costs nothing; a worker idle for
+//! `idle_timeout_ns` exits, so an application that has gone quiet carries
+//! no pool threads. Jobs are intrusive and submitting one does not
+//! allocate.
 //!
 //! Jobs have a class. Compute jobs (decoding, tiles, the default) run on
 //! those workers, highest `priority` first and in submission order within a
@@ -33,6 +35,8 @@ pub const Pool = struct {
     allocator: Allocator,
     max_threads: u32,
     max_blocking: u32 = default_max_blocking,
+    /// How long a worker waits for work before it exits.
+    idle_timeout_ns: u64 = default_idle_timeout_ns,
 
     mutex: c.pthread_mutex_t = .{},
     stopping: bool = false,
@@ -53,6 +57,11 @@ pub const Pool = struct {
     /// Blocking jobs that may run at once. They mostly wait, so the lane
     /// may be wider than the CPU.
     pub const default_max_blocking = 8;
+
+    /// A blocking lane widened by a burst of reads (8 threads at startup
+    /// for an icon theme) or the compute workers a fork-join started stay
+    /// this long after their last job.
+    pub const default_idle_timeout_ns = 5 * std.time.ns_per_s;
 
     /// One queue and its threads: compute or blocking.
     const Lane = struct {
@@ -252,12 +261,27 @@ pub const Pool = struct {
     fn worker(pool: *Pool, lane: *Lane) void {
         pool.lock();
         while (true) {
-            while (lane.head == null and !pool.stopping) {
+            var deadline = std.mem.zeroes(c.timespec);
+            _ = c.clock_gettime(.REALTIME, &deadline);
+            const add = pool.idle_timeout_ns;
+            const nsec: u64 = @as(u64, @intCast(deadline.nsec)) + add % std.time.ns_per_s;
+            deadline.sec += @intCast(add / std.time.ns_per_s + nsec / std.time.ns_per_s);
+            deadline.nsec = @intCast(nsec % std.time.ns_per_s);
+            var timed_out = false;
+            while (lane.head == null and !pool.stopping and !timed_out) {
                 lane.idle += 1;
-                _ = c.pthread_cond_wait(&lane.cond, &pool.mutex);
+                const rc = c.pthread_cond_timedwait(&lane.cond, &pool.mutex, &deadline);
                 lane.idle -= 1;
+                timed_out = rc == .TIMEDOUT;
             }
             if (pool.stopping) break;
+            if (lane.head == null) {
+                // Idle for the timeout: leave the pool. `deinit` joins
+                // only the threads still in `threads`.
+                pool.retireLocked(lane);
+                pool.unlock();
+                return;
+            }
             const job = lane.head.?;
             lane.head = job.next;
             if (lane.head == null) lane.tail = null;
@@ -275,6 +299,18 @@ pub const Pool = struct {
             pool.lock();
         }
         pool.unlock();
+    }
+
+    /// Takes the calling worker out of the pool and detaches it.
+    fn retireLocked(pool: *Pool, lane: *Lane) void {
+        lane.threads -= 1;
+        const self = c.pthread_self();
+        for (pool.threads.items, 0..) |t, i| {
+            if (t.impl.handle != self) continue;
+            _ = pool.threads.swapRemove(i);
+            t.detach();
+            return;
+        }
     }
 
     fn lock(pool: *Pool) void {
@@ -582,4 +618,40 @@ test "blocking jobs never take the compute workers" {
     try testing.expectEqual(@as(u32, 1), pool.lanes[0].threads);
     open.store(true, .release);
     for (&slow) |*g| while (!g.done.load(.acquire)) std.atomic.spinLoopHint();
+}
+
+test "idle workers leave after the timeout, and new work starts new ones" {
+    var pool = Pool.init(testing.allocator, 2);
+    pool.idle_timeout_ns = 30 * std.time.ns_per_ms;
+    defer pool.deinit();
+    const Flag = struct {
+        job: Job = .{ .run = run, .complete = complete },
+        done: std.atomic.Value(bool) = .init(false),
+        fn run(_: *Job) void {}
+        fn complete(job: *Job) void {
+            const f: *@This() = @fieldParentPtr("job", job);
+            f.done.store(true, .release);
+        }
+    };
+    for (0..2) |round| {
+        var jobs = [_]Flag{ .{}, .{}, .{} };
+        jobs[0].job.class = .blocking;
+        jobs[1].job.class = .blocking;
+        for (&jobs) |*f| try pool.submit(&f.job);
+        for (&jobs) |*f| while (!f.done.load(.acquire)) std.atomic.spinLoopHint();
+        try testing.expect(pool.lanes[0].threads + pool.lanes[1].threads > 0);
+        // Quiet for longer than the timeout: no threads left.
+        var waited: u32 = 0;
+        while (waited < 200) : (waited += 1) {
+            pool.lock();
+            const left = pool.threads.items.len;
+            pool.unlock();
+            if (left == 0) break;
+            var ts: c.timespec = .{ .sec = 0, .nsec = 5 * std.time.ns_per_ms };
+            _ = c.nanosleep(&ts, null);
+        }
+        try testing.expectEqual(@as(u32, 0), pool.lanes[0].threads + pool.lanes[1].threads);
+        try testing.expectEqual(@as(usize, 0), pool.threads.items.len);
+        _ = round;
+    }
 }
