@@ -41,6 +41,12 @@ pub const Sway = struct {
         s.pid = try spawn(exe, &argv, &env.ptrs, log);
         errdefer s.stop();
 
+        // Clients in this process that look for a session the usual way
+        // (Mesa's Vulkan device-select layer connects to the default
+        // display) find a valid runtime directory without a default
+        // display in it, rather than libwayland logging that
+        // XDG_RUNTIME_DIR is not set.
+        _ = setenv("XDG_RUNTIME_DIR", s.dir, 1);
         s.display = try std.fmt.bufPrintSentinel(&s.display_buf, "{s}/wayland-1", .{s.dir}, 0);
         var waited: u32 = 0;
         while (linux.access(s.display, 0) != 0) : (waited += 1) {
@@ -129,6 +135,8 @@ pub const Sway = struct {
         if (status != 0) return error.ClientFailed;
     }
 };
+
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
 /// Environment for children: a headless wlroots in the private directory.
 const Env = struct {
