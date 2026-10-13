@@ -301,7 +301,7 @@ const tile_encode: u8 = 2;
 pub const Renderer = struct {
     gpa: std.mem.Allocator,
     executor: Executor,
-    luts: color.Luts,
+    luts: *const color.Luts,
     contrast: glyph.ContrastLuts,
     glyphs: glyph.Cache,
     workers: []Worker,
@@ -347,13 +347,12 @@ pub const Renderer = struct {
         r.* = .{
             .gpa = gpa,
             .executor = executor,
-            .luts = undefined,
+            .luts = color.Luts.shared(),
             .contrast = undefined,
             .glyphs = .init(gpa),
             .workers = workers,
             .path = .init(gpa),
         };
-        r.luts.init();
         r.contrast.init();
         return r;
     }
@@ -1164,7 +1163,7 @@ pub const Renderer = struct {
         while (y < tile.y1) : (y += 1) {
             const src = r.framebuffer[@as(usize, @intCast(y)) * r.width + @as(usize, @intCast(tile.x0)) ..][0..@intCast(tile.width())];
             const out = t.pixels[@as(usize, @intCast(y)) * t.stride + @as(usize, @intCast(tile.x0)) * bpp ..][0 .. src.len * bpp];
-            color.encodeRow(&r.luts, t.format, src, tile.x0, y, out);
+            color.encodeRow(r.luts, t.format, src, tile.x0, y, out);
         }
     }
 
@@ -1314,7 +1313,7 @@ pub const Renderer = struct {
                 },
                 else => {
                     const shade = w.shade[0..width];
-                    paint_mod.shadeRow(&d.paint, &r.luts, x0, y, shade);
+                    paint_mod.shadeRow(&d.paint, r.luts, x0, y, shade);
                     for (dst, cov, shade) |*px, c, s| {
                         if (c == 255 and s[3] == 65535) {
                             px.* = s;
@@ -1338,7 +1337,7 @@ pub const Renderer = struct {
                 },
                 else => {
                     const shade = w.shade[0..width];
-                    paint_mod.shadeRow(paint, &r.luts, region.x0, y, shade);
+                    paint_mod.shadeRow(paint, r.luts, region.x0, y, shade);
                     for (dst, shade) |*px, s| {
                         if (s[3] == 65535) px.* = s else blend.srcOver(px, s, 65535);
                     }
@@ -1366,7 +1365,7 @@ pub const Renderer = struct {
                 switch (e.kind) {
                     .mask => {
                         const src = r.glyphs.maskRow(e, gy)[gx..][0..width];
-                        if (g.paint != .solid) paint_mod.shadeRow(&g.paint, &r.luts, c.x0, y, w.shade[0..width]);
+                        if (g.paint != .solid) paint_mod.shadeRow(&g.paint, r.luts, c.x0, y, w.shade[0..width]);
                         for (dst, src, 0..) |*px, a, xi| {
                             if (a == 0) continue;
                             var cov16: u32 = lut[a];

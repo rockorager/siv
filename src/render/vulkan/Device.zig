@@ -592,9 +592,7 @@ fn createShared(d: *Device) vk.Error!void {
     const contrast = try d.gpa.create(render_cpu.glyph.ContrastLuts);
     defer d.gpa.destroy(contrast);
     contrast.init();
-    const transfer = try d.gpa.create(render_cpu.Luts);
-    defer d.gpa.destroy(transfer);
-    transfer.init();
+    const transfer = render_cpu.Luts.shared();
     const levels = render_cpu.glyph.ContrastLuts.levels;
     const count = levels * 256 + 256 + 3 * 65536;
     d.luts = try Buffer.init(d, count * 4, c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);

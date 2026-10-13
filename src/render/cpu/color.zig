@@ -44,8 +44,8 @@ pub const Format = enum(u32) {
     }
 };
 
-/// Lookup tables for transfer functions. About 260 KiB; build once per
-/// renderer.
+/// Lookup tables for transfer functions, about 390 KiB, built once per
+/// process (`shared`).
 pub const Luts = struct {
     /// sRGB-encoded byte to linear u16.
     srgb8_to_linear: [256]u16,
@@ -69,7 +69,24 @@ pub const Luts = struct {
             v8.* = @intFromFloat(std.math.clamp(e, 0, 1) * 255 * 256 + 0.5);
         }
     }
+
+    /// The tables, built by the first caller and shared by every renderer
+    /// after: building them takes about 1.5 ms, which each small popup's
+    /// CPU renderer paid before its first frame.
+    pub fn shared() *const Luts {
+        if (shared_state.load(.acquire) != 2) {
+            if (shared_state.cmpxchgStrong(0, 1, .acquire, .acquire) == null) {
+                shared_luts.init();
+                shared_state.store(2, .release);
+            } else while (shared_state.load(.acquire) != 2) std.atomic.spinLoopHint();
+        }
+        return &shared_luts;
+    }
 };
+
+var shared_luts: Luts = undefined;
+/// 0: not built, 1: being built, 2: built.
+var shared_state: std.atomic.Value(u8) = .init(0);
 
 pub fn srgbToLinear(v: f32) f32 {
     if (v <= 0.04045) return v / 12.92;
