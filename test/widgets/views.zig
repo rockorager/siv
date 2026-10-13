@@ -1064,3 +1064,59 @@ test "table view: sortable and resizable columns by pointer, keyboard, and assis
     _ = c.siv_view_set_sort(t2, table, 7, .ascending);
     try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(t2));
 }
+
+test "table view: the focused row's ring shows whole inside the view, rows unchanged" {
+    var h: Harness = .{};
+    try h.start(320, 200, null, null);
+    defer h.stop();
+    var m: Model = .{ .columns = 2 };
+    const txn = try begin(h.window);
+    _ = c.siv_set_visual(txn, c.siv_window_get_root(h.window), &.{ .background_token = .window_bg });
+    const table = c.siv_table_view(txn, c.siv_window_get_root(h.window), &.{ .label = "People", .label_len = 6, .count = 1000, .selection = .single, .bind = Model.bind, .user_data = &m, .item_height = 28 });
+    _ = c.siv_table_column(txn, table, &.{ .title = "Name", .title_len = 4 });
+    _ = c.siv_table_column(txn, table, &.{ .title = "Size", .title_len = 4, .width = .{ .unit = .px, .value = 90 } });
+    try ok(c.siv_txn_commit(txn));
+    var settled = false;
+    try ok(c.siv_test_settle(h.app, 5000, &settled));
+    var found = false;
+    var before: t.TestNode = undefined;
+    try ok(c.siv_test_find(h.window, &.{ .role = .row, .name = "Item 0 Item 0", .name_len = 13 }, &found, &before));
+    try testing.expect(found);
+
+    // Tab to the header, Down to the first row: focus from the keyboard
+    // shows the ring.
+    try ok(c.siv_test_key(h.window, .tab, .{}, "", 0));
+    try ok(c.siv_test_key(h.window, .down, .{}, "", 0));
+    try ok(c.siv_test_settle(h.app, 5000, &settled));
+    try testing.expect(settled);
+    var row: t.TestNode = undefined;
+    try ok(c.siv_test_find(h.window, &.{ .flags = .{ .focused = true } }, &found, &row));
+    try testing.expect(found and row.role == .row);
+    try testing.expectEqual(before.bounds, row.bounds);
+
+    var len: usize = 0;
+    var w: u32 = 0;
+    var ht: u32 = 0;
+    try ok(c.siv_test_capture(h.window, null, 0, &len, &w, &ht));
+    const pixels = try testing.allocator.alloc(u8, len);
+    defer testing.allocator.free(pixels);
+    try ok(c.siv_test_capture(h.window, pixels.ptr, len, &len, &w, &ht));
+    const Px = struct {
+        // The light theme's focus ring, #2563eb.
+        fn isRing(px: []const u8, x: f32, y: f32, width: u32) bool {
+            const i = (@as(usize, @intFromFloat(y)) * width + @as(usize, @intFromFloat(x))) * 4;
+            const want = [3]u8{ 0x25, 0x63, 0xeb };
+            for (0..3) |k| if (@abs(@as(i32, px[i + k]) - want[k]) > 40) return false;
+            return true;
+        }
+    };
+    // Each side of the ring inside the row's box: the view clipped the
+    // ring drawn outside it at the start, end, and top.
+    const b = row.bounds;
+    const mid_x = b.x + b.width / 2;
+    const mid_y = b.y + b.height / 2;
+    try testing.expect(Px.isRing(pixels, b.x + 0.5, mid_y, w));
+    try testing.expect(Px.isRing(pixels, b.x + b.width - 1.5, mid_y, w));
+    try testing.expect(Px.isRing(pixels, mid_x, b.y + 0.5, w));
+    try testing.expect(Px.isRing(pixels, mid_x, b.y + b.height - 1.5, w) or Px.isRing(pixels, mid_x, b.y + b.height + 1.5, w));
+}

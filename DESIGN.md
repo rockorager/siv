@@ -1731,7 +1731,15 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Focus moved by the keyboard shows a ring drawn by the core (2 px,
     outside the node), so keyboard-only use works without widget code;
     focus from a pointer press shows none. Its color is the theme's
-    `focus_ring` (D29).
+    `focus_ring` (D29). Inside a scroll node the ring stays within the
+    content's extent (the content box, or the viewport where the content
+    is smaller), moving inside the node's box on the sides where it would
+    pass that edge, so the viewport's clip cannot cut it: a view row is
+    as wide as its viewport, and its ring lost its sides (and the first
+    row its top). Rows keep their layout; found by the user guide's tree
+    and table screenshots. Alternatives: insetting every row's ring
+    (rows in no scroll node would differ for nothing); padding the
+    viewport by the ring's width (changes every scroll node's layout).
   - Focus the application moves (`siv_node_focus`) follows the input
     modality, as CSS :focus-visible does: each window remembers whether
     its latest key press or pointer, touch, or tablet press came last,

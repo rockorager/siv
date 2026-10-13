@@ -941,11 +941,37 @@ fn drawNode(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point
     }
     if (win.input.focus == nid and win.input.focus_visible) {
         const g = focus_ring_width;
-        const ring = r.outset(g / 2 + 1);
+        var ring = r.outset(g / 2 + 1);
+        // Within its scroll node's content, where the viewport can show
+        // it: a row as wide as its view keeps its ring inside its box at
+        // the edges instead of losing it to the viewport's clip.
+        if (scrollExtent(win, nid, off)) |extent| {
+            const inside = ring.intersect(extent.outset(-g / 2));
+            if (!inside.isEmpty()) ring = inside;
+        }
         try b.stroke(.{ .rounded_rect = .{ .rect = ring, .radii = growRadii(radii, g / 2 + 1) } }, .{ .width = g }, .color(focusRingColor(win)));
         bounds = bounds.unite(ring.outset(g / 2));
     }
     return bounds;
+}
+
+/// The extent of the content of `nid`'s nearest scroll ancestor, in the
+/// coordinates `nid` paints in at `off`: the content box, or the viewport
+/// where the content is smaller. Null outside scroll nodes.
+fn scrollExtent(win: *const Window, nid: NodeId, off: Point) ?Rect {
+    var p = win.state(nid).pos;
+    var cur = win.node(nid).parent;
+    while (cur != .none) : (cur = win.node(cur).parent) {
+        if (win.node(cur).kind == .scroll) {
+            const s = win.state(cur);
+            const pad = win.node(cur).layout.padding;
+            return .xywh(off.x - p.x, off.y - p.y, @max(s.content.w, s.size.w - pad.horizontal()), @max(s.content.h, s.size.h - pad.vertical()));
+        }
+        const cs = win.state(cur);
+        p.x += cs.pos.x;
+        p.y += cs.pos.y;
+    }
+    return null;
 }
 
 fn shrinkRadii(r: raster.Radii, d: f32) raster.Radii {
