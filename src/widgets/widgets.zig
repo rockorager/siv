@@ -172,10 +172,18 @@ pub fn isRtl(node: Node) bool {
 pub fn textOf(node: Node, buf: []u8) []const u8 {
     var len: usize = 0;
     if (c.siv_node_get_text(node, buf.ptr, buf.len, &len) != .ok) return "";
+    return fitUtf8(buf, len);
+}
+
+/// The first `len` bytes of a string copied into `buf`, or what fits of
+/// it, cut before a code point that does not fit whole.
+fn fitUtf8(buf: []const u8, len: usize) []const u8 {
     if (len <= buf.len) return buf[0..len];
-    var end = buf.len;
-    while (end > 0 and buf[end] & 0xc0 == 0x80) end -= 1;
-    return buf[0..end];
+    var start = buf.len;
+    while (start > 0 and buf[start - 1] & 0xc0 == 0x80) start -= 1;
+    if (start == 0) return buf[0..0];
+    const n = std.unicode.utf8ByteSequenceLength(buf[start - 1]) catch 1;
+    return if (start - 1 + n <= buf.len) buf else buf[0 .. start - 1];
 }
 
 /// A text node that takes no space and is not shown or announced: a
@@ -197,10 +205,7 @@ pub fn setIcon(txn: Txn, image: Node, name: Node, size: f32, token: siv.ColorTok
 pub fn labelOf(node: Node, buf: []u8) []const u8 {
     var len: usize = 0;
     if (c.siv_node_get_label(node, buf.ptr, buf.len, &len) != .ok) return "";
-    if (len <= buf.len) return buf[0..len];
-    var end = buf.len;
-    while (end > 0 and buf[end] & 0xc0 == 0x80) end -= 1;
-    return buf[0..end];
+    return fitUtf8(buf, len);
 }
 
 pub fn windowOf(node: Node) siv.Window {
@@ -332,6 +337,17 @@ fn setName(txn: Txn, h: HeaderPtr, node: Node, s: []const u8) void {
         .tabs => tabs.setLabel(txn, @ptrCast(h), s),
         else => _ = c.siv_set_semantics(txn, node, &.{ .label = s.ptr, .label_len = s.len }),
     }
+}
+
+pub export fn siv_widget_set_icon(txn: Txn, node: Node, icon: ?[*]const u8, icon_len: usize) siv.Result {
+    const s = str(icon, icon_len) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
+    const h = header(node) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
+    switch (h.kind) {
+        .button, .toggle_button, .menu_button => button.setIcon(txn, @ptrCast(h), s),
+        .menu_item => menu.setItemIcon(txn, @ptrCast(h), s),
+        else => return c.siv_txn_fail(txn, .error_invalid_argument),
+    }
+    return c.siv_txn_status(txn);
 }
 
 pub export fn siv_widget_set_disabled(txn: Txn, node: Node, disabled: bool) siv.Result {

@@ -1797,6 +1797,7 @@ pub const functions = [_]Function{
         .{ .name = "item", .type = out(.u64), .doc = "The item." },
     }),
     setter("siv_widget_set_label", "Sets a stock widget's label: the text of buttons, toggles, check boxes, switches, and radios, and the accessible name of the others.", &.{.{ .name = "label", .type = .string, .doc = "Copied." }}),
+    setter("siv_widget_set_icon", "Sets the themed icon (D19) of a push, toggle, or menu button or a menu item, as their descriptors' icon names it; empty removes it.", &.{.{ .name = "icon", .type = .string, .doc = "Copied." }}),
     setter("siv_widget_set_disabled", "Enables or disables a stock widget: disabled widgets are dimmed, leave the Tab order, and ignore input.", &.{.{ .name = "disabled", .type = .bool, .doc = "Disabled." }}),
     setter("siv_widget_set_value", "Sets a stock widget's value without reporting SIV_EVENT_CHANGE: 0 or 1 for toggles (0.5 is a check box's mixed state), the selected index for choices (-1 for none), the number for ranges (clamped and stepped).", &.{.{ .name = "value", .type = .f64, .doc = "The value." }}),
     setter("siv_widget_set_range", "Sets the range of a slider, spin button, or progress bar; the value is clamped into it. With min equal to max the range is 0 to 100.", &.{

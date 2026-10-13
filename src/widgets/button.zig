@@ -29,7 +29,8 @@ pub const Button = extern struct {
     /// (the image node's setter needs it again to recolor it).
     icon: Node = .null,
     icon_name: Node = .null,
-    /// Only the icon shows; the label names the button.
+    /// Only the icon shows, when there is one; the label names the
+    /// button.
     icon_only: bool = false,
 };
 
@@ -97,26 +98,13 @@ pub fn validFlags(f: siv.WidgetFlags) bool {
 }
 
 fn build(txn: Txn, parent: Node, kind: w.Kind, label: []const u8, icon: []const u8, style: siv.ButtonStyle, flags: siv.WidgetFlags, on: bool) Node {
-    const icon_only = flags.icon_only and icon.len != 0;
     const root = c.siv_flex(txn, parent, &.{ .axis = .row, .justify = .center, .align_items = .center, .gap = tk.icon_gap });
     if (root == .null) return .null;
-    // An icon alone sits in a square button.
-    const pad_x = if (icon_only) (tk.control_height - tk.icon_size) / 2 else tk.pad_x;
-    _ = c.siv_set_default_layout(txn, root, &.{
-        .min_height = tk.control_height,
-        .min_width = if (icon_only) tk.control_height else 0,
-        .padding = .{ .start = pad_x, .end = pad_x, .top = tk.pad_y, .bottom = tk.pad_y },
-    });
-    var image: Node = .null;
-    var name: Node = .null;
-    if (icon.len != 0) {
-        image = c.siv_image_view(txn, root, &.{ .icon = icon.ptr, .icon_len = icon.len, .icon_size = tk.icon_size });
-        name = w.hiddenText(txn, root, icon);
-    }
     const text = c.siv_text(txn, root, label.ptr, label.len);
-    if (icon_only) _ = c.siv_set_visual(txn, text, &.{ .flags = .{ .hidden = true } });
     const st = w.create(Button, txn, root) orelse return .null;
-    st.* = .{ .hdr = .{ .kind = kind, .disabled = flags.disabled }, .style = style, .on = on, .root = root, .label = text, .icon = image, .icon_name = name, .icon_only = icon_only };
+    st.* = .{ .hdr = .{ .kind = kind, .disabled = flags.disabled }, .style = style, .on = on, .root = root, .label = text, .icon_only = flags.icon_only };
+    if (icon.len != 0) setIconNodes(txn, st, icon);
+    layoutIcon(txn, st);
     w.onDefault(txn, root, .pointer, onPointer, st);
     if (kind == .toggle_button) w.onDefault(txn, root, .activate, onActivate, st);
     apply(txn, st);
@@ -155,7 +143,7 @@ pub fn apply(txn: Txn, st: *Button) void {
     if (st.icon != .null) w.setIcon(txn, st.icon, st.icon_name, tk.icon_size, fg);
     // A hidden label does not name the button: say it outright.
     var buf: [1024]u8 = undefined;
-    const name = if (st.icon_only) w.textOf(st.label, &buf) else "";
+    const name = if (alone(st)) w.textOf(st.label, &buf) else "";
     _ = c.siv_set_semantics(txn, st.root, &.{
         .label = name.ptr,
         .label_len = name.len,
@@ -168,7 +156,46 @@ pub fn apply(txn: Txn, st: *Button) void {
 
 pub fn setLabel(txn: Txn, st: *Button, label: []const u8) void {
     _ = c.siv_set_text(txn, st.label, label.ptr, label.len);
-    if (st.icon_only) apply(txn, st);
+    if (alone(st)) apply(txn, st);
+}
+
+/// Shows another icon, or none.
+pub fn setIcon(txn: Txn, st: *Button, icon: []const u8) void {
+    if (st.icon == .null) {
+        if (icon.len == 0) return;
+        setIconNodes(txn, st, icon);
+    } else _ = c.siv_set_text(txn, st.icon_name, icon.ptr, icon.len);
+    _ = c.siv_set_visual(txn, st.icon, &.{ .flags = .{ .hidden = icon.len == 0 } });
+    layoutIcon(txn, st);
+    apply(txn, st);
+}
+
+/// The icon's image node before the label, and its name in a hidden
+/// text node.
+fn setIconNodes(txn: Txn, st: *Button, icon: []const u8) void {
+    st.icon = c.siv_image_view(txn, st.root, &.{ .icon = icon.ptr, .icon_len = icon.len, .icon_size = tk.icon_size });
+    _ = c.siv_move(txn, st.icon, st.root, st.label);
+    st.icon_name = w.hiddenText(txn, st.root, icon);
+}
+
+/// Only the icon shows.
+fn alone(st: *const Button) bool {
+    if (!st.icon_only or st.icon == .null) return false;
+    var len: usize = 0;
+    return c.siv_node_get_text(st.icon_name, null, 0, &len) == .ok and len != 0;
+}
+
+/// Padding, and the label hidden when the icon is alone, which sits in a
+/// square button.
+fn layoutIcon(txn: Txn, st: *Button) void {
+    const square = alone(st);
+    const pad_x = if (square) (tk.control_height - tk.icon_size) / 2 else tk.pad_x;
+    _ = c.siv_set_default_layout(txn, st.root, &.{
+        .min_height = tk.control_height,
+        .min_width = if (square) tk.control_height else 0,
+        .padding = .{ .start = pad_x, .end = pad_x, .top = tk.pad_y, .bottom = tk.pad_y },
+    });
+    _ = c.siv_set_visual(txn, st.label, &.{ .flags = .{ .hidden = square } });
 }
 
 pub fn value(st: *const Button) f64 {

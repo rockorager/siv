@@ -141,6 +141,10 @@ pub fn setItemLabel(txn: Txn, st: *Item, label: []const u8) void {
     _ = c.siv_set_text(txn, st.label, label.ptr, label.len);
 }
 
+pub fn setItemIcon(txn: Txn, st: *Item, icon: []const u8) void {
+    _ = c.siv_set_text(txn, st.icon, icon.ptr, icon.len);
+}
+
 pub fn itemValue(st: *const Item) f64 {
     return if (st.checked) 1 else 0;
 }
@@ -223,8 +227,8 @@ fn openMenu(m: *Menu, at: Node, parent: ?*Menu, grab: bool, focus: bool, point: 
     while (cur != .null) : (cur = w.related(cur, .next)) {
         const it = itemOf(cur) orelse continue;
         checkable = checkable or it.checkable;
-        var buf: [8]u8 = undefined;
-        icons = icons or (!it.separator and textOf(it.icon, &buf).len != 0);
+        var len: usize = 0;
+        icons = icons or (!it.separator and c.siv_node_get_text(it.icon, null, 0, &len) == .ok and len != 0);
     }
     var txn: Txn = .null;
     r = c.siv_txn_begin(popup, &txn);
