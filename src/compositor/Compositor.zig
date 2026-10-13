@@ -285,6 +285,9 @@ const Window = struct {
     stats: FrameStats = .{},
     /// The window has had its chance at a Vulkan surface.
     vulkan_tried: bool = false,
+    /// The next frame commits even if it presents nothing
+    /// (`requestCommit`).
+    commit_wanted: bool = false,
     /// A popup of this window that has not shown its first frame yet: this
     /// window's frames wait for it until `hold_until` (loop time), so the
     /// response to the input that opened it and the popup reach the
@@ -488,6 +491,56 @@ pub fn repositionPopup(self: *Compositor, window: WindowId, pos: platform_mod.Po
     };
 }
 
+/// The Wayland objects behind the connection and, given one, a window,
+/// for code that binds protocols siv does not support itself (D17, D27).
+/// All null on the headless backend; `toplevel` is null for popups.
+pub fn wayland(self: *Compositor, window: ?WindowId) !Wayland {
+    const Ctx = struct {
+        window: ?WindowId,
+        result: anyerror!Wayland = error.InvalidWindow,
+        fn run(ctx: ?*anyopaque, comp: *Compositor) void {
+            const s: *@This() = @ptrCast(@alignCast(ctx));
+            var out: Wayland = .{ .display = comp.platform.waylandDisplay() };
+            if (s.window) |id| {
+                if (comp.getWindow(id) == null) return;
+                if (comp.platform.waylandWindow(id)) |ww| {
+                    out.surface = ww.surface;
+                    out.toplevel = ww.toplevel;
+                }
+            }
+            s.result = out;
+        }
+    };
+    var ctx: Ctx = .{ .window = window };
+    try self.call(&ctx, Ctx.run);
+    return ctx.result;
+}
+
+pub const Wayland = struct {
+    /// `wl_display*`, `wl_surface*`, and `xdg_toplevel*`.
+    display: ?*anyopaque = null,
+    surface: ?*anyopaque = null,
+    toplevel: ?*anyopaque = null,
+};
+
+/// Commits the window at its next frame even if nothing in it changed,
+/// so that double-buffered state that other code set on its surface
+/// (`wayland`) applies. Waits for the compositor thread, so the frame is
+/// owed (`owesFrames`) when this returns.
+pub fn requestCommit(self: *Compositor, window: WindowId) Allocator.Error!void {
+    const Ctx = struct {
+        window: WindowId,
+        fn run(ctx: ?*anyopaque, comp: *Compositor) void {
+            const s: *@This() = @ptrCast(@alignCast(ctx));
+            const w = comp.getWindow(s.window) orelse return;
+            w.commit_wanted = true;
+            comp.want(s.window);
+        }
+    };
+    var ctx: Ctx = .{ .window = window };
+    try self.call(&ctx, Ctx.run);
+}
+
 /// Creates an external content slot in a window (D17). Show it with
 /// `Op.set_external` and feed it frames with `setExternalFrame`.
 pub fn createExternal(self: *Compositor, window: WindowId) !update.ExternalId {
@@ -571,10 +624,18 @@ pub fn destroyExternal(self: *Compositor, window: WindowId, id: update.ExternalI
 /// (`Event.external_released`) once no frame reads it.
 pub fn setExternalFrame(self: *Compositor, window: WindowId, id: update.ExternalId, frame: update.ExternalFrame) !void {
     var own = frame;
+    own.fence = null;
     own.fd = try dupFd(frame.fd);
+    if (frame.fence) |fd| {
+        own.fence = dupFd(fd) catch |err| {
+            _ = std.os.linux.close(own.fd);
+            return err;
+        };
+    }
     if (own.dmabuf) |*d| {
         if (d.plane_count < 1 or d.plane_count > 4) {
             _ = std.os.linux.close(own.fd);
+            if (own.fence) |fd| _ = std.os.linux.close(fd);
             return error.InvalidFrame;
         }
         d.planes[0] = .{ .fd = own.fd, .offset = frame.offset, .stride = frame.stride };
@@ -1201,8 +1262,10 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
     // The frame asked for is composed, unless it is retried for want of
     // a buffer; single-run animations and flings owe the next ones.
     w.owed = (!presented and (damage.len > 0 or tick.active)) or tick.holding;
-    // Subsurface changes apply with the window's commit.
-    if (subsurfaces_changed and !presented) self.platform.commitWindow(w.id);
+    // Subsurface changes, and state other code set on the surface
+    // (`requestCommit`), apply with the window's commit.
+    if ((subsurfaces_changed or w.commit_wanted) and !presented) self.platform.commitWindow(w.id);
+    w.commit_wanted = false;
     self.releaseAll(w.tree.endFrame());
     w.externals.endFrame(self.platform, w.id, ReleaseTo{ .comp = self, .window = w.id });
     for (w.externals.configures.items) |cf| self.outbox.push(.{ .external_configure = .{

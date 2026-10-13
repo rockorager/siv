@@ -650,11 +650,11 @@ const Video = struct {
     /// For the harness's full redraw, drawn as the compositor decided.
     fn draw(ctx: *anyopaque, _: compositor.ExternalId) compositor.tree.Draw {
         const v: *Video = @ptrCast(@alignCast(ctx));
-        return switch (v.mode) {
+        return .{ .promoted = v.mode != .composited, .what = switch (v.mode) {
             .above => .none,
             .below => .hole,
             .composited => .{ .image = .{ .pixels = v.pixels.ptr, .width = v.frame.width, .height = v.frame.height, .stride = v.frame.stride, .format = .bgrx8_srgb, .key = 7 } },
-        };
+        } };
     }
 };
 
@@ -679,8 +679,8 @@ const Embedded = struct {
 
     fn draw(ctx: *anyopaque, _: compositor.ExternalId) compositor.tree.Draw {
         const e: *Embedded = @ptrCast(@alignCast(ctx));
-        const sub = subsurfaceOf(e.app) orelse return .none;
-        return if (sub.visible and sub.below) .hole else .none;
+        const sub = subsurfaceOf(e.app) orelse return .{};
+        return .{ .promoted = sub.visible, .what = if (sub.visible and sub.below) .hole else .none };
     }
 };
 
@@ -789,7 +789,8 @@ test "embedded surfaces: told their size, hidden until a frame fits a crop, neve
     try testing.expectEqual(platform.Rect{ .x = 180, .y = 10, .width = 60, .height = 80 }, sub.rect);
     try testing.expectEqual(@as(f32, 120), sub.source.?.width);
     try expectDamageExact(&app);
-    // Translucent: below the window with a hole, still cropped.
+    // Translucent and uncovered: above the window at that alpha
+    // (alpha-modifier-v1), still cropped.
     {
         const t = try app.win.begin();
         try t.setVisual(player, .{ .transform = .offset(170, 0), .opacity = 0.9 });
@@ -797,7 +798,8 @@ test "embedded surfaces: told their size, hidden until a frame fits a crop, neve
     }
     try app.settle();
     sub = subsurfaceOf(&app).?;
-    try testing.expect(sub.visible and sub.below);
+    try testing.expect(sub.visible and !sub.below);
+    try testing.expectEqual(@as(f32, 0.9), sub.alpha);
     try testing.expectEqual(platform.Rect{ .x = 180, .y = 10, .width = 60, .height = 80 }, sub.rect);
     try testing.expectEqual(@as(f32, 120), sub.source.?.width);
     try expectDamageExact(&app);

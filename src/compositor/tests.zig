@@ -691,17 +691,133 @@ test "external content: a subsurface when unobstructed, composited otherwise" {
     try testing.expectEqual(bgra_blue, h.pixel(id, 20, 20));
     _ = try h.comp.commit(id, &.{.{ .set_clip = .{ .layer = 2, .clip = null } }});
 
-    // Translucent: composited.
+    // Translucent and uncovered: still on the subsurface, at that alpha
+    // (alpha-modifier-v1), with nothing drawn in the window. A change of
+    // opacity alone is a bare commit.
     _ = try h.comp.commit(id, &.{.{ .set_opacity = .{ .layer = 2, .opacity = 0.5 } }});
     try h.runMs(20);
+    subs = hl.subsurfaces(id);
+    try testing.expect(subs[0].?.visible and !subs[0].?.below);
+    try testing.expectEqual(@as(f32, 0.5), subs[0].?.alpha);
+    try testing.expectEqual(bgra_white, h.pixel(id, 20, 20));
+    const fade_frames = h.comp.frameStats(id).?.frames;
+    _ = try h.comp.commit(id, &.{.{ .set_opacity = .{ .layer = 2, .opacity = 0.25 } }});
+    try h.runMs(20);
+    try testing.expectEqual(@as(f32, 0.25), hl.subsurfaces(id)[0].?.alpha);
+    try testing.expectEqual(fade_frames, h.comp.frameStats(id).?.frames);
+
+    // Translucent and covered: a hole would show it at full opacity, so it
+    // is composited.
+    _ = try h.comp.commit(id, &.{
+        .{ .set_opacity = .{ .layer = 2, .opacity = 0.5 } },
+        .{ .create = 3 },
+        .{ .insert = .{ .layer = 3, .parent = 1 } },
+        .{ .set_content = .{ .layer = 3, .content = try h.rect(.xywh(40, 30, 20, 20), red) } },
+    });
+    try h.runMs(20);
     try testing.expect(!hl.subsurfaces(id)[0].?.visible);
-    const px = h.pixel(id, 20, 20);
-    try testing.expect(px[0] > 0x80 and px[2] > 0x80 and px[1] > 0x80); // blue over white
-    // Opaque again: back on the subsurface.
+    var px = h.pixel(id, 20, 20);
+    try testing.expect(px[0] == 0xff and px[1] > 0xb0 and px[1] < 0xc8); // blue over white, in linear light
+    _ = try h.comp.commit(id, &.{.{ .destroy = 3 }});
+
+    // Without alpha-modifier-v1, translucent content is composited.
+    hl.subsurface_features.alpha = false;
+    _ = try h.comp.commit(id, &.{.{ .set_opacity = .{ .layer = 2, .opacity = 0.4 } }});
+    try h.runMs(20);
+    try testing.expect(!hl.subsurfaces(id)[0].?.visible);
+    px = h.pixel(id, 20, 20);
+    try testing.expect(px[0] == 0xff and px[1] > 0xc0 and px[1] < 0xd8);
+    hl.subsurface_features.alpha = true;
+
+    // Opaque again: back on the subsurface at full alpha.
     _ = try h.comp.commit(id, &.{.{ .set_opacity = .{ .layer = 2, .opacity = 1 } }});
     try h.runMs(20);
     try testing.expect(hl.subsurfaces(id)[0].?.visible);
+    try testing.expectEqual(@as(f32, 1), hl.subsurfaces(id)[0].?.alpha);
     try testing.expectEqual(bgra_white, h.pixel(id, 20, 20));
+}
+
+test "external content: a background is a solid subsurface with the content, painted otherwise" {
+    var h: Harness = .{};
+    try h.start(false);
+    defer h.stop();
+    const id = try h.window();
+    const hl = h.headless();
+    const ext = try h.comp.createExternal(id);
+    const frame = try memfdFrame(40, 30, .{ 0xff, 0, 0, 0 }, 1);
+    defer _ = std.os.linux.close(frame.fd);
+    try h.comp.setExternalFrame(id, ext, frame);
+    // Letterboxed: a 40x30 frame centered in an 80x30 box, black bars.
+    const placement: update.ExternalPlacement = .{ .id = ext, .rect = .xywh(20, 0, 40, 30), .background = .black, .box = .xywh(0, 0, 80, 30) };
+    _ = try h.comp.commit(id, &.{
+        .{ .create = 2 },
+        .{ .insert = .{ .layer = 2, .parent = 1 } },
+        .{ .set_transform = .{ .layer = 2, .transform = .offset(10, 10) } },
+        .{ .set_external = .{ .layer = 2, .external = placement } },
+    });
+    try h.runMs(20);
+    // The content on its subsurface, the bars on a solid-color one below
+    // it, and nothing in the window.
+    var sub = hl.subsurfaces(id)[0].?;
+    try testing.expect(sub.visible and !sub.below);
+    try testing.expectEqual(platform.Rect{ .x = 30, .y = 10, .width = 40, .height = 30 }, sub.rect);
+    try testing.expectEqual(platform.Rect{ .x = 10, .y = 10, .width = 80, .height = 30 }, sub.background.?.rect);
+    try testing.expectEqual([4]u32{ 0, 0, 0, std.math.maxInt(u32) }, sub.background.?.rgba);
+    try testing.expectEqual(bgra_white, h.pixel(id, 15, 20));
+
+    // Translucent content would show the solid color through it, so the
+    // window paints the bars around the content instead, not under it.
+    _ = try h.comp.commit(id, &.{.{ .set_opacity = .{ .layer = 2, .opacity = 0.5 } }});
+    try h.runMs(20);
+    sub = hl.subsurfaces(id)[0].?;
+    try testing.expect(sub.visible and !sub.below and sub.background == null);
+    try testing.expectEqual(@as(f32, 0.5), sub.alpha);
+    const half_bar = h.pixel(id, 15, 20);
+    try testing.expect(half_bar[0] > 0xb0 and half_bar[0] < 0xc8);
+    try testing.expectEqual(bgra_white, h.pixel(id, 50, 20));
+    _ = try h.comp.commit(id, &.{.{ .set_opacity = .{ .layer = 2, .opacity = 1 } }});
+
+    // Covered: both below the window, whose hole covers the whole box.
+    _ = try h.comp.commit(id, &.{
+        .{ .create = 3 },
+        .{ .insert = .{ .layer = 3, .parent = 1 } },
+        .{ .set_content = .{ .layer = 3, .content = try h.rect(.xywh(12, 12, 4, 4), red) } },
+    });
+    try h.runMs(20);
+    sub = hl.subsurfaces(id)[0].?;
+    try testing.expect(sub.visible and sub.below and sub.background != null);
+    try testing.expectEqual([4]u8{ 0, 0, 0, 0 }, h.pixel(id, 20, 30));
+    try testing.expectEqual([4]u8{ 0, 0, 0, 0 }, h.pixel(id, 40, 20));
+    try testing.expectEqual(bgra_red, h.pixel(id, 13, 13));
+
+    // A translucent background cannot show through a hole: the window
+    // paints it, and the hole covers only the content.
+    var half = placement;
+    half.background = .{ .r = 0, .g = 0, .b = 0, .a = 0.5 };
+    _ = try h.comp.commit(id, &.{.{ .set_external = .{ .layer = 2, .external = half } }});
+    try h.runMs(20);
+    sub = hl.subsurfaces(id)[0].?;
+    try testing.expect(sub.below and sub.background == null);
+    const bar = h.pixel(id, 20, 30);
+    try testing.expect(bar[0] > 0xb0 and bar[0] < 0xc8 and bar[3] == 0xff);
+    try testing.expectEqual([4]u8{ 0, 0, 0, 0 }, h.pixel(id, 40, 20));
+
+    // Without single-pixel buffers, the window paints the bars under the
+    // content's subsurface.
+    _ = try h.comp.commit(id, &.{ .{ .destroy = 3 }, .{ .set_external = .{ .layer = 2, .external = placement } } });
+    hl.subsurface_features.solid = false;
+    try h.runMs(20);
+    sub = hl.subsurfaces(id)[0].?;
+    try testing.expect(sub.visible and !sub.below and sub.background == null);
+    try testing.expectEqual([4]u8{ 0, 0, 0, 0xff }, h.pixel(id, 15, 20));
+
+    // Composited (a rounded clip), the window paints both.
+    hl.subsurface_features.solid = true;
+    _ = try h.comp.commit(id, &.{.{ .set_clip = .{ .layer = 2, .clip = .{ .rect = .xywh(0, 0, 80, 30), .radii = .uniform(4, 4) } } }});
+    try h.runMs(20);
+    try testing.expect(!hl.subsurfaces(id)[0].?.visible);
+    try testing.expectEqual([4]u8{ 0, 0, 0, 0xff }, h.pixel(id, 15, 20));
+    try testing.expectEqual(bgra_blue, h.pixel(id, 40, 20));
 }
 
 fn wasReleased(h: *const Harness, key: u64) bool {

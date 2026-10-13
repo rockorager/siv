@@ -719,6 +719,31 @@ pub export fn siv_window_set_fullscreen(window: t.Window, fullscreen: bool) t.Re
     return .ok;
 }
 
+pub export fn siv_app_get_wayland(app: t.App, display: ?*?*anyopaque) t.Result {
+    const self = App.get(@backingInt(app)) catch |err| return t.resultOf(err);
+    const dest = runtime.out(?*anyopaque, display) catch |err| return t.resultOf(err);
+    const objects = self.app.comp.wayland(null) catch return .error_unavailable;
+    dest.* = objects.display;
+    return .ok;
+}
+
+pub export fn siv_window_get_wayland(window: t.Window, surface: ?*?*anyopaque, toplevel: ?*?*anyopaque) t.Result {
+    const w = App.window(@backingInt(window), window_tag) catch |err| return t.resultOf(err);
+    const ds = runtime.out(?*anyopaque, surface) catch |err| return t.resultOf(err);
+    var scratch: ?*anyopaque = null;
+    const dt = runtime.optOut(?*anyopaque, toplevel, &scratch);
+    const objects = w.owner.app.comp.wayland(w.win.id) catch return .error_unavailable;
+    ds.* = objects.surface;
+    dt.* = objects.toplevel;
+    return .ok;
+}
+
+pub export fn siv_window_request_commit(window: t.Window) t.Result {
+    const w = App.window(@backingInt(window), window_tag) catch |err| return t.resultOf(err);
+    w.owner.app.comp.requestCommit(w.win.id) catch return .error_out_of_memory;
+    return .ok;
+}
+
 pub export fn siv_window_minimize(window: t.Window) t.Result {
     const w = App.window(@backingInt(window), window_tag) catch |err| return t.resultOf(err);
     w.win.minimize() catch return .error_out_of_memory;

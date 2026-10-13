@@ -112,7 +112,7 @@ install_sway() {
 	step "nix-build .agents/sway.nix"
 	mkdir -p "$(dirname "$out")"
 	"$HOME/.nix-profile/bin/nix-build" .agents/sway.nix -o "$out" >/dev/null
-	for exe in sway swaymsg wtype; do
+	for exe in sway swaymsg wtype grim; do
 		sudo ln -sfn "$out/bin/$exe" "/usr/local/bin/$exe"
 	done
 }

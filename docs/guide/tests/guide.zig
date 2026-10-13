@@ -357,6 +357,20 @@ test "guide: video.c shows frames from a producer thread" {
     }.f);
 }
 
+extern fn guide_main_wayland() c_int;
+
+test "guide: wayland.c extends its window with content-type-v1" {
+    try harness.runC(guide_main_wayland, struct {
+        fn f(g: *Guide) !void {
+            // The headless backend has no Wayland connection to bind on.
+            try g.expectText("No Wayland compositor to tell");
+            try g.expectImage("wayland");
+            // The close request unbinds before siv destroys the window.
+            try g.close(g.window());
+        }
+    }.f);
+}
+
 // Printing --------------------------------------------------------------------------
 
 extern fn guide_main_print() c_int;

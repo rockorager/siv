@@ -992,7 +992,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     siv's: Mesa (since 25.0) creates one for every swapchain in every
     present mode, and a second is a protocol error. The same will apply to
     wp_color_management_surface_v1 when siv drives HDR (D11) on a Vulkan
-    window: the swapchain's color space must say it, not siv.
+    window: the swapchain's color space must say it, not siv. It applies
+    to explicit synchronization already: Mesa's WSI makes the swapchain
+    surface's wp_linux_drm_syncobj_surface_v1 and sets its points, so
+    siv makes none on window surfaces. CPU-rendered windows and popups
+    present wl_shm, which linux-drm-syncobj-v1 does not take (compositors
+    read or copy shared memory at commit). siv's explicit synchronization
+    covers the dma-buf frames it attaches to subsurfaces (D17).
   - Fallback: on any swapchain failure, the window's swapchain is destroyed
     and that same frame presents with the CPU renderer. On device loss the
     window that sees it falls back that frame and, at the next frame of
@@ -2001,7 +2007,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       (`Op.set_external`), fitted to the content's aspect ratio.
     - Each frame the compositor finds every placement's surface rectangle
       and promotes it when the layer's transform is axis-aligned with
-      positive scale, its opacity is 1, and its clips are rectangles.
+      positive scale and its clips are rectangles, and it is opaque or
+      (with alpha-modifier-v1, below) uncovered.
       Promoted frames go to a synchronized `wl_subsurface` as a wl_shm
       buffer from the producer's own memory (no copy), scaled with
       `wp_viewport` and cropped to the clips through its source rectangle.
@@ -2010,8 +2017,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       and composition punches a hole: the window is cleared to transparent
       over the visible part (a `src`-blend layer), so the opaque frame
       shows through and the later content composites over it there.
-      Rounded or rotated clips, other transforms, and opacity composite the
-      frame as an image (`bgrx8_srgb`). Changing modes redraws the layer.
+      Rounded or rotated clips, other transforms, and opacity that the
+      compositor cannot apply composite the frame as an image
+      (`bgrx8_srgb`). Changing modes redraws the layer.
       A new frame that changes only a subsurface costs a bare commit, not a
       present. Replaced frames are released (`Event.external_released`)
       after the next frame.
@@ -2044,10 +2052,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
         a source outside the embedder's buffer is a protocol error. A
         placement that needs cropping stays unmapped until the embedder
         reports such a frame, including after each new size; an uncropped
-        one shows at once, scaled to whatever frame it has. Rotated and
-        translucent placements are cropped on their bounding box and go
-        below the window with a hole at full opacity. It is shown in one
-        place only.
+        one shows at once, scaled to whatever frame it has. Rotated
+        placements, and translucent ones that something covers or that
+        a compositor without alpha-modifier-v1 shows, are cropped on
+        their bounding box and go below the window with a hole at full
+        opacity. It is shown in one place only.
       - Hidden placements destroy the `wl_subsurface` role, which unmaps
         the surface without touching its buffer; showing it again creates
         the role anew.
@@ -2112,6 +2121,162 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
         replaced frame stays in use until sway runs again and releases
         it. A translucent placement composites through the Vulkan
         renderer's explicit-modifier import there too.
+    - Explicit synchronization (linux-drm-syncobj-v1) for every buffer
+      siv attaches itself. Requirement: NVIDIA's driver sets no implicit
+      fences on the dma-bufs it writes or reads, so polling a frame's
+      dma-buf says nothing there, and `wl_buffer.release` can come while
+      the compositor's GPU still reads the buffer, after which a producer
+      overwrites what is on screen.
+      - Covered: dma-buf frames on frame slots' subsurfaces, the only
+        buffers siv attaches that are not wl_shm or single-pixel. Not
+        covered, and why: shared-memory frames and siv's windows and
+        popups (the CPU renderer presents wl_shm, which compositors read
+        or copy at commit; the protocol takes only dma-bufs,
+        `unsupported_buffer` otherwise), Vulkan windows (Mesa's WSI makes
+        the surface's `wp_linux_drm_syncobj_surface_v1` itself; a second
+        is `surface_exists`), embedders' surfaces (likewise their EGL's or
+        Vulkan's), and the solid-color subsurfaces below (single-pixel
+        buffers have no contents to wait for).
+      - Producers' acquire fences: `ExternalFrame.fence` (in C,
+        `siv_external_frame_desc.fence` with `SIV_EXTERNAL_FRAME_FENCE`)
+        is a sync_file signaled when the frame's writes are done, from an
+        exported Vulkan semaphore or EGL native fence. The compositor
+        thread watches it in its loop instead of the dma-buf (a sync_file
+        polls readable once signaled), the readiness path of implicit
+        fences: the previous frame stays until it signals, and composited
+        frames are copied only after it.
+      - Attaching: the platform opens the render node of linux-dmabuf's
+        main device (for a primary node, its sibling in sysfs, else the
+        node itself) at the first dma-buf frame, and needs timeline
+        syncobjs and `DRM_IOCTL_SYNCOBJ_EVENTFD` (Linux 6.6), which a probe
+        syncobj shows. Each attachment gets an acquire point on one
+        timeline, signaled from the CPU as it is attached (siv attaches
+        only frames whose writes are done, so there is nothing to wait
+        for), and a release point on a timeline of its own, since the
+        compositor may signal release points out of order and signaling
+        one signals every earlier point on it; release timelines are
+        pooled and reused once their point signaled. The surface's syncobj
+        object is made at its first dma-buf and destroyed before a
+        shared-memory frame is attached to it.
+      - Release: an eventfd per buffer in flight, registered on its
+        release point, is a loop source; when it fires the buffer is
+        released, as `wl_buffer.release` does under implicit
+        synchronization (a frame still goes back only once every
+        wl_buffer made from it was released). `wl_buffer.release`,
+        undefined while the surface has a syncobj object, is ignored for
+        such buffers.
+      - Fallback: implicit synchronization when the compositor offers no
+        global (pixman sway, older compositors), there is no main device,
+        or the device lacks timelines or eventfd waits (logged once). If
+        anything fails after that (an ioctl, an allocation), explicit
+        synchronization is off for the connection: every surface's syncobj
+        object goes before its next attachment, and buffers already in
+        flight keep their release points.
+      - Alternatives: passing a producer's fence on as the acquire point
+        without waiting for it (the compositor would wait instead, but a
+        composited frame needs the same readiness, the previous frame must
+        stay on screen meanwhile, and the commit carrying it waits for the
+        window's frame anyway, so nothing is gained); importing the
+        dma-buf's implicit fence into the acquire point
+        (`DMA_BUF_IOCTL_EXPORT_SYNC_FILE`, the same as the CPU signal once
+        siv has waited for it); a thread blocking in
+        `DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT` for kernels before 6.6
+        (compositors that offer the protocol, wlroots for one, need
+        eventfd waits themselves); exporting release points as sync_files
+        (needs a fence already attached to the point, which the compositor
+        adds only when it submits its work).
+      - Verified: the frame fence path on the headless backend (a pipe
+        stands in for the sync_file); the ioctl numbers against drm.h;
+        on sway, that pixman sway offers no global and frames keep
+        implicit synchronization. The dma-buf integration test asserts
+        explicit synchronization wherever sway offers the global (a GPU
+        renderer, `SIV_SWAY_RENDERER=vulkan`, on Linux 6.6), with its
+        releases (sway stopped, then resumed) coming from release points,
+        and the syncobj test (`platform/syncobj.zig`) runs on any render
+        node. Not verified: the explicit path against a real compositor
+        and GPU, NVIDIA's included; the orb this was built in has no GPU
+        and runs Linux 6.1. Reverse if a compositor's release points prove
+        unreliable where `wl_buffer.release` is not; then wait for both.
+    - Translucent placements (alpha-modifier-v1): a placement whose
+      layers' opacity multiplies to less than 1 stays on its subsurface
+      when nothing covers it, above the window with the compositor
+      applying the opacity (`SubsurfaceState.alpha`; for an embedder's
+      surface siv commits it, as for the viewport). A fade of such a
+      placement is a bare commit per step, not a repaint. Covered, a hole
+      cannot show it at less than full opacity (it clears the window to
+      what is below it, the desktop), so frames are composited and
+      embedders' surfaces go below at full opacity, as without the
+      protocol. Before, every translucent frame was composited and every
+      translucent embedder surface was shown at full opacity. Verified on
+      the headless backend and on sway, whose screenshot (grim,
+      wlr-screencopy) shows the frame blended at half opacity.
+    - Backgrounds (single-pixel-buffer-v1): an external view's
+      `background` fills its content box behind the content, such as the
+      bars around letterboxed video. While the content is on a
+      subsurface, an opaque background is a solid-color subsurface
+      directly below it (a 1×1 single-pixel buffer scaled by its
+      viewport, `SubsurfaceState.background`) and the window paints
+      nothing there: above the window with the content, or below it with
+      the window's hole covering the whole box (a punch-through hole). A
+      translucent one goes on a subsurface only above the window; below
+      it the window paints it, under a hole over the content alone, as it
+      does any background while the content is composited or the
+      compositor lacks the protocol. The background takes the content's
+      alpha, and the placement's occlusion counts its box, so content
+      over a bar puts both below the window. Requirement: a fullscreen
+      player's window is otherwise a window-sized buffer of black that the
+      compositor blends under the video every frame; a solid-color buffer
+      it can treat as a color (culled, or a plane's background), and the
+      window's own pixels there never change. Verified on the headless
+      backend and on sway (screenshots show the bars from the solid
+      subsurface, which the probe shows attached).
+    - The escape hatch: protocols siv does not support itself (content
+      type, tearing control, toplevel tags, protocols yet to come) are
+      reachable without forking siv. `siv_app_get_wayland` returns siv's
+      `wl_display`, and `siv_window_get_wayland` a window's `wl_surface`
+      and `xdg_toplevel` (null for popups); both are null on the headless
+      backend. The rules, in the header and the guide:
+      - Never commit the surface, attach or damage a buffer, or change
+        its size, scale, regions, or role; never set a listener or user
+        data on either object; never make an `xdg_toplevel` request siv
+        makes (title, app id, parent, size limits, states, move, resize,
+        window menu). siv owns presentation, configure acks, and the frame
+        clock (D8, D12): a commit of the application's own would present a
+        buffer siv did not choose, ack the wrong serial or none, and break
+        frame pacing.
+      - Never create an object of an interface siv or Mesa's Vulkan WSI
+        may already have on the surface (`wp_viewport`,
+        `wp_fractional_scale_v1`, `wp_fifo_v1`, `wp_commit_timer_v1`,
+        `wp_linux_drm_syncobj_surface_v1`, `wp_tearing_control_v1`,
+        `wp_alpha_modifier_surface_v1`, color management and
+        representation, decorations, dialogs, icons, sessions, foreign
+        exports): each allows one per surface, and a second is a protocol
+        error that ends the connection.
+      - Only set extra double-buffered state, which siv's next commit of
+        the window applies; `siv_window_request_commit` makes siv commit
+        at its next frame even if nothing changed (a bare commit, as for
+        subsurface changes).
+      - Threads: requests may come from any thread (libwayland serializes
+        them); siv's compositor thread reads the display with
+        `wl_display_prepare_read` and dispatches its default queue, so the
+        application binds through an event queue of its own and never
+        dispatches, reads, or round-trips the default queue, as for
+        surface slots above.
+      - Lifetime: the objects are the window's and go with it (also when
+        a close request its `on_event` does not take destroys it); the
+        application destroys what it made on them first.
+      - The guide's sample (`docs/guide/examples/wayland.c`) binds
+        content-type-v1 this way; run on sway by hand, it sets the type
+        and siv's commit applies it, without protocol errors.
+      - Alternatives: a siv call per protocol (each an ABI addition and a
+        maintenance cost for protocols few applications need); a hook that
+        runs application code on the compositor thread before each commit
+        (ties the application to siv's thread and frame timing, while the
+        protocols it would serve only need state set before some commit);
+        handing out the surface without rules (applications would commit
+        it, and every frame-clock bug would be theirs and siv's at once).
+        Reverse if applications need state in the same commit as a
+        particular frame; then add the hook.
     - External nodes are in the C API (D27): `siv_external_view` over
       `siv_external_create` and `siv_external_create_surface` slots.
   - Fractional scale, preferred buffer scale, output hotplug, `xdg-activation`,
@@ -4036,10 +4201,24 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     (`siv_external_view`) over `siv_external` slots (D17): frame slots
     take shared-memory frames (`siv_external_submit`) and report each
     replaced frame's key when no frame reads it; surface slots hand the
-    embedder a `wl_display *` and `wl_surface *` (the only pointers in
-    the API) and report the size to render at, with the embedder
-    contract spelled out in `siv_external_create_surface`'s
-    documentation. A window takes its slots with it.
+    embedder a `wl_display *` and `wl_surface *` and report the size to
+    render at, with the embedder contract spelled out in
+    `siv_external_create_surface`'s documentation. A window takes its
+    slots with it.
+  - The Wayland escape hatch (D17): `siv_app_get_wayland` (the
+    `wl_display *`), `siv_window_get_wayland` (a window's `wl_surface *`
+    and `xdg_toplevel *`, the latter optional and NULL for popups), and
+    `siv_window_request_commit`. With `siv_external_get_wayland` they are
+    the only pointers in the API, as `void *` out parameters, so the
+    header needs no Wayland headers. They are application's-thread calls
+    (the objects they return may then be used from any thread, by D17's
+    rules, which their documentation carries in full); on the headless
+    backend they succeed with NULL, as `siv_external_get_wayland` does,
+    so that code testing for NULL runs unchanged in headless tests
+    (`SIV_ERROR_UNSUPPORTED` would add a second way to say the same).
+    `siv_window_request_commit` exists because the rules forbid
+    committing: without it, state set on an idle window would wait for
+    an unrelated redraw.
   - Producers must not wait on the UI thread (D8): `siv_external_submit`
     and `siv_external_surface_committed` work from any thread and go
     straight to the compositor's inbox, and a frame slot's `release`
@@ -4349,6 +4528,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | `siv_set_tooltip` (D17); icon-only buttons show their label as one (D22) | a popup and timer per application | a common need every toolkit has; a core primitive so application widgets get it too |
   | reserved fields in `siv_text_span`, `siv_paragraph_span`, `siv_tab_stop`, `siv_text_metrics` (D2) | — | frozen value structs that will plausibly grow; descriptors grow by appending |
   | `siv_tablet_sample.wheel` and four reserved fields (D16) | — | the axes flags named a wheel the sample could not carry; tablets grow axes, and a frozen struct cannot |
+  | `siv_app_get_wayland`, `siv_window_get_wayland`, `siv_window_request_commit` (D17, D27) | the display only through a surface slot, and no window objects | protocols siv does not support (content type, tearing control, toplevel tags) need no fork of siv; the rules keep siv's commits and frame clock its own |
+  | `siv_external_frame_desc.flags` and `fence`, `SIV_EXTERNAL_FRAME_FENCE` (D17) | implicit fences only | drivers without implicit synchronization (NVIDIA's) could not say when a dma-buf frame was written |
+  | `siv_external_view_desc.background` (D17) | a background the window painted under the video | bars behind video and punch-through holes become solid-color subsurfaces (single-pixel-buffer-v1) |
+  | translucent external placements stay on their subsurface when uncovered (D17) | composited frames, embedders' surfaces at full opacity | alpha-modifier-v1 applies the opacity; fades cost bare commits |
 
   Statements this document made that were no longer true are fixed where
   they stood: external nodes are built and in the C API (D4, D17);

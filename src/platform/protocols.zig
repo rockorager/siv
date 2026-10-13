@@ -28,6 +28,9 @@ pub const xml = [_][]const u8{
     "staging/xdg-session-management/xdg-session-management-v1.xml",
     "unstable/xdg-foreign/xdg-foreign-unstable-v2.xml",
     "staging/xdg-activation/xdg-activation-v1.xml",
+    "staging/linux-drm-syncobj/linux-drm-syncobj-v1.xml",
+    "staging/alpha-modifier/alpha-modifier-v1.xml",
+    "staging/single-pixel-buffer/single-pixel-buffer-v1.xml",
 };
 
 /// Globals to bind, each with the highest version siv implements. Code is
@@ -67,4 +70,9 @@ pub const globals = [_]struct { []const u8, u32 }{
     .{ "xdg_wm_dialog_v1", 1 },
     .{ "xdg_toplevel_icon_manager_v1", 1 },
     .{ "xdg_session_manager_v1", 1 },
+    // External content on subsurfaces (D17): explicit synchronization of
+    // dma-buf frames, translucent placements, and solid backgrounds.
+    .{ "wp_linux_drm_syncobj_manager_v1", 1 },
+    .{ "wp_alpha_modifier_v1", 1 },
+    .{ "wp_single_pixel_buffer_manager_v1", 1 },
 };

@@ -813,6 +813,23 @@ test "dma-buf frames on sway: promoted, shown once their fences signal, released
     });
     try h.settle();
     try SubProbe.waitShown(&h, id, 1);
+    // Where sway offers linux-drm-syncobj-v1 (a GPU renderer with timeline
+    // syncobjs, Linux 6.6), frames carry acquire and release points, and
+    // the releases below come from release points, not wl_buffer.release.
+    const Sync = struct {
+        offered: bool = false,
+        active: bool = false,
+        fn f(ctx: ?*anyopaque, c: *Compositor) void {
+            const x: *@This() = @ptrCast(@alignCast(ctx));
+            x.offered = c.platform.wayland.syncobj_manager != null;
+            x.active = c.platform.wayland.explicitSyncActive();
+        }
+    };
+    var sync: Sync = .{};
+    try h.comp.call(&sync, Sync.f);
+    if (sync.offered) {
+        try testing.expect(sync.active);
+    } else std.log.warn("sway offers no linux-drm-syncobj-v1; explicit synchronization not checked", .{});
 
     // A frame whose writes are pending stays off screen until its fence
     // signals, and the frame before stays.
@@ -857,4 +874,151 @@ test "dma-buf frames on sway: promoted, shown once their fences signal, released
 fn wasReleased(h: *const Harness, key: u64) bool {
     for (h.events.items) |e| if (e == .external_released and e.external_released.key == key) return true;
     return false;
+}
+
+// Translucent and solid-color subsurfaces (D17) ---------------------------------
+
+/// The color sway shows at a point of its output, from a screenshot (grim,
+/// through wlr-screencopy). Null without grim.
+fn outputPixel(h: *Harness, x: u32, y: u32) !?[3]u8 {
+    var geometry_buf: [32]u8 = undefined;
+    const geometry = try std.fmt.bufPrintSentinel(&geometry_buf, "{d},{d} 1x1", .{ x, y }, 0);
+    var path_buf: [96]u8 = undefined;
+    const path = try std.fmt.bufPrintSentinel(&path_buf, "{s}/pixel.ppm", .{h.sway.dir}, 0);
+    const argv = [_:null]?[*:0]const u8{ "grim", "-t", "ppm", "-g", geometry, path };
+    const pid = h.sway.spawnClient(&argv) catch |err| switch (err) {
+        error.ClientNotInstalled => return null,
+        else => return err,
+    };
+    try h.sway.wait(pid);
+    const linux = std.os.linux;
+    const fd_rc = linux.open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
+    if (linux.errno(fd_rc) != .SUCCESS) return error.NoScreenshot;
+    const fd: i32 = @intCast(fd_rc);
+    defer _ = linux.close(fd);
+    var buf: [64]u8 = undefined;
+    const n = linux.read(fd, &buf, buf.len);
+    if (linux.errno(n) != .SUCCESS or n < 3) return error.NoScreenshot;
+    // "P6\n1 1\n255\n" and one RGB pixel.
+    return buf[n - 3 ..][0..3].*;
+}
+
+/// What the platform did with the window's external subsurface.
+const SolidProbe = struct {
+    window: WindowId,
+    key: u64 = 0,
+    alpha: u32 = std.math.maxInt(u32),
+    has_alpha: bool = false,
+    solid: bool = false,
+    solid_rgba: [4]u32 = .{ 0, 0, 0, 0 },
+    features: platform.SubsurfaceFeatures = .{},
+
+    fn f(ctx: ?*anyopaque, c: *Compositor) void {
+        const p: *SolidProbe = @ptrCast(@alignCast(ctx));
+        const w = c.platform.wayland.get(p.window);
+        p.features = c.platform.subsurfaceFeatures();
+        for (w.subsurfaces.items) |s| if (s) |sub| {
+            p.key = if (sub.attached) sub.key else 0;
+            p.alpha = sub.alpha.factor;
+            p.has_alpha = sub.alpha.proxy != null;
+            p.solid = if (sub.solid) |x| x.attached else false;
+            if (sub.solid) |x| p.solid_rgba = x.rgba;
+        };
+    }
+
+    fn read(comp: *Compositor, window: WindowId) !SolidProbe {
+        var p: SolidProbe = .{ .window = window };
+        try comp.call(&p, f);
+        return p;
+    }
+};
+
+test "subsurfaces on sway: translucent through alpha-modifier, backgrounds on single-pixel buffers" {
+    var h: Harness = .{};
+    try h.start();
+    defer h.stop();
+    const id = try h.comp.createWindow(.{});
+    const tiled = Loop.now() + 10 * std.time.ns_per_s;
+    while (h.size.width != 1280) {
+        if (Loop.now() > tiled) return error.Timeout;
+        try h.loop.dispatch(10);
+    }
+    try h.settle();
+    const features = (try SolidProbe.read(h.comp, id)).features;
+    // The pinned sway (wlroots 0.20) offers both, on every renderer.
+    try testing.expect(features.alpha and features.solid);
+
+    // A blue frame over the window's white background (x 400 to 528, y
+    // 290 to 386; the rows at y 300 to 320 are white), pillarboxed in a
+    // 128x96 box with green bars, translucent.
+    const linux = std.os.linux;
+    const memfd: i32 = @intCast(linux.memfd_create("siv-test-frame", linux.MFD.CLOEXEC));
+    defer _ = linux.close(memfd);
+    _ = linux.ftruncate(memfd, 64 * 96 * 4);
+    var pixels: [64 * 96 * 4]u8 = undefined;
+    for (0..64 * 96) |i| pixels[i * 4 ..][0..4].* = .{ 0xff, 0, 0, 0 };
+    _ = linux.pwrite(memfd, &pixels, pixels.len, 0);
+    const ext = try h.comp.createExternal(id);
+    try h.comp.setExternalFrame(id, ext, .{ .fd = memfd, .width = 64, .height = 96, .stride = 256, .key = 1 });
+    const green = scene.Color.srgb8(0, 0xff, 0, 0xff);
+    h.seq = try h.comp.commit(id, &.{
+        .{ .create = 5 },
+        .{ .insert = .{ .layer = 5, .parent = 1 } },
+        .{ .set_transform = .{ .layer = 5, .transform = .offset(400, 290) } },
+        .{ .set_opacity = .{ .layer = 5, .opacity = 0.5 } },
+        .{ .set_external = .{ .layer = 5, .external = .{ .id = ext, .rect = .xywh(32, 0, 64, 96), .background = green, .box = .xywh(0, 0, 128, 96) } } },
+    });
+    try h.settle();
+    try dispatchMs(&h, 50);
+    var p = try SolidProbe.read(h.comp, id);
+    try testing.expectEqual(@as(u64, 1), p.key);
+    try testing.expect(p.has_alpha);
+    try testing.expectEqual(@as(u32, 0x80000000), p.alpha);
+    // Under translucent content a solid subsurface would show through, so
+    // the window paints the bars around it.
+    try testing.expect(!p.solid);
+    // On screen, both at half opacity over white, not over each other:
+    // sway blends the frame, siv the bars.
+    if (try outputPixel(&h, 460, 310)) |video| {
+        try testing.expect(video[0] > 0x60 and video[0] < 0xa0 and video[1] > 0x60 and video[1] < 0xa0 and video[2] > 0xf0);
+        const bar = (try outputPixel(&h, 410, 310)).?;
+        try testing.expect(bar[0] > 0x60 and bar[0] < 0xd0 and bar[1] > 0xf0 and bar[2] > 0x60 and bar[2] < 0xd0);
+    } else std.log.warn("grim is not installed; composition on screen not checked", .{});
+
+    // Opaque: full alpha, the bars on a solid subsurface, and on screen
+    // pure blue and green.
+    h.seq = try h.comp.commit(id, &.{.{ .set_opacity = .{ .layer = 5, .opacity = 1 } }});
+    try h.settle();
+    try dispatchMs(&h, 50);
+    p = try SolidProbe.read(h.comp, id);
+    try testing.expect(p.solid);
+    try testing.expectEqual([4]u32{ 0, std.math.maxInt(u32), 0, std.math.maxInt(u32) }, p.solid_rgba);
+    try testing.expectEqual(@as(u32, std.math.maxInt(u32)), p.alpha);
+    if (try outputPixel(&h, 460, 310)) |video| {
+        try testing.expectEqual([3]u8{ 0, 0, 0xff }, video);
+        try testing.expectEqual([3]u8{ 0, 0xff, 0 }, (try outputPixel(&h, 410, 310)).?);
+        try testing.expectEqual([3]u8{ 0xff, 0xff, 0xff }, (try outputPixel(&h, 540, 310)).?);
+    }
+
+    // Covered (a white square over a bar): below the window, which holds a
+    // hole over the whole box; the square still shows above.
+    const cover = h.free.pop().?;
+    cover.reset();
+    try cover.fillRect(.xywh(405, 330, 10, 10), .color(.white));
+    h.seq = try h.comp.commit(id, &.{
+        .{ .create = 6 },
+        .{ .insert = .{ .layer = 6, .parent = 1 } },
+        .{ .set_content = .{ .layer = 6, .content = .{ .list = try cover.finish(0), .builder = cover } } },
+    });
+    try h.settle();
+    try dispatchMs(&h, 50);
+    p = try SolidProbe.read(h.comp, id);
+    try testing.expect(p.solid and p.key == 1);
+    if (try outputPixel(&h, 460, 310)) |video| {
+        try testing.expectEqual([3]u8{ 0, 0, 0xff }, video);
+        try testing.expectEqual([3]u8{ 0, 0xff, 0 }, (try outputPixel(&h, 410, 310)).?);
+        try testing.expectEqual([3]u8{ 0xff, 0xff, 0xff }, (try outputPixel(&h, 410, 335)).?);
+    }
+    try h.comp.destroyExternal(id, ext);
+    try h.settle();
 }

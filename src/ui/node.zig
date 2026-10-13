@@ -573,6 +573,8 @@ pub const External = struct {
     width: f32 = 0,
     height: f32 = 0,
     fit: Fit = .contain,
+    /// Fills the content box behind the content (D17).
+    background: scene.Color = .transparent,
 };
 
 pub const Editor = struct {

@@ -218,6 +218,21 @@ pub const Harness = struct {
         return ctx.out;
     }
 
+    /// What the headless compositor's subsurfaces can do besides frames
+    /// (alpha-modifier-v1, single-pixel-buffer-v1; both by default).
+    pub fn setSubsurfaceFeatures(h: *Harness, features: platform.SubsurfaceFeatures) !void {
+        const self = try h.internal();
+        const Ctx = struct {
+            features: platform.SubsurfaceFeatures,
+            fn run(ctx: ?*anyopaque, comp: *compositor.Compositor) void {
+                const c: *@This() = @ptrCast(@alignCast(ctx));
+                comp.platform.headless.subsurface_features = c.features;
+            }
+        };
+        var ctx: Ctx = .{ .features = features };
+        try self.app.comp.call(&ctx, Ctx.run);
+    }
+
     pub fn expectGolden(h: *Harness, name: []const u8, width: u32, height: u32) !void {
         return h.expectGoldenOf(h.window, name, width, height);
     }

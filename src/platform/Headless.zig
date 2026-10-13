@@ -42,6 +42,10 @@ selections: [8][2]SimSelection = @splat(@splat(.{})),
 next_source: u32 = 0,
 /// dma-buf formats and modifiers subsurfaces accept (tests add them).
 dmabuf_formats: std.ArrayList([2]u64) = .empty,
+/// What subsurfaces can do besides frames, as a compositor with
+/// alpha-modifier-v1 and single-pixel-buffer-v1 offers (tests turn them
+/// off).
+subsurface_features: platform.SubsurfaceFeatures = .{ .alpha = true, .solid = true },
 /// Simulated drag and drop per seat, and where each seat's pointer is.
 drags: [8]SimDrag = @splat(.{}),
 next_offer: u32 = 0,
@@ -380,6 +384,10 @@ fn dmabufKey(state: ?platform.SubsurfaceState) ?u64 {
 
 fn releaseDmabuf(w: *Window, key: u64) void {
     if (!w.hl.dmabufBusy(w.id, key)) w.hl.queue.push(.{ .subsurface_released = .{ .window = w.id, .key = key } });
+}
+
+pub fn subsurfaceFeatures(hl: *Headless) platform.SubsurfaceFeatures {
+    return hl.subsurface_features;
 }
 
 /// Lets subsurfaces show dma-bufs of this format and modifier.

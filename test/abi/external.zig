@@ -6,6 +6,8 @@ const std = @import("std");
 const linux = std.os.linux;
 const abi = @import("abi");
 const harness = @import("harness.zig");
+const platform = @import("platform");
+const compositor = @import("compositor");
 
 const testing = std.testing;
 const t = abi.types;
@@ -87,11 +89,22 @@ test "C API external: submitted frames show, and replaced ones are released" {
     try testing.expectEqual(@as(i32, 80), sub.rect.width);
     try testing.expectEqual(@as(i32, 40), sub.rect.height);
 
-    // Translucent itself, it is composited into the window instead: the
-    // left half red and the right half blue over the white background.
+    // Translucent itself and uncovered, it stays on the subsurface, which
+    // the compositor shows at that alpha (alpha-modifier-v1).
     try ok(T.siv_txn_begin(h.window, &txn));
     _ = T.siv_set_visual(txn, A.siv_window_get_root(h.window), &.{ .background = .{ .r = 1, .g = 1, .b = 1, .a = 1 } });
     _ = T.siv_set_opacity(txn, view, 0.5);
+    try ok(T.siv_txn_commit(txn));
+    try h.settle();
+    const faded = (try h.subsurface()).?;
+    try testing.expect(faded.visible);
+    try testing.expectEqual(@as(f32, 0.5), faded.alpha);
+    // Where the compositor cannot apply alpha, it is composited into the
+    // window instead: the left half red and the right half blue over the
+    // white background.
+    try h.setSubsurfaceFeatures(.{ .alpha = false, .solid = true });
+    try ok(T.siv_txn_begin(h.window, &txn));
+    _ = T.siv_set_opacity(txn, view, 0.51);
     try ok(T.siv_txn_commit(txn));
     try h.settle();
     if (try h.subsurface()) |st| try testing.expect(!st.visible);
@@ -276,4 +289,126 @@ test "C API external: a producer thread submits and gets frames back while the U
     }
     try testing.expectEqual(11, p.released.load(.seq_cst));
     try testing.expectEqual(11, p.last_key.load(.seq_cst));
+}
+
+test "C API external: a background fills the content box, on a solid subsurface while promoted" {
+    var h: Harness = .{};
+    try h.start(100, 100, null, null);
+    defer h.stop();
+    var ext: t.External = .null;
+    try ok(X.siv_external_create(h.window, null, &ext));
+    var txn: t.Txn = .null;
+    try ok(T.siv_txn_begin(h.window, &txn));
+    _ = T.siv_set_visual(txn, A.siv_window_get_root(h.window), &.{ .background = .{ .r = 1, .g = 1, .b = 1, .a = 1 } });
+    // A 2:1 frame letterboxed in an 80x80 box: black bars above and below.
+    const view = X.siv_external_view(txn, A.siv_window_get_root(h.window), &.{ .external = ext, .content_size = .{ .width = 2, .height = 1 }, .background = .{ .r = 0, .g = 0, .b = 0, .a = 1 } });
+    _ = T.siv_set_layout(txn, view, &.{ .width = .{ .unit = .px, .value = 80 }, .height = .{ .unit = .px, .value = 80 } });
+    try ok(T.siv_txn_commit(txn));
+    const red = [4]u8{ 0, 0, 0xff, 0 };
+    const fd = try frameFd(red, red);
+    defer _ = linux.close(fd);
+    try ok(X.siv_external_submit(ext, &.{ .fd = fd, .width = 2, .height = 1, .key = 1 }));
+    try h.settle();
+    // Promoted, with the bars on a solid-color subsurface over the whole
+    // box: the window paints neither.
+    const sub = (try h.subsurface()).?;
+    try testing.expectEqual(platform.Rect{ .x = 0, .y = 20, .width = 80, .height = 40 }, sub.rect);
+    try testing.expectEqual(platform.Rect{ .x = 0, .y = 0, .width = 80, .height = 80 }, sub.background.?.rect);
+    try testing.expectEqual([4]u32{ 0, 0, 0, std.math.maxInt(u32) }, sub.background.?.rgba);
+    var img = try h.capture();
+    try testing.expectEqual([4]u8{ 0xff, 0xff, 0xff, 0xff }, pixel(img, 100, 40, 5));
+    testing.allocator.free(img);
+    // Without single-pixel buffers, the window paints the bars.
+    try h.setSubsurfaceFeatures(.{ .alpha = true, .solid = false });
+    try ok(T.siv_txn_begin(h.window, &txn));
+    X.siv_set_external_view(txn, view, &.{ .external = ext, .content_size = .{ .width = 2, .height = 1 }, .background = .{ .r = 0, .g = 0, .b = 0.2, .a = 1 } });
+    try ok(T.siv_txn_commit(txn));
+    try h.settle();
+    try testing.expect((try h.subsurface()).?.background == null);
+    img = try h.capture();
+    const bar = pixel(img, 100, 40, 5);
+    testing.allocator.free(img);
+    try testing.expect(bar[0] == 0 and bar[1] == 0 and bar[2] > 0x20 and bar[2] < 0x40);
+}
+
+test "C API external: a frame with a fence shows once it signals" {
+    var h: Harness = .{};
+    try h.start(100, 60, null, null);
+    defer h.stop();
+    var log: Log = .{};
+    var ext: t.External = .null;
+    try ok(X.siv_external_create(h.window, &.{ .on_event = Log.onEvent, .user_data = &log }, &ext));
+    var txn: t.Txn = .null;
+    try ok(T.siv_txn_begin(h.window, &txn));
+    const view = X.siv_external_view(txn, A.siv_window_get_root(h.window), &.{ .external = ext, .content_size = .{ .width = 2, .height = 1 }, .fit = .fill });
+    _ = T.siv_set_layout(txn, view, &.{ .width = .{ .unit = .px, .value = 80 }, .height = .{ .unit = .px, .value = 40 } });
+    try ok(T.siv_txn_commit(txn));
+    // A linear XRGB8888 dma-buf (a memfd maps like one), composited since
+    // the headless compositor takes no dma-bufs, behind a fence (a pipe
+    // stands in for the sync_file: readable once signaled).
+    const blue = [4]u8{ 0xff, 0, 0, 0 };
+    const fd = try frameFd(blue, blue);
+    defer _ = linux.close(fd);
+    var pipe: [2]i32 = undefined;
+    if (linux.errno(linux.pipe2(&pipe, .{ .CLOEXEC = true })) != .SUCCESS) return error.SkipZigTest;
+    defer _ = linux.close(pipe[0]);
+    defer _ = linux.close(pipe[1]);
+    const frame: t.ExternalFrameDesc = .{ .fd = fd, .width = 2, .height = 1, .key = 1, .memory = .dmabuf, .flags = .{ .fence = true }, .fence = pipe[0] };
+    try ok(X.siv_external_submit(ext, &frame));
+    try h.settle();
+    // Captures are RGBA: not blue yet.
+    var img = try h.capture();
+    try testing.expect(!std.mem.eql(u8, &pixel(img, 100, 20, 20), &.{ 0, 0, 0xff, 0xff }));
+    testing.allocator.free(img);
+    _ = linux.write(pipe[1], "x", 1);
+    var waited: usize = 0;
+    while (true) : (waited += 1) {
+        try ok(A.siv_app_dispatch(h.app, 5));
+        try h.settle();
+        img = try h.capture();
+        const px = pixel(img, 100, 20, 20);
+        testing.allocator.free(img);
+        if (std.mem.eql(u8, &px, &.{ 0, 0, 0xff, 0xff })) break;
+        if (waited > 200) return error.Timeout;
+    }
+    // A fence goes only with dma-bufs, and unknown flags are refused.
+    try testing.expectEqual(t.Result.error_invalid_argument, X.siv_external_submit(ext, &.{ .fd = fd, .width = 2, .height = 1, .key = 2, .flags = .{ .fence = true }, .fence = pipe[0] }));
+    try testing.expectEqual(t.Result.error_invalid_argument, X.siv_external_submit(ext, &.{ .fd = fd, .width = 2, .height = 1, .key = 2, .memory = .dmabuf, .flags = .{ .fence = true }, .fence = -1 }));
+    try testing.expectEqual(t.Result.error_unsupported, X.siv_external_submit(ext, &.{ .fd = fd, .width = 2, .height = 1, .key = 2, .flags = @bitCast(@as(u32, 2)) }));
+}
+
+test "C API Wayland escape hatch: NULL objects on the headless backend, and commits on request" {
+    var h: Harness = .{};
+    try h.start(100, 60, null, null);
+    defer h.stop();
+    var display: ?*anyopaque = @ptrFromInt(8);
+    var surface: ?*anyopaque = @ptrFromInt(8);
+    var toplevel: ?*anyopaque = @ptrFromInt(8);
+    try ok(A.siv_app_get_wayland(h.app, &display));
+    try ok(A.siv_window_get_wayland(h.window, &surface, &toplevel));
+    try testing.expect(display == null and surface == null and toplevel == null);
+    // The toplevel is optional; the surface is not.
+    try ok(A.siv_window_get_wayland(h.window, &surface, null));
+    try testing.expectEqual(t.Result.error_invalid_argument, A.siv_window_get_wayland(h.window, null, null));
+    // A commit with nothing new to show: bare, for state set on the
+    // surface to apply.
+    try h.settle();
+    const Bare = struct {
+        id: platform.WindowId,
+        count: u64 = 0,
+        fn run(ctx: ?*anyopaque, comp: *compositor.Compositor) void {
+            const c: *@This() = @ptrCast(@alignCast(ctx));
+            c.count = comp.platform.headless.bareCommits(c.id);
+        }
+        fn read(hh: *Harness) !u64 {
+            var c: @This() = .{ .id = (try hh.win()).win.id };
+            try (try hh.internal()).app.comp.call(&c, run);
+            return c.count;
+        }
+    };
+    const before = try Bare.read(&h);
+    try ok(A.siv_window_request_commit(h.window));
+    try h.settle();
+    try testing.expectEqual(before + 1, try Bare.read(&h));
+    try testing.expectEqual(t.Result.error_invalid_handle, A.siv_window_request_commit(@fromBackingInt(@backingInt(h.window) ^ 1)));
 }

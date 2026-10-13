@@ -218,10 +218,14 @@ pub const ExternalFrame = struct {
     /// A dma-buf instead of shared memory (D17); its first plane is `fd`,
     /// `offset`, and `stride`. Shown once its implicit fences signal.
     dmabuf: ?scene.Dmabuf = null,
+    /// dma-bufs: a sync_file that signals when the frame's writes are
+    /// done, waited for instead of the implicit fences.
+    fence: ?i32 = null,
 
     /// Closes every fd the frame holds.
     pub fn close(f: ExternalFrame) void {
         _ = std.os.linux.close(f.fd);
+        if (f.fence) |fd| _ = std.os.linux.close(fd);
         if (f.dmabuf) |d| for (d.planes[1..d.plane_count]) |p| {
             _ = std.os.linux.close(p.fd);
         };
@@ -247,6 +251,12 @@ pub const ExternalReleaseHook = struct {
 pub const ExternalPlacement = struct {
     id: ExternalId,
     rect: Rect,
+    /// A solid color behind the content over `box` (layer coordinates),
+    /// such as the bars around letterboxed video; transparent for none.
+    /// On a subsurface of its own (single-pixel-buffer-v1) while the
+    /// content is on one (D17), painted in the window otherwise.
+    background: scene.Color = .transparent,
+    box: Rect = Rect.empty,
 };
 
 /// Display-list content of a layer. See the module comment for ownership.
@@ -352,7 +362,7 @@ pub const Op = union(enum) {
             .fling => |s| s.layer != 0 and finitePoint(s.velocity),
             .scroll_by => |s| s.layer != 0 and finitePoint(s.delta),
             .set_wheel_region => |s| s.layer != 0 and (s.region == null or finiteRect(s.region.?)),
-            .set_external => |s| s.layer != 0 and (s.external == null or (s.external.?.id != 0 and finiteRect(s.external.?.rect))),
+            .set_external => |s| s.layer != 0 and (s.external == null or (s.external.?.id != 0 and finiteRect(s.external.?.rect) and (s.external.?.background.a == 0 or finiteRect(s.external.?.box)))),
             .animate => |s| s.layer != 0 and validAnimation(s.animation),
         };
         if (!ok) return error.InvalidArgument;

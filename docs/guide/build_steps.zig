@@ -41,7 +41,7 @@ pub const Options = struct {
 pub const c_samples = [_][]const u8{
     "hello",  "model", "layout", "menus",     "events", "segmented", "images",
     "table",  "jobs",  "watch",  "clipboard", "embed",  "video",     "print",
-    "launch", "export",
+    "launch", "export", "wayland",
 };
 
 /// Zig samples (examples/<name>.zig), each `pub fn main() !void`.
@@ -59,6 +59,10 @@ pub fn add(b: *std.Build, o: Options) void {
     // The generated headers: <prefix>/include, next to share/siv/siv.zig.
     const include = wrapper.root_source_file.?.dirname().dirname().dirname().path(b, "include");
     const c_flags = [_][]const u8{ "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-Wall", "-Wextra", "-Werror" };
+    // wayland.c binds content-type-v1 through libwayland-client, with the
+    // code wayland-scanner (libwayland's development files) generates from
+    // the pinned wayland-protocols.
+    const content_type = contentTypeProtocol(b);
 
     // The samples as programs against libsiv.so.
     for (c_samples) |name| {
@@ -68,6 +72,7 @@ pub fn add(b: *std.Build, o: Options) void {
         });
         exe.root_module.addCSourceFile(.{ .file = b.path(b.fmt("docs/guide/examples/{s}.c", .{name})), .flags = &c_flags });
         exe.root_module.addIncludePath(include);
+        if (std.mem.eql(u8, name, "wayland")) content_type.addTo(exe.root_module);
         exe.root_module.linkLibrary(o.shared);
         exe.root_module.linkSystemLibrary("m", .{});
         exe.root_module.addRPathSpecial("$ORIGIN/../lib");
@@ -164,6 +169,7 @@ pub fn add(b: *std.Build, o: Options) void {
         });
     }
     root.addIncludePath(include);
+    content_type.addTo(root);
     for (zig_samples) |name| {
         root.addImport(b.fmt("zig_{s}", .{name}), b.createModule(.{
             .root_source_file = b.path(b.fmt("docs/guide/examples/{s}.zig", .{name})),
@@ -177,4 +183,26 @@ pub fn add(b: *std.Build, o: Options) void {
     // does not track as inputs.
     run.has_side_effects = true;
     checks.dependOn(&run.step);
+}
+
+/// C bindings of content-type-v1 for wayland.c.
+const Protocol = struct {
+    header_dir: std.Build.LazyPath,
+    code: std.Build.LazyPath,
+
+    fn addTo(p: Protocol, m: *std.Build.Module) void {
+        m.addIncludePath(p.header_dir);
+        m.addCSourceFile(.{ .file = p.code, .flags = &.{"-std=c11"} });
+        m.linkSystemLibrary("wayland-client", .{});
+    }
+};
+
+fn contentTypeProtocol(b: *std.Build) Protocol {
+    const xml = b.dependency("wayland_protocols", .{}).path("staging/content-type/content-type-v1.xml");
+    const header = b.addSystemCommand(&.{ "wayland-scanner", "client-header" });
+    header.addFileArg(xml);
+    const h = header.addOutputFileArg("content-type-v1-client-protocol.h");
+    const code = b.addSystemCommand(&.{ "wayland-scanner", "private-code" });
+    code.addFileArg(xml);
+    return .{ .header_dir = h.dirname(), .code = code.addOutputFileArg("content-type-v1-protocol.c") };
 }

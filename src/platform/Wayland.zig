@@ -31,7 +31,10 @@ pub const Seat = @import("Seat.zig");
 const TextInput = @import("TextInput.zig");
 const DataDevice = @import("DataDevice.zig");
 const cursor = @import("cursor.zig");
+const syncobj = @import("syncobj.zig");
 const Wayland = @This();
+
+const log = std.log.scoped(.wayland);
 
 const Error = platform.Error;
 const WindowId = platform.WindowId;
@@ -70,6 +73,19 @@ dmabuf_formats: std.ArrayList(FormatModifier) = .empty,
 dmabuf_pending: std.ArrayList(FormatModifier) = .empty,
 /// Every dma-buf wl_buffer not yet released (D17).
 dmabuf_buffers: std.ArrayList(*DmabufBuffer) = .empty,
+/// Explicit synchronization of the dma-bufs subsurfaces show
+/// (linux-drm-syncobj-v1, D17), set up at the first one.
+syncobj_manager: ?*wp.LinuxDrmSyncobjManagerV1 = null,
+explicit: ?Explicit = null,
+/// Set up, or found unavailable: implicit synchronization from then on
+/// when `explicit` is null.
+sync_tried: bool = false,
+/// Failed after it was set up: implicit synchronization for what is
+/// attached from then on; `explicit` stays for the buffers still in flight.
+sync_disabled: bool = false,
+/// Translucent subsurfaces and solid-color ones (D17).
+alpha_modifier: ?*wp.AlphaModifierV1 = null,
+single_pixel: ?*wp.SinglePixelBufferManagerV1 = null,
 text_input_manager: ?*zwp.TextInputManagerV3 = null,
 data_device_manager: ?*wl.DataDeviceManager = null,
 primary_selection_manager: ?*zwp.PrimarySelectionDeviceManagerV1 = null,
@@ -127,6 +143,33 @@ const DmabufBuffer = struct {
     /// No subsurface shows it any more.
     retired: bool = false,
     released: bool = false,
+    /// Attached with explicit synchronization: wl_buffer.release is
+    /// undefined then, and the compositor signals this timeline point
+    /// instead, which an eventfd in the loop watches.
+    release: ?*Timeline = null,
+    release_point: u64 = 0,
+    source: Loop.Source = .{ .fd = -1, .events = linux.EPOLL.IN, .func = onReleasePoint },
+};
+
+/// A DRM syncobj timeline imported into the compositor, and the last
+/// point used on it.
+const Timeline = struct {
+    handle: u32,
+    proxy: *wp.LinuxDrmSyncobjTimelineV1,
+    point: u64 = 0,
+};
+
+/// Explicit synchronization (linux-drm-syncobj-v1) of the dma-buf frames
+/// subsurfaces show.
+const Explicit = struct {
+    device: syncobj.Device,
+    /// Every frame's acquire point, signaled from the CPU as it is
+    /// attached: siv shows a frame only once its writes are done (its
+    /// implicit fences or the producer's fence signaled, D17).
+    acquire: *Timeline,
+    /// Release timelines not in use. Each frame in flight has one of its
+    /// own, since the compositor may signal release points out of order.
+    free: std.ArrayList(*Timeline) = .empty,
 };
 
 pub const Options = struct {
@@ -164,13 +207,76 @@ const Subsurface = struct {
     source: @FieldType(platform.SubsurfaceState, "source") = null,
     /// The viewport destination an embedder's surface was given.
     dest: [2]i32 = .{ 0, 0 },
+    /// Its alpha multiplier (alpha-modifier-v1), made when first needed.
+    alpha: Alpha = .{},
+    /// The solid color below it, made when first needed.
+    solid: ?*Solid = null,
+    /// Explicit synchronization of its dma-buf frames, made at the first
+    /// one and destroyed before a shared-memory frame is attached, which
+    /// explicit synchronization does not cover.
+    syncobj: ?*wp.LinuxDrmSyncobjSurfaceV1 = null,
 
     fn destroy(s: *Subsurface, gpa: Allocator) void {
+        if (s.solid) |x| x.destroy(gpa);
+        s.alpha.deinit();
+        if (s.syncobj) |x| x.destroy();
         if (s.buffer) |b| b.destroy();
         if (s.viewport) |v| v.destroy();
         if (s.subsurface) |sub| sub.destroy();
         s.surface.destroy();
         gpa.destroy(s);
+    }
+};
+
+/// A surface's alpha multiplier: the wp_alpha_modifier_surface_v1, made
+/// the first time the alpha drops below 1, and the factor it was given.
+const Alpha = struct {
+    proxy: ?*wp.AlphaModifierSurfaceV1 = null,
+    factor: u32 = std.math.maxInt(u32),
+
+    /// Sets the alpha the surface's next commit applies; true if it
+    /// changed. Needs the global unless the alpha is 1.
+    fn set(a: *Alpha, manager: ?*wp.AlphaModifierV1, surface: *wl.Surface, alpha: f32) bool {
+        const factor: u32 = @intFromFloat(@round(@as(f64, std.math.clamp(alpha, 0, 1)) * std.math.maxInt(u32)));
+        if (factor == a.factor) return false;
+        const proxy = a.proxy orelse blk: {
+            const p = (manager orelse return false).getSurface(surface) catch return false;
+            a.proxy = p;
+            break :blk p;
+        };
+        proxy.setMultiplier(factor);
+        a.factor = factor;
+        return true;
+    }
+
+    /// Before the surface: requests on it after are a protocol error.
+    fn deinit(a: *Alpha) void {
+        if (a.proxy) |p| p.destroy();
+        a.proxy = null;
+    }
+};
+
+/// A solid color on a subsurface of its own, directly below a subsurface
+/// showing external content (D17): a 1x1 single-pixel buffer scaled by
+/// its viewport. Synchronized like the content's, so it moves with the
+/// window's commits.
+const Solid = struct {
+    surface: *wl.Surface,
+    subsurface: *wl.Subsurface,
+    viewport: *wp.Viewport,
+    buffer: ?*wl.Buffer = null,
+    rgba: [4]u32 = .{ 0, 0, 0, 0 },
+    rect: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+    alpha: Alpha = .{},
+    attached: bool = false,
+
+    fn destroy(x: *Solid, gpa: Allocator) void {
+        x.alpha.deinit();
+        if (x.buffer) |b| b.destroy();
+        x.viewport.destroy();
+        x.subsurface.destroy();
+        x.surface.destroy();
+        gpa.destroy(x);
     }
 };
 
@@ -356,13 +462,24 @@ fn teardown(self: *Wayland) void {
     if (self.dmabuf_feedback) |f| f.destroy();
     if (self.dmabuf) |m| m.destroy();
     for (self.dmabuf_buffers.items) |b| {
+        self.endRelease(b, false);
         b.buffer.destroy();
         self.allocator.destroy(b);
     }
     self.dmabuf_buffers.deinit(self.allocator);
+    if (self.explicit) |*e| {
+        for (e.free.items) |t| self.destroyTimeline(e.device, t);
+        e.free.deinit(self.allocator);
+        self.destroyTimeline(e.device, e.acquire);
+        e.device.close();
+        self.explicit = null;
+    }
+    if (self.syncobj_manager) |m| m.destroy();
     self.dmabuf_formats.deinit(self.allocator);
     self.dmabuf_pending.deinit(self.allocator);
     if (self.dmabuf_table.len > 0) _ = linux.munmap(self.dmabuf_table.ptr, self.dmabuf_table.len);
+    if (self.alpha_modifier) |m| m.destroy();
+    if (self.single_pixel) |m| m.destroy();
     if (self.fractional_manager) |m| m.destroy();
     if (self.presentation) |p| p.destroy();
     if (self.viewporter) |v| v.destroy();
@@ -523,6 +640,12 @@ fn addGlobal(self: *Wayland, registry: *wl.Registry, name: u32, interface: []con
         const fb = try m.getDefaultFeedback();
         fb.setListener(*Wayland, onDmabufFeedback, self);
         self.dmabuf_feedback = fb;
+    } else if (is(interface, wp.LinuxDrmSyncobjManagerV1)) {
+        self.syncobj_manager = try registry.bind(name, wp.LinuxDrmSyncobjManagerV1, 1);
+    } else if (is(interface, wp.AlphaModifierV1)) {
+        self.alpha_modifier = try registry.bind(name, wp.AlphaModifierV1, 1);
+    } else if (is(interface, wp.SinglePixelBufferManagerV1)) {
+        self.single_pixel = try registry.bind(name, wp.SinglePixelBufferManagerV1, 1);
     } else if (is(interface, zwp.TextInputManagerV3)) {
         const m = try registry.bind(name, zwp.TextInputManagerV3, version);
         self.text_input_manager = m;
@@ -625,8 +748,128 @@ pub fn supportsDmabuf(self: *Wayland, format: u32, modifier: u64) bool {
 }
 
 fn onDmabufRelease(_: *wl.Buffer, _: wl.Buffer.Event, b: *DmabufBuffer) void {
+    // Undefined with explicit synchronization: the release point says.
+    if (b.release != null) return;
     b.released = true;
     if (b.retired) b.backend.finishDmabuf(b);
+}
+
+/// The compositor signaled a buffer's release point: it is done with it.
+fn onReleasePoint(source: *Loop.Source, _: u32) void {
+    const b: *DmabufBuffer = @fieldParentPtr("source", source);
+    const self = b.backend;
+    self.endRelease(b, true);
+    b.released = true;
+    if (b.retired) self.finishDmabuf(b);
+}
+
+/// Explicit synchronization, set up the first time a dma-buf is attached:
+/// the compositor offers linux-drm-syncobj-v1 and its main device has
+/// timeline syncobjs with eventfd waits. Null keeps implicit
+/// synchronization.
+fn explicitSync(self: *Wayland) ?*Explicit {
+    if (self.sync_disabled) return null;
+    if (self.explicit) |*e| return e;
+    if (self.sync_tried) return null;
+    self.sync_tried = true;
+    const manager = self.syncobj_manager orelse return null;
+    const device = syncobj.Device.open(self.main_device orelse return null) orelse {
+        log.info("the compositor offers explicit synchronization, but its device has no timeline syncobjs with eventfd waits (Linux 6.6); implicit synchronization", .{});
+        return null;
+    };
+    const acquire = self.makeTimeline(manager, device) catch {
+        device.close();
+        return null;
+    };
+    self.explicit = .{ .device = device, .acquire = acquire };
+    return &self.explicit.?;
+}
+
+fn makeTimeline(self: *Wayland, manager: *wp.LinuxDrmSyncobjManagerV1, device: syncobj.Device) !*Timeline {
+    const handle = try device.create();
+    errdefer device.destroy(handle);
+    const fd = try device.exportFd(handle);
+    // libwayland duplicates the fd as it sends it.
+    defer _ = linux.close(fd);
+    const t = try self.allocator.create(Timeline);
+    errdefer self.allocator.destroy(t);
+    t.* = .{ .handle = handle, .proxy = try manager.importTimeline(fd) };
+    return t;
+}
+
+fn destroyTimeline(self: *Wayland, device: syncobj.Device, t: *Timeline) void {
+    t.proxy.destroy();
+    device.destroy(t.handle);
+    self.allocator.destroy(t);
+}
+
+/// Stops watching a buffer's release point. Its timeline is reused once
+/// the point signaled (`reuse`), and destroyed otherwise.
+fn endRelease(self: *Wayland, b: *DmabufBuffer, reuse: bool) void {
+    const t = b.release orelse return;
+    b.release = null;
+    self.loop.removeSource(&b.source);
+    _ = linux.close(b.source.fd);
+    const e = &self.explicit.?;
+    if (reuse) e.free.append(self.allocator, t) catch self.destroyTimeline(e.device, t) else self.destroyTimeline(e.device, t);
+}
+
+/// Before `b` is attached to `s`: its acquire and release points, so that
+/// the commit carries them, with explicit synchronization. Without it, or
+/// if anything fails (which turns it off for the connection), `s` falls
+/// back to implicit synchronization.
+fn syncAttach(self: *Wayland, s: *Subsurface, b: *DmabufBuffer) void {
+    const e = self.explicitSync() orelse return unsync(s);
+    self.explicitPoints(e, s, b) catch |err| {
+        log.warn("explicit synchronization failed ({t}); implicit synchronization from now on", .{err});
+        // In-flight buffers keep their release points; nothing new uses
+        // the timelines.
+        for (e.free.items) |t| self.destroyTimeline(e.device, t);
+        e.free.clearRetainingCapacity();
+        unsync(s);
+        self.disableSync();
+    };
+}
+
+fn explicitPoints(self: *Wayland, e: *Explicit, s: *Subsurface, b: *DmabufBuffer) !void {
+    const t = e.free.pop() orelse try self.makeTimeline(self.syncobj_manager.?, e.device);
+    errdefer e.free.append(self.allocator, t) catch self.destroyTimeline(e.device, t);
+    const efd = try syncobj.eventFd();
+    errdefer _ = linux.close(efd);
+    try e.device.watch(t.handle, t.point + 1, efd);
+    // The frame's writes are done (siv attaches only ready frames), so
+    // its acquire point is signaled at once.
+    try e.device.signal(e.acquire.handle, e.acquire.point + 1);
+    e.acquire.point += 1;
+    const surface = s.syncobj orelse try self.syncobj_manager.?.getSurface(s.surface);
+    s.syncobj = surface;
+    b.source.fd = efd;
+    try self.loop.addSource(&b.source);
+    t.point += 1;
+    b.release = t;
+    b.release_point = t.point;
+    surface.setAcquirePoint(e.acquire.proxy, @truncate(e.acquire.point >> 32), @truncate(e.acquire.point));
+    surface.setReleasePoint(t.proxy, @truncate(t.point >> 32), @truncate(t.point));
+}
+
+/// Turns explicit synchronization off for buffers attached from now on.
+fn disableSync(self: *Wayland) void {
+    for (self.windows.items) |w| if (w) |win| for (win.subsurfaces.items) |sub| if (sub) |x| unsync(x);
+    // `explicit` stays for the buffers still in flight; `syncAttach` checks.
+    self.sync_disabled = true;
+}
+
+/// Back to implicit synchronization for what is attached next. Points
+/// set since the last commit are discarded with the object.
+fn unsync(s: *Subsurface) void {
+    if (s.syncobj) |x| x.destroy();
+    s.syncobj = null;
+}
+
+/// Whether dma-buf frames are attached with explicit synchronization
+/// (tests).
+pub fn explicitSyncActive(self: *Wayland) bool {
+    return self.explicit != null and !self.sync_disabled;
 }
 
 /// A subsurface stops showing its dma-buf buffer, which then lives until
@@ -1189,6 +1432,7 @@ pub fn setSubsurface(self: *Wayland, id: WindowId, sub: platform.SubsurfaceId, s
             // Shown again, it gets a new buffer.
             self.retireDmabuf(s);
         }
+        self.setSolid(w, s, null, 1, false);
         return;
     };
     if (s.buffer == null or s.key != frame.key) {
@@ -1228,14 +1472,17 @@ pub fn setSubsurface(self: *Wayland, id: WindowId, sub: platform.SubsurfaceId, s
         s.attached = false;
     }
     if (!s.attached) {
+        if (s.dmabuf) |b| self.syncAttach(s, b) else unsync(s);
         s.surface.attach(s.buffer, 0, 0);
         s.surface.damageBuffer(0, 0, std.math.maxInt(i32), std.math.maxInt(i32));
         s.attached = true;
     }
     s.subsurface.?.setPosition(state.rect.x, state.rect.y);
+    var restack = false;
     if (state.below != s.below) {
         if (state.below) s.subsurface.?.placeBelow(w.surface) else s.subsurface.?.placeAbove(w.surface);
         s.below = state.below;
+        restack = true;
     }
     if (s.viewport) |v| {
         if (!std.meta.eql(state.source, s.source)) {
@@ -1247,7 +1494,78 @@ pub fn setSubsurface(self: *Wayland, id: WindowId, sub: platform.SubsurfaceId, s
         }
         v.setDestination(@max(state.rect.width, 1), @max(state.rect.height, 1));
     }
+    _ = s.alpha.set(self.alpha_modifier, s.surface, state.alpha);
     s.surface.commit();
+    self.setSolid(w, s, state.background, state.alpha, restack);
+}
+
+/// Shows, moves, or hides the solid color directly below `s`. Its
+/// position and stacking apply with the window's commit; `restack` puts it
+/// back below `s` after `s` itself was restacked (or newly made, which
+/// puts a subsurface on top).
+fn setSolid(self: *Wayland, w: *Window, s: *Subsurface, background: ?platform.SubsurfaceState.Background, alpha: f32, restack: bool) void {
+    const want = background orelse {
+        if (s.solid) |x| if (x.attached) {
+            x.surface.attach(null, 0, 0);
+            x.surface.commit();
+            x.attached = false;
+        };
+        return;
+    };
+    const manager = self.single_pixel orelse return;
+    if (self.viewporter == null) return;
+    var placed = restack;
+    const x = s.solid orelse blk: {
+        const x = self.makeSolid(w) catch return self.queue.fail(error.OutOfMemory);
+        s.solid = x;
+        placed = true;
+        break :blk x;
+    };
+    if (placed) x.subsurface.placeBelow(s.surface);
+    x.subsurface.setPosition(want.rect.x, want.rect.y);
+    var dirty = false;
+    var old: ?*wl.Buffer = null;
+    if (x.buffer == null or !std.meta.eql(x.rgba, want.rgba)) {
+        const buffer = manager.createU32RgbaBuffer(want.rgba[0], want.rgba[1], want.rgba[2], want.rgba[3]) catch return self.queue.fail(error.OutOfMemory);
+        // The one shown goes once the new one is committed.
+        old = x.buffer;
+        x.buffer = buffer;
+        x.rgba = want.rgba;
+        x.attached = false;
+    }
+    if (!x.attached) {
+        x.surface.attach(x.buffer, 0, 0);
+        x.surface.damageBuffer(0, 0, 1, 1);
+        x.attached = true;
+        dirty = true;
+    }
+    if (want.rect.width != x.rect.width or want.rect.height != x.rect.height or dirty) {
+        x.viewport.setDestination(@max(want.rect.width, 1), @max(want.rect.height, 1));
+        dirty = true;
+    }
+    x.rect = want.rect;
+    if (x.alpha.set(self.alpha_modifier, x.surface, alpha)) dirty = true;
+    if (dirty) x.surface.commit();
+    if (old) |b| b.destroy();
+}
+
+fn makeSolid(self: *Wayland, w: *Window) Error!*Solid {
+    const surface = self.compositor.?.createSurface() catch return error.OutOfMemory;
+    errdefer surface.destroy();
+    const sub = self.subcompositor.?.getSubsurface(surface, w.surface) catch return error.OutOfMemory;
+    errdefer sub.destroy();
+    const viewport = self.viewporter.?.getViewport(surface) catch return error.OutOfMemory;
+    errdefer viewport.destroy();
+    const empty = self.compositor.?.createRegion() catch return error.OutOfMemory;
+    surface.setInputRegion(empty);
+    empty.destroy();
+    const x = try self.allocator.create(Solid);
+    x.* = .{ .surface = surface, .subsurface = sub, .viewport = viewport };
+    return x;
+}
+
+pub fn subsurfaceFeatures(self: *Wayland) platform.SubsurfaceFeatures {
+    return .{ .alpha = self.alpha_modifier != null, .solid = self.single_pixel != null and self.viewporter != null };
 }
 
 /// Places an embedder's surface. Position and stacking apply with the
@@ -1261,19 +1579,24 @@ fn setEmbedSurface(self: *Wayland, w: *Window, s: *Subsurface, state: *const pla
     if (!state.visible) {
         if (s.subsurface) |sub| sub.destroy();
         s.subsurface = null;
+        self.setSolid(w, s, null, 1, false);
         return;
     }
+    var restack = false;
     const sub = s.subsurface orelse blk: {
         const sub = self.subcompositor.?.getSubsurface(s.surface, w.surface) catch return error.OutOfMemory;
         s.subsurface = sub;
         s.below = false;
+        restack = true;
         break :blk sub;
     };
     sub.setPosition(state.rect.x, state.rect.y);
     if (state.below != s.below) {
         if (state.below) sub.placeBelow(w.surface) else sub.placeAbove(w.surface);
         s.below = state.below;
+        restack = true;
     }
+    var commit = false;
     if (s.viewport) |v| {
         const source_changed = !std.meta.eql(state.source, s.source);
         if (source_changed) {
@@ -1287,9 +1610,13 @@ fn setEmbedSurface(self: *Wayland, w: *Window, s: *Subsurface, state: *const pla
         if (!std.meta.eql(dest, s.dest) or source_changed) {
             v.setDestination(dest[0], dest[1]);
             s.dest = dest;
-            s.surface.commit();
+            commit = true;
         }
     }
+    // The alpha multiplier is the surface's state too.
+    if (s.alpha.set(self.alpha_modifier, s.surface, state.alpha)) commit = true;
+    if (commit) s.surface.commit();
+    self.setSolid(w, s, state.background, state.alpha, restack);
 }
 
 pub fn commitWindow(self: *Wayland, id: WindowId) void {

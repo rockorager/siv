@@ -225,6 +225,8 @@ pub export fn siv_external_submit(external: t.External, frame: ?*const t.Externa
             if (d.width == 0 or d.height == 0 or d.fd < 0 or d.width > 1 << 15 or d.height > 1 << 15) return error.InvalidArgument;
             const stride = if (d.stride == 0) d.width * 4 else d.stride;
             const planes = try runtime.array(t.ExternalPlane, d.planes, d.planes_count);
+            const fl = try runtime.flags(t.ExternalFrameFlags, d.flags);
+            if (fl.fence and (memory != .dmabuf or d.fence < 0)) return error.InvalidArgument;
             var dmabuf: ?scene.Dmabuf = null;
             if (memory == .dmabuf) {
                 if (planes.len > 3) return error.InvalidArgument;
@@ -241,7 +243,7 @@ pub export fn siv_external_submit(external: t.External, frame: ?*const t.Externa
             }
             // Straight to the compositor: thread-safe, and in order with
             // the slot's other messages.
-            self.app.comp.setExternalFrame(x.platform_window, x.id, .{ .fd = d.fd, .offset = d.offset, .width = d.width, .height = d.height, .stride = stride, .key = d.key, .dmabuf = dmabuf }) catch |err|
+            self.app.comp.setExternalFrame(x.platform_window, x.id, .{ .fd = d.fd, .offset = d.offset, .width = d.width, .height = d.height, .stride = stride, .key = d.key, .dmabuf = dmabuf, .fence = if (fl.fence) d.fence else null }) catch |err|
                 return mapApp(err);
         }
     }.f, .{frame}));
@@ -297,7 +299,7 @@ pub fn deliver(w: *Window, id: compositor.ExternalId, ev: t.ExternalEvent) void 
 
 // External nodes --------------------------------------------------------------
 
-fn viewOf(w: *Window, external: t.External, size: t.Size, fit: t.Fit) Error!ui.External {
+fn viewOf(w: *Window, external: t.External, size: t.Size, fit: t.Fit, background: t.Color) Error!ui.External {
     if (!(size.width >= 0) or !(size.height >= 0) or !std.math.isFinite(size.width) or !std.math.isFinite(size.height)) return error.InvalidArgument;
     const id: compositor.ExternalId = if (external == .null) 0 else blk: {
         const x = try uiSlot(external);
@@ -315,6 +317,7 @@ fn viewOf(w: *Window, external: t.External, size: t.Size, fit: t.Fit) Error!ui.E
             .none => .none,
             _ => unreachable,
         },
+        .background = try tree.color(background, .transparent),
     };
 }
 
@@ -340,5 +343,5 @@ pub export fn siv_set_external_view(txn: t.Txn, node: t.Node, desc: ?*const t.Ex
 
 fn viewDesc(w: *Window, ptr: ?*const t.ExternalViewDesc) Error!ui.External {
     const d = try runtime.readDesc(t.ExternalViewDesc, ptr);
-    return viewOf(w, d.external, d.content_size, d.fit);
+    return viewOf(w, d.external, d.content_size, d.fit, d.background);
 }

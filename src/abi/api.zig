@@ -1542,7 +1542,10 @@ pub const decls = [_]Decl{
     }),
     enumeration("siv_external_memory", "Where an external frame's pixels are.", &.{
         .{ .name = "shm", .value = 0, .doc = "Shared memory the compositor can map, such as a memfd." },
-        .{ .name = "dmabuf", .value = 1, .doc = "A Linux dma-buf, for example from a video decoder or another GPU API. Shown once its implicit fences signal. The compositor promotes it to a subsurface when the Wayland compositor accepts its format and modifier; otherwise siv's Vulkan renderer imports it, and without Vulkan only a linear XRGB8888 dma-buf is drawn (read through a mapping), any other is not drawn but still released (D17)." },
+        .{ .name = "dmabuf", .value = 1, .doc = "A Linux dma-buf, for example from a video decoder or another GPU API. Shown once its implicit fences signal, or its fence (SIV_EXTERNAL_FRAME_FENCE). The compositor promotes it to a subsurface when the Wayland compositor accepts its format and modifier; otherwise siv's Vulkan renderer imports it, and without Vulkan only a linear XRGB8888 dma-buf is drawn (read through a mapping), any other is not drawn but still released (D17)." },
+    }),
+    flags("siv_external_frame_flags", "Options of an external frame.", &.{
+        .{ .name = "fence", .bit = 0, .doc = "fence holds a sync_file to wait for." },
     }),
     value("siv_external_plane", "A dma-buf plane after the first.", &.{
         .{ .name = "fd", .type = .i32, .doc = "The plane's dma-buf; siv duplicates it." },
@@ -1554,6 +1557,7 @@ pub const decls = [_]Decl{
         .{ .name = "content_size", .type = ref("siv_size"), .doc = "The node's intrinsic size: the content's size or aspect ratio; zero sizes it by layout alone." },
         .{ .name = "fit", .type = ref("siv_fit"), .doc = "How the content fits the content box; default contain." },
         reserved("reserved0"),
+        .{ .name = "background", .type = ref("siv_color"), .doc = "Fills the content box behind the content, such as the bars around letterboxed video; default transparent. While the content is on a subsurface, an opaque background is a solid-color subsurface of its own where the compositor offers single-pixel buffers (D17), so the window paints nothing there." },
     }),
     descriptor("siv_external_frame_desc", "One frame of external content in shared memory or a dma-buf.", &.{
         .{ .name = "key", .type = .u64, .doc = "Identifies the pixels; change it whenever they change. Released frames are reported by key." },
@@ -1567,6 +1571,8 @@ pub const decls = [_]Decl{
         .{ .name = "memory", .type = ref("siv_external_memory"), .doc = "Default shm." },
         .{ .name = "drm_format", .type = .u32, .doc = "dma-buf: the DRM fourcc, for formats siv_external_format lacks (such as NV12 for promotion); 0 follows format." },
         .{ .name = "planes", .type = array(ref("siv_external_plane")), .doc = "dma-buf: planes after the first (fd, offset, stride), at most three; copied." },
+        .{ .name = "flags", .type = ref("siv_external_frame_flags"), .doc = "Options." },
+        .{ .name = "fence", .type = .i32, .doc = "With SIV_EXTERNAL_FRAME_FENCE, dma-buf frames: a sync_file that signals once the frame's writes are done (an exported Vulkan semaphore or EGL fence), for drivers that set no implicit fences on the dma-buf, such as NVIDIA's. siv duplicates it and shows the frame once it signals, instead of waiting for implicit fences (D17)." },
     }),
 };
 
@@ -2199,6 +2205,17 @@ pub const functions = [_]Function{
         .{ .name = "display", .type = out(.pointer), .doc = "The wl_display *." },
         .{ .name = "surface", .type = out(.pointer), .doc = "The wl_surface *." },
     })),
+    // The Wayland escape hatch (D17, D27).
+    call("siv_app_get_wayland", "The application's wl_display *, siv's own connection, for binding Wayland protocols siv does not support itself (D17, D27); NULL on the headless backend. siv's compositor thread reads it and dispatches its default queue, so use it, from any thread, only through an event queue of your own: wl_display_create_queue, a proxy wrapper of the display (wl_proxy_create_wrapper, wl_proxy_set_queue) to get the registry, and wl_display_roundtrip_queue or wl_display_dispatch_queue on that queue, as Mesa's EGL and Vulkan do. Never dispatch, read, or round-trip the default queue, flush in a loop of your own, or disconnect it. Destroy the objects you made before siv_app_destroy. Application's thread.", &.{
+        app_param,
+        .{ .name = "display", .type = out(.pointer), .doc = "The wl_display *." },
+    }),
+    call("siv_window_get_wayland", "A window's wl_surface * and xdg_toplevel *, for extending it with protocols siv does not support itself, such as content-type-v1 (D17, D27); NULL on the headless backend. The rules: never commit the surface, attach or damage a buffer, or change its size, scale, input or opaque region, or role; never set a listener or user data on either object, or make an xdg_toplevel request siv makes (title, app id, parent, size limits, states, move, resize, window menu); never create an object of an interface siv or Mesa's Vulkan driver may already have on the surface (wp_viewport, wp_fractional_scale_v1, wp_fifo_v1, wp_commit_timer_v1, wp_linux_drm_syncobj_surface_v1, wp_tearing_control_v1, wp_alpha_modifier_surface_v1, wp_color_management_surface_v1, wp_color_representation_surface_v1, zxdg_toplevel_decoration_v1, xdg_dialog_v1, xdg_toplevel_icon_v1, xdg_toplevel_session_v1, zxdg_exported_v2; it is a protocol error). Only create extension objects of other interfaces and set their double-buffered state, which applies with siv's next commit of the window: call siv_window_request_commit to have one now. Requests may come from any thread; objects you create belong to the queue of the object that creates them, so bind the factory through your own queue (siv_app_get_wayland). The objects live until the window is destroyed, including by a close request its on_event does not take: destroy yours first. Application's thread.", &.{
+        window_param,
+        .{ .name = "surface", .type = out(.pointer), .doc = "The wl_surface *." },
+        .{ .name = "toplevel", .type = out(.pointer), .doc = "The xdg_toplevel *; NULL for popups.", .optional = true },
+    }),
+    call("siv_window_request_commit", "Has siv commit the window's surface at its next frame even if nothing in it changed, so that double-buffered state set through siv_window_get_wayland applies (D17, D27). Application's thread.", &.{window_param}),
     anyThread(call("siv_external_submit", "Shows a new frame in a frame slot, even while the application's thread is busy: the frame goes straight to the compositor thread, in order with other frames of the slot. The previous frame is reported released once no frame reads it; until then its pixels must not change.", &.{
         .{ .name = "external", .type = ref("siv_external"), .doc = "A frame slot." },
         .{ .name = "frame", .type = .{ .desc = "siv_external_frame_desc" }, .doc = "The frame." },
@@ -2209,8 +2226,8 @@ pub const functions = [_]Function{
         .{ .name = "height", .type = .u32, .doc = "Buffer height." },
     })),
     teardown("siv_external_destroy", "Destroys a slot; its frame or surface goes after the next frame. Nodes that show it show nothing. Application's thread; other threads' calls with the handle fail with SIV_ERROR_INVALID_HANDLE from now on.", &.{.{ .name = "external", .type = ref("siv_external"), .doc = "The slot." }}),
-    builder("siv_external_view", "Creates an external node: a slot's content fitted into its content box, in a layer of its own. Its role is image.", &.{.{ .name = "desc", .type = .{ .desc = "siv_external_view_desc" }, .doc = "The slot, size, and fit; NULL shows nothing." }}),
-    setter("siv_set_external_view", "Sets what an external node shows.", &.{.{ .name = "desc", .type = .{ .desc = "siv_external_view_desc" }, .doc = "The slot, size, and fit; NULL shows nothing." }}),
+    builder("siv_external_view", "Creates an external node: a slot's content fitted into its content box, in a layer of its own. Its role is image.", &.{.{ .name = "desc", .type = .{ .desc = "siv_external_view_desc" }, .doc = "The slot, size, fit, and background; NULL shows nothing." }}),
+    setter("siv_set_external_view", "Sets what an external node shows.", &.{.{ .name = "desc", .type = .{ .desc = "siv_external_view_desc" }, .doc = "The slot, size, fit, and background; NULL shows nothing." }}),
 };
 
 pub const spec: schema.Schema = .{

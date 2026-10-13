@@ -16,5 +16,6 @@ pkgs.buildEnv {
   paths = [
     pkgs.sway-unwrapped # sway 1.12, wlroots 0.20
     pkgs.wtype # virtual keyboard input
+    pkgs.grim # screenshots of the output (subsurface composition, D17)
   ];
 }

@@ -81,9 +81,14 @@ Without a `release` callback, releases arrive as
 
 Dma-buf frames (`SIV_EXTERNAL_MEMORY_DMABUF`) take a DRM format and
 modifier and up to four planes; a frame shows once its implicit fences
-signal, so neither siv nor the compositor waits on your GPU. The Wayland
+signal, so neither siv nor the compositor waits on your GPU. Drivers that
+set no implicit fences, such as NVIDIA's, pass a sync_file instead
+(`SIV_EXTERNAL_FRAME_FENCE` and `fence`, from an exported Vulkan semaphore
+or EGL fence), and the frame shows once it signals. The Wayland
 compositor shows YUV and tiled buffers directly when it supports their
-format; otherwise siv's Vulkan renderer imports them.
+format, with explicit synchronization where it offers linux-drm-syncobj-v1,
+so a frame is released only once the compositor's GPU is done reading
+it; otherwise siv's Vulkan renderer imports them.
 
 ## Surface slots
 
@@ -106,3 +111,93 @@ A surface slot hands you siv's `wl_display` and a `wl_surface`
 
 The headless backend has no Wayland objects, so surface slots return NULL
 pointers there; test with frame slots.
+
+## Translucency and backgrounds
+
+A frame or surface slot on a subsurface stays there when the node is
+translucent (an opacity below 1, or a fade) as long as nothing is painted
+over it: the compositor applies the opacity itself (alpha-modifier-v1).
+Covered and translucent, a frame is composited instead, and a surface
+slot is shown at full opacity below a hole.
+
+An external view's `background` fills its content box behind the
+content, such as the bars around letterboxed video. While the content is
+on a subsurface, an opaque background is a solid-color subsurface of its
+own where the compositor offers single-pixel buffers, so the window
+paints nothing under the video and the compositor can show both without
+blending a window-sized buffer.
+
+## Protocols siv does not support
+
+siv binds the Wayland protocols it uses itself. For one it does not, such
+as content-type-v1, you can extend a window yourself on siv's connection
+(D17): `siv_app_get_wayland` returns siv's `wl_display`, and
+`siv_window_get_wayland` a window's `wl_surface` and `xdg_toplevel`.
+[examples/wayland.c](examples/wayland.c) tells the compositor that its
+window shows video:
+
+```c
+/* Extra double-buffered state on siv's surface, never a commit of our
+ * own: siv's next commit of the window applies it. */
+static const char *mark_as_video(struct player *p, siv_app app) {
+	void *display = NULL, *surface = NULL;
+	if (siv_app_get_wayland(app, &display) != SIV_OK || display == NULL) return "No Wayland compositor to tell";
+	if (siv_window_get_wayland(p->window, &surface, NULL) != SIV_OK) return "No surface";
+	bind_globals(p, display);
+	if (p->manager == NULL) return "The compositor has no content types";
+	p->content_type = wp_content_type_manager_v1_get_surface_content_type(p->manager, surface);
+	wp_content_type_v1_set_content_type(p->content_type, WP_CONTENT_TYPE_V1_TYPE_VIDEO);
+	if (siv_window_request_commit(p->window) != SIV_OK) return "No commit";
+	return "Told the compositor: video";
+}
+```
+
+siv's compositor thread reads the connection and dispatches its default
+queue, so everything you bind goes on a queue of your own, which you
+dispatch from any thread you like, as Mesa's EGL and Vulkan do:
+
+```c
+/* siv's compositor thread dispatches the connection's default queue, so
+ * the registry goes on a queue of our own, through a proxy wrapper of the
+ * display, and only that queue is round-tripped. */
+static void bind_globals(struct player *p, struct wl_display *display) {
+	p->queue = wl_display_create_queue(display);
+	struct wl_display *wrapper = wl_proxy_create_wrapper(display);
+	wl_proxy_set_queue((struct wl_proxy *)wrapper, p->queue);
+	struct wl_registry *registry = wl_display_get_registry(wrapper);
+	wl_proxy_wrapper_destroy(wrapper);
+	wl_registry_add_listener(registry, &registry_listener, p);
+	wl_display_roundtrip_queue(display, p->queue);
+	wl_registry_destroy(registry);
+}
+```
+
+The surface and toplevel are siv's, and the rules keep them so:
+
+- Never commit the surface, attach or damage a buffer, or change its
+  size, scale, regions, or role; never set a listener or user data on
+  either object; and never make an `xdg_toplevel` request siv makes
+  (title, app id, parent, size limits, states, move, resize).
+- Only create extension objects of interfaces siv and Mesa's Vulkan
+  driver do not use on the surface (`siv_window_get_wayland`'s reference
+  lists those they do), and set their double-buffered state. siv's next
+  commit of the window applies it; `siv_window_request_commit` asks for
+  one now.
+- Requests may come from any thread. Never dispatch, read, or round-trip
+  the default queue, and never disconnect the display.
+- The objects live as long as the window. Destroy yours first, including
+  when a close request destroys it:
+
+```c
+static bool on_window_event(void *user_data, siv_window window, const siv_window_event *event) {
+	(void)window;
+	if (event->type == SIV_WINDOW_EVENT_TYPE_CLOSE_REQUESTED) unbind(user_data);
+	return false;
+}
+```
+
+The sample builds with the headers `wayland-scanner client-header`
+generates from the protocol's XML and links libwayland-client. On the
+headless backend both calls return NULL, and the sample says so:
+
+![A small window reading No Wayland compositor to tell](images/wayland.png)

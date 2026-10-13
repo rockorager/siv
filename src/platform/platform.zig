@@ -217,6 +217,13 @@ pub const Platform = union(enum) {
         };
     }
 
+    /// What subsurfaces can do besides showing frames (D17).
+    pub fn subsurfaceFeatures(p: Platform) SubsurfaceFeatures {
+        return switch (p) {
+            inline else => |b| b.subsurfaceFeatures(),
+        };
+    }
+
     /// Whether subsurfaces can show dma-bufs of this DRM format and
     /// modifier (linux-dmabuf feedback's format table).
     pub fn supportsDmabuf(p: Platform, format: u32, modifier: u64) bool {
@@ -239,6 +246,25 @@ pub const Platform = union(enum) {
     pub fn vulkanSurface(p: Platform, id: WindowId) ?VulkanSurface {
         return switch (p) {
             inline else => |b| b.vulkanSurface(id),
+        };
+    }
+
+    /// The `wl_display*` of the connection, for code that binds protocols
+    /// siv does not support itself (D17, D27). Null on the headless
+    /// backend.
+    pub fn waylandDisplay(p: Platform) ?*anyopaque {
+        return switch (p) {
+            .wayland => |b| b.display,
+            .headless => null,
+        };
+    }
+
+    /// The window's `wl_surface*` and, for toplevels, `xdg_toplevel*`,
+    /// for the same. Null on the headless backend.
+    pub fn waylandWindow(p: Platform, id: WindowId) ?WaylandWindow {
+        return switch (p) {
+            .wayland => |b| .{ .surface = b.get(id).surface, .toplevel = b.get(id).toplevel },
+            .headless => null,
         };
     }
 
@@ -816,6 +842,29 @@ pub const SubsurfaceState = struct {
     below: bool = false,
     /// An embedder renders the content (`createEmbedSurface`).
     embed: bool = false,
+    /// Multiplies the content's alpha (alpha-modifier-v1); below 1 only
+    /// where `SubsurfaceFeatures.alpha` says so.
+    alpha: f32 = 1,
+    /// A solid color directly below the content (single-pixel-buffer-v1),
+    /// only where `SubsurfaceFeatures.solid` says so; shown with it, at the
+    /// same alpha.
+    background: ?Background = null,
+
+    pub const Background = struct {
+        /// Position and size in the parent surface (logical).
+        rect: Rect,
+        /// sRGB-encoded and premultiplied, 0 to 0xffffffff, as
+        /// wp_single_pixel_buffer_manager_v1 takes them.
+        rgba: [4]u32,
+    };
+};
+
+pub const SubsurfaceFeatures = struct {
+    /// `SubsurfaceState.alpha` below 1 (wp_alpha_modifier_v1).
+    alpha: bool = false,
+    /// `SubsurfaceState.background` (wp_single_pixel_buffer_manager_v1
+    /// with wp_viewporter).
+    solid: bool = false,
 };
 
 pub const SelectionKind = enum(u8) {
@@ -1084,6 +1133,8 @@ pub const WindowState = struct {
 /// A bytes (little-endian 0xAARRGGBB words).
 /// A `wl_display *` and a window's `wl_surface *`.
 pub const VulkanSurface = struct { display: *anyopaque, surface: *anyopaque };
+
+pub const WaylandWindow = struct { surface: *anyopaque, toplevel: ?*anyopaque };
 
 /// The commit of an external presenter (see `Platform.presentExternal`).
 pub const ExternalCommit = struct {
@@ -1569,6 +1620,7 @@ test {
         std.testing.refAllDecls(Platform);
         _ = @import("xcursor.zig");
         _ = @import("cursor.zig");
+        _ = @import("syncobj.zig");
     }
 }
 

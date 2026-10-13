@@ -129,6 +129,8 @@ const External = struct {
     pending: ?*Pending = null,
     sub: ?platform.SubsurfaceId = null,
     mode: Mode = .composited,
+    /// Its placement's background is on a subsurface below it.
+    solid: bool = false,
     /// What the subsurface was last told.
     shown: platform.SubsurfaceState = .{},
     seen: bool = false,
@@ -316,9 +318,13 @@ pub const Externals = struct {
             e.gpa.destroy(pd);
             x.pending = null;
         }
-        if (m.dmabuf != null and !ready(frame.fd)) if (e.loop) |l| {
+        // The producer's fence if it gave one (explicit synchronization),
+        // else the dma-buf's implicit fences: both poll readable once the
+        // writes are done.
+        const fence = frame.fence orelse frame.fd;
+        if (m.dmabuf != null and !ready(fence)) if (e.loop) |l| {
             if (e.gpa.create(Pending)) |pd| {
-                pd.* = .{ .source = .{ .fd = frame.fd, .events = linux.EPOLL.IN, .func = onPendingReady }, .externals = e, .id = id, .mapped = m };
+                pd.* = .{ .source = .{ .fd = fence, .events = linux.EPOLL.IN, .func = onPendingReady }, .externals = e, .id = id, .mapped = m };
                 if (l.addSource(&pd.source)) {
                     x.pending = pd;
                     return false;
@@ -371,9 +377,9 @@ pub const Externals = struct {
 
     fn draw(ctx: *anyopaque, id: ExternalId) tree_mod.Draw {
         const e: *Externals = @ptrCast(@alignCast(ctx));
-        const x = e.get(id) orelse return .none;
-        if (x.embed != null and !x.shown.visible) return .none;
-        return switch (x.mode) {
+        const x = e.get(id) orelse return .{};
+        if (x.embed != null and !x.shown.visible) return .{};
+        return .{ .solid = x.solid, .promoted = x.mode != .composited, .what = switch (x.mode) {
             .above => .none,
             .below => .hole,
             .composited => if (x.frame) |*m| blk: {
@@ -384,7 +390,7 @@ pub const Externals = struct {
                 }
                 break :blk .{ .image = ref };
             } else .none,
-        };
+        } };
     }
 
     /// Decides promotion for this frame and updates the subsurfaces.
@@ -392,6 +398,7 @@ pub const Externals = struct {
     /// next commit). Externals whose drawing changed are touched in `t`.
     pub fn place(e: *Externals, p: platform.Platform, window: platform.WindowId, t: *tree_mod.Tree, bounds: raster.Rect, scale: f64) Allocator.Error!bool {
         try t.externalPlacements(&e.found, bounds);
+        const features = p.subsurfaceFeatures();
         var changed = false;
         for (e.items.items) |*item| if (item.*) |*x| {
             x.seen = false;
@@ -404,18 +411,26 @@ pub const Externals = struct {
             const x = e.get(f.id) orelse continue;
             if (x.embed != null) {
                 if (x.seen) continue; // shown once
-                changed = (try e.placeSurface(p, window, t, x, f, scale)) or changed;
+                changed = (try e.placeSurface(p, window, t, x, f, scale, features)) or changed;
                 continue;
             }
             // Above the window when nothing covers it; below with a hole
-            // when something does (the frames are opaque). One external
-            // shown twice is composited.
+            // when something does (the frames are opaque). Translucent,
+            // above at that alpha (alpha-modifier-v1) when nothing covers
+            // it; a hole cannot show it at less than full opacity, so
+            // otherwise it is composited. One external shown twice is
+            // composited.
             // A dma-buf only if the compositor takes its format and modifier.
             const takes = if (x.frame) |m| if (m.frame.dmabuf) |d| p.supportsDmabuf(d.format, d.modifier) else true else false;
-            const mode: Mode = if (!f.promotable or !takes or x.seen) .composited else if (f.covered) .below else .above;
+            const translucent = f.opacity < 1;
+            const mode: Mode = if (!f.promotable or !takes or x.seen or (translucent and (f.covered or !features.alpha)))
+                .composited
+            else if (f.covered) .below else .above;
             x.seen = true;
-            if (mode != x.mode) t.touchExternal(f.id);
+            const background = solid(f, mode, features);
+            if (mode != x.mode or (background != null) != x.solid) t.touchExternal(f.id);
             x.mode = mode;
+            x.solid = background != null;
             if (mode == .composited) continue;
             const fw: f32 = @floatFromInt(x.frame.?.frame.width);
             const fh: f32 = @floatFromInt(x.frame.?.frame.height);
@@ -424,6 +439,8 @@ pub const Externals = struct {
                 .visible = true,
                 .rect = round(f.visible),
                 .below = mode == .below,
+                .alpha = if (translucent) f.opacity else 1,
+                .background = background,
                 .source = if (cropped) sourceRect(f.source, fw, fh) else null,
                 .frame = .{
                     .fd = x.frame.?.frame.fd,
@@ -438,6 +455,7 @@ pub const Externals = struct {
             if (x.sub == null) x.sub = p.createSubsurface(window) catch {
                 // Without a subsurface, composite it.
                 x.mode = .composited;
+                x.solid = false;
                 t.touchExternal(f.id);
                 continue;
             };
@@ -452,6 +470,8 @@ pub const Externals = struct {
             if (x.embed != null) {
                 if (!x.seen and x.shown.visible) {
                     x.shown.visible = false;
+                    x.shown.background = null;
+                    x.solid = false;
                     p.setSubsurface(window, x.sub.?, &x.shown) catch {};
                     t.touchExternal(@intCast(i + 1));
                     changed = true;
@@ -460,8 +480,9 @@ pub const Externals = struct {
             }
             const keep = x.seen and x.mode != .composited;
             if (!keep) {
-                if (x.mode != .composited) t.touchExternal(@intCast(i + 1));
+                if (x.mode != .composited or x.solid) t.touchExternal(@intCast(i + 1));
                 x.mode = .composited;
+                x.solid = false;
                 if (x.sub != null and x.shown.visible) {
                     x.shown = .{};
                     p.setSubsurface(window, x.sub.?, &x.shown) catch {};
@@ -481,7 +502,7 @@ pub const Externals = struct {
     /// told: a source outside its buffer would be a protocol error. A
     /// placement that needs cropping stays hidden until such a frame
     /// arrives, so that nothing ever shows outside the window or its clips.
-    fn placeSurface(e: *Externals, p: platform.Platform, window: platform.WindowId, t: *tree_mod.Tree, x: *External, f: tree_mod.Found, scale: f64) Allocator.Error!bool {
+    fn placeSurface(e: *Externals, p: platform.Platform, window: platform.WindowId, t: *tree_mod.Tree, x: *External, f: tree_mod.Found, scale: f64, features: platform.SubsurfaceFeatures) Allocator.Error!bool {
         const id = f.id;
         const em = &x.embed.?;
         const full = round(f.rect);
@@ -506,15 +527,51 @@ pub const Externals = struct {
                 state.rect = round(f.visible);
                 state.source = sourceRect(f.source, @floatFromInt(em.buffer.width), @floatFromInt(em.buffer.height));
             }
-            state.below = !f.promotable or f.covered;
+            // Translucent: above at that alpha when nothing covers it;
+            // otherwise below a hole, at full opacity.
+            const translucent = f.opacity < 1;
+            state.below = !f.promotable or f.covered or (translucent and !features.alpha);
+            if (translucent and !state.below) state.alpha = f.opacity;
         }
         const mode: Mode = if (state.below) .below else .above;
-        if (mode != x.mode or state.visible != x.shown.visible) t.touchExternal(id);
+        if (state.visible) state.background = solid(f, mode, features);
+        if (mode != x.mode or state.visible != x.shown.visible or (state.background != null) != x.solid) t.touchExternal(id);
         x.mode = mode;
+        x.solid = state.background != null;
         if (std.meta.eql(state, x.shown)) return false;
         p.setSubsurface(window, x.sub.?, &state) catch {};
         x.shown = state;
         return true;
+    }
+
+    /// The placement's background on a subsurface below the content's, if
+    /// it has one and the compositor can show it: with the content above
+    /// the window, or below it when opaque (a hole shows what is below at
+    /// full opacity, so a translucent one is painted in the window, under
+    /// a hole over the content alone). Only under opaque content: under
+    /// translucent content it would show through, so the window paints it
+    /// around the content instead. Not needed where the content covers the
+    /// whole box.
+    fn solid(f: tree_mod.Found, mode: Mode, features: platform.SubsurfaceFeatures) ?platform.SubsurfaceState.Background {
+        const bg = f.background;
+        if (!features.solid or bg.a <= 0 or f.box.isEmpty() or mode == .composited or f.opacity < 1) return null;
+        if (mode == .below and bg.a < 1) return null;
+        const v = f.visible;
+        if (v.x0 <= f.box.x0 and v.y0 <= f.box.y0 and v.x1 >= f.box.x1 and v.y1 >= f.box.y1) return null;
+        // Premultiplied in encoded space, at 16 bits (siv's working
+        // precision), spread over 32 so that 1 is 0xffffffff.
+        const a: f32 = std.math.clamp(bg.a, 0, 1);
+        const wide = struct {
+            fn wide(c: f32) u32 {
+                return @as(u32, @intFromFloat(@round(std.math.clamp(c, 0, 1) * 65535))) * 65537;
+            }
+        }.wide;
+        return .{ .rect = round(f.box), .rgba = .{
+            wide(scene.linearToSrgb(std.math.clamp(bg.r, 0, 1)) * a),
+            wide(scene.linearToSrgb(std.math.clamp(bg.g, 0, 1)) * a),
+            wide(scene.linearToSrgb(std.math.clamp(bg.b, 0, 1)) * a),
+            wide(a),
+        } };
     }
 
     /// The part `frac` (0..1 on each axis) of a `w` × `h` buffer, snapped
