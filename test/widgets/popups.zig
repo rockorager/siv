@@ -473,7 +473,10 @@ test "toasts: announced, closed after their timeout, removed unless kept" {
     var h: Harness = .{ .golden = "test/golden/widgets" };
     try h.start(320, 160, null, null);
     defer h.stop();
-    var log: Log = .{};
+    // Kept when it first closes, so that its 30 ms timeout, which a
+    // loaded machine may well see pass before the capture, cannot take it
+    // out of the golden image.
+    var log: Log = .{ .keep = true };
     var txn = try begin(h.window);
     background(txn, &h);
     const toast = c.siv_toast(txn, root(&h), &.{ .text = "Message sent", .text_len = 12, .timeout_ms = 30 });
@@ -489,7 +492,6 @@ test "toasts: announced, closed after their timeout, removed unless kept" {
     try testing.expectEqual(ui.Live.assertive, (try sem(sticky)).live);
     try testing.expectEqual(ui.Role.alert, (try sem(sticky)).role);
     // Kept once: it stays.
-    log.keep = true;
     const deadline = @import("loop").Loop.now() + 2 * std.time.ns_per_s;
     while (log.closes == 0 and @import("loop").Loop.now() < deadline) try ok(c.siv_app_dispatch(h.app, 10));
     try testing.expectEqual(@as(u32, 1), log.closes);
