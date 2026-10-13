@@ -1,0 +1,12 @@
+.{
+    .name = .hello_siv,
+    .version = "0.1.0",
+    .fingerprint = 0x797b5dfba7f5f70a,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        // `zig fetch --save <url of a siv release>` writes .url and .hash
+        // here instead; this path is the siv checkout the guide lives in.
+        .siv = .{ .path = "../../../.." },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}

@@ -41,6 +41,10 @@ zig build test-integration-lua # only the Lua binding and siv-lua on sway
 ./zig-out/bin/siv-lua examples/todo.lua  # run a Lua example; --watch reloads it on edits
 zig build test-notices         # NOTICES covers every shipped dependency (also in `test`)
 zig build test-c               # C programs against the generated headers and shared libraries
+zig build guide                # the user guide's samples (docs/guide): built, installed as
+                               #   zig-out/bin/guide-*, run headless against the guide's
+                               #   screenshots; code blocks checked against them (also in `test`)
+SIV_UPDATE_GOLDEN=1 zig build guide  # accept new guide screenshots
 zig build examples             # build and install the C programs in examples/
 zig build test -Dtest-filter=bidi
 zig build bench-text -Doptimize=ReleaseFast   # headless text engine benchmarks

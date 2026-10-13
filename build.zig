@@ -456,6 +456,18 @@ pub fn build(b: *std.Build) void {
         .integration_step = integration_step,
     });
 
+    // The user guide's samples and screenshots (docs/guide), after the
+    // ABI and Lua steps, whose wrapper and binding they use.
+    @import("docs/guide/build_steps.zig").add(b, .{
+        .target = target,
+        .optimize = optimize,
+        .test_filters = test_filters,
+        .abi = abi,
+        .shared = shared,
+        .headless = headless,
+        .test_step = test_step,
+    });
+
     // NOTICES (D25): the licences of what libsiv contains for these
     // options, installed as share/licenses/siv/NOTICES and checked by
     // `test`.

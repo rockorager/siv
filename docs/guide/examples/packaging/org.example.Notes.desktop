@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=Notes
+Comment=Write things down
+Icon=org.example.Notes
+Exec=notes %U
+DBusActivatable=true
+StartupNotify=true
+Categories=Utility;TextEditor;
+MimeType=text/plain;
+Actions=new-note;
+
+[Desktop Action new-note]
+Name=New Note
+Exec=notes --new-note

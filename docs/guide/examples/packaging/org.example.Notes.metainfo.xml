@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.example.Notes</id>
+  <name>Notes</name>
+  <summary>Write things down</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <launchable type="desktop-id">org.example.Notes.desktop</launchable>
+  <description>
+    <p>A small note-taking application built with siv.</p>
+  </description>
+</component>

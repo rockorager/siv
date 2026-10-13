@@ -3380,6 +3380,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Not built yet: the inspector. The counters it would show exist
     (`ui.Window`'s, the compositor's presentation timing), and tests and
     benchmarks read them.
+  - The user guide (`docs/guide`) is tested like code: every code block
+    in it is quoted from a sample in `docs/guide/examples`, and `zig
+    build guide` (part of `test`) builds each sample as a program and
+    runs it unchanged on the headless backend, driving it like a user and
+    comparing its windows with the screenshots the guide shows. C samples
+    are compiled a second time with `siv_app_create`, `siv_window_create`,
+    `siv_app_run`, and `siv_app_dispatch` renamed to the harness's, which pick
+    the headless backend and run the test; Zig samples import a copy of
+    the generated wrapper with the same four renamed; Lua samples run
+    through the binding with `app_create` wrapped, as the Lua examples'
+    tests do. So a renamed function breaks the guide's build, and a
+    changed behavior its screenshots.
 
 ### D25. Project
 

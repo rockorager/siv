@@ -20,6 +20,9 @@ zig build examples # C programs from examples/ in zig-out/bin/
 LUA_CPATH='zig-out/lib/lua/5.5/?.so' lua5.5 -e 'require("siv")'  # or your own Lua 5.5
 ```
 
+To write an application with siv, start with the [guide](docs/guide/README.md),
+in C, Zig, and Lua; `zig build guide` builds and checks its samples.
+
 The C API reference is generated into `zig-out/share/doc/siv/siv.md`, and
 annotations of the Lua API for lua-language-server into
 `zig-out/share/siv/lua/siv.lua`.

@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.example.Notes
+Exec=/usr/bin/notes --service
