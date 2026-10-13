@@ -830,8 +830,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     reruns only break selection and positioning into a `Layout`. The only cache
     is the font cache. Intermediates live in one arena per layout pass.
   - Unsafe-to-break line edges are reshaped inline.
-  - Hyphenation from Liang patterns (check each pattern file's license); an
-    optional Knuth–Plass breaker for document views.
+  - Hyphenation from Liang patterns (each pattern file's licence checked);
+    an optional Knuth–Plass breaker for document views.
   - Horizontal text only; vertical CJK is a non-goal.
   - The font cache never reads files. Fonts enter with caller-supplied bytes or
     as pending Fontconfig sources; shaping skips pending fonts and lists the
@@ -878,8 +878,53 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     of its own breaks at the last grapheme boundary that fits, taking at
     least one grapheme, and both edges are reshaped as at an unsafe
     opportunity. Max-content widths are unchanged.
-  - Not yet built: hyphenation, Knuth–Plass, justified alignment, and
-    center, end, and decimal tab stops.
+  - Justified alignment widens a line's word separators (U+0020, U+00A0,
+    U+3000) equally until its content fills the width, on every line but
+    a paragraph's last, which goes at the start (CSS text-align-last:
+    auto); glyphs and caret stops after each separator move with it. A
+    text node whose lines are justified or chosen by total fit lays out
+    again for every width instead of reusing a layout built for another.
+  - Tab stops align start, center, end, or decimal (a character,
+    '.' by default, at the stop; without one the text ends there). Text
+    after a center, end, or decimal stop is measured to the next tab or
+    the end of its paragraph: word processors measure to the end of the
+    line, which is not known while lines are being chosen.
+  - Hyphenation: Liang's algorithm over hyph-utf8's patterns, kept only
+    where the pattern file's licence is MIT, BSD, or as permissive
+    (`src/text/hyphenation/README.md`: English US and British, German
+    1996, French, Spanish, Dutch, Portuguese, Polish, Ukrainian, Slovak;
+    American English is under the FSF all-permissive notice, which
+    permits copying and modification with the notice kept, like MIT).
+    The patterns are embedded and parsed per language the first time
+    text in it is hyphenated (`text.hyphen.Hyphenation`, one per
+    application in `ui.Fonts`), with the hyphenmins their headers give.
+    A text's language finds them by its tag, its language and region,
+    British English for British-spelling regions, else its language's
+    first patterns. Applications add patterns for other languages, which
+    also replace built-in ones (`siv_app_add_hyphenation`). Words are runs
+    of letters, marks, and apostrophes; points fall on grapheme
+    boundaries. A line broken at one ends with U+2010 (else a hyphen-
+    minus) from the face before the break, after the line's last caret
+    stop and in the cluster of the grapheme before it, so it is shown,
+    never text: PDF copies the word whole. Only left-to-right runs
+    hyphenate. The greedy breaker takes a point in the word that did not
+    fit as the last opportunity that fits, as CSS hyphens: auto does.
+  - Total-fit breaking (`optimal_breaks`, for document views) is Knuth
+    and Plass's, by dynamic programming over every opportunity between
+    forced breaks, quadratic in the opportunities of a paragraph with an
+    early exit once lines overflow. Interword spaces stretch by half
+    their width and never shrink (justification only widens them, and
+    ragged lines must fit); a line's adjustment ratio is its room over
+    its stretch plus 3% of the width, so lines without spaces are worse
+    the looser they are instead of all tied at TeX's capped badness (a
+    first line of one hyphenated syllable tied with a loose line of
+    words); badness 100 |r|³, demerits (10 + badness)² plus 50² for a
+    hyphen and 3000 for consecutive hyphens; a paragraph's last line is
+    free. A word no break makes fit gets a line of its own. Breaks are
+    chosen with tabs at their shaped advance and placed at their stops;
+    `break_words` applies to greedy breaking only. No fitness classes.
+  - Not yet built: hyphenation in right-to-left text and Knuth–Plass's
+    fitness classes and looseness.
   - Text nodes (`src/ui`) reuse a `Layout` built for another width when its
     lines would break the same way (its widest line fits and it was built
     at least as wide), and align lines in the node themselves, so a node
@@ -2211,8 +2256,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       collapse, asking the application's children and child callbacks
       only for items that become visible.
     - Rows carry their position among all items and the set's size (rows
-      of tables their row index, tree items their level), since most of
-      their siblings have no node.
+      of tables their row index), since most of their siblings have no
+      node. Tree items carry their position among their parent's
+      children, the number of them, and their level, kept in the
+      flattened rows, so a screen reader says "2 of 5, level 3".
     - A double click on a row activates it, like Enter: `siv_event`
       carries the click count of primary presses and the input's
       timestamp, so widgets written in C can do the same.
@@ -2236,8 +2283,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       are not focusable: one per column would add a Tab stop per column,
       or a second roving order inside the header, and the keys on the
       header cell cover the keyboard.
-    - Not built yet: a position among siblings for tree items, column
-      reordering, and cells of their own sizes in grids.
+    - Not built yet: column reordering and cells of their own sizes in
+      grids.
   - **Styled text** is spans on the text and editor primitives, not a
     document model: `siv_set_text_spans` gives ranges of a node's text
     their own weight, slant, size, color (literal or themed), underline,
@@ -2264,9 +2311,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       italic, and underline, off when all of the selection (or the
       typing style) has the attribute, else on, as word processors do.
       Masked editors take no spans.
-      Ctrl+L, Ctrl+E, and Ctrl+R align the selected paragraphs left,
-      centered, and right (left and right resolved by the editor's
-      direction; its own start alignment clears the attribute).
+      Ctrl+L, Ctrl+E, Ctrl+R, and Ctrl+J align the selected paragraphs
+      left, centered, right, and justified (left and right resolved by
+      the editor's direction; its own start alignment clears the
+      attribute).
     - Fonts added with `siv_app_add_font` form families whose styles are
       matched per span and synthesized where missing (D13), so bold and
       italic spans show with any font.
@@ -2315,7 +2363,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 ### D25. Project
 
 - **License:** MIT. Every dependency is MIT, BSD, or Apache-2.0; binaries ship a
-  NOTICES file.
+  NOTICES file. Embedded data follows the same rule, with permissive
+  notices of the same kind accepted (D13's American English hyphenation
+  patterns: FSF all-permissive).
 - **Toolchain:** Zig 0.17.
 - **Packaging:** every C dependency has a build option to use the system copy;
   the build installs pkg-config files.
