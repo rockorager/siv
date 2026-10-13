@@ -542,3 +542,47 @@ test "default layouts fill the fields the application's layout leaves zero" {
     try ok(c.siv_node_get_rect(n, &r));
     try testing.expectEqual(t.Rect{ .x = 0, .y = 0, .width = 20, .height = 50 }, r);
 }
+
+const Frames = struct {
+    count: u32 = 0,
+    frame: u64 = 0,
+    present_ns: u64 = 0,
+    commit_ns: u64 = 0,
+
+    fn onEvent(ud: ?*anyopaque, _: t.Window, ev: ?*const t.WindowEvent) callconv(.c) bool {
+        const f: *Frames = @ptrCast(@alignCast(ud.?));
+        const e = ev.?;
+        if (e.type != .presented) return false;
+        f.count += 1;
+        f.frame = e.frame;
+        f.present_ns = e.present_ns;
+        f.commit_ns = e.commit_ns;
+        return false;
+    }
+};
+
+test "windows report each presented frame with its times, and nothing while idle" {
+    var h: Harness = .{};
+    var frames: Frames = .{};
+    const Loop = @import("loop").Loop;
+    const before = Loop.now();
+    try h.start(100, 100, Frames.onEvent, &frames);
+    defer h.stop();
+    try h.settle();
+    try testing.expect(frames.count >= 1);
+    try testing.expect(frames.commit_ns >= before and frames.commit_ns <= Loop.now());
+    try testing.expect(frames.present_ns >= frames.commit_ns);
+    const first = frames.frame;
+    // A change: one more frame, a later commit.
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    _ = c.siv_set_visual(txn, c.siv_window_root(h.window), &.{ .background = .{ .r = 1, .a = 1 } });
+    try ok(c.siv_txn_commit(txn));
+    const n = frames.count;
+    try h.settle();
+    try testing.expectEqual(n + 1, frames.count);
+    try testing.expect(frames.frame > first);
+    // Idle: none.
+    for (0..5) |_| try ok(c.siv_app_dispatch(h.app, 10));
+    try testing.expectEqual(n + 1, frames.count);
+}

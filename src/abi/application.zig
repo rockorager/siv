@@ -564,6 +564,17 @@ fn onWindowEvent(ctx: ?*anyopaque, _: *app_mod.Window, ev: *const app_mod.Window
             external.deliver(w, x.id, .{ .type = .released, .key = x.key });
             return false;
         },
+        .presented => |p| {
+            const cb = w.on_event orelse return false;
+            var e = windowEvent(.presented, w.win.state);
+            e.frame = p.seq;
+            e.present_ns = p.present_ns;
+            e.commit_ns = p.commit_ns;
+            self.enter();
+            defer self.leave();
+            _ = cb(w.user_data, handle, &e);
+            return false;
+        },
         .external_configure => |x| {
             external.deliver(w, x.id, .{
                 .type = .configure,

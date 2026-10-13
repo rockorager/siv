@@ -642,6 +642,7 @@ pub const App = struct {
             .presented => |p| if (app.window(p.window)) |win| {
                 win.presented_seq = p.seq;
                 win.handle(ev);
+                _ = win.notify(&.{ .presented = .{ .seq = p.seq, .present_ns = p.present_ns, .commit_ns = p.commit_ns } });
             },
             else => if (app.window(ev.window())) |win| win.handle(ev),
         }
@@ -684,6 +685,9 @@ pub const WindowEvent = union(enum) {
     external_released: struct { id: compositor.ExternalId, key: u64 },
     /// An embedder's surface has a new size.
     external_configure: struct { id: compositor.ExternalId, width: u32, height: u32, buffer_width: u32, buffer_height: u32 },
+    /// Everything committed up to `seq` reached the screen: predicted
+    /// presentation and commit times on CLOCK_MONOTONIC.
+    presented: struct { seq: u64, present_ns: u64, commit_ns: u64 },
 };
 
 pub const Listener = struct {

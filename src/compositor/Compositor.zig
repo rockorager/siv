@@ -1075,7 +1075,7 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
     // A commit that changed nothing visible is on screen already.
     if (w.seq > w.presented_seq and (presented or damage.len == 0)) {
         w.presented_seq = w.seq;
-        self.outbox.push(.{ .presented = .{ .window = w.id, .seq = w.seq, .present_ns = t } });
+        self.outbox.push(.{ .presented = .{ .window = w.id, .seq = w.seq, .present_ns = t, .commit_ns = Loop.now() } });
     }
     if (w.ui_frame) {
         w.ui_frame = false;

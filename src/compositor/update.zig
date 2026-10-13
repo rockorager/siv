@@ -343,7 +343,10 @@ pub const Event = union(enum) {
     frame: platform.Frame,
     /// The first frame that includes commit `seq` (and every earlier
     /// commit to the window) will be presented at about `present_ns`.
-    presented: struct { window: WindowId, seq: u64, present_ns: u64 },
+    /// `present_ns` is the predicted presentation time of the frame (D12),
+    /// `commit_ns` when it was committed to the display server, both on
+    /// CLOCK_MONOTONIC.
+    presented: struct { window: WindowId, seq: u64, present_ns: u64, commit_ns: u64 = 0 },
     /// The compositor changed a scroll offset: by input, a fling, or an
     /// animation. `seq` is the last commit applied at the time, so a report
     /// older than the UI's own `scroll_to` can be told apart.

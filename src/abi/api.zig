@@ -314,6 +314,7 @@ pub const decls = [_]Decl{
         .{ .name = "resized", .value = 1, .doc = "The logical size changed; width and height have the new size." },
         .{ .name = "scale_changed", .value = 2, .doc = "The buffer scale changed." },
         .{ .name = "states_changed", .value = 3, .doc = "The window states changed." },
+        .{ .name = "presented", .value = 4, .doc = "A frame with everything committed so far reached the display server (D12): frame counts the window's commits, present_ns and commit_ns say when. Sent once per commit that changed what is shown (or changed nothing visible), never while idle; a burst of commits within one frame reports the last." },
     }),
     descriptor("siv_window_event", "A window event. Filled by siv; fields past a caller's size are absent.", &.{
         .{ .name = "type", .type = ref("siv_window_event_type"), .doc = "What happened." },
@@ -321,6 +322,9 @@ pub const decls = [_]Decl{
         .{ .name = "height", .type = .u32, .doc = "Logical height." },
         .{ .name = "states", .type = ref("siv_window_states"), .doc = "Current states." },
         .{ .name = "scale", .type = .f64, .doc = "Buffer scale (1.25 for 125%)." },
+        .{ .name = "frame", .type = .u64, .doc = "Presented: the window's commit count it shows, rising." },
+        .{ .name = "present_ns", .type = .u64, .doc = "Presented: when the frame is shown, CLOCK_MONOTONIC nanoseconds: the refresh the frame clock predicted for it from the compositor's presentation feedback (D12), or one refresh interval after the frame began without feedback." },
+        .{ .name = "commit_ns", .type = .u64, .doc = "Presented: when the frame was committed to the display server, CLOCK_MONOTONIC nanoseconds, comparable with clock_gettime(CLOCK_MONOTONIC) in the application." },
     }),
     callback("siv_window_event_fn", "Receives a window's events at safe points on the application's thread (D5).", &.{
         .{ .name = "window", .type = ref("siv_window"), .doc = "The window." },

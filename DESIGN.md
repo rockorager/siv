@@ -895,6 +895,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     optimized builds), the last prediction within a refresh of its
     feedback (Vulkan), and a wheel-to-photon median within two refreshes
     plus 2 ms.
+  - Applications see presentation too: each window reports
+    `SIV_WINDOW_EVENT_PRESENTED` when a frame with everything committed
+    so far reaches the display server, with the commit count it shows,
+    the predicted presentation time, and the commit time (CLOCK_MONOTONIC).
+    It rides on the compositor's existing "presented" message, so it
+    costs no wakeup and none comes while idle. Startup to first frame,
+    or a change reaching the screen, is measurable without siv's
+    internals; found by the file manager in `apps/files`, whose
+    benchmark read `presented_seq`. The time is the frame clock's
+    prediction rather than the later feedback, so the event is not held
+    back a refresh.
   - Mesa's FIFO without `fifo-v1` (every release before 25.0) waits for the
     previous commit's frame callback inside vkQueuePresentKHR, with no
     timeout. A configure forces a frame even while a callback is
