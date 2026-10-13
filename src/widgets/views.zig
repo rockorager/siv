@@ -83,6 +83,14 @@ pub const View = extern struct {
     heights_built: bool = false,
     /// The header cell that takes focus (roving).
     header_focus: u32 = 0,
+    /// A plain press on an item of a larger selection keeps the selection
+    /// (a drag carries all of it); the release collapses it to this item
+    /// unless a drag started. -1 for none.
+    pending: i32 = -1,
+    /// Items whose selection changed since the last select event: every
+    /// one lies in changed_lo..changed_hi (empty when lo > hi).
+    changed_lo: u32 = std.math.maxInt(u32),
+    changed_hi: u32 = 0,
 };
 
 /// A table column's header cell.
@@ -259,11 +267,29 @@ fn setSelected(v: *View, i: u32, on: bool) void {
     if (was == on) return;
     if (on) b[i / 8] |= mask else b[i / 8] &= ~mask;
     if (on) v.selected += 1 else v.selected -= 1;
+    markChanged(v, i, i);
 }
 
 fn clearSelection(v: *View) void {
-    @memset(bits(v), 0);
+    const b = bits(v);
+    if (v.selected != 0) {
+        const first = std.mem.indexOfNone(u8, b, &.{0}).?;
+        const last = std.mem.lastIndexOfNone(u8, b, &.{0}).?;
+        markChanged(v, @intCast(first * 8 + @ctz(b[first])), @intCast(last * 8 + 7 - @clz(b[last])));
+    }
+    @memset(b, 0);
     v.selected = 0;
+}
+
+fn markChanged(v: *View, lo: u32, hi: u32) void {
+    v.changed_lo = @min(v.changed_lo, lo);
+    v.changed_hi = @max(v.changed_hi, hi);
+}
+
+/// Forgets changes the application made itself (they are not reported).
+fn resetChanged(v: *View) void {
+    v.changed_lo = std.math.maxInt(u32);
+    v.changed_hi = 0;
 }
 
 fn treeRows(v: *const View) []TreeRow {
@@ -947,7 +973,21 @@ fn moveCursor(v: *View, to: i64, window: siv.Window, mods: siv.Modifiers, toggle
 fn emitSelect(v: *View) void {
     var handled = false;
     const i: u32 = if (v.cursor >= 0) @intCast(v.cursor) else 0;
-    _ = c.siv_emit(v.root, &.{ .type = .select, .index = i, .value = @floatFromInt(v.cursor), .count = v.selected }, &handled);
+    const lo, const n = if (v.changed_lo <= v.changed_hi) .{ v.changed_lo, v.changed_hi - v.changed_lo + 1 } else .{ i, 0 };
+    resetChanged(v);
+    _ = c.siv_emit(v.root, &.{ .type = .select, .index = i, .value = @floatFromInt(v.cursor), .count = v.selected, .changed_index = lo, .changed_count = n }, &handled);
+}
+
+/// Moves the cursor to `to` and focuses it without changing the
+/// selection.
+fn moveCursorOnly(v: *View, to: u32, window: siv.Window) void {
+    const txn = w.begin(window) orelse return;
+    v.cursor = @intCast(to);
+    v.anchor = @intCast(to);
+    reveal(txn, v, to);
+    applyAll(txn, v);
+    if (!w.commit(txn)) return;
+    focusCursor(v);
 }
 
 /// Scrolls so that row `i` is in view, and binds rows for the new range.
@@ -964,14 +1004,8 @@ fn reveal(txn: Txn, v: *View, i: u32) void {
 }
 
 fn focusCursor(v: *View) void {
-    var cur = w.related(v.content, .first_child);
-    while (cur != .null) : (cur = w.related(cur, .next)) {
-        const r = rowOf(cur) orelse continue;
-        if (r.index == v.cursor and r.gen == v.gen) {
-            _ = c.siv_node_focus(cur);
-            return;
-        }
-    }
+    if (v.cursor < 0) return;
+    if (boundRow(v, @intCast(v.cursor))) |r| _ = c.siv_node_focus(r.root);
 }
 
 fn onViewport(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
@@ -1017,13 +1051,34 @@ fn onRowPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) si
                 }
             }
             const index = r.index;
-            moveCursor(v, index, e.window, e.modifiers, e.modifiers.ctrl and v.selection == .multiple);
+            const plain = !e.modifiers.ctrl and !e.modifiers.shift;
+            if (plain and v.selection == .multiple and v.selected > 1 and isSelected(v, @intCast(index))) {
+                // Keep the selection for a drag; the release collapses it.
+                v.pending = @intCast(index);
+                moveCursorOnly(v, @intCast(index), e.window);
+            } else {
+                v.pending = -1;
+                moveCursor(v, index, e.window, e.modifiers, e.modifiers.ctrl and v.selection == .multiple);
+            }
             // A double click activates the item, like Enter.
-            if (e.clicks == 2 and !e.modifiers.ctrl and !e.modifiers.shift) {
+            if (e.clicks == 2 and plain) {
                 var handled = false;
                 _ = c.siv_emit(v.root, &.{ .type = .activate, .index = @intCast(index), .value = @floatFromInt(index) }, &handled);
             }
             return .handled;
+        },
+        .up => {
+            if (e.button != .primary or v.pending < 0) return .pass;
+            const index = v.pending;
+            v.pending = -1;
+            // No drag started: select only the pressed item.
+            moveCursor(v, index, e.window, .{}, false);
+            return .handled;
+        },
+        // A drag started (or the compositor took the press).
+        .cancel => {
+            v.pending = -1;
+            return .pass;
         },
         else => return .pass,
     }
@@ -1137,6 +1192,7 @@ pub export fn siv_view_set_count(txn: Txn, view: Node, count: u32) siv.Result {
         if (v.cursor >= @as(i64, count)) v.cursor = if (count == 0) -1 else @intCast(count - 1);
         if (v.anchor >= @as(i64, count)) v.anchor = v.cursor;
     }
+    resetChanged(v);
     v.gen +%= 1;
     update(txn, v);
     return c.siv_txn_status(txn);
@@ -1156,10 +1212,12 @@ pub export fn siv_view_set_selected(txn: Txn, view: Node, index: u32, selected: 
         clearSelection(v);
         v.cursor = @intCast(index);
         setSelected(v, index, selected);
+        resetChanged(v);
         applyAll(txn, v);
         return c.siv_txn_status(txn);
     }
     setSelected(v, index, selected);
+    resetChanged(v);
     // Only the row showing the item changes, if it is bound: restyling
     // every row per call made selecting many items one by one quadratic.
     var cur = w.related(v.content, .first_child);
@@ -1238,6 +1296,7 @@ pub export fn siv_view_set_selection(txn: Txn, view: Node, bitset: ?[*]const u8,
         b[i] = x & keep;
     }
     v.selected = total;
+    resetChanged(v);
     applyAll(txn, v);
     return c.siv_txn_status(txn);
 }
@@ -1251,6 +1310,51 @@ pub export fn siv_view_get_selection(view: Node, out: ?[*]u8, out_cap: usize, le
     if (k != 0) @memcpy(out.?[0..k], bits(v)[0..k]);
     total.* = n;
     return .ok;
+}
+
+pub export fn siv_view_get_cursor(view: Node, index: ?*i32) siv.Result {
+    const out = index orelse return .error_invalid_argument;
+    const v = viewOf(view) orelse return .error_invalid_argument;
+    out.* = v.cursor;
+    return .ok;
+}
+
+pub export fn siv_view_set_cursor(txn: Txn, view: Node, index: i32) siv.Result {
+    const v = viewOf(view) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
+    if (index >= @as(i64, v.count) or index < -1) return c.siv_txn_fail(txn, .error_invalid_argument);
+    setCursor(txn, v, @floatFromInt(index));
+    return c.siv_txn_status(txn);
+}
+
+pub export fn siv_view_focus(view: Node) siv.Result {
+    const v = viewOf(view) orelse return .error_invalid_argument;
+    if (v.hdr.disabled) return .error_invalid_argument;
+    if (v.count == 0) return c.siv_node_focus(v.scroll);
+    if (v.cursor < 0) {
+        const txn = w.begin(w.windowOf(view)) orelse return .error_busy;
+        setCursor(txn, v, 0);
+        if (!w.commit(txn)) return .error_out_of_memory;
+    }
+    const row = boundRow(v, @intCast(v.cursor)) orelse return .error_invalid_argument;
+    return c.siv_node_focus(row.root);
+}
+
+pub export fn siv_view_get_row(view: Node, index: u32, row: ?*Node) siv.Result {
+    const out = row orelse return .error_invalid_argument;
+    const v = viewOf(view) orelse return .error_invalid_argument;
+    if (index >= v.count) return .error_invalid_argument;
+    out.* = if (boundRow(v, index)) |r| r.body else .null;
+    return .ok;
+}
+
+/// The row bound to item `i`, if it is in view (or is the cursor's).
+fn boundRow(v: *const View, i: u32) ?*Row {
+    var cur = w.related(v.content, .first_child);
+    while (cur != .null) : (cur = w.related(cur, .next)) {
+        const r = rowOf(cur) orelse continue;
+        if (r.index == i and r.gen == v.gen) return r;
+    }
+    return null;
 }
 
 pub export fn siv_view_get_item(view: Node, index: u32, item: ?*u64) siv.Result {
@@ -1291,6 +1395,7 @@ pub fn setLabel(txn: Txn, v: *View, label: []const u8) void {
 pub fn setCursor(txn: Txn, v: *View, to: f64) void {
     const i: i64 = @intFromFloat(@round(to));
     v.cursor = if (i >= 0 and i < v.count) @intCast(i) else -1;
+    v.anchor = v.cursor;
     if (v.cursor >= 0) reveal(txn, v, @intCast(v.cursor));
     applyAll(txn, v);
 }

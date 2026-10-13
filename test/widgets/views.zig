@@ -42,6 +42,8 @@ const Model = struct {
     activations: u32 = 0,
     destroyed: u32 = 0,
     columns: u32 = 0,
+    changed_index: u32 = 0,
+    changed_count: u32 = 0,
 
     fn bind(ud: ?*anyopaque, txn: t.Txn, row: t.Node, item: u64, _: u32, depth: u32, recycled: bool) callconv(.c) void {
         const m: *Model = @ptrCast(@alignCast(ud.?));
@@ -79,6 +81,8 @@ const Model = struct {
         m.selects += 1;
         m.index = ev.?.index;
         m.selected = ev.?.count;
+        m.changed_index = ev.?.changed_index;
+        m.changed_count = ev.?.changed_count;
         return .handled;
     }
 
@@ -394,6 +398,144 @@ test "list view: the whole selection as a bitset, set and read in one call" {
     const single = try listOf(&h, &m2, 10, .single);
     txn = try begin(h.window);
     try testing.expectEqual(t.Result.error_invalid_argument, c.siv_view_set_selection(txn, single, &over, 1));
+    try ok(c.siv_txn_abort(txn));
+}
+
+/// Starts a drag from the next move once armed (the view keeps the
+/// press itself, so the test arms it after pressing).
+const Dragger = struct {
+    armed: bool = false,
+    started: t.Result = .error_unavailable,
+
+    fn onPointer(ud: ?*anyopaque, node: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
+        const d: *Dragger = @ptrCast(@alignCast(ud.?));
+        const e = ev.?;
+        if (e.phase == .move and d.armed) {
+            d.armed = false;
+            const mimes = "text/plain";
+            d.started = c.siv_drag_start(node, &.{ .mimes = mimes, .mimes_len = mimes.len, .data = "x", .data_count = 1, .actions = .{ .copy = true } });
+        }
+        return .pass;
+    }
+};
+
+test "list view: a press keeps a larger selection for a drag; select reports what changed" {
+    var h: Harness = .{};
+    try h.start(240, 320, null, null);
+    defer h.stop();
+    var m: Model = .{};
+    const list = try listOf(&h, &m, 1000, .multiple);
+    var d: Dragger = .{};
+    const txn = try begin(h.window);
+    try ok(c.siv_on(txn, list, .pointer, Dragger.onPointer, null, &d));
+    try ok(c.siv_txn_commit(txn));
+    const id = (try h.win()).win.id;
+    const rowY = struct {
+        fn f(i: u32) f64 {
+            return @as(f64, @floatFromInt(i)) * 32 + 16;
+        }
+    }.f;
+
+    // Click item 3, then Shift+click item 7: 3 to 7 selected, and the
+    // event names the range that changed.
+    try h.click(100, rowY(3));
+    try h.settle();
+    try testing.expectEqual(@as(u32, 3), m.changed_index);
+    try testing.expectEqual(@as(u32, 1), m.changed_count);
+    try h.inject(&.{.{ .modifiers = .{ .window = id, .seat = 0, .mods = .{ .shift = true } } }});
+    try h.click(60, rowY(7));
+    try h.inject(&.{.{ .modifiers = .{ .window = id, .seat = 0, .mods = .{} } }});
+    try h.settle();
+    try testing.expectEqual(@as(u32, 5), m.selected);
+    try testing.expectEqual(@as(u32, 3), m.changed_index);
+    try testing.expectEqual(@as(u32, 5), m.changed_count);
+
+    // A press on item 5 keeps all five; the release selects only it.
+    const selects = m.selects;
+    try h.inject(&.{
+        .{ .pointer_motion = .{ .window = id, .seat = 0, .x = 140, .y = rowY(5) } },
+        .{ .pointer_button = .{ .window = id, .seat = 0, .button = 0x110, .pressed = true, .time = 1000, .serial = 5 } },
+    });
+    try h.settle();
+    try testing.expectEqual(selects, m.selects);
+    var sel = false;
+    try ok(c.siv_view_is_selected(list, 3, &sel));
+    try testing.expect(sel);
+    var cursor: i32 = -1;
+    try ok(c.siv_view_get_cursor(list, &cursor));
+    try testing.expectEqual(@as(i32, 5), cursor);
+    try h.inject(&.{.{ .pointer_button = .{ .window = id, .seat = 0, .button = 0x110, .pressed = false, .time = 1000, .serial = 6 } }});
+    try h.settle();
+    try testing.expectEqual(@as(u32, 1), m.selected);
+    try ok(c.siv_view_is_selected(list, 3, &sel));
+    try testing.expect(!sel);
+    // Items 3, 4, 6, 7 lost the selection: the range covers them.
+    try testing.expectEqual(@as(u32, 3), m.changed_index);
+    try testing.expectEqual(@as(u32, 5), m.changed_count);
+
+    // Select 5 to 7 again, press on 6 and drag: the selection goes with
+    // the drag, whole.
+    try h.inject(&.{.{ .modifiers = .{ .window = id, .seat = 0, .mods = .{ .shift = true } } }});
+    try h.click(100, rowY(7));
+    try h.inject(&.{.{ .modifiers = .{ .window = id, .seat = 0, .mods = .{} } }});
+    try h.settle();
+    try testing.expectEqual(@as(u32, 3), m.selected);
+    try h.inject(&.{
+        .{ .pointer_motion = .{ .window = id, .seat = 0, .x = 100, .y = rowY(6) } },
+        .{ .pointer_button = .{ .window = id, .seat = 0, .button = 0x110, .pressed = true, .time = 5000, .serial = 7 } },
+    });
+    try h.settle();
+    d.armed = true;
+    try h.inject(&.{.{ .pointer_motion = .{ .window = id, .seat = 0, .x = 120, .y = rowY(6) + 10 } }});
+    try h.settle();
+    try testing.expectEqual(t.Result.ok, d.started);
+    try h.inject(&.{.{ .pointer_button = .{ .window = id, .seat = 0, .button = 0x110, .pressed = false, .time = 5000, .serial = 8 } }});
+    try h.settle();
+    try testing.expectEqual(@as(u32, 3), m.selected);
+    try ok(c.siv_view_is_selected(list, 5, &sel));
+    try testing.expect(sel);
+}
+
+test "list view: the cursor is read, moved, and focused; rows are reachable" {
+    var h: Harness = .{};
+    try h.start(240, 320, null, null);
+    defer h.stop();
+    var m: Model = .{};
+    const list = try listOf(&h, &m, 1000, .multiple);
+    var cursor: i32 = 0;
+    try ok(c.siv_view_get_cursor(list, &cursor));
+    try testing.expectEqual(@as(i32, -1), cursor);
+    // Focusing the view gives it a cursor on the first row.
+    try ok(c.siv_view_focus(list));
+    try ok(c.siv_view_get_cursor(list, &cursor));
+    try testing.expectEqual(@as(i32, 0), cursor);
+    const uw, _ = try uiId(list);
+    try testing.expectEqualStrings("Item 0", (try uw.semanticsTree()).name((try focusedRole(&h)).?));
+    // Moving it far away scrolls there; focusing follows after the commit.
+    var txn = try begin(h.window);
+    try ok(c.siv_view_set_cursor(txn, list, 500));
+    try ok(c.siv_txn_commit(txn));
+    try ok(c.siv_view_focus(list));
+    try h.settle();
+    try testing.expectEqualStrings("Item 500", (try uw.semanticsTree()).name((try focusedRole(&h)).?));
+    // Shift+Down extends from the new cursor, not the old one.
+    try h.typeKey(ks.down, "", .{ .shift = true });
+    try h.settle();
+    try testing.expectEqual(@as(u32, 2), m.selected);
+    // Bound rows are reachable; rows out of view are not.
+    var row: t.Node = .null;
+    try ok(c.siv_view_get_row(list, 501, &row));
+    try testing.expect(row != .null);
+    var label: t.Node = .null;
+    try ok(c.siv_node_get_related(row, .first_child, &label));
+    var buf: [32]u8 = undefined;
+    var len: usize = 0;
+    try ok(c.siv_node_get_text(label, &buf, buf.len, &len));
+    try testing.expectEqualStrings("Item 501", buf[0..len]);
+    try ok(c.siv_view_get_row(list, 3, &row));
+    try testing.expectEqual(t.Node.null, row);
+    txn = try begin(h.window);
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_view_set_cursor(txn, list, 1000));
     try ok(c.siv_txn_abort(txn));
 }
 

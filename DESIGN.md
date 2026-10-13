@@ -2399,7 +2399,23 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       one item restyles only its row: the file manager in `apps/files`
       took 0.8 s for Ctrl+A over 100 000 entries and 1.5 s to keep a
       selection across a new sort order with a call (and a restyle of
-      every row) per item. Trees
+      every row) per item. A plain press on an item of a larger
+      selection keeps the selection, so that a drag from it carries
+      every item, and the release collapses it to the item unless a drag
+      started (its pointer cancel), as file managers do. `select` names
+      the range of rows that holds every item whose selection changed
+      (`changed_index`, `changed_count`; a bound, not an exact set, so a
+      collapse of scattered items is one range), so an application that
+      keeps totals over the selection, such as the size of the selected
+      files, reads only that range of the bitset. The cursor is read and
+      moved (`siv_view_get_cursor`, `siv_view_set_cursor`, which also
+      moves the Shift anchor) and focused (`siv_view_focus`; the view
+      itself is not focusable, its cursor row is), and the node bind
+      filled for a row is reached with `siv_view_get_row` while bound,
+      for a menu at the cursor's item. Found by the file manager in
+      `apps/files`, which intercepted presses on selected items itself,
+      read the whole bitset on every change, and walked the view's
+      subtree for the cursor's row. Trees
       keep their visible items flattened in node data, inserting and
       removing rows (and shifting selection bits) as items expand and
       collapse, asking the application's children and child callbacks

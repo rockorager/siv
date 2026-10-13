@@ -743,7 +743,7 @@ pub const decls = [_]Decl{
         .{ .name = "drop", .value = 6, .doc = "A drag over a drop target (siv_set_drop_target), not bubbled: phase enter or move (return true to take the drag here), leave, or drop (data holds the data; return true if the node took it). x and y give the position, mime the type the node gets, action the negotiated action, and actions what the source offers." },
         .{ .name = "drag", .value = 7, .doc = "A drag the node started (siv_drag_start) progressed, not bubbled: phase move (the target under the pointer changed, SIV_EVENT_ACCEPTED if it takes the data, action the chosen action), drop (dropped on a target that takes it), or end (action is what the target did, none if cancelled; after a move, delete the data)." },
         .{ .name = "set_value", .value = 8, .doc = "Assistive technology asks a node with a value (SIV_SEMANTICS_HAS_VALUE) to take value. The handler applies it, clamped and stepped, or ignores it. Delivered to the node only." },
-        .{ .name = "select", .value = 9, .doc = "Widgets: an item was chosen (a menu item) or a view's selection changed; index names the item, count how many are selected. Delivered to the node only." },
+        .{ .name = "select", .value = 9, .doc = "Widgets: an item was chosen (a menu item) or a view's selection changed; index names the item (a view's cursor), count how many are selected, and for views changed_index and changed_count the range that holds every item whose selection changed. Delivered to the node only." },
         .{ .name = "close", .value = 10, .doc = "Widgets: a dialog, popover, or toast asks to close (Escape, a click outside it, its timeout). Its default handler closes it; return true from siv_on to keep it. Delivered to the node only." },
         .{ .name = "viewport", .value = 11, .doc = "A scroll node's visible region changed: x and y are its scroll offset (logical, D21), width and height the size of its viewport. Delivered to the scroll node only, at a safe point: after the compositor scrolled it (D8), or at the start of the frame after its offset or size changed, before layout, so nodes a handler adds show in that frame. Virtualized views build the rows they show from it." },
         .{ .name = "sort", .value = 12, .doc = "Table views: the user asked to sort by a column (a click on its header, or Enter or Space on it): index is the column, value 1 for ascending or -1 for descending. Delivered to the view; when its handler returns true, the header shows the column sorted that way, so a handler sorts the items, returns true, and refreshes the view." },
@@ -859,6 +859,8 @@ pub const decls = [_]Decl{
         .{ .name = "clicks", .type = .u32, .doc = "Pointer, phase down or up of the primary button: 1 for a click, 2 for a double click, 3 for a triple click, within the desktop's double-click time and a few pixels (D15)." },
         .{ .name = "time", .type = .u32, .doc = "Pointer and key: the input's timestamp in milliseconds, on the compositor's clock." },
         .{ .name = "target", .type = ref("siv_node"), .doc = "Pointer, key, and scroll: the node the event was delivered to first, before bubbling (the node under the pointer or holding its press, the focused node), so a handler on an ancestor can tell its own events from those of a descendant, such as an editor in a list row. Other events: the node itself." },
+        .{ .name = "changed_index", .type = .u32, .doc = "Select, from views: the first row of the range that holds every item whose selection changed since the last select event (items in it may be unchanged, none outside it changed), so a handler that keeps totals over the selection reads only that range of siv_view_get_selection." },
+        .{ .name = "changed_count", .type = .u32, .doc = "Select, from views: the number of rows in that range; 0 when no item's selection changed (only the cursor moved)." },
     }),
     enumeration("siv_event_result", "What a handler did with an event: two independent requests, to stop bubbling and to prevent the default action, in one value. The default actions are the node's siv_on_default handler, those of the nodes it would bubble to, and siv's own (an editor typing the key, a press focusing and activating, Tab moving focus). For events that do not bubble, any result but pass counts as handled. In C, returning true still means handled and false pass.", &.{
         .{ .name = "pass", .value = 0, .doc = "Not handled: the event bubbles on and the default action runs." },
@@ -1689,6 +1691,17 @@ pub const functions = [_]Function{
         .{ .name = "view", .type = ref("siv_node"), .doc = "A view." },
         .{ .name = "bits", .type = .buffer, .doc = "Receives at most bits_cap bytes; may be NULL with bits_cap 0." },
         .{ .name = "len", .type = out(.usize), .doc = "The bitset's full length in bytes." },
+    }),
+    call("siv_view_get_cursor", "A view's cursor: the row that takes focus and that keys move from, or -1 when it has none.", &.{
+        .{ .name = "view", .type = ref("siv_node"), .doc = "A view." },
+        .{ .name = "index", .type = out(.i32), .doc = "The cursor's row index, or -1." },
+    }),
+    setter("siv_view_set_cursor", "Moves a view's cursor (and the anchor of Shift selection) to a row and scrolls it into view, without reporting it or changing the selection. Focus stays where it is; siv_view_focus moves it there after the commit.", &.{.{ .name = "index", .type = .i32, .doc = "The row index, or -1 for no cursor." }}),
+    call("siv_view_focus", "Moves keyboard focus to a view's cursor row, as of the last commit; without a cursor, it moves the cursor to the first row first. An empty view focuses its scroll node. siv_node_focus on the view itself fails, since the rows take focus (roving).", &.{.{ .name = "view", .type = ref("siv_node"), .doc = "A view." }}),
+    call("siv_view_get_row", "The node bind filled for a row index, as of the last commit, or 0 when the row is not bound: only the rows in view (and the cursor's) exist. For anchoring a popup or a menu at an item (siv_menu_open_at), or reading what bind put there.", &.{
+        .{ .name = "view", .type = ref("siv_node"), .doc = "A view." },
+        .{ .name = "index", .type = .u32, .doc = "The row index." },
+        .{ .name = "row", .type = out(ref("siv_node")), .doc = "The row's node, or 0." },
     }),
     call("siv_view_get_item", "The item at a row index: its index, or for trees its id.", &.{
         .{ .name = "view", .type = ref("siv_node"), .doc = "A view." },
