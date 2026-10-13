@@ -337,6 +337,8 @@ test "grid view with thumbnails decoded on the worker pool" {
     defer fx.remove();
     try writePng(&fx, "photo.png", 320, 200, .{ 220, 120, 40 });
     try writePng(&fx, "tall.png", 90, 240, .{ 40, 140, 220 });
+    // Two lines at most under a cell, the second ending in an ellipsis.
+    try fx.add(.{ .name = "minutes of the annual general meeting.txt", .size = 900 });
     var h: Harness = .{};
     try h.start(.{ .path = fx.path, .mode = .grid, .thumbnails = true });
     defer h.stop();
@@ -374,6 +376,8 @@ test "dark style, and the context menu" {
     var fx: Fixture = .{};
     try fx.create(&sample);
     defer fx.remove();
+    // A name too long for its column ends in an ellipsis.
+    try fx.add(.{ .name = "Quarterly report for the board meeting, final version (2).pdf", .size = 1_500_000 });
     var h: Harness = .{};
     try h.start(.{ .path = fx.path, .scheme = .dark });
     defer h.stop();

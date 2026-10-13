@@ -282,7 +282,8 @@ fn px(v: f32) siv.Dimension {
 
 fn text(txn: Txn, parent: Node, s: []const u8, token: siv.ColorToken, role: siv.TextRole) Node {
     const n = c.siv_text(txn, parent, s.ptr, s.len);
-    _ = c.siv_set_text_style(txn, n, &.{ .color_token = token, .size_role = role, .flags = .{ .no_wrap = true } });
+    // One line; cut short with an ellipsis when it does not fit.
+    _ = c.siv_set_text_style(txn, n, &.{ .color_token = token, .size_role = role, .flags = .{ .no_wrap = true, .ellipsize = true } });
     return n;
 }
 
@@ -607,8 +608,11 @@ fn bindRow(ud: ?*anyopaque, txn: Txn, row: Node, item: u64, _: u32, _: u32, _: b
         parts.name = text(txn, name_cell, "", .view_fg, .body);
         _ = c.siv_set_layout(txn, parts.name, &.{ .grow = 1, .basis = px(0) });
         parts.size = text(txn, row, "", .muted_fg, .body);
-        _ = c.siv_set_text_style(txn, parts.size, &.{ .color_token = .muted_fg, .size_role = .body, .@"align" = .end, .flags = .{ .no_wrap = true } });
+        _ = c.siv_set_text_style(txn, parts.size, &.{ .color_token = .muted_fg, .size_role = .body, .@"align" = .end, .flags = .{ .no_wrap = true, .ellipsize = true } });
         parts.modified = text(txn, row, "", .muted_fg, .body);
+        // Dates read left to right in right-to-left layouts too: their
+        // two runs of digits would swap in an RTL paragraph (D21).
+        _ = c.siv_set_text_style(txn, parts.modified, &.{ .color_token = .muted_fg, .size_role = .body, .direction = .ltr, .flags = .{ .no_wrap = true, .ellipsize = true } });
         parts.kind = text(txn, row, "", .muted_fg, .body);
         // Cells, with their column, for screen readers' table navigation.
         for ([_]Node{ name_cell, parts.size, parts.modified, parts.kind }, 1..) |cell, k| {
@@ -622,13 +626,9 @@ fn bindRow(ud: ?*anyopaque, txn: Txn, row: Node, item: u64, _: u32, _: u32, _: b
     var buf: [64]u8 = undefined;
     const size = if (e.kind == .dir) "—" else model.formatSize(&buf, e.size);
     _ = c.siv_set_text(txn, parts.size, size.ptr, size.len);
-    // A left-to-right mark first: in a right-to-left layout the date's
-    // two runs of digits would otherwise swap (the paragraph's base
-    // direction comes from its first strong character, D21).
     var tbuf: [64]u8 = undefined;
-    tbuf[0..3].* = "\u{200E}".*;
-    const t = model.formatTime(tbuf[3..], e.mtime, self.opts.tz_offset_s);
-    _ = c.siv_set_text(txn, parts.modified, &tbuf, t.len + 3);
+    const t = model.formatTime(&tbuf, e.mtime, self.opts.tz_offset_s);
+    _ = c.siv_set_text(txn, parts.modified, t.ptr, t.len);
     const kind = e.category.label();
     _ = c.siv_set_text(txn, parts.kind, kind.ptr, kind.len);
     _ = c.siv_invalidate(txn, parts.icon);
@@ -657,7 +657,8 @@ fn bindCell(ud: ?*anyopaque, txn: Txn, cell: Node, item: u64, _: u32, _: u32, _:
         _ = c.siv_set_visual(txn, parts.image, &.{ .flags = .{ .hidden = true } });
         _ = c.siv_set_semantics(txn, parts.image, &.{ .role = .none });
         parts.name = c.siv_text(txn, col, "", 0);
-        _ = c.siv_set_text_style(txn, parts.name, &.{ .color_token = .view_fg, .size_role = .caption, .@"align" = .center, .flags = .{ .break_words = true } });
+        // Two lines at most, the second cut short with an ellipsis.
+        _ = c.siv_set_text_style(txn, parts.name, &.{ .color_token = .view_fg, .size_role = .caption, .@"align" = .center, .max_lines = 2, .flags = .{ .break_words = true, .ellipsize = true } });
         _ = c.siv_set_layout(txn, parts.name, &.{ .width = .{ .unit = .fraction, .value = 1 } });
         _ = c.siv_on(txn, cell, .pointer, onRowPointer, null, parts);
         _ = c.siv_on(txn, cell, .drop, onRowDrop, null, parts);

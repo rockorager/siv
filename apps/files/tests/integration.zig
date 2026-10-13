@@ -331,11 +331,10 @@ test "on sway with a screen reader: rows, cells, places, focus, and announcement
     const expected = [_][]const u8{
         // The window's name is its title.
         "FRAME frame 'Home \u{2014} Files'",
-        // Rows named from their cells (Python shows the left-to-right
-        // mark before the date as \u200e), four cells each, the clicked
-        // one selected.
-        "ROW 1 'Projects \u{2014} \\u200e2026-10-13 ",
-        "ROW 2 'notes.txt 1.2 kB \\u200e2026-10-13 14:05 Text' 4 True",
+        // Rows named from their cells, with no marks in them, four cells
+        // each, the clicked one selected.
+        "ROW 1 'Projects \u{2014} 2026-10-13 ",
+        "ROW 2 'notes.txt 1.2 kB 2026-10-13 14:05 Text' 4 True",
         "HEADER 'Name' ascending",
         "HEADER 'Size' none",
         "PLACES ['Home', 'Trash', 'Computer']",

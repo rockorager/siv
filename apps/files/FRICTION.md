@@ -205,12 +205,15 @@ Measurements are in [Numbers](#numbers) at the end.
     first frame and its first frame with rows from it, and the benchmark
     reads those instead of `presented_seq`.
 
-## Open API questions
-
 15. **No text truncation.** Long file names need an ellipsis (one line in
     the table, two in the grid). Text nodes wrap or not, nothing else; the
     app clips the cell, which cuts names mid-glyph with no indication.
     `siv_text_flags` could grow `ellipsize` and a line limit.
+    *Fixed:* `SIV_TEXT_ELLIPSIZE` and `siv_text_style_desc.max_lines`
+    (commit "ui, abi: ellipses, line clamps, and a text direction of its
+    own", D13). Table cells and one-line labels end in "…", grid names
+    take two lines at most; the accessible names stay whole. The goldens
+    show a long name in the list and in the grid.
 
 16. **Formatted numbers in right-to-left layouts need marks.** A date
     "2026-10-13 14:05" in an RTL table shows its two runs of digits
@@ -219,6 +222,12 @@ Measurements are in [Numbers](#numbers) at the end.
     that mark then appears in accessible names (AT-SPI clients see
     "\u200e2026-10-13"). A per-text base direction separate from the
     layout direction (which also flips alignment) would be cleaner.
+    *Fixed:* `siv_text_style_desc.direction` sets a text's base direction
+    apart from its layout direction (same commit, D21). The Modified
+    column is left to right of its own; the mark is gone from the text and
+    from what AT-SPI reads (the sway test checks row names without it).
+
+## Open API questions
 
 ## Noted
 
