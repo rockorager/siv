@@ -274,7 +274,9 @@ pub fn loadNow(icons: *Icons, names: []const u8, size: f32, scale: f32, rtl: boo
 }
 
 const Load = struct {
-    job: loop.Pool.Job = .{ .run = run, .done = done, .cancel = cancel },
+    // The blocking lane (D6): a theme's first lookup reads its
+    // directories, then the file is read; parsing an icon is small.
+    job: loop.Pool.Job = .{ .run = run, .done = done, .cancel = cancel, .class = .blocking },
     icons: *Icons,
     key: Key,
     theme: []u8,

@@ -2301,7 +2301,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     - Each theme's index.theme is parsed and every directory it lists is
       read once (getdents, names keyed to directory and format), on first
       use, on a worker under the `Themes` mutex; later lookups touch no
-      files. Measured on this orb (Debian 12, ReleaseFast, warm page
+      files. Icon loads run on the pool's blocking lane (D6): the theme
+      read and the file read wait on the file system, while parsing an
+      icon takes a fraction of a millisecond. Measured on this orb (Debian 12, ReleaseFast, warm page
       cache, the C allocator): Adwaita 43 (5,555 files in 97
       directories) in 3 to 5 ms, Breeze 5.103 (8,700 files and links in
       86 directories) in 8 to 12 ms, a cached lookup in under 1 µs.
