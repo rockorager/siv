@@ -202,3 +202,76 @@ test "synthetic styles print as their outlines under invisible text" {
     try testing.expect(std.mem.indexOf(u8, ops, " Tj\n") != null);
     try testing.expect(std.mem.indexOf(u8, ops, "f\n") != null);
 }
+
+test "a group ending in a dst_in layer is drawn through a soft mask of it" {
+    // An SVG mask as the svg module lowers it (D19): content, then the
+    // mask's alpha composited with dst_in, in an isolated layer.
+    var b: scene.Builder = .init(gpa);
+    defer b.deinit();
+    try b.pushLayer(.{ .isolate = true });
+    try b.fillRect(.xywh(10, 10, 80, 80), .color(.srgb8(0xff, 0, 0, 0xff)));
+    try b.pushLayer(.{ .blend = .dst_in });
+    try b.fillRect(.xywh(30, 30, 40, 40), .color(.{ .r = 1, .g = 1, .b = 1, .a = 0.5 }));
+    try b.popLayer();
+    try b.popLayer();
+    const list = try b.finish(0);
+    var w = try Writer.init(gpa, .{});
+    defer w.deinit();
+    try w.addPage(100, 100, list);
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    try w.finish(&aw.writer);
+    var p = try Parsed.parse(aw.written());
+    defer p.deinit();
+    // The soft mask's group holds the mask's rectangle, the masked group
+    // the content's, without the mask drawn over it.
+    const gs = for (p.objects.items) |o| {
+        if (std.mem.indexOf(u8, o, "/SMask << /Type /Mask /S /Alpha /G ") != null) break o;
+    } else return error.NoSoftMask;
+    const mask = try p.stream(try ref(gs, "/G "));
+    defer gpa.free(mask);
+    // The mask layer is a group of its own, drawn by the soft mask's.
+    try testing.expect(std.mem.indexOf(u8, mask, " Do") != null or std.mem.indexOf(u8, mask, "30 30 40 40 re") != null);
+    var groups: usize = 0;
+    for (p.objects.items, 1..) |o, n| {
+        if (std.mem.indexOf(u8, o, "/Subtype /Form") == null) continue;
+        const ops = try p.stream(@intCast(n));
+        defer gpa.free(ops);
+        if (std.mem.indexOf(u8, ops, "10 10 80 80 re") != null) {
+            groups += 1;
+            try testing.expect(std.mem.indexOf(u8, ops, "30 30 40 40 re") == null);
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), groups);
+}
+
+test "sibling layers inside a layer keep their clips" {
+    // An icon's groups sit side by side inside its view box layer.
+    var b: scene.Builder = .init(gpa);
+    defer b.deinit();
+    try b.pushLayer(.{ .opacity = 0.5 });
+    for (0..3) |i| {
+        const x: f32 = @floatFromInt(i * 30);
+        try b.pushLayer(.{ .clip = .{ .shape = .{ .rect = .xywh(x, 0, 20, 20) } } });
+        try b.fillRect(.xywh(x, 0, 40, 40), .color(.black));
+        try b.popLayer();
+    }
+    try b.popLayer();
+    const list = try b.finish(0);
+    var w = try Writer.init(gpa, .{});
+    defer w.deinit();
+    try w.addPage(100, 100, list);
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    try w.finish(&aw.writer);
+    var p = try Parsed.parse(aw.written());
+    defer p.deinit();
+    var clips: usize = 0;
+    for (p.objects.items, 1..) |o, n| {
+        if (std.mem.indexOf(u8, o, "/Length") == null) continue;
+        const ops = p.stream(@intCast(n)) catch continue;
+        defer gpa.free(ops);
+        clips += std.mem.count(u8, ops, "W n");
+    }
+    try testing.expectEqual(@as(usize, 3), clips);
+}

@@ -114,7 +114,7 @@ pub fn addPage(w: *Writer, width: f32, height: f32, list: scene.DisplayList) Err
     defer c.deinit();
     // y down from the top-left corner, in points.
     try c.print("1 0 0 -1 0 {f} cm\n", .{content.num(height)});
-    try c.lower(list.commands, .{ .x0 = 0, .y0 = 0, .x1 = width, .y1 = height });
+    try c.lower(list.commands, 0, .{ .x0 = 0, .y0 = 0, .x1 = width, .y1 = height });
     const stream = try w.addStream("", c.out.items);
     var dict: std.ArrayList(u8) = .empty;
     defer dict.deinit(w.gpa);

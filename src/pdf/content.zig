@@ -155,16 +155,18 @@ pub const Content = struct {
         try c.print("{f} {f} {f} {f} {f} {f} cm\n", .{ num(m.a), num(m.b), num(m.c), num(m.d), num(m.e), num(m.f) });
     }
 
-    /// Lowers commands. `box` bounds what is visible, in the current
-    /// coordinates, for layers whose bounds are unbounded.
-    pub fn lower(c: *Content, cmds: []const scene.Command, box: Rect) Error!void {
+    /// Lowers commands, `cmds[0]` being command `base` of the display list
+    /// (pushes name their pops by list index). `box` bounds what is
+    /// visible, in the current coordinates, for layers whose bounds are
+    /// unbounded.
+    pub fn lower(c: *Content, cmds: []const scene.Command, base: usize, box: Rect) Error!void {
         var i: usize = 0;
         while (i < cmds.len) {
             switch (cmds[i]) {
                 .push => |p| {
-                    const inner = cmds[i + 1 .. p.end];
-                    try c.layer(p, inner, box);
-                    i = p.end + 1;
+                    const end = p.end - base;
+                    try c.layer(p, cmds[i + 1 .. end], base + i + 1, box);
+                    i = end + 1;
                     continue;
                 },
                 .pop => {},
@@ -180,7 +182,7 @@ pub const Content = struct {
         }
     }
 
-    fn layer(c: *Content, p: scene.Push, inner: []const scene.Command, box: Rect) Error!void {
+    fn layer(c: *Content, p: scene.Push, inner: []const scene.Command, base: usize, box: Rect) Error!void {
         const l = p.layer;
         // A layer composited with dst shows nothing of itself.
         if (l.blend == .dst) return;
@@ -194,7 +196,7 @@ pub const Content = struct {
             visible = visible.intersect(clip.shape.bounds());
         }
         if (!l.isIsolated()) {
-            try c.lower(inner, visible);
+            try c.lower(inner, base, visible);
             try c.print("Q\n", .{});
             return;
         }
@@ -207,19 +209,49 @@ pub const Content = struct {
             try c.print("Q\n", .{});
             return;
         }
-        const group = try c.form(inner, bbox, true);
-        var gs: [64]u8 = undefined;
-        try c.useState(std.fmt.bufPrint(&gs, "/ca {f} /CA {f} /BM /{s}", .{ num(l.opacity), num(l.opacity), blendName(l.blend) }) catch unreachable);
+        // A last child composited with dst_in keeps the group where it has
+        // alpha (an SVG mask, D19): the group drawn through a soft mask of
+        // that child's alpha, since PDF has no dst_in.
+        const mask_at = maskStart(inner, base);
+        const group = try c.form(inner[0 .. mask_at orelse inner.len], base, bbox, true);
+        var gs: [160]u8 = undefined;
+        const state = std.fmt.bufPrint(&gs, "/ca {f} /CA {f} /BM /{s}", .{ num(l.opacity), num(l.opacity), blendName(l.blend) }) catch unreachable;
+        var body = state;
+        var with_mask: [224]u8 = undefined;
+        if (mask_at) |k| {
+            const mask = try c.form(inner[k..], base + k, bbox, true);
+            body = std.fmt.bufPrint(&with_mask, "{s} /SMask << /Type /Mask /S /Alpha /G {d} 0 R >>", .{ state, mask }) catch unreachable;
+        }
+        try c.useState(body);
         try c.useXObject(group);
         try c.print("Q\n", .{});
     }
 
+    /// Where `cmds` ends with a layer composited with dst_in, its push.
+    fn maskStart(cmds: []const scene.Command, base: usize) ?usize {
+        var i: usize = 0;
+        var last: ?usize = null;
+        while (i < cmds.len) {
+            switch (cmds[i]) {
+                .push => |p| {
+                    last = if (p.layer.blend == .dst_in) i else null;
+                    i = p.end - base + 1;
+                },
+                else => {
+                    last = null;
+                    i += 1;
+                },
+            }
+        }
+        return if (last != null and last.? > 0) last else null;
+    }
+
     /// A form XObject drawing `cmds` in the current coordinates, as a
     /// transparency group (isolated) when `group`.
-    pub fn form(c: *Content, cmds: []const scene.Command, bbox: Rect, group: bool) Error!u32 {
+    pub fn form(c: *Content, cmds: []const scene.Command, base: usize, bbox: Rect, group: bool) Error!u32 {
         var sub: Content = .init(c.w);
         defer sub.deinit();
-        try sub.lower(cmds, bbox);
+        try sub.lower(cmds, base, bbox);
         return sub.finishForm(bbox, if (group) "/Group << /S /Transparency /CS /DeviceRGB /I true >>" else "");
     }
 
