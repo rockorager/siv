@@ -764,7 +764,9 @@ pub const Span = struct {
 
 // Events --------------------------------------------------------------------
 
-pub const Button = enum(u8) { primary, secondary, middle, other };
+/// Back and forward are the side buttons of a mouse (evdev BTN_SIDE or
+/// BTN_BACK, and BTN_EXTRA or BTN_FORWARD).
+pub const Button = enum(u8) { primary, secondary, middle, other, back, forward };
 
 pub const PointerPhase = enum(u8) { down, up, move, enter, leave, cancel };
 
@@ -776,6 +778,9 @@ pub const Pointer = struct {
     x: f32,
     y: f32,
     button: Button = .primary,
+    /// Down and up: the button's evdev code (BTN_LEFT is 0x110), for
+    /// buttons beyond those named.
+    code: u32 = 0,
     mods: Mods = .{},
     /// Presses in quick succession at about the same place: 2 for a double
     /// click, 3 for a triple click (on `down` and `up`).

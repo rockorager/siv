@@ -1750,6 +1750,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     order (logical, so the same in RTL), Enter and Space activate the
     focused node, and arrow and page keys scroll the nearest scroll node.
     Touch drives the primary pointer until gestures exist.
+  - Pointer buttons are primary, secondary, middle, back, and forward
+    (a mouse's side buttons: evdev BTN_SIDE or BTN_BACK, and BTN_EXTRA
+    or BTN_FORWARD), and every press and release also carries the
+    button's evdev code (`siv_event.button_code`), so an application
+    binds any other button without siv naming it. Found by siv-files,
+    whose history buttons are what users press the side buttons for;
+    they were all "other".
   - Touchpad gestures (pointer-gestures, version 3 for holds) are
     `platform.Gesture` events: swipe (three or more fingers), pinch
     (scale relative to the start, rotation since the last event, the

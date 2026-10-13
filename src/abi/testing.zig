@@ -65,7 +65,9 @@ fn buttonCode(b: t.PointerButton) Error!u32 {
         .primary => 0x110,
         .secondary => 0x111,
         .middle => 0x112,
-        .other => 0x113,
+        .back => 0x113,
+        .forward => 0x114,
+        .other => 0x117,
         _ => unreachable,
     };
 }

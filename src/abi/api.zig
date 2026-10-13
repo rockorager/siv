@@ -900,7 +900,9 @@ pub const decls = [_]Decl{
         .{ .name = "primary", .value = 0, .doc = "Primary (left)." },
         .{ .name = "secondary", .value = 1, .doc = "Secondary (right)." },
         .{ .name = "middle", .value = 2, .doc = "Middle." },
-        .{ .name = "other", .value = 3, .doc = "Any other button." },
+        .{ .name = "other", .value = 3, .doc = "Any other button; siv_event.button_code says which." },
+        .{ .name = "back", .value = 4, .doc = "Back: a mouse's side button (evdev BTN_SIDE or BTN_BACK)." },
+        .{ .name = "forward", .value = 5, .doc = "Forward: a mouse's extra button (evdev BTN_EXTRA or BTN_FORWARD)." },
     }),
     flags("siv_modifiers", "Keyboard modifiers held.", &.{
         .{ .name = "shift", .bit = 0, .doc = "Shift." },
@@ -1022,6 +1024,8 @@ pub const decls = [_]Decl{
         .{ .name = "mode", .type = .u32, .doc = "Pad: the group's current mode." },
         f32Field("raw_dx", "Pointer, relative: horizontal motion as the device reported it, without acceleration."),
         f32Field("raw_dy", "Pointer, relative: vertical motion as the device reported it, without acceleration."),
+        .{ .name = "button_code", .type = .u32, .doc = "Pointer, phase down or up: the button's Linux evdev code (BTN_LEFT is 0x110, BTN_SIDE 0x113), for buttons siv_pointer_button does not name; 0 for touch." },
+        reserved("reserved0"),
     }),
     enumeration("siv_event_result", "What a handler did with an event: two independent requests, to stop bubbling and to prevent the default action, in one value. The default actions are the node's siv_on_default handler, those of the nodes it would bubble to, and siv's own (an editor typing the key, a press focusing and activating, Tab moving focus). For events that do not bubble, any result but pass counts as handled. In C, returning true still means handled and false pass.", &.{
         .{ .name = "pass", .value = 0, .doc = "Not handled: the event bubbles on and the default action runs." },

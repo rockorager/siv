@@ -44,6 +44,10 @@ pub const keysym = struct {
 const btn_left = 0x110;
 const btn_right = 0x111;
 const btn_middle = 0x112;
+const btn_side = 0x113;
+const btn_extra = 0x114;
+const btn_forward = 0x115;
+const btn_back = 0x116;
 
 /// Pixels per arrow key when the UI scrolls.
 pub const line_step: f32 = 40;
@@ -77,6 +81,8 @@ pub const State = struct {
     hover_stale: bool = false,
     /// The node a press went to; it receives the pointer until release.
     capture: NodeId = .none,
+    /// The evdev code of the button pressed or released last.
+    button_code: u32 = 0,
     /// The activatable node a primary press went to.
     pressed: NodeId = .none,
     /// An editor whose selection follows the pointer while the primary
@@ -298,7 +304,7 @@ pub fn bubblePointer(win: *Window, target: NodeId, phase: node_mod.PointerPhase,
     var cur = target;
     while (cur != .none and win.isLive(cur)) {
         const local = toLocal(win, cur, p);
-        const ev: Event = .{ .pointer = .{ .phase = phase, .x = local.x, .y = local.y, .button = button, .mods = win.input.mods, .clicks = clicks, .time = win.input.time, .target = target, .prevented = prevented } };
+        const ev: Event = .{ .pointer = .{ .phase = phase, .x = local.x, .y = local.y, .button = button, .code = if (phase == .down or phase == .up) win.input.button_code else 0, .mods = win.input.mods, .clicks = clicks, .time = win.input.time, .target = target, .prevented = prevented } };
         const r = call(win, cur, .pointer, &ev);
         prevented = prevented or r.prevents();
         if (r.stops() or !win.isLive(cur)) return .of(r.stops(), prevented);
@@ -577,8 +583,11 @@ fn pointerButton(win: *Window, code: u32, pressed: bool, time: u32) void {
         btn_left => .primary,
         btn_right => .secondary,
         btn_middle => .middle,
+        btn_side, btn_back => .back,
+        btn_extra, btn_forward => .forward,
         else => .other,
     };
+    st.button_code = code;
     if (pressed and button == .primary) {
         const near = @abs(p.x - st.last_press_at.x) <= multi_click_px and @abs(p.y - st.last_press_at.y) <= multi_click_px;
         const soon = st.clicks != 0 and time -% st.last_press_ms <= win.desktop.double_click_ms;

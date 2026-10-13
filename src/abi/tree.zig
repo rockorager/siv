@@ -1365,7 +1365,10 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
                 .secondary => .secondary,
                 .middle => .middle,
                 .other => .other,
+                .back => .back,
+                .forward => .forward,
             };
+            ev.button_code = p.code;
             ev.modifiers = modifiers(p.mods);
             ev.x = p.x;
             ev.y = p.y;
@@ -1474,6 +1477,8 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
                 .secondary => .secondary,
                 .middle => .middle,
                 .other => .other,
+                .back => .back,
+                .forward => .forward,
             };
             ev.tool = @enumFromInt(@intFromEnum(tb.tool));
             ev.tool_id = tb.tool_id;

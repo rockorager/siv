@@ -1,5 +1,5 @@
 //! Input devices through the exports on the headless backend (D16):
-//! touchpad gestures and zoomable scroll nodes.
+//! touchpad gestures and zoomable scroll nodes, and mouse side buttons.
 
 const std = @import("std");
 const abi = @import("abi");
@@ -362,4 +362,53 @@ test "pointer constraints follow their node's box and send it relative motion; s
     st = try constraintOf(&h);
     try testing.expectEqual(platform.PointerConstraint.none, st.options.kind);
     try testing.expect(!st.options.relative);
+}
+
+const Buttons = struct {
+    events: [8]t.Event = undefined,
+    n: usize = 0,
+
+    fn onPointer(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
+        const l: *Buttons = @ptrCast(@alignCast(ud.?));
+        if (ev.phase != .down and ev.phase != .up) return .pass;
+        l.events[l.n] = ev.*;
+        l.n += 1;
+        return .handled;
+    }
+};
+
+test "side buttons are back and forward, and every button carries its evdev code" {
+    var h: Harness = .{};
+    try h.start(100, 100, null, null);
+    defer h.stop();
+    var log: Buttons = .{};
+    const root = c.siv_window_get_root(h.window);
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_on(txn, root, .pointer, Buttons.onPointer, null, &log);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    const id = (try h.win()).win.id;
+    try h.inject(&.{.{ .pointer_motion = .{ .window = id, .seat = 0, .x = 20, .y = 20 } }});
+    // BTN_SIDE, BTN_EXTRA, BTN_BACK, and BTN_TASK (named by code only).
+    for ([_]u32{ 0x113, 0x114, 0x116, 0x117 }) |code| try h.inject(&.{
+        .{ .pointer_button = .{ .window = id, .seat = 0, .button = code, .pressed = true, .time = 0, .serial = 0 } },
+        .{ .pointer_button = .{ .window = id, .seat = 0, .button = code, .pressed = false, .time = 0, .serial = 0 } },
+    });
+    try h.settle();
+    try testing.expectEqual(@as(usize, 8), log.n);
+    try testing.expectEqual(t.PointerButton.back, log.events[0].button);
+    try testing.expectEqual(@as(u32, 0x113), log.events[0].button_code);
+    try testing.expectEqual(t.PointerPhase.up, log.events[1].phase);
+    try testing.expectEqual(t.PointerButton.forward, log.events[2].button);
+    try testing.expectEqual(t.PointerButton.back, log.events[4].button);
+    try testing.expectEqual(@as(u32, 0x116), log.events[4].button_code);
+    try testing.expectEqual(t.PointerButton.other, log.events[6].button);
+    try testing.expectEqual(@as(u32, 0x117), log.events[6].button_code);
+    // siv_test_click names the side buttons too.
+    log.n = 0;
+    try ok(c.siv_test_click(h.window, 20, 20, .forward));
+    try h.settle();
+    try testing.expectEqual(t.PointerButton.forward, log.events[0].button);
+    try testing.expectEqual(@as(u32, 0x114), log.events[0].button_code);
 }
