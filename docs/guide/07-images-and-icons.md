@@ -93,17 +93,14 @@ static void on_loaded(void *user_data, siv_result result, siv_image image) {
 ```
 
 Until then the node keeps its place, so nothing moves when the image
-arrives. To round a photo's corners, put it in a box that clips its
-children:
+arrives. To round a photo's corners, clip the image node to them:
 
 ```c
 /* Empty until the file arrives; its size keeps its place meanwhile.
- * A frame that clips its children to its rounded corners rounds the
- * photo. */
-siv_node frame = siv_box(txn, column);
-siv_set_visual(txn, frame, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_VIEW_BG, .radius = {10, 10, 10, 10}, .flags = SIV_VISUAL_CLIP));
-g->photo = siv_image_view(txn, frame, NULL);
+ * Clipping to its rounded corners rounds the photo. */
+g->photo = siv_image_view(txn, column, NULL);
 siv_set_layout(txn, g->photo, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_PX, 240}, .height = {SIV_UNIT_PX, 150}));
+siv_set_visual(txn, g->photo, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_VIEW_BG, .radius = {10, 10, 10, 10}, .flags = SIV_VISUAL_CLIP));
 ```
 
 Loads queue for the compute workers in priority order. The request a load

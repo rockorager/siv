@@ -196,7 +196,7 @@ test "guide: chart.zig draws on a canvas and follows the pointer" {
         fn f(g: *Guide) !void {
             try g.expectImage("chart");
             const b = (try g.find(.image, "Sales by month")).bounds;
-            try g.pointer(g.window(), b.x0 + (b.x1 - b.x0) * 4.5 / 6.0, b.y1 - 40, null);
+            try g.pointer(g.window(), b.x + b.width * 4.5 / 6.0, b.y + b.height - 40, null);
             try g.expectImage("chart-hover");
         }
     }.f);
@@ -280,6 +280,8 @@ test "guide: async.lua waits in coroutines" {
             // coroutine hears so.
             try g.clickOn(.button, "Open…");
             try g.waitText("No image chosen (unavailable)");
+            try g.clickOn(.button, "Count primes");
+            try g.waitText("5133 primes below 50000");
             try g.expectImage("async");
         }
     }.f);
@@ -296,7 +298,7 @@ test "guide: clipboard.c copies, pastes, and takes a drop" {
             try g.clickOn(.button, "Paste");
             try g.waitText("Pasted: Hello from siv");
             const p = try g.center(.group, "Drop area");
-            try g.dropFromElsewhere(&.{"text/plain;charset=utf-8"}, "A line from another application", p[0], p[1]);
+            try g.dropFromElsewhere("text/plain;charset=utf-8", "A line from another application", p[0], p[1]);
             try g.expectText("Dropped: A line from another application");
             try g.expectImage("clipboard");
         }
@@ -364,5 +366,14 @@ test "guide: launch.c creates its window when activated" {
             try g.waitText("Opened 1 file");
             try g.expectImage("launch");
         }
+    }.f);
+}
+
+// Testing -------------------------------------------------------------------------
+
+test "guide: counter_test.lua drives a window through the test API" {
+    // The script is the test: it runs to its end, raising on a failure.
+    try harness.runLua("docs/guide/examples/counter_test.lua", struct {
+        fn f(_: *Guide) !void {}
     }.f);
 }

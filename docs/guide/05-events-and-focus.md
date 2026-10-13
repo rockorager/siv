@@ -45,7 +45,7 @@ handled. In Lua, return `true`, or `"stop"` or `"prevent"`.
 window, tiles that move focus with the arrow keys, hover feedback, and a
 context menu.
 
-![A search field above three tiles, Inbox, Drafts, and Archive, and a status line](images/events.png)
+![A search field above three tiles, Inbox, Drafts with a focus ring, and Archive, and a status line](images/events.png)
 
 ## Keys
 
@@ -136,10 +136,10 @@ static siv_event_result on_tiles_key(void *user_data, siv_node tiles, const siv_
 }
 ```
 
-One limit for now: focus moved with `siv_node_focus` never shows the ring,
-even from a key handler, so after an arrow key the tile has focus but no
-ring, as the first screenshot shows. The stock widgets that move focus with
-arrow keys share it.
+Focus moved with `siv_node_focus` shows the ring when the last input was
+a key, as here, and not after a pointer press, the same rule Tab and the
+stock widgets follow; the screenshot shows the ring on the tile the arrow
+key reached.
 
 Modal nodes (`SIV_SEMANTICS_MODAL`, such as dialogs) contain focus: while
 one is shown, Tab cycles inside it, the pointer reaches only it, and when

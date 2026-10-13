@@ -10,7 +10,7 @@ build`, it is in `zig-out/share/doc/siv/siv.md`, and the Lua annotations
 for your editor are in `zig-out/share/siv/lua/siv.lua`. This guide explains
 how the pieces fit together and what to reach for. [DESIGN.md](../../DESIGN.md)
 records why siv is built the way it is; the guide points to its decisions
-(D1 to D29) where the reasons matter.
+(D1 to D30) where the reasons matter.
 
 1. [Getting started](01-getting-started.md): installing siv, building
    against it from C, Zig, and Lua, and a first window.
@@ -32,14 +32,17 @@ records why siv is built the way it is; the guide points to its decisions
 15. [Packaging](15-packaging.md): desktop files, D-Bus activation, and
     Flatpak.
 16. [Performance](16-performance.md)
+17. [Testing](17-testing.md): driving your application without a display
+    and checking what it shows.
 
 ## The samples
 
 Every program in this guide is a file in [examples/](examples/), and every
 code block is quoted from one of them. `zig build guide` builds them all as
 programs (installed as `zig-out/bin/guide-*`), then runs each one on siv's
-headless backend, drives it like a user, and compares its window with the
-screenshot the guide shows. `zig build test` does the same, so the samples
+headless backend, drives it like a user through siv's public test API (see
+[Testing](17-testing.md)), and compares its window with the screenshot the
+guide shows. `zig build test` does the same, so the samples
 and screenshots cannot drift from the library. Lua samples run with the
 `siv-lua` runner:
 

@@ -51,8 +51,8 @@ With siv in `zig-out/`, point pkg-config there:
 For a static link, use `pkg-config --static` and `libsiv.a`, which carries
 everything but the system libraries.
 
-siv.h is C11. Every function returns a `siv_result` or a handle, so there
-is nothing to initialize globally and nothing to free but what you create.
+siv.h is C11. There is nothing to initialize globally and nothing to free
+but what you create.
 
 ## Zig
 
@@ -72,8 +72,19 @@ const exe = b.addExecutable(.{
         .imports = &.{.{ .name = "siv", .module = siv.module("siv") }},
     }),
 });
+// Installed, it finds libsiv.so in ../lib, installed beside it with
+// the licences of everything libsiv contains.
+exe.root_module.addRPathSpecial("$ORIGIN/../lib");
 b.installArtifact(exe);
+b.installArtifact(siv.artifact("siv"));
+b.getInstallStep().dependOn(&b.addInstallFileWithDir(siv.namedLazyPath("notices"), .prefix, "share/licenses/siv/NOTICES").step);
 ```
+
+The package's artifacts are `siv` (libsiv.so) and `siv-static`
+(libsiv.a, which carries everything but the system libraries), and its
+`notices` named path is the NOTICES file every copy of libsiv must ship
+with. `zig build --prefix /usr/local` installs the program, libsiv.so, and
+NOTICES together.
 
 [examples/zig-package](examples/zig-package/) is a complete package that
 depends on the siv checkout it lives in. With siv installed system-wide

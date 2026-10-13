@@ -90,6 +90,22 @@ pub fn add(b: *std.Build, o: Options) void {
         guide.dependOn(&b.addInstallArtifact(exe, .{}).step);
     }
 
+    // The testing chapter's test, a program against libsiv.so that drives
+    // its window through the public test API with no harness around it.
+    const test_exe = b.addExecutable(.{
+        .name = "guide-counter_test",
+        .root_module = b.createModule(.{ .target = o.target, .optimize = o.optimize, .link_libc = true }),
+    });
+    test_exe.root_module.addCSourceFile(.{ .file = b.path("docs/guide/examples/counter_test.c"), .flags = &c_flags });
+    test_exe.root_module.addIncludePath(include);
+    test_exe.root_module.linkLibrary(o.shared);
+    test_exe.root_module.addRPathSpecial("$ORIGIN/../lib");
+    guide.dependOn(&b.addInstallArtifact(test_exe, .{}).step);
+    const run_test = b.addRunArtifact(test_exe);
+    run_test.addFileArg(b.path("src/text/testdata/DroidSans.ttf"));
+    run_test.expectExitCode(0);
+    checks.dependOn(&run_test.step);
+
     // The Zig package sample's program, against the `siv` module as the
     // package gets it. Its build script is not run here: building siv as
     // a dependency fetches and compiles siv's dependencies again.
@@ -130,11 +146,8 @@ pub fn add(b: *std.Build, o: Options) void {
             .{ .name = "siv", .module = unlinked },
             .{ .name = "lua", .module = get(o.headless.root_module, "lua") },
             .{ .name = "png", .module = b.createModule(.{ .root_source_file = b.path("test/render/png.zig") }) },
-            .{ .name = "platform", .module = get(o.abi, "platform") },
-            .{ .name = "compositor", .module = get(o.abi, "compositor") },
-            .{ .name = "loop", .module = get(o.abi, "loop") },
+            // The test fonts' bytes.
             .{ .name = "text", .module = get(o.abi, "text") },
-            .{ .name = "ui", .module = get(o.abi, "ui") },
         },
     });
     for (c_samples) |name| {

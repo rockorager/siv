@@ -30,9 +30,10 @@ siv_view_set_sort(txn, m->table, 0, SIV_SORT_ASCENDING);
 
 `bind` runs inside the view's transaction for each row coming into view:
 add or change nodes under `row` with that transaction, and do not open
-another. A recycled row still holds what an earlier bind put there for
-another item, so a bind makes the row's nodes the first time and only
-updates them afterwards. Rows of a table are grids with the columns'
+another. A recycled row still holds what an earlier bind put there, for
+another item or for this one (`siv_view_refresh` and a new count bind rows
+again), so a bind makes the row's nodes the first time and only updates
+them afterwards. Rows of a table are grids with the columns'
 tracks, one cell per column:
 
 ```c

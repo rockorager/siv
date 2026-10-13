@@ -69,12 +69,10 @@ static siv_result build(struct gallery *g, siv_app app) {
 	siv_set_layout(txn, column, SIV_DESC(siv_layout_desc, .padding = {20, 20, 16, 16}));
 
 	/* Empty until the file arrives; its size keeps its place meanwhile.
-	 * A frame that clips its children to its rounded corners rounds the
-	 * photo. */
-	siv_node frame = siv_box(txn, column);
-	siv_set_visual(txn, frame, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_VIEW_BG, .radius = {10, 10, 10, 10}, .flags = SIV_VISUAL_CLIP));
-	g->photo = siv_image_view(txn, frame, NULL);
+	 * Clipping to its rounded corners rounds the photo. */
+	g->photo = siv_image_view(txn, column, NULL);
 	siv_set_layout(txn, g->photo, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_PX, 240}, .height = {SIV_UNIT_PX, 150}));
+	siv_set_visual(txn, g->photo, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_VIEW_BG, .radius = {10, 10, 10, 10}, .flags = SIV_VISUAL_CLIP));
 	siv_set_semantics(txn, g->photo, SIV_DESC(siv_semantics_desc, .label = SIV_STR("Hills at sunset")));
 	g->caption = siv_text(txn, column, SIV_STR("Loading…"));
 	siv_set_text_style(txn, g->caption, SIV_DESC(siv_text_style_desc, .size_role = SIV_SIZE_ROLE_CAPTION, .color_token = SIV_COLOR_TOKEN_MUTED_FG));

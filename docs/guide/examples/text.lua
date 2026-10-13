@@ -15,7 +15,7 @@ local story = "Typography is the craft of arranging type to make written languag
 -- A styled range over the first occurrence of `word` in `text`.
 local function span(text, word, style)
 	local first, last = text:find(word, 1, true)
-	style.start, style["end"] = first - 1, last
+	style.start, style.stop = first - 1, last
 	return style
 end
 
@@ -48,7 +48,7 @@ win:update(function(txn, root)
 
 	-- Truncation: one line cut with an ellipsis, and two lines at most.
 	text("quarterly-report-final-version-2-reviewed-by-everyone.pdf",
-		{ flags = { "no_wrap", "ellipsize" } }, { layout = { max_width = 300, align_x = "start" } })
+		{ flags = { "no_wrap", "ellipsize" } }, { layout = { max_width = 300 } })
 	text(story, { max_lines = 2, flags = "ellipsize", color_token = "muted_fg" })
 
 	-- Mixed directions: each paragraph's direction comes from its text.

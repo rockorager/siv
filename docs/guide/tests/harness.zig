@@ -3,35 +3,35 @@
 //! guide_app_run, and guide_app_dispatch in place of siv's (see
 //! ../build_steps.zig), which pick the headless backend and the test
 //! fonts, record the sample's windows, and run the test's scenario when
-//! the sample hands control to siv. Scenarios inject input and compare
-//! windows with the guide's screenshots in docs/guide/images.
+//! the sample hands control to siv. Scenarios drive the sample through
+//! siv's public test API (siv_test_*, D27), as an application's own tests
+//! would, and compare windows with the guide's screenshots in
+//! docs/guide/images.
 
 const std = @import("std");
-const abi = @import("abi");
+const siv = @import("siv");
 const text = @import("text");
-const platform = @import("platform");
-const compositor = @import("compositor");
-const ui = @import("ui");
 const lua = @import("lua");
 const png = @import("png");
-const Loop = @import("loop").Loop;
 
 const testing = std.testing;
-const t = abi.types;
-const A = abi.application;
+const t = siv;
 
 pub const images = "docs/guide/images";
 const failure_dir = ".zig-cache/golden-failures";
 
 pub fn ok(r: t.Result) !void {
     if (r == .ok) return;
-    std.debug.print("unexpected {s}\n", .{abi.siv_result_name(r)});
+    std.debug.print("unexpected {s}\n", .{siv.c.siv_result_name(r)});
     return error.Unexpected;
 }
 
 /// What a test does once the sample has built its window and handed
 /// control to siv.
 pub const Scenario = *const fn (g: *Guide) anyerror!void;
+
+pub const Role = siv.Role;
+pub const Node = siv.TestNode;
 
 pub const Guide = struct {
     app: t.App = .null,
@@ -43,18 +43,11 @@ pub const Guide = struct {
     /// Size of the last capture.
     last_w: u32 = 0,
     last_h: u32 = 0,
+    name_buf: [256]u8 = undefined,
 
     /// The first window the sample created.
     pub fn window(g: *Guide) t.Window {
         return g.windows[0];
-    }
-
-    fn internal(g: *Guide) !*A.App {
-        return A.App.get(@backingInt(g.app));
-    }
-
-    fn win(_: *Guide, w: t.Window) !*A.Window {
-        return A.App.window(@backingInt(w), A.window_tag);
     }
 
     fn runScenario(g: *Guide) void {
@@ -70,264 +63,156 @@ pub const Guide = struct {
         };
     }
 
-    /// Dispatches until every shown window presented what it committed
-    /// and nothing is loading, pasting, or dropping.
+    /// Dispatches until the application is idle: frames presented,
+    /// nothing loading, no job, paste, or drop in flight.
     pub fn settle(g: *Guide) !void {
-        const self = try g.internal();
-        const deadline = Loop.now() + 10 * std.time.ns_per_s;
-        var idle: usize = 0;
-        while (idle < 3) {
-            if (Loop.now() > deadline) return error.Timeout;
-            try ok(A.siv_app_dispatch(g.app, 2));
-            const cb = &self.app.clipboard;
-            var busy = self.app.fonts.loading() or self.app.icons.loading() or cb.transfers.items.len != 0 or cb.ready.items.len != 0;
-            for (self.windows.items) |slot| if (slot) |w| {
-                if (w.dead or !w.win.shown) continue;
-                busy = busy or w.win.presented_seq == 0 or !w.win.settled();
-            };
-            idle = if (busy) 0 else idle + 1;
-        }
+        if (!try siv.testSettle(g.app, 10_000)) return error.Timeout;
     }
 
-    /// Dispatches until `done` holds or `ms` milliseconds pass, for work
-    /// on other threads (jobs, image loads).
-    pub fn until(g: *Guide, ms: u64, ctx: anytype, comptime done: fn (@TypeOf(ctx)) bool) !void {
-        const deadline = Loop.now() + ms * std.time.ns_per_ms;
-        while (!done(ctx)) {
-            if (Loop.now() > deadline) return error.Timeout;
-            try ok(A.siv_app_dispatch(g.app, 5));
-        }
+    pub fn pointer(g: *Guide, w: t.Window, x: f32, y: f32, button: ?bool) !void {
+        try siv.testPointerMove(w, x, y);
+        if (button) |pressed| try siv.testPointerButton(w, .primary, pressed);
         try g.settle();
     }
 
-    pub fn inject(g: *Guide, events: []const platform.Event) !void {
-        const self = try g.internal();
-        const Ctx = struct {
-            events: []const platform.Event,
-            pub fn run(ctx: ?*anyopaque, comp: *compositor.Compositor) void {
-                const c: *@This() = @ptrCast(@alignCast(ctx));
-                for (c.events) |ev| comp.platform.headless.inject(ev);
-            }
-        };
-        var ctx: Ctx = .{ .events = events };
-        try self.app.comp.call(&ctx, Ctx.run);
-    }
-
-    /// Runs `func(headless, ctx)` on the compositor thread, which owns
-    /// the headless platform.
-    pub fn onHeadless(g: *Guide, ctx: anytype, comptime func: fn (*platform.Headless, @TypeOf(ctx)) void) !void {
-        const self = try g.internal();
-        const C = struct {
-            inner: @TypeOf(ctx),
-            fn run(p: ?*anyopaque, comp: *compositor.Compositor) void {
-                const s: *@This() = @ptrCast(@alignCast(p));
-                func(comp.platform.headless, s.inner);
-            }
-        };
-        var cx: C = .{ .inner = ctx };
-        try self.app.comp.call(&cx, C.run);
-    }
-
-    var serial: u32 = 10;
-
-    pub fn pointer(g: *Guide, w: t.Window, x: f64, y: f64, button: ?bool) !void {
-        const id = (try g.win(w)).win.id;
-        serial += 1;
-        if (button) |pressed| {
-            try g.inject(&.{
-                .{ .pointer_motion = .{ .window = id, .seat = 0, .x = x, .y = y } },
-                .{ .pointer_button = .{ .window = id, .seat = 0, .button = 0x110, .pressed = pressed, .time = serial, .serial = serial } },
-            });
-        } else try g.inject(&.{.{ .pointer_motion = .{ .window = id, .seat = 0, .x = x, .y = y } }});
+    pub fn clickIn(g: *Guide, w: t.Window, x: f32, y: f32) !void {
+        try siv.testClick(w, x, y, .primary);
         try g.settle();
     }
 
-    pub fn clickIn(g: *Guide, w: t.Window, x: f64, y: f64) !void {
-        try g.pointer(w, x, y, true);
-        try g.pointer(w, x, y, false);
-    }
-
-    pub fn click(g: *Guide, x: f64, y: f64) !void {
+    pub fn click(g: *Guide, x: f32, y: f32) !void {
         try g.clickIn(g.window(), x, y);
     }
 
-    pub fn keyIn(g: *Guide, w: t.Window, keysym: u32, chars: []const u8, mods: platform.Mods) !void {
-        const id = (try g.win(w)).win.id;
-        serial += 1;
-        var k: platform.Key = .{ .window = id, .seat = 0, .keycode = 0, .keysym = keysym, .state = .pressed, .mods = mods, .time = serial, .serial = serial };
-        @memcpy(k.text_buf[0..chars.len], chars);
-        k.text_len = @intCast(chars.len);
-        var up = k;
-        up.state = .released;
-        up.text_len = 0;
-        try g.inject(&.{ .{ .key = k }, .{ .key = up } });
+    /// A secondary (right) click.
+    pub fn rightClick(g: *Guide, x: f32, y: f32) !void {
+        try siv.testClick(g.window(), x, y, .secondary);
         try g.settle();
     }
 
-    pub fn key(g: *Guide, keysym: u32, chars: []const u8, mods: platform.Mods) !void {
+    pub fn keyIn(g: *Guide, w: t.Window, keysym: u32, chars: []const u8, mods: siv.Modifiers) !void {
+        try siv.testKey(w, @enumFromInt(@as(i32, @intCast(keysym))), mods, chars);
+        try g.settle();
+    }
+
+    pub fn key(g: *Guide, keysym: u32, chars: []const u8, mods: siv.Modifiers) !void {
         try g.keyIn(g.window(), keysym, chars, mods);
     }
 
     pub fn typeText(g: *Guide, s: []const u8) !void {
-        for (s) |ch| try g.key(ch, &.{ch}, .{});
+        try siv.testType(g.window(), s);
+        try g.settle();
     }
 
     /// Asks to close a window, as a click on its close button does.
     pub fn close(g: *Guide, w: t.Window) !void {
-        try g.inject(&.{.{ .close_requested = (try g.win(w)).win.id }});
+        try siv.testClose(w);
         try g.settle();
     }
 
     /// The newest popup that is shown (a menu, a popover), if any.
     pub fn popup(g: *Guide) !?t.Window {
-        const self = try g.internal();
-        var found: ?t.Window = null;
-        for (self.windows.items) |slot| if (slot) |w| {
-            if (!w.dead and w.parent != null and w.win.shown) found = @fromBackingInt(w.handle);
-        };
-        return found;
+        const w = siv.testGetPopup(g.app);
+        return if (w == .null) null else w;
     }
 
-    /// A secondary (right) click.
-    pub fn rightClick(g: *Guide, x: f64, y: f64) !void {
-        const id = (try g.win(g.window())).win.id;
-        serial += 1;
-        try g.inject(&.{
-            .{ .pointer_motion = .{ .window = id, .seat = 0, .x = x, .y = y } },
-            .{ .pointer_button = .{ .window = id, .seat = 0, .button = 0x111, .pressed = true, .time = serial, .serial = serial } },
-            .{ .pointer_button = .{ .window = id, .seat = 0, .button = 0x111, .pressed = false, .time = serial, .serial = serial + 1 } },
-        });
-        serial += 1;
+    /// Another application drags `data` over the main window to (x, y)
+    /// and drops it there.
+    pub fn dropFromElsewhere(g: *Guide, mime: []const u8, data: []const u8, x: f32, y: f32) !void {
+        try siv.testDrop(g.window(), x, y, mime, data);
         try g.settle();
     }
 
-    /// The middle of the node with `role` and `name`.
-    pub fn center(g: *Guide, role: Role, name: []const u8) ![2]f64 {
-        const b = (try g.find(role, name)).bounds;
-        return .{ (b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2 };
+    fn query(g: *Guide, q: siv.TestQuery.Options) !?Node {
+        var found = false;
+        var node: Node = .{};
+        try siv.testFind(g.window(), q, &found, &node);
+        return if (found) node else null;
     }
-
-    /// Dispatches until a node of the main window reads `want`, for work
-    /// that finishes on other threads.
-    pub fn waitText(g: *Guide, want: []const u8) !void {
-        const deadline = Loop.now() + 10 * std.time.ns_per_s;
-        while (true) {
-            try ok(A.siv_app_dispatch(g.app, 5));
-            const tree = try g.semantics(g.window());
-            for (tree.nodes.items) |n| if (std.mem.eql(u8, tree.name(n), want)) return g.settle();
-            if (Loop.now() > deadline) return g.expectText(want);
-        }
-    }
-
-    /// Another client drags `data` in `mimes` over the main window to
-    /// (x, y) and drops it there.
-    pub fn dropFromElsewhere(g: *Guide, mimes: []const []const u8, data: []const u8, x: f64, y: f64) !void {
-        const D = struct {
-            wid: platform.WindowId,
-            mimes: []const []const u8,
-            data: []const u8,
-            x: f64,
-            y: f64,
-            fn offer(hl: *platform.Headless, d: *const @This()) void {
-                hl.offerDrag(0, d.wid, d.mimes, d.data, .{ .copy = true }, d.x, d.y) catch unreachable;
-            }
-            fn drop(hl: *platform.Headless, _: *const @This()) void {
-                hl.dropDrag(0);
-            }
-        };
-        const d: D = .{ .wid = (try g.win(g.window())).win.id, .mimes = mimes, .data = data, .x = x, .y = y };
-        try g.onHeadless(&d, D.offer);
-        try g.settle();
-        try g.onHeadless(&d, D.drop);
-        try g.settle();
-    }
-
-    /// What assistive technology sees of a window.
-    pub fn semantics(g: *Guide, w: t.Window) !*const ui.semantics.Tree {
-        return (try g.win(w)).uiWin().semanticsTree();
-    }
-
-    pub const Role = @FieldType(ui.semantics.Node, "role");
 
     /// The first node of the main window with `role` and `name`, as
     /// assistive technology sees it.
-    pub fn find(g: *Guide, role: Role, name: []const u8) !*const ui.semantics.Node {
-        const tree = try g.semantics(g.window());
-        return tree.find(role, name) orelse {
-            std.debug.print("no {s} named \"{s}\"\n", .{ @tagName(role), name });
+    pub fn find(g: *Guide, role: Role, name: []const u8) !Node {
+        return try g.query(.{ .role = role, .name = name }) orelse {
+            std.debug.print("no {t} named \"{s}\"\n", .{ role, name });
+            try g.printTree();
             return error.NotFound;
         };
     }
 
     /// The `n`th node (from 0) of the main window with `role`.
-    pub fn nth(g: *Guide, role: Role, n: usize) !*const ui.semantics.Node {
-        const tree = try g.semantics(g.window());
-        var i: usize = 0;
-        for (tree.nodes.items) |*node| if (node.role == role) {
-            if (i == n) return node;
-            i += 1;
-        };
-        return error.NotFound;
+    pub fn nth(g: *Guide, role: Role, n: u32) !Node {
+        return try g.query(.{ .role = role, .index = n }) orelse error.NotFound;
+    }
+
+    /// The middle of a node.
+    pub fn middle(node: Node) [2]f32 {
+        const b = node.bounds;
+        return .{ b.x + b.width / 2, b.y + b.height / 2 };
+    }
+
+    /// The middle of the node with `role` and `name`.
+    pub fn center(g: *Guide, role: Role, name: []const u8) ![2]f32 {
+        return middle(try g.find(role, name));
     }
 
     /// Clicks the middle of a node.
-    pub fn clickNode(g: *Guide, node: *const ui.semantics.Node) !void {
-        const b = node.bounds;
-        try g.click((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2);
+    pub fn clickNode(g: *Guide, node: Node) !void {
+        const p = middle(node);
+        try g.click(p[0], p[1]);
     }
 
     /// Clicks the middle of the node with `role` and `name`.
     pub fn clickOn(g: *Guide, role: Role, name: []const u8) !void {
-        const b = (try g.find(role, name)).bounds;
-        try g.click((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2);
+        try g.clickNode(try g.find(role, name));
     }
 
     /// The accessible name of the focused node.
     pub fn focusedName(g: *Guide) ![]const u8 {
-        const tree = try g.semantics(g.window());
-        const n = tree.focused() orelse return "";
-        return tree.name(n.*);
+        const len = try siv.testGetName(g.window(), .{ .flags = .{ .focused = true } }, &g.name_buf);
+        return g.name_buf[0..@min(len, g.name_buf.len)];
     }
 
-    /// The text of the first text node of the main window that starts
-    /// with `prefix` (as a screen reader reads it).
+    fn reads(g: *Guide, want: []const u8) !bool {
+        return try g.query(.{ .name = want }) != null;
+    }
+
+    fn printTree(g: *Guide) !void {
+        var buf: [16 << 10]u8 = undefined;
+        const len = try siv.testDump(g.window(), &buf);
+        std.debug.print("the window reads:\n{s}\n", .{buf[0..@min(len, buf.len)]});
+    }
+
+    /// Checks that a node of the main window reads `want`, as a screen
+    /// reader reads it.
     pub fn expectText(g: *Guide, want: []const u8) !void {
-        const tree = try g.semantics(g.window());
-        for (tree.nodes.items) |n| if (std.mem.eql(u8, tree.name(n), want)) return;
-        std.debug.print("no node reads \"{s}\"; the window reads:\n", .{want});
-        for (tree.nodes.items) |n| std.debug.print("  {s} \"{s}\"\n", .{ @tagName(n.role), tree.name(n) });
+        if (try g.reads(want)) return;
+        std.debug.print("no node reads \"{s}\"; ", .{want});
+        try g.printTree();
         return error.NotFound;
+    }
+
+    /// Dispatches until a node of the main window reads `want`, for work
+    /// that finishes on other threads.
+    pub fn waitText(g: *Guide, want: []const u8) !void {
+        // Settling waits for siv's own work; the samples' threads finish
+        // when they finish. About ten seconds at most.
+        var tries: u32 = 0;
+        while (!try g.reads(want)) : (tries += 1) {
+            if (tries == 2000) return g.expectText(want);
+            try ok(siv.c.siv_app_dispatch(g.app, 5));
+        }
+        try g.settle();
     }
 
     /// What a window presented last, as RGBA rows.
     pub fn capture(g: *Guide, w: t.Window) ![]u8 {
-        const self = try g.internal();
-        const Ctx = struct {
-            id: platform.WindowId,
-            out: anyerror![]u8 = error.NothingPresented,
-            w: u32 = 0,
-            h: u32 = 0,
-            pub fn run(ctx: ?*anyopaque, comp: *compositor.Compositor) void {
-                const c: *@This() = @ptrCast(@alignCast(ctx));
-                const img = comp.platform.headless.presented(c.id) orelse return;
-                const out = testing.allocator.alloc(u8, @as(usize, img.width) * img.height * 4) catch |e| {
-                    c.out = e;
-                    return;
-                };
-                for (0..img.height) |y| for (0..img.width) |x| {
-                    const p = img.pixels[y * img.stride + x * 4 ..][0..4];
-                    out[(y * img.width + x) * 4 ..][0..4].* = .{ p[2], p[1], p[0], p[3] };
-                };
-                c.w = img.width;
-                c.h = img.height;
-                c.out = out;
-            }
-        };
-        var ctx: Ctx = .{ .id = (try g.win(w)).win.id };
-        try self.app.comp.call(&ctx, Ctx.run);
-        g.last_w = ctx.w;
-        g.last_h = ctx.h;
-        return ctx.out;
+        var len: usize = 0;
+        try siv.testCapture(w, &.{}, &len, &g.last_w, &g.last_h);
+        const out = try testing.allocator.alloc(u8, len);
+        errdefer testing.allocator.free(out);
+        try siv.testCapture(w, out, &len, &g.last_w, &g.last_h);
+        return out;
     }
 
     /// Compares the main window with docs/guide/images/<name>.png.
@@ -385,11 +270,11 @@ pub var guide: Guide = .{};
 /// of the system's, no motion, and the light theme.
 fn prepare(app: t.App) !void {
     const tf = text.font.test_fonts;
-    for ([_][]const u8{ tf.latin, tf.arabic, tf.hebrew }) |font| try ok(A.siv_app_add_font(app, "Droid", 5, font.ptr, font.len));
-    try ok(A.siv_app_set_default_font(app, "Droid", 5));
-    try ok(abi.icon.siv_app_add_icon_path(app, "test/icons/themes", 17));
-    try ok(abi.icon.siv_app_set_icon_theme(app, "SivTest", 7));
-    try ok(abi.theme.siv_app_set_theme(app, &.{ .scheme = .light }));
+    for ([_][]const u8{ tf.latin, tf.arabic, tf.hebrew }) |font| try ok(siv.c.siv_app_add_font(app, "Droid", 5, font.ptr, font.len));
+    try ok(siv.c.siv_app_set_default_font(app, "Droid", 5));
+    try ok(siv.c.siv_app_add_icon_path(app, "test/icons/themes", 17));
+    try ok(siv.c.siv_app_set_icon_theme(app, "SivTest", 7));
+    try ok(siv.c.siv_app_set_theme(app, &.{ .scheme = .light }));
 }
 
 pub export fn guide_app_create(desc: ?*const t.AppDesc, app: ?*t.App) t.Result {
@@ -403,7 +288,7 @@ pub export fn guide_app_create(desc: ?*const t.AppDesc, app: ?*t.App) t.Result {
     d.app_id = null;
     d.app_id_len = 0;
     const out = app orelse return .error_invalid_argument;
-    const r = A.siv_app_create(&d, out);
+    const r = siv.c.siv_app_create(&d, out);
     if (r != .ok) return r;
     prepare(out.*) catch return .error_unavailable;
     guide.app = out.*;
@@ -411,7 +296,7 @@ pub export fn guide_app_create(desc: ?*const t.AppDesc, app: ?*t.App) t.Result {
 }
 
 pub export fn guide_window_create(app: t.App, desc: ?*const t.WindowDesc, window: ?*t.Window) t.Result {
-    const r = A.siv_window_create(app, desc, window);
+    const r = siv.c.siv_window_create(app, desc, window);
     if (r == .ok and guide.window_count < guide.windows.len) {
         guide.windows[guide.window_count] = window.?.*;
         guide.window_count += 1;
@@ -427,7 +312,7 @@ pub export fn guide_app_run(app: t.App) t.Result {
 
 pub export fn guide_app_dispatch(app: t.App, timeout_ms: i32) t.Result {
     guide.runScenario();
-    return A.siv_app_dispatch(app, timeout_ms);
+    return siv.c.siv_app_dispatch(app, timeout_ms);
 }
 
 fn begin(scenario: Scenario) void {

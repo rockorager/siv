@@ -1,5 +1,5 @@
 -- Asynchronous work in Lua: in a coroutine (siv.spawn), calls that would
--- take a callback (image loads, portals, clipboard reads) wait for their
+-- take a callback (image loads, portals, clipboard reads, jobs) wait for their
 -- result instead, so each step reads in order. The application's thread
 -- keeps running meanwhile.
 --
@@ -46,6 +46,30 @@ local function open()
 	end
 end
 
+-- CPU-bound work runs on the worker pool, in a Lua state of its own: it
+-- sees its arguments and the standard libraries, not this file's locals,
+-- and its results come back as copies.
+local function count_primes(limit)
+	local n = 0
+	for i = 2, limit - 1 do
+		local prime = true
+		for d = 2, math.floor(math.sqrt(i)) do
+			if i % d == 0 then
+				prime = false
+				break
+			end
+		end
+		if prime then n = n + 1 end
+	end
+	return n
+end
+
+local function count()
+	say("Counting…")
+	local n = app:job_start("compute", count_primes, { 50000 })
+	say(("%d primes below 50000"):format(n))
+end
+
 local function paste()
 	local text = win:clipboard_read("clipboard")
 	say(text and ("Pasted: " .. text) or "Nothing to paste")
@@ -67,6 +91,12 @@ win:update(function(txn, root)
 	txn:push_button(bar, { label = "Paste" }, {
 		on = { activate = function()
 			siv.spawn(paste)
+			return true
+		end },
+	})
+	txn:push_button(bar, { label = "Count primes" }, {
+		on = { activate = function()
+			siv.spawn(count)
 			return true
 		end },
 	})

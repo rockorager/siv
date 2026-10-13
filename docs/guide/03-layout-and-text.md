@@ -91,7 +91,8 @@ siv_set_layout(txn, cards, SIV_DESC(siv_layout_desc, .padding = {12, 16, 12, 16}
 **Stack** puts children on top of each other, aligned (`align_x`,
 `align_y`) or placed with insets from its edges. The window's root is a
 stack that stretches its children, which is how one column fills the
-window. The badge is a second child of the root, pinned to the bottom end
+window (the window's root stretches every child that does not align
+itself). The badge is a second child of the root, pinned to the bottom end
 corner; it aligns to the end so the stretch does not apply to it:
 
 ```c
@@ -113,15 +114,14 @@ also has `min_width`, `max_width`, `min_height`, and `max_height`,
 `padding`, the flex and grid fields, alignment in the parent, and a
 `direction`.
 
-Two things surprise people coming from CSS:
+One thing surprises people coming from CSS: a fraction resolves only
+against definite space. A child of a column that sizes to its content has
+nothing to take a fraction of, so the fraction counts as auto. Give the
+container a size (or let its parent stretch it) first.
 
-- A fraction resolves only against definite space. A child of a column
-  that sizes to its content has nothing to take a fraction of, so the
-  fraction counts as auto. Give the container a size (or let its parent
-  stretch it) first.
-- A stretched child fills its parent even past its own `max_width`. To cap
-  a child, give it an alignment of its own (`SIV_ALIGN_START`), as the
-  truncated file name in the text sample below does.
+A stretched child stretches up to its own `max_width` or `max_height` and
+no further, keeping to the start of the space; give it an alignment of its
+own to place it elsewhere.
 
 `siv_set_layout` replaces a node's whole layout. Widgets give their own
 padding and least sizes as a default layout (`siv_set_default_layout`), so
@@ -131,7 +131,8 @@ setting a widget's width does not undo them (see
 ## Appearance
 
 `siv_set_visual` sets a background, a border, corner radii, and flags:
-`SIV_VISUAL_CLIP` clips descendants to the rounded box, `SIV_VISUAL_HIDDEN`
+`SIV_VISUAL_CLIP` clips descendants, and an image's or canvas's own
+content, to the rounded box, `SIV_VISUAL_HIDDEN`
 takes a node out of layout, painting, focus, and the accessibility tree
 while keeping its state, `SIV_VISUAL_NO_HIT_TEST` lets the pointer through,
 and `SIV_VISUAL_LAYER` gives the node a compositor layer of its own. Prefer
@@ -171,14 +172,15 @@ text(story, { language = "en", align = "justify", flags = "hyphenate", line_spac
 ```
 
 Spans restyle ranges of a node's text (weight, slant, size, family, color,
-underline, strikethrough), given as byte offsets. In Lua, `end` is a
-keyword, so the field is `["end"]`:
+underline, strikethrough), given as byte offsets from `start` to `end`.
+In Lua, where `end` is a keyword, the end is `stop` (`["end"]` works
+too):
 
 ```lua
 -- A styled range over the first occurrence of `word` in `text`.
 local function span(text, word, style)
 	local first, last = text:find(word, 1, true)
-	style.start, style["end"] = first - 1, last
+	style.start, style.stop = first - 1, last
 	return style
 end
 ```
@@ -203,7 +205,7 @@ reader reads, stay whole:
 ```lua
 -- Truncation: one line cut with an ellipsis, and two lines at most.
 text("quarterly-report-final-version-2-reviewed-by-everyone.pdf",
-	{ flags = { "no_wrap", "ellipsize" } }, { layout = { max_width = 300, align_x = "start" } })
+	{ flags = { "no_wrap", "ellipsize" } }, { layout = { max_width = 300 } })
 text(story, { max_lines = 2, flags = "ellipsize", color_token = "muted_fg" })
 ```
 

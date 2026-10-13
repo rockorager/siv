@@ -95,6 +95,7 @@ reduced motion.
 
 Read your application's tree with Accerciser, or turn on Orca and use the
 application with the screen off: every action should be reachable, and
-everything announced should make sense without seeing it. siv's own tests
-read semantics trees on the headless backend, but there is no public API
-for that yet.
+everything announced should make sense without seeing it. Tests can read
+the same tree on the headless backend with `siv_test_find` and
+`siv_test_dump` (see [Testing](17-testing.md)): a test that finds a button
+by its role and name passes only if a screen reader could find it too.

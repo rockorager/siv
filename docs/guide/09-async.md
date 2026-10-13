@@ -156,12 +156,11 @@ Notification buttons invoke application actions, registered with
 
 ## Coroutines in Lua
 
-Lua has no threads, and siv's Lua binding runs only on the application's
-thread, so there are no jobs in Lua. What it has is better for the
-asynchronous calls siv offers: in a coroutine started with `siv.spawn`, a
-call that takes a callback (image loads, portal requests, clipboard reads)
-waits for its result when given none, and `app:sleep(ms)` waits on a
-timer. The code reads top to bottom while your thread keeps running.
+A Lua state runs only on the application's thread. In a coroutine started
+with `siv.spawn`, a call that takes a callback (image loads, portal
+requests, clipboard reads, jobs) waits for its result when given none, and
+`app:sleep(ms)` waits on a timer. The code reads top to bottom while your
+thread keeps running.
 [examples/async.lua](examples/async.lua):
 
 ```lua
@@ -220,7 +219,48 @@ siv.spawn(function()
 end)
 ```
 
-![An image of hills shown under Open and Paste buttons, with the status No image chosen (unavailable)](images/async.png)
+CPU-bound work goes to the worker pool with `app:job_start(flags, work,
+args, done)`, as `siv_job_start` does in C. `work` runs in a fresh Lua
+state of its own on a worker, with the base, string, table, math, and utf8
+libraries and nothing of siv's: it gets copies of `args` and its results
+come back as copies (nil, booleans, numbers, strings, and tables of them).
+It cannot use locals from outside it, and a function that does is refused
+with the local's name, so pass what it needs in `args`. In a coroutine,
+without `done`, the call waits and returns the results; a job that raises
+raises there:
+
+```lua
+-- CPU-bound work runs on the worker pool, in a Lua state of its own: it
+-- sees its arguments and the standard libraries, not this file's locals,
+-- and its results come back as copies.
+local function count_primes(limit)
+	local n = 0
+	for i = 2, limit - 1 do
+		local prime = true
+		for d = 2, math.floor(math.sqrt(i)) do
+			if i % d == 0 then
+				prime = false
+				break
+			end
+		end
+		if prime then n = n + 1 end
+	end
+	return n
+end
+
+local function count()
+	say("Counting…")
+	local n = app:job_start("compute", count_primes, { 50000 })
+	say(("%d primes below 50000"):format(n))
+end
+```
+
+Given `done`, the call returns at once and `done(true, results...)` or
+`done(false, message)` runs at a safe point. Each job starts a Lua state
+and copies its data both ways, so give it work that takes milliseconds,
+not microseconds.
+
+![An image of hills under Open, Paste, and Count primes buttons, with the status 5133 primes below 50000](images/async.png)
 
 Outside a coroutine, an asynchronous call needs its callback, and raises
 without one. An error in a callback or coroutine ends `app:run()` with its
