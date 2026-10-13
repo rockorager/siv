@@ -56,6 +56,9 @@ pub const Node = struct {
     position: u32 = 0,
     set_size: u32 = 0,
     row: u32 = 0,
+    /// A column header's sort order.
+    sort: node_mod.Sort = .none,
+    column: u32 = 0,
 };
 
 pub const Tree = struct {
@@ -163,6 +166,8 @@ pub const Tree = struct {
                 .position = sem.position,
                 .set_size = sem.set_size,
                 .row = sem.row,
+                .sort = sem.sort,
+                .column = sem.column,
                 .placeholder = if (n.kind == .editor) n.data.editor.placeholder else "",
             });
         }

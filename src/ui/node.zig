@@ -350,7 +350,13 @@ pub const Semantics = struct {
     set_size: u32 = 0,
     /// A table row's 1-based index among all rows; 0 for none.
     row: u32 = 0,
+    /// A column header's sort order.
+    sort: Sort = .none,
+    /// A cell's or column header's 1-based column; 0 for none.
+    column: u32 = 0,
 };
+
+pub const Sort = enum(u8) { none, ascending, descending };
 
 pub const Axis = enum(u8) { row, column };
 
@@ -832,9 +838,9 @@ pub const Event = union(enum) {
 
 pub const Viewport = struct { x: f32, y: f32, width: f32, height: f32 };
 
-/// `select` and `close` are never sent by the tree: widgets built on the C
-/// API emit them (`siv_emit`).
-pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll, change, drop, drag, set_value, select, close, viewport };
+/// `select`, `close`, and `sort` are never sent by the tree: widgets built
+/// on the C API emit them (`siv_emit`).
+pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll, change, drop, drag, set_value, select, close, viewport, sort };
 
 /// Runs at a safe point on the UI thread (D5). Returns true when it handled
 /// the event, which stops it bubbling and suppresses the default action.

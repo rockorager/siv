@@ -261,6 +261,38 @@ test "the tree, its roles, names, states, and interfaces" {
     try testing.expect(s.has(.checkable) and s.has(.focusable) and s.has(.enabled) and !s.has(.checked));
 
     // Interfaces follow the node.
+    // A sorted column header's object attributes, as browsers expose
+    // aria-sort and aria-colindex.
+    {
+        var t = try h.win.begin();
+        try t.setSemantics(h.nodes.button, .{ .role = .column_header, .label = "OK", .focusable = true, .sort = .descending, .column = 2 });
+        t.commit();
+        try h.frame();
+        var reply = try h.call(h.path(h.nodes.button, &buf), atspi.iface.accessible, "GetAttributes", .{});
+        var rd = reply.decoder();
+        const attrs = try rd.beginArray();
+        var found: u32 = 0;
+        while (attrs.next(&rd)) {
+            try rd.beginDictEntry();
+            const k = try rd.readString();
+            const v = try rd.readString();
+            try rd.endDictEntry();
+            if (std.mem.eql(u8, k, "sort")) {
+                try testing.expectEqualStrings("descending", v);
+                found += 1;
+            }
+            if (std.mem.eql(u8, k, "colindex")) {
+                try testing.expectEqualStrings("2", v);
+                found += 1;
+            }
+        }
+        try rd.endArray(attrs);
+        try testing.expectEqual(@as(u32, 2), found);
+        t = try h.win.begin();
+        try t.setSemantics(h.nodes.button, .{ .role = .button, .label = "OK", .focusable = true });
+        t.commit();
+        try h.frame();
+    }
     const ifaces = try h.call(h.path(h.nodes.editor, &buf), atspi.iface.accessible, "GetInterfaces", .{});
     var id = ifaces.decoder();
     const ia = try id.beginArray();

@@ -646,6 +646,13 @@ pub export fn siv_set_semantics(txn: t.Txn, node: t.Node, desc: ?*const t.Semant
                 .position = d.position,
                 .set_size = d.set_size,
                 .row = d.row,
+                .sort = switch (try runtime.enumValue(t.Sort, d.sort)) {
+                    .none => .none,
+                    .ascending => .ascending,
+                    .descending => .descending,
+                    _ => unreachable,
+                },
+                .column = d.column,
             }) catch |err| return mapTxn(err);
         }
     }.f, .{ node, desc });

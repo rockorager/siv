@@ -491,6 +491,11 @@ pub const decls = [_]Decl{
         .{ .name = "live_assertive", .bit = 4, .doc = "A live region: changes are announced at once. Not with SIV_SEMANTICS_LIVE_POLITE." },
         .{ .name = "modal", .bit = 5, .doc = "While shown, the pointer reaches only this subtree and Tab stays in it (dialogs)." },
     }),
+    enumeration("siv_sort", "The order a table column sorts in.", &.{
+        .{ .name = "none", .value = 0, .doc = "Not sorted." },
+        .{ .name = "ascending", .value = 1, .doc = "Ascending." },
+        .{ .name = "descending", .value = 2, .doc = "Descending." },
+    }),
     descriptor("siv_semantics_desc", "What assistive technology sees, and keyboard behavior (D18). Replaces the node's semantics.", &.{
         .{ .name = "label", .type = .string, .doc = "Accessible name; empty derives it from the text below." },
         .{ .name = "description", .type = .string, .doc = "Longer description." },
@@ -508,6 +513,8 @@ pub const decls = [_]Decl{
         .{ .name = "position", .type = .u32, .doc = "An item's position in its set, from 1, for sets not all in the tree (virtualized views); 0 for none." },
         .{ .name = "set_size", .type = .u32, .doc = "The size of that set; 0 for none." },
         .{ .name = "row", .type = .u32, .doc = "A table row's index among all rows, from 1; 0 for none." },
+        .{ .name = "sort", .type = ref("siv_sort"), .doc = "A column header's sort order, exposed as the sort attribute." },
+        .{ .name = "column", .type = .u32, .doc = "A table cell's or column header's column among all columns, from 1, exposed as the colindex attribute; 0 for none." },
     }),
 
     enumeration("siv_axis", "A flex main axis.", &.{
@@ -713,6 +720,7 @@ pub const decls = [_]Decl{
         .{ .name = "select", .value = 9, .doc = "Widgets: an item was chosen (a menu item) or a view's selection changed; index names the item, count how many are selected. Delivered to the node only." },
         .{ .name = "close", .value = 10, .doc = "Widgets: a dialog, popover, or toast asks to close (Escape, a click outside it, its timeout). Its default handler closes it; return true from siv_on to keep it. Delivered to the node only." },
         .{ .name = "viewport", .value = 11, .doc = "A scroll node's visible region changed: x and y are its scroll offset (logical, D21), width and height the size of its viewport. Delivered to the scroll node only, at a safe point: after the compositor scrolled it (D8), or at the start of the frame after its offset or size changed, before layout, so nodes a handler adds show in that frame. Virtualized views build the rows they show from it." },
+        .{ .name = "sort", .value = 12, .doc = "Table views: the user asked to sort by a column (a click on its header, or Enter or Space on it): index is the column, value 1 for ascending or -1 for descending. Delivered to the view; when its handler returns true, the header shows the column sorted that way, so a handler sorts the items, returns true, and refreshes the view." },
     }),
     enumeration("siv_pointer_phase", "What a pointer event reports.", &.{
         .{ .name = "down", .value = 0, .doc = "A button was pressed." },
@@ -922,6 +930,11 @@ pub const decls = [_]Decl{
         .{ .name = "parent", .type = .u64, .doc = "An item's id, or 0 for the top level." },
         .{ .name = "index", .type = .u32, .doc = "Which child, from 0." },
     }, .u64),
+    callback("siv_view_height_fn", "The height of a view's row, in logical pixels: rows of lists, trees, and tables may differ (siv_app_measure_text measures text). Called for every row when the count is set, when a tree item expands (for its new rows), and on siv_view_refresh, not while scrolling.", &.{
+        .{ .name = "item", .type = .u64, .doc = "As for siv_bind_fn." },
+        .{ .name = "index", .type = .u32, .doc = "The row's position among the view's rows." },
+        .{ .name = "depth", .type = .u32, .doc = "Trees: the item's depth." },
+    }, .f32),
     descriptor("siv_view_desc", "A virtualized view: only the rows in view exist as nodes, filled by bind as they scroll in.", &.{
         .{ .name = "label", .type = .string, .doc = "The view's accessible name, copied." },
         .{ .name = "user_data", .type = .user_data, .doc = "Passed to the callbacks and destroy." },
@@ -933,10 +946,17 @@ pub const decls = [_]Decl{
         f32Field("item_height", "Every row's height, or every cell's in a grid; 0 is 32."),
         f32Field("item_width", "Grids: every cell's width; 0 is 96."),
         .{ .name = "selection", .type = ref("siv_selection_mode"), .doc = "Default none." },
+        .{ .name = "height", .type = ref("siv_view_height_fn"), .doc = "Lists, trees, and tables: each row's height (0 is item_height); NULL makes every row item_height. Rows are still placed by arithmetic, never measured, so the compositor scrolls them as before." },
+    }),
+    flags("siv_column_flags", "Table column options.", &.{
+        .{ .name = "sortable", .bit = 0, .doc = "The header sorts: a click, or Enter or Space, reports SIV_EVENT_SORT." },
+        .{ .name = "fixed", .bit = 1, .doc = "The user cannot resize the column." },
     }),
     descriptor("siv_column_desc", "A table column.", &.{
         .{ .name = "title", .type = .string, .doc = "The header, copied." },
-        .{ .name = "width", .type = ref("siv_track"), .doc = "The column's track; auto is 1 fr." },
+        .{ .name = "width", .type = ref("siv_track"), .doc = "The column's track; auto is 1 fr. Resizing makes it a px track." },
+        .{ .name = "flags", .type = ref("siv_column_flags"), .doc = "Options." },
+        f32Field("min_width", "The narrowest the user can make it, in logical pixels; 0 is 32."),
     }),
     descriptor("siv_range_desc", "A slider, spin button, or progress bar. With min equal to max the range is 0 to 100.", &.{
         .{ .name = "label", .type = .string, .doc = "Accessible name, copied." },
@@ -1495,7 +1515,7 @@ pub const functions = [_]Function{
     }),
     builder("siv_list_view", "Creates a virtualized list: a vertical scroll of rows of item_height, bound as they come into view, so a list of millions costs what is on screen. The cursor moves with Up, Down, Page Up, Page Down, Home, and End and keeps its row in view and focused; Space and clicks select (with Ctrl and Shift in multiple mode), reporting SIV_EVENT_SELECT with the cursor's index and the number selected; Enter reports SIV_EVENT_ACTIVATE with the index. Its role is list, its rows' list_item. siv_widget_get_value is the cursor's index, -1 for none.", &.{.{ .name = "desc", .type = .{ .desc = "siv_view_desc" }, .doc = "Items, callbacks, and selection." }}),
     builder("siv_tree_view", "Creates a virtualized tree: rows of the visible items, indented by depth, with the children and child callbacks walked as items expand. Keys as in a list, and Right (Left in RTL) expands an item or moves to its first child, Left collapses it or moves to its parent; clicking the disclosure toggles it. Its role is tree, its rows' tree_item with level and expanded state.", &.{.{ .name = "desc", .type = .{ .desc = "siv_view_desc" }, .doc = "Callbacks and selection." }}),
-    builder("siv_table_view", "Creates a virtualized table: a header of columns (siv_table_column) over rows like a list's, each a grid with the columns' tracks that bind fills with one cell per column. Its role is table, its rows' row, header cells column_header.", &.{.{ .name = "desc", .type = .{ .desc = "siv_view_desc" }, .doc = "Items, callbacks, and selection." }}),
+    builder("siv_table_view", "Creates a virtualized table: a header of columns (siv_table_column) over rows like a list's, each a grid with the columns' tracks that bind fills with one cell per column. Its role is table, its rows' row, header cells column_header. The header is one Tab stop: Left and Right (mirrored in RTL) move between its cells, Down goes to the rows, Enter and Space sort a sortable column, and Ctrl+Left and Ctrl+Right narrow and widen the focused column. Dragging the handle at a header cell's end resizes its column; the handle is a separator whose value is the column's width, so assistive technology resizes it too. A column the user resized reports SIV_EVENT_CHANGE on its header cell with the width as value.", &.{.{ .name = "desc", .type = .{ .desc = "siv_view_desc" }, .doc = "Items, callbacks, and selection." }}),
     builder("siv_grid_view", "Creates a virtualized grid of item_width by item_height cells, as many per row as fit, in reading order (mirrored in RTL). Arrow keys move in two dimensions. Its role is list.", &.{.{ .name = "desc", .type = .{ .desc = "siv_view_desc" }, .doc = "Items, callbacks, and selection." }}),
     .{
         .name = "siv_table_column",
@@ -1505,7 +1525,20 @@ pub const functions = [_]Function{
         .ret = ref("siv_node"),
     },
     setter("siv_view_set_count", "Sets the number of items of a list, table, or grid view; for a tree, reads the top level again. Rows in view are bound again; selection past the end is dropped.", &.{.{ .name = "count", .type = .u32, .doc = "Items." }}),
-    setter("siv_view_refresh", "Binds the rows in view again, after their items changed.", &.{}),
+    setter("siv_view_refresh", "Binds the rows in view again, after their items changed; with a height callback, asks every row's height again.", &.{}),
+    setter("siv_view_set_sort", "Shows a table column as sorted (or not), without reporting it: the header's indicator and its sort attribute. Sorting another column clears the previous one's.", &.{
+        .{ .name = "column", .type = .u32, .doc = "The column, from 0." },
+        .{ .name = "sort", .type = ref("siv_sort"), .doc = "The order." },
+    }),
+    setter("siv_view_set_column_width", "Sets a table column's width in logical pixels (a px track), without reporting it.", &.{
+        .{ .name = "column", .type = .u32, .doc = "The column, from 0." },
+        .{ .name = "width", .type = .f32, .doc = "The width; at least the column's min_width." },
+    }),
+    call("siv_view_get_column_width", "A table column's width in logical pixels as of the last layout (its px track's value before the first one).", &.{
+        .{ .name = "view", .type = ref("siv_node"), .doc = "A table view." },
+        .{ .name = "column", .type = .u32, .doc = "The column, from 0." },
+        .{ .name = "width", .type = out(.f32), .doc = "The width." },
+    }),
     setter("siv_view_set_selected", "Selects or deselects the item at a row index, without reporting it. In single mode, selecting one deselects the rest and moves the cursor to it.", &.{
         .{ .name = "index", .type = .u32, .doc = "The row index." },
         .{ .name = "selected", .type = .bool, .doc = "Selected." },

@@ -275,6 +275,9 @@ fn getAttributes(r: *Request) anyerror!void {
             if (n.position != 0) try entry(&m.body, "posinset", std.fmt.bufPrint(&buf, "{d}", .{n.position}) catch unreachable);
             if (n.set_size != 0) try entry(&m.body, "setsize", std.fmt.bufPrint(&buf, "{d}", .{n.set_size}) catch unreachable);
             if (n.row != 0) try entry(&m.body, "rowindex", std.fmt.bufPrint(&buf, "{d}", .{n.row}) catch unreachable);
+            // ARIA's aria-sort, as browsers expose it on column headers.
+            if (n.sort != .none) try entry(&m.body, "sort", @tagName(n.sort));
+            if (n.column != 0) try entry(&m.body, "colindex", std.fmt.bufPrint(&buf, "{d}", .{n.column}) catch unreachable);
             if (n.live != .off) {
                 const v = if (n.live == .polite) "polite" else "assertive";
                 try entry(&m.body, "live", v);

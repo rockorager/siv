@@ -609,6 +609,8 @@ pub const SNode = struct {
     position: u32 = 0,
     set_size: u32 = 0,
     row: u32 = 0,
+    sort: ui.Sort = .none,
+    column: u32 = 0,
     caret: ?u32,
     anchor: ?u32,
     bounds: Rect,
@@ -815,6 +817,8 @@ pub const Win = struct {
                 .level = n.level,
                 .position = n.position,
                 .set_size = n.set_size,
+                .sort = n.sort,
+                .column = n.column,
                 .row = n.row,
             };
             sn.text = if (editor)
