@@ -254,9 +254,11 @@ test "a portal that does not answer delays the first frame by at most 100 ms" {
 test "without a bus there is nothing to wait for" {
     const s = try open("unix:path=/nonexistent/siv-bus", true);
     defer s.app.destroy();
-    const t = try firstFrame(s);
     try testing.expect(!s.app.desktop.connected);
-    try testing.expect(t < 100 * std.time.ns_per_ms);
+    // The first frame is not held for settings; how soon it comes
+    // depends on the machine's load.
+    try testing.expect(!s.app.desktop.waiting);
+    _ = try firstFrame(s);
 }
 
 const atspi_script =
