@@ -304,17 +304,22 @@ fn both(w: Constraints, h: Constraints) Constraints {
 fn block(win: *Window, id: NodeId, inner: Constraints, origin: Point) Error!Size {
     const rtl = win.state(id).rtl;
     const cw = try fitWidth(win, id, inner);
-    const h = try stackBlock(win, id, cw, rtl, origin);
+    const h = try stackBlock(win, id, cw, rtl, origin, inner.max_h);
     return .{ .w = cw, .h = inner.clampH(h) };
 }
 
-/// Children stacked vertically in width `cw`; returns their height.
-fn stackBlock(win: *Window, id: NodeId, cw: f32, rtl: bool, origin: Point) Error!f32 {
+/// Children stacked vertically in width `cw`; returns their height. A
+/// child with a fraction height takes that fraction of `ch_space`, the
+/// box's height when it is definite (a pane stretched by its parent);
+/// other children size to their content.
+fn stackBlock(win: *Window, id: NodeId, cw: f32, rtl: bool, origin: Point, ch_space: f32) Error!f32 {
     var y: f32 = 0;
     var it = win.shown(id);
     while (it.next()) |ch| {
         const a = resolveAlign(win.node(ch).layout.align_x, .stretch);
-        const sz = try place(win, ch, widthFor(win, ch, a, cw));
+        var cc = widthFor(win, ch, a, cw);
+        if (win.node(ch).layout.height == .fraction) cc.max_h = ch_space;
+        const sz = try place(win, ch, cc);
         setPos(win, ch, .{ .x = origin.x + alignX(a, cw, sz.w, rtl), .y = origin.y + y });
         y += sz.h;
     }
@@ -334,7 +339,7 @@ fn scroll(win: *Window, id: NodeId, inner: Constraints) Error!Size {
         var it = win.shown(id);
         while (it.next()) |ch| content_w = @max(content_w, try maxContent(win, ch));
     }
-    const h = try stackBlock(win, id, content_w, s.rtl, .zero);
+    const h = try stackBlock(win, id, content_w, s.rtl, .zero, std.math.inf(f32));
     const vh = inner.clampH(h);
     s.content = .{ .w = content_w, .h = if (axis == .horizontal) @max(h, vh) else h };
     return .{ .w = vw, .h = vh };

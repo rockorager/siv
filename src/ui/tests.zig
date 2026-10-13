@@ -270,6 +270,30 @@ test "box flows vertically; stack aligns and insets; grid tracks" {
     try testing.expectEqual([4]f32{ 90, 110, 210, 8 }, f.rect(cells[4]));
 }
 
+test "a fraction height in a box of definite height takes that fraction of it" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 300, .height = 200 });
+    defer f.deinit();
+    const t = try f.win.begin();
+    // A pane: a box stretched by a flex row, as split panes are.
+    const row = try box(t, .root, .flex, .{ .height = .{ .px = 120 } });
+    const pane = try box(t, row, .box, .{ .width = .{ .px = 100 } });
+    const header = try box(t, pane, .box, .{ .height = .{ .px = 20 } });
+    const fill = try box(t, pane, .box, .{ .height = .{ .fraction = 0.5 } });
+    // Inside a box whose height comes from its content the fraction stays
+    // auto: the child takes its own content's height.
+    const loose = try box(t, row, .box, .{});
+    const inner = try box(t, loose, .box, .{});
+    const auto = try box(t, inner, .box, .{ .height = .{ .fraction = 1 } });
+    _ = try box(t, auto, .box, .{ .height = .{ .px = 15 } });
+    t.commit();
+    try f.frame();
+    try testing.expectEqual([4]f32{ 0, 0, 100, 120 }, f.rect(pane));
+    try testing.expectEqual([4]f32{ 0, 0, 100, 20 }, f.rect(header));
+    try testing.expectEqual([4]f32{ 0, 20, 100, 60 }, f.rect(fill));
+    try testing.expectEqual(@as(f32, 15), f.rect(auto)[3]);
+}
+
 test "grid columns run right to left in RTL" {
     var f: Fixture = undefined;
     try f.init(.{ .width = 100, .height = 50, .rtl = true });

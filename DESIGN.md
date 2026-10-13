@@ -2648,8 +2648,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     exist only when the container is larger than its content (stretched,
     sized, or given a minimum).
   - Box is block flow: children stacked vertically and stretched to its
-    width. Flex has an axis, gap, grow, shrink weighted by base size,
-    justification, cross alignment, and wrapping. Grid has px, fr, and
+    width. A child with a fraction height takes that fraction of the box's
+    height when the box has a definite one (stretched by its parent, or
+    sized), as widths resolve against its width; otherwise fractions are
+    auto. Split panes are boxes stretched by their flex row, so a list or
+    editor fills its pane with a fraction height of 1 (the file manager in
+    `apps/files` found the view squashed to its header). Flex has an
+    axis, gap, grow, shrink weighted by base size, justification, cross
+    alignment, and wrapping. Grid has px, fr, and
     auto tracks, row-major auto placement, spans, and auto tracks that
     share leftover definite space; with indefinite space fr tracks size to
     their content in proportion. Stack overlays children with alignment or
