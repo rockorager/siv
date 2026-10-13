@@ -576,7 +576,9 @@ test "windows report each presented frame with its times, and nothing while idle
     try h.settle();
     try testing.expect(frames.count >= 1);
     try testing.expect(frames.commit_ns >= before and frames.commit_ns <= Loop.now());
-    try testing.expect(frames.present_ns >= frames.commit_ns);
+    // The frame's predicted vblank; on a loaded machine the frame can be
+    // committed after it, so it is not compared with commit_ns here.
+    try testing.expect(frames.present_ns > before);
     const first = frames.frame;
     // A change: one more frame, a later commit.
     var txn: t.Txn = .null;
@@ -590,4 +592,10 @@ test "windows report each presented frame with its times, and nothing while idle
     // Idle: none.
     for (0..5) |_| try ok(c.siv_app_dispatch(h.app, 10));
     try testing.expectEqual(n + 1, frames.count);
+}
+
+test "siv_result_name" {
+    try testing.expectEqualStrings("SIV_OK", std.mem.span(abi.siv_result_name(.ok)));
+    try testing.expectEqualStrings("SIV_ERROR_OUT_OF_MEMORY", std.mem.span(abi.siv_result_name(.error_out_of_memory)));
+    try testing.expectEqualStrings("SIV_RESULT_UNKNOWN", std.mem.span(abi.siv_result_name(@fromBackingInt(-1000))));
 }

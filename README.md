@@ -14,7 +14,7 @@ xkbcommon, and Fontconfig.
 
 ```sh
 zig build          # libsiv.so, libsiv.a, include/siv.h, siv.pc in zig-out/
-zig build test
+zig build test -j16  # -j: Zig 0.17 runs about two steps at once by default
 zig build examples # C programs from examples/ in zig-out/bin/
 ./zig-out/bin/siv-lua examples/todo.lua  # Lua 5.5 through libsiv-lua
 LUA_CPATH='zig-out/lib/lua/5.5/?.so' lua5.5 -e 'require("siv")'  # or your own Lua 5.5

@@ -10,7 +10,7 @@ const scene = @import("scene");
 const raster = @import("raster");
 const platform = @import("platform");
 const compositor = @import("compositor");
-const png = @import("../render/png.zig");
+const png = @import("png");
 const Ui = @import("harness.zig").Ui;
 
 const Op = compositor.Op;

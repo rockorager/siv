@@ -16,7 +16,7 @@ const scene = @import("scene");
 const render_cpu = @import("render_cpu");
 const pool = @import("pool");
 const text_engine = @import("text");
-const png = @import("png.zig");
+const png = @import("png");
 const svg = @import("svg");
 const hb = render_cpu.glyph.hb;
 

@@ -3,7 +3,8 @@
 //!
 //!   zig build files           zig-out/bin/siv-files
 //!   zig build run-files -- [FOLDER] [options]
-//!   zig build test-files      unit and headless tests (also in `zig build test`)
+//!   zig build test-files      the headless test binary, which has the
+//!                             headless tests (also in `zig build test`)
 //!   zig build test-integration-files  on headless sway with AT-SPI (also in
 //!                             `zig build test-integration`)
 //!   zig build bench-files     startup, memory, idle wakeups, and scrolling
@@ -21,6 +22,10 @@ pub const Options = struct {
     test_filters: []const []const u8,
     /// The abi module: its exports are compiled into the test binaries.
     abi: *std.Build.Module,
+    /// The headless test binary, which takes the headless tests, and the
+    /// step that runs it.
+    headless: *std.Build.Step.Compile,
+    test_headless: *std.Build.Step,
     test_step: *std.Build.Step,
     integration_step: *std.Build.Step,
 };
@@ -80,19 +85,12 @@ pub fn add(b: *std.Build, o: Options) void {
         .{ .name = "text", .module = get(o.abi, "text") },
         .{ .name = "ui", .module = get(o.abi, "ui") },
     };
-    const test_files = b.step("test-files", "Run the file manager's tests");
-    const headless = b.addTest(.{
-        .name = "files-headless",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("apps/files/tests/headless.zig"),
-            .target = o.target,
-            .optimize = o.optimize,
-            .link_libc = true,
-            .imports = &test_imports,
-        }),
-        .filters = o.test_filters,
-    });
-    test_files.dependOn(&b.addRunArtifact(headless).step);
+    // The headless tests are in the headless test binary (tests.zig
+    // includes tests/headless.zig).
+    const test_files = b.step("test-files", "Run the headless test binary, which has the file manager's tests");
+    o.headless.root_module.addImport("files", files);
+    o.headless.root_module.addImport("siv", unlinked);
+    test_files.dependOn(o.test_headless);
 
     // On headless sway with AT-SPI: part of test-integration.
     var integration_imports: [test_imports.len + 1]std.Build.Module.Import = undefined;
@@ -128,7 +126,6 @@ pub fn add(b: *std.Build, o: Options) void {
     const bench_run = b.addRunArtifact(bench);
     bench_run.has_side_effects = true;
     b.step("bench-files", "Measure the file manager (startup, memory, idle, scrolling 100k entries)").dependOn(&bench_run.step);
-    o.test_step.dependOn(test_files);
     // The executable compiles with every `zig build test`, so it keeps up
     // with the API.
     o.test_step.dependOn(&exe.step);

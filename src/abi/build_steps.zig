@@ -18,9 +18,10 @@ pub const Options = struct {
     test_step: *std.Build.Step,
     /// `zig build test-integration`: tests against headless sway.
     integration_step: *std.Build.Step,
-    /// The headless tests, which link C code that uses the generated
-    /// header (test/abi/canvas.zig).
+    /// The headless test binary, which links C code that uses the
+    /// generated header (test/abi/canvas.zig), and the step that runs it.
     headless: *std.Build.Step.Compile,
+    test_headless: *std.Build.Step,
 };
 
 pub fn add(b: *std.Build, o: Options) void {
@@ -75,12 +76,21 @@ pub fn add(b: *std.Build, o: Options) void {
     const test_abi = b.step("test-abi", "Run the abi tests");
     const test_c = b.step("test-c", "Run the C ABI tests");
 
-    const abi_tests = b.addTest(.{ .name = "abi", .root_module = o.abi, .filters = o.test_filters });
-    test_abi.dependOn(&b.addRunArtifact(abi_tests).step);
-
-    // Generator tests.
-    const gen_tests = b.addTest(.{ .name = "abi-gen", .root_module = gen.root_module, .filters = o.test_filters });
-    test_abi.dependOn(&b.addRunArtifact(gen_tests).step);
+    // The unit tests that need no siv (unit_tests.zig): the generators,
+    // the schema, handles, descriptors, allocation hooks. The rest of the
+    // abi module is tested through the C API in the headless test binary.
+    const unit_tests = b.addTest(.{
+        .name = "abi-unit",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/abi/unit_tests.zig"),
+            .target = b.graph.host,
+            .link_libc = true,
+            .imports = &.{.{ .name = "build_options", .module = o.build_options }},
+        }),
+        .filters = o.test_filters,
+    });
+    test_abi.dependOn(&b.addRunArtifact(unit_tests).step);
+    test_abi.dependOn(o.test_headless);
 
     // Exported symbols, versions, and SONAMEs.
     const check = b.addExecutable(.{
@@ -153,7 +163,9 @@ pub fn add(b: *std.Build, o: Options) void {
     }
 
     // Example programs (examples/*.c): `zig build examples` installs them;
-    // `zig build test` compiles them, so they keep up with the API.
+    // `zig build test` compiles them into the headless test binary with
+    // main renamed, so they keep up with the API without a program each
+    // (shell.c runs there too, below).
     const examples = b.step("examples", "Build the C example programs");
     for ([_][]const u8{ "hello", "todo", "embed", "gauge", "widgets", "shell" }) |name| {
         const exe = b.addExecutable(.{
@@ -164,7 +176,10 @@ pub fn add(b: *std.Build, o: Options) void {
         exe.root_module.addIncludePath(installed.path(b, "include"));
         exe.root_module.linkLibrary(o.shared);
         examples.dependOn(&b.addInstallArtifact(exe, .{}).step);
-        test_c.dependOn(&exe.step);
+        if (!std.mem.eql(u8, name, "shell")) o.headless.root_module.addCSourceFile(.{
+            .file = b.path(b.fmt("examples/{s}.c", .{name})),
+            .flags = &.{ "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-Wall", "-Wextra", "-Werror", b.fmt("-Dmain=example_{s}_main", .{name}) },
+        });
     }
 
     // C drawing code that the headless canvas tests call: it uses the
@@ -191,7 +206,6 @@ pub fn add(b: *std.Build, o: Options) void {
     lifecycle.root_module.addCSourceFile(.{ .file = b.path("test/c/lifecycle.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic" } });
     lifecycle.root_module.addIncludePath(installed.path(b, "include"));
     lifecycle.root_module.linkLibrary(o.shared);
-    test_c.dependOn(&lifecycle.step);
     const helpers = b.addOptions();
     helpers.addOptionPath("lifecycle", lifecycle.getEmittedBin());
     helpers.addOptionPath("libsiv", o.shared.getEmittedBin());

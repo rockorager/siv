@@ -1368,7 +1368,3 @@ pub fn handleToString(Lq: ?*L_) callconv(.c) c_int {
     lua.pushString(L, s);
     return 1;
 }
-
-test "wrappers compile for every function" {
-    try std.testing.expect(wrappers.len == spec.functions.len);
-}

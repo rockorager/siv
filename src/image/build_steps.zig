@@ -442,6 +442,9 @@ fn object(b: *std.Build, o: Options, name: []const u8, cpp: bool) *std.Build.Mod
             .link_libc = true,
             .link_libcpp = cpp,
             .pic = true,
+            // No debug info: it is most of what linking a test binary
+            // reads and writes (D25).
+            .strip = true,
         }),
     });
     o.image_c.addObject(obj);
@@ -566,8 +569,15 @@ pub fn add(b: *std.Build, o_: Options) Result {
         }
     }
 
-    // libjxl with Highway: still and animated JPEG XL.
-    if (b.systemIntegrationOption("libjxl", .{})) {
+    // libjxl with Highway: still and animated JPEG XL. Debug builds leave
+    // it out unless -Djxl, since compiling it is most of a cold `zig build
+    // test` and only one test decodes JPEG XL (D19, D25); with -fsys it
+    // costs nothing, so it is in.
+    const system_jxl = b.systemIntegrationOption("libjxl", .{});
+    const want_jxl = b.option(bool, "jxl", "Decode JPEG XL (default: in all but Debug builds, and with -fsys=libjxl)") orelse (o.optimize != .debug or system_jxl);
+    const options = b.addOptions();
+    options.addOption(bool, "jxl", want_jxl);
+    if (!want_jxl) {} else if (system_jxl) {
         c.linkSystemLibrary("libjxl", .{});
         requires.appendSlice(b.allocator, " libjxl") catch @panic("OOM");
         const m = object(b, o, "jxl", false);
@@ -588,6 +598,7 @@ pub fn add(b: *std.Build, o_: Options) Result {
         .imports = &.{
             .{ .name = "scene", .module = o.scene },
             .{ .name = "image_c", .module = c },
+            .{ .name = "image_options", .module = options.createModule() },
         },
         .link_libc = true,
         .pic = true,

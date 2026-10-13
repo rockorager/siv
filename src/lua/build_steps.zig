@@ -32,9 +32,10 @@ pub const Options = struct {
     shared: *std.Build.Step.Compile,
     test_step: *std.Build.Step,
     integration_step: *std.Build.Step,
-    /// The headless tests (test/headless.zig), which drive Lua
-    /// applications against the exports compiled into that binary.
+    /// The headless test binary, which drives Lua applications against
+    /// the exports compiled into it, and the step that runs it.
     headless: *std.Build.Step.Compile,
+    test_headless: *std.Build.Step,
 };
 
 /// Lua's core: the virtual machine, compiler, and auxiliary library.
@@ -97,7 +98,7 @@ pub fn add(b: *std.Build, o: Options) void {
         if (lua_dep) |dep| {
             const obj = b.addObject(.{
                 .name = "lua",
-                .root_module = b.createModule(.{ .target = o.target, .optimize = o.optimize, .link_libc = true, .pic = true }),
+                .root_module = b.createModule(.{ .target = o.target, .optimize = o.optimize, .link_libc = true, .pic = true, .strip = true }),
             });
             m.addObject(obj);
             obj.root_module.addCSourceFiles(.{
@@ -140,15 +141,17 @@ pub fn add(b: *std.Build, o: Options) void {
                 self.b.createModule(.{ .root_source_file = self.b.path("src/abi/api.zig") }),
                 self.lua_c,
                 true,
+                false,
             );
         }
-        /// With the generated wrapper and the schema from `abi`, for a
-        /// binary that already holds them, and the Lua headers with or
-        /// without Lua (`bundled`: whether siv_lua_new and siv_lua_run,
-        /// which need Lua's libraries, are exported).
-        fn moduleWith(self: @This(), wrapper: *std.Build.Module, schema: *std.Build.Module, lua: *std.Build.Module, bundled: bool) *std.Build.Module {
+        /// With the given wrapper and schema modules, and the Lua headers
+        /// with or without Lua (`bundled`: whether siv_lua_new and
+        /// siv_lua_run, which need Lua's libraries, are exported).
+        /// `test_exports` adds what the headless tests reach through C.
+        fn moduleWith(self: @This(), wrapper: *std.Build.Module, schema: *std.Build.Module, lua: *std.Build.Module, bundled: bool, test_exports: bool) *std.Build.Module {
             const options = self.b.addOptions();
             options.addOption(bool, "bundled", bundled);
+            options.addOption(bool, "test_exports", test_exports);
             // With -fsys=lua, Lua is the system's, with every library and
             // dlopen, so the allowlist (D23) is not siv's to check.
             options.addOption(bool, "system_lua", self.system_lua);
@@ -173,11 +176,25 @@ pub fn add(b: *std.Build, o: Options) void {
     // binding compiles to an object that does not depend on libsiv.so, so
     // a change in libsiv.so relinks libsiv-lua without compiling it again
     // (D25); LLD applies the version script when linking.
+    // The headless test binary links the same object (below); its test
+    // export is not in the version script.
+    const lib_object = b.addObject(.{
+        .name = "siv-lua",
+        .root_module = binding.moduleWith(
+            b.createModule(.{ .root_source_file = wrapper_source }),
+            b.createModule(.{ .root_source_file = b.path("src/abi/api.zig") }),
+            lua_c,
+            true,
+            true,
+        ),
+    });
+    const lib_module = b.createModule(.{ .target = o.target, .optimize = o.optimize, .link_libc = true, .pic = true });
+    lib_module.addObject(lib_object);
     const lib = b.addLibrary(.{
         .name = "siv-lua",
         .linkage = .dynamic,
         .version = o.version,
-        .root_module = linkModule(b, o, binding.module(), "siv-lua"),
+        .root_module = lib_module,
     });
     lib.root_module.linkLibrary(o.shared);
     // Exports the Lua C API, luaopen_siv, and siv_lua_*, nothing else.
@@ -235,6 +252,7 @@ pub fn add(b: *std.Build, o: Options) void {
             b.createModule(.{ .root_source_file = b.path("src/abi/api.zig") }),
             lua_h,
             false,
+            false,
         ), "siv-lua-module"),
     });
     module_lib.root_module.linkLibrary(o.shared);
@@ -275,10 +293,9 @@ pub fn add(b: *std.Build, o: Options) void {
     // Tests: the binding against libsiv.so on the headless backend, the
     // examples, and the generator.
     const test_lua = b.step("test-lua", "Run the Lua binding tests");
-    const module_tests = b.addTest(.{ .name = "lua", .root_module = binding.module(), .filters = o.test_filters });
-    module_tests.root_module.linkLibrary(o.shared);
-    const module_run = b.addRunArtifact(module_tests);
-    test_lua.dependOn(&module_run.step);
+    // The binding's own tests (test/lua/binding.zig) and its examples
+    // (test/lua/lua.zig) are in the headless test binary.
+    test_lua.dependOn(o.test_headless);
     const gen_tests = b.addTest(.{ .name = "lua-gen-types", .root_module = gen.root_module, .filters = o.test_filters });
     test_lua.dependOn(&b.addRunArtifact(gen_tests).step);
     const notices_tests = b.addTest(.{ .name = "lua-notices", .root_module = notices.root_module, .filters = o.test_filters });
@@ -315,11 +332,25 @@ pub fn add(b: *std.Build, o: Options) void {
         test_lua.dependOn(&run_module.step);
     }
 
-    // Golden images of Lua applications (test/lua/), in test/headless.zig.
-    // The binding compiled into that binary shares its wrapper and schema
-    // with the abi module there.
-    const abi = o.headless.root_module.import_table.get("abi").?;
-    o.headless.root_module.addImport("lua", binding.moduleWith(abi.import_table.get("siv").?, abi, lua_c, true));
+    // The headless test binary runs Lua in process (test/lua/): it links
+    // libsiv-lua's object, compiled from the generated wrapper and the
+    // schema alone, whose siv_* calls resolve to the exports in that
+    // binary, so a change in siv does not compile the binding again. The
+    // tests reach it through its C API (test/lua/api.zig).
+    o.headless.root_module.addObject(lib_object);
+    if (system_lua) o.headless.root_module.linkSystemLibrary("lua5.5", .{});
+    const lua_options = b.addOptions();
+    lua_options.addOption(bool, "system_lua", system_lua);
+    o.headless.root_module.addImport("lua", b.createModule(.{
+        .root_source_file = b.path("test/lua/api.zig"),
+        .imports = &.{
+            .{ .name = "lua_helpers", .module = b.createModule(.{
+                .root_source_file = b.path("src/lua/c.zig"),
+                .imports = &.{.{ .name = "lua_c", .module = lua_h }},
+            }) },
+            .{ .name = "lua_options", .module = lua_options.createModule() },
+        },
+    }));
 
     // Lua applications on sway, in process and through the installed
     // runner (src/lua/integration_tests.zig). Not in `test`.

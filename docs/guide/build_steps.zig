@@ -30,9 +30,10 @@ pub const Options = struct {
     abi: *std.Build.Module,
     /// libsiv.so, which the sample programs link.
     shared: *std.Build.Step.Compile,
-    /// The headless tests, whose `lua` import is the binding compiled
-    /// against the exports in a test binary.
+    /// The headless test binary, which runs the samples, and the step
+    /// that runs it.
     headless: *std.Build.Step.Compile,
+    test_headless: *std.Build.Step,
     test_step: *std.Build.Step,
 };
 
@@ -64,7 +65,9 @@ pub fn add(b: *std.Build, o: Options) void {
     // the pinned wayland-protocols.
     const content_type = contentTypeProtocol(b);
 
-    // The samples as programs against libsiv.so.
+    // The samples as programs against libsiv.so, for `zig build guide`
+    // only: the headless test binary compiles the same sources (below),
+    // so `test` needs no program of each.
     for (c_samples) |name| {
         const exe = b.addExecutable(.{
             .name = b.fmt("guide-{s}", .{name}),
@@ -76,7 +79,6 @@ pub fn add(b: *std.Build, o: Options) void {
         exe.root_module.linkLibrary(o.shared);
         exe.root_module.linkSystemLibrary("m", .{});
         exe.root_module.addRPathSpecial("$ORIGIN/../lib");
-        checks.dependOn(&exe.step);
         guide.dependOn(&b.addInstallArtifact(exe, .{}).step);
     }
     for (zig_samples) |name| {
@@ -91,7 +93,6 @@ pub fn add(b: *std.Build, o: Options) void {
             }),
         });
         exe.root_module.addRPathSpecial("$ORIGIN/../lib");
-        checks.dependOn(&exe.step);
         guide.dependOn(&b.addInstallArtifact(exe, .{}).step);
     }
 
@@ -126,7 +127,10 @@ pub fn add(b: *std.Build, o: Options) void {
     });
     checks.dependOn(&package_exe.step);
 
-    // The test binary: the exports, the harness, and every sample.
+    // The samples in the headless test binary (tests.zig includes
+    // tests/guide.zig): every C sample once more with its main and the
+    // four calls renamed, and the Zig samples with a copy of the wrapper
+    // whose four calls are renamed.
     const get = struct {
         fn f(m: *std.Build.Module, name: []const u8) *std.Build.Module {
             return m.import_table.get(name) orelse std.debug.panic("no import {s}", .{name});
@@ -141,20 +145,8 @@ pub fn add(b: *std.Build, o: Options) void {
     shim_run.addFileArg(unlinked.root_source_file.?);
     const shim = b.createModule(.{ .root_source_file = shim_run.addOutputFileArg("siv.zig") });
 
-    const root = b.createModule(.{
-        .root_source_file = b.path("docs/guide/tests/guide.zig"),
-        .target = o.target,
-        .optimize = o.optimize,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "abi", .module = o.abi },
-            .{ .name = "siv", .module = unlinked },
-            .{ .name = "lua", .module = get(o.headless.root_module, "lua") },
-            .{ .name = "png", .module = b.createModule(.{ .root_source_file = b.path("test/render/png.zig") }) },
-            // The test fonts' bytes.
-            .{ .name = "text", .module = get(o.abi, "text") },
-        },
-    });
+    const root = o.headless.root_module;
+    root.addImport("siv", unlinked);
     for (c_samples) |name| {
         const main = b.fmt("-Dmain=guide_main_{s}", .{name});
         root.addCSourceFile(.{
@@ -176,13 +168,7 @@ pub fn add(b: *std.Build, o: Options) void {
             .imports = &.{.{ .name = "siv", .module = shim }},
         }));
     }
-    const tests = b.addTest(.{ .name = "guide", .root_module = root, .filters = o.test_filters });
-    const run = b.addRunArtifact(tests);
-    run.setCwd(b.path("."));
-    // It reads the chapters, samples, and screenshots, which the build
-    // does not track as inputs.
-    run.has_side_effects = true;
-    checks.dependOn(&run.step);
+    checks.dependOn(o.test_headless);
 }
 
 /// C bindings of content-type-v1 for wayland.c.

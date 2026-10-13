@@ -8,7 +8,7 @@ const text = @import("text");
 const platform = @import("platform");
 const compositor = @import("compositor");
 const Loop = @import("loop").Loop;
-const png = @import("../render/png.zig");
+const png = @import("png");
 
 const testing = std.testing;
 const t = abi.types;

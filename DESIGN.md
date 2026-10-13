@@ -3048,6 +3048,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       bundles; libjxl builds its decoder with Highway, without the boxes
       and JPEG reconstruction that need Brotli and without a CMS, since
       it renders XYB to linear sRGB itself and siv converts ICC profiles.
+      Debug builds leave libjxl out unless `-Djxl` (JPEG XL then fails
+      as unsupported, and its test skips): compiling it with Highway was
+      most of a cold `zig build test`, and one test decodes JPEG XL
+      (D25, Build cost). Release builds and `-fsys=libjxl` include it,
+      so CI, which links the system's, runs that test.
       The decoders' internal memory comes from the C allocator, as
       HarfBuzz's does; decoded pixels come from siv's allocator (D2).
     - dav1d's assembly is on for x86-64 and aarch64 (other targets use
@@ -4036,13 +4041,19 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     lanes-style shared tables (a second runtime to trust). Reverse if
     starting a state per job shows up in profiles (then keep a state per
     worker).
-  - **Tests.** `zig build test-lua` runs the binding against `libsiv.so`
-    on the headless backend (allowlist, errors, descriptors, ownership,
-    callbacks, coroutines, jobs, the clipboard, hot reload through the real
-    watcher). The headless tests (D24) run `examples/*.lua` unchanged
-    through the binding compiled into their binary, with `app_create`
-    wrapped to pick the headless backend, and compare golden images under
-    `test/golden/lua/`, a hot reload included. On sway, the installed
+  - **Tests.** The headless test binary (D24) runs the binding on the
+    headless backend (`test/lua/binding.zig`: allowlist, errors,
+    descriptors, ownership, callbacks, coroutines, jobs, the clipboard,
+    hot reload through the real watcher) and `examples/*.lua` unchanged,
+    with `app_create` wrapped to pick the headless backend, comparing
+    golden images under `test/golden/lua/`, a hot reload included. It
+    links the binding as an object compiled from the generated wrapper
+    and the schema alone, whose siv_* calls resolve to the exports in the
+    binary, and reaches it through its C API (`test/lua/api.zig`), so a
+    change in siv does not compile the binding's 10 s of comptime again.
+    Against `libsiv.so`, the stock interpreter loads siv.so (`zig build
+    test-lua`). Before, a test binary of the binding linked `libsiv.so`
+    and compiled again whenever it changed. On sway, the installed
     `siv-lua` copies from a key and an in-process Lua client pastes from a
     coroutine through a real data offer.
 - **Reverse if:** event tables show up in profiles (then pass events as
@@ -4077,8 +4088,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     Adwaita and Breeze themes and rsvg-convert) is installed by
     `.agents/setup-integration`, not by `.agents/setup`, so that a normal
     orb sets up with the build's own packages only.
-  - CI (`.github/workflows/ci.yml`, GitHub Actions) runs `zig build test`
-    on every push and pull request, with no compositor or desktop
+  - CI (`.github/workflows/ci.yml`, GitHub Actions) runs `zig build test
+    -j16` on every push and pull request, with no compositor or desktop
     services, in an Arch Linux container: its packages are new enough
     for every `-fsys` option (HarfBuzz 14.6, Lua 5.5, Little CMS, libwebp,
     libavif, libjxl, glslang), so the job compiles none of the vendored C
@@ -4090,6 +4101,34 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     `-fsys`. Its Vulkan tests run on lavapipe. Zig's global cache and the
     fetched packages are cached between runs. `test` already builds the
     examples, apps, the guide, and the Lua module.
+  - What `zig build test` builds (consolidated 2026-10-13; there were
+    29 test binaries and 45 programs, six of them compiling all of siv):
+    - One headless test binary, rooted at `tests.zig` at the top of the
+      tree so that it reaches `docs/` and `apps/`: `test/headless.zig`
+      (renderers, UI, compositor, the C API, widgets, Lua in process),
+      the guide's samples (`docs/guide/tests`), the files app's headless
+      tests, and the C examples compiled in with main renamed. It runs
+      as eight processes at once, each with every eighth test, through
+      `test/runner.zig` (Zig's runner with `--shard`), and always runs:
+      the guide reads files the build does not track.
+    - A unit-test binary per module (19), since Zig runs only the root
+      module's tests; each builds in 1 to 8 s on the self-hosted backend,
+      and the text tests run as four processes.
+    - `abi-unit`: the schema, generators, handles, descriptors, and
+      allocation hooks, which need nothing of siv; the rest of the abi
+      module is tested through the C API in the headless binary.
+    - What needs the real shared libraries: `abi-wrapper` (the Zig
+      wrappers' layouts against the C headers, linking libsiv.so and the
+      ABI test library), the C programs `smoke.c` and `app.c` against
+      libsiv.so and `abi.c` against the ABI test library, the guide's
+      `counter_test.c`, the stock Lua interpreter loading siv.so, and
+      the export check of both libraries.
+    - The build tools' own tests (`lua-gen-types` with the Lua mapping's
+      checks, `notices`, `lua-notices`), built for the host.
+    - Programs compiled so that they keep up with the API: siv-lua,
+      siv-files, and the guide's Zig package sample. The guide's other
+      samples and the C examples build as programs only in `zig build
+      guide` and `zig build examples`.
   - The suite (cut 2026-10-13, measured per test with `--time-report`):
     tests stay when they catch a plausible regression through public
     behavior. Removed as covered elsewhere: line breaking's "revision 57"
@@ -4267,54 +4306,69 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **Toolchain:** Zig 0.17.
 - **Build cost.** A cold `zig build test` took 31m42s on a 4-core orb
   (4789 s of CPU) and 77 minutes on GitHub's 2-core runner (2026-10-13).
-  Measured with `--summary all`, `--time-report`, and process sampling,
-  the cause was the vendored C and C++: a C source on a Zig module is
-  compiled again by every compilation that includes the module (Zig
-  0.17 keys its C object cache per compilation; one libjxl file was
-  compiled ten times with identical output), so each of the dozen test
-  binaries that imports `image` or `text` compiled libjxl with Highway,
-  HarfBuzz, and the other decoders in Debug with UBSan, 2 to 4 minutes
-  each. Zig code was not: a whole-siv test binary compiles in 15 to 26 s
-  with the self-hosted backend, libsiv.so in 26 s through LLVM, and all
-  tests run in about 70 s of CPU. So:
+  Measured with `--summary all`, `--time-report`, step timelines from
+  `--webui`, and process sampling:
+  - Most of it was vendored C and C++: a C source on a Zig module is
+    compiled again by every compilation that includes the module (Zig
+    0.17 keys its C object cache per compilation; one libjxl file was
+    compiled ten times with identical output), so each test binary that
+    imported `image` or `text` compiled libjxl with Highway, HarfBuzz,
+    and the decoders in Debug with UBSan, 2 to 4 minutes each.
+  - Then siv itself: six binaries compiled all of siv (headless, the
+    guide, the files app, the abi module's tests, libsiv.so, and the Lua
+    binding against it), each 15 to 26 s, libsiv.so through LLVM; the Lua
+    binding's comptime added 10 s to every binary that had it, and three
+    of them compiled again whenever libsiv.so changed. Tests ran in about
+    70 s of CPU, a third of it waiting on real timers.
+  - And the build runner: by default Zig 0.17 makes about two steps at
+    once on a 4-core orb (its thread pool has CPU count − 1 slots, and
+    a step holds one while it waits on its compiler or test), so
+    `zig build test -j16` is the gate's command (AGENTS.md); `-j16` takes
+    a one-line change from about 60 s to 28 s.
+  So:
   - Every vendored library is compiled into objects (`addObject`), once
-    per build, and linked through the module that translates its
-    header, so libsiv.a still contains it. Zig 0.17's linker crashes on
-    an object merged from several C++ files (their COMDAT groups, whether
-    merged by Zig or by LLD), so libjxl and Highway get an object per file
-    and HarfBuzz's subsetter one unity file of its 18 files, which also
-    parses HarfBuzz's headers once instead of 18 times (24 s in Debug
-    against 170 s per file optimized).
-  - C compiles in the build's mode, except HarfBuzz, which is optimized
-    in Debug builds: shaping is most of the text and headless tests' run
-    time, which optimized HarfBuzz cuts by a third, while the decoders'
-    tests take 0.1 s either way and optimizing them only slows the
-    compile. Debug builds compile Highway for the baseline target only
-    (`HWY_COMPILE_ONLY_STATIC`, half of libjxl's compile) and dav1d
-    without its assembly, so NASM is neither built nor run.
+    per build, without debug info, and linked through the module that
+    translates its header, so libsiv.a still contains it. Zig 0.17's
+    linker crashes on an object merged from several C++ files (their
+    COMDAT groups, whether merged by Zig or by LLD), so libjxl and
+    Highway get an object per file and HarfBuzz's subsetter one unity
+    file of its 18 files, which also parses HarfBuzz's headers once
+    (24 s in Debug against 170 s per file optimized). HarfBuzz is
+    compiled with libc++'s headers but nothing links libc++ for it.
+  - C compiles in the build's mode, except HarfBuzz, optimized in Debug
+    builds: shaping is most of the text and headless tests' run time,
+    which optimized HarfBuzz cuts by a third, while the decoders' tests
+    take 0.1 s either way. Debug builds leave libjxl out unless `-Djxl`
+    (D19), compile Highway for the baseline target only when it is in,
+    and build dav1d without its assembly, so NASM is neither built nor
+    run.
   - The shaders' SPIR-V is committed (D10), so glslang is not built.
-  - libsiv-lua.so and the Lua module are linked by LLD from an object of
-    the binding, so a change in libsiv.so relinks them instead of
-    compiling them again through LLVM (34 s for each change).
+  - One headless test binary (D24) replaces six, and runs as eight
+    processes. The Lua binding is linked into it, into libsiv-lua.so,
+    and into the Lua module as objects compiled from the generated
+    wrapper and the schema alone, so a change in siv relinks them.
   - The headless latency and smoothness measurements moved to `zig build
     bench-latency` (D8, D24), and the suite was cut where tests cost more
     than they protected (D24, The suite).
-  - Measured after (4-core orb): a cold `zig build test` in 6m41s
-    with empty caches, of which about three minutes build Zig's own
-    tools and runtimes into its global cache (the build runner, 90 s;
-    translate-c, 55 s; libc++, 50 s), so 3m48s with Zig's
-    cache warm, as in an orb or CI; a rerun with nothing changed in
-    4.9 s (4.6 s before); after a one-line change in src/ui in
-    76 to 106 s (1m47s before). The vendored C now costs about 200 s of
-    CPU once: libjxl with Highway 122 s, HarfBuzz 43 s (one file, on the
-    critical path), its subsetter 23 s, the rest 15 s together. Arch with
-    every `-fsys` option (CI's configuration) takes 5m00s cold.
-  - Not done: one test binary for the headless tests, the guide, and the
-    files app would save about 40 s of CPU on each change but run their
-    tests one after another, lengthening the critical path; building
-    libsiv.so from a self-hosted object linked by LLD would save LLVM's
-    17 s but merges the C++ objects into one, which crashes as above;
-    `-fincremental` writes objects LLD rejects in Zig 0.17.
+  - Measured after, 4-core orb, `-j16`: a cold `zig build test` in
+    1m25s with Zig's global cache warm (as in an orb after
+    setup, or CI with its cache), 4m19s with every cache empty, of
+    which Zig building its own build runner (90 s), translate-c (55 s),
+    and runtimes takes about three minutes; a rerun with nothing changed in
+    9.4 s (4.6 s before; the headless binary always runs, since the
+    guide's tests read files the build does not track); after a one-line
+    change in src/ui in 28 to 30 s (1m47s before), of which libsiv.so's
+    LLVM compile, 25 s, is the critical path. Without `-j`: 1m48s cold, 13.6 s with nothing changed, 50 s after a one-line change.
+    The vendored C now costs about 100 s of CPU once (HarfBuzz 43 s, one
+    file on the critical path; its subsetter 24 s; the decoders and Lua
+    the rest). Arch with every `-fsys` option (CI) takes 3m29s with
+    every cache empty, most of it Zig building its own tools.
+  - Not done: libsiv.so from a self-hosted object linked by LLD would
+    save LLVM's 17 s on every change, but Zig 0.17 spent more than four
+    minutes merging the C objects into that object without finishing;
+    `-fincremental` writes objects LLD rejects in Zig 0.17. Module tests
+    stay one binary per module: Zig runs only the root module's tests,
+    and each builds in 1 to 8 s on the self-hosted backend.
   - Prebuilt C libraries for orbs (the user asked, 2026-10-13): nixpkgs
     at the revision `.agents/sway.nix` pins has HarfBuzz 13.2 (siv needs
     14), no SheenBidi, and libraries that need glibc 2.38 to 2.43, which
@@ -4324,8 +4378,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     binaries only for libjxl (0.11.1 .debs for Debian 12, shared
     libraries), libwebp (a static, position-independent archive), and
     glslang. HarfBuzz, SheenBidi, Lua 5.5, Little CMS, dav1d, and libavif
-    have none. Orbs keep building from source for now: `.agents/setup`
-    builds once and the orb snapshot keeps the result.
+    have none. Orbs keep building from source: what remains costs about
+    100 s of CPU once, and the orb snapshot keeps it.
 - **Packaging:** every C dependency has a build option to use the system copy;
   the build installs pkg-config files.
   - siv is also a Zig package: a program depends on it in build.zig.zon,
@@ -4988,7 +5042,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     and workspaces that apply requests as sway does, idle with
     inhibitors, output hotplug, and a compositor that blurs on request;
     `siv_test_*` gains the calls that play the other clients and the user
-    (D27). `test/abi/shell.zig` covers the C API, `src/lua/tests.zig` the
+    (D27). `test/abi/shell.zig` covers the C API, `test/lua/binding.zig` the
     binding, `src/compositor/tree.zig` the blur region's geometry,
     `src/a11y/tests.zig` the frameless role, and `examples/shell.c` runs
     unchanged both headless (`test/abi/shell_example.zig`, with a

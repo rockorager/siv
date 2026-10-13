@@ -38,6 +38,13 @@ comptime {
         @export(&siv_lua_new, .{ .name = "siv_lua_new" });
         @export(&siv_lua_run, .{ .name = "siv_lua_run" });
     }
+    // The headless tests link the binding as an object and read handles
+    // through C (test/lua/api.zig).
+    if (@import("lua_options").test_exports) @export(&testToHandle, .{ .name = "siv_lua_test_to_handle" });
+}
+
+fn testToHandle(L: *L_, idx: c_int) callconv(.c) u64 {
+    return toHandle(L, idx);
 }
 
 fn setRegistry(L: *L_, key: [:0]const u8) void {
@@ -367,5 +374,4 @@ test {
     std.testing.refAllDecls(@This());
     _ = m;
     _ = bind;
-    _ = @import("tests.zig");
 }

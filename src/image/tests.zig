@@ -210,6 +210,8 @@ test "AVIF: 8-bit, 10-bit, and an image sequence" {
 }
 
 test "JPEG XL: lossy (XYB, rendered to linear light) and lossless" {
+    // Opt in: `zig build test -Djxl` (Debug builds leave libjxl out).
+    if (!@import("image_options").jxl) return error.SkipZigTest;
     const lossy = try image.decode(gpa, @embedFile("testdata/lossy.jxl"), .{});
     defer lossy.deinit(gpa);
     try testing.expectEqual(@as(u32, 64), lossy.width);

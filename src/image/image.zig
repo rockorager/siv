@@ -319,7 +319,8 @@ fn open(format: Format, bytes: []const u8, max_pixels: u64) Error!Source {
         .png, .jpeg, .gif => wuffs.open(bytes, max_pixels),
         .webp => webp.open(bytes, max_pixels),
         .avif => avif.open(bytes, max_pixels),
-        .jxl => jxl.open(bytes, max_pixels),
+        // Built without libjxl (-Djxl=false, the default in Debug builds).
+        .jxl => if (@import("image_options").jxl) jxl.open(bytes, max_pixels) else error.Unsupported,
     };
 }
 

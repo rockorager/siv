@@ -11,7 +11,7 @@ const text = @import("text");
 const ui = @import("ui");
 const platform = @import("platform");
 const compositor = @import("compositor");
-const png = @import("../render/png.zig");
+const png = @import("png");
 const App = @import("harness.zig").App;
 
 const testing = std.testing;

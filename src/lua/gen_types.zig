@@ -314,6 +314,12 @@ fn luaParam(name: []const u8) []const u8 {
     return name;
 }
 
+test {
+    // The mapping's checks against the schema run here, in the one test
+    // binary that has the mapping without the binding.
+    _ = m;
+}
+
 test "annotations name every bound function" {
     var w: Writer.Allocating = .init(std.testing.allocator);
     defer w.deinit();

@@ -231,9 +231,14 @@ test "copy and paste files: within the app, to other apps, and from them" {
     try testing.expect(fx.exists("build.zig"));
     // The pasted files are selected.
     try expectNames(&.{ "build.zig", "notes.txt" }, try h.selected(&buf));
-    // Pasting again names the copies apart.
+    // Pasting again names the copies apart. The copy runs on a worker,
+    // which a loaded machine can start after the harness has settled.
     try h.key('v', "v", .{ .ctrl = true });
-    try testing.expect(fx.exists("Documents/build (2).zig"));
+    const deadline = @import("loop").Loop.now() + 10 * std.time.ns_per_s;
+    while (!fx.exists("Documents/build (2).zig")) {
+        if (@import("loop").Loop.now() > deadline) return error.Timeout;
+        try h.settle();
+    }
     // Cut moves.
     try h.clickItem("notes.txt");
     try h.key('x', "x", .{ .ctrl = true });

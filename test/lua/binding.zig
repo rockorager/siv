@@ -1,10 +1,13 @@
-//! The binding against libsiv.so on the headless backend: Lua scripts run
-//! in a state from siv_lua_new, as an embedding host would make one.
+//! The binding on the headless backend: Lua scripts run in a state from
+//! siv_lua_new, as an embedding host would make one. The binding is
+//! linked into the headless test binary as an object, over the exports
+//! compiled into it (test/lua/api.zig); siv.so from the stock lua
+//! interpreter covers it against libsiv.so (src/lua/build_steps.zig).
 
 const std = @import("std");
-const lua = @import("c.zig");
+const root = @import("lua");
+const lua = root.helpers;
 const c = lua.c;
-const root = @import("lua.zig");
 const siv = @import("siv");
 
 const testing = std.testing;
@@ -71,7 +74,7 @@ test "require adds no globals and the allowlist holds" {
         \\  assert(_G[lib], lib)
         \\end
     );
-    if (@import("lua_options").system_lua) return;
+    if (root.system_lua) return;
     _ = try run(
         \\local ok, err = package.loadlib("libc.so.6", "printf")
         \\assert(not ok and err:find("dynamic libraries not enabled"))

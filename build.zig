@@ -270,6 +270,8 @@ pub fn build(b: *std.Build) void {
 
     // Tests.
     const test_step = b.step("test", "Run all tests");
+    // Zig's test runner with `--shard=I/N` (test/runner.zig).
+    const test_runner: std.Build.Step.Compile.TestRunner = .{ .path = b.path("test/runner.zig"), .mode = .server };
     const module_tests = [_]struct { []const u8, *std.Build.Module }{
         .{ "pool", pool },
         .{ "text", text },
@@ -293,24 +295,34 @@ pub fn build(b: *std.Build) void {
     };
     for (module_tests) |entry| {
         const name, const module = entry;
-        const t = b.addTest(.{ .name = name, .root_module = module, .filters = test_filters });
-        const run = b.addRunArtifact(t);
-        b.step(b.fmt("test-{s}", .{name}), b.fmt("Run the {s} tests", .{name})).dependOn(&run.step);
-        test_step.dependOn(&run.step);
+        const t = b.addTest(.{ .name = name, .root_module = module, .filters = test_filters, .test_runner = test_runner });
+        const step = b.step(b.fmt("test-{s}", .{name}), b.fmt("Run the {s} tests", .{name}));
+        // The text tests' conformance and equivalence tests take seconds
+        // each; the others take less than a second in all.
+        addShardedRuns(b, t, step, if (std.mem.eql(u8, name, "text")) 4 else 1, false);
+        test_step.dependOn(step);
     }
 
-    // Headless integration tests (D24): the real loop on the headless
-    // backend, CPU golden images. Extend test/headless.zig.
+    // The headless test binary (D24): the real loop on the headless
+    // backend, CPU golden images, the C API, the Lua binding in process,
+    // the guide's samples, and the files app, in one compilation of siv
+    // (tests.zig). Extend test/headless.zig. The build steps below add
+    // their C sources and imports. It runs as `headless_shards` processes
+    // at once, each with every Nth test (test/runner.zig).
     const headless = b.addTest(.{
         .name = "headless",
-        .root_module = ctx.module("test/headless.zig", &(internal ++ [_]std.Build.Module.Import{
+        .root_module = ctx.module("tests.zig", &(internal ++ [_]std.Build.Module.Import{
             .{ .name = "abi", .module = abi },
+            .{ .name = "png", .module = b.createModule(.{ .root_source_file = b.path("test/render/png.zig") }) },
         })),
         .filters = test_filters,
+        .test_runner = test_runner,
     });
-    const headless_run = b.addRunArtifact(headless);
-    b.step("test-headless", "Run the headless integration tests").dependOn(&headless_run.step);
-    test_step.dependOn(&headless_run.step);
+    const test_headless = b.step("test-headless", "Run the headless test binary (C API, guide, files app, Lua)");
+    // The guide's tests read its chapters, samples, and screenshots, which
+    // the build does not track as inputs, so the runs are never cached.
+    addShardedRuns(b, headless, test_headless, 8, true);
+    test_step.dependOn(test_headless);
 
     // Integration tests: the Wayland backend against sway running headless
     // (src/platform/integration_tests.zig). Opt in and by hand, never part
@@ -461,6 +473,7 @@ pub fn build(b: *std.Build) void {
         .test_step = test_step,
         .integration_step = integration_step,
         .headless = headless,
+        .test_headless = test_headless,
     });
 
     // libsiv-lua on top of libsiv.so, the siv-lua runner, its annotations,
@@ -475,6 +488,7 @@ pub fn build(b: *std.Build) void {
         .test_step = test_step,
         .integration_step = integration_step,
         .headless = headless,
+        .test_headless = test_headless,
     });
 
     // The file manager (apps/files), built on the `siv` wrapper above.
@@ -483,6 +497,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .test_filters = test_filters,
         .abi = abi,
+        .headless = headless,
+        .test_headless = test_headless,
         .test_step = test_step,
         .integration_step = integration_step,
     });
@@ -496,6 +512,7 @@ pub fn build(b: *std.Build) void {
         .abi = abi,
         .shared = shared,
         .headless = headless,
+        .test_headless = test_headless,
         .test_step = test_step,
     });
 
@@ -534,6 +551,9 @@ const Ctx = struct {
                 .link_libc = true,
                 .link_libcpp = cpp,
                 .pic = true,
+                // No debug info: it is most of what linking a test binary
+                // reads and writes (D25).
+                .strip = true,
             }),
         });
         into.addObject(obj);
@@ -571,6 +591,18 @@ fn integrationOptions(b: *std.Build, enabled: bool, bench: bool) *std.Build.Modu
     return options.createModule();
 }
 
+/// Runs test binary `t` for `step` as `shards` processes at once, each
+/// with every Nth test (test/runner.zig), from the build root.
+fn addShardedRuns(b: *std.Build, t: *std.Build.Step.Compile, step: *std.Build.Step, shards: usize, side_effects: bool) void {
+    for (0..shards) |i| {
+        const run = b.addRunArtifact(t);
+        if (shards > 1) run.addArg(b.fmt("--shard={d}/{d}", .{ i, shards }));
+        run.has_side_effects = side_effects;
+        run.setCwd(b.path("."));
+        step.dependOn(&run.step);
+    }
+}
+
 /// Flags for vendored C and C++ sources. Symbols stay hidden so libsiv.so
 /// exports only the siv ABI.
 const c_flags: []const []const u8 = &.{"-fvisibility=hidden"};
@@ -598,8 +630,8 @@ fn harfbuzzModule(ctx: Ctx) *std.Build.Module {
         tc.addIncludePath(dep.path("src"));
         const m = tc.createModule();
         // Amalgamated build without FreeType, GLib, or ICU (D13). HarfBuzz
-        // needs C++ headers but not the C++ runtime.
-        m.link_libcpp = true;
+        // needs C++ headers but not the C++ runtime, so only its object
+        // has libc++ (for the headers), and nothing links libc++ for it.
         // Optimized in Debug builds too: shaping is most of the text and
         // headless tests' run time, which this halves (D25).
         const optimize: std.builtin.OptimizeMode = if (ctx.optimize == .debug) .fast else ctx.optimize;
@@ -640,7 +672,6 @@ fn harfbuzzSubsetModule(ctx: Ctx, harfbuzz: *std.Build.Module) *std.Build.Module
     const m = if (b.lazyDependency("harfbuzz", .{})) |dep| blk: {
         tc.addIncludePath(dep.path("src"));
         const m = tc.createModule();
-        m.link_libcpp = true;
         m.addImport("harfbuzz", harfbuzz);
         // The files harfbuzz-subset.cc adds to harfbuzz.cc, compiled as one
         // file: they share HarfBuzz's heavy headers, which then compile

@@ -66,6 +66,6 @@ jobs:
 
       - name: zig build test
         run: >-
-          zig build test --summary failures
+          zig build test -j16 --summary failures
           -fsys=harfbuzz -fsys=lua -fsys=lcms2 -fsys=libwebp -fsys=glslang
           -fsys=libavif -fsys=libjxl

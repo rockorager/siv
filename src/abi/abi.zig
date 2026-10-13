@@ -100,19 +100,10 @@ comptime {
     runtime.checkDescriptors(t);
 }
 
+// The abi module's tests run elsewhere: its unit tests without siv in
+// unit_tests.zig, the rest through the C API in the headless test binary
+// (test/abi), so no test binary compiles all of siv for this module alone.
 test {
     std.testing.refAllDecls(@This());
     _ = schema;
-}
-
-test "siv_version encodes the build version" {
-    try std.testing.expectEqual(version.major, siv_version() >> 16);
-    try std.testing.expectEqual(version.minor, siv_version() >> 8 & 0xff);
-    try std.testing.expectEqual(version.patch, siv_version() & 0xff);
-}
-
-test "siv_result_name" {
-    try std.testing.expectEqualStrings("SIV_OK", std.mem.span(siv_result_name(.ok)));
-    try std.testing.expectEqualStrings("SIV_ERROR_OUT_OF_MEMORY", std.mem.span(siv_result_name(.error_out_of_memory)));
-    try std.testing.expectEqualStrings("SIV_RESULT_UNKNOWN", std.mem.span(siv_result_name(@fromBackingInt(-1000))));
 }

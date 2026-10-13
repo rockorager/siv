@@ -14,7 +14,7 @@ const raster = @import("raster");
 const pool = @import("pool");
 const render_vulkan = @import("render_vulkan");
 const golden = @import("golden.zig");
-const png = @import("png.zig");
+const png = @import("png");
 
 const Device = render_vulkan.Device;
 const Renderer = render_vulkan.Renderer;

@@ -10,20 +10,23 @@ xkbcommon, Fontconfig, and the Vulkan headers (`.agents/setup` installs
 them on Debian, with lavapipe and the validation layer for the Vulkan
 tests).
 
-`zig build test` is the gate: run it, and wait for it to pass, before
-every push (D24). Nothing else is part of anyone's gate.
+`zig build test -j16` is the gate: run it, and wait for it to pass,
+before every push (D24). Nothing else is part of anyone's gate. Pass
+`-j`: by default Zig 0.17's build runner makes about two steps at once
+on a 4-core orb, which doubles the time.
 
 ```sh
 zig build                      # zig-out: libsiv.so, libsiv.a, include/siv.h, lib/pkgconfig/siv.pc
-zig build test                 # every module's tests, headless tests, C ABI tests, guide, Lua
+zig build test -j16            # every module's tests, the headless test binary (C API, guide,
+                               #   files app, Lua), C ABI programs; JPEG XL only with -Djxl
 zig build test-text            # one module: test-abi, test-text, test-raster, test-scene, test-image, test-svg, test-icon,
                                #   test-render-cpu, test-render-vulkan, test-pool, test-loop,
                                #   test-dbus, test-portal, test-pdf, test-tray, test-platform,
                                #   test-compositor, test-ui, test-a11y, test-app
-zig build test-headless        # headless integration tests (test/headless.zig)
-zig build test-abi             # abi module, generators, Zig wrappers, exported symbols
-zig build test-lua             # Lua binding against libsiv.so, siv.so from the stock lua,
-                               #   annotations (also in `test`)
+zig build test-headless        # the headless test binary (tests.zig: test/headless.zig, the
+                               #   guide's and the files app's tests), as 8 processes
+zig build test-abi             # abi unit tests, Zig wrappers, exported symbols, headless binary
+zig build test-lua             # Lua: headless binary, siv.so from the stock lua, annotations
 zig build test-notices         # NOTICES covers every shipped dependency (also in `test`)
 zig build test-c               # C programs against the generated headers and shared libraries
 zig build guide                # the user guide's samples (docs/guide): built, installed as
@@ -36,6 +39,7 @@ zig build shaders              # after editing src/render/vulkan/shaders/*: comp
                                #   tests fail until then); -fsys=glslang uses glslangValidator
 zig build examples             # build and install the C programs in examples/
 ./zig-out/bin/siv-lua examples/todo.lua  # run a Lua example; --watch reloads it on edits
+zig build test -Djxl           # include libjxl in a Debug build, and its test
 zig build test-dbus --fuzz -Doptimize=ReleaseSafe  # fuzz a module's parsers
 zig build bench-text -Doptimize=ReleaseFast   # headless text engine benchmarks
 zig build bench-render-cpu -Doptimize=ReleaseFast  # CPU renderer benchmarks
@@ -171,6 +175,10 @@ commit message. In particular:
   `src/abi/` knows about handles.
 - Headless tests (test/headless.zig) may import every internal module; they
   run the real loop on the headless backend and compare CPU golden images
-  (D24). Golden images go under `test/golden/<area>/`. The Vulkan renderer
+  (D24). Golden images go under `test/golden/<area>/`. They, the guide's
+  tests, and the files app's tests build into one binary (tests.zig at
+  the root, so that it reaches docs/ and apps/); add tests there rather
+  than a new test binary. Tests must not depend on timing: the binary
+  runs as several processes beside the build. The Vulkan renderer
   is diffed against the same images on any Vulkan 1.3 device (lavapipe in
   orbs) and skipped without one; validation errors fail the tests.

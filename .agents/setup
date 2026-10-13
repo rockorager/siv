@@ -68,7 +68,7 @@ install_zig() {
 # vendored C libraries) so the first build in a thread is incremental.
 build_once() {
 	step "zig build"
-	zig build
+	zig build -j16
 }
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
