@@ -1,7 +1,8 @@
 //! Build graph for libsiv. See AGENTS.md for module ownership.
 //!
 //! Steps:
-//!   zig build                 libsiv.so, libsiv.a, include/siv.h, siv.pc
+//!   zig build                 libsiv.so, libsiv.a, include/siv.h, siv.pc,
+//!                             share/licenses/siv/NOTICES
 //!   zig build test            every module's tests, the headless tests, and
 //!                             the C ABI smoke test
 //!   zig build test-<module>   one module's tests (e.g. test-text)
@@ -401,6 +402,10 @@ pub fn build(b: *std.Build) void {
         .headless = headless,
     });
 
+    // NOTICES (D25): the licences of what libsiv contains for these
+    // options, installed as share/licenses/siv/NOTICES and checked by
+    // `test`.
+    @import("src/notices/build_steps.zig").add(b, .{ .root = root, .test_step = test_step });
 }
 
 const Ctx = struct {
