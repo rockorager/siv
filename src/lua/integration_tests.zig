@@ -123,7 +123,9 @@ const paste_script =
     \\T.command('[title="lua-b"] focus')
     \\local typer = T.spawn("wtype", "x")
     \\wait("the copy", function() return exists("copied") end)
-    \\assert(T.exited(typer) == 0)
+    \\local typed
+    \\wait("wtype to exit", function() typed = T.exited(typer); return typed ~= nil end)
+    \\assert(typed == 0, "wtype exited with " .. tostring(typed))
     \\-- Focused, this client gets the runner's selection and pastes it.
     \\T.command('[title="lua-a"] focus')
     \\local got
@@ -174,6 +176,26 @@ test "lua on sway: siv-lua copies, the binding pastes from a coroutine, kill clo
     var script_buf: [160]u8 = undefined;
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fmt.bufPrint(&script_buf, "{s}/copy.lua", .{dir}), .data = copy_script });
 
+    // libsiv.so's logs and the runner's go to a file, shown if the test
+    // fails: the test runner shows any output on stderr as a failure.
+    var log_buf: [160]u8 = undefined;
+    const log_path = try std.fmt.bufPrintSentinel(&log_buf, "{s}/stderr.log", .{dir}, 0);
+    const log_rc = linux.openat(linux.AT.FDCWD, log_path, .{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true, .CLOEXEC = true }, 0o600);
+    if (linux.errno(log_rc) != .SUCCESS) return error.Unexpected;
+    const saved: i32 = @intCast(linux.dup(2));
+    _ = linux.dup2(@intCast(log_rc), 2);
+    _ = linux.close(@intCast(log_rc));
+    var restored = false;
+    const restore = struct {
+        fn f(fd: i32, done: *bool) void {
+            if (done.*) return;
+            done.* = true;
+            _ = linux.dup2(fd, 2);
+            _ = linux.close(fd);
+        }
+    }.f;
+    defer restore(saved, &restored);
+
     const L = lua.siv_lua_new(~@as(c_int, 0)) orelse return error.OutOfMemory;
     defer c.lua_close(L);
     if (c.luaL_loadbufferx(L, paste_script.ptr, paste_script.len, "=paste", "t") != 0) return error.LuaSyntax;
@@ -186,6 +208,10 @@ test "lua on sway: siv-lua copies, the binding pastes from a coroutine, kill clo
     _ = c.lua_pushlstring(L, s.display.ptr, s.display.len);
     _ = c.lua_pushlstring(L, dir.ptr, dir.len);
     if (c.lua_pcallk(L, 3, 0, 0, 0, null) != 0) {
+        restore(saved, &restored);
+        const logged = std.Io.Dir.cwd().readFileAlloc(io, log_path, testing.allocator, .limited(1 << 20)) catch "";
+        defer if (logged.len > 0) testing.allocator.free(logged);
+        std.debug.print("{s}", .{logged});
         lua.printError(L, -1);
         return error.LuaError;
     }
