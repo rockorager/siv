@@ -760,6 +760,14 @@ pub fn textPropsOf(d_ptr: ?*const t.TextStyleDesc, stop_buf: *TabStops) Error!ui
         .optimal = fl.optimal_breaks,
         .paragraph = paragraph.apply(.{}),
         .tab_stops = stops,
+        .max_lines = d.max_lines,
+        .ellipsize = fl.ellipsize,
+        .direction = switch (try runtime.enumValue(t.TextDirection, d.direction)) {
+            .auto => .auto,
+            .ltr => .ltr,
+            .rtl => .rtl,
+            _ => unreachable,
+        },
     };
 }
 

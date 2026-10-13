@@ -229,3 +229,74 @@ fn uiOf(n: t.Node) !struct { *ui.Window, ui.NodeId } {
     const w, const id = try abi.tree.lookup(n);
     return .{ w.uiWin(), id };
 }
+
+fn width(n: t.Node) !f32 {
+    var r: t.Rect = undefined;
+    try ok(c.siv_node_get_rect(n, &r));
+    return r.width;
+}
+
+test "text: ellipses, line clamps, and a base direction of its own" {
+    var h: Harness = .{};
+    try h.start(240, 230, null, null);
+    defer h.stop();
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const root = c.siv_window_root(h.window);
+    _ = c.siv_set_visual(txn, root, &.{ .background = .{ .r = 1, .g = 1, .b = 1, .a = 1 } });
+    const col = c.siv_flex(txn, root, &.{ .axis = .column, .gap = 8 });
+    _ = c.siv_set_layout(txn, col, &.{ .padding = .{ .start = 10, .end = 10, .top = 10, .bottom = 10 } });
+    const box: t.Dimension = .{ .unit = .px, .value = 150 };
+
+    // One line, cut with an ellipsis.
+    const long_name = "Holiday photos from the long summer.jpeg";
+    const one = label(txn, col, long_name);
+    _ = c.siv_set_layout(txn, one, &.{ .width = box });
+    _ = c.siv_set_text_style(txn, one, &.{ .flags = .{ .no_wrap = true, .ellipsize = true } });
+    // Two lines of a paragraph, the second ending in an ellipsis.
+    const para = "A paragraph long enough to need three or four lines at this width, clamped to two.";
+    const two = label(txn, col, para);
+    _ = c.siv_set_layout(txn, two, &.{ .width = box });
+    _ = c.siv_set_text_style(txn, two, &.{ .max_lines = 2, .flags = .{ .ellipsize = true } });
+    // Clamped without an ellipsis: the line just ends.
+    const clamp = label(txn, col, para);
+    _ = c.siv_set_layout(txn, clamp, &.{ .width = box });
+    _ = c.siv_set_text_style(txn, clamp, &.{ .max_lines = 1 });
+    // Short text is left alone.
+    const short = label(txn, col, "short.txt");
+    _ = c.siv_set_layout(txn, short, &.{ .width = box });
+    _ = c.siv_set_text_style(txn, short, &.{ .flags = .{ .no_wrap = true, .ellipsize = true } });
+    // A date in a right-to-left box: by its first strong character it
+    // has none, so the box's direction swaps its two runs of digits;
+    // left to right of its own, it reads in order, still aligned to the
+    // box's start (the right).
+    const rtl_box = c.siv_flex(txn, col, &.{ .axis = .column, .gap = 4 });
+    _ = c.siv_set_layout(txn, rtl_box, &.{ .direction = .rtl, .width = .{ .unit = .px, .value = 220 } });
+    const swapped = label(txn, rtl_box, "2026-10-13 14:05");
+    const ordered = label(txn, rtl_box, "2026-10-13 14:05");
+    _ = c.siv_set_text_style(txn, ordered, &.{ .direction = .ltr });
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try h.expectGolden("text-cut", 240, 230);
+
+    try testing.expect(try width(one) <= 150);
+    try testing.expect(try width(two) <= 150);
+    // Two lines high, then one.
+    var r2: t.Rect = undefined;
+    var r1: t.Rect = undefined;
+    try ok(c.siv_node_get_rect(two, &r2));
+    try ok(c.siv_node_get_rect(clamp, &r1));
+    try testing.expectApproxEqAbs(2 * r1.height, r2.height, 1);
+    // The text, and so the accessible name, stays whole and unmarked.
+    var buf: [128]u8 = undefined;
+    var len: usize = 0;
+    try ok(c.siv_node_get_text(one, &buf, buf.len, &len));
+    try testing.expectEqualStrings(long_name, buf[0..len]);
+    const w = try h.win();
+    const tree = try w.uiWin().semanticsTree();
+    try testing.expect(tree.find(.label, long_name) != null or tree.find(.paragraph, long_name) != null);
+    // Its own direction needs no marks in the text.
+    try ok(c.siv_node_get_text(ordered, &buf, buf.len, &len));
+    try testing.expectEqualStrings("2026-10-13 14:05", buf[0..len]);
+    _ = swapped;
+}

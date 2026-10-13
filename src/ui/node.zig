@@ -458,6 +458,16 @@ pub const Text = struct {
     hyphenate: bool = false,
     /// Knuth and Plass's total-fit line breaking, for document views.
     optimal: bool = false,
+    /// At most this many lines show; 0 is unlimited (text nodes only).
+    max_lines: u32 = 0,
+    /// A line cut short (past `max_lines`, or too wide without wrapping)
+    /// ends with an ellipsis (text nodes only).
+    ellipsize: bool = false,
+    /// The base direction of the text's paragraphs: from their first
+    /// strong character (falling back to the node's direction), or set,
+    /// which isolates the text from the node's direction without marks
+    /// in the text. Alignment still follows the node (D21).
+    direction: TextDirection = .auto,
 
     /// Whether lines depend on the exact width they were laid out at, so
     /// a layout built for another width cannot serve.
@@ -469,6 +479,8 @@ pub const Text = struct {
 };
 
 pub const TabStop = text.layout.TabStop;
+
+pub const TextDirection = enum(u8) { auto, ltr, rtl };
 
 pub const Fit = enum(u8) { fill, contain, cover, none };
 

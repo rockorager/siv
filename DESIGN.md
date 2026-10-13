@@ -995,6 +995,24 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     of its own breaks at the last grapheme boundary that fits, taking at
     least one grapheme, and both edges are reshaped as at an unsafe
     opportunity. Max-content widths are unchanged.
+  - Truncation (`SIV_TEXT_ELLIPSIZE`, `siv_text_style_desc.max_lines`,
+    CSS text-overflow and line-clamp) works in the text node, not the
+    engine: when the layout has more lines than allowed, or a line wider
+    than the node's box with ellipsizing on, the node shows a cut copy:
+    the text up to a grapheme boundary of its last allowed line, trailing
+    white space trimmed, plus "…" (nothing without ellipsizing), shaped
+    and laid out like the original. The boundary is the largest one at
+    which the copy still ends on that line and fits, found by bisection
+    over the line's caret stops: about log2 of its graphemes extra
+    layouts, only for text that does not fit, kept until the width or
+    the text changes. The ellipsis is a neutral character at the logical
+    end, so it lands on the visual end of the paragraph's direction. The
+    node's text, accessible name, and max-content width stay whole, so a
+    table cell grows back when its column does. Found by the file
+    manager in `apps/files`, whose names were clipped mid-glyph.
+    Alternative: truncating inside `Layout` by glyph positions (exact per
+    visual line, but needs bidi-aware cutting and reshaping of the edge,
+    which the copy gets for free).
   - Justified alignment widens a line's word separators (U+0020, U+00A0,
     U+3000) equally until its content fills the width, on every line but
     a paragraph's last, which goes at the start (CSS text-align-last:
@@ -2246,6 +2264,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Text aligns by its node's direction, so an English label in an RTL
     window is flush right; each paragraph's bidi base direction is still
     detected from its text, defaulting to the node's direction.
+  - A text node may set its base direction (`siv_text_style_desc.direction`:
+    auto, ltr, rtl) apart from its layout direction, which still aligns
+    it. Text with no strong character, such as a date "2026-10-13 14:05",
+    otherwise takes an RTL node's direction and shows its runs of digits
+    swapped; set to ltr, it reads in order and stays flush with the
+    node's start. This is the isolation applications would otherwise get
+    by inserting U+200E, which then shows up in accessible names (AT-SPI
+    clients read "\u200e2026-10-13"); the text stays unmarked. Found by
+    the file manager in `apps/files`. A per-node property rather than a
+    span attribute: the case is a whole label (dates, sizes, paths), and
+    a span would need isolates inserted into the bidi pass. Reverse if
+    mixed runs inside one label need it.
   - Image nodes can mirror in RTL (directional icons).
   - The application has a language and a direction (`siv_app_desc.language`,
     the `ltr`/`rtl` flags, `siv_app_set_language`): by default the

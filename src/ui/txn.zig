@@ -620,11 +620,12 @@ pub const Txn = struct {
         d.language = language;
         const os = old.props.style;
         const ns = props.style;
-        if (old.family != family or old.language != language or os.size != ns.size or os.weight != ns.weight or os.weight_value != ns.weight_value or os.slant != ns.slant or os.width != ns.width or os.size_role != ns.size_role) {
+        if (old.family != family or old.language != language or os.size != ns.size or os.weight != ns.weight or os.weight_value != ns.weight_value or os.slant != ns.slant or os.width != ns.width or os.size_role != ns.size_role or old.props.direction != props.direction) {
             t.win.markShape(id);
         } else if (old.props.wrap != props.wrap or old.props.break_words != props.break_words or stops_changed or
             !std.meta.eql(old.props.paragraph, props.paragraph) or old.props.hyphenate != props.hyphenate or
-            old.props.optimal != props.optimal or (old.props.alignment == .justify) != (props.alignment == .justify))
+            old.props.optimal != props.optimal or (old.props.alignment == .justify) != (props.alignment == .justify) or
+            old.props.max_lines != props.max_lines or old.props.ellipsize != props.ellipsize)
         {
             // The layout cache keys on the width only: shape again.
             t.win.markShape(id);

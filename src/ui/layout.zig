@@ -815,7 +815,8 @@ fn textSize(win: *Window, id: NodeId, inner: Constraints) Error!Size {
     const n = win.node(id);
     const wrap = if (n.kind == .editor) n.data.editor.editor.multiline and n.data.editor.text.props.wrap else n.data.text.props.wrap;
     const width: ?f32 = if (wrap and std.math.isFinite(inner.max_w)) inner.max_w else null;
-    const l = try text_node.layoutFor(win, id, width) orelse return .{ .w = inner.min_w, .h = inner.min_h };
+    const fit: ?f32 = if (std.math.isFinite(inner.max_w)) inner.max_w else null;
+    const l = try text_node.layoutIn(win, id, width, fit) orelse return .{ .w = inner.min_w, .h = inner.min_h };
     return .{ .w = if (inner.tightW()) inner.max_w else inner.clampW(l.width), .h = inner.clampH(l.height) };
 }
 

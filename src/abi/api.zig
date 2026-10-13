@@ -624,6 +624,12 @@ pub const decls = [_]Decl{
         .{ .name = "hyphenate", .bit = 2, .doc = "Words break at hyphenation points of their language (D13): the built-in patterns or ones added with siv_app_add_hyphenation; lines broken inside a word end with a hyphen (CSS hyphens: auto)." },
         .{ .name = "optimal_breaks", .bit = 3, .doc = "Knuth and Plass's total-fit line breaking, for document views: lines chosen for the whole paragraph to even out their fill (and hyphenation), instead of filling each line in turn. Costs more per layout." },
         .{ .name = "break_words", .bit = 1, .doc = "A word too wide for a line of its own breaks between characters (graphemes) instead of overflowing (CSS overflow-wrap: anywhere)." },
+        .{ .name = "ellipsize", .bit = 4, .doc = "Text nodes: text cut short ends with an ellipsis (…) at a character boundary: the last line max_lines allows when more would follow, or, with no_wrap, a line wider than the node (CSS text-overflow: ellipsis). The node's text and accessible name stay whole." },
+    }),
+    enumeration("siv_text_direction", "The base direction of a text's paragraphs (D21), which orders its bidirectional runs.", &.{
+        .{ .name = "auto", .value = 0, .doc = "From each paragraph's first strong character; without one, the node's direction." },
+        .{ .name = "ltr", .value = 1, .doc = "Left to right whatever the text holds, such as a date, a number with units, or a path in a right-to-left layout. It isolates the text from the node's direction without marks in the text; alignment still follows the node." },
+        .{ .name = "rtl", .value = 2, .doc = "Right to left whatever the text holds." },
     }),
     descriptor("siv_text_style_desc", "The style of a text or editor node (one style per node). Replaces the node's style.", &.{
         .{ .name = "family", .type = .string, .doc = "Family name or generic family; empty uses the application default." },
@@ -647,6 +653,8 @@ pub const decls = [_]Decl{
         f32Field("first_line_indent", "Paragraph default: added to indent_start on each paragraph's first line; negative hangs it out."),
         f32Field("tab_width", "Paragraph default: distance between tab stops after tab_stops, in logical pixels; 0 is four spaces of the font."),
         .{ .name = "tab_stops", .type = array(ref("siv_tab_stop")), .doc = "Tab stops by increasing position; a tab advances to the next one, then to multiples of tab_width (copied)." },
+        .{ .name = "max_lines", .type = .u32, .doc = "Text nodes: show at most this many lines, the rest cut off (with SIV_TEXT_ELLIPSIZE, the last ending in …); 0 is unlimited (CSS line-clamp)." },
+        .{ .name = "direction", .type = ref("siv_text_direction"), .doc = "The base direction of the text's paragraphs; default auto." },
     }),
     flags("siv_text_span_flags", "Which attributes a styled range sets.", &.{
         .{ .name = "weight", .bit = 0, .doc = "weight applies." },
