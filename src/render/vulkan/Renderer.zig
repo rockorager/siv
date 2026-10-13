@@ -99,7 +99,7 @@ const Inst = extern struct {
     ptex: [4]i32 = .{ 0, 0, 0, 0 },
     btex: [4]i32 = .{ 0, 0, 0, 0 },
     /// Part of `quad` not drawn (x0 >= x1: none): covered by a later
-    /// opaque draw, or where the coverage is known to be empty (`occlude`).
+    /// opaque draw (`occlude`).
     hole: [4]i32 = .{ 0, 0, 0, 0 },
 };
 
@@ -755,10 +755,23 @@ fn prepare(r: *Renderer, list: scene.DisplayList, root: Affine) Error!void {
                 const bbox = m.applyRect(s.shape.bounds().outset(s.style.outset())).intersect(top.clip).roundOut().intersect(vp);
                 const quad = bbox.intersect(top.scissor);
                 if (quad.isEmpty()) continue;
-                var inst = try r.paintInst(s.paint, m, quad, top.chain);
-                try r.coverage(&inst, s.shape, .nonzero, m, s.style);
-                inst.hole = irect(strokeInterior(s.shape, s.style.width, m).intersect(quad));
-                try r.pushInst(inst);
+                // A rectangle's or rounded rectangle's stroke (a view's
+                // border) is drawn as the bands around its empty inside,
+                // each rasterized on its own: one mask over the whole
+                // bounds took half the CPU of a scrolling list's frames.
+                const inside = strokeInterior(s.shape, s.style.width, m).intersect(quad);
+                const pieces: [4]IRect = if (inside.isEmpty()) .{ quad, .empty, .empty, .empty } else .{
+                    .{ .x0 = quad.x0, .y0 = quad.y0, .x1 = quad.x1, .y1 = inside.y0 },
+                    .{ .x0 = quad.x0, .y0 = inside.y1, .x1 = quad.x1, .y1 = quad.y1 },
+                    .{ .x0 = quad.x0, .y0 = inside.y0, .x1 = inside.x0, .y1 = inside.y1 },
+                    .{ .x0 = inside.x1, .y0 = inside.y0, .x1 = quad.x1, .y1 = inside.y1 },
+                };
+                for (pieces) |piece| {
+                    if (piece.isEmpty()) continue;
+                    var inst = try r.paintInst(s.paint, m, piece, top.chain);
+                    try r.coverage(&inst, s.shape, .nonzero, m, s.style);
+                    try r.pushInst(inst);
+                }
             },
             .glyphs => |g| try r.prepareGlyphs(g, top),
             .shadow => |sh| try r.prepareShadow(sh, top),
@@ -968,6 +981,10 @@ fn blurCoverage(r: *Renderer, index: u32, shape: scene.Shape, m: Affine) Error!v
 }
 
 const blur_target: u32 = 1 << 31;
+
+/// Path coverage up to this many pixels a frame is rasterized on the
+/// compositor thread rather than on the worker pool.
+const inline_raster_pixels = 256 * 256 * 4;
 
 fn addClip(r: *Renderer, shape: scene.Shape, rule: FillRule, m: Affine, parent: u32, scissor: IRect) Error!u32 {
     var rec: ClipRec = .{ .kind = cov_mask, .parent = parent };
@@ -1237,18 +1254,13 @@ fn occlude(r: *Renderer) Error!void {
             }
         }
         if (best.isEmpty()) continue;
-        const hole = if (quadRect(inst.hole).isEmpty()) best else blk: {
-            // Keep the larger of an empty-coverage hole and this one.
-            const own = quadRect(inst.hole);
-            break :blk if (area(own) >= best_area) own else best;
-        };
-        if (hole.contains(q)) inst.quad = .{ 0, 0, 0, 0 } else inst.hole = irect(hole);
+        if (best.contains(q)) inst.quad = .{ 0, 0, 0, 0 } else inst.hole = irect(best);
     }
 }
 
 /// The device pixels inside a rectangle's or rounded rectangle's stroke
 /// that it leaves empty (a view's border), less a pixel for antialiasing;
-/// empty for other shapes or transforms.
+/// empty for other shapes or transforms, or when small.
 fn strokeInterior(shape: scene.Shape, width: f32, m: Affine) IRect {
     if (!m.isAxisAligned()) return .empty;
     const rect, const radius = switch (shape) {
@@ -1473,7 +1485,14 @@ fn rasterizePaths(r: *Renderer, base: [*]u8) Error!void {
     if (r.paths.items.len == 0) return;
     for (r.workers) |*w| w.failed = false;
     var pass: PathPass = .{ .r = r, .base = base, .counter = .{ .count = @intCast(r.paths.items.len) } };
-    r.executor.run(r.executor.ctx, .{ .ctx = &pass, .func = PathPass.run });
+    // A little coverage (a scrolling view's border, about 60,000 pixels)
+    // costs less than waking the pool: a third of a scrolling list's CPU
+    // time went to a dozen workers waking each frame.
+    var pixels: i64 = 0;
+    for (r.paths.items) |job| pixels += area(job.region);
+    if (pixels <= inline_raster_pixels) {
+        PathPass.run(&pass, 0);
+    } else r.executor.run(r.executor.ctx, .{ .ctx = &pass, .func = PathPass.run });
     for (r.workers) |w| if (w.failed) return error.OutOfMemory;
 }
 

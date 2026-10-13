@@ -126,7 +126,7 @@ test "frames match the CPU renderer, including damage-only frames" {
     try testing.expectEqual(errors, Device.validation_errors.load(.monotonic));
 }
 
-test "draws under later opaque ones get holes, and frames still match the CPU" {
+test "draws under later opaque ones get holes, borders are bands, and frames still match the CPU" {
     const gpa = testing.allocator;
     const device = try testDevice();
     defer device.destroy();
@@ -166,14 +166,14 @@ test "draws under later opaque ones get holes, and frames still match the CPU" {
         try b.popLayer();
         const list = try b.finish(0);
         try expectMatch(r, cpu, list, if (frame == 0) null else &.{.xywh(0, 0, 200, 150)}, 200, 150);
-        // The background, the gradient, and the border's inside are holes
-        // (or nothing at all).
+        // The background and the gradient under the panel are holes (or
+        // nothing at all).
         var holed: usize = 0;
         for (r.insts.items) |inst| {
             const q = inst.quad;
             if (q[2] <= q[0] or inst.hole[2] > inst.hole[0]) holed += 1;
         }
-        try testing.expect(holed >= 3);
+        try testing.expect(holed >= 2);
     }
     try testing.expectEqual(errors, Device.validation_errors.load(.monotonic));
 }

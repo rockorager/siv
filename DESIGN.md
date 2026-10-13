@@ -673,15 +673,20 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Overdraw: an instance gets a hole where a later opaque draw into the
     same target covers it (a solid paint of alpha 1 with analytic
     coverage, inside the full-coverage part of its shape and of every
-    clip), and a rectangle's or rounded rectangle's stroke gets one where
-    it leaves its inside empty. The vertex shader draws an instance with
-    a hole as the four quads around it, so those pixels are not shaded:
-    `Renderer.occlude`, not in frames with a backdrop blur, which reads
-    around its own pixels. A 100,000-row list scrolling on the compositor
-    shaded three full-window quads per frame (the window's background,
-    the view's, and its border as a mask): its draw pass took 1.38 ms of
-    GPU time per frame, 0.74 ms after; frames are unchanged (the Vulkan
-    tests compare them with the CPU's).
+    clip); the vertex shader draws it as the four quads around the hole,
+    so those pixels are not shaded (`Renderer.occlude`, not in frames
+    with a backdrop blur, which reads around its own pixels). A
+    rectangle's or rounded rectangle's stroke is drawn as the four bands
+    around its empty inside, each its own mask. A 100,000-row list
+    scrolling on the compositor shaded three full-window quads per frame
+    (the window's background, the view's, and its border as one mask
+    rasterized over the whole window): GPU time per frame 1.68 to 1.05
+    ms (gpui 0.96), the draw pass alone 1.38 to 0.74 ms; frames are
+    unchanged (the Vulkan tests compare them with the CPU's).
+  - Path coverage of up to 262,144 pixels a frame is rasterized on the
+    compositor thread instead of the worker pool, whose dozen threads
+    woke every frame for a border's four bands: with the bands, that
+    list's CPU time per frame went from 2.39 to 1.51 ms (gpui 2.04).
   - sRGB attachments, which encode in hardware with blending still in
     linear light, were measured as the working image instead of FP16:
     the draw pass took the same time (0.643 against 0.644 ms per frame of
