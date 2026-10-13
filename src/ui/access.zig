@@ -65,7 +65,7 @@ const Geometry = struct {
             .layout = l,
             .origin = .{ .x = r.x0 + pad.left(s.rtl), .y = r.y0 + pad.top },
             .content_width = s.size.w - pad.horizontal(),
-            .len = @intCast(n.textData().content.len),
+            .len = @intCast(n.textData().content.len()),
         };
         if (n.kind == .editor) {
             g.origin.x -= s.editor_scroll;
@@ -134,7 +134,7 @@ pub fn textRun(win: *const Window, id: NodeId, offset: u32) ?node_mod.Span {
     if (!n.isText()) return null;
     if (n.kind == .editor and n.data.editor.editor.masked) return null;
     const d = n.textData();
-    const len: u32 = @intCast(d.content.len);
+    const len: u32 = @intCast(d.content.len());
     return spans.runAt(d.spans, @min(offset, len), len);
 }
 
@@ -147,7 +147,7 @@ pub fn paragraphRun(win: *const Window, id: NodeId, offset: u32) ?node_mod.Parag
     if (!n.isText()) return null;
     if (n.kind == .editor and n.data.editor.editor.masked) return null;
     const d = n.textData();
-    const p = spans.paragraphAt(d.content, @min(offset, @as(u32, @intCast(d.content.len))));
+    const p = spans.paragraphAt(d.content, @min(offset, @as(u32, @intCast(d.content.len()))));
     return .{ .start = p.start, .end = p.end, .style = spans.styleAt(d.paragraphs, p.start) };
 }
 
@@ -157,7 +157,7 @@ pub fn paragraphRun(win: *const Window, id: NodeId, offset: u32) ?node_mod.Parag
 pub fn paragraphStyleRun(win: *const Window, id: NodeId, offset: u32) ?node_mod.ParagraphSpan {
     const p = paragraphRun(win, id, offset) orelse return null;
     const d = win.node(id).textData();
-    const len: u32 = @intCast(d.content.len);
+    const len: u32 = @intCast(d.content.len());
     return spans.runAt(d.paragraphs, p.start, len);
 }
 
@@ -188,7 +188,7 @@ pub fn lineRange(win: *const Window, id: NodeId, offset: u32) ?[2]u32 {
     return .{ g.fromShown(line.start), @min(g.fromShown(line.end), g.len) };
 }
 
-fn editable(win: *const Window, id: NodeId) EditError![]const u8 {
+fn editable(win: *const Window, id: NodeId) EditError!text.Rope {
     if (!win.isLive(id)) return error.InvalidNode;
     const n = win.node(id);
     if (n.kind != .editor or n.data.editor.editor.masked or n.semantics.disabled) return error.InvalidNode;

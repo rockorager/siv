@@ -159,19 +159,22 @@ fn fill(win: *Window, id: NodeId, state: *platform.TextInputState) void {
     const n = win.node(id);
     const e = n.data.editor;
     const content = e.text.content;
+    const len = content.len();
+    var rd = content.reader();
     // A window of text around the caret, cut at character boundaries.
     var start: usize = (@min(e.caret, e.anchor)) -| context_bytes;
-    while (start > 0 and start < content.len and content[start] & 0xc0 == 0x80) start -= 1;
-    var end: usize = @min(content.len, @as(usize, @max(e.caret, e.anchor)) + context_bytes);
-    while (end < content.len and content[end] & 0xc0 == 0x80) end += 1;
+    while (start > 0 and start < len and rd.at(start) & 0xc0 == 0x80) start -= 1;
+    var end: usize = @min(len, @as(usize, @max(e.caret, e.anchor)) + context_bytes);
+    while (end < len and rd.at(end) & 0xc0 == 0x80) end += 1;
     if (end - start > platform.TextInputState.max_surrounding) {
         start = e.caret -| platform.TextInputState.max_surrounding / 2;
-        while (start < content.len and content[start] & 0xc0 == 0x80) start += 1;
-        end = @min(content.len, start + platform.TextInputState.max_surrounding);
-        while (end > start and end < content.len and content[end] & 0xc0 == 0x80) end -= 1;
+        while (start < len and rd.at(start) & 0xc0 == 0x80) start += 1;
+        end = @min(len, start + platform.TextInputState.max_surrounding);
+        while (end > start and end < len and rd.at(end) & 0xc0 == 0x80) end -= 1;
     }
     state.enabled = true;
-    state.surrounding = content[start..end];
+    // Copied out of the rope for the frame; the platform copies it again.
+    state.surrounding = content.slice(win.scratch.allocator(), start, end) catch "";
     state.cursor = @intCast(std.math.clamp(e.caret, start, end) - start);
     state.anchor = @intCast(std.math.clamp(e.anchor, start, end) - start);
     state.hint = .{ .multiline = e.editor.multiline };

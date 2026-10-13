@@ -832,9 +832,9 @@ pub const Win = struct {
                 .row = n.row,
             };
             sn.text = if (editor)
-                try addStr(gpa, s, n.value_text)
+                try addRope(gpa, s, n.value_text)
             else if (un.kind == .text)
-                try addStr(gpa, s, un.data.text.content)
+                try addRope(gpa, s, un.data.text.content)
             else if (has_text) sn.name else .{};
             if (un.isText()) sn.attrs = attrsHash(un.textData());
             sn.states = states(&n, w);
@@ -850,6 +850,12 @@ pub const Win = struct {
             s.nodes.appendAssumeCapacity(sn);
             s.index.putAssumeCapacity(node, @intCast(i));
         }
+    }
+
+    fn addRope(gpa: Allocator, s: *Snapshot, v: @import("text").Rope) Allocator.Error!Str {
+        const off: u32 = @intCast(s.strings.items.len);
+        try v.appendTo(gpa, &s.strings, 0, v.len());
+        return .{ .off = off, .len = @intCast(v.len()) };
     }
 
     fn addStr(gpa: Allocator, s: *Snapshot, v: []const u8) Allocator.Error!Str {

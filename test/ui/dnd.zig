@@ -202,7 +202,7 @@ test "drops from another client reach the nearest drop target that takes them" {
     app.onHeadless({}, dropIt);
     try settle(&app);
     const e = app.win.node(sc.editor).data.editor;
-    try testing.expectEqualStrings("abXY", e.text.content);
+    try testing.expectEqualStrings("abXY", e.text.content.flat().?);
     try testing.expectEqual(@as(u32, 4), e.caret);
     try testing.expectEqual(@as(u32, 2), e.anchor);
     try testing.expectEqual(sc.editor, app.win.input.focus);

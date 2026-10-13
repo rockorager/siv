@@ -410,7 +410,7 @@ test "actions, focus, text, and editing reach the window" {
     const ed = h.path(h.nodes.editor, &buf);
     try testing.expectEqual(@as(i32, 3), try (try h.get(ed, atspi.iface.text, "CharacterCount")).read(i32));
     try testing.expect(try (try h.call(ed, atspi.iface.editable_text, "InsertText", .{ @as(i32, 1), "XYZ", @as(i32, 2) })).read(bool));
-    try testing.expectEqualStrings("aXYbc", h.win.node(h.nodes.editor).data.editor.text.content);
+    try testing.expectEqualStrings("aXYbc", h.win.node(h.nodes.editor).data.editor.text.content.flat().?);
     try testing.expect(try (try h.call(ed, atspi.iface.text, "SetSelection", .{ @as(i32, 0), @as(i32, 1), @as(i32, 3) })).read(bool));
     try testing.expectEqual(@as(u32, 3), h.win.node(h.nodes.editor).data.editor.caret);
     try testing.expectEqual(@as(u32, 1), h.win.node(h.nodes.editor).data.editor.anchor);

@@ -5,6 +5,7 @@
 //! text, or focus, and tests query it. The AT-SPI bridge will read it.
 
 const std = @import("std");
+const text = @import("text");
 const raster = @import("raster");
 const Window = @import("Window.zig");
 const node_mod = @import("node.zig");
@@ -40,7 +41,7 @@ pub const Node = struct {
     /// Has an activate handler: AT can invoke its action.
     actionable: bool,
     /// An editor's text, caret, and selection anchor (byte offsets).
-    value_text: []const u8 = "",
+    value_text: text.Rope = .{},
     caret: ?u32 = null,
     anchor: ?u32 = null,
     /// A password field: its value is never exposed.
@@ -131,7 +132,8 @@ pub const Tree = struct {
                 try t.names.appendSlice(win.gpa, sem.label);
             } else if (n.kind == .text) {
                 // An editor's text is its value, not its name.
-                try t.names.appendSlice(win.gpa, n.data.text.content);
+                const c = n.data.text.content;
+                try c.appendTo(win.gpa, &t.names, 0, c.len());
             } else if (namedFromContent(role)) {
                 try t.contentText(win, id, start);
             }
@@ -161,7 +163,7 @@ pub const Tree = struct {
                 .actionable = n.handler(.activate) != null and !sem.disabled,
                 // A masked editor exposes neither its text nor, through
                 // caret offsets, its length.
-                .value_text = if (editor) n.data.editor.text.content else "",
+                .value_text = if (editor) n.data.editor.text.content else .{},
                 .caret = if (editor) n.data.editor.caret else null,
                 .anchor = if (editor) n.data.editor.anchor else null,
                 .masked = n.kind == .editor and n.data.editor.editor.masked,
@@ -186,11 +188,14 @@ pub const Tree = struct {
         while (it.next()) |c| {
             const n = win.node(c);
             if (n.role() == .none) continue;
-            if (n.semantics.label.len != 0 or n.kind == .text) {
-                const s = if (n.semantics.label.len != 0) n.semantics.label else n.data.text.content;
-                if (s.len == 0) continue;
+            if (n.semantics.label.len != 0) {
                 if (t.names.items.len > name_start) try t.names.append(win.gpa, ' ');
-                try t.names.appendSlice(win.gpa, s);
+                try t.names.appendSlice(win.gpa, n.semantics.label);
+            } else if (n.kind == .text) {
+                const s = n.data.text.content;
+                if (s.len() == 0) continue;
+                if (t.names.items.len > name_start) try t.names.append(win.gpa, ' ');
+                try s.appendTo(win.gpa, &t.names, 0, s.len());
             } else try t.contentText(win, c, name_start);
         }
     }

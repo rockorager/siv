@@ -26,6 +26,7 @@ pub const paragraph = @import("paragraph.zig");
 pub const layout = @import("layout.zig");
 pub const cursor = @import("cursor.zig");
 pub const blocks = @import("blocks.zig");
+pub const rope = @import("rope.zig");
 
 pub const FontId = font.FontId;
 pub const FontCache = font.FontCache;
@@ -37,6 +38,7 @@ pub const ShapedParagraph = paragraph.ShapedParagraph;
 pub const Layout = layout.Layout;
 pub const ShapedText = blocks.ShapedText;
 pub const TextLayout = blocks.TextLayout;
+pub const Rope = rope.Rope;
 
 test {
     std.testing.refAllDecls(@This());

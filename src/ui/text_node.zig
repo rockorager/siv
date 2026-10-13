@@ -65,6 +65,9 @@ pub const Cache = struct {
     late_wanted: bool = false,
     /// Where the text's scroll container shows it (`settle`).
     anchor: ?Anchor = null,
+    /// The text `paragraph` was shaped from (with any preedit), to find
+    /// what the next text changed (D15).
+    shown: text.Rope = .{},
 
     pub fn destroy(c: *Cache, gpa: std.mem.Allocator) void {
         if (c.layout) |*l| l.deinit();
@@ -76,6 +79,7 @@ pub const Cache = struct {
         c.shaping.deinit(gpa);
         c.dropCut();
         c.dropPlaceholder();
+        c.shown.release(gpa);
         c.run_styles.deinit(gpa);
         gpa.destroy(c);
     }
@@ -146,23 +150,32 @@ fn shape(win: *Window, id: NodeId) error{OutOfMemory}!*Cache {
     const d = win.node(id).textData();
     const n = win.node(id);
     const a = win.scratch.allocator();
-    var content = d.content;
+    // The text shown: the content, with an editor's preedit in it.
+    const content = if (n.kind == .editor) try @import("editor.zig").displayText(win, id) else d.content.retain();
+    var keep_content = false;
+    defer if (!keep_content) content.release(win.gpa);
     var list = d.spans;
-    if (n.kind == .editor) {
-        content = try @import("editor.zig").displayText(win, id, a);
+    if (content.len() != d.content.len()) {
         // The preedit sits at the caret in the style typing would give it.
-        if (content.len != d.content.len) {
-            const e = n.data.editor;
-            list = try spans.replaced(a, d.spans, e.caret, e.caret, @intCast(content.len - d.content.len), e.typing orelse spans.inherited(d.spans, e.caret));
-        }
+        const e = n.data.editor;
+        list = try spans.replaced(a, d.spans, e.caret, e.caret, @intCast(content.len() - d.content.len()), e.typing orelse spans.inherited(d.spans, e.caret));
     }
     try c.run_styles.ensureTotalCapacity(win.gpa, 2 * list.len + 1);
     // An edit keeps the blocks it did not touch, unless fonts changed.
-    // Blocks still shaping on the pool stay theirs (`Shaping`).
+    // Blocks still shaping on the pool stay theirs (`Shaping`). What
+    // changed since the text last shaped comes from the ropes, which
+    // share all but the leaves edits touched (D15).
     const old: ?*const text.ShapedText = if (c.paragraph != null and c.serial == fonts.serial) &c.paragraph.? else null;
-    const runs = try styleRuns(win, id, content, list, &c.run_styles);
-    var p = try shapeRuns(win, content, runs, old, blockOptions(win, content.len));
+    const change: ?text.blocks.Change = if (old != null) .{
+        .prefix = text.Rope.commonPrefix(c.shown, content),
+        .suffix = text.Rope.commonSuffix(c.shown, content),
+    } else null;
+    const runs = try styleRuns(win, id, content.len(), list, &c.run_styles);
+    var p = try shapeRuns(win, .ofRope(content), runs, old, blockOptions(win, content.len()), change);
     errdefer p.deinit();
+    c.shown.release(win.gpa);
+    c.shown = content;
+    keep_content = true;
     c.dropCut();
     // The last layout built, kept until the next takes its lines.
     if (old == null) {
@@ -203,13 +216,13 @@ fn isLong(c: *const Cache) bool {
 /// style per run of equal span style; `run_styles` gets each run's span
 /// style.
 fn shapeString(win: *Window, id: NodeId, content: []const u8, list: []const node_mod.Span, run_styles: ?*std.ArrayList(node_mod.SpanStyle), old: ?*const text.ShapedText) error{OutOfMemory}!text.ShapedText {
-    return shapeRuns(win, content, try styleRuns(win, id, content, list, run_styles), old, .{});
+    return shapeRuns(win, .flat(content), try styleRuns(win, id, content.len, list, run_styles), old, .{}, null);
 }
 
 const Runs = struct { styles: []const text.StyleRun, direction: text.bidi.BaseDirection };
 
 /// The style runs `shapeString` shapes with, in scratch memory.
-fn styleRuns(win: *Window, id: NodeId, content: []const u8, list: []const node_mod.Span, run_styles: ?*std.ArrayList(node_mod.SpanStyle)) error{OutOfMemory}!Runs {
+fn styleRuns(win: *Window, id: NodeId, content_len: usize, list: []const node_mod.Span, run_styles: ?*std.ArrayList(node_mod.SpanStyle)) error{OutOfMemory}!Runs {
     const d = win.node(id).textData();
     const fonts = win.fonts;
     const style = d.props.style;
@@ -217,7 +230,7 @@ fn styleRuns(win: *Window, id: NodeId, content: []const u8, list: []const node_m
     const lang_name = if (fonts.name(language).len == 0) "und" else fonts.name(language);
     const scale: f32 = @floatCast(win.desktop.text_scale);
     const size = win.palette.textSize(style.size, style.size_role) * scale;
-    const len: u32 = @intCast(content.len);
+    const len: u32 = @intCast(content_len);
     var runs: std.ArrayList(text.StyleRun) = .empty;
     const a = win.scratch.allocator();
     if (run_styles) |rs| rs.clearRetainingCapacity();
@@ -241,9 +254,9 @@ fn styleRuns(win: *Window, id: NodeId, content: []const u8, list: []const node_m
 }
 
 /// Shapes `content` with `runs`, reusing `old`'s blocks.
-fn shapeRuns(win: *Window, content: []const u8, runs: Runs, old: ?*const text.ShapedText, options: text.blocks.Options) error{OutOfMemory}!text.ShapedText {
+fn shapeRuns(win: *Window, content: text.blocks.Source, runs: Runs, old: ?*const text.ShapedText, options: text.blocks.Options, change: ?text.blocks.Change) error{OutOfMemory}!text.ShapedText {
     const a = win.scratch.allocator();
-    return text.ShapedText.initReusing(win.gpa, a, &win.fonts.cache, content, runs.styles, runs.direction, options, old) catch |err| switch (err) {
+    return text.ShapedText.initEdit(win.gpa, a, &win.fonts.cache, content, runs.styles, runs.direction, options, old, change) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         // Validated when the text was set; chains may be empty, since
         // the font cache has a last resort (D13).
@@ -467,7 +480,7 @@ pub fn placeholder(win: *Window, id: NodeId) error{OutOfMemory}!?*const text.Tex
 pub fn layoutFor(win: *Window, id: NodeId, width: ?f32) error{OutOfMemory}!?*const text.TextLayout {
     // Empty labels take no space; an empty editor still has a caret line.
     const n = win.node(id);
-    if (n.kind == .text and n.data.text.content.len == 0) return null;
+    if (n.kind == .text and n.data.text.content.len() == 0) return null;
     const c = try shape(win, id);
     if (c.layout) |*l| {
         const built: f32 = c.layout_width orelse std.math.inf(f32);
@@ -559,9 +572,10 @@ const Cut = struct {
 /// that line and fits in `fit`.
 fn cutText(win: *Window, id: NodeId, c: *Cache, full: *const text.TextLayout, last: usize, width: ?f32, fit: ?f32) error{OutOfMemory}!void {
     const d = win.node(id).data.text;
-    const content = d.content;
     const line = try full.line(@intCast(last));
     const a = win.scratch.allocator();
+    // The cut copies are made from the text up to the line's end.
+    const content = try d.content.slice(a, 0, line.end);
     // Grapheme edges of the line, without its trailing white space.
     var end = line.end;
     while (end > line.start and std.ascii.isWhitespace(content[end - 1])) end -= 1;
@@ -646,9 +660,9 @@ fn paragraphRuns(win: *Window, id: NodeId) error{OutOfMemory}![]const text.layou
     // Shaped already: the text as total, with any preedit.
     const shaped = &win.state(id).text.?.paragraph.?;
     const total: u32 = shaped.len();
-    if (n.kind == .editor and total != d.content.len) {
+    if (n.kind == .editor and total != d.content.len()) {
         const e = n.data.editor;
-        list = try spans.replaced(a, list, e.caret, e.caret, @intCast(total - d.content.len), spans.inherited(list, e.caret));
+        list = try spans.replaced(a, list, e.caret, e.caret, @intCast(total - d.content.len()), spans.inherited(list, e.caret));
     }
     var runs: std.ArrayList(text.layout.ParagraphRun) = .empty;
     var at: u32 = 0;
@@ -672,7 +686,7 @@ pub fn maxContent(win: *Window, id: NodeId) error{OutOfMemory}!f32 {
 pub fn current(win: *const Window, id: NodeId) ?*const text.TextLayout {
     const c = win.state(id).text orelse return null;
     const n = win.node(id);
-    if (n.kind == .text and n.data.text.content.len == 0) return null;
+    if (n.kind == .text and n.data.text.content.len() == 0) return null;
     if (c.shows_cut) if (c.cut) |*ct| return &ct.layout;
     return if (c.layout) |*l| l else null;
 }

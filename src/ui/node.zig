@@ -618,7 +618,9 @@ pub const EditorData = struct {
 
 /// Stored text: content and style with interned family and language.
 pub const TextData = struct {
-    content: []const u8 = "",
+    /// The text's bytes, a rope shared with the texts edits made from it
+    /// (D15): an edit costs the edit, not the text.
+    content: text.Rope = .{},
     props: Text = .{},
     /// Interned `props.style.family` and `language` (Fonts names).
     family: u32 = 0,

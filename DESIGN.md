@@ -1607,14 +1607,45 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     anchor, and caret affinity; movement, hit testing, and selection
     rectangles come from the text's `TextLayout` (D13), which finds the
     block holding the offset first, so they cost a block, not the text.
-    The node's text stays one buffer (the C API reads it whole, and a
-    transaction keeps the old one until it commits); an edit splices it
-    with one copy (`Txn.replaceText`, checking only the inserted bytes),
-    and the shaped blocks are the rope that makes the rest of an edit
-    independent of the document's size. Arrows move visually, Ctrl+arrows
-    by words, Home and End to the line's edges in reading order, Up and
-    Down keep a preferred x. A single-line editor scrolls its text to
-    keep the caret in view and drops line breaks from typed text.
+    Arrows move visually, Ctrl+arrows by words, Home and End to the
+    line's edges in reading order, Up and Down keep a preferred x. A
+    single-line editor scrolls its text to keep the caret in view and
+    drops line breaks from typed text.
+  - A text node's bytes are a rope (`text.Rope`, October 2026): a
+    height-balanced tree of immutable leaves of up to 4 KB, shared by
+    reference count between a text and the texts edits made from it. An
+    edit (`Txn.replaceText`) copies the leaves holding its ends and the
+    path to them and shares the rest, so it costs the edit and the log
+    of the text's size; the old text stays whole for the transaction to
+    restore on abort and is released at commit. A text of up to 4 KB is
+    one leaf, which reads as one buffer (`Rope.flat`), so labels and
+    fields cost what they did. What an edit changed is found from the
+    ropes (`Rope.commonPrefix`, `commonSuffix`), which skip the subtrees
+    the old and new texts share: a text node keeps the rope it last
+    shaped (with any preedit, itself a rope sharing all but one leaf
+    with the content), and gives the change to shaping
+    (`ShapedText.initEdit`), which compares and builds only the blocks
+    it touches, copying their bytes out of the rope a block at a time.
+    Before, the node's text was one buffer: each edit copied all of it,
+    and shaping compared all of it with the old blocks, 27 ms a
+    keystroke in 100 MB (gpui 3.6). The queries keep their meaning:
+    `siv_node_get_text` copies the text into the caller's buffer and
+    returns its length; `siv_node_get_text_range` copies a piece from an
+    offset, so a long text is read (searched, saved) without a buffer
+    as long as it (D30); a change event still passes the whole text,
+    copied into one buffer for its handler when the text is longer than
+    a leaf, so a change handler on a long text costs a copy a change.
+    Undo copies the bytes an edit removed, the input method gets up to
+    1000 bytes each side of the selection, copies to the clipboard copy
+    the selection, AT-SPI's snapshot copies the text as before, and
+    paragraph lookups (`spans.paragraphAt`) look back and ahead from the
+    offset rather than scanning from the start. Masked editors keep their
+    secret in locked pages as before; their bullets are a rope like any
+    text. Alternatives: a piece table (an edit appends to a buffer and
+    splits a piece; the pieces still need a tree to find an offset in
+    the log of their number, and the buffer grows with every edit); a
+    gap buffer (cheap typing at one place, a copy of the gap's distance
+    when the caret jumps, and no old text to restore without a copy).
   - An editor in a scroll container scrolls it to show its caret after
     the caret moves by keys, typing, an input method, AT-SPI, undo, or
     the application's `siv_set_selection` (`Window.reveal`, handled after
@@ -4641,6 +4672,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | layer windows and an active session lock keep `siv_app_run` running (D27, D31) | shell windows counted for nothing; applications called `siv_app_quit` themselves | a bar or a lock screen alone is an application like any other; lock windows still do not count, as they follow outputs |
   | an output watch keeps `siv_app_run` running with no window (D27, D31) | a bar ended with its last output | closing a laptop lid with only an external monitor, or a monitor vanishing during a dock or KVM switch, killed the bar instead of letting it come back on `added` |
   | `siv_test_find` after a transaction and before its frame keeps no stale bounds (D27) | bounds of the frame before the query, kept until the next change | a query between a transaction and its frame (on a display, where there is no settling) cleared the semantics tree's dirty flag, so the frame's layout never refreshed the bounds |
+  | `siv_node_get_text_range` (D15) | reading a long text whole with `siv_node_get_text` | a text node's text is a rope; an application searching or saving 100 MB needed a buffer as long, and a copy of all of it each time |
 
   Statements this document made that were no longer true are fixed where
   they stood: external nodes are built and in the C API (D4, D17);

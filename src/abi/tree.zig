@@ -1030,8 +1030,8 @@ pub export fn siv_set_selection(txn: t.Txn, node: t.Node, caret: u32, anchor: u3
             const masked = e.editor.masked;
             w.txn.ut.setSelection(
                 id,
-                if (masked) maskedOffset(e.secret, e.text.content, c) else c,
-                if (masked) maskedOffset(e.secret, e.text.content, a) else a,
+                if (masked) bulletOffset(e.secret, c) else c,
+                if (masked) bulletOffset(e.secret, a) else a,
                 .downstream,
             ) catch |err| return mapTxn(err);
         }
@@ -1343,6 +1343,12 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
         inline else => |_, tag| @field(ui.HandlerKind, @tagName(tag)),
     };
     var ev: t.Event = .{ .window = @fromBackingInt(w.handle), .type = @fromBackingInt(@intFromEnum(hk)), .target = @fromBackingInt(w.nodes.handle(id)) };
+    // A change event's text in one piece, for a text longer than a rope
+    // leaf (D15).
+    // The handler may destroy the window: the allocator is taken first.
+    const gpa = w.owner.gpa();
+    var change_copy: []u8 = &.{};
+    defer if (change_copy.len != 0) gpa.free(change_copy);
     switch (event.*) {
         .activate => {},
         .pointer => |p| {
@@ -1416,8 +1422,15 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
         .change => {
             const e = &uw.node(id).data.editor;
             const s = editorText(e);
-            ev.text = s.text.ptr;
-            ev.text_len = s.text.len;
+            const whole = switch (s.text) {
+                .flat => |f| f,
+                .rope => |r| r.flat() orelse blk: {
+                    change_copy = r.toOwned(gpa) catch return .pass;
+                    break :blk change_copy;
+                },
+            };
+            ev.text = whole.ptr;
+            ev.text_len = whole.len;
             ev.caret = s.caret;
             ev.anchor = s.anchor;
         },
@@ -1545,25 +1558,61 @@ fn deliver(w: *Window, id: NodeId, hk: ui.HandlerKind, ev: *const t.Event) ui.Ha
 
 /// An editor's text and selection as the application sees them: a masked
 /// editor's real text, with offsets into it rather than into its bullets.
-fn editorText(e: *const EditorData) struct { text: []const u8, caret: u32, anchor: u32 } {
-    if (!e.editor.masked) return .{ .text = e.text.content, .caret = e.caret, .anchor = e.anchor };
+fn editorText(e: *const EditorData) struct { text: Text, caret: u32, anchor: u32 } {
+    if (!e.editor.masked) return .{ .text = .{ .rope = e.text.content }, .caret = e.caret, .anchor = e.anchor };
     return .{
-        .text = e.secret,
-        .caret = maskedOffset(e.text.content, e.secret, e.caret),
-        .anchor = maskedOffset(e.text.content, e.secret, e.anchor),
+        .text = .{ .flat = e.secret },
+        .caret = secretOffset(e.secret, e.caret),
+        .anchor = secretOffset(e.secret, e.anchor),
     };
 }
 
-/// The offset in `to` after as many code points as `from` has before
-/// `offset`. A masked editor's bullets and real text have the same count.
-fn maskedOffset(from: []const u8, to: []const u8, offset: u32) u32 {
+/// A text node's or an editor's text as the application sees it.
+const Text = union(enum) {
+    rope: @import("text").Rope,
+    flat: []const u8,
+
+    fn of(un: *const ui.Node) Text {
+        return if (un.kind == .editor) editorText(&un.data.editor).text else .{ .rope = un.textData().content };
+    }
+
+    fn len(s: Text) usize {
+        return switch (s) {
+            .rope => |r| r.len(),
+            .flat => |f| f.len,
+        };
+    }
+
+    /// Copies bytes from `from` into `buf`, as many as fit.
+    fn copy(s: Text, from: usize, buf: []u8) void {
+        const n = s.len();
+        if (from >= n) return;
+        const k = @min(n - from, buf.len);
+        switch (s) {
+            .rope => |r| r.read(from, buf[0..k]),
+            .flat => |f| @memcpy(buf[0..k], f[from..][0..k]),
+        }
+    }
+};
+
+/// A masked editor's offset into its bullets (one per code point of the
+/// secret) as an offset into the secret.
+fn secretOffset(secret_text: []const u8, offset: u32) u32 {
+    var n: usize = offset / bullet_len;
+    var j: usize = 0;
+    while (n > 0 and j < secret_text.len) : (n -= 1) j += std.unicode.utf8ByteSequenceLength(secret_text[j]) catch 1;
+    return @intCast(@min(j, secret_text.len));
+}
+
+/// An offset into a masked editor's secret as one into its bullets.
+fn bulletOffset(secret_text: []const u8, offset: u32) u32 {
     var n: usize = 0;
     var i: usize = 0;
-    while (i < @min(offset, from.len)) : (n += 1) i += std.unicode.utf8ByteSequenceLength(from[i]) catch 1;
-    var j: usize = 0;
-    while (n > 0 and j < to.len) : (n -= 1) j += std.unicode.utf8ByteSequenceLength(to[j]) catch 1;
-    return @intCast(@min(j, to.len));
+    while (i < @min(offset, secret_text.len)) : (n += 1) i += std.unicode.utf8ByteSequenceLength(secret_text[i]) catch 1;
+    return @intCast(n * bullet_len);
 }
+
+const bullet_len = "\u{2022}".len;
 
 fn modifiers(m: platform.Mods) t.Modifiers {
     return .{ .shift = m.shift, .ctrl = m.ctrl, .alt = m.alt, .super = m.super, .caps_lock = m.caps_lock, .num_lock = m.num_lock };
@@ -1586,12 +1635,26 @@ pub export fn siv_node_get_text(node: t.Node, text: ?[*]u8, text_cap: usize, len
             const dest = try runtime.out(usize, out);
             const un = w.uiWin().node(id);
             if (!un.isText()) return error.InvalidArgument;
-            const content = if (un.kind == .editor) editorText(&un.data.editor).text else un.textData().content;
-            const k = @min(content.len, buf.len);
-            @memcpy(buf[0..k], content[0..k]);
-            dest.* = content.len;
+            const content: Text = .of(un);
+            content.copy(0, buf);
+            dest.* = content.len();
         }
     }.f(node, text, text_cap, len));
+}
+
+pub export fn siv_node_get_text_range(node: t.Node, offset: u32, text: ?[*]u8, text_cap: usize, len: ?*usize) t.Result {
+    return application.wrap(struct {
+        fn f(n: t.Node, from: u32, ptr: ?[*]u8, cap: usize, out: ?*usize) Error!void {
+            const w, const id = try lookup(n);
+            const buf = try runtime.buffer(ptr, cap);
+            const dest = try runtime.out(usize, out);
+            const un = w.uiWin().node(id);
+            if (!un.isText()) return error.InvalidArgument;
+            const content: Text = .of(un);
+            content.copy(from, buf);
+            dest.* = content.len();
+        }
+    }.f(node, offset, text, text_cap, len));
 }
 
 pub export fn siv_node_get_selection(node: t.Node, caret: ?*u32, anchor: ?*u32) t.Result {

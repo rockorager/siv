@@ -1046,7 +1046,7 @@ fn drawEditor(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Poi
             try b.fillRect(.xywh(x, box.y0 + r.y, r.width, r.height), .color(color));
         }
     }
-    if (e.text.content.len == 0 and e.placeholder.len != 0 and editor.preeditRange(win, nid) == null) {
+    if (e.text.content.len() == 0 and e.placeholder.len != 0 and editor.preeditRange(win, nid) == null) {
         _ = try drawPlaceholder(st, win, nid, b, box);
     } else _ = try drawText(st, win, nid, b, off, -scroll);
     try b.popLayer();

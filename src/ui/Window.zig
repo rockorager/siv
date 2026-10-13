@@ -404,13 +404,13 @@ pub fn freeNodeData(gpa: std.mem.Allocator, n: *const Node) void {
     gpa.free(n.drop.mimes);
     switch (n.data) {
         .text => |t| {
-            gpa.free(t.content);
+            t.content.release(gpa);
             gpa.free(t.spans);
             gpa.free(t.paragraphs);
             gpa.free(t.props.tab_stops);
         },
         .editor => |e| {
-            gpa.free(e.text.content);
+            e.text.content.release(gpa);
             gpa.free(e.text.spans);
             gpa.free(e.text.paragraphs);
             gpa.free(e.text.props.tab_stops);

@@ -23,6 +23,7 @@ const layout_ = @import("layout.zig");
 const cursor = @import("cursor.zig");
 const font = @import("font.zig");
 const bidi = @import("bidi.zig");
+const Rope = @import("rope.zig").Rope;
 
 const Allocator = std.mem.Allocator;
 const ShapedParagraph = paragraph_.ShapedParagraph;
@@ -38,6 +39,45 @@ const FontCache = font.FontCache;
 const FontId = font.FontId;
 const Position = cursor.Position;
 const CaretRect = cursor.CaretRect;
+
+/// A text's bytes, read by range: one buffer, or a rope (D15), whose
+/// bytes a block copies a block's worth at a time.
+pub const Source = struct {
+    len: usize,
+    bytes: ?[]const u8 = null,
+    rope: Rope = .{},
+
+    pub fn flat(bytes: []const u8) Source {
+        return .{ .len = bytes.len, .bytes = bytes };
+    }
+
+    pub fn ofRope(r: Rope) Source {
+        if (r.flat()) |f| return flat(f);
+        return .{ .len = r.len(), .rope = r };
+    }
+
+    fn byteAt(s: Source, i: usize) u8 {
+        return if (s.bytes) |b| b[i] else s.rope.byteAt(i);
+    }
+
+    /// Bytes `from..to`: the buffer's, or a copy in `buf`.
+    fn window(s: Source, gpa: Allocator, buf: *std.ArrayList(u8), from: usize, to: usize) error{OutOfMemory}![]const u8 {
+        if (s.bytes) |b| return b[from..to];
+        buf.clearRetainingCapacity();
+        try buf.resize(gpa, to - from);
+        s.rope.read(from, buf.items);
+        return buf.items;
+    }
+};
+
+/// What an edit changed, from the bytes the old and new texts have in
+/// common at their start and at their end: their caller knows it (a
+/// rope finds it in the time the change takes, `Rope.commonPrefix`), so
+/// building the new text compares nothing.
+pub const Change = struct {
+    prefix: usize,
+    suffix: usize,
+};
 
 pub const Options = struct {
     /// A block ends at the first paragraph end at or after this many bytes
@@ -206,11 +246,13 @@ pub const ShapedBlock = struct {
     /// Its shaping and lines are on the heap (`heavy`).
     on_heap: bool = false,
 
-    /// A block of `text[s..e]`, not shaped.
-    fn create(gpa: Allocator, cache: *const FontCache, residency: ?*Residency, text: []const u8, styles: []const StyleRun, direction: bidi.BaseDirection, s: usize, e: usize) error{OutOfMemory}!*ShapedBlock {
+    /// A block of a copy of `text`, which starts at byte `s` of the text
+    /// `styles` cover; not shaped.
+    fn create(gpa: Allocator, cache: *const FontCache, residency: ?*Residency, text: []const u8, styles: []const StyleRun, direction: bidi.BaseDirection, s: usize) error{OutOfMemory}!*ShapedBlock {
+        const e = s + text.len;
         const b = try gpa.create(ShapedBlock);
         errdefer gpa.destroy(b);
-        const bytes = try gpa.dupe(u8, text[s..e]);
+        const bytes = try gpa.dupe(u8, text);
         errdefer gpa.free(bytes);
         var k = styleIndex(styles, s);
         var count: usize = 1;
@@ -413,13 +455,20 @@ pub const ShapedText = struct {
     /// Shapes `text` with `styles` (as `ShapedParagraph.init` takes them)
     /// in blocks: all of them, or those within `options.eager_bytes`.
     pub fn init(gpa: Allocator, scratch: Allocator, cache: *const FontCache, text: []const u8, styles: []const StyleRun, direction: bidi.BaseDirection, options: Options) BuildError!ShapedText {
+        return initFrom(gpa, scratch, cache, .flat(text), styles, direction, options);
+    }
+
+    /// `init` from a source, read a block at a time.
+    pub fn initFrom(gpa: Allocator, scratch: Allocator, cache: *const FontCache, text: Source, styles: []const StyleRun, direction: bidi.BaseDirection, options: Options) BuildError!ShapedText {
         try validate(cache, text, styles);
         var list: std.ArrayList(*ShapedBlock) = .empty;
         defer list.deinit(scratch);
         errdefer for (list.items) |b| b.release();
         var tmp: std.heap.ArenaAllocator = .init(gpa);
         defer tmp.deinit();
-        const ctx: Ctx = .{ .gpa = gpa, .scratch = scratch, .tmp = &tmp, .cache = cache, .text = text, .styles = styles, .direction = direction, .options = options };
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(gpa);
+        const ctx: Ctx = .{ .gpa = gpa, .scratch = scratch, .tmp = &tmp, .cache = cache, .text = text, .buf = &buf, .styles = styles, .direction = direction, .options = options };
         var eager: usize = options.eager_bytes orelse std.math.maxInt(usize);
         try ctx.appendBlocks(&list, 0, text.len, &eager);
         return finish(gpa, list.items, styles, direction, options);
@@ -433,29 +482,40 @@ pub const ShapedText = struct {
     /// than a quarter block takes in its neighbor, so edits do not leave
     /// slivers. Blocks whose styles changed are shaped again only if they
     /// were in memory; others are left unshaped.
-    pub fn initReusing(gpa: Allocator, scratch: Allocator, cache: *const FontCache, text: []const u8, styles: []const StyleRun, direction: bidi.BaseDirection, options: Options, old_: ?*const ShapedText) BuildError!ShapedText {
-        const old = old_ orelse return init(gpa, scratch, cache, text, styles, direction, options);
+    pub fn initReusing(gpa: Allocator, scratch: Allocator, cache: *const FontCache, text: []const u8, styles: []const StyleRun, direction: bidi.BaseDirection, options: Options, old: ?*const ShapedText) BuildError!ShapedText {
+        return initEdit(gpa, scratch, cache, .flat(text), styles, direction, options, old, null);
+    }
+
+    /// `initReusing` from a source, with what changed when the caller
+    /// knows it (else found by comparing the texts, which needs a flat
+    /// source): only the blocks the change touches are compared and
+    /// built again, so an edit costs its blocks, not the text.
+    pub fn initEdit(gpa: Allocator, scratch: Allocator, cache: *const FontCache, text: Source, styles: []const StyleRun, direction: bidi.BaseDirection, options: Options, old_: ?*const ShapedText, change: ?Change) BuildError!ShapedText {
+        const old = old_ orelse return initFrom(gpa, scratch, cache, text, styles, direction, options);
         if (old.direction != direction or old.missing or old.wanted.len != 0 or old.options.block_bytes != options.block_bytes or old.len() == 0 or text.len == 0)
-            return init(gpa, scratch, cache, text, styles, direction, options);
+            return initFrom(gpa, scratch, cache, text, styles, direction, options);
         try validate(cache, text, styles);
         const old_len = old.len();
         const n = old.blocks.len;
 
-        // The changed bytes, from the common prefix and suffix.
-        // Whole blocks compare with memcmp; only the one that differs is
-        // looked into.
-        const prefix = blk: {
+        // The changed bytes, from the common prefix and suffix: given, or
+        // by whole blocks compared with memcmp, looking into only the one
+        // that differs.
+        const flat_text = text.bytes orelse &.{};
+        const prefix = if (change) |c| @min(c.prefix, old_len, text.len) else blk: {
+            const t = text.bytes.?;
             for (old.blocks, 0..) |b, i| {
                 const s = old.starts[i];
                 const bt = b.text;
-                const k = @min(bt.len, text.len - s);
-                if (k == bt.len and sameBytes(bt, text[s..][0..k])) continue;
-                if (std.mem.indexOfDiff(u8, bt[0..k], text[s..][0..k])) |d| break :blk s + d;
+                const k = @min(bt.len, t.len - s);
+                if (k == bt.len and sameBytes(bt, t[s..][0..k])) continue;
+                if (std.mem.indexOfDiff(u8, bt[0..k], t[s..][0..k])) |d| break :blk s + d;
                 break :blk s + k;
             }
             break :blk @as(usize, old_len);
         };
-        const suffix = blk: {
+        const suffix = if (change) |c| @min(c.suffix, @min(old_len, text.len) - prefix) else blk: {
+            const t = flat_text;
             const limit = @min(old_len, text.len) - prefix;
             var done: usize = 0;
             var i = n;
@@ -463,12 +523,12 @@ pub const ShapedText = struct {
                 i -= 1;
                 const bt = old.blocks[i].text;
                 const k = @min(bt.len, limit - done);
-                if (k == bt.len and sameBytes(bt, text[text.len - done - k ..][0..k])) {
+                if (k == bt.len and sameBytes(bt, t[t.len - done - k ..][0..k])) {
                     done += k;
                     continue;
                 }
                 var j: usize = 0;
-                while (j < k and bt[bt.len - 1 - j] == text[text.len - 1 - done - j]) j += 1;
+                while (j < k and bt[bt.len - 1 - j] == t[t.len - 1 - done - j]) j += 1;
                 done += j;
                 break;
             }
@@ -482,7 +542,9 @@ pub const ShapedText = struct {
         errdefer for (list.items) |b| b.release();
         var tmp: std.heap.ArenaAllocator = .init(gpa);
         defer tmp.deinit();
-        const ctx: Ctx = .{ .gpa = gpa, .scratch = scratch, .tmp = &tmp, .cache = cache, .text = text, .styles = styles, .direction = direction, .options = options };
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(gpa);
+        const ctx: Ctx = .{ .gpa = gpa, .scratch = scratch, .tmp = &tmp, .cache = cache, .text = text, .buf = &buf, .styles = styles, .direction = direction, .options = options };
 
         // Blocks before the change: kept unless it touches their end.
         var i: usize = 0;
@@ -641,21 +703,37 @@ pub const ShapedText = struct {
         scratch: Allocator,
         tmp: *std.heap.ArenaAllocator,
         cache: *const FontCache,
-        text: []const u8,
+        text: Source,
+        /// Where blocks of a rope are copied out to.
+        buf: *std.ArrayList(u8),
         styles: []const StyleRun,
         direction: bidi.BaseDirection,
         options: Options,
 
         /// Appends `b`, now at `start`, if its styles are still the text's
-        /// there; else its bytes again, shaped if `b` was.
+        /// there; else its bytes again (unchanged), shaped if `b` was.
         fn keepOrRedo(ctx: Ctx, list: *std.ArrayList(*ShapedBlock), b: *ShapedBlock, start: usize) BuildError!void {
             try list.ensureUnusedCapacity(ctx.scratch, 1);
             if (sameStyles(b, ctx.styles, start)) {
                 list.appendAssumeCapacity(b.retain());
                 return;
             }
-            const e = start + b.len();
-            list.appendAssumeCapacity(if (b.paragraph != null) try ctx.shapeBlock(start, e, null) else try ctx.unshaped(start, e));
+            list.appendAssumeCapacity(if (b.paragraph != null) try ctx.shapeBytes(b.text, start, null) else try ctx.unshapedBytes(b.text, start));
+        }
+
+        /// The end of the block that starts at `s`, as `blockEnd` finds it
+        /// in a flat text; a rope is read a window at a time, grown until
+        /// the end is clear of the window's edge (a separator there may
+        /// run past it).
+        fn blockEndAt(ctx: Ctx, s: usize, to: usize) error{OutOfMemory}!usize {
+            if (ctx.text.bytes) |b| return blockEnd(b, s, to, ctx.options);
+            var want = @min(to, s + ctx.options.block_bytes + 1024);
+            while (true) {
+                const w = try ctx.text.window(ctx.gpa, ctx.buf, s, want);
+                const e = blockEnd(w, 0, w.len, ctx.options);
+                if (want == to or e + 3 <= w.len) return s + e;
+                want = @min(to, s + 2 * (want - s));
+            }
         }
 
         /// Appends blocks covering `text[from..to]`, which starts and ends
@@ -664,7 +742,7 @@ pub const ShapedText = struct {
         fn appendBlocks(ctx: Ctx, list: *std.ArrayList(*ShapedBlock), from: usize, to: usize, eager: *usize) BuildError!void {
             var s = from;
             while (true) {
-                const e = blockEnd(ctx.text, s, to, ctx.options);
+                const e = try ctx.blockEndAt(s, to);
                 try list.ensureUnusedCapacity(ctx.scratch, 1);
                 if (eager.* > 0) {
                     eager.* -|= e - s;
@@ -675,20 +753,29 @@ pub const ShapedText = struct {
             }
         }
 
-        /// `text[s..e]` as a block, not shaped yet. Shaping checks a
-        /// block's bytes are UTF-8; this one may be shaped on demand.
+        /// `text[s..e]` as a block, not shaped yet.
         fn unshaped(ctx: Ctx, s: usize, e: usize) BuildError!*ShapedBlock {
-            if (!std.unicode.utf8ValidateSlice(ctx.text[s..e])) return error.InvalidUtf8;
-            return ShapedBlock.create(ctx.gpa, ctx.cache, ctx.options.residency, ctx.text, ctx.styles, ctx.direction, s, e);
+            return ctx.unshapedBytes(try ctx.text.window(ctx.gpa, ctx.buf, s, e), s);
+        }
+
+        /// A block of `bytes`, at `s`, not shaped yet. Shaping checks a
+        /// block's bytes are UTF-8; this one may be shaped on demand.
+        fn unshapedBytes(ctx: Ctx, bytes: []const u8, s: usize) BuildError!*ShapedBlock {
+            if (!std.unicode.utf8ValidateSlice(bytes)) return error.InvalidUtf8;
+            return ShapedBlock.create(ctx.gpa, ctx.cache, ctx.options.residency, bytes, ctx.styles, ctx.direction, s);
         }
 
         /// Shapes `text[s..e]` as a block, from `old` (the block it
         /// replaces) when given and in memory.
         fn shapeBlock(ctx: Ctx, s: usize, e: usize, old: ?*const ShapedBlock) BuildError!*ShapedBlock {
+            return ctx.shapeBytes(try ctx.text.window(ctx.gpa, ctx.buf, s, e), s, old);
+        }
+
+        fn shapeBytes(ctx: Ctx, bytes: []const u8, s: usize, old: ?*const ShapedBlock) BuildError!*ShapedBlock {
             // Intermediates go in `tmp`, emptied after each block, so a
             // long text never holds all of them at once.
             defer _ = ctx.tmp.reset(.retain_capacity);
-            const b = try ShapedBlock.create(ctx.gpa, ctx.cache, ctx.options.residency, ctx.text, ctx.styles, ctx.direction, s, e);
+            const b = try ShapedBlock.create(ctx.gpa, ctx.cache, ctx.options.residency, bytes, ctx.styles, ctx.direction, s);
             errdefer b.release();
             b.on_heap = true;
             const reused = if (old) |o| (if (o.paragraph) |*p| p else null) else null;
@@ -748,9 +835,18 @@ pub const ShapedText = struct {
 /// Shaping checks each block's bytes are UTF-8, and blocks kept from an
 /// old text are its bytes, checked then: a keystroke does not check all
 /// of a long text.
-fn validate(cache: *const FontCache, text: []const u8, styles: []const StyleRun) BuildError!void {
+fn validate(cache: *const FontCache, text: Source, styles: []const StyleRun) BuildError!void {
     if (text.len >= std.math.maxInt(u32)) return error.TextTooLong;
-    try paragraph_.validateStyles(cache, text, styles);
+    if (text.bytes) |b| return paragraph_.validateStyles(cache, b, styles);
+    // As `validateStyles`, with the rope's bytes at the style ends.
+    if (styles.len == 0 or styles[styles.len - 1].end != text.len) return error.InvalidStyles;
+    var previous: u32 = 0;
+    for (styles, 0..) |run, i| {
+        if ((run.end <= previous and !(i == 0 and run.end == 0)) or run.end > text.len) return error.InvalidStyles;
+        if (run.end < text.len and text.byteAt(run.end) & 0xc0 == 0x80) return error.InvalidStyles;
+        if ((run.style.fonts.len == 0 and cache.last_resort == null) or !std.math.isFinite(run.style.size) or run.style.size <= 0) return error.InvalidStyles;
+        previous = run.end;
+    }
 }
 
 /// Whether two byte strings are equal, by unaligned 64-bit words:
@@ -1651,6 +1747,77 @@ test "an edit reshapes only its block and equals shaping the new text" {
             }
             try std.testing.expectEqualStrings(buf.items, concatenated.items);
             try expectSameLayout(&flat, &text, gpa, if (mode == .bounded) &residency else null);
+        }
+    }
+}
+
+test "edits to a rope, with what changed given, build what shaping the new text does" {
+    // Texts longer than a rope leaf, so that blocks are read from the
+    // rope; several edits between builds; the change from the ropes, not
+    // from comparing bytes. Against one paragraph of the new text, and
+    // against the blocks the comparing path builds.
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    const gpa = std.testing.allocator;
+    const fonts = [_]FontId{ fixture.latin, fixture.arabic, fixture.hebrew };
+    const style: Style = .{ .fonts = &fonts, .size = 16 };
+    var prng: std.Random.DefaultPrng = .init(53);
+    const rand = prng.random();
+    const inserts = [_][]const u8{ "q", "\n", "\r", "\r\n", "א", " ", "zz\u{2029}y", "", "wwwwwwww wwwwwwww\n" };
+    var residency: Residency = .init(gpa, 20_000);
+    defer residency.deinit();
+    const options: layout_.Options = .{ .width = 150 };
+    for (0..8) |round| {
+        const a = fixture.arena.allocator();
+        var buf: std.ArrayList(u8) = .empty;
+        try randomText(rand, &buf, a, 150 + rand.uintLessThan(usize, 150));
+        try std.testing.expect(buf.items.len > @import("rope.zig").leaf_max);
+        var rope = try Rope.initBytes(gpa, buf.items);
+        defer rope.release(gpa);
+        const bounded = round % 2 == 1;
+        const block_options: Options = if (bounded) .{ .block_bytes = 64 + rand.uintLessThan(u32, 400), .eager_bytes = 256, .residency = &residency } else .{ .block_bytes = 64 + rand.uintLessThan(u32, 400) };
+        var shaped = try ShapedText.initFrom(gpa, a, &fixture.cache, .ofRope(rope), &.{.{ .end = @intCast(buf.items.len), .style = style }}, .auto_ltr, block_options);
+        defer shaped.deinit();
+        var text = try TextLayout.init(gpa, a, &shaped, options, null, bounded);
+        defer text.deinit();
+        for (0..3) |_| {
+            var next = rope.retain();
+            defer next.release(gpa);
+            for (0..1 + rand.uintLessThan(usize, 3)) |_| {
+                const len = next.len();
+                var start = rand.uintAtMost(usize, len);
+                while (start > 0 and start < len and next.byteAt(start) & 0xc0 == 0x80) start -= 1;
+                var end = @min(len, start + rand.uintLessThan(usize, 12));
+                while (end < len and next.byteAt(end) & 0xc0 == 0x80) end += 1;
+                const edited = try next.replace(gpa, start, end, inserts[rand.uintLessThan(usize, inserts.len)]);
+                next.release(gpa);
+                next = edited;
+            }
+            const change: Change = .{ .prefix = Rope.commonPrefix(rope, next), .suffix = Rope.commonSuffix(rope, next) };
+            const bytes = try next.toOwned(a);
+            const styles = [_]StyleRun{.{ .end = @intCast(bytes.len), .style = style }};
+            var reshaped = try ShapedText.initEdit(gpa, a, &fixture.cache, .ofRope(next), &styles, .auto_ltr, block_options, &shaped, change);
+            // The same blocks as comparing the bytes finds.
+            var compared = try ShapedText.initReusing(gpa, a, &fixture.cache, bytes, &styles, .auto_ltr, block_options, &shaped);
+            defer compared.deinit();
+            try std.testing.expectEqualSlices(u32, compared.starts, reshaped.starts);
+            for (compared.blocks, reshaped.blocks) |x, y| try std.testing.expectEqualStrings(x.text, y.text);
+            const relaid = TextLayout.init(gpa, a, &reshaped, options, &text, bounded) catch |err| {
+                reshaped.deinit();
+                return err;
+            };
+            text.deinit();
+            shaped.deinit();
+            shaped = reshaped;
+            text = relaid;
+            text.shaped = &shaped;
+            rope.release(gpa);
+            rope = next.retain();
+            var flat_p = try ShapedParagraph.init(gpa, a, &fixture.cache, bytes, &styles, .auto_ltr);
+            defer flat_p.deinit();
+            var flat = try Layout.init(gpa, a, &fixture.cache, &flat_p, options);
+            defer flat.deinit();
+            try expectSameLayout(&flat, &text, gpa, if (bounded) &residency else null);
         }
     }
 }

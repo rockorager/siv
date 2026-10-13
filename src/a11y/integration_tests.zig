@@ -266,7 +266,7 @@ test "libatspi reads the tree, acts on it, and hears its events through the regi
         return error.TestUnexpectedResult;
     }
     try testing.expectEqual(@as(usize, 1), fx.clicks);
-    try testing.expectEqualStrings("abc!", fx.win.node(fx.nodes.editor).data.editor.text.content);
+    try testing.expectEqualStrings("abc!", fx.win.node(fx.nodes.editor).data.editor.text.content.flat().?);
 }
 
 /// sway on its headless backend in the stack's runtime directory: Orca

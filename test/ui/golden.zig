@@ -314,7 +314,7 @@ test "scrolling on the compositor at 2x: no layout, no repaint, exact damage" {
     // Hit testing follows the compositor's offset.
     var hit = ui.input.hitTest(app.win, .{ .x = r.x0 + 20, .y = r.y0 + 10 });
     if (app.win.node(hit).kind != .text) hit = app.win.node(hit).first;
-    try testing.expectEqualStrings("Message 4", app.win.node(hit).data.text.content);
+    try testing.expectEqualStrings("Message 4", app.win.node(hit).data.text.content.flat().?);
 }
 
 test "a pending font loads on the pool and the text reshapes" {
@@ -419,7 +419,7 @@ test "input method on the compositor: enable, inline preedit, commit" {
     pre.preedit_len = 2;
     app.inject(.{ .text_input = pre });
     try app.settle();
-    try testing.expectEqualStrings("Caf", app.win.node(ed).data.editor.text.content);
+    try testing.expectEqualStrings("Caf", app.win.node(ed).data.editor.text.content.flat().?);
     try expectDamageExact(&app);
     try expectGolden(&app, "ime-preedit");
 
@@ -428,7 +428,7 @@ test "input method on the compositor: enable, inline preedit, commit" {
     done.commit_len = 2;
     app.inject(.{ .text_input = done });
     try app.settle();
-    try testing.expectEqualStrings("Caf\u{e9}", app.win.node(ed).data.editor.text.content);
+    try testing.expectEqualStrings("Caf\u{e9}", app.win.node(ed).data.editor.text.content.flat().?);
     st = try app.textInputState();
     defer testing.allocator.free(st.surrounding);
     try testing.expectEqualStrings("Caf\u{e9}", st.surrounding);
@@ -480,7 +480,7 @@ test "clipboard: copy and paste through the platform, and its size limit" {
     app.key(ui.keysym.tab, .{});
     app.key('v', .{ .ctrl = true });
     try app.settle();
-    try testing.expectEqualStrings(" this", app.win.node(eds[1]).data.editor.text.content);
+    try testing.expectEqualStrings(" this", app.win.node(eds[1]).data.editor.text.content.flat().?);
 
     // Another client copies more than a pipe holds, with a line break; a
     // single-line editor gets a space instead.
@@ -495,26 +495,26 @@ test "clipboard: copy and paste through the platform, and its size limit" {
     app.key('v', .{ .ctrl = true });
     try app.settle();
     const pasted = app.win.node(eds[1]).data.editor.text.content;
-    try testing.expectEqual(big.items.len, pasted.len);
-    try testing.expectEqualStrings("first second 0123", pasted[0..17]);
+    try testing.expectEqual(big.items.len, pasted.len());
+    try testing.expectEqualStrings("first second 0123", try pasted.slice(testing.allocator, 0, 17));
     // Past the limit, the paste is dropped and the text stays.
     app.clipboard.limit = 1000;
     app.key('a', .{ .ctrl = true });
     app.key('v', .{ .ctrl = true });
     try app.settle();
-    try testing.expectEqual(big.items.len, app.win.node(eds[1]).data.editor.text.content.len);
+    try testing.expectEqual(big.items.len, app.win.node(eds[1]).data.editor.text.content.len());
     // Undo removes the paste in one step.
     app.key('z', .{ .ctrl = true });
     try app.settle();
-    try testing.expectEqualStrings(" this", app.win.node(eds[1]).data.editor.text.content);
+    try testing.expectEqualStrings(" this", app.win.node(eds[1]).data.editor.text.content.flat().?);
 
     // Assistive technology cuts a range and pastes it at an offset.
     try ui.access.copyText(app.win, eds[0], 0, 5, true);
     try app.settle();
-    try testing.expectEqualStrings("this text", app.win.node(eds[0]).data.editor.text.content);
+    try testing.expectEqualStrings("this text", app.win.node(eds[0]).data.editor.text.content.flat().?);
     try ui.access.pasteText(app.win, eds[1], 0);
     try app.settle();
-    try testing.expectEqualStrings("copy  this", app.win.node(eds[1]).data.editor.text.content);
+    try testing.expectEqualStrings("copy  this", app.win.node(eds[1]).data.editor.text.content.flat().?);
 }
 
 test "primary selection: selecting offers it, the middle button pastes it" {
@@ -539,7 +539,7 @@ test "primary selection: selecting offers it, the middle button pastes it" {
     app.inject(.{ .pointer_button = .{ .window = app.wid, .seat = 0, .button = 0x112, .pressed = true, .time = 0, .serial = 9 } });
     app.inject(.{ .pointer_button = .{ .window = app.wid, .seat = 0, .button = 0x112, .pressed = false, .time = 0, .serial = 10 } });
     try app.settle();
-    try testing.expectEqualStrings("copy", app.win.node(eds[1]).data.editor.text.content);
+    try testing.expectEqualStrings("copy", app.win.node(eds[1]).data.editor.text.content.flat().?);
     try testing.expectEqual(eds[1], app.win.input.focus);
 }
 

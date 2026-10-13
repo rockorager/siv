@@ -16,6 +16,7 @@ const Window = @import("Window.zig");
 const secret = @import("secret.zig");
 const Image = @import("image.zig").Image;
 const spans_mod = @import("spans.zig");
+const Rope = @import("text").Rope;
 
 const NodeId = node_mod.NodeId;
 const Node = node_mod.Node;
@@ -44,6 +45,7 @@ const Alloc = struct {
     secret: bool = false,
     /// A reference to drop instead of memory to free.
     image: ?*Image = null,
+    rope: ?Rope = null,
 
     fn of(comptime T: type, slice: []const T) Alloc {
         return .{ .bytes = @constCast(std.mem.sliceAsBytes(slice)), .alignment = .of(T) };
@@ -51,6 +53,7 @@ const Alloc = struct {
 
     fn free(a: Alloc, gpa: std.mem.Allocator) void {
         if (a.image) |img| return img.release();
+        if (a.rope) |r| return r.release(gpa);
         if (a.secret) return secret.free(a.bytes);
         if (a.bytes.len != 0) gpa.rawFree(a.bytes, a.alignment, @returnAddress());
     }
@@ -159,6 +162,20 @@ pub const Txn = struct {
     }
 
     /// Copies `bytes` into locked memory the tree will own.
+    /// A rope of a copy of `bytes`, dropped on abort.
+    fn ownRope(t: *Txn, bytes: []const u8) Error!Rope {
+        try t.allocs.ensureUnusedCapacity(t.win.gpa, 1);
+        try t.frees.ensureUnusedCapacity(t.win.gpa, 2);
+        const r = try Rope.initBytes(t.win.gpa, bytes);
+        t.allocs.appendAssumeCapacity(.{ .rope = r });
+        return r;
+    }
+
+    /// `r` is no longer referenced once the transaction commits.
+    fn releaseRope(t: *Txn, r: Rope) void {
+        if (r.root != null) t.frees.appendAssumeCapacity(.{ .rope = r });
+    }
+
     fn ownSecret(t: *Txn, bytes: []const u8) Error![]const u8 {
         try t.allocs.ensureUnusedCapacity(t.win.gpa, 1);
         try t.frees.ensureUnusedCapacity(t.win.gpa, 2);
@@ -451,10 +468,10 @@ pub const Txn = struct {
         if (content.len >= std.math.maxInt(u32) or !std.unicode.utf8ValidateSlice(content)) return error.InvalidArgument;
         const d = n.textData();
         const masked = n.kind == .editor and n.data.editor.editor.masked;
-        if (std.mem.eql(u8, if (masked) n.data.editor.secret else d.content, content)) return;
+        if (if (masked) std.mem.eql(u8, n.data.editor.secret, content) else d.content.eqlBytes(content)) return;
         try t.reserve();
         const shown = if (masked) try t.bullets(content) else content;
-        const copy = try t.own(u8, shown);
+        const copy = try t.ownRope(shown);
         const hidden = if (masked) try t.ownSecret(content) else "";
         try t.frees.ensureUnusedCapacity(t.win.gpa, 4);
         t.putText(id, n, copy, hidden);
@@ -462,40 +479,33 @@ pub const Txn = struct {
 
     /// Replaces `start..end` (character boundaries) of a text or editor
     /// node's text with `insert`, as `setText` with the spliced text
-    /// would, but checks only what changes and copies the text once: an
-    /// editor's keystroke in a long document (D15). Not for masked
-    /// editors.
+    /// would, but checks only what changes and copies only the leaves of
+    /// the text's rope it touches: an editor's keystroke in a long
+    /// document costs the keystroke (D15). Not for masked editors.
     pub fn replaceText(t: *Txn, id: NodeId, from: u32, to: u32, insert: []const u8) Error!void {
         const n = try t.textNode(id);
         if (n.kind == .editor and n.data.editor.editor.masked) return error.InvalidArgument;
         const old = n.textData().content;
-        if (from > to or to > old.len or old.len - (to - from) + insert.len >= std.math.maxInt(u32)) return error.InvalidArgument;
+        const old_len = old.len();
+        if (from > to or to > old_len or old_len - (to - from) + insert.len >= std.math.maxInt(u32)) return error.InvalidArgument;
         if (charBoundary(old, from) != from or charBoundary(old, to) != to or !std.unicode.utf8ValidateSlice(insert)) return error.InvalidArgument;
         if (from == to and insert.len == 0) return;
         try t.reserve();
         try t.allocs.ensureUnusedCapacity(t.win.gpa, 1);
         try t.frees.ensureUnusedCapacity(t.win.gpa, 4);
-        const len = old.len - (to - from) + insert.len;
-        var copy: []const u8 = &.{};
-        if (len != 0) {
-            const buf = try t.win.gpa.alloc(u8, len);
-            @memcpy(buf[0..from], old[0..from]);
-            @memcpy(buf[from..][0..insert.len], insert);
-            @memcpy(buf[from + insert.len ..], old[to..]);
-            t.allocs.appendAssumeCapacity(.of(u8, buf));
-            copy = buf;
-        }
+        const copy = try old.replace(t.win.gpa, from, to, insert);
+        t.allocs.appendAssumeCapacity(.{ .rope = copy });
         t.putText(id, n, copy, "");
     }
 
     /// Gives a text node new text (owned, `hidden` the secret of a masked
     /// editor); its spans go with the old text. Room for four frees and a
     /// snapshot is reserved.
-    fn putText(t: *Txn, id: NodeId, n: *Node, copy: []const u8, hidden: []const u8) void {
+    fn putText(t: *Txn, id: NodeId, n: *Node, copy: Rope, hidden: []const u8) void {
         const d = n.textData();
         const masked = n.kind == .editor and n.data.editor.editor.masked;
         t.touch(id);
-        t.release(u8, d.content);
+        t.releaseRope(d.content);
         d.content = copy;
         // New text: the old ranges mean nothing in it.
         t.release(node_mod.Span, d.spans);
@@ -578,12 +588,12 @@ pub const Txn = struct {
         if (std.meta.eql(ed.editor, e)) return;
         try t.reserve();
         if (ed.editor.masked != e.masked) {
-            const plain = if (ed.editor.masked) ed.secret else ed.text.content;
-            const shown = try t.own(u8, if (e.masked) try t.bullets(plain) else plain);
+            const plain = if (ed.editor.masked) ed.secret else try ed.text.content.toOwned(t.win.scratch.allocator());
+            const shown = try t.ownRope(if (e.masked) try t.bullets(plain) else plain);
             const hidden = if (e.masked) try t.ownSecret(plain) else "";
             try t.frees.ensureUnusedCapacity(t.win.gpa, 4);
             t.touch(id);
-            t.release(u8, ed.text.content);
+            t.releaseRope(ed.text.content);
             t.releaseSecret(ed.secret);
             ed.text.content = shown;
             ed.secret = hidden;
@@ -594,7 +604,7 @@ pub const Txn = struct {
                 ed.text.paragraphs = &.{};
                 ed.typing = null;
             }
-            ed.caret = @intCast(shown.len);
+            ed.caret = @intCast(shown.len());
             ed.anchor = ed.caret;
             ed.revision +%= 1;
             t.win.markShape(id);
@@ -807,10 +817,9 @@ pub const Txn = struct {
 };
 
 /// `offset` clamped to `s` and moved back to the start of a UTF-8 sequence.
-fn charBoundary(s: []const u8, offset: u32) u32 {
-    var o: usize = @min(offset, s.len);
-    while (o > 0 and o < s.len and s[o] & 0xc0 == 0x80) o -= 1;
-    return @intCast(o);
+fn charBoundary(s: Rope, offset: u32) u32 {
+    var rd = s.reader();
+    return @intCast(rd.charStart(offset));
 }
 
 /// What a masked editor shows for each code point.

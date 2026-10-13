@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const node_mod = @import("node.zig");
+const Rope = @import("text").Rope;
 
 const Span = node_mod.Span;
 const SpanStyle = node_mod.SpanStyle;
@@ -50,17 +51,18 @@ pub fn inherited(spans: anytype, at: u32) StyleOf(@TypeOf(spans)) {
 }
 
 /// Whether `spans` is a valid list for text `content`.
-pub fn valid(content: []const u8, spans: anytype) bool {
+pub fn valid(content: Rope, spans: anytype) bool {
     var prev: u32 = 0;
+    var rd = content.reader();
+    const len = content.len();
     for (spans) |s| {
-        if (s.start < prev or s.end <= s.start or s.end > content.len) return false;
-        for ([_]u32{ s.start, s.end }) |o| if (o < content.len and content[o] & 0xc0 == 0x80) return false;
+        if (s.start < prev or s.end <= s.start or s.end > len) return false;
+        for ([_]u32{ s.start, s.end }) |o| if (o < len and rd.at(o) & 0xc0 == 0x80) return false;
         prev = s.end;
     }
     return true;
 }
 
-/// Drops default and empty spans and merges equal neighbors, in place.
 pub fn normalize(list: anytype) void {
     var out: usize = 0;
     for (list.items) |s| {
@@ -124,43 +126,65 @@ pub fn all(spans: []const Span, len: u32, lo: u32, hi: u32, comptime pred: fn (S
     return true;
 }
 
-/// Paragraph separators: Bidi_Class B, which end bidi paragraphs (D13).
-fn separatorLen(content: []const u8, i: usize) usize {
-    const c = content[i];
-    if (c == '\r') return if (i + 1 < content.len and content[i + 1] == '\n') 2 else 1;
-    if (c == '\n' or (c >= 0x1c and c <= 0x1e)) return 1;
-    if (std.mem.startsWith(u8, content[i..], "\u{85}") or std.mem.startsWith(u8, content[i..], "\u{2029}")) return std.unicode.utf8ByteSequenceLength(c) catch 1;
+/// The length of a paragraph separator (Bidi_Class B, which ends bidi
+/// paragraphs, D13) starting at byte `i`, else 0. A CRLF is one.
+fn separatorLen(rd: *Rope.Reader, len: usize, i: usize) usize {
+    if (i >= len) return 0;
+    const c = rd.at(i);
+    if (c == '\r') {
+        // The LF of a CRLF belongs to the CR.
+        return if (i + 1 < len and rd.at(i + 1) == '\n') 2 else 1;
+    }
+    if (c == '\n') return if (i > 0 and rd.at(i - 1) == '\r') 0 else 1;
+    if (c >= 0x1c and c <= 0x1e) return 1;
+    if (c == 0xc2 and i + 1 < len and rd.at(i + 1) == 0x85) return 2;
+    if (c == 0xe2 and i + 2 < len and rd.at(i + 1) == 0x80 and rd.at(i + 2) == 0xa9) return 3;
     return 0;
 }
 
 /// The paragraph around byte `offset`: from the start of its first
-/// character to the end of its separator (or the text).
-pub fn paragraphAt(content: []const u8, offset: u32) struct { start: u32, end: u32 } {
-    var start: usize = 0;
-    var i: usize = 0;
-    while (i < content.len) {
-        const sep = separatorLen(content, i);
-        if (sep == 0) {
-            i += 1;
-            continue;
+/// character to the end of its separator (or the text). Found by looking
+/// back and ahead from `offset`, so it costs the paragraph, not the text.
+pub fn paragraphAt(content: Rope, offset: u32) struct { start: u32, end: u32 } {
+    const len = content.len();
+    var rd = content.reader();
+    const o: usize = @min(offset, len);
+    // Ahead: the first separator that ends after `offset`.
+    var end: usize = len;
+    var i: usize = o -| 2;
+    while (i < len) : (i += 1) {
+        const sep = separatorLen(&rd, len, i);
+        if (sep != 0 and i + sep > o) {
+            end = i + sep;
+            break;
         }
-        if (offset < i + sep) return .{ .start = @intCast(start), .end = @intCast(i + sep) };
-        i += sep;
-        start = i;
     }
-    return .{ .start = @intCast(start), .end = @intCast(content.len) };
+    // Back: the last separator end at or before it.
+    var start: usize = 0;
+    var j = o;
+    back: while (j > 0) : (j -= 1) {
+        var k = j -| 3;
+        while (k < j) : (k += 1) {
+            const sep = separatorLen(&rd, len, k);
+            if (sep != 0 and k + sep == j) {
+                start = j;
+                break :back;
+            }
+        }
+    }
+    return .{ .start = @intCast(start), .end = @intCast(end) };
 }
 
 /// Paragraph spans snapped to whole paragraphs: each paragraph takes the
 /// style at its first byte.
-pub fn snapped(a: Allocator, content: []const u8, spans: []const ParagraphSpan) Allocator.Error![]ParagraphSpan {
+pub fn snapped(a: Allocator, content: Rope, spans: []const ParagraphSpan) Allocator.Error![]ParagraphSpan {
     var list: std.ArrayList(ParagraphSpan) = .empty;
     if (spans.len == 0) return list.items;
     var at: u32 = 0;
     while (true) {
         const p = paragraphAt(content, at);
         try list.append(a, .{ .start = p.start, .end = p.end, .style = styleAt(spans, p.start) });
-        if (p.end >= content.len) break;
+        if (p.end >= content.len()) break;
         at = p.end;
     }
     normalize(&list);
@@ -208,6 +232,49 @@ test "restyling a range splits spans at its edges and merges equal neighbors" {
     }.f));
     // Clearing the weight again leaves the italic in one piece.
     try testing.expectEqualDeep(&[_]Span{.{ .start = 2, .end = 5, .style = .{ .slant = .italic } }}, try restyled(a, out, 10, 0, 10, .{}, .{ .weight = true }));
-    try testing.expect(valid("abcdefghij", out));
-    try testing.expect(!valid("ab", out));
+    const long: Rope = try .initBytes(testing.allocator, "abcdefghij");
+    defer long.release(testing.allocator);
+    const short: Rope = try .initBytes(testing.allocator, "ab");
+    defer short.release(testing.allocator);
+    try testing.expect(valid(long, out));
+    try testing.expect(!valid(short, out));
+}
+
+test "paragraphAt finds what scanning from the start finds, in a rope" {
+    const gpa = testing.allocator;
+    var prng: std.Random.DefaultPrng = .init(3);
+    const rand = prng.random();
+    const pieces = [_][]const u8{ "ab", "\n", "\r", "\r\n", "\u{2029}", "\u{85}", "\x1c", "é", "xyz" };
+    for (0..200) |round| {
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(gpa);
+        // Past a rope leaf sometimes, so that separators straddle leaves.
+        const count = if (round % 10 == 0) 3000 else rand.uintLessThan(usize, 30);
+        for (0..count) |_| try buf.appendSlice(gpa, pieces[rand.uintLessThan(usize, pieces.len)]);
+        const r: Rope = try .initBytes(gpa, buf.items);
+        defer r.release(gpa);
+        var o: usize = 0;
+        while (o <= buf.items.len) : (o += if (count > 100) 37 else 1) {
+            // The old way: from the start.
+            var start: usize = 0;
+            var i: usize = 0;
+            var want: [2]usize = .{ 0, buf.items.len };
+            const c = buf.items;
+            while (i < c.len) {
+                const sep: usize = if (c[i] == '\r') (if (i + 1 < c.len and c[i + 1] == '\n') 2 else 1) else if (c[i] == '\n' or (c[i] >= 0x1c and c[i] <= 0x1e)) 1 else if (std.mem.startsWith(u8, c[i..], "\u{85}")) 2 else if (std.mem.startsWith(u8, c[i..], "\u{2029}")) 3 else 0;
+                if (sep == 0) {
+                    i += 1;
+                    continue;
+                }
+                if (o < i + sep) {
+                    want = .{ start, i + sep };
+                    break;
+                }
+                i += sep;
+                start = i;
+            } else want = .{ start, c.len };
+            const got = paragraphAt(r, @intCast(o));
+            try testing.expectEqual(want, [2]usize{ got.start, got.end });
+        }
+    }
 }

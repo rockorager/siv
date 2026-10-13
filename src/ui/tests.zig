@@ -239,7 +239,7 @@ test "aborted transactions leave no trace; failed operations have no effect" {
     try testing.expectEqual(a, f.win.node(.root).first);
     try testing.expectEqual(a, f.win.node(.root).last);
     try testing.expectEqual(label, f.win.node(a).first);
-    try testing.expectEqualStrings("kept", f.win.node(label).data.text.content);
+    try testing.expectEqualStrings("kept", f.win.node(label).data.text.content.flat().?);
     try testing.expectEqual(@as(f32, 10), f.win.node(a).layout.height.px);
     try testing.expect(!f.win.isLive(b));
     try f.frame();
@@ -693,6 +693,95 @@ test "what a long text shows stays put while blocks above it are measured" {
     const after = access.characterRect(f.win, doc, top).?;
     try testing.expectApproxEqAbs(before.y0, after.y0, 0.5);
     try testing.expectApproxEqAbs(before.x0, after.x0, 0.01);
+}
+
+test "edits to a long editor's rope lay out as the same text set whole, with undo" {
+    // The editor's text is a rope (D15): each edit shares all but the
+    // leaves it touches, and shaping reads only the blocks the change
+    // reaches. Against a second window given each text whole, after edits
+    // through the user's path (AT-SPI's replace, with undo steps) and
+    // undo itself, in a text short of and past the long-text size.
+    const loop = @import("loop");
+    var lp = try loop.Loop.init(std.heap.smp_allocator);
+    defer lp.deinit();
+    var pool = loop.Pool.init(&lp, testing.allocator, 2);
+    defer pool.deinit();
+    var prng: std.Random.DefaultPrng = .init(77);
+    const rand = prng.random();
+    const inserts = [_][]const u8{ "x", "\n", "word ", "\u{05d0}\u{05d1}", "", "two\nlines\n", "é" };
+    for ([_]usize{ 600, 2500 }) |paragraphs| {
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(testing.allocator);
+        for (0..paragraphs) |i| try buf.print(testing.allocator, "Paragraph {d} has words that wrap at this width, {d}.\n", .{ i, i * 13 });
+        var fixtures: [2]Fixture = undefined;
+        var docs: [2]NodeId = undefined;
+        for (&fixtures, &docs) |*f, *doc| {
+            try f.init(.{ .width = 300, .height = 200 });
+            f.fonts.pool = &pool;
+            var t = try f.win.begin();
+            const sc = try box(t, .root, .scroll, .{ .width = .{ .fraction = 1 }, .height = .{ .fraction = 1 } });
+            try t.setScroll(sc, .{ .axis = .vertical });
+            doc.* = try box(t, sc, .editor, .{ .width = .{ .fraction = 1 } });
+            try t.setEditor(doc.*, .{ .multiline = true });
+            try t.setText(doc.*, buf.items);
+            t.commit();
+            try f.frame();
+        }
+        defer for (&fixtures) |*f| f.deinit();
+        const f = &fixtures[0];
+        const g = &fixtures[1];
+        // The texts undo goes back through.
+        var history: std.ArrayList([]u8) = .empty;
+        defer {
+            for (history.items) |h| testing.allocator.free(h);
+            history.deinit(testing.allocator);
+        }
+        for (0..24) |step| {
+            if (step % 6 == 5 and history.items.len > 0) {
+                const k: Keys = .{ .f = f };
+                f.win.input.focus = docs[0];
+                k.press('z', .{ .ctrl = true });
+                const prev = history.pop().?;
+                defer testing.allocator.free(prev);
+                buf.clearRetainingCapacity();
+                try buf.appendSlice(testing.allocator, prev);
+            } else {
+                try history.append(testing.allocator, try testing.allocator.dupe(u8, buf.items));
+                var start = rand.uintAtMost(usize, buf.items.len);
+                while (start > 0 and start < buf.items.len and buf.items[start] & 0xc0 == 0x80) start -= 1;
+                var end = @min(buf.items.len, start + rand.uintLessThan(usize, if (step % 4 == 0) 3000 else 20));
+                while (end < buf.items.len and buf.items[end] & 0xc0 == 0x80) end += 1;
+                const insert = inserts[rand.uintLessThan(usize, inserts.len)];
+                try access.replaceText(f.win, docs[0], @intCast(start), @intCast(end), insert);
+                try buf.replaceRange(testing.allocator, start, end - start, insert);
+            }
+            const content = f.win.node(docs[0]).data.editor.text.content;
+            try testing.expect(content.eqlBytes(buf.items));
+            var t = try g.win.begin();
+            try t.setText(docs[1], buf.items);
+            t.commit();
+            try f.frame();
+            try g.frame();
+            // Both shaped on the pool to the end, then compared.
+            for ([_]*Fixture{ f, g }, docs) |x, doc| {
+                while (x.win.state(doc).text.?.shaping.items.len > 0) try lp.dispatch(-1);
+                try x.frame();
+            }
+            const a = text_node.current(f.win, docs[0]).?;
+            const b = text_node.current(g.win, docs[1]).?;
+            for (0..a.blocks.len) |i| _ = try a.measure(@intCast(i));
+            for (0..b.blocks.len) |i| _ = try b.measure(@intCast(i));
+            try testing.expectEqual(b.lineCount(), a.lineCount());
+            try testing.expectEqual(b.height(), a.height());
+            var i: u32 = 0;
+            while (i < a.lineCount()) : (i += 7) try testing.expectEqual(try b.line(i), try a.line(i));
+            for (0..20) |_| {
+                var o: u32 = @intCast(rand.uintAtMost(usize, buf.items.len));
+                while (o > 0 and o < buf.items.len and buf.items[o] & 0xc0 == 0x80) o -= 1;
+                try testing.expectEqual(try b.caret(.{ .offset = o }), try a.caret(.{ .offset = o }));
+            }
+        }
+    }
 }
 
 test "opacity animates as a layer property; content repaints only its layer" {
@@ -1159,30 +1248,30 @@ test "editor: typing, deleting, selecting, and change events" {
     k.typeText(" world");
     try f.frame();
     const e = &f.win.node(ed).data.editor;
-    try testing.expectEqualStrings("hello world", e.text.content);
+    try testing.expectEqualStrings("hello world", e.text.content.flat().?);
     try testing.expectEqual(@as(u32, 11), e.caret);
     try testing.expectEqual(@as(usize, 2), changes);
 
     // Ctrl+Backspace deletes a word; Backspace a grapheme.
     k.press(0xff08, .{ .ctrl = true });
-    try testing.expectEqualStrings("hello ", e.text.content);
+    try testing.expectEqualStrings("hello ", e.text.content.flat().?);
     k.press(0xff08, .{});
-    try testing.expectEqualStrings("hello", e.text.content);
+    try testing.expectEqualStrings("hello", e.text.content.flat().?);
     // Shift+Left twice selects "lo"; typing replaces it.
     k.press(ui.keysym.left, .{ .shift = true });
     k.press(ui.keysym.left, .{ .shift = true });
     try testing.expectEqual(@as(u32, 3), e.caret);
     try testing.expectEqual(@as(u32, 5), e.anchor);
     k.typeText("p!");
-    try testing.expectEqualStrings("help!", e.text.content);
+    try testing.expectEqualStrings("help!", e.text.content.flat().?);
     // Ctrl+A then Delete clears; single-line editors ignore Enter.
     k.press('a', .{ .ctrl = true });
     k.press(0xffff, .{});
-    try testing.expectEqualStrings("", e.text.content);
+    try testing.expectEqualStrings("", e.text.content.flat().?);
     k.typeText("a\nb");
-    try testing.expectEqualStrings("ab", e.text.content);
+    try testing.expectEqualStrings("ab", e.text.content.flat().?);
     try f.frame();
-    try testing.expectEqualStrings("ab", f.win.semantics.find(.text_input, "").?.value_text);
+    try testing.expectEqualStrings("ab", f.win.semantics.find(.text_input, "").?.value_text.flat().?);
     try testing.expectEqual(@as(?u32, 2), f.win.semantics.find(.text_input, "").?.caret);
 
     // Input that arrives while the application holds a transaction open
@@ -1192,13 +1281,13 @@ test "editor: typing, deleting, selecting, and change events" {
     k.typeText("x");
     k.press(ui.keysym.left, .{});
     k.typeText("y");
-    try testing.expectEqualStrings("ab", e.text.content);
+    try testing.expectEqualStrings("ab", e.text.content.flat().?);
     try t.setLayout(ed, .{ .padding = .all(4), .align_y = .start });
     t.abort();
     k.typeText("z");
-    try testing.expectEqualStrings("ab", e.text.content);
+    try testing.expectEqualStrings("ab", e.text.content.flat().?);
     try f.frame();
-    try testing.expectEqualStrings("abyzx", e.text.content);
+    try testing.expectEqualStrings("abyzx", e.text.content.flat().?);
     try testing.expectEqual(@as(usize, 0), f.win.pending_input.items.len);
 
     // A click places the caret: left of the text is offset 0.
@@ -1242,7 +1331,7 @@ test "editor: visual movement through right-to-left text; multiline lines" {
     try testing.expectEqual(@as(u32, 7), e.caret);
     k.press(ui.keysym.@"return", .{});
     k.typeText("cd");
-    try testing.expectEqualStrings("ab \u{05d0}\u{05d1}\ncd", e.text.content);
+    try testing.expectEqualStrings("ab \u{05d0}\u{05d1}\ncd", e.text.content.flat().?);
     try f.frame();
     const one_line = f.rect(ed)[3];
     k.press(ui.keysym.up, .{});
@@ -1265,29 +1354,29 @@ test "editor: undo and redo merge typing and deleting; app edits reset history" 
     k.press(ui.keysym.tab, .{});
     const e = &f.win.node(ed).data.editor;
     for ([_][]const u8{ "o", "n", "e", " ", "t", "w", "o" }) |c| k.typeText(c);
-    try testing.expectEqualStrings("one two", e.text.content);
+    try testing.expectEqualStrings("one two", e.text.content.flat().?);
     // Typing is one step per word (a space starts the next one).
     k.press('z', .{ .ctrl = true });
-    try testing.expectEqualStrings("one", e.text.content);
+    try testing.expectEqualStrings("one", e.text.content.flat().?);
     k.press('z', .{ .ctrl = true });
-    try testing.expectEqualStrings("", e.text.content);
+    try testing.expectEqualStrings("", e.text.content.flat().?);
     k.press('z', .{ .ctrl = true, .shift = true });
-    try testing.expectEqualStrings("one", e.text.content);
+    try testing.expectEqualStrings("one", e.text.content.flat().?);
     k.press('y', .{ .ctrl = true });
-    try testing.expectEqualStrings("one two", e.text.content);
+    try testing.expectEqualStrings("one two", e.text.content.flat().?);
     // Backspaces merge; undo restores them and the caret.
     k.press(0xff08, .{});
     k.press(0xff08, .{});
-    try testing.expectEqualStrings("one t", e.text.content);
+    try testing.expectEqualStrings("one t", e.text.content.flat().?);
     k.press('z', .{ .ctrl = true });
-    try testing.expectEqualStrings("one two", e.text.content);
+    try testing.expectEqualStrings("one two", e.text.content.flat().?);
     try testing.expectEqual(@as(u32, 7), e.caret);
     // A selection replaced by typing undoes to the selection.
     k.press(ui.keysym.left, .{ .shift = true, .ctrl = true });
     k.typeText("2");
-    try testing.expectEqualStrings("one 2", e.text.content);
+    try testing.expectEqualStrings("one 2", e.text.content.flat().?);
     k.press('z', .{ .ctrl = true });
-    try testing.expectEqualStrings("one two", e.text.content);
+    try testing.expectEqualStrings("one two", e.text.content.flat().?);
     try testing.expectEqual(@as(u32, 4), e.caret);
     try testing.expectEqual(@as(u32, 7), e.anchor);
     // Text the application sets is not the user's to undo.
@@ -1295,7 +1384,7 @@ test "editor: undo and redo merge typing and deleting; app edits reset history" 
     try t.setText(ed, "replaced");
     t.commit();
     k.press('z', .{ .ctrl = true });
-    try testing.expectEqualStrings("replaced", e.text.content);
+    try testing.expectEqualStrings("replaced", e.text.content.flat().?);
     try f.frame();
 }
 
@@ -1329,7 +1418,7 @@ test "styled text: spans shape as runs, follow edits, format as undo steps, and 
     k.press(ui.keysym.end, .{});
     // Typed text takes the style of the character before it.
     k.typeText("s");
-    try testing.expectEqualStrings("one twos", e.text.content);
+    try testing.expectEqualStrings("one twos", e.text.content.flat().?);
     try testing.expectEqualDeep(&[_]ui.Span{.{ .start = 4, .end = 8, .style = bold }}, e.text.spans);
     // Underline "one": a step of its own that undo and redo replay.
     k.press(ui.keysym.home, .{});
@@ -1345,7 +1434,7 @@ test "styled text: spans shape as runs, follow edits, format as undo steps, and 
     // Undoing the typing takes its span part back too.
     k.press('z', .{ .ctrl = true });
     k.press('z', .{ .ctrl = true });
-    try testing.expectEqualStrings("one two", e.text.content);
+    try testing.expectEqualStrings("one two", e.text.content.flat().?);
     try testing.expectEqualDeep(&[_]ui.Span{.{ .start = 4, .end = 7, .style = bold }}, e.text.spans);
 
     // With nothing selected, formatting sets the typing style, which the
@@ -1402,18 +1491,18 @@ test "paragraph styles: whole paragraphs, laid out, kept through edits and undo"
     try t.setSelection(ed, 9, 9, .downstream);
     t.commit();
     k.press(ui.keysym.@"return", .{});
-    try testing.expectEqualStrings("first\nsec\nond\nthird", e.text.content);
+    try testing.expectEqualStrings("first\nsec\nond\nthird", e.text.content.flat().?);
     try testing.expectEqualDeep(&[_]ui.ParagraphSpan{.{ .start = 6, .end = 14, .style = centered }}, e.text.paragraphs);
     // Undo restores the paragraphs with the text.
     k.press('z', .{ .ctrl = true });
-    try testing.expectEqualStrings("first\nsecond\nthird", e.text.content);
+    try testing.expectEqualStrings("first\nsecond\nthird", e.text.content.flat().?);
     try testing.expectEqualDeep(&[_]ui.ParagraphSpan{.{ .start = 6, .end = 13, .style = centered }}, e.text.paragraphs);
     // Joining "second" to "first" makes one paragraph in first's style.
     t = try f.win.begin();
     try t.setSelection(ed, 6, 6, .downstream);
     t.commit();
     k.press(0xff08, .{}); // BackSpace
-    try testing.expectEqualStrings("firstsecond\nthird", e.text.content);
+    try testing.expectEqualStrings("firstsecond\nthird", e.text.content.flat().?);
     try testing.expectEqual(0, e.text.paragraphs.len);
     k.press('z', .{ .ctrl = true });
 
@@ -1474,14 +1563,14 @@ test "masked editor: locked secret, bullets, no undo, nothing for assistive tech
     try f.frame();
     const e = &f.win.node(ed).data.editor;
     try testing.expectEqualStrings("pre", f.win.secretOf(ed));
-    try testing.expectEqualStrings("\u{2022}\u{2022}\u{2022}", e.text.content);
+    try testing.expectEqualStrings("\u{2022}\u{2022}\u{2022}", e.text.content.flat().?);
     const k: Keys = .{ .f = &f };
     k.press(ui.keysym.tab, .{});
     k.typeText("\u{e9}!");
     k.press(ui.keysym.left, .{});
     k.press(0xff08, .{}); // removes the é
     try testing.expectEqualStrings("pre!", f.win.secretOf(ed));
-    try testing.expectEqual(@as(usize, 4 * 3), e.text.content.len);
+    try testing.expectEqual(@as(usize, 4 * 3), e.text.content.len());
     // The secret sits at the start of its own page (locked, not in the heap).
     try testing.expectEqual(@as(usize, 0), @intFromPtr(f.win.secretOf(ed).ptr) % std.heap.page_size_min);
     k.press('z', .{ .ctrl = true });
@@ -1489,13 +1578,13 @@ test "masked editor: locked secret, bullets, no undo, nothing for assistive tech
     try f.frame();
     const sem = f.win.semantics.find(.text_input, "Password").?;
     try testing.expect(sem.masked);
-    try testing.expectEqualStrings("", sem.value_text);
+    try testing.expectEqualStrings("", sem.value_text.flat().?);
     try testing.expectEqual(@as(?u32, null), sem.caret);
     // Unmasking moves the text back to ordinary memory.
     t = try f.win.begin();
     try t.setEditor(ed, .{});
     t.commit();
-    try testing.expectEqualStrings("pre!", e.text.content);
+    try testing.expectEqualStrings("pre!", e.text.content.flat().?);
     try testing.expectEqual(@as(usize, 0), f.win.secretOf(ed).len);
     try f.frame();
 }
@@ -1588,20 +1677,20 @@ test "input method: enable, preedit inline, commit with undo, masked fields stay
     imeEvent(&f, ev);
     try f.frame();
     const e = &f.win.node(ed).data.editor;
-    try testing.expectEqualStrings("", e.text.content);
+    try testing.expectEqualStrings("", e.text.content.flat().?);
     try testing.expectEqualStrings("ka", f.win.state(ed).text.?.paragraph.?.blocks[0].text);
     const moved = f.text_inputs.items[f.text_inputs.items.len - 1];
     try testing.expect(moved.cursor_rect.x > first.cursor_rect.x);
     // Editing keys wait while it composes.
     k.typeText("q");
-    try testing.expectEqualStrings("", e.text.content);
+    try testing.expectEqualStrings("", e.text.content.flat().?);
 
     // The commit replaces the preedit and becomes text and an undo step.
     ev = .{ .window = 0, .seat = 0 };
     ev.commit_len = imeText(&ev.commit_buf, "\u{304b}");
     imeEvent(&f, ev);
     try f.frame();
-    try testing.expectEqualStrings("\u{304b}", e.text.content);
+    try testing.expectEqualStrings("\u{304b}", e.text.content.flat().?);
     try testing.expectEqualStrings("\u{304b}", f.win.state(ed).text.?.paragraph.?.blocks[0].text);
     const after = f.text_inputs.items[f.text_inputs.items.len - 1];
     try testing.expectEqualStrings("\u{304b}", after.surrounding);
@@ -1613,13 +1702,13 @@ test "input method: enable, preedit inline, commit with undo, masked fields stay
     ev = .{ .window = 0, .seat = 0, .delete_before = 1 };
     ev.commit_len = imeText(&ev.commit_buf, "Z");
     imeEvent(&f, ev);
-    try testing.expectEqualStrings("\u{304b}aZ", e.text.content);
+    try testing.expectEqualStrings("\u{304b}aZ", e.text.content.flat().?);
     // Undo: the replacement, then the commit and the typing after it,
     // which merge into one step like typing.
     k.press('z', .{ .ctrl = true });
-    try testing.expectEqualStrings("\u{304b}ab", e.text.content);
+    try testing.expectEqualStrings("\u{304b}ab", e.text.content.flat().?);
     k.press('z', .{ .ctrl = true });
-    try testing.expectEqualStrings("", e.text.content);
+    try testing.expectEqualStrings("", e.text.content.flat().?);
 
     // A masked field turns the input method off; input methods never see
     // passwords.
@@ -1852,7 +1941,7 @@ test "access: character rectangles, hit testing, and lines in window coordinates
     try f.frame();
     try testing.expect(f.win.state(narrow).editor_scroll > 0);
     const nb = f.win.windowRect(narrow);
-    const len: u32 = @intCast(f.win.node(narrow).data.editor.text.content.len);
+    const len: u32 = @intCast(f.win.node(narrow).data.editor.text.content.len());
     const last = access.characterRect(f.win, narrow, len - 1).?;
     try testing.expect(last.x0 >= nb.x0 and last.x1 <= nb.x1 + 0.01);
     try testing.expect(access.characterRect(f.win, narrow, 0).?.x1 < nb.x0);
@@ -1895,7 +1984,7 @@ test "access: edits take the user's path, queue behind a transaction, and skip m
     const gen = f.win.semantics.generation;
 
     try access.replaceText(f.win, ed, 6, 11, "there\nfriend");
-    try testing.expectEqualStrings("hello there friend", e.text.content);
+    try testing.expectEqualStrings("hello there friend", e.text.content.flat().?);
     try testing.expectEqual(@as(usize, 1), changes);
     try testing.expectEqual(@as(u32, 18), e.caret);
     try access.setSelection(f.win, ed, 0, 5);
@@ -1905,15 +1994,15 @@ test "access: edits take the user's path, queue behind a transaction, and skip m
     const k: Keys = .{ .f = &f };
     k.press(ui.keysym.tab, .{});
     k.press('z', .{ .ctrl = true });
-    try testing.expectEqualStrings("hello world", e.text.content);
+    try testing.expectEqualStrings("hello world", e.text.content.flat().?);
 
     // Behind an application transaction the edit waits, then applies.
     t = try f.win.begin();
     try access.replaceText(f.win, ed, 0, 5, "howdy");
-    try testing.expectEqualStrings("hello world", e.text.content);
+    try testing.expectEqualStrings("hello world", e.text.content.flat().?);
     t.commit();
     try f.frame();
-    try testing.expectEqualStrings("howdy world", e.text.content);
+    try testing.expectEqualStrings("howdy world", e.text.content.flat().?);
     try testing.expect(f.win.semantics.generation > gen);
     const settled = f.win.semantics.generation;
     try f.frame();

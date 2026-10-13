@@ -53,11 +53,12 @@ fn contentWidth(win: *const Window, id: NodeId) f32 {
 
 /// The text shaped and shown: the content, with an input method's preedit
 /// at the caret.
-pub fn displayText(win: *const Window, id: NodeId, a: std.mem.Allocator) error{OutOfMemory}![]const u8 {
+/// A new reference: the content's own, or a rope that shares all of it
+/// but the leaf the preedit goes in.
+pub fn displayText(win: *const Window, id: NodeId) error{OutOfMemory}!text.Rope {
     const e = data(win, id);
-    const pre = win.ime.preeditFor(id) orelse return e.text.content;
-    const c = e.caret;
-    return std.mem.concat(a, u8, &.{ e.text.content[0..c], pre, e.text.content[c..] });
+    const pre = win.ime.preeditFor(id) orelse return e.text.content.retain();
+    return e.text.content.replace(win.gpa, e.caret, e.caret, pre);
 }
 
 /// The caret's offset in the shown text: inside the preedit while there
@@ -81,11 +82,13 @@ pub fn preeditRange(win: *const Window, id: NodeId) ?[2]u32 {
 pub fn imeCommit(win: *Window, id: NodeId, before: u32, after: u32, str: []const u8) void {
     const e = data(win, id);
     const content = e.text.content;
+    const len: u32 = @intCast(content.len());
+    var rd = content.reader();
     const lo, const hi = selection(e);
     var start = lo -| before;
-    while (start > 0 and start < content.len and content[start] & 0xc0 == 0x80) start -= 1;
-    var end = @min(@as(u32, @intCast(content.len)), hi + after);
-    while (end < content.len and content[end] & 0xc0 == 0x80) end += 1;
+    while (start > 0 and start < len and rd.at(start) & 0xc0 == 0x80) start -= 1;
+    var end = @min(len, hi + after);
+    while (end < len and rd.at(end) & 0xc0 == 0x80) end += 1;
     replace(win, id, start, end, str, if (start == end) .typing else .other);
 }
 
@@ -233,7 +236,9 @@ fn replace(win: *Window, id: NodeId, start: u32, end: u32, insert: []const u8, r
     const old = e.text.content;
     const before: Snapshot = .{ .caret = e.caret, .anchor = e.anchor, .revision = e.revision };
     const a = win.scratch.allocator();
-    const removed = a.dupe(u8, old[start..end]) catch return;
+    // A copy: the old text goes when the edit commits.
+    const removed = a.alloc(u8, end - start) catch return;
+    old.read(start, removed);
     const caret: u32 = @intCast(start + insert.len);
     // Inserted text takes the typing style, else that of the first
     // replaced character, else that of the character before (D22).
@@ -247,7 +252,8 @@ fn replace(win: *Window, id: NodeId, start: u32, end: u32, insert: []const u8, r
     // Without paragraph spans there is nothing to snap (and no need to
     // scan a long text for paragraphs).
     const paragraphs_after = if (paragraphs_before.len == 0) paragraphs_before else blk: {
-        const content = std.mem.concat(a, u8, &.{ old[0..start], insert, old[end..] }) catch return;
+        const content = old.replace(win.gpa, start, end, insert) catch return;
+        defer content.release(win.gpa);
         const paragraph_style = spans.styleAt(paragraphs_before, spans.paragraphAt(old, start).start);
         break :blk spans.snapped(a, content, spans.replaced(a, paragraphs_before, start, end, @intCast(insert.len), paragraph_style) catch return) catch return;
     };
@@ -521,7 +527,7 @@ pub fn format(win: *Window, id: NodeId, values: node_mod.SpanStyle, mask: node_m
         t.abort();
         return false;
     };
-    const after = spans.restyled(a, before, @intCast(e.text.content.len), lo, hi, values, mask) catch {
+    const after = spans.restyled(a, before, @intCast(e.text.content.len()), lo, hi, values, mask) catch {
         t.abort();
         return false;
     };
@@ -551,7 +557,7 @@ pub fn formatParagraph(win: *Window, id: NodeId, values: node_mod.ParagraphPatch
     // A selection ending at a paragraph's start does not touch it.
     const to = if (hi > lo and hi > from and spans.paragraphAt(content, hi).start == hi) hi else spans.paragraphAt(content, hi).end;
     const before = a.dupe(node_mod.ParagraphSpan, e.text.paragraphs) catch return false;
-    const restyled = spans.restyled(a, before, @intCast(content.len), from, @max(to, from + 1), values, mask) catch return false;
+    const restyled = spans.restyled(a, before, @intCast(content.len()), from, @max(to, from + 1), values, mask) catch return false;
     const after = spans.snapped(a, content, restyled) catch return false;
     const snap: Snapshot = .{ .caret = e.caret, .anchor = e.anchor, .revision = e.revision };
     const t = win.begin() catch return false;
@@ -613,7 +619,7 @@ fn keyIn(win: *Window, id: NodeId, k: *const platform.Key, l: *const Layout) err
     const e = data(win, id);
     const mods = k.mods;
     const lo, const hi = selection(e);
-    const len: u32 = @intCast(e.text.content.len);
+    const len: u32 = @intCast(e.text.content.len());
     const rtl = win.state(id).rtl;
     const pos: Position = .{ .offset = e.caret, .affinity = e.affinity };
     const extend = mods.shift;
@@ -712,7 +718,7 @@ pub fn copyRange(win: *Window, id: NodeId, lo: u32, hi: u32, cut: bool) void {
     const e = data(win, id);
     if (lo == hi or e.editor.masked) return;
     const cb = win.clipboard orelse return;
-    cb.copy(.clipboard, win.input.seat, win.input.serial, e.text.content[lo..hi]) catch return;
+    cb.copy(.clipboard, win.input.seat, win.input.serial, e.text.content.slice(win.scratch.allocator(), lo, hi) catch return) catch return;
     if (cut) replace(win, id, lo, hi, "", .other);
 }
 
@@ -759,9 +765,11 @@ pub fn queue(win: *Window, p: Pending) error{OutOfMemory}!void {
 }
 
 /// Whether `start..end` is a range of whole code points in `s`.
-pub fn validRange(s: []const u8, start: u32, end: u32) bool {
-    if (start > end or end > s.len) return false;
-    for ([_]u32{ start, end }) |o| if (o < s.len and s[o] & 0xc0 == 0x80) return false;
+pub fn validRange(s: text.Rope, start: u32, end: u32) bool {
+    const len = s.len();
+    if (start > end or end > len) return false;
+    var rd = s.reader();
+    for ([_]u32{ start, end }) |o| if (o < len and rd.at(o) & 0xc0 == 0x80) return false;
     return true;
 }
 
@@ -817,11 +825,11 @@ pub fn paste(win: *Window, id: NodeId, kind: platform.SelectionKind) void {
 /// it.
 pub fn dropText(win: *Window, id: NodeId, p: Point, text_: []const u8) void {
     const pos = positionAt(win, id, input.toLocal(win, id, p)) orelse return;
-    const before = data(win, id).text.content.len;
+    const before = data(win, id).text.content.len();
     setSelection(win, id, pos.offset, pos.offset, .downstream);
     replaceRange(win, id, pos.offset, pos.offset, text_);
     const e = data(win, id);
-    const added: u32 = @intCast(e.text.content.len -| before);
+    const added: u32 = @intCast(e.text.content.len() -| before);
     if (added != 0) setSelection(win, id, pos.offset + added, pos.offset, .downstream);
 }
 
@@ -866,7 +874,7 @@ pub fn updatePrimary(win: *Window) void {
     const p = win.primary;
     if (p.node == id and p.lo == lo and p.hi == hi and p.revision == e.revision) return;
     win.primary = .{ .node = id, .lo = lo, .hi = hi, .revision = e.revision };
-    cb.copy(.primary, win.input.seat, win.input.serial, e.text.content[lo..hi]) catch {};
+    cb.copy(.primary, win.input.seat, win.input.serial, e.text.content.slice(win.scratch.allocator(), lo, hi) catch return) catch {};
 }
 
 fn typed(win: *Window, id: NodeId, k: *const platform.Key) bool {

@@ -1781,6 +1781,12 @@ pub const functions = [_]Function{
         .{ .name = "text", .type = schema.text_buffer, .doc = "Receives at most text_cap bytes; may be NULL with text_cap 0." },
         .{ .name = "len", .type = out(.usize), .doc = "The text's full length in bytes." },
     }),
+    call("siv_node_get_text_range", "Copies part of the text of a text or editor node, as of the latest operation: up to text_cap bytes from a byte offset, so that a long text is read in pieces (to search or save it) without a buffer as long as the text. A piece may end inside a character.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "A text or editor node." },
+        .{ .name = "offset", .type = .u32, .doc = "Byte offset of the first byte copied; at or past the end nothing is." },
+        .{ .name = "text", .type = schema.text_buffer, .doc = "Receives at most text_cap bytes; may be NULL with text_cap 0." },
+        .{ .name = "len", .type = out(.usize), .doc = "The text's full length in bytes." },
+    }),
     call("siv_node_get_text_run", "The style run of a text or editor node at a byte offset, as of the latest operation: the styled range containing it, or the unstyled stretch around it (flags 0). Walk the text by asking again at the run's end.", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "A text or editor node." },
         .{ .name = "offset", .type = .u32, .doc = "Byte offset; clamped to the text." },
