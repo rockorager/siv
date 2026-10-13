@@ -2644,7 +2644,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     changes; with `SIV_WIDGET_ICON_ONLY` the label is hidden and becomes
     the button's accessible name, and the button is square. Menu items
     take one too; when any item of a menu has an icon, every row has the
-    slot, so labels line up. The image node's setter replaces the whole
+    slot, so labels line up. `siv_widget_set_icon` changes the icon, as
+    `siv_widget_set_label` the label (the file manager's view toggle
+    shows the view it switches to). The image node's setter replaces the whole
     view, so a widget keeps the icon's name in a hidden text node to
     recolor it: public primitives only, and no string storage of the
     widget's own. Found by the file manager (`apps/files`), whose
