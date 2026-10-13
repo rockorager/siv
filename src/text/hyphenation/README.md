@@ -5,7 +5,9 @@ commit 5684c0f51c0b81133db2efbe60a408b4155a3ff5, 2026-02-24), the `txt`
 conversions of the files below. Each `hyph-<tag>.lic.txt` is the header of the
 pattern file it came from: its copyright, licence, and hyphenmins. Only files
 whose licence is MIT, BSD, or as permissive are kept (D25); siv reads them with
-the typesetting hyphenmins their headers give.
+the typesetting hyphenmins their headers give. `LICENSE-MIT.txt` gives the MIT
+text for the headers that name the licence without it. All of these go into
+libsiv's NOTICES (src/notices/build_steps.zig).
 
 | Tag | Language | Licence |
 | --- | --- | --- |
