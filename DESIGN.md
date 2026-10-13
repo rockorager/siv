@@ -287,6 +287,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     running (the work checks a flag of its own for cancellation), and
     destroying the application waits for running ones, so long jobs
     check that flag often.
+  - Applications watch their own descriptors in the loop with
+    `siv_app_watch_fd` (readable, writable; hangup and error reported):
+    the io phase records readiness and schedules a dispatch task, so the
+    callback runs at a safe point (D5) in the same iteration, and
+    `siv_watch_destroy` is safe from it. Level-triggered, like the
+    loop's own sources; regular files and directories, which epoll
+    refuses, are invalid arguments. A file manager follows the shown
+    folder with inotify; without it, it ran a thread blocked in poll(2)
+    that posted changes, with the lifetime handling a cross-thread post
+    needs. Found by the file manager in `apps/files`. Alternative: an
+    edge-triggered watch (the application must drain every time or
+    lose wakeups, an easy bug to write in every binding).
 - **Alternatives:** io_uring. Rejected: a GUI client issues tens of syscalls per
   frame, so batching gains are negligible; Docker's default seccomp profile
   blocks io_uring, Android and ChromeOS disable it, and seccomp sandboxes cannot

@@ -68,7 +68,7 @@ pub const owned = [_]struct { []const u8, []const u8 }{
     .{ "siv_tray_item", "siv_tray_item_destroy" },
 };
 
-pub const borrowed = [_][]const u8{ "siv_window", "siv_txn", "siv_node", "siv_timer", "siv_draw", "siv_external" };
+pub const borrowed = [_][]const u8{ "siv_window", "siv_txn", "siv_node", "siv_timer", "siv_watch", "siv_draw", "siv_external" };
 
 /// Functions whose out handle is a new object the caller owns (when its
 /// type is `owned`).

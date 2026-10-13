@@ -26,6 +26,7 @@ const canvas = @import("canvas.zig");
 const external = @import("external.zig");
 const loop_mod = @import("loop");
 const portal = @import("portal.zig");
+const watch = @import("watch.zig");
 
 const Root = runtime.Root;
 
@@ -75,6 +76,8 @@ pub const App = struct {
     closing: std.atomic.Value(bool),
     /// By timer index (handle payload); null slots are reused.
     timers: std.ArrayList(?*Timer),
+    /// By watch index (handle payload); null slots are reused.
+    watches: std.ArrayList(?*watch.Watch),
     /// Portal requests, choosers, and actions (D19).
     desktop: portal.State,
 
@@ -256,6 +259,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     self.externals = .{};
     self.closing = .init(false);
     self.timers = .empty;
+    self.watches = .empty;
     self.desktop = .{};
     const gpa = self.gpa();
     self.draw = .init(gpa);
@@ -301,6 +305,8 @@ pub export fn siv_app_destroy(app: t.App) t.Result {
     const gpa = self.gpa();
     for (self.timers.items) |slot| if (slot) |tm| tm.cancel();
     self.timers.deinit(gpa);
+    for (self.watches.items) |slot| if (slot) |w| w.remove();
+    self.watches.deinit(gpa);
     self.app.fonts.removeListener(self);
     for (self.images.items) |img| if (img) |i| i.release();
     // Runs the destroy-notify of posted work that never ran (D5).

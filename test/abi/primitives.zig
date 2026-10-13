@@ -413,6 +413,89 @@ test "jobs run on a worker thread, then done and destroy on the application's" {
     try testing.expectEqual(@as(u32, 1), slow.destroyed);
 }
 
+const Watcher = struct {
+    fd: i32,
+    calls: u32 = 0,
+    read: u32 = 0,
+    last: t.WatchFlags = .{},
+    destroyed: u32 = 0,
+    stop_on_hangup: bool = true,
+    in_callback: bool = false,
+
+    fn ready(ud: ?*anyopaque, watch: t.Watch, events: t.WatchFlags) callconv(.c) void {
+        const wt: *Watcher = @ptrCast(@alignCast(ud.?));
+        wt.calls += 1;
+        wt.last = events;
+        var buf: [64]u8 = undefined;
+        if (events.readable) {
+            const n = std.os.linux.read(wt.fd, &buf, buf.len);
+            if (std.os.linux.errno(n) == .SUCCESS) wt.read += @intCast(n);
+        }
+        if (events.hangup and wt.stop_on_hangup) {
+            wt.in_callback = true;
+            _ = c.siv_watch_destroy(watch);
+            wt.in_callback = false;
+        }
+    }
+
+    fn destroy(ud: ?*anyopaque) callconv(.c) void {
+        const wt: *Watcher = @ptrCast(@alignCast(ud.?));
+        // Never while the callback runs (D2).
+        std.debug.assert(!wt.in_callback);
+        wt.destroyed += 1;
+    }
+};
+
+test "watched descriptors call back at safe points until destroyed" {
+    var h: Harness = .{};
+    try start(&h);
+    defer h.stop();
+    const linux = std.os.linux;
+    var fds: [2]i32 = undefined;
+    try testing.expectEqual(@as(usize, 0), linux.pipe2(&fds, .{ .CLOEXEC = true, .NONBLOCK = true }));
+    defer _ = linux.close(fds[0]);
+    var wt: Watcher = .{ .fd = fds[0] };
+    var watch: t.Watch = .null;
+    try ok(c.siv_app_watch_fd(h.app, fds[0], .{ .readable = true }, Watcher.ready, Watcher.destroy, &wt, &watch));
+    // Idle: no calls.
+    try ok(c.siv_app_dispatch(h.app, 0));
+    try testing.expectEqual(@as(u32, 0), wt.calls);
+    // Data: one call per iteration that sees it, which reads it all.
+    _ = linux.write(fds[1], "hello", 5);
+    try ok(c.siv_app_dispatch(h.app, 100));
+    try testing.expectEqual(@as(u32, 1), wt.calls);
+    try testing.expect(wt.last.readable and !wt.last.hangup);
+    try testing.expectEqual(@as(u32, 5), wt.read);
+    // Neither readable nor writable: data waits, unreported.
+    try ok(c.siv_watch_set_events(watch, .{}));
+    _ = linux.write(fds[1], "x", 1);
+    try ok(c.siv_app_dispatch(h.app, 0));
+    try testing.expectEqual(@as(u32, 1), wt.calls);
+    try ok(c.siv_watch_set_events(watch, .{ .readable = true }));
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_watch_set_events(watch, .{ .hangup = true }));
+    // Closing the write end hangs up; the callback destroys its own watch,
+    // and the destroy-notify runs after it returns.
+    _ = linux.close(fds[1]);
+    var tries: u32 = 0;
+    while (wt.destroyed == 0 and tries < 10) : (tries += 1) try ok(c.siv_app_dispatch(h.app, 100));
+    try testing.expectEqual(@as(u32, 1), wt.destroyed);
+    try testing.expectEqual(@as(u32, 6), wt.read);
+    try testing.expectEqual(t.Result.error_invalid_handle, c.siv_watch_destroy(watch));
+    // A watch the application never destroys goes with it.
+    var other: Watcher = .{ .fd = fds[0], .stop_on_hangup = false };
+    try ok(c.siv_app_watch_fd(h.app, fds[0], .{ .readable = true }, Watcher.ready, Watcher.destroy, &other, &watch));
+    // A descriptor can be watched once; a bad one fails and hands
+    // user_data back.
+    var dup: Watcher = .{ .fd = fds[0] };
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_app_watch_fd(h.app, fds[0], .{ .readable = true }, Watcher.ready, Watcher.destroy, &dup, &watch));
+    try testing.expectEqual(@as(u32, 1), dup.destroyed);
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_app_watch_fd(h.app, -1, .{ .readable = true }, Watcher.ready, Watcher.destroy, &dup, &watch));
+    try testing.expectEqual(@as(u32, 2), dup.destroyed);
+    h.stop();
+    h.app = .null;
+    try testing.expectEqual(@as(u32, 1), other.destroyed);
+}
+
 test "default layouts fill the fields the application's layout leaves zero" {
     var h: Harness = .{};
     try start(&h);

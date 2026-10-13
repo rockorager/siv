@@ -42,12 +42,14 @@ pub const print = @import("print.zig");
 pub const tray = @import("tray.zig");
 /// Decoding images.
 pub const image_load = @import("image_load.zig");
+/// Application file descriptors in the loop.
+pub const watch = @import("watch.zig");
 
 /// The generated wrapper's types, which the exports use.
 pub const types = t;
 
 /// The files that export schema functions.
-const implementations = .{ @This(), application, tree, canvas, external, dnd, clipboard, theme, cursor, portal, print, tray, image_load } ++ @import("widgets").implementations;
+const implementations = .{ @This(), application, tree, canvas, external, dnd, clipboard, theme, cursor, portal, print, tray, image_load, watch } ++ @import("widgets").implementations;
 
 const version = build_options.version;
 
