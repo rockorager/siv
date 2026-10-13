@@ -95,6 +95,23 @@ pub const ShapedParagraph = struct {
     /// Pending fonts that shaping would have tried. Load them into the cache
     /// and rebuild to improve the result.
     wanted: []const FontId,
+    /// Set by `initReusing` when it kept paragraphs of the previous text:
+    /// how they map, for `Layout.initReusing`.
+    reused: ?Reuse = null,
+
+    /// Paragraphs `0..first` and the text before `start` are the old
+    /// text's; paragraphs from `new_rest` on are the old ones from
+    /// `old_rest` on, moved by `new_end - old_end` bytes.
+    pub const Reuse = struct {
+        old_len: u32,
+        old_paragraphs: u32,
+        first: u32,
+        old_rest: u32,
+        new_rest: u32,
+        start: u32,
+        old_end: u32,
+        new_end: u32,
+    };
 
     /// `text` and `styles` are copied. `scratch` should be an arena; nothing
     /// in the result points into it.
@@ -146,6 +163,192 @@ pub const ShapedParagraph = struct {
         self.missing = builder.missing;
         self.wanted = builder.wanted.items;
         self.segments = try measure(a, scratch, &self);
+        self.reused = null;
+        return self;
+    }
+
+    /// Like `init`, but takes what does not change from `old`, the
+    /// result for the text before this edit: the paragraphs the edit left
+    /// alone keep their bidi levels, segmentation, shaping, and line-break
+    /// opportunities, moved to their new offsets, and only the paragraphs
+    /// around the change are analyzed and shaped again. Paragraphs are
+    /// independent (UAX #9 P1, #14 LB4 and LB5, #29 GB4, GB5, WB3a, and
+    /// WB3b break after separators, and shaping stops at them), so the
+    /// result equals `init`'s. A keystroke in a 1.4 MB document reshaped
+    /// all of it. Falls back to `init` when `old` cannot be reused: other
+    /// style values, another direction, or fonts it was missing.
+    pub fn initReusing(
+        gpa: std.mem.Allocator,
+        scratch: std.mem.Allocator,
+        cache: *const FontCache,
+        text: []const u8,
+        styles: []const StyleRun,
+        direction: bidi.BaseDirection,
+        old_: ?*const ShapedParagraph,
+    ) BuildError!ShapedParagraph {
+        const old = old_ orelse return init(gpa, scratch, cache, text, styles, direction);
+        if (old.direction != direction or old.missing or old.wanted.len != 0 or old.text.len == 0 or text.len == 0 or text.len >= std.math.maxInt(u32))
+            return init(gpa, scratch, cache, text, styles, direction);
+        if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUtf8;
+        try validateStyles(text, styles);
+
+        // The changed bytes, from the common prefix and suffix.
+        const shorter = @min(old.text.len, text.len);
+        var prefix: usize = 0;
+        while (prefix < shorter and old.text[prefix] == text[prefix]) prefix += 1;
+        var suffix: usize = 0;
+        while (suffix < shorter - prefix and old.text[old.text.len - 1 - suffix] == text[text.len - 1 - suffix]) suffix += 1;
+        // Redo the paragraphs holding the change and one on each side, so
+        // that separators made or split by it (CR before LF) are seen.
+        const first = old.paragraphAt(@intCast(prefix)) -| 1;
+        const last = @min(old.paragraphAt(@intCast(old.text.len - suffix)) + 1, @as(u32, @intCast(old.paragraphs.len - 1)));
+        const start = old.paragraphs[first].start;
+        const old_end = old.paragraphs[last].end;
+        const delta: i64 = @as(i64, @intCast(text.len)) - @as(i64, @intCast(old.text.len));
+        const new_end: u32 = @intCast(@as(i64, old_end) + delta);
+        // Nothing to keep, or nothing between the kept paragraphs.
+        if ((first == 0 and last == old.paragraphs.len - 1) or new_end == start) return init(gpa, scratch, cache, text, styles, direction);
+
+        // Kept runs refer to styles by index: those values and the ends
+        // outside the redone bytes must not have changed.
+        if (styles.len != old.styles.len) return init(gpa, scratch, cache, text, styles, direction);
+        for (styles, old.styles, old.style_ends) |new, o, old_style_end| {
+            if (new.style.size != o.size or !std.mem.eql(FontId, new.style.fonts, o.fonts) or !std.mem.eql(u8, new.style.language, o.language))
+                return init(gpa, scratch, cache, text, styles, direction);
+            const moved: i64 = if (old_style_end >= old_end) old_style_end + delta else old_style_end;
+            if ((old_style_end <= start or old_style_end >= old_end) and new.end != moved)
+                return init(gpa, scratch, cache, text, styles, direction);
+        }
+
+        // The middle, analyzed and shaped on its own in the scratch arena.
+        const style_first = blk: {
+            for (styles, 0..) |run, i| if (run.end > start) break :blk i;
+            break :blk styles.len - 1;
+        };
+        var mid_styles: std.ArrayList(StyleRun) = .empty;
+        for (styles[style_first..]) |run| {
+            try mid_styles.append(scratch, .{ .end = @min(run.end, new_end) - start, .style = run.style });
+            if (run.end >= new_end) break;
+        }
+        var mid = try init(scratch, scratch, cache, text[start..new_end], mid_styles.items, direction);
+        defer mid.deinit();
+
+        var self: ShapedParagraph = undefined;
+        self.arena = .init(gpa);
+        errdefer self.arena.deinit();
+        const a = self.arena.allocator();
+        self.direction = direction;
+        self.text = try a.dupe(u8, text);
+        const copied = try a.alloc(Style, styles.len);
+        const ends = try a.alloc(u32, styles.len);
+        for (styles, copied, ends) |run, *style, *end| {
+            style.* = .{ .fonts = try a.dupe(FontId, run.style.fonts), .size = run.style.size, .language = try a.dupe(u8, run.style.language) };
+            end.* = run.end;
+        }
+        self.styles = copied;
+        self.style_ends = ends;
+        const shift = struct {
+            fn by(x: u32, d: i64) u32 {
+                return @intCast(@as(i64, x) + d);
+            }
+        }.by;
+
+        // Paragraphs and the per-byte arrays.
+        const mid_count: u32 = @intCast(mid.paragraphs.len);
+        const new_rest = first + mid_count;
+        const dp: i64 = @as(i64, new_rest) - @as(i64, last + 1);
+        const paragraphs = try a.alloc(bidi.Paragraph, old.paragraphs.len - (last + 1 - first) + mid_count);
+        @memcpy(paragraphs[0..first], old.paragraphs[0..first]);
+        for (paragraphs[first..new_rest], mid.paragraphs) |*out, in| out.* = .{ .start = in.start + start, .end = in.end + start, .separator_len = in.separator_len, .base_level = in.base_level };
+        for (paragraphs[new_rest..], old.paragraphs[last + 1 ..]) |*out, in| out.* = .{ .start = shift(in.start, delta), .end = shift(in.end, delta), .separator_len = in.separator_len, .base_level = in.base_level };
+        self.paragraphs = paragraphs;
+        const levels = try a.alloc(u8, text.len);
+        const classes = try a.alloc(bidi.LineClass, text.len);
+        inline for (.{ .{ levels, old.levels, mid.levels }, .{ classes, old.classes, mid.classes } }) |arrays| {
+            @memcpy(arrays[0][0..start], arrays[1][0..start]);
+            @memcpy(arrays[0][start..new_end], arrays[2]);
+            @memcpy(arrays[0][new_end..], arrays[1][old_end..]);
+        }
+        self.levels = levels;
+        self.classes = classes;
+        const len: u32 = @intCast(text.len);
+        self.graphemes = try .init(a, len);
+        self.words = .{ .boundaries = try .init(a, len), .starts = try .init(a, len) };
+        inline for (.{ .{ &self.graphemes, old.graphemes, mid.graphemes }, .{ &self.words.boundaries, old.words.boundaries, mid.words.boundaries }, .{ &self.words.starts, old.words.starts, mid.words.starts } }) |sets| {
+            sets[0].copyRange(0, sets[1], 0, start);
+            sets[0].copyRange(start, sets[2], 0, sets[2].len);
+            sets[0].copyRange(new_end, sets[1], old_end, sets[1].len);
+        }
+
+        // Runs and glyphs: the kept paragraphs' are contiguous at both ends.
+        var run_first: usize = 0;
+        while (run_first < old.runs.len and old.runs[run_first].paragraph < first) run_first += 1;
+        var run_rest = run_first;
+        while (run_rest < old.runs.len and old.runs[run_rest].paragraph <= last) run_rest += 1;
+        const glyph_first: u32 = if (run_first < old.runs.len) old.runs[run_first].glyph_start else @intCast(old.glyphs.len);
+        const glyph_rest: u32 = if (run_rest < old.runs.len) old.runs[run_rest].glyph_start else @intCast(old.glyphs.len);
+        const glyphs = try a.alloc(Glyph, glyph_first + mid.glyphs.len + (old.glyphs.len - glyph_rest));
+        @memcpy(glyphs[0..glyph_first], old.glyphs[0..glyph_first]);
+        for (glyphs[glyph_first..][0..mid.glyphs.len], mid.glyphs) |*out, in| {
+            out.* = in;
+            out.cluster += start;
+        }
+        const dg: i64 = @as(i64, @intCast(glyph_first + mid.glyphs.len)) - glyph_rest;
+        for (glyphs[glyph_first + mid.glyphs.len ..], old.glyphs[glyph_rest..]) |*out, in| {
+            out.* = in;
+            out.cluster = shift(in.cluster, delta);
+        }
+        self.glyphs = glyphs;
+        const runs = try a.alloc(Run, run_first + mid.runs.len + (old.runs.len - run_rest));
+        @memcpy(runs[0..run_first], old.runs[0..run_first]);
+        for (runs[run_first..][0..mid.runs.len], mid.runs) |*out, in| {
+            out.* = in;
+            out.start += start;
+            out.end += start;
+            out.paragraph += first;
+            out.style += @intCast(style_first);
+            out.glyph_start += glyph_first;
+            out.glyph_end += glyph_first;
+        }
+        for (runs[run_first + mid.runs.len ..], old.runs[run_rest..]) |*out, in| {
+            out.* = in;
+            out.start = shift(in.start, delta);
+            out.end = shift(in.end, delta);
+            out.paragraph = shift(in.paragraph, dp);
+            out.glyph_start = shift(in.glyph_start, dg);
+            out.glyph_end = shift(in.glyph_end, dg);
+        }
+        self.runs = runs;
+
+        // Line-break opportunities, sorted by their ends.
+        var seg_first: usize = 0;
+        while (seg_first < old.segments.len and old.segments[seg_first].end <= start) seg_first += 1;
+        var seg_rest = seg_first;
+        while (seg_rest < old.segments.len and old.segments[seg_rest].end <= old_end) seg_rest += 1;
+        const segments = try a.alloc(Segment, seg_first + mid.segments.len + (old.segments.len - seg_rest));
+        @memcpy(segments[0..seg_first], old.segments[0..seg_first]);
+        for (segments[seg_first..][0..mid.segments.len], mid.segments) |*out, in| {
+            out.* = in;
+            out.end += start;
+        }
+        for (segments[seg_first + mid.segments.len ..], old.segments[seg_rest..]) |*out, in| {
+            out.* = in;
+            out.end = shift(in.end, delta);
+        }
+        self.segments = segments;
+
+        self.missing = mid.missing;
+        self.wanted = try a.dupe(FontId, mid.wanted);
+        self.reused = .{
+            .old_len = @intCast(old.text.len),
+            .old_paragraphs = @intCast(old.paragraphs.len),
+            .first = first,
+            .old_rest = last + 1,
+            .new_rest = new_rest,
+            .start = start,
+            .old_end = old_end,
+            .new_end = new_end,
+        };
         return self;
     }
 
@@ -730,4 +933,64 @@ test "styles split items and validate" {
     try std.testing.expect(p.glyphs[0].advance > 2 * p.glyphs[5].advance);
     try std.testing.expectError(error.InvalidStyles, ShapedParagraph.init(std.testing.allocator, a, &fixture.cache, "abc", &.{.{ .end = 2, .style = .{ .fonts = &fonts, .size = 10 } }}, .auto_ltr));
     try std.testing.expectError(error.InvalidUtf8, ShapedParagraph.init(std.testing.allocator, a, &fixture.cache, "a\xff", &.{.{ .end = 2, .style = .{ .fonts = &fonts, .size = 10 } }}, .auto_ltr));
+}
+
+/// Every field `initReusing` builds equals `init`'s for the same text.
+pub fn expectSameShaping(want: *const ShapedParagraph, got: *const ShapedParagraph) !void {
+    const t = std.testing;
+    try t.expectEqualStrings(want.text, got.text);
+    try t.expectEqual(want.missing, got.missing);
+    try t.expectEqualSlices(bidi.Paragraph, want.paragraphs, got.paragraphs);
+    try t.expectEqualSlices(u8, want.levels, got.levels);
+    try t.expectEqualSlices(bidi.LineClass, want.classes, got.classes);
+    try t.expectEqualSlices(Run, want.runs, got.runs);
+    try t.expectEqualSlices(Glyph, want.glyphs, got.glyphs);
+    try t.expectEqualSlices(Segment, want.segments, got.segments);
+    for ([_][2]Boundaries{ .{ want.graphemes, got.graphemes }, .{ want.words.boundaries, got.words.boundaries }, .{ want.words.starts, got.words.starts } }) |pair|
+        for (0..want.text.len + 1) |o| try t.expectEqual(pair[0].isSet(@intCast(o)), pair[1].isSet(@intCast(o)));
+}
+
+test "reusing an edited text's shaping gives the same result as shaping it" {
+    var fixture: testing.Fixture = try .init();
+    defer fixture.deinit();
+    // Paragraphs in three scripts and both directions, with CR LF, CR,
+    // and paragraph separators, tabs, and an empty paragraph.
+    const pieces = [_][]const u8{ "Save the file", "\n", "حفظ الملف", "\r\n", "שמור", "\r", " tab\tstop ", "\u{2029}", "x", "\n", "", "ab cd ef", "\n\n", "مرحبا world" };
+    const inserts = [_][]const u8{ "q", " ", "\n", "\r", "\r\n", "ש", "حف", "\u{2029}", "word " };
+    var prng = std.Random.DefaultPrng.init(0x5eed);
+    const rand = prng.random();
+    for ([_]bidi.BaseDirection{ .auto_ltr, .rtl }) |direction| {
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(std.testing.allocator);
+        for (0..3) |_| for (pieces) |p| try text.appendSlice(std.testing.allocator, p);
+        var old = try fixture.shape(text.items, direction);
+        defer old.deinit();
+        var reused_some = false;
+        for (0..150) |_| {
+            // Insert or delete at a random character boundary.
+            var at = rand.uintLessThan(usize, text.items.len + 1);
+            while (at < text.items.len and text.items[at] & 0xc0 == 0x80) at += 1;
+            if (rand.boolean() and at < text.items.len) {
+                var end = at + 1 + rand.uintLessThan(usize, 4);
+                end = @min(end, text.items.len);
+                while (end < text.items.len and text.items[end] & 0xc0 == 0x80) end += 1;
+                try text.replaceRange(std.testing.allocator, at, end - at, "");
+            } else {
+                try text.insertSlice(std.testing.allocator, at, inserts[rand.uintLessThan(usize, inserts.len)]);
+            }
+            const fonts = [_]FontId{ fixture.latin, fixture.arabic, fixture.hebrew };
+            const styles = [_]StyleRun{.{ .end = @intCast(text.items.len), .style = .{ .fonts = &fonts, .size = 16 } }};
+            var want = try fixture.shape(text.items, direction);
+            defer want.deinit();
+            var got = try ShapedParagraph.initReusing(std.testing.allocator, fixture.arena.allocator(), &fixture.cache, text.items, &styles, direction, &old);
+            if (got.reused != null) reused_some = true;
+            expectSameShaping(&want, &got) catch |err| {
+                got.deinit();
+                return err;
+            };
+            old.deinit();
+            old = got;
+        }
+        try std.testing.expect(reused_some);
+    }
 }

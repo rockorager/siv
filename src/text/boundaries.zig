@@ -72,6 +72,41 @@ pub fn atOrBefore(self: Boundaries, offset: u32) ?u32 {
     return if (self.isSet(offset)) offset else self.before(offset);
 }
 
+/// Adds the members of `src` in `from..to` (inclusive), moved to start at
+/// `at`, a mask word at a time.
+pub fn copyRange(self: *Boundaries, at: u32, src: Boundaries, from: u32, to: u32) void {
+    std.debug.assert(from <= to and to <= src.len and at + (to - from) <= self.len);
+    var offset = from;
+    while (offset <= to) {
+        // Up to the end of the source word, or of the range.
+        const n = @min(bits - offset % bits, to - offset + 1);
+        const chunk = (src.masks[offset / bits] >> @intCast(offset % bits)) & (if (n == bits) ~@as(Mask, 0) else (@as(Mask, 1) << @intCast(n)) - 1);
+        const dst = at + (offset - from);
+        const shift: std.math.Log2Int(Mask) = @intCast(dst % bits);
+        self.masks[dst / bits] |= chunk << shift;
+        if (shift != 0 and n > bits - @as(u32, shift)) self.masks[dst / bits + 1] |= chunk >> @intCast(bits - @as(u32, shift));
+        offset += n;
+    }
+}
+
+test "copyRange moves members across word boundaries" {
+    var src: Boundaries = try .init(std.testing.allocator, 300);
+    defer src.deinit(std.testing.allocator);
+    const members = [_]u32{ 0, 1, 62, 63, 64, 65, 127, 128, 190, 255, 299, 300 };
+    for (members) |m| src.set(m);
+    for ([_]u32{ 0, 1, 63, 64, 100 }) |from| for ([_]u32{ 0, 5, 64, 77 }) |at| {
+        const to: u32 = 300;
+        var dst: Boundaries = try .init(std.testing.allocator, at + (to - from));
+        defer dst.deinit(std.testing.allocator);
+        dst.copyRange(at, src, from, to);
+        for (0..dst.len + 1) |o| {
+            const offset: u32 = @intCast(o);
+            const expect = offset >= at and src.isSet(offset - at + from);
+            try std.testing.expectEqual(expect, dst.isSet(offset));
+        }
+    };
+}
+
 test "neighbors across mask words" {
     var set_: Boundaries = try .init(std.testing.allocator, 200);
     defer set_.deinit(std.testing.allocator);

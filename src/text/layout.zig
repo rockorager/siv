@@ -212,6 +212,19 @@ pub const Layout = struct {
     /// Widest line without hanging whitespace, with its indents.
     width: f32,
     height: f32,
+    /// What it was built with, for `initReusing`.
+    built: Built = .{},
+
+    const Built = struct {
+        width: ?f32 = null,
+        alignment: Alignment = .start,
+        break_words: bool = false,
+        hyphenate: bool = false,
+        optimal: bool = true,
+        tab_stops: []const TabStop = &.{},
+        /// One per bidi paragraph, plus the line after a final break.
+        styles: []const ParagraphStyle = &.{},
+    };
 
     pub fn init(gpa: std.mem.Allocator, scratch: std.mem.Allocator, cache: *const FontCache, paragraph: *const ShapedParagraph, options: Options) !Layout {
         if (options.width) |w| if (!std.math.isFinite(w) or w < 0) return error.InvalidWidth;
@@ -247,11 +260,177 @@ pub const Layout = struct {
         self.glyphs = builder.glyphs.items;
         self.carets = builder.carets.items;
         builder.position(options);
+        try self.finish(options, builder.styles);
+        return self;
+    }
+
+    /// Width, height, and what the layout was built with.
+    fn finish(self: *Layout, options: Options, styles: []const ParagraphStyle) !void {
         for (self.lines) |line| self.width = @max(self.width, line.width + line.indent_start + line.indent_end);
         if (self.lines.len != 0) {
             const last = self.lines[self.lines.len - 1];
             self.height = last.top + last.height;
         }
+        const a = self.arena.allocator();
+        self.built = .{
+            .width = options.width,
+            .alignment = options.alignment,
+            .break_words = options.break_words,
+            .hyphenate = options.hyphenate,
+            .optimal = options.optimal,
+            .tab_stops = try a.dupe(TabStop, options.tab_stops),
+            .styles = try a.dupe(ParagraphStyle, styles),
+        };
+    }
+
+    /// Like `init` for `paragraph`, which `ShapedParagraph.initReusing`
+    /// built from the paragraph `old` was laid out from: the lines of the
+    /// paragraphs it kept are `old`'s, moved to their new offsets and
+    /// heights, and only the paragraphs it redid are broken into lines
+    /// again. Lines of different paragraphs are independent, since every
+    /// paragraph ends with a mandatory break, so the result equals
+    /// `init`'s. Falls back to `init` without a width (alignment then
+    /// depends on the widest line), with total-fit breaking, or when the
+    /// options or the kept paragraphs' styles differ from `old`'s.
+    pub fn initReusing(gpa: std.mem.Allocator, scratch: std.mem.Allocator, cache: *const FontCache, paragraph: *const ShapedParagraph, options: Options, old_: ?*const Layout) !Layout {
+        const old = old_ orelse return init(gpa, scratch, cache, paragraph, options);
+        const r = paragraph.reused orelse return init(gpa, scratch, cache, paragraph, options);
+        const width = options.width orelse return init(gpa, scratch, cache, paragraph, options);
+        if (!std.math.isFinite(width) or width < 0) return error.InvalidWidth;
+        const b = old.built;
+        if (old.paragraph.text.len != r.old_len or old.paragraph.paragraphs.len != r.old_paragraphs or options.optimal or b.optimal or
+            b.width != width or b.alignment != options.alignment or b.break_words != options.break_words or b.hyphenate != options.hyphenate or
+            b.tab_stops.len != options.tab_stops.len)
+            return init(gpa, scratch, cache, paragraph, options);
+        for (b.tab_stops, options.tab_stops) |x, y| if (!std.meta.eql(x, y)) return init(gpa, scratch, cache, paragraph, options);
+        for (options.tab_stops) |stop| if (!std.math.isFinite(stop.position)) return error.InvalidWidth;
+        const styles = try paragraphStyles(scratch, paragraph, options.paragraphs);
+        if (styles.len - r.new_rest != b.styles.len - r.old_rest) return init(gpa, scratch, cache, paragraph, options);
+        for (styles[0..r.first], b.styles[0..r.first]) |x, y| if (!std.meta.eql(x, y)) return init(gpa, scratch, cache, paragraph, options);
+        for (styles[r.new_rest..], b.styles[r.old_rest..]) |x, y| if (!std.meta.eql(x, y)) return init(gpa, scratch, cache, paragraph, options);
+
+        var self: Layout = .{ .arena = .init(gpa), .paragraph = paragraph, .lines = &.{}, .runs = &.{}, .glyphs = &.{}, .carets = &.{}, .width = 0, .height = 0 };
+        errdefer self.arena.deinit();
+        var builder: Builder = .{
+            .p = paragraph,
+            .cache = cache,
+            .a = self.arena.allocator(),
+            .scratch = scratch,
+            .shaper = try shape_.Shaper.init(),
+            .width = width,
+            .styles = styles,
+            .tab_stops = options.tab_stops,
+            .break_words = options.break_words,
+            .hyphenation = if (options.hyphenate) options.hyphenation else null,
+            .tabs = std.mem.indexOfScalar(u8, paragraph.text, '\t') != null,
+        };
+        defer builder.shaper.deinit();
+        const a = builder.a;
+
+        // The kept lines at each end, and where their arrays start.
+        var head: usize = 0;
+        while (head < old.lines.len and old.lines[head].paragraph < r.first) head += 1;
+        var tail = head;
+        while (tail < old.lines.len and old.lines[tail].paragraph < r.old_rest) tail += 1;
+        const runEnd = struct {
+            fn at(l: *const Layout, line: usize) struct { u32, u32, u32 } {
+                if (line == l.lines.len) return .{ @intCast(l.runs.len), @intCast(l.glyphs.len), @intCast(l.carets.len) };
+                const run = l.lines[line].run_start;
+                return .{ run, if (run == 0) 0 else l.runs[run - 1].glyph_end, l.lines[line].caret_start };
+            }
+        }.at;
+        const head_end = runEnd(old, head);
+        const tail_start = runEnd(old, tail);
+        try builder.lines.appendSlice(a, old.lines[0..head]);
+        try builder.runs.appendSlice(a, old.runs[0..head_end[0]]);
+        try builder.glyphs.appendSlice(a, old.glyphs[0..head_end[1]]);
+        try builder.carets.appendSlice(a, old.carets[0..head_end[2]]);
+
+        // The redone paragraphs.
+        const segments = paragraph.segments;
+        var seg_first: usize = 0;
+        while (seg_first < segments.len and segments[seg_first].end <= r.start) seg_first += 1;
+        var seg_end = seg_first;
+        while (seg_end < segments.len and segments[seg_end].end <= r.new_end) seg_end += 1;
+        try builder.breakRange(seg_first, seg_end, r.start);
+        const mid_end = builder.lines.items.len;
+
+        // The kept lines after them.
+        const delta: i64 = @as(i64, r.new_end) - r.old_end;
+        const shift = struct {
+            fn by(x: u32, d: i64) u32 {
+                return @intCast(@as(i64, x) + d);
+            }
+        }.by;
+        const dp: i64 = @as(i64, r.new_rest) - r.old_rest;
+        const dr: i64 = @as(i64, @intCast(builder.runs.items.len)) - tail_start[0];
+        const dg: i64 = @as(i64, @intCast(builder.glyphs.items.len)) - tail_start[1];
+        const dc: i64 = @as(i64, @intCast(builder.carets.items.len)) - tail_start[2];
+        for (old.lines[tail..]) |line| {
+            var l = line;
+            l.start = shift(l.start, delta);
+            l.end = shift(l.end, delta);
+            l.paragraph = shift(l.paragraph, dp);
+            l.run_start = shift(l.run_start, dr);
+            l.run_end = shift(l.run_end, dr);
+            l.caret_start = shift(l.caret_start, dc);
+            l.caret_end = shift(l.caret_end, dc);
+            try builder.lines.append(a, l);
+        }
+        for (old.runs[tail_start[0]..]) |run| {
+            var x = run;
+            x.start = shift(x.start, delta);
+            x.end = shift(x.end, delta);
+            x.glyph_start = shift(x.glyph_start, dg);
+            x.glyph_end = shift(x.glyph_end, dg);
+            try builder.runs.append(a, x);
+        }
+        try builder.glyphs.ensureUnusedCapacity(a, old.glyphs.len - tail_start[1]);
+        for (old.glyphs[tail_start[1]..]) |g| {
+            var x = g;
+            x.cluster = shift(x.cluster, delta);
+            builder.glyphs.appendAssumeCapacity(x);
+        }
+        try builder.carets.ensureUnusedCapacity(a, old.carets.len - tail_start[2]);
+        for (old.carets[tail_start[2]..]) |c| {
+            var x = c;
+            x.offset = shift(x.offset, delta);
+            builder.carets.appendAssumeCapacity(x);
+        }
+        if (r.new_end == paragraph.text.len and builder.endsWithBreak()) {
+            const len: u32 = @intCast(paragraph.text.len);
+            try builder.emitLine(len, len, &.{}, builder.frame(len), null);
+        }
+
+        // Place the redone lines after the kept ones, and move the rest by
+        // the change in height.
+        var place: Builder.Place = .{};
+        if (head > 0) {
+            const prev = builder.lines.items[head - 1];
+            place = .{ .top = prev.top + prev.height, .previous = builder.paragraphIndex(prev.start) };
+        }
+        place = builder.positionRange(options, head, mid_end, place);
+        if (mid_end < builder.lines.items.len and tail < old.lines.len) {
+            const first_kept = builder.lines.items[mid_end];
+            const index = builder.paragraphIndex(first_kept.start);
+            var top = place.top;
+            if (place.previous) |p| if (p != index) {
+                top += styles[p].space_after + styles[index].space_before;
+            };
+            const dy = top - old.lines[tail].top;
+            for (builder.lines.items[mid_end..]) |*line| {
+                line.top += dy;
+                line.baseline += dy;
+            }
+        } else if (mid_end < builder.lines.items.len) {
+            // Only the line after a final break followed.
+            _ = builder.positionRange(options, mid_end, builder.lines.items.len, place);
+        }
+        self.lines = builder.lines.items;
+        self.runs = builder.runs.items;
+        self.glyphs = builder.glyphs.items;
+        self.carets = builder.carets.items;
+        try self.finish(options, styles);
         return self;
     }
 
@@ -462,10 +641,22 @@ const Builder = struct {
     }
 
     fn breakLines(self: *Builder) !void {
-        const segments = self.p.segments;
-        var line_start: u32 = 0;
+        try self.breakRange(0, self.p.segments.len, 0);
+        // The position after a final hard break, and empty text, need a line.
+        if (self.lines.items.len == 0 or self.endsWithBreak()) {
+            const len: u32 = @intCast(self.p.text.len);
+            try self.emitLine(len, len, &.{}, self.frame(len), null);
+        }
+    }
+
+    /// Breaks the text of segments `first_segment..end_segment` into
+    /// lines, from `line_start_`, where the first segment starts; the last
+    /// one ends with a mandatory break or the text.
+    fn breakRange(self: *Builder, first_segment: usize, end_segment: usize, line_start_: u32) !void {
+        const segments = self.p.segments[0..end_segment];
+        var line_start = line_start_;
         var start_unsafe = false;
-        var first: usize = 0;
+        var first: usize = first_segment;
         while (first < segments.len) {
             const f = self.frame(line_start);
             // Greedy: the last opportunity whose line fits without its
@@ -541,11 +732,6 @@ const Builder = struct {
             line_start = segments[chosen].end;
             start_unsafe = segments[chosen].unsafe;
             first = chosen + 1;
-        }
-        // The position after a final hard break, and empty text, need a line.
-        if (self.lines.items.len == 0 or self.endsWithBreak()) {
-            const len: u32 = @intCast(self.p.text.len);
-            try self.emitLine(len, len, &.{}, self.frame(len), null);
         }
     }
 
@@ -1063,13 +1249,25 @@ const Builder = struct {
 
     /// Applies alignment and indents, and stacks lines vertically with
     /// their paragraphs' line and paragraph spacing.
+    /// Where the next line goes: its top, before the space between
+    /// paragraphs, and the paragraph of the line before.
+    const Place = struct { top: f32 = 0, previous: ?u32 = null };
+
     fn position(self: *Builder, options: Options) void {
+        _ = self.positionRange(options, 0, self.lines.items.len, .{});
+    }
+
+    /// Places lines `from..to`, the first at `place`, and returns where
+    /// the next would go.
+    fn positionRange(self: *Builder, options: Options, from: usize, to: usize, place: Place) Place {
         var widest: f32 = 0;
-        for (self.lines.items) |line| widest = @max(widest, line.width + line.indent_start + line.indent_end);
+        if (options.width == null) for (self.lines.items) |line| {
+            widest = @max(widest, line.width + line.indent_start + line.indent_end);
+        };
         const available = options.width orelse widest;
-        var top: f32 = 0;
-        var previous: ?u32 = null;
-        for (self.lines.items) |*line| {
+        var top = place.top;
+        var previous = place.previous;
+        for (self.lines.items[from..to]) |*line| {
             const index = self.paragraphIndex(line.start);
             const style = self.styles[index];
             if (previous) |p| if (p != index) {
@@ -1089,6 +1287,7 @@ const Builder = struct {
             line.height = height;
             top += height;
         }
+        return .{ .top = top, .previous = previous };
     }
 };
 
@@ -1658,4 +1857,65 @@ test "total-fit breaking uses hyphenation points" {
         if (line.end < p.text.len and p.text[line.end - 1] != ' ') hyphenated = true;
     }
     try std.testing.expect(hyphenated);
+}
+
+test "reusing an edited text's layout gives the same lines as laying it out" {
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    const pieces = [_][]const u8{ "Save the file and the rest of it", "\n", "حفظ الملف الآن", "\r\n", "שמור את הקובץ", "\r", " tab\tstop words go here ", "\u{2029}", "x", "\n", "ab cd ef gh ij kl mn op", "\n\n", "مرحبا world again" };
+    const inserts = [_][]const u8{ "q", " ", "\n", "\r", "\r\n", "ש", "حف", "\u{2029}", "word word " };
+    const fonts = [_]FontId{ fixture.latin, fixture.arabic, fixture.hebrew };
+    var prng = std.Random.DefaultPrng.init(0x1a7);
+    const rand = prng.random();
+    // Paragraph spacing, so that moved lines move by the height change.
+    const spaced: ParagraphStyle = .{ .space_before = 3, .space_after = 5, .line_spacing = 1.25 };
+    const runs = [_]ParagraphRun{.{ .end = std.math.maxInt(u32), .style = spaced }};
+    for ([_]Options{
+        .{ .width = 90 },
+        .{ .width = 60, .alignment = .justify, .paragraphs = &runs },
+        .{ .width = 75, .break_words = true, .alignment = .center },
+    }) |options| {
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(std.testing.allocator);
+        for (0..3) |_| for (pieces) |p| try text.appendSlice(std.testing.allocator, p);
+        var old_p = try fixture.shape(text.items, .auto_ltr);
+        defer old_p.deinit();
+        var old = try layoutOf(&fixture, &old_p, options);
+        defer old.deinit();
+        var reused_some = false;
+        for (0..120) |_| {
+            var at = rand.uintLessThan(usize, text.items.len + 1);
+            while (at < text.items.len and text.items[at] & 0xc0 == 0x80) at += 1;
+            if (rand.boolean() and at < text.items.len) {
+                var end = @min(at + 1 + rand.uintLessThan(usize, 4), text.items.len);
+                while (end < text.items.len and text.items[end] & 0xc0 == 0x80) end += 1;
+                try text.replaceRange(std.testing.allocator, at, end - at, "");
+            } else {
+                try text.insertSlice(std.testing.allocator, at, inserts[rand.uintLessThan(usize, inserts.len)]);
+            }
+            const styles = [_]paragraph_.StyleRun{.{ .end = @intCast(text.items.len), .style = .{ .fonts = &fonts, .size = 16 } }};
+            const p = try ShapedParagraph.initReusing(std.testing.allocator, fixture.arena.allocator(), &fixture.cache, text.items, &styles, .auto_ltr, &old_p);
+            var want = try layoutOf(&fixture, &p, options);
+            defer want.deinit();
+            const got = try Layout.initReusing(std.testing.allocator, fixture.arena.allocator(), &fixture.cache, &p, options, &old);
+            if (p.reused != null) reused_some = true;
+            const same = blk: {
+                std.testing.expectEqualSlices(Line, want.lines, got.lines) catch |e| break :blk e;
+                std.testing.expectEqualSlices(GlyphRun, want.runs, got.runs) catch |e| break :blk e;
+                std.testing.expectEqualSlices(PositionedGlyph, want.glyphs, got.glyphs) catch |e| break :blk e;
+                std.testing.expectEqualSlices(Caret, want.carets, got.carets) catch |e| break :blk e;
+                std.testing.expectEqual(want.width, got.width) catch |e| break :blk e;
+                std.testing.expectEqual(want.height, got.height) catch |e| break :blk e;
+                break :blk {};
+            };
+            // The old layout points at the old paragraph: replace both.
+            old.deinit();
+            old_p.deinit();
+            old = got;
+            old_p = p;
+            old.paragraph = &old_p;
+            try same;
+        }
+        try std.testing.expect(reused_some);
+    }
 }
