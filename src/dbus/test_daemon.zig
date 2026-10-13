@@ -134,8 +134,9 @@ pub fn kill(pid: linux.pid_t) void {
 }
 
 pub fn findExecutable(name: []const u8) ?[*:0]const u8 {
+    // Longer paths cannot be executed.
     const S = struct {
-        var buf: [256]u8 = undefined;
+        var buf: [linux.PATH_MAX]u8 = undefined;
     };
     const path = std.mem.span(std.c.getenv("PATH") orelse "/usr/bin:/bin");
     var it = std.mem.splitScalar(u8, path, ':');

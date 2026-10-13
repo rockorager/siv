@@ -156,9 +156,9 @@ test "lua on sway: siv-lua copies, the binding pastes from a coroutine, kill clo
     var link_buf: [128]u8 = undefined;
     const bin = try std.fmt.bufPrintSentinel(&link_buf, "{s}/bin", .{s.dir}, 0);
     _ = linux.mkdir(bin, 0o700);
-    var target_buf: [4096]u8 = undefined;
+    var target_buf: [linux.PATH_MAX]u8 = undefined;
     const target = if (std.fs.path.isAbsolute(helpers.runner)) try std.fmt.bufPrintSentinel(&target_buf, "{s}", .{helpers.runner}, 0) else blk: {
-        var cwd_buf: [2048]u8 = undefined;
+        var cwd_buf: [linux.PATH_MAX]u8 = undefined;
         const cwd = std.mem.sliceTo(@as([*:0]u8, @ptrCast(std.c.getcwd(&cwd_buf, cwd_buf.len) orelse return error.Unexpected)), 0);
         break :blk try std.fmt.bufPrintSentinel(&target_buf, "{s}/{s}", .{ cwd, helpers.runner }, 0);
     };

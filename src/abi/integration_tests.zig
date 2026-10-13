@@ -661,7 +661,9 @@ test "lifecycle: single instance, forwarding, and D-Bus activation through dbus-
     try testing.expect(std.mem.indexOf(u8, readLog(log, &buf), "launch") == null);
 
     // Launched twice: the second forwards its URI and token, then exits.
-    var env: [3][300]u8 = undefined;
+    // The library's directory is in the build's cache, as long as the
+    // checkout's path makes it.
+    var env: [2][std.os.linux.PATH_MAX + 64]u8 = undefined;
     const base = [_]?[*:0]const u8{
         "PATH=/usr/bin:/bin",
         try std.fmt.bufPrintSentinel(&env[0], "DBUS_SESSION_BUS_ADDRESS={s}", .{daemon.address}, 0),

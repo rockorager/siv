@@ -34,6 +34,7 @@ pub const Sway = struct {
             \\
         );
         var env: Env = .{};
+        defer env.deinit();
         try env.init(s.dir);
         var log_buf: [128]u8 = undefined;
         const log = try std.fmt.bufPrintSentinel(&log_buf, "{s}/log", .{s.dir}, 0);
@@ -76,6 +77,7 @@ pub const Sway = struct {
         }
         // Remove the runtime directory.
         var env: Env = .{};
+        defer env.deinit();
         env.init(s.dir) catch return;
         const argv = [_:null]?[*:0]const u8{ "/bin/rm", "-rf", s.dir };
         const pid = spawn("/bin/rm", &argv, &env.ptrs, null) catch return;
@@ -125,6 +127,7 @@ pub const Sway = struct {
     pub fn spawnClient(s: *const Sway, argv: [*:null]const ?[*:0]const u8) !linux.pid_t {
         const exe = findExecutable(std.mem.span(argv[0].?)) orelse return error.ClientNotInstalled;
         var env: Env = .{};
+        defer env.deinit();
         try env.init(s.dir);
         return spawn(exe, argv, &env.ptrs, null);
     }
@@ -139,26 +142,33 @@ pub const Sway = struct {
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
 /// Environment for children: a headless wlroots in the private directory.
+/// Values come from the caller's environment (PATH can be long), so they
+/// are allocated.
 const Env = struct {
-    bufs: [6][160]u8 = undefined,
+    arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator),
     ptrs: [9:null]?[*:0]const u8 = @splat(null),
 
     fn init(env: *Env, dir: []const u8) !void {
+        const a = env.arena.allocator();
         const vars = [_][]const u8{ "XDG_RUNTIME_DIR={s}", "SWAYSOCK={s}/ipc.sock", "WAYLAND_DISPLAY={s}/wayland-1" };
-        inline for (vars, 0..) |fmt, i| env.ptrs[i] = try std.fmt.bufPrintSentinel(&env.bufs[i], fmt, .{dir}, 0);
+        inline for (vars, 0..) |fmt, i| env.ptrs[i] = try std.fmt.allocPrintSentinel(a, fmt, .{dir}, 0);
         const path = std.c.getenv("PATH") orelse "/usr/bin:/bin";
-        env.ptrs[3] = try std.fmt.bufPrintSentinel(&env.bufs[3], "PATH={s}", .{path}, 0);
+        env.ptrs[3] = try std.fmt.allocPrintSentinel(a, "PATH={s}", .{path}, 0);
         env.ptrs[4] = "WLR_BACKENDS=headless";
         // SIV_SWAY_RENDERER=gles2 or vulkan renders on a GPU's render
         // node, which brings linux-dmabuf and hardware Vulkan presentation;
         // pixman (the default) needs no GPU. WLR_RENDER_DRM_DEVICE picks
         // the node where wlroots would pick the wrong one (vgem's).
         const renderer = std.c.getenv("SIV_SWAY_RENDERER") orelse "pixman";
-        env.ptrs[5] = try std.fmt.bufPrintSentinel(&env.bufs[4], "WLR_RENDERER={s}", .{renderer}, 0);
+        env.ptrs[5] = try std.fmt.allocPrintSentinel(a, "WLR_RENDERER={s}", .{renderer}, 0);
         env.ptrs[6] = "WLR_LIBINPUT_NO_DEVICES=1";
         // wtype decodes its arguments as UTF-8.
         env.ptrs[7] = "LC_ALL=C.UTF-8";
-        if (std.c.getenv("WLR_RENDER_DRM_DEVICE")) |node| env.ptrs[8] = try std.fmt.bufPrintSentinel(&env.bufs[5], "WLR_RENDER_DRM_DEVICE={s}", .{node}, 0);
+        if (std.c.getenv("WLR_RENDER_DRM_DEVICE")) |node| env.ptrs[8] = try std.fmt.allocPrintSentinel(a, "WLR_RENDER_DRM_DEVICE={s}", .{node}, 0);
+    }
+
+    fn deinit(env: *Env) void {
+        env.arena.deinit();
     }
 };
 
@@ -181,8 +191,9 @@ fn spawn(exe: [*:0]const u8, argv: [*:null]const ?[*:0]const u8, envp: [*:null]c
 }
 
 fn findExecutable(name: []const u8) ?[*:0]const u8 {
+    // Longer paths cannot be executed.
     const S = struct {
-        var buf: [256]u8 = undefined;
+        var buf: [linux.PATH_MAX]u8 = undefined;
     };
     const path = std.mem.span(std.c.getenv("PATH") orelse "/usr/bin:/bin");
     var it = std.mem.splitScalar(u8, path, ':');
