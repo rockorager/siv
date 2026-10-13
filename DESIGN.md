@@ -434,7 +434,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     that roots it. Only layers whose nodes changed are repainted, and their
     `SetContent.damage` is the old and new painted bounds of the nodes that
     changed. Moving, fading, or transforming a layer root, and scrolling,
-    send properties only.
+    send properties only. One exception: text taller than four viewports
+    of its scroll container paints only the lines within a viewport above
+    and below what it shows, and the UI repaints it when a `scrolled`
+    report (or a layout) shows lines outside that band, about once per
+    viewport scrolled. Otherwise a keystroke in a long document painted
+    all of it (1.4 MB: 1.4 M glyphs into the display list per key); the
+    compositor keeps scrolling smoothly in between, since the band is a
+    viewport ahead.
   - Scroll offsets are logical in the tree (in RTL, offset 0 shows the
     right end of the content) and physical in layer ops. When the content
     of an RTL scroll node changes width, the UI sends `scroll_to` so the
@@ -947,18 +954,32 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - A text node owns a width-independent `ShapedParagraph`; a width change
     reruns only break selection and positioning into a `Layout`. The only cache
     is the font cache. Intermediates live in one arena per layout pass.
-  - An edit reshapes only the paragraphs it touched, and one on each side
-    (`ShapedParagraph.initReusing`): the others keep their bidi levels,
-    segmentation, shaping, and break opportunities, copied to their new
-    offsets, and `Layout.initReusing` keeps their lines, moved by the
-    change in height. Paragraphs are independent (bidi, line, grapheme,
-    and word boundaries all break after a separator; shaping stops
-    there), so the result is the full rebuild's, which randomized tests
-    compare field by field. Measured on a 1.4 MB, 4,000-paragraph editor
-    (bench/gpui-compare, RADV): key to photon 299 ms before, 28 ms after.
-    What remains is linear in the text: the arrays are copied, not
-    shared, and the whole layout is painted; per-paragraph storage would
-    remove that.
+  - A text node's text is shaped and laid out in blocks
+    (`text.blocks`): runs of whole bidi paragraphs of about 8 KB, each
+    with its own `ShapedParagraph` and `Layout` and its own copy of its
+    bytes, shared by reference count between a text and the one an edit
+    built from it (a rope with paragraph-aligned leaves). Paragraphs are
+    independent (bidi, line, grapheme, and word boundaries all break
+    after a separator; shaping stops there), so the blocks give the
+    whole text's lines, carets, movement, and hit tests, which randomized
+    tests compare with a single `Layout` of the text, edit after edit.
+    `ShapedText` holds the blocks' offsets, styles, and paragraph counts;
+    `TextLayout` stacks their layouts, adds the space between paragraphs
+    at block boundaries, and answers the editor's queries in the block
+    holding the offset. An edit reshapes the block it falls in: within
+    it, only the paragraph it touched and one on each side
+    (`ShapedParagraph.initReusing`), whose lines alone are broken again
+    (`Layout.initReusing`); other blocks are kept as they are. A block
+    next to the change is redone too when the change touches its
+    separator (CR then LF), and a block that grows past twice the size
+    splits at the next edit. What stays linear is small: comparing the
+    old and new bytes block by block (memcmp-speed) and a few words per
+    block of offsets. Arrays are built in scratch memory and kept at
+    their exact size (glyphs and lines outside the arena, which grows by
+    half again what it holds). Measured on a 1.4 MB, 4,000-paragraph
+    editor (bench/gpui-compare, RADV): key to photon 299 ms with whole
+    reshaping, 22 ms with paragraph reuse over flat arrays, 3.1 ms in
+    blocks (gpui 3.6 ms); resident memory 284 MiB to 160 MiB.
   - Unsafe-to-break line edges are reshaped inline.
   - Hyphenation from Liang patterns (each pattern file's licence checked);
     an optional Knuth–Plass breaker for document views.
@@ -1199,7 +1220,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   no undo or IME.
   - The editor node (`src/ui/editor.zig`) stores only its text, caret,
     anchor, and caret affinity; movement, hit testing, and selection
-    rectangles come from the `Layout`. Arrows move visually, Ctrl+arrows
+    rectangles come from the text's `TextLayout` (D13), which finds the
+    block holding the offset first, so they cost a block, not the text.
+    The node's text stays one buffer (the C API reads it whole, and a
+    transaction keeps the old one until it commits); an edit splices it
+    with one copy (`Txn.replaceText`, checking only the inserted bytes),
+    and the shaped blocks are the rope that makes the rest of an edit
+    independent of the document's size. Arrows move visually, Ctrl+arrows
     by words, Home and End to the line's edges in reading order, Up and
     Down keep a preferred x. A single-line editor scrolls its text to
     keep the caret in view and drops line breaks from typed text.

@@ -927,7 +927,7 @@ fn drawEditor(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Poi
         defer rects.deinit(win.gpa);
         try l.selectionRects(win.gpa, range[0], range[1], &rects);
         for (rects.items) |r| {
-            const line = l.lines[l.lineAt(r.y + r.height / 2)];
+            const line = l.line(l.lineAt(r.y + r.height / 2));
             const x = box.x0 - scroll + r.x + text_node.lineShift(win, nid, line, cw);
             try b.fillRect(.xywh(x, box.y0 + r.y + r.height - 1.5, r.width, 1), .color(textColor(win, &e.text.props.style)));
         }
@@ -937,7 +937,7 @@ fn drawEditor(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Poi
         try l.selectionRects(win.gpa, @min(e.caret, e.anchor), @max(e.caret, e.anchor), &rects);
         const color = if (focused) win.palette.color(.selection_bg) else win.palette.color(.control_hover);
         for (rects.items) |r| {
-            const line = l.lines[l.lineAt(r.y + r.height / 2)];
+            const line = l.line(l.lineAt(r.y + r.height / 2));
             const x = box.x0 - scroll + r.x + text_node.lineShift(win, nid, line, cw);
             try b.fillRect(.xywh(x, box.y0 + r.y, r.width, r.height), .color(color));
         }
@@ -953,7 +953,7 @@ fn drawPlaceholder(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, box
     const l = (text_node.placeholder(win, nid) catch return Rect.empty) orelse return Rect.empty;
     const s = win.state(nid);
     const dx = if (s.rtl) box.width() - l.width else 0;
-    return drawLayout(st, win, l, b, box.x0 + dx, box.y0, box.width(), win.palette.color(.muted_fg), null);
+    return drawLayout(st, win, l, b, box.x0 + dx, box.y0, box.width(), win.palette.color(.muted_fg), null, null);
 }
 
 /// How many halves of a blink (visible to hidden or back) fit in the
@@ -988,61 +988,101 @@ fn drawText(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point
     const content_w = s.size.w - pad.horizontal();
     const ox = off.x + pad.left(s.rtl) + dx;
     const oy = off.y + pad.top;
-    return drawLayout(st, win, l, b, ox, oy, content_w, textColor(win, &n.textData().props.style), nid);
+    // Text taller than four viewports of its scroll container paints the
+    // lines within a viewport of what it shows, and paints again when
+    // scrolling leaves them (`Window.checkCulled`): a keystroke in a long
+    // document costs the lines in view, not all of them (D8, D13). Shorter
+    // text paints whole, so scrolling it never repaints.
+    var band: ?[2]f32 = null;
+    s.painted_band = null;
+    if (visibleBand(win, nid)) |shown| {
+        const h = shown[1] - shown[0];
+        if (h > 0 and l.height > 4 * h) {
+            const around: [2]f32 = .{ shown[0] - h, shown[1] + h };
+            band = .{ around[0] - pad.top, around[1] - pad.top };
+            s.painted_band = around;
+            if (std.mem.indexOfScalar(NodeId, win.culled.items, nid) == null) try win.culled.append(win.gpa, nid);
+        }
+    }
+    return drawLayout(st, win, l, b, ox, oy, content_w, textColor(win, &n.textData().props.style), nid, band);
 }
 
-/// Draws a text layout's glyphs with its box's top left at (ox, oy).
+/// The band of a node's own y coordinates its nearest scroll container
+/// shows now, or null outside any.
+pub fn visibleBand(win: *const Window, nid: NodeId) ?[2]f32 {
+    var cur = win.node(nid).parent;
+    while (cur != .none and win.node(cur).kind != .scroll) cur = win.node(cur).parent;
+    if (cur == .none) return null;
+    const v = win.viewportOf(cur);
+    const top = win.windowRect(cur).y0 + win.node(cur).layout.padding.top;
+    const y = win.windowRect(nid).y0 - top;
+    return .{ -y, v.height - y };
+}
+
+/// Draws a text layout's glyphs with its box's top left at (ox, oy), only
+/// the lines that reach into `band` (layout coordinates) when given.
 /// Lines are aligned like the node's when `nid` is given, whose spans
 /// (D22) give runs their colors and decorations.
-fn drawLayout(st: *State, win: *Window, l: *const text.Layout, b: *scene.Builder, ox: f32, oy: f32, content_w: f32, color: scene.Color, nid: ?NodeId) DrawError!Rect {
+fn drawLayout(st: *State, win: *Window, l: *const text.TextLayout, b: *scene.Builder, ox: f32, oy: f32, content_w: f32, color: scene.Color, nid: ?NodeId, band: ?[2]f32) DrawError!Rect {
     var bounds = Rect.empty;
     const cache = if (nid) |n| win.state(n).text else null;
-    for (l.lines) |line| {
-        const shift = if (nid) |n| text_node.lineShift(win, n, line, content_w) else 0;
-        for (l.lineRuns(line)) |run| {
-            const face = win.fonts.cache.face(run.font) orelse continue;
-            const own = if (cache) |c| (if (c.layout) |*cl| cl == l else false) else false;
-            const sp: node_mod.SpanStyle = if (own) cache.?.runStyle(run.style) else .{};
-            const run_color = if (sp.color_token != .none) win.palette.color(sp.color_token) else sp.color orelse color;
-            st.glyphs.clearRetainingCapacity();
-            var x0: f32 = std.math.inf(f32);
-            var x1: f32 = -std.math.inf(f32);
-            const baseline = oy + line.baseline;
-            const pen = ox + shift + line.x;
-            const glyphs = l.runGlyphs(run);
-            try st.glyphs.ensureUnusedCapacity(win.gpa, glyphs.len);
-            for (glyphs) |g| {
-                const x = pen + g.x;
-                x0 = @min(x0, x);
-                x1 = @max(x1, x + g.advance);
-                st.glyphs.appendAssumeCapacity(.{ .id = g.id, .x = x, .y = baseline + g.y });
-            }
-            // The layout measured the run's ink.
-            var rb = if (run.ink.width > 0) Rect.xywh(pen + run.ink.x, baseline + run.ink.y, run.ink.width, run.ink.height) else Rect.empty;
-            // Underline below the baseline, strikethrough through the
-            // middle of lowercase letters; about a sixteenth of the size
-            // thick, at least a pixel.
-            if ((sp.underline or sp.strikethrough) and x1 > x0) {
-                // Whole device pixels, so the lines stay crisp.
-                const k: f32 = @floatCast(win.scale);
-                const thick = @max(1, @round(run.size / 16 * k)) / k;
-                for ([_]struct { bool, f32 }{ .{ sp.underline, baseline + run.size / 10 }, .{ sp.strikethrough, baseline - run.size * 0.28 } }) |deco| {
-                    if (!deco[0]) continue;
-                    const r = Rect.xywh(x0, @round((deco[1] - thick / 2) * k) / k, x1 - x0, thick);
-                    try b.fillRect(r, .color(run_color));
-                    bounds = bounds.unite(r);
+    const own = if (cache) |c| (if (c.layout) |*cl| cl == l else false) else false;
+    var bi: u32 = if (band) |bd| l.blockAtY(bd[0]) else 0;
+    while (bi < l.blocks.len) : (bi += 1) {
+        const block_top = l.tops[bi];
+        if (band) |bd| if (block_top > bd[1]) break;
+        const bl = &l.blocks[bi].layout;
+        const style_first = l.shaped.style_firsts[bi];
+        var li: usize = if (band) |bd| bl.lineAt(bd[0] - block_top) else 0;
+        while (li < bl.lines.len) : (li += 1) {
+            const block_line = bl.lines[li];
+            if (band) |bd| if (block_top + block_line.top > bd[1]) break;
+            const line = l.globalLine(bi, block_line);
+            const shift = if (nid) |n| text_node.lineShift(win, n, line, content_w) else 0;
+            for (bl.lineRuns(block_line)) |run| {
+                const face = win.fonts.cache.face(run.font) orelse continue;
+                const sp: node_mod.SpanStyle = if (own) cache.?.runStyle(style_first + run.style) else .{};
+                const run_color = if (sp.color_token != .none) win.palette.color(sp.color_token) else sp.color orelse color;
+                st.glyphs.clearRetainingCapacity();
+                var x0: f32 = std.math.inf(f32);
+                var x1: f32 = -std.math.inf(f32);
+                const baseline = oy + line.baseline;
+                const pen = ox + shift + line.x;
+                const glyphs = bl.runGlyphs(run);
+                try st.glyphs.ensureUnusedCapacity(win.gpa, glyphs.len);
+                for (glyphs) |g| {
+                    const x = pen + g.x;
+                    x0 = @min(x0, x);
+                    x1 = @max(x1, x + g.advance);
+                    st.glyphs.appendAssumeCapacity(.{ .id = g.id, .x = x, .y = baseline + g.y });
                 }
+                // The layout measured the run's ink.
+                var rb = if (run.ink.width > 0) Rect.xywh(pen + run.ink.x, baseline + run.ink.y, run.ink.width, run.ink.height) else Rect.empty;
+                // Underline below the baseline, strikethrough through the
+                // middle of lowercase letters; about a sixteenth of the size
+                // thick, at least a pixel.
+                if ((sp.underline or sp.strikethrough) and x1 > x0) {
+                    // Whole device pixels, so the lines stay crisp.
+                    const k: f32 = @floatCast(win.scale);
+                    const thick = @max(1, @round(run.size / 16 * k)) / k;
+                    for ([_]struct { bool, f32 }{ .{ sp.underline, baseline + run.size / 10 }, .{ sp.strikethrough, baseline - run.size * 0.28 } }) |deco| {
+                        if (!deco[0]) continue;
+                        const r = Rect.xywh(x0, @round((deco[1] - thick / 2) * k) / k, x1 - x0, thick);
+                        try b.fillRect(r, .color(run_color));
+                        bounds = bounds.unite(r);
+                    }
+                }
+                if (rb.isEmpty()) continue;
+                rb = rb.outset(1);
+                try b.glyphs(.{
+                    .font = .{ .handle = face.font, .key = face.key },
+                    .size = run.size,
+                    .glyphs = st.glyphs.items,
+                    .paint = .color(run_color),
+                    .bounds = rb,
+                });
+                bounds = bounds.unite(rb);
             }
-            if (rb.isEmpty()) continue;
-            rb = rb.outset(1);
-            try b.glyphs(.{
-                .font = .{ .handle = face.font, .key = face.key },
-                .size = run.size,
-                .glyphs = st.glyphs.items,
-                .paint = .color(run_color),
-                .bounds = rb,
-            });
-            bounds = bounds.unite(rb);
         }
     }
     return bounds;

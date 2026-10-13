@@ -26,7 +26,7 @@ const spans = @import("spans.zig");
 const NodeId = node_mod.NodeId;
 const Point = raster.Point;
 const Rect = raster.Rect;
-const Layout = text.Layout;
+const Layout = text.TextLayout;
 
 pub const EditError = error{
     OutOfMemory,
@@ -92,7 +92,7 @@ const Geometry = struct {
     }
 
     fn shift(g: Geometry, line: u32) f32 {
-        return text_node.lineShift(g.win, g.id, g.layout.lines[line], g.content_width);
+        return text_node.lineShift(g.win, g.id, g.layout.line(line), g.content_width);
     }
 };
 
@@ -178,7 +178,7 @@ pub fn offsetAt(win: *const Window, id: NodeId, p: Point) ?u32 {
 pub fn lineRange(win: *const Window, id: NodeId, offset: u32) ?[2]u32 {
     const g = Geometry.of(win, id) orelse return null;
     if (offset > g.len) return null;
-    const line = g.layout.lines[g.layout.caret(.{ .offset = g.shown(offset), .affinity = .downstream }).line];
+    const line = g.layout.line(g.layout.caret(.{ .offset = g.shown(offset), .affinity = .downstream }).line);
     return .{ g.fromShown(line.start), @min(g.fromShown(line.end), g.len) };
 }
 

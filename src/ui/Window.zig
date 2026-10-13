@@ -74,6 +74,10 @@ modals: std.ArrayList(NodeId) = .empty,
 /// layout changed one's viewport since it was last told.
 viewports: std.ArrayList(NodeId) = .empty,
 viewport_dirty: bool = false,
+/// Text nodes that painted only the lines near their scroll container's
+/// viewport (some may be gone); a scroll that leaves that band repaints
+/// them (D8).
+culled: std.ArrayList(NodeId) = .empty,
 /// The application's clipboard, if it has one.
 clipboard: ?*Clipboard = null,
 /// Drag-and-drop requests; without them drags neither start nor drop.
@@ -204,7 +208,7 @@ pub const Stats = struct {
     frames: u64 = 0,
     /// Nodes laid out (cache misses).
     layouts: u64 = 0,
-    /// ShapedParagraph builds.
+    /// ShapedText builds.
     shapes: u64 = 0,
     /// Text Layout builds.
     text_layouts: u64 = 0,
@@ -243,6 +247,9 @@ pub const State = struct {
     preferred_x: ?f32 = null,
     // Paint.
     paint_dirty: bool = true,
+    /// Text: the band of its own y coordinates it painted lines in, when
+    /// that was not all of them (in `Window.culled`).
+    painted_band: ?[2]f32 = null,
     /// Image: the animation frame shown, when the next is due (loop
     /// time), and the times it has played through.
     frame: u32 = 0,
@@ -331,6 +338,7 @@ fn deinitStorage(win: *Window) void {
     win.ime.deinit(win.gpa);
     win.semantics.deinit(win.gpa);
     win.viewports.deinit(win.gpa);
+    win.culled.deinit(win.gpa);
     win.modals.deinit(win.gpa);
     win.animating.deinit(win.gpa);
     win.scratch.deinit();
@@ -585,7 +593,10 @@ pub fn frame(win: *Window) Error!void {
     defer _ = win.scratch.reset(.retain_capacity);
     const laid_out = win.state(.root).needs_layout;
     try layout.run(win);
-    if (laid_out) win.checkViewports();
+    if (laid_out) {
+        win.checkViewports();
+        win.checkCulled();
+    }
     if (win.dirty.layers) {
         try win.paint.assign(win);
         win.dirty.layers = false;
@@ -1160,11 +1171,33 @@ fn scrolled(win: *Window, layer: compositor.LayerId, offset: Point, seq: u64) vo
     win.node(l.owner).data.scroll.offset = paint_mod.logicalScroll(win, l.owner, offset);
     win.dirty.semantics = true;
     if (win.node(l.owner).handler(.viewport) != null and !win.txn.open) win.deliverViewports();
+    win.checkCulled();
     // The content moved under the pointer: the next frame, after layout,
     // gives the hover to what is under it now.
     if (win.input.pointer != null) {
         win.input.hover_stale = true;
         win.requestFrame();
+    }
+}
+
+/// Repaints culled text whose painted band no longer covers what its
+/// scroll container shows.
+fn checkCulled(win: *Window) void {
+    var i: usize = 0;
+    while (i < win.culled.items.len) {
+        const id = win.culled.items[i];
+        const band = if (win.isLive(id)) win.state(id).painted_band else null;
+        const painted = band orelse {
+            _ = win.culled.swapRemove(i);
+            continue;
+        };
+        i += 1;
+        if (win.state(id).paint_dirty) continue;
+        const seen = paint_mod.visibleBand(win, id) orelse continue;
+        if (seen[0] < painted[0] or seen[1] > painted[1]) {
+            win.markPaint(id);
+            win.requestFrame();
+        }
     }
 }
 

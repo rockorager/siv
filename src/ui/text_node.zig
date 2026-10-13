@@ -1,7 +1,8 @@
-//! Text nodes (D13): each owns a width-independent `ShapedParagraph`,
-//! rebuilt only when its text or font-related style changes or a font it
-//! wanted finished loading, and a `Layout` for the current width, rebuilt
-//! when the width changes.
+//! Text nodes (D13): each owns a width-independent `ShapedText` (its text
+//! in blocks of whole paragraphs), rebuilt only when its text or
+//! font-related style changes or a font it wanted finished loading, and a
+//! `TextLayout` for the current width, rebuilt when the width changes. An
+//! edit reshapes and lays out only the blocks it touched.
 //!
 //! A node with a line limit or an ellipsis that does not fit shows a cut
 //! copy instead: the text up to a grapheme boundary of its last line, with
@@ -18,24 +19,24 @@ const spans = @import("spans.zig");
 const NodeId = node_mod.NodeId;
 
 pub const Cache = struct {
-    paragraph: ?text.ShapedParagraph = null,
-    layout: ?text.Layout = null,
+    paragraph: ?text.ShapedText = null,
+    layout: ?text.TextLayout = null,
     /// The width the layout was built for (null: unwrapped).
     layout_width: ?f32 = null,
     /// `Fonts.serial` when the paragraph was shaped.
     serial: u32 = 0,
     /// An editor's placeholder, shaped in the same style, unwrapped.
-    placeholder: ?struct { paragraph: text.ShapedParagraph, layout: text.Layout } = null,
+    placeholder: ?struct { paragraph: text.ShapedText, layout: text.TextLayout } = null,
     /// The span style of each of the paragraph's styles (by index), for
     /// colors and decorations at paint time.
     run_styles: std.ArrayList(node_mod.SpanStyle) = .empty,
-    /// The paragraph and layout `paragraph` was reshaped from when it
-    /// kept some of its paragraphs (text.ShapedParagraph.initReusing),
-    /// until the next layout reuses their lines (D13).
-    previous: ?struct { paragraph: text.ShapedParagraph, layout: ?text.Layout } = null,
+    /// The layout of the text `paragraph` was reshaped from, until the
+    /// next layout takes the lines of the blocks they share (D13). Only
+    /// its blocks are used: its `shaped` is gone.
+    previous: ?text.TextLayout = null,
     /// The cut copy shown instead of `layout` (`shows_cut`), and the width
     /// it was fitted to.
-    cut: ?struct { paragraph: text.ShapedParagraph, layout: text.Layout } = null,
+    cut: ?struct { paragraph: text.ShapedText, layout: text.TextLayout } = null,
     cut_fit: ?f32 = null,
     shows_cut: bool = false,
 
@@ -69,10 +70,7 @@ pub const Cache = struct {
     }
 
     fn dropPrevious(c: *Cache) void {
-        if (c.previous) |*pr| {
-            if (pr.layout) |*l| l.deinit();
-            pr.paragraph.deinit();
-        }
+        if (c.previous) |*l| l.deinit();
         c.previous = null;
     }
 
@@ -122,20 +120,16 @@ fn shape(win: *Window, id: NodeId) error{OutOfMemory}!*Cache {
     }
     try c.run_styles.ensureTotalCapacity(win.gpa, 2 * list.len + 1);
     // An edit keeps the paragraphs it did not touch, unless fonts changed.
-    const old: ?*const text.ShapedParagraph = if (c.paragraph != null and c.serial == fonts.serial) &c.paragraph.? else null;
+    const old: ?*const text.ShapedText = if (c.paragraph != null and c.serial == fonts.serial) &c.paragraph.? else null;
     var p = try shapeString(win, id, content, list, &c.run_styles, old);
     errdefer p.deinit();
     c.dropPrevious();
     c.dropCut();
-    if (p.reused != null) {
-        c.previous = .{ .paragraph = c.paragraph.?, .layout = c.layout };
+    if (old != null) {
+        c.previous = c.layout;
         c.layout = null;
-        // The layout points at its paragraph, which moved.
-        if (c.previous.?.layout) |*l| l.paragraph = &c.previous.?.paragraph;
-    } else {
-        c.dropLayout();
-        if (c.paragraph) |*o| o.deinit();
-    }
+    } else c.dropLayout();
+    if (c.paragraph) |*o| o.deinit();
     c.dropPlaceholder();
     c.paragraph = p;
     c.serial = fonts.serial;
@@ -148,7 +142,7 @@ fn shape(win: *Window, id: NodeId) error{OutOfMemory}!*Cache {
 /// Shapes `content` in the node's style with `list`'s spans over it, one
 /// style per run of equal span style; `run_styles` gets each run's span
 /// style.
-fn shapeString(win: *Window, id: NodeId, content: []const u8, list: []const node_mod.Span, run_styles: ?*std.ArrayList(node_mod.SpanStyle), old: ?*const text.ShapedParagraph) error{OutOfMemory}!text.ShapedParagraph {
+fn shapeString(win: *Window, id: NodeId, content: []const u8, list: []const node_mod.Span, run_styles: ?*std.ArrayList(node_mod.SpanStyle), old: ?*const text.ShapedText) error{OutOfMemory}!text.ShapedText {
     const d = win.node(id).textData();
     const fonts = win.fonts;
     const style = d.props.style;
@@ -176,7 +170,7 @@ fn shapeString(win: *Window, id: NodeId, content: []const u8, list: []const node
         .ltr => .ltr,
         .rtl => .rtl,
     };
-    return text.ShapedParagraph.initReusing(win.gpa, a, &fonts.cache, content, runs.items, direction, old) catch |err| switch (err) {
+    return text.ShapedText.initReusing(win.gpa, a, &fonts.cache, content, runs.items, direction, .{}, old) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         // Validated when the text was set.
         error.InvalidUtf8, error.TextTooLong, error.InvalidStyles => unreachable,
@@ -185,7 +179,7 @@ fn shapeString(win: *Window, id: NodeId, content: []const u8, list: []const node
 
 /// An editor's placeholder, laid out on one line, after layout shaped the
 /// editor's own text.
-pub fn placeholder(win: *Window, id: NodeId) error{OutOfMemory}!?*const text.Layout {
+pub fn placeholder(win: *Window, id: NodeId) error{OutOfMemory}!?*const text.TextLayout {
     const c = win.state(id).text orelse return null;
     if (c.placeholder) |*ph| return &ph.layout;
     const n = win.node(id);
@@ -193,7 +187,7 @@ pub fn placeholder(win: *Window, id: NodeId) error{OutOfMemory}!?*const text.Lay
     c.placeholder = .{ .paragraph = try shapeString(win, id, n.data.editor.placeholder, &.{}, null, null), .layout = undefined };
     const ph = &c.placeholder.?;
     if (ph.paragraph.wanted.len != 0) win.fonts.request(ph.paragraph.wanted);
-    ph.layout = text.Layout.init(win.gpa, win.scratch.allocator(), &win.fonts.cache, &ph.paragraph, .{ .alignment = .start }) catch |err| {
+    ph.layout = text.TextLayout.init(win.gpa, win.scratch.allocator(), &win.fonts.cache, &ph.paragraph, .{ .alignment = .start }, null) catch |err| {
         ph.paragraph.deinit();
         c.placeholder = null;
         return switch (err) {
@@ -207,7 +201,7 @@ pub fn placeholder(win: *Window, id: NodeId) error{OutOfMemory}!?*const text.Lay
 /// A layout that is valid for `width` (null: unwrapped). A layout built
 /// for another width is reused when its lines would break the same way:
 /// its widest line fits and it was built at least as wide.
-pub fn layoutFor(win: *Window, id: NodeId, width: ?f32) error{OutOfMemory}!?*const text.Layout {
+pub fn layoutFor(win: *Window, id: NodeId, width: ?f32) error{OutOfMemory}!?*const text.TextLayout {
     // Empty labels take no space; an empty editor still has a caret line.
     const n = win.node(id);
     if (n.kind == .text and n.data.text.content.len == 0) return null;
@@ -222,8 +216,10 @@ pub fn layoutFor(win: *Window, id: NodeId, width: ?f32) error{OutOfMemory}!?*con
     // Lines are aligned in the node at paint time (`lineShift`); only
     // justification needs the layout.
     const d = n.textData();
-    const previous: ?*const text.Layout = if (c.previous) |*pr| (if (pr.layout) |*pl| pl else null) else null;
-    const l = text.Layout.initReusing(win.gpa, win.scratch.allocator(), &win.fonts.cache, &c.paragraph.?, .{
+    // Blocks laid out before an edit, or for another width or style,
+    // keep their lines when nothing they depend on changed.
+    const previous: ?*const text.TextLayout = if (c.previous) |*pl| pl else if (c.layout) |*cl| cl else null;
+    const l = text.TextLayout.init(win.gpa, win.scratch.allocator(), &win.fonts.cache, &c.paragraph.?, .{
         .width = width,
         .alignment = if (d.props.alignment == .justify) .justify else .start,
         .paragraphs = try paragraphRuns(win, id),
@@ -247,7 +243,7 @@ pub fn layoutFor(win: *Window, id: NodeId, width: ?f32) error{OutOfMemory}!?*con
 /// The layout the node shows at wrapping width `width` (null: unwrapped)
 /// in a box `fit` wide: `layoutFor`'s, or a cut copy when the node limits
 /// its lines or ellipsizes and the text does not fit.
-pub fn layoutIn(win: *Window, id: NodeId, width: ?f32, fit: ?f32) error{OutOfMemory}!?*const text.Layout {
+pub fn layoutIn(win: *Window, id: NodeId, width: ?f32, fit: ?f32) error{OutOfMemory}!?*const text.TextLayout {
     const full = try layoutFor(win, id, width) orelse return null;
     const n = win.node(id);
     if (n.kind != .text) return full;
@@ -255,10 +251,10 @@ pub fn layoutIn(win: *Window, id: NodeId, width: ?f32, fit: ?f32) error{OutOfMem
     if (props.max_lines == 0 and !props.ellipsize) return full;
     const c = win.state(id).text.?;
     var last: ?usize = null;
-    if (props.max_lines != 0 and full.lines.len > props.max_lines) last = props.max_lines - 1;
-    if (props.ellipsize) if (fit) |f| for (full.lines, 0..) |line, i| {
+    if (props.max_lines != 0 and full.lineCount() > props.max_lines) last = props.max_lines - 1;
+    if (props.ellipsize) if (fit) |f| for (0..full.lineCount()) |i| {
         if (last != null and i >= last.?) break;
-        if (line.width > f + 0.01) {
+        if (full.line(@intCast(i)).width > f + 0.01) {
             last = i;
             break;
         }
@@ -267,7 +263,7 @@ pub fn layoutIn(win: *Window, id: NodeId, width: ?f32, fit: ?f32) error{OutOfMem
         c.shows_cut = false;
         return full;
     };
-    if (c.cut != null and c.cut_fit == fit and c.cut.?.layout.lines.len == line_index + 1) {
+    if (c.cut != null and c.cut_fit == fit and c.cut.?.layout.lineCount() == line_index + 1) {
         c.shows_cut = true;
         return &c.cut.?.layout;
     }
@@ -279,8 +275,8 @@ pub fn layoutIn(win: *Window, id: NodeId, width: ?f32, fit: ?f32) error{OutOfMem
 }
 
 const Cut = struct {
-    paragraph: text.ShapedParagraph,
-    layout: text.Layout,
+    paragraph: text.ShapedText,
+    layout: text.TextLayout,
 
     fn deinit(ct: *Cut) void {
         ct.layout.deinit();
@@ -291,17 +287,23 @@ const Cut = struct {
 /// Builds the cut copy: the text up to the last grapheme boundary of line
 /// `last` at which it, with "…" when the node ellipsizes, still ends on
 /// that line and fits in `fit`.
-fn cutText(win: *Window, id: NodeId, c: *Cache, full: *const text.Layout, last: usize, width: ?f32, fit: ?f32) error{OutOfMemory}!void {
+fn cutText(win: *Window, id: NodeId, c: *Cache, full: *const text.TextLayout, last: usize, width: ?f32, fit: ?f32) error{OutOfMemory}!void {
     const d = win.node(id).data.text;
-    const content = full.paragraph.text;
-    const line = full.lines[last];
+    const content = d.content;
+    const line = full.line(@intCast(last));
     const a = win.scratch.allocator();
     // Grapheme edges of the line, without its trailing white space.
     var end = line.end;
     while (end > line.start and std.ascii.isWhitespace(content[end - 1])) end -= 1;
     var edges: std.ArrayList(u32) = .empty;
     try edges.append(a, line.start);
-    for (full.lineCarets(line)) |k| if (k.offset > line.start and k.offset <= end) try edges.append(a, k.offset);
+    const bi = full.blockOfLine(@intCast(last));
+    const base = full.shaped.starts[bi];
+    const block = &full.blocks[bi].layout;
+    for (block.lineCarets(block.lines[last - full.line_starts[bi]])) |k| {
+        const offset = base + k.offset;
+        if (offset > line.start and offset <= end) try edges.append(a, offset);
+    }
     std.mem.sort(u32, edges.items, {}, std.sort.asc(u32));
     const ellipsis = if (d.props.ellipsize) "…" else "";
     // The largest edge that fits, by bisection; the line's start stands
@@ -315,7 +317,7 @@ fn cutText(win: *Window, id: NodeId, c: *Cache, full: *const text.Layout, last: 
     while (lo < hi) {
         const mid = (lo + hi + 1) / 2;
         var ct = try cutAt(win, id, content, edges.items[mid], line.start, ellipsis, width);
-        if (ct.layout.lines.len <= last + 1 and (fit == null or ct.layout.width <= fit.? + 0.01)) {
+        if (ct.layout.lineCount() <= last + 1 and (fit == null or ct.layout.width <= fit.? + 0.01)) {
             if (best) |*b| b.deinit();
             best = ct;
             best_at = mid;
@@ -331,7 +333,7 @@ fn cutText(win: *Window, id: NodeId, c: *Cache, full: *const text.Layout, last: 
     }
     // The layout points at its paragraph: put both in place, then fix it.
     c.cut = .{ .paragraph = best.?.paragraph, .layout = best.?.layout };
-    c.cut.?.layout.paragraph = &c.cut.?.paragraph;
+    c.cut.?.layout.shaped = &c.cut.?.paragraph;
 }
 
 /// The node's text up to `at` (less trailing white space, down to
@@ -345,7 +347,7 @@ fn cutAt(win: *Window, id: NodeId, content: []const u8, at: u32, floor: u32, suf
     var ct: Cut = .{ .paragraph = try shapeString(win, id, s, d.spans, null, null), .layout = undefined };
     errdefer ct.paragraph.deinit();
     if (ct.paragraph.wanted.len != 0) win.fonts.request(ct.paragraph.wanted);
-    ct.layout = text.Layout.init(win.gpa, a, &win.fonts.cache, &ct.paragraph, .{
+    ct.layout = text.TextLayout.init(win.gpa, a, &win.fonts.cache, &ct.paragraph, .{
         .width = width,
         .alignment = if (d.props.alignment == .justify) .justify else .start,
         .paragraphs = try paragraphRuns(win, id),
@@ -354,7 +356,7 @@ fn cutAt(win: *Window, id: NodeId, content: []const u8, at: u32, floor: u32, suf
         .hyphenate = d.props.hyphenate,
         .hyphenation = &win.fonts.hyphenation,
         .optimal = d.props.optimal,
-    }) catch |err| switch (err) {
+    }, null) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => unreachable,
     };
@@ -372,7 +374,7 @@ fn paragraphRuns(win: *Window, id: NodeId) error{OutOfMemory}![]const text.layou
     const a = win.scratch.allocator();
     var list = d.paragraphs;
     // Shaped already: the text as shown, with any preedit.
-    const shown: u32 = @intCast(win.state(id).text.?.paragraph.?.text.len);
+    const shown: u32 = win.state(id).text.?.paragraph.?.len();
     if (n.kind == .editor and shown != d.content.len) {
         const e = n.data.editor;
         list = try spans.replaced(a, list, e.caret, e.caret, @intCast(shown - d.content.len), spans.inherited(list, e.caret));
@@ -396,7 +398,7 @@ pub fn maxContent(win: *Window, id: NodeId) error{OutOfMemory}!f32 {
 
 /// The node's current layout (after layout ran): the cut copy when it
 /// shows one.
-pub fn current(win: *const Window, id: NodeId) ?*const text.Layout {
+pub fn current(win: *const Window, id: NodeId) ?*const text.TextLayout {
     const c = win.state(id).text orelse return null;
     const n = win.node(id);
     if (n.kind == .text and n.data.text.content.len == 0) return null;

@@ -20,8 +20,8 @@ const spans = @import("spans.zig");
 const NodeId = node_mod.NodeId;
 const Point = raster.Point;
 const Rect = raster.Rect;
-const Layout = text.Layout;
-const Position = Layout.Position;
+const Layout = text.TextLayout;
+const Position = text.cursor.Position;
 const keysym = input.keysym;
 
 const backspace: u32 = 0xff08;
@@ -93,7 +93,7 @@ pub fn imeCommit(win: *Window, id: NodeId, before: u32, after: u32, str: []const
 pub fn caretRect(win: *const Window, id: NodeId, l: *const Layout) Rect {
     const e = data(win, id);
     const c = l.caret(.{ .offset = displayCaret(win, id), .affinity = e.affinity });
-    const x = c.x + text_node.lineShift(win, id, l.lines[c.line], contentWidth(win, id));
+    const x = c.x + text_node.lineShift(win, id, l.line(c.line), contentWidth(win, id));
     return .xywh(x, c.top, layout.caret_width, c.height);
 }
 
@@ -102,12 +102,12 @@ pub fn scrollToCaret(win: *Window, id: NodeId) void {
     const s = win.state(id);
     const e = data(win, id);
     const l = text_node.current(win, id) orelse return;
-    if (e.editor.multiline or l.lines.len == 0) {
+    if (e.editor.multiline or l.lineCount() == 0) {
         s.editor_scroll = 0;
         return;
     }
     const w = contentWidth(win, id);
-    const line = l.lines[0];
+    const line = l.line(0);
     const x0 = line.x + text_node.lineShift(win, id, line, w);
     const lo = @min(0, x0);
     const hi = @max(0, x0 + line.width + layout.caret_width - w);
@@ -124,7 +124,7 @@ fn positionAt(win: *Window, id: NodeId, local: Point) ?Position {
     const o = contentOrigin(win, id);
     const x = local.x - o.x;
     const y = local.y - o.y;
-    const line = l.lines[l.lineAt(y)];
+    const line = l.line(l.lineAt(y));
     return l.hitTest(x - text_node.lineShift(win, id, line, contentWidth(win, id)), y);
 }
 
@@ -137,17 +137,12 @@ pub const Gesture = struct { unit: Unit = .grapheme, start: u32 = 0, end: u32 = 
 
 /// The word (or run of spaces or punctuation, UAX #29) at an offset.
 fn wordAt(l: *const Layout, offset: u32) [2]u32 {
-    const words = l.paragraph.words.boundaries;
-    const len: u32 = @intCast(l.paragraph.text.len);
-    var start = words.atOrBefore(offset) orelse 0;
-    if (start == len and len > 0) start = words.before(len) orelse 0;
-    return .{ start, words.after(start) orelse len };
+    return l.shaped.wordAt(offset);
 }
 
 /// The paragraph at an offset, without its separator.
 fn paragraphAt(l: *const Layout, offset: u32) [2]u32 {
-    const p = l.paragraph.paragraphs[l.paragraph.paragraphAt(offset)];
-    return .{ p.start, p.contentEnd() };
+    return l.shaped.paragraphRange(offset);
 }
 
 fn unitAt(l: *const Layout, unit: Unit, offset: u32) [2]u32 {
@@ -236,7 +231,6 @@ fn replace(win: *Window, id: NodeId, start: u32, end: u32, insert: []const u8, r
     const before: Snapshot = .{ .caret = e.caret, .anchor = e.anchor, .revision = e.revision };
     const a = win.scratch.allocator();
     const removed = a.dupe(u8, old[start..end]) catch return;
-    const content = std.mem.concat(a, u8, &.{ old[0..start], insert, old[end..] }) catch return;
     const caret: u32 = @intCast(start + insert.len);
     // Inserted text takes the typing style, else that of the first
     // replaced character, else that of the character before (D22).
@@ -247,9 +241,14 @@ fn replace(win: *Window, id: NodeId, start: u32, end: u32, insert: []const u8, r
     // Inserted text joins the paragraph it goes into, and paragraphs keep
     // the style of their first character (D13).
     const paragraphs_before = a.dupe(node_mod.ParagraphSpan, e.text.paragraphs) catch return;
-    const paragraph_style = spans.styleAt(paragraphs_before, spans.paragraphAt(old, start).start);
-    const paragraphs_after = spans.snapped(a, content, spans.replaced(a, paragraphs_before, start, end, @intCast(insert.len), paragraph_style) catch return) catch return;
-    if (!commitEdit(win, id, content, caret, spans_after, paragraphs_after)) return;
+    // Without paragraph spans there is nothing to snap (and no need to
+    // scan a long text for paragraphs).
+    const paragraphs_after = if (paragraphs_before.len == 0) paragraphs_before else blk: {
+        const content = std.mem.concat(a, u8, &.{ old[0..start], insert, old[end..] }) catch return;
+        const paragraph_style = spans.styleAt(paragraphs_before, spans.paragraphAt(old, start).start);
+        break :blk spans.snapped(a, content, spans.replaced(a, paragraphs_before, start, end, @intCast(insert.len), paragraph_style) catch return) catch return;
+    };
+    if (!commitEdit(win, id, .{ .splice = .{ .start = start, .end = end, .insert = insert } }, caret, spans_after, paragraphs_after)) return;
     if (record != .none) remember(win, id, before, .{
         .start = start,
         .removed = removed,
@@ -278,7 +277,7 @@ fn replaceMasked(win: *Window, id: NodeId, start: u32, end: u32, insert: []const
     @memcpy(plain[b_start + insert.len ..], old[b_end..]);
     const inserted_cps = std.unicode.utf8CountCodepoints(insert) catch return;
     const caret: u32 = @intCast((cp_start + inserted_cps) * bullet.len);
-    if (!commitEdit(win, id, plain, caret, &.{}, &.{})) return;
+    if (!commitEdit(win, id, .{ .all = plain }, caret, &.{}, &.{})) return;
     changed(win, id);
 }
 
@@ -289,9 +288,18 @@ fn byteOfCodepoint(s: []const u8, cp: usize) usize {
     return i;
 }
 
-fn commitEdit(win: *Window, id: NodeId, content: []const u8, caret: u32, styled: []const node_mod.Span, paragraphs: []const node_mod.ParagraphSpan) bool {
+/// New text for an edit: all of it, or a range replaced.
+const NewText = union(enum) {
+    all: []const u8,
+    splice: struct { start: u32, end: u32, insert: []const u8 },
+};
+
+fn commitEdit(win: *Window, id: NodeId, new: NewText, caret: u32, styled: []const node_mod.Span, paragraphs: []const node_mod.ParagraphSpan) bool {
     const t = win.begin() catch return false;
-    t.setText(id, content) catch {
+    (switch (new) {
+        .all => |content| t.setText(id, content),
+        .splice => |sp| t.replaceText(id, sp.start, sp.end, sp.insert),
+    }) catch {
         t.abort();
         return false;
     };
@@ -473,15 +481,10 @@ pub fn undo(win: *Window, id: NodeId, redo: bool) bool {
         from.appendAssumeCapacity(ed);
         return false;
     };
-    const old = e.text.content;
-    const a = win.scratch.allocator();
     const gone = if (redo) ed.removed else ed.inserted;
     const back = if (redo) ed.inserted else ed.removed;
-    const content = std.mem.concat(a, u8, &.{ old[0..ed.start], back, old[ed.start + gone.len ..] }) catch {
-        from.appendAssumeCapacity(ed);
-        return false;
-    };
-    if (!commitEdit(win, id, content, @intCast(ed.start + back.len), if (redo) ed.spans_after else ed.spans_before, if (redo) ed.paragraphs_after else ed.paragraphs_before)) {
+    const splice: NewText = .{ .splice = .{ .start = ed.start, .end = @intCast(ed.start + gone.len), .insert = back } };
+    if (!commitEdit(win, id, splice, @intCast(ed.start + back.len), if (redo) ed.spans_after else ed.spans_before, if (redo) ed.paragraphs_after else ed.paragraphs_before)) {
         from.appendAssumeCapacity(ed);
         return false;
     }
@@ -629,10 +632,10 @@ pub fn key(win: *Window, id: NodeId, k: *const platform.Key) bool {
             const s = win.state(id);
             const w = contentWidth(win, id);
             const cur = l.caret(pos);
-            const x_node = s.preferred_x orelse cur.x + text_node.lineShift(win, id, l.lines[cur.line], w);
+            const x_node = s.preferred_x orelse cur.x + text_node.lineShift(win, id, l.line(cur.line), w);
             const up = k.keysym == keysym.up;
-            const target_line = if (up) cur.line -| 1 else @min(cur.line + 1, @as(u32, @intCast(l.lines.len - 1)));
-            const moved = l.moveVertical(pos, x_node - text_node.lineShift(win, id, l.lines[target_line], w), if (up) .up else .down);
+            const target_line = if (up) cur.line -| 1 else @min(cur.line + 1, l.lineCount() - 1);
+            const moved = l.moveVertical(pos, x_node - text_node.lineShift(win, id, l.line(target_line), w), if (up) .up else .down);
             setSelection(win, id, moved.position.offset, if (extend) e.anchor else moved.position.offset, moved.position.affinity);
             win.state(id).preferred_x = x_node;
         },

@@ -465,6 +465,64 @@ test "scroll content scrolls on the compositor; offsets are logical" {
     }
 }
 
+test "long text paints the lines near its scroll viewport; scrolling past them repaints" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 200, .height = 100 });
+    defer f.deinit();
+    var t = try f.win.begin();
+    const sc = try box(t, .root, .scroll, .{ .width = .{ .fraction = 1 }, .height = .{ .fraction = 1 } });
+    try t.setScroll(sc, .{ .axis = .vertical });
+    const doc = try box(t, sc, .text, .{ .width = .{ .fraction = 1 } });
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    for (0..400) |i| try buf.print(testing.allocator, "line {d}\n", .{i});
+    try t.setText(doc, buf.items);
+    t.commit();
+    try f.frame();
+    const runs = struct {
+        /// Glyph runs in the layers, and the lowest and highest baseline.
+        fn of(comp: *Comp) struct { usize, f32, f32 } {
+            var n: usize = 0;
+            var lo: f32 = std.math.inf(f32);
+            var hi: f32 = -std.math.inf(f32);
+            for (comp.tree.layers.items) |l| {
+                if (!l.alive) continue;
+                const c = l.content orelse continue;
+                for (c.list.commands) |cmd| if (cmd == .glyphs) {
+                    n += 1;
+                    lo = @min(lo, cmd.glyphs.bounds.y0);
+                    hi = @max(hi, cmd.glyphs.bounds.y1);
+                };
+            }
+            return .{ n, lo, hi };
+        }
+    }.of;
+    // 400 lines; a 100 px viewport and one viewport each side paint about
+    // 300 px of them.
+    const lines = text_node.current(f.win, doc).?.lineCount();
+    try testing.expect(lines >= 400);
+    const first = runs(&f.comp);
+    try testing.expect(first[0] > 5 and first[0] < 40);
+    try testing.expect(first[2] < 260);
+
+    // A short scroll stays inside what was painted: no repaint.
+    const li = f.win.state(sc).own_layer + 1;
+    const builds = f.win.stats.layer_builds;
+    var off = f.comp.scrollBy(li, .{ .x = 0, .y = 40 });
+    try f.win.handleEvent(&.{ .scrolled = .{ .window = 0, .layer = li, .offset = off, .seq = f.comp.seq } });
+    try f.frame();
+    try testing.expectEqual(builds, f.win.stats.layer_builds);
+
+    // Far down: the lines now in view are painted, in content coordinates.
+    off = f.comp.scrollBy(li, .{ .x = 0, .y = 3000 });
+    try f.win.handleEvent(&.{ .scrolled = .{ .window = 0, .layer = li, .offset = off, .seq = f.comp.seq } });
+    try f.frame();
+    try testing.expect(f.win.stats.layer_builds > builds);
+    const far = runs(&f.comp);
+    try testing.expect(far[0] > 5 and far[0] < 40);
+    try testing.expect(far[1] <= 3040 and far[2] >= 3140);
+}
+
 test "opacity animates as a layer property; content repaints only its layer" {
     var f: Fixture = undefined;
     try f.init(.{ .width = 200, .height = 200 });
@@ -885,7 +943,7 @@ test "styled text: spans shape as runs, follow edits, format as undo steps, and 
     const shaped = struct {
         fn sizes(fx: *Fixture, id: NodeId) ![]const text.Style {
             _ = try text_node.layoutFor(fx.win, id, null);
-            return fx.win.state(id).text.?.paragraph.?.styles;
+            return fx.win.state(id).text.?.paragraph.?.blocks[0].paragraph.styles;
         }
     };
     // The bold word is a style run of its own.
@@ -956,11 +1014,11 @@ test "paragraph styles: whole paragraphs, laid out, kept through edits and undo"
     try f.frame();
     // The second line is centered in the node, the others at the start.
     const l = text_node.current(f.win, ed).?;
-    try testing.expectEqual(3, l.lines.len);
-    try testing.expectEqual(text.layout.Alignment.center, l.lines[1].alignment.?);
-    const second = l.lines[1];
+    try testing.expectEqual(3, l.lineCount());
+    try testing.expectEqual(text.layout.Alignment.center, l.line(1).alignment.?);
+    const second = l.line(1);
     try testing.expectApproxEqAbs((300 - second.width) / 2, second.contentX() + text_node.lineShift(f.win, ed, second, 300), 0.01);
-    try testing.expectApproxEqAbs(0, l.lines[0].contentX() + text_node.lineShift(f.win, ed, l.lines[0], 300), 0.01);
+    try testing.expectApproxEqAbs(0, l.line(0).contentX() + text_node.lineShift(f.win, ed, l.line(0), 300), 0.01);
 
     // A line break inside the centered paragraph starts another centered
     // one; text typed at the start of "third" stays in "third".
@@ -998,7 +1056,7 @@ test "paragraph styles: whole paragraphs, laid out, kept through edits and undo"
     }, e.text.paragraphs);
     try testing.expectEqual(ui.ParagraphPatch{ .alignment = .center, .indent = .{ .start = 20 } }, ui.access.paragraphRun(f.win, ed, 7).?.style);
     try f.frame();
-    try testing.expectEqual(20, text_node.current(f.win, ed).?.lines[0].indent_start);
+    try testing.expectEqual(20, text_node.current(f.win, ed).?.line(0).indent_start);
     k.press('z', .{ .ctrl = true });
     try testing.expectEqualDeep(&[_]ui.ParagraphSpan{.{ .start = 6, .end = 13, .style = centered }}, e.text.paragraphs);
 
@@ -1022,7 +1080,7 @@ test "a span's family shapes its run with that family" {
     try t.setSpans(label, &.{.{ .start = 6, .end = 9, .style = .{ .family = siv } }});
     t.commit();
     try f.frame();
-    const p = f.win.state(label).text.?.paragraph.?;
+    const p = f.win.state(label).text.?.paragraph.?.blocks[0].paragraph;
     try testing.expectEqual(2, p.runs.len);
     var buf: [32]u8 = undefined;
     try testing.expectEqualStrings("Droid Sans", f.fonts.cache.face(p.runs[0].font).?.familyName(&buf));
@@ -1157,7 +1215,7 @@ test "input method: enable, preedit inline, commit with undo, masked fields stay
     try f.frame();
     const e = &f.win.node(ed).data.editor;
     try testing.expectEqualStrings("", e.text.content);
-    try testing.expectEqualStrings("ka", f.win.state(ed).text.?.paragraph.?.text);
+    try testing.expectEqualStrings("ka", f.win.state(ed).text.?.paragraph.?.blocks[0].paragraph.text);
     const moved = f.text_inputs.items[f.text_inputs.items.len - 1];
     try testing.expect(moved.cursor_rect.x > first.cursor_rect.x);
     // Editing keys wait while it composes.
@@ -1170,7 +1228,7 @@ test "input method: enable, preedit inline, commit with undo, masked fields stay
     imeEvent(&f, ev);
     try f.frame();
     try testing.expectEqualStrings("\u{304b}", e.text.content);
-    try testing.expectEqualStrings("\u{304b}", f.win.state(ed).text.?.paragraph.?.text);
+    try testing.expectEqualStrings("\u{304b}", f.win.state(ed).text.?.paragraph.?.blocks[0].paragraph.text);
     const after = f.text_inputs.items[f.text_inputs.items.len - 1];
     try testing.expectEqualStrings("\u{304b}", after.surrounding);
     try testing.expectEqual(@as(u32, 3), after.cursor);
@@ -1221,7 +1279,7 @@ test "editor: double click selects a word, triple a paragraph, dragging extends 
     try f.frame();
     const e = &f.win.node(ed).data.editor;
     const l = @import("text_node.zig").current(f.win, ed).?;
-    const line0 = l.lines[0];
+    const line0 = l.line(0);
     // The middle of "brave" and of "world" on the first line.
     const bx = line0.x + (l.caret(.{ .offset = 6 }).x + l.caret(.{ .offset = 11 }).x) / 2;
     const wx = (l.caret(.{ .offset = 16 }).x + l.caret(.{ .offset = 21 }).x) / 2;

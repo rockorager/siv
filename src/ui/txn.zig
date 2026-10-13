@@ -445,6 +445,43 @@ pub const Txn = struct {
         const copy = try t.own(u8, shown);
         const hidden = if (masked) try t.ownSecret(content) else "";
         try t.frees.ensureUnusedCapacity(t.win.gpa, 4);
+        t.putText(id, n, copy, hidden);
+    }
+
+    /// Replaces `start..end` (character boundaries) of a text or editor
+    /// node's text with `insert`, as `setText` with the spliced text
+    /// would, but checks only what changes and copies the text once: an
+    /// editor's keystroke in a long document (D15). Not for masked
+    /// editors.
+    pub fn replaceText(t: *Txn, id: NodeId, from: u32, to: u32, insert: []const u8) Error!void {
+        const n = try t.textNode(id);
+        if (n.kind == .editor and n.data.editor.editor.masked) return error.InvalidArgument;
+        const old = n.textData().content;
+        if (from > to or to > old.len or old.len - (to - from) + insert.len >= std.math.maxInt(u32)) return error.InvalidArgument;
+        if (charBoundary(old, from) != from or charBoundary(old, to) != to or !std.unicode.utf8ValidateSlice(insert)) return error.InvalidArgument;
+        if (from == to and insert.len == 0) return;
+        try t.reserve();
+        try t.allocs.ensureUnusedCapacity(t.win.gpa, 1);
+        try t.frees.ensureUnusedCapacity(t.win.gpa, 4);
+        const len = old.len - (to - from) + insert.len;
+        var copy: []const u8 = &.{};
+        if (len != 0) {
+            const buf = try t.win.gpa.alloc(u8, len);
+            @memcpy(buf[0..from], old[0..from]);
+            @memcpy(buf[from..][0..insert.len], insert);
+            @memcpy(buf[from + insert.len ..], old[to..]);
+            t.allocs.appendAssumeCapacity(.of(u8, buf));
+            copy = buf;
+        }
+        t.putText(id, n, copy, "");
+    }
+
+    /// Gives a text node new text (owned, `hidden` the secret of a masked
+    /// editor); its spans go with the old text. Room for four frees and a
+    /// snapshot is reserved.
+    fn putText(t: *Txn, id: NodeId, n: *Node, copy: []const u8, hidden: []const u8) void {
+        const d = n.textData();
+        const masked = n.kind == .editor and n.data.editor.editor.masked;
         t.touch(id);
         t.release(u8, d.content);
         d.content = copy;
