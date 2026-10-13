@@ -149,14 +149,22 @@ test "icons: siv_icon_load delivers vector and pixel icons, and misses" {
     var h: Harness = .{};
     try h.start(64, 64, null, null);
     defer h.stop();
+    var req: t.ImageRequest = .null;
     var vec: Loaded = .{};
-    try ok(c.siv_icon_load(h.app, &.{ .name = "edit-copy", .name_len = 9, .logical_size = 24, .style = .symbolic }, Loaded.done, Loaded.destroy, &vec));
+    try ok(c.siv_icon_load(h.app, &.{ .name = "edit-copy", .name_len = 9, .logical_size = 24, .style = .symbolic }, Loaded.done, Loaded.destroy, &vec, &req));
     // Never inside the call.
     try testing.expectEqual(t.Result.error_busy, vec.result);
     var px: Loaded = .{};
-    try ok(c.siv_icon_load(h.app, &.{ .name = "document-new", .name_len = 12, .scale = 2 }, Loaded.done, Loaded.destroy, &px));
+    try ok(c.siv_icon_load(h.app, &.{ .name = "document-new", .name_len = 12, .scale = 2 }, Loaded.done, Loaded.destroy, &px, &req));
     var none: Loaded = .{};
-    try ok(c.siv_icon_load(h.app, &.{ .name = "folder-music", .name_len = 12, .flags = .{ .no_fallbacks = true } }, Loaded.done, Loaded.destroy, &none));
+    try ok(c.siv_icon_load(h.app, &.{ .name = "folder-music", .name_len = 12, .flags = .{ .no_fallbacks = true } }, Loaded.done, Loaded.destroy, &none, &req));
+    // A cancelled load releases its user data at once and never calls back.
+    var cancelled: Loaded = .{};
+    var creq: t.ImageRequest = .null;
+    try ok(c.siv_icon_load(h.app, &.{ .name = "edit-copy", .name_len = 9, .logical_size = 32 }, Loaded.done, Loaded.destroy, &cancelled, &creq));
+    try ok(c.siv_image_request_cancel(creq));
+    try testing.expect(cancelled.destroyed);
+    try testing.expectEqual(t.Result.error_invalid_handle, c.siv_image_request_cancel(creq));
     while (!(vec.destroyed and px.destroyed and none.destroyed)) try ok(c.siv_app_dispatch(h.app, 10));
     try ok(vec.result);
     defer _ = c.siv_image_destroy(vec.image);
@@ -169,5 +177,8 @@ test "icons: siv_icon_load delivers vector and pixel icons, and misses" {
     // 32 pixels at scale 2.
     try testing.expectEqual(t.Size{ .width = 16, .height = 16 }, size);
     try testing.expectEqual(t.Result.error_unavailable, none.result);
-    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_icon_load(h.app, &.{}, Loaded.done, null, null));
+    try testing.expectEqual(t.Result.error_busy, cancelled.result);
+    // A finished load's request is gone.
+    try testing.expectEqual(t.Result.error_invalid_handle, c.siv_image_request_cancel(req));
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_icon_load(h.app, &.{}, Loaded.done, null, null, &req));
 }

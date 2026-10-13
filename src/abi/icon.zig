@@ -11,49 +11,18 @@ const render_cpu = @import("render_cpu");
 const runtime = @import("runtime.zig");
 const application = @import("application.zig");
 const canvas = @import("canvas.zig");
+const image_load = @import("image_load.zig");
 
 const App = application.App;
 const Error = application.Error;
 const platform = @import("platform");
 
-const Request = struct {
-    app: *App,
-    callback: t.ImageLoadFn,
-    destroy: ?t.DestroyFn,
-    user_data: ?*anyopaque,
-
-    fn done(ctx: ?*anyopaque, image: ?*ui.Image) void {
-        const r: *Request = @ptrCast(@alignCast(ctx));
-        const self = r.app;
-        var code: t.Result = .ok;
-        var handle: t.Image = .null;
-        if (image) |img| {
-            handle = canvas.adoptImage(self, img) catch blk: {
-                img.release();
-                code = .error_out_of_memory;
-                break :blk .null;
-            };
-        } else code = .error_unavailable;
-        self.enter();
-        defer self.leave();
-        r.callback(r.user_data, code, handle);
-    }
-
-    fn drop(ctx: ?*anyopaque) void {
-        const r: *Request = @ptrCast(@alignCast(ctx));
-        const self = r.app;
-        const destroy, const user_data = .{ r.destroy, r.user_data };
-        self.gpa().destroy(r);
-        self.release(destroy, user_data);
-    }
-};
-
-pub export fn siv_icon_load(app: t.App, desc: ?*const t.IconDesc, callback: ?t.ImageLoadFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) t.Result {
+pub export fn siv_icon_load(app: t.App, desc: ?*const t.IconDesc, callback: ?t.ImageLoadFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque, request: ?*t.ImageRequest) t.Result {
     const self = App.get(@backingInt(app)) catch |err| {
         if (destroy) |d| d(user_data);
         return t.resultOf(err);
     };
-    load(self, desc, callback, destroy, user_data) catch |err| {
+    load(self, desc, callback, destroy, user_data, request) catch |err| {
         // Ownership of user_data passed with the call (D2).
         self.release(destroy, user_data);
         return t.resultOf(err);
@@ -61,28 +30,30 @@ pub export fn siv_icon_load(app: t.App, desc: ?*const t.IconDesc, callback: ?t.I
     return .ok;
 }
 
-fn load(self: *App, desc: ?*const t.IconDesc, callback: ?t.ImageLoadFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) Error!void {
+/// Through image_load.zig's requests, so that siv_image_request_cancel
+/// cancels an icon load as it does a decode.
+fn load(self: *App, desc: ?*const t.IconDesc, callback: ?t.ImageLoadFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque, request: ?*t.ImageRequest) Error!void {
     const cb = callback orelse return error.InvalidArgument;
+    const dest = try runtime.out(t.ImageRequest, request);
     const d = try runtime.readDesc(t.IconDesc, desc);
     const fl = try runtime.flags(t.IconFlags, d.flags);
     const name = try runtime.string(d.name, d.name_len);
     if (std.mem.trim(u8, name, " \t\r\n").len == 0 or name.len > 4096) return error.InvalidArgument;
     for ([_]f32{ d.logical_size, d.scale }) |v| if (!(v >= 0) or !std.math.isFinite(v)) return error.InvalidArgument;
-    const gpa = self.gpa();
-    const r = try gpa.create(Request);
-    errdefer gpa.destroy(r);
-    r.* = .{ .app = self, .callback = cb, .destroy = destroy, .user_data = user_data };
     const style: @import("icon").Style = switch (try runtime.enumValue(t.IconStyle, d.style)) {
         .default => .default,
         .symbolic => .symbolic,
         .regular => .regular,
         _ => unreachable,
     };
+    const r = try image_load.newRequest(self, cb, destroy, user_data);
+    errdefer self.gpa().destroy(r);
     try self.app.icons.request(name, if (d.logical_size == 0) 16 else @min(d.logical_size, 4096), if (d.scale == 0) 1 else @min(d.scale, 16), .{
         .rtl = fl.rtl,
         .fallbacks = !fl.no_fallbacks,
         .style = style,
-    }, .{ .ctx = r, .func = Request.done, .destroy = Request.drop });
+    }, .{ .ctx = r, .func = image_load.Request.iconDone, .destroy = image_load.Request.drop });
+    dest.* = image_load.publish(self, r);
 }
 
 pub export fn siv_app_set_icon_theme(app: t.App, name: ?[*]const u8, name_len: usize) t.Result {

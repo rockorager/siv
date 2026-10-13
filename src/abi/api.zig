@@ -1043,7 +1043,7 @@ pub const decls = [_]Decl{
     flags("siv_job_flags", "How a job runs.", &.{
         .{ .name = "compute", .bit = 0, .doc = "CPU-bound work (decoding, layout of a large document, hashing): run it on the compute workers, beside siv's image decoding and tile rendering, at most one per CPU. Without it a job is blocking work, which waits (file I/O, a network file system, copying a tree) and runs on a lane of threads of its own, so it never holds a worker that decoding and rendering need." },
     }),
-    handle("siv_image_request", "A pending siv_image_load. Valid until its callback runs or it is cancelled.", false),
+    handle("siv_image_request", "A pending siv_image_load or siv_icon_load. Valid until its callback runs or it is cancelled.", false),
     handle("siv_watch", "A file descriptor the application's loop watches (siv_app_watch_fd). Valid until siv_watch_destroy or the application's destruction.", false),
     flags("siv_watch_flags", "Readiness of a watched file descriptor.", &.{
         .{ .name = "readable", .bit = 0, .doc = "Data to read (EPOLLIN)." },
@@ -1995,7 +1995,7 @@ pub const functions = [_]Function{
         .{ .name = "desc", .type = .{ .desc = "siv_image_desc" }, .doc = "The pixels." },
         .{ .name = "image", .type = out(ref("siv_image")), .doc = "The new image." },
     }),
-    op("siv_image_request_cancel", "Cancels a pending load: one still waiting is never decoded, and one being decoded is dropped when done. Its callback never runs; destroy runs now or once the decode returns.", &.{.{ .name = "request", .type = ref("siv_image_request"), .doc = "The load." }}),
+    op("siv_image_request_cancel", "Cancels a pending load: an image still waiting is never decoded, and one being decoded is dropped when done; an icon is dropped when it arrives. Its callback never runs; destroy runs now, or for an image being decoded once the decode returns.", &.{.{ .name = "request", .type = ref("siv_image_request"), .doc = "The load." }}),
     call("siv_image_request_set_priority", "Changes the priority of a pending load (see siv_image_load_desc); one waiting for a worker moves to its new place.", &.{
         .{ .name = "request", .type = ref("siv_image_request"), .doc = "The load." },
         .{ .name = "priority", .type = .i32, .doc = "Higher first." },
@@ -2008,12 +2008,13 @@ pub const functions = [_]Function{
         .{ .name = "user_data", .type = .user_data, .doc = "Passed to both." },
         .{ .name = "request", .type = out(ref("siv_image_request")), .doc = "The pending load, to cancel or reprioritize; valid until callback runs." },
     }),
-    call("siv_icon_load", "Looks up a themed icon (D19) in the application's icon theme, its parents, hicolor, and unthemed icons, following the freedesktop icon theme specification, and loads it on a worker thread, then calls callback with it, then destroy. SVG icons become vector images that draw sharp at any size, symbolic ones (names ending in -symbolic) in the color they are drawn with (siv_image_view_desc.color, siv_draw_icon); PNG icons are decoded at the size and scale asked for. The image's logical size is the size asked for. A missing icon reports SIV_ERROR_UNAVAILABLE. The image does not follow later theme changes; image nodes showing an icon by name (siv_image_view_desc.icon) do.", &.{
+    call("siv_icon_load", "Looks up a themed icon (D19) in the application's icon theme, its parents, hicolor, and unthemed icons, following the freedesktop icon theme specification, and loads it on a worker thread, then calls callback with it, then destroy. SVG icons become vector images that draw sharp at any size, symbolic ones (names ending in -symbolic) in the color they are drawn with (siv_image_view_desc.color, siv_draw_icon); PNG icons are decoded at the size and scale asked for. The image's logical size is the size asked for. A missing icon reports SIV_ERROR_UNAVAILABLE. The image does not follow later theme changes; image nodes showing an icon by name (siv_image_view_desc.icon) do. Cancelling the request (siv_image_request_cancel) runs destroy at once and drops the icon when it arrives; priorities apply to decodes only.", &.{
         app_param,
         .{ .name = "desc", .type = .{ .desc = "siv_icon_desc" }, .doc = "The icon." },
         .{ .name = "callback", .type = ref("siv_image_load_fn"), .doc = "Receives the image." },
-        .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Runs after callback, or alone if the application is destroyed first." },
+        .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Runs after callback, or alone if the load is cancelled or the application is destroyed first." },
         .{ .name = "user_data", .type = .user_data, .doc = "Passed to both." },
+        .{ .name = "request", .type = out(ref("siv_image_request")), .doc = "The pending load, to cancel (siv_image_request_cancel); valid until callback runs." },
     }),
     call("siv_app_set_icon_theme", "Chooses the icon theme (D19) by its directory name (Adwaita, breeze) instead of following the desktop's, which is GNOME's icon-theme or KDE's Icons/Theme setting through the portal, else Adwaita. hicolor is searched after every theme. Image nodes showing icons by name load them again; images already loaded keep theirs.", &.{
         app_param,

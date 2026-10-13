@@ -2701,8 +2701,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       same 100 ms and then the icons arrive later. Canvases draw icons by
       name (`siv_draw_icon`) and draw again when a missing one loads, as
       with fonts (D28), as do printed pages. `siv_icon_load` delivers an
-      icon as a `siv_image`, which does not follow later theme changes.
-      `siv_image_load` parses SVG files into vector images too.
+      icon as a `siv_image`, which does not follow later theme changes,
+      and returns a `siv_image_request` like `siv_image_load`, so a grid
+      scrolled past its icons cancels them (`siv_image_request_cancel`
+      releases the user data at once and drops the icon when it arrives;
+      priorities apply to decodes only, icons load in order on the
+      blocking lane). `siv_image_load` parses SVG files into vector
+      images too.
     - Vector images draw from the document on every paint: the display
       list copies the paths, so nothing ties the list to the document.
       Where pixels are needed (drag icons, tray pixmaps) the ABI
@@ -3878,6 +3883,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | `siv_pointer_button`, `SIV_POINTER_BUTTON_*` | `siv_button`, `SIV_BUTTON_*` | `siv_button_desc` and `siv_button_style` are the push button widget's; the event field is still `button` |
   | `siv_size_role`, `SIV_SIZE_ROLE_*` | `siv_text_role`, `SIV_TEXT_ROLE_*` | a themed text size beside `siv_role`, the accessibility role, read as a role for text; it is the type of `size_role` |
   | `siv_screencast_cursor`, `siv_screencast_persist` | `siv_cursor_mode`, `siv_persist_mode` | they belong to the screen cast family; `siv_cursor` is the pointer's shape |
+  | `siv_icon_load(..., &request)` (D19) | no request | icon loads cancel like image loads |
   | reserved fields in `siv_text_span`, `siv_paragraph_span`, `siv_tab_stop`, `siv_text_metrics` (D2) | — | frozen value structs that will plausibly grow; descriptors grow by appending |
   | `siv_tablet_sample.wheel` and four reserved fields (D16) | — | the axes flags named a wheel the sample could not carry; tablets grow axes, and a frozen struct cannot |
 

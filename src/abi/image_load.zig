@@ -21,7 +21,11 @@ pub const Request = struct {
     user_data: ?*anyopaque,
     index: u32 = 0,
     handle: u64 = 0,
+    /// Image loads: the decode, to cancel or reprioritize. Icon loads
+    /// (icon.zig) have none: cancelling one releases its user data at
+    /// once and drops the icon when it arrives.
     loading: ?*ui.Image.Loading = null,
+    cancelled: bool = false,
 
     /// The handle goes before the callback runs or the load is dropped.
     fn forget(r: *Request) void {
@@ -35,6 +39,10 @@ pub const Request = struct {
     fn done(ctx: ?*anyopaque, result: ui.Image.LoadError!*ui.Image) void {
         const r: *Request = @ptrCast(@alignCast(ctx));
         const self = r.app;
+        if (r.cancelled) {
+            if (result) |img| img.release() else |_| {}
+            return;
+        }
         r.forget();
         var code: t.Result = .ok;
         var handle: t.Image = .null;
@@ -56,7 +64,12 @@ pub const Request = struct {
         r.callback(r.user_data, code, handle);
     }
 
-    fn drop(ctx: ?*anyopaque) void {
+    /// An icon load's completion (ui.Icons): no icon is a missing one.
+    pub fn iconDone(ctx: ?*anyopaque, image: ?*ui.Image) void {
+        done(ctx, image orelse error.ReadFailed);
+    }
+
+    pub fn drop(ctx: ?*anyopaque) void {
         const r: *Request = @ptrCast(@alignCast(ctx));
         const self = r.app;
         r.forget();
@@ -90,16 +103,8 @@ fn load(self: *App, desc: ?*const t.ImageLoadDesc, callback: ?t.ImageLoadFn, des
     for ([_]f32{ d.max_width, d.max_height, d.scale }) |v| if (!(v >= 0) or !std.math.isFinite(v)) return error.InvalidArgument;
     const scale: f32 = if (d.scale == 0) 1 else d.scale;
     const gpa = self.gpa();
-    const index: u32 = for (self.image_requests.items, 0..) |slot, i| {
-        if (slot == null) break @intCast(i);
-    } else blk: {
-        try self.image_requests.append(gpa, null);
-        break :blk @intCast(self.image_requests.items.len - 1);
-    };
-    try self.root.handles.ensureUnusedCapacity(gpa);
-    const r = try gpa.create(Request);
+    const r = try newRequest(self, cb, destroy, user_data);
     errdefer gpa.destroy(r);
-    r.* = .{ .app = self, .callback = cb, .destroy = destroy, .user_data = user_data, .index = index };
     r.loading = try ui.Image.load(&self.app.pool, gpa, if (data.len != 0) .{ .bytes = data } else .{ .path = path }, .{
         .scale = scale,
         .priority = d.priority,
@@ -109,9 +114,29 @@ fn load(self: *App, desc: ?*const t.ImageLoadDesc, callback: ?t.ImageLoadFn, des
             .first_frame = fl.first_frame,
         },
     }, .{ .ctx = r, .func = Request.done, .destroy = Request.drop });
-    r.handle = self.root.handles.insert(gpa, request_tag, index) catch unreachable;
-    self.image_requests.items[index] = r;
-    dest.* = @fromBackingInt(r.handle);
+    dest.* = publish(self, r);
+}
+
+/// A request with room for its handle reserved; `publish` gives it the
+/// handle once the load has started, which cannot fail.
+pub fn newRequest(self: *App, cb: t.ImageLoadFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) Error!*Request {
+    const gpa = self.gpa();
+    const index: u32 = for (self.image_requests.items, 0..) |slot, i| {
+        if (slot == null) break @intCast(i);
+    } else blk: {
+        try self.image_requests.append(gpa, null);
+        break :blk @intCast(self.image_requests.items.len - 1);
+    };
+    try self.root.handles.ensureUnusedCapacity(gpa);
+    const r = try gpa.create(Request);
+    r.* = .{ .app = self, .callback = cb, .destroy = destroy, .user_data = user_data, .index = index };
+    return r;
+}
+
+pub fn publish(self: *App, r: *Request) t.ImageRequest {
+    r.handle = self.root.handles.insert(self.gpa(), request_tag, r.index) catch unreachable;
+    self.image_requests.items[r.index] = r;
+    return @fromBackingInt(r.handle);
 }
 
 fn requestOf(request: t.ImageRequest) Error!*Request {
@@ -122,14 +147,23 @@ fn requestOf(request: t.ImageRequest) Error!*Request {
 pub export fn siv_image_request_cancel(request: t.ImageRequest) t.Result {
     const r = requestOf(request) catch |err| return t.resultOf(err);
     r.forget();
-    // Runs Request.drop now, or when the decode returns.
-    r.loading.?.cancel();
+    if (r.loading) |l| {
+        // Runs Request.drop now, or when the decode returns.
+        l.cancel();
+    } else {
+        // An icon: its user data goes now, the icon when it arrives.
+        r.cancelled = true;
+        const destroy, const user_data = .{ r.destroy, r.user_data };
+        r.destroy = null;
+        r.app.release(destroy, user_data);
+    }
     return .ok;
 }
 
 pub export fn siv_image_request_set_priority(request: t.ImageRequest, priority: i32) t.Result {
     const r = requestOf(request) catch |err| return t.resultOf(err);
-    r.loading.?.setPriority(priority);
+    // Icon loads run in order on the blocking lane; priority is for decodes.
+    if (r.loading) |l| l.setPriority(priority);
     return .ok;
 }
 
