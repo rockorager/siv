@@ -60,7 +60,7 @@ const result_callback = [_]Param{
     p("user_data", .user_data, "Passed to both."),
 };
 const buffer_out = [_]Param{
-    p("buffer", .buffer, "Receives at most buffer_cap bytes; may be NULL with buffer_cap 0."),
+    p("buffer", schema.text_buffer, "Receives at most buffer_cap bytes; may be NULL with buffer_cap 0."),
     p("len", out(.usize), "The full length in bytes."),
 };
 

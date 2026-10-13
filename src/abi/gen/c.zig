@@ -29,8 +29,8 @@ pub fn decls(arena: std.mem.Allocator, t: Type, name: []const u8) ![]const Decl 
             .{ .type = try std.fmt.allocPrint(arena, "const {s} *", .{try typeName(arena, e.*)}), .name = name },
             .{ .type = "size_t", .name = try std.fmt.allocPrint(arena, "{s}_count", .{name}) },
         }),
-        .buffer => return arena.dupe(Decl, &.{
-            .{ .type = "char *", .name = name },
+        .buffer => |b| return arena.dupe(Decl, &.{
+            .{ .type = if (b == .bytes) "uint8_t *" else "char *", .name = name },
             .{ .type = "size_t", .name = try std.fmt.allocPrint(arena, "{s}_cap", .{name}) },
         }),
         else => {},

@@ -1611,7 +1611,7 @@ pub const functions = [_]Function{
     call("siv_app_get_font_family_name", "Copies the name of a font family id from siv_app_get_font_family.", &.{
         app_param,
         .{ .name = "id", .type = .u32, .doc = "A family id." },
-        .{ .name = "name", .type = .buffer, .doc = "Receives at most name_cap bytes; may be NULL with name_cap 0." },
+        .{ .name = "name", .type = schema.text_buffer, .doc = "Receives at most name_cap bytes; may be NULL with name_cap 0." },
         .{ .name = "len", .type = out(.usize), .doc = "The name's full length in bytes." },
     }),
     call("siv_app_add_hyphenation", "Adds hyphenation patterns for a language (D13), replacing any it had, built in or added: TeX patterns as in hyph-utf8's .pat.txt files, and exceptions as in its .hyp.txt files. Built in are English (US and British), German (1996), French, Spanish, Dutch, Portuguese, Polish, Ukrainian, and Slovak. Patterns are parsed the first time text in their language is hyphenated; add them before laying out text in the language, since text already laid out keeps its lines until it changes.", &.{
@@ -1754,7 +1754,7 @@ pub const functions = [_]Function{
     // Node queries, outside transactions.
     call("siv_node_get_text", "Copies the text of a text or editor node, as of the latest operation.", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "A text or editor node." },
-        .{ .name = "text", .type = .buffer, .doc = "Receives at most text_cap bytes; may be NULL with text_cap 0." },
+        .{ .name = "text", .type = schema.text_buffer, .doc = "Receives at most text_cap bytes; may be NULL with text_cap 0." },
         .{ .name = "len", .type = out(.usize), .doc = "The text's full length in bytes." },
     }),
     call("siv_node_get_text_run", "The style run of a text or editor node at a byte offset, as of the latest operation: the styled range containing it, or the unstyled stretch around it (flags 0). Walk the text by asking again at the run's end.", &.{
@@ -1801,7 +1801,7 @@ pub const functions = [_]Function{
     }),
     call("siv_node_get_label", "Copies the node's accessible label as siv_set_semantics set it (empty when derived from content).", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
-        .{ .name = "label", .type = .buffer, .doc = "Receives at most label_cap bytes; may be NULL with label_cap 0." },
+        .{ .name = "label", .type = schema.text_buffer, .doc = "Receives at most label_cap bytes; may be NULL with label_cap 0." },
         .{ .name = "len", .type = out(.usize), .doc = "The label's full length in bytes." },
     }),
     handleQuery("siv_node_get_window", "siv_window", "The window a node belongs to. Returns 0 for an invalid handle.", &.{
@@ -1960,7 +1960,7 @@ pub const functions = [_]Function{
     }),
     call("siv_view_get_selection", "Copies a view's selection as a bitset (see siv_view_set_selection), one bit per item, (count + 7) / 8 bytes in all.", &.{
         .{ .name = "view", .type = ref("siv_node"), .doc = "A view." },
-        .{ .name = "bits", .type = .buffer, .doc = "Receives at most bits_cap bytes; may be NULL with bits_cap 0." },
+        .{ .name = "bits", .type = schema.byte_buffer, .doc = "Receives at most bits_cap bytes; may be NULL with bits_cap 0." },
         .{ .name = "len", .type = out(.usize), .doc = "The bitset's full length in bytes." },
     }),
     call("siv_view_get_cursor", "A view's cursor: the row that takes focus and that keys move from, or -1 when it has none.", &.{

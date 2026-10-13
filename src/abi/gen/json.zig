@@ -185,6 +185,7 @@ fn typeValue(arena: std.mem.Allocator, j: *std.json.Stringify, s: Schema, t: Typ
             try j.objectField("element");
             try typeValue(arena, j, s, e.*);
         },
+        .buffer => |b| try field(j, "binary", b == .bytes),
         else => {},
     }
     if (t != .string and t != .array and t != .buffer) try field(j, "c_type", try cgen.typeName(arena, t));

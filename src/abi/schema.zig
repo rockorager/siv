@@ -282,10 +282,13 @@ pub const Type = union(enum) {
     /// structs. The library never keeps the caller's pointer.
     array: *const Type,
     /// Function parameter only: memory the function fills, as two C
-    /// parameters `char *<name>` and `size_t <name>_cap`. The function
-    /// writes at most `<name>_cap` bytes and reports the full length
-    /// through an out parameter, so a caller can size a second call.
-    buffer,
+    /// parameters `char *<name>` (text) or `uint8_t *<name>` (bytes:
+    /// pixels, a bitset) and `size_t <name>_cap`. The function writes at
+    /// most `<name>_cap` bytes and reports the full length through an out
+    /// parameter, so a caller can size a second call.
+    buffer: Buffer,
+
+    pub const Buffer = enum { text, bytes };
 
     pub fn eql(a: Type, b: Type) bool {
         if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
@@ -294,10 +297,15 @@ pub const Type = union(enum) {
             .desc => std.mem.eql(u8, a.desc, b.desc),
             .out => a.out.eql(b.out.*),
             .array => a.array.eql(b.array.*),
+            .buffer => a.buffer == b.buffer,
             else => true,
         };
     }
 };
+
+/// A buffer for text, and one for binary data (D2).
+pub const text_buffer: Type = .{ .buffer = .text };
+pub const byte_buffer: Type = .{ .buffer = .bytes };
 
 pub fn ref(comptime name: []const u8) Type {
     return .{ .ref = name };
@@ -653,7 +661,7 @@ test "validate rejects convention violations" {
     s.functions = &.{.{ .name = "x_f", .doc = "", .since = v01, .ret = .string }};
     try std.testing.expectEqualStrings("invalid return type", validate(s, lib).?.what);
     s.functions = &.{.{ .name = "x_f", .doc = "", .since = v01, .ret = ref("x_result"), .params = &.{
-        .{ .name = "buf", .type = .buffer, .doc = "" },
+        .{ .name = "buf", .type = text_buffer, .doc = "" },
         .{ .name = "len", .type = out(.usize), .doc = "" },
     } }};
     try std.testing.expectEqual(null, validate(s, lib));

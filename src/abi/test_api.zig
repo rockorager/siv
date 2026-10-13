@@ -110,7 +110,7 @@ pub const spec: schema.Schema = .{
         } },
         .{ .name = "sivtest_item_get_name", .doc = "Copies an item's name.", .since = v0_1, .ret = ref("siv_result"), .params = &.{
             .{ .name = "item", .type = ref("sivtest_item"), .doc = "The item." },
-            .{ .name = "name", .type = .buffer, .doc = "Receives at most name_cap bytes." },
+            .{ .name = "name", .type = schema.text_buffer, .doc = "Receives at most name_cap bytes." },
             .{ .name = "len", .type = out(.usize), .doc = "The full length of the name." },
         } },
         .{ .name = "sivtest_item_tag_sum", .doc = "Sums an item's tags.", .since = v0_1, .ret = ref("siv_result"), .params = &.{

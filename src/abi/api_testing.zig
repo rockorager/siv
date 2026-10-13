@@ -119,7 +119,7 @@ pub const functions = [_]Function{
     }),
     call("siv_test_capture", "Copies what a window presented last, as the compositor shows it: rows of width * 4 bytes, top to bottom, of 8-bit red, green, blue, and alpha, alpha premultiplied, at the window's buffer scale. SIV_ERROR_UNAVAILABLE if it has presented nothing yet (siv_test_settle first)." ++ headless, &.{
         window_param,
-        p("pixels", .buffer, "Receives at most pixels_cap bytes; may be NULL with pixels_cap 0 to ask for the size."),
+        p("pixels", schema.byte_buffer, "Receives at most pixels_cap bytes; may be NULL with pixels_cap 0 to ask for the size."),
         p("len", out(.usize), "The image's full length in bytes."),
         .{ .name = "width", .type = out(.u32), .doc = "Width in pixels.", .optional = true },
         .{ .name = "height", .type = out(.u32), .doc = "Height in pixels.", .optional = true },
@@ -133,12 +133,12 @@ pub const functions = [_]Function{
     call("siv_test_get_name", "Copies the accessible name of the node siv_test_find finds with the same query (what a screen reader reads, such as a label's text); empty when none matches.", &.{
         window_param,
         p("query", .{ .desc = "siv_test_query" }, "Which node; NULL is the first."),
-        p("name", .buffer, "Receives at most name_cap bytes; may be NULL with name_cap 0."),
+        p("name", schema.text_buffer, "Receives at most name_cap bytes; may be NULL with name_cap 0."),
         p("len", out(.usize), "The name's full length in bytes."),
     }),
     call("siv_test_dump", "Copies a window's semantics tree as text, for test failures and snapshots: a line per node in tree order, indented two spaces per level, with its role, quoted name, states, and bounds.", &.{
         window_param,
-        p("text", .buffer, "Receives at most text_cap bytes; may be NULL with text_cap 0."),
+        p("text", schema.text_buffer, "Receives at most text_cap bytes; may be NULL with text_cap 0."),
         p("len", out(.usize), "The text's full length in bytes."),
     }),
     .{ .name = "siv_test_get_popup", .doc = "The popup shown most recently (a menu, a popover, a combo box's list) that is still shown, or 0 when none is or the handle is invalid.", .since = v0_1, .params = &.{

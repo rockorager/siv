@@ -259,6 +259,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Arrays are a const pointer and `<name>_count`; functions that fill
     caller memory take `char *` and `<name>_cap`, write at most that much,
     and report the full length, so callers can size a second call.
+  - Bytes that are not text are unsigned: `uint8_t *` for pixels, a
+    bitset, encoded images, font files, and clipboard or drop data,
+    whether the library reads them (arrays of `uint8_t`) or fills them
+    (buffers marked `bytes` in the schema). `char *` is for UTF-8 text
+    only, so C callers index pixels without casting away the sign and
+    bindings map each to their byte and string types.
   - Callbacks receive event details as size-prefixed structs by pointer
     (`siv_event`, `siv_window_event`), so events grow like descriptors.
 - **Alternatives:** GObject-style reference-counted objects with
@@ -4157,6 +4163,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | Lua `app:job_start` (D23) | `siv_job_start` unbound | CPU work from Lua ran on the application's thread; the work now runs in a Lua state of its own on the worker pool |
   | `siv_test_*`: headless input, settling, captures, semantics queries (D27) | test-only Zig access to the headless platform | applications test themselves through the C API, the Zig wrapper, and Lua, as the guide's samples now are |
   | `siv_node_focus` shows the ring after a key (D16) | `siv_node_focus` never showing it | focus moved by arrow keys in roving widgets was unmarked |
+  | `siv_test_capture`'s `pixels` and `siv_view_get_selection`'s `bits` are `uint8_t *` (D2) | `char *` | binary data is unsigned, like the byte arrays the library reads; `char *` means text |
   | `siv_set_tooltip` (D17); icon-only buttons show their label as one (D22) | a popup and timer per application | a common need every toolkit has; a core primitive so application widgets get it too |
   | reserved fields in `siv_text_span`, `siv_paragraph_span`, `siv_tab_stop`, `siv_text_metrics` (D2) | — | frozen value structs that will plausibly grow; descriptors grow by appending |
   | `siv_tablet_sample.wheel` and four reserved fields (D16) | — | the axes flags named a wheel the sample could not carry; tablets grow axes, and a frozen struct cannot |

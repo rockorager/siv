@@ -124,9 +124,9 @@ int main(int argc, char **argv) {
 	uint32_t width = 0, height = 0;
 	CHECK(siv_test_capture(window, NULL, 0, &len, &width, &height) == SIV_OK);
 	CHECK(width == 320 && height == 160 && len == (size_t)width * height * 4);
-	char *pixels = malloc(len);
+	uint8_t *pixels = malloc(len);
 	CHECK(pixels && siv_test_capture(window, pixels, len, &len, &width, &height) == SIV_OK);
-	CHECK(pixels && (unsigned char)pixels[3] == 255);
+	CHECK(pixels && pixels[3] == 255);
 	free(pixels);
 
 	if (failures) {
