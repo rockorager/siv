@@ -417,8 +417,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     2.4 ms (ReleaseFast) or 9 ms (Debug). A 500 ms animation while the UI
     thread spins drops no frames on either backend, at 1280×720 on sway;
     rendering on the UI thread (headless) misses 23 of the stall's 24
-    vblanks. Input waits behind a frame being rendered on the compositor
-    thread, so a slow frame delays input by up to its render time.
+    vblanks. The headless test asserts only that the compositor thread
+    finishes the animation while the UI thread does not dispatch, and
+    prints the missed vblanks: with the rest of `zig build test` and busy
+    loops beside it, the compositor thread sometimes runs a vblank late
+    and misses one, which measures the machine, not siv (the sway pacing
+    tests count drops running alone, D12). Input waits behind a frame
+    being rendered on the compositor thread, so a slow frame delays input
+    by up to its render time.
 - **Alternatives:** render on the UI thread (lowest latency when idle, but any
   UI-thread stall drops frames); a plain render thread (adds a handoff without
   independent animation).
