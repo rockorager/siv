@@ -107,6 +107,8 @@ pub const Row = extern struct {
     gen: u32 = 0,
     /// The row index it shows, or -1.
     index: i64 = -1,
+    /// Some bind filled it: the next bind is told it is recycled.
+    bound: bool = false,
     view: Node,
     root: Node,
     disclosure: Node = .null,
@@ -500,7 +502,9 @@ fn createRow(txn: Txn, v: *View) Node {
 }
 
 fn bindRow(txn: Txn, v: *View, r: *Row, index: u32) void {
-    const recycled = r.index != -1 or r.gen != 0;
+    // A row hidden in the pool (index -1) still holds its old children.
+    const recycled = r.bound;
+    r.bound = true;
     r.index = index;
     r.gen = v.gen;
     const item: u64, const depth: u32 = if (v.mode == .tree) .{ treeRows(v)[index].id, treeRows(v)[index].depth } else .{ index, 0 };

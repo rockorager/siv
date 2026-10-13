@@ -34,6 +34,8 @@ const ks = struct {
 const Model = struct {
     binds: u32 = 0,
     recycled: u32 = 0,
+    /// Binds of a row that still had children but was not called recycled.
+    unflagged: u32 = 0,
     selects: u32 = 0,
     index: u32 = 0,
     selected: u32 = 0,
@@ -53,6 +55,7 @@ const Model = struct {
         // A recycled row keeps its children: update the label in place.
         var label: t.Node = .null;
         _ = c.siv_node_get_related(row, .first_child, &label);
+        if (label != .null and !recycled) m.unflagged += 1;
         if (label == .null) {
             const cells = @max(1, m.columns);
             for (0..cells) |k| {
@@ -206,6 +209,17 @@ test "list view: 100000 items cost the rows in view; scrolling rebinds them" {
     try testing.expect(lo >= 90 and lo <= 100);
     try testing.expect(m.binds - binds <= 3 * n);
     try testing.expect(m.recycled > 0);
+
+    // Back to the top, where no overscan above shrinks the range and rows
+    // wait hidden in the pool, and down again: they come back with their
+    // old children, and binds are told so.
+    for ([_]u32{ 0, 60 }) |index| {
+        const txn = try begin(h.window);
+        try ok(c.siv_view_scroll_to(txn, list, index));
+        try ok(c.siv_txn_commit(txn));
+        try h.settle();
+    }
+    try testing.expectEqual(@as(u32, 0), m.unflagged);
 }
 
 test "list view: keyboard cursor, single and multiple selection, activation" {
