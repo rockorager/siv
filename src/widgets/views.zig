@@ -1001,6 +1001,9 @@ fn onRowPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bo
         },
         .down => {
             if (e.button != .primary) return false;
+            // A press in an editor inside the row (renaming an item) is
+            // the editor's: it places the caret, and focus stays there.
+            if (e.target != r.root and isEditor(e.target)) return false;
             // The disclosure toggles the item instead of selecting it.
             if (v.mode == .tree and r.disclosure != .null) {
                 var rr: siv.Rect = undefined;
@@ -1026,6 +1029,13 @@ fn onRowPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bo
     }
 }
 
+/// Editors are the nodes with a selection.
+fn isEditor(n: Node) bool {
+    var caret: u32 = 0;
+    var anchor: u32 = 0;
+    return c.siv_node_get_selection(n, &caret, &anchor) == .ok;
+}
+
 fn toggleExpanded(v: *View, at: u32, window: siv.Window) void {
     const txn = w.begin(window) orelse return;
     v.cursor = @intCast(at);
@@ -1049,6 +1059,10 @@ fn onRowKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
     const e = ev.?;
     const v = viewOf(r.view) orelse return false;
     if (!e.flags.pressed or v.hdr.disabled or v.count == 0) return false;
+    // Keys for a focused node inside the row (an editor renaming the item,
+    // a button) are that node's: Space types a space, arrows move the
+    // caret.
+    if (e.target != r.root) return false;
     const k = w.keysym;
     const cur: i64 = if (v.cursor >= 0) v.cursor else r.index;
     const per: i64 = if (v.mode == .grid) v.columns else 1;

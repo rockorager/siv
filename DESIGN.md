@@ -1178,6 +1178,15 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     order (logical, so the same in RTL), Enter and Space activate the
     focused node, and arrow and page keys scroll the nearest scroll node.
     Touch drives the primary pointer until gestures exist.
+  - Every pointer, key, and scroll event names its target, the node it
+    was delivered to first (`siv_event.target`), so a handler on an
+    ancestor tells its own events from a descendant's: a list row ignores
+    keys aimed at an editor inside it (renaming the item in place), where
+    returning true would also cancel the editor's typing, since one return
+    value both stops bubbling and skips the default action. A primary
+    press in an editor is the editor's: its release activates no ancestor.
+    Found by the file manager in `apps/files`, whose rename field lost
+    every space to the row's selection keys.
   - Focus moved by the keyboard shows a ring drawn by the core (2 px,
     outside the node), so keyboard-only use works without widget code;
     focus from a pointer press shows none. Its color is the theme's
@@ -2315,7 +2324,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     - Selection is a bitset in node data, resized with the count (node
       data of another size replaces the old and keeps what fits); none,
       single, or multiple with Ctrl, Shift, and Ctrl+A. The cursor's row is
-      the focused node (roving focus) and stays bound out of view. Trees
+      the focused node (roving focus) and stays bound out of view. Rows
+      handle only keys aimed at themselves (`siv_event.target`, D16) and
+      leave presses in an editor inside them alone, so an application can
+      rename an item in place with an editor in its row. Trees
       keep their visible items flattened in node data, inserting and
       removing rows (and shifting selection bits) as items expand and
       collapse, asking the application's children and child callbacks

@@ -299,6 +299,81 @@ test "list view: keyboard cursor, single and multiple selection, activation" {
     try testing.expectEqual(@as(u32, 1), m.destroyed);
 }
 
+const Targets = struct {
+    key_target: t.Node = .null,
+    keys: u32 = 0,
+
+    fn onKey(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) bool {
+        const s: *Targets = @ptrCast(@alignCast(ud.?));
+        if (!ev.?.flags.pressed) return false;
+        s.key_target = ev.?.target;
+        s.keys += 1;
+        return false;
+    }
+};
+
+test "list view: an editor in a row keeps its keys and presses; events name their target" {
+    var h: Harness = .{};
+    try h.start(240, 320, null, null);
+    defer h.stop();
+    var m: Model = .{};
+    const list = try listOf(&h, &m, 20, .multiple);
+    // Rename in place: an editor in row 1's body, as a file manager does.
+    const txn = try begin(h.window);
+    var row1: t.Node = .null;
+    {
+        const uw, _ = try uiId(list);
+        const id = (try uw.semanticsTree()).find(.list_item, "Item 1").?.node;
+        const w, _ = try abi.tree.lookup(list);
+        row1 = @fromBackingInt(w.nodes.handle(id));
+    }
+    var body: t.Node = .null;
+    try ok(c.siv_node_get_related(row1, .first_child, &body));
+    const ed = c.siv_editor(txn, body, .{});
+    _ = c.siv_set_text(txn, ed, "ab", 2);
+    _ = c.siv_set_selection(txn, ed, 2, 2);
+    var targets: Targets = .{};
+    _ = c.siv_on(txn, c.siv_window_root(h.window), .key, Targets.onKey, null, &targets);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try ok(c.siv_node_focus(ed));
+    try h.settle();
+    const selected_before = m.selects;
+    // Space, arrows, and Ctrl+A reach the editor, not the row's
+    // selection keys.
+    try h.typeKey(ks.space, " ", .{});
+    try h.typeKey(ks.left, "", .{});
+    try h.typeKey('x', "x", .{});
+    try h.typeKey(ks.down, "", .{});
+    try h.settle();
+    var buf: [16]u8 = undefined;
+    var len: usize = 0;
+    try ok(c.siv_node_get_text(ed, &buf, buf.len, &len));
+    try testing.expectEqualStrings("abx ", buf[0..len]);
+    try testing.expectEqual(selected_before, m.selects);
+    // A handler on the root heard the keys with the editor as the target.
+    try testing.expect(targets.keys >= 4);
+    try testing.expectEqual(ed, targets.key_target);
+    // A press in the editor places its caret and keeps the focus there.
+    var r: t.Rect = undefined;
+    try ok(c.siv_node_get_rect(ed, &r));
+    try h.click(r.x + 1, r.y + r.height / 2);
+    try h.settle();
+    var caret: u32 = 9;
+    var anchor: u32 = 9;
+    try ok(c.siv_node_get_selection(ed, &caret, &anchor));
+    try testing.expectEqual(@as(u32, 0), caret);
+    try testing.expectEqual(selected_before, m.selects);
+    const uw, _ = try uiId(list);
+    try testing.expectEqual((try abi.tree.lookup(ed))[1], uw.input.focus);
+    // Rows themselves still take presses and keys.
+    const b5 = (try uw.semanticsTree()).find(.list_item, "Item 5").?.bounds;
+    try h.click((b5.x0 + b5.x1) / 2, (b5.y0 + b5.y1) / 2);
+    try h.typeKey(ks.down, "", .{});
+    try h.settle();
+    try testing.expectEqual(@as(u32, 6), m.index);
+}
+
 test "tree view: expanding and collapsing, keys mirrored in RTL" {
     for ([_]bool{ false, true }) |rtl| {
         var h: Harness = .{ .golden = "test/golden/widgets" };

@@ -1256,7 +1256,7 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
     const hk: ui.HandlerKind = switch (event.*) {
         inline else => |_, tag| @field(ui.HandlerKind, @tagName(tag)),
     };
-    var ev: t.Event = .{ .window = @fromBackingInt(w.handle), .type = @fromBackingInt(@intFromEnum(hk)) };
+    var ev: t.Event = .{ .window = @fromBackingInt(w.handle), .type = @fromBackingInt(@intFromEnum(hk)), .target = @fromBackingInt(w.nodes.handle(id)) };
     switch (event.*) {
         .activate => {},
         .pointer => |p| {
@@ -1279,6 +1279,7 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
             ev.y = p.y;
             ev.clicks = p.clicks;
             ev.time = p.time;
+            if (p.target != .none and uw.isLive(p.target)) ev.target = @fromBackingInt(w.nodes.handle(p.target));
         },
         .key => |k| {
             ev.keysym = k.keysym;
@@ -1287,11 +1288,13 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
             ev.flags = .{ .pressed = k.pressed, .repeat = k.repeat };
             ev.text = k.text.ptr;
             ev.text_len = k.text.len;
+            if (k.target != .none and uw.isLive(k.target)) ev.target = @fromBackingInt(w.nodes.handle(k.target));
         },
         .focus => |f| ev.flags = .{ .gained = f.gained, .visible = f.visible },
         .scroll => |s| {
             ev.dx = s.dx;
             ev.dy = s.dy;
+            if (s.target != .none and uw.isLive(s.target)) ev.target = @fromBackingInt(w.nodes.handle(s.target));
         },
         .change => {
             const e = &uw.node(id).data.editor;

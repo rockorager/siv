@@ -729,6 +729,8 @@ pub const Pointer = struct {
     /// Timestamp of the latest pointer button or key input, in
     /// milliseconds (the platform's clock).
     time: u32 = 0,
+    /// The node the event was delivered to first, before bubbling.
+    target: NodeId = .none,
 };
 
 pub const Key = struct {
@@ -739,6 +741,8 @@ pub const Key = struct {
     repeat: bool = false,
     mods: Mods = .{},
     text: []const u8 = "",
+    /// The node the event was delivered to first (the focused node).
+    target: NodeId = .none,
 };
 
 pub const FocusChange = struct {
@@ -747,7 +751,7 @@ pub const FocusChange = struct {
     visible: bool,
 };
 
-pub const ScrollDelta = struct { dx: f32, dy: f32 };
+pub const ScrollDelta = struct { dx: f32, dy: f32, target: NodeId = .none };
 
 /// A pointer cursor shape (D16).
 pub const CursorShape = @import("platform").CursorShape;

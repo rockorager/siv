@@ -803,6 +803,7 @@ pub const decls = [_]Decl{
         f32Field("height", "Viewport: the viewport's height."),
         .{ .name = "clicks", .type = .u32, .doc = "Pointer, phase down or up of the primary button: 1 for a click, 2 for a double click, 3 for a triple click, within the desktop's double-click time and a few pixels (D15)." },
         .{ .name = "time", .type = .u32, .doc = "Pointer and key: the input's timestamp in milliseconds, on the compositor's clock." },
+        .{ .name = "target", .type = ref("siv_node"), .doc = "Pointer, key, and scroll: the node the event was delivered to first, before bubbling (the node under the pointer or holding its press, the focused node), so a handler on an ancestor can tell its own events from those of a descendant, such as an editor in a list row. Other events: the node itself." },
     }),
     callback("siv_event_fn", "Handles a node event at a safe point on the application's thread (D5). Return true when handled: the event stops bubbling and the default action is skipped.", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node the handler was set on." },

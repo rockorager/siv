@@ -264,7 +264,7 @@ pub fn bubblePointer(win: *Window, target: NodeId, phase: node_mod.PointerPhase,
     var cur = target;
     while (cur != .none and win.isLive(cur)) {
         const local = toLocal(win, cur, p);
-        const ev: Event = .{ .pointer = .{ .phase = phase, .x = local.x, .y = local.y, .button = button, .mods = win.input.mods, .clicks = clicks, .time = win.input.time } };
+        const ev: Event = .{ .pointer = .{ .phase = phase, .x = local.x, .y = local.y, .button = button, .mods = win.input.mods, .clicks = clicks, .time = win.input.time, .target = target } };
         if (call(win, cur, .pointer, &ev)) return true;
         if (!win.isLive(cur)) return false;
         cur = win.node(cur).parent;
@@ -495,6 +495,10 @@ fn pointerButton(win: *Window, code: u32, pressed: bool, time: u32) void {
         if (win.node(target).kind == .editor and canFocus(win, target)) {
             editor.pointerDown(win, target, p, st.mods.shift, st.clicks);
             st.selecting = target;
+            // The press is the editor's: its release activates no
+            // ancestor (a list row holding an editor that renames it).
+            st.pressed = .none;
+            return;
         }
         cur = target;
         while (cur != .none and win.isLive(cur) and !activatable(win, cur)) cur = win.node(cur).parent;
@@ -531,6 +535,7 @@ fn key(win: *Window, k: *const platform.Key) void {
         .repeat = k.state == .repeated,
         .mods = k.mods,
         .text = k.text(),
+        .target = target,
     } };
     if (bubble(win, target, .key, &ev)) return;
     if (target != .root and win.isLive(target) and win.node(target).kind == .editor and editor.key(win, target, k)) return;
@@ -586,7 +591,7 @@ fn scroll(win: *Window, dx_px: f32, dy_px: f32, v120_x: i32, v120_y: i32) void {
     const d = (platform.Scroll{ .window = 0, .seat = 0, .dx = dx_px, .dy = dy_px, .v120_x = v120_x, .v120_y = v120_y }).delta();
     var dx: f32 = @floatCast(d.x);
     var dy: f32 = @floatCast(d.y);
-    const ev: Event = .{ .scroll = .{ .dx = dx, .dy = dy } };
+    const ev: Event = .{ .scroll = .{ .dx = dx, .dy = dy, .target = target } };
     if (bubble(win, target, .scroll, &ev)) return;
     const mods = win.input.mods;
     if (mods.ctrl or mods.alt or mods.super) return;
