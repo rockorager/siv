@@ -515,7 +515,11 @@ const Builder = struct {
         const primary = for (fonts) |id| switch (self.cache.state(id)) {
             .ready => break id,
             .pending => {
-                try self.want(id);
+                // Only the first: the fonts after it are fallbacks, asked
+                // for once a grapheme needs them. Asking for the whole
+                // chain read every fallback (CJK, emoji: 30 MB) to shape
+                // "Hello".
+                if (!loading) try self.want(id);
                 loading = true;
             },
             .failed => {},
@@ -919,6 +923,17 @@ test "pending fonts are wanted, not read; missing glyphs are reported" {
     try std.testing.expectEqualSlices(FontId, &.{pending}, hebrew.wanted);
     try std.testing.expect(!hebrew.missing);
     try std.testing.expectEqual(fixture.hebrew, hebrew.runs[hebrew.runs.len - 1].font);
+
+    // Two pending fonts ahead of a ready one: only the first is asked for;
+    // the second is a fallback nothing needs yet.
+    const second = try fixture.cache.addPending(.{ .path = "/fonts/Fallback.ttf" }, null);
+    const two = [_]FontId{ pending, second, fixture.latin };
+    var hi = try ShapedParagraph.init(std.testing.allocator, fixture.arena.allocator(), &fixture.cache, "Hi", &.{.{
+        .end = 2,
+        .style = .{ .fonts = &two, .size = 12 },
+    }}, .auto_ltr);
+    defer hi.deinit();
+    try std.testing.expectEqualSlices(FontId, &.{pending}, hi.wanted);
 }
 
 test "without a font, the last-resort face shows boxes, unless a font is loading" {
