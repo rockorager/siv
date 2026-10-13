@@ -1294,8 +1294,9 @@ comptime {
     const S = ui.TabletSample;
     const C = t.TabletSample;
     if (@sizeOf(S) != @sizeOf(C)) @compileError("siv_tablet_sample does not match ui TabletSample");
-    for (.{ "x", "y", "pressure", "distance", "tilt_x", "tilt_y", "rotation", "slider", "time" }) |f| {
-        if (@offsetOf(S, f) != @offsetOf(C, f)) @compileError("siv_tablet_sample." ++ f ++ " does not match");
+    for (.{ "x", "y", "pressure", "distance", "tilt_x", "tilt_y", "rotation", "slider", "wheel", "time", "reserved0", "reserved3" }) |f| {
+        const so = if (std.mem.startsWith(u8, f, "reserved")) @offsetOf(S, "reserved") + 4 * (f[8] - '0') else @offsetOf(S, f);
+        if (so != @offsetOf(C, f)) @compileError("siv_tablet_sample." ++ f ++ " does not match");
     }
     for (@typeInfo(ui.PadControl).@"enum".field_names, 0..) |name, i| {
         if (@backingInt(@field(t.PadControl, name)) != i) @compileError("siv_pad_control does not match at " ++ name);

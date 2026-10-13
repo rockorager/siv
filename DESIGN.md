@@ -96,8 +96,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     reserved fields now (D30): `siv_text_span` in eight (room for a
     background, an underline style, a baseline shift, letter spacing),
     `siv_paragraph_span` in four (list markers, a paragraph's own
-    direction), `siv_tab_stop` in one (a leader), and `siv_text_metrics`
-    in one (a line count). They must be zero where the caller passes the
+    direction), `siv_tab_stop` in one (a leader), `siv_text_metrics`
+    in one (a line count), and `siv_tablet_sample` in four (axes tablets
+    may add, D16). They must be zero where the caller passes the
     struct (`SIV_ERROR_UNSUPPORTED` otherwise) and siv writes zero where
     it fills one, so a later version gives them a meaning without a new
     struct. The others are complete (sizes, rectangles, colors,
@@ -1486,7 +1487,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     frame), one move event per run of one tool's samples, whose
     `samples` hold every position since the last move, oldest first, in
     the node's coordinates (`siv_tablet_sample`, laid out like the
-    tree's samples so C gets them without a copy). Any other tablet or
+    tree's samples so C gets them without a copy). A sample carries every
+    axis `siv_tablet_axes` names, the wheel as the degrees it turned
+    since the previous sample (the event's `wheel` is their sum), and
+    ends in four reserved fields: the struct is a frozen value struct
+    (D2) and tablets keep adding axes (D30). Any other tablet or
     pad event delivers queued motion first, keeping order; more than 256
     queued samples are delivered at once, for windows that draw no
     frames. This is the web's rAF-aligned pointer events with coalesced
@@ -3752,6 +3757,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | `siv_size_role`, `SIV_SIZE_ROLE_*` | `siv_text_role`, `SIV_TEXT_ROLE_*` | a themed text size beside `siv_role`, the accessibility role, read as a role for text; it is the type of `size_role` |
   | `siv_screencast_cursor`, `siv_screencast_persist` | `siv_cursor_mode`, `siv_persist_mode` | they belong to the screen cast family; `siv_cursor` is the pointer's shape |
   | reserved fields in `siv_text_span`, `siv_paragraph_span`, `siv_tab_stop`, `siv_text_metrics` (D2) | — | frozen value structs that will plausibly grow; descriptors grow by appending |
+  | `siv_tablet_sample.wheel` and four reserved fields (D16) | — | the axes flags named a wheel the sample could not carry; tablets grow axes, and a frozen struct cannot |
 
   Statements this document made that were no longer true are fixed where
   they stood: external nodes are built and in the C API (D4, D17);

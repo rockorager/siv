@@ -830,7 +830,11 @@ pub const TabletSample = extern struct {
     rotation: f32 = 0,
     /// -1 to 1.
     slider: f32 = 0,
+    /// Degrees the wheel turned since the previous sample.
+    wheel: f32 = 0,
     time: u32 = 0,
+    /// `siv_tablet_sample`'s reserved fields: zero.
+    reserved: [4]u32 = @splat(0),
 };
 
 /// A tablet tool over the window (D16). Phases as for pointers: enter and
@@ -851,7 +855,8 @@ pub const Tablet = struct {
     /// Move: every sample since the last move event, oldest first, the
     /// last being `sample`. Other phases: `sample` alone.
     samples: []const TabletSample = &.{},
-    /// The wheel turned since the last event: degrees and detents.
+    /// The wheel turned since the last event (its samples' sum): degrees
+    /// and detents.
     wheel: f32 = 0,
     wheel_clicks: i32 = 0,
     /// The tip touches the tablet.

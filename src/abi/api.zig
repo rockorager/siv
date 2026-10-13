@@ -838,7 +838,7 @@ pub const decls = [_]Decl{
         .{ .name = "slider", .bit = 4, .doc = "A finger slider (airbrushes)." },
         .{ .name = "wheel", .bit = 5, .doc = "A wheel (mouse tools)." },
     }),
-    value("siv_tablet_sample", "One position of a tablet tool, in the node's coordinates.", &.{
+    value("siv_tablet_sample", "One position of a tablet tool, in the node's coordinates, with every axis siv_tablet_axes names. Ends in reserved fields for axes tablets may add (siv writes zero).", &([_]schema.Field{
         f32Field("x", "Horizontal position."),
         f32Field("y", "Vertical position."),
         f32Field("pressure", "0 to 1."),
@@ -847,8 +847,9 @@ pub const decls = [_]Decl{
         f32Field("tilt_y", "Degrees from the perpendicular, positive toward the user."),
         f32Field("rotation", "Degrees clockwise from the tool's neutral position."),
         f32Field("slider", "-1 to 1."),
+        f32Field("wheel", "Degrees the tool's wheel turned since the previous sample."),
         .{ .name = "time", .type = .u32, .doc = "Timestamp in milliseconds, on the compositor's clock." },
-    }),
+    } ++ reservedRun(4))),
     enumeration("siv_pad_control", "A control on a tablet pad.", &.{
         .{ .name = "button", .value = 0, .doc = "A button: index names it, SIV_EVENT_PRESSED says pressed or released." },
         .{ .name = "ring", .value = 1, .doc = "A touch ring: value is the angle in degrees clockwise from the top, from 0 to 360." },
@@ -991,7 +992,7 @@ pub const decls = [_]Decl{
         f32Field("tilt_x", "Tablet: degrees from the perpendicular, positive to the right."),
         f32Field("tilt_y", "Tablet: degrees from the perpendicular, positive toward the user."),
         f32Field("slider", "Tablet: -1 to 1."),
-        f32Field("wheel", "Tablet: degrees the tool's wheel turned since the last event."),
+        f32Field("wheel", "Tablet: degrees the tool's wheel turned since the last event, the sum of its samples' wheel."),
         .{ .name = "pad_control", .type = ref("siv_pad_control"), .doc = "Pad: the kind of control." },
         .{ .name = "samples", .type = array(ref("siv_tablet_sample")), .doc = "Tablet, move: every position since the last move event, oldest first; the last is the event's own. Other phases: the event's own. Valid during the call." },
         .{ .name = "group", .type = .u32, .doc = "Pad: the control's group." },

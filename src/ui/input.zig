@@ -797,6 +797,7 @@ fn sampleOf(t: *const platform.TabletTool, p: Point) node_mod.TabletSample {
         .tilt_y = @floatCast(t.tilt_y),
         .rotation = @floatCast(t.rotation),
         .slider = @floatCast(t.slider),
+        .wheel = @floatCast(t.wheel),
         .time = t.time,
     };
 }
@@ -833,6 +834,13 @@ fn deliverTablet(win: *Window, t: *const platform.TabletTool, samples: []const p
         st.press_serial = t.serial;
     }
     st.time = t.time;
+    // Wheel turns since the last event, over every sample.
+    var wheel: f64 = 0;
+    var wheel_clicks: i32 = 0;
+    for (samples) |*smp| {
+        wheel += smp.wheel;
+        wheel_clicks +|= smp.wheel_clicks;
+    }
     var prevented = false;
     var cur = target;
     while (cur != .none and win.isLive(cur)) {
@@ -849,8 +857,8 @@ fn deliverTablet(win: *Window, t: *const platform.TabletTool, samples: []const p
             .axes = t.axes,
             .sample = local[local.len - 1],
             .samples = local,
-            .wheel = @floatCast(t.wheel),
-            .wheel_clicks = t.wheel_clicks,
+            .wheel = @floatCast(wheel),
+            .wheel_clicks = wheel_clicks,
             .tip = t.tip,
             .mods = st.mods,
             .time = t.time,

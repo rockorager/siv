@@ -179,6 +179,7 @@ test "tablet tools and pads reach handlers with every sample, in node coordinate
         s.y = 30;
         s.pressure = @as(f64, @floatFromInt(i)) / 10;
         s.slider = -0.5;
+        s.wheel = if (i >= 2) 1.5 else 0;
         s.tip = i >= 1;
         s.time = @intCast(1000 + i);
         e.* = .{ .tablet_tool = s };
@@ -207,6 +208,10 @@ test "tablet tools and pads reach handlers with every sample, in node coordinate
     try testing.expectApproxEqAbs(@as(f32, 0.7), move.pressure, 1e-6);
     try testing.expectEqual(@as(f32, -0.5), move.slider);
     try testing.expectEqual(@as(u32, 1002), pen.samples[2][0].time);
+    // Each sample has its wheel turn, the event their sum.
+    try testing.expectEqual(@as(f32, 1.5), pen.samples[2][3].wheel);
+    try testing.expectEqual(@as(f32, 9), move.wheel);
+    try testing.expectEqual(@as(u32, 0), pen.samples[2][5].reserved3);
 
     // A stylus button is a secondary press; pads go from focus (none: the
     // root).
