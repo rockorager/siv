@@ -86,6 +86,8 @@ pub const App = struct {
     image_requests: std.ArrayList(?*@import("image_load.zig").Request),
     /// Portal requests, choosers, and actions (D19).
     desktop: portal.State,
+    /// siv_job_start jobs not yet done or dropped, for siv_test_settle.
+    jobs: u32,
 
     pub fn gpa(self: *App) std.mem.Allocator {
         return self.root.gpa;
@@ -275,6 +277,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     self.watches = .empty;
     self.image_requests = .empty;
     self.desktop = .{};
+    self.jobs = 0;
     const gpa = self.gpa();
     self.draw = .init(gpa);
     errdefer self.draw.deinit(gpa);
@@ -808,6 +811,7 @@ const Job = struct {
         const j: *Job = @fieldParentPtr("job", pj);
         const self = j.owner;
         const destroy, const user_data = .{ j.destroy, j.user_data };
+        self.jobs -= 1;
         self.gpa().destroy(j);
         self.release(destroy, user_data);
     }
@@ -831,7 +835,9 @@ fn jobStart(self: *App, flags: t.JobFlags, work: ?t.WorkFn, done: ?t.PostFn, des
     const j = gpa.create(Job) catch return .error_out_of_memory;
     j.* = .{ .owner = self, .work = w, .callback = done, .destroy = destroy, .user_data = user_data };
     j.job.class = if (fl.compute) .compute else .blocking;
+    self.jobs += 1;
     self.app.pool.submit(&j.job) catch |err| {
+        self.jobs -= 1;
         gpa.destroy(j);
         return switch (err) {
             error.OutOfMemory => .error_out_of_memory,

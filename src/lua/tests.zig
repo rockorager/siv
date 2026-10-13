@@ -294,6 +294,54 @@ test "jobs from Lua: work in a state of its own, results at a safe point" {
     );
 }
 
+test "the test API: scrolling, typing, queries, captures" {
+    _ = try run(prologue ++
+        \\local editor, scroll, last
+        \\win:update(function(txn, root)
+        \\  local column = txn:flex(root, { axis = "column" })
+        \\  editor = txn:editor(column, nil, { semantics = { label = "Field" } })
+        \\  txn:push_button(column, { label = "X" })
+        \\  txn:push_button(column, { label = "X" })
+        \\  scroll = txn:scroll(column, "vertical", { layout = { height = 30 } })
+        \\  local inner = txn:flex(scroll, { axis = "column" })
+        \\  for i = 1, 10 do last = txn:text(inner, "Row " .. i) end
+        \\end)
+        \\assert(app:test_settle(5000))
+        \\-- Queries: the index-th match, and none.
+        \\local found, first = win:test_find{ role = "button", name = "X" }
+        \\local found2, second = win:test_find{ role = "button", name = "X", index = 1 }
+        \\assert(found and found2 and second.bounds.y > first.bounds.y)
+        \\assert(not win:test_find{ role = "button", name = "X", index = 2 })
+        \\assert(not win:test_find{ name = "nothing" })
+        \\assert(win:test_get_name{ name = "nothing" } == "")
+        \\assert(win:test_dump():find('button "X"', 1, true), win:test_dump())
+        \\assert(app:test_get_popup() == nil)
+        \\-- Typing: Latin-1 and other characters.
+        \\local _, field = win:test_find{ role = "text_input" }
+        \\win:test_click(field.bounds.x + 2, field.bounds.y + 2, "primary")
+        \\win:test_type("aé€")
+        \\assert(app:test_settle(5000))
+        \\assert(editor:get_text() == "aé€", editor:get_text())
+        \\assert(win:test_get_name{ flags = "focused" } == "Field")
+        \\-- The wheel over the scroll area moves its rows up.
+        \\local _, row = win:test_find{ name = "Row 1" }
+        \\win:test_pointer_move(row.bounds.x + 2, row.bounds.y + 2)
+        \\-- Scrolling queued with the motion is lost (see siv_test_scroll).
+        \\assert(app:test_settle(5000))
+        \\local before = win:test_capture()
+        \\win:test_scroll(0, 30)
+        \\assert(app:test_settle(5000))
+        \\assert(before ~= win:test_capture(), "the capture did not change")
+        \\assert(app:test_settle(5000))
+        \\local _, moved = win:test_find{ name = "Row 1" }
+        \\assert(moved.bounds.y < row.bounds.y, moved.bounds.y .. " " .. row.bounds.y)
+        \\-- Captures, at the window's size.
+        \\local pixels, w, h = win:test_capture()
+        \\assert(w == 120 and h == 80 and #pixels == w * h * 4)
+        \\assert(not pcall(win.test_key, win, "a", {}, string.rep("x", 33)))
+    );
+}
+
 test "span ends: stop, or end, which is a keyword" {
     _ = try run(prologue ++
         \\local a, b

@@ -3901,9 +3901,38 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     one string with one type per line, and a drag's data is one array
     split by `lengths`, because schema arrays hold only fixed-size
     elements (D3); both stay plain C.
-  - Testing input through the C ABI uses the headless backend's
-    injection from Zig (`test/abi`); a public test-input API waits until
-    applications ask for one.
+  - **Testing applications.** `siv_test_*` (`api_testing.zig`,
+    `testing.zig`) lets an application's own tests drive it on the
+    headless backend through the C API, and so the Zig wrapper and Lua:
+    pointer moves, buttons, clicks, wheel scrolling, keys with their
+    text, typed strings, close requests, and another client's drop are
+    injected into the simulated seat on the compositor thread;
+    `siv_test_settle` dispatches until every shown window presented what
+    it committed and wants no frame and no font, icon, image load,
+    `siv_job_start` job, paste, or drop is in flight (three idle
+    dispatches in a row, since a frame's events can start work), with a
+    timeout; `siv_test_capture` copies the last presented buffer as
+    premultiplied RGBA; `siv_test_find`, `siv_test_get_name`, and
+    `siv_test_dump` read the semantics tree (D18) by role, exact name,
+    focus, and index; `siv_test_get_popup` finds the newest shown popup.
+    Injection, settling, and captures fail with `SIV_ERROR_UNSUPPORTED`
+    on Wayland, where a compositor owns input. Queries go through the
+    semantics tree rather than nodes, so a test finds controls as a
+    screen reader does and an unlabelled control fails it; the guide's
+    samples are tested only through these calls. `siv_test_drop`
+    dispatches between the drag's entry and the drop, since a drop goes
+    where the application said it takes the data. Portal requests and
+    the application's own threads are not waited for: tests wait for
+    their effect. siv's own tests (`test/abi`) keep driving the headless
+    platform directly, for protocol states the public calls do not
+    reach. Alternatives: a test-only library beside libsiv (a second ABI
+    to version and ship, and Lua could not reach it); node handles in
+    query results (rows of views and parts of widgets have none, and
+    tests would bind to the tree's shape); settling inside each
+    injection call (hides when work happens and cannot run from a
+    callback). Reverse if applications need input the simulated seat
+    cannot express (touch, tablets, gestures); then add calls in the
+    same family.
 - **Alternatives:** one generic `siv_node_create(kind)` plus setters (one
   more call for every node); a descriptor per node kind carrying every
   property (large structs, most fields unused); presence flags for every
@@ -4096,6 +4125,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | `SIV_VISUAL_CLIP` clips the node's own image and canvas (D26) | descendants only | rounded images needed a wrapper box |
   | Lua `stop` for span ends (D23) | `["end"]` only | `end` is a Lua keyword; both names work and output tables carry both |
   | Lua `app:job_start` (D23) | `siv_job_start` unbound | CPU work from Lua ran on the application's thread; the work now runs in a Lua state of its own on the worker pool |
+  | `siv_test_*`: headless input, settling, captures, semantics queries (D27) | test-only Zig access to the headless platform | applications test themselves through the C API, the Zig wrapper, and Lua, as the guide's samples now are |
   | `siv_node_focus` shows the ring after a key (D16) | `siv_node_focus` never showing it | focus moved by arrow keys in roving widgets was unmarked |
   | reserved fields in `siv_text_span`, `siv_paragraph_span`, `siv_tab_stop`, `siv_text_metrics` (D2) | — | frozen value structs that will plausibly grow; descriptors grow by appending |
   | `siv_tablet_sample.wheel` and four reserved fields (D16) | — | the axes flags named a wheel the sample could not carry; tablets grow axes, and a frozen struct cannot |

@@ -300,6 +300,7 @@ const blend_values: [blend_names.len]schema.EnumValue = blk: {
 };
 
 const desktop = @import("api_desktop.zig");
+const testing = @import("api_testing.zig");
 
 pub const decls = [_]Decl{
     result,
@@ -2194,8 +2195,8 @@ pub const spec: schema.Schema = .{
     .source = "src/abi/api.zig",
     .doc = "siv: a GUI toolkit for Wayland.",
     .result = "siv_result",
-    .decls = &(decls ++ desktop.decls),
-    .functions = &(functions ++ desktop.functions),
+    .decls = &(decls ++ desktop.decls ++ testing.decls),
+    .functions = &(functions ++ desktop.functions ++ testing.functions),
 };
 
 /// Encodes a version as (major << 16) | (minor << 8) | patch.
