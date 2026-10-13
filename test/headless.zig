@@ -45,4 +45,5 @@ test {
     _ = @import("abi/fonts.zig");
     _ = @import("abi/rich_text.zig");
     _ = @import("abi/clipboard.zig");
+    _ = @import("lua/lua.zig");
 }
