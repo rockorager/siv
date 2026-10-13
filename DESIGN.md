@@ -1582,7 +1582,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       `App.create`, mostly because they are read in the first dispatch
       after the application has created its window. A portal that never
       answers delays the first frame to 100–102 ms. The test fails above
-      20 ms.
+      20 ms of CPU time for the process, which is what the first frame
+      costs siv: with four busy loops beside the test, its wall time grows
+      to 25–33 ms while its CPU time stays at 8–11 ms (Debug).
     - The color scheme, contrast, accent, and font size drive the theme
       (D29); the cursor theme and size go to the platform for themed
       cursors (D16).
