@@ -3,7 +3,9 @@
 //! libjxl, into pixels the renderers draw (D9).
 //!
 //! `decode` takes a whole file in memory and runs on the calling thread;
-//! the UI runs it on the worker pool (`ui.Image.load`). Images are scaled
+//! the UI runs it on the worker pool (`ui.Image.load`). Animations too
+//! large to keep decoded (`Options.max_bytes`) decode only their first
+//! frame there and play through a `Decoder`, a frame at a time. Images are scaled
 //! down to the size they are displayed at while they are decoded, frame by
 //! frame, so only that size is kept. Color is converted to the working
 //! space (D11): embedded ICC profiles through Little CMS, CICP encodings
@@ -55,9 +57,10 @@ pub const Options = struct {
     max_height: u32 = 0,
     /// Most pixels per frame before scaling (64 Mpx: 8192 × 8192).
     max_pixels: u64 = 64 << 20,
-    /// Most bytes of all decoded frames together; an animation that needs
-    /// more keeps only its first frame.
-    max_bytes: usize = 256 << 20,
+    /// Most bytes of all frames kept decoded together (32 MiB): an
+    /// animation that needs more decodes only its first frame
+    /// (`Image.streamed`) and plays through a `Decoder`.
+    max_bytes: usize = 32 << 20,
     /// Decode only the first frame of an animation.
     first_frame: bool = false,
     /// Always produce `rgba16_linear_premul`, also for 8-bit sRGB images
@@ -92,6 +95,12 @@ pub const Image = struct {
     frames: []Frame,
     /// How many times an animation plays; 0 loops forever.
     loops: u32 = 0,
+    /// Frames in the file; more than `frames.len` when streamed.
+    frame_count: u32 = 1,
+    /// Only the first frame was decoded, with its delay: the animation is
+    /// too large to keep decoded (`Options.max_bytes`) and plays through
+    /// a `Decoder` with the same options.
+    streamed: bool = false,
 
     pub fn stride(img: *const Image) u32 {
         return img.width * img.format.bytesPerPixel();
@@ -141,6 +150,8 @@ const Source = struct {
     depth: Depth,
     color: Color,
     loops: u32 = 0,
+    /// Frames in the file, from its headers; 0 if unknown.
+    frames: u32 = 1,
     ctx: *anyopaque,
     /// Writes the next frame's canvas into `out`; false after the last.
     next: *const fn (ctx: *anyopaque, out: []u8, delay_ms: *u32) Error!bool,
@@ -171,6 +182,7 @@ const wuffs = struct {
             .depth = .rgba8,
             .color = if (icc != null and icc_len != 0) .{ .icc = icc[0..icc_len] } else .srgb,
             .loops = c.siv_wuffs_loops(s),
+            .frames = c.siv_wuffs_frames(s),
             .ctx = s.?,
             .next = next,
             .close = close,
@@ -205,6 +217,7 @@ const webp = struct {
             .depth = .rgba8,
             .color = if (icc != null and icc_len != 0) .{ .icc = icc[0..icc_len] } else .srgb,
             .loops = loops,
+            .frames = c.siv_webp_frames(s),
             .ctx = s.?,
             .next = next,
             .close = close,
@@ -242,6 +255,7 @@ const avif = struct {
             .depth = if (depth16 != 0) .rgba16 else .rgba8,
             .color = if (icc != null and icc_len != 0) .{ .icc = icc[0..icc_len] } else .{ .cicp = .{ .primaries = primaries, .transfer = transfer } },
             .loops = loops,
+            .frames = c.siv_avif_frames(s),
             .ctx = s.?,
             .next = next,
             .close = close,
@@ -281,6 +295,7 @@ const jxl = struct {
             .depth = if (depth16 != 0) .rgba16 else .rgba8,
             .color = color,
             .loops = loops,
+            .frames = c.siv_jxl_frames(s),
             .ctx = s.?,
             .next = next,
             .close = close,
@@ -312,55 +327,131 @@ fn open(format: Format, bytes: []const u8, max_pixels: u64) Error!Source {
 
 /// Decodes an image (see the module comment).
 pub fn decode(gpa: Allocator, bytes: []const u8, options: Options) Error!Image {
-    const format = sniff(bytes) orelse return error.Unsupported;
-    var src = try open(format, bytes, options.max_pixels);
-    defer src.close(src.ctx);
-    if (src.width == 0 or src.height == 0) return error.InvalidImage;
-    if (@as(u64, src.width) * src.height > options.max_pixels) return error.TooLarge;
-
-    var conv = try Converter.init(gpa, src, fitSize(src.width, src.height, options.max_width, options.max_height), options.linear);
-    defer conv.deinit(gpa);
-
-    const src_bpp: usize = if (src.depth == .rgba8) 4 else 8;
-    const canvas = try gpa.alignedAlloc(u8, .@"16", @as(usize, src.width) * src.height * src_bpp);
-    defer gpa.free(canvas);
+    var d = try Decoder.init(gpa, bytes, options);
+    defer d.deinit();
+    const frame_bytes = d.frameBytes();
+    // Every frame when they fit the budget, by the count in the headers;
+    // otherwise only the first, and the animation is streamed.
+    const whole = !options.first_frame and d.frame_count > 1 and
+        (std.math.mul(usize, frame_bytes, d.frame_count) catch std.math.maxInt(usize)) <= options.max_bytes;
 
     var frames: std.ArrayList(Frame) = .empty;
     errdefer {
         for (frames.items) |f| gpa.free(f.pixels);
         frames.deinit(gpa);
     }
-    const frame_bytes = @as(usize, conv.dw) * conv.dh * conv.format.bytesPerPixel();
     var total: usize = 0;
-    while (true) {
-        var delay: u32 = 0;
-        if (!try src.next(src.ctx, canvas, &delay)) break;
-        if (total + frame_bytes > options.max_bytes and frames.items.len != 0) {
-            // Too much to keep: the first frame only.
+    while (frames.items.len == 0 or whole) {
+        if (frames.items.len != 0 and total + frame_bytes > options.max_bytes) {
+            // More frames than the headers said: stream after all.
             for (frames.items[1..]) |f| gpa.free(f.pixels);
             frames.shrinkRetainingCapacity(1);
             break;
         }
         const pixels = try gpa.alignedAlloc(u8, .@"16", frame_bytes);
-        errdefer gpa.free(pixels);
-        conv.convert(canvas, pixels);
-        try frames.append(gpa, .{ .pixels = pixels, .delay_ms = delay });
+        const delay = d.next(pixels) catch |e| {
+            gpa.free(pixels);
+            return e;
+        } orelse {
+            gpa.free(pixels);
+            break;
+        };
+        frames.append(gpa, .{ .pixels = pixels, .delay_ms = delay }) catch |e| {
+            gpa.free(pixels);
+            return e;
+        };
         total += frame_bytes;
-        if (options.first_frame) break;
     }
     if (frames.items.len == 0) return error.InvalidImage;
-    // A single frame needs no delay.
-    if (frames.items.len == 1) frames.items[0].delay_ms = 0;
+    const streamed = !options.first_frame and frames.items.len == 1 and d.frame_count > 1;
+    // A still image needs no delay.
+    if (frames.items.len == 1 and !streamed) frames.items[0].delay_ms = 0;
+    const count: u32 = if (streamed) d.frame_count else @intCast(frames.items.len);
     return .{
-        .width = conv.dw,
-        .height = conv.dh,
-        .source_width = src.width,
-        .source_height = src.height,
-        .format = conv.format,
+        .width = d.width,
+        .height = d.height,
+        .source_width = d.src.width,
+        .source_height = d.src.height,
+        .format = d.format,
         .frames = try frames.toOwnedSlice(gpa),
-        .loops = src.loops,
+        .loops = d.src.loops,
+        .frame_count = count,
+        .streamed = streamed,
     };
 }
+
+/// One file decoded a frame at a time, at the size and in the format
+/// `decode` gives it with the same options: for animations that play
+/// without keeping every frame. Holds one canvas at the file's size.
+/// `bytes` must outlive the decoder.
+pub const Decoder = struct {
+    gpa: Allocator,
+    bytes: []const u8,
+    max_pixels: u64,
+    src: Source,
+    conv: Converter,
+    canvas: []align(16) u8,
+    width: u32,
+    height: u32,
+    format: scene.ImageFormat,
+    /// Frames in the file, from its headers (at least 1).
+    frame_count: u32,
+
+    pub fn init(gpa: Allocator, bytes: []const u8, options: Options) Error!Decoder {
+        const format = sniff(bytes) orelse return error.Unsupported;
+        var src = try open(format, bytes, options.max_pixels);
+        errdefer src.close(src.ctx);
+        if (src.width == 0 or src.height == 0) return error.InvalidImage;
+        if (@as(u64, src.width) * src.height > options.max_pixels) return error.TooLarge;
+        var conv = try Converter.init(gpa, src, fitSize(src.width, src.height, options.max_width, options.max_height), options.linear);
+        errdefer conv.deinit(gpa);
+        const src_bpp: usize = if (src.depth == .rgba8) 4 else 8;
+        const canvas = try gpa.alignedAlloc(u8, .@"16", @as(usize, src.width) * src.height * src_bpp);
+        return .{
+            .gpa = gpa,
+            .bytes = bytes,
+            .max_pixels = options.max_pixels,
+            .src = src,
+            .conv = conv,
+            .canvas = canvas,
+            .width = conv.dw,
+            .height = conv.dh,
+            .format = conv.format,
+            .frame_count = @max(1, src.frames),
+        };
+    }
+
+    pub fn deinit(d: *Decoder) void {
+        d.src.close(d.src.ctx);
+        d.conv.deinit(d.gpa);
+        d.gpa.free(d.canvas);
+    }
+
+    /// Bytes of one decoded frame: rows of `width` pixels, packed.
+    pub fn frameBytes(d: *const Decoder) usize {
+        return @as(usize, d.width) * d.height * d.format.bytesPerPixel();
+    }
+
+    /// Decodes the next frame into `out` (`frameBytes` long) and returns
+    /// how long to show it, in milliseconds; null after the last frame.
+    pub fn next(d: *Decoder, out: []align(16) u8) Error!?u32 {
+        var delay: u32 = 0;
+        if (!try d.src.next(d.src.ctx, d.canvas, &delay)) return null;
+        d.conv.convert(d.canvas, out);
+        return delay;
+    }
+
+    /// Starts again from the first frame.
+    pub fn rewind(d: *Decoder) Error!void {
+        const src = try open(sniff(d.bytes).?, d.bytes, d.max_pixels);
+        if (src.width != d.src.width or src.height != d.src.height or src.depth != d.src.depth) {
+            src.close(src.ctx);
+            return error.InvalidImage;
+        }
+        d.src.close(d.src.ctx);
+        d.src = src;
+    }
+};
 
 /// The working-space conversion and scaling of one image's frames.
 const Converter = struct {

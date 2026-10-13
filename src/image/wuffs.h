@@ -28,6 +28,10 @@ int siv_wuffs_open(const uint8_t *data, size_t len, uint64_t max_pixels, siv_wuf
  * (width * height * 4 bytes). SIV_WUFFS_END after the last frame. */
 int siv_wuffs_next(siv_wuffs *s, uint8_t *rgba, uint32_t *delay_ms);
 
+/* The number of frames in the file, read without decoding them; 0 if it
+ * cannot tell. */
+uint32_t siv_wuffs_frames(const siv_wuffs *s);
+
 /* 0 loops forever. */
 uint32_t siv_wuffs_loops(const siv_wuffs *s);
 

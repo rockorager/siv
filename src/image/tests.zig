@@ -69,9 +69,45 @@ test "animated GIF and APNG: frames, delays, loops" {
     const first = try image.decode(gpa, @embedFile("testdata/anim.gif"), .{ .first_frame = true });
     defer first.deinit(gpa);
     try testing.expectEqual(@as(usize, 1), first.frames.len);
+    try testing.expect(!first.streamed);
     const small = try image.decode(gpa, @embedFile("testdata/anim.gif"), .{ .max_bytes = 16 * 16 * 4 * 2 });
     defer small.deinit(gpa);
     try testing.expectEqual(@as(usize, 1), small.frames.len);
+    try testing.expect(small.streamed);
+    try testing.expectEqual(@as(u32, 3), small.frame_count);
+    try testing.expectEqual(gif.frames[0].delay_ms, small.frames[0].delay_ms);
+}
+
+test "streamed animations decode frame by frame, the same as whole, and rewind" {
+    const files = [_][]const u8{
+        @embedFile("testdata/anim.gif"),
+        @embedFile("testdata/anim.png"),
+        @embedFile("testdata/anim.webp"),
+        @embedFile("testdata/anim.avif"),
+    };
+    for (files) |bytes| {
+        // Scaled, so that conversion runs too.
+        const options: image.Options = .{ .max_width = 12, .max_height = 12 };
+        const whole = try image.decode(gpa, bytes, options);
+        defer whole.deinit(gpa);
+        try testing.expect(whole.frames.len > 1 and !whole.streamed);
+        try testing.expectEqual(@as(u32, @intCast(whole.frames.len)), whole.frame_count);
+
+        var d = try image.Decoder.init(gpa, bytes, options);
+        defer d.deinit();
+        try testing.expectEqual(whole.frame_count, d.frame_count);
+        try testing.expectEqual(whole.width, d.width);
+        const out = try gpa.alignedAlloc(u8, .@"16", d.frameBytes());
+        defer gpa.free(out);
+        for (0..2) |_| {
+            for (whole.frames) |f| {
+                try testing.expectEqual(f.delay_ms, (try d.next(out)).?);
+                try testing.expectEqualSlices(u8, f.pixels, out);
+            }
+            try testing.expectEqual(@as(?u32, null), try d.next(out));
+            try d.rewind();
+        }
+    }
 }
 
 test "an embedded ICC profile converts to linear light" {

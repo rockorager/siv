@@ -13,6 +13,9 @@ typedef struct siv_webp siv_webp;
 int siv_webp_open(const uint8_t *data, size_t len, uint64_t max_pixels, siv_webp **out,
                   uint32_t *width, uint32_t *height, const uint8_t **icc, size_t *icc_len, uint32_t *loops);
 int siv_webp_next(siv_webp *s, uint8_t *rgba, uint32_t *delay_ms);
+/* The number of frames, without decoding them. */
+uint32_t siv_webp_frames(const siv_webp *s);
+
 void siv_webp_close(siv_webp *s);
 
 #endif

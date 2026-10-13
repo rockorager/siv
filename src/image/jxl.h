@@ -17,6 +17,10 @@ int siv_jxl_open(const uint8_t *data, size_t len, uint64_t max_pixels, siv_jxl *
                  uint32_t *height, int *depth16, int *linear, const uint8_t **icc, size_t *icc_len,
                  uint16_t *primaries, uint16_t *transfer, uint32_t *loops);
 int siv_jxl_next(siv_jxl *s, uint8_t *rgba, uint32_t *delay_ms);
+/* The number of frames, read without decoding their pixels; 0 if it
+ * cannot tell. */
+uint32_t siv_jxl_frames(const siv_jxl *s);
+
 void siv_jxl_close(siv_jxl *s);
 
 #endif

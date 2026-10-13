@@ -39,6 +39,9 @@ struct siv_wuffs {
     /* The ICC profile, decompressed. */
     uint8_t *icc;
     size_t icc_len;
+    /* The file, for counting frames. */
+    const uint8_t *data;
+    size_t len;
 };
 
 /* Profiles larger than this are not worth reading. */
@@ -146,6 +149,8 @@ int siv_wuffs_open(const uint8_t *data, size_t len, uint64_t max_pixels, siv_wuf
         return SIV_WUFFS_UNSUPPORTED;
     }
     s->src = wuffs_base__ptr_u8__reader((uint8_t *)data, len, true);
+    s->data = data;
+    s->len = len;
     wuffs_base__image_decoder__set_report_metadata(s->dec, WUFFS_BASE__FOURCC__ICCP, true);
     wuffs_base__image_config ic;
     int result = SIV_WUFFS_INVALID;
@@ -231,6 +236,23 @@ int siv_wuffs_next(siv_wuffs *s, uint8_t *rgba, uint32_t *delay_ms) {
     *delay_ms = ms > 0xffffffffu ? 0xffffffffu : (uint32_t)ms;
     memcpy(rgba, s->canvas, size);
     return SIV_WUFFS_OK;
+}
+
+uint32_t siv_wuffs_frames(const siv_wuffs *s) {
+    /* JPEG has one frame; PNG and GIF frames are counted by a second
+     * decoder reading only frame headers, which skips pixel data. */
+    if (wuffs_base__magic_number_guess_fourcc(wuffs_base__make_slice_u8((uint8_t *)s->data, s->len), true) ==
+        WUFFS_BASE__FOURCC__JPEG)
+        return 1;
+    wuffs_base__image_decoder *dec = make_decoder(s->data, s->len);
+    if (!dec) return 0;
+    wuffs_base__io_buffer src = wuffs_base__ptr_u8__reader((uint8_t *)s->data, s->len, true);
+    uint32_t n = 0;
+    if (wuffs_base__image_decoder__decode_image_config(dec, NULL, &src).repr == NULL) {
+        while (n < UINT32_MAX && wuffs_base__image_decoder__decode_frame_config(dec, NULL, &src).repr == NULL) n++;
+    }
+    free(dec);
+    return n;
 }
 
 uint32_t siv_wuffs_loops(const siv_wuffs *s) {

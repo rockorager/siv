@@ -21,6 +21,10 @@ struct siv_jxl {
     uint32_t tps_num, tps_den;
     uint8_t *icc;
     int done;
+    int animated;
+    /* The file, for counting frames. */
+    const uint8_t *data;
+    size_t len;
 };
 
 void siv_jxl_close(siv_jxl *s) {
@@ -115,6 +119,9 @@ int siv_jxl_open(const uint8_t *data, size_t len, uint64_t max_pixels, siv_jxl *
     s->height = info.ysize;
     s->tps_num = info.have_animation ? info.animation.tps_numerator : 0;
     s->tps_den = info.have_animation ? info.animation.tps_denominator : 0;
+    s->animated = info.have_animation;
+    s->data = data;
+    s->len = len;
     *width = info.xsize;
     *height = info.ysize;
     *depth16 = deep;
@@ -163,4 +170,20 @@ int siv_jxl_next(siv_jxl *s, uint8_t *rgba, uint32_t *delay_ms) {
             return SIV_WUFFS_INVALID;
         }
     }
+}
+
+uint32_t siv_jxl_frames(const siv_jxl *s) {
+    if (!s->animated) return 1;
+    /* A second decoder asked only for frame headers, which skips the
+     * frames' pixel data. */
+    JxlDecoder *d = JxlDecoderCreate(NULL);
+    if (!d) return 0;
+    uint32_t n = 0;
+    if (JxlDecoderSubscribeEvents(d, JXL_DEC_FRAME) == JXL_DEC_SUCCESS &&
+        JxlDecoderSetInput(d, s->data, s->len) == JXL_DEC_SUCCESS) {
+        JxlDecoderCloseInput(d);
+        while (n < UINT32_MAX && JxlDecoderProcessInput(d) == JXL_DEC_FRAME) n++;
+    }
+    JxlDecoderDestroy(d);
+    return n;
 }

@@ -13,7 +13,7 @@ struct siv_webp {
     WebPDemuxer *demux;
     WebPChunkIterator icc;
     int has_icc;
-    uint32_t width, height;
+    uint32_t width, height, frames;
     int last_ts;
 };
 
@@ -61,6 +61,7 @@ int siv_webp_open(const uint8_t *data, size_t len, uint64_t max_pixels, siv_webp
     *width = w;
     *height = h;
     *loops = info.loop_count;
+    s->frames = info.frame_count;
     *out = s;
     return SIV_WUFFS_OK;
 invalid:
@@ -79,4 +80,8 @@ int siv_webp_next(siv_webp *s, uint8_t *rgba, uint32_t *delay_ms) {
     *delay_ms = ts > s->last_ts ? (uint32_t)(ts - s->last_ts) : 0;
     s->last_ts = ts;
     return SIV_WUFFS_OK;
+}
+
+uint32_t siv_webp_frames(const siv_webp *s) {
+    return s->frames;
 }

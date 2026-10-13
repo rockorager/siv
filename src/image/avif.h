@@ -16,6 +16,9 @@ int siv_avif_open(const uint8_t *data, size_t len, uint64_t max_pixels, siv_avif
                   uint32_t *height, int *depth16, const uint8_t **icc, size_t *icc_len, uint16_t *primaries,
                   uint16_t *transfer, uint32_t *loops);
 int siv_avif_next(siv_avif *s, uint8_t *rgba, uint32_t *delay_ms);
+/* The number of frames, without decoding them. */
+uint32_t siv_avif_frames(const siv_avif *s);
+
 void siv_avif_close(siv_avif *s);
 
 #endif

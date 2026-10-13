@@ -92,3 +92,7 @@ int siv_avif_next(siv_avif *s, uint8_t *rgba, uint32_t *delay_ms) {
     *delay_ms = ms > 0 && ms < 4e9 ? (uint32_t)(ms + 0.5) : 0;
     return SIV_WUFFS_OK;
 }
+
+uint32_t siv_avif_frames(const siv_avif *s) {
+    return s->dec->imageCount < 0 ? 0 : (uint32_t)s->dec->imageCount;
+}
