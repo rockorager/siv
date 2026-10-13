@@ -520,7 +520,10 @@ pub export fn siv_draw_image(handle: t.Draw, image: t.Image, dst: t.Rect, src: t
             const fl = try runtime.flags(t.ImageFlags, fl_raw);
             try finite(.{o});
             const whole = sr.x == 0 and sr.y == 0 and sr.width == 0 and sr.height == 0;
-            if (img.vector) |doc| return drawVector(self, d, doc, img.logicalSize(), try rectOf(dr), if (whole) null else try rectOf(sr), o, .transparent);
+            if (img.vector) |doc| {
+                try keepVector(self, d, img);
+                return drawVector(self, d, doc, img.logicalSize(), try rectOf(dr), if (whole) null else try rectOf(sr), o, .transparent);
+            }
             const s = if (whole) Rect.xywh(0, 0, @floatFromInt(img.width), @floatFromInt(img.height)) else try rectOf(sr);
             try d.images.ensureUnusedCapacity(self.gpa(), 1);
             d.builder.image(.{ .image = img.sceneRef(), .src = s, .dst = try rectOf(dr), .opacity = o, .filter = if (fl.nearest) .nearest else .linear }) catch |err| return mapScene(err);
@@ -545,12 +548,23 @@ pub export fn siv_draw_icon(handle: t.Draw, name: ?[*]const u8, name_len: usize,
                 if (icons.pending(names, size, scale, fl.rtl)) d.wanted_fonts = true;
                 return;
             };
-            if (img.vector) |doc| return drawVector(self, d, doc, img.logicalSize(), r, null, 1, fg);
+            if (img.vector) |doc| {
+                try keepVector(self, d, img);
+                return drawVector(self, d, doc, img.logicalSize(), r, null, 1, fg);
+            }
             try d.images.ensureUnusedCapacity(self.gpa(), 1);
             d.builder.image(.{ .image = img.sceneRef(), .src = .xywh(0, 0, @floatFromInt(img.width), @floatFromInt(img.height)), .dst = r }) catch |err| return mapScene(err);
             d.images.appendAssumeCapacity(img.retain());
         }
     }.f, .{ name, name_len, dst, color, flags });
+}
+
+/// The list keeps a vector image alive when it has embedded images,
+/// whose pixels it references.
+fn keepVector(self: *App, d: *DrawState, img: *ui.Image) Error!void {
+    if (!img.vector.?.has_images) return;
+    try d.images.ensureUnusedCapacity(self.gpa(), 1);
+    d.images.appendAssumeCapacity(img.retain());
 }
 
 /// A vector image drawn into `dst` (its part `src`, in its logical
