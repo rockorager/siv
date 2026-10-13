@@ -597,8 +597,8 @@ pub const Txn = struct {
         try checkParagraph(.{ .indent = .{ .start = props.paragraph.indent_start, .end = props.paragraph.indent_end, .first_line = props.paragraph.first_line_indent }, .spacing = .{ .line_spacing = props.paragraph.line_spacing, .line_height = props.paragraph.line_height }, .gaps = .{ .before = props.paragraph.space_before, .after = props.paragraph.space_after }, .tab_width = props.paragraph.tab_width });
         var prev: f32 = -std.math.inf(f32);
         for (props.tab_stops) |stop| {
-            if (!finite(stop) or stop <= prev) return error.InvalidArgument;
-            prev = stop;
+            if (!finite(stop.position) or stop.position <= prev) return error.InvalidArgument;
+            prev = stop.position;
         }
         try t.reserve();
         const fonts = t.win.fonts;
@@ -606,10 +606,12 @@ pub const Txn = struct {
         const language = try fonts.intern(props.style.language);
         const d = n.textData();
         const old = d.*;
-        const stops_changed = !std.mem.eql(f32, old.props.tab_stops, props.tab_stops);
-        const stops = if (stops_changed) try t.own(f32, props.tab_stops) else old.props.tab_stops;
+        const stops_changed = !std.meta.eql(old.props.tab_stops.len, props.tab_stops.len) or for (old.props.tab_stops, props.tab_stops) |a, b| {
+            if (!std.meta.eql(a, b)) break true;
+        } else false;
+        const stops = if (stops_changed) try t.own(node_mod.TabStop, props.tab_stops) else old.props.tab_stops;
         t.touch(id);
-        if (stops_changed) t.release(f32, old.props.tab_stops);
+        if (stops_changed) t.release(node_mod.TabStop, old.props.tab_stops);
         d.props = props;
         d.props.tab_stops = stops;
         d.props.style.family = fonts.name(family);
@@ -621,7 +623,8 @@ pub const Txn = struct {
         if (old.family != family or old.language != language or os.size != ns.size or os.weight != ns.weight or os.weight_value != ns.weight_value or os.slant != ns.slant or os.width != ns.width or os.size_role != ns.size_role) {
             t.win.markShape(id);
         } else if (old.props.wrap != props.wrap or old.props.break_words != props.break_words or stops_changed or
-            !std.meta.eql(old.props.paragraph, props.paragraph))
+            !std.meta.eql(old.props.paragraph, props.paragraph) or old.props.hyphenate != props.hyphenate or
+            old.props.optimal != props.optimal or (old.props.alignment == .justify) != (props.alignment == .justify))
         {
             // The layout cache keys on the width only: shape again.
             t.win.markShape(id);

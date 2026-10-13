@@ -23,6 +23,8 @@ cache: text.FontCache,
 /// registered families resolve.
 database: ?text.fontconfig.Database = null,
 pool: ?*Pool = null,
+/// Hyphenation patterns by language, parsed on first use (D13).
+hyphenation: text.hyphen.Hyphenation,
 /// Interned family and language names; index 0 is "".
 names: std.StringArrayHashMapUnmanaged(void) = .empty,
 /// Faces registered by family name (fonts added from bytes), in the
@@ -79,7 +81,7 @@ pub const Listener = struct {
 };
 
 pub fn init(gpa: std.mem.Allocator) error{OutOfMemory}!Fonts {
-    var f: Fonts = .{ .gpa = gpa, .cache = .init(gpa) };
+    var f: Fonts = .{ .gpa = gpa, .cache = .init(gpa), .hyphenation = .init(gpa) };
     errdefer f.deinit();
     _ = try f.intern("");
     f.default_family = try f.intern("sans-serif");
@@ -106,6 +108,7 @@ pub fn deinit(f: *Fonts) void {
     for (f.names.keys()) |k| f.gpa.free(k);
     f.names.deinit(f.gpa);
     if (f.database) |*db| db.deinit();
+    f.hyphenation.deinit();
     f.cache.deinit();
     f.* = undefined;
 }

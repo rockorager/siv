@@ -55,6 +55,7 @@ pub const Scroll = node.Scroll;
 pub const TextAlign = node.TextAlign;
 pub const TextStyle = node.TextStyle;
 pub const FontWidth = node.Width;
+pub const TabStop = node.TabStop;
 pub const cssWeight = node.cssWeight;
 pub const Text = node.Text;
 pub const Fit = node.Fit;
@@ -95,6 +96,8 @@ pub const Sink = layers.Sink;
 pub const semantics = @import("semantics.zig");
 pub const input = @import("input.zig");
 pub const access = @import("access.zig");
+/// Text nodes' shaped paragraphs and layouts, for tests that check lines.
+pub const text_node = @import("text_node.zig");
 pub const keysym = input.keysym;
 
 test {

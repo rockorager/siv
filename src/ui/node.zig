@@ -452,10 +452,23 @@ pub const Text = struct {
     /// Paragraph defaults (D13); paragraph spans override them. Its
     /// alignment stays null: `alignment` is the node's.
     paragraph: ParagraphStyle = .{},
-    /// Tab stops in pixels from the start margin, increasing. Owned by the
-    /// tree.
-    tab_stops: []const f32 = &.{},
+    /// Tab stops from the start margin, increasing. Owned by the tree.
+    tab_stops: []const TabStop = &.{},
+    /// Break words at their language's hyphenation points (D13).
+    hyphenate: bool = false,
+    /// Knuth and Plass's total-fit line breaking, for document views.
+    optimal: bool = false,
+
+    /// Whether lines depend on the exact width they were laid out at, so
+    /// a layout built for another width cannot serve.
+    pub fn exactWidth(t: Text, paragraphs: []const ParagraphSpan) bool {
+        if (t.alignment == .justify or t.optimal) return true;
+        for (paragraphs) |sp| if (sp.style.alignment == .justify) return true;
+        return false;
+    }
 };
+
+pub const TabStop = text.layout.TabStop;
 
 pub const Fit = enum(u8) { fill, contain, cover, none };
 

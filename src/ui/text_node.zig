@@ -165,16 +165,22 @@ pub fn layoutFor(win: *Window, id: NodeId, width: ?f32) error{OutOfMemory}!?*con
     if (c.layout) |*l| {
         const built: f32 = c.layout_width orelse std.math.inf(f32);
         const want: f32 = width orelse std.math.inf(f32);
-        if (l.width <= want and want <= built) return l;
+        // Justified and total-fit lines depend on the exact width.
+        const exact = n.textData().props.exactWidth(n.textData().paragraphs);
+        if (if (exact) built == want else l.width <= want and want <= built) return l;
     }
-    // Lines are aligned in the node at paint time (`lineShift`).
+    // Lines are aligned in the node at paint time (`lineShift`); only
+    // justification needs the layout.
     const d = n.textData();
     const l = text.Layout.init(win.gpa, win.scratch.allocator(), &win.fonts.cache, &c.paragraph.?, .{
         .width = width,
-        .alignment = .start,
+        .alignment = if (d.props.alignment == .justify) .justify else .start,
         .paragraphs = try paragraphRuns(win, id),
         .tab_stops = d.props.tab_stops,
         .break_words = d.props.break_words,
+        .hyphenate = d.props.hyphenate,
+        .hyphenation = &win.fonts.hyphenation,
+        .optimal = d.props.optimal,
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => unreachable, // finite, non-negative widths only
