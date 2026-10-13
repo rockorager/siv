@@ -42,4 +42,5 @@ test {
     _ = @import("abi/print.zig");
     _ = @import("abi/image.zig");
     _ = @import("abi/fonts.zig");
+    _ = @import("abi/rich_text.zig");
 }
