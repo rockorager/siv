@@ -136,6 +136,12 @@ fn writeStruct(w: *Writer, s: Schema, st: schema.Struct) !void {
         try w.writeByte(' ');
         try oneLine(w, f.doc);
         try w.writeByte('\n');
+        if (m.fieldAlias(st.name, f.name)) |a| {
+            // Either name in, both out.
+            try w.print("---@field {s}? ", .{a});
+            try writeType(w, s, f.type, if (output) .output else .input);
+            try w.print(" The same as `{s}`, which is a Lua keyword.\n", .{f.name});
+        }
     }
     try w.writeByte('\n');
     if (st.kind == .value) {

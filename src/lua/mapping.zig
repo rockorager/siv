@@ -46,7 +46,7 @@ pub const unbound = [_]struct { []const u8, []const u8 }{
     .{ "siv_set_data", "raw node memory under a pointer key; Lua keeps state in tables" },
     .{ "siv_node_get_data", "raw node memory under a pointer key; Lua keeps state in tables" },
     .{ "siv_external_get_wayland", "hands native embedders wl_display and wl_surface pointers" },
-    .{ "siv_job_start", "work runs on a worker thread, where Lua cannot" },
+    .{ "siv_job_start", "work runs on a worker thread, where this Lua state cannot: job.zig binds it by hand, running the work in a Lua state of its own" },
 };
 
 /// Descriptor fields the binding leaves at zero.
@@ -54,6 +54,21 @@ pub const unbound_fields = [_]struct { []const u8, []const u8, []const u8 }{
     .{ "siv_app_desc", "allocator", "allocator hooks are C functions; Lua uses its own allocator" },
     .{ "siv_external_desc", "release", "runs on the compositor thread, where Lua cannot; releases arrive as events instead" },
 };
+
+/// Second names of struct fields whose C names are Lua keywords: Lua
+/// tables take either name and get both, so `{ start = 0, stop = 4 }`
+/// needs no `["end"]`. Checked against the schema at compile time.
+pub const field_aliases = [_]struct { []const u8, []const u8, []const u8 }{
+    .{ "siv_text_span", "end", "stop" },
+    .{ "siv_paragraph_span", "end", "stop" },
+};
+
+/// The alias of a struct's field, if it has one.
+pub fn fieldAlias(st: []const u8, field: []const u8) ?[]const u8 {
+    @setEvalBranchQuota(1_000_000);
+    for (field_aliases) |a| if (std.mem.eql(u8, a[0], st) and std.mem.eql(u8, a[1], field)) return a[2];
+    return null;
+}
 
 /// Callbacks that run once to complete an asynchronous call.
 pub const async_callbacks = [_][]const u8{ "siv_image_load_fn", "siv_portal_fn", "siv_clipboard_fn" };
@@ -266,6 +281,16 @@ pub fn isPxDimension(name: []const u8) bool {
 pub fn validate(comptime s: Schema) ?[]const u8 {
     @setEvalBranchQuota(100_000_000);
     for (unbound) |u| if (!hasFunction(s, u[0])) return "unbound lists a function the schema lacks";
+    for (field_aliases) |a| {
+        const d = s.find(a[0]) orelse return "field_aliases lists a struct the schema lacks";
+        if (d != .@"struct") return "field_aliases lists a non-struct";
+        var found = false;
+        for (d.@"struct".fields) |f| {
+            if (std.mem.eql(u8, f.name, a[1])) found = true;
+            if (std.mem.eql(u8, f.name, a[2])) return "a field alias names a field";
+        }
+        if (!found) return "field_aliases lists a field the schema lacks";
+    }
     for (unbound_fields) |u| {
         const d = s.find(u[0]) orelse return "unbound_fields lists a struct the schema lacks";
         if (d != .@"struct") return "unbound_fields lists a non-struct";

@@ -249,6 +249,68 @@ test "asynchronous calls: callbacks, or a coroutine that waits" {
     );
 }
 
+test "jobs from Lua: work in a state of its own, results at a safe point" {
+    _ = try run(prologue ++
+        \\local function sum(n, t)
+        \\  local s = 0
+        \\  for i = 1, n do s = s + i end
+        \\  return s, { label = string.format("%d", s), list = { t.x, 2.5 } }, nil, true
+        \\end
+        \\local got, info, flag, failed, waited
+        \\app:job_start("compute", sum, { 100, { x = "y" } }, function(ok, s, t, none, yes)
+        \\  assert(ok, tostring(s))
+        \\  got, info, flag = s, t, yes
+        \\  assert(none == nil)
+        \\end)
+        \\app:job_start(nil, function() error("boom") end, nil, function(ok, msg)
+        \\  failed = not ok and msg:find("boom")
+        \\end)
+        \\siv.spawn(function()
+        \\  waited = app:job_start({ "compute" }, function(a, b) return a * b end, { 6, 7 })
+        \\  local ok, err = pcall(app.job_start, app, nil, function() error("inside") end)
+        \\  assert(not ok and err:find("inside"), tostring(err))
+        \\end)
+        \\for _ = 1, 500 do
+        \\  if got and failed and waited then break end
+        \\  app:dispatch(10)
+        \\end
+        \\assert(got == 5050 and info.label == "5050" and info.list[1] == "y" and info.list[2] == 2.5)
+        \\assert(flag == true and failed and waited == 42)
+        \\local up = 3
+        \\local ok, err = pcall(app.job_start, app, nil, function() return up end, nil, function() end)
+        \\assert(not ok and err:find("'up'"), tostring(err))
+        \\ok, err = pcall(app.job_start, app, nil, function(f) return f end, { print }, function() end)
+        \\assert(not ok and err:find("numbers, strings"), tostring(err))
+        \\ok, err = pcall(app.job_start, app, nil, function() return 1 end)
+        \\assert(not ok and err:find("coroutine"), tostring(err))
+        \\-- Values of this state stay here: the job sees no siv.
+        \\local saw
+        \\app:job_start(nil, function() return require == nil and io == nil and os == nil end, nil, function(ok, v) saw = v end)
+        \\for _ = 1, 500 do
+        \\  if saw ~= nil then break end
+        \\  app:dispatch(10)
+        \\end
+        \\assert(saw == true)
+    );
+}
+
+test "span ends: stop, or end, which is a keyword" {
+    _ = try run(prologue ++
+        \\local a, b
+        \\win:update(function(txn, root)
+        \\  a = txn:text(root, "bold words")
+        \\  txn:set_text_spans(a, { spans = { { start = 0, stop = 4, flags = "weight", weight = "bold" } } })
+        \\  b = txn:text(root, "bold words")
+        \\  txn:set_text_spans(b, { spans = { { start = 0, ["end"] = 4, flags = "weight", weight = "bold" } } })
+        \\end)
+        \\for _, n in ipairs{ a, b } do
+        \\  local run = n:get_text_run(1)
+        \\  assert(run.start == 0 and run.stop == 4 and run["end"] == 4, tostring(run.stop))
+        \\  assert(n:get_text_run(5).stop == 10)
+        \\end
+    );
+}
+
 test "themed icons from Lua: loads, image nodes, buttons, and canvases" {
     _ = try run(prologue ++
         \\app:add_icon_path("test/icons/themes")

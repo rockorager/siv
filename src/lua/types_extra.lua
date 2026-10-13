@@ -36,6 +36,30 @@ function siv.sleep(app, ms) end
 ---@param ms integer
 function app:sleep(ms) end
 
+---Runs work(table.unpack(args)) on siv's worker pool: flags "compute" for
+---CPU-bound work, nil for blocking work. work runs in a Lua state of its own
+---with the base, string, table, math, and utf8 libraries and nothing of siv's;
+---it may not use locals from outside it, and its arguments and results are
+---copied (nil, booleans, numbers, strings, and tables of them). done(true,
+---results...) or done(false, message) runs at a safe point on the
+---application's thread; without done, it waits in the running coroutine and
+---returns the results, raising the job's error.
+---@param flags? "compute"|string[]|table<string, boolean>
+---@param work fun(...): ...
+---@param args? any[]
+---@param done? fun(ok: boolean, ...)
+---@return ...
+function app:job_start(flags, work, args, done) end
+
+---app:job_start as a function of the application.
+---@param app siv.app
+---@param flags? "compute"|string[]|table<string, boolean>
+---@param work fun(...): ...
+---@param args? any[]
+---@param done? fun(ok: boolean, ...)
+---@return ...
+function siv.job_start(app, flags, work, args, done) end
+
 ---Runs fn(txn, root, ...) in a transaction on the window and commits it; if fn
 ---raises, the transaction is aborted and the error goes on. Returns what fn
 ---returns.

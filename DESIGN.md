@@ -3522,7 +3522,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - **Descriptors** are tables. Zero is the default, as in C; unknown
     fields are errors (typos do not pass silently), read with `lua_next`,
     so fields from a metatable's `__index` do not count; reserved fields
-    are not among them. Enums are names (`axis = "column"`) or integers,
+    are not among them. A field whose C name is a Lua keyword also
+    takes a plain name, and output tables carry both: span ends are
+    `stop` or `["end"]` (`mapping.zig` lists the aliases).
+    Enums are names (`axis = "column"`) or integers,
     any integer for open enums (keysyms) and only the values named for
     closed ones; flags a name, a list, a set, or an integer. Value structs take named or positional fields; colors also
     take CSS hex strings, and a color table without alpha is opaque (the
@@ -3590,10 +3593,27 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     (needs the debug library, and breaks on any rename); polling file
     times on a timer (wakes an idle application).
   - **Threads.** A Lua state runs on the application's thread only;
-    nothing in the binding runs elsewhere.
+    nothing in the binding runs elsewhere, except a job's work.
+  - **Jobs.** `app:job_start(flags, work, args, done)` runs `work` on
+    the worker pool through `siv_job_start` (`job.zig`, written by hand
+    since the work cannot run in the application's state): `work` runs
+    in a fresh Lua state of its own on the worker, with only the base,
+    string, table, math, and utf8 libraries, and gets copies of `args`;
+    copies of its results come back, and `done(true, ...)` or
+    `done(false, message)` runs at a safe point. Copies take nil,
+    booleans, numbers, strings, and tables of them, 64 deep; `work`
+    may use no upvalues but `_ENV`, so the error names a local it
+    captured rather than its being nil on the worker. Without `done`
+    it waits in the running coroutine like the asynchronous calls.
+    Alternatives: no jobs in Lua (CPU work would block the application
+    thread or need a C module); one long-lived worker state (shared
+    globals across jobs and a lock where siv's pool already schedules);
+    lanes-style shared tables (a second runtime to trust). Reverse if
+    starting a state per job shows up in profiles (then keep a state per
+    worker).
   - **Tests.** `zig build test-lua` runs the binding against `libsiv.so`
     on the headless backend (allowlist, errors, descriptors, ownership,
-    callbacks, coroutines, the clipboard, hot reload through the real
+    callbacks, coroutines, jobs, the clipboard, hot reload through the real
     watcher). The headless tests (D24) run `examples/*.lua` unchanged
     through the binding compiled into their binary, with `app_create`
     wrapped to pick the headless backend, and compare golden images under
@@ -4074,6 +4094,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | artifacts `siv` (libsiv.so) and `siv-static` (libsiv.a); `notices` named path (D25) | two artifacts named `siv` | a Zig package could not install libsiv.so, or build as a dependency |
   | stretched nodes keep their own largest size; the root's stretch documented (D26) | the parent's stretch winning | a stretched node's `max_width` did nothing |
   | `SIV_VISUAL_CLIP` clips the node's own image and canvas (D26) | descendants only | rounded images needed a wrapper box |
+  | Lua `stop` for span ends (D23) | `["end"]` only | `end` is a Lua keyword; both names work and output tables carry both |
+  | Lua `app:job_start` (D23) | `siv_job_start` unbound | CPU work from Lua ran on the application's thread; the work now runs in a Lua state of its own on the worker pool |
   | `siv_node_focus` shows the ring after a key (D16) | `siv_node_focus` never showing it | focus moved by arrow keys in roving widgets was unmarked |
   | reserved fields in `siv_text_span`, `siv_paragraph_span`, `siv_tab_stop`, `siv_text_metrics` (D2) | — | frozen value structs that will plausibly grow; descriptors grow by appending |
   | `siv_tablet_sample.wheel` and four reserved fields (D16) | — | the axes flags named a wheel the sample could not carry; tablets grow axes, and a frozen struct cannot |

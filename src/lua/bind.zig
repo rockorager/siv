@@ -639,7 +639,10 @@ fn fieldMap(comptime name: []const u8) type {
         const map = blk: {
             var kvs: []const struct { []const u8, usize } = &.{};
             for (st.fields, 0..) |f, i| {
-                if (!m.isUnboundField(name, f.name) and f.type != .user_data) kvs = kvs ++ .{.{ f.name, i }};
+                if (!m.isUnboundField(name, f.name) and f.type != .user_data) {
+                    kvs = kvs ++ .{.{ f.name, i }};
+                    if (m.fieldAlias(name, f.name)) |a| kvs = kvs ++ .{.{ a, i }};
+                }
             }
             break :blk std.StaticStringMap(usize).initComptime(kvs);
         };
@@ -793,6 +796,10 @@ pub fn pushStruct(st: *State, L: *L_, comptime name: []const u8, p: *const ZigTy
                 else => {
                     pushScalar(st, L, f.type, @field(p, f.name), false);
                     c.lua_setfield(L, -2, f.name ++ "");
+                    if (comptime m.fieldAlias(name, f.name)) |a| {
+                        pushScalar(st, L, f.type, @field(p, f.name), false);
+                        c.lua_setfield(L, -2, a ++ "");
+                    }
                 },
             }
         }

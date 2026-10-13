@@ -16,6 +16,7 @@ const c = lua.c;
 const bind = @import("bind.zig");
 const m = @import("mapping.zig");
 const hot = @import("hot.zig");
+const job = @import("job.zig");
 const siv = @import("siv");
 
 pub const mapping = m;
@@ -172,6 +173,8 @@ pub fn luaopen_siv(Lq: ?*L_) callconv(.c) c_int {
     c.lua_setfield(L, internal, "is_error");
     pushFn(L, st, handleValue);
     c.lua_setfield(L, internal, "handle_value");
+    pushFn(L, st, job.start);
+    c.lua_setfield(L, internal, "job_start");
     c.lua_pushvalue(L, internal);
     setRegistry(L, "siv.internal");
 

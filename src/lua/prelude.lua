@@ -151,6 +151,60 @@ function methods.app.sleep(app, ms)
 end
 siv.sleep = methods.app.sleep
 
+-- Jobs ------------------------------------------------------------------
+
+local function wantsCompute(flags)
+	if flags == nil then
+		return false
+	elseif flags == "compute" then
+		return true
+	elseif type(flags) == "table" then
+		if flags.compute then
+			return true
+		end
+		for _, f in ipairs(flags) do
+			if f == "compute" then
+				return true
+			end
+		end
+		return false
+	elseif type(flags) == "number" then
+		return flags & 1 ~= 0
+	end
+	error("job_start: flags must be nil, \"compute\", or a list or set of names", 3)
+end
+
+--- Runs work(table.unpack(args)) on siv's worker pool (siv_job_start, D6):
+--- "compute" for CPU-bound work, nil for blocking work. work runs in a
+--- Lua state of its own on the worker, with the base, string, table,
+--- math, and utf8 libraries and nothing of siv's; it may not use locals
+--- from outside it (upvalues), and its arguments and results are copied:
+--- nil, booleans, numbers, strings, and tables of them. done(true,
+--- results...) or done(false, message) runs on the application's thread
+--- at a safe point. Without done, it waits in the running coroutine and
+--- returns the results, raising the job's error.
+function methods.app.job_start(app, flags, work, args, done)
+	local compute = wantsCompute(flags)
+	if type(work) ~= "function" then
+		error("job_start: work must be a function", 2)
+	end
+	if done ~= nil then
+		internal.job_start(app, compute, work, args, done)
+		return
+	end
+	needCoroutine("job_start", 2)
+	local co = coroutine.running()
+	internal.job_start(app, compute, work, args, function(...)
+		resume(co, ...)
+	end)
+	local results = table.pack(coroutine.yield())
+	if not results[1] then
+		error(results[2], 0)
+	end
+	return table.unpack(results, 2, results.n)
+end
+siv.job_start = methods.app.job_start
+
 -- Hot reload ----------------------------------------------------------
 --
 -- siv-lua --watch runs the main chunk again when it or a Lua module it
