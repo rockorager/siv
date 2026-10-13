@@ -264,6 +264,8 @@ const Out = struct {
     fds: std.ArrayList(i32) = .empty,
     serial: u32 = 0,
     sent: usize = 0,
+    /// The body holds a secret: wiped when freed, never reused.
+    secret: bool = false,
 
     fn len(o: *const Out) usize {
         return o.head.items.len + o.body.items.len;
@@ -271,6 +273,7 @@ const Out = struct {
 
     fn deinit(o: *Out, gpa: Allocator) void {
         o.head.deinit(gpa);
+        if (o.secret) std.crypto.secureZero(u8, o.body.allocatedSlice());
         o.body.deinit(gpa);
         for (o.fds.items) |fd| _ = linux.close(fd);
         o.fds.deinit(gpa);
@@ -292,6 +295,13 @@ pub fn newBuilder(c: *Connection, header: message.Header) Builder {
     return b;
 }
 
+/// A builder for a body holding a secret, such as a passphrase: every
+/// copy of it is wiped when freed, sent or not, and its buffer is not
+/// reused.
+pub fn newSecretBuilder(c: *Connection, header: message.Header) Builder {
+    return .initSecret(&c.gpa, header);
+}
+
 fn recycle(c: *Connection, buf: *std.ArrayList(u8)) void {
     if (buf.capacity == 0 or buf.capacity > max_spare_capacity or c.spare.items.len == c.spare.capacity) {
         buf.deinit(c.gpa);
@@ -305,7 +315,7 @@ fn recycle(c: *Connection, buf: *std.ArrayList(u8)) void {
 /// Frees a message that went out, keeping its buffers.
 fn sent(c: *Connection, o: *Out) void {
     c.recycle(&o.head);
-    c.recycle(&o.body);
+    if (!o.secret) c.recycle(&o.body);
     o.deinit(c.gpa);
 }
 
@@ -332,6 +342,7 @@ fn queue(c: *Connection, b: *Builder) Error!u32 {
     const serial = c.nextSerial();
     try message.encodeHeader(c.gpa, &o.head, &b.header, serial, b.body.signature(), b.body.bytes().len, b.body.fds.items.len);
     o.serial = serial;
+    o.secret = b.secret;
     o.body = b.body.buf;
     o.fds = b.body.fds;
     b.body.buf = .empty;

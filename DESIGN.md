@@ -2614,6 +2614,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       (`siv_dbus_message_status` says why), so a builder needs no check
       per call. A string read into too small a buffer reads nothing and
       reports its length, which is how the Lua binding grows its buffer.
+      A call flagged `secret` (a LUKS passphrase for UDisks2) is built
+      with an allocator that zeroes memory before freeing it and never
+      remaps, and the connection wipes its body after writing it rather
+      than reusing the buffer, so the secret does not linger in the heap
+      (siv-files' unlock dialog; the masked editor already keeps typed
+      text in locked memory, D15).
     - Calls take one callback with the reply, an error reply, or a
       failure (type `failed`: NoReply on timeout, Disconnected), at a safe
       point after the call returns. Signals are subscriptions on a match

@@ -504,6 +504,24 @@ test "dbus: names, calls with every type, errors, and deferred replies" {
     // The invocation is answered: its handle is stale.
     try testing.expectEqual(t.Result.error_invalid_handle, D.siv_dbus_invocation_new_reply(s.later, &reply));
 
+    // A secret's message (a passphrase) goes out like any other; siv
+    // wipes its copies (dbus/message.zig tests the wiping).
+    {
+        var sm: t.DbusMessage = .null;
+        try ok(D.siv_dbus_new_call(f.client, &.{ .destination = iface, .destination_len = iface.len, .path = path, .path_len = path.len, .interface = iface, .interface_len = iface.len, .member = "Later", .member_len = 5, .flags = .{ .secret = true } }, &sm));
+        writeStr(sm, 's', "hunter2");
+        const n = got.n;
+        const calls_before = s.calls;
+        try ok(D.siv_dbus_message_call(sm, 0, Got.onMessage, null, &got));
+        try f.until(wait(&s.calls, calls_before + 1));
+        var r2: t.DbusMessage = .null;
+        try ok(D.siv_dbus_invocation_new_reply(s.later, &r2));
+        writeStr(r2, 's', "unlocked");
+        try ok(D.siv_dbus_message_send(r2));
+        try f.until(wait(&got.n, n + 1));
+        try testing.expectEqualStrings("unlocked", got.textOf());
+    }
+
     // A call nobody answers times out.
     m = try newCall(f.client, iface, path, iface, "Later");
     writeStr(m, 's', "y");

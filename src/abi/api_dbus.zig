@@ -97,6 +97,7 @@ pub const decls = [_]Decl{
         .{ .name = "no_reply", .bit = 0, .doc = "No reply is wanted (siv_dbus_message_send only)." },
         .{ .name = "no_auto_start", .bit = 1, .doc = "Do not start the destination by D-Bus activation." },
         .{ .name = "interactive", .bit = 2, .doc = "The caller may be asked for authorization (polkit)." },
+        .{ .name = "secret", .bit = 3, .doc = "The arguments hold a secret, such as a passphrase: siv wipes every copy of the message it made once the message is sent or dropped, and does not reuse its memory." },
     }),
     descriptor("siv_dbus_message_desc", "A method call (siv_dbus_new_call) or a signal (siv_dbus_new_signal).", &.{
         .{ .name = "destination", .type = .string, .doc = "The bus name it goes to; required for calls on a bus, optional for signals (broadcast without)." },

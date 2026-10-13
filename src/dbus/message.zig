@@ -316,9 +316,18 @@ fn alignZero(data: []const u8, off: usize, a: usize) error{InvalidMessage}!usize
 pub const Builder = struct {
     header: Header,
     body: Encoder,
+    /// The body holds a secret (a passphrase): every copy of it is wiped
+    /// when freed, and a connection does not reuse its buffer.
+    secret: bool = false,
 
     pub fn init(gpa: Allocator, header: Header) Builder {
         return .{ .header = header, .body = .init(gpa) };
+    }
+
+    /// A builder for a secret body. `gpa` must outlive the builder and the
+    /// message's sending (a connection's own allocator field).
+    pub fn initSecret(gpa: *const Allocator, header: Header) Builder {
+        return .{ .header = header, .body = .init(wiping(gpa)), .secret = true };
     }
 
     pub fn deinit(b: *Builder) void {
@@ -471,4 +480,76 @@ fn fuzzParse(_: []const u8, smith: *std.testing.Smith) !void {
     var d = mm.body();
     while (d.peek() != null) try d.skip();
     try testing.expectEqual(m.bodyBytes().len, d.off);
+}
+
+/// An allocator over `child` that zeroes memory before freeing it, and
+/// moves instead of remapping so no copy is left behind.
+pub fn wiping(child: *const Allocator) Allocator {
+    return .{ .ptr = @constCast(child), .vtable = &wiping_vtable };
+}
+
+const wiping_vtable: Allocator.VTable = .{
+    .alloc = struct {
+        fn f(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret: usize) ?[*]u8 {
+            const child: *const Allocator = @ptrCast(@alignCast(ctx));
+            return child.vtable.alloc(child.ptr, len, alignment, ret);
+        }
+    }.f,
+    .resize = struct {
+        fn f(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret: usize) bool {
+            const child: *const Allocator = @ptrCast(@alignCast(ctx));
+            if (new_len < memory.len) std.crypto.secureZero(u8, memory[new_len..]);
+            return child.vtable.resize(child.ptr, memory, alignment, new_len, ret);
+        }
+    }.f,
+    .remap = struct {
+        fn f(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) ?[*]u8 {
+            return null;
+        }
+    }.f,
+    .free = struct {
+        fn f(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret: usize) void {
+            const child: *const Allocator = @ptrCast(@alignCast(ctx));
+            std.crypto.secureZero(u8, memory);
+            child.vtable.free(child.ptr, memory, alignment, ret);
+        }
+    }.f,
+};
+
+test "a secret builder wipes every buffer it frees, growing or not" {
+    // A child allocator that checks memory is zero when freed.
+    const Checking = struct {
+        frees: usize = 0,
+        dirty: usize = 0,
+
+        fn allocator(self: *@This()) Allocator {
+            return .{ .ptr = self, .vtable = &.{
+                .alloc = alloc,
+                .resize = Allocator.noResize,
+                .remap = Allocator.noRemap,
+                .free = free,
+            } };
+        }
+
+        fn alloc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, ret: usize) ?[*]u8 {
+            return std.testing.allocator.vtable.alloc(std.testing.allocator.ptr, len, alignment, ret);
+        }
+
+        fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret: usize) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.frees += 1;
+            if (!std.mem.allEqual(u8, memory, 0)) self.dirty += 1;
+            std.testing.allocator.vtable.free(std.testing.allocator.ptr, memory, alignment, ret);
+        }
+    };
+    var checking: Checking = .{};
+    const child = checking.allocator();
+    var b: Builder = .initSecret(&child, .{ .type = .method_call, .path = "/", .member = "M", .destination = "a.b" });
+    try b.body.writeString("hunter2");
+    // Growing moves the body (no resize in place here): the old buffer
+    // is freed, and must be wiped first.
+    for (0..64) |_| try b.body.writeString("padding that makes the body grow");
+    b.deinit();
+    try std.testing.expect(checking.frees > 1);
+    try std.testing.expectEqual(0, checking.dirty);
 }

@@ -273,7 +273,7 @@ fn messageOf(h: t.DbusMessage) Error!*Message {
 
 /// A new message on `c` with a builder made by `header`; header strings
 /// are copied into the message.
-fn newMessage(c: *Conn, kind: anytype, header: dbus.message.Header) Error!*Message {
+fn newMessage(c: *Conn, kind: anytype, header: dbus.message.Header, secret: bool) Error!*Message {
     const self = c.self;
     const gpa = self.gpa();
     var h = header;
@@ -295,7 +295,7 @@ fn newMessage(c: *Conn, kind: anytype, header: dbus.message.Header) Error!*Messa
     const m = try gpa.create(Message);
     errdefer gpa.destroy(m);
     m.* = .{ .self = self, .conn = c, .kind = kind, .text = text };
-    m.builder = c.bus.newBuilder(h);
+    m.builder = if (secret) c.bus.newSecretBuilder(h) else c.bus.newBuilder(h);
     m.enc = &m.builder.body;
     errdefer m.builder.deinit();
     try register(self, Message, &self.dbus.messages, m, message_tag);
@@ -329,7 +329,7 @@ pub export fn siv_dbus_new_call(handle: t.Dbus, desc: ?*const t.DbusMessageDesc,
                     .no_auto_start = fl.no_auto_start,
                     .allow_interactive_authorization = fl.interactive,
                 },
-            });
+            }, fl.secret);
             dest.* = @fromBackingInt(m.handle);
         }
     }.f(handle, desc, out));
@@ -348,7 +348,7 @@ pub export fn siv_dbus_new_signal(handle: t.Dbus, desc: ?*const t.DbusMessageDes
                 .path = (try optString(d.path, d.path_len)) orelse return error.InvalidArgument,
                 .interface = (try optString(d.interface, d.interface_len)) orelse return error.InvalidArgument,
                 .member = (try optString(d.member, d.member_len)) orelse return error.InvalidArgument,
-            });
+            }, false);
             dest.* = @fromBackingInt(m.handle);
         }
     }.f(handle, desc, out));
@@ -364,7 +364,7 @@ pub export fn siv_dbus_invocation_new_reply(invocation: t.DbusInvocation, out: ?
                 .type = .method_return,
                 .destination = if (d.has_sender) d.sender.slice() else null,
                 .reply_serial = d.serial,
-            });
+            }, false);
             m.invocation = inv;
             dest.* = @fromBackingInt(m.handle);
         }
