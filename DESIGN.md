@@ -625,6 +625,15 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     colors and linear, two-point conical, and sweep gradients; gradients
     interpolate premultiplied in linear light, and repeat/reflect use the
     stop range as the period (CSS, COLRv1).
+  - A layer can composite its content in sRGB (`Layer.srgb`, for SVG,
+    D11): the renderers encode every color drawn in it (solid paints,
+    gradient stops, shadows, glyph colors, image texels), so blending,
+    coverage, and gradient interpolation inside work on encoded values;
+    the layer is isolated and converts its result (unpremultiply,
+    transfer function, premultiply, through the same 16-bit tables in
+    both renderers) when it composites into a parent of the other space.
+    An isolated layer without the flag works in linear light even inside
+    one; a layer that is not isolated draws in its parent's space.
   - Image formats include opaque `bgrx8_srgb`, the XRGB8888 layout
     external video frames arrive in (D17).
   - Layer blend modes are the COLRv1 set (Porter-Duff and the W3C blend
@@ -741,7 +750,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     R8 and an RGBA16 atlas. Isolated layers render into per-depth FP16
     images and composite back with fixed-function source-over, or for other
     blend modes against a copy of their backdrop. A backdrop blur copies its
-    backdrop and runs the CPU's separable passes in FP32.
+    backdrop and runs the CPU's separable passes in FP32. Layers that
+    composite in sRGB (D11) get encoded colors at prepare time; image and
+    color glyph texels and a layer's texels on its way into a parent of
+    the other space convert in the shader through the CPU's 16-bit tables
+    (a sRGB-to-linear table joined the lookup buffer), so both renderers
+    match the `srgb` golden image.
   - Both renderers skip the group buffer of a layer that is isolated only
     for its opacity and holds one fill or stroke with a solid paint, one
     image, or one box shadow (`scene.foldedOpacity`): that draw with its
@@ -981,6 +995,15 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     layers 43 times with runs up to 290 px (FP16: 470 and 110). Each
     blend rounds to 8 bits, and the encode's dither cannot bring back what
     storage already rounded away.
+  - Exception: SVG content composites in sRGB, as the SVG specification
+    says (`color-interpolation` defaults to sRGB) and as icons were
+    designed: in linear light Breeze's translucent highlights and shading
+    looked lighter than in GTK or Qt (23% of its icons differed from
+    librsvg; with sRGB layers 0.16%, D19). Display lists have a layer
+    flag for it (`Layer.srgb`, D9), which the CPU and Vulkan renderers
+    implement with the same arithmetic and PDF ignores (it blends in
+    DeviceRGB, which is sRGB-encoded, D19 Printing). What an sRGB layer
+    holds composites onto its parent in linear light like any layer.
 - **Alternatives:** gamma-space blending everywhere (incorrect gradients and
   alpha); pure linear text (looks thin); 8-bit sRGB working images
   (banding, above).
@@ -2635,18 +2658,34 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       `siv_app_set_icon_theme` fixes one. A new theme or search path
       drops the cache, and image nodes showing icons load them again.
     - Cache: loaded icons by names, logical size (rounded), scale,
-      direction, fallbacks, and style, with misses remembered. Nothing is
-      evicted while the theme stays: an application shows a bounded set of
-      icons (the file manager's mime types among them), and a vector icon
-      is its paths. Reverse if a long-running application's icon set
-      grows without bound.
+      direction, fallbacks, and style, with misses remembered, within a
+      memory budget (16 MiB: a vector icon's document arena, a PNG's
+      pixels, and a small cost per entry), dropping the least recently
+      looked-up entries when a load would exceed it (loads in flight
+      stay). A dropped icon costs nothing on screen: display lists copy
+      paths and retain pixels; a node that paints it again loads it
+      again, so the budget sits far above what windows show (thousands of
+      vector icons, about 60 PNGs of 256 px).
     - Image nodes show an icon by name (`siv_image_view_desc.icon`, with
       `icon_size`): the node's intrinsic size is the icon's from the
       start, so nothing moves when it arrives; until then it shows
       nothing, and the window repaints icon nodes when a load finishes.
-      First frames do not wait for icons (they wait for settings, D19):
-      a lookup of a read theme and a parse take well under a millisecond,
-      so an icon misses at most the first frame. Canvases draw icons by
+      A window's first frame waits for the icons it shows, as long as it
+      may wait for the settings: 100 ms from the window's creation. The
+      frame is built (which starts the loads), but while icons load and
+      the time has not passed it is not committed; its changes go with
+      the commit of the frame that comes when the icons arrive or the
+      time is up. Measured end to end (`test-integration`,
+      `SIV_MEASURE=1`, ReleaseSafe, headless backend, stand-in portal,
+      the installed Adwaita): a window showing 20 icons (12 symbolic
+      at 16 px, 8 PNG at 48 px) presents its first frame, with all of
+      them, a median 11–13 ms after `App.create`, against 6.4 ms
+      without icons (the settings arrive after 6 ms): the theme's read
+      takes 3.5 ms and a load 10–150 µs (an SVG parse or a 48 px PNG
+      decode), on the blocking lane, with the general-purpose allocator
+      (the testing allocator's bookkeeping made loads ten times slower).
+      That fits the 100 ms well, so icons do not pop in; a slower disk delays the first frame by at most the
+      same 100 ms and then the icons arrive later. Canvases draw icons by
       name (`siv_draw_icon`) and draw again when a missing one loads, as
       with fonts (D28), as do printed pages. `siv_icon_load` delivers an
       icon as a `siv_image`, which does not follow later theme changes.
@@ -2692,10 +2731,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       moved onto it as SVG 1.1 says); opacity, mix-blend-mode, and
       isolation; clip paths; luminance and alpha masks; and the filters
       icons use: one feColorMatrix (matrix, saturate, hueRotate,
-      luminanceToAlpha) or one feGaussianBlur. Left out: text, embedded
-      images, patterns, markers, and other filters; an element whose
-      filter is not drawable draws without it (a drop shadow is lost,
-      not its shape). Of the installed themes, every one of 647 Adwaita
+      luminanceToAlpha) or one feGaussianBlur; embedded images (`image`
+      with a base64 `data:` URI in any format siv decodes, placed by
+      preserveAspectRatio, at most 1024 × 1024 pixels), which Adwaita's
+      full-color icons use for shading since release 45. Left out: text,
+      images in files, patterns, markers, and other filters; an element
+      whose filter is not drawable draws without it (a drop shadow is
+      lost, not its shape); color filters and mask luminance do not apply
+      to images, which then draw nothing. Of the installed themes, every one of 647 Adwaita
       and 8,704 Breeze SVGs parses.
     - Lowering: transforms are applied to the points, so paths reach the
       list in the root's user space; strokes under non-uniform transforms
@@ -2712,34 +2755,88 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       icons (Adwaita's masks recolor shapes white). A blur is an isolated
       layer clipped to the filter region whose content is blurred by a
       backdrop blur, which PDF leaves out (D9), so printed blurs are
-      sharp. The PDF writer draws an isolated layer ending in a dst_in
+      sharp. An embedded image's pixels live in the document's arena, so
+      a display list drawn from a document with images retains the
+      document (`Document.has_images`), unlike one of paths only.
+    - Clip paths that coincide with what they clip: renderers combine a
+      clip's coverage with a draw's by multiplying them (D9), which along
+      an edge the two share squares its coverage, and exporters (Adwaita
+      since 45) wrap every shape in a clip path of the same outline, so
+      edges came out thin and light (10% of Adwaita 48's full-color icons
+      differed from librsvg, whose clipping intersects the outlines
+      exactly). The lowering takes out of a clip layer what the clip path
+      does not cut: a fill that holds the clip path draws as the clip
+      path, one inside it as itself, and a nested layer whose clip lies
+      inside keeps only its own; what still needs the clip stays in
+      copies of the layer, in order (an isolated layer only loses its
+      clip when nothing needs it). Containment is tested on the flattened
+      outlines, within a thousandth of the view box (`svg/contain.zig`). The PDF writer draws an isolated layer ending in a dst_in
       layer through a soft mask of that layer's alpha, so masks print.
-    - Gradients interpolate in sRGB in SVG and in linear light in display
-      lists (D9): between stops of different colors the lowering adds
-      sub-stops computed in premultiplied sRGB, 16 per interval while at
-      most 256 fit, which keeps the result within half a level of 8 bits
-      of sRGB interpolation. Role colors are resolved when drawn, so the
-      sub-stops are computed then.
-    - Compositing: siv blends in linear light (D11), icon designers'
-      tools and every other renderer in sRGB, so translucent parts of
-      icons (Breeze's 20% white highlights and 33% black shading,
-      Adwaita's 35% inactive segments) look lighter in siv than in GTK
-      or Qt. Measured (`zig build test-integration-icons`: every SVG of
-      the installed themes drawn by siv and by librsvg's rsvg-convert at
+    - Compositing (D11): SVG content composites in sRGB, as the
+      specification's `color-interpolation: sRGB` default says and as
+      icon designers' tools and every other renderer do. A drawing gets
+      an sRGB layer (`Layer.srgb`, D9) at its root, except a document of
+      one solid draw, which looks the same either way and stays a plain
+      draw. `color-interpolation: linearRGB` is honored where a file sets
+      it: on the root (no sRGB layer), on a container (its content gets a
+      layer of its own space when that differs from its parent's), and on
+      a gradient. Isolated layers inside (opacity, blend modes, masks)
+      keep the space they are in. A blur filter works in
+      `color-interpolation-filters`' space, linearRGB by default, with
+      the element drawn in its own space in a layer inside; a
+      feColorMatrix applies to linear or encoded components the same way.
+      Gradients interpolate in the space of the layer they draw in; where
+      the gradient's color-interpolation differs, the lowering adds
+      sub-stops computed in the gradient's space (premultiplied), 16 per
+      interval while at most 256 fit, within half a level of 8 bits. Role
+      colors are resolved when drawn, so the sub-stops are computed then.
+      What an icon's layer holds composites onto the window in linear
+      light like everything else, so only an icon's edges against what
+      is below it differ from GTK's. An sRGB layer costs an isolated
+      buffer per drawn icon (on Vulkan a render pass break), which the
+      lone-draw exception spares most symbolic icons.
+    - Measured (`zig build test-integration-icons`: every SVG of the
+      installed themes drawn by siv and by librsvg's rsvg-convert at
       32 px; an icon differs when over 2% of its pixels are off by more
-      than 24 of 255): with siv's colors moved to sRGB encodings so the
-      CPU renderer blends as librsvg does, 0 of 647 Adwaita icons and 14
-      of 5,054 Breeze icons (0.3%) differ, so the lowering and coverage
-      agree (of those, an animation's sprite sheet that rsvg-convert
-      squeezes into a square, two icons with filters or text siv leaves
-      out, and four not yet explained: kdesvn, yakuake,
-      preferences-desktop-touchscreen, tool_elliptical_selection); as
-      siv draws them, against librsvg's pixels composited over white in
-      linear light, Adwaita still 0 but Breeze 1,178 (23%), all but those
-      14 from blending translucent shapes over other shapes. Not decided:
-      drawing icons in a layer that composites in sRGB, which needs a
-      layer flag in both renderers (PDF already blends in sRGB) and would
-      make the two agree. Until then the test bounds both shares.
+      than 24 of 255). Geometry, with the icon and a white background in
+      one sRGB layer so that siv blends exactly as librsvg does: 0 of 648
+      Adwaita icons and 8 of 5,052 Breeze icons (0.16%) differ. As siv
+      draws them, against librsvg's pixels composited over white in
+      linear light: also 0 and 8 (before sRGB layers: 0 and 1,178, 23%).
+      The 8: three with text (kwave, kbruch, applets-template), which siv
+      leaves out, one with filters it leaves out (rocs's drop shadows), and four
+      within a few percent of the threshold from antialiasing of
+      overlapping subpaths and many blurs (firewall-applet-shields_up,
+      kmahjongg, kiten, preferences-desktop-navigation). Four earlier unexplained ones
+      were siv's bugs or the test's, now fixed: a one-stop gradient's
+      stop-opacity was replaced by fill-opacity instead of multiplied
+      (yakuake); the root clipped to its view box instead of its viewport,
+      cutting content beyond the view box that meet leaves visible
+      (kdesvn); circles and ellipses started at the top instead of at
+      (cx + rx, cy) as SVG says, which moves dashes
+      (tool_elliptical_selection); and the test drew non-square icons
+      (preferences-desktop-touchscreen's 32 × 33 view box, an
+      animation's 16 × 240 sprite sheet) into a square where
+      rsvg-convert's viewport is the intrinsic size scaled to fit. The
+      test fails above 1% for either theme.
+    - The comparison is opt in (`zig build test-integration-icons`, not
+      part of `test-integration`): what it finds depends on the installed
+      theme releases, which adopt SVG features at their own pace, and a
+      gate must fail on siv's bugs, not on a machine's packages. Adwaita
+      48 (Arch) differed in 10.1% of its 70 full-color icons, from the
+      exporter's clip paths and embedded images above. Measured with
+      `SIV_ICON_ADWAITA` pointed at unpacked releases, geometry and as
+      drawn: Adwaita 43 (Debian 12) 0 and 0 of 648; 48.1, 0 and 1 of 701;
+      51.0, 0 and 1 of 715 (0 and 1 of the 70 full-color ones, which
+      alone would fail the 1% bound by one icon). The one as drawn is
+      application-x-addon, whose differing pixels are where its embedded
+      192 × 152 shading image shows at 32 px; likely cause, not yet
+      confirmed: siv's renderers sample a minified image bilinearly
+      without averaging its area, which librsvg does. What it
+      found stays checked in the default tests: the svg module tests and
+      a test icon written as exporters write them
+      (`hicolor/scalable/apps/siv-test-exported.svg`) in the icons golden
+      image.
     - Verified: module tests for lookup (siv's test themes in
       test/icons/themes: inheritance, hicolor, sizes, scales, fallbacks,
       RTL), the cascade, symbolic and KDE recoloring, gradients, clip
@@ -2747,7 +2844,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       (test/golden/render/icons.png, which Vulkan matches) and of icon
       buttons, menus, image nodes, and canvases in light, dark, and
       another icon theme (test/golden/widgets/icons-*.png); and the
-      real-theme comparison above in `test-integration`. Adwaita and
+      real-theme comparison above in `test-integration-icons`. Adwaita and
       Breeze are LGPL and CC-BY-SA, so neither their files nor images of
       them are in the repository (D25): the integration test reads the
       installed packages (adwaita-icon-theme, breeze-icon-theme) and
