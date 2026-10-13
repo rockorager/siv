@@ -564,7 +564,17 @@ const Targets = struct {
     }
 };
 
-test "list view: an editor in a row keeps its keys and presses; events name their target" {
+const Presses = struct {
+    n: u32 = 0,
+
+    fn onActivate(ud: ?*anyopaque, _: t.Node, _: *const t.Event) callconv(.c) t.EventResult {
+        const p: *Presses = @ptrCast(@alignCast(ud.?));
+        p.n += 1;
+        return .handled;
+    }
+};
+
+test "list view: an editor or a button in a row keeps its keys and presses; events name their target" {
     var h: Harness = .{};
     try h.start(240, 320, null, null);
     defer h.stop();
@@ -618,6 +628,26 @@ test "list view: an editor in a row keeps its keys and presses; events name thei
     try testing.expectEqual(selected_before, m.selects);
     const uw, _ = try uiId(list);
     try testing.expectEqual((try abi.tree.lookup(ed))[1], uw.input.focus);
+    // A button in a row takes its own click: it activates, and the
+    // selection stays.
+    var row3: t.Node = .null;
+    {
+        const id = (try uw.semanticsTree()).find(.list_item, "Item 3").?.node;
+        const tw, _ = try abi.tree.lookup(list);
+        row3 = @fromBackingInt(tw.nodes.handle(id));
+    }
+    const txn2 = try begin(h.window);
+    const btn = c.siv_push_button(txn2, row3, &.{ .label = "Eject", .label_len = 5 });
+    var presses: Presses = .{};
+    _ = c.siv_on(txn2, btn, .activate, Presses.onActivate, null, &presses);
+    try ok(c.siv_txn_commit(txn2));
+    try h.settle();
+    const selects = m.selects;
+    try ok(c.siv_node_get_rect(btn, &r));
+    try h.click(r.x + r.width / 2, r.y + r.height / 2);
+    try h.settle();
+    try testing.expectEqual(@as(u32, 1), presses.n);
+    try testing.expectEqual(selects, m.selects);
     // Rows themselves still take presses and keys.
     const b5 = (try uw.semanticsTree()).find(.list_item, "Item 5").?.bounds;
     try h.click((b5.x0 + b5.x1) / 2, (b5.y0 + b5.y1) / 2);

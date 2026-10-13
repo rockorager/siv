@@ -3795,7 +3795,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       the focused node (roving focus) and stays bound out of view. Rows
       handle only keys aimed at themselves (`siv_event.target`, D16) and
       leave presses in an editor inside them alone, so an application can
-      rename an item in place with an editor in its row. Keys with Alt or
+      rename an item in place with an editor in its row; presses on a
+      stock control in a row (a button, toggle, check box, switch, radio,
+      slider, spin button, menu button, or combo box) are the control's
+      too, since a row that handled the press kept siv from activating
+      the control on release (a drive's eject button in siv-files'
+      sidebar did nothing). Keys with Alt or
       Super, and Enter with Ctrl or Shift, are left to the application:
       a row's handler runs before its ancestors' and returned handled for
       Alt+Up and Alt+Home (moving the cursor) and Ctrl+Enter (activating),

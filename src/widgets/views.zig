@@ -1039,7 +1039,9 @@ fn onRowPointer(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv
             if (e.button != .primary) return .pass;
             // A press in an editor inside the row (renaming an item) is
             // the editor's: it places the caret, and focus stays there.
-            if (e.target != r.root and isEditor(e.target)) return .pass;
+            // So is a press on a control in the row (a drive's eject
+            // button), which activates it on release.
+            if (e.target != r.root and (isEditor(e.target) or inControl(e.target, r.root))) return .pass;
             // The disclosure toggles the item instead of selecting it.
             if (v.mode == .tree and r.disclosure != .null) {
                 var rr: siv.Rect = undefined;
@@ -1087,6 +1089,18 @@ fn onRowPointer(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv
 }
 
 /// Editors are the nodes with a selection.
+/// Whether `n`, or a node between it and the row's root, is a stock
+/// control that takes presses.
+fn inControl(n: Node, root: Node) bool {
+    const controls = [_]w.Kind{ .button, .toggle_button, .check_box, .@"switch", .radio, .slider, .spin_button, .menu_button, .combo_box };
+    var cur = n;
+    while (cur != .null and cur != root) : (cur = c.siv_node_get_related(cur, .parent)) {
+        const h = w.header(cur) orelse continue;
+        for (controls) |k| if (h.kind == k) return true;
+    }
+    return false;
+}
+
 fn isEditor(n: Node) bool {
     var caret: u32 = 0;
     var anchor: u32 = 0;
