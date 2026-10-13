@@ -45,6 +45,10 @@ pub const ColorToken = enum(u8) {
     scrim,
     inverse_bg,
     inverse_fg,
+    /// Symbolic icons' success and warning colors (D19); their error
+    /// color is `destructive`.
+    success,
+    warning,
 };
 
 pub const token_count = @typeInfo(ColorToken).@"enum".field_names.len;
@@ -190,6 +194,7 @@ pub const compiled: [4][token_count]Color = .{
         .accent_active = 0x1e40af, .accent_fg = 0xffffff, .selection_bg = 0xbfdbfe, .selection_fg = 0x18181b,
         .focus_ring = 0x2563eb, .track = 0xd4d4d8, .knob = 0xffffff, .destructive = 0xdc2626,
         .destructive_fg = 0xffffff, .scrim = .{ 0x000000, 0x66 }, .inverse_bg = 0x27272a, .inverse_fg = 0xfafafa,
+        .success = 0x16a34a, .warning = 0xd97706,
     }),
     palette(.{
         .window_bg = 0x18181b, .window_fg = 0xf4f4f5, .view_bg = 0x09090b, .view_fg = 0xf4f4f5,
@@ -199,6 +204,7 @@ pub const compiled: [4][token_count]Color = .{
         .accent_active = 0x1d4ed8, .accent_fg = 0xffffff, .selection_bg = 0x1e3a8a, .selection_fg = 0xf4f4f5,
         .focus_ring = 0x3b82f6, .track = 0x3f3f46, .knob = 0xf4f4f5, .destructive = 0xdc2626,
         .destructive_fg = 0xffffff, .scrim = .{ 0x000000, 0x99 }, .inverse_bg = 0xf4f4f5, .inverse_fg = 0x18181b,
+        .success = 0x22c55e, .warning = 0xf59e0b,
     }),
     palette(.{
         .window_bg = 0xffffff, .window_fg = 0x000000, .view_bg = 0xffffff, .view_fg = 0x000000,
@@ -208,6 +214,7 @@ pub const compiled: [4][token_count]Color = .{
         .accent_active = 0x00226b, .accent_fg = 0xffffff, .selection_bg = 0x0040c0, .selection_fg = 0xffffff,
         .focus_ring = 0x000000, .track = 0x595959, .knob = 0xffffff, .destructive = 0xa00000,
         .destructive_fg = 0xffffff, .scrim = .{ 0x000000, 0xb3 }, .inverse_bg = 0x000000, .inverse_fg = 0xffffff,
+        .success = 0x006b1f, .warning = 0x8a4b00,
     }),
     palette(.{
         .window_bg = 0x000000, .window_fg = 0xffffff, .view_bg = 0x000000, .view_fg = 0xffffff,
@@ -217,6 +224,7 @@ pub const compiled: [4][token_count]Color = .{
         .accent_active = 0xc7ddff, .accent_fg = 0x000000, .selection_bg = 0x7cb4ff, .selection_fg = 0x000000,
         .focus_ring = 0xffff00, .track = 0xa6a6a6, .knob = 0x000000, .destructive = 0xff7070,
         .destructive_fg = 0x000000, .scrim = .{ 0x000000, 0xb3 }, .inverse_bg = 0xffffff, .inverse_fg = 0x000000,
+        .success = 0x66ff99, .warning = 0xffcc33,
     }),
 };
 

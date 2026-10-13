@@ -21,6 +21,7 @@ const loop_mod = @import("loop");
 
 const node_mod = @import("node.zig");
 const Fonts = @import("fonts.zig");
+const Icons = @import("icons.zig");
 const Txn = @import("txn.zig").Txn;
 const layout = @import("layout.zig");
 const paint_mod = @import("paint.zig");
@@ -49,6 +50,9 @@ pub const Error = error{OutOfMemory};
 
 gpa: std.mem.Allocator,
 fonts: *Fonts,
+/// Themed icons, shared by the application's windows; without them
+/// image nodes show no icons.
+icons: ?*Icons = null,
 nodes: std.ArrayList(Node) = .empty,
 states: std.ArrayList(State) = .empty,
 free_head: NodeId = .none,
@@ -144,6 +148,7 @@ pub const Host = struct {
 
 pub const Options = struct {
     fonts: *Fonts,
+    icons: ?*Icons = null,
     sink: layers.Sink,
     host: Host = .{},
     width: f32 = 640,
@@ -277,6 +282,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) Error!*Window {
     win.* = .{
         .gpa = gpa,
         .fonts = options.fonts,
+        .icons = options.icons,
         .width = options.width,
         .height = options.height,
         .scale = options.scale,
@@ -299,12 +305,17 @@ pub fn init(gpa: std.mem.Allocator, options: Options) Error!*Window {
     try win.states.append(gpa, .{});
     try win.paint.init(win);
     try options.fonts.addListener(.{ .ctx = win, .func = onFontsLoaded });
+    if (options.icons) |icons| icons.addListener(.{ .ctx = win, .func = onIconsLoaded }) catch |e| {
+        win.fonts.removeListener(win);
+        return e;
+    };
     return win;
 }
 
 pub fn deinit(win: *Window) void {
     std.debug.assert(!win.txn.open);
     win.fonts.removeListener(win);
+    if (win.icons) |icons| icons.removeListener(win);
     if (win.loop) |l| l.cancelTimer(&win.anim_timer);
     win.dnd.deinit(win);
     if (win.clipboard) |cb| {
@@ -368,7 +379,10 @@ pub fn freeNodeData(gpa: std.mem.Allocator, n: *const Node) void {
             gpa.free(g.columns);
             gpa.free(g.rows);
         },
-        .image => |v| if (v.image) |img| img.release(),
+        .image => |v| {
+            if (v.image) |img| img.release();
+            gpa.free(v.icon);
+        },
         else => {},
     }
 }
@@ -893,7 +907,10 @@ pub fn startDrag(win: *Window, id: NodeId, o: DragOptions) DragError!void {
     errdefer cb.freeDrag(out);
     defer _ = win.scratch.reset(.retain_capacity);
     var icon: platform.DragIcon = undefined;
-    if (o.icon) |img| icon = try dragIcon(win.scratch.allocator(), img, o.hotspot_x, o.hotspot_y);
+    // Vector images have no pixels: the ABI rasterizes them first.
+    if (o.icon) |img| if (img.vector == null) {
+        icon = try dragIcon(win.scratch.allocator(), img, o.hotspot_x, o.hotspot_y);
+    };
     const mimes: []const []const u8 = if (o.in_app) &.{dnd_mod.in_app_mime} else out.mimes;
     const st = &win.input;
     const source = host.start(host.ctx, st.seat, st.press_serial, mimes, o.actions, if (o.icon != null) &icon else null) orelse return error.Unavailable;
@@ -1199,6 +1216,26 @@ fn checkCulled(win: *Window) void {
             win.requestFrame();
         }
     }
+}
+
+/// An icon loaded, or the theme changed: nodes that show icons repaint.
+fn onIconsLoaded(ctx: *anyopaque) void {
+    const win: *Window = @ptrCast(@alignCast(ctx));
+    for (win.nodes.items, 0..) |*n, i| {
+        if (n.status != .live or n.kind != .image or n.data.image.icon.len == 0) continue;
+        win.markPaint(@enumFromInt(i));
+    }
+    win.requestFrame();
+}
+
+/// The image an image node shows: its icon (null until loaded) or its
+/// image.
+pub fn nodeImage(win: *const Window, id: NodeId) ?*Image {
+    const v = win.node(id).data.image;
+    if (v.icon.len == 0) return v.image;
+    const icons = win.icons orelse return null;
+    const s = v.intrinsic().?;
+    return icons.get(v.icon, s[0], win.scale, win.state(id).rtl);
 }
 
 fn onFontsLoaded(ctx: *anyopaque) void {

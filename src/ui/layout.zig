@@ -150,7 +150,7 @@ fn compute(win: *Window, id: NodeId, c: Constraints) Error!Size {
             win.markPaint(id);
             break :blk try textSize(win, id, inner);
         },
-        .image => imageSize(if (n.data.image.image) |img| img.logicalSize() else null, inner),
+        .image => imageSize(n.data.image.intrinsic(), inner),
         .canvas => canvasSize(win, id, inner),
         .external => imageSize(intrinsic(n.data.external), inner),
     };
@@ -242,7 +242,7 @@ pub fn maxContent(win: *Window, id: NodeId) Error!f32 {
             .text => content = try text_node.maxContent(win, id),
             // Room for the caret after the last character.
             .editor => content = try text_node.maxContent(win, id) + caret_width,
-            .image => content = if (n.data.image.image) |img| img.logicalSize()[0] else 0,
+            .image => content = if (n.data.image.intrinsic()) |wh| wh[0] else 0,
             .canvas => content = canvasSize(win, id, .{}).w,
             .external => content = n.data.external.width,
         }

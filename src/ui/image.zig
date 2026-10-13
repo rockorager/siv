@@ -15,6 +15,7 @@ const std = @import("std");
 const scene = @import("scene");
 const image_mod = @import("image");
 const loop_mod = @import("loop");
+const svg = @import("svg");
 
 pub const Image = struct {
     gpa: std.mem.Allocator,
@@ -40,6 +41,10 @@ pub const Image = struct {
     /// A streamed animation: `pixels` is its first frame, and players
     /// decode the rest from the file.
     stream: ?*Stream = null,
+    /// A vector image (an SVG file or icon): drawn from the document at
+    /// any size, with no pixels. `width` and `height` are its logical
+    /// size, at scale 1.
+    vector: ?*svg.Document = null,
 
     pub const Frame = struct {
         pixels: []align(16) const u8,
@@ -107,7 +112,8 @@ pub const Image = struct {
     pub fn release(img: *Image) void {
         if (img.refs.fetchSub(1, .release) != 1) return;
         _ = img.refs.load(.acquire);
-        if (img.frames.len == 0) img.gpa.free(img.pixels);
+        if (img.vector) |doc| doc.deinit();
+        if (img.frames.len == 0 and img.pixels.len != 0) img.gpa.free(img.pixels);
         for (img.frames) |f| img.gpa.free(f.pixels);
         img.gpa.free(img.frames);
         if (img.stream) |st| {
@@ -136,6 +142,24 @@ pub const Image = struct {
             .format = format,
             .key = next_key.fetchAdd(1, .monotonic),
             .scale = scale,
+        };
+        return img;
+    }
+
+    /// A vector image of `width` × `height` logical pixels taking `doc`,
+    /// which stays the caller's if this fails.
+    pub fn fromVector(gpa: std.mem.Allocator, doc: *svg.Document, width: f32, height: f32) error{OutOfMemory}!*Image {
+        const img = try gpa.create(Image);
+        img.* = .{
+            .gpa = gpa,
+            .refs = .init(1),
+            .pixels = &.{},
+            .width = @intFromFloat(@max(1, @min(@ceil(width), 1 << 16))),
+            .height = @intFromFloat(@max(1, @min(@ceil(height), 1 << 16))),
+            .stride = 0,
+            .format = .rgba8_srgb,
+            .key = next_key.fetchAdd(1, .monotonic),
+            .vector = doc,
         };
         return img;
     }
@@ -276,6 +300,15 @@ const Load = struct {
         defer if (file) |f| l.gpa.free(f);
         if (l.is_path) file = try readFile(l.gpa, l.source);
         const bytes = file orelse l.source;
+        if (isSvg(bytes)) {
+            // SVG files are vector images at their own size (D19).
+            const doc = svg.parse(l.gpa, bytes, .{}) catch |e| return switch (e) {
+                error.OutOfMemory => error.OutOfMemory,
+                error.InvalidSvg => error.InvalidImage,
+            };
+            errdefer doc.deinit();
+            return Image.fromVector(l.gpa, doc, doc.width, doc.height);
+        }
         const d = try image_mod.decode(l.gpa, bytes, l.options.decode);
         const streamed = d.streamed;
         const first_delay = d.frames[0].delay_ms;
@@ -317,7 +350,19 @@ const Load = struct {
     }
 };
 
-fn readFile(gpa: std.mem.Allocator, path: []const u8) Image.LoadError![]u8 {
+/// Whether a file is SVG rather than a raster format: XML whose root
+/// element is svg (after an XML declaration, comments, or a DOCTYPE).
+pub fn isSvg(bytes: []const u8) bool {
+    var s = bytes;
+    if (std.mem.startsWith(u8, s, "\xef\xbb\xbf")) s = s[3..];
+    s = std.mem.trimStart(u8, s, " \t\r\n");
+    if (s.len == 0 or s[0] != '<') return false;
+    const head = s[0..@min(s.len, 4096)];
+    return std.mem.indexOf(u8, head, "<svg") != null;
+}
+
+/// Reads a whole file (on a worker: it blocks).
+pub fn readFile(gpa: std.mem.Allocator, path: []const u8) Image.LoadError![]u8 {
     const linux = std.os.linux;
     var buf: [4096]u8 = undefined;
     if (path.len >= buf.len or std.mem.indexOfScalar(u8, path, 0) != null) return error.ReadFailed;

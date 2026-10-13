@@ -27,6 +27,8 @@ const editor = @import("editor.zig");
 const layout = @import("layout.zig");
 const isLayerRoot = @import("txn.zig").isLayerRoot;
 const Image = @import("image.zig").Image;
+const svg = @import("svg");
+const theme = @import("theme.zig");
 
 const NodeId = node_mod.NodeId;
 const Point = raster.Point;
@@ -1091,13 +1093,19 @@ fn drawLayout(st: *State, win: *Window, l: *const text.TextLayout, b: *scene.Bui
 fn drawImage(win: *Window, nid: NodeId, b: *scene.Builder, off: Point) DrawError!Rect {
     const n = win.node(nid);
     const img = n.data.image;
-    const image = img.image orelse return Rect.empty;
+    const image = win.nodeImage(nid) orelse return Rect.empty;
     const s = win.state(nid);
-    const shown = win.shownImage(nid).?;
-    const ref = shown.ref;
     const pad = n.layout.padding;
     const box = Rect.xywh(off.x + pad.left(s.rtl), off.y + pad.top, s.size.w - pad.horizontal(), s.size.h - pad.vertical());
     if (box.isEmpty()) return Rect.empty;
+    if (image.vector) |doc| return drawVector(win, nid, b, doc, image.logicalSize(), box);
+    const shown: struct { image: *Image, ref: scene.ImageRef } = if (img.icon.len != 0)
+        .{ .image = image, .ref = image.sceneRef() }
+    else blk: {
+        const sh = win.shownImage(nid).?;
+        break :blk .{ .image = sh.image, .ref = sh.ref };
+    };
+    const ref = shown.ref;
     // Layout is in logical pixels, the source rectangle in image pixels.
     const lw, const lh = image.logicalSize();
     const scale = image.scale;
@@ -1133,4 +1141,57 @@ fn drawImage(win: *Window, nid: NodeId, b: *scene.Builder, off: Point) DrawError
     images.appendAssumeCapacity(shown.image.retain());
     if (mirror) try b.popLayer();
     return dst;
+}
+
+/// A vector image or icon (D19): the document drawn into the node's box
+/// as the fit says, its role colors from the theme (the foreground the
+/// node's color). The display list copies the paths, so nothing keeps the
+/// document alive.
+fn drawVector(win: *Window, nid: NodeId, b: *scene.Builder, doc: *const svg.Document, logical: [2]f32, box: Rect) DrawError!Rect {
+    const v = win.node(nid).data.image;
+    const lw, const lh = logical;
+    var dst = box;
+    var clip = false;
+    switch (v.fit) {
+        .fill => {},
+        .contain, .none, .cover => {
+            const k = switch (v.fit) {
+                .none => 1,
+                .contain => @min(box.width() / lw, box.height() / lh),
+                else => @max(box.width() / lw, box.height() / lh),
+            };
+            const w = lw * k;
+            const h = lh * k;
+            dst = .xywh(box.x0 + (box.width() - w) / 2, box.y0 + (box.height() - h) / 2, w, h);
+            clip = v.fit != .contain;
+        },
+    }
+    const mirror = v.mirror and win.state(nid).rtl;
+    var layer: scene.Layer = .{};
+    if (mirror) layer.transform = raster.Affine.translate(-(box.x0 + box.x1) / 2, 0).then(.scale(-1, 1)).then(.translate((box.x0 + box.x1) / 2, 0));
+    if (clip) layer.clip = .{ .shape = .{ .rect = box } };
+    const pushed = mirror or clip;
+    if (pushed) try b.pushLayer(layer);
+    var colors: svg.Colors = .{};
+    const fg = if (v.color_token != .none) win.palette.color(v.color_token) else if (v.color.a > 0) v.color else win.palette.color(.window_fg);
+    iconColors(&colors, &win.palette, fg);
+    // A document's own <svg> sizing maps its view box into the box.
+    doc.draw(b, dst, if (doc.recolors) &colors else null) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {},
+    };
+    if (pushed) try b.popLayer();
+    return if (clip) box else dst;
+}
+
+/// The colors symbolic icons and KDE's color scheme classes take (D19):
+/// `fg` for the foreground, the theme for the rest.
+pub fn iconColors(colors: *svg.Colors, palette: *const theme.Palette, fg: scene.Color) void {
+    colors.set(.foreground, fg);
+    colors.set(.background, palette.color(.window_bg));
+    colors.set(.accent, palette.color(.accent));
+    colors.set(.accent_foreground, palette.color(.accent_fg));
+    colors.set(.success, palette.color(.success));
+    colors.set(.warning, palette.color(.warning));
+    colors.set(.@"error", palette.color(.destructive));
 }

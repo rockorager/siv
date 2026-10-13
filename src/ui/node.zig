@@ -492,6 +492,28 @@ pub const ImageView = struct {
     filter: scene.Filter = .linear,
     /// Mirror horizontally in right-to-left layouts (directional icons).
     mirror: bool = false,
+    /// A themed icon shown instead of `image` (D19): its name, or several
+    /// names one per line, the first the theme has winning. Owned by the
+    /// tree; empty for none. The icon follows the theme and the window's
+    /// scale and direction, and is looked up and loaded on the worker
+    /// pool: until it arrives the node takes its space and shows nothing.
+    icon: []const u8 = "",
+    /// The icon's logical size (it is square); 0 is 16.
+    icon_size: f32 = 0,
+    /// The foreground of symbolic icons and of vector images whose colors
+    /// follow the theme (D19, D29): the token if set, else the literal
+    /// color, else (transparent) the window's text color.
+    color: scene.Color = .transparent,
+    color_token: ColorToken = .none,
+
+    /// The node's intrinsic size, before an icon or image arrives.
+    pub fn intrinsic(v: ImageView) ?[2]f32 {
+        if (v.icon.len != 0) {
+            const s = if (v.icon_size > 0) v.icon_size else 16;
+            return .{ s, s };
+        }
+        return if (v.image) |img| img.logicalSize() else null;
+    }
 };
 
 pub const Canvas = struct {

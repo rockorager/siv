@@ -724,21 +724,27 @@ pub const Txn = struct {
         }
     }
 
-    /// The node takes a reference to `view.image`; the caller keeps its own.
+    /// The node takes a reference to `view.image` and copies `view.icon`;
+    /// the caller keeps its own.
     pub fn setImage(t: *Txn, id: NodeId, view: node_mod.ImageView) Error!void {
         const n = try t.data(id, .image);
+        if (!(view.icon_size >= 0) or !finite(view.icon_size)) return error.InvalidArgument;
+        if (view.icon.len > 4096 or !std.unicode.utf8ValidateSlice(view.icon)) return error.InvalidArgument;
         try t.reserve();
         try t.allocs.ensureUnusedCapacity(t.win.gpa, 1);
-        try t.frees.ensureUnusedCapacity(t.win.gpa, 1);
-        t.touch(id);
+        try t.frees.ensureUnusedCapacity(t.win.gpa, 2);
         const old = n.data.image;
+        const icon = if (std.mem.eql(u8, old.icon, view.icon)) old.icon else try t.own(u8, view.icon);
+        t.touch(id);
         // The new reference is dropped if the transaction aborts, the old
         // one once it commits.
         if (view.image) |img| t.allocs.appendAssumeCapacity(.{ .image = img.retain() });
         if (old.image) |img| t.frees.appendAssumeCapacity(.{ .image = img });
+        if (icon.ptr != old.icon.ptr) t.release(u8, old.icon);
         n.data.image = view;
-        const os: [2]f32 = if (old.image) |r| r.logicalSize() else .{ 0, 0 };
-        const ns: [2]f32 = if (view.image) |r| r.logicalSize() else .{ 0, 0 };
+        n.data.image.icon = icon;
+        const os: [2]f32 = old.intrinsic() orelse .{ 0, 0 };
+        const ns: [2]f32 = view.intrinsic() orelse .{ 0, 0 };
         if (os[0] != ns[0] or os[1] != ns[1] or old.fit != view.fit) t.win.markLayout(id);
         t.win.markPaint(id);
         if (view.image != old.image) t.win.animateImage(id);

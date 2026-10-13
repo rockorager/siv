@@ -14,7 +14,8 @@
 //!
 //! Nodes are plain indices (D20); ABI handles wrap them in src/abi.
 //!
-//! Imports: scene, raster, text, loop, platform, compositor.
+//! Imports: scene, svg, icon, raster, text, image, loop, platform,
+//! compositor.
 
 const std = @import("std");
 
@@ -60,6 +61,9 @@ pub const cssWeight = node.cssWeight;
 pub const Text = node.Text;
 pub const Fit = node.Fit;
 pub const Image = @import("image.zig").Image;
+pub const Icons = @import("icons.zig");
+/// The colors symbolic icons take from a palette (D19).
+pub const iconColors = @import("paint.zig").iconColors;
 pub const Player = @import("image.zig").Player;
 pub const ImageView = node.ImageView;
 pub const Canvas = node.Canvas;
@@ -112,4 +116,5 @@ test {
     _ = @import("secret.zig");
     _ = @import("ime.zig");
     _ = @import("tests.zig");
+    _ = @import("icons.zig");
 }
