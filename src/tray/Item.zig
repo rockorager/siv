@@ -63,6 +63,9 @@ pub const Options = struct {
     id: []const u8,
     title: []const u8 = "",
     icon_name: []const u8 = "",
+    /// A directory the host searches for `icon_name` besides its theme:
+    /// the application's own icons (an icon theme or loose files).
+    icon_theme_path: []const u8 = "",
     category: Category = .application_status,
     status: Status = .active,
     /// Activation shows the menu instead of sending Activate.
@@ -75,6 +78,7 @@ func: *const fn (item: *Item, event: Event) void,
 id: []u8 = &.{},
 title: []u8 = &.{},
 icon_name: []u8 = &.{},
+icon_theme_path: []u8 = &.{},
 icon: []u8 = &.{},
 icon_size: [2]i32 = .{ 0, 0 },
 attention_icon_name: []u8 = &.{},
@@ -112,6 +116,7 @@ pub fn start(it: *Item, conn: *Connection, o: Options) (Connection.Error || Allo
     try replace(it.gpa, &it.id, o.id);
     try replace(it.gpa, &it.title, o.title);
     try replace(it.gpa, &it.icon_name, o.icon_name);
+    try replace(it.gpa, &it.icon_theme_path, o.icon_theme_path);
     it.category = o.category;
     it.status = o.status;
     it.item_is_menu = o.item_is_menu;
@@ -142,7 +147,7 @@ pub fn deinit(it: *Item) void {
         c.unexportObject(&it.menu_obj);
     }
     it.menu.deinit();
-    inline for (.{ "id", "title", "icon_name", "icon", "attention_icon_name", "attention_icon", "tooltip_title", "tooltip_body" }) |f| it.gpa.free(@field(it, f));
+    inline for (.{ "id", "title", "icon_name", "icon_theme_path", "icon", "attention_icon_name", "attention_icon", "tooltip_title", "tooltip_body" }) |f| it.gpa.free(@field(it, f));
     it.started = false;
 }
 
@@ -165,6 +170,13 @@ pub fn setStatus(it: *Item, status: Status) void {
     if (it.status == status) return;
     it.status = status;
     it.emit("NewStatus", .{statusName(status)});
+}
+
+/// Where the host looks icon names up besides its theme (KDE's
+/// IconThemePath, with its NewIconThemePath signal).
+pub fn setIconThemePath(it: *Item, dir: []const u8) Allocator.Error!void {
+    try replace(it.gpa, &it.icon_theme_path, dir);
+    it.emit("NewIconThemePath", .{dir});
 }
 
 /// Sets the icon: a themed name, an image, or both (hosts prefer the
@@ -365,11 +377,7 @@ pub const iface: dbus.Interface = .{
                 try e.writeInt32(0);
             }
         }.f),
-        prop("IconThemePath", "s", struct {
-            fn f(_: *Item, e: *Encoder) anyerror!void {
-                try e.writeString("");
-            }
-        }.f),
+        stringProp("IconThemePath", "icon_theme_path"),
         stringProp("IconName", "icon_name"),
         prop("IconPixmap", "a(iiay)", struct {
             fn f(it: *Item, e: *Encoder) anyerror!void {
@@ -425,5 +433,6 @@ pub const iface: dbus.Interface = .{
         .{ .name = "NewOverlayIcon" },
         .{ .name = "NewToolTip" },
         .{ .name = "NewStatus", .signature = "s", .arg_names = &.{"status"} },
+        .{ .name = "NewIconThemePath", .signature = "s", .arg_names = &.{"icon_theme_path"} },
     },
 };

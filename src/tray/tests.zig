@@ -165,7 +165,7 @@ test "an item registers with the watcher and serves its properties and menu" {
     defer h.deinit();
     try h.watcher.start();
     try h.until(&h.watcher, ownsName);
-    try h.item.start(&h.item_conn, .{ .id = "org.example.Tray", .title = "Example", .icon_name = "mail-unread" });
+    try h.item.start(&h.item_conn, .{ .id = "org.example.Tray", .title = "Example", .icon_name = "mail-unread", .icon_theme_path = "/opt/example/icons" });
     try h.until(&h, registeredOnce);
     // By its well-known name.
     try testing.expectEqual(@as(usize, 1), h.watcher.items.items.len);
@@ -175,6 +175,12 @@ test "an item registers with the watcher and serves its properties and menu" {
     const props = "org.freedesktop.DBus.Properties";
     var r = try h.call(name, Item.path, props, "Get", .{ Item.interface, "IconName" }, readStringVariant);
     try testing.expectEqualStrings("mail-unread", r.slice());
+    // Where the host finds the application's own icons (D19).
+    r = try h.call(name, Item.path, props, "Get", .{ Item.interface, "IconThemePath" }, readStringVariant);
+    try testing.expectEqualStrings("/opt/example/icons", r.slice());
+    try h.item.setIconThemePath("/opt/other");
+    r = try h.call(name, Item.path, props, "Get", .{ Item.interface, "IconThemePath" }, readStringVariant);
+    try testing.expectEqualStrings("/opt/other", r.slice());
     r = try h.call(name, Item.path, props, "Get", .{ Item.interface, "Status" }, readStringVariant);
     try testing.expectEqualStrings("Active", r.slice());
     h.item.setStatus(.needs_attention);
