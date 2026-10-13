@@ -49,10 +49,10 @@ fn drawChart(chart: *Chart, d: siv.Draw, width: f32, height: f32) !void {
     var v: f32 = 0;
     while (v <= top) : (v += 5) {
         const y = @round(plot_h - v / top * (plot_h - 8)) + 0.5;
-        try siv.drawMoveTo(d, 0, y);
-        try siv.drawLineTo(d, width, y);
+        siv.drawMoveTo(d, 0, y);
+        siv.drawLineTo(d, width, y);
     }
-    try siv.drawStroke(d, &.{ .width = 1 }, &.{ .color = grid });
+    siv.drawStroke(d, &.{ .width = 1 }, &.{ .color = grid });
 
     chart.gap = 12;
     chart.bar_width = (width - chart.gap * (sales.len - 1)) / sales.len;
@@ -60,13 +60,13 @@ fn drawChart(chart: *Chart, d: siv.Draw, width: f32, height: f32) !void {
         const x = @as(f32, @floatFromInt(i)) * (chart.bar_width + chart.gap);
         const h = value / top * (plot_h - 8);
         const is_hot = chart.hovered == i;
-        try siv.drawRoundedRect(d, .{ .x = x, .y = plot_h - h, .width = chart.bar_width, .height = h }, .{ .top_left = 4, .top_right = 4 });
-        try siv.drawFill(d, &.{ .color = if (is_hot) hot else bar }, .{});
-        try siv.drawText(d, x, plot_h + 4, chart.bar_width, month, &.{ .size_role = .caption, .color = muted, .@"align" = .center });
+        siv.drawRoundedRect(d, .{ .x = x, .y = plot_h - h, .width = chart.bar_width, .height = h }, .{ .top_left = 4, .top_right = 4 });
+        siv.drawFill(d, &.{ .color = if (is_hot) hot else bar }, .{});
+        siv.drawText(d, x, plot_h + 4, chart.bar_width, month, &.{ .size_role = .caption, .color = muted, .@"align" = .center });
         if (is_hot) {
             var buf: [16]u8 = undefined;
             const label = try std.fmt.bufPrint(&buf, "{d}", .{value});
-            try siv.drawText(d, x, plot_h - h - 20, chart.bar_width, label, &.{ .weight = .semibold, .color = ink, .@"align" = .center });
+            siv.drawText(d, x, plot_h - h - 20, chart.bar_width, label, &.{ .weight = .semibold, .color = ink, .@"align" = .center });
         }
     }
 }
@@ -83,34 +83,34 @@ fn onPointer(user_data: ?*anyopaque, _: siv.Node, event: ?*const siv.Event) call
     if (hovered == chart.hovered) return .pass;
     chart.hovered = hovered;
     const txn = siv.txnBegin(e.window) catch return .pass;
-    siv.invalidate(txn, chart.canvas) catch {};
+    siv.invalidate(txn, chart.canvas);
     siv.txnCommit(txn) catch {};
     return .pass;
 }
 
 fn build(chart: *Chart) !void {
     const txn = try siv.txnBegin(chart.window);
-    errdefer siv.txnAbort(txn) catch {};
+    errdefer siv.txnAbort(txn);
     const root = siv.windowRoot(chart.window);
-    try siv.setVisual(txn, root, &.{ .background_token = .window_bg });
+    siv.setVisual(txn, root, &.{ .background_token = .window_bg });
     const column = siv.flex(txn, root, &.{ .axis = .column, .gap = 12 });
-    try siv.setLayout(txn, column, &.{ .width = .{ .unit = .fraction, .value = 1 }, .padding = .{ .start = 20, .end = 20, .top = 16, .bottom = 16 } });
+    siv.setLayout(txn, column, &.{ .width = .{ .unit = .fraction, .value = 1 }, .padding = .{ .start = 20, .end = 20, .top = 16, .bottom = 16 } });
     const title = siv.text(txn, column, "Sales, first half");
-    try siv.setTextStyle(txn, title, &.{ .size_role = .heading, .weight = .bold, .color_token = .window_fg });
+    siv.setTextStyle(txn, title, &.{ .size_role = .heading, .weight = .bold, .color_token = .window_fg });
 
     chart.canvas = siv.canvas(txn, column, &.{ .user_data = chart, .draw = draw, .measure = measure });
     // A canvas is an image to assistive technology unless told more: name
     // it and give the data in words.
     const name = "Sales by month";
     const description = "January 12, February 19, March 7, April 15, May 22, June 18";
-    try siv.setSemantics(txn, chart.canvas, &.{ .role = .image, .label = name, .label_len = name.len, .description = description, .description_len = description.len });
-    try siv.on(txn, chart.canvas, .pointer, onPointer, null, chart);
+    siv.setSemantics(txn, chart.canvas, &.{ .role = .image, .label = name, .label_len = name.len, .description = description, .description_len = description.len });
+    siv.on(txn, chart.canvas, .pointer, onPointer, null, chart);
     try siv.txnCommit(txn);
 }
 
 pub fn main() !void {
     const app = try siv.appCreate(null);
-    defer siv.appDestroy(app) catch {};
+    defer siv.appDestroy(app);
     const title = "Chart";
     const window = try siv.windowCreate(app, &.{ .title = title, .title_len = title.len, .width = 420, .height = 280 });
     var chart: Chart = .{ .window = window };

@@ -54,7 +54,7 @@ test "C API canvas: drawing from C, per-canvas redraws, measured sizes" {
     try testing.expectEqual(t.Result.error_busy, canvas_scene_busy_result());
     try testing.expectEqual(t.Result.error_invalid_argument, canvas_scene_broken_status());
     try ok(canvas_scene_picture_status());
-    try testing.expectEqual(t.Result.error_invalid_handle, abi.canvas.siv_draw_move_to(canvas_scene_stale_draw(), 0, 0));
+    abi.canvas.siv_draw_move_to(canvas_scene_stale_draw(), 0, 0); try testing.expectEqual(t.Result.error_invalid_handle, abi.canvas.siv_draw_status(canvas_scene_stale_draw()));
     try testing.expect(canvas_scene_measures() >= 1);
 
     // Invalidating one canvas redraws it alone and damages only its box.

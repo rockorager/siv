@@ -221,6 +221,9 @@ nothing. `siv_result_name` names a code. The ones you will meet:
 | `SIV_ERROR_UNSUPPORTED` | An unknown enum value or flag, or descriptor fields this version of siv does not know. |
 | `SIV_ERROR_OUT_OF_MEMORY` | An allocation failed; siv never aborts on one. |
 
-Queries and other calls whose result matters are marked
-`warn_unused_result` in siv.h; with `-Werror` you must check them. Setters
-inside a transaction return its status, which you may ignore until commit.
+Every function that returns `siv_result` is marked `warn_unused_result` in
+siv.h; with `-Werror` you must check them. Functions that cannot fail return
+nothing: setters and other operations inside a transaction (their failure is
+the transaction's, which `siv_txn_status` reads and `siv_txn_commit`
+reports), drawing calls (`siv_draw_status`), and teardown such as
+`siv_app_destroy`, where a stale handle does nothing.

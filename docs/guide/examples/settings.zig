@@ -35,45 +35,45 @@ fn onVolume(form: *Form, event: *const siv.Event) !void {
     var buf: [32]u8 = undefined;
     const label = try std.fmt.bufPrint(&buf, "Volume: {d:.0}", .{event.value});
     const txn = try siv.txnBegin(event.window);
-    errdefer siv.txnAbort(txn) catch {};
-    try siv.setText(txn, form.volume_label, label);
-    try siv.widgetSetValue(txn, form.level, event.value);
+    errdefer siv.txnAbort(txn);
+    siv.setText(txn, form.volume_label, label);
+    siv.widgetSetValue(txn, form.level, event.value);
     try siv.txnCommit(txn);
 }
 
 fn onSave(form: *Form, event: *const siv.Event) !void {
     const message = "Settings saved";
     const txn = try siv.txnBegin(event.window);
-    errdefer siv.txnAbort(txn) catch {};
+    errdefer siv.txnAbort(txn);
     _ = siv.toast(txn, form.root, &.{ .text = message, .text_len = message.len });
     try siv.txnCommit(txn);
 }
 
 fn caption(txn: siv.Txn, parent: siv.Node, s: []const u8) !siv.Node {
     const node = siv.text(txn, parent, s);
-    try siv.setTextStyle(txn, node, &.{ .size_role = .caption, .color_token = .muted_fg });
+    siv.setTextStyle(txn, node, &.{ .size_role = .caption, .color_token = .muted_fg });
     return node;
 }
 
 fn build(window: siv.Window, form: *Form) !void {
     const txn = try siv.txnBegin(window);
-    errdefer siv.txnAbort(txn) catch {};
+    errdefer siv.txnAbort(txn);
     form.root = siv.windowRoot(window);
-    try siv.setVisual(txn, form.root, &.{ .background_token = .window_bg });
+    siv.setVisual(txn, form.root, &.{ .background_token = .window_bg });
     const column = siv.flex(txn, form.root, &.{ .axis = .column, .gap = 12, .align_items = .start });
-    try siv.setLayout(txn, column, &.{ .padding = .{ .start = 24, .end = 24, .top = 20, .bottom = 20 } });
+    siv.setLayout(txn, column, &.{ .padding = .{ .start = 24, .end = 24, .top = 20, .bottom = 20 } });
 
     const title = siv.text(txn, column, "Settings");
-    try siv.setTextStyle(txn, title, &.{ .size_role = .title, .weight = .bold, .color_token = .window_fg });
-    try siv.setSemantics(txn, title, &.{ .role = .heading, .level = 1 });
+    siv.setTextStyle(txn, title, &.{ .size_role = .title, .weight = .bold, .color_token = .window_fg });
+    siv.setSemantics(txn, title, &.{ .role = .heading, .level = 1 });
 
     const name_hint = "Display name";
     const name = siv.textField(txn, column, &.{ .placeholder = name_hint, .placeholder_len = name_hint.len });
-    try siv.setLayout(txn, name, &.{ .width = .{ .unit = .px, .value = 260 } });
+    siv.setLayout(txn, name, &.{ .width = .{ .unit = .px, .value = 260 } });
 
     const dark_label = "Dark theme";
     const dark = siv.@"switch"(txn, column, &.{ .label = dark_label, .label_len = dark_label.len });
-    try siv.on(txn, dark, .change, handler(onDarkTheme), null, form);
+    siv.on(txn, dark, .change, handler(onDarkTheme), null, form);
     const stats_label = "Send usage statistics";
     _ = siv.checkBox(txn, column, &.{ .label = stats_label, .label_len = stats_label.len, .checked = .on });
 
@@ -88,11 +88,11 @@ fn build(window: siv.Window, form: *Form) !void {
     form.volume_label = try caption(txn, column, "Volume: 40");
     const volume_label = "Volume";
     const volume = siv.slider(txn, column, &.{ .label = volume_label, .label_len = volume_label.len, .value = 40, .step = 1 });
-    try siv.setLayout(txn, volume, &.{ .width = .{ .unit = .px, .value = 260 } });
-    try siv.on(txn, volume, .change, handler(onVolume), null, form);
+    siv.setLayout(txn, volume, &.{ .width = .{ .unit = .px, .value = 260 } });
+    siv.on(txn, volume, .change, handler(onVolume), null, form);
     const level_label = "Level";
     form.level = siv.progressBar(txn, column, &.{ .label = level_label, .label_len = level_label.len, .value = 40 });
-    try siv.setLayout(txn, form.level, &.{ .width = .{ .unit = .px, .value = 260 } });
+    siv.setLayout(txn, form.level, &.{ .width = .{ .unit = .px, .value = 260 } });
 
     const copies_label = "Copies";
     _ = siv.spinButton(txn, column, &.{ .label = copies_label, .label_len = copies_label.len, .min = 1, .max = 10, .value = 2 });
@@ -102,13 +102,13 @@ fn build(window: siv.Window, form: *Form) !void {
     _ = siv.pushButton(txn, buttons, &.{ .label = cancel_label, .label_len = cancel_label.len });
     const save_label = "Save";
     const save = siv.pushButton(txn, buttons, &.{ .label = save_label, .label_len = save_label.len, .style = .primary });
-    try siv.on(txn, save, .activate, handler(onSave), null, form);
+    siv.on(txn, save, .activate, handler(onSave), null, form);
     try siv.txnCommit(txn);
 }
 
 pub fn main() !void {
     const app = try siv.appCreate(null);
-    defer siv.appDestroy(app) catch {};
+    defer siv.appDestroy(app);
     // The application's own accent, in every variant of the theme. Hover
     // and pressed shades, focus rings, and selections follow it.
     try siv.appSetThemeColor(app, .all, .accent, .{ .r = 0.49, .g = 0.23, .b = 0.93, .a = 1 });

@@ -320,8 +320,8 @@ test "widgets: pointer, keyboard, and overrides on toggles" {
 
     // Values set by the application are not reported.
     try ok(c.siv_txn_begin(h.window, &txn));
-    try ok(c.siv_widget_set_value(txn, w.sw, 0));
-    try ok(c.siv_widget_set_value(txn, w.mixed, 0.5));
+    c.siv_widget_set_value(txn, w.sw, 0);
+    c.siv_widget_set_value(txn, w.mixed, 0.5);
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     try testing.expectEqual(before, log.changes);
@@ -410,13 +410,13 @@ test "widgets: an application's widget answers the generic calls like a stock on
     _ = c.siv_set_semantics(txn, cw.inner, &.{ .flags = .{ .focusable = true } });
     cw.menu = c.siv_menu(txn, cw.root, null);
     var d = cw.desc();
-    try ok(c.siv_set_widget(txn, cw.root, &d));
+    c.siv_set_widget(txn, cw.root, &d);
     // The interface works inside the transaction that set it.
-    try ok(c.siv_widget_set_value(txn, cw.root, 3));
+    c.siv_widget_set_value(txn, cw.root, 3);
     try testing.expectEqual(cw.root, cw.node);
     try testing.expectEqual(txn, cw.txn);
-    try ok(c.siv_widget_set_label(txn, cw.root, "Dial", 4));
-    try ok(c.siv_widget_set_disabled(txn, cw.root, true));
+    c.siv_widget_set_label(txn, cw.root, "Dial", 4);
+    c.siv_widget_set_disabled(txn, cw.root, true);
     // siv_menu_item takes it, since its menu part is a menu.
     const item = c.siv_menu_item(txn, cw.root, &.{ .label = "Reset", .label_len = 5 });
     try testing.expect(item != .null);
@@ -438,22 +438,22 @@ test "widgets: an application's widget answers the generic calls like a stock on
     const calls = cw.calls;
     for ([_]f64{ std.math.nan(f64), std.math.inf(f64) }) |bad| {
         try ok(c.siv_txn_begin(h.window, &txn));
-        try testing.expectEqual(t.Result.error_invalid_argument, c.siv_widget_set_value(txn, cw.root, bad));
+        c.siv_widget_set_value(txn, cw.root, bad); try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_status(txn));
         try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
     }
     try ok(c.siv_txn_begin(h.window, &txn));
-    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_widget_set_range(txn, cw.root, 0, 1, 0));
+    c.siv_widget_set_range(txn, cw.root, 0, 1, 0); try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_status(txn));
     try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
     try ok(c.siv_txn_begin(h.window, &txn));
-    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_widget_set_icon(txn, cw.root, "x", 1));
+    c.siv_widget_set_icon(txn, cw.root, "x", 1); try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_status(txn));
     // The sticky error: later calls do nothing.
-    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_widget_set_value(txn, cw.root, 4));
+    c.siv_widget_set_value(txn, cw.root, 4); try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_status(txn));
     try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
     try testing.expectEqual(calls, cw.calls);
     try testing.expectEqual(@as(f64, 3), try value(cw.root));
     // A value the widget itself refuses fails the transaction too.
     try ok(c.siv_txn_begin(h.window, &txn));
-    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_widget_set_value(txn, cw.root, -1));
+    c.siv_widget_set_value(txn, cw.root, -1); try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_status(txn));
     try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
     // Nodes without an interface refuse every call.
     try testing.expectEqual(t.Result.error_invalid_argument, c.siv_widget_get_value(cw.inner, &got_value));
@@ -471,14 +471,14 @@ test "widgets: an application's widget answers the generic calls like a stock on
     var other: Custom = .{ .value = 7 };
     try ok(c.siv_txn_begin(h.window, &txn));
     var d2 = other.desc();
-    try ok(c.siv_set_widget(txn, cw.root, &d2));
+    c.siv_set_widget(txn, cw.root, &d2);
     try testing.expectEqual(@as(f64, 7), try value(cw.root));
-    try ok(c.siv_txn_abort(txn));
+    c.siv_txn_abort(txn);
     try testing.expectEqual(@as(u32, 1), other.destroyed);
     try testing.expectEqual(@as(u32, 0), cw.destroyed);
     try testing.expectEqual(@as(f64, 3), try value(cw.root));
     try ok(c.siv_txn_begin(h.window, &txn));
-    try ok(c.siv_set_widget(txn, cw.root, null));
+    c.siv_set_widget(txn, cw.root, null);
     try testing.expectEqual(t.Result.error_invalid_argument, c.siv_widget_get_value(cw.root, &got_value));
     try ok(c.siv_txn_commit(txn));
     try testing.expectEqual(@as(u32, 1), cw.destroyed);
@@ -486,8 +486,8 @@ test "widgets: an application's widget answers the generic calls like a stock on
     other = .{};
     try ok(c.siv_txn_begin(h.window, &txn));
     d2 = other.desc();
-    try ok(c.siv_set_widget(txn, cw.root, &d2));
-    try ok(c.siv_remove(txn, cw.root));
+    c.siv_set_widget(txn, cw.root, &d2);
+    c.siv_remove(txn, cw.root);
     try ok(c.siv_txn_commit(txn));
     try testing.expectEqual(@as(u32, 1), other.destroyed);
 }
@@ -505,14 +505,14 @@ test "widgets: focusing a stock widget focuses the node its interface chooses" {
     // A radio group focuses its selected radio, the group's Tab stop.
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
-    try ok(c.siv_widget_set_value(txn, w.group, 2));
+    c.siv_widget_set_value(txn, w.group, 2);
     try ok(c.siv_txn_commit(txn));
     try ok(c.siv_node_focus(w.group));
     try ok(c.siv_window_get_focus(h.window, &focused));
     try testing.expectEqual(w.radios[2], focused);
     // A disabled group has nothing to focus.
     try ok(c.siv_txn_begin(h.window, &txn));
-    try ok(c.siv_widget_set_disabled(txn, w.group, true));
+    c.siv_widget_set_disabled(txn, w.group, true);
     try ok(c.siv_txn_commit(txn));
     try testing.expectEqual(t.Result.error_invalid_argument, c.siv_node_focus(w.group));
 
@@ -570,7 +570,7 @@ test "widgets: radio groups move the selection with arrows, mirrored in RTL" {
         // Tab stop.
         var txn: t.Txn = .null;
         try ok(c.siv_txn_begin(h.window, &txn));
-        try ok(c.siv_widget_set_value(txn, w.group, -1));
+        c.siv_widget_set_value(txn, w.group, -1);
         try ok(c.siv_txn_commit(txn));
         try h.settle();
         try testing.expectEqual(@as(f64, -1), try value(w.group));
@@ -624,7 +624,7 @@ test "widgets: sliders follow keys, the pointer, and assistive technology" {
         // Disabled: neither keys nor assistive technology change it.
         var txn: t.Txn = .null;
         try ok(c.siv_txn_begin(h.window, &txn));
-        try ok(c.siv_widget_set_disabled(txn, w.slider, true));
+        c.siv_widget_set_disabled(txn, w.slider, true);
         try ok(c.siv_txn_commit(txn));
         try h.settle();
         try testing.expect(!ui.input.setValue(uw, id, 10));
@@ -661,7 +661,7 @@ test "widgets: spin buttons step, page, and parse what was typed" {
     // Type 250 over the text, press Enter: clamped to 99.
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
-    try ok(c.siv_set_selection(txn, field, 1, 0));
+    c.siv_set_selection(txn, field, 1, 0);
     try ok(c.siv_txn_commit(txn));
     for ("250") |ch| try h.typeKey(ch, &.{ch}, .{});
     try h.typeKey(ks.@"return", "", .{});
@@ -671,7 +671,7 @@ test "widgets: spin buttons step, page, and parse what was typed" {
     try testing.expectEqualStrings("99", buf[0..len]);
     // Garbage puts the value back when the field loses focus.
     try ok(c.siv_txn_begin(h.window, &txn));
-    try ok(c.siv_set_selection(txn, field, 2, 0));
+    c.siv_set_selection(txn, field, 2, 0);
     try ok(c.siv_txn_commit(txn));
     try h.typeKey('x', "x", .{});
     try h.typeKey(ks.tab, "", .{});
@@ -776,7 +776,7 @@ test "widgets: styled-text editors show spans and toggle bold, italic, and under
         .{ .start = 35, .end = 38, .flags = .{ .size = true }, .font_size = 22 },
         .{ .start = 39, .end = 42, .flags = .{ .color = true }, .color = .{ .r = 0.8, .g = 0.1, .b = 0.1, .a = 1 } },
     };
-    try ok(c.siv_set_text_spans(txn, field, &.{ .spans = &spans, .spans_count = spans.len }));
+    c.siv_set_text_spans(txn, field, &.{ .spans = &spans, .spans_count = spans.len });
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     try h.expectGolden("styled-text", 340, 130);
@@ -797,7 +797,7 @@ test "widgets: styled-text editors show spans and toggle bold, italic, and under
     // back.
     try ok(c.siv_node_focus(field));
     try ok(c.siv_txn_begin(h.window, &txn));
-    try ok(c.siv_set_selection(txn, field, 0, 5));
+    c.siv_set_selection(txn, field, 0, 5);
     try ok(c.siv_txn_commit(txn));
     try h.typeKey('u', "", .{ .ctrl = true });
     try h.settle();
@@ -813,7 +813,7 @@ test "widgets: styled-text editors show spans and toggle bold, italic, and under
     try testing.expect(run.flags.underline);
     // Over a selection only partly underlined, Ctrl+U underlines all of it.
     try ok(c.siv_txn_begin(h.window, &txn));
-    try ok(c.siv_set_selection(txn, field, 3, 8));
+    c.siv_set_selection(txn, field, 3, 8);
     try ok(c.siv_txn_commit(txn));
     try h.typeKey('u', "", .{ .ctrl = true });
     try h.settle();
@@ -822,7 +822,7 @@ test "widgets: styled-text editors show spans and toggle bold, italic, and under
 
     // With nothing selected, Ctrl+B and Ctrl+I style what is typed next.
     try ok(c.siv_txn_begin(h.window, &txn));
-    try ok(c.siv_set_selection(txn, field, content.len, content.len));
+    c.siv_set_selection(txn, field, content.len, content.len);
     try ok(c.siv_txn_commit(txn));
     try h.typeKey('b', "", .{ .ctrl = true });
     try h.typeKey('i', "", .{ .ctrl = true });

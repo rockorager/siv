@@ -54,7 +54,7 @@ test "native modal dialogs: a parent, input kept from it, destroyed with it" {
     const root = c.siv_window_root(h.window);
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
-    try ok(c.siv_on(txn, root, .activate, Clicks.onActivate, null, &clicks));
+    c.siv_on(txn, root, .activate, Clicks.onActivate, null, &clicks);
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     try h.click(10, 10);
@@ -76,7 +76,7 @@ test "native modal dialogs: a parent, input kept from it, destroyed with it" {
     try testing.expectEqual(@as(usize, 1), clicks.n);
 
     // Without the dialog, input reaches the parent again.
-    try ok(c.siv_window_destroy(dialog));
+    c.siv_window_destroy(dialog);
     try h.settle();
     try h.click(10, 10);
     try h.settle();
@@ -85,7 +85,7 @@ test "native modal dialogs: a parent, input kept from it, destroyed with it" {
     // A dialog goes with its parent.
     try ok(c.siv_window_create(h.app, &.{ .parent = h.window }, &dialog));
     try h.settle();
-    try ok(c.siv_window_destroy(h.window));
+    c.siv_window_destroy(h.window);
     var app: t.App = .null;
     try testing.expectEqual(t.Result.error_invalid_handle, c.siv_window_get_app(dialog, &app));
 }
@@ -134,22 +134,22 @@ test "idle inhibition for a window goes through the compositor; other inhibition
     try ok(c.siv_inhibit(h.app, h.window, .{ .idle = true }, "Video", 5, &a));
     try ok(c.siv_inhibit(h.app, h.window, .{ .idle = true }, "Slides", 6, &b));
     try testing.expect(try onHeadless(&h, platform.Headless.idleInhibited, .{id}));
-    try ok(c.siv_inhibition_destroy(a));
+    c.siv_inhibition_destroy(a);
     try testing.expect(try onHeadless(&h, platform.Headless.idleInhibited, .{id}));
-    try ok(c.siv_inhibition_destroy(b));
+    c.siv_inhibition_destroy(b);
     try testing.expect(!try onHeadless(&h, platform.Headless.idleInhibited, .{id}));
     // Suspending, or idling without a window, is the portal's (none here).
     try ok(c.siv_inhibit(h.app, h.window, .{ .idle = true, .@"suspend" = true }, "Burning", 7, &a));
     try ok(c.siv_inhibit(h.app, .null, .{ .idle = true }, "Music", 5, &b));
     try testing.expect(!try onHeadless(&h, platform.Headless.idleInhibited, .{id}));
-    try ok(c.siv_inhibition_destroy(a));
-    try ok(c.siv_inhibition_destroy(b));
+    c.siv_inhibition_destroy(a);
+    c.siv_inhibition_destroy(b);
     // An inhibition outliving its window ends with it.
     var dialog: t.Window = .null;
     try ok(c.siv_window_create(h.app, &.{}, &dialog));
     try ok(c.siv_inhibit(h.app, dialog, .{ .idle = true }, "Video", 5, &a));
-    try ok(c.siv_window_destroy(dialog));
-    try ok(c.siv_inhibition_destroy(a));
+    c.siv_window_destroy(dialog);
+    c.siv_inhibition_destroy(a);
 }
 
 const Session = struct {
@@ -215,7 +215,7 @@ test "session restore: a new session's id brings its windows back in the next ru
     try h.settle();
     try testing.expectEqual(@as(usize, 1), second.restored);
     // Removed, the session is forgotten: its id starts a new one.
-    try ok(c.siv_app_remove_session(h.app));
+    c.siv_app_remove_session(h.app);
     var third: Session = .{};
     try ok(c.siv_app_start_session(h.app, &first.id, first.id_len, .launch, Session.onSession, null, &third));
     try waitSession(&h, &third, 1);

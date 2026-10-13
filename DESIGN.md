@@ -111,7 +111,23 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     parameter is followed by its `user_data`.
   - Fallible functions return `siv_result` (0 is success, errors negative),
     write outputs through trailing pointers only on success, and have no
-    effect when they fail. Unknown flag bits, and unknown values of closed
+    effect when they fail.
+  - **The result rule.** A function returns `siv_result` exactly when the
+    caller must learn whether it worked, and then ignoring it warns
+    (`SIV_NODISCARD`, every one: the schema has no exception). Functions
+    that cannot fail return void: teardown (destroying, cancelling,
+    removing, withdrawing; a stale handle does nothing, as `free(NULL)`
+    does) and the operations of a transaction or a drawing, whose failure
+    is the transaction's or drawing's sticky error (D4, D28), read with
+    `siv_txn_status` or `siv_draw_status` and reported by
+    `siv_txn_commit`. `siv_app_destroy` from a callback destroys the
+    application when the dispatch running it returns instead of failing
+    with `SIV_ERROR_BUSY`. Before, results that "could be ignored"
+    (teardown, transaction operations, and a few window requests) were
+    marked case by case, so C callers could not tell a checked call from
+    an unchecked one, and window requests that can fail (`siv_window_set_title`
+    copies, `siv_window_set_cursor` validates) did not warn (D30).
+  - Unknown flag bits, and unknown values of closed
     enums, are `SIV_ERROR_UNSUPPORTED`. The schema marks each enum closed
     (the default: exactly its values) or open (`siv_key`: it names some
     values of a larger set and passes every other value through); the
@@ -299,8 +315,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     returns it (builders return 0), and `siv_txn_commit` discards the
     whole transaction and returns that error. `siv_txn_status` reads it
     early. A C program builds a subtree without checking each call and
-    still never commits half of it. Setters return the status too, with
-    warnings for ignored results off.
+    still never commits half of it. Setters and the other transaction
+    operations return nothing (D2's result rule): their failure is the
+    transaction's.
   - Node handles are made when a node is created and removed when a
     committed transaction destroys it, the transaction that created it
     aborts, or the window goes. Handlers set with `siv_on` are part of the
@@ -3756,7 +3773,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     path that is a single rect or rounded rect stays a rect shape, so
     the renderer keeps exact box coverage.
   - `siv_draw` is a handle valid only during the call it is passed to.
-    Drawing errors are sticky like a transaction's (D4): after the first
+    Drawing errors are sticky like a transaction's (D4), so drawing calls
+    return nothing and `siv_draw_status` reads the error: after the first
     failure every call does nothing, and the canvas shows nothing that
     frame, never half a drawing. To make that possible the callback draws
     into a scratch builder, which is replayed into the canvas's layer
@@ -3884,6 +3902,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | `siv_size_role`, `SIV_SIZE_ROLE_*` | `siv_text_role`, `SIV_TEXT_ROLE_*` | a themed text size beside `siv_role`, the accessibility role, read as a role for text; it is the type of `size_role` |
   | `siv_screencast_cursor`, `siv_screencast_persist` | `siv_cursor_mode`, `siv_persist_mode` | they belong to the screen cast family; `siv_cursor` is the pointer's shape |
   | `siv_icon_load(..., &request)` (D19) | no request | icon loads cancel like image loads |
+  | transaction operations (`siv_set_*`, `siv_on`, `siv_move`, `siv_widget_set_*`, `siv_view_set_*`, ...), drawing operations, `siv_txn_fail`, and teardown (`*_destroy`, `*_cancel`, `siv_txn_abort`, `siv_app_remove_action`, `siv_notification_withdraw`, `siv_tray_item_remove_menu_item`) return void (D2) | `siv_result` that callers could ignore | the result rule: every `siv_result` warns when ignored, and functions that cannot fail return nothing; a transaction's failure is read from the transaction, as for builders |
+  | `siv_app_quit`, window requests, `siv_drop_finish`, `siv_app_set_transfer_limit`, `siv_window_activate`, `siv_txn_status`, `siv_draw_status` warn when ignored (D2) | ignorable | they can fail |
+  | `siv_app_destroy` from a callback is deferred to the end of the dispatch (D2) | `SIV_ERROR_BUSY` | teardown cannot fail |
   | reserved fields in `siv_text_span`, `siv_paragraph_span`, `siv_tab_stop`, `siv_text_metrics` (D2) | — | frozen value structs that will plausibly grow; descriptors grow by appending |
   | `siv_tablet_sample.wheel` and four reserved fields (D16) | — | the axes flags named a wheel the sample could not carry; tablets grow axes, and a frozen struct cannot |
 

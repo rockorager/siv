@@ -45,7 +45,10 @@ const Doc = struct {
         const words: []const u8 = if (page == 0) "First page" else "Second page";
         _ = C.siv_draw_text(draw, 72, 144, 0, words.ptr, words.len, &.{ .font_size = 18 });
         // The second page fails, and is left blank as a canvas would be.
-        if (page == 1) d.bad_draw = C.siv_draw_rect(draw, .{ .x = std.math.nan(f32), .y = 0, .width = 1, .height = 1 });
+        if (page == 1) {
+            C.siv_draw_rect(draw, .{ .x = std.math.nan(f32), .y = 0, .width = 1, .height = 1 });
+            d.bad_draw = C.siv_draw_status(draw);
+        }
     }
 
     fn done(user_data: ?*anyopaque, result: ?*const t.PortalResult) callconv(.c) void {

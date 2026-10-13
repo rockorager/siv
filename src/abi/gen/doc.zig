@@ -24,10 +24,14 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
         \\  that names an object of another type is rejected with
         \\  `SIV_ERROR_INVALID_HANDLE`. Root handles (the application) own the
         \\  objects created from them; destroying a root invalidates them all.
-        \\- **Results.** A function that can fail returns `siv_result`. Outputs go
-        \\  through trailing pointer parameters and are written only on `SIV_OK`; a
-        \\  failed call has no effect. Allocation failure is
-        \\  `SIV_ERROR_OUT_OF_MEMORY`, never an abort.
+        \\- **Results.** A function that can fail returns `siv_result`, and
+        \\  ignoring it warns. Outputs go through trailing pointer parameters and
+        \\  are written only on `SIV_OK`; a failed call has no effect. Allocation
+        \\  failure is `SIV_ERROR_OUT_OF_MEMORY`, never an abort. Functions that
+        \\  cannot fail return void: teardown, where a stale handle does nothing,
+        \\  and transaction and drawing operations, whose first error the
+        \\  transaction (`siv_txn_status`, `siv_txn_commit`) or drawing
+        \\  (`siv_draw_status`) keeps.
         \\- **Descriptors.** Options are passed as a pointer to a descriptor struct
         \\  whose first field, `size`, is `sizeof` the struct; NULL means all
         \\  defaults. Zero means default in every field, so set only what you need:

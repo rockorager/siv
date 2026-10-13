@@ -236,7 +236,7 @@ test "list view: 100000 items cost the rows in view; scrolling rebinds them" {
     // old children, and binds are told so.
     for ([_]u32{ 0, 60 }) |index| {
         const txn = try begin(h.window);
-        try ok(c.siv_view_scroll_to(txn, list, index));
+        c.siv_view_scroll_to(txn, list, index);
         try ok(c.siv_txn_commit(txn));
         try h.settle();
     }
@@ -342,15 +342,15 @@ test "list view: keyboard cursor, single and multiple selection, activation" {
     try testing.expectEqual(@as(u32, 4), m.index);
     // Shrinking the count drops selection past the end.
     var txn = try begin(h.window);
-    try ok(c.siv_view_set_selected(txn, list, 50, true));
-    try ok(c.siv_view_set_count(txn, list, 10));
+    c.siv_view_set_selected(txn, list, 50, true);
+    c.siv_view_set_count(txn, list, 10);
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     try testing.expectEqual(t.Result.error_invalid_argument, c.siv_view_is_selected(list, 50, &sel));
     try testing.expect(try rowCount(list) == 10);
     // Removing the view releases the application's user data.
     txn = try begin(h.window);
-    try ok(c.siv_remove(txn, list));
+    c.siv_remove(txn, list);
     try ok(c.siv_txn_commit(txn));
     try testing.expectEqual(@as(u32, 1), m.destroyed);
 }
@@ -365,7 +365,7 @@ test "list view: the whole selection as a bitset, set and read in one call" {
     var all: [12_500]u8 = @splat(0xff);
     all[0] = 0xfe;
     var txn = try begin(h.window);
-    try ok(c.siv_view_set_selection(txn, list, &all, all.len));
+    c.siv_view_set_selection(txn, list, &all, all.len);
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     var sel = true;
@@ -394,14 +394,14 @@ test "list view: the whole selection as a bitset, set and read in one call" {
     // An empty bitset clears it; bits past the count are ignored; a
     // single-selection view takes at most one bit.
     txn = try begin(h.window);
-    try ok(c.siv_view_set_selection(txn, list, null, 0));
+    c.siv_view_set_selection(txn, list, null, 0);
     try ok(c.siv_txn_commit(txn));
     try ok(c.siv_view_get_selection(list, &back, back.len, &len));
     for (back) |x| try testing.expectEqual(@as(u8, 0), x);
     txn = try begin(h.window);
-    try ok(c.siv_view_set_count(txn, list, 3));
+    c.siv_view_set_count(txn, list, 3);
     const over = [_]u8{0xff};
-    try ok(c.siv_view_set_selection(txn, list, &over, 1));
+    c.siv_view_set_selection(txn, list, &over, 1);
     try ok(c.siv_txn_commit(txn));
     try ok(c.siv_view_get_selection(list, &back, back.len, &len));
     try testing.expectEqual(@as(usize, 1), len);
@@ -409,8 +409,8 @@ test "list view: the whole selection as a bitset, set and read in one call" {
     var m2: Model = .{};
     const single = try listOf(&h, &m2, 10, .single);
     txn = try begin(h.window);
-    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_view_set_selection(txn, single, &over, 1));
-    try ok(c.siv_txn_abort(txn));
+    c.siv_view_set_selection(txn, single, &over, 1); try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_status(txn));
+    c.siv_txn_abort(txn);
 }
 
 /// Starts a drag from the next move once armed (the view keeps the
@@ -439,7 +439,7 @@ test "list view: a press keeps a larger selection for a drag; select reports wha
     const list = try listOf(&h, &m, 1000, .multiple);
     var d: Dragger = .{};
     const txn = try begin(h.window);
-    try ok(c.siv_on(txn, list, .pointer, Dragger.onPointer, null, &d));
+    c.siv_on(txn, list, .pointer, Dragger.onPointer, null, &d);
     try ok(c.siv_txn_commit(txn));
     const id = (try h.win()).win.id;
     const rowY = struct {
@@ -525,7 +525,7 @@ test "list view: the cursor is read, moved, and focused; rows are reachable" {
     try testing.expectEqualStrings("Item 0", (try uw.semanticsTree()).name((try focusedRole(&h)).?));
     // Moving it far away scrolls there; focusing follows after the commit.
     var txn = try begin(h.window);
-    try ok(c.siv_view_set_cursor(txn, list, 500));
+    c.siv_view_set_cursor(txn, list, 500);
     try ok(c.siv_txn_commit(txn));
     try ok(c.siv_node_focus(list));
     try h.settle();
@@ -547,8 +547,8 @@ test "list view: the cursor is read, moved, and focused; rows are reachable" {
     try ok(c.siv_view_get_row(list, 3, &row));
     try testing.expectEqual(t.Node.null, row);
     txn = try begin(h.window);
-    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_view_set_cursor(txn, list, 1000));
-    try ok(c.siv_txn_abort(txn));
+    c.siv_view_set_cursor(txn, list, 1000); try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_status(txn));
+    c.siv_txn_abort(txn);
 }
 
 const Targets = struct {
@@ -831,7 +831,7 @@ test "list view: rows of their own heights, placed by arithmetic, scrolled on th
 
     // Scrolling to an item puts it in view at its arithmetic top.
     var t2 = try begin(h.window);
-    try ok(c.siv_view_scroll_to(t2, list, 5000));
+    c.siv_view_scroll_to(t2, list, 5000);
     try ok(c.siv_txn_commit(t2));
     try h.settle();
     const b5000 = (try itemBounds(list, "Item 5000")).?.bounds;
@@ -850,8 +850,8 @@ test "list view: rows of their own heights, placed by arithmetic, scrolled on th
     // A refresh asks the heights again.
     s.hs.fixed = 50;
     t2 = try begin(h.window);
-    try ok(c.siv_view_refresh(t2, list));
-    try ok(c.siv_view_scroll_to(t2, list, 0));
+    c.siv_view_refresh(t2, list);
+    c.siv_view_scroll_to(t2, list, 0);
     try ok(c.siv_txn_commit(t2));
     try h.settle();
     try testing.expectEqual(@as(u32, 20_000), s.hs.asked);
@@ -875,7 +875,7 @@ test "tree view: rows of their own heights follow expansion" {
         .height = Sized.height,
         .user_data = &s,
     });
-    try ok(c.siv_view_set_expanded(txn, tree_view, 0, true));
+    c.siv_view_set_expanded(txn, tree_view, 0, true);
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     // Items 1000, 2000..2003, 1001: heights by item id.
@@ -1051,8 +1051,8 @@ test "table view: sortable and resizable columns by pointer, keyboard, and assis
     var kind_cell: t.Node = .null;
     try ok(c.siv_widget_get_part(table, .column, 2, &kind_cell));
     try testing.expectEqual(kind, kind_cell);
-    try ok(c.siv_widget_set_value(t2, kind_cell, 120));
-    try ok(c.siv_view_set_sort(t2, table, 2, .ascending));
+    c.siv_widget_set_value(t2, kind_cell, 120);
+    c.siv_view_set_sort(t2, table, 2, .ascending);
     try ok(c.siv_txn_commit(t2));
     try h.settle();
     width = try columnWidth(table, 2);

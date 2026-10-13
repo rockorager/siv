@@ -154,7 +154,7 @@ test "styled-text editors align paragraphs by keys, undoably" {
     try ok(c.siv_node_focus(field));
     // The caret in "Two": Ctrl+E centers that paragraph only.
     try ok(c.siv_txn_begin(h.window, &txn));
-    try ok(c.siv_set_selection(txn, field, 5, 5));
+    c.siv_set_selection(txn, field, 5, 5);
     try ok(c.siv_txn_commit(txn));
     try h.typeKey('e', "", .{ .ctrl = true });
     try h.settle();
@@ -167,7 +167,7 @@ test "styled-text editors align paragraphs by keys, undoably" {
     // Ctrl+R over a selection from "One" into "Three" aligns all three
     // right; Ctrl+L puts them back; undo restores right.
     try ok(c.siv_txn_begin(h.window, &txn));
-    try ok(c.siv_set_selection(txn, field, 1, 10));
+    c.siv_set_selection(txn, field, 1, 10);
     try ok(c.siv_txn_commit(txn));
     try h.typeKey('r', "", .{ .ctrl = true });
     try h.settle();

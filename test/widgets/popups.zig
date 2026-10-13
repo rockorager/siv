@@ -261,7 +261,7 @@ test "menus: a context menu opens against any node; disabled items cannot be cho
     try testing.expectEqual(@as(u32, 1), log.index);
     // Relabelled and removed items follow the model.
     txn = try begin(h.window);
-    try ok(c.siv_widget_set_label(txn, copy, "Duplicate", 9));
+    c.siv_widget_set_label(txn, copy, "Duplicate", 9);
     try ok(c.siv_txn_commit(txn));
     try h.click(20, 20);
     try h.settle();
@@ -552,7 +552,7 @@ test "toasts: announced, closed after their timeout, removed unless kept" {
     const quick = c.siv_toast(txn, root(&h), &.{ .text = "Bye", .text_len = 3, .timeout_ms = 10 });
     try ok(c.siv_txn_commit(txn));
     txn = try begin(h.window);
-    try ok(c.siv_remove(txn, quick));
+    c.siv_remove(txn, quick);
     try ok(c.siv_txn_commit(txn));
     const until = @import("loop").Loop.now() + 50 * std.time.ns_per_ms;
     while (@import("loop").Loop.now() < until) try ok(c.siv_app_dispatch(h.app, 10));

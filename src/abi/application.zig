@@ -58,6 +58,9 @@ pub const App = struct {
     windows: std.ArrayList(?*Window),
     /// Nesting of node and window callbacks.
     depth: u32,
+    /// siv_app_destroy was called from a callback: the application goes
+    /// when the dispatch running it returns.
+    destroy_requested: bool,
     /// Destroy-notifies waiting for `depth` to reach zero.
     pending: std.ArrayList(Release),
     /// Windows destroyed while `depth` was nonzero.
@@ -260,6 +263,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     errdefer Root.destroy(App, self);
     self.windows = .empty;
     self.depth = 0;
+    self.destroy_requested = false;
     self.pending = .empty;
     self.dead = .empty;
     self.painting = 0;
@@ -303,9 +307,19 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     dest.* = @fromBackingInt(self.root.handle);
 }
 
-pub export fn siv_app_destroy(app: t.App) t.Result {
-    const self = App.get(@backingInt(app)) catch |err| return t.resultOf(err);
-    if (self.depth != 0 or self.app.loop.isDispatching()) return .error_busy;
+pub export fn siv_app_destroy(app: t.App) void {
+    const self = App.get(@backingInt(app)) catch return;
+    if (self.depth != 0 or self.app.loop.isDispatching()) {
+        // From a callback: once the dispatch running it returns, which
+        // siv_app_run does at once.
+        self.destroy_requested = true;
+        self.app.quit();
+        return;
+    }
+    destroyNow(self);
+}
+
+fn destroyNow(self: *App) void {
     // From here no thread can post or submit, and every handle is
     // invalid.
     self.closing.store(true, .seq_cst);
@@ -335,7 +349,7 @@ pub export fn siv_app_destroy(app: t.App) t.Result {
     self.waiting.deinit(gpa);
     self.externals.deinit(gpa);
     Root.destroy(App, self);
-    return .ok;
+    return;
 }
 
 pub export fn siv_app_get_fd(app: t.App, fd: ?*i32) t.Result {
@@ -348,6 +362,7 @@ pub export fn siv_app_get_fd(app: t.App, fd: ?*i32) t.Result {
 pub export fn siv_app_dispatch(app: t.App, timeout_ms: i32) t.Result {
     const self = App.get(@backingInt(app)) catch |err| return t.resultOf(err);
     if (self.depth != 0) return .error_busy;
+    defer if (self.destroy_requested) destroyNow(self);
     self.app.dispatch(timeout_ms) catch |err| return t.resultOf(mapAppError(err));
     return .ok;
 }
@@ -355,6 +370,7 @@ pub export fn siv_app_dispatch(app: t.App, timeout_ms: i32) t.Result {
 pub export fn siv_app_run(app: t.App) t.Result {
     const self = App.get(@backingInt(app)) catch |err| return t.resultOf(err);
     if (self.depth != 0) return .error_busy;
+    defer if (self.destroy_requested) destroyNow(self);
     self.app.run() catch |err| return t.resultOf(mapAppError(err));
     return .ok;
 }
@@ -643,11 +659,11 @@ fn states(s: platform.WindowStates) u32 {
     return @bitCast(out);
 }
 
-pub export fn siv_window_destroy(window: t.Window) t.Result {
-    const w = App.window(@backingInt(window), window_tag) catch |err| return t.resultOf(err);
-    if (w.owner.painting != 0) return .error_busy;
-    w.destroyTree() catch return .error_out_of_memory;
-    return .ok;
+pub export fn siv_window_destroy(window: t.Window) void {
+    const w = App.window(@backingInt(window), window_tag) catch return;
+    if (w.owner.painting != 0) return;
+    w.destroyTree() catch return;
+    return;
 }
 
 pub export fn siv_window_set_title(window: t.Window, title: ?[*]const u8, title_len: usize) t.Result {
@@ -754,11 +770,11 @@ fn timerStart(self: *App, delay_ms: u32, callback: ?t.PostFn, destroy: ?t.Destro
     return .ok;
 }
 
-pub export fn siv_timer_cancel(timer: t.Timer) t.Result {
-    const self, const index = Root.owner(App, app_tag, @backingInt(timer), timer_tag) catch |err| return t.resultOf(err);
-    const tm = self.timers.items[index] orelse return .error_invalid_handle;
+pub export fn siv_timer_cancel(timer: t.Timer) void {
+    const self, const index = Root.owner(App, app_tag, @backingInt(timer), timer_tag) catch return;
+    const tm = self.timers.items[index] orelse return;
     tm.cancel();
-    return .ok;
+    return;
 }
 
 /// A siv_job_start job: one pool job and its C callbacks (D5, D6).

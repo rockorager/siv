@@ -17,7 +17,7 @@ const Window = application.Window;
 const Error = application.Error;
 const NodeId = ui.NodeId;
 
-pub export fn siv_set_widget(txn: t.Txn, node: t.Node, desc: ?*const t.WidgetDesc) t.Result {
+pub export fn siv_set_widget(txn: t.Txn, node: t.Node, desc: ?*const t.WidgetDesc) void {
     const r = tree.run(txn, struct {
         fn f(w: *Window, n: t.Node, ptr: ?*const t.WidgetDesc) Error!void {
             const id = try tree.nodeIn(w, n);
@@ -34,7 +34,7 @@ pub export fn siv_set_widget(txn: t.Txn, node: t.Node, desc: ?*const t.WidgetDes
     if (r != .ok) if (desc) |d| if (d.destroy) |f| {
         if (application.App.window(@backingInt(txn), application.txn_tag)) |w| w.owner.release(f, d.user_data) else |_| f(d.user_data);
     };
-    return r;
+    return;
 }
 
 /// The interface of a node of the transaction's window.
@@ -46,8 +46,8 @@ fn interface(w: *Window, n: t.Node) Error!t.WidgetDesc {
 /// Runs one of a widget's setters in the caller's transaction, under the
 /// sticky-error rule; the widget reports what it refuses with
 /// siv_txn_fail.
-fn set(txn: t.Txn, comptime field: []const u8, args: anytype) t.Result {
-    const r = tree.run(txn, struct {
+fn set(txn: t.Txn, comptime field: []const u8, args: anytype) void {
+    _ = tree.run(txn, struct {
         fn f(w: *Window, tx: t.Txn, a: @TypeOf(args)) Error!void {
             const iface = try interface(w, a[0]);
             const cb = @field(iface, field) orelse return error.InvalidArgument;
@@ -56,29 +56,28 @@ fn set(txn: t.Txn, comptime field: []const u8, args: anytype) t.Result {
             @call(.auto, cb, .{ iface.user_data, tx } ++ a);
         }
     }.f, .{ txn, args });
-    return if (r != .ok) r else tree.siv_txn_status(txn);
 }
 
-pub export fn siv_widget_set_label(txn: t.Txn, node: t.Node, label: ?[*]const u8, label_len: usize) t.Result {
+pub export fn siv_widget_set_label(txn: t.Txn, node: t.Node, label: ?[*]const u8, label_len: usize) void {
     _ = runtime.string(label, label_len) catch return tree.siv_txn_fail(txn, .error_invalid_argument);
     return set(txn, "set_label", .{ node, label, label_len });
 }
 
-pub export fn siv_widget_set_icon(txn: t.Txn, node: t.Node, icon: ?[*]const u8, icon_len: usize) t.Result {
+pub export fn siv_widget_set_icon(txn: t.Txn, node: t.Node, icon: ?[*]const u8, icon_len: usize) void {
     _ = runtime.string(icon, icon_len) catch return tree.siv_txn_fail(txn, .error_invalid_argument);
     return set(txn, "set_icon", .{ node, icon, icon_len });
 }
 
-pub export fn siv_widget_set_disabled(txn: t.Txn, node: t.Node, disabled: bool) t.Result {
+pub export fn siv_widget_set_disabled(txn: t.Txn, node: t.Node, disabled: bool) void {
     return set(txn, "set_disabled", .{ node, disabled });
 }
 
-pub export fn siv_widget_set_value(txn: t.Txn, node: t.Node, value: f64) t.Result {
+pub export fn siv_widget_set_value(txn: t.Txn, node: t.Node, value: f64) void {
     if (!std.math.isFinite(value)) return tree.siv_txn_fail(txn, .error_invalid_argument);
     return set(txn, "set_value", .{ node, value });
 }
 
-pub export fn siv_widget_set_range(txn: t.Txn, node: t.Node, min: f64, max: f64, step: f64) t.Result {
+pub export fn siv_widget_set_range(txn: t.Txn, node: t.Node, min: f64, max: f64, step: f64) void {
     if (!std.math.isFinite(min) or !std.math.isFinite(max) or !std.math.isFinite(step) or step < 0 or min > max)
         return tree.siv_txn_fail(txn, .error_invalid_argument);
     return set(txn, "set_range", .{ node, min, max, step });

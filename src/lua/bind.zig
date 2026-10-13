@@ -996,6 +996,17 @@ fn cIndex(comptime f: schema.Function, comptime pi: usize) usize {
     return n;
 }
 
+/// Whose sticky status a void function's failure goes to: a
+/// transaction's (its first parameter, except siv_txn_abort, which ends
+/// it) or a drawing's.
+fn stickyOf(comptime f: schema.Function) enum { none, txn, draw } {
+    if (f.params.len == 0 or f.params[0].type != .ref) return .none;
+    const t = f.params[0].type.ref;
+    if (std.mem.eql(u8, t, "siv_txn") and !std.mem.eql(u8, f.name, "siv_txn_abort")) return .txn;
+    if (std.mem.eql(u8, t, "siv_draw")) return .draw;
+    return .none;
+}
+
 fn ownedDestroy(comptime name: []const u8) ?[]const u8 {
     @setEvalBranchQuota(1_000_000);
     for (m.owned) |o| if (std.mem.eql(u8, o[1], name)) return o[0];
@@ -1142,6 +1153,24 @@ pub fn Wrapper(comptime fi: usize) type {
                 }
             }
 
+            if (comptime f.ret == .void) {
+                // Transaction and drawing operations return nothing, their
+                // failure being the transaction's or the drawing's (D2);
+                // Lua raises at the operation that failed (D23).
+                const code: i32 = switch (comptime stickyOf(f)) {
+                    .txn => @intFromEnum(siv.c.siv_txn_status(args[0])),
+                    .draw => @intFromEnum(siv.c.siv_draw_status(args[0])),
+                    .none => 0,
+                };
+                if (code != 0) raiseResult(st, L, code, f.name);
+                if (comptime ownedDestroy(f.name)) |h| {
+                    if (toHandleUd(L, 1)) |ud| {
+                        ud.flags.destroyed = true;
+                        if (comptime std.mem.eql(u8, h, "siv_app")) sweepRoot(st, L, ud.value);
+                    }
+                }
+                return 0;
+            }
             if (comptime spec.isResult(f.ret)) {
                 const code = @intFromEnum(r);
                 if (code != 0) raiseResult(st, L, code, f.name);

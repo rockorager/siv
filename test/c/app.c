@@ -202,27 +202,27 @@ static void test_app(const unsigned char *font, size_t font_len) {
 	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
 	siv_txn other = 0;
 	EXPECT(siv_txn_begin(window, &other), SIV_ERROR_BUSY);
-	EXPECT(siv_set_visual(txn, root, SIV_DESC(siv_visual_desc, .background = {1, 1, 1, 1})), SIV_OK);
+	siv_set_visual(txn, root, SIV_DESC(siv_visual_desc, .background = {1, 1, 1, 1}));
 	siv_node column = siv_flex(txn, root, SIV_DESC(siv_flex_desc, .axis = SIV_AXIS_COLUMN, .gap = 8));
-	EXPECT(siv_set_layout(txn, column, SIV_DESC(siv_layout_desc, .padding = {12, 12, 12, 12})), SIV_OK);
+	siv_set_layout(txn, column, SIV_DESC(siv_layout_desc, .padding = {12, 12, 12, 12}));
 	siv_node label = siv_text(txn, column, "Hello", 5);
-	EXPECT(siv_set_text_style(txn, label, SIV_DESC(siv_text_style_desc, .font_size = 18, .weight = SIV_FONT_WEIGHT_BOLD)), SIV_OK);
+	siv_set_text_style(txn, label, SIV_DESC(siv_text_style_desc, .font_size = 18, .weight = SIV_FONT_WEIGHT_BOLD));
 	siv_node button = siv_box(txn, column);
-	EXPECT(siv_set_semantics(txn, button, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_BUTTON, .flags = SIV_SEMANTICS_FOCUSABLE)), SIV_OK);
-	EXPECT(siv_set_visual(txn, button, SIV_DESC(siv_visual_desc, .background = {0.15f, 0.39f, 0.92f, 1}, .radius = {6, 6, 6, 6})), SIV_OK);
-	EXPECT(siv_set_layout(txn, button, SIV_DESC(siv_layout_desc, .padding = {12, 12, 6, 6})), SIV_OK);
+	siv_set_semantics(txn, button, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_BUTTON, .flags = SIV_SEMANTICS_FOCUSABLE));
+	siv_set_visual(txn, button, SIV_DESC(siv_visual_desc, .background = {0.15f, 0.39f, 0.92f, 1}, .radius = {6, 6, 6, 6}));
+	siv_set_layout(txn, button, SIV_DESC(siv_layout_desc, .padding = {12, 12, 6, 6}));
 	siv_node caption = siv_text(txn, button, "Save", 4);
 	struct counts handler_counts = {0};
-	EXPECT(siv_on(txn, button, SIV_EVENT_TYPE_ACTIVATE, on_activate, on_destroy, &handler_counts), SIV_OK);
+	siv_on(txn, button, SIV_EVENT_TYPE_ACTIVATE, on_activate, on_destroy, &handler_counts);
 	siv_node editor = siv_editor(txn, column, 0);
-	EXPECT(siv_set_text(txn, editor, "edit me", 7), SIV_OK);
-	EXPECT(siv_set_selection(txn, editor, 2, 4), SIV_OK);
+	siv_set_text(txn, editor, "edit me", 7);
+	siv_set_selection(txn, editor, 2, 4);
 	siv_track tracks[] = {{SIV_TRACK_UNIT_PX, 40}, {SIV_TRACK_UNIT_FR, 1}};
 	siv_node grid = siv_grid(txn, column, SIV_DESC(siv_grid_desc, .columns = tracks, .columns_count = 2, .column_gap = 4));
 	siv_node scroll = siv_scroll(txn, column, SIV_SCROLL_AXIS_VERTICAL);
 	siv_node stack = siv_stack(txn, scroll, SIV_DESC(siv_stack_desc, .align_x = SIV_ALIGN_CENTER));
-	EXPECT(siv_set_opacity(txn, stack, 0.5f), SIV_OK);
-	EXPECT(siv_set_transform(txn, stack, (siv_transform){.scale_x = 1, .scale_y = 1, .translate_x = 2}), SIV_OK);
+	siv_set_opacity(txn, stack, 0.5f);
+	siv_set_transform(txn, stack, (siv_transform){.scale_x = 1, .scale_y = 1, .translate_x = 2});
 	CHECK(column && label && button && caption && editor && grid && scroll && stack);
 	EXPECT(siv_txn_status(txn), SIV_OK);
 	EXPECT(siv_txn_commit(txn), SIV_OK);
@@ -254,12 +254,12 @@ static void test_app(const unsigned char *font, size_t font_len) {
 	/* Sticky errors: after the first failure nothing applies, builders
 	 * return 0, and commit discards the whole transaction. */
 	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
-	EXPECT(siv_set_text(txn, label, "Changed", 7), SIV_OK);
+	siv_set_text(txn, label, "Changed", 7);
 	siv_node extra = siv_box(txn, column);
 	CHECK(extra != 0);
-	EXPECT(siv_set_text(txn, button, "not text", 8), SIV_ERROR_INVALID_ARGUMENT);
+	siv_set_text(txn, button, "not text", 8); EXPECT(siv_txn_status(txn), SIV_ERROR_INVALID_ARGUMENT);
 	CHECK(siv_box(txn, column) == 0);
-	EXPECT(siv_set_text(txn, label, "Later", 5), SIV_ERROR_INVALID_ARGUMENT);
+	siv_set_text(txn, label, "Later", 5); EXPECT(siv_txn_status(txn), SIV_ERROR_INVALID_ARGUMENT);
 	EXPECT(siv_txn_status(txn), SIV_ERROR_INVALID_ARGUMENT);
 	EXPECT(siv_txn_commit(txn), SIV_ERROR_INVALID_ARGUMENT);
 	EXPECT(siv_node_get_text(label, buf, sizeof buf, &len), SIV_OK);
@@ -268,25 +268,25 @@ static void test_app(const unsigned char *font, size_t font_len) {
 
 	/* Invalid descriptors and handles are errors too. */
 	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
-	EXPECT(siv_set_layout(txn, label, SIV_DESC(siv_layout_desc, .align_x = (siv_align)42)), SIV_ERROR_UNSUPPORTED);
-	EXPECT(siv_txn_abort(txn), SIV_OK);
+	siv_set_layout(txn, label, SIV_DESC(siv_layout_desc, .align_x = (siv_align)42)); EXPECT(siv_txn_status(txn), SIV_ERROR_UNSUPPORTED);
+	siv_txn_abort(txn);
 	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
-	EXPECT(siv_set_layout(txn, (siv_node)window, NULL), SIV_ERROR_INVALID_HANDLE);
-	EXPECT(siv_txn_abort(txn), SIV_OK);
+	siv_set_layout(txn, (siv_node)window, NULL); EXPECT(siv_txn_status(txn), SIV_ERROR_INVALID_HANDLE);
+	siv_txn_abort(txn);
 
 	/* Removing a node invalidates its handle at commit and releases its
 	 * handlers. Replacing a handler releases the old one at commit. */
 	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
-	EXPECT(siv_on(txn, button, SIV_EVENT_TYPE_ACTIVATE, on_activate, on_destroy, &handler_counts), SIV_OK);
+	siv_on(txn, button, SIV_EVENT_TYPE_ACTIVATE, on_activate, on_destroy, &handler_counts);
 	CHECK(atomic_load(&handler_counts.destroys) == 0);
 	EXPECT(siv_txn_commit(txn), SIV_OK);
 	CHECK(atomic_load(&handler_counts.destroys) == 1);
 	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
-	EXPECT(siv_on(txn, button, SIV_EVENT_TYPE_KEY, on_activate, on_destroy, &handler_counts), SIV_OK);
-	EXPECT(siv_txn_abort(txn), SIV_OK);
+	siv_on(txn, button, SIV_EVENT_TYPE_KEY, on_activate, on_destroy, &handler_counts);
+	siv_txn_abort(txn);
 	CHECK(atomic_load(&handler_counts.destroys) == 2);
 	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
-	EXPECT(siv_remove(txn, button), SIV_OK);
+	siv_remove(txn, button);
 	EXPECT(siv_node_get_text(caption, buf, sizeof buf, &len), SIV_OK);
 	EXPECT(siv_txn_commit(txn), SIV_OK);
 	CHECK(atomic_load(&handler_counts.destroys) == 3);
@@ -304,20 +304,20 @@ static void test_app(const unsigned char *font, size_t font_len) {
 	EXPECT(siv_node_get_rect(canvas, &rect), SIV_OK);
 	/* Stretched across the column; the height is what measure chose. */
 	CHECK(rect.width > 50 && rect.height == 20);
-	EXPECT(siv_draw_move_to(last_draw, 0, 0), SIV_ERROR_INVALID_HANDLE);
+	siv_draw_move_to(last_draw, 0, 0); EXPECT(siv_draw_status(last_draw), SIV_ERROR_INVALID_HANDLE);
 	int drawn = canvas_draws;
 	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
-	EXPECT(siv_invalidate(txn, canvas), SIV_OK);
+	siv_invalidate(txn, canvas);
 	EXPECT(siv_txn_commit(txn), SIV_OK);
 	CHECK(wait_for(app, &canvas_draws, drawn));
 	/* Replacing the callbacks releases the old user data at commit. */
 	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
-	EXPECT(siv_set_canvas(txn, canvas, SIV_DESC(siv_canvas_desc, .draw = count_draw, .destroy = on_destroy, .user_data = &canvas_counts, .width = 10, .height = 10)), SIV_OK);
-	EXPECT(siv_set_canvas(txn, label, NULL), SIV_ERROR_INVALID_ARGUMENT);
-	EXPECT(siv_txn_abort(txn), SIV_OK);
+	siv_set_canvas(txn, canvas, SIV_DESC(siv_canvas_desc, .draw = count_draw, .destroy = on_destroy, .user_data = &canvas_counts, .width = 10, .height = 10));
+	siv_set_canvas(txn, label, NULL); EXPECT(siv_txn_status(txn), SIV_ERROR_INVALID_ARGUMENT);
+	siv_txn_abort(txn);
 	CHECK(atomic_load(&canvas_counts.destroys) == 1);
 	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
-	EXPECT(siv_set_canvas(txn, canvas, SIV_DESC(siv_canvas_desc, .draw = count_draw, .destroy = on_destroy, .user_data = &canvas_counts, .width = 10, .height = 10)), SIV_OK);
+	siv_set_canvas(txn, canvas, SIV_DESC(siv_canvas_desc, .draw = count_draw, .destroy = on_destroy, .user_data = &canvas_counts, .width = 10, .height = 10));
 	EXPECT(siv_txn_commit(txn), SIV_OK);
 	CHECK(atomic_load(&canvas_counts.destroys) == 1);
 
@@ -329,8 +329,8 @@ static void test_app(const unsigned char *font, size_t font_len) {
 	siv_node view = siv_image_view(txn, column, SIV_DESC(siv_image_view_desc, .image = image, .fit = SIV_FIT_COVER));
 	CHECK(view != 0);
 	EXPECT(siv_txn_commit(txn), SIV_OK);
-	EXPECT(siv_image_destroy(image), SIV_OK);
-	EXPECT(siv_image_destroy(image), SIV_ERROR_INVALID_HANDLE);
+	siv_image_destroy(image);
+	siv_image_destroy(image);
 
 	siv_text_metrics metrics = {0};
 	EXPECT(siv_app_measure_text(app, "Hello", 5, 0, SIV_DESC(siv_text_style_desc, .font_size = 20), &metrics), SIV_OK);
@@ -341,22 +341,22 @@ static void test_app(const unsigned char *font, size_t font_len) {
 
 	/* An open transaction and the window's handlers go with the window. */
 	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
-	EXPECT(siv_on(txn, label, SIV_EVENT_TYPE_POINTER, on_activate, on_destroy, &handler_counts), SIV_OK);
+	siv_on(txn, label, SIV_EVENT_TYPE_POINTER, on_activate, on_destroy, &handler_counts);
 	CHECK(log.destroyed == 0);
-	EXPECT(siv_window_destroy(window), SIV_OK);
+	siv_window_destroy(window);
 	CHECK(log.destroyed == 1);
 	CHECK(atomic_load(&canvas_counts.destroys) == 2);
 	CHECK(atomic_load(&handler_counts.destroys) == 4);
 	CHECK(atomic_load(&counts.destroys) == 50);
 	EXPECT(siv_txn_commit(txn), SIV_ERROR_INVALID_HANDLE);
-	EXPECT(siv_window_destroy(window), SIV_ERROR_INVALID_HANDLE);
+	siv_window_destroy(window);
 	EXPECT(siv_node_get_text(label, buf, sizeof buf, &len), SIV_ERROR_INVALID_HANDLE);
 
 	/* Work posted but never dispatched is released with the application. */
 	EXPECT(siv_post(app, on_post, on_destroy, &counts), SIV_OK);
-	EXPECT(siv_app_destroy(app), SIV_OK);
+	siv_app_destroy(app);
 	CHECK(atomic_load(&counts.runs) == 50 && atomic_load(&counts.destroys) == 51);
-	EXPECT(siv_app_destroy(app), SIV_ERROR_INVALID_HANDLE);
+	siv_app_destroy(app);
 	EXPECT(siv_post(app, on_post, on_destroy, &counts), SIV_ERROR_INVALID_HANDLE);
 	CHECK(atomic_load(&live_bytes) == 0);
 }

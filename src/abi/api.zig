@@ -142,10 +142,17 @@ fn call(comptime name: []const u8, comptime doc: []const u8, comptime params: []
     return .{ .name = name, .doc = doc, .since = v0_1, .params = params, .ret = result_ref };
 }
 
-/// A fallible function whose result callers may ignore: teardown, and
-/// transaction operations, whose errors commit reports.
-fn op(comptime name: []const u8, comptime doc: []const u8, comptime params: []const Param) Function {
-    return .{ .name = name, .doc = doc, .since = v0_1, .params = params, .ret = result_ref, .must_use = false };
+/// Teardown (D2): destroying, cancelling, or removing what is already
+/// gone does nothing, so it cannot fail and returns nothing.
+fn teardown(comptime name: []const u8, comptime doc: []const u8, comptime params: []const Param) Function {
+    return .{ .name = name, .doc = doc ++ " A stale handle does nothing.", .since = v0_1, .params = params };
+}
+
+/// A transaction operation (D4): it returns nothing, since a failure is
+/// the transaction's, which later operations skip and siv_txn_commit
+/// reports (siv_txn_status reads it early).
+fn txnOp(comptime name: []const u8, comptime doc: []const u8, comptime params: []const Param) Function {
+    return .{ .name = name, .doc = doc ++ " A failure is the transaction's (see siv_txn_commit).", .since = v0_1, .params = params };
 }
 
 /// A transaction operation that creates a node.
@@ -164,7 +171,12 @@ const node_param: Param = .{ .name = "node", .type = ref("siv_node"), .doc = "A 
 
 /// A transaction operation on one node.
 fn setter(comptime name: []const u8, comptime doc: []const u8, comptime params: []const Param) Function {
-    return op(name, doc ++ " Returns the transaction's status (see siv_txn_commit).", &([_]Param{ txn_param, node_param } ++ params[0..params.len].*));
+    var f = txnOp(name, doc, &([_]Param{ txn_param, node_param } ++ params[0..params.len].*));
+    // One with outputs (siv_set_data) returns the result they need.
+    for (params) |p| if (p.type == .out) {
+        f.ret = result_ref;
+    };
+    return f;
 }
 
 const app_param: Param = .{ .name = "app", .type = ref("siv_app"), .doc = "The application." };
@@ -262,9 +274,10 @@ fn param(comptime name: []const u8, comptime t: schema.Type, comptime doc: []con
 
 const draw_param: Param = .{ .name = "draw", .type = ref("siv_draw"), .doc = "The drawing context of the running siv_draw_fn." };
 
-/// A drawing operation: errors are sticky like a transaction's.
+/// A drawing operation: errors are sticky like a transaction's, so it
+/// returns nothing (D2, D28).
 fn drawOp(comptime name: []const u8, comptime doc: []const u8, comptime params: []const Param) Function {
-    return op(name, doc ++ " Returns the drawing's status (see siv_draw_status).", &([_]Param{draw_param} ++ params[0..params.len].*));
+    return .{ .name = name, .doc = doc ++ " A failure is the drawing's (see siv_draw_status).", .since = v0_1, .params = &([_]Param{draw_param} ++ params[0..params.len].*) };
 }
 
 const blend_names = [_][]const u8{
@@ -1561,7 +1574,7 @@ pub const functions = [_]Function{
         .{ .name = "desc", .type = .{ .desc = "siv_app_desc" }, .doc = "Options; NULL for defaults." },
         .{ .name = "app", .type = out(ref("siv_app")), .doc = "The new application." },
     }),
-    op("siv_app_destroy", "Destroys the application, its windows, and every handle it issued. Posted work that has not run gets its destroy-notify instead (D5); so does every callback still registered. Not from a siv callback (SIV_ERROR_BUSY).", &.{app_param}),
+    teardown("siv_app_destroy", "Destroys the application, its windows, and every handle it issued. Posted work that has not run gets its destroy-notify instead (D5); so does every callback still registered. From a siv callback, the application is destroyed when the dispatch running the callback returns, and siv_app_run returns at once; until then its handles stay valid.", &.{app_param}),
     call("siv_app_get_fd", "The application's loop file descriptor, for embedding in another event loop (D6). It is readable whenever siv_app_dispatch has work; then call siv_app_dispatch(app, 0).", &.{
         app_param,
         .{ .name = "fd", .type = out(.i32), .doc = "The descriptor; siv owns it." },
@@ -1571,7 +1584,7 @@ pub const functions = [_]Function{
         .{ .name = "timeout_ms", .type = .i32, .doc = "Longest wait for work: -1 blocks, 0 never waits." },
     }),
     call("siv_app_run", "Dispatches until siv_app_quit is called or the last window is destroyed.", &.{app_param}),
-    op("siv_app_quit", "Makes the running siv_app_run return after the current iteration.", &.{app_param}),
+    call("siv_app_quit", "Makes the running siv_app_run return after the current iteration.", &.{app_param}),
     anyThread(call("siv_post", "Runs callback(user_data) on the application's thread at its next dispatch, then destroy(user_data). Safe even while the application is being destroyed: either the call fails with SIV_ERROR_INVALID_HANDLE and nothing runs, or destroy runs exactly once (alone, if the application is destroyed first). Allocates with the application's allocator on the calling thread.", &.{
         app_param,
         .{ .name = "callback", .type = ref("siv_post_fn"), .doc = "The work." },
@@ -1618,15 +1631,15 @@ pub const functions = [_]Function{
         .{ .name = "desc", .type = .{ .desc = "siv_window_desc" }, .doc = "Options; NULL for defaults." },
         .{ .name = "window", .type = out(ref("siv_window")), .doc = "The new window." },
     }),
-    op("siv_window_destroy", "Destroys a window, its open transaction, and its nodes. Their callbacks' destroy-notify runs, after the running callback returns if called from one.", &.{window_param}),
-    op("siv_window_set_title", "Sets the title.", &.{ window_param, .{ .name = "title", .type = .string, .doc = "Copied." } }),
+    teardown("siv_window_destroy", "Destroys a window, its open transaction, and its nodes. Their callbacks' destroy-notify runs, after the running callback returns if called from one.", &.{window_param}),
+    call("siv_window_set_title", "Sets the title.", &.{ window_param, .{ .name = "title", .type = .string, .doc = "Copied." } }),
     call("siv_window_get_size", "The logical size from the last configure.", &.{ window_param, .{ .name = "size", .type = out(ref("siv_size")), .doc = "The size." } }),
     call("siv_window_get_scale", "The buffer scale from the last configure.", &.{ window_param, .{ .name = "scale", .type = out(.f64), .doc = "The scale." } }),
     call("siv_window_get_states", "The states from the last configure.", &.{ window_param, .{ .name = "states", .type = out(ref("siv_window_states")), .doc = "The states." } }),
-    op("siv_window_set_maximized", "Asks the compositor to maximize or restore the window.", &.{ window_param, .{ .name = "maximized", .type = .bool, .doc = "Maximize." } }),
-    op("siv_window_set_fullscreen", "Asks the compositor to make the window fullscreen or not.", &.{ window_param, .{ .name = "fullscreen", .type = .bool, .doc = "Fullscreen." } }),
-    op("siv_window_minimize", "Asks the compositor to minimize the window.", &.{window_param}),
-    op("siv_window_set_size_limits", "Sets the smallest and largest logical size; zero components are unlimited.", &.{
+    call("siv_window_set_maximized", "Asks the compositor to maximize or restore the window.", &.{ window_param, .{ .name = "maximized", .type = .bool, .doc = "Maximize." } }),
+    call("siv_window_set_fullscreen", "Asks the compositor to make the window fullscreen or not.", &.{ window_param, .{ .name = "fullscreen", .type = .bool, .doc = "Fullscreen." } }),
+    call("siv_window_minimize", "Asks the compositor to minimize the window.", &.{window_param}),
+    call("siv_window_set_size_limits", "Sets the smallest and largest logical size; zero components are unlimited.", &.{
         window_param,
         .{ .name = "min", .type = ref("siv_size"), .doc = "Smallest size." },
         .{ .name = "max", .type = ref("siv_size"), .doc = "Largest size." },
@@ -1664,9 +1677,9 @@ pub const functions = [_]Function{
         .{ .name = "txn", .type = out(ref("siv_txn")), .doc = "The transaction." },
     }),
     call("siv_txn_commit", "Ends the transaction. If every operation succeeded, all of them take effect in the next frame and SIV_OK is returned. If one failed, the transaction stopped there: later operations did nothing, builders returned 0, and commit discards every change and returns the first error. Either way the handle is invalid afterwards.", &.{txn_param}),
-    op("siv_txn_abort", "Ends the transaction and discards every change.", &.{txn_param}),
-    op("siv_txn_status", "The transaction's first error, or SIV_OK while every operation has succeeded.", &.{txn_param}),
-    op("siv_txn_fail", "Records an error in the transaction as if an operation had failed, unless one already has: later operations do nothing and siv_txn_commit discards everything. Code built on siv (widgets) reports its own invalid arguments this way. Returns the transaction's status.", &.{ txn_param, .{ .name = "error", .type = ref("siv_result"), .doc = "An error result; SIV_OK is an invalid argument." } }),
+    teardown("siv_txn_abort", "Ends the transaction and discards every change.", &.{txn_param}),
+    call("siv_txn_status", "The transaction's first error, or SIV_OK while every operation has succeeded.", &.{txn_param}),
+    txnOp("siv_txn_fail", "Records an error in the transaction as if an operation had failed, unless one already has: later operations do nothing and siv_txn_commit discards everything. Code built on siv (widgets) reports its own invalid arguments this way.", &.{ txn_param, .{ .name = "error", .type = ref("siv_result"), .doc = "An error result; SIV_OK is an invalid argument." } }),
 
     builder("siv_box", "Creates a box: children stacked vertically and stretched to its width.", &.{}),
     builder("siv_flex", "Creates a flex container.", &.{.{ .name = "desc", .type = .{ .desc = "siv_flex_desc" }, .doc = "Options; NULL for defaults." }}),
@@ -1676,7 +1689,7 @@ pub const functions = [_]Function{
     builder("siv_editor", "Creates an editor: editable text with a caret and selection (D15). Its role is text_input and it is focusable.", &.{.{ .name = "flags", .type = ref("siv_editor_flags"), .doc = "Options." }}),
     builder("siv_scroll", "Creates a scroll node: a viewport over block-flow children that scroll on the compositor thread (D8).", &.{.{ .name = "axis", .type = ref("siv_scroll_axis"), .doc = "Axes that scroll." }}),
 
-    op("siv_move", "Moves a node and its subtree under parent, before the child before (0 for last). Returns the transaction's status.", &.{
+    txnOp("siv_move", "Moves a node and its subtree under parent, before the child before (0 for last).", &.{
         txn_param,
         node_param,
         .{ .name = "parent", .type = ref("siv_node"), .doc = "The new parent, a container." },
@@ -1828,7 +1841,7 @@ pub const functions = [_]Function{
         .{ .name = "user_data", .type = .user_data, .doc = "Passed to both." },
         .{ .name = "timer", .type = out(ref("siv_timer")), .doc = "The timer." },
     }),
-    op("siv_timer_cancel", "Cancels a timer that has not fired; its destroy-notify runs.", &.{.{ .name = "timer", .type = ref("siv_timer"), .doc = "The timer." }}),
+    teardown("siv_timer_cancel", "Cancels a timer that has not fired; its destroy-notify runs.", &.{.{ .name = "timer", .type = ref("siv_timer"), .doc = "The timer." }}),
     call("siv_app_watch_fd", "Watches a file descriptor of the application's (an inotify descriptor, a socket, a pipe) in siv's loop, so that no thread of the application blocks on it: callback runs on the application's thread when it is ready (D5). siv does not own the descriptor: destroy the watch before closing it.", &.{
         app_param,
         .{ .name = "fd", .type = .i32, .doc = "The descriptor; one watch per descriptor." },
@@ -1842,7 +1855,7 @@ pub const functions = [_]Function{
         .{ .name = "watch", .type = ref("siv_watch"), .doc = "The watch." },
         .{ .name = "events", .type = ref("siv_watch_flags"), .doc = "Readable, writable, both, or neither (only hangup and error)." },
     }),
-    op("siv_watch_destroy", "Stops watching the descriptor (which stays open) and runs the destroy-notify. Safe from the watch's own callback.", &.{.{ .name = "watch", .type = ref("siv_watch"), .doc = "The watch." }}),
+    teardown("siv_watch_destroy", "Stops watching the descriptor (which stays open) and runs the destroy-notify. Safe from the watch's own callback.", &.{.{ .name = "watch", .type = ref("siv_watch"), .doc = "The watch." }}),
     call("siv_job_start", "Runs work(user_data) on the application's worker pool (D6), then done(user_data) at a safe point on the application's thread (D5), then destroy(user_data). Work runs on another thread and may call only siv_post. By default a job is blocking work, such as file I/O, and runs on the pool's blocking lane (up to 8 at once, the rest queued in order); SIV_JOB_COMPUTE puts CPU-bound work on the compute workers that decode images and render tiles. A job cannot be stopped once it runs; long jobs check a flag of their own. Destroying the application waits for running jobs and drops queued ones: then only destroy runs.", &.{
         app_param,
         .{ .name = "flags", .type = ref("siv_job_flags"), .doc = "Blocking (0) or compute." },
@@ -1995,7 +2008,7 @@ pub const functions = [_]Function{
         .{ .name = "desc", .type = .{ .desc = "siv_image_desc" }, .doc = "The pixels." },
         .{ .name = "image", .type = out(ref("siv_image")), .doc = "The new image." },
     }),
-    op("siv_image_request_cancel", "Cancels a pending load: an image still waiting is never decoded, and one being decoded is dropped when done; an icon is dropped when it arrives. Its callback never runs; destroy runs now, or for an image being decoded once the decode returns.", &.{.{ .name = "request", .type = ref("siv_image_request"), .doc = "The load." }}),
+    teardown("siv_image_request_cancel", "Cancels a pending load: an image still waiting is never decoded, and one being decoded is dropped when done; an icon is dropped when it arrives. Its callback never runs; destroy runs now, or for an image being decoded once the decode returns.", &.{.{ .name = "request", .type = ref("siv_image_request"), .doc = "The load." }}),
     call("siv_image_request_set_priority", "Changes the priority of a pending load (see siv_image_load_desc); one waiting for a worker moves to its new place.", &.{
         .{ .name = "request", .type = ref("siv_image_request"), .doc = "The load." },
         .{ .name = "priority", .type = .i32, .doc = "Higher first." },
@@ -2032,7 +2045,7 @@ pub const functions = [_]Function{
         .{ .name = "image", .type = ref("siv_image"), .doc = "The image." },
         .{ .name = "count", .type = out(.u32), .doc = "The number of frames." },
     }),
-    op("siv_image_destroy", "Releases the application's reference to an image. Image nodes that show it, and every display list that drew it (from a node or siv_draw_image), hold references of their own until the compositor releases the list, so this affects only future draws: frames already drawn keep showing it. Canvases draw images by handle, so keep the handle while a canvas may draw it.", &.{.{ .name = "image", .type = ref("siv_image"), .doc = "The image." }}),
+    teardown("siv_image_destroy", "Releases the application's reference to an image. Image nodes that show it, and every display list that drew it (from a node or siv_draw_image), hold references of their own until the compositor releases the list, so this affects only future draws: frames already drawn keep showing it. Canvases draw images by handle, so keep the handle while a canvas may draw it.", &.{.{ .name = "image", .type = ref("siv_image"), .doc = "The image." }}),
     call("siv_app_measure_text", "Lays out text as siv_draw_text would and reports its size. Fonts still loading count as missing (their glyphs come from fallback fonts); once they load, canvases that drew with them are drawn again.", &.{
         app_param,
         .{ .name = "text", .type = .string, .doc = "UTF-8." },
@@ -2043,7 +2056,7 @@ pub const functions = [_]Function{
 
     // Pointer cursors (D16).
     setter("siv_set_cursor", "Sets the pointer cursor over a node and its descendants that set none. While a press is held the cursor stays that of the node that got it.", &.{.{ .name = "cursor", .type = ref("siv_cursor"), .doc = "The cursor; auto inherits." }}),
-    op("siv_window_set_cursor", "Shows a cursor over the whole window whatever its nodes set, such as SIV_CURSOR_PROGRESS while the application is busy; auto stops.", &.{
+    call("siv_window_set_cursor", "Shows a cursor over the whole window whatever its nodes set, such as SIV_CURSOR_PROGRESS while the application is busy; auto stops.", &.{
         window_param,
         .{ .name = "cursor", .type = ref("siv_cursor"), .doc = "The cursor." },
     }),
@@ -2074,11 +2087,11 @@ pub const functions = [_]Function{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node the drag starts from." },
         .{ .name = "desc", .type = .{ .desc = "siv_drag_desc" }, .doc = "The data and options." },
     }),
-    op("siv_drop_finish", "Ends a drop whose action was ask, once the user chose: copy or move, or none to refuse it. Does nothing if no such drop waits; a new drag over the window refuses a drop still waiting.", &.{
+    call("siv_drop_finish", "Ends a drop whose action was ask, once the user chose: copy or move, or none to refuse it. Does nothing if no such drop waits; a new drag over the window refuses a drop still waiting.", &.{
         window_param,
         .{ .name = "action", .type = ref("siv_drag_action"), .doc = "The action performed." },
     }),
-    op("siv_app_set_transfer_limit", "Sets the largest paste or drop accepted, in bytes (16 MiB by default); larger transfers are dropped.", &.{
+    call("siv_app_set_transfer_limit", "Sets the largest paste or drop accepted, in bytes (16 MiB by default); larger transfers are dropped.", &.{
         app_param,
         .{ .name = "bytes", .type = .usize, .doc = "The limit." },
     }),
@@ -2108,7 +2121,7 @@ pub const functions = [_]Function{
         .{ .name = "user_data", .type = .user_data, .doc = "Passed to callback and destroy." },
     }),
 
-    drawOp("siv_draw_status", "The drawing's first error, or SIV_OK. After an error every drawing call does nothing and the canvas shows nothing this frame.", &.{}),
+    call("siv_draw_status", "The drawing's first error, or SIV_OK. After an error every drawing call does nothing and the canvas shows nothing this frame.", &.{draw_param}),
     drawOp("siv_draw_move_to", "Starts a new subpath of the current path at (x, y).", &.{ param("x", .f32, "X."), param("y", .f32, "Y.") }),
     drawOp("siv_draw_line_to", "Adds a line to (x, y).", &.{ param("x", .f32, "X."), param("y", .f32, "Y.") }),
     drawOp("siv_draw_quad_to", "Adds a quadratic Bézier curve through control point (cx, cy) to (x, y).", &.{ param("cx", .f32, "Control x."), param("cy", .f32, "Control y."), param("x", .f32, "X."), param("y", .f32, "Y.") }),
@@ -2171,7 +2184,7 @@ pub const functions = [_]Function{
         .{ .name = "width", .type = .u32, .doc = "Buffer width." },
         .{ .name = "height", .type = .u32, .doc = "Buffer height." },
     })),
-    op("siv_external_destroy", "Destroys a slot; its frame or surface goes after the next frame. Nodes that show it show nothing. Application's thread; other threads' calls with the handle fail with SIV_ERROR_INVALID_HANDLE from now on.", &.{.{ .name = "external", .type = ref("siv_external"), .doc = "The slot." }}),
+    teardown("siv_external_destroy", "Destroys a slot; its frame or surface goes after the next frame. Nodes that show it show nothing. Application's thread; other threads' calls with the handle fail with SIV_ERROR_INVALID_HANDLE from now on.", &.{.{ .name = "external", .type = ref("siv_external"), .doc = "The slot." }}),
     builder("siv_external_view", "Creates an external node: a slot's content fitted into its content box, in a layer of its own. Its role is image.", &.{.{ .name = "desc", .type = .{ .desc = "siv_external_view_desc" }, .doc = "The slot, size, and fit; NULL shows nothing." }}),
     setter("siv_set_external_view", "Sets what an external node shows.", &.{.{ .name = "desc", .type = .{ .desc = "siv_external_view_desc" }, .doc = "The slot, size, and fit; NULL shows nothing." }}),
 };

@@ -254,7 +254,7 @@ test "C API: a form built through the exports renders, and input reaches C callb
     try ok(A.siv_app_run(h.app));
     try testing.expectEqual(2, log.closes);
     try testing.expectEqual(1, log.destroyed);
-    try testing.expectEqual(t.Result.error_invalid_handle, A.siv_window_destroy(h.window));
+    A.siv_window_destroy(h.window);
 }
 
 test "C API: destroying the window from its own handler defers releases until the handler returns" {
@@ -328,7 +328,7 @@ test "C API: siv_post races siv_app_destroy without losing a destroy-notify" {
         var threads: [3]std.Thread = undefined;
         for (&threads) |*th| th.* = try std.Thread.spawn(.{}, Poster.post, .{ app, &counts, &stop });
         try ok(A.siv_app_dispatch(app, 0));
-        try ok(A.siv_app_destroy(app));
+        A.siv_app_destroy(app);
         stop.store(true, .seq_cst);
         for (threads) |th| th.join();
         // Every successful post was released exactly once: run and then

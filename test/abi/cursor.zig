@@ -35,11 +35,11 @@ test "C API cursors: per node, window override, resize edges" {
     var txn: t.Txn = undefined;
     try ok(T.siv_txn_begin(h.window, &txn));
     const edge = T.siv_box(txn, abi.application.siv_window_root(h.window));
-    try ok(T.siv_set_layout(txn, edge, &.{ .size = @sizeOf(t.LayoutDesc), .width = .{ .unit = .px, .value = 8 }, .height = .{ .unit = .px, .value = 8 } }));
-    try ok(C.siv_set_cursor(txn, edge, .nwse_resize));
+    T.siv_set_layout(txn, edge, &.{ .size = @sizeOf(t.LayoutDesc), .width = .{ .unit = .px, .value = 8 }, .height = .{ .unit = .px, .value = 8 } });
+    C.siv_set_cursor(txn, edge, .nwse_resize);
     try ok(T.siv_txn_commit(txn));
     try ok(T.siv_txn_begin(h.window, &txn));
-    try testing.expectEqual(t.Result.error_unsupported, C.siv_set_cursor(txn, edge, @fromBackingInt(99)));
+    C.siv_set_cursor(txn, edge, @fromBackingInt(99)); try testing.expectEqual(t.Result.error_unsupported, T.siv_txn_status(txn));
     try testing.expectEqual(t.Result.error_unsupported, T.siv_txn_commit(txn));
     try h.settle();
 

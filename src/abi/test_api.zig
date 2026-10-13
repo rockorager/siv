@@ -79,7 +79,7 @@ pub const spec: schema.Schema = .{
             .{ .name = "desc", .type = .{ .desc = "sivtest_context_desc" }, .doc = "Options; NULL for defaults." },
             .{ .name = "context", .type = out(ref("sivtest_context")), .doc = "The new context." },
         } },
-        .{ .name = "sivtest_context_destroy", .doc = "Destroys a context and every item in it.", .since = v0_1, .ret = ref("siv_result"), .must_use = false, .params = &.{
+        .{ .name = "sivtest_context_destroy", .doc = "Destroys a context and every item in it.", .since = v0_1, .ret = ref("siv_result"), .params = &.{
             .{ .name = "context", .type = ref("sivtest_context"), .doc = "The context." },
         } },
         .{ .name = "sivtest_item_create", .doc = "Creates an item.", .since = v0_1, .ret = ref("siv_result"), .params = &.{
@@ -87,7 +87,7 @@ pub const spec: schema.Schema = .{
             .{ .name = "desc", .type = .{ .desc = "sivtest_item_desc" }, .doc = "Options; NULL for defaults." },
             .{ .name = "item", .type = out(ref("sivtest_item")), .doc = "The new item." },
         } },
-        .{ .name = "sivtest_item_destroy", .doc = "Destroys an item.", .since = v0_1, .ret = ref("siv_result"), .must_use = false, .params = &.{
+        .{ .name = "sivtest_item_destroy", .doc = "Destroys an item.", .since = v0_1, .ret = ref("siv_result"), .params = &.{
             .{ .name = "item", .type = ref("sivtest_item"), .doc = "The item." },
         } },
         .{ .name = "sivtest_item_get", .doc = "Reports an item's state.", .since = v0_1, .ret = ref("siv_result"), .params = &.{

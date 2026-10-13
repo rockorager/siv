@@ -267,13 +267,13 @@ fn uiSlot(handle: t.External) Error!*External {
     return out;
 }
 
-pub export fn siv_external_destroy(external: t.External) t.Result {
-    const x = uiSlot(external) catch |err| return t.resultOf(err);
+pub export fn siv_external_destroy(external: t.External) void {
+    const x = uiSlot(external) catch return;
     const self = x.window.owner;
-    if (self.painting != 0) return .error_busy;
-    x.window.win.destroyExternal(x.id) catch return .error_out_of_memory;
+    if (self.painting != 0) return;
+    x.window.win.destroyExternal(x.id) catch return;
     forget(self, x);
-    return .ok;
+    return;
 }
 
 /// The window is gone, and the compositor destroyed its slots with it.
@@ -329,8 +329,8 @@ pub export fn siv_external_view(txn: t.Txn, parent: t.Node, desc: ?*const t.Exte
     }.f, .{ parent, desc });
 }
 
-pub export fn siv_set_external_view(txn: t.Txn, node: t.Node, desc: ?*const t.ExternalViewDesc) t.Result {
-    return tree.run(txn, struct {
+pub export fn siv_set_external_view(txn: t.Txn, node: t.Node, desc: ?*const t.ExternalViewDesc) void {
+    _ = tree.run(txn, struct {
         fn f(w: *Window, n: t.Node, d: ?*const t.ExternalViewDesc) Error!void {
             const id = try tree.nodeIn(w, n);
             w.txn.ut.setExternal(id, try viewDesc(w, d)) catch |err| return tree.mapTxn(err);

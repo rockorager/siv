@@ -194,7 +194,7 @@ out parameters become return values:
 ```zig
 pub fn main() !void {
     const app = try siv.appCreate(null);
-    defer siv.appDestroy(app) catch {};
+    defer siv.appDestroy(app);
     const title = "Hello";
     const window = try siv.windowCreate(app, &.{ .title = title, .title_len = title.len, .width = 320, .height = 160 });
     var counter: Counter = .{};
@@ -209,11 +209,11 @@ Zig code `try`s each setter and aborts the transaction with `errdefer`:
 ```zig
 fn build(window: siv.Window, counter: *Counter) !void {
     const txn = try siv.txnBegin(window);
-    errdefer siv.txnAbort(txn) catch {};
+    errdefer siv.txnAbort(txn);
     const root = siv.windowRoot(window);
-    try siv.setVisual(txn, root, &.{ .background_token = .window_bg });
+    siv.setVisual(txn, root, &.{ .background_token = .window_bg });
     const column = siv.flex(txn, root, &.{ .axis = .column, .gap = 12, .align_items = .start });
-    try siv.setLayout(txn, column, &.{ .padding = .{ .start = 24, .end = 24, .top = 24, .bottom = 24 } });
+    siv.setLayout(txn, column, &.{ .padding = .{ .start = 24, .end = 24, .top = 24, .bottom = 24 } });
 
     const title = siv.text(txn, column, "Hello, siv");
 ```
@@ -228,7 +228,7 @@ fn onClick(user_data: ?*anyopaque, _: siv.Node, event: ?*const siv.Event) callco
     var buf: [32]u8 = undefined;
     const label = std.fmt.bufPrint(&buf, "Clicked {d} time{s}", .{ counter.clicks, if (counter.clicks == 1) "" else "s" }) catch unreachable;
     const txn = siv.txnBegin(event.?.window) catch return .pass;
-    siv.setText(txn, counter.label, label) catch {};
+    siv.setText(txn, counter.label, label);
     siv.txnCommit(txn) catch {};
     return .handled;
 }

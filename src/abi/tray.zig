@@ -237,14 +237,14 @@ pub export fn siv_tray_item_set_menu_item(item: t.TrayItem, desc: ?*const t.Tray
     }.f(item, desc));
 }
 
-pub export fn siv_tray_item_remove_menu_item(item: t.TrayItem, id: u32) t.Result {
-    const x = trayOf(item) catch |err| return t.resultOf(err);
+pub export fn siv_tray_item_remove_menu_item(item: t.TrayItem, id: u32) void {
+    const x = trayOf(item) catch return;
     if (id != 0 and id <= std.math.maxInt(i32)) x.item.menu.remove(@intCast(id));
-    return .ok;
+    return;
 }
 
-pub export fn siv_tray_item_destroy(item: t.TrayItem) t.Result {
-    const x = trayOf(item) catch |err| return t.resultOf(err);
+pub export fn siv_tray_item_destroy(item: t.TrayItem) void {
+    const x = trayOf(item) catch return;
     destroy(x.self, x);
-    return .ok;
+    return;
 }

@@ -23,8 +23,8 @@ fn shapeOf(c: t.Cursor) Error!?ui.CursorShape {
     return @enumFromInt(v);
 }
 
-pub export fn siv_set_cursor(txn: t.Txn, node: t.Node, cursor: t.Cursor) t.Result {
-    return tree.run(txn, struct {
+pub export fn siv_set_cursor(txn: t.Txn, node: t.Node, cursor: t.Cursor) void {
+    _ = tree.run(txn, struct {
         fn f(w: *Window, n: t.Node, c: t.Cursor) Error!void {
             const id = try tree.nodeIn(w, n);
             w.txn.ut.setCursor(id, try shapeOf(c)) catch |err| return tree.mapTxn(err);

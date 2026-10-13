@@ -46,16 +46,16 @@ test "gestures reach handlers; pinches zoom scroll nodes on the compositor or th
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
     const sc = c.siv_scroll(txn, root, .both);
-    try ok(c.siv_set_layout(txn, sc, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(200), .height = px(100) }));
-    try ok(c.siv_set_scroll_zoom_range(txn, sc, 1, 4));
-    try ok(c.siv_on(txn, sc, .viewport, Log.onViewport, null, &view));
+    c.siv_set_layout(txn, sc, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(200), .height = px(100) });
+    c.siv_set_scroll_zoom_range(txn, sc, 1, 4);
+    c.siv_on(txn, sc, .viewport, Log.onViewport, null, &view);
     const content = c.siv_stack(txn, sc, null);
-    try ok(c.siv_set_layout(txn, content, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(400), .height = px(400) }));
+    c.siv_set_layout(txn, content, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(400), .height = px(400) });
     // A knob at (100, 0) in the content that takes gestures itself.
     const knob = c.siv_box(txn, content);
-    try ok(c.siv_set_layout(txn, knob, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(50), .height = px(50), .inset_start = 100, .inset_top = 0, .flags = .{ .inset_start = true, .inset_top = true } }));
-    try ok(c.siv_on(txn, knob, .gesture, Log.onGesture, null, &log));
-    try ok(c.siv_on(txn, root, .gesture, Log.onGesture, null, &log));
+    c.siv_set_layout(txn, knob, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(50), .height = px(50), .inset_start = 100, .inset_top = 0, .flags = .{ .inset_start = true, .inset_top = true } });
+    c.siv_on(txn, knob, .gesture, Log.onGesture, null, &log);
+    c.siv_on(txn, root, .gesture, Log.onGesture, null, &log);
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     try testing.expectEqual(@as(f32, 1), view.zoom);
@@ -81,8 +81,8 @@ test "gestures reach handlers; pinches zoom scroll nodes on the compositor or th
     // Back at zoom 1, a pinch over the knob goes to its handler, bubbles
     // to the root's, and then zooms through the UI.
     try ok(c.siv_txn_begin(h.window, &txn));
-    try ok(c.siv_scroll_zoom_to(txn, sc, 1));
-    try ok(c.siv_scroll_to(txn, sc, 0, 0));
+    c.siv_scroll_zoom_to(txn, sc, 1);
+    c.siv_scroll_to(txn, sc, 0, 0);
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     try testing.expectEqual(@as(f32, 1), view.zoom);
@@ -161,11 +161,11 @@ test "tablet tools and pads reach handlers with every sample, in node coordinate
     try ok(c.siv_txn_begin(h.window, &txn));
     const row = c.siv_flex(txn, root, null);
     const spacer = c.siv_box(txn, row);
-    try ok(c.siv_set_layout(txn, spacer, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(40), .height = px(10) }));
+    c.siv_set_layout(txn, spacer, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(40), .height = px(10) });
     const canvas = c.siv_box(txn, row);
-    try ok(c.siv_set_layout(txn, canvas, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(100), .height = px(100) }));
-    try ok(c.siv_on(txn, canvas, .tablet, Pen.onTablet, null, &pen));
-    try ok(c.siv_on(txn, root, .pad, Pen.onPad, null, &pen));
+    c.siv_set_layout(txn, canvas, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(100), .height = px(100) });
+    c.siv_on(txn, canvas, .tablet, Pen.onTablet, null, &pen);
+    c.siv_on(txn, root, .pad, Pen.onPad, null, &pen);
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     const id = (try h.win()).win.id;
@@ -291,10 +291,10 @@ test "pointer constraints follow their node's box and send it relative motion; s
     try ok(c.siv_txn_begin(h.window, &txn));
     const row = c.siv_flex(txn, root, null);
     const spacer = c.siv_box(txn, row);
-    try ok(c.siv_set_layout(txn, spacer, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(30), .height = px(10) }));
+    c.siv_set_layout(txn, spacer, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(30), .height = px(10) });
     const view = c.siv_box(txn, row);
-    try ok(c.siv_set_layout(txn, view, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(120), .height = px(80) }));
-    try ok(c.siv_on(txn, view, .pointer, Lock.onPointer, null, &lock));
+    c.siv_set_layout(txn, view, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(120), .height = px(80) });
+    c.siv_on(txn, view, .pointer, Lock.onPointer, null, &lock);
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     const id = (try h.win()).win.id;
@@ -310,7 +310,7 @@ test "pointer constraints follow their node's box and send it relative motion; s
 
     // The box follows layout.
     try ok(c.siv_txn_begin(h.window, &txn));
-    try ok(c.siv_set_layout(txn, spacer, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(50), .height = px(10) }));
+    c.siv_set_layout(txn, spacer, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(50), .height = px(10) });
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     st = try constraintOf(&h);
@@ -356,7 +356,7 @@ test "pointer constraints follow their node's box and send it relative motion; s
 
     // Removing the node ends the constraint.
     try ok(c.siv_txn_begin(h.window, &txn));
-    try ok(c.siv_remove(txn, view));
+    c.siv_remove(txn, view);
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     st = try constraintOf(&h);

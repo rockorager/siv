@@ -37,7 +37,7 @@ test "C API: destroying the application while a window's transaction is open" {
         try ok(T.siv_txn_begin(w, &txn));
         _ = T.siv_box(txn, A.siv_window_root(w));
     }
-    try ok(A.siv_app_destroy(app));
+    A.siv_app_destroy(app);
 }
 
 test "C API: destroying a window while its transaction is open" {
@@ -50,6 +50,32 @@ test "C API: destroying a window while its transaction is open" {
     var txn: t.Txn = undefined;
     try ok(T.siv_txn_begin(w, &txn));
     _ = T.siv_box(txn, A.siv_window_root(w));
-    try ok(A.siv_window_destroy(w));
+    A.siv_window_destroy(w);
     try testing.expectEqual(t.Result.error_invalid_handle, T.siv_txn_status(txn));
+}
+
+test "C API: destroying the application from a callback waits for the dispatch to return" {
+    const hooks: t.Allocator = .{ .alloc = alloc, .free = free };
+    var app: t.App = .null;
+    try ok(A.siv_app_create(&.{ .allocator = &hooks, .backend = .headless, .flags = .{ .no_system_fonts = true, .reduced_motion = true } }, &app));
+    var window: t.Window = .null;
+    try ok(A.siv_window_create(app, &.{ .width = 64, .height = 48 }, &window));
+    const S = struct {
+        var seen: t.Result = .error_busy;
+        fn fire(ud: ?*anyopaque) callconv(.c) void {
+            const a: *t.App = @ptrCast(@alignCast(ud.?));
+            A.siv_app_destroy(a.*);
+            // Still valid until the dispatch running this returns.
+            var w: t.Window = .null;
+            seen = A.siv_window_create(a.*, null, &w);
+        }
+    };
+    var timer: t.Timer = .null;
+    try ok(A.siv_timer_start(app, 0, S.fire, null, &app, &timer));
+    // siv_app_run returns at once, and the application is gone after it.
+    try ok(A.siv_app_run(app));
+    try ok(S.seen);
+    try testing.expectEqual(t.Result.error_invalid_handle, A.siv_app_dispatch(app, 0));
+    // A second destroy of the stale handle does nothing.
+    A.siv_app_destroy(app);
 }

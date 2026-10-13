@@ -9,7 +9,7 @@ const cgen = @import("c.zig");
 const Schema = schema.Schema;
 const Type = schema.Type;
 
-pub const format_version = 1;
+pub const format_version = 2;
 
 pub fn write(arena: std.mem.Allocator, w: *std.Io.Writer, s: Schema, version: std.SemanticVersion) !void {
     var j: std.json.Stringify = .{ .writer = w, .options = .{ .whitespace = .indent_2 } };
@@ -34,6 +34,7 @@ pub fn write(arena: std.mem.Allocator, w: *std.Io.Writer, s: Schema, version: st
     try field(&j, "buffer_capacity_suffix", "_cap");
     try field(&j, "callback_user_data", "first parameter");
     try field(&j, "default_thread", "app");
+    try field(&j, "fallible_must_use", true);
     try field(&j, "enum_c_type", "int32_t");
     try field(&j, "flags_c_type", "uint32_t");
     try j.endObject();
@@ -112,7 +113,6 @@ pub fn write(arena: std.mem.Allocator, w: *std.Io.Writer, s: Schema, version: st
         try field(&j, "since", try since(arena, f.since));
         try field(&j, "symbol_version", try arena.dupe(u8, schema.versionNode(&buf, s, version, f)));
         try field(&j, "fallible", s.isResult(f.ret));
-        if (s.isResult(f.ret)) try field(&j, "must_use", f.must_use);
         try field(&j, "thread", @tagName(f.thread));
         if (f.deprecated) |d| {
             try j.objectField("deprecated");

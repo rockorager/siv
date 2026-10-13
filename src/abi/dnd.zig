@@ -44,8 +44,8 @@ pub fn actionsTo(a: ui.DragActions) t.DragActionFlags {
     return .{ .copy = a.copy, .move = a.move, .ask = a.ask };
 }
 
-pub export fn siv_set_drop_target(txn: t.Txn, node: t.Node, desc: ?*const t.DropTargetDesc) t.Result {
-    return tree.run(txn, struct {
+pub export fn siv_set_drop_target(txn: t.Txn, node: t.Node, desc: ?*const t.DropTargetDesc) void {
+    _ = tree.run(txn, struct {
         fn f(w: *Window, n: t.Node, d_ptr: ?*const t.DropTargetDesc) Error!void {
             const id = try tree.nodeIn(w, n);
             const d = try runtime.readDesc(t.DropTargetDesc, d_ptr);

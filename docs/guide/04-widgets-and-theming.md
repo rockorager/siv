@@ -65,9 +65,9 @@ fn onVolume(form: *Form, event: *const siv.Event) !void {
     var buf: [32]u8 = undefined;
     const label = try std.fmt.bufPrint(&buf, "Volume: {d:.0}", .{event.value});
     const txn = try siv.txnBegin(event.window);
-    errdefer siv.txnAbort(txn) catch {};
-    try siv.setText(txn, form.volume_label, label);
-    try siv.widgetSetValue(txn, form.level, event.value);
+    errdefer siv.txnAbort(txn);
+    siv.setText(txn, form.volume_label, label);
+    siv.widgetSetValue(txn, form.level, event.value);
     try siv.txnCommit(txn);
 }
 ```
@@ -189,7 +189,7 @@ the bottom of a stack that screen readers announce and that times out:
 fn onSave(form: *Form, event: *const siv.Event) !void {
     const message = "Settings saved";
     const txn = try siv.txnBegin(event.window);
-    errdefer siv.txnAbort(txn) catch {};
+    errdefer siv.txnAbort(txn);
     _ = siv.toast(txn, form.root, &.{ .text = message, .text_len = message.len });
     try siv.txnCommit(txn);
 }

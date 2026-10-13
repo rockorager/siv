@@ -166,7 +166,8 @@ static siv_event_result on_change(void *user_data, siv_node node, const siv_even
 	struct gauge *g = user_data;
 	char title[32];
 	int n = snprintf(title, sizeof title, "Gauge: %d%%", (int)lround(e->value * 100));
-	siv_window_set_title(g->window, title, (size_t)n);
+	siv_result r = siv_window_set_title(g->window, title, (size_t)n);
+	if (r != SIV_OK) fprintf(stderr, "gauge: %s\n", siv_result_name(r));
 	return SIV_EVENT_RESULT_HANDLED;
 }
 

@@ -165,9 +165,9 @@ test "C API images: loads wait in priority order, and cancelled ones never call 
     for (&loads, priorities, &reqs) |*l, p, *r| {
         try ok(I.siv_image_load(h.app, &.{ .data = png, .data_count = png.len, .priority = p }, Ordered.done, Ordered.destroy, l, r));
     }
-    try ok(I.siv_image_request_cancel(reqs[3]));
+    I.siv_image_request_cancel(reqs[3]);
     try testing.expect(loads[3].destroyed);
-    try testing.expectEqual(t.Result.error_invalid_handle, I.siv_image_request_cancel(reqs[3]));
+    I.siv_image_request_cancel(reqs[3]);
     try ok(I.siv_image_request_set_priority(reqs[0], 4));
     gate.open.store(true, .release);
     var guard: usize = 0;

@@ -140,26 +140,26 @@ fn releaseDesc(txn: t.Txn, desc: ?*const t.CanvasDesc) void {
     if (application.App.window(@backingInt(txn), application.txn_tag)) |w| w.owner.release(f, d.user_data) else |_| f(d.user_data);
 }
 
-pub export fn siv_set_canvas(txn: t.Txn, node: t.Node, desc: ?*const t.CanvasDesc) t.Result {
+pub export fn siv_set_canvas(txn: t.Txn, node: t.Node, desc: ?*const t.CanvasDesc) void {
     const r = tree.run(txn, struct {
         fn f(w: *Window, n: t.Node, d: ?*const t.CanvasDesc) Error!void {
             try setCanvas(w, try tree.nodeIn(w, n), d);
         }
     }.f, .{ node, desc });
     if (r != .ok) releaseDesc(txn, desc);
-    return r;
+    return;
 }
 
-pub export fn siv_invalidate(txn: t.Txn, node: t.Node) t.Result {
-    return tree.run(txn, struct {
+pub export fn siv_invalidate(txn: t.Txn, node: t.Node) void {
+    _ = tree.run(txn, struct {
         fn f(w: *Window, n: t.Node) Error!void {
             w.txn.ut.invalidate(try tree.nodeIn(w, n)) catch |err| return tree.mapTxn(err);
         }
     }.f, .{node});
 }
 
-pub export fn siv_invalidate_size(txn: t.Txn, node: t.Node) t.Result {
-    return tree.run(txn, struct {
+pub export fn siv_invalidate_size(txn: t.Txn, node: t.Node) void {
+    _ = tree.run(txn, struct {
         fn f(w: *Window, n: t.Node) Error!void {
             w.txn.ut.remeasure(try tree.nodeIn(w, n)) catch |err| return tree.mapTxn(err);
         }
@@ -293,8 +293,8 @@ pub export fn siv_draw_status(handle: t.Draw) t.Result {
     }.f, .{});
 }
 
-pub export fn siv_draw_move_to(handle: t.Draw, x: f32, y: f32) t.Result {
-    return draw(handle, struct {
+pub export fn siv_draw_move_to(handle: t.Draw, x: f32, y: f32) void {
+    _ = draw(handle, struct {
         fn f(_: *App, d: *DrawState, px: f32, py: f32) Error!void {
             try finite(.{ px, py });
             try d.path.moveTo(px, py);
@@ -312,8 +312,8 @@ fn ensureOpen(d: *DrawState) Error!void {
     d.simple = null;
 }
 
-pub export fn siv_draw_line_to(handle: t.Draw, x: f32, y: f32) t.Result {
-    return draw(handle, struct {
+pub export fn siv_draw_line_to(handle: t.Draw, x: f32, y: f32) void {
+    _ = draw(handle, struct {
         fn f(_: *App, d: *DrawState, px: f32, py: f32) Error!void {
             try finite(.{ px, py });
             try ensureOpen(d);
@@ -322,8 +322,8 @@ pub export fn siv_draw_line_to(handle: t.Draw, x: f32, y: f32) t.Result {
     }.f, .{ x, y });
 }
 
-pub export fn siv_draw_quad_to(handle: t.Draw, cx: f32, cy: f32, x: f32, y: f32) t.Result {
-    return draw(handle, struct {
+pub export fn siv_draw_quad_to(handle: t.Draw, cx: f32, cy: f32, x: f32, y: f32) void {
+    _ = draw(handle, struct {
         fn f(_: *App, d: *DrawState, a: f32, b: f32, px: f32, py: f32) Error!void {
             try finite(.{ a, b, px, py });
             try ensureOpen(d);
@@ -332,8 +332,8 @@ pub export fn siv_draw_quad_to(handle: t.Draw, cx: f32, cy: f32, x: f32, y: f32)
     }.f, .{ cx, cy, x, y });
 }
 
-pub export fn siv_draw_cubic_to(handle: t.Draw, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32) t.Result {
-    return draw(handle, struct {
+pub export fn siv_draw_cubic_to(handle: t.Draw, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32) void {
+    _ = draw(handle, struct {
         fn f(_: *App, d: *DrawState, a: f32, b: f32, c: f32, e: f32, px: f32, py: f32) Error!void {
             try finite(.{ a, b, c, e, px, py });
             try ensureOpen(d);
@@ -342,8 +342,8 @@ pub export fn siv_draw_cubic_to(handle: t.Draw, c1x: f32, c1y: f32, c2x: f32, c2
     }.f, .{ c1x, c1y, c2x, c2y, x, y });
 }
 
-pub export fn siv_draw_arc(handle: t.Draw, cx: f32, cy: f32, radius: f32, start_angle: f32, end_angle: f32) t.Result {
-    return draw(handle, struct {
+pub export fn siv_draw_arc(handle: t.Draw, cx: f32, cy: f32, radius: f32, start_angle: f32, end_angle: f32) void {
+    _ = draw(handle, struct {
         fn f(_: *App, d: *DrawState, x: f32, y: f32, r: f32, a0: f32, a1: f32) Error!void {
             try finite(.{ x, y, r, a0, a1 });
             if (r < 0) return error.InvalidArgument;
@@ -375,8 +375,8 @@ fn arc(d: *DrawState, cx: f32, cy: f32, r: f32, a0: f32, a1: f32) Error!void {
     }
 }
 
-pub export fn siv_draw_close(handle: t.Draw) t.Result {
-    return draw(handle, struct {
+pub export fn siv_draw_close(handle: t.Draw) void {
+    _ = draw(handle, struct {
         fn f(_: *App, d: *DrawState) Error!void {
             if (!d.open) return;
             try d.path.close();
@@ -394,16 +394,16 @@ fn addShape(d: *DrawState, shape: scene.Shape) Error!void {
     d.simple = if (was_empty) shape else null;
 }
 
-pub export fn siv_draw_rect(handle: t.Draw, rect: t.Rect) t.Result {
-    return draw(handle, struct {
+pub export fn siv_draw_rect(handle: t.Draw, rect: t.Rect) void {
+    _ = draw(handle, struct {
         fn f(_: *App, d: *DrawState, r: t.Rect) Error!void {
             try addShape(d, .{ .rect = try rectOf(r) });
         }
     }.f, .{rect});
 }
 
-pub export fn siv_draw_rounded_rect(handle: t.Draw, rect: t.Rect, radii: t.Radii) t.Result {
-    return draw(handle, struct {
+pub export fn siv_draw_rounded_rect(handle: t.Draw, rect: t.Rect, radii: t.Radii) void {
+    _ = draw(handle, struct {
         fn f(_: *App, d: *DrawState, r: t.Rect, rd: t.Radii) Error!void {
             try finite(.{ rd.top_left, rd.top_right, rd.bottom_right, rd.bottom_left });
             const c = struct {
@@ -418,8 +418,8 @@ pub export fn siv_draw_rounded_rect(handle: t.Draw, rect: t.Rect, radii: t.Radii
     }.f, .{ rect, radii });
 }
 
-pub export fn siv_draw_ellipse(handle: t.Draw, rect: t.Rect) t.Result {
-    return draw(handle, struct {
+pub export fn siv_draw_ellipse(handle: t.Draw, rect: t.Rect) void {
+    _ = draw(handle, struct {
         fn f(_: *App, d: *DrawState, r: t.Rect) Error!void {
             try d.path.ellipse(try rectOf(r));
             d.open = false;
@@ -464,8 +464,8 @@ fn paintOf(gpa: std.mem.Allocator, ptr: ?*const t.PaintDesc, stops: *std.ArrayLi
     } };
 }
 
-pub export fn siv_draw_fill(handle: t.Draw, paint: ?*const t.PaintDesc, flags: t.FillFlags) t.Result {
-    return draw(handle, struct {
+pub export fn siv_draw_fill(handle: t.Draw, paint: ?*const t.PaintDesc, flags: t.FillFlags) void {
+    _ = draw(handle, struct {
         fn f(self: *App, d: *DrawState, pd: ?*const t.PaintDesc, fl_raw: t.FillFlags) Error!void {
             const fl = try runtime.flags(t.FillFlags, fl_raw);
             var stops: std.ArrayList(scene.Stop) = .empty;
@@ -477,8 +477,8 @@ pub export fn siv_draw_fill(handle: t.Draw, paint: ?*const t.PaintDesc, flags: t
     }.f, .{ paint, flags });
 }
 
-pub export fn siv_draw_stroke(handle: t.Draw, stroke: ?*const t.StrokeDesc, paint: ?*const t.PaintDesc) t.Result {
-    return draw(handle, struct {
+pub export fn siv_draw_stroke(handle: t.Draw, stroke: ?*const t.StrokeDesc, paint: ?*const t.PaintDesc) void {
+    _ = draw(handle, struct {
         fn f(self: *App, d: *DrawState, sd_ptr: ?*const t.StrokeDesc, pd: ?*const t.PaintDesc) Error!void {
             const sd = try runtime.readDesc(t.StrokeDesc, sd_ptr);
             const fl = try runtime.flags(t.StrokeFlags, sd.flags);
@@ -513,8 +513,8 @@ pub export fn siv_draw_stroke(handle: t.Draw, stroke: ?*const t.StrokeDesc, pain
     }.f, .{ stroke, paint });
 }
 
-pub export fn siv_draw_image(handle: t.Draw, image: t.Image, dst: t.Rect, src: t.Rect, opacity: f32, flags: t.ImageFlags) t.Result {
-    return draw(handle, struct {
+pub export fn siv_draw_image(handle: t.Draw, image: t.Image, dst: t.Rect, src: t.Rect, opacity: f32, flags: t.ImageFlags) void {
+    _ = draw(handle, struct {
         fn f(self: *App, d: *DrawState, im: t.Image, dr: t.Rect, sr: t.Rect, o: f32, fl_raw: t.ImageFlags) Error!void {
             const img = try imageOf(self, im);
             const fl = try runtime.flags(t.ImageFlags, fl_raw);
@@ -532,8 +532,8 @@ pub export fn siv_draw_image(handle: t.Draw, image: t.Image, dst: t.Rect, src: t
     }.f, .{ image, dst, src, opacity, flags });
 }
 
-pub export fn siv_draw_icon(handle: t.Draw, name: ?[*]const u8, name_len: usize, dst: t.Rect, color: t.Color, flags: t.IconFlags) t.Result {
-    return draw(handle, struct {
+pub export fn siv_draw_icon(handle: t.Draw, name: ?[*]const u8, name_len: usize, dst: t.Rect, color: t.Color, flags: t.IconFlags) void {
+    _ = draw(handle, struct {
         fn f(self: *App, d: *DrawState, np: ?[*]const u8, nl: usize, dr: t.Rect, c: t.Color, fl_raw: t.IconFlags) Error!void {
             const names = try runtime.string(np, nl);
             const fl = try runtime.flags(t.IconFlags, fl_raw);
@@ -589,8 +589,8 @@ fn drawVector(self: *App, d: *DrawState, doc: *const @import("svg").Document, lo
     if (layer) d.builder.popLayer() catch |err| return mapScene(err);
 }
 
-pub export fn siv_draw_text(handle: t.Draw, x: f32, y: f32, width: f32, str: ?[*]const u8, str_len: usize, style: ?*const t.TextStyleDesc) t.Result {
-    return draw(handle, struct {
+pub export fn siv_draw_text(handle: t.Draw, x: f32, y: f32, width: f32, str: ?[*]const u8, str_len: usize, style: ?*const t.TextStyleDesc) void {
+    _ = draw(handle, struct {
         fn f(self: *App, d: *DrawState, px: f32, py: f32, wd: f32, ptr: ?[*]const u8, len: usize, sd: ?*const t.TextStyleDesc) Error!void {
             try finite(.{ px, py, wd });
             if (wd < 0) return error.InvalidArgument;
@@ -638,8 +638,8 @@ pub export fn siv_draw_text(handle: t.Draw, x: f32, y: f32, width: f32, str: ?[*
     }.f, .{ x, y, width, str, str_len, style });
 }
 
-pub export fn siv_draw_backdrop_blur(handle: t.Draw, sigma: f32, flags: t.FillFlags) t.Result {
-    return draw(handle, struct {
+pub export fn siv_draw_backdrop_blur(handle: t.Draw, sigma: f32, flags: t.FillFlags) void {
+    _ = draw(handle, struct {
         fn f(_: *App, d: *DrawState, sg: f32, fl_raw: t.FillFlags) Error!void {
             const fl = try runtime.flags(t.FillFlags, fl_raw);
             try finite(.{sg});
@@ -655,16 +655,16 @@ fn push(d: *DrawState, layer: scene.Layer) Error!void {
     d.depth += 1;
 }
 
-pub export fn siv_draw_push_transform(handle: t.Draw, transform: t.Affine) t.Result {
-    return draw(handle, struct {
+pub export fn siv_draw_push_transform(handle: t.Draw, transform: t.Affine) void {
+    _ = draw(handle, struct {
         fn f(_: *App, d: *DrawState, m: t.Affine) Error!void {
             try push(d, .{ .transform = .{ .a = m.a, .b = m.b, .c = m.c, .d = m.d, .e = m.e, .f = m.f } });
         }
     }.f, .{transform});
 }
 
-pub export fn siv_draw_push_clip(handle: t.Draw, flags: t.FillFlags) t.Result {
-    return draw(handle, struct {
+pub export fn siv_draw_push_clip(handle: t.Draw, flags: t.FillFlags) void {
+    _ = draw(handle, struct {
         fn f(_: *App, d: *DrawState, fl_raw: t.FillFlags) Error!void {
             const fl = try runtime.flags(t.FillFlags, fl_raw);
             try push(d, .{ .clip = .{ .shape = currentShape(d), .rule = if (fl.even_odd) .even_odd else .nonzero } });
@@ -673,16 +673,16 @@ pub export fn siv_draw_push_clip(handle: t.Draw, flags: t.FillFlags) t.Result {
     }.f, .{flags});
 }
 
-pub export fn siv_draw_push_opacity(handle: t.Draw, opacity: f32) t.Result {
-    return draw(handle, struct {
+pub export fn siv_draw_push_opacity(handle: t.Draw, opacity: f32) void {
+    _ = draw(handle, struct {
         fn f(_: *App, d: *DrawState, o: f32) Error!void {
             try push(d, .{ .opacity = o });
         }
     }.f, .{opacity});
 }
 
-pub export fn siv_draw_push_blend(handle: t.Draw, mode: t.BlendMode) t.Result {
-    return draw(handle, struct {
+pub export fn siv_draw_push_blend(handle: t.Draw, mode: t.BlendMode) void {
+    _ = draw(handle, struct {
         fn f(_: *App, d: *DrawState, m: t.BlendMode) Error!void {
             const v = try runtime.enumValue(t.BlendMode, m);
             const blend = blendOf(v);
@@ -709,8 +709,8 @@ comptime {
     }
 }
 
-pub export fn siv_draw_pop(handle: t.Draw) t.Result {
-    return draw(handle, struct {
+pub export fn siv_draw_pop(handle: t.Draw) void {
+    _ = draw(handle, struct {
         fn f(_: *App, d: *DrawState) Error!void {
             if (d.depth == 0) return error.InvalidArgument;
             d.builder.popLayer() catch |err| return mapScene(err);
@@ -860,12 +860,12 @@ pub fn adoptImage(self: *App, img: *ui.Image) Error!t.Image {
     return @fromBackingInt(self.root.handles.insert(gpa, image_tag, index) catch unreachable);
 }
 
-pub export fn siv_image_destroy(image: t.Image) t.Result {
-    const self, const index = runtime.Root.owner(App, application.app_tag, @backingInt(image), image_tag) catch |err| return t.resultOf(err);
+pub export fn siv_image_destroy(image: t.Image) void {
+    const self, const index = runtime.Root.owner(App, application.app_tag, @backingInt(image), image_tag) catch return;
     _ = self.root.handles.remove(@backingInt(image), image_tag) catch unreachable;
     self.images.items[index].?.release();
     self.images.items[index] = null;
-    return .ok;
+    return;
 }
 
 fn imageViewOf(self: *App, ptr: ?*const t.ImageViewDesc) Error!ui.ImageView {
@@ -900,8 +900,8 @@ pub export fn siv_image_view(txn: t.Txn, parent: t.Node, desc: ?*const t.ImageVi
     }.f, .{ parent, desc });
 }
 
-pub export fn siv_set_image_view(txn: t.Txn, node: t.Node, desc: ?*const t.ImageViewDesc) t.Result {
-    return tree.run(txn, struct {
+pub export fn siv_set_image_view(txn: t.Txn, node: t.Node, desc: ?*const t.ImageViewDesc) void {
+    _ = tree.run(txn, struct {
         fn f(w: *Window, n: t.Node, d: ?*const t.ImageViewDesc) Error!void {
             const id = try tree.nodeIn(w, n);
             w.txn.ut.setImage(id, try imageViewOf(w.owner, d)) catch |err| return tree.mapTxn(err);

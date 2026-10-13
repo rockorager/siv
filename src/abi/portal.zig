@@ -405,8 +405,8 @@ fn appAction(a: std.mem.Allocator, name: []const u8) Error![]const u8 {
     return std.fmt.allocPrint(a, "app.{s}", .{name});
 }
 
-pub export fn siv_notification_withdraw(app: t.App, id: ?[*]const u8, id_len: usize) t.Result {
-    return application.wrap(struct {
+pub export fn siv_notification_withdraw(app: t.App, id: ?[*]const u8, id_len: usize) void {
+    _ = application.wrap(struct {
         fn f(a: t.App, p: ?[*]const u8, n: usize) Error!void {
             const self = try App.get(@backingInt(a));
             const s = try runtime.string(p, n);
@@ -470,15 +470,15 @@ pub export fn siv_app_add_action(app: t.App, name: ?[*]const u8, name_len: usize
     return .ok;
 }
 
-pub export fn siv_app_remove_action(app: t.App, name: ?[*]const u8, name_len: usize) t.Result {
-    const self = App.get(@backingInt(app)) catch |err| return t.resultOf(err);
-    const s = runtime.string(name, name_len) catch |err| return t.resultOf(err);
-    const kv = self.desktop.actions.fetchRemove(s) orelse return .error_invalid_argument;
+pub export fn siv_app_remove_action(app: t.App, name: ?[*]const u8, name_len: usize) void {
+    const self = App.get(@backingInt(app)) catch return;
+    const s = runtime.string(name, name_len) catch return;
+    const kv = self.desktop.actions.fetchRemove(s) orelse return;
     self.app.removeAction(s);
     self.release(kv.value.destroy, kv.value.user_data);
     self.gpa().free(kv.key);
     self.gpa().destroy(kv.value);
-    return .ok;
+    return;
 }
 
 // Inhibition --------------------------------------------------------------------
@@ -555,10 +555,10 @@ fn destroyInhibition(self: *App, index: u32) void {
     self.gpa().destroy(x);
 }
 
-pub export fn siv_inhibition_destroy(inhibition: t.Inhibition) t.Result {
-    const self, const index = runtime.Root.owner(App, application.app_tag, @backingInt(inhibition), inhibition_tag) catch |err| return t.resultOf(err);
+pub export fn siv_inhibition_destroy(inhibition: t.Inhibition) void {
+    const self, const index = runtime.Root.owner(App, application.app_tag, @backingInt(inhibition), inhibition_tag) catch return;
     destroyInhibition(self, index);
-    return .ok;
+    return;
 }
 
 // Session restore -----------------------------------------------------------------
@@ -610,8 +610,8 @@ fn onSession(ctx: ?*anyopaque, ev: *const platform.SessionEvent) void {
     cb(x.user_data, &e);
 }
 
-pub export fn siv_app_remove_session(app: t.App) t.Result {
-    return application.wrap(struct {
+pub export fn siv_app_remove_session(app: t.App) void {
+    _ = application.wrap(struct {
         fn f(a: t.App) Error!void {
             const self = try App.get(@backingInt(a));
             try self.app.removeSession();
@@ -866,10 +866,10 @@ pub export fn siv_file_chooser_show(chooser: t.FileChooser, window: t.Window, ca
     return .ok;
 }
 
-pub export fn siv_file_chooser_cancel(chooser: t.FileChooser) t.Result {
-    _, _, const c = chooserOf(chooser) catch |err| return t.resultOf(err);
+pub export fn siv_file_chooser_cancel(chooser: t.FileChooser) void {
+    _, _, const c = chooserOf(chooser) catch return;
     c.stop();
-    return .ok;
+    return;
 }
 
 pub export fn siv_file_chooser_get_uri_count(chooser: t.FileChooser, count: ?*u32) t.Result {
@@ -937,10 +937,10 @@ fn destroyChooser(self: *App, index: u32) void {
     self.gpa().destroy(c);
 }
 
-pub export fn siv_file_chooser_destroy(chooser: t.FileChooser) t.Result {
-    const self, const index, _ = chooserOf(chooser) catch |err| return t.resultOf(err);
+pub export fn siv_file_chooser_destroy(chooser: t.FileChooser) void {
+    const self, const index, _ = chooserOf(chooser) catch return;
     destroyChooser(self, index);
-    return .ok;
+    return;
 }
 
 // Global shortcuts --------------------------------------------------------------------
@@ -1093,10 +1093,10 @@ fn destroyShortcuts(self: *App, index: u32) void {
     self.gpa().destroy(s);
 }
 
-pub export fn siv_global_shortcuts_destroy(shortcuts: t.GlobalShortcuts) t.Result {
-    const self, const index, _ = shortcutsOf(shortcuts) catch |err| return t.resultOf(err);
+pub export fn siv_global_shortcuts_destroy(shortcuts: t.GlobalShortcuts) void {
+    const self, const index, _ = shortcutsOf(shortcuts) catch return;
     destroyShortcuts(self, index);
-    return .ok;
+    return;
 }
 
 // Screen casts -------------------------------------------------------------------------
@@ -1247,10 +1247,10 @@ fn destroyCast(self: *App, index: u32) void {
     self.gpa().destroy(c);
 }
 
-pub export fn siv_screencast_destroy(screencast: t.Screencast) t.Result {
-    const self, const index, _ = castOf(screencast) catch |err| return t.resultOf(err);
+pub export fn siv_screencast_destroy(screencast: t.Screencast) void {
+    const self, const index, _ = castOf(screencast) catch return;
     destroyCast(self, index);
-    return .ok;
+    return;
 }
 
 // Lifecycle -----------------------------------------------------------------------

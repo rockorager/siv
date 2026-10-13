@@ -43,8 +43,9 @@ fn call(comptime name: []const u8, comptime doc: []const u8, comptime params: []
     return .{ .name = name, .doc = doc, .since = v0_1, .params = params, .ret = result_ref };
 }
 
-fn op(comptime name: []const u8, comptime doc: []const u8, comptime params: []const Param) Function {
-    return .{ .name = name, .doc = doc, .since = v0_1, .params = params, .ret = result_ref, .must_use = false };
+/// Teardown (D2): it cannot fail, and a stale handle does nothing.
+fn teardown(comptime name: []const u8, comptime doc: []const u8, comptime params: []const Param) Function {
+    return .{ .name = name, .doc = doc ++ " A stale handle does nothing.", .since = v0_1, .params = params };
 }
 
 fn p(comptime name: []const u8, comptime t: schema.Type, comptime doc: []const u8) Param {
@@ -447,7 +448,7 @@ pub const functions = [_]Function{
     call("siv_notification_send", "Shows a desktop notification through the portal, replacing one with the same id. Fails with SIV_ERROR_UNAVAILABLE without a session bus.", &.{
         app_param, p("desc", .{ .desc = "siv_notification_desc" }, "The notification."),
     }),
-    op("siv_notification_withdraw", "Takes a notification back.", &.{ app_param, p("id", .string, "Its id.") }),
+    teardown("siv_notification_withdraw", "Takes a notification back.", &.{ app_param, p("id", .string, "Its id.") }),
     call("siv_app_add_action", "Registers an application action, or replaces the one with the same name: notification buttons invoke it, and so does the desktop through D-Bus activation. The replaced callback's destroy-notify runs.", &.{
         app_param,
         p("name", .string, "The action's name."),
@@ -455,7 +456,7 @@ pub const functions = [_]Function{
         p("destroy", ref("siv_destroy_fn"), "Releases user_data when the action is removed or replaced or the application destroyed; may be NULL."),
         p("user_data", .user_data, "Passed to both."),
     }),
-    op("siv_app_remove_action", "Removes an application action; its destroy-notify runs.", &.{ app_param, p("name", .string, "The action's name.") }),
+    teardown("siv_app_remove_action", "Removes an application action; its destroy-notify runs.", &.{ app_param, p("name", .string, "The action's name.") }),
     call("siv_app_start_session", "Joins a session (D17, xdg-session-management): the compositor remembers the size, place, and states of windows with a session name (siv_window_desc.session_name), and restores them in the next run that joins the same session, before they map. Start it before creating the windows to restore; windows that already exist are only remembered. Replaces the application's earlier session and its callback.", &.{
         app_param,
         p("session_id", .string, "The id a created event gave in an earlier run, or empty for a new session; an unknown id starts a new one."),
@@ -464,7 +465,7 @@ pub const functions = [_]Function{
         p("destroy", ref("siv_destroy_fn"), "Releases user_data when the session ends or the application is destroyed; may be NULL."),
         p("user_data", .user_data, "Passed to both."),
     }),
-    op("siv_app_remove_session", "Leaves the session and has the compositor forget it, as when the user closes the application for good.", &.{app_param}),
+    teardown("siv_app_remove_session", "Leaves the session and has the compositor forget it, as when the user closes the application for good.", &.{app_param}),
     call("siv_inhibit", "Keeps the session from logging out, switching users, suspending, or going idle, as the desktop allows, until the handle is destroyed (D17). An inhibition of idling alone for a window goes through the compositor (idle-inhibit) when it offers that: it holds while the window is visible, which is what a video or presentation in it needs, and works without a portal. Everything else, and idling without that protocol, goes through the portal; without one it does nothing.", &.{
         app_param,
         parent_param,
@@ -472,7 +473,7 @@ pub const functions = [_]Function{
         p("reason", .string, "Why, as the desktop may show it."),
         p("inhibition", out(ref("siv_inhibition")), "The inhibition."),
     }),
-    op("siv_inhibition_destroy", "Ends an inhibition.", &.{p("inhibition", ref("siv_inhibition"), "The inhibition.")}),
+    teardown("siv_inhibition_destroy", "Ends an inhibition.", &.{p("inhibition", ref("siv_inhibition"), "The inhibition.")}),
 
     call("siv_file_chooser_create", "Creates a file chooser. Add filters and choices, then show it.", &.{
         app_param,
@@ -510,7 +511,7 @@ pub const functions = [_]Function{
         result_callback[1],
         result_callback[2],
     }),
-    op("siv_file_chooser_cancel", "Closes the shown dialog; the callback does not run (its destroy-notify does).", &.{p("chooser", ref("siv_file_chooser"), "The chooser.")}),
+    teardown("siv_file_chooser_cancel", "Closes the shown dialog; the callback does not run (its destroy-notify does).", &.{p("chooser", ref("siv_file_chooser"), "The chooser.")}),
     call("siv_file_chooser_get_uri_count", "How many files or folders were chosen.", &.{
         p("chooser", ref("siv_file_chooser"), "The chooser."),
         p("count", out(.u32), "The number of URIs."),
@@ -531,7 +532,7 @@ pub const functions = [_]Function{
         p("chooser", ref("siv_file_chooser"), "The chooser."),
         p("index", out(.i32), "The filter, or -1."),
     }),
-    op("siv_file_chooser_destroy", "Destroys a chooser, closing its dialog if shown.", &.{p("chooser", ref("siv_file_chooser"), "The chooser.")}),
+    teardown("siv_file_chooser_destroy", "Destroys a chooser, closing its dialog if shown.", &.{p("chooser", ref("siv_file_chooser"), "The chooser.")}),
 
     call("siv_global_shortcuts_create", "Creates a set of global shortcuts. Add shortcuts, then bind them.", &.{
         app_param,
@@ -552,7 +553,7 @@ pub const functions = [_]Function{
         p("shortcuts", ref("siv_global_shortcuts"), "The shortcuts."),
         p("id", .string, "The shortcut."),
     } ++ buffer_out)),
-    op("siv_global_shortcuts_destroy", "Unbinds and destroys the shortcuts.", &.{p("shortcuts", ref("siv_global_shortcuts"), "The shortcuts.")}),
+    teardown("siv_global_shortcuts_destroy", "Unbinds and destroys the shortcuts.", &.{p("shortcuts", ref("siv_global_shortcuts"), "The shortcuts.")}),
 
     call("siv_screencast_start", "Starts a screen cast: the desktop asks the user what to share, then a started event follows. Its streams are PipeWire nodes on the remote siv_screencast_take_pipewire_fd returns.", &.{
         app_param,
@@ -576,7 +577,7 @@ pub const functions = [_]Function{
         p("screencast", ref("siv_screencast"), "The cast."),
         p("fd", out(.i32), "The file descriptor."),
     }),
-    op("siv_screencast_destroy", "Stops and destroys a cast; an untaken PipeWire fd is closed.", &.{p("screencast", ref("siv_screencast"), "The cast.")}),
+    teardown("siv_screencast_destroy", "Stops and destroys a cast; an untaken PipeWire fd is closed.", &.{p("screencast", ref("siv_screencast"), "The cast.")}),
 
     call("siv_app_launch", "Launches the application as a single instance (D19): the first instance to own the application id (siv_app_desc.app_id) on the session bus is primary and gets its activation (on_activate, at the next dispatch, with $XDG_ACTIVATION_TOKEN's token, which is removed from the environment) and every later one, from other instances and from the desktop over org.freedesktop.Application (D-Bus activation for DBusActivatable desktop files). A later instance forwards its activation, or its URIs, to the primary instead, and siv_app_run returns (SIV_ERROR_UNAVAILABLE if forwarding failed). Without an application id or a session bus, every launch is primary. Once per application (SIV_ERROR_BUSY).", &.{
         app_param,
@@ -586,7 +587,7 @@ pub const functions = [_]Function{
         app_param,
         p("instance", out(ref("siv_instance")), "The instance."),
     }),
-    op("siv_window_activate", "Asks the compositor to focus the window with an xdg-activation token another application passed on (siv_activation.activation_token); for a window not shown yet, once it is.", &.{
+    call("siv_window_activate", "Asks the compositor to focus the window with an xdg-activation token another application passed on (siv_activation.activation_token); for a window not shown yet, once it is.", &.{
         p("window", ref("siv_window"), "The window."),
         p("token", .string, "The token; empty does nothing."),
     }),
@@ -634,8 +635,8 @@ pub const functions = [_]Function{
         p("item", ref("siv_tray_item"), "The item."),
         p("desc", .{ .desc = "siv_tray_menu_item_desc" }, "The entry."),
     }),
-    op("siv_tray_item_remove_menu_item", "Removes a menu entry and the entries in it.", &.{ p("item", ref("siv_tray_item"), "The item."), p("id", .u32, "The entry.") }),
-    op("siv_tray_item_destroy", "Removes the item from the tray and destroys it.", &.{p("item", ref("siv_tray_item"), "The item.")}),
+    teardown("siv_tray_item_remove_menu_item", "Removes a menu entry and the entries in it.", &.{ p("item", ref("siv_tray_item"), "The item."), p("id", .u32, "The entry.") }),
+    teardown("siv_tray_item_destroy", "Removes the item from the tray and destroys it.", &.{p("item", ref("siv_tray_item"), "The item.")}),
 
     call("siv_document_export", "Makes a file available to sandboxed applications through the document portal; the result's uri is its path there and id its document id.", &([_]Param{
         app_param,

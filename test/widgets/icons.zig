@@ -162,9 +162,9 @@ test "icons: siv_icon_load delivers vector and pixel icons, and misses" {
     var cancelled: Loaded = .{};
     var creq: t.ImageRequest = .null;
     try ok(c.siv_icon_load(h.app, &.{ .name = "edit-copy", .name_len = 9, .logical_size = 32 }, Loaded.done, Loaded.destroy, &cancelled, &creq));
-    try ok(c.siv_image_request_cancel(creq));
+    c.siv_image_request_cancel(creq);
     try testing.expect(cancelled.destroyed);
-    try testing.expectEqual(t.Result.error_invalid_handle, c.siv_image_request_cancel(creq));
+    c.siv_image_request_cancel(creq);
     while (!(vec.destroyed and px.destroyed and none.destroyed)) try ok(c.siv_app_dispatch(h.app, 10));
     try ok(vec.result);
     defer _ = c.siv_image_destroy(vec.image);
@@ -179,6 +179,6 @@ test "icons: siv_icon_load delivers vector and pixel icons, and misses" {
     try testing.expectEqual(t.Result.error_unavailable, none.result);
     try testing.expectEqual(t.Result.error_busy, cancelled.result);
     // A finished load's request is gone.
-    try testing.expectEqual(t.Result.error_invalid_handle, c.siv_image_request_cancel(req));
+    c.siv_image_request_cancel(req);
     try testing.expectEqual(t.Result.error_invalid_argument, c.siv_icon_load(h.app, &.{}, Loaded.done, null, null, &req));
 }

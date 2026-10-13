@@ -1184,30 +1184,30 @@ fn treeKey(v: *View, at: u32, forward: bool, window: siv.Window) void {
 
 // Exports -------------------------------------------------------------------------
 
-pub export fn siv_view_set_count(txn: Txn, view: Node, count: u32) siv.Result {
+pub export fn siv_view_set_count(txn: Txn, view: Node, count: u32) void {
     const v = viewOf(view) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
     if (v.mode == .tree) {
-        if (!buildTop(txn, v)) return c.siv_txn_status(txn);
+        if (!buildTop(txn, v)) return;
     } else {
         v.count = count;
-        if (!resizeSelection(txn, v)) return c.siv_txn_status(txn);
+        if (!resizeSelection(txn, v)) return;
         if (v.cursor >= @as(i64, count)) v.cursor = if (count == 0) -1 else @intCast(count - 1);
         if (v.anchor >= @as(i64, count)) v.anchor = v.cursor;
     }
     resetChanged(v);
     v.gen +%= 1;
     update(txn, v);
-    return c.siv_txn_status(txn);
+    return;
 }
 
-pub export fn siv_view_refresh(txn: Txn, view: Node) siv.Result {
+pub export fn siv_view_refresh(txn: Txn, view: Node) void {
     const v = viewOf(view) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
     v.gen +%= 1;
     update(txn, v);
-    return c.siv_txn_status(txn);
+    return;
 }
 
-pub export fn siv_view_set_selected(txn: Txn, view: Node, index: u32, selected: bool) siv.Result {
+pub export fn siv_view_set_selected(txn: Txn, view: Node, index: u32, selected: bool) void {
     const v = viewOf(view) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
     if (index >= v.count or v.selection == .none) return c.siv_txn_fail(txn, .error_invalid_argument);
     if (v.selection == .single and selected) {
@@ -1216,7 +1216,7 @@ pub export fn siv_view_set_selected(txn: Txn, view: Node, index: u32, selected: 
         setSelected(v, index, selected);
         resetChanged(v);
         applyAll(txn, v);
-        return c.siv_txn_status(txn);
+        return;
     }
     setSelected(v, index, selected);
     resetChanged(v);
@@ -1227,30 +1227,30 @@ pub export fn siv_view_set_selected(txn: Txn, view: Node, index: u32, selected: 
         const r = rowOf(cur) orelse continue;
         if (r.index == index and r.gen == v.gen) applyRow(txn, v, r);
     }
-    return c.siv_txn_status(txn);
+    return;
 }
 
-pub export fn siv_view_set_expanded(txn: Txn, view: Node, index: u32, expanded: bool) siv.Result {
+pub export fn siv_view_set_expanded(txn: Txn, view: Node, index: u32, expanded: bool) void {
     const v = viewOf(view) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
     if (v.mode != .tree or index >= v.count) return c.siv_txn_fail(txn, .error_invalid_argument);
     setExpanded(txn, v, index, expanded);
     update(txn, v);
-    return c.siv_txn_status(txn);
+    return;
 }
 
-pub export fn siv_view_scroll_to(txn: Txn, view: Node, index: u32) siv.Result {
+pub export fn siv_view_scroll_to(txn: Txn, view: Node, index: u32) void {
     const v = viewOf(view) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
     if (index >= v.count) return c.siv_txn_fail(txn, .error_invalid_argument);
     reveal(txn, v, index);
-    return c.siv_txn_status(txn);
+    return;
 }
 
-pub export fn siv_view_set_sort(txn: Txn, view: Node, column: u32, sort: siv.Sort) siv.Result {
+pub export fn siv_view_set_sort(txn: Txn, view: Node, column: u32, sort: siv.Sort) void {
     const v = viewOf(view) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
     if (v.mode != .table or column >= v.column_count) return c.siv_txn_fail(txn, .error_invalid_argument);
     if (@backingInt(sort) < 0 or @backingInt(sort) > 2) return c.siv_txn_fail(txn, .error_unsupported);
     setSort(txn, v, column, sort);
-    return c.siv_txn_status(txn);
+    return;
 }
 
 pub export fn siv_view_is_selected(view: Node, index: u32, selected: ?*bool) siv.Result {
@@ -1261,7 +1261,7 @@ pub export fn siv_view_is_selected(view: Node, index: u32, selected: ?*bool) siv
     return .ok;
 }
 
-pub export fn siv_view_set_selection(txn: Txn, view: Node, bitset: ?[*]const u8, bitset_count: usize) siv.Result {
+pub export fn siv_view_set_selection(txn: Txn, view: Node, bitset: ?[*]const u8, bitset_count: usize) void {
     const v = viewOf(view) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
     if (bitset_count != 0 and bitset == null) return c.siv_txn_fail(txn, .error_invalid_argument);
     const src = if (bitset_count == 0) &[_]u8{} else bitset.?[0..bitset_count];
@@ -1283,7 +1283,7 @@ pub export fn siv_view_set_selection(txn: Txn, view: Node, bitset: ?[*]const u8,
     v.selected = total;
     resetChanged(v);
     applyAll(txn, v);
-    return c.siv_txn_status(txn);
+    return;
 }
 
 pub export fn siv_view_get_selection(view: Node, out: ?[*]u8, out_cap: usize, len: ?*usize) siv.Result {
@@ -1304,11 +1304,11 @@ pub export fn siv_view_get_cursor(view: Node, index: ?*i32) siv.Result {
     return .ok;
 }
 
-pub export fn siv_view_set_cursor(txn: Txn, view: Node, index: i32) siv.Result {
+pub export fn siv_view_set_cursor(txn: Txn, view: Node, index: i32) void {
     const v = viewOf(view) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
     if (index >= @as(i64, v.count) or index < -1) return c.siv_txn_fail(txn, .error_invalid_argument);
     setCursor(txn, v, @floatFromInt(index));
-    return c.siv_txn_status(txn);
+    return;
 }
 
 /// Focusing a view focuses its cursor's row (roving focus), moving the

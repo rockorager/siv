@@ -144,7 +144,7 @@ test "C API external: submitted frames show, and replaced ones are released" {
     testing.allocator.free(img);
     try testing.expectEqual(l, l2);
 
-    try ok(X.siv_external_destroy(ext));
+    X.siv_external_destroy(ext);
     try testing.expectEqual(1, log.destroyed);
     try testing.expectEqual(t.Result.error_invalid_handle, X.siv_external_submit(ext, &.{ .fd = fd2, .width = 2, .height = 1, .key = 4 }));
     try h.settle();
@@ -178,7 +178,7 @@ test "C API external: an embedder surface is configured to its node's size" {
     try ok(X.siv_external_surface_committed(ext, 60, 30));
 
     // The window takes its slots with it.
-    try ok(A.siv_window_destroy(h.window));
+    A.siv_window_destroy(h.window);
     try testing.expectEqual(1, log.destroyed);
     try testing.expectEqual(t.Result.error_invalid_handle, X.siv_external_get_wayland(ext, &display, &surface));
 }
@@ -267,7 +267,7 @@ test "C API external: a producer thread submits and gets frames back while the U
 
     // Destroying the slot: the last frame comes back, then the
     // destroy-notify runs on the application's thread.
-    try ok(X.siv_external_destroy(p.ext));
+    X.siv_external_destroy(p.ext);
     try testing.expectEqual(t.Result.error_invalid_handle, X.siv_external_submit(p.ext, &.{ .fd = fd, .width = 2, .height = 1, .key = 12 }));
     var waited: usize = 0;
     while (p.destroyed.load(.seq_cst) == 0) : (waited += 1) {

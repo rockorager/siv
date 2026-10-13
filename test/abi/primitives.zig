@@ -68,7 +68,7 @@ test "default handlers run after the application's, which can override them" {
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
     const n = c.siv_box(txn, c.siv_window_root(h.window));
-    try ok(c.siv_on_default(txn, n, .select, Calls.default, null, &calls));
+    c.siv_on_default(txn, n, .select, Calls.default, null, &calls);
     try ok(c.siv_txn_commit(txn));
 
     // Only a default handler: it runs, and takes the event.
@@ -79,7 +79,7 @@ test "default handlers run after the application's, which can override them" {
 
     // The application's handler declines: both run, in that order.
     try ok(c.siv_txn_begin(h.window, &txn));
-    try ok(c.siv_on(txn, n, .select, Calls.app, null, &calls));
+    c.siv_on(txn, n, .select, Calls.app, null, &calls);
     try ok(c.siv_txn_commit(txn));
     calls.n = 0;
     try ok(c.siv_node_emit(n, &.{ .type = .select, .value = 3 }, &handled));
@@ -94,8 +94,8 @@ test "default handlers run after the application's, which can override them" {
 
     // An aborted transaction restores the previous default handler.
     try ok(c.siv_txn_begin(h.window, &txn));
-    try ok(c.siv_on_default(txn, n, .select, null, null, null));
-    try ok(c.siv_txn_abort(txn));
+    c.siv_on_default(txn, n, .select, null, null, null);
+    c.siv_txn_abort(txn);
     calls.n = 0;
     calls.app_returns = false;
     try ok(c.siv_node_emit(n, &.{ .type = .select }, &handled));
@@ -112,7 +112,7 @@ test "default handlers make a node activatable for input" {
     try ok(c.siv_txn_begin(h.window, &txn));
     const n = c.siv_box(txn, c.siv_window_root(h.window));
     _ = c.siv_set_semantics(txn, n, &.{ .role = .button, .flags = .{ .focusable = true } });
-    try ok(c.siv_on_default(txn, n, .activate, Calls.default, null, &calls));
+    c.siv_on_default(txn, n, .activate, Calls.default, null, &calls);
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     try ok(c.siv_node_focus(n));
@@ -150,8 +150,8 @@ test "handlers stop bubbling and prevent the default action separately" {
     try ok(c.siv_txn_begin(h.window, &txn));
     const box = c.siv_box(txn, root);
     const editor = c.siv_editor(txn, box, .{});
-    try ok(c.siv_on(txn, root, .key, Keys.onRoot, null, &keys));
-    try ok(c.siv_on(txn, box, .key, Keys.onInner, null, &keys));
+    c.siv_on(txn, root, .key, Keys.onRoot, null, &keys);
+    c.siv_on(txn, box, .key, Keys.onInner, null, &keys);
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     var focus: t.Node = .null;
@@ -230,7 +230,7 @@ test "node data lives with its node and goes with an aborted transaction" {
     try ok(c.siv_txn_begin(h.window, &txn));
     var key_c: u8 = 0;
     try ok(c.siv_set_data(txn, n, &key_c, 100, &q));
-    try ok(c.siv_txn_abort(txn));
+    c.siv_txn_abort(txn);
     try ok(c.siv_node_get_data(n, &key_c, &q));
     try testing.expect(q == null);
     try ok(c.siv_node_get_data(n, &key_a, &q));
@@ -242,7 +242,7 @@ test "node data lives with its node and goes with an aborted transaction" {
     try ok(c.siv_set_data(txn, n, &key_a, 64, &q));
     try testing.expectEqual(@as(u8, 7), @as([*]u8, @ptrCast(q.?))[0]);
     try testing.expectEqual(@as(u8, 0), @as([*]u8, @ptrCast(q.?))[63]);
-    try ok(c.siv_txn_abort(txn));
+    c.siv_txn_abort(txn);
     try ok(c.siv_node_get_data(n, &key_a, &q));
     try testing.expectEqual(p, q);
     try ok(c.siv_txn_begin(h.window, &txn));
@@ -252,7 +252,7 @@ test "node data lives with its node and goes with an aborted transaction" {
     try testing.expectEqual(@as(u8, 7), @as([*]u8, @ptrCast(q.?))[0]);
     // Removing the node frees its data (the testing allocator checks).
     try ok(c.siv_txn_begin(h.window, &txn));
-    try ok(c.siv_remove(txn, n));
+    c.siv_remove(txn, n);
     try ok(c.siv_txn_commit(txn));
 }
 
@@ -294,9 +294,9 @@ test "tree navigation, labels, direction, and failing a transaction" {
     try ok(c.siv_node_get_window(inner, &win));
     try testing.expectEqual(h.window, win);
     // A failed transaction does nothing more and commits nothing.
-    try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_fail(txn, .error_unsupported));
+    c.siv_txn_fail(txn, .error_unsupported); try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_status(txn));
     try testing.expectEqual(t.Node.null, c.siv_box(txn, root));
-    try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_fail(txn, .error_busy));
+    c.siv_txn_fail(txn, .error_busy); try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_status(txn));
     try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_commit(txn));
     try testing.expectEqual(t.Result.error_invalid_handle, c.siv_node_get_related(a, .next, &r));
 }
@@ -327,7 +327,7 @@ test "timers fire once after their delay; cancelled ones never" {
     const t0 = @import("loop").Loop.now();
     try ok(c.siv_timer_start(h.app, 20, Ticks.fire, Ticks.destroy, &a, &ta));
     try ok(c.siv_timer_start(h.app, 10, Ticks.fire, Ticks.destroy, &b, &tb));
-    try ok(c.siv_timer_cancel(tb));
+    c.siv_timer_cancel(tb);
     try testing.expectEqual(@as(u32, 1), b.destroyed);
     while (a.fired == 0) try ok(c.siv_app_dispatch(h.app, 100));
     const elapsed = @import("loop").Loop.now() - t0;
@@ -335,7 +335,7 @@ test "timers fire once after their delay; cancelled ones never" {
     try testing.expectEqual(@as(u32, 1), a.destroyed);
     try testing.expectEqual(@as(u32, 0), b.fired);
     // A fired timer's handle is gone.
-    try testing.expectEqual(t.Result.error_invalid_handle, c.siv_timer_cancel(ta));
+    c.siv_timer_cancel(ta);
     // Destroying the application cancels pending timers.
     var d: Ticks = .{};
     var td: t.Timer = .null;
@@ -483,7 +483,7 @@ test "watched descriptors call back at safe points until destroyed" {
     while (wt.destroyed == 0 and tries < 10) : (tries += 1) try ok(c.siv_app_dispatch(h.app, 100));
     try testing.expectEqual(@as(u32, 1), wt.destroyed);
     try testing.expectEqual(@as(u32, 6), wt.read);
-    try testing.expectEqual(t.Result.error_invalid_handle, c.siv_watch_destroy(watch));
+    c.siv_watch_destroy(watch);
     // A watch the application never destroys goes with it.
     var other: Watcher = .{ .fd = fds[0], .stop_on_hangup = false };
     try ok(c.siv_app_watch_fd(h.app, fds[0], .{ .readable = true }, Watcher.ready, Watcher.destroy, &other, &watch));
@@ -507,13 +507,13 @@ test "default layouts fill the fields the application's layout leaves zero" {
     try ok(c.siv_txn_begin(h.window, &txn));
     const col = c.siv_flex(txn, c.siv_window_root(h.window), &.{ .axis = .column, .align_items = .start });
     const n = c.siv_box(txn, col);
-    try ok(c.siv_set_default_layout(txn, n, &.{
+    c.siv_set_default_layout(txn, n, &.{
         .width = .{ .unit = .px, .value = 40 },
         .height = .{ .unit = .px, .value = 30 },
         .padding = .{ .start = 5, .end = 5 },
-    }));
+    });
     // The application's width wins; its zero height and padding do not.
-    try ok(c.siv_set_layout(txn, n, &.{ .width = .{ .unit = .px, .value = 70 }, .padding = .{ .top = 2 } }));
+    c.siv_set_layout(txn, n, &.{ .width = .{ .unit = .px, .value = 70 }, .padding = .{ .top = 2 } });
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     var r: t.Rect = undefined;
@@ -526,17 +526,17 @@ test "default layouts fill the fields the application's layout leaves zero" {
 
     // New defaults keep the application's layout; an abort restores both.
     try ok(c.siv_txn_begin(h.window, &txn));
-    try ok(c.siv_set_default_layout(txn, n, &.{ .height = .{ .unit = .px, .value = 50 } }));
+    c.siv_set_default_layout(txn, n, &.{ .height = .{ .unit = .px, .value = 50 } });
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     try ok(c.siv_node_get_rect(n, &r));
     try testing.expectEqual(t.Rect{ .x = 0, .y = 0, .width = 70, .height = 50 }, r);
     try ok(c.siv_txn_begin(h.window, &txn));
-    try ok(c.siv_set_layout(txn, n, &.{ .height = .{ .unit = .px, .value = 10 } }));
-    try ok(c.siv_set_default_layout(txn, n, null));
-    try ok(c.siv_txn_abort(txn));
+    c.siv_set_layout(txn, n, &.{ .height = .{ .unit = .px, .value = 10 } });
+    c.siv_set_default_layout(txn, n, null);
+    c.siv_txn_abort(txn);
     try ok(c.siv_txn_begin(h.window, &txn));
-    try ok(c.siv_set_layout(txn, n, &.{ .width = .{ .unit = .px, .value = 20 } }));
+    c.siv_set_layout(txn, n, &.{ .width = .{ .unit = .px, .value = 20 } });
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     try ok(c.siv_node_get_rect(n, &r));

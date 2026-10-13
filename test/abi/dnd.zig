@@ -86,17 +86,17 @@ test "C API drag and drop: drop targets and drags from nodes" {
     const source = T.siv_box(txn, row);
     const target = T.siv_box(txn, row);
     const size: t.LayoutDesc = .{ .size = @sizeOf(t.LayoutDesc), .width = .{ .unit = .px, .value = 100 }, .height = .{ .unit = .px, .value = 100 } };
-    try ok(T.siv_set_layout(txn, source, &size));
-    try ok(T.siv_set_layout(txn, target, &size));
+    T.siv_set_layout(txn, source, &size);
+    T.siv_set_layout(txn, target, &size);
     const mimes = "text/uri-list\ntext/plain";
-    try ok(D.siv_set_drop_target(txn, target, &.{ .size = @sizeOf(t.DropTargetDesc), .mimes = mimes, .mimes_len = mimes.len, .actions = .{ .copy = true, .move = true }, .preferred = .move }));
-    try ok(T.siv_on(txn, target, .drop, Rec.onEvent, null, &rec));
-    try ok(T.siv_on(txn, source, .pointer, Rec.onEvent, null, &rec));
-    try ok(T.siv_on(txn, source, .drag, Rec.onEvent, null, &rec));
+    D.siv_set_drop_target(txn, target, &.{ .size = @sizeOf(t.DropTargetDesc), .mimes = mimes, .mimes_len = mimes.len, .actions = .{ .copy = true, .move = true }, .preferred = .move });
+    T.siv_on(txn, target, .drop, Rec.onEvent, null, &rec);
+    T.siv_on(txn, source, .pointer, Rec.onEvent, null, &rec);
+    T.siv_on(txn, source, .drag, Rec.onEvent, null, &rec);
     try ok(T.siv_txn_commit(txn));
     // Invalid MIME types fail the transaction like any operation.
     try ok(T.siv_txn_begin(h.window, &txn));
-    try testing.expectEqual(t.Result.error_invalid_argument, D.siv_set_drop_target(txn, source, &.{ .size = @sizeOf(t.DropTargetDesc), .mimes = "a b", .mimes_len = 3 }));
+    D.siv_set_drop_target(txn, source, &.{ .size = @sizeOf(t.DropTargetDesc), .mimes = "a b", .mimes_len = 3 }); try testing.expectEqual(t.Result.error_invalid_argument, T.siv_txn_status(txn));
     try testing.expectEqual(t.Result.error_invalid_argument, T.siv_txn_commit(txn));
     try h.settle();
 

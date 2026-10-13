@@ -148,8 +148,8 @@ pub export fn siv_watch_set_events(watch: t.Watch, events: t.WatchFlags) t.Resul
     return .ok;
 }
 
-pub export fn siv_watch_destroy(watch: t.Watch) t.Result {
-    const w = lookup(watch) catch |err| return t.resultOf(err);
+pub export fn siv_watch_destroy(watch: t.Watch) void {
+    const w = lookup(watch) catch return;
     w.remove();
-    return .ok;
+    return;
 }

@@ -388,15 +388,15 @@ pub export fn siv_txn_commit(txn: t.Txn) t.Result {
     return .ok;
 }
 
-pub export fn siv_txn_abort(txn: t.Txn) t.Result {
-    const w = txnWindow(txn) catch |err| return t.resultOf(err);
+pub export fn siv_txn_abort(txn: t.Txn) void {
+    const w = txnWindow(txn) catch return;
     abortState(w);
-    return .ok;
+    return;
 }
 
-pub export fn siv_txn_fail(txn: t.Txn, err: t.Result) t.Result {
-    const w = txnWindow(txn) catch |e| return t.resultOf(e);
-    if (w.txn.err) |e| return t.resultOf(e);
+pub export fn siv_txn_fail(txn: t.Txn, err: t.Result) void {
+    const w = txnWindow(txn) catch return;
+    if (w.txn.err != null) return;
     if (@backingInt(err) >= 0) {
         w.txn.err = error.InvalidArgument;
     } else {
@@ -410,7 +410,6 @@ pub export fn siv_txn_fail(txn: t.Txn, err: t.Result) t.Result {
             else => error.InvalidArgument,
         };
     }
-    return t.resultOf(w.txn.err.?);
 }
 
 pub export fn siv_txn_status(txn: t.Txn) t.Result {
@@ -506,8 +505,8 @@ pub export fn siv_scroll(txn: t.Txn, parent: t.Node, axis: t.ScrollAxis) t.Node 
 
 // Structure and properties ----------------------------------------------------
 
-pub export fn siv_move(txn: t.Txn, node: t.Node, parent: t.Node, before: t.Node) t.Result {
-    return run(txn, struct {
+pub export fn siv_move(txn: t.Txn, node: t.Node, parent: t.Node, before: t.Node) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, p: t.Node, b: t.Node) Error!void {
             const id = try nodeIn(w, n);
             const pid = try nodeIn(w, p);
@@ -517,8 +516,8 @@ pub export fn siv_move(txn: t.Txn, node: t.Node, parent: t.Node, before: t.Node)
     }.f, .{ node, parent, before });
 }
 
-pub export fn siv_remove(txn: t.Txn, node: t.Node) t.Result {
-    return run(txn, struct {
+pub export fn siv_remove(txn: t.Txn, node: t.Node) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node) Error!void {
             const id = try nodeIn(w, n);
             try w.txn.removed.ensureUnusedCapacity(w.owner.gpa(), 1);
@@ -528,8 +527,8 @@ pub export fn siv_remove(txn: t.Txn, node: t.Node) t.Result {
     }.f, .{node});
 }
 
-pub export fn siv_set_layout(txn: t.Txn, node: t.Node, desc: ?*const t.LayoutDesc) t.Result {
-    return run(txn, struct {
+pub export fn siv_set_layout(txn: t.Txn, node: t.Node, desc: ?*const t.LayoutDesc) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, d_ptr: ?*const t.LayoutDesc) Error!void {
             const id = try nodeIn(w, n);
             const d = try runtime.readDesc(t.LayoutDesc, d_ptr);
@@ -542,8 +541,8 @@ pub export fn siv_set_layout(txn: t.Txn, node: t.Node, desc: ?*const t.LayoutDes
     }.f, .{ node, desc });
 }
 
-pub export fn siv_set_default_layout(txn: t.Txn, node: t.Node, desc: ?*const t.LayoutDesc) t.Result {
-    return run(txn, struct {
+pub export fn siv_set_default_layout(txn: t.Txn, node: t.Node, desc: ?*const t.LayoutDesc) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, d_ptr: ?*const t.LayoutDesc) Error!void {
             const id = try nodeIn(w, n);
             const d = try runtime.readDesc(t.LayoutDesc, d_ptr);
@@ -587,8 +586,8 @@ fn mergeLayout(app: t.LayoutDesc, default: t.LayoutDesc) t.LayoutDesc {
     return out;
 }
 
-pub export fn siv_set_visual(txn: t.Txn, node: t.Node, desc: ?*const t.VisualDesc) t.Result {
-    return run(txn, struct {
+pub export fn siv_set_visual(txn: t.Txn, node: t.Node, desc: ?*const t.VisualDesc) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, d_ptr: ?*const t.VisualDesc) Error!void {
             const id = try nodeIn(w, n);
             const d = try runtime.readDesc(t.VisualDesc, d_ptr);
@@ -612,8 +611,8 @@ pub export fn siv_set_visual(txn: t.Txn, node: t.Node, desc: ?*const t.VisualDes
     }.f, .{ node, desc });
 }
 
-pub export fn siv_set_opacity(txn: t.Txn, node: t.Node, opacity: f32) t.Result {
-    return run(txn, struct {
+pub export fn siv_set_opacity(txn: t.Txn, node: t.Node, opacity: f32) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, o: f32) Error!void {
             const id = try nodeIn(w, n);
             var v = w.uiWin().node(id).visual;
@@ -623,8 +622,8 @@ pub export fn siv_set_opacity(txn: t.Txn, node: t.Node, opacity: f32) t.Result {
     }.f, .{ node, opacity });
 }
 
-pub export fn siv_set_transform(txn: t.Txn, node: t.Node, transform: t.Transform) t.Result {
-    return run(txn, struct {
+pub export fn siv_set_transform(txn: t.Txn, node: t.Node, transform: t.Transform) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, tr: t.Transform) Error!void {
             const id = try nodeIn(w, n);
             var v = w.uiWin().node(id).visual;
@@ -639,8 +638,8 @@ pub export fn siv_set_transform(txn: t.Txn, node: t.Node, transform: t.Transform
     }.f, .{ node, transform });
 }
 
-pub export fn siv_set_semantics(txn: t.Txn, node: t.Node, desc: ?*const t.SemanticsDesc) t.Result {
-    return run(txn, struct {
+pub export fn siv_set_semantics(txn: t.Txn, node: t.Node, desc: ?*const t.SemanticsDesc) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, d_ptr: ?*const t.SemanticsDesc) Error!void {
             const id = try nodeIn(w, n);
             const d = try runtime.readDesc(t.SemanticsDesc, d_ptr);
@@ -676,8 +675,8 @@ pub export fn siv_set_semantics(txn: t.Txn, node: t.Node, desc: ?*const t.Semant
     }.f, .{ node, desc });
 }
 
-pub export fn siv_set_text(txn: t.Txn, node: t.Node, text: ?[*]const u8, text_len: usize) t.Result {
-    return run(txn, struct {
+pub export fn siv_set_text(txn: t.Txn, node: t.Node, text: ?[*]const u8, text_len: usize) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, ptr: ?[*]const u8, len: usize) Error!void {
             const id = try nodeIn(w, n);
             w.txn.ut.setText(id, try runtime.string(ptr, len)) catch |err| return mapTxn(err);
@@ -685,8 +684,8 @@ pub export fn siv_set_text(txn: t.Txn, node: t.Node, text: ?[*]const u8, text_le
     }.f, .{ node, text, text_len });
 }
 
-pub export fn siv_set_text_style(txn: t.Txn, node: t.Node, desc: ?*const t.TextStyleDesc) t.Result {
-    return run(txn, struct {
+pub export fn siv_set_text_style(txn: t.Txn, node: t.Node, desc: ?*const t.TextStyleDesc) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, d: ?*const t.TextStyleDesc) Error!void {
             const id = try nodeIn(w, n);
             var stops: TabStops = undefined;
@@ -862,8 +861,8 @@ fn paragraphSpanOf(start: u32, end: u32, p: ui.ParagraphPatch) t.ParagraphSpan {
     return out;
 }
 
-pub export fn siv_set_paragraph_spans(txn: t.Txn, node: t.Node, desc: ?*const t.ParagraphSpansDesc) t.Result {
-    return run(txn, struct {
+pub export fn siv_set_paragraph_spans(txn: t.Txn, node: t.Node, desc: ?*const t.ParagraphSpansDesc) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, d_ptr: ?*const t.ParagraphSpansDesc) Error!void {
             const id = try nodeIn(w, n);
             const d = try runtime.readDesc(t.ParagraphSpansDesc, d_ptr);
@@ -918,8 +917,8 @@ fn widthOf(w: t.FontWidth) Error!ui.FontWidth {
     };
 }
 
-pub export fn siv_set_flex(txn: t.Txn, node: t.Node, desc: ?*const t.FlexDesc) t.Result {
-    return run(txn, struct {
+pub export fn siv_set_flex(txn: t.Txn, node: t.Node, desc: ?*const t.FlexDesc) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, d: ?*const t.FlexDesc) Error!void {
             const id = try nodeIn(w, n);
             w.txn.ut.setFlex(id, try flexOf(d)) catch |err| return mapTxn(err);
@@ -927,16 +926,16 @@ pub export fn siv_set_flex(txn: t.Txn, node: t.Node, desc: ?*const t.FlexDesc) t
     }.f, .{ node, desc });
 }
 
-pub export fn siv_set_grid(txn: t.Txn, node: t.Node, desc: ?*const t.GridDesc) t.Result {
-    return run(txn, struct {
+pub export fn siv_set_grid(txn: t.Txn, node: t.Node, desc: ?*const t.GridDesc) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, d: ?*const t.GridDesc) Error!void {
             try setGrid(w, try nodeIn(w, n), d);
         }
     }.f, .{ node, desc });
 }
 
-pub export fn siv_set_stack(txn: t.Txn, node: t.Node, desc: ?*const t.StackDesc) t.Result {
-    return run(txn, struct {
+pub export fn siv_set_stack(txn: t.Txn, node: t.Node, desc: ?*const t.StackDesc) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, d: ?*const t.StackDesc) Error!void {
             const id = try nodeIn(w, n);
             w.txn.ut.setStack(id, try stackOf(d)) catch |err| return mapTxn(err);
@@ -944,8 +943,8 @@ pub export fn siv_set_stack(txn: t.Txn, node: t.Node, desc: ?*const t.StackDesc)
     }.f, .{ node, desc });
 }
 
-pub export fn siv_set_scroll_axis(txn: t.Txn, node: t.Node, axis: t.ScrollAxis) t.Result {
-    return run(txn, struct {
+pub export fn siv_set_scroll_axis(txn: t.Txn, node: t.Node, axis: t.ScrollAxis) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, a: t.ScrollAxis) Error!void {
             const id = try nodeIn(w, n);
             const un = w.uiWin().node(id);
@@ -957,8 +956,8 @@ pub export fn siv_set_scroll_axis(txn: t.Txn, node: t.Node, axis: t.ScrollAxis) 
     }.f, .{ node, axis });
 }
 
-pub export fn siv_set_scroll_zoom_range(txn: t.Txn, node: t.Node, min_zoom: f32, max_zoom: f32) t.Result {
-    return run(txn, struct {
+pub export fn siv_set_scroll_zoom_range(txn: t.Txn, node: t.Node, min_zoom: f32, max_zoom: f32) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, lo: f32, hi: f32) Error!void {
             const id = try nodeIn(w, n);
             const un = w.uiWin().node(id);
@@ -971,8 +970,8 @@ pub export fn siv_set_scroll_zoom_range(txn: t.Txn, node: t.Node, min_zoom: f32,
     }.f, .{ node, min_zoom, max_zoom });
 }
 
-pub export fn siv_scroll_zoom_to(txn: t.Txn, node: t.Node, zoom: f32) t.Result {
-    return run(txn, struct {
+pub export fn siv_scroll_zoom_to(txn: t.Txn, node: t.Node, zoom: f32) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, z: f32) Error!void {
             const id = try nodeIn(w, n);
             const un = w.uiWin().node(id);
@@ -988,8 +987,8 @@ pub export fn siv_scroll_zoom_to(txn: t.Txn, node: t.Node, zoom: f32) t.Result {
     }.f, .{ node, zoom });
 }
 
-pub export fn siv_scroll_to(txn: t.Txn, node: t.Node, x: f32, y: f32) t.Result {
-    return run(txn, struct {
+pub export fn siv_scroll_to(txn: t.Txn, node: t.Node, x: f32, y: f32) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, sx: f32, sy: f32) Error!void {
             const id = try nodeIn(w, n);
             const un = w.uiWin().node(id);
@@ -1001,8 +1000,8 @@ pub export fn siv_scroll_to(txn: t.Txn, node: t.Node, x: f32, y: f32) t.Result {
     }.f, .{ node, x, y });
 }
 
-pub export fn siv_set_editor_flags(txn: t.Txn, node: t.Node, flags: t.EditorFlags) t.Result {
-    return run(txn, struct {
+pub export fn siv_set_editor_flags(txn: t.Txn, node: t.Node, flags: t.EditorFlags) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, fl: t.EditorFlags) Error!void {
             const id = try nodeIn(w, n);
             const e = try runtime.flags(t.EditorFlags, fl);
@@ -1011,8 +1010,8 @@ pub export fn siv_set_editor_flags(txn: t.Txn, node: t.Node, flags: t.EditorFlag
     }.f, .{ node, flags });
 }
 
-pub export fn siv_set_selection(txn: t.Txn, node: t.Node, caret: u32, anchor: u32) t.Result {
-    return run(txn, struct {
+pub export fn siv_set_selection(txn: t.Txn, node: t.Node, caret: u32, anchor: u32) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, c: u32, a: u32) Error!void {
             const id = try nodeIn(w, n);
             const un = w.uiWin().node(id);
@@ -1029,8 +1028,8 @@ pub export fn siv_set_selection(txn: t.Txn, node: t.Node, caret: u32, anchor: u3
     }.f, .{ node, caret, anchor });
 }
 
-pub export fn siv_set_transition(txn: t.Txn, node: t.Node, duration_ms: u32) t.Result {
-    return run(txn, struct {
+pub export fn siv_set_transition(txn: t.Txn, node: t.Node, duration_ms: u32) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, ms: u32) Error!void {
             const id = try nodeIn(w, n);
             var v = w.uiWin().node(id).visual;
@@ -1040,8 +1039,8 @@ pub export fn siv_set_transition(txn: t.Txn, node: t.Node, duration_ms: u32) t.R
     }.f, .{ node, duration_ms });
 }
 
-pub export fn siv_set_animation(txn: t.Txn, node: t.Node, desc: ?*const t.AnimationDesc) t.Result {
-    return run(txn, struct {
+pub export fn siv_set_animation(txn: t.Txn, node: t.Node, desc: ?*const t.AnimationDesc) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, d_ptr: ?*const t.AnimationDesc) Error!void {
             const id = try nodeIn(w, n);
             const d = try runtime.readDesc(t.AnimationDesc, d_ptr);
@@ -1171,8 +1170,8 @@ fn textSpanOf(start: u32, end: u32, st: ui.SpanStyle) t.TextSpan {
     return out;
 }
 
-pub export fn siv_set_text_spans(txn: t.Txn, node: t.Node, desc: ?*const t.TextSpansDesc) t.Result {
-    return run(txn, struct {
+pub export fn siv_set_text_spans(txn: t.Txn, node: t.Node, desc: ?*const t.TextSpansDesc) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, d_ptr: ?*const t.TextSpansDesc) Error!void {
             const id = try nodeIn(w, n);
             const d = try runtime.readDesc(t.TextSpansDesc, d_ptr);
@@ -1224,8 +1223,8 @@ pub export fn siv_editor_format(node: t.Node, values: t.TextSpan, mask: t.TextSp
     }.f(node, values, mask));
 }
 
-pub export fn siv_set_placeholder(txn: t.Txn, node: t.Node, text: ?[*]const u8, text_len: usize) t.Result {
-    return run(txn, struct {
+pub export fn siv_set_placeholder(txn: t.Txn, node: t.Node, text: ?[*]const u8, text_len: usize) void {
+    _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, ptr: ?[*]const u8, len: usize) Error!void {
             const id = try nodeIn(w, n);
             if (w.uiWin().node(id).kind != .editor) return error.InvalidArgument;
@@ -1265,12 +1264,12 @@ pub export fn siv_set_data(txn: t.Txn, node: t.Node, key: ?*anyopaque, size: usi
     }.f, .{ node, key, size, data });
 }
 
-pub export fn siv_on(txn: t.Txn, node: t.Node, kind: t.EventType, callback: ?t.EventFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) t.Result {
-    return on(txn, node, kind, callback, destroy, user_data, false);
+pub export fn siv_on(txn: t.Txn, node: t.Node, kind: t.EventType, callback: ?t.EventFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) void {
+    _ = on(txn, node, kind, callback, destroy, user_data, false);
 }
 
-pub export fn siv_on_default(txn: t.Txn, node: t.Node, kind: t.EventType, callback: ?t.EventFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) t.Result {
-    return on(txn, node, kind, callback, destroy, user_data, true);
+pub export fn siv_on_default(txn: t.Txn, node: t.Node, kind: t.EventType, callback: ?t.EventFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) void {
+    _ = on(txn, node, kind, callback, destroy, user_data, true);
 }
 
 fn on(txn: t.Txn, node: t.Node, kind: t.EventType, callback: ?t.EventFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque, default: bool) t.Result {

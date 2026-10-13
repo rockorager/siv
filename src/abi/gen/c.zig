@@ -96,10 +96,12 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
         \\ * Conventions (DESIGN.md, D2):
         \\ * - Objects are uint64_t handles; 0 is none. A destroyed, stale, or
         \\ *   mistyped handle is {[up]s}_ERROR_INVALID_HANDLE, never a crash.
-        \\ * - Functions that can fail return a result: 0 is {[up]s}_OK, errors are
-        \\ *   negative. They write their trailing out parameters only on success
-        \\ *   and have no effect when they fail. Transaction operations record
-        \\ *   their first error in the transaction, which commit reports.
+        \\ * - Functions that can fail return a result, which warns when ignored:
+        \\ *   0 is {[up]s}_OK, errors are negative. They write their trailing out
+        \\ *   parameters only on success and have no effect when they fail.
+        \\ *   Functions that cannot fail return void: teardown (a stale handle
+        \\ *   does nothing) and transaction and drawing operations, whose first
+        \\ *   error the transaction or drawing keeps and reports.
         \\ * - Descriptors (structs beginning with size_t size) are passed by
         \\ *   pointer: {[up]s}_DESC sets the size, zero fields are defaults, and NULL
         \\ *   is all defaults. Structs without a size are frozen values.
@@ -213,7 +215,7 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
         for (f.params) |p| try w.print(" * {s}: {s}\n", .{ p.name, p.doc });
         try w.writeAll(" */\n");
         if (f.deprecated) |d| try w.print("{s}_DEPRECATED(\"use {s}\") ", .{ up, d.replacement });
-        if (s.isResult(f.ret) and f.must_use) try w.print("{s}_NODISCARD ", .{up});
+        if (s.isResult(f.ret)) try w.print("{s}_NODISCARD ", .{up});
         try prototype(arena, w, f);
         try w.writeAll(";\n");
     }

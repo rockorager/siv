@@ -144,8 +144,8 @@ fn requestOf(request: t.ImageRequest) Error!*Request {
     return self.image_requests.items[index] orelse error.InvalidHandle;
 }
 
-pub export fn siv_image_request_cancel(request: t.ImageRequest) t.Result {
-    const r = requestOf(request) catch |err| return t.resultOf(err);
+pub export fn siv_image_request_cancel(request: t.ImageRequest) void {
+    const r = requestOf(request) catch return;
     r.forget();
     if (r.loading) |l| {
         // Runs Request.drop now, or when the decode returns.
@@ -157,7 +157,7 @@ pub export fn siv_image_request_cancel(request: t.ImageRequest) t.Result {
         r.destroy = null;
         r.app.release(destroy, user_data);
     }
-    return .ok;
+    return;
 }
 
 pub export fn siv_image_request_set_priority(request: t.ImageRequest, priority: i32) t.Result {

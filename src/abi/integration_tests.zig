@@ -178,7 +178,7 @@ test "the public API on sway: present, pointer and keyboard input, resize, close
     try sway.command("kill");
     try ok(A.siv_app_run(app));
     try testing.expectEqual(1, log.closes);
-    try testing.expectEqual(t.Result.error_invalid_handle, A.siv_window_destroy(window));
+    A.siv_window_destroy(window);
 }
 
 // Portals (D19) ------------------------------------------------------------------
@@ -551,9 +551,9 @@ test "a tray item through the public API over dbus-daemon, driven by gdbus" {
     _ = try gdbusOutput(app, daemon.address, &.{ "call", "--session", "--dest", name, "--object-path", "/StatusNotifierItem", "--method", "org.kde.StatusNotifierItem.Activate", "0", "0" }, &buf);
     try testing.expectEqual(@as(u32, 1), log.activated);
 
-    try ok(abi.tray.siv_tray_item_destroy(item));
+    abi.tray.siv_tray_item_destroy(item);
     try testing.expectEqual(@as(u32, 1), log.destroyed);
-    try testing.expectEqual(t.Result.error_invalid_handle, abi.tray.siv_tray_item_destroy(item));
+    abi.tray.siv_tray_item_destroy(item);
 }
 
 // Lifecycle (D19) -----------------------------------------------------------------

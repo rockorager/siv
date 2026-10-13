@@ -81,7 +81,7 @@ test "without a session bus, portal requests are unavailable at the next dispatc
     try testing.expectEqual(t.Result.error_invalid_argument, P.siv_screencast_take_pipewire_fd(cast, &fd));
     _ = P.siv_screencast_destroy(cast);
     try testing.expectEqual(@as(u32, 5), log.destroys);
-    try testing.expectEqual(t.Result.error_invalid_handle, P.siv_screencast_destroy(cast));
+    P.siv_screencast_destroy(cast);
 }
 
 test "rejected calls run their destroy-notify at once" {
@@ -158,7 +158,7 @@ test "actions are replaced and removed with their destroy-notify, and inhibition
         try testing.expectEqual(@as(u32, 2), log.destroys);
         self.app.invokeAction("quit", "", "");
         try testing.expectEqual(@as(u32, 1), log.actions);
-        try testing.expectEqual(t.Result.error_invalid_argument, P.siv_app_remove_action(h.app, "quit", 4));
+        P.siv_app_remove_action(h.app, "quit", 4);
         try testing.expectEqual(t.Result.error_invalid_argument, P.siv_app_add_action(h.app, "", 0, Log.onAction, Log.onDestroy, &log));
         try testing.expectEqual(@as(u32, 3), log.destroys);
         // Left registered: released with the application.
@@ -168,7 +168,7 @@ test "actions are replaced and removed with their destroy-notify, and inhibition
         try testing.expectEqual(t.Result.error_invalid_argument, P.siv_inhibit(h.app, h.window, .{}, "x", 1, &inh));
         try ok(P.siv_inhibit(h.app, h.window, .{ .idle = true, .@"suspend" = true }, "Playing", 7, &inh));
         _ = P.siv_inhibition_destroy(inh);
-        try testing.expectEqual(t.Result.error_invalid_handle, P.siv_inhibition_destroy(inh));
+        P.siv_inhibition_destroy(inh);
 
         // Pending at teardown: only the destroy-notify runs.
         try ok(P.siv_screenshot(h.app, .null, .{}, Log.onResult, Log.onDestroy, &log));
@@ -253,6 +253,6 @@ test "tray items need a session bus; handles die with their item" {
     var item: t.TrayItem = .null;
     try testing.expectEqual(t.Result.error_unavailable, abi.tray.siv_tray_item_create(h.app, &.{ .id = "org.example.Tray", .id_len = 16 }, &item));
     try testing.expectEqual(t.Result.error_unsupported, abi.tray.siv_tray_item_create(h.app, &.{ .category = @enumFromInt(9) }, &item));
-    try testing.expectEqual(t.Result.error_invalid_handle, abi.tray.siv_tray_item_destroy(@fromBackingInt(12345)));
+    abi.tray.siv_tray_item_destroy(@fromBackingInt(12345));
     try testing.expectEqual(t.Result.error_invalid_handle, abi.tray.siv_tray_item_set_title(.null, "x", 1));
 }

@@ -29,7 +29,7 @@ static void on_action(void *user_data, const siv_action_event *e) {
     (void)user_data;
     fprintf(log_file, "action %.*s %.*s\n", (int)e->name_len, e->name, (int)e->target_len, e->target ? e->target : "");
     fflush(log_file);
-    if (e->name_len == 4 && memcmp(e->name, "quit", 4) == 0) siv_app_quit(app);
+    if (e->name_len == 4 && memcmp(e->name, "quit", 4) == 0 && siv_app_quit(app) != SIV_OK) fprintf(log_file, "quit failed\n");
 }
 
 int main(int argc, char **argv) {

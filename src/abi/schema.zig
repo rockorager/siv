@@ -23,8 +23,9 @@
 //!   or a run of callbacks (a callback and its destroy-notify) by their
 //!   shared `user_data`; a struct with callback fields has one `user_data`
 //!   field.
-//! - Fallible functions return the schema's result enum and write their
-//!   outputs through trailing `Type.out` parameters.
+//! - Fallible functions return the schema's result enum, which warns when
+//!   ignored, and write their outputs through trailing `Type.out`
+//!   parameters; functions that cannot fail return void.
 
 const std = @import("std");
 
@@ -204,11 +205,11 @@ pub const Function = struct {
     doc: []const u8,
     since: Version,
     params: []const Param = &.{},
+    /// The result enum for functions that can fail, which warns when
+    /// ignored (D2). Functions that cannot fail (teardown, and transaction
+    /// and drawing operations, whose failure is the transaction's or the
+    /// drawing's) return void.
     ret: Type = .void,
-    /// For functions returning the result enum: whether ignoring the result
-    /// warns. Turn off for teardown functions, where the only error is an
-    /// invalid handle.
-    must_use: bool = true,
     /// Which threads may call it (D2, D5).
     thread: Thread = .app,
     /// Set when a better function replaces it (D2's deprecation rules):
