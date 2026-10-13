@@ -858,6 +858,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - A text node owns a width-independent `ShapedParagraph`; a width change
     reruns only break selection and positioning into a `Layout`. The only cache
     is the font cache. Intermediates live in one arena per layout pass.
+  - An edit reshapes only the paragraphs it touched, and one on each side
+    (`ShapedParagraph.initReusing`): the others keep their bidi levels,
+    segmentation, shaping, and break opportunities, copied to their new
+    offsets, and `Layout.initReusing` keeps their lines, moved by the
+    change in height. Paragraphs are independent (bidi, line, grapheme,
+    and word boundaries all break after a separator; shaping stops
+    there), so the result is the full rebuild's, which randomized tests
+    compare field by field. Measured on a 1.4 MB, 4,000-paragraph editor
+    (bench/gpui-compare, RADV): key to photon 299 ms before, 28 ms after.
+    What remains is linear in the text: the arrays are copied, not
+    shared, and the whole layout is painted; per-paragraph storage would
+    remove that.
   - Unsafe-to-break line edges are reshaped inline.
   - Hyphenation from Liang patterns (each pattern file's licence checked);
     an optional Knuth–Plass breaker for document views.

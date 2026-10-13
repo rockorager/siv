@@ -24,10 +24,15 @@ pub const Cache = struct {
     /// The span style of each of the paragraph's styles (by index), for
     /// colors and decorations at paint time.
     run_styles: std.ArrayList(node_mod.SpanStyle) = .empty,
+    /// The paragraph and layout `paragraph` was reshaped from when it
+    /// kept some of its paragraphs (text.ShapedParagraph.initReusing),
+    /// until the next layout reuses their lines (D13).
+    previous: ?struct { paragraph: text.ShapedParagraph, layout: ?text.Layout } = null,
 
     pub fn destroy(c: *Cache, gpa: std.mem.Allocator) void {
         if (c.layout) |*l| l.deinit();
         if (c.paragraph) |*p| p.deinit();
+        c.dropPrevious();
         c.dropPlaceholder();
         c.run_styles.deinit(gpa);
         gpa.destroy(c);
@@ -50,6 +55,14 @@ pub const Cache = struct {
     pub fn waiting(c: *const Cache, fonts: *const Fonts) bool {
         const p = c.paragraph orelse return false;
         return p.wanted.len != 0 and c.serial != fonts.serial;
+    }
+
+    fn dropPrevious(c: *Cache) void {
+        if (c.previous) |*pr| {
+            if (pr.layout) |*l| l.deinit();
+            pr.paragraph.deinit();
+        }
+        c.previous = null;
     }
 
     fn dropLayout(c: *Cache) void {
@@ -87,11 +100,21 @@ fn shape(win: *Window, id: NodeId) error{OutOfMemory}!*Cache {
         }
     }
     try c.run_styles.ensureTotalCapacity(win.gpa, 2 * list.len + 1);
-    var p = try shapeString(win, id, content, list, &c.run_styles);
+    // An edit keeps the paragraphs it did not touch, unless fonts changed.
+    const old: ?*const text.ShapedParagraph = if (c.paragraph != null and c.serial == fonts.serial) &c.paragraph.? else null;
+    var p = try shapeString(win, id, content, list, &c.run_styles, old);
     errdefer p.deinit();
-    c.dropLayout();
+    c.dropPrevious();
+    if (p.reused != null) {
+        c.previous = .{ .paragraph = c.paragraph.?, .layout = c.layout };
+        c.layout = null;
+        // The layout points at its paragraph, which moved.
+        if (c.previous.?.layout) |*l| l.paragraph = &c.previous.?.paragraph;
+    } else {
+        c.dropLayout();
+        if (c.paragraph) |*o| o.deinit();
+    }
     c.dropPlaceholder();
-    if (c.paragraph) |*old| old.deinit();
     c.paragraph = p;
     c.serial = fonts.serial;
     s.needs_shape = false;
@@ -103,7 +126,7 @@ fn shape(win: *Window, id: NodeId) error{OutOfMemory}!*Cache {
 /// Shapes `content` in the node's style with `list`'s spans over it, one
 /// style per run of equal span style; `run_styles` gets each run's span
 /// style.
-fn shapeString(win: *Window, id: NodeId, content: []const u8, list: []const node_mod.Span, run_styles: ?*std.ArrayList(node_mod.SpanStyle)) error{OutOfMemory}!text.ShapedParagraph {
+fn shapeString(win: *Window, id: NodeId, content: []const u8, list: []const node_mod.Span, run_styles: ?*std.ArrayList(node_mod.SpanStyle), old: ?*const text.ShapedParagraph) error{OutOfMemory}!text.ShapedParagraph {
     const d = win.node(id).textData();
     const fonts = win.fonts;
     const style = d.props.style;
@@ -126,7 +149,7 @@ fn shapeString(win: *Window, id: NodeId, content: []const u8, list: []const node
         if (run.end >= len) break;
         at = run.end;
     }
-    return text.ShapedParagraph.init(win.gpa, a, &fonts.cache, content, runs.items, if (win.state(id).rtl) .auto_rtl else .auto_ltr) catch |err| switch (err) {
+    return text.ShapedParagraph.initReusing(win.gpa, a, &fonts.cache, content, runs.items, if (win.state(id).rtl) .auto_rtl else .auto_ltr, old) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         // Validated when the text was set.
         error.InvalidUtf8, error.TextTooLong, error.InvalidStyles => unreachable,
@@ -140,7 +163,7 @@ pub fn placeholder(win: *Window, id: NodeId) error{OutOfMemory}!?*const text.Lay
     if (c.placeholder) |*ph| return &ph.layout;
     const n = win.node(id);
     // The layout points at the paragraph, so it goes in place first.
-    c.placeholder = .{ .paragraph = try shapeString(win, id, n.data.editor.placeholder, &.{}, null), .layout = undefined };
+    c.placeholder = .{ .paragraph = try shapeString(win, id, n.data.editor.placeholder, &.{}, null, null), .layout = undefined };
     const ph = &c.placeholder.?;
     if (ph.paragraph.wanted.len != 0) win.fonts.request(ph.paragraph.wanted);
     ph.layout = text.Layout.init(win.gpa, win.scratch.allocator(), &win.fonts.cache, &ph.paragraph, .{ .alignment = .start }) catch |err| {
@@ -172,7 +195,8 @@ pub fn layoutFor(win: *Window, id: NodeId, width: ?f32) error{OutOfMemory}!?*con
     // Lines are aligned in the node at paint time (`lineShift`); only
     // justification needs the layout.
     const d = n.textData();
-    const l = text.Layout.init(win.gpa, win.scratch.allocator(), &win.fonts.cache, &c.paragraph.?, .{
+    const previous: ?*const text.Layout = if (c.previous) |*pr| (if (pr.layout) |*pl| pl else null) else null;
+    const l = text.Layout.initReusing(win.gpa, win.scratch.allocator(), &win.fonts.cache, &c.paragraph.?, .{
         .width = width,
         .alignment = if (d.props.alignment == .justify) .justify else .start,
         .paragraphs = try paragraphRuns(win, id),
@@ -181,10 +205,11 @@ pub fn layoutFor(win: *Window, id: NodeId, width: ?f32) error{OutOfMemory}!?*con
         .hyphenate = d.props.hyphenate,
         .hyphenation = &win.fonts.hyphenation,
         .optimal = d.props.optimal,
-    }) catch |err| switch (err) {
+    }, previous) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => unreachable, // finite, non-negative widths only
     };
+    c.dropPrevious();
     c.dropLayout();
     c.layout = l;
     c.layout_width = width;
