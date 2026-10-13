@@ -3610,6 +3610,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - **Popups and overlays.** Menus and popovers are popups (D17) made
     with the public `siv_popup_create`; dialogs and toasts are overlays
     in the window's own tree.
+    - A toast may carry an action (`siv_toast_desc.action`, "Undo"): a
+      button in its card, in the accent since a flat button's control
+      color does not read on the inverse surface. Pressing it reports
+      `activate` on the toast, which then closes; such a toast stays 8 s
+      by default instead of 4, and only its action takes the pointer.
+      Found by siv-files, which drew an undo bar of its own because
+      toasts took text only.
     - A popup is created with its tree but mapped only by
       `siv_popup_show`, so that its content exists first and it can size
       to it (the root measured with loose constraints, at most the

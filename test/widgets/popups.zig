@@ -34,6 +34,7 @@ const Log = struct {
     changes: u32 = 0,
     value: f64 = 0,
     closes: u32 = 0,
+    activates: u32 = 0,
     keep: bool = false,
     node: t.Node = .null,
 
@@ -50,6 +51,12 @@ const Log = struct {
         log.changes += 1;
         log.value = ev.value;
         log.node = node;
+        return .handled;
+    }
+
+    fn onActivate(ud: ?*anyopaque, _: t.Node, _: *const t.Event) callconv(.c) t.EventResult {
+        const log: *Log = @ptrCast(@alignCast(ud.?));
+        log.activates += 1;
         return .handled;
     }
 
@@ -577,6 +584,22 @@ test "toasts: announced, closed after their timeout, removed unless kept" {
     try ok(c.siv_txn_commit(txn));
     const until = @import("loop").Loop.now() + 50 * std.time.ns_per_ms;
     while (@import("loop").Loop.now() < until) try ok(c.siv_app_dispatch(h.app, 10));
+    // An action: its button reports activate on the toast, which closes.
+    var acts: Log = .{};
+    txn = try begin(h.window);
+    const undo = c.siv_toast(txn, root(&h), &.{ .text = "Moved to the trash", .text_len = 18, .flags = .{ .persistent = true }, .action = "Undo", .action_len = 4 });
+    _ = c.siv_on(txn, undo, .activate, Log.onActivate, null, &acts);
+    _ = c.siv_on(txn, undo, .close, Log.onClose, null, &acts);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    var found = false;
+    var btn: t.TestNode = .{};
+    try ok(c.siv_test_find(h.window, &.{ .role = .button, .name = "Undo", .name_len = 4 }, &found, &btn));
+    try testing.expect(found);
+    try h.click(btn.bounds.x + btn.bounds.width / 2, btn.bounds.y + btn.bounds.height / 2);
+    try h.settle();
+    try testing.expectEqual(@as(u32, 1), acts.activates);
+    try testing.expectEqual(@as(u32, 1), acts.closes);
 }
 
 /// The application's open popups, innermost last.
