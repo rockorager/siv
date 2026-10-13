@@ -73,6 +73,7 @@ fn create(txn: Txn, parent: Node, desc: ?*const siv.ToggleDesc, kind: w.Kind) No
     st.label = c.siv_text(txn, root, label.ptr, label.len);
     w.onDefault(txn, root, .pointer, onPointer, st);
     w.onDefault(txn, root, .activate, onActivate, st);
+    w.setInterface(txn, root, Toggle, st, .{ .set_label = setLabel, .set_value = setValue, .get_value = value, .apply = apply });
     apply(txn, st);
     return root;
 }

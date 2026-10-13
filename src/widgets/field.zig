@@ -43,6 +43,7 @@ pub export fn siv_text_field(txn: Txn, parent: Node, desc: ?*const siv.TextField
     w.onDefault(txn, root, .pointer, onPointer, st);
     w.onDefault(txn, root, .focus, onFocus, st);
     if (d.flags.styled) w.onDefault(txn, root, .key, onStyleKey, st);
+    w.setInterface(txn, root, Field, st, .{ .set_label = setLabel, .apply = apply });
     apply(txn, st);
     return root;
 }

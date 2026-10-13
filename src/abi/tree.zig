@@ -21,6 +21,7 @@ const platform = @import("platform");
 const runtime = @import("runtime.zig");
 const application = @import("application.zig");
 const dnd = @import("dnd.zig");
+const widget = @import("widget.zig");
 
 const App = application.App;
 const Window = application.Window;
@@ -92,8 +93,11 @@ pub const Nodes = struct {
     /// Nodes with a siv_set_default_layout, by index: the application's
     /// and the default layout, merged into the node's layout.
     layouts: std.AutoHashMapUnmanaged(u32, LayoutPair) = .empty,
+    /// Widget interfaces (siv_set_widget, widget.zig), by node index.
+    widgets: std.AutoHashMapUnmanaged(u32, t.WidgetDesc) = .empty,
 
     pub fn deinit(n: *Nodes, gpa: std.mem.Allocator) void {
+        n.widgets.deinit(gpa);
         n.layouts.deinit(gpa);
         n.handles.deinit(gpa);
         n.callbacks.deinit(gpa);
@@ -163,6 +167,7 @@ pub const Nodes = struct {
             w.owner.release(c.destroy, c.user_data);
         };
         _ = n.layouts.remove(i);
+        if (n.widgets.fetchRemove(i)) |kv| w.owner.release(kv.value.destroy, kv.value.user_data);
         var data = n.data.items[i];
         n.data.items[i] = null;
         while (data) |d| {
@@ -201,8 +206,11 @@ pub const TxnState = struct {
     data_created: std.ArrayList(struct { node: NodeId, data: *Data, old: ?*Data = null }) = .empty,
     /// Layout pairs changed, to restore on abort.
     layout_undo: std.ArrayList(LayoutUndo) = .empty,
+    /// Widget interfaces replaced: restored on abort, released on commit.
+    widget_undo: std.ArrayList(WidgetUndo) = .empty,
 
     pub fn deinit(s: *TxnState, gpa: std.mem.Allocator) void {
+        s.widget_undo.deinit(gpa);
         s.layout_undo.deinit(gpa);
         s.created.deinit(gpa);
         s.removed.deinit(gpa);
@@ -221,6 +229,7 @@ pub const TxnState = struct {
         s.canvas_undo.clearRetainingCapacity();
         s.data_created.clearRetainingCapacity();
         s.layout_undo.clearRetainingCapacity();
+        s.widget_undo.clearRetainingCapacity();
     }
 };
 
@@ -228,6 +237,7 @@ pub const CanvasUndo = struct { node: NodeId, old: ?CanvasCb };
 
 pub const LayoutPair = struct { app: t.LayoutDesc = .{}, default: t.LayoutDesc = .{} };
 pub const LayoutUndo = struct { node: NodeId, old: ?LayoutPair };
+pub const WidgetUndo = struct { node: NodeId, old: ?t.WidgetDesc };
 
 /// Aborts the window's open transaction, if any (also after the tree's
 /// own transaction was aborted, as when the window is destroyed).
@@ -249,6 +259,13 @@ pub fn abortState(w: *Window) void {
         if (u.old) |old| {
             w.nodes.layouts.putAssumeCapacity(u.node.index(), old);
         } else _ = w.nodes.layouts.remove(u.node.index());
+    }
+    i = s.widget_undo.items.len;
+    while (i > 0) {
+        i -= 1;
+        const u = s.widget_undo.items[i];
+        if (w.nodes.widgets.fetchRemove(u.node.index())) |kv| w.owner.release(kv.value.destroy, kv.value.user_data);
+        if (u.old) |old| w.nodes.widgets.putAssumeCapacity(u.node.index(), old);
     }
     i = s.data_created.items.len;
     while (i > 0) {
@@ -289,6 +306,7 @@ fn commitState(w: *Window) void {
     for (s.removed.items) |id| forgetSubtree(w, id);
     for (s.undo.items) |u| if (u.old) |c| w.owner.release(c.destroy, c.user_data);
     for (s.canvas_undo.items) |u| if (u.old) |c| w.owner.release(c.destroy, c.user_data);
+    for (s.widget_undo.items) |u| if (u.old) |c| w.owner.release(c.destroy, c.user_data);
     s.ut.commit();
     s.finish(w);
 }
@@ -1677,16 +1695,22 @@ pub export fn siv_emit(node: t.Node, event: ?*const t.Event, handled: ?*bool) t.
 }
 
 pub export fn siv_node_focus(node: t.Node) t.Result {
-    return application.wrap(struct {
-        fn f(n: t.Node) Error!void {
-            const w, const id = try lookup(n);
-            if (w.owner.painting != 0) return error.Busy;
-            const uw = w.uiWin();
-            // Hidden nodes and nodes outside an active modal node too.
-            if (!ui.input.canFocus(uw, id)) return error.InvalidArgument;
-            ui.input.setFocus(uw, id, false);
-        }
-    }.f(node));
+    return application.wrap(focus(node, 0));
+}
+
+/// Focuses `n`, or the node its widget interface chooses (widget.zig),
+/// which may be a widget that chooses in turn, up to a few levels.
+fn focus(n: t.Node, depth: u8) Error!void {
+    const w, const id = try lookup(n);
+    if (w.owner.painting != 0) return error.Busy;
+    if (depth < 4) if (try widget.focusTarget(w, id, n)) |target| {
+        // The choice ran application code: look the node up again.
+        return focus(target, if (target == n) 4 else depth + 1);
+    };
+    const uw = w.uiWin();
+    // Hidden nodes and nodes outside an active modal node too.
+    if (!ui.input.canFocus(uw, id)) return error.InvalidArgument;
+    ui.input.setFocus(uw, id, false);
 }
 
 pub export fn siv_window_get_focus(window: t.Window, node: ?*t.Node) t.Result {

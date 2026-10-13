@@ -48,12 +48,14 @@ pub const watch = @import("watch.zig");
 pub const icon = @import("icon.zig");
 /// Pointer constraints and shortcut inhibition.
 pub const input = @import("input.zig");
+/// The widget interface behind the generic siv_widget_* calls.
+pub const widget = @import("widget.zig");
 
 /// The generated wrapper's types, which the exports use.
 pub const types = t;
 
 /// The files that export schema functions.
-const implementations = .{ @This(), application, tree, canvas, external, dnd, clipboard, theme, cursor, portal, print, tray, image_load, watch, icon, input } ++ @import("widgets").implementations;
+const implementations = .{ @This(), application, tree, canvas, external, dnd, clipboard, theme, cursor, portal, print, tray, image_load, watch, icon, input, widget } ++ @import("widgets").implementations;
 
 const version = build_options.version;
 

@@ -172,6 +172,18 @@ test "lua: gauge.lua draws on a canvas and takes keys" {
     try app.key(key_right, "");
     try app.key(key_right, "");
     try app.h.expectGolden("gauge-50", 260, 260);
+    // An application's widget answers the generic calls (D22): the keys
+    // moved its value, and setting it back draws the first frame again.
+    try app.run(
+        \\local dial = captured.window:get_focus()
+        \\assert(math.abs(dial:widget_get_value() - 0.5) < 1e-6, dial:widget_get_value())
+        \\captured.window:update(function(t) t:widget_set_value(dial, 0.4) end)
+        \\assert(math.abs(dial:widget_get_value() - 0.4) < 1e-6)
+        \\local ok, err = pcall(captured.window.update, captured.window, function(t) t:widget_set_range(dial, 0, 1, 0) end)
+        \\assert(not ok and err.code == "invalid_argument", "a widget without set_range refuses it")
+    );
+    try app.h.settle();
+    try app.h.expectGolden("gauge", 260, 260);
 }
 
 test "lua: viewer.lua loads an image from a coroutine" {

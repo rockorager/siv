@@ -1,8 +1,8 @@
 //! Stock widgets (D22), written against the public C API only: this module
 //! imports nothing but `siv`, the generated Zig wrapper of the C ABI, so a
 //! stock widget can do nothing a widget written in C cannot. libsiv
-//! exports the builders and `siv_widget_*` functions from here; their
-//! signatures are checked against the schema like every export.
+//! exports the builders and view functions from here; their signatures
+//! are checked against the schema like every export.
 //!
 //! Conventions every widget follows:
 //!
@@ -13,6 +13,9 @@
 //!   handlers get it as user data.
 //! - Behavior is installed with `siv_on_default`, so the application's
 //!   `siv_on` handlers run first and can override it.
+//! - The generic `siv_widget_*` calls reach a widget through the interface
+//!   its builder sets on the root with `siv_set_widget` (`setInterface`),
+//!   as they reach an application's widget.
 //! - User changes commit in a transaction of their own, then report
 //!   `change` with `siv_emit`; values set by the application do not.
 //! - Colors and text sizes are theme tokens (D29); metrics come from
@@ -307,144 +310,67 @@ pub fn arrowDirection(sym: siv.Key, rtl: bool) i2 {
     };
 }
 
-// Generic widget functions ----------------------------------------------------
+// The widget interface ---------------------------------------------------------
 
-pub export fn siv_widget_set_label(txn: Txn, node: Node, label: ?[*]const u8, label_len: usize) siv.Result {
-    const s = str(label, label_len) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
-    const h = header(node) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
-    switch (h.kind) {
-        .button, .toggle_button => button.setLabel(txn, @ptrCast(h), s),
-        .check_box, .@"switch" => toggle.setLabel(txn, @ptrCast(h), s),
-        .radio => radio.setLabel(txn, @ptrCast(h), s),
-        .radio_group => radio.setGroupLabel(txn, @ptrCast(h), s),
-        .text_field => field.setLabel(txn, @ptrCast(h), s),
-        .slider, .spin_button, .progress_bar => range.setLabel(txn, @ptrCast(h), s),
-        .menu_button => button.setLabel(txn, @ptrCast(h), s),
-        .menu_item => menu.setItemLabel(txn, @ptrCast(h), s),
-        .view => views.setLabel(txn, @ptrCast(h), s),
-        .view_column => views.setColumnLabel(txn, @ptrCast(h), s),
-        .menu, .popover, .menu_row, .dialog, .tabs, .tab, .split_pane, .toast, .view_row => setName(txn, h, node, s),
-    }
-    return c.siv_txn_status(txn);
-}
-
-/// Widgets whose label is only their accessible name.
-fn setName(txn: Txn, h: HeaderPtr, node: Node, s: []const u8) void {
-    switch (h.kind) {
-        .dialog => dialog.setTitle(txn, @ptrCast(h), s),
-        .toast => toast.setText(txn, @ptrCast(h), s),
-        .split_pane => split.setLabel(txn, @ptrCast(h), s),
-        .tabs => tabs.setLabel(txn, @ptrCast(h), s),
-        else => _ = c.siv_set_semantics(txn, node, &.{ .label = s.ptr, .label_len = s.len }),
-    }
-}
-
-pub export fn siv_widget_set_icon(txn: Txn, node: Node, icon: ?[*]const u8, icon_len: usize) siv.Result {
-    const s = str(icon, icon_len) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
-    const h = header(node) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
-    switch (h.kind) {
-        .button, .toggle_button, .menu_button => button.setIcon(txn, @ptrCast(h), s),
-        .menu_item => menu.setItemIcon(txn, @ptrCast(h), s),
-        else => return c.siv_txn_fail(txn, .error_invalid_argument),
-    }
-    return c.siv_txn_status(txn);
-}
-
-pub export fn siv_widget_set_disabled(txn: Txn, node: Node, disabled: bool) siv.Result {
-    const h = header(node) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
-    h.disabled = disabled;
-    if (disabled) {
-        h.hover = false;
-        h.pressed = false;
-    }
-    refresh(txn, h);
-    return c.siv_txn_status(txn);
-}
-
-/// Shows a widget's state again after its header changed.
-fn refresh(txn: Txn, h: HeaderPtr) void {
-    switch (h.kind) {
-        .button, .toggle_button => button.apply(txn, @ptrCast(h)),
-        .check_box, .@"switch" => toggle.apply(txn, @ptrCast(h)),
-        .radio_group => radio.applyGroup(txn, @ptrCast(h)),
-        .radio => radio.apply(txn, @ptrCast(h)),
-        .text_field => field.apply(txn, @ptrCast(h)),
-        .slider, .spin_button, .progress_bar => range.apply(txn, @ptrCast(h)),
-        .menu_button => button.apply(txn, @ptrCast(h)),
-        .menu_item => {},
-        .tabs => tabs.apply(txn, @ptrCast(h)),
-        .split_pane => split.apply(txn, @ptrCast(h)),
-        .view => views.apply(txn, @ptrCast(h)),
-        .menu, .popover, .menu_row, .dialog, .tab, .toast, .view_row, .view_column => {},
-    }
-}
-
-pub export fn siv_widget_set_value(txn: Txn, node: Node, value: f64) siv.Result {
-    const h = header(node) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
-    if (!std.math.isFinite(value)) return c.siv_txn_fail(txn, .error_invalid_argument);
-    switch (h.kind) {
-        .button, .text_field, .radio, .menu, .menu_button, .menu_row, .popover, .dialog, .tab, .toast, .view_row => return c.siv_txn_fail(txn, .error_invalid_argument),
-        .view => views.setCursor(txn, @ptrCast(h), value),
-        .view_column => views.setColumnValue(txn, @ptrCast(h), value),
-        .menu_item => menu.setItemValue(txn, @ptrCast(h), value),
-        .tabs => tabs.select(txn, @ptrCast(h), value),
-        .split_pane => split.setPosition(txn, @ptrCast(h), value),
-        .toggle_button => button.setValue(txn, @ptrCast(h), value),
-        .check_box, .@"switch" => toggle.setValue(txn, @ptrCast(h), value),
-        .radio_group => radio.select(txn, @ptrCast(h), value),
-        .slider, .spin_button, .progress_bar => range.setValue(txn, @ptrCast(h), value),
-    }
-    return c.siv_txn_status(txn);
-}
-
-pub export fn siv_widget_get_value(node: Node, value: ?*f64) siv.Result {
-    const out = value orelse return .error_invalid_argument;
-    const h = header(node) orelse {
-        // Not a widget: say whether the handle was valid at all.
-        var w: siv.Window = .null;
-        const r = c.siv_node_get_window(node, &w);
-        return if (r != .ok) r else .error_invalid_argument;
+/// Gives a stock widget's root its interface (siv_set_widget, D22), with
+/// its state as user data, so the generic siv_widget_* calls reach it the
+/// way they reach an application's widget. `ops` names functions of the
+/// state, each optional:
+///
+///   set_label, set_icon: fn (Txn, *T, []const u8) void
+///   set_value:           fn (Txn, *T, f64) void
+///   set_range:           fn (Txn, *T, f64, f64, f64) void
+///   get_value:           fn (*const T) f64
+///   get_part:            fn (*const T, siv.WidgetPart, u32) Node
+///   focus:               fn (*T) Node
+///   apply:               fn (Txn, *T) void; with it, siv_widget_set_disabled
+///                        sets the header's disabled flag and shows it
+pub fn setInterface(txn: Txn, node: Node, comptime T: type, st: *T, comptime ops: anytype) void {
+    const O = @TypeOf(ops);
+    const I = struct {
+        fn state(ud: ?*anyopaque) *T {
+            return @ptrCast(@alignCast(ud.?));
+        }
+        fn setLabel(ud: ?*anyopaque, txn_: Txn, _: Node, p: ?[*]const u8, len: usize) callconv(.c) void {
+            ops.set_label(txn_, state(ud), str(p, len) orelse "");
+        }
+        fn setIcon(ud: ?*anyopaque, txn_: Txn, _: Node, p: ?[*]const u8, len: usize) callconv(.c) void {
+            ops.set_icon(txn_, state(ud), str(p, len) orelse "");
+        }
+        fn setDisabled(ud: ?*anyopaque, txn_: Txn, _: Node, disabled: bool) callconv(.c) void {
+            const st_ = state(ud);
+            const h: *Header = &st_.hdr;
+            h.disabled = disabled;
+            if (disabled) {
+                h.hover = false;
+                h.pressed = false;
+            }
+            ops.apply(txn_, st_);
+        }
+        fn setValue(ud: ?*anyopaque, txn_: Txn, _: Node, v: f64) callconv(.c) void {
+            ops.set_value(txn_, state(ud), v);
+        }
+        fn setRange(ud: ?*anyopaque, txn_: Txn, _: Node, min: f64, max: f64, step: f64) callconv(.c) void {
+            ops.set_range(txn_, state(ud), min, max, step);
+        }
+        fn getValue(ud: ?*anyopaque, _: Node) callconv(.c) f64 {
+            return ops.get_value(state(ud));
+        }
+        fn getPart(ud: ?*anyopaque, _: Node, part: siv.WidgetPart, index: u32) callconv(.c) Node {
+            return ops.get_part(state(ud), part, index);
+        }
+        fn focus(ud: ?*anyopaque, _: Node) callconv(.c) Node {
+            return ops.focus(state(ud));
+        }
     };
-    out.* = switch (h.kind) {
-        .button, .text_field, .radio, .menu, .menu_button, .menu_row, .popover, .dialog, .tab, .toast, .view_row => return .error_invalid_argument,
-        .view => views.value(@ptrCast(h)),
-        .view_column => views.columnValue(@ptrCast(h)),
-        .menu_item => menu.itemValue(@ptrCast(h)),
-        .tabs => @floatFromInt(@as(*tabs.Tabs, @ptrCast(h)).selected),
-        .split_pane => @as(*split.Split, @ptrCast(h)).position,
-        .toggle_button => button.value(@ptrCast(h)),
-        .check_box, .@"switch" => toggle.value(@ptrCast(h)),
-        .radio_group => @as(*radio.Group, @ptrCast(h)).selectedValue(),
-        .slider, .spin_button, .progress_bar => @as(*range.Range, @ptrCast(h)).value,
-    };
-    return .ok;
-}
-
-pub export fn siv_widget_set_range(txn: Txn, node: Node, min: f64, max: f64, step: f64) siv.Result {
-    const r = stateOf(range.Range, node, &.{ .slider, .spin_button, .progress_bar }) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
-    if (!std.math.isFinite(min) or !std.math.isFinite(max) or !std.math.isFinite(step) or step < 0 or min > max)
-        return c.siv_txn_fail(txn, .error_invalid_argument);
-    range.setRange(txn, r, min, max, step);
-    return c.siv_txn_status(txn);
-}
-
-pub export fn siv_widget_get_part(node: Node, part: siv.WidgetPart, index: u32, result: ?*Node) siv.Result {
-    const out = result orelse return .error_invalid_argument;
-    const h = header(node) orelse return .error_invalid_argument;
-    const r: Node = switch (part) {
-        .content => switch (h.kind) {
-            .dialog => @as(*dialog.Dialog, @ptrCast(h)).content,
-            .popover => @as(*menu.Popover, @ptrCast(h)).content,
-            else => .null,
-        },
-        .actions => if (h.kind == .dialog) @as(*dialog.Dialog, @ptrCast(h)).actions else .null,
-        .tab, .panel => if (h.kind == .tabs) tabs.part(@ptrCast(h), part == .tab, index) else .null,
-        .start => if (h.kind == .split_pane) @as(*split.Split, @ptrCast(h)).start else .null,
-        .end => if (h.kind == .split_pane) @as(*split.Split, @ptrCast(h)).end else .null,
-        .menu => if (h.kind == .menu_button) @as(*button.Button, @ptrCast(h)).menu else .null,
-        else => return .error_unsupported,
-    };
-    if (r == .null) return .error_invalid_argument;
-    out.* = r;
-    return .ok;
+    var d: siv.WidgetDesc = .{ .user_data = st };
+    if (@hasField(O, "set_label")) d.set_label = I.setLabel;
+    if (@hasField(O, "set_icon")) d.set_icon = I.setIcon;
+    if (@hasField(O, "apply")) d.set_disabled = I.setDisabled;
+    if (@hasField(O, "set_value")) d.set_value = I.setValue;
+    if (@hasField(O, "set_range")) d.set_range = I.setRange;
+    if (@hasField(O, "get_value")) d.get_value = I.getValue;
+    if (@hasField(O, "get_part")) d.get_part = I.getPart;
+    if (@hasField(O, "focus")) d.focus = I.focus;
+    _ = c.siv_set_widget(txn, node, &d);
 }

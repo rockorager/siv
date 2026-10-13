@@ -907,7 +907,7 @@ fn Invoke(comptime name: []const u8, comptime slot: c_int, comptime R: type, com
                     }
                     const nret: c_int = switch (cb.ret) {
                         .void => 0,
-                        .ref => |r| if (Info(r).d == .@"struct") @intCast(Info(r).d.@"struct".fields.len) else 1,
+                        .ref => |r| if (comptime Info(r).d == .@"struct") @intCast(Info(r).d.@"struct".fields.len) else 1,
                         else => 1,
                     };
                     lua.call(Ls, nargs, nret);
@@ -929,6 +929,8 @@ fn Invoke(comptime name: []const u8, comptime slot: c_int, comptime R: type, com
                                 if (c.lua_type(Ls, -1) == lua.tboolean) return @enumFromInt(c.lua_toboolean(Ls, -1));
                                 return readScalar(&ctx, -1, cb.ret, R, w);
                             }
+                            // A handle, or nil for 0 (a widget's part).
+                            if (comptime Info(r).d == .handle) return readScalar(&ctx, -1, cb.ret, R, w);
                             // A value struct: a table, or its fields as
                             // several return values.
                             if (c.lua_type(Ls, -nret) == lua.ttable) return readValue(&ctx, -nret, r, w);

@@ -2699,6 +2699,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     (`SIV_VISUAL_HIDDEN`), modal nodes (`SIV_SEMANTICS_MODAL`), the value
     step, editor placeholders, transitions, themed colors and text sizes
     (D29), default handlers and default layouts, `siv_emit`, node data,
+    the widget interface (`siv_set_widget`),
     tree navigation (`siv_node_get_related`, `siv_node_get_window`,
     `siv_node_get_label`, `siv_node_is_rtl`), `siv_txn_fail`, one-shot
     timers, popups (D17), the `set_value`, `select`, `close`, and
@@ -2723,12 +2724,58 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     itself, so every editor function (text, selection, change events)
     works on them unchanged.
   - **Driving:** a few functions cover every widget instead of setters per
-    widget kind: `siv_widget_set_label`, `siv_widget_set_disabled`,
-    `siv_widget_set_value` and `siv_widget_get_value`, and
-    `siv_widget_set_range`. A widget's value is one double: 0 or 1 for
+    widget kind: `siv_widget_set_label`, `siv_widget_set_icon`,
+    `siv_widget_set_disabled`, `siv_widget_set_value` and
+    `siv_widget_get_value`, `siv_widget_set_range`, and
+    `siv_widget_get_part`. A widget's value is one double: 0 or 1 for
     toggles (0.5 is mixed), the chosen index for choices, the number for
     ranges. They are transaction operations, so a value change lands in
     the same frame as the tree changes around it.
+  - **The widget interface.** The generic calls know no widget kinds:
+    each dispatches through the node's interface, a `siv_widget_desc`
+    set with `siv_set_widget` (callbacks for `set_label`, `set_icon`,
+    `set_disabled`, `set_value`, `set_range`, `get_value`, `get_part`,
+    and `focus`, with user data and a destroy-notify), copied and kept
+    with the transaction like handlers (`src/abi/widget.zig`). Stock
+    widgets set theirs on their root through the same public call
+    (`setInterface` in `src/widgets/widgets.zig`), so an application's
+    widget, such as the canvas dial in `examples/gauge.c` and
+    `examples/gauge.lua`, answers `siv_widget_set_value` and the rest
+    exactly as a slider does, and generic code (a form library, the Lua
+    binding, an inspector) drives both without telling them apart.
+    - siv checks what every widget would check before calling: a string,
+      a finite value, min at most max and a step of at least 0. A NULL
+      callback refuses its call with `SIV_ERROR_INVALID_ARGUMENT`, as the
+      stock widgets refused calls that do not apply to their kind.
+      Setters run inside the caller's transaction, which they are given,
+      and report what they refuse with `siv_txn_fail`; getters run
+      outside one and return their answer (a part's node, or 0 for none),
+      since callbacks have no out parameters (D3).
+    - `focus` makes `siv_node_focus` on a widget focus the node it
+      chooses: a view's cursor row (moving the cursor to the first row if
+      it has none), the selected tab or radio, a spin button's field, a
+      split pane's divider. Roving focus otherwise needs a call per
+      widget kind, which only stock widgets could have.
+    - `siv_widget_part` is open (D2): an application's widget answers for
+      the named parts and numbers its own from 0x10000 up. `siv_menu_item`,
+      `siv_menu_open`, and `siv_menu_get_item` take a menu or any widget
+      whose `menu` part is one, so an application's own menu button works
+      with them as the stock one does.
+    - Before, the calls switched on the stock widget's kind inside
+      `src/widgets`, so they failed on every other node: a Lua
+      application could not drive its own dial with `widget_set_value`,
+      and code that drives widgets generically had to special-case
+      application widgets.
+    - Alternatives: a widget class registered once (a type handle) with
+      per-node user data (one more handle type and lifetime to save a
+      copy of eight pointers on widget roots only, which a hash map by
+      node keeps); events (`siv_emit` of a `set_label` event: events
+      return no value for `get_value` and `get_part`, and the `siv_on`
+      slot is the application's, so its handler would swallow the
+      widget's own calls); a public enum of stock kinds (a closed set no
+      application widget could join).
+    - Reverse if a generic call needs an answer the callbacks cannot
+      give, or interfaces show up in profiles of large trees.
   - **Events** go through `siv_on` on the returned node, as for
     primitives: `activate` for buttons, `change` with `value` (and `index`
     for choices) when the user or assistive technology changed the value,
@@ -2816,7 +2863,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       `siv_on` handler that returns true keeps them.
     - Parts the application fills are reached with
       `siv_widget_get_part` (dialog content and actions, popover content,
-      tabs and panels, split panes, a menu button's menu).
+      tabs and panels, split panes, a menu button's menu, a table's
+      column header cells).
   - **Icons** (D19): push, toggle, and menu buttons take a themed icon
     name (`icon` in their descriptors), shown before the label in the
     label's color token, so it follows hover, press, disabled, and theme
@@ -3102,7 +3150,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     stack (the main thread otherwise), so a Lua error never unwinds
     through siv's frames; a wrapper converts every argument before
     calling siv and raises only after siv returns. Event structs arrive as
-    tables. An error in a callback goes to `siv.set_error_handler`'s
+    tables; a callback returns enums as names, value structs as tables
+    or several values, and handles as handles or nil (a widget's
+    `get_part` and `focus`). An error in a callback goes to
+    `siv.set_error_handler`'s
     function if set; otherwise it is kept, `siv_run` is quit, and the
     binding call that returns to Lua next (`app:run()`, `node:emit()`,
     ...) raises it, so an error in a handler ends the program with its

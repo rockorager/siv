@@ -50,6 +50,7 @@ pub export fn siv_dialog(txn: Txn, parent: Node, desc: ?*const siv.DialogDesc) N
     st.content = c.siv_flex(txn, st.card, &.{ .axis = .column, .gap = tk.gap });
     st.actions = c.siv_flex(txn, st.card, &.{ .axis = .row, .justify = .end, .gap = tk.gap });
     applySemantics(txn, st, title);
+    w.setInterface(txn, root, Dialog, st, .{ .set_label = setTitle, .get_part = part });
     w.onDefault(txn, root, .key, onKey, st);
     w.onDefault(txn, root, .pointer, onPointer, st);
     w.onDefault(txn, root, .close, onClose, st);
@@ -65,6 +66,15 @@ fn applySemantics(txn: Txn, st: *Dialog, title: []const u8) void {
         .label_len = title.len,
         .flags = .{ .modal = true, .focusable = true },
     });
+}
+
+/// The content and actions parts.
+fn part(st: *const Dialog, p: siv.WidgetPart, _: u32) Node {
+    return switch (p) {
+        .content => st.content,
+        .actions => st.actions,
+        else => .null,
+    };
 }
 
 pub fn setTitle(txn: Txn, st: *Dialog, title: []const u8) void {

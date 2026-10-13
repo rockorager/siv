@@ -112,8 +112,18 @@ fn create(txn: Txn, parent: Node, desc: ?*const siv.RangeDesc, kind: w.Kind) Nod
         else => buildProgress(txn, r),
     }
     _ = c.siv_set_semantics(txn, r.target, &.{ .label = label.ptr, .label_len = label.len });
+    w.setInterface(txn, root, Range, r, .{ .set_label = setLabel, .set_value = setValue, .set_range = setRange, .get_value = getValue, .apply = apply, .focus = focusTarget });
     apply(txn, r);
     return root;
+}
+
+fn getValue(r: *const Range) f64 {
+    return r.value;
+}
+
+/// The node with the value: a spin button's field, or the root.
+fn focusTarget(r: *Range) Node {
+    return r.target;
 }
 
 fn px(v: f32) siv.Dimension {

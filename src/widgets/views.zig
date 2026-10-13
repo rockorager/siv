@@ -205,6 +205,7 @@ fn create(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc, mode: Mode) Node {
         .label_len = label.len,
     });
     w.onDefault(txn, v.scroll, .viewport, onViewport, v);
+    w.setInterface(txn, root, View, v, .{ .set_label = setLabel, .set_value = setCursor, .get_value = value, .get_part = viewPart, .apply = apply, .focus = focusTarget });
     if (!resizeSelection(txn, v)) return .null;
     if (mode == .tree and !buildTop(txn, v)) return .null;
     // The first rows are bound at once against the window's height, so
@@ -678,6 +679,7 @@ pub export fn siv_table_column(txn: Txn, table: Node, desc: ?*const siv.ColumnDe
     w.onDefault(txn, cell, .key, onHeaderKey, col);
     w.onDefault(txn, cell, .focus, onHeaderFocus, col);
     if (col.sortable) w.onDefault(txn, cell, .activate, onHeaderActivate, col);
+    w.setInterface(txn, cell, Column, col, .{ .set_label = setColumnLabel, .set_value = setColumnValue, .get_value = columnValue });
     setColumns(txn, v, v.header);
     applyHeader(txn, v);
     var cur = w.related(v.content, .first_child);
@@ -1327,16 +1329,30 @@ pub export fn siv_view_set_cursor(txn: Txn, view: Node, index: i32) siv.Result {
 }
 
 pub export fn siv_view_focus(view: Node) siv.Result {
-    const v = viewOf(view) orelse return .error_invalid_argument;
-    if (v.hdr.disabled) return .error_invalid_argument;
-    if (v.count == 0) return c.siv_node_focus(v.scroll);
+    if (viewOf(view) == null) return .error_invalid_argument;
+    return c.siv_node_focus(view);
+}
+
+/// Focusing a view focuses its cursor's row (roving focus), moving the
+/// cursor to the first row if it has none; an empty view focuses its
+/// scroll node.
+fn focusTarget(v: *View) Node {
+    if (v.hdr.disabled) return .null;
+    if (v.count == 0) return v.scroll;
     if (v.cursor < 0) {
-        const txn = w.begin(w.windowOf(view)) orelse return .error_busy;
+        const txn = w.begin(w.windowOf(v.root)) orelse return .null;
         setCursor(txn, v, 0);
-        if (!w.commit(txn)) return .error_out_of_memory;
+        if (!w.commit(txn)) return .null;
     }
-    const row = boundRow(v, @intCast(v.cursor)) orelse return .error_invalid_argument;
-    return c.siv_node_focus(row.root);
+    const row = boundRow(v, @intCast(v.cursor)) orelse return .null;
+    return row.root;
+}
+
+/// Tables: the header cell of a column.
+fn viewPart(v: *const View, p: siv.WidgetPart, index: u32) Node {
+    if (p != .column) return .null;
+    const col = columnAt(v, index) orelse return .null;
+    return col.cell;
 }
 
 pub export fn siv_view_get_row(view: Node, index: u32, row: ?*Node) siv.Result {

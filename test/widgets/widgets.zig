@@ -329,6 +329,194 @@ test "widgets: pointer, keyboard, and overrides on toggles" {
     try testing.expectEqual(@as(f64, 0), try value(w.sw));
 }
 
+/// An application's widget: a stack with a focusable child, a menu part,
+/// and a value, answering the generic calls through siv_set_widget.
+const Custom = struct {
+    value: f64 = 0,
+    label: [16]u8 = undefined,
+    label_len: usize = 0,
+    disabled: bool = false,
+    root: t.Node = .null,
+    inner: t.Node = .null,
+    menu: t.Node = .null,
+    calls: u32 = 0,
+    /// The node and transaction the last setter was given.
+    node: t.Node = .null,
+    txn: t.Txn = .null,
+    destroyed: u32 = 0,
+    focus_none: bool = false,
+
+    const own_part: t.WidgetPart = @enumFromInt(0x10001);
+
+    fn of(ud: ?*anyopaque) *Custom {
+        return @ptrCast(@alignCast(ud.?));
+    }
+    fn setValue(ud: ?*anyopaque, txn: t.Txn, node: t.Node, v: f64) callconv(.c) void {
+        const self = of(ud);
+        self.calls += 1;
+        self.node = node;
+        self.txn = txn;
+        // Refuses negative values, as a widget reports its own invalid
+        // arguments.
+        if (v < 0) {
+            _ = c.siv_txn_fail(txn, .error_invalid_argument);
+            return;
+        }
+        self.value = v;
+        _ = c.siv_set_semantics(txn, node, &.{ .role = .slider, .flags = .{ .has_value = true }, .value_max = 10, .value_now = v });
+    }
+    fn getValue(ud: ?*anyopaque, _: t.Node) callconv(.c) f64 {
+        return of(ud).value;
+    }
+    fn setLabel(ud: ?*anyopaque, _: t.Txn, _: t.Node, p: ?[*]const u8, len: usize) callconv(.c) void {
+        const self = of(ud);
+        self.calls += 1;
+        self.label_len = @min(len, self.label.len);
+        if (len != 0) @memcpy(self.label[0..self.label_len], p.?[0..self.label_len]);
+    }
+    fn setDisabled(ud: ?*anyopaque, _: t.Txn, _: t.Node, d: bool) callconv(.c) void {
+        of(ud).calls += 1;
+        of(ud).disabled = d;
+    }
+    fn getPart(ud: ?*anyopaque, _: t.Node, part: t.WidgetPart, index: u32) callconv(.c) t.Node {
+        const self = of(ud);
+        if (part == .menu) return self.menu;
+        if (part == own_part and index == 0) return self.inner;
+        return .null;
+    }
+    fn focus(ud: ?*anyopaque, _: t.Node) callconv(.c) t.Node {
+        const self = of(ud);
+        return if (self.focus_none) .null else self.inner;
+    }
+    fn destroy(ud: ?*anyopaque) callconv(.c) void {
+        of(ud).destroyed += 1;
+    }
+
+    fn desc(self: *Custom) t.WidgetDesc {
+        return .{ .user_data = self, .set_value = setValue, .get_value = getValue, .set_label = setLabel, .set_disabled = setDisabled, .get_part = getPart, .focus = focus, .destroy = destroy };
+    }
+};
+
+test "widgets: an application's widget answers the generic calls like a stock one" {
+    var h: Harness = .{};
+    try h.start(320, 240, null, null);
+    defer h.stop();
+    var cw: Custom = .{};
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const root = c.siv_window_root(h.window);
+    cw.root = c.siv_stack(txn, root, null);
+    cw.inner = c.siv_box(txn, cw.root);
+    _ = c.siv_set_semantics(txn, cw.inner, &.{ .flags = .{ .focusable = true } });
+    cw.menu = c.siv_menu(txn, cw.root, null);
+    var d = cw.desc();
+    try ok(c.siv_set_widget(txn, cw.root, &d));
+    // The interface works inside the transaction that set it.
+    try ok(c.siv_widget_set_value(txn, cw.root, 3));
+    try testing.expectEqual(cw.root, cw.node);
+    try testing.expectEqual(txn, cw.txn);
+    try ok(c.siv_widget_set_label(txn, cw.root, "Dial", 4));
+    try ok(c.siv_widget_set_disabled(txn, cw.root, true));
+    // siv_menu_item takes it, since its menu part is a menu.
+    const item = c.siv_menu_item(txn, cw.root, &.{ .label = "Reset", .label_len = 5 });
+    try testing.expect(item != .null);
+    try ok(c.siv_txn_commit(txn));
+    try testing.expectEqual(@as(f64, 3), try value(cw.root));
+    try testing.expectEqualStrings("Dial", cw.label[0..cw.label_len]);
+    try testing.expect(cw.disabled);
+    try testing.expectEqual(@as(f64, 3), (try sem(cw.root)).value.?.now);
+    var got: t.Node = .null;
+    try ok(c.siv_menu_get_item(cw.root, 0, &got));
+    try testing.expectEqual(item, got);
+    try ok(c.siv_widget_get_part(cw.root, Custom.own_part, 0, &got));
+    try testing.expectEqual(cw.inner, got);
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_widget_get_part(cw.root, Custom.own_part, 1, &got));
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_widget_get_part(cw.root, .content, 0, &got));
+
+    // What every widget would refuse never reaches it: values that are
+    // not finite, inverted ranges, and calls it has no callback for.
+    const calls = cw.calls;
+    for ([_]f64{ std.math.nan(f64), std.math.inf(f64) }) |bad| {
+        try ok(c.siv_txn_begin(h.window, &txn));
+        try testing.expectEqual(t.Result.error_invalid_argument, c.siv_widget_set_value(txn, cw.root, bad));
+        try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
+    }
+    try ok(c.siv_txn_begin(h.window, &txn));
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_widget_set_range(txn, cw.root, 0, 1, 0));
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
+    try ok(c.siv_txn_begin(h.window, &txn));
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_widget_set_icon(txn, cw.root, "x", 1));
+    // The sticky error: later calls do nothing.
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_widget_set_value(txn, cw.root, 4));
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
+    try testing.expectEqual(calls, cw.calls);
+    try testing.expectEqual(@as(f64, 3), try value(cw.root));
+    // A value the widget itself refuses fails the transaction too.
+    try ok(c.siv_txn_begin(h.window, &txn));
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_widget_set_value(txn, cw.root, -1));
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
+    // Nodes without an interface refuse every call.
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_widget_get_value(cw.inner, &got_value));
+
+    // focus chooses the node that takes the focus; 0 refuses.
+    try ok(c.siv_node_focus(cw.root));
+    var focused: t.Node = .null;
+    try ok(c.siv_window_get_focus(h.window, &focused));
+    try testing.expectEqual(cw.inner, focused);
+    cw.focus_none = true;
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_node_focus(cw.root));
+
+    // Replacing the interface follows the transaction: an abort keeps the
+    // old one and drops the new one, a commit drops the old one.
+    var other: Custom = .{ .value = 7 };
+    try ok(c.siv_txn_begin(h.window, &txn));
+    var d2 = other.desc();
+    try ok(c.siv_set_widget(txn, cw.root, &d2));
+    try testing.expectEqual(@as(f64, 7), try value(cw.root));
+    try ok(c.siv_txn_abort(txn));
+    try testing.expectEqual(@as(u32, 1), other.destroyed);
+    try testing.expectEqual(@as(u32, 0), cw.destroyed);
+    try testing.expectEqual(@as(f64, 3), try value(cw.root));
+    try ok(c.siv_txn_begin(h.window, &txn));
+    try ok(c.siv_set_widget(txn, cw.root, null));
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_widget_get_value(cw.root, &got_value));
+    try ok(c.siv_txn_commit(txn));
+    try testing.expectEqual(@as(u32, 1), cw.destroyed);
+    // Removing the node releases its interface.
+    other = .{};
+    try ok(c.siv_txn_begin(h.window, &txn));
+    d2 = other.desc();
+    try ok(c.siv_set_widget(txn, cw.root, &d2));
+    try ok(c.siv_remove(txn, cw.root));
+    try ok(c.siv_txn_commit(txn));
+    try testing.expectEqual(@as(u32, 1), other.destroyed);
+}
+
+var got_value: f64 = 0;
+
+test "widgets: focusing a stock widget focuses the node its interface chooses" {
+    var h: Harness = .{};
+    try h.start(420, 330, null, null);
+    defer h.stop();
+    var log: Log = .{};
+    const w = try buildControls(&h, &log);
+    try h.settle();
+    var focused: t.Node = .null;
+    // A radio group focuses its selected radio, the group's Tab stop.
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    try ok(c.siv_widget_set_value(txn, w.group, 2));
+    try ok(c.siv_txn_commit(txn));
+    try ok(c.siv_node_focus(w.group));
+    try ok(c.siv_window_get_focus(h.window, &focused));
+    try testing.expectEqual(w.radios[2], focused);
+    // A disabled group has nothing to focus.
+    try ok(c.siv_txn_begin(h.window, &txn));
+    try ok(c.siv_widget_set_disabled(txn, w.group, true));
+    try ok(c.siv_txn_commit(txn));
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_node_focus(w.group));
+}
+
 test "widgets: radio groups move the selection with arrows, mirrored in RTL" {
     for ([_]bool{ false, true }) |rtl| {
         var h: Harness = .{};

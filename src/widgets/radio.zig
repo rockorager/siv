@@ -43,6 +43,7 @@ pub export fn siv_radio_group(txn: Txn, parent: Node, desc: ?*const siv.RadioGro
     const g = w.create(Group, txn, root) orelse return .null;
     g.* = .{ .hdr = .{ .kind = .radio_group, .disabled = d.flags.disabled }, .root = root };
     _ = c.siv_set_semantics(txn, root, &.{ .role = .group, .label = label.ptr, .label_len = label.len });
+    w.setInterface(txn, root, Group, g, .{ .set_label = setGroupLabel, .set_value = select, .get_value = Group.selectedValue, .apply = applyGroup, .focus = groupFocus });
     applyGroup(txn, g);
     return root;
 }
@@ -62,6 +63,7 @@ pub export fn siv_radio(txn: Txn, group: Node, label_ptr: ?[*]const u8, label_le
     w.onDefault(txn, root, .pointer, onPointer, st);
     w.onDefault(txn, root, .activate, onActivate, st);
     w.onDefault(txn, root, .key, onKey, st);
+    w.setInterface(txn, root, Radio, st, .{ .set_label = setLabel, .apply = apply });
     apply(txn, st);
     return root;
 }
@@ -156,6 +158,14 @@ pub fn setLabel(txn: Txn, st: *Radio, label: []const u8) void {
 
 pub fn setGroupLabel(txn: Txn, g: *Group, label: []const u8) void {
     _ = c.siv_set_semantics(txn, g.root, &.{ .role = .group, .label = label.ptr, .label_len = label.len, .flags = .{ .disabled = g.hdr.disabled } });
+}
+
+/// Focusing the group focuses its Tab stop: the selected radio, or the
+/// first without a selection.
+fn groupFocus(g: *Group) Node {
+    if (g.hdr.disabled) return .null;
+    const r = nth(g, if (g.selected >= 0) @intCast(g.selected) else 0) orelse return .null;
+    return if (r.hdr.disabled) .null else r.root;
 }
 
 /// Selects the radio at `v` (-1 or out of range: none).

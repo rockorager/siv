@@ -62,8 +62,27 @@ pub export fn siv_split_pane(txn: Txn, parent: Node, desc: ?*const siv.SplitDesc
     w.onDefault(txn, st.divider, .key, onKey, st);
     w.onDefault(txn, st.divider, .set_value, onSetValue, st);
     w.onDefault(txn, st.divider, .focus, onFocus, st);
+    w.setInterface(txn, root, Split, st, .{ .set_label = setLabel, .set_value = setPosition, .get_value = position, .get_part = part, .apply = apply, .focus = divider });
     apply(txn, st);
     return root;
+}
+
+fn position(st: *const Split) f64 {
+    return st.position;
+}
+
+/// The start and end panes.
+fn part(st: *const Split, p: siv.WidgetPart, _: u32) Node {
+    return switch (p) {
+        .start => st.start,
+        .end => st.end,
+        else => .null,
+    };
+}
+
+/// The divider takes the focus: it holds the value.
+fn divider(st: *Split) Node {
+    return st.divider;
 }
 
 /// The largest position depends on layout: it is exposed again when the

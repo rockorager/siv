@@ -1071,14 +1071,62 @@ pub const decls = [_]Decl{
         .{ .name = "disabled", .bit = 0, .doc = "Shown dimmed; neither focusable nor operable." },
         .{ .name = "indeterminate", .bit = 1, .doc = "Progress bars: progress is unknown; the value is ignored." },
     }),
-    enumeration("siv_widget_part", "A part of a stock widget that the application fills or handles, for siv_widget_get_part.", &.{
+    openEnumeration("siv_widget_part", "A part of a widget that the application fills or handles, for siv_widget_get_part. Open (D2): an application's widget (siv_widget_desc) answers for these and may number parts of its own from 0x10000 up.", &.{
         .{ .name = "content", .value = 0, .doc = "Dialogs and popovers: the container for their content." },
         .{ .name = "actions", .value = 1, .doc = "Dialogs: the row for their buttons, at the end edge." },
         .{ .name = "tab", .value = 2, .doc = "Tabs: the tab at index." },
         .{ .name = "panel", .value = 3, .doc = "Tabs: the panel at index." },
         .{ .name = "start", .value = 4, .doc = "Split panes: the pane at the start (or top)." },
         .{ .name = "end", .value = 5, .doc = "Split panes: the pane at the end (or bottom)." },
-        .{ .name = "menu", .value = 6, .doc = "Menu buttons: their menu, for siv_menu_item and siv_menu_open." },
+        .{ .name = "menu", .value = 6, .doc = "Menu buttons, and any widget with a menu: their menu, for siv_menu_item, siv_menu_open, and siv_menu_get_item." },
+        .{ .name = "column", .value = 7, .doc = "Table views: the header cell of the column at index (siv_table_column returned it), whose value is the column's width." },
+    }),
+    // The widget interface (D22): how a widget, stock or the
+    // application's, answers the generic siv_widget_* calls.
+    callback("siv_widget_set_string_fn", "Applies siv_widget_set_label or siv_widget_set_icon to a widget, inside the caller's transaction: change the widget's nodes with txn, and report a value the widget refuses with siv_txn_fail.", &.{
+        .{ .name = "txn", .type = ref("siv_txn"), .doc = "The caller's open transaction." },
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The widget." },
+        .{ .name = "text", .type = .string, .doc = "The label or icon name, valid during the call." },
+    }, .void),
+    callback("siv_widget_set_bool_fn", "Applies siv_widget_set_disabled to a widget, inside the caller's transaction.", &.{
+        .{ .name = "txn", .type = ref("siv_txn"), .doc = "The caller's open transaction." },
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The widget." },
+        .{ .name = "value", .type = .bool, .doc = "Disabled." },
+    }, .void),
+    callback("siv_widget_set_value_fn", "Applies siv_widget_set_value to a widget, inside the caller's transaction: the value is finite; the widget clamps and steps it as it would the user's. It reports no change event.", &.{
+        .{ .name = "txn", .type = ref("siv_txn"), .doc = "The caller's open transaction." },
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The widget." },
+        .{ .name = "value", .type = .f64, .doc = "The value." },
+    }, .void),
+    callback("siv_widget_set_range_fn", "Applies siv_widget_set_range to a widget, inside the caller's transaction: min and max are finite with min at most max, and step is at least 0.", &.{
+        .{ .name = "txn", .type = ref("siv_txn"), .doc = "The caller's open transaction." },
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The widget." },
+        .{ .name = "min", .type = .f64, .doc = "Smallest value." },
+        .{ .name = "max", .type = .f64, .doc = "Largest value." },
+        .{ .name = "step", .type = .f64, .doc = "Step; 0 for none." },
+    }, .void),
+    callback("siv_widget_get_value_fn", "Answers siv_widget_get_value: the widget's value, as siv_widget_set_value takes it.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The widget." },
+    }, .f64),
+    callback("siv_widget_get_part_fn", "Answers siv_widget_get_part: the node of one of the widget's parts, or 0 when it has no such part.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The widget." },
+        .{ .name = "part", .type = ref("siv_widget_part"), .doc = "Which part: a named one, or one of the widget's own." },
+        .{ .name = "index", .type = .u32, .doc = "Which one, for parts that come in several." },
+    }, ref("siv_node")),
+    callback("siv_widget_focus_fn", "Chooses the node that takes keyboard focus when siv_node_focus is called on the widget, outside any transaction: a focusable node of the widget (a list's cursor row, the selected tab or radio), or 0 when none can take it. It may commit a transaction of its own first, such as one that moves a cursor.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The widget." },
+    }, ref("siv_node")),
+    descriptor("siv_widget_desc", "A widget's interface (D22): what the generic siv_widget_* calls and siv_node_focus do on its root node. Stock widgets set one on their root, and an application's widget, written in any language, sets its own with siv_set_widget, so both answer the same calls. A NULL callback refuses its call: siv_widget_set_value on a widget without set_value fails the transaction with SIV_ERROR_INVALID_ARGUMENT, and siv_node_focus without focus focuses the node itself.", &.{
+        .{ .name = "user_data", .type = .user_data, .doc = "Passed to the callbacks and destroy." },
+        .{ .name = "set_label", .type = ref("siv_widget_set_string_fn"), .doc = "siv_widget_set_label: the widget's label or, for widgets without visible text, its accessible name." },
+        .{ .name = "set_icon", .type = ref("siv_widget_set_string_fn"), .doc = "siv_widget_set_icon: a themed icon name; empty removes the icon." },
+        .{ .name = "set_disabled", .type = ref("siv_widget_set_bool_fn"), .doc = "siv_widget_set_disabled: dim the widget, take it out of the Tab order, and ignore input (SIV_SEMANTICS_DISABLED)." },
+        .{ .name = "set_value", .type = ref("siv_widget_set_value_fn"), .doc = "siv_widget_set_value." },
+        .{ .name = "set_range", .type = ref("siv_widget_set_range_fn"), .doc = "siv_widget_set_range." },
+        .{ .name = "get_value", .type = ref("siv_widget_get_value_fn"), .doc = "siv_widget_get_value." },
+        .{ .name = "get_part", .type = ref("siv_widget_get_part_fn"), .doc = "siv_widget_get_part." },
+        .{ .name = "focus", .type = ref("siv_widget_focus_fn"), .doc = "siv_node_focus on the widget: which node takes the focus." },
+        .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data when the interface is replaced or the node is destroyed." },
     }),
     descriptor("siv_menu_desc", "A menu: items added with siv_menu_item and shown in a popup by siv_menu_open.", &.{
         .{ .name = "label", .type = .string, .doc = "The menu's accessible name, copied." },
@@ -1678,7 +1726,7 @@ pub const functions = [_]Function{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
         .{ .name = "rect", .type = out(ref("siv_rect")), .doc = "The box." },
     }),
-    call("siv_node_focus", "Moves keyboard focus to a node that can take it (SIV_SEMANTICS_FOCUSABLE, or an editor). Its focus handler runs before this returns.", &.{
+    call("siv_node_focus", "Moves keyboard focus to a node that can take it (SIV_SEMANTICS_FOCUSABLE, or an editor), or for a widget whose interface chooses (siv_widget_desc.focus: a view's cursor row, the selected tab or radio) to the node it chooses. Its focus handler runs before this returns. Not from a canvas callback (SIV_ERROR_BUSY).", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
     }),
     call("siv_node_get_data", "The memory siv_set_data gave the node under key, or NULL.", &.{
@@ -1814,12 +1862,6 @@ pub const functions = [_]Function{
     },
     builder("siv_split_pane", "Creates a split pane: start and end panes (siv_widget_get_part) with a divider between them. Dragging the divider or pressing arrow keys, Home, or End on it moves it; the value is the start pane's size, reported with SIV_EVENT_CHANGE. The divider's role is separator with that value.", &.{.{ .name = "desc", .type = .{ .desc = "siv_split_desc" }, .doc = "Axis and position; NULL for side by side at 200." }}),
     builder("siv_toast", "Shows a toast: a brief message in the inverse colors at the bottom of parent, announced to assistive technology. When it times out it reports SIV_EVENT_CLOSE; unless a handler keeps it, it fades out and is removed.", &.{.{ .name = "desc", .type = .{ .desc = "siv_toast_desc" }, .doc = "The message." }}),
-    call("siv_widget_get_part", "A part of a stock widget, such as a dialog's content or a split pane's panes, as of the latest operation.", &.{
-        .{ .name = "node", .type = ref("siv_node"), .doc = "The widget." },
-        .{ .name = "part", .type = ref("siv_widget_part"), .doc = "Which part." },
-        .{ .name = "index", .type = .u32, .doc = "Tabs and panels: which one." },
-        .{ .name = "result", .type = out(ref("siv_node")), .doc = "The part." },
-    }),
     builder("siv_list_view", "Creates a virtualized list: a vertical scroll of rows of item_height, bound as they come into view, so a list of millions costs what is on screen. The cursor moves with Up, Down, Page Up, Page Down, Home, and End and keeps its row in view and focused; Space and clicks select (with Ctrl and Shift in multiple mode), reporting SIV_EVENT_SELECT with the cursor's index and the number selected; Enter reports SIV_EVENT_ACTIVATE with the index. Its role is list, its rows' list_item. siv_widget_get_value is the cursor's index, -1 for none.", &.{.{ .name = "desc", .type = .{ .desc = "siv_view_desc" }, .doc = "Items, callbacks, and selection." }}),
     builder("siv_tree_view", "Creates a virtualized tree: rows of the visible items, indented by depth, with the children and child callbacks walked as items expand. Keys as in a list, and Right (Left in RTL) expands an item or moves to its first child, Left collapses it or moves to its parent; clicking the disclosure toggles it. Its role is tree, its rows' tree_item with level and expanded state.", &.{.{ .name = "desc", .type = .{ .desc = "siv_view_desc" }, .doc = "Callbacks and selection." }}),
     builder("siv_table_view", "Creates a virtualized table: a header of columns (siv_table_column) over rows like a list's, each a grid with the columns' tracks that bind fills with one cell per column. Its role is table, its rows' row, header cells column_header. The header is one Tab stop: Left and Right (mirrored in RTL) move between its cells, Down goes to the rows, Enter and Space sort a sortable column, and Ctrl+Left and Ctrl+Right narrow and widen the focused column. Dragging the handle at a header cell's end resizes its column; the handle is a separator whose value is the column's width, so assistive technology resizes it too. A column the user resized reports SIV_EVENT_CHANGE on its header cell with the width as value.", &.{.{ .name = "desc", .type = .{ .desc = "siv_view_desc" }, .doc = "Items, callbacks, and selection." }}),
@@ -1884,18 +1926,25 @@ pub const functions = [_]Function{
         .{ .name = "index", .type = .u32, .doc = "The row index." },
         .{ .name = "item", .type = out(.u64), .doc = "The item." },
     }),
-    setter("siv_widget_set_label", "Sets a stock widget's label: the text of buttons, toggles, check boxes, switches, and radios, and the accessible name of the others.", &.{.{ .name = "label", .type = .string, .doc = "Copied." }}),
-    setter("siv_widget_set_icon", "Sets the themed icon (D19) of a push, toggle, or menu button or a menu item, as their descriptors' icon names it; empty removes it.", &.{.{ .name = "icon", .type = .string, .doc = "Copied." }}),
-    setter("siv_widget_set_disabled", "Enables or disables a stock widget: disabled widgets are dimmed, leave the Tab order, and ignore input.", &.{.{ .name = "disabled", .type = .bool, .doc = "Disabled." }}),
-    setter("siv_widget_set_value", "Sets a stock widget's value without reporting SIV_EVENT_CHANGE: 0 or 1 for toggles (0.5 is a check box's mixed state), the selected index for choices (-1 for none), the number for ranges (clamped and stepped).", &.{.{ .name = "value", .type = .f64, .doc = "The value." }}),
-    setter("siv_widget_set_range", "Sets the range of a slider, spin button, or progress bar; the value is clamped into it. With min equal to max the range is 0 to 100.", &.{
+    setter("siv_set_widget", "Gives a node a widget interface (D22), so that the generic siv_widget_* calls and siv_node_focus work on it as on a stock widget: an application's own widget, built from primitives or a canvas in any language, answers siv_widget_set_value and the rest through its callbacks. Replaces the node's interface; the replaced one's destroy-notify runs at commit, the new one's when it is replaced, the node is removed, or the transaction aborts. Stock widgets set one on their root, so setting another on a stock widget replaces how it answers.", &.{.{ .name = "desc", .type = .{ .desc = "siv_widget_desc" }, .doc = "The interface, copied; NULL removes it." }}),
+    setter("siv_widget_set_label", "Sets a widget's label (its set_label, siv_widget_desc): the text of buttons, toggles, check boxes, switches, radios, and tabs, and the accessible name of the others.", &.{.{ .name = "label", .type = .string, .doc = "Copied." }}),
+    setter("siv_widget_set_icon", "Sets a widget's themed icon (D19; its set_icon): push, toggle, and menu buttons and menu items take one, as their descriptors' icon names it; empty removes it.", &.{.{ .name = "icon", .type = .string, .doc = "Copied." }}),
+    setter("siv_widget_set_disabled", "Enables or disables a widget (its set_disabled): disabled widgets are dimmed, leave the Tab order, and ignore input.", &.{.{ .name = "disabled", .type = .bool, .doc = "Disabled." }}),
+    setter("siv_widget_set_value", "Sets a widget's value (its set_value) without reporting SIV_EVENT_CHANGE: 0 or 1 for toggles (0.5 is a check box's mixed state), the selected index for choices (-1 for none), the number for ranges and split panes (clamped and stepped), the width for table column headers. SIV_ERROR_INVALID_ARGUMENT for a value that is not finite or a widget without one.", &.{.{ .name = "value", .type = .f64, .doc = "The value." }}),
+    setter("siv_widget_set_range", "Sets a widget's range (its set_range): sliders, spin buttons, and progress bars clamp their value into it. With min equal to max their range is 0 to 100.", &.{
         .{ .name = "min", .type = .f64, .doc = "Smallest value." },
-        .{ .name = "max", .type = .f64, .doc = "Largest value." },
-        .{ .name = "step", .type = .f64, .doc = "Step, as in siv_range_desc." },
+        .{ .name = "max", .type = .f64, .doc = "Largest value; at least min." },
+        .{ .name = "step", .type = .f64, .doc = "Step, as in siv_range_desc; at least 0." },
     }),
-    call("siv_widget_get_value", "A stock widget's value, as siv_widget_set_value takes it.", &.{
-        .{ .name = "node", .type = ref("siv_node"), .doc = "A stock widget's root (for text fields: the field)." },
+    call("siv_widget_get_value", "A widget's value (its get_value), as siv_widget_set_value takes it, as of the latest operation. SIV_ERROR_INVALID_ARGUMENT for a node without a widget interface or a widget without a value.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "A widget's root (for text fields: the field)." },
         .{ .name = "value", .type = out(.f64), .doc = "The value." },
+    }),
+    call("siv_widget_get_part", "A part of a widget (its get_part), such as a dialog's content or a split pane's panes, as of the latest operation. SIV_ERROR_INVALID_ARGUMENT when the widget has no such part.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The widget." },
+        .{ .name = "part", .type = ref("siv_widget_part"), .doc = "Which part." },
+        .{ .name = "index", .type = .u32, .doc = "Tabs, panels, and columns: which one." },
+        .{ .name = "result", .type = out(ref("siv_node")), .doc = "The part." },
     }),
     // Canvases (D28).
     builder("siv_canvas", "Creates a canvas: content the application draws (siv_draw_fn) in its own compositor layer, so redrawing it repaints nothing else.", &.{.{ .name = "desc", .type = .{ .desc = "siv_canvas_desc" }, .doc = "Callbacks and size; NULL for an empty canvas." }}),

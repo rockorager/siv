@@ -46,7 +46,26 @@ pub export fn siv_tabs(txn: Txn, parent: Node, desc: ?*const siv.TabsDesc) Node 
     _ = c.siv_set_visual(txn, rule, &.{ .background_token = .separator });
     st.panels = c.siv_stack(txn, root, &.{ .align_x = .stretch, .align_y = .stretch });
     _ = c.siv_set_layout(txn, st.panels, &.{ .grow = 1, .padding = .{ .top = 12 } });
+    w.setInterface(txn, root, Tabs, st, .{ .set_label = setLabel, .set_value = select, .get_value = selected, .get_part = tabsPart, .apply = apply, .focus = focusTab });
     return root;
+}
+
+fn selected(ts: *const Tabs) f64 {
+    return @floatFromInt(ts.selected);
+}
+
+fn tabsPart(ts: *const Tabs, p: siv.WidgetPart, index: u32) Node {
+    return switch (p) {
+        .tab, .panel => part(ts, p == .tab, index),
+        else => .null,
+    };
+}
+
+/// The selected tab takes the focus: it is the tab list's one Tab stop.
+fn focusTab(ts: *Tabs) Node {
+    if (ts.hdr.disabled or ts.selected < 0) return .null;
+    const t = nth(ts, @intCast(ts.selected)) orelse return .null;
+    return t.root;
 }
 
 pub export fn siv_tab(txn: Txn, tabs_node: Node, label_ptr: ?[*]const u8, label_len: usize) Node {
@@ -64,6 +83,7 @@ pub export fn siv_tab(txn: Txn, tabs_node: Node, label_ptr: ?[*]const u8, label_
     w.onDefault(txn, root, .pointer, onPointer, st);
     w.onDefault(txn, root, .activate, onActivate, st);
     w.onDefault(txn, root, .key, onKey, st);
+    w.setInterface(txn, root, Tab, st, .{ .set_label = setTabLabel });
     apply(txn, ts);
     return st.panel;
 }
@@ -126,6 +146,10 @@ pub fn apply(txn: Txn, ts: *Tabs) void {
 
 pub fn setLabel(txn: Txn, ts: *Tabs, label: []const u8) void {
     _ = c.siv_set_semantics(txn, ts.list, &.{ .role = .tab_list, .label = label.ptr, .label_len = label.len });
+}
+
+fn setTabLabel(txn: Txn, t: *Tab, label: []const u8) void {
+    _ = c.siv_set_text(txn, t.label, label.ptr, label.len);
 }
 
 pub fn select(txn: Txn, ts: *Tabs, v: f64) void {

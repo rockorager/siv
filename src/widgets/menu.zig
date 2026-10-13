@@ -95,16 +95,21 @@ pub fn createModel(txn: Txn, parent: Node, label: []const u8, owner: Node) Node 
     _ = c.siv_set_semantics(txn, root, &.{ .role = .menu, .label = label.ptr, .label_len = label.len });
     const st = w.create(Menu, txn, root) orelse return .null;
     st.* = .{ .hdr = .{ .kind = .menu }, .root = root, .owner = if (owner == .null) root else owner };
+    w.setInterface(txn, root, Menu, st, .{ .set_label = setMenuLabel });
     return root;
 }
 
+fn setMenuLabel(txn: Txn, st: *Menu, label: []const u8) void {
+    _ = c.siv_set_semantics(txn, st.root, &.{ .role = .menu, .label = label.ptr, .label_len = label.len });
+}
+
+/// A menu, or the menu part of a widget that has one (a menu button, or
+/// an application's widget, through its interface).
 fn menuOf(node: Node) ?*Menu {
-    const h = w.header(node) orelse return null;
-    return switch (h.kind) {
-        .menu => @ptrCast(h),
-        .menu_button => w.stateOf(Menu, @as(*button.Button, @ptrCast(h)).menu, &.{.menu}),
-        else => null,
-    };
+    if (w.stateOf(Menu, node, &.{.menu})) |m| return m;
+    var part: Node = .null;
+    if (c.siv_widget_get_part(node, .menu, 0, &part) != .ok) return null;
+    return w.stateOf(Menu, part, &.{.menu});
 }
 
 pub export fn siv_menu_item(txn: Txn, menu_node: Node, desc: ?*const siv.MenuItemDesc) Node {
@@ -134,8 +139,12 @@ pub export fn siv_menu_item(txn: Txn, menu_node: Node, desc: ?*const siv.MenuIte
         .icon = c.siv_text(txn, root, icon.ptr, icon.len),
     };
     _ = c.siv_set_semantics(txn, root, &.{ .role = if (st.separator) .separator else .menu_item });
+    w.setInterface(txn, root, Item, st, .{ .set_label = setItemLabel, .set_icon = setItemIcon, .set_value = setItemValue, .get_value = itemValue, .apply = applyItem });
     return root;
 }
+
+/// Items show their state when their menu opens.
+fn applyItem(_: Txn, _: *Item) void {}
 
 pub fn setItemLabel(txn: Txn, st: *Item, label: []const u8) void {
     _ = c.siv_set_text(txn, st.label, label.ptr, label.len);
@@ -574,6 +583,7 @@ pub export fn siv_popover_create(anchor: Node, desc: ?*const siv.PopoverDesc, po
         st.* = .{ .hdr = .{ .kind = .popover }, .root = root, .content = content, .popup = popup };
         w.onDefault(txn, root, .key, onPopoverKey, st);
         w.onDefault(txn, content, .close, onPopoverClose, st);
+        w.setInterface(txn, root, Popover, st, .{ .set_label = setPopoverLabel, .get_part = popoverPart });
     }
     r = c.siv_txn_commit(txn);
     if (r != .ok) {
@@ -583,6 +593,14 @@ pub export fn siv_popover_create(anchor: Node, desc: ?*const siv.PopoverDesc, po
     popup_out.?.* = popup;
     content_out.?.* = content;
     return .ok;
+}
+
+fn setPopoverLabel(txn: Txn, st: *Popover, label: []const u8) void {
+    _ = c.siv_set_semantics(txn, st.content, &.{ .role = .dialog, .label = label.ptr, .label_len = label.len });
+}
+
+fn popoverPart(st: *const Popover, part: siv.WidgetPart, _: u32) Node {
+    return if (part == .content) st.content else .null;
 }
 
 fn popoverOf(popup: siv.Window) ?*Popover {

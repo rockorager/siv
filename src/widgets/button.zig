@@ -107,8 +107,18 @@ fn build(txn: Txn, parent: Node, kind: w.Kind, label: []const u8, icon: []const 
     layoutIcon(txn, st);
     w.onDefault(txn, root, .pointer, onPointer, st);
     if (kind == .toggle_button) w.onDefault(txn, root, .activate, onActivate, st);
+    switch (kind) {
+        .toggle_button => w.setInterface(txn, root, Button, st, .{ .set_label = setLabel, .set_icon = setIcon, .apply = apply, .set_value = setValue, .get_value = value }),
+        .menu_button => w.setInterface(txn, root, Button, st, .{ .set_label = setLabel, .set_icon = setIcon, .apply = apply, .get_part = menuPart }),
+        else => w.setInterface(txn, root, Button, st, .{ .set_label = setLabel, .set_icon = setIcon, .apply = apply }),
+    }
     apply(txn, st);
     return root;
+}
+
+/// A menu button's menu.
+fn menuPart(st: *const Button, part: siv.WidgetPart, _: u32) Node {
+    return if (part == .menu) st.menu else .null;
 }
 
 /// Shows the state: fill, border, label color, and semantics.

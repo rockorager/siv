@@ -46,6 +46,7 @@ pub export fn siv_toast(txn: Txn, parent: Node, desc: ?*const siv.ToastDesc) Nod
     st.* = .{ .hdr = .{ .kind = .toast }, .root = root, .text = c.siv_text(txn, card, text.ptr, text.len) };
     _ = c.siv_set_text_style(txn, st.text, &.{ .color_token = .inverse_fg, .size_role = .body });
     w.onDefault(txn, root, .close, onClose, st);
+    w.setInterface(txn, root, Toast, st, .{ .set_label = setText });
     if (!d.flags.persistent) {
         const app = w.appOf(w.windowOf(root));
         var timer: siv.Timer = .null;
