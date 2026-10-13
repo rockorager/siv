@@ -734,7 +734,8 @@ fn getAttributeRun(r: *Request) anyerror!void {
 
 /// The attributes of the style run (D22) at character `offset` and its
 /// character range, named as GTK names them: only what the run changes
-/// from the node's style.
+/// from the node's style, and what the paragraph style (D13) changes from
+/// the node's paragraph defaults, the run ending where either changes.
 fn attributeRun(r: *Request, offset: i32) anyerror!void {
     const x = try nodeObj(r);
     const s = x.text();
@@ -745,10 +746,15 @@ fn attributeRun(r: *Request, offset: i32) anyerror!void {
     var start: u32 = 0;
     var end: u32 = len;
     if (x.live()) if (ui.access.textRun(x.w.ui, x.id(), @intCast(textutil.byteOf(s, offset)))) |run| {
-        start = textutil.charCount(s[0..@min(run.start, s.len)]);
-        end = textutil.charCount(s[0..@min(run.end, s.len)]);
+        const para = ui.access.paragraphStyleRun(x.w.ui, x.id(), @intCast(textutil.byteOf(s, offset))).?;
+        const from = @max(run.start, para.start);
+        const to = @min(run.end, para.end);
+        start = textutil.charCount(s[0..@min(from, s.len)]);
+        end = textutil.charCount(s[0..@min(to, s.len)]);
         const st = run.style;
         var buf: [32]u8 = undefined;
+        if (st.family) |f| try entry(&m.body, "family-name", x.w.ui.fonts.name(if (f == 0) x.w.ui.fonts.default_family else f));
+        if (st.width) |wd| try entry(&m.body, "stretch", @tagName(wd));
         if (st.weight) |w| try entry(&m.body, "weight", switch (w) {
             .thin => "100",
             .light => "300",
@@ -772,6 +778,24 @@ fn attributeRun(r: *Request, offset: i32) anyerror!void {
                 }
             }.f;
             try entry(&m.body, "fg-color", try std.fmt.bufPrint(&buf, "{d},{d},{d}", .{ u16s(c.r), u16s(c.g), u16s(c.b) }));
+        }
+        // Paragraph attributes, with start and end resolved by the node's
+        // direction as the layout resolves them (D21).
+        const ps = para.style;
+        const rtl = x.w.ui.state(x.id()).rtl;
+        if (ps.alignment) |a| try entry(&m.body, "justification", switch (a) {
+            .center => "center",
+            .start => if (rtl) "right" else "left",
+            .end => if (rtl) "left" else "right",
+        });
+        if (ps.indent) |i| {
+            try entry(&m.body, "left-margin", try std.fmt.bufPrint(&buf, "{d}", .{@round(if (rtl) i.end else i.start)}));
+            try entry(&m.body, "right-margin", try std.fmt.bufPrint(&buf, "{d}", .{@round(if (rtl) i.start else i.end)}));
+            try entry(&m.body, "indent", try std.fmt.bufPrint(&buf, "{d}", .{@round(i.first_line)}));
+        }
+        if (ps.gaps) |g| {
+            try entry(&m.body, "pixels-above-lines", try std.fmt.bufPrint(&buf, "{d}", .{@round(g.before)}));
+            try entry(&m.body, "pixels-below-lines", try std.fmt.bufPrint(&buf, "{d}", .{@round(g.after)}));
         }
     };
     try m.body.endArray();

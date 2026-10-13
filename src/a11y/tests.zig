@@ -310,8 +310,8 @@ test "actions, focus, text, and editing reach the window" {
     try t.setSpans(h.nodes.label, &.{.{ .start = 6, .end = 12, .style = .{ .weight = .bold, .underline = true } }});
     t.commit();
     const Run = struct {
-        keys: [4][]const u8 = undefined,
-        values: [4][]const u8 = undefined,
+        keys: [12][]const u8 = undefined,
+        values: [12][]const u8 = undefined,
         count: usize = 0,
         range: [2]i32 = .{ 0, 0 },
 
@@ -343,6 +343,37 @@ test "actions, focus, text, and editing reach the window" {
     const plain = try Run.of(&plain_reply);
     try testing.expectEqual(@as(usize, 0), plain.count);
     try testing.expectEqual([2]i32{ 0, 6 }, plain.range);
+
+    // A span's family and width, and the paragraph style (D13): runs end
+    // where either changes; the text is one paragraph, so its style
+    // covers all of it.
+    const serif = try h.fx.fonts.intern("Serif");
+    t = try h.win.begin();
+    try t.setSpans(h.nodes.label, &.{.{ .start = 6, .end = 12, .style = .{ .family = serif, .width = .condensed } }});
+    try t.setParagraphSpans(h.nodes.label, &.{.{ .start = 0, .end = 1, .style = .{ .alignment = .end, .indent = .{ .start = 10, .end = 4, .first_line = 8 }, .gaps = .{ .before = 3, .after = 5 } } }});
+    t.commit();
+    var rich_reply = try h.call(label, atspi.iface.text, "GetAttributeRun", .{ @as(i32, 8), false });
+    const rich = try Run.of(&rich_reply);
+    const want = [_][2][]const u8{
+        .{ "family-name", "Serif" },
+        .{ "stretch", "condensed" },
+        .{ "justification", "right" },
+        .{ "left-margin", "10" },
+        .{ "right-margin", "4" },
+        .{ "indent", "8" },
+        .{ "pixels-above-lines", "3" },
+        .{ "pixels-below-lines", "5" },
+    };
+    try testing.expectEqual(want.len, rich.count);
+    for (want, 0..) |kv, i| {
+        try testing.expectEqualStrings(kv[0], rich.keys[i]);
+        try testing.expectEqualStrings(kv[1], rich.values[i]);
+    }
+    try testing.expectEqual([2]i32{ 6, 11 }, rich.range);
+    var para_reply = try h.call(label, atspi.iface.text, "GetAttributes", .{@as(i32, 1)});
+    const para = try Run.of(&para_reply);
+    try testing.expectEqual(@as(usize, 6), para.count);
+    try testing.expectEqual([2]i32{ 0, 6 }, para.range);
 
     const ed = h.path(h.nodes.editor, &buf);
     try testing.expectEqual(@as(i32, 3), try (try h.get(ed, atspi.iface.text, "CharacterCount")).read(i32));
@@ -384,6 +415,25 @@ test "changes become events" {
     try h.frame();
     try testing.expect(h.events.has("TextChanged:insert:3:de"));
     try testing.expect(h.events.has("TextCaretMoved::5:"));
+
+    // New styles over unchanged text: the attributes changed.
+    h.events.log.clearRetainingCapacity();
+    t = try h.win.begin();
+    try t.setSpans(h.nodes.status_text, &.{.{ .start = 0, .end = 2, .style = .{ .weight = .bold } }});
+    t.commit();
+    try h.frame();
+    try testing.expect(h.events.has("TextAttributesChanged::0:"));
+    h.events.log.clearRetainingCapacity();
+    t = try h.win.begin();
+    try t.setParagraphSpans(h.nodes.status_text, &.{.{ .start = 0, .end = 5, .style = .{ .alignment = .center } }});
+    t.commit();
+    try h.frame();
+    try testing.expect(h.events.has("TextAttributesChanged::0:"));
+    // Styles that move with an edit are part of the text change.
+    h.events.log.clearRetainingCapacity();
+    try ui.access.replaceText(h.win, h.nodes.editor, 0, 0, "x");
+    try h.frame();
+    try testing.expect(!h.events.has("TextAttributesChanged"));
 
     // A removed node: the parent reports it and its path dies.
     var buf: [96]u8 = undefined;

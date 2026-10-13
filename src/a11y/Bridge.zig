@@ -620,9 +620,40 @@ pub const SNode = struct {
     editable: bool,
     masked: bool,
     has_text: bool,
+    /// Identifies the text attributes (styled ranges and paragraph
+    /// styles), so a change without a text change is reported.
+    attrs: u64 = 0,
 };
 
 pub const none: u32 = std.math.maxInt(u32);
+
+/// A hash of a text node's styled ranges and paragraph styles.
+fn attrsHash(d: *const ui.TextData) u64 {
+    var h = std.hash.Wyhash.init(0);
+    hashValue(&h, d.spans);
+    hashValue(&h, d.paragraphs);
+    return h.final();
+}
+
+fn hashValue(h: *std.hash.Wyhash, v: anytype) void {
+    const T = @TypeOf(v);
+    switch (@typeInfo(T)) {
+        .pointer => |ptr| if (ptr.size == .slice) {
+            hashValue(h, @as(u64, v.len));
+            for (v) |e| hashValue(h, e);
+        } else hashValue(h, v.*),
+        .optional => if (v) |x| {
+            hashValue(h, true);
+            hashValue(h, x);
+        } else hashValue(h, false),
+        .@"struct" => |st| inline for (st.field_names) |name| hashValue(h, @field(v, name)),
+        .float => hashValue(h, @as(u32, @bitCast(@as(f32, v)))),
+        .@"enum" => hashValue(h, @as(u32, @intFromEnum(v))),
+        .bool => h.update(&.{@intFromBool(v)}),
+        .int => h.update(std.mem.asBytes(&v)),
+        else => @compileError("cannot hash " ++ @typeName(T)),
+    }
+}
 
 pub const Snapshot = struct {
     nodes: std.ArrayList(SNode) = .empty,
@@ -791,6 +822,7 @@ pub const Win = struct {
             else if (un.kind == .text)
                 try addStr(gpa, s, un.data.text.content)
             else if (has_text) sn.name else .{};
+            if (un.isText()) sn.attrs = attrsHash(un.textData());
             sn.states = states(&n, w);
             if (n.parent == none) {
                 sn.child_index = s.top_count;
@@ -998,6 +1030,8 @@ pub const Win = struct {
         const b = w.bridge;
         const old_text = w.cur.str(o.text);
         const new_text = w.next.str(n.text);
+        // Attributes that move with edited text are part of the edit.
+        if (o.attrs != n.attrs and std.mem.eql(u8, old_text, new_text)) b.emitObject(p, "TextAttributesChanged", "", 0, 0, .{ .int = 0 });
         if (textutil.diff(old_text, new_text)) |c| {
             const at = textutil.charOf(old_text, c.start);
             if (c.old_end > c.start) {
