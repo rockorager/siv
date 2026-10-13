@@ -307,11 +307,12 @@ test "deferred replies, cancelled calls, and timeouts" {
     try h.settle();
     try testing.expect(!cancelled.done);
 
-    // A call nobody answers times out.
+    // A call nobody answers times out, 30 ms after it was made at the
+    // earliest.
     var timed: Result = .{};
     var call = a.methodCall(b.uniqueName(), "/calc", null, "Later");
-    _ = try a.call(&call, Result.cb, &timed, .{ .timeout_ms = 30 });
     const start = Loop.now();
+    _ = try a.call(&call, Result.cb, &timed, .{ .timeout_ms = 30 });
     try waitReply(&h, &timed);
     try testing.expect(timed.kind == .failed and timed.failure.? == error.Timeout);
     try testing.expect(Loop.now() - start >= 30 * std.time.ns_per_ms);
