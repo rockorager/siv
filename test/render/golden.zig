@@ -17,6 +17,7 @@ const render_cpu = @import("render_cpu");
 const pool = @import("pool");
 const text_engine = @import("text");
 const png = @import("png.zig");
+const svg = @import("svg");
 const hb = render_cpu.glyph.hb;
 
 const Affine = raster.Affine;
@@ -600,6 +601,70 @@ fn shadows(_: *Ctx, b: *Builder) !void {
     try b.popLayer();
 }
 
+/// siv's test icons (test/icons/themes) lowered by the SVG renderer (D19):
+/// symbolic icons in light and dark foregrounds with the success, warning,
+/// and error colors, full-color icons with gradients, clip paths, masks,
+/// a blur filter, and a blend mode, and color-scheme icons as written and
+/// recolored.
+fn icons(c: *Ctx, b: *Builder) !void {
+    const dir = "test/icons/themes/";
+    const symbolic = [_][]const u8{
+        "SivTest/scalable/actions/edit-copy-symbolic.svg",
+        "SivTest/scalable/actions/go-next-symbolic.svg",
+        "SivTest/scalable/status/dialog-warning-symbolic.svg",
+        "SivTest/scalable/status/emblem-ok-symbolic.svg",
+        "SivTest/scalable/status/dialog-error-symbolic.svg",
+        "SivColor/actions/16/edit-copy.svg",
+        "SivColor/actions/16/edit-delete.svg",
+    };
+    const full = [_][]const u8{
+        "SivTest/scalable/places/folder.svg",
+        "SivTest/scalable/places/folder-documents.svg",
+        "hicolor/scalable/apps/siv-test-app.svg",
+        "SivColor/places/64/folder.svg",
+        "SivTest/24x24/actions/document-new.svg",
+    };
+    var light: svg.Colors = .{};
+    light.set(.foreground, ink);
+    light.set(.accent, blue);
+    light.set(.success, green);
+    light.set(.warning, orange);
+    light.set(.@"error", .srgb8(0xdc, 0x26, 0x26, 0xff));
+    var dark = light;
+    dark.set(.foreground, .srgb8(0xf4, 0xf4, 0xf5, 0xff));
+    var warm = light;
+    warm.set(.accent, pink);
+    try b.fillRect(.xywh(0, 120, 400, 110), .color(.srgb8(0x18, 0x18, 0x1b, 0xff)));
+    for (symbolic, 0..) |name, i| {
+        const doc = try loadIcon(c.gpa, dir, name);
+        defer doc.deinit();
+        const x: f32 = 12 + @as(f32, @floatFromInt(i)) * 54;
+        for ([_]f32{ 16, 32 }, [_]f32{ 12, 40 }) |size, y| {
+            try doc.draw(b, .xywh(x, y, size, size), &light);
+            try doc.draw(b, .xywh(x, 120 + y, size, size), &dark);
+        }
+        // At 1.5x: the shapes keep their proportions off the pixel grid.
+        try doc.draw(b, .xywh(x + 0.5, 80.25, 24, 24), &light);
+    }
+    for (full, 0..) |name, i| {
+        const doc = try loadIcon(c.gpa, dir, name);
+        defer doc.deinit();
+        const x: f32 = 12 + @as(f32, @floatFromInt(i)) * 76;
+        try doc.draw(b, .xywh(x, 240, 64, 64), null);
+        try doc.draw(b, .xywh(x + 64, 240, 8, 8), &warm);
+        try doc.draw(b, .xywh(x + 20, 310, 24, 24), &warm);
+    }
+}
+
+fn loadIcon(gpa: std.mem.Allocator, dir: []const u8, name: []const u8) !*svg.Document {
+    const io = std.testing.io;
+    const path = try std.mem.concat(gpa, u8, &.{ dir, name });
+    defer gpa.free(path);
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1 << 20));
+    defer gpa.free(bytes);
+    return svg.parse(gpa, bytes, .{ .symbolic = std.mem.endsWith(u8, name, "-symbolic.svg") });
+}
+
 pub const Case = struct {
     name: []const u8,
     width: u32,
@@ -619,6 +684,7 @@ pub const cases = [_]Case{
     .{ .name = "bitmaps", .width = 240, .height = 130, .build = bitmaps },
     .{ .name = "shadows", .width = 400, .height = 300, .build = shadows },
     .{ .name = "families", .width = 400, .height = 210, .build = families },
+    .{ .name = "icons", .width = 400, .height = 340, .build = icons },
 };
 
 test "golden images" {

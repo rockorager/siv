@@ -37,7 +37,10 @@ pub const Harness = struct {
     }
 
     pub fn startWith(h: *Harness, desc: t.WindowDesc) !void {
-        try ok(A.siv_app_create(&.{ .backend = .headless, .flags = .{ .no_system_fonts = true, .reduced_motion = h.reduced_motion } }, &h.app));
+        try ok(A.siv_app_create(&.{ .backend = .headless, .flags = .{ .no_system_fonts = true, .no_system_icons = true, .reduced_motion = h.reduced_motion } }, &h.app));
+        // siv's test icon themes (test/icons/themes), never the system's.
+        try ok(abi.icon.siv_app_add_icon_path(h.app, "test/icons/themes", 17));
+        try ok(abi.icon.siv_app_set_icon_theme(h.app, "SivTest", 7));
         const tf = text.font.test_fonts;
         for ([_][]const u8{ tf.latin, tf.arabic, tf.hebrew }) |font| try ok(A.siv_app_add_font(h.app, "Droid", 5, font.ptr, font.len));
         try ok(A.siv_app_set_default_font(h.app, "Droid", 5));
@@ -69,7 +72,7 @@ pub const Harness = struct {
             // Pastes and drops read on the UI thread from data another
             // thread writes.
             const cb = &self.app.clipboard;
-            var busy = self.app.fonts.loading() or cb.transfers.items.len != 0 or cb.ready.items.len != 0;
+            var busy = self.app.fonts.loading() or self.app.icons.loading() or cb.transfers.items.len != 0 or cb.ready.items.len != 0;
             for (self.windows.items) |slot| if (slot) |w| {
                 if (w.dead or !w.win.shown) continue;
                 busy = busy or w.win.presented_seq == 0 or !w.win.settled();

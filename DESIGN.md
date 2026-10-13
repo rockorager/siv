@@ -2146,6 +2146,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       both. KDE's ProvideXdgActivationToken is kept for the next Activate,
       whose event carries it for `siv_window_activate`. WindowId is 0
       (X11 only); overlay icons and attention movies are left out.
+      IconThemePath is the last directory the application added for its
+      icons (`siv_app_add_icon_path`, D19), so a host finds the
+      application's own icons by name; vector images (SVG files, themed
+      icons) become 64 px pixmaps, which panels scale down to their 16
+      to 48 px.
     - The menu is com.canonical.dbusmenu version 3 at /MenuBar: entries
       by application-chosen id with a parent id, kinds normal,
       separator, check, and radio, and disabled, hidden, and checked
@@ -2265,6 +2270,164 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       here writes only still ones).
   - Icons follow the freedesktop icon theme specification, rendered by siv's
     SVG parser for the subset icon themes use.
+    - Two modules: `src/icon` (imports nothing) finds files, `src/svg`
+      (imports `scene` and `raster`) parses SVG and lowers it to display
+      lists (D9), so the CPU renderer, Vulkan, and PDF draw icons with no
+      code of their own. `ui.Icons` (one per application, like
+      `ui.Fonts`) holds the theme name and a cache and loads on the
+      worker pool; `ui.Image` gains a vector variant (`Image.vector`).
+    - Lookup (`icon.Themes`) is the specification's FindIcon: the theme,
+      its index.theme parents, hicolor, then unthemed files in the base
+      directories and /usr/share/pixmaps. Base directories, in order:
+      directories the application adds (`siv_app_add_icon_path`, its own
+      icons), $XDG_DATA_HOME/icons, ~/.icons, $XDG_DATA_DIRS/icons. A
+      directory matches by Size, Scale, and Type (Fixed, Scalable,
+      Threshold), else the closest by DirectorySizeDistance wins;
+      directory order breaks ties, then base order. Every name (and its
+      fallbacks) is tried in a theme before its parents, as GTK does, so
+      a theme's own `folder` beats its parent's `folder-documents`.
+      KDE's ScaledDirectories are read with Directories.
+    - Names: several, one per line, the first found winning; generic
+      fallbacks shorten at dashes keeping `-symbolic`
+      (`folder-documents-symbolic` → `folder-symbolic`); in right-to-left
+      layouts `-rtl` variants come first (Adwaita has both
+      `go-next-rtl-symbolic` and `go-next-symbolic-rtl`); a style asks
+      for each name's symbolic or regular variant first (GTK's
+      FORCE_SYMBOLIC and FORCE_REGULAR).
+    - Formats: SVG and PNG. XPM is not decoded. GTK's `.symbolic.png`
+      (a channel-coded rendering for GTK's recoloring) is not an icon
+      file to siv: its name ends in `.symbolic`, so the lookup passes it
+      and finds the theme's scalable SVG of the same icon.
+    - Each theme's index.theme is parsed and every directory it lists is
+      read once (getdents, names keyed to directory and format), on first
+      use, on a worker under the `Themes` mutex; later lookups touch no
+      files. Measured on this orb (Debian 12, ReleaseFast, warm page
+      cache, the C allocator): Adwaita 43 (5,555 files in 97
+      directories) in 3 to 5 ms, Breeze 5.103 (8,700 files and links in
+      86 directories) in 8 to 12 ms, a cached lookup in under 1 µs.
+      GTK's icon-theme.cache (a prebuilt hash of the same names) would
+      skip the scan; reverse if theme reads show up at startup. Themes
+      are not watched for newly installed icons.
+    - The theme comes from the portal: GNOME's icon-theme, else KDE's
+      org.kde.kdeglobals.Icons Theme (D19 settings), else Adwaita, GTK's
+      default (hicolor follows every theme anyway);
+      `siv_app_set_icon_theme` fixes one. A new theme or search path
+      drops the cache, and image nodes showing icons load them again.
+    - Cache: loaded icons by names, logical size (rounded), scale,
+      direction, fallbacks, and style, with misses remembered. Nothing is
+      evicted while the theme stays: an application shows a bounded set of
+      icons (the file manager's mime types among them), and a vector icon
+      is its paths. Reverse if a long-running application's icon set
+      grows without bound.
+    - Image nodes show an icon by name (`siv_image_view_desc.icon`, with
+      `icon_size`): the node's intrinsic size is the icon's from the
+      start, so nothing moves when it arrives; until then it shows
+      nothing, and the window repaints icon nodes when a load finishes.
+      First frames do not wait for icons (they wait for settings, D19):
+      a lookup of a read theme and a parse take well under a millisecond,
+      so an icon misses at most the first frame. Canvases draw icons by
+      name (`siv_draw_icon`) and draw again when a missing one loads, as
+      with fonts (D28), as do printed pages. `siv_icon_load` delivers an
+      icon as a `siv_image`, which does not follow later theme changes.
+      `siv_image_load` parses SVG files into vector images too.
+    - Vector images draw from the document on every paint: the display
+      list copies the paths, so nothing ties the list to the document.
+      Where pixels are needed (drag icons, tray pixmaps) the ABI
+      rasterizes a vector image with the CPU renderer.
+    - Symbolic icons (`*-symbolic`) follow GTK's convention: shapes take
+      the foreground; shapes of class `success`, `warning`, or `error`
+      take those colors. siv's foreground is the node's color (literal or
+      token, else `window_fg`); success and warning are theme tokens
+      added for icons (D29), error is `destructive`. Where GTK's style
+      sheet (`rect, circle, path { fill: fg !important }`) differs, siv
+      chose: every basic shape and path is recolored, not only rect,
+      circle, and path; strokes are recolored like fills; `fill="none"`
+      stays unpainted (GTK's `!important` fills it); and a color that
+      already stands for a KDE role keeps that role. The opacity
+      attributes stay.
+    - KDE's convention (Breeze, FollowsColorScheme): the
+      `current-color-scheme` style sheet's `.ColorScheme-*` rules set
+      `color`, which shapes use through `currentColor`. A `color` set by
+      a rule whose selector is one such class stands for its role
+      (Text, View, Button, and Window text: foreground; their
+      backgrounds: background; Highlight, focus, hover, and link colors:
+      accent; HighlightedText: accent_fg; Positive, Neutral, and
+      NegativeText: success, warning, error), so Breeze folders take the
+      accent and its text-colored icons turn light in dark themes, as
+      KIconLoader does. siv recolors these wherever they appear, without
+      reading FollowsColorScheme: outside Breeze-like themes the classes
+      do not occur.
+    - SVG subset (`svg.parse`): XML with entities (including a
+      DOCTYPE's internal ones), the `<style>` sheets and `style`
+      attributes (selectors of names, classes, ids, attribute tests,
+      `:first-child`, descendant and child combinators; specificity,
+      source order, `!important`, `inherit`), presentation attributes,
+      inheritance; `svg` (view box, preserveAspectRatio, nested), `g`,
+      `a`, `switch`, `use` (with `symbol`), path, rect, circle, ellipse,
+      line, polyline, polygon; transforms; fill and stroke with their
+      opacities, rules, widths, joins, caps, miter limits, dashes, and
+      paint-order; linear and radial gradients (units, gradientTransform,
+      spreadMethod, href inheritance, a focal point outside the circle
+      moved onto it as SVG 1.1 says); opacity, mix-blend-mode, and
+      isolation; clip paths; luminance and alpha masks; and the filters
+      icons use: one feColorMatrix (matrix, saturate, hueRotate,
+      luminanceToAlpha) or one feGaussianBlur. Left out: text, embedded
+      images, patterns, markers, and other filters; an element whose
+      filter is not drawable draws without it (a drop shadow is lost,
+      not its shape). Of the installed themes, every one of 647 Adwaita
+      and 8,704 Breeze SVGs parses.
+    - Lowering: transforms are applied to the points, so paths reach the
+      list in the root's user space; strokes under non-uniform transforms
+      go in a transformed layer so their outline follows. Opacity of a
+      single draw folds into its paint; groups with opacity, blend modes,
+      or clips become layers. A clip path's shapes join into one path
+      filled nonzero (exact unless their windings cancel; one shape keeps
+      its clip-rule). A mask is an isolated layer of the content whose
+      last child is the mask's content composited with dst_in, its colors
+      turned into alpha (luminance times alpha, or alpha for mask-type
+      alpha) per paint, which is exact for the white and black masks
+      icons use and approximate where colored mask shapes overlap. A
+      feColorMatrix applies to each paint's colors, exact for its uses in
+      icons (Adwaita's masks recolor shapes white). A blur is an isolated
+      layer clipped to the filter region whose content is blurred by a
+      backdrop blur, which PDF leaves out (D9), so printed blurs are
+      sharp. The PDF writer draws an isolated layer ending in a dst_in
+      layer through a soft mask of that layer's alpha, so masks print.
+    - Gradients interpolate in sRGB in SVG and in linear light in display
+      lists (D9): between stops of different colors the lowering adds
+      sub-stops computed in premultiplied sRGB, 16 per interval while at
+      most 256 fit, which keeps the result within half a level of 8 bits
+      of sRGB interpolation. Role colors are resolved when drawn, so the
+      sub-stops are computed then.
+    - Compositing: siv blends in linear light (D11), icon designers'
+      tools and every other renderer in sRGB, so translucent parts of
+      icons (Breeze's 20% white highlights and 33% black shading,
+      Adwaita's 35% inactive segments) look lighter in siv than in GTK
+      or Qt. Measured (`zig build test-integration-icons`: every SVG of
+      the installed themes drawn by siv and by librsvg's rsvg-convert at
+      32 px, librsvg's pixels composited over white in linear light; an
+      icon differs when over 2% of its pixels are off by more than 24 of
+      255): Adwaita 0 of 647 differ; Breeze 1,178 of 5,054 (23%), all of
+      the worst from translucent overlays. Not decided: drawing icons in
+      a layer that composites in sRGB, which needs a layer flag in both
+      renderers (PDF already blends in sRGB) and would make the two
+      agree. Until then the test bounds Breeze's share of differing
+      icons.
+    - Verified: module tests for lookup (siv's test themes in
+      test/icons/themes: inheritance, hicolor, sizes, scales, fallbacks,
+      RTL), the cascade, symbolic and KDE recoloring, gradients, clip
+      paths, masks, and `use`; golden images of the test icons
+      (test/golden/render/icons.png, which Vulkan matches) and of icon
+      buttons, menus, image nodes, and canvases in light, dark, and
+      another icon theme (test/golden/widgets/icons-*.png); and the
+      real-theme comparison above in `test-integration`. Adwaita and
+      Breeze are LGPL and CC-BY-SA, so neither their files nor images of
+      them are in the repository (D25): the integration test reads the
+      installed packages (adwaita-icon-theme, breeze-icon-theme) and
+      makes its reference with librsvg (librsvg2-bin), a test-time tool
+      like gdbus. The test themes are siv's own drawings (MIT).
+    - Fuzz targets: the SVG parser (XML, CSS, path data, lowering, and
+      drawing) and index.theme (D25).
 
 ### D20. Internal handles and module boundaries
 
@@ -2473,6 +2636,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     - Parts the application fills are reached with
       `siv_widget_get_part` (dialog content and actions, popover content,
       tabs and panels, split panes, a menu button's menu).
+  - **Icons** (D19): push, toggle, and menu buttons take a themed icon
+    name (`icon` in their descriptors), shown before the label in the
+    label's color token, so it follows hover, press, disabled, and theme
+    changes; with `SIV_WIDGET_ICON_ONLY` the label is hidden and becomes
+    the button's accessible name, and the button is square. Menu items
+    take one too; when any item of a menu has an icon, every row has the
+    slot, so labels line up. The image node's setter replaces the whole
+    view, so a widget keeps the icon's name in a hidden text node to
+    recolor it: public primitives only, and no string storage of the
+    widget's own. Found by the file manager (`apps/files`), whose
+    Back, Forward, and Up buttons were text.
   - Tabs show one panel at a time by hiding the others, so panels keep
     their state, with roving focus and automatic activation. Split panes
     are a start pane of a set size, a divider that is a focusable
@@ -2861,7 +3035,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   the build installs pkg-config files.
 - **Security:** continuous fuzzing of every parser (rasterizer inputs, SVG,
   image decoders, clipboard and drag-and-drop payloads, Wayland input, D-Bus
-  messages, SASL replies, addresses, match rules, and portal font strings).
+  messages, SASL replies, addresses, match rules, portal font strings,
+  and icon themes' index.theme files).
   Fuzz targets are `std.testing.fuzz` tests, so `zig build test` runs their
   corpus and `zig build test-<module> --fuzz -Doptimize=ReleaseSafe` fuzzes
   them (Zig 0.17's fuzzer finds no coverage in Debug builds).
@@ -2949,7 +3124,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     destroying a `siv_image` affects only future draws.
   - Images come from pixels (`siv_image_create`) or files
     (`siv_image_load`, D19), which decode on a worker thread and arrive
-    in a callback with a handle the application owns.
+    in a callback with a handle the application owns. SVG files and
+    themed icons (`siv_icon_load`) are vector images: the same handle,
+    drawn from the document at whatever size image nodes and
+    `siv_draw_image` give them.
   - `siv_image` handles hold one reference to a `ui.Image`; image nodes
     and display lists hold their own, so destroying the handle never
     pulls pixels from under a frame. Canvases draw images by handle, so
@@ -3077,7 +3255,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     separators, control rest, hover, and pressed fills and their text, the
     accent with its hover and pressed shades and the text on it,
     selections, focus rings, tracks and knobs, destructive actions, the
-    modal scrim, and inverse surfaces for toasts. Visual descriptors take
+    modal scrim, inverse surfaces for toasts, and the success and warning
+    colors of symbolic icons (D19). Visual descriptors take
     `background_token` and `border_token` and text styles `color_token`,
     each replacing the literal color when set. Text styles take a
     `size_role` (body, caption, heading, title) relative to the desktop's
