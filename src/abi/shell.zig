@@ -262,13 +262,20 @@ pub export fn siv_app_watch_outputs(app: t.App, callback: ?t.OutputFn, destroy: 
         return t.resultOf(err);
     };
     const st = stateOf(self);
+    const watching = st.output_cb != null;
     if (st.output_cb) |old| self.release(old.destroy, old.user_data);
     st.output_cb = null;
     for (st.outputs.items) |*o| o.told = false;
     if (callback) |cb| {
         st.output_cb = .{ .callback = cb, .destroy = destroy, .user_data = user_data };
         self.app.loop.schedule(&st.replay, .dispatch);
-    } else self.release(destroy, user_data);
+        // A watch keeps siv_app_run going with no window: its windows
+        // are per output, gone while no output is (D31).
+        if (!watching) self.app.holdRun();
+    } else {
+        self.release(destroy, user_data);
+        if (watching) self.app.releaseRun();
+    }
     return .ok;
 }
 

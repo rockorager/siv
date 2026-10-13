@@ -126,9 +126,10 @@ pub const App = struct {
     zombies: std.ArrayList(*Window) = .empty,
     /// Nesting of compositor event delivery.
     delivering: u32 = 0,
-    /// What keeps `run` going (D27): toplevels and layer windows, and a
-    /// session lock until it is unlocked or finished (D31). Popups and
-    /// lock windows do not count.
+    /// What keeps `run` going (D27): toplevels and layer windows, a
+    /// session lock until it is unlocked or finished, and anything that
+    /// holds it (`holdRun`: an output watch, D31). Popups and lock windows
+    /// do not count.
     open_windows: usize = 0,
     /// A session lock holds (`lockSession`), counted in `open_windows`.
     lock_held: bool = false,
@@ -515,8 +516,15 @@ pub const App = struct {
         }
     }
 
+    /// Keeps `run` going until a matching `releaseRun`, with no window:
+    /// an application that watches outputs makes its windows per output
+    /// and makes them again when one is plugged in (D31).
+    pub fn holdRun(app: *App) void {
+        app.open_windows += 1;
+    }
+
     /// One fewer thing keeps `run` going; with none left it returns.
-    fn releaseRun(app: *App) void {
+    pub fn releaseRun(app: *App) void {
         app.open_windows -= 1;
         if (app.open_windows == 0) app.quit();
     }

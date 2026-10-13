@@ -469,7 +469,10 @@ static void create_bar(struct shell *s, siv_output output) {
 
 static void on_output_event(void *user_data, const siv_output_event *e) {
 	struct shell *s = user_data;
-	/* A removed output's bar is closed by the compositor and freed by its
+	/* Every output gets a bar, also one plugged in again after the last
+	 * went away (a laptop lid closed with only an external monitor, a dock
+	 * or KVM switch): the output watch keeps siv_app_run going meanwhile.
+	 * A removed output's bar is closed by the compositor and freed by its
 	 * destroy-notify. */
 	if (e->type == SIV_OUTPUT_EVENT_TYPE_ADDED) create_bar(s, e->output);
 }
@@ -504,8 +507,9 @@ int main(int argc, char **argv) {
 		if (siv_workspace_list_create(s.app, SIV_DESC(siv_workspace_list_desc, .on_event = on_workspace, .user_data = &s), &s.workspace_list) != SIV_OK) s.workspace_list = 0;
 		if (siv_idle_watch_create(s.app, SIV_DESC(siv_idle_watch_desc, .timeout_ms = IDLE_LOCK_MS, .flags = SIV_IDLE_IGNORE_INHIBITORS, .on_event = on_idle, .user_data = &s), &s.idle) != SIV_OK) s.idle = 0;
 	}
-	/* Runs while a bar or the lock is up: siv_app_run returns when the
-	 * last bar closes, and --lock returns once the session unlocks. */
+	/* The bars run until the shell is killed (the output watch keeps
+	 * siv_app_run going with no output); --lock returns once the session
+	 * unlocks. */
 	r = siv_app_run(s.app);
 	if (r != SIV_OK) fprintf(stderr, "siv_app_run: %s\n", siv_result_name(r));
 	siv_app_destroy(s.app);

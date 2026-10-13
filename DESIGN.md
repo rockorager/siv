@@ -4349,8 +4349,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - A close request goes to the window's `on_event`; unless it returns
     true, siv destroys the window. `siv_app_run` returns when `siv_app_quit`
     is called or nothing keeps the application running: no toplevel or
-    layer window is left and no session lock holds (D31). Popups and lock
-    windows do not count: popups belong to a window, and lock windows come
+    layer window is left, no session lock holds, and no output watch is
+    set (D31). Popups and lock windows do not count: popups belong to a window, and lock windows come
     and go with outputs while the lock they belong to is what holds.
     Before, layer windows did not count either, so an application whose
     only window was a bar never returned on its own (D30).
@@ -4639,6 +4639,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | `siv_test_add_output`, `siv_test_remove_output`, `siv_test_*_toplevel`, `siv_test_*_workspace`, `siv_test_set_idle`, `siv_test_set_blur`, `siv_test_get_blur_region_count`, `siv_test_get_blur_rect`, `siv_test_is_locked` (D27, D31) | — | applications test their shell components headless, as the shell example does |
   | permissive, OSI-approved, non-copyleft licences such as HPND (D25) | MIT, BSD, or Apache-2.0 only | wlr-protocols' layer shell and toplevel management are HPND |
   | layer windows and an active session lock keep `siv_app_run` running (D27, D31) | shell windows counted for nothing; applications called `siv_app_quit` themselves | a bar or a lock screen alone is an application like any other; lock windows still do not count, as they follow outputs |
+  | an output watch keeps `siv_app_run` running with no window (D27, D31) | a bar ended with its last output | closing a laptop lid with only an external monitor, or a monitor vanishing during a dock or KVM switch, killed the bar instead of letting it come back on `added` |
   | `siv_test_find` after a transaction and before its frame keeps no stale bounds (D27) | bounds of the frame before the query, kept until the next change | a query between a transaction and its frame (on a display, where there is no settling) cleared the semantics tree's dirty flag, so the frame's layout never refreshed the bounds |
 
   Statements this document made that were no longer true are fixed where
@@ -4808,13 +4809,19 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     `siv_app_run` running exactly as toplevels do, and a session lock
     keeps it running until it is unlocked, destroyed, denied, or finished
     (`app.App.lock_held`); individual lock windows do not count, since
-    they come and go with outputs. So a lock screen of nothing else
-    returns from `siv_app_run` once it unlocks, and a shell of layer
-    windows returns when its last one closes, which includes its output
-    going away: a shell that should outlive every output keeps a window
-    of some kind or runs its own loop with `siv_app_dispatch`. Before,
-    layer and lock windows counted for nothing and such applications ran
-    until `siv_app_quit`; the user chose the rule above (D30).
+    they come and go with outputs. An output watch
+    (`siv_app_watch_outputs`) keeps it running too, with no window at
+    all (`app.App.holdRun`): an application that watches outputs makes its
+    windows per output and makes them again on `added`, so the moment
+    with no output (a laptop lid closed with only an external monitor, a
+    monitor gone during a dock or KVM switch) must not end it. So a lock
+    screen of nothing else returns from `siv_app_run` once it unlocks; a
+    shell of layer windows without a watch returns when its last one
+    closes; and a shell that watches outputs, like the example, runs until
+    it clears the watch or calls `siv_app_quit`. Before, layer and lock
+    windows counted for nothing and such applications ran until
+    `siv_app_quit`; then layer windows counted but a bar died with its
+    last output; the user chose the rule above (D30).
   - **Tests.** The headless backend simulates every protocol: layer
     windows placed by their anchors and margins on their output (other
     windows' exclusive zones are not simulated), popups placed against

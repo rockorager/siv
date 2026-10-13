@@ -302,6 +302,17 @@ fn drive(app: t.App) !void {
     try ok(c.siv_test_remove_output(app, "HEADLESS-2", 10));
     try settle(app);
     try testing.expectEqual(@as(usize, 1), (try windowsOf(app, .layer, &buf)).len);
+    // The only monitor goes and another comes (a dock switch): the bar
+    // goes with the first and comes back on the second.
+    try ok(c.siv_test_remove_output(app, "HEADLESS-1", 10));
+    try settle(app);
+    try testing.expectEqual(@as(usize, 0), (try windowsOf(app, .layer, &buf)).len);
+    try ok(c.siv_test_add_output(app, "HEADLESS-3", 10, 2560, 1440, 2));
+    try settle(app);
+    const back = try windowsOf(app, .layer, &buf);
+    try testing.expectEqual(@as(usize, 1), back.len);
+    try ok(c.siv_window_get_size(back[0], &size));
+    try testing.expectEqual(t.Size{ .width = 1280, .height = 34 }, size);
 }
 
 test "the shell example: a bar with workspaces, tasks, and a clock; a lock screen that checks the password with PAM" {

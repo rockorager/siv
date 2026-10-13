@@ -255,6 +255,68 @@ test "a layer window keeps siv_app_run running as a toplevel does, and a lock un
     try testing.expect(!run.timed_out);
 }
 
+/// A shell that keeps a bar on every output, recreating it on hotplug.
+const Shell = struct {
+    run: Run = .{},
+    bars: u32 = 0,
+    seen_without: bool = false,
+
+    fn onOutput(ud: ?*anyopaque, e: *const t.OutputEvent) callconv(.c) void {
+        const s: *Shell = @ptrCast(@alignCast(ud.?));
+        if (e.type != .added) return;
+        var w: t.Window = .null;
+        if (c.siv_layer_create(s.run.app, &.{ .output = e.output, .anchor = .{ .top = true, .left = true, .right = true }, .height = 30, .destroy = gone, .user_data = s }, &w) != .ok) return;
+        s.bars += 1;
+        s.run.window = w;
+    }
+
+    fn gone(ud: ?*anyopaque) callconv(.c) void {
+        const s: *Shell = @ptrCast(@alignCast(ud.?));
+        s.bars -= 1;
+    }
+
+    fn unplugOnly(ud: ?*anyopaque) callconv(.c) void {
+        const s: *Shell = @ptrCast(@alignCast(ud.?));
+        s.run.steps += 1;
+        _ = c.siv_test_remove_output(s.run.app, "HEADLESS-1", 10);
+    }
+
+    fn plugAnother(ud: ?*anyopaque) callconv(.c) void {
+        const s: *Shell = @ptrCast(@alignCast(ud.?));
+        s.run.steps += 1;
+        // No output, no bar, and still running.
+        s.seen_without = s.bars == 0;
+        _ = c.siv_test_add_output(s.run.app, "HEADLESS-2", 10, 1280, 720, 1);
+    }
+
+    fn stop(ud: ?*anyopaque) callconv(.c) void {
+        const s: *Shell = @ptrCast(@alignCast(ud.?));
+        s.run.steps += 1;
+        // The bar came back; clearing the watch and closing it ends the run.
+        if (s.bars != 1) return;
+        s.run.steps += 1;
+        _ = c.siv_app_watch_outputs(s.run.app, null, null, null);
+        c.siv_window_destroy(s.run.window);
+    }
+};
+
+test "an output watch keeps siv_app_run running while the only output is gone, and the bar comes back" {
+    var s: Shell = .{};
+    try ok(A.siv_app_create(&.{ .backend = .headless, .flags = .{ .no_system_fonts = true, .no_system_icons = true } }, &s.run.app));
+    defer A.siv_app_destroy(s.run.app);
+    try ok(c.siv_app_watch_outputs(s.run.app, Shell.onOutput, null, &s));
+    try s.run.at(50, Shell.unplugOnly);
+    try s.run.at(120, Shell.plugAnother);
+    try s.run.at(200, Shell.stop);
+    try s.run.at(2000, Run.giveUp);
+    try ok(c.siv_app_run(s.run.app));
+    try testing.expect(!s.run.timed_out);
+    try testing.expect(s.seen_without);
+    // Unplugged, plugged, stopped with the bar back.
+    try testing.expectEqual(@as(u32, 4), s.run.steps);
+    try testing.expectEqual(@as(u32, 0), s.bars);
+}
+
 test "outputs are reported and hotplugged; a layer window on a removed output is closed" {
     var h: Harness = .{};
     try h.start(200, 100, null, null);
