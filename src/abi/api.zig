@@ -6,7 +6,9 @@
 //! application.zig; transactions, nodes, and events in tree.zig.
 
 const std = @import("std");
-const schema = @import("schema.zig");
+/// The schema format, for generators that import this file as a module
+/// (the Lua binding, D23) and so cannot import schema.zig beside it.
+pub const schema = @import("schema.zig");
 const ref = schema.ref;
 const out = schema.out;
 const array = schema.array;
