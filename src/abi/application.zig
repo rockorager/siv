@@ -390,6 +390,27 @@ pub export fn siv_app_get_font_family_name(app: t.App, id: u32, name: ?[*]u8, na
     }.f(app, id, name, name_cap, len));
 }
 
+pub export fn siv_app_add_hyphenation(app: t.App, desc: ?*const t.HyphenationDesc) t.Result {
+    return wrap(struct {
+        fn f(a: t.App, d_ptr: ?*const t.HyphenationDesc) Error!void {
+            const self = try App.get(@backingInt(a));
+            const d = try runtime.readDesc(t.HyphenationDesc, d_ptr);
+            const language = try runtime.string(d.language, d.language_len);
+            if (d.left_min > 32 or d.right_min > 32) return error.InvalidArgument;
+            self.app.fonts.hyphenation.add(
+                language,
+                try runtime.string(d.patterns, d.patterns_len),
+                try runtime.string(d.exceptions, d.exceptions_len),
+                if (d.left_min == 0) 2 else @intCast(d.left_min),
+                if (d.right_min == 0) 3 else @intCast(d.right_min),
+            ) catch |err| return switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                error.InvalidPatterns => error.InvalidArgument,
+            };
+        }
+    }.f(app, desc));
+}
+
 pub export fn siv_app_set_default_font(app: t.App, family: ?[*]const u8, family_len: usize) t.Result {
     const self = App.get(@backingInt(app)) catch |err| return t.resultOf(err);
     const name = runtime.string(family, family_len) catch |err| return t.resultOf(err);

@@ -671,23 +671,41 @@ pub export fn siv_set_text_style(txn: t.Txn, node: t.Node, desc: ?*const t.TextS
     return run(txn, struct {
         fn f(w: *Window, n: t.Node, d: ?*const t.TextStyleDesc) Error!void {
             const id = try nodeIn(w, n);
-            w.txn.ut.setTextProps(id, try textPropsOf(d)) catch |err| return mapTxn(err);
+            var stops: TabStops = undefined;
+            w.txn.ut.setTextProps(id, try textPropsOf(d, &stops)) catch |err| return mapTxn(err);
         }
     }.f, .{ node, desc });
 }
 
+/// Room for a text style's tab stops.
+pub const TabStops = [64]ui.TabStop;
+
 /// A siv_text_style_desc as the tree's text properties. Strings point
-/// into the caller's memory.
-pub fn textPropsOf(d_ptr: ?*const t.TextStyleDesc) Error!ui.Text {
+/// into the caller's memory, tab stops into `stop_buf`.
+pub fn textPropsOf(d_ptr: ?*const t.TextStyleDesc, stop_buf: *TabStops) Error!ui.Text {
     const d = try runtime.readDesc(t.TextStyleDesc, d_ptr);
     const fl = try runtime.flags(t.TextFlags, d.flags);
     if (!(d.font_size >= 0) or d.font_size > 1 << 16) return error.InvalidArgument;
-    const stops = try runtime.array(f32, d.tab_stops, d.tab_stops_count);
+    const in = try runtime.array(t.TabStop, d.tab_stops, d.tab_stops_count);
+    if (in.len > stop_buf.len) return error.LimitExceeded;
     var prev: f32 = -std.math.inf(f32);
-    for (stops) |stop| {
-        if (!std.math.isFinite(stop) or stop <= prev) return error.InvalidArgument;
-        prev = stop;
+    for (in, stop_buf[0..in.len]) |stop, *o| {
+        if (!std.math.isFinite(stop.position) or stop.position <= prev) return error.InvalidArgument;
+        if (stop.decimal > 0x10ffff or (stop.decimal >= 0xd800 and stop.decimal < 0xe000)) return error.InvalidArgument;
+        prev = stop.position;
+        o.* = .{
+            .position = stop.position,
+            .alignment = switch (try runtime.enumValue(t.TabAlign, stop.@"align")) {
+                .start => .start,
+                .center => .center,
+                .end => .end,
+                .decimal => .decimal,
+                _ => unreachable,
+            },
+            .decimal = if (stop.decimal == 0) '.' else @intCast(stop.decimal),
+        };
     }
+    const stops = stop_buf[0..in.len];
     const paragraph = try paragraphPatchOf(.{
         .start = 0,
         .end = 0,
@@ -733,10 +751,13 @@ pub fn textPropsOf(d_ptr: ?*const t.TextStyleDesc) Error!ui.Text {
             .start => .start,
             .end => .end,
             .center => .center,
+            .justify => .justify,
             _ => unreachable,
         },
         .wrap = !fl.no_wrap,
         .break_words = fl.break_words,
+        .hyphenate = fl.hyphenate,
+        .optimal = fl.optimal_breaks,
         .paragraph = paragraph.apply(.{}),
         .tab_stops = stops,
     };
@@ -750,6 +771,7 @@ fn paragraphPatchOf(sp: t.ParagraphSpan) Error!ui.ParagraphPatch {
         .start => .start,
         .end => .end,
         .center => .center,
+        .justify => .justify,
         _ => unreachable,
     };
     for ([_]f32{ sp.line_spacing, sp.line_height, sp.space_before, sp.space_after, sp.indent_start, sp.indent_end, sp.first_line_indent, sp.tab_width }) |v| {
@@ -786,6 +808,7 @@ fn paragraphSpanOf(start: u32, end: u32, p: ui.ParagraphPatch) t.ParagraphSpan {
             .start => .start,
             .end => .end,
             .center => .center,
+            .justify => .justify,
         };
     }
     if (p.indent) |i| {

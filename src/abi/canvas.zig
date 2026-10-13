@@ -533,7 +533,8 @@ pub export fn siv_draw_text(handle: t.Draw, x: f32, y: f32, width: f32, str: ?[*
             try finite(.{ px, py, wd });
             if (wd < 0) return error.InvalidArgument;
             const s = try runtime.string(ptr, len);
-            const props = try tree.textPropsOf(sd);
+            var stops: tree.TabStops = undefined;
+            const props = try tree.textPropsOf(sd, &stops);
             // Pages (print.zig) have the document's direction and language
             // and the light theme, without the desktop's text scaling.
             const uw: ?*ui.Window = if (d.window) |w| w.uiWin() else null;
@@ -699,6 +700,10 @@ const Shaped = struct {
             .paragraphs = &.{.{ .end = std.math.maxInt(u32), .style = props.paragraph }},
             .tab_stops = props.tab_stops,
             .break_words = props.break_words,
+            .alignment = props.alignment,
+            .hyphenate = props.hyphenate,
+            .hyphenation = &fonts.hyphenation,
+            .optimal = props.optimal,
         }) catch |err| return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             else => error.InvalidArgument,
@@ -732,7 +737,8 @@ pub export fn siv_app_measure_text(app: t.App, str: ?[*]const u8, str_len: usize
             const self = try App.get(@backingInt(a));
             const s = try runtime.string(ptr, len);
             if (!std.math.isFinite(mw) or mw < 0) return error.InvalidArgument;
-            const props = try tree.textPropsOf(sd);
+            var stops: tree.TabStops = undefined;
+            const props = try tree.textPropsOf(sd, &stops);
             const dest = try runtime.out(t.TextMetrics, out);
             var shaped = try Shaped.init(self, s, props, mw, false, 0, @floatCast(self.app.desktop.values.text_scale));
             defer shaped.deinit();

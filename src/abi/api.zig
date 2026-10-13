@@ -597,9 +597,23 @@ pub const decls = [_]Decl{
         .{ .name = "start", .value = 0, .doc = "The start edge of the node's direction." },
         .{ .name = "end", .value = 1, .doc = "The end edge." },
         .{ .name = "center", .value = 2, .doc = "Centered." },
+        .{ .name = "justify", .value = 3, .doc = "Every line but a paragraph's last widened at its spaces to fill the width; the last at the start (D13)." },
+    }),
+    enumeration("siv_tab_align", "How the text after a tab lines up with its tab stop.", &.{
+        .{ .name = "start", .value = 0, .doc = "Starts at the stop." },
+        .{ .name = "center", .value = 1, .doc = "Centered on the stop." },
+        .{ .name = "end", .value = 2, .doc = "Ends at the stop." },
+        .{ .name = "decimal", .value = 3, .doc = "Its decimal character at the stop (ending at it without one)." },
+    }),
+    value("siv_tab_stop", "A tab stop (D13). Text after a center, end, or decimal stop is measured to the next tab or the end of its paragraph.", &.{
+        f32Field("position", "Logical pixels from the start edge (indents do not move it)."),
+        .{ .name = "align", .type = ref("siv_tab_align"), .doc = "How the text after the tab lines up." },
+        .{ .name = "decimal", .type = .u32, .doc = "Decimal stops: the character placed at the stop; 0 is '.'." },
     }),
     flags("siv_text_flags", "Text options.", &.{
         .{ .name = "no_wrap", .bit = 0, .doc = "Keep each paragraph on one line." },
+        .{ .name = "hyphenate", .bit = 2, .doc = "Words break at hyphenation points of their language (D13): the built-in patterns or ones added with siv_app_add_hyphenation; lines broken inside a word end with a hyphen (CSS hyphens: auto)." },
+        .{ .name = "optimal_breaks", .bit = 3, .doc = "Knuth and Plass's total-fit line breaking, for document views: lines chosen for the whole paragraph to even out their fill (and hyphenation), instead of filling each line in turn. Costs more per layout." },
         .{ .name = "break_words", .bit = 1, .doc = "A word too wide for a line of its own breaks between characters (graphemes) instead of overflowing (CSS overflow-wrap: anywhere)." },
     }),
     descriptor("siv_text_style_desc", "The style of a text or editor node (one style per node). Replaces the node's style.", &.{
@@ -623,7 +637,7 @@ pub const decls = [_]Decl{
         f32Field("indent_end", "Paragraph default: space at the end edge of every line, in logical pixels."),
         f32Field("first_line_indent", "Paragraph default: added to indent_start on each paragraph's first line; negative hangs it out."),
         f32Field("tab_width", "Paragraph default: distance between tab stops after tab_stops, in logical pixels; 0 is four spaces of the font."),
-        .{ .name = "tab_stops", .type = array(.f32), .doc = "Tab stops in logical pixels from the start edge (indents do not move them), increasing; a tab advances to the next one, then to multiples of tab_width (copied)." },
+        .{ .name = "tab_stops", .type = array(ref("siv_tab_stop")), .doc = "Tab stops by increasing position; a tab advances to the next one, then to multiples of tab_width (copied)." },
     }),
     flags("siv_text_span_flags", "Which attributes a styled range sets.", &.{
         .{ .name = "weight", .bit = 0, .doc = "weight applies." },
@@ -646,6 +660,13 @@ pub const decls = [_]Decl{
         .{ .name = "color", .type = ref("siv_color"), .doc = "Text and decoration color, with SIV_TEXT_SPAN_COLOR." },
         .{ .name = "family", .type = .u32, .doc = "A font family from siv_app_font_family, with SIV_TEXT_SPAN_FAMILY; 0 is the application's default family." },
         .{ .name = "width", .type = ref("siv_font_width"), .doc = "Font width, with SIV_TEXT_SPAN_WIDTH." },
+    }),
+    descriptor("siv_hyphenation_desc", "Hyphenation patterns for a language.", &.{
+        .{ .name = "language", .type = .string, .doc = "BCP 47 tag; text whose language matches it, or whose language and region or language alone match it, uses the patterns." },
+        .{ .name = "patterns", .type = .string, .doc = "TeX hyphenation patterns, whitespace-separated (such as .ab4c); copied." },
+        .{ .name = "exceptions", .type = .string, .doc = "Words hyphenated by hand (such as as-so-ciate), whitespace-separated; copied." },
+        .{ .name = "left_min", .type = .u32, .doc = "Characters kept together at a word's start; 0 is 2." },
+        .{ .name = "right_min", .type = .u32, .doc = "Characters kept together at a word's end; 0 is 3." },
     }),
     descriptor("siv_text_spans_desc", "Styled ranges of a text or editor node.", &.{
         .{ .name = "spans", .type = array(ref("siv_text_span")), .doc = "Ranges in order, not overlapping (copied); empty ranges and ones that set nothing are dropped, and equal neighbors merge." },
@@ -1239,6 +1260,10 @@ pub const functions = [_]Function{
         .{ .name = "id", .type = .u32, .doc = "A family id." },
         .{ .name = "name", .type = .buffer, .doc = "Receives at most name_cap bytes; may be NULL with name_cap 0." },
         .{ .name = "len", .type = out(.usize), .doc = "The name's full length in bytes." },
+    }),
+    call("siv_app_add_hyphenation", "Adds hyphenation patterns for a language (D13), replacing any it had, built in or added: TeX patterns as in hyph-utf8's .pat.txt files, and exceptions as in its .hyp.txt files. Built in are English (US and British), German (1996), French, Spanish, Dutch, Portuguese, Polish, Ukrainian, and Slovak. Patterns are parsed the first time text in their language is hyphenated; add them before laying out text in the language, since text already laid out keeps its lines until it changes.", &.{
+        app_param,
+        .{ .name = "desc", .type = .{ .desc = "siv_hyphenation_desc" }, .doc = "The patterns." },
     }),
     call("siv_app_set_default_font", "Sets the family used by text styles that name none. By default it is the desktop's font (D19), else sans-serif; once set here, the desktop's no longer replaces it.", &.{
         app_param,
