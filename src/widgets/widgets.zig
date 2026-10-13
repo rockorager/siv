@@ -75,6 +75,8 @@ pub const Kind = enum(u8) {
     /// Lists, trees, tables, and grids.
     view,
     view_row,
+    /// A table column's header cell.
+    view_column,
 };
 
 /// The first field of every widget's state.
@@ -297,6 +299,7 @@ pub export fn siv_widget_set_label(txn: Txn, node: Node, label: ?[*]const u8, la
         .menu_button => button.setLabel(txn, @ptrCast(h), s),
         .menu_item => menu.setItemLabel(txn, @ptrCast(h), s),
         .view => views.setLabel(txn, @ptrCast(h), s),
+        .view_column => views.setColumnLabel(txn, @ptrCast(h), s),
         .menu, .popover, .menu_row, .dialog, .tabs, .tab, .split_pane, .toast, .view_row => setName(txn, h, node, s),
     }
     return c.siv_txn_status(txn);
@@ -338,7 +341,7 @@ fn refresh(txn: Txn, h: HeaderPtr) void {
         .tabs => tabs.apply(txn, @ptrCast(h)),
         .split_pane => split.apply(txn, @ptrCast(h)),
         .view => views.apply(txn, @ptrCast(h)),
-        .menu, .popover, .menu_row, .dialog, .tab, .toast, .view_row => {},
+        .menu, .popover, .menu_row, .dialog, .tab, .toast, .view_row, .view_column => {},
     }
 }
 
@@ -348,6 +351,7 @@ pub export fn siv_widget_set_value(txn: Txn, node: Node, value: f64) siv.Result 
     switch (h.kind) {
         .button, .text_field, .radio, .menu, .menu_button, .menu_row, .popover, .dialog, .tab, .toast, .view_row => return c.siv_txn_fail(txn, .error_invalid_argument),
         .view => views.setCursor(txn, @ptrCast(h), value),
+        .view_column => views.setColumnValue(txn, @ptrCast(h), value),
         .menu_item => menu.setItemValue(txn, @ptrCast(h), value),
         .tabs => tabs.select(txn, @ptrCast(h), value),
         .split_pane => split.setPosition(txn, @ptrCast(h), value),
@@ -370,6 +374,7 @@ pub export fn siv_widget_get_value(node: Node, value: ?*f64) siv.Result {
     out.* = switch (h.kind) {
         .button, .text_field, .radio, .menu, .menu_button, .menu_row, .popover, .dialog, .tab, .toast, .view_row => return .error_invalid_argument,
         .view => views.value(@ptrCast(h)),
+        .view_column => views.columnValue(@ptrCast(h)),
         .menu_item => menu.itemValue(@ptrCast(h)),
         .tabs => @floatFromInt(@as(*tabs.Tabs, @ptrCast(h)).selected),
         .split_pane => @as(*split.Split, @ptrCast(h)).position,
