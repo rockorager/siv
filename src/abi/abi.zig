@@ -11,7 +11,9 @@ const std = @import("std");
 const build_options = @import("build_options");
 const t = @import("siv");
 const schema = @import("schema.zig");
-const api = @import("api.zig");
+/// The schema (D3), for code compiled with libsiv's exports that reads it,
+/// such as the Lua binding in the headless tests.
+pub const api = @import("api.zig");
 
 pub const runtime = @import("runtime.zig");
 pub const handles = @import("handles.zig");
