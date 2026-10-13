@@ -369,15 +369,40 @@ const Entry = struct {
 pub const FontCache = struct {
     gpa: std.mem.Allocator,
     entries: std.ArrayList(Entry) = .empty,
+    /// Taken exclusively by the functions that change the cache, which
+    /// run on one thread, and shared by other threads while they shape
+    /// with it (`lockShared`); that thread reads without it.
+    lock: std.c.pthread_rwlock_t = .{},
 
     pub fn init(gpa: std.mem.Allocator) FontCache {
         return .{ .gpa = gpa };
     }
 
     pub fn deinit(self: *FontCache) void {
+        // Shaping on other threads finishes first.
+        self.lockExclusive();
+        self.unlockExclusive();
+        _ = std.c.pthread_rwlock_destroy(&self.lock);
         for (self.entries.items) |*entry| self.release(entry);
         self.entries.deinit(self.gpa);
         self.* = undefined;
+    }
+
+    /// Keeps the cache from changing while another thread shapes with it.
+    pub fn lockShared(self: *const FontCache) void {
+        _ = std.c.pthread_rwlock_rdlock(@constCast(&self.lock));
+    }
+
+    pub fn unlockShared(self: *const FontCache) void {
+        _ = std.c.pthread_rwlock_unlock(@constCast(&self.lock));
+    }
+
+    fn lockExclusive(self: *FontCache) void {
+        _ = std.c.pthread_rwlock_wrlock(&self.lock);
+    }
+
+    fn unlockExclusive(self: *FontCache) void {
+        _ = std.c.pthread_rwlock_unlock(&self.lock);
     }
 
     fn release(self: *FontCache, entry: *Entry) void {
@@ -392,6 +417,8 @@ pub const FontCache = struct {
     /// Adds a font from bytes. On error, owned bytes are freed.
     pub fn add(self: *FontCache, bytes: []const u8, index: u32, ownership: Ownership) !FontId {
         errdefer if (ownership == .owned) self.gpa.free(bytes);
+        self.lockExclusive();
+        defer self.unlockExclusive();
         try self.entries.ensureUnusedCapacity(self.gpa, 1);
         const loaded: Face = try .init(bytes, index, "", .{});
         self.entries.appendAssumeCapacity(.{ .state = .ready, .face = loaded, .bytes = bytes, .ownership = ownership, .index = index });
@@ -420,6 +447,8 @@ pub const FontCache = struct {
         for (self.entries.items, 0..) |entry, i| {
             if (entry.base == base and entry.instance.eql(inst)) return @enumFromInt(i);
         }
+        self.lockExclusive();
+        defer self.unlockExclusive();
         try self.entries.ensureUnusedCapacity(self.gpa, 1);
         const variations = try self.gpa.dupe(u8, root.variations);
         errdefer self.gpa.free(variations);
@@ -438,6 +467,8 @@ pub const FontCache = struct {
     /// is copied.
     pub fn addPending(self: *FontCache, src: Source, charset: ?*const fc.FcCharSet) !FontId {
         if (self.find(src)) |id| return id;
+        self.lockExclusive();
+        defer self.unlockExclusive();
         try self.entries.ensureUnusedCapacity(self.gpa, 1);
         const path = try self.gpa.dupe(u8, src.path);
         errdefer self.gpa.free(path);
@@ -459,6 +490,8 @@ pub const FontCache = struct {
     /// Supplies the bytes of a pending font. Bytes that do not parse mark the
     /// font failed (and are freed if owned); shaping then skips it for good.
     pub fn load(self: *FontCache, id: FontId, bytes: []const u8, ownership: Ownership) !void {
+        self.lockExclusive();
+        defer self.unlockExclusive();
         const entry = &self.entries.items[@intFromEnum(id)];
         std.debug.assert(entry.state == .pending);
         entry.face = Face.init(bytes, entry.index, entry.variations, entry.instance) catch |err| {
@@ -474,6 +507,8 @@ pub const FontCache = struct {
 
     /// Marks a pending font as unreadable, so shaping stops asking for it.
     pub fn fail(self: *FontCache, id: FontId) void {
+        self.lockExclusive();
+        defer self.unlockExclusive();
         self.entries.items[@intFromEnum(id)].state = .failed;
     }
 

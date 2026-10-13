@@ -1178,6 +1178,40 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     editor (bench/gpui-compare, RADV): key to photon 299 ms with whole
     reshaping, 22 ms with paragraph reuse over flat arrays, 3.1 ms in
     blocks (gpui 3.6 ms); resident memory 284 MiB to 160 MiB.
+  - A text of 64 KB or more shapes only its first blocks (32 KB, more
+    than a screen) before its first frame, and the rest on the worker
+    pool: low-priority jobs of 48 whole blocks (four for 1.4 MB), the blocks
+    `ShapedText.init` would make, each joining the text when it and those
+    before it are done (`ShapedText.extend`), so the finished text is
+    the one shaping it whole gives. Until then layout gives the unshaped
+    bytes the height per byte of the shaped ones, and the last shaped
+    block gets no final line. Editing (`editor.fresh`), painting past
+    the shaped part, or new text shapes the rest at once on the UI
+    thread (new text then reshapes only the blocks it changed). Workers
+    shape under the font cache's lock, shared; the functions that change
+    the cache, all on the UI thread, take it exclusively, and the UI
+    thread reads without it. A node that reshapes or goes away orphans
+    the jobs: queued ones are cancelled, running ones check the flag
+    under the lock and drop their blocks, and the last reference frees
+    the copies of the text and styles they shaped from. When the last
+    chunk joins, the heap is trimmed after the next layout (glibc's
+    `malloc_trim`, looked up weakly): each worker's heap otherwise keeps
+    the freed intermediates of the blocks it shaped, 15 MiB for the
+    1.4 MB editor. More, smaller jobs finish sooner but touch more
+    per-thread heaps (eleven jobs left 10 MiB more resident than four).
+  - Positioned glyphs, which only painting reads, are kept by a text of
+    more than four blocks only for the blocks it paints: others are laid
+    out without them (`Options.glyphs`; lines, runs, and carets are the
+    same) and laid out again with them when painted
+    (`TextLayout.withGlyphs`), and painting drops them from blocks
+    outside what it painted. A block reshaped from one that had glyphs
+    keeps them, so typing does not lay out twice. Carets stay, since
+    the editor's queries cannot fail. Measured on the 1.4 MB editor:
+    startup to first frame 99 ms to 35 ms (gpui 87 ms); resident memory
+    at the end of the scenario 163 MiB to 150 MiB, 30 MiB of glyphs
+    less and some of the pool's heaps more (gpui 82 MiB, which shapes
+    lines lazily and stores no per-glyph layout); key to photon
+    unchanged (3.4 ms).
   - Unsafe-to-break line edges are reshaped inline.
   - Hyphenation from Liang patterns (each pattern file's licence checked);
     an optional Knuth–Plass breaker for document views.

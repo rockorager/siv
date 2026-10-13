@@ -32,6 +32,8 @@ const insert_key: u32 = 0xff63;
 /// since the last frame.
 fn fresh(win: *Window, id: NodeId) ?*const Layout {
     const s = win.state(id);
+    // Editing works on the whole text (D13).
+    text_node.finish(win, id) catch return null;
     if (!s.needs_shape) if (text_node.current(win, id)) |l| return l;
     const width = if (s.text) |c| c.layout_width else null;
     return text_node.layoutFor(win, id, width) catch null;

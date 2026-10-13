@@ -524,6 +524,93 @@ test "long text paints the lines near its scroll viewport; scrolling past them r
     try testing.expect(far[1] <= 3040 and far[2] >= 3140);
 }
 
+test "a long text shapes its start at once and the rest on the pool, ending as if shaped whole" {
+    const loop = @import("loop");
+    var lp = try loop.Loop.init(std.heap.smp_allocator);
+    defer lp.deinit();
+    var pool = loop.Pool.init(&lp, testing.allocator, 3);
+    defer pool.deinit();
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    for (0..3000) |i| try buf.print(testing.allocator, "Paragraph {d} has some words that wrap at this width, {d}.\n", .{ i, i * 7 });
+    // Shaped all at once, without a pool, for reference.
+    var reference: Fixture = undefined;
+    try reference.init(.{ .width = 300, .height = 200 });
+    defer reference.deinit();
+    var fixtures: [4]Fixture = undefined;
+    for (&fixtures) |*f| {
+        try f.init(.{ .width = 300, .height = 200 });
+        f.fonts.pool = &pool;
+    }
+    defer for (&fixtures) |*f| f.deinit();
+    var docs: [5]NodeId = undefined;
+    var scrolls: [5]NodeId = undefined;
+    for ([_]*Fixture{ &reference, &fixtures[0], &fixtures[1], &fixtures[2], &fixtures[3] }, 0..) |f, i| {
+        var t = try f.win.begin();
+        scrolls[i] = try box(t, .root, .scroll, .{ .width = .{ .fraction = 1 }, .height = .{ .fraction = 1 } });
+        try t.setScroll(scrolls[i], .{ .axis = .vertical });
+        docs[i] = try box(t, scrolls[i], .editor, .{ .width = .{ .fraction = 1 } });
+        try t.setEditor(docs[i], .{ .multiline = true });
+        try t.setText(docs[i], buf.items);
+        t.commit();
+        try f.frame();
+    }
+    const whole = text_node.current(reference.win, docs[0]).?;
+    for (&fixtures, docs[1..]) |*f, doc| {
+        const c = f.win.state(doc).text.?;
+        try testing.expect(c.pending != null and c.paragraph.?.len() < 64 << 10);
+        // The rest is estimated.
+        try testing.expect(text_node.current(f.win, doc).?.height > whole.height / 2);
+    }
+    // 1: the pool finishes.
+    const c1 = fixtures[0].win.state(docs[1]).text.?;
+    while (c1.pending != null) try lp.dispatch(-1);
+    try fixtures[0].frame();
+    // 2: showing the end shapes the rest at the next frame.
+    {
+        const f = &fixtures[1];
+        const li = f.win.state(scrolls[2]).own_layer + 1;
+        const off = f.comp.scrollBy(li, .{ .x = 0, .y = 1e6 });
+        try f.win.handleEvent(&.{ .scrolled = .{ .window = 0, .layer = li, .offset = off, .seq = f.comp.seq } });
+        try f.frame();
+        try f.frame();
+        try testing.expect(f.win.state(docs[2]).text.?.pending == null);
+    }
+    // 3: editing shapes the rest first.
+    {
+        const f = &fixtures[2];
+        const k: Keys = .{ .f = f };
+        k.press(ui.keysym.tab, .{});
+        k.press(ui.keysym.end, .{ .ctrl = true });
+        try testing.expect(f.win.state(docs[3]).text.?.pending == null);
+        try testing.expectEqual(@as(u32, @intCast(buf.items.len)), f.win.node(docs[3]).data.editor.caret);
+        try f.frame();
+    }
+    // 4: new text finishes the old first and reshapes only what changed.
+    {
+        const f = &fixtures[3];
+        var t = try f.win.begin();
+        try t.setText(docs[4], buf.items[0 .. buf.items.len - 1]);
+        t.commit();
+        try f.frame();
+        try testing.expect(f.win.state(docs[4]).text.?.pending == null);
+        t = try f.win.begin();
+        try t.setText(docs[4], buf.items);
+        t.commit();
+        try f.frame();
+    }
+    for (&fixtures, docs[1..]) |*f, doc| {
+        const l = text_node.current(f.win, doc).?;
+        try testing.expectEqual(@as(u32, 0), l.shaped.pending);
+        try testing.expectEqual(whole.lineCount(), l.lineCount());
+        try testing.expectEqual(whole.height, l.height);
+        try testing.expectEqualSlices(u32, whole.shaped.starts, l.shaped.starts);
+        var i: u32 = 0;
+        while (i < l.lineCount()) : (i += 97) try testing.expectEqual(whole.line(i), l.line(i));
+        try testing.expectEqual(reference.rect(docs[0])[2..].*, f.rect(doc)[2..].*);
+    }
+}
+
 test "opacity animates as a layer property; content repaints only its layer" {
     var f: Fixture = undefined;
     try f.init(.{ .width = 200, .height = 200 });

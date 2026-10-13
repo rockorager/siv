@@ -1047,6 +1047,7 @@ fn drawText(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point
             if (std.mem.indexOfScalar(NodeId, win.culled.items, nid) == null) try win.culled.append(win.gpa, nid);
         }
     }
+    text_node.cover(win, nid, l, if (band) |bd| bd[1] else null);
     return drawLayout(st, win, l, b, ox, oy, content_w, textColor(win, &n.textData().props.style), nid, band);
 }
 
@@ -1071,11 +1072,14 @@ fn drawLayout(st: *State, win: *Window, l: *const text.TextLayout, b: *scene.Bui
     var bounds = Rect.empty;
     const cache = if (nid) |n| win.state(n).text else null;
     const own = if (cache) |c| (if (c.layout) |*cl| cl == l else false) else false;
-    var bi: u32 = if (band) |bd| l.blockAtY(bd[0]) else 0;
+    const first: u32 = if (band) |bd| l.blockAtY(bd[0]) else 0;
+    var bi = first;
+    // A long text keeps the glyphs of the blocks it paints only (D13).
+    defer l.dropGlyphs(first, bi);
     while (bi < l.blocks.len) : (bi += 1) {
         const block_top = l.tops[bi];
         if (band) |bd| if (block_top > bd[1]) break;
-        const bl = &l.blocks[bi].layout;
+        const bl = try l.withGlyphs(win.scratch.allocator(), bi);
         const style_first = l.shaped.style_firsts[bi];
         var li: usize = if (band) |bd| bl.lineAt(bd[0] - block_top) else 0;
         while (li < bl.lines.len) : (li += 1) {

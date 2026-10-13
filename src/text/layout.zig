@@ -103,6 +103,9 @@ pub const Options = struct {
     /// A block of a longer text (`blocks.zig`) other than the last has
     /// none: the next block's first line follows.
     final_line: bool = true,
+    /// Whether to keep the positioned glyphs (`runGlyphs`), which only
+    /// painting reads: lines, runs, and carets are the same without.
+    glyphs: bool = true,
 };
 
 /// A glyph positioned relative to its line's origin: x from the line's
@@ -230,6 +233,7 @@ pub const Layout = struct {
         hyphenate: bool = false,
         optimal: bool = true,
         final_line: bool = true,
+        glyphs: bool = true,
         tab_stops: []const TabStop = &.{},
         /// One per bidi paragraph, plus the line after a final break.
         styles: []const ParagraphStyle = &.{},
@@ -268,7 +272,7 @@ pub const Layout = struct {
         defer builder.freeLists();
         if (options.optimal and options.width != null) try builder.breakOptimal() else try builder.breakLines();
         builder.position(options);
-        try self.keep(&builder);
+        try self.keep(&builder, options.glyphs);
         errdefer self.freeArrays();
         try self.finish(options, builder.styles);
         return self;
@@ -277,12 +281,12 @@ pub const Layout = struct {
     /// Takes the builder's lists at their exact sizes, outside the arena:
     /// an arena grows by half again what it holds, which left more than
     /// half of a long text's memory unused. `deinit` frees them.
-    fn keep(self: *Layout, builder: *Builder) !void {
+    fn keep(self: *Layout, builder: *Builder, glyphs: bool) !void {
         const gpa = self.arena.child_allocator;
         errdefer self.freeArrays();
         self.lines = try builder.lines.toOwnedSlice(gpa);
         self.runs = try builder.runs.toOwnedSlice(gpa);
-        self.glyphs = try builder.glyphs.toOwnedSlice(gpa);
+        if (glyphs) self.glyphs = try builder.glyphs.toOwnedSlice(gpa);
         self.carets = try builder.carets.toOwnedSlice(gpa);
     }
 
@@ -313,6 +317,7 @@ pub const Layout = struct {
             .hyphenate = options.hyphenate,
             .optimal = options.optimal,
             .final_line = options.final_line,
+            .glyphs = options.glyphs,
             .tab_stops = try a.dupe(TabStop, options.tab_stops),
             .styles = try a.dupe(ParagraphStyle, styles),
         };
@@ -333,7 +338,7 @@ pub const Layout = struct {
         const width = options.width orelse return init(gpa, scratch, cache, paragraph, options);
         if (!std.math.isFinite(width) or width < 0) return error.InvalidWidth;
         const b = old.built;
-        if (old.paragraph.text.len != r.old_len or old.paragraph.paragraphs.len != r.old_paragraphs or options.optimal or b.optimal or
+        if (old.paragraph.text.len != r.old_len or old.paragraph.paragraphs.len != r.old_paragraphs or options.optimal or b.optimal or !b.glyphs or
             b.final_line != options.final_line or b.width != width or b.alignment != options.alignment or b.break_words != options.break_words or b.hyphenate != options.hyphenate or
             b.tab_stops.len != options.tab_stops.len)
             return init(gpa, scratch, cache, paragraph, options);
@@ -464,10 +469,25 @@ pub const Layout = struct {
             // Only the line after a final break followed.
             _ = builder.positionRange(options, mid_end, builder.lines.items.len, place);
         }
-        try self.keep(&builder);
+        try self.keep(&builder, options.glyphs);
         errdefer self.freeArrays();
         try self.finish(options, styles);
         return self;
+    }
+
+    /// The options the layout was built with (its paragraph runs and
+    /// hyphenation aside), to build it again.
+    pub fn builtOptions(self: *const Layout) Options {
+        const b = self.built;
+        return .{ .width = b.width, .alignment = b.alignment, .tab_stops = b.tab_stops, .break_words = b.break_words, .hyphenate = b.hyphenate, .optimal = b.optimal, .final_line = b.final_line, .glyphs = b.glyphs };
+    }
+
+    /// Frees the positioned glyphs; building again with `glyphs` set
+    /// brings them back.
+    pub fn dropGlyphs(self: *Layout) void {
+        self.arena.child_allocator.free(self.glyphs);
+        self.glyphs = &.{};
+        self.built.glyphs = false;
     }
 
     pub fn deinit(self: *Layout) void {

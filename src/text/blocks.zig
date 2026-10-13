@@ -54,7 +54,7 @@ pub const ShapedBlock = struct {
         return b;
     }
 
-    fn release(b: *ShapedBlock) void {
+    pub fn release(b: *ShapedBlock) void {
         b.refs -= 1;
         if (b.refs != 0) return;
         b.paragraph.deinit();
@@ -83,6 +83,10 @@ pub const ShapedText = struct {
     missing: bool,
     /// Pending fonts shaping would have tried, from every block.
     wanted: []FontId,
+    /// Bytes of the text after the blocks that are not shaped yet
+    /// (`initPrefix`): `len` is the shaped part's length, and layouts
+    /// estimate the rest's height.
+    pending: u32 = 0,
 
     /// Shapes `text` with `styles` (as `ShapedParagraph.init` takes them)
     /// in blocks.
@@ -94,7 +98,34 @@ pub const ShapedText = struct {
         var tmp: std.heap.ArenaAllocator = .init(gpa);
         defer tmp.deinit();
         try appendBlocks(&list, gpa, scratch, &tmp, cache, text, styles, direction, options, 0, text.len);
-        return finish(gpa, list.items, text, styles, direction, options);
+        return finish(gpa, list.items, text.len, styles, direction, options);
+    }
+
+    /// Like `init`, but shapes only the blocks before `prefix_end` (a
+    /// block end, `blockEnd`), leaving the rest `pending`: `extend` adds
+    /// it, block by block, and the result is then `init`'s.
+    pub fn initPrefix(gpa: Allocator, scratch: Allocator, cache: *const FontCache, text: []const u8, styles: []const StyleRun, direction: bidi.BaseDirection, options: Options, prefix_end: usize) BuildError!ShapedText {
+        try validate(text, styles);
+        var list: std.ArrayList(*ShapedBlock) = .empty;
+        defer list.deinit(scratch);
+        errdefer for (list.items) |b| b.release();
+        var tmp: std.heap.ArenaAllocator = .init(gpa);
+        defer tmp.deinit();
+        try appendBlocks(&list, gpa, scratch, &tmp, cache, text, styles, direction, options, 0, prefix_end);
+        return finish(gpa, list.items, text.len, styles, direction, options);
+    }
+
+    /// This text with `more` (blocks shaped by `shapeRange` from where its
+    /// blocks end, taking their references) appended; `styles` are the
+    /// whole text's, as `initPrefix` took them.
+    pub fn extend(self: *const ShapedText, gpa: Allocator, scratch: Allocator, more: []const *ShapedBlock, styles: []const StyleRun) BuildError!ShapedText {
+        const list = try scratch.alloc(*ShapedBlock, self.blocks.len + more.len);
+        defer scratch.free(list);
+        @memcpy(list[0..self.blocks.len], self.blocks);
+        @memcpy(list[self.blocks.len..], more);
+        const result = try finish(gpa, list, self.len() + self.pending, styles, self.direction, self.options);
+        for (self.blocks) |b| _ = b.retain();
+        return result;
     }
 
     /// Like `init`, but keeps `old`'s blocks (the text before an edit)
@@ -106,7 +137,7 @@ pub const ShapedText = struct {
     /// slivers.
     pub fn initReusing(gpa: Allocator, scratch: Allocator, cache: *const FontCache, text: []const u8, styles: []const StyleRun, direction: bidi.BaseDirection, options: Options, old_: ?*const ShapedText) BuildError!ShapedText {
         const old = old_ orelse return init(gpa, scratch, cache, text, styles, direction, options);
-        if (old.direction != direction or old.missing or old.wanted.len != 0 or old.options.block_bytes != options.block_bytes or old.len() == 0 or text.len == 0)
+        if (old.pending != 0 or old.direction != direction or old.missing or old.wanted.len != 0 or old.options.block_bytes != options.block_bytes or old.len() == 0 or text.len == 0)
             return init(gpa, scratch, cache, text, styles, direction, options);
         try validate(text, styles);
         const old_len = old.len();
@@ -189,7 +220,7 @@ pub const ShapedText = struct {
             list.appendAssumeCapacity(try shapeBlock(gpa, &tmp, cache, text, styles, direction, from, to, old.blocks[i]));
         } else if (to > from or (list.items.len == 0 and j == n)) try appendBlocks(&list, gpa, scratch, &tmp, cache, text, styles, direction, options, from, to);
         while (j < n) : (j += 1) try ctx.keepOrRedo(&list, old.blocks[j], shift(old.starts[j], delta));
-        return finish(gpa, list.items, text, styles, direction, options);
+        return finish(gpa, list.items, text.len, styles, direction, options);
     }
 
     pub fn deinit(self: *ShapedText) void {
@@ -322,7 +353,9 @@ pub const ShapedText = struct {
         }
     };
 
-    fn finish(gpa: Allocator, list: []const *ShapedBlock, text: []const u8, styles: []const StyleRun, direction: bidi.BaseDirection, options: Options) BuildError!ShapedText {
+    /// Builds the text from `list`, taking its references, the first
+    /// `total` bytes of which they cover from the start.
+    fn finish(gpa: Allocator, list: []const *ShapedBlock, total: usize, styles: []const StyleRun, direction: bidi.BaseDirection, options: Options) BuildError!ShapedText {
         const blocks = try gpa.dupe(*ShapedBlock, list);
         errdefer gpa.free(blocks);
         const starts = try gpa.alloc(u32, list.len + 1);
@@ -347,7 +380,7 @@ pub const ShapedText = struct {
             missing = missing or b.paragraph.missing;
             for (b.paragraph.wanted) |f| if (std.mem.indexOfScalar(FontId, wanted.items, f) == null) try wanted.append(gpa, f);
         }
-        std.debug.assert(at == text.len);
+        std.debug.assert(at <= total);
         starts[list.len] = at;
         paragraph_starts[list.len] = paragraphs;
         // The list's references move into the result.
@@ -361,6 +394,7 @@ pub const ShapedText = struct {
             .options = options,
             .missing = missing,
             .wanted = try wanted.toOwnedSlice(gpa),
+            .pending = @intCast(total - at),
         };
     }
 };
@@ -423,16 +457,31 @@ fn endsWithSeparator(text: []const u8) bool {
 fn appendBlocks(list: *std.ArrayList(*ShapedBlock), gpa: Allocator, scratch: Allocator, tmp: *std.heap.ArenaAllocator, cache: *const FontCache, text: []const u8, styles: []const StyleRun, direction: bidi.BaseDirection, options: Options, from: usize, to: usize) BuildError!void {
     var s = from;
     while (true) {
-        var e = s;
-        while (e < to) {
-            e = paragraphEnd(text, e, to);
-            if (e - s >= options.block_bytes) break;
-        }
+        const e = blockEnd(text, s, to, options);
         try list.ensureUnusedCapacity(scratch, 1);
         list.appendAssumeCapacity(try shapeBlock(gpa, tmp, cache, text, styles, direction, s, e, null));
         s = e;
         if (s >= to) break;
     }
+}
+
+/// The end of the block that starts at `s` (a paragraph start) in a text
+/// split from `s` on, no later than `to`.
+pub fn blockEnd(text: []const u8, s: usize, to: usize, options: Options) usize {
+    var e = s;
+    while (e < to) {
+        e = paragraphEnd(text, e, to);
+        if (e - s >= options.block_bytes) break;
+    }
+    return e;
+}
+
+/// Shapes `text[s..e]` (a block, `blockEnd`) on its own, for
+/// `ShapedText.extend`; safe on any thread while `cache` is not changed.
+pub fn shapeRange(gpa: Allocator, cache: *const FontCache, text: []const u8, styles: []const StyleRun, direction: bidi.BaseDirection, s: usize, e: usize) BuildError!*ShapedBlock {
+    var tmp: std.heap.ArenaAllocator = .init(gpa);
+    defer tmp.deinit();
+    return shapeBlock(gpa, &tmp, cache, text, styles, direction, s, e, null);
 }
 
 /// The index of the first style run ending after `offset` (the last for
@@ -493,6 +542,9 @@ pub const LayoutBlock = struct {
     layout: Layout,
     /// Its paragraph runs, ends relative to its start, for reuse checks.
     runs: []ParagraphRun,
+    /// For laying it out again with glyphs (`TextLayout.withGlyphs`).
+    cache: *const FontCache,
+    hyphenation: @FieldType(layout_.Options, "hyphenation"),
 
     fn retain(b: *LayoutBlock) *LayoutBlock {
         b.refs += 1;
@@ -508,6 +560,9 @@ pub const LayoutBlock = struct {
         b.gpa.destroy(b);
     }
 };
+
+/// Texts of up to this many blocks keep every block's positioned glyphs.
+const eager_glyph_blocks = 4;
 
 /// A `ShapedText` laid out for one width: its blocks' layouts stacked,
 /// with the space between paragraphs between blocks.
@@ -561,7 +616,12 @@ pub const TextLayout = struct {
             }
             var block_options = options;
             block_options.paragraphs = local.items;
-            block_options.final_line = last;
+            block_options.final_line = last and shaped.pending == 0;
+            // Only painting reads positioned glyphs: a long text keeps
+            // them for the blocks it paints (`withGlyphs`), and for a
+            // block reshaped from one it painted.
+            const from: ?*const Layout = if (sb.from) |f| (if (reusable.get(@constCast(f))) |o| &o.layout else null) else null;
+            block_options.glyphs = n <= eager_glyph_blocks or (if (from) |f| f.built.glyphs else false);
             if (reusable.get(sb)) |lb| if (compatible(lb, block_options)) {
                 blocks[i] = lb.retain();
                 made += 1;
@@ -571,11 +631,10 @@ pub const TextLayout = struct {
             errdefer gpa.destroy(lb);
             const owned_runs = try gpa.dupe(ParagraphRun, local.items);
             errdefer gpa.free(owned_runs);
-            lb.* = .{ .gpa = gpa, .shaped = sb.retain(), .layout = undefined, .runs = owned_runs };
+            lb.* = .{ .gpa = gpa, .shaped = sb.retain(), .layout = undefined, .runs = owned_runs, .cache = cache, .hyphenation = options.hyphenation };
             errdefer sb.release();
             // A block reshaped from an old one keeps the old one's lines
             // for the paragraphs it kept.
-            const from: ?*const Layout = if (sb.from) |f| (if (reusable.get(@constCast(f))) |o| &o.layout else null) else null;
             lb.layout = try Layout.initReusing(gpa, tmp.allocator(), cache, &sb.paragraph, block_options, from);
             _ = tmp.reset(.retain_capacity);
             blocks[i] = lb;
@@ -601,7 +660,36 @@ pub const TextLayout = struct {
             width = @max(width, b.layout.width);
         }
         line_starts[n] = lines;
+        // Text not shaped yet is as tall, byte for byte, as the rest.
+        const shaped_len = shaped.len();
+        if (shaped.pending != 0 and shaped_len != 0) top += top / @as(f32, @floatFromInt(shaped_len)) * @as(f32, @floatFromInt(shaped.pending));
         return .{ .gpa = gpa, .shaped = shaped, .blocks = blocks, .tops = tops, .line_starts = line_starts, .width = width, .height = top };
+    }
+
+    /// Block `b`'s layout with its positioned glyphs, laid out again
+    /// (the same lines) if it was built without them.
+    pub fn withGlyphs(self: *const TextLayout, scratch: Allocator, b: u32) error{OutOfMemory}!*const Layout {
+        const lb = self.blocks[b];
+        if (lb.layout.built.glyphs) return &lb.layout;
+        var options = lb.layout.builtOptions();
+        options.paragraphs = lb.runs;
+        options.hyphenation = lb.hyphenation;
+        options.glyphs = true;
+        const again = Layout.init(lb.gpa, scratch, lb.cache, &lb.shaped.paragraph, options) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            // It was laid out with these options before.
+            else => unreachable,
+        };
+        lb.layout.deinit();
+        lb.layout = again;
+        return &lb.layout;
+    }
+
+    /// Frees the positioned glyphs of a long text's blocks outside
+    /// `first..end`.
+    pub fn dropGlyphs(self: *const TextLayout, first: u32, end: u32) void {
+        if (self.blocks.len <= eager_glyph_blocks) return;
+        for (self.blocks, 0..) |lb, i| if ((i < first or i >= end) and lb.layout.built.glyphs) lb.layout.dropGlyphs();
     }
 
     fn compatible(lb: *const LayoutBlock, options: layout_.Options) bool {
@@ -966,5 +1054,87 @@ test "an edit reshapes only its block and equals shaping the new text" {
             try std.testing.expectEqualStrings(buf.items, concatenated.items);
             try expectSameLayout(&flat, &text, gpa);
         }
+    }
+}
+
+test "a text shaped from its first blocks and extended equals shaping it whole" {
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    const gpa = std.testing.allocator;
+    const fonts = [_]FontId{ fixture.latin, fixture.arabic, fixture.hebrew };
+    var prng: std.Random.DefaultPrng = .init(31);
+    const rand = prng.random();
+    const block_options: Options = .{ .block_bytes = 24 };
+    const options: layout_.Options = .{ .width = 110 };
+    for (0..30) |_| {
+        const a = fixture.arena.allocator();
+        var buf: std.ArrayList(u8) = .empty;
+        try randomText(rand, &buf, a, 4 + rand.uintLessThan(usize, 8));
+        // Two sizes, so blocks start in different styles.
+        var cut: u32 = @intCast(rand.uintAtMost(usize, buf.items.len));
+        while (cut > 0 and cut < buf.items.len and buf.items[cut] & 0xc0 == 0x80) cut -= 1;
+        const styles = [_]StyleRun{
+            .{ .end = cut, .style = .{ .fonts = &fonts, .size = 16 } },
+            .{ .end = @intCast(buf.items.len), .style = .{ .fonts = &fonts, .size = 11 } },
+        };
+        const all = if (cut == 0) styles[1..] else styles[0..];
+        var whole = try ShapedText.init(gpa, a, &fixture.cache, buf.items, all, .auto_ltr, block_options);
+        defer whole.deinit();
+        if (whole.blocks.len < 3) continue;
+        var flat_p = try ShapedParagraph.init(gpa, a, &fixture.cache, buf.items, all, .auto_ltr);
+        defer flat_p.deinit();
+        var flat = try Layout.init(gpa, a, &fixture.cache, &flat_p, options);
+        defer flat.deinit();
+
+        // The first block at once, then the rest in two steps.
+        const first = whole.starts[1];
+        var shaped = try ShapedText.initPrefix(gpa, a, &fixture.cache, buf.items, all, .auto_ltr, block_options, first);
+        defer shaped.deinit();
+        try std.testing.expectEqual(@as(usize, 1), shaped.blocks.len);
+        try std.testing.expectEqual(@as(u32, @intCast(buf.items.len)) - first, shaped.pending);
+        var text = try TextLayout.init(gpa, a, &fixture.cache, &shaped, options, null);
+        defer text.deinit();
+        // The rest is estimated, and the last line shaped is not the text's.
+        try std.testing.expect(text.height > text.tops[0] + text.blocks[0].layout.height);
+        const middle = whole.starts[2];
+        for ([_][2]u32{ .{ first, middle }, .{ middle, @intCast(buf.items.len) } }) |range| {
+            var more: std.ArrayList(*ShapedBlock) = .empty;
+            var s: usize = range[0];
+            while (s < range[1]) {
+                const e = blockEnd(buf.items, s, range[1], block_options);
+                try more.append(a, try shapeRange(gpa, &fixture.cache, buf.items, all, .auto_ltr, s, e));
+                s = e;
+            }
+            const extended = try shaped.extend(gpa, a, more.items, all);
+            const relaid = try TextLayout.init(gpa, a, &fixture.cache, &extended, options, &text);
+            text.deinit();
+            shaped.deinit();
+            shaped = extended;
+            text = relaid;
+            text.shaped = &shaped;
+        }
+        try std.testing.expectEqual(@as(u32, 0), shaped.pending);
+        try std.testing.expectEqualSlices(u32, whole.starts, shaped.starts);
+        try std.testing.expectEqualSlices(u32, whole.style_firsts, shaped.style_firsts);
+        try std.testing.expectEqualSlices(u32, whole.paragraph_starts, shaped.paragraph_starts);
+        for (whole.blocks, shaped.blocks) |x, y| try std.testing.expectEqual(x.paragraph.glyphs.len, y.paragraph.glyphs.len);
+        try expectSameLayout(&flat, &text, gpa);
+        // A long text's blocks are laid out without positioned glyphs
+        // until painted; laid out again with them, the lines are the same.
+        const lazy = shaped.blocks.len > eager_glyph_blocks;
+        try std.testing.expectEqual(lazy, !text.blocks[text.blocks.len - 1].layout.built.glyphs);
+        for (text.blocks, 0..) |lb, b| {
+            try std.testing.expect(lazy or lb.layout.built.glyphs);
+            const lines = try a.dupe(Line, lb.layout.lines);
+            const l = try text.withGlyphs(a, @intCast(b));
+            try std.testing.expectEqualSlices(Line, lines, l.lines);
+            var options_ = l.builtOptions();
+            options_.paragraphs = lb.runs;
+            var eager = try Layout.init(gpa, a, &fixture.cache, &lb.shaped.paragraph, options_);
+            defer eager.deinit();
+            try std.testing.expectEqualSlices(layout_.PositionedGlyph, eager.glyphs, l.glyphs);
+        }
+        text.dropGlyphs(1, 2);
+        for (text.blocks, 0..) |lb, b| try std.testing.expectEqual(!lazy or b == 1, lb.layout.built.glyphs);
     }
 }
