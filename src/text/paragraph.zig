@@ -157,12 +157,13 @@ pub const ShapedParagraph = struct {
             .shaper = shape_.Shaper.init() catch return error.OutOfMemory,
         };
         defer builder.shaper.deinit();
+        defer builder.glyphs.deinit(gpa);
         for (self.paragraphs, 0..) |paragraph, index| try builder.itemize(@intCast(index), paragraph);
         // Grown in scratch memory, kept at their final size; the glyphs,
-        // most of a long text's memory, outside the arena, which grows by
-        // half again what it holds (`deinit` frees them).
+        // most of a long text's memory, grow and stay outside the arena,
+        // which grows by half again what it holds (`deinit` frees them).
         self.runs = try a.dupe(Run, builder.runs.items);
-        self.glyphs = try gpa.dupe(Glyph, builder.glyphs.items);
+        self.glyphs = try builder.glyphs.toOwnedSlice(gpa);
         errdefer gpa.free(self.glyphs);
         self.missing = builder.missing;
         self.wanted = try a.dupe(FontId, builder.wanted.items);
@@ -477,7 +478,7 @@ const Builder = struct {
 
     fn appendRun(self: *Builder, item: Item, id: FontId, start: u32, end: u32, glyphs: []const Glyph) !void {
         const glyph_start: u32 = @intCast(self.glyphs.items.len);
-        try self.glyphs.appendSlice(self.scratch, glyphs);
+        try self.glyphs.appendSlice(self.paragraph.arena.child_allocator, glyphs);
         if (self.cache.face(id)) |face| hideControls(self.paragraph.text, face, item.paragraph, self.glyphs.items[glyph_start..], self.paragraph.styles[item.style].size);
         try self.runs.append(self.scratch, .{
             .start = start,

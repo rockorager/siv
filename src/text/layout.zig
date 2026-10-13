@@ -250,6 +250,7 @@ pub const Layout = struct {
         errdefer self.arena.deinit();
         for (options.tab_stops) |stop| if (!std.math.isFinite(stop.position)) return error.InvalidWidth;
         var builder: Builder = .{
+            .lists = gpa,
             .p = paragraph,
             .cache = cache,
             .a = self.arena.allocator(),
@@ -264,6 +265,7 @@ pub const Layout = struct {
             .final_line = options.final_line,
         };
         defer builder.shaper.deinit();
+        defer builder.freeLists();
         if (options.optimal and options.width != null) try builder.breakOptimal() else try builder.breakLines();
         builder.position(options);
         try self.keep(&builder);
@@ -272,16 +274,16 @@ pub const Layout = struct {
         return self;
     }
 
-    /// Copies the builder's lists out at their exact sizes, outside the
-    /// arena: an arena grows by half again what it holds, which left more
-    /// than half of a long text's memory unused. `deinit` frees them.
-    fn keep(self: *Layout, builder: *const Builder) !void {
+    /// Takes the builder's lists at their exact sizes, outside the arena:
+    /// an arena grows by half again what it holds, which left more than
+    /// half of a long text's memory unused. `deinit` frees them.
+    fn keep(self: *Layout, builder: *Builder) !void {
         const gpa = self.arena.child_allocator;
         errdefer self.freeArrays();
-        self.lines = try gpa.dupe(Line, builder.lines.items);
-        self.runs = try gpa.dupe(GlyphRun, builder.runs.items);
-        self.glyphs = try gpa.dupe(PositionedGlyph, builder.glyphs.items);
-        self.carets = try gpa.dupe(Caret, builder.carets.items);
+        self.lines = try builder.lines.toOwnedSlice(gpa);
+        self.runs = try builder.runs.toOwnedSlice(gpa);
+        self.glyphs = try builder.glyphs.toOwnedSlice(gpa);
+        self.carets = try builder.carets.toOwnedSlice(gpa);
     }
 
     fn freeArrays(self: *Layout) void {
@@ -345,6 +347,7 @@ pub const Layout = struct {
         var self: Layout = .{ .arena = .init(gpa), .paragraph = paragraph, .lines = &.{}, .runs = &.{}, .glyphs = &.{}, .carets = &.{}, .width = 0, .height = 0 };
         errdefer self.arena.deinit();
         var builder: Builder = .{
+            .lists = gpa,
             .p = paragraph,
             .cache = cache,
             .a = self.arena.allocator(),
@@ -359,6 +362,7 @@ pub const Layout = struct {
             .final_line = options.final_line,
         };
         defer builder.shaper.deinit();
+        defer builder.freeLists();
 
         // The kept lines at each end, and where their arrays start.
         var head: usize = 0;
@@ -374,7 +378,7 @@ pub const Layout = struct {
         }.at;
         const head_end = runEnd(old, head);
         const tail_start = runEnd(old, tail);
-        const lists = builder.scratch;
+        const lists = builder.lists;
         try builder.lines.appendSlice(lists, old.lines[0..head]);
         try builder.runs.appendSlice(lists, old.runs[0..head_end[0]]);
         try builder.glyphs.appendSlice(lists, old.glyphs[0..head_end[1]]);
@@ -526,13 +530,21 @@ const Builder = struct {
     tabs: bool,
     /// `Options.final_line`.
     final_line: bool = true,
-    /// The lists below grow in scratch memory and are copied into the
-    /// layout's arena at their final size: grown in the arena, every
-    /// outgrown buffer stayed (about half the memory of a long text).
+    /// The lists below grow in `lists` (the layout's allocator, not its
+    /// arena: there every outgrown buffer stayed, about half the memory
+    /// of a long text) and are kept shrunk to their final size.
+    lists: std.mem.Allocator,
     lines: std.ArrayList(Line) = .empty,
     runs: std.ArrayList(GlyphRun) = .empty,
     glyphs: std.ArrayList(PositionedGlyph) = .empty,
     carets: std.ArrayList(Caret) = .empty,
+
+    fn freeLists(self: *Builder) void {
+        self.lines.deinit(self.lists);
+        self.runs.deinit(self.lists);
+        self.glyphs.deinit(self.lists);
+        self.carets.deinit(self.lists);
+    }
 
     fn fits(limit: ?f32, width: f32) bool {
         const l = limit orelse return true;
@@ -1119,7 +1131,7 @@ const Builder = struct {
             const part_x = pen;
             const glyph_start: u32 = @intCast(self.glyphs.items.len);
             for (part.glyphs) |glyph| {
-                try self.glyphs.append(self.scratch, .{ .id = glyph.id, .x = pen + glyph.x_offset, .y = glyph.y_offset, .advance = glyph.advance, .cluster = glyph.cluster });
+                try self.glyphs.append(self.lists, .{ .id = glyph.id, .x = pen + glyph.x_offset, .y = glyph.y_offset, .advance = glyph.advance, .cluster = glyph.cluster });
                 pen += glyph.advance;
             }
             try self.appendCarets(part, run, face, style.size, part_x);
@@ -1135,7 +1147,7 @@ const Builder = struct {
                 }
             }
             if (part.glyphs.len == 0) continue;
-            try self.runs.append(self.scratch, .{
+            try self.runs.append(self.lists, .{
                 .font = run.font,
                 .size = style.size,
                 .style = run.style,
@@ -1146,12 +1158,12 @@ const Builder = struct {
                 .glyph_end = @intCast(self.glyphs.items.len),
             });
         }
-        if (self.carets.items.len == caret_start) try self.carets.append(self.scratch, .{ .offset = start, .x = 0, .affinity = .downstream });
+        if (self.carets.items.len == caret_start) try self.carets.append(self.lists, .{ .offset = start, .x = 0, .affinity = .downstream });
         if (hyphen) |hy| {
             // At the visual end of the (left-to-right) line, after its
             // last caret stop: it is shown, not text.
             const at: u32 = @intCast(self.glyphs.items.len);
-            try self.glyphs.append(self.scratch, .{ .id = hy.id, .x = pen, .y = 0, .advance = hy.advance, .cluster = hy.cluster });
+            try self.glyphs.append(self.lists, .{ .id = hy.id, .x = pen, .y = 0, .advance = hy.advance, .cluster = hy.cluster });
             pen += hy.advance;
             const merge = self.runs.items.len > run_start and blk: {
                 const last = self.runs.items[self.runs.items.len - 1];
@@ -1160,7 +1172,7 @@ const Builder = struct {
             if (merge) {
                 self.runs.items[self.runs.items.len - 1].glyph_end = at + 1;
             } else {
-                try self.runs.append(self.scratch, .{ .font = hy.font, .size = hy.size, .style = hy.style, .start = hy.cluster, .end = end, .rtl = false, .glyph_start = at, .glyph_end = at + 1 });
+                try self.runs.append(self.lists, .{ .font = hy.font, .size = hy.size, .style = hy.style, .start = hy.cluster, .end = end, .rtl = false, .glyph_start = at, .glyph_end = at + 1 });
             }
         }
 
@@ -1170,7 +1182,7 @@ const Builder = struct {
         for (self.glyphs.items[glyph_start_line..]) |glyph| {
             if (glyph.cluster >= hang) hanging += glyph.advance;
         }
-        try self.lines.append(self.scratch, .{
+        try self.lines.append(self.lists, .{
             .start = start,
             .end = end,
             .paragraph = paragraph_index,
@@ -1257,11 +1269,11 @@ const Builder = struct {
                 const g_start = nthBoundary(graphemes, group_start, logical);
                 const g_end = @min(graphemes.after(g_start) orelse group_end, group_end);
                 if (rtl) {
-                    try self.carets.append(self.scratch, .{ .offset = g_end, .x = edge_left, .affinity = .upstream });
-                    try self.carets.append(self.scratch, .{ .offset = g_start, .x = edge_right, .affinity = .downstream });
+                    try self.carets.append(self.lists, .{ .offset = g_end, .x = edge_left, .affinity = .upstream });
+                    try self.carets.append(self.lists, .{ .offset = g_start, .x = edge_right, .affinity = .downstream });
                 } else {
-                    try self.carets.append(self.scratch, .{ .offset = g_start, .x = edge_left, .affinity = .downstream });
-                    try self.carets.append(self.scratch, .{ .offset = g_end, .x = edge_right, .affinity = .upstream });
+                    try self.carets.append(self.lists, .{ .offset = g_start, .x = edge_left, .affinity = .downstream });
+                    try self.carets.append(self.lists, .{ .offset = g_end, .x = edge_right, .affinity = .upstream });
                 }
                 edge_left = edge_right;
             }
