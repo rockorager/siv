@@ -2,6 +2,8 @@
 //! functions, each under the version node the version script assigns, and
 //! has the expected SONAME. Catches a linker that ignores the version
 //! script and runtime symbols (UBSan, compiler-rt) leaking into the ABI.
+//! Also checks that its thread-local storage stays small, since every
+//! thread of a host process carries it.
 //!
 //! Usage: siv-abi-check-exports <lib.so> <siv|sivtest> <soname>
 
@@ -24,6 +26,10 @@ pub fn main(init: std.process.Init) !void {
     var failed = false;
     if (!std.mem.eql(u8, lib.soname orelse "", args[3])) {
         std.log.err("{s}: SONAME is {s}, expected {s}", .{ args[1], lib.soname orelse "(none)", args[3] });
+        failed = true;
+    }
+    if (lib.tls > max_tls) {
+        std.log.err("{s}: {d} bytes of thread-local storage, more than {d}; every thread of the host process carries it (std_options in src/siv.zig)", .{ args[1], lib.tls, max_tls });
         failed = true;
     }
     var buf: [64]u8 = undefined;
@@ -51,8 +57,13 @@ pub fn main(init: std.process.Init) !void {
     if (failed) std.process.exit(1);
 }
 
+/// Thread-local storage libsiv may have (D2).
+const max_tls = 4096;
+
 const Library = struct {
     soname: ?[]const u8,
+    /// Size of the thread-local storage segment (PT_TLS), 0 without one.
+    tls: u64,
     /// Defined dynamic symbols and their version names ("" if unversioned).
     exports: std.StringArrayHashMapUnmanaged([]const u8),
 
@@ -120,7 +131,12 @@ const Library = struct {
                 if (d.d_tag == elf.DT_SONAME) soname = str(data, shdrs[dy.sh_link], d.d_val);
             }
         }
-        return .{ .soname = soname, .exports = exports };
+        var tls: u64 = 0;
+        for (0..eh.e_phnum) |i| {
+            const ph = read(elf.Elf64.Phdr, data, eh.e_phoff + i * eh.e_phentsize);
+            if (ph.type == .TLS) tls = ph.memsz;
+        }
+        return .{ .soname = soname, .exports = exports, .tls = tls };
     }
 };
 

@@ -14,6 +14,9 @@ const alloc = @import("alloc.zig");
 const Error = runtime.Error;
 const Root = runtime.Root;
 
+/// As libsiv (src/siv.zig): no per-thread alternative signal stack.
+pub const std_options: std.Options = .{ .signal_stack_size = null };
+
 const spec = test_api.spec;
 const context_tag = spec.handleTag("sivtest_context");
 const item_tag = spec.handleTag("sivtest_item");

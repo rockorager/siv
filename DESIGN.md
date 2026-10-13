@@ -96,6 +96,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     process-wide structure is a fixed, lock-free table of 1024 root slots
     that lets any handle be validated without its root. It holds no
     configuration and needs no initialization.
+  - Thread-local storage stays small: libsiv sets Zig's
+    `std_options.signal_stack_size` to null, since a library installs no
+    crash handler to use the per-thread alternative signal stack Zig
+    otherwise reserves (256 KiB of thread-local storage in every thread of
+    the host process). With it, a host thread created with a 512 KiB
+    stack failed to start (EINVAL); found by the file manager in
+    `apps/files`, whose inotify thread did. The export check fails the
+    build above 4 KiB of thread-local storage.
   - Allocation failure is an error result at every call, never an abort.
     Applications may supply allocator hooks (`siv_allocator`: alloc and free
     with size and alignment, plus user data) per root; every allocation for
