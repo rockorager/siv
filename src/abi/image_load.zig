@@ -108,7 +108,7 @@ pub export fn siv_image_get_frame_count(image: t.Image, count: ?*u32) t.Result {
             const self, _ = try runtime.Root.owner(App, application.app_tag, @backingInt(h), canvas.image_tag);
             const img = try canvas.imageOf(self, h);
             const dest = try runtime.out(u32, out);
-            dest.* = @intCast(@max(img.frames.len, 1));
+            dest.* = img.frame_count;
         }
     }.f(image, count));
 }

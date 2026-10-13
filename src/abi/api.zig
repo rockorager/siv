@@ -1582,7 +1582,7 @@ pub const functions = [_]Function{
         .{ .name = "desc", .type = .{ .desc = "siv_image_desc" }, .doc = "The pixels." },
         .{ .name = "image", .type = out(ref("siv_image")), .doc = "The new image." },
     }),
-    call("siv_image_load", "Decodes PNG, APNG, JPEG, GIF, WebP, AVIF, or JPEG XL on a worker thread (D19), straight to the size it is shown at, with embedded color profiles converted to siv's linear working space, and calls callback with the image, then destroy. If the application is destroyed first, only destroy runs. Image nodes play animated images, unless motion is reduced; canvases draw their first frame.", &.{
+    call("siv_image_load", "Decodes PNG, APNG, JPEG, GIF, WebP, AVIF, or JPEG XL on a worker thread (D19), straight to the size it is shown at, with embedded color profiles converted to siv's linear working space, and calls callback with the image, then destroy. If the application is destroyed first, only destroy runs. Image nodes play animated images, unless motion is reduced; canvases draw their first frame. Animations with more than 32 MiB of frames at that size keep their file instead and decode a few frames ahead while they play.", &.{
         app_param,
         .{ .name = "desc", .type = .{ .desc = "siv_image_load_desc" }, .doc = "The file and size." },
         .{ .name = "callback", .type = ref("siv_image_load_fn"), .doc = "Receives the image." },
