@@ -118,8 +118,6 @@ drag_armed: bool = false,
 drag_x: f32 = 0,
 drag_y: f32 = 0,
 drag_entry: u32 = 0,
-/// A press on an item of a larger selection kept the selection, for a
-/// drag of all of it; the release without a drag selects only the item.
 /// The active view's selection as of the last status update, and totals
 /// over it, kept from the changed ranges select events report.
 sel_bits: std.ArrayList(u8) = .empty,

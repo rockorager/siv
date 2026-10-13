@@ -151,14 +151,22 @@ Measurements are in [Numbers](#numbers) at the end.
    `.escape` in Zig, `"escape"` in Lua (commit "abi: name keysyms in the
    schema as siv_key", D16). `src/keys.zig` is gone.
 
-## Open API questions
-
 11. **No way to watch a file descriptor.** inotify for the shown folder
     needs a descriptor in the event loop, but the public loop takes none:
     `siv_app_fd` embeds siv in another loop, not the reverse. The app runs
     a thread blocked in poll(2) that `siv_post`s changes
     (`src/Watcher.zig`). A `siv_app_watch_fd(app, fd, events, callback)`
     would remove the thread and the cross-thread lifetime handling.
+    *Fixed:* `siv_app_watch_fd` watches it in siv's loop and calls back at
+    a safe point; `siv_watch_destroy` stops (commit "abi: watch
+    application file descriptors in the loop", D6). `src/Watcher.zig` lost
+    its thread, eventfd, atomics, and post lifetime handling (119 to 70
+    lines). Writing the test for it found a bug of the app's own: re-
+    adding the watch after every reload reported IN_IGNORED, which
+    reloaded again; it now keeps the watch of an unchanged folder and
+    ignores IN_IGNORED.
+
+## Open API questions
 
 12. **Long jobs share the pool with decoding and rendering.** A copy of a
     large tree occupies a worker for its whole length; several copies at

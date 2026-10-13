@@ -307,6 +307,26 @@ fn writePng(fx: *Fixture, name: []const u8, w: u32, h: u32, rgb: [3]u8) !void {
     _ = linux.utimensat(linux.AT.FDCWD, path, &ts, 0);
 }
 
+test "changes made elsewhere show up: the folder is watched in siv's loop" {
+    var fx: Fixture = .{};
+    try fx.create(&sample);
+    defer fx.remove();
+    var h: Harness = .{};
+    try h.start(.{ .path = fx.path, .watch = true });
+    defer h.stop();
+    try fx.add(.{ .name = "new-from-elsewhere.txt", .size = 5 });
+    try h.until(3000, struct {
+        fn f(hh: *Harness) bool {
+            if (hh.f().listing == null) return false;
+            var buf: [16][]const u8 = undefined;
+            for (buf[0..names(hh, &buf)]) |n| if (std.mem.eql(u8, n, "new-from-elsewhere.txt")) return true;
+            return false;
+        }
+    }.f);
+    var sbuf: [128]u8 = undefined;
+    try testing.expectEqualStrings("10 items", h.status(&sbuf));
+}
+
 test "grid view with thumbnails decoded on the worker pool" {
     var fx: Fixture = .{};
     try fx.create(&sample);

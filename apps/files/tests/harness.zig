@@ -125,6 +125,7 @@ pub const Harness = struct {
         thumbnails: bool = false,
         config_home: ?[]const u8 = "/nonexistent-config",
         data_home: ?[]const u8 = null,
+        watch: bool = false,
     };
 
     fn onClosed(files: *Files) void {
@@ -147,9 +148,19 @@ pub const Harness = struct {
             .height = s.height,
             .mode = s.mode,
             .thumbnails = s.thumbnails,
-            .watch = false,
+            .watch = s.watch,
             .on_closed = onClosed,
         });
+        try h.settle();
+    }
+
+    /// Runs the loop until `done(h)` or the deadline.
+    pub fn until(h: *Harness, ms: u64, comptime done: fn (*Harness) bool) !void {
+        const deadline = Loop.now() + ms * std.time.ns_per_ms;
+        while (!done(h)) {
+            if (Loop.now() > deadline) return error.Timeout;
+            try ok(A.siv_app_dispatch(h.app, 10));
+        }
         try h.settle();
     }
 
