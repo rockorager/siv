@@ -76,6 +76,9 @@ primary_selection_manager: ?*zwp.PrimarySelectionDeviceManagerV1 = null,
 cursor_shape_manager: ?*wp.CursorShapeManagerV1 = null,
 gestures: ?*zwp.PointerGesturesV1 = null,
 tablet_manager: ?*zwp.TabletManagerV2 = null,
+pointer_constraints: ?*zwp.PointerConstraintsV1 = null,
+relative_manager: ?*zwp.RelativePointerManagerV1 = null,
+shortcuts_manager: ?*zwp.KeyboardShortcutsInhibitManagerV1 = null,
 /// Themed cursors, without cursor-shape-v1.
 cursor_theme: cursor.Theme,
 exporter: ?*zxdg.ExporterV2 = null,
@@ -214,6 +217,10 @@ pub const Window = struct {
     /// An activation asked for before the window was mapped, sent once
     /// it is (compositors ignore activating an unmapped surface).
     pending_activation: ?platform.Handle = null,
+    /// Pointer constraint and shortcut inhibition the window asked for;
+    /// each seat holds the protocol objects.
+    constraint: platform.ConstraintOptions = .{},
+    inhibit_shortcuts: bool = false,
 
     /// Presentation feedback for one commit and the time it was predicted for.
     const Feedback = struct {
@@ -290,6 +297,9 @@ fn teardown(self: *Wayland) void {
     if (self.cursor_shape_manager) |m| m.destroy();
     if (self.gestures) |m| if (m.getVersion() >= 2) m.release() else wlDestroy(m);
     if (self.tablet_manager) |m| m.destroy();
+    if (self.pointer_constraints) |m| m.destroy();
+    if (self.relative_manager) |m| m.destroy();
+    if (self.shortcuts_manager) |m| m.destroy();
     for (self.outputs.items) |o| if (o) |out| self.destroyOutput(out);
     self.windows.deinit(self.allocator);
     self.seats.deinit(self.allocator);
@@ -457,6 +467,12 @@ fn addGlobal(self: *Wayland, registry: *wl.Registry, name: u32, interface: []con
         const m = try registry.bind(name, zwp.TabletManagerV2, @min(version, 2));
         self.tablet_manager = m;
         for (self.seats.items) |s| if (s) |seat| seat.addTablet(m);
+    } else if (is(interface, zwp.PointerConstraintsV1)) {
+        self.pointer_constraints = try registry.bind(name, zwp.PointerConstraintsV1, 1);
+    } else if (is(interface, zwp.RelativePointerManagerV1)) {
+        self.relative_manager = try registry.bind(name, zwp.RelativePointerManagerV1, 1);
+    } else if (is(interface, zwp.KeyboardShortcutsInhibitManagerV1)) {
+        self.shortcuts_manager = try registry.bind(name, zwp.KeyboardShortcutsInhibitManagerV1, 1);
     } else if (is(interface, zwp.PointerGesturesV1)) {
         self.gestures = try registry.bind(name, zwp.PointerGesturesV1, @min(version, 3));
         for (self.seats.items) |s| if (s) |seat| seat.addGestures();
@@ -1218,6 +1234,19 @@ fn reapplyCursors(self: *Wayland, id: WindowId) void {
         if (seat.pointer_focus == id) seat.applyCursor();
         if (seat.tablet) |t| t.reapplyCursors(id);
     };
+}
+
+pub fn setPointerConstraint(self: *Wayland, id: WindowId, options: platform.ConstraintOptions) void {
+    const w = self.get(id);
+    w.constraint = options;
+    for (self.seats.items) |s| if (s) |seat| seat.applyConstraint(w);
+}
+
+pub fn inhibitShortcuts(self: *Wayland, id: WindowId, on: bool) void {
+    const w = self.get(id);
+    if (w.inhibit_shortcuts == on) return;
+    w.inhibit_shortcuts = on;
+    for (self.seats.items) |s| if (s) |seat| seat.applyInhibitor(w);
 }
 
 pub fn startDrag(self: *Wayland, id: WindowId, seat: SeatId, serial: u32, mimes: []const []const u8, actions: platform.DragActions, icon: ?*const platform.DragIcon) Error!u32 {

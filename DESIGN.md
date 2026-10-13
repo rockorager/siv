@@ -1438,6 +1438,36 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     draws pressure-sensitive strokes from the samples, erases with the
     eraser end, and zooms with pinches; the headless Lua test drives it
     with injected tablet and pinch events against golden images.
+  - Pointer constraints and relative motion are per window and on
+    request: `siv_window_set_pointer_constraint` locks or confines the
+    pointer to a node's box (the root: the whole window), one-shot by
+    default (the compositor's deactivation ends it, as browsers' pointer
+    lock does) or persistent, and with the relative flag sends the node
+    relative motion as pointer move events marked relative (accelerated
+    and raw deltas, also while locked or against an edge). The tree keeps
+    the request and sends the box again whenever layout moves it; a
+    removed or hidden node ends it. The platform makes the constraint for
+    every seat's pointer (pointer-constraints) and a relative pointer per
+    seat on the first request (relative-pointer), forwarding relative
+    motion only to windows that asked. The compositor decides when a
+    constraint is active; window events (`pointer_constrained`,
+    `pointer_unconstrained`) report it, and after a one-shot constraint
+    ends, asking again makes a new one. Window-level rather than a node
+    property: the protocol constrains a surface, one at a time, and a
+    lock is a mode the application enters (a 3D view's drag, a game)
+    rather than a property of a node in the tree.
+  - Shortcut inhibition (`siv_window_inhibit_shortcuts`,
+    keyboard-shortcuts-inhibit) asks for the compositor's own shortcuts
+    as keys while the window has focus, for remote desktops, virtual
+    machines, and terminals; `shortcuts_inhibited` and
+    `shortcuts_restored` window events report what the compositor
+    granted.
+  - Verified on sway 1.12 (`zig build test-integration`): a lock over
+    the focused window activates at once, a virtual pointer's motion then
+    arrives only as relative motion (the pointer stays put), and ending
+    the lock lets it move; sway grants a shortcut inhibitor to the
+    focused window. The headless backend grants both at once and
+    simulates the compositor ending a constraint.
   - Every pointer, key, and scroll event names its target, the node it
     was delivered to first (`siv_event.target`), so a handler on an
     ancestor tells its own events from a descendant's: a list row ignores

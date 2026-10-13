@@ -310,6 +310,14 @@ pub const VirtualPointer = struct {
         vp.send(4, &.{});
     }
 
+    /// Moves by (dx, dy), as a mouse would, then ends the frame.
+    pub fn move(vp: *VirtualPointer, dx: f64, dy: f64) void {
+        vp.time += 10;
+        var args = [_]wl.Argument{ .{ .u = vp.time }, .{ .f = .fromDouble(dx) }, .{ .f = .fromDouble(dy) } };
+        vp.send(0, &args);
+        vp.send(4, &.{});
+    }
+
     pub fn button(vp: *VirtualPointer, code: u32, pressed: bool) void {
         vp.time += 10;
         var args = [_]wl.Argument{ .{ .u = vp.time }, .{ .u = code }, .{ .u = @intFromBool(pressed) } };

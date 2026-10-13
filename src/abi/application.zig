@@ -578,6 +578,19 @@ fn onWindowEvent(ctx: ?*anyopaque, _: *app_mod.Window, ev: *const app_mod.Window
             _ = cb(w.user_data, handle, &e);
             return false;
         },
+        .pointer_constraint, .shortcuts_inhibit => {
+            const cb = w.on_event orelse return false;
+            const kind: t.WindowEventType = switch (ev.*) {
+                .pointer_constraint => |c| if (c.active) .pointer_constrained else .pointer_unconstrained,
+                .shortcuts_inhibit => |on| if (on) .shortcuts_inhibited else .shortcuts_restored,
+                else => unreachable,
+            };
+            var e = windowEvent(kind, w.win.state);
+            self.enter();
+            defer self.leave();
+            _ = cb(w.user_data, handle, &e);
+            return false;
+        },
         .external_configure => |x| {
             external.deliver(w, x.id, .{
                 .type = .configure,

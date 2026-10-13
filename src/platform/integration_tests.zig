@@ -524,6 +524,86 @@ test "tablets: sway's tablet seat, and tool and pad events translated" {
     try testing.expect(pads.items[2].stop);
 }
 
+test "pointer lock with relative motion, and shortcut inhibition, granted by sway" {
+    var h: Harness = .{};
+    try h.start();
+    defer h.stop();
+    const app = &h.app;
+    const id = try h.mapWindow(.{});
+    var vp = try VirtualPointer.connect(&h.sway);
+    defer vp.deinit();
+    try vp.sync();
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            const seat = a.backend.seats.items[0] orelse return false;
+            return seat.pointer != null;
+        }
+    }.f);
+    _ = app.backend.display.roundtrip();
+    vp.moveTo(100, 120);
+    try vp.sync();
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.count(.pointer_enter) + a.count(.pointer_motion) >= 1;
+        }
+    }.f);
+
+    // Sway locks the pointer over the focused window at once.
+    app.backend.setPointerConstraint(id, .{ .kind = .lock, .relative = true });
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            const c = a.last(.pointer_constraint) orelse return false;
+            return c.pointer_constraint.active;
+        }
+    }.f);
+    try testing.expectEqual(id, app.last(.pointer_constraint).?.pointer_constraint.window);
+    // A locked pointer does not move; the motion arrives as relative.
+    const motions = app.count(.pointer_motion);
+    vp.move(5, -3);
+    vp.move(2, 0);
+    try vp.sync();
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.count(.relative_motion) >= 2;
+        }
+    }.f);
+    var dx: f64 = 0;
+    var dy: f64 = 0;
+    for (app.events.items) |e| if (e == .relative_motion) {
+        dx += e.relative_motion.dx_unaccel;
+        dy += e.relative_motion.dy_unaccel;
+        try testing.expectEqual(id, e.relative_motion.window);
+    };
+    try testing.expectEqual(@as(f64, 7), dx);
+    try testing.expectEqual(@as(f64, -3), dy);
+    try testing.expectEqual(motions, app.count(.pointer_motion));
+
+    // Ending the lock lets the pointer move again.
+    app.backend.setPointerConstraint(id, .{});
+    try h.loop.dispatch(0);
+    try testing.expect(!app.last(.pointer_constraint).?.pointer_constraint.active);
+    vp.move(4, 4);
+    try vp.sync();
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            const m = a.last(.pointer_motion) orelse return false;
+            return m.pointer_motion.x == 104;
+        }
+    }.f);
+
+    // Sway grants a shortcut inhibitor to the focused window.
+    app.backend.inhibitShortcuts(id, true);
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            const i = a.last(.shortcuts_inhibit) orelse return false;
+            return i.shortcuts_inhibit.active;
+        }
+    }.f);
+    app.backend.inhibitShortcuts(id, false);
+    try h.loop.dispatch(0);
+    try testing.expect(!app.last(.shortcuts_inhibit).?.shortcuts_inhibit.active);
+}
+
 test "a deferred configure is acked by the next present or after the timeout" {
     var h: Harness = .{};
     try h.start();

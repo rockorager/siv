@@ -491,6 +491,7 @@ pub fn handle(win: *Window, event: *const platform.Event) void {
         .scroll => |s| scroll(win, @floatCast(s.dx), @floatCast(s.dy), s.v120_x, s.v120_y),
         .gesture => |g| gesture(win, &g),
         .tablet_tool => |t| tabletTool(win, &t),
+        .relative_motion => |r| relativeMotion(win, &r),
         .tablet_pad => |p| {
             flushTablet(win);
             padEvent(win, &p);
@@ -907,6 +908,42 @@ fn padEvent(win: *Window, p: *const platform.TabletPad) void {
         const r = call(win, cur, .pad, &ev);
         if (r.prevents()) ev.pad.prevented = true;
         if (r.stops() or !win.isLive(cur)) return;
+        cur = win.node(cur).parent;
+    }
+}
+
+/// Relative motion goes to the node the pointer constraint names (the
+/// root for the whole window) as pointer move events marked relative, and
+/// bubbles from there.
+fn relativeMotion(win: *Window, r: *const platform.RelativeMotion) void {
+    const c = win.constraint;
+    if (c.kind == .none and !c.relative) return;
+    const target: NodeId = if (c.node == .none) .root else c.node;
+    if (!win.isLive(target)) return;
+    const st = &win.input;
+    const p = st.pointer orelse Point.zero;
+    const time: u32 = @truncate(r.time_us / 1000);
+    var prevented = false;
+    var cur = target;
+    while (cur != .none and win.isLive(cur)) {
+        const local = toLocal(win, cur, p);
+        const ev: Event = .{ .pointer = .{
+            .phase = .move,
+            .x = local.x,
+            .y = local.y,
+            .mods = st.mods,
+            .time = time,
+            .target = target,
+            .prevented = prevented,
+            .relative = true,
+            .dx = @floatCast(r.dx),
+            .dy = @floatCast(r.dy),
+            .raw_dx = @floatCast(r.dx_unaccel),
+            .raw_dy = @floatCast(r.dy_unaccel),
+        } };
+        const res = call(win, cur, .pointer, &ev);
+        prevented = prevented or res.prevents();
+        if (res.stops() or !win.isLive(cur)) return;
         cur = win.node(cur).parent;
     }
 }

@@ -96,6 +96,11 @@ const Window = struct {
     bare_commits: u32 = 0,
     cursor: platform.CursorShape = .default,
     activated_with: platform.Handle = .{},
+    /// What the window asked for; the simulated compositor grants it at
+    /// once (`endConstraint` deactivates it).
+    constraint: platform.ConstraintOptions = .{},
+    constraint_active: bool = false,
+    inhibit_shortcuts: bool = false,
 
     const Slot = struct { pixels: []u8 = &.{}, width: u32 = 0, height: u32 = 0 };
 };
@@ -463,6 +468,38 @@ pub fn activate(hl: *Headless, id: WindowId, token: []const u8) void {
 /// The token the window was last activated with.
 pub fn activationToken(hl: *Headless, id: WindowId) []const u8 {
     return hl.get(id).activated_with.slice();
+}
+
+pub fn setPointerConstraint(hl: *Headless, id: WindowId, options: platform.ConstraintOptions) void {
+    const w = hl.get(id);
+    w.constraint = options;
+    const active = options.kind != .none;
+    if (active == w.constraint_active) return;
+    w.constraint_active = active;
+    hl.queue.push(.{ .pointer_constraint = .{ .window = id, .seat = 0, .active = active, .ended = !active } });
+}
+
+/// The window's constraint as the simulated compositor has it.
+pub fn constraintOf(hl: *Headless, id: WindowId) struct { options: platform.ConstraintOptions, active: bool } {
+    const w = hl.get(id);
+    return .{ .options = w.constraint, .active = w.constraint_active };
+}
+
+/// Deactivates a window's constraint as a compositor would (the user
+/// switched windows); a one-shot constraint ends.
+pub fn endConstraint(hl: *Headless, id: WindowId) void {
+    const w = hl.get(id);
+    if (!w.constraint_active) return;
+    w.constraint_active = false;
+    if (!w.constraint.persistent) w.constraint.kind = .none;
+    hl.queue.push(.{ .pointer_constraint = .{ .window = id, .seat = 0, .active = false, .ended = !w.constraint.persistent } });
+}
+
+pub fn inhibitShortcuts(hl: *Headless, id: WindowId, on: bool) void {
+    const w = hl.get(id);
+    if (w.inhibit_shortcuts == on) return;
+    w.inhibit_shortcuts = on;
+    hl.queue.push(.{ .shortcuts_inhibit = .{ .window = id, .seat = 0, .active = on } });
 }
 
 pub fn windowState(hl: *Headless, id: WindowId) *const WindowState {

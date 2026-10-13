@@ -90,6 +90,10 @@ dnd: dnd_mod.State = .{},
 /// A cursor for the whole window over every node's, such as a busy
 /// cursor; null for none.
 cursor_override: ?node_mod.CursorShape = null,
+/// The pointer constraint the application asked for (D16): the node
+/// whose box it covers (root: the window) and gets relative motion, and
+/// what was last sent, which follows the node's box after layout.
+constraint: Constraint = .{},
 /// The cursor last sent to the platform.
 cursor_shown: node_mod.CursorShape = .default,
 /// The loop animated images are timed on; without it they show their
@@ -140,10 +144,22 @@ pub const Host = struct {
     /// Sets the window's pointer cursor (D16). Run it on the compositor
     /// thread with `Compositor.post` and `Platform.setCursor`.
     set_cursor: *const fn (ctx: ?*anyopaque, shape: node_mod.CursorShape) void = noopCursor,
+    /// Sets the window's pointer constraint and relative motion (D16).
+    /// Run it on the compositor thread with `Platform.setPointerConstraint`.
+    pointer_constraint: *const fn (ctx: ?*anyopaque, options: platform.ConstraintOptions) void = noopConstraint,
 
+    fn noopConstraint(_: ?*anyopaque, _: platform.ConstraintOptions) void {}
     fn noop(_: ?*anyopaque) void {}
     fn noopTextInput(_: ?*anyopaque, _: platform.SeatId, _: *const platform.TextInputState) void {}
     fn noopCursor(_: ?*anyopaque, _: node_mod.CursorShape) void {}
+};
+
+pub const Constraint = struct {
+    kind: platform.PointerConstraint = .none,
+    node: NodeId = .none,
+    persistent: bool = false,
+    relative: bool = false,
+    sent: platform.ConstraintOptions = .{},
 };
 
 pub const Options = struct {
@@ -457,6 +473,47 @@ pub fn isAncestor(win: *const Window, ancestor: NodeId, id: NodeId) bool {
     return false;
 }
 
+/// Locks or confines the pointer to a node's box (the root: the whole
+/// window), and with `relative` asks for relative motion, which goes to
+/// that node as pointer events (D16). `.none` without `relative` ends it.
+/// The region follows the node's box after each layout.
+pub fn setPointerConstraint(win: *Window, id: NodeId, kind: platform.PointerConstraint, persistent: bool, relative: bool) void {
+    win.constraint = .{ .kind = kind, .node = id, .persistent = persistent, .relative = relative, .sent = win.constraint.sent };
+    // At once with the last layout; a frame sends it again if the box
+    // was not laid out yet.
+    win.syncConstraint();
+    win.requestFrame();
+}
+
+/// The compositor ended a one-shot constraint: it is none now, and asking
+/// for it again makes a new one.
+pub fn pointerConstraintEnded(win: *Window) void {
+    win.constraint.kind = .none;
+    win.constraint.sent.kind = .none;
+    win.constraint.sent.region = null;
+    if (!win.constraint.relative) win.constraint.sent = .{};
+}
+
+/// Sends the pointer constraint if it or its node's box changed.
+fn syncConstraint(win: *Window) void {
+    const c = &win.constraint;
+    var o: platform.ConstraintOptions = .{ .kind = c.kind, .persistent = c.persistent, .relative = c.relative };
+    if (c.node != .root and c.node != .none and (c.kind != .none or c.relative)) {
+        if (!win.isLive(c.node) or !win.isShown(c.node)) {
+            // The node went: so did its constraint.
+            o = .{};
+        } else {
+            const r = win.windowRect(c.node);
+            const x0 = @floor(r.x0);
+            const y0 = @floor(r.y0);
+            o.region = .{ .x = @intFromFloat(x0), .y = @intFromFloat(y0), .width = @intFromFloat(@max(1, @ceil(r.x1) - x0)), .height = @intFromFloat(@max(1, @ceil(r.y1) - y0)) };
+        }
+    }
+    if (std.meta.eql(o, c.sent)) return;
+    c.sent = o;
+    win.host.pointer_constraint(win.host.ctx, o);
+}
+
 /// The node's top-left corner in window coordinates (ignoring transforms
 /// other than translation), and its size.
 pub fn windowRect(win: *const Window, id: NodeId) Rect {
@@ -624,6 +681,7 @@ pub fn frame(win: *Window) Error!void {
     }
     try win.paint.build(win);
     try win.paint.emit(win);
+    win.syncConstraint();
     win.dirty.props = false;
     if (win.dirty.semantics) {
         try win.semantics.rebuild(win);

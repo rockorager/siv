@@ -97,7 +97,7 @@ const Recorder = struct {
                 r.configures += 1;
                 r.last = c.new;
             },
-            .external_released, .external_configure, .presented => {},
+            .external_released, .external_configure, .presented, .pointer_constraint, .shortcuts_inhibit => {},
         }
         return r.keep_open;
     }

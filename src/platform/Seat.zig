@@ -55,6 +55,13 @@ hold: ?*zwp.PointerGestureHoldV1 = null,
 gesture_window: [3]?WindowId = @splat(null),
 gesture_fingers: [3]u32 = @splat(0),
 
+/// Pointer constraints windows asked for (pointer-constraints), relative
+/// motion (relative-pointer, made on first request), and shortcut
+/// inhibitors (keyboard-shortcuts-inhibit), each per window.
+constraints: std.ArrayList(*Constraint) = .empty,
+relative: ?*zwp.RelativePointerV1 = null,
+inhibitors: std.ArrayList(*Inhibitor) = .empty,
+
 /// Serial of the pointer's last enter, which cursor requests name.
 enter_serial: u32 = 0,
 /// cursor-shape-v1 for the pointer, if the compositor offers it.
@@ -71,6 +78,21 @@ cursor_timer: Timer = .{ .func = onCursorFrame },
 points: [max_points]Point = @splat(.{}),
 
 const max_points = 16;
+
+pub const Constraint = struct {
+    seat: *Seat,
+    window: WindowId,
+    locked: ?*zwp.LockedPointerV1 = null,
+    confined: ?*zwp.ConfinedPointerV1 = null,
+    persistent: bool,
+    active: bool = false,
+};
+
+pub const Inhibitor = struct {
+    seat: *Seat,
+    window: WindowId,
+    proxy: *zwp.KeyboardShortcutsInhibitorV1,
+};
 
 const Point = struct {
     active: bool = false,
@@ -120,6 +142,11 @@ pub fn addTablet(seat: *Seat, manager: *zwp.TabletManagerV2) void {
 }
 
 pub fn destroy(seat: *Seat) void {
+    for (seat.inhibitors.items) |i| {
+        i.proxy.destroy();
+        seat.backend.allocator.destroy(i);
+    }
+    seat.inhibitors.deinit(seat.backend.allocator);
     if (seat.tablet) |t| t.destroy();
     if (seat.text_input) |ti| ti.destroy();
     seat.data.destroy();
@@ -128,6 +155,7 @@ pub fn destroy(seat: *Seat) void {
     if (seat.cursor_viewport) |v| v.destroy();
     if (seat.cursor_surface) |c| c.destroy();
     seat.setCapabilities(.{});
+    seat.constraints.deinit(seat.backend.allocator);
     seat.keyboard.deinit();
     if (seat.proxy.getVersion() >= 5) seat.proxy.release() else seat.proxy.destroy();
     seat.backend.allocator.destroy(seat);
@@ -148,6 +176,13 @@ pub fn forgetWindow(seat: *Seat, id: WindowId) void {
     }
     for (&seat.gesture_window) |*g| if (g.* == id) {
         g.* = null;
+    };
+    seat.dropConstraint(id, false);
+    for (seat.inhibitors.items, 0..) |inh, i| if (inh.window == id) {
+        inh.proxy.destroy();
+        seat.backend.allocator.destroy(inh);
+        _ = seat.inhibitors.swapRemove(i);
+        break;
     };
     for (&seat.points) |*p| if (p.active and p.touch.window == id) {
         p.* = .{};
@@ -173,12 +208,16 @@ fn setCapabilities(seat: *Seat, caps: wl.Seat.Capability) void {
             seat.pointer = p;
             seat.addShapeDevice();
             seat.addGestures();
+            for (seat.backend.windows.items) |w| if (w) |win| seat.applyConstraint(win);
         } else |_| seat.backend.queue.fail(error.OutOfMemory);
     } else if (!caps.pointer and seat.pointer != null) {
         const p = seat.pointer.?;
         if (seat.shape_device) |d| d.destroy();
         seat.shape_device = null;
         seat.removeGestures();
+        while (seat.constraints.items.len != 0) seat.dropConstraint(seat.constraints.items[0].window, true);
+        if (seat.relative) |r| r.destroy();
+        seat.relative = null;
         seat.stopCursorAnimation();
         if (v3) p.release() else p.destroy();
         seat.pointer = null;
@@ -400,6 +439,130 @@ fn onPointer(_: *wl.Pointer, event: wl.Pointer.Event, seat: *Seat) void {
             }
         },
     }
+}
+
+// Constraints and relative motion --------------------------------------------
+
+/// Makes the seat's pointer follow a window's constraint request: drops
+/// the old constraint and makes the new one.
+pub fn applyConstraint(seat: *Seat, w: *Wayland.Window) void {
+    const b = seat.backend;
+    const o = w.constraint;
+    seat.dropConstraint(w.id, true);
+    const p = seat.pointer orelse return;
+    if ((o.relative or o.kind != .none) and seat.relative == null) if (b.relative_manager) |m| {
+        const r = m.getRelativePointer(p) catch return b.queue.fail(error.OutOfMemory);
+        r.setListener(*Seat, onRelative, seat);
+        seat.relative = r;
+    };
+    if (o.kind == .none) return;
+    const manager = b.pointer_constraints orelse return;
+    const region = if (o.region) |r| blk: {
+        const reg = b.compositor.?.createRegion() catch return b.queue.fail(error.OutOfMemory);
+        reg.add(r.x, r.y, r.width, r.height);
+        break :blk reg;
+    } else null;
+    defer if (region) |r| r.destroy();
+    const c = b.allocator.create(Constraint) catch return b.queue.fail(error.OutOfMemory);
+    c.* = .{ .seat = seat, .window = w.id, .persistent = o.persistent };
+    seat.constraints.append(b.allocator, c) catch {
+        b.allocator.destroy(c);
+        return b.queue.fail(error.OutOfMemory);
+    };
+    const lifetime: zwp.PointerConstraintsV1.Lifetime = if (o.persistent) .persistent else .oneshot;
+    switch (o.kind) {
+        .none => unreachable,
+        .lock => {
+            const l = manager.lockPointer(w.surface, p, region, lifetime) catch return b.queue.fail(error.OutOfMemory);
+            l.setListener(*Constraint, onLocked, c);
+            c.locked = l;
+        },
+        .confine => {
+            const cf = manager.confinePointer(w.surface, p, region, lifetime) catch return b.queue.fail(error.OutOfMemory);
+            cf.setListener(*Constraint, onConfined, c);
+            c.confined = cf;
+        },
+    }
+}
+
+/// Destroys a window's constraint, reporting it inactive if it was
+/// active and `report` is set.
+fn dropConstraint(seat: *Seat, window: WindowId, report: bool) void {
+    for (seat.constraints.items, 0..) |c, i| if (c.window == window) {
+        if (c.locked) |l| l.destroy();
+        if (c.confined) |cf| cf.destroy();
+        if (report and c.active) seat.push(.{ .pointer_constraint = .{ .window = window, .seat = seat.id, .active = false, .ended = true } });
+        seat.backend.allocator.destroy(c);
+        _ = seat.constraints.swapRemove(i);
+        return;
+    };
+}
+
+fn constraintChanged(c: *Constraint, active: bool) void {
+    const seat = c.seat;
+    c.active = active;
+    seat.push(.{ .pointer_constraint = .{ .window = c.window, .seat = seat.id, .active = active, .ended = !active and !c.persistent } });
+    // A one-shot constraint is dead once deactivated.
+    if (!active and !c.persistent) seat.dropConstraint(c.window, false);
+}
+
+fn onLocked(_: *zwp.LockedPointerV1, event: zwp.LockedPointerV1.Event, c: *Constraint) void {
+    constraintChanged(c, event == .locked);
+}
+
+fn onConfined(_: *zwp.ConfinedPointerV1, event: zwp.ConfinedPointerV1.Event, c: *Constraint) void {
+    constraintChanged(c, event == .confined);
+}
+
+fn onRelative(_: *zwp.RelativePointerV1, event: zwp.RelativePointerV1.Event, seat: *Seat) void {
+    const m = switch (event) {
+        .relative_motion => |m| m,
+    };
+    const id = seat.pointer_focus orelse return;
+    const w = seat.backend.windows.items[id] orelse return;
+    // Only windows that asked for it.
+    if (!w.constraint.relative and w.constraint.kind == .none) return;
+    seat.push(.{ .relative_motion = .{
+        .window = id,
+        .seat = seat.id,
+        .dx = m.dx.toDouble(),
+        .dy = m.dy.toDouble(),
+        .dx_unaccel = m.dx_unaccel.toDouble(),
+        .dy_unaccel = m.dy_unaccel.toDouble(),
+        .time_us = @as(u64, m.utime_hi) << 32 | m.utime_lo,
+    } });
+}
+
+// Shortcut inhibition -------------------------------------------------------
+
+/// Makes or destroys the seat's inhibitor for a window.
+pub fn applyInhibitor(seat: *Seat, w: *Wayland.Window) void {
+    const b = seat.backend;
+    for (seat.inhibitors.items, 0..) |inh, i| if (inh.window == w.id) {
+        if (w.inhibit_shortcuts) return;
+        inh.proxy.destroy();
+        b.allocator.destroy(inh);
+        _ = seat.inhibitors.swapRemove(i);
+        seat.push(.{ .shortcuts_inhibit = .{ .window = w.id, .seat = seat.id, .active = false } });
+        return;
+    };
+    if (!w.inhibit_shortcuts) return;
+    const m = b.shortcuts_manager orelse return;
+    const inh = b.allocator.create(Inhibitor) catch return b.queue.fail(error.OutOfMemory);
+    inh.* = .{ .seat = seat, .window = w.id, .proxy = m.inhibitShortcuts(w.surface, seat.proxy) catch {
+        b.allocator.destroy(inh);
+        return b.queue.fail(error.OutOfMemory);
+    } };
+    seat.inhibitors.append(b.allocator, inh) catch {
+        inh.proxy.destroy();
+        b.allocator.destroy(inh);
+        return b.queue.fail(error.OutOfMemory);
+    };
+    inh.proxy.setListener(*Inhibitor, onInhibitor, inh);
+}
+
+fn onInhibitor(_: *zwp.KeyboardShortcutsInhibitorV1, event: zwp.KeyboardShortcutsInhibitorV1.Event, inh: *Inhibitor) void {
+    inh.seat.push(.{ .shortcuts_inhibit = .{ .window = inh.window, .seat = inh.seat.id, .active = event == .active } });
 }
 
 // Gestures ------------------------------------------------------------------

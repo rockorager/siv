@@ -1335,6 +1335,11 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
             ev.clicks = p.clicks;
             ev.time = p.time;
             ev.flags.prevented = p.prevented;
+            ev.flags.relative = p.relative;
+            ev.dx = p.dx;
+            ev.dy = p.dy;
+            ev.raw_dx = p.raw_dx;
+            ev.raw_dy = p.raw_dy;
             if (p.target != .none and uw.isLive(p.target)) ev.target = @fromBackingInt(w.nodes.handle(p.target));
         },
         .key => |k| {

@@ -330,6 +330,19 @@ pub const decls = [_]Decl{
         .{ .name = "scale_changed", .value = 2, .doc = "The buffer scale changed." },
         .{ .name = "states_changed", .value = 3, .doc = "The window states changed." },
         .{ .name = "presented", .value = 4, .doc = "A frame with everything committed so far reached the display server (D12): frame counts the window's commits, present_ns and commit_ns say when. Sent once per commit that changed what is shown (or changed nothing visible), never while idle; a burst of commits within one frame reports the last." },
+        .{ .name = "pointer_constrained", .value = 5, .doc = "The compositor activated the pointer constraint (siv_window_set_pointer_constraint): the pointer is locked or confined now." },
+        .{ .name = "pointer_unconstrained", .value = 6, .doc = "The compositor deactivated the pointer constraint (the user switched away, or it was ended). Unless it was persistent, it is gone: set it again to get it back." },
+        .{ .name = "shortcuts_inhibited", .value = 7, .doc = "The compositor sends the window its own shortcuts as keys (siv_window_inhibit_shortcuts), while the window has keyboard focus." },
+        .{ .name = "shortcuts_restored", .value = 8, .doc = "The compositor handles its shortcuts again (the user overrode the inhibition, or it was ended)." },
+    }),
+    enumeration("siv_pointer_constraint", "What a pointer constraint does (D16).", &.{
+        .{ .name = "none", .value = 0, .doc = "No constraint." },
+        .{ .name = "lock", .value = 1, .doc = "The pointer stays where it is and its cursor hides; only relative motion arrives (3D views, games)." },
+        .{ .name = "confine", .value = 2, .doc = "The pointer moves only inside the node's box (games, remote desktops)." },
+    }),
+    flags("siv_pointer_constraint_flags", "Pointer constraint options.", &.{
+        .{ .name = "persistent", .bit = 0, .doc = "The constraint comes back whenever the compositor would activate it again, instead of ending the first time it is deactivated." },
+        .{ .name = "relative", .bit = 1, .doc = "Relative motion: pointer move events marked SIV_EVENT_RELATIVE go to the node, with dx and dy as the device moved (accelerated) and raw_dx and raw_dy unaccelerated, also while the pointer is locked or against an edge. Also with kind none." },
     }),
     descriptor("siv_window_event", "A window event. Filled by siv; fields past a caller's size are absent.", &.{
         .{ .name = "type", .type = ref("siv_window_event_type"), .doc = "What happened." },
@@ -853,6 +866,7 @@ pub const decls = [_]Decl{
         .{ .name = "prevented", .bit = 5, .doc = "Bubbling events: a handler on the way here (on the target or a node between) prevented the default action (SIV_EVENT_RESULT_PREVENT), so no siv_on_default handler runs any more and siv takes no default action." },
         .{ .name = "tip", .bit = 6, .doc = "Tablet: the tool's tip touches the tablet." },
         .{ .name = "lifted", .bit = 7, .doc = "Pad: the finger left a ring or strip; its value is meaningless." },
+        .{ .name = "relative", .bit = 8, .doc = "Pointer: relative motion (siv_window_set_pointer_constraint): dx, dy, raw_dx, and raw_dy hold it." },
     }),
     openEnumeration("siv_key", "An XKB keysym (D16), as key events report it. Every keysym is valid, not only the named ones: a key that types a character reports its Unicode code point below 0x100 (0x61 for a, 0x41 for Shift+A) and 0x01000000 plus the code point above. The named keys are those applications commonly bind.", &.{
         .{ .name = "none", .value = 0, .doc = "No key (NoSymbol): the event is not a key event." },
@@ -917,8 +931,8 @@ pub const decls = [_]Decl{
         .{ .name = "keysym", .type = ref("siv_key"), .doc = "Key: the XKB keysym, named (SIV_KEY_ESCAPE) or not (siv_key)." },
         f32Field("x", "Pointer: position in the node's coordinates."),
         f32Field("y", "Pointer: position in the node's coordinates."),
-        f32Field("dx", "Scroll: horizontal distance in logical pixels."),
-        f32Field("dy", "Scroll: vertical distance in logical pixels."),
+        f32Field("dx", "Scroll: horizontal distance in logical pixels. Gesture: the fingers' horizontal motion. Pointer, relative: horizontal motion, accelerated."),
+        f32Field("dy", "Scroll: vertical distance in logical pixels. Gesture: the fingers' vertical motion. Pointer, relative: vertical motion, accelerated."),
         .{ .name = "caret", .type = .u32, .doc = "Change: caret byte offset." },
         .{ .name = "anchor", .type = .u32, .doc = "Change: selection anchor byte offset." },
         .{ .name = "mime", .type = .string, .doc = "Drop: the MIME type the node gets. Valid during the call." },
@@ -953,6 +967,8 @@ pub const decls = [_]Decl{
         .{ .name = "samples", .type = array(ref("siv_tablet_sample")), .doc = "Tablet, move: every position since the last move event, oldest first; the last is the event's own. Other phases: the event's own. Valid during the call." },
         .{ .name = "group", .type = .u32, .doc = "Pad: the control's group." },
         .{ .name = "mode", .type = .u32, .doc = "Pad: the group's current mode." },
+        f32Field("raw_dx", "Pointer, relative: horizontal motion as the device reported it, without acceleration."),
+        f32Field("raw_dy", "Pointer, relative: vertical motion as the device reported it, without acceleration."),
     }),
     enumeration("siv_event_result", "What a handler did with an event: two independent requests, to stop bubbling and to prevent the default action, in one value. The default actions are the node's siv_on_default handler, those of the nodes it would bubble to, and siv's own (an editor typing the key, a press focusing and activating, Tab moving focus). For events that do not bubble, any result but pass counts as handled. In C, returning true still means handled and false pass.", &.{
         .{ .name = "pass", .value = 0, .doc = "Not handled: the event bubbles on and the default action runs." },
@@ -1943,6 +1959,16 @@ pub const functions = [_]Function{
     op("siv_window_set_cursor", "Shows a cursor over the whole window whatever its nodes set, such as SIV_CURSOR_PROGRESS while the application is busy; auto stops.", &.{
         window_param,
         .{ .name = "cursor", .type = ref("siv_cursor"), .doc = "The cursor." },
+    }),
+    call("siv_window_set_pointer_constraint", "Locks or confines the pointer to a node's box, or asks for relative motion, which goes to the node (D16). Compositors activate a constraint while the pointer is over the box, usually after a click (pointer_constrained and pointer_unconstrained window events report it); the box follows the node's layout. Replaces the window's previous constraint; kind none without SIV_POINTER_CONSTRAINT_RELATIVE ends it. Removing or hiding the node ends it too.", &.{
+        window_param,
+        .{ .name = "node", .type = ref("siv_node"), .doc = "A node of the window; 0 is the root, the whole window." },
+        .{ .name = "kind", .type = ref("siv_pointer_constraint"), .doc = "Lock, confine, or none." },
+        .{ .name = "flags", .type = ref("siv_pointer_constraint_flags"), .doc = "Options." },
+    }),
+    call("siv_window_inhibit_shortcuts", "Asks the compositor to send the window its own shortcuts (Super combinations, workspace switching) as keys while it has keyboard focus, for remote desktops, virtual machines, and terminals that forward keys (D16). The compositor decides; shortcuts_inhibited and shortcuts_restored window events report it.", &.{
+        window_param,
+        .{ .name = "inhibit", .type = .bool, .doc = "Inhibit, or stop inhibiting." },
     }),
     call("siv_window_begin_move", "Starts moving the window interactively, for client-side decorations: call from a pointer down handler, while the press is held.", &.{window_param}),
     call("siv_window_begin_resize", "Starts resizing the window interactively from an edge, like siv_window_begin_move. Show the matching resize cursor on the edge's node (siv_set_cursor).", &.{

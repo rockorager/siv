@@ -435,7 +435,7 @@ pub const App = struct {
             .fonts = &app.fonts,
             .icons = &app.icons,
             .sink = .{ .ctx = win, .commit = Window.commit },
-            .host = .{ .ctx = win, .request_frame = Window.requestFrame, .text_input = Window.textInput, .set_cursor = Window.setCursor },
+            .host = .{ .ctx = win, .request_frame = Window.requestFrame, .text_input = Window.textInput, .set_cursor = Window.setCursor, .pointer_constraint = Window.pointerConstraint },
             .clipboard = &app.clipboard,
             .drag = win.drag.host(),
             .loop = &app.loop,
@@ -640,6 +640,13 @@ pub const App = struct {
                 .close_requested => |id| if (app.window(id)) |win| {
                     if (!win.notify(&.close_requested)) win.destroy() catch |err| app.fail(err);
                 },
+                .pointer_constraint => |c| if (app.window(c.window)) |win| {
+                    if (c.ended) win.ui.pointerConstraintEnded();
+                    _ = win.notify(&.{ .pointer_constraint = c });
+                },
+                .shortcuts_inhibit => |i| if (app.window(i.window)) |win| {
+                    _ = win.notify(&.{ .shortcuts_inhibit = i.active });
+                },
                 else => if (app.window(p.window())) |win| win.handle(ev),
             },
             .configure => |c| if (app.window(c.window)) |win| {
@@ -711,6 +718,11 @@ pub const WindowEvent = union(enum) {
     /// Everything committed up to `seq` reached the screen: predicted
     /// presentation and commit times on CLOCK_MONOTONIC.
     presented: struct { seq: u64, present_ns: u64, commit_ns: u64 },
+    /// The compositor activated or deactivated the pointer constraint
+    /// (D16); `ended` when it will not come back.
+    pointer_constraint: platform.ConstraintState,
+    /// The compositor passes its shortcuts to the window, or stopped.
+    shortcuts_inhibit: bool,
 };
 
 pub const Listener = struct {
@@ -958,6 +970,18 @@ pub const Window = struct {
                 p.setTitle(id, s);
             }
         }.f, title);
+    }
+
+    fn pointerConstraint(ctx: ?*anyopaque, options: platform.ConstraintOptions) void {
+        const win: *Window = @ptrCast(@alignCast(ctx));
+        if (win.closed) return;
+        win.platformCall(platform.Platform.setPointerConstraint, options) catch win.app.fail(error.OutOfMemory);
+    }
+
+    /// Asks the compositor for every key, its shortcuts included, while
+    /// the window has focus (D16); `shortcuts_inhibit` events follow.
+    pub fn inhibitShortcuts(win: *Window, on: bool) Allocator.Error!void {
+        try win.platformCall(platform.Platform.inhibitShortcuts, on);
     }
 
     fn setCursor(ctx: ?*anyopaque, shape: ui.CursorShape) void {

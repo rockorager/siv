@@ -421,7 +421,71 @@ pub const Platform = union(enum) {
             inline else => |b| b.activate(id, token),
         }
     }
+
+    // Input on request (D16).
+
+    /// Locks or confines every seat's pointer to the window (pointer-
+    /// constraints), and asks for relative motion (relative-pointer).
+    /// The compositor activates a constraint when it sees fit (usually
+    /// while the pointer is over the region): `pointer_constraint` events
+    /// report it. Replaces the window's previous request; `.none` ends it.
+    pub fn setPointerConstraint(p: Platform, id: WindowId, options: ConstraintOptions) void {
+        switch (p) {
+            inline else => |b| b.setPointerConstraint(id, options),
+        }
+    }
+
+    /// Asks the compositor to send the window every key, its own
+    /// shortcuts included, while it has keyboard focus
+    /// (keyboard-shortcuts-inhibit); `shortcuts_inhibit` events report
+    /// whether it does.
+    pub fn inhibitShortcuts(p: Platform, id: WindowId, on: bool) void {
+        switch (p) {
+            inline else => |b| b.inhibitShortcuts(id, on),
+        }
+    }
 };
+
+pub const PointerConstraint = enum(u8) {
+    none,
+    /// The pointer stays where it is; only relative motion arrives.
+    lock,
+    /// The pointer moves only inside the region.
+    confine,
+};
+
+pub const ConstraintOptions = struct {
+    kind: PointerConstraint = .none,
+    /// Where the constraint applies (surface coordinates); null is the
+    /// whole surface.
+    region: ?Rect = null,
+    /// The constraint comes back whenever the compositor would activate
+    /// it again, rather than ending the first time it is deactivated.
+    persistent: bool = false,
+    /// Relative motion events while the pointer is over the window, with
+    /// or without a constraint.
+    relative: bool = false,
+};
+
+/// A window's pointer constraint was activated or deactivated. `ended`:
+/// it will not come back (a one-shot constraint was deactivated).
+pub const ConstraintState = struct { window: WindowId, seat: SeatId, active: bool, ended: bool = false };
+
+/// Pointer motion as the device reported it (relative-pointer), also
+/// while the pointer is locked or at an edge: accelerated and not, in
+/// logical pixels, with a microsecond timestamp.
+pub const RelativeMotion = struct {
+    window: WindowId,
+    seat: SeatId,
+    dx: f64,
+    dy: f64,
+    dx_unaccel: f64 = 0,
+    dy_unaccel: f64 = 0,
+    time_us: u64 = 0,
+};
+
+/// Whether the compositor passes its own shortcuts to the window.
+pub const InhibitState = struct { window: WindowId, seat: SeatId, active: bool };
 
 /// Pointer cursor shapes: the CSS cursor names, numbered as in
 /// cursor-shape-v1, and a hidden cursor.
@@ -1274,6 +1338,10 @@ pub const Event = union(enum) {
     /// Tablet tools (pens, erasers, ...) over a window, and tablet pads.
     tablet_tool: TabletTool,
     tablet_pad: TabletPad,
+    /// Pointer constraints and relative motion, and shortcut inhibition.
+    pointer_constraint: ConstraintState,
+    relative_motion: RelativeMotion,
+    shortcuts_inhibit: InhibitState,
     /// The seat's text input (input method) focuses the window, or leaves.
     text_input_enter: Focus,
     text_input_leave: Focus,

@@ -233,3 +233,128 @@ test "tablet tools and pads reach handlers with every sample, in node coordinate
     try testing.expectEqual(@as(u32, 4), pen.pads[1].index);
     try testing.expect(pen.pads[1].flags.pressed);
 }
+
+const Lock = struct {
+    window_events: [8]t.WindowEventType = undefined,
+    wn: usize = 0,
+    moves: [8]t.Event = undefined,
+    n: usize = 0,
+
+    fn onWindow(ud: ?*anyopaque, _: t.Window, ev: ?*const t.WindowEvent) callconv(.c) bool {
+        const l: *Lock = @ptrCast(@alignCast(ud.?));
+        switch (ev.?.type) {
+            .pointer_constrained, .pointer_unconstrained, .shortcuts_inhibited, .shortcuts_restored => {
+                l.window_events[l.wn] = ev.?.type;
+                l.wn += 1;
+            },
+            else => {},
+        }
+        return false;
+    }
+
+    fn onPointer(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
+        const l: *Lock = @ptrCast(@alignCast(ud.?));
+        if (!ev.?.flags.relative) return .pass;
+        l.moves[l.n] = ev.?.*;
+        l.n += 1;
+        return .handled;
+    }
+};
+
+fn constraintOf(h: *Harness) !struct { options: platform.ConstraintOptions, active: bool } {
+    const self = try h.internal();
+    const Ctx = struct {
+        id: platform.WindowId,
+        out: @typeInfo(@TypeOf(platform.Headless.constraintOf)).@"fn".return_type.? = undefined,
+        fn run(ctx: ?*anyopaque, comp: *@import("compositor").Compositor) void {
+            const q: *@This() = @ptrCast(@alignCast(ctx));
+            q.out = comp.platform.headless.constraintOf(q.id);
+        }
+    };
+    var ctx: Ctx = .{ .id = (try h.win()).win.id };
+    try self.app.comp.call(&ctx, Ctx.run);
+    return .{ .options = ctx.out.options, .active = ctx.out.active };
+}
+
+test "pointer constraints follow their node's box and send it relative motion; shortcut inhibition" {
+    var h: Harness = .{};
+    var lock: Lock = .{};
+    try h.start(200, 100, Lock.onWindow, &lock);
+    defer h.stop();
+    const root = c.siv_window_root(h.window);
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const row = c.siv_flex(txn, root, null);
+    const spacer = c.siv_box(txn, row);
+    try ok(c.siv_set_layout(txn, spacer, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(30), .height = px(10) }));
+    const view = c.siv_box(txn, row);
+    try ok(c.siv_set_layout(txn, view, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(120), .height = px(80) }));
+    try ok(c.siv_on(txn, view, .pointer, Lock.onPointer, null, &lock));
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    const id = (try h.win()).win.id;
+
+    try ok(c.siv_window_set_pointer_constraint(h.window, view, .lock, .{ .relative = true }));
+    try h.settle();
+    var st = try constraintOf(&h);
+    try testing.expectEqual(platform.PointerConstraint.lock, st.options.kind);
+    try testing.expect(st.options.relative and !st.options.persistent);
+    try testing.expectEqual(platform.Rect{ .x = 30, .y = 0, .width = 120, .height = 80 }, st.options.region.?);
+    try testing.expectEqual(@as(usize, 1), lock.wn);
+    try testing.expectEqual(t.WindowEventType.pointer_constrained, lock.window_events[0]);
+
+    // The box follows layout.
+    try ok(c.siv_txn_begin(h.window, &txn));
+    try ok(c.siv_set_layout(txn, spacer, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(50), .height = px(10) }));
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    st = try constraintOf(&h);
+    try testing.expectEqual(@as(i32, 50), st.options.region.?.x);
+
+    // Relative motion goes to the node.
+    try h.inject(&.{
+        .{ .pointer_motion = .{ .window = id, .seat = 0, .x = 90, .y = 40 } },
+        .{ .relative_motion = .{ .window = id, .seat = 0, .dx = 3.5, .dy = -2, .dx_unaccel = 2, .dy_unaccel = -1, .time_us = 5_000_000 } },
+    });
+    try h.settle();
+    try testing.expectEqual(@as(usize, 1), lock.n);
+    const m = lock.moves[0];
+    try testing.expectEqual(t.PointerPhase.move, m.phase);
+    try testing.expectEqual(@as(f32, 3.5), m.dx);
+    try testing.expectEqual(@as(f32, -2), m.dy);
+    try testing.expectEqual(@as(f32, 2), m.raw_dx);
+    try testing.expectEqual(@as(f32, -1), m.raw_dy);
+    try testing.expectEqual(@as(f32, 40), m.x); // 90 - 50
+    try testing.expectEqual(@as(u32, 5000), m.time);
+
+    // The compositor ends a one-shot lock; relative motion still comes.
+    const self = try h.internal();
+    const End = struct {
+        id: platform.WindowId,
+        fn run(ctx: ?*anyopaque, comp: *@import("compositor").Compositor) void {
+            const e: *@This() = @ptrCast(@alignCast(ctx));
+            comp.platform.headless.endConstraint(e.id);
+        }
+    };
+    var end: End = .{ .id = id };
+    try self.app.comp.call(&end, End.run);
+    try h.settle();
+    try testing.expectEqual(t.WindowEventType.pointer_unconstrained, lock.window_events[1]);
+
+    try ok(c.siv_window_inhibit_shortcuts(h.window, true));
+    try h.settle();
+    try ok(c.siv_window_inhibit_shortcuts(h.window, false));
+    try h.settle();
+    try testing.expectEqual(@as(usize, 4), lock.wn);
+    try testing.expectEqual(t.WindowEventType.shortcuts_inhibited, lock.window_events[2]);
+    try testing.expectEqual(t.WindowEventType.shortcuts_restored, lock.window_events[3]);
+
+    // Removing the node ends the constraint.
+    try ok(c.siv_txn_begin(h.window, &txn));
+    try ok(c.siv_remove(txn, view));
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    st = try constraintOf(&h);
+    try testing.expectEqual(platform.PointerConstraint.none, st.options.kind);
+    try testing.expect(!st.options.relative);
+}

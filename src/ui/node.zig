@@ -778,6 +778,14 @@ pub const Pointer = struct {
     target: NodeId = .none,
     /// A handler on the way here prevented the default action.
     prevented: bool = false,
+    /// Relative motion (D16), from the device rather than the pointer's
+    /// position, also while the pointer is locked: `dx` and `dy`
+    /// accelerated, `raw_dx` and `raw_dy` as the device reported them.
+    relative: bool = false,
+    dx: f32 = 0,
+    dy: f32 = 0,
+    raw_dx: f32 = 0,
+    raw_dy: f32 = 0,
 };
 
 pub const Key = struct {
