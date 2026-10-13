@@ -418,6 +418,16 @@ pub fn build(b: *std.Build) void {
         .headless = headless,
     });
 
+    // The file manager (apps/files), built on the `siv` wrapper above.
+    @import("apps/files/build_steps.zig").add(b, .{
+        .target = target,
+        .optimize = optimize,
+        .test_filters = test_filters,
+        .abi = abi,
+        .test_step = test_step,
+        .integration_step = integration_step,
+    });
+
     // NOTICES (D25): the licences of what libsiv contains for these
     // options, installed as share/licenses/siv/NOTICES and checked by
     // `test`.
