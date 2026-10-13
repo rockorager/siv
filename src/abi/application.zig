@@ -278,6 +278,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
         },
         .display = if (display_z) |d| d.ptr else null,
         .system_fonts = !flags.no_system_fonts,
+        .system_icons = !flags.no_system_icons,
         .reduced_motion = flags.reduced_motion,
         .desktop_settings = backend == .wayland and !flags.no_desktop_settings,
         // Mandatory on a display (D18); the headless backend stays
@@ -291,6 +292,8 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     }) catch |err| return mapAppError(err);
     errdefer self.app.destroy();
     try self.app.fonts.addListener(.{ .ctx = self, .func = canvas.onFontsLoaded });
+    // Canvases and pages that drew while icons loaded draw again too.
+    try self.app.icons.addListener(.{ .ctx = self, .func = canvas.onFontsLoaded });
     dest.* = @fromBackingInt(self.root.handle);
 }
 

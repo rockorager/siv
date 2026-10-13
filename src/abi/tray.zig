@@ -10,7 +10,9 @@ const ui = @import("ui");
 const runtime = @import("runtime.zig");
 const application = @import("application.zig");
 const canvas = @import("canvas.zig");
+const icon_abi = @import("icon.zig");
 const api = @import("api.zig");
+const scene = @import("scene");
 
 const App = application.App;
 const Error = application.Error;
@@ -96,6 +98,7 @@ pub export fn siv_tray_item_create(app: t.App, desc: ?*const t.TrayItemDesc, out
                 .id = id,
                 .title = title,
                 .icon_name = icon,
+                .icon_theme_path = self.app.icons.search_path.items,
                 .item_is_menu = fl.item_is_menu,
                 .category = switch (category) {
                     .application_status => .application_status,
@@ -151,8 +154,20 @@ fn pixmapOf(gpa: std.mem.Allocator, img: *ui.Image) Error![]u8 {
             .rgba8_srgb => .{ p[3], p[0], p[1], p[2] },
             .bgra8_srgb => .{ p[3], p[2], p[1], p[0] },
             .bgrx8_srgb => .{ 255, p[2], p[1], p[0] },
-            else => return error.Unsupported,
+            .rgba16_linear_premul => unpremultiply(img.pixels[y * img.stride + x * 8 ..][0..8]),
         };
+    };
+    return out;
+}
+
+/// A 16-bit linear premultiplied pixel as ARGB, straight, sRGB-encoded.
+fn unpremultiply(bytes: *const [8]u8) [4]u8 {
+    const c = std.mem.bytesAsValue([4]u16, bytes).*;
+    const a: f32 = @as(f32, @floatFromInt(c[3])) / 65535;
+    var out: [4]u8 = .{ @intFromFloat(@round(a * 255)), 0, 0, 0 };
+    if (a > 0) for (0..3) |i| {
+        const lin = @as(f32, @floatFromInt(c[i])) / 65535 / a;
+        out[i + 1] = @intFromFloat(@round(std.math.clamp(scene.linearToSrgb(lin), 0, 1) * 255));
     };
     return out;
 }
@@ -165,7 +180,11 @@ fn setIcon(h: t.TrayItem, name_ptr: ?[*]const u8, name_len: usize, image: t.Imag
     defer gpa.free(argb);
     var pixmap: ?tray.Item.Pixmap = null;
     if (image != .null) {
-        const img = try canvas.imageOf(x.self, image);
+        // Vector images become pixels: 64 px is what panels show sharply
+        // at their usual 16 to 48 px.
+        const src = try canvas.imageOf(x.self, image);
+        const img = try icon_abi.rasterize(x.self, src, if (src.vector != null) 64 / @as(f32, @floatFromInt(@max(src.width, src.height))) else 1);
+        defer img.release();
         if (img.width > std.math.maxInt(i32) or img.height > std.math.maxInt(i32)) return error.InvalidArgument;
         argb = try pixmapOf(gpa, img);
         pixmap = .{ .width = @intCast(img.width), .height = @intCast(img.height), .argb = argb };

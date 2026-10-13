@@ -228,6 +228,8 @@ const color_token_values = [_]schema.EnumValue{
     .{ .name = "scrim", .value = 26, .doc = "The translucent cover behind modal dialogs." },
     .{ .name = "inverse_bg", .value = 27, .doc = "Toasts and tooltips." },
     .{ .name = "inverse_fg", .value = 28, .doc = "Text on inverse_bg." },
+    .{ .name = "success", .value = 29, .doc = "Success in symbolic icons (D19), and other positive states." },
+    .{ .name = "warning", .value = 30, .doc = "Warnings in symbolic icons (D19); their errors use destructive." },
 };
 
 fn param(comptime name: []const u8, comptime t: schema.Type, comptime doc: []const u8) Param {
@@ -277,6 +279,7 @@ pub const decls = [_]Decl{
         .{ .name = "no_desktop_settings", .bit = 2, .doc = "Do not follow the desktop's settings (D19); use the built-in defaults. The headless backend never follows them, and never publishes to assistive technology, so tests do not depend on the desktop." },
         .{ .name = "ltr", .bit = 3, .doc = "Lay out left to right whatever the language (D21). Without ltr or rtl, the direction is the language's." },
         .{ .name = "rtl", .bit = 4, .doc = "Lay out right to left whatever the language (D21)." },
+        .{ .name = "no_system_icons", .bit = 5, .doc = "Do not search the system's icon themes (D19); only directories added with siv_app_add_icon_path. For tests that must not depend on the installed themes." },
     }),
     descriptor("siv_app_desc", "Options for siv_app_create.", &.{
         .{ .name = "allocator", .type = .{ .desc = "siv_allocator" }, .doc = "Allocator hooks for everything the application allocates, on any thread; NULL for the C library allocator." },
@@ -945,6 +948,7 @@ pub const decls = [_]Decl{
     // Stock widgets (D22).
     flags("siv_widget_flags", "Widget options.", &.{
         .{ .name = "disabled", .bit = 0, .doc = "Shown dimmed; neither focusable nor operable." },
+        .{ .name = "icon_only", .bit = 1, .doc = "Buttons with an icon: show only the icon; the label stays the accessible name." },
     }),
     enumeration("siv_button_style", "How a button looks.", &.{
         .{ .name = "default", .value = 0, .doc = "A bordered control." },
@@ -956,11 +960,13 @@ pub const decls = [_]Decl{
         .{ .name = "label", .type = .string, .doc = "The label, copied; also the accessible name." },
         .{ .name = "style", .type = ref("siv_button_style"), .doc = "Default default." },
         .{ .name = "flags", .type = ref("siv_widget_flags"), .doc = "Options." },
+        .{ .name = "icon", .type = .string, .doc = "A themed icon before the label (D19), as siv_image_view_desc.icon names it, in the label's color; with SIV_WIDGET_ICON_ONLY instead of it. Empty for none." },
     }),
     descriptor("siv_toggle_desc", "A toggle button, check box, or switch.", &.{
         .{ .name = "label", .type = .string, .doc = "The label, copied; also the accessible name." },
         .{ .name = "checked", .type = ref("siv_toggle"), .doc = "Initial state; unset is off. Mixed only for check boxes." },
         .{ .name = "flags", .type = ref("siv_widget_flags"), .doc = "Options." },
+        .{ .name = "icon", .type = .string, .doc = "Toggle buttons: a themed icon before the label, as for siv_button_desc." },
     }),
     descriptor("siv_radio_group_desc", "A group of radio buttons, added with siv_radio. The first one starts selected.", &.{
         .{ .name = "label", .type = .string, .doc = "The group's accessible name, copied." },
@@ -1007,6 +1013,7 @@ pub const decls = [_]Decl{
         .{ .name = "shortcut", .type = .string, .doc = "A key binding to show at the end edge, copied; siv does not bind it." },
         .{ .name = "flags", .type = ref("siv_menu_item_flags"), .doc = "Options." },
         .{ .name = "mnemonic", .type = .u32, .doc = "A keysym that chooses the item while its menu is open, letters in either case; 0 for none." },
+        .{ .name = "icon", .type = .string, .doc = "A themed icon at the item's start (D19), as siv_image_view_desc.icon names it, in the item's text color. Items of a menu line up whether or not they have one. Empty for none." },
         .{ .name = "submenu", .type = ref("siv_node"), .doc = "A menu (siv_menu) the item opens beside itself, instead of being chosen: on hover, Enter, Space, a click, or the arrow toward the end edge; the arrow toward the start edge and Escape close it again. Choosing in it reports SIV_EVENT_SELECT on the submenu and closes every menu of the chain; 0 for none." },
     }),
     descriptor("siv_popover_desc", "A popover: a card in a popup next to its anchor.", &.{
@@ -1208,10 +1215,30 @@ pub const decls = [_]Decl{
         .{ .name = "fill", .value = 2, .doc = "Stretched to the box." },
         .{ .name = "none", .value = 3, .doc = "At its size, centered and cropped." },
     }),
-    descriptor("siv_image_view_desc", "What an image node shows.", &.{
+    descriptor("siv_image_view_desc", "What an image node shows: an image, or a themed icon by name.", &.{
         .{ .name = "image", .type = ref("siv_image"), .doc = "The image; 0 shows nothing. The node keeps it alive." },
         .{ .name = "fit", .type = ref("siv_fit"), .doc = "Default contain." },
         .{ .name = "flags", .type = ref("siv_image_flags"), .doc = "Options." },
+        .{ .name = "icon", .type = .string, .doc = "A themed icon to show instead of image (D19), copied: an icon name such as document-save-symbolic, or several one per line, the first the theme has winning, each falling back to shorter names at its dashes. The node follows the application's icon theme, the window's scale and direction (a name's -rtl variant in right-to-left layouts), and loads the icon on a worker thread: until it arrives the node takes its size and shows nothing. Empty for none." },
+        f32Field("icon_size", "The icon's size in logical pixels (icons are square); 0 is 16. It is the node's intrinsic size."),
+        .{ .name = "color", .type = ref("siv_color"), .doc = "The color of symbolic icons, and of SVG images whose colors follow the theme; transparent (all zero) is the window's text color (window_fg)." },
+        .{ .name = "color_token", .type = ref("siv_color_token"), .doc = "A themed color that replaces color. Success, warning, and error parts of symbolic icons take the theme's success, warning, and destructive colors." },
+    }),
+    flags("siv_icon_flags", "Icon lookup options.", &.{
+        .{ .name = "rtl", .bit = 0, .doc = "Right to left: prefer a name's -rtl variant (mirrored arrows)." },
+        .{ .name = "no_fallbacks", .bit = 1, .doc = "Only the names given, not their shorter fallbacks (folder-documents falling back to folder)." },
+    }),
+    enumeration("siv_icon_style", "Which variant of an icon to prefer.", &.{
+        .{ .name = "default", .value = 0, .doc = "The names as given." },
+        .{ .name = "symbolic", .value = 1, .doc = "Each name's -symbolic variant first: monochrome icons in the color they are drawn with." },
+        .{ .name = "regular", .value = 2, .doc = "Each name without its -symbolic suffix first: full-color icons." },
+    }),
+    descriptor("siv_icon_desc", "A themed icon for siv_icon_load (D19).", &.{
+        .{ .name = "name", .type = .string, .doc = "An icon name, or several one per line, the first the theme has winning." },
+        f32Field("logical_size", "The size it is shown at, in logical pixels (icons are square); 0 is 16."),
+        f32Field("scale", "Pixels per logical pixel, the window's buffer scale (siv_window_get_scale); 0 is 1. Themes may have icons drawn for a scale."),
+        .{ .name = "flags", .type = ref("siv_icon_flags"), .doc = "Options." },
+        .{ .name = "style", .type = ref("siv_icon_style"), .doc = "Default default." },
     }),
     descriptor("siv_image_desc", "Pixels for siv_image_create.", &.{
         .{ .name = "pixels", .type = array(.u8), .doc = "Rows of pixels, copied; at least stride * (height - 1) + width * 4 bytes." },
@@ -1798,13 +1825,28 @@ pub const functions = [_]Function{
         .{ .name = "request", .type = ref("siv_image_request"), .doc = "The load." },
         .{ .name = "priority", .type = .i32, .doc = "Higher first." },
     }),
-    call("siv_image_load", "Decodes PNG, APNG, JPEG, GIF, WebP, AVIF, or JPEG XL on a worker thread (D19), straight to the size it is shown at, with embedded color profiles converted to siv's linear working space, and calls callback with the image, then destroy. If the load is cancelled or the application is destroyed first, only destroy runs. Loads wait for a compute worker in priority order (see siv_image_load_desc). Image nodes play animated images, unless motion is reduced; canvases draw their first frame. Animations with more than 32 MiB of frames at that size keep their file instead and decode a few frames ahead while they play.", &.{
+    call("siv_image_load", "Decodes PNG, APNG, JPEG, GIF, WebP, AVIF, or JPEG XL on a worker thread (D19), straight to the size it is shown at, or parses SVG into a vector image that draws sharp at any size (its logical size is the file's width and height), with embedded color profiles converted to siv's linear working space, and calls callback with the image, then destroy. If the load is cancelled or the application is destroyed first, only destroy runs. Loads wait for a compute worker in priority order (see siv_image_load_desc). Image nodes play animated images, unless motion is reduced; canvases draw their first frame. Animations with more than 32 MiB of frames at that size keep their file instead and decode a few frames ahead while they play.", &.{
         app_param,
         .{ .name = "desc", .type = .{ .desc = "siv_image_load_desc" }, .doc = "The file and size." },
         .{ .name = "callback", .type = ref("siv_image_load_fn"), .doc = "Receives the image." },
         .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data; may be NULL." },
         .{ .name = "user_data", .type = .user_data, .doc = "Passed to both." },
         .{ .name = "request", .type = out(ref("siv_image_request")), .doc = "The pending load, to cancel or reprioritize; valid until callback runs." },
+    }),
+    call("siv_icon_load", "Looks up a themed icon (D19) in the application's icon theme, its parents, hicolor, and unthemed icons, following the freedesktop icon theme specification, and loads it on a worker thread, then calls callback with it, then destroy. SVG icons become vector images that draw sharp at any size, symbolic ones (names ending in -symbolic) in the color they are drawn with (siv_image_view_desc.color, siv_draw_icon); PNG icons are decoded at the size and scale asked for. The image's logical size is the size asked for. A missing icon reports SIV_ERROR_UNAVAILABLE. The image does not follow later theme changes; image nodes showing an icon by name (siv_image_view_desc.icon) do.", &.{
+        app_param,
+        .{ .name = "desc", .type = .{ .desc = "siv_icon_desc" }, .doc = "The icon." },
+        .{ .name = "callback", .type = ref("siv_image_load_fn"), .doc = "Receives the image." },
+        .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Runs after callback, or alone if the application is destroyed first." },
+        .{ .name = "user_data", .type = .user_data, .doc = "Passed to both." },
+    }),
+    call("siv_app_set_icon_theme", "Chooses the icon theme (D19) by its directory name (Adwaita, breeze) instead of following the desktop's, which is GNOME's icon-theme or KDE's Icons/Theme setting through the portal, else Adwaita. hicolor is searched after every theme. Image nodes showing icons by name load them again; images already loaded keep theirs.", &.{
+        app_param,
+        .{ .name = "name", .type = .string, .doc = "The theme; empty follows the desktop again." },
+    }),
+    call("siv_app_add_icon_path", "Searches a directory for icon themes and unthemed icons before the system's (D19): an application's own icons, installed as a theme (hicolor/scalable/apps/org.example.App.svg) or as files named after the icon. Image nodes showing icons by name load them again.", &.{
+        app_param,
+        .{ .name = "path", .type = .string, .doc = "The directory." },
     }),
     call("siv_image_get_size", "An image's logical size: its pixel size divided by the scale it was loaded for.", &.{
         .{ .name = "image", .type = ref("siv_image"), .doc = "The image." },
@@ -1893,6 +1935,12 @@ pub const functions = [_]Function{
         param("src", ref("siv_rect"), "The part to draw, in image pixels; all zero is the whole image."),
         param("opacity", .f32, "From 0 to 1."),
         param("flags", ref("siv_image_flags"), "Options (nearest)."),
+    }),
+    drawOp("siv_draw_icon", "Draws a themed icon (D19) into a rectangle, looked up in the application's icon theme at the rectangle's size like siv_image_view_desc.icon. Symbolic icons take color. An icon still loading draws nothing, and the canvas draws again once it has loaded, as with text and fonts; a missing icon draws nothing.", &.{
+        .{ .name = "name", .type = .string, .doc = "An icon name, or several one per line, the first the theme has winning." },
+        param("dst", ref("siv_rect"), "Where it goes."),
+        param("color", ref("siv_color"), "The color of symbolic icons; transparent (all zero) is the window's text color."),
+        param("flags", ref("siv_icon_flags"), "Options."),
     }),
     drawOp("siv_draw_text", "Draws text with its layout box's top left at (x, y): shaped, bidi-ordered, with font fallback, one paragraph per line break (D13).", &.{
         param("x", .f32, "Left edge of the layout box."),

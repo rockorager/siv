@@ -72,7 +72,10 @@ fn dragStart(node: t.Node, d_ptr: ?*const t.DragDesc) Error!void {
     const data = try runtime.array(u8, d.data, d.data_count);
     const lengths = try runtime.array(usize, d.lengths, d.lengths_count);
     if (!std.math.isFinite(d.hotspot_x) or !std.math.isFinite(d.hotspot_y)) return error.InvalidArgument;
-    const icon = if (d.icon == .null) null else try canvas.imageOf(self, d.icon);
+    const shown = if (d.icon == .null) null else try canvas.imageOf(self, d.icon);
+    // Vector images become pixels, one per logical pixel.
+    const icon = if (shown) |img| try @import("icon.zig").rasterize(self, img, 1) else null;
+    defer if (icon) |img| img.release();
 
     // One item per MIME type, with its share of the data.
     var items: std.ArrayList(ui.Clipboard.DragItem) = .empty;

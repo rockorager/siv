@@ -57,7 +57,8 @@ pub const DrawState = struct {
     page_rtl: bool = false,
     page_language: u32 = 0,
     node: NodeId = .none,
-    /// Fonts were still loading when text was drawn.
+    /// Fonts were still loading when text was drawn, or icons when icons
+    /// were (D19): the drawing runs again once they load.
     wanted_fonts: bool = false,
 
     pub fn init(gpa: std.mem.Allocator) DrawState {
@@ -519,12 +520,59 @@ pub export fn siv_draw_image(handle: t.Draw, image: t.Image, dst: t.Rect, src: t
             const fl = try runtime.flags(t.ImageFlags, fl_raw);
             try finite(.{o});
             const whole = sr.x == 0 and sr.y == 0 and sr.width == 0 and sr.height == 0;
+            if (img.vector) |doc| return drawVector(self, d, doc, img.logicalSize(), try rectOf(dr), if (whole) null else try rectOf(sr), o, .transparent);
             const s = if (whole) Rect.xywh(0, 0, @floatFromInt(img.width), @floatFromInt(img.height)) else try rectOf(sr);
             try d.images.ensureUnusedCapacity(self.gpa(), 1);
             d.builder.image(.{ .image = img.sceneRef(), .src = s, .dst = try rectOf(dr), .opacity = o, .filter = if (fl.nearest) .nearest else .linear }) catch |err| return mapScene(err);
             d.images.appendAssumeCapacity(img.retain());
         }
     }.f, .{ image, dst, src, opacity, flags });
+}
+
+pub export fn siv_draw_icon(handle: t.Draw, name: ?[*]const u8, name_len: usize, dst: t.Rect, color: t.Color, flags: t.IconFlags) t.Result {
+    return draw(handle, struct {
+        fn f(self: *App, d: *DrawState, np: ?[*]const u8, nl: usize, dr: t.Rect, c: t.Color, fl_raw: t.IconFlags) Error!void {
+            const names = try runtime.string(np, nl);
+            const fl = try runtime.flags(t.IconFlags, fl_raw);
+            const r = try rectOf(dr);
+            const fg = try tree.color(c, .transparent);
+            if (names.len == 0 or r.isEmpty()) return;
+            const icons = &self.app.icons;
+            const size = @max(r.width(), r.height());
+            const scale = if (d.window) |w| w.uiWin().scale else 1;
+            const img = icons.get(names, size, scale, fl.rtl) orelse {
+                // Drawn again once it loads, as text waiting for fonts is.
+                if (icons.pending(names, size, scale, fl.rtl)) d.wanted_fonts = true;
+                return;
+            };
+            if (img.vector) |doc| return drawVector(self, d, doc, img.logicalSize(), r, null, 1, fg);
+            try d.images.ensureUnusedCapacity(self.gpa(), 1);
+            d.builder.image(.{ .image = img.sceneRef(), .src = .xywh(0, 0, @floatFromInt(img.width), @floatFromInt(img.height)), .dst = r }) catch |err| return mapScene(err);
+            d.images.appendAssumeCapacity(img.retain());
+        }
+    }.f, .{ name, name_len, dst, color, flags });
+}
+
+/// A vector image drawn into `dst` (its part `src`, in its logical
+/// pixels, when given), with the window's theme colors for its roles
+/// and `fg` (transparent: the window's text color) as the foreground.
+fn drawVector(self: *App, d: *DrawState, doc: *const @import("svg").Document, logical: [2]f32, dst: Rect, src: ?Rect, opacity: f32, fg: scene.Color) Error!void {
+    if (dst.isEmpty()) return;
+    const palette = if (d.window) |w| w.uiWin().palette else lightPalette(self);
+    var colors: @import("svg").Colors = .{};
+    ui.iconColors(&colors, &palette, if (fg.a > 0) fg else palette.color(.window_fg));
+    // The whole image's box, so that `src` lands on `dst`.
+    var box = dst;
+    if (src) |s| {
+        if (s.isEmpty()) return;
+        const kx = dst.width() / s.width();
+        const ky = dst.height() / s.height();
+        box = .xywh(dst.x0 - s.x0 * kx, dst.y0 - s.y0 * ky, logical[0] * kx, logical[1] * ky);
+    }
+    const layer = opacity < 1 or src != null;
+    if (layer) d.builder.pushLayer(.{ .opacity = opacity, .clip = if (src != null) .{ .shape = .{ .rect = dst } } else null }) catch |err| return mapScene(err);
+    doc.draw(&d.builder, box, if (doc.recolors) &colors else null) catch |err| return mapScene(err);
+    if (layer) d.builder.popLayer() catch |err| return mapScene(err);
 }
 
 pub export fn siv_draw_text(handle: t.Draw, x: f32, y: f32, width: f32, str: ?[*]const u8, str_len: usize, style: ?*const t.TextStyleDesc) t.Result {
@@ -820,6 +868,10 @@ fn imageViewOf(self: *App, ptr: ?*const t.ImageViewDesc) Error!ui.ImageView {
         },
         .filter = if (fl.nearest) .nearest else .linear,
         .mirror = fl.mirror_rtl,
+        .icon = try runtime.string(d.icon, d.icon_len),
+        .icon_size = d.icon_size,
+        .color = try tree.color(d.color, .transparent),
+        .color_token = try tree.colorToken(d.color_token, true),
     };
 }
 
