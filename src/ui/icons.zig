@@ -9,6 +9,11 @@
 //! and the file's parse or decode run on a worker; SVG icons become
 //! vector images (`Image.vector`), PNG icons pixels decoded at the size
 //! and scale asked for.
+//!
+//! The cache keeps what it holds within a memory budget, dropping the
+//! entries asked for least recently first. Display lists copy an icon's
+//! paths or retain its pixels, so dropping one never affects a frame; a
+//! node that shows a dropped icon again loads it again.
 
 const std = @import("std");
 const loop = @import("loop");
@@ -38,6 +43,17 @@ search_path: std.ArrayList(u8) = .empty,
 loaded: u32 = 0,
 /// Loads on the pool.
 running: u32 = 0,
+/// Bumped by every lookup; entries remember when they were last used.
+clock: u64 = 0,
+/// What the cache's entries hold, and how much they may.
+bytes: usize = 0,
+budget: usize = default_budget,
+
+/// Thousands of vector icons, or about 60 PNG icons of 256 pixels, far
+/// above what windows show at once.
+pub const default_budget = 16 << 20;
+/// What an entry costs beyond its icon: the key and the table's slot.
+const entry_overhead = 64;
 
 /// GTK's default theme, used until the desktop or the application names
 /// one; hicolor is searched after it anyway.
@@ -68,7 +84,15 @@ const KeyContext = struct {
     }
 };
 
-const Entry = union(enum) {
+const Entry = struct {
+    state: State,
+    /// `clock` when last looked up.
+    used: u64 = 0,
+    /// Counted in `bytes` (nothing while loading).
+    bytes: usize = 0,
+};
+
+const State = union(enum) {
     loading,
     ready: *Image,
     /// No theme has it, or its file failed to load.
@@ -107,10 +131,54 @@ pub fn deinit(icons: *Icons) void {
 fn clear(icons: *Icons) void {
     var it = icons.entries.iterator();
     while (it.next()) |e| {
-        if (e.value_ptr.* == .ready) e.value_ptr.ready.release();
+        if (e.value_ptr.state == .ready) e.value_ptr.state.ready.release();
         icons.gpa.free(e.key_ptr.names);
     }
     icons.entries.clearRetainingCapacity();
+    icons.bytes = 0;
+}
+
+/// Marks an entry used now.
+fn touch(icons: *Icons, e: *Entry) void {
+    icons.clock += 1;
+    e.used = icons.clock;
+}
+
+/// Stores a finished lookup in its entry (taking the reference), then
+/// drops the least recently used entries until the cache is within its
+/// budget. Loading entries stay, and so does this one.
+fn fill(icons: *Icons, key: Key, e: *Entry, result: ?*Image) void {
+    e.state = if (result) |img| .{ .ready = img } else .missing;
+    e.bytes = entry_overhead + key.names.len + if (result) |img| cost(img) else 0;
+    icons.bytes += e.bytes;
+    icons.touch(e);
+    const keep = e.used;
+    while (icons.bytes > icons.budget) {
+        var oldest: ?*Key = null;
+        var oldest_used: u64 = std.math.maxInt(u64);
+        var it = icons.entries.iterator();
+        while (it.next()) |x| {
+            const v = x.value_ptr;
+            if (v.state == .loading or v.used == keep or v.used >= oldest_used) continue;
+            oldest = x.key_ptr;
+            oldest_used = v.used;
+        }
+        const k = oldest orelse break;
+        const v = icons.entries.getPtr(k.*).?;
+        if (v.state == .ready) v.state.ready.release();
+        icons.bytes -= v.bytes;
+        const names = k.names;
+        icons.entries.removeByPtr(k);
+        icons.gpa.free(names);
+    }
+}
+
+/// The memory an icon holds: a document's arena or the pixels.
+fn cost(img: *const Image) usize {
+    if (img.vector) |doc| return doc.arena.queryCapacity();
+    var n = img.pixels.len;
+    for (img.frames[@min(img.frames.len, 1)..]) |f| n += f.pixels.len;
+    return n;
 }
 
 pub fn addListener(icons: *Icons, l: Listener) error{OutOfMemory}!void {
@@ -161,10 +229,13 @@ fn invalidate(icons: *Icons) void {
 /// is known to be missing. `size` is logical pixels at `scale`.
 pub fn get(icons: *Icons, names: []const u8, size: f32, scale: f32, rtl: bool) ?*Image {
     const key = keyOf(names, size, scale, rtl) orelse return null;
-    if (icons.entries.get(key)) |e| return switch (e) {
-        .ready => |img| img,
-        .loading, .missing => null,
-    };
+    if (icons.entries.getPtr(key)) |e| {
+        icons.touch(e);
+        return switch (e.state) {
+            .ready => |img| img,
+            .loading, .missing => null,
+        };
+    }
     icons.start(key) catch {};
     return null;
 }
@@ -173,7 +244,7 @@ pub fn get(icons: *Icons, names: []const u8, size: f32, scale: f32, rtl: bool) ?
 pub fn pending(icons: *const Icons, names: []const u8, size: f32, scale: f32, rtl: bool) bool {
     const key = keyOf(names, size, scale, rtl) orelse return false;
     const e = icons.entries.get(key) orelse return true;
-    return e == .loading;
+    return e.state == .loading;
 }
 
 fn keyOf(names: []const u8, size: f32, scale: f32, rtl: bool) ?Key {
@@ -191,7 +262,7 @@ fn start(icons: *Icons, key: Key) error{OutOfMemory}!void {
     var k = key;
     k.names = try icons.gpa.dupe(u8, key.names);
     errdefer icons.gpa.free(k.names);
-    try icons.entries.put(icons.gpa, k, .loading);
+    try icons.entries.put(icons.gpa, k, .{ .state = .loading });
     errdefer _ = icons.entries.remove(k);
     const l = try icons.gpa.create(Load);
     errdefer icons.gpa.destroy(l);
@@ -239,11 +310,14 @@ pub fn request(icons: *Icons, names: []const u8, size: f32, scale: f32, options:
     var k = key;
     k.names = k_names;
     l.* = .{ .icons = icons, .key = k, .theme = theme, .serial = icons.serial, .client = done, .owns_names = true };
-    if (icons.entries.get(key)) |e| switch (e) {
-        .ready => |img| l.cached = img.retain(),
-        .missing => l.known_missing = true,
-        .loading => {},
-    };
+    if (icons.entries.getPtr(key)) |e| {
+        icons.touch(e);
+        switch (e.state) {
+            .ready => |img| l.cached = img.retain(),
+            .missing => l.known_missing = true,
+            .loading => {},
+        }
+    }
     pool.submit(&l.job) catch {
         if (l.cached) |img| img.release();
         return error.OutOfMemory;
@@ -255,21 +329,27 @@ pub fn request(icons: *Icons, names: []const u8, size: f32, scale: f32, options:
 /// thread (tests, and output without a loop such as printing).
 pub fn loadNow(icons: *Icons, names: []const u8, size: f32, scale: f32, rtl: bool) error{OutOfMemory}!?*Image {
     const key = keyOf(names, size, scale, rtl) orelse return null;
-    if (icons.entries.get(key)) |e| switch (e) {
-        .ready => |img| return img,
-        .missing => return null,
-        .loading => {},
-    };
+    if (icons.entries.getPtr(key)) |e| {
+        icons.touch(e);
+        switch (e.state) {
+            .ready => |img| return img,
+            .missing => return null,
+            .loading => {},
+        }
+    }
     const result = try resolve(icons.gpa, icons.themes, icons.theme.items, key);
+    errdefer if (result) |img| img.release();
     var k = key;
     k.names = try icons.gpa.dupe(u8, key.names);
     errdefer icons.gpa.free(k.names);
     const gop = try icons.entries.getOrPut(icons.gpa, k);
     if (gop.found_existing) {
+        // A load is running: it finds the entry filled and replaces it.
         icons.gpa.free(k.names);
-        if (gop.value_ptr.* == .ready) gop.value_ptr.ready.release();
-    }
-    gop.value_ptr.* = if (result) |img| .{ .ready = img } else .missing;
+        icons.bytes -= gop.value_ptr.bytes;
+        if (gop.value_ptr.state == .ready) gop.value_ptr.state.ready.release();
+    } else gop.value_ptr.* = .{ .state = .loading };
+    icons.fill(gop.key_ptr.*, gop.value_ptr, result);
     return result;
 }
 
@@ -311,7 +391,12 @@ const Load = struct {
         // gone.
         const fills = l.cache and l.serial == icons.serial;
         if (fills) {
-            if (icons.entries.getPtr(l.key)) |e| e.* = if (result) |img| .{ .ready = img.retain() } else .missing;
+            if (icons.entries.getPtr(l.key)) |e| {
+                // loadNow may have filled it meanwhile.
+                icons.bytes -= e.bytes;
+                if (e.state == .ready) e.state.ready.release();
+                icons.fill(l.key, e, if (result) |img| img.retain() else null);
+            }
             icons.loaded +%= 1;
         }
         l.free();
@@ -459,4 +544,29 @@ test "icons load on the pool, are cached, and follow the theme" {
     const app = (try icons.loadNow("siv-test-app", 48, 1, false)).?;
     try std.testing.expect(app.vector == null);
     try std.testing.expectEqual(app, icons.get("siv-test-app", 48, 1, false).?);
+}
+
+test "the cache stays within its budget, dropping the least recently used" {
+    const gpa = std.testing.allocator;
+    var icons = try Icons.init(gpa, .{ .xdg_data_dirs = "/nonexistent" });
+    defer icons.deinit();
+    try icons.addSearchPath("test/icons/themes");
+    try icons.setTheme("SivTest");
+    const names = [_][]const u8{ "edit-copy-symbolic", "go-next-symbolic", "folder", "folder-documents" };
+    for (names) |n| _ = (try icons.loadNow(n, 16, 1, false)).?;
+    try std.testing.expectEqual(@as(usize, 4), icons.entries.count());
+    // Room for three of them: using the first keeps it, so the second,
+    // now the least recently used, goes when the fifth arrives.
+    const all = icons.bytes;
+    icons.budget = all - 1;
+    try std.testing.expect(icons.get(names[0], 16, 1, false) != null);
+    _ = (try icons.loadNow("document-new", 16, 1, false)).?;
+    try std.testing.expect(icons.bytes <= icons.budget);
+    try std.testing.expect(icons.get(names[0], 16, 1, false) != null);
+    try std.testing.expect(icons.entries.get(keyOf(names[1], 16, 1, false).?) == null);
+    try std.testing.expect(icons.get("document-new", 16, 1, false) != null);
+    // A budget smaller than one icon keeps only the newest.
+    icons.budget = 1;
+    _ = (try icons.loadNow(names[3], 32, 1, false)).?;
+    try std.testing.expectEqual(@as(usize, 1), icons.entries.count());
 }

@@ -102,6 +102,14 @@ loop: ?*loop_mod.Loop = null,
 /// Image nodes showing animations, and the timer of their next frame.
 animating: std.ArrayList(NodeId) = .empty,
 anim_timer: loop_mod.Timer = .{ .func = onAnimTimer },
+/// First frames wait for their icons (D19): until this time (Loop.now),
+/// a frame built while icons load is not committed, and the next frame
+/// comes when they arrive or at this time. Null once a frame is
+/// committed, or when the owner does not wait.
+icon_wait_until: ?u64 = null,
+icon_timer: loop_mod.Timer = .{ .func = onIconWait },
+/// A frame was built but not committed, waiting for icons.
+commit_held: bool = false,
 /// Pastes and assistive technology edits that arrived while a transaction
 /// was open, applied in order at the next frame like queued input.
 pending_edits: std.ArrayList(editor_mod.Pending) = .empty,
@@ -332,7 +340,10 @@ pub fn deinit(win: *Window) void {
     std.debug.assert(!win.txn.open);
     win.fonts.removeListener(win);
     if (win.icons) |icons| icons.removeListener(win);
-    if (win.loop) |l| l.cancelTimer(&win.anim_timer);
+    if (win.loop) |l| {
+        l.cancelTimer(&win.anim_timer);
+        l.cancelTimer(&win.icon_timer);
+    }
     win.dnd.deinit(win);
     if (win.clipboard) |cb| {
         cb.cancel(win);
@@ -591,7 +602,32 @@ pub fn needsFrame(win: *const Window) bool {
     // next frame (`semanticsTree`), so scrolling makes no extra frames.
     return win.state(.root).needs_layout or win.dirty.layers or win.dirty.props or win.viewport_dirty or
         win.paint.anyDirty() or win.pending_input.items.len != 0 or win.input.tablet_pending.items.len != 0 or win.ime.dirty or win.pending_edits.items.len != 0 or
-        win.dnd.pending != null;
+        win.dnd.pending != null or win.commit_held;
+}
+
+/// Whether to keep this frame's changes for a later commit: the window
+/// has never committed, icons are loading, and `icon_wait_until` is not
+/// past. The changes built so far go with the next commit.
+fn holdForIcons(win: *Window) bool {
+    const until = win.icon_wait_until orelse return false;
+    const icons = win.icons orelse return win.stopIconWait();
+    const lp = win.loop orelse return win.stopIconWait();
+    if (!icons.loading() or loop_mod.Loop.now() >= until) return win.stopIconWait();
+    lp.startTimer(&win.icon_timer, until, 0) catch return win.stopIconWait();
+    win.commit_held = true;
+    return true;
+}
+
+fn stopIconWait(win: *Window) bool {
+    win.icon_wait_until = null;
+    win.commit_held = false;
+    if (win.loop) |l| l.cancelTimer(&win.icon_timer);
+    return false;
+}
+
+fn onIconWait(timer: *loop_mod.Timer) void {
+    const win: *Window = @fieldParentPtr("icon_timer", timer);
+    win.requestFrame();
 }
 
 pub fn requestFrame(win: *Window) void {
@@ -680,9 +716,11 @@ pub fn frame(win: *Window) Error!void {
         win.dirty.layers = false;
     }
     try win.paint.build(win);
-    try win.paint.emit(win);
-    win.syncConstraint();
-    win.dirty.props = false;
+    if (!win.holdForIcons()) {
+        try win.paint.emit(win);
+        win.syncConstraint();
+        win.dirty.props = false;
+    }
     if (win.dirty.semantics) {
         try win.semantics.rebuild(win);
         win.dirty.semantics = false;

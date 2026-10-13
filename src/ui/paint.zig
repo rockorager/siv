@@ -1140,7 +1140,15 @@ fn drawImage(win: *Window, nid: NodeId, b: *scene.Builder, off: Point) DrawError
     const pad = n.layout.padding;
     const box = Rect.xywh(off.x + pad.left(s.rtl), off.y + pad.top, s.size.w - pad.horizontal(), s.size.h - pad.vertical());
     if (box.isEmpty()) return Rect.empty;
-    if (image.vector) |doc| return drawVector(win, nid, b, doc, image.logicalSize(), box);
+    if (image.vector) |doc| {
+        // Embedded images' pixels are the document's: the list keeps it.
+        if (doc.has_images) {
+            const images = &Slot.of(b).images;
+            try images.ensureUnusedCapacity(win.gpa, 1);
+            images.appendAssumeCapacity(image.retain());
+        }
+        return drawVector(win, nid, b, doc, image.logicalSize(), box);
+    }
     const shown: struct { image: *Image, ref: scene.ImageRef } = if (img.icon.len != 0)
         .{ .image = image, .ref = image.sceneRef() }
     else blk: {
@@ -1187,8 +1195,8 @@ fn drawImage(win: *Window, nid: NodeId, b: *scene.Builder, off: Point) DrawError
 
 /// A vector image or icon (D19): the document drawn into the node's box
 /// as the fit says, its role colors from the theme (the foreground the
-/// node's color). The display list copies the paths, so nothing keeps the
-/// document alive.
+/// node's color). The display list copies the paths, so only a document
+/// with embedded images, whose pixels it references, is kept alive.
 fn drawVector(win: *Window, nid: NodeId, b: *scene.Builder, doc: *const svg.Document, logical: [2]f32, box: Rect) DrawError!Rect {
     const v = win.node(nid).data.image;
     const lw, const lh = logical;
