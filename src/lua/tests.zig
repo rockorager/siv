@@ -331,3 +331,21 @@ test "hot reload: a changed module runs again, kept values stay" {
     const args = [_:null]?[*:0]const u8{dir ++ "/label.lua"};
     try testing.expectEqual(0, root.siv_lua_run(L, dir ++ "/main.lua", 1, &args, 1));
 }
+
+test "portal requests from a coroutine: the file chooser without a bus" {
+    _ = try run(prologue ++
+        \\local result
+        \\siv.spawn(function()
+        \\  local chooser <close> = app:file_chooser_create{ title = "Open" }
+        \\  chooser:add_filter("Images")
+        \\  chooser:add_pattern("mime", "image/*")
+        \\  result = chooser:show(win)
+        \\end)
+        \\for _ = 1, 200 do
+        \\  if result then break end
+        \\  app:dispatch(5)
+        \\end
+        \\-- The headless backend has no session bus.
+        \\assert(result and result.response == "unavailable", result and result.response)
+    );
+}

@@ -267,6 +267,16 @@ fn writeFunction(w: *Writer, s: Schema, f: schema.Function, method: bool) !void 
         .buffer => try w.print("---@return string {s}\n", .{p.name}),
         else => {},
     };
+    if (async_param) |ap| {
+        // What waiting returns: the completion's arguments.
+        const cb = s.get(f.params[ap].type.ref).callback;
+        for (cb.params) |p| {
+            if (s.isResult(p.type)) continue;
+            try w.writeAll("---@return ");
+            try writeType(w, s, p.type, .output);
+            try w.print("{s} {s}\n", .{ if (p.type == .string) "?" else "", p.name });
+        }
+    }
     if (!s.isResult(f.ret) and f.ret != .void) {
         try w.writeAll("---@return ");
         try writeType(w, s, f.ret, .output);

@@ -45,13 +45,22 @@ const setup =
     \\local function run() end
     \\siv.methods.app.run = run
     \\siv.run = run
+    \\-- Image loads report when they finish, for tests to wait on.
+    \\captured.loads = 0
+    \\local image_load = siv.methods.app.image_load
+    \\siv.methods.app.image_load = function(...)
+    \\  local results = table.pack(pcall(image_load, ...))
+    \\  captured.loads = captured.loads + 1
+    \\  if not results[1] then error(results[2], 0) end
+    \\  return table.unpack(results, 2, results.n)
+    \\end
 ;
 
 const LuaApp = struct {
     L: *c.lua_State,
     h: Harness,
 
-    const Options = struct { dark: bool = false };
+    const Options = struct { dark: bool = false, arg: ?[:0]const u8 = null };
 
     fn start(path: [:0]const u8, o: Options) !LuaApp {
         const L = lua.siv_lua_new(~@as(c_int, 0)) orelse return error.OutOfMemory;
@@ -67,7 +76,8 @@ const LuaApp = struct {
         c.lua_settop(L, -2);
         _ = c.lua_pushstring(L, path.ptr);
         c.lua_pushboolean(L, 0);
-        try call(L, 2);
+        if (o.arg) |a| _ = c.lua_pushstring(L, a.ptr);
+        try call(L, if (o.arg != null) 3 else 2);
         var self: LuaApp = .{ .L = L, .h = .{ .golden = golden_dir } };
         _ = c.lua_getglobal(L, "captured");
         _ = c.lua_getfield(L, -1, "app");
@@ -162,6 +172,20 @@ test "lua: gauge.lua draws on a canvas and takes keys" {
     try app.key(key_right, "");
     try app.key(key_right, "");
     try app.h.expectGolden("gauge-50", 260, 260);
+}
+
+test "lua: viewer.lua loads an image from a coroutine" {
+    var app = try LuaApp.start("examples/viewer.lua", .{ .arg = "test/abi/testdata/rgba.png" });
+    defer app.stop();
+    try app.run(
+        \\for _ = 1, 500 do
+        \\  if captured.loads > 0 then return end
+        \\  captured.app:dispatch(10)
+        \\end
+        \\error("the image did not load")
+    );
+    try app.h.settle();
+    try app.h.expectGolden("viewer", 640, 480);
 }
 
 test "lua: hot reload of todo.lua keeps its window, items, and draft" {
