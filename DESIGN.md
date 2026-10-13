@@ -658,6 +658,20 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     windows present with the CPU renderer until it is ready and then
     switch once. First frames stay on the CPU even with the pipeline cache
     below: instance and device creation alone took 15 to 45 ms on lavapipe.
+  - `exit` waits for a device thread that is still starting (up to 2 s).
+    Loading the driver runs its libraries' static constructors on that
+    thread: Mesa's drivers link libLLVM, whose constructors register about
+    2700 command-line options and their destructors (8 ms on RADV). An
+    application that returned from `main` meanwhile (an error path without
+    `siv_app_destroy`) ran those destructors under the constructors, and
+    LLVM aborted with "Option 'print-inst-addrs' registered more than
+    once": one libLLVM, loaded once, its registry torn down mid-build, not
+    two copies. `exit` runs the exiting thread's thread-local destructors
+    first, so the compositor registers one (glibc's
+    `__cxa_thread_atexit_impl`; none elsewhere) on the thread that creates
+    it, which waits for that thread's device threads. Loading the driver on
+    the UI thread instead would add those 8 ms to startup. `exit` from
+    another thread is not covered.
   - Pipeline cache: a VkPipelineCache persists in
     `$XDG_CACHE_HOME/siv/vulkan` (else `~/.cache/siv/vulkan`), one file
     named by the driver's pipelineCacheUUID and a hash of the SPIR-V, so a

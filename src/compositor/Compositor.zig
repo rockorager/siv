@@ -87,8 +87,54 @@ vulkan_thread: ?std.Thread = null,
 /// Written by the starting thread before it posts `vulkan_remote`.
 vulkan_result: render_vulkan.Error!*render_vulkan.Device = error.Unavailable,
 vulkan_remote: Loop.Remote = .{ .func = onVulkanReady },
+/// The creating thread's exit guard (D10), counting device threads
+/// still starting.
+exit_guard: ?*ExitGuard = null,
 
 const max_seats = 8;
+
+/// Holds `exit` back while a device thread is still starting (D10).
+/// Loading the Vulkan driver runs its libraries' static constructors
+/// (Mesa's drivers link libLLVM, which registers thousands of
+/// command-line options and their destructors); `exit` on another thread
+/// meanwhile runs those destructors under them, and LLVM aborts with
+/// "Option '...' registered more than once". `exit` first runs the
+/// exiting thread's thread-local destructors, so one on the thread that
+/// created the compositor waits for its device threads. Each thread has
+/// one guard, alive as long as the thread is, shared by its compositors.
+const ExitGuard = struct {
+    starting: std.atomic.Value(u32) = .init(0),
+    registered: bool = false,
+
+    /// The longest `exit` waits for a device thread.
+    const max_wait_ns = 2 * std.time.ns_per_s;
+
+    /// This thread's guard, its destructor registered; null without
+    /// thread-local destructors (not glibc).
+    fn get() ?*ExitGuard {
+        const g = &thread_exit_guard;
+        if (!g.registered) {
+            const register = cxa_thread_atexit_impl orelse return null;
+            // The dso argument (any address in libsiv) keeps libsiv
+            // loaded until the destructor has run.
+            if (register(wait, g, @ptrCast(@constCast(&wait))) != 0) return null;
+            g.registered = true;
+        }
+        return g;
+    }
+
+    fn wait(ctx: ?*anyopaque) callconv(.c) void {
+        const g: *ExitGuard = @ptrCast(@alignCast(ctx));
+        var waited: u64 = 0;
+        while (g.starting.load(.acquire) != 0 and waited < max_wait_ns) : (waited += std.time.ns_per_ms) {
+            const ts: c.timespec = .{ .sec = 0, .nsec = std.time.ns_per_ms };
+            _ = c.nanosleep(&ts, null);
+        }
+    }
+};
+
+threadlocal var thread_exit_guard: ExitGuard = .{};
+const cxa_thread_atexit_impl = @extern(?*const fn (*const fn (?*anyopaque) callconv(.c) void, ?*anyopaque, ?*anyopaque) callconv(.c) c_int, .{ .name = "__cxa_thread_atexit_impl", .linkage = .weak });
 
 /// Which renderer presents windows (D10).
 pub const Renderer = enum {
@@ -252,6 +298,7 @@ pub fn create(options: Options) !*Compositor {
         .renderer = options.renderer,
         .vulkan_options = options.vulkan,
         .vulkan_backoff_ns = options.vulkan.retry_ns,
+        .exit_guard = if (options.thread) ExitGuard.get() else null,
     };
     if (options.thread) {
         self.own_loop = try Loop.init(gpa);
@@ -755,10 +802,13 @@ fn startVulkan(self: *Compositor) void {
     };
     self.vulkan_state = .starting;
     if (self.threaded) {
+        if (self.exit_guard) |g| _ = g.starting.fetchAdd(1, .acq_rel);
         if (std.Thread.spawn(.{}, createVulkan, .{ self, options })) |t| {
             self.vulkan_thread = t;
             return;
-        } else |_| {}
+        } else |_| {
+            if (self.exit_guard) |g| _ = g.starting.fetchSub(1, .acq_rel);
+        }
     }
     // Without a thread (tests), on this one.
     self.vulkan_result = render_vulkan.Device.create(self.gpa, options);
@@ -767,6 +817,7 @@ fn startVulkan(self: *Compositor) void {
 
 fn createVulkan(self: *Compositor, options: render_vulkan.Device.Options) void {
     self.vulkan_result = render_vulkan.Device.create(self.gpa, options);
+    if (self.exit_guard) |g| _ = g.starting.fetchSub(1, .acq_rel);
     self.loop.postRemote(&self.vulkan_remote);
 }
 

@@ -69,6 +69,11 @@ const Harness = struct {
     fn start(h: *Harness) !void {
         try h.sway.start();
         errdefer h.sway.stop();
+        try h.open();
+    }
+
+    /// The loop, workers, and compositor on the running sway.
+    fn open(h: *Harness) !void {
         h.loop = try Loop.init(testing.allocator);
         h.workers = pool.Pool.init(testing.allocator, 3);
         for (&h.builders) |*b| {
@@ -489,6 +494,48 @@ fn checkPacing(h: *Harness, id: WindowId, label: []const u8) !void {
         try testing.expect(r.presentations >= anim_ns / refresh - 3);
         try testing.expectEqual(@as(usize, 0), r.dropped);
         try testing.expect(@abs(err) <= @as(i64, @intCast(refresh)));
+    }
+}
+
+test "exiting while the Vulkan device is starting runs no driver destructors under it" {
+    // Loading the driver runs libLLVM's static constructors on the device
+    // thread (D10); without the exit guard, `exit` on the UI thread
+    // meanwhile made LLVM abort with "Option '...' registered more than
+    // once" in a third of these runs (Mesa 26, RADV).
+    if (bench) return error.SkipZigTest;
+    var sway: Sway = .{};
+    try sway.start();
+    defer sway.stop();
+    var delay_ms: u64 = 0;
+    while (delay_ms < 24) : (delay_ms += 1) {
+        var fds: [2]std.c.fd_t = undefined;
+        try testing.expectEqual(@as(c_int, 0), std.c.pipe(&fds));
+        const pid = std.c.fork();
+        try testing.expect(pid >= 0);
+        if (pid == 0) {
+            _ = std.c.dup2(fds[1], 2);
+            var h: Harness = .{ .sway = sway, .renderer = .vulkan, .vulkan = .{ .pipeline_cache = .none } };
+            h.open() catch std.c._exit(3);
+            _ = h.comp.createWindow(.{ .app_id = "siv-exit" }) catch std.c._exit(3);
+            const end = Loop.now() + delay_ms * std.time.ns_per_ms;
+            while (Loop.now() < end) h.loop.dispatch(1) catch std.c._exit(3);
+            std.c.exit(0);
+        }
+        _ = std.c.close(fds[1]);
+        var out: [4096]u8 = undefined;
+        var len: usize = 0;
+        while (len < out.len) {
+            const n = std.c.read(fds[0], out[len..].ptr, out.len - len);
+            if (n <= 0) break;
+            len += @intCast(n);
+        }
+        _ = std.c.close(fds[0]);
+        var status: c_int = 0;
+        _ = std.c.waitpid(pid, &status, 0);
+        if (std.mem.indexOf(u8, out[0..len], "CommandLine Error") != null or status != 0) {
+            std.debug.print("exit after {d} ms: status {d}, stderr:\n{s}\n", .{ delay_ms, status, out[0..len] });
+            return error.TestUnexpectedResult;
+        }
     }
 }
 
