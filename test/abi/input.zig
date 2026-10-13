@@ -42,7 +42,7 @@ test "gestures reach handlers; pinches zoom scroll nodes on the compositor or th
     defer h.stop();
     var log: Log = .{};
     var view: Log = .{};
-    const root = c.siv_window_root(h.window);
+    const root = c.siv_window_get_root(h.window);
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
     const sc = c.siv_scroll(txn, root, .both);
@@ -156,7 +156,7 @@ test "tablet tools and pads reach handlers with every sample, in node coordinate
     try h.start(200, 100, null, null);
     defer h.stop();
     var pen: Pen = .{};
-    const root = c.siv_window_root(h.window);
+    const root = c.siv_window_get_root(h.window);
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
     const row = c.siv_flex(txn, root, null);
@@ -286,7 +286,7 @@ test "pointer constraints follow their node's box and send it relative motion; s
     var lock: Lock = .{};
     try h.start(200, 100, Lock.onWindow, &lock);
     defer h.stop();
-    const root = c.siv_window_root(h.window);
+    const root = c.siv_window_get_root(h.window);
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
     const row = c.siv_flex(txn, root, null);

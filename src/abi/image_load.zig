@@ -94,7 +94,8 @@ pub export fn siv_image_load(app: t.App, desc: ?*const t.ImageLoadDesc, callback
 
 fn load(self: *App, desc: ?*const t.ImageLoadDesc, callback: ?t.ImageLoadFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque, request: ?*t.ImageRequest) Error!void {
     const cb = callback orelse return error.InvalidArgument;
-    const dest = try runtime.out(t.ImageRequest, request);
+    var unused: t.ImageRequest = .null;
+    const dest = runtime.optOut(t.ImageRequest, request, &unused);
     const d = try runtime.readDesc(t.ImageLoadDesc, desc);
     const fl = try runtime.flags(t.ImageLoadFlags, d.flags);
     const data = try runtime.array(u8, d.data, d.data_count);

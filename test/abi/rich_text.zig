@@ -41,7 +41,7 @@ test "rich text: families per span, paragraph styles, tab stops, and broken word
 
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
-    const root = c.siv_window_root(h.window);
+    const root = c.siv_window_get_root(h.window);
     _ = c.siv_set_visual(txn, root, &.{ .background = .{ .r = 1, .g = 1, .b = 1, .a = 1 } });
     const col = c.siv_flex(txn, root, &.{ .axis = .column, .gap = 10 });
     _ = c.siv_set_layout(txn, col, &.{ .padding = .{ .start = 10, .end = 10, .top = 10, .bottom = 10 } });
@@ -148,7 +148,7 @@ test "styled-text editors align paragraphs by keys, undoably" {
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
     const content = "One\nTwo\nThree";
-    const field = c.siv_text_field(txn, c.siv_window_root(h.window), &.{ .text = content, .text_len = content.len, .flags = .{ .multiline = true, .styled = true }, .rows = 3 });
+    const field = c.siv_text_field(txn, c.siv_window_get_root(h.window), &.{ .text = content, .text_len = content.len, .flags = .{ .multiline = true, .styled = true }, .rows = 3 });
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     try ok(c.siv_node_focus(field));
@@ -195,7 +195,7 @@ test "typesetting: justified, hyphenated, total-fit paragraphs and aligned tab s
     defer h.stop();
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
-    const root = c.siv_window_root(h.window);
+    const root = c.siv_window_get_root(h.window);
     _ = c.siv_set_visual(txn, root, &.{ .background = .{ .r = 1, .g = 1, .b = 1, .a = 1 } });
     const col = c.siv_flex(txn, root, &.{ .axis = .column, .gap = 12 });
     _ = c.siv_set_layout(txn, col, &.{ .padding = .{ .start = 10, .end = 10, .top = 10, .bottom = 10 } });
@@ -261,7 +261,7 @@ test "text: ellipses, line clamps, and a base direction of its own" {
     defer h.stop();
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
-    const root = c.siv_window_root(h.window);
+    const root = c.siv_window_get_root(h.window);
     _ = c.siv_set_visual(txn, root, &.{ .background = .{ .r = 1, .g = 1, .b = 1, .a = 1 } });
     const col = c.siv_flex(txn, root, &.{ .axis = .column, .gap = 8 });
     _ = c.siv_set_layout(txn, col, &.{ .padding = .{ .start = 10, .end = 10, .top = 10, .bottom = 10 } });

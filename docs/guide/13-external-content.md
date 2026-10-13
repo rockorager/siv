@@ -34,7 +34,7 @@ siv_result r = siv_external_create(p->window, SIV_DESC(siv_external_desc, .user_
 siv_txn txn;
 if (r == SIV_OK) r = siv_txn_begin(p->window, &txn);
 if (r != SIV_OK) return r;
-siv_node root = siv_window_root(p->window);
+siv_node root = siv_window_get_root(p->window);
 siv_set_visual(txn, root, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_WINDOW_BG));
 siv_node column = siv_flex(txn, root, SIV_DESC(siv_flex_desc, .axis = SIV_AXIS_COLUMN, .gap = 8, .align_items = SIV_ALIGN_CENTER));
 siv_set_layout(txn, column, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_FRACTION, 1}, .padding = {16, 16, 16, 16}));

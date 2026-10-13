@@ -212,15 +212,11 @@ pub fn labelOf(node: Node, buf: []u8) []const u8 {
 }
 
 pub fn windowOf(node: Node) siv.Window {
-    var win: siv.Window = .null;
-    _ = c.siv_node_get_window(node, &win);
-    return win;
+    return c.siv_node_get_window(node);
 }
 
 pub fn appOf(window: siv.Window) siv.App {
-    var app: siv.App = .null;
-    _ = c.siv_window_get_app(window, &app);
-    return app;
+    return c.siv_window_get_app(window);
 }
 
 /// Whether a window handle is still valid (a popup may have been
@@ -269,9 +265,7 @@ pub fn drawCheck(draw: siv.Draw, width: f32, height: f32, col: siv.Color, mixed:
 }
 
 pub fn related(node: Node, rel: siv.Relation) Node {
-    var out: Node = .null;
-    _ = c.siv_node_get_related(node, rel, &out);
-    return out;
+    return c.siv_node_get_related(node, rel);
 }
 
 /// A label's text style.

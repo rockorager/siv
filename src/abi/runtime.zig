@@ -127,6 +127,12 @@ pub fn out(comptime T: type, p: ?*T) Error!*T {
     return p orelse error.InvalidArgument;
 }
 
+/// An optional out pointer (`Param.optional`): writes go to `scratch`
+/// when the caller passed NULL because it does not need the value.
+pub fn optOut(comptime T: type, p: ?*T, scratch: *T) *T {
+    return p orelse scratch;
+}
+
 /// The ABI state every root object carries: its allocator and the handle
 /// table of the objects it owns. A root type embeds it as a field named
 /// `root` and is created with `create`.

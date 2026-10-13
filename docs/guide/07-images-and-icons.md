@@ -64,7 +64,7 @@ converted:
 double scale = 1;
 if (siv_window_get_scale(g->window, &scale) != SIV_OK) scale = 1;
 siv_image_request request;
-return siv_image_load(app, SIV_DESC(siv_image_load_desc, .path = S("docs/guide/examples/data/landscape.png"), .max_width = 240, .max_height = 150, .scale = (float)scale), on_loaded, NULL, g, &request);
+return siv_image_load(app, SIV_DESC(siv_image_load_desc, .path = SIV_STR("docs/guide/examples/data/landscape.png"), .max_width = 240, .max_height = 150, .scale = (float)scale), on_loaded, NULL, g, &request);
 ```
 
 The callback runs on your thread with the image, or with the reason it
@@ -85,7 +85,7 @@ static void on_loaded(void *user_data, siv_result result, siv_image image) {
 	siv_txn txn;
 	if (siv_txn_begin(g->window, &txn) == SIV_OK) {
 		if (result == SIV_OK) siv_set_image_view(txn, g->photo, SIV_DESC(siv_image_view_desc, .image = image, .fit = SIV_FIT_COVER));
-		siv_set_text(txn, g->caption, S(text));
+		siv_set_text(txn, g->caption, text, strlen(text));
 		commit(txn);
 	}
 	if (result == SIV_OK) siv_image_destroy(image);
@@ -126,7 +126,7 @@ in logical pixels:
 
 ```c
 static void icon(siv_txn txn, siv_node parent, const char *name, siv_color_token color) {
-	siv_image_view(txn, parent, SIV_DESC(siv_image_view_desc, .icon = S(name), .icon_size = 32, .color_token = color));
+	siv_image_view(txn, parent, SIV_DESC(siv_image_view_desc, .icon = name, strlen(name), .icon_size = 32, .color_token = color));
 }
 ```
 
@@ -156,7 +156,7 @@ their descriptor's `icon` field, drawn in the label's color;
 `SIV_WIDGET_ICON_ONLY` hides the label, which stays the accessible name:
 
 ```c
-siv_push_button(txn, column, SIV_DESC(siv_button_desc, .label = S("Copy"), .icon = S("edit-copy-symbolic")));
+siv_push_button(txn, column, SIV_DESC(siv_button_desc, .label = SIV_STR("Copy"), .icon = SIV_STR("edit-copy-symbolic")));
 ```
 
 Canvases draw icons with `siv_draw_icon` and draw again when one loads.

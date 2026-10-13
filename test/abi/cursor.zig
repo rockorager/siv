@@ -34,7 +34,7 @@ test "C API cursors: per node, window override, resize edges" {
     const wid = (try h.win()).win.id;
     var txn: t.Txn = undefined;
     try ok(T.siv_txn_begin(h.window, &txn));
-    const edge = T.siv_box(txn, abi.application.siv_window_root(h.window));
+    const edge = T.siv_box(txn, abi.application.siv_window_get_root(h.window));
     T.siv_set_layout(txn, edge, &.{ .size = @sizeOf(t.LayoutDesc), .width = .{ .unit = .px, .value = 8 }, .height = .{ .unit = .px, .value = 8 } });
     C.siv_set_cursor(txn, edge, .nwse_resize);
     try ok(T.siv_txn_commit(txn));

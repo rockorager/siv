@@ -43,7 +43,7 @@ static void tick(struct host *host) {
 	snprintf(text, sizeof text, "Host ticks: %u", ++host->count);
 	siv_txn txn;
 	if (siv_txn_begin(host->window, &txn) != SIV_OK) return;
-	siv_set_text(txn, host->ticks, S(text));
+	siv_set_text(txn, host->ticks, text, strlen(text));
 	siv_result r = siv_txn_commit(txn);
 	if (r != SIV_OK) fprintf(stderr, "embed: %s\n", siv_result_name(r));
 }

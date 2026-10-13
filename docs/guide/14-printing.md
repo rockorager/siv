@@ -27,23 +27,23 @@ static void draw_page(void *user_data, siv_draw d, uint32_t page, const siv_page
 	float w = setup->width - setup->margin_left - setup->margin_right;
 	siv_color ink = {0.1f, 0.1f, 0.12f, 1}, muted = {0.45f, 0.45f, 0.5f, 1}, accent = {0.15f, 0.39f, 0.92f, 1};
 	if (page == 1) {
-		siv_draw_text(d, x, y, w, S("Terms"), SIV_DESC(siv_text_style_desc, .font_size = 20, .weight = SIV_FONT_WEIGHT_BOLD, .color = ink));
-		siv_draw_text(d, x, y + 36, w, S("Payment is due within 30 days. Thank you for your business."), SIV_DESC(siv_text_style_desc, .font_size = 12, .color = ink));
+		siv_draw_text(d, x, y, w, SIV_STR("Terms"), SIV_DESC(siv_text_style_desc, .font_size = 20, .weight = SIV_FONT_WEIGHT_BOLD, .color = ink));
+		siv_draw_text(d, x, y + 36, w, SIV_STR("Payment is due within 30 days. Thank you for your business."), SIV_DESC(siv_text_style_desc, .font_size = 12, .color = ink));
 		return;
 	}
 	siv_draw_rect(d, (siv_rect){x, y, w, 6});
 	siv_draw_fill(d, SIV_DESC(siv_paint_desc, .color = accent), 0);
-	siv_draw_text(d, x, y + 20, w, S("Invoice 2026-041"), SIV_DESC(siv_text_style_desc, .font_size = 28, .weight = SIV_FONT_WEIGHT_BOLD, .color = ink));
-	siv_draw_text(d, x, y + 60, w, S("Northwind Studio, for Example Press"), SIV_DESC(siv_text_style_desc, .font_size = 12, .color = muted));
+	siv_draw_text(d, x, y + 20, w, SIV_STR("Invoice 2026-041"), SIV_DESC(siv_text_style_desc, .font_size = 28, .weight = SIV_FONT_WEIGHT_BOLD, .color = ink));
+	siv_draw_text(d, x, y + 60, w, SIV_STR("Northwind Studio, for Example Press"), SIV_DESC(siv_text_style_desc, .font_size = 12, .color = muted));
 	float row = y + 110;
 	for (size_t i = 0; i < 3; i++, row += 28) {
-		siv_draw_text(d, x, row, w, S(items[i][0]), SIV_DESC(siv_text_style_desc, .font_size = 13, .color = ink));
-		siv_draw_text(d, x, row, w, S(items[i][1]), SIV_DESC(siv_text_style_desc, .font_size = 13, .color = ink, .align = SIV_TEXT_ALIGN_END));
+		siv_draw_text(d, x, row, w, items[i][0], strlen(items[i][0]), SIV_DESC(siv_text_style_desc, .font_size = 13, .color = ink));
+		siv_draw_text(d, x, row, w, items[i][1], strlen(items[i][1]), SIV_DESC(siv_text_style_desc, .font_size = 13, .color = ink, .align = SIV_TEXT_ALIGN_END));
 	}
 	siv_draw_move_to(d, x, row + 4);
 	siv_draw_line_to(d, x + w, row + 4);
 	siv_draw_stroke(d, SIV_DESC(siv_stroke_desc, .width = 1), SIV_DESC(siv_paint_desc, .color = muted));
-	siv_draw_text(d, x, row + 16, w, S("Total  $3,910.00"), SIV_DESC(siv_text_style_desc, .font_size = 16, .weight = SIV_FONT_WEIGHT_BOLD, .color = ink, .align = SIV_TEXT_ALIGN_END));
+	siv_draw_text(d, x, row + 16, w, SIV_STR("Total  $3,910.00"), SIV_DESC(siv_text_style_desc, .font_size = 16, .weight = SIV_FONT_WEIGHT_BOLD, .color = ink, .align = SIV_TEXT_ALIGN_END));
 }
 ```
 
@@ -87,7 +87,7 @@ static siv_event_result on_export(void *user_data, siv_node button, const siv_ev
 	int fd = open(doc->path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
 	if (fd < 0) return SIV_EVENT_RESULT_PASS;
 	/* siv duplicates the descriptor; pages are drawn at the next dispatch. */
-	siv_result r = siv_pdf_write(doc->app, SIV_DESC(siv_print_desc, .title = S("Invoice 2026-041"), .user_data = doc, .draw_page = draw_page, .done = on_exported, .page_count = 2, .margin = 56), fd);
+	siv_result r = siv_pdf_write(doc->app, SIV_DESC(siv_print_desc, .title = SIV_STR("Invoice 2026-041"), .user_data = doc, .draw_page = draw_page, .done = on_exported, .page_count = 2, .margin = 56), fd);
 	close(fd);
 	return r == SIV_OK ? SIV_EVENT_RESULT_HANDLED : SIV_EVENT_RESULT_PASS;
 }
@@ -110,7 +110,7 @@ and pages per sheet itself:
 static siv_event_result on_print(void *user_data, siv_node button, const siv_event *event) {
 	(void)button;
 	struct doc *doc = user_data;
-	siv_result r = siv_print(doc->app, event->window, SIV_DESC(siv_print_desc, .title = S("Invoice 2026-041"), .user_data = doc, .draw_page = draw_page, .done = on_printed, .page_count = 2));
+	siv_result r = siv_print(doc->app, event->window, SIV_DESC(siv_print_desc, .title = SIV_STR("Invoice 2026-041"), .user_data = doc, .draw_page = draw_page, .done = on_printed, .page_count = 2));
 	return r == SIV_OK ? SIV_EVENT_RESULT_HANDLED : SIV_EVENT_RESULT_PASS;
 }
 ```

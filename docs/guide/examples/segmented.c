@@ -12,7 +12,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#define S(str) (str), strlen(str)
 
 /* Commits a transaction made in a handler. There is nothing to undo when
  * one fails (siv discarded it), so report it and go on. */
@@ -23,8 +22,7 @@ static void commit(siv_txn txn) {
 
 /* A node's neighbor, or 0. */
 static siv_node related(siv_node node, siv_relation which) {
-	siv_node out = 0;
-	return siv_node_get_related(node, which, &out) == SIV_OK ? out : 0;
+	return siv_node_get_related(node, which);
 }
 
 /* The widget ---------------------------------------------------------- */
@@ -145,14 +143,14 @@ static siv_node segmented(siv_txn txn, siv_node parent, const char *label, const
 	 * siv_set_layout adds to them instead of replacing them. */
 	siv_set_default_layout(txn, root, SIV_DESC(siv_layout_desc, .padding = {3, 3, 3, 3}));
 	siv_set_visual(txn, root, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_CONTROL_BG, .border_token = SIV_COLOR_TOKEN_BORDER, .border_width = 1, .radius = {8, 8, 8, 8}));
-	siv_set_semantics(txn, root, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_GROUP, .label = S(label)));
+	siv_set_semantics(txn, root, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_GROUP, .label = label, strlen(label)));
 	siv_on_default(txn, root, SIV_EVENT_TYPE_KEY, root_key, NULL, s);
 	siv_set_widget(txn, root, SIV_DESC(siv_widget_desc, .user_data = s, .set_value = widget_set_value, .get_value = widget_get_value, .set_label = widget_set_label, .focus = widget_focus));
 	for (uint32_t i = 0; i < count; i++) {
 		siv_node seg = siv_box(txn, root);
 		siv_set_default_layout(txn, seg, SIV_DESC(siv_layout_desc, .padding = {14, 14, 5, 5}));
 		siv_on_default(txn, seg, SIV_EVENT_TYPE_ACTIVATE, segment_activate, NULL, s);
-		siv_text(txn, seg, S(options[i]));
+		siv_text(txn, seg, options[i], strlen(options[i]));
 	}
 	restyle(txn, s);
 	return root;
@@ -170,7 +168,7 @@ static siv_event_result on_range(void *user_data, siv_node control, const siv_ev
 	static const char *const text[] = {"Showing today", "Showing this week", "Showing this month"};
 	siv_txn txn;
 	if (siv_txn_begin(event->window, &txn) != SIV_OK) return SIV_EVENT_RESULT_PASS;
-	siv_set_text(txn, cal->shown, S(text[event->index]));
+	siv_set_text(txn, cal->shown, text[event->index], strlen(text[event->index]));
 	commit(txn);
 	return SIV_EVENT_RESULT_HANDLED;
 }
@@ -184,11 +182,11 @@ int main(void) {
 	}
 	siv_window window;
 	struct calendar cal = {0};
-	r = siv_window_create(app, SIV_DESC(siv_window_desc, .title = S("Calendar"), .width = 340, .height = 140), &window);
+	r = siv_window_create(app, SIV_DESC(siv_window_desc, .title = SIV_STR("Calendar"), .width = 340, .height = 140), &window);
 	siv_txn txn;
 	if (r == SIV_OK) r = siv_txn_begin(window, &txn);
 	if (r == SIV_OK) {
-		siv_node root = siv_window_root(window);
+		siv_node root = siv_window_get_root(window);
 		siv_set_visual(txn, root, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_WINDOW_BG));
 		siv_node column = siv_flex(txn, root, SIV_DESC(siv_flex_desc, .axis = SIV_AXIS_COLUMN, .gap = 14, .align_items = SIV_ALIGN_START));
 		siv_set_layout(txn, column, SIV_DESC(siv_layout_desc, .padding = {20, 20, 20, 20}));
@@ -197,7 +195,7 @@ int main(void) {
 		/* The generic calls drive it like a stock widget. */
 		siv_widget_set_value(txn, range, 1);
 		siv_on(txn, range, SIV_EVENT_TYPE_CHANGE, on_range, NULL, &cal);
-		cal.shown = siv_text(txn, column, S("Showing this week"));
+		cal.shown = siv_text(txn, column, SIV_STR("Showing this week"));
 		siv_set_text_style(txn, cal.shown, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_WINDOW_FG));
 		r = siv_txn_commit(txn);
 	}

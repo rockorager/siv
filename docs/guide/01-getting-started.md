@@ -115,11 +115,11 @@ if (r != SIV_OK) {
 siv_window window = 0;
 struct counter counter = {0};
 siv_txn txn = 0;
-r = siv_window_create(app, SIV_DESC(siv_window_desc, .title = S("Hello"), .width = 320, .height = 160), &window);
+r = siv_window_create(app, SIV_DESC(siv_window_desc, .title = SIV_STR("Hello"), .width = 320, .height = 160), &window);
 ```
 
-`S()` is a two-line macro the samples define: siv takes strings as a
-pointer and a length, so `S("Hello")` expands to `"Hello", strlen("Hello")`.
+`, strlen()` is a two-line macro the samples define: siv takes strings as a
+pointer and a length, so `SIV_STR("Hello")` expands to `"Hello", strlen("Hello")`.
 Descriptor structs like `siv_window_desc` are passed with `SIV_DESC`, which
 sets their `size` field; fields you leave out are zero, and zero always
 means the default.
@@ -129,19 +129,19 @@ The window's content is a tree of nodes, built in a transaction:
 ```c
 if (r == SIV_OK) r = siv_txn_begin(window, &txn);
 if (r == SIV_OK) {
-	siv_node root = siv_window_root(window);
+	siv_node root = siv_window_get_root(window);
 	siv_set_visual(txn, root, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_WINDOW_BG));
 	siv_node column = siv_flex(txn, root, SIV_DESC(siv_flex_desc, .axis = SIV_AXIS_COLUMN, .gap = 12, .align_items = SIV_ALIGN_START));
 	siv_set_layout(txn, column, SIV_DESC(siv_layout_desc, .padding = {24, 24, 24, 24}));
 
-	siv_node title = siv_text(txn, column, S("Hello, siv"));
+	siv_node title = siv_text(txn, column, SIV_STR("Hello, siv"));
 	siv_set_text_style(txn, title, SIV_DESC(siv_text_style_desc, .size_role = SIV_SIZE_ROLE_TITLE, .weight = SIV_FONT_WEIGHT_BOLD, .color_token = SIV_COLOR_TOKEN_WINDOW_FG));
 	siv_set_semantics(txn, title, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_HEADING, .level = 1));
 
-	siv_node button = siv_push_button(txn, column, SIV_DESC(siv_button_desc, .label = S("Click me"), .style = SIV_BUTTON_STYLE_PRIMARY));
+	siv_node button = siv_push_button(txn, column, SIV_DESC(siv_button_desc, .label = SIV_STR("Click me"), .style = SIV_BUTTON_STYLE_PRIMARY));
 	siv_on(txn, button, SIV_EVENT_TYPE_ACTIVATE, on_click, NULL, &counter);
 
-	counter.label = siv_text(txn, column, S("Not clicked yet"));
+	counter.label = siv_text(txn, column, SIV_STR("Not clicked yet"));
 	siv_set_text_style(txn, counter.label, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_WINDOW_FG));
 	/* Nothing above was checked: the first failure would have made
 	 * the rest do nothing, and commit reports it. */
@@ -166,7 +166,7 @@ static siv_event_result on_click(void *user_data, siv_node button, const siv_eve
 	snprintf(text, sizeof text, "Clicked %d time%s", counter->clicks, counter->clicks == 1 ? "" : "s");
 	siv_txn txn;
 	if (siv_txn_begin(event->window, &txn) != SIV_OK) return SIV_EVENT_RESULT_PASS;
-	siv_set_text(txn, counter->label, S(text));
+	siv_set_text(txn, counter->label, text, strlen(text));
 	return siv_txn_commit(txn) == SIV_OK ? SIV_EVENT_RESULT_HANDLED : SIV_EVENT_RESULT_PASS;
 }
 ```
@@ -210,7 +210,7 @@ Zig code `try`s each setter and aborts the transaction with `errdefer`:
 fn build(window: siv.Window, counter: *Counter) !void {
     const txn = try siv.txnBegin(window);
     errdefer siv.txnAbort(txn);
-    const root = siv.windowRoot(window);
+    const root = siv.windowGetRoot(window);
     siv.setVisual(txn, root, &.{ .background_token = .window_bg });
     const column = siv.flex(txn, root, &.{ .axis = .column, .gap = 12, .align_items = .start });
     siv.setLayout(txn, column, &.{ .padding = .{ .start = 24, .end = 24, .top = 24, .bottom = 24 } });

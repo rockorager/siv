@@ -44,12 +44,12 @@ static void on_activate(void *user_data, siv_app app, const siv_activation *acti
 ```
 
 ```c
-siv_result r = siv_app_create(SIV_DESC(siv_app_desc, .app_id = S("org.example.Notes"), .name = S("Notes")), &n.app);
+siv_result r = siv_app_create(SIV_DESC(siv_app_desc, .app_id = SIV_STR("org.example.Notes"), .name = SIV_STR("Notes")), &n.app);
 if (r != SIV_OK) {
 	fprintf(stderr, "launch: %s\n", siv_result_name(r));
 	return 1;
 }
-r = siv_app_add_action(n.app, S("new-note"), on_new_note, NULL, &n);
+r = siv_app_add_action(n.app, SIV_STR("new-note"), on_new_note, NULL, &n);
 if (r == SIV_OK) r = siv_app_launch(n.app, SIV_DESC(siv_launch_desc, .uris = uris, .uris_count = count, .on_activate = on_activate, .user_data = &n, .flags = service ? SIV_LAUNCH_SERVICE : 0, .idle_timeout_ms = 10000));
 /* A second instance forwards its activation and returns at once. */
 if (r == SIV_OK) r = siv_app_run(n.app);

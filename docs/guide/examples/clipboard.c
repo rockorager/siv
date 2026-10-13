@@ -9,7 +9,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#define S(str) (str), strlen(str)
 
 static void commit(siv_txn txn) {
 	siv_result r = siv_txn_commit(txn);
@@ -74,7 +73,7 @@ static siv_event_result on_tile_pointer(void *user_data, siv_node tile, const si
 	} else if (event->phase == SIV_POINTER_PHASE_MOVE && ui->pressed && hypotf(event->x - ui->press_x, event->y - ui->press_y) > 4) {
 		ui->pressed = false;
 		const char *note = "A note dragged from siv";
-		siv_result r = siv_drag_start(tile, SIV_DESC(siv_drag_desc, .mimes = S(TEXT_MIME), .data = (const uint8_t *)note, .data_count = strlen(note), .actions = SIV_DRAG_ALLOW_COPY));
+		siv_result r = siv_drag_start(tile, SIV_DESC(siv_drag_desc, .mimes = TEXT_MIME, strlen(TEXT_MIME), .data = (const uint8_t *)note, .data_count = strlen(note), .actions = SIV_DRAG_ALLOW_COPY));
 		return r == SIV_OK ? SIV_EVENT_RESULT_HANDLED : SIV_EVENT_RESULT_PASS;
 	}
 	return SIV_EVENT_RESULT_PASS;
@@ -117,19 +116,19 @@ static siv_result build(struct ui *ui) {
 	siv_txn txn;
 	siv_result r = siv_txn_begin(ui->window, &txn);
 	if (r != SIV_OK) return r;
-	siv_node root = siv_window_root(ui->window);
+	siv_node root = siv_window_get_root(ui->window);
 	siv_set_visual(txn, root, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_WINDOW_BG));
 	siv_node column = siv_flex(txn, root, SIV_DESC(siv_flex_desc, .axis = SIV_AXIS_COLUMN, .gap = 12));
 	siv_set_layout(txn, column, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_FRACTION, 1}, .padding = {16, 16, 16, 16}));
 
 	siv_node row = siv_flex(txn, column, SIV_DESC(siv_flex_desc, .gap = 8, .align_items = SIV_ALIGN_CENTER));
-	ui->field = siv_text_field(txn, row, SIV_DESC(siv_text_field_desc, .label = S("Text to copy"), .text = S("Hello from siv")));
+	ui->field = siv_text_field(txn, row, SIV_DESC(siv_text_field_desc, .label = SIV_STR("Text to copy"), .text = SIV_STR("Hello from siv")));
 	siv_set_layout(txn, ui->field, SIV_DESC(siv_layout_desc, .grow = 1));
-	siv_node copy = siv_push_button(txn, row, SIV_DESC(siv_button_desc, .label = S("Copy")));
-	siv_node paste = siv_push_button(txn, row, SIV_DESC(siv_button_desc, .label = S("Paste")));
+	siv_node copy = siv_push_button(txn, row, SIV_DESC(siv_button_desc, .label = SIV_STR("Copy")));
+	siv_node paste = siv_push_button(txn, row, SIV_DESC(siv_button_desc, .label = SIV_STR("Paste")));
 	siv_on(txn, copy, SIV_EVENT_TYPE_ACTIVATE, on_copy, NULL, ui);
 	siv_on(txn, paste, SIV_EVENT_TYPE_ACTIVATE, on_paste, NULL, ui);
-	ui->pasted = siv_text(txn, column, S("Nothing pasted yet"));
+	ui->pasted = siv_text(txn, column, SIV_STR("Nothing pasted yet"));
 	siv_set_text_style(txn, ui->pasted, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_MUTED_FG));
 
 	siv_node pair = siv_flex(txn, column, SIV_DESC(siv_flex_desc, .gap = 12));
@@ -138,17 +137,17 @@ static siv_result build(struct ui *ui) {
 	siv_set_visual(txn, tile, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_CONTROL_BG, .border_token = SIV_COLOR_TOKEN_BORDER, .border_width = 1, .radius = {8, 8, 8, 8}));
 	siv_set_cursor(txn, tile, SIV_CURSOR_GRAB);
 	siv_on(txn, tile, SIV_EVENT_TYPE_POINTER, on_tile_pointer, NULL, ui);
-	siv_node tile_text = siv_text(txn, tile, S("Drag me"));
+	siv_node tile_text = siv_text(txn, tile, SIV_STR("Drag me"));
 	siv_set_text_style(txn, tile_text, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_CONTROL_FG, .align = SIV_TEXT_ALIGN_CENTER));
 
 	ui->target = siv_box(txn, pair);
 	siv_set_layout(txn, ui->target, SIV_DESC(siv_layout_desc, .grow = 1, .padding = {12, 12, 24, 24}));
-	siv_set_drop_target(txn, ui->target, SIV_DESC(siv_drop_target_desc, .mimes = S(TEXT_MIME "\ntext/plain"), .actions = SIV_DRAG_ALLOW_COPY));
+	siv_set_drop_target(txn, ui->target, SIV_DESC(siv_drop_target_desc, .mimes = TEXT_MIME "\ntext/plain", strlen(TEXT_MIME "\ntext/plain"), .actions = SIV_DRAG_ALLOW_COPY));
 	siv_on(txn, ui->target, SIV_EVENT_TYPE_DROP, on_drop, NULL, ui);
-	siv_set_semantics(txn, ui->target, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_GROUP, .label = S("Drop area")));
-	siv_node hint = siv_text(txn, ui->target, S("Drop text here"));
+	siv_set_semantics(txn, ui->target, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_GROUP, .label = SIV_STR("Drop area")));
+	siv_node hint = siv_text(txn, ui->target, SIV_STR("Drop text here"));
 	siv_set_text_style(txn, hint, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_MUTED_FG, .align = SIV_TEXT_ALIGN_CENTER));
-	ui->dropped = siv_text(txn, column, S("Nothing dropped yet"));
+	ui->dropped = siv_text(txn, column, SIV_STR("Nothing dropped yet"));
 	siv_set_text_style(txn, ui->dropped, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_MUTED_FG));
 	r = siv_txn_commit(txn);
 	if (r == SIV_OK) highlight(ui, false);
@@ -163,7 +162,7 @@ int main(void) {
 		fprintf(stderr, "clipboard: %s\n", siv_result_name(r));
 		return 1;
 	}
-	r = siv_window_create(app, SIV_DESC(siv_window_desc, .title = S("Clipboard"), .width = 420, .height = 240), &ui.window);
+	r = siv_window_create(app, SIV_DESC(siv_window_desc, .title = SIV_STR("Clipboard"), .width = 420, .height = 240), &ui.window);
 	if (r == SIV_OK) r = build(&ui);
 	if (r == SIV_OK) r = siv_app_run(app);
 	if (r != SIV_OK) fprintf(stderr, "clipboard: %s\n", siv_result_name(r));

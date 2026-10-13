@@ -13,7 +13,6 @@
 
 #include "../common/doc.h"
 
-#define S(str) str, strlen(str)
 
 static siv_color rgb(uint32_t v) {
 	return (siv_color){((v >> 16) & 0xff) / 255.0f, ((v >> 8) & 0xff) / 255.0f, (v & 0xff) / 255.0f, 1};
@@ -29,7 +28,7 @@ static siv_node column(siv_txn txn, siv_node parent, float gap, float pad) {
 
 static void build_idle(siv_txn txn, siv_node root) {
 	siv_node c = column(txn, root, 0, 24);
-	siv_text(txn, c, S("Idle window"));
+	siv_text(txn, c, SIV_STR("Idle window"));
 }
 
 /* Gallery --------------------------------------------------------------------- */
@@ -72,7 +71,7 @@ static void bind_item(void *user_data, siv_txn txn, siv_node row, uint64_t item,
 	char text[32];
 	int len = snprintf(text, sizeof text, "Item %u", index + 1);
 	siv_node label = 0;
-	if (recycled && siv_node_get_related(row, SIV_RELATION_FIRST_CHILD, &label) == SIV_OK && label) {
+	if (recycled && (label = siv_node_get_related(row, SIV_RELATION_FIRST_CHILD))) {
 		siv_set_text(txn, label, text, (size_t)len);
 		return;
 	}
@@ -81,32 +80,32 @@ static void bind_item(void *user_data, siv_txn txn, siv_node row, uint64_t item,
 
 static siv_node build_gallery(siv_txn txn, siv_node root) {
 	siv_node c = column(txn, root, 14, 24);
-	siv_node title = siv_text(txn, c, S("Widget gallery"));
+	siv_node title = siv_text(txn, c, SIV_STR("Widget gallery"));
 	siv_set_text_style(txn, title, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_WINDOW_FG, .size_role = SIV_SIZE_ROLE_TITLE, .weight = SIV_FONT_WEIGHT_BOLD));
 
 	siv_node buttons = siv_flex(txn, c, SIV_DESC(siv_flex_desc, .gap = 8));
-	siv_node b = siv_push_button(txn, buttons, SIV_DESC(siv_button_desc, .label = S("Default")));
+	siv_node b = siv_push_button(txn, buttons, SIV_DESC(siv_button_desc, .label = SIV_STR("Default")));
 	siv_on(txn, b, SIV_EVENT_TYPE_ACTIVATE, on_button, NULL, "Default");
-	b = siv_push_button(txn, buttons, SIV_DESC(siv_button_desc, .label = S("Primary"), .style = SIV_BUTTON_STYLE_PRIMARY));
+	b = siv_push_button(txn, buttons, SIV_DESC(siv_button_desc, .label = SIV_STR("Primary"), .style = SIV_BUTTON_STYLE_PRIMARY));
 	siv_on(txn, b, SIV_EVENT_TYPE_ACTIVATE, on_button, NULL, "Primary");
-	siv_push_button(txn, buttons, SIV_DESC(siv_button_desc, .label = S("Disabled"), .flags = SIV_WIDGET_DISABLED));
-	siv_node menu = siv_menu_button(txn, buttons, SIV_DESC(siv_button_desc, .label = S("Menu")));
-	for (int i = 0; i < 6; i++) siv_menu_item(txn, menu, SIV_DESC(siv_menu_item_desc, .label = S(menu_items[i])));
+	siv_push_button(txn, buttons, SIV_DESC(siv_button_desc, .label = SIV_STR("Disabled"), .flags = SIV_WIDGET_DISABLED));
+	siv_node menu = siv_menu_button(txn, buttons, SIV_DESC(siv_button_desc, .label = SIV_STR("Menu")));
+	for (int i = 0; i < 6; i++) siv_menu_item(txn, menu, SIV_DESC(siv_menu_item_desc, .label = menu_items[i], strlen(menu_items[i])));
 	siv_on(txn, menu, SIV_EVENT_TYPE_SELECT, on_menu, NULL, NULL);
 
-	siv_node field = siv_text_field(txn, c, SIV_DESC(siv_text_field_desc, .placeholder = S("Type here")));
+	siv_node field = siv_text_field(txn, c, SIV_DESC(siv_text_field_desc, .placeholder = SIV_STR("Type here")));
 	siv_set_layout(txn, field, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_PX, 320}));
 
-	siv_node check = siv_check_box(txn, c, SIV_DESC(siv_toggle_desc, .label = S("Enable feature")));
+	siv_node check = siv_check_box(txn, c, SIV_DESC(siv_toggle_desc, .label = SIV_STR("Enable feature")));
 	siv_on(txn, check, SIV_EVENT_TYPE_CHANGE, on_button, NULL, "Toggled");
 
 	/* Views draw their own frame: view background, border, radius 6. */
-	siv_node list = siv_list_view(txn, c, SIV_DESC(siv_view_desc, .label = S("Items"), .bind = bind_item, .count = 50, .item_height = 32,
+	siv_node list = siv_list_view(txn, c, SIV_DESC(siv_view_desc, .label = SIV_STR("Items"), .bind = bind_item, .count = 50, .item_height = 32,
 	                                               .selection = SIV_SELECTION_MODE_SINGLE));
 	siv_set_layout(txn, list, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_PX, 320}, .height = {SIV_UNIT_PX, 320}, .max_height = 320));
 	siv_on(txn, list, SIV_EVENT_TYPE_SELECT, on_list_select, NULL, NULL);
 
-	status = siv_text(txn, c, S("Last action: none"));
+	status = siv_text(txn, c, SIV_STR("Last action: none"));
 	siv_set_text_style(txn, status, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_MUTED_FG, .size_role = SIV_SIZE_ROLE_BODY));
 	return field;
 }
@@ -119,9 +118,9 @@ static void bind_row(void *user_data, siv_txn txn, siv_node row, uint64_t item, 
 	int nlen = snprintf(name, sizeof name, "Row %u", index + 1);
 	int dlen = snprintf(desc, sizeof desc, "Description of row %u with a few more words", index + 1);
 	siv_node flex = 0, first = 0, second = 0;
-	if (recycled && siv_node_get_related(row, SIV_RELATION_FIRST_CHILD, &flex) == SIV_OK && flex &&
-	    siv_node_get_related(flex, SIV_RELATION_FIRST_CHILD, &first) == SIV_OK && first &&
-	    siv_node_get_related(first, SIV_RELATION_NEXT, &second) == SIV_OK && second) {
+	if (recycled && (flex = siv_node_get_related(row, SIV_RELATION_FIRST_CHILD)) &&
+	    (first = siv_node_get_related(flex, SIV_RELATION_FIRST_CHILD)) &&
+	    (second = siv_node_get_related(first, SIV_RELATION_NEXT))) {
 		siv_set_text(txn, first, name, (size_t)nlen);
 		siv_set_text(txn, second, desc, (size_t)dlen);
 		return;
@@ -135,7 +134,7 @@ static void bind_row(void *user_data, siv_txn txn, siv_node row, uint64_t item, 
 }
 
 static void build_list(siv_txn txn, siv_node root) {
-	siv_node list = siv_list_view(txn, root, SIV_DESC(siv_view_desc, .label = S("Rows"), .bind = bind_row, .count = 100000, .item_height = 28));
+	siv_node list = siv_list_view(txn, root, SIV_DESC(siv_view_desc, .label = SIV_STR("Rows"), .bind = bind_row, .count = 100000, .item_height = 28));
 	siv_set_layout(txn, list, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_FRACTION, 1}, .height = {SIV_UNIT_FRACTION, 1}));
 }
 
@@ -175,16 +174,16 @@ int main(int argc, char **argv) {
 	bool grid = strcmp(scenario, "grid") == 0;
 	siv_app_flags flags = SIV_APP_NO_DESKTOP_SETTINGS | (grid ? 0 : SIV_APP_REDUCED_MOTION);
 	siv_app app;
-	siv_result r = siv_app_create(SIV_DESC(siv_app_desc, .flags = flags, .name = S("siv-bench"), .app_id = S("siv-bench")), &app);
+	siv_result r = siv_app_create(SIV_DESC(siv_app_desc, .flags = flags, .name = SIV_STR("siv-bench"), .app_id = SIV_STR("siv-bench")), &app);
 	if (r != SIV_OK) {
 		fprintf(stderr, "siv_app_create: %s\n", siv_result_name(r));
 		return 1;
 	}
-	if (siv_app_set_default_font(app, S(BENCH_FONT)) != SIV_OK) fprintf(stderr, "font %s not set\n", BENCH_FONT);
+	if (siv_app_set_default_font(app, BENCH_FONT, strlen(BENCH_FONT)) != SIV_OK) fprintf(stderr, "font %s not set\n", BENCH_FONT);
 	char title[64];
 	snprintf(title, sizeof title, "bench %s", scenario);
 	siv_window window;
-	r = siv_window_create(app, SIV_DESC(siv_window_desc, .title = S(title), .width = 1280, .height = 800), &window);
+	r = siv_window_create(app, SIV_DESC(siv_window_desc, .title = title, strlen(title), .width = 1280, .height = 800), &window);
 	if (r != SIV_OK) {
 		fprintf(stderr, "siv_window_create: %s\n", siv_result_name(r));
 		return 1;
@@ -193,7 +192,7 @@ int main(int argc, char **argv) {
 	siv_txn txn;
 	r = siv_txn_begin(window, &txn);
 	if (r == SIV_OK) {
-		siv_node root = siv_window_root(window);
+		siv_node root = siv_window_get_root(window);
 		siv_set_visual(txn, root, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_WINDOW_BG));
 		if (strcmp(scenario, "idle") == 0) build_idle(txn, root);
 		else if (strcmp(scenario, "gallery") == 0) focus = build_gallery(txn, root);

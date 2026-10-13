@@ -10,7 +10,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define S(str) (str), strlen(str)
 #define COUNT 100000
 
 /* Commits a transaction made in a handler. There is nothing to undo when
@@ -22,8 +21,7 @@ static void commit(siv_txn txn) {
 
 /* A node's neighbor, or 0. */
 static siv_node related(siv_node node, siv_relation which) {
-	siv_node out = 0;
-	return siv_node_get_related(node, which, &out) == SIV_OK ? out : 0;
+	return siv_node_get_related(node, which);
 }
 
 static const char *const kinds[] = {"Document", "Image", "Audio", "Archive"};
@@ -64,7 +62,7 @@ static void bind(void *user_data, siv_txn txn, siv_node row, uint64_t item, uint
 	if (f->size < 1000) snprintf(size, sizeof size, "%u bytes", (unsigned)f->size);
 	else snprintf(size, sizeof size, "%u.%u kB", (unsigned)(f->size / 1000), (unsigned)(f->size % 1000 / 100));
 	const char *texts[] = {name, size, kinds[f->kind]};
-	for (int i = 0; i < 3 && cell; i++, cell = related(cell, SIV_RELATION_NEXT)) siv_set_text(txn, cell, S(texts[i]));
+	for (int i = 0; i < 3 && cell; i++, cell = related(cell, SIV_RELATION_NEXT)) siv_set_text(txn, cell, texts[i], strlen(texts[i]));
 }
 
 /* Sorting: the view only shows the order. The handler sorts the items,
@@ -94,7 +92,7 @@ static siv_event_result on_sort(void *user_data, siv_node table, const siv_event
 static void set_status(struct model *m, const char *text) {
 	siv_txn txn;
 	if (siv_txn_begin(m->window, &txn) != SIV_OK) return;
-	siv_set_text(txn, m->status, S(text));
+	siv_set_text(txn, m->status, text, strlen(text));
 	commit(txn);
 }
 
@@ -120,23 +118,23 @@ static siv_result build(struct model *m) {
 	siv_txn txn;
 	siv_result r = siv_txn_begin(m->window, &txn);
 	if (r != SIV_OK) return r;
-	siv_node root = siv_window_root(m->window);
+	siv_node root = siv_window_get_root(m->window);
 	siv_set_visual(txn, root, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_WINDOW_BG));
 	siv_node column = siv_flex(txn, root, SIV_DESC(siv_flex_desc, .axis = SIV_AXIS_COLUMN, .gap = 8));
 	siv_set_layout(txn, column, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_FRACTION, 1}, .height = {SIV_UNIT_FRACTION, 1}, .padding = {12, 12, 12, 12}));
 
-	m->table = siv_table_view(txn, column, SIV_DESC(siv_view_desc, .label = S("Files"), .user_data = m, .bind = bind, .count = COUNT, .item_height = 28, .selection = SIV_SELECTION_MODE_MULTIPLE));
+	m->table = siv_table_view(txn, column, SIV_DESC(siv_view_desc, .label = SIV_STR("Files"), .user_data = m, .bind = bind, .count = COUNT, .item_height = 28, .selection = SIV_SELECTION_MODE_MULTIPLE));
 	siv_set_layout(txn, m->table, SIV_DESC(siv_layout_desc, .grow = 1, .basis = {SIV_UNIT_PX, 0}));
 	siv_set_visual(txn, m->table, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_VIEW_BG, .border_token = SIV_COLOR_TOKEN_BORDER, .border_width = 1, .radius = {6, 6, 6, 6}, .flags = SIV_VISUAL_CLIP));
-	siv_table_column(txn, m->table, SIV_DESC(siv_column_desc, .title = S("Name"), .width = {SIV_TRACK_UNIT_FR, 2}, .flags = SIV_COLUMN_SORTABLE));
-	siv_table_column(txn, m->table, SIV_DESC(siv_column_desc, .title = S("Size"), .width = {SIV_TRACK_UNIT_PX, 100}, .flags = SIV_COLUMN_SORTABLE));
-	siv_table_column(txn, m->table, SIV_DESC(siv_column_desc, .title = S("Kind"), .width = {SIV_TRACK_UNIT_FR, 1}, .flags = SIV_COLUMN_SORTABLE));
+	siv_table_column(txn, m->table, SIV_DESC(siv_column_desc, .title = SIV_STR("Name"), .width = {SIV_TRACK_UNIT_FR, 2}, .flags = SIV_COLUMN_SORTABLE));
+	siv_table_column(txn, m->table, SIV_DESC(siv_column_desc, .title = SIV_STR("Size"), .width = {SIV_TRACK_UNIT_PX, 100}, .flags = SIV_COLUMN_SORTABLE));
+	siv_table_column(txn, m->table, SIV_DESC(siv_column_desc, .title = SIV_STR("Kind"), .width = {SIV_TRACK_UNIT_FR, 1}, .flags = SIV_COLUMN_SORTABLE));
 	siv_view_set_sort(txn, m->table, 0, SIV_SORT_ASCENDING);
 	siv_on(txn, m->table, SIV_EVENT_TYPE_SORT, on_sort, NULL, m);
 	siv_on(txn, m->table, SIV_EVENT_TYPE_SELECT, on_select, NULL, m);
 	siv_on(txn, m->table, SIV_EVENT_TYPE_ACTIVATE, on_activate, NULL, m);
 
-	m->status = siv_text(txn, column, S("100000 files"));
+	m->status = siv_text(txn, column, SIV_STR("100000 files"));
 	siv_set_text_style(txn, m->status, SIV_DESC(siv_text_style_desc, .size_role = SIV_SIZE_ROLE_CAPTION, .color_token = SIV_COLOR_TOKEN_MUTED_FG));
 	return siv_txn_commit(txn);
 }
@@ -155,7 +153,7 @@ int main(void) {
 	siv_app app;
 	siv_result r = siv_app_create(NULL, &app);
 	if (r == SIV_OK) {
-		r = siv_window_create(app, SIV_DESC(siv_window_desc, .title = S("Files"), .width = 440, .height = 320), &m.window);
+		r = siv_window_create(app, SIV_DESC(siv_window_desc, .title = SIV_STR("Files"), .width = 440, .height = 320), &m.window);
 		if (r == SIV_OK) r = build(&m);
 		if (r == SIV_OK) r = siv_app_run(app);
 		siv_app_destroy(app);

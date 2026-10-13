@@ -38,14 +38,14 @@ static siv_node segmented(siv_txn txn, siv_node parent, const char *label, const
 	 * siv_set_layout adds to them instead of replacing them. */
 	siv_set_default_layout(txn, root, SIV_DESC(siv_layout_desc, .padding = {3, 3, 3, 3}));
 	siv_set_visual(txn, root, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_CONTROL_BG, .border_token = SIV_COLOR_TOKEN_BORDER, .border_width = 1, .radius = {8, 8, 8, 8}));
-	siv_set_semantics(txn, root, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_GROUP, .label = S(label)));
+	siv_set_semantics(txn, root, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_GROUP, .label = label, strlen(label)));
 	siv_on_default(txn, root, SIV_EVENT_TYPE_KEY, root_key, NULL, s);
 	siv_set_widget(txn, root, SIV_DESC(siv_widget_desc, .user_data = s, .set_value = widget_set_value, .get_value = widget_get_value, .set_label = widget_set_label, .focus = widget_focus));
 	for (uint32_t i = 0; i < count; i++) {
 		siv_node seg = siv_box(txn, root);
 		siv_set_default_layout(txn, seg, SIV_DESC(siv_layout_desc, .padding = {14, 14, 5, 5}));
 		siv_on_default(txn, seg, SIV_EVENT_TYPE_ACTIVATE, segment_activate, NULL, s);
-		siv_text(txn, seg, S(options[i]));
+		siv_text(txn, seg, options[i], strlen(options[i]));
 	}
 	restyle(txn, s);
 	return root;
@@ -179,7 +179,7 @@ siv_node range = segmented(txn, column, "Range", options, 3);
 /* The generic calls drive it like a stock widget. */
 siv_widget_set_value(txn, range, 1);
 siv_on(txn, range, SIV_EVENT_TYPE_CHANGE, on_range, NULL, &cal);
-cal.shown = siv_text(txn, column, S("Showing this week"));
+cal.shown = siv_text(txn, column, SIV_STR("Showing this week"));
 ```
 
 The widget interface also has a `focus` callback, so `siv_node_focus` on

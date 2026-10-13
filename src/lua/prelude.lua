@@ -41,7 +41,7 @@ end
 --- if fn raises, the transaction is aborted and the error goes on.
 function methods.window.update(window, fn, ...)
 	local txn <close> = window:txn_begin()
-	local r = table.pack(fn(txn, window:root(), ...))
+	local r = table.pack(fn(txn, window:get_root(), ...))
 	txn:commit()
 	return table.unpack(r, 1, r.n)
 end

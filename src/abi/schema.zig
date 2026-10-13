@@ -240,6 +240,9 @@ pub const Param = struct {
     name: []const u8,
     type: Type,
     doc: []const u8,
+    /// Out parameters only: the caller may pass NULL when it does not need
+    /// the value (D2), such as the request of a load it never cancels.
+    optional: bool = false,
 };
 
 pub const Type = union(enum) {
@@ -501,6 +504,7 @@ fn checkParams(s: Schema, where: []const u8, params: []const Param, allow_out: b
     for (params, 0..) |p, j| {
         if (std.mem.eql(u8, p.name, "user_data") != (p.type == .user_data)) return .{ .where = where, .what = "the user_data parameter is named user_data" };
         for (params[0..j]) |q| if (std.mem.eql(u8, q.name, p.name)) return .{ .where = where, .what = "duplicate parameter" };
+        if (p.optional and p.type != .out) return .{ .where = where, .what = "only out parameters are optional" };
         switch (p.type) {
             .void, .static_string => return .{ .where = where, .what = "invalid parameter type" },
             .buffer => if (!allow_out) return .{ .where = where, .what = "callbacks have no buffer parameters" },

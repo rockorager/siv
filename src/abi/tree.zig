@@ -1635,33 +1635,23 @@ pub export fn siv_node_get_label(node: t.Node, label: ?[*]u8, label_cap: usize, 
     }.f(node, label, label_cap, len));
 }
 
-pub export fn siv_node_get_window(node: t.Node, window: ?*t.Window) t.Result {
-    return application.wrap(struct {
-        fn f(n: t.Node, out: ?*t.Window) Error!void {
-            const w, _ = try lookup(n);
-            const dest = try runtime.out(t.Window, out);
-            dest.* = @fromBackingInt(w.handle);
-        }
-    }.f(node, window));
+pub export fn siv_node_get_window(node: t.Node) t.Window {
+    const w, _ = lookup(node) catch return .null;
+    return @fromBackingInt(w.handle);
 }
 
-pub export fn siv_node_get_related(node: t.Node, relation: t.Relation, related: ?*t.Node) t.Result {
-    return application.wrap(struct {
-        fn f(n: t.Node, rel: t.Relation, out: ?*t.Node) Error!void {
-            const w, const id = try lookup(n);
-            const dest = try runtime.out(t.Node, out);
-            const un = w.uiWin().node(id);
-            const r: NodeId = switch (try runtime.enumValue(t.Relation, rel)) {
-                .parent => un.parent,
-                .first_child => un.first,
-                .last_child => un.last,
-                .next => un.next,
-                .previous => un.prev,
-                _ => unreachable,
-            };
-            dest.* = if (r == .none) .null else @fromBackingInt(w.nodes.handle(r));
-        }
-    }.f(node, relation, related));
+pub export fn siv_node_get_related(node: t.Node, relation: t.Relation) t.Node {
+    const w, const id = lookup(node) catch return .null;
+    const un = w.uiWin().node(id);
+    const r: NodeId = switch (runtime.enumValue(t.Relation, relation) catch return .null) {
+        .parent => un.parent,
+        .first_child => un.first,
+        .last_child => un.last,
+        .next => un.next,
+        .previous => un.prev,
+        _ => unreachable,
+    };
+    return if (r == .none) .null else @fromBackingInt(w.nodes.handle(r));
 }
 
 pub export fn siv_node_is_rtl(node: t.Node, rtl: ?*bool) t.Result {
@@ -1686,7 +1676,8 @@ pub export fn siv_node_emit(node: t.Node, event: ?*const t.Event, handled: ?*boo
     return application.wrap(struct {
         fn f(n: t.Node, e_ptr: ?*const t.Event, out: ?*bool) Error!void {
             const w, const id = try lookup(n);
-            const dest = try runtime.out(bool, out);
+            var unused = false;
+            const dest = runtime.optOut(bool, out, &unused);
             var ev = try runtime.readDesc(t.Event, e_ptr);
             const hk = try handlerKind(ev.type);
             if (w.owner.painting != 0) return error.Busy;
@@ -1716,16 +1707,11 @@ fn focus(n: t.Node, depth: u8) Error!void {
     ui.input.setFocus(uw, id, false);
 }
 
-pub export fn siv_window_get_focus(window: t.Window, node: ?*t.Node) t.Result {
-    return application.wrap(struct {
-        fn f(win: t.Window, out: ?*t.Node) Error!void {
-            const w = try App.window(@backingInt(win), application.window_tag);
-            const dest = try runtime.out(t.Node, out);
-            const uw = w.uiWin();
-            const id = uw.input.focus;
-            dest.* = if (id != .none and uw.isLive(id)) @fromBackingInt(w.nodes.handle(id)) else .null;
-        }
-    }.f(window, node));
+pub export fn siv_window_get_focus(window: t.Window) t.Node {
+    const w = App.window(@backingInt(window), application.window_tag) catch return .null;
+    const uw = w.uiWin();
+    const id = uw.input.focus;
+    return if (id != .none and uw.isLive(id)) @fromBackingInt(w.nodes.handle(id)) else .null;
 }
 
 // Conversions -----------------------------------------------------------------

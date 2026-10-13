@@ -58,7 +58,7 @@ fn caption(txn: siv.Txn, parent: siv.Node, s: []const u8) !siv.Node {
 fn build(window: siv.Window, form: *Form) !void {
     const txn = try siv.txnBegin(window);
     errdefer siv.txnAbort(txn);
-    form.root = siv.windowRoot(window);
+    form.root = siv.windowGetRoot(window);
     siv.setVisual(txn, form.root, &.{ .background_token = .window_bg });
     const column = siv.flex(txn, form.root, &.{ .axis = .column, .gap = 12, .align_items = .start });
     siv.setLayout(txn, column, &.{ .padding = .{ .start = 24, .end = 24, .top = 20, .bottom = 20 } });

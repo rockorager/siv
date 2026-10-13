@@ -17,7 +17,6 @@
 #include <time.h>
 #include <unistd.h>
 
-#define S(str) (str), strlen(str)
 #define WIDTH 320
 #define HEIGHT 180
 #define FRAME_BYTES (WIDTH * HEIGHT * 4)
@@ -64,7 +63,7 @@ static void on_finished(void *user_data) {
 	struct player *p = user_data;
 	siv_txn txn;
 	if (siv_txn_begin(p->window, &txn) != SIV_OK) return;
-	siv_set_text(txn, p->status, S("Played 60 frames"));
+	siv_set_text(txn, p->status, SIV_STR("Played 60 frames"));
 	siv_result r = siv_txn_commit(txn);
 	if (r != SIV_OK) fprintf(stderr, "video: %s\n", siv_result_name(r));
 }
@@ -100,7 +99,7 @@ static siv_result build(struct player *p) {
 	siv_txn txn;
 	if (r == SIV_OK) r = siv_txn_begin(p->window, &txn);
 	if (r != SIV_OK) return r;
-	siv_node root = siv_window_root(p->window);
+	siv_node root = siv_window_get_root(p->window);
 	siv_set_visual(txn, root, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_WINDOW_BG));
 	siv_node column = siv_flex(txn, root, SIV_DESC(siv_flex_desc, .axis = SIV_AXIS_COLUMN, .gap = 8, .align_items = SIV_ALIGN_CENTER));
 	siv_set_layout(txn, column, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_FRACTION, 1}, .padding = {16, 16, 16, 16}));
@@ -111,8 +110,8 @@ static siv_result build(struct player *p) {
 	siv_set_visual(txn, frame, SIV_DESC(siv_visual_desc, .radius = {12, 12, 12, 12}, .flags = SIV_VISUAL_CLIP));
 	siv_node view = siv_external_view(txn, frame, SIV_DESC(siv_external_view_desc, .external = p->slot, .content_size = {WIDTH, HEIGHT}, .fit = SIV_FIT_CONTAIN));
 	siv_set_layout(txn, view, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_PX, WIDTH}, .height = {SIV_UNIT_PX, HEIGHT}));
-	siv_set_semantics(txn, view, SIV_DESC(siv_semantics_desc, .label = S("Test pattern")));
-	p->status = siv_text(txn, column, S("Playing…"));
+	siv_set_semantics(txn, view, SIV_DESC(siv_semantics_desc, .label = SIV_STR("Test pattern")));
+	p->status = siv_text(txn, column, SIV_STR("Playing…"));
 	siv_set_text_style(txn, p->status, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_MUTED_FG));
 	return siv_txn_commit(txn);
 }
@@ -128,7 +127,7 @@ int main(void) {
 		fprintf(stderr, "video: %s\n", siv_result_name(r));
 		return 1;
 	}
-	r = siv_window_create(p.app, SIV_DESC(siv_window_desc, .title = S("Video"), .width = 352, .height = 248), &p.window);
+	r = siv_window_create(p.app, SIV_DESC(siv_window_desc, .title = SIV_STR("Video"), .width = 352, .height = 248), &p.window);
 	if (r == SIV_OK) r = build(&p);
 	pthread_t producer;
 	bool started = r == SIV_OK && pthread_create(&producer, NULL, produce, &p) == 0;

@@ -38,8 +38,8 @@ static void header(siv_txn txn, siv_node parent) {
 	siv_node title = label(txn, bar, "Projects", SIV_SIZE_ROLE_HEADING, SIV_COLOR_TOKEN_CARD_FG);
 	siv_set_layout(txn, title, SIV_DESC(siv_layout_desc, .grow = 1));
 	siv_set_semantics(txn, title, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_HEADING, .level = 1));
-	siv_push_button(txn, bar, SIV_DESC(siv_button_desc, .label = S("Share"), .style = SIV_BUTTON_STYLE_FLAT));
-	siv_push_button(txn, bar, SIV_DESC(siv_button_desc, .label = S("New project"), .style = SIV_BUTTON_STYLE_PRIMARY));
+	siv_push_button(txn, bar, SIV_DESC(siv_button_desc, .label = SIV_STR("Share"), .style = SIV_BUTTON_STYLE_FLAT));
+	siv_push_button(txn, bar, SIV_DESC(siv_button_desc, .label = SIV_STR("New project"), .style = SIV_BUTTON_STYLE_PRIMARY));
 }
 ```
 

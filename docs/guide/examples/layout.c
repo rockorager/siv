@@ -9,10 +9,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#define S(str) (str), strlen(str)
 
 static siv_node label(siv_txn txn, siv_node parent, const char *text, siv_size_role role, siv_color_token color) {
-	siv_node node = siv_text(txn, parent, S(text));
+	siv_node node = siv_text(txn, parent, text, strlen(text));
 	siv_set_text_style(txn, node, SIV_DESC(siv_text_style_desc, .size_role = role, .color_token = color));
 	return node;
 }
@@ -25,8 +24,8 @@ static void header(siv_txn txn, siv_node parent) {
 	siv_node title = label(txn, bar, "Projects", SIV_SIZE_ROLE_HEADING, SIV_COLOR_TOKEN_CARD_FG);
 	siv_set_layout(txn, title, SIV_DESC(siv_layout_desc, .grow = 1));
 	siv_set_semantics(txn, title, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_HEADING, .level = 1));
-	siv_push_button(txn, bar, SIV_DESC(siv_button_desc, .label = S("Share"), .style = SIV_BUTTON_STYLE_FLAT));
-	siv_push_button(txn, bar, SIV_DESC(siv_button_desc, .label = S("New project"), .style = SIV_BUTTON_STYLE_PRIMARY));
+	siv_push_button(txn, bar, SIV_DESC(siv_button_desc, .label = SIV_STR("Share"), .style = SIV_BUTTON_STYLE_FLAT));
+	siv_push_button(txn, bar, SIV_DESC(siv_button_desc, .label = SIV_STR("New project"), .style = SIV_BUTTON_STYLE_PRIMARY));
 }
 
 /* A card: a box with a background, a border, rounded corners, and
@@ -44,7 +43,7 @@ static siv_result build(siv_window window) {
 	siv_txn txn;
 	siv_result r = siv_txn_begin(window, &txn);
 	if (r != SIV_OK) return r;
-	siv_node root = siv_window_root(window);
+	siv_node root = siv_window_get_root(window);
 	siv_set_visual(txn, root, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_WINDOW_BG));
 
 	/* The window's root is a stack: its children overlay each other.
@@ -61,7 +60,7 @@ static siv_result build(siv_window window) {
 
 	siv_node sidebar = siv_flex(txn, body, SIV_DESC(siv_flex_desc, .axis = SIV_AXIS_COLUMN, .gap = 6));
 	siv_set_layout(txn, sidebar, SIV_DESC(siv_layout_desc, .padding = {16, 16, 12, 12}));
-	siv_set_semantics(txn, sidebar, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_GROUP, .label = S("Filters")));
+	siv_set_semantics(txn, sidebar, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_GROUP, .label = SIV_STR("Filters")));
 	const char *filters[] = {"All projects", "Starred", "Shared with me", "Archived"};
 	for (size_t i = 0; i < 4; i++) label(txn, sidebar, filters[i], SIV_SIZE_ROLE_BODY, i == 0 ? SIV_COLOR_TOKEN_ACCENT : SIV_COLOR_TOKEN_WINDOW_FG);
 
@@ -97,7 +96,7 @@ int main(void) {
 		return 1;
 	}
 	siv_window window;
-	r = siv_window_create(app, SIV_DESC(siv_window_desc, .title = S("Projects"), .width = 640, .height = 360), &window);
+	r = siv_window_create(app, SIV_DESC(siv_window_desc, .title = SIV_STR("Projects"), .width = 640, .height = 360), &window);
 	if (r == SIV_OK) r = build(window);
 	if (r == SIV_OK) r = siv_app_run(app);
 	if (r != SIV_OK) fprintf(stderr, "layout: %s\n", siv_result_name(r));

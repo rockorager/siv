@@ -193,9 +193,9 @@ static void test_app(const unsigned char *font, size_t font_len) {
 	                         &window),
 	       SIV_OK);
 	EXPECT(siv_window_set_title(window, "Renamed", 7), SIV_OK);
-	siv_node root = siv_window_root(window);
+	siv_node root = siv_window_get_root(window);
 	CHECK(root != 0);
-	CHECK(siv_window_root(0) == 0);
+	CHECK(siv_window_get_root(0) == 0);
 
 	/* A transaction that builds a small form. */
 	siv_txn txn = 0;

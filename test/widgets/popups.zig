@@ -106,7 +106,7 @@ fn idOf(n: t.Node) !ui.NodeId {
 }
 
 fn root(h: *Harness) t.Node {
-    return c.siv_window_root(h.window);
+    return c.siv_window_get_root(h.window);
 }
 
 fn background(txn: t.Txn, h: *Harness) void {
@@ -235,10 +235,10 @@ test "menus: a context menu opens against any node; disabled items cannot be cho
     _ = c.siv_on(txn, menu, .select, Log.onSelect, null, &log);
     // Items by position, in the transaction that added them too.
     var second: t.Node = .null;
-    try ok(c.siv_menu_get_item(menu, 1, &second));
+    second = c.siv_menu_get_item(menu, 1);
     try testing.expectEqual(copy, second);
-    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_menu_get_item(menu, 2, &second));
-    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_menu_get_item(target, 0, &second));
+    try testing.expect(c.siv_menu_get_item(menu, 2) == .null);
+    try testing.expect(c.siv_menu_get_item(target, 0) == .null);
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     try h.click(20, 20);
@@ -368,7 +368,7 @@ test "dialogs: modal over the window, focused, closed by Escape or the scrim" {
     txn = try begin(h.window);
     const dialog = c.siv_dialog(txn, root(&h), &.{ .title = "Discard changes?", .title_len = 16, .text = "Your edits will be lost.", .text_len = 24 });
     var actions: t.Node = .null;
-    try ok(c.siv_widget_get_part(dialog, .actions, 0, &actions));
+    actions = c.siv_widget_get_part(dialog, .actions, 0);
     const cancel = c.siv_push_button(txn, actions, &.{ .label = "Cancel", .label_len = 6 });
     const discard = c.siv_push_button(txn, actions, &.{ .label = "Discard", .label_len = 7, .style = .destructive });
     _ = c.siv_on(txn, dialog, .close, Log.onClose, null, &log);
@@ -427,7 +427,7 @@ test "tabs: one panel at a time, arrows move the selection, mirrored in RTL" {
         try h.settle();
         if (!rtl) try h.expectGolden("tabs", 320, 200);
         var tab0: t.Node = .null;
-        try ok(c.siv_widget_get_part(tabs, .tab, 0, &tab0));
+        tab0 = c.siv_widget_get_part(tabs, .tab, 0);
         try testing.expectEqual(ui.Role.tab, (try sem(tab0)).role);
         try testing.expectEqual(ui.Toggle.on, (try sem(tab0)).selected);
         try testing.expectEqual(ui.Role.tab_panel, (try sem(panels[0])).role);
@@ -439,7 +439,7 @@ test "tabs: one panel at a time, arrows move the selection, mirrored in RTL" {
         const want: u32 = if (rtl) 2 else 1;
         try testing.expectEqual(@as(f64, @floatFromInt(want)), log.value);
         var tab: t.Node = .null;
-        try ok(c.siv_widget_get_part(tabs, .tab, want, &tab));
+        tab = c.siv_widget_get_part(tabs, .tab, want);
         try testing.expectEqual(try idOf(tab), try focusedIn(h.window));
         try testing.expectEqual(ui.Role.tab_panel, (try sem(panels[want])).role);
         try testing.expectError(error.NotInSemanticsTree, sem(panels[0]));
@@ -450,7 +450,7 @@ test "tabs: one panel at a time, arrows move the selection, mirrored in RTL" {
         try testing.expectEqual(@as(f64, 0), v);
         // A click on the last tab.
         var last: t.Node = .null;
-        try ok(c.siv_widget_get_part(tabs, .tab, 2, &last));
+        last = c.siv_widget_get_part(tabs, .tab, 2);
         const lc = try center(last);
         try h.click(lc[0], lc[1]);
         try h.settle();
@@ -470,13 +470,13 @@ test "split panes: the divider follows drags and keys within the panes' limits" 
         try ok(c.siv_txn_commit(txn));
         try h.settle();
         var start: t.Node = .null;
-        try ok(c.siv_widget_get_part(split, .start, 0, &start));
+        start = c.siv_widget_get_part(split, .start, 0);
         var r: t.Rect = undefined;
         try ok(c.siv_node_get_rect(start, &r));
         try testing.expectEqual(@as(f32, 150), r.width);
         try testing.expectEqual(@as(f32, if (rtl) 250 else 0), r.x);
         var divider: t.Node = .null;
-        try ok(c.siv_node_get_related(start, .next, &divider));
+        divider = c.siv_node_get_related(start, .next);
         try ok(c.siv_node_focus(divider));
         try h.settle();
         const d = try sem(divider);

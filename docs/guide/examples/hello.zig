@@ -27,7 +27,7 @@ fn onClick(user_data: ?*anyopaque, _: siv.Node, event: ?*const siv.Event) callco
 fn build(window: siv.Window, counter: *Counter) !void {
     const txn = try siv.txnBegin(window);
     errdefer siv.txnAbort(txn);
-    const root = siv.windowRoot(window);
+    const root = siv.windowGetRoot(window);
     siv.setVisual(txn, root, &.{ .background_token = .window_bg });
     const column = siv.flex(txn, root, &.{ .axis = .column, .gap = 12, .align_items = .start });
     siv.setLayout(txn, column, &.{ .padding = .{ .start = 24, .end = 24, .top = 24, .bottom = 24 } });

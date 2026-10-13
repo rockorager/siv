@@ -56,7 +56,7 @@ const Model = struct {
             std.fmt.bufPrint(&buf, "Item {d}", .{item}) catch unreachable;
         // A recycled row keeps its children: update the label in place.
         var label: t.Node = .null;
-        _ = c.siv_node_get_related(row, .first_child, &label);
+        label = c.siv_node_get_related(row, .first_child);
         if (label != .null and !recycled) m.unflagged += 1;
         if (label == .null) {
             const cells = @max(1, m.columns);
@@ -70,7 +70,7 @@ const Model = struct {
             while (cur != .null) {
                 _ = c.siv_set_text(txn, cur, s.ptr, s.len);
                 var next: t.Node = .null;
-                _ = c.siv_node_get_related(cur, .next, &next);
+                next = c.siv_node_get_related(cur, .next);
                 cur = next;
             }
         }
@@ -150,7 +150,7 @@ fn shownRows(view: t.Node, items: []u64) !usize {
 /// A table column's width: its header cell's widget value (D22).
 fn columnWidth(table: t.Node, column: u32) !f32 {
     var cell: t.Node = .null;
-    try ok(c.siv_widget_get_part(table, .column, column, &cell));
+    cell = c.siv_widget_get_part(table, .column, column);
     var v: f64 = 0;
     try ok(c.siv_widget_get_value(cell, &v));
     return @floatCast(v);
@@ -169,8 +169,8 @@ fn focusedRole(h: *Harness) !?ui.semantics.Node {
 
 fn listOf(h: *Harness, m: *Model, count: u32, mode: t.SelectionMode) !t.Node {
     const txn = try begin(h.window);
-    _ = c.siv_set_visual(txn, c.siv_window_root(h.window), &.{ .background_token = .window_bg });
-    const list = c.siv_list_view(txn, c.siv_window_root(h.window), &.{
+    _ = c.siv_set_visual(txn, c.siv_window_get_root(h.window), &.{ .background_token = .window_bg });
+    const list = c.siv_list_view(txn, c.siv_window_get_root(h.window), &.{
         .label = "Files",
         .label_len = 5,
         .count = count,
@@ -252,11 +252,11 @@ test "list view: in a plain box it keeps its size at every layout" {
     defer h.stop();
     var m: Model = .{};
     var txn = try begin(h.window);
-    const frame = c.siv_box(txn, c.siv_window_root(h.window));
+    const frame = c.siv_box(txn, c.siv_window_get_root(h.window));
     _ = c.siv_set_layout(txn, frame, &.{ .height = .{ .unit = .px, .value = 200 } });
     const filling = c.siv_list_view(txn, frame, &.{ .label = "Fill", .label_len = 4, .count = 50, .bind = Model.bind, .user_data = &m });
     _ = c.siv_set_layout(txn, filling, &.{ .height = .{ .unit = .fraction, .value = 1 } });
-    const fixed = c.siv_list_view(txn, c.siv_window_root(h.window), &.{ .label = "Fixed", .label_len = 5, .count = 50, .bind = Model.bind, .user_data = &m });
+    const fixed = c.siv_list_view(txn, c.siv_window_get_root(h.window), &.{ .label = "Fixed", .label_len = 5, .count = 50, .bind = Model.bind, .user_data = &m });
     _ = c.siv_set_layout(txn, fixed, &.{ .height = .{ .unit = .px, .value = 100 }, .max_height = 100 });
     try ok(c.siv_txn_commit(txn));
     try h.settle();
@@ -269,7 +269,7 @@ test "list view: in a plain box it keeps its size at every layout" {
         if (pass == 1) break;
         // An unrelated change lays the window out again, incrementally.
         txn = try begin(h.window);
-        _ = c.siv_text(txn, c.siv_window_root(h.window), "after", 5);
+        _ = c.siv_text(txn, c.siv_window_get_root(h.window), "after", 5);
         try ok(c.siv_txn_commit(txn));
         try h.settle();
     }
@@ -536,15 +536,15 @@ test "list view: the cursor is read, moved, and focused; rows are reachable" {
     try testing.expectEqual(@as(u32, 2), m.selected);
     // Bound rows are reachable; rows out of view are not.
     var row: t.Node = .null;
-    try ok(c.siv_view_get_row(list, 501, &row));
+    row = c.siv_view_get_row(list, 501);
     try testing.expect(row != .null);
     var label: t.Node = .null;
-    try ok(c.siv_node_get_related(row, .first_child, &label));
+    label = c.siv_node_get_related(row, .first_child);
     var buf: [32]u8 = undefined;
     var len: usize = 0;
     try ok(c.siv_node_get_text(label, &buf, buf.len, &len));
     try testing.expectEqualStrings("Item 501", buf[0..len]);
-    try ok(c.siv_view_get_row(list, 3, &row));
+    row = c.siv_view_get_row(list, 3);
     try testing.expectEqual(t.Node.null, row);
     txn = try begin(h.window);
     c.siv_view_set_cursor(txn, list, 1000); try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_status(txn));
@@ -580,12 +580,12 @@ test "list view: an editor in a row keeps its keys and presses; events name thei
         row1 = @fromBackingInt(w.nodes.handle(id));
     }
     var body: t.Node = .null;
-    try ok(c.siv_node_get_related(row1, .first_child, &body));
+    body = c.siv_node_get_related(row1, .first_child);
     const ed = c.siv_editor(txn, body, .{});
     _ = c.siv_set_text(txn, ed, "ab", 2);
     _ = c.siv_set_selection(txn, ed, 2, 2);
     var targets: Targets = .{};
-    _ = c.siv_on(txn, c.siv_window_root(h.window), .key, Targets.onKey, null, &targets);
+    _ = c.siv_on(txn, c.siv_window_get_root(h.window), .key, Targets.onKey, null, &targets);
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     try ok(c.siv_node_focus(ed));
@@ -633,8 +633,8 @@ test "tree view: expanding and collapsing, keys mirrored in RTL" {
         defer h.stop();
         var m: Model = .{};
         const txn = try begin(h.window);
-        _ = c.siv_set_visual(txn, c.siv_window_root(h.window), &.{ .background_token = .window_bg });
-        const tree_view = c.siv_tree_view(txn, c.siv_window_root(h.window), &.{
+        _ = c.siv_set_visual(txn, c.siv_window_get_root(h.window), &.{ .background_token = .window_bg });
+        const tree_view = c.siv_tree_view(txn, c.siv_window_get_root(h.window), &.{
             .label = "Outline",
             .label_len = 7,
             .selection = .single,
@@ -697,8 +697,8 @@ test "table view: a header over rows of cells" {
     defer h.stop();
     var m: Model = .{ .columns = 2 };
     const txn = try begin(h.window);
-    _ = c.siv_set_visual(txn, c.siv_window_root(h.window), &.{ .background_token = .window_bg });
-    const table = c.siv_table_view(txn, c.siv_window_root(h.window), &.{ .label = "People", .label_len = 6, .count = 1000, .selection = .single, .bind = Model.bind, .user_data = &m, .item_height = 28 });
+    _ = c.siv_set_visual(txn, c.siv_window_get_root(h.window), &.{ .background_token = .window_bg });
+    const table = c.siv_table_view(txn, c.siv_window_get_root(h.window), &.{ .label = "People", .label_len = 6, .count = 1000, .selection = .single, .bind = Model.bind, .user_data = &m, .item_height = 28 });
     _ = c.siv_table_column(txn, table, &.{ .title = "Name", .title_len = 4 });
     _ = c.siv_table_column(txn, table, &.{ .title = "Size", .title_len = 4, .width = .{ .unit = .px, .value = 90 } });
     try ok(c.siv_txn_commit(txn));
@@ -726,8 +726,8 @@ test "grid view: cells in reading order, two-dimensional keys, mirrored in RTL" 
         defer h.stop();
         var m: Model = .{};
         const txn = try begin(h.window);
-        _ = c.siv_set_visual(txn, c.siv_window_root(h.window), &.{ .background_token = .window_bg });
-        const grid = c.siv_grid_view(txn, c.siv_window_root(h.window), &.{ .label = "Photos", .label_len = 6, .count = 10_000, .selection = .single, .bind = Model.bind, .user_data = &m, .item_width = 100, .item_height = 60 });
+        _ = c.siv_set_visual(txn, c.siv_window_get_root(h.window), &.{ .background_token = .window_bg });
+        const grid = c.siv_grid_view(txn, c.siv_window_get_root(h.window), &.{ .label = "Photos", .label_len = 6, .count = 10_000, .selection = .single, .bind = Model.bind, .user_data = &m, .item_width = 100, .item_height = 60 });
         _ = c.siv_on(txn, grid, .select, Model.onSelect, null, &m);
         try ok(c.siv_txn_commit(txn));
         try h.settle();
@@ -789,7 +789,7 @@ test "list view: rows of their own heights, placed by arithmetic, scrolled on th
     defer h.stop();
     var s: Sized = .{};
     const txn = try begin(h.window);
-    const list = c.siv_list_view(txn, c.siv_window_root(h.window), &.{
+    const list = c.siv_list_view(txn, c.siv_window_get_root(h.window), &.{
         .label = "Notes",
         .label_len = 5,
         .count = 10_000,
@@ -866,7 +866,7 @@ test "tree view: rows of their own heights follow expansion" {
     defer h.stop();
     var s: Sized = .{};
     const txn = try begin(h.window);
-    const tree_view = c.siv_tree_view(txn, c.siv_window_root(h.window), &.{
+    const tree_view = c.siv_tree_view(txn, c.siv_window_get_root(h.window), &.{
         .label = "Outline",
         .label_len = 7,
         .bind = Model.bind,
@@ -928,8 +928,8 @@ test "table view: sortable and resizable columns by pointer, keyboard, and assis
     var m: Model = .{ .columns = 3 };
     var s: Sorter = .{};
     const txn = try begin(h.window);
-    _ = c.siv_set_visual(txn, c.siv_window_root(h.window), &.{ .background_token = .window_bg });
-    const table = c.siv_table_view(txn, c.siv_window_root(h.window), &.{ .label = "Files", .label_len = 5, .count = 100, .selection = .single, .bind = Model.bind, .user_data = &m, .item_height = 28 });
+    _ = c.siv_set_visual(txn, c.siv_window_get_root(h.window), &.{ .background_token = .window_bg });
+    const table = c.siv_table_view(txn, c.siv_window_get_root(h.window), &.{ .label = "Files", .label_len = 5, .count = 100, .selection = .single, .bind = Model.bind, .user_data = &m, .item_height = 28 });
     const name = c.siv_table_column(txn, table, &.{ .title = "Name", .title_len = 4, .flags = .{ .sortable = true } });
     const size = c.siv_table_column(txn, table, &.{ .title = "Size", .title_len = 4, .width = .{ .unit = .px, .value = 90 }, .flags = .{ .sortable = true }, .min_width = 60 });
     const kind = c.siv_table_column(txn, table, &.{ .title = "Kind", .title_len = 4, .width = .{ .unit = .px, .value = 80 }, .flags = .{ .fixed = true } });
@@ -1010,7 +1010,7 @@ test "table view: sortable and resizable columns by pointer, keyboard, and assis
     width = try columnWidth(table, 0);
     const before = width;
     var handle: t.Node = .null;
-    try ok(c.siv_node_get_related(name, .last_child, &handle));
+    handle = c.siv_node_get_related(name, .last_child);
     var hr: t.Rect = undefined;
     try ok(c.siv_node_get_rect(handle, &hr));
     const wid = (try h.win()).win.id;
@@ -1041,7 +1041,7 @@ test "table view: sortable and resizable columns by pointer, keyboard, and assis
     try testing.expectEqual(@as(f32, 152), width);
     // The fixed column has no handle.
     var last: t.Node = .null;
-    try ok(c.siv_node_get_related(kind, .last_child, &last));
+    last = c.siv_node_get_related(kind, .last_child);
     const last_role = (try semOf(last)).role;
     try testing.expect(last_role == null or last_role.? != .separator);
 
@@ -1049,7 +1049,7 @@ test "table view: sortable and resizable columns by pointer, keyboard, and assis
     const reports = s.widths;
     var t2 = try begin(h.window);
     var kind_cell: t.Node = .null;
-    try ok(c.siv_widget_get_part(table, .column, 2, &kind_cell));
+    kind_cell = c.siv_widget_get_part(table, .column, 2);
     try testing.expectEqual(kind, kind_cell);
     c.siv_widget_set_value(t2, kind_cell, 120);
     c.siv_view_set_sort(t2, table, 2, .ascending);

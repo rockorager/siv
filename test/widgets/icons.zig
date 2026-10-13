@@ -49,7 +49,7 @@ const Fixture = struct {
 fn build(h: *Harness) !Fixture {
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
-    const root = c.siv_window_root(h.window);
+    const root = c.siv_window_get_root(h.window);
     _ = c.siv_set_visual(txn, root, &.{ .background_token = .window_bg });
     const col = c.siv_flex(txn, root, &.{ .axis = .column, .gap = 12, .align_items = .start });
     _ = c.siv_set_layout(txn, col, &.{ .padding = .{ .start = 16, .end = 16, .top = 16, .bottom = 16 } });

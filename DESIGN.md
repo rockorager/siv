@@ -237,6 +237,25 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     handler) are queued until the outermost callback returns. A call that
     takes a destroy-notify and fails runs it at once, since ownership
     passed with the call.
+  - Out parameters a caller may not need take NULL (`Param.optional`,
+    "May be NULL." in the header): an event's `handled`, the request of a
+    load, the timer of a one-shot, a popover's content. C callers no
+    longer declare a variable to throw away; the others stay required,
+    since a missing one is a bug.
+  - Queries that answer with a handle return it (`Function.ret` a handle),
+    0 when there is none or an argument is invalid, as builders return 0:
+    `siv_node_get_related`, `siv_node_get_window`, `siv_window_get_root`,
+    `siv_window_get_focus`, `siv_window_get_app`, `siv_menu_get_item`,
+    `siv_view_get_row`, `siv_widget_get_part`. They nest in other calls
+    (`siv_menu_open(siv_widget_get_part(b, SIV_WIDGET_PART_MENU, 0), b)`),
+    and a 0 passed on is reported by the call that gets it (a transaction
+    operation's sticky error). Lua returns nil for 0. Queries with other
+    answers keep the out parameter, since only a handle has a value that
+    means none.
+  - `SIV_STR("literal")` in siv.h passes a string literal and its length,
+    as a parameter or, since a string's length field follows its pointer,
+    in a designated initializer (`.label = SIV_STR("Save")`); `"" s ""`
+    rejects anything but a literal, whose `sizeof` is its length plus one.
   - Arrays are a const pointer and `<name>_count`; functions that fill
     caller memory take `char *` and `<name>_cap`, write at most that much,
     and report the full length, so callers can size a second call.
@@ -3721,11 +3740,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     (D23's methods): `siv_<object>_<verb>` for an object's calls
     (`siv_window_set_title`, `siv_app_run`), `siv_<verb>` for transaction
     operations on nodes (`siv_set_layout`, `siv_move`, `siv_on`),
-    `siv_<object>_get_<thing>` for queries that write an out parameter
-    (`siv_node_get_rect`, `siv_app_get_fd`), and `siv_<object>_is_<state>`
-    for boolean ones. Functions that return their value directly have no
-    `get_`: `siv_version`, `siv_result_name`, `siv_window_root`, and the
-    builders, whose 0 the next operation rejects as the sticky error.
+    `siv_<object>_get_<thing>` for queries, whether they write an out
+    parameter (`siv_node_get_rect`, `siv_app_get_fd`) or return a handle
+    (`siv_node_get_related`, `siv_window_get_root`, D2), and
+    `siv_<object>_is_<state>` for boolean ones. Only `siv_version`,
+    `siv_result_name`, and the builders return a value without `get_`.
     Calls on a node outside a transaction are `siv_node_*`
     (`siv_node_focus`, `siv_node_emit`), except families named for their
     widget (`siv_view_*`, `siv_menu_*`, `siv_editor_*`, `siv_widget_*`).
@@ -3986,6 +4005,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | transaction operations (`siv_set_*`, `siv_on`, `siv_move`, `siv_widget_set_*`, `siv_view_set_*`, ...), drawing operations, `siv_txn_fail`, and teardown (`*_destroy`, `*_cancel`, `siv_txn_abort`, `siv_app_remove_action`, `siv_notification_withdraw`, `siv_tray_item_remove_menu_item`) return void (D2) | `siv_result` that callers could ignore | the result rule: every `siv_result` warns when ignored, and functions that cannot fail return nothing; a transaction's failure is read from the transaction, as for builders |
   | `siv_app_quit`, window requests, `siv_drop_finish`, `siv_app_set_transfer_limit`, `siv_window_activate`, `siv_txn_status`, `siv_draw_status` warn when ignored (D2) | ignorable | they can fail |
   | `siv_app_destroy` from a callback is deferred to the end of the dispatch (D2) | `SIV_ERROR_BUSY` | teardown cannot fail |
+  | optional out parameters: `siv_node_emit`'s `handled`, `siv_image_load`'s and `siv_icon_load`'s `request`, `siv_timer_start`'s `timer`, `siv_popover_create`'s `content` (D2) | required | C callers do not declare values they throw away |
+  | `siv_node_get_related`, `siv_node_get_window`, `siv_window_get_focus`, `siv_window_get_app`, `siv_menu_get_item`, `siv_view_get_row`, `siv_widget_get_part` return the handle, 0 for none (D2) | `siv_result` and an out handle | handle queries nest like builders; 0 already meant none |
+  | `siv_window_get_root` (Lua `window:get_root()`, Zig `windowGetRoot`) | `siv_window_root` | queries are `get_` however they answer (D27) |
+  | `SIV_STR` in siv.h (D2) | each sample's `S(s)` | one helper for string literals |
   | reserved fields in `siv_text_span`, `siv_paragraph_span`, `siv_tab_stop`, `siv_text_metrics` (D2) | — | frozen value structs that will plausibly grow; descriptors grow by appending |
   | `siv_tablet_sample.wheel` and four reserved fields (D16) | — | the axes flags named a wheel the sample could not carry; tablets grow axes, and a frozen struct cannot |
 

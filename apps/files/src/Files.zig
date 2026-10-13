@@ -308,7 +308,7 @@ fn setIcon(txn: Txn, node: Node, icon: icons.Icon, size: f32) void {
 fn build(self: *Files) !void {
     const txn = self.begin() orelse return error.Busy;
     errdefer _ = c.siv_txn_abort(txn);
-    self.root = c.siv_window_root(self.window);
+    self.root = c.siv_window_get_root(self.window);
     _ = c.siv_set_visual(txn, self.root, &.{ .background_token = .window_bg });
     _ = c.siv_on(txn, self.root, .key, onKey, null, self);
 
@@ -350,7 +350,7 @@ fn build(self: *Files) !void {
 
     const menu_btn = c.siv_menu_button(txn, bar, &.{ .label = "Menu", .label_len = 4, .style = .flat });
     var appm: Node = .null;
-    _ = c.siv_widget_get_part(menu_btn, .menu, 0, &appm);
+    appm = c.siv_widget_get_part(menu_btn, .menu, 0);
     self.app_menu = menu_btn;
     for (app_menu_items) |it| {
         _ = c.siv_menu_item(txn, appm, &.{
@@ -372,8 +372,8 @@ fn build(self: *Files) !void {
     _ = c.siv_set_layout(txn, split, &.{ .grow = 1, .basis = px(0) });
     var start: Node = .null;
     var end: Node = .null;
-    _ = c.siv_widget_get_part(split, .start, 0, &start);
-    _ = c.siv_widget_get_part(split, .end, 0, &end);
+    start = c.siv_widget_get_part(split, .start, 0);
+    end = c.siv_widget_get_part(split, .end, 0);
 
     self.sidebar = c.siv_list_view(txn, start, &.{
         .label = "Places",
@@ -510,13 +510,13 @@ const app_menu_items = [_]MenuSpec{
 /// The menu item node at `index` of a menu.
 fn menuItem(menu: Node, index: usize) Node {
     var item: Node = .null;
-    _ = c.siv_menu_get_item(menu, @intCast(index), &item);
+    item = c.siv_menu_get_item(menu, @intCast(index));
     return item;
 }
 
 fn appMenu(self: *Files) Node {
     var m: Node = .null;
-    _ = c.siv_widget_get_part(self.app_menu, .menu, 0, &m);
+    m = c.siv_widget_get_part(self.app_menu, .menu, 0);
     return m;
 }
 
@@ -1137,7 +1137,7 @@ fn buildCrumbs(self: *Files, txn: Txn) void {
     // Remove the old ones.
     while (true) {
         var child: Node = .null;
-        _ = c.siv_node_get_related(self.crumbs, .first_child, &child);
+        child = c.siv_node_get_related(self.crumbs, .first_child);
         if (child == .null) break;
         _ = c.siv_remove(txn, child);
     }
@@ -1659,7 +1659,7 @@ fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.Event
 /// location, rename), whose keys are text rather than shortcuts.
 fn inEditor(self: *Files) bool {
     var focus: Node = .null;
-    _ = c.siv_window_get_focus(self.window, &focus);
+    focus = c.siv_window_get_focus(self.window);
     return focus != .null and (focus == self.search or focus == self.location or focus == self.rename_editor);
 }
 
@@ -1790,7 +1790,7 @@ fn cursorRow(self: *Files) ?Node {
     const view = self.activeView();
     const cursor = self.cursorIndex() orelse return null;
     var row: Node = .null;
-    _ = c.siv_view_get_row(view, cursor, &row);
+    row = c.siv_view_get_row(view, cursor);
     return if (row == .null) null else row;
 }
 
@@ -1870,13 +1870,13 @@ pub fn startRename(self: *Files, vi: u32) void {
 /// of a row that no longer does.
 fn bindRename(self: *Files, txn: Txn, parts: *RowParts, entry: u32) void {
     var parent: Node = .null;
-    _ = c.siv_node_get_related(parts.name, .parent, &parent);
+    parent = c.siv_node_get_related(parts.name, .parent);
     const want = self.renaming != null and self.renaming.? == entry;
     // Is the editor in this row?
     var has = false;
     if (self.rename_editor != .null) {
         var ep: Node = .null;
-        _ = c.siv_node_get_related(self.rename_editor, .parent, &ep);
+        ep = c.siv_node_get_related(self.rename_editor, .parent);
         has = ep == parent;
     }
     if (want and !has) {
@@ -2002,7 +2002,7 @@ fn confirmDelete(self: *Files) void {
     const txn = self.begin() orelse return;
     const d = c.siv_dialog(txn, self.root, &.{ .title = title.ptr, .title_len = title.len, .text = msg, .text_len = msg.len });
     var actions: Node = .null;
-    _ = c.siv_widget_get_part(d, .actions, 0, &actions);
+    actions = c.siv_widget_get_part(d, .actions, 0);
     const cancel = c.siv_push_button(txn, actions, &.{ .label = "Cancel", .label_len = 6 });
     const del = c.siv_push_button(txn, actions, &.{ .label = "Delete", .label_len = 6, .style = .destructive });
     _ = c.siv_on(txn, cancel, .activate, onDialogCancel, null, self);

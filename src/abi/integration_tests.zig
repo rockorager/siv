@@ -93,7 +93,7 @@ test "the public API on sway: present, pointer and keyboard input, resize, close
 
     var txn: t.Txn = .null;
     try ok(T.siv_txn_begin(window, &txn));
-    const root = A.siv_window_root(window);
+    const root = A.siv_window_get_root(window);
     _ = T.siv_set_visual(txn, root, &.{ .background = .{ .r = 1, .g = 1, .b = 1, .a = 1 } });
     const column = T.siv_flex(txn, root, &.{ .axis = .column });
     const button = T.siv_box(txn, column);
@@ -772,7 +772,7 @@ test "menus on sway: a click opens a grabbing popup, keys reach it, submenus ope
     var sub_log: MenuLog = .{};
     var txn: t.Txn = .null;
     try ok(T.siv_txn_begin(window, &txn));
-    const col = c.siv_flex(txn, A.siv_window_root(window), &.{ .axis = .column, .align_items = .start });
+    const col = c.siv_flex(txn, A.siv_window_get_root(window), &.{ .axis = .column, .align_items = .start });
     _ = c.siv_set_layout(txn, col, &.{ .padding = .{ .start = 20, .top = 20 } });
     const button = c.siv_menu_button(txn, col, &.{ .label = "File", .label_len = 4 });
     const recent = c.siv_menu(txn, col, &.{ .label = "Recent", .label_len = 6 });

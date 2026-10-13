@@ -82,7 +82,7 @@ test "C API drag and drop: drop targets and drags from nodes" {
 
     var txn: t.Txn = undefined;
     try ok(T.siv_txn_begin(h.window, &txn));
-    const row = T.siv_flex(txn, abi.application.siv_window_root(h.window), null);
+    const row = T.siv_flex(txn, abi.application.siv_window_get_root(h.window), null);
     const source = T.siv_box(txn, row);
     const target = T.siv_box(txn, row);
     const size: t.LayoutDesc = .{ .size = @sizeOf(t.LayoutDesc), .width = .{ .unit = .px, .value = 100 }, .height = .{ .unit = .px, .value = 100 } };

@@ -221,7 +221,7 @@ test "clipboard: data in two MIME types, pasted elsewhere and read back by type"
     var copier: Copier = .{};
     var txn: t.Txn = .null;
     try ok(capi.siv_txn_begin(h.window, &txn));
-    _ = capi.siv_on(txn, capi.siv_window_root(h.window), .key, Copier.onKey, null, &copier);
+    _ = capi.siv_on(txn, capi.siv_window_get_root(h.window), .key, Copier.onKey, null, &copier);
     try ok(capi.siv_txn_commit(txn));
     try h.settle();
     // Ctrl+C copies, from the key's handler.

@@ -100,7 +100,7 @@ test "C API images: load from a path and from bytes, play an animation" {
     // then blue after 300 ms.
     var txn: t.Txn = undefined;
     try ok(T.siv_txn_begin(h.window, &txn));
-    const stack = T.siv_stack(txn, A.siv_window_root(h.window), null);
+    const stack = T.siv_stack(txn, A.siv_window_get_root(h.window), null);
     _ = C.siv_image_view(txn, stack, &.{ .image = gif.image });
     try ok(T.siv_txn_commit(txn));
     try h.settle();

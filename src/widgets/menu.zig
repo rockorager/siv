@@ -107,9 +107,7 @@ fn setMenuLabel(txn: Txn, st: *Menu, label: []const u8) void {
 /// an application's widget, through its interface).
 fn menuOf(node: Node) ?*Menu {
     if (w.stateOf(Menu, node, &.{.menu})) |m| return m;
-    var part: Node = .null;
-    if (c.siv_widget_get_part(node, .menu, 0, &part) != .ok) return null;
-    return w.stateOf(Menu, part, &.{.menu});
+    return w.stateOf(Menu, c.siv_widget_get_part(node, .menu, 0), &.{.menu});
 }
 
 pub export fn siv_menu_item(txn: Txn, menu_node: Node, desc: ?*const siv.MenuItemDesc) Node {
@@ -170,20 +168,16 @@ fn itemOf(node: Node) ?*Item {
     return w.stateOf(Item, node, &.{.menu_item});
 }
 
-pub export fn siv_menu_get_item(menu_node: Node, index: u32, item: ?*Node) siv.Result {
-    const out = item orelse return .error_invalid_argument;
-    const m = menuOf(menu_node) orelse return .error_invalid_argument;
+pub export fn siv_menu_get_item(menu_node: Node, index: u32) Node {
+    const m = menuOf(menu_node) orelse return .null;
     var i: u32 = 0;
     var cur = w.related(m.root, .first_child);
     while (cur != .null) : (cur = w.related(cur, .next)) {
         if (itemOf(cur) == null) continue;
-        if (i == index) {
-            out.* = cur;
-            return .ok;
-        }
+        if (i == index) return cur;
         i += 1;
     }
-    return .error_invalid_argument;
+    return .null;
 }
 
 fn textOf(node: Node, buf: []u8) []const u8 {
@@ -245,7 +239,7 @@ fn openMenu(m: *Menu, at: Node, parent: ?*Menu, grab: bool, focus: bool, point: 
         _ = c.siv_window_destroy(popup);
         return r;
     }
-    const root = c.siv_window_root(popup);
+    const root = c.siv_window_get_root(popup);
     cardVisual(txn, root);
     var buf: [1024]u8 = undefined;
     const name = w.labelOf(m.root, &buf);
@@ -284,7 +278,7 @@ fn openMenu(m: *Menu, at: Node, parent: ?*Menu, grab: bool, focus: bool, point: 
 
 fn focusFirst(m: *Menu) void {
     if (!w.windowAlive(m.popup)) return;
-    const col = w.related(c.siv_window_root(m.popup), .first_child);
+    const col = w.related(c.siv_window_get_root(m.popup), .first_child);
     focusStep(col, .first_child, false);
 }
 
@@ -562,7 +556,7 @@ fn onMenuPopupEvent(ud: ?*anyopaque, _: siv.Window, ev: ?*const siv.WindowEvent)
 pub export fn siv_popover_create(anchor: Node, desc: ?*const siv.PopoverDesc, popup_out: ?*siv.Window, content_out: ?*Node) siv.Result {
     const d = w.readDesc(siv.PopoverDesc, desc) orelse return .error_invalid_argument;
     const label = w.str(d.label, d.label_len) orelse return .error_invalid_argument;
-    if (popup_out == null or content_out == null) return .error_invalid_argument;
+    if (popup_out == null) return .error_invalid_argument;
     const parent_window = w.windowOf(anchor);
     if (parent_window == .null) return .error_invalid_handle;
     var popup: siv.Window = .null;
@@ -574,7 +568,7 @@ pub export fn siv_popover_create(anchor: Node, desc: ?*const siv.PopoverDesc, po
         _ = c.siv_window_destroy(popup);
         return r;
     }
-    const root = c.siv_window_root(popup);
+    const root = c.siv_window_get_root(popup);
     cardVisual(txn, root);
     const content = c.siv_flex(txn, root, &.{ .axis = .column, .gap = tk.gap });
     _ = c.siv_set_layout(txn, content, &.{ .padding = .{ .start = 12, .end = 12, .top = 12, .bottom = 12 } });
@@ -591,7 +585,7 @@ pub export fn siv_popover_create(anchor: Node, desc: ?*const siv.PopoverDesc, po
         return r;
     }
     popup_out.?.* = popup;
-    content_out.?.* = content;
+    if (content_out) |p| p.* = content;
     return .ok;
 }
 
@@ -604,7 +598,7 @@ fn popoverPart(st: *const Popover, part: siv.WidgetPart, _: u32) Node {
 }
 
 fn popoverOf(popup: siv.Window) ?*Popover {
-    return w.stateOf(Popover, c.siv_window_root(popup), &.{.popover});
+    return w.stateOf(Popover, c.siv_window_get_root(popup), &.{.popover});
 }
 
 fn askClose(st: *Popover) bool {

@@ -8,7 +8,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#define S(str) (str), strlen(str)
 
 /* Commits a transaction made in a handler. There is nothing to undo when
  * one fails (siv discarded it), so report it and go on. */
@@ -35,7 +34,7 @@ static void on_loaded(void *user_data, siv_result result, siv_image image) {
 	siv_txn txn;
 	if (siv_txn_begin(g->window, &txn) == SIV_OK) {
 		if (result == SIV_OK) siv_set_image_view(txn, g->photo, SIV_DESC(siv_image_view_desc, .image = image, .fit = SIV_FIT_COVER));
-		siv_set_text(txn, g->caption, S(text));
+		siv_set_text(txn, g->caption, text, strlen(text));
 		commit(txn);
 	}
 	if (result == SIV_OK) siv_image_destroy(image);
@@ -57,14 +56,14 @@ static siv_image checkerboard(siv_app app) {
 }
 
 static void icon(siv_txn txn, siv_node parent, const char *name, siv_color_token color) {
-	siv_image_view(txn, parent, SIV_DESC(siv_image_view_desc, .icon = S(name), .icon_size = 32, .color_token = color));
+	siv_image_view(txn, parent, SIV_DESC(siv_image_view_desc, .icon = name, strlen(name), .icon_size = 32, .color_token = color));
 }
 
 static siv_result build(struct gallery *g, siv_app app) {
 	siv_txn txn;
 	siv_result r = siv_txn_begin(g->window, &txn);
 	if (r != SIV_OK) return r;
-	siv_node root = siv_window_root(g->window);
+	siv_node root = siv_window_get_root(g->window);
 	siv_set_visual(txn, root, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_WINDOW_BG));
 	siv_node column = siv_flex(txn, root, SIV_DESC(siv_flex_desc, .axis = SIV_AXIS_COLUMN, .gap = 12, .align_items = SIV_ALIGN_START));
 	siv_set_layout(txn, column, SIV_DESC(siv_layout_desc, .padding = {20, 20, 16, 16}));
@@ -76,8 +75,8 @@ static siv_result build(struct gallery *g, siv_app app) {
 	siv_set_visual(txn, frame, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_VIEW_BG, .radius = {10, 10, 10, 10}, .flags = SIV_VISUAL_CLIP));
 	g->photo = siv_image_view(txn, frame, NULL);
 	siv_set_layout(txn, g->photo, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_PX, 240}, .height = {SIV_UNIT_PX, 150}));
-	siv_set_semantics(txn, g->photo, SIV_DESC(siv_semantics_desc, .label = S("Hills at sunset")));
-	g->caption = siv_text(txn, column, S("Loading…"));
+	siv_set_semantics(txn, g->photo, SIV_DESC(siv_semantics_desc, .label = SIV_STR("Hills at sunset")));
+	g->caption = siv_text(txn, column, SIV_STR("Loading…"));
 	siv_set_text_style(txn, g->caption, SIV_DESC(siv_text_style_desc, .size_role = SIV_SIZE_ROLE_CAPTION, .color_token = SIV_COLOR_TOKEN_MUTED_FG));
 
 	siv_node row = siv_flex(txn, column, SIV_DESC(siv_flex_desc, .gap = 16, .align_items = SIV_ALIGN_CENTER));
@@ -94,7 +93,7 @@ static siv_result build(struct gallery *g, siv_app app) {
 	icon(txn, row, "document-new", SIV_COLOR_TOKEN_NONE);
 	icon(txn, row, "emblem-ok-symbolic", SIV_COLOR_TOKEN_SUCCESS);
 	icon(txn, row, "dialog-warning-symbolic", SIV_COLOR_TOKEN_WARNING);
-	siv_push_button(txn, column, SIV_DESC(siv_button_desc, .label = S("Copy"), .icon = S("edit-copy-symbolic")));
+	siv_push_button(txn, column, SIV_DESC(siv_button_desc, .label = SIV_STR("Copy"), .icon = SIV_STR("edit-copy-symbolic")));
 	r = siv_txn_commit(txn);
 	if (r != SIV_OK) return r;
 
@@ -103,7 +102,7 @@ static siv_result build(struct gallery *g, siv_app app) {
 	double scale = 1;
 	if (siv_window_get_scale(g->window, &scale) != SIV_OK) scale = 1;
 	siv_image_request request;
-	return siv_image_load(app, SIV_DESC(siv_image_load_desc, .path = S("docs/guide/examples/data/landscape.png"), .max_width = 240, .max_height = 150, .scale = (float)scale), on_loaded, NULL, g, &request);
+	return siv_image_load(app, SIV_DESC(siv_image_load_desc, .path = SIV_STR("docs/guide/examples/data/landscape.png"), .max_width = 240, .max_height = 150, .scale = (float)scale), on_loaded, NULL, g, &request);
 }
 
 int main(void) {
@@ -114,7 +113,7 @@ int main(void) {
 		fprintf(stderr, "images: %s\n", siv_result_name(r));
 		return 1;
 	}
-	r = siv_window_create(app, SIV_DESC(siv_window_desc, .title = S("Images"), .width = 300, .height = 340), &g.window);
+	r = siv_window_create(app, SIV_DESC(siv_window_desc, .title = SIV_STR("Images"), .width = 300, .height = 340), &g.window);
 	if (r == SIV_OK) r = build(&g, app);
 	if (r == SIV_OK) r = siv_app_run(app);
 	if (r != SIV_OK) fprintf(stderr, "images: %s\n", siv_result_name(r));

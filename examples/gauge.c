@@ -183,7 +183,7 @@ int main(void) {
 	siv_txn txn;
 	if (r == SIV_OK) r = siv_txn_begin(g.window, &txn);
 	if (r == SIV_OK) {
-		siv_node root = siv_window_root(g.window);
+		siv_node root = siv_window_get_root(g.window);
 		siv_set_visual(txn, root, SIV_DESC(siv_visual_desc, .background = {1, 1, 1, 1}));
 		siv_set_stack(txn, root, SIV_DESC(siv_stack_desc, .align_x = SIV_ALIGN_CENTER, .align_y = SIV_ALIGN_CENTER));
 		siv_node dial = gauge(txn, root, &g);

@@ -13,7 +13,6 @@
 #include <sys/timerfd.h>
 #include <unistd.h>
 
-#define S(str) (str), strlen(str)
 
 struct host {
 	siv_window window;
@@ -36,7 +35,7 @@ static void tick(struct host *host) {
 	snprintf(text, sizeof text, "Host ticks: %u", ++host->count);
 	siv_txn txn;
 	if (siv_txn_begin(host->window, &txn) != SIV_OK) return;
-	siv_set_text(txn, host->ticks, S(text));
+	siv_set_text(txn, host->ticks, text, strlen(text));
 	siv_result r = siv_txn_commit(txn);
 	if (r != SIV_OK) fprintf(stderr, "embed: %s\n", siv_result_name(r));
 }
@@ -49,13 +48,13 @@ int main(void) {
 		fprintf(stderr, "embed: %s\n", siv_result_name(r));
 		return 1;
 	}
-	r = siv_window_create(app, SIV_DESC(siv_window_desc, .title = S("Embedded"), .width = 280, .height = 120, .on_event = on_window_event, .user_data = &host), &host.window);
+	r = siv_window_create(app, SIV_DESC(siv_window_desc, .title = SIV_STR("Embedded"), .width = 280, .height = 120, .on_event = on_window_event, .user_data = &host), &host.window);
 	siv_txn txn;
 	if (r == SIV_OK) r = siv_txn_begin(host.window, &txn);
 	if (r == SIV_OK) {
-		siv_node root = siv_window_root(host.window);
+		siv_node root = siv_window_get_root(host.window);
 		siv_set_visual(txn, root, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_WINDOW_BG));
-		host.ticks = siv_text(txn, root, S("Host ticks: 0"));
+		host.ticks = siv_text(txn, root, SIV_STR("Host ticks: 0"));
 		siv_set_layout(txn, host.ticks, SIV_DESC(siv_layout_desc, .align_x = SIV_ALIGN_CENTER, .align_y = SIV_ALIGN_CENTER));
 		siv_set_text_style(txn, host.ticks, SIV_DESC(siv_text_style_desc, .size_role = SIV_SIZE_ROLE_HEADING, .color_token = SIV_COLOR_TOKEN_WINDOW_FG));
 		r = siv_txn_commit(txn);

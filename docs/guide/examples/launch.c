@@ -10,7 +10,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#define S(str) (str), strlen(str)
 
 struct notes {
 	siv_app app;
@@ -21,7 +20,7 @@ struct notes {
 static void show_status(struct notes *n, const char *text) {
 	siv_txn txn;
 	if (siv_txn_begin(n->window, &txn) != SIV_OK) return;
-	siv_set_text(txn, n->status, S(text));
+	siv_set_text(txn, n->status, text, strlen(text));
 	siv_result r = siv_txn_commit(txn);
 	if (r != SIV_OK) fprintf(stderr, "launch: %s\n", siv_result_name(r));
 }
@@ -29,13 +28,13 @@ static void show_status(struct notes *n, const char *text) {
 static siv_result create_window(struct notes *n) {
 	/* Windows take the application id as their app id, which the
 	 * compositor matches with the desktop file. */
-	siv_result r = siv_window_create(n->app, SIV_DESC(siv_window_desc, .title = S("Notes"), .width = 320, .height = 120), &n->window);
+	siv_result r = siv_window_create(n->app, SIV_DESC(siv_window_desc, .title = SIV_STR("Notes"), .width = 320, .height = 120), &n->window);
 	siv_txn txn;
 	if (r == SIV_OK) r = siv_txn_begin(n->window, &txn);
 	if (r != SIV_OK) return r;
-	siv_node root = siv_window_root(n->window);
+	siv_node root = siv_window_get_root(n->window);
 	siv_set_visual(txn, root, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_WINDOW_BG));
-	n->status = siv_text(txn, root, S("Ready"));
+	n->status = siv_text(txn, root, SIV_STR("Ready"));
 	siv_set_layout(txn, n->status, SIV_DESC(siv_layout_desc, .align_x = SIV_ALIGN_CENTER, .align_y = SIV_ALIGN_CENTER));
 	siv_set_text_style(txn, n->status, SIV_DESC(siv_text_style_desc, .size_role = SIV_SIZE_ROLE_HEADING, .color_token = SIV_COLOR_TOKEN_WINDOW_FG));
 	return siv_txn_commit(txn);
@@ -72,14 +71,14 @@ int main(int argc, char **argv) {
 	bool service = argc > 1 && strcmp(argv[1], "--service") == 0;
 	siv_uri uris[16];
 	size_t count = 0;
-	for (int i = service ? 2 : 1; i < argc && count < 16; i++) uris[count++] = (siv_uri){S(argv[i])};
+	for (int i = service ? 2 : 1; i < argc && count < 16; i++) uris[count++] = (siv_uri){argv[i], strlen(argv[i])};
 
-	siv_result r = siv_app_create(SIV_DESC(siv_app_desc, .app_id = S("org.example.Notes"), .name = S("Notes")), &n.app);
+	siv_result r = siv_app_create(SIV_DESC(siv_app_desc, .app_id = SIV_STR("org.example.Notes"), .name = SIV_STR("Notes")), &n.app);
 	if (r != SIV_OK) {
 		fprintf(stderr, "launch: %s\n", siv_result_name(r));
 		return 1;
 	}
-	r = siv_app_add_action(n.app, S("new-note"), on_new_note, NULL, &n);
+	r = siv_app_add_action(n.app, SIV_STR("new-note"), on_new_note, NULL, &n);
 	if (r == SIV_OK) r = siv_app_launch(n.app, SIV_DESC(siv_launch_desc, .uris = uris, .uris_count = count, .on_activate = on_activate, .user_data = &n, .flags = service ? SIV_LAUNCH_SERVICE : 0, .idle_timeout_ms = 10000));
 	/* A second instance forwards its activation and returns at once. */
 	if (r == SIV_OK) r = siv_app_run(n.app);

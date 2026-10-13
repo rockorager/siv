@@ -113,7 +113,7 @@ fn helloInk(flags: t.WindowFlags) ![2]usize {
     defer h.stop();
     var txn: t.Txn = .null;
     try ok(t.c.siv_txn_begin(h.window, &txn));
-    _ = C.siv_canvas(txn, t.c.siv_window_root(h.window), &.{ .draw = Hello.draw, .width = 200, .height = 40 });
+    _ = C.siv_canvas(txn, t.c.siv_window_get_root(h.window), &.{ .draw = Hello.draw, .width = 200, .height = 40 });
     try ok(t.c.siv_txn_commit(txn));
     try h.settle();
     const px = try h.capture();

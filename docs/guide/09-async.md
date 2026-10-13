@@ -73,7 +73,7 @@ static void count_done(void *user_data) {
 	else snprintf(text, sizeof text, "%u primes below %u", (unsigned)job->found, LIMIT);
 	siv_txn txn;
 	if (siv_txn_begin(ui->window, &txn) != SIV_OK) return;
-	siv_set_text(txn, ui->result, S(text));
+	siv_set_text(txn, ui->result, text, strlen(text));
 	siv_widget_set_value(txn, ui->progress, atomic_load(&job->cancelled) ? 0 : 100);
 	set_running(ui, txn, false);
 	commit(txn);

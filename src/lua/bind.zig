@@ -1211,7 +1211,9 @@ pub fn Wrapper(comptime fi: usize) type {
                                 const status = siv.c.siv_txn_status(args[0]);
                                 raiseResult(st, L, if (@intFromEnum(status) != 0) @intFromEnum(status) else -2, f.name);
                             }
-                            raiseResult(st, L, -2, f.name);
+                            // A query's 0 is "none" (D2): nil.
+                            c.lua_pushnil(L);
+                            return 1;
                         }
                         pushHandle(st, L, comptime handleIndex(rn), @intFromEnum(r), false);
                         if (props > 0 and c.lua_type(L, props) == lua.ttable) applyProperties(st, L, props);

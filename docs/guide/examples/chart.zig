@@ -91,7 +91,7 @@ fn onPointer(user_data: ?*anyopaque, _: siv.Node, event: ?*const siv.Event) call
 fn build(chart: *Chart) !void {
     const txn = try siv.txnBegin(chart.window);
     errdefer siv.txnAbort(txn);
-    const root = siv.windowRoot(chart.window);
+    const root = siv.windowGetRoot(chart.window);
     siv.setVisual(txn, root, &.{ .background_token = .window_bg });
     const column = siv.flex(txn, root, &.{ .axis = .column, .gap = 12 });
     siv.setLayout(txn, column, &.{ .width = .{ .unit = .fraction, .value = 1 }, .padding = .{ .start = 20, .end = 20, .top = 16, .bottom = 16 } });

@@ -87,7 +87,7 @@ int main(void) {
 	siv_txn txn;
 	if (r == SIV_OK) r = siv_txn_begin(ui.window, &txn);
 	if (r == SIV_OK) {
-		siv_node root = siv_window_root(ui.window);
+		siv_node root = siv_window_get_root(ui.window);
 		siv_set_visual(txn, root, SIV_DESC(siv_visual_desc, .background = {0.1f, 0.1f, 0.12f, 1}));
 		siv_node column = siv_flex(txn, root, SIV_DESC(siv_flex_desc, .axis = SIV_AXIS_COLUMN, .gap = 8, .align_items = SIV_ALIGN_CENTER, .justify = SIV_JUSTIFY_CENTER));
 		siv_set_layout(txn, column, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_FRACTION, 1}, .height = {SIV_UNIT_FRACTION, 1}));

@@ -108,7 +108,7 @@ test "failed calls raise errors with the result code" {
 
 test "descriptors are tables: defaults, enums, flags, colors, typos" {
     _ = try run(prologue ++
-        \\local root = win:root()
+        \\local root = win:get_root()
         \\win:update(function(txn)
         \\  local col = txn:flex(root, { axis = "column", gap = 4, flags = { "wrap" } })
         \\  txn:set_layout(col, { padding = 8, width = 100, height = { "fraction", 1 }, flags = "no_shrink" })
@@ -148,12 +148,12 @@ test "handles are userdata: identity, methods, ownership" {
         \\local siv = require("siv")
         \\app = siv.app_create{ backend = "headless", flags = { "no_system_fonts" } }
         \\local win = app:window_create{ width = 120, height = 80 }
-        \\assert(win:root() == win:root())
+        \\assert(win:get_root() == win:get_root())
         \\assert(tostring(win):find("^siv.window: 0x"))
         \\assert(siv.methods.window.root == siv.window_root)
         \\local seen = {}
-        \\seen[win:root()] = true
-        \\assert(seen[win:root()])
+        \\seen[win:get_root()] = true
+        \\assert(seen[win:get_root()])
         \\local function value(h) return math.tointeger(tonumber(tostring(h):match("0x(%x+)"), 16)) end
         \\local img = app:image_create{ pixels = string.rep("\\255", 16), width = 2, height = 2, stride = 8 }
         \\local s = img:get_size()
@@ -188,7 +188,7 @@ test "handles are userdata: identity, methods, ownership" {
 
 test "callbacks run at safe points and their errors reach the caller" {
     _ = try run(prologue ++
-        \\local root = win:root()
+        \\local root = win:get_root()
         \\local log = {}
         \\local button
         \\win:update(function(txn)
@@ -264,7 +264,7 @@ test "themed icons from Lua: loads, image nodes, buttons, and canvases" {
         \\end)
         \\local drew = 0
         \\win:update(function(txn)
-        \\  local root = win:root()
+        \\  local root = win:get_root()
         \\  txn:image_view(root, { icon = "folder", icon_size = 48, color_token = "accent" })
         \\  txn:push_button(root, { label = "Copy", icon = "edit-copy-symbolic", flags = { "icon_only" } })
         \\  txn:canvas(root, { width = 32, height = 32, draw = function(node, d, w, h)
@@ -285,7 +285,7 @@ test "themed icons from Lua: loads, image nodes, buttons, and canvases" {
 
 test "canvases draw from Lua" {
     _ = try run(prologue ++
-        \\local root = win:root()
+        \\local root = win:get_root()
         \\local draws, measured = 0, 0
         \\win:update(function(txn)
         \\  txn:canvas(root, {

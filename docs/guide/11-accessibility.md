@@ -37,7 +37,7 @@ same thing. From [examples/events.c](examples/events.c):
 ```c
 /* Focusable with a role and a name: Tab reaches it, Enter and
  * Space activate it, and a screen reader announces it. */
-siv_set_semantics(txn, tile, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_BUTTON, .label = S(names[i]), .flags = SIV_SEMANTICS_FOCUSABLE));
+siv_set_semantics(txn, tile, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_BUTTON, .label = names[i], strlen(names[i]), .flags = SIV_SEMANTICS_FOCUSABLE));
 ```
 
 **Name things that have no text.** An icon-only button, an image that
@@ -67,7 +67,7 @@ From [examples/jobs.c](examples/jobs.c):
 
 ```c
 /* A live region: screen readers announce the result when it comes. */
-ui->result = siv_text(txn, column, S("Count the primes below 200000"));
+ui->result = siv_text(txn, column, SIV_STR("Count the primes below 200000"));
 siv_set_text_style(txn, ui->result, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_WINDOW_FG));
 siv_set_semantics(txn, ui->result, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_STATUS, .flags = SIV_SEMANTICS_LIVE_POLITE));
 ```

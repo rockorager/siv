@@ -103,19 +103,12 @@ pub export fn siv_widget_get_value(node: t.Node, value: ?*f64) t.Result {
     }.f(node, value));
 }
 
-pub export fn siv_widget_get_part(node: t.Node, part: t.WidgetPart, index: u32, result: ?*t.Node) t.Result {
-    return application.wrap(struct {
-        fn f(n: t.Node, p: t.WidgetPart, i: u32, out: ?*t.Node) Error!void {
-            const dest = try runtime.out(t.Node, out);
-            const w, const iface = try query(n);
-            const cb = iface.get_part orelse return error.InvalidArgument;
-            w.owner.enter();
-            const r = cb(iface.user_data, n, p, i);
-            w.owner.leave();
-            if (r == .null) return error.InvalidArgument;
-            dest.* = r;
-        }
-    }.f(node, part, index, result));
+pub export fn siv_widget_get_part(node: t.Node, part: t.WidgetPart, index: u32) t.Node {
+    const w, const iface = query(node) catch return .null;
+    const cb = iface.get_part orelse return .null;
+    w.owner.enter();
+    defer w.owner.leave();
+    return cb(iface.user_data, node, part, index);
 }
 
 /// The node that takes focus for `n` as its interface's focus chooses, or

@@ -98,7 +98,7 @@ int main(void) {
 	siv_txn txn;
 	r = siv_txn_begin(a.window, &txn);
 	if (r == SIV_OK) {
-		siv_node root = siv_window_root(a.window);
+		siv_node root = siv_window_get_root(a.window);
 		siv_set_visual(txn, root, SIV_DESC(siv_visual_desc, .background = {1, 1, 1, 1}));
 		siv_node column = siv_flex(txn, root, SIV_DESC(siv_flex_desc, .axis = SIV_AXIS_COLUMN, .gap = 10));
 		siv_set_layout(txn, column, SIV_DESC(siv_layout_desc, .padding = {16, 16, 16, 16}, .height = {SIV_UNIT_FRACTION, 1}));

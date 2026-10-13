@@ -150,6 +150,13 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
         \\#define {[up]s}_DEPRECATED(msg)
         \\#endif
         \\
+        \\/* A string literal as a string parameter or field, its pointer and its
+        \\ * length; the length field follows the pointer, so it works in
+        \\ * designated initializers too (only literals, which "" s "" checks):
+        \\ *     siv_text(txn, parent, {[up]s}_STR("Hello"));
+        \\ *     {[up]s}_DESC(siv_button_desc, .label = {[up]s}_STR("Save")) */
+        \\#define {[up]s}_STR(s) ("" s ""), (sizeof(s) - 1)
+        \\
         \\/* A pointer to a descriptor with its size set and the given fields;
         \\ * every other field is zero, which means default:
         \\ *     {[up]s}_DESC(type, .field = value, ...) */
@@ -212,7 +219,7 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
         if (threadNote(f.thread)) |note| try w.print(" * {s}\n", .{note});
         if (f.deprecated) |d| try w.print(" * Deprecated since {d}.{d}: use {s}.\n", .{ d.since.major, d.since.minor, d.replacement });
         if (f.params.len > 0) try w.writeAll(" *\n");
-        for (f.params) |p| try w.print(" * {s}: {s}\n", .{ p.name, p.doc });
+        for (f.params) |p| try w.print(" * {s}: {s}{s}\n", .{ p.name, p.doc, if (p.optional) " May be NULL." else "" });
         try w.writeAll(" */\n");
         if (f.deprecated) |d| try w.print("{s}_DEPRECATED(\"use {s}\") ", .{ up, d.replacement });
         if (s.isResult(f.ret)) try w.print("{s}_NODISCARD ", .{up});

@@ -1333,12 +1333,10 @@ fn viewPart(v: *const View, p: siv.WidgetPart, index: u32) Node {
     return col.cell;
 }
 
-pub export fn siv_view_get_row(view: Node, index: u32, row: ?*Node) siv.Result {
-    const out = row orelse return .error_invalid_argument;
-    const v = viewOf(view) orelse return .error_invalid_argument;
-    if (index >= v.count) return .error_invalid_argument;
-    out.* = if (boundRow(v, index)) |r| r.body else .null;
-    return .ok;
+pub export fn siv_view_get_row(view: Node, index: u32) Node {
+    const v = viewOf(view) orelse return .null;
+    if (index >= v.count) return .null;
+    return if (boundRow(v, index)) |r| r.body else .null;
 }
 
 /// The row bound to item `i`, if it is in view (or is the cursor's).

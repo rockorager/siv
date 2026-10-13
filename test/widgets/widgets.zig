@@ -74,7 +74,7 @@ const Controls = struct {
 fn buildControls(h: *Harness, log: *Log) !Controls {
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
-    const root = c.siv_window_root(h.window);
+    const root = c.siv_window_get_root(h.window);
     _ = c.siv_set_visual(txn, root, &.{ .background_token = .window_bg });
     const col = c.siv_flex(txn, root, &.{ .axis = .column, .gap = 12, .align_items = .start });
     _ = c.siv_set_layout(txn, col, &.{ .padding = .{ .start = 16, .end = 16, .top = 16, .bottom = 16 } });
@@ -115,7 +115,7 @@ const Inputs = struct {
 fn buildInputs(h: *Harness, log: *Log) !Inputs {
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
-    const root = c.siv_window_root(h.window);
+    const root = c.siv_window_get_root(h.window);
     _ = c.siv_set_visual(txn, root, &.{ .background_token = .window_bg });
     const col = c.siv_flex(txn, root, &.{ .axis = .column, .gap = 12, .align_items = .start });
     _ = c.siv_set_layout(txn, col, &.{ .padding = .{ .start = 16, .end = 16, .top = 16, .bottom = 16 } });
@@ -404,7 +404,7 @@ test "widgets: an application's widget answers the generic calls like a stock on
     var cw: Custom = .{};
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
-    const root = c.siv_window_root(h.window);
+    const root = c.siv_window_get_root(h.window);
     cw.root = c.siv_stack(txn, root, null);
     cw.inner = c.siv_box(txn, cw.root);
     _ = c.siv_set_semantics(txn, cw.inner, &.{ .flags = .{ .focusable = true } });
@@ -426,12 +426,12 @@ test "widgets: an application's widget answers the generic calls like a stock on
     try testing.expect(cw.disabled);
     try testing.expectEqual(@as(f64, 3), (try sem(cw.root)).value.?.now);
     var got: t.Node = .null;
-    try ok(c.siv_menu_get_item(cw.root, 0, &got));
+    got = c.siv_menu_get_item(cw.root, 0);
     try testing.expectEqual(item, got);
-    try ok(c.siv_widget_get_part(cw.root, Custom.own_part, 0, &got));
+    got = c.siv_widget_get_part(cw.root, Custom.own_part, 0);
     try testing.expectEqual(cw.inner, got);
-    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_widget_get_part(cw.root, Custom.own_part, 1, &got));
-    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_widget_get_part(cw.root, .content, 0, &got));
+    try testing.expect(c.siv_widget_get_part(cw.root, Custom.own_part, 1) == .null);
+    try testing.expect(c.siv_widget_get_part(cw.root, .content, 0) == .null);
 
     // What every widget would refuse never reaches it: values that are
     // not finite, inverted ranges, and calls it has no callback for.
@@ -461,7 +461,7 @@ test "widgets: an application's widget answers the generic calls like a stock on
     // focus chooses the node that takes the focus; 0 refuses.
     try ok(c.siv_node_focus(cw.root));
     var focused: t.Node = .null;
-    try ok(c.siv_window_get_focus(h.window, &focused));
+    focused = c.siv_window_get_focus(h.window);
     try testing.expectEqual(cw.inner, focused);
     cw.focus_none = true;
     try testing.expectEqual(t.Result.error_invalid_argument, c.siv_node_focus(cw.root));
@@ -508,7 +508,7 @@ test "widgets: focusing a stock widget focuses the node its interface chooses" {
     c.siv_widget_set_value(txn, w.group, 2);
     try ok(c.siv_txn_commit(txn));
     try ok(c.siv_node_focus(w.group));
-    try ok(c.siv_window_get_focus(h.window, &focused));
+    focused = c.siv_window_get_focus(h.window);
     try testing.expectEqual(w.radios[2], focused);
     // A disabled group has nothing to focus.
     try ok(c.siv_txn_begin(h.window, &txn));
@@ -518,14 +518,14 @@ test "widgets: focusing a stock widget focuses the node its interface chooses" {
 
     // A radio disabled by its descriptor is skipped by the arrows.
     try ok(c.siv_txn_begin(h.window, &txn));
-    const group = c.siv_radio_group(txn, c.siv_window_root(h.window), &.{ .label = "Speed", .label_len = 5 });
+    const group = c.siv_radio_group(txn, c.siv_window_get_root(h.window), &.{ .label = "Speed", .label_len = 5 });
     var radios: [3]t.Node = undefined;
     for (&radios, [_][]const u8{ "Slow", "Medium", "Fast" }, 0..) |*r, label, i|
         r.* = c.siv_radio(txn, group, &.{ .label = label.ptr, .label_len = label.len, .flags = .{ .disabled = i == 1 } });
     try testing.expectEqual(t.Node.null, c.siv_radio(txn, group, &.{ .reserved0 = 1 }));
     try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_commit(txn));
     try ok(c.siv_txn_begin(h.window, &txn));
-    const group2 = c.siv_radio_group(txn, c.siv_window_root(h.window), &.{ .label = "Speed", .label_len = 5 });
+    const group2 = c.siv_radio_group(txn, c.siv_window_get_root(h.window), &.{ .label = "Speed", .label_len = 5 });
     for (&radios, [_][]const u8{ "Slow", "Medium", "Fast" }, 0..) |*r, label, i|
         r.* = c.siv_radio(txn, group2, &.{ .label = label.ptr, .label_len = label.len, .flags = .{ .disabled = i == 1 } });
     try ok(c.siv_txn_commit(txn));
@@ -642,7 +642,7 @@ test "widgets: spin buttons step, page, and parse what was typed" {
     try h.settle();
     const field = blk: {
         var f: t.Node = .null;
-        try ok(c.siv_node_get_related(w.spin, .first_child, &f));
+        f = c.siv_node_get_related(w.spin, .first_child);
         break :blk f;
     };
     const s = try sem(field);
@@ -680,7 +680,7 @@ test "widgets: spin buttons step, page, and parse what was typed" {
     try testing.expectEqualStrings("99", buf[0..len]);
     // The decrement button.
     var dec: t.Node = .null;
-    try ok(c.siv_node_get_related(field, .next, &dec));
+    dec = c.siv_node_get_related(field, .next);
     const dc = try center(dec);
     try h.click(dc[0], dc[1]);
     try h.settle();
@@ -762,7 +762,7 @@ test "widgets: styled-text editors show spans and toggle bold, italic, and under
     defer h.stop();
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
-    const col = c.siv_flex(txn, c.siv_window_root(h.window), &.{ .axis = .column });
+    const col = c.siv_flex(txn, c.siv_window_get_root(h.window), &.{ .axis = .column });
     _ = c.siv_set_layout(txn, col, &.{ .padding = .{ .start = 12, .end = 12, .top = 12, .bottom = 12 } });
     _ = c.siv_set_visual(txn, col, &.{ .background_token = .window_bg });
     const content = "Plain underline struck bold italic big red";
@@ -873,7 +873,7 @@ test "widgets: indeterminate progress sweeps on the compositor while shown, mirr
         defer h.stop();
         var txn: t.Txn = .null;
         try ok(c.siv_txn_begin(h.window, &txn));
-        const holder = c.siv_box(txn, c.siv_window_root(h.window));
+        const holder = c.siv_box(txn, c.siv_window_get_root(h.window));
         const busy = c.siv_progress_bar(txn, holder, &.{ .label = "Working", .label_len = 7, .flags = .{ .indeterminate = true } });
         _ = c.siv_set_layout(txn, busy, &.{ .width = .{ .unit = .px, .value = 200 } });
         try ok(c.siv_txn_commit(txn));
@@ -909,7 +909,7 @@ test "widgets: indeterminate progress sweeps on the compositor while shown, mirr
     defer h.stop();
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
-    const holder = c.siv_box(txn, c.siv_window_root(h.window));
+    const holder = c.siv_box(txn, c.siv_window_get_root(h.window));
     _ = c.siv_progress_bar(txn, holder, &.{ .flags = .{ .indeterminate = true } });
     try ok(c.siv_txn_commit(txn));
     try h.settle();

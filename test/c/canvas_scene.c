@@ -148,7 +148,7 @@ int canvas_scene_build(siv_app app, siv_window window) {
 	siv_txn txn;
 	r = siv_txn_begin(window, &txn);
 	if (r != SIV_OK) return r;
-	siv_node root = siv_window_root(window);
+	siv_node root = siv_window_get_root(window);
 	siv_set_visual(txn, root, SIV_DESC(siv_visual_desc, .background = {1, 1, 1, 1}));
 	siv_node column = siv_flex(txn, root, SIV_DESC(siv_flex_desc, .axis = SIV_AXIS_COLUMN, .gap = 8, .align_items = SIV_ALIGN_START));
 	siv_set_layout(txn, column, SIV_DESC(siv_layout_desc, .padding = {10, 10, 10, 10}));

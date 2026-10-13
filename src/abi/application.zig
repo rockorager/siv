@@ -725,7 +725,7 @@ fn limit(s: t.Size) Error!platform.Size {
     return .{ .width = @intFromFloat(@ceil(s.width)), .height = @intFromFloat(@ceil(s.height)) };
 }
 
-pub export fn siv_window_root(window: t.Window) t.Node {
+pub export fn siv_window_get_root(window: t.Window) t.Node {
     const w = App.window(@backingInt(window), window_tag) catch return .null;
     return @fromBackingInt(w.nodes.handle(.root));
 }
@@ -745,7 +745,8 @@ pub export fn siv_timer_start(app: t.App, delay_ms: u32, callback: ?t.PostFn, de
 
 fn timerStart(self: *App, delay_ms: u32, callback: ?t.PostFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque, out: ?*t.Timer) t.Result {
     const cb = callback orelse return .error_invalid_argument;
-    const dest = runtime.out(t.Timer, out) catch |err| return t.resultOf(err);
+    var unused: t.Timer = .null;
+    const dest = runtime.optOut(t.Timer, out, &unused);
     const gpa = self.gpa();
     const index: u32 = for (self.timers.items, 0..) |slot, i| {
         if (slot == null) break @intCast(i);
@@ -908,9 +909,7 @@ pub export fn siv_popup_show(popup: t.Window) t.Result {
     return .ok;
 }
 
-pub export fn siv_window_get_app(window: t.Window, app: ?*t.App) t.Result {
-    const w = App.window(@backingInt(window), window_tag) catch |err| return t.resultOf(err);
-    const dest = runtime.out(t.App, app) catch |err| return t.resultOf(err);
-    dest.* = @fromBackingInt(w.owner.root.handle);
-    return .ok;
+pub export fn siv_window_get_app(window: t.Window) t.App {
+    const w = App.window(@backingInt(window), window_tag) catch return .null;
+    return @fromBackingInt(w.owner.root.handle);
 }

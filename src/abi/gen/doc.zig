@@ -124,7 +124,7 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
         try w.writeAll(";\n```\n");
         if (f.params.len > 0) {
             try w.writeAll("\n| Parameter | |\n| --- | --- |\n");
-            for (f.params) |p| try w.print("| `{s}` | {s} |\n", .{ p.name, p.doc });
+            for (f.params) |p| try w.print("| `{s}` | {s}{s} |\n", .{ p.name, p.doc, if (p.optional) " May be NULL." else "" });
         }
     }
 }

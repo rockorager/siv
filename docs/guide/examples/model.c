@@ -13,7 +13,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define S(str) (str), strlen(str)
 
 /* Commits a transaction made in a handler. There is nothing to undo when
  * one fails (siv discarded it), so report it and go on. */
@@ -34,7 +33,7 @@ struct notes {
 static void set_status(struct notes *notes, const char *text) {
 	siv_txn txn;
 	if (siv_txn_begin(notes->window, &txn) != SIV_OK) return;
-	siv_set_text(txn, notes->status, S(text));
+	siv_set_text(txn, notes->status, text, strlen(text));
 	commit(txn);
 }
 
@@ -107,11 +106,10 @@ static siv_event_result on_dialog_close(void *user_data, siv_node dialog, const 
 static void ask_to_discard(struct notes *notes) {
 	siv_txn txn;
 	if (notes->dialog || siv_txn_begin(notes->window, &txn) != SIV_OK) return;
-	notes->dialog = siv_dialog(txn, notes->root, SIV_DESC(siv_dialog_desc, .title = S("Discard the note?"), .text = S("Your changes have not been saved.")));
-	siv_node actions = 0;
-	if (siv_widget_get_part(notes->dialog, SIV_WIDGET_PART_ACTIONS, 0, &actions) != SIV_OK) siv_txn_fail(txn, SIV_ERROR_INVALID_ARGUMENT);
-	siv_node keep = siv_push_button(txn, actions, SIV_DESC(siv_button_desc, .label = S("Keep editing")));
-	siv_node discard = siv_push_button(txn, actions, SIV_DESC(siv_button_desc, .label = S("Discard"), .style = SIV_BUTTON_STYLE_DESTRUCTIVE));
+	notes->dialog = siv_dialog(txn, notes->root, SIV_DESC(siv_dialog_desc, .title = SIV_STR("Discard the note?"), .text = SIV_STR("Your changes have not been saved.")));
+	siv_node actions = siv_widget_get_part(notes->dialog, SIV_WIDGET_PART_ACTIONS, 0);
+	siv_node keep = siv_push_button(txn, actions, SIV_DESC(siv_button_desc, .label = SIV_STR("Keep editing")));
+	siv_node discard = siv_push_button(txn, actions, SIV_DESC(siv_button_desc, .label = SIV_STR("Discard"), .style = SIV_BUTTON_STYLE_DESTRUCTIVE));
 	siv_on(txn, keep, SIV_EVENT_TYPE_ACTIVATE, on_keep, NULL, notes);
 	siv_on(txn, discard, SIV_EVENT_TYPE_ACTIVATE, on_discard, NULL, notes);
 	siv_on(txn, notes->dialog, SIV_EVENT_TYPE_CLOSE, on_dialog_close, NULL, notes);
@@ -135,14 +133,14 @@ static siv_result build(struct notes *notes) {
 	siv_txn txn;
 	siv_result r = siv_txn_begin(notes->window, &txn);
 	if (r != SIV_OK) return r;
-	notes->root = siv_window_root(notes->window);
+	notes->root = siv_window_get_root(notes->window);
 	siv_set_visual(txn, notes->root, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_WINDOW_BG));
 	siv_node column = siv_flex(txn, notes->root, SIV_DESC(siv_flex_desc, .axis = SIV_AXIS_COLUMN, .gap = 8));
 	siv_set_layout(txn, column, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_FRACTION, 1}, .height = {SIV_UNIT_FRACTION, 1}, .padding = {16, 16, 16, 16}));
-	siv_node editor = siv_text_field(txn, column, SIV_DESC(siv_text_field_desc, .label = S("Note"), .placeholder = S("Write something"), .flags = SIV_TEXT_FIELD_MULTILINE));
+	siv_node editor = siv_text_field(txn, column, SIV_DESC(siv_text_field_desc, .label = SIV_STR("Note"), .placeholder = SIV_STR("Write something"), .flags = SIV_TEXT_FIELD_MULTILINE));
 	siv_set_layout(txn, editor, SIV_DESC(siv_layout_desc, .grow = 1));
 	siv_on(txn, editor, SIV_EVENT_TYPE_CHANGE, on_edit, NULL, notes);
-	notes->status = siv_text(txn, column, S("Loading…"));
+	notes->status = siv_text(txn, column, SIV_STR("Loading…"));
 	siv_set_text_style(txn, notes->status, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_MUTED_FG, .size_role = SIV_SIZE_ROLE_CAPTION));
 	r = siv_txn_commit(txn);
 	/* Focus is not part of a transaction: the editor exists once the
@@ -158,7 +156,7 @@ int main(void) {
 		fprintf(stderr, "model: %s\n", siv_result_name(r));
 		return 1;
 	}
-	r = siv_window_create(notes.app, SIV_DESC(siv_window_desc, .title = S("Notes"), .width = 360, .height = 240, .on_event = on_window_event, .user_data = &notes), &notes.window);
+	r = siv_window_create(notes.app, SIV_DESC(siv_window_desc, .title = SIV_STR("Notes"), .width = 360, .height = 240, .on_event = on_window_event, .user_data = &notes), &notes.window);
 	if (r == SIV_OK) r = build(&notes);
 	pthread_t worker;
 	bool started = r == SIV_OK && pthread_create(&worker, NULL, load_notes, &notes) == 0;

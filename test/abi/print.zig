@@ -258,9 +258,9 @@ test "the application's language and direction reach windows and documents" {
     var own: t.Window = .null;
     try ok(A.siv_window_create(h.app, &.{}, &follows));
     try ok(A.siv_window_create(h.app, &.{ .flags = .{ .ltr = true } }, &own));
-    try ok(c.siv_node_is_rtl(c.siv_window_root(follows), &rtl));
+    try ok(c.siv_node_is_rtl(c.siv_window_get_root(follows), &rtl));
     try testing.expect(rtl);
-    try ok(c.siv_node_is_rtl(c.siv_window_root(own), &rtl));
+    try ok(c.siv_node_is_rtl(c.siv_window_get_root(own), &rtl));
     try testing.expect(!rtl);
 
     // Documents default to the application's direction: digits, which
@@ -272,7 +272,7 @@ test "the application's language and direction reach windows and documents" {
     try ok(c.siv_app_set_language(h.app, "en", 2, .inherit));
     try ok(c.siv_app_is_rtl(h.app, &rtl));
     try testing.expect(!rtl);
-    try ok(c.siv_node_is_rtl(c.siv_window_root(follows), &rtl));
+    try ok(c.siv_node_is_rtl(c.siv_window_get_root(follows), &rtl));
     try testing.expect(!rtl);
     try testing.expectApproxEqAbs(@as(f32, 20), try writeAligned(&h, .inherit), 0.5);
     try testing.expectEqual(t.Result.error_unsupported, c.siv_app_set_language(h.app, "en", 2, @enumFromInt(7)));

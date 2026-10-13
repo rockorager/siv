@@ -35,7 +35,7 @@ test "C API: destroying the application while a window's transaction is open" {
     for (windows) |w| {
         var txn: t.Txn = undefined;
         try ok(T.siv_txn_begin(w, &txn));
-        _ = T.siv_box(txn, A.siv_window_root(w));
+        _ = T.siv_box(txn, A.siv_window_get_root(w));
     }
     A.siv_app_destroy(app);
 }
@@ -49,7 +49,7 @@ test "C API: destroying a window while its transaction is open" {
     try ok(A.siv_window_create(app, &.{ .width = 64, .height = 48 }, &w));
     var txn: t.Txn = undefined;
     try ok(T.siv_txn_begin(w, &txn));
-    _ = T.siv_box(txn, A.siv_window_root(w));
+    _ = T.siv_box(txn, A.siv_window_get_root(w));
     A.siv_window_destroy(w);
     try testing.expectEqual(t.Result.error_invalid_handle, T.siv_txn_status(txn));
 }

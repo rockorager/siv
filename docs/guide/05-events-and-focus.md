@@ -105,7 +105,7 @@ screen reader needs to announce it (see [Accessibility](11-accessibility.md)):
 ```c
 /* Focusable with a role and a name: Tab reaches it, Enter and
  * Space activate it, and a screen reader announces it. */
-siv_set_semantics(txn, tile, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_BUTTON, .label = S(names[i]), .flags = SIV_SEMANTICS_FOCUSABLE));
+siv_set_semantics(txn, tile, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_BUTTON, .label = names[i], strlen(names[i]), .flags = SIV_SEMANTICS_FOCUSABLE));
 siv_set_cursor(txn, tile, SIV_CURSOR_POINTER);
 siv_on(txn, tile, SIV_EVENT_TYPE_POINTER, on_tile_pointer, NULL, ui);
 siv_on(txn, tile, SIV_EVENT_TYPE_ACTIVATE, on_tile_activate, NULL, ui);

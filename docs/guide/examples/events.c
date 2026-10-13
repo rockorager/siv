@@ -10,7 +10,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#define S(str) (str), strlen(str)
 
 /* Commits a transaction made in a handler. There is nothing to undo when
  * one fails (siv discarded it), so report it and go on. */
@@ -21,8 +20,7 @@ static void commit(siv_txn txn) {
 
 /* A node's neighbor, or 0. */
 static siv_node related(siv_node node, siv_relation which) {
-	siv_node out = 0;
-	return siv_node_get_related(node, which, &out) == SIV_OK ? out : 0;
+	return siv_node_get_related(node, which);
 }
 
 /* Moves keyboard focus; a node that cannot take it is left alone. */
@@ -41,7 +39,7 @@ struct ui {
 static void set_status(struct ui *ui, const char *text) {
 	siv_txn txn;
 	if (siv_txn_begin(ui->window, &txn) != SIV_OK) return;
-	siv_set_text(txn, ui->status, S(text));
+	siv_set_text(txn, ui->status, text, strlen(text));
 	commit(txn);
 }
 
@@ -121,13 +119,13 @@ static siv_result build(struct ui *ui) {
 	siv_txn txn;
 	siv_result r = siv_txn_begin(ui->window, &txn);
 	if (r != SIV_OK) return r;
-	siv_node root = siv_window_root(ui->window);
+	siv_node root = siv_window_get_root(ui->window);
 	siv_set_visual(txn, root, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_WINDOW_BG));
 	siv_on(txn, root, SIV_EVENT_TYPE_KEY, on_root_key, NULL, ui);
 	siv_node column = siv_flex(txn, root, SIV_DESC(siv_flex_desc, .axis = SIV_AXIS_COLUMN, .gap = 14));
 	siv_set_layout(txn, column, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_FRACTION, 1}, .padding = {16, 16, 16, 16}));
 
-	ui->search = siv_text_field(txn, column, SIV_DESC(siv_text_field_desc, .label = S("Search"), .placeholder = S("Search (press /)")));
+	ui->search = siv_text_field(txn, column, SIV_DESC(siv_text_field_desc, .label = SIV_STR("Search"), .placeholder = SIV_STR("Search (press /)")));
 	siv_on(txn, ui->search, SIV_EVENT_TYPE_KEY, on_search_key, NULL, ui);
 
 	ui->tiles = siv_flex(txn, column, SIV_DESC(siv_flex_desc, .gap = 10));
@@ -139,20 +137,20 @@ static siv_result build(struct ui *ui) {
 		siv_set_visual(txn, tile, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_CONTROL_BG, .border_token = SIV_COLOR_TOKEN_BORDER, .border_width = 1, .radius = {8, 8, 8, 8}));
 		/* Focusable with a role and a name: Tab reaches it, Enter and
 		 * Space activate it, and a screen reader announces it. */
-		siv_set_semantics(txn, tile, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_BUTTON, .label = S(names[i]), .flags = SIV_SEMANTICS_FOCUSABLE));
+		siv_set_semantics(txn, tile, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_BUTTON, .label = names[i], strlen(names[i]), .flags = SIV_SEMANTICS_FOCUSABLE));
 		siv_set_cursor(txn, tile, SIV_CURSOR_POINTER);
 		siv_on(txn, tile, SIV_EVENT_TYPE_POINTER, on_tile_pointer, NULL, ui);
 		siv_on(txn, tile, SIV_EVENT_TYPE_ACTIVATE, on_tile_activate, NULL, ui);
-		siv_node text = siv_text(txn, tile, S(names[i]));
+		siv_node text = siv_text(txn, tile, names[i], strlen(names[i]));
 		siv_set_text_style(txn, text, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_CONTROL_FG, .align = SIV_TEXT_ALIGN_CENTER));
 	}
 
-	ui->menu = siv_menu(txn, column, SIV_DESC(siv_menu_desc, .label = S("Folder")));
-	siv_menu_item(txn, ui->menu, SIV_DESC(siv_menu_item_desc, .label = S("Rename"), .shortcut = S("F2")));
-	siv_menu_item(txn, ui->menu, SIV_DESC(siv_menu_item_desc, .label = S("Remove"), .shortcut = S("Delete")));
+	ui->menu = siv_menu(txn, column, SIV_DESC(siv_menu_desc, .label = SIV_STR("Folder")));
+	siv_menu_item(txn, ui->menu, SIV_DESC(siv_menu_item_desc, .label = SIV_STR("Rename"), .shortcut = SIV_STR("F2")));
+	siv_menu_item(txn, ui->menu, SIV_DESC(siv_menu_item_desc, .label = SIV_STR("Remove"), .shortcut = SIV_STR("Delete")));
 	siv_on(txn, ui->menu, SIV_EVENT_TYPE_SELECT, on_menu, NULL, ui);
 
-	ui->status = siv_text(txn, column, S("Press Tab, the arrow keys, or /"));
+	ui->status = siv_text(txn, column, SIV_STR("Press Tab, the arrow keys, or /"));
 	siv_set_text_style(txn, ui->status, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_MUTED_FG));
 	siv_set_semantics(txn, ui->status, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_STATUS, .flags = SIV_SEMANTICS_LIVE_POLITE));
 	return siv_txn_commit(txn);
@@ -166,7 +164,7 @@ int main(void) {
 		fprintf(stderr, "events: %s\n", siv_result_name(r));
 		return 1;
 	}
-	r = siv_window_create(app, SIV_DESC(siv_window_desc, .title = S("Events"), .width = 440, .height = 240), &ui.window);
+	r = siv_window_create(app, SIV_DESC(siv_window_desc, .title = SIV_STR("Events"), .width = 440, .height = 240), &ui.window);
 	if (r == SIV_OK) r = build(&ui);
 	if (r == SIV_OK) r = siv_app_run(app);
 	if (r != SIV_OK) fprintf(stderr, "events: %s\n", siv_result_name(r));

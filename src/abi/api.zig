@@ -137,6 +137,12 @@ fn onThread(comptime thread: schema.Thread, comptime d: Decl) Decl {
     return c;
 }
 
+/// A query that answers with a handle (D2): 0 when there is none or an
+/// argument is invalid, as builders return 0, so it is used inline.
+fn handleQuery(comptime name: []const u8, comptime ret: []const u8, comptime doc: []const u8, comptime params: []const Param) Function {
+    return .{ .name = name, .doc = doc, .since = v0_1, .params = params, .ret = ref(ret) };
+}
+
 /// A fallible function.
 fn call(comptime name: []const u8, comptime doc: []const u8, comptime params: []const Param) Function {
     return .{ .name = name, .doc = doc, .since = v0_1, .params = params, .ret = result_ref };
@@ -1655,17 +1661,15 @@ pub const functions = [_]Function{
         .{ .name = "delay_ms", .type = out(.u32), .doc = "Delay before the first repeat." },
         .{ .name = "interval_ms", .type = out(.u32), .doc = "Interval between repeats; 0 when held keys do not repeat." },
     }),
-    call("siv_window_get_focus", "The node that has keyboard focus in the window, as of the latest operation, or 0 when none has. Key events start there.", &.{
+    handleQuery("siv_window_get_focus", "siv_node", "The node that has keyboard focus in the window, as of the latest operation, or 0 when none has or the handle is invalid. Key events start there.", &.{
         window_param,
-        .{ .name = "node", .type = out(ref("siv_node")), .doc = "The focused node, or 0." },
     }),
-    call("siv_window_get_app", "The application a window belongs to.", &.{
+    handleQuery("siv_window_get_app", "siv_app", "The application a window belongs to. Returns 0 for an invalid handle.", &.{
         window_param,
-        .{ .name = "app", .type = out(ref("siv_app")), .doc = "The application." },
     }),
     .{
-        .name = "siv_window_root",
-        .doc = "The window's root node: a stack that fills the window. Returns 0 for an invalid handle.",
+        .name = "siv_window_get_root",
+        .doc = "The window's root node: a stack that fills the window. Returns 0 for an invalid handle, which the transaction operation given it then reports.",
         .since = v0_1,
         .params = &.{window_param},
         .ret = ref("siv_node"),
@@ -1799,14 +1803,12 @@ pub const functions = [_]Function{
         .{ .name = "label", .type = .buffer, .doc = "Receives at most label_cap bytes; may be NULL with label_cap 0." },
         .{ .name = "len", .type = out(.usize), .doc = "The label's full length in bytes." },
     }),
-    call("siv_node_get_window", "The window a node belongs to.", &.{
+    handleQuery("siv_node_get_window", "siv_window", "The window a node belongs to. Returns 0 for an invalid handle.", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
-        .{ .name = "window", .type = out(ref("siv_window")), .doc = "Its window." },
     }),
-    call("siv_node_get_related", "A node's parent, first or last child, or next or previous sibling, as of the latest operation (inside an open transaction too), or 0 when there is none.", &.{
+    handleQuery("siv_node_get_related", "siv_node", "A node's parent, first or last child, or next or previous sibling, as of the latest operation (inside an open transaction too), or 0 when there is none or the handle is invalid.", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
         .{ .name = "relation", .type = ref("siv_relation"), .doc = "Which neighbor." },
-        .{ .name = "related", .type = out(ref("siv_node")), .doc = "The neighbor, or 0." },
     }),
     call("siv_node_is_rtl", "Whether the node lays out right to left (D21): the nearest direction set on it or an ancestor, else the window's, as of the latest operation.", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
@@ -1815,7 +1817,7 @@ pub const functions = [_]Function{
     call("siv_node_emit", "Sends an event to a node's handlers as siv sends input: the siv_on handler, then, unless it returned handled or prevent, the siv_on_default handler. It does not bubble. This is how widgets report their own events (change, select). Not from a canvas callback (SIV_ERROR_BUSY).", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
         .{ .name = "event", .type = .{ .desc = "siv_event" }, .doc = "The event; window is filled in." },
-        .{ .name = "handled", .type = out(.bool), .doc = "Whether a handler returned anything but pass." },
+        .{ .name = "handled", .type = out(.bool), .doc = "Whether a handler returned anything but pass.", .optional = true },
     }),
     // Theming (D29).
     call("siv_app_set_theme", "Chooses the theme's scheme and contrast instead of following the desktop. Every window repaints if its colors change.", &.{
@@ -1839,7 +1841,7 @@ pub const functions = [_]Function{
         .{ .name = "callback", .type = ref("siv_post_fn"), .doc = "The work." },
         .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data; may be NULL." },
         .{ .name = "user_data", .type = .user_data, .doc = "Passed to both." },
-        .{ .name = "timer", .type = out(ref("siv_timer")), .doc = "The timer." },
+        .{ .name = "timer", .type = out(ref("siv_timer")), .doc = "The timer, to cancel.", .optional = true },
     }),
     teardown("siv_timer_cancel", "Cancels a timer that has not fired; its destroy-notify runs.", &.{.{ .name = "timer", .type = ref("siv_timer"), .doc = "The timer." }}),
     call("siv_app_watch_fd", "Watches a file descriptor of the application's (an inotify descriptor, a socket, a pipe) in siv's loop, so that no thread of the application blocks on it: callback runs on the application's thread when it is ready (D5). siv does not own the descriptor: destroy the watch before closing it.", &.{
@@ -1900,16 +1902,15 @@ pub const functions = [_]Function{
         .{ .name = "x", .type = .f32, .doc = "Horizontal position in anchor, from its left edge, as pointer events report it." },
         .{ .name = "y", .type = .f32, .doc = "Vertical position in anchor, from its top edge." },
     }),
-    call("siv_menu_get_item", "A menu's item by its position, as siv_menu_item added it (separators count), as of the latest operation: for setting a check mark, a label, or the disabled state of menus built from tables (siv_widget_set_value, siv_widget_set_label, siv_widget_set_disabled). SIV_ERROR_INVALID_ARGUMENT past the last item.", &.{
+    handleQuery("siv_menu_get_item", "siv_node", "A menu's item by its position, as siv_menu_item added it (separators count), as of the latest operation: for setting a check mark, a label, or the disabled state of menus built from tables (siv_widget_set_value, siv_widget_set_label, siv_widget_set_disabled). Returns 0 past the last item or for an invalid handle.", &.{
         .{ .name = "menu", .type = ref("siv_node"), .doc = "A menu or menu button." },
         .{ .name = "index", .type = .u32, .doc = "The item's position, from 0." },
-        .{ .name = "item", .type = out(ref("siv_node")), .doc = "The item." },
     }),
     call("siv_popover_create", "Creates a popover against anchor: a popup with a themed card whose content the application builds in a transaction on the popup, then maps with siv_popup_show. Escape and clicks outside report SIV_EVENT_CLOSE on the content node; unless a handler keeps it, the popup is destroyed.", &.{
         .{ .name = "anchor", .type = ref("siv_node"), .doc = "The node to place it against." },
         .{ .name = "desc", .type = .{ .desc = "siv_popover_desc" }, .doc = "Options; NULL for defaults." },
         .{ .name = "popup", .type = out(ref("siv_window")), .doc = "The popup window." },
-        .{ .name = "content", .type = out(ref("siv_node")), .doc = "The container for the content." },
+        .{ .name = "content", .type = out(ref("siv_node")), .doc = "The container for the content (also siv_widget_get_part of the popup's root).", .optional = true },
     }),
     builder("siv_dialog", "Creates a modal dialog over parent: a scrim and a card with the title, the text, a content part, and an actions part (siv_widget_get_part). Input and Tab stay inside it and focus moves to it. Escape and clicks on the scrim report SIV_EVENT_CLOSE on the dialog; unless a handler keeps it, it is removed. Its role is dialog.", &.{.{ .name = "desc", .type = .{ .desc = "siv_dialog_desc" }, .doc = "Title and text." }}),
     builder("siv_tabs", "Creates tabs: a tab list over panels, added with siv_tab. The value is the selected tab's index; choosing one (click, arrow keys, Home, End) shows its panel and reports SIV_EVENT_CHANGE with value and index. Only the selected tab is in the Tab order.", &.{.{ .name = "desc", .type = .{ .desc = "siv_tabs_desc" }, .doc = "Options; NULL for defaults." }}),
@@ -1966,10 +1967,9 @@ pub const functions = [_]Function{
         .{ .name = "index", .type = out(.i32), .doc = "The cursor's row index, or -1." },
     }),
     setter("siv_view_set_cursor", "Moves a view's cursor (and the anchor of Shift selection) to a row and scrolls it into view, without reporting it or changing the selection. Focus stays where it is; siv_node_focus on the view moves it there after the commit. Views have no widget value: the cursor is read and moved only here.", &.{.{ .name = "index", .type = .i32, .doc = "The row index, or -1 for no cursor." }}),
-    call("siv_view_get_row", "The node bind filled for a row index, as of the last commit, or 0 when the row is not bound: only the rows in view (and the cursor's) exist. For anchoring a popup or a menu at an item (siv_menu_open_at), or reading what bind put there.", &.{
+    handleQuery("siv_view_get_row", "siv_node", "The node bind filled for a row index, as of the last commit, or 0 when the row is not bound (only the rows in view and the cursor's exist) or the arguments are invalid. For anchoring a popup or a menu at an item (siv_menu_open_at), or reading what bind put there.", &.{
         .{ .name = "view", .type = ref("siv_node"), .doc = "A view." },
         .{ .name = "index", .type = .u32, .doc = "The row index." },
-        .{ .name = "row", .type = out(ref("siv_node")), .doc = "The row's node, or 0." },
     }),
     call("siv_view_get_item", "The item at a row index: its index, or for trees its id.", &.{
         .{ .name = "view", .type = ref("siv_node"), .doc = "A view." },
@@ -1990,11 +1990,10 @@ pub const functions = [_]Function{
         .{ .name = "node", .type = ref("siv_node"), .doc = "A widget's root (for text fields: the field)." },
         .{ .name = "value", .type = out(.f64), .doc = "The value." },
     }),
-    call("siv_widget_get_part", "A part of a widget (its get_part), such as a dialog's content or a split pane's panes, as of the latest operation. SIV_ERROR_INVALID_ARGUMENT when the widget has no such part.", &.{
+    handleQuery("siv_widget_get_part", "siv_node", "A part of a widget (its get_part), such as a dialog's content or a split pane's panes, as of the latest operation, or 0 when the widget has no such part or the node is no widget.", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The widget." },
         .{ .name = "part", .type = ref("siv_widget_part"), .doc = "Which part." },
         .{ .name = "index", .type = .u32, .doc = "Tabs, panels, and columns: which one." },
-        .{ .name = "result", .type = out(ref("siv_node")), .doc = "The part." },
     }),
     // Canvases (D28).
     builder("siv_canvas", "Creates a canvas: content the application draws (siv_draw_fn) in its own compositor layer, so redrawing it repaints nothing else.", &.{.{ .name = "desc", .type = .{ .desc = "siv_canvas_desc" }, .doc = "Callbacks and size; NULL for an empty canvas." }}),
@@ -2019,7 +2018,7 @@ pub const functions = [_]Function{
         .{ .name = "callback", .type = ref("siv_image_load_fn"), .doc = "Receives the image." },
         .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data; may be NULL." },
         .{ .name = "user_data", .type = .user_data, .doc = "Passed to both." },
-        .{ .name = "request", .type = out(ref("siv_image_request")), .doc = "The pending load, to cancel or reprioritize; valid until callback runs." },
+        .{ .name = "request", .type = out(ref("siv_image_request")), .doc = "The pending load, to cancel or reprioritize; valid until callback runs.", .optional = true },
     }),
     call("siv_icon_load", "Looks up a themed icon (D19) in the application's icon theme, its parents, hicolor, and unthemed icons, following the freedesktop icon theme specification, and loads it on a worker thread, then calls callback with it, then destroy. SVG icons become vector images that draw sharp at any size, symbolic ones (names ending in -symbolic) in the color they are drawn with (siv_image_view_desc.color, siv_draw_icon); PNG icons are decoded at the size and scale asked for. The image's logical size is the size asked for. A missing icon reports SIV_ERROR_UNAVAILABLE. The image does not follow later theme changes; image nodes showing an icon by name (siv_image_view_desc.icon) do. Cancelling the request (siv_image_request_cancel) runs destroy at once and drops the icon when it arrives; priorities apply to decodes only.", &.{
         app_param,
@@ -2027,7 +2026,7 @@ pub const functions = [_]Function{
         .{ .name = "callback", .type = ref("siv_image_load_fn"), .doc = "Receives the image." },
         .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Runs after callback, or alone if the load is cancelled or the application is destroyed first." },
         .{ .name = "user_data", .type = .user_data, .doc = "Passed to both." },
-        .{ .name = "request", .type = out(ref("siv_image_request")), .doc = "The pending load, to cancel (siv_image_request_cancel); valid until callback runs." },
+        .{ .name = "request", .type = out(ref("siv_image_request")), .doc = "The pending load, to cancel (siv_image_request_cancel); valid until callback runs.", .optional = true },
     }),
     call("siv_app_set_icon_theme", "Chooses the icon theme (D19) by its directory name (Adwaita, breeze) instead of following the desktop's, which is GNOME's icon-theme or KDE's Icons/Theme setting through the portal, else Adwaita. hicolor is searched after every theme. Image nodes showing icons by name load them again; images already loaded keep theirs.", &.{
         app_param,

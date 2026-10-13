@@ -14,7 +14,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define S(str) (str), strlen(str)
 
 /* Commits a transaction made in a handler. There is nothing to undo when
  * one fails (siv discarded it), so report it and go on. */
@@ -42,7 +41,7 @@ static void update(struct log *log, const char *status) {
 	size_t len = log->len;
 	if (len > 0 && log->buf[len - 1] == '\n') len--;
 	siv_set_text(txn, log->text, log->buf, len);
-	if (status) siv_set_text(txn, log->status, S(status));
+	if (status) siv_set_text(txn, log->status, status, strlen(status));
 	commit(txn);
 }
 
@@ -102,17 +101,17 @@ int main(void) {
 		fprintf(stderr, "watch: %s\n", siv_result_name(r));
 		return 1;
 	}
-	r = siv_window_create(app, SIV_DESC(siv_window_desc, .title = S("Output"), .width = 320, .height = 200), &log.window);
+	r = siv_window_create(app, SIV_DESC(siv_window_desc, .title = SIV_STR("Output"), .width = 320, .height = 200), &log.window);
 	siv_txn txn;
 	if (r == SIV_OK) r = siv_txn_begin(log.window, &txn);
 	if (r == SIV_OK) {
-		siv_node root = siv_window_root(log.window);
+		siv_node root = siv_window_get_root(log.window);
 		siv_set_visual(txn, root, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_WINDOW_BG));
 		siv_node column = siv_flex(txn, root, SIV_DESC(siv_flex_desc, .axis = SIV_AXIS_COLUMN, .gap = 8));
 		siv_set_layout(txn, column, SIV_DESC(siv_layout_desc, .padding = {16, 16, 16, 16}));
 		log.text = siv_text(txn, column, NULL, 0);
-		siv_set_text_style(txn, log.text, SIV_DESC(siv_text_style_desc, .family = S("monospace"), .color_token = SIV_COLOR_TOKEN_WINDOW_FG));
-		log.status = siv_text(txn, column, S("Running…"));
+		siv_set_text_style(txn, log.text, SIV_DESC(siv_text_style_desc, .family = SIV_STR("monospace"), .color_token = SIV_COLOR_TOKEN_WINDOW_FG));
+		log.status = siv_text(txn, column, SIV_STR("Running…"));
 		siv_set_text_style(txn, log.status, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_MUTED_FG));
 		r = siv_txn_commit(txn);
 	}

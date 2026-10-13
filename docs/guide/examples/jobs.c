@@ -11,7 +11,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define S(str) (str), strlen(str)
 #define LIMIT 200000
 
 /* Commits a transaction made in a handler. There is nothing to undo when
@@ -90,7 +89,7 @@ static void count_done(void *user_data) {
 	else snprintf(text, sizeof text, "%u primes below %u", (unsigned)job->found, LIMIT);
 	siv_txn txn;
 	if (siv_txn_begin(ui->window, &txn) != SIV_OK) return;
-	siv_set_text(txn, ui->result, S(text));
+	siv_set_text(txn, ui->result, text, strlen(text));
 	siv_widget_set_value(txn, ui->progress, atomic_load(&job->cancelled) ? 0 : 100);
 	set_running(ui, txn, false);
 	commit(txn);
@@ -116,7 +115,7 @@ static siv_event_result on_start(void *user_data, siv_node button, const siv_eve
 	running = job;
 	siv_txn txn;
 	if (siv_txn_begin(event->window, &txn) != SIV_OK) return SIV_EVENT_RESULT_HANDLED;
-	siv_set_text(txn, ui->result, S("Counting…"));
+	siv_set_text(txn, ui->result, SIV_STR("Counting…"));
 	set_running(ui, txn, true);
 	commit(txn);
 	return SIV_EVENT_RESULT_HANDLED;
@@ -135,19 +134,19 @@ static siv_result build(struct ui *ui) {
 	siv_txn txn;
 	siv_result r = siv_txn_begin(ui->window, &txn);
 	if (r != SIV_OK) return r;
-	siv_node root = siv_window_root(ui->window);
+	siv_node root = siv_window_get_root(ui->window);
 	siv_set_visual(txn, root, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_WINDOW_BG));
 	siv_node column = siv_flex(txn, root, SIV_DESC(siv_flex_desc, .axis = SIV_AXIS_COLUMN, .gap = 12, .align_items = SIV_ALIGN_START));
 	siv_set_layout(txn, column, SIV_DESC(siv_layout_desc, .padding = {20, 20, 20, 20}));
-	ui->progress = siv_progress_bar(txn, column, SIV_DESC(siv_range_desc, .label = S("Progress")));
+	ui->progress = siv_progress_bar(txn, column, SIV_DESC(siv_range_desc, .label = SIV_STR("Progress")));
 	siv_set_layout(txn, ui->progress, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_PX, 280}));
 	/* A live region: screen readers announce the result when it comes. */
-	ui->result = siv_text(txn, column, S("Count the primes below 200000"));
+	ui->result = siv_text(txn, column, SIV_STR("Count the primes below 200000"));
 	siv_set_text_style(txn, ui->result, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_WINDOW_FG));
 	siv_set_semantics(txn, ui->result, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_STATUS, .flags = SIV_SEMANTICS_LIVE_POLITE));
 	siv_node buttons = siv_flex(txn, column, SIV_DESC(siv_flex_desc, .gap = 8));
-	ui->start = siv_push_button(txn, buttons, SIV_DESC(siv_button_desc, .label = S("Start"), .style = SIV_BUTTON_STYLE_PRIMARY));
-	ui->cancel = siv_push_button(txn, buttons, SIV_DESC(siv_button_desc, .label = S("Cancel"), .flags = SIV_WIDGET_DISABLED));
+	ui->start = siv_push_button(txn, buttons, SIV_DESC(siv_button_desc, .label = SIV_STR("Start"), .style = SIV_BUTTON_STYLE_PRIMARY));
+	ui->cancel = siv_push_button(txn, buttons, SIV_DESC(siv_button_desc, .label = SIV_STR("Cancel"), .flags = SIV_WIDGET_DISABLED));
 	siv_on(txn, ui->start, SIV_EVENT_TYPE_ACTIVATE, on_start, NULL, ui);
 	siv_on(txn, ui->cancel, SIV_EVENT_TYPE_ACTIVATE, on_cancel, NULL, ui);
 	return siv_txn_commit(txn);
@@ -160,7 +159,7 @@ int main(void) {
 		fprintf(stderr, "jobs: %s\n", siv_result_name(r));
 		return 1;
 	}
-	r = siv_window_create(ui.app, SIV_DESC(siv_window_desc, .title = S("Primes"), .width = 340, .height = 150), &ui.window);
+	r = siv_window_create(ui.app, SIV_DESC(siv_window_desc, .title = SIV_STR("Primes"), .width = 340, .height = 150), &ui.window);
 	if (r == SIV_OK) r = build(&ui);
 	if (r == SIV_OK) r = siv_app_run(ui.app);
 	if (r != SIV_OK) fprintf(stderr, "jobs: %s\n", siv_result_name(r));

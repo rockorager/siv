@@ -34,7 +34,8 @@ pub export fn siv_icon_load(app: t.App, desc: ?*const t.IconDesc, callback: ?t.I
 /// cancels an icon load as it does a decode.
 fn load(self: *App, desc: ?*const t.IconDesc, callback: ?t.ImageLoadFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque, request: ?*t.ImageRequest) Error!void {
     const cb = callback orelse return error.InvalidArgument;
-    const dest = try runtime.out(t.ImageRequest, request);
+    var unused: t.ImageRequest = .null;
+    const dest = runtime.optOut(t.ImageRequest, request, &unused);
     const d = try runtime.readDesc(t.IconDesc, desc);
     const fl = try runtime.flags(t.IconFlags, d.flags);
     const name = try runtime.string(d.name, d.name_len);

@@ -80,7 +80,7 @@ static siv_event_result on_tile_pointer(void *user_data, siv_node tile, const si
 	} else if (event->phase == SIV_POINTER_PHASE_MOVE && ui->pressed && hypotf(event->x - ui->press_x, event->y - ui->press_y) > 4) {
 		ui->pressed = false;
 		const char *note = "A note dragged from siv";
-		siv_result r = siv_drag_start(tile, SIV_DESC(siv_drag_desc, .mimes = S(TEXT_MIME), .data = (const uint8_t *)note, .data_count = strlen(note), .actions = SIV_DRAG_ALLOW_COPY));
+		siv_result r = siv_drag_start(tile, SIV_DESC(siv_drag_desc, .mimes = TEXT_MIME, strlen(TEXT_MIME), .data = (const uint8_t *)note, .data_count = strlen(note), .actions = SIV_DRAG_ALLOW_COPY));
 		return r == SIV_OK ? SIV_EVENT_RESULT_HANDLED : SIV_EVENT_RESULT_PASS;
 	}
 	return SIV_EVENT_RESULT_PASS;
@@ -101,7 +101,7 @@ under the pointer whose types and actions meet the drag's, and to no
 other: drop events do not bubble.
 
 ```c
-siv_set_drop_target(txn, ui->target, SIV_DESC(siv_drop_target_desc, .mimes = S(TEXT_MIME "\ntext/plain"), .actions = SIV_DRAG_ALLOW_COPY));
+siv_set_drop_target(txn, ui->target, SIV_DESC(siv_drop_target_desc, .mimes = TEXT_MIME "\ntext/plain", strlen(TEXT_MIME "\ntext/plain"), .actions = SIV_DRAG_ALLOW_COPY));
 siv_on(txn, ui->target, SIV_EVENT_TYPE_DROP, on_drop, NULL, ui);
 ```
 

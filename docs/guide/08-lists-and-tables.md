@@ -19,12 +19,12 @@ an accessible label, and the callbacks with their `user_data` and
 destroy-notify:
 
 ```c
-m->table = siv_table_view(txn, column, SIV_DESC(siv_view_desc, .label = S("Files"), .user_data = m, .bind = bind, .count = COUNT, .item_height = 28, .selection = SIV_SELECTION_MODE_MULTIPLE));
+m->table = siv_table_view(txn, column, SIV_DESC(siv_view_desc, .label = SIV_STR("Files"), .user_data = m, .bind = bind, .count = COUNT, .item_height = 28, .selection = SIV_SELECTION_MODE_MULTIPLE));
 siv_set_layout(txn, m->table, SIV_DESC(siv_layout_desc, .grow = 1, .basis = {SIV_UNIT_PX, 0}));
 siv_set_visual(txn, m->table, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_VIEW_BG, .border_token = SIV_COLOR_TOKEN_BORDER, .border_width = 1, .radius = {6, 6, 6, 6}, .flags = SIV_VISUAL_CLIP));
-siv_table_column(txn, m->table, SIV_DESC(siv_column_desc, .title = S("Name"), .width = {SIV_TRACK_UNIT_FR, 2}, .flags = SIV_COLUMN_SORTABLE));
-siv_table_column(txn, m->table, SIV_DESC(siv_column_desc, .title = S("Size"), .width = {SIV_TRACK_UNIT_PX, 100}, .flags = SIV_COLUMN_SORTABLE));
-siv_table_column(txn, m->table, SIV_DESC(siv_column_desc, .title = S("Kind"), .width = {SIV_TRACK_UNIT_FR, 1}, .flags = SIV_COLUMN_SORTABLE));
+siv_table_column(txn, m->table, SIV_DESC(siv_column_desc, .title = SIV_STR("Name"), .width = {SIV_TRACK_UNIT_FR, 2}, .flags = SIV_COLUMN_SORTABLE));
+siv_table_column(txn, m->table, SIV_DESC(siv_column_desc, .title = SIV_STR("Size"), .width = {SIV_TRACK_UNIT_PX, 100}, .flags = SIV_COLUMN_SORTABLE));
+siv_table_column(txn, m->table, SIV_DESC(siv_column_desc, .title = SIV_STR("Kind"), .width = {SIV_TRACK_UNIT_FR, 1}, .flags = SIV_COLUMN_SORTABLE));
 siv_view_set_sort(txn, m->table, 0, SIV_SORT_ASCENDING);
 ```
 
@@ -57,7 +57,7 @@ static void bind(void *user_data, siv_txn txn, siv_node row, uint64_t item, uint
 	if (f->size < 1000) snprintf(size, sizeof size, "%u bytes", (unsigned)f->size);
 	else snprintf(size, sizeof size, "%u.%u kB", (unsigned)(f->size / 1000), (unsigned)(f->size % 1000 / 100));
 	const char *texts[] = {name, size, kinds[f->kind]};
-	for (int i = 0; i < 3 && cell; i++, cell = related(cell, SIV_RELATION_NEXT)) siv_set_text(txn, cell, S(texts[i]));
+	for (int i = 0; i < 3 && cell; i++, cell = related(cell, SIV_RELATION_NEXT)) siv_set_text(txn, cell, texts[i], strlen(texts[i]));
 }
 ```
 

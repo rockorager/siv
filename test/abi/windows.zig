@@ -51,7 +51,7 @@ test "native modal dialogs: a parent, input kept from it, destroyed with it" {
     try h.start(200, 100, null, null);
     defer h.stop();
     var clicks: Clicks = .{};
-    const root = c.siv_window_root(h.window);
+    const root = c.siv_window_get_root(h.window);
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
     c.siv_on(txn, root, .activate, Clicks.onActivate, null, &clicks);
@@ -86,8 +86,7 @@ test "native modal dialogs: a parent, input kept from it, destroyed with it" {
     try ok(c.siv_window_create(h.app, &.{ .parent = h.window }, &dialog));
     try h.settle();
     c.siv_window_destroy(h.window);
-    var app: t.App = .null;
-    try testing.expectEqual(t.Result.error_invalid_handle, c.siv_window_get_app(dialog, &app));
+    try testing.expect(c.siv_window_get_app(dialog) == .null);
 }
 
 test "window icons: a themed name drawn at the compositor's sizes, and images" {

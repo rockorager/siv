@@ -115,7 +115,7 @@ const Form = struct { button: t.Node, editor: t.Node, check: t.Node, wheel: t.No
 fn buildForm(h: *Harness, log: *Log) !Form {
     var txn: t.Txn = .null;
     try ok(T.siv_txn_begin(h.window, &txn));
-    const root = A.siv_window_root(h.window);
+    const root = A.siv_window_get_root(h.window);
     _ = T.siv_set_visual(txn, root, &.{ .background = .{ .r = 1, .g = 1, .b = 1, .a = 1 } });
     const column = T.siv_flex(txn, root, &.{ .axis = .column, .gap = 8 });
     _ = T.siv_set_layout(txn, column, &.{ .padding = .{ .start = 12, .end = 12, .top = 12, .bottom = 12 } });
@@ -284,7 +284,7 @@ test "C API: destroying the window from its own handler defers releases until th
     var ctx: Ctx = .{ .h = &h };
     var txn: t.Txn = .null;
     try ok(T.siv_txn_begin(h.window, &txn));
-    const root = A.siv_window_root(h.window);
+    const root = A.siv_window_get_root(h.window);
     const outer = T.siv_box(txn, root);
     const inner = T.siv_box(txn, outer);
     _ = T.siv_set_layout(txn, inner, &.{ .height = .{ .unit = .px, .value = 30 } });
@@ -357,7 +357,7 @@ test "C API: a masked editor reports its real text and offsets" {
     var seen: Seen = .{};
     var txn: t.Txn = .null;
     try ok(T.siv_txn_begin(h.window, &txn));
-    const editor = T.siv_editor(txn, A.siv_window_root(h.window), .{ .masked = true });
+    const editor = T.siv_editor(txn, A.siv_window_get_root(h.window), .{ .masked = true });
     _ = T.siv_on(txn, editor, .change, Seen.onChange, null, &seen);
     try ok(T.siv_txn_commit(txn));
     try ok(T.siv_node_focus(editor));

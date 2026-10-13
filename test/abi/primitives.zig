@@ -67,7 +67,7 @@ test "default handlers run after the application's, which can override them" {
     var calls: Calls = .{};
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
-    const n = c.siv_box(txn, c.siv_window_root(h.window));
+    const n = c.siv_box(txn, c.siv_window_get_root(h.window));
     c.siv_on_default(txn, n, .select, Calls.default, null, &calls);
     try ok(c.siv_txn_commit(txn));
 
@@ -86,10 +86,11 @@ test "default handlers run after the application's, which can override them" {
     try testing.expectEqualStrings("ad", calls.order[0..calls.n]);
     try testing.expectEqual(@as(f64, 3), calls.value);
 
-    // It takes the event: the default never runs.
+    // It takes the event: the default never runs. A caller that does not
+    // need to know passes no handled (D2).
     calls.n = 0;
     calls.app_returns = true;
-    try ok(c.siv_node_emit(n, &.{ .type = .select }, &handled));
+    try ok(c.siv_node_emit(n, &.{ .type = .select }, null));
     try testing.expectEqualStrings("a", calls.order[0..calls.n]);
 
     // An aborted transaction restores the previous default handler.
@@ -101,6 +102,10 @@ test "default handlers run after the application's, which can override them" {
     try ok(c.siv_node_emit(n, &.{ .type = .select }, &handled));
     try testing.expectEqualStrings("ad", calls.order[0..calls.n]);
     try testing.expectEqual(t.Result.error_unsupported, c.siv_node_emit(n, &.{ .type = @fromBackingInt(99) }, &handled));
+    // Handle queries answer 0 for none and for stale handles.
+    try testing.expect(c.siv_node_get_related(n, .first_child) == .null);
+    try testing.expect(c.siv_node_get_related(n, .parent) == c.siv_window_get_root(h.window));
+    try testing.expect(c.siv_node_get_window(@fromBackingInt(12345)) == .null);
 }
 
 test "default handlers make a node activatable for input" {
@@ -110,7 +115,7 @@ test "default handlers make a node activatable for input" {
     var calls: Calls = .{};
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
-    const n = c.siv_box(txn, c.siv_window_root(h.window));
+    const n = c.siv_box(txn, c.siv_window_get_root(h.window));
     _ = c.siv_set_semantics(txn, n, &.{ .role = .button, .flags = .{ .focusable = true } });
     c.siv_on_default(txn, n, .activate, Calls.default, null, &calls);
     try ok(c.siv_txn_commit(txn));
@@ -146,7 +151,7 @@ test "handlers stop bubbling and prevent the default action separately" {
     defer h.stop();
     var keys: Keys = .{};
     var txn: t.Txn = .null;
-    const root = c.siv_window_root(h.window);
+    const root = c.siv_window_get_root(h.window);
     try ok(c.siv_txn_begin(h.window, &txn));
     const box = c.siv_box(txn, root);
     const editor = c.siv_editor(txn, box, .{});
@@ -155,10 +160,10 @@ test "handlers stop bubbling and prevent the default action separately" {
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     var focus: t.Node = .null;
-    try ok(c.siv_window_get_focus(h.window, &focus));
+    focus = c.siv_window_get_focus(h.window);
     try testing.expectEqual(t.Node.null, focus);
     try ok(c.siv_node_focus(editor));
-    try ok(c.siv_window_get_focus(h.window, &focus));
+    focus = c.siv_window_get_focus(h.window);
     try testing.expectEqual(editor, focus);
 
     var buf: [16]u8 = undefined;
@@ -206,7 +211,7 @@ test "node data lives with its node and goes with an aborted transaction" {
     var key_b: u8 = 0;
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
-    const n = c.siv_box(txn, c.siv_window_root(h.window));
+    const n = c.siv_box(txn, c.siv_window_get_root(h.window));
     var p: ?*anyopaque = null;
     try ok(c.siv_set_data(txn, n, &key_a, 40, &p));
     const bytes: [*]u8 = @ptrCast(p.?);
@@ -262,7 +267,7 @@ test "tree navigation, labels, direction, and failing a transaction" {
     defer h.stop();
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
-    const root = c.siv_window_root(h.window);
+    const root = c.siv_window_get_root(h.window);
     const a = c.siv_box(txn, root);
     const b = c.siv_flex(txn, root, null);
     _ = c.siv_set_layout(txn, b, &.{ .direction = .rtl });
@@ -270,15 +275,15 @@ test "tree navigation, labels, direction, and failing a transaction" {
     _ = c.siv_set_semantics(txn, inner, &.{ .label = "Inner", .label_len = 5 });
     // Navigation sees the open transaction's tree.
     var r: t.Node = .null;
-    try ok(c.siv_node_get_related(a, .next, &r));
+    r = c.siv_node_get_related(a, .next);
     try testing.expectEqual(b, r);
-    try ok(c.siv_node_get_related(b, .previous, &r));
+    r = c.siv_node_get_related(b, .previous);
     try testing.expectEqual(a, r);
-    try ok(c.siv_node_get_related(inner, .parent, &r));
+    r = c.siv_node_get_related(inner, .parent);
     try testing.expectEqual(b, r);
-    try ok(c.siv_node_get_related(root, .last_child, &r));
+    r = c.siv_node_get_related(root, .last_child);
     try testing.expectEqual(b, r);
-    try ok(c.siv_node_get_related(inner, .first_child, &r));
+    r = c.siv_node_get_related(inner, .first_child);
     try testing.expectEqual(t.Node.null, r);
     var rtl = false;
     try ok(c.siv_node_is_rtl(inner, &rtl));
@@ -291,14 +296,14 @@ test "tree navigation, labels, direction, and failing a transaction" {
     try testing.expectEqual(@as(usize, 5), len);
     try testing.expectEqualStrings("Inn", buf[0..3]);
     var win: t.Window = .null;
-    try ok(c.siv_node_get_window(inner, &win));
+    win = c.siv_node_get_window(inner);
     try testing.expectEqual(h.window, win);
     // A failed transaction does nothing more and commits nothing.
     c.siv_txn_fail(txn, .error_unsupported); try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_status(txn));
     try testing.expectEqual(t.Node.null, c.siv_box(txn, root));
     c.siv_txn_fail(txn, .error_busy); try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_status(txn));
     try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_commit(txn));
-    try testing.expectEqual(t.Result.error_invalid_handle, c.siv_node_get_related(a, .next, &r));
+    try testing.expect(c.siv_node_get_related(a, .next) == .null);
 }
 
 const Ticks = struct {
@@ -505,7 +510,7 @@ test "default layouts fill the fields the application's layout leaves zero" {
     defer h.stop();
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
-    const col = c.siv_flex(txn, c.siv_window_root(h.window), &.{ .axis = .column, .align_items = .start });
+    const col = c.siv_flex(txn, c.siv_window_get_root(h.window), &.{ .axis = .column, .align_items = .start });
     const n = c.siv_box(txn, col);
     c.siv_set_default_layout(txn, n, &.{
         .width = .{ .unit = .px, .value = 40 },
@@ -576,7 +581,7 @@ test "windows report each presented frame with its times, and nothing while idle
     // A change: one more frame, a later commit.
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
-    _ = c.siv_set_visual(txn, c.siv_window_root(h.window), &.{ .background = .{ .r = 1, .a = 1 } });
+    _ = c.siv_set_visual(txn, c.siv_window_get_root(h.window), &.{ .background = .{ .r = 1, .a = 1 } });
     try ok(c.siv_txn_commit(txn));
     const n = frames.count;
     try h.settle();
