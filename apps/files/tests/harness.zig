@@ -107,6 +107,8 @@ pub const Harness = struct {
     files: ?*Files = null,
     golden: []const u8 = golden_dir,
     closed: bool = false,
+    /// Settle without waiting for file operations (a test holding one).
+    ignore_ops: bool = false,
     last_w: u32 = 0,
     last_h: u32 = 0,
 
@@ -184,7 +186,7 @@ pub const Harness = struct {
             try ok(A.siv_app_dispatch(h.app, 2));
             const cb = &self.app.clipboard;
             var busy = self.app.fonts.loading() or cb.transfers.items.len != 0 or cb.ready.items.len != 0;
-            if (h.files) |fl| busy = busy or fl.loading != null or fl.ops.items.len != 0 or fl.thumbs.busy() or fl.reload_timer != .null or fl.thumbs.notify_timer != .null;
+            if (h.files) |fl| busy = busy or fl.loading != null or (fl.ops.items.len != 0 and !h.ignore_ops) or fl.thumbs.busy() or fl.reload_timer != .null or fl.thumbs.notify_timer != .null;
             for (self.windows.items) |slot| if (slot) |w| {
                 if (w.dead or !w.win.shown) continue;
                 busy = busy or w.win.presented_seq == 0 or !w.win.settled();

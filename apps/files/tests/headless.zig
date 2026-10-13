@@ -436,3 +436,35 @@ test "opening a file asks the desktop's portal; without one the app says so" {
     }
     try testing.expect(found);
 }
+
+test "the operations bar shows progress, and Cancel asks the operation to stop" {
+    var fx: Fixture = .{};
+    try fx.create(&sample);
+    defer fx.remove();
+    var h: Harness = .{};
+    try h.start(.{ .path = fx.path });
+    defer h.stop();
+    const f = h.f();
+    // An operation as the worker reports it halfway, not running, so the
+    // capture does not race it.
+    const op = try harness.Files.fsops.Op.create(std.heap.c_allocator, .copy, &.{"/x/a"}, "/x/b");
+    defer op.destroy();
+    op.scanning.store(false, .release);
+    op.total_items.store(40, .release);
+    op.done_items.store(17, .release);
+    op.total_bytes.store(800_000_000, .release);
+    op.done_bytes.store(340_000_000, .release);
+    try f.ops.append(f.gpa, op);
+    h.ignore_ops = true;
+    f.updateOps();
+    try h.settle();
+    try h.expectGolden("operations");
+    const tree = try h.semantics();
+    const bar = tree.find(.progress_bar, "Progress").?;
+    try testing.expectApproxEqAbs(@as(f64, 42.5), bar.value.?.now, 0.01);
+    try h.clickOn(.button, "Cancel");
+    try testing.expect(op.cancel.load(.acquire));
+    _ = f.ops.pop();
+    f.updateOps();
+    try h.settle();
+}

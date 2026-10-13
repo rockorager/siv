@@ -2167,7 +2167,7 @@ fn opFinished(self: *Files, op: *fsops.Op) void {
     self.reloadSoon(0);
 }
 
-fn updateOps(self: *Files) void {
+pub fn updateOps(self: *Files) void {
     if (self.window == .null) return;
     const txn = self.begin() orelse return;
     _ = c.siv_set_visual(txn, self.ops_bar, &.{ .background_token = .card_bg, .flags = .{ .hidden = self.ops.items.len == 0 } });
