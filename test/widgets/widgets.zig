@@ -9,6 +9,7 @@ const std = @import("std");
 const abi = @import("abi");
 const ui = @import("ui");
 const harness = @import("../abi/harness.zig");
+const Loop = @import("loop").Loop;
 
 const testing = std.testing;
 const t = abi.types;
@@ -478,19 +479,21 @@ test "widgets: spin buttons step, page, and parse what was typed" {
     try testing.expectEqual(@as(f64, 98), try value(w.spin));
 
     // Held, it steps at once, then repeats with the seat's key-repeat
-    // timing (100 ms, then 20 ms) until released.
+    // timing (100 ms, then 20 ms) until released: three repeats take at
+    // least 140 ms, however long a loaded machine makes them take.
     const wid = (try h.win()).win.id;
+    const pressed_at = Loop.now();
     try h.inject(&.{
         .{ .key_repeat = .{ .seat = 0, .delay_ms = 100, .rate = 50 } },
         .{ .pointer_button = .{ .window = wid, .seat = 0, .button = 0x110, .pressed = true, .time = 10, .serial = 5 } },
     });
     try h.settle();
     try testing.expect(try value(w.spin) <= 97);
-    try dispatchFor(&h, 300);
-    const held = try value(w.spin);
-    // About ten repeats; at least a few however loaded the machine, and
-    // never more than the timing allows.
-    try testing.expect(held <= 94 and held >= 97 - 11);
+    while (try value(w.spin) > 94) {
+        if (Loop.now() - pressed_at > 10 * std.time.ns_per_s) return error.Timeout;
+        try ok(c.siv_app_dispatch(h.app, 5));
+    }
+    try testing.expect(Loop.now() - pressed_at >= 140 * std.time.ns_per_ms);
     try h.inject(&.{.{ .pointer_button = .{ .window = wid, .seat = 0, .button = 0x110, .pressed = false, .time = 400, .serial = 6 } }});
     try h.settle();
     const released = try value(w.spin);
@@ -502,6 +505,7 @@ test "widgets: spin buttons step, page, and parse what was typed" {
         .{ .key_repeat = .{ .seat = 0, .delay_ms = 100, .rate = 0 } },
         .{ .pointer_button = .{ .window = wid, .seat = 0, .button = 0x110, .pressed = true, .time = 500, .serial = 7 } },
     });
+    try h.settle();
     try dispatchFor(&h, 200);
     try testing.expectEqual(released - 1, try value(w.spin));
     try h.inject(&.{.{ .pointer_button = .{ .window = wid, .seat = 0, .button = 0x110, .pressed = false, .time = 700, .serial = 8 } }});
@@ -514,7 +518,6 @@ test "widgets: spin buttons step, page, and parse what was typed" {
 
 /// Runs the application's loop for about `ms`, timers included.
 fn dispatchFor(h: *Harness, ms: u64) !void {
-    const Loop = @import("loop").Loop;
     const end = Loop.now() + ms * std.time.ns_per_ms;
     while (Loop.now() < end) try ok(c.siv_app_dispatch(h.app, 5));
 }
