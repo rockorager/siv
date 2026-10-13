@@ -57,11 +57,13 @@ Measurements are in [Numbers](#numbers) at the end.
 5. **Only editors could reach the clipboard.** Copy and cut of files need
    text/uri-list and x-special/gnome-copied-files (which says whether a
    paste moves), and paste needs to read those types from other
-   applications. There was no clipboard call at all. *Fixed:*
-   `siv_clipboard_set(window, flags, desc)` offers MIME types and data
-   split by lengths (like `siv_drag_start`); `siv_clipboard_read(window,
-   mimes, flags, callback, ...)` reads the first type offered (commit
-   "abi: offer and read the clipboard in any MIME type", D19).
+   applications. There was no clipboard call at all; while this work was
+   under way, `siv_clipboard_write` and `siv_clipboard_read` landed for
+   text (with the Lua binding). *Fixed:* `siv_clipboard_write_data(window,
+   selection, desc)` offers MIME types and data split by lengths (like
+   `siv_drag_start`); `siv_clipboard_read_data(window, selection, mimes,
+   callback, ...)` reads the first type offered as raw bytes (commit "abi:
+   offer and read the clipboard in any MIME type", D19).
 
 6. **Selecting many items was quadratic.** A view's selection could be
    read and set only one item per call, and every `siv_view_set_selected`
