@@ -92,16 +92,25 @@ pub fn add(b: *std.Build, o: Options) void {
         const m = tc.createModule();
         m.link_libc = true;
         m.pic = true;
-        if (lua_dep) |dep| m.addCSourceFiles(.{
-            .root = dep.path("src"),
-            .files = &(core ++ allowed_libs),
-            // POSIX for io.popen, os.tmpname, and the like; no
-            // LUA_USE_DLOPEN, so package.loadlib and C searchers report
-            // that dynamic libraries are disabled. Default visibility:
-            // libsiv-lua exports the Lua API, limited by its version
-            // script.
-            .flags = &.{ "-std=gnu99", "-DLUA_USE_POSIX" },
-        });
+        // One object, compiled once and linked into every artifact with
+        // Lua: C sources on a module would compile again for each.
+        if (lua_dep) |dep| {
+            const obj = b.addObject(.{
+                .name = "lua",
+                .root_module = b.createModule(.{ .target = o.target, .optimize = o.optimize, .link_libc = true, .pic = true }),
+            });
+            m.addObject(obj);
+            obj.root_module.addCSourceFiles(.{
+                .root = dep.path("src"),
+                .files = &(core ++ allowed_libs),
+                // POSIX for io.popen, os.tmpname, and the like; no
+                // LUA_USE_DLOPEN, so package.loadlib and C searchers report
+                // that dynamic libraries are disabled. Default visibility:
+                // libsiv-lua exports the Lua API, limited by its version
+                // script.
+                .flags = &.{ "-std=gnu99", "-DLUA_USE_POSIX" },
+            });
+        }
         m.linkSystemLibrary("m", .{});
         break :blk m;
     };
@@ -124,6 +133,7 @@ pub fn add(b: *std.Build, o: Options) void {
         o: Options,
         lua_c: *std.Build.Module,
         wrapper_source: std.Build.LazyPath,
+        system_lua: bool,
         fn module(self: @This()) *std.Build.Module {
             return self.moduleWith(
                 self.b.createModule(.{ .root_source_file = self.wrapper_source }),
@@ -139,6 +149,9 @@ pub fn add(b: *std.Build, o: Options) void {
         fn moduleWith(self: @This(), wrapper: *std.Build.Module, schema: *std.Build.Module, lua: *std.Build.Module, bundled: bool) *std.Build.Module {
             const options = self.b.addOptions();
             options.addOption(bool, "bundled", bundled);
+            // With -fsys=lua, Lua is the system's, with every library and
+            // dlopen, so the allowlist (D23) is not siv's to check.
+            options.addOption(bool, "system_lua", self.system_lua);
             return self.b.createModule(.{
                 .root_source_file = self.b.path("src/lua/lua.zig"),
                 .target = self.o.target,
@@ -154,14 +167,17 @@ pub fn add(b: *std.Build, o: Options) void {
             });
         }
     };
-    const binding: Binding = .{ .b = b, .o = o, .lua_c = lua_c, .wrapper_source = wrapper_source };
+    const binding: Binding = .{ .b = b, .o = o, .lua_c = lua_c, .wrapper_source = wrapper_source, .system_lua = system_lua };
 
-    // libsiv-lua.so: the binding and Lua, on top of libsiv.so (D23).
+    // libsiv-lua.so: the binding and Lua, on top of libsiv.so (D23). The
+    // binding compiles to an object that does not depend on libsiv.so, so
+    // a change in libsiv.so relinks libsiv-lua without compiling it again
+    // (D25); LLD applies the version script when linking.
     const lib = b.addLibrary(.{
         .name = "siv-lua",
         .linkage = .dynamic,
         .version = o.version,
-        .root_module = binding.module(),
+        .root_module = linkModule(b, o, binding.module(), "siv-lua"),
     });
     lib.root_module.linkLibrary(o.shared);
     // Exports the Lua C API, luaopen_siv, and siv_lua_*, nothing else.
@@ -202,6 +218,8 @@ pub fn add(b: *std.Build, o: Options) void {
         }),
     });
     runner.root_module.linkLibrary(lib);
+    // It calls Lua, which libsiv-lua exports only when it embeds it.
+    if (system_lua) runner.root_module.linkSystemLibrary("lua5.5", .{});
     runner.root_module.addRPathSpecial("$ORIGIN/../lib");
     b.installArtifact(runner);
 
@@ -212,12 +230,12 @@ pub fn add(b: *std.Build, o: Options) void {
     const module_lib = b.addLibrary(.{
         .name = "siv-lua-module",
         .linkage = .dynamic,
-        .root_module = binding.moduleWith(
+        .root_module = linkModule(b, o, binding.moduleWith(
             b.createModule(.{ .root_source_file = wrapper_source }),
             b.createModule(.{ .root_source_file = b.path("src/abi/api.zig") }),
             lua_h,
             false,
-        ),
+        ), "siv-lua-module"),
     });
     module_lib.root_module.linkLibrary(o.shared);
     module_lib.linker_allow_shlib_undefined = true;
@@ -330,4 +348,13 @@ pub fn add(b: *std.Build, o: Options) void {
     integration_run.step.dependOn(&runner.step);
     o.integration_step.dependOn(&integration_run.step);
     b.step("test-integration-lua", "Run the Lua binding against headless sway").dependOn(&integration_run.step);
+}
+
+/// A module with no source of its own that links `module` compiled to an
+/// object: what the object is compiled from does not include the
+/// libraries the artifact links, so relinking them compiles nothing.
+fn linkModule(b: *std.Build, o: Options, module: *std.Build.Module, name: []const u8) *std.Build.Module {
+    const m = b.createModule(.{ .target = o.target, .optimize = o.optimize, .link_libc = true, .pic = true });
+    m.addObject(b.addObject(.{ .name = name, .root_module = module }));
+    return m;
 }

@@ -19,7 +19,7 @@ const Harness = harness.Harness;
 const golden_dir = "test/golden/lua";
 
 const setup =
-    \\local font, dark = ...
+    \\local font = ...
     \\local siv = require("siv")
     \\captured = {}
     \\local create = siv.app_create
@@ -31,7 +31,7 @@ const setup =
     \\  local app = create(desc)
     \\  app:add_font("Droid", font)
     \\  app:set_default_font("Droid")
-    \\  app:set_theme{ scheme = dark and "dark" or "light" }
+    \\  app:set_theme{ scheme = "light" }
     \\  captured.app = app
     \\  return app
     \\end
@@ -60,15 +60,14 @@ const LuaApp = struct {
     L: *c.lua_State,
     h: Harness,
 
-    const Options = struct { dark: bool = false, arg: ?[:0]const u8 = null };
+    const Options = struct { arg: ?[:0]const u8 = null };
 
     fn start(path: [:0]const u8, o: Options) !LuaApp {
         const L = lua.siv_lua_new(~@as(c_int, 0)) orelse return error.OutOfMemory;
         errdefer c.lua_close(L);
         try load(L, setup, "=setup");
         _ = c.lua_pushlstring(L, text.font.test_fonts.latin.ptr, text.font.test_fonts.latin.len);
-        c.lua_pushboolean(L, @intFromBool(o.dark));
-        try call(L, 2);
+        try call(L, 1);
         // The example, as siv-lua runs a main chunk.
         _ = c.lua_getfield(L, c.LUA_REGISTRYINDEX, "siv.internal");
         _ = c.lua_getfield(L, -1, "run_main");
@@ -154,15 +153,12 @@ test "lua: todo.lua adds and removes items" {
     try app.h.expectGolden("todo-removed", 360, 420);
 }
 
-test "lua: widgets.lua in the light and dark themes" {
-    {
-        var app = try LuaApp.start("examples/widgets.lua", .{});
-        defer app.stop();
-        try app.h.expectGolden("widgets", 420, 520);
-    }
-    var app = try LuaApp.start("examples/widgets.lua", .{ .dark = true });
+test "lua: widgets.lua" {
+    // The dark theme is the widgets' and the guide's (settings.zig) to
+    // check; this checks the Lua constructors.
+    var app = try LuaApp.start("examples/widgets.lua", .{});
     defer app.stop();
-    try app.h.expectGolden("widgets-dark", 420, 520);
+    try app.h.expectGolden("widgets", 420, 520);
 }
 
 test "lua: gauge.lua draws on a canvas and takes keys" {

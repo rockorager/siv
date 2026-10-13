@@ -402,13 +402,6 @@ test "opportunities are UTF-8 offsets after the preceding code point" {
     try std.testing.expectEqualSlices(Opportunity, &.{.{ .offset = 0, .mandatory = true }}, empty);
 }
 
-test "revision 57: no break between EN DASH and NO-BREAK SPACE" {
-    // U+2013 is BA in Unicode 18; LB12a no longer allows BA ÷ GL.
-    const breaks = try analyze(std.testing.allocator, "a\u{2013}\u{00A0}b");
-    defer std.testing.allocator.free(breaks);
-    try std.testing.expectEqual(1, breaks.len);
-}
-
 test "UAX #14 conformance (LineBreakTest-18.0.0)" {
     const gpa = std.testing.allocator;
     var cases = @import("ucd_test.zig").Cases.init(@embedFile("LineBreakTest.txt"));

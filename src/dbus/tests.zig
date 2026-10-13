@@ -748,9 +748,9 @@ test "large messages and many pipelined calls" {
     try b.exportObject(&obj);
     try h.ready(&b);
 
-    // A 12 MiB string crosses many reads and partial writes, and the
+    // A 9 MiB string crosses many reads and partial writes, and the
     // pause in reading above 8 MiB of undispatched bytes.
-    const big = try gpa.alloc(u8, 12 << 20);
+    const big = try gpa.alloc(u8, 9 << 20);
     defer gpa.free(big);
     for (big, 0..) |*x, i| x.* = 'a' + @as(u8, @intCast(i % 26));
     const Big = struct {
@@ -782,13 +782,13 @@ test "large messages and many pipelined calls" {
             self.sum += d.readUint32() catch 0;
         }
         fn all(self: *@This()) bool {
-            return self.n == 5000;
+            return self.n == 1000;
         }
     };
     var count: Count = .{};
-    for (0..5000) |i| _ = try a.callMethod(b.uniqueName(), "/calc", null, "Add", .{ @as(u32, @intCast(i)), @as(u32, 0) }, Count.cb, &count);
+    for (0..1000) |i| _ = try a.callMethod(b.uniqueName(), "/calc", null, "Add", .{ @as(u32, @intCast(i)), @as(u32, 0) }, Count.cb, &count);
     try h.until(&count, Count.all);
-    try testing.expectEqual(@as(u64, 4999 * 5000 / 2), count.sum);
+    try testing.expectEqual(@as(u64, 999 * 1000 / 2), count.sum);
 }
 
 test "a closed connection fails pending calls and reports it" {

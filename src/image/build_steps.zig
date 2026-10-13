@@ -15,6 +15,8 @@ pub const Options = struct {
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     scene: *std.Build.Module,
+    /// Set by `add`: the module the C objects are linked through.
+    image_c: *std.Build.Module = undefined,
 };
 
 pub const Result = struct {
@@ -51,16 +53,21 @@ const webp_sources = [_][]const u8{
 
 /// dav1d with its assembly on x86-64 (NASM syntax, assembled by `nasm`
 /// built from source, see `addNasm`) and aarch64 (GNU syntax, assembled
-/// by clang); other targets use its C paths. The `_tmpl` files build once
-/// per bit depth, and meson's generated headers are written here.
-fn addDav1d(b: *std.Build, m: *std.Build.Module, dep: *std.Build.Dependency, target: std.Build.ResolvedTarget) void {
+/// by clang); other targets use its C paths. Debug builds use the C paths
+/// too: the assembly only makes decoding faster, and building NASM and
+/// assembling dav1d's x86-64 files cost more than the rest of dav1d (D25).
+/// The `_tmpl` files build once per bit depth, and meson's generated
+/// headers are written here.
+fn addDav1d(b: *std.Build, m: *std.Build.Module, dep: *std.Build.Dependency, o: Options) void {
+    const target = o.target;
     const arch = target.result.cpu.arch;
     const x86 = arch == .x86_64 or arch == .x86;
-    const nasm: ?*std.Build.Step.Compile = if (arch == .x86_64)
+    const want_asm = o.optimize != .debug;
+    const nasm: ?*std.Build.Step.Compile = if (want_asm and arch == .x86_64)
         if (b.lazyDependency("nasm", .{})) |n| addNasm(b, n) else return
     else
         null;
-    const asm_on = nasm != null or arch == .aarch64;
+    const asm_on = nasm != null or (want_asm and arch == .aarch64);
     const gen = b.addWriteFiles();
     _ = gen.add("config.h", b.fmt(
         \\#define ARCH_AARCH64 {d}
@@ -167,7 +174,7 @@ fn addDav1d(b: *std.Build, m: *std.Build.Module, dep: *std.Build.Dependency, tar
             run.addArg("-o");
             m.addObjectFile(run.addOutputFileArg(b.fmt("{s}.o", .{file})));
         }
-    } else if (arch == .aarch64) {
+    } else if (asm_on and arch == .aarch64) {
         m.addCSourceFile(.{ .file = dep.path("src/arm/cpu.c"), .flags = flags });
         m.addCSourceFiles(.{ .root = dep.path("src/arm/64"), .files = &dav1d_arm64_asm, .flags = &.{"-D_GNU_SOURCE"} });
     }
@@ -339,7 +346,10 @@ const nasm_sources = [_][]const u8{
 /// libjxl's decoder, without the boxes and JPEG reconstruction that need
 /// Brotli and without a CMS of its own: siv converts ICC profiles with
 /// Little CMS, and libjxl renders XYB to linear sRGB by itself.
-fn addJxl(b: *std.Build, m: *std.Build.Module, jxl: *std.Build.Dependency, hwy: *std.Build.Dependency) void {
+/// Each C++ file is an object of its own: Zig 0.17's linker crashes on a
+/// relocatable object merged from several C++ files (their COMDAT groups),
+/// written by itself or by LLD.
+fn addJxl(b: *std.Build, jxl: *std.Build.Dependency, hwy: *std.Build.Dependency, o: Options) void {
     const gen = b.addWriteFiles();
     _ = gen.add("jxl/version.h",
         \\#ifndef JXL_VERSION_H_
@@ -363,13 +373,11 @@ fn addJxl(b: *std.Build, m: *std.Build.Module, jxl: *std.Build.Dependency, hwy: 
     _ = gen.add("jxl/jxl_export.h", export_h);
     _ = gen.add("jxl/jxl_cms_export.h", export_h);
     _ = gen.add("jxl/jxl_threads_export.h", export_h);
-    m.addIncludePath(gen.getDirectory());
-    m.addIncludePath(jxl.path("lib/include"));
-    m.addIncludePath(jxl.path(""));
-    m.addIncludePath(hwy.path(""));
-    m.link_libcpp = true;
-    m.addCSourceFile(.{ .file = b.path("src/image/jxl.c"), .flags = c_flags ++ &[_][]const u8{"-std=c99"} });
-    const cxx = c_flags ++ &[_][]const u8{
+    const includes = [_]std.Build.LazyPath{ gen.getDirectory(), jxl.path("lib/include"), jxl.path(""), hwy.path("") };
+    const shim = object(b, o, "jxl", false);
+    for (includes) |i| shim.addIncludePath(i);
+    shim.addCSourceFile(.{ .file = b.path("src/image/jxl.c"), .flags = c_flags ++ &[_][]const u8{"-std=c99"} });
+    const cxx_flags = c_flags ++ &[_][]const u8{
         "-std=c++17",
         "-fno-exceptions",
         "-fno-rtti",
@@ -379,12 +387,18 @@ fn addJxl(b: *std.Build, m: *std.Build.Module, jxl: *std.Build.Dependency, hwy: 
         "-DJXL_INTERNAL_LIBRARY_BUILD",
         "-DHWY_DISABLE_FUTEX",
     };
-    m.addCSourceFiles(.{
-        .root = hwy.path("hwy"),
-        .files = &.{ "abort.cc", "aligned_allocator.cc", "per_target.cc", "print.cc", "targets.cc", "timer.cc" },
-        .flags = cxx,
-    });
-    m.addCSourceFiles(.{ .root = jxl.path("lib"), .files = &jxl_sources, .flags = cxx });
+    // Debug builds compile Highway's code for the target's baseline only,
+    // not once per instruction set it dispatches to (D25).
+    const cxx = if (o.optimize == .debug) cxx_flags ++ &[_][]const u8{"-DHWY_COMPILE_ONLY_STATIC=1"} else cxx_flags;
+    const sources = [_]struct { std.Build.LazyPath, []const []const u8 }{
+        .{ hwy.path("hwy"), &.{ "abort.cc", "aligned_allocator.cc", "per_target.cc", "print.cc", "targets.cc", "timer.cc" } },
+        .{ jxl.path("lib"), &jxl_sources },
+    };
+    for (sources) |entry| for (entry[1]) |file| {
+        const m = object(b, o, std.fs.path.stem(file), true);
+        for (includes) |i| m.addIncludePath(i);
+        m.addCSourceFile(.{ .file = entry[0].path(b, file), .flags = cxx });
+    };
 }
 
 const jxl_sources = [_][]const u8{
@@ -415,7 +429,27 @@ const jxl_sources = [_][]const u8{
     "jxl/splines.cc",                                  "jxl/toc.cc",
 };
 
-pub fn add(b: *std.Build, o: Options) Result {
+/// A C object, compiled once and linked into every
+/// artifact that imports `image`, libsiv.a included. C sources on a module
+/// are compiled again for each artifact (their cache entries are not
+/// shared between compilations), so every C file here is in one of these.
+fn object(b: *std.Build, o: Options, name: []const u8, cpp: bool) *std.Build.Module {
+    const obj = b.addObject(.{
+        .name = name,
+        .root_module = b.createModule(.{
+            .target = o.target,
+            .optimize = o.optimize,
+            .link_libc = true,
+            .link_libcpp = cpp,
+            .pic = true,
+        }),
+    });
+    o.image_c.addObject(obj);
+    return obj.root_module;
+}
+
+pub fn add(b: *std.Build, o_: Options) Result {
+    var o = o_;
     const tc = b.addTranslateC(.{
         .root_source_file = b.addWriteFiles().add("image_c.h",
             \\#include "wuffs.h"
@@ -432,25 +466,31 @@ pub fn add(b: *std.Build, o: Options) Result {
     const c = tc.createModule();
     c.pic = true;
     c.link_libc = true;
+    o.image_c = c;
     var requires: std.ArrayList(u8) = .empty;
+    const shim_flags = c_flags ++ &[_][]const u8{"-std=c99"};
 
     // wuffs: PNG, APNG, JPEG, GIF.
     if (b.lazyDependency("wuffs", .{})) |dep| {
-        c.addIncludePath(dep.path("release/c"));
+        const m = object(b, o, "wuffs", false);
+        m.addIncludePath(dep.path("release/c"));
         // wuffs calls its codecs through vtables of type-erased function
         // pointers, which -fsanitize=function (ReleaseSafe) traps.
-        c.addCSourceFile(.{ .file = b.path("src/image/wuffs.c"), .flags = c_flags ++ &[_][]const u8{ "-std=c99", "-fno-sanitize=function" } });
+        m.addCSourceFile(.{ .file = b.path("src/image/wuffs.c"), .flags = c_flags ++ &[_][]const u8{ "-std=c99", "-fno-sanitize=function" } });
     }
 
     // Little CMS: ICC profiles.
     if (b.systemIntegrationOption("lcms2", .{})) {
         c.linkSystemLibrary("lcms2", .{});
         requires.appendSlice(b.allocator, " lcms2") catch @panic("OOM");
-        c.addCSourceFile(.{ .file = b.path("src/image/color.c"), .flags = c_flags ++ &[_][]const u8{"-std=c99"} });
+        const m = object(b, o, "color", false);
+        m.linkSystemLibrary("lcms2", .{});
+        m.addCSourceFile(.{ .file = b.path("src/image/color.c"), .flags = shim_flags });
     } else if (b.lazyDependency("lcms2", .{})) |dep| {
-        c.addIncludePath(dep.path("include"));
-        c.addCSourceFile(.{ .file = b.path("src/image/color.c"), .flags = c_flags ++ &[_][]const u8{"-std=c99"} });
-        c.addCSourceFiles(.{
+        const m = object(b, o, "lcms2", false);
+        m.addIncludePath(dep.path("include"));
+        m.addCSourceFile(.{ .file = b.path("src/image/color.c"), .flags = shim_flags });
+        m.addCSourceFiles(.{
             .root = dep.path("src"),
             .files = &.{
                 "cmsalpha.c", "cmscam02.c", "cmscgats.c", "cmscnvrt.c", "cmserr.c",   "cmsgamma.c",
@@ -459,24 +499,27 @@ pub fn add(b: *std.Build, o: Options) Result {
                 "cmsplugin.c", "cmsps2.c",  "cmssamp.c",  "cmssm.c",    "cmstypes.c", "cmsvirt.c",
                 "cmswtpnt.c", "cmsxform.c",
             },
-            .flags = c_flags ++ &[_][]const u8{"-std=c99"},
+            .flags = shim_flags,
         });
     }
 
     // libwebp: still and animated WebP.
-    const shim_flags = c_flags ++ &[_][]const u8{"-std=c99"};
     if (b.systemIntegrationOption("libwebp", .{})) {
         c.linkSystemLibrary("libwebpdemux", .{});
         c.linkSystemLibrary("libwebp", .{});
         requires.appendSlice(b.allocator, " libwebpdemux libwebp") catch @panic("OOM");
-        c.addCSourceFile(.{ .file = b.path("src/image/webp.c"), .flags = shim_flags });
+        const m = object(b, o, "webp", false);
+        m.linkSystemLibrary("libwebpdemux", .{});
+        m.linkSystemLibrary("libwebp", .{});
+        m.addCSourceFile(.{ .file = b.path("src/image/webp.c"), .flags = shim_flags });
     } else if (b.lazyDependency("libwebp", .{})) |dep| {
-        c.addIncludePath(dep.path("src"));
-        c.addIncludePath(dep.path(""));
-        c.addCSourceFile(.{ .file = b.path("src/image/webp.c"), .flags = shim_flags });
+        const m = object(b, o, "libwebp", false);
+        m.addIncludePath(dep.path("src"));
+        m.addIncludePath(dep.path(""));
+        m.addCSourceFile(.{ .file = b.path("src/image/webp.c"), .flags = shim_flags });
         // The decoder and demuxer of libwebp's makefile.unix, without the
         // encoder.
-        c.addCSourceFiles(.{
+        m.addCSourceFiles(.{
             .root = dep.path("src"),
             .files = &webp_sources,
             .flags = shim_flags,
@@ -487,18 +530,21 @@ pub fn add(b: *std.Build, o: Options) Result {
     if (b.systemIntegrationOption("libavif", .{})) {
         c.linkSystemLibrary("libavif", .{});
         requires.appendSlice(b.allocator, " libavif") catch @panic("OOM");
-        c.addCSourceFile(.{ .file = b.path("src/image/avif.c"), .flags = shim_flags });
+        const m = object(b, o, "avif", false);
+        m.linkSystemLibrary("libavif", .{});
+        m.addCSourceFile(.{ .file = b.path("src/image/avif.c"), .flags = shim_flags });
     } else if (b.lazyDependency("libavif", .{})) |avif| {
-        c.addIncludePath(avif.path("include"));
-        c.addIncludePath(avif.path("third_party/libyuv/include"));
-        c.addCSourceFile(.{ .file = b.path("src/image/avif.c"), .flags = shim_flags });
+        const m = object(b, o, "libavif", false);
+        m.addIncludePath(avif.path("include"));
+        m.addIncludePath(avif.path("third_party/libyuv/include"));
+        m.addCSourceFile(.{ .file = b.path("src/image/avif.c"), .flags = shim_flags });
         // The part of libyuv (BSD-3-Clause) libavif bundles for scaling.
-        c.addCSourceFiles(.{
+        m.addCSourceFiles(.{
             .root = avif.path("third_party/libyuv/source"),
             .files = &.{ "scale.c", "scale_common.c", "scale_any.c", "row_common.c", "planar_functions.c" },
-            .flags = c_flags ++ &[_][]const u8{"-std=c99"},
+            .flags = shim_flags,
         });
-        c.addCSourceFiles(.{
+        m.addCSourceFiles(.{
             .root = avif.path("src"),
             .files = &.{
                 "alpha.c",      "avif.c",       "colr.c",      "colrconvert.c", "diag.c",           "exif.c",
@@ -512,17 +558,27 @@ pub fn add(b: *std.Build, o: Options) Result {
         // libavif.
         if (b.systemIntegrationOption("dav1d", .{})) {
             c.linkSystemLibrary("dav1d", .{});
+            m.linkSystemLibrary("dav1d", .{});
             requires.appendSlice(b.allocator, " dav1d") catch @panic("OOM");
-        } else if (b.lazyDependency("dav1d", .{})) |dav1d| addDav1d(b, c, dav1d, o.target);
+        } else if (b.lazyDependency("dav1d", .{})) |dav1d| {
+            m.addIncludePath(dav1d.path("include"));
+            addDav1d(b, object(b, o, "dav1d", false), dav1d, o);
+        }
     }
 
     // libjxl with Highway: still and animated JPEG XL.
     if (b.systemIntegrationOption("libjxl", .{})) {
         c.linkSystemLibrary("libjxl", .{});
         requires.appendSlice(b.allocator, " libjxl") catch @panic("OOM");
-        c.addCSourceFile(.{ .file = b.path("src/image/jxl.c"), .flags = shim_flags });
+        const m = object(b, o, "jxl", false);
+        m.linkSystemLibrary("libjxl", .{});
+        m.addCSourceFile(.{ .file = b.path("src/image/jxl.c"), .flags = shim_flags });
     } else if (b.lazyDependency("libjxl", .{})) |jxl| {
-        if (b.lazyDependency("highway", .{})) |hwy| addJxl(b, c, jxl, hwy);
+        if (b.lazyDependency("highway", .{})) |hwy| {
+            // libjxl's C++ needs the C++ runtime wherever it is linked.
+            c.link_libcpp = true;
+            addJxl(b, jxl, hwy, o);
+        }
     }
 
     const image = b.createModule(.{

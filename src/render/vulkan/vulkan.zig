@@ -13,7 +13,8 @@
 //!
 //! Imports: scene, raster, render_cpu (glyph rasterization, the blur
 //! contract), pool, vulkan (headers; libvulkan is loaded at run time),
-//! shaders (SPIR-V compiled at build time, see build_steps.zig).
+//! shaders (committed SPIR-V, compiled by `zig build shaders`, see
+//! build_steps.zig).
 
 const std = @import("std");
 

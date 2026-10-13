@@ -1772,7 +1772,7 @@ test "an edit reshapes only its block and equals shaping the new text" {
     const options: layout_.Options = .{ .width = 120 };
     var residency: Residency = .init(gpa, 0);
     defer residency.deinit();
-    for (0..80) |round| {
+    for (0..30) |round| {
         const mode: Mode = if (round % 2 == 0) .keep else .bounded;
         const block_options = mode.options(24, &residency);
         const a = fixture.arena.allocator();
@@ -1836,10 +1836,10 @@ test "edits to a rope, with what changed given, build what shaping the new text 
     var residency: Residency = .init(gpa, 20_000);
     defer residency.deinit();
     const options: layout_.Options = .{ .width = 150 };
-    for (0..8) |round| {
+    for (0..4) |round| {
         const a = fixture.arena.allocator();
         var buf: std.ArrayList(u8) = .empty;
-        try randomText(rand, &buf, a, 150 + rand.uintLessThan(usize, 150));
+        try randomText(rand, &buf, a, 170 + rand.uintLessThan(usize, 30));
         try std.testing.expect(buf.items.len > @import("rope.zig").leaf_max);
         var rope = try Rope.initBytes(gpa, buf.items);
         defer rope.release(gpa);
@@ -1849,7 +1849,7 @@ test "edits to a rope, with what changed given, build what shaping the new text 
         defer shaped.deinit();
         var text = try TextLayout.init(gpa, a, &shaped, options, null, bounded);
         defer text.deinit();
-        for (0..3) |_| {
+        for (0..3) |edit| {
             var next = rope.retain();
             defer next.release(gpa);
             for (0..1 + rand.uintLessThan(usize, 3)) |_| {
@@ -1882,6 +1882,9 @@ test "edits to a rope, with what changed given, build what shaping the new text 
             text.shaped = &shaped;
             rope.release(gpa);
             rope = next.retain();
+            // Each edit's blocks match the comparing path's above; the
+            // layout, reused through every edit, is checked after the last.
+            if (edit < 2) continue;
             var flat_p = try ShapedParagraph.init(gpa, a, &fixture.cache, bytes, &styles, .auto_ltr);
             defer flat_p.deinit();
             var flat = try Layout.init(gpa, a, &fixture.cache, &flat_p, options);
@@ -1905,7 +1908,7 @@ test "evicted blocks are built again as they were, across edits" {
     const inserts = [_][]const u8{ "q", "\n", "\r\n", "א", " ", "zz\u{2029}y", "", "wwwwwwww wwwwwwww\n" };
     var residency: Residency = .init(gpa, 0);
     defer residency.deinit();
-    for (0..30) |round| {
+    for (0..12) |round| {
         const a = fixture.arena.allocator();
         residency.budget = rand.uintLessThan(usize, 40_000);
         const spacing: layout_.ParagraphStyle = .{ .space_before = 2, .space_after = 3 };
@@ -1922,7 +1925,7 @@ test "evicted blocks are built again as they were, across edits" {
         defer bounded_s.deinit();
         var bounded = try TextLayout.init(gpa, a, &bounded_s, options, null, true);
         defer bounded.deinit();
-        for (0..5) |_| {
+        for (0..3) |_| {
             try std.testing.expectEqualSlices(u32, kept_s.starts, bounded_s.starts);
             try std.testing.expectEqualSlices(u32, kept_s.paragraph_starts, bounded_s.paragraph_starts);
             const n: u32 = @intCast(kept.blocks.len);

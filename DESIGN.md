@@ -651,20 +651,21 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     touchpad gesture stops faster than 100 px/s, from the last 100 ms of
     deltas, and decay with a 325 ms time constant (a first guess). A
     scroll container is hit anywhere in its viewport, drawn or not.
-  - Measured (`zig build test-headless` with `SIV_MEASURE=1`, and `zig
-    build bench-pacing`, 60 Hz): on headless, key-to-photon with the
+  - Measured (`zig build bench-latency` and `zig build bench-pacing`, 60
+    Hz): on headless, key-to-photon with the
     compositor thread has a median of 7 ms against 7.6 ms rendering on the
     UI thread (both within one frame). On sway, using presentation
     feedback while the UI thread sleeps, wheel-to-photon has a median of
     2.4 ms (ReleaseFast) or 9 ms (Debug). A 500 ms animation while the UI
     thread spins drops no frames on either backend, at 1280×720 on sway;
     rendering on the UI thread (headless) misses 23 of the stall's 24
-    vblanks. The headless test asserts only that the compositor thread
-    finishes the animation while the UI thread does not dispatch, and
-    prints the missed vblanks: with the rest of `zig build test` and busy
-    loops beside it, the compositor thread sometimes runs a vblank late
-    and misses one, which measures the machine, not siv (`zig build
-    bench-pacing` counts drops on sway, D12). Input waits behind a frame
+    vblanks. These timings are checked by hand (`zig build bench-latency`,
+    test/compositor/latency.zig), not in `zig build test`, where the rest
+    of the suite beside them makes the machine, not siv, decide them (D24);
+    `zig build test` checks that the compositor thread finishes an
+    animation while the UI thread does not dispatch
+    (src/compositor/tests.zig), and `zig build bench-pacing` counts drops
+    on sway (D12). Input waits behind a frame
     being rendered on the compositor thread, so a slow frame delays input
     by up to its render time.
 - **Alternatives:** render on the UI thread (lowest latency when idle, but any
@@ -898,19 +899,23 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     lavapipe (Mesa 22.3, the test device) has none.
   - libvulkan is loaded with dlopen, so libsiv has no link dependency on it
     and starts on machines without a loader.
-  - Shaders are GLSL compiled to SPIR-V 1.6 on every build by glslang 16.6
-    built from the source pinned in build.zig.zon (`-fsys=glslang` runs the
-    system glslangValidator), so the SPIR-V always derives from the tree and
-    from one compiler on every host. Alternatives: checked-in SPIR-V
-    (drifts from its source without a regeneration step and a check that
-    needs the compiler anyway); shaderc, DXC, Slang, or Tint (larger C++
-    builds wrapping the same work); Zig's SPIR-V backend (experimental, with
-    no image fetch or descriptor helpers in std). glslang's generated parser
-    is GPL-3.0 with the Bison exception; it runs only at build time and
-    nothing of it ships. Cost: about 80 s on a cold build (glslang is built
-    in Debug; optimized builds exceeded 7 GiB with four jobs). Reverse if
-    Zig's SPIR-V backend compiles these shaders into SPIR-V that drivers
-    accept.
+  - Shaders are GLSL compiled to SPIR-V 1.6 by glslang 16.6 built from the
+    source pinned in build.zig.zon, and the SPIR-V is committed beside them
+    (`src/render/vulkan/shaders/*.spv`), so builds run no shader compiler.
+    `zig build shaders` compiles them again and rewrites the SPIR-V and
+    `glsl.sha256`, the hashes of the GLSL it came from (`-fsys=glslang`
+    runs the system glslangValidator instead); a render-vulkan test
+    compares those hashes with the GLSL, so an edit without regenerating
+    fails `zig build test`. The check needs no compiler, which answers the
+    old objection to checked-in SPIR-V (drift without a check). Before,
+    every build compiled glslang (about 80 s of a cold build, in Debug;
+    optimized builds exceeded 7 GiB with four jobs) and the shaders (D25,
+    Build cost). Alternatives: shaderc, DXC, Slang, or Tint (larger C++
+    builds wrapping the same work); Zig's SPIR-V backend (experimental,
+    with no image fetch or descriptor helpers in std). glslang's generated
+    parser is GPL-3.0 with the Bison exception; it runs only when
+    regenerating and nothing of it ships. Reverse if Zig's SPIR-V backend
+    compiles these shaders into SPIR-V that drivers accept.
   - Verified (`zig build test-headless`, lavapipe): every CPU golden image
     in test/golden/render matches within the golden tolerance, including
     every blend mode, blur, COLRv1, and bitmap glyphs; in fact every
@@ -4045,31 +4050,68 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   socket the target opens only when an environment variable enables it (tree,
   properties, semantics, layout overlays, repaint flashing, frame timing). Tests
   run the real loop on the headless backend, compare CPU golden images, and diff
-  CPU against Vulkan output. `zig build test` stays hermetic. `zig build
-  test-integration` runs the Wayland backend against one real compositor, the
-  latest sway on its headless backend, pinned through nixpkgs; other
-  compositors are not part of the test suite. It also runs D-Bus against a
-  private dbus-daemon, with GLib's gdbus as a second client, and AT-SPI
-  against at-spi2-core's bus launcher and registry with libatspi as the
-  client, and portals against xdg-desktop-portal with a backend of siv's
-  own behind it; the hermetic D-Bus, AT-SPI, and portal tests use an
-  in-process test bus over socketpairs.
+  CPU against Vulkan output. `zig build test` stays hermetic, and it is the
+  only gate: run it, and wait for it to pass, before every push; CI runs
+  it and nothing else. `zig build test-integration` runs the Wayland
+  backend against one real compositor, the latest sway on its headless
+  backend, pinned through nixpkgs; other compositors are not part of the
+  test suite. It also runs D-Bus against a private dbus-daemon, with
+  GLib's gdbus as a second client, and AT-SPI against at-spi2-core's bus
+  launcher and registry with libatspi as the client, and portals against
+  xdg-desktop-portal with a backend of siv's own behind it; the hermetic
+  D-Bus, AT-SPI, and portal tests use an in-process test bus over
+  socketpairs.
+  - Real-compositor testing is not routine (the user's decision,
+    2026-10-13, after a cold `zig build test` took 31 minutes on a 4-core
+    orb and 77 on GitHub's runner, with the sway suite on top). `zig build
+    test-integration` and its `test-integration-*` parts, like
+    `test-integration-icons` and `bench-pacing`, are opt-in steps run by
+    hand and part of no one's gate. What they need (Nix with the pinned
+    sway, wtype, and grim; dbus-daemon and gdbus; xdg-desktop-portal and
+    PipeWire; at-spi2-core, libatspi, and Orca; qpdf and poppler; the
+    Adwaita and Breeze themes and rsvg-convert) is installed by
+    `.agents/setup-integration`, not by `.agents/setup`, so that a normal
+    orb sets up with the build's own packages only.
   - CI (`.github/workflows/ci.yml`, GitHub Actions) runs `zig build test`
-    and `zig build test-integration` on every push and pull request, in a
-    Debian 12 container prepared by `.agents/setup`, so CI and orbs install
-    the same packages, Zig, Nix, and sway; its Vulkan tests run on
-    lavapipe. The same job builds with the `-fsys` options whose libraries
-    Debian 12 packages: glslang, lcms2, libwebp, libavif, dav1d, and
-    libjxl. Not harfbuzz (siv needs HarfBuzz 14; Debian 12 has 6.0),
-    sheenbidi (not packaged by Debian), or lua (Debian 12 has no Lua 5.5).
-    `test` already builds the examples, apps, the guide, and the Lua
-    module. Zig's packages and caches and the Nix store are cached
-    between runs.
+    on every push and pull request, with no compositor or desktop
+    services, in an Arch Linux container: its packages are new enough
+    for every `-fsys` option (HarfBuzz 14.6, Lua 5.5, Little CMS, libwebp,
+    libavif, libjxl, glslang), so the job compiles none of the vendored C
+    and C++ libraries but SheenBidi, which no distribution packages, and
+    wuffs, which has no system library (D25, Build cost). Fedora 43 has
+    HarfBuzz 11.5 and Lua 5.4, too old; Debian 12, the orb base, has
+    HarfBuzz 6.0, no Lua 5.5, and no SheenBidi, and its older lcms2,
+    libwebp, libavif, dav1d, and libjxl pass `zig build test` with
+    `-fsys`. Its Vulkan tests run on lavapipe. Zig's global cache and the
+    fetched packages are cached between runs. `test` already builds the
+    examples, apps, the guide, and the Lua module.
+  - The suite (cut 2026-10-13, measured per test with `--time-report`):
+    tests stay when they catch a plausible regression through public
+    behavior. Removed as covered elsewhere: line breaking's "revision 57"
+    case (LineBreakTest has `2013 × 00A0`), bidi's L2 reordering case (the
+    conformance tests check every reordering), the app's posted-closure
+    test (`test/c/app.c` and the loop's tests), D-Bus's namespace and
+    signature-iterator tests (match rules and the signature fuzz corpus),
+    the portal option round trip (every portal test), the platform's
+    fractional-scale rounding (the headless backend's scale test), a
+    span-family test in src/ui (the C API's rich-text golden image), and
+    the Lua widgets example's dark theme (the widgets' and the guide's
+    dark tests). Made cheaper with the same properties: the block-shaping
+    equivalence tests in src/text (fewer rounds, the flat comparison
+    after a round's last edit; 16 s to a few), the rope, layout-reuse,
+    long-editor, long-text, and paragraphAt tests (smaller texts or fewer
+    steps, still past the sizes that pick their paths), the D-Bus large
+    message (9 MiB, still past the 8 MiB read pause) and pipelined calls
+    (1000), and the Vulkan pipeline-cache test (two devices). Kept: the
+    Unicode conformance tests, the wake-race test at 50 000 iterations
+    (10 000 missed the bug it guards), the tooltip test's real delays,
+    and the fuzz corpora.
   - Run by hand, not in CI, because they need a quiet machine or a real
     GPU: the GPU tests (`SIV_SWAY_RENDERER=vulkan zig build
     test-integration`, sway rendering and presenting on the GPU), frame
-    pacing (`zig build bench-pacing`), the budgets' benchmarks (D25), and
-    fuzzing (D25).
+    pacing (`zig build bench-pacing`), input-to-photon latency on the
+    headless backend (`zig build bench-latency`, D8), the budgets'
+    benchmarks (D25), and fuzzing (D25).
   - Protocols sway 1.12 lacks (xdg-dialog-v1, xdg-toplevel-icon-v1,
     xdg-session-management-v1; D17) are covered by the headless tests
     (`test/abi/windows.zig`: dialogs, icons, session restore through the
@@ -4218,6 +4260,67 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - SheenBidi 3.0.0 has no NOTICE file, so its section is its Apache-2.0
     LICENSE.
 - **Toolchain:** Zig 0.17.
+- **Build cost.** A cold `zig build test` took 31m42s on a 4-core orb
+  (4789 s of CPU) and 77 minutes on GitHub's 2-core runner (2026-10-13).
+  Measured with `--summary all`, `--time-report`, and process sampling,
+  the cause was the vendored C and C++: a C source on a Zig module is
+  compiled again by every compilation that includes the module (Zig
+  0.17 keys its C object cache per compilation; one libjxl file was
+  compiled ten times with identical output), so each of the dozen test
+  binaries that imports `image` or `text` compiled libjxl with Highway,
+  HarfBuzz, and the other decoders in Debug with UBSan, 2 to 4 minutes
+  each. Zig code was not: a whole-siv test binary compiles in 15 to 26 s
+  with the self-hosted backend, libsiv.so in 26 s through LLVM, and all
+  tests run in about 70 s of CPU. So:
+  - Every vendored library is compiled into objects (`addObject`), once
+    per build, and linked through the module that translates its
+    header, so libsiv.a still contains it. Zig 0.17's linker crashes on
+    an object merged from several C++ files (their COMDAT groups, whether
+    merged by Zig or by LLD), so libjxl and Highway get an object per file
+    and HarfBuzz's subsetter one unity file of its 18 files, which also
+    parses HarfBuzz's headers once instead of 18 times (24 s in Debug
+    against 170 s per file optimized).
+  - C compiles in the build's mode, except HarfBuzz, which is optimized
+    in Debug builds: shaping is most of the text and headless tests' run
+    time, which optimized HarfBuzz cuts by a third, while the decoders'
+    tests take 0.1 s either way and optimizing them only slows the
+    compile. Debug builds compile Highway for the baseline target only
+    (`HWY_COMPILE_ONLY_STATIC`, half of libjxl's compile) and dav1d
+    without its assembly, so NASM is neither built nor run.
+  - The shaders' SPIR-V is committed (D10), so glslang is not built.
+  - libsiv-lua.so and the Lua module are linked by LLD from an object of
+    the binding, so a change in libsiv.so relinks them instead of
+    compiling them again through LLVM (34 s for each change).
+  - The headless latency and smoothness measurements moved to `zig build
+    bench-latency` (D8, D24), and the suite was cut where tests cost more
+    than they protected (D24, The suite).
+  - Measured after (4-core orb): a cold `zig build test` in 6m41s
+    with empty caches, of which about three minutes build Zig's own
+    tools and runtimes into its global cache (the build runner, 90 s;
+    translate-c, 55 s; libc++, 50 s), so 3m48s with Zig's
+    cache warm, as in an orb or CI; a rerun with nothing changed in
+    4.9 s (4.6 s before); after a one-line change in src/ui in
+    76 to 106 s (1m47s before). The vendored C now costs about 200 s of
+    CPU once: libjxl with Highway 122 s, HarfBuzz 43 s (one file, on the
+    critical path), its subsetter 23 s, the rest 15 s together. Arch with
+    every `-fsys` option (CI's configuration) takes 5m00s cold.
+  - Not done: one test binary for the headless tests, the guide, and the
+    files app would save about 40 s of CPU on each change but run their
+    tests one after another, lengthening the critical path; building
+    libsiv.so from a self-hosted object linked by LLD would save LLVM's
+    17 s but merges the C++ objects into one, which crashes as above;
+    `-fincremental` writes objects LLD rejects in Zig 0.17.
+  - Prebuilt C libraries for orbs (the user asked, 2026-10-13): nixpkgs
+    at the revision `.agents/sway.nix` pins has HarfBuzz 13.2 (siv needs
+    14), no SheenBidi, and libraries that need glibc 2.38 to 2.43, which
+    Debian 12's 2.36 cannot load; Debian 12 packages only the decoders
+    (lcms2 2.14, libwebp 1.2.4, libavif 0.11.1, dav1d 1.0, libjxl 0.7),
+    which pass `zig build test` with `-fsys`; upstream publishes Linux
+    binaries only for libjxl (0.11.1 .debs for Debian 12, shared
+    libraries), libwebp (a static, position-independent archive), and
+    glslang. HarfBuzz, SheenBidi, Lua 5.5, Little CMS, dav1d, and libavif
+    have none. Orbs keep building from source for now: `.agents/setup`
+    builds once and the orb snapshot keeps the result.
 - **Packaging:** every C dependency has a build option to use the system copy;
   the build installs pkg-config files.
   - siv is also a Zig package: a program depends on it in build.zig.zon,

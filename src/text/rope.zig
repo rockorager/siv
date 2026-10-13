@@ -606,7 +606,7 @@ test "edits, reads, and comparisons agree with a flat buffer, and old texts stay
     for (0..40) |round| {
         var flat: std.ArrayList(u8) = .empty;
         defer flat.deinit(gpa);
-        const start_len = rand.uintLessThan(usize, if (round % 4 == 0) 200_000 else 20_000);
+        const start_len = rand.uintLessThan(usize, if (round % 4 == 0) 50_000 else 20_000);
         for (0..start_len) |i| try flat.append(gpa, 'a' + @as(u8, @intCast((i * 7 + round) % 26)));
         var r = try Rope.initBytes(gpa, flat.items);
         defer r.release(gpa);

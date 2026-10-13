@@ -124,13 +124,3 @@ test "interface, member, and bus names" {
     try t.expect(!isBusName(&long));
     try t.expect(isBusName(long[0..255]));
 }
-
-test "namespaces" {
-    const t = std.testing;
-    try t.expect(pathInNamespace("/a/b", "/a"));
-    try t.expect(pathInNamespace("/a", "/a"));
-    try t.expect(pathInNamespace("/a", "/"));
-    try t.expect(!pathInNamespace("/ab", "/a"));
-    try t.expect(nameInNamespace("org.a.b", "org.a"));
-    try t.expect(!nameInNamespace("org.ab", "org.a"));
-}

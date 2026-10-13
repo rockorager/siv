@@ -10,53 +10,68 @@ xkbcommon, Fontconfig, and the Vulkan headers (`.agents/setup` installs
 them on Debian, with lavapipe and the validation layer for the Vulkan
 tests).
 
+`zig build test` is the gate: run it, and wait for it to pass, before
+every push (D24). Nothing else is part of anyone's gate.
+
 ```sh
 zig build                      # zig-out: libsiv.so, libsiv.a, include/siv.h, lib/pkgconfig/siv.pc
-zig build test                 # every module's tests, headless tests, C ABI smoke test
+zig build test                 # every module's tests, headless tests, C ABI tests, guide, Lua
 zig build test-text            # one module: test-abi, test-text, test-raster, test-scene, test-image, test-svg, test-icon,
                                #   test-render-cpu, test-render-vulkan, test-pool, test-loop,
                                #   test-dbus, test-portal, test-pdf, test-tray, test-platform,
                                #   test-compositor, test-ui, test-a11y, test-app
 zig build test-headless        # headless integration tests (test/headless.zig)
-zig build test-integration     # Wayland backend against headless sway, D-Bus against
-                               #   dbus-daemon (not in `test`; .agents/setup installs both)
-zig build bench-pacing         # frame pacing on sway end to end (dropped frames,
-                               #   wheel-to-photon, prediction error) against D12's
-                               #   thresholds; not in any test step, needs a quiet machine
-SIV_SWAY_RENDERER=vulkan zig build test-integration  # sway renders on the GPU: linux-dmabuf,
-                               #   hardware Vulkan presentation, dma-buf frames (gles2 works
-                               #   too; with vgem loaded, set WLR_RENDER_DRM_DEVICE as well)
-zig build test-integration-dbus  # only the D-Bus part
-zig build test-integration-a11y  # only AT-SPI against the real registry
-zig build test-integration-portal  # only portals against xdg-desktop-portal
-zig build test-integration-pdf  # only PDF output against qpdf and poppler
-zig build test-integration-tray  # only the tray against dbus-daemon and gdbus
-zig build test-integration-icons -Doptimize=ReleaseSafe  # installed Adwaita and Breeze drawn by siv
-                               #   against rsvg-convert; opt in, not in `test-integration`
-                               #   (results depend on the theme releases). SIV_ICON_DIFFS=DIR
-                               #   keeps the worst, SIV_ICON_ONLY=TEXT picks files,
-                               #   SIV_ICON_ADWAITA=DIR / SIV_ICON_BREEZE=DIR compare other copies
-zig build test-dbus --fuzz -Doptimize=ReleaseSafe  # fuzz a module's parsers
 zig build test-abi             # abi module, generators, Zig wrappers, exported symbols
 zig build test-lua             # Lua binding against libsiv.so, siv.so from the stock lua,
                                #   annotations (also in `test`)
-zig build test-integration-lua # only the Lua binding and siv-lua on sway
-./zig-out/bin/siv-lua examples/todo.lua  # run a Lua example; --watch reloads it on edits
 zig build test-notices         # NOTICES covers every shipped dependency (also in `test`)
 zig build test-c               # C programs against the generated headers and shared libraries
 zig build guide                # the user guide's samples (docs/guide): built, installed as
                                #   zig-out/bin/guide-*, run headless against the guide's
                                #   screenshots; code blocks checked against them (also in `test`)
 SIV_UPDATE_GOLDEN=1 zig build guide  # accept new guide screenshots
-zig build examples             # build and install the C programs in examples/
 zig build test -Dtest-filter=bidi
+zig build shaders              # after editing src/render/vulkan/shaders/*: compile them with
+                               #   glslang and update the committed SPIR-V (the render-vulkan
+                               #   tests fail until then); -fsys=glslang uses glslangValidator
+zig build examples             # build and install the C programs in examples/
+./zig-out/bin/siv-lua examples/todo.lua  # run a Lua example; --watch reloads it on edits
+zig build test-dbus --fuzz -Doptimize=ReleaseSafe  # fuzz a module's parsers
 zig build bench-text -Doptimize=ReleaseFast   # headless text engine benchmarks
 zig build bench-render-cpu -Doptimize=ReleaseFast  # CPU renderer benchmarks
 zig build bench-image -Doptimize=ReleaseFast -- FILE...  # image decoding benchmarks
+zig build bench-latency        # input-to-photon and smoothness on the headless backend
+                               #   against D25's budget; quiet machine
 zig build -fsys=harfbuzz -fsys=sheenbidi   # link system copies instead of vendored ones
-zig build -fsys=glslang        # compile shaders with the system glslangValidator
 zig build -fsys=lua            # link the system liblua5.5 into libsiv-lua
 zig build -fsys=lcms2 -fsys=libwebp -fsys=libavif -fsys=dav1d -fsys=libjxl  # system image decoders
+```
+
+Opt in and by hand only, never a gate: the steps against real desktop
+software. Run `.agents/setup-integration` first; it installs Nix with the
+pinned sway, dbus-daemon, xdg-desktop-portal, PipeWire, AT-SPI, Orca,
+qpdf, poppler, and the icon themes, which `.agents/setup` leaves out.
+
+```sh
+zig build test-integration     # Wayland backend against headless sway, D-Bus against
+                               #   dbus-daemon, AT-SPI, portals, PDF, tray, Lua, files app
+zig build test-integration-dbus  # only the D-Bus part
+zig build test-integration-a11y  # only AT-SPI against the real registry
+zig build test-integration-portal  # only portals against xdg-desktop-portal
+zig build test-integration-pdf  # only PDF output against qpdf and poppler
+zig build test-integration-tray  # only the tray against dbus-daemon and gdbus
+zig build test-integration-lua # only the Lua binding and siv-lua on sway
+zig build test-integration-files  # only the file manager on sway with AT-SPI
+SIV_SWAY_RENDERER=vulkan zig build test-integration  # sway renders on the GPU: linux-dmabuf,
+                               #   hardware Vulkan presentation, dma-buf frames (gles2 works
+                               #   too; with vgem loaded, set WLR_RENDER_DRM_DEVICE as well)
+zig build bench-pacing         # frame pacing on sway end to end (dropped frames,
+                               #   wheel-to-photon, prediction error) against D12's
+                               #   thresholds; needs a quiet machine
+zig build test-integration-icons -Doptimize=ReleaseSafe  # installed Adwaita and Breeze drawn by siv
+                               #   against rsvg-convert (results depend on the theme releases).
+                               #   SIV_ICON_DIFFS=DIR keeps the worst, SIV_ICON_ONLY=TEXT picks
+                               #   files, SIV_ICON_ADWAITA=DIR / SIV_ICON_BREEZE=DIR compare others
 ```
 
 Fetched packages live in `zig-pkg/` (ignored). `zig build --fetch=all`
@@ -118,7 +133,8 @@ commit message. In particular:
   - `src/abi/build_steps.zig`: the ABI part of the build graph (generated
     outputs, libsiv.so link setup, ABI tests).
   - `src/render/vulkan/build_steps.zig`: the Vulkan headers module, the
-    glslang shader compiler, and the shader list (`shaders/*.glsl`).
+    shader list, and `zig build shaders` with the glslang compiler that
+    writes the committed SPIR-V.
   - `src/image/build_steps.zig`: the image decoders' C sources, generated
     headers, `-fsys` options, and NASM (built from source for dav1d).
   - `src/lua/build_steps.zig`: Lua's sources and allowlist of standard
@@ -137,6 +153,11 @@ commit message. In particular:
   is loaded at run time).
 - Unicode data files for tests are embedded by name:
   `@embedFile("LineBreakTest.txt")`. The list is in `build.zig`.
+- Vendored C code is compiled into objects (`addObject`), each once, and
+  linked through the module that translates its header; C sources added
+  to a Zig module compile again for every artifact that includes it
+  (D25). Zig 0.17's linker crashes on an object merged from several C++
+  files, so C++ libraries get an object per file or a unity file.
 - Vendored C code is compiled with `-fvisibility=hidden`; libsiv.so exports
   only the `siv_` ABI. A generated version script enforces this, so
   libsiv.so links with LLVM and LLD (Zig's self-hosted ELF linker ignores

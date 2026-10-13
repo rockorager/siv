@@ -28,7 +28,6 @@ test {
     _ = @import("ui/cursor.zig");
     _ = @import("ui/image.zig");
     _ = @import("compositor/golden.zig");
-    _ = @import("compositor/latency.zig");
     _ = @import("abi/golden.zig");
     _ = @import("abi/canvas.zig");
     _ = @import("abi/external.zig");

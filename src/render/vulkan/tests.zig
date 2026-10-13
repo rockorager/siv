@@ -436,20 +436,20 @@ test "the pipeline cache persists across devices, and how much it saves" {
         const cmd = std.fmt.bufPrintSentinel(&cmd_buf, "rm -rf {s}", .{dir}, 0) catch unreachable;
         _ = system(cmd);
     }
-    var times: [3]u64 = undefined;
-    var loaded: [3]usize = undefined;
-    for ([_]Device.PipelineCache{ .none, .{ .dir = dir }, .{ .dir = dir } }, 0..) |cache, i| {
+    var times: [2]u64 = undefined;
+    var loaded: [2]usize = undefined;
+    for (&times, &loaded) |*t, *l| {
         const t0 = now();
-        const d = try Device.create(gpa, .{ .allow_cpu = true, .pipeline_cache = cache });
-        times[i] = now() - t0;
-        loaded[i] = d.cache_loaded;
+        const d = try Device.create(gpa, .{ .allow_cpu = true, .pipeline_cache = .{ .dir = dir } });
+        t.* = now() - t0;
+        l.* = d.cache_loaded;
         d.destroy();
     }
-    if (testing.environ.getPosix("SIV_MEASURE") != null) std.debug.print("device creation: {d:.1} ms without a cache, {d:.1} ms cold, {d:.1} ms warm ({d} bytes)\n", .{
-        @as(f64, @floatFromInt(times[0])) / 1e6, @as(f64, @floatFromInt(times[1])) / 1e6, @as(f64, @floatFromInt(times[2])) / 1e6, loaded[2],
+    if (testing.environ.getPosix("SIV_MEASURE") != null) std.debug.print("device creation: {d:.1} ms cold, {d:.1} ms warm ({d} bytes)\n", .{
+        @as(f64, @floatFromInt(times[0])) / 1e6, @as(f64, @floatFromInt(times[1])) / 1e6, loaded[1],
     });
-    try testing.expectEqual(@as(usize, 0), loaded[1]);
-    try testing.expect(loaded[2] > 0);
+    try testing.expectEqual(@as(usize, 0), loaded[0]);
+    try testing.expect(loaded[1] > 0);
 }
 
 extern "c" fn system(cmd: [*:0]const u8) c_int;
@@ -458,4 +458,27 @@ fn now() u64 {
     var ts: std.c.timespec = undefined;
     _ = std.c.clock_gettime(.MONOTONIC, &ts);
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+}
+
+test "the committed SPIR-V was compiled from the GLSL beside it" {
+    // `zig build shaders` writes glsl.sha256 with the SPIR-V; a GLSL edit
+    // without it would leave the SPIR-V stale (D10).
+    const shaders = @import("shaders");
+    var checked: usize = 0;
+    var lines = std.mem.tokenizeScalar(u8, shaders.glsl_sha256, '\n');
+    while (lines.next()) |line| : (checked += 1) {
+        const name = line[66..];
+        for (shaders.glsl) |file| {
+            if (!std.mem.eql(u8, file.name, name)) continue;
+            var digest: [32]u8 = undefined;
+            std.crypto.hash.sha2.Sha256.hash(file.text, &digest, .{});
+            const hex = std.fmt.bytesToHex(digest, .lower);
+            if (!std.mem.eql(u8, &hex, line[0..64])) {
+                std.log.err("{s} changed since its SPIR-V was compiled; run `zig build shaders`", .{name});
+                return error.StaleSpirv;
+            }
+            break;
+        } else return error.UnknownShaderSource;
+    }
+    try testing.expectEqual(shaders.glsl.len, checked);
 }

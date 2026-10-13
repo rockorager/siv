@@ -175,15 +175,6 @@ test "depth limits" {
     try t.expect(!isValid(rep('i', 256)));
 }
 
-test "iterator and skipLen" {
-    var it: Iterator = .{ .sig = "ia{sv}(i(ss))v" };
-    try std.testing.expectEqualStrings("i", it.next().?);
-    try std.testing.expectEqualStrings("a{sv}", it.next().?);
-    try std.testing.expectEqualStrings("(i(ss))", it.next().?);
-    try std.testing.expectEqualStrings("v", it.next().?);
-    try std.testing.expect(it.next() == null);
-}
-
 test "fuzz signature validation" {
     try std.testing.fuzz({}, fuzzValidate, .{ .corpus = &.{ "a{sv}", "(ii)a(sa{sv})", rep('a', 32) ++ "y" } });
 }

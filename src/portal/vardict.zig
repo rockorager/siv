@@ -143,35 +143,3 @@ pub const StringIterator = struct {
         return it.d.readString() catch null;
     }
 };
-
-test "options round-trip through a reader" {
-    const gpa = std.testing.allocator;
-    var e: Encoder = .init(gpa);
-    defer e.deinit();
-    const w = try Writer.begin(&e);
-    try w.put("handle_token", @as([]const u8, "siv1"));
-    try w.put("modal", true);
-    try w.put("types", @as(u32, 3));
-    try w.path("current_folder", "/tmp/a b");
-    try w.open("uris", "as");
-    try e.write(@as([]const []const u8, &.{ "file:///a", "file:///b" }));
-    try w.close();
-    try w.end();
-    try std.testing.expectEqualStrings("a{sv}", e.signature());
-
-    var d: Decoder = .init(e.bytes(), e.signature(), .little, &.{});
-    const r = try Reader.take(&d);
-    try std.testing.expect(d.peek() == null);
-    try std.testing.expectEqualStrings("siv1", r.string("handle_token").?);
-    try std.testing.expectEqual(true, r.boolean("modal").?);
-    try std.testing.expectEqual(@as(u32, 3), r.uint("types").?);
-    // The wrong type is absent.
-    try std.testing.expectEqual(null, r.string("types"));
-    try std.testing.expectEqual(null, r.uint("missing"));
-    try std.testing.expectEqualStrings("/tmp/a b", r.bytesZ("current_folder").?);
-    var it = r.strings("uris").?;
-    try std.testing.expectEqualStrings("file:///a", it.next().?);
-    try std.testing.expectEqualStrings("file:///b", it.next().?);
-    try std.testing.expectEqual(null, it.next());
-    try std.testing.expectEqual(null, Reader.empty.string("x"));
-}

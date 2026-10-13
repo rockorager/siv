@@ -4,7 +4,9 @@
 //! the first frame that shows the input's effect; input time is when the
 //! platform received the event.
 //!
-//! Print the measurements with SIV_MEASURE=1 zig build test-headless.
+//! Timings against D25's budgets, so not part of `zig build test`: run
+//! `zig build bench-latency` by hand on a quiet machine. It prints the
+//! measurements (SIV_MEASURE=1).
 
 const std = @import("std");
 const scene = @import("scene");

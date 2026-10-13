@@ -70,6 +70,9 @@ test "require adds no globals and the allowlist holds" {
         \\for _, lib in ipairs{ "coroutine", "table", "string", "math", "utf8", "os", "io", "package" } do
         \\  assert(_G[lib], lib)
         \\end
+    );
+    if (@import("lua_options").system_lua) return;
+    _ = try run(
         \\local ok, err = package.loadlib("libc.so.6", "printf")
         \\assert(not ok and err:find("dynamic libraries not enabled"))
     );

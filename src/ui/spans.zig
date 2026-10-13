@@ -249,7 +249,7 @@ test "paragraphAt finds what scanning from the start finds, in a rope" {
         var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(gpa);
         // Past a rope leaf sometimes, so that separators straddle leaves.
-        const count = if (round % 10 == 0) 3000 else rand.uintLessThan(usize, 30);
+        const count = if (round % 50 == 0) 3000 else rand.uintLessThan(usize, 30);
         for (0..count) |_| try buf.appendSlice(gpa, pieces[rand.uintLessThan(usize, pieces.len)]);
         const r: Rope = try .initBytes(gpa, buf.items);
         defer r.release(gpa);

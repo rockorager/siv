@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Opt in: prepares an orb (Debian 12), after .agents/setup, for the manual
+# integration steps (D24): `zig build test-integration` and its
+# test-integration-* parts, test-integration-icons, and bench-pacing.
+# Not part of any gate, so .agents/setup leaves all of this out.
+# Idempotent: a warm orb skips downloads and package installs.
+set -euo pipefail
+
+step() { printf '==> %s\n' "$*"; }
+timed() {
+	local start=$SECONDS
+	"$@"
+	printf '    (%ss)\n' "$((SECONDS - start))"
+}
+
+# dbus-daemon and gdbus (libglib2.0-bin) are the D-Bus integration tests'
+# bus and second client; at-spi2-core (the accessibility bus and registry),
+# python3-pyatspi (libatspi), and orca are the AT-SPI integration tests'
+# stack and clients. xdg-desktop-portal (with xdg-permission-store) is the
+# portal integration tests' frontend, and pipewire the daemon screen casts
+# connect to. qpdf and poppler-utils check the PDF writer's output
+# independently. The Adwaita and Breeze icon themes and librsvg's
+# rsvg-convert are the icon integration test's real themes and reference
+# renderer (D19).
+packages=(
+	dbus-daemon libglib2.0-bin
+	at-spi2-core python3-pyatspi orca
+	xdg-desktop-portal pipewire
+	qpdf poppler-utils
+	adwaita-icon-theme breeze-icon-theme librsvg2-bin
+)
+
+install_packages() {
+	local missing=()
+	for p in "${packages[@]}"; do
+		dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'install ok installed' || missing+=("$p")
+	done
+	if ((${#missing[@]})); then
+		step "apt-get install ${missing[*]}"
+		sudo apt-get update -qq
+		sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${missing[@]}"
+	else
+		step "system packages already installed"
+	fi
+}
+
+# Nix, single-user, only to fetch the pinned sway below from the binary
+# cache. Debian 12's sway 1.7 (wlroots 0.15) lacks the protocols the
+# integration tests cover, and building current wlroots and sway needs newer
+# meson, wayland, and pixman than Debian ships.
+NIX_VERSION=2.35.2
+
+install_nix() {
+	if [[ -x $HOME/.nix-profile/bin/nix-build ]]; then
+		step "nix already installed"
+		return
+	fi
+	local arch sha
+	arch=$(uname -m)
+	case $arch in
+	x86_64) sha=0c3960a9792331a22081c3c7a5d8465db9b17c50b3acdf18587fa4c6f2cb1158 ;;
+	aarch64) sha=4d0302a2910f5eec1c33b8deef634f04899a75737e7001ec49908d003ae5efda ;;
+	*) echo "unsupported architecture: $arch" >&2; exit 1 ;;
+	esac
+	local name=nix-$NIX_VERSION-$arch-linux
+	local tmp
+	tmp=$(mktemp -d)
+	step "download $name"
+	curl -fsSL "https://releases.nixos.org/nix/nix-$NIX_VERSION/$name.tar.xz" -o "$tmp/nix.tar.xz"
+	echo "$sha  $tmp/nix.tar.xz" | sha256sum -c --quiet
+	tar -xJf "$tmp/nix.tar.xz" -C "$tmp"
+	sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /nix
+	"$tmp/$name/install" --no-daemon --no-channel-add --no-modify-profile >/dev/null
+	rm -rf "$tmp"
+}
+
+# Sway, wtype, and grim, pinned in sway.nix and linked into /usr/local/bin
+# where the tests find them.
+install_sway() {
+	local out=$HOME/.local/state/siv-sway
+	step "nix-build .agents/sway.nix"
+	mkdir -p "$(dirname "$out")"
+	"$HOME/.nix-profile/bin/nix-build" .agents/sway.nix -o "$out" >/dev/null
+	for exe in sway swaymsg wtype grim; do
+		sudo ln -sfn "$out/bin/$exe" "/usr/local/bin/$exe"
+	done
+}
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+timed install_packages
+timed install_nix
+timed install_sway

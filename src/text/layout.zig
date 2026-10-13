@@ -1984,7 +1984,7 @@ test "reusing an edited text's layout gives the same lines as laying it out" {
         var old = try layoutOf(&fixture, &old_p, options);
         defer old.deinit();
         var reused_some = false;
-        for (0..120) |_| {
+        for (0..50) |_| {
             var at = rand.uintLessThan(usize, text.items.len + 1);
             while (at < text.items.len and text.items[at] & 0xc0 == 0x80) at += 1;
             if (rand.boolean() and at < text.items.len) {

@@ -8,10 +8,16 @@
 //!                             the C ABI smoke test
 //!   zig build test-<module>   one module's tests (e.g. test-text)
 //!   zig build test-headless   the headless integration tests
-//!   zig build test-integration  the Wayland backend against headless sway,
-//!                             D-Bus against dbus-daemon
+//!   zig build shaders         compile the Vulkan shaders and update the
+//!                             committed SPIR-V (src/render/vulkan)
+//!   zig build test-integration  opt in, by hand (D24): the Wayland backend
+//!                             against headless sway, D-Bus against
+//!                             dbus-daemon; .agents/setup-integration
+//!                             installs what it needs
 //!   zig build bench-pacing    frame pacing on sway end to end, against
 //!                             D12's thresholds (on a quiet machine)
+//!   zig build bench-latency   input-to-photon on the headless backend,
+//!                             against D25's budget (on a quiet machine)
 //!
 //! Options:
 //!   -Dtest-filter=<text>      only run tests whose name contains <text>
@@ -42,8 +48,9 @@ pub fn build(b: *std.Build) void {
     const build_options = options.createModule();
 
     // C and external dependencies. Each C library is a module that carries
-    // both its translated header and, when vendored, its compiled sources, so
-    // that it lands in every artifact that imports it, including libsiv.a.
+    // its translated header and, when vendored, an object with its compiled
+    // sources (`Ctx.cObject`), so that it lands in every artifact that
+    // imports it, including libsiv.a.
     const harfbuzz = harfbuzzModule(ctx);
     const harfbuzz_subset = harfbuzzSubsetModule(ctx, harfbuzz);
     const sheenbidi = sheenbidiModule(ctx);
@@ -306,7 +313,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&headless_run.step);
 
     // Integration tests: the Wayland backend against sway running headless
-    // (src/platform/integration_tests.zig). Not part of `test`.
+    // (src/platform/integration_tests.zig). Opt in and by hand, never part
+    // of `test` or a gate (D24).
     const integration = ctx.module("src/platform/platform.zig", &platform_imports);
     integration.addImport("integration", integrationOption(b, true));
     const integration_run = b.addRunArtifact(b.addTest(.{ .name = "integration", .root_module = integration, .filters = test_filters }));
@@ -388,6 +396,25 @@ pub fn build(b: *std.Build) void {
     pacing_run.has_side_effects = true;
     b.step("bench-pacing", "Measure frame pacing on sway against D12's thresholds (quiet machine)").dependOn(&pacing_run.step);
     b.step("test-integration-a11y", "Run the AT-SPI integration tests against the registry").dependOn(&a11y_integration_run.step);
+
+    // Input-to-photon latency and animation smoothness on the headless
+    // backend against D25's budget (test/compositor/latency.zig): timings,
+    // so run by hand on a quiet machine like the other benchmarks.
+    const bench_latency = b.addTest(.{
+        .name = "bench-latency",
+        .root_module = ctx.module("test/compositor/latency.zig", &.{
+            .{ .name = "scene", .module = scene },
+            .{ .name = "pool", .module = pool },
+            .{ .name = "loop", .module = loop },
+            .{ .name = "platform", .module = platform },
+            .{ .name = "compositor", .module = compositor },
+        }),
+        .filters = test_filters,
+    });
+    const bench_latency_run = b.addRunArtifact(bench_latency);
+    bench_latency_run.has_side_effects = true;
+    bench_latency_run.setEnvironmentVariable("SIV_MEASURE", "1");
+    b.step("bench-latency", "Measure input-to-photon latency and smoothness on the headless backend (quiet machine)").dependOn(&bench_latency_run.step);
 
     // Headless text engine benchmarks. Not part of `test`; build with
     // -Doptimize=ReleaseFast for meaningful numbers.
@@ -494,6 +521,25 @@ const Ctx = struct {
         });
     }
 
+    /// An object for vendored C, linked through `into`. C sources on a
+    /// module are compiled again for every artifact that includes it,
+    /// since their cache entries are not shared between compilations; an
+    /// object is compiled once and linked into each (D25).
+    fn cObject(ctx: Ctx, into: *std.Build.Module, name: []const u8, cpp: bool, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+        const obj = ctx.b.addObject(.{
+            .name = name,
+            .root_module = ctx.b.createModule(.{
+                .target = ctx.target,
+                .optimize = optimize,
+                .link_libc = true,
+                .link_libcpp = cpp,
+                .pic = true,
+            }),
+        });
+        into.addObject(obj);
+        return obj.root_module;
+    }
+
     fn systemHarfbuzz(ctx: Ctx) bool {
         return ctx.b.systemIntegrationOption("harfbuzz", .{});
     }
@@ -554,7 +600,10 @@ fn harfbuzzModule(ctx: Ctx) *std.Build.Module {
         // Amalgamated build without FreeType, GLib, or ICU (D13). HarfBuzz
         // needs C++ headers but not the C++ runtime.
         m.link_libcpp = true;
-        m.addCSourceFile(.{
+        // Optimized in Debug builds too: shaping is most of the text and
+        // headless tests' run time, which this halves (D25).
+        const optimize: std.builtin.OptimizeMode = if (ctx.optimize == .debug) .fast else ctx.optimize;
+        ctx.cObject(m, "harfbuzz", true, optimize).addCSourceFile(.{
             .file = dep.path("src/harfbuzz.cc"),
             .flags = c_flags ++ &[_][]const u8{
                 "-std=c++17",
@@ -593,29 +642,34 @@ fn harfbuzzSubsetModule(ctx: Ctx, harfbuzz: *std.Build.Module) *std.Build.Module
         const m = tc.createModule();
         m.link_libcpp = true;
         m.addImport("harfbuzz", harfbuzz);
-        // The files harfbuzz-subset.cc adds to harfbuzz.cc.
-        m.addCSourceFiles(.{
-            .root = dep.path("src"),
-            .files = &.{
-                "graph/gsubgpos-context.cc",
-                "hb-depend.cc",
-                "hb-subset-cff-common.cc",
-                "hb-subset-cff1.cc",
-                "hb-subset-cff2.cc",
-                "hb-subset-input.cc",
-                "hb-subset-instancer-iup.cc",
-                "hb-subset-instancer-solver.cc",
-                "hb-subset-plan-layout.cc",
-                "hb-subset-plan-var.cc",
-                "hb-subset-plan.cc",
-                "hb-subset-serialize.cc",
-                "hb-subset-table-cff.cc",
-                "hb-subset-table-color.cc",
-                "hb-subset-table-layout.cc",
-                "hb-subset-table-other.cc",
-                "hb-subset-table-var.cc",
-                "hb-subset.cc",
-            },
+        // The files harfbuzz-subset.cc adds to harfbuzz.cc, compiled as one
+        // file: they share HarfBuzz's heavy headers, which then compile
+        // once (a quarter of the time of compiling each file).
+        var unity: std.ArrayList(u8) = .empty;
+        for ([_][]const u8{
+            "graph/gsubgpos-context.cc",
+            "hb-depend.cc",
+            "hb-subset-cff-common.cc",
+            "hb-subset-cff1.cc",
+            "hb-subset-cff2.cc",
+            "hb-subset-input.cc",
+            "hb-subset-instancer-iup.cc",
+            "hb-subset-instancer-solver.cc",
+            "hb-subset-plan-layout.cc",
+            "hb-subset-plan-var.cc",
+            "hb-subset-plan.cc",
+            "hb-subset-serialize.cc",
+            "hb-subset-table-cff.cc",
+            "hb-subset-table-color.cc",
+            "hb-subset-table-layout.cc",
+            "hb-subset-table-other.cc",
+            "hb-subset-table-var.cc",
+            "hb-subset.cc",
+        }) |file| unity.print(b.allocator, "#include \"{s}\"\n", .{file}) catch @panic("OOM");
+        const obj = ctx.cObject(m, "harfbuzz-subset", true, ctx.optimize);
+        obj.addIncludePath(dep.path("src"));
+        obj.addCSourceFile(.{
+            .file = b.addWriteFiles().add("harfbuzz-subset-files.cc", unity.items),
             .flags = c_flags ++ &[_][]const u8{
                 "-std=c++17",
                 "-fno-exceptions",
@@ -640,9 +694,10 @@ fn sheenbidiModule(ctx: Ctx) *std.Build.Module {
     const m = if (b.lazyDependency("sheenbidi", .{})) |dep| blk: {
         tc.addIncludePath(dep.path("Headers"));
         const m = tc.createModule();
-        m.addIncludePath(dep.path("Headers"));
-        m.addIncludePath(dep.path("Source"));
-        m.addCSourceFile(.{
+        const obj = ctx.cObject(m, "sheenbidi", false, ctx.optimize);
+        obj.addIncludePath(dep.path("Headers"));
+        obj.addIncludePath(dep.path("Source"));
+        obj.addCSourceFile(.{
             .file = dep.path("Source/SheenBidi.c"),
             // The native scratch allocator keeps a thread-local buffer that
             // is never freed; siv has no global state (D2).

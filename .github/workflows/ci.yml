@@ -1,8 +1,12 @@
-# `zig build test` and `zig build test-integration` on every push and pull
-# request (D24). The job runs in Debian 12, the system orbs use, and
-# prepares it with .agents/setup, so CI and orbs install the same packages,
-# Zig, Nix, and sway. Performance budgets, frame pacing, GPU tests, and
-# fuzzing run by hand (D24, D25).
+# `zig build test` on every push and pull request (D24). Nothing else: the
+# integration steps against sway and the desktop daemons, GPU tests,
+# performance budgets, frame pacing, and fuzzing run by hand (D24, D25).
+#
+# The job runs in Arch Linux, whose packages are new enough for every
+# `-fsys` option, so it compiles none of the vendored C and C++ libraries
+# (D25). Not covered by a system package: SheenBidi, which no distribution
+# packages, and wuffs, which has no system library; both are single C
+# files. The shaders' SPIR-V is committed, so no shader compiler runs.
 name: CI
 
 on:
@@ -16,87 +20,52 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
-    container: debian:12
+    timeout-minutes: 30
+    container: archlinux:base
     defaults:
       run:
-        # As an unprivileged user with sudo, like an orb.
+        # As an unprivileged user, like an orb.
         shell: runuser -u ci -- bash -eo pipefail {0}
+    env:
+      ZIG_VERSION: 0.17.0
+      ZIG_SHA256: 1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026
     steps:
-      - name: Create the ci user
+      # The libraries siv links, the -fsys ones included; lavapipe
+      # (vulkan-swrast) and the validation layer for the Vulkan tests; the
+      # keymaps and a font the tests use.
+      - name: Packages and the ci user
         shell: bash
         run: |
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends sudo git zstd ca-certificates
+          pacman -Syu --noconfirm --needed \
+            git curl xz tar pkgconf \
+            wayland libxkbcommon xkeyboard-config fontconfig ttf-dejavu \
+            vulkan-headers vulkan-icd-loader vulkan-swrast vulkan-validation-layers \
+            harfbuzz lua lcms2 libwebp libavif dav1d libjxl
           useradd -m -u "$(stat -c %u "$GITHUB_WORKSPACE")" ci
-          echo 'ci ALL=(ALL) NOPASSWD: ALL' >/etc/sudoers.d/ci
+          # D-Bus's Peer.GetMachineId reads it; the image has none.
+          systemd-machine-id-setup || tr -d - </proc/sys/kernel/random/uuid >/etc/machine-id
 
       - uses: actions/checkout@v5
 
-      # Zig and the Nix store with the pinned sway, keyed on the files that
-      # pin them.
-      - uses: actions/cache/restore@v4
-        id: tools
-        with:
-          path: |
-            /opt/zig-*
-            /nix
-            /home/ci/.nix-profile
-            /home/ci/.local/state/nix
-            /home/ci/.local/state/siv-sway
-          key: tools-${{ hashFiles('.agents/setup', '.agents/sway.nix') }}
+      - name: Zig
+        shell: bash
+        run: |
+          curl -fsSL "https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz" -o /tmp/zig.tar.xz
+          echo "$ZIG_SHA256  /tmp/zig.tar.xz" | sha256sum -c --quiet
+          mkdir -p /opt/zig && tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1
+          ln -s /opt/zig/zig /usr/local/bin/zig
 
-      # Fetched packages and Zig's caches, saved once per set of pinned
-      # packages: the vendored C and C++ libraries, most of a cold build,
-      # stay compiled, and the cache does not grow with every commit.
-      - uses: actions/cache/restore@v4
-        id: zig
+      # Fetched packages and Zig's global cache (compiler-rt, libc++, the
+      # two vendored C files), once per set of pinned packages.
+      - uses: actions/cache@v4
         with:
           path: |
             zig-pkg
-            .zig-cache
             /home/ci/.cache/zig
-          key: zig-${{ hashFiles('build.zig.zon', '.agents/setup') }}
-          restore-keys: zig-
-
-      - name: .agents/setup
-        run: .agents/setup
-
-      - uses: actions/cache/save@v4
-        if: steps.tools.outputs.cache-hit != 'true'
-        with:
-          path: |
-            /opt/zig-*
-            /nix
-            /home/ci/.nix-profile
-            /home/ci/.local/state/nix
-            /home/ci/.local/state/siv-sway
-          key: ${{ steps.tools.outputs.cache-primary-key }}
+          key: zig-${{ hashFiles('build.zig.zon') }}
 
       - name: zig build test
-        run: zig build test --summary failures
-
-      - name: zig build test-integration
-        run: zig build test-integration --summary failures
-
-      # The -fsys libraries Debian 12 provides. Not covered: harfbuzz (siv
-      # needs HarfBuzz 14; Debian 12 has 6.0), sheenbidi (not packaged by
-      # Debian), and lua (Debian 12 has no Lua 5.5). dav1d is linked only by
-      # the vendored libavif, so it gets a build of its own.
-      - name: zig build with -fsys
-        run: |
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-            glslang-tools liblcms2-dev libwebp-dev libavif-dev libdav1d-dev libjxl-dev
-          zig build --prefix "$RUNNER_TEMP/fsys" --summary failures \
-            -fsys=glslang -fsys=lcms2 -fsys=libwebp -fsys=libavif -fsys=libjxl
-          zig build --prefix "$RUNNER_TEMP/fsys-dav1d" --summary failures -fsys=dav1d
-
-      # Also after a failure, so that the next run does not start cold.
-      - uses: actions/cache/save@v4
-        if: always() && steps.zig.outcome == 'success' && steps.zig.outputs.cache-hit != 'true'
-        with:
-          path: |
-            zig-pkg
-            .zig-cache
-            /home/ci/.cache/zig
-          key: ${{ steps.zig.outputs.cache-primary-key }}
+        run: >-
+          zig build test --summary failures
+          -fsys=harfbuzz -fsys=lua -fsys=lcms2 -fsys=libwebp -fsys=glslang
+          -fsys=libavif -fsys=libjxl

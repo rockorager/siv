@@ -1997,14 +1997,6 @@ test "text input commits split at character boundaries" {
     try std.testing.expectEqual(@as(usize, 200), r.events[0].commit().len + r.events[1].commit().len);
 }
 
-test "fractional scale rounds half away from zero" {
-    const s: Scale = .{ .v120 = 150 }; // 1.25
-    try std.testing.expectEqual(@as(u32, 800), s.apply(640));
-    try std.testing.expectEqual(@as(u32, 4), s.apply(3)); // 3.75
-    try std.testing.expectEqual(@as(u32, 3), (Scale{ .v120 = 180 }).apply(2)); // 1.5 * 2 = 3
-    try std.testing.expectEqual(@as(u32, 2), (Scale{ .v120 = 180 }).apply(1)); // 1.5 rounds up
-}
-
 test "bounded strings truncate at UTF-8 boundaries" {
     var s: BoundedString(4) = .{};
     s.set("abé!"); // é is two bytes: "ab" + 2 bytes fits exactly

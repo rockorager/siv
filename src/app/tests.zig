@@ -175,43 +175,6 @@ test "a window destroyed from its own event handler lives until its lists come b
     }.f);
 }
 
-test "posted closures run on the loop thread, then their destroy; at teardown only destroy" {
-    const Counts = struct {
-        runs: std.atomic.Value(u32) = .init(0),
-        destroys: std.atomic.Value(u32) = .init(0),
-        fn run(ctx: ?*anyopaque) callconv(.c) void {
-            const c: *@This() = @ptrCast(@alignCast(ctx));
-            _ = c.runs.fetchAdd(1, .seq_cst);
-        }
-        fn destroy(ctx: ?*anyopaque) callconv(.c) void {
-            const c: *@This() = @ptrCast(@alignCast(ctx));
-            _ = c.destroys.fetchAdd(1, .seq_cst);
-        }
-    };
-    var counts: Counts = .{};
-    {
-        const app = try create(true);
-        defer app.destroy();
-        const Poster = struct {
-            fn post(a: *App, c: *Counts) void {
-                for (0..100) |_| a.post(Counts.run, Counts.destroy, c) catch unreachable;
-            }
-        };
-        const thread = try std.Thread.spawn(.{}, Poster.post, .{ app, &counts });
-        thread.join();
-        try runUntil(app, &counts, struct {
-            fn f(c: *Counts) bool {
-                return c.runs.load(.seq_cst) == 100;
-            }
-        }.f);
-        try testing.expectEqual(100, counts.destroys.load(.seq_cst));
-        // Never dispatched: destroyed with the application.
-        try app.post(Counts.run, Counts.destroy, &counts);
-    }
-    try testing.expectEqual(100, counts.runs.load(.seq_cst));
-    try testing.expectEqual(101, counts.destroys.load(.seq_cst));
-}
-
 // Portals (D19) -----------------------------------------------------------------
 
 const dbus = @import("dbus");

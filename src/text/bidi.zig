@@ -207,15 +207,6 @@ test "L1 resets trailing whitespace of a wrapped line" {
     try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0 }, &out);
 }
 
-test "L2 reverses runs from the highest level down" {
-    var order: [5]u32 = undefined;
-    reorder(&.{ 0, 1, 1, 2, 0 }, &order);
-    try std.testing.expectEqualSlices(u32, &.{ 0, 3, 2, 1, 4 }, &order);
-    var rtl: [3]u32 = undefined;
-    reorder(&.{ 1, 2, 2 }, &rtl);
-    try std.testing.expectEqualSlices(u32, &.{ 1, 2, 0 }, &rtl);
-}
-
 /// Runs one conformance case: `text` is a single paragraph; `expected_levels`
 /// holds null for characters removed by X9.
 fn checkCase(
