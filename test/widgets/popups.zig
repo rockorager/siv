@@ -266,6 +266,43 @@ test "menus: a context menu opens against any node; disabled items cannot be cho
     try testing.expect((try w2.uiWin().semanticsTree()).find(.menu_item, "Duplicate") != null);
 }
 
+test "menus: a context menu opens at the click's point, in LTR and RTL" {
+    for ([_]bool{ false, true }) |rtl| {
+        var h: Harness = .{};
+        try h.startWith(.{ .width = 300, .height = 260, .flags = .{ .rtl = rtl } });
+        defer h.stop();
+        const txn = try begin(h.window);
+        const col = c.siv_flex(txn, root(&h), &.{ .axis = .column });
+        _ = c.siv_set_layout(txn, col, &.{ .padding = .{ .top = 30 } });
+        const target = c.siv_box(txn, col);
+        _ = c.siv_set_layout(txn, target, &.{ .height = .{ .unit = .px, .value = 150 } });
+        const menu = c.siv_menu(txn, root(&h), &.{ .label = "Edit", .label_len = 4 });
+        _ = c.siv_menu_item(txn, menu, &.{ .label = "Copy", .label_len = 4 });
+        try ok(c.siv_txn_commit(txn));
+        try h.settle();
+        // A right click at (px, 50) in the window, (px, 20) in the
+        // target, with room for the menu on its start side.
+        const px: f32 = if (rtl) 250 else 70;
+        try h.click(px, 50);
+        try h.settle();
+        try ok(c.siv_menu_open_at(menu, target, px, 20));
+        try h.settle();
+        const popup = (try openPopup(&h)).?;
+        const at = (try A.App.window(@backingInt(popup), A.window_tag)).win.state.popup.?;
+        // Below the point at its start side: right of it in LTR, left of
+        // it (ending there) in RTL.
+        try testing.expect(at.y >= 50 and at.y <= 52);
+        const size = (try A.App.window(@backingInt(popup), A.window_tag)).uiWin().width;
+        const x0: f32 = @floatFromInt(at.x);
+        if (rtl) {
+            try testing.expect(x0 + size >= px and x0 + size <= px + 2);
+        } else {
+            try testing.expect(x0 >= px - 1 and x0 <= px + 1);
+        }
+        try testing.expectEqual(t.Result.error_invalid_argument, c.siv_menu_open_at(menu, .null, 0, 0));
+    }
+}
+
 test "popovers: content the application builds, closed by Escape unless kept" {
     var h: Harness = .{ .golden = "test/golden/widgets" };
     try h.start(300, 260, null, null);

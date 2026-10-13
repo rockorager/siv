@@ -616,7 +616,7 @@ test "popups: placed below their button, flipped at the edge, keyboard, dismisse
         const nr = app.win.windowRect(near_bottom);
         try testing.expectEqual(@as(i32, @intFromFloat(@floor(nr.y0))) - 60, st.popup.?.y);
         // Repositioned to follow a moved anchor: below the button now.
-        try app.comp.repositionPopup(q.wid, app.win.popupPositioner(button, 100, 60, .below));
+        try app.comp.repositionPopup(q.wid, app.win.popupPositioner(button, 100, 60, .below, null));
         try app.settle();
         st = try app.windowState(q.wid);
         try testing.expectEqual(@as(i32, @intFromFloat(@ceil(br.y1))), st.popup.?.y);

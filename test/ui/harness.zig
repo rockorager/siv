@@ -108,7 +108,7 @@ pub const App = struct {
         errdefer _ = app.popups.pop();
         p.wid = try app.comp.createPopup(.{
             .parent = app.wid,
-            .positioner = app.win.popupPositioner(node, width, height, placement),
+            .positioner = app.win.popupPositioner(node, width, height, placement, null),
             .grab = if (grab) .{ .seat = app.win.input.seat, .serial = app.win.input.serial } else null,
         });
         return p;

@@ -715,8 +715,15 @@ pub const PopupPlacement = enum {
 
 /// An xdg_positioner for a popup of `width` x `height` anchored to `id`
 /// (its window rectangle, rounded out).
-pub fn popupPositioner(win: *const Window, id: NodeId, width: u32, height: u32, placement: PopupPlacement) platform.Positioner {
-    const r = win.windowRect(id);
+pub fn popupPositioner(win: *const Window, id: NodeId, width: u32, height: u32, placement: PopupPlacement, sub: ?[4]f32) platform.Positioner {
+    var r = win.windowRect(id);
+    // A rectangle within the node (a context menu's point), at least a
+    // pixel in size.
+    if (sub) |s| {
+        const x = r.x0 + s[0];
+        const y = r.y0 + s[1];
+        r = .{ .x0 = x, .y0 = y, .x1 = x + @max(1, s[2]), .y1 = y + @max(1, s[3]) };
+    }
     const x0: i32 = @intFromFloat(@floor(r.x0));
     const y0: i32 = @intFromFloat(@floor(r.y0));
     const anchor_rect: platform.positioner.Rect = .{

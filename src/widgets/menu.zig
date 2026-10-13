@@ -159,13 +159,20 @@ fn textOf(node: Node, buf: []u8) []const u8 {
 pub export fn siv_menu_open(menu_node: Node, anchor: Node) siv.Result {
     const m = menuOf(menu_node) orelse return .error_invalid_argument;
     const at = if (anchor != .null) anchor else w.related(m.owner, .parent);
-    return openMenu(m, at, null, true, true);
+    return openMenu(m, at, null, true, true, null);
+}
+
+/// A context menu: at a point of `anchor` instead of below it.
+pub export fn siv_menu_open_at(menu_node: Node, anchor: Node, x: f32, y: f32) siv.Result {
+    const m = menuOf(menu_node) orelse return .error_invalid_argument;
+    if (anchor == .null or !std.math.isFinite(x) or !std.math.isFinite(y)) return .error_invalid_argument;
+    return openMenu(m, anchor, null, true, true, .{ .x = x, .y = y });
 }
 
 /// Shows `m` in a popup against `at`: below it, or beside it for a
 /// submenu of `parent`. With `grab` the popup takes the keyboard (it
 /// answers a press or key); `focus` focuses its first enabled item.
-fn openMenu(m: *Menu, at: Node, parent: ?*Menu, grab: bool, focus: bool) siv.Result {
+fn openMenu(m: *Menu, at: Node, parent: ?*Menu, grab: bool, focus: bool, point: ?siv.Rect) siv.Result {
     if (w.windowAlive(m.popup)) {
         if (!grab or m.grabbed) {
             if (focus) focusFirst(m);
@@ -181,7 +188,8 @@ fn openMenu(m: *Menu, at: Node, parent: ?*Menu, grab: bool, focus: bool) siv.Res
     var r = c.siv_popup_create(parent_window, &.{
         .anchor = at,
         .placement = if (parent != null) .beside else .below,
-        .flags = .{ .no_grab = !grab },
+        .flags = .{ .no_grab = !grab, .at_rect = point != null },
+        .anchor_rect = point orelse .{},
         .user_data = w.handleData(m.root),
         .on_event = onMenuPopupEvent,
     }, &popup);
@@ -276,7 +284,7 @@ fn openSubmenu(st: *Row, grab: bool, focus: bool) void {
     if (m.child != .null and m.child != sub.root) {
         if (w.stateOf(Menu, m.child, &.{.menu})) |old| closeMenu(old);
     }
-    _ = openMenu(sub, st.root, m, grab, focus);
+    _ = openMenu(sub, st.root, m, grab, focus, null);
     refreshRow(st.root);
 }
 

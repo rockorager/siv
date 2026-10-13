@@ -171,6 +171,8 @@ pub const Window = struct {
         width: u32 = 0,
         height: u32 = 0,
         grab: bool = true,
+        /// SIV_POPUP_AT_RECT: x, y, width, height in the anchor.
+        rect: ?[4]f32 = null,
     };
 
     /// Destroys the window after its popups, which go first (D17).
@@ -781,6 +783,10 @@ fn popupCreate(parent: t.Window, desc_ptr: ?*const t.PopupDesc, out: ?*t.Window)
         _ => unreachable,
     };
     const anchor: ui.NodeId = if (desc.anchor == .null) .root else try tree.nodeIn(pw, desc.anchor);
+    const ar = desc.anchor_rect;
+    for ([_]f32{ ar.x, ar.y, ar.width, ar.height }) |v| if (!std.math.isFinite(v)) return error.InvalidArgument;
+    if (ar.width < 0 or ar.height < 0) return error.InvalidArgument;
+    const rect: ?[4]f32 = if (flags.at_rect) .{ ar.x, ar.y, ar.width, ar.height } else null;
     const dest = try runtime.out(t.Window, out);
 
     const gpa = self.gpa();
@@ -802,7 +808,7 @@ fn popupCreate(parent: t.Window, desc_ptr: ?*const t.PopupDesc, out: ?*t.Window)
         .destroy = desc.destroy,
         .user_data = desc.user_data,
         .parent = pw,
-        .popup = .{ .anchor = anchor, .placement = placement, .width = desc.width, .height = desc.height, .grab = !flags.no_grab },
+        .popup = .{ .anchor = anchor, .placement = placement, .width = desc.width, .height = desc.height, .grab = !flags.no_grab, .rect = rect },
     };
     errdefer w.nodes.deinit(gpa);
     try w.nodes.reserve(gpa, 1);
@@ -822,7 +828,7 @@ pub export fn siv_popup_show(popup: t.Window) t.Result {
     const pw = w.parent orelse return .error_invalid_argument;
     const p = w.popup;
     const anchor: ui.NodeId = if (pw.uiWin().isLive(p.anchor)) p.anchor else .root;
-    w.win.showPopup(anchor, p.placement, p.width, p.height, p.grab) catch |err| return t.resultOf(mapAppError(err));
+    w.win.showPopup(anchor, p.placement, p.width, p.height, p.grab, p.rect) catch |err| return t.resultOf(mapAppError(err));
     return .ok;
 }
 

@@ -1262,7 +1262,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     - In the C API (D22), `siv_popup_create` makes a popup window with its
       tree and `siv_popup_show` maps it, sized to its content unless a
       size was given; its `close_requested` arrives at the popup's
-      `on_event`.
+      `on_event`. With `SIV_POPUP_AT_RECT` it is placed against a
+      rectangle inside its anchor (`anchor_rect`, in the anchor's
+      coordinates from its last layout) instead of the anchor's box, and
+      `siv_menu_open_at` opens a menu at a point of a node: a context menu
+      at the click. Before, a menu could open only below a node, so the
+      file manager in `apps/files` moved a 1×1 anchor node to the pointer
+      and opened the menu a frame later, after the anchor's layout.
     - The headless backend places popups with the same rules
       (`platform.positioner.place`: flip, then slide, then resize, per
       axis) against its output and simulates grab dismissal; the sway

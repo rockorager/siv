@@ -774,7 +774,9 @@ pub const Window = struct {
     /// parent. A zero width or height sizes it to its content, at most
     /// the parent's width. With `grab`, it takes the keyboard for the
     /// parent's last press or key, and a click outside dismisses it.
-    pub fn showPopup(win: *Window, anchor: ui.NodeId, placement: Placement, width: u32, height: u32, grab: bool) Error!void {
+    /// `rect`, if set, is where in `anchor` to place the popup (x, y,
+    /// width, height in the anchor's coordinates).
+    pub fn showPopup(win: *Window, anchor: ui.NodeId, placement: Placement, width: u32, height: u32, grab: bool, rect: ?[4]f32) Error!void {
         const app = win.app;
         const parent = win.parent orelse return error.Unavailable;
         if (win.shown or win.closed or parent.closed or !parent.shown) return error.Busy;
@@ -785,7 +787,8 @@ pub const Window = struct {
             if (w == 0) w = @intFromFloat(@max(1, @ceil(sz.w)));
             if (h == 0) h = @intFromFloat(@max(1, @ceil(sz.h)));
         }
-        var pos = parent.ui.popupPositioner(if (parent.ui.isLive(anchor)) anchor else .root, w, h, placement);
+        const live = parent.ui.isLive(anchor);
+        var pos = parent.ui.popupPositioner(if (live) anchor else .root, w, h, placement, if (live) rect else null);
         pos.reactive = true;
         const id = app.comp.createPopup(.{
             .parent = parent.id,

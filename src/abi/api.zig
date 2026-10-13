@@ -350,6 +350,7 @@ pub const decls = [_]Decl{
     }),
     flags("siv_popup_flags", "Popup options.", &.{
         .{ .name = "no_grab", .bit = 0, .doc = "A passive popup (a tooltip): it takes no keyboard focus and clicks outside do not dismiss it." },
+        .{ .name = "at_rect", .bit = 1, .doc = "Place the popup against anchor_rect, a rectangle in the anchor's coordinates, instead of the anchor's whole box: a context menu at the pointer." },
     }),
     descriptor("siv_popup_desc", "Options for siv_popup_create.", &.{
         .{ .name = "anchor", .type = ref("siv_node"), .doc = "A node of the parent window the popup is placed against; 0 is its root." },
@@ -360,6 +361,7 @@ pub const decls = [_]Decl{
         .{ .name = "height", .type = .u32, .doc = "Logical height; 0 sizes it to its content when shown." },
         .{ .name = "placement", .type = ref("siv_popup_placement"), .doc = "Default below." },
         .{ .name = "flags", .type = ref("siv_popup_flags"), .doc = "Options." },
+        .{ .name = "anchor_rect", .type = ref("siv_rect"), .doc = "With SIV_POPUP_AT_RECT: where in the anchor to place the popup, in the anchor's coordinates from its top-left corner as of its last layout; a point (zero size) such as a click's x and y opens a menu there." },
     }),
 
     // Layout and style.
@@ -1547,6 +1549,12 @@ pub const functions = [_]Function{
     call("siv_menu_open", "Shows a menu in a popup below anchor, focused on its first enabled item. Up and Down move, Enter and Space choose, Escape and clicks outside close. Call it while handling the press or key that opens it; outside a transaction.", &.{
         .{ .name = "menu", .type = ref("siv_node"), .doc = "A menu or menu button." },
         .{ .name = "anchor", .type = ref("siv_node"), .doc = "The node to place it against; 0 is the menu's parent." },
+    }),
+    call("siv_menu_open_at", "Shows a menu as siv_menu_open does, at a point of anchor rather than below it: its start corner at the point, flipping and sliding to stay on the output. For context menus: anchor is the node clicked and x and y the click's position in it.", &.{
+        .{ .name = "menu", .type = ref("siv_node"), .doc = "A menu or menu button." },
+        .{ .name = "anchor", .type = ref("siv_node"), .doc = "The node the point is in." },
+        .{ .name = "x", .type = .f32, .doc = "Horizontal position in anchor, from its left edge, as pointer events report it." },
+        .{ .name = "y", .type = .f32, .doc = "Vertical position in anchor, from its top edge." },
     }),
     call("siv_popover_create", "Creates a popover against anchor: a popup with a themed card whose content the application builds in a transaction on the popup, then maps with siv_popup_show. Escape and clicks outside report SIV_EVENT_CLOSE on the content node; unless a handler keeps it, the popup is destroyed.", &.{
         .{ .name = "anchor", .type = ref("siv_node"), .doc = "The node to place it against." },
