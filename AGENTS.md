@@ -32,7 +32,10 @@ zig build test-integration-portal  # only portals against xdg-desktop-portal
 zig build test-integration-pdf  # only PDF output against qpdf and poppler
 zig build test-integration-tray  # only the tray against dbus-daemon and gdbus
 zig build test-integration-icons -Doptimize=ReleaseSafe  # installed Adwaita and Breeze drawn by siv
-                               #   against rsvg-convert (SIV_ICON_DIFFS=DIR keeps the worst)
+                               #   against rsvg-convert; opt in, not in `test-integration`
+                               #   (results depend on the theme releases). SIV_ICON_DIFFS=DIR
+                               #   keeps the worst, SIV_ICON_ONLY=TEXT picks files,
+                               #   SIV_ICON_ADWAITA=DIR / SIV_ICON_BREEZE=DIR compare other copies
 zig build test-dbus --fuzz -Doptimize=ReleaseSafe  # fuzz a module's parsers
 zig build test-abi             # abi module, generators, Zig wrappers, exported symbols
 zig build test-lua             # Lua binding against libsiv.so, siv.so from the stock lua,

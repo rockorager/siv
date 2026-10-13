@@ -41,8 +41,12 @@ pub const Ctx = struct {
     /// A generated sbix bitmap font and its bytes.
     sbix: ?Font = null,
     sbix_bytes: []u8 = &.{},
+    /// An icon with an embedded image, whose pixels the list references
+    /// until it is rendered.
+    exported: ?*svg.Document = null,
 
     pub fn deinit(c: *Ctx) void {
+        if (c.exported) |d| d.deinit();
         if (c.fonts) |*f| f.deinit();
         if (c.sbix) |f| f.deinit();
         c.gpa.free(c.sbix_bytes);
@@ -604,8 +608,9 @@ fn shadows(_: *Ctx, b: *Builder) !void {
 /// siv's test icons (test/icons/themes) lowered by the SVG renderer (D19):
 /// symbolic icons in light and dark foregrounds with the success, warning,
 /// and error colors, full-color icons with gradients, clip paths, masks,
-/// a blur filter, and a blend mode, and color-scheme icons as written and
-/// recolored.
+/// a blur filter, and a blend mode, color-scheme icons as written and
+/// recolored, and an icon as exporters write them (coincident clip paths,
+/// an embedded image).
 fn icons(c: *Ctx, b: *Builder) !void {
     const dir = "test/icons/themes/";
     const symbolic = [_][]const u8{
@@ -654,6 +659,57 @@ fn icons(c: *Ctx, b: *Builder) !void {
         try doc.draw(b, .xywh(x + 64, 240, 8, 8), &warm);
         try doc.draw(b, .xywh(x + 20, 310, 24, 24), &warm);
     }
+    // Clip paths that coincide with what they clip, and an embedded
+    // image, as exporters write icons: edges as sharp as unclipped ones.
+    if (c.exported == null) c.exported = try loadIcon(c.gpa, dir, "hicolor/scalable/apps/siv-test-exported.svg");
+    const exported = c.exported.?;
+    for ([_]f32{ 64, 32, 24, 16 }, [_]f32{ 12, 88, 132, 168 }) |size, x| try exported.draw(b, .xywh(x, 345, size, size), null);
+}
+
+/// Layers composited in sRGB (scene.Layer.srgb, D11): each pair draws the
+/// same content in linear light (left) and in an sRGB layer (right).
+fn srgbLayers(c: *Ctx, b: *Builder) !void {
+    const s = stops2(.srgb8(0xff, 0, 0, 0xff), .srgb8(0, 0xff, 0, 0xff));
+    for ([_]bool{ false, true }, 0..) |srgb, k| {
+        const x: f32 = 10 + @as(f32, @floatFromInt(k)) * 200;
+        try b.pushLayer(.{ .srgb = srgb });
+        // Gradient interpolation.
+        try b.fillRect(.xywh(x, 10, 180, 30), .{ .gradient = .{ .geometry = .{ .linear = .{ .p0 = .{ .x = x, .y = 0 }, .p1 = .{ .x = x + 180, .y = 0 } } }, .stops = &s } });
+        // Translucent overlap and antialiased edges.
+        c.pb.reset();
+        try c.pb.ellipse(.xywh(x, 50, 70, 70));
+        try b.fillPath(c.pb.path(), .nonzero, .color(blue.withAlpha(0.6)));
+        c.pb.reset();
+        try c.pb.ellipse(.xywh(x + 35, 50, 70, 70));
+        try b.fillPath(c.pb.path(), .nonzero, .color(orange.withAlpha(0.6)));
+        try b.stroke(.{ .rect = .xywh(x + 115.3, 55.3, 60, 60) }, .{ .width = 1.3 }, .color(ink));
+        // An opacity group that stays in the layer's space, and one that
+        // composites in linear light inside it.
+        try b.pushLayer(.{ .opacity = 0.5, .srgb = srgb });
+        try b.fillRect(.xywh(x, 130, 40, 40), .color(green));
+        try b.fillRect(.xywh(x + 20, 150, 40, 40), .color(pink));
+        try b.popLayer();
+        try b.pushLayer(.{ .opacity = 0.5 });
+        try b.fillRect(.xywh(x + 70, 130, 40, 40), .color(green));
+        try b.fillRect(.xywh(x + 90, 150, 40, 40), .color(pink));
+        try b.popLayer();
+        // A blend mode inside, a shadow, an image, mask and color glyphs.
+        try b.pushLayer(.{ .blend = .multiply, .srgb = srgb });
+        try b.fillRect(.xywh(x + 140, 130, 40, 60), .color(blue.withAlpha(0.8)));
+        try b.popLayer();
+        try b.shadow(.{ .shape = .{ .rect = .xywh(x + 10, 210, 50, 30), .radii = .uniform(6, 6) }, .sigma = 4, .color = ink.withAlpha(0.6) });
+        try b.fillRoundedRect(.xywh(x + 10, 210, 50, 30), .uniform(6, 6), .color(.white));
+        try b.image(.{ .image = checkerImage(c), .src = .xywh(0, 0, 32, 32), .dst = .xywh(x + 70, 205, 40, 40), .opacity = 0.8 });
+        try text(c, b, c.roboto, "sRGB", x + 115, 235, 18, .color(blue));
+        try b.glyphs(.{
+            .font = c.colr.handle(),
+            .size = 30,
+            .glyphs = &.{.{ .id = 10, .x = x + 150, .y = 280 }},
+            .paint = .color(ink),
+            .bounds = .{ .x0 = x + 120, .y0 = 220, .x1 = x + 200, .y1 = 310 },
+        });
+        try b.popLayer();
+    }
 }
 
 fn loadIcon(gpa: std.mem.Allocator, dir: []const u8, name: []const u8) !*svg.Document {
@@ -684,7 +740,8 @@ pub const cases = [_]Case{
     .{ .name = "bitmaps", .width = 240, .height = 130, .build = bitmaps },
     .{ .name = "shadows", .width = 400, .height = 300, .build = shadows },
     .{ .name = "families", .width = 400, .height = 210, .build = families },
-    .{ .name = "icons", .width = 400, .height = 340, .build = icons },
+    .{ .name = "icons", .width = 400, .height = 420, .build = icons },
+    .{ .name = "srgb", .width = 400, .height = 300, .build = srgbLayers },
 };
 
 test "golden images" {

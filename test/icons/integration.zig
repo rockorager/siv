@@ -1,26 +1,27 @@
 //! siv's SVG renderer against librsvg on real icon themes (`zig build
-//! test-integration-icons`, part of `test-integration`): every SVG of
-//! the installed Adwaita and Breeze themes is drawn by siv (svg lowered
-//! to a display list, CPU renderer) and by rsvg-convert at 32 × 32, and
-//! the two are compared. The themes are LGPL and CC-BY-SA, so neither the
+//! test-integration-icons`, opt in: what it finds depends on the theme
+//! releases installed, D19): every SVG of the installed Adwaita and
+//! Breeze themes is drawn by siv (svg lowered to a display list, CPU
+//! renderer) and by rsvg-convert at 32 × 32, and the two are compared. The themes are LGPL and CC-BY-SA, so neither the
 //! icons nor images of them are in the repository (D25); the reference is
 //! made from the installed files when the test runs. Debian packages:
 //! adwaita-icon-theme, breeze-icon-theme, librsvg2-bin (.agents/setup).
 //!
-//! siv composites in linear light (D11) and librsvg in sRGB. Two
+//! siv composites an SVG's content in sRGB, as librsvg does, and the
+//! result onto what is below it in linear light (D11, D19). Two
 //! comparisons:
 //!
-//! - Geometry: siv's display list with its colors moved to sRGB-encoded
-//!   values, so the CPU renderer blends as librsvg does, against the
-//!   reference over white. Only the lowering and coverage differ here,
-//!   so this is the strict check of the SVG renderer.
-//! - As drawn: siv's output, linear blending and all, against the
-//!   reference composited over white in linear light. Translucent parts
-//!   of an icon over other parts blend differently, which D19 records.
+//! - Geometry: the icon drawn over white inside one sRGB layer, so that
+//!   the composite onto white blends as librsvg's does too, against the
+//!   reference over white in sRGB. Only the lowering and coverage differ
+//!   here, so this is the strict check of the SVG renderer.
+//! - As drawn: siv's output as an application gets it, against the
+//!   reference composited over white in linear light.
 //!
 //! An icon differs when more than 2% of its pixels are off by more than
 //! 24 of 255 in some channel. With SIV_ICON_DIFFS=DIR, the renderings
 //! of the icons that differ most in geometry go to DIR (siv left).
+//! SIV_ICON_ONLY=TEXT compares only the files whose paths contain TEXT.
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -34,13 +35,17 @@ const png = @import("png");
 const gpa = std.testing.allocator;
 const size = 32;
 
-const Theme = struct { name: []const u8, dir: []const u8, max_geometry: f32, max_drawn: f32 };
+/// `env` names a variable that points the comparison at another copy of
+/// the theme (an unpacked release, say).
+const Theme = struct { name: []const u8, dir: []const u8, env: [:0]const u8, max_geometry: f32, max_drawn: f32 };
 
 /// Measured on Debian 12's adwaita-icon-theme 43 and breeze-icon-theme
-/// 5.103 (October 2026); the bounds leave room for other versions.
+/// 5.103, and Adwaita 48.1 and 51.0 (October 2026; D19 has the numbers).
+/// A newer release may use what siv leaves out: that is why the test is
+/// opt in.
 const themes = [_]Theme{
-    .{ .name = "Adwaita", .dir = "/usr/share/icons/Adwaita/scalable", .max_geometry = 0.01, .max_drawn = 0.01 },
-    .{ .name = "Breeze", .dir = "/usr/share/icons/breeze", .max_geometry = 0.03, .max_drawn = 0.3 },
+    .{ .name = "Adwaita", .dir = "/usr/share/icons/Adwaita", .env = "SIV_ICON_ADWAITA", .max_geometry = 0.01, .max_drawn = 0.01 },
+    .{ .name = "Breeze", .dir = "/usr/share/icons/breeze", .env = "SIV_ICON_BREEZE", .max_geometry = 0.01, .max_drawn = 0.01 },
 };
 
 test "real icon themes match librsvg" {
@@ -61,7 +66,7 @@ test "real icon themes match librsvg" {
             for (files.items) |f| gpa.free(f);
             files.deinit(gpa);
         }
-        try listSvgs(theme.dir, &files, 0);
+        try listSvgs(std.testing.environ.getPosix(theme.env) orelse theme.dir, &files, 0);
         if (files.items.len == 0) continue;
         any = true;
         std.mem.sort([]u8, files.items, {}, struct {
@@ -75,7 +80,9 @@ test "real icon themes match librsvg" {
         var geometry: usize = 0;
         var unparsed: usize = 0;
         var worst: [8]struct { score: f32 = 0, file: []const u8 = "" } = @splat(.{});
+        const only = std.testing.environ.getPosix("SIV_ICON_ONLY");
         for (files.items) |file| {
+            if (only) |o| if (std.mem.indexOf(u8, file, o) == null) continue;
             const bytes = readFile(file) catch continue;
             defer gpa.free(bytes);
             const doc = svg.parse(gpa, bytes, .{}) catch {
@@ -86,8 +93,13 @@ test "real icon themes match librsvg" {
             const reference = try rsvg(exe, file) orelse continue;
             defer gpa.free(reference);
 
+            // rsvg-convert's viewport for -w and -h with
+            // --keep-aspect-ratio: the intrinsic size scaled to fit, at the
+            // top left of the canvas.
+            const fit = @min(size / doc.width, size / doc.height);
+            const dst: raster.Rect = .xywh(0, 0, doc.width * fit, doc.height * fit);
             b.reset();
-            doc.draw(&b, .xywh(0, 0, size, size), null) catch |e| {
+            doc.draw(&b, dst, null) catch |e| {
                 std.debug.print("{s}: drawing failed: {t}\n", .{ file, e });
                 return e;
             };
@@ -99,12 +111,13 @@ test "real icon themes match librsvg" {
             const want = overWhite(reference, true);
             if (differing(&out, &want) > 0.02) different += 1;
 
-            // Blending in sRGB: encoded colors, decoded output.
-            encodeColors(list);
-            try r.render(list, .{ .background = .white, .target = .{ .pixels = &out, .stride = size * 4, .format = .abgr8888 } });
-            for (0..size * size) |i| for (0..3) |ch| {
-                out[i * 4 + ch] = @intFromFloat(@round(scene.srgbToLinear(@as(f32, @floatFromInt(out[i * 4 + ch])) / 255) * 255));
-            };
+            // Blending in sRGB throughout, onto white too.
+            b.reset();
+            try b.pushLayer(.{ .srgb = true });
+            try b.fillRect(.xywh(0, 0, size, size), .color(.white));
+            try doc.draw(&b, dst, null);
+            try b.popLayer();
+            try r.render(try b.finish(0), .{ .background = .white, .target = .{ .pixels = &out, .stride = size * 4, .format = .abgr8888 } });
             const flat = overWhite(reference, false);
             const score = differing(&out, &flat);
             if (score > 0.02) geometry += 1;
@@ -156,27 +169,6 @@ fn differing(got: []const u8, want: []const u8) f32 {
     return @as(f32, @floatFromInt(off)) / (size * size);
 }
 
-/// Replaces a list's linear colors with their sRGB encodings, so the
-/// renderer's linear blending blends encoded values as librsvg does.
-fn encodeColors(list: scene.DisplayList) void {
-    const enc = struct {
-        fn color(c: *scene.Color) void {
-            c.* = .{ .r = scene.linearToSrgb(c.r), .g = scene.linearToSrgb(c.g), .b = scene.linearToSrgb(c.b), .a = c.a };
-        }
-        fn paint(p: *scene.Paint) void {
-            switch (p.*) {
-                .solid => |*c| color(c),
-                .gradient => |g| for (@constCast(g.stops)) |*s| color(&s.color),
-            }
-        }
-    };
-    for (@constCast(list.commands)) |*cmd| switch (cmd.*) {
-        .fill => |*f| enc.paint(&f.paint),
-        .stroke => |*st| enc.paint(&st.paint),
-        else => {},
-    };
-}
-
 fn absDiff(a: u8, b: u8) u8 {
     return if (a > b) a - b else b - a;
 }
@@ -203,7 +195,7 @@ fn rsvg(exe: [*:0]const u8, file: []const u8) !?[]u8 {
     if (linux.errno(out_rc) != .SUCCESS) return error.SpawnFailed;
     const out: i32 = @intCast(out_rc);
     defer _ = linux.close(out);
-    const args = [_:null]?[*:0]const u8{ exe, "-w", "32", "-h", "32", z, null };
+    const args = [_:null]?[*:0]const u8{ exe, "-w", "32", "-h", "32", "--keep-aspect-ratio", z, null };
     const env = [_:null]?[*:0]const u8{ "PATH=/usr/bin:/bin", "LC_ALL=C.UTF-8" };
     const devnull_rc = linux.open("/dev/null", .{ .ACCMODE = .WRONLY }, 0);
     const rc = linux.fork();

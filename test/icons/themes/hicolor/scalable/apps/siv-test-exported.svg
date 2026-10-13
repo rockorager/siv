@@ -1,0 +1,14 @@
+<svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <!-- As icon exporters write them (Adwaita since 45): a clip path
+       around every shape that coincides with the shape's edge, and
+       shading as an embedded image. siv's own drawing, MIT. -->
+  <clipPath id="a"><path d="m4 4h56v56h-56z"/></clipPath>
+  <clipPath id="b"><path d="m14 6h36c4.4 0 8 3.6 8 8v36c0 4.4-3.6 8-8 8h-36c-4.4 0-8-3.6-8-8v-36c0-4.4 3.6-8 8-8"/></clipPath>
+  <g clip-path="url(#a)">
+    <g clip-path="url(#b)">
+      <path d="m14 6h36c4.4 0 8 3.6 8 8v36c0 4.4-3.6 8-8 8h-36c-4.4 0-8-3.6-8-8v-36c0-4.4 3.6-8 8-8" fill="#3584e4"/>
+      <image x="0" y="34" width="64" height="30" preserveAspectRatio="none" xlink:href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAICAYAAADeM14FAAAAH0lEQVQI12OUKbzxX0+G45qLNs/VQnfha0wMaIA+AgBAtwaNFvWAOQAAAABJRU5ErkJggg=="/>
+    </g>
+  </g>
+  <g clip-path="url(#b)"><circle cx="32" cy="26" r="12" fill="#f6f5f4"/></g>
+</svg>

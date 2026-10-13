@@ -358,7 +358,9 @@ pub fn build(b: *std.Build) void {
     a11y_integration_run.has_side_effects = true; // depends on the installed at-spi2-core
     integration_step.dependOn(&a11y_integration_run.step);
     // Real icon themes (Adwaita, Breeze) drawn by siv's SVG renderer
-    // against librsvg's rsvg-convert (test/icons/integration.zig).
+    // against librsvg's rsvg-convert (test/icons/integration.zig). Opt in:
+    // what it finds depends on the installed theme releases, which use new
+    // SVG features at their own pace (D19).
     const icons_integration_run = b.addRunArtifact(b.addTest(.{
         .name = "icons-integration",
         .root_module = ctx.module("test/icons/integration.zig", &.{
@@ -372,7 +374,6 @@ pub fn build(b: *std.Build) void {
         .filters = test_filters,
     }));
     icons_integration_run.has_side_effects = true; // depends on the installed themes and librsvg
-    integration_step.dependOn(&icons_integration_run.step);
     b.step("test-integration-icons", "Draw the installed Adwaita and Breeze icons against rsvg-convert").dependOn(&icons_integration_run.step);
     // Frame pacing measured end to end (src/compositor/integration_tests.zig,
     // "pacing: ..."): dropped frames on lavapipe and pixman sway are CPU
