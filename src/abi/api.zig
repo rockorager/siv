@@ -426,7 +426,7 @@ pub const decls = [_]Decl{
     enumeration("siv_popup_placement", "Where a popup goes relative to its anchor (D17). Horizontal sides are logical: they mirror in right-to-left layouts.", &.{
         .{ .name = "below", .value = 0, .doc = "Menus and combo boxes: below the anchor at its start edge; flips above and slides sideways to stay on the output." },
         .{ .name = "beside", .value = 1, .doc = "Submenus: beside the anchor's end edge, top-aligned; flips to the start side." },
-        .{ .name = "tooltip", .value = 2, .doc = "Tooltips: centered below the anchor." },
+        .{ .name = "tooltip", .value = 2, .doc = "Tooltips: centered below the anchor. The popup takes no pointer input: the pointer goes to what is under it." },
     }),
     flags("siv_popup_flags", "Popup options.", &.{
         .{ .name = "no_grab", .bit = 0, .doc = "A passive popup (a tooltip): it takes no keyboard focus and clicks outside do not dismiss it." },
@@ -2055,6 +2055,7 @@ pub const functions = [_]Function{
     }),
 
     // Pointer cursors (D16).
+    setter("siv_set_tooltip", "Sets the text of a node's tooltip (D17): a small popup shown when the pointer rests on the node or a descendant without one, or when the keyboard focuses it, after half a second (at once while the user moves between tooltips); a press, a key, or scrolling hides it. It is also the node's accessible description unless the node has one or the text repeats its name. Stock icon-only buttons show their label this way.", &.{.{ .name = "text", .type = .string, .doc = "UTF-8, copied; empty removes the tooltip." }}),
     setter("siv_set_cursor", "Sets the pointer cursor over a node and its descendants that set none. While a press is held the cursor stays that of the node that got it.", &.{.{ .name = "cursor", .type = ref("siv_cursor"), .doc = "The cursor; auto inherits." }}),
     call("siv_window_set_cursor", "Shows a cursor over the whole window whatever its nodes set, such as SIV_CURSOR_PROGRESS while the application is busy; auto stops.", &.{
         window_param,

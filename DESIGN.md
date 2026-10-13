@@ -1829,6 +1829,32 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       parent moves or resizes. Both need `xdg_wm_base` 3; on older
       compositors a popup keeps its first placement, so the caller closes
       and reopens it if the move matters.
+  - Tooltips are a core primitive, not a widget: `siv_set_tooltip(txn,
+    node, text)` gives any node one, so application widgets (D22) get
+    them as stock ones do.
+    - The tree (`ui.input`) decides when: the pointer resting on a node
+      or a descendant without a tooltip of its own, or keyboard focus
+      (with the focus ring, so not a click) arriving on it, asks the
+      host for that node's tooltip; a press, a key, scrolling, the
+      pointer leaving, or the node's removal asks for none. After a
+      press or key the tooltip stays hidden until the pointer reaches
+      another node, so typing in a field does not bring it back.
+    - The coordinator (`src/app`) decides how: after 500 ms (GTK's
+      value; the settings portal has no such setting), or at once
+      within a second of the last tooltip hiding, as the user moves
+      along a toolbar, it shows the text in an `xdg_popup` without a
+      grab, `tooltip` placement, and the theme's inverse colors, at most
+      360 pixels wide. Such popups take no pointer input (an empty input
+      region), so the pointer reaching one does not leave the node and
+      hide it.
+    - The tooltip is the node's accessible description (D18) unless the
+      node sets one or the tooltip repeats its name, as an icon-only
+      button's does; the popup itself has the `tooltip` role. Screen
+      readers read the description on focus, so the popup is not
+      announced.
+    - Before, an application wanting a tooltip built a popup itself and
+      timed it with `siv_timer_start`, and stock icon-only buttons had
+      none (D30).
   - External GPU content is a scene node. When the node is axis-aligned,
     rectangularly clipped, and opaque or topmost, it is promoted to a subsurface
     (zero-copy, `wp_viewporter`, compositor color management). Otherwise its
@@ -3257,7 +3283,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     name (`icon` in their descriptors), shown before the label in the
     label's color token, so it follows hover, press, disabled, and theme
     changes; with `SIV_WIDGET_ICON_ONLY` the label is hidden and becomes
-    the button's accessible name, and the button is square. Menu items
+    the button's accessible name, and the button is square; the label
+    also shows as the button's tooltip (D17), since a sighted user
+    otherwise has only the icon to go by. The button sets the tooltip
+    when its label or icon changes, so an application's own
+    `siv_set_tooltip` on it holds until then. Menu items
     take one too; when any item of a menu has an icon, every row has the
     slot, so labels line up. `siv_widget_set_icon` changes the icon, as
     `siv_widget_set_label` the label (the file manager's view toggle
@@ -4127,6 +4157,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | Lua `app:job_start` (D23) | `siv_job_start` unbound | CPU work from Lua ran on the application's thread; the work now runs in a Lua state of its own on the worker pool |
   | `siv_test_*`: headless input, settling, captures, semantics queries (D27) | test-only Zig access to the headless platform | applications test themselves through the C API, the Zig wrapper, and Lua, as the guide's samples now are |
   | `siv_node_focus` shows the ring after a key (D16) | `siv_node_focus` never showing it | focus moved by arrow keys in roving widgets was unmarked |
+  | `siv_set_tooltip` (D17); icon-only buttons show their label as one (D22) | a popup and timer per application | a common need every toolkit has; a core primitive so application widgets get it too |
   | reserved fields in `siv_text_span`, `siv_paragraph_span`, `siv_tab_stop`, `siv_text_metrics` (D2) | — | frozen value structs that will plausibly grow; descriptors grow by appending |
   | `siv_tablet_sample.wheel` and four reserved fields (D16) | — | the axes flags named a wheel the sample could not carry; tablets grow axes, and a frozen struct cannot |
 

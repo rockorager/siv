@@ -56,6 +56,11 @@ pub const line_step: f32 = 40;
 pub const multi_click_px: f32 = 4;
 
 pub const State = struct {
+    /// The node whose tooltip is asked for (D17), and the one the pointer
+    /// rests on, which a press, a key, or scrolling hide until the
+    /// pointer reaches another.
+    tooltip: NodeId = .none,
+    tooltip_hover: NodeId = .none,
     focus: NodeId = .none,
     /// Focus came from the keyboard, so it shows a ring.
     focus_visible: bool = false,
@@ -129,6 +134,8 @@ pub const State = struct {
         if (st.capture == id) st.capture = .none;
         if (st.pressed == id) st.pressed = .none;
         if (st.selecting == id) st.selecting = .none;
+        if (st.tooltip_hover == id) st.tooltip_hover = .none;
+        if (st.tooltip == id) requestTooltip(win, .none);
         for (&st.gesture_target) |*g| if (g.* == id) {
             g.* = .none;
         };
@@ -369,6 +376,8 @@ pub fn setFocus(win: *Window, id: NodeId, visible: bool) void {
         win.markPaint(id);
         if (old != id) _ = call(win, id, .focus, &.{ .focus = .{ .gained = true, .visible = visible } });
     }
+    // Focus the keyboard moved shows the tooltip of where it went.
+    if (visible and win.input.focus == id and old != id) requestTooltip(win, tooltipFor(win, id));
     ime.focusChanged(win);
     win.requestFrame();
 }
@@ -430,6 +439,33 @@ fn updateHover(win: *Window, target: NodeId) void {
     }
 }
 
+/// The nearest node from `id` up that has a tooltip.
+fn tooltipFor(win: *Window, id: NodeId) NodeId {
+    var cur = id;
+    while (cur != .none and win.isLive(cur)) : (cur = win.node(cur).parent) {
+        if (win.node(cur).tooltip.len != 0) return cur;
+    }
+    return .none;
+}
+
+/// Asks the host to show `id`'s tooltip after its delay, or to hide it.
+pub fn requestTooltip(win: *Window, id: NodeId) void {
+    const st = &win.input;
+    if (st.tooltip == id) return;
+    st.tooltip = id;
+    win.host.tooltip(win.host.ctx, id);
+}
+
+/// The pointer rests on another node: its tooltip, if it has one.
+fn hoverTooltip(win: *Window) void {
+    const st = &win.input;
+    const leaf = if (st.hover.items.len != 0) st.hover.items[st.hover.items.len - 1] else NodeId.none;
+    const t = tooltipFor(win, leaf);
+    if (t == st.tooltip_hover) return;
+    st.tooltip_hover = t;
+    requestTooltip(win, t);
+}
+
 /// Sends the platform the cursor for the pointer's place: the window's
 /// override, else that of the node the pointer is captured by or over,
 /// or of its nearest ancestor that sets one. Enabled editors show the text
@@ -466,6 +502,7 @@ pub fn handle(win: *Window, event: *const platform.Event) void {
             st.pointer = .{ .x = @floatCast(m.x), .y = @floatCast(m.y) };
             const target = if (st.capture != .none) st.capture else hitTest(win, st.pointer.?);
             updateHover(win, if (st.capture != .none) hitTest(win, st.pointer.?) else target);
+            if (st.capture == .none) hoverTooltip(win);
             if (target != .none) _ = bubblePointer(win, target, .move, .primary);
             if (st.selecting != .none and win.isLive(st.selecting)) editor.pointerDrag(win, st.selecting, st.pointer.?);
             updateCursor(win);
@@ -473,6 +510,8 @@ pub fn handle(win: *Window, event: *const platform.Event) void {
         .pointer_leave => {
             updateHover(win, .none);
             st.pointer = null;
+            st.tooltip_hover = .none;
+            requestTooltip(win, .none);
         },
         .pointer_button => |b| {
             if (b.pressed) {
@@ -480,6 +519,8 @@ pub fn handle(win: *Window, event: *const platform.Event) void {
                 st.serial = b.serial;
                 st.press_serial = b.serial;
                 st.keyboard_modality = false;
+                // A press hides the tooltip until the pointer moves on.
+                requestTooltip(win, .none);
             }
             pointerButton(win, b.button, b.pressed, b.time);
             // A release ends the capture that chose the cursor.
@@ -593,6 +634,8 @@ fn key(win: *Window, k: *const platform.Key) void {
         st.seat = k.seat;
         st.serial = k.serial;
         st.keyboard_modality = true;
+        // A key hides the tooltip; one that moves focus asks for the next.
+        requestTooltip(win, .none);
     }
     // Without focus, keys go to the active modal node (Escape closes a
     // dialog), or the root.
@@ -655,6 +698,7 @@ pub fn scrollBy(win: *Window, id: NodeId, delta: Point) void {
 /// first, from the node under the pointer up; otherwise, without ctrl,
 /// alt, or super, the nearest scroll node with room scrolls.
 fn scroll(win: *Window, dx_px: f32, dy_px: f32, v120_x: i32, v120_y: i32) void {
+    requestTooltip(win, .none);
     const p = win.input.pointer orelse return;
     const target = hitTest(win, p);
     if (target == .none) return;

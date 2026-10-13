@@ -82,6 +82,7 @@ win:update(function(txn, root)
 	local buttons = txn:flex(column, { gap = 8 })
 	txn:push_button(buttons, { label = "Cancel" })
 	txn:push_button(buttons, { label = "Save", style = "primary" }, {
+		tooltip = "Saves the settings",
 		on = { activate = function()
 			print("saved")
 			return true

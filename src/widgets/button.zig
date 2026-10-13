@@ -32,6 +32,8 @@ pub const Button = extern struct {
     /// Only the icon shows, when there is one; the label names the
     /// button.
     icon_only: bool = false,
+    /// The button set its label as its tooltip.
+    auto_tooltip: bool = false,
 };
 
 pub export fn siv_push_button(txn: Txn, parent: Node, desc: ?*const siv.ButtonDesc) Node {
@@ -166,7 +168,21 @@ pub fn apply(txn: Txn, st: *Button) void {
 
 pub fn setLabel(txn: Txn, st: *Button, label: []const u8) void {
     _ = c.siv_set_text(txn, st.label, label.ptr, label.len);
-    if (alone(st)) apply(txn, st);
+    if (alone(st)) {
+        apply(txn, st);
+        showTooltip(txn, st);
+    }
+}
+
+/// A button showing only its icon shows its label as a tooltip (D17),
+/// set when the label or icon changes so that an application's own
+/// tooltip stays until then.
+fn showTooltip(txn: Txn, st: *Button) void {
+    var buf: [1024]u8 = undefined;
+    const tip = if (alone(st)) w.textOf(st.label, &buf) else "";
+    if (tip.len == 0 and !st.auto_tooltip) return;
+    c.siv_set_tooltip(txn, st.root, tip.ptr, tip.len);
+    st.auto_tooltip = tip.len != 0;
 }
 
 /// Shows another icon, or none.
@@ -206,6 +222,7 @@ fn layoutIcon(txn: Txn, st: *Button) void {
         .padding = .{ .start = pad_x, .end = pad_x, .top = tk.pad_y, .bottom = tk.pad_y },
     });
     _ = c.siv_set_visual(txn, st.label, &.{ .flags = .{ .hidden = square } });
+    showTooltip(txn, st);
 }
 
 pub fn value(st: *const Button) f64 {

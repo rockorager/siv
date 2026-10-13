@@ -857,6 +857,11 @@ pub fn createPopup(self: *Wayland, options: platform.PopupOptions) Error!WindowI
     popup.setListener(*Window, onPopup, w);
     if (w.fractional) |f| f.setListener(*Window, onFractionalScale, w);
     if (options.grab) |g| if (self.seatProxy(g.seat)) |seat| popup.grab(seat, g.serial);
+    if (!options.input) {
+        const empty = self.compositor.?.createRegion() catch return error.OutOfMemory;
+        surface.setInputRegion(empty);
+        empty.destroy();
+    }
     surface.commit();
     self.windows.items[slot] = w;
     return w.id;

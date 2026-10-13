@@ -136,6 +136,10 @@ pub const Tree = struct {
                 try t.contentText(win, id, start);
             }
             const editor = n.kind == .editor and !n.data.editor.editor.masked;
+            // A tooltip describes the node, unless it only repeats the
+            // name (an icon-only button's label).
+            const own_name = t.names.items[start..];
+            const description = if (sem.description.len != 0 or std.mem.eql(u8, n.tooltip, own_name)) sem.description else n.tooltip;
             try t.nodes.append(win.gpa, .{
                 .node = id,
                 .role = role,
@@ -143,7 +147,7 @@ pub const Tree = struct {
                 .end = 0,
                 .name_start = start,
                 .name_len = @intCast(t.names.items.len - start),
-                .description = sem.description,
+                .description = description,
                 .bounds = win.windowRect(id),
                 .focusable = n.canFocus(),
                 .focused = win.input.focus == id,

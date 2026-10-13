@@ -1070,6 +1070,10 @@ pub const Node = struct {
     /// The pointer cursor over the node and its descendants that set
     /// none; null inherits (editors show the text cursor).
     cursor: ?CursorShape = null,
+    /// Text shown in a tooltip when the pointer rests on the node or the
+    /// keyboard focuses it (D17), and its accessible description unless
+    /// it repeats the name; empty for none. Owned.
+    tooltip: []const u8 = "",
 
     pub const Status = enum(u8) {
         /// On the free list (`next` links it).

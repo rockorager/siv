@@ -684,6 +684,15 @@ pub export fn siv_set_text(txn: t.Txn, node: t.Node, text: ?[*]const u8, text_le
     }.f, .{ node, text, text_len });
 }
 
+pub export fn siv_set_tooltip(txn: t.Txn, node: t.Node, text: ?[*]const u8, text_len: usize) void {
+    _ = run(txn, struct {
+        fn f(w: *Window, n: t.Node, ptr: ?[*]const u8, len: usize) Error!void {
+            const id = try nodeIn(w, n);
+            w.txn.ut.setTooltip(id, try runtime.string(ptr, len)) catch |err| return mapTxn(err);
+        }
+    }.f, .{ node, text, text_len });
+}
+
 pub export fn siv_set_text_style(txn: t.Txn, node: t.Node, desc: ?*const t.TextStyleDesc) void {
     _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, d: ?*const t.TextStyleDesc) Error!void {

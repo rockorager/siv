@@ -420,6 +420,18 @@ pub const Txn = struct {
         n.cursor = shape;
     }
 
+    /// Sets the node's tooltip text; empty removes it.
+    pub fn setTooltip(t: *Txn, id: NodeId, text: []const u8) Error!void {
+        const n = try t.live(id);
+        if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidArgument;
+        try t.reserve();
+        const owned = try t.own(u8, text);
+        t.touch(id);
+        t.release(u8, n.tooltip);
+        n.tooltip = owned;
+        t.win.dirty.semantics = true;
+    }
+
     fn data(t: *Txn, id: NodeId, kind: Kind) Error!*Node {
         const n = try t.live(id);
         if (n.kind != kind) return error.InvalidNode;

@@ -1006,6 +1006,9 @@ pub const PopupOptions = struct {
     /// keyboard focus moves to the popup, and input outside the popup
     /// chain dismisses it. Without it, the popup is passive (a tooltip).
     grab: ?struct { seat: SeatId, serial: u32 } = null,
+    /// False lets input through to what is under the popup (a tooltip),
+    /// so the pointer reaching it does not leave the parent.
+    input: bool = true,
 };
 
 pub const WindowOptions = struct {

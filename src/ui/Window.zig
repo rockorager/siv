@@ -155,7 +155,11 @@ pub const Host = struct {
     /// Sets the window's pointer constraint and relative motion (D16).
     /// Run it on the compositor thread with `Platform.setPointerConstraint`.
     pointer_constraint: *const fn (ctx: ?*anyopaque, options: platform.ConstraintOptions) void = noopConstraint,
+    /// The node whose tooltip to show now, or .none to hide it (D17): the
+    /// owner shows it after its delay, in a tooltip popup.
+    tooltip: *const fn (ctx: ?*anyopaque, node: NodeId) void = noopTooltip,
 
+    fn noopTooltip(_: ?*anyopaque, _: NodeId) void {}
     fn noopConstraint(_: ?*anyopaque, _: platform.ConstraintOptions) void {}
     fn noop(_: ?*anyopaque) void {}
     fn noopTextInput(_: ?*anyopaque, _: platform.SeatId, _: *const platform.TextInputState) void {}
@@ -386,6 +390,7 @@ fn deinitStorage(win: *Window) void {
 pub fn freeNodeData(gpa: std.mem.Allocator, n: *const Node) void {
     gpa.free(n.semantics.label);
     gpa.free(n.semantics.description);
+    gpa.free(n.tooltip);
     gpa.free(n.drop.mimes);
     switch (n.data) {
         .text => |t| {

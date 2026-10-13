@@ -691,3 +691,76 @@ test "menus: submenus open beside their item, by keys, clicks, and hover, mirror
         try testing.expectEqual(@as(usize, 0), try openPopups(&h, &ps));
     }
 }
+
+/// Dispatches for `ms` milliseconds.
+fn dispatchFor(h: *Harness, ms: u64) !void {
+    const Loop = @import("loop").Loop;
+    const until = Loop.now() + ms * std.time.ns_per_ms;
+    while (Loop.now() < until) try ok(c.siv_app_dispatch(h.app, 5));
+}
+
+/// The text the window's tooltip shows, or null without one.
+fn tooltipText(h: *Harness) !?[]const u8 {
+    const p = (try h.win()).win.tooltip_popup orelse return null;
+    if (!p.shown) return null;
+    const tree = try p.ui.semanticsTree();
+    for (tree.nodes.items) |s| if (s.role == .tooltip) return tree.name(s);
+    return error.NoTooltipNode;
+}
+
+test "tooltips: shown after resting on a node or focusing it, hidden by input, describing the node" {
+    var h: Harness = .{};
+    try h.start(320, 160, null, null);
+    defer h.stop();
+    const txn = try begin(h.window);
+    background(txn, &h);
+    const row = c.siv_flex(txn, root(&h), &.{ .axis = .row, .gap = 8 });
+    _ = c.siv_set_layout(txn, row, &.{ .padding = .{ .start = 16, .top = 16 } });
+    const open = c.siv_push_button(txn, row, &.{ .label = "Open", .label_len = 4 });
+    c.siv_set_tooltip(txn, open, "Opens a file", 12);
+    const save = c.siv_push_button(txn, row, &.{ .label = "Save", .label_len = 4, .icon = "document-save-symbolic", .icon_len = 22, .flags = .{ .icon_only = true } });
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+
+    // The tooltip describes its node; an icon-only button's repeats its
+    // name, so it describes nothing.
+    try testing.expectEqualStrings("Opens a file", (try sem(open)).description);
+    try testing.expectEqualStrings("", (try sem(save)).description);
+
+    const id = (try h.win()).win.id;
+    const oc = try center(open);
+    try h.inject(&.{.{ .pointer_motion = .{ .window = id, .seat = 0, .x = oc[0], .y = oc[1] } }});
+    try dispatchFor(&h, 100);
+    try testing.expectEqual(@as(?[]const u8, null), try tooltipText(&h));
+    try dispatchFor(&h, 600);
+    try h.settle();
+    try testing.expectEqualStrings("Opens a file", (try tooltipText(&h)).?);
+
+    // A key hides it, and moving within the node does not bring it back.
+    try h.typeKey(0xffe1, "", .{});
+    try h.settle();
+    try testing.expectEqual(@as(?[]const u8, null), try tooltipText(&h));
+    try h.inject(&.{.{ .pointer_motion = .{ .window = id, .seat = 0, .x = oc[0] + 1, .y = oc[1] } }});
+    try dispatchFor(&h, 700);
+    try testing.expectEqual(@as(?[]const u8, null), try tooltipText(&h));
+
+    // Soon after one hid, the next shows at once: the icon-only button's
+    // label.
+    const sc = try center(save);
+    try h.inject(&.{.{ .pointer_motion = .{ .window = id, .seat = 0, .x = sc[0], .y = sc[1] } }});
+    try h.settle();
+    try testing.expectEqualStrings("Save", (try tooltipText(&h)).?);
+
+    // Leaving the window hides it; keyboard focus shows the focused
+    // node's after the delay.
+    try h.inject(&.{.{ .pointer_leave = .{ .window = id, .seat = 0, .serial = 0 } }});
+    try h.settle();
+    try testing.expectEqual(@as(?[]const u8, null), try tooltipText(&h));
+    try dispatchFor(&h, 1100);
+    try h.typeKey(ks.tab, "", .{});
+    try h.settle();
+    try testing.expectEqual(@as(?[]const u8, null), try tooltipText(&h));
+    try dispatchFor(&h, 600);
+    try h.settle();
+    try testing.expectEqualStrings("Opens a file", (try tooltipText(&h)).?);
+}

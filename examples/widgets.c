@@ -110,6 +110,7 @@ int main(void) {
 		siv_node buttons = siv_flex(txn, column, SIV_DESC(siv_flex_desc, .gap = 8));
 		siv_push_button(txn, buttons, SIV_DESC(siv_button_desc, .label = SIV_STR("Cancel")));
 		siv_node save = siv_push_button(txn, buttons, SIV_DESC(siv_button_desc, .label = SIV_STR("Save"), .style = SIV_BUTTON_STYLE_PRIMARY));
+		siv_set_tooltip(txn, save, SIV_STR("Saves the settings"));
 		siv_on(txn, save, SIV_EVENT_TYPE_ACTIVATE, on_save, NULL, NULL);
 		r = siv_txn_commit(txn);
 	}

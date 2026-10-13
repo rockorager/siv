@@ -440,7 +440,7 @@ pub const App = struct {
             .fonts = &app.fonts,
             .icons = &app.icons,
             .sink = .{ .ctx = win, .commit = Window.commit },
-            .host = .{ .ctx = win, .request_frame = Window.requestFrame, .text_input = Window.textInput, .set_cursor = Window.setCursor, .pointer_constraint = Window.pointerConstraint },
+            .host = .{ .ctx = win, .request_frame = Window.requestFrame, .text_input = Window.textInput, .set_cursor = Window.setCursor, .pointer_constraint = Window.pointerConstraint, .tooltip = Window.tooltip },
             .clipboard = &app.clipboard,
             .drag = win.drag.host(),
             .loop = &app.loop,
@@ -477,7 +477,7 @@ pub const App = struct {
             .fonts = &app.fonts,
             .icons = &app.icons,
             .sink = .{ .ctx = win, .commit = Window.commit },
-            .host = .{ .ctx = win, .request_frame = Window.requestFrame, .text_input = Window.textInput },
+            .host = .{ .ctx = win, .request_frame = Window.requestFrame, .text_input = Window.textInput, .tooltip = Window.tooltip },
             .clipboard = &app.clipboard,
             .reduced_motion = app.reduced_motion,
             .desktop = app.desktop.values,
@@ -853,6 +853,22 @@ pub const Window = struct {
     /// which keeps input from it.
     owner: ?*Window = null,
     modal: bool = false,
+    /// Tooltips (D17): the node asked for, the timer that shows it, the
+    /// popup showing it, and when the last one hid (another shown soon
+    /// after shows at once, as the user browses a toolbar).
+    tooltip_node: ui.NodeId = .none,
+    tooltip_timer: loop_mod.Timer = .{ .func = tooltipFire },
+    tooltip_popup: ?*Window = null,
+    tooltip_hid_ns: u64 = 0,
+    /// A popup that shows a tooltip.
+    is_tooltip: bool = false,
+
+    /// How long the pointer rests or keyboard focus stays before a
+    /// tooltip shows. The desktop settings portal has no such setting;
+    /// this is GTK's.
+    pub const tooltip_delay_ns: u64 = 500 * std.time.ns_per_ms;
+    /// After a tooltip hides, others show without the delay this long.
+    pub const tooltip_browse_ns: u64 = 1000 * std.time.ns_per_ms;
 
     fn toplevel(win: *Window) *Window {
         var w = win;
@@ -874,6 +890,11 @@ pub const Window = struct {
         if (win.closed) return;
         const app = win.app;
         try app.zombies.ensureUnusedCapacity(app.gpa, 1);
+        app.loop.cancelTimer(&win.tooltip_timer);
+        if (win.tooltip_popup) |p| {
+            win.tooltip_popup = null;
+            try p.destroy();
+        }
         if (!win.shown) {
             win.closed = true;
             if (win.ui.txn.open) win.ui.txn.abort();
@@ -926,6 +947,7 @@ pub const Window = struct {
             .parent = parent.id,
             .positioner = pos,
             .grab = if (grab) .{ .seat = parent.ui.input.seat, .serial = parent.ui.input.serial } else null,
+            .input = placement != .tooltip,
         }) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable;
         errdefer app.comp.destroyWindow(id) catch {};
         if (id >= app.windows.items.len) try app.windows.appendNTimes(app.gpa, null, id + 1 - app.windows.items.len);
@@ -1113,6 +1135,63 @@ pub const Window = struct {
         var r: Req = .{ .id = win.id, .on = on };
         try win.app.comp.call(&r, Req.run);
         return r.out;
+    }
+
+    /// The tree asks for a node's tooltip, or for none (D17): hide what
+    /// shows, then show the new one after the delay.
+    fn tooltip(ctx: ?*anyopaque, node: ui.NodeId) void {
+        const win: *Window = @ptrCast(@alignCast(ctx));
+        if (win.closed or win.is_tooltip) return;
+        const app = win.app;
+        app.loop.cancelTimer(&win.tooltip_timer);
+        const now = Loop.now();
+        if (win.tooltip_popup) |p| {
+            win.tooltip_popup = null;
+            win.tooltip_hid_ns = now;
+            p.destroy() catch |err| app.fail(err);
+        }
+        win.tooltip_node = node;
+        if (node == .none) return;
+        const browsing = win.tooltip_hid_ns != 0 and now - win.tooltip_hid_ns < tooltip_browse_ns;
+        app.loop.startTimer(&win.tooltip_timer, if (browsing) now else now + tooltip_delay_ns, 0) catch app.fail(error.OutOfMemory);
+    }
+
+    fn tooltipFire(timer: *loop_mod.Timer) void {
+        const win: *Window = @fieldParentPtr("tooltip_timer", timer);
+        showTooltip(win) catch |err| switch (err) {
+            // A compositor without popups, or a window not shown: no tooltip.
+            error.Unavailable, error.Busy => {},
+            else => win.app.fail(err),
+        };
+    }
+
+    /// A tooltip popup (D17's tooltip placement, no grab) with the node's
+    /// text in the theme's inverse colors, like a toast.
+    fn showTooltip(win: *Window) Error!void {
+        const node = win.tooltip_node;
+        if (win.closed or !win.shown or node == .none or !win.ui.isLive(node)) return;
+        const tip = win.ui.node(node).tooltip;
+        if (tip.len == 0) return;
+        const app = win.app;
+        const popup = try app.createPopup(win, .{});
+        popup.is_tooltip = true;
+        errdefer popup.destroy() catch {};
+        const t = popup.ui.begin() catch return error.OutOfMemory;
+        build: {
+            const card = t.create(.root, .box, .none) catch break :build;
+            t.setLayout(card, .{ .max_width = 360, .padding = .{ .start = 8, .end = 8, .top = 4, .bottom = 4 } }) catch break :build;
+            t.setVisual(card, .{ .background_token = .inverse_bg, .radius = .all(4) }) catch break :build;
+            const label = t.create(card, .text, .none) catch break :build;
+            t.setText(label, tip) catch break :build;
+            t.setTextProps(label, .{ .style = .{ .color_token = .inverse_fg, .size_role = .caption } }) catch break :build;
+            t.setSemantics(card, .{ .role = .tooltip }) catch break :build;
+            t.commit();
+            try popup.showPopup(node, .tooltip, 0, 0, false, null);
+            win.tooltip_popup = popup;
+            return;
+        }
+        t.abort();
+        return error.OutOfMemory;
     }
 
     fn setCursor(ctx: ?*anyopaque, shape: ui.CursorShape) void {
