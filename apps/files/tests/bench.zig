@@ -155,16 +155,14 @@ pub fn main() !void {
         try ok(A.siv_app_set_default_font(h.app, "Droid", 5));
         const cpu0 = threadCpu();
         h.files = try harness.Files.create(@enumFromInt(@intFromEnum(h.app)), .{ .gpa = std.heap.c_allocator, .path = small, .home = small, .config_home = "/nonexistent", .data_home = small, .watch = true, .thumbnails = false });
-        var first: u64 = 0;
-        var rows: u64 = 0;
-        const self = try A.App.get(@backingInt(h.app));
-        while (rows == 0) {
+        // The app's presented events (SIV_WINDOW_EVENT_PRESENTED) say
+        // when each frame was committed.
+        while (h.f().rows_frame_ns == 0) {
             try ok(A.siv_app_dispatch(h.app, 1));
-            const w = self.windows.items[0].?;
-            if (first == 0 and w.win.presented_seq > 0) first = now();
-            if (h.f().listing != null and h.f().loading == null and w.win.presented_seq > 0 and w.win.settled()) rows = now();
             if (now() - t0 > 10 * std.time.ns_per_s) return error.Timeout;
         }
+        const first = h.f().first_frame_ns;
+        const rows = h.f().rows_frame_ns;
         const cpu = threadCpu() - cpu0;
         report("startup (40 entries): first frame {d:.1} ms, first frame with rows {d:.1} ms, UI thread CPU {d:.1} ms", .{ ms(first - t0), ms(rows - t0), ms(cpu) });
         try h.settle();
@@ -191,17 +189,15 @@ pub fn main() !void {
     const t0 = now();
     h.files = try harness.Files.create(@enumFromInt(@intFromEnum(h.app)), .{ .gpa = std.heap.c_allocator, .path = root, .home = root, .config_home = "/nonexistent", .data_home = small, .watch = false, .thumbnails = false, .height = 720 });
     const self = try A.App.get(@backingInt(h.app));
-    var first: u64 = 0;
     var loaded: u64 = 0;
     while (loaded == 0) {
         try ok(A.siv_app_dispatch(h.app, 1));
-        const w = self.windows.items[0].?;
-        if (first == 0 and w.win.presented_seq > 0) first = now();
         if (h.f().listing != null and h.f().loading == null) loaded = now();
         if (now() - t0 > 60 * std.time.ns_per_s) return error.Timeout;
     }
     try h.settle();
-    const shown = now();
+    const first = h.f().first_frame_ns;
+    const shown = h.f().rows_frame_ns;
     report("100 000 entries: first frame {d:.1} ms, read and sorted on the pool {d:.1} ms, rows shown {d:.1} ms", .{ ms(first - t0), ms(loaded - t0), ms(shown - t0) });
     report("memory: {d:.1} MiB more with 100 000 entries listed", .{@as(f64, @floatFromInt(rss() -| rss0)) / (1 << 20)});
 

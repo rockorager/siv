@@ -121,6 +121,13 @@ drag_entry: u32 = 0,
 /// The active view's selection as of the last status update, and totals
 /// over it, kept from the changed ranges select events report.
 sel_bits: std.ArrayList(u8) = .empty,
+/// Presented frames (SIV_WINDOW_EVENT_PRESENTED), for measurements: when
+/// the first one and the first one with the folder's rows were committed
+/// (CLOCK_MONOTONIC), and how many.
+frames: u64 = 0,
+first_frame_ns: u64 = 0,
+rows_frame_ns: u64 = 0,
+rows_pending: bool = false,
 sel_count: usize = 0,
 sel_bytes: u64 = 0,
 tokens: std.ArrayList(*Token) = .empty,
@@ -226,8 +233,17 @@ fn deinit(self: *Files) void {
 
 fn onWindowEvent(ud: ?*anyopaque, _: siv.Window, ev: ?*const siv.WindowEvent) callconv(.c) bool {
     const self: *Files = @ptrCast(@alignCast(ud.?));
-    switch (ev.?.type) {
-        .scale_changed => self.thumbs.setScale(@floatCast(ev.?.scale)),
+    const e = ev.?;
+    switch (e.type) {
+        .scale_changed => self.thumbs.setScale(@floatCast(e.scale)),
+        .presented => {
+            self.frames += 1;
+            if (self.first_frame_ns == 0) self.first_frame_ns = e.commit_ns;
+            if (self.rows_pending) {
+                self.rows_pending = false;
+                self.rows_frame_ns = e.commit_ns;
+            }
+        },
         else => {},
     }
     return false;
@@ -886,6 +902,8 @@ fn loaded(self: *Files, l: *Load) void {
     }
     self.refilter();
     self.applySelectionAfterLoad();
+    // The rows are committed: the next presented frame shows them.
+    if (self.rows_frame_ns == 0) self.rows_pending = true;
 }
 
 /// Applies `pending_select` (names) and the remembered cursor to the new

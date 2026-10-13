@@ -195,12 +195,17 @@ Measurements are in [Numbers](#numbers) at the end.
     decoded. Decoding at full size before scaling remains (D19 lists JPEG
     DCT scaling as not done).
 
-## Open API questions
-
 14. **No frame-presented event.** Measuring startup to first frame, or
     knowing that a change reached the screen, is impossible from the
     public API: windows report close, resize, scale, and states only. The
     benchmark and tests read siv's internals (`presented_seq`).
+    *Fixed:* `SIV_WINDOW_EVENT_PRESENTED` with the commit count shown, the
+    predicted presentation time, and the commit time (commit "abi, app:
+    report presented frames to applications", D12). The app records its
+    first frame and its first frame with rows from it, and the benchmark
+    reads those instead of `presented_seq`.
+
+## Open API questions
 
 15. **No text truncation.** Long file names need an ellipsis (one line in
     the table, two in the grid). Text nodes wrap or not, nothing else; the
