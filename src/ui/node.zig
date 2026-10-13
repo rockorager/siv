@@ -434,11 +434,21 @@ pub const TextStyle = struct {
     size_role: TextRole = .fixed,
 };
 
+pub const ParagraphStyle = text.layout.ParagraphStyle;
+
 pub const Text = struct {
     style: TextStyle = .{},
     alignment: TextAlign = .start,
     /// Wrap at the available width.
     wrap: bool = true,
+    /// Break inside a word too wide for a line of its own.
+    break_words: bool = false,
+    /// Paragraph defaults (D13); paragraph spans override them. Its
+    /// alignment stays null: `alignment` is the node's.
+    paragraph: ParagraphStyle = .{},
+    /// Tab stops in pixels from the start margin, increasing. Owned by the
+    /// tree.
+    tab_stops: []const f32 = &.{},
 };
 
 pub const Fit = enum(u8) { fill, contain, cover, none };
@@ -546,13 +556,20 @@ pub const TextData = struct {
     /// overlapping, not empty, at character boundaries, none with the
     /// default style, and neighbors with equal styles merged.
     spans: []const Span = &.{},
+    /// Paragraph styles over `props.paragraph`, kept like `spans` and
+    /// covering whole paragraphs (each separator with the paragraph it
+    /// ends).
+    paragraphs: []const ParagraphSpan = &.{},
 };
 
 /// What a span changes in its node's style; null and false keep the
 /// node's.
 pub const SpanStyle = struct {
+    /// An interned family name (`Fonts.intern`); 0 is the default family.
+    family: ?u32 = null,
     weight: ?Weight = null,
     slant: ?Slant = null,
+    width: ?Width = null,
     /// Logical pixels, scaled like the node's size by the desktop's text
     /// scale.
     size: ?f32 = null,
@@ -578,7 +595,8 @@ pub const SpanStyle = struct {
         color: bool = false,
         underline: bool = false,
         strikethrough: bool = false,
-        _: u2 = 0,
+        family: bool = false,
+        width: bool = false,
     };
 
     /// `s` with the attributes in `mask` taken from `values`.
@@ -593,8 +611,76 @@ pub const SpanStyle = struct {
         }
         if (mask.underline) out.underline = values.underline;
         if (mask.strikethrough) out.strikethrough = values.strikethrough;
+        if (mask.family) out.family = values.family;
+        if (mask.width) out.width = values.width;
         return out;
     }
+};
+
+/// What a paragraph span changes in its node's paragraph style (D13);
+/// null keeps the node's.
+pub const ParagraphPatch = struct {
+    alignment: ?TextAlign = null,
+    indent: ?Indent = null,
+    spacing: ?Spacing = null,
+    gaps: ?Gaps = null,
+    tab_width: ?f32 = null,
+
+    pub const Indent = struct { start: f32 = 0, end: f32 = 0, first_line: f32 = 0 };
+    pub const Spacing = struct { line_spacing: f32 = 1, line_height: f32 = 0 };
+    pub const Gaps = struct { before: f32 = 0, after: f32 = 0 };
+
+    pub fn isDefault(s: ParagraphPatch) bool {
+        return std.meta.eql(s, ParagraphPatch{});
+    }
+
+    pub fn eql(a: ParagraphPatch, b: ParagraphPatch) bool {
+        return std.meta.eql(a, b);
+    }
+
+    pub const Mask = packed struct(u8) {
+        alignment: bool = false,
+        indent: bool = false,
+        spacing: bool = false,
+        gaps: bool = false,
+        tab_width: bool = false,
+        _: u3 = 0,
+    };
+
+    pub fn patched(s: ParagraphPatch, values: ParagraphPatch, mask: Mask) ParagraphPatch {
+        var out = s;
+        inline for (.{ "alignment", "indent", "spacing", "gaps", "tab_width" }) |name| {
+            if (@field(mask, name)) @field(out, name) = @field(values, name);
+        }
+        return out;
+    }
+
+    /// `base` with the patch's attributes.
+    pub fn apply(s: ParagraphPatch, base: ParagraphStyle) ParagraphStyle {
+        var out = base;
+        if (s.alignment) |a| out.alignment = a;
+        if (s.indent) |i| {
+            out.indent_start = i.start;
+            out.indent_end = i.end;
+            out.first_line_indent = i.first_line;
+        }
+        if (s.spacing) |sp| {
+            out.line_spacing = sp.line_spacing;
+            out.line_height = sp.line_height;
+        }
+        if (s.gaps) |g| {
+            out.space_before = g.before;
+            out.space_after = g.after;
+        }
+        if (s.tab_width) |w| out.tab_width = w;
+        return out;
+    }
+};
+
+pub const ParagraphSpan = struct {
+    start: u32,
+    end: u32,
+    style: ParagraphPatch,
 };
 
 pub const Span = struct {

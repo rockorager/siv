@@ -120,7 +120,7 @@ fn shapeString(win: *Window, id: NodeId, content: []const u8, list: []const node
         const run = spans.runAt(list, at, len);
         const sp = run.style;
         const run_size = if (sp.size) |z| z * scale else size;
-        const chain = try fonts.chain(.{ .family = d.family, .language = language, .weight = node_mod.cssWeight(style, sp.weight), .slant = sp.slant orelse style.slant, .width = style.width, .size = run_size });
+        const chain = try fonts.chain(.{ .family = sp.family orelse d.family, .language = language, .weight = node_mod.cssWeight(style, sp.weight), .slant = sp.slant orelse style.slant, .width = sp.width orelse style.width, .size = run_size });
         try runs.append(a, .{ .end = run.end, .style = .{ .fonts = chain, .size = run_size, .language = lang_name } });
         if (run_styles) |rs| try rs.append(win.gpa, sp);
         if (run.end >= len) break;
@@ -168,9 +168,13 @@ pub fn layoutFor(win: *Window, id: NodeId, width: ?f32) error{OutOfMemory}!?*con
         if (l.width <= want and want <= built) return l;
     }
     // Lines are aligned in the node at paint time (`lineShift`).
+    const d = n.textData();
     const l = text.Layout.init(win.gpa, win.scratch.allocator(), &win.fonts.cache, &c.paragraph.?, .{
         .width = width,
         .alignment = .start,
+        .paragraphs = try paragraphRuns(win, id),
+        .tab_stops = d.props.tab_stops,
+        .break_words = d.props.break_words,
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => unreachable, // finite, non-negative widths only
@@ -180,6 +184,33 @@ pub fn layoutFor(win: *Window, id: NodeId, width: ?f32) error{OutOfMemory}!?*con
     c.layout_width = width;
     win.stats.text_layouts += 1;
     return &c.layout.?;
+}
+
+/// The node's paragraph styles as layout runs: its defaults, patched by
+/// its paragraph spans. An editor's preedit shifts the spans after the
+/// caret.
+fn paragraphRuns(win: *Window, id: NodeId) error{OutOfMemory}![]const text.layout.ParagraphRun {
+    const n = win.node(id);
+    const d = n.textData();
+    const base = d.props.paragraph;
+    if (d.paragraphs.len == 0) return win.scratch.allocator().dupe(text.layout.ParagraphRun, &.{.{ .end = std.math.maxInt(u32), .style = base }});
+    const a = win.scratch.allocator();
+    var list = d.paragraphs;
+    // Shaped already: the text as shown, with any preedit.
+    const shown: u32 = @intCast(win.state(id).text.?.paragraph.?.text.len);
+    if (n.kind == .editor and shown != d.content.len) {
+        const e = n.data.editor;
+        list = try spans.replaced(a, list, e.caret, e.caret, @intCast(shown - d.content.len), spans.inherited(list, e.caret));
+    }
+    var runs: std.ArrayList(text.layout.ParagraphRun) = .empty;
+    var at: u32 = 0;
+    while (true) {
+        const run = spans.runAt(list, at, shown);
+        try runs.append(a, .{ .end = run.end, .style = run.style.apply(base) });
+        if (run.end >= shown) break;
+        at = run.end;
+    }
+    return runs.items;
 }
 
 /// Unwrapped width of the text.
@@ -202,16 +233,7 @@ pub fn current(win: *const Window, id: NodeId) ?*const text.Layout {
 /// right-to-left window is flush right, while each paragraph's bidi
 /// ordering still follows its own text.
 pub fn lineShift(win: *const Window, id: NodeId, line: text.layout.Line, content_width: f32) f32 {
-    const c = win.state(id).text.?;
-    const l = c.layout.?;
-    const aligned_in = c.layout_width orelse l.width;
-    // Left edge of the line's content (without hanging whitespace) now.
-    const now = if (line.rtl()) aligned_in - line.width else 0;
-    const rtl = win.state(id).rtl;
-    const target: f32 = switch (win.node(id).textData().props.alignment) {
-        .start => if (rtl) content_width - line.width else 0,
-        .end => if (rtl) 0 else content_width - line.width,
-        .center => (content_width - line.width) / 2,
-    };
-    return target - now;
+    // Paragraph indents and alignment follow the node's direction too.
+    const target = line.contentXIn(content_width, win.state(id).rtl, win.node(id).textData().props.alignment);
+    return target - line.contentX();
 }

@@ -889,6 +889,99 @@ test "styled text: spans shape as runs, follow edits, format as undo steps, and 
     try f.frame();
 }
 
+test "paragraph styles: whole paragraphs, laid out, kept through edits and undo" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 300, .height = 200 });
+    defer f.deinit();
+    var t = try f.win.begin();
+    const ed = try box(t, .root, .editor, .{ .align_y = .start, .width = .{ .px = 300 } });
+    try t.setEditor(ed, .{ .multiline = true });
+    try t.setText(ed, "first\nsecond\nthird");
+    const centered: ui.ParagraphPatch = .{ .alignment = .center };
+    // A range from the start of "second" styles all of it, separator
+    // included; paragraphs take the style at their first character.
+    try t.setParagraphSpans(ed, &.{ .{ .start = 6, .end = 9, .style = centered }, .{ .start = 15, .end = 16, .style = .{ .tab_width = 9 } } });
+    try testing.expectError(error.InvalidArgument, t.setParagraphSpans(ed, &.{.{ .start = 0, .end = 2, .style = .{ .spacing = .{ .line_spacing = 0 } } }}));
+    try testing.expectError(error.InvalidArgument, t.setParagraphSpans(ed, &.{.{ .start = 0, .end = 2, .style = .{ .indent = .{ .start = -1 } } }}));
+    t.commit();
+    const e = &f.win.node(ed).data.editor;
+    try testing.expectEqualDeep(&[_]ui.ParagraphSpan{.{ .start = 6, .end = 13, .style = centered }}, e.text.paragraphs);
+    try f.frame();
+    // The second line is centered in the node, the others at the start.
+    const l = text_node.current(f.win, ed).?;
+    try testing.expectEqual(3, l.lines.len);
+    try testing.expectEqual(text.layout.Alignment.center, l.lines[1].alignment.?);
+    const second = l.lines[1];
+    try testing.expectApproxEqAbs((300 - second.width) / 2, second.contentX() + text_node.lineShift(f.win, ed, second, 300), 0.01);
+    try testing.expectApproxEqAbs(0, l.lines[0].contentX() + text_node.lineShift(f.win, ed, l.lines[0], 300), 0.01);
+
+    // A line break inside the centered paragraph starts another centered
+    // one; text typed at the start of "third" stays in "third".
+    const k: Keys = .{ .f = &f };
+    k.press(ui.keysym.tab, .{});
+    t = try f.win.begin();
+    try t.setSelection(ed, 9, 9, .downstream);
+    t.commit();
+    k.press(ui.keysym.@"return", .{});
+    try testing.expectEqualStrings("first\nsec\nond\nthird", e.text.content);
+    try testing.expectEqualDeep(&[_]ui.ParagraphSpan{.{ .start = 6, .end = 14, .style = centered }}, e.text.paragraphs);
+    // Undo restores the paragraphs with the text.
+    k.press('z', .{ .ctrl = true });
+    try testing.expectEqualStrings("first\nsecond\nthird", e.text.content);
+    try testing.expectEqualDeep(&[_]ui.ParagraphSpan{.{ .start = 6, .end = 13, .style = centered }}, e.text.paragraphs);
+    // Joining "second" to "first" makes one paragraph in first's style.
+    t = try f.win.begin();
+    try t.setSelection(ed, 6, 6, .downstream);
+    t.commit();
+    k.press(0xff08, .{}); // BackSpace
+    try testing.expectEqualStrings("firstsecond\nthird", e.text.content);
+    try testing.expectEqual(0, e.text.paragraphs.len);
+    k.press('z', .{ .ctrl = true });
+
+    // A paragraph command over a selection from "first" into "second"
+    // indents both, as one undo step.
+    t = try f.win.begin();
+    try t.setSelection(ed, 2, 8, .downstream);
+    t.commit();
+    const indent: ui.ParagraphPatch = .{ .indent = .{ .start = 20 } };
+    try testing.expect(ui.access.formatParagraph(f.win, ed, indent, .{ .indent = true }));
+    try testing.expectEqualDeep(&[_]ui.ParagraphSpan{
+        .{ .start = 0, .end = 6, .style = indent },
+        .{ .start = 6, .end = 13, .style = .{ .alignment = .center, .indent = .{ .start = 20 } } },
+    }, e.text.paragraphs);
+    try testing.expectEqual(ui.ParagraphPatch{ .alignment = .center, .indent = .{ .start = 20 } }, ui.access.paragraphRun(f.win, ed, 7).?.style);
+    try f.frame();
+    try testing.expectEqual(20, text_node.current(f.win, ed).?.lines[0].indent_start);
+    k.press('z', .{ .ctrl = true });
+    try testing.expectEqualDeep(&[_]ui.ParagraphSpan{.{ .start = 6, .end = 13, .style = centered }}, e.text.paragraphs);
+
+    // Text the application sets drops them.
+    t = try f.win.begin();
+    try t.setText(ed, "plain");
+    t.commit();
+    try testing.expectEqual(0, e.text.paragraphs.len);
+    try f.frame();
+}
+
+test "a span's family shapes its run with that family" {
+    var f: Fixture = undefined;
+    try f.init(.{});
+    defer f.deinit();
+    try f.fonts.addFont("", text.font.test_fonts.siv_regular);
+    const siv = try f.fonts.intern("SivTest");
+    var t = try f.win.begin();
+    const label = try box(t, .root, .text, .{});
+    try t.setText(label, "Hello HIO");
+    try t.setSpans(label, &.{.{ .start = 6, .end = 9, .style = .{ .family = siv } }});
+    t.commit();
+    try f.frame();
+    const p = f.win.state(label).text.?.paragraph.?;
+    try testing.expectEqual(2, p.runs.len);
+    var buf: [32]u8 = undefined;
+    try testing.expectEqualStrings("Droid Sans", f.fonts.cache.face(p.runs[0].font).?.familyName(&buf));
+    try testing.expectEqualStrings("SivTest", f.fonts.cache.face(p.runs[1].font).?.familyName(&buf));
+}
+
 test "masked editor: locked secret, bullets, no undo, nothing for assistive technology" {
     var f: Fixture = undefined;
     try f.init(.{ .width = 300, .height = 100 });

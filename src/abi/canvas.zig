@@ -696,6 +696,9 @@ const Shaped = struct {
         }
         sh.layout = text.Layout.init(gpa, sh.scratch.allocator(), &fonts.cache, p, .{
             .width = if (width > 0 and props.wrap) width else null,
+            .paragraphs = &.{.{ .end = std.math.maxInt(u32), .style = props.paragraph }},
+            .tab_stops = props.tab_stops,
+            .break_words = props.break_words,
         }) catch |err| return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             else => error.InvalidArgument,
@@ -708,11 +711,8 @@ const Shaped = struct {
         const l = &sh.layout.?;
         const box = if (width > 0) width else l.width;
         for (@constCast(l.lines)) |*line| {
-            const target: f32 = switch (props.alignment) {
-                .start => if (rtl) box - line.width else 0,
-                .end => if (rtl) 0 else box - line.width,
-                .center => (box - line.width) / 2,
-            };
+            // Indents follow the drawing's direction like the alignment.
+            const target = line.contentXIn(box, rtl, props.alignment);
             // Hanging whitespace sits left of a right-to-left line's content.
             line.x = target - if (line.rtl()) line.advance - line.width else 0;
         }

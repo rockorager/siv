@@ -7,16 +7,33 @@ const node_mod = @import("node.zig");
 
 const Span = node_mod.Span;
 const SpanStyle = node_mod.SpanStyle;
+const ParagraphSpan = node_mod.ParagraphSpan;
 const Allocator = std.mem.Allocator;
 
+// The functions take character spans (`Span`) or paragraph spans
+// (`ParagraphSpan`): ranges with a style that has isDefault, eql, and
+// patched.
+
+fn Elem(comptime T: type) type {
+    return switch (@typeInfo(T)) {
+        .pointer => |p| if (p.size == .slice) p.child else Elem(p.child),
+        .array => |a| a.child,
+        else => @compileError("not a list of spans"),
+    };
+}
+
+fn StyleOf(comptime T: type) type {
+    return @FieldType(Elem(T), "style");
+}
+
 /// The style at byte `offset`: of the span containing it, else default.
-pub fn styleAt(spans: []const Span, offset: u32) SpanStyle {
+pub fn styleAt(spans: anytype, offset: u32) StyleOf(@TypeOf(spans)) {
     return (runAt(spans, offset, std.math.maxInt(u32))).style;
 }
 
 /// The run containing `offset` in text of length `len`: a span, or the
 /// unstyled stretch between spans.
-pub fn runAt(spans: []const Span, offset: u32, len: u32) Span {
+pub fn runAt(spans: anytype, offset: u32, len: u32) Elem(@TypeOf(spans)) {
     var start: u32 = 0;
     for (spans) |s| {
         if (offset < s.start) return .{ .start = start, .end = s.start, .style = .{} };
@@ -28,12 +45,12 @@ pub fn runAt(spans: []const Span, offset: u32, len: u32) Span {
 
 /// The style text inserted at `at` takes without a typing style: that of
 /// the character before, or at the start that of the one after.
-pub fn inherited(spans: []const Span, at: u32) SpanStyle {
+pub fn inherited(spans: anytype, at: u32) StyleOf(@TypeOf(spans)) {
     return styleAt(spans, if (at > 0) at - 1 else 0);
 }
 
 /// Whether `spans` is a valid list for text `content`.
-pub fn valid(content: []const u8, spans: []const Span) bool {
+pub fn valid(content: []const u8, spans: anytype) bool {
     var prev: u32 = 0;
     for (spans) |s| {
         if (s.start < prev or s.end <= s.start or s.end > content.len) return false;
@@ -44,7 +61,7 @@ pub fn valid(content: []const u8, spans: []const Span) bool {
 }
 
 /// Drops default and empty spans and merges equal neighbors, in place.
-pub fn normalize(list: *std.ArrayList(Span)) void {
+pub fn normalize(list: anytype) void {
     var out: usize = 0;
     for (list.items) |s| {
         if (s.end <= s.start or s.style.isDefault()) continue;
@@ -60,8 +77,9 @@ pub fn normalize(list: *std.ArrayList(Span)) void {
 
 /// The spans after `start..end` is replaced by `inserted` bytes that take
 /// `style`.
-pub fn replaced(a: Allocator, spans: []const Span, start: u32, end: u32, inserted: u32, style: SpanStyle) Allocator.Error![]Span {
-    var list: std.ArrayList(Span) = .empty;
+pub fn replaced(a: Allocator, spans: anytype, start: u32, end: u32, inserted: u32, style: StyleOf(@TypeOf(spans))) Allocator.Error![]Elem(@TypeOf(spans)) {
+    const S = Elem(@TypeOf(spans));
+    var list: std.ArrayList(S) = .empty;
     try list.ensureTotalCapacity(a, spans.len + 2);
     const removed = end - start;
     for (spans) |s| {
@@ -78,8 +96,9 @@ pub fn replaced(a: Allocator, spans: []const Span, start: u32, end: u32, inserte
 
 /// The spans after the attributes in `mask` are set to those of `values`
 /// over `lo..hi` of text of length `len`.
-pub fn restyled(a: Allocator, spans: []const Span, len: u32, lo: u32, hi: u32, values: SpanStyle, mask: SpanStyle.Mask) Allocator.Error![]Span {
-    var list: std.ArrayList(Span) = .empty;
+pub fn restyled(a: Allocator, spans: anytype, len: u32, lo: u32, hi: u32, values: StyleOf(@TypeOf(spans)), mask: StyleOf(@TypeOf(spans)).Mask) Allocator.Error![]Elem(@TypeOf(spans)) {
+    const S = Elem(@TypeOf(spans));
+    var list: std.ArrayList(S) = .empty;
     try list.ensureTotalCapacity(a, 2 * spans.len + 3);
     var at: u32 = 0;
     while (at < len) {
@@ -103,6 +122,49 @@ pub fn all(spans: []const Span, len: u32, lo: u32, hi: u32, comptime pred: fn (S
         at = @max(run.end, at + 1);
     }
     return true;
+}
+
+/// Paragraph separators: Bidi_Class B, which end bidi paragraphs (D13).
+fn separatorLen(content: []const u8, i: usize) usize {
+    const c = content[i];
+    if (c == '\r') return if (i + 1 < content.len and content[i + 1] == '\n') 2 else 1;
+    if (c == '\n' or (c >= 0x1c and c <= 0x1e)) return 1;
+    if (std.mem.startsWith(u8, content[i..], "\u{85}") or std.mem.startsWith(u8, content[i..], "\u{2029}")) return std.unicode.utf8ByteSequenceLength(c) catch 1;
+    return 0;
+}
+
+/// The paragraph around byte `offset`: from the start of its first
+/// character to the end of its separator (or the text).
+pub fn paragraphAt(content: []const u8, offset: u32) struct { start: u32, end: u32 } {
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i < content.len) {
+        const sep = separatorLen(content, i);
+        if (sep == 0) {
+            i += 1;
+            continue;
+        }
+        if (offset < i + sep) return .{ .start = @intCast(start), .end = @intCast(i + sep) };
+        i += sep;
+        start = i;
+    }
+    return .{ .start = @intCast(start), .end = @intCast(content.len) };
+}
+
+/// Paragraph spans snapped to whole paragraphs: each paragraph takes the
+/// style at its first byte.
+pub fn snapped(a: Allocator, content: []const u8, spans: []const ParagraphSpan) Allocator.Error![]ParagraphSpan {
+    var list: std.ArrayList(ParagraphSpan) = .empty;
+    if (spans.len == 0) return list.items;
+    var at: u32 = 0;
+    while (true) {
+        const p = paragraphAt(content, at);
+        try list.append(a, .{ .start = p.start, .end = p.end, .style = styleAt(spans, p.start) });
+        if (p.end >= content.len) break;
+        at = p.end;
+    }
+    normalize(&list);
+    return list.items;
 }
 
 const testing = std.testing;

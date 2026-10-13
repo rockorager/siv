@@ -133,8 +133,32 @@ pub fn textRun(win: *const Window, id: NodeId, offset: u32) ?node_mod.Span {
     return spans.runAt(d.spans, @min(offset, len), len);
 }
 
-/// Formatting commands on editors and the typing style (D22).
+/// The paragraph of a text or editor node containing byte `offset`: its
+/// range (up to the end of its separator) and its paragraph span's style.
+/// Null for other nodes and masked editors.
+pub fn paragraphRun(win: *const Window, id: NodeId, offset: u32) ?node_mod.ParagraphSpan {
+    if (!win.isLive(id)) return null;
+    const n = win.node(id);
+    if (!n.isText()) return null;
+    if (n.kind == .editor and n.data.editor.editor.masked) return null;
+    const d = n.textData();
+    const p = spans.paragraphAt(d.content, @min(offset, @as(u32, @intCast(d.content.len))));
+    return .{ .start = p.start, .end = p.end, .style = spans.styleAt(d.paragraphs, p.start) };
+}
+
+/// The stretch of a text or editor node around byte `offset` whose
+/// paragraph style is the same: a paragraph span (whole paragraphs), or
+/// the paragraphs with the node's defaults around it.
+pub fn paragraphStyleRun(win: *const Window, id: NodeId, offset: u32) ?node_mod.ParagraphSpan {
+    const p = paragraphRun(win, id, offset) orelse return null;
+    const d = win.node(id).textData();
+    const len: u32 = @intCast(d.content.len);
+    return spans.runAt(d.paragraphs, p.start, len);
+}
+
+/// Formatting commands on editors and the typing style (D22, D13).
 pub const format = editor.format;
+pub const formatParagraph = editor.formatParagraph;
 pub const typingStyle = editor.typingStyle;
 
 /// The offset nearest a window point (a caret position), or null if the

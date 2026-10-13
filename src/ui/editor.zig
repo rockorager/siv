@@ -244,8 +244,22 @@ fn replace(win: *Window, id: NodeId, start: u32, end: u32, insert: []const u8, r
     const spans_before = e.text.spans;
     const spans_after = spans.replaced(a, spans_before, start, end, @intCast(insert.len), style) catch return;
     const kept_before = a.dupe(node_mod.Span, spans_before) catch return;
-    if (!commitEdit(win, id, content, caret, spans_after)) return;
-    if (record != .none) remember(win, id, before, .{ .start = start, .removed = removed, .inserted = insert, .kind = record, .spans_before = kept_before, .spans_after = spans_after });
+    // Inserted text joins the paragraph it goes into, and paragraphs keep
+    // the style of their first character (D13).
+    const paragraphs_before = a.dupe(node_mod.ParagraphSpan, e.text.paragraphs) catch return;
+    const paragraph_style = spans.styleAt(paragraphs_before, spans.paragraphAt(old, start).start);
+    const paragraphs_after = spans.snapped(a, content, spans.replaced(a, paragraphs_before, start, end, @intCast(insert.len), paragraph_style) catch return) catch return;
+    if (!commitEdit(win, id, content, caret, spans_after, paragraphs_after)) return;
+    if (record != .none) remember(win, id, before, .{
+        .start = start,
+        .removed = removed,
+        .inserted = insert,
+        .kind = record,
+        .spans_before = kept_before,
+        .spans_after = spans_after,
+        .paragraphs_before = paragraphs_before,
+        .paragraphs_after = paragraphs_after,
+    });
     changed(win, id);
 }
 
@@ -264,7 +278,7 @@ fn replaceMasked(win: *Window, id: NodeId, start: u32, end: u32, insert: []const
     @memcpy(plain[b_start + insert.len ..], old[b_end..]);
     const inserted_cps = std.unicode.utf8CountCodepoints(insert) catch return;
     const caret: u32 = @intCast((cp_start + inserted_cps) * bullet.len);
-    if (!commitEdit(win, id, plain, caret, &.{})) return;
+    if (!commitEdit(win, id, plain, caret, &.{}, &.{})) return;
     changed(win, id);
 }
 
@@ -275,13 +289,17 @@ fn byteOfCodepoint(s: []const u8, cp: usize) usize {
     return i;
 }
 
-fn commitEdit(win: *Window, id: NodeId, content: []const u8, caret: u32, styled: []const node_mod.Span) bool {
+fn commitEdit(win: *Window, id: NodeId, content: []const u8, caret: u32, styled: []const node_mod.Span, paragraphs: []const node_mod.ParagraphSpan) bool {
     const t = win.begin() catch return false;
     t.setText(id, content) catch {
         t.abort();
         return false;
     };
     t.setSpans(id, styled) catch {
+        t.abort();
+        return false;
+    };
+    t.setParagraphSpans(id, paragraphs) catch {
         t.abort();
         return false;
     };
@@ -315,15 +333,19 @@ pub const Edit = struct {
     /// Selection before the edit, restored by undo.
     caret: u32 = 0,
     anchor: u32 = 0,
-    /// Styled ranges before and after the edit (D22).
+    /// Styled ranges and paragraph styles before and after the edit (D22).
     spans_before: []const node_mod.Span = &.{},
     spans_after: []const node_mod.Span = &.{},
+    paragraphs_before: []const node_mod.ParagraphSpan = &.{},
+    paragraphs_after: []const node_mod.ParagraphSpan = &.{},
 
     fn deinit(ed: Edit, gpa: std.mem.Allocator) void {
         gpa.free(ed.removed);
         gpa.free(ed.inserted);
         gpa.free(ed.spans_before);
         gpa.free(ed.spans_after);
+        gpa.free(ed.paragraphs_before);
+        gpa.free(ed.paragraphs_after);
     }
 };
 
@@ -389,8 +411,15 @@ fn remember(win: *Window, id: NodeId, before: Snapshot, edit: Edit) void {
                 gpa.free(m);
                 return h.clear(gpa);
             };
+            const paragraphs_after = gpa.dupe(node_mod.ParagraphSpan, edit.paragraphs_after) catch {
+                gpa.free(m);
+                gpa.free(after);
+                return h.clear(gpa);
+            };
             gpa.free(last.spans_after);
             last.spans_after = after;
+            gpa.free(last.paragraphs_after);
+            last.paragraphs_after = paragraphs_after;
             if (typing) {
                 gpa.free(last.inserted);
                 last.inserted = m;
@@ -413,6 +442,14 @@ fn remember(win: *Window, id: NodeId, before: Snapshot, edit: Edit) void {
         return h.clear(gpa);
     };
     owned.spans_after = gpa.dupe(node_mod.Span, edit.spans_after) catch {
+        owned.deinit(gpa);
+        return h.clear(gpa);
+    };
+    owned.paragraphs_before = gpa.dupe(node_mod.ParagraphSpan, edit.paragraphs_before) catch {
+        owned.deinit(gpa);
+        return h.clear(gpa);
+    };
+    owned.paragraphs_after = gpa.dupe(node_mod.ParagraphSpan, edit.paragraphs_after) catch {
         owned.deinit(gpa);
         return h.clear(gpa);
     };
@@ -444,7 +481,7 @@ pub fn undo(win: *Window, id: NodeId, redo: bool) bool {
         from.appendAssumeCapacity(ed);
         return false;
     };
-    if (!commitEdit(win, id, content, @intCast(ed.start + back.len), if (redo) ed.spans_after else ed.spans_before)) {
+    if (!commitEdit(win, id, content, @intCast(ed.start + back.len), if (redo) ed.spans_after else ed.spans_before, if (redo) ed.paragraphs_after else ed.paragraphs_before)) {
         from.appendAssumeCapacity(ed);
         return false;
     }
@@ -488,9 +525,45 @@ pub fn format(win: *Window, id: NodeId, values: node_mod.SpanStyle, mask: node_m
         return false;
     };
     t.commit();
-    remember(win, id, snap, .{ .start = lo, .removed = "", .inserted = "", .kind = .format, .spans_before = before, .spans_after = after });
+    const paragraphs = e.text.paragraphs;
+    remember(win, id, snap, .{ .start = lo, .removed = "", .inserted = "", .kind = .format, .spans_before = before, .spans_after = after, .paragraphs_before = paragraphs, .paragraphs_after = paragraphs });
     changed(win, id);
     return true;
+}
+
+/// A paragraph formatting command (D13): sets the attributes in `mask` to
+/// those of `values` on every paragraph the selection touches (the
+/// caret's, with nothing selected), as one undo step followed by a change
+/// event. Masked editors take none.
+pub fn formatParagraph(win: *Window, id: NodeId, values: node_mod.ParagraphPatch, mask: node_mod.ParagraphPatch.Mask) bool {
+    const e = data(win, id);
+    if (e.editor.masked) return false;
+    const lo, const hi = selection(e);
+    const content = e.text.content;
+    const a = win.scratch.allocator();
+    const from = spans.paragraphAt(content, lo).start;
+    // A selection ending at a paragraph's start does not touch it.
+    const to = if (hi > lo and hi > from and spans.paragraphAt(content, hi).start == hi) hi else spans.paragraphAt(content, hi).end;
+    const before = a.dupe(node_mod.ParagraphSpan, e.text.paragraphs) catch return false;
+    const restyled = spans.restyled(a, before, @intCast(content.len), from, @max(to, from + 1), values, mask) catch return false;
+    const after = spans.snapped(a, content, restyled) catch return false;
+    const snap: Snapshot = .{ .caret = e.caret, .anchor = e.anchor, .revision = e.revision };
+    const t = win.begin() catch return false;
+    t.setParagraphSpans(id, after) catch {
+        t.abort();
+        return false;
+    };
+    t.commit();
+    const styled = e.text.spans;
+    remember(win, id, snap, .{ .start = lo, .removed = "", .inserted = "", .kind = .format, .spans_before = styled, .spans_after = styled, .paragraphs_before = before, .paragraphs_after = after });
+    changed(win, id);
+    return true;
+}
+
+/// The paragraph style at `offset`: of the paragraph containing it.
+pub fn paragraphStyle(win: *const Window, id: NodeId, offset: u32) node_mod.ParagraphPatch {
+    const d = win.node(id).textData();
+    return spans.styleAt(d.paragraphs, spans.paragraphAt(d.content, offset).start);
 }
 
 /// The style typed text would take now.

@@ -444,13 +444,15 @@ pub const Txn = struct {
         const shown = if (masked) try t.bullets(content) else content;
         const copy = try t.own(u8, shown);
         const hidden = if (masked) try t.ownSecret(content) else "";
-        try t.frees.ensureUnusedCapacity(t.win.gpa, 3);
+        try t.frees.ensureUnusedCapacity(t.win.gpa, 4);
         t.touch(id);
         t.release(u8, d.content);
         d.content = copy;
         // New text: the old ranges mean nothing in it.
         t.release(node_mod.Span, d.spans);
         d.spans = &.{};
+        t.release(node_mod.ParagraphSpan, d.paragraphs);
+        d.paragraphs = &.{};
         if (n.kind == .editor) {
             const e = &n.data.editor;
             e.typing = null;
@@ -489,6 +491,26 @@ pub const Txn = struct {
         t.win.dirty.semantics = true;
     }
 
+    /// Replaces the paragraph styles of a text or editor node (D13). Like
+    /// spans they must be sorted, disjoint, and at character boundaries;
+    /// each paragraph takes the style at its first byte, so they are kept
+    /// as whole paragraphs.
+    pub fn setParagraphSpans(t: *Txn, id: NodeId, list: []const node_mod.ParagraphSpan) Error!void {
+        const n = try t.textNode(id);
+        const d = n.textData();
+        if (!spans_mod.valid(d.content, list)) return error.InvalidArgument;
+        for (list) |sp| try checkParagraph(sp.style);
+        const norm = try spans_mod.snapped(t.win.scratch.allocator(), d.content, list);
+        if (paragraphsEql(d.paragraphs, norm)) return;
+        try t.reserve();
+        const copy = try t.own(node_mod.ParagraphSpan, norm);
+        t.touch(id);
+        t.release(node_mod.ParagraphSpan, d.paragraphs);
+        d.paragraphs = copy;
+        t.win.markShape(id);
+        t.win.dirty.semantics = true;
+    }
+
     /// Sets the style an editor's typed text takes until the caret moves.
     pub fn setTypingStyle(t: *Txn, id: NodeId, style: ?node_mod.SpanStyle) Error!void {
         const n = try t.data(id, .editor);
@@ -510,7 +532,7 @@ pub const Txn = struct {
             const plain = if (ed.editor.masked) ed.secret else ed.text.content;
             const shown = try t.own(u8, if (e.masked) try t.bullets(plain) else plain);
             const hidden = if (e.masked) try t.ownSecret(plain) else "";
-            try t.frees.ensureUnusedCapacity(t.win.gpa, 3);
+            try t.frees.ensureUnusedCapacity(t.win.gpa, 4);
             t.touch(id);
             t.release(u8, ed.text.content);
             t.releaseSecret(ed.secret);
@@ -519,6 +541,8 @@ pub const Txn = struct {
             if (e.masked) {
                 t.release(node_mod.Span, ed.text.spans);
                 ed.text.spans = &.{};
+                t.release(node_mod.ParagraphSpan, ed.text.paragraphs);
+                ed.text.paragraphs = &.{};
                 ed.typing = null;
             }
             ed.caret = @intCast(shown.len);
@@ -564,19 +588,30 @@ pub const Txn = struct {
         t.win.dirty.semantics = true;
     }
 
-    /// Text style, alignment, and wrapping. Color and alignment only
-    /// repaint; wrapping relayouts; anything else reshapes.
+    /// Text style, alignment, wrapping, and paragraph defaults. Color and
+    /// alignment only repaint; wrapping and paragraph defaults relayout;
+    /// anything else reshapes.
     pub fn setTextProps(t: *Txn, id: NodeId, props: node_mod.Text) Error!void {
         const n = try t.textNode(id);
         if (!(props.style.size > 0) or !finite(props.style.size)) return error.InvalidArgument;
+        try checkParagraph(.{ .indent = .{ .start = props.paragraph.indent_start, .end = props.paragraph.indent_end, .first_line = props.paragraph.first_line_indent }, .spacing = .{ .line_spacing = props.paragraph.line_spacing, .line_height = props.paragraph.line_height }, .gaps = .{ .before = props.paragraph.space_before, .after = props.paragraph.space_after }, .tab_width = props.paragraph.tab_width });
+        var prev: f32 = -std.math.inf(f32);
+        for (props.tab_stops) |stop| {
+            if (!finite(stop) or stop <= prev) return error.InvalidArgument;
+            prev = stop;
+        }
         try t.reserve();
         const fonts = t.win.fonts;
         const family = try fonts.intern(props.style.family);
         const language = try fonts.intern(props.style.language);
         const d = n.textData();
         const old = d.*;
+        const stops_changed = !std.mem.eql(f32, old.props.tab_stops, props.tab_stops);
+        const stops = if (stops_changed) try t.own(f32, props.tab_stops) else old.props.tab_stops;
         t.touch(id);
+        if (stops_changed) t.release(f32, old.props.tab_stops);
         d.props = props;
+        d.props.tab_stops = stops;
         d.props.style.family = fonts.name(family);
         d.props.style.language = fonts.name(language);
         d.family = family;
@@ -585,8 +620,11 @@ pub const Txn = struct {
         const ns = props.style;
         if (old.family != family or old.language != language or os.size != ns.size or os.weight != ns.weight or os.weight_value != ns.weight_value or os.slant != ns.slant or os.width != ns.width or os.size_role != ns.size_role) {
             t.win.markShape(id);
-        } else if (old.props.wrap != props.wrap) {
-            t.win.markLayout(id);
+        } else if (old.props.wrap != props.wrap or old.props.break_words != props.break_words or stops_changed or
+            !std.meta.eql(old.props.paragraph, props.paragraph))
+        {
+            // The layout cache keys on the width only: shape again.
+            t.win.markShape(id);
         }
         t.win.markPaint(id);
     }
@@ -720,6 +758,21 @@ fn spansEql(a: []const node_mod.Span, b: []const node_mod.Span) bool {
     if (a.len != b.len) return false;
     for (a, b) |x, y| if (x.start != y.start or x.end != y.end or !x.style.eql(y.style)) return false;
     return true;
+}
+
+fn paragraphsEql(a: []const node_mod.ParagraphSpan, b: []const node_mod.ParagraphSpan) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |x, y| if (x.start != y.start or x.end != y.end or !x.style.eql(y.style)) return false;
+    return true;
+}
+
+/// Finite lengths, non-negative where negative means nothing (all but the
+/// first-line indent), and a positive line spacing.
+fn checkParagraph(p: node_mod.ParagraphPatch) Error!void {
+    if (p.indent) |i| if (!finite(i.start) or !finite(i.end) or !finite(i.first_line) or i.start < 0 or i.end < 0) return error.InvalidArgument;
+    if (p.spacing) |s| if (!(s.line_spacing > 0) or !finite(s.line_spacing) or !(s.line_height >= 0) or !finite(s.line_height)) return error.InvalidArgument;
+    if (p.gaps) |g| if (!(g.before >= 0) or !(g.after >= 0) or !finite(g.before) or !finite(g.after)) return error.InvalidArgument;
+    if (p.tab_width) |w| if (!(w >= 0) or !finite(w)) return error.InvalidArgument;
 }
 
 fn finite(v: f32) bool {
