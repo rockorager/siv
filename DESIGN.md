@@ -3977,11 +3977,25 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     pointer moves, buttons, clicks, wheel scrolling, keys with their
     text, typed strings, close requests, and another client's drop are
     injected into the simulated seat on the compositor thread;
-    `siv_test_settle` dispatches until every shown window presented what
-    it committed and wants no frame and no font, icon, image load,
-    `siv_job_start` job, paste, or drop is in flight (three idle
-    dispatches in a row, since a frame's events can start work), with a
-    timeout; `siv_test_capture` copies the last presented buffer as
+    `siv_test_settle` dispatches until no work is in flight, with a
+    timeout: no transaction is open, every shown window presented what
+    it committed and wants no frame, no font, icon, image load,
+    `siv_job_start` job, paste, or drop is in flight, and the compositor
+    owes no frame (`Compositor.owesFrames`: a commit not yet presented,
+    a frame asked for by input, the UI, a compositor-side scroll, a
+    popup, or a timer and not yet composed, a fling or single-run
+    animation still running, events posted to the UI and not yet
+    delivered, or input the headless backend has not handled). The
+    headless backend presents as the compositor commits, so no frame
+    owed means every one owed is presented. It waits on the loop rather
+    than for quiet time: when it finds frames owed, the compositor posts
+    `Event.idle` once none are, which wakes the loop. Repeating
+    animations (`iterations` other than 1: a caret's blink, a spinner)
+    never end and are not waited for, so a capture may catch them in
+    any phase; reduced motion stops them. It used to stop after three
+    idle 2 ms dispatches, which returned before a frame the compositor
+    owed for a wheel scroll whenever that frame waited for the next
+    vblank (test/abi/settle.zig forces a 300 ms refresh to show it); `siv_test_capture` copies the last presented buffer as
     premultiplied RGBA; `siv_test_find`, `siv_test_get_name`, and
     `siv_test_dump` read the semantics tree (D18) by role, exact name,
     focus, and index; `siv_test_get_popup` finds the newest shown popup.

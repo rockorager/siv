@@ -90,6 +90,9 @@ vulkan_remote: Loop.Remote = .{ .func = onVulkanReady },
 /// The creating thread's exit guard (D10), counting device threads
 /// still starting.
 exit_guard: ?*ExitGuard = null,
+/// `owesFrames` found frames owed and was asked to say when none are:
+/// post `Event.idle` then.
+settle_wake: bool = false,
 
 const max_seats = 8;
 
@@ -271,6 +274,9 @@ const Window = struct {
     presented_seq: u64 = 0,
     /// The UI asked for an `Event.frame`.
     ui_frame: bool = false,
+    /// A frame was asked for (`want`) and has not been composed yet, or a
+    /// single-run animation or fling still runs (`owesFrames`).
+    owed: bool = false,
     configure_serial: u64 = 0,
     /// Serial of the last configure that changed the logical size; frames
     /// wait for the UI's layout for it.
@@ -597,7 +603,7 @@ const ReleaseTo = struct {
 fn onExternalReady(ctx: *anyopaque, id: update.ExternalId) void {
     const w: *Window = @ptrCast(@alignCast(ctx));
     w.tree.touchExternal(id);
-    w.compositor.platform.requestFrame(w.id);
+    w.compositor.want(w.id);
 }
 
 fn dupFd(fd: i32) error{SystemResources}!i32 {
@@ -678,7 +684,7 @@ fn drain(self: *Compositor) void {
         .commit => |cm| self.applyCommit(cm.window, cm.seq, in.ops.items[cm.start..][0..cm.len]),
         .request_frame => |id| if (self.getWindow(id)) |w| {
             w.ui_frame = true;
-            self.platform.requestFrame(id);
+            self.want(id);
         },
         .destroy_window => |id| if (self.getWindow(id)) |w| {
             self.closeWindow(w);
@@ -687,13 +693,13 @@ fn drain(self: *Compositor) void {
         .external_frame => |f| if (self.getWindow(f.window)) |w| {
             if (w.externals.setFrame(f.id, f.frame)) {
                 w.tree.touchExternal(f.id);
-                self.platform.requestFrame(f.window);
+                self.want(f.window);
             }
         } else {
             _ = std.os.linux.close(f.frame.fd);
         },
         .external_committed => |ec| if (self.getWindow(ec.window)) |w| {
-            if (w.externals.surfaceCommitted(ec.id, ec.width, ec.height)) self.platform.requestFrame(ec.window);
+            if (w.externals.surfaceCommitted(ec.id, ec.width, ec.height)) self.want(ec.window);
         },
         .external_hook => |eh| if (self.getWindow(eh.window)) |w| {
             if (!w.externals.setHook(eh.id, eh.hook)) if (eh.hook) |h| h.dropped(h.ctx);
@@ -701,7 +707,7 @@ fn drain(self: *Compositor) void {
         .destroy_external => |d| if (self.getWindow(d.window)) |w| {
             w.externals.destroy(self.platform, d.window, d.id);
             w.tree.touchExternal(d.id);
-            self.platform.requestFrame(d.window);
+            self.want(d.window);
         },
         .call => |cl| {
             cl.func(cl.ctx, self);
@@ -718,6 +724,7 @@ fn drain(self: *Compositor) void {
     };
     in.msgs.clearRetainingCapacity();
     in.ops.clearRetainingCapacity();
+    self.checkIdle();
 }
 
 fn applyCommit(self: *Compositor, id: WindowId, seq: u64, ops: []const Op) void {
@@ -728,10 +735,51 @@ fn applyCommit(self: *Compositor, id: WindowId, seq: u64, ops: []const Op) void 
     };
     w.seq = seq;
     self.releaseAll(w.tree.trimRetired());
-    self.platform.requestFrame(id);
+    self.want(id);
 }
 
 // Windows -------------------------------------------------------------------
+
+/// Asks the platform for a frame of window `id`, owed until it is
+/// composed (`owesFrames`).
+fn want(self: *Compositor, id: WindowId) void {
+    if (self.getWindow(id)) |w| w.owed = true;
+    self.platform.requestFrame(id);
+}
+
+/// Whether some window has a frame to show that it has not presented: a
+/// commit applied but not presented, a frame asked for (by a commit, the
+/// UI, input such as a compositor-side scroll, a popup, a timer) and not
+/// composed yet, or a single-run animation or a fling still running.
+/// Repeating animations (`Animation.iterations` other than 1: a caret
+/// blink, a spinner) owe nothing, since they never end. Events for the UI
+/// not yet delivered count too. Compositor thread only; with `wake`, the
+/// compositor posts `Event.idle` once none is owed (siv_test_settle).
+pub fn owesFrames(self: *Compositor, wake: bool) bool {
+    const owes = self.owing();
+    if (owes and wake) self.settle_wake = true;
+    return owes;
+}
+
+fn owing(self: *Compositor) bool {
+    for (self.windows.items) |item| if (item) |w| {
+        if (w.owed or w.seq > w.presented_seq or w.hold_for != null) return true;
+    };
+    _ = c.pthread_mutex_lock(&self.outbox.mutex);
+    defer _ = c.pthread_mutex_unlock(&self.outbox.mutex);
+    return self.outbox.posted;
+}
+
+/// Posts `Event.idle` if `owesFrames` was asked to and nothing is owed
+/// any more.
+fn checkIdle(self: *Compositor) void {
+    if (!self.settle_wake) return;
+    for (self.windows.items) |item| if (item) |w| {
+        if (w.owed or w.seq > w.presented_seq or w.hold_for != null) return;
+    };
+    self.settle_wake = false;
+    self.outbox.push(.idle);
+}
 
 fn getWindow(self: *Compositor, id: WindowId) ?*Window {
     if (id >= self.windows.items.len) return null;
@@ -862,7 +910,7 @@ fn finishVulkan(self: *Compositor) void {
         self.vulkan_state = .ready;
         self.vulkan_backoff_ns = self.vulkan_options.retry_ns;
         // Open windows switch at their next frame.
-        for (self.windows.items) |w| if (w) |win| self.platform.requestFrame(win.id);
+        for (self.windows.items) |w| if (w) |win| self.want(win.id);
     } else |err| {
         if (self.vulkan_retrying) {
             log.info("Vulkan device not back yet ({t}); retrying in {d} ms", .{ err, self.vulkan_backoff_ns / std.time.ns_per_ms });
@@ -893,7 +941,7 @@ fn loseVulkan(self: *Compositor) void {
             w.surface = cpu;
             w.tree.current = null;
         }
-        self.platform.requestFrame(w.id);
+        self.want(w.id);
     };
     var lost_windows = false;
     for (self.windows.items) |item| if (item) |w| {
@@ -935,13 +983,18 @@ fn releaseAll(self: *Compositor, builders: []const *scene.Builder) void {
 
 fn onWindowTimer(timer: *Timer) void {
     const w: *Window = @fieldParentPtr("timer", timer);
-    w.compositor.platform.requestFrame(w.id);
+    w.compositor.want(w.id);
 }
 
 // Platform events -----------------------------------------------------------
 
 fn onPlatformEvent(ctx: ?*anyopaque, ev: *const platform_mod.Event) void {
     const self: *Compositor = @ptrCast(@alignCast(ctx));
+    self.handlePlatformEvent(ev);
+    self.checkIdle();
+}
+
+fn handlePlatformEvent(self: *Compositor, ev: *const platform_mod.Event) void {
     switch (ev.*) {
         .frame => |f| return self.renderFrame(f),
         .configure => |cf| {
@@ -1014,7 +1067,7 @@ fn scroll(self: *Compositor, s: platform_mod.Scroll) bool {
         seat.latch = null;
         seat.velocity.reset();
     }
-    self.platform.requestFrame(s.window);
+    self.want(s.window);
     return true;
 }
 
@@ -1034,7 +1087,7 @@ fn releaseHold(self: *Compositor, popup: *Window, time: ?platform_mod.FrameClock
     // Vulkan present flushes the connection): the display server takes
     // them together and shows them in one refresh. Presented apart, the
     // parent's commit showed at once and the popup's a refresh later.
-    if (time) |t| self.renderFrame(.{ .window = pid, .time = t }) else self.platform.requestFrame(pid);
+    if (time) |t| self.renderFrame(.{ .window = pid, .time = t }) else self.want(pid);
 }
 
 /// Zooms a container for a touchpad pinch, if one takes it (routed like
@@ -1074,7 +1127,7 @@ fn routeGesture(self: *Compositor, g: platform_mod.Gesture) bool {
     w.tree.zoomAt(id, seat.pinch_zoom * @as(f32, @floatCast(g.scale)), focus, true) catch return true;
     // The content follows the fingers.
     _ = w.tree.pan(id, .{ .x = @floatCast(-g.dx), .y = @floatCast(-g.dy) }) catch {};
-    self.platform.requestFrame(g.window);
+    self.want(g.window);
     return true;
 }
 
@@ -1145,6 +1198,9 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
             self.loop.startTimer(&w.timer, Loop.now() + f.time.interval_ns / 2, 0) catch {};
         }
     }
+    // The frame asked for is composed, unless it is retried for want of
+    // a buffer; single-run animations and flings owe the next ones.
+    w.owed = (!presented and (damage.len > 0 or tick.active)) or tick.holding;
     // Subsurface changes apply with the window's commit.
     if (subsurfaces_changed and !presented) self.platform.commitWindow(w.id);
     self.releaseAll(w.tree.endFrame());
@@ -1188,6 +1244,8 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
     }
 
     if (tick.active) {
+        // Owed only while single-run animations or flings run
+        // (`tick.holding`): repeating ones never end.
         self.platform.requestFrame(w.id);
     } else if (tick.next_start_ns) |start| {
         if (!w.timer.armed()) self.loop.startTimer(&w.timer, start -| f.time.interval_ns, 0) catch {};

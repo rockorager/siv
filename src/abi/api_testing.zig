@@ -71,7 +71,7 @@ pub const decls = [_]Decl{
 };
 
 pub const functions = [_]Function{
-    call("siv_test_settle", "Dispatches until the application is idle or timeout_ms pass: every shown window has presented what it committed and wants no frame, and no font, icon, image load, application job (siv_job_start), paste, or drop is in flight. Portal requests and the application's own threads are not waited for: wait for what they show. A window that animates without end never settles (use SIV_APP_REDUCED_MOTION). Not from a callback (SIV_ERROR_BUSY)." ++ headless, &.{
+    call("siv_test_settle", "Dispatches until the application is idle or timeout_ms pass, waiting for the events that end the work rather than for quiet time: no transaction is open; every shown window has presented what it committed and wants no frame; the compositor owes no frame (for injected input, a scroll or fling it runs itself, or a single-run animation) and has presented every frame it owed; and no font, icon, image load, application job (siv_job_start), paste, or drop is in flight. Repeating animations (a caret's blink, a spinner) are not waited for, since they never end, and a capture may catch them in any phase (SIV_APP_REDUCED_MOTION stops them). Timers, portal requests, and the application's own threads are not waited for: wait for what they show. Not from a callback (SIV_ERROR_BUSY)." ++ headless, &.{
         p("app", ref("siv_app"), "The application."),
         p("timeout_ms", .u32, "How long to wait at most."),
         p("settled", out(.bool), "Whether it settled in time."),

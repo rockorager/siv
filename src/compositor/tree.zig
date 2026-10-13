@@ -597,6 +597,9 @@ pub const Tree = struct {
         active: bool,
         /// Earliest start of an animation that has not started yet.
         next_start_ns: ?u64,
+        /// A single-run animation (started or waiting to) or a fling is
+        /// left: it ends, so its frames are owed (`Compositor.owesFrames`).
+        holding: bool = false,
     };
 
     /// Samples every animation at `t_ns`, the frame's predicted
@@ -623,9 +626,12 @@ pub const Tree = struct {
                     if (s.done) {
                         try t.finished.append(t.gpa, .{ .layer = id, .id = r.anim.id, .property = prop });
                         l.anims[@intFromEnum(prop)] = null;
-                    } else if (t_ns < r.start_ns) {
-                        result.next_start_ns = @min(result.next_start_ns orelse r.start_ns, r.start_ns);
-                    } else result.active = true;
+                    } else {
+                        if (r.anim.iterations == 1) result.holding = true;
+                        if (t_ns < r.start_ns) {
+                            result.next_start_ns = @min(result.next_start_ns orelse r.start_ns, r.start_ns);
+                        } else result.active = true;
+                    }
                 }
             }
             if (l.fling) |*f| {
@@ -634,7 +640,10 @@ pub const Tree = struct {
                 try t.setOffset(id, s.offset, true);
                 // Stops at rest or once it runs into the edge.
                 const stuck = l.offset.eql(before) and f.start_ns != t_ns;
-                if (s.done or stuck) l.fling = null else result.active = true;
+                if (s.done or stuck) l.fling = null else {
+                    result.active = true;
+                    result.holding = true;
+                }
             }
             if (l.animating()) {
                 i += 1;

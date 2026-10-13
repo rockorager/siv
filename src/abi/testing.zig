@@ -78,7 +78,9 @@ fn button(w: *Window, code: u32, pressed: bool) platform.Event {
     return .{ .pointer_button = .{ .window = w.win.id, .seat = 0, .button = code, .pressed = pressed, .time = s, .serial = s } };
 }
 
-/// Whether nothing the application waits for is in flight.
+/// Whether the UI has nothing in flight: no font, icon, image, job, or
+/// clipboard work, and every shown window has presented what it
+/// committed, with no transaction open and no frame of its own to run.
 fn idle(self: *App) bool {
     const app = self.app;
     if (app.fonts.loading() or app.icons.loading() or self.jobs != 0) return false;
@@ -92,24 +94,55 @@ fn idle(self: *App) bool {
     return true;
 }
 
-/// Dispatches until idle for three dispatches in a row (a frame's events
-/// can start more work), or until `timeout_ms` pass.
+/// Whether the compositor owes a frame (`Compositor.owesFrames`: commits,
+/// frames asked for by input or the UI, compositor-side scrolls, flings,
+/// single-run animations, undelivered events) or the headless backend
+/// holds input it has not handled. When it is busy, the compositor posts
+/// `Event.idle` once it owes nothing, so waiting on the loop ends.
+fn compositorBusy(self: *App) Error!bool {
+    const C = struct {
+        busy: bool = false,
+        fn run(p: ?*anyopaque, comp: *compositor.Compositor) void {
+            const s: *@This() = @ptrCast(@alignCast(p));
+            const input = comp.platform.headless.queue.items.items.len != 0;
+            if (input) comp.settle_wake = true;
+            s.busy = comp.owesFrames(true) or input;
+        }
+    };
+    var cx: C = .{};
+    try self.app.comp.call(&cx, C.run);
+    return cx.busy;
+}
+
+fn dispatch(self: *App, timeout_ms: i32) Error!void {
+    // A destroyed window or a callback's error can end the application's
+    // run; dispatching still works.
+    self.app.dispatch(timeout_ms) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.Busy => error.Busy,
+        error.Unavailable => error.Unavailable,
+    };
+}
+
+/// Dispatches until neither the UI nor the compositor has work in flight
+/// (`idle`, `compositorBusy`), waiting on the loop for the events that
+/// end it rather than for quiet time, or until `timeout_ms` pass. Every
+/// frame owed is then presented on the headless backend, since it
+/// presents as the compositor commits.
 fn settle(self: *App, timeout_ms: u32) Error!bool {
     if (self.depth != 0) return error.Busy;
     const deadline = loop_mod.Loop.now() + @as(u64, timeout_ms) * std.time.ns_per_ms;
-    var quiet: u32 = 0;
-    while (quiet < 3) {
-        if (loop_mod.Loop.now() > deadline) return false;
-        // A destroyed window or a callback's error can end the
-        // application's run; dispatching still works.
-        self.app.dispatch(2) catch |err| return switch (err) {
-            error.OutOfMemory => error.OutOfMemory,
-            error.Busy => error.Busy,
-            error.Unavailable => error.Unavailable,
-        };
-        quiet = if (idle(self)) quiet + 1 else 0;
+    var wait: i32 = 0;
+    while (true) {
+        try dispatch(self, wait);
+        // The compositor counts the events it posted and the UI has not
+        // taken yet, so a true answer leaves none behind.
+        if (idle(self) and !try compositorBusy(self)) return true;
+        const now = loop_mod.Loop.now();
+        if (now >= deadline) return false;
+        const left_ms = (deadline - now + std.time.ns_per_ms - 1) / std.time.ns_per_ms;
+        wait = @intCast(@min(left_ms, std.math.maxInt(i32)));
     }
-    return true;
 }
 
 pub export fn siv_test_settle(app: t.App, timeout_ms: u32, settled: ?*bool) t.Result {

@@ -47,10 +47,14 @@ Without any font, text has nothing to lay out with; always add one.
 A test does not call `siv_app_run`. Input it injects is queued like a
 compositor's, and `siv_test_settle` dispatches until the application is
 idle: every shown window has presented what it committed and wants no
-frame, and no font, icon, image load, job, paste, or drop is in flight. It
-gives up after a timeout and says whether it settled. It does not wait for
-portal requests or threads of your own; wait for what they show instead,
-dispatching with `siv_app_dispatch` until it appears.
+frame, the compositor has presented every frame it owes (for the input,
+for a scroll or fling it runs itself, for a transition), and no font,
+icon, image load, job, paste, or drop is in flight. It waits for the
+events that end this work, however long the frames take, rather than
+for a moment of quiet. It gives up after a timeout and says whether it
+settled. It does not wait for timers, portal requests, or threads of
+your own; wait for what they show instead, dispatching with
+`siv_app_dispatch` until it appears.
 
 ```c
 /* Delivers the input so far and waits until every frame is presented and
@@ -61,8 +65,10 @@ static void settle(siv_app app) {
 }
 ```
 
-A window that animates without end never settles; reduced motion stops
-siv's own animations.
+Animations that repeat, such as a caret's blink or a spinner, never end,
+so settling does not wait for them, and a capture can catch them in any
+phase; reduced motion stops them. A window your code redraws on every
+frame without end never settles.
 
 ## Finding and driving
 

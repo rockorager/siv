@@ -396,6 +396,9 @@ pub const Event = union(enum) {
     /// render one soon even if nothing else changed, since the new size
     /// applies with the surface's next commit.
     external_configure: struct { window: WindowId, id: ExternalId, width: u32, height: u32, buffer_width: u32, buffer_height: u32 },
+    /// The compositor owes no frame any more (`Compositor.owesFrames`
+    /// asked for this). Carries nothing: it wakes the UI loop.
+    idle,
 
     /// The window an event is about, if any. `released` belongs to no
     /// window: it must be delivered even after the window is gone.
@@ -404,7 +407,7 @@ pub const Event = union(enum) {
             .platform => |*p| p.window(),
             .frame => |f| f.window,
             inline .configure, .presented, .scrolled, .animation_finished, .external_released, .external_configure => |e| e.window,
-            .released => null,
+            .released, .idle => null,
         };
     }
 };
