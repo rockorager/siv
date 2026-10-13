@@ -212,7 +212,7 @@ int main(int argc, char **argv) {
 		fprintf(stderr, "building the window failed: %s\n", siv_result_name(r));
 		return 1;
 	}
-	r = siv_run(app);
+	r = siv_app_run(app);
 	siv_app_destroy(app);
 	return r == SIV_OK ? 0 : 1;
 }

@@ -466,7 +466,7 @@ fn choose(menu_node: Node, item_node: Node, index: u32, _: siv.Window) void {
         it.checked = !it.checked;
     };
     var handled = false;
-    _ = c.siv_emit(owner, &.{ .type = .select, .index = index, .value = @floatFromInt(index), .count = 1 }, &handled);
+    _ = c.siv_node_emit(owner, &.{ .type = .select, .index = index, .value = @floatFromInt(index), .count = 1 }, &handled);
 }
 
 fn onRowKey(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
@@ -609,7 +609,7 @@ fn popoverOf(popup: siv.Window) ?*Popover {
 
 fn askClose(st: *Popover) bool {
     var handled = false;
-    _ = c.siv_emit(st.content, &.{ .type = .close }, &handled);
+    _ = c.siv_node_emit(st.content, &.{ .type = .close }, &handled);
     return handled;
 }
 

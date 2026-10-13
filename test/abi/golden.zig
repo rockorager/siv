@@ -238,7 +238,7 @@ test "C API: a form built through the exports renders, and input reaches C callb
     try testing.expectEqual(@as(f32, 15), log.scroll_dy);
 
     // A handled close request keeps the window; an unhandled one destroys
-    // it, which releases its handlers, and siv_run returns.
+    // it, which releases its handlers, and siv_app_run returns.
     const Close = struct {
         fn run(ctx: ?*anyopaque, comp: *compositor.Compositor) void {
             comp.platform.headless.requestClose(@as(*platform.WindowId, @ptrCast(@alignCast(ctx))).*);
@@ -251,7 +251,7 @@ test "C API: a form built through the exports renders, and input reaches C callb
     try testing.expectEqual(1, log.closes);
     log.keep_open = false;
     try self.app.comp.call(&wid, Close.run);
-    try ok(A.siv_run(h.app));
+    try ok(A.siv_app_run(h.app));
     try testing.expectEqual(2, log.closes);
     try testing.expectEqual(1, log.destroyed);
     try testing.expectEqual(t.Result.error_invalid_handle, A.siv_window_destroy(h.window));
@@ -294,7 +294,7 @@ test "C API: destroying the window from its own handler defers releases until th
     try ok(T.siv_txn_commit(txn));
     try h.settle();
     try h.click(10, 10);
-    try ok(A.siv_run(h.app));
+    try ok(A.siv_app_run(h.app));
     try testing.expect(!ctx.released_during);
     try testing.expectEqual(2, ctx.released);
 }

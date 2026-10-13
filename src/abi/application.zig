@@ -332,7 +332,7 @@ pub export fn siv_app_destroy(app: t.App) t.Result {
     return .ok;
 }
 
-pub export fn siv_app_fd(app: t.App, fd: ?*i32) t.Result {
+pub export fn siv_app_get_fd(app: t.App, fd: ?*i32) t.Result {
     const self = App.get(@backingInt(app)) catch |err| return t.resultOf(err);
     const dest = runtime.out(i32, fd) catch |err| return t.resultOf(err);
     dest.* = self.app.fd();
@@ -346,7 +346,7 @@ pub export fn siv_app_dispatch(app: t.App, timeout_ms: i32) t.Result {
     return .ok;
 }
 
-pub export fn siv_run(app: t.App) t.Result {
+pub export fn siv_app_run(app: t.App) t.Result {
     const self = App.get(@backingInt(app)) catch |err| return t.resultOf(err);
     if (self.depth != 0) return .error_busy;
     self.app.run() catch |err| return t.resultOf(mapAppError(err));
@@ -380,7 +380,7 @@ pub export fn siv_app_add_font(app: t.App, family: ?[*]const u8, family_len: usi
     return .ok;
 }
 
-pub export fn siv_app_font_family(app: t.App, family: ?[*]const u8, family_len: usize, id: ?*u32) t.Result {
+pub export fn siv_app_get_font_family(app: t.App, family: ?[*]const u8, family_len: usize, id: ?*u32) t.Result {
     return wrap(struct {
         fn f(a: t.App, p: ?[*]const u8, n: usize, out: ?*u32) Error!void {
             const self = try App.get(@backingInt(a));

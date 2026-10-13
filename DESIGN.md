@@ -338,8 +338,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **Requirement:** hosts with their own loop (GLib, libuv, Qt, game loops) must
   be able to drive siv. siv must run inside sandboxes.
 - **Decision:** one epoll loop per application with eventfd wakeups and timerfd
-  deadlines from a userspace timer heap. `siv_app_fd()` and
-  `siv_app_dispatch(timeout)` embed it; `siv_run()` owns it. File I/O runs on the
+  deadlines from a userspace timer heap. `siv_app_get_fd()` and
+  `siv_app_dispatch(timeout)` embed it; `siv_app_run()` owns it. File I/O runs on the
   worker pool.
   - The loop fd stays readable while any work is pending (the eventfd is
     written when work is scheduled for a phase that already ran), so an
@@ -2231,7 +2231,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       launched by D-Bus activation it activates itself (or opens its
       URIs) at the next dispatch, never inside the call. An instance that
       finds the name taken is secondary: it forwards Activate or Open,
-      with its activation token, and `siv_run` returns
+      with its activation token, and `siv_app_run` returns
       (`SIV_ERROR_UNAVAILABLE` if the primary did not answer). Without an
       id, a bus, or with `SIV_LAUNCH_MULTIPLE_INSTANCES`, every launch is
       primary. The application creates its windows in `on_activate`, as
@@ -2757,7 +2757,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     primitive first. Primitives added this way: hidden nodes
     (`SIV_VISUAL_HIDDEN`), modal nodes (`SIV_SEMANTICS_MODAL`), the value
     step, editor placeholders, transitions, themed colors and text sizes
-    (D29), default handlers and default layouts, `siv_emit`, node data,
+    (D29), default handlers and default layouts, `siv_node_emit`, node data,
     the widget interface (`siv_set_widget`),
     tree navigation (`siv_node_get_related`, `siv_node_get_window`,
     `siv_node_get_label`, `siv_node_is_rtl`), `siv_txn_fail`, one-shot
@@ -2771,7 +2771,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     `column`, AT-SPI's sort and colindex attributes, as browsers expose
     aria-sort and aria-colindex).
   - **Creating:** one builder per widget, a transaction operation like the
-    primitive builders (D27): `siv_button(txn, parent, &desc)` appends the
+    primitive builders (D27): `siv_push_button(txn, parent, &desc)` appends the
     widget and returns its root node, or 0 once the transaction has failed
     (sticky errors, D4; a widget reports its own invalid arguments with
     `siv_txn_fail`). The root is an ordinary node: layout, `siv_move`,
@@ -2831,7 +2831,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     - Alternatives: a widget class registered once (a type handle) with
       per-node user data (one more handle type and lifetime to save a
       copy of eight pointers on widget roots only, which a hash map by
-      node keeps); events (`siv_emit` of a `set_label` event: events
+      node keeps); events (`siv_node_emit` of a `set_label` event: events
       return no value for `get_value` and `get_part`, and the `siv_on`
       slot is the application's, so its handler would swallow the
       widget's own calls); a public enum of stock kinds (a closed set no
@@ -2850,7 +2850,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     So `siv_on` stays the application's on every node, a stock widget
     never takes a handler slot away from it, and an application overrides
     a behavior by returning handled or prevent. Widgets report
-    their own events with `siv_emit`, which runs the same two slots.
+    their own events with `siv_node_emit`, which runs the same two slots.
   - **Layout defaults.** `siv_set_layout` replaces a node's whole layout
     (D27), which would wipe a widget's padding and least sizes the moment
     an application positions the widget. So a node can also have a
@@ -3088,7 +3088,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       matched per span and synthesized where missing (D13), so bold and
       italic spans show with any font.
     - Spans also set a family and a width. A family is a `u32` from
-      `siv_app_font_family` (interned names, 0 the default family), not a
+      `siv_app_get_font_family` (interned names, 0 the default family), not a
       string: `siv_text_span` is a fixed-size value that arrays hold and
       `siv_node_get_text_run` returns through an out parameter, so a
       pointer in it would have no owner.
@@ -3227,7 +3227,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     or several values, and handles as handles or nil (a widget's
     `get_part` and `focus`). An error in a callback goes to
     `siv.set_error_handler`'s
-    function if set; otherwise it is kept, `siv_run` is quit, and the
+    function if set; otherwise it is kept, `siv_app_run` is quit, and the
     binding call that returns to Lua next (`app:run()`, `node:emit()`,
     ...) raises it, so an error in a handler ends the program with its
     traceback like any uncaught error. `siv-lua --watch` reports errors
@@ -3400,6 +3400,21 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **Requirement:** C programs build real UIs with little ceremony, and
   every binding (D3, D23) gets the same safe defaults.
 - **Decision:**
+  - **Names** follow one pattern, so a binding can map them mechanically
+    (D23's methods): `siv_<object>_<verb>` for an object's calls
+    (`siv_window_set_title`, `siv_app_run`), `siv_<verb>` for transaction
+    operations on nodes (`siv_set_layout`, `siv_move`, `siv_on`),
+    `siv_<object>_get_<thing>` for queries that write an out parameter
+    (`siv_node_get_rect`, `siv_app_get_fd`), and `siv_<object>_is_<state>`
+    for boolean ones. Functions that return their value directly have no
+    `get_`: `siv_version`, `siv_result_name`, `siv_window_root`, and the
+    builders, whose 0 the next operation rejects as the sticky error.
+    Calls on a node outside a transaction are `siv_node_*`
+    (`siv_node_focus`, `siv_node_emit`), except families named for their
+    widget (`siv_view_*`, `siv_menu_*`, `siv_editor_*`, `siv_widget_*`).
+    Structs that siv fills (events, results) have no `_desc` suffix;
+    structs the caller fills do. The pre-1.0 review renamed what broke
+    the pattern (D30).
   - One builder per primitive (`siv_box`, `siv_flex`, `siv_grid`,
     `siv_stack`, `siv_text`, `siv_editor`, `siv_scroll`), appending as
     the last child; `siv_move` reorders. Image nodes (`siv_image_view`)
@@ -3452,9 +3467,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     true stops bubbling and the default action (D16). Changes to the tree
     from a handler go through a transaction like any other. A second
     slot, `siv_on_default`, holds widget behavior and runs only when the
-    first is empty or declines (D22); `siv_emit` sends an event to both.
+    first is empty or declines (D22); `siv_node_emit` sends an event to both.
   - A close request goes to the window's `on_event`; unless it returns
-    true, siv destroys the window. `siv_run` returns when `siv_app_quit`
+    true, siv destroys the window. `siv_app_run` returns when `siv_app_quit`
     is called or the last window is destroyed.
   - `siv_app_dispatch` reports `SIV_ERROR_UNAVAILABLE` once the display
     connection is lost and `SIV_ERROR_OUT_OF_MEMORY` once when events
@@ -3641,6 +3656,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | `siv_external_view(txn, parent, &siv_external_view_desc)` and `siv_set_external_view` (D27) | slot, size, and fit as arguments | like `siv_image_view`; the Lua builder takes an `external_view` property |
   | `thread` on schema functions and callbacks; the header's conventions comment (D2) | "Any thread." in prose | binding generators (a Rust `Send` bound, a Lua check) read it instead of parsing documentation |
   | `deprecated` on schema functions, `SIV_DEPRECATED` (D2) | — | the deprecation rules D2 promised before 1.0, with the mechanism that carries them out |
+  | `siv_app_run` | `siv_run` | it is an application's call, like `siv_app_dispatch` and `siv_app_quit` (Lua: `app:run()` as before, `siv.app_run`) |
+  | `siv_app_get_fd` | `siv_app_fd` | queries with an out parameter are `get_` (D27; Lua `app:get_fd()`) |
+  | `siv_app_get_font_family` | `siv_app_font_family` | likewise, beside `siv_app_get_font_family_name` (Lua `app:get_font_family(name)`) |
+  | `siv_notification_send` | `siv_notify` | pairs with `siv_notification_withdraw` (Lua `app:notification_send{}`) |
+  | `siv_node_emit` | `siv_emit` | calls on a node outside a transaction are `siv_node_*` (Lua `node:emit` as before) |
+  | `siv_pointer_button`, `SIV_POINTER_BUTTON_*` | `siv_button`, `SIV_BUTTON_*` | `siv_button_desc` and `siv_button_style` are the push button widget's; the event field is still `button` |
 - **Reverse if:** a binding cannot express one of these without special
   cases; then the schema needs a construct, not an exception.
 

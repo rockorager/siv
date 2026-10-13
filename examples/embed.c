@@ -109,7 +109,7 @@ int main(void) {
 	pthread_create(&thread, NULL, clock_thread, &worker);
 
 	int fd;
-	if (siv_app_fd(app, &fd) != SIV_OK) return 1;
+	if (siv_app_get_fd(app, &fd) != SIV_OK) return 1;
 	struct pollfd fds[2] = {{.fd = fd, .events = POLLIN}, {.fd = STDIN_FILENO, .events = POLLIN}};
 	while (ui.open) {
 		if (poll(fds, 2, -1) < 0) break;

@@ -127,7 +127,7 @@ int main(void) {
 		r = siv_txn_commit(txn);
 	}
 	if (r == SIV_OK) r = siv_node_focus(a.editor);
-	if (r == SIV_OK) r = siv_run(app);
+	if (r == SIV_OK) r = siv_app_run(app);
 	if (r != SIV_OK) fprintf(stderr, "todo: %s\n", siv_result_name(r));
 	/* Destroying the application releases every remaining item. */
 	siv_app_destroy(app);

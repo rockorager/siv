@@ -1679,7 +1679,7 @@ pub export fn siv_node_is_rtl(node: t.Node, rtl: ?*bool) t.Result {
     }.f(node, rtl));
 }
 
-pub export fn siv_emit(node: t.Node, event: ?*const t.Event, handled: ?*bool) t.Result {
+pub export fn siv_node_emit(node: t.Node, event: ?*const t.Event, handled: ?*bool) t.Result {
     return application.wrap(struct {
         fn f(n: t.Node, e_ptr: ?*const t.Event, out: ?*bool) Error!void {
             const w, const id = try lookup(n);

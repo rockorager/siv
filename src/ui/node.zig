@@ -1013,7 +1013,7 @@ pub const Event = union(enum) {
 pub const Viewport = struct { x: f32, y: f32, width: f32, height: f32, zoom: f32 = 1 };
 
 /// `select`, `close`, and `sort` are never sent by the tree: widgets built
-/// on the C API emit them (`siv_emit`).
+/// on the C API emit them (`siv_node_emit`).
 pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll, change, drop, drag, set_value, select, close, viewport, sort, gesture, tablet, pad };
 
 /// What a handler did with an event: whether it stops bubbling and

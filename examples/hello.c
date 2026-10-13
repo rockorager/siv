@@ -2,8 +2,8 @@
  *
  *     zig build examples && ./zig-out/bin/hello
  *
- * Closing the window ends siv_run: an unhandled close request destroys the
- * window, and siv_run returns once no window is left. */
+ * Closing the window ends siv_app_run: an unhandled close request destroys the
+ * window, and siv_app_run returns once no window is left. */
 #include <siv.h>
 
 #include <stdio.h>
@@ -76,8 +76,8 @@ int main(void) {
 		return 1;
 	}
 
-	r = siv_run(app);
-	if (r != SIV_OK) fprintf(stderr, "siv_run: %s\n", siv_result_name(r));
+	r = siv_app_run(app);
+	if (r != SIV_OK) fprintf(stderr, "siv_app_run: %s\n", siv_result_name(r));
 	siv_app_destroy(app);
 	return r == SIV_OK ? 0 : 1;
 }

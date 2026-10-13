@@ -84,7 +84,7 @@ pub fn setTitle(txn: Txn, st: *Dialog, title: []const u8) void {
 
 fn askClose(root: Node) void {
     var handled = false;
-    _ = c.siv_emit(root, &.{ .type = .close }, &handled);
+    _ = c.siv_node_emit(root, &.{ .type = .close }, &handled);
 }
 
 fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {

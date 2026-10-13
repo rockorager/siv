@@ -17,7 +17,7 @@
 //!   its builder sets on the root with `siv_set_widget` (`setInterface`),
 //!   as they reach an application's widget.
 //! - User changes commit in a transaction of their own, then report
-//!   `change` with `siv_emit`; values set by the application do not.
+//!   `change` with `siv_node_emit`; values set by the application do not.
 //! - Colors and text sizes are theme tokens (D29); metrics come from
 //!   tokens.zig.
 //!
@@ -149,7 +149,7 @@ pub fn onDefault(txn: Txn, node: Node, kind: siv.EventType, func: siv.EventFn, s
 /// Reports a value change to the application's handler on `node`.
 pub fn emitChange(node: Node, value: f64, index: u32) void {
     var handled = false;
-    _ = c.siv_emit(node, &.{ .type = .change, .value = value, .index = index }, &handled);
+    _ = c.siv_node_emit(node, &.{ .type = .change, .value = value, .index = index }, &handled);
 }
 
 /// A transaction of the widget's own, for changes the user made.

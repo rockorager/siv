@@ -63,7 +63,7 @@ fn onTimeout(ud: ?*anyopaque) callconv(.c) void {
     const node = w.dataHandle(ud);
     if (w.stateOf(Toast, node, &.{.toast}) == null) return;
     var handled = false;
-    _ = c.siv_emit(node, &.{ .type = .close }, &handled);
+    _ = c.siv_node_emit(node, &.{ .type = .close }, &handled);
 }
 
 /// Fades out, then the removal timer takes it away.

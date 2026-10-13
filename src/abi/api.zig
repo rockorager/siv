@@ -719,7 +719,7 @@ pub const decls = [_]Decl{
         .{ .name = "color_token", .type = ref("siv_color_token"), .doc = "A themed color, with SIV_TEXT_SPAN_COLOR; none uses color." },
         f32Field("font_size", "Size in logical pixels, with SIV_TEXT_SPAN_SIZE; greater than 0."),
         .{ .name = "color", .type = ref("siv_color"), .doc = "Text and decoration color, with SIV_TEXT_SPAN_COLOR." },
-        .{ .name = "family", .type = .u32, .doc = "A font family from siv_app_font_family, with SIV_TEXT_SPAN_FAMILY; 0 is the application's default family." },
+        .{ .name = "family", .type = .u32, .doc = "A font family from siv_app_get_font_family, with SIV_TEXT_SPAN_FAMILY; 0 is the application's default family." },
         .{ .name = "width", .type = ref("siv_font_width"), .doc = "Font width, with SIV_TEXT_SPAN_WIDTH." },
     }),
     descriptor("siv_hyphenation_desc", "Hyphenation patterns for a language.", &.{
@@ -859,7 +859,7 @@ pub const decls = [_]Decl{
         .{ .name = "end", .value = 7, .doc = "Drag events: the drag ended. Gestures: the gesture finished." },
         .{ .name = "begin", .value = 8, .doc = "Gestures: the gesture began; move reports its updates and cancel a gesture that was cancelled." },
     }),
-    enumeration("siv_button", "A pointer button.", &.{
+    enumeration("siv_pointer_button", "A pointer button.", &.{
         .{ .name = "primary", .value = 0, .doc = "Primary (left)." },
         .{ .name = "secondary", .value = 1, .doc = "Secondary (right)." },
         .{ .name = "middle", .value = 2, .doc = "Middle." },
@@ -941,7 +941,7 @@ pub const decls = [_]Decl{
         .{ .name = "text", .type = .string, .doc = "Key: the text the key produced. Change: the editor's text. Valid during the call." },
         .{ .name = "type", .type = ref("siv_event_type"), .doc = "What happened." },
         .{ .name = "phase", .type = ref("siv_pointer_phase"), .doc = "Pointer: what happened." },
-        .{ .name = "button", .type = ref("siv_button"), .doc = "Pointer: the button pressed or released." },
+        .{ .name = "button", .type = ref("siv_pointer_button"), .doc = "Pointer: the button pressed or released." },
         .{ .name = "modifiers", .type = ref("siv_modifiers"), .doc = "Pointer and key: modifiers held." },
         .{ .name = "flags", .type = ref("siv_event_flags"), .doc = "Details." },
         .{ .name = "keysym", .type = ref("siv_key"), .doc = "Key: the XKB keysym, named (SIV_KEY_ESCAPE) or not (siv_key)." },
@@ -1547,7 +1547,7 @@ pub const functions = [_]Function{
         .{ .name = "app", .type = out(ref("siv_app")), .doc = "The new application." },
     }),
     op("siv_app_destroy", "Destroys the application, its windows, and every handle it issued. Posted work that has not run gets its destroy-notify instead (D5); so does every callback still registered. Not from a siv callback (SIV_ERROR_BUSY).", &.{app_param}),
-    call("siv_app_fd", "The application's loop file descriptor, for embedding in another event loop (D6). It is readable whenever siv_app_dispatch has work; then call siv_app_dispatch(app, 0).", &.{
+    call("siv_app_get_fd", "The application's loop file descriptor, for embedding in another event loop (D6). It is readable whenever siv_app_dispatch has work; then call siv_app_dispatch(app, 0).", &.{
         app_param,
         .{ .name = "fd", .type = out(.i32), .doc = "The descriptor; siv owns it." },
     }),
@@ -1555,8 +1555,8 @@ pub const functions = [_]Function{
         app_param,
         .{ .name = "timeout_ms", .type = .i32, .doc = "Longest wait for work: -1 blocks, 0 never waits." },
     }),
-    call("siv_run", "Dispatches until siv_app_quit is called or the last window is destroyed.", &.{app_param}),
-    op("siv_app_quit", "Makes the running siv_run return after the current iteration.", &.{app_param}),
+    call("siv_app_run", "Dispatches until siv_app_quit is called or the last window is destroyed.", &.{app_param}),
+    op("siv_app_quit", "Makes the running siv_app_run return after the current iteration.", &.{app_param}),
     anyThread(call("siv_post", "Runs callback(user_data) on the application's thread at its next dispatch, then destroy(user_data). Safe even while the application is being destroyed: either the call fails with SIV_ERROR_INVALID_HANDLE and nothing runs, or destroy runs exactly once (alone, if the application is destroyed first). Allocates with the application's allocator on the calling thread.", &.{
         app_param,
         .{ .name = "callback", .type = ref("siv_post_fn"), .doc = "The work." },
@@ -1568,12 +1568,12 @@ pub const functions = [_]Function{
         .{ .name = "family", .type = .string, .doc = "Family name; empty uses each face's own (its typographic family name)." },
         .{ .name = "data", .type = array(.u8), .doc = "An OpenType or TrueType font or collection." },
     }),
-    call("siv_app_font_family", "The id of a font family name for text spans (siv_text_span's family), the same for the same name for the application's lifetime. The family need not exist yet: spans resolve it when they shape, as text styles do.", &.{
+    call("siv_app_get_font_family", "The id of a font family name for text spans (siv_text_span's family), the same for the same name for the application's lifetime. The family need not exist yet: spans resolve it when they shape, as text styles do.", &.{
         app_param,
         .{ .name = "family", .type = .string, .doc = "Family name or generic family; empty is 0, the default family." },
         .{ .name = "id", .type = out(.u32), .doc = "The id." },
     }),
-    call("siv_app_get_font_family_name", "Copies the name of a font family id from siv_app_font_family.", &.{
+    call("siv_app_get_font_family_name", "Copies the name of a font family id from siv_app_get_font_family.", &.{
         app_param,
         .{ .name = "id", .type = .u32, .doc = "A family id." },
         .{ .name = "name", .type = .buffer, .doc = "Receives at most name_cap bytes; may be NULL with name_cap 0." },
@@ -1784,7 +1784,7 @@ pub const functions = [_]Function{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
         .{ .name = "rtl", .type = out(.bool), .doc = "Right to left." },
     }),
-    call("siv_emit", "Sends an event to a node's handlers as siv sends input: the siv_on handler, then, unless it returned handled or prevent, the siv_on_default handler. It does not bubble. This is how widgets report their own events (change, select). Not from a canvas callback (SIV_ERROR_BUSY).", &.{
+    call("siv_node_emit", "Sends an event to a node's handlers as siv sends input: the siv_on handler, then, unless it returned handled or prevent, the siv_on_default handler. It does not bubble. This is how widgets report their own events (change, select). Not from a canvas callback (SIV_ERROR_BUSY).", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
         .{ .name = "event", .type = .{ .desc = "siv_event" }, .doc = "The event; window is filled in." },
         .{ .name = "handled", .type = out(.bool), .doc = "Whether a handler returned anything but pass." },

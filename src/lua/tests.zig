@@ -183,7 +183,7 @@ test "handles are userdata: identity, methods, ownership" {
     const app: siv.App = @enumFromInt(root.toHandle(L, -1));
     lua.pop(L, 1);
     var fd: i32 = 0;
-    try testing.expectEqual(siv.Result.ok, siv.c.siv_app_fd(app, &fd));
+    try testing.expectEqual(siv.Result.ok, siv.c.siv_app_get_fd(app, &fd));
 }
 
 test "callbacks run at safe points and their errors reach the caller" {

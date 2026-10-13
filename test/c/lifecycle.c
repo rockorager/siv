@@ -55,7 +55,7 @@ int main(int argc, char **argv) {
     if (siv_app_add_action(app, "quit", 4, on_action, NULL, NULL) != SIV_OK) return 4;
     if (siv_app_launch(app, SIV_DESC(siv_launch_desc, .uris = uris, .uris_count = uri_count, .on_activate = on_activate,
                                      .flags = service ? SIV_LAUNCH_SERVICE : 0, .idle_timeout_ms = 20000)) != SIV_OK) return 5;
-    siv_result r = siv_run(app);
+    siv_result r = siv_app_run(app);
     siv_instance instance = SIV_INSTANCE_NONE;
     if (siv_app_get_instance(app, &instance) != SIV_OK) return 6;
     fprintf(log_file, "exit %s %s\n", instance == SIV_INSTANCE_PRIMARY ? "primary" : instance == SIV_INSTANCE_SECONDARY ? "secondary" : "other",

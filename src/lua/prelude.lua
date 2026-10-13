@@ -18,7 +18,7 @@ function siv.is_error(v)
 end
 
 --- Sets the function that hears errors raised by callbacks, or with nil
---- restores the default: the error ends siv.run (or the binding call that
+--- restores the default: the error ends app:run (or the binding call that
 --- ran the callback) and is raised from it.
 function siv.set_error_handler(fn)
 	internal.set_error_handler(fn)
@@ -208,14 +208,14 @@ function siv.app_create(desc)
 	return app
 end
 
-local run = siv.run
+local run = siv.app_run
 local function run_app(app)
 	if reloading then
 		return
 	end
 	return run(app)
 end
-siv.run = run_app
+siv.app_run = run_app
 methods.app.run = run_app
 
 local window_create = siv.window_create

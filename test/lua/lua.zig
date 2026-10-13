@@ -44,7 +44,7 @@ const setup =
     \\siv.window_create = siv.methods.app.window_create
     \\local function run() end
     \\siv.methods.app.run = run
-    \\siv.run = run
+    \\siv.app_run = run
     \\-- Image loads report when they finish, for tests to wait on.
     \\captured.loads = 0
     \\local image_load = siv.methods.app.image_load

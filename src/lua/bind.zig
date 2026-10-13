@@ -88,7 +88,7 @@ pub const State = struct {
     pending: c_int = lua.noref,
     /// Callbacks now running.
     depth: u32 = 0,
-    /// The application siv_run is running, quit when a callback fails.
+    /// The application siv_app_run is running, quit when a callback fails.
     running: u64 = 0,
     apps: [max_apps]u64 = @splat(0),
     /// Hot reload (hot.zig), if started.
@@ -118,7 +118,7 @@ pub const State = struct {
 
     /// Reports the error on top of L's stack from a callback: to the
     /// handler if there is one, else kept for the next call to raise
-    /// (quitting siv_run). Pops it. Never raises.
+    /// (quitting siv_app_run). Pops it. Never raises.
     pub fn report(st: *State, L: *L_) void {
         if (c.lua_checkstack(L, 4) == 0) {
             lua.pop(L, 1);
@@ -1102,9 +1102,9 @@ pub fn Wrapper(comptime fi: usize) type {
 
             const prev = st.L;
             st.L = L;
-            if (comptime std.mem.eql(u8, f.name, "siv_run")) st.running = @intFromEnum(args[0]);
+            if (comptime std.mem.eql(u8, f.name, "siv_app_run")) st.running = @intFromEnum(args[0]);
             var r = @call(.auto, cfn, args);
-            if (comptime std.mem.eql(u8, f.name, "siv_run")) st.running = 0;
+            if (comptime std.mem.eql(u8, f.name, "siv_app_run")) st.running = 0;
             st.L = prev;
             st.raisePending(L);
 

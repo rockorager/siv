@@ -120,8 +120,8 @@ int main(void) {
 		return 1;
 	}
 
-	r = siv_run(app);
-	if (r != SIV_OK) fprintf(stderr, "siv_run: %s\n", siv_result_name(r));
+	r = siv_app_run(app);
+	if (r != SIV_OK) fprintf(stderr, "siv_app_run: %s\n", siv_result_name(r));
 	siv_app_destroy(app);
 	return r == SIV_OK ? 0 : 1;
 }

@@ -2,7 +2,7 @@
 //! test-integration`): a window created through the exports maps and
 //! presents on a real compositor, real pointer and keyboard input reach C
 //! callbacks, the compositor's configure arrives as a resize, and sway's
-//! kill command arrives as a close request that ends siv_run.
+//! kill command arrives as a close request that ends siv_app_run.
 //!
 //! Imports: abi, platform, compositor, text, loop, portal, helpers.
 
@@ -174,9 +174,9 @@ test "the public API on sway: present, pointer and keyboard input, resize, close
     try testing.expectEqualStrings("hi", buf[0..len]);
 
     // sway's kill sends a close request; unhandled, it destroys the
-    // window, and siv_run returns with no window left.
+    // window, and siv_app_run returns with no window left.
     try sway.command("kill");
-    try ok(A.siv_run(app));
+    try ok(A.siv_app_run(app));
     try testing.expectEqual(1, log.closes);
     try testing.expectEqual(t.Result.error_invalid_handle, A.siv_window_destroy(window));
 }
@@ -303,7 +303,7 @@ test "portals through the public API on sway: parented dialogs, OpenURI, notific
     // A notification whose button invokes an application action.
     try ok(P.siv_app_add_action(app, "archive", 7, PortalLog.onAction, null, &log));
     const buttons = [_]t.NotificationButton{.{ .label = "Archive", .label_len = 7, .action = "archive", .action_len = 7, .target = "42", .target_len = 2 }};
-    try ok(P.siv_notify(app, &.{ .id = "mail", .id_len = 4, .title = "New mail", .title_len = 8, .buttons = &buttons, .buttons_count = 1 }));
+    try ok(P.siv_notification_send(app, &.{ .id = "mail", .id_len = 4, .title = "New mail", .title_len = 8, .buttons = &buttons, .buttons_count = 1 }));
     const Added = struct {
         var d: *PortalDesktop = undefined;
         fn f(_: void) bool {

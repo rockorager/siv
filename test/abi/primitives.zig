@@ -1,5 +1,5 @@
 //! The public primitives that code built on siv uses (D22): default
-//! handlers, siv_emit, node data, tree navigation, siv_txn_fail, and
+//! handlers, siv_node_emit, node data, tree navigation, siv_txn_fail, and
 //! timers, through the exports on the headless backend. The application
 //! allocates through hooks over the testing allocator, so node data that
 //! outlives its node shows up as a leak.
@@ -73,7 +73,7 @@ test "default handlers run after the application's, which can override them" {
 
     // Only a default handler: it runs, and takes the event.
     var handled = false;
-    try ok(c.siv_emit(n, &.{ .type = .select, .value = 2 }, &handled));
+    try ok(c.siv_node_emit(n, &.{ .type = .select, .value = 2 }, &handled));
     try testing.expect(handled);
     try testing.expectEqualStrings("d", calls.order[0..calls.n]);
 
@@ -82,14 +82,14 @@ test "default handlers run after the application's, which can override them" {
     try ok(c.siv_on(txn, n, .select, Calls.app, null, &calls));
     try ok(c.siv_txn_commit(txn));
     calls.n = 0;
-    try ok(c.siv_emit(n, &.{ .type = .select, .value = 3 }, &handled));
+    try ok(c.siv_node_emit(n, &.{ .type = .select, .value = 3 }, &handled));
     try testing.expectEqualStrings("ad", calls.order[0..calls.n]);
     try testing.expectEqual(@as(f64, 3), calls.value);
 
     // It takes the event: the default never runs.
     calls.n = 0;
     calls.app_returns = true;
-    try ok(c.siv_emit(n, &.{ .type = .select }, &handled));
+    try ok(c.siv_node_emit(n, &.{ .type = .select }, &handled));
     try testing.expectEqualStrings("a", calls.order[0..calls.n]);
 
     // An aborted transaction restores the previous default handler.
@@ -98,9 +98,9 @@ test "default handlers run after the application's, which can override them" {
     try ok(c.siv_txn_abort(txn));
     calls.n = 0;
     calls.app_returns = false;
-    try ok(c.siv_emit(n, &.{ .type = .select }, &handled));
+    try ok(c.siv_node_emit(n, &.{ .type = .select }, &handled));
     try testing.expectEqualStrings("ad", calls.order[0..calls.n]);
-    try testing.expectEqual(t.Result.error_unsupported, c.siv_emit(n, &.{ .type = @fromBackingInt(99) }, &handled));
+    try testing.expectEqual(t.Result.error_unsupported, c.siv_node_emit(n, &.{ .type = @fromBackingInt(99) }, &handled));
 }
 
 test "default handlers make a node activatable for input" {

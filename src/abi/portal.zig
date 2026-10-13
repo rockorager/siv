@@ -347,7 +347,7 @@ pub export fn siv_document_export(app: t.App, desc: ?*const t.DocumentDesc, call
 
 // Notifications and actions ---------------------------------------------------------
 
-pub export fn siv_notify(app: t.App, desc: ?*const t.NotificationDesc) t.Result {
+pub export fn siv_notification_send(app: t.App, desc: ?*const t.NotificationDesc) t.Result {
     return application.wrap(struct {
         fn f(a: t.App, dp: ?*const t.NotificationDesc) Error!void {
             const self = try App.get(@backingInt(a));

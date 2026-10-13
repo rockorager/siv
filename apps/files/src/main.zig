@@ -90,7 +90,7 @@ pub fn main(init: std.process.Init) !u8 {
         var buf: [4096]u8 = undefined;
         files.thumbs.setCacheDir(std.fmt.bufPrint(&buf, "{s}/.cache/thumbnails", .{home}) catch "");
     }
-    r = c.siv_run(app);
+    r = c.siv_app_run(app);
     if (r != .ok) {
         std.debug.print("siv-files: {s}\n", .{std.mem.span(c.siv_result_name(r))});
         return 1;

@@ -189,7 +189,7 @@ test "tablet tools and pads reach handlers with every sample, in node coordinate
     try testing.expectEqual(@as(usize, 3), pen.n);
     try testing.expectEqual(t.PointerPhase.enter, pen.events[0].phase);
     try testing.expectEqual(t.PointerPhase.down, pen.events[1].phase);
-    try testing.expectEqual(t.Button.primary, pen.events[1].button);
+    try testing.expectEqual(t.PointerButton.primary, pen.events[1].button);
     const move = pen.events[2];
     try testing.expectEqual(t.EventType.tablet, move.type);
     try testing.expectEqual(t.PointerPhase.move, move.phase);
@@ -223,7 +223,7 @@ test "tablet tools and pads reach handlers with every sample, in node coordinate
     try h.settle();
     try testing.expectEqual(@as(usize, 4), pen.n);
     try testing.expectEqual(t.PointerPhase.down, pen.events[3].phase);
-    try testing.expectEqual(t.Button.secondary, pen.events[3].button);
+    try testing.expectEqual(t.PointerButton.secondary, pen.events[3].button);
     try testing.expectEqual(@as(usize, 2), pen.pad_n);
     try testing.expectEqual(t.EventType.pad, pen.pads[0].type);
     try testing.expectEqual(t.PadControl.dial, pen.pads[0].pad_control);

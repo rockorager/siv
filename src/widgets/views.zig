@@ -819,7 +819,7 @@ fn onHeaderActivate(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c
     if (v.hdr.disabled) return .pass;
     const next: siv.Sort = if (col.sort == .ascending) .descending else .ascending;
     var handled = false;
-    _ = c.siv_emit(v.root, &.{ .type = .sort, .index = col.index, .value = if (next == .ascending) 1 else -1 }, &handled);
+    _ = c.siv_node_emit(v.root, &.{ .type = .sort, .index = col.index, .value = if (next == .ascending) 1 else -1 }, &handled);
     const txn = w.begin(ev.?.window) orelse return .handled;
     v.header_focus = col.index;
     if (handled) setSort(txn, v, col.index, next) else applyHeader(txn, v);
@@ -977,7 +977,7 @@ fn emitSelect(v: *View) void {
     const i: u32 = if (v.cursor >= 0) @intCast(v.cursor) else 0;
     const lo, const n = if (v.changed_lo <= v.changed_hi) .{ v.changed_lo, v.changed_hi - v.changed_lo + 1 } else .{ i, 0 };
     resetChanged(v);
-    _ = c.siv_emit(v.root, &.{ .type = .select, .index = i, .value = @floatFromInt(v.cursor), .count = v.selected, .changed_index = lo, .changed_count = n }, &handled);
+    _ = c.siv_node_emit(v.root, &.{ .type = .select, .index = i, .value = @floatFromInt(v.cursor), .count = v.selected, .changed_index = lo, .changed_count = n }, &handled);
 }
 
 /// Moves the cursor to `to` and focuses it without changing the
@@ -1065,7 +1065,7 @@ fn onRowPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) si
             // A double click activates the item, like Enter.
             if (e.clicks == 2 and plain) {
                 var handled = false;
-                _ = c.siv_emit(v.root, &.{ .type = .activate, .index = @intCast(index), .value = @floatFromInt(index) }, &handled);
+                _ = c.siv_node_emit(v.root, &.{ .type = .activate, .index = @intCast(index), .value = @floatFromInt(index) }, &handled);
             }
             return .handled;
         },
@@ -1151,7 +1151,7 @@ fn onRowKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.Ev
         },
         k.@"return", k.kp_enter => {
             var handled = false;
-            _ = c.siv_emit(v.root, &.{ .type = .activate, .index = @intCast(cur), .value = @floatFromInt(cur) }, &handled);
+            _ = c.siv_node_emit(v.root, &.{ .type = .activate, .index = @intCast(cur), .value = @floatFromInt(cur) }, &handled);
         },
         @as(siv.Key, @enumFromInt('a')), @as(siv.Key, @enumFromInt('A')) => {
             if (!e.modifiers.ctrl or v.selection != .multiple) return .pass;

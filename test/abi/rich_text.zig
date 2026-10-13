@@ -29,9 +29,9 @@ test "rich text: families per span, paragraph styles, tab stops, and broken word
     const vf = text.font.test_fonts.siv_variable;
     try ok(c.siv_app_add_font(h.app, "", 0, vf.ptr, vf.len));
     var family: u32 = 0;
-    try ok(c.siv_app_font_family(h.app, "SivTest VF", 10, &family));
+    try ok(c.siv_app_get_font_family(h.app, "SivTest VF", 10, &family));
     var again: u32 = 0;
-    try ok(c.siv_app_font_family(h.app, "SivTest VF", 10, &again));
+    try ok(c.siv_app_get_font_family(h.app, "SivTest VF", 10, &again));
     try testing.expectEqual(family, again);
     var buf: [64]u8 = undefined;
     var len: usize = 0;

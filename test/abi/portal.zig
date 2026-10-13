@@ -70,7 +70,7 @@ test "without a session bus, portal requests are unavailable at the next dispatc
     try testing.expectEqual(@as(u32, 4), log.destroys);
     try testing.expectEqual(t.PortalResponse.unavailable, log.last);
 
-    try testing.expectEqual(t.Result.error_unavailable, P.siv_notify(h.app, &.{ .id = "n", .id_len = 1, .title = "Hi", .title_len = 2 }));
+    try testing.expectEqual(t.Result.error_unavailable, P.siv_notification_send(h.app, &.{ .id = "n", .id_len = 1, .title = "Hi", .title_len = 2 }));
     var cast: t.Screencast = .null;
     try ok(P.siv_screencast_start(h.app, h.window, &.{ .on_event = Log.onCast, .destroy = Log.onDestroy, .user_data = &log }, &cast));
     try dispatch(&h, 2);

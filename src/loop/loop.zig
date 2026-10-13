@@ -1,6 +1,6 @@
 //! Event loop (D5, D6): one epoll loop per application with eventfd wakeups,
 //! timerfd deadlines from a userspace timer heap, and safe-point callback
-//! dispatch. Embeddable through siv_app_fd() and siv_app_dispatch().
+//! dispatch. Embeddable through siv_app_get_fd() and siv_app_dispatch().
 //!
 //! One call to `dispatch` runs these phases in order:
 //!

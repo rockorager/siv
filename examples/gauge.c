@@ -112,7 +112,7 @@ static void user_set(struct gauge *g, float v) {
 		return;
 	}
 	bool handled;
-	(void)siv_emit(g->canvas, SIV_DESC(siv_event, .type = SIV_EVENT_TYPE_CHANGE, .value = v), &handled);
+	(void)siv_node_emit(g->canvas, SIV_DESC(siv_event, .type = SIV_EVENT_TYPE_CHANGE, .value = v), &handled);
 }
 
 /* The angle of the pointer around the center sets the value. */
@@ -193,7 +193,7 @@ int main(void) {
 		r = siv_txn_commit(txn);
 	}
 	if (r == SIV_OK) r = siv_node_focus(g.canvas);
-	if (r == SIV_OK) r = siv_run(app);
+	if (r == SIV_OK) r = siv_app_run(app);
 	if (r != SIV_OK) fprintf(stderr, "gauge: %s\n", siv_result_name(r));
 	siv_app_destroy(app);
 	return r == SIV_OK ? 0 : 1;

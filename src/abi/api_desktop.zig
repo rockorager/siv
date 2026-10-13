@@ -273,13 +273,13 @@ pub const decls = [_]Decl{
         .{ .name = "on_activate", .type = ref("siv_activate_fn"), .doc = "Handles activations." },
         .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data when the application is destroyed." },
         .{ .name = "flags", .type = ref("siv_launch_flags"), .doc = "Options." },
-        .{ .name = "idle_timeout_ms", .type = .u32, .doc = "Services: siv_run returns when no window is open this long after an activation; 0 waits forever." },
+        .{ .name = "idle_timeout_ms", .type = .u32, .doc = "Services: siv_app_run returns when no window is open this long after an activation; 0 waits forever." },
     }),
     enumeration("siv_instance", "What this process is, after siv_app_launch.", &.{
         .{ .name = "none", .value = 0, .doc = "siv_app_launch was not called." },
         .{ .name = "pending", .value = 1, .doc = "Waiting for the bus to say whether another instance runs." },
         .{ .name = "primary", .value = 2, .doc = "The instance that serves the application: activations come here." },
-        .{ .name = "secondary", .value = 3, .doc = "Another instance runs: this launch was forwarded to it, and siv_run returns." },
+        .{ .name = "secondary", .value = 3, .doc = "Another instance runs: this launch was forwarded to it, and siv_app_run returns." },
     }),
 
     // The document portal.
@@ -423,7 +423,7 @@ pub const functions = [_]Function{
     call("siv_pick_color", "Lets the user pick a color from the screen through the portal; the result's color has it.", &.{
         app_param, parent_param, result_callback[0], result_callback[1], result_callback[2],
     }),
-    call("siv_notify", "Shows a desktop notification through the portal, replacing one with the same id. Fails with SIV_ERROR_UNAVAILABLE without a session bus.", &.{
+    call("siv_notification_send", "Shows a desktop notification through the portal, replacing one with the same id. Fails with SIV_ERROR_UNAVAILABLE without a session bus.", &.{
         app_param, p("desc", .{ .desc = "siv_notification_desc" }, "The notification."),
     }),
     op("siv_notification_withdraw", "Takes a notification back.", &.{ app_param, p("id", .string, "Its id.") }),
@@ -548,7 +548,7 @@ pub const functions = [_]Function{
     }),
     op("siv_screencast_destroy", "Stops and destroys a cast; an untaken PipeWire fd is closed.", &.{p("screencast", ref("siv_screencast"), "The cast.")}),
 
-    call("siv_app_launch", "Launches the application as a single instance (D19): the first instance to own the application id (siv_app_desc.app_id) on the session bus is primary and gets its activation (on_activate, at the next dispatch, with $XDG_ACTIVATION_TOKEN's token, which is removed from the environment) and every later one, from other instances and from the desktop over org.freedesktop.Application (D-Bus activation for DBusActivatable desktop files). A later instance forwards its activation, or its URIs, to the primary instead, and siv_run returns (SIV_ERROR_UNAVAILABLE if forwarding failed). Without an application id or a session bus, every launch is primary. Once per application (SIV_ERROR_BUSY).", &.{
+    call("siv_app_launch", "Launches the application as a single instance (D19): the first instance to own the application id (siv_app_desc.app_id) on the session bus is primary and gets its activation (on_activate, at the next dispatch, with $XDG_ACTIVATION_TOKEN's token, which is removed from the environment) and every later one, from other instances and from the desktop over org.freedesktop.Application (D-Bus activation for DBusActivatable desktop files). A later instance forwards its activation, or its URIs, to the primary instead, and siv_app_run returns (SIV_ERROR_UNAVAILABLE if forwarding failed). Without an application id or a session bus, every launch is primary. Once per application (SIV_ERROR_BUSY).", &.{
         app_param,
         p("desc", .{ .desc = "siv_launch_desc" }, "The activation handler and URIs."),
     }),

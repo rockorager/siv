@@ -14,7 +14,7 @@
 function siv.is_error(v) end
 
 ---Sets the function that hears errors raised by callbacks, or with nil restores
----the default: the error ends siv.run (or the binding call that ran the
+---the default: the error ends app:run (or the binding call that ran the
 ---callback) and is raised from it.
 ---@param fn? fun(err: siv.error|string)
 function siv.set_error_handler(fn) end

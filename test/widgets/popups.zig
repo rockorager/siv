@@ -543,7 +543,7 @@ test "toasts: announced, closed after their timeout, removed unless kept" {
     // Closed again, not kept: it fades and is removed.
     log.keep = false;
     var handled = false;
-    try ok(c.siv_emit(toast, &.{ .type = .close }, &handled));
+    try ok(c.siv_node_emit(toast, &.{ .type = .close }, &handled));
     while (c.siv_node_get_rect(toast, &r) == .ok and @import("loop").Loop.now() < deadline) try ok(c.siv_app_dispatch(h.app, 10));
     try testing.expectEqual(t.Result.error_invalid_handle, c.siv_node_get_rect(toast, &r));
     try ok(c.siv_node_get_rect(sticky, &r));

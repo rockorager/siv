@@ -168,7 +168,7 @@ static void test_app(const unsigned char *font, size_t font_len) {
 	EXPECT(siv_app_set_default_font(app, "Droid", 5), SIV_OK);
 
 	int fd = -1;
-	EXPECT(siv_app_fd(app, &fd), SIV_OK);
+	EXPECT(siv_app_get_fd(app, &fd), SIV_OK);
 	CHECK(fd >= 0);
 
 	/* Posting from another thread: each closure runs, then its destroy. */
