@@ -23,6 +23,8 @@ const Command = list.Command;
 
 /// More rectangles than this collapse into their bounding box.
 pub const max_rects = 16;
+/// While merging, more disjoint rectangles than this collapse at once.
+const collapse_rects = 4 * max_rects;
 
 pub const Tracker = struct {
     gpa: std.mem.Allocator,
@@ -142,32 +144,46 @@ pub const Tracker = struct {
     }
 
     /// Merges overlapping rectangles; too many collapse into one.
+    ///
+    /// Each rectangle merges into the disjoint ones kept so far (at the
+    /// front of the list), absorbing every one it overlaps. Once more than
+    /// `collapse_rects` stay disjoint, the result is the bounding box
+    /// without looking further: merging thousands of rectangles pairwise
+    /// (2,560 animated layers damage 5,120) took most of a frame.
     fn finish(t: *Tracker, viewport: IRect) []const IRect {
         _ = viewport;
-        var rects = t.rects.items;
-        var changed = true;
-        while (changed) {
-            changed = false;
-            var i: usize = 0;
-            while (i < rects.len) : (i += 1) {
-                var j = i + 1;
-                while (j < rects.len) {
-                    if (rects[i].intersects(rects[j]) or rects[i].contains(rects[j]) or rects[j].contains(rects[i])) {
-                        rects[i] = rects[i].unite(rects[j]);
-                        rects[j] = rects[rects.len - 1];
-                        rects.len -= 1;
-                        changed = true;
-                    } else j += 1;
-                }
+        const rects = t.rects.items;
+        var n: usize = 0;
+        for (rects, 0..) |next, i| {
+            var r = next;
+            var k: usize = 0;
+            while (k < n) {
+                if (r.intersects(rects[k]) or r.contains(rects[k]) or rects[k].contains(r)) {
+                    // The union may overlap rectangles already passed.
+                    r = r.unite(rects[k]);
+                    rects[k] = rects[n - 1];
+                    n -= 1;
+                    k = 0;
+                } else k += 1;
+            }
+            rects[n] = r;
+            n += 1;
+            if (n > collapse_rects) {
+                var u = IRect.empty;
+                for (rects[0..n]) |kept| u = u.unite(kept);
+                for (rects[i + 1 ..]) |rest| u = u.unite(rest);
+                rects[0] = u;
+                n = 1;
+                break;
             }
         }
-        if (rects.len > max_rects) {
+        if (n > max_rects) {
             var u = IRect.empty;
-            for (rects) |r| u = u.unite(r);
+            for (rects[0..n]) |r| u = u.unite(r);
             rects[0] = u;
-            rects.len = 1;
+            n = 1;
         }
-        t.rects.items.len = rects.len;
+        t.rects.items.len = n;
         return t.rects.items;
     }
 

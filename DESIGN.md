@@ -491,7 +491,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Damage: layers with a nonzero id are matched across lists. A layer's
     version covers everything except its transform and opacity, including
     the order of its child layers. `scene.damage.Tracker` returns device
-    rectangles (merged; more than 16 collapse to their bounds).
+    rectangles (merged; more than 16 collapse to their bounds). Merging
+    is one pass that collapses to the bounds as soon as more than 64 stay
+    disjoint: 2,560 animated layers damage 5,120 rectangles a frame, and
+    pairwise merging took 65% of the process's time.
   - PDF output composites in sRGB, not linear light. PDF blends in a
     transparency group's color space, so declaring a linear-light space
     (an ICCBased profile with sRGB primaries and identity curves, or
