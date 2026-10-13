@@ -1853,6 +1853,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       360 pixels wide. Such popups take no pointer input (an empty input
       region), so the pointer reaching one does not leave the node and
       hide it.
+    - The delay is not an application setting: one application with a
+      shorter delay than the rest would make the desktop inconsistent,
+      and the user, not the application, is the one with a preference.
+      If the settings portal ever offers a tooltip delay, siv follows it
+      as it follows the double-click time.
     - The tooltip is the node's accessible description (D18) unless the
       node sets one or the tooltip repeats its name, as an icon-only
       button's does; the popup itself has the `tooltip` role. Screen
@@ -3979,7 +3984,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     injected into the simulated seat on the compositor thread;
     `siv_test_settle` dispatches until no work is in flight, with a
     timeout: no transaction is open, every shown window presented what
-    it committed and wants no frame, no font, icon, image load,
+    it committed and wants no frame, no tooltip waits for its delay
+    (so a test hovers, settles, and finds the tooltip shown), no font,
+    icon, image load,
     `siv_job_start` job, paste, or drop is in flight, and the compositor
     owes no frame (`Compositor.owesFrames`: a commit not yet presented,
     a frame asked for by input, the UI, a compositor-side scroll, a
@@ -3996,7 +4003,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     idle 2 ms dispatches, which returned before a frame the compositor
     owed for a wheel scroll whenever that frame waited for the next
     vblank (test/abi/settle.zig forces a 300 ms refresh to show it); `siv_test_capture` copies the last presented buffer as
-    premultiplied RGBA; `siv_test_find`, `siv_test_get_name`, and
+    premultiplied RGBA, and `siv_test_capture_tooltip` a window's shown
+    tooltip, which has no window handle; `siv_test_find`, `siv_test_get_name`, and
     `siv_test_dump` read the semantics tree (D18) by role, exact name,
     focus, and index; `siv_test_get_popup` finds the newest shown popup.
     Injection, settling, and captures fail with `SIV_ERROR_UNSUPPORTED`
@@ -4213,6 +4221,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | `siv_node_focus` shows the ring after a key (D16) | `siv_node_focus` never showing it | focus moved by arrow keys in roving widgets was unmarked |
   | `siv_test_capture`'s `pixels` and `siv_view_get_selection`'s `bits` are `uint8_t *` (D2) | `char *` | binary data is unsigned, like the byte arrays the library reads; `char *` means text |
   | `siv_combo_box`, `siv_combo_box_item`, `SIV_WIDGET_PART_ITEM` (D22) | a menu button with radio items, or a widget of the application's own | choosing one of several options in little space is among the most common controls, and needs list semantics and typeahead each application would redo |
+  | `siv_test_capture_tooltip`; `siv_test_settle` waits for a tooltip's delay (D27) | — | tooltips are popups without a handle, and tests could not see one or know when it would show |
   | `siv_set_tooltip` (D17); icon-only buttons show their label as one (D22) | a popup and timer per application | a common need every toolkit has; a core primitive so application widgets get it too |
   | reserved fields in `siv_text_span`, `siv_paragraph_span`, `siv_tab_stop`, `siv_text_metrics` (D2) | — | frozen value structs that will plausibly grow; descriptors grow by appending |
   | `siv_tablet_sample.wheel` and four reserved fields (D16) | — | the axes flags named a wheel the sample could not carry; tablets grow axes, and a frozen struct cannot |

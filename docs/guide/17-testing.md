@@ -145,6 +145,11 @@ CHECK(pixels && pixels[3] == 255);
 free(pixels);
 ```
 
+A tooltip is a popup of its own: `siv_test_capture_tooltip` copies the
+one a window shows, the same way. `siv_test_settle` waits for a tooltip's
+delay, so move the pointer onto the node (`siv_test_pointer_move`) and
+settle first.
+
 ## Zig and Lua
 
 The Zig API has the same calls (`siv.testSettle`, `siv.testFind`,

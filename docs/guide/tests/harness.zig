@@ -162,6 +162,13 @@ pub const Guide = struct {
         try g.click(p[0], p[1]);
     }
 
+    /// Rests the pointer on the middle of the node with `role` and `name`;
+    /// settling waits for its tooltip, if it has one.
+    pub fn hover(g: *Guide, role: Role, name: []const u8) !void {
+        const p = try g.center(role, name);
+        try g.pointer(g.window(), p[0], p[1], null);
+    }
+
     /// Clicks the middle of the node with `role` and `name`.
     pub fn clickOn(g: *Guide, role: Role, name: []const u8) !void {
         try g.clickNode(try g.find(role, name));
@@ -221,10 +228,24 @@ pub const Guide = struct {
     }
 
     pub fn expectImageOf(g: *Guide, w: t.Window, name: []const u8) !void {
+        const got = try g.capture(w);
+        defer testing.allocator.free(got);
+        return g.expectPixels(got, name);
+    }
+
+    /// Compares the main window's tooltip with docs/guide/images/<name>.png.
+    pub fn expectTooltip(g: *Guide, name: []const u8) !void {
+        var len: usize = 0;
+        try siv.testCaptureTooltip(g.window(), &.{}, &len, &g.last_w, &g.last_h);
+        const got = try testing.allocator.alloc(u8, len);
+        defer testing.allocator.free(got);
+        try siv.testCaptureTooltip(g.window(), got, &len, &g.last_w, &g.last_h);
+        return g.expectPixels(got, name);
+    }
+
+    fn expectPixels(g: *Guide, got: []const u8, name: []const u8) !void {
         const gpa = testing.allocator;
         const io = testing.io;
-        const got = try g.capture(w);
-        defer gpa.free(got);
         const path = try std.fmt.allocPrint(gpa, "{s}/{s}.png", .{ images, name });
         defer gpa.free(path);
         if (testing.environ.getPosix("SIV_UPDATE_GOLDEN") != null) {

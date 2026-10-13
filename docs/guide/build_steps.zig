@@ -41,7 +41,7 @@ pub const Options = struct {
 pub const c_samples = [_][]const u8{
     "hello",  "model", "layout", "menus",     "events", "segmented", "images",
     "table",  "jobs",  "watch",  "clipboard", "embed",  "video",     "print",
-    "launch",
+    "launch", "export",
 };
 
 /// Zig samples (examples/<name>.zig), each `pub fn main() !void`.

@@ -9,7 +9,7 @@ returns its root node:
 | Kind | Builders |
 | --- | --- |
 | Buttons | `siv_push_button`, `siv_toggle_button`, `siv_menu_button` |
-| Choices | `siv_check_box`, `siv_switch`, `siv_radio_group` with `siv_radio` |
+| Choices | `siv_check_box`, `siv_switch`, `siv_radio_group` with `siv_radio`, `siv_combo_box` with `siv_combo_box_item` |
 | Text | `siv_text_field` (single line, multiline, masked, or styled) |
 | Ranges | `siv_slider`, `siv_spin_button`, `siv_progress_bar` |
 | Menus | `siv_menu`, `siv_menu_item`, `siv_menu_open`, `siv_menu_open_at` |
@@ -197,6 +197,61 @@ fn onSave(form: *Form, event: *const siv.Event) !void {
 Tabs show one panel at a time (`siv_tab` returns the panel to fill), and a
 split pane has start and end panes and a divider the user drags; both
 expose their parts through `siv_widget_get_part`.
+
+## Tooltips and combo boxes
+
+[examples/export.c](examples/export.c) has a toolbar of icon-only buttons
+and a combo box that picks an export format.
+
+![A toolbar with copy and next-page icon buttons and a blue Export button, above a combo box showing PNG and the text Format: PNG](images/export.png)
+
+A tooltip is a small popup that explains a node. Any node can have one
+with `siv_set_tooltip`, and an icon-only button shows its label as its
+tooltip without asking, since its icon is all a sighted user sees. siv
+shows a tooltip half a second after the pointer rests on the node or
+keyboard focus reaches it, and hides it on a click, a key, or scrolling.
+Its text is also the node's accessible description, so screen reader
+users hear it too:
+
+```c
+/* An icon-only button's label names it for screen readers and shows
+ * in its tooltip; any node can have a tooltip of its own. */
+siv_node toolbar = siv_flex(txn, column, SIV_DESC(siv_flex_desc, .gap = 8));
+siv_set_semantics(txn, toolbar, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_TOOLBAR, .label = SIV_STR("Export")));
+siv_push_button(txn, toolbar, SIV_DESC(siv_button_desc, .label = SIV_STR("Copy"), .icon = SIV_STR("edit-copy-symbolic"), .style = SIV_BUTTON_STYLE_FLAT, .flags = SIV_WIDGET_ICON_ONLY));
+siv_push_button(txn, toolbar, SIV_DESC(siv_button_desc, .label = SIV_STR("Next page"), .icon = SIV_STR("go-next-symbolic"), .style = SIV_BUTTON_STYLE_FLAT, .flags = SIV_WIDGET_ICON_ONLY));
+siv_node save = siv_push_button(txn, toolbar, SIV_DESC(siv_button_desc, .label = SIV_STR("Export"), .style = SIV_BUTTON_STYLE_PRIMARY));
+siv_set_tooltip(txn, save, SIV_STR("Saves a copy in the chosen format"));
+```
+
+![The tooltip Copy in a dark rounded box](images/export-tooltip.png)
+![The tooltip Saves a copy in the chosen format](images/export-tooltip-own.png)
+
+A combo box shows the selected option and opens the list of options
+below itself. Like a radio group, its options are added one by one, its
+value is the selected index (`siv_widget_set_value` and
+`siv_widget_get_value`), and choosing reports `SIV_EVENT_TYPE_CHANGE` with
+`index`:
+
+```c
+/* A combo box's options are nodes added one by one; its value is the
+ * selected option's index. */
+siv_node format = siv_combo_box(txn, column, SIV_DESC(siv_combo_box_desc, .label = SIV_STR("Format")));
+siv_combo_box_item(txn, format, SIV_DESC(siv_combo_box_item_desc, .label = SIV_STR("PNG")));
+siv_combo_box_item(txn, format, SIV_DESC(siv_combo_box_item_desc, .label = SIV_STR("JPEG")));
+siv_combo_box_item(txn, format, SIV_DESC(siv_combo_box_item_desc, .label = SIV_STR("WebP")));
+siv_combo_box_item(txn, format, SIV_DESC(siv_combo_box_item_desc, .label = SIV_STR("AVIF"), .flags = SIV_WIDGET_DISABLED));
+siv_on(txn, format, SIV_EVENT_TYPE_CHANGE, on_format, NULL, s);
+```
+
+![The list open below the combo box: PNG checked and highlighted, JPEG, WebP, and a dimmed AVIF](images/export-list.png)
+
+When the list is closed, the arrow keys select an option at once, skipping
+disabled ones. Space, Enter, a click, or Alt+Down open the list, where the
+arrows move the focus and Enter or a click chooses. Typing the first
+letters of an option finds it, open or closed. Because options are nodes,
+you relabel, disable, and remove them like any node, and
+`siv_widget_get_part` with `SIV_WIDGET_PART_ITEM` finds one by index.
 
 ## Theming
 

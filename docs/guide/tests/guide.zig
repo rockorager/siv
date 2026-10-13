@@ -141,6 +141,31 @@ test "guide: menus.c opens a menu, a popover, and a dialog" {
     }.f);
 }
 
+extern fn guide_main_export() c_int;
+
+test "guide: export.c shows tooltips and chooses in a combo box" {
+    try harness.runC(guide_main_export, struct {
+        fn f(g: *Guide) !void {
+            try g.expectImage("export");
+            try g.hover(.button, "Copy");
+            try g.expectTooltip("export-tooltip");
+            try g.hover(.button, "Export");
+            try g.expectTooltip("export-tooltip-own");
+            try g.clickOn(.combo_box, "Format");
+            const list = (try g.popup()) orelse return error.NoList;
+            try g.expectImageOf(list, "export-list");
+            try g.keyIn(list, ks.down, "", .{});
+            try g.keyIn(list, ks.down, "", .{});
+            try g.keyIn(list, ks.enter, "\r", .{});
+            try testing.expect(try g.popup() == null);
+            try g.expectText("Format: WebP");
+            // Closed, typing picks an option by its first letters.
+            try g.typeText("j");
+            try g.expectText("Format: JPEG");
+        }
+    }.f);
+}
+
 // Events and focus ------------------------------------------------------------
 
 extern fn guide_main_events() c_int;
