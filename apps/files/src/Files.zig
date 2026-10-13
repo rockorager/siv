@@ -333,7 +333,7 @@ fn build(self: *Files) !void {
     _ = c.siv_set_visual(txn, self.crumbs, &.{ .flags = .{ .clip = true } });
     self.location = c.siv_text_field(txn, where, &.{ .label = "Location", .label_len = 8, .placeholder = "Type a path", .placeholder_len = 11 });
     _ = c.siv_set_layout(txn, self.location, &.{ .width = .{ .unit = .fraction, .value = 1 } });
-    _ = c.siv_set_visual(txn, self.location, &.{ .flags = .{ .hidden = true } });
+    _ = c.siv_set_hidden(txn, self.location, true);
     _ = c.siv_on(txn, self.location, .key, onLocationKey, null, self);
     _ = c.siv_on(txn, self.location, .focus, onEditorFocus, null, self);
 
@@ -540,8 +540,8 @@ fn activeView(self: *const Files) Node {
 
 fn applyMode(self: *Files) !void {
     const txn = self.begin() orelse return error.Busy;
-    _ = c.siv_set_visual(txn, self.table, &.{ .flags = .{ .hidden = self.mode != .list } });
-    _ = c.siv_set_visual(txn, self.grid, &.{ .flags = .{ .hidden = self.mode != .grid } });
+    _ = c.siv_set_hidden(txn, self.table, self.mode != .list);
+    _ = c.siv_set_hidden(txn, self.grid, self.mode != .grid);
     const label = if (self.mode == .list) "Grid" else "List";
     _ = c.siv_widget_set_label(txn, self.mode_btn, label.ptr, label.len);
     const icon = if (self.mode == .list) "view-grid-symbolic" else "view-list-symbolic";
@@ -1381,7 +1381,7 @@ fn onLocationKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) si
 pub fn showLocation(self: *Files, show: bool) void {
     const txn = self.begin() orelse return;
     _ = c.siv_set_visual(txn, self.crumbs, &.{ .flags = .{ .hidden = show, .clip = true } });
-    _ = c.siv_set_visual(txn, self.location, &.{ .flags = .{ .hidden = !show } });
+    _ = c.siv_set_hidden(txn, self.location, !show);
     if (show) {
         _ = c.siv_set_text(txn, self.location, self.path.ptr, self.path.len);
         _ = c.siv_set_selection(txn, self.location, @intCast(self.path.len), 0);

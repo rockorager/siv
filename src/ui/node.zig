@@ -1088,6 +1088,10 @@ pub const Node = struct {
     /// keyboard focuses it (D17), and its accessible description unless
     /// it repeats the name; empty for none. Owned.
     tooltip: []const u8 = "",
+    /// Hidden by the application (`siv_set_hidden`), apart from the
+    /// visual's own `hidden`, so that hiding a widget never replaces the
+    /// visual it draws itself with. Either one hides the subtree.
+    hidden: bool = false,
 
     pub const Status = enum(u8) {
         /// On the free list (`next` links it).
@@ -1097,6 +1101,12 @@ pub const Node = struct {
         /// during event dispatch never see a reused slot.
         dead,
     };
+
+    /// Hidden by its visual or by the application: not laid out, painted,
+    /// hit, focused, or in the semantics tree, with its subtree.
+    pub fn isHidden(n: *const Node) bool {
+        return n.visual.hidden or n.hidden;
+    }
 
     pub fn role(n: *const Node) Role {
         return n.semantics.role orelse n.kind.defaultRole();

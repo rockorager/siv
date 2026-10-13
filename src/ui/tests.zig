@@ -2043,6 +2043,22 @@ test "hidden nodes take no space, paint nothing, and leave focus, hit testing, a
     try f.frame();
     try testing.expectEqual(@as(f32, 90), f.rect(c)[0]);
     try testing.expect(ui.input.canFocus(f.win, inner));
+
+    // Hidden by the application, apart from the visual: the visual stays
+    // as it was, replacing it keeps the node hidden, and either hides.
+    t = try f.win.begin();
+    try t.setHidden(b, true);
+    try t.setVisual(b, .{ .background = .white });
+    t.commit();
+    try f.frame();
+    try testing.expectEqual(@as(f32, 40), f.rect(c)[0]);
+    try testing.expect(!ui.input.canFocus(f.win, inner));
+    try testing.expect(std.meta.eql(f.win.node(b).visual.background, @TypeOf(f.win.node(b).visual.background).white));
+    t = try f.win.begin();
+    try t.setHidden(b, false);
+    t.commit();
+    try f.frame();
+    try testing.expectEqual(@as(f32, 90), f.rect(c)[0]);
     _ = a;
 }
 

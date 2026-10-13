@@ -229,6 +229,7 @@ fn openMenu(m: *Menu, at: Node, parent: ?*Menu, grab: bool, focus: bool, point: 
     var cur = w.related(m.root, .first_child);
     while (cur != .null) : (cur = w.related(cur, .next)) {
         const it = itemOf(cur) orelse continue;
+        if (isHidden(cur)) continue;
         checkable = checkable or it.checkable;
         var len: usize = 0;
         icons = icons or (!it.separator and c.siv_node_get_text(it.icon, null, 0, &len) == .ok and len != 0);
@@ -247,17 +248,26 @@ fn openMenu(m: *Menu, at: Node, parent: ?*Menu, grab: bool, focus: bool, point: 
     _ = c.siv_set_layout(txn, col, &.{ .min_width = 180, .padding = .{ .start = 4, .end = 4, .top = 4, .bottom = 4 } });
     _ = c.siv_set_semantics(txn, col, &.{ .role = .menu, .label = name.ptr, .label_len = name.len });
     var index: u32 = 0;
+    // Separators between shown items only: none first, last, or twice.
+    var pending_sep = false;
+    var shown_any = false;
     cur = w.related(m.root, .first_child);
     while (cur != .null) : (cur = w.related(cur, .next)) {
         const it = itemOf(cur) orelse continue;
         defer index += 1;
+        if (isHidden(cur)) continue;
         if (it.separator) {
+            pending_sep = shown_any;
+            continue;
+        }
+        if (pending_sep) {
+            pending_sep = false;
             const sep = c.siv_box(txn, col);
             _ = c.siv_set_layout(txn, sep, &.{ .height = w.px(1), .padding = .{ .top = 0 } });
             _ = c.siv_set_visual(txn, sep, &.{ .background_token = .separator });
             _ = c.siv_set_semantics(txn, sep, &.{ .role = .separator });
-            continue;
         }
+        shown_any = true;
         _ = buildRow(txn, col, m, it, index, checkable, icons, &buf);
     }
     r = c.siv_txn_commit(txn);
@@ -274,6 +284,13 @@ fn openMenu(m: *Menu, at: Node, parent: ?*Menu, grab: bool, focus: bool, point: 
     if (focus) focusFirst(m);
     if (parent == null) button.setExpanded(m.owner, true);
     return .ok;
+}
+
+/// Hidden by siv_set_hidden: left out of the open menu.
+fn isHidden(node: Node) bool {
+    var hidden = false;
+    _ = c.siv_node_is_hidden(node, &hidden);
+    return hidden;
 }
 
 fn focusFirst(m: *Menu) void {

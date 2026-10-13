@@ -685,6 +685,25 @@ pub export fn siv_set_text(txn: t.Txn, node: t.Node, text: ?[*]const u8, text_le
     }.f, .{ node, text, text_len });
 }
 
+pub export fn siv_set_hidden(txn: t.Txn, node: t.Node, hidden: bool) void {
+    _ = run(txn, struct {
+        fn f(w: *Window, n: t.Node, h: bool) Error!void {
+            const id = try nodeIn(w, n);
+            w.txn.ut.setHidden(id, h) catch |err| return mapTxn(err);
+        }
+    }.f, .{ node, hidden });
+}
+
+pub export fn siv_node_is_hidden(node: t.Node, hidden: ?*bool) t.Result {
+    return application.wrap(struct {
+        fn f(n: t.Node, out: ?*bool) Error!void {
+            const w, const id = try lookup(n);
+            const dest = try runtime.out(bool, out);
+            dest.* = w.uiWin().node(id).hidden;
+        }
+    }.f(node, hidden));
+}
+
 pub export fn siv_set_tooltip(txn: t.Txn, node: t.Node, text: ?[*]const u8, text_len: usize) void {
     _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, ptr: ?[*]const u8, len: usize) Error!void {

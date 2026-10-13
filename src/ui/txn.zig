@@ -344,6 +344,7 @@ pub const Txn = struct {
         if (std.meta.eql(old, v)) return;
         try t.reserve();
         t.touch(id);
+        const was_hidden = n.isHidden();
         n.visual = v;
         n.visual.opacity = std.math.clamp(v.opacity, 0, 1);
         const win = t.win;
@@ -355,14 +356,28 @@ pub const Txn = struct {
             old.background_token != v.background_token or old.border_token != v.border_token)
             win.markPaint(id);
         if (old.hit_test != v.hit_test) win.markLayers();
-        if (old.hidden != v.hidden) {
-            // Hidden subtrees take no space and paint nothing; what they
-            // painted is damaged now, since no layer visits them.
-            if (v.hidden) hideSubtree(win, id);
-            win.markLayout(id);
-            win.markSubtreeLayout(id);
-            win.markLayers();
-        }
+        if (was_hidden != n.isHidden()) visibilityChanged(win, id, n.isHidden());
+    }
+
+    /// Hides or shows a node and its subtree as the application asks,
+    /// apart from its visual (`Node.hidden`).
+    pub fn setHidden(t: *Txn, id: NodeId, hidden: bool) Error!void {
+        const n = try t.live(id);
+        if (n.hidden == hidden) return;
+        try t.reserve();
+        t.touch(id);
+        const was_hidden = n.isHidden();
+        n.hidden = hidden;
+        if (was_hidden != n.isHidden()) visibilityChanged(t.win, id, n.isHidden());
+    }
+
+    fn visibilityChanged(win: *Window, id: NodeId, hidden: bool) void {
+        // Hidden subtrees take no space and paint nothing; what they
+        // painted is damaged now, since no layer visits them.
+        if (hidden) hideSubtree(win, id);
+        win.markLayout(id);
+        win.markSubtreeLayout(id);
+        win.markLayers();
     }
 
     fn hideSubtree(win: *Window, id: NodeId) void {

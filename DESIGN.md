@@ -3475,7 +3475,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     widget written in C, Lua, or Rust against `siv.h` cannot. When a widget
     needs something the API lacks, the capability becomes a public
     primitive first. Primitives added this way: hidden nodes
-    (`SIV_VISUAL_HIDDEN`), modal nodes (`SIV_SEMANTICS_MODAL`), the value
+    (`SIV_VISUAL_HIDDEN`, and `siv_set_hidden` apart from the visual:
+    a widget draws its own visual, which `siv_set_visual` replaced
+    whole, so hiding a text field or a button erased its border and
+    fill, and a button set its visual again on hover and reappeared;
+    found by siv-files), modal nodes (`SIV_SEMANTICS_MODAL`), the value
     step, editor placeholders, transitions, themed colors and text sizes
     (D29), default handlers and default layouts, `siv_node_emit`, node data,
     the widget interface (`siv_set_widget`),
@@ -3617,8 +3621,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     - A menu is a model in the tree (`siv_menu`, or the one inside a
       `siv_menu_button`): a node that takes no space with one hidden child
       per item, so items are nodes the application relabels, disables,
-      and removes. `siv_menu_open` builds the popup from the model each
-      time. Choosing reports `select` with the item's position (separators
+      hides (`siv_set_hidden`), and removes. `siv_menu_open` builds the
+      popup from the model each time, leaving out hidden items and the
+      separators that would end up first, last, or doubled. Choosing reports `select` with the item's position (separators
       count) after the popup is gone; Up, Down, Home, End, Enter, Space,
       a mnemonic keysym per item, and Escape work as in WAI-ARIA's menu.
       `siv_menu_get_item` finds an item by that same position, so an

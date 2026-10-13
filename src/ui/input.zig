@@ -239,7 +239,7 @@ pub fn hitTest(win: *const Window, p: Point) NodeId {
 
 fn hit(win: *const Window, id: NodeId, parent_p: Point) ?NodeId {
     const n = win.node(id);
-    if (n.visual.hidden) return null;
+    if (n.isHidden()) return null;
     const s = win.state(id);
     var p: Point = .{ .x = parent_p.x - s.pos.x, .y = parent_p.y - s.pos.y };
     if (!n.visual.transform.eql(.identity)) {

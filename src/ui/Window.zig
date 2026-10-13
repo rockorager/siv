@@ -472,7 +472,7 @@ pub const Shown = struct {
             const id = it.cur;
             const n = it.win.node(id);
             it.cur = n.next;
-            if (!n.visual.hidden) return id;
+            if (!n.isHidden()) return id;
         }
         return null;
     }
@@ -486,7 +486,7 @@ pub fn shown(win: *const Window, id: NodeId) Shown {
 pub fn isShown(win: *const Window, id: NodeId) bool {
     var cur = id;
     while (cur != .none) : (cur = win.node(cur).parent) {
-        if (win.node(cur).visual.hidden) return false;
+        if (win.node(cur).isHidden()) return false;
     }
     return true;
 }

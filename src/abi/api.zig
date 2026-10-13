@@ -1845,6 +1845,10 @@ pub const functions = [_]Function{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
         .{ .name = "relation", .type = ref("siv_relation"), .doc = "Which neighbor." },
     }),
+    call("siv_node_is_hidden", "Whether siv_set_hidden hid the node itself (not its visual, nor an ancestor), as of the latest operation.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
+        .{ .name = "hidden", .type = out(.bool), .doc = "Hidden by siv_set_hidden." },
+    }),
     call("siv_node_is_rtl", "Whether the node lays out right to left (D21): the nearest direction set on it or an ancestor, else the window's, as of the latest operation.", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
         .{ .name = "rtl", .type = out(.bool), .doc = "Right to left." },
@@ -2098,6 +2102,7 @@ pub const functions = [_]Function{
 
     // Pointer cursors (D16).
     setter("siv_set_tooltip", "Sets the text of a node's tooltip (D17): a small popup shown when the pointer rests on the node or a descendant without one, or when the keyboard focuses it, after half a second (at once while the user moves between tooltips); a press, a key, or scrolling hides it. It is also the node's accessible description unless the node has one or the text repeats its name. Stock icon-only buttons show their label this way.", &.{.{ .name = "text", .type = .string, .doc = "UTF-8, copied; empty removes the tooltip." }}),
+    setter("siv_set_hidden", "Hides or shows a node and its subtree: hidden, it takes no space and is not painted, hit, focused, or in the semantics tree, and keeps its state. Apart from SIV_VISUAL_HIDDEN, so hiding a widget never replaces the visual it draws itself with; either one hides. A hidden menu item is left out of its menu when it opens.", &.{.{ .name = "hidden", .type = .bool, .doc = "Hidden." }}),
     setter("siv_set_cursor", "Sets the pointer cursor over a node and its descendants that set none. While a press is held the cursor stays that of the node that got it.", &.{.{ .name = "cursor", .type = ref("siv_cursor"), .doc = "The cursor; auto inherits." }}),
     call("siv_window_set_cursor", "Shows a cursor over the whole window whatever its nodes set, such as SIV_CURSOR_PROGRESS while the application is busy; auto stops.", &.{
         window_param,

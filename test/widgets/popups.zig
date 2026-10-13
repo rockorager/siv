@@ -270,6 +270,27 @@ test "menus: a context menu opens against any node; disabled items cannot be cho
     const p2 = (try openPopup(&h)).?;
     const w2 = try A.App.window(@backingInt(p2), A.window_tag);
     try testing.expect((try w2.uiWin().semanticsTree()).find(.menu_item, "Duplicate") != null);
+    // A hidden item is left out, keeping the others' positions.
+    txn = try begin(h.window);
+    const paste = c.siv_menu_item(txn, menu, &.{ .label = "Paste", .label_len = 5 });
+    c.siv_set_hidden(txn, copy, true);
+    try ok(c.siv_txn_commit(txn));
+    var hidden = false;
+    try ok(c.siv_node_is_hidden(copy, &hidden));
+    try testing.expect(hidden);
+    try h.click(20, 20);
+    try h.settle();
+    try ok(c.siv_menu_open(menu, target));
+    try h.settle();
+    const p3 = (try openPopup(&h)).?;
+    const w3 = try A.App.window(@backingInt(p3), A.window_tag);
+    const tree3 = try w3.uiWin().semanticsTree();
+    try testing.expect(tree3.find(.menu_item, "Duplicate") == null);
+    try testing.expectEqualStrings("Paste", tree3.name(tree3.focused().?.*));
+    try h.typeKeyIn(p3, ks.@"return", "", .{});
+    try h.settle();
+    try testing.expectEqual(@as(u32, 2), log.index);
+    _ = paste;
 }
 
 test "menus: a context menu opens at the click's point, in LTR and RTL" {
