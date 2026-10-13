@@ -543,15 +543,14 @@ pub fn setMode(self: *Files, mode: ViewMode) void {
     const from = self.activeView();
     var cursor: f64 = -1;
     _ = c.siv_widget_get_value(from, &cursor);
-    const sel = self.selectedIndices() catch return;
-    defer self.gpa.free(sel);
+    const bits = self.selectionBits() catch return;
+    defer self.gpa.free(bits);
     self.mode = mode;
     self.applyMode() catch return;
     const to = self.activeView();
     const txn = self.begin() orelse return;
     _ = c.siv_view_set_count(txn, to, @intCast(self.visible.items.len));
-    self.clearSelection(txn, to);
-    for (sel) |i| _ = c.siv_view_set_selected(txn, to, i, true);
+    _ = c.siv_view_set_selection(txn, to, bits.ptr, bits.len);
     if (cursor >= 0) _ = c.siv_widget_set_value(txn, to, cursor);
     if (!commit(txn)) return;
     self.focusView();
@@ -944,14 +943,21 @@ fn applySelectionAfterLoad(self: *Files) void {
         defer wanted.deinit(self.gpa);
         var it = std.mem.splitScalar(u8, self.pending_select.items, '\n');
         while (it.next()) |nm| if (nm.len != 0) wanted.put(self.gpa, nm, {}) catch {};
+        const bits = self.gpa.alloc(u8, (self.visible.items.len + 7) / 8) catch {
+            _ = c.siv_txn_abort(txn);
+            return;
+        };
+        defer self.gpa.free(bits);
+        @memset(bits, 0);
         for (self.visible.items, 0..) |e, vi| {
             const nm = self.nameOf(e);
-            if (wanted.contains(nm)) {
-                _ = c.siv_view_set_selected(txn, view, @intCast(vi), true);
+            if (wanted.count() != 0 and wanted.contains(nm)) {
+                bits[vi / 8] |= @as(u8, 1) << @intCast(vi % 8);
                 if (first == null) first = @intCast(vi);
             }
             if (self.keep_cursor_name.items.len != 0 and std.mem.eql(u8, nm, self.keep_cursor_name.items)) cursor = @intCast(vi);
         }
+        _ = c.siv_view_set_selection(txn, view, bits.ptr, bits.len);
     }
     const target = cursor orelse first;
     if (target) |t| {
@@ -1003,33 +1009,90 @@ fn refilter(self: *Files) void {
     self.updateStatus();
 }
 
-/// Clears a view's selection. There is no call for it: one call per
-/// selected item (FRICTION.md).
+/// Clears a view's selection.
 fn clearSelection(self: *Files, txn: Txn, view: Node) void {
-    var count: u32 = 0;
-    var cur: u32 = 0;
-    const n: u32 = @intCast(self.visible.items.len);
-    while (cur < n) : (cur += 1) {
-        var on = false;
-        if (c.siv_view_is_selected(view, cur, &on) != .ok) break;
-        if (on) {
-            _ = c.siv_view_set_selected(txn, view, cur, false);
-            count += 1;
+    _ = self;
+    _ = c.siv_view_set_selection(txn, view, null, 0);
+}
+
+/// The active view's selection as a bitset over view indices (owned).
+fn selectionBits(self: *Files) ![]u8 {
+    const view = self.activeView();
+    var len: usize = 0;
+    _ = c.siv_view_get_selection(view, null, 0, &len);
+    const bits = try self.gpa.alloc(u8, len);
+    errdefer self.gpa.free(bits);
+    if (c.siv_view_get_selection(view, bits.ptr, bits.len, &len) != .ok) @memset(bits, 0);
+    return bits;
+}
+
+/// The selection as a bitset over entries of the listing (owned), which
+/// survives a new order, filter, or view.
+fn selectedEntries(self: *Files) ![]u8 {
+    const l = self.listing orelse return self.gpa.alloc(u8, 0);
+    const out = try self.gpa.alloc(u8, (l.entries.len + 7) / 8);
+    @memset(out, 0);
+    const bits = try self.selectionBits();
+    defer self.gpa.free(bits);
+    for (bits, 0..) |byte, bi| {
+        var b = byte;
+        while (b != 0) : (b &= b - 1) {
+            const vi = bi * 8 + @ctz(b);
+            if (vi >= self.visible.items.len) break;
+            const e = self.visible.items[vi];
+            out[e / 8] |= @as(u8, 1) << @intCast(e % 8);
         }
     }
+    return out;
+}
+
+/// Selects in `view` the shown items whose entries are set in
+/// `entries`; returns the first such view index.
+fn selectEntries(self: *Files, txn: Txn, view: Node, entries: []const u8) !?u32 {
+    const bits = try self.gpa.alloc(u8, (self.visible.items.len + 7) / 8);
+    defer self.gpa.free(bits);
+    @memset(bits, 0);
+    var first: ?u32 = null;
+    for (self.visible.items, 0..) |e, vi| {
+        if (e / 8 >= entries.len or entries[e / 8] & (@as(u8, 1) << @intCast(e % 8)) == 0) continue;
+        bits[vi / 8] |= @as(u8, 1) << @intCast(vi % 8);
+        if (first == null) first = @intCast(vi);
+    }
+    _ = c.siv_view_set_selection(txn, view, bits.ptr, bits.len);
+    return first;
+}
+
+/// Re-sorts or re-filters with `change`, keeping the selection and the
+/// cursor's item.
+fn keepSelection(self: *Files, comptime change: type) void {
+    const entries = self.selectedEntries() catch return;
+    defer self.gpa.free(entries);
+    var cursor_entry: ?u32 = null;
+    var cursor: f64 = -1;
+    _ = c.siv_widget_get_value(self.activeView(), &cursor);
+    if (cursor >= 0 and cursor < @as(f64, @floatFromInt(self.visible.items.len))) cursor_entry = self.visible.items[@intFromFloat(cursor)];
+    change.apply(self);
+    self.refilter();
+    const txn = self.begin() orelse return;
+    const first = self.selectEntries(txn, self.activeView(), entries) catch null;
+    const target = if (cursor_entry) |ce| self.viewIndexOfEntry(ce) else null;
+    if (target orelse first) |t| {
+        _ = c.siv_widget_set_value(txn, self.activeView(), @floatFromInt(t));
+        _ = c.siv_view_scroll_to(txn, self.activeView(), t);
+    }
+    _ = commit(txn);
+    self.updateStatus();
 }
 
 /// The selected view indices (owned), in order.
 pub fn selectedIndices(self: *Files) ![]u32 {
-    const view = self.activeView();
+    const bits = try self.selectionBits();
+    defer self.gpa.free(bits);
     var out: std.ArrayList(u32) = .empty;
     errdefer out.deinit(self.gpa);
-    const n: u32 = @intCast(self.visible.items.len);
-    var i: u32 = 0;
-    while (i < n) : (i += 1) {
-        var on = false;
-        if (c.siv_view_is_selected(view, i, &on) != .ok) break;
-        if (on) try out.append(self.gpa, i);
+    for (bits, 0..) |byte, bi| {
+        var b = byte;
+        while (b != 0) : (b &= b - 1) try out.append(self.gpa, @intCast(bi * 8 + @ctz(b)));
     }
     return out.toOwnedSlice(self.gpa);
 }
@@ -1258,12 +1321,13 @@ fn onSort(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
 
 pub fn setSort(self: *Files, s: model.Sort) void {
     self.sort = s;
-    if (self.listing) |*l| {
+    if (self.listing != null) {
         // Keep the selection across the new order, by entry.
-        self.rememberSelection();
-        model.sort(l, self.order.items, s);
-        self.refilter();
-        self.applySelectionAfterLoad();
+        self.keepSelection(struct {
+            fn apply(f: *Files) void {
+                model.sort(&f.listing.?, f.order.items, f.sort);
+            }
+        });
     }
     const txn = self.begin() orelse return;
     _ = c.siv_view_set_sort(txn, self.table, @intFromEnum(s.key), if (s.descending) .descending else .ascending);
@@ -1375,8 +1439,11 @@ fn onSelect(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) bool {
 
 pub fn selectAll(self: *Files) void {
     const view = self.activeView();
+    const bits = self.gpa.alloc(u8, (self.visible.items.len + 7) / 8) catch return;
+    defer self.gpa.free(bits);
+    @memset(bits, 0xff);
     const txn = self.begin() orelse return;
-    for (0..self.visible.items.len) |i| _ = c.siv_view_set_selected(txn, view, @intCast(i), true);
+    _ = c.siv_view_set_selection(txn, view, bits.ptr, bits.len);
     _ = commit(txn);
     self.updateStatus();
 }
@@ -1573,9 +1640,9 @@ fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
 
 pub fn setShowHidden(self: *Files, on: bool) void {
     self.show_hidden = on;
-    self.rememberSelection();
-    self.refilter();
-    self.applySelectionAfterLoad();
+    self.keepSelection(struct {
+        fn apply(_: *Files) void {}
+    });
     const txn = self.begin() orelse return;
     self.syncAppMenu(txn);
     _ = commit(txn);

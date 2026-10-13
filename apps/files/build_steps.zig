@@ -86,6 +86,41 @@ pub fn add(b: *std.Build, o: Options) void {
         .filters = o.test_filters,
     });
     test_files.dependOn(&b.addRunArtifact(headless).step);
+
+    // On headless sway with AT-SPI: part of test-integration.
+    var integration_imports: [test_imports.len + 1]std.Build.Module.Import = undefined;
+    @memcpy(integration_imports[0..test_imports.len], &test_imports);
+    integration_imports[test_imports.len] = .{ .name = "dbus", .module = get(get(o.abi, "app"), "dbus") };
+    const integration = b.addTest(.{
+        .name = "files-integration",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("apps/files/tests/integration.zig"),
+            .target = o.target,
+            .optimize = o.optimize,
+            .link_libc = true,
+            .imports = &integration_imports,
+        }),
+        .filters = o.test_filters,
+    });
+    const integration_run = b.addRunArtifact(integration);
+    integration_run.has_side_effects = true; // depends on the installed sway, dbus-daemon, at-spi2-core
+    b.step("test-integration-files", "Run the file manager on headless sway with AT-SPI").dependOn(&integration_run.step);
+    o.integration_step.dependOn(&integration_run.step);
+
+    // Measurements: not part of any test step.
+    const bench = b.addExecutable(.{
+        .name = "files-bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("apps/files/tests/bench.zig"),
+            .target = o.target,
+            .optimize = o.optimize,
+            .link_libc = true,
+            .imports = &test_imports,
+        }),
+    });
+    const bench_run = b.addRunArtifact(bench);
+    bench_run.has_side_effects = true;
+    b.step("bench-files", "Measure the file manager (startup, memory, idle, scrolling 100k entries)").dependOn(&bench_run.step);
     o.test_step.dependOn(test_files);
     // The executable compiles with every `zig build test`, so it keeps up
     // with the API.

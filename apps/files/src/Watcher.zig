@@ -40,7 +40,7 @@ pub fn create(gpa: std.mem.Allocator, app: siv.App, on_change: *const fn (?*anyo
     const w = try gpa.create(Watcher);
     errdefer gpa.destroy(w);
     w.* = .{ .gpa = gpa, .app = app, .on_change = on_change, .ctx = ctx, .inotify = @intCast(ino), .wake = @intCast(efd) };
-    w.thread = try std.Thread.spawn(.{ .stack_size = 64 * 1024 }, run, .{w});
+    w.thread = try std.Thread.spawn(.{ .stack_size = 512 * 1024 }, run, .{w});
     return w;
 }
 
