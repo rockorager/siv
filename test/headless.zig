@@ -26,6 +26,7 @@ test {
     _ = @import("ui/golden.zig");
     _ = @import("ui/dnd.zig");
     _ = @import("ui/cursor.zig");
+    _ = @import("ui/image.zig");
     _ = @import("compositor/golden.zig");
     _ = @import("compositor/latency.zig");
     _ = @import("abi/golden.zig");

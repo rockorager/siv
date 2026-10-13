@@ -700,7 +700,7 @@ pub const Txn = struct {
         const ns: [2]f32 = if (view.image) |r| r.logicalSize() else .{ 0, 0 };
         if (os[0] != ns[0] or os[1] != ns[1] or old.fit != view.fit) t.win.markLayout(id);
         t.win.markPaint(id);
-        if (view.image) |img| if (img.frames.len > 1) t.win.animateImage(id);
+        if (view.image != old.image) t.win.animateImage(id);
     }
 
     pub fn setCanvas(t: *Txn, id: NodeId, c: node_mod.Canvas) Error!void {

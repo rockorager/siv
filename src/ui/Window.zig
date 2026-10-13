@@ -30,6 +30,7 @@ const semantics_mod = @import("semantics.zig");
 const text_node = @import("text_node.zig");
 const editor_mod = @import("editor.zig");
 const Image = @import("image.zig").Image;
+const Player = @import("image.zig").Player;
 const secret = @import("secret.zig");
 const ime_mod = @import("ime.zig");
 pub const Clipboard = @import("clipboard.zig");
@@ -247,6 +248,8 @@ pub const State = struct {
     frame: u32 = 0,
     frame_due: u64 = 0,
     played: u32 = 0,
+    /// Image: plays a streamed animation; holds the frame shown.
+    player: ?*Player = null,
     /// Layer that receives the node's own painting.
     layer: u32 = paint_mod.no_layer,
     /// Layer the node roots.
@@ -310,6 +313,7 @@ fn deinitStorage(win: *Window) void {
     for (win.nodes.items, win.states.items) |*n, *s| {
         if (n.status != .free) freeNodeData(win.gpa, n);
         if (s.text) |c| c.destroy(win.gpa);
+        if (s.player) |p| p.destroy();
     }
     win.nodes.deinit(win.gpa);
     win.states.deinit(win.gpa);
@@ -676,6 +680,7 @@ fn recycleDead(win: *Window) void {
         n.* = .{ .kind = .box, .status = .free, .next = win.free_head, .data = .{ .box = {} } };
         const s = win.state(id);
         if (s.text) |c| c.destroy(win.gpa);
+        if (s.player) |p| p.destroy();
         s.* = .{};
         win.free_head = id;
     }
@@ -932,28 +937,63 @@ fn frameDelay(ms: u32) u64 {
 fn animatedImage(win: *const Window, id: NodeId) ?*Image {
     if (!win.isLive(id) or win.node(id).kind != .image) return null;
     const img = win.node(id).data.image.image orelse return null;
-    return if (img.frames.len > 1) img else null;
+    return if (img.animated()) img else null;
 }
 
-/// Starts playing a node's animated image from its first frame. Called
-/// by the transaction that shows it.
+/// The image a node shows and the frame of it: a streamed animation's
+/// player holds its frames past the first.
+pub fn shownImage(win: *const Window, id: NodeId) ?struct { image: *Image, ref: scene.ImageRef } {
+    const img = win.node(id).data.image.image orelse return null;
+    const s = win.state(id);
+    if (s.player) |p| if (p.image == img) if (p.current) |c| return .{ .image = c, .ref = c.sceneRef() };
+    return .{ .image = img, .ref = img.frameRef(s.frame) };
+}
+
+fn stopPlayer(win: *Window, id: NodeId) void {
+    const s = win.state(id);
+    if (s.player) |p| p.destroy();
+    s.player = null;
+}
+
+/// Starts playing a node's animated image from its first frame, or stops
+/// an animation it showed. Called by the transaction that sets its image.
 pub fn animateImage(win: *Window, id: NodeId) void {
     const s = win.state(id);
     s.frame = 0;
     s.played = 0;
+    win.stopPlayer(id);
     if (win.loop == null) return;
     const img = win.animatedImage(id) orelse return;
-    s.frame_due = loop_mod.Loop.now() + frameDelay(img.frames[0].delay_ms);
+    if (img.stream) |st| {
+        // Nothing to decode while motion is reduced.
+        if (win.reducedMotion()) return;
+        s.player = Player.create(win.gpa, img, .{ .ctx = win, .id = @intFromEnum(id), .func = onPlayerFrame }) catch return;
+        s.frame_due = loop_mod.Loop.now() + frameDelay(st.first_delay_ms);
+    } else s.frame_due = loop_mod.Loop.now() + frameDelay(img.frames[0].delay_ms);
     if (std.mem.indexOfScalar(NodeId, win.animating.items, id) == null) {
         win.animating.append(win.gpa, id) catch return;
     }
     win.armAnimation();
 }
 
+/// A frame a player was waiting for arrived (or playback ended).
+fn onPlayerFrame(ctx: *anyopaque, id: u32) void {
+    const win: *Window = @ptrCast(@alignCast(ctx));
+    const nid: NodeId = @enumFromInt(id);
+    win.state(nid).frame_due = loop_mod.Loop.now();
+    win.armAnimation();
+}
+
+/// Waiting for a player's frame: due when it arrives.
+const not_due = std.math.maxInt(u64);
+
 fn armAnimation(win: *Window) void {
     const loop = win.loop orelse return;
     var due: ?u64 = null;
-    for (win.animating.items) |id| due = @min(due orelse std.math.maxInt(u64), win.state(id).frame_due);
+    for (win.animating.items) |id| {
+        const d = win.state(id).frame_due;
+        if (d != not_due) due = @min(due orelse not_due, d);
+    }
     if (due) |d| loop.startTimer(&win.anim_timer, d, 0) catch {} else loop.cancelTimer(&win.anim_timer);
 }
 
@@ -966,32 +1006,20 @@ fn onAnimTimer(timer: *loop_mod.Timer) void {
     var i: usize = 0;
     while (i < win.animating.items.len) {
         const id = win.animating.items[i];
+        const s = win.state(id);
         const img = win.animatedImage(id) orelse {
+            if (win.isLive(id)) win.stopPlayer(id);
             _ = win.animating.swapRemove(i);
             continue;
         };
-        const s = win.state(id);
         if (still) {
-            if (s.frame != 0) win.markPaint(id);
+            if (s.frame != 0 or s.player != null) win.markPaint(id);
             s.frame = 0;
+            win.stopPlayer(id);
             _ = win.animating.swapRemove(i);
             continue;
         }
-        var done = false;
-        while (s.frame_due <= now) {
-            if (s.frame + 1 == img.frames.len) {
-                s.played += 1;
-                // The last loop ends on the last frame.
-                if (img.loops != 0 and s.played >= img.loops) {
-                    done = true;
-                    break;
-                }
-                s.frame = 0;
-            } else s.frame += 1;
-            // Far behind (a stalled loop): continue from now.
-            s.frame_due = @max(s.frame_due, now -| frameDelay(img.frames[s.frame].delay_ms)) + frameDelay(img.frames[s.frame].delay_ms);
-            win.markPaint(id);
-        }
+        const done = if (img.stream != null) win.advancePlayer(id, img, now) else win.advanceFrames(id, img, now);
         if (done) {
             _ = win.animating.swapRemove(i);
             continue;
@@ -1000,6 +1028,46 @@ fn onAnimTimer(timer: *loop_mod.Timer) void {
     }
     win.requestFrame();
     win.armAnimation();
+}
+
+/// Advances an animation kept decoded; true when it ended.
+fn advanceFrames(win: *Window, id: NodeId, img: *Image, now: u64) bool {
+    const s = win.state(id);
+    while (s.frame_due <= now) {
+        if (s.frame + 1 == img.frames.len) {
+            s.played += 1;
+            // The last loop ends on the last frame.
+            if (img.loops != 0 and s.played >= img.loops) return true;
+            s.frame = 0;
+        } else s.frame += 1;
+        // Far behind (a stalled loop): continue from now.
+        s.frame_due = @max(s.frame_due, now -| frameDelay(img.frames[s.frame].delay_ms)) + frameDelay(img.frames[s.frame].delay_ms);
+        win.markPaint(id);
+    }
+    return false;
+}
+
+/// Advances a streamed animation; true when it ended (on its last
+/// frame). A frame that is not decoded yet holds the one shown until it
+/// arrives.
+fn advancePlayer(win: *Window, id: NodeId, img: *Image, now: u64) bool {
+    const s = win.state(id);
+    const p = s.player orelse return true;
+    if (p.image != img) {
+        // The node shows another image now (an aborted transaction).
+        win.stopPlayer(id);
+        return true;
+    }
+    while (s.frame_due <= now) {
+        const delay = frameDelay(p.advance() orelse {
+            if (p.ended) return true;
+            s.frame_due = not_due;
+            return false;
+        });
+        s.frame_due = @max(s.frame_due, now -| delay) + delay;
+        win.markPaint(id);
+    }
+    return false;
 }
 
 /// Shows `shape` over the whole window, whatever the nodes under the

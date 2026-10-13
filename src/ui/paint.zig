@@ -1051,7 +1051,8 @@ fn drawImage(win: *Window, nid: NodeId, b: *scene.Builder, off: Point) DrawError
     const img = n.data.image;
     const image = img.image orelse return Rect.empty;
     const s = win.state(nid);
-    const ref = image.frameRef(s.frame);
+    const shown = win.shownImage(nid).?;
+    const ref = shown.ref;
     const pad = n.layout.padding;
     const box = Rect.xywh(off.x + pad.left(s.rtl), off.y + pad.top, s.size.w - pad.horizontal(), s.size.h - pad.vertical());
     if (box.isEmpty()) return Rect.empty;
@@ -1087,7 +1088,7 @@ fn drawImage(win: *Window, nid: NodeId, b: *scene.Builder, off: Point) DrawError
     const images = &Slot.of(b).images;
     try images.ensureUnusedCapacity(win.gpa, 1);
     try b.image(.{ .image = ref, .src = src, .dst = dst, .filter = img.filter });
-    images.appendAssumeCapacity(image.retain());
+    images.appendAssumeCapacity(shown.image.retain());
     if (mirror) try b.popLayer();
     return dst;
 }

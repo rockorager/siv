@@ -6,6 +6,10 @@
 //! the compositor releases the list (`Event.released`), so the pixels
 //! outlive every frame that can still read them. The creator's
 //! reference is dropped with `release`; the last release frees them.
+//!
+//! Animations too large to keep decoded (`image.Options.max_bytes`) keep
+//! their file instead (`Image.stream`); each image node showing one plays
+//! it through a `Player`, which decodes a few frames ahead on the pool.
 
 const std = @import("std");
 const scene = @import("scene");
@@ -27,16 +31,32 @@ pub const Image = struct {
     /// pixel size divided by it (images decoded for a scale-2 window).
     scale: f32 = 1,
     /// An animation's frames, the first being `pixels`; empty for a still
-    /// image.
+    /// image or a streamed animation.
     frames: []const Frame = &.{},
     /// How many times an animation plays; 0 loops forever.
     loops: u32 = 0,
+    /// Frames of the animation, also when streamed.
+    frame_count: u32 = 1,
+    /// A streamed animation: `pixels` is its first frame, and players
+    /// decode the rest from the file.
+    stream: ?*Stream = null,
 
     pub const Frame = struct {
         pixels: []align(16) const u8,
         /// How long to show it, in milliseconds.
         delay_ms: u32,
         key: u64,
+    };
+
+    /// What a streamed animation plays from.
+    pub const Stream = struct {
+        /// The file.
+        bytes: []u8,
+        /// The options it decodes with, the same as its first frame's.
+        options: image_mod.Options,
+        /// How long the first frame shows, in milliseconds.
+        first_delay_ms: u32,
+        pool: *loop_mod.Pool,
     };
 
     pub const Desc = struct {
@@ -90,7 +110,34 @@ pub const Image = struct {
         if (img.frames.len == 0) img.gpa.free(img.pixels);
         for (img.frames) |f| img.gpa.free(f.pixels);
         img.gpa.free(img.frames);
+        if (img.stream) |st| {
+            img.gpa.free(st.bytes);
+            img.gpa.destroy(st);
+        }
         img.gpa.destroy(img);
+    }
+
+    /// Whether image nodes play it.
+    pub fn animated(img: *const Image) bool {
+        return img.frames.len > 1 or img.stream != null;
+    }
+
+    /// A still image taking `pixels` (packed rows, allocated with `gpa`);
+    /// they stay the caller's if this fails.
+    pub fn fromPixels(gpa: std.mem.Allocator, pixels: []align(16) u8, width: u32, height: u32, format: scene.ImageFormat, scale: f32) error{OutOfMemory}!*Image {
+        const img = try gpa.create(Image);
+        img.* = .{
+            .gpa = gpa,
+            .refs = .init(1),
+            .pixels = pixels,
+            .width = width,
+            .height = height,
+            .stride = width * format.bytesPerPixel(),
+            .format = format,
+            .key = next_key.fetchAdd(1, .monotonic),
+            .scale = scale,
+        };
+        return img;
     }
 
     /// Takes the frames of a decoded image (allocated with `gpa`), which
@@ -116,6 +163,7 @@ pub const Image = struct {
             .scale = if (scale > 0 and std.math.isFinite(scale)) scale else 1,
             .frames = frames,
             .loops = d.loops,
+            .frame_count = d.frame_count,
         };
         // The pixels now belong to the image.
         gpa.free(d.frames);
@@ -177,7 +225,7 @@ pub const Image = struct {
         const copy = try gpa.dupe(u8, switch (source) {
             inline else => |b| b,
         });
-        l.* = .{ .gpa = gpa, .source = copy, .is_path = source == .path, .options = options, .done = done };
+        l.* = .{ .gpa = gpa, .pool = pool, .source = copy, .is_path = source == .path, .options = options, .done = done };
         pool.submit(&l.job) catch {
             gpa.free(copy);
             return error.OutOfMemory;
@@ -191,6 +239,7 @@ const max_file = 512 << 20;
 const Load = struct {
     job: loop_mod.Pool.Job = .{ .run = run, .done = finish, .cancel = cancel },
     gpa: std.mem.Allocator,
+    pool: *loop_mod.Pool,
     source: []u8,
     is_path: bool,
     options: Image.LoadOptions,
@@ -203,15 +252,25 @@ const Load = struct {
     }
 
     fn decode(l: *Load) Image.LoadError!*Image {
-        var bytes: []const u8 = l.source;
         var file: ?[]u8 = null;
         defer if (file) |f| l.gpa.free(f);
-        if (l.is_path) {
-            file = try readFile(l.gpa, l.source);
-            bytes = file.?;
-        }
+        if (l.is_path) file = try readFile(l.gpa, l.source);
+        const bytes = file orelse l.source;
         const d = try image_mod.decode(l.gpa, bytes, l.options.decode);
-        return Image.fromDecoded(l.gpa, d, l.options.scale);
+        const streamed = d.streamed;
+        const first_delay = d.frames[0].delay_ms;
+        const img = try Image.fromDecoded(l.gpa, d, l.options.scale);
+        if (streamed) {
+            const st = l.gpa.create(Image.Stream) catch |e| {
+                img.release();
+                return e;
+            };
+            // The file moves to the stream.
+            st.* = .{ .bytes = bytes, .options = l.options.decode, .first_delay_ms = first_delay, .pool = l.pool };
+            if (file != null) file = null else l.source = &.{};
+            img.stream = st;
+        }
+        return img;
     }
 
     fn finish(job: *loop_mod.Pool.Job) void {
@@ -304,6 +363,177 @@ test "decoded animations keep their frames; loads run on the pool" {
     try std.testing.expectEqual(@as(?Image.LoadError, error.ReadFailed), bad.err);
 }
 
+
+/// Plays a streamed animation (`Image.stream`) for one image node: an
+/// `image.Decoder` on the worker pool keeps up to `ahead` frames decoded
+/// ahead of the one shown. Every frame is an `Image` of its own, so the
+/// display lists that draw one keep it alive, and memory stays bounded by
+/// them, the frames ahead, and the decoder's canvas, however long the
+/// animation. Loop thread only, apart from the decoding job.
+pub const Player = struct {
+    gpa: std.mem.Allocator,
+    image: *Image,
+    notify: Notify,
+    // The decoding job's, while `busy`.
+    decoder: ?image_mod.Decoder = null,
+    /// Past the first frame, which `image` itself shows.
+    started: bool = false,
+    loops_done: u32 = 0,
+    result: Result = .none,
+    // The loop thread's.
+    job: loop_mod.Pool.Job = .{ .run = run, .done = done, .cancel = cancel },
+    busy: bool = false,
+    /// Destroyed while busy: freed when the job finishes.
+    dead: bool = false,
+    /// No more frames: the last loop ended, or decoding failed.
+    ended: bool = false,
+    /// `take` found no frame: `notify` runs when one arrives.
+    waiting: bool = false,
+    queue: [ahead]Frame = undefined,
+    head: usize = 0,
+    len: usize = 0,
+    /// The frame shown, once past the first.
+    current: ?*Image = null,
+
+    pub const ahead = 2;
+
+    pub const Frame = struct { image: *Image, delay_ms: u32 };
+
+    /// Told on the loop thread that a frame `take` waited for arrived, or
+    /// that playback ended.
+    pub const Notify = struct {
+        ctx: *anyopaque,
+        id: u32,
+        func: *const fn (ctx: *anyopaque, id: u32) void,
+    };
+
+    const Result = union(enum) { none, frame: Frame, end };
+
+    /// Starts decoding ahead. `image` must be streamed.
+    pub fn create(gpa: std.mem.Allocator, image: *Image, notify: Notify) error{OutOfMemory}!*Player {
+        std.debug.assert(image.stream != null);
+        const p = try gpa.create(Player);
+        p.* = .{ .gpa = gpa, .image = image.retain(), .notify = notify };
+        p.fill();
+        return p;
+    }
+
+    pub fn destroy(p: *Player) void {
+        if (p.busy) {
+            p.dead = true;
+            return;
+        }
+        p.free();
+    }
+
+    fn free(p: *Player) void {
+        while (p.len != 0) p.pop().image.release();
+        if (p.current) |c| c.release();
+        if (p.decoder) |*d| d.deinit();
+        p.image.release();
+        p.gpa.destroy(p);
+    }
+
+    fn pop(p: *Player) Frame {
+        const f = p.queue[p.head];
+        p.head = (p.head + 1) % ahead;
+        p.len -= 1;
+        return f;
+    }
+
+    /// Shows the next frame and returns how long to, or null if it is not
+    /// decoded yet (`notify` follows) or there is none (`ended`).
+    pub fn advance(p: *Player) ?u32 {
+        if (p.len == 0) {
+            p.waiting = !p.ended;
+            return null;
+        }
+        const f = p.pop();
+        if (p.current) |c| c.release();
+        p.current = f.image;
+        p.fill();
+        return f.delay_ms;
+    }
+
+    fn fill(p: *Player) void {
+        if (p.busy or p.ended or p.len + 1 > ahead) return;
+        p.busy = true;
+        p.image.stream.?.pool.submit(&p.job) catch {
+            p.busy = false;
+            p.ended = true;
+        };
+    }
+
+    fn run(job: *loop_mod.Pool.Job) void {
+        const p: *Player = @fieldParentPtr("job", job);
+        p.result = p.decodeOne() catch .end;
+    }
+
+    fn decodeOne(p: *Player) !Result {
+        const st = p.image.stream.?;
+        if (p.decoder == null) p.decoder = try image_mod.Decoder.init(p.gpa, st.bytes, st.options);
+        const d = &p.decoder.?;
+        const out = try p.gpa.alignedAlloc(u8, .@"16", d.frameBytes());
+        errdefer p.gpa.free(out);
+        var rewound = false;
+        while (true) {
+            if (try d.next(out)) |delay| {
+                if (!p.started) {
+                    p.started = true;
+                    continue;
+                }
+                const img = try Image.fromPixels(p.gpa, out, d.width, d.height, d.format, p.image.scale);
+                return .{ .frame = .{ .image = img, .delay_ms = delay } };
+            }
+            p.loops_done += 1;
+            // The last loop ends on its last frame; a file with no frames
+            // after rewinding has nothing to loop.
+            if ((p.image.loops != 0 and p.loops_done >= p.image.loops) or rewound) {
+                p.gpa.free(out);
+                return .end;
+            }
+            try d.rewind();
+            rewound = true;
+        }
+    }
+
+    fn done(job: *loop_mod.Pool.Job) void {
+        const p: *Player = @fieldParentPtr("job", job);
+        p.busy = false;
+        const result = p.result;
+        p.result = .none;
+        if (p.dead) {
+            if (result == .frame) result.frame.image.release();
+            return p.free();
+        }
+        switch (result) {
+            .frame => |f| {
+                p.queue[(p.head + p.len) % ahead] = f;
+                p.len += 1;
+            },
+            .end, .none => {
+                p.ended = true;
+                // The canvas is not needed any more.
+                if (p.decoder) |*d| d.deinit();
+                p.decoder = null;
+            },
+        }
+        if (p.waiting) {
+            p.waiting = false;
+            p.notify.func(p.notify.ctx, p.notify.id);
+        }
+        p.fill();
+    }
+
+    fn cancel(job: *loop_mod.Pool.Job) void {
+        const p: *Player = @fieldParentPtr("job", job);
+        p.busy = false;
+        if (p.result == .frame) p.result.frame.image.release();
+        p.result = .none;
+        p.ended = true;
+        if (p.dead) p.free();
+    }
+};
 
 /// Keys have the top bit set, apart from keys that producers choose for
 /// external frames (D17), so backend caches keyed by them cannot mix the

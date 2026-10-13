@@ -59,6 +59,7 @@ pub const cssWeight = node.cssWeight;
 pub const Text = node.Text;
 pub const Fit = node.Fit;
 pub const Image = @import("image.zig").Image;
+pub const Player = @import("image.zig").Player;
 pub const ImageView = node.ImageView;
 pub const Canvas = node.Canvas;
 pub const CanvasSize = node.CanvasSize;
