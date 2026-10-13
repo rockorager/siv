@@ -58,13 +58,14 @@ fn onStyleKey(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) b
     const st: *Field = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
     if (st.hdr.disabled or !e.flags.pressed or !e.modifiers.ctrl or e.modifiers.alt or e.modifiers.super) return false;
-    switch (e.keysym) {
+    const key: u32 = @bitCast(@intFromEnum(e.keysym));
+    switch (key) {
         'l', 'L', 'e', 'E', 'r', 'R', 'j', 'J' => {
             var rtl = false;
             _ = c.siv_node_is_rtl(node, &rtl);
             const left: siv.TextAlign = if (rtl) .end else .start;
             const right: siv.TextAlign = if (rtl) .start else .end;
-            const a: siv.TextAlign = switch (e.keysym) {
+            const a: siv.TextAlign = switch (key) {
                 'l', 'L' => left,
                 'e', 'E' => .center,
                 'j', 'J' => .justify,
@@ -76,7 +77,7 @@ fn onStyleKey(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) b
         else => {},
     }
     const Attr = enum { bold, italic, underline };
-    const attr: Attr = switch (e.keysym) {
+    const attr: Attr = switch (key) {
         'b', 'B' => .bold,
         'i', 'I' => .italic,
         'u', 'U' => .underline,

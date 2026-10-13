@@ -57,10 +57,6 @@ function siv.keep(key, make) end
 ---once the new run succeeds, except those made in siv.keep.
 function siv.reload() end
 
----Keysyms of keys applications commonly handle (event.keysym).
----@type table<string, integer>
-siv.keysym = {}
-
 ---The methods of each handle type, by type name ("node", "window", ...), for
 ---extending them.
 ---@type table<string, table<string, function>>

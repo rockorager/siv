@@ -1191,6 +1191,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Key text omits C0 control characters and DEL; the keysym identifies those
     keys. A key that continues or cancels a compose sequence is delivered
     with `composing` set and no text, so shortcuts still see it.
+  - Keysyms are the schema enum `siv_key`, which names the keys
+    applications commonly bind (navigation, editing, function keys,
+    modifiers, and the XF86 Back, Forward, Copy, Cut, Paste keys):
+    `SIV_KEY_ESCAPE` in C, `.escape` in Zig, `"escape"` in Lua. It is
+    open: every other keysym passes through as its number, and character
+    keys are their Latin-1 code point (`'a'`). Found by the file manager
+    in `apps/files`, which, like every program and the stock widgets,
+    had written out its own keysym table.
   - Routing (`src/ui/input.zig`): pointer events go to the topmost
     hit-testable node (or the node a button press went to, until release)
     and bubble to the root until a handler returns true; keyboard events

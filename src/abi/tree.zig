@@ -1282,7 +1282,7 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
             if (p.target != .none and uw.isLive(p.target)) ev.target = @fromBackingInt(w.nodes.handle(p.target));
         },
         .key => |k| {
-            ev.keysym = k.keysym;
+            ev.keysym = @enumFromInt(@as(i32, @bitCast(k.keysym)));
             ev.time = k.time;
             ev.modifiers = modifiers(k.mods);
             ev.flags = .{ .pressed = k.pressed, .repeat = k.repeat };

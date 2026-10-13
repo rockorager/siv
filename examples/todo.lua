@@ -70,7 +70,7 @@ win:update(function(txn, root)
 	txn:set_selection(editor, #state.draft, #state.draft)
 	-- Enter adds the editor's text as an item and clears it.
 	txn:on(editor, "key", function(node, ev)
-		if ev.keysym ~= siv.keysym.Return or not ev.flags.pressed then
+		if ev.keysym ~= "return" or not ev.flags.pressed then
 			return false
 		end
 		local text = node:get_text()

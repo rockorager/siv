@@ -10,8 +10,6 @@
 #include <stdio.h>
 
 #define PI 3.14159265f
-#define KEY_LEFT 0xff51
-#define KEY_RIGHT 0xff53
 
 struct gauge {
 	siv_window window;
@@ -72,8 +70,8 @@ static bool on_key(void *user_data, siv_node node, const siv_event *e) {
 	(void)node;
 	struct gauge *g = user_data;
 	if (!(e->flags & SIV_EVENT_PRESSED)) return false;
-	if (e->keysym == KEY_LEFT) set_value(g, g->value - 0.05f);
-	else if (e->keysym == KEY_RIGHT) set_value(g, g->value + 0.05f);
+	if (e->keysym == SIV_KEY_LEFT) set_value(g, g->value - 0.05f);
+	else if (e->keysym == SIV_KEY_RIGHT) set_value(g, g->value + 0.05f);
 	else return false;
 	return true;
 }

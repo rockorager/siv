@@ -257,24 +257,11 @@ pub fn snap(v: f64, min: f64, max: f64, step: f64) f64 {
 }
 
 // Keysyms the widgets handle.
-pub const keysym = struct {
-    pub const @"return": u32 = 0xff0d;
-    pub const kp_enter: u32 = 0xff8d;
-    pub const escape: u32 = 0xff1b;
-    pub const space: u32 = 0x0020;
-    pub const home: u32 = 0xff50;
-    pub const left: u32 = 0xff51;
-    pub const up: u32 = 0xff52;
-    pub const right: u32 = 0xff53;
-    pub const down: u32 = 0xff54;
-    pub const page_up: u32 = 0xff55;
-    pub const page_down: u32 = 0xff56;
-    pub const end: u32 = 0xff57;
-};
+pub const keysym = siv.Key;
 
 /// Keyboard direction of an arrow key: -1 back, +1 forward, 0 neither.
 /// Left and right swap in right-to-left layouts.
-pub fn arrowDirection(sym: u32, rtl: bool) i2 {
+pub fn arrowDirection(sym: siv.Key, rtl: bool) i2 {
     return switch (sym) {
         keysym.up => -1,
         keysym.down => 1,

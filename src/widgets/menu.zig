@@ -448,7 +448,7 @@ fn onRowKey(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) boo
         k.up, k.down => focusStep(node, if (e.keysym == k.down) .next else .previous, true),
         k.home => focusStep(w.related(node, .parent), .first_child, false),
         k.end => focusStep(w.related(node, .parent), .last_child, false),
-        else => return chooseMnemonic(st, e.keysym, e.window),
+        else => return chooseMnemonic(st, @bitCast(@intFromEnum(e.keysym)), e.window),
     }
     return true;
 }

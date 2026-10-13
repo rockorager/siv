@@ -10,7 +10,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define KEY_RETURN 0xff0d
 
 struct app {
 	siv_window window;
@@ -54,7 +53,7 @@ static void add_item(struct app *a, siv_txn txn, const char *text, size_t len) {
 /* Enter in the editor adds its text as an item and clears it. */
 static bool on_editor_key(void *user_data, siv_node node, const siv_event *event) {
 	struct app *a = user_data;
-	if (event->keysym != KEY_RETURN || !(event->flags & SIV_EVENT_PRESSED)) return false;
+	if (event->keysym != SIV_KEY_RETURN || !(event->flags & SIV_EVENT_PRESSED)) return false;
 	char text[256];
 	size_t len = 0;
 	if (siv_node_get_text(node, text, sizeof text, &len) != SIV_OK || len == 0) return true;

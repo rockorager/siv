@@ -151,19 +151,6 @@ function methods.app.sleep(app, ms)
 end
 siv.sleep = methods.app.sleep
 
--- Keys ----------------------------------------------------------------
-
---- Keysyms of keys applications commonly handle (event.keysym).
-siv.keysym = {
-	BackSpace = 0xff08, Tab = 0xff09, Return = 0xff0d, Escape = 0xff1b,
-	Delete = 0xffff, Home = 0xff50, Left = 0xff51, Up = 0xff52,
-	Right = 0xff53, Down = 0xff54, Page_Up = 0xff55, Page_Down = 0xff56,
-	End = 0xff57, Insert = 0xff63, space = 0x20, KP_Enter = 0xff8d,
-	F1 = 0xffbe, F2 = 0xffbf, F3 = 0xffc0, F4 = 0xffc1, F5 = 0xffc2,
-	F6 = 0xffc3, F7 = 0xffc4, F8 = 0xffc5, F9 = 0xffc6, F10 = 0xffc7,
-	F11 = 0xffc8, F12 = 0xffc9,
-}
-
 -- Hot reload ----------------------------------------------------------
 --
 -- siv-lua --watch runs the main chunk again when it or a Lua module it

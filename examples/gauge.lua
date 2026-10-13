@@ -80,9 +80,9 @@ win:update(function(txn, root)
 				if not e.flags.pressed then
 					return false
 				end
-				if e.keysym == siv.keysym.Left then
+				if e.keysym == "left" then
 					set_value(value - 0.05)
-				elseif e.keysym == siv.keysym.Right then
+				elseif e.keysym == "right" then
 					set_value(value + 0.05)
 				else
 					return false

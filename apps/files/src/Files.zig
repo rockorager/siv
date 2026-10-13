@@ -14,7 +14,6 @@ const c = siv.c;
 pub const model = @import("model.zig");
 pub const fsops = @import("fsops.zig");
 pub const icons = @import("icons.zig");
-pub const keys = @import("keys.zig");
 pub const places_mod = @import("places.zig");
 pub const uri = @import("uri.zig");
 pub const Thumbs = @import("Thumbs.zig");
@@ -1351,7 +1350,7 @@ fn onSearchKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) boo
     const e = ev.?;
     if (!e.flags.pressed) return false;
     switch (e.keysym) {
-        keys.escape => {
+        .escape => {
             const txn = self.begin() orelse return true;
             _ = c.siv_set_text(txn, self.search, "", 0);
             _ = commit(txn);
@@ -1359,7 +1358,7 @@ fn onSearchKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) boo
             self.focusView();
             return true;
         },
-        keys.down, keys.@"return", keys.kp_enter => {
+        .down, .@"return", .kp_enter => {
             self.focusView();
             return true;
         },
@@ -1381,12 +1380,12 @@ fn onLocationKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) b
     const e = ev.?;
     if (!e.flags.pressed) return false;
     switch (e.keysym) {
-        keys.escape => {
+        .escape => {
             self.showLocation(false);
             self.focusView();
             return true;
         },
-        keys.@"return", keys.kp_enter => {
+        .@"return", .kp_enter => {
             var buf: [linux.PATH_MAX]u8 = undefined;
             var len: usize = 0;
             _ = c.siv_node_get_text(self.location, &buf, buf.len, &len);
@@ -1489,7 +1488,7 @@ fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
     const m = e.modifiers;
     const ctrl = m.ctrl and !m.alt;
     // Shortcuts that work everywhere, editors included.
-    if (ctrl) switch (e.keysym) {
+    if (ctrl) switch (@intFromEnum(e.keysym)) {
         'l', 'L' => {
             self.showLocation(true);
             return true;
@@ -1505,19 +1504,19 @@ fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
         else => {},
     };
     if (m.alt and !m.ctrl) switch (e.keysym) {
-        keys.left => {
+        .left => {
             self.goBack();
             return true;
         },
-        keys.right => {
+        .right => {
             self.goForward();
             return true;
         },
-        keys.up => {
+        .up => {
             self.goUp();
             return true;
         },
-        keys.home => {
+        .home => {
             var buf: [linux.PATH_MAX]u8 = undefined;
             self.navigate(std.fmt.bufPrint(&buf, "{s}", .{self.home}) catch return true, .push);
             return true;
@@ -1525,15 +1524,15 @@ fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
         else => {},
     };
     switch (e.keysym) {
-        keys.back => {
+        .back => {
             self.goBack();
             return true;
         },
-        keys.forward => {
+        .forward => {
             self.goForward();
             return true;
         },
-        keys.f5 => {
+        .f5 => {
             self.reload();
             return true;
         },
@@ -1541,7 +1540,7 @@ fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
     }
     // The rest act on files; in an editor they are the editor's keys.
     if (self.editing) return false;
-    if (ctrl) switch (e.keysym) {
+    if (ctrl) switch (@intFromEnum(e.keysym)) {
         'a', 'A' => {
             self.selectAll();
             return true;
@@ -1581,27 +1580,27 @@ fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
         else => {},
     };
     switch (e.keysym) {
-        keys.backspace => {
+        .backspace => {
             self.goUp();
             return true;
         },
-        keys.f2 => {
+        .f2 => {
             self.renameCursor();
             return true;
         },
-        keys.delete => {
+        .delete => {
             if (m.shift) self.confirmDelete() else self.trashSelection();
             return true;
         },
-        keys.menu => {
+        .menu => {
             self.openContextMenuAtCursor();
             return true;
         },
-        keys.f10 => if (m.shift) {
+        .f10 => if (m.shift) {
             self.openContextMenuAtCursor();
             return true;
         },
-        keys.escape => {
+        .escape => {
             const view = self.activeView();
             const txn = self.begin() orelse return true;
             self.clearSelection(txn, view);
@@ -1923,11 +1922,11 @@ fn onRenameKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) boo
     const e = ev.?;
     if (!e.flags.pressed) return false;
     switch (e.keysym) {
-        keys.@"return", keys.kp_enter => {
+        .@"return", .kp_enter => {
             self.finishRename(true);
             return true;
         },
-        keys.escape => {
+        .escape => {
             self.finishRename(false);
             return true;
         },

@@ -1096,7 +1096,7 @@ fn onRowKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
             var handled = false;
             _ = c.siv_emit(v.root, &.{ .type = .activate, .index = @intCast(cur), .value = @floatFromInt(cur) }, &handled);
         },
-        'a', 'A' => {
+        @as(siv.Key, @enumFromInt('a')), @as(siv.Key, @enumFromInt('A')) => {
             if (!e.modifiers.ctrl or v.selection != .multiple) return false;
             const txn = w.begin(e.window) orelse return true;
             for (0..v.count) |i| setSelected(v, @intCast(i), true);
