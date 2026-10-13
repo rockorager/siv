@@ -1922,8 +1922,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       the displayed size is kept; never up. Peak memory is one canvas at
       the file's size: none of these decoders scales while decoding
       except libwebp, and DCT scaling of JPEGs waits for a decoder that
-      offers it. Limits: 64 megapixels per frame, 256 MiB for all frames
-      (an animation over it keeps its first frame), 512 MiB files.
+      offers it. Limits: 64 megapixels per frame and 512 MiB files; an
+      animation keeps at most 32 MiB of decoded frames, or streams
+      (below).
     - Color (D11): an embedded RGB ICC profile converts through Little
       CMS to linear light with sRGB primaries, unless it is sRGB (matrix
       and curves within rounding), which keeps 8-bit pixels as they are;
@@ -1934,13 +1935,29 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       gamuts clip to sRGB, until HDR and wide-gamut output exist. 8-bit
       sRGB images at their own size stay `rgba8_srgb`; everything else
       is `rgba16_linear_premul`.
-    - Animation (GIF, APNG, WebP, AVIF sequences, JPEG XL): every frame is
-      decoded up front at the displayed size, composited by the decoder.
-      Image nodes play them on a timer of the window's loop that fires
-      only when a frame changes, repainting only the node's layer; delays
-      of 10 ms or less show for 100 ms, as in browsers; a finite loop
-      count ends on the last frame. With reduced motion an animation
-      shows its first frame, as canvases always do.
+    - Animation (GIF, APNG, WebP, AVIF sequences, JPEG XL): frames are
+      decoded at the displayed size, composited by the decoder. When all
+      of them fit 32 MiB (`image.Options.max_bytes`; the count comes from
+      the file's headers without decoding: wuffs and libjxl read only
+      frame headers, libwebp and libavif report it) they are decoded up
+      front and kept, so loops cost nothing. Longer ones stream: the load
+      decodes only the first frame and keeps the file, and every image
+      node showing it plays it through its own `ui.Player`, an
+      `image.Decoder` on the worker pool that keeps two frames decoded
+      ahead of the one shown and decodes the file again for each loop.
+      Each streamed frame is an image of its own, so display lists keep
+      alive only what they draw, and memory stays at those frames, the
+      two ahead, and one canvas at the file's size, however long the
+      animation. A frame not decoded in time holds the one shown until
+      it arrives (playback slows, frames are not skipped). Per-node
+      players keep nodes independent (each starts at its first frame
+      when shown), at the cost of decoding once per node.
+    - Image nodes play animations on a timer of the window's loop that
+      fires only when a frame changes, repainting only the node's layer;
+      delays of 10 ms or less show for 100 ms, as in browsers; a finite
+      loop count ends on the last frame. With reduced motion an
+      animation shows its first frame, as canvases always do, and
+      streamed ones decode nothing more.
     - The fuzz target (`zig build test-image --fuzz`) feeds every decoder
       through `decode`. Zig's fuzzer only reads coverage from Zig code
       (clang's PC table for C does not match the one it expects), so the
