@@ -2,7 +2,8 @@
 //!
 //! Steps:
 //!   zig build                 libsiv.so, libsiv.a, include/siv.h, siv.pc,
-//!                             share/licenses/siv/NOTICES
+//!                             share/licenses/siv/NOTICES, libsiv-lua.so,
+//!                             bin/siv-lua (src/lua/build_steps.zig)
 //!   zig build test            every module's tests, the headless tests, and
 //!                             the C ABI smoke test
 //!   zig build test-<module>   one module's tests (e.g. test-text)
@@ -16,6 +17,7 @@
 //!   -Dtest-filter=<text>      only run tests whose name contains <text>
 //!   -fsys=harfbuzz            link the system HarfBuzz instead of building it
 //!   -fsys=sheenbidi           link the system SheenBidi instead of building it
+//!   -fsys=lua                 link the system Lua 5.5 into libsiv-lua
 //!   -fsys=lcms2, libwebp, libavif, dav1d, libjxl
 //!                             link the system image decoders and Little CMS
 //!                             (src/image/build_steps.zig)
@@ -396,6 +398,20 @@ pub fn build(b: *std.Build) void {
         .test_filters = test_filters,
         .abi = abi,
         .widgets = widgets,
+        .shared = shared,
+        .test_step = test_step,
+        .integration_step = integration_step,
+        .headless = headless,
+    });
+
+    // libsiv-lua on top of libsiv.so, the siv-lua runner, its annotations,
+    // and the Lua binding's tests (D23). Owned by the Lua binding
+    // workstream.
+    @import("src/lua/build_steps.zig").add(b, .{
+        .target = target,
+        .optimize = optimize,
+        .version = version,
+        .test_filters = test_filters,
         .shared = shared,
         .test_step = test_step,
         .integration_step = integration_step,

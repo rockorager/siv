@@ -33,6 +33,9 @@ zig build test-integration-pdf  # only PDF output against qpdf and poppler
 zig build test-integration-tray  # only the tray against dbus-daemon and gdbus
 zig build test-dbus --fuzz -Doptimize=ReleaseSafe  # fuzz a module's parsers
 zig build test-abi             # abi module, generators, Zig wrappers, exported symbols
+zig build test-lua             # Lua binding against libsiv.so, annotations (also in `test`)
+zig build test-integration-lua # only the Lua binding and siv-lua on sway
+./zig-out/bin/siv-lua examples/todo.lua  # run a Lua example; --watch reloads it on edits
 zig build test-notices         # NOTICES covers every shipped dependency (also in `test`)
 zig build test-c               # C programs against the generated headers and shared libraries
 zig build examples             # build and install the C programs in examples/
@@ -42,6 +45,7 @@ zig build bench-render-cpu -Doptimize=ReleaseFast  # CPU renderer benchmarks
 zig build bench-image -Doptimize=ReleaseFast -- FILE...  # image decoding benchmarks
 zig build -fsys=harfbuzz -fsys=sheenbidi   # link system copies instead of vendored ones
 zig build -fsys=glslang        # compile shaders with the system glslangValidator
+zig build -fsys=lua            # link the system liblua5.5 into libsiv-lua
 zig build -fsys=lcms2 -fsys=libwebp -fsys=libavif -fsys=dav1d -fsys=libjxl  # system image decoders
 ```
 
@@ -74,6 +78,7 @@ owns its directories and does not edit another workstream's files.
 | `a11y` | `src/a11y/` | D-Bus and desktop settings (AT-SPI) | `dbus`, `ui`, `loop`, `raster`, `text` |
 | `app` | `src/app/` | Public C API | `text`, `loop`, `platform`, `compositor`, `ui`, `dbus`, `a11y`, `portal` |
 | `widgets` | `src/widgets/` | Theming and stock widgets | `siv` (the generated C API wrapper) only (D22) |
+| `lua` | `src/lua/` | Lua binding | `siv` (the generated C API wrapper), `siv_schema` (`src/abi/api.zig` as data), `lua_c` (D23) |
 
 The theming workstream also owns `src/ui/theme.zig` (D29). Stock widgets
 use only the public C API; when one needs more, add a public primitive.
@@ -101,6 +106,9 @@ commit message. In particular:
     glslang shader compiler, and the shader list (`shaders/*.glsl`).
   - `src/image/build_steps.zig`: the image decoders' C sources, generated
     headers, `-fsys` options, and NASM (built from source for dav1d).
+  - `src/lua/build_steps.zig`: Lua's sources and allowlist of standard
+    libraries, libsiv-lua, the siv-lua runner, the generated annotations,
+    and the Lua tests (D23).
 
 ## Conventions
 

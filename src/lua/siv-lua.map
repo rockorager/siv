@@ -1,0 +1,12 @@
+/* libsiv-lua exports the Lua 5.5 C API it embeds, luaopen_siv, and the
+ * siv_lua_* embedding functions (siv_lua.h); everything else, including
+ * Lua's internals and the Zig runtime, stays local. */
+SIV_LUA_0.1 {
+  global:
+    lua_*;
+    luaL_*;
+    luaopen_*;
+    siv_lua_*;
+  local:
+    *;
+};

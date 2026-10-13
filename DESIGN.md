@@ -152,9 +152,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   third-party bindings must never drift.
 - **Decision:** a Zig schema (`src/abi/api.zig`, format in
   `src/abi/schema.zig`) describes every type and function. Build steps
-  generate `siv.h`, the Zig wrapper, the Lua binding, reference documentation,
-  a published JSON description for external generators, and the linker
-  version script. libsiv's own exports use the generated Zig wrapper's types
+  generate `siv.h`, the Zig wrapper, reference documentation, a published
+  JSON description for external generators, and the linker version
+  script; the Lua binding is generated from the schema at compile time
+  (D23). libsiv's own exports use the generated Zig wrapper's types
   and are checked at compile time against the schema signatures, so the
   implementation cannot drift either. A test-only library built from a second
   schema exercises every construct through the same pipeline.
@@ -2396,8 +2397,149 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 ### D23. Lua 5.5
 
 - **Requirement:** hot reload and user extension, optional for C users.
+  Lua code gets the whole C API with the same safety, and with what Lua
+  makes pleasant: tables, closures, coroutines, exceptions.
 - **Decision:** `libsiv-lua`, a separate library built on the C ABI. No ambient
   globals; APIs come from `require("siv")`.
+  - **Library.** `src/lua/` builds `libsiv-lua.so`, which links
+    `libsiv.so` and uses only the generated wrapper of the C ABI (the
+    boundary of D22's widgets), and `siv-lua`, which runs an application
+    (`siv-lua [--watch] app.lua`). libsiv-lua embeds Lua and exports
+    exactly the Lua C API, `luaopen_siv`, `siv_lua_new` (a state with the
+    chosen standard libraries and `require("siv")`), and `siv_lua_run`
+    (runs a main chunk, with hot reload on request), under a version
+    script (`SIV_LUA_0.1`). A host embeds Lua through it (`siv_lua.h`);
+    it cannot bring a Lua of its own, since a `lua_State` from another
+    build has another layout. libsiv-lua ships its own NOTICES, with
+    Lua's licence from `lua.h` (the tarball has no licence file).
+  - **Lua** is 5.5.1 from lua.org, pinned by URL and hash (lua.org's
+    published SHA-256 matches). The build compiles the core and an
+    explicit allowlist of standard libraries: base, package, coroutine,
+    table, string, math, utf8, os, and io. Left out are the debug library
+    (it reads any function's upvalues and the registry, where the binding
+    keeps its state) and linit.c (it references every library).
+    loadlib.c is built without dlopen, so `require` loads Lua source only
+    and the allowlist cannot grow at run time. io and os are in because
+    applications read files and the clock; a host embedding Lua for user
+    extension leaves them out with `siv_lua_new`'s mask. `-fsys=lua`
+    links the system liblua5.5 instead; its compiled set and C module
+    loading are then the system's, and only what is opened stays the
+    allowlist.
+  - **Generated at compile time, not written.** `bind.zig` imports the
+    schema (`src/abi/api.zig`, as data) and the generated wrapper, and
+    generates one `lua_CFunction` per schema function, every conversion
+    between Lua values and schema types, and a C trampoline per callback
+    type, with comptime loops. A schema change that the rules cannot map
+    fails the build; nothing drifts. `mapping.zig` holds the rules and
+    the few facts the schema does not state: functions and fields left
+    unbound with the reason (node data under pointer keys, wl_surface
+    pointers, allocator hooks, and the external frame `release` callback,
+    which runs on the compositor thread), which handles Lua owns, which
+    functions construct them, and which callbacks complete an
+    asynchronous call. Its tables are checked against the schema at
+    compile time, so a new handle type or a struct with callbacks and no
+    destroy-notify fails the build until classified. `gen_types.zig`
+    writes lua-language-server annotations (`share/siv/lua/siv.lua`) from
+    the same rules. Alternative: a text generator in `src/abi/gen` that
+    writes C against `lua.h` (what D3 first sketched). Rejected: a
+    generator writing marshaling code as strings that no compiler checks
+    until it runs, two languages for one mapping, and more code than the
+    comptime version. Reverse if another binding needs the mapping as
+    text, or the comptime work slows the build noticeably.
+  - **Names.** Every function is `siv.<name>` without the prefix and a
+    method of the handle type of its first parameter without that type's
+    name: `siv_window_set_title(w, t)` is `w:set_title(t)`, `siv_flex(t,
+    p, d)` is `t:flex(p, d)`. Out parameters are return values; a buffer
+    and its length are one string. `siv.methods.<type>` holds the methods,
+    for extensions.
+  - **Handles** are userdata, one per handle while Lua references it (a
+    weak table maps handles to them), so they compare equal and serve as
+    table keys. Applications, images, inhibitions, file choosers, global
+    shortcuts, screen casts, and tray items are owned: collecting the
+    userdata, leaving a `<close>` variable's scope, or `:destroy()`
+    destroys the object. Windows (until closed), nodes (until removed),
+    transactions, timers, external slots, and draw contexts (valid during
+    `draw`) are not: a window does not vanish because Lua dropped it.
+    Stale handles are safe, since siv checks generations (D2); destroying
+    an application marks all its handles destroyed. A transaction in a
+    `<close>` variable aborts unless committed.
+  - **Descriptors** are tables. Zero is the default, as in C; unknown
+    fields are errors (typos do not pass silently), read with `lua_next`,
+    so fields from a metatable's `__index` do not count. Enums are names
+    (`axis = "column"`) or integers; flags a name, a list, a set, or an
+    integer. Value structs take named or positional fields; colors also
+    take CSS hex strings, and a color table without alpha is opaque (the
+    one default that differs from C's zero, since `{1, 1, 1}` meaning
+    invisible would be a trap); edges, corners, and radii take one number
+    for all sides; dimensions and tracks take a number as pixels; and a
+    parameter of a value struct of numbers also takes its fields as
+    consecutive arguments (`d:rect(x, y, w, h)`). Strings point into Lua
+    strings without a copy (siv copies what it keeps, D2); byte arrays
+    are strings. Builders take a trailing properties table: each key
+    names a setter with one value (`layout`, `visual`, `semantics`,
+    `text_style`, `text`, ...) and `on` holds handlers, so a node is one
+    call.
+  - **Errors.** A failed call raises a table `{ code = "busy", result =
+    -6, func = "siv_txn_begin", message = "app.lua:12: siv_txn_begin:
+    SIV_ERROR_BUSY" }` (`siv.is_error`); bad argument types are ordinary
+    Lua errors. A builder that returns 0 raises its transaction's status,
+    and setters raise too: Lua raises at the failing operation rather
+    than keeping D4's sticky error to commit, since a Lua program has
+    exceptions and a traceback at the cause beats one at the commit.
+    `window:update(fn)` runs `fn(txn, root)` in a transaction held in a
+    `<close>` variable, so an error aborts it and goes on with its
+    traceback intact.
+  - **Callbacks** are Lua functions in a userdata box (its user values)
+    that the registry keeps until siv's destroy-notify releases it. They
+    run under `lua_pcall` on the thread that made the siv call now on the
+    stack (the main thread otherwise), so a Lua error never unwinds
+    through siv's frames; a wrapper converts every argument before
+    calling siv and raises only after siv returns. Event structs arrive as
+    tables. An error in a callback goes to `siv.set_error_handler`'s
+    function if set; otherwise it is kept, `siv_run` is quit, and the
+    binding call that returns to Lua next (`app:run()`, `node:emit()`,
+    ...) raises it, so an error in a handler ends the program with its
+    traceback like any uncaught error. `siv-lua --watch` reports errors
+    and keeps the application running instead. Alternative: printing and
+    continuing by default (hides bugs in ordinary runs).
+  - **Asynchronous calls** (image loads, portal requests and the file
+    chooser, clipboard pastes) take a callback; given none, they wait in
+    the running coroutine and return the result, raising a failed result
+    (`local image = app:image_load{ path = p }`). Outside a coroutine,
+    without a callback, they raise. `siv.spawn(fn)` starts a coroutine
+    and `app:sleep(ms)` waits on a one-shot timer. The completion
+    resumes the coroutine from its callback, at a safe point (D5).
+  - **Hot reload.** `siv-lua --watch` (`SIV_LUA_WATCH`) runs the main
+    chunk again when it or a Lua module it required changes. A thread
+    blocks on inotify for their directories and, after 50 ms without
+    changes, calls `siv_post`, the one call safe from any thread (D5), so
+    an idle application pays nothing. The reload runs the chunk inside
+    the running application: `siv.app_create` returns that application
+    and `app:run()` returns at once. Applications opt in to keeping state
+    with `siv.keep(key, make)`, whose value survives reloads; windows
+    created inside `make` are kept with it, so their size and focus stay
+    and the chunk rebuilds their content (keeping models, drafts, or
+    nodes as it chooses, and registering new handlers, which replace the
+    old ones). Windows the previous run created otherwise are destroyed
+    once the new run succeeds; if it fails, its windows go, the old ones
+    stay, and the error is reported. Modules required from files load
+    again. Alternatives: swapping functions inside closures by name
+    (needs the debug library, and breaks on any rename); polling file
+    times on a timer (wakes an idle application).
+  - **Threads.** A Lua state runs on the application's thread only;
+    nothing in the binding runs elsewhere.
+  - **Tests.** `zig build test-lua` runs the binding against `libsiv.so`
+    on the headless backend (allowlist, errors, descriptors, ownership,
+    callbacks, coroutines, the clipboard, hot reload through the real
+    watcher). The headless tests (D24) run `examples/*.lua` unchanged
+    through the binding compiled into their binary, with `app_create`
+    wrapped to pick the headless backend, and compare golden images under
+    `test/golden/lua/`, a hot reload included. On sway, the installed
+    `siv-lua` copies from a key and an in-process Lua client pastes from a
+    coroutine through a real data offer.
+- **Reverse if:** event tables show up in profiles (then pass events as
+  proxies valid during the call); applications need C modules (then
+  build loadlib.c with dlopen behind an option).
 
 ### D24. Developer tooling and tests
 

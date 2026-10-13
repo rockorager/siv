@@ -16,9 +16,12 @@ xkbcommon, and Fontconfig.
 zig build          # libsiv.so, libsiv.a, include/siv.h, siv.pc in zig-out/
 zig build test
 zig build examples # C programs from examples/ in zig-out/bin/
+./zig-out/bin/siv-lua examples/todo.lua  # Lua 5.5 through libsiv-lua
 ```
 
-The C API reference is generated into `zig-out/share/doc/siv/siv.md`.
+The C API reference is generated into `zig-out/share/doc/siv/siv.md`, and
+annotations of the Lua API for lua-language-server into
+`zig-out/share/siv/lua/siv.lua`.
 
 See [AGENTS.md](AGENTS.md) for the module layout and contribution rules.
 
