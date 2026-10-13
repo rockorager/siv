@@ -279,8 +279,21 @@ test "on sway with a screen reader: rows, cells, places, focus, and announcement
         var status: c_int = 0;
         _ = std.c.waitpid(keyboard, &status, 0);
     }
+    // The seat's keyboard (the idle wtype) gives the window focus first,
+    // as in the menu test on sway; a click before that can be lost.
+    const focus_deadline = Loop.now() + 10 * std.time.ns_per_s;
+    while (!(try app.window()).uiWin().input.keyboard) {
+        if (Loop.now() > focus_deadline) return error.Timeout;
+        try app.dispatch(10);
+    }
     const notes = (try app.item("notes.txt")).bounds;
-    vp.moveTo(@intFromFloat((notes.x0 + notes.x1) / 2), @intFromFloat((notes.y0 + notes.y1) / 2));
+    const x: u32 = @intFromFloat((notes.x0 + notes.x1) / 2);
+    const y: u32 = @intFromFloat((notes.y0 + notes.y1) / 2);
+    // A real click selects the row. The pointer moves in first: sway
+    // sends the window its enter with the motion.
+    vp.moveTo(x, y - 2);
+    try vp.sync();
+    vp.moveTo(x, y);
     vp.button(0x110, true);
     vp.button(0x110, false);
     try vp.sync();
