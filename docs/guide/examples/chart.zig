@@ -23,8 +23,8 @@ const Chart = struct {
 
 /// Asked for the preferred width with an unbounded maximum, then with the
 /// final constraints: wide charts are half as tall as they are wide.
-fn measure(_: ?*anyopaque, _: siv.Node, constraints: ?*const siv.Constraints) callconv(.c) siv.Size {
-    const c = constraints.?;
+fn measure(_: ?*anyopaque, _: siv.Node, constraints: *const siv.Constraints) callconv(.c) siv.Size {
+    const c = constraints;
     const width = if (std.math.isInf(c.max_width)) 360 else c.max_width;
     return .{ .width = width, .height = std.math.clamp(width / 2, 140, 320) };
 }
@@ -52,7 +52,7 @@ fn drawChart(chart: *Chart, d: siv.Draw, width: f32, height: f32) !void {
         siv.drawMoveTo(d, 0, y);
         siv.drawLineTo(d, width, y);
     }
-    siv.drawStroke(d, &.{ .width = 1 }, &.{ .color = grid });
+    siv.drawStroke(d, .{ .width = 1 }, .{ .color = grid });
 
     chart.gap = 12;
     chart.bar_width = (width - chart.gap * (sales.len - 1)) / sales.len;
@@ -61,20 +61,20 @@ fn drawChart(chart: *Chart, d: siv.Draw, width: f32, height: f32) !void {
         const h = value / top * (plot_h - 8);
         const is_hot = chart.hovered == i;
         siv.drawRoundedRect(d, .{ .x = x, .y = plot_h - h, .width = chart.bar_width, .height = h }, .{ .top_left = 4, .top_right = 4 });
-        siv.drawFill(d, &.{ .color = if (is_hot) hot else bar }, .{});
-        siv.drawText(d, x, plot_h + 4, chart.bar_width, month, &.{ .size_role = .caption, .color = muted, .@"align" = .center });
+        siv.drawFill(d, .{ .color = if (is_hot) hot else bar }, .{});
+        siv.drawText(d, x, plot_h + 4, chart.bar_width, month, .{ .size_role = .caption, .color = muted, .@"align" = .center });
         if (is_hot) {
             var buf: [16]u8 = undefined;
             const label = try std.fmt.bufPrint(&buf, "{d}", .{value});
-            siv.drawText(d, x, plot_h - h - 20, chart.bar_width, label, &.{ .weight = .semibold, .color = ink, .@"align" = .center });
+            siv.drawText(d, x, plot_h - h - 20, chart.bar_width, label, .{ .weight = .semibold, .color = ink, .@"align" = .center });
         }
     }
 }
 
 /// The bar under the pointer, highlighted. Only a change redraws.
-fn onPointer(user_data: ?*anyopaque, _: siv.Node, event: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onPointer(user_data: ?*anyopaque, _: siv.Node, event: *const siv.Event) callconv(.c) siv.EventResult {
     const chart: *Chart = @ptrCast(@alignCast(user_data));
-    const e = event.?;
+    const e = event;
     var hovered: ?usize = null;
     if (e.phase != .leave and chart.bar_width > 0) {
         const i: usize = @intFromFloat(@max(0, e.x / (chart.bar_width + chart.gap)));
@@ -92,18 +92,18 @@ fn build(chart: *Chart) !void {
     const txn = try siv.txnBegin(chart.window);
     errdefer siv.txnAbort(txn);
     const root = siv.windowGetRoot(chart.window);
-    siv.setVisual(txn, root, &.{ .background_token = .window_bg });
-    const column = siv.flex(txn, root, &.{ .axis = .column, .gap = 12 });
-    siv.setLayout(txn, column, &.{ .width = .{ .unit = .fraction, .value = 1 }, .padding = .{ .start = 20, .end = 20, .top = 16, .bottom = 16 } });
+    siv.setVisual(txn, root, .{ .background_token = .window_bg });
+    const column = siv.flex(txn, root, .{ .axis = .column, .gap = 12 });
+    siv.setLayout(txn, column, .{ .width = .{ .unit = .fraction, .value = 1 }, .padding = .{ .start = 20, .end = 20, .top = 16, .bottom = 16 } });
     const title = siv.text(txn, column, "Sales, first half");
-    siv.setTextStyle(txn, title, &.{ .size_role = .heading, .weight = .bold, .color_token = .window_fg });
+    siv.setTextStyle(txn, title, .{ .size_role = .heading, .weight = .bold, .color_token = .window_fg });
 
-    chart.canvas = siv.canvas(txn, column, &.{ .user_data = chart, .draw = draw, .measure = measure });
+    chart.canvas = siv.canvas(txn, column, .{ .user_data = chart, .draw = draw, .measure = measure });
     // A canvas is an image to assistive technology unless told more: name
     // it and give the data in words.
     const name = "Sales by month";
     const description = "January 12, February 19, March 7, April 15, May 22, June 18";
-    siv.setSemantics(txn, chart.canvas, &.{ .role = .image, .label = name, .label_len = name.len, .description = description, .description_len = description.len });
+    siv.setSemantics(txn, chart.canvas, .{ .role = .image, .label = name, .description = description });
     siv.on(txn, chart.canvas, .pointer, onPointer, null, chart);
     try siv.txnCommit(txn);
 }
@@ -112,7 +112,7 @@ pub fn main() !void {
     const app = try siv.appCreate(null);
     defer siv.appDestroy(app);
     const title = "Chart";
-    const window = try siv.windowCreate(app, &.{ .title = title, .title_len = title.len, .width = 420, .height = 280 });
+    const window = try siv.windowCreate(app, .{ .title = title, .width = 420, .height = 280 });
     var chart: Chart = .{ .window = window };
     try build(&chart);
     try siv.appRun(app);

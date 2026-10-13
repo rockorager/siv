@@ -191,9 +191,9 @@ fn choose(st: *Radio, window: siv.Window, focus: bool) void {
     if (changed) w.emitChange(g.root, g.selectedValue(), index);
 }
 
-fn onPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onPointer(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Radio = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     const g = groupOf(st) orelse return .pass;
     if (g.hdr.disabled) return .pass;
     if (button.feedback(&st.hdr, e)) {
@@ -204,18 +204,18 @@ fn onPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.E
     return .pass;
 }
 
-fn onActivate(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onActivate(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Radio = @ptrCast(@alignCast(ud.?));
     const g = groupOf(st) orelse return .pass;
     if (st.hdr.disabled or g.hdr.disabled) return .pass;
-    choose(st, ev.?.window, false);
+    choose(st, ev.window, false);
     return .handled;
 }
 
 /// Arrows select and focus the next or previous enabled radio, wrapping.
-fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Radio = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     if (!e.flags.pressed) return .pass;
     const dir = w.arrowDirection(e.keysym, w.isRtl(st.root));
     if (dir == 0) return .pass;

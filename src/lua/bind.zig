@@ -904,7 +904,7 @@ fn Invoke(comptime name: []const u8, comptime slot: c_int, comptime R: type, com
                             result = @intFromEnum(fr.args[i]);
                         } else {
                             switch (p.type) {
-                                .desc => |dn| if (fr.args[i]) |dp| pushStruct(s, Ls, dn, dp) else c.lua_pushnil(Ls),
+                                .desc => |dn| pushStruct(s, Ls, dn, fr.args[i]),
                                 // A string is pointer and length; NULL is nil.
                                 .string => if (fr.args[i]) |sp| {
                                     _ = c.lua_pushlstring(Ls, sp, fr.args[i + 1]);

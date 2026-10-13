@@ -87,9 +87,9 @@ fn divider(st: *Split) Node {
 
 /// The largest position depends on layout: it is exposed again when the
 /// divider gains focus, as well as whenever it moves.
-fn onFocus(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onFocus(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Split = @ptrCast(@alignCast(ud.?));
-    if (ev.?.flags.gained) restyle(st, ev.?.window);
+    if (ev.flags.gained) restyle(st, ev.window);
     return .pass;
 }
 
@@ -164,9 +164,9 @@ fn restyle(st: *Split, window: siv.Window) void {
 
 /// Dragging moves the divider with the pointer: `grab` is where in the
 /// divider it was pressed, so the divider stays under it.
-fn onPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onPointer(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Split = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     if (st.hdr.disabled) return .pass;
     const along = if (st.vertical) e.y else e.x;
     switch (e.phase) {
@@ -202,9 +202,9 @@ fn onPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.E
     return .pass;
 }
 
-fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Split = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     if (st.hdr.disabled or !e.flags.pressed) return .pass;
     const k = w.keysym;
     const rtl = !st.vertical and w.isRtl(st.root);
@@ -222,9 +222,9 @@ fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.Event
     return .handled;
 }
 
-fn onSetValue(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onSetValue(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Split = @ptrCast(@alignCast(ud.?));
     if (st.hdr.disabled) return .pass;
-    userSet(st, ev.?.window, ev.?.value);
+    userSet(st, ev.window, ev.value);
     return .handled;
 }

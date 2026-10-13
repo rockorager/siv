@@ -30,9 +30,9 @@ const Rec = struct {
     start: ?*const t.DragDesc = null,
     start_result: t.Result = .ok,
 
-    fn onEvent(user: ?*anyopaque, node: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onEvent(user: ?*anyopaque, node: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
         const r: *Rec = @ptrCast(@alignCast(user));
-        const e = ev.?;
+        const e = ev;
         switch (e.type) {
             .drop, .drag => {
                 r.phases[r.n] = e.phase;

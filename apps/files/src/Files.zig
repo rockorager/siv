@@ -184,11 +184,9 @@ pub fn create(app: siv.App, opts: Options) !*Files {
     self.thumbs.ctx = self;
     errdefer self.thumbs.deinit();
 
-    self.window = try siv.windowCreate(app, &.{
+    self.window = try siv.windowCreate(app, .{
         .title = "Files",
-        .title_len = 5,
         .app_id = "org.siv.Files",
-        .app_id_len = 13,
         .width = opts.width,
         .height = opts.height,
         .min_width = 360,
@@ -235,9 +233,9 @@ fn deinit(self: *Files) void {
     gpa.destroy(self);
 }
 
-fn onWindowEvent(ud: ?*anyopaque, _: siv.Window, ev: ?*const siv.WindowEvent) callconv(.c) bool {
+fn onWindowEvent(ud: ?*anyopaque, _: siv.Window, ev: *const siv.WindowEvent) callconv(.c) bool {
     const self: *Files = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     switch (e.type) {
         .scale_changed => self.thumbs.setScale(@floatCast(e.scale)),
         .presented => {
@@ -719,9 +717,9 @@ fn bindPlace(ud: ?*anyopaque, txn: Txn, row: Node, item: u64, _: u32, _: u32, _:
     setIcon(txn, parts.icon, pl.icon, 18);
 }
 
-fn onPlaceSelect(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onPlaceSelect(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
-    const i = ev.?.index;
+    const i = ev.index;
     if (i >= self.places.items.items.len) return .handled;
     const path = self.places.items.items[i].path;
     if (!std.mem.eql(u8, path, self.path)) {
@@ -1173,7 +1171,7 @@ fn addCrumb(self: *Files, txn: Txn, label: []const u8, depth: u32, rtl: bool, se
 }
 var crumb_key: u8 = 0;
 
-fn onCrumb(ud: ?*anyopaque, node: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onCrumb(ud: ?*anyopaque, node: Node, _: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     var p: ?*anyopaque = null;
     if (c.siv_node_get_data(node, &crumb_key, &p) != .ok or p == null) return .handled;
@@ -1193,19 +1191,19 @@ fn onCrumb(ud: ?*anyopaque, node: Node, _: ?*const siv.Event) callconv(.c) siv.E
     return .handled;
 }
 
-fn onBack(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onBack(ud: ?*anyopaque, _: Node, _: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     self.goBack();
     return .handled;
 }
 
-fn onForward(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onForward(ud: ?*anyopaque, _: Node, _: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     self.goForward();
     return .handled;
 }
 
-fn onUp(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onUp(ud: ?*anyopaque, _: Node, _: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     self.goUp();
     return .handled;
@@ -1238,9 +1236,9 @@ pub fn goUp(self: *Files) void {
 
 // Opening -----------------------------------------------------------------------------
 
-fn onActivateItem(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onActivateItem(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
-    self.openItem(ev.?.index, false);
+    self.openItem(ev.index, false);
     return .handled;
 }
 
@@ -1261,9 +1259,9 @@ pub fn openItem(self: *Files, vi: u32, ask: bool) void {
     _ = c.siv_open_uri(self.app, self.window, ubuf.items.ptr, ubuf.items.len, .{ .ask = ask }, onOpened, null, self);
 }
 
-fn onOpened(ud: ?*anyopaque, result: ?*const siv.PortalResult) callconv(.c) void {
+fn onOpened(ud: ?*anyopaque, result: *const siv.PortalResult) callconv(.c) void {
     const self: *Files = @ptrCast(@alignCast(ud.?));
-    switch (result.?.response) {
+    switch (result.response) {
         .success, .cancelled => {},
         .unavailable => self.toast("No application could be asked to open this file (no portal)", false),
         else => self.toast("The file could not be opened", false),
@@ -1272,15 +1270,15 @@ fn onOpened(ud: ?*anyopaque, result: ?*const siv.PortalResult) callconv(.c) void
 
 // Sorting and searching ----------------------------------------------------------------
 
-fn onSort(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onSort(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
-    const key: model.SortKey = switch (ev.?.index) {
+    const key: model.SortKey = switch (ev.index) {
         0 => .name,
         1 => .size,
         2 => .modified,
         else => .type,
     };
-    self.setSort(.{ .key = key, .descending = ev.?.value < 0 });
+    self.setSort(.{ .key = key, .descending = ev.value < 0 });
     return .handled;
 }
 
@@ -1299,9 +1297,9 @@ pub fn setSort(self: *Files, s: model.Sort) void {
     _ = commit(txn);
 }
 
-fn onSearchChange(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onSearchChange(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     const s = if (e.text) |p| p[0..e.text_len] else "";
     self.setQuery(s);
     return .handled;
@@ -1319,9 +1317,9 @@ pub fn setQuery(self: *Files, q: []const u8) void {
     }
 }
 
-fn onSearchKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onSearchKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     if (!e.flags.pressed) return .pass;
     switch (e.keysym) {
         .escape => {
@@ -1340,17 +1338,17 @@ fn onSearchKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv
     }
 }
 
-fn onEditorFocus(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onEditorFocus(ud: ?*anyopaque, node: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
-    const gained = ev.?.flags.gained;
+    const gained = ev.flags.gained;
     // Leaving the location field shows the breadcrumbs again.
     if (!gained and node == self.location) self.showLocation(false);
     return .pass;
 }
 
-fn onLocationKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onLocationKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     if (!e.flags.pressed) return .pass;
     switch (e.keysym) {
         .escape => {
@@ -1394,9 +1392,9 @@ pub fn showLocation(self: *Files, show: bool) void {
 
 // Selection and status ----------------------------------------------------------------
 
-fn onSelect(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onSelect(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     self.applySelectChange(e.changed_index, e.changed_count) catch self.recountSelection() catch {};
     self.showStatus();
     return .handled;
@@ -1508,9 +1506,9 @@ pub fn toast(self: *Files, msg: []const u8, assertive: bool) void {
 
 // Keyboard ----------------------------------------------------------------------------
 
-fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     if (!e.flags.pressed) return .pass;
     const m = e.modifiers;
     const ctrl = m.ctrl and !m.alt;
@@ -1673,16 +1671,16 @@ pub fn setShowHidden(self: *Files, on: bool) void {
     _ = commit(txn);
 }
 
-fn onToggleMode(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onToggleMode(ud: ?*anyopaque, _: Node, _: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     self.setMode(if (self.mode == .list) .grid else .list);
     return .handled;
 }
 
-fn onAppMenu(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onAppMenu(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
-    if (ev.?.index >= app_menu_items.len) return .handled;
-    switch (@as(AppAction, @enumFromInt(ev.?.index))) {
+    if (ev.index >= app_menu_items.len) return .handled;
+    switch (@as(AppAction, @enumFromInt(ev.index))) {
         .new_folder => self.newFolder(),
         .hidden => self.setShowHidden(!self.show_hidden),
         .list => self.setMode(.list),
@@ -1706,10 +1704,10 @@ pub fn setTheme(self: *Files, scheme: siv.ColorScheme) void {
 
 // Context menu ----------------------------------------------------------------------
 
-fn onRowPointer(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onRowPointer(ud: ?*anyopaque, node: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const parts: *RowParts = @ptrCast(@alignCast(ud.?));
     const self = parts.files orelse return .pass;
-    const e = ev.?;
+    const e = ev;
     switch (e.phase) {
         .down => {
             if (e.button == .secondary) {
@@ -1746,9 +1744,9 @@ fn onRowPointer(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c)
     }
 }
 
-fn onContentPointer(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onContentPointer(ud: ?*anyopaque, node: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     if (e.phase == .down and e.button == .secondary) {
         // Empty space: actions on the folder.
         const txn = self.begin() orelse return .handled;
@@ -1820,10 +1818,10 @@ pub fn openContextMenu(self: *Files, node: Node, x: f32, y: f32, on_items: bool)
     _ = c.siv_menu_open_at(self.context, node, x, y);
 }
 
-fn onContextSelect(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onContextSelect(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
-    if (ev.?.index >= context_items.len) return .handled;
-    self.runContextAction(@enumFromInt(ev.?.index));
+    if (ev.index >= context_items.len) return .handled;
+    self.runContextAction(@enumFromInt(ev.index));
     return .handled;
 }
 
@@ -1901,9 +1899,9 @@ fn bindRename(self: *Files, txn: Txn, parts: *RowParts, entry: u32) void {
     }
 }
 
-fn onRenameKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onRenameKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     if (!e.flags.pressed) return .pass;
     switch (e.keysym) {
         .@"return", .kp_enter => {
@@ -1920,9 +1918,9 @@ fn onRenameKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv
     }
 }
 
-fn onRenameFocus(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onRenameFocus(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
-    if (!ev.?.flags.gained and self.renaming != null) self.finishRename(true);
+    if (!ev.flags.gained and self.renaming != null) self.finishRename(true);
     return .pass;
 }
 
@@ -2021,19 +2019,19 @@ fn closeDialog(self: *Files) void {
     self.dialog = .null;
 }
 
-fn onDialogClose(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onDialogClose(ud: ?*anyopaque, _: Node, _: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     self.closeDialog();
     return .handled;
 }
 
-fn onDialogCancel(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onDialogCancel(ud: ?*anyopaque, _: Node, _: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     self.closeDialog();
     return .handled;
 }
 
-fn onDialogDelete(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onDialogDelete(ud: ?*anyopaque, _: Node, _: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     self.closeDialog();
     const paths = self.selectedPaths() catch return .handled;
@@ -2097,7 +2095,7 @@ fn onOpsTimer(ud: ?*anyopaque) callconv(.c) void {
     if (self.ops.items.len != 0) _ = c.siv_timer_start(self.app, 100, onOpsTimer, null, self, &self.ops_timer);
 }
 
-fn onCancelOps(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onCancelOps(ud: ?*anyopaque, _: Node, _: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     for (self.ops.items) |op| op.cancel.store(true, .release);
     return .handled;
@@ -2308,10 +2306,10 @@ fn pasteInto(self: *Files, dest: []const u8) void {
     _ = c.siv_clipboard_read_data(self.window, .clipboard, mimes, mimes.len, onPasted, Token.destroy, tok);
 }
 
-fn onPasted(ud: ?*anyopaque, d: ?*const siv.ClipboardData) callconv(.c) void {
+fn onPasted(ud: ?*anyopaque, d: *const siv.ClipboardData) callconv(.c) void {
     const tok: *Token = @ptrCast(@alignCast(ud.?));
     const self = tok.files orelse return;
-    const x = d.?;
+    const x = d;
     if (x.result != .ok) return self.toast("Nothing to paste", false);
     const bytes = x.data.?[0..x.data_count];
     const g = if (x.index == 0) uri.gnomeCopied(bytes) else @TypeOf(uri.gnomeCopied(bytes)){ .cut = false, .uris = bytes };
@@ -2388,24 +2386,24 @@ fn acceptDrop(self: *Files, ev: *const siv.Event, dest: []const u8) bool {
     }
 }
 
-fn onDrop(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onDrop(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
     var buf: [linux.PATH_MAX]u8 = undefined;
     const dest = std.fmt.bufPrint(&buf, "{s}", .{self.path}) catch return .pass;
-    return if (self.acceptDrop(ev.?, dest)) .handled else .pass;
+    return if (self.acceptDrop(ev, dest)) .handled else .pass;
 }
 
-fn onRowDrop(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onRowDrop(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const parts: *RowParts = @ptrCast(@alignCast(ud.?));
     const self = parts.files orelse return .pass;
     const l = &(self.listing orelse return .pass);
     if (parts.entry >= l.entries.len or l.entries[parts.entry].kind != .dir) return .pass;
     var buf: [linux.PATH_MAX]u8 = undefined;
     const dest = model.join(&buf, l.path, l.name(l.entries[parts.entry])) orelse return .pass;
-    return if (self.acceptDrop(ev.?, dest)) .handled else .pass;
+    return if (self.acceptDrop(ev, dest)) .handled else .pass;
 }
 
-fn onPlaceDrop(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onPlaceDrop(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const parts: *PlaceParts = @ptrCast(@alignCast(ud.?));
     const self = parts.files orelse return .pass;
     if (parts.index >= self.places.items.items.len) return .pass;
@@ -2413,8 +2411,8 @@ fn onPlaceDrop(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv
     var buf: [linux.PATH_MAX]u8 = undefined;
     const dest = std.fmt.bufPrint(&buf, "{s}", .{pl.path}) catch return .pass;
     // Dropping on the trash moves there.
-    if (pl.icon == .trash and ev.?.phase == .drop) {
-        const data = if (ev.?.data) |p| p[0..ev.?.data_count] else return .pass;
+    if (pl.icon == .trash and ev.phase == .drop) {
+        const data = if (ev.data) |p| p[0..ev.data_count] else return .pass;
         var paths: std.ArrayList([]const u8) = .empty;
         defer {
             for (paths.items) |p| self.gpa.free(p);
@@ -2429,5 +2427,5 @@ fn onPlaceDrop(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv
         if (paths.items.len != 0) self.startOp(.trash, paths.items, "");
         return .handled;
     }
-    return if (self.acceptDrop(ev.?, dest)) .handled else .pass;
+    return if (self.acceptDrop(ev, dest)) .handled else .pass;
 }

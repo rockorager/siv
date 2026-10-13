@@ -45,17 +45,17 @@ const Calls = struct {
         cs.n += 1;
     }
 
-    fn app(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
+    fn app(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
         const cs: *Calls = @ptrCast(@alignCast(ud.?));
         cs.add('a');
-        cs.value = ev.?.value;
+        cs.value = ev.value;
         return if (cs.app_returns) .handled else .pass;
     }
 
-    fn default(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
+    fn default(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
         const cs: *Calls = @ptrCast(@alignCast(ud.?));
         cs.add('d');
-        cs.value = ev.?.value;
+        cs.value = ev.value;
         return .handled;
     }
 };
@@ -131,16 +131,16 @@ const Keys = struct {
     root_keys: u32 = 0,
     root_prevented: bool = false,
 
-    fn onInner(ud: ?*anyopaque, _: t.Node, _: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onInner(ud: ?*anyopaque, _: t.Node, _: *const t.Event) callconv(.c) t.EventResult {
         const k: *Keys = @ptrCast(@alignCast(ud.?));
         return k.inner;
     }
 
-    fn onRoot(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onRoot(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
         const k: *Keys = @ptrCast(@alignCast(ud.?));
-        if (!ev.?.flags.pressed) return .pass;
+        if (!ev.flags.pressed) return .pass;
         k.root_keys += 1;
-        k.root_prevented = ev.?.flags.prevented;
+        k.root_prevented = ev.flags.prevented;
         return .pass;
     }
 };
@@ -554,9 +554,9 @@ const Frames = struct {
     present_ns: u64 = 0,
     commit_ns: u64 = 0,
 
-    fn onEvent(ud: ?*anyopaque, _: t.Window, ev: ?*const t.WindowEvent) callconv(.c) bool {
+    fn onEvent(ud: ?*anyopaque, _: t.Window, ev: *const t.WindowEvent) callconv(.c) bool {
         const f: *Frames = @ptrCast(@alignCast(ud.?));
-        const e = ev.?;
+        const e = ev;
         if (e.type != .presented) return false;
         f.count += 1;
         f.frame = e.frame;

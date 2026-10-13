@@ -55,9 +55,9 @@ pub export fn siv_text_field(txn: Txn, parent: Node, desc: ?*const siv.TextField
 /// the selected paragraphs left, centered, right, and justified (D13);
 /// left in a left-to-right editor and right in a right-to-left one go
 /// back to the editor's own alignment.
-fn onStyleKey(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onStyleKey(ud: ?*anyopaque, node: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Field = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     if (st.hdr.disabled or !e.flags.pressed or !e.modifiers.ctrl or e.modifiers.alt or e.modifiers.super) return .pass;
     const key: u32 = @bitCast(@intFromEnum(e.keysym));
     switch (key) {
@@ -154,15 +154,15 @@ pub fn setLabel(txn: Txn, st: *Field, label: []const u8) void {
     _ = c.siv_set_semantics(txn, st.root, &.{ .label = label.ptr, .label_len = label.len, .flags = .{ .disabled = st.hdr.disabled } });
 }
 
-fn onPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onPointer(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Field = @ptrCast(@alignCast(ud.?));
-    _ = button.feedback(&st.hdr, ev.?);
+    _ = button.feedback(&st.hdr, ev);
     return .pass;
 }
 
-fn onFocus(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onFocus(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Field = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     st.focused = e.flags.gained;
     const txn = w.begin(e.window) orelse return .pass;
     apply(txn, st);

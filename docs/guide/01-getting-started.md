@@ -196,7 +196,7 @@ pub fn main() !void {
     const app = try siv.appCreate(null);
     defer siv.appDestroy(app);
     const title = "Hello";
-    const window = try siv.windowCreate(app, &.{ .title = title, .title_len = title.len, .width = 320, .height = 160 });
+    const window = try siv.windowCreate(app, .{ .title = title, .width = 320, .height = 160 });
     var counter: Counter = .{};
     try build(window, &counter);
     try siv.appRun(app);
@@ -211,9 +211,9 @@ fn build(window: siv.Window, counter: *Counter) !void {
     const txn = try siv.txnBegin(window);
     errdefer siv.txnAbort(txn);
     const root = siv.windowGetRoot(window);
-    siv.setVisual(txn, root, &.{ .background_token = .window_bg });
-    const column = siv.flex(txn, root, &.{ .axis = .column, .gap = 12, .align_items = .start });
-    siv.setLayout(txn, column, &.{ .padding = .{ .start = 24, .end = 24, .top = 24, .bottom = 24 } });
+    siv.setVisual(txn, root, .{ .background_token = .window_bg });
+    const column = siv.flex(txn, root, .{ .axis = .column, .gap = 12, .align_items = .start });
+    siv.setLayout(txn, column, .{ .padding = .{ .start = 24, .end = 24, .top = 24, .bottom = 24 } });
 
     const title = siv.text(txn, column, "Hello, siv");
 ```
@@ -222,12 +222,12 @@ Callbacks are C functions (`callconv(.c)`); the event pointer is optional
 in the generated types, though siv always passes one:
 
 ```zig
-fn onClick(user_data: ?*anyopaque, _: siv.Node, event: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onClick(user_data: ?*anyopaque, _: siv.Node, event: *const siv.Event) callconv(.c) siv.EventResult {
     const counter: *Counter = @ptrCast(@alignCast(user_data));
     counter.clicks += 1;
     var buf: [32]u8 = undefined;
     const label = std.fmt.bufPrint(&buf, "Clicked {d} time{s}", .{ counter.clicks, if (counter.clicks == 1) "" else "s" }) catch unreachable;
-    const txn = siv.txnBegin(event.?.window) catch return .pass;
+    const txn = siv.txnBegin(event.window) catch return .pass;
     siv.setText(txn, counter.label, label);
     siv.txnCommit(txn) catch {};
     return .handled;

@@ -22,9 +22,9 @@ const Log = struct {
     last: t.ExternalEvent = .{},
     destroyed: u32 = 0,
 
-    fn onEvent(user_data: ?*anyopaque, _: t.External, event: ?*const t.ExternalEvent) callconv(.c) void {
+    fn onEvent(user_data: ?*anyopaque, _: t.External, event: *const t.ExternalEvent) callconv(.c) void {
         const log: *Log = @ptrCast(@alignCast(user_data));
-        const e = event.?;
+        const e = event;
         switch (e.type) {
             .released => {
                 log.released[log.releases] = e.key;
@@ -200,9 +200,9 @@ test "C API external: a producer thread submits and gets frames back while the U
         ui_thread: std.Thread.Id,
 
         failed: ?anyerror = null,
-        fn onEvent(user_data: ?*anyopaque, _: t.External, event: ?*const t.ExternalEvent) callconv(.c) void {
+        fn onEvent(user_data: ?*anyopaque, _: t.External, event: *const t.ExternalEvent) callconv(.c) void {
             const p: *@This() = @ptrCast(@alignCast(user_data));
-            if (event.?.type == .released) p.ui_releases += 1;
+            if (event.type == .released) p.ui_releases += 1;
         }
 
         fn onRelease(user_data: ?*anyopaque, _: t.External, key: u64) callconv(.c) void {

@@ -46,20 +46,20 @@ const Log = struct {
     destroyed: u32 = 0,
 
     /// Counts the click and relabels the button from inside the callback.
-    fn onActivate(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onActivate(user_data: ?*anyopaque, _: t.Node, event: *const t.Event) callconv(.c) t.EventResult {
         const log: *Log = @ptrCast(@alignCast(user_data));
         log.clicks += 1;
         var buf: [32]u8 = undefined;
         const label = std.fmt.bufPrint(&buf, "Count: {d}", .{log.clicks}) catch unreachable;
         var txn: t.Txn = .null;
-        if (T.siv_txn_begin(event.?.window, &txn) != .ok) return .pass;
+        if (T.siv_txn_begin(event.window, &txn) != .ok) return .pass;
         _ = T.siv_set_text(txn, log.label, label.ptr, label.len);
         return if (T.siv_txn_commit(txn) == .ok) .handled else .pass;
     }
 
-    fn onChange(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onChange(user_data: ?*anyopaque, _: t.Node, event: *const t.Event) callconv(.c) t.EventResult {
         const log: *Log = @ptrCast(@alignCast(user_data));
-        const e = event.?;
+        const e = event;
         std.debug.assert(e.type == .change);
         log.changes += 1;
         log.last_len = e.text_len;
@@ -68,27 +68,27 @@ const Log = struct {
         return .handled;
     }
 
-    fn onFocus(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onFocus(user_data: ?*anyopaque, _: t.Node, event: *const t.Event) callconv(.c) t.EventResult {
         const log: *Log = @ptrCast(@alignCast(user_data));
-        if (event.?.flags.gained) log.focus_gained += 1 else log.focus_lost += 1;
+        if (event.flags.gained) log.focus_gained += 1 else log.focus_lost += 1;
         return .pass;
     }
 
-    fn onKey(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onKey(user_data: ?*anyopaque, _: t.Node, event: *const t.Event) callconv(.c) t.EventResult {
         const log: *Log = @ptrCast(@alignCast(user_data));
-        if (event.?.flags.pressed) log.keys += 1;
+        if (event.flags.pressed) log.keys += 1;
         return .pass;
     }
 
-    fn onScroll(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onScroll(user_data: ?*anyopaque, _: t.Node, event: *const t.Event) callconv(.c) t.EventResult {
         const log: *Log = @ptrCast(@alignCast(user_data));
-        log.scroll_dy += event.?.dy;
+        log.scroll_dy += event.dy;
         return .handled;
     }
 
-    fn onPointer(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onPointer(user_data: ?*anyopaque, _: t.Node, event: *const t.Event) callconv(.c) t.EventResult {
         const log: *Log = @ptrCast(@alignCast(user_data));
-        const e = event.?;
+        const e = event;
         if (e.phase == .down) {
             log.pointer_downs += 1;
             log.down_x = e.x;
@@ -96,9 +96,9 @@ const Log = struct {
         return .pass;
     }
 
-    fn onWindow(user_data: ?*anyopaque, _: t.Window, event: ?*const t.WindowEvent) callconv(.c) bool {
+    fn onWindow(user_data: ?*anyopaque, _: t.Window, event: *const t.WindowEvent) callconv(.c) bool {
         const log: *Log = @ptrCast(@alignCast(user_data));
-        if (event.?.type == .close_requested) log.closes += 1;
+        if (event.type == .close_requested) log.closes += 1;
         return log.keep_open;
     }
 
@@ -264,7 +264,7 @@ test "C API: destroying the window from its own handler defers releases until th
         released: u32 = 0,
         running: bool = false,
 
-        fn onActivate(user_data: ?*anyopaque, _: t.Node, _: ?*const t.Event) callconv(.c) t.EventResult {
+        fn onActivate(user_data: ?*anyopaque, _: t.Node, _: *const t.Event) callconv(.c) t.EventResult {
             const c: *@This() = @ptrCast(@alignCast(user_data));
             c.running = true;
             defer c.running = false;
@@ -342,9 +342,9 @@ test "C API: a masked editor reports its real text and offsets" {
         text: [16]u8 = undefined,
         len: usize = 0,
         caret: u32 = 0,
-        fn onChange(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) t.EventResult {
+        fn onChange(user_data: ?*anyopaque, _: t.Node, event: *const t.Event) callconv(.c) t.EventResult {
             const seen: *@This() = @ptrCast(@alignCast(user_data));
-            const e = event.?;
+            const e = event;
             seen.len = e.text_len;
             @memcpy(seen.text[0..e.text_len], e.text.?[0..e.text_len]);
             seen.caret = e.caret;

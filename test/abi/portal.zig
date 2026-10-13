@@ -25,11 +25,11 @@ const Log = struct {
     event_response: t.PortalResponse = .success,
     actions: u32 = 0,
 
-    fn onResult(user_data: ?*anyopaque, result: ?*const t.PortalResult) callconv(.c) void {
+    fn onResult(user_data: ?*anyopaque, result: *const t.PortalResult) callconv(.c) void {
         const log: *Log = @ptrCast(@alignCast(user_data));
         log.results += 1;
-        log.last = result.?.response;
-        log.count = result.?.count;
+        log.last = result.response;
+        log.count = result.count;
     }
 
     fn onDestroy(user_data: ?*anyopaque) callconv(.c) void {
@@ -37,14 +37,14 @@ const Log = struct {
         log.destroys += 1;
     }
 
-    fn onCast(user_data: ?*anyopaque, _: t.Screencast, event: ?*const t.ScreencastEvent) callconv(.c) void {
+    fn onCast(user_data: ?*anyopaque, _: t.Screencast, event: *const t.ScreencastEvent) callconv(.c) void {
         const log: *Log = @ptrCast(@alignCast(user_data));
         log.events += 1;
-        log.event = event.?.type;
-        log.event_response = event.?.response;
+        log.event = event.type;
+        log.event_response = event.response;
     }
 
-    fn onAction(user_data: ?*anyopaque, _: ?*const t.ActionEvent) callconv(.c) void {
+    fn onAction(user_data: ?*anyopaque, _: *const t.ActionEvent) callconv(.c) void {
         const log: *Log = @ptrCast(@alignCast(user_data));
         log.actions += 1;
     }
@@ -186,12 +186,12 @@ const Launches = struct {
     tokens: u32 = 0,
     token_len: usize = 99,
 
-    fn onActivate(user_data: ?*anyopaque, _: t.App, a: ?*const t.Activation) callconv(.c) void {
+    fn onActivate(user_data: ?*anyopaque, _: t.App, a: *const t.Activation) callconv(.c) void {
         const l: *Launches = @ptrCast(@alignCast(user_data));
         l.activations += 1;
-        l.kind = a.?.type;
-        l.source = a.?.source;
-        l.uris = a.?.uris_count;
+        l.kind = a.type;
+        l.source = a.source;
+        l.uris = a.uris_count;
     }
 
     fn onDestroy(user_data: ?*anyopaque) callconv(.c) void {
@@ -199,10 +199,10 @@ const Launches = struct {
         l.destroys += 1;
     }
 
-    fn onToken(user_data: ?*anyopaque, result: ?*const t.PortalResult) callconv(.c) void {
+    fn onToken(user_data: ?*anyopaque, result: *const t.PortalResult) callconv(.c) void {
         const l: *Launches = @ptrCast(@alignCast(user_data));
         l.tokens += 1;
-        l.token_len = result.?.token_len;
+        l.token_len = result.token_len;
     }
 };
 

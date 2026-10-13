@@ -287,6 +287,25 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   and are checked at compile time against the schema signatures, so the
   implementation cannot drift either. A test-only library built from a second
   schema exercises every construct through the same pipeline.
+  - **The Zig wrapper** has the C ABI's types and functions as they are
+    (`siv.c`, extern structs matching the header) and an idiomatic
+    function per schema function, which Zig applications use: errors as
+    Zig errors, a trailing out parameter as the return value, strings and
+    arrays as slices. Its rules (D30):
+    - Descriptor parameters take `T.Options`, a struct with the
+      descriptor's fields but strings and arrays as slices and no size or
+      reserved fields (`siv.pushButton(txn, row, .{ .label = "Save" })`),
+      or null for defaults; the function builds the extern descriptor on
+      its stack (`T.fromOptions`). Extern structs cannot hold slices, so
+      a second type is the price of not writing `.label_len`.
+    - Callbacks receive descriptors as `*const T`, not `?*const T`: siv
+      never passes them NULL, and the optional made every handler start
+      with `ev.?`. The C header is unchanged (a pointer is a pointer).
+    - Transaction and drawing operations and teardown return nothing
+      (D2's result rule), so setters read like builders (`siv.setLayout(
+      txn, node, .{ ... })` without `try`) and the transaction's error
+      comes from `txnCommit`, the same sticky model; nothing falls back
+      to `siv.c` for it.
 - **Alternatives:** hand-written header with bindings derived from it; GObject
   Introspection.
 - **Reverse if:** the schema cannot express a needed ABI construct without
@@ -4009,6 +4028,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | `siv_node_get_related`, `siv_node_get_window`, `siv_window_get_focus`, `siv_window_get_app`, `siv_menu_get_item`, `siv_view_get_row`, `siv_widget_get_part` return the handle, 0 for none (D2) | `siv_result` and an out handle | handle queries nest like builders; 0 already meant none |
   | `siv_window_get_root` (Lua `window:get_root()`, Zig `windowGetRoot`) | `siv_window_root` | queries are `get_` however they answer (D27) |
   | `SIV_STR` in siv.h (D2) | each sample's `S(s)` | one helper for string literals |
+  | Zig: descriptor parameters take `T.Options` with slices (D3) | `?*const T` with `.x` and `.x_len` | strings and arrays as slices |
+  | Zig: callbacks get `*const T` descriptors (D3) | `?*const T` | siv never passes NULL; no `ev.?` |
   | reserved fields in `siv_text_span`, `siv_paragraph_span`, `siv_tab_stop`, `siv_text_metrics` (D2) | — | frozen value structs that will plausibly grow; descriptors grow by appending |
   | `siv_tablet_sample.wheel` and four reserved fields (D16) | — | the axes flags named a wheel the sample could not carry; tablets grow axes, and a frozen struct cannot |
 

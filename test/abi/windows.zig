@@ -39,7 +39,7 @@ fn idOf(window: t.Window) !platform.WindowId {
 
 const Clicks = struct {
     n: usize = 0,
-    fn onActivate(ud: ?*anyopaque, _: t.Node, _: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onActivate(ud: ?*anyopaque, _: t.Node, _: *const t.Event) callconv(.c) t.EventResult {
         const k: *Clicks = @ptrCast(@alignCast(ud.?));
         k.n += 1;
         return .handled;
@@ -158,9 +158,9 @@ const Session = struct {
     id_len: usize = 0,
     restored: usize = 0,
 
-    fn onSession(ud: ?*anyopaque, ev: ?*const t.SessionEvent) callconv(.c) void {
+    fn onSession(ud: ?*anyopaque, ev: *const t.SessionEvent) callconv(.c) void {
         const s: *Session = @ptrCast(@alignCast(ud.?));
-        const e = ev.?;
+        const e = ev;
         s.events[s.n] = e.type;
         s.n += 1;
         if (e.type == .created) {
@@ -169,9 +169,9 @@ const Session = struct {
         }
     }
 
-    fn onWindow(ud: ?*anyopaque, _: t.Window, ev: ?*const t.WindowEvent) callconv(.c) bool {
+    fn onWindow(ud: ?*anyopaque, _: t.Window, ev: *const t.WindowEvent) callconv(.c) bool {
         const s: *Session = @ptrCast(@alignCast(ud.?));
-        if (ev.?.type == .restored) s.restored += 1;
+        if (ev.type == .restored) s.restored += 1;
         return false;
     }
 };

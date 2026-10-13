@@ -37,17 +37,17 @@ const Log = struct {
     node: t.Node = .null,
     activations: u32 = 0,
 
-    fn onChange(ud: ?*anyopaque, node: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onChange(ud: ?*anyopaque, node: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
         const log: *Log = @ptrCast(@alignCast(ud.?));
-        std.debug.assert(ev.?.type == .change);
+        std.debug.assert(ev.type == .change);
         log.changes += 1;
-        log.value = ev.?.value;
-        log.index = ev.?.index;
+        log.value = ev.value;
+        log.index = ev.index;
         log.node = node;
         return .handled;
     }
 
-    fn onActivate(ud: ?*anyopaque, _: t.Node, _: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onActivate(ud: ?*anyopaque, _: t.Node, _: *const t.Event) callconv(.c) t.EventResult {
         const log: *Log = @ptrCast(@alignCast(ud.?));
         log.activations += 1;
         return .handled;

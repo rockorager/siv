@@ -31,9 +31,9 @@ a node too:
 // Choices are built item by item; the group's value is the index.
 const channel_label = "Update channel";
 _ = try caption(txn, column, channel_label);
-const channel = siv.radioGroup(txn, column, &.{ .label = channel_label, .label_len = channel_label.len });
+const channel = siv.radioGroup(txn, column, .{ .label = channel_label });
 for ([_][]const u8{ "Stable", "Beta", "Nightly" }) |option| {
-    _ = siv.radio(txn, channel, &.{ .label = option.ptr, .label_len = option.len });
+    _ = siv.radio(txn, channel, .{ .label = option });
 }
 ```
 
@@ -78,8 +78,8 @@ adapter, since every callback siv calls is a C function:
 ```zig
 fn handler(comptime f: fn (*Form, *const siv.Event) anyerror!void) siv.EventFn {
     return struct {
-        fn call(user_data: ?*anyopaque, _: siv.Node, event: ?*const siv.Event) callconv(.c) siv.EventResult {
-            f(@ptrCast(@alignCast(user_data)), event.?) catch return .pass;
+        fn call(user_data: ?*anyopaque, _: siv.Node, event: *const siv.Event) callconv(.c) siv.EventResult {
+            f(@ptrCast(@alignCast(user_data)), event) catch return .pass;
             return .handled;
         }
     }.call;
@@ -189,7 +189,7 @@ fn onSave(form: *Form, event: *const siv.Event) !void {
     const message = "Settings saved";
     const txn = try siv.txnBegin(event.window);
     errdefer siv.txnAbort(txn);
-    _ = siv.toast(txn, form.root, &.{ .text = message, .text_len = message.len });
+    _ = siv.toast(txn, form.root, .{ .text = message });
     try siv.txnCommit(txn);
 }
 ```
@@ -231,7 +231,7 @@ try siv.appSetThemeColor(app, .all, .accent, .{ .r = 0.49, .g = 0.23, .b = 0.93,
 /// The switch's value is 0 or 1. The theme follows the desktop unless the
 /// application chooses; choosing repaints every window.
 fn onDarkTheme(form: *Form, event: *const siv.Event) !void {
-    try siv.appSetTheme(form.app, &.{ .scheme = if (event.value != 0) .dark else .follow });
+    try siv.appSetTheme(form.app, .{ .scheme = if (event.value != 0) .dark else .follow });
 }
 ```
 

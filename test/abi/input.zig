@@ -22,16 +22,16 @@ const Log = struct {
     zoom: f32 = 0,
     result: t.EventResult = .pass,
 
-    fn onGesture(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onGesture(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
         const l: *Log = @ptrCast(@alignCast(ud.?));
-        l.gestures[l.n] = ev.?.*;
+        l.gestures[l.n] = ev.*;
         l.n += 1;
         return l.result;
     }
 
-    fn onViewport(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onViewport(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
         const l: *Log = @ptrCast(@alignCast(ud.?));
-        l.zoom = ev.?.zoom;
+        l.zoom = ev.zoom;
         return .handled;
     }
 };
@@ -134,18 +134,18 @@ const Pen = struct {
     pads: [4]t.Event = undefined,
     pad_n: usize = 0,
 
-    fn onTablet(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onTablet(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
         const p: *Pen = @ptrCast(@alignCast(ud.?));
-        const e = ev.?;
+        const e = ev;
         p.events[p.n] = e.*;
         @memcpy(p.samples[p.n][0..e.samples_count], e.samples.?[0..e.samples_count]);
         p.n += 1;
         return .handled;
     }
 
-    fn onPad(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onPad(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
         const p: *Pen = @ptrCast(@alignCast(ud.?));
-        p.pads[p.pad_n] = ev.?.*;
+        p.pads[p.pad_n] = ev.*;
         p.pad_n += 1;
         return .handled;
     }
@@ -245,11 +245,11 @@ const Lock = struct {
     moves: [8]t.Event = undefined,
     n: usize = 0,
 
-    fn onWindow(ud: ?*anyopaque, _: t.Window, ev: ?*const t.WindowEvent) callconv(.c) bool {
+    fn onWindow(ud: ?*anyopaque, _: t.Window, ev: *const t.WindowEvent) callconv(.c) bool {
         const l: *Lock = @ptrCast(@alignCast(ud.?));
-        switch (ev.?.type) {
+        switch (ev.type) {
             .pointer_constrained, .pointer_unconstrained, .shortcuts_inhibited, .shortcuts_restored => {
-                l.window_events[l.wn] = ev.?.type;
+                l.window_events[l.wn] = ev.type;
                 l.wn += 1;
             },
             else => {},
@@ -257,10 +257,10 @@ const Lock = struct {
         return false;
     }
 
-    fn onPointer(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onPointer(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
         const l: *Lock = @ptrCast(@alignCast(ud.?));
-        if (!ev.?.flags.relative) return .pass;
-        l.moves[l.n] = ev.?.*;
+        if (!ev.flags.relative) return .pass;
+        l.moves[l.n] = ev.*;
         l.n += 1;
         return .handled;
     }

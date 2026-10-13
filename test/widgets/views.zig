@@ -76,20 +76,20 @@ const Model = struct {
         }
     }
 
-    fn onSelect(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onSelect(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
         const m: *Model = @ptrCast(@alignCast(ud.?));
         m.selects += 1;
-        m.index = ev.?.index;
-        m.selected = ev.?.count;
-        m.changed_index = ev.?.changed_index;
-        m.changed_count = ev.?.changed_count;
+        m.index = ev.index;
+        m.selected = ev.count;
+        m.changed_index = ev.changed_index;
+        m.changed_count = ev.changed_count;
         return .handled;
     }
 
-    fn onActivate(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onActivate(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
         const m: *Model = @ptrCast(@alignCast(ud.?));
         m.activations += 1;
-        m.index = ev.?.index;
+        m.index = ev.index;
         return .handled;
     }
 
@@ -419,9 +419,9 @@ const Dragger = struct {
     armed: bool = false,
     started: t.Result = .error_unavailable,
 
-    fn onPointer(ud: ?*anyopaque, node: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onPointer(ud: ?*anyopaque, node: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
         const d: *Dragger = @ptrCast(@alignCast(ud.?));
-        const e = ev.?;
+        const e = ev;
         if (e.phase == .move and d.armed) {
             d.armed = false;
             const mimes = "text/plain";
@@ -555,10 +555,10 @@ const Targets = struct {
     key_target: t.Node = .null,
     keys: u32 = 0,
 
-    fn onKey(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onKey(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
         const s: *Targets = @ptrCast(@alignCast(ud.?));
-        if (!ev.?.flags.pressed) return .pass;
-        s.key_target = ev.?.target;
+        if (!ev.flags.pressed) return .pass;
+        s.key_target = ev.target;
         s.keys += 1;
         return .pass;
     }
@@ -900,18 +900,18 @@ const Sorter = struct {
     widths: u32 = 0,
     width: f64 = 0,
 
-    fn onSort(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onSort(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
         const s: *Sorter = @ptrCast(@alignCast(ud.?));
         s.sorts += 1;
-        s.column = ev.?.index;
-        s.value = ev.?.value;
-        return if (s.accept[ev.?.index]) .handled else .pass;
+        s.column = ev.index;
+        s.value = ev.value;
+        return if (s.accept[ev.index]) .handled else .pass;
     }
 
-    fn onWidth(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onWidth(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
         const s: *Sorter = @ptrCast(@alignCast(ud.?));
         s.widths += 1;
-        s.width = ev.?.value;
+        s.width = ev.value;
         return .handled;
     }
 };

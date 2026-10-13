@@ -79,7 +79,34 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
                         try w.print("    {f}: {s} = {s},\n", .{ id(f.name), try typeName(arena, s, f.type), try zero(s, f.type) });
                     }
                 }
-                if (st.kind == .descriptor) try w.writeAll("\n    /// Size-prefixed and extensible; see runtime.readDesc.\n    pub const descriptor = true;\n");
+                if (st.kind == .descriptor) {
+                    try w.writeAll("\n    /// Size-prefixed and extensible; see runtime.readDesc.\n    pub const descriptor = true;\n");
+                    // The same fields with slices for strings and arrays,
+                    // which the idiomatic functions take (D3).
+                    try w.print("\n    /// {f} with strings and arrays as slices, for the idiomatic functions.\n    pub const Options = struct {{\n", .{id(tn)});
+                    for (st.fields) |f| {
+                        if (f.reserved) continue;
+                        if (f.type == .string) {
+                            try w.print("        {f}: []const u8 = \"\",\n", .{id(f.name)});
+                        } else if (f.type == .array) {
+                            try w.print("        {f}: []const {s} = &.{{}},\n", .{ id(f.name), try typeName(arena, s, f.type.array.*) });
+                        } else {
+                            try w.print("        {f}: {s} = {s},\n", .{ id(f.name), try typeName(arena, s, f.type), try zero(s, f.type) });
+                        }
+                    }
+                    try w.print("    }};\n\n    /// The descriptor that `o` describes; it points into o's slices.\n    pub fn fromOptions(o: Options) {f} {{\n        return .{{\n", .{id(tn)});
+                    for (st.fields) |f| {
+                        if (f.reserved) continue;
+                        if (f.type == .string) {
+                            try w.print("            .{f} = o.{f}.ptr,\n            .{f} = o.{f}.len,\n", .{ id(f.name), id(f.name), id(try std.fmt.allocPrint(arena, "{s}_len", .{f.name})), id(f.name) });
+                        } else if (f.type == .array) {
+                            try w.print("            .{f} = o.{f}.ptr,\n            .{f} = o.{f}.len,\n", .{ id(f.name), id(f.name), id(try std.fmt.allocPrint(arena, "{s}_count", .{f.name})), id(f.name) });
+                        } else {
+                            try w.print("            .{f} = o.{f},\n", .{ id(f.name), id(f.name) });
+                        }
+                    }
+                    try w.writeAll("        };\n    }\n");
+                }
                 var any_reserved = false;
                 for (st.fields) |f| any_reserved = any_reserved or f.reserved;
                 if (any_reserved) {
@@ -91,7 +118,10 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
             },
             .callback => |cb| {
                 try w.print("pub const {f} = *const fn (user_data: ?*anyopaque", .{id(tn)});
-                for (cb.params) |p| try writeParam(arena, w, s, p, ", ");
+                // siv never passes a callback a NULL descriptor (an event).
+                for (cb.params) |p| if (p.type == .desc) {
+                    try w.print(", {f}: *const {f}", .{ id(p.name), id(schema.zigTypeName(&nbuf, p.type.desc)) });
+                } else try writeParam(arena, w, s, p, ", ");
                 try w.print(") callconv(.c) {s};\n", .{try typeName(arena, s, cb.ret)});
             },
         }
@@ -157,6 +187,8 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
                 try w.print("{f}: []const {s}", .{ id(pn), try typeName(arena, s, p.type.array.*) });
             } else if (p.type == .buffer) {
                 try w.print("{f}: []u8", .{id(pn)});
+            } else if (p.type == .desc) {
+                try w.print("{f}: ?{f}.Options", .{ id(pn), id(schema.zigTypeName(&nbuf, p.type.desc)) });
             } else {
                 try w.print("{f}: {s}", .{ id(pn), try typeName(arena, s, p.type) });
             }
@@ -170,6 +202,12 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
             try w.writeAll(try typeName(arena, s, f.ret));
         }
         try w.writeAll(" {\n");
+        for (params) |p| if (p.type == .desc) {
+            const pn = try argName(arena, s, p.name);
+            const dn = try std.fmt.allocPrint(arena, "{f}", .{id(schema.zigTypeName(&nbuf, p.type.desc))});
+            try w.print("    var {s}_c: {s} = undefined;\n", .{ pn, dn });
+            try w.print("    const {s}_ptr: ?*const {s} = if ({f}) |o| blk: {{\n        {s}_c = {s}.fromOptions(o);\n        break :blk &{s}_c;\n    }} else null;\n", .{ pn, dn, id(pn), pn, dn, pn });
+        };
         if (ret_out) |o| try w.print("    var {f}: {s} = undefined;\n", .{ id(try argName(arena, s, o.name)), try typeName(arena, s, o.type.out.*) });
         try w.writeAll("    ");
         if (fallible) {
@@ -185,6 +223,8 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
             const pn = try argName(arena, s, p.name);
             if (p.type == .string or p.type == .array or p.type == .buffer) {
                 try w.print("{f}.ptr, {f}.len", .{ id(pn), id(pn) });
+            } else if (p.type == .desc) {
+                try w.print("{s}_ptr", .{pn});
             } else if (ret_out != null and i == f.params.len - 1) {
                 try w.print("&{f}", .{id(pn)});
             } else {

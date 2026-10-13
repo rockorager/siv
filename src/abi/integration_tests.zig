@@ -36,24 +36,24 @@ const Log = struct {
     resizes: u32 = 0,
     closes: u32 = 0,
 
-    fn onActivate(user_data: ?*anyopaque, _: t.Node, _: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onActivate(user_data: ?*anyopaque, _: t.Node, _: *const t.Event) callconv(.c) t.EventResult {
         const log: *Log = @ptrCast(@alignCast(user_data));
         log.clicks += 1;
         return .handled;
     }
 
-    fn onChange(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onChange(user_data: ?*anyopaque, _: t.Node, event: *const t.Event) callconv(.c) t.EventResult {
         const log: *Log = @ptrCast(@alignCast(user_data));
-        const e = event.?;
+        const e = event;
         log.changes += 1;
         log.text_len = @min(e.text_len, log.text.len);
         @memcpy(log.text[0..log.text_len], e.text.?[0..log.text_len]);
         return .handled;
     }
 
-    fn onWindow(user_data: ?*anyopaque, _: t.Window, event: ?*const t.WindowEvent) callconv(.c) bool {
+    fn onWindow(user_data: ?*anyopaque, _: t.Window, event: *const t.WindowEvent) callconv(.c) bool {
         const log: *Log = @ptrCast(@alignCast(user_data));
-        const e = event.?;
+        const e = event;
         switch (e.type) {
             .resized => {
                 log.resizes += 1;
@@ -199,16 +199,16 @@ const PortalLog = struct {
     target: [16]u8 = undefined,
     target_len: usize = 0,
 
-    fn onResult(user_data: ?*anyopaque, result: ?*const t.PortalResult) callconv(.c) void {
+    fn onResult(user_data: ?*anyopaque, result: *const t.PortalResult) callconv(.c) void {
         const log: *PortalLog = @ptrCast(@alignCast(user_data));
         log.results += 1;
-        log.response = result.?.response;
-        log.count = result.?.count;
+        log.response = result.response;
+        log.count = result.count;
     }
 
-    fn onAction(user_data: ?*anyopaque, event: ?*const t.ActionEvent) callconv(.c) void {
+    fn onAction(user_data: ?*anyopaque, event: *const t.ActionEvent) callconv(.c) void {
         const log: *PortalLog = @ptrCast(@alignCast(user_data));
-        const e = event.?;
+        const e = event;
         log.actions += 1;
         log.target_len = @min(e.target_len, log.target.len);
         @memcpy(log.target[0..log.target_len], e.target.?[0..log.target_len]);
@@ -354,23 +354,23 @@ const Printing = struct {
     pages: u32 = 0,
     width: f32 = 0,
 
-    fn begin(user_data: ?*anyopaque, setup: ?*const t.PageSetup) callconv(.c) u32 {
+    fn begin(user_data: ?*anyopaque, setup: *const t.PageSetup) callconv(.c) u32 {
         const p: *Printing = @ptrCast(@alignCast(user_data));
-        p.width = setup.?.width;
+        p.width = setup.width;
         return 2;
     }
 
-    fn drawPage(_: ?*anyopaque, draw: t.Draw, page: u32, setup: ?*const t.PageSetup) callconv(.c) void {
-        const s = setup.?;
+    fn drawPage(_: ?*anyopaque, draw: t.Draw, page: u32, setup: *const t.PageSetup) callconv(.c) void {
+        const s = setup;
         const words: []const u8 = if (page == 0) "Printed by siv" else "Second sheet";
         _ = abi.canvas.siv_draw_text(draw, s.margin_left, s.margin_top, 0, words.ptr, words.len, &.{ .font_size = 24 });
     }
 
-    fn onDone(user_data: ?*anyopaque, result: ?*const t.PortalResult) callconv(.c) void {
+    fn onDone(user_data: ?*anyopaque, result: *const t.PortalResult) callconv(.c) void {
         const p: *Printing = @ptrCast(@alignCast(user_data));
         p.done += 1;
-        p.response = result.?.response;
-        p.pages = result.?.count;
+        p.response = result.response;
+        p.pages = result.count;
     }
 };
 
@@ -462,9 +462,9 @@ const TrayLog = struct {
     menu: u32 = 0,
     destroyed: u32 = 0,
 
-    fn onEvent(user_data: ?*anyopaque, _: t.TrayItem, event: ?*const t.TrayEvent) callconv(.c) void {
+    fn onEvent(user_data: ?*anyopaque, _: t.TrayItem, event: *const t.TrayEvent) callconv(.c) void {
         const log: *TrayLog = @ptrCast(@alignCast(user_data));
-        const e = event.?;
+        const e = event;
         switch (e.type) {
             .unregistered => log.unregistered += 1,
             .activate => log.activated += 1,
@@ -692,10 +692,10 @@ const MenuLog = struct {
     selects: u32 = 0,
     index: u32 = 0,
 
-    fn onSelect(user_data: ?*anyopaque, _: t.Node, event: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onSelect(user_data: ?*anyopaque, _: t.Node, event: *const t.Event) callconv(.c) t.EventResult {
         const log: *MenuLog = @ptrCast(@alignCast(user_data));
         log.selects += 1;
-        log.index = event.?.index;
+        log.index = event.index;
         return .pass;
     }
 };

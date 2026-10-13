@@ -66,7 +66,7 @@ pub export fn siv_menu_button(txn: Txn, parent: Node, desc: ?*const siv.ButtonDe
     return root;
 }
 
-fn onMenuActivate(ud: ?*anyopaque, node: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onMenuActivate(ud: ?*anyopaque, node: Node, _: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Button = @ptrCast(@alignCast(ud.?));
     if (st.hdr.disabled) return .pass;
     _ = c.siv_menu_open(st.menu, node);
@@ -74,9 +74,9 @@ fn onMenuActivate(ud: ?*anyopaque, node: Node, _: ?*const siv.Event) callconv(.c
 }
 
 /// Down opens the menu too, as in WAI-ARIA's menu button.
-fn onMenuKey(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onMenuKey(ud: ?*anyopaque, node: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Button = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     if (st.hdr.disabled or !e.flags.pressed or e.keysym != w.keysym.down) return .pass;
     _ = c.siv_menu_open(st.menu, node);
     return .handled;
@@ -219,9 +219,9 @@ pub fn setValue(txn: Txn, st: *Button, v: f64) void {
 
 /// Hover and press feedback; never consumes the event, so the core still
 /// focuses and activates (D16).
-pub fn onPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+pub fn onPointer(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Button = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     if (feedback(&st.hdr, e)) {
         const txn = w.begin(e.window) orelse return .pass;
         apply(txn, st);
@@ -247,10 +247,10 @@ pub fn feedback(h: *w.Header, e: *const siv.Event) bool {
     return true;
 }
 
-fn onActivate(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onActivate(ud: ?*anyopaque, node: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Button = @ptrCast(@alignCast(ud.?));
     if (st.hdr.disabled) return .pass;
-    const txn = w.begin(ev.?.window) orelse return .pass;
+    const txn = w.begin(ev.window) orelse return .pass;
     st.on = !st.on;
     apply(txn, st);
     if (!w.commit(txn)) return .handled;

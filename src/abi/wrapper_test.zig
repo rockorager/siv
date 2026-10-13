@@ -90,11 +90,16 @@ test "idiomatic sivtest wrapper" {
     defer sivtest.contextDestroy(ctx) catch unreachable;
 
     const name = "zig\x00name";
-    const item = try sivtest.itemCreate(ctx, &.{ .name = name, .name_len = name.len, .shape = .circle, .flags = .{ .pinned = true } });
+    const item = try sivtest.itemCreate(ctx, .{ .name = name, .shape = .circle, .flags = .{ .pinned = true } });
     const info = try sivtest.itemGet(item);
     try std.testing.expectEqual(sivtest.Shape.circle, info.shape);
     try std.testing.expect(info.flags.pinned and !info.flags.hidden);
     try std.testing.expectEqual(name.len, info.name_len);
+
+    // Options take strings and arrays as slices (D3).
+    const tagged = try sivtest.itemCreate(ctx, .{ .tags = &.{ 1, 2, 39 } });
+    try std.testing.expectEqual(42, try sivtest.itemTagSum(tagged));
+    try sivtest.itemDestroy(tagged);
 
     try sivtest.itemSetName(item, "x");
     try std.testing.expectEqual(1, (try sivtest.itemGet(item)).name_len);
@@ -115,5 +120,5 @@ test "idiomatic sivtest wrapper" {
 
     try sivtest.itemDestroy(item);
     try std.testing.expectError(error.InvalidHandle, sivtest.itemGet(item));
-    try std.testing.expectError(error.Unsupported, sivtest.itemCreate(ctx, &.{ .shape = @fromBackingInt(3) }));
+    try std.testing.expectError(error.Unsupported, sivtest.itemCreate(ctx, .{ .shape = @fromBackingInt(3) }));
 }

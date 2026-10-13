@@ -119,13 +119,13 @@ const plain = "/tmp/a b\n/tmp/c";
 const Copier = struct {
     result: t.Result = .error_busy,
 
-    fn onKey(ud: ?*anyopaque, _: t.Node, ev: ?*const t.Event) callconv(.c) t.EventResult {
+    fn onKey(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
         const s: *Copier = @ptrCast(@alignCast(ud.?));
-        if (!ev.?.flags.pressed) return .pass;
+        if (!ev.flags.pressed) return .pass;
         const mimes = "text/uri-list\ntext/plain;charset=utf-8";
         const data = uris ++ plain;
         const lengths = [_]usize{ uris.len, plain.len };
-        s.result = capi.siv_clipboard_write_data(ev.?.window, .clipboard, &.{ .mimes = mimes, .mimes_len = mimes.len, .data = data, .data_count = data.len, .lengths = &lengths, .lengths_count = 2 });
+        s.result = capi.siv_clipboard_write_data(ev.window, .clipboard, &.{ .mimes = mimes, .mimes_len = mimes.len, .data = data, .data_count = data.len, .lengths = &lengths, .lengths_count = 2 });
         return .handled;
     }
 };
@@ -140,9 +140,9 @@ const Reader = struct {
     data: [256]u8 = undefined,
     data_len: usize = 0,
 
-    fn got(ud: ?*anyopaque, d: ?*const t.ClipboardData) callconv(.c) void {
+    fn got(ud: ?*anyopaque, d: *const t.ClipboardData) callconv(.c) void {
         const r: *Reader = @ptrCast(@alignCast(ud.?));
-        const x = d.?;
+        const x = d;
         r.calls += 1;
         r.result = x.result;
         r.index = x.index;

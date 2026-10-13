@@ -416,9 +416,9 @@ pub fn cardVisual(txn: Txn, root: Node) void {
 
 /// Hovering focuses the row, opens its submenu (without the keyboard),
 /// and closes a sibling's.
-fn onRowPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onRowPointer(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Row = @ptrCast(@alignCast(ud.?));
-    if (ev.?.phase != .enter or st.hdr.disabled) return .pass;
+    if (ev.phase != .enter or st.hdr.disabled) return .pass;
     _ = c.siv_node_focus(st.root);
     if (st.submenu != .null) {
         openSubmenu(st, false, false);
@@ -428,9 +428,9 @@ fn onRowPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) si
     return .pass;
 }
 
-fn onRowFocus(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onRowFocus(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Row = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     st.focused = e.flags.gained;
     const txn = w.begin(e.window) orelse return .pass;
     applyRow(txn, st, e.flags.gained);
@@ -438,14 +438,14 @@ fn onRowFocus(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.
     return .pass;
 }
 
-fn onRowActivate(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onRowActivate(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Row = @ptrCast(@alignCast(ud.?));
     if (st.hdr.disabled) return .handled;
     if (st.submenu != .null) {
         openSubmenu(st, true, true);
         return .handled;
     }
-    choose(st.menu, st.item, st.index, ev.?.window);
+    choose(st.menu, st.item, st.index, ev.window);
     return .handled;
 }
 
@@ -463,9 +463,9 @@ fn choose(menu_node: Node, item_node: Node, index: u32, _: siv.Window) void {
     _ = c.siv_node_emit(owner, &.{ .type = .select, .index = index, .value = @floatFromInt(index), .count = 1 }, &handled);
 }
 
-fn onRowKey(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onRowKey(ud: ?*anyopaque, node: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Row = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     if (!e.flags.pressed) return .pass;
     const k = w.keysym;
     const forward = if (w.isRtl(node)) k.left else k.right;
@@ -541,8 +541,8 @@ fn focusStep(from: Node, rel: siv.Relation, wrap: bool) void {
 }
 
 /// Dismissed by the compositor (a click outside): the popup goes.
-fn onMenuPopupEvent(ud: ?*anyopaque, _: siv.Window, ev: ?*const siv.WindowEvent) callconv(.c) bool {
-    if (ev.?.type != .close_requested) return false;
+fn onMenuPopupEvent(ud: ?*anyopaque, _: siv.Window, ev: *const siv.WindowEvent) callconv(.c) bool {
+    if (ev.type != .close_requested) return false;
     if (w.stateOf(Menu, w.dataHandle(ud), &.{.menu})) |m| {
         // The compositor destroys the popup's children with it.
         m.popup = .null;
@@ -607,15 +607,15 @@ fn askClose(st: *Popover) bool {
     return handled;
 }
 
-fn onPopoverKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onPopoverKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Popover = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     if (!e.flags.pressed or e.keysym != w.keysym.escape) return .pass;
     _ = askClose(st);
     return .handled;
 }
 
-fn onPopoverClose(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onPopoverClose(ud: ?*anyopaque, _: Node, _: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Popover = @ptrCast(@alignCast(ud.?));
     _ = c.siv_window_destroy(st.popup);
     return .handled;
@@ -623,8 +623,8 @@ fn onPopoverClose(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) s
 
 /// Dismissed by the compositor: kept only if the application's close
 /// handler says so.
-fn onPopoverEvent(_: ?*anyopaque, popup: siv.Window, ev: ?*const siv.WindowEvent) callconv(.c) bool {
-    if (ev.?.type != .close_requested) return false;
+fn onPopoverEvent(_: ?*anyopaque, popup: siv.Window, ev: *const siv.WindowEvent) callconv(.c) bool {
+    if (ev.type != .close_requested) return false;
     const st = popoverOf(popup) orelse return false;
     return askClose(st);
 }

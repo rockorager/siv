@@ -218,7 +218,7 @@ fn create(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc, mode: Mode) Node {
     return root;
 }
 
-fn never(_: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn never(_: ?*anyopaque, _: Node, _: *const siv.Event) callconv(.c) siv.EventResult {
     return .pass;
 }
 
@@ -813,26 +813,26 @@ fn moveHeaderFocus(v: *View, k: u32, window: siv.Window) void {
 
 /// A sortable header asks the application to sort: ascending first, then
 /// flipping; the header shows it once the application's handler accepts.
-fn onHeaderActivate(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onHeaderActivate(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const col: *Column = @ptrCast(@alignCast(ud.?));
     const v = viewOf(col.view) orelse return .pass;
     if (v.hdr.disabled) return .pass;
     const next: siv.Sort = if (col.sort == .ascending) .descending else .ascending;
     var handled = false;
     _ = c.siv_node_emit(v.root, &.{ .type = .sort, .index = col.index, .value = if (next == .ascending) 1 else -1 }, &handled);
-    const txn = w.begin(ev.?.window) orelse return .handled;
+    const txn = w.begin(ev.window) orelse return .handled;
     v.header_focus = col.index;
     if (handled) setSort(txn, v, col.index, next) else applyHeader(txn, v);
     _ = w.commit(txn);
     return .handled;
 }
 
-fn onHeaderFocus(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onHeaderFocus(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const col: *Column = @ptrCast(@alignCast(ud.?));
     const v = viewOf(col.view) orelse return .pass;
     // Widths from layout reach the handles' values.
-    if (ev.?.flags.gained) {
-        const txn = w.begin(ev.?.window) orelse return .pass;
+    if (ev.flags.gained) {
+        const txn = w.begin(ev.window) orelse return .pass;
         applyHeader(txn, v);
         _ = w.commit(txn);
     }
@@ -843,9 +843,9 @@ fn onHeaderFocus(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) s
 /// End to the first and last; Ctrl with them narrows and widens the
 /// column; Down goes to the rows. Enter and Space sort through the
 /// activate handler.
-fn onHeaderKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onHeaderKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const col: *Column = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     const v = viewOf(col.view) orelse return .pass;
     if (!e.flags.pressed or v.hdr.disabled) return .pass;
     const k = w.keysym;
@@ -875,9 +875,9 @@ fn onHeaderKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv
 
 /// Dragging a handle moves the column's end edge with the pointer;
 /// `grab` is where in the handle it was pressed.
-fn onHandlePointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onHandlePointer(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const col: *Column = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     const v = viewOf(col.view) orelse return .pass;
     if (v.hdr.disabled) return .pass;
     switch (e.phase) {
@@ -914,12 +914,12 @@ fn onHandlePointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c)
     return .pass;
 }
 
-fn onHandleSetValue(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onHandleSetValue(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const col: *Column = @ptrCast(@alignCast(ud.?));
     const v = viewOf(col.view) orelse return .pass;
     if (v.hdr.disabled) return .pass;
-    const width: f32 = @floatCast(@round(ev.?.value / resize_step) * resize_step);
-    userResize(v, col, ev.?.window, width, true);
+    const width: f32 = @floatCast(@round(ev.value / resize_step) * resize_step);
+    userResize(v, col, ev.window, width, true);
     return .handled;
 }
 
@@ -1010,9 +1010,9 @@ fn focusCursor(v: *View) void {
     if (boundRow(v, @intCast(v.cursor))) |r| _ = c.siv_node_focus(r.root);
 }
 
-fn onViewport(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onViewport(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const v: *View = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     v.view_y = e.y;
     v.view_w = e.width;
     v.view_h = e.height;
@@ -1022,9 +1022,9 @@ fn onViewport(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.
     return .handled;
 }
 
-fn onRowPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onRowPointer(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const r: *Row = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     const v = viewOf(r.view) orelse return .pass;
     if (v.hdr.disabled or r.index < 0) return .pass;
     switch (e.phase) {
@@ -1103,17 +1103,17 @@ fn toggleExpanded(v: *View, at: u32, window: siv.Window) void {
 }
 
 /// Assistive technology's SelectChild activates a row: it selects it.
-fn onRowActivate(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onRowActivate(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const r: *Row = @ptrCast(@alignCast(ud.?));
     const v = viewOf(r.view) orelse return .pass;
     if (v.hdr.disabled or r.index < 0) return .pass;
-    moveCursor(v, r.index, ev.?.window, .{}, false);
+    moveCursor(v, r.index, ev.window, .{}, false);
     return .handled;
 }
 
-fn onRowKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onRowKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const r: *Row = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     const v = viewOf(r.view) orelse return .pass;
     if (!e.flags.pressed or v.hdr.disabled or v.count == 0) return .pass;
     // Keys for a focused node inside the row (an editor renaming the item,

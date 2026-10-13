@@ -172,28 +172,28 @@ fn choose(ts: *Tabs, index: u32, window: siv.Window, focus: bool) void {
     if (changed) w.emitChange(ts.root, @floatFromInt(index), index);
 }
 
-fn onPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onPointer(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Tab = @ptrCast(@alignCast(ud.?));
     const ts = w.stateOf(Tabs, st.tabs, &.{.tabs}) orelse return .pass;
-    if (button.feedback(&st.hdr, ev.?)) {
-        const txn = w.begin(ev.?.window) orelse return .pass;
+    if (button.feedback(&st.hdr, ev)) {
+        const txn = w.begin(ev.window) orelse return .pass;
         apply(txn, ts);
         _ = w.commit(txn);
     }
     return .pass;
 }
 
-fn onActivate(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onActivate(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Tab = @ptrCast(@alignCast(ud.?));
     const ts = w.stateOf(Tabs, st.tabs, &.{.tabs}) orelse return .pass;
     if (ts.hdr.disabled) return .pass;
-    choose(ts, indexOf(ts, st.root), ev.?.window, false);
+    choose(ts, indexOf(ts, st.root), ev.window, false);
     return .handled;
 }
 
-fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Tab = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     if (!e.flags.pressed) return .pass;
     const ts = w.stateOf(Tabs, st.tabs, &.{.tabs}) orelse return .pass;
     const n = count(ts);

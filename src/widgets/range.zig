@@ -303,16 +303,16 @@ fn userSet(r: *Range, window: siv.Window, v: f64) void {
     w.emitChange(r.root, r.value, 0);
 }
 
-fn onSetValue(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onSetValue(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const r: *Range = @ptrCast(@alignCast(ud.?));
     if (r.hdr.disabled) return .pass;
-    userSet(r, ev.?.window, ev.?.value);
+    userSet(r, ev.window, ev.value);
     return .handled;
 }
 
-fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const r: *Range = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     if (r.hdr.disabled or !e.flags.pressed) return .pass;
     const k = w.keysym;
     const rtl = w.isRtl(r.root);
@@ -353,9 +353,9 @@ fn valueAt(r: *const Range, x: f32) f64 {
     return r.min + f * (r.max - r.min);
 }
 
-fn onSliderPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onSliderPointer(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const r: *Range = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     if (r.hdr.disabled) return .pass;
     switch (e.phase) {
         .down => if (e.button == .primary) {
@@ -383,17 +383,17 @@ fn restyle(r: *Range, window: siv.Window) void {
     _ = w.commit(txn);
 }
 
-fn onDecrement(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onDecrement(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const r: *Range = @ptrCast(@alignCast(ud.?));
     if (r.hdr.disabled) return .pass;
-    userSet(r, ev.?.window, r.value - r.keyStep());
+    userSet(r, ev.window, r.value - r.keyStep());
     return .handled;
 }
 
-fn onIncrement(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onIncrement(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const r: *Range = @ptrCast(@alignCast(ud.?));
     if (r.hdr.disabled) return .pass;
-    userSet(r, ev.?.window, r.value + r.keyStep());
+    userSet(r, ev.window, r.value + r.keyStep());
     return .handled;
 }
 
@@ -401,9 +401,9 @@ fn onIncrement(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv
 /// the desktop's key-repeat delay and then at its rate, like a held arrow
 /// key. Handling the press keeps the release from activating the button,
 /// which is left to the keyboard and assistive technology.
-fn onSpinPointer(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onSpinPointer(ud: ?*anyopaque, node: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const r: *Range = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     if (r.hdr.disabled or (e.phase != .enter and e.phase != .leave and e.phase != .down and e.phase != .up and e.phase != .cancel)) return .pass;
     if (e.phase != .down or e.button != .primary) stopRepeat(r);
     const txn = w.begin(e.window) orelse return .pass;
@@ -453,9 +453,9 @@ fn stopRepeat(r: *Range) void {
 }
 
 /// Leaving the field takes what was typed.
-fn onFieldFocus(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onFieldFocus(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const r: *Range = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     if (!e.flags.gained) commitText(r, e.window);
     return .pass;
 }

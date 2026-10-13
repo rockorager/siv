@@ -29,17 +29,17 @@ const Doc = struct {
     /// A drawing call that failed on purpose.
     bad_draw: t.Result = .ok,
 
-    fn begin(user_data: ?*anyopaque, setup: ?*const t.PageSetup) callconv(.c) u32 {
+    fn begin(user_data: ?*anyopaque, setup: *const t.PageSetup) callconv(.c) u32 {
         const d: *Doc = @ptrCast(@alignCast(user_data));
         d.begins += 1;
-        d.setup = setup.?.*;
+        d.setup = setup.*;
         return 2;
     }
 
-    fn drawPage(user_data: ?*anyopaque, draw: t.Draw, page: u32, setup: ?*const t.PageSetup) callconv(.c) void {
+    fn drawPage(user_data: ?*anyopaque, draw: t.Draw, page: u32, setup: *const t.PageSetup) callconv(.c) void {
         const d: *Doc = @ptrCast(@alignCast(user_data));
         d.draws += 1;
-        const s = setup.?;
+        const s = setup;
         _ = C.siv_draw_rect(draw, .{ .x = s.margin_left + 10, .y = s.margin_top + 10, .width = 100, .height = 50 });
         _ = C.siv_draw_fill(draw, &.{ .color = .{ .r = 1, .g = 0, .b = 0, .a = 1 } }, .{});
         const words: []const u8 = if (page == 0) "First page" else "Second page";
@@ -51,11 +51,11 @@ const Doc = struct {
         }
     }
 
-    fn done(user_data: ?*anyopaque, result: ?*const t.PortalResult) callconv(.c) void {
+    fn done(user_data: ?*anyopaque, result: *const t.PortalResult) callconv(.c) void {
         const d: *Doc = @ptrCast(@alignCast(user_data));
         d.results += 1;
-        d.response = result.?.response;
-        d.count = result.?.count;
+        d.response = result.response;
+        d.count = result.count;
     }
 
     fn destroy(user_data: ?*anyopaque) callconv(.c) void {
@@ -184,14 +184,14 @@ test "rejected documents run their destroy-notify; pending ones go with the appl
 const Aligned = struct {
     finished: bool = false,
 
-    fn drawPage(_: ?*anyopaque, draw: t.Draw, _: u32, setup: ?*const t.PageSetup) callconv(.c) void {
-        const s = setup.?;
+    fn drawPage(_: ?*anyopaque, draw: t.Draw, _: u32, setup: *const t.PageSetup) callconv(.c) void {
+        const s = setup;
         // Start-aligned across the page between the margins. Digits have
         // no direction of their own: the paragraph takes the page's.
         _ = C.siv_draw_text(draw, s.margin_left, s.margin_top, s.width - s.margin_left - s.margin_right, "42", 2, &.{ .font_size = 12 });
     }
 
-    fn done(user_data: ?*anyopaque, _: ?*const t.PortalResult) callconv(.c) void {
+    fn done(user_data: ?*anyopaque, _: *const t.PortalResult) callconv(.c) void {
         const a: *Aligned = @ptrCast(@alignCast(user_data));
         a.finished = true;
     }

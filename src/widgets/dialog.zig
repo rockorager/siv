@@ -87,18 +87,18 @@ fn askClose(root: Node) void {
     _ = c.siv_node_emit(root, &.{ .type = .close }, &handled);
 }
 
-fn onKey(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Dialog = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     if (!e.flags.pressed or e.keysym != w.keysym.escape) return .pass;
     askClose(st.root);
     return .handled;
 }
 
 /// A press on the scrim, outside the card, asks to close.
-fn onPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onPointer(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Dialog = @ptrCast(@alignCast(ud.?));
-    const e = ev.?;
+    const e = ev;
     if (e.phase != .down or e.button != .primary) return .pass;
     var root: siv.Rect = undefined;
     var card: siv.Rect = undefined;
@@ -110,9 +110,9 @@ fn onPointer(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.E
     return .handled;
 }
 
-fn onClose(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onClose(ud: ?*anyopaque, node: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     _ = ud;
-    const txn = w.begin(ev.?.window) orelse return .pass;
+    const txn = w.begin(ev.window) orelse return .pass;
     _ = c.siv_remove(txn, node);
     _ = w.commit(txn);
     return .handled;
