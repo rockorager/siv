@@ -156,8 +156,11 @@ pub const ShapedParagraph = struct {
 
     /// Index of the style that applies at `offset`.
     pub fn styleAt(self: *const ShapedParagraph, offset: u32) u32 {
-        for (self.style_ends, 0..) |end, i| if (offset < end) return @intCast(i);
-        return @intCast(self.style_ends.len - 1);
+        return firstEndAfter(u32, self.style_ends, offset, {}, struct {
+            fn end(_: void, e: u32) u32 {
+                return e;
+            }
+        }.end);
     }
 
     pub fn runGlyphs(self: *const ShapedParagraph, run: Run) []const Glyph {
@@ -167,10 +170,26 @@ pub const ShapedParagraph = struct {
     /// The index of the paragraph containing `offset` (the last one for the
     /// end of the text).
     pub fn paragraphAt(self: *const ShapedParagraph, offset: u32) u32 {
-        for (self.paragraphs, 0..) |paragraph, i| if (offset < paragraph.end) return @intCast(i);
-        return @intCast(self.paragraphs.len - 1);
+        return firstEndAfter(bidi.Paragraph, self.paragraphs, offset, {}, struct {
+            fn end(_: void, p: bidi.Paragraph) u32 {
+                return p.end;
+            }
+        }.end);
     }
 };
+
+/// The index of the first item whose end is past `offset`, or the last
+/// item: a binary search over items with increasing ends. Layout asks for
+/// every line's paragraph, so a linear scan was quadratic in a long text.
+fn firstEndAfter(comptime T: type, items: []const T, offset: u32, ctx: anytype, comptime endOf: fn (@TypeOf(ctx), T) u32) u32 {
+    var low: usize = 0;
+    var high: usize = items.len;
+    while (low < high) {
+        const middle = low + (high - low) / 2;
+        if (endOf(ctx, items[middle]) <= offset) low = middle + 1 else high = middle;
+    }
+    return @intCast(@min(low, items.len - 1));
+}
 
 fn validateStyles(text: []const u8, styles: []const StyleRun) !void {
     if (styles.len == 0 or styles[styles.len - 1].end != text.len) return error.InvalidStyles;
