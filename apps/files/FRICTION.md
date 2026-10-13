@@ -227,29 +227,45 @@ Measurements are in [Numbers](#numbers) at the end.
     `.escape` in Zig, `"escape"` in Lua (commit "abi: name keysyms in the
     schema as siv_key", D16). `src/keys.zig` is gone.
 
-## Open API questions
+22. **Menu items are reached by walking the menu's children.** Setting a
+    check mark or disabling an item needs its node; the builder returns
+    it, but an application that builds menus from tables keeps an index
+    and walks `siv_node_get_related` to find it again (`menuItem` in
+    `src/Files.zig`). A `siv_menu_get_item(menu, index)`, like
+    `siv_view_get_row`, would do.
+    *Fixed:* `siv_menu_get_item(menu, index, item)`, by the position
+    `select` reports (commit "widgets: find a menu item by its position",
+    D22). The app's child walk is a one-line call.
 
 24. **A descriptor cannot end in one 4-byte field.** Descriptors have no
     padding (D2), so appending a single `uint32_t` or enum to one whose
     size is a multiple of 8 fails the build ("trailing padding; append a
-    field"). The image load priority became an `int64_t` for that
-    reason; `siv_text_style_desc` took `max_lines` and `direction`
-    together. Should the rule allow trailing padding that must be zero,
-    or should descriptors reserve a field when they end 4 bytes short?
+    field"). The image load priority became an `int64_t` for that reason;
+    `siv_text_style_desc` took `max_lines` and `direction` together.
+    Should the rule allow trailing padding that must be zero, or should
+    descriptors reserve a field when they end 4 bytes short?
+    *Fixed:* the no-padding rule stays (C does not zero an automatic
+    struct's padding); schema fields can be reserved instead: zero,
+    rejected as unsupported otherwise, so a later version can use them
+    (commit "abi: reserved descriptor fields, and open or closed enums",
+    D2). The image priority is an `int32_t` again, followed by
+    `reserved0`; Lua tables leave reserved fields out.
 
 25. **`siv_key` is the first open enum.** D2 says unknown enum values are
     `SIV_ERROR_UNSUPPORTED`; keysyms are an open set, so `siv_key` names
-    the common keys and every other value passes through (Lua gets a
-    name or a number). Nothing checks keysyms today, but the schema has
-    no way to say an enum is open, and a generator for another language
-    might map it to a closed type. Should the schema mark open enums?
+    the common keys and every other value passes through (Lua gets a name
+    or a number). Nothing checks keysyms today, but the schema has no way
+    to say an enum is open, and a generator for another language might map
+    it to a closed type. Should the schema mark open enums?
+    *Fixed:* the schema marks enums open or closed (same commit, D2).
+    Closed enums reject unknown values; `siv_key` is open and passes them.
+    The header, Zig wrapper, JSON, reference, Lua binding (closed enums
+    take only named integers), and Lua annotations follow the mark.
 
-22. **Menu items are reached by walking the menu's children.** Setting a
-    check mark or disabling an item needs its node; the builder returns
-    it, but an application that builds menus from tables keeps an index
-    and walks `siv_node_get_related` to find it again
-    (`menuItem` in `src/Files.zig`). A `siv_menu_get_item(menu, index)`,
-    like `siv_view_get_row`, would do.
+## Open API questions
+
+None: every question this work raised has been decided and is fixed
+above. What is left is noted below.
 
 ## Noted
 
