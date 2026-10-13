@@ -127,7 +127,7 @@ pub export fn siv_image_request_cancel(request: t.ImageRequest) t.Result {
     return .ok;
 }
 
-pub export fn siv_image_request_set_priority(request: t.ImageRequest, priority: i64) t.Result {
+pub export fn siv_image_request_set_priority(request: t.ImageRequest, priority: i32) t.Result {
     const r = requestOf(request) catch |err| return t.resultOf(err);
     r.loading.?.setPriority(priority);
     return .ok;

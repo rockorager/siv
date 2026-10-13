@@ -84,14 +84,27 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     fields; a larger size (newer headers) is accepted only if the unknown
     bytes are zero, otherwise `SIV_ERROR_UNSUPPORTED`; a size that ends inside
     a field is invalid. Value structs (points, colors) are frozen forever.
+  - Padding stays forbidden, since C does not zero the padding of an
+    automatic struct and siv could not tell old garbage from a new field.
+    Where a descriptor would end 4 bytes short, the schema declares a
+    reserved field (`reserved0`, an unsigned integer): it must be zero,
+    `SIV_ERROR_UNSUPPORTED` otherwise (checked by `runtime.readDesc`), so a
+    later version can turn it into a real field. Bindings leave it out
+    (the Lua tables do not have it). Found by the file manager in
+    `apps/files`, whose image load priority otherwise had to be 64-bit.
   - Strings are pointer and length; embedded NUL is allowed. siv copies what
     it keeps. Static strings siv returns are also NUL-terminated.
   - Callbacks take `void *user_data` as their first parameter; a callback
     parameter is followed by its `user_data`.
   - Fallible functions return `siv_result` (0 is success, errors negative),
     write outputs through trailing pointers only on success, and have no
-    effect when they fail. Unknown enum values and flag bits are
-    `SIV_ERROR_UNSUPPORTED`.
+    effect when they fail. Unknown flag bits, and unknown values of closed
+    enums, are `SIV_ERROR_UNSUPPORTED`. The schema marks each enum closed
+    (the default: exactly its values) or open (`siv_key`: it names some
+    values of a larger set and passes every other value through); the
+    generated headers, Zig wrapper (`pub const open`), JSON, documentation,
+    Lua binding (any integer for open enums, only named values for closed
+    ones), and Lua annotations follow the mark.
   - No global state; multiple applications per process are allowed. The one
     process-wide structure is a fixed, lock-free table of 1024 root slots
     that lets any handle be validated without its root. It holds no
@@ -2670,9 +2683,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     `<close>` variable aborts unless committed.
   - **Descriptors** are tables. Zero is the default, as in C; unknown
     fields are errors (typos do not pass silently), read with `lua_next`,
-    so fields from a metatable's `__index` do not count. Enums are names
-    (`axis = "column"`) or integers; flags a name, a list, a set, or an
-    integer. Value structs take named or positional fields; colors also
+    so fields from a metatable's `__index` do not count; reserved fields
+    are not among them. Enums are names (`axis = "column"`) or integers,
+    any integer for open enums (keysyms) and only the values named for
+    closed ones; flags a name, a list, a set, or an integer. Value structs take named or positional fields; colors also
     take CSS hex strings, and a color table without alpha is opaque (the
     one default that differs from C's zero, since `{1, 1, 1}` meaning
     invisible would be a trap); edges, corners, and radii take one number

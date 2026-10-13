@@ -35,7 +35,10 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
         \\  library older than your headers accepts a larger descriptor if the
         \\  fields it does not know are zero and returns `SIV_ERROR_UNSUPPORTED`
         \\  otherwise; a newer library treats the fields your headers lack as zero.
-        \\  Unknown enum values and flag bits are `SIV_ERROR_UNSUPPORTED` too.
+        \\  Fields named `reserved*` must be zero, `SIV_ERROR_UNSUPPORTED`
+        \\  otherwise, until a version gives them a meaning. Unknown values of
+        \\  closed enums and unknown flag bits are `SIV_ERROR_UNSUPPORTED` too;
+        \\  open enums (marked so) pass every value.
         \\- **Strings** are a `const char *` and a `size_t` length; embedded NUL is
         \\  allowed and no terminator is read. NULL with length 0 is the empty
         \\  string. siv copies what it keeps. Strings siv returns with static
@@ -67,7 +70,9 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
             .handle => |h| try w.print("typedef uint64_t {s};\n```\n", .{h.name}),
             .@"enum" => |e| {
                 const prefix = schema.enumValuePrefix(&pbuf, e);
-                try w.print("typedef enum {s} {{ ... }} {s};\n```\n\n| Value | | |\n| --- | --- | --- |\n", .{ e.name, e.name });
+                try w.print("typedef enum {s} {{ ... }} {s};\n```\n\n", .{ e.name, e.name });
+                try w.writeAll(if (e.open) "An open enum: values other than those named are valid.\n\n" else "A closed enum: functions reject values other than those named (`SIV_ERROR_UNSUPPORTED`).\n\n");
+                try w.writeAll("| Value | | |\n| --- | --- | --- |\n");
                 for (e.values) |v| try w.print("| `{s}{s}` | {d} | {s} |\n", .{ prefix, schema.upper(&ubuf, v.name), v.value, v.doc });
             },
             .flags => |f| {

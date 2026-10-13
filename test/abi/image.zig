@@ -93,6 +93,8 @@ test "C API images: load from a path and from bytes, play an animation" {
     try testing.expectEqual(t.Result.error_unavailable, missing.result.?);
     var req: t.ImageRequest = .null;
     try testing.expectEqual(t.Result.error_invalid_argument, I.siv_image_load(h.app, &.{}, Loaded.done, null, null, &req));
+    // A reserved field must be zero.
+    try testing.expectEqual(t.Result.error_unsupported, I.siv_image_load(h.app, &.{ .path = path, .path_len = path.len, .reserved0 = 1 }, Loaded.done, null, null, &req));
 
     // The animation plays in an image node: red, then green after 100 ms,
     // then blue after 300 ms.
@@ -158,7 +160,7 @@ test "C API images: loads wait in priority order, and cancelled ones never call 
     defer log.deinit(testing.allocator);
     const png = @embedFile("testdata/rgba.png");
     var loads = [_]Ordered{ .{ .tag = 'a', .log = &log }, .{ .tag = 'b', .log = &log }, .{ .tag = 'c', .log = &log }, .{ .tag = 'd', .log = &log } };
-    const priorities = [_]i64{ 1, 3, 2, 5 };
+    const priorities = [_]i32{ 1, 3, 2, 5 };
     var reqs: [4]t.ImageRequest = undefined;
     for (&loads, priorities, &reqs) |*l, p, *r| {
         try ok(I.siv_image_load(h.app, &.{ .data = png, .data_count = png.len, .priority = p }, Ordered.done, Ordered.destroy, l, r));

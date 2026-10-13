@@ -136,7 +136,7 @@ pub fn get(t: *Thumbs, folder: []const u8, name: []const u8, mtime: i64) ?siv.Im
             .failed => return null,
             .loading => {
                 // Wanted again: before everything asked so far.
-                _ = c.siv_image_request_set_priority(slot.request, @intCast(t.stamp));
+                _ = c.siv_image_request_set_priority(slot.request, t.priority());
                 return null;
             },
         }
@@ -150,6 +150,12 @@ pub fn get(t: *Thumbs, folder: []const u8, name: []const u8, mtime: i64) ?siv.Im
     t.request(key, gop.value_ptr);
     if (t.pending > max_pending) t.cancelOldest();
     return null;
+}
+
+/// The priority of what is asked now: later asks come first (saturating
+/// after 2^31 asks, when they come in order).
+fn priority(t: *const Thumbs) i32 {
+    return @intCast(@min(t.stamp, std.math.maxInt(i32)));
 }
 
 fn request(t: *Thumbs, name: []const u8, slot: *Slot) void {
@@ -166,7 +172,7 @@ fn request(t: *Thumbs, name: []const u8, slot: *Slot) void {
         .max_height = size,
         .scale = t.scale,
         .flags = .{ .first_frame = true },
-        .priority = @intCast(t.stamp),
+        .priority = t.priority(),
     }, Request.done, Request.free, r, &slot.request) != .ok) return;
     slot.state = .loading;
     t.pending += 1;

@@ -49,6 +49,7 @@ pub fn write(arena: std.mem.Allocator, w: *std.Io.Writer, s: Schema, version: st
             .handle => |h| try field(&j, "root", h.root),
             .@"enum" => |e| {
                 const prefix = try arena.dupe(u8, schema.enumValuePrefix(&buf, e));
+                try field(&j, "open", e.open);
                 try j.objectField("values");
                 try j.beginArray();
                 for (e.values) |v| {
@@ -82,15 +83,15 @@ pub fn write(arena: std.mem.Allocator, w: *std.Io.Writer, s: Schema, version: st
                 try field(&j, "descriptor", st.kind == .descriptor);
                 try j.objectField("fields");
                 try j.beginArray();
-                if (st.kind == .descriptor) try member(arena, &j, s, "size", .usize, "sizeof the struct.", st.since);
-                for (st.fields) |f| try member(arena, &j, s, f.name, f.type, f.doc, f.since orelse st.since);
+                if (st.kind == .descriptor) try member(arena, &j, s, "size", .usize, "sizeof the struct.", st.since, false);
+                for (st.fields) |f| try member(arena, &j, s, f.name, f.type, f.doc, f.since orelse st.since, f.reserved);
                 try j.endArray();
             },
             .callback => |cb| {
                 try j.objectField("params");
                 try j.beginArray();
-                try member(arena, &j, s, "user_data", .user_data, "The user_data registered with the callback.", null);
-                for (cb.params) |p| try member(arena, &j, s, p.name, p.type, p.doc, null);
+                try member(arena, &j, s, "user_data", .user_data, "The user_data registered with the callback.", null, false);
+                for (cb.params) |p| try member(arena, &j, s, p.name, p.type, p.doc, null, false);
                 try j.endArray();
                 try j.objectField("return");
                 try typeValue(arena, &j, s, cb.ret);
@@ -112,7 +113,7 @@ pub fn write(arena: std.mem.Allocator, w: *std.Io.Writer, s: Schema, version: st
         if (s.isResult(f.ret)) try field(&j, "must_use", f.must_use);
         try j.objectField("params");
         try j.beginArray();
-        for (f.params) |p| try member(arena, &j, s, p.name, p.type, p.doc, null);
+        for (f.params) |p| try member(arena, &j, s, p.name, p.type, p.doc, null, false);
         try j.endArray();
         try j.objectField("return");
         try typeValue(arena, &j, s, f.ret);
@@ -136,10 +137,11 @@ fn since(arena: std.mem.Allocator, v: schema.Version) ![]const u8 {
 }
 
 /// A parameter or field: its schema type and the C declarations it becomes.
-fn member(arena: std.mem.Allocator, j: *std.json.Stringify, s: Schema, name: []const u8, t: Type, doc: []const u8, v: ?schema.Version) !void {
+fn member(arena: std.mem.Allocator, j: *std.json.Stringify, s: Schema, name: []const u8, t: Type, doc: []const u8, v: ?schema.Version, reserved: bool) !void {
     try j.beginObject();
     try field(j, "name", name);
     try field(j, "doc", doc);
+    if (reserved) try field(j, "reserved", true);
     if (v) |vs| try field(j, "since", try since(arena, vs));
     try j.objectField("type");
     try typeValue(arena, j, s, t);

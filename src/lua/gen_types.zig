@@ -67,7 +67,9 @@ pub fn write(w: *Writer, s: Schema) !void {
                 try oneLine(w, v.doc);
                 try w.writeByte('\n');
             }
-            try w.writeAll("---| integer\n\n");
+            // Closed enums take their values' integers too, but names read
+            // better; open ones take any integer.
+            try w.writeAll(if (e.open) "---| integer\n\n" else "\n");
         },
         .flags => |f| {
             const st = m.stem(s, f.name);

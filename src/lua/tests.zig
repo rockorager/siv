@@ -117,6 +117,14 @@ test "descriptors are tables: defaults, enums, flags, colors, typos" {
         \\  txn:set_layout(col, nil)
         \\  local ok, err = pcall(txn.flex, txn, root, { axis = "diagonal" })
         \\  assert(not ok and err:find("unknown siv_axis 'diagonal'"), err)
+        \\  -- Closed enums take only the integers they name; open ones any.
+        \\  txn:flex(root, { axis = 1 })
+        \\  ok, err = pcall(txn.flex, txn, root, { axis = 7 })
+        \\  assert(not ok and err:find("unknown siv_axis 7"), err)
+        \\  root:emit({ type = "key", keysym = 0x61 })
+        \\  -- Reserved fields are not part of the table.
+        \\  ok, err = pcall(app.image_load, app, { path = "x", reserved0 = 1 }, function() end)
+        \\  assert(not ok and err:find("unknown field"), err)
         \\end)
         \\local ok, err = pcall(win.update, win, function(txn, r) txn:set_layout(r, { padd = 1 }) end)
         \\assert(not ok and err:find("siv_layout_desc.padd: unknown field"), err)

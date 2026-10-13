@@ -40,6 +40,10 @@ pub fn readDesc(comptime T: type, ptr: ?*const T) Error!T {
     }
     const n = @min(size, @sizeOf(T));
     @memcpy(std.mem.asBytes(&result)[@sizeOf(usize)..n], bytes[@sizeOf(usize)..n]);
+    // Reserved fields are zero until a version gives them a meaning.
+    if (@hasDecl(T, "reserved")) inline for (T.reserved) |name| {
+        if (@field(result, name) != 0) return error.Unsupported;
+    };
     return result;
 }
 
@@ -94,8 +98,10 @@ pub fn buffer(ptr: ?[*]u8, cap: usize) Error![]u8 {
     return p[0..cap];
 }
 
-/// An enum value from C: unknown values are unsupported.
+/// An enum value from C: unknown values of a closed enum are unsupported;
+/// open enums pass every value.
 pub fn enumValue(comptime E: type, v: E) Error!E {
+    if (@hasDecl(E, "open")) return v;
     inline for (@typeInfo(E).@"enum".field_values) |value| {
         if (@backingInt(v) == value) return v;
     }
@@ -218,6 +224,18 @@ test "readDesc: null, older, newer, and malformed sizes" {
     try std.testing.expectError(error.Unsupported, readDesc(D, &newer.d));
 }
 
+test "readDesc rejects nonzero reserved fields" {
+    const R = extern struct {
+        size: usize = @sizeOf(@This()),
+        value: i32 = 0,
+        reserved0: u32 = 0,
+        pub const descriptor = true;
+        pub const reserved = .{"reserved0"};
+    };
+    try std.testing.expectEqual(@as(i32, 7), (try readDesc(R, &.{ .value = 7 })).value);
+    try std.testing.expectError(error.Unsupported, readDesc(R, &.{ .reserved0 = 1 }));
+}
+
 test "string, enumValue, flags, out" {
     try std.testing.expectEqualStrings("", try string(null, 0));
     try std.testing.expectError(error.InvalidArgument, string(null, 1));
@@ -226,6 +244,13 @@ test "string, enumValue, flags, out" {
     const E = enum(i32) { a = 0, b = 5, _ };
     try std.testing.expectEqual(E.b, try enumValue(E, .b));
     try std.testing.expectError(error.Unsupported, enumValue(E, @fromBackingInt(4)));
+    // Open enums pass values they do not name.
+    const O = enum(i32) {
+        a = 0,
+        _,
+        pub const open = true;
+    };
+    try std.testing.expectEqual(@as(O, @fromBackingInt(4)), try enumValue(O, @fromBackingInt(4)));
 
     const F = packed struct(u32) {
         x: bool = false,

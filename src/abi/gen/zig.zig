@@ -38,7 +38,9 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
             .@"enum" => |e| {
                 try w.print("pub const {f} = enum(i32) {{\n", .{id(tn)});
                 for (e.values) |v| try w.print("    /// {s}\n    {f} = {d},\n", .{ v.doc, id(v.name), v.value });
-                try w.writeAll("    _,\n};\n");
+                try w.writeAll("    _,\n");
+                if (e.open) try w.writeAll("\n    /// Open: values other than those named are valid (runtime.enumValue passes them).\n    pub const open = true;\n");
+                try w.writeAll("};\n");
             },
             .flags => |f| {
                 try w.print("pub const {f} = packed struct(u32) {{\n", .{id(tn)});
@@ -77,6 +79,13 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
                     }
                 }
                 if (st.kind == .descriptor) try w.writeAll("\n    /// Size-prefixed and extensible; see runtime.readDesc.\n    pub const descriptor = true;\n");
+                var any_reserved = false;
+                for (st.fields) |f| any_reserved = any_reserved or f.reserved;
+                if (any_reserved) {
+                    try w.writeAll("    /// Fields that must be zero (runtime.readDesc rejects others).\n    pub const reserved = .{");
+                    for (st.fields) |f| if (f.reserved) try w.print(" \"{s}\",", .{f.name});
+                    try w.writeAll(" };\n");
+                }
                 try w.writeAll("};\n");
             },
             .callback => |cb| {

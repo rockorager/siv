@@ -79,6 +79,18 @@ fn enumeration(comptime name: []const u8, comptime doc: []const u8, comptime val
     return .{ .@"enum" = .{ .name = name, .doc = doc, .since = v0_1, .values = values } };
 }
 
+/// An enum that names some values of a larger set and passes the others
+/// (D2).
+fn openEnumeration(comptime name: []const u8, comptime doc: []const u8, comptime values: []const schema.EnumValue) Decl {
+    return .{ .@"enum" = .{ .name = name, .doc = doc, .since = v0_1, .values = values, .open = true } };
+}
+
+/// A reserved descriptor field (D2): zero, until a version gives it a
+/// meaning.
+fn reserved(comptime name: []const u8) schema.Field {
+    return .{ .name = name, .type = .u32, .doc = "Reserved; must be zero (SIV_ERROR_UNSUPPORTED otherwise).", .reserved = true };
+}
+
 fn flags(comptime name: []const u8, comptime doc: []const u8, comptime bits: []const schema.Flag) Decl {
     return .{ .flags = .{ .name = name, .doc = doc, .since = v0_1, .bits = bits } };
 }
@@ -792,7 +804,7 @@ pub const decls = [_]Decl{
         .{ .name = "accepted", .bit = 4, .doc = "Drag: the target under the pointer takes the data." },
         .{ .name = "prevented", .bit = 5, .doc = "Bubbling events: a handler on the way here (on the target or a node between) prevented the default action (SIV_EVENT_RESULT_PREVENT), so no siv_on_default handler runs any more and siv takes no default action." },
     }),
-    enumeration("siv_key", "An XKB keysym (D16), as key events report it. Every keysym is valid, not only the named ones: a key that types a character reports its Unicode code point below 0x100 (0x61 for a, 0x41 for Shift+A) and 0x01000000 plus the code point above. The named keys are those applications commonly bind.", &.{
+    openEnumeration("siv_key", "An XKB keysym (D16), as key events report it. Every keysym is valid, not only the named ones: a key that types a character reports its Unicode code point below 0x100 (0x61 for a, 0x41 for Shift+A) and 0x01000000 plus the code point above. The named keys are those applications commonly bind.", &.{
         .{ .name = "none", .value = 0, .doc = "No key (NoSymbol): the event is not a key event." },
         .{ .name = "space", .value = 0x20, .doc = "Space." },
         .{ .name = "iso_left_tab", .value = 0xfe20, .doc = "Tab with Shift held, on most layouts (ISO_Left_Tab)." },
@@ -1250,7 +1262,8 @@ pub const decls = [_]Decl{
         f32Field("max_height", "The largest logical height it is shown at; 0 is unbounded."),
         f32Field("scale", "Pixels per logical pixel, the window's buffer scale (siv_window_get_scale), so that the image is sharp; 0 is 1. The image's logical size is its pixel size divided by it."),
         .{ .name = "flags", .type = ref("siv_image_load_flags"), .doc = "Options." },
-        .{ .name = "priority", .type = .i64, .doc = "Order among loads that wait for a worker: higher first, and in the order asked within one priority; 0 is the default. A grid of thumbnails gives later requests higher numbers so that the cells scrolled to come first, and lowers those scrolled past (siv_image_request_set_priority)." },
+        .{ .name = "priority", .type = .i32, .doc = "Order among loads that wait for a worker: higher first, and in the order asked within one priority; 0 is the default. A grid of thumbnails gives later requests higher numbers so that the cells scrolled to come first, and lowers those scrolled past (siv_image_request_set_priority)." },
+        reserved("reserved0"),
     }),
     callback("siv_image_load_fn", "Receives a loaded image on the application's thread (D5). On SIV_OK image is a new handle the application owns (siv_image_destroy); otherwise it is 0 and result says why: SIV_ERROR_UNSUPPORTED for formats siv does not decode, SIV_ERROR_INVALID_ARGUMENT for damaged files, SIV_ERROR_LIMIT_EXCEEDED for images over 64 megapixels, SIV_ERROR_UNAVAILABLE when the file could not be read.", &.{
         .{ .name = "result", .type = ref("siv_result"), .doc = "SIV_OK or the failure." },
@@ -1778,7 +1791,7 @@ pub const functions = [_]Function{
     op("siv_image_request_cancel", "Cancels a pending load: one still waiting is never decoded, and one being decoded is dropped when done. Its callback never runs; destroy runs now or once the decode returns.", &.{.{ .name = "request", .type = ref("siv_image_request"), .doc = "The load." }}),
     call("siv_image_request_set_priority", "Changes the priority of a pending load (see siv_image_load_desc); one waiting for a worker moves to its new place.", &.{
         .{ .name = "request", .type = ref("siv_image_request"), .doc = "The load." },
-        .{ .name = "priority", .type = .i64, .doc = "Higher first." },
+        .{ .name = "priority", .type = .i32, .doc = "Higher first." },
     }),
     call("siv_image_load", "Decodes PNG, APNG, JPEG, GIF, WebP, AVIF, or JPEG XL on a worker thread (D19), straight to the size it is shown at, with embedded color profiles converted to siv's linear working space, and calls callback with the image, then destroy. If the load is cancelled or the application is destroyed first, only destroy runs. Loads wait for a compute worker in priority order (see siv_image_load_desc). Image nodes play animated images, unless motion is reduced; canvases draw their first frame. Animations with more than 32 MiB of frames at that size keep their file instead and decode a few frames ahead while they play.", &.{
         app_param,

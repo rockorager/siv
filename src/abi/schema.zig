@@ -127,6 +127,11 @@ pub const Enum = struct {
     value_prefix: ?[]const u8 = null,
     /// Value 0 must exist: it is what a zeroed field means.
     values: []const EnumValue,
+    /// Closed enums (the default) are exactly their values: a value from
+    /// the caller that this version does not define is unsupported (D2).
+    /// Open enums name some values of a larger set, such as keysyms, and
+    /// pass every other value through.
+    open: bool = false,
 };
 
 pub const EnumValue = struct {
@@ -175,6 +180,10 @@ pub const Field = struct {
     doc: []const u8,
     /// Version that appended the field. Default: the struct's.
     since: ?Version = null,
+    /// Reserved (D2): an unsigned integer in a descriptor that must be
+    /// zero, rejected as unsupported otherwise, so that a later version
+    /// can give it a meaning. It fills what would be padding.
+    reserved: bool = false,
 };
 
 pub const Callback = struct {
@@ -406,6 +415,13 @@ pub fn validate(s: Schema, lib: std.SemanticVersion) ?Problem {
                         else => {},
                     }
                     if (f.since) |v| if (v.order(st.since) == .lt or v.order(current) == .gt) return .{ .where = n, .what = "field since outside the struct's lifetime" };
+                    if (f.reserved) {
+                        if (st.kind != .descriptor) return .{ .where = n, .what = "only descriptors have reserved fields" };
+                        switch (f.type) {
+                            .u8, .u16, .u32, .u64 => {},
+                            else => return .{ .where = n, .what = "reserved fields are unsigned integers" },
+                        }
+                    }
                 }
                 if (callbacks > 0 and user_data != 1) return .{ .where = n, .what = "a struct with callbacks has exactly one user_data field" };
                 if (callbacks == 0 and user_data > 0) return .{ .where = n, .what = "user_data without callbacks" };

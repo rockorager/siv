@@ -17,7 +17,9 @@
 //!   out values (an image load's request, to cancel it); waiting drops
 //!   them.
 //! - Descriptors are tables; value structs are tables with named or
-//!   positional fields.
+//!   positional fields. Reserved fields are not in them.
+//! - Enums are names or integers: any integer for open enums (keysyms),
+//!   only the values named for closed ones.
 //! - A Lua function returning an enum to a callback returns its name, an
 //!   integer, or a boolean (true for 1, false or nil for 0), so an event
 //!   handler returns true for handled, "stop", or "prevent".
@@ -90,9 +92,14 @@ pub fn isUnbound(name: []const u8) bool {
     return false;
 }
 
+/// Fields the binding leaves at zero: those in `unbound_fields`, and
+/// reserved fields (D2), which have no meaning yet.
 pub fn isUnboundField(st: []const u8, field: []const u8) bool {
     @setEvalBranchQuota(1_000_000);
     for (unbound_fields) |u| if (std.mem.eql(u8, u[0], st) and std.mem.eql(u8, u[1], field)) return true;
+    if (spec.find(st)) |d| if (d == .@"struct") for (d.@"struct".fields) |f| {
+        if (f.reserved and std.mem.eql(u8, f.name, field)) return true;
+    };
     return false;
 }
 

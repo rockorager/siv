@@ -134,6 +134,7 @@ pub fn write(arena: std.mem.Allocator, w: *Writer, s: Schema, version: std.Seman
             .@"enum" => |e| {
                 var pbuf: [128]u8 = undefined;
                 const prefix = schema.enumValuePrefix(&pbuf, e);
+                if (e.open) try w.writeAll("/* An open enum: values other than those named are valid. */\n");
                 try w.print("typedef enum {s} {{\n", .{e.name});
                 for (e.values) |v| {
                     try comment(w, "    ", v.doc);

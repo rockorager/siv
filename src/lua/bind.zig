@@ -400,7 +400,16 @@ fn readEnum(ctx: *Ctx, idx: c_int, comptime name: []const u8, w: Where) ZigType(
             const v = enumMap(name).map.get(s) orelse ctx.fail(w, "unknown {s} '{s}'", .{ name, s });
             return @enumFromInt(v);
         },
-        lua.tnumber => return @enumFromInt(readInt(ctx, idx, i32, w)),
+        lua.tnumber => {
+            const v = readInt(ctx, idx, i32, w);
+            // Closed enums take only the values they name (D2).
+            if (comptime !Info(name).d.@"enum".open) {
+                if (for (Info(name).d.@"enum".values) |ev| {
+                    if (ev.value == v) break false;
+                } else true) ctx.fail(w, "unknown {s} {d}", .{ name, v });
+            }
+            return @enumFromInt(v);
+        },
         else => ctx.typeError(w, idx, "string"),
     }
 }
