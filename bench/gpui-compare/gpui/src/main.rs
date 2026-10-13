@@ -1,6 +1,6 @@
 //! The gpui side of bench/gpui-compare: one program, one scenario per run.
 //!
-//!     gpui-compare idle|gallery|list|text|grid|typing
+//!     gpui-compare idle|gallery|list|text|grid|typing|logs
 //!
 //! Mirrors siv/bench.c. gpui has no stock widgets, so the gallery's
 //! buttons, text field, checkbox, list, and menu are written here with
@@ -37,7 +37,7 @@ const ACCENT_HOVER: u32 = 0x1d4ed8;
 const ACCENT_ACTIVE: u32 = 0x1e40af;
 const SELECTION_BG: u32 = 0xbfdbfe;
 
-actions!(bench, [Backspace, Enter, Left, Right, Escape]);
+actions!(bench, [Backspace, Enter, Left, Right, Escape, JumpEnd, JumpHome, Search]);
 
 fn color(v: u32) -> Hsla {
     rgb(v).into()
@@ -459,8 +459,8 @@ struct Editor {
 }
 
 impl Editor {
-    fn new(cx: &mut Context<Self>, paragraphs: usize) -> Self {
-        let paras: Vec<SharedString> = doc_paragraphs(paragraphs).into_iter().map(Into::into).collect();
+    fn new(cx: &mut Context<Self>, paras: Vec<String>) -> Self {
+        let paras: Vec<SharedString> = paras.into_iter().map(Into::into).collect();
         let list = ListState::new(paras.len(), ListAlignment::Top, px(200.));
         Self { focus: cx.focus_handle(), paras, caret: (0, 0), list }
     }
@@ -513,6 +513,35 @@ impl Editor {
             cx.notify();
         }
     }
+
+    fn jump_end(&mut self, _: &JumpEnd, _: &mut Window, cx: &mut Context<Self>) {
+        let last = self.paras.len() - 1;
+        self.caret = (last, self.paras[last].len());
+        self.list.scroll_to_reveal_item(last);
+        cx.notify();
+    }
+
+    fn jump_home(&mut self, _: &JumpHome, _: &mut Window, cx: &mut Context<Self>) {
+        self.caret = (0, 0);
+        self.list.scroll_to_reveal_item(0);
+        cx.notify();
+    }
+
+    /// F3: the next paragraph holding the needle after the caret's,
+    /// wrapping around; the caret goes after it and its paragraph into
+    /// view.
+    fn search(&mut self, _: &Search, _: &mut Window, cx: &mut Context<Self>) {
+        let n = self.paras.len();
+        for k in 1..=n {
+            let p = (self.caret.0 + k) % n;
+            if let Some(off) = self.paras[p].find(DOC_NEEDLE) {
+                self.caret = (p, off + DOC_NEEDLE.len());
+                self.list.scroll_to_reveal_item(p);
+                cx.notify();
+                return;
+            }
+        }
+    }
 }
 
 impl EntityInputHandler for Editor {
@@ -562,6 +591,9 @@ impl Render for Editor {
             .on_action(cx.listener(Self::enter))
             .on_action(cx.listener(Self::left))
             .on_action(cx.listener(Self::right))
+            .on_action(cx.listener(Self::jump_end))
+            .on_action(cx.listener(Self::jump_home))
+            .on_action(cx.listener(Self::search))
             .size_full()
             .relative()
             .bg(color(WINDOW_BG))
@@ -653,6 +685,9 @@ fn main() {
             KeyBinding::new("left", Left, None),
             KeyBinding::new("right", Right, None),
             KeyBinding::new("escape", Escape, None),
+            KeyBinding::new("ctrl-end", JumpEnd, Some("Editor")),
+            KeyBinding::new("ctrl-home", JumpHome, Some("Editor")),
+            KeyBinding::new("f3", Search, Some("Editor")),
         ]);
         let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
         let options = WindowOptions {
@@ -672,9 +707,13 @@ fn main() {
                     cx.new(|cx| Gallery { field, focus: cx.focus_handle(), checked: false, menu_open: false, selected: None, status: "Last action: none".into() }).into()
                 }
                 "list" => cx.new(|_| RowList).into(),
-                "text" | "typing" => {
-                    let n = if scenario == "text" { DOC_LARGE_PARAGRAPHS } else { DOC_SMALL_PARAGRAPHS };
-                    let editor = cx.new(|cx| Editor::new(cx, n));
+                "text" | "typing" | "logs" => {
+                    let paras = match scenario.as_str() {
+                        "text" => doc_paragraphs(DOC_LARGE_PARAGRAPHS),
+                        "typing" => doc_paragraphs(DOC_SMALL_PARAGRAPHS),
+                        _ => log_lines(),
+                    };
+                    let editor = cx.new(|cx| Editor::new(cx, paras));
                     window.focus(&editor.read(cx).focus.clone(), cx);
                     editor.into()
                 }

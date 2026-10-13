@@ -7,6 +7,11 @@ pub const BODY_PX: f32 = 11.0 * 4.0 / 3.0;
 pub const DOC_LINE_HEIGHT: f32 = 20.0;
 pub const DOC_LARGE_PARAGRAPHS: usize = 4000;
 pub const DOC_SMALL_PARAGRAPHS: usize = 6;
+/// The word F3 searches for: once, three quarters of the way through the
+/// document and the log.
+pub const DOC_NEEDLE: &str = "haystackneedle";
+/// The log scenario's size.
+pub const LOG_BYTES: usize = 100 << 20;
 
 pub const GRID_COLS: usize = 64;
 pub const GRID_ROWS: usize = 40;
@@ -54,8 +59,56 @@ pub fn doc_paragraphs(paragraphs: usize) -> Vec<String> {
                 p.push_str(c.as_str());
             }
         }
+        if out.len() == paragraphs * 3 / 4 {
+            p.push(' ');
+            p.push_str(DOC_NEEDLE);
+        }
         p.push('.');
         out.push(p);
+    }
+    out
+}
+
+const LOG_LEVELS: [&str; 6] = ["INFO ", "INFO ", "INFO ", "DEBUG", "WARN ", "ERROR"];
+
+/// The lines of log_generate, one string per line.
+pub fn log_lines() -> Vec<String> {
+    let mut state = 777u64;
+    let mut out = Vec::new();
+    let mut len = 0usize;
+    let mut i = 0usize;
+    while len < LOG_BYTES {
+        if i > 0 {
+            len += 1;
+        }
+        let t = i as u32;
+        let ms = next(&mut state) % 1000;
+        let worker = next(&mut state) % 16;
+        let item = next(&mut state) % 100000;
+        let took = next(&mut state) % 500;
+        let level = LOG_LEVELS[next(&mut state) as usize % 6];
+        let what = WORDS[next(&mut state) as usize % WORDS.len()];
+        let mut line = format!(
+            "2026-10-13 {:02}:{:02}:{:02}.{:03} {} [worker-{:02}] GET /api/v1/{}/{:05} served in {} ms (request {})",
+            t / 3600000 % 24,
+            t / 60000 % 60,
+            t / 1000 % 60,
+            ms,
+            level,
+            worker,
+            what,
+            item,
+            took,
+            i
+        );
+        len += line.len();
+        if len >= LOG_BYTES * 3 / 4 && len - line.len() < LOG_BYTES * 3 / 4 {
+            line.push(' ');
+            line.push_str(DOC_NEEDLE);
+            len += 1 + DOC_NEEDLE.len();
+        }
+        out.push(line);
+        i += 1;
     }
     out
 }

@@ -26,10 +26,11 @@ ROOT = os.path.dirname(HERE)
 OUT = os.path.join(ROOT, "out")
 REFRESH_NS = 1e9 / 60
 PROGRAMS = {
-    "siv": [os.path.join(OUT, "siv-bench")],
+    # GC_SIV_BENCH runs another build of the siv program (an older siv).
+    "siv": [os.environ.get("GC_SIV_BENCH", os.path.join(OUT, "siv-bench"))],
     "gpui": [os.path.join(ROOT, "gpui", "target", "release", "gpui-compare")],
 }
-SCENARIOS = ["idle", "gallery", "list", "text", "grid", "typing", "resize"]
+SCENARIOS = ["idle", "gallery", "list", "text", "grid", "typing", "resize", "logs"]
 # Touchpad scroll per event, so that both move 30 logical px: gpui
 # multiplies touchpad deltas by 3 (gpui_linux's Wayland client,
 # `let modifier = 3.0`), siv scrolls them as they come (D8).
@@ -317,6 +318,7 @@ class Run:
         self.shim = Shim(self.log_path)
         self.screenshot = screenshot
         app_scenario = "gallery" if scenario == "resize" else scenario
+        startup_limit = 60 if scenario == "logs" else 15
         env = dict(self.sway.env, LD_PRELOAD=os.path.join(OUT, "presshim.so"), PRESSHIM_LOG=self.log_path)
         # SIV_* variables reach the program (for experiments).
         env.update({k: v for k, v in os.environ.items() if k.startswith("SIV_")})
@@ -325,7 +327,7 @@ class Run:
         self.app = subprocess.Popen(PROGRAMS[toolkit] + [app_scenario], env=env, stdout=self.app_log, stderr=subprocess.STDOUT)
         self.pid = self.app.pid
         self.main = set()
-        deadline = time.monotonic() + 15
+        deadline = time.monotonic() + startup_limit
         while time.monotonic() < deadline:
             self.shim.poll()
             self.main = self.shim.surfaces()
@@ -493,11 +495,30 @@ def scenario_list(r):
     r.result["wheel_ms"] = r.latency(["wheel 1"], count=15)
 
 
+def jumps(r):
+    """Ctrl+End and Ctrl+Home: the caret to the end or the start, shown;
+    F3: the caret to the search result, shown (from the start each time)."""
+    end, home, search = [], [], []
+    for i in range(5):
+        end += r.latency(["key ctrl+End"], count=1, gap=0.4)
+        if i == 0:
+            r.shot(r.scenario + "-end")
+        home += r.latency(["key ctrl+Home"], count=1, gap=0.4)
+    for i in range(5):
+        search += r.latency(["key F3"], count=1, gap=0.4)
+        if i == 0:
+            r.shot(r.scenario + "-search")
+        r.latency(["key ctrl+Home"], count=1, gap=0.4)
+    r.result["jump_end_ms"] = end
+    r.result["jump_home_ms"] = home
+    r.result["search_ms"] = search
+
+
 def scenario_text(r):
     r.settle()
     r.memory("memory")
     r.result["idle"] = r.window(3)
-    r.shot("text")
+    r.shot(r.scenario)
     r.result["key_ms"] = r.latency(["key x"], count=15)
     r.inj.send("move 640 400")
     time.sleep(0.3)
@@ -505,6 +526,14 @@ def scenario_text(r):
     r.result["scroll"] = r.frames(lambda: r.inj.send(f"scrollburst {SCROLL_EVENT[r.toolkit]} 120 360", answers=360))
     r.settle(0.3)
     r.result["wheel_ms"] = r.latency(["wheel 1"], count=10)
+    jumps(r)
+
+
+def scenario_logs(r):
+    # The same steps over 100 MB of log lines; background work may take a
+    # while to go quiet.
+    r.settle(0.5, limit=60)
+    scenario_text(r)
 
 
 def scenario_typing(r):

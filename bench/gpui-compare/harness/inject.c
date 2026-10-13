@@ -7,7 +7,7 @@
  * compositor, as "t <ns>", or "ok" for sync:
  *   move X Y                 absolute pointer motion (output coordinates)
  *   press | release          left button
- *   key CHAR|Return|BackSpace|Escape|Down|Up  press and release
+ *   key [ctrl+]CHAR|Return|BackSpace|Escape|Down|Up|Home|End|F3  press and release
  *   wheel N                  N wheel notches (positive: down)
  *   scroll DY                touchpad scroll of DY logical pixels
  *   scrollburst DY HZ COUNT  COUNT touchpad scrolls at HZ, one "t" per event
@@ -108,6 +108,9 @@ static int keycode(const char *name, int *shift) {
 	if (strcmp(name, "Down") == 0) return KEY_DOWN;
 	if (strcmp(name, "Up") == 0) return KEY_UP;
 	if (strcmp(name, "space") == 0) return KEY_SPACE;
+	if (strcmp(name, "Home") == 0) return KEY_HOME;
+	if (strcmp(name, "End") == 0) return KEY_END;
+	if (strcmp(name, "F3") == 0) return KEY_F3;
 	if (strlen(name) != 1) return -1;
 	char c = name[0];
 	if (c >= 'A' && c <= 'Z') *shift = 1, c = (char)(c - 'A' + 'a');
@@ -121,24 +124,27 @@ static int keycode(const char *name, int *shift) {
 	return -1;
 }
 
-static void mods(int shift) {
-	zwp_virtual_keyboard_v1_modifiers(kbd, shift ? 1 : 0, 0, 0, 0);
+/* Shift and Control in the keymap's modifier mask. */
+static void mods(int shift, int ctrl) {
+	zwp_virtual_keyboard_v1_modifiers(kbd, (shift ? 1u : 0u) | (ctrl ? 4u : 0u), 0, 0, 0);
 }
 
 /* Presses and releases a key; the reported time is the press's. */
 static void key(const char *name) {
 	int shift;
+	int ctrl = strncmp(name, "ctrl+", 5) == 0;
+	if (ctrl) name += 5;
 	int code = keycode(name, &shift);
 	if (code < 0) {
 		printf("error unknown key %s\n", name);
 		fflush(stdout);
 		return;
 	}
-	if (shift) mods(1);
+	if (shift || ctrl) mods(shift, ctrl);
 	zwp_virtual_keyboard_v1_key(kbd, ms(), (uint32_t)code, WL_KEYBOARD_KEY_STATE_PRESSED);
 	flushed();
 	zwp_virtual_keyboard_v1_key(kbd, ms(), (uint32_t)code, WL_KEYBOARD_KEY_STATE_RELEASED);
-	if (shift) mods(0);
+	if (shift || ctrl) mods(0, 0);
 	wl_display_flush(display);
 }
 

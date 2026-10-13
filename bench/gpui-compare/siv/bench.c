@@ -1,6 +1,6 @@
 /* The siv side of bench/gpui-compare: one program, one scenario per run.
  *
- *     siv-bench idle|gallery|list|text|grid|typing
+ *     siv-bench idle|gallery|list|text|grid|typing|logs
  *
  * Every scenario is mirrored by gpui/src/main.rs; README.md lists what
  * each shows and the differences that remain. */
@@ -140,9 +140,51 @@ static void build_list(siv_txn txn, siv_node root) {
 
 /* Text: an editable document -------------------------------------------------------- */
 
-static siv_node build_editor(siv_txn txn, siv_node root, size_t paragraphs) {
+static siv_node doc_scroll;
+
+/* F3 finds the needle after the caret (from the start again past the
+ * last), selects it, and so shows it (D15). With BENCH_SCROLL_JUMP,
+ * Ctrl+End and Ctrl+Home also scroll to the end and the start, for siv
+ * before its editor showed its caret. */
+static siv_event_result on_editor_key(void *user_data, siv_node node, const siv_event *event) {
+	(void)user_data;
+	if (!(event->flags & SIV_EVENT_PRESSED)) return SIV_EVENT_RESULT_PASS;
+#ifdef BENCH_SCROLL_JUMP
+	if ((event->modifiers & SIV_MODIFIERS_CTRL) && (event->keysym == SIV_KEY_END || event->keysym == SIV_KEY_HOME)) {
+		siv_txn txn;
+		if (siv_txn_begin(event->window, &txn) != SIV_OK) return SIV_EVENT_RESULT_PASS;
+		siv_scroll_to(txn, doc_scroll, 0, event->keysym == SIV_KEY_END ? 1e9f : 0);
+		if (siv_txn_commit(txn) != SIV_OK) fprintf(stderr, "scroll failed\n");
+		return SIV_EVENT_RESULT_PASS;
+	}
+#endif
+	if (event->keysym != SIV_KEY_F3) return SIV_EVENT_RESULT_PASS;
+	static char *buf;
+	static size_t cap;
 	size_t len = 0;
-	char *doc = doc_generate(paragraphs, &len);
+	if (siv_node_get_text(node, buf, cap, &len) != SIV_OK) return SIV_EVENT_RESULT_HANDLED;
+	if (len + 1 > cap) {
+		free(buf);
+		cap = len + 1 + (len >> 3);
+		buf = malloc(cap);
+		if (siv_node_get_text(node, buf, cap, &len) != SIV_OK) return SIV_EVENT_RESULT_HANDLED;
+	}
+	buf[len] = 0;
+	const char *hit = strstr(buf, DOC_NEEDLE);
+	uint32_t at = hit ? (uint32_t)(hit - buf) : 0;
+	/* An application searching now and then does not keep a copy. */
+	free(buf);
+	buf = NULL;
+	cap = 0;
+	if (!hit) return SIV_EVENT_RESULT_HANDLED;
+	siv_txn txn;
+	if (siv_txn_begin(event->window, &txn) != SIV_OK) return SIV_EVENT_RESULT_HANDLED;
+	siv_set_selection(txn, node, at + (uint32_t)strlen(DOC_NEEDLE), at);
+	if (siv_txn_commit(txn) != SIV_OK) fprintf(stderr, "search failed\n");
+	return SIV_EVENT_RESULT_HANDLED;
+}
+
+static siv_node build_editor_text(siv_txn txn, siv_node root, char *doc, size_t len) {
 	siv_node scroll = siv_scroll(txn, root, SIV_SCROLL_AXIS_VERTICAL);
 	siv_set_layout(txn, scroll, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_FRACTION, 1}, .height = {SIV_UNIT_FRACTION, 1}));
 	siv_node editor = siv_editor(txn, scroll, SIV_EDITOR_MULTILINE);
@@ -150,8 +192,22 @@ static siv_node build_editor(siv_txn txn, siv_node root, size_t paragraphs) {
 	siv_set_text_style(txn, editor, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_VIEW_FG, .size_role = SIV_SIZE_ROLE_BODY, .line_height = DOC_LINE_HEIGHT));
 	siv_set_text(txn, editor, doc, len);
 	siv_set_selection(txn, editor, 0, 0);
+	siv_on(txn, editor, SIV_EVENT_TYPE_KEY, on_editor_key, NULL, NULL);
+	doc_scroll = scroll;
 	free(doc);
 	return editor;
+}
+
+static siv_node build_editor(siv_txn txn, siv_node root, size_t paragraphs) {
+	size_t len = 0;
+	char *doc = doc_generate(paragraphs, &len);
+	return build_editor_text(txn, root, doc, len);
+}
+
+static siv_node build_logs(siv_txn txn, siv_node root) {
+	size_t len = 0, lines = 0;
+	char *doc = log_generate(&len, &lines);
+	return build_editor_text(txn, root, doc, len);
 }
 
 /* Grid of animated cells ------------------------------------------------------------- */
@@ -199,6 +255,7 @@ int main(int argc, char **argv) {
 		else if (strcmp(scenario, "list") == 0) build_list(txn, root);
 		else if (strcmp(scenario, "text") == 0) focus = build_editor(txn, root, DOC_LARGE_PARAGRAPHS);
 		else if (strcmp(scenario, "typing") == 0) focus = build_editor(txn, root, DOC_SMALL_PARAGRAPHS);
+		else if (strcmp(scenario, "logs") == 0) focus = build_logs(txn, root);
 		else if (grid) build_grid(txn, root);
 		else {
 			fprintf(stderr, "unknown scenario %s\n", scenario);

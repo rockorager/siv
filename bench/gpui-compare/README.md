@@ -23,6 +23,7 @@ ZIG=~/.local/opt/zig-0.17.0/zig ./build.sh          # libsiv (ReleaseFast), both
 python3 harness/run.py --runs 5                     # about 25 minutes
 python3 harness/report.py > results/latest.md
 python3 harness/run.py --runs 1 --scenarios text --toolkits siv --perf /tmp/prof   # perf record
+GC_SIV_BENCH=out/siv-bench-before python3 harness/run.py --toolkits siv --out results/raw-before   # another build of the siv program
 GC_KMS=/dev/dri/card0 python3 harness/run.py --scenarios gallery   # sway on a KMS device (vkms): real vblank
 ```
 
@@ -96,10 +97,22 @@ load average in every result.
 | idle | A window with one label. 10 s idle window. |
 | gallery | A title, four buttons (default, primary, disabled, and a menu button with six items), a focused 320 px text field, a checkbox, a 320×320 list of 50 selectable items, and a status label. 15 key presses into the field, 15 clicks on a button, 8 menu openings. |
 | list | A 100,000-row list filling the window, two text columns per row. 5 s of touchpad scrolling at 120 events/s of 30 px each, then 15 wheel notches. |
-| text | An editor over a 4,000-paragraph document (about 1.2 MB, 200,000 words) at 14.67 px with 20 px lines, wrapped to the window, focused at the start. 15 key presses, 3 s of scrolling, 10 wheel notches. |
+| text | An editor over a 4,000-paragraph document (about 1.2 MB, 200,000 words) at 14.67 px with 20 px lines, wrapped to the window, focused at the start. 15 key presses, 3 s of scrolling, 10 wheel notches, then five jumps to the end and back (Ctrl+End, Ctrl+Home) and five search-result jumps (F3, then Ctrl+Home). |
 | grid | 2,560 rounded 16 px squares (64×40), each fading between opacity 1 and 0.2 every second (CSS ease-in-out, alternating) with its own delay. 5 s of animation. |
 | typing | The editor with a 6-paragraph document: 300 characters typed at one per 8 ms. |
 | resize | The gallery as a floating window, resized 180 times at 60 Hz between 1280×800 and 800×500. |
+| logs | The text scenario's editor and steps over 100 MB of log lines (1.05 M lines of about 100 bytes, `log_generate`), after waiting for the program to go quiet. |
+
+Ctrl+End and Ctrl+Home move the caret to the end or the start and show
+it. F3 searches the text for a word that occurs once, three quarters of
+the way through (`DOC_NEEDLE`), puts the caret there, and shows it: siv
+copies the editor's text (`siv_node_get_text`, freed after) and calls
+`siv_set_selection`, whose editor scrolls to its caret (D15); gpui
+searches its paragraphs and calls `ListState::scroll_to_reveal_item`.
+siv before round 4 could not show a caret's offset: its build
+(`-DBENCH_SCROLL_JUMP`) also scrolls to the end or the start with
+`siv_scroll_to` on Ctrl+End and Ctrl+Home, and its search jump moves
+only the caret.
 
 gpui multiplies touchpad deltas by 3 (`gpui_linux`'s Wayland client), so
 `run.py` sends it 10 px per event where siv gets 30: both scroll the same
@@ -229,12 +242,14 @@ for 5 s, so an idle siv window keeps 8 (gpui keeps 27).
   change in timing exposed a race in `siv_test_settle`, which could
   return before the frame the compositor owed for a wheel scroll; it
   now waits for every frame the compositor owes (D27).
-- **The large document** holds 149 MiB against 82. siv keeps the whole
+- **The large document** held 149 MiB against 82. siv kept the whole
   document shaped (glyphs, carets, and line breaks of 1.4 M characters),
   so that every height, caret, and hit test is exact; gpui's editor
   shapes only the lines in view. Round 3 dropped positioned glyphs from
   blocks that are not painted (30 MiB less), and part of that went to
-  the heaps of the workers that shape in the background.
+  the heaps of the workers that shape in the background. Round 4 bounds
+  it (89 MiB at the end of the scenario, below).
+- **Keystrokes in 100 MB** cost 27 ms against 3.6 (round 4, below).
 
 ### Profiling and fixes
 
@@ -259,6 +274,51 @@ scenario (`run.py --perf`), and measured with `run.py` before and after.
 | `e2fe7b5` render: a specialized draw pipeline for the common draws | one exact shader of 23,560 instructions and 56 VGPRs drew every rect and glyph | draw pass (GPU timestamps) text 0.84 → 0.54 ms, grid 0.53 → 0.43, list 0.65 → 0.39; GPU/frame text 1.25 → 0.97, grid 0.99 → 0.89, list 1.02 → 0.72 |
 | `63bc95e` text: shape long texts on the pool and keep glyphs only where painted | the 1.4 MB document was shaped and laid out whole before the first frame; positioned glyphs of every block were kept (30 MiB) though only painting reads them | text startup 98.6 → 38.0 ms, RSS 163 → 149 MiB |
 | `d34089c` render: build the CPU renderer's transfer tables once per process | each small popup's CPU renderer computed three 65,536-entry tables with `pow` before its first frame | menu shown 7.4 → 3.3 ms (5.6 before the third table) |
+
+### Round 4: bounded memory for long documents
+
+`results/round4.md` (five runs each, siv before at `116a844`, after at
+this round's commit) for the text scenario, now with jumps, and the new
+100 MB log scenario:
+
+| Scenario | Metric | siv before | siv after | gpui |
+| --- | --- | --- | --- | --- |
+| text | startup to first frame | 37.2 ms | 37.0 ms | 79.5 ms |
+| text | RSS at the end | 151.5 MiB | 89.4 MiB | 82.4 MiB |
+| text | key to photon (median / max) | 3.18 / 5.46 ms | 3.26 / 5.85 ms | 3.46 / 19.7 ms |
+| text | scroll: CPU / GPU per frame | 1.35 / 1.03 ms | 1.39 / 0.96 ms | 2.67 / 0.58 ms |
+| text | jump to end (median / max) | 3.48 / 3.91 ms* | 4.50 / 9.26 ms | 7.58 / 21.7 ms |
+| text | search result jump (median / max) | –† | 5.75 / 12.9 ms | 8.14 / 9.25 ms |
+| logs | startup to first frame | 215.6 ms | 215.6 ms | 469.3 ms |
+| logs | RSS after start / at the end / peak | 1,028 / 6,607 / 7,439 MiB | 284 / 292 / 404 MiB | 434 / 434 / 434 MiB |
+| logs | key to photon (median / max) | 30.4 / 571 ms | 27.1 / 28.3 ms | 3.57 / 19.1 ms |
+| logs | scroll: CPU / GPU per frame | 1.16 / 0.82 ms | 1.14 / 0.79 ms | 2.63 / 0.54 ms |
+| logs | jump to end (median / max) | 3.61 / 4.21 ms* | 3.84 / 9.10 ms | 7.13 / 22.1 ms |
+| logs | search result jump (median / max) | –† | 21.0 / 24.5 ms | 37.6 / 38.8 ms |
+
+\* Scrolled with `siv_scroll_to` over a document kept whole in memory.
+† siv before could not show a caret's offset; its F3 only moved the
+caret (2.7 ms for the document, 20.6 ms for the logs).
+
+siv kept every block's shaping and lines: 65 times the text's bytes,
+91 MiB for the document and 7 GiB for the logs, where the background
+shaping of the rest also stalled keys pressed meanwhile (571 ms). Now a
+residency keeps 16 MiB of blocks for all long texts and every block's
+exact metrics, builds evicted blocks again when something needs them,
+estimates the metrics of blocks not shaped yet, and keeps what a scroll
+container shows in place while they are measured (D13); the editor
+scrolls to show its caret (D15), which is what the jumps measure. The
+document's memory is within 7 MiB of gpui's; the logs' is two thirds of
+it. A jump costs one to four blocks shaped again (a millisecond each),
+so the first jump to a place peaks at 9 ms, against gpui's 22.
+
+Two costs remain linear in the document's size, and show at 100 MB:
+a keystroke copies the editor's text, which is one buffer (D15), and
+compares the old and new text block by block to find what changed
+(D13); together 27 ms for the logs against gpui's 3.6, where gpui edits
+one paragraph string. siv's search copies the text out
+(`siv_node_get_text`), 100 MB per search; gpui searches its strings in
+place and is still slower, scanning a million of them.
 
 ### siv bugs found by the bench, and their fixes
 

@@ -1261,7 +1261,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     queries now return `OutOfMemory`, since they may lay out: the editor
     ignores a key it cannot lay out for, and AT-SPI answers nothing.
     PDF output needs nothing of this: pages are canvases (D19), whose
-    text is shaped and laid out whole for the page. Alternatives: no
+    text is shaped and laid out whole for the page. Measured
+    (bench/gpui-compare round 4, five runs): the 1.4 MB editor's
+    resident memory at the end of its scenario 152 MiB to 89 MiB (gpui
+    82), key to photon unchanged (3.3 ms median); 100 MB of logs 6.6 GiB
+    to 292 MiB (gpui 434), first frame in 216 ms (gpui 469). A jump to
+    the end or a search result shows in 4 to 6 ms, 9 to 13 ms the first
+    time, which shapes a few blocks again (gpui 8 ms, 22 ms at most). A
+    keystroke in the logs costs 27 ms (gpui 3.6): the editor's text is
+    one buffer that an edit copies (D15), and finding what an edit
+    changed compares the texts block by block, both linear in the size;
+    a rope for the node's text and the edit's range passed to shaping
+    would remove both. Alternatives: no
     budget, laying out only the blocks shown each frame, as gpui does
     (the editor's queries then cost a layout every time, and the
     scrollbar is an estimate for good); a budget per text (an
