@@ -1887,6 +1887,19 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       without the protocol the callback gets `unavailable`. The headless
       backend keeps sessions process-wide, as a compositor outlives its
       clients, so a test restores a window in a second application.
+      Compositors remember a toplevel's state when its xdg_toplevel is
+      destroyed while it is still in the session (KWin 6.7 does), so a
+      window destroys its xdg_toplevel before its toplevel session
+      object; and libwayland's server destroys a client on hangup without
+      reading what it sent last, so a connection with a session waits (at
+      most 100 ms) for the compositor to process the windows' destruction
+      before it disconnects. Both found against KWin 6.7.5
+      (`kwin_wayland --virtual`), where a second run then restores the
+      window; sway has no session management, so this is not in the
+      integration tests.
+    - Also checked by hand, not in the tests: labwc (wlroots 0.19) and
+      KWin 6.7.5 take the modal dialog role and window icons (KWin asks
+      for 96 px icons, labwc states no size) without protocol errors.
     - Idle inhibition: the portal's Inhibit (D19) and idle-inhibit-
       unstable-v1 behind one call, `siv_inhibit`. The rule: an inhibition
       of idling alone for a window uses the compositor's protocol when it

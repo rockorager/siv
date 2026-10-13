@@ -317,6 +317,11 @@ pub fn destroy(self: *Wayland) void {
 
 fn teardown(self: *Wayland) void {
     for (self.windows.items, 0..) |w, i| if (w != null) self.destroyWindow(@intCast(i));
+    // A compositor remembers a session's toplevels as they are destroyed,
+    // but drops what a client sent just before hanging up (libwayland's
+    // server destroys a client on hangup without reading on), so wait for
+    // it to process their destruction, briefly.
+    if (self.session != null) self.sync(100 * std.time.ns_per_ms);
     for (self.tokens.items) |t| {
         t.proxy.destroy();
         self.allocator.destroy(t);
@@ -371,6 +376,35 @@ fn teardown(self: *Wayland) void {
     xkb.xkb_compose_table_unref(self.compose_table);
     xkb.xkb_context_unref(self.xkb_context);
     self.queue.deinit();
+}
+
+/// Waits, at most `timeout_ns`, until the compositor processed every
+/// request sent so far, dispatching what arrives meanwhile.
+fn sync(self: *Wayland, timeout_ns: u64) void {
+    if (self.dead) return;
+    const cb = self.display.sync() catch return;
+    defer cb.destroy();
+    var done = false;
+    cb.setListener(*bool, struct {
+        fn f(_: *wl.Callback, _: wl.Callback.Event, d: *bool) void {
+            d.* = true;
+        }
+    }.f, &done);
+    const deadline = Loop.now() + timeout_ns;
+    while (!done) {
+        const now = Loop.now();
+        if (now >= deadline) return;
+        if (self.display.flush() == .SUCCESS) {} else return;
+        while (!self.display.prepareRead()) {
+            if (self.display.dispatchPending() != .SUCCESS) return;
+        }
+        var fds = [_]linux.pollfd{.{ .fd = self.display.getFd(), .events = linux.POLL.IN, .revents = 0 }};
+        const ms: i32 = @intCast(@max(1, (deadline - now) / std.time.ns_per_ms));
+        if (linux.poll(&fds, 1, ms) == 1) {
+            if (self.display.readEvents() != .SUCCESS) return;
+        } else self.display.cancelRead();
+        if (self.display.dispatchPending() != .SUCCESS) return;
+    }
 }
 
 /// Destroys a proxy without a destructor request.
@@ -885,9 +919,11 @@ pub fn destroyWindow(self: *Wayland, id: WindowId) void {
     if (w.dialog) |d| d.destroy();
     if (w.icon) |i| i.destroy();
     if (w.idle) |i| i.destroy();
-    if (w.session) |x| x.destroy();
     w.subsurfaces.deinit(self.allocator);
     if (w.toplevel) |t| t.destroy();
+    // After the toplevel: compositors remember a toplevel's state when its
+    // role is destroyed while it is still in the session (KWin does).
+    if (w.session) |x| x.destroy();
     if (w.popup) |p| p.destroy();
     w.xdg_surface.destroy();
     w.swapchain.deinit();
