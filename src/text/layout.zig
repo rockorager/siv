@@ -125,6 +125,10 @@ pub const GlyphRun = struct {
     /// Range in `Layout.glyphs`.
     glyph_start: u32,
     glyph_end: u32,
+    /// Ink bounds of the glyphs, x from the line's left pen position and y
+    /// from the baseline (down); empty (zero size) without ink. Painting
+    /// takes them as they are instead of asking every glyph.
+    ink: Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
 };
 
 pub const Affinity = enum {
@@ -1125,6 +1129,7 @@ const Builder = struct {
             }
         }
 
+        self.inkRuns(run_start, @intCast(self.runs.items.len));
         const hang = paragraph_.hangingStart(p.text, start, end);
         var hanging: f32 = 0;
         for (self.glyphs.items[glyph_start_line..]) |glyph| {
@@ -1151,6 +1156,26 @@ const Builder = struct {
             .indent_end = fr.style.indent_end,
             .alignment = fr.style.alignment,
         });
+    }
+
+    /// Sets the ink bounds of runs `from..to` from their glyphs.
+    fn inkRuns(self: *Builder, from: u32, to: u32) void {
+        for (self.runs.items[from..to]) |*run| {
+            const face = self.cache.face(run.font) orelse continue;
+            var x0: f32 = std.math.inf(f32);
+            var y0: f32 = std.math.inf(f32);
+            var x1: f32 = -std.math.inf(f32);
+            var y1: f32 = -std.math.inf(f32);
+            for (self.glyphs.items[run.glyph_start..run.glyph_end]) |g| {
+                const b = face.glyphBounds(g.id, run.size) orelse continue;
+                if (!(b.width > 0 and b.height > 0)) continue;
+                x0 = @min(x0, g.x + b.x);
+                y0 = @min(y0, g.y + b.y);
+                x1 = @max(x1, g.x + b.x + b.width);
+                y1 = @max(y1, g.y + b.y + b.height);
+            }
+            run.ink = if (x1 > x0) .{ .x = x0, .y = y0, .width = x1 - x0, .height = y1 - y0 } else .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+        }
     }
 
     fn strut(self: *const Builder, style_index: u32) font_.Metrics {
@@ -1276,6 +1301,8 @@ const Builder = struct {
             previous = index;
             if ((line.alignment orelse options.alignment) == .justify) if (options.width) |w| {
                 self.justify(line, w - line.indent_start - line.indent_end);
+                // Justification moved the glyphs.
+                self.inkRuns(line.run_start, line.run_end);
             };
             // Hanging whitespace sits at the logical end: right for
             // left-to-right lines, left for right-to-left ones.

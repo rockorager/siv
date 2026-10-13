@@ -1005,18 +1005,20 @@ fn drawLayout(st: *State, win: *Window, l: *const text.Layout, b: *scene.Builder
             const sp: node_mod.SpanStyle = if (own) cache.?.runStyle(run.style) else .{};
             const run_color = if (sp.color_token != .none) win.palette.color(sp.color_token) else sp.color orelse color;
             st.glyphs.clearRetainingCapacity();
-            var rb = Rect.empty;
             var x0: f32 = std.math.inf(f32);
             var x1: f32 = -std.math.inf(f32);
             const baseline = oy + line.baseline;
-            for (l.runGlyphs(run)) |g| {
-                const x = ox + shift + line.x + g.x;
-                const y = baseline + g.y;
+            const pen = ox + shift + line.x;
+            const glyphs = l.runGlyphs(run);
+            try st.glyphs.ensureUnusedCapacity(win.gpa, glyphs.len);
+            for (glyphs) |g| {
+                const x = pen + g.x;
                 x0 = @min(x0, x);
                 x1 = @max(x1, x + g.advance);
-                try st.glyphs.append(win.gpa, .{ .id = g.id, .x = x, .y = y });
-                if (face.glyphBounds(g.id, run.size)) |gb| rb = rb.unite(.xywh(x + gb.x, y + gb.y, gb.width, gb.height));
+                st.glyphs.appendAssumeCapacity(.{ .id = g.id, .x = x, .y = baseline + g.y });
             }
+            // The layout measured the run's ink.
+            var rb = if (run.ink.width > 0) Rect.xywh(pen + run.ink.x, baseline + run.ink.y, run.ink.width, run.ink.height) else Rect.empty;
             // Underline below the baseline, strikethrough through the
             // middle of lowercase letters; about a sixteenth of the size
             // thick, at least a pixel.
