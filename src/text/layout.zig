@@ -1,6 +1,10 @@
 //! Layout: a ShapedParagraph broken into lines at one width (D13).
 //!
-//! Greedy break selection runs over the paragraph's measured segments.
+//! Greedy break selection runs over the paragraph's measured segments,
+//! each line within the width its paragraph's indents leave. Tabs advance
+//! to the next tab stop from the start margin, so a segment holding one
+//! is measured where it falls; with `break_words`, a word too wide for a
+//! line of its own breaks between graphemes.
 //! Where a chosen break is unsafe to break (HarfBuzz UNSAFE_TO_BREAK), the
 //! line edges are reshaped inline from the nearest safe glyph boundary, and
 //! the line is re-selected if the reshaped edge no longer fits. Each line
@@ -25,10 +29,53 @@ const ShapedParagraph = paragraph_.ShapedParagraph;
 
 pub const Alignment = enum { start, end, center };
 
+/// How the lines of one paragraph (a bidi paragraph: text up to a
+/// paragraph separator) are placed.
+pub const ParagraphStyle = struct {
+    /// Null takes the layout's alignment (a text node's, at paint time).
+    alignment: ?Alignment = null,
+    /// Space at the start and end edges, in pixels.
+    indent_start: f32 = 0,
+    indent_end: f32 = 0,
+    /// Added to `indent_start` on the paragraph's first line; negative
+    /// hangs the first line out.
+    first_line_indent: f32 = 0,
+    /// Line height as a multiple of the font's (CSS line-height), with
+    /// the extra space split above and below the line.
+    line_spacing: f32 = 1,
+    /// An exact line height in pixels, replacing `line_spacing`; 0 is
+    /// none.
+    line_height: f32 = 0,
+    /// Space above the paragraph's first line and below its last, between
+    /// paragraphs only: not above the text's first paragraph or below its
+    /// last.
+    space_before: f32 = 0,
+    space_after: f32 = 0,
+    /// Distance between tab stops after the explicit ones; 0 is the
+    /// shaped tab's advance (four spaces).
+    tab_width: f32 = 0,
+};
+
+/// A paragraph style up to byte offset `end` (exclusive). A paragraph
+/// takes the style of the run containing its first byte.
+pub const ParagraphRun = struct {
+    end: u32,
+    style: ParagraphStyle,
+};
+
 pub const Options = struct {
     /// Available width in pixels; null lays out without wrapping.
     width: ?f32 = null,
     alignment: Alignment = .start,
+    /// Paragraph styles in text order; empty uses the defaults.
+    paragraphs: []const ParagraphRun = &.{},
+    /// Explicit tab stops in pixels from the start margin (before
+    /// indentation), increasing; after them tabs advance to multiples of
+    /// the paragraph's `tab_width`.
+    tab_stops: []const f32 = &.{},
+    /// A word too wide for a line of its own breaks between graphemes
+    /// (CSS overflow-wrap: anywhere) instead of overflowing.
+    break_words: bool = false,
 };
 
 /// A glyph positioned relative to its line's origin: x from the line's
@@ -97,9 +144,36 @@ pub const Line = struct {
     /// Range in `Layout.carets`, in visual left-to-right order.
     caret_start: u32,
     caret_end: u32,
+    /// The paragraph's indents on this line (the first-line indent
+    /// included), in its own direction's start and end edges.
+    indent_start: f32 = 0,
+    indent_end: f32 = 0,
+    /// The paragraph's alignment, if it sets one.
+    alignment: ?Alignment = null,
 
     pub fn rtl(self: Line) bool {
         return self.base_level & 1 != 0;
+    }
+
+    /// The left edge of the line's content (without hanging whitespace)
+    /// as laid out.
+    pub fn contentX(self: Line) f32 {
+        return self.x + if (self.rtl()) self.advance - self.width else 0;
+    }
+
+    /// Where the line's content goes in a box `width` wide whose start
+    /// edge is the left (or the right, `rtl`): within the indents, which
+    /// follow the box's direction like the alignment does (D21), by the
+    /// line's alignment or else `alignment`.
+    pub fn contentXIn(self: Line, width: f32, rtl_box: bool, alignment: Alignment) f32 {
+        const left = if (rtl_box) self.indent_end else self.indent_start;
+        const right = if (rtl_box) self.indent_start else self.indent_end;
+        const free = width - left - right - self.width;
+        return left + switch (self.alignment orelse alignment) {
+            .start => if (rtl_box) free else 0,
+            .end => if (rtl_box) 0 else free,
+            .center => free / 2,
+        };
     }
 };
 
@@ -112,7 +186,7 @@ pub const Layout = struct {
     runs: []const GlyphRun,
     glyphs: []const PositionedGlyph,
     carets: []const Caret,
-    /// Widest line without hanging whitespace.
+    /// Widest line without hanging whitespace, with its indents.
     width: f32,
     height: f32,
 
@@ -129,6 +203,7 @@ pub const Layout = struct {
             .height = 0,
         };
         errdefer self.arena.deinit();
+        for (options.tab_stops) |stop| if (!std.math.isFinite(stop)) return error.InvalidWidth;
         var builder: Builder = .{
             .p = paragraph,
             .cache = cache,
@@ -136,6 +211,10 @@ pub const Layout = struct {
             .scratch = scratch,
             .shaper = try shape_.Shaper.init(),
             .width = options.width,
+            .styles = try paragraphStyles(scratch, paragraph, options.paragraphs),
+            .tab_stops = options.tab_stops,
+            .break_words = options.break_words,
+            .tabs = std.mem.indexOfScalar(u8, paragraph.text, '\t') != null,
         };
         defer builder.shaper.deinit();
         try builder.breakLines();
@@ -144,7 +223,7 @@ pub const Layout = struct {
         self.glyphs = builder.glyphs.items;
         self.carets = builder.carets.items;
         builder.position(options);
-        for (self.lines) |line| self.width = @max(self.width, line.width);
+        for (self.lines) |line| self.width = @max(self.width, line.width + line.indent_start + line.indent_end);
         if (self.lines.len != 0) {
             const last = self.lines[self.lines.len - 1];
             self.height = last.top + last.height;
@@ -201,14 +280,127 @@ const Builder = struct {
     scratch: std.mem.Allocator,
     shaper: shape_.Shaper,
     width: ?f32,
+    /// One per bidi paragraph, plus one for a line after a final break.
+    styles: []const ParagraphStyle,
+    tab_stops: []const f32,
+    break_words: bool,
+    /// The text has a tab, so segments need measuring where they fall.
+    tabs: bool,
     lines: std.ArrayList(Line) = .empty,
     runs: std.ArrayList(GlyphRun) = .empty,
     glyphs: std.ArrayList(PositionedGlyph) = .empty,
     carets: std.ArrayList(Caret) = .empty,
 
-    fn fits(self: *const Builder, width: f32) bool {
-        const limit = self.width orelse return true;
-        return width <= limit + 0.001;
+    fn fits(limit: ?f32, width: f32) bool {
+        const l = limit orelse return true;
+        return width <= l + 0.001;
+    }
+
+    /// Where the line starting at `start` begins and how wide it may be.
+    const LineFrame = struct {
+        style: ParagraphStyle,
+        /// The start indent, with the first-line indent on a first line.
+        indent: f32,
+        limit: ?f32,
+    };
+
+    fn frame(self: *const Builder, start: u32) LineFrame {
+        const index = self.paragraphIndex(start);
+        const style = self.styles[index];
+        const first = index == self.p.paragraphs.len or start == self.p.paragraphs[index].start;
+        const indent = style.indent_start + if (first) style.first_line_indent else 0;
+        return .{
+            .style = style,
+            .indent = indent,
+            .limit = if (self.width) |w| @max(0, w - indent - style.indent_end) else null,
+        };
+    }
+
+    /// The paragraph a line starting at `start` belongs to; the line after
+    /// a final break starts a paragraph of its own (index
+    /// `paragraphs.len`).
+    fn paragraphIndex(self: *const Builder, start: u32) u32 {
+        if (start == self.p.text.len and self.p.text.len != 0 and self.endsWithBreak()) return @intCast(self.p.paragraphs.len);
+        return self.p.paragraphAt(start);
+    }
+
+    const Measured = struct { advance: f32, trailing: f32 };
+
+    /// The advance of segment `j` from `from` (its start, or inside it
+    /// after a break within a word), with its tabs advancing to their
+    /// stops from `x`, the pen's distance from the start margin.
+    fn segment(self: *Builder, j: usize, from: u32, x: f32, style: ParagraphStyle) Measured {
+        const seg = self.p.segments[j];
+        const seg_start = if (j == 0) 0 else self.p.segments[j - 1].end;
+        if (from == seg_start and !self.tabs) return .{ .advance = seg.advance, .trailing = seg.trailing };
+        const hang = paragraph_.hangingStart(self.p.text, from, seg.end);
+        var m: Measured = .{ .advance = 0, .trailing = 0 };
+        var it: LogicalGlyphs = .init(self.p, from, seg.end);
+        while (it.next()) |glyph| {
+            const advance = if (self.isTab(glyph)) self.tabAdvance(x + m.advance, glyph.advance, style) else glyph.advance;
+            m.advance += advance;
+            if (glyph.cluster >= hang) m.trailing += advance;
+        }
+        return m;
+    }
+
+    fn isTab(self: *const Builder, glyph: Glyph) bool {
+        return self.p.text[glyph.cluster] == '\t';
+    }
+
+    /// From `x`, the pen's distance from the start margin, to the next tab
+    /// stop: an explicit one, else a multiple of the tab width (or of the
+    /// shaped tab's advance, four spaces).
+    fn tabAdvance(self: *const Builder, x: f32, shaped: f32, style: ParagraphStyle) f32 {
+        for (self.tab_stops) |stop| if (stop > x + 0.01) return stop - x;
+        const interval = if (style.tab_width > 0) style.tab_width else shaped;
+        if (!(interval > 0.01)) return shaped;
+        return (@floor((x + 0.01) / interval) + 1) * interval - x;
+    }
+
+    /// Gives the tabs among a line's pieces (logical order) their
+    /// advances from the start margin, on copies of the glyphs.
+    fn placeTabs(self: *Builder, pieces: []Piece, indent: f32, style: ParagraphStyle) !void {
+        if (!self.tabs) return;
+        var pen: f32 = indent;
+        for (pieces) |*piece| {
+            const rtl = self.p.runs[piece.run].rtl();
+            var has_tab = false;
+            for (piece.glyphs) |glyph| has_tab = has_tab or self.isTab(glyph);
+            if (!has_tab) {
+                for (piece.glyphs) |glyph| pen += glyph.advance;
+                continue;
+            }
+            const copy = try self.scratch.dupe(Glyph, piece.glyphs);
+            for (0..copy.len) |i| {
+                const g = &copy[if (rtl) copy.len - 1 - i else i];
+                if (self.isTab(g.*)) g.advance = self.tabAdvance(pen, g.advance, style);
+                pen += g.advance;
+            }
+            piece.glyphs = copy;
+        }
+    }
+
+    /// The last grapheme boundary in `start..end` before which the text
+    /// fits in `limit`, at least one grapheme past `start`.
+    fn graphemeBreak(self: *Builder, start: u32, end: u32, limit: f32, x: f32, style: ParagraphStyle) u32 {
+        const graphemes = self.p.graphemes;
+        var advance: f32 = 0;
+        var at = start;
+        var it: LogicalGlyphs = .init(self.p, start, end);
+        var pending: ?Glyph = it.next();
+        while (true) {
+            const next = @min(end, graphemes.after(at) orelse end);
+            var width = advance;
+            while (pending) |glyph| : (pending = it.next()) {
+                if (glyph.cluster >= next) break;
+                width += if (self.isTab(glyph)) self.tabAdvance(x + width, glyph.advance, style) else glyph.advance;
+            }
+            if (at != start and !fits(limit, width)) return at;
+            advance = width;
+            at = next;
+            if (at >= end) return end;
+        }
     }
 
     fn breakLines(self: *Builder) !void {
@@ -217,22 +409,42 @@ const Builder = struct {
         var start_unsafe = false;
         var first: usize = 0;
         while (first < segments.len) {
+            const f = self.frame(line_start);
             // Greedy: the last opportunity whose line fits without its
             // hanging whitespace. A first segment that does not fit
-            // overflows; nothing breaks inside a UAX #14 segment.
+            // overflows, unless words may break.
             var advance: f32 = 0;
             var chosen = first;
             var j = first;
             while (j < segments.len) : (j += 1) {
-                advance += segments[j].advance;
-                if (j != first and !self.fits(advance - segments[j].trailing)) break;
+                const m = self.segment(j, if (j == first) line_start else segments[j - 1].end, f.indent + advance, f.style);
+                advance += m.advance;
+                if (j != first and !fits(f.limit, advance - m.trailing)) break;
                 chosen = j;
                 if (segments[j].mandatory) break;
+            }
+            if (chosen == first and self.break_words and f.limit != null) {
+                const m = self.segment(first, line_start, f.indent, f.style);
+                const content_end = paragraph_.hangingStart(self.p.text, line_start, segments[first].end);
+                if (!fits(f.limit, m.advance - m.trailing) and content_end > line_start) {
+                    const end = self.graphemeBreak(line_start, content_end, f.limit.?, f.indent, f.style);
+                    if (end < content_end) {
+                        // Shaping across the break may differ: reshape
+                        // both edges, as at an unsafe opportunity.
+                        const pieces = try self.linePieces(line_start, end, start_unsafe, true);
+                        try self.placeTabs(pieces, f.indent, f.style);
+                        try self.emitLine(line_start, end, pieces, f);
+                        line_start = end;
+                        start_unsafe = true;
+                        continue;
+                    }
+                }
             }
             var pieces: []Piece = undefined;
             while (true) {
                 const end = segments[chosen].end;
                 pieces = try self.linePieces(line_start, end, start_unsafe, segments[chosen].unsafe);
+                try self.placeTabs(pieces, f.indent, f.style);
                 // A reshaped edge can be wider than measured; then end the
                 // line one opportunity earlier.
                 if (!segments[chosen].unsafe or chosen == first) break;
@@ -240,16 +452,19 @@ const Builder = struct {
                 for (pieces) |piece| {
                     for (piece.glyphs) |glyph| total += glyph.advance;
                 }
-                if (self.fits(total - self.trailing(pieces, line_start, end))) break;
+                if (fits(f.limit, total - self.trailing(pieces, line_start, end))) break;
                 chosen -= 1;
             }
-            try self.emitLine(line_start, segments[chosen].end, pieces);
+            try self.emitLine(line_start, segments[chosen].end, pieces, f);
             line_start = segments[chosen].end;
             start_unsafe = segments[chosen].unsafe;
             first = chosen + 1;
         }
         // The position after a final hard break, and empty text, need a line.
-        if (self.lines.items.len == 0 or self.endsWithBreak()) try self.emitLine(@intCast(self.p.text.len), @intCast(self.p.text.len), &.{});
+        if (self.lines.items.len == 0 or self.endsWithBreak()) {
+            const len: u32 = @intCast(self.p.text.len);
+            try self.emitLine(len, len, &.{}, self.frame(len));
+        }
     }
 
     fn endsWithBreak(self: *const Builder) bool {
@@ -338,7 +553,7 @@ const Builder = struct {
         return out.items;
     }
 
-    fn emitLine(self: *Builder, start: u32, end: u32, pieces: []Piece) !void {
+    fn emitLine(self: *Builder, start: u32, end: u32, pieces: []Piece, fr: LineFrame) !void {
         const p = self.p;
         const paragraph_index = p.paragraphAt(start);
         const paragraph = p.paragraphs[paragraph_index];
@@ -432,6 +647,9 @@ const Builder = struct {
             .run_end = @intCast(self.runs.items.len),
             .caret_start = caret_start,
             .caret_end = @intCast(self.carets.items.len),
+            .indent_start = fr.indent,
+            .indent_end = fr.style.indent_end,
+            .alignment = fr.style.alignment,
         });
     }
 
@@ -492,29 +710,86 @@ const Builder = struct {
         }
     }
 
-    /// Applies alignment and stacks lines vertically.
+    /// Applies alignment and indents, and stacks lines vertically with
+    /// their paragraphs' line and paragraph spacing.
     fn position(self: *Builder, options: Options) void {
         var widest: f32 = 0;
-        for (self.lines.items) |line| widest = @max(widest, line.width);
+        for (self.lines.items) |line| widest = @max(widest, line.width + line.indent_start + line.indent_end);
         const available = options.width orelse widest;
         var top: f32 = 0;
+        var previous: ?u32 = null;
         for (self.lines.items) |*line| {
-            const hanging = line.advance - line.width;
-            const free = available - line.width;
+            const index = self.paragraphIndex(line.start);
+            const style = self.styles[index];
+            if (previous) |p| if (p != index) {
+                top += self.styles[p].space_after + style.space_before;
+            };
+            previous = index;
             // Hanging whitespace sits at the logical end: right for
             // left-to-right lines, left for right-to-left ones.
-            const left_of_content: f32 = if (line.rtl()) hanging else 0;
-            line.x = switch (options.alignment) {
-                .start => if (line.rtl()) free else 0,
-                .end => if (line.rtl()) 0 else free,
-                .center => free / 2,
-            } - left_of_content;
+            line.x = line.contentXIn(available, line.rtl(), options.alignment) - if (line.rtl()) line.advance - line.width else 0;
+            const natural = line.height;
+            const height = if (style.line_height > 0) style.line_height else natural * style.line_spacing;
             line.top = top;
-            line.baseline = top + line.ascent;
-            top += line.height;
+            line.baseline = top + (height - natural) / 2 + line.ascent;
+            line.height = height;
+            top += height;
         }
     }
 };
+
+/// The glyphs of `from..to` in logical order: runs in order, each run's
+/// glyphs reversed when it is right to left.
+const LogicalGlyphs = struct {
+    p: *const ShapedParagraph,
+    from: u32,
+    to: u32,
+    run: usize,
+    index: usize = 0,
+
+    fn init(p: *const ShapedParagraph, from: u32, to: u32) LogicalGlyphs {
+        var low: usize = 0;
+        var high = p.runs.len;
+        while (low < high) {
+            const middle = low + (high - low) / 2;
+            if (p.runs[middle].end <= from) low = middle + 1 else high = middle;
+        }
+        return .{ .p = p, .from = from, .to = to, .run = low };
+    }
+
+    fn next(it: *LogicalGlyphs) ?Glyph {
+        while (it.run < it.p.runs.len) {
+            const run = it.p.runs[it.run];
+            if (run.start >= it.to) return null;
+            const glyphs = it.p.runGlyphs(run);
+            while (it.index < glyphs.len) {
+                const g = glyphs[if (run.rtl()) glyphs.len - 1 - it.index else it.index];
+                it.index += 1;
+                if (g.cluster >= it.from and g.cluster < it.to) return g;
+            }
+            it.run += 1;
+            it.index = 0;
+        }
+        return null;
+    }
+};
+
+/// The style of each bidi paragraph, and of the line after a final break,
+/// from the runs (each paragraph takes the run containing its start).
+fn paragraphStyles(scratch: std.mem.Allocator, p: *const ShapedParagraph, runs: []const ParagraphRun) ![]ParagraphStyle {
+    const out = try scratch.alloc(ParagraphStyle, p.paragraphs.len + 1);
+    for (out, 0..) |*style, i| {
+        const start: u32 = if (i < p.paragraphs.len) p.paragraphs[i].start else @intCast(p.text.len);
+        style.* = for (runs) |run| {
+            if (start < run.end) break run.style;
+        } else if (runs.len != 0) runs[runs.len - 1].style else .{};
+        if (!(style.line_spacing > 0) or !std.math.isFinite(style.line_spacing)) style.line_spacing = 1;
+        inline for (.{ "indent_start", "indent_end", "first_line_indent", "line_height", "space_before", "space_after", "tab_width" }) |name| {
+            if (!std.math.isFinite(@field(style, name))) @field(style, name) = 0;
+        }
+    }
+    return out;
+}
 
 /// The glyphs of `from..to` in a run's glyph sequence (monotone clusters,
 /// decreasing for right-to-left).
@@ -700,4 +975,149 @@ test "unsafe line edges are reshaped from the nearest safe boundary" {
         try std.testing.expectApproxEqAbs(x, positioned.x, 0.001);
         x += glyph.advance;
     }
+}
+
+/// Left edge of the glyph for byte `offset`, from the layout origin.
+fn glyphX(l: *const Layout, offset: u32) ?f32 {
+    for (l.lines) |line| for (l.lineRuns(line)) |run| for (l.runGlyphs(run)) |g| {
+        if (g.cluster == offset) return line.x + g.x;
+    };
+    return null;
+}
+
+test "tabs advance to explicit stops from the start margin, then to multiples of the tab width" {
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    var p = try fixture.shape("a\tb\tc\td", .auto_ltr);
+    defer p.deinit();
+    const stops = [_]f32{ 50, 120 };
+    var l = try layoutOf(&fixture, &p, .{ .tab_stops = &stops, .paragraphs = &.{.{ .end = 7, .style = .{ .tab_width = 40 } }} });
+    defer l.deinit();
+    try std.testing.expectApproxEqAbs(50, glyphX(&l, 2).?, 0.01);
+    try std.testing.expectApproxEqAbs(120, glyphX(&l, 4).?, 0.01);
+    // Past the stops, the next multiple of 40 after c.
+    const c_end = glyphX(&l, 4).? + p.glyphs[4].advance;
+    try std.testing.expectApproxEqAbs(@ceil(c_end / 40) * 40, glyphX(&l, 6).?, 0.01);
+
+    // Stops count from the margin, not the indent: an indented line still
+    // puts b at 50.
+    var indented = try layoutOf(&fixture, &p, .{ .tab_stops = &stops, .paragraphs = &.{.{ .end = 7, .style = .{ .indent_start = 20 } }} });
+    defer indented.deinit();
+    try std.testing.expectApproxEqAbs(20, glyphX(&indented, 0).?, 0.01);
+    try std.testing.expectApproxEqAbs(50, glyphX(&indented, 2).?, 0.01);
+
+    // Without stops or a width, multiples of the shaped tab (four spaces).
+    var plain = try layoutOf(&fixture, &p, .{});
+    defer plain.deinit();
+    const tab = p.glyphs[1].advance;
+    try std.testing.expectApproxEqAbs(tab, glyphX(&plain, 2).?, 0.01);
+    try std.testing.expectApproxEqAbs(2 * tab, glyphX(&plain, 4).?, 0.01);
+}
+
+test "a tab's advance decides where lines break" {
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    var p = try fixture.shape("aa\tbb", .auto_ltr);
+    defer p.deinit();
+    const bb = p.glyphs[3].advance + p.glyphs[4].advance;
+    // bb after a stop at 100 needs 100 + bb; one pixel less wraps it.
+    var fits = try layoutOf(&fixture, &p, .{ .width = 100 + bb, .tab_stops = &.{100} });
+    defer fits.deinit();
+    try std.testing.expectEqual(1, fits.lines.len);
+    var wraps = try layoutOf(&fixture, &p, .{ .width = 100 + bb - 1, .tab_stops = &.{100} });
+    defer wraps.deinit();
+    try std.testing.expectEqual(2, wraps.lines.len);
+    try std.testing.expectEqual(3, wraps.lines[1].start);
+    // The tab hangs at the end of the first line.
+    try std.testing.expect(wraps.lines[0].advance > wraps.lines[0].width + 50);
+}
+
+test "words too wide for a line break between graphemes when asked" {
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    const text = "go abcdefghijklmnop to";
+    var p = try fixture.shape(text, .auto_ltr);
+    defer p.deinit();
+    const width = 4 * p.glyphs[3].advance + 1;
+    var overflow = try layoutOf(&fixture, &p, .{ .width = width });
+    defer overflow.deinit();
+    try std.testing.expect(overflow.width > width);
+    var broken = try layoutOf(&fixture, &p, .{ .width = width, .break_words = true });
+    defer broken.deinit();
+    var covered: u32 = 0;
+    for (broken.lines) |line| {
+        try std.testing.expectEqual(covered, line.start);
+        try std.testing.expect(line.width <= width + 0.001);
+        covered = line.end;
+    }
+    try std.testing.expectEqual(text.len, covered);
+    // "go " stays whole; the long word starts a line and breaks inside.
+    try std.testing.expectEqual(3, broken.lines[0].end);
+    try std.testing.expect(broken.lines.len >= 5);
+    // Every glyph appears once.
+    var total: usize = 0;
+    for (broken.runs) |run| total += run.glyph_end - run.glyph_start;
+    try std.testing.expectEqual(p.glyphs.len, total);
+    // A line narrower than one grapheme still takes one.
+    var tiny = try layoutOf(&fixture, &p, .{ .width = 1, .break_words = true });
+    defer tiny.deinit();
+    try std.testing.expect(tiny.lines.len > text.len / 2);
+}
+
+test "paragraph styles: indents, alignment, line and paragraph spacing" {
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    const text = "aaa aaa aaa\nbbb\nccc";
+    var p = try fixture.shape(text, .auto_ltr);
+    defer p.deinit();
+    var plain = try layoutOf(&fixture, &p, .{});
+    defer plain.deinit();
+    const natural = plain.lines[0].height;
+    const word = p.segments[0].advance - p.segments[0].trailing;
+
+    const runs = [_]ParagraphRun{
+        // The first paragraph: indented, its first line further, double
+        // spaced, with space after it.
+        .{ .end = 12, .style = .{ .indent_start = 10, .indent_end = 5, .first_line_indent = 20, .line_spacing = 2, .space_after = 7, .space_before = 100 } },
+        // The second: centered, an exact line height, space before it.
+        .{ .end = 16, .style = .{ .alignment = .center, .line_height = 30, .space_before = 3 } },
+        .{ .end = @intCast(text.len), .style = .{} },
+    };
+    // Room for two words after the first line's 30 px of indent and 5 at
+    // the end; later lines have 15 px of indents.
+    const width = 30 + 5 + 2 * word + p.segments[0].trailing + 1;
+    var l = try layoutOf(&fixture, &p, .{ .width = width, .paragraphs = &runs });
+    defer l.deinit();
+    try std.testing.expectEqual(4, l.lines.len);
+    try std.testing.expectEqual(8, l.lines[0].end);
+    try std.testing.expectEqual(30, l.lines[0].indent_start);
+    try std.testing.expectEqual(10, l.lines[1].indent_start);
+    try std.testing.expectApproxEqAbs(30, l.lines[0].x, 0.01);
+    try std.testing.expectApproxEqAbs(10, l.lines[1].x, 0.01);
+    // Space before the text's first paragraph does not apply.
+    try std.testing.expectEqual(0, l.lines[0].top);
+    try std.testing.expectApproxEqAbs(2 * natural, l.lines[0].height, 0.01);
+    try std.testing.expectApproxEqAbs(natural / 2 + plain.lines[0].ascent, l.lines[0].baseline, 0.01);
+    try std.testing.expectApproxEqAbs(4 * natural + 7 + 3, l.lines[2].top, 0.01);
+    try std.testing.expectEqual(30, l.lines[2].height);
+    try std.testing.expectEqual(Alignment.center, l.lines[2].alignment.?);
+    try std.testing.expectApproxEqAbs((width - l.lines[2].width) / 2, l.lines[2].x, 0.01);
+    try std.testing.expectApproxEqAbs(l.lines[2].top + 30, l.lines[3].top, 0.01);
+    try std.testing.expectApproxEqAbs(l.lines[3].top + natural, l.height, 0.01);
+    // The widest line counts its indents.
+    try std.testing.expectApproxEqAbs(@max(l.lines[0].width + 35, l.lines[1].width + 15), l.width, 0.01);
+    // Placed in a box by its alignment and indents.
+    // In a right-to-left box the start indent is on the right.
+    try std.testing.expectApproxEqAbs(200 - 30 - l.lines[0].width, l.lines[0].contentXIn(200, true, .start), 0.01);
+    try std.testing.expectApproxEqAbs(200 - 5 - l.lines[0].width, l.lines[0].contentXIn(200, false, .end), 0.01);
+}
+
+test "right-to-left paragraphs indent from the right" {
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    var p = try fixture.shape("שלום עולם", .auto_ltr);
+    defer p.deinit();
+    var l = try layoutOf(&fixture, &p, .{ .width = 300, .paragraphs = &.{.{ .end = 17, .style = .{ .indent_start = 25 } }} });
+    defer l.deinit();
+    try std.testing.expectApproxEqAbs(275, l.lines[0].contentX() + l.lines[0].width, 0.01);
 }
