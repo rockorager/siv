@@ -3735,7 +3735,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       the focused node (roving focus) and stays bound out of view. Rows
       handle only keys aimed at themselves (`siv_event.target`, D16) and
       leave presses in an editor inside them alone, so an application can
-      rename an item in place with an editor in its row. The whole
+      rename an item in place with an editor in its row. Keys with Alt or
+      Super, and Enter with Ctrl or Shift, are left to the application:
+      a row's handler runs before its ancestors' and returned handled for
+      Alt+Up and Alt+Home (moving the cursor) and Ctrl+Enter (activating),
+      so a file manager's window-wide Alt+Up and Ctrl+Enter never ran
+      while a view had focus (found by siv-files). The whole
       selection is also read and replaced as a bitset in one call
       (`siv_view_get_selection`, `siv_view_set_selection`), and setting
       one item restyles only its row: the file manager in `apps/files`

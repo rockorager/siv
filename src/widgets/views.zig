@@ -1120,6 +1120,10 @@ fn onRowKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.Eve
     // a button) are that node's: Space types a space, arrows move the
     // caret.
     if (e.target != r.root) return .pass;
+    // Alt and Super with any key, and Enter with any modifier, are the
+    // application's (Alt+Up goes to the parent folder in a file manager,
+    // Ctrl+Enter opens in a new tab).
+    if (e.modifiers.alt or e.modifiers.super) return .pass;
     const k = w.keysym;
     const cur: i64 = if (v.cursor >= 0) v.cursor else r.index;
     const per: i64 = if (v.mode == .grid) v.columns else 1;
@@ -1150,6 +1154,7 @@ fn onRowKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.Eve
             moveCursor(v, cur, e.window, .{}, v.selection == .multiple and e.modifiers.ctrl);
         },
         k.@"return", k.kp_enter => {
+            if (e.modifiers.ctrl or e.modifiers.shift) return .pass;
             var handled = false;
             _ = c.siv_node_emit(v.root, &.{ .type = .activate, .index = @intCast(cur), .value = @floatFromInt(cur) }, &handled);
         },

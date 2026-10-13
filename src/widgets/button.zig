@@ -147,7 +147,8 @@ pub fn apply(txn: Txn, st: *Button) void {
     const bordered = st.style == .default and !filled;
     _ = c.siv_set_visual(txn, st.root, &.{
         .radius = .{ .top_start = tk.radius, .top_end = tk.radius, .bottom_end = tk.radius, .bottom_start = tk.radius },
-        .border_width = if (bordered or h.disabled) tk.border else 0,
+        // A disabled flat button stays flat: its dimmed label says enough.
+        .border_width = if (bordered or (h.disabled and st.style != .flat)) tk.border else 0,
         .border_token = .border,
         .background_token = bg,
     });
