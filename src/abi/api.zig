@@ -1790,7 +1790,7 @@ pub const functions = [_]Function{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
         .{ .name = "rect", .type = out(ref("siv_rect")), .doc = "The box." },
     }),
-    call("siv_node_focus", "Moves keyboard focus to a node that can take it (SIV_SEMANTICS_FOCUSABLE, or an editor), or for a widget whose interface chooses (siv_widget_desc.focus: a view's cursor row, the selected tab or radio) to the node it chooses. Its focus handler runs before this returns. Not from a canvas callback (SIV_ERROR_BUSY).", &.{
+    call("siv_node_focus", "Moves keyboard focus to a node that can take it (SIV_SEMANTICS_FOCUSABLE, or an editor), or for a widget whose interface chooses (siv_widget_desc.focus: a view's cursor row, the selected tab or radio) to the node it chooses. It shows the focus ring when the window's latest input was a key, as focus that Tab moves does, so focus moved from a key handler (arrow keys in a composite widget) is marked and focus moved after a click is not. Its focus handler runs before this returns. Not from a canvas callback (SIV_ERROR_BUSY).", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
     }),
     call("siv_node_get_data", "The memory siv_set_data gave the node under key, or NULL.", &.{

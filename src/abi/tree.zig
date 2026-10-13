@@ -1704,7 +1704,7 @@ fn focus(n: t.Node, depth: u8) Error!void {
     const uw = w.uiWin();
     // Hidden nodes and nodes outside an active modal node too.
     if (!ui.input.canFocus(uw, id)) return error.InvalidArgument;
-    ui.input.setFocus(uw, id, false);
+    ui.input.setFocusFromApp(uw, id);
 }
 
 pub export fn siv_window_get_focus(window: t.Window) t.Node {

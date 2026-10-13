@@ -715,6 +715,21 @@ test "pointer presses activate; Tab moves focus; Enter activates" {
     f.win.handlePlatform(&.{ .key = back });
     try testing.expectEqual(buttons[1], f.win.input.focus);
 
+    // Focus the application moves follows the latest input: after a key
+    // it shows the ring (arrow keys in a composite widget), after a press
+    // it does not.
+    ui.input.setFocusFromApp(f.win, buttons[0]);
+    try testing.expectEqual(buttons[0], f.win.input.focus);
+    try testing.expect(f.win.input.focus_visible);
+    f.win.handlePlatform(&.{ .pointer_button = .{ .window = 0, .seat = 0, .button = 0x110, .pressed = true, .time = 0, .serial = 6 } });
+    f.win.handlePlatform(&.{ .pointer_button = .{ .window = 0, .seat = 0, .button = 0x110, .pressed = false, .time = 0, .serial = 7 } });
+    ui.input.setFocusFromApp(f.win, buttons[1]);
+    try testing.expectEqual(buttons[1], f.win.input.focus);
+    try testing.expect(!f.win.input.focus_visible);
+    f.win.handlePlatform(&.{ .key = tab });
+    ui.input.setFocusFromApp(f.win, buttons[1]);
+    try testing.expect(f.win.input.focus_visible);
+
     // Disabling the focused button drops focus at commit.
     t = try f.win.begin();
     try t.setSemantics(buttons[1], .{ .role = .button, .focusable = true, .disabled = true });

@@ -59,6 +59,10 @@ pub const State = struct {
     focus: NodeId = .none,
     /// Focus came from the keyboard, so it shows a ring.
     focus_visible: bool = false,
+    /// The latest input that can move focus was a key rather than a
+    /// press (pointer, touch, tablet): focus the application moves now
+    /// shows a ring if this is set (`setFocusFromApp`).
+    keyboard_modality: bool = false,
     /// The window has keyboard focus.
     keyboard: bool = false,
     /// Nodes under the pointer, root first.
@@ -333,6 +337,14 @@ pub fn setValue(win: *Window, id: NodeId, value: f64) bool {
     return call(win, id, .set_value, &.{ .set_value = value }) != .pass;
 }
 
+/// Moves keyboard focus for the application (siv_node_focus), with a
+/// ring when the latest input was a key, as CSS :focus-visible does: focus
+/// moved from a key handler (arrow keys in a composite widget) shows where
+/// it went, focus moved after a click does not.
+pub fn setFocusFromApp(win: *Window, id: NodeId) void {
+    setFocus(win, id, win.input.keyboard_modality);
+}
+
 /// Moves keyboard focus (none clears it).
 pub fn setFocus(win: *Window, id: NodeId, visible: bool) void {
     const st = &win.input;
@@ -467,12 +479,14 @@ pub fn handle(win: *Window, event: *const platform.Event) void {
                 st.seat = b.seat;
                 st.serial = b.serial;
                 st.press_serial = b.serial;
+                st.keyboard_modality = false;
             }
             pointerButton(win, b.button, b.pressed, b.time);
             // A release ends the capture that chose the cursor.
             updateCursor(win);
         },
         .touch_down => |t| {
+            st.keyboard_modality = false;
             st.seat = t.seat;
             st.press_serial = t.serial;
             st.pointer = .{ .x = @floatCast(t.x), .y = @floatCast(t.y) };
@@ -578,6 +592,7 @@ fn key(win: *Window, k: *const platform.Key) void {
     if (k.state == .pressed) {
         st.seat = k.seat;
         st.serial = k.serial;
+        st.keyboard_modality = true;
     }
     // Without focus, keys go to the active modal node (Escape closes a
     // dialog), or the root.
@@ -828,6 +843,7 @@ fn deliverTablet(win: *Window, t: *const platform.TabletTool, samples: []const p
         else => .other,
     };
     if (t.phase == .down) {
+        st.keyboard_modality = false;
         ts.capture = target;
         st.seat = t.seat;
         st.serial = t.serial;

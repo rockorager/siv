@@ -1708,6 +1708,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     outside the node), so keyboard-only use works without widget code;
     focus from a pointer press shows none. Its color is the theme's
     `focus_ring` (D29).
+  - Focus the application moves (`siv_node_focus`) follows the input
+    modality, as CSS :focus-visible does: each window remembers whether
+    its latest key press or pointer, touch, or tablet press came last,
+    and the moved focus shows the ring after a key. So arrow keys in a
+    composite widget, which move focus from a key handler, mark where it
+    went, in stock widgets (radio groups, tabs, view rows) and an
+    application's alike, and a click that moves focus elsewhere does
+    not. Before, `siv_node_focus` never showed the ring, so keyboard
+    users lost their place in every roving widget; found by the user
+    guide (`docs/guide`), whose arrow-key sample showed it. Alternative:
+    a flag on `siv_node_focus` (every caller would pass the modality it
+    cannot know better than siv).
   - Modal nodes (`SIV_SEMANTICS_MODAL`, dialogs) contain focus: the
     active one is the shown modal node made modal last; while it exists
     the pointer reaches only its subtree, Tab cycles inside it, nodes
@@ -4030,6 +4042,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | `SIV_STR` in siv.h (D2) | each sample's `S(s)` | one helper for string literals |
   | Zig: descriptor parameters take `T.Options` with slices (D3) | `?*const T` with `.x` and `.x_len` | strings and arrays as slices |
   | Zig: callbacks get `*const T` descriptors (D3) | `?*const T` | siv never passes NULL; no `ev.?` |
+  | `siv_node_focus` shows the ring after a key (D16) | `siv_node_focus` never showing it | focus moved by arrow keys in roving widgets was unmarked |
   | reserved fields in `siv_text_span`, `siv_paragraph_span`, `siv_tab_stop`, `siv_text_metrics` (D2) | — | frozen value structs that will plausibly grow; descriptors grow by appending |
   | `siv_tablet_sample.wheel` and four reserved fields (D16) | — | the axes flags named a wheel the sample could not carry; tablets grow axes, and a frozen struct cannot |
 
