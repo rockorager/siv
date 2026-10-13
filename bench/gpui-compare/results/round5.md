@@ -1,4 +1,4 @@
-Round 5: a text node's bytes in a rope, edits shaping only what changed (D15). siv before is round 4 (`2e4e5bb`), siv after is this round (`b5284f6` plus the bench's chunked search). Measured 09:03–09:16 CDT with no other zig, test, or sway process running (checked every 15 s); an earlier attempt overlapped another thread's test runs and was discarded. Only the text and logs scenarios ran.
+Round 5: a text node's bytes in a rope, edits shaping only what changed (D15). siv before is round 4 (`2e4e5bb`), siv after is this round (`7be42d8` plus the bench's chunked search). Measured 09:03–09:16 CDT with no other zig, test, or sway process running (checked every 15 s); an earlier attempt overlapped another thread's test runs and was discarded. Only the text and logs scenarios ran.
 
 Median over 5 runs per cell, [min–max over runs].
 | scenario | metric | siv before | siv after | gpui |
