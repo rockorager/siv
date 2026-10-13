@@ -350,3 +350,89 @@ test "right to left" {
     try h.clickItem("build.zig");
     try h.expectGolden("list-rtl");
 }
+
+test "file operations: copy trees, name clashes, moves, the trash, deletion, cancelling" {
+    const fsops = harness.Files.fsops;
+    const gpa = std.heap.c_allocator;
+    var fx: Fixture = .{};
+    try fx.create(&.{
+        .{ .name = "src", .dir = true },
+        .{ .name = "src/a.txt", .size = 3000 },
+        .{ .name = "src/deep", .dir = true },
+        .{ .name = "src/deep/b.bin", .size = 70_000 },
+        .{ .name = "dest", .dir = true },
+        .{ .name = "dest/src", .dir = true },
+    });
+    defer fx.remove();
+    var sbuf: [256]u8 = undefined;
+    var tbuf: [256]u8 = undefined;
+    var pbuf: [256]u8 = undefined;
+    var dbuf: [256]u8 = undefined;
+    const src = try std.fmt.bufPrint(&sbuf, "{s}/src", .{fx.path});
+    const dest = try std.fmt.bufPrint(&tbuf, "{s}/dest", .{fx.path});
+
+    // A copy into a folder that has the name already gets " (2)", with
+    // progress counted in bytes and items.
+    var op = try fsops.Op.create(gpa, .copy, &.{src}, dest);
+    op.run();
+    try testing.expect(op.result == null);
+    try testing.expect(fx.exists("dest/src (2)/deep/b.bin"));
+    try testing.expectEqual(@as(u64, 73_000), op.total_bytes.load(.monotonic));
+    try testing.expectEqual(op.total_bytes.load(.monotonic), op.done_bytes.load(.monotonic));
+    try testing.expectEqual(@as(u32, 4), op.done_items.load(.monotonic));
+    try testing.expectEqualStrings("src (2)\n", op.created.items);
+    op.destroy();
+
+    // Not into itself.
+    op = try fsops.Op.create(gpa, .copy, &.{src}, try std.fmt.bufPrint(&dbuf, "{s}/src/deep", .{fx.path}));
+    op.run();
+    try testing.expectEqual(fsops.Error.IntoItself, op.result.?);
+    op.destroy();
+
+    // Cancelled before it starts: nothing is copied.
+    op = try fsops.Op.create(gpa, .copy, &.{src}, dest);
+    op.cancel.store(true, .release);
+    op.run();
+    try testing.expectEqual(fsops.Error.Canceled, op.result.?);
+    try testing.expect(!fx.exists("dest/src (3)"));
+    op.destroy();
+
+    // Move, then to the trash with its info file, then delete for good.
+    op = try fsops.Op.create(gpa, .move, &.{try std.fmt.bufPrint(&pbuf, "{s}/src/a.txt", .{fx.path})}, try std.fmt.bufPrint(&dbuf, "{s}/dest", .{fx.path}));
+    op.run();
+    try testing.expect(op.result == null);
+    try testing.expect(fx.exists("dest/a.txt") and !fx.exists("src/a.txt"));
+    op.destroy();
+    op = try fsops.Op.create(gpa, .trash, &.{try std.fmt.bufPrint(&pbuf, "{s}/dest/a.txt", .{fx.path})}, "");
+    op.trash_dir = try std.fmt.allocPrint(gpa, "{s}/Trash", .{fx.path});
+    op.run();
+    try testing.expect(op.result == null);
+    try testing.expect(fx.exists("Trash/files/a.txt") and fx.exists("Trash/info/a.txt.trashinfo"));
+    op.destroy();
+    op = try fsops.Op.create(gpa, .delete, &.{src}, "");
+    op.run();
+    try testing.expect(op.result == null);
+    try testing.expect(!fx.exists("src"));
+    op.destroy();
+
+    // Names are checked before renaming and creating.
+    try testing.expectError(error.InvalidName, fsops.rename(fx.path, "dest", "a/b"));
+    try testing.expectError(error.Exists, fsops.makeDir(fx.path, "dest"));
+}
+
+test "opening a file asks the desktop's portal; without one the app says so" {
+    var fx: Fixture = .{};
+    try fx.create(&sample);
+    defer fx.remove();
+    var h: Harness = .{};
+    try h.start(.{ .path = fx.path });
+    defer h.stop();
+    try h.clickItem("notes.txt");
+    try h.key(ks.@"return", "", .{});
+    const tree = try h.semantics();
+    var found = false;
+    for (tree.nodes.items) |n| {
+        if (std.mem.indexOf(u8, tree.name(n), "No application could be asked") != null) found = true;
+    }
+    try testing.expect(found);
+}
