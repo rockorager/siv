@@ -15,6 +15,9 @@ pub const pad_y: f32 = 5;
 pub const field_pad_x: f32 = 8;
 /// Space between a control and its label, and between related controls.
 pub const gap: f32 = 8;
+/// Icons in buttons and menu items (D19), and the space after them.
+pub const icon_size: f32 = 16;
+pub const icon_gap: f32 = 6;
 
 pub const check_size: f32 = 18;
 pub const check_radius: f32 = 4;

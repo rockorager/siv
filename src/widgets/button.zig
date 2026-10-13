@@ -1,5 +1,7 @@
-//! Push buttons and toggle buttons: a flex row with a centered label, its
-//! fill following the pointer (rest, hover, pressed) in themed colors.
+//! Push buttons and toggle buttons: a flex row with a centered label and
+//! an optional themed icon before it (D19), or the icon alone with the
+//! label as the accessible name, its fill following the pointer (rest,
+//! hover, pressed) in themed colors, the icon in the label's.
 //! Clicks, Enter, Space, and assistive technology activate it through
 //! the core's default action (D16); a toggle button's default activate
 //! handler flips it and reports `change`.
@@ -23,6 +25,12 @@ pub const Button = extern struct {
     menu: Node = .null,
     /// Menu buttons: the menu is open.
     expanded: bool = false,
+    /// The icon's image node, and a hidden text node holding its name
+    /// (the image node's setter needs it again to recolor it).
+    icon: Node = .null,
+    icon_name: Node = .null,
+    /// Only the icon shows; the label names the button.
+    icon_only: bool = false,
 };
 
 pub export fn siv_push_button(txn: Txn, parent: Node, desc: ?*const siv.ButtonDesc) Node {
@@ -30,14 +38,16 @@ pub export fn siv_push_button(txn: Txn, parent: Node, desc: ?*const siv.ButtonDe
     if (@backingInt(d.style) < 0 or @backingInt(d.style) > 3) return w.fail(txn, .error_unsupported);
     if (!validFlags(d.flags)) return w.fail(txn, .error_unsupported);
     const label = w.str(d.label, d.label_len) orelse return w.fail(txn, .error_invalid_argument);
-    return build(txn, parent, .button, label, d.style, d.flags.disabled, false);
+    const icon = w.str(d.icon, d.icon_len) orelse return w.fail(txn, .error_invalid_argument);
+    return build(txn, parent, .button, label, icon, d.style, d.flags, false);
 }
 
 pub export fn siv_toggle_button(txn: Txn, parent: Node, desc: ?*const siv.ToggleDesc) Node {
     const d = w.readDesc(siv.ToggleDesc, desc) orelse return w.fail(txn, .error_invalid_argument);
     if (!validFlags(d.flags) or @backingInt(d.checked) < 0 or @backingInt(d.checked) > 2) return w.fail(txn, .error_unsupported);
     const label = w.str(d.label, d.label_len) orelse return w.fail(txn, .error_invalid_argument);
-    return build(txn, parent, .toggle_button, label, .default, d.flags.disabled, d.checked == .on);
+    const icon = w.str(d.icon, d.icon_len) orelse return w.fail(txn, .error_invalid_argument);
+    return build(txn, parent, .toggle_button, label, icon, .default, d.flags, d.checked == .on);
 }
 
 pub export fn siv_menu_button(txn: Txn, parent: Node, desc: ?*const siv.ButtonDesc) Node {
@@ -45,7 +55,8 @@ pub export fn siv_menu_button(txn: Txn, parent: Node, desc: ?*const siv.ButtonDe
     if (@backingInt(d.style) < 0 or @backingInt(d.style) > 3) return w.fail(txn, .error_unsupported);
     if (!validFlags(d.flags)) return w.fail(txn, .error_unsupported);
     const label = w.str(d.label, d.label_len) orelse return w.fail(txn, .error_invalid_argument);
-    const root = build(txn, parent, .menu_button, label, d.style, d.flags.disabled, false);
+    const icon = w.str(d.icon, d.icon_len) orelse return w.fail(txn, .error_invalid_argument);
+    const root = build(txn, parent, .menu_button, label, icon, d.style, d.flags, false);
     if (root == .null) return .null;
     const st = w.stateOf(Button, root, &.{.menu_button}).?;
     st.menu = @import("menu.zig").createModel(txn, root, label, root);
@@ -80,20 +91,32 @@ pub fn setExpanded(button: Node, expanded: bool) void {
     _ = w.commit(txn);
 }
 
+/// Disabled, and icon_only for buttons that have an icon.
 pub fn validFlags(f: siv.WidgetFlags) bool {
-    return @as(u32, @bitCast(f)) & ~@as(u32, 1) == 0;
+    return @as(u32, @bitCast(f)) & ~@as(u32, 3) == 0;
 }
 
-fn build(txn: Txn, parent: Node, kind: w.Kind, label: []const u8, style: siv.ButtonStyle, disabled: bool, on: bool) Node {
-    const root = c.siv_flex(txn, parent, &.{ .axis = .row, .justify = .center, .align_items = .center });
+fn build(txn: Txn, parent: Node, kind: w.Kind, label: []const u8, icon: []const u8, style: siv.ButtonStyle, flags: siv.WidgetFlags, on: bool) Node {
+    const icon_only = flags.icon_only and icon.len != 0;
+    const root = c.siv_flex(txn, parent, &.{ .axis = .row, .justify = .center, .align_items = .center, .gap = tk.icon_gap });
     if (root == .null) return .null;
+    // An icon alone sits in a square button.
+    const pad_x = if (icon_only) (tk.control_height - tk.icon_size) / 2 else tk.pad_x;
     _ = c.siv_set_default_layout(txn, root, &.{
         .min_height = tk.control_height,
-        .padding = .{ .start = tk.pad_x, .end = tk.pad_x, .top = tk.pad_y, .bottom = tk.pad_y },
+        .min_width = if (icon_only) tk.control_height else 0,
+        .padding = .{ .start = pad_x, .end = pad_x, .top = tk.pad_y, .bottom = tk.pad_y },
     });
+    var image: Node = .null;
+    var name: Node = .null;
+    if (icon.len != 0) {
+        image = c.siv_image_view(txn, root, &.{ .icon = icon.ptr, .icon_len = icon.len, .icon_size = tk.icon_size });
+        name = w.hiddenText(txn, root, icon);
+    }
     const text = c.siv_text(txn, root, label.ptr, label.len);
+    if (icon_only) _ = c.siv_set_visual(txn, text, &.{ .flags = .{ .hidden = true } });
     const st = w.create(Button, txn, root) orelse return .null;
-    st.* = .{ .hdr = .{ .kind = kind, .disabled = disabled }, .style = style, .on = on, .root = root, .label = text };
+    st.* = .{ .hdr = .{ .kind = kind, .disabled = flags.disabled }, .style = style, .on = on, .root = root, .label = text, .icon = image, .icon_name = name, .icon_only = icon_only };
     w.onDefault(txn, root, .pointer, onPointer, st);
     if (kind == .toggle_button) w.onDefault(txn, root, .activate, onActivate, st);
     apply(txn, st);
@@ -129,7 +152,13 @@ pub fn apply(txn: Txn, st: *Button) void {
         .background_token = bg,
     });
     _ = c.siv_set_text_style(txn, st.label, &w.textStyle(fg, .body));
+    if (st.icon != .null) w.setIcon(txn, st.icon, st.icon_name, tk.icon_size, fg);
+    // A hidden label does not name the button: say it outright.
+    var buf: [1024]u8 = undefined;
+    const name = if (st.icon_only) w.textOf(st.label, &buf) else "";
     _ = c.siv_set_semantics(txn, st.root, &.{
+        .label = name.ptr,
+        .label_len = name.len,
         .role = if (h.kind == .toggle_button) .toggle_button else .button,
         .pressed = if (h.kind == .toggle_button) (if (st.on) .on else .off) else .unset,
         .expanded = if (h.kind == .menu_button) (if (st.expanded) .on else .off) else .unset,
@@ -139,6 +168,7 @@ pub fn apply(txn: Txn, st: *Button) void {
 
 pub fn setLabel(txn: Txn, st: *Button, label: []const u8) void {
     _ = c.siv_set_text(txn, st.label, label.ptr, label.len);
+    if (st.icon_only) apply(txn, st);
 }
 
 pub fn value(st: *const Button) f64 {

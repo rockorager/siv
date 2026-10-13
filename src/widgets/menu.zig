@@ -2,7 +2,8 @@
 //! public siv_popup_create.
 //!
 //! A menu is a model in the tree: a node that takes no space, with one
-//! hidden child per item holding its label and shortcut as text, so the
+//! hidden child per item holding its label, shortcut, and icon name as
+//! text, so the
 //! application adds, relabels, disables, and removes items like any
 //! nodes. siv_menu_open builds a popup from the model: a card with one
 //! row per item. Up and Down move focus between enabled rows (wrapping),
@@ -51,6 +52,8 @@ pub const Item = extern struct {
     label: Node,
     shortcut: Node,
     submenu: Node = .null,
+    /// The themed icon's name (D19), empty for none.
+    icon: Node = .null,
 };
 
 /// A menu item's row in an open popup.
@@ -66,6 +69,8 @@ pub const Row = extern struct {
     submenu: Node = .null,
     arrow: Node = .null,
     focused: bool = false,
+    /// The icon's image node, when some item of the menu has one.
+    icon: Node = .null,
 };
 
 pub const Popover = extern struct {
@@ -108,6 +113,7 @@ pub export fn siv_menu_item(txn: Txn, menu_node: Node, desc: ?*const siv.MenuIte
     if (@as(u32, @bitCast(d.flags)) & ~@as(u32, 15) != 0) return w.fail(txn, .error_unsupported);
     const label = w.str(d.label, d.label_len) orelse return w.fail(txn, .error_invalid_argument);
     const shortcut = w.str(d.shortcut, d.shortcut_len) orelse return w.fail(txn, .error_invalid_argument);
+    const icon = w.str(d.icon, d.icon_len) orelse return w.fail(txn, .error_invalid_argument);
     if (d.submenu != .null) {
         const sub = w.stateOf(Menu, d.submenu, &.{.menu}) orelse return w.fail(txn, .error_invalid_argument);
         if (sub.root == m.root) return w.fail(txn, .error_invalid_argument);
@@ -125,6 +131,7 @@ pub export fn siv_menu_item(txn: Txn, menu_node: Node, desc: ?*const siv.MenuIte
         .label = c.siv_text(txn, root, label.ptr, label.len),
         .shortcut = c.siv_text(txn, root, shortcut.ptr, shortcut.len),
         .submenu = d.submenu,
+        .icon = c.siv_text(txn, root, icon.ptr, icon.len),
     };
     _ = c.siv_set_semantics(txn, root, &.{ .role = if (st.separator) .separator else .menu_item });
     return root;
@@ -211,9 +218,13 @@ fn openMenu(m: *Menu, at: Node, parent: ?*Menu, grab: bool, focus: bool, point: 
     }, &popup);
     if (r != .ok) return r;
     var checkable = false;
+    var icons = false;
     var cur = w.related(m.root, .first_child);
     while (cur != .null) : (cur = w.related(cur, .next)) {
-        if (itemOf(cur)) |it| checkable = checkable or it.checkable;
+        const it = itemOf(cur) orelse continue;
+        checkable = checkable or it.checkable;
+        var buf: [8]u8 = undefined;
+        icons = icons or (!it.separator and textOf(it.icon, &buf).len != 0);
     }
     var txn: Txn = .null;
     r = c.siv_txn_begin(popup, &txn);
@@ -240,7 +251,7 @@ fn openMenu(m: *Menu, at: Node, parent: ?*Menu, grab: bool, focus: bool, point: 
             _ = c.siv_set_semantics(txn, sep, &.{ .role = .separator });
             continue;
         }
-        _ = buildRow(txn, col, m, it, index, checkable, &buf);
+        _ = buildRow(txn, col, m, it, index, checkable, icons, &buf);
     }
     r = c.siv_txn_commit(txn);
     if (r == .ok) r = c.siv_popup_show(popup);
@@ -311,13 +322,18 @@ fn refreshRow(row: Node) void {
     _ = w.commit(txn);
 }
 
-fn buildRow(txn: Txn, col: Node, m: *Menu, it: *Item, index: u32, checkable: bool, buf: []u8) Node {
+fn buildRow(txn: Txn, col: Node, m: *Menu, it: *Item, index: u32, checkable: bool, icons: bool, buf: []u8) Node {
     const row = c.siv_flex(txn, col, &.{ .axis = .row, .align_items = .center, .gap = tk.gap });
     _ = c.siv_set_layout(txn, row, &.{ .min_height = 28, .padding = .{ .start = 10, .end = 10, .top = 2, .bottom = 2 } });
     const st = w.create(Row, txn, row) orelse return .null;
     st.* = .{ .hdr = .{ .kind = .menu_row, .disabled = it.hdr.disabled }, .index = index, .item = it.root, .menu = m.root, .root = row, .label = .null, .shortcut = .null, .submenu = it.submenu };
     if (checkable) {
         st.mark = c.siv_canvas(txn, row, &.{ .user_data = st, .draw = drawRowMark, .width = 16, .height = 16 });
+    }
+    // Every row of a menu with icons has the slot, so labels line up.
+    if (icons) {
+        st.icon = c.siv_image_view(txn, row, &.{ .icon_size = tk.icon_size });
+        _ = c.siv_set_layout(txn, st.icon, &.{ .width = w.px(tk.icon_size), .height = w.px(tk.icon_size) });
     }
     const label = textOf(it.label, buf);
     st.label = c.siv_text(txn, row, label.ptr, label.len);
@@ -343,6 +359,7 @@ fn applyRow(txn: Txn, st: *Row, focused: bool) void {
     _ = c.siv_set_visual(txn, st.root, &.{ .radius = w.corners(tk.radius - 2), .background_token = if (lit) .selection_bg else .none });
     _ = c.siv_set_text_style(txn, st.label, &w.textStyle(if (disabled) .disabled_fg else if (lit) .selection_fg else .card_fg, .body));
     _ = c.siv_set_text_style(txn, st.shortcut, &w.textStyle(if (lit) .selection_fg else .muted_fg, .caption));
+    if (st.icon != .null) if (it) |i| w.setIcon(txn, st.icon, i.icon, tk.icon_size, if (disabled) .disabled_fg else if (lit) .selection_fg else .card_fg);
     const checkable = if (it) |i| i.checkable else false;
     const checked = if (it) |i| i.checked else false;
     const open = if (w.stateOf(Menu, st.submenu, &.{.menu})) |sub| w.windowAlive(sub.popup) else false;

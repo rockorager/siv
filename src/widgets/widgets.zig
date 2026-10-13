@@ -168,6 +168,32 @@ pub fn isRtl(node: Node) bool {
 
 /// The node's accessible label, truncated to the buffer at a character
 /// boundary.
+/// The text of a text node, cut at a UTF-8 boundary to fit `buf`.
+pub fn textOf(node: Node, buf: []u8) []const u8 {
+    var len: usize = 0;
+    if (c.siv_node_get_text(node, buf.ptr, buf.len, &len) != .ok) return "";
+    if (len <= buf.len) return buf[0..len];
+    var end = buf.len;
+    while (end > 0 and buf[end] & 0xc0 == 0x80) end -= 1;
+    return buf[0..end];
+}
+
+/// A text node that takes no space and is not shown or announced: a
+/// widget keeps a string in the tree with it (an icon's name).
+pub fn hiddenText(txn: Txn, parent: Node, text: []const u8) Node {
+    const n = c.siv_text(txn, parent, text.ptr, text.len);
+    _ = c.siv_set_visual(txn, n, &.{ .flags = .{ .hidden = true } });
+    return n;
+}
+
+/// Shows the themed icon named by the text of `name` (D19) in `image`,
+/// at `size`, in a themed color.
+pub fn setIcon(txn: Txn, image: Node, name: Node, size: f32, token: siv.ColorToken) void {
+    var buf: [1024]u8 = undefined;
+    const icon = textOf(name, &buf);
+    _ = c.siv_set_image_view(txn, image, &.{ .icon = icon.ptr, .icon_len = icon.len, .icon_size = size, .color_token = token });
+}
+
 pub fn labelOf(node: Node, buf: []u8) []const u8 {
     var len: usize = 0;
     if (c.siv_node_get_label(node, buf.ptr, buf.len, &len) != .ok) return "";
