@@ -120,6 +120,13 @@ watcher: ?*Watcher = null,
 reload_timer: siv.Timer = .null,
 theme: siv.ColorScheme = .follow,
 drag_armed: bool = false,
+drag_x: f32 = 0,
+drag_y: f32 = 0,
+drag_entry: u32 = 0,
+/// A press on an item of a larger selection kept the selection, for a
+/// drag of all of it; the release without a drag selects only the item.
+drag_kept: bool = false,
+tokens: std.ArrayList(*Token) = .empty,
 context_pending: bool = false,
 op_jobs: std.ArrayList(*OpJob) = .empty,
 
@@ -200,6 +207,9 @@ fn deinit(self: *Files) void {
     // Running operations stop at their next check and free themselves
     // when their done callback finds the window gone.
     for (self.op_jobs.items) |j| j.files = null;
+    // Callbacks still waiting free their tokens without the window.
+    for (self.tokens.items) |t| t.files = null;
+    self.tokens.deinit(gpa);
     self.op_jobs.deinit(gpa);
     self.ops.deinit(gpa);
     self.thumbs.deinit();
@@ -409,6 +419,7 @@ fn build(self: *Files) !void {
             .shortcut = it.shortcut.ptr,
             .shortcut_len = it.shortcut.len,
             .flags = .{ .separator = it.label.len == 0 },
+            .mnemonic = it.mnemonic,
         });
     }
     _ = c.siv_on(txn, self.context, .select, onContextSelect, null, self);
@@ -443,23 +454,23 @@ const columns = [_]ColumnSpec{
     .{ .title = "Type", .width = .{ .unit = .px, .value = 100 }, .min = 60 },
 };
 
-const MenuSpec = struct { label: []const u8, shortcut: []const u8 = "", check: bool = false };
+const MenuSpec = struct { label: []const u8, shortcut: []const u8 = "", check: bool = false, mnemonic: u32 = 0 };
 
 const ContextAction = enum { open, open_with, sep1, cut, copy, paste, sep2, rename, trash, delete, sep3, new_folder, select_all };
 const context_items = [_]MenuSpec{
-    .{ .label = "Open", .shortcut = "Enter" },
-    .{ .label = "Open With…" },
+    .{ .label = "Open", .shortcut = "Enter", .mnemonic = 'o' },
+    .{ .label = "Open With…", .mnemonic = 'w' },
     .{ .label = "" },
-    .{ .label = "Cut", .shortcut = "Ctrl+X" },
-    .{ .label = "Copy", .shortcut = "Ctrl+C" },
-    .{ .label = "Paste", .shortcut = "Ctrl+V" },
+    .{ .label = "Cut", .shortcut = "Ctrl+X", .mnemonic = 't' },
+    .{ .label = "Copy", .shortcut = "Ctrl+C", .mnemonic = 'c' },
+    .{ .label = "Paste", .shortcut = "Ctrl+V", .mnemonic = 'p' },
     .{ .label = "" },
-    .{ .label = "Rename…", .shortcut = "F2" },
-    .{ .label = "Move to Trash", .shortcut = "Delete" },
-    .{ .label = "Delete Permanently", .shortcut = "Shift+Delete" },
+    .{ .label = "Rename…", .shortcut = "F2", .mnemonic = 'r' },
+    .{ .label = "Move to Trash", .shortcut = "Delete", .mnemonic = 'm' },
+    .{ .label = "Delete Permanently", .shortcut = "Shift+Delete", .mnemonic = 'd' },
     .{ .label = "" },
     .{ .label = "New Folder", .shortcut = "Ctrl+Shift+N" },
-    .{ .label = "Select All", .shortcut = "Ctrl+A" },
+    .{ .label = "Select All", .shortcut = "Ctrl+A", .mnemonic = 'a' },
 };
 
 const AppAction = enum { new_folder, hidden, sep1, list, grid, sep2, follow, light, dark, sep3, close };
@@ -629,15 +640,20 @@ fn bindRow(ud: ?*anyopaque, txn: Txn, row: Node, item: u64, _: u32, _: u32, _: b
             _ = c.siv_set_semantics(txn, cell, &.{ .role = .cell, .column = @intCast(k) });
         }
         _ = c.siv_on(txn, row, .pointer, onRowPointer, null, parts);
+        _ = c.siv_on(txn, row, .drop, onRowDrop, null, parts);
     }
     parts.entry = entry;
     _ = c.siv_set_text(txn, parts.name, l.name(e).ptr, l.name(e).len);
     var buf: [64]u8 = undefined;
     const size = if (e.kind == .dir) "—" else model.formatSize(&buf, e.size);
     _ = c.siv_set_text(txn, parts.size, size.ptr, size.len);
+    // A left-to-right mark first: in a right-to-left layout the date's
+    // two runs of digits would otherwise swap (the paragraph's base
+    // direction comes from its first strong character, D21).
     var tbuf: [64]u8 = undefined;
-    const t = model.formatTime(&tbuf, e.mtime, self.opts.tz_offset_s);
-    _ = c.siv_set_text(txn, parts.modified, t.ptr, t.len);
+    tbuf[0..3].* = "\u{200E}".*;
+    const t = model.formatTime(tbuf[3..], e.mtime, self.opts.tz_offset_s);
+    _ = c.siv_set_text(txn, parts.modified, &tbuf, t.len + 3);
     const kind = e.category.label();
     _ = c.siv_set_text(txn, parts.kind, kind.ptr, kind.len);
     _ = c.siv_invalidate(txn, parts.icon);
@@ -669,6 +685,7 @@ fn bindCell(ud: ?*anyopaque, txn: Txn, cell: Node, item: u64, _: u32, _: u32, _:
         _ = c.siv_set_text_style(txn, parts.name, &.{ .color_token = .view_fg, .size_role = .caption, .@"align" = .center, .flags = .{ .break_words = true } });
         _ = c.siv_set_layout(txn, parts.name, &.{ .width = .{ .unit = .fraction, .value = 1 } });
         _ = c.siv_on(txn, cell, .pointer, onRowPointer, null, parts);
+        _ = c.siv_on(txn, cell, .drop, onRowDrop, null, parts);
     }
     parts.entry = entry;
     _ = c.siv_set_text(txn, parts.name, l.name(e).ptr, l.name(e).len);
@@ -1621,15 +1638,42 @@ fn onRowPointer(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c)
                 self.openContextMenu(r.x + e.x, r.y + e.y, true);
                 return true;
             }
-            if (e.button == .primary) self.dragArm(node, e, parts.entry);
+            if (e.button != .primary) return false;
+            self.dragArm(node, e, parts.entry);
+            // A press on an item of a larger selection keeps the selection,
+            // so that the drag carries all of it; the view would select
+            // only the pressed item (FRICTION.md).
+            const plain = !e.modifiers.ctrl and !e.modifiers.shift and e.clicks == 1;
+            if (plain and self.isSelected(parts.entry) and self.selectionCount() > 1) {
+                self.drag_kept = true;
+                return true;
+            }
             return false;
         },
         .move => {
             self.dragMove(node, e);
             return false;
         },
-        .up, .cancel => {
+        .up => {
             self.drag_armed = false;
+            if (self.drag_kept) {
+                self.drag_kept = false;
+                // No drag happened: now select only this item.
+                const vi = self.viewIndexOfEntry(parts.entry) orelse return true;
+                const txn = self.begin() orelse return true;
+                self.clearSelection(txn, self.activeView());
+                _ = c.siv_view_set_selected(txn, self.activeView(), vi, true);
+                _ = c.siv_widget_set_value(txn, self.activeView(), @floatFromInt(vi));
+                _ = commit(txn);
+                self.focusView();
+                self.updateStatus();
+                return true;
+            }
+            return false;
+        },
+        .cancel => {
+            self.drag_armed = false;
+            self.drag_kept = false;
             return false;
         },
         else => return false,
@@ -1651,6 +1695,19 @@ fn onContentPointer(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv
         return true;
     }
     return false;
+}
+
+fn isSelected(self: *Files, entry: u32) bool {
+    const vi = self.viewIndexOfEntry(entry) orelse return false;
+    var on = false;
+    _ = c.siv_view_is_selected(self.activeView(), vi, &on);
+    return on;
+}
+
+fn selectionCount(self: *Files) usize {
+    const sel = self.selectedIndices() catch return 0;
+    defer self.gpa.free(sel);
+    return sel.len;
 }
 
 fn viewIndexOfEntry(self: *const Files, entry: u32) ?u32 {
@@ -2157,39 +2214,224 @@ fn onWatch(ctx: ?*anyopaque) void {
 
 // Clipboard ---------------------------------------------------------------------------
 
+/// The selection's paths as text/uri-list, x-special/gnome-copied-files
+/// (with "copy" or "cut" first, so a paste here or in GNOME Files moves
+/// cut files), and plain text, for the clipboard and drags.
+const Offer = struct {
+    data: std.ArrayList(u8) = .empty,
+    lengths: [3]usize = .{ 0, 0, 0 },
+
+    fn deinit(o: *Offer, gpa: Allocator) void {
+        o.data.deinit(gpa);
+    }
+
+    fn build(gpa: Allocator, paths: []const []const u8, cut: bool, gnome: bool) !Offer {
+        var o: Offer = .{};
+        errdefer o.deinit(gpa);
+        var start = o.data.items.len;
+        for (paths) |p| {
+            try uri.appendFileUri(&o.data, gpa, p);
+            try o.data.appendSlice(gpa, "\r\n");
+        }
+        o.lengths[0] = o.data.items.len - start;
+        var k: usize = 1;
+        if (gnome) {
+            start = o.data.items.len;
+            try o.data.appendSlice(gpa, if (cut) "cut" else "copy");
+            for (paths) |p| {
+                try o.data.append(gpa, '\n');
+                try uri.appendFileUri(&o.data, gpa, p);
+            }
+            o.lengths[k] = o.data.items.len - start;
+            k += 1;
+        }
+        start = o.data.items.len;
+        for (paths, 0..) |p, i| {
+            if (i > 0) try o.data.append(gpa, '\n');
+            try o.data.appendSlice(gpa, p);
+        }
+        o.lengths[k] = o.data.items.len - start;
+        return o;
+    }
+};
+
 pub fn copySelection(self: *Files, cut: bool) void {
-    _ = self;
-    _ = cut;
+    const paths = self.selectedPaths() catch return;
+    defer self.freePaths(paths);
+    if (paths.len == 0) return;
+    var o = Offer.build(self.gpa, paths, cut, true) catch return;
+    defer o.deinit(self.gpa);
+    const mimes = "text/uri-list\nx-special/gnome-copied-files\ntext/plain;charset=utf-8";
+    const r = c.siv_clipboard_write_data(self.window, .clipboard, &.{ .mimes = mimes, .mimes_len = mimes.len, .data = o.data.items.ptr, .data_count = o.data.items.len, .lengths = &o.lengths, .lengths_count = 3 });
+    if (r != .ok) return self.toast("Could not copy to the clipboard", true);
+    var buf: [128]u8 = undefined;
+    const what = if (paths.len == 1) std.fmt.bufPrint(&buf, "“{s}”", .{model.basename(paths[0])}) catch "" else std.fmt.bufPrint(&buf, "{d} items", .{paths.len}) catch "";
+    var mbuf: [192]u8 = undefined;
+    self.toast(std.fmt.bufPrint(&mbuf, "{s} {s}", .{ if (cut) "Cut" else "Copied", what }) catch "", false);
 }
 
+/// A callback's way back to the window, which may be gone when it runs:
+/// `files` is cleared when the window closes, and the token freed by the
+/// callback's destroy-notify.
+const Token = struct {
+    files: ?*Files,
+    gpa: Allocator,
+    /// Where pasted or dropped files go (owned).
+    dest: []u8 = &.{},
+
+    fn create(self: *Files, dest: []const u8) ?*Token {
+        const t = self.gpa.create(Token) catch return null;
+        t.* = .{ .files = self, .gpa = self.gpa, .dest = self.gpa.dupe(u8, dest) catch &.{} };
+        self.tokens.append(self.gpa, t) catch {
+            self.gpa.free(t.dest);
+            self.gpa.destroy(t);
+            return null;
+        };
+        return t;
+    }
+
+    fn destroy(ud: ?*anyopaque) callconv(.c) void {
+        const t: *Token = @ptrCast(@alignCast(ud.?));
+        if (t.files) |self| for (self.tokens.items, 0..) |x, i| if (x == t) {
+            _ = self.tokens.swapRemove(i);
+            break;
+        };
+        t.gpa.free(t.dest);
+        t.gpa.destroy(t);
+    }
+};
+
 pub fn paste(self: *Files) void {
-    _ = self;
+    self.pasteInto(self.path);
+}
+
+fn pasteInto(self: *Files, dest: []const u8) void {
+    const tok = Token.create(self, dest) orelse return;
+    const mimes = "x-special/gnome-copied-files\ntext/uri-list";
+    _ = c.siv_clipboard_read_data(self.window, .clipboard, mimes, mimes.len, onPasted, Token.destroy, tok);
+}
+
+fn onPasted(ud: ?*anyopaque, d: ?*const siv.ClipboardData) callconv(.c) void {
+    const tok: *Token = @ptrCast(@alignCast(ud.?));
+    const self = tok.files orelse return;
+    const x = d.?;
+    if (x.result != .ok) return self.toast("Nothing to paste", false);
+    const bytes = x.data.?[0..x.data_count];
+    const g = if (x.index == 0) uri.gnomeCopied(bytes) else @TypeOf(uri.gnomeCopied(bytes)){ .cut = false, .uris = bytes };
+    self.transferUris(g.uris, tok.dest, if (g.cut) .move else .copy);
+}
+
+/// Copies or moves the local files of a URI list into `dest`.
+fn transferUris(self: *Files, uris: []const u8, dest: []const u8, kind: fsops.Kind) void {
+    const gpa = self.gpa;
+    var paths: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (paths.items) |p| gpa.free(p);
+        paths.deinit(gpa);
+    }
+    var it: uri.Lines = .{ .rest = uris };
+    while (it.next()) |u| {
+        var buf: [linux.PATH_MAX]u8 = undefined;
+        const p = uri.filePath(&buf, u) orelse continue;
+        const copy = gpa.dupe(u8, p) catch return;
+        paths.append(gpa, copy) catch {
+            gpa.free(copy);
+            return;
+        };
+    }
+    if (paths.items.len == 0) return self.toast("Only local files can be pasted here", false);
+    self.startOp(kind, paths.items, dest);
 }
 
 // Drag and drop -------------------------------------------------------------------------
 
+/// A press on an item may start a drag once the pointer moves this far.
+const drag_threshold: f32 = 6;
+
 fn dragArm(self: *Files, node: Node, e: *const siv.Event, entry: u32) void {
     _ = node;
-    _ = e;
-    _ = entry;
-    self.drag_armed = false;
+    self.drag_armed = true;
+    self.drag_x = e.x;
+    self.drag_y = e.y;
+    self.drag_entry = entry;
 }
 
 fn dragMove(self: *Files, node: Node, e: *const siv.Event) void {
-    _ = self;
-    _ = node;
-    _ = e;
+    if (!self.drag_armed) return;
+    if (@abs(e.x - self.drag_x) < drag_threshold and @abs(e.y - self.drag_y) < drag_threshold) return;
+    self.drag_armed = false;
+    self.drag_kept = false;
+    const paths = self.selectedPaths() catch return;
+    defer self.freePaths(paths);
+    if (paths.len == 0) return;
+    var o = Offer.build(self.gpa, paths, false, false) catch return;
+    defer o.deinit(self.gpa);
+    const mimes = "text/uri-list\ntext/plain;charset=utf-8";
+    _ = c.siv_drag_start(node, &.{
+        .mimes = mimes,
+        .mimes_len = mimes.len,
+        .data = o.data.items.ptr,
+        .data_count = o.data.items.len,
+        .lengths = &o.lengths,
+        .lengths_count = 2,
+        .actions = .{ .copy = true, .move = true },
+    });
+}
+
+/// Drops of files: on the view (into the folder shown), on a folder's row,
+/// or on a place in the sidebar.
+fn acceptDrop(self: *Files, ev: *const siv.Event, dest: []const u8) bool {
+    switch (ev.phase) {
+        .enter, .move => return dest.len != 0,
+        .drop => {
+            const data = if (ev.data) |p| p[0..ev.data_count] else return false;
+            self.transferUris(data, dest, if (ev.action == .move) .move else .copy);
+            return true;
+        },
+        else => return false,
+    }
 }
 
 fn onDrop(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
-    _ = ud;
-    _ = ev;
-    return false;
+    const self: *Files = @ptrCast(@alignCast(ud.?));
+    var buf: [linux.PATH_MAX]u8 = undefined;
+    const dest = std.fmt.bufPrint(&buf, "{s}", .{self.path}) catch return false;
+    return self.acceptDrop(ev.?, dest);
+}
+
+fn onRowDrop(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
+    const parts: *RowParts = @ptrCast(@alignCast(ud.?));
+    const self = parts.files orelse return false;
+    const l = &(self.listing orelse return false);
+    if (parts.entry >= l.entries.len or l.entries[parts.entry].kind != .dir) return false;
+    var buf: [linux.PATH_MAX]u8 = undefined;
+    const dest = model.join(&buf, l.path, l.name(l.entries[parts.entry])) orelse return false;
+    return self.acceptDrop(ev.?, dest);
 }
 
 fn onPlaceDrop(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {
-    _ = ud;
-    _ = ev;
-    return false;
+    const parts: *PlaceParts = @ptrCast(@alignCast(ud.?));
+    const self = parts.files orelse return false;
+    if (parts.index >= self.places.items.items.len) return false;
+    const pl = self.places.items.items[parts.index];
+    var buf: [linux.PATH_MAX]u8 = undefined;
+    const dest = std.fmt.bufPrint(&buf, "{s}", .{pl.path}) catch return false;
+    // Dropping on the trash moves there.
+    if (pl.icon == .trash and ev.?.phase == .drop) {
+        const data = if (ev.?.data) |p| p[0..ev.?.data_count] else return false;
+        var paths: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (paths.items) |p| self.gpa.free(p);
+            paths.deinit(self.gpa);
+        }
+        var it: uri.Lines = .{ .rest = data };
+        while (it.next()) |u| {
+            var pb: [linux.PATH_MAX]u8 = undefined;
+            const p = uri.filePath(&pb, u) orelse continue;
+            paths.append(self.gpa, self.gpa.dupe(u8, p) catch continue) catch {};
+        }
+        if (paths.items.len != 0) self.startOp(.trash, paths.items, "");
+        return true;
+    }
+    return self.acceptDrop(ev.?, dest);
 }
-

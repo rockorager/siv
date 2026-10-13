@@ -197,3 +197,151 @@ test "Shift+Delete asks before deleting for good" {
     try h.clickOn(.button, "Delete");
     try testing.expect(!fx.exists("song.flac"));
 }
+
+test "copy and paste files: within the app, to other apps, and from them" {
+    var fx: Fixture = .{};
+    try fx.create(&sample);
+    defer fx.remove();
+    var h: Harness = .{};
+    try h.start(.{ .path = fx.path });
+    defer h.stop();
+    var buf: [16][]const u8 = undefined;
+    // Select two files and copy them.
+    try h.clickItem("build.zig");
+    try h.clickItemWith("notes.txt", 0x110, .{ .ctrl = true });
+    try h.key('c', "c", .{ .ctrl = true });
+    // Other applications get the URIs, GNOME's copy marker, and paths.
+    var out: [1024]u8 = undefined;
+    const want_uris = try std.fmt.bufPrint(&out, "file://{s}/build.zig\r\nfile://{s}/notes.txt\r\n", .{ fx.path, fx.path });
+    var got_buf: [1024]u8 = undefined;
+    try testing.expectEqualStrings(want_uris, try h.pasteElsewhere("text/uri-list", &got_buf));
+    try testing.expect(std.mem.startsWith(u8, try h.pasteElsewhere("x-special/gnome-copied-files", &got_buf), "copy\nfile://"));
+    // Paste into Documents.
+    try h.clickItem("Documents");
+    try h.key(ks.@"return", "", .{});
+    try h.key('v', "v", .{ .ctrl = true });
+    try testing.expect(fx.exists("Documents/build.zig"));
+    try testing.expect(fx.exists("Documents/notes.txt"));
+    try testing.expect(fx.exists("build.zig"));
+    // The pasted files are selected.
+    try expectNames(&.{ "build.zig", "notes.txt" }, try h.selected(&buf));
+    // Pasting again names the copies apart.
+    try h.key('v', "v", .{ .ctrl = true });
+    try testing.expect(fx.exists("Documents/build (2).zig"));
+    // Cut moves.
+    try h.clickItem("notes.txt");
+    try h.key('x', "x", .{ .ctrl = true });
+    try h.key(ks.backspace, "", .{});
+    try h.clickItem("Pictures");
+    try h.key(ks.@"return", "", .{});
+    try h.key('v', "v", .{ .ctrl = true });
+    try testing.expect(fx.exists("Pictures/notes.txt"));
+    try testing.expect(!fx.exists("Documents/notes.txt"));
+    // Files another application copied.
+    var ubuf: [512]u8 = undefined;
+    const theirs = try std.fmt.bufPrint(&ubuf, "file://{s}/song.flac\r\n", .{fx.path});
+    try h.copyElsewhere(&.{ "text/plain", "text/uri-list" }, theirs);
+    try h.key('v', "v", .{ .ctrl = true });
+    try testing.expect(fx.exists("Pictures/song.flac"));
+    try testing.expect(fx.exists("song.flac"));
+}
+
+test "drag and drop: files from other apps, onto folders, and out to other apps" {
+    var fx: Fixture = .{};
+    try fx.create(&sample);
+    defer fx.remove();
+    try fx.add(.{ .name = "Documents/letter.odt", .size = 300 });
+    var h: Harness = .{};
+    try h.start(.{ .path = fx.path });
+    defer h.stop();
+    // Another application drops a file on empty space: it is copied here.
+    var ubuf: [512]u8 = undefined;
+    const letter = try std.fmt.bufPrint(&ubuf, "file://{s}/Documents/letter.odt\r\n", .{fx.path});
+    try h.dropFromElsewhere(&.{"text/uri-list"}, letter, .{ .copy = true }, 600, 450);
+    try testing.expect(fx.exists("letter.odt"));
+    try testing.expect(fx.exists("Documents/letter.odt"));
+    // Dropped on a folder's row, with move, it moves into the folder.
+    const pb = (try h.item("Pictures")).bounds;
+    const p = [2]f64{ (pb.x0 + pb.x1) / 2, (pb.y0 + pb.y1) / 2 };
+    const song = try std.fmt.bufPrint(&ubuf, "file://{s}/song.flac\r\n", .{fx.path});
+    try h.dropFromElsewhere(&.{"text/uri-list"}, song, .{ .move = true }, p[0], p[1]);
+    try testing.expect(fx.exists("Pictures/song.flac"));
+    try testing.expect(!fx.exists("song.flac"));
+    // Dragging an item out offers its URI.
+    var out: [512]u8 = undefined;
+    const got = try h.dragOut("photo.png", "text/uri-list", &out);
+    var wbuf: [512]u8 = undefined;
+    try testing.expectEqualStrings(try std.fmt.bufPrint(&wbuf, "file://{s}/photo.png\r\n", .{fx.path}), got);
+}
+
+fn writePng(fx: *Fixture, name: []const u8, w: u32, h: u32, rgb: [3]u8) !void {
+    const gpa = testing.allocator;
+    const px = try gpa.alloc(u8, @as(usize, w) * h * 4);
+    defer gpa.free(px);
+    for (0..h) |y| for (0..w) |x| {
+        // A diagonal band so that orientation and scaling show.
+        const band = (x + y) % 16 < 8;
+        const p = px[(y * w + x) * 4 ..][0..4];
+        p.* = if (band) .{ rgb[0], rgb[1], rgb[2], 255 } else .{ rgb[0] / 2, rgb[1] / 2, rgb[2] / 2, 255 };
+    };
+    const bytes = try @import("png").encode(gpa, w, h, px);
+    defer gpa.free(bytes);
+    var pbuf: [512]u8 = undefined;
+    const path = try std.fmt.bufPrintSentinel(&pbuf, "{s}/{s}", .{ fx.path, name }, 0);
+    const linux = std.os.linux;
+    const fd: i32 = @intCast(linux.openat(linux.AT.FDCWD, path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644));
+    defer _ = linux.close(fd);
+    _ = linux.write(fd, bytes.ptr, bytes.len);
+    const ts = [2]linux.timespec{ .{ .sec = 1_791_900_300, .nsec = 0 }, .{ .sec = 1_791_900_300, .nsec = 0 } };
+    _ = linux.utimensat(linux.AT.FDCWD, path, &ts, 0);
+}
+
+test "grid view with thumbnails decoded on the worker pool" {
+    var fx: Fixture = .{};
+    try fx.create(&sample);
+    defer fx.remove();
+    try writePng(&fx, "photo.png", 320, 200, .{ 220, 120, 40 });
+    try writePng(&fx, "tall.png", 90, 240, .{ 40, 140, 220 });
+    var h: Harness = .{};
+    try h.start(.{ .path = fx.path, .mode = .grid, .thumbnails = true });
+    defer h.stop();
+    try testing.expectEqual(@as(u32, 2), h.f().thumbs.loaded);
+    try h.expectGolden("grid-light");
+    // Grid cells are list items named by the file.
+    try h.clickItem("tall.png");
+    var buf: [4][]const u8 = undefined;
+    try expectNames(&.{"tall.png"}, try h.selected(&buf));
+}
+
+test "dark style, and the context menu" {
+    var fx: Fixture = .{};
+    try fx.create(&sample);
+    defer fx.remove();
+    var h: Harness = .{};
+    try h.start(.{ .path = fx.path, .scheme = .dark });
+    defer h.stop();
+    try h.clickItem("report-10.pdf");
+    try h.expectGolden("list-dark");
+    try h.clickItemWith("report-10.pdf", 0x111, .{});
+    var ps: [4]@import("abi").types.Window = undefined;
+    try testing.expectEqual(@as(usize, 1), try h.popups(&ps));
+    try h.expectGoldenOf(ps[0], "context-menu");
+    // Choosing Rename from the keyboard starts renaming.
+    try h.keyIn(ps[0], ks.down, "", .{});
+    try h.keyIn(ps[0], 'r', "r", .{});
+    try testing.expectEqual(@as(usize, 0), try h.popups(&ps));
+    try testing.expectEqualStrings("New name", try h.focusedName());
+}
+
+test "right to left" {
+    var fx: Fixture = .{};
+    try fx.create(&sample);
+    defer fx.remove();
+    try fx.add(.{ .name = "מסמכים", .dir = true });
+    try fx.add(.{ .name = "تقرير.txt", .size = 4096 });
+    var h: Harness = .{};
+    try h.start(.{ .path = fx.path, .rtl = true });
+    defer h.stop();
+    try h.clickItem("build.zig");
+    try h.expectGolden("list-rtl");
+}

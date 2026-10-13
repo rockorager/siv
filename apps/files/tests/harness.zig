@@ -266,6 +266,132 @@ pub const Harness = struct {
         return (try h.win()).uiWin().semanticsTree();
     }
 
+    /// Runs `func(headless, ctx)` on the compositor thread, which owns the
+    /// headless platform.
+    pub fn onHeadless(h: *Harness, ctx: anytype, comptime func: fn (*platform.Headless, @TypeOf(ctx)) void) !void {
+        const self = try h.internal();
+        const C = struct {
+            inner: @TypeOf(ctx),
+            fn run(p: ?*anyopaque, comp: *compositor.Compositor) void {
+                const s: *@This() = @ptrCast(@alignCast(p));
+                func(comp.platform.headless, s.inner);
+            }
+        };
+        var cx: C = .{ .inner = ctx };
+        try self.app.comp.call(&cx, C.run);
+    }
+
+    /// Reads a pipe another client got, dispatching meanwhile so that the
+    /// application writes it.
+    pub fn readPipe(h: *Harness, fd: i32, out: []u8) ![]u8 {
+        defer _ = linux.close(fd);
+        const flags = linux.fcntl(fd, linux.F.GETFL, 0);
+        _ = linux.fcntl(fd, linux.F.SETFL, flags | @as(usize, @as(u32, @bitCast(linux.O{ .NONBLOCK = true }))));
+        var n: usize = 0;
+        const deadline = Loop.now() + 10 * std.time.ns_per_s;
+        while (true) {
+            try ok(A.siv_app_dispatch(h.app, 5));
+            const rc = linux.read(fd, out[n..].ptr, out.len - n);
+            switch (linux.errno(rc)) {
+                .SUCCESS => if (rc == 0) break else {
+                    n += rc;
+                },
+                .AGAIN => {},
+                else => return error.ReadFailed,
+            }
+            if (Loop.now() > deadline) return error.Timeout;
+        }
+        return out[0..n];
+    }
+
+    /// What another client pasting the clipboard in `mime` reads.
+    pub fn pasteElsewhere(h: *Harness, mime: []const u8, out: []u8) ![]u8 {
+        const R = struct {
+            mime: []const u8,
+            fd: i32 = -1,
+            fn f(hl: *platform.Headless, r: *@This()) void {
+                r.fd = hl.requestSelection(0, .clipboard, r.mime) catch -1;
+            }
+        };
+        var r: R = .{ .mime = mime };
+        try h.onHeadless(&r, R.f);
+        if (r.fd < 0) return error.NoSelection;
+        return h.readPipe(r.fd, out);
+    }
+
+    /// Another client copies `data` in `mimes`.
+    pub fn copyElsewhere(h: *Harness, mimes: []const []const u8, data: []const u8) !void {
+        const O = struct {
+            mimes: []const []const u8,
+            data: []const u8,
+            fn f(hl: *platform.Headless, o: *const @This()) void {
+                hl.offerSelection(0, .clipboard, o.mimes, o.data) catch unreachable;
+            }
+        };
+        try h.onHeadless(&O{ .mimes = mimes, .data = data }, O.f);
+        try h.settle();
+    }
+
+    /// Another client drags `data` in `mimes` over the window to (x, y)
+    /// and drops it there.
+    pub fn dropFromElsewhere(h: *Harness, mimes: []const []const u8, data: []const u8, actions: platform.DragActions, x: f64, y: f64) !void {
+        const D = struct {
+            wid: platform.WindowId,
+            mimes: []const []const u8,
+            data: []const u8,
+            actions: platform.DragActions,
+            x: f64,
+            y: f64,
+            fn offer(hl: *platform.Headless, d: *const @This()) void {
+                hl.offerDrag(0, d.wid, d.mimes, d.data, d.actions, d.x, d.y) catch unreachable;
+            }
+            fn drop(hl: *platform.Headless, _: *const @This()) void {
+                hl.dropDrag(0);
+            }
+        };
+        const d: D = .{ .wid = (try h.win()).win.id, .mimes = mimes, .data = data, .actions = actions, .x = x, .y = y };
+        try h.onHeadless(&d, D.offer);
+        try h.settle();
+        try h.onHeadless(&d, D.drop);
+        try h.settle();
+    }
+
+    /// Presses on the item named `name`, moves the pointer out of the
+    /// window as a drag does, and lets another client take it in `mime`:
+    /// returns what that client reads.
+    pub fn dragOut(h: *Harness, name: []const u8, mime: []const u8, out: []u8) ![]u8 {
+        const n = try h.item(name);
+        const b = n.bounds;
+        const id = (try h.win()).win.id;
+        const x = (b.x0 + b.x1) / 2;
+        const y = (b.y0 + b.y1) / 2;
+        serial += 2;
+        try h.inject(&.{
+            .{ .pointer_motion = .{ .window = id, .seat = 0, .x = x, .y = y } },
+            .{ .pointer_button = .{ .window = id, .seat = 0, .button = 0x110, .pressed = true, .time = serial, .serial = serial } },
+            .{ .pointer_motion = .{ .window = id, .seat = 0, .x = x + 20, .y = y + 12 } },
+        });
+        try h.settle();
+        const O = struct {
+            mime: []const u8,
+            fd: i32 = -1,
+            fn run(hl: *platform.Headless, o: *@This()) void {
+                hl.leaveDrag(0);
+                o.fd = (hl.dropOutside(0, o.mime, .copy) catch null) orelse -1;
+            }
+            fn finish(hl: *platform.Headless, _: *@This()) void {
+                hl.finishOutside(0, .copy);
+            }
+        };
+        var o: O = .{ .mime = mime };
+        try h.onHeadless(&o, O.run);
+        if (o.fd < 0) return error.NoDrag;
+        const got = try h.readPipe(o.fd, out);
+        try h.onHeadless(&o, O.finish);
+        try h.settle();
+        return got;
+    }
+
     pub const Role = @FieldType(@import("ui").semantics.Node, "role");
 
     /// The center of the first node with `role` and `name`, in window
