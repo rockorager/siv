@@ -7,6 +7,7 @@
 const std = @import("std");
 const abi = @import("abi");
 const harness = @import("harness.zig");
+const Loop = @import("loop").Loop;
 
 const testing = std.testing;
 const t = abi.types;
@@ -229,9 +230,15 @@ test "launching without an application id is a primary instance that activates o
         try testing.expectEqual(t.Result.error_busy, P.siv_app_launch(h.app, &.{ .on_activate = Launches.onActivate, .destroy = Launches.onDestroy, .user_data = &other }));
         try testing.expectEqual(@as(u32, 1), other.destroys);
 
-        // No input yet: the compositor gives no token.
+        // No input yet: the compositor gives no token. Its answer comes
+        // from the compositor thread, so wait for it.
         try ok(P.siv_window_request_activation_token(h.window, Launches.onToken, null, &l));
-        try dispatch(&h, 3);
+        const deadline = Loop.now() + 10 * std.time.ns_per_s;
+        while (l.tokens == 0) {
+            if (Loop.now() > deadline) return error.Timeout;
+            try ok(A.siv_app_dispatch(h.app, 10));
+        }
+        try dispatch(&h, 2);
         try testing.expectEqual(@as(u32, 1), l.tokens);
         try testing.expectEqual(@as(usize, 0), l.token_len);
         try ok(P.siv_window_activate(h.window, "some-token", 10));
