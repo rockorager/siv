@@ -366,7 +366,9 @@ fn loadFile(gpa: std.mem.Allocator, found: icon.Found, key: Key) !*Image {
         .svg => {
             const base = found.path[if (std.mem.lastIndexOfScalar(u8, found.path, '/')) |i| i + 1 else 0..];
             const stem = base[0 .. base.len - ".svg".len];
-            const doc = try svg.parse(gpa, bytes, .{ .symbolic = std.mem.endsWith(u8, stem, "-symbolic") });
+            // Adwaita names mirrored symbolic icons both ways.
+            const symbolic = std.mem.endsWith(u8, stem, "-symbolic") or std.mem.endsWith(u8, stem, "-symbolic-rtl");
+            const doc = try svg.parse(gpa, bytes, .{ .symbolic = symbolic });
             errdefer doc.deinit();
             return Image.fromVector(gpa, doc, size, size);
         },
