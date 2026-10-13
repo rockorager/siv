@@ -65,7 +65,13 @@ per toolkit, interleaved; tables give the median over runs and the range.
   0.5 ms), not a monitor's scan-out.
 - **CPU time** is the sum over the program's threads of
   `/proc/PID/task/*/schedstat`, over the measured window, divided by
-  presented frames for per-frame figures. **GPU time** is the program's
+  presented frames for per-frame figures. Each thread counts its own
+  change, from zero for a thread started during the window; a thread
+  that exits takes its counts with it (siv's pool retires idle workers),
+  so over idle windows threads are sampled every 50 ms and one that
+  exits counts up to its last sample. (Until round 3 the harness
+  subtracted sums over the live threads, which went negative when a
+  thread exited.) **GPU time** is the program's
   `drm-engine-*` time from `/proc/PID/fdinfo` (amdgpu), which counts the
   GPU work the program submitted, not sway's composite.
 - **Wakeups** are voluntary and involuntary context switches of all
@@ -140,77 +146,95 @@ padding 12).
 ## Results
 
 Measured 2026-10-13 on the machine above. `results/final.md` has every
-metric with its range over five runs, comparing the first round of fixes
-(`results/round1.md`, main at `01e17ce`) with the second (main at
-`5ae92cb`); `results/baseline.md` is the first comparison, before any
-fix (main at `e661fb4`).
+metric with its range over five runs, comparing the second round of
+fixes (`results/round2.md`, main at `7fac27c`) with the third (main at
+`63bc95e` plus `d34089c`; a run after rebasing onto other work
+matched); `results/round1.md` is the first round (main at `01e17ce`)
+and `results/baseline.md` the first comparison, before any fix (main at
+`e661fb4`).
 
-| Scenario | Metric | siv baseline | siv round 1 | siv now | gpui |
+| Scenario | Metric | siv baseline | siv round 2 | siv now | gpui |
 | --- | --- | --- | --- | --- | --- |
-| idle | startup to first frame | 28.0 ms | 28.0 ms | 26.6 ms | 70.3 ms |
+| idle | startup to first frame | 28.0 ms | 26.6 ms | 25.8 ms | 71.4 ms |
 | idle | CPU, wakeups | 0, 0/s | 0, 0/s | 0, 0/s | 0, 0/s |
-| idle | RSS / PSS / GPU memory | 60.5 / 37.8 / 43.3 MiB | 60.9 / 38.1 / 43.3 MiB | 55.5 / 36.9 / 43.3 MiB | 76.1 / 53.0 / 81.5 MiB |
-| gallery | key / click to photon (median) | 2.09 / 1.71 ms | 1.97 / 1.53 ms | 2.01 / 1.63 ms | 2.36 / 2.16 ms |
-| gallery | click to menu shown | 19.8 ms | 19.7 ms | 5.6 ms | 2.4 ms |
-| list | scroll: CPU / GPU per frame | 3.93 / 1.73 ms | 2.39 / 1.68 ms | 1.50 / 1.02 ms | 2.12 / 0.96 ms |
-| list | scroll: dropped frames, p99 interval | 0, 17.2 ms | 0, 17.2 ms | 0, 17.3 ms | 0, 17.2 ms |
-| list | wheel to photon | 2.73 ms | 2.49 ms | 1.70 ms | 3.27 ms |
-| text | startup to first frame | 102.5 ms | 99.4 ms | 98.6 ms | 86.6 ms |
-| text | key to photon (median / max) | 606 ms | 22.2 / 24.8 ms | 3.30 / 4.76 ms | 3.55 / 20.1 ms |
-| text | RSS | 536 MiB | 284 MiB | 163 MiB | 82 MiB |
-| text | scroll: CPU / GPU per frame | 1.76 / 1.22 ms | 1.77 / 1.22 ms | 1.31 / 1.25 ms | 2.68 / 0.59 ms |
-| grid | frames in 5 s (dropped) | 217 (0) | 301 (0) | 300 (0) | 303 (0) |
-| grid | CPU / GPU per frame | 22.9 / 18.7 ms | 2.09 / 0.96 ms | 2.17 / 0.99 ms | 6.21 / 0.46 ms |
-| typing | key to photon (median / max) | 23.9 / 32.9 ms | 24.2 / 33.0 ms | 24.0 / 32.8 ms | 24.0 / 32.7 ms |
-| typing | CPU per frame | 3.42 ms | 1.93 ms | 1.96 ms | 3.14 ms |
-| resize | resize to photon (median) | 11.0 ms | 10.9 ms | 10.6 ms | 10.9 ms |
-| resize | CPU per frame | 1.86 ms | 1.78 ms | 1.47 ms | 2.33 ms |
-| all | stripped binary | 10.4 MiB | 10.4 MiB | 10.7 MiB | 21.3 MiB |
+| idle | RSS / PSS / GPU memory | 60.5 / 37.8 / 43.3 MiB | 55.5 / 36.9 / 43.3 MiB | 56.0 / 37.4 / 43.3 MiB | 75.8 / 52.7 / 81.5 MiB |
+| idle | threads at start, after 10 s idle | 20 | 28, 28 | 28, 8 | 27, 27 |
+| gallery | key / click to photon (median) | 2.09 / 1.71 ms | 2.01 / 1.63 ms | 1.92 / 1.65 ms | 2.36 / 2.21 ms |
+| gallery | click to menu shown | 19.8 ms | 5.6 ms | 3.3 ms | 2.5 ms |
+| list | scroll: CPU / GPU per frame | 3.93 / 1.73 ms | 1.50 / 1.02 ms | 1.50 / 0.72 ms | 2.01 / 0.95 ms |
+| list | scroll: dropped frames, p99 interval | 0, 17.2 ms | 0, 17.3 ms | 0, 17.3 ms | 0, 17.2 ms |
+| list | wheel to photon | 2.73 ms | 1.70 ms | 1.69 ms | 3.07 ms |
+| text | startup to first frame | 102.5 ms | 98.6 ms | 38.0 ms | 82.8 ms |
+| text | key to photon (median / max) | 606 ms | 3.30 / 4.76 ms | 3.17 / 5.88 ms | 3.48 / 19.5 ms |
+| text | RSS | 536 MiB | 163 MiB | 149 MiB | 82 MiB |
+| text | scroll: CPU / GPU per frame | 1.76 / 1.22 ms | 1.31 / 1.25 ms | 1.33 / 0.97 ms | 2.64 / 0.57 ms |
+| grid | frames in 5 s (dropped) | 217 (0) | 300 (0) | 301 (0) | 303 (0) |
+| grid | CPU / GPU per frame | 22.9 / 18.7 ms | 2.17 / 0.99 ms | 2.14 / 0.89 ms | 6.16 / 0.50 ms |
+| typing | key to photon (median / max) | 23.9 / 32.9 ms | 24.0 / 32.8 ms | 23.9 / 32.7 ms | 24.1 / 32.9 ms |
+| typing | CPU per frame | 3.42 ms | 1.96 ms | 1.89 ms | 2.98 ms |
+| resize | resize to photon (median) | 11.0 ms | 10.6 ms | 11.1 ms | 10.8 ms |
+| resize | CPU per frame | 1.86 ms | 1.47 ms | 1.46 ms | 2.37 ms |
+| all | stripped binary | 10.4 MiB | 10.7 MiB | 10.8 MiB | 21.3 MiB |
 
 Run-to-run spread is small (startup within ±2 ms, per-frame CPU within
 ±5%), except where noted. The typing burst types faster (125 keys/s)
 than either toolkit presents, so its latency is the frame pacing of
 both, about one and a half refreshes. The resize latency is set by
-sway's transactions; both toolkits acknowledge every configure. siv now
-runs 28 threads (20 before): other work added a blocking lane to its
-worker pool for icon and image loads.
+sway's transactions; both toolkits acknowledge every configure. siv
+starts 28 threads (20 at baseline, before its pool had a blocking lane
+for icon and image loads); since round 3 the pool retires workers idle
+for 5 s, so an idle siv window keeps 8 (gpui keeps 27).
 
 ### Where siv wins
 
-- Startup: 27 ms from `fork` to the first presented frame against 70 ms,
-  in every scenario but the large document.
+- Startup: 26 ms from `fork` to the first presented frame against 71 ms,
+  and now in every scenario: the 1.4 MB document's first frame comes in
+  38 ms against 83, since siv shapes the blocks in view first and the
+  rest on its worker pool (D13).
 - Memory: 56 MiB RSS and 43 MiB of GPU memory at idle against 76 and 82;
-  half the binary size (libsiv.so 10.7 MiB with every image decoder,
-  against a 21.3 MiB gpui program).
-- Animation: the grid costs 2.2 ms of CPU per frame against 6.2 ms,
+  8 threads after 10 s idle against 27; half the binary size (libsiv.so
+  10.8 MiB with every image decoder, against a 21.3 MiB gpui program).
+- Animation: the grid costs 2.1 ms of CPU per frame against 6.2 ms,
   because siv's compositor thread animates layer opacity (D8) while gpui
   rebuilds and re-lays out 2,560 elements every frame.
-- Input latency: keys and clicks in the gallery 0.3–0.5 ms lower, wheels
-  1.6–1.8 ms lower; a key in the 1.4 MB document 3.3 ms against 3.6 ms,
-  with a worst key of 4.8 ms against 20.1 ms.
-- CPU per frame: list scrolling 1.5 ms against 2.1, document scrolling
-  1.3 against 2.7, typing 2.0 against 3.1, resizing 1.5 against 2.3.
+- Input latency: keys and clicks in the gallery 0.4–0.6 ms lower, wheels
+  1.4–1.8 ms lower; a key in the 1.4 MB document 3.2 ms against 3.5 ms,
+  with a worst key of 5.9 ms against 19.5 ms.
+- CPU per frame: list scrolling 1.5 ms against 2.0, document scrolling
+  1.3 against 2.6, typing 1.9 against 3.0, resizing 1.5 against 2.4.
+- GPU time per frame for the list: 0.72 ms against 0.95.
 
 ### Where siv loses, and why
 
-- **GPU time per frame** is about the same for the list (1.02 against
-  0.96 ms) but twice gpui's for the document (1.25 against 0.59) and the
-  grid (0.99 against 0.46). siv's one fragment shader evaluates the CPU
-  renderer's formulas exactly (coverage, clips, paints) into an FP16
-  image and encodes it with the CPU's dither (D10, D11); gpui's
-  specialized shaders draw straight into an 8-bit image. Skipping
-  covered pixels fixed the list's overdraw; an sRGB working image and
-  encoding by swapchain image age were measured and gave nothing (D10).
-  The frame rate is unaffected at 60 Hz.
-- **Menus** show 5.6 ms after the click against 2.4 ms. siv's menu is an
-  `xdg_popup`: its first buffer has to wait for the popup's configure
-  round trip and a layout and frame of its own. The window's response
-  now waits for it, so both show in one refresh (D17), on a KMS output
-  with real vblank too; gpui draws its menu inside the window.
-- **The large document** still holds 163 MiB against 82 and starts in
-  99 ms against 87: siv shapes and lays out all of it at startup (in
-  blocks, D13), while gpui's editor here shapes only the paragraphs in
-  view. Editing it is now as fast as gpui's.
+- **GPU time per frame** for the document (0.97 against 0.57 ms) and the
+  grid (0.89 against 0.50). Round 3 split the draw pass between the
+  exact shader, which evaluates the CPU renderer's formulas for every
+  paint, clip, and coverage (23,560 instructions, 56 VGPRs under RADV's
+  shader statistics), and a variant specialized by a constant for solid
+  rects, rounded rects, and glyphs with at most two analytic clips (943
+  instructions, 24 VGPRs; D10). The draw pass went from 0.84 to 0.54 ms
+  for the document, 0.53 to 0.43 for the grid, and 0.65 to 0.39 for the
+  list, by GPU timestamps; goldens are unchanged. What remains is the
+  FP16 working image and its encode pass with the CPU's dither (about
+  0.2 ms, D11), and the draw pass's pixel work: gpui draws straight into
+  an 8-bit image. The frame rate is unaffected at 60 Hz.
+- **Menus** show 3.3 ms after the click against 2.5 ms. siv's menu is an
+  `xdg_popup`, which may extend outside the window: its first buffer
+  waits for the popup's configure round trip and a layout and frame of
+  its own, and the window's response waits for it so both show in one
+  refresh (D17); gpui draws its menu inside the window. Round 3 found
+  that each small popup's CPU renderer built three 65,536-entry transfer
+  tables before its first frame (7.4 ms after the third was added for
+  sRGB layers); built once per process, the menu shows in 3.3 ms. Its
+  change in timing exposed a race in `siv_test_settle`, which could
+  return before the frame the compositor owed for a wheel scroll; it
+  now waits for every frame the compositor owes (D27).
+- **The large document** holds 149 MiB against 82. siv keeps the whole
+  document shaped (glyphs, carets, and line breaks of 1.4 M characters),
+  so that every height, caret, and hit test is exact; gpui's editor
+  shapes only the lines in view. Round 3 dropped positioned glyphs from
+  blocks that are not painted (30 MiB less), and part of that went to
+  the heaps of the workers that shape in the background.
 
 ### Profiling and fixes
 
@@ -231,6 +255,10 @@ scenario (`run.py --perf`), and measured with `run.py` before and after.
 | `65b003e` render: skip pixels a later opaque draw covers | the list shaded three full-window quads per frame (window background, view background, border) | list GPU/frame 1.68 → 1.05 ms (draw pass 1.38 → 0.74) |
 | `03b1592` render: draw borders as bands; rasterize little path coverage inline | 45% of the list's CPU rasterizing the view's border as one window-sized mask, then a third waking twelve workers per frame | list CPU/frame 2.39 → 1.50 ms, wheel to photon 2.49 → 1.70 ms |
 | `5ae92cb` compositor: show a popup and its parent's response in one refresh | the menu's first buffer came about 5 ms after the click, after the window's commit had been shown, so it waited a refresh | menu shown 19.7 → 5.6 ms (KMS output: 30.5 → 19.6 ms) |
+| `9aa7c08` pool: retire workers idle for 5 s | an idle window kept every worker it had ever started | idle threads after 10 s 28 → 8 |
+| `e2fe7b5` render: a specialized draw pipeline for the common draws | one exact shader of 23,560 instructions and 56 VGPRs drew every rect and glyph | draw pass (GPU timestamps) text 0.84 → 0.54 ms, grid 0.53 → 0.43, list 0.65 → 0.39; GPU/frame text 1.25 → 0.97, grid 0.99 → 0.89, list 1.02 → 0.72 |
+| `63bc95e` text: shape long texts on the pool and keep glyphs only where painted | the 1.4 MB document was shaped and laid out whole before the first frame; positioned glyphs of every block were kept (30 MiB) though only painting reads them | text startup 98.6 → 38.0 ms, RSS 163 → 149 MiB |
+| `d34089c` render: build the CPU renderer's transfer tables once per process | each small popup's CPU renderer computed three 65,536-entry tables with `pow` before its first frame | menu shown 7.4 → 3.3 ms (5.6 before the third table) |
 
 ### siv bugs found by the bench, and their fixes
 
@@ -253,3 +281,9 @@ scenario (`run.py --perf`), and measured with `run.py` before and after.
   libLLVM's static constructors, and `exit` ran their destructors under
   them. Fixed in `8dd0a3e`: `exit` waits for a starting device thread
   (DESIGN D10).
+- `siv_test_settle` returned after three quiet 2 ms dispatches, before a
+  frame the compositor owed for a wheel scroll when that frame waited for
+  the next vblank; the transfer-table fix's timing made the test API's
+  Lua test fail every time. Fixed in `e8be896`: settling waits on the
+  loop until the compositor owes no frame (repeating animations aside),
+  with a test that forces a 300 ms refresh (DESIGN D27).

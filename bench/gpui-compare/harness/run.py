@@ -206,20 +206,28 @@ class Shim:
 # Process statistics -------------------------------------------------------------------
 
 
-def proc_stats(pid):
-    cpu = 0
-    ctx = 0
+def task_stats(pid):
+    """CPU time (ns) and context switches of each live thread, by tid."""
+    tasks = {}
     for task in glob.glob(f"/proc/{pid}/task/*"):
         try:
             with open(task + "/schedstat") as f:
-                cpu += int(f.read().split()[0])
+                cpu = int(f.read().split()[0])
+            ctx = 0
             with open(task + "/status") as f:
                 for line in f:
                     if line.startswith(("voluntary_ctxt_switches", "nonvoluntary_ctxt_switches")):
                         ctx += int(line.split()[1])
+            tasks[os.path.basename(task)] = (cpu, ctx)
         except (FileNotFoundError, ProcessLookupError):
             pass
-    st = {"cpu_ns": cpu, "ctx": ctx, "t": now()}
+    return tasks
+
+
+def proc_stats(pid):
+    # Per thread: threads that exit (siv's pool retires idle workers)
+    # take their counts with them, so sums over live threads can drop.
+    st = {"tasks": task_stats(pid), "t": now()}
     with open(f"/proc/{pid}/status") as f:
         for line in f:
             if line.startswith(("VmRSS", "VmHWM")):
@@ -253,12 +261,21 @@ def proc_stats(pid):
 
 
 def delta(a, b):
+    """CPU, GPU, and context switches between two proc_stats: each
+    thread's change, from zero for threads started in between; a thread
+    that exited counts up to its last sample in b["tasks"] (see
+    `Run.window`), else not at all."""
     dt = b["t"] - a["t"]
+    cpu = ctx = 0
+    for tid, (c1, x1) in b["tasks"].items():
+        c0, x0 = a["tasks"].get(tid, (0, 0))
+        cpu += c1 - c0
+        ctx += x1 - x0
     return {
         "seconds": dt / 1e9,
-        "cpu_ms": (b["cpu_ns"] - a["cpu_ns"]) / 1e6,
+        "cpu_ms": cpu / 1e6,
         "gpu_ms": (b["gpu_ns"] - a["gpu_ns"]) / 1e6,
-        "ctx": b["ctx"] - a["ctx"],
+        "ctx": ctx,
     }
 
 
@@ -346,8 +363,14 @@ class Run:
         """Measures idle cost over `seconds`."""
         a = proc_stats(self.pid)
         t0 = now()
-        time.sleep(seconds)
+        # Threads seen during the window keep their last counts.
+        seen = {}
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            seen.update(task_stats(self.pid))
+            time.sleep(0.05)
         b = proc_stats(self.pid)
+        b["tasks"] = {**seen, **b["tasks"]}
         self.shim.poll()
         d = delta(a, b)
         return {"cpu_percent": 100 * d["cpu_ms"] / 1000 / d["seconds"], "wakeups_per_s": d["ctx"] / d["seconds"],
@@ -410,6 +433,7 @@ def scenario_idle(r):
     r.settle()
     r.memory("memory")
     r.result["idle"] = r.window(10)
+    r.memory("memory_idle")
     r.shot("idle")
 
 

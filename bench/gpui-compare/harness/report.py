@@ -76,6 +76,7 @@ METRICS = [
     ("idle", "PSS after start (MiB)", "memory.pss_kib", None, "{:.1f}"),
     ("idle", "GPU memory (MiB)", "memory.vram_kib", None, "{:.1f}"),
     ("idle", "threads", "memory.threads", None, "{:.0f}"),
+    ("idle", "threads after 10 s idle", "memory_idle.threads", None, "{:.0f}"),
     ("gallery", "startup to first frame (ms)", "startup_ms", None, "{:.1f}"),
     ("gallery", "idle wakeups (/s)", "idle.wakeups_per_s", None, "{:.1f}"),
     ("gallery", "RSS (MiB)", "memory_end.rss_kib", None, "{:.1f}"),
