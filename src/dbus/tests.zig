@@ -32,12 +32,18 @@ const Harness = struct {
         try c.initFd(gpa, &h.loop, try h.bus.connect(), opts);
     }
 
-    /// Dispatches until `cond(ctx)` holds, failing after two seconds.
+    /// Dispatches until `cond(ctx)` holds. Everything here runs on this
+    /// thread's loop, so the test is stuck only while the loop has
+    /// nothing to do: fail after two seconds of that, however long a
+    /// loaded machine makes the work itself take.
     fn until(h: *Harness, ctx: anytype, comptime cond: fn (@TypeOf(ctx)) bool) !void {
-        const deadline = Loop.now() + 2 * std.time.ns_per_s;
+        var idle: u64 = 0;
         while (!cond(ctx)) {
-            if (Loop.now() > deadline) return error.TestTimeout;
-            try h.loop.dispatch(100);
+            if (idle > 2 * std.time.ns_per_s) return error.TestTimeout;
+            var pfd = [_]linux.pollfd{.{ .fd = h.loop.fd(), .events = linux.POLL.IN, .revents = 0 }};
+            const t0 = Loop.now();
+            if (linux.poll(&pfd, 1, 100) == 0) idle += Loop.now() - t0;
+            try h.loop.dispatch(0);
         }
     }
 

@@ -53,9 +53,11 @@ pub const Daemon = struct {
         const envp = [_:null]?[*:0]const u8{"PATH=/usr/bin:/bin"};
         d.pid = try spawn(exe, &argv, &envp, null);
         errdefer d.stop();
+        // The socket file appears when the daemon binds it, a moment
+        // before it listens; connect only once it accepts connections.
         const sock = d.address["unix:path=".len..];
         var waited: u32 = 0;
-        while (linux.access(sock, 0) != 0) : (waited += 1) {
+        while (!accepting(sock)) : (waited += 1) {
             if (waited > 500) return error.DbusDaemonDidNotStart;
             sleepMs(10);
         }
@@ -71,6 +73,18 @@ pub const Daemon = struct {
         removeTree(d.dir);
     }
 };
+
+/// Whether something accepts connections on the unix socket at `path`.
+fn accepting(path: []const u8) bool {
+    var addr: linux.sockaddr.un = .{ .path = @splat(0) };
+    if (path.len >= addr.path.len) return false;
+    @memcpy(addr.path[0..path.len], path);
+    const rc = linux.socket(linux.AF.UNIX, linux.SOCK.STREAM | linux.SOCK.CLOEXEC, 0);
+    if (linux.errno(rc) != .SUCCESS) return false;
+    const fd: i32 = @intCast(rc);
+    defer _ = linux.close(fd);
+    return linux.errno(linux.connect(fd, &addr, @sizeOf(linux.sockaddr.un))) == .SUCCESS;
+}
 
 /// Removes a test's private directory and everything in it.
 pub fn removeTree(dir: []const u8) void {
