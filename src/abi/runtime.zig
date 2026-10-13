@@ -40,11 +40,18 @@ pub fn readDesc(comptime T: type, ptr: ?*const T) Error!T {
     }
     const n = @min(size, @sizeOf(T));
     @memcpy(std.mem.asBytes(&result)[@sizeOf(usize)..n], bytes[@sizeOf(usize)..n]);
-    // Reserved fields are zero until a version gives them a meaning.
-    if (@hasDecl(T, "reserved")) inline for (T.reserved) |name| {
-        if (@field(result, name) != 0) return error.Unsupported;
-    };
+    try reservedZero(result);
     return result;
+}
+
+/// Reserved fields (D2) are zero until a version gives them a meaning:
+/// checked for descriptors by readDesc, and for value structs from C (a
+/// span, a tab stop) by the code that reads them.
+pub fn reservedZero(v: anytype) Error!void {
+    const T = @TypeOf(v);
+    if (@hasDecl(T, "reserved")) inline for (T.reserved) |name| {
+        if (@field(v, name) != 0) return error.Unsupported;
+    };
 }
 
 /// Whether an older version of descriptor T can have this size: fields are

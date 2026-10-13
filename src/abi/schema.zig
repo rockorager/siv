@@ -180,9 +180,11 @@ pub const Field = struct {
     doc: []const u8,
     /// Version that appended the field. Default: the struct's.
     since: ?Version = null,
-    /// Reserved (D2): an unsigned integer in a descriptor that must be
-    /// zero, rejected as unsupported otherwise, so that a later version
-    /// can give it a meaning. It fills what would be padding.
+    /// Reserved (D2): an unsigned integer that must be zero, rejected as
+    /// unsupported otherwise (and written as zero when siv fills the
+    /// struct), so that a later version can give it a meaning. In a
+    /// descriptor it fills what would be padding; in a frozen value
+    /// struct it is room to grow. Reserved fields come after the others.
     reserved: bool = false,
 };
 
@@ -442,11 +444,15 @@ pub fn validate(s: Schema, lib: std.SemanticVersion) ?Problem {
                     }
                     if (f.since) |v| if (v.order(st.since) == .lt or v.order(current) == .gt) return .{ .where = n, .what = "field since outside the struct's lifetime" };
                     if (f.reserved) {
-                        if (st.kind != .descriptor) return .{ .where = n, .what = "only descriptors have reserved fields" };
+                        // Descriptors fill what would be padding with
+                        // them; value structs, which never grow, keep room
+                        // for fields to come (D2).
                         switch (f.type) {
                             .u8, .u16, .u32, .u64 => {},
                             else => return .{ .where = n, .what = "reserved fields are unsigned integers" },
                         }
+                    } else if (st.kind == .value and j > 0 and st.fields[j - 1].reserved) {
+                        return .{ .where = n, .what = "a value struct's reserved fields come last" };
                     }
                 }
                 if (callbacks > 0 and user_data != 1) return .{ .where = n, .what = "a struct with callbacks has exactly one user_data field" };

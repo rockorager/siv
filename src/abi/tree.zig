@@ -708,6 +708,7 @@ pub fn textPropsOf(d_ptr: ?*const t.TextStyleDesc, stop_buf: *TabStops) Error!ui
     if (in.len > stop_buf.len) return error.LimitExceeded;
     var prev: f32 = -std.math.inf(f32);
     for (in, stop_buf[0..in.len]) |stop, *o| {
+        try runtime.reservedZero(stop);
         if (!std.math.isFinite(stop.position) or stop.position <= prev) return error.InvalidArgument;
         if (stop.decimal > 0x10ffff or (stop.decimal >= 0xd800 and stop.decimal < 0xe000)) return error.InvalidArgument;
         prev = stop.position;
@@ -791,6 +792,7 @@ pub fn textPropsOf(d_ptr: ?*const t.TextStyleDesc, stop_buf: *TabStops) Error!ui
 
 /// A siv_paragraph_span's attributes as a paragraph patch.
 fn paragraphPatchOf(sp: t.ParagraphSpan) Error!ui.ParagraphPatch {
+    try runtime.reservedZero(sp);
     const fl = try runtime.flags(t.ParagraphFlags, sp.flags);
     var out: ui.ParagraphPatch = .{};
     if (fl.@"align") out.alignment = switch (try runtime.enumValue(t.TextAlign, sp.@"align")) {
@@ -1081,6 +1083,7 @@ pub export fn siv_set_animation(txn: t.Txn, node: t.Node, desc: ?*const t.Animat
 /// A siv_text_span's attributes as a span style; family ids must be
 /// `w`'s application's.
 fn spanStyleOf(w: *Window, sp: t.TextSpan) Error!ui.SpanStyle {
+    try runtime.reservedZero(sp);
     const fl = try runtime.flags(t.TextSpanFlags, sp.flags);
     var out: ui.SpanStyle = .{ .underline = fl.underline, .strikethrough = fl.strikethrough };
     if (fl.family) {

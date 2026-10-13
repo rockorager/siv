@@ -142,6 +142,7 @@ fn writeStruct(w: *Writer, s: Schema, st: schema.Struct) !void {
         // What a value struct parameter or field accepts.
         try w.print("---@alias siv.{s}.value siv.{s}|[", .{ name, name });
         for (st.fields, 0..) |f, i| {
+            if (f.reserved) continue;
             if (i > 0) try w.writeAll(", ");
             try writeType(w, s, f.type, .input);
         }

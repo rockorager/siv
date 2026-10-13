@@ -93,6 +93,14 @@ fn reserved(comptime name: []const u8) schema.Field {
     return .{ .name = name, .type = .u32, .doc = "Reserved; must be zero (SIV_ERROR_UNSUPPORTED otherwise).", .reserved = true };
 }
 
+/// `n` reserved fields, `reserved0` on: room for a frozen value struct to
+/// grow (D2).
+fn reservedRun(comptime n: usize) [n]schema.Field {
+    var fs: [n]schema.Field = undefined;
+    for (&fs, 0..) |*f, i| f.* = reserved(std.fmt.comptimePrint("reserved{d}", .{i}));
+    return fs;
+}
+
 fn flags(comptime name: []const u8, comptime doc: []const u8, comptime bits: []const schema.Flag) Decl {
     return .{ .flags = .{ .name = name, .doc = doc, .since = v0_1, .bits = bits } };
 }
@@ -662,6 +670,7 @@ pub const decls = [_]Decl{
         f32Field("position", "Logical pixels from the start edge (indents do not move it)."),
         .{ .name = "align", .type = ref("siv_tab_align"), .doc = "How the text after the tab lines up." },
         .{ .name = "decimal", .type = .u32, .doc = "Decimal stops: the character placed at the stop; 0 is '.'." },
+        reserved("reserved0"),
     }),
     flags("siv_text_flags", "Text options.", &.{
         .{ .name = "no_wrap", .bit = 0, .doc = "Keep each paragraph on one line." },
@@ -710,7 +719,7 @@ pub const decls = [_]Decl{
         .{ .name = "family", .bit = 6, .doc = "family applies." },
         .{ .name = "width", .bit = 7, .doc = "width applies." },
     }),
-    value("siv_text_span", "A styled range of a text or editor node (D22): attributes that replace the node's style over start..end. Attributes whose flag is clear keep the node's.", &.{
+    value("siv_text_span", "A styled range of a text or editor node (D22): attributes that replace the node's style over start..end. Attributes whose flag is clear keep the node's.", &([_]schema.Field{
         .{ .name = "start", .type = .u32, .doc = "First byte, at a character boundary." },
         .{ .name = "end", .type = .u32, .doc = "Byte after the last, at a character boundary or the end of the text." },
         .{ .name = "flags", .type = ref("siv_text_span_flags"), .doc = "Which attributes apply." },
@@ -721,7 +730,7 @@ pub const decls = [_]Decl{
         .{ .name = "color", .type = ref("siv_color"), .doc = "Text and decoration color, with SIV_TEXT_SPAN_COLOR." },
         .{ .name = "family", .type = .u32, .doc = "A font family from siv_app_get_font_family, with SIV_TEXT_SPAN_FAMILY; 0 is the application's default family." },
         .{ .name = "width", .type = ref("siv_font_width"), .doc = "Font width, with SIV_TEXT_SPAN_WIDTH." },
-    }),
+    } ++ reservedRun(8))),
     descriptor("siv_hyphenation_desc", "Hyphenation patterns for a language.", &.{
         .{ .name = "language", .type = .string, .doc = "BCP 47 tag; text whose language matches it, or whose language and region or language alone match it, uses the patterns." },
         .{ .name = "patterns", .type = .string, .doc = "TeX hyphenation patterns, whitespace-separated (such as .ab4c); copied." },
@@ -739,7 +748,7 @@ pub const decls = [_]Decl{
         .{ .name = "paragraph_spacing", .bit = 3, .doc = "space_before and space_after apply." },
         .{ .name = "tab_width", .bit = 4, .doc = "tab_width applies." },
     }),
-    value("siv_paragraph_span", "Paragraph styles over a range of a text or editor node (D13): attributes that replace the node's paragraph defaults (siv_text_style_desc) on every paragraph whose first character is in start..end. A paragraph runs to the end of its separator (a line break). Attributes whose flag is clear keep the node's.", &.{
+    value("siv_paragraph_span", "Paragraph styles over a range of a text or editor node (D13): attributes that replace the node's paragraph defaults (siv_text_style_desc) on every paragraph whose first character is in start..end. A paragraph runs to the end of its separator (a line break). Attributes whose flag is clear keep the node's.", &([_]schema.Field{
         .{ .name = "start", .type = .u32, .doc = "First byte, at a character boundary." },
         .{ .name = "end", .type = .u32, .doc = "Byte after the last, at a character boundary or the end of the text." },
         .{ .name = "flags", .type = ref("siv_paragraph_flags"), .doc = "Which attributes apply." },
@@ -752,7 +761,7 @@ pub const decls = [_]Decl{
         f32Field("indent_end", "End-edge indent of every line, with SIV_PARAGRAPH_INDENT."),
         f32Field("first_line_indent", "Added to indent_start on the first line, with SIV_PARAGRAPH_INDENT; negative hangs it out."),
         f32Field("tab_width", "Distance between tab stops after the node's tab_stops, with SIV_PARAGRAPH_TAB_WIDTH; 0 is four spaces."),
-    }),
+    } ++ reservedRun(4))),
     descriptor("siv_paragraph_spans_desc", "Paragraph styles of a text or editor node.", &.{
         .{ .name = "spans", .type = array(ref("siv_paragraph_span")), .doc = "Ranges in order, not overlapping (copied); each paragraph takes the style of the range holding its first character, and equal neighbors merge." },
     }),
@@ -1461,6 +1470,7 @@ pub const decls = [_]Decl{
         f32Field("width", "Width of the widest line."),
         f32Field("height", "Height of all lines."),
         f32Field("baseline", "Distance from the top to the first line's baseline."),
+        reserved("reserved0"),
     }),
     // External content (D17).
     handle("siv_external", "A slot in a window for content rendered outside siv: frames a producer submits, or a wl_surface an embedder renders into. External nodes (siv_external_view) show it.", false),

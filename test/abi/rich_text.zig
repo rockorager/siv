@@ -109,6 +109,24 @@ test "rich text: families per span, paragraph styles, tab stops, and broken word
     const bad_family = [_]t.TextSpan{.{ .start = 0, .end = 1, .flags = .{ .family = true }, .family = 100000 }};
     _ = c.siv_set_text_spans(txn, mixed, &.{ .spans = &bad_family, .spans_count = 1 });
     try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
+    // Reserved fields of frozen value structs are zero until a version
+    // gives them a meaning (D2), and siv fills them with zero.
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const reserved_span = [_]t.TextSpan{.{ .start = 0, .end = 1, .flags = .{ .underline = true }, .reserved7 = 1 }};
+    _ = c.siv_set_text_spans(txn, mixed, &.{ .spans = &reserved_span, .spans_count = 1 });
+    try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_commit(txn));
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const reserved_paragraph = [_]t.ParagraphSpan{.{ .start = 0, .end = 1, .reserved0 = 1 }};
+    _ = c.siv_set_paragraph_spans(txn, doc, &.{ .spans = &reserved_paragraph, .spans_count = 1 });
+    try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_commit(txn));
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const reserved_stop = [_]t.TabStop{.{ .position = 20, .reserved0 = 1 }};
+    _ = c.siv_set_text_style(txn, table, &.{ .tab_stops = &reserved_stop, .tab_stops_count = 1 });
+    try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_commit(txn));
+    var filled: t.TextSpan = undefined;
+    @memset(std.mem.asBytes(&filled), 0xaa);
+    try ok(c.siv_node_get_text_run(mixed, 0, &filled));
+    for ([_]u32{ filled.reserved0, filled.reserved1, filled.reserved2, filled.reserved3, filled.reserved4, filled.reserved5, filled.reserved6, filled.reserved7 }) |r| try testing.expectEqual(@as(u32, 0), r);
 
     // Measured text takes the paragraph defaults: double spacing doubles
     // the height of two lines.

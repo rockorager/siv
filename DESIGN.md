@@ -92,6 +92,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     later version can turn it into a real field. Bindings leave it out
     (the Lua tables do not have it). Found by the file manager in
     `apps/files`, whose image load priority otherwise had to be 64-bit.
+  - Value structs are frozen, so where one will plausibly grow it ends in
+    reserved fields now (D30): `siv_text_span` in eight (room for a
+    background, an underline style, a baseline shift, letter spacing),
+    `siv_paragraph_span` in four (list markers, a paragraph's own
+    direction), `siv_tab_stop` in one (a leader), and `siv_text_metrics`
+    in one (a line count). They must be zero where the caller passes the
+    struct (`SIV_ERROR_UNSUPPORTED` otherwise) and siv writes zero where
+    it fills one, so a later version gives them a meaning without a new
+    struct. The others are complete (sizes, rectangles, colors,
+    transforms, gradient stops) or fixed by what they describe (a dma-buf
+    plane, a screen cast stream, a notification button). Descriptors need
+    no such room: they grow by appending.
   - Strings are pointer and length; embedded NUL is allowed. siv copies what
     it keeps. Static strings siv returns are also NUL-terminated.
   - Callbacks take `void *user_data` as their first parameter; a callback
@@ -3662,6 +3674,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | `siv_notification_send` | `siv_notify` | pairs with `siv_notification_withdraw` (Lua `app:notification_send{}`) |
   | `siv_node_emit` | `siv_emit` | calls on a node outside a transaction are `siv_node_*` (Lua `node:emit` as before) |
   | `siv_pointer_button`, `SIV_POINTER_BUTTON_*` | `siv_button`, `SIV_BUTTON_*` | `siv_button_desc` and `siv_button_style` are the push button widget's; the event field is still `button` |
+  | reserved fields in `siv_text_span`, `siv_paragraph_span`, `siv_tab_stop`, `siv_text_metrics` (D2) | — | frozen value structs that will plausibly grow; descriptors grow by appending |
 - **Reverse if:** a binding cannot express one of these without special
   cases; then the schema needs a construct, not an exception.
 

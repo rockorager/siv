@@ -501,11 +501,24 @@ fn parseColor(s: []const u8) ?siv.Color {
 
 fn isNumericStruct(comptime name: []const u8) bool {
     @setEvalBranchQuota(1_000_000);
-    for (Info(name).d.@"struct".fields) |f| switch (f.type) {
-        .f32, .f64, .u32, .i32 => {},
-        else => return false,
-    };
+    for (Info(name).d.@"struct".fields) |f| {
+        if (f.reserved) return false;
+        switch (f.type) {
+            .f32, .f64, .u32, .i32 => {},
+            else => return false,
+        }
+    }
     return true;
+}
+
+/// The number of a struct's fields a Lua table sets by position: reserved
+/// fields come last and are not among them (D2).
+fn positionalFields(comptime name: []const u8) usize {
+    var n: usize = 0;
+    for (Info(name).d.@"struct".fields) |f| {
+        if (!f.reserved) n += 1;
+    }
+    return n;
 }
 
 /// A value struct from one Lua value: a table (named or positional
@@ -659,7 +672,8 @@ fn fillStruct(ctx: *Ctx, idx: c_int, comptime name: []const u8, out: *ZigType(na
             lua.tnumber => {
                 if (st.kind != .value) ctx.fail(w0, "{s} has named fields only", .{name});
                 const k = readInt(ctx, -2, i64, w0);
-                if (k < 1 or k > st.fields.len) ctx.fail(w0, "{s} has {d} fields", .{ name, st.fields.len });
+                const n = comptime positionalFields(name);
+                if (k < 1 or k > n) ctx.fail(w0, "{s} has {d} fields", .{ name, n });
                 fi = @intCast(k - 1);
             },
             else => ctx.fail(w0, "{s} has named fields only", .{name}),
@@ -756,7 +770,7 @@ pub fn pushStruct(st: *State, L: *L_, comptime name: []const u8, p: *const ZigTy
     c.lua_createtable(L, 0, sd.fields.len);
     inline for (sd.fields) |f| {
         const present = if (sd.kind == .descriptor) @offsetOf(T, f.name) + @sizeOf(@FieldType(T, f.name)) <= p.size else true;
-        if (present and !comptime m.isCallback(spec, f.type) and f.type != .user_data) {
+        if (present and !comptime m.isCallback(spec, f.type) and f.type != .user_data and !m.isUnboundField(name, f.name)) {
             switch (f.type) {
                 .string => if (@field(p, f.name)) |s| {
                     _ = c.lua_pushlstring(L, s, @field(p, f.name ++ "_len"));
