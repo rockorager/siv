@@ -1136,6 +1136,20 @@ pub const decls = [_]Decl{
         f32Field("hotspot_x", "The point of the icon under the pointer, in image pixels."),
         f32Field("hotspot_y", "The point of the icon under the pointer, in image pixels."),
     }),
+    descriptor("siv_clipboard_desc", "Data to offer as the clipboard (D19), in one or more MIME types.", &.{
+        .{ .name = "mimes", .type = .string, .doc = "MIME types, one per line, preferred first: text/uri-list for files, image/png, text/plain;charset=utf-8." },
+        .{ .name = "data", .type = array(.u8), .doc = "The data (copied)." },
+        .{ .name = "lengths", .type = array(.usize), .doc = "How many bytes of data each MIME type gets, in order, splitting data; empty gives every type all of data." },
+    }),
+    descriptor("siv_clipboard_data", "What a clipboard read got. Filled by siv; valid during the call.", &.{
+        .{ .name = "mime", .type = .string, .doc = "The MIME type read, one of those asked for; empty on failure." },
+        .{ .name = "data", .type = array(.u8), .doc = "The bytes as the owner wrote them." },
+        .{ .name = "result", .type = ref("siv_result"), .doc = "SIV_OK, or SIV_ERROR_UNAVAILABLE when the selection has none of the types, the transfer failed or passed the transfer limit, or the window went away." },
+        .{ .name = "index", .type = .u32, .doc = "The position of mime among the types asked for, from 0." },
+    }),
+    callback("siv_clipboard_data_fn", "Receives a clipboard read of chosen MIME types (siv_clipboard_read_data) on the application's thread, in the dispatch phase (D5), never inside the call that asked for it.", &.{
+        .{ .name = "data", .type = .{ .desc = "siv_clipboard_data" }, .doc = "What was read, valid during the call." },
+    }, .void),
     flags("siv_image_load_flags", "Image loading options.", &.{
         .{ .name = "first_frame", .bit = 0, .doc = "Decode only the first frame of an animation." },
     }),
@@ -1685,6 +1699,19 @@ pub const functions = [_]Function{
         window_param,
         .{ .name = "selection", .type = ref("siv_selection"), .doc = "Which selection." },
         .{ .name = "callback", .type = ref("siv_clipboard_fn"), .doc = "Receives the text." },
+        .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data, after callback; may be NULL." },
+        .{ .name = "user_data", .type = .user_data, .doc = "Passed to callback and destroy." },
+    }),
+    call("siv_clipboard_write_data", "Offers data in one or more MIME types as the seat's clipboard or primary selection, as siv_clipboard_write offers text: files as text/uri-list (with x-special/gnome-copied-files to say whether a paste moves them), an image as image/png. siv keeps a copy and writes each type to whoever pastes it. Call it while handling input, like siv_clipboard_write.", &.{
+        window_param,
+        .{ .name = "selection", .type = ref("siv_selection"), .doc = "Which selection." },
+        .{ .name = "desc", .type = .{ .desc = "siv_clipboard_desc" }, .doc = "The data and its types." },
+    }),
+    call("siv_clipboard_read_data", "Reads the seat's clipboard or primary selection in the first of mimes it offers, as raw bytes, up to the transfer limit, and calls callback with it, then destroy, never inside this call. For types other than text, such as the text/uri-list of copied files. If the application is destroyed first, only destroy runs.", &.{
+        window_param,
+        .{ .name = "selection", .type = ref("siv_selection"), .doc = "Which selection." },
+        .{ .name = "mimes", .type = .string, .doc = "MIME types, one per line, preferred first." },
+        .{ .name = "callback", .type = ref("siv_clipboard_data_fn"), .doc = "Receives the data." },
         .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data, after callback; may be NULL." },
         .{ .name = "user_data", .type = .user_data, .doc = "Passed to callback and destroy." },
     }),

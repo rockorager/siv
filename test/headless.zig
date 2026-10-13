@@ -33,6 +33,7 @@ test {
     _ = @import("abi/canvas.zig");
     _ = @import("abi/external.zig");
     _ = @import("abi/dnd.zig");
+    _ = @import("abi/clipboard.zig");
     _ = @import("abi/teardown.zig");
     _ = @import("abi/primitives.zig");
     _ = @import("widgets/widgets.zig");
@@ -44,6 +45,5 @@ test {
     _ = @import("abi/image.zig");
     _ = @import("abi/fonts.zig");
     _ = @import("abi/rich_text.zig");
-    _ = @import("abi/clipboard.zig");
     _ = @import("lua/lua.zig");
 }

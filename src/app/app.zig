@@ -540,27 +540,31 @@ pub const App = struct {
         return c.out;
     }
 
-    fn receiveSelection(ctx: ?*anyopaque, seat: platform.SeatId, kind: platform.SelectionKind, prefs: []const []const u8, pipe_fd: i32) bool {
+    fn receiveSelection(ctx: ?*anyopaque, seat: platform.SeatId, kind: platform.SelectionKind, prefs: []const []const u8, pipe_fd: i32) ?usize {
         const app: *App = @ptrCast(@alignCast(ctx));
         const Ctx = struct {
             seat: platform.SeatId,
             kind: platform.SelectionKind,
             prefs: []const []const u8,
             fd: i32,
-            out: bool = false,
+            out: ?usize = null,
             fn run(c: ?*anyopaque, comp: *Compositor) void {
                 const s: *@This() = @ptrCast(@alignCast(c));
                 const mime = ui.Clipboard.pick(comp.platform.selectionMimes(s.seat, s.kind), s.prefs) orelse {
                     _ = std.os.linux.close(s.fd);
                     return;
                 };
-                s.out = comp.platform.receiveSelection(s.seat, s.kind, mime, s.fd);
+                if (!comp.platform.receiveSelection(s.seat, s.kind, mime, s.fd)) return;
+                for (s.prefs, 0..) |p, i| if (p.ptr == mime.ptr) {
+                    s.out = i;
+                    return;
+                };
             }
         };
         var c: Ctx = .{ .seat = seat, .kind = kind, .prefs = prefs, .fd = pipe_fd };
         app.comp.call(&c, Ctx.run) catch {
             _ = std.os.linux.close(pipe_fd);
-            return false;
+            return null;
         };
         return c.out;
     }

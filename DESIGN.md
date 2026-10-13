@@ -1770,6 +1770,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       offered) is posted, so the callback never runs inside
       `siv_clipboard_read`; one still waiting at teardown runs only its
       destroy-notify (D5). The Lua binding awaits it in a coroutine (D23).
+    - Any MIME type, as drags do: `siv_clipboard_write_data` offers MIME
+      lines and data split by `lengths` (D27), each type written to
+      whoever asks for it through the loop like text, and
+      `siv_clipboard_read_data` names the types it takes, preferred first,
+      and gets the first one offered as raw bytes up to the transfer
+      limit, by a post like a text paste. A file manager copies files as
+      text/uri-list with x-special/gnome-copied-files to say whether a
+      paste moves them, and pastes files other applications copied; found
+      by the file manager in `apps/files`. `ui.Clipboard` keeps one text
+      for every text type of a text copy and per-type data otherwise, and
+      learns which type a paste picked.
     - Drag and drop (`src/ui/dnd.zig`): the platform keeps each seat's
       drag offer (the offer over one of this client's surfaces) with a
       per-seat id, and this client's drag source with its icon surface,
