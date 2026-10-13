@@ -1248,6 +1248,7 @@ const Builder = struct {
     fn strut(self: *const Builder, style_index: u32) font_.Metrics {
         const style = self.p.styles[style_index];
         for (style.fonts) |id| if (self.cache.face(id)) |face| return face.metrics(style.size);
+        if (self.cache.last_resort) |id| return self.cache.face(id).?.metrics(style.size);
         return .{ .ascent = 0, .descent = 0, .line_gap = 0 };
     }
 

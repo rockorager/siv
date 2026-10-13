@@ -125,7 +125,7 @@ pub const ShapedParagraph = struct {
     ) BuildError!ShapedParagraph {
         if (text.len >= std.math.maxInt(u32)) return error.TextTooLong;
         if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUtf8;
-        try validateStyles(text, styles);
+        try validateStyles(cache, text, styles);
 
         var self: ShapedParagraph = undefined;
         self.arena = .init(gpa);
@@ -195,7 +195,7 @@ pub const ShapedParagraph = struct {
         if (old.direction != direction or old.missing or old.wanted.len != 0 or old.text.len == 0 or text.len == 0 or text.len >= std.math.maxInt(u32))
             return init(gpa, scratch, cache, text, styles, direction);
         if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUtf8;
-        try validateStyles(text, styles);
+        try validateStyles(cache, text, styles);
 
         // The changed bytes, from the common prefix and suffix.
         const shorter = @min(old.text.len, text.len);
@@ -401,13 +401,14 @@ fn firstEndAfter(comptime T: type, items: []const T, offset: u32, ctx: anytype, 
     return @intCast(@min(low, items.len - 1));
 }
 
-pub fn validateStyles(text: []const u8, styles: []const StyleRun) !void {
+/// A run's fonts may be empty only when `cache` has a last-resort face.
+pub fn validateStyles(cache: *const FontCache, text: []const u8, styles: []const StyleRun) !void {
     if (styles.len == 0 or styles[styles.len - 1].end != text.len) return error.InvalidStyles;
     var previous: u32 = 0;
     for (styles, 0..) |run, i| {
         if ((run.end <= previous and !(i == 0 and run.end == 0)) or run.end > text.len) return error.InvalidStyles;
         if (run.end < text.len and text[run.end] & 0xc0 == 0x80) return error.InvalidStyles;
-        if (run.style.fonts.len == 0 or !std.math.isFinite(run.style.size) or run.style.size <= 0) return error.InvalidStyles;
+        if ((run.style.fonts.len == 0 and cache.last_resort == null) or !std.math.isFinite(run.style.size) or run.style.size <= 0) return error.InvalidStyles;
         previous = run.end;
     }
 }
@@ -498,14 +499,22 @@ const Builder = struct {
     /// wrong emoji presentation) go to the first later font whose actual
     /// shaping output has no .notdef. Adjacent graphemes with the same font
     /// are shaped together, always with full paragraph context.
+    ///
+    /// Without a ready font, the cache's last-resort face shapes it
+    /// (boxes), unless a font of the chain is still loading: then nothing
+    /// shows until it loads, rather than boxes for a moment.
     fn shapeItem(self: *Builder, item: Item) !void {
         const p = self.paragraph;
         const fonts = p.styles[item.style].fonts;
+        var loading = false;
         const primary = for (fonts) |id| switch (self.cache.state(id)) {
             .ready => break id,
-            .pending => try self.want(id),
+            .pending => {
+                try self.want(id);
+                loading = true;
+            },
             .failed => {},
-        } else {
+        } else if (self.cache.last_resort != null and !loading) self.cache.last_resort.? else {
             // Nothing can shape this text until a font loads.
             self.missing = true;
             return self.appendRun(item, fonts[0], item.start, item.end, &.{});
@@ -905,6 +914,42 @@ test "pending fonts are wanted, not read; missing glyphs are reported" {
     try std.testing.expectEqualSlices(FontId, &.{pending}, hebrew.wanted);
     try std.testing.expect(!hebrew.missing);
     try std.testing.expectEqual(fixture.hebrew, hebrew.runs[hebrew.runs.len - 1].font);
+}
+
+test "without a font, the last-resort face shows boxes, unless a font is loading" {
+    var fixture: testing.Fixture = try .init();
+    defer fixture.deinit();
+    const style = struct {
+        var run: [1]StyleRun = undefined;
+        fn of(fonts: []const FontId) []const StyleRun {
+            run[0] = .{ .end = "ab c".len, .style = .{ .fonts = fonts, .size = 10 } };
+            return &run;
+        }
+    }.of;
+    const a = fixture.arena.allocator();
+    // An empty chain is invalid without a last resort.
+    try std.testing.expectError(error.InvalidStyles, ShapedParagraph.init(std.testing.allocator, a, &fixture.cache, "ab c", style(&.{}), .auto_ltr));
+    try fixture.cache.addLastResort();
+    const failed = try fixture.cache.addPending(.{ .path = "/fonts/Gone.ttf" }, null);
+    fixture.cache.fail(failed);
+    for ([_][]const FontId{ &.{}, &.{failed} }) |chain| {
+        var p = try ShapedParagraph.init(std.testing.allocator, a, &fixture.cache, "ab c", style(chain), .auto_ltr);
+        defer p.deinit();
+        try std.testing.expect(p.missing);
+        try std.testing.expectEqual(fixture.cache.last_resort.?, p.runs[0].font);
+        // A box of 0.6 em per letter, a quarter em for the space.
+        try std.testing.expectEqual(4, p.glyphs.len);
+        for (p.glyphs, [_]u32{ 0, 0, 1, 0 }, [_]f32{ 6, 6, 2.5, 6 }) |g, id, advance| {
+            try std.testing.expectEqual(id, g.id);
+            try std.testing.expectApproxEqAbs(advance, g.advance, 0.001);
+        }
+    }
+    // A font still loading: nothing until it loads, not boxes.
+    const pending = try fixture.cache.addPending(.{ .path = "/fonts/Unloaded.ttf" }, null);
+    var p = try ShapedParagraph.init(std.testing.allocator, a, &fixture.cache, "ab c", style(&.{ failed, pending }), .auto_ltr);
+    defer p.deinit();
+    try std.testing.expectEqualSlices(FontId, &.{pending}, p.wanted);
+    try std.testing.expectEqual(0, p.glyphs.len);
 }
 
 test "segments measure the advance between opportunities" {

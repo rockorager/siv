@@ -85,6 +85,8 @@ pub fn init(gpa: std.mem.Allocator) error{OutOfMemory}!Fonts {
     errdefer f.deinit();
     _ = try f.intern("");
     f.default_family = try f.intern("sans-serif");
+    // Text without a font shows boxes rather than nothing (D13).
+    try f.cache.addLastResort();
     return f;
 }
 
@@ -290,6 +292,16 @@ fn withSize(f: *Fonts, base: []const FontId, size: f32) error{OutOfMemory}!?[]Fo
     return out;
 }
 
+/// Whether text in the default family has a font to draw with, ready or
+/// still loading: one added, or Fontconfig's. Without one, text draws
+/// with the last-resort face (boxes).
+pub fn hasFonts(f: *Fonts) error{OutOfMemory}!bool {
+    for (try f.chain(.{ .family = 0, .language = 0, .weight = 400, .slant = .roman })) |id| {
+        if (f.cache.state(id) != .failed) return true;
+    }
+    return false;
+}
+
 /// Starts reading pending fonts on the pool. Fonts already loading, ready,
 /// or failed are skipped. Without a pool nothing happens.
 pub fn request(f: *Fonts, ids: []const FontId) void {
@@ -390,6 +402,18 @@ test "registered families and the default resolve without Fontconfig" {
         try std.testing.expect(id != base);
         try std.testing.expectEqual(text.font.Synthetic.bold_strength, f.cache.instanceOf(id).synthetic.bold);
     }
+}
+
+test "without fonts, the default family has none; text draws with the last resort" {
+    var f = try Fonts.init(std.testing.allocator);
+    defer f.deinit();
+    try std.testing.expect(f.cache.last_resort != null);
+    try std.testing.expect(!try f.hasFonts());
+    try f.addFont("", text.font.test_fonts.siv_regular);
+    // Added under its own family, not the default one.
+    try std.testing.expect(!try f.hasFonts());
+    try f.setDefault("SivTest");
+    try std.testing.expect(try f.hasFonts());
 }
 
 test "added faces form families matched by style" {

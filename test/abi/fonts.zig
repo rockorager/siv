@@ -82,3 +82,45 @@ test "siv_app_add_font: families and styles from the font data, matched per styl
     s.weight = .medium; // below semibold: not emboldened
     try testing.expectApproxEqAbs(regular, try width(app, "Hamburgefonstiv", s), 0.01);
 }
+
+test "without any font, text lays out and draws boxes, and siv_app_has_fonts says so (D13)" {
+    var app: t.App = .null;
+    try ok(c.siv_app_create(&.{ .backend = .headless, .flags = .{ .no_system_fonts = true, .reduced_motion = true } }, &app));
+    defer c.siv_app_destroy(app);
+    var has = true;
+    try ok(c.siv_app_has_fonts(app, &has));
+    try testing.expect(!has);
+
+    // A text node shapes and shows its boxes (it reached an unreachable
+    // InvalidStyles before).
+    var window: t.Window = .null;
+    try ok(c.siv_window_create(app, &.{ .width = 120, .height = 40 }, &window));
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(window, &txn));
+    _ = c.siv_text(txn, c.siv_window_get_root(window), "Hello", 5);
+    try ok(c.siv_txn_commit(txn));
+    var settled = false;
+    try ok(c.siv_test_settle(app, 5000, &settled));
+    try testing.expect(settled);
+    var len: usize = 0;
+    var w: u32 = 0;
+    var h: u32 = 0;
+    try ok(c.siv_test_capture(window, null, 0, &len, &w, &h));
+    const pixels = try testing.allocator.alloc(u8, len);
+    defer testing.allocator.free(pixels);
+    try ok(c.siv_test_capture(window, pixels.ptr, len, &len, &w, &h));
+    // Pixels unlike the background's (the first one) are the boxes.
+    var inked: usize = 0;
+    var i: usize = 0;
+    while (i < len) : (i += 4) {
+        if (!std.mem.eql(u8, pixels[i..][0..4], pixels[0..4])) inked += 1;
+    }
+    try testing.expect(inked > 50);
+    // The last-resort face: 0.6 em per character, a quarter em per space.
+    try testing.expectApproxEqAbs(3 * 12 + 5, try width(app, "ab c", .{ .font_size = 20 }), 0.01);
+
+    try ok(c.siv_app_add_font(app, "Test", 4, tf.siv_regular.ptr, tf.siv_regular.len));
+    try ok(c.siv_app_set_default_font(app, "Test", 4));
+    try ok(c.siv_app_has_fonts(app, &has));
+    try testing.expect(has);
+}

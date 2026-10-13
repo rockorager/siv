@@ -40,7 +40,8 @@ static siv_result add_font(siv_app app, const char *path) {
 }
 ```
 
-Without any font, text has nothing to lay out with; always add one.
+Without any font, text still lays out, but every character draws as a box
+(siv's last-resort face) and `siv_app_has_fonts` reports false; add one.
 
 ## Settling
 

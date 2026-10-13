@@ -269,7 +269,8 @@ fn shapeRuns(win: *Window, content: []const u8, runs: Runs, old: ?*const text.Sh
         text.ShapedText.initReusing(win.gpa, a, cache_, content, runs.styles, runs.direction, .{}, old);
     return result catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        // Validated when the text was set.
+        // Validated when the text was set; chains may be empty, since
+        // the font cache has a last resort (D13).
         error.InvalidUtf8, error.TextTooLong, error.InvalidStyles => unreachable,
     };
 }

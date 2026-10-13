@@ -324,7 +324,7 @@ test "a pending font loads on the pool and the text reshapes" {
     var path_buf: [64]u8 = undefined;
     const path = try writeFont(&path_buf, text.font.test_fonts.hebrew);
     defer _ = std.os.linux.unlink(path);
-    const latin: text.FontId = @enumFromInt(0); // the harness adds it first
+    const latin = app.fonts.families.get(try app.fonts.intern("Droid")).?[0]; // the harness adds it first
     const hebrew = try app.fonts.cache.addPending(.{ .path = path }, null);
     try app.fonts.register("Pending", &.{ latin, hebrew });
     var id: NodeId = undefined;

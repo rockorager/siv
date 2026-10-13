@@ -460,6 +460,16 @@ pub export fn siv_app_set_default_font(app: t.App, family: ?[*]const u8, family_
     return .ok;
 }
 
+pub export fn siv_app_has_fonts(app: t.App, has_fonts: ?*bool) t.Result {
+    return wrap(struct {
+        fn f(a: t.App, out: ?*bool) Error!void {
+            const self = try App.get(@backingInt(a));
+            const dest = try runtime.out(bool, out);
+            dest.* = try self.app.fonts.hasFonts();
+        }
+    }.f(app, has_fonts));
+}
+
 pub export fn siv_app_set_language(app: t.App, language: ?[*]const u8, language_len: usize, direction: t.Direction) t.Result {
     return wrap(struct {
         fn f(a: t.App, p: ?[*]const u8, n: usize, d: t.Direction) Error!void {

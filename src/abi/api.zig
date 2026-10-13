@@ -318,7 +318,7 @@ pub const decls = [_]Decl{
         .{ .name = "headless", .value = 1, .doc = "No display server: windows render into memory, for tests (D24)." },
     }),
     flags("siv_app_flags", "Application options.", &.{
-        .{ .name = "no_system_fonts", .bit = 0, .doc = "Do not use Fontconfig; only families added with siv_app_add_font resolve." },
+        .{ .name = "no_system_fonts", .bit = 0, .doc = "Do not use Fontconfig; only families added with siv_app_add_font resolve (without one, text shows boxes; see siv_app_has_fonts)." },
         .{ .name = "reduced_motion", .bit = 1, .doc = "No caret blinking or other motion, whatever the desktop settings say." },
         .{ .name = "no_desktop_settings", .bit = 2, .doc = "Do not follow the desktop's settings (D19); use the built-in defaults. The headless backend never follows them, and never publishes to assistive technology, so tests do not depend on the desktop." },
         .{ .name = "ltr", .bit = 3, .doc = "Lay out left to right whatever the language (D21). Without ltr or rtl, the direction is the language's." },
@@ -1632,6 +1632,10 @@ pub const functions = [_]Function{
     call("siv_app_set_default_font", "Sets the family used by text styles that name none. By default it is the desktop's font (D19), else sans-serif; once set here, the desktop's no longer replaces it.", &.{
         app_param,
         .{ .name = "family", .type = .string, .doc = "Family name." },
+    }),
+    call("siv_app_has_fonts", "Whether text in the default family (siv_app_set_default_font) has a font to draw with: one added with siv_app_add_font, or Fontconfig's, ready or still loading. Without one (SIV_APP_NO_SYSTEM_FONTS and no font added, or a system where Fontconfig finds none), text still lays out and draws, with siv's built-in last-resort face: a box for every character but spaces (D13).", &.{
+        app_param,
+        .{ .name = "has_fonts", .type = out(.bool), .doc = "A font resolves." },
     }),
     call("siv_app_set_language", "Changes the application's language and direction (D21). Windows that follow the application shape their text again and mirror their layout; documents printed later default to them.", &.{
         app_param,

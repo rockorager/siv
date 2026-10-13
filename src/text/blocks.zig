@@ -91,7 +91,7 @@ pub const ShapedText = struct {
     /// Shapes `text` with `styles` (as `ShapedParagraph.init` takes them)
     /// in blocks.
     pub fn init(gpa: Allocator, scratch: Allocator, cache: *const FontCache, text: []const u8, styles: []const StyleRun, direction: bidi.BaseDirection, options: Options) BuildError!ShapedText {
-        try validate(text, styles);
+        try validate(cache, text, styles);
         var list: std.ArrayList(*ShapedBlock) = .empty;
         defer list.deinit(scratch);
         errdefer for (list.items) |b| b.release();
@@ -105,7 +105,7 @@ pub const ShapedText = struct {
     /// block end, `blockEnd`), leaving the rest `pending`: `extend` adds
     /// it, block by block, and the result is then `init`'s.
     pub fn initPrefix(gpa: Allocator, scratch: Allocator, cache: *const FontCache, text: []const u8, styles: []const StyleRun, direction: bidi.BaseDirection, options: Options, prefix_end: usize) BuildError!ShapedText {
-        try validate(text, styles);
+        try validate(cache, text, styles);
         var list: std.ArrayList(*ShapedBlock) = .empty;
         defer list.deinit(scratch);
         errdefer for (list.items) |b| b.release();
@@ -139,7 +139,7 @@ pub const ShapedText = struct {
         const old = old_ orelse return init(gpa, scratch, cache, text, styles, direction, options);
         if (old.pending != 0 or old.direction != direction or old.missing or old.wanted.len != 0 or old.options.block_bytes != options.block_bytes or old.len() == 0 or text.len == 0)
             return init(gpa, scratch, cache, text, styles, direction, options);
-        try validate(text, styles);
+        try validate(cache, text, styles);
         const old_len = old.len();
         const n = old.blocks.len;
 
@@ -402,9 +402,9 @@ pub const ShapedText = struct {
 /// Each block checks its own bytes are UTF-8 when shaped, and blocks
 /// kept from an old text are its bytes, checked then: a keystroke does not
 /// check all of a long text.
-fn validate(text: []const u8, styles: []const StyleRun) BuildError!void {
+fn validate(cache: *const FontCache, text: []const u8, styles: []const StyleRun) BuildError!void {
     if (text.len >= std.math.maxInt(u32)) return error.TextTooLong;
-    try paragraph_.validateStyles(text, styles);
+    try paragraph_.validateStyles(cache, text, styles);
 }
 
 /// Whether two byte strings are equal, by unaligned 64-bit words:
