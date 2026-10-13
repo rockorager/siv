@@ -978,9 +978,11 @@ test "subsurfaces on sway: translucent through alpha-modifier, backgrounds on si
     // the window paints the bars around it.
     try testing.expect(!p.solid);
     // On screen, both at half opacity over white, not over each other:
-    // sway blends the frame, siv the bars.
+    // sway blends the frame, siv the bars. siv blends in linear light
+    // (0xbb); sway's renderers differ: pixman and GLES2 blend encoded
+    // values (0x80), Vulkan linear light (0xba).
     if (try outputPixel(&h, 460, 310)) |video| {
-        try testing.expect(video[0] > 0x60 and video[0] < 0xa0 and video[1] > 0x60 and video[1] < 0xa0 and video[2] > 0xf0);
+        try testing.expect(video[0] > 0x60 and video[0] < 0xd0 and video[1] > 0x60 and video[1] < 0xd0 and video[2] > 0xf0);
         const bar = (try outputPixel(&h, 410, 310)).?;
         try testing.expect(bar[0] > 0x60 and bar[0] < 0xd0 and bar[1] > 0xf0 and bar[2] > 0x60 and bar[2] < 0xd0);
     } else std.log.warn("grim is not installed; composition on screen not checked", .{});

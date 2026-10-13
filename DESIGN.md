@@ -2231,9 +2231,15 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
         renderer, `SIV_SWAY_RENDERER=vulkan`, on Linux 6.6), with its
         releases (sway stopped, then resumed) coming from release points,
         and the syncobj test (`platform/syncobj.zig`) runs on any render
-        node. Not verified: the explicit path against a real compositor
-        and GPU, NVIDIA's included; the orb this was built in has no GPU
-        and runs Linux 6.1. Reverse if a compositor's release points prove
+        node. On an AMD GPU (Radeon 760M, RADV, Linux 7.2) with sway 1.12
+        (wlroots 0.20.2), whose Vulkan and GLES2 renderers offer the
+        global: every attachment carries its acquire and release points
+        (WAYLAND_DEBUG), each frame goes back only once the eventfd on its
+        release point fired with the point signaled, bare commits (moves,
+        fades) with the dma-buf still attached are accepted, and with the
+        global hidden (`WLR_RENDER_NO_EXPLICIT_SYNC=1`) frames keep
+        implicit synchronization and `wl_buffer.release`. Not verified:
+        NVIDIA. Reverse if a compositor's release points prove
         unreliable where `wl_buffer.release` is not; then wait for both.
     - Translucent placements (alpha-modifier-v1): a placement whose
       layers' opacity multiplies to less than 1 stays on its subsurface
@@ -2247,7 +2253,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       protocol. Before, every translucent frame was composited and every
       translucent embedder surface was shown at full opacity. Verified on
       the headless backend and on sway, whose screenshot (grim,
-      wlr-screencopy) shows the frame blended at half opacity.
+      wlr-screencopy) shows the frame blended at half opacity. The
+      compositor blends as it does: sway's pixman and GLES2 renderers
+      blend encoded sRGB values (50% blue over white gives 128), its
+      Vulkan renderer linear light (186) as siv does (187), so on the
+      former a translucent promoted frame looks darker than the same
+      frame composited by siv.
     - Backgrounds (single-pixel-buffer-v1): an external view's
       `background` fills its content box behind the content, such as the
       bars around letterboxed video. While the content is on a
