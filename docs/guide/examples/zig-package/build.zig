@@ -1,6 +1,6 @@
 //! A Zig program that depends on siv as a package.
 //!
-//!     zig build run
+//!     zig build run       (or zig build --prefix /usr/local to install)
 
 const std = @import("std");
 
@@ -20,9 +20,13 @@ pub fn build(b: *std.Build) void {
             .imports = &.{.{ .name = "siv", .module = siv.module("siv") }},
         }),
     });
+    // Installed, it finds libsiv.so in ../lib, installed beside it with
+    // the licences of everything libsiv contains.
+    exe.root_module.addRPathSpecial("$ORIGIN/../lib");
     b.installArtifact(exe);
+    b.installArtifact(siv.artifact("siv"));
+    b.getInstallStep().dependOn(&b.addInstallFileWithDir(siv.namedLazyPath("notices"), .prefix, "share/licenses/siv/NOTICES").step);
 
-    // Runs the program against the libsiv.so this build made.
     const run = b.addRunArtifact(exe);
     b.step("run", "Run the program").dependOn(&run.step);
 }

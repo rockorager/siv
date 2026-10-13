@@ -3286,7 +3286,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       the range reassigns rows that left it to items that entered it and
       calls the application's bind callback inside the view's
       transaction, with a recycled flag so it updates rather than
-      rebuilds. A rebind of everything (`siv_view_refresh`, a new count,
+      rebuilds: set whenever an earlier bind filled the row, for the
+      same item too (a rebind), not only for another (the reference
+      said only another until the user guide's table sample read it). A
+      rebind of everything (`siv_view_refresh`, a new count,
       a tree changing shape) keeps each row at its index, so focus stays
       put. Positions are arithmetic, never measured: rows of lists,
       trees, and tables have `item_height`, or each the height the
@@ -4067,6 +4070,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | `SIV_STR` in siv.h (D2) | each sample's `S(s)` | one helper for string literals |
   | Zig: descriptor parameters take `T.Options` with slices (D3) | `?*const T` with `.x` and `.x_len` | strings and arrays as slices |
   | Zig: callbacks get `*const T` descriptors (D3) | `?*const T` | siv never passes NULL; no `ev.?` |
+  | `siv_bind_fn`'s `recycled` documented as any row bound before (D22) | "showed another item before" | a bind trusting the old words could add a second set of nodes on a rebind |
   | artifacts `siv` (libsiv.so) and `siv-static` (libsiv.a); `notices` named path (D25) | two artifacts named `siv` | a Zig package could not install libsiv.so, or build as a dependency |
   | stretched nodes keep their own largest size; the root's stretch documented (D26) | the parent's stretch winning | a stretched node's `max_width` did nothing |
   | `SIV_VISUAL_CLIP` clips the node's own image and canvas (D26) | descendants only | rounded images needed a wrapper box |

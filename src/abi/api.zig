@@ -1235,13 +1235,13 @@ pub const decls = [_]Decl{
         .{ .name = "single", .value = 1, .doc = "One at a time: the cursor's item." },
         .{ .name = "multiple", .value = 2, .doc = "Any number: Ctrl toggles one, Shift extends a range, Ctrl+A selects all." },
     }),
-    callback("siv_bind_fn", "Fills a view's row for an item, inside the view's transaction: add and change nodes under row with txn, and do not begin another. Views call it only for the rows they show, as they come into view. A recycled row still holds what an earlier bind put in it, for another item, to update or replace.", &.{
+    callback("siv_bind_fn", "Fills a view's row for an item, inside the view's transaction: add and change nodes under row with txn, and do not begin another. Views call it only for the rows they show, as they come into view. A recycled row still holds what an earlier bind put in it, for this item or another, to update or replace.", &.{
         .{ .name = "txn", .type = ref("siv_txn"), .doc = "The view's open transaction." },
         .{ .name = "row", .type = ref("siv_node"), .doc = "The container to fill: a box, or for tables a grid with the columns' tracks." },
         .{ .name = "item", .type = .u64, .doc = "Lists, tables, and grids: the item's index. Trees: the item's id." },
         .{ .name = "index", .type = .u32, .doc = "The row's position among the view's rows." },
         .{ .name = "depth", .type = .u32, .doc = "Trees: the item's depth, 0 at the top." },
-        .{ .name = "recycled", .type = .bool, .doc = "The row showed another item before." },
+        .{ .name = "recycled", .type = .bool, .doc = "An earlier bind filled the row, for this item or another (siv_view_refresh and new counts bind rows again): its nodes exist, so update them rather than adding more." },
     }, .void),
     callback("siv_tree_count_fn", "The number of children of a tree view's item.", &.{
         .{ .name = "parent", .type = .u64, .doc = "An item's id, or 0 for the top level." },
