@@ -7,8 +7,9 @@
 //!   zig build test-<module>   one module's tests (e.g. test-text)
 //!   zig build test-headless   the headless integration tests
 //!   zig build test-integration  the Wayland backend against headless sway,
-//!                             D-Bus against dbus-daemon; frame pacing last
-//!   zig build test-integration-pacing  the frame pacing tests alone
+//!                             D-Bus against dbus-daemon
+//!   zig build bench-pacing    frame pacing on sway end to end, against
+//!                             D12's thresholds (on a quiet machine)
 //!
 //! Options:
 //!   -Dtest-filter=<text>      only run tests whose name contains <text>
@@ -341,19 +342,16 @@ pub fn build(b: *std.Build) void {
     const a11y_integration_run = b.addRunArtifact(b.addTest(.{ .name = "a11y-integration", .root_module = a11y_integration, .filters = test_filters }));
     a11y_integration_run.has_side_effects = true; // depends on the installed at-spi2-core
     integration_step.dependOn(&a11y_integration_run.step);
-    // Frame pacing (src/compositor/integration_tests.zig, "pacing: ..."):
-    // dropped frames on lavapipe and pixman sway are CPU work that other
-    // processes delay, so these run alone, after the other integration
-    // tests, the ABI's included (and are skipped if one of those fails);
-    // wired at the end of this function.
+    // Frame pacing measured end to end (src/compositor/integration_tests.zig,
+    // "pacing: ..."): dropped frames on lavapipe and pixman sway are CPU
+    // work that other processes delay, so they are checked against D12's
+    // thresholds only here, for a quiet machine or real hardware. Not part
+    // of `test-integration`, which asserts only what siv controls.
     const pacing = ctx.module("src/compositor/compositor.zig", &compositor_imports);
     pacing.addImport("integration", integrationOptions(b, true, true));
-    const pacing_test = b.addTest(.{ .name = "pacing-integration", .root_module = pacing, .filters = if (test_filters.len > 0) test_filters else &.{"pacing: "} });
-    const pacing_run = b.addRunArtifact(pacing_test);
+    const pacing_run = b.addRunArtifact(b.addTest(.{ .name = "bench-pacing", .root_module = pacing, .filters = if (test_filters.len > 0) test_filters else &.{"pacing: "} }));
     pacing_run.has_side_effects = true;
-    const pacing_alone = b.addRunArtifact(pacing_test);
-    pacing_alone.has_side_effects = true;
-    b.step("test-integration-pacing", "Run the frame pacing integration tests alone").dependOn(&pacing_alone.step);
+    b.step("bench-pacing", "Measure frame pacing on sway against D12's thresholds (quiet machine)").dependOn(&pacing_run.step);
     b.step("test-integration-a11y", "Run the AT-SPI integration tests against the registry").dependOn(&a11y_integration_run.step);
 
     // Headless text engine benchmarks. Not part of `test`; build with
@@ -403,8 +401,6 @@ pub fn build(b: *std.Build) void {
         .headless = headless,
     });
 
-    for (integration_step.dependencies.items) |dep| pacing_run.step.dependOn(dep);
-    integration_step.dependOn(&pacing_run.step);
 }
 
 const Ctx = struct {
@@ -445,11 +441,12 @@ fn integrationOption(b: *std.Build, enabled: bool) *std.Build.Module {
     return integrationOptions(b, enabled, false);
 }
 
-/// `pacing` selects the compositor's "pacing: ..." integration tests.
-fn integrationOptions(b: *std.Build, enabled: bool, pacing: bool) *std.Build.Module {
+/// `bench` makes the compositor's "pacing: ..." integration tests measure
+/// end to end (`zig build bench-pacing`).
+fn integrationOptions(b: *std.Build, enabled: bool, bench: bool) *std.Build.Module {
     const options = b.addOptions();
     options.addOption(bool, "enabled", enabled);
-    options.addOption(bool, "pacing", pacing);
+    options.addOption(bool, "bench", bench);
     return options.createModule();
 }
 

@@ -6,13 +6,14 @@
 //! need sway on a GPU (SIV_SWAY_RENDERER=vulkan) and /dev/udmabuf, and for
 //! fence gating vgem. Print the measurements with SIV_MEASURE=1.
 //!
-//! Tests named "pacing: ..." count dropped frames end to end. On lavapipe
-//! and sway's pixman renderer every frame is CPU work, so other processes
-//! make frames late whatever siv does: they run in their own binary, alone,
-//! after the other integration tests (`pacing-integration`, also `zig
-//! build test-integration-pacing`), and are skipped here. What siv controls
-//! (handing each frame off well before its predicted presentation, one
-//! frame per refresh, predictions that follow feedback) they assert too.
+//! Tests named "pacing: ..." assert here only what siv controls: each
+//! frame handed off within a refresh of becoming due, no more than one
+//! frame per refresh, presentation feedback recorded, device loss and
+//! hidden windows handled. Dropped frames, wheel-to-photon latency, and
+//! prediction error are end to end: on lavapipe and sway's pixman
+//! renderer every frame is CPU work that other processes delay whatever
+//! siv does. `zig build bench-pacing`, for a quiet machine or real
+//! hardware, prints them and checks them against D12's thresholds.
 
 const std = @import("std");
 const testing = std.testing;
@@ -27,13 +28,8 @@ const pool = @import("pool");
 
 const Loop = loop_mod.Loop;
 
-/// Whether this is the binary for "pacing: ..." tests.
-const pacing = @import("integration").pacing;
-
-/// Skips a test outside the binary it belongs to.
-fn only(comptime pacing_test: bool) !void {
-    if (pacing != pacing_test) return error.SkipZigTest;
-}
+/// Whether this is `zig build bench-pacing`.
+const bench = @import("integration").bench;
 const Event = update.Event;
 const WindowId = platform.WindowId;
 
@@ -220,7 +216,7 @@ const Probe = struct {
 };
 
 test "windows map with content laid out for their configured size" {
-    try only(false);
+    if (bench) return error.SkipZigTest;
     var h: Harness = .{};
     try h.start();
     defer h.stop();
@@ -255,7 +251,6 @@ test "windows map with content laid out for their configured size" {
 }
 
 test "pacing: scrolling and animation stay smooth on sway while the UI thread is stalled" {
-    try only(true);
     var h: Harness = .{};
     try h.start();
     defer h.stop();
@@ -271,67 +266,68 @@ test "pacing: scrolling and animation stay smooth on sway while the UI thread is
     try h.settle();
     sleepNs(300 * std.time.ns_per_ms);
 
-    // Wheel input from a virtual pointer while the UI thread sleeps: a
-    // helper thread sends it and watches presentation feedback.
-    var vp = try VirtualPointer.connect(&h.sway);
-    defer vp.deinit();
-    vp.moveTo(640, 360);
-    try vp.sync();
-    const Wheel = struct {
-        fn run(comp: *Compositor, window: WindowId, pointer: *VirtualPointer, out: *[10]u64, err: *?anyerror) void {
-            measure(comp, window, pointer, out) catch |e| {
-                err.* = e;
-            };
-        }
+    const refresh = (try Probe.read(h.comp, id)).refresh;
+    if (bench) {
+        // Wheel input from a virtual pointer while the UI thread sleeps: a
+        // helper thread sends it and watches presentation feedback.
+        var vp = try VirtualPointer.connect(&h.sway);
+        defer vp.deinit();
+        vp.moveTo(640, 360);
+        try vp.sync();
+        const Wheel = struct {
+            fn run(comp: *Compositor, window: WindowId, pointer: *VirtualPointer, out: *[10]u64, err: *?anyerror) void {
+                measure(comp, window, pointer, out) catch |e| {
+                    err.* = e;
+                };
+            }
 
-        fn measure(comp: *Compositor, window: WindowId, pointer: *VirtualPointer, out: *[10]u64) !void {
-            var prng = std.Random.DefaultPrng.init(3);
-            for (out) |*sample| {
-                sleepNs(20 * std.time.ns_per_ms + prng.random().uintLessThan(u64, 17 * std.time.ns_per_ms));
-                const before = try Probe.read(comp, window);
-                const t0 = Loop.now();
-                pointer.wheel(15, 1);
-                try pointer.sync();
-                const limit = Loop.now() + std.time.ns_per_s;
-                // The first frame showing the scroll, then the first
-                // presentation feedback after it. (Sway's headless output
-                // stamps presentations when it repaints, which can precede
-                // the predicted vblank, so match by order, not by time.)
-                var shown_frame = false;
-                while (true) {
-                    if (Loop.now() > limit) return error.Timeout;
-                    sleepNs(250 * std.time.ns_per_us);
-                    const p = try Probe.read(comp, window);
-                    if (!shown_frame and p.offset != before.offset and p.frames > before.frames) shown_frame = true;
-                    if (!shown_frame) continue;
-                    const shown = p.presented orelse continue;
-                    if (shown > t0 and shown != before.presented) {
-                        sample.* = shown - t0;
-                        break;
+            fn measure(comp: *Compositor, window: WindowId, pointer: *VirtualPointer, out: *[10]u64) !void {
+                var prng = std.Random.DefaultPrng.init(3);
+                for (out) |*sample| {
+                    sleepNs(20 * std.time.ns_per_ms + prng.random().uintLessThan(u64, 17 * std.time.ns_per_ms));
+                    const before = try Probe.read(comp, window);
+                    const t0 = Loop.now();
+                    pointer.wheel(15, 1);
+                    try pointer.sync();
+                    const limit = Loop.now() + std.time.ns_per_s;
+                    // The first frame showing the scroll, then the first
+                    // presentation feedback after it. (Sway's headless output
+                    // stamps presentations when it repaints, which can precede
+                    // the predicted vblank, so match by order, not by time.)
+                    var shown_frame = false;
+                    while (true) {
+                        if (Loop.now() > limit) return error.Timeout;
+                        sleepNs(250 * std.time.ns_per_us);
+                        const p = try Probe.read(comp, window);
+                        if (!shown_frame and p.offset != before.offset and p.frames > before.frames) shown_frame = true;
+                        if (!shown_frame) continue;
+                        const shown = p.presented orelse continue;
+                        if (shown > t0 and shown != before.presented) {
+                            sample.* = shown - t0;
+                            break;
+                        }
                     }
                 }
             }
+        };
+        var wheel: [10]u64 = undefined;
+        var err: ?anyerror = null;
+        const helper = try std.Thread.spawn(.{}, Wheel.run, .{ h.comp, id, &vp, &wheel, &err });
+        sleepNs(1200 * std.time.ns_per_ms); // the stalled UI thread
+        helper.join();
+        if (err) |e| {
+            std.debug.print("wheel measurement failed: {t}\n", .{e});
+            return e;
         }
-    };
-    var wheel: [10]u64 = undefined;
-    var err: ?anyerror = null;
-    const helper = try std.Thread.spawn(.{}, Wheel.run, .{ h.comp, id, &vp, &wheel, &err });
-    sleepNs(1200 * std.time.ns_per_ms); // the stalled UI thread
-    helper.join();
-    if (err) |e| {
-        std.debug.print("wheel measurement failed: {t}\n", .{e});
-        return e;
+        std.mem.sort(u64, &wheel, {}, std.sort.asc(u64));
+        std.debug.print("sway: wheel to photon (feedback), stalled UI: min {d:.2} ms, median {d:.2} ms, max {d:.2} ms; refresh {d:.2} ms\n", .{
+            @as(f64, @floatFromInt(wheel[0])) / 1e6,
+            @as(f64, @floatFromInt(wheel[wheel.len / 2])) / 1e6,
+            @as(f64, @floatFromInt(wheel[wheel.len - 1])) / 1e6,
+            @as(f64, @floatFromInt(refresh)) / 1e6,
+        });
+        try testing.expect(wheel[wheel.len / 2] <= 2 * refresh + 2 * std.time.ns_per_ms);
     }
-    std.mem.sort(u64, &wheel, {}, std.sort.asc(u64));
-    const refresh = (try Probe.read(h.comp, id)).refresh;
-
-    if (measuring()) std.debug.print("sway: wheel to photon (feedback), stalled UI: min {d:.2} ms, median {d:.2} ms, max {d:.2} ms; refresh {d:.2} ms\n", .{
-        @as(f64, @floatFromInt(wheel[0])) / 1e6,
-        @as(f64, @floatFromInt(wheel[wheel.len / 2])) / 1e6,
-        @as(f64, @floatFromInt(wheel[wheel.len - 1])) / 1e6,
-        @as(f64, @floatFromInt(refresh)) / 1e6,
-    });
-    try testing.expect(wheel[wheel.len / 2] <= 2 * refresh + 2 * std.time.ns_per_ms);
 
     // A small card sliding: compositor scheduling, cheap to render.
     const slide = try droppedDuringStall(&h, id, refresh, .{ .layer = 4, .animation = .{
@@ -346,17 +342,25 @@ test "pacing: scrolling and animation stay smooth on sway while the UI thread is
         .duration_ns = anim_ns,
         .easing = .linear,
     } });
-    if (measuring()) {
-        std.debug.print("sway: 500 ms animations, UI thread spinning: card {d} presentations, {d} dropped, handed off at most {d:.2} ms after due; full-window scroll {d} presentations, {d} dropped, at most {d:.2} ms\n", .{
-            slide.presentations,  slide.dropped,  @as(f64, @floatFromInt(slide.max_latency_ns)) / 1e6,
-            scroll.presentations, scroll.dropped, @as(f64, @floatFromInt(scroll.max_latency_ns)) / 1e6,
+    if (bench or measuring()) {
+        std.debug.print("sway: 500 ms animations, UI thread spinning: card {d} frames, {d} presentations, {d} dropped, handed off at most {d:.2} ms after due; full-window scroll {d} frames, {d} presentations, {d} dropped, at most {d:.2} ms\n", .{
+            slide.frames,  slide.presentations,  slide.dropped,  @as(f64, @floatFromInt(slide.max_latency_ns)) / 1e6,
+            scroll.frames, scroll.presentations, scroll.dropped, @as(f64, @floatFromInt(scroll.max_latency_ns)) / 1e6,
         });
     }
-    // Debug builds of the CPU renderer take most of a refresh here.
+    // siv's: the compositor thread animates while the UI thread spins, no
+    // more than one frame per refresh, each handed off within a refresh
+    // (Debug builds of the CPU renderer take most of a refresh here).
+    for ([_]Pacing{ slide, scroll }) |r| {
+        try testing.expect(r.frames > 0);
+        try testing.expect(r.frames <= anim_ns / refresh + 4);
+    }
     if (@import("builtin").mode != .debug) try testing.expectEqual(@as(usize, 0), slide.late_handoffs);
-    try testing.expect(slide.presentations >= anim_ns / refresh - 3);
-    try testing.expectEqual(@as(usize, 0), slide.dropped);
-    if (@import("builtin").mode != .debug) try testing.expectEqual(@as(usize, 0), scroll.dropped);
+    if (bench) {
+        try testing.expect(slide.presentations >= anim_ns / refresh - 3);
+        try testing.expectEqual(@as(usize, 0), slide.dropped);
+        if (@import("builtin").mode != .debug) try testing.expectEqual(@as(usize, 0), scroll.dropped);
+    }
 }
 
 const anim_ns = 500 * std.time.ns_per_ms;
@@ -367,17 +371,22 @@ const anim_ns = 500 * std.time.ns_per_ms;
 fn droppedDuringStall(h: *Harness, id: WindowId, refresh: u64, op: @FieldType(update.Op, "animate")) !Pacing {
     _ = try h.comp.commit(id, &.{.{ .animate = op }});
     try h.settle();
+    const before = try Probe.read(h.comp, id);
     const start = Loop.now();
     spinNs(anim_ns);
     const end = Loop.now();
-    const clock = (try Probe.read(h.comp, id)).clock;
+    const after = try Probe.read(h.comp, id);
     // Let the animation finish before the next one.
     sleepNs(50 * std.time.ns_per_ms);
     try h.loop.dispatch(0);
-    return .measure(clock, refresh, start, end);
+    var r: Pacing = .measure(after.clock, refresh, start, end);
+    r.frames = after.frames - before.frames;
+    return r;
 }
 
 const Pacing = struct {
+    /// Frames rendered during the animation.
+    frames: u64 = 0,
     presentations: usize = 0,
     /// Refreshes without a presentation between two presentations.
     dropped: usize = 0,
@@ -446,8 +455,9 @@ fn startVulkan(h: *Harness, mode: @import("render_vulkan").Swapchain.PresentMode
 }
 
 /// Runs a 500 ms card animation and checks it is paced by the frame clock
-/// with presentation feedback: one presentation per refresh, none dropped,
-/// predictions within a refresh of the feedback.
+/// with presentation feedback: hand-offs within a refresh, no more than
+/// one frame per refresh; for bench-pacing also one presentation per
+/// refresh, none dropped, predictions within a refresh of the feedback.
 fn checkPacing(h: *Harness, id: WindowId, label: []const u8) !void {
     // Warm up presentation feedback.
     _ = try h.comp.commit(id, &.{.{ .animate = .{ .layer = 4, .animation = .{ .to = .{ .transform = .offset(10, 10) }, .duration_ns = 200 * std.time.ns_per_ms } } }});
@@ -463,23 +473,26 @@ fn checkPacing(h: *Harness, id: WindowId, label: []const u8) !void {
     } });
     const after = try Probe.read(h.comp, id);
     const frames = after.frames - before.frames;
-    if (measuring()) std.debug.print("sway, Vulkan {s}: 500 ms animation, UI thread spinning: {d} frames rendered, {d} presentations, {d} dropped, frames handed off at most {d:.2} ms after due, last prediction error {d:.2} ms, refresh {d:.2} ms\n", .{
+    if (bench or measuring()) std.debug.print("sway, Vulkan {s}: 500 ms animation, UI thread spinning: {d} frames rendered, {d} presentations, {d} dropped, frames handed off at most {d:.2} ms after due, last prediction error {d:.2} ms, refresh {d:.2} ms\n", .{
         label,                                           frames,                                                 r.presentations,                        r.dropped,
         @as(f64, @floatFromInt(r.max_latency_ns)) / 1e6, @as(f64, @floatFromInt(after.error_ns orelse 0)) / 1e6, @as(f64, @floatFromInt(refresh)) / 1e6,
     });
-    // siv met every frame's deadline; then, running alone, so did lavapipe
-    // and sway.
+    // siv's: every frame handed off within a refresh of becoming due, no
+    // more than one per refresh, and presentation feedback reaching the
+    // frame clock.
     try testing.expectEqual(@as(usize, 0), r.late_handoffs);
-    try testing.expect(r.presentations >= anim_ns / refresh - 3);
-    try testing.expectEqual(@as(usize, 0), r.dropped);
-    // Frames follow the frame clock: no more than one per refresh.
     try testing.expect(frames <= anim_ns / refresh + 4);
     const err = after.error_ns orelse return error.NoFeedback;
-    try testing.expect(@abs(err) <= @as(i64, @intCast(refresh)));
+    // End to end, on a quiet machine: lavapipe and sway kept up too, and
+    // the predictions matched the feedback.
+    if (bench) {
+        try testing.expect(r.presentations >= anim_ns / refresh - 3);
+        try testing.expectEqual(@as(usize, 0), r.dropped);
+        try testing.expect(@abs(err) <= @as(i64, @intCast(refresh)));
+    }
 }
 
 test "pacing: Vulkan windows present on sway in MAILBOX mode, paced by the frame clock" {
-    try only(true);
     var h: Harness = .{};
     const id = try startVulkan(&h, .auto);
     defer h.stop();
@@ -493,6 +506,10 @@ test "pacing: Vulkan windows present on sway in MAILBOX mode, paced by the frame
             c.vulkan.?.note(error.DeviceLost) catch {};
         }
     };
+    // The device's warning is expected.
+    const level = testing.log_level;
+    testing.log_level = .err;
+    defer testing.log_level = level;
     try h.comp.call(null, Lose.f);
     const before = (try Probe.read(h.comp, id)).frames;
     const deadline = Loop.now() + 3 * std.time.ns_per_s;
@@ -516,7 +533,6 @@ test "pacing: Vulkan windows present on sway in MAILBOX mode, paced by the frame
 }
 
 test "pacing: Vulkan FIFO: frame clock and presentation feedback stay correct, hidden windows never block" {
-    try only(true);
     var h: Harness = .{};
     const id = try startVulkan(&h, .fifo);
     defer h.stop();

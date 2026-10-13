@@ -20,8 +20,9 @@ zig build test-text            # one module: test-abi, test-text, test-raster, t
 zig build test-headless        # headless integration tests (test/headless.zig)
 zig build test-integration     # Wayland backend against headless sway, D-Bus against
                                #   dbus-daemon (not in `test`; .agents/setup installs both)
-zig build test-integration-pacing  # only its frame pacing tests, which it runs
-                               #   last and alone (dropped frames are CPU work)
+zig build bench-pacing         # frame pacing on sway end to end (dropped frames,
+                               #   wheel-to-photon, prediction error) against D12's
+                               #   thresholds; not in any test step, needs a quiet machine
 SIV_SWAY_RENDERER=vulkan zig build test-integration  # sway renders on the GPU: linux-dmabuf,
                                #   hardware Vulkan presentation, dma-buf frames (gles2 works
                                #   too; with vgem loaded, set WLR_RENDER_DRM_DEVICE as well)

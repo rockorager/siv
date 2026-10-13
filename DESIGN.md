@@ -409,8 +409,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     touchpad gesture stops faster than 100 px/s, from the last 100 ms of
     deltas, and decay with a 325 ms time constant (a first guess). A
     scroll container is hit anywhere in its viewport, drawn or not.
-  - Measured (`zig build test-headless`, `test-integration` with
-    `SIV_MEASURE=1`, 60 Hz): on headless, key-to-photon with the
+  - Measured (`zig build test-headless` with `SIV_MEASURE=1`, and `zig
+    build bench-pacing`, 60 Hz): on headless, key-to-photon with the
     compositor thread has a median of 7 ms against 7.6 ms rendering on the
     UI thread (both within one frame). On sway, using presentation
     feedback while the UI thread sleeps, wheel-to-photon has a median of
@@ -421,8 +421,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     finishes the animation while the UI thread does not dispatch, and
     prints the missed vblanks: with the rest of `zig build test` and busy
     loops beside it, the compositor thread sometimes runs a vblank late
-    and misses one, which measures the machine, not siv (the sway pacing
-    tests count drops running alone, D12). Input waits behind a frame
+    and misses one, which measures the machine, not siv (`zig build
+    bench-pacing` counts drops on sway, D12). Input waits behind a frame
     being rendered on the compositor thread, so a slow frame delays input
     by up to its render time.
 - **Alternatives:** render on the UI thread (lowest latency when idle, but any
@@ -804,9 +804,21 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     under 0.7 ms: the time goes to lavapipe rasterizing on the contended
     CPUs, which Mesa's software WSI waits for in vkQueuePresentKHR (25 to
     37 ms), and to sway's pixman repaint. That is inherent to a software
-    GPU, so the end-to-end drop tests ("pacing: ...") run in a binary of
-    their own after the rest of `zig build test-integration`, or alone with
-    `zig build test-integration-pacing`.
+    GPU, so `zig build test-integration` asserts only what siv controls:
+    every frame handed off within a refresh of becoming due (in Debug,
+    only for Vulkan and the small card; the CPU renderer's full-window
+    redraw takes most of a refresh unoptimized), no more than one frame
+    per refresh (at most 500 ms / refresh + 4 frames for a 500 ms
+    animation), presentation feedback reaching the frame clock, device
+    loss falling back to the CPU renderer and recovering, and hidden FIFO
+    windows never blocking. `zig build bench-pacing`, outside every test
+    step and meant for a quiet machine or real hardware, prints the end
+    to end numbers and fails above these thresholds: for a 500 ms
+    animation with the UI thread spinning, at least 500 ms / refresh - 3
+    presentations and none dropped (the full-window scroll only in
+    optimized builds), the last prediction within a refresh of its
+    feedback (Vulkan), and a wheel-to-photon median within two refreshes
+    plus 2 ms.
   - Mesa's FIFO without `fifo-v1` (every release before 25.0) waits for the
     previous commit's frame callback inside vkQueuePresentKHR, with no
     timeout. A configure forces a frame even while a callback is
