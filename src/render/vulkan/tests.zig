@@ -134,6 +134,12 @@ test "dma-buf frames are imported, or skipped without pixels" {
     const r = try Renderer.create(gpa, device, .serial);
     defer r.destroy();
     try r.resize(40, 30);
+    // A device that cannot import warns that the frame is not drawn. The
+    // warning is expected here, and `zig build` shows a passing test's
+    // output under "failed command:".
+    const level = testing.log_level;
+    if (!device.dmabuf_import) testing.log_level = .err;
+    defer testing.log_level = level;
     const w = 13;
     const h = 9;
     // A 256-byte aligned layout, which drivers with explicit modifiers
