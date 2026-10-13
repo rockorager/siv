@@ -105,9 +105,10 @@ commit message. In particular:
 - **New import between modules:** add the edge in `build.zig` and the table
   above. Keep the graph acyclic and the direction low level to high level.
 - **New dependency:** pin it in `build.zig.zon` with an exact URL and hash
-  (`zig fetch <url>`). Only MIT, BSD, or Apache-2.0 code (D25). A C library
-  gets a `-fsys=<name>` option to link the system copy, and is fetched lazily
-  so that `-fsys` builds do not download it. Give it a licence entry in
+  (`zig fetch <url>`). Only permissive, OSI-approved, non-copyleft
+  licences: MIT, BSD, Apache-2.0, HPND, and the like (D25). A C library
+  gets a `-fsys=<name>` option to link the system copy, and is fetched
+  lazily so that `-fsys` builds do not download it. Give it a licence entry in
   `src/notices/build_steps.zig` (D25); `zig build test` fails without one.
 - **Owner-controlled build inputs** that need no `build.zig` edit:
   - `src/platform/protocols.zig`: Wayland protocol XML and global versions.

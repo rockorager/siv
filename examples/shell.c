@@ -193,7 +193,6 @@ static void auth_done(void *user_data) {
 		(void)siv_lock_unlock(s->lock);
 		s->lock = 0;
 		memset(s->lock_windows, 0, sizeof s->lock_windows);
-		if (s->lock_only) (void)siv_app_quit(s->app);
 	} else {
 		clear_lock_fields(s, "Wrong password");
 	}
@@ -291,7 +290,6 @@ static void on_lock_event(void *user_data, siv_lock lock, const siv_lock_event *
 		siv_lock_destroy(lock);
 		s->lock = 0;
 		memset(s->lock_windows, 0, sizeof s->lock_windows);
-		if (s->lock_only) (void)siv_app_quit(s->app);
 		break;
 	default: break;
 	}
@@ -506,6 +504,8 @@ int main(int argc, char **argv) {
 		if (siv_workspace_list_create(s.app, SIV_DESC(siv_workspace_list_desc, .on_event = on_workspace, .user_data = &s), &s.workspace_list) != SIV_OK) s.workspace_list = 0;
 		if (siv_idle_watch_create(s.app, SIV_DESC(siv_idle_watch_desc, .timeout_ms = IDLE_LOCK_MS, .flags = SIV_IDLE_IGNORE_INHIBITORS, .on_event = on_idle, .user_data = &s), &s.idle) != SIV_OK) s.idle = 0;
 	}
+	/* Runs while a bar or the lock is up: siv_app_run returns when the
+	 * last bar closes, and --lock returns once the session unlocks. */
 	r = siv_app_run(s.app);
 	if (r != SIV_OK) fprintf(stderr, "siv_app_run: %s\n", siv_result_name(r));
 	siv_app_destroy(s.app);

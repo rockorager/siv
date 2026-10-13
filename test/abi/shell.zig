@@ -174,12 +174,85 @@ test "layer windows: placed by their anchors, resized by the compositor, with po
     try testing.expectEqual(@as(i32, -80), ps.popup.?.y);
     c.siv_window_destroy(popup);
 
-    // Layer windows do not keep the application running, nor end it.
+    // The layer window keeps the application running without the
+    // toplevel.
     c.siv_window_destroy(h.window);
     h.window = .null;
     try settle(&h);
     try testing.expect(alive(window));
     c.siv_window_destroy(window);
+}
+
+/// Drives siv_app_run from timers: a step at each delay, and a quit after
+/// two seconds that marks a run that would otherwise not have ended.
+const Run = struct {
+    app: t.App = .null,
+    window: t.Window = .null,
+    lock: t.Lock = .null,
+    /// Steps done, in order; run must return only after the last.
+    steps: u32 = 0,
+    timed_out: bool = false,
+
+    fn close(ud: ?*anyopaque) callconv(.c) void {
+        const r: *Run = @ptrCast(@alignCast(ud.?));
+        r.steps += 1;
+        c.siv_window_destroy(r.window);
+    }
+
+    fn plug(ud: ?*anyopaque) callconv(.c) void {
+        const r: *Run = @ptrCast(@alignCast(ud.?));
+        r.steps += 1;
+        _ = c.siv_test_add_output(r.app, "HEADLESS-2", 10, 800, 600, 1);
+    }
+
+    fn unplug(ud: ?*anyopaque) callconv(.c) void {
+        const r: *Run = @ptrCast(@alignCast(ud.?));
+        r.steps += 1;
+        _ = c.siv_test_remove_output(r.app, "HEADLESS-2", 10);
+    }
+
+    fn unlock(ud: ?*anyopaque) callconv(.c) void {
+        const r: *Run = @ptrCast(@alignCast(ud.?));
+        r.steps += 1;
+        _ = c.siv_lock_unlock(r.lock);
+    }
+
+    fn giveUp(ud: ?*anyopaque) callconv(.c) void {
+        const r: *Run = @ptrCast(@alignCast(ud.?));
+        r.timed_out = true;
+        _ = c.siv_app_quit(r.app);
+    }
+
+    fn at(r: *Run, ms: u32, func: t.PostFn) !void {
+        try ok(c.siv_timer_start(r.app, ms, func, null, r, null));
+    }
+};
+
+test "a layer window keeps siv_app_run running as a toplevel does, and a lock until it is unlocked" {
+    var run: Run = .{};
+    try ok(A.siv_app_create(&.{ .backend = .headless, .flags = .{ .no_system_fonts = true, .no_system_icons = true } }, &run.app));
+    defer A.siv_app_destroy(run.app);
+
+    // A bar alone: run returns when it is destroyed, not before.
+    try ok(c.siv_layer_create(run.app, &.{ .anchor = .{ .top = true, .left = true, .right = true }, .height = 30 }, &run.window));
+    try run.at(50, Run.close);
+    try run.at(2000, Run.giveUp);
+    try ok(c.siv_app_run(run.app));
+    try testing.expectEqual(@as(u32, 1), run.steps);
+    try testing.expect(!run.timed_out);
+
+    // A lock screen alone: an output plugged in and unplugged gives the
+    // lock a window and takes it away, which ends nothing; unlocking
+    // does.
+    run.steps = 0;
+    try ok(c.siv_lock_create(run.app, null, &run.lock));
+    try run.at(20, Run.plug);
+    try run.at(50, Run.unplug);
+    try run.at(100, Run.unlock);
+    try run.at(2000, Run.giveUp);
+    try ok(c.siv_app_run(run.app));
+    try testing.expectEqual(@as(u32, 3), run.steps);
+    try testing.expect(!run.timed_out);
 }
 
 test "outputs are reported and hotplugged; a layer window on a removed output is closed" {

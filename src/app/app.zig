@@ -126,7 +126,12 @@ pub const App = struct {
     zombies: std.ArrayList(*Window) = .empty,
     /// Nesting of compositor event delivery.
     delivering: u32 = 0,
+    /// What keeps `run` going (D27): toplevels and layer windows, and a
+    /// session lock until it is unlocked or finished (D31). Popups and
+    /// lock windows do not count.
     open_windows: usize = 0,
+    /// A session lock holds (`lockSession`), counted in `open_windows`.
+    lock_held: bool = false,
     reduced_motion: bool = false,
     desktop: desktop_mod.Desktop = .{},
     /// The theme choices every window follows (D29).
@@ -481,8 +486,9 @@ pub const App = struct {
         // technology (D18, D31).
         win.ui.frameless = options.role != .toplevel;
         app.windows.items[id] = win;
-        // Shell windows neither keep `run` going nor end it (D31).
-        if (options.role == .toplevel) app.open_windows += 1;
+        // Lock windows come and go with outputs; the lock itself keeps
+        // `run` going (D31).
+        if (options.role != .lock) app.open_windows += 1;
         return win;
     }
 
@@ -503,6 +509,23 @@ pub const App = struct {
             error.Unsupported => error.Unsupported,
             else => error.Unavailable,
         };
+        if (!app.lock_held) {
+            app.lock_held = true;
+            app.open_windows += 1;
+        }
+    }
+
+    /// One fewer thing keeps `run` going; with none left it returns.
+    fn releaseRun(app: *App) void {
+        app.open_windows -= 1;
+        if (app.open_windows == 0) app.quit();
+    }
+
+    /// The session lock ended: unlocked, abandoned, refused, or finished.
+    fn lockEnded(app: *App) void {
+        if (!app.lock_held) return;
+        app.lock_held = false;
+        app.releaseRun();
     }
 
     /// Ends the session lock (see `platform.Platform.unlockSession`).
@@ -516,6 +539,7 @@ pub const App = struct {
         };
         var r: Req = .{ .abandon = abandon };
         try app.comp.call(&r, Req.run);
+        app.lockEnded();
     }
 
     /// A popup of `parent` (D17): its own tree, shown with
@@ -712,6 +736,8 @@ pub const App = struct {
                 .session => |e| if (app.session_listener.func) |f| f(app.session_listener.ctx, &e),
                 .output_added, .output_changed, .output_removed, .lock, .toplevel, .workspace, .idle, .blur_capable => {
                     if (app.shell_listener.func) |f| f(app.shell_listener.ctx, p);
+                    // After the listener, which may still want `run`.
+                    if (p.* == .lock and p.lock == .finished) app.lockEnded();
                 },
                 .closed => |id| if (app.window(id)) |win| {
                     // The role is gone: the window goes, whatever the
@@ -991,10 +1017,9 @@ pub const Window = struct {
         app.windows.items[win.id] = null;
         portals.windowClosed(win);
         app.zombies.appendAssumeCapacity(win);
-        // Popups and shell windows do not keep the application running.
-        if (win.parent != null or win.role != .toplevel) return;
-        app.open_windows -= 1;
-        if (app.open_windows == 0) app.quit();
+        // Popups and lock windows do not keep the application running.
+        if (win.parent != null or win.role == .lock) return;
+        app.releaseRun();
         // Not freed here even if its lists are home: the caller may still
         // use it (the C API tears down its handles after this returns).
     }

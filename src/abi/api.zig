@@ -1610,7 +1610,7 @@ pub const functions = [_]Function{
         app_param,
         .{ .name = "timeout_ms", .type = .i32, .doc = "Longest wait for work: -1 blocks, 0 never waits." },
     }),
-    call("siv_app_run", "Dispatches until siv_app_quit is called or the last window is destroyed.", &.{app_param}),
+    call("siv_app_run", "Dispatches until siv_app_quit is called or nothing keeps the application running: no toplevel or layer window is left (D31) and no session lock holds. Popups and lock windows do not count.", &.{app_param}),
     call("siv_app_quit", "Makes the running siv_app_run return after the current iteration.", &.{app_param}),
     anyThread(call("siv_post", "Runs callback(user_data) on the application's thread at its next dispatch, then destroy(user_data). Safe even while the application is being destroyed: either the call fails with SIV_ERROR_INVALID_HANDLE and nothing runs, or destroy runs exactly once (alone, if the application is destroyed first). Allocates with the application's allocator on the calling thread.", &.{
         app_param,
