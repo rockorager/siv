@@ -1862,13 +1862,13 @@ pub const functions = [_]Function{
     },
     builder("siv_split_pane", "Creates a split pane: start and end panes (siv_widget_get_part) with a divider between them. Dragging the divider or pressing arrow keys, Home, or End on it moves it; the value is the start pane's size, reported with SIV_EVENT_CHANGE. The divider's role is separator with that value.", &.{.{ .name = "desc", .type = .{ .desc = "siv_split_desc" }, .doc = "Axis and position; NULL for side by side at 200." }}),
     builder("siv_toast", "Shows a toast: a brief message in the inverse colors at the bottom of parent, announced to assistive technology. When it times out it reports SIV_EVENT_CLOSE; unless a handler keeps it, it fades out and is removed.", &.{.{ .name = "desc", .type = .{ .desc = "siv_toast_desc" }, .doc = "The message." }}),
-    builder("siv_list_view", "Creates a virtualized list: a vertical scroll of rows of item_height, bound as they come into view, so a list of millions costs what is on screen. The cursor moves with Up, Down, Page Up, Page Down, Home, and End and keeps its row in view and focused; Space and clicks select (with Ctrl and Shift in multiple mode), reporting SIV_EVENT_SELECT with the cursor's index and the number selected; Enter reports SIV_EVENT_ACTIVATE with the index. Its role is list, its rows' list_item. siv_widget_get_value is the cursor's index, -1 for none.", &.{.{ .name = "desc", .type = .{ .desc = "siv_view_desc" }, .doc = "Items, callbacks, and selection." }}),
+    builder("siv_list_view", "Creates a virtualized list: a vertical scroll of rows of item_height, bound as they come into view, so a list of millions costs what is on screen. The cursor moves with Up, Down, Page Up, Page Down, Home, and End and keeps its row in view and focused; Space and clicks select (with Ctrl and Shift in multiple mode), reporting SIV_EVENT_SELECT with the cursor's index and the number selected; Enter reports SIV_EVENT_ACTIVATE with the index. Its role is list, its rows' list_item. siv_view_get_cursor reads the cursor; siv_node_focus on the view focuses the cursor's row.", &.{.{ .name = "desc", .type = .{ .desc = "siv_view_desc" }, .doc = "Items, callbacks, and selection." }}),
     builder("siv_tree_view", "Creates a virtualized tree: rows of the visible items, indented by depth, with the children and child callbacks walked as items expand. Keys as in a list, and Right (Left in RTL) expands an item or moves to its first child, Left collapses it or moves to its parent; clicking the disclosure toggles it. Its role is tree, its rows' tree_item with level and expanded state.", &.{.{ .name = "desc", .type = .{ .desc = "siv_view_desc" }, .doc = "Callbacks and selection." }}),
     builder("siv_table_view", "Creates a virtualized table: a header of columns (siv_table_column) over rows like a list's, each a grid with the columns' tracks that bind fills with one cell per column. Its role is table, its rows' row, header cells column_header. The header is one Tab stop: Left and Right (mirrored in RTL) move between its cells, Down goes to the rows, Enter and Space sort a sortable column, and Ctrl+Left and Ctrl+Right narrow and widen the focused column. Dragging the handle at a header cell's end resizes its column; the handle is a separator whose value is the column's width, so assistive technology resizes it too. A column the user resized reports SIV_EVENT_CHANGE on its header cell with the width as value.", &.{.{ .name = "desc", .type = .{ .desc = "siv_view_desc" }, .doc = "Items, callbacks, and selection." }}),
     builder("siv_grid_view", "Creates a virtualized grid of item_width by item_height cells, as many per row as fit, in reading order (mirrored in RTL). Arrow keys move in two dimensions. Its role is list.", &.{.{ .name = "desc", .type = .{ .desc = "siv_view_desc" }, .doc = "Items, callbacks, and selection." }}),
     .{
         .name = "siv_table_column",
-        .doc = "Appends a column to a table view and returns its header cell, or 0 if the transaction has failed. Add columns before the rows are bound.",
+        .doc = "Appends a column to a table view and returns its header cell, or 0 if the transaction has failed. Add columns before the rows are bound. The header cell is a widget whose value is the column's width in logical pixels (siv_widget_set_value sets it as a px track, without reporting it) and whose label is its title; siv_widget_get_part with SIV_WIDGET_PART_COLUMN finds it again by index.",
         .since = v0_1,
         .params = &.{ txn_param, .{ .name = "table", .type = ref("siv_node"), .doc = "A table view." }, .{ .name = "desc", .type = .{ .desc = "siv_column_desc" }, .doc = "The column." } },
         .ret = ref("siv_node"),
@@ -1878,15 +1878,6 @@ pub const functions = [_]Function{
     setter("siv_view_set_sort", "Shows a table column as sorted (or not), without reporting it: the header's indicator and its sort attribute. Sorting another column clears the previous one's.", &.{
         .{ .name = "column", .type = .u32, .doc = "The column, from 0." },
         .{ .name = "sort", .type = ref("siv_sort"), .doc = "The order." },
-    }),
-    setter("siv_view_set_column_width", "Sets a table column's width in logical pixels (a px track), without reporting it.", &.{
-        .{ .name = "column", .type = .u32, .doc = "The column, from 0." },
-        .{ .name = "width", .type = .f32, .doc = "The width; at least the column's min_width." },
-    }),
-    call("siv_view_get_column_width", "A table column's width in logical pixels as of the last layout (its px track's value before the first one).", &.{
-        .{ .name = "view", .type = ref("siv_node"), .doc = "A table view." },
-        .{ .name = "column", .type = .u32, .doc = "The column, from 0." },
-        .{ .name = "width", .type = out(.f32), .doc = "The width." },
     }),
     setter("siv_view_set_selected", "Selects or deselects the item at a row index, without reporting it. In single mode, selecting one deselects the rest and moves the cursor to it.", &.{
         .{ .name = "index", .type = .u32, .doc = "The row index." },
@@ -1914,8 +1905,7 @@ pub const functions = [_]Function{
         .{ .name = "view", .type = ref("siv_node"), .doc = "A view." },
         .{ .name = "index", .type = out(.i32), .doc = "The cursor's row index, or -1." },
     }),
-    setter("siv_view_set_cursor", "Moves a view's cursor (and the anchor of Shift selection) to a row and scrolls it into view, without reporting it or changing the selection. Focus stays where it is; siv_view_focus moves it there after the commit.", &.{.{ .name = "index", .type = .i32, .doc = "The row index, or -1 for no cursor." }}),
-    call("siv_view_focus", "Moves keyboard focus to a view's cursor row, as of the last commit; without a cursor, it moves the cursor to the first row first. An empty view focuses its scroll node. siv_node_focus on the view itself fails, since the rows take focus (roving).", &.{.{ .name = "view", .type = ref("siv_node"), .doc = "A view." }}),
+    setter("siv_view_set_cursor", "Moves a view's cursor (and the anchor of Shift selection) to a row and scrolls it into view, without reporting it or changing the selection. Focus stays where it is; siv_node_focus on the view moves it there after the commit. Views have no widget value: the cursor is read and moved only here.", &.{.{ .name = "index", .type = .i32, .doc = "The row index, or -1 for no cursor." }}),
     call("siv_view_get_row", "The node bind filled for a row index, as of the last commit, or 0 when the row is not bound: only the rows in view (and the cursor's) exist. For anchoring a popup or a menu at an item (siv_menu_open_at), or reading what bind put there.", &.{
         .{ .name = "view", .type = ref("siv_node"), .doc = "A view." },
         .{ .name = "index", .type = .u32, .doc = "The row index." },

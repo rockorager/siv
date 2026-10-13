@@ -571,7 +571,7 @@ pub fn setMode(self: *Files, mode: ViewMode) void {
 }
 
 fn focusView(self: *Files) void {
-    _ = c.siv_view_focus(self.activeView());
+    _ = c.siv_node_focus(self.activeView());
 }
 
 fn entryOf(self: *const Files, view_index: u32) ?model.Entry {

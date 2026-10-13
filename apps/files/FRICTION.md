@@ -310,6 +310,10 @@ above. What is left is noted below.
 29. **`siv_view_set_cursor` overlaps the widget value.** A view's value
     (`siv_widget_set_value`) was already its cursor; the named calls are
     clearer and also move the Shift anchor, but there are two ways now.
+    *Fixed:* views have no widget value, and `siv_node_focus` on a view
+    focuses its cursor row, so `siv_view_focus` is gone too (commit
+    "widgets: one way to move a view's cursor, focus it, and size its
+    columns", D22, D30). The app calls `siv_node_focus`.
 
 30. **Asynchronous Lua calls with out values.** The Lua mapping rejected
     asynchronous functions with out parameters; `siv_image_load` now has

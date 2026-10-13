@@ -147,6 +147,15 @@ fn shownRows(view: t.Node, items: []u64) !usize {
     return n;
 }
 
+/// A table column's width: its header cell's widget value (D22).
+fn columnWidth(table: t.Node, column: u32) !f32 {
+    var cell: t.Node = .null;
+    try ok(c.siv_widget_get_part(table, .column, column, &cell));
+    var v: f64 = 0;
+    try ok(c.siv_widget_get_value(cell, &v));
+    return @floatCast(v);
+}
+
 fn rowCount(view: t.Node) !usize {
     var buf: [1]u64 = undefined;
     return shownRows(view, &buf);
@@ -302,9 +311,12 @@ test "list view: keyboard cursor, single and multiple selection, activation" {
     try testing.expectEqual(@as(u32, 99_999), m.index);
     try testing.expectEqualStrings("Item 99999", (try uw.semanticsTree()).name((try focusedRole(&h)).?));
     try testing.expect(try rowCount(list) <= 40);
+    var cursor: i32 = 0;
+    try ok(c.siv_view_get_cursor(list, &cursor));
+    try testing.expectEqual(@as(i32, 99_999), cursor);
+    // Views have no widget value: the cursor has its own calls.
     var v: f64 = 0;
-    try ok(c.siv_widget_get_value(list, &v));
-    try testing.expectEqual(@as(f64, 99_999), v);
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_widget_get_value(list, &v));
     // Ctrl+A selects every item, rows or not; Enter activates the cursor.
     try h.typeKey('a', "a", .{ .ctrl = true });
     try h.typeKey(ks.@"return", "", .{});
@@ -506,7 +518,7 @@ test "list view: the cursor is read, moved, and focused; rows are reachable" {
     try ok(c.siv_view_get_cursor(list, &cursor));
     try testing.expectEqual(@as(i32, -1), cursor);
     // Focusing the view gives it a cursor on the first row.
-    try ok(c.siv_view_focus(list));
+    try ok(c.siv_node_focus(list));
     try ok(c.siv_view_get_cursor(list, &cursor));
     try testing.expectEqual(@as(i32, 0), cursor);
     const uw, _ = try uiId(list);
@@ -515,7 +527,7 @@ test "list view: the cursor is read, moved, and focused; rows are reachable" {
     var txn = try begin(h.window);
     try ok(c.siv_view_set_cursor(txn, list, 500));
     try ok(c.siv_txn_commit(txn));
-    try ok(c.siv_view_focus(list));
+    try ok(c.siv_node_focus(list));
     try h.settle();
     try testing.expectEqualStrings("Item 500", (try uw.semanticsTree()).name((try focusedRole(&h)).?));
     // Shift+Down extends from the new cursor, not the old one.
@@ -979,14 +991,13 @@ test "table view: sortable and resizable columns by pointer, keyboard, and assis
     try testing.expectEqual(@as(u32, 1), s.column);
     try h.typeKey(ks.right, "", .{ .ctrl = true });
     try h.settle();
-    var width: f32 = 0;
-    try ok(c.siv_view_get_column_width(table, 1, &width));
+    var width = try columnWidth(table, 1);
     try testing.expectEqual(@as(f32, 98), width);
     try testing.expectEqual(@as(f64, 98), s.width);
     // Narrowing stops at the column's least width.
     for (0..10) |_| try h.typeKey(ks.left, "", .{ .ctrl = true });
     try h.settle();
-    try ok(c.siv_view_get_column_width(table, 1, &width));
+    width = try columnWidth(table, 1);
     try testing.expectEqual(@as(f32, 60), width);
     try h.typeKey(ks.down, "", .{});
     try h.settle();
@@ -996,7 +1007,7 @@ test "table view: sortable and resizable columns by pointer, keyboard, and assis
     try testing.expectEqual(ui.Role.column_header, (try focusedRole(&h)).?.role);
 
     // Dragging Name's handle 30 px toward the end widens it by 30 px.
-    try ok(c.siv_view_get_column_width(table, 0, &width));
+    width = try columnWidth(table, 0);
     const before = width;
     var handle: t.Node = .null;
     try ok(c.siv_node_get_related(name, .last_child, &handle));
@@ -1013,7 +1024,7 @@ test "table view: sortable and resizable columns by pointer, keyboard, and assis
     try h.settle();
     try h.inject(&.{.{ .pointer_button = .{ .window = wid, .seat = 0, .button = 0x110, .pressed = false, .time = 0, .serial = 11 } }});
     try h.settle();
-    try ok(c.siv_view_get_column_width(table, 0, &width));
+    width = try columnWidth(table, 0);
     try testing.expectApproxEqAbs(before + 30, width, 0.5);
     try testing.expectApproxEqAbs(@as(f64, width), s.width, 0.01);
     // Rows follow the header's tracks.
@@ -1026,7 +1037,7 @@ test "table view: sortable and resizable columns by pointer, keyboard, and assis
     try testing.expectApproxEqAbs(@as(f64, width), hsem.value.?.now, 0.01);
     try testing.expect(ui.input.setValue(uwin, handle_id, 150));
     try h.settle();
-    try ok(c.siv_view_get_column_width(table, 0, &width));
+    width = try columnWidth(table, 0);
     try testing.expectEqual(@as(f32, 152), width);
     // The fixed column has no handle.
     var last: t.Node = .null;
@@ -1037,11 +1048,14 @@ test "table view: sortable and resizable columns by pointer, keyboard, and assis
     // From the application, without reports.
     const reports = s.widths;
     var t2 = try begin(h.window);
-    try ok(c.siv_view_set_column_width(t2, table, 2, 120));
+    var kind_cell: t.Node = .null;
+    try ok(c.siv_widget_get_part(table, .column, 2, &kind_cell));
+    try testing.expectEqual(kind, kind_cell);
+    try ok(c.siv_widget_set_value(t2, kind_cell, 120));
     try ok(c.siv_view_set_sort(t2, table, 2, .ascending));
     try ok(c.siv_txn_commit(t2));
     try h.settle();
-    try ok(c.siv_view_get_column_width(table, 2, &width));
+    width = try columnWidth(table, 2);
     try testing.expectEqual(@as(f32, 120), width);
     try testing.expectEqual(ui.Sort.ascending, (try semOf(kind)).sort);
     try testing.expectEqual(ui.Sort.none, (try semOf(name)).sort);

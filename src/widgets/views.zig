@@ -205,7 +205,7 @@ fn create(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc, mode: Mode) Node {
         .label_len = label.len,
     });
     w.onDefault(txn, v.scroll, .viewport, onViewport, v);
-    w.setInterface(txn, root, View, v, .{ .set_label = setLabel, .set_value = setCursor, .get_value = value, .get_part = viewPart, .apply = apply, .focus = focusTarget });
+    w.setInterface(txn, root, View, v, .{ .set_label = setLabel, .get_part = viewPart, .apply = apply, .focus = focusTarget });
     if (!resizeSelection(txn, v)) return .null;
     if (mode == .tree and !buildTop(txn, v)) return .null;
     // The first rows are bound at once against the window's height, so
@@ -1253,23 +1253,6 @@ pub export fn siv_view_set_sort(txn: Txn, view: Node, column: u32, sort: siv.Sor
     return c.siv_txn_status(txn);
 }
 
-pub export fn siv_view_set_column_width(txn: Txn, view: Node, column: u32, width: f32) siv.Result {
-    const v = viewOf(view) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
-    if (v.mode != .table or column >= v.column_count or !std.math.isFinite(width)) return c.siv_txn_fail(txn, .error_invalid_argument);
-    const col = columnAt(v, column) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
-    setColumnWidth(txn, v, col, width);
-    return c.siv_txn_status(txn);
-}
-
-pub export fn siv_view_get_column_width(view: Node, column: u32, width: ?*f32) siv.Result {
-    const out = width orelse return .error_invalid_argument;
-    const v = viewOf(view) orelse return .error_invalid_argument;
-    if (v.mode != .table or column >= v.column_count) return .error_invalid_argument;
-    const col = columnAt(v, column) orelse return .error_invalid_argument;
-    out.* = columnWidth(v, col);
-    return .ok;
-}
-
 pub export fn siv_view_is_selected(view: Node, index: u32, selected: ?*bool) siv.Result {
     const out = selected orelse return .error_invalid_argument;
     const v = viewOf(view) orelse return .error_invalid_argument;
@@ -1326,11 +1309,6 @@ pub export fn siv_view_set_cursor(txn: Txn, view: Node, index: i32) siv.Result {
     if (index >= @as(i64, v.count) or index < -1) return c.siv_txn_fail(txn, .error_invalid_argument);
     setCursor(txn, v, @floatFromInt(index));
     return c.siv_txn_status(txn);
-}
-
-pub export fn siv_view_focus(view: Node) siv.Result {
-    if (viewOf(view) == null) return .error_invalid_argument;
-    return c.siv_node_focus(view);
 }
 
 /// Focusing a view focuses its cursor's row (roving focus), moving the
@@ -1395,10 +1373,6 @@ pub fn columnValue(col: *const Column) f64 {
 pub fn setColumnValue(txn: Txn, col: *Column, width: f64) void {
     const v = viewOf(col.view) orelse return;
     setColumnWidth(txn, v, col, @floatCast(width));
-}
-
-pub fn value(v: *const View) f64 {
-    return @floatFromInt(v.cursor);
 }
 
 pub fn setLabel(txn: Txn, v: *View, label: []const u8) void {

@@ -2940,13 +2940,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       keeps totals over the selection, such as the size of the selected
       files, reads only that range of the bitset. The cursor is read and
       moved (`siv_view_get_cursor`, `siv_view_set_cursor`, which also
-      moves the Shift anchor) and focused (`siv_view_focus`; the view
-      itself is not focusable, its cursor row is), and the node bind
+      moves the Shift anchor) and focused (`siv_node_focus` on the view,
+      whose widget interface chooses the cursor's row: the view itself is
+      not focusable), and the node bind
       filled for a row is reached with `siv_view_get_row` while bound,
       for a menu at the cursor's item. Found by the file manager in
       `apps/files`, which intercepted presses on selected items itself,
       read the whole bitset on every change, and walked the view's
-      subtree for the cursor's row. Trees
+      subtree for the cursor's row. A view has no widget value: its
+      value was its cursor, a second way to move it beside
+      `siv_view_set_cursor` (which also moves the Shift anchor), and
+      views report `select`, not `change`; `siv_view_focus` gave way to
+      `siv_node_focus` (D30). Trees
       keep their visible items flattened in node data, inserting and
       removing rows (and shifting selection bits) as items expand and
       collapse, asking the application's children and child callbacks
@@ -2971,7 +2976,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       like a split pane's divider, so assistive technology resizes the
       column through the Value interface. A resized column becomes a px
       track; the others keep theirs. The user's resizes report `change`
-      on the header cell (drags when released).
+      on the header cell (drags when released). The header cell is a
+      widget whose value is the width, so the application reads and sets
+      it with `siv_widget_get_value` and `siv_widget_set_value` (finding
+      a cell by index with `siv_widget_get_part`'s `column` part): the
+      value a widget reports in `change` is the value it takes.
+      `siv_view_set_column_width` and `siv_view_get_column_width` did the
+      same by index and are gone (D30).
     - The header is one Tab stop with roving focus: Left and Right
       (mirrored in RTL) move between header cells, Home and End to the
       ends, Ctrl+Left and Ctrl+Right narrow and widen the focused column,
@@ -3542,6 +3553,29 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **Reverse if:** applications need per-subtree themes (an always-dark
   sidebar); then let a node carry a palette that its subtree resolves
   against.
+
+### D30. The pre-1.0 API review
+
+- **Requirement:** the API grew across parallel workstreams; before 1.0
+  freezes it (D2's versioning), one pass reads all of it as a binding
+  author and an application author would and makes it consistent: names,
+  argument order, ownership, threading notes, error conventions, no two
+  ways to do one thing, no gap that makes a common task awkward, and room
+  to grow where growth is plausible.
+- **Decision:** the changes below, each recorded with its reason in the
+  decision it belongs to. Before 1.0 renames and removals take effect at
+  once, without deprecated aliases (D2), so this list is what bindings and
+  applications follow; the Lua names follow the C ones (D23).
+
+  | Change | Replaces | Why |
+  | --- | --- | --- |
+  | `siv_set_widget`, `siv_widget_desc` (D22) | the generic calls switching on stock kinds | application widgets take part in `siv_widget_*` and `siv_node_focus` |
+  | `SIV_WIDGET_PART_COLUMN`; `siv_widget_part` open (D22) | — | header cells by index; parts of application widgets |
+  | views have no widget value (D22) | `siv_widget_set_value`/`get_value` on views | one way to move the cursor: `siv_view_set_cursor`, `siv_view_get_cursor` |
+  | `siv_node_focus` on a view (D22) | `siv_view_focus` | the widget interface's `focus` covers every roving widget |
+  | header cell value (D22) | `siv_view_set_column_width`, `siv_view_get_column_width` | the value a widget reports in `change` is the value it takes |
+- **Reverse if:** a binding cannot express one of these without special
+  cases; then the schema needs a construct, not an exception.
 
 ## Lessons from ourokit
 
