@@ -14,6 +14,7 @@
 //! it, or showing what is not shaped yet, shapes the rest at once (D13).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const text = @import("text");
 const Window = @import("Window.zig");
 const node_mod = @import("node.zig");
@@ -433,9 +434,11 @@ const Pending = struct {
 /// Hands the free pages of the C library's heaps back to the system:
 /// shaping on the pool leaves each worker's heap holding the freed
 /// intermediates of the blocks it shaped (a sixth again of a 1.4 MB
-/// text's memory). glibc's malloc_trim; other C libraries go without.
+/// text's memory). glibc's malloc_trim, decided at compile time: other
+/// C libraries (musl has none) and builds without libc go without.
 fn trimHeap() void {
-    const malloc_trim = @extern(?*const fn (usize) callconv(.c) c_int, .{ .name = "malloc_trim", .linkage = .weak }) orelse return;
+    if (comptime !(builtin.link_libc and builtin.target.isGnuLibC())) return;
+    const malloc_trim = @extern(*const fn (usize) callconv(.c) c_int, .{ .name = "malloc_trim" });
     _ = malloc_trim(0);
 }
 
