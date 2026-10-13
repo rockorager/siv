@@ -144,26 +144,105 @@ test "the cascade: attributes, rules by specificity, style, important" {
     for (f, [_]f32{ 1, 2, 3, 5, 4, 6 }) |fill, v| try expectColor(.{ v / 255, v / 255, v / 255, 1 }, fill.paint.solid);
 }
 
-test "gradients map their bounding box and interpolate in sRGB" {
-    const doc = try parse(
-        \\<svg viewBox="0 0 10 10"><defs>
+test "gradients map their bounding box and interpolate in their color-interpolation" {
+    const src =
+        \\<svg viewBox="0 0 10 10" color-interpolation="{s}"><defs>
         \\ <linearGradient id="g"><stop offset="0" stop-color="#000"/><stop offset="100%" stop-color="#fff"/></linearGradient>
         \\ <linearGradient id="h" xlink:href="#g" x1="0" y1="0" x2="0" y2="1"/>
-        \\</defs><rect x="2" y="4" width="6" height="2" fill="url(#h)"/></svg>
+        \\ <linearGradient id="l" xlink:href="#g" color-interpolation="{s}"/>
+        \\</defs><rect x="2" y="4" width="6" height="2" fill="url(#h)"/><rect width="1" height="1" fill="url(#l)"/></svg>
+    ;
+    var b: scene.Builder = .init(testing.allocator);
+    defer b.deinit();
+    // Root layer space, then for each gradient: stop count and the
+    // encoded middle (sRGB's middle gray or linear light's).
+    const Case = struct { root: []const u8, other: []const u8, srgb: bool, stops: [2]usize, mid: [2]f32 };
+    for ([_]Case{
+        // The root composites in sRGB: an sRGB gradient needs no sub-stops,
+        // a linearRGB one gets 16 per interval computed in linear light.
+        .{ .root = "auto", .other = "linearRGB", .srgb = true, .stops = .{ 2, 17 }, .mid = .{ 0.5, scene.linearToSrgb(0.5) } },
+        // A linearRGB root, which gradients inherit: the other way round.
+        .{ .root = "linearRGB", .other = "sRGB", .srgb = false, .stops = .{ 2, 17 }, .mid = .{ scene.linearToSrgb(0.5), 0.5 } },
+    }) |case| {
+        const text = try std.fmt.allocPrint(testing.allocator, src, .{ case.root, case.other });
+        defer testing.allocator.free(text);
+        const doc = try parse(text, .{});
+        defer doc.deinit();
+        var f: [2]scene.Fill = undefined;
+        const list = try drawn(&b, doc, .xywh(0, 0, 10, 10), null);
+        try testing.expectEqual(case.srgb, list.commands[0].push.layer.srgb);
+        _ = fills(list, &f);
+        // The unit square maps onto the rectangle.
+        const g = f[0].paint.gradient;
+        try testing.expectEqual(raster.Point{ .x = 2, .y = 6 }, g.transform.apply(g.geometry.linear.p1));
+        for (f, case.stops, case.mid) |fill, n, mid| {
+            const stops = fill.paint.gradient.stops;
+            try testing.expectEqual(n, stops.len);
+            // Where the layer interpolates itself, its middle is between
+            // the two stops in its own space.
+            const c = if (n == 17) stops[8].color.r else if (case.srgb) scene.srgbToLinear(0.5 * (scene.linearToSrgb(stops[0].color.r) + scene.linearToSrgb(stops[1].color.r))) else 0.5 * (stops[0].color.r + stops[1].color.r);
+            try testing.expectApproxEqAbs(mid, scene.linearToSrgb(c), 1e-3);
+        }
+    }
+}
+
+test "color spaces of layers: the root, groups, blur filters" {
+    const doc = try parse(
+        \\<svg viewBox="0 0 16 16"><defs>
+        \\ <filter id="b"><feGaussianBlur stdDeviation="1"/></filter>
+        \\ <filter id="s" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="1"/></filter>
+        \\</defs>
+        \\<g opacity="0.5"><rect width="4" height="4"/><rect width="2" height="2" fill="red"/></g>
+        \\<g color-interpolation="linearRGB"><rect width="4" height="4"/><rect width="2" height="2" fill="red"/></g>
+        \\<rect width="4" height="4" filter="url(#b)"/>
+        \\<rect width="4" height="4" filter="url(#s)"/>
+        \\</svg>
     , .{});
     defer doc.deinit();
     var b: scene.Builder = .init(testing.allocator);
     defer b.deinit();
-    var f: [1]scene.Fill = undefined;
-    _ = fills(try drawn(&b, doc, .xywh(0, 0, 10, 10), null), &f);
-    const g = f[0].paint.gradient;
-    // The unit square maps onto the rectangle.
-    const p1 = g.transform.apply(g.geometry.linear.p1);
-    try testing.expectEqual(raster.Point{ .x = 2, .y = 6 }, p1);
-    // 16 sub-stops per interval; the middle is sRGB's middle gray, not
-    // linear light's.
-    try testing.expectEqual(@as(usize, 17), g.stops.len);
-    try testing.expectApproxEqAbs(@as(f32, 0.5), scene.linearToSrgb(g.stops[8].color.r), 1e-3);
+    const list = try drawn(&b, doc, .xywh(0, 0, 16, 16), null);
+    var spaces: std.ArrayList(bool) = .empty;
+    defer spaces.deinit(testing.allocator);
+    for (list.commands) |c| switch (c) {
+        .push => |p| if (p.layer.isIsolated()) try spaces.append(testing.allocator, p.layer.srgb),
+        else => {},
+    };
+    // Root (sRGB); the opacity group stays in sRGB; the linearRGB group
+    // gets a linear layer; a default blur works in linear light with the
+    // element drawn in sRGB inside it; an sRGB blur needs no inner layer.
+    try testing.expectEqualSlices(bool, &.{ true, true, false, false, true, true }, spaces.items);
+}
+
+test "one-stop gradients, ellipse starts, and the viewport beyond the view box" {
+    const doc = try parse(
+        \\<svg viewBox="0 0 10 20"><defs>
+        \\ <linearGradient id="g"><stop offset="0" stop-color="#00f" stop-opacity="0.5"/></linearGradient>
+        \\</defs>
+        \\<rect width="10" height="10" fill="url(#g)" fill-opacity="0.5"/>
+        \\<circle cx="5" cy="15" r="2" fill="none" stroke="#000"/>
+        \\<rect x="-5" width="2" height="2"/>
+        \\</svg>
+    , .{});
+    defer doc.deinit();
+    var b: scene.Builder = .init(testing.allocator);
+    defer b.deinit();
+    // A 20 x 20 viewport: the 10 x 20 view box centers, leaving 5 units
+    // on each side that still show.
+    const list = try drawn(&b, doc, .xywh(0, 0, 20, 20), null);
+    try testing.expectEqual(raster.Rect{ .x0 = -5, .y0 = 0, .x1 = 15, .y1 = 20 }, list.commands[0].push.layer.clip.?.shape.rect);
+    var f: [2]scene.Fill = undefined;
+    try testing.expectEqual(@as(usize, 2), fills(list, &f));
+    // The stop's opacity and fill-opacity multiply.
+    try expectColor(.{ 0, 0, 1, 0.25 }, f[0].paint.solid);
+    // A circle's path starts at (cx + r, cy), where dashes begin.
+    for (list.commands) |c| switch (c) {
+        .stroke => |s| {
+            const p = s.shape.path;
+            try testing.expectEqual(raster.Point{ .x = 7, .y = 15 }, p.points[0]);
+        },
+        else => {},
+    };
 }
 
 test "clip paths and masks become layers" {
@@ -174,7 +253,7 @@ test "clip paths and masks become layers" {
         \\ <mask id="m"><g filter="url(#w)"><rect width="16" height="8" fill-opacity="0.3"/></g></mask>
         \\</defs>
         \\<g clip-path="url(#c)"><rect width="16" height="16"/></g>
-        \\<path clip-path="url(#c)" d="M0 0C1 1 2 2 3 3C4 4 5 5 6 6Z"/>
+        \\<path clip-path="url(#c)" d="M0 0C4 0 8 0 12 0L12 12Z"/>
         \\<g mask="url(#m)"><rect width="16" height="16" fill="#ff0000"/></g>
         \\</svg>
     , .{});
@@ -183,6 +262,7 @@ test "clip paths and masks become layers" {
     defer b.deinit();
     const list = try drawn(&b, doc, .xywh(0, 0, 16, 16), null);
     var clips: usize = 0;
+    var first_fill: ?scene.Fill = null;
     var dst_in: ?scene.Push = null;
     var mask_fill: ?scene.Fill = null;
     for (list.commands, 0..) |c, i| switch (c) {
@@ -193,11 +273,17 @@ test "clip paths and masks become layers" {
                 mask_fill = list.commands[i + 1].fill;
             }
         },
+        .fill => |f| if (first_fill == null) {
+            first_fill = f;
+        },
         else => {},
     };
-    // The view box, the clip path twice, and the mask's region. Building
-    // the clip path of a shape leaves the shape intact.
-    try testing.expectEqual(@as(usize, 4), clips);
+    // The view box, the clip path of the triangle that crosses it, and
+    // the mask's region. Building the clip path of a shape leaves the
+    // shape intact. The square holds its clip path, so it draws as the
+    // clip path's rectangle, with no clip (contain.zig).
+    try testing.expectEqual(@as(usize, 3), clips);
+    try testing.expectEqual(raster.Rect{ .x0 = 0, .y0 = 0, .x1 = 8, .y1 = 16 }, first_fill.?.shape.path.bounds());
     try testing.expect(dst_in != null);
     // The filter turns the mask white; luminance becomes alpha: 0.3.
     try expectColor(.{ 1, 1, 1, 0.3 }, mask_fill.?.paint.solid);
@@ -271,4 +357,37 @@ fn fuzzParse(_: void, smith: *std.testing.Smith) !void {
         else => return err,
     };
     _ = try b.finish(0);
+}
+
+test "embedded images draw in their viewport, wrapped base64 and all" {
+    const doc = try parse(
+        \\<svg viewBox="0 0 16 16"><image x="2" y="4" width="8" height="8" preserveAspectRatio="xMidYMid meet"
+        \\ xlink:href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVQI12P4z8Dwn4Hh
+        \\ /38AD/kD/XjubY4AAAAASUVORK5CYII="/>
+        \\<image width="4" height="4" href="file:///etc/passwd"/></svg>
+    , .{});
+    defer doc.deinit();
+    try testing.expect(doc.has_images);
+    var b: scene.Builder = .init(testing.allocator);
+    defer b.deinit();
+    const list = try drawn(&b, doc, .xywh(0, 0, 16, 16), null);
+    var images: usize = 0;
+    var m: raster.Affine = .identity;
+    for (list.commands) |c| switch (c) {
+        .push => |p| m = p.layer.transform.then(m),
+        .image => |im| {
+            images += 1;
+            try testing.expectEqual(@as(u32, 2), im.image.width);
+            // 2 × 1 pixels meet in 8 × 8 at (2, 4): 4 units a pixel,
+            // centered vertically.
+            const r = m.applyRect(im.dst);
+            try testing.expectEqual(raster.Rect{ .x0 = 2, .y0 = 6, .x1 = 10, .y1 = 10 }, r);
+            // Red, then blue.
+            const px = im.image.pixels.?;
+            try testing.expect(px[0] > 200 and px[2] < 50 and px[4] < 50 and px[6] > 200);
+        },
+        else => {},
+    };
+    // Files are not loaded.
+    try testing.expectEqual(@as(usize, 1), images);
 }

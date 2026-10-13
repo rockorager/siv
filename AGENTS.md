@@ -72,7 +72,7 @@ owns its directories and does not edit another workstream's files.
 | `raster` | `src/raster/` | Rasterizer, display list, CPU renderer | none |
 | `scene` | `src/scene/` | Rasterizer, display list, CPU renderer | `raster` |
 | `image` | `src/image/` | Image decoding | `scene`, `image_c` (wuffs, lcms2, libwebp, libavif, dav1d, libjxl) |
-| `svg` | `src/svg/` | Icons and SVG | `scene`, `raster` |
+| `svg` | `src/svg/` | Icons and SVG | `scene`, `raster`, `image` |
 | `icon` | `src/icon/` | Icons and SVG | none |
 | `render_cpu` | `src/render/cpu/` | Rasterizer, display list, CPU renderer | `scene`, `raster`, `text`, `harfbuzz`, `pool`, `image` |
 | `render_vulkan` | `src/render/vulkan/` | Vulkan renderer | `scene`, `raster`, `render_cpu`, `pool`, `vulkan`, `shaders` |

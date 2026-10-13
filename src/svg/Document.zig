@@ -25,6 +25,12 @@ paints: []const Paint,
 /// Whether any paint stands for a role, so the document follows the
 /// colors it is drawn with.
 recolors: bool,
+/// The document has embedded images, whose pixels display lists drawn
+/// from it reference: keep the document alive with such a list.
+has_images: bool = false,
+/// The root composites its content in sRGB (D11, D19): SVG's default
+/// color-interpolation, unless the root asks for linearRGB.
+srgb: bool = true,
 
 /// What a color stands for in a recolored icon: the GTK symbolic
 /// convention's foreground, success, warning, and error colors, and
@@ -97,6 +103,10 @@ pub const Paint = struct {
     opacity: f32 = 1,
     /// Applied in order to every color.
     filter: []const ColorStep = &.{},
+    /// The operation draws into a layer composited in sRGB.
+    layer_srgb: bool = true,
+    /// Gradients: color-interpolation is linearRGB (else sRGB).
+    interp_linear: bool = false,
 
     pub const Kind = union(enum) {
         solid: Tint,
@@ -113,12 +123,17 @@ pub const Op = union(enum) {
     /// Blurs what the innermost isolated layer holds so far (a Gaussian
     /// blur filter on that layer's content).
     blur: struct { region: raster.Path, sigma: f32 },
+    /// An embedded image: its pixels (in the document's arena) drawn as
+    /// the rectangle (0, 0, width, height) through `transform`.
+    image: struct { ref: scene.ImageRef, transform: Affine },
 
     pub const Push = struct {
         transform: Affine = .identity,
         opacity: f32 = 1,
         blend: scene.BlendMode = .src_over,
         isolate: bool = false,
+        /// scene.Layer.srgb.
+        srgb: bool = false,
         clip: ?struct { path: raster.Path, rule: scene.FillRule } = null,
     };
 };
@@ -161,7 +176,19 @@ fn alignOffset(al: Aspect.Align, free: f32) f32 {
 /// Without `colors` every role keeps the color the file gives it.
 pub fn draw(doc: *const Document, b: *scene.Builder, dst: Rect, colors: ?*const Colors) scene.Error!void {
     if (dst.isEmpty()) return;
-    try b.pushLayer(.{ .transform = doc.viewTransform(dst), .clip = .{ .shape = .{ .rect = doc.view_box } } });
+    // The root clips to its viewport, which with meet is larger than the
+    // view box: content beyond the view box but in the viewport shows.
+    const m = doc.viewTransform(dst);
+    const viewport = if (m.invert()) |inv| inv.applyRect(dst) else doc.view_box;
+    // SVG composites in sRGB: the drawing gets a layer that does (D11),
+    // except a lone solid draw, which looks the same either way.
+    const lone = doc.ops.len == 1 and switch (doc.ops[0]) {
+        .fill => |f| doc.paints[f.paint].kind == .solid,
+        .stroke => |s| doc.paints[s.paint].kind == .solid,
+        .image => true,
+        else => false,
+    };
+    try b.pushLayer(.{ .transform = m, .srgb = doc.srgb and !lone, .clip = .{ .shape = .{ .rect = viewport } } });
     var depth: usize = 1;
     errdefer for (0..depth) |_| b.popLayer() catch {};
     for (doc.ops) |op| switch (op) {
@@ -171,6 +198,7 @@ pub fn draw(doc: *const Document, b: *scene.Builder, dst: Rect, colors: ?*const 
                 .opacity = p.opacity,
                 .blend = p.blend,
                 .isolate = p.isolate,
+                .srgb = p.srgb,
                 .clip = if (p.clip) |c| .{ .shape = .{ .path = c.path }, .rule = c.rule } else null,
             });
             depth += 1;
@@ -190,6 +218,12 @@ pub fn draw(doc: *const Document, b: *scene.Builder, dst: Rect, colors: ?*const 
             if (!paint.isInvisible()) try b.stroke(.{ .path = s.path }, s.style, paint);
         },
         .blur => |bl| try b.backdropBlur(.{ .path = bl.region }, bl.sigma),
+        .image => |im| {
+            const r = Rect.xywh(0, 0, @floatFromInt(im.ref.width), @floatFromInt(im.ref.height));
+            try b.pushLayer(.{ .transform = im.transform });
+            try b.image(.{ .image = im.ref, .src = r, .dst = r });
+            try b.popLayer();
+        },
     };
     try b.popLayer();
     depth -= 1;
@@ -229,10 +263,11 @@ fn apply(step: ColorStep, in: [4]f32) [4]f32 {
     }
 }
 
-/// SVG interpolates gradients in sRGB, display lists in linear light
-/// (D9): stops between colors that differ get sub-stops computed in
-/// premultiplied sRGB, 16 per interval while they fit, so the linear
-/// interpolation between them stays within half a level of 8 bits.
+/// Display lists interpolate gradients in the space of the layer they
+/// draw in (D9, D11). Where the gradient's color-interpolation differs
+/// from it, stops between colors that differ get sub-stops computed in
+/// the gradient's space (premultiplied), 16 per interval while they fit,
+/// so the interpolation between them stays within half a level of 8 bits.
 fn resolve(doc: *const Document, index: u32, colors: ?*const Colors, buf: *StopBuffer) scene.Paint {
     const p = &doc.paints[index];
     switch (p.kind) {
@@ -241,7 +276,7 @@ fn resolve(doc: *const Document, index: u32, colors: ?*const Colors, buf: *StopB
     }
     const stops = p.stops;
     var n: usize = 0;
-    var subdivisions: usize = 16;
+    var subdivisions: usize = if (p.interp_linear == p.layer_srgb) 16 else 1;
     while (subdivisions > 1 and 1 + (stops.len - 1) * subdivisions > max_stops) subdivisions /= 2;
     for (stops, 0..) |s, i| {
         if (n >= max_stops) break;
@@ -254,7 +289,7 @@ fn resolve(doc: *const Document, index: u32, colors: ?*const Colors, buf: *StopB
                 for (1..subdivisions) |k| {
                     if (n >= max_stops - 1) break;
                     const t = @as(f32, @floatFromInt(k)) / @as(f32, @floatFromInt(subdivisions));
-                    buf[n] = .{ .offset = prev.offset + (s.offset - prev.offset) * t, .color = mixSrgb(a, z, t) };
+                    buf[n] = .{ .offset = prev.offset + (s.offset - prev.offset) * t, .color = if (p.interp_linear) mixLinear(a, z, t) else mixSrgb(a, z, t) };
                     n += 1;
                 }
             }
@@ -281,6 +316,19 @@ fn encoded(p: *const Paint, t: Tint, opacity: f32, colors: ?*const Colors) [4]f3
     for (p.filter) |step| c = apply(step, c);
     c[3] = std.math.clamp(c[3] * opacity * p.opacity, 0, 1);
     return c;
+}
+
+/// Premultiplied interpolation in linear light, of sRGB-encoded colors.
+fn mixLinear(a: [4]f32, z: [4]f32, t: f32) scene.Color {
+    const alpha = a[3] + (z[3] - a[3]) * t;
+    if (alpha <= 0) return .transparent;
+    var out: [3]f32 = undefined;
+    for (0..3) |k| {
+        const la = scene.srgbToLinear(a[k]) * a[3];
+        const lz = scene.srgbToLinear(z[k]) * z[3];
+        out[k] = std.math.clamp((la + (lz - la) * t) / alpha, 0, 1);
+    }
+    return .{ .r = out[0], .g = out[1], .b = out[2], .a = alpha };
 }
 
 /// Premultiplied interpolation in sRGB, back to straight linear light.

@@ -17,6 +17,8 @@ const css = @import("css.zig");
 const colors_mod = @import("color.zig");
 const pathdata = @import("pathdata.zig");
 const Document = @import("Document.zig");
+const contain = @import("contain.zig");
+const image_mod = @import("image");
 
 const Affine = raster.Affine;
 const Rect = raster.Rect;
@@ -74,6 +76,8 @@ const Style = struct {
     visible: bool = true,
     clip_rule: scene.FillRule = .nonzero,
     filters_linear: bool = true,
+    /// color-interpolation: linearRGB (else sRGB, the default).
+    interp_linear: bool = false,
     stroke_first: bool = false,
     // Not inherited.
     opacity: f32 = 1,
@@ -120,6 +124,7 @@ const Prop = enum {
     visibility,
     @"clip-rule",
     @"color-interpolation-filters",
+    @"color-interpolation",
     @"paint-order",
     opacity,
     display,
@@ -140,7 +145,7 @@ const props: std.StaticStringMap(Prop) = blk: {
     break :blk .initComptime(kvs);
 };
 
-const Kind = enum { svg, g, a, @"switch", use, path, rect, circle, ellipse, line, polyline, polygon };
+const Kind = enum { svg, g, a, @"switch", use, path, rect, circle, ellipse, line, polyline, polygon, image };
 
 const kinds: std.StaticStringMap(Kind) = blk: {
     const fields = @typeInfo(Kind).@"enum".field_names;
@@ -171,6 +176,8 @@ pub const Lowered = struct {
     ops: []const Op,
     paints: []const Paint,
     recolors: bool,
+    /// The root composites in sRGB (its color-interpolation).
+    srgb: bool,
 };
 
 const Lower = struct {
@@ -194,6 +201,9 @@ const Lower = struct {
     /// Nesting of references (use, masks), against cycles.
     depth: u32 = 0,
     recolors: bool = false,
+    /// The innermost isolated layer composites in sRGB (D11): what
+    /// color-interpolation asks for where it is opened.
+    srgb: bool = true,
 
     fn run(l: *Lower) Error!Lowered {
         const root = &l.doc.nodes[0];
@@ -247,6 +257,7 @@ const Lower = struct {
         const base: Style = .{};
         const st = try l.cascade(0, &base);
         try l.styles.put(0, st);
+        l.srgb = !st.interp_linear;
         var m: Affine = .identity;
         if (root.attr("transform")) |t| if (pathdata.parseTransform(t)) |tm| {
             m = tm;
@@ -260,6 +271,7 @@ const Lower = struct {
             .ops = l.ops.items,
             .paints = l.paints.items,
             .recolors = l.recolors,
+            .srgb = !st.interp_linear,
         };
     }
 
@@ -372,6 +384,7 @@ const Lower = struct {
             .visibility => s.visible = std.mem.eql(u8, value, "visible") or !(std.mem.eql(u8, value, "hidden") or std.mem.eql(u8, value, "collapse")),
             .display => s.display = !std.mem.eql(u8, value, "none"),
             .@"color-interpolation-filters" => s.filters_linear = !std.ascii.eqlIgnoreCase(value, "srgb"),
+            .@"color-interpolation" => s.interp_linear = std.ascii.eqlIgnoreCase(value, "linearrgb"),
             .@"paint-order" => {
                 if (std.mem.eql(u8, value, "normal")) {
                     s.stroke_first = false;
@@ -450,6 +463,7 @@ const Lower = struct {
                 try l.group(node, &st, inner, .children);
             },
             .use => try l.use(node, &st, m),
+            .image => try l.image(node, &st, m),
             else => try l.shape(node, kind, &st, m),
         }
     }
@@ -560,6 +574,53 @@ const Lower = struct {
         try l.endEffects(fx, node, m, bbox);
     }
 
+    /// An embedded raster image (a `data:` URI with base64 PNG, JPEG, or
+    /// another format siv decodes), placed in its viewport by
+    /// preserveAspectRatio. Images in files are not loaded, and color
+    /// filters and mask luminance do not apply to images, which then draw
+    /// nothing.
+    fn image(l: *Lower, node: u32, st: *const Style, m: Affine) Error!void {
+        if (!st.visible or l.chain.len != 0) return;
+        const n = &l.doc.nodes[node];
+        const href = n.attr("href") orelse n.attr("xlink:href") orelse return;
+        const bytes = try dataUri(l.tmp, href) orelse return;
+        const d = image_mod.decode(l.out, bytes, .{ .max_pixels = max_image_pixels, .max_bytes = 4 * max_image_pixels * 2, .first_frame = true }) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return,
+        };
+        if (d.frames.len == 0 or d.width == 0 or d.height == 0) return;
+        const iw: f32 = @floatFromInt(d.width);
+        const ih: f32 = @floatFromInt(d.height);
+        // Without a size the image's own (SVG 2's auto).
+        const w = l.attrLen(node, "width", .x, iw);
+        const h = l.attrLen(node, "height", .y, ih);
+        if (!(w > 0) or !(h > 0)) return;
+        const box = Rect.xywh(l.attrLen(node, "x", .x, 0), l.attrLen(node, "y", .y, 0), w, h);
+        const aspect = parseAspect(n.attr("preserveAspectRatio") orelse "");
+        const fx = (try l.beginEffects(node, st, m, box, false)) orelse return;
+        const clipped = aspect.slice and !aspect.none;
+        if (clipped) {
+            var b: raster.PathBuilder = .init(l.tmp);
+            defer b.deinit();
+            try b.rect(box);
+            try l.emit(.{ .push = .{ .clip = .{ .path = try l.copyPath(b.path(), m), .rule = .nonzero } } });
+        }
+        const f = d.frames[0];
+        try l.emit(.{ .image = .{
+            .ref = .{
+                .pixels = f.pixels.ptr,
+                .width = d.width,
+                .height = d.height,
+                .stride = d.width * @as(u32, if (d.format == .rgba16_linear_premul) 8 else 4),
+                .format = d.format,
+                .key = image_keys.fetchAdd(1, .monotonic),
+            },
+            .transform = mapBox(.xywh(0, 0, iw, ih), box, aspect).then(m),
+        } });
+        if (clipped) try l.emit(.pop);
+        try l.endEffects(fx, node, m, box);
+    }
+
     fn buildShape(l: *Lower, node: u32, kind: Kind, b: *raster.PathBuilder) Error!void {
         const n = &l.doc.nodes[node];
         switch (kind) {
@@ -584,7 +645,7 @@ const Lower = struct {
                 if (!(r > 0)) return;
                 const cx = l.attrLen(node, "cx", .x, 0);
                 const cy = l.attrLen(node, "cy", .y, 0);
-                try b.ellipse(.xywh(cx - r, cy - r, 2 * r, 2 * r));
+                try ellipsePath(b, cx, cy, r, r);
             },
             .ellipse => {
                 var rx = l.attrLen(node, "rx", .x, -1);
@@ -594,7 +655,7 @@ const Lower = struct {
                 if (!(rx > 0) or !(ry > 0)) return;
                 const cx = l.attrLen(node, "cx", .x, 0);
                 const cy = l.attrLen(node, "cy", .y, 0);
-                try b.ellipse(.xywh(cx - rx, cy - ry, 2 * rx, 2 * ry));
+                try ellipsePath(b, cx, cy, rx, ry);
             },
             .line => {
                 try b.moveTo(l.attrLen(node, "x1", .x, 0), l.attrLen(node, "y1", .y, 0));
@@ -612,13 +673,18 @@ const Lower = struct {
         mask: ?u32 = null,
         mask_alpha: bool = false,
         blur: ?struct { region: raster.Path, sigma: f32 } = null,
+        /// A layer for the content's color space is the innermost push.
+        inner: bool = false,
+        /// The push with the clip path, the first one.
+        clip_push: ?usize = null,
         saved_chain: []const ColorStep,
+        saved_srgb: bool,
     };
 
     /// Opens the layers for an element's effects. Null when the element
     /// draws nothing (an empty clip path).
     fn beginEffects(l: *Lower, node: u32, st: *const Style, m: Affine, known_bbox: ?Rect, folded: bool) Error!?Effects {
-        var fx: Effects = .{ .saved_chain = l.chain };
+        var fx: Effects = .{ .saved_chain = l.chain, .saved_srgb = l.srgb };
         const needs_bbox = st.clip_path != null or st.mask != null or st.filter != null;
         const bbox = if (!needs_bbox) Rect.empty else known_bbox orelse try l.bboxOf(node, .identity, 0);
 
@@ -636,11 +702,14 @@ const Lower = struct {
         };
 
         const group_opacity = if (folded) 1 else st.opacity;
-        if (group_opacity < 1 or st.blend != .src_over or st.isolate or clip != null) {
+        const isolated = group_opacity < 1 or st.blend != .src_over or st.isolate;
+        if (isolated or clip != null) {
+            if (clip != null) fx.clip_push = l.ops.items.len;
             try l.emit(.{ .push = .{
                 .opacity = group_opacity,
                 .blend = st.blend,
                 .isolate = st.isolate,
+                .srgb = isolated and l.srgb,
                 .clip = if (clip) |c| .{ .path = c.path, .rule = c.rule } else null,
             } });
             fx.pushes += 1;
@@ -658,7 +727,7 @@ const Lower = struct {
             }
             // An isolated layer whose last child is the mask, composited
             // with dst_in: PDF writes that pattern as a soft mask.
-            try l.emit(.{ .push = .{ .isolate = true, .clip = .{ .path = area, .rule = .nonzero } } });
+            try l.emit(.{ .push = .{ .isolate = true, .srgb = l.srgb, .clip = .{ .path = area, .rule = .nonzero } } });
             fx.pushes += 1;
         }
         if (blur) |b| switch (b) {
@@ -669,11 +738,24 @@ const Lower = struct {
                 l.chain = chain;
             },
             .blur => |bl| {
-                try l.emit(.{ .push = .{ .isolate = true, .clip = .{ .path = bl.region, .rule = .nonzero } } });
+                // The blur works in the filter's color space.
+                try l.emit(.{ .push = .{ .isolate = true, .srgb = !bl.linear, .clip = .{ .path = bl.region, .rule = .nonzero } } });
                 fx.pushes += 1;
                 fx.blur = .{ .region = bl.region, .sigma = bl.sigma };
+                l.srgb = !bl.linear;
             },
         };
+        // The content composites in the space a container's
+        // color-interpolation asks for (inherited otherwise), in a layer
+        // of its own where that differs from the layer it draws into.
+        const kind = kinds.get(l.doc.nodes[node].name) orelse .g;
+        const content = if (isShape(kind)) fx.saved_srgb else !st.interp_linear;
+        if (content != l.srgb) {
+            try l.emit(.{ .push = .{ .isolate = true, .srgb = content } });
+            fx.pushes += 1;
+            fx.inner = true;
+            l.srgb = content;
+        }
         return fx;
     }
 
@@ -681,16 +763,22 @@ const Lower = struct {
         for (0..fx.pushes) |_| try l.emit(.pop);
         fx.pushes = 0;
         l.chain = fx.saved_chain;
+        l.srgb = fx.saved_srgb;
     }
 
     fn endEffects(l: *Lower, fx: Effects, node: u32, m: Affine, known_bbox: ?Rect) Error!void {
         var pushes = fx.pushes;
+        if (fx.inner) {
+            try l.emit(.pop);
+            pushes -= 1;
+        }
         if (fx.blur) |b| {
             try l.emit(.{ .blur = .{ .region = b.region, .sigma = b.sigma } });
             try l.emit(.pop);
             pushes -= 1;
         }
         l.chain = fx.saved_chain;
+        l.srgb = fx.saved_srgb;
         if (fx.mask) |mk| {
             if (l.depth < 16) {
                 l.depth += 1;
@@ -708,14 +796,83 @@ const Lower = struct {
                 chain[0] = step;
                 l.chain = chain;
                 defer l.chain = saved;
-                try l.emit(.{ .push = .{ .blend = .dst_in } });
+                try l.emit(.{ .push = .{ .blend = .dst_in, .srgb = l.srgb } });
                 const ms = try l.computed(mk);
                 var it = l.doc.children(mk);
                 while (it.next()) |c| try l.render(c, &ms, cm);
                 try l.emit(.pop);
             }
         }
+        if (fx.clip_push) |ci| if (pushes == 1) {
+            if (try l.unclip(ci)) pushes -= 1;
+        };
         for (0..pushes) |_| try l.emit(.pop);
+    }
+
+    /// Takes what a clip path does not cut out of its layer (the push at
+    /// `ci`, whose content follows it) out of the clip (contain.zig): a
+    /// fill that holds the clip path draws as the clip path, a fill inside
+    /// it as itself, and a layer clipped inside it keeps its own clip.
+    /// What remains clipped stays in copies of the layer, in order. An
+    /// isolated layer only loses its clip, when nothing in it needs it.
+    /// True when the layer's pop is written.
+    fn unclip(l: *Lower, ci: usize) Error!bool {
+        const push = l.ops.items[ci].push;
+        const c = push.clip.?;
+        const eps = 1e-3 * @max(l.vw, l.vh);
+        const isolated = push.opacity < 1 or push.blend != .src_over or push.isolate or push.srgb;
+        const items = l.ops.items[ci + 1 ..];
+        // Each top-level item: its end, and whether it needs the clip.
+        var free: std.ArrayList(struct { end: usize, clipped: bool }) = .empty;
+        var i: usize = 0;
+        var any_free = false;
+        while (i < items.len) {
+            var end = i + 1;
+            var clipped = true;
+            switch (items[i]) {
+                .fill => |*f| {
+                    if (contain.contains(l.tmp, f.path, f.rule, c.path, c.rule, eps)) {
+                        f.path = c.path;
+                        f.rule = c.rule;
+                        clipped = false;
+                    } else if (contain.contains(l.tmp, c.path, c.rule, f.path, f.rule, eps)) clipped = false;
+                },
+                .push => |p| {
+                    var depth: usize = 1;
+                    while (depth > 0 and end < items.len) : (end += 1) switch (items[end]) {
+                        .push => depth += 1,
+                        .pop => depth -= 1,
+                        else => {},
+                    };
+                    if (p.clip) |pc| if (p.transform.eql(.identity) and contain.contains(l.tmp, c.path, c.rule, pc.path, pc.rule, eps)) {
+                        clipped = false;
+                    };
+                },
+                else => {},
+            }
+            any_free = any_free or !clipped;
+            try free.append(l.tmp, .{ .end = end, .clipped = clipped });
+            i = end;
+        }
+        if (!any_free) return false;
+        if (isolated) {
+            for (free.items) |it| if (it.clipped) return false;
+            l.ops.items[ci].push.clip = null;
+            return false;
+        }
+        const content = try l.tmp.dupe(Op, items);
+        l.ops.items.len = ci;
+        var open = false;
+        var at: usize = 0;
+        for (free.items) |it| {
+            if (it.clipped and !open) try l.emit(.{ .push = push });
+            if (!it.clipped and open) try l.emit(.pop);
+            open = it.clipped;
+            for (content[at..it.end]) |op| try l.emit(op);
+            at = it.end;
+        }
+        if (open) try l.emit(.pop);
+        return true;
     }
 
     /// A clip, mask, or filter region as a path in root coordinates.
@@ -818,7 +975,7 @@ const Lower = struct {
 
     const Filter = union(enum) {
         matrix: ColorStep,
-        blur: struct { region: raster.Path, sigma: f32 },
+        blur: struct { region: raster.Path, sigma: f32, linear: bool },
     };
 
     /// The filter as a color step or a blur, or null when it is one this
@@ -849,7 +1006,7 @@ const Lower = struct {
             const user = std.mem.eql(u8, fn_.attr("filterUnits") orelse "", "userSpaceOnUse");
             const r = try l.region(f, user, bbox, m, -0.1, 1.2);
             if (r.isEmpty()) return null;
-            return .{ .blur = .{ .region = r, .sigma = sigma * @sqrt(@abs(m.determinant())) } };
+            return .{ .blur = .{ .region = r, .sigma = sigma * @sqrt(@abs(m.determinant())), .linear = ps.filters_linear } };
         }
         return null;
     }
@@ -885,8 +1042,10 @@ const Lower = struct {
             const role = classRole(l.doc.nodes[node].attr("class") orelse "") orelse if (prev != .none) prev else .foreground;
             p = .{ .kind = .{ .solid = .{ .role = role } } };
         }
-        p.opacity = opacity;
+        // A one-stop gradient's paint carries the stop's opacity.
+        p.opacity *= opacity;
         p.filter = l.chain;
+        p.layer_srgb = l.srgb;
         switch (p.kind) {
             .solid => |t| if (t.role != .none) {
                 l.recolors = true;
@@ -970,7 +1129,7 @@ const Lower = struct {
         const half_x: f32 = if (user) l.vw / 2 else 0.5;
         const half_y: f32 = if (user) l.vh / 2 else 0.5;
         const half_d: f32 = if (user) l.len(.{ .v = 50, .pct = true }, .diagonal) else 0.5;
-        var p: Paint = .{ .kind = undefined, .stops = stops.items, .transform = t.then(space) };
+        var p: Paint = .{ .kind = undefined, .stops = stops.items, .transform = t.then(space), .interp_linear = (try l.computed(start)).interp_linear };
         if (radial) {
             const cx = coord(l, nodes, "cx", user, .x, half_x);
             const cy = coord(l, nodes, "cy", user, .y, half_y);
@@ -1067,6 +1226,33 @@ const Lower = struct {
 
 // Value parsing ---------------------------------------------------------------
 
+/// Embedded images are icon-sized: larger ones are scaled down.
+const max_image_pixels = 1024 * 1024;
+
+/// Keys of embedded images' pixels (scene.ImageRef.key), apart from the
+/// UI's image keys, which count from zero.
+var image_keys: std.atomic.Value(u64) = .init(0x5356_4700_0000_0000);
+
+/// The bytes of a base64 `data:` URI, or null for any other reference.
+fn dataUri(tmp: std.mem.Allocator, href: []const u8) error{OutOfMemory}!?[]const u8 {
+    const s = css.trim(href);
+    if (!std.ascii.startsWithIgnoreCase(s, "data:")) return null;
+    const comma = std.mem.indexOfScalar(u8, s, ',') orelse return null;
+    if (!std.ascii.endsWithIgnoreCase(s[0..comma], ";base64")) return null;
+    // Base64 in attributes is often wrapped.
+    const packed_buf = try tmp.alloc(u8, s.len - comma - 1);
+    var n: usize = 0;
+    for (s[comma + 1 ..]) |c| if (!std.ascii.isWhitespace(c)) {
+        packed_buf[n] = c;
+        n += 1;
+    };
+    const dec = std.base64.standard.Decoder;
+    const len = dec.calcSizeForSlice(packed_buf[0..n]) catch return null;
+    const out = try tmp.alloc(u8, len);
+    dec.decode(out, packed_buf[0..n]) catch return null;
+    return out;
+}
+
 fn fieldOf(p: Prop) []const u8 {
     return switch (p) {
         .fill => "fill",
@@ -1084,6 +1270,7 @@ fn fieldOf(p: Prop) []const u8 {
         .visibility => "visible",
         .@"clip-rule" => "clip_rule",
         .@"color-interpolation-filters" => "filters_linear",
+        .@"color-interpolation" => "interp_linear",
         .@"paint-order" => "stroke_first",
         .opacity => "opacity",
         .display => "display",
@@ -1413,6 +1600,19 @@ pub fn tightBounds(p: raster.Path, m: Affine) Rect {
         .close => {},
     };
     return r;
+}
+
+/// An ellipse as SVG defines its path: from (cx + rx, cy), clockwise on
+/// screen through (cx, cy + ry), so dashes start where they should.
+fn ellipsePath(b: *raster.PathBuilder, cx: f32, cy: f32, rx: f32, ry: f32) error{OutOfMemory}!void {
+    const kx = rx * raster.kappa;
+    const ky = ry * raster.kappa;
+    try b.moveTo(cx + rx, cy);
+    try b.cubicTo(cx + rx, cy + ky, cx + kx, cy + ry, cx, cy + ry);
+    try b.cubicTo(cx - kx, cy + ry, cx - rx, cy + ky, cx - rx, cy);
+    try b.cubicTo(cx - rx, cy - ky, cx - kx, cy - ry, cx, cy - ry);
+    try b.cubicTo(cx + kx, cy - ry, cx + rx, cy - ky, cx + rx, cy);
+    try b.close();
 }
 
 fn quadAt(a: Point, b: Point, c: Point, t: f32) Point {

@@ -76,13 +76,14 @@ pub fn build(b: *std.Build) void {
         .{ .name = "fontconfig", .module = fontconfig },
         .{ .name = "uucode", .module = uucode },
     });
-    const svg = ctx.module("src/svg/svg.zig", &.{
-        .{ .name = "scene", .module = scene },
-        .{ .name = "raster", .module = raster },
-    });
     const icon = ctx.module("src/icon/icon.zig", &.{});
     const images = @import("src/image/build_steps.zig").add(b, .{ .target = target, .optimize = optimize, .scene = scene });
     const image = images.image;
+    const svg = ctx.module("src/svg/svg.zig", &.{
+        .{ .name = "scene", .module = scene },
+        .{ .name = "raster", .module = raster },
+        .{ .name = "image", .module = image },
+    });
     const render_cpu = ctx.module("src/render/cpu/cpu.zig", &.{
         .{ .name = "scene", .module = scene },
         .{ .name = "raster", .module = raster },

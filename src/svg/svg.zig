@@ -45,6 +45,10 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: Options) Error!
         .ops = l.ops,
         .paints = l.paints,
         .recolors = l.recolors,
+        .has_images = for (l.ops) |op| {
+            if (op == .image) break true;
+        } else false,
+        .srgb = l.srgb,
     };
     doc.arena = arena;
     return doc;
@@ -56,6 +60,7 @@ test {
     _ = @import("css.zig");
     _ = @import("color.zig");
     _ = @import("pathdata.zig");
+    _ = @import("contain.zig");
     _ = lower_mod;
     _ = @import("tests.zig");
 }
