@@ -87,13 +87,19 @@ fn freeClient(b: *TestBus, c: *Client) void {
 pub fn connect(b: *TestBus) !i32 {
     var fds: [2]i32 = undefined;
     if (linux.errno(linux.socketpair(linux.AF.UNIX, linux.SOCK.STREAM | linux.SOCK.CLOEXEC, 0, &fds)) != .SUCCESS) return error.SystemResources;
+    try b.adopt(fds[1]);
+    return fds[0];
+}
+
+/// Serves a connected socket as a client's connection (a socket
+/// accepted from a listening one), taking ownership of it.
+pub fn adopt(b: *TestBus, fd: i32) !void {
     const c = try b.gpa.create(Client);
-    c.* = .{ .bus = b, .fd = fds[1], .source = .{ .fd = fds[1], .events = linux.EPOLL.IN, .func = onIo }, .id = b.next_id };
+    c.* = .{ .bus = b, .fd = fd, .source = .{ .fd = fd, .events = linux.EPOLL.IN, .func = onIo }, .id = b.next_id };
     c.name_len = (try std.fmt.bufPrint(&c.name, ":1.{d}", .{b.next_id})).len;
     b.next_id += 1;
     try b.clients.append(b.gpa, c);
     try b.loop.addSource(&c.source);
-    return fds[0];
 }
 
 /// Disconnects the client owning `unique` (as if it crashed).

@@ -148,6 +148,9 @@ pub const PropertyContext = struct {
     path: []const u8,
     node: Node,
     interface: *const Interface,
+    /// The property being read or written, for accessors shared by
+    /// several properties.
+    property: *const Property,
 };
 
 /// An incoming method call being handled. Defined by the connection.

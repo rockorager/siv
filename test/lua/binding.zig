@@ -9,6 +9,8 @@ const root = @import("lua");
 const lua = root.helpers;
 const c = lua.c;
 const siv = @import("siv");
+const dbus = @import("dbus");
+const Loop = @import("loop").Loop;
 
 const testing = std.testing;
 
@@ -572,4 +574,123 @@ test "portal requests from a coroutine: the file chooser without a bus" {
         \\-- The headless backend has no session bus.
         \\assert(result and result.response == "unavailable", result and result.response)
     );
+}
+
+/// A test bus on a loop of its own in a thread, listening on an abstract
+/// socket, for scripts that connect by address.
+const ThreadBus = struct {
+    loop: Loop,
+    bus: dbus.testing.TestBus,
+    source: Loop.Source,
+    stop: std.atomic.Value(bool) = .init(false),
+    thread: std.Thread = undefined,
+    address: [64]u8 = undefined,
+    address_len: usize = 0,
+
+    fn start(tb: *ThreadBus) !void {
+        const linux = std.os.linux;
+        tb.* = .{ .loop = try Loop.init(testing.allocator), .bus = undefined, .source = undefined };
+        tb.bus = .init(testing.allocator, &tb.loop);
+        const fd: i32 = @intCast(linux.socket(linux.AF.UNIX, linux.SOCK.STREAM | linux.SOCK.CLOEXEC | linux.SOCK.NONBLOCK, 0));
+        var sa: linux.sockaddr.un = .{ .path = @splat(0) };
+        const name = try std.fmt.bufPrint(sa.path[1..], "siv-lua-dbus-{d}", .{linux.getpid()});
+        if (linux.errno(linux.bind(fd, @ptrCast(&sa), @intCast(@offsetOf(linux.sockaddr.un, "path") + 1 + name.len))) != .SUCCESS) return error.Bind;
+        if (linux.errno(linux.listen(fd, 16)) != .SUCCESS) return error.Listen;
+        tb.address_len = (try std.fmt.bufPrint(&tb.address, "unix:abstract={s}", .{name})).len;
+        tb.source = .{ .fd = fd, .events = linux.EPOLL.IN, .func = onAccept };
+        try tb.loop.addSource(&tb.source);
+        tb.thread = try std.Thread.spawn(.{}, serve, .{tb});
+    }
+
+    fn serve(tb: *ThreadBus) void {
+        while (!tb.stop.load(.acquire)) tb.loop.dispatch(20) catch {};
+    }
+
+    fn onAccept(s: *Loop.Source, _: u32) void {
+        const linux = std.os.linux;
+        const tb: *ThreadBus = @fieldParentPtr("source", s);
+        const rc = linux.accept4(s.fd, null, null, linux.SOCK.CLOEXEC);
+        if (linux.errno(rc) != .SUCCESS) return;
+        tb.bus.adopt(@intCast(rc)) catch {};
+    }
+
+    fn finish(tb: *ThreadBus) void {
+        tb.stop.store(true, .release);
+        tb.loop.wake();
+        tb.thread.join();
+        tb.bus.deinit();
+        tb.loop.removeSource(&tb.source);
+        _ = std.os.linux.close(tb.source.fd);
+        tb.loop.deinit();
+    }
+};
+
+test "D-Bus from Lua: a service and a client on one bus" {
+    var tb: ThreadBus = undefined;
+    try tb.start();
+    defer tb.finish();
+    const body =
+        \\local function pump(cond)
+        \\  for _ = 1, 400 do
+        \\    if cond() then return end
+        \\    app:dispatch(5)
+        \\  end
+        \\  error("timed out")
+        \\end
+        \\local S, I, U = ("s"):byte(), ("i"):byte(), ("u"):byte()
+        \\local server <close> = app:dbus_connect{ bus = "address", address = A }
+        \\local client <close> = app:dbus_connect{ bus = "address", address = A }
+        \\pump(function() return server:get_unique_name() ~= "" and client:get_unique_name() ~= "" end)
+        \\local state
+        \\local name <close> = server:own_name("org.siv.Lua", {}, function(_, s) state = s end)
+        \\local obj <close> = server:export{
+        \\  path = "/org/siv/Lua", interface = "org.siv.Lua",
+        \\  methods = { { name = "Add", in_signature = "ii", out_signature = "s" } },
+        \\  properties = { { name = "Count", signature = "u", access = "read" } },
+        \\  on_call = function(info, args, inv)
+        \\    assert(info.member == "Add")
+        \\    local a, b = args:read_int(), args:read_int()
+        \\    local reply = inv:new_reply()
+        \\    reply:write_string(S, tostring(a + b))
+        \\    reply:send()
+        \\  end,
+        \\  get_property = function(prop, msg) msg:write_int(U, 3) end,
+        \\}
+        \\pump(function() return state == "primary" end)
+        \\local owner
+        \\local watch <close> = client:watch_name("org.siv.Lua", function(_, o) owner = o end)
+        \\pump(function() return owner == server:get_unique_name() end)
+        \\local function call(desc, write)
+        \\  desc.destination = desc.destination or "org.siv.Lua"
+        \\  desc.path = "/org/siv/Lua"
+        \\  local m = client:new_call(desc)
+        \\  if write then write(m) end
+        \\  local result
+        \\  m:call(0, function(info, r) result = { info = info, r = r and r:read_type() }; if info.type == "method_return" and result.r ~= 0 then
+        \\    if result.r == ("v"):byte() then r:read_enter() end
+        \\    result.value = (r:read_type() == S) and r:read_string() or r:read_int()
+        \\  end end)
+        \\  pump(function() return result end)
+        \\  return result
+        \\end
+        \\local res = call({ interface = "org.siv.Lua", member = "Add" }, function(m) m:write_int(I, 40); m:write_int(I, 2) end)
+        \\assert(res.info.type == "method_return" and res.value == "42", res.info.error_name)
+        \\res = call({ interface = "org.freedesktop.DBus.Properties", member = "Get" }, function(m)
+        \\  m:write_string(S, "org.siv.Lua"); m:write_string(S, "Count")
+        \\end)
+        \\assert(res.value == 3)
+        \\res = call({ interface = "org.siv.Lua", member = "Nope" })
+        \\assert(res.info.type == "error" and res.info.error_name == "org.freedesktop.DBus.Error.UnknownMethod")
+        \\local heard
+        \\local sub <close> = client:subscribe({ interface = "org.siv.Lua", member = "Changed" }, function(info, r) heard = r:read_string() end)
+        \\call({ interface = "org.siv.Lua", member = "Nope" }) -- the match is in place
+        \\local sig = server:new_signal{ path = "/org/siv/Lua", interface = "org.siv.Lua", member = "Changed" }
+        \\sig:write_string(S, "yes")
+        \\sig:send()
+        \\pump(function() return heard end)
+        \\assert(heard == "yes")
+    ;
+    const script = try std.mem.concat(testing.allocator, u8, &.{ prologue, "local A = \"", tb.address[0..tb.address_len], "\"\n", body });
+    defer testing.allocator.free(script);
+    _ = try run(script);
 }

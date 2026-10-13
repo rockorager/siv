@@ -203,6 +203,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "portal", .module = portal },
         .{ .name = "pdf", .module = pdf },
         .{ .name = "tray", .module = tray },
+        .{ .name = "dbus", .module = dbus },
     };
     // Stock widgets (D22) import only the generated C API wrapper, which
     // src/abi/build_steps.zig adds as `siv`.

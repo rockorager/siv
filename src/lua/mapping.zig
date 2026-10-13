@@ -90,9 +90,15 @@ pub const owned = [_]struct { []const u8, []const u8 }{
     .{ "siv_toplevel_list", "siv_toplevel_list_destroy" },
     .{ "siv_workspace_list", "siv_workspace_list_destroy" },
     .{ "siv_idle_watch", "siv_idle_watch_destroy" },
+    .{ "siv_dbus", "siv_dbus_disconnect" },
+    .{ "siv_dbus_message", "siv_dbus_message_destroy" },
+    .{ "siv_dbus_subscription", "siv_dbus_subscription_destroy" },
+    .{ "siv_dbus_name", "siv_dbus_name_release" },
+    .{ "siv_dbus_name_watch", "siv_dbus_name_watch_destroy" },
+    .{ "siv_dbus_object", "siv_dbus_object_destroy" },
 };
 
-pub const borrowed = [_][]const u8{ "siv_window", "siv_txn", "siv_node", "siv_timer", "siv_watch", "siv_image_request", "siv_draw", "siv_external", "siv_output", "siv_toplevel", "siv_workspace" };
+pub const borrowed = [_][]const u8{ "siv_window", "siv_txn", "siv_node", "siv_timer", "siv_watch", "siv_image_request", "siv_draw", "siv_external", "siv_output", "siv_toplevel", "siv_workspace", "siv_dbus_reader", "siv_dbus_invocation" };
 
 /// Functions whose out handle is a new object the caller owns (when its
 /// type is `owned`).
@@ -108,6 +114,14 @@ pub const constructors = [_][]const u8{
     "siv_toplevel_list_create",
     "siv_workspace_list_create",
     "siv_idle_watch_create",
+    "siv_dbus_connect",
+    "siv_dbus_new_call",
+    "siv_dbus_new_signal",
+    "siv_dbus_invocation_new_reply",
+    "siv_dbus_subscribe",
+    "siv_dbus_own_name",
+    "siv_dbus_watch_name",
+    "siv_dbus_export",
 };
 
 pub fn isUnbound(name: []const u8) bool {

@@ -46,6 +46,8 @@ pub const image_load = @import("image_load.zig");
 pub const watch = @import("watch.zig");
 /// Themed icons.
 pub const icon = @import("icon.zig");
+/// The public D-Bus API.
+pub const dbus = @import("dbus.zig");
 /// Pointer constraints and shortcut inhibition.
 pub const input = @import("input.zig");
 /// The widget interface behind the generic siv_widget_* calls.
@@ -60,7 +62,7 @@ pub const testing = @import("testing.zig");
 pub const types = t;
 
 /// The files that export schema functions.
-const implementations = .{ @This(), application, tree, canvas, external, dnd, clipboard, theme, cursor, portal, print, tray, image_load, watch, icon, input, widget, shell, testing } ++ @import("widgets").implementations;
+const implementations = .{ @This(), application, tree, canvas, external, dnd, clipboard, theme, cursor, portal, print, tray, image_load, watch, icon, dbus, input, widget, shell, testing } ++ @import("widgets").implementations;
 
 const version = build_options.version;
 

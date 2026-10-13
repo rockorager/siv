@@ -1081,11 +1081,11 @@ pub fn emitPropertiesChanged(c: *Connection, path: []const u8, node: Node, inter
     var b = c.signal(path, properties_interface, "PropertiesChanged");
     errdefer b.deinit();
     try b.body.writeString(interface.name);
-    const ctx: object.PropertyContext = .{ .path = path, .node = node, .interface = interface };
     try b.body.beginArray("{sv}");
     for (changed) |name| {
         const p = interface.findProperty(name) orelse return error.UnknownProperty;
         if (p.emits_changed != .true or !p.readable()) continue;
+        const ctx: object.PropertyContext = .{ .path = path, .node = node, .interface = interface, .property = p };
         try b.body.beginDictEntry();
         try b.body.writeString(p.name);
         try b.body.beginVariant(p.signature);
@@ -1297,9 +1297,9 @@ fn properties(c: *Connection, r: *Request) !void {
         try b.body.beginArray("{sv}");
         for (r.node.interfaces) |i| {
             if (iface_name.len > 0 and !std.mem.eql(u8, i.name, iface_name)) continue;
-            const ctx: object.PropertyContext = .{ .path = r.path, .node = r.node, .interface = i };
             for (i.properties) |*p| {
                 if (!p.readable()) continue;
+                const ctx: object.PropertyContext = .{ .path = r.path, .node = r.node, .interface = i, .property = p };
                 try b.body.beginDictEntry();
                 try b.body.writeString(p.name);
                 try b.body.beginVariant(p.signature);
@@ -1325,7 +1325,7 @@ fn properties(c: *Connection, r: *Request) !void {
     const p = i.findProperty(prop_name) orelse {
         return r.replyError(errors.unknown_property, bufText(&buf, "No such property '{s}'", .{prop_name}));
     };
-    const ctx: object.PropertyContext = .{ .path = r.path, .node = r.node, .interface = i };
+    const ctx: object.PropertyContext = .{ .path = r.path, .node = r.node, .interface = i, .property = p };
     if (get) {
         if (!p.readable()) return r.replyError(errors.access_denied, bufText(&buf, "Property '{s}' is not readable", .{prop_name}));
         var b = r.newReply();

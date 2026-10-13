@@ -28,6 +28,7 @@ const loop_mod = @import("loop");
 const portal = @import("portal.zig");
 const watch = @import("watch.zig");
 const shell = @import("shell.zig");
+const dbus_abi = @import("dbus.zig");
 
 const Root = runtime.Root;
 
@@ -92,6 +93,8 @@ pub const App = struct {
     /// Outputs, layer windows, the lock, toplevels, workspaces, and idle
     /// watches (D31).
     shell: shell.State,
+    /// Public D-Bus connections and what was made on them (D19).
+    dbus: dbus_abi.State,
 
     pub fn gpa(self: *App) std.mem.Allocator {
         return self.root.gpa;
@@ -282,6 +285,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     self.watches = .empty;
     self.image_requests = .empty;
     self.desktop = .{};
+    self.dbus = .{};
     self.jobs = 0;
     self.shell = .{};
     const gpa = self.gpa();
@@ -336,6 +340,7 @@ fn destroyNow(self: *App) void {
     self.root.retire();
     // Before the windows, whose destruction would start waiting requests.
     portal.teardown(self);
+    dbus_abi.teardown(self);
     for (self.windows.items) |slot| if (slot) |w| {
         w.destroyTree() catch {};
     };

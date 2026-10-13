@@ -2592,6 +2592,42 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       encodes in 0.1 ms and validates and decodes in 0.05 ms.
     - Not built yet: ObjectManager and serving peer-to-peer
       connections.
+  - Applications use D-Bus through `siv_dbus_*` (`src/abi/api_dbus.zig`,
+    implemented in `src/abi/dbus.zig`), so a file manager can mount
+    drives over UDisks2 and serve org.freedesktop.FileManager1 without a
+    second D-Bus library or loop.
+    - `siv_dbus_connect` gives the session bus (the application's own
+      connection, shared with portals and accessibility; unavailable on
+      the headless backend), the system bus, an address, or a connected
+      socket (tests, embedders); the others are connections of their own.
+    - Messages are written and read value by value with D-Bus type
+      codes (`siv_dbus_message_write_int(m, 'u', 3)`, `_write_open(m,
+      'a', "{sv}")`, `siv_dbus_reader_read_type`, `_read_enter`), so C,
+      Zig, and Lua read and write any signature with sixteen functions
+      instead of one per type; the encoder checks each value against the
+      signature as it is written. A failed write marks the message, the
+      writes after it do nothing, and sending it fails
+      (`siv_dbus_message_status` says why), so a builder needs no check
+      per call. A string read into too small a buffer reads nothing and
+      reports its length, which is how the Lua binding grows its buffer.
+    - Calls take one callback with the reply, an error reply, or a
+      failure (type `failed`: NoReply on timeout, Disconnected), at a safe
+      point after the call returns. Signals are subscriptions on a match
+      (sender, path, path namespace, interface, member, arg0); names are
+      owned and watched with a callback per change.
+    - An exported object is one interface at one path, copied from a
+      descriptor: calls reach `on_call` with an invocation handle, which
+      the application answers then or later (a reply whose signature is
+      not the declared one becomes an error reply), and properties go
+      through `get_property` and `set_property`; introspection,
+      Properties with PropertiesChanged, and Peer come from the
+      connection. An invocation not answered when its object or
+      connection goes gets an UnknownObject error, so callers never wait
+      for a timeout.
+    - Handles follow D2: everything made on a connection goes with it,
+      with destroy-notifies; readers live only during their callback.
+      Closing a connection from one of its own callbacks defers freeing
+      it to a later dispatch.
   - Settings come only from the portal (color scheme, accent, contrast, reduced
     motion, text scale, fonts, cursor theme and size, double-click time,
     caret blinking), applied live, with built-in defaults when no portal
