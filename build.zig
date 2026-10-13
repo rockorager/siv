@@ -231,12 +231,14 @@ pub fn build(b: *std.Build) void {
     // libsiv. The root module only pulls in the ABI exports.
     const root = ctx.module("src/siv.zig", &.{.{ .name = "abi", .module = abi }});
     const shared = b.addLibrary(.{ .name = "siv", .linkage = .dynamic, .version = version, .root_module = root });
-    const static = b.addLibrary(.{ .name = "siv", .linkage = .static, .root_module = root });
+    // Distinct artifact names, so that a package depending on siv can
+    // pick one with dependency.artifact; the archive is still libsiv.a.
+    const static = b.addLibrary(.{ .name = "siv-static", .linkage = .static, .root_module = root });
     // Vendored C code is built with UBSan in safe modes; carry its runtime so
     // that C programs can link libsiv.a without Zig.
     static.bundle_ubsan_rt = true;
     b.installArtifact(shared);
-    b.installArtifact(static);
+    b.getInstallStep().dependOn(&b.addInstallArtifact(static, .{ .dest_sub_path = "libsiv.a" }).step);
 
     const pc = b.addWriteFiles().add("siv.pc", b.fmt(
         \\prefix=${{pcfiledir}}/../..

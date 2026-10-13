@@ -3705,6 +3705,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **Toolchain:** Zig 0.17.
 - **Packaging:** every C dependency has a build option to use the system copy;
   the build installs pkg-config files.
+  - siv is also a Zig package: a program depends on it in build.zig.zon,
+    imports its `siv` module (the generated wrapper, linked against
+    libsiv.so), installs `dependency.artifact("siv")` (libsiv.so) and the
+    `notices` named path (NOTICES) beside itself, and builds with siv's
+    own steps. The static library's artifact is `siv-static`, installed
+    as libsiv.a, so the two artifacts' names differ: with both named
+    `siv`, `dependency.artifact` refused the ambiguous name. And the
+    NOTICES generator takes siv's own files by builder rather than by
+    the lack of a package hash, which siv has as a dependency: it failed
+    the dependent's install, reporting siv as a package without a
+    licence. Found by the user guide's package sample
+    (`docs/guide/examples/zig-package`).
 - **Security:** continuous fuzzing of every parser (rasterizer inputs, SVG,
   image decoders, clipboard and drag-and-drop payloads, Wayland input, D-Bus
   messages, SASL replies, addresses, match rules, portal font strings,
@@ -4055,6 +4067,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | `SIV_STR` in siv.h (D2) | each sample's `S(s)` | one helper for string literals |
   | Zig: descriptor parameters take `T.Options` with slices (D3) | `?*const T` with `.x` and `.x_len` | strings and arrays as slices |
   | Zig: callbacks get `*const T` descriptors (D3) | `?*const T` | siv never passes NULL; no `ev.?` |
+  | artifacts `siv` (libsiv.so) and `siv-static` (libsiv.a); `notices` named path (D25) | two artifacts named `siv` | a Zig package could not install libsiv.so, or build as a dependency |
   | stretched nodes keep their own largest size; the root's stretch documented (D26) | the parent's stretch winning | a stretched node's `max_width` did nothing |
   | `SIV_VISUAL_CLIP` clips the node's own image and canvas (D26) | descendants only | rounded images needed a wrapper box |
   | `siv_node_focus` shows the ring after a key (D16) | `siv_node_focus` never showing it | focus moved by arrow keys in roving widgets was unmarked |

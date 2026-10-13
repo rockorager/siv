@@ -111,6 +111,8 @@ pub fn add(b: *std.Build, o: Options) void {
         for (pkg.sources.keys()) |s| run.addArgs(&.{ "-s", s });
     }
     b.getInstallStep().dependOn(&b.addInstallFileWithDir(notices, .prefix, "share/licenses/siv/NOTICES").step);
+    // For packages that depend on siv and ship libsiv.so.
+    b.addNamedLazyPath("notices", notices);
     o.test_step.dependOn(&run.step);
 
     const t = b.addTest(.{ .name = "notices", .root_module = gen.root_module });
@@ -197,7 +199,9 @@ const Walk = struct {
     }
 
     fn file(w: *Walk, owner: *std.Build, sub_path: []const u8) void {
-        if (owner.pkg_hash.len == 0) return; // siv's own
+        // siv's own, also when siv is a dependency of another package
+        // (its builder then has a hash and a name in that package).
+        if (owner == w.b) return;
         const gpa = w.b.allocator;
         const name = nameOf(owner);
         const entry = w.packages.getOrPut(gpa, name) catch @panic("OOM");
