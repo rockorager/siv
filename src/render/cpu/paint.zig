@@ -37,6 +37,8 @@ pub const Image = struct {
     y1: i32,
     filter: scene.Filter,
     opacity16: u32,
+    /// Encode texels to sRGB: the image draws in an sRGB layer (D11).
+    encode: bool = false,
 };
 
 pub const Paint = union(enum) {
@@ -48,6 +50,12 @@ pub const Paint = union(enum) {
         return p.* == .solid;
     }
 };
+
+/// `c` with its color channels sRGB-encoded, for paints drawn in a layer
+/// composited in sRGB (D11).
+pub fn encoded(c: scene.Color) scene.Color {
+    return .{ .r = color.linearToSrgb(c.r), .g = color.linearToSrgb(c.g), .b = color.linearToSrgb(c.b), .a = c.a };
+}
 
 pub fn solid(c: scene.Color, opacity: f32) Pixel {
     return color.premultiply(c.r, c.g, c.b, c.a * opacity);
@@ -272,7 +280,7 @@ fn shadeImage(im: *const Image, luts: *const color.Luts, x0: i32, y: i32, out: [
             const v: @Vector(4, u32) = p;
             p = color.narrow(color.div65535v(v * @as(@Vector(4, u32), @splat(im.opacity16))));
         }
-        o.* = p;
+        o.* = if (im.encode) color.convert(p, &luts.linear_to_srgb16) else p;
     }
 }
 

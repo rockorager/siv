@@ -36,13 +36,13 @@ pub const Executor = @import("pool").Executor;
 
 pub const glyph = @import("glyph.zig");
 pub const shadow = @import("shadow.zig");
+pub const paint = @import("paint.zig");
 
 test {
     std.testing.refAllDecls(@This());
     _ = renderer;
     _ = color;
     _ = @import("blend.zig");
-    _ = @import("paint.zig");
     _ = @import("coverage.zig");
     _ = glyph;
     _ = shadow;

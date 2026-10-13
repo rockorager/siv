@@ -216,6 +216,16 @@ pub const Layer = struct {
     /// source-over, so that blend modes inside it only see its own content
     /// (a PDF isolated transparency group). Needed for COLRv1 composites.
     isolate: bool = false,
+    /// Composite the layer's content in sRGB-encoded space instead of
+    /// linear light (D11): colors are encoded before they are drawn, and
+    /// blending, coverage, and gradient interpolation inside the layer
+    /// work on encoded values, as SVG's default `color-interpolation:
+    /// sRGB` does. The layer is isolated, and its result converts to its
+    /// parent's space when it composites. An isolated layer without the
+    /// flag composites its content in linear light, even inside an sRGB
+    /// layer; a layer that is not isolated draws into its parent's buffer,
+    /// in its parent's space.
+    srgb: bool = false,
     /// Clip in this layer's coordinates.
     clip: ?Clip = null,
     /// What changed since the previous version with the same id, in layer
@@ -224,7 +234,7 @@ pub const Layer = struct {
 
     /// True when the layer needs its own buffer to composite correctly.
     pub fn isIsolated(l: Layer) bool {
-        return l.isolate or l.opacity < 1 or l.blend != .src_over;
+        return l.isolate or l.srgb or l.opacity < 1 or l.blend != .src_over;
     }
 };
 
@@ -428,7 +438,7 @@ pub const Command = union(enum(u8)) {
 pub fn foldedOpacity(commands: []const Command, push: usize) ?Command {
     const p = commands[push].push;
     const l = p.layer;
-    if (l.isolate or l.blend != .src_over or !(l.opacity < 1) or p.end != push + 2) return null;
+    if (l.isolate or l.srgb or l.blend != .src_over or !(l.opacity < 1) or p.end != push + 2) return null;
     var c = commands[push + 1];
     switch (c) {
         .fill => |*f| switch (f.paint) {

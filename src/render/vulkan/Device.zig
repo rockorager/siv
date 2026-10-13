@@ -584,7 +584,8 @@ fn createShared(d: *Device) vk.Error!void {
 
     // Constant tables, one u32 per entry: 16 text contrast tables of 256,
     // then the CPU renderer's transfer tables (sRGB byte to linear u16,
-    // linear u16 to sRGB u16, linear u16 to sRGB 8.8 fixed point).
+    // linear u16 to sRGB u16, linear u16 to sRGB 8.8 fixed point, sRGB u16
+    // to linear u16).
     const contrast = try d.gpa.create(render_cpu.glyph.ContrastLuts);
     defer d.gpa.destroy(contrast);
     contrast.init();
@@ -592,7 +593,7 @@ fn createShared(d: *Device) vk.Error!void {
     defer d.gpa.destroy(transfer);
     transfer.init();
     const levels = render_cpu.glyph.ContrastLuts.levels;
-    const count = levels * 256 + 256 + 2 * 65536;
+    const count = levels * 256 + 256 + 3 * 65536;
     d.luts = try Buffer.init(d, count * 4, c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     const out: [*]u32 = @ptrCast(@alignCast(d.luts.mapped.?));
     for (contrast.tables, 0..) |t, i| for (t, 0..) |v, j| {
@@ -601,6 +602,7 @@ fn createShared(d: *Device) vk.Error!void {
     for (transfer.srgb8_to_linear, 0..) |v, i| out[levels * 256 + i] = v;
     for (transfer.linear_to_srgb16, 0..) |v, i| out[levels * 256 + 256 + i] = v;
     for (transfer.linear_to_srgb8_8, 0..) |v, i| out[levels * 256 + 256 + 65536 + i] = v;
+    for (transfer.srgb16_to_linear, 0..) |v, i| out[levels * 256 + 256 + 2 * 65536 + i] = v;
 }
 
 /// Push constants, matching common.glsl.

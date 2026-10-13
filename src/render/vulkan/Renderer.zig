@@ -153,6 +153,11 @@ const paint_glyph = 8;
 
 const max_layer_depth = 64;
 
+/// Inst.ptex.w for texel paints: convert the texel between linear light
+/// and sRGB encoding (CONVERT_* in common.glsl).
+const convert_encode = 1;
+const convert_decode = 2;
+
 // CPU-side frame state ---------------------------------------------------------
 
 const Op = union(enum) {
@@ -177,6 +182,10 @@ const LayerInfo = struct {
     /// Index of the matching pop op.
     end: u32 = 0,
     depth: u32,
+    /// Its content and its parent's are sRGB-encoded (D11); the layer
+    /// converts when they differ.
+    srgb: bool,
+    parent_srgb: bool,
 };
 
 const BlurInfo = struct {
@@ -219,6 +228,8 @@ const State = struct {
     /// Innermost isolated layer, or none.
     layer: ?u32,
     depth: u32,
+    /// Draws go into a buffer composited in sRGB (scene.Layer.srgb).
+    srgb: bool = false,
 };
 
 const Upload = struct {
@@ -705,7 +716,7 @@ fn prepare(r: *Renderer, list: scene.DisplayList, root: Affine) Error!void {
                     i = p.end;
                     continue;
                 }
-                var state: State = .{ .m = lm, .clip = clip_bounds, .scissor = scissor, .chain = chain, .layer = top.layer, .depth = top.depth };
+                var state: State = .{ .m = lm, .clip = clip_bounds, .scissor = scissor, .chain = chain, .layer = top.layer, .depth = top.depth, .srgb = top.srgb };
                 if (scene.foldedOpacity(cmds, i)) |f| {
                     folded = f;
                     l.opacity = 1;
@@ -724,11 +735,14 @@ fn prepare(r: *Renderer, list: scene.DisplayList, root: Affine) Error!void {
                         .opacity = l.opacity,
                         .clip = chain,
                         .depth = top.depth,
+                        .srgb = l.srgb,
+                        .parent_srgb = top.srgb,
                     });
                     const index: u32 = @intCast(r.layers.items.len - 1);
                     try r.ops.append(gpa, .{ .push = index });
                     state.layer = index;
                     state.depth = top.depth + 1;
+                    state.srgb = l.srgb;
                 }
                 try r.stack.append(gpa, state);
             },
@@ -746,7 +760,7 @@ fn prepare(r: *Renderer, list: scene.DisplayList, root: Affine) Error!void {
                 const bbox = m.applyRect(fl.shape.bounds()).intersect(top.clip).roundOut().intersect(vp);
                 const quad = bbox.intersect(top.scissor);
                 if (quad.isEmpty()) continue;
-                var inst = try r.paintInst(fl.paint, m, quad, top.chain);
+                var inst = try r.paintInst(fl.paint, m, quad, top.chain, top.srgb);
                 try r.coverage(&inst, fl.shape, fl.rule, m, null);
                 try r.pushInst(inst);
             },
@@ -768,7 +782,7 @@ fn prepare(r: *Renderer, list: scene.DisplayList, root: Affine) Error!void {
                 };
                 for (pieces) |piece| {
                     if (piece.isEmpty()) continue;
-                    var inst = try r.paintInst(s.paint, m, piece, top.chain);
+                    var inst = try r.paintInst(s.paint, m, piece, top.chain, top.srgb);
                     try r.coverage(&inst, s.shape, .nonzero, m, s.style);
                     try r.pushInst(inst);
                 }
@@ -855,11 +869,17 @@ fn solid(cl: scene.Color) [4]f32 {
     return .{ toU16f(cl.r * a), toU16f(cl.g * a), toU16f(cl.b * a), toU16f(a) };
 }
 
-/// An instance with `paint` (solid or gradient) over `quad`.
-fn paintInst(r: *Renderer, paint: scene.Paint, m: Affine, quad: IRect, chain: u32) Error!Inst {
+/// The CPU renderer's paint.encoded when `srgb`.
+fn space(cl: scene.Color, srgb: bool) scene.Color {
+    return if (srgb) render_cpu.paint.encoded(cl) else cl;
+}
+
+/// An instance with `paint` (solid or gradient) over `quad`; `srgb` encodes
+/// its colors for an sRGB layer.
+fn paintInst(r: *Renderer, paint: scene.Paint, m: Affine, quad: IRect, chain: u32, srgb: bool) Error!Inst {
     var inst: Inst = .{ .quad = irect(quad), .clip = chain };
     switch (paint) {
-        .solid => |cl| inst.color = solid(cl),
+        .solid => |cl| inst.color = solid(space(cl, srgb)),
         .gradient => |g| {
             const inv = g.transform.then(m).invert() orelse {
                 inst.color = .{ 0, 0, 0, 0 };
@@ -867,8 +887,9 @@ fn paintInst(r: *Renderer, paint: scene.Paint, m: Affine, quad: IRect, chain: u3
             };
             const first: u32 = @intCast(r.stops.items.len);
             for (g.stops) |s| {
-                const a = std.math.clamp(s.color.a, 0, 1);
-                try r.stops.append(r.gpa, .{ .color = .{ s.color.r * a, s.color.g * a, s.color.b * a, a }, .offset = .{ s.offset, 0, 0, 0 } });
+                const sc = space(s.color, srgb);
+                const a = std.math.clamp(sc.a, 0, 1);
+                try r.stops.append(r.gpa, .{ .color = .{ sc.r * a, sc.g * a, sc.b * a, a }, .offset = .{ s.offset, 0, 0, 0 } });
             }
             var rec: PaintRec = .{
                 .inv0 = .{ inv.a, inv.b, inv.c, inv.d },
@@ -1017,7 +1038,7 @@ fn prepareGlyphs(r: *Renderer, g: scene.GlyphRun, top: State) Error!void {
     };
     const start = r.placements.items.len;
     if (try r.glyphs.place(g, m, fg, &r.placements)) {
-        const template = try r.paintInst(g.paint, m, region, top.chain);
+        const template = try r.paintInst(g.paint, m, region, top.chain, top.srgb);
         const contrast = glyph.ContrastLuts.index(fg);
         try r.glyph_pos.ensureTotalCapacity(r.gpa, r.glyphs.entries.items.len);
         while (r.glyph_pos.items.len < r.glyphs.entries.items.len) r.glyph_pos.appendAssumeCapacity(.{});
@@ -1037,7 +1058,7 @@ fn prepareGlyphs(r: *Renderer, g: scene.GlyphRun, top: State) Error!void {
                 .color => {
                     inst.cov = cov_full;
                     inst.paint = paint_glyph;
-                    inst.ptex = .{ 0, gr.x0 - pos.x, gr.y0 - pos.y, 0 };
+                    inst.ptex = .{ 0, gr.x0 - pos.x, gr.y0 - pos.y, if (top.srgb) convert_encode else 0 };
                 },
                 .redirect => unreachable,
             }
@@ -1050,7 +1071,7 @@ fn prepareGlyphs(r: *Renderer, g: scene.GlyphRun, top: State) Error!void {
         r.outlines_used += 1;
         pb.reset();
         try r.glyphs.outlines(g, pb);
-        var inst = try r.paintInst(g.paint, m, region, top.chain);
+        var inst = try r.paintInst(g.paint, m, region, top.chain, top.srgb);
         inst.cov = cov_mask;
         try r.paths.append(r.gpa, .{
             .shape = .{ .path = .empty },
@@ -1110,7 +1131,7 @@ fn prepareShadow(r: *Renderer, sh: scene.Shadow, top: State) Error!void {
         .cov = cov_shadow,
         .aux = @intCast(r.paints.items.len - 2),
         .clip = top.chain,
-        .color = solid(sh.color),
+        .color = solid(space(sh.color, top.srgb)),
     });
 }
 
@@ -1132,7 +1153,7 @@ fn prepareImage(r: *Renderer, img: scene.Image, top: State) Error!void {
     try r.paints.append(r.gpa, .{
         .inv0 = .{ t.a, t.b, t.c, t.d },
         .inv1 = .{ t.e, t.f, 0, 0 },
-        .meta = .{ tex.format, @backingInt(img.filter), @intFromFloat(std.math.clamp(img.opacity, 0, 1) * 65535 + 0.5), 0 },
+        .meta = .{ tex.format, @backingInt(img.filter), @intFromFloat(std.math.clamp(img.opacity, 0, 1) * 65535 + 0.5), @intFromBool(top.srgb) },
         .range = .{ sr.x0, sr.y0, sr.x1, sr.y1 },
     });
     var inst: Inst = .{ .quad = irect(quad), .clip = top.chain, .paint = paint_image, .aux = @intCast(r.paints.items.len - 1) };
@@ -1930,10 +1951,13 @@ const Recorder = struct {
         const parent = rec.top();
         const region = l.scissor.intersect(rec.region).intersect(layer.area).intersect(parent.area);
         if (region.isEmpty()) return rec.begin(null);
+        // Content composited in another space converts to the parent's
+        // (D11).
+        const convert: i32 = if (l.srgb == l.parent_srgb) 0 else if (l.srgb) convert_decode else convert_encode;
         var inst: Inst = .{
             .quad = irect(region),
             .color = .{ 0, 0, 0, l.opacity },
-            .ptex = .{ 0, layer.origin[0], layer.origin[1], 0 },
+            .ptex = .{ 0, layer.origin[0], layer.origin[1], convert },
         };
         if (l.blend == .src_over) {
             inst.paint = paint_texel;

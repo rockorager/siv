@@ -154,6 +154,8 @@ const Glyphs = struct {
     paint: Paint,
     /// Text contrast table (see glyph.ContrastLuts).
     contrast: u8,
+    /// Encode color glyph pixels to sRGB (an sRGB layer, D11).
+    encode: bool,
 };
 
 const Clip = struct {
@@ -167,6 +169,9 @@ const PushOp = struct {
     /// Index of the matching pop op.
     end: u32,
     isolated: bool,
+    /// The space of the buffer an isolated layer draws into: sRGB-encoded
+    /// or linear (scene.Layer.srgb, D11).
+    srgb: bool,
     opacity16: u32,
     blend: scene.BlendMode,
     clip: ?Clip,
@@ -231,6 +236,8 @@ const Level = struct {
     mask: ?[*]u8,
     push: u32,
     isolated: bool,
+    /// The surface holds sRGB-encoded pixels.
+    srgb: bool,
 };
 
 const Worker = struct {
@@ -328,7 +335,8 @@ pub const Renderer = struct {
     path: raster.PathBuilder,
     max_depth: usize = 0,
 
-    const PrepState = struct { m: Affine, clip: Rect, op: u32 };
+    /// `srgb`: draws go into a buffer composited in sRGB (D11).
+    const PrepState = struct { m: Affine, clip: Rect, op: u32, srgb: bool = false };
 
     pub fn create(gpa: std.mem.Allocator, executor: Executor) Error!*Renderer {
         const r = try gpa.create(Renderer);
@@ -492,11 +500,12 @@ pub const Renderer = struct {
                         .bbox = bbox,
                         .end = 0,
                         .isolated = l.isIsolated(),
+                        .srgb = l.srgb,
                         .opacity16 = color.toU16(l.opacity),
                         .blend = l.blend,
                         .clip = clip,
                     } });
-                    try r.stack.append(r.gpa, .{ .m = lm, .clip = clip_bounds, .op = @intCast(r.ops.items.len - 1) });
+                    try r.stack.append(r.gpa, .{ .m = lm, .clip = clip_bounds, .op = @intCast(r.ops.items.len - 1), .srgb = if (l.isIsolated()) l.srgb else top.srgb });
                     r.max_depth = @max(r.max_depth, r.stack.items.len);
                 },
                 .pop => {
@@ -509,16 +518,16 @@ pub const Renderer = struct {
                     const bbox = m.applyRect(f.shape.bounds()).intersect(top.clip).roundOut().intersect(vp);
                     if (bbox.isEmpty()) continue;
                     const cov = try r.coverageFor(f.shape, f.rule, m, .draw);
-                    try r.ops.append(r.gpa, .{ .draw = .{ .bbox = bbox, .coverage = cov, .paint = r.preparePaint(f.paint, m) } });
+                    try r.ops.append(r.gpa, .{ .draw = .{ .bbox = bbox, .coverage = cov, .paint = r.preparePaint(f.paint, m, top.srgb) } });
                 },
                 .stroke => |s| {
                     if (s.paint.isInvisible()) continue;
                     const bbox = m.applyRect(s.shape.bounds().outset(s.style.outset())).intersect(top.clip).roundOut().intersect(vp);
                     if (bbox.isEmpty()) continue;
                     const cov = try r.geomJob(s.shape, s.style, .nonzero, m, .draw);
-                    try r.ops.append(r.gpa, .{ .draw = .{ .bbox = bbox, .coverage = cov, .paint = r.preparePaint(s.paint, m) } });
+                    try r.ops.append(r.gpa, .{ .draw = .{ .bbox = bbox, .coverage = cov, .paint = r.preparePaint(s.paint, m, top.srgb) } });
                 },
-                .glyphs => |g| try r.prepareGlyphs(g, m, top.clip, vp),
+                .glyphs => |g| try r.prepareGlyphs(g, m, top.clip, vp, top.srgb),
                 .image => |img| {
                     // Pixels only in a dma-buf: nothing to read (D17).
                     if (img.opacity <= 0 or img.image.pixels == null) continue;
@@ -542,6 +551,7 @@ pub const Renderer = struct {
                         .y1 = sr.y1,
                         .filter = img.filter,
                         .opacity16 = color.toU16(img.opacity),
+                        .encode = top.srgb,
                     } } } });
                 },
                 .shadow => |sh| {
@@ -556,7 +566,7 @@ pub const Renderer = struct {
                         var x = bbox.x0;
                         while (x < bbox.x1) : (x += 1) r.shadow_cols.appendAssumeCapacity(shadow.Row.column(&prep, @as(f32, @floatFromInt(x)) + 0.5));
                     }
-                    try r.ops.append(r.gpa, .{ .shadow = .{ .bbox = bbox, .prep = prep, .color = paint_mod.solid(sh.color, 1), .cols = cols } });
+                    try r.ops.append(r.gpa, .{ .shadow = .{ .bbox = bbox, .prep = prep, .color = paint_mod.solid(if (top.srgb) paint_mod.encoded(sh.color) else sh.color, 1), .cols = cols } });
                 },
                 .backdrop_blur => |b| {
                     const bbox = m.applyRect(b.shape.bounds()).intersect(top.clip).roundOut().intersect(vp);
@@ -784,9 +794,11 @@ pub const Renderer = struct {
         }
     };
 
-    fn preparePaint(r: *Renderer, p: scene.Paint, m: Affine) Paint {
+    /// `srgb`: the paint draws in an sRGB layer, so its colors are encoded
+    /// first (and gradients interpolate between encoded stops).
+    fn preparePaint(r: *Renderer, p: scene.Paint, m: Affine, srgb: bool) Paint {
         switch (p) {
-            .solid => |c| return .{ .solid = paint_mod.solid(c, 1) },
+            .solid => |c| return .{ .solid = paint_mod.solid(if (srgb) paint_mod.encoded(c) else c, 1) },
             .gradient => |g| {
                 const to_device = g.transform.then(m);
                 const inv = to_device.invert() orelse return .{ .solid = .{ 0, 0, 0, 0 } };
@@ -794,12 +806,16 @@ pub const Renderer = struct {
                 r.stops.items.len += g.stops.len; // capacity reserved in prepare
                 const out = r.stops.items[start..];
                 paint_mod.prepareStops(g.stops, 1, out);
+                if (srgb) for (out, g.stops) |*o, st| {
+                    const e = paint_mod.encoded(st.color);
+                    o.c = .{ e.r * o.c[3], e.g * o.c[3], e.b * o.c[3], o.c[3] };
+                };
                 return .{ .gradient = .{ .inv = inv, .geometry = g.geometry, .stops = out, .extend = g.extend } };
             },
         }
     }
 
-    fn prepareGlyphs(r: *Renderer, g: scene.GlyphRun, m: Affine, clip: Rect, vp: IRect) Error!void {
+    fn prepareGlyphs(r: *Renderer, g: scene.GlyphRun, m: Affine, clip: Rect, vp: IRect, srgb: bool) Error!void {
         if (g.paint.isInvisible() or g.glyphs.len == 0) return;
         const bbox = m.applyRect(g.bounds).intersect(clip).roundOut().intersect(vp);
         if (bbox.isEmpty()) return;
@@ -813,8 +829,9 @@ pub const Renderer = struct {
                 .bbox = bbox,
                 .start = start,
                 .end = @intCast(r.placements.items.len),
-                .paint = r.preparePaint(g.paint, m),
+                .paint = r.preparePaint(g.paint, m, srgb),
                 .contrast = glyph.ContrastLuts.index(fg),
+                .encode = srgb,
             } });
         } else {
             // Transformed or very large text: draw outlines as paths.
@@ -825,7 +842,7 @@ pub const Renderer = struct {
             try r.ops.append(r.gpa, .{ .draw = .{
                 .bbox = bbox,
                 .coverage = .{ .lines = try r.binLines(main_list, line_start, @intCast(r.lines.items.len), .nonzero) },
-                .paint = r.preparePaint(g.paint, m),
+                .paint = r.preparePaint(g.paint, m, srgb),
             } });
         }
     }
@@ -1157,7 +1174,7 @@ pub const Renderer = struct {
     /// culled and isolated layers clear the whole tile.
     fn runOps(r: *Renderer, w: *Worker, tile: IRect, base: Surface, stop: u32, backdrop: bool) Surface {
         w.levels.clearRetainingCapacity();
-        w.levels.appendAssumeCapacity(.{ .surf = base, .scissor = tile, .mask = null, .push = 0, .isolated = false });
+        w.levels.appendAssumeCapacity(.{ .surf = base, .scissor = tile, .mask = null, .push = 0, .isolated = false, .srgb = false });
         const ops = r.ops.items;
         var i: u32 = 0;
         while (i < stop) : (i += 1) {
@@ -1172,7 +1189,7 @@ pub const Renderer = struct {
                         continue;
                     }
                     const depth = w.levels.items.len - 1;
-                    var nl: Level = .{ .surf = lv.surf, .scissor = scissor, .mask = lv.mask, .push = i, .isolated = p.isolated };
+                    var nl: Level = .{ .surf = lv.surf, .scissor = scissor, .mask = lv.mask, .push = i, .isolated = p.isolated, .srgb = if (p.isolated) p.srgb else lv.srgb };
                     if (p.clip) |c| if (c.coverage) |cov| {
                         const m = w.masks.items[depth].ptr;
                         r.computeCoverage(w, cov, tile, scissor, m);
@@ -1190,6 +1207,9 @@ pub const Renderer = struct {
                     const done = w.levels.pop().?;
                     if (done.isolated) {
                         const parent = w.levels.items[w.levels.items.len - 1];
+                        // Content composited in another space converts to
+                        // the parent's first (D11).
+                        if (done.srgb != parent.srgb) convertRegion(done.surf, done.scissor, if (done.srgb) &r.luts.srgb16_to_linear else &r.luts.linear_to_srgb16);
                         compositeLayer(parent.surf, done.surf, done.scissor, done.mask, tile, p.blend, p.opacity16);
                     }
                 },
@@ -1360,7 +1380,7 @@ pub const Renderer = struct {
                         for (dst, src, 0..) |*px, s, xi| {
                             if (s[3] == 0) continue;
                             const cov16: u32 = if (clip_row) |cr| @as(u32, cr[xi]) * 257 else 65535;
-                            blend.srcOver(px, s, cov16);
+                            blend.srcOver(px, if (g.encode) color.convert(s, &r.luts.linear_to_srgb16) else s, cov16);
                         }
                     },
                     .redirect => unreachable,
@@ -1412,6 +1432,13 @@ pub const Renderer = struct {
         }
     }
 };
+
+fn convertRegion(s: Surface, rc: IRect, table: *const [65536]u16) void {
+    var y = rc.y0;
+    while (y < rc.y1) : (y += 1) for (s.row(rc.x0, y)[0..@intCast(rc.width())]) |*p| {
+        p.* = color.convert(p.*, table);
+    };
+}
 
 fn fillRect(s: Surface, rc: IRect, p: Pixel) void {
     var y = rc.y0;

@@ -51,6 +51,8 @@ pub const Luts = struct {
     srgb8_to_linear: [256]u16,
     /// Linear u16 to sRGB-encoded u16.
     linear_to_srgb16: [65536]u16,
+    /// sRGB-encoded u16 to linear u16, for layers composited in sRGB.
+    srgb16_to_linear: [65536]u16,
     /// Linear u16 to sRGB-encoded 8-bit values in 8.8 fixed point, for
     /// dithering opaque pixels with one lookup per channel.
     linear_to_srgb8_8: [65536]u16,
@@ -59,8 +61,10 @@ pub const Luts = struct {
         for (&l.srgb8_to_linear, 0..) |*v, i| {
             v.* = toU16(srgbToLinear(@as(f32, @floatFromInt(i)) / 255));
         }
-        for (&l.linear_to_srgb16, &l.linear_to_srgb8_8, 0..) |*v, *v8, i| {
-            const e = linearToSrgb(@as(f32, @floatFromInt(i)) / 65535);
+        for (&l.linear_to_srgb16, &l.linear_to_srgb8_8, &l.srgb16_to_linear, 0..) |*v, *v8, *d, i| {
+            const x = @as(f32, @floatFromInt(i)) / 65535;
+            const e = linearToSrgb(x);
+            d.* = toU16(srgbToLinear(x));
             v.* = toU16(e);
             v8.* = @intFromFloat(std.math.clamp(e, 0, 1) * 255 * 256 + 0.5);
         }
@@ -102,6 +106,22 @@ pub inline fn narrow(v: @Vector(4, u32)) Pixel {
 pub fn premultiply(r: f32, g: f32, b: f32, a: f32) Pixel {
     const al = std.math.clamp(a, 0, 1);
     return .{ toU16(r * al), toU16(g * al), toU16(b * al), toU16(al) };
+}
+
+/// Converts a premultiplied pixel between linear light and sRGB encoding
+/// through `table` (Luts.linear_to_srgb16 or Luts.srgb16_to_linear):
+/// unpremultiply, transfer, premultiply. Layers composited in sRGB (D11)
+/// convert with it; the Vulkan renderer's shader does the same arithmetic.
+pub fn convert(p: Pixel, table: *const [65536]u16) Pixel {
+    const a: u32 = p[3];
+    if (a == 0) return .{ 0, 0, 0, 0 };
+    var o: Pixel = undefined;
+    inline for (0..3) |k| {
+        const u = @min(65535, (@as(u32, p[k]) * 65535 + a / 2) / a);
+        o[k] = @intCast(div65535(@as(u32, table[u]) * a));
+    }
+    o[3] = p[3];
+    return o;
 }
 
 /// 8x8 Bayer matrix, values 0..63.

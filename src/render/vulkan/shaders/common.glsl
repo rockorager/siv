@@ -80,7 +80,8 @@ layout(std430, set = 0, binding = 1) readonly buffer Paints { PaintRec paints[];
 layout(std430, set = 0, binding = 2) readonly buffer Stops { Stop stops[]; };
 layout(std430, set = 0, binding = 3) readonly buffer Clips { ClipRec clips[]; };
 // 16 contrast tables of 256 entries, then sRGB byte to linear u16 (256),
-// linear u16 to sRGB u16 (65536), linear u16 to sRGB 8.8 fixed (65536).
+// linear u16 to sRGB u16 (65536), linear u16 to sRGB 8.8 fixed (65536),
+// sRGB u16 to linear u16 (65536).
 layout(std430, set = 0, binding = 4) readonly buffer Luts { uint luts[]; };
 layout(std430, set = 0, binding = 5) readonly buffer Kernels { float kernels[]; };
 layout(set = 0, binding = 6) uniform sampler2D glyph_masks;
@@ -94,6 +95,12 @@ layout(set = 1, binding = 1) uniform sampler2D tex_b;
 const uint LUT_SRGB8 = 16u * 256u;
 const uint LUT_TO_SRGB16 = LUT_SRGB8 + 256u;
 const uint LUT_TO_SRGB8_8 = LUT_TO_SRGB16 + 65536u;
+const uint LUT_FROM_SRGB16 = LUT_TO_SRGB8_8 + 65536u;
+
+// Inst.ptex.w for texel paints (Renderer.convert_*): convert between
+// linear light and sRGB encoding, for layers composited in sRGB (D11).
+const int CONVERT_ENCODE = 1;
+const int CONVERT_DECODE = 2;
 
 layout(push_constant) uniform Push {
     vec2 origin;      // device coordinates of target pixel (0, 0)
@@ -122,4 +129,19 @@ uvec4 div65535v(uvec4 x) {
 
 uvec4 toU16(vec4 v) {
     return uvec4(clamp(v, 0.0, 1.0) * 65535.0 + 0.5);
+}
+
+// A premultiplied u16 pixel converted through a transfer table
+// (color.convert): unpremultiply, look up, premultiply.
+uvec4 convertSpace(uvec4 p, uint table) {
+    uint a = p.a;
+    if (a == 0u) return uvec4(0u);
+    uvec3 u = min(uvec3(65535u), (p.rgb * 65535u + a / 2u) / a);
+    return uvec4(div65535(luts[table + u.r] * a), div65535(luts[table + u.g] * a), div65535(luts[table + u.b] * a), a);
+}
+
+uvec4 convertMode(uvec4 p, int mode) {
+    if (mode == CONVERT_ENCODE) return convertSpace(p, LUT_TO_SRGB16);
+    if (mode == CONVERT_DECODE) return convertSpace(p, LUT_FROM_SRGB16);
+    return p;
 }

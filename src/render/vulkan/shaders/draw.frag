@@ -308,6 +308,7 @@ vec4 image(PaintRec p, vec2 pos) {
     }
     uint opacity = p.meta.z;
     if (opacity != 65535u) px = div65535v(px * opacity);
+    if (p.meta.w != 0u) px = convertSpace(px, LUT_TO_SRGB16);
     return vec4(px) / 65535.0;
 }
 
@@ -452,7 +453,7 @@ void main() {
 
     if (it.paint == PAINT_BLEND) {
         uint mode = it.aux;
-        uvec4 s = texelA(it.ptex, px);
+        uvec4 s = convertMode(texelA(it.ptex, px), it.ptex.w);
         uint opacity = uint(it.color.a * 65535.0 + 0.5);
         if (opacity != 65535u) s = div65535v(s * opacity);
         uvec4 d = texelB(it.btex, px);
@@ -476,8 +477,12 @@ void main() {
     case PAINT_RADIAL:
     case PAINT_SWEEP: s = gradient(paints[it.aux], it.paint, pos); break;
     case PAINT_IMAGE: s = image(paints[it.aux], pos); break;
-    case PAINT_GLYPH: s = texelFetch(glyph_colors, ivec2(px) - it.ptex.yz, 0); break;
-    default: s = texelFetch(tex_a, ivec2(px) - it.ptex.yz, 0) * it.color.a; break;
+    case PAINT_GLYPH: s = vec4(convertMode(toU16(texelFetch(glyph_colors, ivec2(px) - it.ptex.yz, 0)), it.ptex.w)) / 65535.0; break;
+    default:
+        s = texelFetch(tex_a, ivec2(px) - it.ptex.yz, 0);
+        if (it.ptex.w != 0) s = vec4(convertMode(toU16(s), it.ptex.w)) / 65535.0;
+        s *= it.color.a;
+        break;
     }
     o_color = s * (float(cov16) / 65535.0);
 }
