@@ -661,7 +661,33 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     backdrop of every blur it meets, so blurs read only pixels drawn in the
     same pass (pixels outside the damage redraw identically). Every frame
     encodes the whole working image into the target with the CPU's transfer
-    tables and dither, so swapchain images need no buffer age.
+    tables and dither, so swapchain images need no buffer age. Encoding
+    only what changed since a swapchain image last showed (its age, kept
+    per image, with each frame's redrawn regions) was tried and dropped:
+    on RADV (Radeon 760M, 1280×800, five swapchain images) the whole
+    encode takes about 0.2 ms, and keeping an image's contents (a
+    transition from the present layout instead of from undefined, and a
+    load) made it slower: 0.26 against 0.20 ms per typing frame, 0.72
+    against 0.21 ms per frame of a scrolling list. Where the GPU time goes
+    is the draw pass.
+  - Overdraw: an instance gets a hole where a later opaque draw into the
+    same target covers it (a solid paint of alpha 1 with analytic
+    coverage, inside the full-coverage part of its shape and of every
+    clip), and a rectangle's or rounded rectangle's stroke gets one where
+    it leaves its inside empty. The vertex shader draws an instance with
+    a hole as the four quads around it, so those pixels are not shaded:
+    `Renderer.occlude`, not in frames with a backdrop blur, which reads
+    around its own pixels. A 100,000-row list scrolling on the compositor
+    shaded three full-window quads per frame (the window's background,
+    the view's, and its border as a mask): its draw pass took 1.38 ms of
+    GPU time per frame, 0.74 ms after; frames are unchanged (the Vulkan
+    tests compare them with the CPU's).
+  - sRGB attachments, which encode in hardware with blending still in
+    linear light, were measured as the working image instead of FP16:
+    the draw pass took the same time (0.643 against 0.644 ms per frame of
+    that list, 0.224 against 0.238 ms per typing frame; its shader, not
+    memory, is the cost) and the encode, reading half the bytes, 0.02 ms
+    less, while banding came back (D11). Kept FP16.
   - Descriptors: storage buffers and the atlases in one set per frame, and a
     second set of two textures per draw that needs one (images, layers,
     backdrops); image draws batch per image. No descriptor indexing:
@@ -847,8 +873,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     same ink (it blends in sRGB), but siv's light text carried 7% less
     than its dark text and looked dim. With #181818 the two match, and
     dark text is unchanged.
+  - Measured against 8-bit sRGB storage (a Vulkan sRGB working image,
+    blending in linear light in hardware): across a dark gradient (sRGB
+    20 to 36 over 1024 px) the FP16 path's output changes value 513 times
+    with runs of one value up to 34 px, as the CPU's does; 8-bit storage
+    changed 191 times with runs up to 83 px, and under three translucent
+    layers 43 times with runs up to 290 px (FP16: 470 and 110). Each
+    blend rounds to 8 bits, and the encode's dither cannot bring back what
+    storage already rounded away.
 - **Alternatives:** gamma-space blending everywhere (incorrect gradients and
-  alpha); pure linear text (looks thin).
+  alpha); pure linear text (looks thin); 8-bit sRGB working images
+  (banding, above).
 - **Reverse if:** user testing prefers uncorrected linear text.
 
 ### D12. Frame clock

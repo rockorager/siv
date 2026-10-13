@@ -98,6 +98,9 @@ const Inst = extern struct {
     tex: [4]i32 = .{ 0, 0, 0, 0 },
     ptex: [4]i32 = .{ 0, 0, 0, 0 },
     btex: [4]i32 = .{ 0, 0, 0, 0 },
+    /// Part of `quad` not drawn (x0 >= x1: none): covered by a later
+    /// opaque draw, or where the coverage is known to be empty (`occlude`).
+    hole: [4]i32 = .{ 0, 0, 0, 0 },
 };
 
 const PaintRec = extern struct {
@@ -125,7 +128,7 @@ const ClipRec = extern struct {
 };
 
 comptime {
-    std.debug.assert(@sizeOf(Inst) == 144);
+    std.debug.assert(@sizeOf(Inst) == 160);
     std.debug.assert(@sizeOf(PaintRec) == 96);
     std.debug.assert(@sizeOf(ClipRec) == 80);
     std.debug.assert(@sizeOf(Device.Push) == 80);
@@ -350,6 +353,9 @@ outlines_used: usize = 0,
 stack: std.ArrayList(State) = .empty,
 regions: std.ArrayList(IRect) = .empty,
 changed: std.ArrayList(IRect) = .empty,
+/// For `occlude`: each instance's target, and the opaque instances.
+inst_targets: std.ArrayList(u32) = .empty,
+occluders: std.ArrayList(struct { index: u32, box: IRect }) = .empty,
 uploads: std.ArrayList(Upload) = .empty,
 glyph_uploads: std.ArrayList(u32) = .empty,
 image_uploads: std.ArrayList(scene.ImageRef) = .empty,
@@ -453,7 +459,7 @@ pub fn destroy(r: *Renderer) void {
     gpa.free(r.workers);
     for (r.outline_paths.items) |*p| p.deinit();
     r.outline_paths.deinit(gpa);
-    inline for (.{ "insts", "paints", "stops", "clips", "kernels", "ops", "layers", "blurs", "paths", "placements", "stack", "regions", "changed", "uploads", "glyph_uploads", "image_uploads" }) |name| {
+    inline for (.{ "insts", "paints", "stops", "clips", "kernels", "ops", "layers", "blurs", "paths", "placements", "stack", "regions", "changed", "uploads", "glyph_uploads", "image_uploads", "inst_targets", "occluders" }) |name| {
         @field(r, name).deinit(gpa);
     }
     gpa.destroy(r);
@@ -528,6 +534,7 @@ pub fn render(r: *Renderer, list: scene.DisplayList, opts: Options, target: Targ
     const f = &r.frames[r.frame % frames_in_flight];
 
     try r.prepareWithAtlas(list, opts.root);
+    try r.occlude();
     try r.planRegions(if (r.stale) null else opts.damage);
     try r.planPaths();
     try r.planPools();
@@ -750,6 +757,7 @@ fn prepare(r: *Renderer, list: scene.DisplayList, root: Affine) Error!void {
                 if (quad.isEmpty()) continue;
                 var inst = try r.paintInst(s.paint, m, quad, top.chain);
                 try r.coverage(&inst, s.shape, .nonzero, m, s.style);
+                inst.hole = irect(strokeInterior(s.shape, s.style.width, m).intersect(quad));
                 try r.pushInst(inst);
             },
             .glyphs => |g| try r.prepareGlyphs(g, top),
@@ -1183,6 +1191,123 @@ fn skipDmabuf(r: *Renderer, err: anyerror) void {
 
 // Regions ---------------------------------------------------------------------
 
+/// Gives instances holes where a later opaque draw into the same target
+/// covers them, so those pixels are not shaded twice: a window's
+/// background under a view's, under its rows (D10). The hole is the
+/// largest such area, if at least 16 by 16 pixels; an instance covered
+/// whole draws nothing. Opaque means a solid paint of alpha 1 with
+/// analytic coverage, inside the full-coverage part of its shape and of
+/// every clip. Frames with a backdrop blur are left as they are: a blur
+/// reads pixels around its own, which a hole could leave unpainted.
+fn occlude(r: *Renderer) Error!void {
+    if (r.blurs.items.len != 0 or r.insts.items.len < 2) return;
+    const gpa = r.gpa;
+    // Each instance's target: 0 for the working image, else its layer + 1.
+    try r.inst_targets.resize(gpa, r.insts.items.len);
+    var stack: [max_layer_depth + 1]u32 = undefined;
+    var depth: usize = 0;
+    stack[0] = 0;
+    for (r.ops.items) |op| switch (op) {
+        .draws => |dr| @memset(r.inst_targets.items[dr.first..][0..dr.count], stack[depth]),
+        .push => |li| {
+            depth += 1;
+            stack[depth] = li + 1;
+        },
+        .pop => depth -= 1,
+        .blur => {},
+    };
+    r.occluders.clearRetainingCapacity();
+    for (r.insts.items, 0..) |inst, i| {
+        const box = r.opaqueBox(inst) orelse continue;
+        if (area(box) >= 32 * 32) try r.occluders.append(gpa, .{ .index = @intCast(i), .box = box });
+    }
+    if (r.occluders.items.len == 0) return;
+    for (r.insts.items, r.inst_targets.items, 0..) |*inst, target, j| {
+        const q = quadRect(inst.quad);
+        if (q.isEmpty()) continue;
+        var best = IRect.empty;
+        var best_area: i64 = 16 * 16 - 1;
+        for (r.occluders.items) |o| {
+            if (o.index <= j or r.inst_targets.items[o.index] != target) continue;
+            const x = q.intersect(o.box);
+            const a = area(x);
+            if (a > best_area) {
+                best = x;
+                best_area = a;
+            }
+        }
+        if (best.isEmpty()) continue;
+        const hole = if (quadRect(inst.hole).isEmpty()) best else blk: {
+            // Keep the larger of an empty-coverage hole and this one.
+            const own = quadRect(inst.hole);
+            break :blk if (area(own) >= best_area) own else best;
+        };
+        if (hole.contains(q)) inst.quad = .{ 0, 0, 0, 0 } else inst.hole = irect(hole);
+    }
+}
+
+/// The device pixels inside a rectangle's or rounded rectangle's stroke
+/// that it leaves empty (a view's border), less a pixel for antialiasing;
+/// empty for other shapes or transforms.
+fn strokeInterior(shape: scene.Shape, width: f32, m: Affine) IRect {
+    if (!m.isAxisAligned()) return .empty;
+    const rect, const radius = switch (shape) {
+        .rect => |rc| .{ rc, 0 },
+        .rounded_rect => |rr| .{ rr.rect, @max(@max(rr.radii.tl.x, rr.radii.tl.y), @max(rr.radii.tr.x, rr.radii.tr.y), @max(rr.radii.br.x, rr.radii.br.y), @max(rr.radii.bl.x, rr.radii.bl.y)) },
+        .path => return .empty,
+    };
+    const inner = rect.outset(-(width / 2 + radius));
+    if (!(inner.x1 > inner.x0 and inner.y1 > inner.y0)) return .empty;
+    const d = m.applyRect(inner);
+    const b: IRect = .{ .x0 = @as(i32, @intFromFloat(@ceil(d.x0))) + 1, .y0 = @as(i32, @intFromFloat(@ceil(d.y0))) + 1, .x1 = @as(i32, @intFromFloat(@floor(d.x1))) - 1, .y1 = @as(i32, @intFromFloat(@floor(d.y1))) - 1 };
+    return if (b.isEmpty() or area(b) < 16 * 16) .empty else b;
+}
+
+/// The device pixels an instance surely covers fully and opaquely, or
+/// null when it is not opaque.
+fn opaqueBox(r: *const Renderer, inst: Inst) ?IRect {
+    if (inst.paint != paint_solid or inst.color[3] < 1) return null;
+    var box = quadRect(inst.quad);
+    switch (inst.cov) {
+        cov_full => {},
+        cov_rect, cov_rrect => box = box.intersect(analyticInterior(inst.cov, inst.g0, inst.g1, inst.g2)),
+        else => return null,
+    }
+    var clip = inst.clip;
+    while (clip != 0) {
+        const rec = r.clips.items[clip - 1];
+        switch (rec.kind) {
+            cov_full => {},
+            cov_rect, cov_rrect => box = box.intersect(analyticInterior(rec.kind, rec.g0, rec.g1, rec.g2)),
+            else => return null,
+        }
+        clip = rec.parent;
+    }
+    return if (box.isEmpty()) null else box;
+}
+
+/// The whole pixels where analytic rectangle or rounded rectangle
+/// coverage is full: inside the rectangle, and for rounded ones the
+/// larger of its bands between the corners.
+fn analyticInterior(kind: u32, g0: [4]f32, g1: [4]f32, g2: [4]f32) IRect {
+    const inner = struct {
+        fn of(x0: f32, y0: f32, x1: f32, y1: f32) IRect {
+            if (!(x1 > x0 and y1 > y0)) return .empty;
+            const b: IRect = .{ .x0 = @intFromFloat(@ceil(x0)), .y0 = @intFromFloat(@ceil(y0)), .x1 = @intFromFloat(@floor(x1)), .y1 = @intFromFloat(@floor(y1)) };
+            return if (b.isEmpty()) .empty else b;
+        }
+    }.of;
+    if (kind == cov_rect) return inner(g0[0], g0[1], g0[2], g0[3]);
+    // Radii: g1 = top left (x, y), top right; g2 = bottom right, bottom left.
+    const top = @max(g1[1], g1[3]);
+    const bottom = @max(g2[1], g2[3]);
+    const left = @max(g1[0], g2[2]);
+    const right = @max(g1[2], g2[0]);
+    const wide = inner(g0[0], g0[1] + top, g0[2], g0[3] - bottom);
+    const tall = inner(g0[0] + left, g0[1], g0[2] - right, g0[3]);
+    return if (area(wide) >= area(tall)) wide else tall;
+}
+
 fn planRegions(r: *Renderer, damage: ?[]const IRect) Error!void {
     const gpa = r.gpa;
     const vp = r.viewport();
@@ -1569,6 +1694,8 @@ const Recorder = struct {
     depth: usize = 0,
     pipeline: c.VkPipeline = null,
     rendering: bool = false,
+    /// The `pieces` push constant last set.
+    pieces: bool = false,
     region: IRect = .empty,
     dummy_set: c.VkDescriptorSet = null,
 
@@ -1637,14 +1764,35 @@ const Recorder = struct {
         rec.pushConstants(push);
     }
 
+    /// Sets whether instance draws expand each instance around its hole.
+    fn setPieces(rec: *Recorder, on: bool) void {
+        if (rec.pieces == on) return;
+        rec.pieces = on;
+        const v: u32 = @intFromBool(on);
+        rec.k().vkCmdPushConstants.?(rec.cmd, rec.r.device.pipeline_layout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, @offsetOf(Device.Push, "pieces"), 4, &v);
+    }
+
     fn pushConstants(rec: *Recorder, push: Device.Push) void {
+        rec.pieces = push.pieces != 0;
         rec.k().vkCmdPushConstants.?(rec.cmd, rec.r.device.pipeline_layout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(Device.Push), &push);
     }
 
     fn draw(rec: *Recorder, first: u32, count: u32, image: ?u64) Error!void {
         if (image) |key| try rec.bindTextures(&rec.r.textures.getPtr(key).?.image, null);
         rec.bind(rec.r.device.draw_pipeline);
-        rec.k().vkCmdDraw.?(rec.cmd, 4, count, 0, first);
+        // An instance with a hole is drawn as the four quads around it
+        // (quad.vert): runs of those go four times, the rest once.
+        const insts = rec.r.insts.items;
+        var i = first;
+        const last = first + count;
+        while (i < last) {
+            const holed = !quadRect(insts[i].hole).isEmpty();
+            var j = i + 1;
+            while (j < last and !quadRect(insts[j].hole).isEmpty() == holed) j += 1;
+            rec.setPieces(holed);
+            if (holed) rec.k().vkCmdDraw.?(rec.cmd, 4, (j - i) * 4, 0, i * 4) else rec.k().vkCmdDraw.?(rec.cmd, 4, j - i, 0, i);
+            i = j;
+        }
     }
 
     /// Binds the dummy images as set 1. Every image a bound set names
@@ -1699,6 +1847,7 @@ const Recorder = struct {
         r.inst_base.?[index] = inst;
         r.inst_next += 1;
         rec.bind(p);
+        rec.setPieces(false);
         rec.k().vkCmdDraw.?(rec.cmd, 4, 1, 0, index);
     }
 

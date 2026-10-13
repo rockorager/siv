@@ -47,6 +47,7 @@ struct Inst {
                  // mask size (width | height << 16) or the glyph contrast table
     ivec4 ptex;  // paint texture (tex_a or the color glyph atlas): device x and y of texel (0, 0) in .yz
     ivec4 btex;  // backdrop texture (tex_b), the same way
+    ivec4 hole;  // part of quad not drawn (x0 >= x1: none)
 };
 
 struct PaintRec {
@@ -99,7 +100,7 @@ layout(push_constant) uniform Push {
     vec2 size;        // target size
     ivec4 region;     // quad for passes without instances; empty otherwise
     ivec4 clampr;     // blur: reads clamp to this rectangle
-    uint pad;
+    uint pieces;     // instance draws: four quads around each instance's hole
     uint mode;
     uint radius;
     uint kernel;

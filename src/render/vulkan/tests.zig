@@ -126,6 +126,58 @@ test "frames match the CPU renderer, including damage-only frames" {
     try testing.expectEqual(errors, Device.validation_errors.load(.monotonic));
 }
 
+test "draws under later opaque ones get holes, and frames still match the CPU" {
+    const gpa = testing.allocator;
+    const device = try testDevice();
+    defer device.destroy();
+    const errors = Device.validation_errors.load(.monotonic);
+    var tp = pool.Pool.init(gpa, 3);
+    defer tp.deinit();
+    const r = try Renderer.create(gpa, device, tp.executor());
+    defer r.destroy();
+    const cpu = try render_cpu.Renderer.create(gpa, .serial);
+    defer cpu.destroy();
+    try r.resize(200, 150);
+    try cpu.resize(200, 150);
+    var b = scene.Builder.init(gpa);
+    defer b.deinit();
+    for (0..3) |frame| {
+        b.reset();
+        const f: f32 = @floatFromInt(frame);
+        // A window's background, a view's rounded background and clip
+        // over most of it, its border, and rows; then an opaque panel
+        // over a gradient and a faded layer.
+        try b.fillRect(.xywh(0, 0, 200, 150), .color(.srgb8(0xf0, 0xf0, 0xf0, 0xff)));
+        const view: scene.Shape = .{ .rounded_rect = .{ .rect = .xywh(6.5, 5.25, 187, 139.5), .radii = .uniform(8, 8) } };
+        try b.pushLayer(.{ .clip = .{ .shape = view } });
+        try b.fill(view, .nonzero, .color(.white));
+        for (0..6) |i| try b.fillRect(.xywh(10, 10 + @as(f32, @floatFromInt(i)) * 22 - f * 5, 120, 14), .color(.srgb8(0x30, 0x30, 0x40, 0xff)));
+        try b.popLayer();
+        try b.stroke(view, .{ .width = 1 }, .color(.srgb8(0x80, 0x80, 0x90, 0xff)));
+        const stops = [_]scene.Stop{
+            .{ .offset = 0, .color = scene.Color.srgb8(0x20, 0x60, 0xd0, 0xff) },
+            .{ .offset = 1, .color = scene.Color.srgb8(0xf0, 0xa0, 0x30, 0xff) },
+        };
+        try b.fillRect(.xywh(140, 20, 50, 60), .{ .gradient = .{ .geometry = .{ .linear = .{ .p0 = .{ .x = 140, .y = 20 }, .p1 = .{ .x = 190, .y = 80 } } }, .stops = &stops } });
+        try b.fillRect(.xywh(138, 18, 54, 64), .color(.srgb8(0x10, 0x80, 0x40, 0xff)));
+        try b.pushLayer(.{ .opacity = 0.5 });
+        try b.fillRect(.xywh(150, 90, 30, 30), .color(.srgb8(0xff, 0x20, 0x20, 0xff)));
+        try b.fillRect(.xywh(160, 100, 30, 30), .color(.srgb8(0x20, 0x20, 0xff, 0xff)));
+        try b.popLayer();
+        const list = try b.finish(0);
+        try expectMatch(r, cpu, list, if (frame == 0) null else &.{.xywh(0, 0, 200, 150)}, 200, 150);
+        // The background, the gradient, and the border's inside are holes
+        // (or nothing at all).
+        var holed: usize = 0;
+        for (r.insts.items) |inst| {
+            const q = inst.quad;
+            if (q[2] <= q[0] or inst.hole[2] > inst.hole[0]) holed += 1;
+        }
+        try testing.expect(holed >= 3);
+    }
+    try testing.expectEqual(errors, Device.validation_errors.load(.monotonic));
+}
+
 test "dma-buf frames are imported, or skipped without pixels" {
     const gpa = testing.allocator;
     const device = try testDevice();

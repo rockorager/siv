@@ -613,8 +613,10 @@ pub const Push = extern struct {
     region: [4]i32 = .{ -1, 0, 0, 0 },
     /// Blur: rows or columns reads clamp to.
     clamp: [4]i32 = .{ 0, 0, 0, 0 },
+    /// Instance draws: each instance is drawn four times, as the quads
+    /// around its hole (quad.vert).
+    pieces: u32 = 0,
     /// Device coordinates of `tex_a`'s texel (0, 0) are `src_origin`.
-    pad: u32 = 0,
     mode: u32 = 0,
     radius: u32 = 0,
     kernel: u32 = 0,
