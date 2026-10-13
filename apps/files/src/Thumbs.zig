@@ -1,13 +1,14 @@
 //! Thumbnails of images in the shown folder, decoded asynchronously by
 //! siv_image_load straight to the size they are shown at.
 //!
-//! The grid asks for the cells it binds; requests wait in a stack (the
-//! newest first, so what scrolled into view last decodes next) with a few
-//! in flight at once, since siv_image_load cannot be cancelled and each
-//! decode reads and decodes the whole file (FRICTION.md). Thumbnails that
-//! other applications saved in the freedesktop.org thumbnail cache are
-//! used instead of the original when they are newer than it. Decoded
-//! images are kept up to a count and then dropped oldest first.
+//! The grid asks for the cells it binds. Each request goes to siv at once
+//! with a priority that grows with every ask, so what scrolled into view
+//! last decodes first; asking again raises it, and the oldest requests
+//! are cancelled once too many wait (they scrolled out of view long ago).
+//! Thumbnails that other applications saved in the freedesktop.org
+//! thumbnail cache are used instead of the original when they are newer
+//! than it. Decoded images are kept up to a count and then dropped oldest
+//! first.
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -18,11 +19,9 @@ const uri = @import("uri.zig");
 const Thumbs = @This();
 
 pub const size: f32 = 64;
-const max_in_flight = 3;
 const max_cached = 400;
-/// Requests older than this many newer ones are dropped: they scrolled
-/// out of view long ago.
-const max_queued = 256;
+/// More waiting requests than this cancel the oldest.
+const max_pending = 256;
 
 gpa: std.mem.Allocator,
 app: siv.App,
@@ -31,8 +30,8 @@ scale: f32 = 1,
 folder: []u8 = &.{},
 gen: u32 = 0,
 map: std.StringHashMapUnmanaged(Slot) = .empty,
-queue: std.ArrayList([]const u8) = .empty,
-in_flight: std.ArrayList(*Request) = .empty,
+/// Requests siv has not answered.
+pending: u32 = 0,
 stamp: u64 = 0,
 on_ready: ?*const fn (ctx: ?*anyopaque) void = null,
 ctx: ?*anyopaque = null,
@@ -43,27 +42,26 @@ loaded: u32 = 0,
 cache_dir: []u8 = &.{},
 
 const Slot = struct {
-    state: enum { queued, loading, ready, failed },
+    state: enum { loading, ready, failed },
     image: siv.Image = .null,
+    request: siv.ImageRequest = .null,
     mtime: i64,
     used: u64 = 0,
 };
 
+/// One siv_image_load; cancelled requests never call back.
 const Request = struct {
-    thumbs: ?*Thumbs,
-    gen: u32,
+    thumbs: *Thumbs,
     /// Key in the map (owned by the map).
     name: []const u8,
 
     fn done(ud: ?*anyopaque, result: siv.Result, image: siv.Image) callconv(.c) void {
         const r: *Request = @ptrCast(@alignCast(ud.?));
-        const t = r.thumbs orelse {
-            if (image != .null) _ = c.siv_image_destroy(image);
-            return;
-        };
-        t.finished(r, result, image);
+        r.thumbs.finished(r.name, result, image);
     }
 
+    /// May run after the Thumbs is gone (a cancelled decode that was
+    /// running), so requests come from the C allocator.
     fn free(ud: ?*anyopaque) callconv(.c) void {
         const r: *Request = @ptrCast(@alignCast(ud.?));
         std.heap.c_allocator.destroy(r);
@@ -75,24 +73,23 @@ pub fn init(gpa: std.mem.Allocator, app: siv.App) Thumbs {
 }
 
 pub fn deinit(t: *Thumbs) void {
-    for (t.in_flight.items) |r| r.thumbs = null;
-    t.in_flight.deinit(t.gpa);
     if (t.notify_timer != .null) _ = c.siv_timer_cancel(t.notify_timer);
     t.clear();
     t.map.deinit(t.gpa);
-    t.queue.deinit(t.gpa);
     t.gpa.free(t.folder);
     t.gpa.free(t.cache_dir);
 }
 
+/// Drops every thumbnail and cancels every request.
 fn clear(t: *Thumbs) void {
     var it = t.map.iterator();
     while (it.next()) |kv| {
+        if (kv.value_ptr.request != .null) _ = c.siv_image_request_cancel(kv.value_ptr.request);
         if (kv.value_ptr.image != .null) _ = c.siv_image_destroy(kv.value_ptr.image);
         t.gpa.free(kv.key_ptr.*);
     }
     t.map.clearRetainingCapacity();
-    t.queue.clearRetainingCapacity();
+    t.pending = 0;
 }
 
 pub fn setCacheDir(t: *Thumbs, dir: []const u8) void {
@@ -103,8 +100,6 @@ pub fn setCacheDir(t: *Thumbs, dir: []const u8) void {
 /// A new folder: thumbnails of the old one go.
 pub fn setFolder(t: *Thumbs, folder: []const u8) void {
     if (std.mem.eql(u8, folder, t.folder)) return;
-    for (t.in_flight.items) |r| r.thumbs = null;
-    t.in_flight.clearRetainingCapacity();
     t.clear();
     t.gen +%= 1;
     t.gpa.free(t.folder);
@@ -115,8 +110,6 @@ pub fn setScale(t: *Thumbs, scale: f32) void {
     if (scale == t.scale or scale <= 0) return;
     t.scale = scale;
     // Sharper ones on demand.
-    for (t.in_flight.items) |r| r.thumbs = null;
-    t.in_flight.clearRetainingCapacity();
     t.clear();
     t.gen +%= 1;
 }
@@ -129,70 +122,70 @@ pub fn get(t: *Thumbs, folder: []const u8, name: []const u8, mtime: i64) ?siv.Im
     if (t.map.getPtr(name)) |slot| {
         if (slot.mtime != mtime) {
             // Changed on disk: decode again.
+            if (slot.request != .null) {
+                _ = c.siv_image_request_cancel(slot.request);
+                t.pending -= 1;
+            }
             if (slot.image != .null) _ = c.siv_image_destroy(slot.image);
-            slot.* = .{ .state = .queued, .mtime = mtime };
+            slot.* = .{ .state = .failed, .mtime = mtime };
+            t.request(t.map.getKey(name).?, slot);
         }
         slot.used = t.stamp;
         switch (slot.state) {
             .ready => return slot.image,
-            .failed, .loading => return null,
-            .queued => {
-                // Wanted again: to the top of the stack.
-                const key = t.map.getKey(name).?;
-                for (t.queue.items, 0..) |q, i| if (q.ptr == key.ptr) {
-                    _ = t.queue.orderedRemove(i);
-                    break;
-                };
-                t.queue.append(t.gpa, key) catch {};
-                t.pump();
+            .failed => return null,
+            .loading => {
+                // Wanted again: before everything asked so far.
+                _ = c.siv_image_request_set_priority(slot.request, @intCast(t.stamp));
                 return null;
             },
         }
     }
     const key = t.gpa.dupe(u8, name) catch return null;
-    t.map.put(t.gpa, key, .{ .state = .queued, .mtime = mtime, .used = t.stamp }) catch {
+    const gop = t.map.getOrPut(t.gpa, key) catch {
         t.gpa.free(key);
         return null;
     };
-    t.queue.append(t.gpa, key) catch {};
-    if (t.queue.items.len > max_queued) {
-        const old = t.queue.orderedRemove(0);
-        if (t.map.fetchRemove(old)) |kv| t.gpa.free(kv.key);
-    }
-    t.pump();
+    gop.value_ptr.* = .{ .state = .failed, .mtime = mtime, .used = t.stamp };
+    t.request(key, gop.value_ptr);
+    if (t.pending > max_pending) t.cancelOldest();
     return null;
 }
 
-fn pump(t: *Thumbs) void {
-    while (t.in_flight.items.len < max_in_flight) {
-        const name = t.queue.pop() orelse return;
-        const slot = t.map.getPtr(name) orelse continue;
-        var pbuf: [linux.PATH_MAX]u8 = undefined;
-        const path = t.cachedThumbnail(&pbuf, name, slot.mtime) orelse
-            (std.fmt.bufPrint(&pbuf, "{s}/{s}", .{ t.folder, name }) catch continue);
-        // The request outlives this Thumbs if it is dropped meanwhile; it
-        // comes from the C allocator, which siv's callbacks free from.
-        const r = std.heap.c_allocator.create(Request) catch return;
-        r.* = .{ .thumbs = t, .gen = t.gen, .name = name };
-        t.in_flight.append(t.gpa, r) catch {
-            std.heap.c_allocator.destroy(r);
-            return;
-        };
-        slot.state = .loading;
-        var request: siv.ImageRequest = .null;
-        const res = c.siv_image_load(t.app, &.{
-            .path = path.ptr,
-            .path_len = path.len,
-            .max_width = size,
-            .max_height = size,
-            .scale = t.scale,
-            .flags = .{ .first_frame = true },
-        }, Request.done, Request.free, r, &request);
-        if (res != .ok) {
-            _ = t.in_flight.pop();
-            slot.state = .failed;
-        }
-    }
+fn request(t: *Thumbs, name: []const u8, slot: *Slot) void {
+    var pbuf: [linux.PATH_MAX]u8 = undefined;
+    const path = t.cachedThumbnail(&pbuf, name, slot.mtime) orelse
+        (std.fmt.bufPrint(&pbuf, "{s}/{s}", .{ t.folder, name }) catch return);
+    const r = std.heap.c_allocator.create(Request) catch return;
+    r.* = .{ .thumbs = t, .name = name };
+    // The newest request decodes first.
+    if (c.siv_image_load(t.app, &.{
+        .path = path.ptr,
+        .path_len = path.len,
+        .max_width = size,
+        .max_height = size,
+        .scale = t.scale,
+        .flags = .{ .first_frame = true },
+        .priority = @intCast(t.stamp),
+    }, Request.done, Request.free, r, &slot.request) != .ok) return;
+    slot.state = .loading;
+    t.pending += 1;
+}
+
+/// Cancels the request asked for longest ago.
+fn cancelOldest(t: *Thumbs) void {
+    var oldest: ?*Slot = null;
+    var it = t.map.valueIterator();
+    while (it.next()) |slot| if (slot.state == .loading and (oldest == null or slot.used < oldest.?.used)) {
+        oldest = slot;
+    };
+    const slot = oldest orelse return;
+    _ = c.siv_image_request_cancel(slot.request);
+    slot.request = .null;
+    // Asked for again, it loads again.
+    slot.mtime = -1;
+    slot.state = .failed;
+    t.pending -= 1;
 }
 
 /// A thumbnail another application saved ($XDG_CACHE_HOME/thumbnails,
@@ -217,22 +210,17 @@ fn cachedThumbnail(t: *Thumbs, out: []u8, name: []const u8, mtime: i64) ?[]u8 {
     return null;
 }
 
-fn finished(t: *Thumbs, r: *Request, result: siv.Result, image: siv.Image) void {
-    for (t.in_flight.items, 0..) |x, i| if (x == r) {
-        _ = t.in_flight.swapRemove(i);
-        break;
-    };
+fn finished(t: *Thumbs, name: []const u8, result: siv.Result, image: siv.Image) void {
     t.loaded += 1;
-    const slot = if (r.gen == t.gen) t.map.getPtr(r.name) else null;
-    if (slot) |s| {
-        if (result == .ok) {
-            s.state = .ready;
-            s.image = image;
-        } else s.state = .failed;
-        t.evict();
-        t.scheduleNotify();
-    } else if (image != .null) _ = c.siv_image_destroy(image);
-    t.pump();
+    t.pending -= 1;
+    const s = t.map.getPtr(name).?;
+    s.request = .null;
+    if (result == .ok) {
+        s.state = .ready;
+        s.image = image;
+    } else s.state = .failed;
+    t.evict();
+    t.scheduleNotify();
 }
 
 fn evict(t: *Thumbs) void {
@@ -267,7 +255,7 @@ fn notify(ud: ?*anyopaque) callconv(.c) void {
     if (t.on_ready) |f| f(t.ctx);
 }
 
-/// Requests in flight or queued.
+/// Requests siv has not answered.
 pub fn busy(t: *const Thumbs) bool {
-    return t.in_flight.items.len != 0 or t.queue.items.len != 0;
+    return t.pending != 0;
 }

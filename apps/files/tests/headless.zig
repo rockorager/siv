@@ -344,6 +344,28 @@ test "grid view with thumbnails decoded on the worker pool" {
     try expectNames(&.{"tall.png"}, try h.selected(&buf));
 }
 
+test "thumbnail requests past the limit cancel the oldest" {
+    var fx: Fixture = .{};
+    try fx.create(&sample);
+    defer fx.remove();
+    var h: Harness = .{};
+    try h.start(.{ .path = fx.path, .mode = .grid, .thumbnails = true });
+    defer h.stop();
+    const t = &h.f().thumbs;
+    const before = t.loaded;
+    // Asked for faster than they decode: 300 cells scrolled past.
+    var buf: [32]u8 = undefined;
+    for (0..300) |i| {
+        const name = try std.fmt.bufPrint(&buf, "img-{d}.png", .{i});
+        try testing.expect(t.get(fx.path, name, 1) == null);
+    }
+    try testing.expectEqual(@as(u32, 256), t.pending);
+    try h.settle();
+    // The 44 asked for first were cancelled, never decoded.
+    try testing.expectEqual(before + 256, t.loaded);
+    try testing.expectEqual(@as(u32, 0), t.pending);
+}
+
 test "dark style, and the context menu" {
     var fx: Fixture = .{};
     try fx.create(&sample);

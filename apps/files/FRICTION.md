@@ -166,13 +166,17 @@ Measurements are in [Numbers](#numbers) at the end.
     reloaded again; it now keeps the watch of an unchanged folder and
     ignores IN_IGNORED.
 
-## Open API questions
-
 12. **Long jobs share the pool with decoding and rendering.** A copy of a
     large tree occupies a worker for its whole length; several copies at
     once leave thumbnails queued behind them, and fork-join rendering
     falls back to the compositor thread alone. Blocking I/O may want a
     lane of its own, or a cap on how many workers jobs take.
+    *Fixed:* the pool has a blocking lane of its own (up to 8 threads that
+    never take compute work), and fork-join helpers jump the compute
+    queue; `siv_job_start` takes `siv_job_flags`, blocking by default,
+    `SIV_JOB_COMPUTE` for CPU work (commit "pool, abi: a blocking lane,
+    and prioritized, cancellable image loads", D6). The app's folder
+    listings and file operations are blocking jobs.
 
 13. **Image loads cannot be cancelled or prioritised.** The grid asks for
     thumbnails of the cells it binds; scrolling quickly past thousands of
@@ -182,6 +186,16 @@ Measurements are in [Numbers](#numbers) at the end.
     reads and decodes the whole file at full size before scaling (D19
     notes JPEG DCT scaling is not done yet), so a 12-megapixel photo
     costs ~50 MB and tens of ms per thumbnail.
+    *Fixed:* `siv_image_load` returns a `siv_image_request` and takes a
+    priority; `siv_image_request_cancel` and
+    `siv_image_request_set_priority` (same commit, D19). `src/Thumbs.zig`
+    dropped its own stack and in-flight cap: every request goes to siv at
+    once with a growing priority, asking again raises it, and past 256
+    waiting the oldest is cancelled. A test asks for 300 and sees 256
+    decoded. Decoding at full size before scaling remains (D19 lists JPEG
+    DCT scaling as not done).
+
+## Open API questions
 
 14. **No frame-presented event.** Measuring startup to first frame, or
     knowing that a change reached the screen, is impossible from the
