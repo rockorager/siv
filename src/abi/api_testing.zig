@@ -71,7 +71,7 @@ pub const decls = [_]Decl{
 };
 
 pub const functions = [_]Function{
-    call("siv_test_settle", "Dispatches until the application is idle or timeout_ms pass, waiting for the events that end the work rather than for quiet time: no transaction is open; every shown window has presented what it committed and wants no frame; the compositor owes no frame (for injected input, a scroll or fling it runs itself, or a single-run animation) and has presented every frame it owed; and no font, icon, image load, application job (siv_job_start), paste, or drop is in flight. Repeating animations (a caret's blink, a spinner) are not waited for, since they never end, and a capture may catch them in any phase (SIV_APP_REDUCED_MOTION stops them). Timers, portal requests, and the application's own threads are not waited for: wait for what they show. Not from a callback (SIV_ERROR_BUSY)." ++ headless, &.{
+    call("siv_test_settle", "Dispatches until the application is idle or timeout_ms pass, waiting for the events that end the work rather than for quiet time: no transaction is open; every shown window has presented what it committed and wants no frame; the compositor owes no frame (for injected input, a scroll or fling it runs itself, or a single-run animation) and has presented every frame it owed; no tooltip waits for its delay (D17); and no font, icon, image load, application job (siv_job_start), paste, or drop is in flight. Repeating animations (a caret's blink, a spinner) are not waited for, since they never end, and a capture may catch them in any phase (SIV_APP_REDUCED_MOTION stops them). Timers, portal requests, and the application's own threads are not waited for: wait for what they show. Not from a callback (SIV_ERROR_BUSY)." ++ headless, &.{
         p("app", ref("siv_app"), "The application."),
         p("timeout_ms", .u32, "How long to wait at most."),
         p("settled", out(.bool), "Whether it settled in time."),
@@ -118,6 +118,13 @@ pub const functions = [_]Function{
         p("data", array(.u8), "The data (copied)."),
     }),
     call("siv_test_capture", "Copies what a window presented last, as the compositor shows it: rows of width * 4 bytes, top to bottom, of 8-bit red, green, blue, and alpha, alpha premultiplied, at the window's buffer scale. SIV_ERROR_UNAVAILABLE if it has presented nothing yet (siv_test_settle first)." ++ headless, &.{
+        window_param,
+        p("pixels", schema.byte_buffer, "Receives at most pixels_cap bytes; may be NULL with pixels_cap 0 to ask for the size."),
+        p("len", out(.usize), "The image's full length in bytes."),
+        .{ .name = "width", .type = out(.u32), .doc = "Width in pixels.", .optional = true },
+        .{ .name = "height", .type = out(.u32), .doc = "Height in pixels.", .optional = true },
+    }),
+    call("siv_test_capture_tooltip", "Copies what a window's tooltip (D17, siv_set_tooltip) presented last, like siv_test_capture. A tooltip shows half a second after the pointer rests on its node (siv_test_pointer_move) or keyboard focus reaches it, which siv_test_settle waits for. SIV_ERROR_UNAVAILABLE if none is shown." ++ headless, &.{
         window_param,
         p("pixels", schema.byte_buffer, "Receives at most pixels_cap bytes; may be NULL with pixels_cap 0 to ask for the size."),
         p("len", out(.usize), "The image's full length in bytes."),

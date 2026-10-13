@@ -90,6 +90,9 @@ fn idle(self: *App) bool {
     for (self.windows.items) |slot| if (slot) |w| {
         if (w.dead or !w.win.shown) continue;
         if (w.win.presented_seq == 0 or !w.win.settled()) return false;
+        // A tooltip waiting for its delay, or not yet presented.
+        if (w.win.tooltip_timer.armed()) return false;
+        if (w.win.tooltip_popup) |p| if (p.shown and (p.presented_seq == 0 or !p.settled())) return false;
     };
     return true;
 }
@@ -298,6 +301,26 @@ pub export fn siv_test_capture(window: t.Window, pixels: ?[*]u8, pixels_cap: usi
     return wrap(struct {
         fn f(wh: t.Window, p: ?[*]u8, cap: usize, out_len: ?*usize, out_w: ?*u32, out_h: ?*u32) Error!void {
             const w = try headlessWindow(wh);
+            return capture(w, w.win.id, p, cap, out_len, out_w, out_h);
+        }
+    }.f(window, pixels, pixels_cap, len, width, height));
+}
+
+pub export fn siv_test_capture_tooltip(window: t.Window, pixels: ?[*]u8, pixels_cap: usize, len: ?*usize, width: ?*u32, height: ?*u32) t.Result {
+    return wrap(struct {
+        fn f(wh: t.Window, p: ?[*]u8, cap: usize, out_len: ?*usize, out_w: ?*u32, out_h: ?*u32) Error!void {
+            const w = try headlessWindow(wh);
+            const tip = w.win.tooltip_popup orelse return error.Unavailable;
+            if (!tip.shown) return error.Unavailable;
+            return capture(w, tip.id, p, cap, out_len, out_w, out_h);
+        }
+    }.f(window, pixels, pixels_cap, len, width, height));
+}
+
+/// Copies what the platform window `id` of `w`'s application presented.
+fn capture(w: *Window, id: platform.WindowId, p: ?[*]u8, cap: usize, out_len: ?*usize, out_w: ?*u32, out_h: ?*u32) Error!void {
+    {
+        {
             const C = struct {
                 id: platform.WindowId,
                 buf: []u8,
@@ -320,7 +343,7 @@ pub export fn siv_test_capture(window: t.Window, pixels: ?[*]u8, pixels_cap: usi
                     };
                 }
             };
-            var c: C = .{ .id = w.win.id, .buf = try runtime.buffer(p, cap) };
+            var c: C = .{ .id = id, .buf = try runtime.buffer(p, cap) };
             const dl = try runtime.out(usize, out_len);
             var sw: u32 = 0;
             var sh: u32 = 0;
@@ -332,7 +355,7 @@ pub export fn siv_test_capture(window: t.Window, pixels: ?[*]u8, pixels_cap: usi
             dw.* = c.width;
             dh.* = c.height;
         }
-    }.f(window, pixels, pixels_cap, len, width, height));
+    }
 }
 
 fn semanticsOf(w: *Window) Error!*const ui.semantics.Tree {
