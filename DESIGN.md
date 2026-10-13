@@ -1694,7 +1694,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       delivered in the dispatch phase (D5). Pastes over the limit (16 MiB
       by default) are dropped; invalid UTF-8 becomes U+FFFD and NULs are
       removed. While the application owns a selection, pasting it uses the
-      data directly.
+      data directly. A reader that closes its pipe early must not end the
+      application with SIGPIPE, and a library must not change the
+      process's signal dispositions: each write blocks SIGPIPE on its
+      thread and takes back one it raised, so it fails with EPIPE.
     - Editors copy with Ctrl+C and Ctrl+Insert, cut with Ctrl+X and
       Shift+Delete, paste with Ctrl+V and Shift+Insert, and paste the
       primary selection with the middle button at the pointer. A non-empty

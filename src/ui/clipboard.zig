@@ -409,7 +409,7 @@ fn onReady(source: *Loop.Source, events: u32) void {
     switch (t.direction) {
         .write => while (t.written < t.buf.items.len) {
             const rest = t.buf.items[t.written..];
-            const n = linux.write(source.fd, rest.ptr, rest.len);
+            const n = writePipe(source.fd, rest);
             switch (linux.errno(n)) {
                 .SUCCESS => t.written += n,
                 .INTR => {},
@@ -433,6 +433,28 @@ fn onReady(source: *Loop.Source, events: u32) void {
             }
         },
     }
+}
+
+/// write() to a pipe another client reads. If it closed its end, the
+/// write fails with EPIPE and raises SIGPIPE, whose default action ends
+/// the process: an application would die of a paste abandoned midway.
+/// SIGPIPE is blocked on this thread around the write, and one the write
+/// raised is taken back.
+fn writePipe(fd: i32, bytes: []const u8) usize {
+    var pipe_set = linux.sigemptyset();
+    linux.sigaddset(&pipe_set, .PIPE);
+    var old: linux.sigset_t = undefined;
+    _ = linux.sigprocmask(linux.SIG.BLOCK, &pipe_set, &old);
+    defer _ = linux.sigprocmask(linux.SIG.SETMASK, &old, null);
+    var pending: linux.sigset_t = undefined;
+    _ = linux.syscall2(.rt_sigpending, @intFromPtr(&pending), linux.NSIG / 8);
+    const n = linux.write(fd, bytes.ptr, bytes.len);
+    // One SIGPIPE that was pending already is someone else's.
+    if (linux.errno(n) == .PIPE and !linux.sigismember(&pending, .PIPE)) {
+        const zero: linux.timespec = .{ .sec = 0, .nsec = 0 };
+        _ = linux.syscall4(.rt_sigtimedwait, @intFromPtr(&pipe_set), 0, @intFromPtr(&zero), linux.NSIG / 8);
+    }
+    return n;
 }
 
 /// Valid UTF-8, with each invalid sequence replaced by U+FFFD and NUL
@@ -475,4 +497,44 @@ fn fuzzSanitize(_: void, smith: *std.testing.Smith) !void {
     try std.testing.expect(std.mem.indexOfScalar(u8, out, 0) == null);
     // Valid input without NULs comes out unchanged.
     if (std.unicode.utf8ValidateSlice(input) and std.mem.indexOfScalar(u8, input, 0) == null) try std.testing.expectEqualStrings(input, out);
+}
+
+test "a paste whose reader closes early ends without SIGPIPE" {
+    const gpa = std.testing.allocator;
+    var loop = try Loop.init(gpa);
+    defer loop.deinit();
+    const Fake = struct {
+        fn set(_: ?*anyopaque, _: platform.SeatId, _: Kind, _: []const []const u8, _: u32) ?u32 {
+            return 1;
+        }
+        fn receive(_: ?*anyopaque, _: platform.SeatId, _: Kind, _: []const []const u8, fd: i32) bool {
+            _ = linux.close(fd);
+            return false;
+        }
+    };
+    var cb = init(gpa, &loop, .{ .set_selection = Fake.set, .receive = Fake.receive });
+    defer cb.deinit();
+    try cb.copy(.clipboard, 0, 1, "copied");
+
+    // Another client asks for the selection and closes its end before
+    // reading. SIGPIPE's default action would end the application; here
+    // it is blocked, so one the write raised stays pending.
+    var fds: [2]i32 = undefined;
+    try std.testing.expectEqual(.SUCCESS, linux.errno(linux.pipe2(&fds, .{ .CLOEXEC = true })));
+    _ = linux.close(fds[0]);
+    var pipe_set = linux.sigemptyset();
+    linux.sigaddset(&pipe_set, .PIPE);
+    var old: linux.sigset_t = undefined;
+    _ = linux.sigprocmask(linux.SIG.BLOCK, &pipe_set, &old);
+    defer _ = linux.sigprocmask(linux.SIG.SETMASK, &old, null);
+    try std.testing.expect(cb.handleEvent(&.{ .selection_send = .{ .seat = 0, .kind = .clipboard, .source = 1, .mime = 0, .fd = fds[1] } }));
+    var pending: linux.sigset_t = undefined;
+    _ = linux.syscall2(.rt_sigpending, @intFromPtr(&pending), linux.NSIG / 8);
+    const raised = linux.sigismember(&pending, .PIPE);
+    if (raised) {
+        const zero: linux.timespec = .{ .sec = 0, .nsec = 0 };
+        _ = linux.syscall4(.rt_sigtimedwait, @intFromPtr(&pipe_set), 0, @intFromPtr(&zero), linux.NSIG / 8);
+    }
+    try std.testing.expect(!raised);
+    try std.testing.expectEqual(@as(usize, 0), cb.transfers.items.len);
 }
