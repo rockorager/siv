@@ -2,6 +2,7 @@
 """Summarizes harness/run.py's results as Markdown tables.
 
     harness/report.py [RAW_DIR] > results.md
+    harness/report.py BEFORE_DIR AFTER_DIR   # siv before, siv after, gpui
 
 Every cell is the median over runs, with the range over runs in brackets.
 Latencies are first reduced to each run's median (and p99/max where shown).
@@ -137,19 +138,21 @@ def stripped_size(path):
 
 
 def main():
-    raw = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "results", "raw")
-    data = load(raw)
-    toolkits = ["siv", "gpui"]
+    dirs = sys.argv[1:] or [os.path.join(ROOT, "results", "raw")]
+    sets = [load(d) for d in dirs]
+    data = sets[-1]
+    # Columns: (label, data set, toolkit).
+    if len(sets) == 2:
+        columns = [("siv before", sets[0], "siv"), ("siv after", sets[1], "siv"), ("gpui", sets[1], "gpui")]
+    else:
+        columns = [("siv", data, "siv"), ("gpui", data, "gpui")]
     runs = max((len(v) for v in data.values()), default=0)
     print(f"Median over {runs} runs per cell, [min–max over runs].\n")
-    print("| scenario | metric | siv | gpui |")
-    print("| --- | --- | --- | --- |")
+    print("| scenario | metric | " + " | ".join(c[0] for c in columns) + " |")
+    print("| --- | --- |" + " --- |" * len(columns))
     for scenario, label, path, how, fmt in METRICS:
-        cells = []
-        for tk in toolkits:
-            rs = data.get((tk, scenario), [])
-            cells.append(cell(rs, path, how, fmt))
-        print(f"| {scenario} | {label} | {cells[0]} | {cells[1]} |")
+        cells = [cell(d.get((tk, scenario), []), path, how, fmt) for _, d, tk in columns]
+        print(f"| {scenario} | {label} | " + " | ".join(cells) + " |")
     siv_lib = os.path.realpath(os.path.join(ROOT, "..", "..", "zig-out", "lib", "libsiv.so"))
     sizes = {}
     for name, path in [("siv-bench", os.path.join(ROOT, "out", "siv-bench")), ("libsiv.so", siv_lib),
@@ -158,8 +161,10 @@ def main():
             sizes[name] = stripped_size(path)
     if sizes:
         siv_total = sizes.get("siv-bench", 0) + sizes.get("libsiv.so", 0)
-        print(f"| all | stripped binary size (MiB) | {siv_total / 2**20:.1f} (libsiv.so {sizes.get('libsiv.so', 0) / 2**20:.1f} "
-              f"+ program {sizes.get('siv-bench', 0) / 2**10:.0f} KiB) | {sizes.get('gpui-compare', 0) / 2**20:.1f} |")
+        siv_cell = f"{siv_total / 2**20:.1f} (libsiv.so {sizes.get('libsiv.so', 0) / 2**20:.1f} + program {sizes.get('siv-bench', 0) / 2**10:.0f} KiB)"
+        gpui_cell = f"{sizes.get('gpui-compare', 0) / 2**20:.1f}"
+        cells = [siv_cell] * (len(columns) - 1) + [gpui_cell]
+        print("| all | stripped binary size (MiB) | " + " | ".join(cells) + " |")
 
 
 if __name__ == "__main__":

@@ -30,6 +30,10 @@ PROGRAMS = {
     "gpui": [os.path.join(ROOT, "gpui", "target", "release", "gpui-compare")],
 }
 SCENARIOS = ["idle", "gallery", "list", "text", "grid", "typing", "resize"]
+# Touchpad scroll per event, so that both move 30 logical px: gpui
+# multiplies touchpad deltas by 3 (gpui_linux's Wayland client,
+# `let modifier = 3.0`), siv scrolls them as they come (D8).
+SCROLL_EVENT = {"siv": 30, "gpui": 10}
 
 
 def now():
@@ -453,7 +457,7 @@ def scenario_list(r):
     r.inj.send("move 640 400")
     time.sleep(0.3)
     r.settle(0.2)
-    r.result["scroll"] = r.frames(lambda: r.inj.send("scrollburst 30 120 600", answers=600))
+    r.result["scroll"] = r.frames(lambda: r.inj.send(f"scrollburst {SCROLL_EVENT[r.toolkit]} 120 600", answers=600))
     r.settle(0.3)
     r.shot("list-scrolled")
     r.result["wheel_ms"] = r.latency(["wheel 1"], count=15)
@@ -468,7 +472,7 @@ def scenario_text(r):
     r.inj.send("move 640 400")
     time.sleep(0.3)
     r.settle(0.2)
-    r.result["scroll"] = r.frames(lambda: r.inj.send("scrollburst 30 120 360", answers=360))
+    r.result["scroll"] = r.frames(lambda: r.inj.send(f"scrollburst {SCROLL_EVENT[r.toolkit]} 120 360", answers=360))
     r.settle(0.3)
     r.result["wheel_ms"] = r.latency(["wheel 1"], count=10)
 

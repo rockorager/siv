@@ -53,7 +53,10 @@ impl Render for Idle {
     }
 }
 
-// Text field (gpui's examples/input.rs, trimmed) ------------------------------------------
+// Text field ------------------------------------------------------------------------------
+//
+// Adapted from gpui's examples/input.rs (zed, Apache-2.0), trimmed to a caret
+// without selection.
 
 struct TextField {
     focus: FocusHandle,
