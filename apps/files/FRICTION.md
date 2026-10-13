@@ -26,22 +26,22 @@ Measurements are in [Numbers](#numbers) at the end.
 
 2. **A list in a split pane could not fill the pane.** Split panes are
    boxes; a box offered its children no height, so `height = fraction 1`
-   resolved to auto and the file view shrank to its header (the sidebar
-   to 12 px). Nothing in the public API could make it fill: the pane's
-   height is unknown to the application. *Fixed:* fraction heights
-   resolve against a box's height when it is definite (commit "ui:
-   resolve fraction heights against a box's definite height", D26).
+   resolved to auto and the file view shrank to its header (the sidebar to
+   12 px). Nothing in the public API could make it fill: the pane's height
+   is unknown to the application. *Fixed:* fraction heights resolve
+   against a box's height when it is definite (commit "ui: resolve
+   fraction heights against a box's definite height", D26).
 
 3. **An editor inside a list row lost its keys to the row.** Renaming in
    place puts a text field in the item's row. Keys bubble from the focused
    node to the root *before* the editor's own handling, and the row's key
    handler took Space, arrows, Home, End, and Ctrl+A, so typing "my list"
    gave "my" and moved the selection. A handler cannot help: returning
-   true both stops bubbling and cancels the editor's default handling,
-   and a handler could not tell which node the key was aimed at. Releasing
-   a press in the editor also activated the row (selecting it and
-   stealing focus). *Fixed:* `siv_event.target` names the node an event
-   was delivered to first; rows handle only keys aimed at themselves and
+   true both stops bubbling and cancels the editor's default handling, and
+   a handler could not tell which node the key was aimed at. Releasing a
+   press in the editor also activated the row (selecting it and stealing
+   focus). *Fixed:* `siv_event.target` names the node an event was
+   delivered to first; rows handle only keys aimed at themselves and
    ignore presses in an editor; a press in an editor activates no ancestor
    (commit "abi, widgets: leave keys and presses in a row's editor to the
    editor", D16, D22).
@@ -74,14 +74,14 @@ Measurements are in [Numbers](#numbers) at the end.
    setting one item restyles only its row (commit "widgets: read and
    replace a view's selection as a bitset", D22). Now 1.8 ms and 60 ms.
 
-7. **Context menus could open only below a node.** A context menu
-   belongs at the click, but `siv_menu_open` and popups anchored to a
-   node's whole box. The app kept a 1×1 anchor node in a stack, moved it
-   to the pointer with insets, and opened the menu from a zero-delay
-   timer after the next layout, since a popup takes its anchor's place
-   from the last layout. *Fixed:* `siv_popup_desc.anchor_rect` with
-   `SIV_POPUP_AT_RECT`, and `siv_menu_open_at(menu, node, x, y)` (commit
-   "abi, widgets: open popups and menus at a point of a node", D17).
+7. **Context menus could open only below a node.** A context menu belongs
+   at the click, but `siv_menu_open` and popups anchored to a node's whole
+   box. The app kept a 1×1 anchor node in a stack, moved it to the pointer
+   with insets, and opened the menu from a zero-delay timer after the next
+   layout, since a popup takes its anchor's place from the last layout.
+   *Fixed:* `siv_popup_desc.anchor_rect` with `SIV_POPUP_AT_RECT`, and
+   `siv_menu_open_at(menu, node, x, y)` (commit "abi, widgets: open popups
+   and menus at a point of a node", D17).
 
 8. **Every thread of the host process carried 256 KiB of libsiv's
    thread-local storage.** The file manager's inotify thread, started with
@@ -92,8 +92,8 @@ Measurements are in [Numbers](#numbers) at the end.
    every thread of the process, including the host's. *Fixed:* libsiv sets
    `std_options.signal_stack_size = null`, and the export check fails the
    build above 4 KiB of TLS (commit "abi: keep libsiv's thread-local
-   storage small", D2). Programs built with Zig still carry Zig's own
-   256 KiB unless they do the same (the app does not need to).
+   storage small", D2). Programs built with Zig still carry Zig's own 256
+   KiB unless they do the same (the app does not need to).
 
 9. **One return value means both "stop bubbling" and "skip the default
    action".** The DOM separates `stopPropagation` from `preventDefault`;
@@ -114,42 +114,17 @@ Measurements are in [Numbers](#numbers) at the end.
    shortcuts see them while the editor still types them.
 
 10. **A press on a selected item collapses a multiple selection at once.**
-   File managers keep the selection on press so that a drag carries all
-   of it, and collapse it on release without a drag. The stock view
-   selects on press; the app intercepts presses on already selected items
-   (returning true, which also skips focusing) and selects on release
-   itself. Should views defer the collapse to the release when the item
-   is selected?
-   *Fixed:* views keep the selection on such a press and collapse it on
-   release unless a drag started (commit "widgets: keep a selection on
-   press, say what changed, expose the cursor", D22). The app's
-   interception is gone; a test drags two selected files out and gets both
-   URIs.
-
-17. **Selection changes do not say what changed.** `select` reports the
-    cursor and the count; the status line needs the selected items' total
-    size, so the app reads the whole bitset on every change (cheap now,
-    item 6).
-   *Fixed:* `select` names a range of rows that holds every changed item
-   (`changed_index`, `changed_count`; same commit). The app keeps a copy
-   of the bitset with the count and total size, and on each event reads
-   the bitset only up to the range's end and adjusts the totals for the
-   bits that differ.
-
-18. **Views expose neither their rows nor a way to focus the cursor.**
-    Opening the context menu with the keyboard (Menu, Shift+F10) at the
-    cursor's row means walking the view's subtree for the row whose node
-    data the app set; focusing the view means a depth-first search for its
-    one focusable row, since `siv_node_focus` on the view itself fails.
-   *Fixed:* `siv_view_get_cursor`, `siv_view_set_cursor`,
-   `siv_view_focus`, and `siv_view_get_row` (same commit). The subtree
-   walk and the depth-first focus search are gone.
-
-19. **Keysyms are not in siv.h.** Every program writes out XKB keysym
-    numbers (`apps/files/src/keys.zig`; src/widgets has its own table).
-   *Fixed:* `siv_key` names them in the schema: `SIV_KEY_ESCAPE` in C,
-   `.escape` in Zig, `"escape"` in Lua (commit "abi: name keysyms in the
-   schema as siv_key", D16). `src/keys.zig` is gone.
+    File managers keep the selection on press so that a drag carries all
+    of it, and collapse it on release without a drag. The stock view
+    selects on press; the app intercepts presses on already selected items
+    (returning true, which also skips focusing) and selects on release
+    itself. Should views defer the collapse to the release when the item
+    is selected?
+    *Fixed:* views keep the selection on such a press and collapse it on
+    release unless a drag started (commit "widgets: keep a selection on
+    press, say what changed, expose the cursor", D22). The app's
+    interception is gone; a test drags two selected files out and gets
+    both URIs.
 
 11. **No way to watch a file descriptor.** inotify for the shown folder
     needs a descriptor in the event loop, but the public loop takes none:
@@ -160,7 +135,7 @@ Measurements are in [Numbers](#numbers) at the end.
     *Fixed:* `siv_app_watch_fd` watches it in siv's loop and calls back at
     a safe point; `siv_watch_destroy` stops (commit "abi: watch
     application file descriptors in the loop", D6). `src/Watcher.zig` lost
-    its thread, eventfd, atomics, and post lifetime handling (119 to 70
+    its thread, eventfd, atomics, and post lifetime handling (119 to 72
     lines). Writing the test for it found a bug of the app's own: re-
     adding the watch after every reload reported IN_IGNORED, which
     reloaded again; it now keeps the watch of an unchanged folder and
@@ -184,8 +159,8 @@ Measurements are in [Numbers](#numbers) at the end.
     first, three in flight, older requests dropped) and reads the
     freedesktop thumbnail cache first (`src/Thumbs.zig`). Each decode
     reads and decodes the whole file at full size before scaling (D19
-    notes JPEG DCT scaling is not done yet), so a 12-megapixel photo
-    costs ~50 MB and tens of ms per thumbnail.
+    notes JPEG DCT scaling is not done yet), so a 12-megapixel photo costs
+    ~50 MB and tens of ms per thumbnail.
     *Fixed:* `siv_image_load` returns a `siv_image_request` and takes a
     priority; `siv_image_request_cancel` and
     `siv_image_request_set_priority` (same commit, D19). `src/Thumbs.zig`
@@ -227,7 +202,54 @@ Measurements are in [Numbers](#numbers) at the end.
     column is left to right of its own; the mark is gone from the text and
     from what AT-SPI reads (the sway test checks row names without it).
 
+17. **Selection changes do not say what changed.** `select` reports the
+    cursor and the count; the status line needs the selected items' total
+    size, so the app reads the whole bitset on every change (cheap now,
+    item 6).
+    *Fixed:* `select` names a range of rows that holds every changed item
+    (`changed_index`, `changed_count`; same commit). The app keeps a copy
+    of the bitset with the count and total size, and on each event reads
+    the bitset only up to the range's end and adjusts the totals for the
+    bits that differ.
+
+18. **Views expose neither their rows nor a way to focus the cursor.**
+    Opening the context menu with the keyboard (Menu, Shift+F10) at the
+    cursor's row means walking the view's subtree for the row whose node
+    data the app set; focusing the view means a depth-first search for its
+    one focusable row, since `siv_node_focus` on the view itself fails.
+    *Fixed:* `siv_view_get_cursor`, `siv_view_set_cursor`,
+    `siv_view_focus`, and `siv_view_get_row` (same commit). The subtree
+    walk and the depth-first focus search are gone.
+
+19. **Keysyms are not in siv.h.** Every program writes out XKB keysym
+    numbers (`apps/files/src/keys.zig`; src/widgets has its own table).
+    *Fixed:* `siv_key` names them in the schema: `SIV_KEY_ESCAPE` in C,
+    `.escape` in Zig, `"escape"` in Lua (commit "abi: name keysyms in the
+    schema as siv_key", D16). `src/keys.zig` is gone.
+
 ## Open API questions
+
+24. **A descriptor cannot end in one 4-byte field.** Descriptors have no
+    padding (D2), so appending a single `uint32_t` or enum to one whose
+    size is a multiple of 8 fails the build ("trailing padding; append a
+    field"). The image load priority became an `int64_t` for that
+    reason; `siv_text_style_desc` took `max_lines` and `direction`
+    together. Should the rule allow trailing padding that must be zero,
+    or should descriptors reserve a field when they end 4 bytes short?
+
+25. **`siv_key` is the first open enum.** D2 says unknown enum values are
+    `SIV_ERROR_UNSUPPORTED`; keysyms are an open set, so `siv_key` names
+    the common keys and every other value passes through (Lua gets a
+    name or a number). Nothing checks keysyms today, but the schema has
+    no way to say an enum is open, and a generator for another language
+    might map it to a closed type. Should the schema mark open enums?
+
+22. **Menu items are reached by walking the menu's children.** Setting a
+    check mark or disabling an item needs its node; the builder returns
+    it, but an application that builds menus from tables keeps an index
+    and walks `siv_node_get_related` to find it again
+    (`menuItem` in `src/Files.zig`). A `siv_menu_get_item(menu, index)`,
+    like `siv_view_get_row`, would do.
 
 ## Noted
 
@@ -236,37 +258,59 @@ Measurements are in [Numbers](#numbers) at the end.
     exists yet: there is no way to load a themed icon by name. The app
     draws its icons on canvases with paths in theme colors
     (`src/icons.zig`), which keeps them sharp and themed but means every
-    application redraws the folder icon.
+    application redraws the folder icon. Another thread owns icon
+    themes, the SVG renderer, and icon buttons.
 
 21. **Push buttons take a label only.** Back, Forward, Up, and the view
     toggle are text buttons; an icon button would need a custom canvas
-    widget with its own focus, press, and activate handling.
-
-22. **Menu items are reached by walking the menu's children.** Setting a
-    check mark or disabling an item needs its node; the builder returns
-    it, but an application that builds menus from tables keeps an index
-    and walks `siv_node_get_related` to find it again.
+    widget with its own focus, press, and activate handling. Left to the
+    icon thread with item 20.
 
 23. **Fields must precede declarations in a Zig struct** (Zig 0.17), so an
     application's state struct cannot keep a field next to the functions
     that use it. Not siv's, but every Zig program meets it.
 
+27. **Changing a callback's return type moves every handler.** Splitting
+    the handler result (item 9) touched about 150 handlers in the stock
+    widgets, the tests, the C examples, and the app. In C it stays a
+    one-line change per handler, and `return true` still means handled,
+    which is why the result is an enum and not two flag bits.
+
+28. **The cut copy of ellipsized text is what AT-SPI measures.** The
+    accessible name and text are whole, but character extents come from
+    the layout on screen, so characters past the ellipsis have none.
+    Screen readers read the name; a magnifier following the caret has no
+    caret in a label. Fine for labels; revisit if editors ever ellipsize.
+
+29. **`siv_view_set_cursor` overlaps the widget value.** A view's value
+    (`siv_widget_set_value`) was already its cursor; the named calls are
+    clearer and also move the Shift anchor, but there are two ways now.
+
+30. **Asynchronous Lua calls with out values.** The Lua mapping rejected
+    asynchronous functions with out parameters; `siv_image_load` now has
+    one (its request). The rule is relaxed: given a callback the call
+    returns its out values, and waiting in a coroutine drops them.
+
 ## Numbers
 
 `zig build bench-files -Doptimize=ReleaseFast` on this orb (x86-64,
-headless backend, CPU renderer), October 2026:
+headless backend, CPU renderer), October 2026. Frame times come from the
+app's `SIV_WINDOW_EVENT_PRESENTED` events (commit time of the first
+presented frame, and of the first presented after the listing arrived);
+the first round read siv's internals and waited for the window to settle.
 
-| What | Result |
-| --- | --- |
-| Startup, 40 entries: first frame | 12 ms |
-| Startup, 40 entries: first frame with the rows | 53 ms (UI thread CPU 5.4 ms) |
-| Resident memory with the window open | 25 MiB |
-| Idle for 2 s | 2 context switches across 7 threads, one of them the bench's own timeout |
-| 100 000 entries: read and sorted on the pool | 205–250 ms |
-| 100 000 entries: rows shown | 223–273 ms |
-| Memory for 100 000 entries listed | +25 MiB |
-| Scrolling 300 wheel steps of 450 px | 0.6 ms UI thread CPU per step on average, 2.7 ms worst (8.3 ms is a 120 Hz frame) |
-| End, then Home | 0.9 ms |
-| Ctrl+A over 100 000 entries | 1.8 ms (was 805 ms) |
-| Sort by size keeping the selection | 60 ms (was 1563 ms) |
-| Search as you type ("file-99") | 9.5 ms |
+| What | Result | First round |
+| --- | --- | --- |
+| Startup, 40 entries: first frame | 12.6 ms | 12 ms |
+| Startup, 40 entries: first frame with the rows | 12.6 ms (the listing beats the first frame; UI thread CPU 3.4 ms) | 53 ms to settled (5.4 ms CPU) |
+| Resident memory with the window open | 25.1 MiB | 25 MiB |
+| Idle for 2 s | 2 context switches across 7 threads, one of them the bench's own timeout | same |
+| 100 000 entries: first frame | 12.8 ms | — |
+| 100 000 entries: read and sorted on the blocking lane | 221 ms | 205–250 ms |
+| 100 000 entries: rows shown | 227 ms | 223–273 ms |
+| Memory for 100 000 entries listed | +23.8 MiB | +25 MiB |
+| Scrolling 300 wheel steps of 450 px | 0.69 ms UI thread CPU per step on average, 3.6 ms worst (8.3 ms is a 120 Hz frame) | 0.6 ms, 2.7 ms worst |
+| End, then Home | 0.21 ms | 0.9 ms |
+| Ctrl+A over 100 000 entries | 1.4 ms | 1.8 ms (805 ms before the bitset calls) |
+| Sort by size keeping the selection | 60 ms | 60 ms |
+| Search as you type ("file-99") | 7.1 ms | 9.5 ms |
