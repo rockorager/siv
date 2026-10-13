@@ -323,16 +323,16 @@ test "the test API: scrolling, typing, queries, captures" {
         \\assert(app:test_settle(5000))
         \\assert(editor:get_text() == "aé€", editor:get_text())
         \\assert(win:test_get_name{ flags = "focused" } == "Field")
-        \\-- The wheel over the scroll area moves its rows up.
+        \\-- The wheel over the scroll area moves its rows up, queued with
+        \\-- the motion there: the frame the motion's hover change presents
+        \\-- puts the compositor's scroll frame a refresh later, which
+        \\-- settling waits for.
         \\local _, row = win:test_find{ name = "Row 1" }
-        \\win:test_pointer_move(row.bounds.x + 2, row.bounds.y + 2)
-        \\-- Scrolling queued with the motion is lost (see siv_test_scroll).
-        \\assert(app:test_settle(5000))
         \\local before = win:test_capture()
+        \\win:test_pointer_move(row.bounds.x + 2, row.bounds.y + 2)
         \\win:test_scroll(0, 30)
         \\assert(app:test_settle(5000))
         \\assert(before ~= win:test_capture(), "the capture did not change")
-        \\assert(app:test_settle(5000))
         \\local _, moved = win:test_find{ name = "Row 1" }
         \\assert(moved.bounds.y < row.bounds.y, moved.bounds.y .. " " .. row.bounds.y)
         \\-- Captures, at the window's size.
