@@ -618,7 +618,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     the pointer; if none takes it, and no ctrl, alt, or super is held, it
     goes on to the nearest scroll node with room as `scroll_by`. Keyboard
     scrolling (arrows, page keys) is `scroll_by` too. Only offsets the
-    application sets in a transaction are `scroll_to`.
+    application sets in a transaction are `scroll_to`. Corrections that
+    keep a long text in place while its metrics change (D13) and the
+    scrolls that show an editor's caret (D15) are `scroll_by` as well,
+    in the commit with the content they answer: one that scrolls up goes
+    before the commit's other ops, so that the container's new, smaller
+    extent does not clamp the offset first, and one that scrolls down
+    after them, once the extent has room (`paint.ScrollBy.early`).
   - A frame composes the window's tree into one display list: each layer
     is a scene layer with its own id, so `scene.damage.Tracker` diffs
     frames (D9); ids inside content are cleared, and content damage comes
@@ -1222,40 +1228,108 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     editor (bench/gpui-compare, RADV): key to photon 299 ms with whole
     reshaping, 22 ms with paragraph reuse over flat arrays, 3.1 ms in
     blocks (gpui 3.6 ms); resident memory 284 MiB to 160 MiB.
-  - A text of 64 KB or more shapes only its first blocks (32 KB, more
-    than a screen) before its first frame, and the rest on the worker
-    pool: low-priority jobs of 48 whole blocks (four for 1.4 MB), the blocks
-    `ShapedText.init` would make, each joining the text when it and those
-    before it are done (`ShapedText.extend`), so the finished text is
-    the one shaping it whole gives. Until then layout gives the unshaped
-    bytes the height per byte of the shaped ones, and the last shaped
-    block gets no final line. Editing (`editor.fresh`), painting past
-    the shaped part, or new text shapes the rest at once on the UI
-    thread (new text then reshapes only the blocks it changed). Workers
-    shape under the font cache's lock, shared; the functions that change
-    the cache, all on the UI thread, take it exclusively, and the UI
-    thread reads without it. A node that reshapes or goes away orphans
-    the jobs: queued ones are cancelled, running ones check the flag
-    under the lock and drop their blocks, and the last reference frees
-    the copies of the text and styles they shaped from. When the last
-    chunk joins, the heap is trimmed after the next layout (glibc's
-    `malloc_trim`, looked up weakly): each worker's heap otherwise keeps
-    the freed intermediates of the blocks it shaped, 15 MiB for the
-    1.4 MB editor. More, smaller jobs finish sooner but touch more
-    per-thread heaps (eleven jobs left 10 MiB more resident than four).
+  - Memory is bounded (October 2026). Every block keeps its bytes, its
+    styles, its paragraph count, and, once laid out, its exact metrics
+    (`blocks.Metrics`: height, line count, widest line, and its first
+    paragraph's space before and last's space after), a few dozen bytes;
+    the heavy part, its `ShapedParagraph` and `Layout` (shaped runs,
+    break opportunities, lines, caret stops, positioned glyphs), stays
+    only while a `blocks.Residency` keeps it. That was 65 times the
+    block's bytes for the 1.4 MB editor (330 KB of shaping and 210 KB of
+    lines per 8 KB block, two thirds of them glyphs and caret stops), so
+    keeping every block cost 91 MiB where gpui keeps 6. The application
+    has one residency for all its windows (`ui.Fonts.residency`), with a
+    budget of 16 MiB (`residency_budget`: about 30 such blocks, several
+    screens beyond those shown), its blocks in order of use; `trim`
+    evicts the least recently used beyond the budget after every frame
+    and after each background job, sparing the blocks used since the
+    last trim (what a frame or an operation is using, however large)
+    and blocks shaped while a font they wanted was loading (shaping
+    them again once it loads would differ; their text reshapes then
+    anyway). Only long texts (64 KB or more) use it; shorter ones keep
+    everything, as before. Whatever needs an evicted block builds it
+    again (`ShapedBlock.ensure`, `LayoutBlock.ensure`), from its own
+    bytes and styles: editing (the edited block reshapes as before,
+    reusing the old block's paragraphs when they are in memory), caret
+    movement, selection, hit testing, painting, and AT-SPI's text
+    extents and character queries. A block built again is the block it
+    was (shaping and layout are deterministic over the same fonts, and a
+    debug assertion compares its metrics with the kept ones); randomized
+    tests compare a bounded text with a kept one block by block (lines,
+    caret stops, glyphs, metrics, and tops) and query by query, with
+    evictions between queries, across chains of edits. The text
+    queries now return `OutOfMemory`, since they may lay out: the editor
+    ignores a key it cannot lay out for, and AT-SPI answers nothing.
+    PDF output needs nothing of this: pages are canvases (D19), whose
+    text is shaped and laid out whole for the page. Alternatives: no
+    budget, laying out only the blocks shown each frame, as gpui does
+    (the editor's queries then cost a layout every time, and the
+    scrollbar is an estimate for good); a budget per text (an
+    application with several long texts would multiply it).
+  - A long text shapes only its first blocks (32 KB, more than a
+    screen) before its first frame; the rest is split into blocks at
+    once (a block's end is searched from `block_bytes` past its start,
+    less the three bytes a separator may take, and separators are found
+    16 bytes at a time, so 100 MB splits in milliseconds), and laid out
+    with estimated metrics: the height per byte and line height of the
+    blocks measured. The worker pool shapes the estimated blocks in jobs
+    of eight (`text_node.Shaping`), low priority, under the font cache's
+    shared lock; each job's blocks are installed on the UI thread
+    (`ShapedBlock.install`), measured (`TextLayout.measureShaped`), and
+    trimmed at once, so a job's blocks are the most a delivery adds to
+    the budget (48 blocks a job held a whole budget's worth each). A job
+    holds references to its blocks, which do not change while other
+    blocks are edited: editing no longer shapes the rest first, and a
+    text whose fonts change, or a node that goes away, orphans its
+    jobs. When the last job is done, the heap is trimmed (glibc's
+    `malloc_trim`, looked up weakly): evicted blocks and each worker's
+    intermediates leave free pages behind. Metrics are exact once known:
+    a block is measured when its estimate is replaced, for good, and a
+    query that reaches an estimated block (a caret, a hit test, a line
+    by index, painting) measures it first, which moves only the blocks
+    after it (`TextLayout.generation` counts such changes). The line
+    count, height, and tops are exact once every block before them is
+    measured. A width change lays out the blocks in memory and
+    estimates the others, which the pool shapes again, instead of
+    reshaping every evicted block on the UI thread. The size threshold
+    for estimating is the long-text one (64 KB): a jump to the end of
+    the 1.4 MB editor measures the blocks it shows rather than shaping
+    the 1.4 MB first (about 100 ms, the old behavior); tens of megabytes
+    was the other candidate. Tops are doubles: summed in floats, the
+    heights of a 100 MB text lose whole pixels.
   - Positioned glyphs, which only painting reads, are kept by a text of
     more than four blocks only for the blocks it paints: others are laid
     out without them (`Options.glyphs`; lines, runs, and carets are the
     same) and laid out again with them when painted
     (`TextLayout.withGlyphs`), and painting drops them from blocks
     outside what it painted. A block reshaped from one that had glyphs
-    keeps them, so typing does not lay out twice. Carets stay, since
-    the editor's queries cannot fail. Measured on the 1.4 MB editor:
-    startup to first frame 99 ms to 35 ms (gpui 87 ms); resident memory
-    at the end of the scenario 163 MiB to 150 MiB, 30 MiB of glyphs
-    less and some of the pool's heaps more (gpui 82 MiB, which shapes
-    lines lazily and stores no per-glyph layout); key to photon
+    keeps them, so typing does not lay out twice. Measured on the 1.4 MB
+    editor: startup to first frame 99 ms to 35 ms (gpui 87 ms); resident
+    memory at the end of the scenario 163 MiB to 150 MiB, 30 MiB of
+    glyphs less and some of the pool's heaps more (gpui 82 MiB, which
+    shapes lines lazily and stores no per-glyph layout); key to photon
     unchanged (3.4 ms).
+  - A long text in a scroll container stays where it is shown while
+    metrics elsewhere change: estimates replaced by measurements, blocks
+    laid out for another width, edits in other blocks (`text_node.settle`,
+    after layout). The scroll position the text keeps is an anchor
+    (`text_node.Anchor`): the block at the top of what is shown, compared
+    by address, and the distance from the start of its line there (by
+    byte, so a new width finds the line again; through
+    `ShapedParagraph.Reuse` when an edit reshaped the block). After each
+    layout the anchor's new position, less its old, is the correction,
+    sent as a relative `scroll_by` in the same commit as the content it
+    corrects for (D8), so no frame shows the content moved and scrolling
+    the compositor does meanwhile is kept. Then the blocks within a
+    viewport of what is shown are measured (painting draws them), and
+    the anchor is corrected again until none is estimated; layout runs
+    again in the same frame when heights changed. The compositor's
+    `scrolled` reports move the anchor. A text above the viewport moves
+    what follows it by its change of height, through the same anchor.
+    Far down a long text, floats are coarser than pixels (2 px apart past
+    16.7 M), so painting places a band's lines in a layer at the band's
+    first block's top, relative to it in doubles, and lines keep their
+    spacing; only the band as a whole may be a pixel off.
   - Unsafe-to-break line edges are reshaped inline.
   - Hyphenation from Liang patterns (each pattern file's licence checked);
     an optional Knuth–Plass breaker for document views.
@@ -1524,6 +1598,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     by words, Home and End to the line's edges in reading order, Up and
     Down keep a preferred x. A single-line editor scrolls its text to
     keep the caret in view and drops line breaks from typed text.
+  - An editor in a scroll container scrolls it to show its caret after
+    the caret moves by keys, typing, an input method, AT-SPI, undo, or
+    the application's `siv_set_selection` (`Window.reveal`, handled after
+    layout by `text_node.settle`), by the least distance that shows the
+    caret's line. Pointer presses and drags, which put the caret where
+    they point, and select-all do not scroll. Before, Ctrl+End left a
+    multiline editor's caret out of view, and an application could not
+    show a search result at all; found when benchmarking jumps in long
+    documents (D13). Alternative: a public call to scroll an offset into
+    view (an application would still need to call it after every
+    keyboard move).
   - User edits commit through their own transaction and then send the
     editor a `change` event. User input is never lost: input that arrives
     while the application holds a transaction open, and input queued
@@ -2135,7 +2220,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     applies); and replace, select, copy or cut, and paste-at for editors.
     The edits take the user's path, so they are undo steps with change
     events, and they queue behind an open application transaction like
-    input (D15). Masked editors have neither. Copies carry the serial of
+    input (D15). Masked editors have neither. In a long text, extents
+    and character queries lay out the block they reach if it was evicted
+    or estimated (D13), and answer nothing if that fails for memory. Copies carry the serial of
     the window's last input, which a compositor may refuse when the
     window has had none. Text attributes (GetAttributes,
     GetAttributeRun) report the style run at an offset with GTK's names

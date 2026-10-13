@@ -358,6 +358,11 @@ pub const ShapedParagraph = struct {
         return self;
     }
 
+    /// Bytes it holds: its arena and its glyphs.
+    pub fn bytes(self: *const ShapedParagraph) usize {
+        return self.arena.queryCapacity() + self.glyphs.len * @sizeOf(Glyph);
+    }
+
     pub fn deinit(self: *ShapedParagraph) void {
         self.arena.child_allocator.free(self.glyphs);
         self.arena.deinit();

@@ -633,6 +633,9 @@ pub const Txn = struct {
         e.caret = c;
         e.anchor = a;
         e.affinity = affinity;
+        // Its scroll container shows the caret (D15); pointer presses
+        // take this back, being where they point already.
+        t.win.reveal = id;
         t.win.markPaint(id);
         t.win.dirty.semantics = true;
     }

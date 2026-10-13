@@ -823,7 +823,7 @@ fn textSize(win: *Window, id: NodeId, inner: Constraints) Error!Size {
     const width: ?f32 = if (wrap and std.math.isFinite(inner.max_w)) inner.max_w else null;
     const fit: ?f32 = if (std.math.isFinite(inner.max_w)) inner.max_w else null;
     const l = try text_node.layoutIn(win, id, width, fit) orelse return .{ .w = inner.min_w, .h = inner.min_h };
-    return .{ .w = if (inner.tightW()) inner.max_w else inner.clampW(l.width), .h = inner.clampH(l.height) };
+    return .{ .w = if (inner.tightW()) inner.max_w else inner.clampW(l.width()), .h = inner.clampH(l.height()) };
 }
 
 /// An external's intrinsic size, if it has one.

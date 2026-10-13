@@ -91,8 +91,8 @@ const Geometry = struct {
         return offset - g.preedit_len;
     }
 
-    fn shift(g: Geometry, line: u32) f32 {
-        return text_node.lineShift(g.win, g.id, g.layout.line(line), g.content_width);
+    fn shift(g: Geometry, line: u32) error{OutOfMemory}!f32 {
+        return text_node.lineShift(g.win, g.id, try g.layout.line(line), g.content_width);
     }
 };
 
@@ -102,21 +102,26 @@ const Geometry = struct {
 pub fn characterRect(win: *const Window, id: NodeId, offset: u32) ?Rect {
     const g = Geometry.of(win, id) orelse return null;
     if (offset > g.len) return null;
+    // Without memory to lay out the block holding it, there is no answer.
+    return characterRectIn(g, offset) catch null;
+}
+
+fn characterRectIn(g: Geometry, offset: u32) error{OutOfMemory}!Rect {
     const l = g.layout;
     const at = g.shown(offset);
-    const lead = l.caret(.{ .offset = at, .affinity = .downstream });
+    const lead = try l.caret(.{ .offset = at, .affinity = .downstream });
     var x0 = lead.x;
     var x1 = lead.x;
     if (offset < g.len) {
         // The character runs from its leading edge to the caret after it
         // on the same line, whichever way the run goes.
-        const trail = l.caret(.{ .offset = l.nextGrapheme(at), .affinity = .upstream });
+        const trail = try l.caret(.{ .offset = try l.nextGrapheme(at), .affinity = .upstream });
         if (trail.line == lead.line) {
             x0 = @min(lead.x, trail.x);
             x1 = @max(lead.x, trail.x);
         }
     }
-    const dx = g.origin.x + g.shift(lead.line);
+    const dx = g.origin.x + try g.shift(lead.line);
     return .{ .x0 = dx + x0, .y0 = g.origin.y + lead.top, .x1 = dx + x1, .y1 = g.origin.y + lead.top + lead.height };
 }
 
@@ -167,8 +172,8 @@ pub fn offsetAt(win: *const Window, id: NodeId, p: Point) ?u32 {
     const g = Geometry.of(win, id) orelse return null;
     const l = g.layout;
     const y = p.y - g.origin.y;
-    const line = l.lineAt(y);
-    const pos = l.hitTest(p.x - g.origin.x - g.shift(line), y);
+    const line = l.lineAt(y) catch return null;
+    const pos = l.hitTest(p.x - g.origin.x - (g.shift(line) catch return null), y) catch return null;
     return g.fromShown(pos.offset);
 }
 
@@ -178,7 +183,8 @@ pub fn offsetAt(win: *const Window, id: NodeId, p: Point) ?u32 {
 pub fn lineRange(win: *const Window, id: NodeId, offset: u32) ?[2]u32 {
     const g = Geometry.of(win, id) orelse return null;
     if (offset > g.len) return null;
-    const line = g.layout.line(g.layout.caret(.{ .offset = g.shown(offset), .affinity = .downstream }).line);
+    const caret = g.layout.caret(.{ .offset = g.shown(offset), .affinity = .downstream }) catch return null;
+    const line = g.layout.line(caret.line) catch return null;
     return .{ g.fromShown(line.start), @min(g.fromShown(line.end), g.len) };
 }
 

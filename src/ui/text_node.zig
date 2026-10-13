@@ -9,9 +9,13 @@
 //! "…" appended, shaped and laid out like the original, the boundary found
 //! by bisection. Its content, and so its accessible name, stays whole.
 //!
-//! A long text first shapes the blocks that cover its start and shapes the
-//! rest on the worker pool (`Pending`), adding it as it arrives; editing
-//! it, or showing what is not shaped yet, shapes the rest at once (D13).
+//! A long text keeps the shaping and lines of only the blocks it used
+//! recently, within the application's `Residency` budget, and their exact
+//! metrics for good (D13). It first shapes the blocks that cover its start
+//! and lays out the rest with estimated metrics; the worker pool shapes
+//! them (`Shaping`) and each is measured as it arrives. `settle`, after
+//! each layout, measures the blocks a scroll container shows and keeps
+//! what it shows in place while metrics above it change.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -25,11 +29,14 @@ const NodeId = node_mod.NodeId;
 const Pool = @import("loop").Pool;
 const ShapedBlock = text.blocks.ShapedBlock;
 
-/// Texts at least this long shape their first `prefix_bytes` (to a block
-/// end) at once and the rest on the pool, `chunk_blocks` blocks per job.
-const background_bytes = 64 << 10;
+/// Texts at least this long are long texts: they keep blocks in the
+/// residency's budget, shape their first `prefix_bytes` (to a block end)
+/// at once, and estimate the rest until the pool has shaped it,
+/// `chunk_blocks` blocks per job.
+pub const background_bytes = 64 << 10;
 const prefix_bytes = 32 << 10;
-const chunk_blocks = 48;
+const chunk_blocks = 8;
+const inflight_jobs = 4;
 
 pub const Cache = struct {
     paragraph: ?text.ShapedText = null,
@@ -52,20 +59,22 @@ pub const Cache = struct {
     cut: ?struct { paragraph: text.ShapedText, layout: text.TextLayout } = null,
     cut_fit: ?f32 = null,
     shows_cut: bool = false,
-    /// The rest of the text, while the pool shapes it.
-    pending: ?*Pending = null,
-    /// Shape the rest at the next layout: it is wanted on screen.
-    want_all: bool = false,
-    /// The pool finished shaping the text: trim the heap after the next
-    /// layout.
-    trim: bool = false,
+    /// Jobs shaping estimated blocks on the pool.
+    shaping: std.ArrayList(*Shaping) = .empty,
+    /// Blocks shaped after the text wanted fonts that were loading.
+    late_wanted: bool = false,
+    /// Where the text's scroll container shows it (`settle`).
+    anchor: ?Anchor = null,
 
     pub fn destroy(c: *Cache, gpa: std.mem.Allocator) void {
-        c.dropPending();
         if (c.layout) |*l| l.deinit();
-        if (c.paragraph) |*p| p.deinit();
-        c.dropCut();
         c.dropPrevious();
+        if (c.paragraph) |*p| p.deinit();
+        // After the text's references are gone, so that the blocks only
+        // jobs hold leave the residency (`Shaping.orphan`).
+        c.dropShaping(gpa);
+        c.shaping.deinit(gpa);
+        c.dropCut();
         c.dropPlaceholder();
         c.run_styles.deinit(gpa);
         gpa.destroy(c);
@@ -87,37 +96,15 @@ pub const Cache = struct {
     /// The paragraph wanted fonts and some font finished loading since.
     pub fn waiting(c: *const Cache, fonts: *const Fonts) bool {
         const p = c.paragraph orelse return false;
-        return p.wanted.len != 0 and c.serial != fonts.serial;
+        return (p.wanted.len != 0 or c.late_wanted) and c.serial != fonts.serial;
     }
 
-    /// Stops shaping the rest: queued jobs are cancelled, and running
-    /// ones throw their blocks away.
-    fn dropPending(c: *Cache) void {
-        const p = c.pending orelse return;
-        c.pending = null;
-        c.want_all = false;
-        p.orphaned.store(true, .seq_cst);
-        for (p.chunks[p.next..]) |*ch| if (!ch.delivered and p.pool.cancel(&ch.job)) {
-            ch.delivered = true;
-            p.unref();
-        };
-        p.unref();
-    }
-
-    /// Puts a paragraph extended from the current one in its place; the
-    /// next layout keeps the lines of the blocks they share.
-    fn adopt(c: *Cache, win: *Window, id: NodeId, p: text.ShapedText, mark: bool) void {
-        c.dropCut();
-        if (c.layout != null) {
-            c.dropPrevious();
-            c.previous = c.layout;
-            c.layout = null;
-        }
-        c.paragraph.?.deinit();
-        c.paragraph = p;
-        if (!mark) return;
-        win.markLayout(id);
-        win.requestFrame();
+    /// Stops shaping on the pool: queued jobs are cancelled, and running
+    /// ones throw their work away.
+    fn dropShaping(c: *Cache, gpa: std.mem.Allocator) void {
+        for (c.shaping.items) |sh| sh.orphan();
+        c.shaping.clearRetainingCapacity();
+        _ = gpa;
     }
 
     fn dropPrevious(c: *Cache) void {
@@ -155,12 +142,6 @@ fn shape(win: *Window, id: NodeId) error{OutOfMemory}!*Cache {
     const c = try cache(win, id);
     const s = win.state(id);
     const fonts = win.fonts;
-    // A text changed while the pool shapes it is finished first, so that
-    // the change reshapes only its blocks; with other fonts it is
-    // reshaped whole anyway.
-    if (c.pending != null) {
-        if (s.needs_shape and c.serial != fonts.serial) c.dropPending() else if (s.needs_shape or c.want_all) try finishNow(win, id, c, false);
-    }
     if (!s.needs_shape and c.paragraph != null) return c;
     const d = win.node(id).textData();
     const n = win.node(id);
@@ -176,30 +157,20 @@ fn shape(win: *Window, id: NodeId) error{OutOfMemory}!*Cache {
         }
     }
     try c.run_styles.ensureTotalCapacity(win.gpa, 2 * list.len + 1);
-    // An edit keeps the paragraphs it did not touch, unless fonts changed.
-    const old: ?*const text.ShapedText = if (c.paragraph != null and c.serial == fonts.serial and c.paragraph.?.pending == 0) &c.paragraph.? else null;
+    // An edit keeps the blocks it did not touch, unless fonts changed.
+    // Blocks still shaping on the pool stay theirs (`Shaping`).
+    const old: ?*const text.ShapedText = if (c.paragraph != null and c.serial == fonts.serial) &c.paragraph.? else null;
     const runs = try styleRuns(win, id, content, list, &c.run_styles);
-    var pending: ?*Pending = null;
-    var p = blk: {
-        if (old == null and content.len >= background_bytes) if (fonts.pool) |pool| {
-            // The first blocks `ShapedText.init` would make.
-            var prefix_end: usize = 0;
-            while (prefix_end < prefix_bytes) prefix_end = text.blocks.blockEnd(content, prefix_end, content.len, .{});
-            if (prefix_end < content.len) {
-                var head = try shapeRuns(win, content, runs, null, prefix_end);
-                pending = Pending.start(win, id, pool, content, runs, prefix_end) catch null;
-                if (pending != null) break :blk head;
-                head.deinit();
-            }
-        };
-        break :blk try shapeRuns(win, content, runs, old, null);
-    };
+    var p = try shapeRuns(win, content, runs, old, blockOptions(win, content.len));
     errdefer p.deinit();
     c.dropCut();
     // The last layout built, kept until the next takes its lines.
     if (old == null) {
+        c.dropShaping(win.gpa);
         c.dropPrevious();
         c.dropLayout();
+        c.anchor = null;
+        c.late_wanted = false;
     } else if (c.layout != null) {
         c.dropPrevious();
         c.previous = c.layout;
@@ -208,8 +179,6 @@ fn shape(win: *Window, id: NodeId) error{OutOfMemory}!*Cache {
     if (c.paragraph) |*o| o.deinit();
     c.dropPlaceholder();
     c.paragraph = p;
-    c.pending = pending;
-    c.want_all = false;
     c.serial = fonts.serial;
     s.needs_shape = false;
     win.stats.shapes += 1;
@@ -217,11 +186,24 @@ fn shape(win: *Window, id: NodeId) error{OutOfMemory}!*Cache {
     return c;
 }
 
+/// How a text of `len` bytes is split: a long text keeps its blocks in
+/// the residency's budget and, with a pool to shape the rest, shapes only
+/// its first blocks now.
+fn blockOptions(win: *Window, len: usize) text.blocks.Options {
+    if (len < background_bytes) return .{};
+    return .{ .eager_bytes = if (win.fonts.pool != null) prefix_bytes else null, .residency = &win.fonts.residency };
+}
+
+/// Whether the node's text is a long text.
+fn isLong(c: *const Cache) bool {
+    return c.paragraph.?.options.residency != null;
+}
+
 /// Shapes `content` in the node's style with `list`'s spans over it, one
 /// style per run of equal span style; `run_styles` gets each run's span
 /// style.
 fn shapeString(win: *Window, id: NodeId, content: []const u8, list: []const node_mod.Span, run_styles: ?*std.ArrayList(node_mod.SpanStyle), old: ?*const text.ShapedText) error{OutOfMemory}!text.ShapedText {
-    return shapeRuns(win, content, try styleRuns(win, id, content, list, run_styles), old, null);
+    return shapeRuns(win, content, try styleRuns(win, id, content, list, run_styles), old, .{});
 }
 
 const Runs = struct { styles: []const text.StyleRun, direction: text.bidi.BaseDirection };
@@ -258,16 +240,10 @@ fn styleRuns(win: *Window, id: NodeId, content: []const u8, list: []const node_m
     return .{ .styles = runs.items, .direction = direction };
 }
 
-/// Shapes `content` with `runs`, reusing `old`'s blocks, or only up to
-/// `prefix_end` (a block end).
-fn shapeRuns(win: *Window, content: []const u8, runs: Runs, old: ?*const text.ShapedText, prefix_end: ?usize) error{OutOfMemory}!text.ShapedText {
+/// Shapes `content` with `runs`, reusing `old`'s blocks.
+fn shapeRuns(win: *Window, content: []const u8, runs: Runs, old: ?*const text.ShapedText, options: text.blocks.Options) error{OutOfMemory}!text.ShapedText {
     const a = win.scratch.allocator();
-    const cache_ = &win.fonts.cache;
-    const result = if (prefix_end) |e|
-        text.ShapedText.initPrefix(win.gpa, a, cache_, content, runs.styles, runs.direction, .{}, e)
-    else
-        text.ShapedText.initReusing(win.gpa, a, cache_, content, runs.styles, runs.direction, .{}, old);
-    return result catch |err| switch (err) {
+    return text.ShapedText.initReusing(win.gpa, a, &win.fonts.cache, content, runs.styles, runs.direction, options, old) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         // Validated when the text was set; chains may be empty, since
         // the font cache has a last resort (D13).
@@ -275,13 +251,13 @@ fn shapeRuns(win: *Window, content: []const u8, runs: Runs, old: ?*const text.Sh
     };
 }
 
-/// The rest of a long text after the blocks shaped at once, shaped on
-/// the pool in chunks of whole blocks (the blocks `ShapedText.init` would
-/// make, so the result is the same). Each chunk's blocks join the text
-/// when it and those before it are done. Shared by the node and each
-/// chunk until its completion: a node that goes away, or reshapes, marks
-/// it orphaned and the jobs still running throw their work away.
-const Pending = struct {
+/// Estimated blocks of a long text, shaped on the pool in jobs of
+/// `chunk_blocks` and measured on the loop thread as each job is done
+/// (D13). Each job holds references to its blocks, which stay what they
+/// are while other blocks of the text are edited, so an edit does not
+/// stop it; a node that reshapes whole or goes away orphans it: queued
+/// jobs are cancelled and running ones throw their work away.
+const Shaping = struct {
     gpa: std.mem.Allocator,
     pool: *Pool,
     cache: *const text.FontCache,
@@ -289,208 +265,179 @@ const Pending = struct {
     id: NodeId,
     refs: u32,
     orphaned: std.atomic.Value(bool) = .init(false),
-    /// Copies of the text from `offset` on, its style runs from there
-    /// (ends relative to `offset`, font chains copied), and all its style
-    /// runs (for `ShapedText.extend`).
-    arena: std.heap.ArenaAllocator,
-    offset: u32,
-    rest: []const u8,
-    rest_styles: []const text.StyleRun,
-    styles: []const text.StyleRun,
-    direction: text.bidi.BaseDirection,
-    chunks: []Chunk,
-    /// The first chunk not in the text yet.
-    next: usize = 0,
+    blocks: []*ShapedBlock,
+    results: []?text.ShapedParagraph,
+    jobs: []Job,
+    submitted: usize = 0,
 
-    const Chunk = struct {
+    const Job = struct {
         job: Pool.Job = .{ .run = run, .done = done, .cancel = cancelled, .priority = -1 },
-        owner: *Pending,
-        /// Whole-text offsets.
-        start: u32,
-        end: u32,
-        blocks: std.ArrayList(*ShapedBlock) = .empty,
-        failed: bool = false,
+        owner: *Shaping,
+        first: usize,
+        end: usize,
         delivered: bool = false,
     };
 
-    fn start(win: *Window, id: NodeId, pool: *Pool, content: []const u8, runs: Runs, offset: usize) error{ OutOfMemory, Submit }!*Pending {
+    /// Shapes `list` (estimated blocks not in memory or queued) on the pool.
+    fn start(win: *Window, id: NodeId, pool: *Pool, list: []const *ShapedBlock) error{ OutOfMemory, Submit }!*Shaping {
         const gpa = win.gpa;
-        const p = try gpa.create(Pending);
-        p.* = .{ .gpa = gpa, .pool = pool, .cache = &win.fonts.cache, .win = win, .id = id, .refs = 1, .arena = .init(gpa), .offset = @intCast(offset), .rest = &.{}, .rest_styles = &.{}, .styles = &.{}, .direction = runs.direction, .chunks = &.{} };
-        errdefer p.unref();
-        const a = p.arena.allocator();
-        p.rest = try a.dupe(u8, content[offset..]);
-        const styles = try a.alloc(text.StyleRun, runs.styles.len);
-        var rest: std.ArrayList(text.StyleRun) = .empty;
-        for (runs.styles, styles) |r, *copy| {
-            copy.* = .{ .end = r.end, .style = .{ .fonts = try a.dupe(text.FontId, r.style.fonts), .size = r.style.size, .language = try a.dupe(u8, r.style.language) } };
-            if (r.end > offset) try rest.append(a, .{ .end = @intCast(r.end - offset), .style = copy.style });
+        const sh = try gpa.create(Shaping);
+        sh.* = .{ .gpa = gpa, .pool = pool, .cache = &win.fonts.cache, .win = win, .id = id, .refs = 1, .blocks = &.{}, .results = &.{}, .jobs = &.{} };
+        errdefer sh.unref();
+        sh.blocks = try gpa.dupe(*ShapedBlock, list);
+        for (sh.blocks) |b| {
+            b.refs += 1;
+            b.queued = true;
         }
-        p.styles = styles;
-        p.rest_styles = rest.items;
-        // Chunks of `chunk_blocks` blocks.
-        var ends: std.ArrayList(u32) = .empty;
-        var at = offset;
-        while (at < content.len) {
-            for (0..chunk_blocks) |_| {
-                if (at >= content.len) break;
-                at = text.blocks.blockEnd(content, at, content.len, .{});
-            }
-            try ends.append(a, @intCast(at));
-        }
-        p.chunks = try a.alloc(Chunk, ends.items.len);
-        var from: u32 = @intCast(offset);
-        for (p.chunks, ends.items) |*ch, end| {
-            ch.* = .{ .owner = p, .start = from, .end = end };
-            from = end;
-        }
-        for (p.chunks, 0..) |*ch, i| {
-            pool.submit(&ch.job) catch {
-                p.orphaned.store(true, .seq_cst);
-                for (p.chunks[0..i]) |*q| if (pool.cancel(&q.job)) p.unref();
-                return error.Submit;
-            };
-            p.refs += 1;
-        }
-        return p;
-    }
-
-    fn unref(p: *Pending) void {
-        p.refs -= 1;
-        if (p.refs != 0) return;
-        for (p.chunks) |*ch| {
-            for (ch.blocks.items) |b| b.release();
-            ch.blocks.deinit(p.gpa);
-        }
-        p.arena.deinit();
-        p.gpa.destroy(p);
-    }
-
-    /// On a worker: shapes the chunk's blocks while the font cache stays
-    /// as it is, unless the node no longer wants them.
-    fn run(job: *Pool.Job) void {
-        const ch: *Chunk = @fieldParentPtr("job", job);
-        const p = ch.owner;
-        var s = ch.start - p.offset;
-        const e = ch.end - p.offset;
-        while (s < e) {
-            if (p.orphaned.load(.seq_cst)) break;
-            const to = text.blocks.blockEnd(p.rest, s, e, .{});
-            p.cache.lockShared();
-            const b = if (p.orphaned.load(.seq_cst)) null else text.blocks.shapeRange(p.gpa, p.cache, p.rest, p.rest_styles, p.direction, s, to) catch null;
-            p.cache.unlockShared();
-            const block = b orelse break;
-            ch.blocks.append(p.gpa, block) catch {
-                block.release();
-                break;
-            };
-            s = @intCast(to);
-        }
-        ch.failed = s < e;
-    }
-
-    /// On the loop thread: adds the chunks done in order to the text.
-    fn done(job: *Pool.Job) void {
-        const ch: *Chunk = @fieldParentPtr("job", job);
-        const p = ch.owner;
-        ch.delivered = true;
-        defer p.unref();
-        if (p.orphaned.load(.seq_cst)) return;
-        const c = p.win.state(p.id).text.?;
-        p.splice(c, true) catch {
-            // Shaped at the next layout instead.
-            c.want_all = true;
-            p.win.markLayout(p.id);
-            p.win.requestFrame();
+        sh.results = try gpa.alloc(?text.ShapedParagraph, list.len);
+        @memset(sh.results, null);
+        sh.jobs = try gpa.alloc(Job, (list.len + chunk_blocks - 1) / chunk_blocks);
+        for (sh.jobs, 0..) |*j, i| j.* = .{ .owner = sh, .first = i * chunk_blocks, .end = @min(list.len, (i + 1) * chunk_blocks) };
+        for (0..@min(sh.jobs.len, inflight_jobs)) |_| sh.submitNext() catch {
+            sh.orphan();
+            return error.Submit;
         };
+        return sh;
+    }
+
+    /// Submits the next job. A few at a time: the shaping a job holds
+    /// waits for the loop thread to measure and trim it, which may be busy.
+    fn submitNext(sh: *Shaping) error{Submit}!void {
+        if (sh.submitted == sh.jobs.len) return;
+        sh.pool.submit(&sh.jobs[sh.submitted].job) catch return error.Submit;
+        sh.submitted += 1;
+        sh.refs += 1;
+    }
+
+    fn orphan(sh: *Shaping) void {
+        sh.orphaned.store(true, .seq_cst);
+        // Blocks no text holds any more may outlive the application's
+        // residency in jobs still running.
+        for (sh.blocks) |b| if (b.refs == 1) b.detach();
+        for (sh.jobs[0..sh.submitted]) |*j| if (!j.delivered and sh.pool.cancel(&j.job)) {
+            j.delivered = true;
+            sh.unref();
+        };
+        sh.submitted = sh.jobs.len;
+        sh.unref();
+    }
+
+    fn unref(sh: *Shaping) void {
+        sh.refs -= 1;
+        if (sh.refs != 0) return;
+        for (sh.results) |*r| if (r.*) |*p| p.deinit();
+        for (sh.blocks) |b| {
+            b.queued = false;
+            b.release();
+        }
+        sh.gpa.free(sh.jobs);
+        sh.gpa.free(sh.results);
+        sh.gpa.free(sh.blocks);
+        sh.gpa.destroy(sh);
+    }
+
+    /// On a worker: shapes the job's blocks while the font cache stays as
+    /// it is, unless the node no longer wants them.
+    fn run(job: *Pool.Job) void {
+        const j: *Job = @fieldParentPtr("job", job);
+        const sh = j.owner;
+        for (j.first..j.end) |i| {
+            if (sh.orphaned.load(.seq_cst)) break;
+            sh.cache.lockShared();
+            defer sh.cache.unlockShared();
+            if (sh.orphaned.load(.seq_cst)) break;
+            sh.results[i] = sh.blocks[i].shapeAlone() catch null;
+        }
+    }
+
+    /// On the loop thread: puts the job's blocks in place and measures
+    /// them in the node's layout.
+    fn done(job: *Pool.Job) void {
+        const j: *Job = @fieldParentPtr("job", job);
+        const sh = j.owner;
+        j.delivered = true;
+        defer sh.unref();
+        if (sh.orphaned.load(.seq_cst)) return;
+        sh.submitNext() catch {
+            // Measured where they are shown, or by the next layout's jobs.
+            for (sh.jobs[sh.submitted..]) |*q| {
+                q.delivered = true;
+                for (sh.blocks[q.first..q.end]) |b| b.queued = false;
+            }
+            sh.submitted = sh.jobs.len;
+        };
+        for (sh.blocks[j.first..j.end], sh.results[j.first..j.end]) |b, *r| {
+            b.queued = false;
+            if (r.*) |p| b.install(p);
+            r.* = null;
+        }
+        const win = sh.win;
+        const c = win.state(sh.id).text.?;
+        if (c.layout) |*l| {
+            const changed = l.measureShaped() catch true;
+            if (changed) {
+                win.markLayout(sh.id);
+                win.markPaint(sh.id);
+                win.requestFrame();
+            }
+        }
+        // Blocks shaped here count as used by no one: back within the
+        // budget before more arrive.
+        win.fonts.residency.trim();
+        noteWanted(win, sh.id);
+        for (sh.jobs) |*q| if (!q.delivered) return;
+        if (std.mem.indexOfScalar(*Shaping, c.shaping.items, sh)) |i| {
+            _ = c.shaping.swapRemove(i);
+            sh.unref();
+        }
+        // The free pages the pool's work left go back at once.
+        if (c.shaping.items.len == 0) trimHeap();
     }
 
     fn cancelled(job: *Pool.Job) void {
-        const ch: *Chunk = @fieldParentPtr("job", job);
-        ch.delivered = true;
-        ch.owner.unref();
-    }
-
-    fn splice(p: *Pending, c: *Cache, mark: bool) error{OutOfMemory}!void {
-        var more: std.ArrayList(*ShapedBlock) = .empty;
-        defer more.deinit(p.gpa);
-        var next = p.next;
-        while (next < p.chunks.len and p.chunks[next].delivered) : (next += 1) {
-            if (p.chunks[next].failed) return error.OutOfMemory;
-            try more.appendSlice(p.gpa, p.chunks[next].blocks.items);
-        }
-        if (next == p.next) return;
-        const extended = c.paragraph.?.extend(p.gpa, p.gpa, more.items, p.styles) catch return error.OutOfMemory;
-        // The blocks' references moved into the text.
-        for (p.chunks[p.next..next]) |*ch| ch.blocks.clearRetainingCapacity();
-        p.next = next;
-        c.adopt(p.win, p.id, extended, mark);
-        if (next == p.chunks.len) {
-            c.dropPending();
-            c.trim = true;
-        }
+        const j: *Job = @fieldParentPtr("job", job);
+        j.delivered = true;
+        j.owner.unref();
     }
 };
 
+/// Blocks shaped after their text was built wanted fonts that are
+/// loading: request them, and reshape the text when they load.
+fn noteWanted(win: *Window, id: NodeId) void {
+    const r = &win.fonts.residency;
+    if (r.wanted.items.len == 0) return;
+    win.fonts.request(r.wanted.items);
+    r.wanted.clearRetainingCapacity();
+    if (win.state(id).text) |c| c.late_wanted = true;
+}
+
 /// Hands the free pages of the C library's heaps back to the system:
 /// shaping on the pool leaves each worker's heap holding the freed
-/// intermediates of the blocks it shaped (a sixth again of a 1.4 MB
-/// text's memory). glibc's malloc_trim, decided at compile time: other
-/// C libraries (musl has none) and builds without libc go without.
+/// intermediates of the blocks it shaped, and evicted blocks leave holes
+/// in the loop thread's. glibc's malloc_trim, decided at compile time:
+/// other C libraries (musl has none) and builds without libc go without.
 fn trimHeap() void {
     if (comptime !(builtin.link_libc and builtin.target.isGnuLibC())) return;
     const malloc_trim = @extern(*const fn (usize) callconv(.c) c_int, .{ .name = "malloc_trim" });
     _ = malloc_trim(0);
 }
 
-/// Shapes what is left of a long text now, on this thread: it is being
-/// edited or shown.
-/// `mark`: the node needs layout again (not when layout shapes it).
-fn finishNow(win: *Window, id: NodeId, c: *Cache, mark: bool) error{OutOfMemory}!void {
-    const p = c.pending.?;
-    // What the pool has finished joins first.
-    p.splice(c, mark) catch {};
-    const q = c.pending orelse return;
-    var more: std.ArrayList(*ShapedBlock) = .empty;
-    defer more.deinit(win.gpa);
-    errdefer for (more.items) |b| b.release();
-    var s: usize = c.paragraph.?.len() - q.offset;
-    while (s < q.rest.len) {
-        const e = text.blocks.blockEnd(q.rest, s, q.rest.len, .{});
-        try more.ensureUnusedCapacity(win.gpa, 1);
-        more.appendAssumeCapacity(text.blocks.shapeRange(win.gpa, q.cache, q.rest, q.rest_styles, q.direction, s, e) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => unreachable,
-        });
-        s = e;
-    }
-    const extended = c.paragraph.?.extend(win.gpa, win.scratch.allocator(), more.items, q.styles) catch |err| switch (err) {
+/// Starts shaping a long text's estimated blocks on the pool, those not
+/// in memory and not shaping already.
+fn shapeEstimated(win: *Window, id: NodeId, c: *Cache, l: *const text.TextLayout) error{OutOfMemory}!void {
+    const pool = win.fonts.pool orelse return;
+    if (!l.estimated()) return;
+    var list: std.ArrayList(*ShapedBlock) = .empty;
+    defer list.deinit(win.gpa);
+    for (l.blocks) |lb| if (!lb.measured and lb.shaped.paragraph == null and !lb.shaped.queued) try list.append(win.gpa, lb.shaped);
+    if (list.items.len == 0) return;
+    try c.shaping.ensureUnusedCapacity(win.gpa, 1);
+    const sh = Shaping.start(win, id, pool, list.items) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => unreachable,
+        // Measured where they are shown instead.
+        error.Submit => return,
     };
-    more.clearRetainingCapacity();
-    c.dropPending();
-    c.adopt(win, id, extended, mark);
-}
-
-/// Shapes the rest of a long text at the next layout if what is shown
-/// goes past its shaped part: `end` is the bottom of what is painted
-/// (null: all of it).
-pub fn cover(win: *Window, id: NodeId, l: *const text.TextLayout, end: ?f32) void {
-    const c = win.state(id).text orelse return;
-    if (c.pending == null or c.want_all) return;
-    const last = l.blocks.len - 1;
-    if (end) |y| if (y <= l.tops[last] + l.blocks[last].layout.height) return;
-    c.want_all = true;
-    win.markLayout(id);
-    win.requestFrame();
-}
-
-/// Shapes the rest of a long text now, for editing.
-pub fn finish(win: *Window, id: NodeId) error{OutOfMemory}!void {
-    const c = win.state(id).text orelse return;
-    if (c.pending == null or win.state(id).needs_shape) return;
-    try finishNow(win, id, c, true);
+    c.shaping.appendAssumeCapacity(sh);
 }
 
 /// An editor's placeholder, laid out on one line, after layout shaped the
@@ -503,7 +450,7 @@ pub fn placeholder(win: *Window, id: NodeId) error{OutOfMemory}!?*const text.Tex
     c.placeholder = .{ .paragraph = try shapeString(win, id, n.data.editor.placeholder, &.{}, null, null), .layout = undefined };
     const ph = &c.placeholder.?;
     if (ph.paragraph.wanted.len != 0) win.fonts.request(ph.paragraph.wanted);
-    ph.layout = text.TextLayout.init(win.gpa, win.scratch.allocator(), &win.fonts.cache, &ph.paragraph, .{ .alignment = .start }, null) catch |err| {
+    ph.layout = text.TextLayout.init(win.gpa, win.scratch.allocator(), &ph.paragraph, .{ .alignment = .start }, null, false) catch |err| {
         ph.paragraph.deinit();
         c.placeholder = null;
         return switch (err) {
@@ -525,9 +472,10 @@ pub fn layoutFor(win: *Window, id: NodeId, width: ?f32) error{OutOfMemory}!?*con
     if (c.layout) |*l| {
         const built: f32 = c.layout_width orelse std.math.inf(f32);
         const want: f32 = width orelse std.math.inf(f32);
-        // Justified and total-fit lines depend on the exact width.
-        const exact = n.textData().props.exactWidth(n.textData().paragraphs);
-        if (if (exact) built == want else l.width <= want and want <= built) return l;
+        // Justified and total-fit lines depend on the exact width, and so
+        // does a long text, whose estimated blocks may hold wider lines.
+        const exact = n.textData().props.exactWidth(n.textData().paragraphs) or isLong(c);
+        if (if (exact) built == want else l.width() <= want and want <= built) return l;
     }
     // Lines are aligned in the node at paint time (`lineShift`); only
     // justification needs the layout.
@@ -535,7 +483,8 @@ pub fn layoutFor(win: *Window, id: NodeId, width: ?f32) error{OutOfMemory}!?*con
     // Blocks laid out before an edit, or for another width or style,
     // keep their lines when nothing they depend on changed.
     const previous: ?*const text.TextLayout = if (c.previous) |*pl| pl else if (c.layout) |*cl| cl else null;
-    const l = text.TextLayout.init(win.gpa, win.scratch.allocator(), &win.fonts.cache, &c.paragraph.?, .{
+    const long = isLong(c);
+    const l = text.TextLayout.init(win.gpa, win.scratch.allocator(), &c.paragraph.?, .{
         .width = width,
         .alignment = if (d.props.alignment == .justify) .justify else .start,
         .paragraphs = try paragraphRuns(win, id),
@@ -544,7 +493,8 @@ pub fn layoutFor(win: *Window, id: NodeId, width: ?f32) error{OutOfMemory}!?*con
         .hyphenate = d.props.hyphenate,
         .hyphenation = &win.fonts.hyphenation,
         .optimal = d.props.optimal,
-    }, previous) catch |err| switch (err) {
+        // A long text estimates the blocks not in memory (D13).
+    }, previous, long) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => unreachable, // finite, non-negative widths only
     };
@@ -553,9 +503,9 @@ pub fn layoutFor(win: *Window, id: NodeId, width: ?f32) error{OutOfMemory}!?*con
     c.layout = l;
     c.layout_width = width;
     win.stats.text_layouts += 1;
-    if (c.trim) {
-        c.trim = false;
-        trimHeap();
+    if (long) {
+        if (std.mem.indexOfScalar(NodeId, win.long_texts.items, id) == null) try win.long_texts.append(win.gpa, id);
+        try shapeEstimated(win, id, c, &c.layout.?);
     }
     return &c.layout.?;
 }
@@ -574,7 +524,7 @@ pub fn layoutIn(win: *Window, id: NodeId, width: ?f32, fit: ?f32) error{OutOfMem
     if (props.max_lines != 0 and full.lineCount() > props.max_lines) last = props.max_lines - 1;
     if (props.ellipsize) if (fit) |f| for (0..full.lineCount()) |i| {
         if (last != null and i >= last.?) break;
-        if (full.line(@intCast(i)).width > f + 0.01) {
+        if ((try full.line(@intCast(i))).width > f + 0.01) {
             last = i;
             break;
         }
@@ -610,7 +560,7 @@ const Cut = struct {
 fn cutText(win: *Window, id: NodeId, c: *Cache, full: *const text.TextLayout, last: usize, width: ?f32, fit: ?f32) error{OutOfMemory}!void {
     const d = win.node(id).data.text;
     const content = d.content;
-    const line = full.line(@intCast(last));
+    const line = try full.line(@intCast(last));
     const a = win.scratch.allocator();
     // Grapheme edges of the line, without its trailing white space.
     var end = line.end;
@@ -619,7 +569,7 @@ fn cutText(win: *Window, id: NodeId, c: *Cache, full: *const text.TextLayout, la
     try edges.append(a, line.start);
     const bi = full.blockOfLine(@intCast(last));
     const base = full.shaped.starts[bi];
-    const block = &full.blocks[bi].layout;
+    const block = try full.measure(bi);
     for (block.lineCarets(block.lines[last - full.line_starts[bi]])) |k| {
         const offset = base + k.offset;
         if (offset > line.start and offset <= end) try edges.append(a, offset);
@@ -637,7 +587,7 @@ fn cutText(win: *Window, id: NodeId, c: *Cache, full: *const text.TextLayout, la
     while (lo < hi) {
         const mid = (lo + hi + 1) / 2;
         var ct = try cutAt(win, id, content, edges.items[mid], line.start, ellipsis, width);
-        if (ct.layout.lineCount() <= last + 1 and (fit == null or ct.layout.width <= fit.? + 0.01)) {
+        if (ct.layout.lineCount() <= last + 1 and (fit == null or ct.layout.width() <= fit.? + 0.01)) {
             if (best) |*b| b.deinit();
             best = ct;
             best_at = mid;
@@ -667,7 +617,7 @@ fn cutAt(win: *Window, id: NodeId, content: []const u8, at: u32, floor: u32, suf
     var ct: Cut = .{ .paragraph = try shapeString(win, id, s, d.spans, null, null), .layout = undefined };
     errdefer ct.paragraph.deinit();
     if (ct.paragraph.wanted.len != 0) win.fonts.request(ct.paragraph.wanted);
-    ct.layout = text.TextLayout.init(win.gpa, a, &win.fonts.cache, &ct.paragraph, .{
+    ct.layout = text.TextLayout.init(win.gpa, a, &ct.paragraph, .{
         .width = width,
         .alignment = if (d.props.alignment == .justify) .justify else .start,
         .paragraphs = try paragraphRuns(win, id),
@@ -676,7 +626,7 @@ fn cutAt(win: *Window, id: NodeId, content: []const u8, at: u32, floor: u32, suf
         .hyphenate = d.props.hyphenate,
         .hyphenation = &win.fonts.hyphenation,
         .optimal = d.props.optimal,
-    }, null) catch |err| switch (err) {
+    }, null, false) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => unreachable,
     };
@@ -693,19 +643,19 @@ fn paragraphRuns(win: *Window, id: NodeId) error{OutOfMemory}![]const text.layou
     if (d.paragraphs.len == 0) return win.scratch.allocator().dupe(text.layout.ParagraphRun, &.{.{ .end = std.math.maxInt(u32), .style = base }});
     const a = win.scratch.allocator();
     var list = d.paragraphs;
-    // Shaped already: the text as shown, with any preedit.
+    // Shaped already: the text as total, with any preedit.
     const shaped = &win.state(id).text.?.paragraph.?;
-    const shown: u32 = shaped.len() + shaped.pending;
-    if (n.kind == .editor and shown != d.content.len) {
+    const total: u32 = shaped.len();
+    if (n.kind == .editor and total != d.content.len) {
         const e = n.data.editor;
-        list = try spans.replaced(a, list, e.caret, e.caret, @intCast(shown - d.content.len), spans.inherited(list, e.caret));
+        list = try spans.replaced(a, list, e.caret, e.caret, @intCast(total - d.content.len), spans.inherited(list, e.caret));
     }
     var runs: std.ArrayList(text.layout.ParagraphRun) = .empty;
     var at: u32 = 0;
     while (true) {
-        const run = spans.runAt(list, at, shown);
+        const run = spans.runAt(list, at, total);
         try runs.append(a, .{ .end = run.end, .style = run.style.apply(base) });
-        if (run.end >= shown) break;
+        if (run.end >= total) break;
         at = run.end;
     }
     return runs.items;
@@ -714,7 +664,7 @@ fn paragraphRuns(win: *Window, id: NodeId) error{OutOfMemory}![]const text.layou
 /// Unwrapped width of the text.
 pub fn maxContent(win: *Window, id: NodeId) error{OutOfMemory}!f32 {
     const l = try layoutFor(win, id, null) orelse return 0;
-    return l.width;
+    return l.width();
 }
 
 /// The node's current layout (after layout ran): the cut copy when it
@@ -736,4 +686,175 @@ pub fn lineShift(win: *const Window, id: NodeId, line: text.layout.Line, content
     // Paragraph indents and alignment follow the node's direction too.
     const target = line.contentXIn(content_width, win.state(id).rtl, win.node(id).textData().props.alignment);
     return target - line.contentX();
+}
+
+// Scroll anchoring ------------------------------------------------------------
+
+/// Where a long text's scroll container showed it: the block holding the
+/// top of what it showed, by address (compared, never dereferenced), and
+/// how far below the start of that block's line at `byte` (or, without
+/// one, below the block's top) the shown top was. Metrics that change
+/// elsewhere (estimates measured, blocks laid out again, edits in other
+/// blocks) move the shown top with its block, so what is shown stays put
+/// (D13).
+pub const Anchor = struct {
+    block: *const ShapedBlock,
+    byte: ?u32,
+    dy: f64,
+    /// The shown top, in text coordinates, when it was recorded.
+    y: f64,
+};
+
+/// The anchor for the shown top at text coordinate `y`, from what is in
+/// memory: nothing is laid out for it.
+fn anchorAt(l: *const text.TextLayout, y: f64) Anchor {
+    const b = l.blockAtY(y);
+    const lb = l.blocks[b];
+    const top = l.tops[b];
+    if (lb.measured) if (lb.layout) |*lay| {
+        const line = lay.lines[lay.lineAt(@floatCast(y - top))];
+        return .{ .block = lb.shaped, .byte = line.start, .dy = y - (top + line.top), .y = y };
+    };
+    return .{ .block = lb.shaped, .byte = null, .dy = y - top, .y = y };
+}
+
+/// Where the anchor's point is now, in text coordinates: its block (or
+/// the block an edit reshaped it into), its line found again by byte.
+/// Null when its block is gone.
+fn anchorY(l: *const text.TextLayout, a: Anchor) error{OutOfMemory}!?f64 {
+    for (l.blocks, 0..) |lb, i| {
+        const sb = lb.shaped;
+        var byte = a.byte;
+        if (sb != a.block) {
+            if (sb.from != a.block) continue;
+            // Reshaped by an edit: bytes after the change moved with it.
+            if (byte) |o| if (sb.paragraph) |*p| if (p.reused) |r| {
+                byte = if (o < r.start) o else if (o >= r.old_end) o - r.old_end + r.new_end else r.start;
+            };
+        }
+        const b: u32 = @intCast(i);
+        const o = byte orelse return l.tops[b] + a.dy;
+        const lay = try l.measure(b);
+        const c = lay.caret(.{ .offset = @min(o, sb.len()) });
+        return l.tops[b] + lay.lines[c.line].top + a.dy;
+    }
+    return null;
+}
+
+fn nearestScroll(win: *const Window, id: NodeId) ?NodeId {
+    var cur = win.node(id).parent;
+    while (cur != .none) : (cur = win.node(cur).parent) if (win.node(cur).kind == .scroll) return cur;
+    return null;
+}
+
+/// What scroll container `sc` shows of the text of `id`: the top in
+/// text coordinates, from the offset the UI knows (with corrections not
+/// reported back yet), and the height.
+fn shown(win: *const Window, id: NodeId, sc: NodeId) [2]f64 {
+    const paint = @import("paint.zig");
+    const z: f64 = paint.zoomOf(win, sc);
+    const pad = win.node(sc).layout.padding;
+    // The node's top in the container's content, whatever the offset.
+    const node_y = (@as(f64, win.windowRect(id).y0) - (win.windowRect(sc).y0 + pad.top) + paint.scrollTranslation(win, sc).y) / z;
+    return .{ win.node(sc).data.scroll.offset.y / z - node_y - win.node(id).layout.padding.top, win.viewportOf(sc).height / z };
+}
+
+/// Scrolls `sc` by `dy` text pixels, relative to wherever the compositor
+/// has it (D8), and moves the offset the UI knows with it.
+fn scrollText(win: *Window, sc: NodeId, dy: f64) void {
+    const d: f32 = @floatCast(dy * @import("paint.zig").zoomOf(win, sc));
+    win.node(sc).data.scroll.offset.y += d;
+    // Up goes before the container's new extent, which may clamp it;
+    // down after, which may make room for it.
+    win.paint.scroll_by.append(win.gpa, .{ .node = sc, .delta = .{ .x = 0, .y = d }, .early = d < 0 }) catch return;
+    win.dirty.props = true;
+}
+
+/// After layout: for each long text in a scroll container, keeps what it
+/// shows in place while metrics above it changed, scrolls an editor's
+/// caret into view when it moved (`Window.reveal`), and measures the
+/// estimated blocks within a viewport of what it shows, so that painting
+/// finds them exact. Whether layout must run again (heights changed).
+pub fn settle(win: *Window) error{OutOfMemory}!bool {
+    const reveal = win.reveal;
+    win.reveal = .none;
+    var revealed = false;
+    var relayout = false;
+    var i: usize = 0;
+    while (i < win.long_texts.items.len) {
+        const id = win.long_texts.items[i];
+        const c = if (win.isLive(id)) win.state(id).text else null;
+        if (c == null or c.?.layout == null or c.?.paragraph == null or !isLong(c.?)) {
+            _ = win.long_texts.swapRemove(i);
+            continue;
+        }
+        i += 1;
+        const sc = nearestScroll(win, id) orelse continue;
+        if (!win.isShown(id)) continue;
+        const l = &c.?.layout.?;
+        const g = l.generation();
+        try settleText(win, id, c.?, l, sc, id == reveal);
+        if (id == reveal) revealed = true;
+        if (l.generation() != g) {
+            win.markLayout(id);
+            win.markPaint(id);
+            relayout = true;
+        }
+    }
+    if (!revealed and reveal != .none) try revealCaret(win, reveal);
+    return relayout;
+}
+
+fn settleText(win: *Window, id: NodeId, c: *Cache, l: *const text.TextLayout, sc: NodeId, reveal: bool) error{OutOfMemory}!void {
+    // Each round measures at least one block, or ends.
+    for (0..16) |_| {
+        if (c.anchor) |a| if (try anchorY(l, a)) |y| {
+            const dy = y - a.y;
+            if (@abs(dy) > 0.001) scrollText(win, sc, dy);
+        };
+        if (reveal) try revealIn(win, id, l, sc);
+        const view = shown(win, id, sc);
+        c.anchor = anchorAt(l, view[0]);
+        // Painting draws the lines within a viewport of what is shown.
+        var measured = false;
+        var b = l.blockAtY(view[0] - view[1]);
+        while (b < l.blocks.len and l.tops[b] <= view[0] + 2 * view[1]) : (b += 1) {
+            if (l.blocks[b].measured) continue;
+            _ = try l.measure(b);
+            measured = true;
+        }
+        if (!measured) return;
+    }
+}
+
+/// Scrolls the caret of editor `id` into view in its nearest scroll
+/// container (a text that is not long).
+fn revealCaret(win: *Window, id: NodeId) error{OutOfMemory}!void {
+    if (!win.isLive(id) or win.node(id).kind != .editor or !win.isShown(id)) return;
+    const sc = nearestScroll(win, id) orelse return;
+    const l = current(win, id) orelse return;
+    try revealIn(win, id, l, sc);
+}
+
+fn revealIn(win: *Window, id: NodeId, l: *const text.TextLayout, sc: NodeId) error{OutOfMemory}!void {
+    const e = win.node(id).data.editor;
+    const editor = @import("editor.zig");
+    const caret = try l.caret(.{ .offset = editor.displayCaret(win, id), .affinity = e.affinity });
+    const view = shown(win, id, sc);
+    const top: f64 = caret.top;
+    const bottom = top + caret.height;
+    if (top < view[0]) {
+        scrollText(win, sc, top - view[0]);
+    } else if (bottom > view[0] + view[1]) scrollText(win, sc, bottom - (view[0] + view[1]));
+}
+
+/// The compositor scrolled `sc`: long texts in it take their anchors
+/// from what it shows now.
+pub fn scrolled(win: *Window, sc: NodeId) void {
+    for (win.long_texts.items) |id| {
+        if (!win.isLive(id) or nearestScroll(win, id) != sc) continue;
+        const c = win.state(id).text orelse continue;
+        const l = if (c.layout) |*l| l else continue;
+        c.anchor = anchorAt(l, shown(win, id, sc)[0]);
+    }
 }

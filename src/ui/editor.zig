@@ -32,8 +32,6 @@ const insert_key: u32 = 0xff63;
 /// since the last frame.
 fn fresh(win: *Window, id: NodeId) ?*const Layout {
     const s = win.state(id);
-    // Editing works on the whole text (D13).
-    text_node.finish(win, id) catch return null;
     if (!s.needs_shape) if (text_node.current(win, id)) |l| return l;
     const width = if (s.text) |c| c.layout_width else null;
     return text_node.layoutFor(win, id, width) catch null;
@@ -92,10 +90,10 @@ pub fn imeCommit(win: *Window, id: NodeId, before: u32, after: u32, str: []const
 }
 
 /// The caret rectangle in content coordinates (before editor scrolling).
-pub fn caretRect(win: *const Window, id: NodeId, l: *const Layout) Rect {
+pub fn caretRect(win: *const Window, id: NodeId, l: *const Layout) error{OutOfMemory}!Rect {
     const e = data(win, id);
-    const c = l.caret(.{ .offset = displayCaret(win, id), .affinity = e.affinity });
-    const x = c.x + text_node.lineShift(win, id, l.line(c.line), contentWidth(win, id));
+    const c = try l.caret(.{ .offset = displayCaret(win, id), .affinity = e.affinity });
+    const x = c.x + text_node.lineShift(win, id, try l.line(c.line), contentWidth(win, id));
     return .xywh(x, c.top, layout.caret_width, c.height);
 }
 
@@ -109,11 +107,11 @@ pub fn scrollToCaret(win: *Window, id: NodeId) void {
         return;
     }
     const w = contentWidth(win, id);
-    const line = l.line(0);
+    const line = l.line(0) catch return;
     const x0 = line.x + text_node.lineShift(win, id, line, w);
     const lo = @min(0, x0);
     const hi = @max(0, x0 + line.width + layout.caret_width - w);
-    const c = caretRect(win, id, l);
+    const c = caretRect(win, id, l) catch return;
     var scroll = s.editor_scroll;
     if (c.x1 - scroll > w) scroll = c.x1 - w;
     if (c.x0 - scroll < 0) scroll = c.x0;
@@ -126,8 +124,8 @@ fn positionAt(win: *Window, id: NodeId, local: Point) ?Position {
     const o = contentOrigin(win, id);
     const x = local.x - o.x;
     const y = local.y - o.y;
-    const line = l.line(l.lineAt(y));
-    return l.hitTest(x - text_node.lineShift(win, id, line, contentWidth(win, id)), y);
+    const line = l.line(l.lineAt(y) catch return null) catch return null;
+    return l.hitTest(x - text_node.lineShift(win, id, line, contentWidth(win, id)), y) catch null;
 }
 
 /// What a multi-click selects, and what dragging after it extends by.
@@ -138,16 +136,16 @@ pub const Unit = enum { grapheme, word, paragraph };
 pub const Gesture = struct { unit: Unit = .grapheme, start: u32 = 0, end: u32 = 0 };
 
 /// The word (or run of spaces or punctuation, UAX #29) at an offset.
-fn wordAt(l: *const Layout, offset: u32) [2]u32 {
+fn wordAt(l: *const Layout, offset: u32) error{OutOfMemory}![2]u32 {
     return l.shaped.wordAt(offset);
 }
 
 /// The paragraph at an offset, without its separator.
-fn paragraphAt(l: *const Layout, offset: u32) [2]u32 {
+fn paragraphAt(l: *const Layout, offset: u32) error{OutOfMemory}![2]u32 {
     return l.shaped.paragraphRange(offset);
 }
 
-fn unitAt(l: *const Layout, unit: Unit, offset: u32) [2]u32 {
+fn unitAt(l: *const Layout, unit: Unit, offset: u32) error{OutOfMemory}![2]u32 {
     return switch (unit) {
         .grapheme => .{ offset, offset },
         .word => wordAt(l, offset),
@@ -172,13 +170,15 @@ pub fn pointerDown(win: *Window, id: NodeId, p: Point, extend: bool, clicks: u8)
     if (effective == .grapheme or extend) {
         win.input.gesture = .{ .unit = .grapheme, .start = pos.offset, .end = pos.offset };
         select(win, id, pos, if (extend) e.anchor else pos.offset);
+        win.reveal = .none;
         return;
     }
     const l = fresh(win, id) orelse return;
-    const r = unitAt(l, effective, pos.offset);
+    const r = unitAt(l, effective, pos.offset) catch return;
     win.input.gesture = .{ .unit = effective, .start = r[0], .end = r[1] };
     win.state(id).preferred_x = null;
     setSelection(win, id, r[1], r[0], .upstream);
+    win.reveal = .none;
 }
 
 /// Dragging with the button held extends the selection, by the unit the
@@ -186,9 +186,10 @@ pub fn pointerDown(win: *Window, id: NodeId, p: Point, extend: bool, clicks: u8)
 pub fn pointerDrag(win: *Window, id: NodeId, p: Point) void {
     const pos = positionAt(win, id, input.toLocal(win, id, p)) orelse return;
     const g = win.input.gesture;
+    defer win.reveal = .none;
     if (g.unit == .grapheme) return select(win, id, pos, data(win, id).anchor);
     const l = fresh(win, id) orelse return;
-    const r = unitAt(l, g.unit, pos.offset);
+    const r = unitAt(l, g.unit, pos.offset) catch return;
     if (r[0] < g.start) {
         setSelection(win, id, r[0], g.end, .downstream);
     } else {
@@ -603,8 +604,13 @@ pub fn key(win: *Window, id: NodeId, k: *const platform.Key) bool {
     // The input method owns the keyboard while it composes; keys that
     // still arrive must not edit around its preedit.
     if (win.ime.preeditFor(id) != null) return k.keysym != keysym.tab and k.keysym != keysym.iso_left_tab;
-    const e = data(win, id);
     const l = fresh(win, id) orelse return false;
+    // Without memory to lay out the blocks it needs, the key does nothing.
+    return keyIn(win, id, k, l) catch true;
+}
+
+fn keyIn(win: *Window, id: NodeId, k: *const platform.Key, l: *const Layout) error{OutOfMemory}!bool {
+    const e = data(win, id);
     const mods = k.mods;
     const lo, const hi = selection(e);
     const len: u32 = @intCast(e.text.content.len);
@@ -619,25 +625,25 @@ pub fn key(win: *Window, id: NodeId, k: *const platform.Key) bool {
                 return true;
             }
             const next: Position = if (mods.ctrl and !e.editor.masked)
-                .{ .offset = if (forward) l.nextWordEnd(e.caret) else l.previousWordStart(e.caret) }
+                .{ .offset = if (forward) try l.nextWordEnd(e.caret) else try l.previousWordStart(e.caret) }
             else
-                l.moveVisual(pos, if (k.keysym == keysym.right) .right else .left);
+                try l.moveVisual(pos, if (k.keysym == keysym.right) .right else .left);
             select(win, id, next, if (extend) e.anchor else next.offset);
         },
         keysym.home, keysym.end => {
             const boundary: text.cursor.Boundary = if (k.keysym == keysym.home) .start else .end;
-            const next: Position = if (mods.ctrl) .{ .offset = if (boundary == .start) 0 else len } else l.lineBoundary(pos, boundary);
+            const next: Position = if (mods.ctrl) .{ .offset = if (boundary == .start) 0 else len } else try l.lineBoundary(pos, boundary);
             select(win, id, next, if (extend) e.anchor else next.offset);
         },
         keysym.up, keysym.down => {
             if (!e.editor.multiline) return false;
             const s = win.state(id);
             const w = contentWidth(win, id);
-            const cur = l.caret(pos);
-            const x_node = s.preferred_x orelse cur.x + text_node.lineShift(win, id, l.line(cur.line), w);
+            const cur = try l.caret(pos);
+            const x_node = s.preferred_x orelse cur.x + text_node.lineShift(win, id, try l.line(cur.line), w);
             const up = k.keysym == keysym.up;
             const target_line = if (up) cur.line -| 1 else @min(cur.line + 1, l.lineCount() - 1);
-            const moved = l.moveVertical(pos, x_node - text_node.lineShift(win, id, l.line(target_line), w), if (up) .up else .down);
+            const moved = try l.moveVertical(pos, x_node - text_node.lineShift(win, id, try l.line(target_line), w), if (up) .up else .down);
             setSelection(win, id, moved.position.offset, if (extend) e.anchor else moved.position.offset, moved.position.affinity);
             win.state(id).preferred_x = x_node;
         },
@@ -649,11 +655,11 @@ pub fn key(win: *Window, id: NodeId, k: *const platform.Key) bool {
             } else if (k.keysym == backspace) {
                 if (e.caret == 0) return true;
                 // Word deletion in a masked field would reveal word breaks.
-                const start = if (mods.ctrl and !e.editor.masked) l.previousWordStart(e.caret) else l.previousGrapheme(e.caret);
+                const start = if (mods.ctrl and !e.editor.masked) try l.previousWordStart(e.caret) else try l.previousGrapheme(e.caret);
                 replace(win, id, start, e.caret, "", if (mods.ctrl) .other else .deleting);
             } else {
                 if (e.caret == len) return true;
-                const end = if (mods.ctrl and !e.editor.masked) l.nextWordEnd(e.caret) else l.nextGrapheme(e.caret);
+                const end = if (mods.ctrl and !e.editor.masked) try l.nextWordEnd(e.caret) else try l.nextGrapheme(e.caret);
                 replace(win, id, e.caret, end, "", if (mods.ctrl) .other else .deleting);
             }
         },
@@ -664,6 +670,8 @@ pub fn key(win: *Window, id: NodeId, k: *const platform.Key) bool {
         'a', 'A' => {
             if (!mods.ctrl) return typed(win, id, k);
             select(win, id, .{ .offset = len }, 0);
+            // Selecting all leaves the view where it is.
+            win.reveal = .none;
         },
         'c', 'C', 'x', 'X' => {
             if (!mods.ctrl) return typed(win, id, k);

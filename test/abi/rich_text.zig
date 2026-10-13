@@ -217,13 +217,13 @@ test "typesetting: justified, hyphenated, total-fit paragraphs and aligned tab s
     try testing.expect(l.lineCount() >= 4);
     var hyphenated = false;
     for (0..l.lineCount() - 1) |i| {
-        const line = l.line(@intCast(i));
+        const line = try l.line(@intCast(i));
         try testing.expectApproxEqAbs(@as(f32, 220), line.width, 0.01);
         const prev = prose[line.end - 1];
         if (std.ascii.isAlphabetic(prev) and std.ascii.isAlphabetic(prose[line.end])) hyphenated = true;
     }
     try testing.expect(hyphenated);
-    try testing.expect(l.line(l.lineCount() - 1).width < 219);
+    try testing.expect((try l.line(l.lineCount() - 1)).width < 219);
 
     // An application's patterns for a language without built-in ones.
     try ok(c.siv_app_add_hyphenation(h.app, &.{ .language = "x-test", .language_len = 6, .patterns = "a1b", .patterns_len = 3, .left_min = 1, .right_min = 1 }));

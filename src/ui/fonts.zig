@@ -43,6 +43,14 @@ loads: std.ArrayList(*Load) = .empty,
 listeners: std.ArrayList(Listener) = .empty,
 /// Counts finished loads, so text nodes know when to reshape.
 serial: u32 = 0,
+/// The blocks of long texts whose shaping and lines are in memory, in
+/// every window (D13).
+residency: text.blocks.Residency,
+
+/// What a residency keeps of long texts' blocks: about 30 blocks of
+/// 8 KB of Latin text (shaping and lines take 60 times their bytes),
+/// several screens of a document beyond those shown.
+pub const residency_budget = 16 << 20;
 
 pub const Query = struct {
     family: u32,
@@ -81,7 +89,7 @@ pub const Listener = struct {
 };
 
 pub fn init(gpa: std.mem.Allocator) error{OutOfMemory}!Fonts {
-    var f: Fonts = .{ .gpa = gpa, .cache = .init(gpa), .hyphenation = .init(gpa) };
+    var f: Fonts = .{ .gpa = gpa, .cache = .init(gpa), .hyphenation = .init(gpa), .residency = .init(gpa, residency_budget) };
     errdefer f.deinit();
     _ = try f.intern("");
     f.default_family = try f.intern("sans-serif");
@@ -111,6 +119,7 @@ pub fn deinit(f: *Fonts) void {
     f.names.deinit(f.gpa);
     if (f.database) |*db| db.deinit();
     f.hyphenation.deinit();
+    f.residency.deinit();
     f.cache.deinit();
     f.* = undefined;
 }

@@ -490,6 +490,12 @@ pub const Layout = struct {
         self.built.glyphs = false;
     }
 
+    /// Bytes it holds: its arena and its arrays.
+    pub fn bytes(self: *const Layout) usize {
+        return self.arena.queryCapacity() + self.lines.len * @sizeOf(Line) + self.runs.len * @sizeOf(GlyphRun) +
+            self.glyphs.len * @sizeOf(PositionedGlyph) + self.carets.len * @sizeOf(Caret);
+    }
+
     pub fn deinit(self: *Layout) void {
         self.freeArrays();
         self.arena.deinit();

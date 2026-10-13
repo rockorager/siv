@@ -82,6 +82,12 @@ viewport_dirty: bool = false,
 /// viewport (some may be gone); a scroll that leaves that band repaints
 /// them (D8).
 culled: std.ArrayList(NodeId) = .empty,
+/// Long texts (D13), which `text_node.settle` keeps in place in their
+/// scroll containers after each layout.
+long_texts: std.ArrayList(NodeId) = .empty,
+/// The editor whose caret moved by keys, input, or the application since
+/// the last frame: its scroll container scrolls it into view.
+reveal: NodeId = .none,
 /// The application's clipboard, if it has one.
 clipboard: ?*Clipboard = null,
 /// Drag-and-drop requests; without them drags neither start nor drop.
@@ -381,6 +387,7 @@ fn deinitStorage(win: *Window) void {
     win.semantics.deinit(win.gpa);
     win.viewports.deinit(win.gpa);
     win.culled.deinit(win.gpa);
+    win.long_texts.deinit(win.gpa);
     win.modals.deinit(win.gpa);
     win.animating.deinit(win.gpa);
     win.scratch.deinit();
@@ -710,8 +717,14 @@ pub fn frame(win: *Window) Error!void {
     win.deliverViewports();
     if (win.txn.open) return;
     defer _ = win.scratch.reset(.retain_capacity);
-    const laid_out = win.state(.root).needs_layout;
+    var laid_out = win.state(.root).needs_layout;
     try layout.run(win);
+    // Long texts measure what their scroll containers show and stay in
+    // place; what that changed is laid out in this frame too.
+    if (try text_node.settle(win)) {
+        laid_out = true;
+        try layout.run(win);
+    }
     if (laid_out) {
         win.checkViewports();
         win.checkCulled();
@@ -736,6 +749,8 @@ pub fn frame(win: *Window) Error!void {
     // handlers run here, at the end of the frame (D5), and what they
     // change shows in the next one.
     if (laid_out or win.input.hover_stale) input_mod.refreshHover(win) else input_mod.updateCursor(win);
+    // Blocks of long texts nothing used in this frame may go (D13).
+    win.fonts.residency.trim();
     win.stats.frames += 1;
 }
 
@@ -1298,6 +1313,7 @@ fn scrolled(win: *Window, layer: compositor.LayerId, offset: Point, zoom: f32, s
     win.node(l.owner).data.scroll.zoom = zoom;
     win.node(l.owner).data.scroll.offset = paint_mod.logicalScroll(win, l.owner, offset);
     win.dirty.semantics = true;
+    text_node.scrolled(win, l.owner);
     if (win.node(l.owner).handler(.viewport) != null and !win.txn.open) win.deliverViewports();
     win.checkCulled();
     // The content moved under the pointer: the next frame, after layout,

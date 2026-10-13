@@ -11,6 +11,7 @@ const raster = @import("raster");
 const ui = @import("ui.zig");
 const paint = @import("paint.zig");
 const node_mod = @import("node.zig");
+const access = ui.access;
 
 const testing = std.testing;
 const NodeId = ui.NodeId;
@@ -578,59 +579,120 @@ test "a long text shapes its start at once and the rest on the pool, ending as i
         try f.frame();
     }
     const whole = text_node.current(reference.win, docs[0]).?;
+    try testing.expect(!whole.estimated());
     for (&fixtures, docs[1..]) |*f, doc| {
-        const c = f.win.state(doc).text.?;
-        try testing.expect(c.pending != null and c.paragraph.?.len() < 64 << 10);
-        // The rest is estimated.
-        try testing.expect(text_node.current(f.win, doc).?.height > whole.height / 2);
+        const l = text_node.current(f.win, doc).?;
+        // The start is shaped, the rest estimated and shaping.
+        try testing.expect(l.estimated() and f.win.state(doc).text.?.shaping.items.len > 0);
+        try testing.expect(l.blocks[0].measured and l.height() > whole.height() / 2);
     }
+    const waitPool = struct {
+        fn wait(f: *Fixture, doc: NodeId, l_: *loop.Loop) !void {
+            while (f.win.state(doc).text.?.shaping.items.len > 0) try l_.dispatch(-1);
+            try f.frame();
+        }
+    }.wait;
     // 1: the pool finishes.
-    const c1 = fixtures[0].win.state(docs[1]).text.?;
-    while (c1.pending != null) try lp.dispatch(-1);
-    try fixtures[0].frame();
-    // 2: showing the end shapes the rest at the next frame.
+    try waitPool(&fixtures[0], docs[1], &lp);
+    // 2: showing the end measures what is shown at once, and the pool
+    // the rest.
     {
         const f = &fixtures[1];
         const li = f.win.state(scrolls[2]).own_layer + 1;
         const off = f.comp.scrollBy(li, .{ .x = 0, .y = 1e6 });
         try f.win.handleEvent(&.{ .scrolled = .{ .window = 0, .layer = li, .offset = off, .seq = f.comp.seq } });
         try f.frame();
-        try f.frame();
-        try testing.expect(f.win.state(docs[2]).text.?.pending == null);
+        const l = text_node.current(f.win, docs[2]).?;
+        try testing.expect(l.blocks[l.blocks.len - 1].measured);
+        try waitPool(f, docs[2], &lp);
     }
-    // 3: editing shapes the rest first.
+    // 3: Ctrl+End moves to the end without shaping the rest, and the
+    // scroll container shows the caret.
     {
         const f = &fixtures[2];
         const k: Keys = .{ .f = f };
         k.press(ui.keysym.tab, .{});
         k.press(ui.keysym.end, .{ .ctrl = true });
-        try testing.expect(f.win.state(docs[3]).text.?.pending == null);
         try testing.expectEqual(@as(u32, @intCast(buf.items.len)), f.win.node(docs[3]).data.editor.caret);
         try f.frame();
+        try f.frame();
+        const r = access.characterRect(f.win, docs[3], @intCast(buf.items.len)).?;
+        try testing.expect(r.y0 >= 0 and r.y1 <= 200.01);
+        try waitPool(f, docs[3], &lp);
     }
-    // 4: new text finishes the old first and reshapes only what changed.
+    // 4: new text reshapes only what changed, even while shaping.
     {
         const f = &fixtures[3];
         var t = try f.win.begin();
         try t.setText(docs[4], buf.items[0 .. buf.items.len - 1]);
         t.commit();
         try f.frame();
-        try testing.expect(f.win.state(docs[4]).text.?.pending == null);
         t = try f.win.begin();
         try t.setText(docs[4], buf.items);
         t.commit();
         try f.frame();
+        try waitPool(f, docs[4], &lp);
     }
     for (&fixtures, docs[1..]) |*f, doc| {
         const l = text_node.current(f.win, doc).?;
-        try testing.expectEqual(@as(u32, 0), l.shaped.pending);
+        try testing.expect(!l.estimated());
         try testing.expectEqual(whole.lineCount(), l.lineCount());
-        try testing.expectEqual(whole.height, l.height);
+        try testing.expectEqual(whole.height(), l.height());
         try testing.expectEqualSlices(u32, whole.shaped.starts, l.shaped.starts);
         var i: u32 = 0;
-        while (i < l.lineCount()) : (i += 97) try testing.expectEqual(whole.line(i), l.line(i));
+        while (i < l.lineCount()) : (i += 97) try testing.expectEqual(try whole.line(i), try l.line(i));
         try testing.expectEqual(reference.rect(docs[0])[2..].*, f.rect(doc)[2..].*);
+        // Within the budget, less what the last frame used.
+        try testing.expect(f.fonts.residency.bytes <= ui.Fonts.residency_budget);
     }
+}
+
+test "what a long text shows stays put while blocks above it are measured" {
+    const loop = @import("loop");
+    var lp = try loop.Loop.init(std.heap.smp_allocator);
+    defer lp.deinit();
+    var pool = loop.Pool.init(&lp, testing.allocator, 2);
+    defer pool.deinit();
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    // Short lines first, so that the estimate of the long paragraphs
+    // after them is far off.
+    for (0..3000) |i| try buf.print(testing.allocator, "{d}\n", .{i});
+    for (0..1500) |i| try buf.print(testing.allocator, "Paragraph {d} has a good many more words, which wrap over several lines at this width.\n", .{i});
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 300, .height = 200 });
+    defer f.deinit();
+    f.fonts.pool = &pool;
+    var t = try f.win.begin();
+    const sc = try box(t, .root, .scroll, .{ .width = .{ .fraction = 1 }, .height = .{ .fraction = 1 } });
+    try t.setScroll(sc, .{ .axis = .vertical });
+    const doc = try box(t, sc, .editor, .{ .width = .{ .fraction = 1 } });
+    try t.setEditor(doc, .{ .multiline = true });
+    try t.setText(doc, buf.items);
+    t.commit();
+    try f.frame();
+    const l = text_node.current(f.win, doc).?;
+    try testing.expect(l.estimated());
+    // Far down, into the estimated part.
+    const li = f.win.state(sc).own_layer + 1;
+    const off = f.comp.scrollBy(li, .{ .x = 0, .y = l.height() * 0.8 });
+    try f.win.handleEvent(&.{ .scrolled = .{ .window = 0, .layer = li, .offset = off, .seq = f.comp.seq } });
+    try f.frame();
+    try f.frame();
+    // The character at the top of the viewport, and where it is.
+    const top = (access.offsetAt(f.win, doc, .{ .x = 20, .y = 30 })).?;
+    const before = access.characterRect(f.win, doc, top).?;
+    const g = l.generation();
+    while (f.win.state(doc).text.?.shaping.items.len > 0) try lp.dispatch(-1);
+    try f.frame();
+    try f.frame();
+    const now = text_node.current(f.win, doc).?;
+    try testing.expect(!now.estimated() and now.generation() != g);
+    // The blocks above changed height by thousands of pixels; the
+    // character is where it was.
+    const after = access.characterRect(f.win, doc, top).?;
+    try testing.expectApproxEqAbs(before.y0, after.y0, 0.5);
+    try testing.expectApproxEqAbs(before.x0, after.x0, 0.01);
 }
 
 test "opacity animates as a layer property; content repaints only its layer" {
@@ -1255,7 +1317,7 @@ test "styled text: spans shape as runs, follow edits, format as undo steps, and 
     const shaped = struct {
         fn sizes(fx: *Fixture, id: NodeId) ![]const text.Style {
             _ = try text_node.layoutFor(fx.win, id, null);
-            return fx.win.state(id).text.?.paragraph.?.blocks[0].paragraph.styles;
+            return fx.win.state(id).text.?.paragraph.?.blocks[0].paragraph.?.styles;
         }
     };
     // The bold word is a style run of its own.
@@ -1327,10 +1389,10 @@ test "paragraph styles: whole paragraphs, laid out, kept through edits and undo"
     // The second line is centered in the node, the others at the start.
     const l = text_node.current(f.win, ed).?;
     try testing.expectEqual(3, l.lineCount());
-    try testing.expectEqual(text.layout.Alignment.center, l.line(1).alignment.?);
-    const second = l.line(1);
+    try testing.expectEqual(text.layout.Alignment.center, (try l.line(1)).alignment.?);
+    const second = try l.line(1);
     try testing.expectApproxEqAbs((300 - second.width) / 2, second.contentX() + text_node.lineShift(f.win, ed, second, 300), 0.01);
-    try testing.expectApproxEqAbs(0, l.line(0).contentX() + text_node.lineShift(f.win, ed, l.line(0), 300), 0.01);
+    try testing.expectApproxEqAbs(0, (try l.line(0)).contentX() + text_node.lineShift(f.win, ed, try l.line(0), 300), 0.01);
 
     // A line break inside the centered paragraph starts another centered
     // one; text typed at the start of "third" stays in "third".
@@ -1368,7 +1430,7 @@ test "paragraph styles: whole paragraphs, laid out, kept through edits and undo"
     }, e.text.paragraphs);
     try testing.expectEqual(ui.ParagraphPatch{ .alignment = .center, .indent = .{ .start = 20 } }, ui.access.paragraphRun(f.win, ed, 7).?.style);
     try f.frame();
-    try testing.expectEqual(20, text_node.current(f.win, ed).?.line(0).indent_start);
+    try testing.expectEqual(20, (try text_node.current(f.win, ed).?.line(0)).indent_start);
     k.press('z', .{ .ctrl = true });
     try testing.expectEqualDeep(&[_]ui.ParagraphSpan{.{ .start = 6, .end = 13, .style = centered }}, e.text.paragraphs);
 
@@ -1392,7 +1454,7 @@ test "a span's family shapes its run with that family" {
     try t.setSpans(label, &.{.{ .start = 6, .end = 9, .style = .{ .family = siv } }});
     t.commit();
     try f.frame();
-    const p = f.win.state(label).text.?.paragraph.?.blocks[0].paragraph;
+    const p = f.win.state(label).text.?.paragraph.?.blocks[0].paragraph.?;
     try testing.expectEqual(2, p.runs.len);
     var buf: [32]u8 = undefined;
     try testing.expectEqualStrings("Droid Sans", f.fonts.cache.face(p.runs[0].font).?.familyName(&buf));
@@ -1527,7 +1589,7 @@ test "input method: enable, preedit inline, commit with undo, masked fields stay
     try f.frame();
     const e = &f.win.node(ed).data.editor;
     try testing.expectEqualStrings("", e.text.content);
-    try testing.expectEqualStrings("ka", f.win.state(ed).text.?.paragraph.?.blocks[0].paragraph.text);
+    try testing.expectEqualStrings("ka", f.win.state(ed).text.?.paragraph.?.blocks[0].text);
     const moved = f.text_inputs.items[f.text_inputs.items.len - 1];
     try testing.expect(moved.cursor_rect.x > first.cursor_rect.x);
     // Editing keys wait while it composes.
@@ -1540,7 +1602,7 @@ test "input method: enable, preedit inline, commit with undo, masked fields stay
     imeEvent(&f, ev);
     try f.frame();
     try testing.expectEqualStrings("\u{304b}", e.text.content);
-    try testing.expectEqualStrings("\u{304b}", f.win.state(ed).text.?.paragraph.?.blocks[0].paragraph.text);
+    try testing.expectEqualStrings("\u{304b}", f.win.state(ed).text.?.paragraph.?.blocks[0].text);
     const after = f.text_inputs.items[f.text_inputs.items.len - 1];
     try testing.expectEqualStrings("\u{304b}", after.surrounding);
     try testing.expectEqual(@as(u32, 3), after.cursor);
@@ -1591,10 +1653,10 @@ test "editor: double click selects a word, triple a paragraph, dragging extends 
     try f.frame();
     const e = &f.win.node(ed).data.editor;
     const l = @import("text_node.zig").current(f.win, ed).?;
-    const line0 = l.line(0);
+    const line0 = try l.line(0);
     // The middle of "brave" and of "world" on the first line.
-    const bx = line0.x + (l.caret(.{ .offset = 6 }).x + l.caret(.{ .offset = 11 }).x) / 2;
-    const wx = (l.caret(.{ .offset = 16 }).x + l.caret(.{ .offset = 21 }).x) / 2;
+    const bx = line0.x + ((try l.caret(.{ .offset = 6 })).x + (try l.caret(.{ .offset = 11 })).x) / 2;
+    const wx = ((try l.caret(.{ .offset = 16 })).x + (try l.caret(.{ .offset = 21 })).x) / 2;
     const y = line0.top + line0.height / 2;
     const P = struct {
         fn press(fx: *Fixture, x: f32, yy: f32, time: u32, down: bool) void {
@@ -1738,7 +1800,6 @@ test "access: character rectangles, hit testing, and lines in window coordinates
     var f: Fixture = undefined;
     try f.init(.{ .width = 300, .height = 120 });
     defer f.deinit();
-    const access = ui.access;
     var t = try f.win.begin();
     const col = try box(t, .root, .flex, .{ .padding = .all(10) });
     try t.setFlex(col, .{ .axis = .column, .align_items = .start, .gap = 4 });
@@ -1818,7 +1879,6 @@ test "access: edits take the user's path, queue behind a transaction, and skip m
     var f: Fixture = undefined;
     try f.init(.{ .width = 300, .height = 100 });
     defer f.deinit();
-    const access = ui.access;
     var changes: usize = 0;
     var t = try f.win.begin();
     const ed = try box(t, .root, .editor, .{ .align_y = .start });

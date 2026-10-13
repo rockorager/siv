@@ -91,7 +91,16 @@ const Layer = struct {
 /// Input the UI passes on to a scroll node's container: a scroll by
 /// `delta`, or (`zoom` other than 1) a zoom by that factor about `focus`
 /// in the node's coordinates.
-pub const ScrollBy = struct { node: NodeId, delta: Point = .zero, zoom: f32 = 1, focus: Point = .zero };
+pub const ScrollBy = struct {
+    node: NodeId,
+    delta: Point = .zero,
+    zoom: f32 = 1,
+    focus: Point = .zero,
+    /// Goes before the commit's other ops: a correction that moves up
+    /// to content that shrank above (D13), before the container's new
+    /// extent clamps the offset.
+    early: bool = false,
+};
 
 const ClipEntry = struct {
     serial: u32,
@@ -525,6 +534,12 @@ pub const State = struct {
     pub fn emit(st: *State, win: *Window) Error!void {
         const gpa = win.gpa;
         var scroll_layers: std.ArrayList(u32) = .empty;
+        var early: usize = 0;
+        for (st.scroll_by.items) |sb| {
+            if (!sb.early or !win.isLive(sb.node) or !st.ownsLayerNow(win, sb.node)) continue;
+            try st.ops.insert(gpa, early, .{ .scroll_by = .{ .layer = id(win.state(sb.node).own_layer), .delta = sb.delta } });
+            early += 1;
+        }
         if (win.dirty.props or st.ops.items.len != 0) {
             try st.ops.ensureUnusedCapacity(gpa, 12 * st.order.items.len + st.scroll_by.items.len + 1);
             for (st.order.items) |i| {
@@ -642,7 +657,7 @@ pub const State = struct {
         // compositor has the offset now.
         try st.ops.ensureUnusedCapacity(gpa, 2 * st.scroll_by.items.len + 1);
         for (st.scroll_by.items) |sb| {
-            if (!win.isLive(sb.node) or !st.ownsLayerNow(win, sb.node)) continue;
+            if (sb.early or !win.isLive(sb.node) or !st.ownsLayerNow(win, sb.node)) continue;
             const layer = id(win.state(sb.node).own_layer);
             if (sb.zoom != 1) st.ops.appendAssumeCapacity(.{ .zoom_by = .{ .layer = layer, .factor = sb.zoom, .focus = sb.focus } });
             if (!sb.delta.eql(.zero)) st.ops.appendAssumeCapacity(.{ .scroll_by = .{ .layer = layer, .delta = sb.delta } });
@@ -719,7 +734,7 @@ pub const State = struct {
                 const l_ = text_node.current(win, l.owner) orelse return .{};
                 const n = win.node(l.owner);
                 const s = win.state(l.owner);
-                const c = editor.caretRect(win, l.owner, l_);
+                const c = editor.caretRect(win, l.owner, l_) catch return .{};
                 return .{ .transform = .offset(n.layout.padding.left(s.rtl) - s.editor_scroll + c.x0, n.layout.padding.top + c.y0) };
             },
             .scroll_content => {
@@ -1006,19 +1021,20 @@ fn drawEditor(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Poi
         // The preedit is underlined; the selection waits behind it.
         var rects: std.ArrayList(text.layout.Rect) = .empty;
         defer rects.deinit(win.gpa);
-        try l.selectionRects(win.gpa, range[0], range[1], &rects);
+        try l.selectionRects(win.gpa, range[0], range[1], &rects, null);
         for (rects.items) |r| {
-            const line = l.line(l.lineAt(r.y + r.height / 2));
+            const line = try l.line(try l.lineAt(r.y + r.height / 2));
             const x = box.x0 - scroll + r.x + text_node.lineShift(win, nid, line, cw);
             try b.fillRect(.xywh(x, box.y0 + r.y + r.height - 1.5, r.width, 1), .color(textColor(win, &e.text.props.style)));
         }
     } else if (e.caret != e.anchor) {
         var rects: std.ArrayList(text.layout.Rect) = .empty;
         defer rects.deinit(win.gpa);
-        try l.selectionRects(win.gpa, @min(e.caret, e.anchor), @max(e.caret, e.anchor), &rects);
+        // A long text's selection is drawn where its lines are (D13).
+        try l.selectionRects(win.gpa, @min(e.caret, e.anchor), @max(e.caret, e.anchor), &rects, try textBand(win, nid, l));
         const color = if (focused) win.palette.color(.selection_bg) else win.palette.color(.control_hover);
         for (rects.items) |r| {
-            const line = l.line(l.lineAt(r.y + r.height / 2));
+            const line = try l.line(try l.lineAt(r.y + r.height / 2));
             const x = box.x0 - scroll + r.x + text_node.lineShift(win, nid, line, cw);
             try b.fillRect(.xywh(x, box.y0 + r.y, r.width, r.height), .color(color));
         }
@@ -1033,7 +1049,7 @@ fn drawEditor(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Poi
 fn drawPlaceholder(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, box: Rect) DrawError!Rect {
     const l = (text_node.placeholder(win, nid) catch return Rect.empty) orelse return Rect.empty;
     const s = win.state(nid);
-    const dx = if (s.rtl) box.width() - l.width else 0;
+    const dx = if (s.rtl) box.width() - l.width() else 0;
     return drawLayout(st, win, l, b, box.x0 + dx, box.y0, box.width(), win.palette.color(.muted_fg), null, null);
 }
 
@@ -1047,7 +1063,7 @@ fn blinkHalves(d: Window.Desktop) u32 {
 /// A focused editor's caret height and color.
 fn caretLook(win: *Window, nid: NodeId) struct { f32, scene.Color } {
     const l = text_node.current(win, nid) orelse return .{ 0, .transparent };
-    const c = editor.caretRect(win, nid, l);
+    const c = editor.caretRect(win, nid, l) catch return .{ 0, .transparent };
     return .{ c.height(), textColor(win, &win.node(nid).data.editor.text.props.style) };
 }
 
@@ -1069,24 +1085,27 @@ fn drawText(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point
     const content_w = s.size.w - pad.horizontal();
     const ox = off.x + pad.left(s.rtl) + dx;
     const oy = off.y + pad.top;
-    // Text taller than four viewports of its scroll container paints the
-    // lines within a viewport of what it shows, and paints again when
-    // scrolling leaves them (`Window.checkCulled`): a keystroke in a long
-    // document costs the lines in view, not all of them (D8, D13). Shorter
-    // text paints whole, so scrolling it never repaints.
-    var band: ?[2]f32 = null;
-    s.painted_band = null;
-    if (visibleBand(win, nid)) |shown| {
-        const h = shown[1] - shown[0];
-        if (h > 0 and l.height > 4 * h) {
-            const around: [2]f32 = .{ shown[0] - h, shown[1] + h };
-            band = .{ around[0] - pad.top, around[1] - pad.top };
-            s.painted_band = around;
-            if (std.mem.indexOfScalar(NodeId, win.culled.items, nid) == null) try win.culled.append(win.gpa, nid);
-        }
-    }
-    text_node.cover(win, nid, l, if (band) |bd| bd[1] else null);
+    const band = try textBand(win, nid, l);
     return drawLayout(st, win, l, b, ox, oy, content_w, textColor(win, &n.textData().props.style), nid, band);
+}
+
+/// The band of layout coordinates a text paints: text taller than four
+/// viewports of its scroll container paints the lines within a viewport
+/// of what it shows, and paints again when scrolling leaves them
+/// (`Window.checkCulled`): a keystroke in a long document costs the lines
+/// in view, not all of them (D8, D13). Shorter text paints whole (null),
+/// so scrolling it never repaints.
+fn textBand(win: *Window, nid: NodeId, l: *const text.TextLayout) error{OutOfMemory}!?[2]f32 {
+    const s = win.state(nid);
+    const pad = win.node(nid).layout.padding;
+    s.painted_band = null;
+    const shown = visibleBand(win, nid) orelse return null;
+    const h = shown[1] - shown[0];
+    if (!(h > 0 and l.height() > 4 * h)) return null;
+    const around: [2]f32 = .{ shown[0] - h, shown[1] + h };
+    s.painted_band = around;
+    if (std.mem.indexOfScalar(NodeId, win.culled.items, nid) == null) try win.culled.append(win.gpa, nid);
+    return .{ around[0] - pad.top, around[1] - pad.top };
 }
 
 /// The band of a node's own y coordinates its nearest scroll container
@@ -1111,15 +1130,22 @@ fn drawLayout(st: *State, win: *Window, l: *const text.TextLayout, b: *scene.Bui
     const cache = if (nid) |n| win.state(n).text else null;
     const own = if (cache) |c| (if (c.layout) |*cl| cl == l else false) else false;
     const first: u32 = if (band) |bd| l.blockAtY(bd[0]) else 0;
+    // Far down a long text, floats are coarser than a pixel: the band's
+    // lines go in a layer at its first block's top, placed relative to it
+    // in doubles, so that they keep their spacing (D13).
+    const origin: f64 = if (band != null and l.tops[first] > far_text) l.tops[first] else 0;
+    const shift_y: f32 = @floatCast(origin);
+    if (origin != 0) try b.pushLayer(.{ .transform = .translate(0, shift_y) });
     var bi = first;
     // A long text keeps the glyphs of the blocks it paints only (D13).
     defer l.dropGlyphs(first, bi);
     while (bi < l.blocks.len) : (bi += 1) {
-        const block_top = l.tops[bi];
-        if (band) |bd| if (block_top > bd[1]) break;
+        if (band) |bd| if (l.tops[bi] > bd[1]) break;
         const bl = try l.withGlyphs(win.scratch.allocator(), bi);
+        // Measuring it may have moved the blocks after it.
+        const block_top = l.tops[bi];
         const style_first = l.shaped.style_firsts[bi];
-        var li: usize = if (band) |bd| bl.lineAt(bd[0] - block_top) else 0;
+        var li: usize = if (band) |bd| bl.lineAt(@floatCast(bd[0] - block_top)) else 0;
         while (li < bl.lines.len) : (li += 1) {
             const block_line = bl.lines[li];
             if (band) |bd| if (block_top + block_line.top > bd[1]) break;
@@ -1132,7 +1158,7 @@ fn drawLayout(st: *State, win: *Window, l: *const text.TextLayout, b: *scene.Bui
                 st.glyphs.clearRetainingCapacity();
                 var x0: f32 = std.math.inf(f32);
                 var x1: f32 = -std.math.inf(f32);
-                const baseline = oy + line.baseline;
+                const baseline = oy + @as(f32, @floatCast(block_top - origin + block_line.baseline));
                 const pen = ox + shift + line.x;
                 const glyphs = bl.runGlyphs(run);
                 try st.glyphs.ensureUnusedCapacity(win.gpa, glyphs.len);
@@ -1171,8 +1197,16 @@ fn drawLayout(st: *State, win: *Window, l: *const text.TextLayout, b: *scene.Bui
             }
         }
     }
+    if (origin != 0) {
+        try b.popLayer();
+        if (!bounds.isEmpty()) bounds = .{ .x0 = bounds.x0, .y0 = bounds.y0 + shift_y, .x1 = bounds.x1, .y1 = bounds.y1 + shift_y };
+    }
     return bounds;
 }
+
+/// Layout coordinates past which a band of a long text is painted
+/// relative to its top: floats are a sixteenth of a pixel apart there.
+const far_text = 1 << 19;
 
 fn drawImage(win: *Window, nid: NodeId, b: *scene.Builder, off: Point) DrawError!Rect {
     const n = win.node(nid);
