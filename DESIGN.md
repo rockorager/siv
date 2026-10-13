@@ -2340,7 +2340,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       the focused node (roving focus) and stays bound out of view. Rows
       handle only keys aimed at themselves (`siv_event.target`, D16) and
       leave presses in an editor inside them alone, so an application can
-      rename an item in place with an editor in its row. Trees
+      rename an item in place with an editor in its row. The whole
+      selection is also read and replaced as a bitset in one call
+      (`siv_view_get_selection`, `siv_view_set_selection`), and setting
+      one item restyles only its row: the file manager in `apps/files`
+      took 0.8 s for Ctrl+A over 100 000 entries and 1.5 s to keep a
+      selection across a new sort order with a call (and a restyle of
+      every row) per item. Trees
       keep their visible items flattened in node data, inserting and
       removing rows (and shifting selection bits) as items expand and
       collapse, asking the application's children and child callbacks

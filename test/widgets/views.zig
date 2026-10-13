@@ -299,6 +299,64 @@ test "list view: keyboard cursor, single and multiple selection, activation" {
     try testing.expectEqual(@as(u32, 1), m.destroyed);
 }
 
+test "list view: the whole selection as a bitset, set and read in one call" {
+    var h: Harness = .{};
+    try h.start(240, 320, null, null);
+    defer h.stop();
+    var m: Model = .{};
+    const list = try listOf(&h, &m, 100_000, .multiple);
+    // Every item but the first.
+    var all: [12_500]u8 = @splat(0xff);
+    all[0] = 0xfe;
+    var txn = try begin(h.window);
+    try ok(c.siv_view_set_selection(txn, list, &all, all.len));
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    var sel = true;
+    try ok(c.siv_view_is_selected(list, 0, &sel));
+    try testing.expect(!sel);
+    try ok(c.siv_view_is_selected(list, 99_999, &sel));
+    try testing.expect(sel);
+    // Rows in view show it.
+    const uw, _ = try uiId(list);
+    try testing.expectEqual(.on, (try uw.semanticsTree()).find(.list_item, "Item 1").?.selected);
+    try testing.expectEqual(.off, (try uw.semanticsTree()).find(.list_item, "Item 0").?.selected);
+    // Read back: the length is (count + 7) / 8 whatever the buffer.
+    var back: [12_500]u8 = undefined;
+    var len: usize = 0;
+    try ok(c.siv_view_get_selection(list, &back, back.len, &len));
+    try testing.expectEqual(@as(usize, 12_500), len);
+    try testing.expectEqualSlices(u8, &all, &back);
+    try ok(c.siv_view_get_selection(list, null, 0, &len));
+    try testing.expectEqual(@as(usize, 12_500), len);
+    // Ctrl+click on a selected row still reports the count the view keeps.
+    const b2 = (try uw.semanticsTree()).find(.list_item, "Item 2").?.bounds;
+    try h.inject(&.{.{ .modifiers = .{ .window = (try h.win()).win.id, .seat = 0, .mods = .{ .ctrl = true } } }});
+    try h.click((b2.x0 + b2.x1) / 2, (b2.y0 + b2.y1) / 2);
+    try h.settle();
+    try testing.expectEqual(@as(u32, 99_998), m.selected);
+    // An empty bitset clears it; bits past the count are ignored; a
+    // single-selection view takes at most one bit.
+    txn = try begin(h.window);
+    try ok(c.siv_view_set_selection(txn, list, null, 0));
+    try ok(c.siv_txn_commit(txn));
+    try ok(c.siv_view_get_selection(list, &back, back.len, &len));
+    for (back) |x| try testing.expectEqual(@as(u8, 0), x);
+    txn = try begin(h.window);
+    try ok(c.siv_view_set_count(txn, list, 3));
+    const over = [_]u8{0xff};
+    try ok(c.siv_view_set_selection(txn, list, &over, 1));
+    try ok(c.siv_txn_commit(txn));
+    try ok(c.siv_view_get_selection(list, &back, back.len, &len));
+    try testing.expectEqual(@as(usize, 1), len);
+    try testing.expectEqual(@as(u8, 0x07), back[0]);
+    var m2: Model = .{};
+    const single = try listOf(&h, &m2, 10, .single);
+    txn = try begin(h.window);
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_view_set_selection(txn, single, &over, 1));
+    try ok(c.siv_txn_abort(txn));
+}
+
 const Targets = struct {
     key_target: t.Node = .null,
     keys: u32 = 0,

@@ -1611,6 +1611,14 @@ pub const functions = [_]Function{
         .{ .name = "index", .type = .u32, .doc = "The row index." },
         .{ .name = "selected", .type = out(.bool), .doc = "Selected." },
     }),
+    setter("siv_view_set_selection", "Replaces a view's whole selection with a bitset, without reporting it: item i (a row index) is selected when bit i % 8 of byte i / 8 is set. Bytes past the end are unselected and bits past the count ignored, so an empty array clears the selection. One call instead of one per item, for selecting all, clearing, or keeping a selection across a new order. In single mode at most one bit may be set.", &.{
+        .{ .name = "bits", .type = array(.u8), .doc = "The bitset (copied)." },
+    }),
+    call("siv_view_get_selection", "Copies a view's selection as a bitset (see siv_view_set_selection), one bit per item, (count + 7) / 8 bytes in all.", &.{
+        .{ .name = "view", .type = ref("siv_node"), .doc = "A view." },
+        .{ .name = "bits", .type = .buffer, .doc = "Receives at most bits_cap bytes; may be NULL with bits_cap 0." },
+        .{ .name = "len", .type = out(.usize), .doc = "The bitset's full length in bytes." },
+    }),
     call("siv_view_get_item", "The item at a row index: its index, or for trees its id.", &.{
         .{ .name = "view", .type = ref("siv_node"), .doc = "A view." },
         .{ .name = "index", .type = .u32, .doc = "The row index." },

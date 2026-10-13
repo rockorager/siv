@@ -1155,9 +1155,18 @@ pub export fn siv_view_set_selected(txn: Txn, view: Node, index: u32, selected: 
     if (v.selection == .single and selected) {
         clearSelection(v);
         v.cursor = @intCast(index);
+        setSelected(v, index, selected);
+        applyAll(txn, v);
+        return c.siv_txn_status(txn);
     }
     setSelected(v, index, selected);
-    applyAll(txn, v);
+    // Only the row showing the item changes, if it is bound: restyling
+    // every row per call made selecting many items one by one quadratic.
+    var cur = w.related(v.content, .first_child);
+    while (cur != .null) : (cur = w.related(cur, .next)) {
+        const r = rowOf(cur) orelse continue;
+        if (r.index == index and r.gen == v.gen) applyRow(txn, v, r);
+    }
     return c.siv_txn_status(txn);
 }
 
@@ -1206,6 +1215,41 @@ pub export fn siv_view_is_selected(view: Node, index: u32, selected: ?*bool) siv
     const v = viewOf(view) orelse return .error_invalid_argument;
     if (index >= v.count) return .error_invalid_argument;
     out.* = isSelected(v, index);
+    return .ok;
+}
+
+pub export fn siv_view_set_selection(txn: Txn, view: Node, bitset: ?[*]const u8, bitset_count: usize) siv.Result {
+    const v = viewOf(view) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
+    if (bitset_count != 0 and bitset == null) return c.siv_txn_fail(txn, .error_invalid_argument);
+    const src = if (bitset_count == 0) &[_]u8{} else bitset.?[0..bitset_count];
+    const b = bits(v);
+    const n = @min(src.len, (@as(usize, v.count) + 7) / 8);
+    var total: u32 = 0;
+    for (src[0..n], 0..) |x, i| {
+        // Bits past the count are not items.
+        const keep: u8 = if ((i + 1) * 8 <= v.count) 0xff else @as(u8, 0xff) >> @intCast((i + 1) * 8 - v.count);
+        total += @popCount(x & keep);
+    }
+    if (total != 0 and v.selection == .none) return c.siv_txn_fail(txn, .error_invalid_argument);
+    if (total > 1 and v.selection == .single) return c.siv_txn_fail(txn, .error_invalid_argument);
+    @memset(b, 0);
+    for (src[0..n], 0..) |x, i| {
+        const keep: u8 = if ((i + 1) * 8 <= v.count) 0xff else @as(u8, 0xff) >> @intCast((i + 1) * 8 - v.count);
+        b[i] = x & keep;
+    }
+    v.selected = total;
+    applyAll(txn, v);
+    return c.siv_txn_status(txn);
+}
+
+pub export fn siv_view_get_selection(view: Node, out: ?[*]u8, out_cap: usize, len: ?*usize) siv.Result {
+    const total = len orelse return .error_invalid_argument;
+    if (out_cap != 0 and out == null) return .error_invalid_argument;
+    const v = viewOf(view) orelse return .error_invalid_argument;
+    const n = (@as(usize, v.count) + 7) / 8;
+    const k = @min(n, out_cap);
+    if (k != 0) @memcpy(out.?[0..k], bits(v)[0..k]);
+    total.* = n;
     return .ok;
 }
 
