@@ -95,7 +95,7 @@ fn buildControls(h: *Harness, log: *Log) !Controls {
     out.sw = c.siv_switch(txn, switches, &.{ .label = "Wi-Fi", .label_len = 5 });
     _ = c.siv_switch(txn, switches, &.{ .label = "Bluetooth", .label_len = 9, .checked = .on });
     out.group = c.siv_radio_group(txn, col, &.{ .label = "Size", .label_len = 4 });
-    for (&out.radios, [_][]const u8{ "Small", "Medium", "Large" }) |*r, label| r.* = c.siv_radio(txn, out.group, label.ptr, label.len);
+    for (&out.radios, [_][]const u8{ "Small", "Medium", "Large" }) |*r, label| r.* = c.siv_radio(txn, out.group, &.{ .label = label.ptr, .label_len = label.len });
     for ([_]t.Node{ out.toggle, out.check, out.mixed, out.sw, out.group }) |n| _ = c.siv_on(txn, n, .change, Log.onChange, null, log);
     _ = c.siv_on(txn, out.button, .activate, Log.onActivate, null, log);
     _ = c.siv_on(txn, out.disabled, .activate, Log.onActivate, null, log);
@@ -515,6 +515,26 @@ test "widgets: focusing a stock widget focuses the node its interface chooses" {
     try ok(c.siv_widget_set_disabled(txn, w.group, true));
     try ok(c.siv_txn_commit(txn));
     try testing.expectEqual(t.Result.error_invalid_argument, c.siv_node_focus(w.group));
+
+    // A radio disabled by its descriptor is skipped by the arrows.
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const group = c.siv_radio_group(txn, c.siv_window_root(h.window), &.{ .label = "Speed", .label_len = 5 });
+    var radios: [3]t.Node = undefined;
+    for (&radios, [_][]const u8{ "Slow", "Medium", "Fast" }, 0..) |*r, label, i|
+        r.* = c.siv_radio(txn, group, &.{ .label = label.ptr, .label_len = label.len, .flags = .{ .disabled = i == 1 } });
+    try testing.expectEqual(t.Node.null, c.siv_radio(txn, group, &.{ .reserved0 = 1 }));
+    try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_commit(txn));
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const group2 = c.siv_radio_group(txn, c.siv_window_root(h.window), &.{ .label = "Speed", .label_len = 5 });
+    for (&radios, [_][]const u8{ "Slow", "Medium", "Fast" }, 0..) |*r, label, i|
+        r.* = c.siv_radio(txn, group2, &.{ .label = label.ptr, .label_len = label.len, .flags = .{ .disabled = i == 1 } });
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try ok(c.siv_node_focus(group2));
+    try h.typeKey(ks.down, "", .{});
+    try h.settle();
+    try testing.expectEqual(@as(f64, 2), try value(group2));
+    try testing.expect((try sem(radios[1])).disabled);
 }
 
 test "widgets: radio groups move the selection with arrows, mirrored in RTL" {

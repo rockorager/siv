@@ -91,9 +91,9 @@ int main(void) {
 		siv_on(txn, updates, SIV_EVENT_TYPE_CHANGE, on_change, NULL, "updates");
 
 		siv_node quality = siv_radio_group(txn, column, SIV_DESC(siv_radio_group_desc, .label = S("Quality"), .axis = SIV_AXIS_COLUMN));
-		siv_radio(txn, quality, S("Low"));
-		siv_radio(txn, quality, S("Balanced"));
-		siv_radio(txn, quality, S("High"));
+		siv_radio(txn, quality, SIV_DESC(siv_radio_desc, .label = "Low", .label_len = 3));
+		siv_radio(txn, quality, SIV_DESC(siv_radio_desc, .label = "Balanced", .label_len = 8));
+		siv_radio(txn, quality, SIV_DESC(siv_radio_desc, .label = "High", .label_len = 4));
 		siv_widget_set_value(txn, quality, 1);
 		siv_on(txn, quality, SIV_EVENT_TYPE_CHANGE, on_change, NULL, "quality");
 

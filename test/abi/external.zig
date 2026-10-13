@@ -68,7 +68,7 @@ test "C API external: submitted frames show, and replaced ones are released" {
 
     var txn: t.Txn = .null;
     try ok(T.siv_txn_begin(h.window, &txn));
-    const view = X.siv_external_view(txn, A.siv_window_root(h.window), ext, .{ .width = 2, .height = 1 }, .fill);
+    const view = X.siv_external_view(txn, A.siv_window_root(h.window), &.{ .external = ext, .content_size = .{ .width = 2, .height = 1 }, .fit = .fill });
     _ = T.siv_set_layout(txn, view, &.{ .width = .{ .unit = .px, .value = 80 }, .height = .{ .unit = .px, .value = 40 } });
     try ok(T.siv_txn_commit(txn));
 
@@ -165,7 +165,7 @@ test "C API external: an embedder surface is configured to its node's size" {
 
     var txn: t.Txn = .null;
     try ok(T.siv_txn_begin(h.window, &txn));
-    const view = X.siv_external_view(txn, A.siv_window_root(h.window), ext, .{ .width = 0, .height = 0 }, .fill);
+    const view = X.siv_external_view(txn, A.siv_window_root(h.window), &.{ .external = ext, .fit = .fill });
     _ = T.siv_set_layout(txn, view, &.{ .width = .{ .unit = .px, .value = 60 }, .height = .{ .unit = .px, .value = 30 } });
     try ok(T.siv_txn_commit(txn));
     try h.settle();
@@ -245,7 +245,7 @@ test "C API external: a producer thread submits and gets frames back while the U
     try ok(X.siv_external_create(h.window, &.{ .on_event = Producer.onEvent, .release = Producer.onRelease, .destroy = Producer.onDestroy, .user_data = &p }, &p.ext));
     var txn: t.Txn = .null;
     try ok(T.siv_txn_begin(h.window, &txn));
-    const view = X.siv_external_view(txn, A.siv_window_root(h.window), p.ext, .{ .width = 2, .height = 1 }, .fill);
+    const view = X.siv_external_view(txn, A.siv_window_root(h.window), &.{ .external = p.ext, .content_size = .{ .width = 2, .height = 1 }, .fit = .fill });
     _ = T.siv_set_layout(txn, view, &.{ .width = .{ .unit = .px, .value = 80 }, .height = .{ .unit = .px, .value = 40 } });
     try ok(T.siv_txn_commit(txn));
     try ok(X.siv_external_submit(p.ext, &.{ .fd = fd, .width = 2, .height = 1, .key = 1 }));

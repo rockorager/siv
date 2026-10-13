@@ -68,9 +68,10 @@ fn focusTab(ts: *Tabs) Node {
     return t.root;
 }
 
-pub export fn siv_tab(txn: Txn, tabs_node: Node, label_ptr: ?[*]const u8, label_len: usize) Node {
+pub export fn siv_tab(txn: Txn, tabs_node: Node, desc: ?*const siv.TabDesc) Node {
     const ts = w.stateOf(Tabs, tabs_node, &.{.tabs}) orelse return w.fail(txn, .error_invalid_argument);
-    const label = w.str(label_ptr, label_len) orelse return w.fail(txn, .error_invalid_argument);
+    const d = w.readDesc(siv.TabDesc, desc) orelse return w.fail(txn, .error_invalid_argument);
+    const label = w.str(d.label, d.label_len) orelse return w.fail(txn, .error_invalid_argument);
     const root = c.siv_flex(txn, ts.list, &.{ .axis = .column, .align_items = .stretch });
     if (root == .null) return .null;
     const st = w.create(Tab, txn, root) orelse return .null;

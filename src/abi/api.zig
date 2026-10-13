@@ -1054,6 +1054,11 @@ pub const decls = [_]Decl{
         .{ .name = "axis", .type = ref("siv_axis"), .doc = "How the radios are arranged; default row." },
         .{ .name = "flags", .type = ref("siv_widget_flags"), .doc = "Options." },
     }),
+    descriptor("siv_radio_desc", "A radio button of a group (siv_radio).", &.{
+        .{ .name = "label", .type = .string, .doc = "The option's label, copied." },
+        .{ .name = "flags", .type = ref("siv_widget_flags"), .doc = "SIV_WIDGET_DISABLED: this option cannot be chosen; arrow keys skip it." },
+        reserved("reserved0"),
+    }),
     flags("siv_text_field_flags", "Text field options.", &.{
         .{ .name = "multiline", .bit = 0, .doc = "A text area: Enter inserts a line break and lines wrap." },
         .{ .name = "masked", .bit = 1, .doc = "A password field (SIV_EDITOR_MASKED)." },
@@ -1156,6 +1161,9 @@ pub const decls = [_]Decl{
     }),
     descriptor("siv_tabs_desc", "Tabs: a tab list over panels, added with siv_tab.", &.{
         .{ .name = "label", .type = .string, .doc = "The tab list's accessible name, copied." },
+    }),
+    descriptor("siv_tab_desc", "A tab of a tab list (siv_tab).", &.{
+        .{ .name = "label", .type = .string, .doc = "The tab's label, copied." },
     }),
     descriptor("siv_split_desc", "A split pane: two panes and a divider the user drags.", &.{
         .{ .name = "axis", .type = ref("siv_axis"), .doc = "row puts the panes side by side, column one above the other." },
@@ -1478,6 +1486,12 @@ pub const decls = [_]Decl{
         .{ .name = "fd", .type = .i32, .doc = "The plane's dma-buf; siv duplicates it." },
         .{ .name = "offset", .type = .u32, .doc = "Byte offset of the plane." },
         .{ .name = "stride", .type = .u32, .doc = "Bytes per row." },
+    }),
+    descriptor("siv_external_view_desc", "What an external node shows.", &.{
+        .{ .name = "external", .type = ref("siv_external"), .doc = "A slot of the same window; 0 shows nothing." },
+        .{ .name = "content_size", .type = ref("siv_size"), .doc = "The node's intrinsic size: the content's size or aspect ratio; zero sizes it by layout alone." },
+        .{ .name = "fit", .type = ref("siv_fit"), .doc = "How the content fits the content box; default contain." },
+        reserved("reserved0"),
     }),
     descriptor("siv_external_frame_desc", "One frame of external content in shared memory or a dma-buf.", &.{
         .{ .name = "key", .type = .u64, .doc = "Identifies the pixels; change it whenever they change. Released frames are reported by key." },
@@ -1812,9 +1826,9 @@ pub const functions = [_]Function{
     builder("siv_radio_group", "Creates a radio group; add options with siv_radio. Its value is the selected option's index (-1 for none); choosing one reports SIV_EVENT_CHANGE with value and index on the group. Arrow keys move the selection; only the selected radio is in the Tab order. Its role is group.", &.{.{ .name = "desc", .type = .{ .desc = "siv_radio_group_desc" }, .doc = "Options; NULL for defaults." }}),
     .{
         .name = "siv_radio",
-        .doc = "Appends an option to a radio group and returns it, or 0 if the transaction has failed. Its role is radio.",
+        .doc = "Appends an option to a radio group and returns it, or 0 if the transaction has failed. Its role is radio; siv_widget_set_label and siv_widget_set_disabled apply to it.",
         .since = v0_1,
-        .params = &.{ txn_param, .{ .name = "group", .type = ref("siv_node"), .doc = "A radio group." }, .{ .name = "label", .type = .string, .doc = "The option's label, copied." } },
+        .params = &.{ txn_param, .{ .name = "group", .type = ref("siv_node"), .doc = "A radio group." }, .{ .name = "desc", .type = .{ .desc = "siv_radio_desc" }, .doc = "The option." } },
         .ret = ref("siv_node"),
     },
     builder("siv_text_field", "Creates a framed editor and returns the editor itself, so editor functions and SIV_EVENT_CHANGE apply. Its role is text_input.", &.{.{ .name = "desc", .type = .{ .desc = "siv_text_field_desc" }, .doc = "Text and options; NULL for an empty field." }}),
@@ -1855,9 +1869,9 @@ pub const functions = [_]Function{
     builder("siv_tabs", "Creates tabs: a tab list over panels, added with siv_tab. The value is the selected tab's index; choosing one (click, arrow keys, Home, End) shows its panel and reports SIV_EVENT_CHANGE with value and index. Only the selected tab is in the Tab order.", &.{.{ .name = "desc", .type = .{ .desc = "siv_tabs_desc" }, .doc = "Options; NULL for defaults." }}),
     .{
         .name = "siv_tab",
-        .doc = "Appends a tab and returns its panel, a box for its content, or 0 if the transaction has failed. The first tab starts selected.",
+        .doc = "Appends a tab and returns its panel, a box for its content, or 0 if the transaction has failed. The first tab starts selected. The tab itself is siv_widget_get_part's tab part, a widget whose label siv_widget_set_label sets.",
         .since = v0_1,
-        .params = &.{ txn_param, .{ .name = "tabs", .type = ref("siv_node"), .doc = "Tabs." }, .{ .name = "label", .type = .string, .doc = "The tab's label, copied." } },
+        .params = &.{ txn_param, .{ .name = "tabs", .type = ref("siv_node"), .doc = "Tabs." }, .{ .name = "desc", .type = .{ .desc = "siv_tab_desc" }, .doc = "The tab." } },
         .ret = ref("siv_node"),
     },
     builder("siv_split_pane", "Creates a split pane: start and end panes (siv_widget_get_part) with a divider between them. Dragging the divider or pressing arrow keys, Home, or End on it moves it; the value is the start pane's size, reported with SIV_EVENT_CHANGE. The divider's role is separator with that value.", &.{.{ .name = "desc", .type = .{ .desc = "siv_split_desc" }, .doc = "Axis and position; NULL for side by side at 200." }}),
@@ -2119,16 +2133,8 @@ pub const functions = [_]Function{
         .{ .name = "height", .type = .u32, .doc = "Buffer height." },
     }),
     op("siv_external_destroy", "Destroys a slot; its frame or surface goes after the next frame. Nodes that show it show nothing. Application's thread; other threads' calls with the handle fail with SIV_ERROR_INVALID_HANDLE from now on.", &.{.{ .name = "external", .type = ref("siv_external"), .doc = "The slot." }}),
-    builder("siv_external_view", "Creates an external node: a slot's content fitted into its content box, in a layer of its own. Its role is image.", &.{
-        .{ .name = "external", .type = ref("siv_external"), .doc = "A slot of the same window; 0 shows nothing." },
-        .{ .name = "size", .type = ref("siv_size"), .doc = "Intrinsic size: the content's size or aspect ratio; zero sizes it by layout alone." },
-        .{ .name = "fit", .type = ref("siv_fit"), .doc = "How the content fits the box." },
-    }),
-    setter("siv_set_external_view", "Sets what an external node shows.", &.{
-        .{ .name = "external", .type = ref("siv_external"), .doc = "A slot of the same window; 0 shows nothing." },
-        .{ .name = "size", .type = ref("siv_size"), .doc = "Intrinsic size." },
-        .{ .name = "fit", .type = ref("siv_fit"), .doc = "How the content fits the box." },
-    }),
+    builder("siv_external_view", "Creates an external node: a slot's content fitted into its content box, in a layer of its own. Its role is image.", &.{.{ .name = "desc", .type = .{ .desc = "siv_external_view_desc" }, .doc = "The slot, size, and fit; NULL shows nothing." }}),
+    setter("siv_set_external_view", "Sets what an external node shows.", &.{.{ .name = "desc", .type = .{ .desc = "siv_external_view_desc" }, .doc = "The slot, size, and fit; NULL shows nothing." }}),
 };
 
 pub const spec: schema.Schema = .{

@@ -418,7 +418,7 @@ test "tabs: one panel at a time, arrows move the selection, mirrored in RTL" {
         _ = c.siv_set_layout(txn, tabs, &.{ .padding = .{ .start = 12, .end = 12, .top = 12, .bottom = 12 } });
         var panels: [3]t.Node = undefined;
         for (&panels, [_][]const u8{ "General", "Privacy", "About" }) |*p, label| {
-            p.* = c.siv_tab(txn, tabs, label.ptr, label.len);
+            p.* = c.siv_tab(txn, tabs, &.{ .label = label.ptr, .label_len = label.len });
             const text = c.siv_text(txn, p.*, label.ptr, label.len);
             _ = c.siv_set_text_style(txn, text, &.{ .color_token = .window_fg, .size_role = .body });
         }

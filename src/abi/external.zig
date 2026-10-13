@@ -318,22 +318,27 @@ fn viewOf(w: *Window, external: t.External, size: t.Size, fit: t.Fit) Error!ui.E
     };
 }
 
-pub export fn siv_external_view(txn: t.Txn, parent: t.Node, external: t.External, size: t.Size, fit: t.Fit) t.Node {
+pub export fn siv_external_view(txn: t.Txn, parent: t.Node, desc: ?*const t.ExternalViewDesc) t.Node {
     return tree.build(txn, struct {
-        fn f(w: *Window, p: t.Node, e: t.External, s: t.Size, ft: t.Fit) Error!NodeId {
-            const view = try viewOf(w, e, s, ft);
+        fn f(w: *Window, p: t.Node, d: ?*const t.ExternalViewDesc) Error!NodeId {
+            const view = try viewDesc(w, d);
             const id = try tree.create(w, p, .external);
             w.txn.ut.setExternal(id, view) catch |err| return tree.mapTxn(err);
             return id;
         }
-    }.f, .{ parent, external, size, fit });
+    }.f, .{ parent, desc });
 }
 
-pub export fn siv_set_external_view(txn: t.Txn, node: t.Node, external: t.External, size: t.Size, fit: t.Fit) t.Result {
+pub export fn siv_set_external_view(txn: t.Txn, node: t.Node, desc: ?*const t.ExternalViewDesc) t.Result {
     return tree.run(txn, struct {
-        fn f(w: *Window, n: t.Node, e: t.External, s: t.Size, ft: t.Fit) Error!void {
+        fn f(w: *Window, n: t.Node, d: ?*const t.ExternalViewDesc) Error!void {
             const id = try tree.nodeIn(w, n);
-            w.txn.ut.setExternal(id, try viewOf(w, e, s, ft)) catch |err| return tree.mapTxn(err);
+            w.txn.ut.setExternal(id, try viewDesc(w, d)) catch |err| return tree.mapTxn(err);
         }
-    }.f, .{ node, external, size, fit });
+    }.f, .{ node, desc });
+}
+
+fn viewDesc(w: *Window, ptr: ?*const t.ExternalViewDesc) Error!ui.External {
+    const d = try runtime.readDesc(t.ExternalViewDesc, ptr);
+    return viewOf(w, d.external, d.content_size, d.fit);
 }

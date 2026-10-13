@@ -48,13 +48,15 @@ pub export fn siv_radio_group(txn: Txn, parent: Node, desc: ?*const siv.RadioGro
     return root;
 }
 
-pub export fn siv_radio(txn: Txn, group: Node, label_ptr: ?[*]const u8, label_len: usize) Node {
+pub export fn siv_radio(txn: Txn, group: Node, desc: ?*const siv.RadioDesc) Node {
     if (w.stateOf(Group, group, &.{.radio_group}) == null) return w.fail(txn, .error_invalid_argument);
-    const label = w.str(label_ptr, label_len) orelse return w.fail(txn, .error_invalid_argument);
+    const d = w.readDesc(siv.RadioDesc, desc) orelse return w.fail(txn, .error_invalid_argument);
+    if (@as(u32, @bitCast(d.flags)) & ~@as(u32, 1) != 0 or d.reserved0 != 0) return w.fail(txn, .error_unsupported);
+    const label = w.str(d.label, d.label_len) orelse return w.fail(txn, .error_invalid_argument);
     const root = c.siv_flex(txn, group, &.{ .axis = .row, .align_items = .center, .gap = tk.gap });
     if (root == .null) return .null;
     const st = w.create(Radio, txn, root) orelse return .null;
-    st.* = .{ .hdr = .{ .kind = .radio }, .group = group, .root = root, .circle = .null, .dot = .null, .label = .null };
+    st.* = .{ .hdr = .{ .kind = .radio, .disabled = d.flags.disabled }, .group = group, .root = root, .circle = .null, .dot = .null, .label = .null };
     st.circle = c.siv_stack(txn, root, &.{ .align_x = .center, .align_y = .center });
     _ = c.siv_set_layout(txn, st.circle, &.{ .width = px(tk.check_size), .height = px(tk.check_size), .flags = .{ .no_shrink = true } });
     st.dot = c.siv_box(txn, st.circle);

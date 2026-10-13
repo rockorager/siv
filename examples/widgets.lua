@@ -51,7 +51,7 @@ win:update(function(txn, root)
 		on = { change = report("quality") },
 	})
 	for _, label in ipairs{ "Low", "Balanced", "High" } do
-		txn:radio(quality, label)
+		txn:radio(quality, { label = label })
 	end
 	txn:widget_set_value(quality, 1)
 

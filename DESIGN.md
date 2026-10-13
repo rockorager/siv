@@ -2720,7 +2720,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     removes the widget. Parts that hold several items are built item by
     item with child builders (`siv_radio` under a radio group), so items
     are nodes too and no descriptor needs an array of strings, which the
-    schema cannot express. Text fields and areas return the editor node
+    schema cannot express. Child builders take descriptors like the
+    others (`siv_radio_desc`, `siv_tab_desc`, `siv_menu_item_desc`,
+    `siv_column_desc`), so an item gains options without a new function:
+    a radio disabled from the start was the first (D30). Text fields and areas return the editor node
     itself, so every editor function (text, selection, change events)
     works on them unchanged.
   - **Driving:** a few functions cover every widget instead of setters per
@@ -3574,6 +3577,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | views have no widget value (D22) | `siv_widget_set_value`/`get_value` on views | one way to move the cursor: `siv_view_set_cursor`, `siv_view_get_cursor` |
   | `siv_node_focus` on a view (D22) | `siv_view_focus` | the widget interface's `focus` covers every roving widget |
   | header cell value (D22) | `siv_view_set_column_width`, `siv_view_get_column_width` | the value a widget reports in `change` is the value it takes |
+  | `siv_radio(txn, group, &siv_radio_desc)` (D22) | `siv_radio(txn, group, label)` | items grow options (a disabled radio now, its `flags`) without new functions |
+  | `siv_tab(txn, tabs, &siv_tab_desc)` (D22) | `siv_tab(txn, tabs, label)` | likewise (an icon, a close button) |
+  | `siv_external_view(txn, parent, &siv_external_view_desc)` and `siv_set_external_view` (D27) | slot, size, and fit as arguments | like `siv_image_view`; the Lua builder takes an `external_view` property |
 - **Reverse if:** a binding cannot express one of these without special
   cases; then the schema needs a construct, not an exception.
 
