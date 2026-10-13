@@ -1,0 +1,102 @@
+# `zig build test` and `zig build test-integration` on every push and pull
+# request (D24). The job runs in Debian 12, the system orbs use, and
+# prepares it with .agents/setup, so CI and orbs install the same packages,
+# Zig, Nix, and sway. Performance budgets, frame pacing, GPU tests, and
+# fuzzing run by hand (D24, D25).
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container: debian:12
+    defaults:
+      run:
+        # As an unprivileged user with sudo, like an orb.
+        shell: runuser -u ci -- bash -eo pipefail {0}
+    steps:
+      - name: Create the ci user
+        shell: bash
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends sudo git zstd ca-certificates
+          useradd -m -u "$(stat -c %u "$GITHUB_WORKSPACE")" ci
+          echo 'ci ALL=(ALL) NOPASSWD: ALL' >/etc/sudoers.d/ci
+
+      - uses: actions/checkout@v5
+
+      # Zig and the Nix store with the pinned sway, keyed on the files that
+      # pin them.
+      - uses: actions/cache/restore@v4
+        id: tools
+        with:
+          path: |
+            /opt/zig-*
+            /nix
+            /home/ci/.nix-profile
+            /home/ci/.local/state/nix
+            /home/ci/.local/state/siv-sway
+          key: tools-${{ hashFiles('.agents/setup', '.agents/sway.nix') }}
+
+      # Fetched packages and Zig's caches, saved once per set of pinned
+      # packages: the vendored C and C++ libraries, most of a cold build,
+      # stay compiled, and the cache does not grow with every commit.
+      - uses: actions/cache/restore@v4
+        id: zig
+        with:
+          path: |
+            zig-pkg
+            .zig-cache
+            /home/ci/.cache/zig
+          key: zig-${{ hashFiles('build.zig.zon', '.agents/setup') }}
+          restore-keys: zig-
+
+      - name: .agents/setup
+        run: .agents/setup
+
+      - uses: actions/cache/save@v4
+        if: steps.tools.outputs.cache-hit != 'true'
+        with:
+          path: |
+            /opt/zig-*
+            /nix
+            /home/ci/.nix-profile
+            /home/ci/.local/state/nix
+            /home/ci/.local/state/siv-sway
+          key: ${{ steps.tools.outputs.cache-primary-key }}
+
+      - name: zig build test
+        run: zig build test --summary failures
+
+      - name: zig build test-integration
+        run: zig build test-integration --summary failures
+
+      # The -fsys libraries Debian 12 provides. Not covered: harfbuzz (siv
+      # needs HarfBuzz 14; Debian 12 has 6.0), sheenbidi (not packaged by
+      # Debian), and lua (Debian 12 has no Lua 5.5). dav1d is linked only by
+      # the vendored libavif, so it gets a build of its own.
+      - name: zig build with -fsys
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+            glslang-tools liblcms2-dev libwebp-dev libavif-dev libdav1d-dev libjxl-dev
+          zig build --prefix "$RUNNER_TEMP/fsys" --summary failures \
+            -fsys=glslang -fsys=lcms2 -fsys=libwebp -fsys=libavif -fsys=libjxl
+          zig build --prefix "$RUNNER_TEMP/fsys-dav1d" --summary failures -fsys=dav1d
+
+      # Also after a failure, so that the next run does not start cold.
+      - uses: actions/cache/save@v4
+        if: always() && steps.zig.outcome == 'success' && steps.zig.outputs.cache-hit != 'true'
+        with:
+          path: |
+            zig-pkg
+            .zig-cache
+            /home/ci/.cache/zig
+          key: ${{ steps.zig.outputs.cache-primary-key }}

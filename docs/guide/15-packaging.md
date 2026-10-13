@@ -162,7 +162,7 @@ modules:
       - ./zig/zig build -Doptimize=ReleaseSafe --prefix /app
     sources:
       - type: git
-        url: https://example.org/siv.git
+        url: https://github.com/rockorager/siv.git
         tag: v0.1.0
       - type: archive
         dest: zig

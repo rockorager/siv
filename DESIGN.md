@@ -4003,6 +4003,22 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   client, and portals against xdg-desktop-portal with a backend of siv's
   own behind it; the hermetic D-Bus, AT-SPI, and portal tests use an
   in-process test bus over socketpairs.
+  - CI (`.github/workflows/ci.yml`, GitHub Actions) runs `zig build test`
+    and `zig build test-integration` on every push and pull request, in a
+    Debian 12 container prepared by `.agents/setup`, so CI and orbs install
+    the same packages, Zig, Nix, and sway; its Vulkan tests run on
+    lavapipe. The same job builds with the `-fsys` options whose libraries
+    Debian 12 packages: glslang, lcms2, libwebp, libavif, dav1d, and
+    libjxl. Not harfbuzz (siv needs HarfBuzz 14; Debian 12 has 6.0),
+    sheenbidi (not packaged by Debian), or lua (Debian 12 has no Lua 5.5).
+    `test` already builds the examples, apps, the guide, and the Lua
+    module. Zig's packages and caches and the Nix store are cached
+    between runs.
+  - Run by hand, not in CI, because they need a quiet machine or a real
+    GPU: the GPU tests (`SIV_SWAY_RENDERER=vulkan zig build
+    test-integration`, sway rendering and presenting on the GPU), frame
+    pacing (`zig build bench-pacing`), the budgets' benchmarks (D25), and
+    fuzzing (D25).
   - Protocols sway 1.12 lacks (xdg-dialog-v1, xdg-toplevel-icon-v1,
     xdg-session-management-v1; D17) are covered by the headless tests
     (`test/abi/windows.zig`: dialogs, icons, session restore through the
@@ -4104,18 +4120,24 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     the dependent's install, reporting siv as a package without a
     licence. Found by the user guide's package sample
     (`docs/guide/examples/zig-package`).
-- **Security:** continuous fuzzing of every parser (rasterizer inputs, SVG,
+- **Security:** fuzzing of every parser (rasterizer inputs, SVG,
   image decoders, clipboard and drag-and-drop payloads, Wayland input, D-Bus
   messages, SASL replies, addresses, match rules, portal font strings,
   and icon themes' index.theme files).
-  Fuzz targets are `std.testing.fuzz` tests, so `zig build test` runs their
-  corpus and `zig build test-<module> --fuzz -Doptimize=ReleaseSafe` fuzzes
-  them (Zig 0.17's fuzzer finds no coverage in Debug builds).
+  Fuzz targets are `std.testing.fuzz` tests, so `zig build test` (and so
+  CI) runs their corpus. Fuzzing itself runs by hand, not in CI: `zig
+  build test-<module> --fuzz -Doptimize=ReleaseSafe` for each module with
+  targets (dbus, icon, image, platform, svg, ui) fuzzes until stopped
+  (Zig 0.17's fuzzer finds no coverage in Debug builds).
 - **Budgets:** first frame under 20 ms, input-to-photon within one
   frame, 120 Hz scrolling through a 100k-row virtual list, zero idle CPU and
-  wakeups, fixed memory per window. Not built yet: CI to enforce them.
-  Today the `bench-*` steps measure them on demand (`bench-pacing` checks
-  D12's thresholds and fails past them).
+  wakeups, fixed memory per window. They are checked by hand, not in CI,
+  on a quiet machine with a real GPU, since shared CI runners give noisy
+  timings and no GPU: `zig build bench-pacing` measures pacing on sway and
+  fails past D12's thresholds, and `zig build bench-text`,
+  `bench-render-cpu`, and `bench-image -- FILE...` (all with
+  `-Doptimize=ReleaseFast`) print timings to compare with the budgets and
+  with earlier results before a change that could affect them lands.
 
 ### D26. Layout
 
