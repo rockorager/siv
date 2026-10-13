@@ -363,6 +363,33 @@ pub export fn siv_app_add_font(app: t.App, family: ?[*]const u8, family_len: usi
     return .ok;
 }
 
+pub export fn siv_app_font_family(app: t.App, family: ?[*]const u8, family_len: usize, id: ?*u32) t.Result {
+    return wrap(struct {
+        fn f(a: t.App, p: ?[*]const u8, n: usize, out: ?*u32) Error!void {
+            const self = try App.get(@backingInt(a));
+            const name = try runtime.string(p, n);
+            const dest = try runtime.out(u32, out);
+            dest.* = try self.app.fonts.intern(name);
+        }
+    }.f(app, family, family_len, id));
+}
+
+pub export fn siv_app_get_font_family_name(app: t.App, id: u32, name: ?[*]u8, name_cap: usize, len: ?*usize) t.Result {
+    return wrap(struct {
+        fn f(a: t.App, i: u32, ptr: ?[*]u8, cap: usize, out: ?*usize) Error!void {
+            const self = try App.get(@backingInt(a));
+            const buf = try runtime.buffer(ptr, cap);
+            const dest = try runtime.out(usize, out);
+            const fonts = &self.app.fonts;
+            if (i >= fonts.names.count()) return error.InvalidArgument;
+            const s = fonts.name(i);
+            const k = @min(s.len, buf.len);
+            @memcpy(buf[0..k], s[0..k]);
+            dest.* = s.len;
+        }
+    }.f(app, id, name, name_cap, len));
+}
+
 pub export fn siv_app_set_default_font(app: t.App, family: ?[*]const u8, family_len: usize) t.Result {
     const self = App.get(@backingInt(app)) catch |err| return t.resultOf(err);
     const name = runtime.string(family, family_len) catch |err| return t.resultOf(err);

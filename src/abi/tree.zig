@@ -675,6 +675,26 @@ pub fn textPropsOf(d_ptr: ?*const t.TextStyleDesc) Error!ui.Text {
     const d = try runtime.readDesc(t.TextStyleDesc, d_ptr);
     const fl = try runtime.flags(t.TextFlags, d.flags);
     if (!(d.font_size >= 0) or d.font_size > 1 << 16) return error.InvalidArgument;
+    const stops = try runtime.array(f32, d.tab_stops, d.tab_stops_count);
+    var prev: f32 = -std.math.inf(f32);
+    for (stops) |stop| {
+        if (!std.math.isFinite(stop) or stop <= prev) return error.InvalidArgument;
+        prev = stop;
+    }
+    const paragraph = try paragraphPatchOf(.{
+        .start = 0,
+        .end = 0,
+        .flags = .{ .indent = true, .line_spacing = true, .paragraph_spacing = true, .tab_width = true },
+        .@"align" = .start,
+        .line_spacing = d.line_spacing,
+        .line_height = d.line_height,
+        .space_before = d.space_before,
+        .space_after = d.space_after,
+        .indent_start = d.indent_start,
+        .indent_end = d.indent_end,
+        .first_line_indent = d.first_line_indent,
+        .tab_width = d.tab_width,
+    });
     return .{
         .style = .{
             .family = try runtime.string(d.family, d.family_len),
@@ -709,7 +729,120 @@ pub fn textPropsOf(d_ptr: ?*const t.TextStyleDesc) Error!ui.Text {
             _ => unreachable,
         },
         .wrap = !fl.no_wrap,
+        .break_words = fl.break_words,
+        .paragraph = paragraph.apply(.{}),
+        .tab_stops = stops,
     };
+}
+
+/// A siv_paragraph_span's attributes as a paragraph patch.
+fn paragraphPatchOf(sp: t.ParagraphSpan) Error!ui.ParagraphPatch {
+    const fl = try runtime.flags(t.ParagraphFlags, sp.flags);
+    var out: ui.ParagraphPatch = .{};
+    if (fl.@"align") out.alignment = switch (try runtime.enumValue(t.TextAlign, sp.@"align")) {
+        .start => .start,
+        .end => .end,
+        .center => .center,
+        _ => unreachable,
+    };
+    for ([_]f32{ sp.line_spacing, sp.line_height, sp.space_before, sp.space_after, sp.indent_start, sp.indent_end, sp.first_line_indent, sp.tab_width }) |v| {
+        if (!std.math.isFinite(v) or @abs(v) > 1 << 20) return error.InvalidArgument;
+    }
+    if (fl.indent) {
+        if (sp.indent_start < 0 or sp.indent_end < 0) return error.InvalidArgument;
+        out.indent = .{ .start = sp.indent_start, .end = sp.indent_end, .first_line = sp.first_line_indent };
+    }
+    if (fl.line_spacing) {
+        if (sp.line_spacing < 0 or sp.line_height < 0) return error.InvalidArgument;
+        out.spacing = .{ .line_spacing = if (sp.line_spacing == 0) 1 else sp.line_spacing, .line_height = sp.line_height };
+    }
+    if (fl.paragraph_spacing) {
+        if (sp.space_before < 0 or sp.space_after < 0) return error.InvalidArgument;
+        out.gaps = .{ .before = sp.space_before, .after = sp.space_after };
+    }
+    if (fl.tab_width) {
+        if (sp.tab_width < 0) return error.InvalidArgument;
+        out.tab_width = sp.tab_width;
+    }
+    return out;
+}
+
+/// A paragraph patch as a siv_paragraph_span over start..end.
+fn paragraphSpanOf(start: u32, end: u32, p: ui.ParagraphPatch) t.ParagraphSpan {
+    var out = std.mem.zeroes(t.ParagraphSpan);
+    out.start = start;
+    out.end = end;
+    out.@"align" = .start;
+    if (p.alignment) |a| {
+        out.flags.@"align" = true;
+        out.@"align" = switch (a) {
+            .start => .start,
+            .end => .end,
+            .center => .center,
+        };
+    }
+    if (p.indent) |i| {
+        out.flags.indent = true;
+        out.indent_start = i.start;
+        out.indent_end = i.end;
+        out.first_line_indent = i.first_line;
+    }
+    if (p.spacing) |s| {
+        out.flags.line_spacing = true;
+        out.line_spacing = s.line_spacing;
+        out.line_height = s.line_height;
+    }
+    if (p.gaps) |g| {
+        out.flags.paragraph_spacing = true;
+        out.space_before = g.before;
+        out.space_after = g.after;
+    }
+    if (p.tab_width) |w| {
+        out.flags.tab_width = true;
+        out.tab_width = w;
+    }
+    return out;
+}
+
+pub export fn siv_set_paragraph_spans(txn: t.Txn, node: t.Node, desc: ?*const t.ParagraphSpansDesc) t.Result {
+    return run(txn, struct {
+        fn f(w: *Window, n: t.Node, d_ptr: ?*const t.ParagraphSpansDesc) Error!void {
+            const id = try nodeIn(w, n);
+            const d = try runtime.readDesc(t.ParagraphSpansDesc, d_ptr);
+            const in = try runtime.array(t.ParagraphSpan, d.spans, d.spans_count);
+            const list = try w.uiWin().scratch.allocator().alloc(ui.ParagraphSpan, in.len);
+            for (in, list) |sp, *o| o.* = .{ .start = sp.start, .end = sp.end, .style = try paragraphPatchOf(sp) };
+            w.txn.ut.setParagraphSpans(id, list) catch |err| return mapTxn(err);
+        }
+    }.f, .{ node, desc });
+}
+
+pub export fn siv_node_get_paragraph(node: t.Node, offset: u32, out: ?*t.ParagraphSpan) t.Result {
+    return application.wrap(struct {
+        fn f(n: t.Node, o: u32, dest_ptr: ?*t.ParagraphSpan) Error!void {
+            const w, const id = try lookup(n);
+            const dest = try runtime.out(t.ParagraphSpan, dest_ptr);
+            const r = ui.access.paragraphRun(w.uiWin(), id, o) orelse return error.InvalidArgument;
+            dest.* = paragraphSpanOf(r.start, r.end, r.style);
+        }
+    }.f(node, offset, out));
+}
+
+pub export fn siv_editor_format_paragraph(node: t.Node, values: t.ParagraphSpan, mask: t.ParagraphFlags) t.Result {
+    return application.wrap(struct {
+        fn f(n: t.Node, v: t.ParagraphSpan, m: t.ParagraphFlags) Error!void {
+            const w, const id = try lookup(n);
+            if (w.owner.painting != 0) return error.Busy;
+            const uw = w.uiWin();
+            const un = uw.node(id);
+            if (un.kind != .editor or un.data.editor.editor.masked) return error.InvalidArgument;
+            const fl = try runtime.flags(t.ParagraphFlags, m);
+            const style = try paragraphPatchOf(v);
+            if (uw.txn.open) return error.Busy;
+            if (!ui.access.formatParagraph(uw, id, style, .{ .alignment = fl.@"align", .indent = fl.indent, .spacing = fl.line_spacing, .gaps = fl.paragraph_spacing, .tab_width = fl.tab_width }))
+                return error.OutOfMemory;
+        }
+    }.f(node, values, mask));
 }
 
 fn widthOf(w: t.FontWidth) Error!ui.FontWidth {
@@ -858,10 +991,16 @@ pub export fn siv_set_animation(txn: t.Txn, node: t.Node, desc: ?*const t.Animat
     }.f, .{ node, desc });
 }
 
-/// A siv_text_span's attributes as a span style.
-fn spanStyleOf(sp: t.TextSpan) Error!ui.SpanStyle {
+/// A siv_text_span's attributes as a span style; family ids must be
+/// `w`'s application's.
+fn spanStyleOf(w: *Window, sp: t.TextSpan) Error!ui.SpanStyle {
     const fl = try runtime.flags(t.TextSpanFlags, sp.flags);
     var out: ui.SpanStyle = .{ .underline = fl.underline, .strikethrough = fl.strikethrough };
+    if (fl.family) {
+        if (sp.family >= w.uiWin().fonts.names.count()) return error.InvalidArgument;
+        out.family = sp.family;
+    }
+    if (fl.width) out.width = try widthOf(sp.width);
     if (fl.weight) out.weight = switch (try runtime.enumValue(t.FontWeight, sp.weight)) {
         .regular => .regular,
         .thin => .thin,
@@ -891,7 +1030,25 @@ fn spanStyleOf(sp: t.TextSpan) Error!ui.SpanStyle {
 
 /// A span style as a siv_text_span over start..end.
 fn textSpanOf(start: u32, end: u32, st: ui.SpanStyle) t.TextSpan {
-    var out: t.TextSpan = .{ .start = start, .end = end, .flags = .{ .underline = st.underline, .strikethrough = st.strikethrough }, .weight = .regular, .slant = .roman, .color_token = .none, .font_size = 0, .color = .{ .r = 0, .g = 0, .b = 0, .a = 0 } };
+    var out: t.TextSpan = .{ .start = start, .end = end, .flags = .{ .underline = st.underline, .strikethrough = st.strikethrough }, .weight = .regular, .slant = .roman, .color_token = .none, .font_size = 0, .color = .{ .r = 0, .g = 0, .b = 0, .a = 0 }, .family = 0, .width = .normal };
+    if (st.family) |f| {
+        out.flags.family = true;
+        out.family = f;
+    }
+    if (st.width) |wd| {
+        out.flags.width = true;
+        out.width = switch (wd) {
+            .normal => .normal,
+            .ultra_condensed => .ultra_condensed,
+            .extra_condensed => .extra_condensed,
+            .condensed => .condensed,
+            .semi_condensed => .semi_condensed,
+            .semi_expanded => .semi_expanded,
+            .expanded => .expanded,
+            .extra_expanded => .extra_expanded,
+            .ultra_expanded => .ultra_expanded,
+        };
+    }
     if (st.weight) |wt| {
         out.flags.weight = true;
         out.weight = switch (wt) {
@@ -931,7 +1088,7 @@ pub export fn siv_set_text_spans(txn: t.Txn, node: t.Node, desc: ?*const t.TextS
             const d = try runtime.readDesc(t.TextSpansDesc, d_ptr);
             const in = try runtime.array(t.TextSpan, d.spans, d.spans_count);
             const list = try w.uiWin().scratch.allocator().alloc(ui.Span, in.len);
-            for (in, list) |sp, *o| o.* = .{ .start = sp.start, .end = sp.end, .style = try spanStyleOf(sp) };
+            for (in, list) |sp, *o| o.* = .{ .start = sp.start, .end = sp.end, .style = try spanStyleOf(w, sp) };
             w.txn.ut.setSpans(id, list) catch |err| return mapTxn(err);
         }
     }.f, .{ node, desc });
@@ -969,9 +1126,9 @@ pub export fn siv_editor_format(node: t.Node, values: t.TextSpan, mask: t.TextSp
             const un = uw.node(id);
             if (un.kind != .editor or un.data.editor.editor.masked) return error.InvalidArgument;
             const fl = try runtime.flags(t.TextSpanFlags, m);
-            const style = try spanStyleOf(v);
+            const style = try spanStyleOf(w, v);
             if (uw.txn.open) return error.Busy;
-            if (!ui.access.format(uw, id, style, .{ .weight = fl.weight, .slant = fl.slant, .size = fl.size, .color = fl.color, .underline = fl.underline, .strikethrough = fl.strikethrough }))
+            if (!ui.access.format(uw, id, style, .{ .weight = fl.weight, .slant = fl.slant, .size = fl.size, .color = fl.color, .underline = fl.underline, .strikethrough = fl.strikethrough, .family = fl.family, .width = fl.width }))
                 return error.OutOfMemory;
         }
     }.f(node, values, mask));

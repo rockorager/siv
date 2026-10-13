@@ -593,6 +593,7 @@ pub const decls = [_]Decl{
     }),
     flags("siv_text_flags", "Text options.", &.{
         .{ .name = "no_wrap", .bit = 0, .doc = "Keep each paragraph on one line." },
+        .{ .name = "break_words", .bit = 1, .doc = "A word too wide for a line of its own breaks between characters (graphemes) instead of overflowing (CSS overflow-wrap: anywhere)." },
     }),
     descriptor("siv_text_style_desc", "The style of a text or editor node (one style per node). Replaces the node's style.", &.{
         .{ .name = "family", .type = .string, .doc = "Family name or generic family; empty uses the application default." },
@@ -607,6 +608,15 @@ pub const decls = [_]Decl{
         .{ .name = "size_role", .type = ref("siv_text_role"), .doc = "A themed size that replaces font_size." },
         .{ .name = "width", .type = ref("siv_font_width"), .doc = "Default normal." },
         .{ .name = "weight_value", .type = .u32, .doc = "A CSS weight from 1 to 1000 that replaces weight, for variable fonts, whose wght axis takes it as it is; 0 uses weight." },
+        f32Field("line_spacing", "Paragraph default (D13): line height as a multiple of the font's (CSS line-height), the extra split above and below each line; 0 is 1."),
+        f32Field("line_height", "Paragraph default: an exact line height in logical pixels that replaces line_spacing; 0 is none."),
+        f32Field("space_before", "Paragraph default: space above each paragraph after the first, in logical pixels."),
+        f32Field("space_after", "Paragraph default: space below each paragraph before the last, in logical pixels."),
+        f32Field("indent_start", "Paragraph default: space at the start edge of every line, in logical pixels; start and end follow the node's direction, like align."),
+        f32Field("indent_end", "Paragraph default: space at the end edge of every line, in logical pixels."),
+        f32Field("first_line_indent", "Paragraph default: added to indent_start on each paragraph's first line; negative hangs it out."),
+        f32Field("tab_width", "Paragraph default: distance between tab stops after tab_stops, in logical pixels; 0 is four spaces of the font."),
+        .{ .name = "tab_stops", .type = array(.f32), .doc = "Tab stops in logical pixels from the start edge (indents do not move them), increasing; a tab advances to the next one, then to multiples of tab_width (copied)." },
     }),
     flags("siv_text_span_flags", "Which attributes a styled range sets.", &.{
         .{ .name = "weight", .bit = 0, .doc = "weight applies." },
@@ -615,6 +625,8 @@ pub const decls = [_]Decl{
         .{ .name = "color", .bit = 3, .doc = "color, or color_token when set, applies." },
         .{ .name = "underline", .bit = 4, .doc = "Underlined." },
         .{ .name = "strikethrough", .bit = 5, .doc = "Struck through." },
+        .{ .name = "family", .bit = 6, .doc = "family applies." },
+        .{ .name = "width", .bit = 7, .doc = "width applies." },
     }),
     value("siv_text_span", "A styled range of a text or editor node (D22): attributes that replace the node's style over start..end. Attributes whose flag is clear keep the node's.", &.{
         .{ .name = "start", .type = .u32, .doc = "First byte, at a character boundary." },
@@ -625,9 +637,35 @@ pub const decls = [_]Decl{
         .{ .name = "color_token", .type = ref("siv_color_token"), .doc = "A themed color, with SIV_TEXT_SPAN_COLOR; none uses color." },
         f32Field("font_size", "Size in logical pixels, with SIV_TEXT_SPAN_SIZE; greater than 0."),
         .{ .name = "color", .type = ref("siv_color"), .doc = "Text and decoration color, with SIV_TEXT_SPAN_COLOR." },
+        .{ .name = "family", .type = .u32, .doc = "A font family from siv_app_font_family, with SIV_TEXT_SPAN_FAMILY; 0 is the application's default family." },
+        .{ .name = "width", .type = ref("siv_font_width"), .doc = "Font width, with SIV_TEXT_SPAN_WIDTH." },
     }),
     descriptor("siv_text_spans_desc", "Styled ranges of a text or editor node.", &.{
         .{ .name = "spans", .type = array(ref("siv_text_span")), .doc = "Ranges in order, not overlapping (copied); empty ranges and ones that set nothing are dropped, and equal neighbors merge." },
+    }),
+    flags("siv_paragraph_flags", "Which attributes a paragraph style sets.", &.{
+        .{ .name = "align", .bit = 0, .doc = "align applies." },
+        .{ .name = "indent", .bit = 1, .doc = "indent_start, indent_end, and first_line_indent apply." },
+        .{ .name = "line_spacing", .bit = 2, .doc = "line_spacing and line_height apply." },
+        .{ .name = "paragraph_spacing", .bit = 3, .doc = "space_before and space_after apply." },
+        .{ .name = "tab_width", .bit = 4, .doc = "tab_width applies." },
+    }),
+    value("siv_paragraph_span", "Paragraph styles over a range of a text or editor node (D13): attributes that replace the node's paragraph defaults (siv_text_style_desc) on every paragraph whose first character is in start..end. A paragraph runs to the end of its separator (a line break). Attributes whose flag is clear keep the node's.", &.{
+        .{ .name = "start", .type = .u32, .doc = "First byte, at a character boundary." },
+        .{ .name = "end", .type = .u32, .doc = "Byte after the last, at a character boundary or the end of the text." },
+        .{ .name = "flags", .type = ref("siv_paragraph_flags"), .doc = "Which attributes apply." },
+        .{ .name = "align", .type = ref("siv_text_align"), .doc = "Line alignment, with SIV_PARAGRAPH_ALIGN." },
+        f32Field("line_spacing", "Line height as a multiple of the font's, with SIV_PARAGRAPH_LINE_SPACING; 0 is 1."),
+        f32Field("line_height", "An exact line height in logical pixels that replaces line_spacing, with SIV_PARAGRAPH_LINE_SPACING; 0 is none."),
+        f32Field("space_before", "Space above the paragraph (unless it is the first), with SIV_PARAGRAPH_PARAGRAPH_SPACING."),
+        f32Field("space_after", "Space below the paragraph (unless it is the last), with SIV_PARAGRAPH_PARAGRAPH_SPACING."),
+        f32Field("indent_start", "Start-edge indent of every line, with SIV_PARAGRAPH_INDENT."),
+        f32Field("indent_end", "End-edge indent of every line, with SIV_PARAGRAPH_INDENT."),
+        f32Field("first_line_indent", "Added to indent_start on the first line, with SIV_PARAGRAPH_INDENT; negative hangs it out."),
+        f32Field("tab_width", "Distance between tab stops after the node's tab_stops, with SIV_PARAGRAPH_TAB_WIDTH; 0 is four spaces."),
+    }),
+    descriptor("siv_paragraph_spans_desc", "Paragraph styles of a text or editor node.", &.{
+        .{ .name = "spans", .type = array(ref("siv_paragraph_span")), .doc = "Ranges in order, not overlapping (copied); each paragraph takes the style of the range holding its first character, and equal neighbors merge." },
     }),
     flags("siv_editor_flags", "Editor options.", &.{
         .{ .name = "multiline", .bit = 0, .doc = "Enter inserts a line break and lines wrap; otherwise one line that scrolls to keep the caret visible." },
@@ -798,7 +836,7 @@ pub const decls = [_]Decl{
         .{ .name = "multiline", .bit = 0, .doc = "A text area: Enter inserts a line break and lines wrap." },
         .{ .name = "masked", .bit = 1, .doc = "A password field (SIV_EDITOR_MASKED)." },
         .{ .name = "disabled", .bit = 2, .doc = "Shown dimmed; not focusable." },
-        .{ .name = "styled", .bit = 3, .doc = "A styled-text editor (D22): Ctrl+B, Ctrl+I, and Ctrl+U toggle bold, italic, and underline over the selection, or for what is typed next, as undoable steps (siv_editor_format); the styles are the editor's text spans (siv_node_get_text_run, siv_set_text_spans). Not with masked." },
+        .{ .name = "styled", .bit = 3, .doc = "A styled-text editor (D22): Ctrl+B, Ctrl+I, and Ctrl+U toggle bold, italic, and underline over the selection, or for what is typed next, as undoable steps (siv_editor_format); the styles are the editor's text spans (siv_node_get_text_run, siv_set_text_spans). Ctrl+L, Ctrl+E, and Ctrl+R align the selected paragraphs left, centered, and right (siv_editor_format_paragraph). Not with masked." },
     }),
     descriptor("siv_text_field_desc", "A framed editor: a text field, or with SIV_TEXT_FIELD_MULTILINE a text area.", &.{
         .{ .name = "text", .type = .string, .doc = "Initial text, copied." },
@@ -1171,6 +1209,17 @@ pub const functions = [_]Function{
         .{ .name = "family", .type = .string, .doc = "Family name; empty uses each face's own (its typographic family name)." },
         .{ .name = "data", .type = array(.u8), .doc = "An OpenType or TrueType font or collection." },
     }),
+    call("siv_app_font_family", "The id of a font family name for text spans (siv_text_span's family), the same for the same name for the application's lifetime. The family need not exist yet: spans resolve it when they shape, as text styles do.", &.{
+        app_param,
+        .{ .name = "family", .type = .string, .doc = "Family name or generic family; empty is 0, the default family." },
+        .{ .name = "id", .type = out(.u32), .doc = "The id." },
+    }),
+    call("siv_app_get_font_family_name", "Copies the name of a font family id from siv_app_font_family.", &.{
+        app_param,
+        .{ .name = "id", .type = .u32, .doc = "A family id." },
+        .{ .name = "name", .type = .buffer, .doc = "Receives at most name_cap bytes; may be NULL with name_cap 0." },
+        .{ .name = "len", .type = out(.usize), .doc = "The name's full length in bytes." },
+    }),
     call("siv_app_set_default_font", "Sets the family used by text styles that name none. By default it is the desktop's font (D19), else sans-serif; once set here, the desktop's no longer replaces it.", &.{
         app_param,
         .{ .name = "family", .type = .string, .doc = "Family name." },
@@ -1305,6 +1354,17 @@ pub const functions = [_]Function{
         .{ .name = "node", .type = ref("siv_node"), .doc = "A text or editor node." },
         .{ .name = "offset", .type = .u32, .doc = "Byte offset; clamped to the text." },
         .{ .name = "run", .type = out(ref("siv_text_span")), .doc = "The run." },
+    }),
+    setter("siv_set_paragraph_spans", "Replaces the paragraph styles of a text or editor node (D13): alignment, indents, line spacing, paragraph spacing, and tab width per paragraph, over the node's defaults. Kept as whole paragraphs. siv_set_text clears them when the text changes; an editor keeps each paragraph's style as the user edits (text typed into a paragraph joins it; a line break starts a paragraph with the same style), and undo restores them. Exposed to assistive technology as text attributes.", &.{.{ .name = "desc", .type = .{ .desc = "siv_paragraph_spans_desc" }, .doc = "The ranges; NULL clears them." }}),
+    call("siv_node_get_paragraph", "The paragraph of a text or editor node containing a byte offset, as of the latest operation: its range, up to the end of its separator, and the attributes its paragraph style sets (flags 0 for the node's defaults). Walk the paragraphs by asking again at the end.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "A text or editor node, not masked." },
+        .{ .name = "offset", .type = .u32, .doc = "Byte offset; clamped to the text." },
+        .{ .name = "paragraph", .type = out(ref("siv_paragraph_span")), .doc = "The paragraph." },
+    }),
+    call("siv_editor_format_paragraph", "A user's paragraph formatting command on an editor (D13), like Ctrl+E in a styled-text editor: sets the attributes in mask to those of values on every paragraph the selection touches (the caret's when nothing is selected), as one undo step, followed by a change event. An attribute in mask whose flag is clear in values goes back to the node's default. Not inside an open transaction of the window (SIV_ERROR_BUSY).", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "An editor node, not masked." },
+        .{ .name = "values", .type = ref("siv_paragraph_span"), .doc = "The attributes; start and end are ignored." },
+        .{ .name = "mask", .type = ref("siv_paragraph_flags"), .doc = "Which attributes to set." },
     }),
     call("siv_node_get_typing_style", "The style an editor's typed text takes now: its typing style, else that of the first selected character, else that of the character before the caret. start and end are 0. For toolbars that show the current style.", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "An editor node." },
