@@ -184,7 +184,7 @@ pub const Harness = struct {
             try ok(A.siv_app_dispatch(h.app, 2));
             const cb = &self.app.clipboard;
             var busy = self.app.fonts.loading() or cb.transfers.items.len != 0 or cb.ready.items.len != 0;
-            if (h.files) |fl| busy = busy or fl.loading != null or fl.ops.items.len != 0 or fl.thumbs.busy() or fl.reload_timer != .null or fl.context_pending or fl.thumbs.notify_timer != .null;
+            if (h.files) |fl| busy = busy or fl.loading != null or fl.ops.items.len != 0 or fl.thumbs.busy() or fl.reload_timer != .null or fl.thumbs.notify_timer != .null;
             for (self.windows.items) |slot| if (slot) |w| {
                 if (w.dead or !w.win.shown) continue;
                 busy = busy or w.win.presented_seq == 0 or !w.win.settled();
@@ -258,6 +258,13 @@ pub const Harness = struct {
             }
         };
         return n;
+    }
+
+    /// Where the compositor placed a popup, in window coordinates.
+    pub fn popupAt(h: *Harness, popup: t.Window) ![2]i32 {
+        _ = h;
+        const p = (try A.App.window(@backingInt(popup), A.window_tag)).win.state.popup orelse return error.NotAPopup;
+        return .{ p.x, p.y };
     }
 
     /// The semantics tree of the main window, for assertions about what a

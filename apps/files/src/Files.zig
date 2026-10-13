@@ -76,7 +76,6 @@ ops_label: Node = .null,
 ops_progress: Node = .null,
 ops_cancel: Node = .null,
 context: Node = .null,
-context_anchor: Node = .null,
 dialog: Node = .null,
 
 // The folder.
@@ -127,7 +126,6 @@ drag_entry: u32 = 0,
 /// drag of all of it; the release without a drag selects only the item.
 drag_kept: bool = false,
 tokens: std.ArrayList(*Token) = .empty,
-context_pending: bool = false,
 op_jobs: std.ArrayList(*OpJob) = .empty,
 
 /// Row parts, kept in node data on each row body.
@@ -406,11 +404,6 @@ fn build(self: *Files) !void {
     _ = c.siv_set_layout(txn, self.empty, &.{ .align_x = .center, .align_y = .center });
     _ = c.siv_set_visual(txn, self.empty, &.{ .flags = .{ .hidden = true, .no_hit_test = true } });
 
-    // A zero-size node the context menu opens against, moved to the
-    // pointer (menus open below a node, not at a point).
-    self.context_anchor = c.siv_box(txn, content);
-    _ = c.siv_set_layout(txn, self.context_anchor, &.{ .width = px(1), .height = px(1), .flags = .{ .inset_start = true, .inset_top = true } });
-    _ = c.siv_set_visual(txn, self.context_anchor, &.{ .flags = .{ .no_hit_test = true } });
     self.context = c.siv_menu(txn, content, &.{ .label = "File actions", .label_len = 12 });
     for (context_items) |it| {
         _ = c.siv_menu_item(txn, self.context, &.{
@@ -1700,9 +1693,7 @@ fn onRowPointer(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c)
                     _ = commit(txn);
                     self.updateStatus();
                 }
-                var r: siv.Rect = .{};
-                _ = c.siv_node_get_rect(node, &r);
-                self.openContextMenu(r.x + e.x, r.y + e.y, true);
+                self.openContextMenu(node, e.x, e.y, true);
                 return true;
             }
             if (e.button != .primary) return false;
@@ -1756,9 +1747,7 @@ fn onContentPointer(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv
         self.clearSelection(txn, self.activeView());
         _ = commit(txn);
         self.updateStatus();
-        var r: siv.Rect = .{};
-        _ = c.siv_node_get_rect(node, &r);
-        self.openContextMenu(r.x + e.x, r.y + e.y, false);
+        self.openContextMenu(node, e.x, e.y, false);
         return true;
     }
     return false;
@@ -1782,34 +1771,26 @@ fn viewIndexOfEntry(self: *const Files, entry: u32) ?u32 {
     return null;
 }
 
+/// The context menu from the keyboard (Menu, Shift+F10): at the cursor's
+/// row when it is bound, else at the view's corner.
 pub fn openContextMenuAtCursor(self: *Files) void {
-    const view = self.activeView();
-    var cursor: f64 = -1;
-    _ = c.siv_widget_get_value(view, &cursor);
-    var r: siv.Rect = .{};
-    _ = c.siv_node_get_rect(view, &r);
-    var x = r.x + 40;
-    var y = r.y + 40;
-    if (cursor >= 0) {
-        // Near the cursor's row when it is in view.
-        if (self.cursorRowRect()) |rr| {
-            x = rr.x + 40;
-            y = rr.y + rr.height - 4;
-        }
-    }
     const sel = self.selectedIndices() catch return;
     defer self.gpa.free(sel);
-    self.openContextMenu(x, y, sel.len > 0);
+    if (self.cursorRow()) |row| {
+        var r: siv.Rect = .{};
+        _ = c.siv_node_get_rect(row, &r);
+        self.openContextMenu(row, @min(40, r.width), r.height, sel.len > 0);
+    } else self.openContextMenu(self.activeView(), 40, 40, sel.len > 0);
 }
 
-fn cursorRowRect(self: *Files) ?siv.Rect {
-    var focus_rect: ?siv.Rect = null;
+/// The node showing the cursor's item. Views expose neither their rows
+/// nor the cursor's node (FRICTION.md): walk the view for the row body
+/// whose node data names the item.
+fn cursorRow(self: *Files) ?Node {
     const view = self.activeView();
     var cursor: f64 = -1;
     _ = c.siv_widget_get_value(view, &cursor);
-    if (cursor < 0) return null;
-    // The view does not expose its rows; walk to the row whose body shows
-    // the cursor's entry.
+    if (cursor < 0 or cursor >= @as(f64, @floatFromInt(self.visible.items.len))) return null;
     const entry = self.visible.items[@intFromFloat(cursor)];
     var stack: [64]Node = undefined;
     var n: usize = 1;
@@ -1820,11 +1801,7 @@ fn cursorRowRect(self: *Files) ?siv.Rect {
         var p: ?*anyopaque = null;
         if (c.siv_node_get_data(cur, &row_key, &p) == .ok and p != null) {
             const parts: *RowParts = @ptrCast(@alignCast(p));
-            if (parts.entry == entry) {
-                var r: siv.Rect = .{};
-                if (c.siv_node_get_rect(cur, &r) == .ok) focus_rect = r;
-                break;
-            }
+            if (parts.entry == entry) return cur;
             continue;
         }
         var ch: Node = .null;
@@ -1837,27 +1814,13 @@ fn cursorRowRect(self: *Files) ?siv.Rect {
             ch = next;
         }
     }
-    return focus_rect;
+    return null;
 }
 
-/// Opens the context menu at window coordinates (x, y), for the
-/// selection (`on_items`) or the folder.
-pub fn openContextMenu(self: *Files, x: f32, y: f32, on_items: bool) void {
-    var content_rect: siv.Rect = .{};
-    var parent: Node = .null;
-    _ = c.siv_node_get_related(self.context_anchor, .parent, &parent);
-    _ = c.siv_node_get_rect(parent, &content_rect);
-    var rtl = false;
-    _ = c.siv_node_is_rtl(parent, &rtl);
-    const inset_x = if (rtl) content_rect.x + content_rect.width - x else x - content_rect.x;
+/// Opens the context menu at (x, y) in `node`, for the selection
+/// (`on_items`) or the folder.
+pub fn openContextMenu(self: *Files, node: Node, x: f32, y: f32, on_items: bool) void {
     const txn = self.begin() orelse return;
-    _ = c.siv_set_layout(txn, self.context_anchor, &.{
-        .width = px(1),
-        .height = px(1),
-        .inset_start = @max(0, inset_x),
-        .inset_top = @max(0, y - content_rect.y),
-        .flags = .{ .inset_start = true, .inset_top = true },
-    });
     const disable = [_]struct { ContextAction, bool }{
         .{ .open, !on_items },
         .{ .open_with, !on_items },
@@ -1870,19 +1833,7 @@ pub fn openContextMenu(self: *Files, x: f32, y: f32, on_items: bool) void {
     };
     for (disable) |d| _ = c.siv_widget_set_disabled(txn, menuItem(self.context, @intFromEnum(d[0])), d[1]);
     if (!commit(txn)) return;
-    // The anchor's new place is known only after layout, which runs in
-    // the next frame; the menu would open at its old place. Open it from
-    // a zero-delay timer, after that frame (FRICTION.md).
-    self.context_pending = true;
-    var timer: siv.Timer = .null;
-    _ = c.siv_timer_start(self.app, 0, openContextLater, null, self, &timer);
-}
-
-fn openContextLater(ud: ?*anyopaque) callconv(.c) void {
-    const self: *Files = @ptrCast(@alignCast(ud.?));
-    if (!self.context_pending) return;
-    self.context_pending = false;
-    _ = c.siv_menu_open(self.context, self.context_anchor);
+    _ = c.siv_menu_open_at(self.context, node, x, y);
 }
 
 fn onContextSelect(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) bool {

@@ -325,6 +325,11 @@ test "dark style, and the context menu" {
     try h.clickItemWith("report-10.pdf", 0x111, .{});
     var ps: [4]@import("abi").types.Window = undefined;
     try testing.expectEqual(@as(usize, 1), try h.popups(&ps));
+    // It opened at the click, the middle of the row.
+    const b = (try h.item("report-10.pdf")).bounds;
+    const at = try h.popupAt(ps[0]);
+    try testing.expectApproxEqAbs((b.x0 + b.x1) / 2, @as(f32, @floatFromInt(at[0])), 1.5);
+    try testing.expectApproxEqAbs((b.y0 + b.y1) / 2, @as(f32, @floatFromInt(at[1])), 1.5);
     try h.expectGoldenOf(ps[0], "context-menu");
     // Choosing Rename from the keyboard starts renaming.
     try h.keyIn(ps[0], ks.down, "", .{});

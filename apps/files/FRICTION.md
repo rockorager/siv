@@ -72,9 +72,18 @@ Measurements are in [Numbers](#numbers) at the end.
    setting one item restyles only its row (commit "widgets: read and
    replace a view's selection as a bitset", D22). Now 1.8 ms and 60 ms.
 
+7. **Context menus could open only below a node.** A context menu
+   belongs at the click, but `siv_menu_open` and popups anchored to a
+   node's whole box. The app kept a 1×1 anchor node in a stack, moved it
+   to the pointer with insets, and opened the menu from a zero-delay
+   timer after the next layout, since a popup takes its anchor's place
+   from the last layout. *Fixed:* `siv_popup_desc.anchor_rect` with
+   `SIV_POPUP_AT_RECT`, and `siv_menu_open_at(menu, node, x, y)` (commit
+   "abi, widgets: open popups and menus at a point of a node", D17).
+
 ## Open API questions
 
-7. **One return value means both "stop bubbling" and "skip the default
+8. **One return value means both "stop bubbling" and "skip the default
    action".** The DOM separates `stopPropagation` from `preventDefault`;
    siv's `bool` return conflates them. The app's window-wide shortcut
    handler (on the root) sees every key typed into the search field, the
@@ -84,14 +93,6 @@ Measurements are in [Numbers](#numbers) at the end.
    of its editors (`editing`). Should handlers be able to stop bubbling
    without cancelling the default action? Should siv expose the focused
    node (`siv_window_get_focus`) and whether a node is an editor?
-
-8. **Context menus open below a node, not at the pointer.** `siv_menu_open`
-   and popups anchor to a node's rectangle. A context menu belongs at the
-   click, so the app keeps a 1×1 anchor node in a stack, moves it to the
-   pointer with insets, and must open the menu only after the next layout
-   (a zero-delay timer), since a popup takes its anchor's place from the
-   last layout. Proposal: an anchor rectangle in `siv_popup_desc` and a
-   `siv_menu_open_at(menu, node, x, y)`.
 
 9. **A press on a selected item collapses a multiple selection at once.**
    File managers keep the selection on press so that a drag carries all
