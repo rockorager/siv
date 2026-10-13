@@ -1,0 +1,4 @@
+<svg height="16px" viewBox="0 0 16 16" width="16px" xmlns="http://www.w3.org/2000/svg">
+    <g class="error"><circle class="error" cx="8" cy="8" r="8" fill="#e01b24"/></g>
+    <path d="m 4.5 5.9 l 1.4 -1.4 l 2.1 2.1 l 2.1 -2.1 l 1.4 1.4 l -2.1 2.1 l 2.1 2.1 l -1.4 1.4 l -2.1 -2.1 l -2.1 2.1 l -1.4 -1.4 l 2.1 -2.1 z" fill="#ffffff" opacity="0.9"/>
+</svg>

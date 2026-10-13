@@ -13,7 +13,7 @@ tests).
 ```sh
 zig build                      # zig-out: libsiv.so, libsiv.a, include/siv.h, lib/pkgconfig/siv.pc
 zig build test                 # every module's tests, headless tests, C ABI smoke test
-zig build test-text            # one module: test-abi, test-text, test-raster, test-scene, test-image,
+zig build test-text            # one module: test-abi, test-text, test-raster, test-scene, test-image, test-svg, test-icon,
                                #   test-render-cpu, test-render-vulkan, test-pool, test-loop,
                                #   test-dbus, test-portal, test-pdf, test-tray, test-platform,
                                #   test-compositor, test-ui, test-a11y, test-app
@@ -31,6 +31,8 @@ zig build test-integration-a11y  # only AT-SPI against the real registry
 zig build test-integration-portal  # only portals against xdg-desktop-portal
 zig build test-integration-pdf  # only PDF output against qpdf and poppler
 zig build test-integration-tray  # only the tray against dbus-daemon and gdbus
+zig build test-integration-icons -Doptimize=ReleaseSafe  # installed Adwaita and Breeze drawn by siv
+                               #   against rsvg-convert (SIV_ICON_DIFFS=DIR keeps the worst)
 zig build test-dbus --fuzz -Doptimize=ReleaseSafe  # fuzz a module's parsers
 zig build test-abi             # abi module, generators, Zig wrappers, exported symbols
 zig build test-lua             # Lua binding against libsiv.so, siv.so from the stock lua,
@@ -66,6 +68,8 @@ owns its directories and does not edit another workstream's files.
 | `raster` | `src/raster/` | Rasterizer, display list, CPU renderer | none |
 | `scene` | `src/scene/` | Rasterizer, display list, CPU renderer | `raster` |
 | `image` | `src/image/` | Image decoding | `scene`, `image_c` (wuffs, lcms2, libwebp, libavif, dav1d, libjxl) |
+| `svg` | `src/svg/` | Icons and SVG | `scene`, `raster` |
+| `icon` | `src/icon/` | Icons and SVG | none |
 | `render_cpu` | `src/render/cpu/` | Rasterizer, display list, CPU renderer | `scene`, `raster`, `text`, `harfbuzz`, `pool`, `image` |
 | `render_vulkan` | `src/render/vulkan/` | Vulkan renderer | `scene`, `raster`, `render_cpu`, `pool`, `vulkan`, `shaders` |
 | `loop` | `src/loop/` | Event loop and Wayland platform | `pool` |
@@ -75,13 +79,15 @@ owns its directories and does not edit another workstream's files.
 | `pdf` | `src/pdf/` | Desktop integration | `scene`, `raster`, `render_cpu`, `text`, `harfbuzz_subset` |
 | `platform` | `src/platform/` | Event loop and Wayland platform | `loop`, `wayland`, `xkbcommon` |
 | `compositor` | `src/compositor/` | Compositor thread | `scene`, `raster`, `render_cpu`, `render_vulkan`, `pool`, `loop`, `platform` |
-| `ui` | `src/ui/` | UI core | `scene`, `raster`, `text`, `image`, `loop`, `platform`, `compositor` |
+| `ui` | `src/ui/` | UI core | `scene`, `svg`, `icon`, `raster`, `text`, `image`, `loop`, `platform`, `compositor` |
 | `a11y` | `src/a11y/` | D-Bus and desktop settings (AT-SPI) | `dbus`, `ui`, `loop`, `raster`, `text` |
 | `app` | `src/app/` | Public C API | `text`, `loop`, `platform`, `compositor`, `ui`, `dbus`, `a11y`, `portal` |
 | `widgets` | `src/widgets/` | Theming and stock widgets | `siv` (the generated C API wrapper) only (D22) |
 | `lua` | `src/lua/` | Lua binding | `siv` (the generated C API wrapper), `siv_schema` (`src/abi/api.zig` as data), `lua_c` (D23) |
 
-The theming workstream also owns `src/ui/theme.zig` (D29). Stock widgets
+The theming workstream also owns `src/ui/theme.zig` (D29). The icons
+workstream owns `src/ui/icons.zig` and the test themes in
+`test/icons/` (D19). Stock widgets
 use only the public C API; when one needs more, add a public primitive.
 
 Shared files have no single owner: `build.zig`, `build.zig.zon`,

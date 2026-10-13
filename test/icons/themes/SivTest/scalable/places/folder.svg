@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A full-color folder exercising gradients, clip paths, group opacity, and strokes. Test data written for siv. -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#62a0ea"/>
+      <stop offset="1" stop-color="#1c71d8"/>
+    </linearGradient>
+    <linearGradient id="shine" xlink:href="#body" gradientUnits="userSpaceOnUse" x1="8" y1="20" x2="56" y2="52"/>
+    <clipPath id="frame"><rect x="4" y="8" width="56" height="48" rx="5"/></clipPath>
+  </defs>
+  <g clip-path="url(#frame)">
+    <path d="M 4 8 h 20 l 6 6 h 30 v 42 h -56 z" fill="#1a5fb4"/>
+    <rect x="4" y="20" width="56" height="40" rx="4" fill="url(#body)"/>
+    <g opacity="0.35">
+      <rect x="4" y="20" width="56" height="2" fill="#ffffff"/>
+      <rect x="4" y="22" width="56" height="2" fill="#ffffff" opacity="0.5"/>
+    </g>
+  </g>
+  <rect x="4.5" y="8.5" width="55" height="47" rx="4.5" fill="none" stroke="#0b3b75" stroke-opacity="0.4"/>
+  <path d="M 14 40 h 36" stroke="url(#shine)" stroke-width="3" stroke-linecap="round" stroke-dasharray="4 3" opacity="0.6"/>
+</svg>

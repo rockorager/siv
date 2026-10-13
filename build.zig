@@ -76,6 +76,11 @@ pub fn build(b: *std.Build) void {
         .{ .name = "fontconfig", .module = fontconfig },
         .{ .name = "uucode", .module = uucode },
     });
+    const svg = ctx.module("src/svg/svg.zig", &.{
+        .{ .name = "scene", .module = scene },
+        .{ .name = "raster", .module = raster },
+    });
+    const icon = ctx.module("src/icon/icon.zig", &.{});
     const images = @import("src/image/build_steps.zig").add(b, .{ .target = target, .optimize = optimize, .scene = scene });
     const image = images.image;
     const render_cpu = ctx.module("src/render/cpu/cpu.zig", &.{
@@ -142,6 +147,8 @@ pub fn build(b: *std.Build) void {
     compositor.addImport("integration", not_integration);
     const ui = ctx.module("src/ui/ui.zig", &.{
         .{ .name = "scene", .module = scene },
+        .{ .name = "svg", .module = svg },
+        .{ .name = "icon", .module = icon },
         .{ .name = "image", .module = image },
         .{ .name = "raster", .module = raster },
         .{ .name = "text", .module = text },
@@ -173,6 +180,8 @@ pub fn build(b: *std.Build) void {
     const internal = [_]std.Build.Module.Import{
         .{ .name = "pool", .module = pool },
         .{ .name = "scene", .module = scene },
+        .{ .name = "svg", .module = svg },
+        .{ .name = "icon", .module = icon },
         .{ .name = "raster", .module = raster },
         .{ .name = "text", .module = text },
         .{ .name = "image", .module = image },
@@ -256,6 +265,8 @@ pub fn build(b: *std.Build) void {
         .{ "text", text },
         .{ "raster", raster },
         .{ "scene", scene },
+        .{ "svg", svg },
+        .{ "icon", icon },
         .{ "image", image },
         .{ "render-cpu", render_cpu },
         .{ "render-vulkan", render_vulkan },
@@ -345,6 +356,23 @@ pub fn build(b: *std.Build) void {
     const a11y_integration_run = b.addRunArtifact(b.addTest(.{ .name = "a11y-integration", .root_module = a11y_integration, .filters = test_filters }));
     a11y_integration_run.has_side_effects = true; // depends on the installed at-spi2-core
     integration_step.dependOn(&a11y_integration_run.step);
+    // Real icon themes (Adwaita, Breeze) drawn by siv's SVG renderer
+    // against librsvg's rsvg-convert (test/icons/integration.zig).
+    const icons_integration_run = b.addRunArtifact(b.addTest(.{
+        .name = "icons-integration",
+        .root_module = ctx.module("test/icons/integration.zig", &.{
+            .{ .name = "svg", .module = svg },
+            .{ .name = "scene", .module = scene },
+            .{ .name = "raster", .module = raster },
+            .{ .name = "render_cpu", .module = render_cpu },
+            .{ .name = "pool", .module = pool },
+            .{ .name = "png", .module = ctx.module("test/render/png.zig", &.{}) },
+        }),
+        .filters = test_filters,
+    }));
+    icons_integration_run.has_side_effects = true; // depends on the installed themes and librsvg
+    integration_step.dependOn(&icons_integration_run.step);
+    b.step("test-integration-icons", "Draw the installed Adwaita and Breeze icons against rsvg-convert").dependOn(&icons_integration_run.step);
     // Frame pacing measured end to end (src/compositor/integration_tests.zig,
     // "pacing: ..."): dropped frames on lavapipe and pixman sway are CPU
     // work that other processes delay, so they are checked against D12's

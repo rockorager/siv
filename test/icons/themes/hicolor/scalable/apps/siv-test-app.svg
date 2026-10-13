@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- An application icon: a radial gradient, a blurred shadow, and blending. Test data written for siv. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <radialGradient id="orb" cx="0.5" cy="0.5" r="0.5" fx="0.35" fy="0.3">
+      <stop offset="0" stop-color="#ffbe6f"/>
+      <stop offset="0.6" stop-color="#e66100"/>
+      <stop offset="1" stop-color="#a51d2d"/>
+    </radialGradient>
+    <filter id="soft" x="-0.2" y="-0.2" width="1.4" height="1.4"><feGaussianBlur stdDeviation="4"/></filter>
+  </defs>
+  <ellipse cx="64" cy="112" rx="40" ry="8" fill="#000000" opacity="0.4" filter="url(#soft)"/>
+  <circle cx="64" cy="60" r="48" fill="url(#orb)"/>
+  <g style="mix-blend-mode:multiply"><circle cx="80" cy="76" r="20" fill="#99c1f1"/></g>
+  <polygon points="44,40 60,32 52,52" fill="#ffffff" fill-opacity="0.6"/>
+</svg>

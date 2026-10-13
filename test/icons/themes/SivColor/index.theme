@@ -1,0 +1,18 @@
+# A theme drawn like Breeze: fixed sizes per directory, colors from a
+# current-color-scheme style sheet. Test data written for siv.
+[Icon Theme]
+Name=SivColor
+Comment=siv's test theme with color scheme classes
+Inherits=SivTest
+FollowsColorScheme=true
+Directories=actions/16,places/64
+
+[actions/16]
+Size=16
+Context=Actions
+Type=Fixed
+
+[places/64]
+Size=64
+Context=Places
+Type=Fixed

@@ -22,7 +22,9 @@ timed() {
 # (libatspi), and orca are the AT-SPI integration tests' stack and clients.
 # xdg-desktop-portal (with xdg-permission-store) is the portal integration
 # tests' frontend, and pipewire the daemon screen casts connect to. qpdf
-# and poppler-utils check the PDF writer's output independently.
+# and poppler-utils check the PDF writer's output independently. The
+# Adwaita and Breeze icon themes and librsvg's rsvg-convert are the icon
+# integration test's real themes and reference renderer (D19).
 packages=(
 	ca-certificates curl xz-utils pkg-config
 	libwayland-dev libxkbcommon-dev libfontconfig-dev xkb-data
@@ -31,6 +33,7 @@ packages=(
 	at-spi2-core python3-pyatspi orca
 	xdg-desktop-portal pipewire
 	qpdf poppler-utils
+	adwaita-icon-theme breeze-icon-theme librsvg2-bin
 )
 
 install_packages() {

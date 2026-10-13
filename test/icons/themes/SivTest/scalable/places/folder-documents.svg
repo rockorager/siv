@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A folder with an emblem from a symbol, through a luminance mask. Test data written for siv. -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <symbol id="page" viewBox="0 0 10 12"><path d="M 0 0 h 7 l 3 3 v 9 h -10 z" fill="#ffffff"/><path d="M 2 5 h 6 M 2 7 h 6 M 2 9 h 4" stroke="#3d3846" stroke-width="0.8"/></symbol>
+    <mask id="fade" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64">
+      <rect width="64" height="64" fill="#ffffff"/>
+      <circle cx="32" cy="38" r="12" fill="#404040"/>
+    </mask>
+  </defs>
+  <path d="M 4 8 h 20 l 6 6 h 30 v 42 h -56 z" fill="#1a5fb4"/>
+  <rect x="4" y="20" width="56" height="36" rx="4" fill="#3584e4" mask="url(#fade)"/>
+  <use xlink:href="#page" x="22" y="26" width="20" height="24"/>
+</svg>
