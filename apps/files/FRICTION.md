@@ -95,8 +95,6 @@ Measurements are in [Numbers](#numbers) at the end.
    storage small", D2). Programs built with Zig still carry Zig's own
    256 KiB unless they do the same (the app does not need to).
 
-## Open API questions
-
 9. **One return value means both "stop bubbling" and "skip the default
    action".** The DOM separates `stopPropagation` from `preventDefault`;
    siv's `bool` return conflates them. The app's window-wide shortcut
@@ -107,6 +105,13 @@ Measurements are in [Numbers](#numbers) at the end.
    of its editors (`editing`). Should handlers be able to stop bubbling
    without cancelling the default action? Should siv expose the focused
    node (`siv_window_get_focus`) and whether a node is an editor?
+   *Fixed:* handlers return `siv_event_result`: `stop`, `prevent`,
+   `handled` (both), or `pass`, and `siv_window_get_focus` names the
+   focused node (commit "abi, ui: separate stopping bubbling from
+   preventing the default", D16). The app asks for the focus instead of
+   tracking it on each editor, and the rename field returns `stop` for the
+   keys it leaves to the editor, so neither the row nor the window's
+   shortcuts see them while the editor still types them.
 
 10. **A press on a selected item collapses a multiple selection at once.**
    File managers keep the selection on press so that a drag carries all
@@ -115,6 +120,38 @@ Measurements are in [Numbers](#numbers) at the end.
    (returning true, which also skips focusing) and selects on release
    itself. Should views defer the collapse to the release when the item
    is selected?
+   *Fixed:* views keep the selection on such a press and collapse it on
+   release unless a drag started (commit "widgets: keep a selection on
+   press, say what changed, expose the cursor", D22). The app's
+   interception is gone; a test drags two selected files out and gets both
+   URIs.
+
+17. **Selection changes do not say what changed.** `select` reports the
+    cursor and the count; the status line needs the selected items' total
+    size, so the app reads the whole bitset on every change (cheap now,
+    item 6).
+   *Fixed:* `select` names a range of rows that holds every changed item
+   (`changed_index`, `changed_count`; same commit). The app keeps a copy
+   of the bitset with the count and total size, and on each event reads
+   the bitset only up to the range's end and adjusts the totals for the
+   bits that differ.
+
+18. **Views expose neither their rows nor a way to focus the cursor.**
+    Opening the context menu with the keyboard (Menu, Shift+F10) at the
+    cursor's row means walking the view's subtree for the row whose node
+    data the app set; focusing the view means a depth-first search for its
+    one focusable row, since `siv_node_focus` on the view itself fails.
+   *Fixed:* `siv_view_get_cursor`, `siv_view_set_cursor`,
+   `siv_view_focus`, and `siv_view_get_row` (same commit). The subtree
+   walk and the depth-first focus search are gone.
+
+19. **Keysyms are not in siv.h.** Every program writes out XKB keysym
+    numbers (`apps/files/src/keys.zig`; src/widgets has its own table).
+   *Fixed:* `siv_key` names them in the schema: `SIV_KEY_ESCAPE` in C,
+   `.escape` in Zig, `"escape"` in Lua (commit "abi: name keysyms in the
+   schema as siv_key", D16). `src/keys.zig` is gone.
+
+## Open API questions
 
 11. **No way to watch a file descriptor.** inotify for the shown folder
     needs a descriptor in the event loop, but the public loop takes none:
@@ -156,21 +193,7 @@ Measurements are in [Numbers](#numbers) at the end.
     "\u200e2026-10-13"). A per-text base direction separate from the
     layout direction (which also flips alignment) would be cleaner.
 
-17. **Selection changes do not say what changed.** `select` reports the
-    cursor and the count; the status line needs the selected items' total
-    size, so the app reads the whole bitset on every change (cheap now,
-    item 6).
-
-18. **Views expose neither their rows nor a way to focus the cursor.**
-    Opening the context menu with the keyboard (Menu, Shift+F10) at the
-    cursor's row means walking the view's subtree for the row whose node
-    data the app set; focusing the view means a depth-first search for its
-    one focusable row, since `siv_node_focus` on the view itself fails.
-
 ## Noted
-
-19. **Keysyms are not in siv.h.** Every program writes out XKB keysym
-    numbers (`apps/files/src/keys.zig`; src/widgets has its own table).
 
 20. **Icons.** DESIGN.md (D19) says icons follow the freedesktop icon
     theme specification and render through siv's SVG parser, but neither

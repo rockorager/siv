@@ -120,7 +120,11 @@ drag_y: f32 = 0,
 drag_entry: u32 = 0,
 /// A press on an item of a larger selection kept the selection, for a
 /// drag of all of it; the release without a drag selects only the item.
-drag_kept: bool = false,
+/// The active view's selection as of the last status update, and totals
+/// over it, kept from the changed ranges select events report.
+sel_bits: std.ArrayList(u8) = .empty,
+sel_count: usize = 0,
+sel_bytes: u64 = 0,
 tokens: std.ArrayList(*Token) = .empty,
 op_jobs: std.ArrayList(*OpJob) = .empty,
 
@@ -215,6 +219,7 @@ fn deinit(self: *Files) void {
     self.history.deinit(gpa);
     self.pending_select.deinit(gpa);
     self.keep_cursor_name.deinit(gpa);
+    self.sel_bits.deinit(gpa);
     gpa.free(self.path);
     gpa.free(self.home);
     self.places.deinit();
@@ -527,9 +532,7 @@ fn applyMode(self: *Files) !void {
 pub fn setMode(self: *Files, mode: ViewMode) void {
     if (mode == self.mode) return;
     // Each view keeps its own selection: carry it over, with the cursor.
-    const from = self.activeView();
-    var cursor: f64 = -1;
-    _ = c.siv_widget_get_value(from, &cursor);
+    const cursor = self.cursorIndex();
     const bits = self.selectionBits() catch return;
     defer self.gpa.free(bits);
     self.mode = mode;
@@ -538,42 +541,14 @@ pub fn setMode(self: *Files, mode: ViewMode) void {
     const txn = self.begin() orelse return;
     _ = c.siv_view_set_count(txn, to, @intCast(self.visible.items.len));
     _ = c.siv_view_set_selection(txn, to, bits.ptr, bits.len);
-    if (cursor >= 0) _ = c.siv_widget_set_value(txn, to, cursor);
+    if (cursor) |i| _ = c.siv_view_set_cursor(txn, to, @intCast(i));
     if (!commit(txn)) return;
     self.focusView();
     self.updateStatus();
 }
 
 fn focusView(self: *Files) void {
-    // The cursor's row is the view's focusable node; focusing the view's
-    // root does not reach it (FRICTION.md), so find the row.
-    const view = self.activeView();
-    var cursor: f64 = 0;
-    _ = c.siv_widget_get_value(view, &cursor);
-    if (self.visible.items.len == 0) {
-        _ = c.siv_node_focus(view);
-        return;
-    }
-    if (cursor < 0) {
-        const txn = self.begin() orelse return;
-        _ = c.siv_widget_set_value(txn, view, 0);
-        _ = commit(txn);
-    }
-    _ = focusFirstFocusable(view);
-}
-
-/// Depth-first search for a focusable node under `n` and focuses it.
-fn focusFirstFocusable(n: Node) bool {
-    if (c.siv_node_focus(n) == .ok) return true;
-    var cur: Node = .null;
-    _ = c.siv_node_get_related(n, .first_child, &cur);
-    while (cur != .null) {
-        if (focusFirstFocusable(cur)) return true;
-        var next: Node = .null;
-        _ = c.siv_node_get_related(cur, .next, &next);
-        cur = next;
-    }
-    return false;
+    _ = c.siv_view_focus(self.activeView());
 }
 
 fn entryOf(self: *const Files, view_index: u32) ?model.Entry {
@@ -884,11 +859,9 @@ fn rememberSelection(self: *Files) void {
         self.pending_select.appendSlice(self.gpa, nm) catch return;
         self.pending_select.append(self.gpa, '\n') catch return;
     }
-    var cursor: f64 = -1;
-    _ = c.siv_widget_get_value(self.activeView(), &cursor);
     self.keep_cursor_name.clearRetainingCapacity();
-    if (cursor >= 0 and cursor < @as(f64, @floatFromInt(self.visible.items.len))) {
-        const nm = self.nameOf(self.visible.items[@intFromFloat(cursor)]);
+    if (self.cursorIndex()) |cursor| {
+        const nm = self.nameOf(self.visible.items[cursor]);
         self.keep_cursor_name.appendSlice(self.gpa, nm) catch {};
     }
 }
@@ -948,10 +921,9 @@ fn applySelectionAfterLoad(self: *Files) void {
     }
     const target = cursor orelse first;
     if (target) |t| {
-        _ = c.siv_widget_set_value(txn, view, @floatFromInt(t));
-        _ = c.siv_view_scroll_to(txn, view, t);
+        _ = c.siv_view_set_cursor(txn, view, @intCast(t));
     } else if (self.visible.items.len > 0) {
-        _ = c.siv_widget_set_value(txn, view, 0);
+        _ = c.siv_view_set_cursor(txn, view, 0);
     }
     self.pending_select.clearRetainingCapacity();
     self.keep_cursor_name.clearRetainingCapacity();
@@ -1054,18 +1026,14 @@ fn selectEntries(self: *Files, txn: Txn, view: Node, entries: []const u8) !?u32 
 fn keepSelection(self: *Files, comptime change: type) void {
     const entries = self.selectedEntries() catch return;
     defer self.gpa.free(entries);
-    var cursor_entry: ?u32 = null;
-    var cursor: f64 = -1;
-    _ = c.siv_widget_get_value(self.activeView(), &cursor);
-    if (cursor >= 0 and cursor < @as(f64, @floatFromInt(self.visible.items.len))) cursor_entry = self.visible.items[@intFromFloat(cursor)];
+    const cursor_entry: ?u32 = if (self.cursorIndex()) |i| self.visible.items[i] else null;
     change.apply(self);
     self.refilter();
     const txn = self.begin() orelse return;
     const first = self.selectEntries(txn, self.activeView(), entries) catch null;
     const target = if (cursor_entry) |ce| self.viewIndexOfEntry(ce) else null;
     if (target orelse first) |t| {
-        _ = c.siv_widget_set_value(txn, self.activeView(), @floatFromInt(t));
-        _ = c.siv_view_scroll_to(txn, self.activeView(), t);
+        _ = c.siv_view_set_cursor(txn, self.activeView(), @intCast(t));
     }
     _ = commit(txn);
     self.updateStatus();
@@ -1336,8 +1304,7 @@ pub fn setQuery(self: *Files, q: []const u8) void {
     self.refilter();
     if (self.visible.items.len > 0) {
         const txn = self.begin() orelse return;
-        _ = c.siv_widget_set_value(txn, self.activeView(), 0);
-        _ = c.siv_view_scroll_to(txn, self.activeView(), 0);
+        _ = c.siv_view_set_cursor(txn, self.activeView(), 0);
         _ = commit(txn);
     }
 }
@@ -1417,10 +1384,64 @@ pub fn showLocation(self: *Files, show: bool) void {
 
 // Selection and status ----------------------------------------------------------------
 
-fn onSelect(ud: ?*anyopaque, _: Node, _: ?*const siv.Event) callconv(.c) siv.EventResult {
+fn onSelect(ud: ?*anyopaque, _: Node, ev: ?*const siv.Event) callconv(.c) siv.EventResult {
     const self: *Files = @ptrCast(@alignCast(ud.?));
-    self.updateStatus();
+    const e = ev.?;
+    self.applySelectChange(e.changed_index, e.changed_count) catch self.recountSelection() catch {};
+    self.showStatus();
     return .handled;
+}
+
+/// Updates the totals from the rows whose selection may have changed:
+/// reads the bitset only up to the range's end and looks at its bytes.
+fn applySelectChange(self: *Files, lo: u32, n: u32) !void {
+    const count = self.visible.items.len;
+    if (self.sel_bits.items.len != (count + 7) / 8) return error.Stale;
+    if (n == 0) return;
+    const end: usize = @min(count, @as(usize, lo) + n);
+    const first = lo / 8;
+    const last = (end + 7) / 8;
+    var buf: [4096]u8 = undefined;
+    const now = if (last <= buf.len) buf[0..last] else try self.gpa.alloc(u8, last);
+    defer if (now.ptr != &buf) self.gpa.free(now);
+    var len: usize = 0;
+    try siv.check(c.siv_view_get_selection(self.activeView(), now.ptr, now.len, &len));
+    for (first..last) |bi| {
+        var diff = now[bi] ^ self.sel_bits.items[bi];
+        while (diff != 0) : (diff &= diff - 1) {
+            const vi = bi * 8 + @ctz(diff);
+            const on = now[bi] & (@as(u8, 1) << @intCast(@ctz(diff))) != 0;
+            const e = self.entryOf(@intCast(vi)) orelse continue;
+            const size: u64 = if (e.kind == .dir) 0 else e.size;
+            if (on) {
+                self.sel_count += 1;
+                self.sel_bytes += size;
+            } else {
+                self.sel_count -= 1;
+                self.sel_bytes -= size;
+            }
+        }
+        self.sel_bits.items[bi] = now[bi];
+    }
+}
+
+/// Reads the whole selection again, after the app changed it itself (those
+/// changes are not reported) or the listing changed.
+fn recountSelection(self: *Files) !void {
+    const bits = try self.selectionBits();
+    defer self.gpa.free(bits);
+    self.sel_bits.clearRetainingCapacity();
+    try self.sel_bits.appendSlice(self.gpa, bits);
+    self.sel_count = 0;
+    self.sel_bytes = 0;
+    for (bits, 0..) |byte, bi| {
+        var b = byte;
+        while (b != 0) : (b &= b - 1) {
+            const e = self.entryOf(@intCast(bi * 8 + @ctz(b))) orelse continue;
+            self.sel_count += 1;
+            if (e.kind != .dir) self.sel_bytes += e.size;
+        }
+    }
 }
 
 pub fn selectAll(self: *Files) void {
@@ -1434,35 +1455,35 @@ pub fn selectAll(self: *Files) void {
     self.updateStatus();
 }
 
+/// Counts the selection again and shows it in the status line.
 pub fn updateStatus(self: *Files) void {
+    if (self.window == .null) return;
+    self.recountSelection() catch return;
+    self.showStatus();
+}
+
+fn showStatus(self: *Files) void {
     if (self.window == .null) return;
     var buf: [256]u8 = undefined;
     const n = self.visible.items.len;
-    const sel = self.selectedIndices() catch return;
-    defer self.gpa.free(sel);
     var msg: []const u8 = "";
+    var sbuf: [32]u8 = undefined;
     if (self.listing == null) {
         msg = if (self.loading != null) "Loading…" else "";
-    } else if (sel.len == 0) {
+    } else if (self.sel_count == 0) {
         msg = std.fmt.bufPrint(&buf, "{d} {s}", .{ n, if (n == 1) "item" else "items" }) catch "";
+    } else if (self.sel_count == 1) {
+        const vi = for (self.sel_bits.items, 0..) |byte, bi| {
+            if (byte != 0) break bi * 8 + @ctz(byte);
+        } else return;
+        const e = self.entryOf(@intCast(vi)) orelse return;
+        const nm = self.nameOf(self.visible.items[vi]);
+        msg = if (e.kind == .dir)
+            std.fmt.bufPrint(&buf, "“{s}” selected", .{nm}) catch ""
+        else
+            std.fmt.bufPrint(&buf, "“{s}” selected ({s})", .{ nm, model.formatSize(&sbuf, self.sel_bytes) }) catch "";
     } else {
-        var bytes: u64 = 0;
-        var folders: usize = 0;
-        for (sel) |vi| {
-            const e = self.entryOf(vi).?;
-            if (e.kind == .dir) folders += 1 else bytes += e.size;
-        }
-        var sbuf: [32]u8 = undefined;
-        if (sel.len == 1) {
-            const e = self.entryOf(sel[0]).?;
-            const nm = self.nameOf(self.visible.items[sel[0]]);
-            msg = if (e.kind == .dir)
-                std.fmt.bufPrint(&buf, "“{s}” selected", .{nm}) catch ""
-            else
-                std.fmt.bufPrint(&buf, "“{s}” selected ({s})", .{ nm, model.formatSize(&sbuf, bytes) }) catch "";
-        } else {
-            msg = std.fmt.bufPrint(&buf, "{d} of {d} items selected ({s})", .{ sel.len, n, model.formatSize(&sbuf, bytes) }) catch "";
-        }
+        msg = std.fmt.bufPrint(&buf, "{d} of {d} items selected ({s})", .{ self.sel_count, n, model.formatSize(&sbuf, self.sel_bytes) }) catch "";
     }
     const txn = self.begin() orelse return;
     _ = c.siv_set_text(txn, self.status, msg.ptr, msg.len);
@@ -1690,7 +1711,7 @@ fn onRowPointer(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c)
                     const txn = self.begin() orelse return .handled;
                     self.clearSelection(txn, self.activeView());
                     _ = c.siv_view_set_selected(txn, self.activeView(), vi, true);
-                    _ = c.siv_widget_set_value(txn, self.activeView(), @floatFromInt(vi));
+                    _ = c.siv_view_set_cursor(txn, self.activeView(), @intCast(vi));
                     _ = commit(txn);
                     self.updateStatus();
                 }
@@ -1698,41 +1719,17 @@ fn onRowPointer(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c)
                 return .handled;
             }
             if (e.button != .primary) return .pass;
+            // The view keeps a larger selection on this press, so that the
+            // drag carries all of it, and collapses it on release.
             self.dragArm(node, e, parts.entry);
-            // A press on an item of a larger selection keeps the selection,
-            // so that the drag carries all of it; the view would select
-            // only the pressed item (FRICTION.md).
-            const plain = !e.modifiers.ctrl and !e.modifiers.shift and e.clicks == 1;
-            if (plain and self.isSelected(parts.entry) and self.selectionCount() > 1) {
-                self.drag_kept = true;
-                return .handled;
-            }
             return .pass;
         },
         .move => {
             self.dragMove(node, e);
             return .pass;
         },
-        .up => {
+        .up, .cancel => {
             self.drag_armed = false;
-            if (self.drag_kept) {
-                self.drag_kept = false;
-                // No drag happened: now select only this item.
-                const vi = self.viewIndexOfEntry(parts.entry) orelse return .handled;
-                const txn = self.begin() orelse return .handled;
-                self.clearSelection(txn, self.activeView());
-                _ = c.siv_view_set_selected(txn, self.activeView(), vi, true);
-                _ = c.siv_widget_set_value(txn, self.activeView(), @floatFromInt(vi));
-                _ = commit(txn);
-                self.focusView();
-                self.updateStatus();
-                return .handled;
-            }
-            return .pass;
-        },
-        .cancel => {
-            self.drag_armed = false;
-            self.drag_kept = false;
             return .pass;
         },
         else => return .pass,
@@ -1761,12 +1758,6 @@ fn isSelected(self: *Files, entry: u32) bool {
     return on;
 }
 
-fn selectionCount(self: *Files) usize {
-    const sel = self.selectedIndices() catch return 0;
-    defer self.gpa.free(sel);
-    return sel.len;
-}
-
 fn viewIndexOfEntry(self: *const Files, entry: u32) ?u32 {
     for (self.visible.items, 0..) |e, i| if (e == entry) return @intCast(i);
     return null;
@@ -1784,38 +1775,20 @@ pub fn openContextMenuAtCursor(self: *Files) void {
     } else self.openContextMenu(self.activeView(), 40, 40, sel.len > 0);
 }
 
-/// The node showing the cursor's item. Views expose neither their rows
-/// nor the cursor's node (FRICTION.md): walk the view for the row body
-/// whose node data names the item.
+/// The node showing the cursor's item, if its row is bound.
 fn cursorRow(self: *Files) ?Node {
     const view = self.activeView();
-    var cursor: f64 = -1;
-    _ = c.siv_widget_get_value(view, &cursor);
-    if (cursor < 0 or cursor >= @as(f64, @floatFromInt(self.visible.items.len))) return null;
-    const entry = self.visible.items[@intFromFloat(cursor)];
-    var stack: [64]Node = undefined;
-    var n: usize = 1;
-    stack[0] = view;
-    while (n > 0) {
-        n -= 1;
-        const cur = stack[n];
-        var p: ?*anyopaque = null;
-        if (c.siv_node_get_data(cur, &row_key, &p) == .ok and p != null) {
-            const parts: *RowParts = @ptrCast(@alignCast(p));
-            if (parts.entry == entry) return cur;
-            continue;
-        }
-        var ch: Node = .null;
-        _ = c.siv_node_get_related(cur, .first_child, &ch);
-        while (ch != .null and n < stack.len) {
-            stack[n] = ch;
-            n += 1;
-            var next: Node = .null;
-            _ = c.siv_node_get_related(ch, .next, &next);
-            ch = next;
-        }
-    }
-    return null;
+    const cursor = self.cursorIndex() orelse return null;
+    var row: Node = .null;
+    _ = c.siv_view_get_row(view, cursor, &row);
+    return if (row == .null) null else row;
+}
+
+/// The active view's cursor.
+fn cursorIndex(self: *Files) ?u32 {
+    var cursor: i32 = -1;
+    _ = c.siv_view_get_cursor(self.activeView(), &cursor);
+    return if (cursor >= 0 and cursor < self.visible.items.len) @intCast(cursor) else null;
 }
 
 /// Opens the context menu at (x, y) in `node`, for the selection
@@ -1868,9 +1841,7 @@ pub fn runContextAction(self: *Files, action: ContextAction) void {
 fn renameCursor(self: *Files) void {
     const sel = self.selectedIndices() catch return;
     defer self.gpa.free(sel);
-    var cursor: f64 = -1;
-    _ = c.siv_widget_get_value(self.activeView(), &cursor);
-    const vi: u32 = if (sel.len == 1) sel[0] else if (cursor >= 0) @intFromFloat(cursor) else return;
+    const vi: u32 = if (sel.len == 1) sel[0] else self.cursorIndex() orelse return;
     self.startRename(vi);
 }
 
@@ -1878,8 +1849,7 @@ pub fn startRename(self: *Files, vi: u32) void {
     if (vi >= self.visible.items.len) return;
     self.renaming = self.visible.items[vi];
     const txn = self.begin() orelse return;
-    _ = c.siv_widget_set_value(txn, self.activeView(), @floatFromInt(vi));
-    _ = c.siv_view_scroll_to(txn, self.activeView(), vi);
+    _ = c.siv_view_set_cursor(txn, self.activeView(), @intCast(vi));
     // Rebinding puts the editor in the row (bindRename).
     _ = c.siv_view_refresh(txn, self.activeView());
     if (!commit(txn)) return;
@@ -2377,7 +2347,6 @@ fn dragMove(self: *Files, node: Node, e: *const siv.Event) void {
     if (!self.drag_armed) return;
     if (@abs(e.x - self.drag_x) < drag_threshold and @abs(e.y - self.drag_y) < drag_threshold) return;
     self.drag_armed = false;
-    self.drag_kept = false;
     const paths = self.selectedPaths() catch return;
     defer self.freePaths(paths);
     if (paths.len == 0) return;

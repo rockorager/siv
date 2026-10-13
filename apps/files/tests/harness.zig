@@ -455,6 +455,13 @@ pub const Harness = struct {
         return tree.name(n.*);
     }
 
+    /// The status line's text.
+    pub fn status(h: *Harness, buf: []u8) []const u8 {
+        var len: usize = 0;
+        _ = t.c.siv_node_get_text(h.f().status, buf.ptr, buf.len, &len);
+        return buf[0..@min(len, buf.len)];
+    }
+
     /// The names of the view's items as shown, in order.
     pub fn shown(h: *Harness, out: [][]const u8) [][]const u8 {
         const fl = h.f();

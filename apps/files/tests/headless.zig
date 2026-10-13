@@ -272,6 +272,17 @@ test "drag and drop: files from other apps, onto folders, and out to other apps"
     const got = try h.dragOut("photo.png", "text/uri-list", &out);
     var wbuf: [512]u8 = undefined;
     try testing.expectEqualStrings(try std.fmt.bufPrint(&wbuf, "file://{s}/photo.png\r\n", .{fx.path}), got);
+    // Two selected: the status line totals them as the selection changes,
+    // and a press on one of them keeps both, so the drag carries both.
+    try h.clickItem("photo.png");
+    try h.clickItemWith("notes.txt", 0x110, .{ .ctrl = true });
+    var sbuf: [128]u8 = undefined;
+    try testing.expectEqualStrings("2 of 9 items selected (53.2 kB)", h.status(&sbuf));
+    const both = try h.dragOut("photo.png", "text/uri-list", &out);
+    try testing.expectEqualStrings(try std.fmt.bufPrint(&wbuf, "file://{s}/notes.txt\r\nfile://{s}/photo.png\r\n", .{ fx.path, fx.path }), both);
+    // Without a drag, the release selects only the item pressed.
+    try h.clickItem("notes.txt");
+    try testing.expectEqualStrings("“notes.txt” selected (1.2 kB)", h.status(&sbuf));
 }
 
 fn writePng(fx: *Fixture, name: []const u8, w: u32, h: u32, rgb: [3]u8) !void {
