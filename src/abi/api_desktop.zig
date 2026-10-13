@@ -196,13 +196,13 @@ pub const decls = [_]Decl{
         .{ .name = "window", .bit = 1, .doc = "Windows." },
         .{ .name = "virtual", .bit = 2, .doc = "A virtual monitor." },
     }),
-    enumeration("siv_cursor_mode", "How a screen cast shows the pointer.", &.{
+    enumeration("siv_screencast_cursor", "How a screen cast shows the pointer.", &.{
         .{ .name = "default", .value = 0, .doc = "The desktop's choice." },
         .{ .name = "hidden", .value = 1, .doc = "Not at all." },
         .{ .name = "embedded", .value = 2, .doc = "Drawn into the frames." },
         .{ .name = "metadata", .value = 3, .doc = "As stream metadata." },
     }),
-    enumeration("siv_persist_mode", "Whether the user's choice of sources can be restored.", &.{
+    enumeration("siv_screencast_persist", "Whether the user's choice of sources can be restored.", &.{
         .{ .name = "none", .value = 0, .doc = "No." },
         .{ .name = "transient", .value = 1, .doc = "While the application runs." },
         .{ .name = "persistent", .value = 2, .doc = "Until the user revokes it." },
@@ -228,8 +228,8 @@ pub const decls = [_]Decl{
         .{ .name = "on_event", .type = ref("siv_screencast_fn"), .doc = "Receives events; may be NULL." },
         .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data when the cast is destroyed." },
         .{ .name = "sources", .type = ref("siv_screencast_sources"), .doc = "What may be recorded; 0 is monitors." },
-        .{ .name = "cursor", .type = ref("siv_cursor_mode"), .doc = "Default: the desktop's choice." },
-        .{ .name = "persist", .type = ref("siv_persist_mode"), .doc = "Default none." },
+        .{ .name = "cursor", .type = ref("siv_screencast_cursor"), .doc = "Default: the desktop's choice." },
+        .{ .name = "persist", .type = ref("siv_screencast_persist"), .doc = "Default none." },
         .{ .name = "flags", .type = ref("siv_screencast_flags"), .doc = "Options." },
     }),
     value("siv_screencast_stream", "A stream of a running screen cast.", &.{

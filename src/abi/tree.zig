@@ -762,7 +762,7 @@ pub fn textPropsOf(d_ptr: ?*const t.TextStyleDesc, stop_buf: *TabStops) Error!ui
             },
             .color = try color(d.color, .black),
             .color_token = try colorToken(d.color_token, true),
-            .size_role = @enumFromInt(@backingInt(try runtime.enumValue(t.TextRole, d.size_role))),
+            .size_role = @enumFromInt(@backingInt(try runtime.enumValue(t.SizeRole, d.size_role))),
             .width = try widthOf(d.width),
             .weight_value = if (d.weight_value <= 1000) @intCast(d.weight_value) else return error.InvalidArgument,
         },
@@ -1750,7 +1750,7 @@ pub fn colorToken(tok: t.ColorToken, none_ok: bool) Error!ui.ColorToken {
 
 comptime {
     for (@typeInfo(ui.TextRole).@"enum".field_names, 0..) |name, i| {
-        if (@backingInt(@field(t.TextRole, name)) != i) @compileError("siv_text_role does not match ui.TextRole at " ++ name);
+        if (@backingInt(@field(t.SizeRole, name)) != i) @compileError("siv_size_role does not match ui.TextRole at " ++ name);
     }
     for (@typeInfo(ui.ColorToken).@"enum".field_names, 0..) |name, i| {
         if (@backingInt(@field(t.ColorToken, name)) != i) @compileError("siv_color_token does not match ui.ColorToken at " ++ name);

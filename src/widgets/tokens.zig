@@ -1,6 +1,6 @@
 //! Compiled design tokens of the stock widgets (D29): spacing, radii, and
 //! control sizes in logical pixels. Colors and text sizes are themed at
-//! run time (siv_color_token, siv_text_role) and are not here.
+//! run time (siv_color_token, siv_size_role) and are not here.
 
 /// Least height of buttons, fields, and spin buttons.
 pub const control_height: f32 = 32;

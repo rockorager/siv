@@ -79,7 +79,7 @@ int main(void) {
 		siv_set_layout(txn, column, SIV_DESC(siv_layout_desc, .padding = {24, 24, 24, 24}));
 
 		siv_node title = siv_text(txn, column, S("Settings"));
-		siv_set_text_style(txn, title, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_WINDOW_FG, .size_role = SIV_TEXT_ROLE_TITLE, .weight = SIV_FONT_WEIGHT_BOLD));
+		siv_set_text_style(txn, title, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_WINDOW_FG, .size_role = SIV_SIZE_ROLE_TITLE, .weight = SIV_FONT_WEIGHT_BOLD));
 		siv_set_semantics(txn, title, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_HEADING));
 
 		siv_node name = siv_text_field(txn, column, SIV_DESC(siv_text_field_desc, .placeholder = S("Your name")));
@@ -98,7 +98,7 @@ int main(void) {
 		siv_on(txn, quality, SIV_EVENT_TYPE_CHANGE, on_change, NULL, "quality");
 
 		form.volume_label = siv_text(txn, column, S("Volume: 40"));
-		siv_set_text_style(txn, form.volume_label, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_MUTED_FG, .size_role = SIV_TEXT_ROLE_CAPTION));
+		siv_set_text_style(txn, form.volume_label, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_MUTED_FG, .size_role = SIV_SIZE_ROLE_CAPTION));
 		siv_node volume = siv_slider(txn, column, SIV_DESC(siv_range_desc, .label = S("Volume"), .value = 40, .step = 1));
 		siv_set_layout(txn, volume, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_PX, 260}));
 		siv_on(txn, volume, SIV_EVENT_TYPE_CHANGE, on_volume, NULL, &form);

@@ -1077,8 +1077,8 @@ pub export fn siv_screencast_start(app: t.App, window: t.Window, desc: ?*const t
             const dest = try runtime.out(t.Screencast, o);
             const token = try runtime.string(dd.restore_token, dd.restore_token_len);
             const sources = try runtime.flags(t.ScreencastSources, dd.sources);
-            const cursor = try runtime.enumValue(t.CursorMode, dd.cursor);
-            const persist = try runtime.enumValue(t.PersistMode, dd.persist);
+            const cursor = try runtime.enumValue(t.ScreencastCursor, dd.cursor);
+            const persist = try runtime.enumValue(t.ScreencastPersist, dd.persist);
             const fl = try runtime.flags(t.ScreencastFlags, dd.flags);
             if (token.len > portal.screencast.max_token) return error.InvalidArgument;
             const win = try parentWindow(s, wnd);

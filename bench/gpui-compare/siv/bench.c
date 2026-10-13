@@ -82,7 +82,7 @@ static void bind_item(void *user_data, siv_txn txn, siv_node row, uint64_t item,
 static siv_node build_gallery(siv_txn txn, siv_node root) {
 	siv_node c = column(txn, root, 14, 24);
 	siv_node title = siv_text(txn, c, S("Widget gallery"));
-	siv_set_text_style(txn, title, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_WINDOW_FG, .size_role = SIV_TEXT_ROLE_TITLE, .weight = SIV_FONT_WEIGHT_BOLD));
+	siv_set_text_style(txn, title, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_WINDOW_FG, .size_role = SIV_SIZE_ROLE_TITLE, .weight = SIV_FONT_WEIGHT_BOLD));
 
 	siv_node buttons = siv_flex(txn, c, SIV_DESC(siv_flex_desc, .gap = 8));
 	siv_node b = siv_push_button(txn, buttons, SIV_DESC(siv_button_desc, .label = S("Default")));
@@ -107,7 +107,7 @@ static siv_node build_gallery(siv_txn txn, siv_node root) {
 	siv_on(txn, list, SIV_EVENT_TYPE_SELECT, on_list_select, NULL, NULL);
 
 	status = siv_text(txn, c, S("Last action: none"));
-	siv_set_text_style(txn, status, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_MUTED_FG, .size_role = SIV_TEXT_ROLE_BODY));
+	siv_set_text_style(txn, status, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_MUTED_FG, .size_role = SIV_SIZE_ROLE_BODY));
 	return field;
 }
 
@@ -131,7 +131,7 @@ static void bind_row(void *user_data, siv_txn txn, siv_node row, uint64_t item, 
 	siv_node a = siv_text(txn, flex, name, (size_t)nlen);
 	siv_set_layout(txn, a, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_PX, 100}));
 	siv_node b = siv_text(txn, flex, desc, (size_t)dlen);
-	siv_set_text_style(txn, b, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_MUTED_FG, .size_role = SIV_TEXT_ROLE_BODY));
+	siv_set_text_style(txn, b, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_MUTED_FG, .size_role = SIV_SIZE_ROLE_BODY));
 }
 
 static void build_list(siv_txn txn, siv_node root) {
@@ -148,7 +148,7 @@ static siv_node build_editor(siv_txn txn, siv_node root, size_t paragraphs) {
 	siv_set_layout(txn, scroll, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_FRACTION, 1}, .height = {SIV_UNIT_FRACTION, 1}));
 	siv_node editor = siv_editor(txn, scroll, SIV_EDITOR_MULTILINE);
 	siv_set_layout(txn, editor, SIV_DESC(siv_layout_desc, .padding = {24, 24, 24, 24}, .width = {SIV_UNIT_FRACTION, 1}));
-	siv_set_text_style(txn, editor, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_VIEW_FG, .size_role = SIV_TEXT_ROLE_BODY, .line_height = DOC_LINE_HEIGHT));
+	siv_set_text_style(txn, editor, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_VIEW_FG, .size_role = SIV_SIZE_ROLE_BODY, .line_height = DOC_LINE_HEIGHT));
 	siv_set_text(txn, editor, doc, len);
 	siv_set_selection(txn, editor, 0, 0);
 	free(doc);

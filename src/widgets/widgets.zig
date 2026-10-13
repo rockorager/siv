@@ -275,7 +275,7 @@ pub fn related(node: Node, rel: siv.Relation) Node {
 }
 
 /// A label's text style.
-pub fn textStyle(token: siv.ColorToken, role: siv.TextRole) siv.TextStyleDesc {
+pub fn textStyle(token: siv.ColorToken, role: siv.SizeRole) siv.TextStyleDesc {
     return .{ .color_token = token, .size_role = role, .flags = .{ .no_wrap = true } };
 }
 

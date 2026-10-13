@@ -3687,6 +3687,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | `siv_notification_send` | `siv_notify` | pairs with `siv_notification_withdraw` (Lua `app:notification_send{}`) |
   | `siv_node_emit` | `siv_emit` | calls on a node outside a transaction are `siv_node_*` (Lua `node:emit` as before) |
   | `siv_pointer_button`, `SIV_POINTER_BUTTON_*` | `siv_button`, `SIV_BUTTON_*` | `siv_button_desc` and `siv_button_style` are the push button widget's; the event field is still `button` |
+  | `siv_size_role`, `SIV_SIZE_ROLE_*` | `siv_text_role`, `SIV_TEXT_ROLE_*` | a themed text size beside `siv_role`, the accessibility role, read as a role for text; it is the type of `size_role` |
+  | `siv_screencast_cursor`, `siv_screencast_persist` | `siv_cursor_mode`, `siv_persist_mode` | they belong to the screen cast family; `siv_cursor` is the pointer's shape |
   | reserved fields in `siv_text_span`, `siv_paragraph_span`, `siv_tab_stop`, `siv_text_metrics` (D2) | — | frozen value structs that will plausibly grow; descriptors grow by appending |
 
   Statements this document made that were no longer true are fixed where

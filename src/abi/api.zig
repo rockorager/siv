@@ -480,7 +480,7 @@ pub const decls = [_]Decl{
         .{ .name = "flags", .type = ref("siv_layout_flags"), .doc = "Options." },
     }),
     enumeration("siv_color_token", "A themed color (D29): resolved from the window's theme when painted, so it follows the desktop's color scheme, contrast, and accent and the application's overrides without the tree changing. none uses the literal color.", &color_token_values),
-    enumeration("siv_text_role", "A themed text size (D29), relative to the desktop's UI font size; follows it live.", &.{
+    enumeration("siv_size_role", "A themed text size (D29), relative to the desktop's UI font size; follows it live.", &.{
         .{ .name = "fixed", .value = 0, .doc = "The style's own font_size." },
         .{ .name = "body", .value = 1, .doc = "The desktop's UI font size (11 pt by default)." },
         .{ .name = "caption", .value = 2, .doc = "0.85 times body." },
@@ -694,7 +694,7 @@ pub const decls = [_]Decl{
         .{ .name = "align", .type = ref("siv_text_align"), .doc = "Default start." },
         .{ .name = "flags", .type = ref("siv_text_flags"), .doc = "Options." },
         .{ .name = "color_token", .type = ref("siv_color_token"), .doc = "A themed color that replaces color." },
-        .{ .name = "size_role", .type = ref("siv_text_role"), .doc = "A themed size that replaces font_size." },
+        .{ .name = "size_role", .type = ref("siv_size_role"), .doc = "A themed size that replaces font_size." },
         .{ .name = "width", .type = ref("siv_font_width"), .doc = "Default normal." },
         .{ .name = "weight_value", .type = .u32, .doc = "A CSS weight from 1 to 1000 that replaces weight, for variable fonts, whose wght axis takes it as it is; 0 uses weight." },
         f32Field("line_spacing", "Paragraph default (D13): line height as a multiple of the font's (CSS line-height), the extra split above and below each line; 0 is 1."),

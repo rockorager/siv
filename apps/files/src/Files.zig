@@ -284,7 +284,7 @@ fn px(v: f32) siv.Dimension {
     return .{ .unit = .px, .value = v };
 }
 
-fn text(txn: Txn, parent: Node, s: []const u8, token: siv.ColorToken, role: siv.TextRole) Node {
+fn text(txn: Txn, parent: Node, s: []const u8, token: siv.ColorToken, role: siv.SizeRole) Node {
     const n = c.siv_text(txn, parent, s.ptr, s.len);
     // One line; cut short with an ellipsis when it does not fit.
     _ = c.siv_set_text_style(txn, n, &.{ .color_token = token, .size_role = role, .flags = .{ .no_wrap = true, .ellipsize = true } });
