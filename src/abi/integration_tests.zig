@@ -4,13 +4,14 @@
 //! callbacks, the compositor's configure arrives as a resize, and sway's
 //! kill command arrives as a close request that ends siv_run.
 //!
-//! Imports: abi, platform, text, loop.
+//! Imports: abi, platform, compositor, text, loop, portal, helpers.
 
 const std = @import("std");
 const testing = std.testing;
 const abi = @import("abi");
 const text = @import("text");
 const platform = @import("platform");
+const Compositor = @import("compositor").Compositor;
 const Loop = @import("loop").Loop;
 
 const t = abi.types;
@@ -74,11 +75,6 @@ fn dispatchUntil(app: t.App, ctx: anytype, comptime cond: fn (@TypeOf(ctx)) bool
     }
 }
 
-fn dispatchFor(app: t.App, ms: u64) void {
-    const deadline = Loop.now() + ms * std.time.ns_per_ms;
-    while (Loop.now() < deadline) _ = A.siv_app_dispatch(app, 10);
-}
-
 test "the public API on sway: present, pointer and keyboard input, resize, close" {
     var sway: Sway = .{};
     try sway.start();
@@ -127,10 +123,15 @@ test "the public API on sway: present, pointer and keyboard input, resize, close
     // A real click on the button.
     var vp = try VirtualPointer.connect(&sway);
     defer vp.deinit();
-    // The virtual device gives the seat its pointer capability; give the
-    // application time to bind its wl_pointer before clicking.
+    // The virtual device gives the seat its pointer capability. Sway sends
+    // the pointer's enter only once it handled siv's get_pointer, so after
+    // that the clicks reach siv.
     try vp.sync();
-    dispatchFor(app, 300);
+    try dispatchUntil(app, w, struct {
+        fn f(win: *A.Window) bool {
+            return win.uiWin().input.pointer != null;
+        }
+    }.f);
     vp.moveTo(100, 50);
     vp.button(0x110, true);
     vp.button(0x110, false);
@@ -141,16 +142,26 @@ test "the public API on sway: present, pointer and keyboard input, resize, close
         }
     }.f);
 
-    // Focus the editor and type through a virtual keyboard.
+    // Focus the editor and type through a virtual keyboard. Keys from a
+    // keyboard that appears with them can beat siv's get_keyboard, so an
+    // idle wtype provides the seat's keyboard first, and the keys follow
+    // its enter.
     vp.moveTo(100, 120);
     vp.button(0x110, true);
     vp.button(0x110, false);
     try vp.sync();
-    dispatchFor(app, 300);
-    const wtype = try sway.spawnClient(&[_:null]?[*:0]const u8{ "wtype", "-s", "300", "hi" });
-    var status: c_int = 0;
-    while (std.c.waitpid(wtype, &status, std.c.W.NOHANG) == 0) try ok(A.siv_app_dispatch(app, 10));
-    try testing.expectEqual(0, status);
+    const keyboard = try sway.spawnClient(&[_:null]?[*:0]const u8{ "wtype", "-s", "60000" });
+    defer {
+        _ = std.c.kill(keyboard, std.c.SIG.TERM);
+        var status: c_int = 0;
+        _ = std.c.waitpid(keyboard, &status, 0);
+    }
+    try dispatchUntil(app, w, struct {
+        fn f(win: *A.Window) bool {
+            return win.uiWin().input.keyboard;
+        }
+    }.f);
+    try typeKeys(&sway, app, &[_:null]?[*:0]const u8{ "wtype", "hi" });
     try dispatchUntil(app, &log, struct {
         fn f(l: *Log) bool {
             return l.changes >= 2;
@@ -702,14 +713,34 @@ fn shownPopups(app: t.App, out: []*A.Window) !usize {
     return n;
 }
 
+/// Whether sway has shown `w`: presentation feedback for one of its
+/// commits arrived. siv's own `presented` event comes as soon as siv
+/// commits; sway may still handle input from another connection (the
+/// virtual pointer, wtype) before that commit, and hit-test without the
+/// window.
+fn swayShown(w: *A.Window) !bool {
+    const Probe = struct {
+        id: platform.WindowId,
+        shown: bool = false,
+        fn run(ctx: ?*anyopaque, comp: *Compositor) void {
+            const p: *@This() = @ptrCast(@alignCast(ctx));
+            p.shown = comp.platform.wayland.get(p.id).clock.last_present_ns != null;
+        }
+    };
+    var p: Probe = .{ .id = w.win.id };
+    try w.win.app.comp.call(&p, Probe.run);
+    return p.shown;
+}
+
 fn waitPopups(app: t.App, count: usize) !void {
     const deadline = Loop.now() + 10 * std.time.ns_per_s;
     var ps: [4]*A.Window = undefined;
     while (true) {
         const n = try shownPopups(app, &ps);
-        // Shown and placed by the compositor.
+        // Placed by the compositor and on screen, so that input sent from
+        // now on finds them.
         var placed = n == count;
-        for (ps[0..n]) |p| placed = placed and p.win.state.popup != null and p.win.presented_seq > 0;
+        for (ps[0..n]) |p| placed = placed and p.win.state.popup != null and p.win.presented_seq > 0 and try swayShown(p);
         if (placed) return;
         if (Loop.now() > deadline) return error.Timeout;
         try ok(A.siv_app_dispatch(app, 10));

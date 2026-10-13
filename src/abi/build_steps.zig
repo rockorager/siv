@@ -197,6 +197,7 @@ pub fn add(b: *std.Build, o: Options) void {
             .imports = &.{
                 .{ .name = "abi", .module = o.abi },
                 .{ .name = "platform", .module = o.abi.import_table.get("platform").? },
+                .{ .name = "compositor", .module = o.abi.import_table.get("compositor").? },
                 .{ .name = "text", .module = o.abi.import_table.get("text").? },
                 .{ .name = "loop", .module = o.abi.import_table.get("loop").? },
                 .{ .name = "portal", .module = o.abi.import_table.get("portal").? },
