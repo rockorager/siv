@@ -54,9 +54,11 @@ test "lists a folder, folders first in natural order, hidden files hidden" {
     try testing.expectEqual(want.len, got.len);
     for (want, got) |a, b| try testing.expectEqualStrings(a, b);
     try h.expectGolden("list-light");
-    // The window reported its frames: the first, then one with the rows.
+    // The window reported its frames: the first, then one with the rows
+    // (the same one when the listing arrives while the first frame waits
+    // for its icons, D19).
     const f = h.f();
-    try testing.expect(f.frames >= 2);
+    try testing.expect(f.frames >= 1);
     try testing.expect(f.first_frame_ns != 0 and f.rows_frame_ns >= f.first_frame_ns);
 }
 
