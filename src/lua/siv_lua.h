@@ -12,7 +12,11 @@
  * Only the core and an allowlist of standard libraries are compiled in:
  * base, package, coroutine, table, string, math, utf8, os, and io. The
  * debug library is not, and `require` loads Lua source only: loading C
- * modules is disabled. */
+ * modules is disabled.
+ *
+ * A program that embeds Lua 5.5 itself does not use this library: it
+ * loads the Lua C module lib/lua/5.5/siv.so with require("siv"), which
+ * contains no Lua and uses the program's. */
 #ifndef SIV_LUA_H
 #define SIV_LUA_H
 

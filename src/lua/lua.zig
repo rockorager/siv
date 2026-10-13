@@ -6,7 +6,9 @@
 //!   functions, coroutines for asynchronous calls, hot reload).
 //! - hot.zig: the file watcher behind hot reload.
 //! - siv_lua_new and siv_lua_run: the embedding API (siv_lua.h), which
-//!   the siv-lua runner (main.zig) uses.
+//!   the siv-lua runner (main.zig) uses. Only libsiv-lua, which bundles
+//!   Lua, exports them; siv.so, the same binding as a Lua C module for a
+//!   host's own Lua 5.5, exports luaopen_siv alone.
 
 const std = @import("std");
 const lua = @import("c.zig");
@@ -25,10 +27,16 @@ pub const c_api = c;
 
 const prelude = @embedFile("prelude.lua");
 
+/// libsiv-lua bundles Lua and exports the embedding API; siv.so, the Lua
+/// C module, has only luaopen_siv and takes Lua from its host.
+const bundled = @import("lua_options").bundled;
+
 comptime {
     @export(&luaopen_siv, .{ .name = "luaopen_siv" });
-    @export(&siv_lua_new, .{ .name = "siv_lua_new" });
-    @export(&siv_lua_run, .{ .name = "siv_lua_run" });
+    if (bundled) {
+        @export(&siv_lua_new, .{ .name = "siv_lua_new" });
+        @export(&siv_lua_run, .{ .name = "siv_lua_run" });
+    }
 }
 
 fn setRegistry(L: *L_, key: [:0]const u8) void {
@@ -48,6 +56,8 @@ fn pushFn(L: *L_, st: *State, f: lua.CFunction) void {
 pub fn luaopen_siv(Lq: ?*L_) callconv(.c) c_int {
     @setEvalBranchQuota(10_000_000);
     const L = Lq.?;
+    // A host's Lua must be 5.5 with this build's number types.
+    c.luaL_checkversion_(L, c.LUA_VERSION_NUM, @sizeOf(c.lua_Integer) * 16 + @sizeOf(c.lua_Number));
     if (c.lua_getfield(L, lua.registry, "siv.module") == lua.ttable) return 1;
     lua.pop(L, 1);
 

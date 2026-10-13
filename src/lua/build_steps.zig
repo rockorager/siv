@@ -6,6 +6,8 @@
 //!
 //! Installed:
 //!   lib/libsiv-lua.so            the binding and the Lua it embeds
+//!   lib/lua/5.5/siv.so           the binding as a Lua C module, without
+//!                                Lua, for hosts with a Lua 5.5 of their own
 //!   include/siv-lua/siv_lua.h    embedding API (and lua.h, lauxlib.h,
 //!                                lualib.h, luaconf.h unless -fsys=lua)
 //!   lib/pkgconfig/siv-lua.pc
@@ -66,23 +68,27 @@ pub fn add(b: *std.Build, o: Options) void {
     const lua_dep = if (system_lua) null else b.lazyDependency("lua", .{});
 
     // The Lua C API: translated headers, plus the compiled sources when
-    // vendored.
+    // vendored (`lua_c`), or the headers alone (`lua_h`) for siv.so, which
+    // takes Lua from the process that loads it.
+    const tc = b.addTranslateC(.{
+        .root_source_file = b.addWriteFiles().add("lua_all.h",
+            \\#include <lua.h>
+            \\#include <lauxlib.h>
+            \\#include <lualib.h>
+            \\
+        ),
+        .target = o.target,
+        .optimize = o.optimize,
+    });
+    if (lua_dep) |dep| tc.addIncludePath(dep.path("src"));
+    const lua_h = tc.createModule();
+    lua_h.pic = true;
     const lua_c = blk: {
-        const tc = b.addTranslateC(.{
-            .root_source_file = b.addWriteFiles().add("lua_all.h",
-                \\#include <lua.h>
-                \\#include <lauxlib.h>
-                \\#include <lualib.h>
-                \\
-            ),
-            .target = o.target,
-            .optimize = o.optimize,
-        });
         if (system_lua) {
-            tc.linkSystemLibrary("lua5.5", .{});
-            break :blk tc.createModule();
+            const m = tc.createModule();
+            m.linkSystemLibrary("lua5.5", .{});
+            break :blk m;
         }
-        if (lua_dep) |dep| tc.addIncludePath(dep.path("src"));
         const m = tc.createModule();
         m.link_libc = true;
         m.pic = true;
@@ -122,11 +128,17 @@ pub fn add(b: *std.Build, o: Options) void {
             return self.moduleWith(
                 self.b.createModule(.{ .root_source_file = self.wrapper_source }),
                 self.b.createModule(.{ .root_source_file = self.b.path("src/abi/api.zig") }),
+                self.lua_c,
+                true,
             );
         }
         /// With the generated wrapper and the schema from `abi`, for a
-        /// binary that already holds them.
-        fn moduleWith(self: @This(), wrapper: *std.Build.Module, schema: *std.Build.Module) *std.Build.Module {
+        /// binary that already holds them, and the Lua headers with or
+        /// without Lua (`bundled`: whether siv_lua_new and siv_lua_run,
+        /// which need Lua's libraries, are exported).
+        fn moduleWith(self: @This(), wrapper: *std.Build.Module, schema: *std.Build.Module, lua: *std.Build.Module, bundled: bool) *std.Build.Module {
+            const options = self.b.addOptions();
+            options.addOption(bool, "bundled", bundled);
             return self.b.createModule(.{
                 .root_source_file = self.b.path("src/lua/lua.zig"),
                 .target = self.o.target,
@@ -136,7 +148,8 @@ pub fn add(b: *std.Build, o: Options) void {
                 .imports = &.{
                     .{ .name = "siv", .module = wrapper },
                     .{ .name = "siv_schema", .module = schema },
-                    .{ .name = "lua_c", .module = self.lua_c },
+                    .{ .name = "lua_c", .module = lua },
+                    .{ .name = "lua_options", .module = options.createModule() },
                 },
             });
         }
@@ -192,6 +205,29 @@ pub fn add(b: *std.Build, o: Options) void {
     runner.root_module.addRPathSpecial("$ORIGIN/../lib");
     b.installArtifact(runner);
 
+    // siv.so: the same binding as a standard Lua C module for hosts that
+    // embed Lua 5.5 themselves and for the stock interpreter. It contains
+    // no Lua: lua_* resolve from the process that loads it. Installed where
+    // Lua's default package.cpath looks under a prefix.
+    const module_lib = b.addLibrary(.{
+        .name = "siv-lua-module",
+        .linkage = .dynamic,
+        .root_module = binding.moduleWith(
+            b.createModule(.{ .root_source_file = wrapper_source }),
+            b.createModule(.{ .root_source_file = b.path("src/abi/api.zig") }),
+            lua_h,
+            false,
+        ),
+    });
+    module_lib.root_module.linkLibrary(o.shared);
+    module_lib.linker_allow_shlib_undefined = true;
+    module_lib.use_llvm = true;
+    module_lib.use_lld = true;
+    module_lib.setVersionScript(b.path("src/lua/siv-module.map"));
+    // lib/lua/5.5/siv.so finds lib/libsiv.so.
+    module_lib.root_module.addRPathSpecial("$ORIGIN/../..");
+    b.getInstallStep().dependOn(&b.addInstallFileWithDir(module_lib.getEmittedBin(), .lib, "lua/5.5/siv.so").step);
+
     // Annotations for lua-language-server, from the same mapping as the
     // binding (src/lua/mapping.zig).
     const gen = b.addExecutable(.{
@@ -235,11 +271,37 @@ pub fn add(b: *std.Build, o: Options) void {
     test_lua.dependOn(&gen_run.step);
     o.test_step.dependOn(test_lua);
 
+    // siv.so from the stock lua interpreter, built from the pinned
+    // release for the test only (with -fsys=lua the system's would be
+    // needed, so the test is skipped): every library, linit.c, lua.c, and
+    // dlopen, with its symbols exported for C modules, as distributions
+    // build it.
+    if (lua_dep) |dep| {
+        const interp = b.addExecutable(.{
+            .name = "lua",
+            .root_module = b.createModule(.{ .target = o.target, .optimize = o.optimize, .link_libc = true }),
+        });
+        interp.root_module.addCSourceFiles(.{
+            .root = dep.path("src"),
+            .files = &(core ++ allowed_libs ++ [_][]const u8{ "ldblib.c", "linit.c", "lua.c" }),
+            .flags = &.{ "-std=gnu99", "-DLUA_USE_LINUX" },
+        });
+        interp.root_module.linkSystemLibrary("m", .{});
+        interp.root_module.linkSystemLibrary("dl", .{});
+        interp.rdynamic = true;
+        const run_module = b.addRunArtifact(interp);
+        run_module.setCwd(b.path("."));
+        run_module.addFileArg(b.path("src/lua/testdata/module.lua"));
+        run_module.addFileArg(module_lib.getEmittedBin());
+        run_module.expectExitCode(0);
+        test_lua.dependOn(&run_module.step);
+    }
+
     // Golden images of Lua applications (test/lua/), in test/headless.zig.
     // The binding compiled into that binary shares its wrapper and schema
     // with the abi module there.
     const abi = o.headless.root_module.import_table.get("abi").?;
-    o.headless.root_module.addImport("lua", binding.moduleWith(abi.import_table.get("siv").?, abi));
+    o.headless.root_module.addImport("lua", binding.moduleWith(abi.import_table.get("siv").?, abi, lua_c, true));
 
     // Lua applications on sway, in process and through the installed
     // runner (src/lua/integration_tests.zig). Not in `test`.

@@ -33,7 +33,8 @@ zig build test-integration-pdf  # only PDF output against qpdf and poppler
 zig build test-integration-tray  # only the tray against dbus-daemon and gdbus
 zig build test-dbus --fuzz -Doptimize=ReleaseSafe  # fuzz a module's parsers
 zig build test-abi             # abi module, generators, Zig wrappers, exported symbols
-zig build test-lua             # Lua binding against libsiv.so, annotations (also in `test`)
+zig build test-lua             # Lua binding against libsiv.so, siv.so from the stock lua,
+                               #   annotations (also in `test`)
 zig build test-integration-lua # only the Lua binding and siv-lua on sway
 ./zig-out/bin/siv-lua examples/todo.lua  # run a Lua example; --watch reloads it on edits
 zig build test-notices         # NOTICES covers every shipped dependency (also in `test`)

@@ -2462,10 +2462,24 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     exactly the Lua C API, `luaopen_siv`, `siv_lua_new` (a state with the
     chosen standard libraries and `require("siv")`), and `siv_lua_run`
     (runs a main chunk, with hot reload on request), under a version
-    script (`SIV_LUA_0.1`). A host embeds Lua through it (`siv_lua.h`);
-    it cannot bring a Lua of its own, since a `lua_State` from another
-    build has another layout. libsiv-lua ships its own NOTICES, with
-    Lua's licence from `lua.h` (the tarball has no licence file).
+    script (`SIV_LUA_0.1`), for embedders without a Lua (`siv_lua.h`).
+    libsiv-lua ships its own NOTICES, with Lua's licence from `lua.h`
+    (the tarball has no licence file).
+  - **A Lua C module for hosts with their own Lua.** Editors, games, and
+    other programs that already embed Lua 5.5 load `siv.so`
+    (`lib/lua/5.5/siv.so`, on the default `package.cpath` under a
+    prefix): the same binding with only `luaopen_siv` exported and no
+    Lua inside, its `lua_*` references resolved from the process that
+    loads it, so `require("siv")` works from the stock `lua` interpreter
+    and from any host whose Lua symbols are visible to modules (as
+    distributions build them). `luaopen_siv` checks the host's Lua
+    version and number types with `luaL_checkversion`. The host's
+    libraries are its own (the allowlist applies to libsiv-lua);
+    `siv.reload` belongs to `siv-lua`, which owns the main chunk.
+    Alternative: one library that both bundles Lua and loads into hosts
+    (two Lua copies in one process, with states of one used by the
+    other). `zig build test-lua` runs `require("siv")` from the stock
+    interpreter built from the pinned release.
   - **Lua** is 5.5.1 from lua.org, pinned by URL and hash (lua.org's
     published SHA-256 matches). The build compiles the core and an
     explicit allowlist of standard libraries: base, package, coroutine,
