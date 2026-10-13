@@ -50,11 +50,30 @@ pub export fn siv_text_field(txn: Txn, parent: Node, desc: ?*const siv.TextField
 /// Styled-text editors (D22): Ctrl+B, Ctrl+I, and Ctrl+U toggle bold,
 /// italic, and underline. An attribute turns off when all of the
 /// selection has it (or, with nothing selected, the typing style), else
-/// on, as word processors do.
+/// on, as word processors do. Ctrl+L, Ctrl+E, and Ctrl+R align the
+/// selected paragraphs left, centered, and right (D13); left in a
+/// left-to-right editor and right in a right-to-left one go back to the
+/// editor's own alignment.
 fn onStyleKey(ud: ?*anyopaque, node: Node, ev: ?*const siv.Event) callconv(.c) bool {
     const st: *Field = @ptrCast(@alignCast(ud.?));
     const e = ev.?;
     if (st.hdr.disabled or !e.flags.pressed or !e.modifiers.ctrl or e.modifiers.alt or e.modifiers.super) return false;
+    switch (e.keysym) {
+        'l', 'L', 'e', 'E', 'r', 'R' => {
+            var rtl = false;
+            _ = c.siv_node_is_rtl(node, &rtl);
+            const left: siv.TextAlign = if (rtl) .end else .start;
+            const right: siv.TextAlign = if (rtl) .start else .end;
+            const a: siv.TextAlign = switch (e.keysym) {
+                'l', 'L' => left,
+                'e', 'E' => .center,
+                else => right,
+            };
+            _ = c.siv_editor_format_paragraph(node, .{ .flags = .{ .@"align" = a != .start }, .@"align" = a }, .{ .@"align" = true });
+            return true;
+        },
+        else => {},
+    }
     const Attr = enum { bold, italic, underline };
     const attr: Attr = switch (e.keysym) {
         'b', 'B' => .bold,
