@@ -182,10 +182,16 @@ fn resolveDirection(win: *Window, id: NodeId) void {
 fn own(n: *const Node, c: Constraints) Constraints {
     const l = n.layout;
     var r = c;
-    r.min_w = @max(c.min_w, @min(l.min_width, c.max_w));
-    r.max_w = @max(r.min_w, @min(c.max_w, l.max_width));
-    r.min_h = @max(c.min_h, @min(l.min_height, c.max_h));
-    r.max_h = @max(r.min_h, @min(c.max_h, l.max_height));
+    // The node's own largest size wins over a parent that stretches it
+    // (a minimum from the parent above it), as CSS max-width does; its
+    // own smallest size wins over both, but not over the parent's
+    // largest. A stretched node held narrower is placed at the start.
+    const min_w = @min(l.min_width, c.max_w);
+    r.max_w = @max(min_w, @min(c.max_w, l.max_width));
+    r.min_w = @min(@max(c.min_w, min_w), r.max_w);
+    const min_h = @min(l.min_height, c.max_h);
+    r.max_h = @max(min_h, @min(c.max_h, l.max_height));
+    r.min_h = @min(@max(c.min_h, min_h), r.max_h);
     if (resolve(l.width, c.max_w)) |w| {
         r.min_w = r.clampW(w);
         r.max_w = r.min_w;

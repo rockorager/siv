@@ -914,9 +914,21 @@ fn drawNode(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point
             try drawEditor(st, win, nid, b, off);
             bounds = bounds.unite(r);
         },
-        .image => bounds = bounds.unite(try drawImage(win, nid, b, off)),
+        // SIV_VISUAL_CLIP clips a node's own content too, to its rounded
+        // border box: a photo with rounded corners is one image node.
+        .image => {
+            if (v.clip) try b.pushLayer(.{ .clip = .{ .shape = if (rounded) .{ .rounded_rect = .{ .rect = r, .radii = radii } } else .{ .rect = r } } });
+            const drawn = drawImage(win, nid, b, off) catch |err| {
+                if (v.clip) b.popLayer() catch {};
+                return err;
+            };
+            if (v.clip) try b.popLayer();
+            bounds = bounds.unite(if (v.clip) drawn.intersect(r) else drawn);
+        },
         .canvas => if (n.data.canvas.draw) |draw| {
-            try b.pushLayer(.{ .transform = .translate(off.x, off.y), .clip = .{ .shape = .{ .rect = .xywh(0, 0, s.size.w, s.size.h) } } });
+            const box = Rect.xywh(0, 0, s.size.w, s.size.h);
+            const shape: scene.Shape = if (v.clip and rounded) .{ .rounded_rect = .{ .rect = box, .radii = radii } } else .{ .rect = box };
+            try b.pushLayer(.{ .transform = .translate(off.x, off.y), .clip = .{ .shape = shape } });
             // Keep the builder balanced when the content fails.
             draw(n.data.canvas.user, win, nid, b, s.size.w, s.size.h) catch |err| {
                 b.popLayer() catch {};

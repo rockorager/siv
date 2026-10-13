@@ -3740,6 +3740,15 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     only children without an explicit size; flex free space and fr tracks
     exist only when the container is larger than its content (stretched,
     sized, or given a minimum).
+  - A node's own largest size (`max_width`, `max_height`) wins over a
+    parent that stretches it, as CSS max-width does, and the node is
+    placed at the start; its own smallest size wins over its largest.
+    Before, the parent's minimum won, so a stretched label ignored its
+    `max_width` and an inset child of the window's root (which
+    stretches) filled the window; found by the user guide
+    (`docs/guide`). The window's root is a stack whose alignment is
+    stretch on both axes, unlike a stack's default of start, so a single
+    child fills the window; `siv_window_get_root` says so.
   - Box is block flow: children stacked vertically and stretched to its
     width. A child with a fraction height takes that fraction of the box's
     height when the box has a definite one (stretched by its parent, or
@@ -3755,6 +3764,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     insets. Scroll lays out like a box in an unbounded content area.
   - There is no min-content size and no margin; gaps and padding space
     things. Borders draw over the padding and do not affect layout.
+  - `SIV_VISUAL_CLIP` clips a node's own image or canvas content to its
+    rounded border box, not only its descendants (external content
+    already was), so a photo with rounded corners is one image node
+    rather than an image in a clipping box; found by the user guide.
 - **Alternatives:** CSS block, flex, and grid in full (intrinsic min and
   max sizes per axis, margins, multiple layout passes); Flutter's model
   without intrinsic widths (shrink-wrapping needs explicit, quadratic
@@ -4042,6 +4055,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | `SIV_STR` in siv.h (D2) | each sample's `S(s)` | one helper for string literals |
   | Zig: descriptor parameters take `T.Options` with slices (D3) | `?*const T` with `.x` and `.x_len` | strings and arrays as slices |
   | Zig: callbacks get `*const T` descriptors (D3) | `?*const T` | siv never passes NULL; no `ev.?` |
+  | stretched nodes keep their own largest size; the root's stretch documented (D26) | the parent's stretch winning | a stretched node's `max_width` did nothing |
+  | `SIV_VISUAL_CLIP` clips the node's own image and canvas (D26) | descendants only | rounded images needed a wrapper box |
   | `siv_node_focus` shows the ring after a key (D16) | `siv_node_focus` never showing it | focus moved by arrow keys in roving widgets was unmarked |
   | reserved fields in `siv_text_span`, `siv_paragraph_span`, `siv_tab_stop`, `siv_text_metrics` (D2) | — | frozen value structs that will plausibly grow; descriptors grow by appending |
   | `siv_tablet_sample.wheel` and four reserved fields (D16) | — | the axes flags named a wheel the sample could not carry; tablets grow axes, and a frozen struct cannot |

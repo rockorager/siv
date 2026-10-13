@@ -294,6 +294,28 @@ test "box flows vertically; stack aligns and insets; grid tracks" {
     try testing.expectEqual([4]f32{ 90, 110, 210, 8 }, f.rect(cells[4]));
 }
 
+test "stretched children keep to their own largest size, at the start" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 400, .height = 300 });
+    defer f.deinit();
+    const t = try f.win.begin();
+    // A box stretches its children to its width; a flex row stretches
+    // them to its height; the window's root stack stretches both ways.
+    const col = try box(t, .root, .box, .{ .width = .{ .px = 200 }, .height = .{ .px = 100 } });
+    const capped = try box(t, col, .box, .{ .height = .{ .px = 10 }, .max_width = 120 });
+    const floor = try box(t, col, .box, .{ .height = .{ .px = 10 }, .min_width = 150, .max_width = 120 });
+    const row = try box(t, col, .flex, .{ .height = .{ .px = 50 } });
+    const short = try box(t, row, .box, .{ .width = .{ .px = 30 }, .max_height = 20 });
+    const badge = try box(t, .root, .box, .{ .max_width = 60, .max_height = 30, .inset = .{ .end = 10, .bottom = 10 } });
+    t.commit();
+    try f.frame();
+    try testing.expectEqual([4]f32{ 0, 0, 120, 10 }, f.rect(capped));
+    // Its own smallest size wins over its own largest, as in CSS.
+    try testing.expectEqual(@as(f32, 150), f.rect(floor)[2]);
+    try testing.expectEqual([4]f32{ 0, 20, 30, 20 }, f.rect(short));
+    try testing.expectEqual([4]f32{ 330, 260, 60, 30 }, f.rect(badge));
+}
+
 test "a fraction height in a box of definite height takes that fraction of it" {
     var f: Fixture = undefined;
     try f.init(.{ .width = 300, .height = 200 });

@@ -511,7 +511,7 @@ pub const decls = [_]Decl{
         .{ .name = "title", .value = 4, .doc = "1.5 times body." },
     }),
     flags("siv_visual_flags", "Appearance options.", &.{
-        .{ .name = "clip", .bit = 0, .doc = "Clip descendants to the rounded border box." },
+        .{ .name = "clip", .bit = 0, .doc = "Clip descendants, and the node's own image, canvas, or external content, to the rounded border box." },
         .{ .name = "layer", .bit = 1, .doc = "Give the node its own compositor layer (D8), for example before animating it." },
         .{ .name = "no_hit_test", .bit = 2, .doc = "Pointer events pass through the node to what is below." },
         .{ .name = "hidden", .bit = 3, .doc = "The node and its subtree take no space and are not painted, hit, focusable, or in the semantics tree; its state is kept." },
@@ -1669,7 +1669,7 @@ pub const functions = [_]Function{
     }),
     .{
         .name = "siv_window_get_root",
-        .doc = "The window's root node: a stack that fills the window. Returns 0 for an invalid handle, which the transaction operation given it then reports.",
+        .doc = "The window's root node: a stack that fills the window and stretches its children to it (its alignment is stretch on both axes, where siv_stack_desc's default is start), so one child fills the window; a child that sets its own size, largest size, or alignment keeps it. siv_set_stack changes it. Returns 0 for an invalid handle, which the transaction operation given it then reports.",
         .since = v0_1,
         .params = &.{window_param},
         .ret = ref("siv_node"),
