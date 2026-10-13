@@ -52,12 +52,18 @@ export fn shell_test_app_run(app: t.App) t.Result {
     return .ok;
 }
 
-/// 2026-01-01 09:41:00 UTC; the test runs without TZ.
+/// 2026-01-01 09:41:00 UTC.
 export fn shell_test_time(out: ?*c_long) c_long {
     const now: c_long = 1767260460;
     if (out) |o| o.* = now;
     return now;
 }
+
+/// The local time zone is UTC, wherever the test runs.
+export fn shell_test_localtime_r(time: *const c_long, tm: *anyopaque) ?*anyopaque {
+    return gmtime_r(time, tm);
+}
+extern "c" fn gmtime_r(time: *const c_long, tm: *anyopaque) ?*anyopaque;
 
 /// struct passwd, as glibc lays it out.
 const Passwd = extern struct {

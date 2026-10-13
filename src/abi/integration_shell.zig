@@ -59,6 +59,11 @@ export fn shell_sway_time(out: ?*c_long) c_long {
     return now;
 }
 
+export fn shell_sway_localtime_r(time: *const c_long, tm: *anyopaque) ?*anyopaque {
+    return gmtime_r(time, tm);
+}
+extern "c" fn gmtime_r(time: *const c_long, tm: *anyopaque) ?*anyopaque;
+
 const Passwd = extern struct {
     name: [*:0]const u8,
     passwd: [*:0]const u8,
