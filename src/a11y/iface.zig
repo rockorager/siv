@@ -788,6 +788,7 @@ fn attributeRun(r: *Request, offset: i32) anyerror!void {
         const rtl = x.w.ui.state(x.id()).rtl;
         if (ps.alignment) |a| try entry(&m.body, "justification", switch (a) {
             .center => "center",
+            .justify => "fill",
             .start => if (rtl) "right" else "left",
             .end => if (rtl) "left" else "right",
         });
