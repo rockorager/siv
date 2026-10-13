@@ -37,6 +37,7 @@ zig build examples             # build and install the C programs in examples/
 zig build test -Dtest-filter=bidi
 zig build bench-text -Doptimize=ReleaseFast   # headless text engine benchmarks
 zig build bench-render-cpu -Doptimize=ReleaseFast  # CPU renderer benchmarks
+zig build bench-image -Doptimize=ReleaseFast -- FILE...  # image decoding benchmarks
 zig build -fsys=harfbuzz -fsys=sheenbidi   # link system copies instead of vendored ones
 zig build -fsys=glslang        # compile shaders with the system glslangValidator
 zig build -fsys=lcms2 -fsys=libwebp -fsys=libavif -fsys=dav1d -fsys=libjxl  # system image decoders

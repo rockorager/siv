@@ -377,6 +377,15 @@ pub fn build(b: *std.Build) void {
     });
     b.step("bench-render-cpu", "Run the CPU renderer benchmarks").dependOn(&b.addRunArtifact(bench_render_cpu).step);
 
+    // Image decoding benchmarks, likewise; `-- FILE...` decodes those files.
+    const bench_image = b.addExecutable(.{
+        .name = "bench-image",
+        .root_module = ctx.module("src/image/bench.zig", &.{.{ .name = "image", .module = image }}),
+    });
+    const bench_image_run = b.addRunArtifact(bench_image);
+    bench_image_run.addPassthruArgs();
+    b.step("bench-image", "Run the image decoding benchmarks").dependOn(&bench_image_run.step);
+
     // Generated headers and bindings, libsiv.so link setup (SONAME, symbol
     // versions), the `siv` Zig module, and the abi, ABI library, and C
     // tests (D2, D3). Owned by the ABI workstream.
