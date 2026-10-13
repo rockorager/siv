@@ -125,6 +125,13 @@
             .url = "https://gitlab.freedesktop.org/wayland/wayland-protocols/-/releases/1.49/downloads/wayland-protocols-1.49.tar.xz",
             .hash = "N-V-__8AAOTNEADZkChhsSciYizE4kIbZsozjDZXVeG5R_uY",
         },
+        // Layer surfaces and foreign toplevel management (D31), which
+        // wayland-protocols lacks. No releases; pinned to a commit. Only
+        // the XML is used. Each file's notice is HPND (MIT-style).
+        .wlr_protocols = .{
+            .url = "https://gitlab.freedesktop.org/wlroots/wlr-protocols/-/archive/bf4fc79abc359eea5a0edec0ac6d4a2b2955f82a/wlr-protocols-bf4fc79abc359eea5a0edec0ac6d4a2b2955f82a.tar.gz",
+            .hash = "N-V-__8AAMq4AQA7HRciMY4LL0U3pkLweiWuvsZIarkdhV20",
+        },
     },
     .paths = .{
         "build.zig",

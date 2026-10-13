@@ -54,6 +54,9 @@ pub const Error = error{
     Unavailable,
     /// The loop is already dispatching (a callback called back in).
     Busy,
+    /// The compositor lacks an optional protocol the call needs (layer
+    /// shell, session lock; D31).
+    Unsupported,
 };
 
 pub const Backend = enum {
@@ -139,6 +142,9 @@ pub const App = struct {
     key_repeat: platform.KeyRepeat = .{ .seat = 0, .delay_ms = 600, .rate = 25 },
     /// Receives session events (`startSession`).
     session_listener: SessionListener = .{},
+    /// Receives the desktop shell's events (D31): outputs, the session
+    /// lock, toplevels, workspaces, idle watches, and blur capability.
+    shell_listener: ShellListener = .{},
     /// A press that dismissed popups (`dismissGrabs`): its release is
     /// dropped too.
     swallowed: ?struct { window: WindowId, button: u32 } = null,
@@ -423,6 +429,13 @@ pub const App = struct {
         try app.zombies.ensureUnusedCapacity(gpa, 1);
         const win = try gpa.create(Window);
         errdefer gpa.destroy(win);
+        // Shell windows start at the size they asked for, or 1 on a
+        // stretched axis until the first configure.
+        const width: u32, const height: u32 = switch (options.role) {
+            .toplevel => .{ options.width, options.height },
+            .layer => |l| .{ @max(l.state.width, 1), @max(l.state.height, 1) },
+            .lock => .{ 1, 1 },
+        };
         const id = app.comp.createWindow(.{
             .title = options.title,
             .app_id = if (options.app_id.len > 0) options.app_id else app.app_id.slice(),
@@ -432,10 +445,15 @@ pub const App = struct {
             .parent = if (options.parent) |p| p.id else null,
             .modal = options.modal,
             .session_name = options.session_name,
-        }) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable;
+            .role = options.role,
+        }) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.Unsupported => error.Unsupported,
+            else => error.Unavailable,
+        };
         errdefer app.comp.destroyWindow(id) catch {};
         if (id >= app.windows.items.len) try app.windows.appendNTimes(gpa, null, id + 1 - app.windows.items.len);
-        win.* = .{ .app = app, .id = id, .ui = undefined, .listener = listener, .drag = .{ .comp = app.comp, .window = id, .gpa = gpa }, .follows_language = options.language.len == 0, .follows_direction = options.rtl == null, .owner = options.parent, .modal = options.parent != null and options.modal };
+        win.* = .{ .app = app, .id = id, .ui = undefined, .listener = listener, .drag = .{ .comp = app.comp, .window = id, .gpa = gpa }, .follows_language = options.language.len == 0, .follows_direction = options.rtl == null, .owner = options.parent, .modal = options.parent != null and options.modal, .role = options.role };
         win.ui = try ui.Window.init(gpa, .{
             .fonts = &app.fonts,
             .icons = &app.icons,
@@ -447,8 +465,8 @@ pub const App = struct {
             .reduced_motion = app.reduced_motion,
             .desktop = app.desktop.values,
             .theme = app.theme,
-            .width = @floatFromInt(options.width),
-            .height = @floatFromInt(options.height),
+            .width = @floatFromInt(width),
+            .height = @floatFromInt(height),
             .rtl = options.rtl orelse app.rtl,
             .language = if (options.language.len > 0) options.language else app.fonts.name(app.language),
         });
@@ -459,9 +477,45 @@ pub const App = struct {
             app.fail(if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable);
             break :blk 0;
         };
+        // Undecorated: no title bar, so not a frame to assistive
+        // technology (D18, D31).
+        win.ui.frameless = options.role != .toplevel;
         app.windows.items[id] = win;
-        app.open_windows += 1;
+        // Shell windows neither keep `run` going nor end it (D31).
+        if (options.role == .toplevel) app.open_windows += 1;
         return win;
+    }
+
+    /// Asks the compositor to lock the session (D31). `lock` events go to
+    /// the shell listener; lock windows can be created until the lock ends.
+    pub fn lockSession(app: *App) Error!void {
+        const Req = struct {
+            result: platform.Error!void = {},
+            fn run(ctx: ?*anyopaque, comp: *Compositor) void {
+                const r: *@This() = @ptrCast(@alignCast(ctx));
+                r.result = comp.platform.lockSession();
+            }
+        };
+        var r: Req = .{};
+        try app.comp.call(&r, Req.run);
+        r.result catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.Unsupported => error.Unsupported,
+            else => error.Unavailable,
+        };
+    }
+
+    /// Ends the session lock (see `platform.Platform.unlockSession`).
+    pub fn unlockSession(app: *App, abandon: bool) Allocator.Error!void {
+        const Req = struct {
+            abandon: bool,
+            fn run(ctx: ?*anyopaque, comp: *Compositor) void {
+                const r: *@This() = @ptrCast(@alignCast(ctx));
+                comp.platform.unlockSession(r.abandon);
+            }
+        };
+        var r: Req = .{ .abandon = abandon };
+        try app.comp.call(&r, Req.run);
     }
 
     /// A popup of `parent` (D17): its own tree, shown with
@@ -656,6 +710,15 @@ pub const App = struct {
                     _ = win.notify(&.{ .shortcuts_inhibit = i.active });
                 },
                 .session => |e| if (app.session_listener.func) |f| f(app.session_listener.ctx, &e),
+                .output_added, .output_changed, .output_removed, .lock, .toplevel, .workspace, .idle, .blur_capable => {
+                    if (app.shell_listener.func) |f| f(app.shell_listener.ctx, p);
+                },
+                .closed => |id| if (app.window(id)) |win| {
+                    // The role is gone: the window goes, whatever the
+                    // listener says.
+                    _ = win.notify(&.closed);
+                    win.destroy() catch |err| app.fail(err);
+                },
                 .window_restored => |id| if (app.window(id)) |win| {
                     _ = win.notify(&.restored);
                 },
@@ -760,6 +823,10 @@ pub const App = struct {
 };
 
 pub const WindowOptions = struct {
+    /// A toplevel, a layer window, or a lock window (D31); the fields
+    /// below about titles, parents, sessions, decorations, and size are
+    /// toplevels'.
+    role: platform.Role = .toplevel,
     title: []const u8 = "",
     app_id: []const u8 = "",
     /// Logical size used when the compositor lets the client choose.
@@ -803,6 +870,15 @@ pub const WindowEvent = union(enum) {
     /// The compositor restored the window from the session, before its
     /// first configure.
     restored,
+    /// The compositor took the window's role away (a layer window whose
+    /// output went away, a lock window whose lock or output ended); it
+    /// is destroyed after this.
+    closed,
+};
+
+pub const ShellListener = struct {
+    ctx: ?*anyopaque = null,
+    func: ?*const fn (ctx: ?*anyopaque, event: *const platform.Event) void = null,
 };
 
 pub const SessionListener = struct {
@@ -862,6 +938,8 @@ pub const Window = struct {
     tooltip_hid_ns: u64 = 0,
     /// A popup that shows a tooltip.
     is_tooltip: bool = false,
+    /// What kind of surface it is (D31); popups are `.toplevel` here.
+    role: std.meta.Tag(platform.Role) = .toplevel,
 
     /// How long the pointer rests or keyboard focus stays before a
     /// tooltip shows. The desktop settings portal has no such setting;
@@ -913,8 +991,8 @@ pub const Window = struct {
         app.windows.items[win.id] = null;
         portals.windowClosed(win);
         app.zombies.appendAssumeCapacity(win);
-        // Popups do not keep the application running.
-        if (win.parent != null) return;
+        // Popups and shell windows do not keep the application running.
+        if (win.parent != null or win.role != .toplevel) return;
         app.open_windows -= 1;
         if (app.open_windows == 0) app.quit();
         // Not freed here even if its lists are home: the caller may still
@@ -1247,6 +1325,12 @@ pub const Window = struct {
                 p.setMinimized(id);
             }
         }.f, {});
+    }
+
+    /// Changes a layer window's placement (D31); a configure follows if
+    /// its size changes.
+    pub fn setLayer(win: *Window, state: platform.LayerState) Allocator.Error!void {
+        try win.platformCall(platform.Platform.setLayer, state);
     }
 
     pub const Limits = struct { min: platform.Size, max: platform.Size };

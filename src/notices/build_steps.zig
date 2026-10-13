@@ -72,6 +72,7 @@ const entries = [_]Entry{
     .{ .title = "zig-wayland (MIT)", .package = "wayland", .files = &.{"LICENSE"} },
     .{ .title = "Wayland protocol (MIT)", .package = "wayland_core", .files = &.{"COPYING"} },
     .{ .title = "wayland-protocols (MIT)", .package = "wayland_protocols", .files = &.{"COPYING"} },
+    .{ .title = "wlr-protocols (HPND)", .package = "wlr_protocols", .siv_files = &.{"src/notices/wlr-protocols-LICENSE.txt"} },
     .{ .title = "Hyphenation patterns from hyph-utf8 (MIT, BSD-3-Clause, FSF all-permissive)", .siv_files = &hyphenation },
 };
 

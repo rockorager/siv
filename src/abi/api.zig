@@ -28,7 +28,7 @@ pub const result: schema.Decl = .{ .@"enum" = .{
         .{ .name = "error_out_of_memory", .value = -1, .doc = "An allocation failed. The call had no effect." },
         .{ .name = "error_invalid_handle", .value = -2, .doc = "A handle is null, was destroyed, belongs to a destroyed root, or has the wrong type." },
         .{ .name = "error_invalid_argument", .value = -3, .doc = "An argument breaks the call's contract: a NULL out pointer, a malformed descriptor size, a NULL string with a nonzero length." },
-        .{ .name = "error_unsupported", .value = -4, .doc = "The caller asked for something this version of the library does not know: an unknown enum value or flag bit, or nonzero descriptor fields past the end this version knows." },
+        .{ .name = "error_unsupported", .value = -4, .doc = "The caller asked for something this version of the library does not know: an unknown enum value or flag bit, or nonzero descriptor fields past the end this version knows; or something the compositor does not offer, such as an optional protocol it lacks (D31)." },
         .{ .name = "error_limit_exceeded", .value = -5, .doc = "A fixed limit was reached, such as the number of live objects per root or roots per process." },
         .{ .name = "error_busy", .value = -6, .doc = "The object is in a state that does not allow the call: a transaction is already open on the window, the loop is already dispatching, or the call is not allowed from a callback." },
         .{ .name = "error_unavailable", .value = -7, .doc = "The system failed the request: no Wayland display could be reached, it lacks a required protocol, the connection was lost, or a system call failed." },
@@ -301,6 +301,7 @@ const blend_values: [blend_names.len]schema.EnumValue = blk: {
 
 const desktop = @import("api_desktop.zig");
 const testing = @import("api_testing.zig");
+const shell = @import("api_shell.zig");
 
 pub const decls = [_]Decl{
     result,
@@ -380,6 +381,7 @@ pub const decls = [_]Decl{
         .{ .name = "shortcuts_inhibited", .value = 7, .doc = "The compositor sends the window its own shortcuts as keys (siv_window_inhibit_shortcuts), while the window has keyboard focus." },
         .{ .name = "shortcuts_restored", .value = 8, .doc = "The compositor handles its shortcuts again (the user overrode the inhibition, or it was ended)." },
         .{ .name = "restored", .value = 9, .doc = "The compositor restored the window's size, place, and states from the session (siv_app_start_session, session_name), before its first resize. Sent at most once, soon after creation." },
+        .{ .name = "closed", .value = 10, .doc = "The compositor took the window away (D31): a layer window whose output went away, a lock window whose output or lock ended. siv destroys it after this event, whatever the callback returns." },
     }),
     enumeration("siv_pointer_constraint", "What a pointer constraint does (D16).", &.{
         .{ .name = "none", .value = 0, .doc = "No constraint." },
@@ -516,6 +518,7 @@ pub const decls = [_]Decl{
         .{ .name = "layer", .bit = 1, .doc = "Give the node its own compositor layer (D8), for example before animating it." },
         .{ .name = "no_hit_test", .bit = 2, .doc = "Pointer events pass through the node to what is below." },
         .{ .name = "hidden", .bit = 3, .doc = "The node and its subtree take no space and are not painted, hit, focusable, or in the semantics tree; its state is kept." },
+        .{ .name = "window_blur", .bit = 4, .doc = "Ask the compositor to blur what is behind the window under the node's rounded border box (D31, ext-background-effect-v1), so a translucent background reads as frosted glass: bars, notifications, launchers, translucent windows and popups. The region follows the node through layout, scrolling, clips, and animations, in the same frame as its content. Where the compositor cannot blur (SIV_CAPABILITIES_BLUR unset; sway cannot), nothing is blurred, so pick a more opaque background then. siv_draw_backdrop_blur blurs the window's own content instead." },
     }),
     descriptor("siv_visual_desc", "A node's appearance. Repaints without layout; does not change opacity or transform.", &.{
         .{ .name = "background", .type = ref("siv_color"), .doc = "Fill of the border box; default transparent." },
@@ -2210,7 +2213,7 @@ pub const functions = [_]Function{
         app_param,
         .{ .name = "display", .type = out(.pointer), .doc = "The wl_display *." },
     }),
-    call("siv_window_get_wayland", "A window's wl_surface * and xdg_toplevel *, for extending it with protocols siv does not support itself, such as content-type-v1 (D17, D27); NULL on the headless backend. The rules: never commit the surface, attach or damage a buffer, or change its size, scale, input or opaque region, or role; never set a listener or user data on either object, or make an xdg_toplevel request siv makes (title, app id, parent, size limits, states, move, resize, window menu); never create an object of an interface siv or Mesa's Vulkan driver may already have on the surface (wp_viewport, wp_fractional_scale_v1, wp_fifo_v1, wp_commit_timer_v1, wp_linux_drm_syncobj_surface_v1, wp_tearing_control_v1, wp_alpha_modifier_surface_v1, wp_color_management_surface_v1, wp_color_representation_surface_v1, zxdg_toplevel_decoration_v1, xdg_dialog_v1, xdg_toplevel_icon_v1, xdg_toplevel_session_v1, zxdg_exported_v2; it is a protocol error). Only create extension objects of other interfaces and set their double-buffered state, which applies with siv's next commit of the window: call siv_window_request_commit to have one now. Requests may come from any thread; objects you create belong to the queue of the object that creates them, so bind the factory through your own queue (siv_app_get_wayland). The objects live until the window is destroyed, including by a close request its on_event does not take: destroy yours first. Application's thread.", &.{
+    call("siv_window_get_wayland", "A window's wl_surface * and xdg_toplevel * (NULL for popups, layer windows, and lock windows, D31), for extending it with protocols siv does not support itself, such as content-type-v1 (D17, D27); NULL on the headless backend. The rules: never commit the surface, attach or damage a buffer, or change its size, scale, input or opaque region, or role; never set a listener or user data on either object, or make an xdg_toplevel request siv makes (title, app id, parent, size limits, states, move, resize, window menu); never create an object of an interface siv or Mesa's Vulkan driver may already have on the surface (wp_viewport, wp_fractional_scale_v1, wp_fifo_v1, wp_commit_timer_v1, wp_linux_drm_syncobj_surface_v1, wp_tearing_control_v1, wp_alpha_modifier_surface_v1, wp_color_management_surface_v1, wp_color_representation_surface_v1, zxdg_toplevel_decoration_v1, xdg_dialog_v1, xdg_toplevel_icon_v1, xdg_toplevel_session_v1, zxdg_exported_v2, ext_background_effect_surface_v1, zwlr_layer_surface_v1, ext_session_lock_surface_v1; it is a protocol error). Only create extension objects of other interfaces and set their double-buffered state, which applies with siv's next commit of the window: call siv_window_request_commit to have one now. Requests may come from any thread; objects you create belong to the queue of the object that creates them, so bind the factory through your own queue (siv_app_get_wayland). The objects live until the window is destroyed, including by a close request its on_event does not take: destroy yours first. Application's thread.", &.{
         window_param,
         .{ .name = "surface", .type = out(.pointer), .doc = "The wl_surface *." },
         .{ .name = "toplevel", .type = out(.pointer), .doc = "The xdg_toplevel *; NULL for popups.", .optional = true },
@@ -2236,8 +2239,8 @@ pub const spec: schema.Schema = .{
     .source = "src/abi/api.zig",
     .doc = "siv: a GUI toolkit for Wayland.",
     .result = "siv_result",
-    .decls = &(decls ++ desktop.decls ++ testing.decls),
-    .functions = &(functions ++ desktop.functions ++ testing.functions),
+    .decls = &(decls ++ desktop.decls ++ shell.decls ++ testing.decls),
+    .functions = &(functions ++ desktop.functions ++ shell.functions ++ testing.functions),
 };
 
 /// Encodes a version as (major << 16) | (minor << 8) | patch.

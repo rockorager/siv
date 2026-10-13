@@ -519,7 +519,340 @@ pub const Platform = union(enum) {
             inline else => |b| b.removeSession(),
         }
     }
+
+    // Desktop shell (D31).
+
+    /// Changes a layer window's layer, anchors, margins, exclusive zone,
+    /// keyboard mode, and size; applied with its next commit, which this
+    /// makes. A configure follows if the size changes.
+    pub fn setLayer(p: Platform, id: WindowId, state: LayerState) void {
+        switch (p) {
+            inline else => |b| b.setLayer(id, state),
+        }
+    }
+
+    /// Asks the compositor to lock the session (ext-session-lock-v1). A
+    /// `lock` event follows: `locked` once every output is blanked, or
+    /// `finished` if the compositor refused or ended it. Lock windows
+    /// (`Role.lock`) can be created from now until the lock ends.
+    /// Unsupported without the protocol.
+    pub fn lockSession(p: Platform) Error!void {
+        return switch (p) {
+            inline else => |b| b.lockSession(),
+        };
+    }
+
+    /// Ends the lock: unlocks the session if it was locked. Lock windows
+    /// get `closed` events. With `abandon`, a locked session stays locked
+    /// (the application is going away without having authenticated the
+    /// user): the lock object is dropped without a request.
+    pub fn unlockSession(p: Platform, abandon: bool) void {
+        switch (p) {
+            inline else => |b| b.unlockSession(abandon),
+        }
+    }
+
+    /// Starts receiving the desktop's toplevel windows: `toplevel` events
+    /// for each one now and as they change. Unsupported without a
+    /// foreign toplevel protocol.
+    pub fn startToplevels(p: Platform) Error!void {
+        return switch (p) {
+            inline else => |b| b.startToplevels(),
+        };
+    }
+
+    pub fn stopToplevels(p: Platform) void {
+        switch (p) {
+            inline else => |b| b.stopToplevels(),
+        }
+    }
+
+    /// A toplevel announced by a `toplevel` event, valid until the next
+    /// platform event; null once it is gone.
+    pub fn toplevelInfo(p: Platform, id: u32) ?ToplevelInfo {
+        return switch (p) {
+            inline else => |b| b.toplevelInfo(id),
+        };
+    }
+
+    /// Asks the compositor to act on a toplevel. False when it is gone or
+    /// the compositor does not let this client manage toplevels.
+    pub fn toplevelRequest(p: Platform, id: u32, request: ToplevelRequest) bool {
+        return switch (p) {
+            inline else => |b| b.toplevelRequest(id, request),
+        };
+    }
+
+    /// Starts receiving the desktop's workspaces (ext-workspace-v1):
+    /// `workspace` events for each one now and as they change.
+    pub fn startWorkspaces(p: Platform) Error!void {
+        return switch (p) {
+            inline else => |b| b.startWorkspaces(),
+        };
+    }
+
+    pub fn stopWorkspaces(p: Platform) void {
+        switch (p) {
+            inline else => |b| b.stopWorkspaces(),
+        }
+    }
+
+    /// A workspace announced by a `workspace` event, valid until the next
+    /// platform event; null once it is gone.
+    pub fn workspaceInfo(p: Platform, id: u32) ?WorkspaceInfo {
+        return switch (p) {
+            inline else => |b| b.workspaceInfo(id),
+        };
+    }
+
+    /// Asks the compositor to act on a workspace. False when it is gone
+    /// or the compositor does not allow it for this workspace.
+    pub fn workspaceRequest(p: Platform, id: u32, request: WorkspaceRequest) bool {
+        return switch (p) {
+            inline else => |b| b.workspaceRequest(id, request),
+        };
+    }
+
+    /// Reports `idle` events for the returned watch when the user has
+    /// not used the seat for `timeout_ms`, and when they are back
+    /// (ext-idle-notify-v1). Idle inhibitors hold it off unless
+    /// `ignore_inhibitors`.
+    pub fn createIdleWatch(p: Platform, timeout_ms: u32, ignore_inhibitors: bool) Error!u32 {
+        return switch (p) {
+            inline else => |b| b.createIdleWatch(timeout_ms, ignore_inhibitors),
+        };
+    }
+
+    pub fn destroyIdleWatch(p: Platform, id: u32) void {
+        switch (p) {
+            inline else => |b| b.destroyIdleWatch(id),
+        }
+    }
+
+    /// Which optional desktop shell protocols the compositor offers.
+    pub fn shellCapabilities(p: Platform) ShellCapabilities {
+        return switch (p) {
+            inline else => |b| b.shellCapabilities(),
+        };
+    }
+
+    // Background effects (D31).
+
+    /// Whether the compositor blurs what is behind a surface's blur
+    /// region (ext-background-effect-v1 with the blur capability). It
+    /// may change: a `blur_capable` event follows.
+    pub fn canBlur(p: Platform) bool {
+        return switch (p) {
+            inline else => |b| b.canBlur(),
+        };
+    }
+
+    /// Where the compositor blurs what is behind the window, in surface
+    /// coordinates; null or empty for nowhere. Applied with the window's
+    /// next commit. Does nothing when the compositor cannot blur.
+    pub fn setBlurRegion(p: Platform, id: WindowId, region: []const Rect) void {
+        switch (p) {
+            inline else => |b| b.setBlurRegion(id, region),
+        }
+    }
 };
+
+// Desktop shell (D31) ----------------------------------------------------------
+
+/// The desktop shell protocols a compositor offers (D31), so that an
+/// application can fall back (a more opaque background without blur).
+pub const ShellCapabilities = packed struct(u8) {
+    layers: bool = false,
+    lock: bool = false,
+    toplevels: bool = false,
+    /// Toplevels accept window management requests.
+    toplevel_management: bool = false,
+    workspaces: bool = false,
+    idle: bool = false,
+    blur: bool = false,
+    _: u1 = 0,
+};
+
+/// The stacking layer of a layer window (wlr-layer-shell), bottom to top.
+pub const Layer = enum(u8) { background, bottom, top, overlay };
+
+/// The output edges a layer window is anchored to.
+pub const Anchor = packed struct(u8) {
+    top: bool = false,
+    bottom: bool = false,
+    left: bool = false,
+    right: bool = false,
+    _: u4 = 0,
+};
+
+/// When a layer window takes keyboard focus.
+pub const KeyboardMode = enum(u8) {
+    /// Never.
+    none,
+    /// Always, while it is on a layer above toplevels (a launcher, a
+    /// lock-like overlay).
+    exclusive,
+    /// When the user clicks it, like a toplevel.
+    on_demand,
+};
+
+pub const Margins = struct { top: i32 = 0, right: i32 = 0, bottom: i32 = 0, left: i32 = 0 };
+
+/// Where a layer window goes on its output and how it behaves; changed
+/// with `Platform.setLayer`.
+pub const LayerState = struct {
+    layer: Layer = .top,
+    anchor: Anchor = .{},
+    margin: Margins = .{},
+    /// Logical pixels along its edge that other windows keep clear of;
+    /// 0 keeps clear of other windows' zones without reserving one, -1
+    /// ignores them too (a wallpaper under a bar).
+    exclusive_zone: i32 = 0,
+    /// Reserve the window's own size along the edge it is anchored to,
+    /// following resizes, instead of `exclusive_zone`.
+    auto_exclusive: bool = false,
+    keyboard: KeyboardMode = .none,
+    /// Logical size; 0 on an axis anchored to both of its edges spans
+    /// the output between them.
+    width: u32 = 0,
+    height: u32 = 0,
+
+    /// A zero size on an axis needs both of that axis's anchors.
+    pub fn valid(s: LayerState) bool {
+        if (s.width == 0 and !(s.anchor.left and s.anchor.right)) return false;
+        if (s.height == 0 and !(s.anchor.top and s.anchor.bottom)) return false;
+        return true;
+    }
+
+    /// The exclusive zone to send for a window of this size: with
+    /// `auto_exclusive`, its height when anchored to the top or bottom
+    /// edge alone (or with both side edges), its width likewise for the
+    /// left or right edge; 0 for any other anchoring. Compositors add the
+    /// margin on that edge themselves.
+    pub fn zone(s: LayerState, width: u32, height: u32) i32 {
+        if (!s.auto_exclusive) return s.exclusive_zone;
+        const a = s.anchor;
+        const horizontal = a.left == a.right; // both or neither side edge
+        const vertical = a.top == a.bottom;
+        if (a.top != a.bottom and horizontal) return @intCast(@min(height, std.math.maxInt(i32)));
+        if (a.left != a.right and vertical) return @intCast(@min(width, std.math.maxInt(i32)));
+        return 0;
+    }
+
+    /// The window's rectangle on an output of `out_w` by `out_h` logical
+    /// pixels, as a compositor arranges it (centered on unanchored axes).
+    pub fn place(s: LayerState, out_w: i32, out_h: i32) Rect {
+        const m = s.margin;
+        const w: i32 = if (s.width == 0) @max(1, out_w - m.left - m.right) else @intCast(s.width);
+        const h: i32 = if (s.height == 0) @max(1, out_h - m.top - m.bottom) else @intCast(s.height);
+        const x: i32 = if (s.anchor.left) m.left else if (s.anchor.right) out_w - m.right - w else @divTrunc(out_w - w, 2);
+        const y: i32 = if (s.anchor.top) m.top else if (s.anchor.bottom) out_h - m.bottom - h else @divTrunc(out_h - h, 2);
+        return .{ .x = x, .y = y, .width = w, .height = h };
+    }
+};
+
+/// What kind of surface a window is.
+pub const Role = union(enum) {
+    /// An ordinary application window (xdg_toplevel).
+    toplevel,
+    /// A desktop shell surface (wlr-layer-shell): a bar, dock, wallpaper,
+    /// notification, or on-screen display.
+    layer: LayerRole,
+    /// The surface a session lock shows on an output (ext-session-lock);
+    /// needs `Platform.lockSession` first.
+    lock: OutputId,
+};
+
+pub const LayerRole = struct {
+    state: LayerState = .{},
+    /// The output it goes on; null lets the compositor choose (usually
+    /// the focused one).
+    output: ?OutputId = null,
+    /// What the surface is ("bar", "notifications"), for compositor rules.
+    namespace: []const u8 = "",
+};
+
+/// The session lock's progress (`Platform.lockSession`).
+pub const LockEvent = enum(u8) {
+    /// Every output is locked: the lock windows are all that shows.
+    locked,
+    /// The lock ended without this client unlocking it: before `locked`,
+    /// the compositor refused (another client holds a lock); after, it
+    /// ended the lock itself.
+    finished,
+};
+
+pub const ToplevelStates = packed struct(u8) {
+    maximized: bool = false,
+    minimized: bool = false,
+    activated: bool = false,
+    fullscreen: bool = false,
+    _: u4 = 0,
+};
+
+/// Another client's (or this client's) toplevel window, as the desktop's
+/// window list reports it.
+pub const ToplevelInfo = struct {
+    title: []const u8 = "",
+    app_id: []const u8 = "",
+    /// A stable identifier that does not change while the window exists
+    /// (ext-foreign-toplevel-list); empty when the compositor's list does
+    /// not have one.
+    identifier: []const u8 = "",
+    states: ToplevelStates = .{},
+    /// The toplevel it belongs to (a dialog's), or 0.
+    parent: u32 = 0,
+    outputs: []const OutputId = &.{},
+    /// The compositor accepts window management requests for it.
+    managed: bool = false,
+};
+
+pub const ToplevelRequest = union(enum) {
+    activate,
+    close,
+    minimized: bool,
+    maximized: bool,
+    fullscreen: struct { on: bool, output: ?OutputId = null },
+};
+
+pub const WorkspaceStates = packed struct(u8) {
+    active: bool = false,
+    urgent: bool = false,
+    hidden: bool = false,
+    _: u5 = 0,
+};
+
+pub const WorkspaceCapabilities = packed struct(u8) {
+    activate: bool = false,
+    deactivate: bool = false,
+    remove: bool = false,
+    assign: bool = false,
+    _: u4 = 0,
+};
+
+pub const WorkspaceInfo = struct {
+    name: []const u8 = "",
+    /// Stable across sessions where the compositor can keep it.
+    identifier: []const u8 = "",
+    states: WorkspaceStates = .{},
+    capabilities: WorkspaceCapabilities = .{},
+    /// The outputs its group is on.
+    outputs: []const OutputId = &.{},
+};
+
+pub const WorkspaceRequest = enum(u8) { activate, deactivate, remove };
+
+/// A toplevel or workspace appeared, changed, or went away. Ids are never
+/// reused, so a late event never names a newer object.
+pub const ForeignChange = struct {
+    id: u32,
+    kind: Kind,
+
+    pub const Kind = enum(u8) { added, changed, removed };
+};
+
+/// An idle watch's seat went idle or became active again.
+pub const IdleChange = struct { watch: u32, idle: bool };
 
 /// A toplevel icon: a name from the icon theme and images of it.
 pub const ToplevelIcon = struct {
@@ -999,6 +1332,9 @@ pub const Error = error{
     /// xdg_wm_base, or ARGB8888 shm buffers).
     MissingGlobal,
     SystemResources,
+    /// The compositor offers no protocol for an optional feature (layer
+    /// shell, session lock, toplevels, workspaces, idle notification).
+    Unsupported,
 };
 
 pub const Size = struct { width: u32 = 0, height: u32 = 0 };
@@ -1079,6 +1415,9 @@ pub const WindowOptions = struct {
     /// `WindowState.decoration`. `.client` opts into client-side decorations
     /// for header-bar layouts.
     decoration: Decoration = .server,
+    /// A toplevel, a layer window, or a lock window (D31). Title, app
+    /// id, parent, session name, size, and decoration are toplevels'.
+    role: Role = .toplevel,
 };
 
 pub const WindowStates = packed struct(u16) {
@@ -1523,13 +1862,25 @@ pub const Event = union(enum) {
     drag_source: DragSource,
     exported: Exported,
     activation_token: ActivationToken,
+    /// The compositor took the window's role away: a layer window it
+    /// closed (its output went away), or a lock window whose output or
+    /// lock ended. Destroy the window; it shows nothing more.
+    closed: WindowId,
+    /// The session lock's progress (D31).
+    lock: LockEvent,
+    /// Toplevels, workspaces, and idle watches (D31).
+    toplevel: ForeignChange,
+    workspace: ForeignChange,
+    idle: IdleChange,
+    /// Whether the compositor can blur behind surfaces changed (D31).
+    blur_capable: bool,
     /// The platform failed: events were lost (OutOfMemory) or the
     /// connection is gone (ConnectionLost, ProtocolError).
     failed: Error,
 
     pub fn window(ev: *const Event) ?WindowId {
         return switch (ev.*) {
-            .close_requested, .window_restored => |w| w,
+            .close_requested, .window_restored, .closed => |w| w,
             inline else => |payload| if (comptime hasWindow(@TypeOf(payload))) payload.window else null,
         };
     }
@@ -1692,4 +2043,23 @@ test "event queue purges a destroyed window's pending events" {
     try std.testing.expectEqual(@as(OutputId, 7), rec.seen.items[1].output_added);
     try std.testing.expectEqual(@as(WindowId, 2), rec.seen.items[2].keyboard_leave.window);
     try std.testing.expectEqual(error.OutOfMemory, rec.seen.items[3].failed);
+}
+
+test "layer windows are placed by their anchors and margins, and reserve their size" {
+    // A bar along the top: spans the output between its side margins.
+    const bar: LayerState = .{ .anchor = .{ .top = true, .left = true, .right = true }, .margin = .{ .top = 4, .left = 10, .right = 20 }, .height = 30, .auto_exclusive = true };
+    try std.testing.expect(bar.valid());
+    try std.testing.expectEqual(Rect{ .x = 10, .y = 4, .width = 1250, .height = 30 }, bar.place(1280, 720));
+    try std.testing.expectEqual(@as(i32, 30), bar.zone(1250, 30));
+    // A dock on the right edge reserves its width, not its height.
+    const dock: LayerState = .{ .anchor = .{ .right = true }, .margin = .{ .right = 8 }, .width = 64, .height = 300, .auto_exclusive = true };
+    try std.testing.expectEqual(Rect{ .x = 1280 - 8 - 64, .y = 210, .width = 64, .height = 300 }, dock.place(1280, 720));
+    try std.testing.expectEqual(@as(i32, 64), dock.zone(64, 300));
+    // Anchored to opposite edges on both axes there is no edge to reserve.
+    const full: LayerState = .{ .anchor = .{ .top = true, .bottom = true, .left = true, .right = true }, .auto_exclusive = true };
+    try std.testing.expectEqual(@as(i32, 0), full.zone(1280, 720));
+    // A zero size needs both anchors of its axis.
+    try std.testing.expect(!(LayerState{ .anchor = .{ .top = true, .left = true } }).valid());
+    // Without auto, the zone is what was asked for, -1 included.
+    try std.testing.expectEqual(@as(i32, -1), (LayerState{ .exclusive_zone = -1, .width = 1, .height = 1 }).zone(1, 1));
 }

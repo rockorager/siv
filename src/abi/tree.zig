@@ -604,6 +604,7 @@ pub export fn siv_set_visual(txn: t.Txn, node: t.Node, desc: ?*const t.VisualDes
             v.layer = fl.layer or w.uiWin().node(id).kind == .canvas;
             v.hit_test = !fl.no_hit_test;
             v.hidden = fl.hidden;
+            v.window_blur = fl.window_blur;
             v.background_token = try colorToken(d.background_token, true);
             v.border_token = try colorToken(d.border_token, true);
             w.txn.ut.setVisual(id, v) catch |err| return mapTxn(err);

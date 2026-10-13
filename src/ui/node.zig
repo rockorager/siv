@@ -217,6 +217,11 @@ pub const Visual = struct {
     layer: bool = false,
     /// Whether pointer events can target the node.
     hit_test: bool = true,
+    /// Ask the Wayland compositor to blur what is behind the window under
+    /// the node's rounded border box (D31), for a translucent background.
+    /// Gives the node its own layer, whose transforms, clips, scrolling,
+    /// and animations the blur region follows.
+    window_blur: bool = false,
     /// Themed colors (D29) that replace `background` and `border_color`
     /// when set, resolved at paint time.
     background_token: ColorToken = .none,

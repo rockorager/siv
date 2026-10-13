@@ -86,9 +86,13 @@ pub const owned = [_]struct { []const u8, []const u8 }{
     .{ "siv_global_shortcuts", "siv_global_shortcuts_destroy" },
     .{ "siv_screencast", "siv_screencast_destroy" },
     .{ "siv_tray_item", "siv_tray_item_destroy" },
+    .{ "siv_lock", "siv_lock_destroy" },
+    .{ "siv_toplevel_list", "siv_toplevel_list_destroy" },
+    .{ "siv_workspace_list", "siv_workspace_list_destroy" },
+    .{ "siv_idle_watch", "siv_idle_watch_destroy" },
 };
 
-pub const borrowed = [_][]const u8{ "siv_window", "siv_txn", "siv_node", "siv_timer", "siv_watch", "siv_image_request", "siv_draw", "siv_external" };
+pub const borrowed = [_][]const u8{ "siv_window", "siv_txn", "siv_node", "siv_timer", "siv_watch", "siv_image_request", "siv_draw", "siv_external", "siv_output", "siv_toplevel", "siv_workspace" };
 
 /// Functions whose out handle is a new object the caller owns (when its
 /// type is `owned`).
@@ -100,6 +104,10 @@ pub const constructors = [_][]const u8{
     "siv_global_shortcuts_create",
     "siv_screencast_start",
     "siv_tray_item_create",
+    "siv_lock_create",
+    "siv_toplevel_list_create",
+    "siv_workspace_list_create",
+    "siv_idle_watch_create",
 };
 
 pub fn isUnbound(name: []const u8) bool {

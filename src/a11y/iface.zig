@@ -240,7 +240,7 @@ fn getRelationSet(r: *Request) anyerror!void {
 fn roleOf(o: Obj) atspi.Role {
     return switch (o) {
         .root => .application,
-        .node => |x| atspi.role(x.n().role, x.n().masked),
+        .node => |x| Bridge.roleOf(x.n()),
     };
 }
 
@@ -1165,7 +1165,7 @@ fn getItems(r: *Request) anyerror!void {
             const index: usize = if (n.parent == Bridge.none) base + n.child_index else n.child_index;
             try e.writeAll(.{ @as(i32, @intCast(index)), @as(i32, @intCast(n.child_count)) });
             try writeNames(e, interfacesOf(n));
-            try e.writeAll(.{ x.name(@intCast(i)), @intFromEnum(atspi.role(n.role, n.masked)), x.cur.str(n.description) });
+            try e.writeAll(.{ x.name(@intCast(i)), @intFromEnum(Bridge.roleOf(n)), x.cur.str(n.description) });
             try e.write(@as([]const u32, &n.states.words()));
             try e.endStruct();
         }

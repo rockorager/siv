@@ -817,7 +817,7 @@ fn charBoundary(s: []const u8, offset: u32) u32 {
 pub const bullet = "\u{2022}";
 
 pub fn isLayerRoot(v: node_mod.Visual) bool {
-    return v.opacity < 1 or !v.transform.eql(.identity) or v.layer or v.animation.property != .none;
+    return v.opacity < 1 or !v.transform.eql(.identity) or v.layer or v.animation.property != .none or v.window_blur;
 }
 
 fn spansEql(a: []const node_mod.Span, b: []const node_mod.Span) bool {

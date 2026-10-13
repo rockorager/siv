@@ -148,6 +148,67 @@ pub const functions = [_]Function{
         p("text", schema.text_buffer, "Receives at most text_cap bytes; may be NULL with text_cap 0."),
         p("len", out(.usize), "The text's full length in bytes."),
     }),
+    // The simulated desktop shell (D31). The headless compositor offers
+    // every shell protocol; these play the other clients and the user.
+    call("siv_test_add_output", "Plugs in a simulated output: output events follow, and an active lock gets a lock window on it." ++ headless, &.{
+        p("app", ref("siv_app"), "The application."),
+        p("name", .string, "Its connector name, such as HEADLESS-2."),
+        p("pixel_width", .u32, "Its mode's width in pixels."),
+        p("pixel_height", .u32, "Its mode's height in pixels."),
+        p("scale", .u32, "Its integer scale; 0 is 1."),
+    }),
+    call("siv_test_remove_output", "Unplugs the simulated output with a name: layer and lock windows on it are closed, as on a compositor. SIV_ERROR_INVALID_ARGUMENT if there is none." ++ headless, &.{
+        p("app", ref("siv_app"), "The application."),
+        p("name", .string, "Its connector name."),
+    }),
+    call("siv_test_add_toplevel", "Another application opens a toplevel window, which toplevel lists report (siv_toplevel_list_create). The simulated compositor applies requests to it: activating focuses it (unfocusing the others), closing removes it." ++ headless, &.{
+        p("app", ref("siv_app"), "The application."),
+        p("title", .string, "Its title."),
+        p("app_id", .string, "Its application id."),
+        p("output", ref("siv_output"), "The output it is on; 0 for none."),
+        p("id", out(.u32), "Its id for the other siv_test_*toplevel calls."),
+    }),
+    call("siv_test_set_toplevel", "Changes another application's toplevel: its title and states." ++ headless, &.{
+        p("app", ref("siv_app"), "The application."),
+        p("id", .u32, "From siv_test_add_toplevel."),
+        p("title", .string, "Its new title."),
+        p("states", ref("siv_toplevel_states"), "Its new states; managed is ignored."),
+    }),
+    call("siv_test_remove_toplevel", "Another application closes its toplevel." ++ headless, &.{
+        p("app", ref("siv_app"), "The application."),
+        p("id", .u32, "From siv_test_add_toplevel."),
+    }),
+    call("siv_test_add_workspace", "The compositor adds a workspace on an output, which workspace lists report (siv_workspace_list_create); the first on an output is active. It applies requests as sway does: activating one deactivates the others on its output." ++ headless, &.{
+        p("app", ref("siv_app"), "The application."),
+        p("name", .string, "Its name."),
+        p("output", ref("siv_output"), "Its output; 0 for none."),
+        p("id", out(.u32), "Its id for siv_test_remove_workspace."),
+    }),
+    call("siv_test_remove_workspace", "The compositor removes a workspace." ++ headless, &.{
+        p("app", ref("siv_app"), "The application."),
+        p("id", .u32, "From siv_test_add_workspace."),
+    }),
+    call("siv_test_set_idle", "The user stops using the seat (true), past every idle watch's timeout, or comes back (false); idle watches report it, held off by idle inhibitors unless they ignore them." ++ headless, &.{
+        p("app", ref("siv_app"), "The application."),
+        p("idle", .bool, "Idle."),
+    }),
+    call("siv_test_set_blur", "Whether the simulated compositor blurs behind windows (SIV_CAPABILITIES_BLUR); it starts without." ++ headless, &.{
+        p("app", ref("siv_app"), "The application."),
+        p("blur", .bool, "It can blur."),
+    }),
+    call("siv_test_get_blur_region_count", "How many rectangles make up the blur region (SIV_VISUAL_WINDOW_BLUR) the window's last commit set, in its logical coordinates; 0 without one or when the compositor cannot blur." ++ headless, &.{
+        window_param,
+        p("count", out(.usize), "The number of rectangles."),
+    }),
+    call("siv_test_get_blur_rect", "A rectangle of the blur region the window's last commit set. SIV_ERROR_INVALID_ARGUMENT past the count." ++ headless, &.{
+        window_param,
+        p("index", .usize, "From 0."),
+        p("rect", out(ref("siv_rect")), "The rectangle."),
+    }),
+    call("siv_test_is_locked", "Whether the simulated session is locked, by this application or another one in the process, or left locked by a lock destroyed without unlocking." ++ headless, &.{
+        p("app", ref("siv_app"), "The application."),
+        p("locked", out(.bool), "Locked."),
+    }),
     .{ .name = "siv_test_get_popup", .doc = "The popup shown most recently (a menu, a popover, a combo box's list) that is still shown, or 0 when none is or the handle is invalid.", .since = v0_1, .params = &.{
         p("app", ref("siv_app"), "The application."),
     }, .ret = ref("siv_window") },

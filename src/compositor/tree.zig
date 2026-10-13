@@ -54,6 +54,7 @@ pub const Layer = struct {
     /// `update.Scroll`).
     zoom: f32 = 1,
     wheel: ?Rect = null,
+    blur: ?update.BlurShape = null,
     external: ?update.ExternalPlacement = null,
     content: ?update.Content = null,
 
@@ -163,6 +164,8 @@ pub const Tree = struct {
     background_changed: bool = false,
     /// Highest configure serial the UI's commits answered.
     acked_configure: u64 = 0,
+    /// Layers with a blur shape.
+    blurs: u32 = 0,
 
     animated: std.ArrayList(LayerId) = .empty,
     scrolled: std.ArrayList(LayerId) = .empty,
@@ -342,6 +345,13 @@ pub const Tree = struct {
                 const l = t.get(s.layer) orelse return t.reject(op, "no such layer");
                 l.wheel = s.region;
             },
+            .set_blur => |s| {
+                const l = t.get(s.layer) orelse return t.reject(op, "no such layer");
+                if ((l.blur == null) != (s.shape == null)) {
+                    if (s.shape == null) t.blurs -= 1 else t.blurs += 1;
+                }
+                l.blur = s.shape;
+            },
             .set_background => |c| {
                 if (!c.eql(t.background)) t.background_changed = true;
                 t.background = c;
@@ -374,6 +384,7 @@ pub const Tree = struct {
         if (l.content) |c| try t.retired.append(t.gpa, c.builder);
         if (l.animated) removeId(&t.animated, id);
         if (l.scrolled) removeId(&t.scrolled, id);
+        if (l.blur != null) t.blurs -= 1;
         l.* = .{};
     }
 
@@ -759,6 +770,38 @@ pub const Tree = struct {
         while (child != 0) : (child = t.layers.items[child].next) try t.place(out, child, cm, opacity, child_clip, round);
     }
 
+    /// The window's blur region (D31) as the tree shows it now: every
+    /// shown layer's blur shape through its transforms, scroll offsets,
+    /// and zoom, clipped by its clips and `bounds`, in whole surface
+    /// pixels. Rounded corners become a stack of rectangles inside the
+    /// curve; a rotated or skewed shape becomes its bounding box, and
+    /// rounded clips are taken as their rectangles. Layers that are fully
+    /// transparent blur nothing.
+    pub fn blurRegion(t: *Tree, out: *std.ArrayList(platform.Rect), bounds: Rect) Allocator.Error!void {
+        out.clearRetainingCapacity();
+        if (t.root == 0 or t.blurs == 0) return;
+        try t.blurFrom(out, t.root, .identity, 1, bounds);
+    }
+
+    fn blurFrom(t: *Tree, out: *std.ArrayList(platform.Rect), id: LayerId, parent: Affine, parent_opacity: f32, parent_clip: Rect) Allocator.Error!void {
+        const l = &t.layers.items[id];
+        const m = l.transform.affine().then(parent);
+        const opacity = parent_opacity * l.opacity;
+        if (opacity <= 0) return;
+        var clip = parent_clip;
+        if (l.clip) |c| clip = clip.intersect(m.applyRect(c.rect));
+        if (clip.isEmpty()) return;
+        if (l.blur) |b| try blurShape(t.gpa, out, b, m, clip);
+        var cm = m;
+        var child_clip = clip;
+        if (l.scroll) |s| {
+            child_clip = clip.intersect(m.applyRect(s.viewport));
+            cm = childMap(l).then(m);
+        }
+        var child = l.first;
+        while (child != 0) : (child = t.layers.items[child].next) try t.blurFrom(out, child, cm, opacity, child_clip);
+    }
+
     /// Composes the tree into a display list in window coordinates. Valid
     /// until the next call.
     pub fn compose(t: *Tree) Allocator.Error!scene.DisplayList {
@@ -903,6 +946,78 @@ pub const Tree = struct {
         top.bounds = top.bounds.unite(r);
     }
 };
+
+/// Strips per rounded corner in a blur region: enough that the steps stay
+/// within about a pixel for radii up to 16, few enough that a region
+/// stays small.
+const corner_strips = 6;
+
+/// Appends a blur shape's rectangles in surface pixels, rounded inward.
+fn blurShape(gpa: Allocator, out: *std.ArrayList(platform.Rect), b: update.BlurShape, m: Affine, clip: Rect) Allocator.Error!void {
+    const r = m.applyRect(b.rect);
+    const axis_aligned = m.b == 0 and m.c == 0;
+    if (!axis_aligned or b.radii.eql(.{})) return appendRect(gpa, out, r, clip);
+    // Radii scale with the transform; m.a and m.d may be negative (a flip).
+    const sx = @abs(m.a);
+    const sy = @abs(m.d);
+    const w = r.width();
+    const h = r.height();
+    // Each corner's radii, clamped to half the box like a renderer does.
+    const corner = struct {
+        fn f(rad: raster.Point, sx_: f32, sy_: f32, w_: f32, h_: f32) raster.Point {
+            return .{ .x = @min(rad.x * sx_, w_ / 2), .y = @min(rad.y * sy_, h_ / 2) };
+        }
+    }.f;
+    const tl = corner(b.radii.tl, sx, sy, w, h);
+    const tr = corner(b.radii.tr, sx, sy, w, h);
+    const bl = corner(b.radii.bl, sx, sy, w, h);
+    const br = corner(b.radii.br, sx, sy, w, h);
+    const top = @max(tl.y, tr.y);
+    const bottom = @max(bl.y, br.y);
+    // The middle band spans the full width.
+    try appendRect(gpa, out, .{ .x0 = r.x0, .y0 = r.y0 + top, .x1 = r.x1, .y1 = r.y1 - bottom }, clip);
+    // Bands from the edge inward: each is inset by the curve at its outer
+    // edge, where the inset is largest, so the rectangles stay inside.
+    var i: u32 = 0;
+    while (i < corner_strips) : (i += 1) {
+        const f0: f32 = @as(f32, @floatFromInt(i)) / corner_strips;
+        const f1: f32 = @as(f32, @floatFromInt(i + 1)) / corner_strips;
+        try appendRect(gpa, out, .{
+            .x0 = r.x0 + inset(tl, top, f0),
+            .y0 = r.y0 + top * f0,
+            .x1 = r.x1 - inset(tr, top, f0),
+            .y1 = r.y0 + top * f1,
+        }, clip);
+        try appendRect(gpa, out, .{
+            .x0 = r.x0 + inset(bl, bottom, f0),
+            .y0 = r.y1 - bottom * f1,
+            .x1 = r.x1 - inset(br, bottom, f0),
+            .y1 = r.y1 - bottom * f0,
+        }, clip);
+    }
+}
+
+/// How far an elliptical corner of radii `c` cuts into a horizontal band
+/// at `frac` of `band` from the edge (0 at the edge).
+fn inset(c: raster.Point, band: f32, frac: f32) f32 {
+    if (c.x <= 0 or c.y <= 0) return 0;
+    // Distance from the corner's center line, in the corner's own height.
+    const y = band * frac;
+    if (y >= c.y) return 0;
+    const dy = (c.y - y) / c.y;
+    return c.x * (1 - @sqrt(@max(0, 1 - dy * dy)));
+}
+
+fn appendRect(gpa: Allocator, out: *std.ArrayList(platform.Rect), r: Rect, clip: Rect) Allocator.Error!void {
+    const v = r.intersect(clip);
+    if (v.isEmpty()) return;
+    const x0: i32 = @intFromFloat(@ceil(v.x0));
+    const y0: i32 = @intFromFloat(@ceil(v.y0));
+    const x1: i32 = @intFromFloat(@floor(v.x1));
+    const y1: i32 = @intFromFloat(@floor(v.y1));
+    if (x1 <= x0 or y1 <= y0) return;
+    try out.append(gpa, .{ .x = x0, .y = y0, .width = x1 - x0, .height = y1 - y0 });
+}
 
 fn clipShape(r: Rect, radii: raster.Radii) scene.Shape {
     if (radii.eql(.{})) return .{ .rect = r };
@@ -1183,4 +1298,81 @@ test "animations sample at frame times and finish" {
     tk = try f.tree.tick(2000);
     try testing.expect(!tk.active);
     try testing.expectEqual(@as(f32, 0.25), f.tree.get(1).?.opacity);
+}
+
+test "the blur region follows transforms, scrolling, and clips, with rounded corners inside the curve" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    var out: std.ArrayList(platform.Rect) = .empty;
+    defer out.deinit(testing.allocator);
+    const window = Rect.xywh(0, 0, 200, 200);
+    try f.apply(&.{
+        .{ .create = 1 },
+        .{ .create = 2 },
+        .{ .create = 3 },
+        .{ .set_root = 1 },
+        .{ .insert = .{ .layer = 2, .parent = 1 } },
+        .{ .insert = .{ .layer = 3, .parent = 2 } },
+        // A scroll container at (20, 30) with a 100x50 viewport.
+        .{ .set_transform = .{ .layer = 2, .transform = .offset(20, 30) } },
+        .{ .set_scroll = .{ .layer = 2, .scroll = .{ .viewport = .xywh(0, 0, 100, 50), .content = .{ .width = 100, .height = 200 } } } },
+        // A plain 40x20 shape 10 px into the content.
+        .{ .set_transform = .{ .layer = 3, .transform = .offset(10, 10) } },
+        .{ .set_blur = .{ .layer = 3, .shape = .{ .rect = .xywh(0, 0, 40, 20) } } },
+    });
+    try f.tree.blurRegion(&out, window);
+    try testing.expectEqualSlices(platform.Rect, &.{.{ .x = 30, .y = 40, .width = 40, .height = 20 }}, out.items);
+
+    // Scrolled by 15: it moves up and the viewport cuts its top.
+    try f.apply(&.{.{ .scroll_to = .{ .layer = 2, .offset = .{ .x = 0, .y = 15 } } }});
+    try f.tree.blurRegion(&out, window);
+    try testing.expectEqualSlices(platform.Rect, &.{.{ .x = 30, .y = 30, .width = 40, .height = 15 }}, out.items);
+
+    // Scrolled out of view: nothing; a hidden layer blurs nothing either.
+    try f.apply(&.{.{ .scroll_to = .{ .layer = 2, .offset = .{ .x = 0, .y = 100 } } }});
+    try f.tree.blurRegion(&out, window);
+    try testing.expectEqual(@as(usize, 0), out.items.len);
+    try f.apply(&.{
+        .{ .scroll_to = .{ .layer = 2, .offset = .zero } },
+        .{ .set_opacity = .{ .layer = 3, .opacity = 0 } },
+    });
+    try f.tree.blurRegion(&out, window);
+    try testing.expectEqual(@as(usize, 0), out.items.len);
+
+    // Rounded corners of radius 12 at scale 2: a full-width middle band,
+    // and bands toward each edge inset by the curve, never outside it.
+    try f.apply(&.{
+        .{ .set_opacity = .{ .layer = 3, .opacity = 1 } },
+        .{ .set_transform = .{ .layer = 3, .transform = .{ .translate = .{ .x = 10, .y = 10 }, .scale = .{ .x = 2, .y = 2 } } } },
+        .{ .set_blur = .{ .layer = 3, .shape = .{ .rect = .xywh(0, 0, 40, 20), .radii = .uniform(6, 6) } } },
+    });
+    try f.tree.blurRegion(&out, window);
+    // The shape is 80x40 at (30, 40); the viewport (20..120, 30..80)
+    // cuts it at x 120 and y 80.
+    try testing.expectEqual(platform.Rect{ .x = 30, .y = 52, .width = 80, .height = 16 }, out.items[0]);
+    var area: i64 = 0;
+    for (out.items) |r| {
+        // Inside the shape and the viewport.
+        try testing.expect(r.x >= 30 and r.y >= 40 and r.x + r.width <= 110 and r.y + r.height <= 80);
+        // Each band avoids the corner's curve: its corners are within
+        // the ellipse of radius 12 around the corner centers.
+        for ([_][2]i32{ .{ r.x, r.y }, .{ r.x + r.width, r.y }, .{ r.x, r.y + r.height }, .{ r.x + r.width, r.y + r.height } }) |pt| {
+            const cx: f32 = if (pt[0] < 42) 42 else if (pt[0] > 98) 98 else @floatFromInt(pt[0]);
+            const cy: f32 = if (pt[1] < 52) 52 else if (pt[1] > 68) 68 else @floatFromInt(pt[1]);
+            const dx = @as(f32, @floatFromInt(pt[0])) - cx;
+            const dy = @as(f32, @floatFromInt(pt[1])) - cy;
+            try testing.expect(dx * dx + dy * dy <= 12 * 12 + 0.01);
+        }
+        area += @as(i64, r.width) * r.height;
+    }
+    // Most of the rounded rectangle (80*40 minus 4 corners of
+    // (1 - pi/4) * 144 = about 124) is covered.
+    try testing.expect(area > 80 * 40 - 4 * 31 - 6 * 4 * 12 and area < 80 * 40 - 4 * 31);
+
+    // Removing the shape empties the region.
+    try f.apply(&.{.{ .set_blur = .{ .layer = 3, .shape = null } }});
+    try testing.expectEqual(@as(u32, 0), f.tree.blurs);
+    try f.tree.blurRegion(&out, window);
+    try testing.expectEqual(@as(usize, 0), out.items.len);
 }

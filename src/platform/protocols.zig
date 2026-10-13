@@ -2,8 +2,9 @@
 //! imports this file, so it must only use plain data. Owned by the platform
 //! workstream: add protocols here without editing build.zig.
 //!
-//! Paths are relative to the pinned wayland-protocols release in
-//! build.zig.zon. The core protocol (wayland.xml) is always included.
+//! Paths in `xml` are relative to the pinned wayland-protocols release in
+//! build.zig.zon, those in `wlr_xml` to the pinned wlr-protocols commit.
+//! The core protocol (wayland.xml) is always included.
 
 /// Protocol XML files to scan.
 pub const xml = [_][]const u8{
@@ -31,7 +32,25 @@ pub const xml = [_][]const u8{
     "staging/linux-drm-syncobj/linux-drm-syncobj-v1.xml",
     "staging/alpha-modifier/alpha-modifier-v1.xml",
     "staging/single-pixel-buffer/single-pixel-buffer-v1.xml",
+    // The desktop shell (D31).
+    "staging/ext-session-lock/ext-session-lock-v1.xml",
+    "staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml",
+    "staging/ext-workspace/ext-workspace-v1.xml",
+    "staging/ext-idle-notify/ext-idle-notify-v1.xml",
+    "staging/ext-background-effect/ext-background-effect-v1.xml",
 };
+
+/// Protocol XML files from wlr-protocols (D31): layer surfaces and window
+/// management for task lists, which wayland-protocols has no equivalent
+/// of yet.
+pub const wlr_xml = [_][]const u8{
+    wlr_root ++ "unstable/wlr-layer-shell-unstable-v1.xml",
+    wlr_root ++ "unstable/wlr-foreign-toplevel-management-unstable-v1.xml",
+};
+
+/// GitLab's archive keeps its top directory (a pax header beside it stops
+/// the fetch from stripping it); it names the commit build.zig.zon pins.
+const wlr_root = "wlr-protocols-bf4fc79abc359eea5a0edec0ac6d4a2b2955f82a/";
 
 /// Globals to bind, each with the highest version siv implements. Code is
 /// generated for each global and every interface reachable from it at that
@@ -75,4 +94,13 @@ pub const globals = [_]struct { []const u8, u32 }{
     .{ "wp_linux_drm_syncobj_manager_v1", 1 },
     .{ "wp_alpha_modifier_v1", 1 },
     .{ "wp_single_pixel_buffer_manager_v1", 1 },
+    // The desktop shell (D31): layer surfaces, session lock, toplevels and
+    // their management, workspaces, idle notification, background blur.
+    .{ "zwlr_layer_shell_v1", 4 },
+    .{ "ext_session_lock_manager_v1", 1 },
+    .{ "ext_foreign_toplevel_list_v1", 1 },
+    .{ "zwlr_foreign_toplevel_manager_v1", 3 },
+    .{ "ext_workspace_manager_v1", 1 },
+    .{ "ext_idle_notifier_v1", 2 },
+    .{ "ext_background_effect_manager_v1", 1 },
 };

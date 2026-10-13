@@ -25,8 +25,8 @@ const TestApp = struct {
     /// The frame clock's state when each frame began.
     frame_basis: std.ArrayList(struct { begin: u64, last_present: ?u64, refresh: u64, last_error: ?i64 }) = .empty,
     last_buffer: Size = .{},
-    frames_of: [4]usize = @splat(0),
-    buffer_of: [4]Size = @splat(.{}),
+    frames_of: [16]usize = @splat(0),
+    buffer_of: [16]Size = @splat(.{}),
     /// The window conditions passed to `runUntil` look at.
     watch: WindowId = 0,
     animate: bool = false,
@@ -144,6 +144,8 @@ const Harness = struct {
     fn mapWindow(h: *Harness, options: platform.WindowOptions) !WindowId {
         const id = try h.app.backend.createWindow(options);
         h.app.watch = id;
+        // The id may be a destroyed window's.
+        h.app.frames_of[id] = 0;
         try runUntil(&h.loop, &h.app, struct {
             fn f(a: *TestApp) bool {
                 return a.frames_of[a.watch] >= 1;
@@ -1274,4 +1276,305 @@ test "toplevels export xdg-foreign handles and activation tokens hand focus over
         }
     }.f);
     try testing.expectEqual(@as(WindowId, 1), second);
+}
+
+// The desktop shell (D31) --------------------------------------------------------
+
+fn waitOutputs(h: *Harness, n: usize) !void {
+    const S = struct {
+        var want: usize = 0;
+        fn f(a: *TestApp) bool {
+            return a.count(.output_added) >= want;
+        }
+    };
+    S.want = n;
+    try runUntil(&h.loop, &h.app, S.f);
+}
+
+test "layer surfaces on sway: placed by anchors, reserving their zone, with popups, closed with their output" {
+    var h: Harness = .{};
+    try h.start();
+    defer h.stop();
+    const app = &h.app;
+    const backend = app.backend;
+    try waitOutputs(&h, 1);
+    try testing.expect(backend.shellCapabilities().layers);
+
+    // A bar along the top: sway spans it across the output.
+    const bar_state: platform.LayerState = .{ .anchor = .{ .top = true, .left = true, .right = true }, .height = 30, .auto_exclusive = true };
+    const bar = try h.mapWindow(.{ .role = .{ .layer = .{ .state = bar_state, .namespace = "bar" } } });
+    try testing.expectEqual(@as(u32, 1280), backend.windowState(bar).width);
+    try testing.expectEqual(@as(u32, 30), backend.windowState(bar).height);
+    try testing.expectEqual(Size{ .width = 1280, .height = 30 }, app.buffer_of[bar]);
+
+    // A toplevel tiles into the rest: the bar's zone is reserved.
+    const top = try h.mapWindow(.{ .title = "App" });
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.backend.windowState(a.watch).height == 690;
+        }
+    }.f);
+
+    // A taller bar: sway configures it, and the toplevel shrinks with the
+    // zone that follows it.
+    var taller = bar_state;
+    taller.height = 50;
+    backend.setLayer(bar, taller);
+    app.watch = top;
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.backend.windowState(a.watch).height == 670;
+        }
+    }.f);
+    try testing.expectEqual(@as(u32, 50), backend.windowState(bar).height);
+
+    // A menu from the bar: a popup of the layer surface, below its anchor.
+    const popup = try backend.createPopup(.{ .parent = bar, .positioner = .{ .width = 150, .height = 80, .anchor_rect = .{ .x = 20, .y = 0, .width = 60, .height = 50 } } });
+    app.watch = popup;
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.frames_of[a.watch] >= 1;
+        }
+    }.f);
+    try testing.expectEqual(@as(i32, 50), backend.windowState(popup).popup.?.y);
+    backend.destroyWindow(popup);
+
+    // An overlay with exclusive keyboard focus on a second output gets the
+    // keys; when the output goes, sway closes it.
+    try h.sway.command("create_output");
+    try waitOutputs(&h, 2);
+    const second = app.last(.output_added).?.output_added;
+    const osd = try h.mapWindow(.{ .role = .{ .layer = .{ .output = second, .namespace = "osd", .state = .{ .layer = .overlay, .keyboard = .exclusive, .width = 200, .height = 100 } } } });
+    try testing.expectEqual(@as(u32, 200), backend.windowState(osd).width);
+    // The pause lets the seat gain wtype's keyboard before the key; the
+    // loop runs meanwhile, as siv binds the keyboard.
+    const wtype = try h.sway.spawnClient(&[_:null]?[*:0]const u8{ "wtype", "-s", "400", "q" });
+    app.watch = osd;
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            for (a.events.items) |e| if (e == .key and e.key.window == a.watch and e.key.keysym == 'q') return true;
+            return false;
+        }
+    }.f);
+    try h.sway.wait(wtype);
+    try h.sway.command("output HEADLESS-2 unplug");
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            const c = a.last(.closed) orelse return false;
+            return c.closed == a.watch;
+        }
+    }.f);
+    backend.destroyWindow(osd);
+
+    // A zero width without both side anchors is refused before it can be a
+    // protocol error.
+    try testing.expectError(error.Unsupported, backend.createWindow(.{ .role = .{ .layer = .{ .state = .{ .anchor = .{ .top = true }, .height = 10 } } } }));
+    _ = backend.display.roundtrip();
+    try testing.expectEqual(@as(usize, 0), app.count(.failed));
+}
+
+test "the session lock on sway: lock surfaces per output, locked, unlocked; a second client is refused" {
+    var h: Harness = .{};
+    try h.start();
+    defer h.stop();
+    const app = &h.app;
+    const backend = app.backend;
+    try waitOutputs(&h, 1);
+    const out = app.last(.output_added).?.output_added;
+
+    try backend.lockSession();
+    const lock_window = try h.mapWindow(.{ .role = .{ .lock = out } });
+    try testing.expectEqual(@as(u32, 1280), backend.windowState(lock_window).width);
+    try testing.expectEqual(@as(u32, 720), backend.windowState(lock_window).height);
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            const l = a.last(.lock) orelse return false;
+            return l.lock == .locked;
+        }
+    }.f);
+    // One lock surface per output.
+    try testing.expectError(error.Unsupported, backend.createWindow(.{ .role = .{ .lock = out } }));
+
+    // Another client asking for a lock now is refused.
+    var other: TestApp = .{};
+    defer other.deinit();
+    other.backend = try Wayland.create(&h.loop, testing.allocator, other.sink(), .{ .display = h.sway.display });
+    defer other.backend.destroy();
+    try other.backend.lockSession();
+    try runUntil(&h.loop, &other, struct {
+        fn f(a: *TestApp) bool {
+            const l = a.last(.lock) orelse return false;
+            return l.lock == .finished;
+        }
+    }.f);
+
+    // A new output while locked needs its own lock surface.
+    try h.sway.command("create_output");
+    try waitOutputs(&h, 2);
+    const second = app.last(.output_added).?.output_added;
+    const second_window = try h.mapWindow(.{ .role = .{ .lock = second } });
+    try h.sway.command("output HEADLESS-2 unplug");
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            const c = a.last(.closed) orelse return false;
+            return c.closed == a.watch;
+        }
+    }.f);
+    backend.destroyWindow(second_window);
+
+    // Unlocked: the lock window is closed, and a toplevel can map again.
+    backend.unlockSession(false);
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            var n: usize = 0;
+            for (a.events.items) |e| n += @intFromBool(e == .closed);
+            return n >= 2;
+        }
+    }.f);
+    backend.destroyWindow(lock_window);
+    _ = try h.mapWindow(.{ .title = "After" });
+    _ = backend.display.roundtrip();
+    try testing.expectEqual(@as(usize, 0), app.count(.failed));
+}
+
+/// The id of the last toplevel or workspace event whose title or name is
+/// `text`, read from the backend.
+fn foreignNamed(app: *TestApp, comptime what: enum { toplevel, workspace }, text: []const u8) ?u32 {
+    var i = app.events.items.len;
+    while (i > 0) {
+        i -= 1;
+        const e = app.events.items[i];
+        const c = switch (what) {
+            .toplevel => if (e == .toplevel) e.toplevel else continue,
+            .workspace => if (e == .workspace) e.workspace else continue,
+        };
+        if (c.kind == .removed) continue;
+        const name = switch (what) {
+            .toplevel => (app.backend.toplevelInfo(c.id) orelse continue).title,
+            .workspace => (app.backend.workspaceInfo(c.id) orelse continue).name,
+        };
+        if (std.mem.eql(u8, name, text)) return c.id;
+    }
+    return null;
+}
+
+test "the desktop on sway: toplevels with management and the ext list, workspaces, idle notification, no blur" {
+    var h: Harness = .{};
+    try h.start();
+    defer h.stop();
+    const app = &h.app;
+    const backend = app.backend;
+    try waitOutputs(&h, 1);
+    const out = app.last(.output_added).?.output_added;
+    const caps = backend.shellCapabilities();
+    try testing.expect(caps.toplevels and caps.toplevel_management and caps.workspaces and caps.idle and !caps.blur);
+
+    // This client's own toplevels are in the desktop's list too.
+    const win = try h.mapWindow(.{ .title = "Listed", .app_id = "org.siv.Test" });
+    try backend.startToplevels();
+    const S = struct {
+        fn listed(a: *TestApp) bool {
+            const id = foreignNamed(a, .toplevel, "Listed") orelse return false;
+            const info = a.backend.toplevelInfo(id).?;
+            return info.states.activated and info.outputs.len == 1;
+        }
+    };
+    try runUntil(&h.loop, app, S.listed);
+    const id = foreignNamed(app, .toplevel, "Listed").?;
+    const info = backend.toplevelInfo(id).?;
+    try testing.expectEqualStrings("org.siv.Test", info.app_id);
+    try testing.expect(info.managed);
+    try testing.expectEqual(out, info.outputs[0]);
+    // A title change arrives as a change.
+    backend.setTitle(win, "Renamed");
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return foreignNamed(a, .toplevel, "Renamed") != null;
+        }
+    }.f);
+    // Closing it from the list asks the window to close.
+    try testing.expect(backend.toplevelRequest(id, .close));
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.closed;
+        }
+    }.f);
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            const e = a.last(.toplevel) orelse return false;
+            return e.toplevel.kind == .removed;
+        }
+    }.f);
+    backend.stopToplevels();
+
+    // The ext list: titles and stable identifiers, no management.
+    backend.foreign.force_ext_list = true;
+    _ = try h.mapWindow(.{ .title = "Plain" });
+    try backend.startToplevels();
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return foreignNamed(a, .toplevel, "Plain") != null;
+        }
+    }.f);
+    const plain = backend.toplevelInfo(foreignNamed(app, .toplevel, "Plain").?).?;
+    try testing.expect(plain.identifier.len > 0 and !plain.managed);
+    try testing.expect(!backend.toplevelRequest(foreignNamed(app, .toplevel, "Plain").?, .activate));
+    backend.stopToplevels();
+
+    // Workspaces: sway's "1" on the output, then a second one; activating
+    // the first switches back.
+    try backend.startWorkspaces();
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            const ws = foreignNamed(a, .workspace, "1") orelse return false;
+            const i = a.backend.workspaceInfo(ws).?;
+            return i.states.active and i.outputs.len == 1;
+        }
+    }.f);
+    try h.sway.command("workspace 2");
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            const ws = foreignNamed(a, .workspace, "2") orelse return false;
+            return a.backend.workspaceInfo(ws).?.states.active;
+        }
+    }.f);
+    const one = foreignNamed(app, .workspace, "1").?;
+    try testing.expect(backend.workspaceInfo(one).?.capabilities.activate);
+    try testing.expect(backend.workspaceRequest(one, .activate));
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            const ws = foreignNamed(a, .workspace, "1") orelse return false;
+            return a.backend.workspaceInfo(ws).?.states.active;
+        }
+    }.f);
+    backend.stopWorkspaces();
+
+    // Idle after the timeout without input; back with pointer motion.
+    var vp = try VirtualPointer.connect(&h.sway);
+    defer vp.deinit();
+    try vp.sync();
+    const watch = try backend.createIdleWatch(200, false);
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            const e = a.last(.idle) orelse return false;
+            return e.idle.idle;
+        }
+    }.f);
+    try testing.expectEqual(watch, app.last(.idle).?.idle.watch);
+    vp.move(5, 5);
+    try vp.sync();
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            const e = a.last(.idle) orelse return false;
+            return !e.idle.idle;
+        }
+    }.f);
+    backend.destroyIdleWatch(watch);
+
+    // Sway cannot blur: a blur region is dropped without a request.
+    const plain_win = app.watch;
+    backend.setBlurRegion(plain_win, &.{.{ .x = 0, .y = 0, .width = 10, .height = 10 }});
+    backend.commitWindow(plain_win);
+    _ = backend.display.roundtrip();
+    try testing.expectEqual(@as(usize, 0), app.count(.failed));
 }

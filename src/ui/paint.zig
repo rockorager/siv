@@ -63,6 +63,7 @@ const Layer = struct {
     scroll_offset: Point = .zero,
     zoom: f32 = 1,
     wheel: ?Rect = null,
+    blur: ?compositor.BlurShape = null,
     external: ?compositor.ExternalPlacement = null,
     /// Caret layers: what the content shows, and what the running blink
     /// started from (it restarts when this changes).
@@ -541,7 +542,7 @@ pub const State = struct {
             early += 1;
         }
         if (win.dirty.props or st.ops.items.len != 0) {
-            try st.ops.ensureUnusedCapacity(gpa, 12 * st.order.items.len + st.scroll_by.items.len + 1);
+            try st.ops.ensureUnusedCapacity(gpa, 13 * st.order.items.len + st.scroll_by.items.len + 1);
             for (st.order.items) |i| {
                 const l = &st.layers.items[i];
                 const p = props(st, win, l.*);
@@ -599,6 +600,10 @@ pub const State = struct {
                 if (!std.meta.eql(l.wheel, p.wheel)) {
                     st.ops.appendAssumeCapacity(.{ .set_wheel_region = .{ .layer = id(i), .region = p.wheel } });
                     l.wheel = p.wheel;
+                }
+                if (!std.meta.eql(l.blur, p.blur)) {
+                    st.ops.appendAssumeCapacity(.{ .set_blur = .{ .layer = id(i), .shape = p.blur } });
+                    l.blur = p.blur;
                 }
                 if (!std.meta.eql(l.external, p.external)) {
                     st.ops.appendAssumeCapacity(.{ .set_external = .{ .layer = id(i), .external = p.external } });
@@ -724,6 +729,7 @@ pub const State = struct {
         clip: ?compositor.Clip = null,
         scroll: ?compositor.Scroll = null,
         wheel: ?Rect = null,
+        blur: ?compositor.BlurShape = null,
         external: ?compositor.ExternalPlacement = null,
     };
 
@@ -763,6 +769,7 @@ pub const State = struct {
                     };
                 }
                 if (wantsWheel(n)) p.wheel = .xywh(0, 0, s.size.w, s.size.h);
+                if (n.visual.window_blur) p.blur = .{ .rect = .xywh(0, 0, s.size.w, s.size.h), .radii = n.visual.radius.physical(s.rtl) };
                 if (n.kind == .external) {
                     p.external = externalPlacement(win, l.owner);
                     // Covering content overflows its box: clip it there (and

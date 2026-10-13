@@ -506,6 +506,24 @@ test "window activation and titles" {
     try testing.expectEqual(@as(i32, 0), try (try h.get(atspi.root_path, atspi.iface.accessible, "ChildCount")).read(i32));
 }
 
+test "a layer or lock window's root is a window, not a frame" {
+    var h: Harness = undefined;
+    try h.init();
+    defer h.deinit();
+    var buf: [96]u8 = undefined;
+    const root = h.path(.root, &buf);
+    var copy: [96]u8 = undefined;
+    @memcpy(copy[0..root.len], root);
+    const p = copy[0..root.len];
+    try testing.expectEqual(@as(u32, 23), try (try h.call(p, atspi.iface.accessible, "GetRole", .{})).read(u32));
+    // Without a title bar (D31): AT-SPI's window.
+    h.win.frameless = true;
+    h.win.dirty.semantics = true;
+    try h.frame();
+    try testing.expectEqual(@as(u32, 69), try (try h.call(p, atspi.iface.accessible, "GetRole", .{})).read(u32));
+    try testing.expectEqualStrings("window", try (try h.call(p, atspi.iface.accessible, "GetRoleName", .{})).read([]const u8));
+}
+
 fn takeValue(user: ?*anyopaque, _: *ui.Window, _: ui.NodeId, ev: *const ui.Event) ui.HandlerResult {
     const v: *f64 = @ptrCast(@alignCast(user));
     v.* = ev.set_value;

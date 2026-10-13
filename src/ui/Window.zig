@@ -129,6 +129,9 @@ height: f32,
 scale: f32 = 1,
 /// Direction of the window's locale; nodes inherit it (D21).
 rtl: bool = false,
+/// A window without a title bar or frame (a layer or lock window, D31),
+/// so its root is a window rather than a frame to assistive technology.
+frameless: bool = false,
 /// Interned window language (Fonts names).
 language: u32 = 0,
 /// Serial of the last configure, until a commit acknowledges it.
@@ -929,7 +932,10 @@ pub fn preferredSize(win: *Window, max_width: f32) Error!Size {
 pub fn semanticsTree(win: *Window) Error!*const semantics_mod.Tree {
     if (win.dirty.semantics) {
         try win.semantics.rebuild(win);
-        win.dirty.semantics = false;
+        // Bounds come from layout: a tree built while a layout is pending
+        // (a query between a transaction and its frame) is built again
+        // after it, rather than keeping the old bounds.
+        win.dirty.semantics = win.state(.root).needs_layout;
     }
     return &win.semantics;
 }

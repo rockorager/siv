@@ -67,6 +67,8 @@ outbox: *Outbox,
 windows: std.ArrayList(?*Window) = .empty,
 seats: [max_seats]Seat = @splat(.{}),
 released: std.ArrayList(*scene.Builder) = .empty,
+/// Scratch for blur regions (D31).
+blur_scratch: std.ArrayList(platform_mod.Rect) = .empty,
 renderer: Renderer,
 vulkan_options: VulkanOptions,
 /// The process's Vulkan device (D10). Creating it (instance, device,
@@ -298,6 +300,8 @@ const Window = struct {
     parent: ?WindowId = null,
     shown: bool = false,
     externals: external_mod.Externals,
+    /// The blur region last handed to the platform (D31).
+    blur: std.ArrayList(platform_mod.Rect) = .empty,
     /// Retries a frame when no buffer was free, or starts delayed
     /// animations.
     timer: Timer = .{ .func = onWindowTimer },
@@ -377,6 +381,7 @@ pub fn destroy(self: *Compositor) void {
     self.inbox.deinit(self.gpa);
     self.processing.deinit(self.gpa);
     self.released.deinit(self.gpa);
+    self.blur_scratch.deinit(self.gpa);
     self.outbox.close();
     _ = c.pthread_cond_destroy(&self.call_done);
     _ = c.pthread_mutex_destroy(&self.mutex);
@@ -887,6 +892,27 @@ fn openSurface(self: *Compositor, role: union(enum) { toplevel: platform_mod.Win
     return id;
 }
 
+/// Computes the window's blur region and hands it to the platform when
+/// it changed; true if so, so that it is committed even without a new
+/// buffer.
+fn updateBlur(self: *Compositor, w: *Window, bounds: raster.Rect) Allocator.Error!bool {
+    if (w.tree.blurs == 0 and w.blur.items.len == 0) return false;
+    if (!self.platform.canBlur()) return false;
+    try w.tree.blurRegion(&self.blur_scratch, bounds);
+    if (sameRects(self.blur_scratch.items, w.blur.items)) return false;
+    try w.blur.ensureTotalCapacity(self.gpa, self.blur_scratch.items.len);
+    w.blur.clearRetainingCapacity();
+    w.blur.appendSliceAssumeCapacity(self.blur_scratch.items);
+    self.platform.setBlurRegion(w.id, w.blur.items);
+    return true;
+}
+
+fn sameRects(a: []const platform_mod.Rect, b: []const platform_mod.Rect) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |x, y| if (!std.meta.eql(x, y)) return false;
+    return true;
+}
+
 fn closeWindow(self: *Compositor, w: *Window) void {
     const id = w.id;
     self.releaseHold(w, null);
@@ -905,6 +931,7 @@ fn closeWindow(self: *Compositor, w: *Window) void {
 
 fn freeWindow(self: *Compositor, w: *Window) void {
     self.loop.cancelTimer(&w.timer);
+    w.blur.deinit(self.gpa);
     w.externals.deinit();
     w.tree.deinit();
     w.tracker.deinit();
@@ -1079,6 +1106,12 @@ fn handlePlatformEvent(self: *Compositor, ev: *const platform_mod.Event) void {
         },
         .scroll => |s| if (self.scroll(s)) return,
         .gesture => |g| if (self.routeGesture(g)) return,
+        // A compositor that starts blurring gets every window's region;
+        // one that stops forgets them.
+        .blur_capable => |on| for (self.windows.items) |slot| if (slot) |w| {
+            w.blur.clearRetainingCapacity();
+            if (on and w.tree.blurs != 0) self.want(w.id);
+        },
         .subsurface_released => |r| {
             if (self.getWindow(r.window)) |w| w.externals.subsurfaceReleased(r.key, ReleaseTo{ .comp = self, .window = w.id });
             return;
@@ -1230,6 +1263,9 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
     const bounds = raster.Rect.xywh(0, 0, @floatFromInt(state.width), @floatFromInt(state.height));
     const subsurfaces_changed = w.externals.place(self.platform, w.id, &w.tree, bounds, state.scale.toFloat()) catch return self.outOfMemory(w);
     w.tree.externals = w.externals.resolver();
+    // The blur region (D31) goes with this frame's commit, so it follows
+    // what this frame shows.
+    const blur_changed = self.updateBlur(w, bounds) catch return self.outOfMemory(w);
     const list = w.tree.compose() catch return self.outOfMemory(w);
     var damage = w.tracker.diff(w.tree.previous(), list, root, vp) catch return self.outOfMemory(w);
     const all = [_]IRect{vp};
@@ -1262,9 +1298,10 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
     // The frame asked for is composed, unless it is retried for want of
     // a buffer; single-run animations and flings owe the next ones.
     w.owed = (!presented and (damage.len > 0 or tick.active)) or tick.holding;
-    // Subsurface changes, and state other code set on the surface
-    // (`requestCommit`), apply with the window's commit.
-    if ((subsurfaces_changed or w.commit_wanted) and !presented) self.platform.commitWindow(w.id);
+    // Subsurface changes, state other code set on the surface
+    // (`requestCommit`), and a new blur region apply with the window's
+    // commit.
+    if ((subsurfaces_changed or blur_changed or w.commit_wanted) and !presented) self.platform.commitWindow(w.id);
     w.commit_wanted = false;
     self.releaseAll(w.tree.endFrame());
     w.externals.endFrame(self.platform, w.id, ReleaseTo{ .comp = self, .window = w.id });

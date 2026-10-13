@@ -27,6 +27,7 @@ const external = @import("external.zig");
 const loop_mod = @import("loop");
 const portal = @import("portal.zig");
 const watch = @import("watch.zig");
+const shell = @import("shell.zig");
 
 const Root = runtime.Root;
 
@@ -88,6 +89,9 @@ pub const App = struct {
     desktop: portal.State,
     /// siv_job_start jobs not yet done or dropped, for siv_test_settle.
     jobs: u32,
+    /// Outputs, layer windows, the lock, toplevels, workspaces, and idle
+    /// watches (D31).
+    shell: shell.State,
 
     pub fn gpa(self: *App) std.mem.Allocator {
         return self.root.gpa;
@@ -239,6 +243,7 @@ fn mapAppError(err: app_mod.Error) Error {
         error.OutOfMemory => error.OutOfMemory,
         error.Unavailable => error.Unavailable,
         error.Busy => error.Busy,
+        error.Unsupported => error.Unsupported,
     };
 }
 
@@ -278,6 +283,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     self.image_requests = .empty;
     self.desktop = .{};
     self.jobs = 0;
+    self.shell = .{};
     const gpa = self.gpa();
     self.draw = .init(gpa);
     errdefer self.draw.deinit(gpa);
@@ -307,6 +313,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     try self.app.fonts.addListener(.{ .ctx = self, .func = canvas.onFontsLoaded });
     // Canvases and pages that drew while icons loaded draw again too.
     try self.app.icons.addListener(.{ .ctx = self, .func = canvas.onFontsLoaded });
+    shell.start(self);
     dest.* = @fromBackingInt(self.root.handle);
 }
 
@@ -332,6 +339,7 @@ fn destroyNow(self: *App) void {
     for (self.windows.items) |slot| if (slot) |w| {
         w.destroyTree() catch {};
     };
+    shell.teardown(self);
     const gpa = self.gpa();
     for (self.timers.items) |slot| if (slot) |tm| tm.cancel();
     self.timers.deinit(gpa);
@@ -531,25 +539,7 @@ fn windowCreate(app: t.App, desc_ptr: ?*const t.WindowDesc, out: ?*t.Window) Err
     if (flags.modal and parent == null) return error.InvalidArgument;
     const dest = try runtime.out(t.Window, out);
 
-    const gpa = self.gpa();
-    const index: u32 = for (self.windows.items, 0..) |slot, i| {
-        if (slot == null) break @intCast(i);
-    } else blk: {
-        if (self.windows.items.len >= max_windows) return error.LimitExceeded;
-        try self.windows.append(gpa, null);
-        break :blk @intCast(self.windows.items.len - 1);
-    };
-    const w = try gpa.create(Window);
-    errdefer gpa.destroy(w);
-    w.* = .{ .owner = self, .index = index, .handle = 0, .win = undefined, .on_event = desc.on_event, .destroy = desc.destroy, .user_data = desc.user_data, .dialog_parent = parent };
-    errdefer w.nodes.deinit(gpa);
-    try w.nodes.reserve(gpa, 1);
-    try self.root.handles.ensureUnusedCapacity(gpa);
-    w.handle = try self.root.handles.insert(gpa, window_tag, index);
-    errdefer _ = self.root.handles.remove(w.handle, window_tag) catch unreachable;
-    try self.root.handles.ensureUnusedCapacity(gpa);
-
-    w.win = self.app.createWindow(.{
+    const w = try newWindow(self, .{
         .title = title,
         .app_id = app_id,
         .width = if (desc.width == 0) 640 else desc.width,
@@ -560,17 +550,53 @@ fn windowCreate(app: t.App, desc_ptr: ?*const t.WindowDesc, out: ?*t.Window) Err
         .parent = if (parent) |pw| pw.win else null,
         .modal = flags.modal,
         .session_name = session_name,
-    }, .{ .ctx = w, .func = onWindowEvent }) catch |err| return mapAppError(err);
-    errdefer w.win.destroy() catch {};
+    }, .{ .on_event = desc.on_event, .destroy = desc.destroy, .user_data = desc.user_data, .dialog_parent = parent });
+    errdefer {
+        // The window's destroy-notify is the caller's to run on failure.
+        w.destroy = null;
+        w.destroyTree() catch {};
+    }
     if (desc.min_width != 0 or desc.min_height != 0 or desc.max_width != 0 or desc.max_height != 0) {
         try w.win.setSizeLimits(.{ .width = desc.min_width, .height = desc.min_height }, .{ .width = desc.max_width, .height = desc.max_height });
     }
     if (initial.maximized) try w.win.setMaximized(true);
     if (initial.fullscreen) try w.win.setFullscreen(true);
+    dest.* = @fromBackingInt(w.handle);
+}
+
+/// A window's callbacks, for `newWindow`.
+pub const Callbacks = struct {
+    on_event: ?t.WindowEventFn = null,
+    destroy: ?t.DestroyFn = null,
+    user_data: ?*anyopaque = null,
+    dialog_parent: ?*Window = null,
+};
+
+/// Creates a window of any role in the coordinator with its handle, its
+/// root node's handle, and its callbacks. On failure nothing is left.
+pub fn newWindow(self: *App, options: app_mod.WindowOptions, cb: Callbacks) Error!*Window {
+    const gpa = self.gpa();
+    const index: u32 = for (self.windows.items, 0..) |slot, i| {
+        if (slot == null) break @intCast(i);
+    } else blk: {
+        if (self.windows.items.len >= max_windows) return error.LimitExceeded;
+        try self.windows.append(gpa, null);
+        break :blk @intCast(self.windows.items.len - 1);
+    };
+    const w = try gpa.create(Window);
+    errdefer gpa.destroy(w);
+    w.* = .{ .owner = self, .index = index, .handle = 0, .win = undefined, .on_event = cb.on_event, .destroy = cb.destroy, .user_data = cb.user_data, .dialog_parent = cb.dialog_parent };
+    errdefer w.nodes.deinit(gpa);
+    try w.nodes.reserve(gpa, 1);
+    try self.root.handles.ensureUnusedCapacity(gpa);
+    w.handle = try self.root.handles.insert(gpa, window_tag, index);
+    errdefer _ = self.root.handles.remove(w.handle, window_tag) catch unreachable;
+    try self.root.handles.ensureUnusedCapacity(gpa);
+    w.win = self.app.createWindow(options, .{ .ctx = w, .func = onWindowEvent }) catch |err| return mapAppError(err);
     // Nothing below fails.
     w.nodes.adopt(self, w, .root) catch unreachable;
     self.windows.items[index] = w;
-    dest.* = @fromBackingInt(w.handle);
+    return w;
 }
 
 fn onWindowEvent(ctx: ?*anyopaque, _: *app_mod.Window, ev: *const app_mod.WindowEvent) bool {
@@ -624,6 +650,18 @@ fn onWindowEvent(ctx: ?*anyopaque, _: *app_mod.Window, ev: *const app_mod.Window
             defer self.leave();
             _ = cb(w.user_data, handle, &e);
             return false;
+        },
+        .closed => {
+            if (w.on_event) |cb| {
+                var e = windowEvent(.closed, w.win.state);
+                self.enter();
+                defer self.leave();
+                _ = cb(w.user_data, handle, &e);
+            }
+            // The coordinator destroys it next; the handles and callbacks
+            // go with it here, popups first.
+            if (!w.dead) w.destroyTree() catch {};
+            return true;
         },
         .pointer_constraint, .shortcuts_inhibit, .restored => {
             const cb = w.on_event orelse return false;

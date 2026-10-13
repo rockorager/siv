@@ -155,7 +155,7 @@ pub fn add(b: *std.Build, o: Options) void {
     // Example programs (examples/*.c): `zig build examples` installs them;
     // `zig build test` compiles them, so they keep up with the API.
     const examples = b.step("examples", "Build the C example programs");
-    for ([_][]const u8{ "hello", "todo", "embed", "gauge", "widgets" }) |name| {
+    for ([_][]const u8{ "hello", "todo", "embed", "gauge", "widgets", "shell" }) |name| {
         const exe = b.addExecutable(.{
             .name = name,
             .root_module = b.createModule(.{ .target = o.target, .optimize = o.optimize, .link_libc = true }),
@@ -171,6 +171,16 @@ pub fn add(b: *std.Build, o: Options) void {
     // exports in the test binary itself.
     o.headless.root_module.addCSourceFile(.{ .file = b.path("test/c/canvas_scene.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" } });
     o.headless.root_module.addIncludePath(installed.path(b, "include"));
+    // examples/shell.c, run unchanged on the headless backend by
+    // test/abi/shell_example.zig (D31): main and the calls the test drives
+    // or fakes (the backend, the run loop, the clock, the user, and libpam)
+    // renamed.
+    o.headless.root_module.addCSourceFile(.{ .file = b.path("examples/shell.c"), .flags = &.{
+        "-std=c11",                           "-D_POSIX_C_SOURCE=200809L",          "-Wall", "-Wextra", "-Werror",
+        "-Dmain=shell_example_main",          "-Dsiv_app_create=shell_test_app_create", "-Dsiv_app_run=shell_test_app_run",
+        "-Dtime=shell_test_time",             "-Ddlopen=shell_test_dlopen",         "-Ddlsym=shell_test_dlsym",
+        "-Ddlclose=shell_test_dlclose",       "-Dgetpwuid=shell_test_getpwuid",
+    } });
 
     // A single-instance C application that the lifecycle integration test
     // launches, also through D-Bus activation (test/c/lifecycle.c).
@@ -206,6 +216,15 @@ pub fn add(b: *std.Build, o: Options) void {
         }),
         .filters = o.test_filters,
     });
+    // examples/shell.c on sway (integration_shell.zig), renamed as for the
+    // headless test above.
+    integration.root_module.addCSourceFile(.{ .file = b.path("examples/shell.c"), .flags = &.{
+        "-std=c11",                       "-D_POSIX_C_SOURCE=200809L",             "-Wall", "-Wextra", "-Werror",
+        "-Dmain=shell_example_main",      "-Dsiv_app_create=shell_sway_app_create", "-Dsiv_app_run=shell_sway_app_run",
+        "-Dtime=shell_sway_time",         "-Ddlopen=shell_sway_dlopen",            "-Ddlsym=shell_sway_dlsym",
+        "-Ddlclose=shell_sway_dlclose",   "-Dgetpwuid=shell_sway_getpwuid",
+    } });
+    integration.root_module.addIncludePath(installed.path(b, "include"));
     const integration_run = b.addRunArtifact(integration);
     integration_run.has_side_effects = true; // depends on the installed sway
     o.integration_step.dependOn(&integration_run.step);

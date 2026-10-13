@@ -621,6 +621,9 @@ pub const SNode = struct {
     focusable: bool,
     editable: bool,
     masked: bool,
+    /// The root of a window without a title bar (a layer or lock window,
+    /// D31): AT-SPI's window rather than frame.
+    frameless: bool = false,
     has_text: bool,
     /// Identifies the text attributes (styled ranges and paragraph
     /// styles), so a change without a text change is reported.
@@ -628,6 +631,12 @@ pub const SNode = struct {
 };
 
 pub const none: u32 = std.math.maxInt(u32);
+
+/// A snapshot node's AT-SPI role.
+pub fn roleOf(n: *const SNode) atspi.Role {
+    if (n.frameless and n.role == .window) return .window;
+    return atspi.role(n.role, n.masked);
+}
 
 /// A hash of a text node's styled ranges and paragraph styles.
 fn attrsHash(d: *const ui.TextData) u64 {
@@ -813,6 +822,7 @@ pub const Win = struct {
                 .focusable = n.focusable,
                 .editable = editor and !n.masked and !n.disabled,
                 .masked = n.masked,
+                .frameless = n.node == .root and w.ui.frameless,
                 .has_text = has_text,
                 .level = n.level,
                 .position = n.position,
@@ -924,7 +934,7 @@ pub const Win = struct {
                 b.emitObject(p, "PropertyChange", "accessible-description", 0, 0, .{ .str = new.str(n.description) });
             }
             if (o.role != n.role or o.masked != n.masked) {
-                b.emitObject(p, "PropertyChange", "accessible-role", 0, 0, .{ .int = @intCast(@backingInt(atspi.role(n.role, n.masked))) });
+                b.emitObject(p, "PropertyChange", "accessible-role", 0, 0, .{ .int = @intCast(@backingInt(roleOf(n))) });
             }
             if (!std.meta.eql(o.value, n.value)) {
                 b.emitObject(p, "PropertyChange", "accessible-value", 0, 0, .{ .double = if (n.value) |v| v.now else 0 });

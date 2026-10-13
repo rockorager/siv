@@ -59,6 +59,38 @@ icon_sizes: []const u32,
 /// found rather than created.
 session: ?usize = null,
 session_restored: bool = false,
+/// The simulated desktop shell (D31): this client's lock, the toplevels
+/// of other clients and the workspaces tests add, idle watches, and
+/// background blur.
+lock: LockState = .none,
+toplevels_on: bool = false,
+sim_toplevels: std.ArrayList(SimToplevel) = .empty,
+toplevel_requests: std.ArrayList(struct { id: u32, request: platform.ToplevelRequest }) = .empty,
+workspaces_on: bool = false,
+sim_workspaces: std.ArrayList(SimWorkspace) = .empty,
+idle_watches: std.ArrayList(SimIdle) = .empty,
+idle: bool = false,
+next_foreign: u32 = 1,
+blur_capable: bool,
+
+const LockState = enum { none, locked };
+
+pub const SimToplevel = struct {
+    id: u32,
+    title: platform.BoundedString(256) = .{},
+    app_id: platform.BoundedString(256) = .{},
+    states: platform.ToplevelStates = .{},
+    output: ?OutputId = null,
+};
+
+pub const SimWorkspace = struct {
+    id: u32,
+    name: platform.BoundedString(64) = .{},
+    states: platform.WorkspaceStates = .{},
+    output: ?OutputId = null,
+};
+
+const SimIdle = struct { id: u32, timeout_ms: u32, ignore_inhibitors: bool, idle: bool = false };
 
 pub const Options = struct {
     refresh_ns: u64 = FrameClock.default_refresh_ns,
@@ -66,6 +98,8 @@ pub const Options = struct {
     icon_sizes: []const u32 = &.{ 32, 64 },
     /// The initial output. Windows take its integer scale.
     output: platform.OutputInfo = defaultOutput(),
+    /// The simulated compositor blurs behind surfaces (D31).
+    blur: bool = false,
 };
 
 fn defaultOutput() platform.OutputInfo {
@@ -119,6 +153,16 @@ const Window = struct {
     icon: ?struct { name: platform.BoundedString(255) = .{}, sizes: [16]u32 = @splat(0), count: u8 = 0 } = null,
     idle_count: u32 = 0,
     session_name: platform.BoundedString(255) = .{},
+    /// Layer and lock windows (D31): the role, the layer state asked for,
+    /// and the output it is on.
+    role: std.meta.Tag(platform.Role) = .toplevel,
+    layer_state: platform.LayerState = .{},
+    output_id: ?OutputId = null,
+    namespace: platform.BoundedString(64) = .{},
+    /// The blur region as applied by the window's commits, and as set
+    /// since.
+    blur: std.ArrayList(Rect) = .empty,
+    pending_blur: std.ArrayList(Rect) = .empty,
 
     const Slot = struct { pixels: []u8 = &.{}, width: u32 = 0, height: u32 = 0 };
 };
@@ -152,6 +196,7 @@ pub fn create(loop: *Loop, allocator: Allocator, sink: platform.Sink, options: O
         .refresh_ns = options.refresh_ns,
         .epoch_ns = Loop.now(),
         .icon_sizes = options.icon_sizes,
+        .blur_capable = options.blur,
     };
     _ = try hl.addOutput(options.output);
     return hl;
@@ -246,6 +291,11 @@ pub fn destroy(hl: *Headless) void {
     for (&hl.drags) |*d| d.deinit(hl.allocator);
     for (hl.windows.items, 0..) |w, i| if (w != null) hl.destroyWindow(@intCast(i));
     hl.windows.deinit(hl.allocator);
+    hl.unlockSession(true);
+    hl.sim_toplevels.deinit(hl.allocator);
+    hl.toplevel_requests.deinit(hl.allocator);
+    hl.sim_workspaces.deinit(hl.allocator);
+    hl.idle_watches.deinit(hl.allocator);
     hl.outputs.deinit(hl.allocator);
     hl.dmabuf_formats.deinit(hl.allocator);
     hl.queue.deinit();
@@ -264,6 +314,15 @@ fn primaryScale(hl: *Headless) platform.Scale {
 // Platform interface ------------------------------------------------------
 
 pub fn createWindow(hl: *Headless, options: platform.WindowOptions) Error!WindowId {
+    switch (options.role) {
+        .toplevel => {},
+        .layer => |l| return hl.createLayer(l),
+        .lock => |o| return hl.createLockSurface(o),
+    }
+    return hl.createToplevel(options);
+}
+
+fn createToplevel(hl: *Headless, options: platform.WindowOptions) Error!WindowId {
     const slot = for (hl.windows.items, 0..) |w, i| {
         if (w == null) break i;
     } else blk: {
@@ -298,6 +357,8 @@ pub fn createWindow(hl: *Headless, options: platform.WindowOptions) Error!Window
 /// output, like a compositor would.
 pub fn createPopup(hl: *Headless, options: platform.PopupOptions) Error!WindowId {
     const parent = hl.get(options.parent);
+    // Lock surfaces take no popups (ext-session-lock has no xdg parent).
+    if (parent.role == .lock) return error.Unsupported;
     const r = platform.positioner.place(options.positioner, hl.popupArea(parent));
     const id = try hl.createWindow(.{ .width = @intCast(r.width), .height = @intCast(r.height) });
     const w = hl.get(id);
@@ -363,6 +424,12 @@ pub fn commitWindow(hl: *Headless, id: WindowId) void {
     const w = hl.get(id);
     w.bare_commits += 1;
     applySubsurfaces(w);
+    applyBlur(w);
+}
+
+fn applyBlur(w: *Window) void {
+    w.blur.clearRetainingCapacity();
+    w.blur.appendSlice(w.hl.allocator, w.pending_blur.items) catch w.hl.queue.fail(error.OutOfMemory);
 }
 
 /// Applies pending subsurface states. Like a compositor, it releases a
@@ -430,11 +497,15 @@ pub fn repositionPopup(hl: *Headless, id: WindowId, pos: platform.Positioner) vo
 
 /// Where popups of `parent` may go: the first output, in its coordinates.
 fn popupArea(hl: *Headless, parent: *const Window) platform.positioner.Rect {
-    const out = hl.output(0);
+    var root = parent;
+    while (root.parent) |p| root = hl.get(p);
+    const out = hl.output(root.output_id orelse 0);
     const scale: i32 = if (out) |o| @max(o.scale, 1) else 1;
+    const ox: i32 = if (out) |o| o.x else 0;
+    const oy: i32 = if (out) |o| o.y else 0;
     return .{
-        .x = -parent.origin.x,
-        .y = -parent.origin.y,
+        .x = ox - parent.origin.x,
+        .y = oy - parent.origin.y,
         .width = if (out) |o| @divTrunc(o.width, scale) else std.math.maxInt(i16),
         .height = if (out) |o| @divTrunc(o.height, scale) else std.math.maxInt(i16),
     };
@@ -458,6 +529,8 @@ pub fn destroyWindow(hl: *Headless, id: WindowId) void {
         p.window = null;
     };
     for (w.slots) |s| hl.allocator.free(s.pixels);
+    w.blur.deinit(hl.allocator);
+    w.pending_blur.deinit(hl.allocator);
     w.subsurfaces.deinit(hl.allocator);
     w.pending_subsurfaces.deinit(hl.allocator);
     hl.queue.purge(id);
@@ -568,7 +641,385 @@ pub fn dialogOf(hl: *Headless, id: WindowId) struct { parent: ?WindowId, modal: 
 pub fn inhibitIdle(hl: *Headless, id: WindowId, on: bool) bool {
     const w = hl.get(id);
     if (on) w.idle_count += 1 else w.idle_count -|= 1;
+    hl.updateIdle();
     return true;
+}
+
+// Desktop shell (D31) ---------------------------------------------------------
+
+/// The output a layer window goes on: the one asked for, else the first.
+fn layerOutput(hl: *Headless, asked: ?OutputId) ?OutputId {
+    if (asked) |id| return if (hl.output(id) != null) id else null;
+    for (hl.outputs.items, 0..) |o, i| if (o != null) return @intCast(i);
+    return null;
+}
+
+/// An output's logical size.
+fn logicalSize(info: *const platform.OutputInfo) [2]i32 {
+    const scale = @max(info.scale, 1);
+    return .{ @divTrunc(info.width, scale), @divTrunc(info.height, scale) };
+}
+
+/// Places a layer window on its output as a compositor would (anchors and
+/// margins; other windows' exclusive zones are not simulated) and sets
+/// its size and origin.
+fn placeLayer(hl: *Headless, w: *Window) void {
+    const info = hl.output(w.output_id.?) orelse return;
+    const size = logicalSize(info);
+    const r = w.layer_state.place(size[0], size[1]);
+    w.state.width = @intCast(r.width);
+    w.state.height = @intCast(r.height);
+    w.origin = .{ .x = info.x + r.x, .y = info.y + r.y };
+}
+
+fn createLayer(hl: *Headless, role: platform.LayerRole) Error!WindowId {
+    if (!role.state.valid()) return error.Unsupported;
+    const out = hl.layerOutput(role.output) orelse return error.Unsupported;
+    const id = try hl.createToplevel(.{ .width = 1, .height = 1, .decoration = .client });
+    const w = hl.get(id);
+    w.role = .layer;
+    w.layer_state = role.state;
+    w.output_id = out;
+    w.namespace.set(role.namespace);
+    w.state.states = .{};
+    w.state.scale = .int(@intCast(@max(hl.output(out).?.scale, 1)));
+    hl.placeLayer(w);
+    hl.updateConfigure(id);
+    return id;
+}
+
+/// Brings the configure createToplevel queued up to date with the state.
+fn updateConfigure(hl: *Headless, id: WindowId) void {
+    const w = hl.get(id);
+    for (hl.queue.items.items) |*ev| if (ev.* == .configure and ev.configure.window == id) {
+        ev.configure.state = w.state;
+    };
+}
+
+pub fn setLayer(hl: *Headless, id: WindowId, state: platform.LayerState) void {
+    const w = hl.get(id);
+    if (w.role != .layer or !state.valid()) return;
+    const old = w.state;
+    w.layer_state = state;
+    hl.placeLayer(w);
+    if (old.width != w.state.width or old.height != w.state.height) hl.sendConfigure(w);
+}
+
+/// A layer window's state, output, namespace, and origin on the
+/// simulated screen (tests).
+pub fn layerOf(hl: *Headless, id: WindowId) ?struct { state: platform.LayerState, output: OutputId, namespace: []const u8, x: i32, y: i32 } {
+    const w = hl.get(id);
+    if (w.role != .layer) return null;
+    return .{ .state = w.layer_state, .output = w.output_id.?, .namespace = w.namespace.slice(), .x = w.origin.x, .y = w.origin.y };
+}
+
+/// The process's session lock: like a compositor, one client holds it at
+/// a time; a lock its client abandoned while locked stays until a new
+/// client takes it over.
+const LockStore = struct {
+    mutex: std.c.pthread_mutex_t = .{},
+    holder: ?*Headless = null,
+    abandoned: bool = false,
+};
+var lock_store: LockStore = .{};
+
+/// Whether the simulated session is locked, by any client or abandoned.
+pub fn sessionLocked() bool {
+    _ = std.c.pthread_mutex_lock(&lock_store.mutex);
+    defer _ = std.c.pthread_mutex_unlock(&lock_store.mutex);
+    return lock_store.holder != null or lock_store.abandoned;
+}
+
+pub fn lockSession(hl: *Headless) Error!void {
+    if (hl.lock != .none) return error.Unsupported;
+    const st = &lock_store;
+    _ = std.c.pthread_mutex_lock(&st.mutex);
+    defer _ = std.c.pthread_mutex_unlock(&st.mutex);
+    if (st.holder != null and st.holder != hl) {
+        // Another client holds it: refused, as the protocol's finished.
+        hl.queue.push(.{ .lock = .finished });
+        return;
+    }
+    st.holder = hl;
+    st.abandoned = false;
+    // The simulated outputs blank at once.
+    hl.queue.push(.{ .lock = .locked });
+    hl.lock = .locked;
+}
+
+pub fn unlockSession(hl: *Headless, abandon: bool) void {
+    if (hl.lock == .none) return;
+    hl.lock = .none;
+    const st = &lock_store;
+    _ = std.c.pthread_mutex_lock(&st.mutex);
+    if (st.holder == hl) {
+        st.holder = null;
+        st.abandoned = abandon;
+    }
+    _ = std.c.pthread_mutex_unlock(&st.mutex);
+    if (!abandon) for (hl.windows.items) |x| if (x) |w| if (w.role == .lock) hl.queue.push(.{ .closed = w.id });
+}
+
+fn createLockSurface(hl: *Headless, out: OutputId) Error!WindowId {
+    if (hl.lock == .none) return error.Unsupported;
+    const info = hl.output(out) orelse return error.Unsupported;
+    for (hl.windows.items) |x| if (x) |o| if (o.role == .lock and o.output_id == out) return error.Unsupported;
+    const size = logicalSize(info);
+    const id = try hl.createToplevel(.{ .width = @intCast(@max(size[0], 1)), .height = @intCast(@max(size[1], 1)), .decoration = .client });
+    const w = hl.get(id);
+    w.role = .lock;
+    w.output_id = out;
+    w.origin = .{ .x = info.x, .y = info.y };
+    w.state.states = .{};
+    w.state.scale = .int(@intCast(@max(info.scale, 1)));
+    hl.updateConfigure(id);
+    return id;
+}
+
+/// Whether the window is a lock window (tests).
+pub fn isLockWindow(hl: *Headless, id: WindowId) bool {
+    return hl.get(id).role == .lock;
+}
+
+fn nextForeign(hl: *Headless) u32 {
+    const id = hl.next_foreign;
+    hl.next_foreign += 1;
+    return id;
+}
+
+fn findSimToplevel(hl: *Headless, id: u32) ?*SimToplevel {
+    for (hl.sim_toplevels.items) |*t| if (t.id == id) return t;
+    return null;
+}
+
+fn pushToplevel(hl: *Headless, id: u32, kind: platform.ForeignChange.Kind) void {
+    if (hl.toplevels_on) hl.queue.push(.{ .toplevel = .{ .id = id, .kind = kind } });
+}
+
+/// Another client's toplevel appears (tests).
+pub fn addToplevel(hl: *Headless, title_text: []const u8, app_id: []const u8, output_id: ?OutputId) Error!u32 {
+    var t: SimToplevel = .{ .id = hl.nextForeign(), .output = output_id };
+    t.title.set(title_text);
+    t.app_id.set(app_id);
+    try hl.sim_toplevels.append(hl.allocator, t);
+    hl.pushToplevel(t.id, .added);
+    return t.id;
+}
+
+/// Changes another client's toplevel (tests); null keeps a value.
+pub fn setToplevel(hl: *Headless, id: u32, title_text: ?[]const u8, states: ?platform.ToplevelStates) void {
+    const t = hl.findSimToplevel(id) orelse return;
+    if (title_text) |x| t.title.set(x);
+    if (states) |x| t.states = x;
+    hl.pushToplevel(id, .changed);
+}
+
+pub fn removeToplevel(hl: *Headless, id: u32) void {
+    for (hl.sim_toplevels.items, 0..) |t, i| if (t.id == id) {
+        _ = hl.sim_toplevels.orderedRemove(i);
+        hl.pushToplevel(id, .removed);
+        return;
+    };
+}
+
+pub fn startToplevels(hl: *Headless) Error!void {
+    if (hl.toplevels_on) return;
+    hl.toplevels_on = true;
+    for (hl.sim_toplevels.items) |t| hl.pushToplevel(t.id, .added);
+}
+
+pub fn stopToplevels(hl: *Headless) void {
+    hl.toplevels_on = false;
+}
+
+pub fn toplevelInfo(hl: *Headless, id: u32) ?platform.ToplevelInfo {
+    if (!hl.toplevels_on) return null;
+    const t = hl.findSimToplevel(id) orelse return null;
+    return .{
+        .title = t.title.slice(),
+        .app_id = t.app_id.slice(),
+        .states = t.states,
+        .outputs = if (t.output) |*o| o[0..1] else &.{},
+        .managed = true,
+    };
+}
+
+/// Applies a request as a compositor would: activating one toplevel
+/// deactivates (and unminimizes) the others' activation, closing removes
+/// it. Requests are recorded for tests.
+pub fn toplevelRequest(hl: *Headless, id: u32, request: platform.ToplevelRequest) bool {
+    if (!hl.toplevels_on) return false;
+    const t = hl.findSimToplevel(id) orelse return false;
+    hl.toplevel_requests.append(hl.allocator, .{ .id = id, .request = request }) catch {};
+    switch (request) {
+        .activate => {
+            for (hl.sim_toplevels.items) |*o| if (o.id != id and o.states.activated) {
+                o.states.activated = false;
+                hl.pushToplevel(o.id, .changed);
+            };
+            t.states.activated = true;
+            t.states.minimized = false;
+        },
+        .close => {
+            hl.removeToplevel(id);
+            return true;
+        },
+        .minimized => |on| {
+            t.states.minimized = on;
+            if (on) t.states.activated = false;
+        },
+        .maximized => |on| t.states.maximized = on,
+        .fullscreen => |f| t.states.fullscreen = f.on,
+    }
+    hl.pushToplevel(id, .changed);
+    return true;
+}
+
+fn findSimWorkspace(hl: *Headless, id: u32) ?*SimWorkspace {
+    for (hl.sim_workspaces.items) |*w| if (w.id == id) return w;
+    return null;
+}
+
+fn pushWorkspace(hl: *Headless, id: u32, kind: platform.ForeignChange.Kind) void {
+    if (hl.workspaces_on) hl.queue.push(.{ .workspace = .{ .id = id, .kind = kind } });
+}
+
+/// A workspace appears on an output (tests); the first on an output is
+/// active.
+pub fn addWorkspace(hl: *Headless, name: []const u8, output_id: ?OutputId) Error!u32 {
+    var w: SimWorkspace = .{ .id = hl.nextForeign(), .output = output_id };
+    w.name.set(name);
+    w.states.active = for (hl.sim_workspaces.items) |o| {
+        if (o.output == output_id) break false;
+    } else true;
+    try hl.sim_workspaces.append(hl.allocator, w);
+    hl.pushWorkspace(w.id, .added);
+    return w.id;
+}
+
+pub fn setWorkspace(hl: *Headless, id: u32, states: platform.WorkspaceStates) void {
+    const w = hl.findSimWorkspace(id) orelse return;
+    w.states = states;
+    hl.pushWorkspace(id, .changed);
+}
+
+pub fn removeWorkspace(hl: *Headless, id: u32) void {
+    for (hl.sim_workspaces.items, 0..) |w, i| if (w.id == id) {
+        _ = hl.sim_workspaces.orderedRemove(i);
+        hl.pushWorkspace(id, .removed);
+        return;
+    };
+}
+
+pub fn startWorkspaces(hl: *Headless) Error!void {
+    if (hl.workspaces_on) return;
+    hl.workspaces_on = true;
+    for (hl.sim_workspaces.items) |w| hl.pushWorkspace(w.id, .added);
+}
+
+pub fn stopWorkspaces(hl: *Headless) void {
+    hl.workspaces_on = false;
+}
+
+pub fn workspaceInfo(hl: *Headless, id: u32) ?platform.WorkspaceInfo {
+    if (!hl.workspaces_on) return null;
+    const w = hl.findSimWorkspace(id) orelse return null;
+    return .{
+        .name = w.name.slice(),
+        .states = w.states,
+        .capabilities = .{ .activate = true, .deactivate = true, .remove = true },
+        .outputs = if (w.output) |*o| o[0..1] else &.{},
+    };
+}
+
+/// Applies a request as sway does: activating a workspace deactivates the
+/// others on its output.
+pub fn workspaceRequest(hl: *Headless, id: u32, request: platform.WorkspaceRequest) bool {
+    if (!hl.workspaces_on) return false;
+    const w = hl.findSimWorkspace(id) orelse return false;
+    switch (request) {
+        .activate => {
+            for (hl.sim_workspaces.items) |*o| if (o.id != id and o.output == w.output and o.states.active) {
+                o.states.active = false;
+                hl.pushWorkspace(o.id, .changed);
+            };
+            w.states.active = true;
+            w.states.urgent = false;
+        },
+        .deactivate => w.states.active = false,
+        .remove => {
+            hl.removeWorkspace(id);
+            return true;
+        },
+    }
+    hl.pushWorkspace(id, .changed);
+    return true;
+}
+
+pub fn createIdleWatch(hl: *Headless, timeout_ms: u32, ignore_inhibitors: bool) Error!u32 {
+    const id = hl.nextForeign();
+    try hl.idle_watches.append(hl.allocator, .{ .id = id, .timeout_ms = timeout_ms, .ignore_inhibitors = ignore_inhibitors });
+    hl.updateIdle();
+    return id;
+}
+
+pub fn destroyIdleWatch(hl: *Headless, id: u32) void {
+    for (hl.idle_watches.items, 0..) |w, i| if (w.id == id) {
+        _ = hl.idle_watches.swapRemove(i);
+        return;
+    };
+}
+
+/// The user stops or resumes using the seat (tests). Timeouts are not
+/// simulated: idle means past every watch's timeout.
+pub fn setIdle(hl: *Headless, on: bool) void {
+    hl.idle = on;
+    hl.updateIdle();
+}
+
+/// Idle watches follow `idle`, held off by idle inhibitors unless they
+/// ignore them.
+fn updateIdle(hl: *Headless) void {
+    var inhibited = false;
+    for (hl.windows.items) |x| if (x) |w| if (w.idle_count > 0) {
+        inhibited = true;
+    };
+    for (hl.idle_watches.items) |*w| {
+        const now = hl.idle and (w.ignore_inhibitors or !inhibited);
+        if (now == w.idle) continue;
+        w.idle = now;
+        hl.queue.push(.{ .idle = .{ .watch = w.id, .idle = now } });
+    }
+}
+
+/// The simulated compositor offers every shell protocol; blur only when
+/// asked (`Options.blur`, `setBlurCapable`).
+pub fn shellCapabilities(hl: *Headless) platform.ShellCapabilities {
+    return .{ .layers = true, .lock = true, .toplevels = true, .toplevel_management = true, .workspaces = true, .idle = true, .blur = hl.blur_capable };
+}
+
+pub fn canBlur(hl: *Headless) bool {
+    return hl.blur_capable;
+}
+
+/// The simulated compositor gains or loses blurring (tests).
+pub fn setBlurCapable(hl: *Headless, on: bool) void {
+    if (hl.blur_capable == on) return;
+    hl.blur_capable = on;
+    hl.queue.push(.{ .blur_capable = on });
+}
+
+pub fn setBlurRegion(hl: *Headless, id: WindowId, region: []const Rect) void {
+    if (!hl.blur_capable) return;
+    const w = hl.get(id);
+    w.pending_blur.clearRetainingCapacity();
+    w.pending_blur.appendSlice(hl.allocator, region) catch hl.queue.fail(error.OutOfMemory);
+}
+
+/// The blur region as the window's last commit applied it (tests).
+pub fn blurRegion(hl: *Headless, id: WindowId) []const Rect {
+    if (!hl.blur_capable) return &.{};
+    return hl.get(id).blur.items;
 }
 
 /// Whether a window inhibits idling.
@@ -684,6 +1135,7 @@ pub fn acquireBuffer(hl: *Headless, id: WindowId) Error!Buffer {
 pub fn present(hl: *Headless, id: WindowId, buffer: Buffer, damage: ?[]const Rect) void {
     const w = hl.get(id);
     applySubsurfaces(w);
+    applyBlur(w);
     hl.ack(w, true);
     w.front = buffer.slot;
     w.damage = if (damage) |rects| bounds(rects) else .{
@@ -1213,6 +1665,8 @@ pub fn addOutput(hl: *Headless, info: platform.OutputInfo) Error!OutputId {
 pub fn removeOutput(hl: *Headless, id: OutputId) void {
     hl.outputs.items[id] = null;
     hl.queue.push(.{ .output_removed = id });
+    // Layer and lock windows on it are closed, as a compositor does.
+    for (hl.windows.items) |x| if (x) |w| if (w.role != .toplevel and w.output_id == id) hl.queue.push(.{ .closed = w.id });
 }
 
 /// The window's last presented frame.
@@ -1268,7 +1722,10 @@ fn runFrame(task: *Loop.Task) void {
 fn ack(hl: *Headless, w: *Window, with_buffer: bool) void {
     const serial = w.ack_serial orelse return;
     w.last_ack = .{ .serial = serial, .with_buffer = with_buffer, .time_ns = Loop.now() };
-    if (!with_buffer) applySubsurfaces(w);
+    if (!with_buffer) {
+        applySubsurfaces(w);
+        applyBlur(w);
+    }
     w.ack_serial = null;
     w.ack_deferred = false;
     w.ack_deadline = null;

@@ -2449,6 +2449,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     client through the next update like any other; Selection for lists,
     trees, tab lists, menus, tables, and combo boxes, where selecting a
     child activates it. Modal nodes have the modal state.
+  - The root of a window without a title bar (a layer or lock window,
+    D31) is AT-SPI's `window` rather than `frame`.
   - Roles follow ARIA's AT-SPI mapping where siv's roles are ARIA's;
     switches are toggle buttons, since the switch role (at-spi2-core 2.56)
     is newer than current registries and screen readers. Text offsets are
@@ -4043,6 +4045,53 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     the first run's session id gets `window_restored`. The check found
     the two session bugs fixed in D17 (destroy order and a sync before
     disconnecting).
+  - The desktop shell (D31): sway 1.12 offers every shell protocol siv
+    binds except ext-background-effect-v1 (its globals:
+    zwlr_layer_shell_v1 5, ext_session_lock_manager_v1 1,
+    ext_foreign_toplevel_list_v1 1, zwlr_foreign_toplevel_manager_v1 3,
+    ext_workspace_manager_v1 1, ext_idle_notifier_v1 2), so
+    `src/platform/integration_tests.zig` checks for real: layer surfaces
+    placed by anchors, a toplevel tiled clear of an automatic exclusive
+    zone and of a taller one after `setLayer`, a popup of a layer surface,
+    an exclusive-keyboard overlay on a hotplugged output that gets wtype's
+    keys and is closed when the output is unplugged; the lock with a lock
+    surface per output, locked, a second client refused, a lock surface
+    for an output plugged in while locked and closed with it, unlocked;
+    this client's own toplevels in the wlr list (states, outputs, a title
+    change, a close request that reaches the window) and in the ext list
+    (an identifier, no management); sway's workspaces, one made by a sway
+    command and switching back by request; idle after a timeout and back
+    with virtual pointer motion; and that a blur region on sway sends
+    nothing. `src/abi/integration_shell.zig` runs `examples/shell.c` on
+    sway end to end (the bar lists sway's workspaces and a real window,
+    a click switches workspace, the lock button locks, a wrong and a
+    right password typed with wtype go through the PAM conversation on a
+    worker thread, the session unlocks). Only headless: the blur region's
+    geometry and capability changes, denial and takeover of a lock left
+    behind by a client that went away, and toplevel and workspace
+    requests on objects other clients own (the requests sway took are
+    verified on this client's own window and sway's workspaces).
+    Background blur needs a compositor with ext-background-effect-v1
+    (KWin 6.7, mutter 51, niri, Hyprland after hyprwm/Hyprland#13211);
+    none is in the suite, so it was checked by hand: KWin 6.7.5 from the
+    pinned nixpkgs (`pkgs.kdePackages.kwin`, with `pkgs.mesa` for
+    llvmpipe), started as for the window features above, in an orb
+    without a GPU. It offers ext_background_effect_manager_v1 but
+    announces no blur capability there (KWin blurs only when it composites
+    with OpenGL, which its virtual backend does on a DRM render node), and
+    siv behaved as it should: `SIV_CAPABILITIES_BLUR` unset, an effect
+    object per surface, no region sent, no protocol error. What remains
+    unverified on a real compositor is the region itself, which needs a
+    machine with a render node. To repeat it there: a scratch C program
+    with a window whose root is translucent and a rounded child marked
+    `SIV_VISUAL_WINDOW_BLUR`, run with `WAYLAND_DEBUG=client` against
+    `kwin_wayland --virtual` (or niri 26.04 or Hyprland 0.56.2 nested,
+    from the same nixpkgs; mutter there is 50.4, before the protocol),
+    should log `capabilities(1)`, then
+    `ext_background_effect_surface_v1.set_blur_region` with `wl_region.add`
+    rectangles matching the child's rounded box in the same commit as its
+    frame, again when the child moves, and no protocol error; on screen,
+    what is behind the child shows blurred.
   - Not built yet: the inspector. The counters it would show exist
     (`ui.Window`'s, the compositor's presentation timing), and tests and
     benchmarks read them.
@@ -4064,7 +4113,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **License:** MIT. Every dependency is MIT, BSD, or Apache-2.0; binaries ship a
   NOTICES file. Embedded data follows the same rule, with permissive
   notices of the same kind accepted (D13's American English hyphenation
-  patterns: FSF all-permissive).
+  patterns: FSF all-permissive; the wlr-protocols descriptions siv
+  generates bindings from, D31: HPND, the MIT-style notice of much of
+  wayland-protocols, gathered in `src/notices/wlr-protocols-LICENSE.txt`
+  since that repository has no licence file). Protocols under copyleft
+  licences stay out, such as org_kde_kwin_blur (LGPL).
 - **NOTICES** is generated by the build for the chosen options and
   installed as `share/licenses/siv/NOTICES` (`src/notices/`).
   - What ships is found, not listed by hand. The build walks libsiv's
@@ -4332,6 +4385,16 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     tooltip, which has no window handle; `siv_test_find`, `siv_test_get_name`, and
     `siv_test_dump` read the semantics tree (D18) by role, exact name,
     focus, and index; `siv_test_get_popup` finds the newest shown popup.
+    The simulated desktop shell (D31) is played by `siv_test_add_output`
+    and `siv_test_remove_output` (hotplug), `siv_test_add_toplevel`,
+    `siv_test_set_toplevel`, and `siv_test_remove_toplevel` (other
+    clients' windows), `siv_test_add_workspace` and
+    `siv_test_remove_workspace`, `siv_test_set_idle` (the user away or
+    back), and `siv_test_set_blur` (a compositor that blurs), and read
+    with `siv_test_get_blur_region_count`, `siv_test_get_blur_rect`, and
+    `siv_test_is_locked`. A semantics query made between a transaction
+    and its frame no longer keeps stale bounds after the frame: the tree
+    stays marked for rebuilding while a layout is pending.
     Injection, settling, and captures fail with `SIV_ERROR_UNSUPPORTED`
     on Wayland, where a compositor owns input. Queries go through the
     semantics tree rather than nodes, so a test finds controls as a
@@ -4554,6 +4617,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | `siv_external_frame_desc.flags` and `fence`, `SIV_EXTERNAL_FRAME_FENCE` (D17) | implicit fences only | drivers without implicit synchronization (NVIDIA's) could not say when a dma-buf frame was written |
   | `siv_external_view_desc.background` (D17) | a background the window painted under the video | bars behind video and punch-through holes become solid-color subsurfaces (single-pixel-buffer-v1) |
   | translucent external placements stay on their subsurface when uncovered (D17) | composited frames, embedders' surfaces at full opacity | alpha-modifier-v1 applies the opacity; fades cost bare commits |
+  | the shell module (D31): `siv_layer_create`, `siv_window_set_layer`, `siv_app_watch_outputs`, `siv_lock_*`, `siv_toplevel_*`, `siv_workspace_*`, `siv_idle_watch_*`, `siv_app_get_capabilities` and their types | — | bars, docks, launchers, notifications, and lock screens through siv's windows and events, `SIV_ERROR_UNSUPPORTED` where the compositor lacks a protocol |
+  | `SIV_VISUAL_WINDOW_BLUR` (D31) | — | the compositor's blur behind translucent windows (ext-background-effect-v1), region kept in step with every frame |
+  | `SIV_WINDOW_EVENT_TYPE_CLOSED` (D31) | — | a layer or lock window whose surface the compositor took away; destroyed after the event |
+  | `SIV_ERROR_UNSUPPORTED` also means the compositor lacks a protocol (D31) | only unknown values and fields | the window icon call already used it so; now documented on the result |
+  | `siv_test_add_output`, `siv_test_remove_output`, `siv_test_*_toplevel`, `siv_test_*_workspace`, `siv_test_set_idle`, `siv_test_set_blur`, `siv_test_get_blur_region_count`, `siv_test_get_blur_rect`, `siv_test_is_locked` (D27, D31) | — | applications test their shell components headless, as the shell example does |
+  | `siv_test_find` after a transaction and before its frame keeps no stale bounds (D27) | bounds of the frame before the query, kept until the next change | a query between a transaction and its frame (on a display, where there is no settling) cleared the semantics tree's dirty flag, so the frame's layout never refreshed the bounds |
 
   Statements this document made that were no longer true are fixed where
   they stood: external nodes are built and in the C API (D4, D17);
@@ -4564,6 +4633,209 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   misspelled `SIV_WINDOW_EVENT_TYPE_PRESENTED`.
 - **Reverse if:** a binding cannot express one of these without special
   cases; then the schema needs a construct, not an exception.
+
+### D31. The desktop shell module
+
+- **Requirement:** siv is a good toolkit for desktop shell components:
+  bars, docks, launchers, notification popups, on-screen displays,
+  wallpapers, and lock screens, written in C or Lua like any siv
+  application, with the same tree, widgets, accessibility, and tests.
+- **Decision:** an optional module of the C API (`src/abi/api_shell.zig`,
+  `src/abi/shell.zig`) over the platform, compositor, and coordinator
+  layers: layer windows, the session lock, the desktop's toplevels and
+  workspaces, idle notification, outputs, compositor blur behind windows,
+  and the capabilities that say which of them the compositor offers.
+  Optional means nothing is bound until an application asks: an ordinary
+  application never receives the desktop's window list, and a compositor
+  without a protocol (GNOME has none of these) answers
+  `SIV_ERROR_UNSUPPORTED` for it, which `siv_app_get_capabilities` tells
+  in advance. It is not a separate Zig module or library: layer and lock
+  surfaces are roles of siv's own windows, committed with siv's frames,
+  so they live where windows live (`platform.Role`, D8, D17); the data
+  protocols ride along so that shell data arrives as ordinary siv events
+  at safe points (D5) rather than on a Wayland queue of the
+  application's own.
+  - **Protocols** (`src/platform/protocols.zig`):
+    wlr-layer-shell-unstable-v1 (version 4) and
+    wlr-foreign-toplevel-management-unstable-v1 (3) from wlr-protocols,
+    pinned to a commit (no releases; HPND notices, D25);
+    ext-session-lock-v1, ext-foreign-toplevel-list-v1, ext-workspace-v1,
+    ext-idle-notify-v1 (2), and ext-background-effect-v1 from
+    wayland-protocols 1.49, which already has them all. org_kde_kwin_blur
+    is left out: its protocol XML is LGPL (D25).
+  - **Windows have roles** (`platform.Role`: toplevel, layer, lock). A
+    layer window (`siv_layer_create`) is a `siv_window` like any other:
+    its tree, transactions, popups, menus, tooltips, canvases, and
+    external content work unchanged, and the toplevel-only calls do
+    nothing. Its placement is a `siv_layer_desc`: layer (top by default,
+    so zero means the common case), anchors, margins, keyboard mode
+    (none, exclusive, on demand), size (0 on an axis anchored to both
+    edges spans the output), exclusive zone, and
+    `SIV_LAYER_AUTO_EXCLUSIVE`, which reserves the window's own size along
+    its edge and follows it as the compositor resizes the window, the
+    zone a bar always wants and one the application could only compute
+    after the configure. `siv_window_set_layer` changes all of that
+    later; output, namespace, and callbacks stay those of creation,
+    since the protocol cannot move a surface between outputs. A zero
+    size without both anchors is `SIV_ERROR_INVALID_ARGUMENT` before it
+    can be the protocol error it would be. Size negotiation is the
+    configure path every window has (D8): the compositor's size arrives
+    as `resized`, the layout answers it in the commit that acknowledges
+    it.
+  - **Popups of layer windows** are xdg_popups without an xdg parent that
+    the layer surface adopts (`zwlr_layer_surface_v1.get_popup`) before
+    their first commit, so menus, combo boxes, and tooltips (D17) work
+    from a bar. Lock surfaces cannot have popups (the protocol gives them
+    no xdg parent): creating one fails, and tooltips there do not show;
+    lock screens use in-window widgets.
+  - **Accessibility** (D18): layer and lock windows are frameless
+    (`ui.Window.frameless`), so their root is AT-SPI's `window` (69: a
+    top-level window without a title or border) rather than `frame`.
+    Applications give the root the role of what it is, as the example
+    does: `toolbar` for a bar, `alert` (AT-SPI notification) for a
+    notification, `dialog` for a lock screen's prompt; popups keep their
+    menu and tooltip roles.
+  - **Outputs** are handles (`siv_output`), reported by
+    `siv_app_watch_outputs` as added, changed, and removed events with
+    what wl_output says (name, description, make, model, position, mode,
+    integer scale, transform, physical size); a new callback hears
+    every output there is at the next dispatch, each exactly once as
+    added (a replay and the compositor's event can cross). Layer windows
+    name an output by handle. A removed output's layer windows are closed
+    by the compositor (`zwlr_layer_surface_v1.closed`), its lock windows
+    by siv; either way the window gets `SIV_WINDOW_EVENT_TYPE_CLOSED`
+    (new) and is destroyed after it, whatever the callback returns, since
+    its surface shows nothing more.
+  - **The session lock** (`siv_lock_create`): siv makes the lock window
+    of every output when the lock is requested and of every output that
+    appears while it holds, and reports each as a `window` event for the
+    application to build (a clock, a masked editor), before `locked`.
+    One lock surface per output is the protocol's rule and the part
+    every hand-written lock screen gets wrong on hotplug, so siv owns it.
+    `denied` (the compositor refused, another client holds a lock) and
+    `finished` (it ended the lock itself) are the protocol's finished
+    before and after locked. `siv_lock_unlock` unlocks and destroys the
+    lock with its windows; `siv_lock_destroy` lets go without unlocking,
+    so a lock screen that fails leaves the session locked (the
+    compositor shows a solid color until a new lock client unlocks), the
+    protocol's crash semantics and the safe direction. Lock windows
+    share the lock's `user_data` and get no destroy-notify of their own;
+    siv destroys them before the lock's destroy-notify runs, so a late
+    event never reaches released user data. Authentication stays the
+    application's: siv provides masked editors whose text lives in
+    locked memory (D15), and the application runs PAM on the worker pool
+    (`siv_job_start`, D6) so the lock screen stays responsive while PAM
+    sleeps after a failure; `examples/shell.c` shows the pattern, loading
+    libpam at run time so the example builds without PAM's headers.
+  - **Toplevels** (`siv_toplevel_list_create`): wlr-foreign-toplevel-
+    management when the compositor offers it, since it carries states,
+    outputs, and parents and is the one that accepts activate, close,
+    minimize, maximize, and fullscreen; otherwise
+    ext-foreign-toplevel-list, whose toplevels have titles, app ids, and
+    stable identifiers only and whose requests fail with
+    `SIV_ERROR_UNSUPPORTED` (`SIV_TOPLEVEL_MANAGED` unset). The two
+    protocols share no key, so siv never mixes them: pairing a wlr handle
+    with an ext handle by title and app id would send a close to the
+    wrong one of two "foot" windows. Each toplevel event carries the
+    whole description (title, app id, identifier, states, parent,
+    outputs), so a task list rebuilds from events without queries; a
+    removed event carries the last values.
+  - **Workspaces** (`siv_workspace_list_create`, ext-workspace-v1): the
+    compositor's changes arrive atomically at its `done`, then one event
+    per changed workspace, with name, identifier, states (active, urgent,
+    hidden), capabilities, and the outputs of its group, so a switcher
+    per output filters by output without a group object. Activate,
+    deactivate, and remove are committed at once. Groups, creating
+    workspaces, and assigning them to groups are not in the API yet.
+  - **Idle** (`siv_idle_watch_create`, ext-idle-notify-v1): true after
+    the timeout without input, false when input resumes; idle inhibitors
+    (D17's `siv_inhibit`) hold it off unless `SIV_IDLE_IGNORE_INHIBITORS`
+    (version 2's input idle notification), which a screen lock wants.
+  - **Ids and handles** (D2, D20): the platform numbers toplevels,
+    workspaces, and idle watches with ids it never reuses, so an event the
+    UI thread handles late cannot name a newer object, and the UI reads
+    the details on the compositor thread (`Compositor.call`) when it
+    handles the event; an object gone by then is skipped, its removal
+    follows. The C handles (`siv_output`, `siv_toplevel`,
+    `siv_workspace`) are generation-checked like every other: valid from
+    the added event until the removed one, invalid in every later call.
+    One toplevel list and one workspace list per application
+    (`SIV_ERROR_BUSY` for a second): the platform has one subscription,
+    and replaying it for a second list would run callbacks outside a
+    safe point.
+  - **Background blur** (ext-background-effect-v1):
+    `SIV_VISUAL_WINDOW_BLUR` on a node means "blur what is behind the
+    window under this node's rounded border box", for frosted bars,
+    notifications, launchers, translucent windows, and popups. A marked
+    node roots a compositor layer with a blur shape (`Op.set_blur`, D8),
+    and every frame the compositor thread computes the surface's region
+    from the shapes as that frame shows them, through transforms, scroll
+    offsets and zoom, clips, and running animations, and sets it with
+    the frame's own commit, so the region never lags the content,
+    including scrolling and animation the UI thread never sees.
+    Region rectangles are rounded inward to whole pixels; rounded corners
+    become six bands per corner inside the curve (at most about a pixel
+    of unblurred sliver for radii up to 16, never blur outside the
+    corner), a rotated shape its bounding box, rounded clips their
+    rectangles; a fully transparent layer blurs nothing. The region is
+    sent only when it changes. Without the protocol or its blur
+    capability nothing is sent, and `SIV_CAPABILITIES_BLUR` tells the
+    application to pick a more opaque background, as the example does.
+    siv's own backdrop blur (D9, `siv_draw_backdrop_blur`) is separate:
+    it blurs the window's own content. siv creates the surface's
+    ext_background_effect_surface_v1 with the window (one per surface is
+    the protocol's rule), so `siv_window_get_wayland` users must not
+    (D27), nor a layer or lock surface; that call's toplevel is NULL for
+    layer and lock windows.
+  - **Shell windows and the run loop:** layer and lock windows neither
+    keep `siv_app_run` running nor end it. A bar that loses its only
+    output must not quit the shell, and a shell of layer windows only
+    runs until `siv_app_quit`; the example's standalone lock screen
+    quits after unlocking.
+  - **Tests.** The headless backend simulates every protocol: layer
+    windows placed by their anchors and margins on their output (other
+    windows' exclusive zones are not simulated), popups placed against
+    them, a process-wide lock store (one holder, an abandoned lock taken
+    over by the next client, as sway allows), other clients' toplevels
+    and workspaces that apply requests as sway does, idle with
+    inhibitors, output hotplug, and a compositor that blurs on request;
+    `siv_test_*` gains the calls that play the other clients and the user
+    (D27). `test/abi/shell.zig` covers the C API, `src/lua/tests.zig` the
+    binding, `src/compositor/tree.zig` the blur region's geometry,
+    `src/a11y/tests.zig` the frameless role, and `examples/shell.c` runs
+    unchanged both headless (`test/abi/shell_example.zig`, with a
+    golden image of its bar and lock screen) and on sway
+    (`src/abi/integration_shell.zig`), compiled a second time with main,
+    `siv_app_create`, `siv_app_run`, the clock, the user, and dlopen
+    renamed, as the guide's samples are (D24); its libpam is a fake that
+    accepts one password. On sway 1.12 (`src/platform/integration_tests.zig`,
+    D24) every protocol but background blur is verified for real.
+- **Alternatives:** applications binding these protocols on a Wayland
+  queue of their own through an escape hatch (fine for the data
+  protocols, impossible for layer and lock surfaces, which are roles of
+  surfaces siv creates and commits, and every Lua shell would need FFI);
+  a separate libsiv-shell (the roles need the platform's window
+  internals); siv choosing the outputs a lock covers but leaving window
+  creation to the application (hotplug is exactly what such code gets
+  wrong); the ext toplevel list always, with wlr management paired by
+  title (guesswork that misdirects requests); a blur region the UI thread
+  computes at layout (lags compositor-side scrolling and animations by a
+  frame or more); org_kde_kwin_blur for KWin (LGPL protocol XML).
+- **Reverse if:** wayland-protocols gains a toplevel management protocol
+  keyed by ext-foreign-toplevel-list handles that compositors adopt (then
+  use the ext list always and management through it); libraries in one
+  application need separate toplevel or workspace subscriptions (then
+  replay at a safe point for each list); compositors commonly toggle blur
+  at run time (then report the capability change as an application
+  event); applications need groups, workspace creation, output logical
+  geometry (xdg-output), or minimize rectangles (then add them in the same
+  families).
+- **Open, recorded rather than settled:** whether a layer window with
+  `SIV_LAYER_AUTO_EXCLUSIVE` should also reserve its margin (compositors
+  add the margin themselves today, so siv does not); whether lock windows
+  should get tooltips through an in-window fallback; and the exclusive
+  edge of layer-shell version 5, not exposed since an automatic zone
+  covers the bars and docks it is for.
 
 ## Lessons from ourokit
 

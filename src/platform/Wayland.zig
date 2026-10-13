@@ -21,6 +21,8 @@ const xdg = wayland.client.xdg;
 const wp = wayland.client.wp;
 const zxdg = wayland.client.zxdg;
 const zwp = wayland.client.zwp;
+const zwlr = wayland.client.zwlr;
+const ext = wayland.client.ext;
 const xkb = @import("xkbcommon");
 const platform = @import("platform.zig");
 const Loop = platform.Loop;
@@ -32,6 +34,7 @@ const TextInput = @import("TextInput.zig");
 const DataDevice = @import("DataDevice.zig");
 const cursor = @import("cursor.zig");
 const syncobj = @import("syncobj.zig");
+const Foreign = @import("Foreign.zig");
 const Wayland = @This();
 
 const log = std.log.scoped(.wayland);
@@ -110,6 +113,16 @@ exporter: ?*zxdg.ExporterV2 = null,
 activation: ?*xdg.ActivationV1 = null,
 /// Activation tokens requested and not yet done.
 tokens: std.ArrayList(*TokenRequest) = .empty,
+/// The desktop shell (D31): layer surfaces, the session lock (with
+/// `locked` once the compositor confirmed it), toplevels, workspaces,
+/// and idle watches, and background blur.
+layer_shell: ?*zwlr.LayerShellV1 = null,
+lock_manager: ?*ext.SessionLockManagerV1 = null,
+lock: ?*ext.SessionLockV1 = null,
+locked: bool = false,
+foreign: Foreign = undefined,
+effect_manager: ?*ext.BackgroundEffectManagerV1 = null,
+blur_capable: bool = false,
 /// Clock of wp_presentation timestamps; converted to CLOCK_MONOTONIC, the
 /// loop's clock, when it differs (weston uses CLOCK_MONOTONIC_RAW).
 presentation_clock: linux.clockid_t = .MONOTONIC,
@@ -297,10 +310,21 @@ pub const Window = struct {
     backend: *Wayland,
     id: WindowId,
     surface: *wl.Surface,
-    xdg_surface: *xdg.Surface,
-    /// The role: a toplevel, or a popup.
+    /// Toplevels and popups; null for layer and lock windows.
+    xdg_surface: ?*xdg.Surface,
+    /// The role: a toplevel, a popup, a layer surface, or a lock surface.
     toplevel: ?*xdg.Toplevel = null,
     popup: ?*xdg.Popup = null,
+    layer: ?*zwlr.LayerSurfaceV1 = null,
+    lock_surface: ?*ext.SessionLockSurfaceV1 = null,
+    /// Layer windows: what was asked for, and the output it is on (lock
+    /// windows too).
+    layer_state: platform.LayerState = .{},
+    zone: i32 = 0,
+    output_id: ?OutputId = null,
+    /// Background blur (ext-background-effect-v1) and the region last set.
+    effect: ?*ext.BackgroundEffectSurfaceV1 = null,
+    blur_region: std.ArrayList(Rect) = .empty,
     decoration: ?*zxdg.ToplevelDecorationV1 = null,
     viewport: ?*wp.Viewport = null,
     fractional: ?*wp.FractionalScaleV1 = null,
@@ -398,6 +422,7 @@ pub fn create(loop: *Loop, allocator: Allocator, sink: platform.Sink, options: O
         .compose_table = xkb.xkb_compose_table_new_from_locale(context, composeLocale(), xkb.XKB_COMPOSE_COMPILE_NO_FLAGS),
         .source = .{ .fd = display.getFd(), .events = linux.EPOLL.IN, .func = onReadable },
     };
+    self.foreign = .{ .backend = self };
     errdefer self.teardown();
 
     registry.setListener(*Wayland, onRegistry, self);
@@ -423,6 +448,12 @@ pub fn destroy(self: *Wayland) void {
 
 fn teardown(self: *Wayland) void {
     for (self.windows.items, 0..) |w, i| if (w != null) self.destroyWindow(@intCast(i));
+    self.foreign.deinit();
+    // A lock still held keeps the session locked: dropped, not destroyed.
+    self.unlockSession(true);
+    if (self.lock_manager) |m| m.destroy();
+    if (self.layer_shell) |m| if (m.getVersion() >= 3) m.destroy() else wlDestroy(m);
+    if (self.effect_manager) |m| m.destroy();
     // A compositor remembers a session's toplevels as they are destroyed,
     // but drops what a client sent just before hanging up (libwayland's
     // server destroys a client on hangup without reading on), so wait for
@@ -686,6 +717,22 @@ fn addGlobal(self: *Wayland, registry: *wl.Registry, name: u32, interface: []con
         self.exporter = try registry.bind(name, zxdg.ExporterV2, 1);
     } else if (is(interface, xdg.ActivationV1)) {
         self.activation = try registry.bind(name, xdg.ActivationV1, 1);
+    } else if (is(interface, zwlr.LayerShellV1)) {
+        self.layer_shell = try registry.bind(name, zwlr.LayerShellV1, @min(version, 4));
+    } else if (is(interface, ext.SessionLockManagerV1)) {
+        self.lock_manager = try registry.bind(name, ext.SessionLockManagerV1, 1);
+    } else if (is(interface, ext.BackgroundEffectManagerV1)) {
+        const m = try registry.bind(name, ext.BackgroundEffectManagerV1, 1);
+        m.setListener(*Wayland, onEffectManager, self);
+        self.effect_manager = m;
+    } else if (is(interface, ext.ForeignToplevelListV1)) {
+        self.foreign.list_global = .{ .name = name, .version = version };
+    } else if (is(interface, zwlr.ForeignToplevelManagerV1)) {
+        self.foreign.wlr_global = .{ .name = name, .version = version };
+    } else if (is(interface, ext.WorkspaceManagerV1)) {
+        self.foreign.workspace_global = .{ .name = name, .version = version };
+    } else if (is(interface, ext.IdleNotifierV1)) {
+        self.foreign.idle_global = .{ .name = name, .version = version };
     } else if (is(interface, wl.Output)) {
         try self.addOutput(registry, name, version);
     } else if (is(interface, wl.Seat)) {
@@ -941,6 +988,12 @@ fn destroyOutput(self: *Wayland, out: *Output) void {
 fn removeOutput(self: *Wayland, out: *Output) void {
     const id = out.id;
     if (out.announced) self.queue.push(.{ .output_removed = id });
+    self.foreign.outputRemoved(id);
+    // A lock window's output is gone; layer windows hear it from the
+    // compositor (closed).
+    for (self.windows.items) |w| if (w) |win| if (win.lock_surface != null and win.output_id == id) {
+        self.queue.push(.{ .closed = win.id });
+    };
     self.destroyOutput(out);
     for (self.windows.items) |w| if (w) |win| {
         if (removeEntered(win, id)) updateScale(win);
@@ -986,7 +1039,7 @@ fn onOutput(_: *wl.Output, event: wl.Output.Event, out: *Output) void {
     }
 }
 
-fn outputOf(proxy: ?*wl.Output) ?*Output {
+pub fn outputOf(proxy: ?*wl.Output) ?*Output {
     const p = proxy orelse return null;
     return @ptrCast(@alignCast(p.getUserData() orelse return null));
 }
@@ -1005,6 +1058,14 @@ pub fn windowOf(surface: ?*wl.Surface) ?WindowId {
 }
 
 pub fn createWindow(self: *Wayland, options: platform.WindowOptions) Error!WindowId {
+    return switch (options.role) {
+        .toplevel => self.createToplevel(options),
+        .layer => |l| self.createLayer(l),
+        .lock => |o| self.createLockSurface(o),
+    };
+}
+
+fn createToplevel(self: *Wayland, options: platform.WindowOptions) Error!WindowId {
     const slot = try reserveSlot(Window, self.allocator, &self.windows);
     const surface = self.compositor.?.createSurface() catch return error.OutOfMemory;
     errdefer surface.destroy();
@@ -1022,20 +1083,11 @@ pub fn createWindow(self: *Wayland, options: platform.WindowOptions) Error!Windo
         .toplevel = toplevel,
         .default_size = .{ .width = options.width, .height = options.height },
     };
-    errdefer {
-        if (w.fifo) |f| f.destroy();
-        if (w.decoration) |d| d.destroy();
-        if (w.viewport) |v| v.destroy();
-        if (w.fractional) |f| f.destroy();
-    }
-    if (self.fractional_manager != null and self.viewporter != null) {
-        w.fractional = self.fractional_manager.?.getFractionalScale(surface) catch return error.OutOfMemory;
-        w.viewport = self.viewporter.?.getViewport(surface) catch return error.OutOfMemory;
-    }
+    errdefer self.dropSurfaceExtensions(w);
+    try self.addSurfaceExtensions(w);
     if (self.decoration_manager) |m| {
         w.decoration = m.getToplevelDecoration(toplevel) catch return error.OutOfMemory;
     }
-    if (self.fifo_manager) |m| w.fifo = m.getFifo(surface) catch return error.OutOfMemory;
 
     surface.setListener(*Window, onSurface, w);
     xdg_surface.setListener(*Window, onXdgSurface, w);
@@ -1066,6 +1118,314 @@ pub fn createWindow(self: *Wayland, options: platform.WindowOptions) Error!Windo
     return w.id;
 }
 
+/// The scale, pacing, and background effect objects every window has
+/// when the compositor offers them.
+fn addSurfaceExtensions(self: *Wayland, w: *Window) Error!void {
+    if (self.fractional_manager != null and self.viewporter != null) {
+        w.fractional = self.fractional_manager.?.getFractionalScale(w.surface) catch return error.OutOfMemory;
+        w.viewport = self.viewporter.?.getViewport(w.surface) catch return error.OutOfMemory;
+    }
+    if (self.fifo_manager) |m| w.fifo = m.getFifo(w.surface) catch return error.OutOfMemory;
+    if (self.effect_manager) |m| w.effect = m.getBackgroundEffect(w.surface) catch return error.OutOfMemory;
+}
+
+fn dropSurfaceExtensions(_: *Wayland, w: *Window) void {
+    if (w.effect) |e| e.destroy();
+    if (w.fifo) |f| f.destroy();
+    if (w.decoration) |d| d.destroy();
+    if (w.viewport) |v| v.destroy();
+    if (w.fractional) |f| f.destroy();
+}
+
+/// A layer surface (wlr-layer-shell, D31). Its state goes out before the
+/// initial commit, which asks for the first configure.
+fn createLayer(self: *Wayland, role: platform.LayerRole) Error!WindowId {
+    const shell = self.layer_shell orelse return error.Unsupported;
+    const st = role.state;
+    // A zero size on an axis without both anchors is a protocol error;
+    // so is keyboard on_demand before version 4.
+    if (!st.valid()) return error.Unsupported;
+    if (st.keyboard == .on_demand and shell.getVersion() < 4) return error.Unsupported;
+    const out: ?*wl.Output = if (role.output) |id| self.outputProxy(id) orelse return error.Unsupported else null;
+    const slot = try reserveSlot(Window, self.allocator, &self.windows);
+    const surface = self.compositor.?.createSurface() catch return error.OutOfMemory;
+    errdefer surface.destroy();
+    var ns: platform.BoundedString(255) = .{};
+    ns.set(role.namespace);
+    ns.buf[ns.len] = 0;
+    const layer = shell.getLayerSurface(surface, out, layerOf(st.layer), ns.buf[0..ns.len :0]) catch return error.OutOfMemory;
+    errdefer layer.destroy();
+    const w = try self.allocator.create(Window);
+    errdefer self.allocator.destroy(w);
+    w.* = .{
+        .backend = self,
+        .id = @intCast(slot),
+        .surface = surface,
+        .xdg_surface = null,
+        .layer = layer,
+        .layer_state = st,
+        .output_id = role.output,
+        .default_size = .{ .width = st.width, .height = st.height },
+    };
+    errdefer self.dropSurfaceExtensions(w);
+    try self.addSurfaceExtensions(w);
+    surface.setListener(*Window, onSurface, w);
+    layer.setListener(*Window, onLayerSurface, w);
+    if (w.fractional) |f| f.setListener(*Window, onFractionalScale, w);
+    sendLayerState(w, st.width, st.height);
+    surface.commit();
+    self.windows.items[slot] = w;
+    return w.id;
+}
+
+fn layerOf(l: platform.Layer) zwlr.LayerShellV1.Layer {
+    return switch (l) {
+        .background => .background,
+        .bottom => .bottom,
+        .top => .top,
+        .overlay => .overlay,
+    };
+}
+
+/// Sends a layer surface's double-buffered state; the zone follows the
+/// size given (the configured one, for an automatic zone).
+fn sendLayerState(w: *Window, width: u32, height: u32) void {
+    const l = w.layer.?;
+    const st = w.layer_state;
+    l.setSize(st.width, st.height);
+    l.setAnchor(.{ .top = st.anchor.top, .bottom = st.anchor.bottom, .left = st.anchor.left, .right = st.anchor.right });
+    l.setMargin(st.margin.top, st.margin.right, st.margin.bottom, st.margin.left);
+    w.zone = st.zone(width, height);
+    l.setExclusiveZone(w.zone);
+    l.setKeyboardInteractivity(switch (st.keyboard) {
+        .none => .none,
+        .exclusive => .exclusive,
+        .on_demand => if (l.getVersion() >= 4) .on_demand else .none,
+    });
+    if (l.getVersion() >= 2) l.setLayer(layerOf(st.layer));
+}
+
+pub fn setLayer(self: *Wayland, id: WindowId, state: platform.LayerState) void {
+    const w = self.get(id);
+    if (w.layer == null or !state.valid()) return;
+    w.layer_state = state;
+    w.default_size = .{ .width = state.width, .height = state.height };
+    sendLayerState(w, w.state.width, w.state.height);
+    if (w.configured) w.surface.commit();
+}
+
+fn onLayerSurface(_: *zwlr.LayerSurfaceV1, event: zwlr.LayerSurfaceV1.Event, w: *Window) void {
+    switch (event) {
+        .configure => |c| {
+            w.pending.width = c.width;
+            w.pending.height = c.height;
+            // An automatic zone follows the size, sent with the commit
+            // that answers this configure.
+            if (w.layer_state.auto_exclusive) {
+                const width = if (c.width != 0) c.width else w.default_size.width;
+                const height = if (c.height != 0) c.height else w.default_size.height;
+                const zone = w.layer_state.zone(width, height);
+                if (zone != w.zone) {
+                    w.zone = zone;
+                    w.layer.?.setExclusiveZone(zone);
+                }
+            }
+            applyConfigure(w, c.serial);
+        },
+        .closed => w.backend.queue.push(.{ .closed = w.id }),
+    }
+}
+
+/// A lock surface (ext-session-lock, D31) on an output, for the lock in
+/// progress.
+fn createLockSurface(self: *Wayland, output_id: OutputId) Error!WindowId {
+    const lock = self.lock orelse return error.Unsupported;
+    const out = self.outputProxy(output_id) orelse return error.Unsupported;
+    // One lock surface per output, or a protocol error.
+    for (self.windows.items) |x| if (x) |o| if (o.lock_surface != null and o.output_id == output_id) return error.Unsupported;
+    const slot = try reserveSlot(Window, self.allocator, &self.windows);
+    const surface = self.compositor.?.createSurface() catch return error.OutOfMemory;
+    errdefer surface.destroy();
+    const ls = lock.getLockSurface(surface, out) catch return error.OutOfMemory;
+    errdefer ls.destroy();
+    const w = try self.allocator.create(Window);
+    errdefer self.allocator.destroy(w);
+    w.* = .{
+        .backend = self,
+        .id = @intCast(slot),
+        .surface = surface,
+        .xdg_surface = null,
+        .lock_surface = ls,
+        .output_id = output_id,
+        .default_size = .{ .width = 1, .height = 1 },
+    };
+    errdefer self.dropSurfaceExtensions(w);
+    try self.addSurfaceExtensions(w);
+    surface.setListener(*Window, onSurface, w);
+    ls.setListener(*Window, onLockSurface, w);
+    if (w.fractional) |f| f.setListener(*Window, onFractionalScale, w);
+    // A lock surface gets its configure without a commit; committing
+    // before acking it is a protocol error.
+    self.windows.items[slot] = w;
+    return w.id;
+}
+
+fn onLockSurface(_: *ext.SessionLockSurfaceV1, event: ext.SessionLockSurfaceV1.Event, w: *Window) void {
+    switch (event) {
+        .configure => |c| {
+            w.pending.width = c.width;
+            w.pending.height = c.height;
+            applyConfigure(w, c.serial);
+        },
+    }
+}
+
+pub fn lockSession(self: *Wayland) Error!void {
+    const m = self.lock_manager orelse return error.Unsupported;
+    if (self.lock != null) return error.Unsupported;
+    const lock = m.lock() catch return error.OutOfMemory;
+    lock.setListener(*Wayland, onLock, self);
+    self.lock = lock;
+    self.locked = false;
+}
+
+fn onLock(_: *ext.SessionLockV1, event: ext.SessionLockV1.Event, self: *Wayland) void {
+    switch (event) {
+        .locked => {
+            self.locked = true;
+            self.queue.push(.{ .lock = .locked });
+        },
+        .finished => {
+            // The lock is inert: destroy it, and its windows are closed.
+            if (self.lock) |l| l.destroy();
+            self.lock = null;
+            self.locked = false;
+            self.closeLockWindows();
+            self.queue.push(.{ .lock = .finished });
+        },
+    }
+}
+
+fn closeLockWindows(self: *Wayland) void {
+    for (self.windows.items) |w| if (w) |win| if (win.lock_surface != null) self.queue.push(.{ .closed = win.id });
+}
+
+pub fn unlockSession(self: *Wayland, abandon: bool) void {
+    const lock = self.lock orelse return;
+    self.lock = null;
+    if (self.locked and abandon) {
+        // Dropped without a request: the session stays locked.
+        wlDestroy(lock);
+    } else if (self.locked) {
+        lock.unlockAndDestroy();
+    } else lock.destroy();
+    self.locked = false;
+    if (!abandon) self.closeLockWindows();
+}
+
+pub fn startToplevels(self: *Wayland) Error!void {
+    return self.foreign.startToplevels();
+}
+
+pub fn stopToplevels(self: *Wayland) void {
+    self.foreign.stopToplevels();
+}
+
+pub fn toplevelInfo(self: *Wayland, id: u32) ?platform.ToplevelInfo {
+    return self.foreign.toplevel(id);
+}
+
+pub fn toplevelRequest(self: *Wayland, id: u32, request: platform.ToplevelRequest) bool {
+    return self.foreign.toplevelRequest(id, request);
+}
+
+pub fn startWorkspaces(self: *Wayland) Error!void {
+    return self.foreign.startWorkspaces();
+}
+
+pub fn stopWorkspaces(self: *Wayland) void {
+    self.foreign.stopWorkspaces();
+}
+
+pub fn workspaceInfo(self: *Wayland, id: u32) ?platform.WorkspaceInfo {
+    return self.foreign.workspace(id);
+}
+
+pub fn workspaceRequest(self: *Wayland, id: u32, request: platform.WorkspaceRequest) bool {
+    return self.foreign.workspaceRequest(id, request);
+}
+
+pub fn createIdleWatch(self: *Wayland, timeout_ms: u32, ignore_inhibitors: bool) Error!u32 {
+    return self.foreign.createIdleWatch(timeout_ms, ignore_inhibitors);
+}
+
+pub fn destroyIdleWatch(self: *Wayland, id: u32) void {
+    self.foreign.destroyIdleWatch(id);
+}
+
+fn onEffectManager(_: *ext.BackgroundEffectManagerV1, event: ext.BackgroundEffectManagerV1.Event, self: *Wayland) void {
+    switch (event) {
+        .capabilities => |c| {
+            const blur = @as(u32, @bitCast(c.flags)) & 1 != 0;
+            if (blur == self.blur_capable) return;
+            self.blur_capable = blur;
+            self.queue.push(.{ .blur_capable = blur });
+        },
+    }
+}
+
+pub fn shellCapabilities(self: *Wayland) platform.ShellCapabilities {
+    const f = &self.foreign;
+    return .{
+        .layers = self.layer_shell != null,
+        .lock = self.lock_manager != null,
+        .toplevels = f.list_global != null or f.wlr_global != null,
+        .toplevel_management = f.wlr_global != null,
+        .workspaces = f.workspace_global != null,
+        .idle = f.idle_global != null,
+        .blur = self.blur_capable,
+    };
+}
+
+pub fn canBlur(self: *Wayland) bool {
+    return self.blur_capable;
+}
+
+pub fn setBlurRegion(self: *Wayland, id: WindowId, region: []const Rect) void {
+    const w = self.get(id);
+    const effect = w.effect orelse return;
+    if (!self.blur_capable and w.blur_region.items.len == 0) return;
+    if (sameRects(w.blur_region.items, region)) return;
+    w.blur_region.clearRetainingCapacity();
+    w.blur_region.appendSlice(self.allocator, region) catch {
+        // Without memory to remember it, send it anyway; the next call
+        // sends it again.
+    };
+    if (region.len == 0) return effect.setBlurRegion(null);
+    const r = self.compositor.?.createRegion() catch return self.queue.fail(error.OutOfMemory);
+    defer r.destroy();
+    for (region) |rect| r.add(rect.x, rect.y, rect.width, rect.height);
+    effect.setBlurRegion(r);
+}
+
+fn sameRects(a: []const Rect, b: []const Rect) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |x, y| if (!std.meta.eql(x, y)) return false;
+    return true;
+}
+
+/// The proxy of an announced output.
+pub fn outputProxy(self: *Wayland, id: OutputId) ?*wl.Output {
+    if (id >= self.outputs.items.len) return null;
+    const out = self.outputs.items[id] orelse return null;
+    return if (out.announced) out.proxy else null;
+}
+
+pub fn firstSeat(self: *Wayland) ?*wl.Seat {
+    for (self.seats.items) |s| if (s) |seat| return seat.proxy;
+    return null;
+}
+
 /// An xdg_popup placed by an xdg_positioner; the grab, if any, is taken
 /// before the first commit as the protocol requires.
 pub fn createPopup(self: *Wayland, options: platform.PopupOptions) Error!WindowId {
@@ -1078,8 +1438,12 @@ pub fn createPopup(self: *Wayland, options: platform.PopupOptions) Error!WindowI
     errdefer xdg_surface.destroy();
     const positioner = try self.makePositioner(pos);
     defer positioner.destroy();
+    // A layer window's popups have no xdg parent; the layer surface
+    // adopts them before the first commit.
+    if (parent.xdg_surface == null and parent.layer == null) return error.Unsupported;
     const popup = xdg_surface.getPopup(parent.xdg_surface, positioner) catch return error.OutOfMemory;
     errdefer popup.destroy();
+    if (parent.layer) |l| l.getPopup(popup);
     const w = try self.allocator.create(Window);
     errdefer self.allocator.destroy(w);
     w.* = .{
@@ -1090,11 +1454,8 @@ pub fn createPopup(self: *Wayland, options: platform.PopupOptions) Error!WindowI
         .popup = popup,
         .default_size = .{ .width = pos.width, .height = pos.height },
     };
-    if (self.fractional_manager != null and self.viewporter != null) {
-        w.fractional = self.fractional_manager.?.getFractionalScale(surface) catch return error.OutOfMemory;
-        w.viewport = self.viewporter.?.getViewport(surface) catch return error.OutOfMemory;
-    }
-    if (self.fifo_manager) |m| w.fifo = m.getFifo(surface) catch return error.OutOfMemory;
+    errdefer self.dropSurfaceExtensions(w);
+    try self.addSurfaceExtensions(w);
     surface.setListener(*Window, onSurface, w);
     xdg_surface.setListener(*Window, onXdgSurface, w);
     popup.setListener(*Window, onPopup, w);
@@ -1155,6 +1516,8 @@ pub fn destroyWindow(self: *Wayland, id: WindowId) void {
     self.loop.cancelTimer(&w.ack_timer);
     for (w.feedbacks) |f| if (f.proxy) |fb| fb.destroy();
     if (w.frame_callback) |cb| cb.destroy();
+    if (w.effect) |e| e.destroy();
+    w.blur_region.deinit(self.allocator);
     if (w.fifo) |f| f.destroy();
     if (w.fractional) |f| f.destroy();
     if (w.viewport) |v| v.destroy();
@@ -1173,7 +1536,9 @@ pub fn destroyWindow(self: *Wayland, id: WindowId) void {
     // role is destroyed while it is still in the session (KWin does).
     if (w.session) |x| x.destroy();
     if (w.popup) |p| p.destroy();
-    w.xdg_surface.destroy();
+    if (w.xdg_surface) |x| x.destroy();
+    if (w.layer) |l| l.destroy();
+    if (w.lock_surface) |l| l.destroy();
     w.swapchain.deinit();
     w.surface.destroy();
     self.allocator.destroy(w);
@@ -1358,7 +1723,7 @@ pub fn showWindowMenu(self: *Wayland, id: WindowId, seat: SeatId, serial: u32, x
 }
 
 pub fn setWindowGeometry(self: *Wayland, id: WindowId, g: Rect) void {
-    self.get(id).xdg_surface.setWindowGeometry(g.x, g.y, g.width, g.height);
+    if (self.get(id).xdg_surface) |x| x.setWindowGeometry(g.x, g.y, g.width, g.height);
 }
 
 pub fn setRegion(self: *Wayland, id: WindowId, kind: platform.Region, rects: ?[]const Rect) Error!void {
@@ -1984,30 +2349,34 @@ fn seatProxy(self: *Wayland, id: SeatId) ?*wl.Seat {
 
 fn onXdgSurface(_: *xdg.Surface, event: xdg.Surface.Event, w: *Window) void {
     switch (event) {
-        .configure => |c| {
-            const p = w.pending;
-            var next = w.state;
-            next.width = if (p.width != 0) p.width else if (w.configured) w.state.width else w.default_size.width;
-            next.height = if (p.height != 0) p.height else if (w.configured) w.state.height else w.default_size.height;
-            next.states = p.states;
-            next.bounds = p.bounds;
-            next.capabilities = p.capabilities;
-            next.decoration = p.decoration;
-            next.popup = p.popup;
-            next.scale = computeScale(w);
-            const changed = !w.configured or !std.meta.eql(next, w.state);
-            const rescaled = next.scale.v120 != w.state.scale.v120;
-            w.state = next;
-            if (rescaled) w.backend.reapplyCursors(w.id);
-            w.configured = true;
-            w.ack_serial = c.serial;
-            w.clock.configured = true;
-            w.clock.suspended = next.states.suspended;
-            if (changed) w.backend.queue.push(.{ .configure = .{ .window = w.id, .state = next } });
-            w.clock.force();
-            scheduleFrame(w);
-        },
+        .configure => |c| applyConfigure(w, c.serial),
     }
+}
+
+/// A configure is complete (xdg_surface, layer, or lock surface): the
+/// window takes the pending state, and a frame answers it.
+fn applyConfigure(w: *Window, serial: u32) void {
+    const p = w.pending;
+    var next = w.state;
+    next.width = if (p.width != 0) p.width else if (w.configured) w.state.width else w.default_size.width;
+    next.height = if (p.height != 0) p.height else if (w.configured) w.state.height else w.default_size.height;
+    next.states = p.states;
+    next.bounds = p.bounds;
+    next.capabilities = p.capabilities;
+    next.decoration = p.decoration;
+    next.popup = p.popup;
+    next.scale = computeScale(w);
+    const changed = !w.configured or !std.meta.eql(next, w.state);
+    const rescaled = next.scale.v120 != w.state.scale.v120;
+    w.state = next;
+    if (rescaled) w.backend.reapplyCursors(w.id);
+    w.configured = true;
+    w.ack_serial = serial;
+    w.clock.configured = true;
+    w.clock.suspended = next.states.suspended;
+    if (changed) w.backend.queue.push(.{ .configure = .{ .window = w.id, .state = next } });
+    w.clock.force();
+    scheduleFrame(w);
 }
 
 fn onToplevel(_: *xdg.Toplevel, event: xdg.Toplevel.Event, w: *Window) void {
@@ -2166,7 +2535,7 @@ fn scheduleFrame(w: *Window) void {
 
 fn ackPending(w: *Window) void {
     const serial = w.ack_serial orelse return;
-    w.xdg_surface.ackConfigure(serial);
+    if (w.xdg_surface) |x| x.ackConfigure(serial) else if (w.layer) |l| l.ackConfigure(serial) else if (w.lock_surface) |l| l.ackConfigure(serial);
     w.ack_serial = null;
     w.ack_deferred = false;
     w.ack_deadline = null;

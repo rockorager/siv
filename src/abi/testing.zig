@@ -13,6 +13,7 @@ const ui = @import("ui");
 const loop_mod = @import("loop");
 const runtime = @import("runtime.zig");
 const application = @import("application.zig");
+const shell = @import("shell.zig");
 
 const App = application.App;
 const Window = application.Window;
@@ -124,6 +125,7 @@ fn dispatch(self: *App, timeout_ms: i32) Error!void {
         error.OutOfMemory => error.OutOfMemory,
         error.Busy => error.Busy,
         error.Unavailable => error.Unavailable,
+        error.Unsupported => error.Unsupported,
     };
 }
 
@@ -503,4 +505,221 @@ pub export fn siv_test_get_popup(app: t.App) t.Window {
         }
     };
     return if (best) |w| @fromBackingInt(w.handle) else .null;
+}
+
+// The simulated desktop shell (D31) ------------------------------------------------
+
+fn testApp(app: t.App) Error!*App {
+    const self = try App.get(@backingInt(app));
+    try headlessApp(self);
+    return self;
+}
+
+pub export fn siv_test_add_output(app: t.App, name: ?[*]const u8, name_len: usize, pixel_width: u32, pixel_height: u32, scale: u32) t.Result {
+    return wrap(struct {
+        fn f(a: t.App, np: ?[*]const u8, nl: usize, w: u32, h: u32, sc: u32) Error!void {
+            const self = try testApp(a);
+            const n = try runtime.string(np, nl);
+            if (n.len == 0 or w == 0 or h == 0 or w > std.math.maxInt(i32) or h > std.math.maxInt(i32)) return error.InvalidArgument;
+            var info: platform.OutputInfo = .{ .width = @intCast(w), .height = @intCast(h), .scale = @intCast(@max(sc, 1)), .refresh_mhz = 60000 };
+            info.name.set(n);
+            const C = struct {
+                info: platform.OutputInfo,
+                failed: bool = false,
+            };
+            var c: C = .{ .info = info };
+            // Placed to the right of the outputs there are.
+            try onHeadless(self, &c, struct {
+                fn g(hl: *platform.Headless, cx: *C) void {
+                    var x: i32 = 0;
+                    for (hl.outputs.items) |o| if (o) |out| {
+                        x = @max(x, out.x + @divTrunc(out.width, @max(out.scale, 1)));
+                    };
+                    cx.info.x = x;
+                    _ = hl.addOutput(cx.info) catch {
+                        cx.failed = true;
+                    };
+                }
+            }.g);
+            if (c.failed) return error.OutOfMemory;
+        }
+    }.f(app, name, name_len, pixel_width, pixel_height, scale));
+}
+
+pub export fn siv_test_remove_output(app: t.App, name: ?[*]const u8, name_len: usize) t.Result {
+    return wrap(struct {
+        fn f(a: t.App, np: ?[*]const u8, nl: usize) Error!void {
+            const self = try testApp(a);
+            const n = try runtime.string(np, nl);
+            const C = struct { name: []const u8, found: bool = false };
+            var c: C = .{ .name = n };
+            try onHeadless(self, &c, struct {
+                fn g(hl: *platform.Headless, cx: *C) void {
+                    for (hl.outputs.items, 0..) |o, i| if (o) |out| if (std.mem.eql(u8, out.name.slice(), cx.name)) {
+                        hl.removeOutput(@intCast(i));
+                        cx.found = true;
+                        return;
+                    };
+                }
+            }.g);
+            if (!c.found) return error.InvalidArgument;
+        }
+    }.f(app, name, name_len));
+}
+
+pub export fn siv_test_add_toplevel(app: t.App, title: ?[*]const u8, title_len: usize, app_id: ?[*]const u8, app_id_len: usize, output: t.Output, id: ?*u32) t.Result {
+    return wrap(struct {
+        fn f(a: t.App, tp: ?[*]const u8, tl: usize, ap: ?[*]const u8, al: usize, o: t.Output, idp: ?*u32) Error!void {
+            const self = try testApp(a);
+            const C = struct { title: []const u8, app_id: []const u8, output: ?platform.OutputId, out: ?u32 = null };
+            var c: C = .{ .title = try runtime.string(tp, tl), .app_id = try runtime.string(ap, al), .output = try shell.outputOf(self, o) };
+            const dest = try runtime.out(u32, idp);
+            try onHeadless(self, &c, struct {
+                fn g(hl: *platform.Headless, cx: *C) void {
+                    cx.out = hl.addToplevel(cx.title, cx.app_id, cx.output) catch null;
+                }
+            }.g);
+            dest.* = c.out orelse return error.OutOfMemory;
+        }
+    }.f(app, title, title_len, app_id, app_id_len, output, id));
+}
+
+pub export fn siv_test_set_toplevel(app: t.App, id: u32, title: ?[*]const u8, title_len: usize, states: t.ToplevelStates) t.Result {
+    return wrap(struct {
+        fn f(a: t.App, i: u32, tp: ?[*]const u8, tl: usize, s: t.ToplevelStates) Error!void {
+            const self = try testApp(a);
+            const st = try runtime.flags(t.ToplevelStates, s);
+            const C = struct { id: u32, title: []const u8, states: platform.ToplevelStates };
+            const c: C = .{ .id = i, .title = try runtime.string(tp, tl), .states = .{ .maximized = st.maximized, .minimized = st.minimized, .activated = st.activated, .fullscreen = st.fullscreen } };
+            try onHeadless(self, c, struct {
+                fn g(hl: *platform.Headless, cx: C) void {
+                    hl.setToplevel(cx.id, cx.title, cx.states);
+                }
+            }.g);
+        }
+    }.f(app, id, title, title_len, states));
+}
+
+pub export fn siv_test_remove_toplevel(app: t.App, id: u32) t.Result {
+    return wrap(struct {
+        fn f(a: t.App, i: u32) Error!void {
+            const self = try testApp(a);
+            try onHeadless(self, i, struct {
+                fn g(hl: *platform.Headless, x: u32) void {
+                    hl.removeToplevel(x);
+                }
+            }.g);
+        }
+    }.f(app, id));
+}
+
+pub export fn siv_test_add_workspace(app: t.App, name: ?[*]const u8, name_len: usize, output: t.Output, id: ?*u32) t.Result {
+    return wrap(struct {
+        fn f(a: t.App, np: ?[*]const u8, nl: usize, o: t.Output, idp: ?*u32) Error!void {
+            const self = try testApp(a);
+            const C = struct { name: []const u8, output: ?platform.OutputId, out: ?u32 = null };
+            var c: C = .{ .name = try runtime.string(np, nl), .output = try shell.outputOf(self, o) };
+            const dest = try runtime.out(u32, idp);
+            try onHeadless(self, &c, struct {
+                fn g(hl: *platform.Headless, cx: *C) void {
+                    cx.out = hl.addWorkspace(cx.name, cx.output) catch null;
+                }
+            }.g);
+            dest.* = c.out orelse return error.OutOfMemory;
+        }
+    }.f(app, name, name_len, output, id));
+}
+
+pub export fn siv_test_remove_workspace(app: t.App, id: u32) t.Result {
+    return wrap(struct {
+        fn f(a: t.App, i: u32) Error!void {
+            const self = try testApp(a);
+            try onHeadless(self, i, struct {
+                fn g(hl: *platform.Headless, x: u32) void {
+                    hl.removeWorkspace(x);
+                }
+            }.g);
+        }
+    }.f(app, id));
+}
+
+pub export fn siv_test_set_idle(app: t.App, idle_: bool) t.Result {
+    return wrap(struct {
+        fn f(a: t.App, on: bool) Error!void {
+            const self = try testApp(a);
+            try onHeadless(self, on, struct {
+                fn g(hl: *platform.Headless, x: bool) void {
+                    hl.setIdle(x);
+                }
+            }.g);
+        }
+    }.f(app, idle_));
+}
+
+pub export fn siv_test_set_blur(app: t.App, blur: bool) t.Result {
+    return wrap(struct {
+        fn f(a: t.App, on: bool) Error!void {
+            const self = try testApp(a);
+            try onHeadless(self, on, struct {
+                fn g(hl: *platform.Headless, x: bool) void {
+                    hl.setBlurCapable(x);
+                }
+            }.g);
+        }
+    }.f(app, blur));
+}
+
+/// Runs `func` with the window's applied blur region on the compositor
+/// thread.
+fn blurRegion(w: *Window, ctx: anytype, comptime func: fn ([]const platform.Rect, @TypeOf(ctx)) void) Error!void {
+    const C = struct { id: platform.WindowId, inner: @TypeOf(ctx) };
+    try onHeadless(w.owner, C{ .id = w.win.id, .inner = ctx }, struct {
+        fn g(hl: *platform.Headless, cx: C) void {
+            func(hl.blurRegion(cx.id), cx.inner);
+        }
+    }.g);
+}
+
+pub export fn siv_test_get_blur_region_count(window: t.Window, count: ?*usize) t.Result {
+    return wrap(struct {
+        fn f(wh: t.Window, o: ?*usize) Error!void {
+            const w = try headlessWindow(wh);
+            const dest = try runtime.out(usize, o);
+            var n: usize = 0;
+            try blurRegion(w, &n, struct {
+                fn g(r: []const platform.Rect, out: *usize) void {
+                    out.* = r.len;
+                }
+            }.g);
+            dest.* = n;
+        }
+    }.f(window, count));
+}
+
+pub export fn siv_test_get_blur_rect(window: t.Window, index: usize, rect: ?*t.Rect) t.Result {
+    return wrap(struct {
+        fn f(wh: t.Window, i: usize, o: ?*t.Rect) Error!void {
+            const w = try headlessWindow(wh);
+            const dest = try runtime.out(t.Rect, o);
+            const C = struct { index: usize, out: ?platform.Rect = null };
+            var c: C = .{ .index = i };
+            try blurRegion(w, &c, struct {
+                fn g(r: []const platform.Rect, cx: *C) void {
+                    if (cx.index < r.len) cx.out = r[cx.index];
+                }
+            }.g);
+            const r = c.out orelse return error.InvalidArgument;
+            dest.* = .{ .x = @floatFromInt(r.x), .y = @floatFromInt(r.y), .width = @floatFromInt(r.width), .height = @floatFromInt(r.height) };
+        }
+    }.f(window, index, rect));
+}
+
+pub export fn siv_test_is_locked(app: t.App, locked: ?*bool) t.Result {
+    return wrap(struct {
+        fn f(a: t.App, o: ?*bool) Error!void {
+            _ = try testApp(a);
+            const dest = try runtime.out(bool, o);
+            dest.* = platform.Headless.sessionLocked();
+        }
+    }.f(app, locked));
 }

@@ -663,6 +663,8 @@ fn waylandModule(ctx: Ctx) *std.Build.Module {
         .wayland_protocols = b.dependency("wayland_protocols", .{}).path(""),
     });
     for (wayland_protocols.xml) |path| scanner.addSystemProtocol(path);
+    const wlr = b.dependency("wlr_protocols", .{});
+    for (wayland_protocols.wlr_xml) |path| scanner.addCustomProtocol(wlr.path(path));
     for (wayland_protocols.globals) |global| scanner.generate(global[0], global[1]);
     const m = b.createModule(.{
         .root_source_file = scanner.result,

@@ -20,6 +20,11 @@ const T = abi.tree;
 const Sway = platform.test_sway.Sway;
 const VirtualPointer = platform.test_sway.VirtualPointer;
 
+test {
+    // examples/shell.c on sway (D31).
+    _ = @import("integration_shell.zig");
+}
+
 fn ok(r: t.Result) !void {
     if (r == .ok) return;
     std.debug.print("unexpected {s}\n", .{abi.siv_result_name(r)});

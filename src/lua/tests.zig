@@ -342,6 +342,72 @@ test "the test API: scrolling, typing, queries, captures" {
     );
 }
 
+test "the desktop shell from Lua: outputs, a layer window, a lock, toplevels, workspaces, idle, capabilities" {
+    _ = try run(prologue ++
+        \\local caps = app:get_capabilities()
+        \\assert(caps.layers and caps.lock and not caps.blur)
+        \\local outputs = {}
+        \\app:watch_outputs(function(ev)
+        \\  if ev.type == "added" then outputs[ev.name] = ev.output else outputs[ev.name] = nil end
+        \\end)
+        \\assert(app:test_settle(5000))
+        \\assert(outputs["HEADLESS-1"])
+        \\-- A frosted bar on the output.
+        \\local resized
+        \\local bar = app:layer_create{
+        \\  output = outputs["HEADLESS-1"], namespace = "bar",
+        \\  anchor = { "top", "left", "right" }, height = 24, flags = "auto_exclusive",
+        \\  on_event = function(_, ev) if ev.type == "resized" then resized = ev.width end end,
+        \\}
+        \\bar:update(function(txn, root)
+        \\  txn:set_visual(root, { background = "#00000080", flags = "window_blur" })
+        \\  txn:set_semantics(root, { role = "toolbar", label = "Bar" })
+        \\  txn:text(root, "12:00")
+        \\end)
+        \\assert(app:test_settle(5000))
+        \\assert(resized == 1920, tostring(resized))
+        \\assert(bar:test_find{ role = "toolbar", name = "Bar" })
+        \\bar:set_layer{ anchor = { "bottom", "left", "right" }, height = 30 }
+        \\assert(app:test_settle(5000))
+        \\assert(resized == 1920 and bar:get_size().height == 30)
+        \\-- Toplevels and workspaces arrive as events.
+        \\app:test_add_toplevel("foot", "foot", outputs["HEADLESS-1"])
+        \\local titles = {}
+        \\local list <close> = app:toplevel_list_create{ on_event = function(_, ev)
+        \\  titles[ev.title] = ev.type ~= "removed" and ev.toplevel or nil
+        \\end }
+        \\app:test_add_workspace("1", outputs["HEADLESS-1"])
+        \\local active
+        \\local spaces <close> = app:workspace_list_create{ on_event = function(_, ev)
+        \\  if ev.states.active then active = ev.name end
+        \\end }
+        \\assert(app:test_settle(5000))
+        \\assert(titles.foot and active == "1")
+        \\titles.foot:close()
+        \\assert(app:test_settle(5000))
+        \\assert(titles.foot == nil)
+        \\-- Idle.
+        \\local idle
+        \\local watch <close> = app:idle_watch_create{ timeout_ms = 1000, on_event = function(_, on) idle = on end }
+        \\app:test_set_idle(true)
+        \\assert(app:test_settle(5000))
+        \\assert(idle == true)
+        \\-- The lock: a window per output, then locked; unlocked.
+        \\local events = {}
+        \\local lock = app:lock_create{ on_event = function(_, ev)
+        \\  events[#events + 1] = ev.type
+        \\  if ev.type == "window" then
+        \\    ev.window:update(function(txn, root) txn:editor(root, { "masked" }) end)
+        \\  end
+        \\end }
+        \\assert(app:test_settle(5000))
+        \\assert(events[1] == "window" and events[2] == "locked", table.concat(events, " "))
+        \\assert(app:test_is_locked())
+        \\lock:unlock()
+        \\assert(not app:test_is_locked())
+    );
+}
+
 test "span ends: stop, or end, which is a keyword" {
     _ = try run(prologue ++
         \\local a, b

@@ -259,6 +259,14 @@ pub const ExternalPlacement = struct {
     box: Rect = Rect.empty,
 };
 
+/// Where the compositor blurs what is behind the window (D31): a rounded
+/// rectangle in layer coordinates, transformed and clipped like the
+/// layer's content.
+pub const BlurShape = struct {
+    rect: Rect,
+    radii: Radii = .{},
+};
+
 /// Display-list content of a layer. See the module comment for ownership.
 pub const Content = struct {
     list: scene.DisplayList,
@@ -312,6 +320,11 @@ pub const Op = union(enum) {
     /// the tree; see `Scroll`. Null removes the region. A region also makes
     /// the layer hit-testable where it has no content.
     set_wheel_region: struct { layer: LayerId, region: ?Rect },
+    /// Asks the Wayland compositor to blur what is behind the window under
+    /// `shape` (null removes it). Every frame the surface's blur region is
+    /// made from the shapes as they are then (transforms, scrolling,
+    /// clips, animations) and set in the same commit as the content.
+    set_blur: struct { layer: LayerId, shape: ?BlurShape },
     /// What the window shows behind the root layer. Default transparent.
     set_background: Color,
     /// Shows external content in a layer (null removes it). When the
@@ -362,6 +375,7 @@ pub const Op = union(enum) {
             .fling => |s| s.layer != 0 and finitePoint(s.velocity),
             .scroll_by => |s| s.layer != 0 and finitePoint(s.delta),
             .set_wheel_region => |s| s.layer != 0 and (s.region == null or finiteRect(s.region.?)),
+            .set_blur => |s| s.layer != 0 and (s.shape == null or finiteRect(s.shape.?.rect)),
             .set_external => |s| s.layer != 0 and (s.external == null or (s.external.?.id != 0 and finiteRect(s.external.?.rect) and (s.external.?.background.a == 0 or finiteRect(s.external.?.box)))),
             .animate => |s| s.layer != 0 and validAnimation(s.animation),
         };

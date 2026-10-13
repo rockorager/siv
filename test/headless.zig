@@ -48,6 +48,8 @@ test {
     _ = @import("abi/rich_text.zig");
     _ = @import("abi/input.zig");
     _ = @import("abi/windows.zig");
+    _ = @import("abi/shell.zig");
+    _ = @import("abi/shell_example.zig");
     _ = @import("abi/settle.zig");
     _ = @import("lua/lua.zig");
 }
