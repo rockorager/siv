@@ -97,7 +97,7 @@ commit message. In particular:
   - `src/render/vulkan/build_steps.zig`: the Vulkan headers module, the
     glslang shader compiler, and the shader list (`shaders/*.glsl`).
   - `src/image/build_steps.zig`: the image decoders' C sources, generated
-    headers, and `-fsys` options.
+    headers, `-fsys` options, and NASM (built from source for dav1d).
 
 ## Conventions
 

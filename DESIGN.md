@@ -1883,14 +1883,38 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       dav1d, libjxl) and vendored ones share siv's code; the shims also
       build against Debian 12's older libavif 0.11 and libjxl 0.7.
     - Vendored builds: wuffs is built once, here, and also decodes the
-      CPU renderer's bitmap glyphs (D14); dav1d builds its C paths only (its assembly needs nasm, which the
-      build does without; slower, never wrong), with meson's generated
-      headers written by the build; libavif uses the part of libyuv it
+      CPU renderer's bitmap glyphs (D14); dav1d builds with meson's generated headers written by the build;
+      libavif uses the part of libyuv it
       bundles; libjxl builds its decoder with Highway, without the boxes
       and JPEG reconstruction that need Brotli and without a CMS, since
       it renders XYB to linear sRGB itself and siv converts ICC profiles.
       The decoders' internal memory comes from the C allocator, as
       HarfBuzz's does; decoded pixels come from siv's allocator (D2).
+    - dav1d's assembly is on for x86-64 and aarch64 (other targets use
+      its C). x86-64's is NASM syntax: NASM 2.16.03 (BSD-2-Clause) is a
+      pinned lazy dependency, its release tarball (which carries the
+      files its perl scripts generate) compiled by Zig for the build
+      machine with a configuration written in `build_steps.zig`, and run
+      once per `.asm` file; aarch64's is GNU syntax that clang assembles.
+      No system assembler, perl, or meson is involved, so the build stays
+      reproducible, and nothing is fetched for other targets or with
+      `-fsys=dav1d`. The aarch64 build passes `test-image` under
+      qemu-user (`-Dtarget=aarch64-linux-musl -fqemu`) but was not timed.
+    - Measured with `zig build bench-image -Doptimize=ReleaseFast --
+      FILE...` (one thread, whole decode to pixels including libavif's
+      YUV to RGB, best of 15) on this orb's x86-64 (AVX2), October 2026,
+      before and after the assembly: a 1920×1080 4:2:0 still 100 → 42 ms,
+      the same at 4:4:4 142 → 32 ms, a 3840×2160 10-bit 4:2:0 still
+      590 → 287 ms, a 60-frame 1280×720 sequence 1455 → 1219 ms. The
+      inputs were ffmpeg's `mandelbrot` source with `noise=alls=12`
+      (stills) and its zooming `mandelbrot` with `noise=alls=8` (the
+      sequence), encoded by libaom at CRF 28 and 32. After the
+      assembly most of a sequence's time is libavif's portable YUV to
+      RGB conversion (for a 60-frame 1280×720 `testsrc2` sequence siv
+      takes 1030 ms, of which ffmpeg with the system dav1d needs 205 ms
+      to decode the AV1): libavif uses libyuv's SIMD
+      paths when built with all of libyuv, which siv does not vendor
+      yet; that is the next step for AVIF speed.
     - Size: images larger than the bounds the caller gives (logical
       pixels times the window's scale, which then divides the pixel size
       into the image's logical size) are scaled down frame by frame while

@@ -44,6 +44,15 @@
             .hash = "N-V-__8AADyfswC8PUcbSINU_Y8cAc2lKgEqVi6du23wXLMS",
             .lazy = true,
         },
+        // NASM, built for the build machine to assemble dav1d's x86-64
+        // assembly (D19). BSD-2-Clause. The release tarball, which carries
+        // the sources its perl scripts generate. Lazy: fetched only for
+        // x86-64 targets without -fsys=dav1d.
+        .nasm = .{
+            .url = "https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/nasm-2.16.03.tar.gz",
+            .hash = "N-V-__8AAOdiwQAcuTPO3dqgQrt8BtvnkUYJ1Z5tP5qQOphI",
+            .lazy = true,
+        },
         // AVIF decoding (D19). BSD-2-Clause. Lazy: skipped with -fsys=libavif.
         .libavif = .{
             .url = "https://github.com/AOMediaCodec/libavif/archive/refs/tags/v1.3.0.tar.gz",
