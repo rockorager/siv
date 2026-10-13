@@ -194,7 +194,7 @@ pub const Tree = struct {
 
 fn namedFromContent(role: Role) bool {
     return switch (role) {
-        .button, .toggle_button, .link, .checkbox, .radio, .@"switch", .menu_item, .tab, .list_item, .tree_item, .cell, .column_header, .heading, .tooltip, .label, .paragraph, .status, .alert => true,
+        .button, .toggle_button, .link, .checkbox, .radio, .@"switch", .menu_item, .tab, .list_item, .tree_item, .row, .cell, .column_header, .heading, .tooltip, .label, .paragraph, .status, .alert => true,
         else => false,
     };
 }

@@ -1422,8 +1422,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     scroll `scroll_area`, image `image`). Role `none`, and `generic` nodes
     that are neither labelled nor focusable, are left out of the semantics
     tree with their children promoted. Buttons, links, checkboxes, list
-    items, and similar roles without a label take their name from their
-    descendants' text.
+    items, table rows and cells, and similar roles without a label take
+    their name from their descendants' text, as ARIA 1.2 names them (a
+    focused row of a file list reads "notes.txt 1.2 kB ... Text", not
+    nothing; found by the file manager in `apps/files`).
   - Focusability and disabled state are semantic properties, so a node
     cannot take focus without the information a screen reader needs.
   - The tree is rebuilt in full after frames that changed structure,

@@ -463,6 +463,8 @@ test "table view: a header over rows of cells" {
     };
     try testing.expect(rows > 3);
     try testing.expect(try rowCount(table) < 30);
+    // Rows are named from their cells' text, as ARIA names them.
+    try testing.expectEqual(@as(u32, 3), tree.find(.row, "Item 2 Item 2").?.row);
 }
 
 test "grid view: cells in reading order, two-dimensional keys, mirrored in RTL" {
