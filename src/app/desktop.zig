@@ -100,6 +100,7 @@ fn onChange(ctx: ?*anyopaque, s: *dbus.Settings, changed: dbus.Settings.Changed)
     d.values = desktopOf(s.values);
     for (app.windows.items) |w| if (w) |win| win.ui.setDesktop(d.values);
     if (first or changed.cursor_theme or changed.cursor_size) setCursorTheme(app, s.values.cursor_theme.slice(), s.values.cursor_size);
+    if ((first or changed.icon_theme) and !app.icon_theme_overridden) app.icons.setTheme(s.values.icon_theme.slice()) catch app.fail(error.OutOfMemory);
     var refresh = changed.text_scale;
     if ((first or changed.font) and !app.font_overridden) {
         app.fonts.setDefault(s.values.font.family.slice()) catch app.fail(error.OutOfMemory);

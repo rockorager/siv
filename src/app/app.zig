@@ -72,6 +72,9 @@ pub const Options = struct {
     /// Resolve font families with Fontconfig. Without it only families
     /// registered from bytes (`addFont`) resolve.
     system_fonts: bool = true,
+    /// Search the system's icon themes (D19). Without it only directories
+    /// added with `Icons.addSearchPath` are searched.
+    system_icons: bool = true,
     /// Worker threads; 0 uses one per CPU.
     threads: u32 = 0,
     /// Run the compositor on its own thread (D8). Without one it runs on
@@ -110,6 +113,8 @@ pub const App = struct {
     loop: Loop,
     pool: loop_mod.Pool,
     fonts: ui.Fonts,
+    /// Themed icons (D19), shared by every window.
+    icons: ui.Icons,
     clipboard: ui.Clipboard,
     comp: *Compositor,
     /// Live windows by platform window id.
@@ -126,6 +131,9 @@ pub const App = struct {
     /// The application chose the default font family, so the desktop's
     /// does not replace it.
     font_overridden: bool = false,
+    /// The application chose the icon theme, so the desktop's does not
+    /// replace it.
+    icon_theme_overridden: bool = false,
     /// The seat's key-repeat timing (platform.KeyRepeat); these defaults
     /// until the compositor reports it.
     key_repeat: platform.KeyRepeat = .{ .seat = 0, .delay_ms = 600, .rate = 25 },
@@ -157,6 +165,7 @@ pub const App = struct {
             .loop = Loop.init(gpa) catch return error.Unavailable,
             .pool = undefined,
             .fonts = undefined,
+            .icons = undefined,
             .clipboard = undefined,
             .comp = undefined,
             .reduced_motion = options.reduced_motion,
@@ -168,6 +177,9 @@ pub const App = struct {
         app.fonts = try .init(gpa);
         errdefer app.fonts.deinit();
         app.fonts.pool = &app.pool;
+        app.icons = try .init(gpa, if (options.system_icons) ui.Icons.environment() else .{ .xdg_data_dirs = "", .pixmaps = false });
+        errdefer app.icons.deinit();
+        app.icons.pool = &app.pool;
         app.process_locale = options.backend != .headless;
         try app.applyLocale(options.language, options.rtl);
         if (options.system_fonts) app.fonts.database = text.fontconfig.Database.init() catch null;
@@ -223,8 +235,17 @@ pub const App = struct {
         app.clipboard.deinit();
         app.fonts.deinit();
         app.pool.deinit();
+        // Loads the pool dropped release into the icons.
+        app.icons.deinit();
         app.loop.deinit();
         gpa.destroy(app);
+    }
+
+    /// Chooses the icon theme (D19); empty follows the desktop's again.
+    pub fn setIconTheme(app: *App, name: []const u8) Error!void {
+        app.icon_theme_overridden = name.len != 0;
+        const desktop = if (app.desktop.reading) app.desktop.settings.values.icon_theme.slice() else "";
+        try app.icons.setTheme(if (name.len != 0) name else desktop);
     }
 
     /// Runs one loop iteration (D6). `timeout_ms` bounds the wait: -1
@@ -412,6 +433,7 @@ pub const App = struct {
         win.* = .{ .app = app, .id = id, .ui = undefined, .listener = listener, .drag = .{ .comp = app.comp, .window = id, .gpa = gpa }, .follows_language = options.language.len == 0, .follows_direction = options.rtl == null };
         win.ui = try ui.Window.init(gpa, .{
             .fonts = &app.fonts,
+            .icons = &app.icons,
             .sink = .{ .ctx = win, .commit = Window.commit },
             .host = .{ .ctx = win, .request_frame = Window.requestFrame, .text_input = Window.textInput, .set_cursor = Window.setCursor },
             .clipboard = &app.clipboard,
@@ -445,6 +467,7 @@ pub const App = struct {
         win.* = .{ .app = app, .id = 0, .ui = undefined, .listener = listener, .drag = .{ .comp = app.comp, .window = 0, .gpa = gpa }, .parent = parent, .shown = false };
         win.ui = try ui.Window.init(gpa, .{
             .fonts = &app.fonts,
+            .icons = &app.icons,
             .sink = .{ .ctx = win, .commit = Window.commit },
             .host = .{ .ctx = win, .request_frame = Window.requestFrame, .text_input = Window.textInput },
             .clipboard = &app.clipboard,
