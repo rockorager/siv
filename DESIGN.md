@@ -851,8 +851,35 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     nothing. `ptem`-dependent shaping (`trak`) is not applied.
   - The cluster map is two caret stops per grapheme in visual order; ligatures
     split at GDEF caret positions, else evenly.
-  - Not yet built: tab stops (a tab is four spaces wide), breaking inside an
-    overlong word, hyphenation, and Knuth–Plass.
+  - Paragraph styles (`text.layout.ParagraphStyle`, per bidi paragraph:
+    the text up to a paragraph separator) are layout options, since none
+    changes shaping: start and end indents and a first-line indent
+    (negative hangs), alignment, line spacing as a multiple of the line's
+    natural height (CSS line-height: the extra space split above and
+    below, so the baseline moves down by half of it) or an exact line
+    height, and space before and after. Paragraph spacing applies between
+    paragraphs only, the two sums adding (as in LibreOffice; CSS margins
+    collapse to the larger, Word adds both); space before the first
+    paragraph or after the last would only duplicate the node's padding.
+    Lines record their indents and alignment; the layout's widest line
+    counts its indents, so the reuse rule above still holds. Indents
+    follow the direction the lines are aligned by, like alignment (D21):
+    a text node's or a canvas's, not each paragraph's.
+  - Tabs advance to tab stops at layout time, from the start margin
+    rather than the indent, so columns line up across paragraphs with
+    different indents: explicit stops (per node, since a value struct
+    cannot hold an array), then multiples of the paragraph's tab width,
+    by default the shaped tab's advance (four spaces). A segment holding
+    a tab is measured where it falls, glyph by glyph in logical order,
+    which is exact for lines of one direction; a line mixing directions
+    measures its tabs in logical order too. Stops are start-aligned only.
+  - Breaking inside an overlong word is opt-in (`break_words`, CSS
+    overflow-wrap: anywhere): a first segment that does not fit on a line
+    of its own breaks at the last grapheme boundary that fits, taking at
+    least one grapheme, and both edges are reshaped as at an unsafe
+    opportunity. Max-content widths are unchanged.
+  - Not yet built: hyphenation, Knuth–Plass, justified alignment, and
+    center, end, and decimal tab stops.
   - Text nodes (`src/ui`) reuse a `Layout` built for another width when its
     lines would break the same way (its widest line fits and it was built
     at least as wide), and align lines in the node themselves, so a node
@@ -1309,9 +1336,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     the window's last input, which a compositor may refuse when the
     window has had none. Text attributes (GetAttributes,
     GetAttributeRun) report the style run at an offset with GTK's names
-    (weight, style, size in points, underline, strikethrough, fg-color),
-    only what the run changes from the node's style; default attributes
-    stay empty.
+    (family-name, weight, style, stretch, size in points, underline,
+    strikethrough, fg-color), only what the run changes from the node's
+    style, and what the paragraph style changes from the node's
+    paragraph defaults (justification, left-margin, right-margin, indent,
+    pixels-above-lines, pixels-below-lines, with start and end resolved
+    by the node's direction); a run ends where either changes. Line
+    spacing and tab stops are not reported. Default attributes stay
+    empty.
   - The bridge (`src/a11y`, `a11y.Bridge`) follows org.a11y.Bus on the
     session bus and connects to the accessibility bus only while
     org.a11y.Status IsEnabled or ScreenReaderEnabled is set, so an
@@ -1357,7 +1389,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     characters, converted from siv's UTF-8 byte offsets.
   - Events: ChildrenChanged, PropertyChange (name, description, role,
     value), StateChanged (focus gained after every loss), TextChanged,
-    TextCaretMoved, TextSelectionChanged, and Announcement for a live
+    TextCaretMoved, TextSelectionChanged, TextAttributesChanged (a
+    snapshot keeps a hash of each text node's spans and paragraph styles;
+    a new hash over the same text sends it, while styles that move with
+    an edit are part of its TextChanged), and Announcement for a live
     region whose text changes or that gains content, with live and
     container-live attributes on the region. Window Activate and
     Deactivate come from the application (`setActive`, from the
@@ -2149,10 +2184,30 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       italic, and underline, off when all of the selection (or the
       typing style) has the attribute, else on, as word processors do.
       Masked editors take no spans.
+      Ctrl+L, Ctrl+E, and Ctrl+R align the selected paragraphs left,
+      centered, and right (left and right resolved by the editor's
+      direction; its own start alignment clears the attribute).
     - Fonts added with `siv_app_add_font` form families whose styles are
       matched per span and synthesized where missing (D13), so bold and
-      italic spans show with any font. Not built yet: a family per span,
-      and paragraph styles (alignment, lists).
+      italic spans show with any font.
+    - Spans also set a family and a width. A family is a `u32` from
+      `siv_app_font_family` (interned names, 0 the default family), not a
+      string: `siv_text_span` is a fixed-size value that arrays hold and
+      `siv_node_get_text_run` returns through an out parameter, so a
+      pointer in it would have no owner.
+    - Paragraph styles (`siv_set_paragraph_spans`, D13's layout options)
+      are ranges like spans, but each paragraph takes the style at its
+      first character, and they are kept snapped to whole paragraphs
+      (each separator with the paragraph it ends). The node's defaults
+      come from its text style. Editors keep them through edits: text
+      typed into a paragraph joins it, a line break starts a paragraph
+      with the same style, and joining two paragraphs keeps the first's.
+      Undo steps keep them before and after like spans, and
+      `siv_editor_format_paragraph` is the user's command over the
+      paragraphs a selection touches. An empty paragraph (empty text, or
+      after a final line break) has no character to carry a style, so it
+      shows the style of the paragraph before it and cannot be styled on
+      its own; lists (bullets and numbering) are not built.
 - **Non-goal:** a full document model with embedded tables and images.
 
 ### D23. Lua 5.5
