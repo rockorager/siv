@@ -66,6 +66,8 @@ draw_frag: c.VkShaderModule = null,
 blur_frag: c.VkShaderModule = null,
 encode_frag: c.VkShaderModule = null,
 draw_pipeline: c.VkPipeline = null,
+/// The draw pipeline specialized for common draws (draw.frag's VARIANT 1).
+draw_simple_pipeline: c.VkPipeline = null,
 replace_pipeline: c.VkPipeline = null,
 blur_pipeline: c.VkPipeline = null,
 encode_pipelines: [2]c.VkPipeline = .{ null, null },
@@ -217,7 +219,7 @@ pub fn destroy(d: *Device) void {
         _ = d.vkd.vkDeviceWaitIdle.?(d.device);
         const dev = d.device;
         const k = &d.vkd;
-        for ([_]c.VkPipeline{ d.draw_pipeline, d.replace_pipeline, d.blur_pipeline, d.encode_pipelines[0], d.encode_pipelines[1] }) |p| {
+        for ([_]c.VkPipeline{ d.draw_pipeline, d.draw_simple_pipeline, d.replace_pipeline, d.blur_pipeline, d.encode_pipelines[0], d.encode_pipelines[1] }) |p| {
             if (p != null) k.vkDestroyPipeline.?(dev, p, null);
         }
         for ([_]c.VkShaderModule{ d.vert, d.draw_frag, d.blur_frag, d.encode_frag }) |m| {
@@ -576,11 +578,12 @@ fn createShared(d: *Device) vk.Error!void {
     const cache_path = d.cachePath(&cache_buf);
     try d.openPipelineCache(cache_path);
     defer d.closePipelineCache(cache_path);
-    d.draw_pipeline = try d.pipeline(d.draw_frag, fp16, true);
-    d.replace_pipeline = try d.pipeline(d.draw_frag, fp16, false);
-    d.blur_pipeline = try d.pipeline(d.blur_frag, fp32, false);
-    d.encode_pipelines[@backingInt(Output.bgra8)] = try d.pipeline(d.encode_frag, outputFormat(.bgra8), false);
-    d.encode_pipelines[@backingInt(Output.rgba8)] = try d.pipeline(d.encode_frag, outputFormat(.rgba8), false);
+    d.draw_pipeline = try d.pipeline(d.draw_frag, fp16, true, 0);
+    d.draw_simple_pipeline = try d.pipeline(d.draw_frag, fp16, true, 1);
+    d.replace_pipeline = try d.pipeline(d.draw_frag, fp16, false, 0);
+    d.blur_pipeline = try d.pipeline(d.blur_frag, fp32, false, 0);
+    d.encode_pipelines[@backingInt(Output.bgra8)] = try d.pipeline(d.encode_frag, outputFormat(.bgra8), false, 0);
+    d.encode_pipelines[@backingInt(Output.rgba8)] = try d.pipeline(d.encode_frag, outputFormat(.rgba8), false, 0);
 
     // Constant tables, one u32 per entry: 16 text contrast tables of 256,
     // then the CPU renderer's transfer tables (sRGB byte to linear u16,
@@ -640,10 +643,13 @@ fn shaderModule(d: *Device, code: []const u8) vk.Error!c.VkShaderModule {
     return m;
 }
 
-fn pipeline(d: *Device, frag: c.VkShaderModule, format: c.VkFormat, blend: bool) vk.Error!c.VkPipeline {
+/// `variant` sets the fragment shader's specialization constant 0.
+fn pipeline(d: *Device, frag: c.VkShaderModule, format: c.VkFormat, blend: bool, variant: u32) vk.Error!c.VkPipeline {
+    const entry: c.VkSpecializationMapEntry = .{ .constantID = 0, .offset = 0, .size = 4 };
+    const spec: c.VkSpecializationInfo = .{ .mapEntryCount = 1, .pMapEntries = &entry, .dataSize = 4, .pData = &variant };
     const stages = [_]c.VkPipelineShaderStageCreateInfo{
         .{ .sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = c.VK_SHADER_STAGE_VERTEX_BIT, .module = d.vert, .pName = "main" },
-        .{ .sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = c.VK_SHADER_STAGE_FRAGMENT_BIT, .module = frag, .pName = "main" },
+        .{ .sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = c.VK_SHADER_STAGE_FRAGMENT_BIT, .module = frag, .pName = "main", .pSpecializationInfo = &spec },
     };
     const vertex_input: c.VkPipelineVertexInputStateCreateInfo = .{ .sType = c.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
     const assembly: c.VkPipelineInputAssemblyStateCreateInfo = .{

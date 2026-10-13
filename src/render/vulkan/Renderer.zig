@@ -1296,6 +1296,29 @@ fn strokeInterior(shape: scene.Shape, width: f32, m: Affine) IRect {
     return if (b.isEmpty() or area(b) < 16 * 16) .empty else b;
 }
 
+/// Whether draw.frag's specialized variant draws `inst` (as the full one
+/// would): a solid paint, analytic or glyph coverage, and no more than two
+/// clips, both analytic.
+pub fn simpleDraw(r: *const Renderer, inst: Inst) bool {
+    if (inst.paint != paint_solid) return false;
+    switch (inst.cov) {
+        cov_full, cov_rect, cov_rrect, cov_glyph => {},
+        else => return false,
+    }
+    var clip = inst.clip;
+    var depth: u32 = 0;
+    while (clip != 0) : (depth += 1) {
+        if (depth == 2) return false;
+        const rec = r.clips.items[clip - 1];
+        switch (rec.kind) {
+            cov_full, cov_rect, cov_rrect => {},
+            else => return false,
+        }
+        clip = rec.parent;
+    }
+    return true;
+}
+
 /// The device pixels an instance surely covers fully and opaquely, or
 /// null when it is not opaque.
 fn opaqueBox(r: *const Renderer, inst: Inst) ?IRect {
@@ -1819,16 +1842,19 @@ const Recorder = struct {
 
     fn draw(rec: *Recorder, first: u32, count: u32, image: ?u64) Error!void {
         if (image) |key| try rec.bindTextures(&rec.r.textures.getPtr(key).?.image, null);
-        rec.bind(rec.r.device.draw_pipeline);
         // An instance with a hole is drawn as the four quads around it
-        // (quad.vert): runs of those go four times, the rest once.
-        const insts = rec.r.insts.items;
+        // (quad.vert): runs of those go four times, the rest once. Common
+        // draws go to the specialized pipeline (`simpleDraw`).
+        const r = rec.r;
+        const insts = r.insts.items;
         var i = first;
         const last = first + count;
         while (i < last) {
             const holed = !quadRect(insts[i].hole).isEmpty();
+            const simple = r.simpleDraw(insts[i]);
             var j = i + 1;
-            while (j < last and !quadRect(insts[j].hole).isEmpty() == holed) j += 1;
+            while (j < last and !quadRect(insts[j].hole).isEmpty() == holed and r.simpleDraw(insts[j]) == simple) j += 1;
+            rec.bind(if (simple) r.device.draw_simple_pipeline else r.device.draw_pipeline);
             rec.setPieces(holed);
             if (holed) rec.k().vkCmdDraw.?(rec.cmd, 4, (j - i) * 4, 0, i * 4) else rec.k().vkCmdDraw.?(rec.cmd, 4, j - i, 0, i);
             i = j;

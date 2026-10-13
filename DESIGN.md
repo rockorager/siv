@@ -818,6 +818,20 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     rasterized over the whole window): GPU time per frame 1.68 to 1.05
     ms (gpui 0.96), the draw pass alone 1.38 to 0.74 ms; frames are
     unchanged (the Vulkan tests compare them with the CPU's).
+  - Two draw pipelines from the one fragment shader: a specialization
+    constant selects a variant for the common draws (solid paint with
+    rectangle, rounded rectangle, or glyph coverage, and at most two
+    analytic clips; `Renderer.simpleDraw`), from which the driver drops
+    every other path, and runs of such instances are drawn with it. The
+    variant evaluates the same formulas, so frames are unchanged (the
+    Vulkan tests compare both against the CPU). RADV's shader statistics
+    (`RADV_DEBUG=shaderstats`; RGP is not available here) put the full
+    shader at 23,560 instructions in 110 KB with 56 VGPRs, the variant at
+    943 instructions in 4.4 KB with 24. GPU timestamps of the draw pass
+    per frame, full shader against the two pipelines: the 1.4 MB
+    document scrolling 0.84 to 0.54 ms, the grid 0.53 to 0.43 ms, the
+    100,000-row list 0.65 to 0.39 ms. The encode (about 0.2 ms) is
+    untouched.
   - Path coverage of up to 262,144 pixels a frame is rasterized on the
     compositor thread instead of the worker pool, whose dozen threads
     woke every frame for a border's four bands: with the bands, that

@@ -9,6 +9,12 @@
 layout(location = 0) flat in uint v_inst;
 layout(location = 0) out vec4 o_color;
 
+// 1: the pipeline for the common draws (Renderer.simpleDraw): a solid
+// paint with analytic or glyph coverage and at most two analytic clips.
+// The driver drops everything else from that pipeline's shader, which is
+// a few hundred instructions instead of 23,000 (D10).
+layout(constant_id = 0) const uint VARIANT = 0u;
+
 // Coverage ------------------------------------------------------------------
 
 float overlap(float lo, float hi, float p) {
@@ -429,7 +435,45 @@ uvec4 texelB(ivec4 t, vec2 px) {
     return toU16(texelFetch(tex_b, ivec2(px) - t.yz, 0));
 }
 
+float analyticCoverage(uint kind, vec4 g0, vec4 g1, vec4 g2, vec2 px) {
+    if (kind == COV_RECT) return floor(overlap(g0.x, g0.z, px.x) * overlap(g0.y, g0.w, px.y) * 255.0 + 0.5);
+    if (kind == COV_RRECT) return rrectCoverage(g0, g1, g2, px);
+    return 255.0;
+}
+
+// clipCoverage for chains of at most two analytic clips.
+float clipCoverage2(uint index, vec2 px) {
+    ClipRec inner = clips[index - 1u];
+    float m = analyticCoverage(inner.kind, inner.g0, inner.g1, inner.g2, px);
+    if (inner.parent == 0u) return m;
+    ClipRec outer = clips[inner.parent - 1u];
+    float o = analyticCoverage(outer.kind, outer.g0, outer.g1, outer.g2, px);
+    return floor((m * o + 127.0) / 255.0);
+}
+
+void simpleMain() {
+    Inst it = insts[v_inst];
+    vec2 px = floor(gl_FragCoord.xy) + pc.origin;
+    uint cov16;
+    if (it.cov == COV_GLYPH) {
+        uint a = uint(glyphCoverage(it.tex, px));
+        if (a == 0u) discard;
+        cov16 = luts[uint(it.tex.w) * 256u + a];
+        if (it.clip != 0u) cov16 = div65535(cov16 * (uint(clipCoverage2(it.clip, px)) * 257u));
+    } else {
+        float c = analyticCoverage(it.cov, it.g0, it.g1, it.g2, px);
+        if (it.clip != 0u) c = floor((c * clipCoverage2(it.clip, px) + 127.0) / 255.0);
+        cov16 = uint(c) * 257u;
+    }
+    if (cov16 == 0u) discard;
+    o_color = it.color * (float(cov16) / 65535.0);
+}
+
 void main() {
+    if (VARIANT == 1u) {
+        simpleMain();
+        return;
+    }
     Inst it = insts[v_inst];
     vec2 px = floor(gl_FragCoord.xy) + pc.origin;
     vec2 pos = px + 0.5;

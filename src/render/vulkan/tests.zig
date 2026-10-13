@@ -174,6 +174,11 @@ test "draws under later opaque ones get holes, borders are bands, and frames sti
             if (q[2] <= q[0] or inst.hole[2] > inst.hole[0]) holed += 1;
         }
         try testing.expect(holed >= 2);
+        // Both draw pipelines drew part of it: the specialized one the
+        // rows and backgrounds, the full one the gradient and the border.
+        var simple: usize = 0;
+        for (r.insts.items) |inst| simple += @intFromBool(r.simpleDraw(inst));
+        try testing.expect(simple >= 6 and simple < r.insts.items.len);
     }
     try testing.expectEqual(errors, Device.validation_errors.load(.monotonic));
 }
