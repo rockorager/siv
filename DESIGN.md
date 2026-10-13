@@ -2407,14 +2407,20 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       Adwaita's 35% inactive segments) look lighter in siv than in GTK
       or Qt. Measured (`zig build test-integration-icons`: every SVG of
       the installed themes drawn by siv and by librsvg's rsvg-convert at
-      32 px, librsvg's pixels composited over white in linear light; an
-      icon differs when over 2% of its pixels are off by more than 24 of
-      255): Adwaita 0 of 647 differ; Breeze 1,178 of 5,054 (23%), all of
-      the worst from translucent overlays. Not decided: drawing icons in
-      a layer that composites in sRGB, which needs a layer flag in both
-      renderers (PDF already blends in sRGB) and would make the two
-      agree. Until then the test bounds Breeze's share of differing
-      icons.
+      32 px; an icon differs when over 2% of its pixels are off by more
+      than 24 of 255): with siv's colors moved to sRGB encodings so the
+      CPU renderer blends as librsvg does, 0 of 647 Adwaita icons and 14
+      of 5,054 Breeze icons (0.3%) differ, so the lowering and coverage
+      agree (of those, an animation's sprite sheet that rsvg-convert
+      squeezes into a square, two icons with filters or text siv leaves
+      out, and four not yet explained: kdesvn, yakuake,
+      preferences-desktop-touchscreen, tool_elliptical_selection); as
+      siv draws them, against librsvg's pixels composited over white in
+      linear light, Adwaita still 0 but Breeze 1,178 (23%), all but those
+      14 from blending translucent shapes over other shapes. Not decided:
+      drawing icons in a layer that composites in sRGB, which needs a
+      layer flag in both renderers (PDF already blends in sRGB) and would
+      make the two agree. Until then the test bounds both shares.
     - Verified: module tests for lookup (siv's test themes in
       test/icons/themes: inheritance, hicolor, sizes, scales, fallbacks,
       RTL), the cascade, symbolic and KDE recoloring, gradients, clip
