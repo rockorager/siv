@@ -57,7 +57,8 @@ pub const Harness = struct {
     }
 
     /// Dispatches until every commit is presented and nothing is pending.
-    /// Every shown window (popups too) has presented what it committed.
+    /// Every shown window (popups too) has presented what it committed,
+    /// and no paste or drop is still being read.
     pub fn settle(h: *Harness) !void {
         const self = try h.internal();
         const deadline = Loop.now() + 10 * std.time.ns_per_s;
@@ -65,7 +66,10 @@ pub const Harness = struct {
         while (idle < 3) {
             if (Loop.now() > deadline) return error.Timeout;
             try ok(A.siv_app_dispatch(h.app, 2));
-            var busy = self.app.fonts.loading();
+            // Pastes and drops read on the UI thread from data another
+            // thread writes.
+            const cb = &self.app.clipboard;
+            var busy = self.app.fonts.loading() or cb.transfers.items.len != 0 or cb.ready.items.len != 0;
             for (self.windows.items) |slot| if (slot) |w| {
                 if (w.dead or !w.win.shown) continue;
                 busy = busy or w.win.presented_seq == 0 or !w.win.settled();
