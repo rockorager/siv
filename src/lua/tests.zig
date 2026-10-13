@@ -249,6 +249,40 @@ test "asynchronous calls: callbacks, or a coroutine that waits" {
     );
 }
 
+test "themed icons from Lua: loads, image nodes, buttons, and canvases" {
+    _ = try run(prologue ++
+        \\app:add_icon_path("test/icons/themes")
+        \\app:set_icon_theme("SivTest")
+        \\local size, missing
+        \\local done = false
+        \\siv.spawn(function()
+        \\  local icon = app:icon_load{ name = "edit-copy-symbolic", logical_size = 24 }
+        \\  size = icon:get_size()
+        \\  local ok, err = pcall(app.icon_load, app, { name = "no-such-icon", flags = { "no_fallbacks" } })
+        \\  missing = not ok and siv.is_error(err)
+        \\  done = true
+        \\end)
+        \\local drew = 0
+        \\win:update(function(txn)
+        \\  local root = win:root()
+        \\  txn:image_view(root, { icon = "folder", icon_size = 48, color_token = "accent" })
+        \\  txn:push_button(root, { label = "Copy", icon = "edit-copy-symbolic", flags = { "icon_only" } })
+        \\  txn:canvas(root, { width = 32, height = 32, draw = function(node, d, w, h)
+        \\    d:icon("emblem-ok-symbolic", { x = 0, y = 0, width = w, height = h }, "#ff0000", {})
+        \\    drew = drew + 1
+        \\  end })
+        \\end)
+        \\for _ = 1, 500 do
+        \\  if done and drew >= 2 then break end
+        \\  app:dispatch(10)
+        \\end
+        \\assert(done and size.width == 24 and size.height == 24, "icon did not load")
+        \\assert(missing, "a missing icon raises")
+        \\-- The canvas drew again once its icon loaded.
+        \\assert(drew >= 2, "canvas drew " .. drew .. " times")
+    );
+}
+
 test "canvases draw from Lua" {
     _ = try run(prologue ++
         \\local root = win:root()

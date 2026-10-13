@@ -1093,7 +1093,9 @@ pub fn Wrapper(comptime fi: usize) type {
                     },
                 }
             }
-            const props = if (comptime m.isBuilder(spec, f)) arg else 0;
+            // Only an argument the caller passed: past them is the anchor
+            // slot, a table once a callback was boxed.
+            const props = if (comptime m.isBuilder(spec, f)) (if (arg <= top) arg else 0) else 0;
             ctx.commitBoxes();
 
             const prev = st.L;
