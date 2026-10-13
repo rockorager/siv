@@ -46,5 +46,6 @@ test {
     _ = @import("abi/image.zig");
     _ = @import("abi/fonts.zig");
     _ = @import("abi/rich_text.zig");
+    _ = @import("abi/input.zig");
     _ = @import("lua/lua.zig");
 }

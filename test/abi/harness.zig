@@ -95,6 +95,34 @@ pub const Harness = struct {
         try self.app.comp.call(&ctx, Ctx.run);
     }
 
+    /// Frames the compositor presented for the window, counting those
+    /// the UI did not commit (compositor scrolling and zooming, D8).
+    pub fn framesPresented(h: *Harness) !u64 {
+        const self = try h.internal();
+        const Ctx = struct {
+            id: platform.WindowId,
+            out: u64 = 0,
+            pub fn run(ctx: ?*anyopaque, comp: *compositor.Compositor) void {
+                const c: *@This() = @ptrCast(@alignCast(ctx));
+                if (comp.frameStats(c.id)) |st| c.out = st.frames;
+            }
+        };
+        var ctx: Ctx = .{ .id = (try h.win()).win.id };
+        try self.app.comp.call(&ctx, Ctx.run);
+        return ctx.out;
+    }
+
+    /// Dispatches until the compositor presented a frame after `since`
+    /// (`framesPresented`), then settles.
+    pub fn waitFrame(h: *Harness, since: u64) !void {
+        const deadline = Loop.now() + 5 * std.time.ns_per_s;
+        while (try h.framesPresented() <= since) {
+            if (Loop.now() > deadline) return error.Timeout;
+            try ok(A.siv_app_dispatch(h.app, 2));
+        }
+        try h.settle();
+    }
+
     pub fn click(h: *Harness, x: f64, y: f64) !void {
         return h.clickIn(h.window, x, y);
     }

@@ -462,21 +462,25 @@ pub fn isAncestor(win: *const Window, ancestor: NodeId, id: NodeId) bool {
 pub fn windowRect(win: *const Window, id: NodeId) Rect {
     const s = win.state(id);
     var p = s.pos;
+    // Zoomed scroll nodes above scale the box.
+    var k: f32 = 1;
     var cur = win.node(id).parent;
     while (cur != .none) : (cur = win.node(cur).parent) {
         const n = win.node(cur);
         const cs = win.state(cur);
         if (n.kind == .scroll) {
             const pad = n.layout.padding;
-            p.x += pad.left(cs.rtl) - paint_mod.scrollTranslation(win, cur).x;
-            p.y += pad.top - paint_mod.scrollTranslation(win, cur).y;
+            const z = n.data.scroll.zoom;
+            p.x = pad.left(cs.rtl) + p.x * z - paint_mod.scrollTranslation(win, cur).x;
+            p.y = pad.top + p.y * z - paint_mod.scrollTranslation(win, cur).y;
+            k *= z;
         }
         const t = n.visual.transform;
         if (!t.eql(.identity)) p = t.affine().apply(p);
         p.x += cs.pos.x;
         p.y += cs.pos.y;
     }
-    return .xywh(p.x, p.y, s.size.w, s.size.h);
+    return .xywh(p.x, p.y, s.size.w * k, s.size.h * k);
 }
 
 // Dirty marking -------------------------------------------------------------
@@ -529,7 +533,7 @@ pub fn needsFrame(win: *const Window) bool {
     // Semantics alone need no frame: they rebuild on query or with the
     // next frame (`semanticsTree`), so scrolling makes no extra frames.
     return win.state(.root).needs_layout or win.dirty.layers or win.dirty.props or win.viewport_dirty or
-        win.paint.anyDirty() or win.pending_input.items.len != 0 or win.ime.dirty or win.pending_edits.items.len != 0 or
+        win.paint.anyDirty() or win.pending_input.items.len != 0 or win.input.tablet_pending.items.len != 0 or win.ime.dirty or win.pending_edits.items.len != 0 or
         win.dnd.pending != null;
 }
 
@@ -600,6 +604,9 @@ pub fn frame(win: *Window) Error!void {
     win.recycleDead();
     win.replayInput();
     if (win.txn.open) return;
+    // Tablet motion goes out once a frame (D16).
+    input_mod.flushTablet(win);
+    if (win.txn.open) return;
     // Rows a viewport handler adds are laid out in this frame.
     win.viewport_dirty = false;
     win.deliverViewports();
@@ -642,6 +649,7 @@ pub fn viewportOf(win: *const Window, id: NodeId) node_mod.Viewport {
         .y = n.data.scroll.offset.y,
         .width = @max(0, s.size.w - pad.horizontal()),
         .height = @max(0, s.size.h - pad.vertical()),
+        .zoom = n.data.scroll.zoom,
     };
 }
 
@@ -823,7 +831,7 @@ pub fn handleEvent(win: *Window, event: *const compositor.Event) Error!void {
             win.configure(@floatFromInt(c.state.width), @floatFromInt(c.state.height), @floatCast(c.state.scale.toFloat()));
         },
         .frame => try win.frame(),
-        .scrolled => |s| win.scrolled(s.layer, s.offset, s.seq),
+        .scrolled => |s| win.scrolled(s.layer, s.offset, s.zoom, s.seq),
         .released => |b| win.paint.released(win.gpa, b),
         // External frames belong to their producer, not the window.
         .presented, .animation_finished, .external_released, .external_configure => {},
@@ -1178,13 +1186,15 @@ pub fn reducedMotion(win: *const Window) bool {
 
 /// The compositor scrolled a container. Reports older than the UI's own
 /// last `scroll_to` for it are stale.
-fn scrolled(win: *Window, layer: compositor.LayerId, offset: Point, seq: u64) void {
+fn scrolled(win: *Window, layer: compositor.LayerId, offset: Point, zoom: f32, seq: u64) void {
     const index = paint_mod.indexOf(layer);
     if (index >= win.paint.layers.items.len) return;
     const l = &win.paint.layers.items[index];
     if (seq < l.scroll_seq or !win.isLive(l.owner) or win.node(l.owner).kind != .scroll) return;
     if (!win.paint.ownsLayerNow(win, l.owner)) return;
     l.scroll_offset = offset;
+    l.zoom = zoom;
+    win.node(l.owner).data.scroll.zoom = zoom;
     win.node(l.owner).data.scroll.offset = paint_mod.logicalScroll(win, l.owner, offset);
     win.dirty.semantics = true;
     if (win.node(l.owner).handler(.viewport) != null and !win.txn.open) win.deliverViewports();

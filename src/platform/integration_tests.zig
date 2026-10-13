@@ -9,6 +9,7 @@ const platform = @import("platform.zig");
 const Loop = platform.Loop;
 const Wayland = @import("Wayland.zig");
 const Seat = @import("Seat.zig");
+const Tablet = @import("Tablet.zig");
 const Sway = @import("test_sway.zig").Sway;
 const VirtualPointer = @import("test_sway.zig").VirtualPointer;
 const Size = platform.Size;
@@ -378,6 +379,149 @@ test "pointer, scrolling, keyboard text and repeat, touch" {
     try testing.expectEqual(@as(f64, 6), got[3].touch_motion.major);
     try testing.expectEqual(@as(i32, 8), got[4].touch_up.id);
     try testing.expectEqual(@as(f64, 30), got[4].touch_up.x);
+}
+
+test "touchpad gestures: sway's pointer-gestures objects, and their events translated" {
+    var h: Harness = .{};
+    try h.start();
+    defer h.stop();
+    const app = &h.app;
+    const id = try h.mapWindow(.{});
+    var vp = try VirtualPointer.connect(&h.sway);
+    defer vp.deinit();
+    try vp.sync();
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            const seat = a.backend.seats.items[0] orelse return false;
+            return seat.pointer != null;
+        }
+    }.f);
+    _ = app.backend.display.roundtrip();
+    // Sway 1.12 offers pointer-gestures version 3: all three gestures.
+    const seat = app.backend.seats.items[0].?;
+    try testing.expect(seat.swipe != null and seat.pinch != null and seat.hold != null);
+
+    // Sway cannot make gestures without a touchpad, so feed the listeners
+    // events for the real surface, as with touch.
+    const surface = app.backend.get(id).surface;
+    const fx = wl.Fixed.fromDouble;
+    const before = app.events.items.len;
+    Seat.onPinch(seat.pinch.?, .{ .begin = .{ .serial = 3, .time = 10, .surface = surface, .fingers = 2 } }, seat);
+    Seat.onPinch(seat.pinch.?, .{ .update = .{ .time = 11, .dx = fx(1.5), .dy = fx(-2), .scale = fx(1.25), .rotation = fx(4) } }, seat);
+    Seat.onPinch(seat.pinch.?, .{ .end = .{ .serial = 4, .time = 12, .cancelled = 0 } }, seat);
+    Seat.onSwipe(seat.swipe.?, .{ .begin = .{ .serial = 5, .time = 13, .surface = surface, .fingers = 3 } }, seat);
+    Seat.onSwipe(seat.swipe.?, .{ .end = .{ .serial = 6, .time = 14, .cancelled = 1 } }, seat);
+    Seat.onHold(seat.hold.?, .{ .begin = .{ .serial = 7, .time = 15, .surface = surface, .fingers = 2 } }, seat);
+    Seat.onHold(seat.hold.?, .{ .end = .{ .serial = 8, .time = 16, .cancelled = 0 } }, seat);
+    // An update without a begin (the surface was not ours) is dropped.
+    Seat.onPinch(seat.pinch.?, .{ .update = .{ .time = 17, .dx = fx(0), .dy = fx(0), .scale = fx(2), .rotation = fx(0) } }, seat);
+    try h.loop.dispatch(0);
+    var got: std.ArrayList(platform.Gesture) = .empty;
+    defer got.deinit(testing.allocator);
+    for (app.events.items[before..]) |e| if (e == .gesture) try got.append(testing.allocator, e.gesture);
+    try testing.expectEqual(@as(usize, 7), got.items.len);
+    const pinch = got.items[1];
+    try testing.expectEqual(id, pinch.window);
+    try testing.expectEqual(platform.GestureKind.pinch, pinch.kind);
+    try testing.expectEqual(platform.GesturePhase.update, pinch.phase);
+    try testing.expectEqual(@as(u32, 2), pinch.fingers);
+    try testing.expectEqual(@as(f64, 1.5), pinch.dx);
+    try testing.expectEqual(@as(f64, -2), pinch.dy);
+    try testing.expectEqual(@as(f64, 1.25), pinch.scale);
+    try testing.expectEqual(@as(f64, 4), pinch.rotation);
+    try testing.expect(got.items[2].phase == .end and !got.items[2].cancelled);
+    try testing.expectEqual(@as(u32, 3), got.items[3].fingers);
+    try testing.expect(got.items[4].kind == .swipe and got.items[4].cancelled);
+    try testing.expect(got.items[5].kind == .hold and got.items[5].phase == .begin);
+}
+
+test "tablets: sway's tablet seat, and tool and pad events translated" {
+    var h: Harness = .{};
+    try h.start();
+    defer h.stop();
+    const app = &h.app;
+    const id = try h.mapWindow(.{});
+    _ = app.backend.display.roundtrip();
+    // Sway offers tablet-v2: the seat has a tablet seat, with no tablets
+    // on the headless backend.
+    const seat = app.backend.seats.items[0].?;
+    const tablet = seat.tablet orelse return error.NoTabletSeat;
+    try testing.expectEqual(@as(usize, 0), tablet.tools.items.len);
+
+    // Sway cannot make tablet input without a device, so feed a tool's and
+    // a pad's listeners events for the real surface, as with touch.
+    const surface = app.backend.get(id).surface;
+    const fx = wl.Fixed.fromDouble;
+    const tool = try tablet.addTool(null);
+    const proxy: *@import("wayland").client.zwp.TabletToolV2 = @ptrFromInt(0x1000); // the listener ignores it
+    const before = app.events.items.len;
+    Tablet.onTool(proxy, .{ .type = .{ .tool_type = @enumFromInt(0x141) } }, tool);
+    Tablet.onTool(proxy, .{ .hardware_serial = .{ .hardware_serial_hi = 1, .hardware_serial_lo = 2 } }, tool);
+    Tablet.onTool(proxy, .{ .capability = .{ .capability = @enumFromInt(2) } }, tool);
+    Tablet.onTool(proxy, .{ .capability = .{ .capability = @enumFromInt(1) } }, tool);
+    Tablet.onTool(proxy, .done, tool);
+    // One frame with proximity, contact, position, and axes...
+    Tablet.onTool(proxy, .{ .proximity_in = .{ .serial = 9, .tablet = null, .surface = surface } }, tool);
+    Tablet.onTool(proxy, .{ .down = .{ .serial = 10 } }, tool);
+    Tablet.onTool(proxy, .{ .motion = .{ .x = fx(12.5), .y = fx(20) } }, tool);
+    Tablet.onTool(proxy, .{ .pressure = .{ .pressure = 32768 } }, tool);
+    Tablet.onTool(proxy, .{ .tilt = .{ .tilt_x = fx(-15), .tilt_y = fx(30) } }, tool);
+    Tablet.onTool(proxy, .{ .frame = .{ .time = 100 } }, tool);
+    // ...motion only, then a button, then lifting and leaving.
+    Tablet.onTool(proxy, .{ .motion = .{ .x = fx(14), .y = fx(21) } }, tool);
+    Tablet.onTool(proxy, .{ .frame = .{ .time = 105 } }, tool);
+    Tablet.onTool(proxy, .{ .button = .{ .serial = 11, .button = 0x14b, .state = .pressed } }, tool);
+    Tablet.onTool(proxy, .{ .frame = .{ .time = 110 } }, tool);
+    Tablet.onTool(proxy, .up, tool);
+    Tablet.onTool(proxy, .proximity_out, tool);
+    Tablet.onTool(proxy, .{ .frame = .{ .time = 120 } }, tool);
+
+    var pad: Tablet.Pad = .{ .tablet = tablet, .index = 0, .proxy = @ptrFromInt(0x1000) };
+    var group: Tablet.Group = .{ .pad = &pad, .index = 0, .proxy = @ptrFromInt(0x1000), .mode = 1 };
+    var ring: Tablet.Control = .{ .group = &group, .kind = .ring, .index = 0, .proxy = @ptrFromInt(0x1000) };
+    Tablet.onPad(pad.proxy, .{ .enter = .{ .serial = 12, .tablet = null, .surface = surface } }, &pad);
+    Tablet.onPad(pad.proxy, .{ .button = .{ .time = 130, .button = 3, .state = .pressed } }, &pad);
+    Tablet.onRing(@ptrFromInt(0x1000), .{ .angle = .{ .degrees = fx(45) } }, &ring);
+    Tablet.onRing(@ptrFromInt(0x1000), .{ .frame = .{ .time = 131 } }, &ring);
+    Tablet.onRing(@ptrFromInt(0x1000), .stop, &ring);
+    Tablet.onRing(@ptrFromInt(0x1000), .{ .frame = .{ .time = 132 } }, &ring);
+    try h.loop.dispatch(0);
+
+    var tools: std.ArrayList(platform.TabletTool) = .empty;
+    defer tools.deinit(testing.allocator);
+    var pads: std.ArrayList(platform.TabletPad) = .empty;
+    defer pads.deinit(testing.allocator);
+    for (app.events.items[before..]) |e| switch (e) {
+        .tablet_tool => |t| try tools.append(testing.allocator, t),
+        .tablet_pad => |p| try pads.append(testing.allocator, p),
+        else => {},
+    };
+    const phases = [_]platform.TabletPhase{ .proximity_in, .down, .motion, .button, .up, .proximity_out };
+    try testing.expectEqual(phases.len, tools.items.len);
+    for (phases, tools.items) |p, t| try testing.expectEqual(p, t.phase);
+    const down = tools.items[1];
+    try testing.expectEqual(id, down.window);
+    try testing.expectEqual(platform.ToolKind.eraser, down.kind);
+    try testing.expectEqual(@as(u64, 1 << 32 | 2), down.serial_number);
+    try testing.expect(down.axes.pressure and down.axes.tilt and !down.axes.distance);
+    try testing.expect(down.tip);
+    try testing.expectEqual(@as(f64, 12.5), down.x);
+    try testing.expectApproxEqAbs(@as(f64, 0.5), down.pressure, 1e-4);
+    try testing.expectEqual(@as(f64, -15), down.tilt_x);
+    try testing.expectEqual(@as(u32, 100), down.time);
+    try testing.expectEqual(@as(f64, 14), tools.items[2].x);
+    try testing.expectEqual(@as(u32, 0x14b), tools.items[3].button);
+    try testing.expect(tools.items[3].pressed);
+    try testing.expect(!tools.items[4].tip);
+    try testing.expectEqual(@as(?platform.WindowId, null), tool.window);
+
+    try testing.expectEqual(@as(usize, 3), pads.items.len);
+    try testing.expectEqual(platform.PadControl.button, pads.items[0].control);
+    try testing.expectEqual(@as(u32, 3), pads.items[0].index);
+    try testing.expectEqual(platform.PadControl.ring, pads.items[1].control);
+    try testing.expectEqual(@as(f64, 45), pads.items[1].value);
+    try testing.expectEqual(@as(u32, 1), pads.items[1].mode);
+    try testing.expect(pads.items[2].stop);
 }
 
 test "a deferred configure is acked by the next present or after the timeout" {

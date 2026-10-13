@@ -713,11 +713,15 @@ pub const Txn = struct {
     pub fn setScroll(t: *Txn, id: NodeId, s: node_mod.Scroll) Error!void {
         const n = try t.data(id, .scroll);
         if (!finite(s.offset.x) or !finite(s.offset.y)) return error.InvalidArgument;
+        if (!finite(s.min_zoom) or !finite(s.max_zoom) or !finite(s.zoom) or !(s.min_zoom > 0) or s.max_zoom < s.min_zoom) return error.InvalidArgument;
         try t.reserve();
         t.touch(id);
         const old = n.data.scroll;
         n.data.scroll = s;
+        n.data.scroll.zoom = std.math.clamp(s.zoom, s.min_zoom, s.max_zoom);
         if (old.axis != s.axis) t.win.markLayout(id);
+        // The zoom range is a layer property; a new zoom goes out with them.
+        if (old.min_zoom != s.min_zoom or old.max_zoom != s.max_zoom or old.zoom != n.data.scroll.zoom) t.win.dirty.props = true;
         if (!old.offset.eql(s.offset)) {
             t.win.state(id).scroll_pending = true;
             t.win.dirty.props = true;

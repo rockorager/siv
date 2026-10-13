@@ -937,6 +937,37 @@ pub export fn siv_set_scroll_axis(txn: t.Txn, node: t.Node, axis: t.ScrollAxis) 
     }.f, .{ node, axis });
 }
 
+pub export fn siv_set_scroll_zoom_range(txn: t.Txn, node: t.Node, min_zoom: f32, max_zoom: f32) t.Result {
+    return run(txn, struct {
+        fn f(w: *Window, n: t.Node, lo: f32, hi: f32) Error!void {
+            const id = try nodeIn(w, n);
+            const un = w.uiWin().node(id);
+            if (un.kind != .scroll) return error.InvalidArgument;
+            var s = un.data.scroll;
+            s.min_zoom = lo;
+            s.max_zoom = hi;
+            w.txn.ut.setScroll(id, s) catch |err| return mapTxn(err);
+        }
+    }.f, .{ node, min_zoom, max_zoom });
+}
+
+pub export fn siv_scroll_zoom_to(txn: t.Txn, node: t.Node, zoom: f32) t.Result {
+    return run(txn, struct {
+        fn f(w: *Window, n: t.Node, z: f32) Error!void {
+            const id = try nodeIn(w, n);
+            const un = w.uiWin().node(id);
+            if (un.kind != .scroll) return error.InvalidArgument;
+            if (!(z > 0) or !std.math.isFinite(z)) return error.InvalidArgument;
+            var s = un.data.scroll;
+            const nz = std.math.clamp(z, s.min_zoom, s.max_zoom);
+            // The content at the viewport's corner stays.
+            s.offset = .{ .x = s.offset.x * nz / s.zoom, .y = s.offset.y * nz / s.zoom };
+            s.zoom = nz;
+            w.txn.ut.setScroll(id, s) catch |err| return mapTxn(err);
+        }
+    }.f, .{ node, zoom });
+}
+
 pub export fn siv_scroll_to(txn: t.Txn, node: t.Node, x: f32, y: f32) t.Result {
     return run(txn, struct {
         fn f(w: *Window, n: t.Node, sx: f32, sy: f32) Error!void {
@@ -1238,6 +1269,22 @@ fn handlerKind(kind: t.EventType) Error!ui.HandlerKind {
 }
 
 comptime {
+    // Tablet samples go to C without a copy.
+    const S = ui.TabletSample;
+    const C = t.TabletSample;
+    if (@sizeOf(S) != @sizeOf(C)) @compileError("siv_tablet_sample does not match ui TabletSample");
+    for (.{ "x", "y", "pressure", "distance", "tilt_x", "tilt_y", "rotation", "slider", "time" }) |f| {
+        if (@offsetOf(S, f) != @offsetOf(C, f)) @compileError("siv_tablet_sample." ++ f ++ " does not match");
+    }
+    for (@typeInfo(ui.PadControl).@"enum".field_names, 0..) |name, i| {
+        if (@backingInt(@field(t.PadControl, name)) != i) @compileError("siv_pad_control does not match at " ++ name);
+    }
+    for (@typeInfo(ui.ToolKind).@"enum".field_names, 0..) |name, i| {
+        if (@backingInt(@field(t.TabletTool, name)) != i) @compileError("siv_tablet_tool does not match at " ++ name);
+    }
+}
+
+comptime {
     for (@typeInfo(ui.HandlerKind).@"enum".field_names, 0..) |name, i| {
         if (@backingInt(@field(t.EventType, name)) != i) @compileError("siv_event_type does not match ui.HandlerKind at " ++ name);
     }
@@ -1306,6 +1353,30 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
             ev.flags.prevented = s.prevented;
             if (s.target != .none and uw.isLive(s.target)) ev.target = @fromBackingInt(w.nodes.handle(s.target));
         },
+        .gesture => |g| {
+            ev.gesture = switch (g.kind) {
+                .swipe => .swipe,
+                .pinch => .pinch,
+                .hold => .hold,
+            };
+            ev.phase = switch (g.phase) {
+                .begin => .begin,
+                .update => .move,
+                .end => .end,
+                .cancel => .cancel,
+            };
+            ev.count = g.fingers;
+            ev.x = g.x;
+            ev.y = g.y;
+            ev.dx = g.dx;
+            ev.dy = g.dy;
+            ev.scale = g.scale;
+            ev.rotation = g.rotation;
+            ev.modifiers = modifiers(g.mods);
+            ev.time = g.time;
+            ev.flags.prevented = g.prevented;
+            if (g.target != .none and uw.isLive(g.target)) ev.target = @fromBackingInt(w.nodes.handle(g.target));
+        },
         .change => {
             const e = &uw.node(id).data.editor;
             const s = editorText(e);
@@ -1340,11 +1411,65 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
             ev.flags = .{ .accepted = d.accepted };
         },
         .set_value => |v| ev.value = v,
+        .tablet => |tb| {
+            ev.phase = switch (tb.phase) {
+                .down => .down,
+                .up => .up,
+                .move => .move,
+                .enter => .enter,
+                .leave => .leave,
+                .cancel => .cancel,
+            };
+            ev.button = switch (tb.button) {
+                .primary => .primary,
+                .secondary => .secondary,
+                .middle => .middle,
+                .other => .other,
+            };
+            ev.tool = @enumFromInt(@intFromEnum(tb.tool));
+            ev.tool_id = tb.tool_id;
+            ev.tool_serial = tb.serial_number;
+            ev.axes = .{
+                .pressure = tb.axes.pressure,
+                .distance = tb.axes.distance,
+                .tilt = tb.axes.tilt,
+                .rotation = tb.axes.rotation,
+                .slider = tb.axes.slider,
+                .wheel = tb.axes.wheel,
+            };
+            ev.x = tb.sample.x;
+            ev.y = tb.sample.y;
+            ev.pressure = tb.sample.pressure;
+            ev.distance = tb.sample.distance;
+            ev.tilt_x = tb.sample.tilt_x;
+            ev.tilt_y = tb.sample.tilt_y;
+            ev.rotation = tb.sample.rotation;
+            ev.slider = tb.sample.slider;
+            ev.wheel = tb.wheel;
+            // The tree's samples have the C layout (checked below).
+            ev.samples = @ptrCast(tb.samples.ptr);
+            ev.samples_count = tb.samples.len;
+            ev.modifiers = modifiers(tb.mods);
+            ev.time = tb.time;
+            ev.flags = .{ .tip = tb.tip, .prevented = tb.prevented };
+            if (tb.target != .none and uw.isLive(tb.target)) ev.target = @fromBackingInt(w.nodes.handle(tb.target));
+        },
+        .pad => |pd| {
+            ev.pad_control = @enumFromInt(@intFromEnum(pd.control));
+            ev.index = pd.index;
+            ev.group = pd.group;
+            ev.mode = pd.mode;
+            ev.value = pd.value;
+            ev.time = pd.time;
+            ev.flags = .{ .pressed = pd.pressed, .lifted = pd.lifted, .prevented = pd.prevented };
+            if (pd.target != .none and uw.isLive(pd.target)) ev.target = @fromBackingInt(w.nodes.handle(pd.target));
+        },
         .viewport => |v| {
             ev.x = v.x;
             ev.y = v.y;
             ev.width = v.width;
             ev.height = v.height;
+            ev.zoom = v.zoom;
         },
     }
     return deliver(w, id, hk, &ev);

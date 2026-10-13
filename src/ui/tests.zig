@@ -10,6 +10,7 @@ const compositor = @import("compositor");
 const raster = @import("raster");
 const ui = @import("ui.zig");
 const paint = @import("paint.zig");
+const node_mod = @import("node.zig");
 
 const testing = std.testing;
 const NodeId = ui.NodeId;
@@ -135,7 +136,7 @@ const Fixture = struct {
         for (f.comp.tree.endFrame()) |b| try f.win.handleEvent(&.{ .released = b });
         for (f.comp.tree.scrolled.items) |id| {
             f.comp.get(id).scrolled = false;
-            try f.win.handleEvent(&.{ .scrolled = .{ .window = 0, .layer = id, .offset = f.comp.get(id).offset, .seq = f.comp.seq } });
+            try f.win.handleEvent(&.{ .scrolled = .{ .window = 0, .layer = id, .offset = f.comp.get(id).offset, .seq = f.comp.seq, .zoom = f.comp.get(id).zoom } });
         }
         f.comp.tree.scrolled.clearRetainingCapacity();
     }
@@ -722,6 +723,193 @@ test "scroll handlers get wheel regions; declined input passes on as scroll_by" 
     f.win.handlePlatform(&.{ .scroll = .{ .window = 0, .seat = 0, .dy = 40 } });
     try f.frame();
     try testing.expectEqual(@as(f32, 40), f.comp.get(sl).offset.y);
+}
+
+const GestureLog = struct {
+    events: [8]node_mod.Gesture = undefined,
+    n: usize = 0,
+    viewport: ?node_mod.Viewport = null,
+    result: ui.HandlerResult = .pass,
+
+    fn onGesture(user: ?*anyopaque, _: *ui.Window, _: NodeId, ev: *const ui.Event) ui.HandlerResult {
+        const g: *GestureLog = @ptrCast(@alignCast(user));
+        g.events[g.n] = ev.gesture;
+        g.n += 1;
+        return g.result;
+    }
+
+    fn onViewport(user: ?*anyopaque, _: *ui.Window, _: NodeId, ev: *const ui.Event) ui.HandlerResult {
+        const g: *GestureLog = @ptrCast(@alignCast(user));
+        g.viewport = ev.viewport;
+        return .handled;
+    }
+};
+
+test "zoomable scroll nodes: the zoom scales layout boxes and hit tests; pinches and Ctrl+wheel zoom them" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 200, .height = 100 });
+    defer f.deinit();
+    var log: GestureLog = .{};
+    var t = try f.win.begin();
+    const sc = try box(t, .root, .scroll, .{ .padding = .all(5), .width = .{ .px = 200 }, .height = .{ .px = 100 } });
+    try t.setScroll(sc, .{ .axis = .both, .min_zoom = 0.5, .max_zoom = 4, .zoom = 2 });
+    try t.on(sc, .viewport, .{ .func = GestureLog.onViewport, .user = &log });
+    const content = try box(t, sc, .stack, .{ .width = .{ .px = 300 }, .height = .{ .px = 300 } });
+    const knob = try box(t, content, .box, .{ .width = .{ .px = 30 }, .height = .{ .px = 10 }, .inset = .{ .start = 10, .top = 20 } });
+    try t.on(knob, .gesture, .{ .func = GestureLog.onGesture, .user = &log });
+    t.commit();
+    try f.frame();
+    try f.frame();
+    const sl = f.win.state(sc).own_layer + 1;
+    try testing.expectEqual(@as(f32, 2), f.comp.get(sl).zoom);
+    try testing.expectEqual(@as(f32, 4), f.comp.get(sl).scroll.?.max_zoom);
+    // Box (10, 20, 30, 10) in the content shows at 5 + 2 * (10, 20).
+    try testing.expectEqual([4]f32{ 25, 45, 60, 20 }, f.rect(knob));
+    try testing.expectEqual(knob, ui.input.hitTest(f.win, .{ .x = 84, .y = 64 }));
+    try testing.expect(ui.input.hitTest(f.win, .{ .x = 86, .y = 64 }) != knob);
+    try testing.expectEqual(@as(f32, 2), log.viewport.?.zoom);
+
+    // A pinch over the knob goes to its handler; nobody prevents it, so
+    // it zooms the scroll node about the pointer (zoom 2 to 3).
+    f.win.handlePlatform(&.{ .pointer_motion = .{ .window = 0, .seat = 0, .x = 45, .y = 55 } });
+    f.win.handlePlatform(&.{ .gesture = .{ .window = 0, .seat = 0, .kind = .pinch, .phase = .begin, .fingers = 2 } });
+    f.win.handlePlatform(&.{ .gesture = .{ .window = 0, .seat = 0, .kind = .pinch, .phase = .update, .fingers = 2, .scale = 1.5, .rotation = 3 } });
+    f.win.handlePlatform(&.{ .gesture = .{ .window = 0, .seat = 0, .kind = .pinch, .phase = .end, .fingers = 2, .cancelled = true } });
+    try testing.expectEqual(@as(usize, 3), log.n);
+    try testing.expectEqual(node_mod.GesturePhase.begin, log.events[0].phase);
+    try testing.expectEqual(@as(f32, 10), log.events[1].x); // (45 - 5) / 2 - 10
+    try testing.expectEqual(@as(f32, 5), log.events[1].y); // (55 - 5) / 2 - 20
+    try testing.expectEqual(@as(f32, 1.5), log.events[1].scale);
+    try testing.expectEqual(@as(f32, 3), log.events[1].rotation);
+    try testing.expectEqual(node_mod.GesturePhase.cancel, log.events[2].phase);
+    try testing.expectEqual(knob, log.events[2].target);
+    try f.frame();
+    try testing.expectEqual(@as(f32, 3), f.comp.get(sl).zoom);
+    try testing.expectEqual(@as(f32, 3), f.win.node(sc).data.scroll.zoom);
+    // The content point under the pointer stayed: (45, 55) still shows
+    // content (20, 25).
+    const cp = paint.toContent(f.win, sc, .{ .x = 45, .y = 55 });
+    try testing.expectApproxEqAbs(@as(f32, 20), cp.x, 1e-4);
+    try testing.expectApproxEqAbs(@as(f32, 25), cp.y, 1e-4);
+    try testing.expectEqual(@as(f32, 3), log.viewport.?.zoom);
+
+    // A handler that prevents it keeps the zoom.
+    log.result = .handled;
+    f.win.handlePlatform(&.{ .gesture = .{ .window = 0, .seat = 0, .kind = .pinch, .phase = .begin, .fingers = 2 } });
+    f.win.handlePlatform(&.{ .gesture = .{ .window = 0, .seat = 0, .kind = .pinch, .phase = .update, .fingers = 2, .scale = 2 } });
+    try f.frame();
+    try testing.expectEqual(@as(f32, 3), f.comp.get(sl).zoom);
+
+    // Ctrl+wheel: a detent up zooms in by 10%.
+    f.win.handlePlatform(&.{ .modifiers = .{ .window = 0, .seat = 0, .mods = .{ .ctrl = true } } });
+    f.win.handlePlatform(&.{ .scroll = .{ .window = 0, .seat = 0, .v120_y = -120, .source = .wheel } });
+    try f.frame();
+    try testing.expectApproxEqAbs(@as(f32, 3.3), f.comp.get(sl).zoom, 1e-4);
+}
+
+const TabletLog = struct {
+    events: [16]node_mod.Tablet = undefined,
+    samples: [16][8]node_mod.TabletSample = undefined,
+    n: usize = 0,
+    pads: [4]node_mod.Pad = undefined,
+    pad_n: usize = 0,
+    result: ui.HandlerResult = .handled,
+    activated: usize = 0,
+
+    fn onTablet(user: ?*anyopaque, _: *ui.Window, _: NodeId, ev: *const ui.Event) ui.HandlerResult {
+        const l: *TabletLog = @ptrCast(@alignCast(user));
+        l.events[l.n] = ev.tablet;
+        @memcpy(l.samples[l.n][0..ev.tablet.samples.len], ev.tablet.samples);
+        l.n += 1;
+        return l.result;
+    }
+
+    fn onPad(user: ?*anyopaque, _: *ui.Window, _: NodeId, ev: *const ui.Event) ui.HandlerResult {
+        const l: *TabletLog = @ptrCast(@alignCast(user));
+        l.pads[l.pad_n] = ev.pad;
+        l.pad_n += 1;
+        return .handled;
+    }
+
+    fn onActivate(user: ?*anyopaque, _: *ui.Window, _: NodeId, _: *const ui.Event) ui.HandlerResult {
+        const l: *TabletLog = @ptrCast(@alignCast(user));
+        l.activated += 1;
+        return .handled;
+    }
+};
+
+fn pen(phase: @import("platform").TabletPhase, x: f64, y: f64, pressure: f64) @import("platform").Event {
+    return .{ .tablet_tool = .{ .window = 0, .seat = 0, .tool = 1, .kind = .pen, .axes = .{ .pressure = true, .tilt = true }, .serial_number = 0xabc, .phase = phase, .x = x, .y = y, .pressure = pressure, .tilt_x = 10, .tip = pressure > 0, .time = @intFromFloat(x) } };
+}
+
+test "tablet tools: motion once a frame with every sample, capture by the tip, and the pen as the pointer" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 200, .height = 100 });
+    defer f.deinit();
+    var log: TabletLog = .{};
+    var buttons: TabletLog = .{};
+    var t = try f.win.begin();
+    const row = try box(t, .root, .flex, .{});
+    const canvas = try box(t, row, .box, .{ .width = .{ .px = 100 }, .height = .{ .px = 100 } });
+    try t.on(canvas, .tablet, .{ .func = TabletLog.onTablet, .user = &log });
+    try t.on(canvas, .pad, .{ .func = TabletLog.onPad, .user = &log });
+    try t.setSemantics(canvas, .{ .focusable = true });
+    const button = try box(t, row, .box, .{ .width = .{ .px = 50 }, .height = .{ .px = 50 } });
+    try t.on(button, .activate, .{ .func = TabletLog.onActivate, .user = &buttons });
+    t.commit();
+    try f.frame();
+
+    // A stroke: the tip goes down on the canvas, five motions arrive
+    // between frames, then the pen lifts past the canvas's edge.
+    f.win.handlePlatform(&pen(.proximity_in, 10, 10, 0));
+    f.win.handlePlatform(&pen(.down, 10, 10, 0.2));
+    const requested = f.frames_requested;
+    for (0..5) |i| f.win.handlePlatform(&pen(.motion, 20 + 10 * @as(f64, @floatFromInt(i)), 10, 0.5));
+    try testing.expectEqual(@as(usize, 2), log.n); // enter, down: nothing yet
+    try testing.expect(f.frames_requested > requested);
+    try f.frame();
+    try testing.expectEqual(@as(usize, 3), log.n);
+    const move = log.events[2];
+    try testing.expectEqual(node_mod.PointerPhase.move, move.phase);
+    try testing.expectEqual(@as(usize, 5), move.samples.len);
+    try testing.expectEqual(@as(f32, 20), log.samples[2][0].x);
+    try testing.expectEqual(@as(f32, 60), log.samples[2][4].x);
+    try testing.expectEqual(@as(f32, 60), move.sample.x);
+    try testing.expectEqual(@as(f32, 0.5), move.sample.pressure);
+    try testing.expectEqual(@as(f32, 10), move.sample.tilt_x);
+    try testing.expectEqual(@as(u64, 0xabc), move.serial_number);
+    try testing.expect(move.axes.pressure and move.tip);
+    // Past the canvas (over the button), the stroke stays the canvas's.
+    f.win.handlePlatform(&pen(.motion, 130, 10, 0.4));
+    f.win.handlePlatform(&pen(.up, 130, 10, 0));
+    try testing.expectEqual(@as(usize, 5), log.n);
+    try testing.expectEqual(node_mod.PointerPhase.up, log.events[4].phase);
+    try testing.expectEqual(@as(f32, 130), log.events[4].sample.x);
+    try testing.expectEqual(canvas, log.events[4].target);
+    try testing.expectEqual(@as(usize, 0), buttons.activated);
+    // The canvas handled every event, so the pen never acted as the
+    // pointer: no focus.
+    try testing.expectEqual(NodeId.none, f.win.input.focus);
+
+    // Over the button, with no tablet handler, the pen clicks it.
+    f.win.handlePlatform(&pen(.motion, 120, 20, 0));
+    f.win.handlePlatform(&pen(.down, 120, 20, 0.3));
+    f.win.handlePlatform(&pen(.up, 121, 20, 0));
+    try testing.expectEqual(@as(usize, 1), buttons.activated);
+
+    // A canvas handler that passes lets the pen focus it like a click.
+    log.result = .pass;
+    f.win.handlePlatform(&pen(.down, 30, 30, 0.3));
+    f.win.handlePlatform(&pen(.up, 30, 30, 0));
+    try testing.expectEqual(canvas, f.win.input.focus);
+    // Pads go to the focused node.
+    f.win.handlePlatform(&.{ .tablet_pad = .{ .window = 0, .seat = 0, .pad = 0, .control = .ring, .index = 1, .group = 0, .mode = 2, .value = 90 } });
+    f.win.handlePlatform(&.{ .tablet_pad = .{ .window = 0, .seat = 0, .pad = 0, .control = .strip, .stop = true } });
+    try testing.expectEqual(@as(usize, 2), log.pad_n);
+    try testing.expectEqual(node_mod.PadControl.ring, log.pads[0].control);
+    try testing.expectEqual(@as(f64, 90), log.pads[0].value);
+    try testing.expectEqual(@as(u32, 2), log.pads[0].mode);
+    try testing.expect(log.pads[1].lifted);
 }
 
 test "configures are acknowledged by the commit with their layout" {

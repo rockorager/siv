@@ -59,8 +59,9 @@ const Layer = struct {
     scroll: ?compositor.Scroll = null,
     /// Sequence of the last `scroll_to`, to ignore older `scrolled` reports.
     scroll_seq: u64 = 0,
-    /// The compositor's offset as last sent or reported.
+    /// The compositor's offset and zoom as last sent or reported.
     scroll_offset: Point = .zero,
+    zoom: f32 = 1,
     wheel: ?Rect = null,
     external: ?compositor.ExternalPlacement = null,
     /// Caret layers: what the content shows, and what the running blink
@@ -87,7 +88,10 @@ const Layer = struct {
     version: u32 = 0,
 };
 
-pub const ScrollBy = struct { node: NodeId, delta: Point };
+/// Input the UI passes on to a scroll node's container: a scroll by
+/// `delta`, or (`zoom` other than 1) a zoom by that factor about `focus`
+/// in the node's coordinates.
+pub const ScrollBy = struct { node: NodeId, delta: Point = .zero, zoom: f32 = 1, focus: Point = .zero };
 
 const ClipEntry = struct {
     serial: u32,
@@ -284,12 +288,13 @@ pub const State = struct {
         return .{ .layer_below = f.layer_below or ownsLayer(win, nid, f) };
     }
 
-    /// Nodes with scroll handlers root a layer so that their wheel region
-    /// sends scroll input over them to the UI first (D8).
+    /// Nodes with scroll or gesture handlers root a layer so that their
+    /// wheel region sends scroll input and pinches over them to the UI
+    /// first (D8).
     fn ownsLayer(win: *const Window, nid: NodeId, f: Flags) bool {
         const n = win.node(nid);
         return nid == .root or n.kind == .scroll or isLayerRoot(n.visual) or (n.visual.clip and f.layer_below) or
-            n.handler(.scroll) != null or hasCaret(win, nid) or n.kind == .external;
+            wantsWheel(n) or hasCaret(win, nid) or n.kind == .external;
     }
 
     /// The focused editor roots a layer with its caret in a child layer, so
@@ -521,7 +526,7 @@ pub const State = struct {
         const gpa = win.gpa;
         var scroll_layers: std.ArrayList(u32) = .empty;
         if (win.dirty.props or st.ops.items.len != 0) {
-            try st.ops.ensureUnusedCapacity(gpa, 11 * st.order.items.len + st.scroll_by.items.len + 1);
+            try st.ops.ensureUnusedCapacity(gpa, 12 * st.order.items.len + st.scroll_by.items.len + 1);
             for (st.order.items) |i| {
                 const l = &st.layers.items[i];
                 const p = props(st, win, l.*);
@@ -612,6 +617,15 @@ pub const State = struct {
                 }
                 if (l.kind == .node and win.node(l.owner).kind == .scroll) {
                     const s = win.state(l.owner);
+                    // A zoom the application set; the content at the
+                    // viewport's corner stays (the offset follows below).
+                    const zoom = win.node(l.owner).data.scroll.zoom;
+                    if (zoom != l.zoom) {
+                        const pad = win.node(l.owner).layout.padding;
+                        st.ops.appendAssumeCapacity(.{ .zoom_to = .{ .layer = id(i), .zoom = zoom, .focus = .{ .x = pad.left(s.rtl), .y = pad.top } } });
+                        l.zoom = zoom;
+                        s.scroll_pending = true;
+                    }
                     const phys = scrollTranslation(win, l.owner);
                     // In RTL the start edge is at the far end of the content,
                     // so the offset follows the content width.
@@ -626,10 +640,12 @@ pub const State = struct {
         }
         // Scroll input the UI passed on, relative to wherever the
         // compositor has the offset now.
-        try st.ops.ensureUnusedCapacity(gpa, st.scroll_by.items.len + 1);
+        try st.ops.ensureUnusedCapacity(gpa, 2 * st.scroll_by.items.len + 1);
         for (st.scroll_by.items) |sb| {
             if (!win.isLive(sb.node) or !st.ownsLayerNow(win, sb.node)) continue;
-            st.ops.appendAssumeCapacity(.{ .scroll_by = .{ .layer = id(win.state(sb.node).own_layer), .delta = sb.delta } });
+            const layer = id(win.state(sb.node).own_layer);
+            if (sb.zoom != 1) st.ops.appendAssumeCapacity(.{ .zoom_by = .{ .layer = layer, .factor = sb.zoom, .focus = sb.focus } });
+            if (!sb.delta.eql(.zero)) st.ops.appendAssumeCapacity(.{ .scroll_by = .{ .layer = layer, .delta = sb.delta } });
         }
         st.scroll_by.clearRetainingCapacity();
         if (win.configure_serial) |serial| {
@@ -727,9 +743,11 @@ pub const State = struct {
                     p.scroll = .{
                         .viewport = .xywh(pad.left(s.rtl), pad.top, @max(0, s.size.w - pad.horizontal()), @max(0, s.size.h - pad.vertical())),
                         .content = .{ .width = s.content.w, .height = s.content.h },
+                        .min_zoom = n.data.scroll.min_zoom,
+                        .max_zoom = n.data.scroll.max_zoom,
                     };
                 }
-                if (n.handler(.scroll) != null) p.wheel = .xywh(0, 0, s.size.w, s.size.h);
+                if (wantsWheel(n)) p.wheel = .xywh(0, 0, s.size.w, s.size.h);
                 if (n.kind == .external) {
                     p.external = externalPlacement(win, l.owner);
                     // Covering content overflows its box: clip it there (and
@@ -787,14 +805,37 @@ pub fn indexOf(layer: compositor.LayerId) u32 {
 
 const infinite: Rect = .{ .x0 = -std.math.inf(f32), .y0 = -std.math.inf(f32), .x1 = std.math.inf(f32), .y1 = std.math.inf(f32) };
 
-/// Largest physical scroll offset of a scroll node.
+/// Whether scroll input and pinches over the node go to the UI first: it
+/// has a scroll or gesture handler.
+fn wantsWheel(n: *const node_mod.Node) bool {
+    return n.handler(.scroll) != null or n.handler(.gesture) != null;
+}
+
+/// Largest physical scroll offset of a scroll node, in zoomed pixels.
 pub fn maxScroll(win: *const Window, nid: NodeId) Point {
     const s = win.state(nid);
     const pad = win.node(nid).layout.padding;
+    const z = zoomOf(win, nid);
     return .{
-        .x = @max(0, s.content.w - (s.size.w - pad.horizontal())),
-        .y = @max(0, s.content.h - (s.size.h - pad.vertical())),
+        .x = @max(0, s.content.w * z - (s.size.w - pad.horizontal())),
+        .y = @max(0, s.content.h * z - (s.size.h - pad.vertical())),
     };
+}
+
+/// A scroll node's zoom; 1 for other nodes.
+pub fn zoomOf(win: *const Window, nid: NodeId) f32 {
+    const n = win.node(nid);
+    return if (n.kind == .scroll) n.data.scroll.zoom else 1;
+}
+
+/// A point in a scroll node's coordinates in its content's (the
+/// coordinates its children are placed in).
+pub fn toContent(win: *const Window, nid: NodeId, p: Point) Point {
+    const n = win.node(nid);
+    const s = win.state(nid);
+    const t = scrollTranslation(win, nid);
+    const z = zoomOf(win, nid);
+    return .{ .x = (p.x - n.layout.padding.left(s.rtl) + t.x) / z, .y = (p.y - n.layout.padding.top + t.y) / z };
 }
 
 /// A scroll node's offset in physical content coordinates (how far its
@@ -1018,7 +1059,8 @@ pub fn visibleBand(win: *const Window, nid: NodeId) ?[2]f32 {
     const v = win.viewportOf(cur);
     const top = win.windowRect(cur).y0 + win.node(cur).layout.padding.top;
     const y = win.windowRect(nid).y0 - top;
-    return .{ -y, v.height - y };
+    const z = zoomOf(win, cur);
+    return .{ -y / z, (v.height - y) / z };
 }
 
 /// Draws a text layout's glyphs with its box's top left at (ox, oy), only

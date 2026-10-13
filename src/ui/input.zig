@@ -91,12 +91,29 @@ pub const State = struct {
     /// Modal nodes focus entered, innermost last, each with the node that
     /// had focus before it, which gets it back when the modal goes.
     modals: std.ArrayList(ModalEntry) = .empty,
+    /// The node a touchpad gesture began on, which gets its later events,
+    /// per gesture kind; and the pinch scale last passed on as a zoom.
+    gesture_target: [3]NodeId = @splat(.none),
+    pinch_scale: f32 = 1,
+    /// Tablet tool motion not delivered yet: it goes out once per frame
+    /// (`flushTablet`), as one move event per tool carrying every sample.
+    tablet_pending: std.ArrayList(platform.TabletTool) = .empty,
+    /// Scratch for samples in a node's coordinates.
+    tablet_samples: std.ArrayList(node_mod.TabletSample) = .empty,
+    /// The node each tool's tip is pressed on, which gets its events
+    /// until the tip lifts.
+    tools: [max_tools]ToolState = @splat(.{}),
 
     pub const ModalEntry = struct { modal: NodeId, opener: NodeId, visible: bool };
+
+    pub const max_tools = 8;
+    pub const ToolState = struct { active: bool = false, seat: platform.SeatId = 0, tool: u32 = 0, capture: NodeId = .none };
 
     pub fn deinit(st: *State, gpa: std.mem.Allocator) void {
         st.hover.deinit(gpa);
         st.modals.deinit(gpa);
+        st.tablet_pending.deinit(gpa);
+        st.tablet_samples.deinit(gpa);
     }
 
     /// A node was removed.
@@ -108,6 +125,12 @@ pub const State = struct {
         if (st.capture == id) st.capture = .none;
         if (st.pressed == id) st.pressed = .none;
         if (st.selecting == id) st.selecting = .none;
+        for (&st.gesture_target) |*g| if (g.* == id) {
+            g.* = .none;
+        };
+        for (&st.tools) |*t| if (t.capture == id) {
+            t.capture = .none;
+        };
         for (st.hover.items, 0..) |h, i| if (h == id) {
             st.hover.shrinkRetainingCapacity(i);
             break;
@@ -214,8 +237,7 @@ fn hit(win: *const Window, id: NodeId, parent_p: Point) ?NodeId {
         if (p.x < pad.left(s.rtl) or p.x >= s.size.w - (if (s.rtl) pad.start else pad.end) or p.y < pad.top or p.y >= s.size.h - pad.bottom) {
             return if (n.visual.hit_test) id else null;
         }
-        const t = paint.scrollTranslation(win, id);
-        cp = .{ .x = p.x - pad.left(s.rtl) + t.x, .y = p.y - pad.top + t.y };
+        cp = paint.toContent(win, id, p);
     }
     var c = n.last;
     while (c != .none) : (c = win.node(c).prev) {
@@ -231,11 +253,7 @@ pub fn toLocal(win: *const Window, id: NodeId, p: Point) Point {
     var q = if (parent == .none) p else blk: {
         var pp = toLocal(win, parent, p);
         const pn = win.node(parent);
-        if (pn.kind == .scroll) {
-            const ps = win.state(parent);
-            const t = paint.scrollTranslation(win, parent);
-            pp = .{ .x = pp.x - pn.layout.padding.left(ps.rtl) + t.x, .y = pp.y - pn.layout.padding.top + t.y };
-        }
+        if (pn.kind == .scroll) pp = paint.toContent(win, parent, pp);
         break :blk pp;
     };
     const s = win.state(id);
@@ -471,6 +489,12 @@ pub fn handle(win: *Window, event: *const platform.Event) void {
             st.pressed = .none;
         },
         .scroll => |s| scroll(win, @floatCast(s.dx), @floatCast(s.dy), s.v120_x, s.v120_y),
+        .gesture => |g| gesture(win, &g),
+        .tablet_tool => |t| tabletTool(win, &t),
+        .tablet_pad => |p| {
+            flushTablet(win);
+            padEvent(win, &p);
+        },
         .key => |k| key(win, &k),
         .modifiers => |m| st.mods = m.mods,
         .text_input_enter, .text_input_leave, .text_input => ime.handle(win, event),
@@ -624,6 +648,11 @@ fn scroll(win: *Window, dx_px: f32, dy_px: f32, v120_x: i32, v120_y: i32) void {
     const ev: Event = .{ .scroll = .{ .dx = dx, .dy = dy, .target = target } };
     if (bubble(win, target, .scroll, ev).prevents()) return;
     const mods = win.input.mods;
+    // Ctrl+wheel zooms the nearest zoomable scroll node: 10% per detent.
+    if (mods.ctrl and !mods.alt and !mods.super and dy != 0) {
+        if (win.isLive(target)) zoomNearest(win, target, std.math.pow(f32, 1.1, -dy / @as(f32, platform.Scroll.detent_px)));
+        return;
+    }
     if (mods.ctrl or mods.alt or mods.super) return;
     // Shift turns a vertical wheel horizontal, as in the compositor.
     if (mods.shift and dx == 0) {
@@ -641,5 +670,243 @@ fn scroll(win: *Window, dx_px: f32, dy_px: f32, v120_x: i32, v120_y: i32) void {
         if (!can_x and !can_y) continue;
         scrollBy(win, cur, .{ .x = if (can_x) dx else 0, .y = if (can_y) dy else 0 });
         return;
+    }
+}
+
+/// Passes a zoom on to the nearest zoomable scroll node at or above
+/// `from`, about the pointer, as `zoom_by` (relative, like `scroll_by`).
+fn zoomNearest(win: *Window, from: NodeId, factor: f32) void {
+    const p = win.input.pointer orelse return;
+    var cur = from;
+    while (cur != .none) : (cur = win.node(cur).parent) {
+        const n = win.node(cur);
+        if (n.kind != .scroll or !n.data.scroll.zoomable()) continue;
+        win.paint.scroll_by.append(win.gpa, .{ .node = cur, .zoom = factor, .focus = toLocal(win, cur, p) }) catch return;
+        win.dirty.props = true;
+        win.requestFrame();
+        return;
+    }
+}
+
+/// A touchpad gesture the compositor forwarded (D8): it bubbles from the
+/// node under the pointer when it began; a pinch nobody prevented zooms
+/// the nearest zoomable scroll node.
+fn gesture(win: *Window, g: *const platform.Gesture) void {
+    const st = &win.input;
+    const k = @intFromEnum(g.kind);
+    const p = st.pointer orelse return;
+    if (g.phase == .begin) {
+        st.gesture_target[k] = hitTest(win, p);
+        if (g.kind == .pinch) st.pinch_scale = 1;
+    }
+    const target = st.gesture_target[k];
+    if (g.phase == .end) st.gesture_target[k] = .none;
+    if (target == .none or !win.isLive(target)) return;
+    st.time = g.time;
+    var prevented = false;
+    var cur = target;
+    while (cur != .none and win.isLive(cur)) {
+        const local = toLocal(win, cur, p);
+        const ev: Event = .{ .gesture = .{
+            .kind = g.kind,
+            .phase = switch (g.phase) {
+                .begin => .begin,
+                .update => .update,
+                .end => if (g.cancelled) .cancel else .end,
+            },
+            .fingers = g.fingers,
+            .x = local.x,
+            .y = local.y,
+            .dx = @floatCast(g.dx),
+            .dy = @floatCast(g.dy),
+            .scale = @floatCast(g.scale),
+            .rotation = @floatCast(g.rotation),
+            .mods = st.mods,
+            .time = g.time,
+            .target = target,
+            .prevented = prevented,
+        } };
+        const r = call(win, cur, .gesture, &ev);
+        prevented = prevented or r.prevents();
+        if (r.stops() or !win.isLive(cur)) break;
+        cur = win.node(cur).parent;
+    }
+    if (prevented or g.kind != .pinch or g.phase != .update or !win.isLive(target)) return;
+    const scale: f32 = @floatCast(g.scale);
+    if (!(scale > 0) or !(st.pinch_scale > 0)) return;
+    zoomNearest(win, target, scale / st.pinch_scale);
+    st.pinch_scale = scale;
+}
+
+// Tablets --------------------------------------------------------------------
+
+/// Pending samples past this are delivered at once, without waiting for a
+/// frame (a window that draws no frames, or a stalled UI thread).
+const max_pending_samples = 256;
+
+fn tabletTool(win: *Window, t: *const platform.TabletTool) void {
+    const st = &win.input;
+    if (t.phase == .motion) {
+        st.tablet_pending.append(win.gpa, t.*) catch return deliverTablet(win, t, &.{t.*});
+        if (st.tablet_pending.items.len >= max_pending_samples) flushTablet(win) else win.requestFrame();
+        return;
+    }
+    // Motion queued before it is delivered first, in order.
+    flushTablet(win);
+    deliverTablet(win, t, &.{t.*});
+}
+
+/// Delivers queued tablet motion: one move event per run of samples from
+/// one tool. The window calls it at the start of each frame (D5: a safe
+/// point), so a tool reporting at hundreds of hertz costs handlers one call
+/// per frame, with every sample for drawing.
+pub fn flushTablet(win: *Window) void {
+    const st = &win.input;
+    var i: usize = 0;
+    while (i < st.tablet_pending.items.len) {
+        var j = i + 1;
+        const first = st.tablet_pending.items[i];
+        while (j < st.tablet_pending.items.len and st.tablet_pending.items[j].tool == first.tool and st.tablet_pending.items[j].seat == first.seat) j += 1;
+        const run = st.tablet_pending.items[i..j];
+        deliverTablet(win, &run[run.len - 1], run);
+        i = j;
+    }
+    st.tablet_pending.clearRetainingCapacity();
+}
+
+fn toolState(win: *Window, t: *const platform.TabletTool) *State.ToolState {
+    const st = &win.input;
+    var free: ?*State.ToolState = null;
+    for (&st.tools) |*ts| {
+        if (ts.active and ts.seat == t.seat and ts.tool == t.tool) return ts;
+        if (!ts.active and free == null) free = ts;
+    }
+    const ts = free orelse &st.tools[0];
+    ts.* = .{ .active = true, .seat = t.seat, .tool = t.tool };
+    return ts;
+}
+
+fn sampleOf(t: *const platform.TabletTool, p: Point) node_mod.TabletSample {
+    return .{
+        .x = p.x,
+        .y = p.y,
+        .pressure = @floatCast(t.pressure),
+        .distance = @floatCast(t.distance),
+        .tilt_x = @floatCast(t.tilt_x),
+        .tilt_y = @floatCast(t.tilt_y),
+        .rotation = @floatCast(t.rotation),
+        .slider = @floatCast(t.slider),
+        .time = t.time,
+    };
+}
+
+const btn_stylus = 0x14b;
+const btn_stylus2 = 0x14c;
+
+/// Sends one tablet event, bubbling from the node the tip is pressed on
+/// or the node under the tool; `samples` are the motion it sums up. Unless
+/// a handler prevents it, the tool then acts as the pointer: its tip is
+/// the primary button and its buttons the secondary and middle ones.
+fn deliverTablet(win: *Window, t: *const platform.TabletTool, samples: []const platform.TabletTool) void {
+    const st = &win.input;
+    const ts = toolState(win, t);
+    const p: Point = .{ .x = @floatCast(t.x), .y = @floatCast(t.y) };
+    const target = if (ts.capture != .none and win.isLive(ts.capture)) ts.capture else hitTest(win, p);
+    const phase: node_mod.PointerPhase = switch (t.phase) {
+        .proximity_in => .enter,
+        .proximity_out => .leave,
+        .down => .down,
+        .up => .up,
+        .motion => .move,
+        .button => if (t.pressed) .down else .up,
+    };
+    const button: node_mod.Button = if (t.phase != .button) .primary else switch (t.button) {
+        btn_stylus => .secondary,
+        btn_stylus2 => .middle,
+        else => .other,
+    };
+    if (t.phase == .down) {
+        ts.capture = target;
+        st.seat = t.seat;
+        st.serial = t.serial;
+        st.press_serial = t.serial;
+    }
+    st.time = t.time;
+    var prevented = false;
+    var cur = target;
+    while (cur != .none and win.isLive(cur)) {
+        st.tablet_samples.clearRetainingCapacity();
+        st.tablet_samples.ensureTotalCapacity(win.gpa, samples.len) catch break;
+        for (samples) |*s| st.tablet_samples.appendAssumeCapacity(sampleOf(s, toLocal(win, cur, .{ .x = @floatCast(s.x), .y = @floatCast(s.y) })));
+        const local = st.tablet_samples.items;
+        const ev: Event = .{ .tablet = .{
+            .phase = phase,
+            .button = button,
+            .tool = t.kind,
+            .tool_id = t.tool,
+            .serial_number = t.serial_number,
+            .axes = t.axes,
+            .sample = local[local.len - 1],
+            .samples = local,
+            .wheel = @floatCast(t.wheel),
+            .wheel_clicks = t.wheel_clicks,
+            .tip = t.tip,
+            .mods = st.mods,
+            .time = t.time,
+            .target = target,
+            .prevented = prevented,
+        } };
+        const r = call(win, cur, .tablet, &ev);
+        prevented = prevented or r.prevents();
+        if (r.stops() or !win.isLive(cur)) break;
+        cur = win.node(cur).parent;
+    }
+    if (t.phase == .up) ts.capture = .none;
+    if (t.phase == .proximity_out) ts.* = .{};
+    if (prevented) return;
+    // The tool as the pointer.
+    const motion: platform.PointerMotion = .{ .window = t.window, .seat = t.seat, .x = t.x, .y = t.y, .time = t.time, .serial = t.serial };
+    switch (t.phase) {
+        .proximity_in => handle(win, &.{ .pointer_enter = motion }),
+        .proximity_out => handle(win, &.{ .pointer_leave = .{ .window = t.window, .seat = t.seat, .serial = t.serial } }),
+        .motion => handle(win, &.{ .pointer_motion = motion }),
+        .down, .up => {
+            handle(win, &.{ .pointer_motion = motion });
+            handle(win, &.{ .pointer_button = .{ .window = t.window, .seat = t.seat, .button = btn_left, .pressed = t.phase == .down, .time = t.time, .serial = t.serial } });
+        },
+        .button => {
+            const code: u32 = switch (t.button) {
+                btn_stylus => btn_right,
+                btn_stylus2 => btn_middle,
+                else => return,
+            };
+            handle(win, &.{ .pointer_button = .{ .window = t.window, .seat = t.seat, .button = code, .pressed = t.pressed, .time = t.time, .serial = t.serial } });
+        },
+    }
+}
+
+/// A pad event goes from the focused node up, like a key; without focus,
+/// to the active modal node or the root.
+fn padEvent(win: *Window, p: *const platform.TabletPad) void {
+    const st = &win.input;
+    const target = if (st.focus != .none and win.isLive(st.focus)) st.focus else modalRoot(win);
+    st.time = p.time;
+    var ev: Event = .{ .pad = .{
+        .control = p.control,
+        .index = p.index,
+        .group = p.group,
+        .mode = p.mode,
+        .value = p.value,
+        .pressed = p.pressed,
+        .lifted = p.stop,
+        .time = p.time,
+        .target = target,
+    } };
+    var cur = target;
+    while (cur != .none and win.isLive(cur)) {
+        const r = call(win, cur, .pad, &ev);
+        if (r.prevents()) ev.pad.prevented = true;
+        if (r.stops() or !win.isLive(cur)) return;
+        cur = win.node(cur).parent;
     }
 }

@@ -50,6 +50,9 @@ pub const Layer = struct {
     clip: ?update.Clip = null,
     scroll: ?update.Scroll = null,
     offset: Point = .zero,
+    /// Scale of a zoomable scroll container's children (see
+    /// `update.Scroll`).
+    zoom: f32 = 1,
     wheel: ?Rect = null,
     external: ?update.ExternalPlacement = null,
     content: ?update.Content = null,
@@ -73,9 +76,25 @@ pub const Layer = struct {
 pub const Route = union(enum) {
     /// Deliver to the UI.
     ui,
-    /// Scroll this container in the compositor.
+    /// Scroll (or, for a pinch, zoom) this container in the compositor.
     scroll: LayerId,
 };
+
+/// Maps a scroll container's child coordinates to its own: zoomed about
+/// the viewport's top-left corner, then moved by the offset.
+fn childMap(l: *const Layer) Affine {
+    const s = l.scroll orelse return .identity;
+    const o: Point = .{ .x = s.viewport.x0, .y = s.viewport.y0 };
+    if (l.zoom == 1) return Affine.translate(-l.offset.x, -l.offset.y);
+    return Affine.translate(-o.x, -o.y).then(.scale(l.zoom, l.zoom)).then(.translate(o.x - l.offset.x, o.y - l.offset.y));
+}
+
+/// The inverse of `childMap` for a point.
+fn childPoint(l: *const Layer, p: Point) Point {
+    const s = l.scroll orelse return p;
+    const o: Point = .{ .x = s.viewport.x0, .y = s.viewport.y0 };
+    return .{ .x = o.x + (p.x - o.x + l.offset.x) / l.zoom, .y = o.y + (p.y - o.y + l.offset.y) / l.zoom };
+}
 
 /// How composition draws an external.
 pub const Draw = union(enum) {
@@ -251,12 +270,14 @@ pub const Tree = struct {
             .set_scroll => |s| {
                 const l = t.get(s.layer) orelse return t.reject(op, "no such layer");
                 l.scroll = s.scroll;
-                if (s.scroll == null) {
+                if (s.scroll) |sc| {
+                    l.zoom = sc.clampZoom(l.zoom);
+                    try t.setOffset(s.layer, l.offset, false);
+                } else {
                     l.offset = .zero;
+                    l.zoom = 1;
                     l.fling = null;
                     l.anims[@intFromEnum(Property.scroll)] = null;
-                } else {
-                    try t.setOffset(s.layer, l.offset, false);
                 }
                 l.scroll_version +%= 1;
                 l.damage_all = true;
@@ -275,6 +296,18 @@ pub const Tree = struct {
             },
             .fling => |s| {
                 if (!try t.startFling(s.layer, s.velocity)) return t.reject(op, "not a scroll container");
+            },
+            .zoom_to => |s| {
+                const l = t.get(s.layer) orelse return t.reject(op, "no such layer");
+                if (l.scroll == null) return t.reject(op, "not a scroll container");
+                t.stopScrolling(l);
+                try t.zoomAt(s.layer, s.zoom, s.focus, false);
+            },
+            .zoom_by => |s| {
+                const l = t.get(s.layer) orelse return t.reject(op, "no such layer");
+                if (l.scroll == null) return t.reject(op, "not a scroll container");
+                t.stopScrolling(l);
+                try t.zoomAt(s.layer, l.zoom * s.factor, s.focus, true);
             },
             .animate => |s| {
                 const l = t.get(s.layer) orelse return t.reject(op, "no such layer");
@@ -372,29 +405,78 @@ pub const Tree = struct {
 
     // Scrolling ---------------------------------------------------------
 
-    fn maxOffset(s: update.Scroll) Point {
+    fn maxOffset(s: update.Scroll, zoom: f32) Point {
         return .{
-            .x = @max(0, s.content.width - s.viewport.width()),
-            .y = @max(0, s.content.height - s.viewport.height()),
+            .x = @max(0, s.content.width * zoom - s.viewport.width()),
+            .y = @max(0, s.content.height * zoom - s.viewport.height()),
         };
     }
 
-    fn clampOffset(s: update.Scroll, p: Point) Point {
-        const m = maxOffset(s);
+    fn clampOffset(s: update.Scroll, zoom: f32, p: Point) Point {
+        const m = maxOffset(s, zoom);
         return .{ .x = std.math.clamp(p.x, 0, m.x), .y = std.math.clamp(p.y, 0, m.y) };
     }
 
     /// Sets a clamped offset; `report` queues an `Event.scrolled`.
     fn setOffset(t: *Tree, id: LayerId, p: Point, report: bool) Allocator.Error!void {
         const l = &t.layers.items[id];
-        const c = clampOffset(l.scroll.?, p);
+        const c = clampOffset(l.scroll.?, l.zoom, p);
         if (c.eql(l.offset)) return;
         l.offset = c;
         l.scroll_version +%= 1;
-        if (report and !l.scrolled) {
-            try t.scrolled.append(t.gpa, id);
-            l.scrolled = true;
+        if (report) try t.markScrolled(id);
+    }
+
+    fn markScrolled(t: *Tree, id: LayerId) Allocator.Error!void {
+        const l = &t.layers.items[id];
+        if (l.scrolled) return;
+        try t.scrolled.append(t.gpa, id);
+        l.scrolled = true;
+    }
+
+    /// Zooms a scroll container to `zoom` (clamped to its range), keeping
+    /// `focus` (layer coordinates) over the same content point.
+    pub fn zoomAt(t: *Tree, id: LayerId, zoom: f32, focus: Point, report: bool) Allocator.Error!void {
+        const l = &t.layers.items[id];
+        const s = l.scroll orelse return;
+        const z = s.clampZoom(zoom);
+        if (z == l.zoom) return;
+        const o: Point = .{ .x = s.viewport.x0, .y = s.viewport.y0 };
+        const k = z / l.zoom;
+        const off: Point = .{
+            .x = k * (focus.x - o.x + l.offset.x) - (focus.x - o.x),
+            .y = k * (focus.y - o.y + l.offset.y) - (focus.y - o.y),
+        };
+        l.zoom = z;
+        l.scroll_version +%= 1;
+        l.offset = clampOffset(s, z, off);
+        if (report) try t.markScrolled(id);
+    }
+
+    /// Stops every fling in the tree: fingers came to rest on a touchpad
+    /// (a hold gesture).
+    pub fn stopFlings(t: *Tree) void {
+        for (t.animated.items) |id| t.layers.items[id].fling = null;
+    }
+
+    /// A window point in a layer's coordinates, through every transform
+    /// and scroll container above it; null if a transform is singular.
+    pub fn toLayer(t: *Tree, id: LayerId, p: Point) ?Point {
+        var m: Affine = .identity;
+        var cur = id;
+        while (cur != 0) {
+            const l = &t.layers.items[cur];
+            m = m.then(l.transform.affine());
+            if (l.parent != 0) m = m.then(childMap(&t.layers.items[l.parent]));
+            cur = l.parent;
         }
+        const inv = m.invert() orelse return null;
+        return inv.apply(p);
+    }
+
+    /// Stops a container's fling and scroll animation, as input does.
+    pub fn stopLayer(t: *Tree, id: LayerId) void {
+        if (t.get(id)) |l| t.stopScrolling(l);
     }
 
     fn stopScrolling(t: *Tree, l: *Layer) void {
@@ -408,6 +490,13 @@ pub const Tree = struct {
         const l = t.get(id) orelse return false;
         if (l.scroll == null) return false;
         t.stopScrolling(l);
+        return t.pan(id, delta);
+    }
+
+    /// Moves the offset by `delta` without stopping flings or animations.
+    pub fn pan(t: *Tree, id: LayerId, delta: Point) Allocator.Error!bool {
+        const l = t.get(id) orelse return false;
+        if (l.scroll == null) return false;
         const before = l.offset;
         try t.setOffset(id, before.add(delta), true);
         return !t.layers.items[id].offset.eql(before);
@@ -429,10 +518,29 @@ pub const Tree = struct {
         return t.route(p, delta);
     }
 
+    /// Where a touchpad pinch at `p` goes: by the rules of `routeScroll`,
+    /// with zoomable containers in place of those that can scroll.
+    pub fn routePinch(t: *Tree, p: Point, mods: platform.Mods) Route {
+        if (mods.ctrl or mods.alt or mods.super) return .ui;
+        return t.routeFor(p, .zoom);
+    }
+
+    /// What a container must be able to do to take an input.
+    pub const Want = union(enum) {
+        /// Scroll by this delta.
+        wheel: Point,
+        /// Zoom.
+        zoom,
+    };
+
     /// The modifier-free part of `routeScroll`.
     pub fn route(t: *Tree, p: Point, delta: Point) Route {
+        return t.routeFor(p, .{ .wheel = delta });
+    }
+
+    fn routeFor(t: *Tree, p: Point, want: Want) Route {
         if (t.root == 0) return .ui;
-        return switch (t.routeLayer(t.root, p, delta)) {
+        return switch (t.routeLayer(t.root, p, want)) {
             .miss, .pending => .ui,
             .ui => .ui,
             .scroll => |id| .{ .scroll = id },
@@ -441,7 +549,7 @@ pub const Tree = struct {
 
     const Hit = union(enum) { miss, pending, ui, scroll: LayerId };
 
-    fn routeLayer(t: *Tree, id: LayerId, parent_p: Point, delta: Point) Hit {
+    fn routeLayer(t: *Tree, id: LayerId, parent_p: Point, want: Want) Hit {
         const l = &t.layers.items[id];
         const inv = l.transform.affine().invert() orelse return .miss;
         const p = inv.apply(parent_p);
@@ -449,10 +557,10 @@ pub const Tree = struct {
         var hit: Hit = .miss;
         const in_viewport = if (l.scroll) |s| contains(s.viewport, p) else true;
         if (in_viewport) {
-            const cp = p.add(l.offset);
+            const cp = childPoint(l, p);
             var child = l.last;
             while (child != 0) : (child = t.layers.items[child].prev) {
-                hit = t.routeLayer(child, cp, delta);
+                hit = t.routeLayer(child, cp, want);
                 if (hit != .miss) break;
             }
         }
@@ -465,12 +573,15 @@ pub const Tree = struct {
         }
         if (hit != .pending) return hit;
         if (wheel) return .ui;
-        if (l.scroll) |s| if (s.input and in_viewport and canMove(s, l.offset, delta)) return .{ .scroll = id };
+        if (l.scroll) |s| if (s.input and in_viewport) switch (want) {
+            .wheel => |delta| if (canMove(s, l.zoom, l.offset, delta)) return .{ .scroll = id },
+            .zoom => if (s.zoomable()) return .{ .scroll = id },
+        };
         return .pending;
     }
 
-    fn canMove(s: update.Scroll, offset: Point, d: Point) bool {
-        const m = maxOffset(s);
+    fn canMove(s: update.Scroll, zoom: f32, offset: Point, d: Point) bool {
+        const m = maxOffset(s, zoom);
         return (d.x > 0 and offset.x < m.x) or (d.x < 0 and offset.x > 0) or
             (d.y > 0 and offset.y < m.y) or (d.y < 0 and offset.y > 0);
     }
@@ -609,7 +720,7 @@ pub const Tree = struct {
         var child_clip = clip;
         if (l.scroll) |s| {
             child_clip = clip.intersect(m.applyRect(s.viewport));
-            cm = Affine.translate(-l.offset.x, -l.offset.y).then(m);
+            cm = childMap(l).then(m);
         }
         var child = l.first;
         while (child != 0) : (child = t.layers.items[child].next) try t.place(out, child, cm, opacity, child_clip, round);
@@ -702,7 +813,7 @@ pub const Tree = struct {
                 .version = l.scroll_version,
                 .clip = .{ .shape = .{ .rect = s.viewport } },
             });
-            try t.push(out, .{ .transform = .translate(-l.offset.x, -l.offset.y) });
+            try t.push(out, .{ .transform = childMap(l) });
         }
         var child = l.first;
         while (child != 0) : (child = t.layers.items[child].next) try t.emit(out, child);
@@ -924,6 +1035,64 @@ test "a scroll container's viewport takes scroll input where nothing is drawn" {
     try testing.expectEqual(Route.ui, f.tree.route(.{ .x = 100, .y = 151 }, down));
     try testing.expectEqual(Route.ui, f.tree.routeScroll(.{ .x = 100, .y = 120 }, down, .{ .ctrl = true }));
     try testing.expectEqual(Route{ .scroll = 2 }, f.tree.routeScroll(.{ .x = 100, .y = 120 }, down, .{ .shift = true }));
+}
+
+test "pinches route like scrolling to zoomable containers, which zoom about the fingers" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    // A zoomable container at (50, 50) whose viewport starts at (10, 10) in
+    // its own coordinates, and a plain one beside it.
+    try f.apply(&.{
+        .{ .create = 1 },
+        .{ .create = 2 },
+        .{ .create = 3 },
+        .{ .create = 4 },
+        .{ .set_root = 1 },
+        .{ .insert = .{ .layer = 2, .parent = 1 } },
+        .{ .insert = .{ .layer = 3, .parent = 2 } },
+        .{ .insert = .{ .layer = 4, .parent = 1 } },
+        .{ .set_transform = .{ .layer = 2, .transform = .offset(50, 50) } },
+        .{ .set_scroll = .{ .layer = 2, .scroll = .{ .viewport = .xywh(10, 10, 100, 100), .content = .{ .width = 100, .height = 500 }, .min_zoom = 0.5, .max_zoom = 4 } } },
+        .{ .set_content = .{ .layer = 3, .content = try f.rect(0, .xywh(10, 10, 100, 500)) } },
+        .{ .set_transform = .{ .layer = 4, .transform = .offset(200, 0) } },
+        .{ .set_scroll = .{ .layer = 4, .scroll = .{ .viewport = .xywh(0, 0, 50, 50), .content = .{ .width = 50, .height = 500 } } } },
+    });
+    try testing.expectEqual(Route{ .scroll = 2 }, f.tree.routePinch(.{ .x = 100, .y = 120 }, .{}));
+    try testing.expectEqual(Route.ui, f.tree.routePinch(.{ .x = 100, .y = 120 }, .{ .ctrl = true }));
+    // A container that only scrolls does not take pinches.
+    try testing.expectEqual(Route.ui, f.tree.routePinch(.{ .x = 220, .y = 20 }, .{}));
+
+    // Zooming to 2 about (60, 40) in the container keeps the content
+    // point under it, (60, 40) of the child (window point (110, 90)).
+    try f.tree.zoomAt(2, 2, .{ .x = 60, .y = 40 }, true);
+    try testing.expectEqual(@as(f32, 2), f.tree.get(2).?.zoom);
+    try testing.expectEqual(Point{ .x = 50, .y = 30 }, f.tree.get(2).?.offset);
+    try testing.expectEqual(Point{ .x = 60, .y = 40 }, f.tree.toLayer(3, .{ .x = 110, .y = 90 }).?);
+    try testing.expectEqualSlices(LayerId, &.{2}, f.tree.scrolled.items);
+    // Composition scales the children about the viewport's corner, then
+    // moves them by the offset: x' = 10 + 2 (x - 10) - 50.
+    const list = try f.tree.compose();
+    try testing.expectEqual(@as(f32, 2), list.commands[3].push.layer.transform.a);
+    try testing.expectEqual(@as(f32, -60), list.commands[3].push.layer.transform.e);
+
+    // Hit testing goes through the zoom: a wheel region on the child at
+    // (60, 40)-(70, 50) shows at window (110, 90)-(130, 110).
+    try f.apply(&.{.{ .set_wheel_region = .{ .layer = 3, .region = .xywh(60, 40, 10, 10) } }});
+    const down: Point = .{ .x = 0, .y = 10 };
+    try testing.expectEqual(Route.ui, f.tree.route(.{ .x = 129, .y = 92 }, down));
+    try testing.expectEqual(Route{ .scroll = 2 }, f.tree.route(.{ .x = 131, .y = 92 }, down));
+
+    // Offsets are clamped to the zoomed content (200 x 1000 in a
+    // 100 x 100 viewport), and the zoom to its range.
+    _ = try f.tree.scrollBy(2, .{ .x = 1000, .y = 5000 });
+    try testing.expectEqual(Point{ .x = 100, .y = 900 }, f.tree.get(2).?.offset);
+    try f.tree.zoomAt(2, 100, .{ .x = 10, .y = 10 }, false);
+    try testing.expectEqual(@as(f32, 4), f.tree.get(2).?.zoom);
+    try testing.expectEqual(Point{ .x = 200, .y = 1800 }, f.tree.get(2).?.offset);
+    try f.apply(&.{.{ .zoom_by = .{ .layer = 2, .factor = 0.01, .focus = .{ .x = 10, .y = 10 } } }});
+    try testing.expectEqual(@as(f32, 0.5), f.tree.get(2).?.zoom);
+    try testing.expectEqual(Point{ .x = 0, .y = 150 }, f.tree.get(2).?.offset);
 }
 
 test "animations sample at frame times and finish" {

@@ -74,6 +74,8 @@ text_input_manager: ?*zwp.TextInputManagerV3 = null,
 data_device_manager: ?*wl.DataDeviceManager = null,
 primary_selection_manager: ?*zwp.PrimarySelectionDeviceManagerV1 = null,
 cursor_shape_manager: ?*wp.CursorShapeManagerV1 = null,
+gestures: ?*zwp.PointerGesturesV1 = null,
+tablet_manager: ?*zwp.TabletManagerV2 = null,
 /// Themed cursors, without cursor-shape-v1.
 cursor_theme: cursor.Theme,
 exporter: ?*zxdg.ExporterV2 = null,
@@ -286,6 +288,8 @@ fn teardown(self: *Wayland) void {
     for (self.seats.items) |s| if (s) |seat| seat.destroy();
     self.cursor_theme.deinit();
     if (self.cursor_shape_manager) |m| m.destroy();
+    if (self.gestures) |m| if (m.getVersion() >= 2) m.release() else wlDestroy(m);
+    if (self.tablet_manager) |m| m.destroy();
     for (self.outputs.items) |o| if (o) |out| self.destroyOutput(out);
     self.windows.deinit(self.allocator);
     self.seats.deinit(self.allocator);
@@ -449,6 +453,13 @@ fn addGlobal(self: *Wayland, registry: *wl.Registry, name: u32, interface: []con
     } else if (is(interface, wp.CursorShapeManagerV1)) {
         self.cursor_shape_manager = try registry.bind(name, wp.CursorShapeManagerV1, @min(version, 2));
         for (self.seats.items) |s| if (s) |seat| seat.addShapeDevice();
+    } else if (is(interface, zwp.TabletManagerV2)) {
+        const m = try registry.bind(name, zwp.TabletManagerV2, @min(version, 2));
+        self.tablet_manager = m;
+        for (self.seats.items) |s| if (s) |seat| seat.addTablet(m);
+    } else if (is(interface, zwp.PointerGesturesV1)) {
+        self.gestures = try registry.bind(name, zwp.PointerGesturesV1, @min(version, 3));
+        for (self.seats.items) |s| if (s) |seat| seat.addGestures();
     } else if (is(interface, zxdg.ExporterV2)) {
         self.exporter = try registry.bind(name, zxdg.ExporterV2, 1);
     } else if (is(interface, xdg.ActivationV1)) {
@@ -460,6 +471,7 @@ fn addGlobal(self: *Wayland, registry: *wl.Registry, name: u32, interface: []con
         const seat = try Seat.create(self, @intCast(slot), registry, name, version);
         self.seats.items[slot] = seat;
         if (self.text_input_manager) |m| seat.addTextInput(m);
+        if (self.tablet_manager) |m| seat.addTablet(m);
     }
 }
 
@@ -1202,7 +1214,10 @@ pub fn setCursorTheme(self: *Wayland, name: []const u8, size: u32) void {
 /// Shows the window's cursor again on the seats over it: it changed, or
 /// a themed one must be loaded for a new scale.
 fn reapplyCursors(self: *Wayland, id: WindowId) void {
-    for (self.seats.items) |s| if (s) |seat| if (seat.pointer_focus == id) seat.applyCursor();
+    for (self.seats.items) |s| if (s) |seat| {
+        if (seat.pointer_focus == id) seat.applyCursor();
+        if (seat.tablet) |t| t.reapplyCursors(id);
+    };
 }
 
 pub fn startDrag(self: *Wayland, id: WindowId, seat: SeatId, serial: u32, mimes: []const []const u8, actions: platform.DragActions, icon: ?*const platform.DragIcon) Error!u32 {

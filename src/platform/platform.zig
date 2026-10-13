@@ -1090,6 +1090,154 @@ pub const Touch = struct {
     serial: u32 = 0,
 };
 
+pub const GestureKind = enum(u8) {
+    /// Three or more fingers moving together (two-finger motion is
+    /// scrolling).
+    swipe,
+    /// Fingers moving apart or together, and rotating.
+    pinch,
+    /// Fingers resting on the touchpad, which stops kinetic scrolling.
+    hold,
+};
+
+pub const GesturePhase = enum(u8) { begin, update, end };
+
+/// A touchpad gesture (pointer-gestures). `begin` names the window under
+/// the pointer; the gesture's later events go to the same window.
+pub const Gesture = struct {
+    window: WindowId,
+    seat: SeatId,
+    kind: GestureKind,
+    phase: GesturePhase,
+    /// `end`: the gesture was cancelled (a finger was added or lifted
+    /// early, or the compositor took it over) rather than finished.
+    cancelled: bool = false,
+    fingers: u32 = 0,
+    /// Swipe and pinch updates: how far the fingers' center moved since
+    /// the last event, in logical pixels.
+    dx: f64 = 0,
+    dy: f64 = 0,
+    /// Pinch: the fingers' distance relative to `begin` (2 is twice as
+    /// far apart).
+    scale: f64 = 1,
+    /// Pinch: rotation since the last event, in degrees clockwise.
+    rotation: f64 = 0,
+    time: u32 = 0,
+    serial: u32 = 0,
+};
+
+/// A tablet tool's physical type (tablet-v2).
+pub const ToolKind = enum(u8) { pen, eraser, brush, pencil, airbrush, finger, mouse, lens };
+
+/// The axes a tablet tool reports besides its position.
+pub const ToolAxes = packed struct(u8) {
+    pressure: bool = false,
+    distance: bool = false,
+    tilt: bool = false,
+    rotation: bool = false,
+    slider: bool = false,
+    wheel: bool = false,
+    _: u2 = 0,
+};
+
+pub const TabletPhase = enum(u8) {
+    /// The tool came into proximity of the window.
+    proximity_in,
+    /// It left, or went out of proximity.
+    proximity_out,
+    /// The tip touched the tablet.
+    down,
+    /// The tip left the tablet.
+    up,
+    /// Axes changed (position, pressure, tilt, ...).
+    motion,
+    /// A button on the tool was pressed or released.
+    button,
+};
+
+/// One tablet tool event (tablet-v2). The protocol groups a tool's
+/// changes into frames; each frame becomes its events in the order
+/// proximity_in, down, motion (when only axes changed), buttons, up,
+/// proximity_out, and every event carries the tool's whole state as of
+/// the frame, so a drawing program can start a stroke from `down`.
+pub const TabletTool = struct {
+    window: WindowId,
+    seat: SeatId,
+    /// The tool, per seat, while it exists.
+    tool: u32,
+    kind: ToolKind = .pen,
+    axes: ToolAxes = .{},
+    /// The tool's hardware serial number, the same on every tablet it is
+    /// used on; 0 if unknown.
+    serial_number: u64 = 0,
+    phase: TabletPhase,
+    /// Surface-local logical coordinates.
+    x: f64 = 0,
+    y: f64 = 0,
+    /// 0 to 1.
+    pressure: f64 = 0,
+    /// 0 (touching) to 1 (as far as the tablet senses).
+    distance: f64 = 0,
+    /// Degrees from the perpendicular, positive to the right and toward
+    /// the user.
+    tilt_x: f64 = 0,
+    tilt_y: f64 = 0,
+    /// Degrees clockwise from the tool's logical neutral position.
+    rotation: f64 = 0,
+    /// -1 to 1.
+    slider: f64 = 0,
+    /// The wheel turned this frame: degrees and detents.
+    wheel: f64 = 0,
+    wheel_clicks: i32 = 0,
+    /// `button`: a Linux input code (BTN_STYLUS is 0x14b) and its state.
+    button: u32 = 0,
+    pressed: bool = false,
+    /// The tip touches the tablet.
+    tip: bool = false,
+    time: u32 = 0,
+    serial: u32 = 0,
+};
+
+pub const PadControl = enum(u8) {
+    button,
+    /// A touch ring: `value` is the angle in degrees clockwise from the
+    /// top, [0, 360).
+    ring,
+    /// A touch strip: `value` is the position from the top or left, 0
+    /// to 1.
+    strip,
+    /// A dial: `value` is its rotation this frame in detents (positive
+    /// clockwise), fractions for high-resolution dials.
+    dial,
+    /// The group's mode changed to `mode`.
+    mode,
+};
+
+/// A tablet pad event (tablet-v2): the buttons, rings, strips, and dials
+/// on the tablet itself, sent to the window the pad focuses (usually the
+/// one with keyboard focus). `group` is the pad group the control is in
+/// and `mode` that group's current mode, so an application can map a
+/// control to a different action per mode.
+pub const TabletPad = struct {
+    window: WindowId,
+    seat: SeatId,
+    /// The pad, per seat, while it exists.
+    pad: u32,
+    control: PadControl,
+    /// The button, ring, strip, or dial: its index on the pad.
+    index: u32 = 0,
+    group: u32 = 0,
+    mode: u32 = 0,
+    value: f64 = 0,
+    /// `button`: pressed rather than released.
+    pressed: bool = false,
+    /// Rings and strips: the finger left the control (`value` is then
+    /// meaningless), so kinetic behavior can start.
+    stop: bool = false,
+    time: u32 = 0,
+    serial: u32 = 0,
+};
+
 pub const Configure = struct { window: WindowId, state: WindowState };
 
 pub const Frame = struct { window: WindowId, time: FrameClock.Time };
@@ -1121,6 +1269,11 @@ pub const Event = union(enum) {
     touch_frame: SeatId,
     /// The compositor took over the touch sequence; forget every point.
     touch_cancel: SeatId,
+    /// Touchpad swipe, pinch, and hold gestures.
+    gesture: Gesture,
+    /// Tablet tools (pens, erasers, ...) over a window, and tablet pads.
+    tablet_tool: TabletTool,
+    tablet_pad: TabletPad,
     /// The seat's text input (input method) focuses the window, or leaves.
     text_input_enter: Focus,
     text_input_leave: Focus,

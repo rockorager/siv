@@ -118,6 +118,18 @@ pub const Clip = struct {
 /// and similar bindings); shift is a plain scroll, with a vertical wheel
 /// scrolling horizontally. A touchpad gesture stays with the target its
 /// first event chose until the scroll stops.
+///
+/// Zoom: a container whose `max_zoom` exceeds `min_zoom` also scales its
+/// children by a zoom factor about the viewport's top-left corner, so a
+/// child point p shows at `viewport.min + zoom * (p - viewport.min) -
+/// offset`, and the offset (in zoomed pixels) is clamped to the zoomed
+/// content. Touchpad pinches are routed by the rules above, with "can
+/// still move" read as "zooms": the first wheel region sends the pinch to
+/// the UI, the first input-enabled zoomable container under the pointer
+/// zooms in the compositor, keeping the point under the fingers in place
+/// and panning with them, and modifiers send it to the UI. A pinch keeps
+/// its first target until it ends. The zoom is reported in
+/// `Event.scrolled`.
 pub const Scroll = struct {
     /// Visible area, in layer coordinates.
     viewport: Rect,
@@ -127,6 +139,17 @@ pub const Scroll = struct {
     /// with kinetic scrolling after touchpad gestures, without waiting for
     /// the UI thread. Scroll events it consumes are not forwarded.
     input: bool = true,
+    /// Zoom range; equal values (the default) never zoom.
+    min_zoom: f32 = 1,
+    max_zoom: f32 = 1,
+
+    pub fn zoomable(s: Scroll) bool {
+        return s.max_zoom > s.min_zoom;
+    }
+
+    pub fn clampZoom(s: Scroll, z: f32) f32 {
+        return std.math.clamp(z, s.min_zoom, s.max_zoom);
+    }
 };
 
 /// Timing curve of an animation.
@@ -267,6 +290,13 @@ pub const Op = union(enum) {
     /// and passes on, without racing the compositor's own scrolling.
     scroll_by: struct { layer: LayerId, delta: Point },
     animate: struct { layer: LayerId, animation: Animation },
+    /// Sets a zoomable scroll container's zoom (clamped to its range),
+    /// keeping `focus` (layer coordinates, inside the viewport) in place.
+    zoom_to: struct { layer: LayerId, zoom: f32, focus: Point },
+    /// Multiplies the zoom by `factor`, relative to wherever the
+    /// compositor has it now, keeping `focus` in place: for pinches and
+    /// zoom bindings the UI handled first and passes on.
+    zoom_by: struct { layer: LayerId, factor: f32, focus: Point },
     /// Pointer scroll events over `region` (layer coordinates, clipped like
     /// the layer) go to the UI instead of a scroll container below it in
     /// the tree; see `Scroll`. Null removes the region. A region also makes
@@ -316,6 +346,8 @@ pub const Op = union(enum) {
             .set_opacity => |s| s.layer != 0 and std.math.isFinite(s.opacity),
             .set_clip => |s| s.layer != 0 and (s.clip == null or finiteRect(s.clip.?.rect)),
             .set_scroll => |s| s.layer != 0 and (s.scroll == null or validScroll(s.scroll.?)),
+            .zoom_to => |s| s.layer != 0 and std.math.isFinite(s.zoom) and s.zoom > 0 and finitePoint(s.focus),
+            .zoom_by => |s| s.layer != 0 and std.math.isFinite(s.factor) and s.factor > 0 and finitePoint(s.focus),
             .scroll_to => |s| s.layer != 0 and finitePoint(s.offset),
             .fling => |s| s.layer != 0 and finitePoint(s.velocity),
             .scroll_by => |s| s.layer != 0 and finitePoint(s.delta),
@@ -347,10 +379,10 @@ pub const Event = union(enum) {
     /// `commit_ns` when it was committed to the display server, both on
     /// CLOCK_MONOTONIC.
     presented: struct { window: WindowId, seq: u64, present_ns: u64, commit_ns: u64 = 0 },
-    /// The compositor changed a scroll offset: by input, a fling, or an
-    /// animation. `seq` is the last commit applied at the time, so a report
-    /// older than the UI's own `scroll_to` can be told apart.
-    scrolled: struct { window: WindowId, layer: LayerId, offset: Point, seq: u64 },
+    /// The compositor changed a scroll offset or zoom: by input, a fling,
+    /// or an animation. `seq` is the last commit applied at the time, so a
+    /// report older than the UI's own `scroll_to` can be told apart.
+    scrolled: struct { window: WindowId, layer: LayerId, offset: Point, seq: u64, zoom: f32 = 1 },
     animation_finished: struct { window: WindowId, layer: LayerId, id: u32, property: Property },
     /// No frame reads this builder's list any more; the UI may reset or
     /// free it and the fonts and images it referred to.
@@ -386,7 +418,8 @@ fn finiteRect(r: Rect) bool {
 }
 
 fn validScroll(s: Scroll) bool {
-    return finiteRect(s.viewport) and std.math.isFinite(s.content.width) and std.math.isFinite(s.content.height);
+    return finiteRect(s.viewport) and std.math.isFinite(s.content.width) and std.math.isFinite(s.content.height) and
+        std.math.isFinite(s.min_zoom) and std.math.isFinite(s.max_zoom) and s.min_zoom > 0 and s.max_zoom >= s.min_zoom;
 }
 
 fn validValue(v: Value) bool {

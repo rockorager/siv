@@ -392,6 +392,89 @@ test "pointer scroll moves containers in the compositor unless the UI wants it" 
     try testing.expect(flung > 30 + 40 + 20);
 }
 
+test "pinches zoom containers in the compositor unless the UI wants them; holds stop flings" {
+    var h: Harness = .{};
+    try h.start(false);
+    defer h.stop();
+    const id = try h.window();
+    // A zoomable container over the window with a red stripe at x 40 to 50
+    // on blue, and a wheel region on its child's bottom half.
+    const b = h.free.pop().?;
+    b.reset();
+    try b.fillRect(.xywh(0, 0, 100, 80), .color(blue));
+    try b.fillRect(.xywh(40, 0, 10, 80), .color(red));
+    _ = try h.comp.commit(id, &.{
+        .{ .create = 2 },
+        .{ .create = 3 },
+        .{ .insert = .{ .layer = 2, .parent = 1 } },
+        .{ .insert = .{ .layer = 3, .parent = 2 } },
+        .{ .set_scroll = .{ .layer = 2, .scroll = .{ .viewport = .xywh(0, 0, 100, 80), .content = .{ .width = 100, .height = 80 }, .max_zoom = 4 } } },
+        .{ .set_content = .{ .layer = 3, .content = .{ .list = try b.finish(0), .builder = b } } },
+        .{ .set_wheel_region = .{ .layer = 3, .region = .xywh(0, 40, 100, 40) } },
+    });
+    const hl = h.headless();
+    hl.inject(.{ .pointer_motion = .{ .window = id, .seat = 0, .x = 50, .y = 20 } });
+    hl.inject(.{ .gesture = .{ .window = id, .seat = 0, .kind = .pinch, .phase = .begin, .fingers = 2 } });
+    hl.inject(.{ .gesture = .{ .window = id, .seat = 0, .kind = .pinch, .phase = .update, .fingers = 2, .scale = 2 } });
+    try h.run(&h, struct {
+        fn f(x: *Harness) bool {
+            const s = x.last(.scrolled) orelse return false;
+            return s.scrolled.zoom == 2;
+        }
+    }.f);
+    // Zoomed about the pointer: the stripe now covers x 30 to 50.
+    try testing.expectEqual(update.Point{ .x = 50, .y = 20 }, h.last(.scrolled).?.scrolled.offset);
+    try h.run(&h, struct {
+        fn f(x: *Harness) bool {
+            return std.mem.eql(u8, &x.pixel(0, 35, 20), &bgra_red);
+        }
+    }.f);
+    // The content follows the fingers: 10 px right.
+    hl.inject(.{ .gesture = .{ .window = id, .seat = 0, .kind = .pinch, .phase = .update, .fingers = 2, .scale = 2, .dx = 10 } });
+    hl.inject(.{ .gesture = .{ .window = id, .seat = 0, .kind = .pinch, .phase = .end, .fingers = 2 } });
+    try h.run(&h, struct {
+        fn f(x: *Harness) bool {
+            return std.mem.eql(u8, &x.pixel(0, 55, 20), &bgra_red) and std.mem.eql(u8, &x.pixel(0, 35, 20), &bgra_blue);
+        }
+    }.f);
+    var forwarded: usize = 0;
+    for (h.events.items) |e| if (e == .platform and e.platform == .gesture) {
+        forwarded += 1;
+    };
+    try testing.expectEqual(@as(usize, 0), forwarded);
+
+    // Over the wheel region (now from y 60), and with ctrl held, the UI
+    // gets the pinch.
+    hl.inject(.{ .pointer_motion = .{ .window = id, .seat = 0, .x = 50, .y = 70 } });
+    hl.inject(.{ .gesture = .{ .window = id, .seat = 0, .kind = .pinch, .phase = .begin, .fingers = 2 } });
+    hl.inject(.{ .gesture = .{ .window = id, .seat = 0, .kind = .pinch, .phase = .update, .fingers = 2, .scale = 3 } });
+    hl.inject(.{ .gesture = .{ .window = id, .seat = 0, .kind = .pinch, .phase = .end, .fingers = 2 } });
+    hl.inject(.{ .pointer_motion = .{ .window = id, .seat = 0, .x = 50, .y = 20 } });
+    hl.inject(.{ .modifiers = .{ .window = id, .seat = 0, .mods = .{ .ctrl = true } } });
+    hl.inject(.{ .gesture = .{ .window = id, .seat = 0, .kind = .pinch, .phase = .begin, .fingers = 2 } });
+    hl.inject(.{ .gesture = .{ .window = id, .seat = 0, .kind = .pinch, .phase = .end, .fingers = 2 } });
+    hl.inject(.{ .modifiers = .{ .window = id, .seat = 0, .mods = .{} } });
+    try h.runMs(10);
+    forwarded = 0;
+    for (h.events.items) |e| if (e == .platform and e.platform == .gesture) {
+        forwarded += 1;
+    };
+    try testing.expectEqual(@as(usize, 5), forwarded);
+    try testing.expectEqual(@as(f32, 2), h.last(.scrolled).?.scrolled.zoom);
+
+    // A fling stops when fingers come to rest, and the hold goes on to the
+    // UI.
+    _ = try h.comp.commit(id, &.{.{ .fling = .{ .layer = 2, .velocity = .{ .x = 0, .y = 300 } } }});
+    try h.runMs(10);
+    hl.inject(.{ .gesture = .{ .window = id, .seat = 0, .kind = .hold, .phase = .begin, .fingers = 2 } });
+    try h.runMs(10);
+    const held = h.last(.scrolled).?.scrolled.offset.y;
+    try testing.expect(held > 20 and held < 80);
+    try h.runMs(50);
+    try testing.expectEqual(held, h.last(.scrolled).?.scrolled.offset.y);
+    try testing.expect(h.last(.platform).?.platform == .gesture);
+}
+
 test "suspended windows render nothing until resumed" {
     var h: Harness = .{};
     try h.start(false);

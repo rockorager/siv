@@ -254,6 +254,11 @@ const Seat = struct {
     latch: ?tree_mod.Route = null,
     latch_window: WindowId = 0,
     velocity: anim.VelocityTracker = .{},
+    /// The container a pinch in progress zooms, and its zoom when the
+    /// pinch began; null while a pinch goes to the UI or none runs.
+    pinch: ?LayerId = null,
+    pinch_window: WindowId = 0,
+    pinch_zoom: f32 = 1,
 };
 
 const Window = struct {
@@ -959,6 +964,7 @@ fn onPlatformEvent(ctx: ?*anyopaque, ev: *const platform_mod.Event) void {
             self.seats[m.seat].mods = m.mods;
         },
         .scroll => |s| if (self.scroll(s)) return,
+        .gesture => |g| if (self.routeGesture(g)) return,
         .subsurface_released => |r| {
             if (self.getWindow(r.window)) |w| w.externals.subsurfaceReleased(r.key, ReleaseTo{ .comp = self, .window = w.id });
             return;
@@ -1029,6 +1035,47 @@ fn releaseHold(self: *Compositor, popup: *Window, time: ?platform_mod.FrameClock
     // them together and shows them in one refresh. Presented apart, the
     // parent's commit showed at once and the popup's a refresh later.
     if (time) |t| self.renderFrame(.{ .window = pid, .time = t }) else self.platform.requestFrame(pid);
+}
+
+/// Zooms a container for a touchpad pinch, if one takes it (routed like
+/// scrolling, `update.Scroll`); a hold stops kinetic scrolling. Returns
+/// whether the event was consumed. Swipes and holds go on to the UI.
+fn routeGesture(self: *Compositor, g: platform_mod.Gesture) bool {
+    if (g.seat >= max_seats) return false;
+    const seat = &self.seats[g.seat];
+    const w = self.getWindow(g.window) orelse return false;
+    switch (g.kind) {
+        .swipe => return false,
+        .hold => {
+            if (g.phase == .begin) w.tree.stopFlings();
+            return false;
+        },
+        .pinch => {},
+    }
+    if (g.phase == .begin) {
+        seat.pinch = switch (w.tree.routePinch(seat.pos, seat.mods)) {
+            .ui => null,
+            .scroll => |id| id,
+        };
+        const id = seat.pinch orelse return false;
+        seat.pinch_window = g.window;
+        w.tree.stopLayer(id);
+        seat.pinch_zoom = w.tree.get(id).?.zoom;
+        return true;
+    }
+    const id = seat.pinch orelse return false;
+    if (seat.pinch_window != g.window) return false;
+    if (g.phase == .end) {
+        seat.pinch = null;
+        return true;
+    }
+    if (w.tree.get(id) == null or w.tree.get(id).?.scroll == null) return true;
+    const focus = w.tree.toLayer(id, seat.pos) orelse return true;
+    w.tree.zoomAt(id, seat.pinch_zoom * @as(f32, @floatCast(g.scale)), focus, true) catch return true;
+    // The content follows the fingers.
+    _ = w.tree.pan(id, .{ .x = @floatCast(-g.dx), .y = @floatCast(-g.dy) }) catch {};
+    self.platform.requestFrame(g.window);
+    return true;
 }
 
 fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
@@ -1115,7 +1162,7 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
     for (w.tree.scrolled.items) |id| {
         const l = &w.tree.layers.items[id];
         l.scrolled = false;
-        self.outbox.push(.{ .scrolled = .{ .window = w.id, .layer = id, .offset = l.offset, .seq = w.seq } });
+        self.outbox.push(.{ .scrolled = .{ .window = w.id, .layer = id, .offset = l.offset, .seq = w.seq, .zoom = l.zoom } });
     }
     w.tree.scrolled.clearRetainingCapacity();
     for (w.tree.finished.items) |fin| {

@@ -188,6 +188,55 @@ test "lua: viewer.lua loads an image from a coroutine" {
     try app.h.expectGolden("viewer", 640, 480);
 }
 
+test "lua: sketch.lua draws a pen's strokes from every sample, erases, and zooms" {
+    var app = try LuaApp.start("examples/sketch.lua", .{});
+    defer app.stop();
+    const id = (try app.h.win()).win.id;
+    // A pen stroke: down, then a wave of motions arriving between frames
+    // with rising pressure, then up.
+    var events: [42]@import("platform").Event = undefined;
+    const pen: @import("platform").TabletTool = .{ .window = id, .seat = 0, .tool = 0, .axes = .{ .pressure = true }, .phase = .motion, .tip = true };
+    for (&events, 0..) |*e, i| {
+        var s = pen;
+        const k: f64 = @floatFromInt(i);
+        s.phase = if (i == 0) .down else if (i == events.len - 1) .up else .motion;
+        s.x = 60 + k * 12;
+        s.y = 120 + 40 * @sin(k / 4);
+        s.pressure = k / @as(f64, events.len);
+        s.tip = i != events.len - 1;
+        e.* = .{ .tablet_tool = s };
+    }
+    try app.h.inject(&events);
+    try app.h.settle();
+    // The eraser end across the stroke.
+    var eraser = pen;
+    eraser.tool = 1;
+    eraser.kind = .eraser;
+    eraser.pressure = 1;
+    var erase: [12]@import("platform").Event = undefined;
+    for (&erase, 0..) |*e, i| {
+        var s = eraser;
+        s.phase = if (i == 0) .down else if (i == erase.len - 1) .up else .motion;
+        s.x = 300;
+        s.y = 60 + @as(f64, @floatFromInt(i)) * 12;
+        s.tip = i != erase.len - 1;
+        e.* = .{ .tablet_tool = s };
+    }
+    try app.h.inject(&erase);
+    try app.h.settle();
+    try app.h.expectGolden("sketch", 640, 480);
+    // A pinch zooms the sheet about the pointer, on the compositor.
+    const frames = try app.h.framesPresented();
+    try app.h.inject(&.{
+        .{ .pointer_motion = .{ .window = id, .seat = 0, .x = 60, .y = 120 } },
+        .{ .gesture = .{ .window = id, .seat = 0, .kind = .pinch, .phase = .begin, .fingers = 2 } },
+        .{ .gesture = .{ .window = id, .seat = 0, .kind = .pinch, .phase = .update, .fingers = 2, .scale = 2 } },
+        .{ .gesture = .{ .window = id, .seat = 0, .kind = .pinch, .phase = .end, .fingers = 2 } },
+    });
+    try app.h.waitFrame(frames);
+    try app.h.expectGolden("sketch-zoomed", 640, 480);
+}
+
 test "lua: hot reload of todo.lua keeps its window, items, and draft" {
     const io = testing.io;
     const dir = ".zig-cache/lua-hot-reload";

@@ -403,8 +403,19 @@ pub const ScrollAxis = enum(u8) { vertical, horizontal, both };
 pub const Scroll = struct {
     axis: ScrollAxis = .vertical,
     /// Distance scrolled from the start (logical: in RTL, x grows to the
-    /// left). Clamped to the content at layout.
+    /// left), in zoomed pixels. Clamped to the content at layout.
     offset: Point = .zero,
+    /// Zoom range for pinches and Ctrl+wheel (D16); equal values (the
+    /// default) never zoom.
+    min_zoom: f32 = 1,
+    max_zoom: f32 = 1,
+    /// Scale of the content about the viewport's top-left corner, within
+    /// the range. The compositor changes it for pinches (D8).
+    zoom: f32 = 1,
+
+    pub fn zoomable(s: Scroll) bool {
+        return s.max_zoom > s.min_zoom;
+    }
 };
 
 pub const TextAlign = text.layout.Alignment;
@@ -791,6 +802,101 @@ pub const FocusChange = struct {
 
 pub const ScrollDelta = struct { dx: f32, dy: f32, target: NodeId = .none, prevented: bool = false };
 
+pub const ToolKind = @import("platform").ToolKind;
+pub const ToolAxes = @import("platform").ToolAxes;
+pub const PadControl = @import("platform").PadControl;
+
+/// One position of a tablet tool, in the node's coordinates. Laid out as
+/// `siv_tablet_sample`, so the C API passes samples without a copy.
+pub const TabletSample = extern struct {
+    x: f32,
+    y: f32,
+    /// 0 to 1.
+    pressure: f32 = 0,
+    /// 0 (touching) to 1.
+    distance: f32 = 0,
+    /// Degrees from the perpendicular.
+    tilt_x: f32 = 0,
+    tilt_y: f32 = 0,
+    /// Degrees clockwise.
+    rotation: f32 = 0,
+    /// -1 to 1.
+    slider: f32 = 0,
+    time: u32 = 0,
+};
+
+/// A tablet tool over the window (D16). Phases as for pointers: enter and
+/// leave for proximity, down and up for the tip (button primary) and the
+/// tool's buttons (secondary, middle, other), move for motion. Motion is
+/// delivered once per frame with every sample since the last move.
+pub const Tablet = struct {
+    phase: PointerPhase,
+    button: Button = .primary,
+    tool: ToolKind = .pen,
+    /// Distinguishes tools on a seat while they exist.
+    tool_id: u32 = 0,
+    /// The tool's hardware serial number; 0 if unknown.
+    serial_number: u64 = 0,
+    axes: ToolAxes = .{},
+    /// The tool's state now, in the node's coordinates.
+    sample: TabletSample,
+    /// Move: every sample since the last move event, oldest first, the
+    /// last being `sample`. Other phases: `sample` alone.
+    samples: []const TabletSample = &.{},
+    /// The wheel turned since the last event: degrees and detents.
+    wheel: f32 = 0,
+    wheel_clicks: i32 = 0,
+    /// The tip touches the tablet.
+    tip: bool = false,
+    mods: Mods = .{},
+    time: u32 = 0,
+    target: NodeId = .none,
+    prevented: bool = false,
+};
+
+/// A tablet pad's button, ring, strip, dial, or mode switch (D16), from
+/// the focused node up like a key.
+pub const Pad = struct {
+    control: PadControl,
+    index: u32 = 0,
+    group: u32 = 0,
+    mode: u32 = 0,
+    value: f64 = 0,
+    pressed: bool = false,
+    /// Rings and strips: the finger left the control.
+    lifted: bool = false,
+    time: u32 = 0,
+    target: NodeId = .none,
+    prevented: bool = false,
+};
+
+pub const GestureKind = @import("platform").GestureKind;
+pub const GesturePhase = enum(u8) { begin, update, end, cancel };
+
+/// A touchpad gesture the compositor left to the UI (D8, D16): over a
+/// node with a gesture or scroll handler, with a modifier held, or with
+/// nothing to zoom; swipes and holds always.
+pub const Gesture = struct {
+    kind: GestureKind,
+    phase: GesturePhase,
+    fingers: u32 = 0,
+    /// The pointer, in the target node's coordinates.
+    x: f32 = 0,
+    y: f32 = 0,
+    /// Swipe and pinch: motion of the fingers' center since the last
+    /// event, in logical pixels.
+    dx: f32 = 0,
+    dy: f32 = 0,
+    /// Pinch: the fingers' distance relative to the start.
+    scale: f32 = 1,
+    /// Pinch: rotation since the last event, degrees clockwise.
+    rotation: f32 = 0,
+    mods: Mods = .{},
+    time: u32 = 0,
+    target: NodeId = .none,
+    prevented: bool = false,
+};
+
 /// A pointer cursor shape (D16).
 pub const CursorShape = @import("platform").CursorShape;
 
@@ -874,6 +980,9 @@ pub const Event = union(enum) {
     key: Key,
     focus: FocusChange,
     scroll: ScrollDelta,
+    gesture: Gesture,
+    tablet: Tablet,
+    pad: Pad,
     /// The user edited an editor's text (delivered to the editor only,
     /// after the edit is committed).
     change,
@@ -891,11 +1000,13 @@ pub const Event = union(enum) {
     viewport: Viewport,
 };
 
-pub const Viewport = struct { x: f32, y: f32, width: f32, height: f32 };
+/// The visible content is the rectangle (x, y, width, height) divided by
+/// `zoom`.
+pub const Viewport = struct { x: f32, y: f32, width: f32, height: f32, zoom: f32 = 1 };
 
 /// `select`, `close`, and `sort` are never sent by the tree: widgets built
 /// on the C API emit them (`siv_emit`).
-pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll, change, drop, drag, set_value, select, close, viewport, sort };
+pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll, change, drop, drag, set_value, select, close, viewport, sort, gesture, tablet, pad };
 
 /// What a handler did with an event: whether it stops bubbling and
 /// whether it prevents the default action (later default handlers and the

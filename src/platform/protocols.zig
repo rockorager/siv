@@ -17,8 +17,15 @@ pub const xml = [_][]const u8{
     "unstable/primary-selection/primary-selection-unstable-v1.xml",
     "stable/linux-dmabuf/linux-dmabuf-v1.xml",
     "staging/cursor-shape/cursor-shape-v1.xml",
-    // Only for an interface cursor-shape-v1 refers to; no tablet support yet.
     "stable/tablet/tablet-v2.xml",
+    "unstable/pointer-gestures/pointer-gestures-unstable-v1.xml",
+    "unstable/pointer-constraints/pointer-constraints-unstable-v1.xml",
+    "unstable/relative-pointer/relative-pointer-unstable-v1.xml",
+    "unstable/keyboard-shortcuts-inhibit/keyboard-shortcuts-inhibit-unstable-v1.xml",
+    "unstable/idle-inhibit/idle-inhibit-unstable-v1.xml",
+    "staging/xdg-dialog/xdg-dialog-v1.xml",
+    "staging/xdg-toplevel-icon/xdg-toplevel-icon-v1.xml",
+    "staging/xdg-session-management/xdg-session-management-v1.xml",
     "unstable/xdg-foreign/xdg-foreign-unstable-v2.xml",
     "staging/xdg-activation/xdg-activation-v1.xml",
 };
@@ -48,4 +55,16 @@ pub const globals = [_]struct { []const u8, u32 }{
     .{ "zxdg_exporter_v2", 1 },
     // Focus handoff between applications (D17, D19).
     .{ "xdg_activation_v1", 1 },
+    // Input on request (D16): tablets and pads, touchpad gestures, pointer
+    // lock and confinement with relative motion, and shortcut inhibition.
+    .{ "zwp_tablet_manager_v2", 2 },
+    .{ "zwp_pointer_gestures_v1", 3 },
+    .{ "zwp_pointer_constraints_v1", 1 },
+    .{ "zwp_relative_pointer_manager_v1", 1 },
+    .{ "zwp_keyboard_shortcuts_inhibit_manager_v1", 1 },
+    // Windows (D17): idle inhibition, modal dialogs, icons, session restore.
+    .{ "zwp_idle_inhibit_manager_v1", 1 },
+    .{ "xdg_wm_dialog_v1", 1 },
+    .{ "xdg_toplevel_icon_manager_v1", 1 },
+    .{ "xdg_session_manager_v1", 1 },
 };

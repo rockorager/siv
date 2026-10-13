@@ -1,7 +1,8 @@
 //! A wl_seat (D16): keyboard with XKB keymaps, compose, and key repeat;
-//! pointer with high-resolution scrolling and axis source; touch. Listeners
-//! translate events and queue them; scroll and touch events are grouped by
-//! the protocol's frame events.
+//! pointer with high-resolution scrolling and axis source, and touchpad
+//! gestures (pointer-gestures); touch. Listeners translate events and
+//! queue them; scroll and touch events are grouped by the protocol's frame
+//! events.
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -13,6 +14,7 @@ const Wayland = @import("Wayland.zig");
 const Keyboard = @import("Keyboard.zig");
 const TextInput = @import("TextInput.zig");
 const DataDevice = @import("DataDevice.zig");
+const Tablet = @import("Tablet.zig");
 const cursor = @import("cursor.zig");
 const zwp = @import("wayland").client.zwp;
 const wp = @import("wayland").client.wp;
@@ -30,6 +32,8 @@ keyboard_proxy: ?*wl.Keyboard = null,
 touch: ?*wl.Touch = null,
 text_input: ?*TextInput = null,
 data: *DataDevice = undefined,
+/// Tablet tools and pads (tablet-v2), once the manager is known.
+tablet: ?*Tablet = null,
 
 keyboard: Keyboard,
 keyboard_focus: ?WindowId = null,
@@ -42,6 +46,14 @@ repeat_key: platform.Key = undefined,
 pointer_focus: ?WindowId = null,
 scroll: platform.Scroll = undefined,
 scrolling: bool = false,
+
+/// Touchpad gestures on the pointer (pointer-gestures), and the window
+/// each kind's gesture in progress began on.
+swipe: ?*zwp.PointerGestureSwipeV1 = null,
+pinch: ?*zwp.PointerGesturePinchV1 = null,
+hold: ?*zwp.PointerGestureHoldV1 = null,
+gesture_window: [3]?WindowId = @splat(null),
+gesture_fingers: [3]u32 = @splat(0),
 
 /// Serial of the pointer's last enter, which cursor requests name.
 enter_serial: u32 = 0,
@@ -98,7 +110,17 @@ pub fn addTextInput(seat: *Seat, manager: *zwp.TextInputManagerV3) void {
     };
 }
 
+/// Creates the seat's tablet seat once the manager is known.
+pub fn addTablet(seat: *Seat, manager: *zwp.TabletManagerV2) void {
+    if (seat.tablet != null) return;
+    seat.tablet = Tablet.create(seat.backend, manager, seat.id, seat.proxy) catch {
+        seat.backend.queue.fail(error.OutOfMemory);
+        return;
+    };
+}
+
 pub fn destroy(seat: *Seat) void {
+    if (seat.tablet) |t| t.destroy();
     if (seat.text_input) |ti| ti.destroy();
     seat.data.destroy();
     seat.backend.loop.cancelTimer(&seat.repeat_timer);
@@ -114,6 +136,7 @@ pub fn destroy(seat: *Seat) void {
 /// Drops references to a destroyed window.
 pub fn forgetWindow(seat: *Seat, id: WindowId) void {
     if (seat.text_input) |ti| ti.forgetWindow(id);
+    if (seat.tablet) |t| t.forgetWindow(id);
     seat.data.forgetWindow(id);
     if (seat.keyboard_focus == id) {
         seat.keyboard_focus = null;
@@ -123,6 +146,9 @@ pub fn forgetWindow(seat: *Seat, id: WindowId) void {
         seat.pointer_focus = null;
         seat.scrolling = false;
     }
+    for (&seat.gesture_window) |*g| if (g.* == id) {
+        g.* = null;
+    };
     for (&seat.points) |*p| if (p.active and p.touch.window == id) {
         p.* = .{};
     };
@@ -146,11 +172,13 @@ fn setCapabilities(seat: *Seat, caps: wl.Seat.Capability) void {
             p.setListener(*Seat, onPointer, seat);
             seat.pointer = p;
             seat.addShapeDevice();
+            seat.addGestures();
         } else |_| seat.backend.queue.fail(error.OutOfMemory);
     } else if (!caps.pointer and seat.pointer != null) {
         const p = seat.pointer.?;
         if (seat.shape_device) |d| d.destroy();
         seat.shape_device = null;
+        seat.removeGestures();
         seat.stopCursorAnimation();
         if (v3) p.release() else p.destroy();
         seat.pointer = null;
@@ -370,6 +398,120 @@ fn onPointer(_: *wl.Pointer, event: wl.Pointer.Event, seat: *Seat) void {
                 .horizontal_scroll => s.inverted_x = inverted,
                 _ => {},
             }
+        },
+    }
+}
+
+// Gestures ------------------------------------------------------------------
+
+/// Gets the pointer's gesture objects once both the pointer and the
+/// manager exist.
+pub fn addGestures(seat: *Seat) void {
+    const m = seat.backend.gestures orelse return;
+    const p = seat.pointer orelse return;
+    if (seat.swipe != null) return;
+    const fail = struct {
+        fn f(s: *Seat) void {
+            s.backend.queue.fail(error.OutOfMemory);
+        }
+    }.f;
+    const swipe = m.getSwipeGesture(p) catch return fail(seat);
+    swipe.setListener(*Seat, onSwipe, seat);
+    seat.swipe = swipe;
+    const pinch = m.getPinchGesture(p) catch return fail(seat);
+    pinch.setListener(*Seat, onPinch, seat);
+    seat.pinch = pinch;
+    if (m.getVersion() >= 3) {
+        const hold = m.getHoldGesture(p) catch return fail(seat);
+        hold.setListener(*Seat, onHold, seat);
+        seat.hold = hold;
+    }
+}
+
+fn removeGestures(seat: *Seat) void {
+    // Gesture objects have a destructor request from version 2.
+    if (seat.swipe) |g| if (g.getVersion() >= 2) g.destroy() else @as(*wl.Proxy, @ptrCast(g)).destroy();
+    if (seat.pinch) |g| if (g.getVersion() >= 2) g.destroy() else @as(*wl.Proxy, @ptrCast(g)).destroy();
+    if (seat.hold) |g| g.destroy();
+    seat.swipe = null;
+    seat.pinch = null;
+    seat.hold = null;
+    // A gesture in progress ends with its device.
+    for (seat.gesture_window, 0..) |w, i| if (w) |window| seat.push(.{ .gesture = .{
+        .window = window,
+        .seat = seat.id,
+        .kind = @enumFromInt(i),
+        .phase = .end,
+        .cancelled = true,
+    } });
+    seat.gesture_window = @splat(null);
+}
+
+fn beginGesture(seat: *Seat, kind: platform.GestureKind, surface: ?*wl.Surface, fingers: u32, time: u32, serial: u32) void {
+    const window = Wayland.windowOf(surface) orelse return;
+    seat.gesture_window[@intFromEnum(kind)] = window;
+    seat.gesture_fingers[@intFromEnum(kind)] = fingers;
+    seat.push(.{ .gesture = .{ .window = window, .seat = seat.id, .kind = kind, .phase = .begin, .fingers = fingers, .time = time, .serial = serial } });
+}
+
+fn gestureEvent(seat: *Seat, kind: platform.GestureKind, phase: platform.GesturePhase) ?platform.Gesture {
+    const window = seat.gesture_window[@intFromEnum(kind)] orelse return null;
+    if (phase == .end) seat.gesture_window[@intFromEnum(kind)] = null;
+    return .{ .window = window, .seat = seat.id, .kind = kind, .phase = phase, .fingers = seat.gesture_fingers[@intFromEnum(kind)] };
+}
+
+/// Public for tests: sway cannot inject gestures on its headless backend.
+pub fn onSwipe(_: *zwp.PointerGestureSwipeV1, event: zwp.PointerGestureSwipeV1.Event, seat: *Seat) void {
+    switch (event) {
+        .begin => |b| seat.beginGesture(.swipe, b.surface, b.fingers, b.time, b.serial),
+        .update => |u| if (seat.gestureEvent(.swipe, .update)) |g| {
+            var ev = g;
+            ev.time = u.time;
+            ev.dx = u.dx.toDouble();
+            ev.dy = u.dy.toDouble();
+            seat.push(.{ .gesture = ev });
+        },
+        .end => |e| if (seat.gestureEvent(.swipe, .end)) |g| {
+            var ev = g;
+            ev.time = e.time;
+            ev.serial = e.serial;
+            ev.cancelled = e.cancelled != 0;
+            seat.push(.{ .gesture = ev });
+        },
+    }
+}
+
+pub fn onPinch(_: *zwp.PointerGesturePinchV1, event: zwp.PointerGesturePinchV1.Event, seat: *Seat) void {
+    switch (event) {
+        .begin => |b| seat.beginGesture(.pinch, b.surface, b.fingers, b.time, b.serial),
+        .update => |u| if (seat.gestureEvent(.pinch, .update)) |g| {
+            var ev = g;
+            ev.time = u.time;
+            ev.dx = u.dx.toDouble();
+            ev.dy = u.dy.toDouble();
+            ev.scale = u.scale.toDouble();
+            ev.rotation = u.rotation.toDouble();
+            seat.push(.{ .gesture = ev });
+        },
+        .end => |e| if (seat.gestureEvent(.pinch, .end)) |g| {
+            var ev = g;
+            ev.time = e.time;
+            ev.serial = e.serial;
+            ev.cancelled = e.cancelled != 0;
+            seat.push(.{ .gesture = ev });
+        },
+    }
+}
+
+pub fn onHold(_: *zwp.PointerGestureHoldV1, event: zwp.PointerGestureHoldV1.Event, seat: *Seat) void {
+    switch (event) {
+        .begin => |b| seat.beginGesture(.hold, b.surface, b.fingers, b.time, b.serial),
+        .end => |e| if (seat.gestureEvent(.hold, .end)) |g| {
+            var ev = g;
+            ev.time = e.time;
+            ev.serial = e.serial;
+            ev.cancelled = e.cancelled != 0;
+            seat.push(.{ .gesture = ev });
         },
     }
 }

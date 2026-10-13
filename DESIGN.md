@@ -396,6 +396,28 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     handlers that decline an event pass it on with `scroll_by`, which is
     relative and so cannot race the compositor's own scrolling. Touch
     drags go to the UI, which starts flings with `fling`.
+  - Touchpad pinches route by the same rules (`update.Scroll`), with
+    "can still move" read as "zooms": with ctrl, alt, or super held, or
+    over a wheel region (nodes with scroll or gesture handlers), they go
+    to the UI; otherwise the first input-enabled zoomable scroll
+    container under the pointer zooms in the compositor, and without one
+    the UI gets them. A pinch keeps its first target until it ends. A
+    zoomable container (`Scroll.min_zoom` below `max_zoom`) scales its
+    children about its viewport's top-left corner; offsets are in zoomed
+    pixels and clamped to the zoomed content. A pinch zooms to its start
+    zoom times the pinch's scale, keeping the content point under the
+    pointer (between the fingers) in place, and pans with the fingers'
+    motion; `scrolled` reports the zoom with the offset. Vector content
+    stays sharp, since every frame rasterizes the display lists at the
+    composed transform (D9): no layout or repaint runs while zooming. UI
+    handlers that decline a pinch pass it on with `zoom_by`, relative
+    like `scroll_by`; the application's own zoom is `zoom_to`, which keeps
+    the content at the viewport's corner. A hold gesture (fingers resting
+    on the touchpad) stops every fling in the window, which is what
+    libinput's hold exists for; holds and swipes also go on to the UI.
+    Alternative: zoom only in UI handlers, relaying out per step (a busy
+    UI thread would freeze the pinch, against this decision's
+    requirement).
   - Configure acks follow content: configures reach the UI as events
     with serials, and a commit names the serial its layout answers
     (`ack_configure`). A configure that changes the logical size is
@@ -1351,6 +1373,71 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     order (logical, so the same in RTL), Enter and Space activate the
     focused node, and arrow and page keys scroll the nearest scroll node.
     Touch drives the primary pointer until gestures exist.
+  - Touchpad gestures (pointer-gestures, version 3 for holds) are
+    `platform.Gesture` events: swipe (three or more fingers), pinch
+    (scale relative to the start, rotation since the last event, the
+    fingers' motion), and hold, each with begin, update, and end or
+    cancel. The compositor routes pinches (D8); in the UI the rest bubble
+    as `gesture` events (`SIV_EVENT_GESTURE`) from the node under the
+    pointer when the gesture began, and the gesture's later events go
+    there too, as a press's do. A pinch no handler prevents zooms the
+    nearest zoomable scroll node (`siv_set_scroll_zoom_range`), as does
+    Ctrl+wheel, by 10% a detent, so a zoomable view zooms the same with
+    a mouse. Nodes with a gesture handler get a wheel region, like nodes
+    with a scroll handler, so pinches over them reach the UI first.
+    Viewport events carry the zoom. Sway cannot make gestures on its
+    headless backend: the integration test binds the real gesture
+    objects (version 3) and feeds their listeners, as for touch.
+  - Tablets (tablet-v2, `src/platform/Tablet.zig`): each seat's tablet
+    seat tracks tools and pads. A tool's events are collected until its
+    `frame` and become `platform.TabletTool` events in the order
+    proximity_in, down, motion (only when nothing else happened), buttons,
+    up, proximity_out, each carrying the tool's whole state (position,
+    pressure and distance 0 to 1, tilt and rotation in degrees, slider -1
+    to 1, wheel, tip contact, kind, axes, hardware serial), so a stroke
+    starts from `down` with its pressure. While a tool is near a window
+    it shows that window's cursor, through cursor-shape-v1's tablet tool
+    device or the theme's first frame. Pad buttons, rings (degrees),
+    strips (0 to 1), dials (detents), and mode switches become
+    `platform.TabletPad` events for the window the pad focuses, with the
+    control's group and that group's mode, so an application can give a
+    control one action per mode.
+  - Tablet events in the UI (`SIV_EVENT_TABLET`) use the pointer's
+    phases: enter and leave for proximity, down and up for the tip
+    (button primary) and the tool's buttons (BTN_STYLUS secondary,
+    BTN_STYLUS2 middle, others other), move for motion. They bubble from
+    the node under the tool, or the node the tip went down on until it
+    lifts. High-frequency motion (tablets report at 200 Hz and more)
+    costs handlers one call per frame: motion is queued on the window
+    and delivered at the start of the next frame (a safe point, D5, before
+    viewport handlers and layout, so what a handler draws shows in that
+    frame), one move event per run of one tool's samples, whose
+    `samples` hold every position since the last move, oldest first, in
+    the node's coordinates (`siv_tablet_sample`, laid out like the
+    tree's samples so C gets them without a copy). Any other tablet or
+    pad event delivers queued motion first, keeping order; more than 256
+    queued samples are delivered at once, for windows that draw no
+    frames. This is the web's rAF-aligned pointer events with coalesced
+    events, without a second, unaligned stream: drawing programs want
+    every sample, everything else the latest. Alternative: an event per
+    sample (handlers and hit tests at the tablet's rate on the UI
+    thread); coalescing in the compositor thread's outbox (no fewer
+    wakeups, and the latency is a frame either way).
+  - Unless a handler prevents it, a tablet event then acts as the
+    pointer: proximity enters and leaves, motion moves, the tip clicks
+    with the primary button, BTN_STYLUS and BTN_STYLUS2 with the
+    secondary and middle ones. Compositors send tablet-v2 clients no
+    emulated pointer events, so without this a pen could not press a
+    button; a canvas that handles the pen's events keeps them for
+    itself. Pad events (`SIV_EVENT_PAD`) go from the focused node up, like
+    keys, with no default action.
+  - Sway on its headless backend has no tablets: the integration test
+    checks that the tablet seat binds and feeds tool, pad, and ring
+    listeners events for the real surface (tools fed without a
+    compositor object make no cursor requests). `examples/sketch.lua`
+    draws pressure-sensitive strokes from the samples, erases with the
+    eraser end, and zooms with pinches; the headless Lua test drives it
+    with injected tablet and pinch events against golden images.
   - Every pointer, key, and scroll event names its target, the node it
     was delivered to first (`siv_event.target`), so a handler on an
     ancestor tells its own events from a descendant's: a list row ignores
