@@ -37,13 +37,14 @@ pub const tabs = @import("tabs.zig");
 pub const split = @import("split.zig");
 pub const toast = @import("toast.zig");
 pub const views = @import("views.zig");
+pub const combo = @import("combo.zig");
 
 const c = siv.c;
 const Node = siv.Node;
 const Txn = siv.Txn;
 
 /// The files that export schema functions, for src/abi/abi.zig.
-pub const implementations = .{ @This(), button, toggle, radio, field, range, menu, dialog, tabs, split, toast, views };
+pub const implementations = .{ @This(), button, toggle, radio, field, range, menu, dialog, tabs, split, toast, views, combo };
 
 var key_byte: u8 = 0;
 
@@ -80,6 +81,10 @@ pub const Kind = enum(u8) {
     view_row,
     /// A table column's header cell.
     view_column,
+    combo_box,
+    combo_item,
+    /// A combo box option's row in its list.
+    combo_row,
 };
 
 /// The first field of every widget's state.

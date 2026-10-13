@@ -55,6 +55,13 @@ win:update(function(txn, root)
 	end
 	txn:widget_set_value(quality, 1)
 
+	local format = txn:combo_box(column, { label = "Format" }, {
+		on = { change = report("format") },
+	})
+	for _, label in ipairs{ "PNG", "JPEG", "WebP" } do
+		txn:combo_box_item(format, { label = label })
+	end
+
 	local volume_label = txn:text(column, "Volume: 40", {
 		text_style = { color_token = "muted_fg", size_role = "caption" },
 	})

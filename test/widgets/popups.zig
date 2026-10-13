@@ -764,3 +764,149 @@ test "tooltips: shown after resting on a node or focusing it, hidden by input, d
     try h.settle();
     try testing.expectEqualStrings("Opens a file", (try tooltipText(&h)).?);
 }
+
+/// A key typed at `time` (milliseconds), for typeahead's timing.
+fn typeAt(h: *Harness, window: t.Window, keysym: u32, chars: []const u8, time: u32) !void {
+    const platform = @import("platform");
+    const id = (try A.App.window(@backingInt(window), A.window_tag)).win.id;
+    var k: platform.Key = .{ .window = id, .seat = 0, .keycode = 0, .keysym = keysym, .state = .pressed, .mods = .{}, .time = time, .serial = 3 };
+    @memcpy(k.text_buf[0..chars.len], chars);
+    k.text_len = @intCast(chars.len);
+    var up = k;
+    up.state = .released;
+    up.text_len = 0;
+    try h.inject(&.{ .{ .key = k }, .{ .key = up } });
+    try h.settle();
+}
+
+fn widgetValue(n: t.Node) !f64 {
+    var v: f64 = 0;
+    try ok(c.siv_widget_get_value(n, &v));
+    return v;
+}
+
+test "combo boxes: keys and typeahead select, the list opens below and chooses, mirrored in RTL" {
+    for ([_]bool{ false, true }) |rtl| {
+        var h: Harness = .{ .golden = "test/golden/widgets" };
+        try h.startWith(.{ .width = 240, .height = 220, .flags = .{ .rtl = rtl } });
+        defer h.stop();
+        var log: Log = .{};
+        const txn = try begin(h.window);
+        background(txn, &h);
+        const col = c.siv_flex(txn, root(&h), &.{ .axis = .column, .align_items = .start });
+        _ = c.siv_set_layout(txn, col, &.{ .padding = .{ .start = 16, .end = 16, .top = 16 } });
+        const combo = c.siv_combo_box(txn, col, &.{ .label = "Format", .label_len = 6 });
+        const labels = [_][]const u8{ "PNG", "JPEG", "WebP", "TIFF", "Targa" };
+        var items: [labels.len]t.Node = undefined;
+        for (&items, labels, 0..) |*n, l, i| n.* = c.siv_combo_box_item(txn, combo, &.{ .label = l.ptr, .label_len = l.len, .flags = .{ .disabled = i == 1 } });
+        _ = c.siv_on(txn, combo, .change, Log.onChange, null, &log);
+        try ok(c.siv_txn_commit(txn));
+        try h.settle();
+
+        // The first option starts selected; the combo box is named by its
+        // label and shows the selected option.
+        try testing.expectEqual(@as(f64, 0), try widgetValue(combo));
+        const s0 = try sem(combo);
+        try testing.expectEqual(ui.Role.combo_box, s0.role);
+        try testing.expectEqual(ui.Toggle.off, s0.expanded);
+        try testing.expectEqual(items[2], c.siv_widget_get_part(combo, .item, 2));
+        try testing.expectEqual(t.Node.null, c.siv_widget_get_part(combo, .item, 5));
+        try h.expectGolden(if (rtl) "combo-closed-rtl" else "combo-closed", 240, 220);
+
+        // Closed, arrows select at once, skipping the disabled option,
+        // and report it.
+        _ = c.siv_node_focus(combo);
+        try h.typeKey(ks.down, "", .{});
+        try h.settle();
+        try testing.expectEqual(@as(f64, 2), try widgetValue(combo));
+        try testing.expectEqual(@as(u32, 1), log.changes);
+        try testing.expectEqual(@as(f64, 2), log.value);
+        try h.typeKey(ks.end, "", .{});
+        try h.settle();
+        try testing.expectEqual(@as(f64, 4), try widgetValue(combo));
+        try h.typeKey(ks.home, "", .{});
+        try h.settle();
+        try testing.expectEqual(@as(f64, 0), try widgetValue(combo));
+
+        // Typeahead: "t" finds TIFF, "t" again cycles to Targa, and
+        // "ti" typed together finds TIFF again; after a pause a new
+        // search starts. The disabled JPEG is never found.
+        try typeAt(&h, h.window, 't', "t", 10_000);
+        try testing.expectEqual(@as(f64, 3), try widgetValue(combo));
+        try typeAt(&h, h.window, 't', "t", 10_100);
+        try testing.expectEqual(@as(f64, 4), try widgetValue(combo));
+        try typeAt(&h, h.window, 't', "t", 12_000);
+        try typeAt(&h, h.window, 'i', "i", 12_100);
+        try testing.expectEqual(@as(f64, 3), try widgetValue(combo));
+        try typeAt(&h, h.window, 'j', "j", 14_000);
+        try testing.expectEqual(@as(f64, 3), try widgetValue(combo));
+        const changes = log.changes;
+
+        // Enter opens the list below, the selected option focused.
+        try h.typeKey(ks.@"return", "", .{});
+        try h.settle();
+        const popup = (try openPopup(&h)) orelse return error.NoPopup;
+        try testing.expectEqual(ui.Toggle.on, (try sem(combo)).expanded);
+        try testing.expectEqualStrings("TIFF", try focusedName(popup));
+        const pw = try A.App.window(@backingInt(popup), A.window_tag);
+        const ptree = try pw.uiWin().semanticsTree();
+        try testing.expect(ptree.find(.list, "Format") != null);
+        const tiff = ptree.find(.list_item, "TIFF").?;
+        try testing.expectEqual(ui.Toggle.on, tiff.selected);
+        // Below the combo box at its start edge.
+        var r: t.Rect = undefined;
+        try ok(c.siv_node_get_rect(combo, &r));
+        const at = pw.win.state.popup.?;
+        try testing.expect(@as(f64, @floatFromInt(at.y)) >= r.y + r.height - 1);
+        const pwidth: f64 = pw.uiWin().width;
+        if (rtl) {
+            try testing.expectApproxEqAbs(r.x + r.width, @as(f64, @floatFromInt(at.x)) + pwidth, 2);
+        } else {
+            try testing.expectApproxEqAbs(r.x, @as(f64, @floatFromInt(at.x)), 2);
+        }
+        var size: t.Size = undefined;
+        try ok(c.siv_window_get_size(popup, &size));
+        try h.expectGoldenOf(popup, if (rtl) "combo-list-rtl" else "combo-list", @intFromFloat(size.width), @intFromFloat(size.height));
+
+        // Arrows move the focus, skipping the disabled option, without
+        // choosing; Enter chooses, closing the list.
+        try h.typeKeyIn(popup, ks.up, "", .{});
+        try h.settle();
+        try testing.expectEqualStrings("WebP", try focusedName(popup));
+        try h.typeKeyIn(popup, ks.up, "", .{});
+        try h.settle();
+        try testing.expectEqualStrings("PNG", try focusedName(popup));
+        try h.typeKeyIn(popup, ks.end, "", .{});
+        try h.settle();
+        try testing.expectEqualStrings("Targa", try focusedName(popup));
+        try h.typeKeyIn(popup, ks.@"return", "", .{});
+        try h.settle();
+        try testing.expectEqual(@as(?t.Window, null), try openPopup(&h));
+        try testing.expectEqual(@as(f64, 4), try widgetValue(combo));
+        try testing.expectEqual(changes + 1, log.changes);
+        try testing.expectEqual(ui.Toggle.off, (try sem(combo)).expanded);
+
+        // Escape closes without choosing.
+        try h.typeKey(ks.@"return", "", .{});
+        try h.settle();
+        const p2 = (try openPopup(&h)).?;
+        try h.typeKeyIn(p2, ks.up, "", .{});
+        try h.settle();
+        try h.typeKeyIn(p2, ks.escape, "", .{});
+        try h.settle();
+        try testing.expectEqual(@as(?t.Window, null), try openPopup(&h));
+        try testing.expectEqual(@as(f64, 4), try widgetValue(combo));
+        try testing.expectEqual(changes + 1, log.changes);
+
+        // The application sets the value without a report; out of range
+        // fails the transaction.
+        var t2 = try begin(h.window);
+        c.siv_widget_set_value(t2, combo, 2);
+        try ok(c.siv_txn_commit(t2));
+        try testing.expectEqual(@as(f64, 2), try widgetValue(combo));
+        t2 = try begin(h.window);
+        c.siv_widget_set_value(t2, combo, 5);
+        try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(t2));
+        try testing.expectEqual(changes + 1, log.changes);
+    }
+}

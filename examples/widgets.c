@@ -90,11 +90,17 @@ int main(void) {
 		siv_on(txn, updates, SIV_EVENT_TYPE_CHANGE, on_change, NULL, "updates");
 
 		siv_node quality = siv_radio_group(txn, column, SIV_DESC(siv_radio_group_desc, .label = SIV_STR("Quality"), .axis = SIV_AXIS_COLUMN));
-		siv_radio(txn, quality, SIV_DESC(siv_radio_desc, .label = "Low", .label_len = 3));
-		siv_radio(txn, quality, SIV_DESC(siv_radio_desc, .label = "Balanced", .label_len = 8));
-		siv_radio(txn, quality, SIV_DESC(siv_radio_desc, .label = "High", .label_len = 4));
+		siv_radio(txn, quality, SIV_DESC(siv_radio_desc, .label = SIV_STR("Low")));
+		siv_radio(txn, quality, SIV_DESC(siv_radio_desc, .label = SIV_STR("Balanced")));
+		siv_radio(txn, quality, SIV_DESC(siv_radio_desc, .label = SIV_STR("High")));
 		siv_widget_set_value(txn, quality, 1);
 		siv_on(txn, quality, SIV_EVENT_TYPE_CHANGE, on_change, NULL, "quality");
+
+		siv_node format = siv_combo_box(txn, column, SIV_DESC(siv_combo_box_desc, .label = SIV_STR("Format")));
+		siv_combo_box_item(txn, format, SIV_DESC(siv_combo_box_item_desc, .label = SIV_STR("PNG")));
+		siv_combo_box_item(txn, format, SIV_DESC(siv_combo_box_item_desc, .label = SIV_STR("JPEG")));
+		siv_combo_box_item(txn, format, SIV_DESC(siv_combo_box_item_desc, .label = SIV_STR("WebP")));
+		siv_on(txn, format, SIV_EVENT_TYPE_CHANGE, on_change, NULL, "format");
 
 		form.volume_label = siv_text(txn, column, SIV_STR("Volume: 40"));
 		siv_set_text_style(txn, form.volume_label, SIV_DESC(siv_text_style_desc, .color_token = SIV_COLOR_TOKEN_MUTED_FG, .size_role = SIV_SIZE_ROLE_CAPTION));

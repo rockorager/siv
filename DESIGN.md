@@ -3102,8 +3102,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **Requirement:** applications in every language get a complete widget set.
 - **Decision:** stock widgets are written in Zig using only public primitives:
   buttons, text fields and areas, styled-text editor, virtualized list, tree,
-  table, and grid with selection models, menus, popovers, dialogs, tabs, split
-  panes, sliders, spin buttons, progress, toasts. Theming uses compiled design
+  table, and grid with selection models, menus, combo boxes, popovers, dialogs,
+  tabs, split panes, sliders, spin buttons, progress, toasts. Theming uses compiled design
   tokens plus runtime overrides, follows the portal accent and color scheme, and
   includes a high-contrast variant (D29). Animation respects reduced motion.
   - **The boundary is enforced by the build.** `src/widgets` imports only
@@ -3274,6 +3274,40 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       its item again. Choosing in a submenu reports `select` on the
       submenu and closes the whole chain; a click outside dismisses the
       chain, since the compositor destroys a popup's children with it.
+    - A combo box (`siv_combo_box`, options added with
+      `siv_combo_box_item`) is a button showing the selected option that
+      opens the options below it in a popup (WAI-ARIA's select-only
+      combobox). Its options are a model like a menu's (hidden children
+      holding their labels), so they are nodes the application relabels,
+      disables, and removes, and the list is built from them on each
+      opening, the selected option focused and checked. Its value is the
+      selected index, through the generic `siv_widget_set_value` and
+      `siv_widget_get_value` like a radio group's, and choosing reports
+      `change` with value and index; `siv_widget_get_part` with
+      `SIV_WIDGET_PART_ITEM` finds an option by index.
+      - Closed, Up, Down, Home, and End select at once (as Qt's combo box
+        does), skipping disabled options; Space, Enter, a
+        click, or Alt+Down open the list, where the same keys move the
+        focus without choosing, Enter, Space, or a click choose, and
+        Escape or Tab close it unchanged.
+      - Typeahead: typed text within a second of the last key (the key
+        events' timestamps, so no timer) selects, or in the list focuses,
+        the next enabled option whose label starts with it,
+        case-insensitively for ASCII; the same letter typed again cycles
+        through the options that start with it.
+      - Semantics: the root is a `combo_box` named by the descriptor's
+        label and `expanded` while the list is open; the list is a
+        `list` named the same, its rows `list_item`s with `selected` on
+        the chosen one.
+      - RTL needs nothing of its own: the row's layout, the popup's
+        `below` placement, and the check mark's end edge are logical.
+      - The list scrolls past 320 pixels and is at least as wide as the
+        combo box.
+      - Alternatives: a menu button whose menu items are radio-checked
+        (no selected value to read or set, and screen readers announce a
+        menu rather than a choice); an editable combo box (a text field
+        with completion, which the editor and a popup already allow;
+        reverse if applications keep building one).
     - A popover is a popup whose root is a card with a content part.
       Dialogs are modal overlays over a parent stack (a scrim and a card
       with title, text, content, and actions parts) that take focus.
@@ -3284,7 +3318,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     - Parts the application fills are reached with
       `siv_widget_get_part` (dialog content and actions, popover content,
       tabs and panels, split panes, a menu button's menu, a table's
-      column header cells).
+      column header cells, a combo box's options).
   - **Icons** (D19): push, toggle, and menu buttons take a themed icon
     name (`icon` in their descriptors), shown before the label in the
     label's color token, so it follows hover, press, disabled, and theme
@@ -4164,6 +4198,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | `siv_test_*`: headless input, settling, captures, semantics queries (D27) | test-only Zig access to the headless platform | applications test themselves through the C API, the Zig wrapper, and Lua, as the guide's samples now are |
   | `siv_node_focus` shows the ring after a key (D16) | `siv_node_focus` never showing it | focus moved by arrow keys in roving widgets was unmarked |
   | `siv_test_capture`'s `pixels` and `siv_view_get_selection`'s `bits` are `uint8_t *` (D2) | `char *` | binary data is unsigned, like the byte arrays the library reads; `char *` means text |
+  | `siv_combo_box`, `siv_combo_box_item`, `SIV_WIDGET_PART_ITEM` (D22) | a menu button with radio items, or a widget of the application's own | choosing one of several options in little space is among the most common controls, and needs list semantics and typeahead each application would redo |
   | `siv_set_tooltip` (D17); icon-only buttons show their label as one (D22) | a popup and timer per application | a common need every toolkit has; a core primitive so application widgets get it too |
   | reserved fields in `siv_text_span`, `siv_paragraph_span`, `siv_tab_stop`, `siv_text_metrics` (D2) | — | frozen value structs that will plausibly grow; descriptors grow by appending |
   | `siv_tablet_sample.wheel` and four reserved fields (D16) | — | the axes flags named a wheel the sample could not carry; tablets grow axes, and a frozen struct cannot |

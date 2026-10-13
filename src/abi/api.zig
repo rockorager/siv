@@ -1109,6 +1109,16 @@ pub const decls = [_]Decl{
         .{ .name = "flags", .type = ref("siv_widget_flags"), .doc = "SIV_WIDGET_DISABLED: this option cannot be chosen; arrow keys skip it." },
         reserved("reserved0"),
     }),
+    descriptor("siv_combo_box_desc", "A combo box, with options added by siv_combo_box_item.", &.{
+        .{ .name = "label", .type = .string, .doc = "The combo box's accessible name, copied (a visible label beside it says the same)." },
+        .{ .name = "flags", .type = ref("siv_widget_flags"), .doc = "SIV_WIDGET_DISABLED only." },
+        reserved("reserved0"),
+    }),
+    descriptor("siv_combo_box_item_desc", "An option of a combo box (siv_combo_box_item).", &.{
+        .{ .name = "label", .type = .string, .doc = "The option's label, copied; shown in the list and, when selected, in the combo box." },
+        .{ .name = "flags", .type = ref("siv_widget_flags"), .doc = "SIV_WIDGET_DISABLED: this option cannot be chosen; keys skip it." },
+        reserved("reserved0"),
+    }),
     flags("siv_text_field_flags", "Text field options.", &.{
         .{ .name = "multiline", .bit = 0, .doc = "A text area: Enter inserts a line break and lines wrap." },
         .{ .name = "masked", .bit = 1, .doc = "A password field (SIV_EDITOR_MASKED)." },
@@ -1135,6 +1145,7 @@ pub const decls = [_]Decl{
         .{ .name = "end", .value = 5, .doc = "Split panes: the pane at the end (or bottom)." },
         .{ .name = "menu", .value = 6, .doc = "Menu buttons, and any widget with a menu: their menu, for siv_menu_item, siv_menu_open, and siv_menu_get_item." },
         .{ .name = "column", .value = 7, .doc = "Table views: the header cell of the column at index (siv_table_column returned it), whose value is the column's width." },
+        .{ .name = "item", .value = 8, .doc = "Combo boxes: the option at index (siv_combo_box_item returned it)." },
     }),
     // The widget interface (D22): how a widget, stock or the
     // application's, answers the generic siv_widget_* calls.
@@ -1878,6 +1889,14 @@ pub const functions = [_]Function{
         .doc = "Appends an option to a radio group and returns it, or 0 if the transaction has failed. Its role is radio; siv_widget_set_label and siv_widget_set_disabled apply to it.",
         .since = v0_1,
         .params = &.{ txn_param, .{ .name = "group", .type = ref("siv_node"), .doc = "A radio group." }, .{ .name = "desc", .type = .{ .desc = "siv_radio_desc" }, .doc = "The option." } },
+        .ret = ref("siv_node"),
+    },
+    builder("siv_combo_box", "Creates a combo box (D22): a button showing the selected option that opens the list of options below it in a popup (D17). Add options with siv_combo_box_item. Its value is the selected option's index (-1 for none; the first option added starts selected, and removing options clamps the index to those left); choosing one reports SIV_EVENT_CHANGE with value and index. Closed, Up, Down, Home, and End select an enabled option at once; Space, Enter, a click, or Alt+Down open the list, where they move the focus and Space, Enter, or a click choose and Escape closes without choosing. Typing selects (closed) or focuses (open) the next option whose label starts with what was typed within a second, case-insensitively; typing one letter again cycles through the options starting with it. Its role is combo_box, expanded while the list is open; the list's role is list and its options' list_item, selected for the selected one.", &.{.{ .name = "desc", .type = .{ .desc = "siv_combo_box_desc" }, .doc = "Options; NULL for defaults." }}),
+    .{
+        .name = "siv_combo_box_item",
+        .doc = "Appends an option to a combo box and returns it, or 0 if the transaction has failed. siv_widget_set_label and siv_widget_set_disabled apply to it; siv_widget_get_part with SIV_WIDGET_PART_ITEM finds it by index.",
+        .since = v0_1,
+        .params = &.{ txn_param, .{ .name = "combo", .type = ref("siv_node"), .doc = "A combo box." }, .{ .name = "desc", .type = .{ .desc = "siv_combo_box_item_desc" }, .doc = "The option." } },
         .ret = ref("siv_node"),
     },
     builder("siv_text_field", "Creates a framed editor and returns the editor itself, so editor functions and SIV_EVENT_CHANGE apply. Its role is text_input.", &.{.{ .name = "desc", .type = .{ .desc = "siv_text_field_desc" }, .doc = "Text and options; NULL for an empty field." }}),
