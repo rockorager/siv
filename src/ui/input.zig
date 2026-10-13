@@ -63,6 +63,8 @@ pub const State = struct {
     /// Nodes under the pointer, root first.
     hover: std.ArrayList(NodeId) = .empty,
     pointer: ?Point = null,
+    /// Content moved under the pointer since the hover was last found.
+    hover_stale: bool = false,
     /// The node a press went to; it receives the pointer until release.
     capture: NodeId = .none,
     /// The activatable node a primary press went to.
@@ -344,6 +346,18 @@ fn collectFocusable(win: *const Window, id: NodeId, a: std.mem.Allocator, out: *
     if (canFocus(win, id)) try out.append(a, id);
     var it = win.shown(id);
     while (it.next()) |c| try collectFocusable(win, c, a, out);
+}
+
+/// Content moved under a pointer that did not (the compositor scrolled
+/// it, D8): the hover goes to what is under the pointer now, as if it had
+/// moved. A captured pointer keeps its target.
+pub fn refreshHover(win: *Window) void {
+    const st = &win.input;
+    st.hover_stale = false;
+    const p = st.pointer orelse return;
+    if (st.capture != .none) return;
+    updateHover(win, hitTest(win, p));
+    updateCursor(win);
 }
 
 fn updateHover(win: *Window, target: NodeId) void {

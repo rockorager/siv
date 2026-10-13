@@ -599,8 +599,10 @@ pub fn frame(win: *Window) Error!void {
     }
     ime_mod.sync(win);
     editor_mod.updatePrimary(win);
-    // The tree may have changed under a pointer that did not move.
-    input_mod.updateCursor(win);
+    // The tree may have changed under a pointer that did not move: hover
+    // handlers run here, at the end of the frame (D5), and what they
+    // change shows in the next one.
+    if (laid_out or win.input.hover_stale) input_mod.refreshHover(win) else input_mod.updateCursor(win);
     win.stats.frames += 1;
 }
 
@@ -1158,6 +1160,12 @@ fn scrolled(win: *Window, layer: compositor.LayerId, offset: Point, seq: u64) vo
     win.node(l.owner).data.scroll.offset = paint_mod.logicalScroll(win, l.owner, offset);
     win.dirty.semantics = true;
     if (win.node(l.owner).handler(.viewport) != null and !win.txn.open) win.deliverViewports();
+    // The content moved under the pointer: the next frame, after layout,
+    // gives the hover to what is under it now.
+    if (win.input.pointer != null) {
+        win.input.hover_stale = true;
+        win.requestFrame();
+    }
 }
 
 fn onFontsLoaded(ctx: *anyopaque) void {

@@ -209,6 +209,14 @@ test "list view: 100000 items cost the rows in view; scrolling rebinds them" {
     try testing.expect(lo >= 90 and lo <= 100);
     try testing.expect(m.binds - binds <= 3 * n);
     try testing.expect(m.recycled > 0);
+    // The pointer did not move, but the row under it changed: the hover
+    // follows the content.
+    {
+        const win, _ = try uiId(list);
+        const under = ui.input.hitTest(win, .{ .x = 100, .y = 100 });
+        try testing.expect(under != .none and win.input.hover.items.len > 0);
+        try testing.expectEqual(under, win.input.hover.items[win.input.hover.items.len - 1]);
+    }
 
     // Back to the top, where no overscan above shrinks the range and rows
     // wait hidden in the pool, and down again: they come back with their
