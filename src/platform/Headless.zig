@@ -645,6 +645,15 @@ pub fn receiveSelection(hl: *Headless, seat: SeatId, kind: platform.SelectionKin
     return hl.writeAsync(sel.data.items, fd);
 }
 
+/// writeAsync threads still running, in any Headless. One whose reader
+/// stopped early frees its copy of the data only once it runs again;
+/// tests wait for none before they check for leaks.
+var writers: std.atomic.Value(u32) = .init(0);
+
+pub fn writersRunning() u32 {
+    return writers.load(.acquire);
+}
+
 /// Writes `bytes` (copied) to `fd` on a thread of its own, as another
 /// client would, and closes it.
 fn writeAsync(hl: *Headless, bytes: []const u8, fd: i32) bool {
@@ -654,8 +663,15 @@ fn writeAsync(hl: *Headless, bytes: []const u8, fd: i32) bool {
     };
     const Writer = struct {
         fn run(gpa: Allocator, buf: []u8, out: i32) void {
+            // A reader that stops early would raise SIGPIPE, which belongs
+            // to the other client, not to this process; it stays pending
+            // on this thread and goes with it.
+            var pipe_set = std.os.linux.sigemptyset();
+            std.os.linux.sigaddset(&pipe_set, .PIPE);
+            _ = std.os.linux.sigprocmask(std.os.linux.SIG.BLOCK, &pipe_set, null);
             // Freed before the reader sees the end of the data, so a test
             // that reads to the end leaks nothing.
+            defer _ = writers.fetchSub(1, .release);
             defer _ = std.os.linux.close(out);
             defer gpa.free(buf);
             var done: usize = 0;
@@ -666,7 +682,9 @@ fn writeAsync(hl: *Headless, bytes: []const u8, fd: i32) bool {
             }
         }
     };
+    _ = writers.fetchAdd(1, .acquire);
     const t = std.Thread.spawn(.{}, Writer.run, .{ hl.allocator, data, fd }) catch {
+        _ = writers.fetchSub(1, .release);
         hl.allocator.free(data);
         _ = std.os.linux.close(fd);
         return false;

@@ -416,7 +416,8 @@ pub const App = struct {
             for (app.popups.items) |p| popups_busy = popups_busy or p.win.needsFrame();
             const busy = app.presented_seq != before or app.presented_seq < app.last_seq or
                 app.win.needsFrame() or app.fonts.loading() or app.win.txn.open or popups_busy or
-                app.clipboard.transfers.items.len != 0 or app.clipboard.ready.items.len != 0;
+                app.clipboard.transfers.items.len != 0 or app.clipboard.ready.items.len != 0 or
+                platform.Headless.writersRunning() != 0;
             idle = if (busy) 0 else idle + 1;
         }
     }
