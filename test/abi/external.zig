@@ -410,5 +410,34 @@ test "C API Wayland escape hatch: NULL objects on the headless backend, and comm
     try ok(A.siv_window_request_commit(h.window));
     try h.settle();
     try testing.expectEqual(before + 1, try Bare.read(&h));
+    // Requested within a refresh of a frame the window presented, the
+    // commit waits for the frame callback, and settling waits for it too.
+    // It once returned first, so this test failed after any other test in
+    // the process (whose warm caches made it fast enough to hit this).
+    const Pending = struct {
+        id: platform.WindowId,
+        waiting: bool = false,
+        fn run(ctx: ?*anyopaque, comp: *compositor.Compositor) void {
+            const c: *@This() = @ptrCast(@alignCast(ctx));
+            c.waiting = comp.platform.headless.frameCallbackPending(c.id);
+        }
+    };
+    var deferred: usize = 0;
+    for (0..10) |i| {
+        var txn: t.Txn = .null;
+        try ok(T.siv_txn_begin(h.window, &txn));
+        const v: f32 = if (i % 2 == 0) 1 else 0;
+        _ = T.siv_set_visual(txn, A.siv_window_get_root(h.window), &.{ .background = .{ .r = v, .g = v, .b = v, .a = 1 } });
+        try ok(T.siv_txn_commit(txn));
+        try h.settle();
+        const n = try Bare.read(&h);
+        try ok(A.siv_window_request_commit(h.window));
+        var p: Pending = .{ .id = (try h.win()).win.id };
+        try (try h.internal()).app.comp.call(&p, Pending.run);
+        if (p.waiting) deferred += 1;
+        try h.settle();
+        try testing.expectEqual(n + 1, try Bare.read(&h));
+    }
+    try testing.expect(deferred > 0);
     try testing.expectEqual(t.Result.error_invalid_handle, A.siv_window_request_commit(@fromBackingInt(@backingInt(h.window) ^ 1)));
 }

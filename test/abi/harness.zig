@@ -61,7 +61,8 @@ pub const Harness = struct {
 
     /// Dispatches until every commit is presented and nothing is pending.
     /// Every shown window (popups too) has presented what it committed,
-    /// and no paste or drop is still being read.
+    /// the compositor owes no frame, and no paste or drop is still being
+    /// read.
     pub fn settle(h: *Harness) !void {
         const self = try h.internal();
         const deadline = Loop.now() + 10 * std.time.ns_per_s;
@@ -77,8 +78,25 @@ pub const Harness = struct {
                 if (w.dead or !w.win.shown) continue;
                 busy = busy or w.win.presented_seq == 0 or !w.win.settled();
             };
+            // Frames no commit accounts for: siv_window_request_commit's
+            // waits for the frame callback when the window presented
+            // within the last refresh.
+            busy = busy or try h.compositorOwes();
             idle = if (busy) 0 else idle + 1;
         }
+    }
+
+    fn compositorOwes(h: *Harness) !bool {
+        const C = struct {
+            owes: bool = false,
+            fn run(ctx: ?*anyopaque, comp: *compositor.Compositor) void {
+                const c: *@This() = @ptrCast(@alignCast(ctx));
+                c.owes = comp.owesFrames(false);
+            }
+        };
+        var c: C = .{};
+        try (try h.internal()).app.comp.call(&c, C.run);
+        return c.owes;
     }
 
     /// Injects platform events as the compositor would receive them.
