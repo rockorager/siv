@@ -606,15 +606,26 @@ test "timers fire in deadline order, repeat, and cancel" {
     var c: Ctx = .{ .loop = &loop };
     const start = Loop.now();
     const ms = std.time.ns_per_ms;
-    try loop.startTimer(&c.b, start + 2 * ms, 3 * ms);
-    try loop.startTimer(&c.a, start + 6 * ms, 0);
-    try loop.startTimer(&c.c, start + 6 * ms + 1, 0);
+    // Every deadline has passed when the loop first looks, as after a slow
+    // dispatch, so which timers are due does not depend on how quickly
+    // the test runs: b (due 20 ms ago, every 3 ms), then a, which cancels
+    // c although it is due too.
+    try loop.startTimer(&c.b, start - 20 * ms, 3 * ms);
+    try loop.startTimer(&c.a, start - 10 * ms, 0);
+    try loop.startTimer(&c.c, start - 10 * ms + 1, 0);
+    try loop.dispatch(0);
+    try testing.expectEqualStrings("ba", c.rec.get());
+    try testing.expect(!c.c.armed());
+    // b skipped the periods it missed rather than firing a burst: its next
+    // deadline is on its period, after the dispatch began.
+    const next = c.b.deadline;
+    try testing.expect(next > start);
+    try testing.expectEqual(@as(u64, 0), (next - (start - 20 * ms)) % (3 * ms));
 
-    // b at 2 and 5 ms, a at 6 ms (cancelling c even if it is also due), b
-    // at 8 ms. The order holds even if a slow dispatch makes several due.
+    // The timerfd wakes a blocking dispatch for b's next periods.
     while (c.rec.len < 4) try loop.dispatch(-1);
-    try testing.expectEqualStrings("bbab", c.rec.get());
-    try testing.expect(Loop.now() - start >= 8 * ms);
+    try testing.expectEqualStrings("babb", c.rec.get());
+    try testing.expect(Loop.now() >= next + 3 * ms);
     try testing.expect(!c.b.armed());
     try testing.expect(!c.c.armed());
     try testing.expectEqual(@as(?u64, null), loop.armed_deadline);
