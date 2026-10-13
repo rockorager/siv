@@ -71,10 +71,12 @@ pub const FakePortal = struct {
         const mouse = [_]E{.{ .key = "double-click", .value = .{ .i = 300 } }};
         // KDE's portal sends kdeglobals entries as strings.
         const kde = [_]E{.{ .key = "CursorBlinkRate", .value = .{ .s = "0" } }};
+        // A theme GNOME's key does not name; GNOME's would win.
+        const kde_icons = [_]E{.{ .key = "Theme", .value = .{ .s = "breeze" } }};
         var b = r.newReply();
         errdefer b.deinit();
         try b.body.beginArray("{sa{sv}}");
-        for ([_]struct { []const u8, []const E }{ .{ "org.freedesktop.appearance", &appearance }, .{ "org.gnome.desktop.interface", &gnome }, .{ "org.gnome.desktop.peripherals.mouse", &mouse }, .{ "org.kde.kdeglobals.KDE", &kde } }) |ns| {
+        for ([_]struct { []const u8, []const E }{ .{ "org.freedesktop.appearance", &appearance }, .{ "org.gnome.desktop.interface", &gnome }, .{ "org.gnome.desktop.peripherals.mouse", &mouse }, .{ "org.kde.kdeglobals.KDE", &kde }, .{ "org.kde.kdeglobals.Icons", &kde_icons } }) |ns| {
             try b.body.beginDictEntry();
             try b.body.writeString(ns[0]);
             try b.body.beginArray("{sv}");

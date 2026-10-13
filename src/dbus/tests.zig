@@ -905,7 +905,7 @@ test "settings: defaults without a portal, then live values once it starts" {
             return o.calls == 2;
         }
     }.f);
-    try testing.expectEqualStrings("org.freedesktop.appearance,org.gnome.desktop.interface,org.gnome.desktop.a11y.interface,org.gnome.desktop.peripherals.mouse,org.kde.kdeglobals.General,org.kde.kdeglobals.KDE", portal.askedFor());
+    try testing.expectEqualStrings("org.freedesktop.appearance,org.gnome.desktop.interface,org.gnome.desktop.a11y.interface,org.gnome.desktop.peripherals.mouse,org.kde.kdeglobals.General,org.kde.kdeglobals.KDE,org.kde.kdeglobals.Icons", portal.askedFor());
     const v = settings.values;
     try testing.expectEqual(Settings.ColorScheme.dark, v.color_scheme);
     try testing.expectEqual([3]f64{ 0.2, 0.4, 0.8 }, v.accent_color.?);
@@ -915,6 +915,7 @@ test "settings: defaults without a portal, then live values once it starts" {
     try testing.expectEqualStrings("Cantarell", v.document_font.family.slice());
     try testing.expectEqualStrings("Source Code Pro", v.monospace_font.family.slice());
     try testing.expectEqualStrings("Adwaita", v.cursor_theme.slice());
+    try testing.expectEqualStrings("breeze", v.icon_theme.slice());
     try testing.expectEqual(@as(u32, 32), v.cursor_size);
     try testing.expectEqual(@as(u32, 300), v.double_click_ms);
     // GNOME's period, and KDE's string "0" turning blinking off.

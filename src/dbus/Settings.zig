@@ -1,6 +1,6 @@
 //! Desktop settings from the portal (D19): color scheme, accent color,
 //! contrast, reduced motion, text scale, fonts, cursor theme and size,
-//! double-click time, and caret blinking, read from
+//! double-click time, caret blinking, and the icon theme, read from
 //! org.freedesktop.portal.Settings and followed live through
 //! SettingChanged. Without a portal the built-in defaults stay in effect.
 //!
@@ -9,7 +9,7 @@
 //! org.gnome.desktop.a11y.interface, and
 //! org.gnome.desktop.peripherals.mouse, which xdg-desktop-portal-gnome and
 //! -gtk expose) come next, then KDE's (org.kde.kdeglobals.General and
-//! .KDE, from xdg-desktop-portal-kde, as strings). A setting no source
+//! .KDE, and .Icons, from xdg-desktop-portal-kde, as strings). A setting no source
 //! provides takes its default.
 //!
 //! When the portal starts or restarts, the settings are read again. When
@@ -44,7 +44,8 @@ const ns_gnome_a11y = "org.gnome.desktop.a11y.interface";
 const ns_gnome_mouse = "org.gnome.desktop.peripherals.mouse";
 const ns_kde = "org.kde.kdeglobals.General";
 const ns_kde_kde = "org.kde.kdeglobals.KDE";
-const namespaces = [_][]const u8{ ns_appearance, ns_gnome, ns_gnome_a11y, ns_gnome_mouse, ns_kde, ns_kde_kde };
+const ns_kde_icons = "org.kde.kdeglobals.Icons";
+const namespaces = [_][]const u8{ ns_appearance, ns_gnome, ns_gnome_a11y, ns_gnome_mouse, ns_kde, ns_kde_kde, ns_kde_icons };
 
 pub const ColorScheme = enum { no_preference, dark, light };
 pub const Contrast = enum { normal, high };
@@ -118,6 +119,9 @@ pub const Values = struct {
     cursor_blink_ms: u32 = 1200,
     /// The caret stops blinking after this many seconds without input.
     cursor_blink_timeout_s: u32 = 10,
+    /// The icon theme's directory name (D19); empty when no source names
+    /// one, and the toolkit's default applies.
+    icon_theme: Text(64) = .{},
 };
 
 /// Which values changed.
@@ -135,7 +139,8 @@ pub const Changed = packed struct(u16) {
     double_click: bool = false,
     /// Any of the three caret blink values.
     cursor_blink: bool = false,
-    _: u4 = 0,
+    icon_theme: bool = false,
+    _: u3 = 0,
 
     pub fn any(c: Changed) bool {
         return @as(u16, @bitCast(c)) != 0;
@@ -156,6 +161,8 @@ pub const Raw = struct {
     gnome_document_font: ?Font = null,
     gnome_monospace_font: ?Font = null,
     gnome_cursor_theme: ?Text(64) = null,
+    gnome_icon_theme: ?Text(64) = null,
+    kde_icon_theme: ?Text(64) = null,
     gnome_cursor_size: ?i64 = null,
     gnome_double_click: ?i64 = null,
     gnome_cursor_blink: ?bool = null,
@@ -196,6 +203,9 @@ pub const Raw = struct {
             } else if (eq(u8, key, "cursor-theme")) {
                 const s = readString(value_sig, d) orelse return;
                 r.gnome_cursor_theme = if (s.len > 0) .init(s) else null;
+            } else if (eq(u8, key, "icon-theme")) {
+                const v = readString(value_sig, d) orelse return;
+                r.gnome_icon_theme = if (v.len > 0) .init(v) else null;
             } else if (eq(u8, key, "cursor-size")) {
                 r.gnome_cursor_size = readInt(value_sig, d);
             } else if (eq(u8, key, "cursor-blink")) {
@@ -214,6 +224,11 @@ pub const Raw = struct {
                 r.kde_double_click = readIntString(value_sig, d);
             } else if (eq(u8, key, "CursorBlinkRate")) {
                 r.kde_cursor_blink_rate = readIntString(value_sig, d);
+            }
+        } else if (eq(u8, namespace, ns_kde_icons)) {
+            if (eq(u8, key, "Theme")) {
+                const v = readString(value_sig, d) orelse return;
+                r.kde_icon_theme = if (v.len > 0) .init(v) else null;
             }
         } else if (eq(u8, namespace, ns_kde)) {
             if (eq(u8, key, "font")) {
@@ -241,6 +256,7 @@ pub const Raw = struct {
         v.document_font = r.gnome_document_font orelse r.gnome_font orelse r.kde_font orelse def.document_font;
         v.monospace_font = r.gnome_monospace_font orelse r.kde_fixed orelse def.monospace_font;
         v.cursor_theme = r.gnome_cursor_theme orelse def.cursor_theme;
+        v.icon_theme = r.gnome_icon_theme orelse r.kde_icon_theme orelse def.icon_theme;
         v.cursor_size = if (r.gnome_cursor_size) |s| (if (s >= 8 and s <= 512) @intCast(s) else def.cursor_size) else def.cursor_size;
         v.double_click_ms = inRange(r.gnome_double_click, 100, 5000) orelse inRange(r.kde_double_click, 100, 5000) orelse def.double_click_ms;
         v.cursor_blink = r.gnome_cursor_blink orelse if (r.kde_cursor_blink_rate) |k| k != 0 else def.cursor_blink;
@@ -514,6 +530,7 @@ fn update(s: *Settings, always: bool) void {
         .document_font = !old.document_font.eql(new.document_font),
         .monospace_font = !old.monospace_font.eql(new.monospace_font),
         .cursor_theme = !old.cursor_theme.eql(&new.cursor_theme),
+        .icon_theme = !old.icon_theme.eql(&new.icon_theme),
         .cursor_size = old.cursor_size != new.cursor_size,
         .double_click = old.double_click_ms != new.double_click_ms,
         .cursor_blink = old.cursor_blink != new.cursor_blink or old.cursor_blink_ms != new.cursor_blink_ms or
