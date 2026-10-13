@@ -1,0 +1,28 @@
+# The gpui side of bench/gpui-compare. Not part of siv's build or tests.
+# ./setup.sh clones zed at the commit pinned in ZED_COMMIT into ./zed.
+[package]
+name = "gpui-compare"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "gpui-compare"
+path = "src/main.rs"
+
+[dependencies]
+gpui = { path = "zed/crates/gpui", default-features = false, features = ["wayland"] }
+gpui_platform = { path = "zed/crates/gpui_platform", default-features = false, features = ["wayland"] }
+
+# Zed's own release profile (zed/Cargo.toml), so gpui is built as Zed ships it.
+[profile.release]
+debug = "limited"
+lto = "thin"
+codegen-units = 1
+
+# zed/Cargo.toml's patches that gpui's dependency graph reaches; patches do
+# not carry over from a path dependency's workspace.
+[patch.crates-io]
+async-task = { git = "https://github.com/zed-industries/async-task.git", rev = "015845a19fc31752c02367567d3b8900a406f9da" }
+calloop = { git = "https://github.com/zed-industries/calloop", rev = "3759371fee14c40066d64777e2a36b6ffcc22590" }
+khronos-egl = { git = "https://github.com/zed-industries/khronos-egl", rev = "42214b36347b108fd9630ca6254b96dde59e04fe" }
