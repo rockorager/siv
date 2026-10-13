@@ -26,8 +26,22 @@ const FontId = font_.FontId;
 const FontCache = font_.FontCache;
 const Glyph = shape_.Glyph;
 const ShapedParagraph = paragraph_.ShapedParagraph;
+const hyphen_ = @import("hyphen.zig");
 
-pub const Alignment = enum { start, end, center };
+/// `justify` widens the spaces of every line but a paragraph's last to
+/// fill the width, which then goes at the start.
+pub const Alignment = enum { start, end, center, justify };
+
+/// How text after a tab lines up with a tab stop.
+pub const TabAlign = enum { start, center, end, decimal };
+
+pub const TabStop = struct {
+    /// Pixels from the start margin (before indentation).
+    position: f32,
+    alignment: TabAlign = .start,
+    /// Decimal stops: the character placed at the stop.
+    decimal: u21 = '.',
+};
 
 /// How the lines of one paragraph (a bidi paragraph: text up to a
 /// paragraph separator) are placed.
@@ -69,13 +83,22 @@ pub const Options = struct {
     alignment: Alignment = .start,
     /// Paragraph styles in text order; empty uses the defaults.
     paragraphs: []const ParagraphRun = &.{},
-    /// Explicit tab stops in pixels from the start margin (before
-    /// indentation), increasing; after them tabs advance to multiples of
-    /// the paragraph's `tab_width`.
-    tab_stops: []const f32 = &.{},
+    /// Explicit tab stops, increasing; after them tabs advance to
+    /// multiples of the paragraph's `tab_width`. Text after a center,
+    /// end, or decimal stop is measured to the next tab or the end of
+    /// its paragraph.
+    tab_stops: []const TabStop = &.{},
     /// A word too wide for a line of its own breaks between graphemes
     /// (CSS overflow-wrap: anywhere) instead of overflowing.
     break_words: bool = false,
+    /// Words may break at hyphenation points of their style's language,
+    /// from `hyphenation`, ending the line with a hyphen.
+    hyphenate: bool = false,
+    hyphenation: ?*hyphen_.Hyphenation = null,
+    /// Knuth and Plass's total-fit breaking (with a width): lines chosen
+    /// for the whole paragraph, evening out their fill, instead of
+    /// greedily.
+    optimal: bool = false,
 };
 
 /// A glyph positioned relative to its line's origin: x from the line's
@@ -170,7 +193,7 @@ pub const Line = struct {
         const right = if (rtl_box) self.indent_start else self.indent_end;
         const free = width - left - right - self.width;
         return left + switch (self.alignment orelse alignment) {
-            .start => if (rtl_box) free else 0,
+            .start, .justify => if (rtl_box) free else 0,
             .end => if (rtl_box) 0 else free,
             .center => free / 2,
         };
@@ -203,7 +226,7 @@ pub const Layout = struct {
             .height = 0,
         };
         errdefer self.arena.deinit();
-        for (options.tab_stops) |stop| if (!std.math.isFinite(stop)) return error.InvalidWidth;
+        for (options.tab_stops) |stop| if (!std.math.isFinite(stop.position)) return error.InvalidWidth;
         var builder: Builder = .{
             .p = paragraph,
             .cache = cache,
@@ -214,10 +237,11 @@ pub const Layout = struct {
             .styles = try paragraphStyles(scratch, paragraph, options.paragraphs),
             .tab_stops = options.tab_stops,
             .break_words = options.break_words,
+            .hyphenation = if (options.hyphenate) options.hyphenation else null,
             .tabs = std.mem.indexOfScalar(u8, paragraph.text, '\t') != null,
         };
         defer builder.shaper.deinit();
-        try builder.breakLines();
+        if (options.optimal and options.width != null) try builder.breakOptimal() else try builder.breakLines();
         self.lines = builder.lines.items;
         self.runs = builder.runs.items;
         self.glyphs = builder.glyphs.items;
@@ -282,8 +306,9 @@ const Builder = struct {
     width: ?f32,
     /// One per bidi paragraph, plus one for a line after a final break.
     styles: []const ParagraphStyle,
-    tab_stops: []const f32,
+    tab_stops: []const TabStop,
     break_words: bool,
+    hyphenation: ?*hyphen_.Hyphenation,
     /// The text has a tab, so segments need measuring where they fall.
     tabs: bool,
     lines: std.ArrayList(Line) = .empty,
@@ -337,7 +362,7 @@ const Builder = struct {
         var m: Measured = .{ .advance = 0, .trailing = 0 };
         var it: LogicalGlyphs = .init(self.p, from, seg.end);
         while (it.next()) |glyph| {
-            const advance = if (self.isTab(glyph)) self.tabAdvance(x + m.advance, glyph.advance, style) else glyph.advance;
+            const advance = if (self.isTab(glyph)) self.tabAdvance(x + m.advance, glyph, style) else glyph.advance;
             m.advance += advance;
             if (glyph.cluster >= hang) m.trailing += advance;
         }
@@ -348,14 +373,47 @@ const Builder = struct {
         return self.p.text[glyph.cluster] == '\t';
     }
 
-    /// From `x`, the pen's distance from the start margin, to the next tab
-    /// stop: an explicit one, else a multiple of the tab width (or of the
-    /// shaped tab's advance, four spaces).
-    fn tabAdvance(self: *const Builder, x: f32, shaped: f32, style: ParagraphStyle) f32 {
-        for (self.tab_stops) |stop| if (stop > x + 0.01) return stop - x;
+    /// The advance of `tab` from `x`, the pen's distance from the start
+    /// margin, to the next tab stop: an explicit one, where the text
+    /// after the tab starts, centers, ends, or puts its decimal
+    /// character; else a multiple of the tab width (or of the shaped
+    /// tab's advance, four spaces).
+    fn tabAdvance(self: *const Builder, x: f32, tab: Glyph, style: ParagraphStyle) f32 {
+        const shaped = tab.advance;
+        for (self.tab_stops) |stop| if (stop.position > x + 0.01) {
+            const to = stop.position - x;
+            return switch (stop.alignment) {
+                .start => to,
+                .center => @max(0, to - self.following(tab.cluster, null) / 2),
+                .end => @max(0, to - self.following(tab.cluster, null)),
+                .decimal => @max(0, to - self.following(tab.cluster, stop.decimal)),
+            };
+        };
         const interval = if (style.tab_width > 0) style.tab_width else shaped;
         if (!(interval > 0.01)) return shaped;
         return (@floor((x + 0.01) / interval) + 1) * interval - x;
+    }
+
+    /// The advance of the text after the tab at `at`, to the next tab or
+    /// the end of its paragraph, or with `decimal` to that character.
+    fn following(self: *const Builder, at: u32, decimal: ?u21) f32 {
+        const p = self.p;
+        const end = p.paragraphs[p.paragraphAt(at)].contentEnd();
+        var it: LogicalGlyphs = .init(p, at + 1, end);
+        var width: f32 = 0;
+        var seen: ?u32 = null;
+        while (it.next()) |g| {
+            const ch = p.text[g.cluster];
+            if (ch == '\t') break;
+            if (decimal) |d| if (seen != g.cluster) {
+                seen = g.cluster;
+                const len = std.unicode.utf8ByteSequenceLength(ch) catch 1;
+                const cp = std.unicode.utf8Decode(p.text[g.cluster..@min(p.text.len, g.cluster + len)]) catch 0;
+                if (cp == d) break;
+            };
+            width += g.advance;
+        }
+        return width;
     }
 
     /// Gives the tabs among a line's pieces (logical order) their
@@ -374,7 +432,7 @@ const Builder = struct {
             const copy = try self.scratch.dupe(Glyph, piece.glyphs);
             for (0..copy.len) |i| {
                 const g = &copy[if (rtl) copy.len - 1 - i else i];
-                if (self.isTab(g.*)) g.advance = self.tabAdvance(pen, g.advance, style);
+                if (self.isTab(g.*)) g.advance = self.tabAdvance(pen, g.*, style);
                 pen += g.advance;
             }
             piece.glyphs = copy;
@@ -394,7 +452,7 @@ const Builder = struct {
             var width = advance;
             while (pending) |glyph| : (pending = it.next()) {
                 if (glyph.cluster >= next) break;
-                width += if (self.isTab(glyph)) self.tabAdvance(x + width, glyph.advance, style) else glyph.advance;
+                width += if (self.isTab(glyph)) self.tabAdvance(x + width, glyph, style) else glyph.advance;
             }
             if (at != start and !fits(limit, width)) return at;
             advance = width;
@@ -416,12 +474,36 @@ const Builder = struct {
             var advance: f32 = 0;
             var chosen = first;
             var j = first;
+            var overflow: ?usize = null;
             while (j < segments.len) : (j += 1) {
                 const m = self.segment(j, if (j == first) line_start else segments[j - 1].end, f.indent + advance, f.style);
+                if (j != first and !fits(f.limit, advance + m.advance - m.trailing)) {
+                    overflow = j;
+                    break;
+                }
                 advance += m.advance;
-                if (j != first and !fits(f.limit, advance - m.trailing)) break;
                 chosen = j;
                 if (segments[j].mandatory) break;
+            }
+            // A hyphenation point is a later opportunity than the last
+            // that fits: in the segment that did not fit, or in a first
+            // segment that does not fit alone.
+            if (self.hyphenation != null and f.limit != null) {
+                const alone = chosen == first and !fits(f.limit, advance - self.segment(first, line_start, f.indent, f.style).trailing);
+                const in_seg: ?usize = if (overflow) |o| o else if (alone) first else null;
+                if (in_seg) |k| {
+                    const from = if (k == first) line_start else segments[k - 1].end;
+                    const used = if (k == first) 0 else advance;
+                    if (try self.hyphenBreak(from, segments[k].end, f.limit.? - used)) |hyph| {
+                        const pieces = try self.linePieces(line_start, hyph.at, start_unsafe, true);
+                        try self.placeTabs(pieces, f.indent, f.style);
+                        try self.emitLine(line_start, hyph.at, pieces, f, hyph.hyphen);
+                        line_start = hyph.at;
+                        start_unsafe = true;
+                        first = k;
+                        continue;
+                    }
+                }
             }
             if (chosen == first and self.break_words and f.limit != null) {
                 const m = self.segment(first, line_start, f.indent, f.style);
@@ -433,7 +515,7 @@ const Builder = struct {
                         // both edges, as at an unsafe opportunity.
                         const pieces = try self.linePieces(line_start, end, start_unsafe, true);
                         try self.placeTabs(pieces, f.indent, f.style);
-                        try self.emitLine(line_start, end, pieces, f);
+                        try self.emitLine(line_start, end, pieces, f, null);
                         line_start = end;
                         start_unsafe = true;
                         continue;
@@ -455,7 +537,7 @@ const Builder = struct {
                 if (fits(f.limit, total - self.trailing(pieces, line_start, end))) break;
                 chosen -= 1;
             }
-            try self.emitLine(line_start, segments[chosen].end, pieces, f);
+            try self.emitLine(line_start, segments[chosen].end, pieces, f, null);
             line_start = segments[chosen].end;
             start_unsafe = segments[chosen].unsafe;
             first = chosen + 1;
@@ -463,7 +545,223 @@ const Builder = struct {
         // The position after a final hard break, and empty text, need a line.
         if (self.lines.items.len == 0 or self.endsWithBreak()) {
             const len: u32 = @intCast(self.p.text.len);
-            try self.emitLine(len, len, &.{}, self.frame(len));
+            try self.emitLine(len, len, &.{}, self.frame(len), null);
+        }
+    }
+
+    /// The hyphen ending a line broken inside a word before `at`.
+    const Hyphen = struct { id: u32, advance: f32, font: FontId, size: f32, style: u32, cluster: u32 };
+
+    /// The hyphen glyph (U+2010, else a hyphen-minus) of the face of the
+    /// text before `at`; null in right-to-left runs or without a face.
+    fn hyphenAt(self: *const Builder, at: u32) ?Hyphen {
+        const p = self.p;
+        if (at == 0) return null;
+        const run = for (p.runs) |r| {
+            if (at - 1 >= r.start and at - 1 < r.end) break r;
+        } else return null;
+        if (run.rtl()) return null;
+        const face = self.cache.face(run.font) orelse return null;
+        var id: hb.hb_codepoint_t = 0;
+        if (hb.hb_font_get_nominal_glyph(face.font, 0x2010, &id) == 0 and hb.hb_font_get_nominal_glyph(face.font, '-', &id) == 0) return null;
+        const size = p.styles[run.style].size;
+        return .{
+            .id = id,
+            .advance = @as(f32, @floatFromInt(hb.hb_font_get_glyph_h_advance(face.font, id))) * face.scale(size),
+            .font = run.font,
+            .size = size,
+            .style = run.style,
+            // The hyphen is not text: in the cluster of the grapheme
+            // before it, where it follows that grapheme's own glyph.
+            .cluster = p.graphemes.atOrBefore(at - 1).?,
+        };
+    }
+
+    /// Hyphenation points in `from..to`, increasing: inside words (runs of
+    /// letters, marks, and apostrophes), in each word's language, at
+    /// grapheme boundaries.
+    fn hyphenPoints(self: *Builder, from: u32, to: u32, out: *std.ArrayList(u32)) !void {
+        const h = self.hyphenation orelse return;
+        const p = self.p;
+        var i = from;
+        while (i < to) {
+            const len = std.unicode.utf8ByteSequenceLength(p.text[i]) catch 1;
+            const cp = std.unicode.utf8Decode(p.text[i..@min(p.text.len, i + len)]) catch 0;
+            if (!hyphen_.isWordChar(cp)) {
+                i += len;
+                continue;
+            }
+            const word_start = i;
+            while (i < to) {
+                const l = std.unicode.utf8ByteSequenceLength(p.text[i]) catch 1;
+                const c = std.unicode.utf8Decode(p.text[i..@min(p.text.len, i + l)]) catch 0;
+                if (!hyphen_.isWordChar(c)) break;
+                i += l;
+            }
+            const language = p.styles[p.styleAt(word_start)].language;
+            const hyph = try h.get(language) orelse continue;
+            var found: std.ArrayList(u32) = .empty;
+            try hyph.points(self.scratch, p.text[word_start..i], &found, self.scratch);
+            for (found.items) |off| {
+                const at = word_start + off;
+                if (p.graphemes.atOrBefore(at) == at) try out.append(self.scratch, at);
+            }
+        }
+    }
+
+    const HyphenBreak = struct { at: u32, hyphen: Hyphen };
+
+    /// The last hyphenation point in `from..to` (a segment's text) where
+    /// the text from `from` and a hyphen fit in `room`.
+    fn hyphenBreak(self: *Builder, from: u32, to: u32, room: f32) !?HyphenBreak {
+        const content_end = paragraph_.hangingStart(self.p.text, from, to);
+        var points: std.ArrayList(u32) = .empty;
+        try self.hyphenPoints(from, content_end, &points);
+        var k = points.items.len;
+        while (k > 0) {
+            k -= 1;
+            const at = points.items[k];
+            const hy = self.hyphenAt(at) orelse continue;
+            if (fits(room, self.advanceOf(from, at) + hy.advance)) return .{ .at = at, .hyphen = hy };
+        }
+        return null;
+    }
+
+    /// The shaped advance of `from..to`.
+    fn advanceOf(self: *const Builder, from: u32, to: u32) f32 {
+        var it: LogicalGlyphs = .init(self.p, from, to);
+        var w: f32 = 0;
+        while (it.next()) |g| w += g.advance;
+        return w;
+    }
+
+    /// A place a line may end, for total-fit breaking: the end of a
+    /// segment, or a hyphenation point inside one.
+    const Candidate = struct {
+        at: u32,
+        /// Totals from the text's start: natural width, stretch, and
+        /// shrink, up to the end of a line ending here (without its
+        /// hanging whitespace) and up to where the next line starts.
+        w_end: f64,
+        w_next: f64,
+        s_end: f64,
+        s_next: f64,
+        z_end: f64,
+        z_next: f64,
+        hyphen: ?Hyphen = null,
+        forced: bool = false,
+        unsafe: bool = false,
+        penalty: f64 = 0,
+    };
+
+    /// Knuth and Plass's total-fit line breaking: the breaks minimizing
+    /// the paragraph's demerits, by dynamic programming over every
+    /// opportunity (forced breaks split the text). Interword spaces (each
+    /// segment's hanging whitespace when the line goes on) stretch by
+    /// half their width and never shrink, since justification only widens
+    /// them and ragged lines must fit; a paragraph's last line
+    /// may fall short freely. The adjustment ratio r is the room left over
+    /// the stretch plus 3% of the width (so lines without spaces are not
+    /// all equally bad, as with TeX's capped badness, where a first line
+    /// of one hyphenated syllable tied with a loose line of words);
+    /// badness is 100 |r|³, demerits (10 + badness)² plus the square of a
+    /// hyphen's penalty (50) and 3000 for consecutive hyphenated lines. A line no break
+    /// can make fit overflows, with demerits growing with the overflow.
+    fn breakOptimal(self: *Builder) !void {
+        const p = self.p;
+        const segments = p.segments;
+        var cands: std.ArrayList(Candidate) = .empty;
+        try cands.append(self.scratch, .{ .at = 0, .w_end = 0, .w_next = 0, .s_end = 0, .s_next = 0, .z_end = 0, .z_next = 0 });
+        var w: f64 = 0;
+        var s: f64 = 0;
+        const z: f64 = 0;
+        var points: std.ArrayList(u32) = .empty;
+        for (segments, 0..) |seg, j| {
+            const from: u32 = if (j == 0) 0 else segments[j - 1].end;
+            if (self.hyphenation != null) {
+                points.clearRetainingCapacity();
+                try self.hyphenPoints(from, paragraph_.hangingStart(p.text, from, seg.end), &points);
+                for (points.items) |at| {
+                    const hy = self.hyphenAt(at) orelse continue;
+                    const prefix: f64 = self.advanceOf(from, at);
+                    try cands.append(self.scratch, .{ .at = at, .w_end = w + prefix, .w_next = w + prefix, .s_end = s, .s_next = s, .z_end = z, .z_next = z, .hyphen = hy, .unsafe = true, .penalty = 50 });
+                }
+            }
+            const hanging: f64 = seg.trailing;
+            try cands.append(self.scratch, .{
+                .at = seg.end,
+                .w_end = w + seg.advance - hanging,
+                .w_next = w + seg.advance,
+                .s_end = s,
+                .s_next = s + hanging / 2,
+                .z_end = z,
+                .z_next = z,
+                .forced = seg.mandatory or j + 1 == segments.len,
+                .unsafe = seg.unsafe,
+            });
+            w += seg.advance;
+            s += hanging / 2;
+        }
+        const c = cands.items;
+        const best = try self.scratch.alloc(f64, c.len);
+        const prev = try self.scratch.alloc(u32, c.len);
+        best[0] = 0;
+        var floor: usize = 0;
+        for (1..c.len) |k| {
+            best[k] = std.math.inf(f64);
+            prev[k] = @intCast(k - 1);
+            var a = k;
+            while (a > floor) {
+                a -= 1;
+                const limit: f64 = self.frame(c[a].at).limit.?;
+                const natural = c[k].w_end - c[a].w_next + if (c[k].hyphen) |hy| @as(f64, hy.advance) else 0;
+                const stretch = c[k].s_end - c[a].s_next;
+                const shrink = c[k].z_end - c[a].z_next;
+                var d: f64 = undefined;
+                if (natural > limit + shrink + 0.001) {
+                    // Overfull: only as the one way out.
+                    if (a + 1 != k and best[k] < std.math.inf(f64)) break;
+                    d = 1e12 + (natural - limit) * 1e6;
+                } else {
+                    // Lines without spaces still give a little (3% of
+                    // the width), so a loose line is worse the looser it
+                    // is rather than all equally bad.
+                    const give = stretch + 0.03 * limit;
+                    const r: f64 = if (natural <= limit)
+                        (if (c[k].forced) 0 else (limit - natural) / give)
+                    else
+                        (limit - natural) / @max(shrink, 1e-9);
+                    const badness = @min(1e10, 100 * @abs(r) * @abs(r) * @abs(r));
+                    d = (10 + badness) * (10 + badness) + c[k].penalty * c[k].penalty;
+                    if (c[k].hyphen != null and c[a].hyphen != null) d += 3000;
+                }
+                if (best[a] + d < best[k]) {
+                    best[k] = best[a] + d;
+                    prev[k] = @intCast(a);
+                }
+            }
+            if (c[k].forced) floor = k;
+        }
+        // Back from the end, then forward.
+        var chain: std.ArrayList(u32) = .empty;
+        var k: u32 = @intCast(c.len - 1);
+        while (k != 0) : (k = prev[k]) try chain.append(self.scratch, k);
+        var a: u32 = 0;
+        var i = chain.items.len;
+        while (i > 0) {
+            i -= 1;
+            const b = chain.items[i];
+            const start = c[a].at;
+            const end = c[b].at;
+            const f = self.frame(start);
+            const pieces = try self.linePieces(start, end, c[a].unsafe, c[b].unsafe);
+            try self.placeTabs(pieces, f.indent, f.style);
+            try self.emitLine(start, end, pieces, f, c[b].hyphen);
+            a = b;
+        }
+        if (self.lines.items.len == 0 or self.endsWithBreak()) {
+            const len: u32 = @intCast(p.text.len);
+            try self.emitLine(len, len, &.{}, self.frame(len), null);
         }
     }
 
@@ -553,7 +851,7 @@ const Builder = struct {
         return out.items;
     }
 
-    fn emitLine(self: *Builder, start: u32, end: u32, pieces: []Piece, fr: LineFrame) !void {
+    fn emitLine(self: *Builder, start: u32, end: u32, pieces: []Piece, fr: LineFrame, hyphen: ?Hyphen) !void {
         const p = self.p;
         const paragraph_index = p.paragraphAt(start);
         const paragraph = p.paragraphs[paragraph_index];
@@ -624,6 +922,22 @@ const Builder = struct {
             });
         }
         if (self.carets.items.len == caret_start) try self.carets.append(self.a, .{ .offset = start, .x = 0, .affinity = .downstream });
+        if (hyphen) |hy| {
+            // At the visual end of the (left-to-right) line, after its
+            // last caret stop: it is shown, not text.
+            const at: u32 = @intCast(self.glyphs.items.len);
+            try self.glyphs.append(self.a, .{ .id = hy.id, .x = pen, .y = 0, .advance = hy.advance, .cluster = hy.cluster });
+            pen += hy.advance;
+            const merge = self.runs.items.len > run_start and blk: {
+                const last = self.runs.items[self.runs.items.len - 1];
+                break :blk last.font == hy.font and last.size == hy.size and !last.rtl and last.glyph_end == at;
+            };
+            if (merge) {
+                self.runs.items[self.runs.items.len - 1].glyph_end = at + 1;
+            } else {
+                try self.runs.append(self.a, .{ .font = hy.font, .size = hy.size, .style = hy.style, .start = hy.cluster, .end = end, .rtl = false, .glyph_start = at, .glyph_end = at + 1 });
+            }
+        }
 
         const hang = paragraph_.hangingStart(p.text, start, end);
         var hanging: f32 = 0;
@@ -710,6 +1024,43 @@ const Builder = struct {
         }
     }
 
+    /// Widens the word separators of a line that does not end its
+    /// paragraph so that its content fills `target`, moving the glyphs
+    /// and caret stops after each.
+    fn justify(self: *Builder, line: *Line, target: f32) void {
+        const p = self.p;
+        const extra = target - line.width;
+        if (!(extra > 0.01) or line.run_start == line.run_end) return;
+        if (line.end >= p.text.len or line.end >= p.paragraphs[line.paragraph].end) return;
+        const hang = paragraph_.hangingStart(p.text, line.start, line.end);
+        const glyphs = self.glyphs.items[self.runs.items[line.run_start].glyph_start..self.runs.items[line.run_end - 1].glyph_end];
+        var count: usize = 0;
+        for (glyphs) |g| {
+            if (g.cluster < hang and isSeparator(p.text[g.cluster..])) count += 1;
+        }
+        if (count == 0) return;
+        const per = extra / @as(f32, @floatFromInt(count));
+        // Caret stops move by the separators wholly left of them.
+        const carets = self.carets.items[line.caret_start..line.caret_end];
+        for (carets) |*cs| {
+            var n: f32 = 0;
+            for (glyphs) |g| {
+                if (g.cluster < hang and isSeparator(p.text[g.cluster..]) and g.x + g.advance <= cs.x + 0.01) n += 1;
+            }
+            cs.x += n * per;
+        }
+        var shift: f32 = 0;
+        for (glyphs) |*g| {
+            g.x += shift;
+            if (g.cluster < hang and isSeparator(p.text[g.cluster..])) {
+                g.advance += per;
+                shift += per;
+            }
+        }
+        line.advance += extra;
+        line.width += extra;
+    }
+
     /// Applies alignment and indents, and stacks lines vertically with
     /// their paragraphs' line and paragraph spacing.
     fn position(self: *Builder, options: Options) void {
@@ -725,6 +1076,9 @@ const Builder = struct {
                 top += self.styles[p].space_after + style.space_before;
             };
             previous = index;
+            if ((line.alignment orelse options.alignment) == .justify) if (options.width) |w| {
+                self.justify(line, w - line.indent_start - line.indent_end);
+            };
             // Hanging whitespace sits at the logical end: right for
             // left-to-right lines, left for right-to-left ones.
             line.x = line.contentXIn(available, line.rtl(), options.alignment) - if (line.rtl()) line.advance - line.width else 0;
@@ -737,6 +1091,11 @@ const Builder = struct {
         }
     }
 };
+
+/// Whether a character is a word separator that justification widens.
+fn isSeparator(ch: []const u8) bool {
+    return ch[0] == ' ' or std.mem.startsWith(u8, ch, "\u{00A0}") or std.mem.startsWith(u8, ch, "\u{3000}");
+}
 
 /// The glyphs of `from..to` in logical order: runs in order, each run's
 /// glyphs reversed when it is right to left.
@@ -990,7 +1349,7 @@ test "tabs advance to explicit stops from the start margin, then to multiples of
     defer fixture.deinit();
     var p = try fixture.shape("a\tb\tc\td", .auto_ltr);
     defer p.deinit();
-    const stops = [_]f32{ 50, 120 };
+    const stops = [_]TabStop{ .{ .position = 50 }, .{ .position = 120 } };
     var l = try layoutOf(&fixture, &p, .{ .tab_stops = &stops, .paragraphs = &.{.{ .end = 7, .style = .{ .tab_width = 40 } }} });
     defer l.deinit();
     try std.testing.expectApproxEqAbs(50, glyphX(&l, 2).?, 0.01);
@@ -1021,10 +1380,10 @@ test "a tab's advance decides where lines break" {
     defer p.deinit();
     const bb = p.glyphs[3].advance + p.glyphs[4].advance;
     // bb after a stop at 100 needs 100 + bb; one pixel less wraps it.
-    var fits = try layoutOf(&fixture, &p, .{ .width = 100 + bb, .tab_stops = &.{100} });
+    var fits = try layoutOf(&fixture, &p, .{ .width = 100 + bb, .tab_stops = &.{.{ .position = 100 }} });
     defer fits.deinit();
     try std.testing.expectEqual(1, fits.lines.len);
-    var wraps = try layoutOf(&fixture, &p, .{ .width = 100 + bb - 1, .tab_stops = &.{100} });
+    var wraps = try layoutOf(&fixture, &p, .{ .width = 100 + bb - 1, .tab_stops = &.{.{ .position = 100 }} });
     defer wraps.deinit();
     try std.testing.expectEqual(2, wraps.lines.len);
     try std.testing.expectEqual(3, wraps.lines[1].start);
@@ -1120,4 +1479,183 @@ test "right-to-left paragraphs indent from the right" {
     var l = try layoutOf(&fixture, &p, .{ .width = 300, .paragraphs = &.{.{ .end = 17, .style = .{ .indent_start = 25 } }} });
     defer l.deinit();
     try std.testing.expectApproxEqAbs(275, l.lines[0].contentX() + l.lines[0].width, 0.01);
+}
+
+fn shapeIn(fixture: *Fixture, text: []const u8, language: []const u8) !ShapedParagraph {
+    const fonts = [_]FontId{ fixture.latin, fixture.arabic, fixture.hebrew };
+    return ShapedParagraph.init(std.testing.allocator, fixture.arena.allocator(), &fixture.cache, text, &.{.{
+        .end = @intCast(text.len),
+        .style = .{ .fonts = &fonts, .size = 16, .language = language },
+    }}, .auto_ltr);
+}
+
+/// The right edge of a line's last glyph before its hanging whitespace.
+fn contentRight(l: *const Layout, line: Line) f32 {
+    const hang = paragraph_.hangingStart(l.paragraph.text, line.start, line.end);
+    var right: f32 = 0;
+    for (l.lineRuns(line)) |run| for (l.runGlyphs(run)) |g| {
+        if (g.cluster < hang) right = @max(right, g.x + g.advance);
+    };
+    return line.x + right;
+}
+
+test "justified lines fill the width except a paragraph's last" {
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    var p = try fixture.shape("aa aaa a aaaa aa\nshort", .auto_ltr);
+    defer p.deinit();
+    const width = p.segments[0].advance + p.segments[1].advance + p.segments[2].advance + 3;
+    var l = try layoutOf(&fixture, &p, .{ .width = width, .alignment = .justify });
+    defer l.deinit();
+    try std.testing.expect(l.lines.len >= 3);
+    // The first line's content reaches the right edge; its spaces grew.
+    try std.testing.expectApproxEqAbs(width, contentRight(&l, l.lines[0]), 0.01);
+    try std.testing.expectApproxEqAbs(width, l.lines[0].width, 0.01);
+    const plain_a = p.glyphs[3].x_offset + p.segments[0].advance;
+    try std.testing.expect(glyphX(&l, 3).? > plain_a + 0.5);
+    // Caret stops moved with the glyphs: the stop before "aaa" is at its glyph.
+    const stop = for (l.lineCarets(l.lines[0])) |cs| {
+        if (cs.offset == 3 and cs.affinity == .downstream) break cs.x;
+    } else unreachable;
+    try std.testing.expectApproxEqAbs(glyphX(&l, 3).?, l.lines[0].x + stop, 0.01);
+    // The last line of each paragraph keeps its natural spacing.
+    var last_first_para: Line = undefined;
+    for (l.lines) |line| if (line.end == 17) {
+        last_first_para = line;
+    };
+    try std.testing.expect(last_first_para.width < width - 1);
+    try std.testing.expect(l.lines[l.lines.len - 1].width < width - 1);
+}
+
+test "center, end, and decimal tab stops" {
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    var p = try fixture.shape("x\tabc\t12.50\tz", .auto_ltr);
+    defer p.deinit();
+    const stops = [_]TabStop{ .{ .position = 100, .alignment = .center }, .{ .position = 200, .alignment = .decimal }, .{ .position = 300, .alignment = .end } };
+    var l = try layoutOf(&fixture, &p, .{ .tab_stops = &stops });
+    defer l.deinit();
+    const abc = p.glyphs[2].advance + p.glyphs[3].advance + p.glyphs[4].advance;
+    try std.testing.expectApproxEqAbs(100 - abc / 2, glyphX(&l, 2).?, 0.01);
+    // The decimal point sits at the stop.
+    try std.testing.expectApproxEqAbs(200, glyphX(&l, 8).?, 0.01);
+    // "z" ends at the stop.
+    try std.testing.expectApproxEqAbs(300 - p.glyphs[p.glyphs.len - 1].advance, glyphX(&l, 12).?, 0.01);
+    // A decimal stop with no decimal point ends the text there.
+    var q = try fixture.shape("x\t1250", .auto_ltr);
+    defer q.deinit();
+    const dec = [_]TabStop{.{ .position = 200, .alignment = .decimal, .decimal = ',' }};
+    var m = try layoutOf(&fixture, &q, .{ .tab_stops = &dec });
+    defer m.deinit();
+    try std.testing.expectApproxEqAbs(200, contentRight(&m, m.lines[0]), 0.01);
+}
+
+test "hyphenation breaks words at their language's points, with a hyphen" {
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    var reg: hyphen_.Hyphenation = .init(std.testing.allocator);
+    defer reg.deinit();
+    const text = "hyphenation hyphenation";
+    var p = try shapeIn(&fixture, text, "en-US");
+    defer p.deinit();
+    const word = p.segments[0].advance;
+    var width: f32 = word;
+    for (p.glyphs[12..15]) |g| width += g.advance; // "hyp" fits, but the point is after "hy"
+    var l = try layoutOf(&fixture, &p, .{ .width = width, .hyphenate = true, .hyphenation = &reg });
+    defer l.deinit();
+    try std.testing.expectEqual(2, l.lines.len);
+    try std.testing.expectEqual(14, l.lines[0].end); // "hy-" ends the first line
+    const runs = l.lineRuns(l.lines[0]);
+    const glyphs = l.runGlyphs(runs[runs.len - 1]);
+    const last = glyphs[glyphs.len - 1];
+    const face = fixture.cache.face(fixture.latin).?;
+    var dash: u32 = 0;
+    var minus: u32 = 0;
+    _ = hb.hb_font_get_nominal_glyph(face.font, 0x2010, &dash);
+    _ = hb.hb_font_get_nominal_glyph(face.font, '-', &minus);
+    try std.testing.expect(last.id == dash or last.id == minus);
+    try std.testing.expectEqual(13, last.cluster);
+    try std.testing.expect(l.lines[0].width <= width + 0.001);
+    // Every text glyph appears once, plus the hyphen.
+    var total: usize = 0;
+    for (l.runs) |run| total += run.glyph_end - run.glyph_start;
+    try std.testing.expectEqual(p.glyphs.len + 1, total);
+    // Off, or in a language without patterns, the word stays whole.
+    var off = try layoutOf(&fixture, &p, .{ .width = width });
+    defer off.deinit();
+    try std.testing.expectEqual(12, off.lines[0].end);
+    var q = try shapeIn(&fixture, text, "x-none");
+    defer q.deinit();
+    var none = try layoutOf(&fixture, &q, .{ .width = width, .hyphenate = true, .hyphenation = &reg });
+    defer none.deinit();
+    try std.testing.expectEqual(12, none.lines[0].end);
+}
+
+/// Knuth and Plass's demerits of a layout's lines (as breakOptimal counts
+/// them, without hyphens): the paragraph's last line is free.
+fn demerits(l: *const Layout, width: f32) f64 {
+    var total: f64 = 0;
+    for (l.lines[0 .. l.lines.len - 1]) |line| {
+        const hang = paragraph_.hangingStart(l.paragraph.text, line.start, line.end);
+        var stretch: f64 = 0;
+        for (l.lineRuns(line)) |run| for (l.runGlyphs(run)) |g| {
+            if (g.cluster < hang and l.paragraph.text[g.cluster] == ' ') stretch += g.advance / 2;
+        };
+        const r: f64 = (width - line.width) / (stretch + 0.03 * width);
+        const badness = @min(1e10, 100 * r * r * r);
+        total += (10 + badness) * (10 + badness);
+    }
+    return total;
+}
+
+test "total-fit breaking finds breaks with fewer demerits than greedy" {
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    const text = "aaa bb cc ddddd ee ff gggg hh iiiii jj kk llll mm nnnnnn oo pp qqq rr";
+    var p = try fixture.shape(text, .auto_ltr);
+    defer p.deinit();
+    const width = 12 * p.glyphs[0].advance;
+    var greedy = try layoutOf(&fixture, &p, .{ .width = width });
+    defer greedy.deinit();
+    var optimal = try layoutOf(&fixture, &p, .{ .width = width, .optimal = true });
+    defer optimal.deinit();
+    var covered: u32 = 0;
+    for (optimal.lines) |line| {
+        try std.testing.expectEqual(covered, line.start);
+        try std.testing.expect(line.width <= width + 0.001);
+        covered = line.end;
+    }
+    try std.testing.expectEqual(text.len, covered);
+    // Other breaks than greedy's, with fewer demerits: the minimum.
+    const differ = for (optimal.lines, greedy.lines) |o, g| {
+        if (o.end != g.end) break true;
+    } else false;
+    try std.testing.expect(differ);
+    try std.testing.expect(demerits(&optimal, width) < demerits(&greedy, width));
+    // Justified, its lines fill the width.
+    var justified = try layoutOf(&fixture, &p, .{ .width = width, .optimal = true, .alignment = .justify });
+    defer justified.deinit();
+    for (justified.lines[0 .. justified.lines.len - 1]) |line| try std.testing.expectApproxEqAbs(width, line.width, 0.01);
+    // A word wider than the line still gets a line of its own.
+    var tiny = try layoutOf(&fixture, &p, .{ .width = 1, .optimal = true });
+    defer tiny.deinit();
+    try std.testing.expectEqual(p.segments.len, tiny.lines.len);
+}
+
+test "total-fit breaking uses hyphenation points" {
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    var reg: hyphen_.Hyphenation = .init(std.testing.allocator);
+    defer reg.deinit();
+    var p = try shapeIn(&fixture, "hyphenation hyphenation hyphenation", "en-US");
+    defer p.deinit();
+    const width = p.segments[0].advance * 1.5;
+    var l = try layoutOf(&fixture, &p, .{ .width = width, .optimal = true, .hyphenate = true, .hyphenation = &reg });
+    defer l.deinit();
+    var hyphenated = false;
+    for (l.lines) |line| {
+        try std.testing.expect(line.width <= width + 0.001);
+        if (line.end < p.text.len and p.text[line.end - 1] != ' ') hyphenated = true;
+    }
+    try std.testing.expect(hyphenated);
 }
