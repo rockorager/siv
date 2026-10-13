@@ -701,6 +701,67 @@ pub export fn siv_timer_cancel(timer: t.Timer) t.Result {
     return .ok;
 }
 
+/// A siv_job_start job: one pool job and its C callbacks (D5, D6).
+const Job = struct {
+    job: loop_mod.Pool.Job = .{ .run = run, .done = done, .cancel = dropped },
+    owner: *App,
+    work: t.WorkFn,
+    callback: ?t.PostFn,
+    destroy: ?t.DestroyFn,
+    user_data: ?*anyopaque,
+
+    fn run(pj: *loop_mod.Pool.Job) void {
+        const j: *Job = @fieldParentPtr("job", pj);
+        j.work(j.user_data);
+    }
+
+    fn done(pj: *loop_mod.Pool.Job) void {
+        const j: *Job = @fieldParentPtr("job", pj);
+        const self = j.owner;
+        if (j.callback) |f| {
+            self.enter();
+            f(j.user_data);
+            self.leave();
+        }
+        dropped(pj);
+    }
+
+    /// Queued at teardown, or done: only the destroy-notify runs.
+    fn dropped(pj: *loop_mod.Pool.Job) void {
+        const j: *Job = @fieldParentPtr("job", pj);
+        const self = j.owner;
+        const destroy, const user_data = .{ j.destroy, j.user_data };
+        self.gpa().destroy(j);
+        self.release(destroy, user_data);
+    }
+};
+
+pub export fn siv_job_start(app: t.App, work: ?t.WorkFn, done: ?t.PostFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) t.Result {
+    const self = App.get(@backingInt(app)) catch |err| {
+        if (destroy) |d| d(user_data);
+        return t.resultOf(err);
+    };
+    const r = jobStart(self, work, done, destroy, user_data);
+    // The call failed: the caller handed user_data over anyway (D2).
+    if (r != .ok) self.release(destroy, user_data);
+    return r;
+}
+
+fn jobStart(self: *App, work: ?t.WorkFn, done: ?t.PostFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) t.Result {
+    const w = work orelse return .error_invalid_argument;
+    const gpa = self.gpa();
+    const j = gpa.create(Job) catch return .error_out_of_memory;
+    j.* = .{ .owner = self, .work = w, .callback = done, .destroy = destroy, .user_data = user_data };
+    self.app.pool.submit(&j.job) catch |err| {
+        gpa.destroy(j);
+        return switch (err) {
+            error.OutOfMemory => .error_out_of_memory,
+            error.SystemResources => .error_unavailable,
+        };
+    };
+    return .ok;
+}
+
 // Popups ----------------------------------------------------------------------
 
 pub export fn siv_popup_create(parent: t.Window, desc: ?*const t.PopupDesc, popup: ?*t.Window) t.Result {

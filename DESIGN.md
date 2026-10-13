@@ -270,6 +270,15 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     delivered by the loop, D5) and blocking fork-join, in which the calling
     thread also runs the job and helpers that have not started when it
     finishes are dropped, so fork-join never waits behind queued I/O.
+  - Applications use the same pool through `siv_job_start`: `work` on a
+    worker thread, then `done` and the destroy-notify at a safe point
+    (D5). A file manager reading a folder of 100 000 entries or copying
+    gigabytes needs blocking I/O off the UI thread, and a pool of its own
+    would oversubscribe the CPU against siv's decoders and tiles; found
+    by the file manager in `apps/files`. Jobs cannot be stopped once
+    running (the work checks a flag of its own for cancellation), and
+    destroying the application waits for running ones, so long jobs
+    check that flag often.
 - **Alternatives:** io_uring. Rejected: a GUI client issues tens of syscalls per
   frame, so batching gains are negligible; Docker's default seccomp profile
   blocks io_uring, Android and ChromeOS disable it, and seccomp sandboxes cannot

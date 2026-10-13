@@ -277,6 +277,7 @@ pub const decls = [_]Decl{
     }),
     callback("siv_post_fn", "Work posted with siv_post; runs on the application's thread.", &.{}, .void),
     callback("siv_destroy_fn", "Releases user_data once siv no longer needs it. Runs exactly once, on the application's thread, never while a siv callback is running.", &.{}, .void),
+    callback("siv_work_fn", "A job's work (siv_job_start): runs on a worker thread, where it may call only siv_post.", &.{}, .void),
 
     value("siv_size", "A logical size.", &.{ f32Field("width", "Width in logical pixels."), f32Field("height", "Height in logical pixels.") }),
     value("siv_rect", "A logical rectangle.", &.{
@@ -1495,6 +1496,13 @@ pub const functions = [_]Function{
         .{ .name = "timer", .type = out(ref("siv_timer")), .doc = "The timer." },
     }),
     op("siv_timer_cancel", "Cancels a timer that has not fired; its destroy-notify runs.", &.{.{ .name = "timer", .type = ref("siv_timer"), .doc = "The timer." }}),
+    call("siv_job_start", "Runs work(user_data) on the application's worker pool (D6), the threads siv decodes images and renders tiles on, then done(user_data) at a safe point on the application's thread (D5), then destroy(user_data). For blocking work such as file I/O: work runs on another thread and may call only siv_post. A job cannot be stopped once it runs; long jobs check a flag of their own. Destroying the application waits for running jobs and drops queued ones: then only destroy runs.", &.{
+        app_param,
+        .{ .name = "work", .type = ref("siv_work_fn"), .doc = "The work, on a worker thread." },
+        .{ .name = "done", .type = ref("siv_post_fn"), .doc = "Runs after work on the application's thread; may be NULL." },
+        .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data; may be NULL." },
+        .{ .name = "user_data", .type = .user_data, .doc = "Passed to all three." },
+    }),
     // Stock widgets (D22).
     builder("siv_push_button", "Creates a push button: siv_on SIV_EVENT_ACTIVATE runs when it is clicked or activated by Enter, Space, or assistive technology. Its role is button.", &.{.{ .name = "desc", .type = .{ .desc = "siv_button_desc" }, .doc = "Label and style; NULL for an empty default button." }}),
     builder("siv_toggle_button", "Creates a button that stays pressed: activating it flips its value (0 or 1) and reports SIV_EVENT_CHANGE. Its role is toggle_button.", &.{.{ .name = "desc", .type = .{ .desc = "siv_toggle_desc" }, .doc = "Label and state; NULL for defaults." }}),

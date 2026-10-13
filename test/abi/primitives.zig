@@ -269,6 +269,73 @@ test "timers fire once after their delay; cancelled ones never" {
     try testing.expectEqual(@as(u32, 0), d.fired);
 }
 
+const Work = struct {
+    worker: std.atomic.Value(std.Thread.Id) = .init(0),
+    worked: std.atomic.Value(u32) = .init(0),
+    started: std.atomic.Value(bool) = .init(false),
+    delay_ms: u64 = 0,
+    done: u32 = 0,
+    done_after_work: bool = false,
+    destroyed: u32 = 0,
+    destroyed_after_done: bool = false,
+
+    fn work(ud: ?*anyopaque) callconv(.c) void {
+        const k: *Work = @ptrCast(@alignCast(ud.?));
+        k.started.store(true, .release);
+        if (k.delay_ms != 0) @import("platform").test_sway.sleepMs(k.delay_ms);
+        k.worker.store(std.Thread.getCurrentId(), .release);
+        _ = k.worked.fetchAdd(1, .acq_rel);
+    }
+
+    fn finish(ud: ?*anyopaque) callconv(.c) void {
+        const k: *Work = @ptrCast(@alignCast(ud.?));
+        k.done += 1;
+        k.done_after_work = k.worked.load(.acquire) == 1;
+    }
+
+    fn destroy(ud: ?*anyopaque) callconv(.c) void {
+        const k: *Work = @ptrCast(@alignCast(ud.?));
+        k.destroyed += 1;
+        k.destroyed_after_done = k.done == 1;
+    }
+};
+
+test "jobs run on a worker thread, then done and destroy on the application's" {
+    var h: Harness = .{};
+    try start(&h);
+    defer h.stop();
+    var jobs: [8]Work = @splat(.{});
+    for (&jobs) |*j| try ok(c.siv_job_start(h.app, Work.work, Work.finish, Work.destroy, j));
+    // Nothing completes inside the call.
+    for (jobs) |j| try testing.expectEqual(@as(u32, 0), j.done);
+    const deadline = @import("loop").Loop.now() + 10 * std.time.ns_per_s;
+    while (true) {
+        var all = true;
+        for (jobs) |j| all = all and j.destroyed == 1;
+        if (all) break;
+        if (@import("loop").Loop.now() > deadline) return error.Timeout;
+        try ok(c.siv_app_dispatch(h.app, 10));
+    }
+    for (jobs) |j| {
+        try testing.expect(j.worker.load(.acquire) != std.Thread.getCurrentId());
+        try testing.expect(j.done_after_work and j.destroyed_after_done);
+    }
+    // Without work the call fails and hands user_data back at once.
+    var bad: Work = .{};
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_job_start(h.app, null, Work.finish, Work.destroy, &bad));
+    try testing.expectEqual(@as(u32, 1), bad.destroyed);
+    // Destroying the application waits for a running job and runs only
+    // its destroy-notify.
+    var slow: Work = .{ .delay_ms = 50 };
+    try ok(c.siv_job_start(h.app, Work.work, Work.finish, Work.destroy, &slow));
+    while (!slow.started.load(.acquire)) std.atomic.spinLoopHint();
+    h.stop();
+    h.app = .null;
+    try testing.expectEqual(@as(u32, 1), slow.worked.load(.acquire));
+    try testing.expectEqual(@as(u32, 0), slow.done);
+    try testing.expectEqual(@as(u32, 1), slow.destroyed);
+}
+
 test "default layouts fill the fields the application's layout leaves zero" {
     var h: Harness = .{};
     try start(&h);

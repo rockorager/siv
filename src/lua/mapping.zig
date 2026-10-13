@@ -38,6 +38,7 @@ pub const unbound = [_]struct { []const u8, []const u8 }{
     .{ "siv_set_data", "raw node memory under a pointer key; Lua keeps state in tables" },
     .{ "siv_node_get_data", "raw node memory under a pointer key; Lua keeps state in tables" },
     .{ "siv_external_get_wayland", "hands native embedders wl_display and wl_surface pointers" },
+    .{ "siv_job_start", "work runs on a worker thread, where Lua cannot" },
 };
 
 /// Descriptor fields the binding leaves at zero.
