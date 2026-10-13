@@ -33,6 +33,7 @@ zig build test-integration-pdf  # only PDF output against qpdf and poppler
 zig build test-integration-tray  # only the tray against dbus-daemon and gdbus
 zig build test-dbus --fuzz -Doptimize=ReleaseSafe  # fuzz a module's parsers
 zig build test-abi             # abi module, generators, Zig wrappers, exported symbols
+zig build test-notices         # NOTICES covers every shipped dependency (also in `test`)
 zig build test-c               # C programs against the generated headers and shared libraries
 zig build examples             # build and install the C programs in examples/
 zig build test -Dtest-filter=bidi
@@ -87,7 +88,8 @@ commit message. In particular:
 - **New dependency:** pin it in `build.zig.zon` with an exact URL and hash
   (`zig fetch <url>`). Only MIT, BSD, or Apache-2.0 code (D25). A C library
   gets a `-fsys=<name>` option to link the system copy, and is fetched lazily
-  so that `-fsys` builds do not download it.
+  so that `-fsys` builds do not download it. Give it a licence entry in
+  `src/notices/build_steps.zig` (D25); `zig build test` fails without one.
 - **Owner-controlled build inputs** that need no `build.zig` edit:
   - `src/platform/protocols.zig`: Wayland protocol XML and global versions.
   - `src/text/uucode_config.zig`: Unicode properties compiled into tables.
