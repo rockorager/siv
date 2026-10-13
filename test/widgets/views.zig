@@ -230,6 +230,38 @@ test "list view: 100000 items cost the rows in view; scrolling rebinds them" {
     try testing.expectEqual(@as(u32, 0), m.unflagged);
 }
 
+test "list view: in a plain box it keeps its size at every layout" {
+    // bench/gpui-compare once saw a list view in a box lose its height at
+    // the second layout; it was zero high from the first one, a fraction
+    // height against a box offering none.
+    var h: Harness = .{};
+    try h.start(240, 320, null, null);
+    defer h.stop();
+    var m: Model = .{};
+    var txn = try begin(h.window);
+    const frame = c.siv_box(txn, c.siv_window_root(h.window));
+    _ = c.siv_set_layout(txn, frame, &.{ .height = .{ .unit = .px, .value = 200 } });
+    const filling = c.siv_list_view(txn, frame, &.{ .label = "Fill", .label_len = 4, .count = 50, .bind = Model.bind, .user_data = &m });
+    _ = c.siv_set_layout(txn, filling, &.{ .height = .{ .unit = .fraction, .value = 1 } });
+    const fixed = c.siv_list_view(txn, c.siv_window_root(h.window), &.{ .label = "Fixed", .label_len = 5, .count = 50, .bind = Model.bind, .user_data = &m });
+    _ = c.siv_set_layout(txn, fixed, &.{ .height = .{ .unit = .px, .value = 100 }, .max_height = 100 });
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    const uw, const fill_id = try uiId(filling);
+    _, const fixed_id = try uiId(fixed);
+    for (0..2) |pass| {
+        try testing.expectEqual(@as(f32, 200), uw.windowRect(fill_id).height());
+        try testing.expectEqual(@as(f32, 100), uw.windowRect(fixed_id).height());
+        try testing.expect(try rowCount(filling) >= 6);
+        if (pass == 1) break;
+        // An unrelated change lays the window out again, incrementally.
+        txn = try begin(h.window);
+        _ = c.siv_text(txn, c.siv_window_root(h.window), "after", 5);
+        try ok(c.siv_txn_commit(txn));
+        try h.settle();
+    }
+}
+
 test "list view: keyboard cursor, single and multiple selection, activation" {
     var h: Harness = .{};
     try h.start(240, 320, null, null);
