@@ -1149,6 +1149,14 @@ pub const decls = [_]Decl{
         .{ .name = "result", .type = ref("siv_result"), .doc = "SIV_OK or the failure." },
         .{ .name = "image", .type = ref("siv_image"), .doc = "The image, or 0." },
     }, .void),
+    // Clipboard (D19).
+    enumeration("siv_selection", "Which selection a clipboard call uses.", &.{
+        .{ .name = "clipboard", .value = 0, .doc = "The clipboard: copy and paste." },
+        .{ .name = "primary", .value = 1, .doc = "The primary selection: the last text selected, pasted with the middle button." },
+    }),
+    callback("siv_clipboard_fn", "Receives pasted text on the application's thread, in the dispatch phase (D5), never inside the call that asked for it.", &.{
+        .{ .name = "text", .type = .string, .doc = "The text as valid UTF-8 without NULs, valid during the call; NULL when the selection held no text, the paste failed or exceeded the transfer limit, or the window went away." },
+    }, .void),
     value("siv_text_metrics", "The size of laid-out text.", &.{
         f32Field("width", "Width of the widest line."),
         f32Field("height", "Height of all lines."),
@@ -1658,6 +1666,18 @@ pub const functions = [_]Function{
     op("siv_app_set_transfer_limit", "Sets the largest paste or drop accepted, in bytes (16 MiB by default); larger transfers are dropped.", &.{
         app_param,
         .{ .name = "bytes", .type = .usize, .doc = "The limit." },
+    }),
+    call("siv_clipboard_write", "Offers text as the seat's clipboard or primary selection, as an editor's copy does: siv keeps a copy and writes it to whoever pastes, other clients too. Wayland gives the selection only for input, so call it while handling a key, pointer, or activate event on the window; otherwise the compositor may ignore it.", &.{
+        window_param,
+        .{ .name = "selection", .type = ref("siv_selection"), .doc = "Which selection." },
+        .{ .name = "text", .type = .string, .doc = "UTF-8 (copied)." },
+    }),
+    call("siv_clipboard_read", "Pastes the text of the seat's clipboard or primary selection: reads the best text type it offers through the event loop, up to the transfer limit, and calls callback with it, then destroy. If the application is destroyed first, only destroy runs.", &.{
+        window_param,
+        .{ .name = "selection", .type = ref("siv_selection"), .doc = "Which selection." },
+        .{ .name = "callback", .type = ref("siv_clipboard_fn"), .doc = "Receives the text." },
+        .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data, after callback; may be NULL." },
+        .{ .name = "user_data", .type = .user_data, .doc = "Passed to callback and destroy." },
     }),
 
     drawOp("siv_draw_status", "The drawing's first error, or SIV_OK. After an error every drawing call does nothing and the canvas shows nothing this frame.", &.{}),

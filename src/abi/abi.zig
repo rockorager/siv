@@ -26,6 +26,8 @@ pub const canvas = @import("canvas.zig");
 pub const external = @import("external.zig");
 /// Drag and drop.
 pub const dnd = @import("dnd.zig");
+/// The clipboard and primary selection.
+pub const clipboard = @import("clipboard.zig");
 /// Theming: scheme and contrast choices, color overrides.
 pub const theme = @import("theme.zig");
 /// Pointer cursors.
@@ -43,7 +45,7 @@ pub const image_load = @import("image_load.zig");
 pub const types = t;
 
 /// The files that export schema functions.
-const implementations = .{ @This(), application, tree, canvas, external, dnd, theme, cursor, portal, print, tray, image_load } ++ @import("widgets").implementations;
+const implementations = .{ @This(), application, tree, canvas, external, dnd, clipboard, theme, cursor, portal, print, tray, image_load } ++ @import("widgets").implementations;
 
 const version = build_options.version;
 

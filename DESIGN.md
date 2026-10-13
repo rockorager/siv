@@ -1740,6 +1740,15 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       per frame. Masked editors never copy. A paste is one undo step, and
       waits behind an open transaction like input; single-line editors
       turn line breaks into spaces.
+    - Applications copy and paste with `siv_clipboard_write`, which
+      offers text with the window's seat and latest input serial (Wayland
+      grants a selection only for input, so it is called from an input
+      handler), and `siv_clipboard_read`, whose text arrives in the
+      dispatch phase like an editor's paste. A paste that completes
+      inside the call (this application owns the selection, or nothing is
+      offered) is posted, so the callback never runs inside
+      `siv_clipboard_read`; one still waiting at teardown runs only its
+      destroy-notify (D5). The Lua binding awaits it in a coroutine (D23).
     - Drag and drop (`src/ui/dnd.zig`): the platform keeps each seat's
       drag offer (the offer over one of this client's surfaces) with a
       per-seat id, and this client's drag source with its icon surface,
