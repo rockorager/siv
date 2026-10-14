@@ -1,65 +1,109 @@
-# siv vs gpui
+# siv vs gpui, Qt, and GTK
 
-Matching applications in siv and gpui (Zed's GUI framework), measured the
-same way on sway with GPU rendering. Nothing here is part of siv's build or
-tests; the gpui side builds only where cargo is installed.
+Matching applications in siv, gpui (Zed's GUI framework), Qt Quick, and
+GTK 4, measured the same way on sway, every one rendering with Vulkan on
+the same GPU. Nothing here is part of siv's build or tests. The directory
+is named for its first comparison, siv against gpui; Qt and GTK came
+later.
 
 ```text
 bench/gpui-compare/
   siv/bench.c        the siv program (C, against libsiv.so)
   gpui/src/main.rs   the gpui program; gpui/setup.sh fetches zed at a pinned commit
+  qt/bench.cpp       the Qt Quick program; qt/bench.qml has its scenes
+  gtk/bench.c        the GTK 4 program
   common/doc.h       shared constants and document text (gpui/src/spec.rs mirrors it)
   harness/presshim.c LD_PRELOAD library: presentation feedback for every commit
   harness/inject.c   virtual keyboard and pointer client
-  harness/run.py     runs the scenarios, writes results/raw/*.json
+  harness/run.py     runs the scenarios, writes results/raw/*.json and machine.json
   harness/report.py  summarizes them as the tables in results/
 ```
 
 ## Running
 
+On a machine with a GPU and its Mesa Vulkan driver, after a commit (run.py
+records the commit and whether the tree had changes):
+
 ```sh
 rustup toolchain install 1.98.1 --profile minimal   # zed's pinned toolchain
-ZIG=~/.local/opt/zig-0.17.0/zig ./build.sh          # libsiv (ReleaseFast), both programs, the tools
-python3 harness/run.py --runs 5                     # about 25 minutes
+ZIG=~/.local/opt/zig-0.17.0/zig ./build.sh          # libsiv (ReleaseFast), the four programs, the tools
+python3 harness/run.py --runs 5 --warmup            # about 40 minutes
 python3 harness/report.py > results/latest.md
+```
+
+and for working on siv:
+
+```sh
 python3 harness/run.py --runs 1 --scenarios text --toolkits siv --perf /tmp/prof   # perf record
 GC_SIV_BENCH=out/siv-bench-before python3 harness/run.py --toolkits siv --out results/raw-before   # another build of the siv program
+python3 harness/report.py results/raw-before results/raw   # siv before, siv after, gpui
 GC_KMS=/dev/dri/card0 python3 harness/run.py --scenarios gallery   # sway on a KMS device (vkms): real vblank
 ```
 
-`run.py` passes `SIV_*` environment variables to the siv program, for
-experiments.
+`--toolkits` and `--scenarios` pick subsets (default all four and every
+scenario); `--screenshots DIR` saves what the first run showed. `--warmup`
+runs each program once per scenario first and discards it, so that
+Fontconfig's cache, the shader caches (Mesa's, Qt's pipeline cache), Qt's
+QML cache, and the page cache are warm for every recorded run. `run.py`
+passes `SIV_*` environment variables to the siv program, for experiments;
+`GC_RENDER_NODE` names another render node than `/dev/dri/renderD128`.
 
-Needs sway, wayland-scanner, libwayland-client, xkbcommon, Fontconfig, the
-Adwaita Sans font, and a Vulkan driver; `grim` for `--screenshots`.
+Needs sway, wayland-scanner, wayland-protocols, libwayland-client,
+xkbcommon, Fontconfig, the Adwaita Sans font, a Mesa Vulkan driver for the
+GPU, `vulkaninfo` (vulkan-tools), Qt 6 with Qt Quick Controls (qtbase and
+qtdeclarative 6.8 or later, for menus in their own popup surfaces), and
+GTK 4 with their pkg-config files; `grim` for `--screenshots`. `build.sh`
+skips gpui without cargo and Qt or GTK without their pkg-config files.
 
 gpui is built from zed commit `26363aabdb31a0c016728634202e1ad5067033aa`
 (2026-10-12) with zed's own release profile (thin LTO, one codegen unit)
 and the `[patch]` entries of zed's workspace that gpui's dependencies
 reach. Its Linux renderer is wgpu on Vulkan. libsiv is built ReleaseFast.
+The Qt and GTK programs are built `-O2` against the system's Qt and GTK,
+so all four programs share the C library and load the same Mesa Vulkan
+driver.
 
 ## Method
 
 Each run starts a fresh sway 1.12 on its headless backend with the Vulkan
 renderer on the GPU's render node (`WLR_BACKENDS=headless
 WLR_RENDERER=vulkan`), one output of 1280×800 at 60 Hz and scale 1, no
-borders, so the one window is 1280×800. Both toolkits render with Vulkan
-on the same GPU (RADV). Then the scenario's program starts, input comes
-from `inject`, and the program is stopped. Each scenario runs five times
-per toolkit, interleaved; tables give the median over runs and the range.
+borders, so the one window is 1280×800. Then the scenario's program
+starts, input comes from `inject`, and the program is stopped. Each
+scenario runs five times per toolkit, interleaved, after an unrecorded
+warm-up run; tables give the median over runs and the range.
 
-- **Frames** come from `presshim.so`, preloaded into both programs. It
+Every toolkit renders with Vulkan on the GPU, named rather than left to
+the toolkit's default:
+
+- **siv** with its Vulkan renderer. It draws its first frames with its
+  CPU renderer while its Vulkan device is created on a thread (D10), and
+  switches after; startup measures that.
+- **gpui** with wgpu on Vulkan, its only Linux renderer.
+- **Qt Quick** with its scene graph on QRhi's Vulkan backend
+  (`QSG_RHI_BACKEND=vulkan`). Qt Widgets is not compared: it paints with
+  its raster engine on the CPU even when a GPU is present.
+- **GTK 4** with its Vulkan renderer (`GSK_RENDERER=vulkan`, its default
+  on Wayland since 4.16).
+
+Each result's `app_log` keeps the line in which each toolkit names its
+renderer and device (siv's own log, Qt's `qt.rhi.general` logging, GTK's
+`GSK_DEBUG=renderer`). run.py exits unless `vulkaninfo` lists a GPU, and
+stops if a program submitted no work to the GPU's render node during a
+run (amdgpu's `drm-engine-*` counters below), so no CPU-rendered or
+emulated (lavapipe) result can be recorded.
+
+- **Frames** come from `presshim.so`, preloaded into every program. It
   wraps libwayland's request marshalling (including the entry points
   Rust's wayland-backend looks up with dlsym, and Mesa's WSI commits) and
   asks for `wp_presentation` feedback on every `wl_surface.commit`, so
-  both toolkits are measured by the same code, whether they present
-  through Vulkan or shared memory. Its dispatch thread sleeps while no
-  feedback is outstanding, so it adds no idle wakeups.
+  every toolkit is measured by the same code. Its dispatch thread sleeps
+  while no feedback is outstanding, so it adds no idle wakeups.
 - **Startup** is from `fork` to the presentation of the toplevel's first
   frame.
 - **Input to photon** is from the moment `inject` flushed the event to sway
   to the presentation of the first commit the program made after it. The
-  programs commit nothing while idle (both carets are steady, see below),
+  programs commit nothing while idle (every caret is steady, see below),
   so that commit is the response. sway's headless output composites a
   damaged frame as soon as a client commits, not at a vblank, so these
   numbers are the toolkit's own latency plus sway's composite (about
@@ -70,104 +114,235 @@ per toolkit, interleaved; tables give the median over runs and the range.
   change, from zero for a thread started during the window; a thread
   that exits takes its counts with it (siv's pool retires idle workers),
   so over idle windows threads are sampled every 50 ms and one that
-  exits counts up to its last sample. (Until round 3 the harness
-  subtracted sums over the live threads, which went negative when a
-  thread exited.) **GPU time** is the program's
+  exits counts up to its last sample. **GPU time** is the program's
   `drm-engine-*` time from `/proc/PID/fdinfo` (amdgpu), which counts the
   GPU work the program submitted, not sway's composite.
 - **Wakeups** are voluntary and involuntary context switches of all
   threads per second over an idle window.
-- **Memory** is VmRSS and PSS (`smaps_rollup`) after startup, and
-  `drm-memory-vram` for GPU memory.
+- **Memory** is VmRSS and PSS (`smaps_rollup`) after startup, and the
+  program's GPU buffers from fdinfo: `drm-memory-vram` (the GPU's carve-out
+  on this APU) and `drm-memory-gtt` (system memory mapped for the GPU).
+  RSS does not count GPU buffers; the GTT pages are system memory too.
 - **Dropped frames** are refresh intervals during continuous motion with
   no new presentation: for each gap between presentations, its length in
   refresh periods minus one.
 - **Binary size** is the stripped program, plus libsiv.so for siv. gpui
-  links statically.
-
-The machine: AMD Ryzen 5 PRO 7640HS with a Radeon 760M (RADV, Mesa 26.2.2),
-Linux 7.2, `powersave` governor with `balance_performance`, sway 1.12.
-Other work on the machine was light during runs; `run.py` records the
-load average in every result.
-
+  links statically; the Qt and GTK programs link their toolkits' shared
+  libraries and are not compared.
 ## Scenarios
 
 | Scenario | What it does |
 | --- | --- |
 | idle | A window with one label. 10 s idle window. |
 | gallery | A title, four buttons (default, primary, disabled, and a menu button with six items), a focused 320 px text field, a checkbox, a 320×320 list of 50 selectable items, and a status label. 15 key presses into the field, 15 clicks on a button, 8 menu openings. |
-| list | A 100,000-row list filling the window, two text columns per row. 5 s of touchpad scrolling at 120 events/s of 30 px each, then 15 wheel notches. |
-| text | An editor over a 4,000-paragraph document (about 1.2 MB, 200,000 words) at 14.67 px with 20 px lines, wrapped to the window, focused at the start. 15 key presses, 3 s of scrolling, 10 wheel notches, then five jumps to the end and back (Ctrl+End, Ctrl+Home) and five search-result jumps (F3, then Ctrl+Home). |
+| list | A 100,000-row list filling the window, two text columns per row. 5 s of touchpad scrolling at 120 events/s of 30 px each (after each toolkit's own scaling), then 15 wheel notches. |
+| text | An editor over a 4,000-paragraph document (about 1.2 MB, 200,000 words) at 14.67 px, wrapped to the window, focused at the start. 15 key presses, 3 s of scrolling, 10 wheel notches, then five jumps to the end and back (Ctrl+End, Ctrl+Home) and five search-result jumps (F3, then Ctrl+Home). |
 | grid | 2,560 rounded 16 px squares (64×40), each fading between opacity 1 and 0.2 every second (CSS ease-in-out, alternating) with its own delay. 5 s of animation. |
 | typing | The editor with a 6-paragraph document: 300 characters typed at one per 8 ms. |
 | resize | The gallery as a floating window, resized 180 times at 60 Hz between 1280×800 and 800×500. |
-| logs | The text scenario's editor and steps over 100 MB of log lines (1.05 M lines of about 100 bytes, `log_generate`), after waiting for the program to go quiet. |
+| logs | The text scenario's editor and steps over 100 MB of log lines (1.05 M lines of about 100 bytes, `log_generate`), after waiting for the program to go quiet. siv and gpui only. |
 
 Ctrl+End and Ctrl+Home move the caret to the end or the start and show
 it. F3 searches the text for a word that occurs once, three quarters of
 the way through (`DOC_NEEDLE`), puts the caret there, and shows it: siv
-reads the editor's text in pieces of 1 MiB (`siv_node_get_text_range`;
-round 4 copied it whole with `siv_node_get_text`) and calls
-`siv_set_selection`, whose editor scrolls to its caret (D15); gpui
-searches its paragraphs and calls `ListState::scroll_to_reveal_item`.
-siv before round 4 could not show a caret's offset: its build
-(`-DBENCH_SCROLL_JUMP`) also scrolls to the end or the start with
-`siv_scroll_to` on Ctrl+End and Ctrl+Home, and its search jump moves
-only the caret.
+reads the editor's text in pieces of 1 MiB (`siv_node_get_text_range`)
+and calls `siv_set_selection`, whose editor scrolls to its caret (D15);
+gpui searches its paragraphs and scrolls the paragraph to the top with
+`ListState::scroll_to` (Ctrl+End: `scroll_to_end`);
+Qt searches `TextArea.text` with JavaScript's `indexOf` and selects the
+match (TextArea has no search of its own); GTK uses
+`gtk_text_iter_forward_search` and `gtk_text_view_scroll_mark_onscreen`.
 
-gpui multiplies touchpad deltas by 3 (`gpui_linux`'s Wayland client), so
-`run.py` sends it 10 px per event where siv gets 30: both scroll the same
-3,600 px/s and end on the same row.
+Touchpad distances are scaled per toolkit so that each scrolls the same
+3,600 px/s (`SCROLL_EVENT` in run.py): siv multiplies touchpad deltas by 4
+(D16), gpui by 3 (`gpui_linux`'s Wayland client), GTK by 2.5, and Qt
+Quick's Flickable takes them as they come. 600 events end every list
+within four rows of row 644. In the editors the distance is set for the
+same paragraphs per second (`TEXT_SCROLL_EVENT`), since line heights
+differ (20 px in siv and gpui, 19 in Qt, about 18 in GTK); 360 events end
+every editor within two paragraphs of paragraph 223.
 
-Text is Adwaita Sans at siv's body size (11 pt, 14.67 px) in both, in
-siv's light theme colors and widget metrics (control height 32, radius 6,
-padding 12).
+Text is Adwaita Sans at siv's body size (11 pt, 14.67 px) in every
+toolkit. siv's and gpui's programs use siv's light theme colors and widget
+metrics (control height 32, radius 6, padding 12); Qt and GTK look like
+themselves at the same sizes.
 
 ## Differences that remain
 
 - **Stock widgets.** gpui has no stock widgets. The gallery's buttons,
   text field (trimmed from gpui's `examples/input.rs`), checkbox, list
   (`uniform_list`), and menu are written in the gpui program with gpui's
-  elements, as a gpui application would. siv's are its stock widgets,
-  which do more: accessibility (AT-SPI), focus rings, keyboard navigation,
-  mnemonics, transitions.
-- **Menus.** siv shows menus in `xdg_popup` surfaces that can extend
-  past the window; gpui draws them inside the window (`deferred` and
-  `anchored`). The menu latency compares the two ways of showing a menu,
-  which is what users of each see.
-- **The editor.** gpui has no stock editor outside Zed. The gpui program's
-  editor is a `list` over paragraphs, each a wrapped `StyledText`, with a
-  caret, typing through gpui's input handler, Backspace, Enter, and arrow
-  keys: it shapes and lays out only the paragraphs in view. siv's is its
-  stock editor (D15): selection, undo, input methods, accessibility.
-- **Carets do not blink in either.** gpui's example editor has no blink;
-  siv runs with reduced motion (`SIV_APP_REDUCED_MOTION`) except in the
-  grid scenario, which also turns off siv's 150 ms control transitions.
-- **Animation.** siv animates the grid on its compositor thread
-  (`siv_set_animation`, one layer per cell, D8); gpui re-renders the
-  window every frame (`request_animation_frame`), which is how gpui
-  animates.
+  elements, as a gpui application would. siv's, Qt's, and GTK's are their
+  stock widgets, which do more: accessibility, focus rings, keyboard
+  navigation.
+- **Menus.** siv, Qt (`popupType: Popup.Window`), and GTK (a
+  GtkPopoverMenu) show menus in `xdg_popup` surfaces that can extend past
+  the window, and the menu latency is the popup's first presented frame;
+  gpui draws them inside the window (`deferred` and `anchored`). That
+  compares the ways of showing a menu users of each see.
+- **The editors.** gpui has no stock editor outside Zed. The gpui
+  program's editor is a `list` over paragraphs, each a wrapped
+  `StyledText`, with a caret, typing through gpui's input handler,
+  Backspace, Enter, and arrow keys: it shapes and lays out only the
+  paragraphs in view. siv's is its stock editor (D15): selection, undo,
+  input methods, accessibility. Qt's is TextArea in a Flickable that
+  follows the caret (TextEdit's documented idiom), which lays out the
+  whole document before its first frame; GTK's is GtkTextView, which lays
+  out lazily.
 - **Text rendering.** siv blends in linear light with its contrast
   correction (D11); gpui's text is lighter. gpui does not apply variable
-  font weights, so the gallery's bold title is regular in gpui.
-- **No session bus.** Neither program can reach D-Bus, so neither
-  publishes accessibility or reads desktop settings (siv also runs with
-  `SIV_APP_NO_DESKTOP_SETTINGS`).
-- **First frames.** siv draws its first frames with the CPU renderer
-  while its Vulkan device is created on a thread (D10), and switches
-  after; startup measures that.
-
+  font weights, so the gallery's bold title is regular in gpui. Qt Quick
+  draws text from distance fields (its default, `Text.QtRendering`).
+- **Animation.** siv animates the grid on its compositor thread
+  (`siv_set_animation`, one layer per cell, D8); Qt with an
+  OpacityAnimator per cell, on its render thread; GTK with a CSS
+  animation per cell (`animation: fade 1s cubic-bezier(0.42, 0, 0.58, 1)
+  infinite alternate`), restyled and redrawn on the main thread each
+  frame; gpui re-renders the window every frame
+  (`request_animation_frame`), which is how gpui animates.
+- **Same steady state.** No caret blinks: gpui's example editor has no
+  blink, Qt's cursor flash time is 0, GTK's `gtk-cursor-blink` is off, and
+  siv runs with reduced motion (`SIV_APP_REDUCED_MOTION`), which GTK
+  matches with `gtk-enable-animations` off; in the grid scenario both are
+  on. No program reaches a session bus, so none publishes accessibility
+  or reads desktop settings (siv also runs with
+  `SIV_APP_NO_DESKTOP_SETTINGS`; GTK warns that it cannot autolaunch
+  D-Bus).
+- **The programs** in detail: Qt's uses Qt Quick Controls' Fusion style
+  with Button, Menu, TextField, CheckBox, a ListView of ItemDelegates in
+  a Frame, a ListView over 100,000 rows of two Labels made on demand, and
+  TextArea. GTK's uses GtkButton, a GtkMenuButton with a GMenu, GtkEntry,
+  GtkCheckButton, GtkListView over list models (the 100,000 rows from a
+  model that makes its items on demand), GtkTextView, and a GtkGrid of
+  boxes for the grid, with GTK's built-in theme (no libadwaita).
+- **Not ported:** the 100 MB log, to Qt and GTK.
 ## Results
 
-Measured 2026-10-13 on the machine above. `results/final.md` has every
-metric with its range over five runs, comparing the second round of
-fixes (`results/round2.md`, main at `7fac27c`) with the third (main at
-`63bc95e` plus `d34089c`; a run after rebasing onto other work
-matched); `results/round1.md` is the first round (main at `01e17ce`)
-and `results/baseline.md` the first comparison, before any fix (main at
-`e661fb4`).
+These are directional numbers: one machine, one session of five runs per
+cell after a warm-up, with no thermal or frequency pinning. They show
+where each toolkit stands and by roughly how much, not differences of a
+few percent. `results/timbot.md` has every metric with its range over the
+runs (`report.py` writes it from the raw results). Measured
+2026-10-14 on an AMD Ryzen 5 PRO 7640HS (6 cores, 12 threads, 32 GB of RAM) with
+its integrated Radeon 760M, RADV from Mesa 26.2.2, Arch Linux with Linux
+7.2.2, the `powersave` governor with `balance_performance`, sway 1.12,
+Qt 6.11.2, and GTK 4.22.4; siv at `fcb487f` (the bench programs at
+`d9906d7`), gpui at zed `26363aa`. gpui's jumps in the document and the
+log were measured again, three runs, after `710b51d` made them reach
+their target (its first runs scrolled a few paragraphs and stopped). The machine was otherwise idle (load average at most
+0.63 at the end of any run). Every run's renderer line and GPU counters
+show Vulkan on the Radeon.
 
-| Scenario | Metric | siv baseline | siv round 2 | siv now | gpui |
+| Scenario | Metric | siv | gpui | Qt Quick | GTK 4 |
+| --- | --- | --- | --- | --- | --- |
+| idle | startup to first frame | 25.8 ms | 75.2 ms | 69.4 ms | 60.0 ms |
+| idle | RSS / PSS | 48.5 / 29.9 MiB | 77.1 / 53.9 MiB | 85.1 / 61.9 MiB | 65.1 / 40.9 MiB |
+| idle | GPU memory, VRAM + GTT | 35.3 + 3.2 MiB | 81.5 + 17.2 MiB | 88.4 + 34.6 MiB | 22.7 + 3.3 MiB |
+| idle | threads after 10 s idle; CPU and wakeups while idle | 8; 0, 0/s | 27; 0, 0/s | 9; 0, 0/s | 11; 0, 0.1/s |
+| gallery | startup to first frame | 34.2 ms | 71.7 ms | 76.8 ms | 69.7 ms |
+| gallery | key / click to photon (median) | 2.05 / 1.75 ms | 2.43 / 2.25 ms | 2.02 / 1.76 ms | 1.94 / 1.81 ms |
+| gallery | key to photon, worst of 15 | 2.76 ms | 18.4 ms | 3.92 ms | 2.25 ms |
+| gallery | click to menu shown | 3.59 ms | 2.38 ms* | 18.2 ms | 19.6 ms |
+| list | scroll: CPU / GPU per frame | 1.44 / 0.89 ms | 1.95 / 0.94 ms | 2.04 / 0.24 ms | 1.74 / 0.19 ms |
+| list | wheel to photon | 1.66 ms | 3.21 ms | 23.7 ms | 2.78 ms |
+| text | startup to first frame | 34.8 ms | 83.8 ms | 651 ms | 86.6 ms |
+| text | RSS / GPU memory at the end | 76.4 / 41.3 MiB | 83.1 / 96.2 MiB | 180 / 123 MiB | 71.8 / 26.1 MiB |
+| text | key to photon (median / worst) | 2.75 / 3.78 ms | 3.57 / 19.1 ms | 7.37 / 8.69 ms | 2.78 / 18.2 ms |
+| text | scroll: CPU / GPU per frame | 1.31 / 0.92 ms | 2.66 / 0.58 ms | 2.85 / 0.36 ms | 1.99 / 0.36 ms |
+| text | wheel to photon | 1.96 ms | 3.93 ms | 22.4 ms | 3.02 ms |
+| text | jump to end / search result (median) | 4.33 / 5.35 ms | 6.48 / 7.64 ms‡ | 6.45 / 10.2 ms | 7.48 / 10.0 ms |
+| grid | CPU / GPU per frame | 2.06 / 0.91 ms | 6.10 / 0.47 ms | 7.05 / 0.52 ms | 6.35 / 0.34 ms |
+| typing | key to photon (median), CPU per frame | 24.0 ms, 1.82 ms | 24.2 ms, 3.03 ms | 23.9 ms, 2.71 ms | 24.2 ms, 3.22 ms |
+| resize | resize to photon (median); configures acknowledged | 10.6 ms; 360 | 10.9 ms; 360 | 10.5 ms; 360 | 22.8 ms; 306 |
+| resize | CPU per frame | 1.45 ms | 2.40 ms | 1.97 ms | 1.92 ms |
+| logs | startup; RSS at the end | 215 ms; 280 MiB | 452 ms; 435 MiB | – | – |
+| logs | key to photon (median / worst) | 5.55 / 7.51 ms | 3.45 / 19.0 ms | – | – |
+| logs | search result jump (median) | 19.5 ms | 36.4 ms‡ | – | – |
+| all | stripped binary | 11.2 MiB (libsiv.so) | 21.3 MiB | – | – |
+
+\* gpui draws its menu inside the window; the others show theirs in a
+popup surface (Differences that remain).
+‡ Three runs after `710b51d` (see above and `results/timbot.md`).
+
+Every toolkit kept 60 Hz with no dropped frame in every run of the list,
+the document, the grid, and the logs (p99 frame interval 16.5 to 18.2 ms),
+and none woke while idle. In the typing burst, which types faster (125
+keys/s) than any toolkit presents, all four show a key 24 ms after it,
+about one and a half refreshes: that is frame pacing, the same for all.
+Run-to-run spread is small: startup within 6 ms of the median except
+gpui's (up to 18 ms above), per-frame CPU within 11%; the ranges are in
+`results/timbot.md`.
+
+### Where siv leads
+
+- **Startup**: 26 ms to the first frame of a small window, against 60 to
+  75 ms, and 35 ms for the 1.2 MB document, against 84 to 87 ms and Qt
+  Quick's 651 ms (69 ms over the typing scenario's 6 paragraphs: Qt's
+  TextArea takes in the whole text before its first frame; not profiled
+  further). siv draws its first frame with its CPU renderer while the
+  Vulkan device is made on a thread (D10), and shapes the blocks in view
+  first (D13).
+- **CPU per frame** in every scenario with motion: scrolling the list
+  1.44 ms against 1.74 to 2.04, the document 1.31 against 1.99 to 2.85,
+  typing 1.82 against 2.71 to 3.22, resizing 1.45 against 1.92 to 2.40.
+  The grid costs 2.06 ms against 6.10 to 7.05: siv's compositor thread
+  animates layer opacity (D8), where gpui rebuilds 2,560 elements every
+  frame, GTK restyles and redraws 2,560 widgets, and Qt's render thread
+  updates 2,560 animators and the scene graph.
+- **Memory**: the lowest RSS and PSS at idle (48.5 / 29.9 MiB), 8
+  threads after 10 s idle, and the second-lowest GPU memory (38.5 MiB,
+  after GTK's 26.0); the 100 MB log holds 280 MiB against gpui's 435.
+- **Wheel to photon**: 1.7 to 2.0 ms, against 2.8 to 3.9 for gpui and
+  GTK. Qt Quick shows a wheel notch about a refresh later (22 to 24 ms)
+  although it answers keys and clicks in 2 ms; this bench does not
+  break that down.
+- **Worst keystroke** in the document: 3.8 ms, where gpui's and GTK's
+  wait a refresh (19.1 and 18.2 ms) and Qt's takes 8.7 (gpui's in the
+  gallery too, 18.4).
+- **Jumps** to the end of the document and to a search result: 4.3 and
+  5.4 ms, against 6.5 to 10.2.
+
+### Where siv trails, and why
+
+- **GPU time per frame**: 0.89 ms scrolling the list against Qt's 0.24,
+  GTK's 0.19, and gpui's 0.94; 0.92 for the document against 0.36 to
+  0.58; 0.91 for the grid against 0.34 to 0.52. siv renders into an FP16
+  working image in linear light and encodes it with its CPU renderer's
+  dither (D11), and its draw shader evaluates the CPU renderer's
+  coverage formulas (with a specialized variant for the common draws,
+  D10), so that its Vulkan output matches its CPU renderer; gpui draws
+  straight into an 8-bit image (History has the round that measured
+  this). None of it costs a frame at 60 Hz, but it is GPU time a laptop
+  pays for.
+- **Menus** among the toolkits with popup menus siv is first (3.6 ms
+  against Qt's 18.2 and GTK's 19.6), but gpui, which draws its menu inside
+  the window, shows it in 2.4 ms: a popup's first buffer waits for its
+  configure round trip and a frame of its own (D17).
+- **Keys in the 100 MB log**: 5.6 ms against gpui's 3.5 (but a worst of
+  7.5 ms against 19.0). Round 5 (History) traced what is left to
+  bookkeeping per block of the editor's text (12,800 blocks) on every
+  edit (D13, D15); gpui edits one paragraph string.
+- **GTK** answers keys in the gallery marginally sooner (1.94 against
+  2.05 ms, within each other's run-to-run range) and holds the least GPU
+  memory; its resizing costs the least CPU per second because it presents
+  fewer frames (96 against about 170) and acknowledges 306 of the 360
+  configures.
+
+## History: what the comparison found in siv
+
+The first comparisons ran siv against gpui alone, on the same machine, on
+2026-10-13, while the hot spots they showed were fixed. Each round's
+numbers are from the commits named and were not measured again; the
+Results above are current. gpui's jump and search times in rounds 4
+and 5 measured a scroll that stopped short of its target (fixed in
+`710b51d`, see Results). `results/final.md` has every metric with its
+range over five runs, comparing the second round of fixes
+(`results/round2.md`, main at `7fac27c`) with the third (main at
+`63bc95e` plus `d34089c`); `results/round1.md` is the first round (main
+at `01e17ce`) and `results/baseline.md` the first comparison, before any
+fix (main at `e661fb4`).
+
+| Scenario | Metric | siv baseline | siv round 2 | siv round 3 | gpui |
 | --- | --- | --- | --- | --- | --- |
 | idle | startup to first frame | 28.0 ms | 26.6 ms | 25.8 ms | 71.4 ms |
 | idle | CPU, wakeups | 0, 0/s | 0, 0/s | 0, 0/s | 0, 0/s |
@@ -198,60 +373,6 @@ sway's transactions; both toolkits acknowledge every configure. siv
 starts 28 threads (20 at baseline, before its pool had a blocking lane
 for icon and image loads); since round 3 the pool retires workers idle
 for 5 s, so an idle siv window keeps 8 (gpui keeps 27).
-
-### Where siv wins
-
-- Startup: 26 ms from `fork` to the first presented frame against 71 ms,
-  and now in every scenario: the 1.4 MB document's first frame comes in
-  38 ms against 83, since siv shapes the blocks in view first and the
-  rest on its worker pool (D13).
-- Memory: 56 MiB RSS and 43 MiB of GPU memory at idle against 76 and 82;
-  8 threads after 10 s idle against 27; half the binary size (libsiv.so
-  10.8 MiB with every image decoder, against a 21.3 MiB gpui program).
-- Animation: the grid costs 2.1 ms of CPU per frame against 6.2 ms,
-  because siv's compositor thread animates layer opacity (D8) while gpui
-  rebuilds and re-lays out 2,560 elements every frame.
-- Input latency: keys and clicks in the gallery 0.4–0.6 ms lower, wheels
-  1.4–1.8 ms lower; a key in the 1.4 MB document 3.2 ms against 3.5 ms,
-  with a worst key of 5.9 ms against 19.5 ms.
-- CPU per frame: list scrolling 1.5 ms against 2.0, document scrolling
-  1.3 against 2.6, typing 1.9 against 3.0, resizing 1.5 against 2.4.
-- GPU time per frame for the list: 0.72 ms against 0.95.
-
-### Where siv loses, and why
-
-- **GPU time per frame** for the document (0.97 against 0.57 ms) and the
-  grid (0.89 against 0.50). Round 3 split the draw pass between the
-  exact shader, which evaluates the CPU renderer's formulas for every
-  paint, clip, and coverage (23,560 instructions, 56 VGPRs under RADV's
-  shader statistics), and a variant specialized by a constant for solid
-  rects, rounded rects, and glyphs with at most two analytic clips (943
-  instructions, 24 VGPRs; D10). The draw pass went from 0.84 to 0.54 ms
-  for the document, 0.53 to 0.43 for the grid, and 0.65 to 0.39 for the
-  list, by GPU timestamps; goldens are unchanged. What remains is the
-  FP16 working image and its encode pass with the CPU's dither (about
-  0.2 ms, D11), and the draw pass's pixel work: gpui draws straight into
-  an 8-bit image. The frame rate is unaffected at 60 Hz.
-- **Menus** show 3.3 ms after the click against 2.5 ms. siv's menu is an
-  `xdg_popup`, which may extend outside the window: its first buffer
-  waits for the popup's configure round trip and a layout and frame of
-  its own, and the window's response waits for it so both show in one
-  refresh (D17); gpui draws its menu inside the window. Round 3 found
-  that each small popup's CPU renderer built three 65,536-entry transfer
-  tables before its first frame (7.4 ms after the third was added for
-  sRGB layers); built once per process, the menu shows in 3.3 ms. Its
-  change in timing exposed a race in `siv_test_settle`, which could
-  return before the frame the compositor owed for a wheel scroll; it
-  now waits for every frame the compositor owes (D27).
-- **The large document** held 149 MiB against 82. siv kept the whole
-  document shaped (glyphs, carets, and line breaks of 1.4 M characters),
-  so that every height, caret, and hit test is exact; gpui's editor
-  shapes only the lines in view. Round 3 dropped positioned glyphs from
-  blocks that are not painted (30 MiB less), and part of that went to
-  the heaps of the workers that shape in the background. Round 4 bounds
-  it (89 MiB at the end of the scenario, below).
-- **Keystrokes in 100 MB** cost 27 ms against 3.6 in round 4, 5.3
-  against 3.5 since round 5 (below).
 
 ### Profiling and fixes
 
