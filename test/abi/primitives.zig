@@ -145,6 +145,48 @@ const Keys = struct {
     }
 };
 
+const Grower = struct {
+    window: t.Window,
+    changes: u32 = 0,
+    /// Builds many nodes from the change handler, so the tree's storage
+    /// moves while the editor is in the middle of its edit.
+    fn onChange(ud: ?*anyopaque, _: t.Node, _: *const t.Event) callconv(.c) t.EventResult {
+        const g: *Grower = @ptrCast(@alignCast(ud.?));
+        g.changes += 1;
+        var txn: t.Txn = .null;
+        if (c.siv_txn_begin(g.window, &txn) != .ok) return .handled;
+        const root = c.siv_window_get_root(g.window);
+        for (0..20000) |_| _ = c.siv_box(txn, root);
+        _ = c.siv_txn_commit(txn);
+        return .handled;
+    }
+};
+
+test "a change handler may build nodes while an editor types" {
+    var h: Harness = .{};
+    try h.start(100, 100, null, null);
+    defer h.stop();
+    var g: Grower = .{ .window = h.window };
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const editor = c.siv_editor(txn, c.siv_window_get_root(h.window), .{});
+    c.siv_on(txn, editor, .change, Grower.onChange, null, &g);
+    // A big tree already, so that growing it moves its storage (as it
+    // does in a file manager's window) rather than extending it in place.
+    for (0..20000) |_| _ = c.siv_box(txn, c.siv_window_get_root(h.window));
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try ok(c.siv_node_focus(editor));
+    try h.typeKey('a', "a", .{});
+    try h.typeKey('b', "b", .{});
+    try h.settle();
+    try testing.expectEqual(@as(u32, 2), g.changes);
+    var buf: [16]u8 = undefined;
+    var len: usize = 0;
+    try ok(c.siv_node_get_text(editor, &buf, buf.len, &len));
+    try testing.expectEqualStrings("ab", buf[0..len]);
+}
+
 test "handlers stop bubbling and prevent the default action separately" {
     var h: Harness = .{};
     try h.start(100, 100, null, null);

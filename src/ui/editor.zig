@@ -594,8 +594,11 @@ fn selection(e: *const node_mod.EditorData) struct { u32, u32 } {
 /// line breaks.
 pub fn insertText(win: *Window, id: NodeId, str: []const u8) void {
     const e = data(win, id);
+    // The edit runs change handlers, which may build nodes and move `e`:
+    // nothing reads it after `replace`.
+    const masked = e.editor.masked;
     var buf: std.ArrayList(u8) = .empty;
-    defer if (e.editor.masked) std.crypto.secureZero(u8, buf.items);
+    defer if (masked) std.crypto.secureZero(u8, buf.items);
     for (str) |c| if (e.editor.multiline or (c != '\n' and c != '\r')) buf.append(win.scratch.allocator(), c) catch return;
     if (buf.items.len == 0 and str.len != 0) return;
     const lo, const hi = selection(e);
