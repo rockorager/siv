@@ -298,7 +298,7 @@ test "scrolling on the compositor at 2x: no layout, no repaint, exact damage" {
     const builds = app.win.stats.layer_builds;
     const r = app.win.windowRect(list);
     app.inject(.{ .pointer_motion = .{ .window = app.wid, .seat = 0, .x = r.x0 + 20, .y = r.y0 + 20 } });
-    app.inject(.{ .scroll = .{ .window = app.wid, .seat = 0, .dy = 80, .v120_y = 120 * 2, .source = .wheel } });
+    app.inject(.{ .scroll = .{ .window = app.wid, .seat = 0, .dy = 80, .source = .wheel } });
     try app.settle();
     try testing.expectEqual(@as(f32, 80), app.win.node(list).data.scroll.offset.y);
     try testing.expectEqual(layouts, app.win.stats.layouts);

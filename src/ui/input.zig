@@ -580,7 +580,7 @@ pub fn handle(win: *Window, event: *const platform.Event) void {
             st.capture = .none;
             st.pressed = .none;
         },
-        .scroll => |s| scroll(win, @floatCast(s.dx), @floatCast(s.dy), s.v120_x, s.v120_y),
+        .scroll => |s| scroll(win, s),
         .gesture => |g| gesture(win, &g),
         .tablet_tool => |t| tabletTool(win, &t),
         .relative_motion => |r| relativeMotion(win, &r),
@@ -751,40 +751,52 @@ pub fn scrollBy(win: *Window, id: NodeId, delta: Point) void {
 /// modifier held, or with nothing for it to scroll. Scroll handlers see it
 /// first, from the node under the pointer up; otherwise, without ctrl,
 /// alt, or super, the nearest scroll node with room scrolls.
-fn scroll(win: *Window, dx_px: f32, dy_px: f32, v120_x: i32, v120_y: i32) void {
+fn scroll(win: *Window, s: platform.Scroll) void {
     requestTooltip(win, .none);
     const p = win.input.pointer orelse return;
     const target = hitTest(win, p);
     if (target == .none) return;
-    const d = (platform.Scroll{ .window = 0, .seat = 0, .dx = dx_px, .dy = dy_px, .v120_x = v120_x, .v120_y = v120_y }).delta();
-    var dx: f32 = @floatCast(d.x);
-    var dy: f32 = @floatCast(d.y);
-    const ev: Event = .{ .scroll = .{ .dx = dx, .dy = dy, .target = target } };
+    // Handlers see the distance for the nearest scroll node's viewport, or
+    // the window's without one (wheel detents depend on it).
+    var near: NodeId = target;
+    while (near != .none and win.node(near).kind != .scroll) near = win.node(near).parent;
+    const d = scrollDelta(win, near, s);
+    const ev: Event = .{ .scroll = .{ .dx = d.x, .dy = d.y, .target = target } };
     if (bubble(win, target, .scroll, ev).prevents()) return;
     const mods = win.input.mods;
     // Ctrl+wheel zooms the nearest zoomable scroll node: 10% per detent.
-    if (mods.ctrl and !mods.alt and !mods.super and dy != 0) {
-        if (win.isLive(target)) zoomNearest(win, target, std.math.pow(f32, 1.1, -dy / @as(f32, platform.Scroll.detent_px)));
+    if (mods.ctrl and !mods.alt and !mods.super and (s.dy != 0 or s.v120_y != 0)) {
+        if (win.isLive(target)) zoomNearest(win, target, @floatCast(std.math.pow(f64, 1.1, -s.detentsY())));
         return;
     }
     if (mods.ctrl or mods.alt or mods.super) return;
     // Shift turns a vertical wheel horizontal, as in the compositor.
-    if (mods.shift and dx == 0) {
-        dx = dy;
-        dy = 0;
-    }
+    const in = if (mods.shift and s.dx == 0 and s.v120_x == 0) s.shifted() else s;
+    const dir = in.delta(1, 1);
     var cur: NodeId = if (win.isLive(target)) target else return;
     while (cur != .none) : (cur = win.node(cur).parent) {
         const n = win.node(cur);
         if (n.kind != .scroll) continue;
         const max = paint.maxScroll(win, cur);
         const off = paint.scrollTranslation(win, cur);
-        const can_x = n.data.scroll.axis != .vertical and ((dx > 0 and off.x < max.x) or (dx < 0 and off.x > 0));
-        const can_y = n.data.scroll.axis != .horizontal and ((dy > 0 and off.y < max.y) or (dy < 0 and off.y > 0));
+        const can_x = n.data.scroll.axis != .vertical and ((dir.x > 0 and off.x < max.x) or (dir.x < 0 and off.x > 0));
+        const can_y = n.data.scroll.axis != .horizontal and ((dir.y > 0 and off.y < max.y) or (dir.y < 0 and off.y > 0));
         if (!can_x and !can_y) continue;
-        scrollBy(win, cur, .{ .x = if (can_x) dx else 0, .y = if (can_y) dy else 0 });
+        const sd = scrollDelta(win, cur, in);
+        scrollBy(win, cur, .{ .x = if (can_x) sd.x else 0, .y = if (can_y) sd.y else 0 });
         return;
     }
+}
+
+/// The distance scroll input moves scroll node `id` (`platform.Scroll.delta`
+/// for its viewport), or the window for `.none`.
+fn scrollDelta(win: *Window, id: NodeId, s: platform.Scroll) Point {
+    const w: f64, const h: f64 = if (id == .none) .{ win.width, win.height } else blk: {
+        const v = win.viewportOf(id);
+        break :blk .{ v.width, v.height };
+    };
+    const d = s.delta(w, h);
+    return .{ .x = @floatCast(d.x), .y = @floatCast(d.y) };
 }
 
 /// Passes a zoom on to the nearest zoomable scroll node at or above

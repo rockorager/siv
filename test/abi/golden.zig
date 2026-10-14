@@ -235,7 +235,8 @@ test "C API: a form built through the exports renders, and input reaches C callb
         .{ .scroll = .{ .window = id, .seat = 0, .dy = 15, .source = .finger } },
     });
     try h.settle();
-    try testing.expectEqual(@as(f32, 15), log.scroll_dy);
+    // Touchpad distances are multiplied (D16).
+    try testing.expectEqual(@as(f32, 60), log.scroll_dy);
 
     // A handled close request keeps the window; an unhandled one destroys
     // it, which releases its handlers, and siv_app_run returns.

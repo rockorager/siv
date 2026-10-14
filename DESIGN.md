@@ -1745,9 +1745,35 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   xkbcommon with compose, `text-input-v3`, pointer constraints and relative
   motion on request, and keyboard-shortcut inhibition on request. Kinetic
   scrolling is implemented in the toolkit using the scroll-stop event.
-  - Wheel events that carry only high-resolution steps (`v120`) scroll
-    15 logical pixels per detent, wl_pointer's legacy axis value, in the
-    compositor and the UI alike (`platform.Scroll.delta`).
+  - Scroll distance has one source, `platform.Scroll.delta`, which the
+    compositor (for the container it scrolls) and the UI (for handlers
+    and `scroll_by`) apply to the raw event, each once. A wheel detent
+    (`axis_value120`, or `axis_discrete` × 120 before wl_pointer v8)
+    scrolls a viewport `extent` logical pixels long by extent^(2/3), as
+    GTK 4 does (`get_wheel_detent_scroll_step`), but at least 60 pixels,
+    about Firefox's three lines, and at most the extent: 100 pixels for
+    a 1000-pixel list, about four of siv-columns' 26-pixel rows, and 60
+    below 465 pixels. High-resolution fractions scale it, and the steps
+    win over the distance the compositor sends beside them, which is 15
+    per detent and which Hyprland rounds to whole detents for
+    high-resolution wheels (`emulate_discrete_scroll`). Touchpad
+    distances (axis source finger or continuous, in surface pixels) are
+    multiplied by 4, Firefox's factor (GTK 4's GDK delta × 40 for the
+    pan gesture over GTK 3's ÷ 10); kinetic scrolling starts from the
+    multiplied velocity, as in GTK. Other distances (no source, or a
+    wheel without steps, as `siv_test_scroll` injects) are used as sent.
+    Scale plays no part: axis values are surface (logical) pixels.
+    Before, a detent scrolled the compositor's 15 pixels (GTK 4: 71 to
+    100 for 600- to 1000-pixel views; Firefox: about 57) and a touchpad
+    1:1, which users found too slow. Elsewhere: GTK 4 scales touchpads by 2.5
+    (`MAGIC_SCROLL_FACTOR`); Qt 6 scrolls three single steps a detent
+    (three rows in item views) and turns touchpad pixels into
+    angleDelta × 12; Chromium scrolls 120 pixels a detent and
+    multiplies touchpad distances by 12 (2.5 behind a disabled flag).
+    No setting: no portal or GNOME key sets scroll speed, and the
+    compositors that have one (Hyprland's and sway's `scroll_factor`,
+    KWin's scrolling speed) scale both the steps and the distances
+    before siv sees them. Ctrl+wheel zooms by detents, not distance.
   - Key text omits C0 control characters and DEL; the keysym identifies those
     keys. A key that continues or cancels a compose sequence is delivered
     with `composing` set and no text, so shortcuts still see it.

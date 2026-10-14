@@ -1603,23 +1603,57 @@ pub const ScrollSource = enum { unknown, wheel, finger, continuous, wheel_tilt }
 
 /// One pointer frame of scrolling.
 pub const Scroll = struct {
-    /// Logical pixels per wheel detent (120 v120 units) for events that
-    /// carry only discrete steps, matching wl_pointer's legacy axis value.
-    pub const detent_px: f64 = 15;
+    /// The fewest logical pixels a wheel detent scrolls: about three lines
+    /// of text, as in Firefox (D16).
+    pub const min_detent_px: f64 = 60;
+    /// Touchpad distances (axis source finger or continuous) are
+    /// multiplied by this, as Firefox does (GTK 4 uses 2.5; D16).
+    pub const finger_factor: f64 = 4;
 
-    /// The scroll distance in logical pixels, from the high-resolution
-    /// steps when the event has no continuous distance on an axis.
-    pub fn delta(s: Scroll) struct { x: f64, y: f64 } {
-        return .{
-            .x = if (s.dx != 0) s.dx else @as(f64, @floatFromInt(s.v120_x)) / 120 * detent_px,
-            .y = if (s.dy != 0) s.dy else @as(f64, @floatFromInt(s.v120_y)) / 120 * detent_px,
-        };
+    /// Logical pixels one wheel detent (120 v120 units) scrolls a viewport
+    /// `extent` logical pixels long on that axis: GTK 4's extent^(2/3),
+    /// at least `min_detent_px`, at most the extent (D16).
+    pub fn detentPx(extent: f64) f64 {
+        return @min(@max(std.math.pow(f64, extent, 2.0 / 3.0), min_detent_px), extent);
+    }
+
+    /// The distance in logical pixels this scrolls a viewport of the
+    /// given size (logical pixels): wheel steps by `detentPx`, touchpad
+    /// distances by `finger_factor`, other distances as they are. The one
+    /// place siv scales scroll input (D16).
+    pub fn delta(s: Scroll, width: f64, height: f64) struct { x: f64, y: f64 } {
+        return .{ .x = s.axisDelta(s.dx, s.v120_x, width), .y = s.axisDelta(s.dy, s.v120_y, height) };
+    }
+
+    fn axisDelta(s: Scroll, d: f64, v120: i32, extent: f64) f64 {
+        // Compositors send both for a wheel; the steps carry high-resolution
+        // fractions that the distance may not (Hyprland rounds it to whole
+        // detents), and both include the compositor's scroll factor.
+        if (v120 != 0) return @as(f64, @floatFromInt(v120)) / 120 * detentPx(extent);
+        return if (s.source == .finger or s.source == .continuous) d * finger_factor else d;
+    }
+
+    /// Vertical wheel detents, for zooming: from the steps, or from the
+    /// distance at wl_pointer's legacy 15 pixels a detent.
+    pub fn detentsY(s: Scroll) f64 {
+        return if (s.v120_y != 0) @as(f64, @floatFromInt(s.v120_y)) / 120 else s.dy / 15;
+    }
+
+    /// The same input turned horizontal, for Shift+wheel.
+    pub fn shifted(s: Scroll) Scroll {
+        var h = s;
+        h.dx = s.dy;
+        h.v120_x = s.v120_y;
+        h.dy = 0;
+        h.v120_y = 0;
+        return h;
     }
 
     window: WindowId,
     seat: SeatId,
     time: u32 = 0,
-    /// Scroll distance in logical pixels.
+    /// Scroll distance in logical pixels, as the compositor sends it
+    /// (`delta` scales it).
     dx: f64 = 0,
     dy: f64 = 0,
     /// High-resolution wheel steps; 120 is one detent.

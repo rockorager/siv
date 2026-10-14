@@ -579,7 +579,7 @@ test "a frame request with nothing new presents nothing" {
     try testing.expectEqual(frames + 1, h.comp.frameStats(id).?.frames);
 }
 
-test "discrete wheel steps without a distance scroll like Wayland wheels" {
+test "wheel detents and touchpad distances scroll by D16's distances" {
     var h: Harness = .{};
     try h.start(false);
     defer h.stop();
@@ -589,18 +589,31 @@ test "discrete wheel steps without a distance scroll like Wayland wheels" {
         .{ .create = 3 },
         .{ .insert = .{ .layer = 2, .parent = 1 } },
         .{ .insert = .{ .layer = 3, .parent = 2 } },
-        .{ .set_scroll = .{ .layer = 2, .scroll = .{ .viewport = .xywh(0, 0, 100, 40), .content = .{ .width = 100, .height = 200 } } } },
-        .{ .set_content = .{ .layer = 3, .content = try h.rect(.xywh(0, 0, 100, 200), blue) } },
+        .{ .set_scroll = .{ .layer = 2, .scroll = .{ .viewport = .xywh(0, 0, 100, 1000), .content = .{ .width = 100, .height = 10000 } } } },
+        .{ .set_content = .{ .layer = 3, .content = try h.rect(.xywh(0, 0, 100, 10000), blue) } },
     });
     const hl = h.headless();
     hl.inject(.{ .pointer_motion = .{ .window = id, .seat = 0, .x = 50, .y = 20 } });
-    hl.inject(.{ .scroll = .{ .window = id, .seat = 0, .v120_y = 240, .source = .wheel } });
-    try h.run(&h, struct {
-        fn f(x: *Harness) bool {
-            return x.count(.scrolled) >= 1;
-        }
-    }.f);
-    try testing.expectEqual(@as(f32, 2 * platform.Scroll.detent_px), h.last(.scrolled).?.scrolled.offset.y);
+    const steps = [_]struct { scroll: platform.Scroll, offset: f32 }{
+        // A detent over a 1000 px viewport: 1000^(2/3) = 100 px, from the
+        // steps, not the distance the compositor sends beside them.
+        .{ .scroll = .{ .window = id, .seat = 0, .dy = 15, .v120_y = 120, .source = .wheel }, .offset = 100 },
+        // Half a detent of a high-resolution wheel.
+        .{ .scroll = .{ .window = id, .seat = 0, .dy = 7.5, .v120_y = 60, .source = .wheel }, .offset = 150 },
+        // 10 px of touchpad motion scrolls 40.
+        .{ .scroll = .{ .window = id, .seat = 0, .dy = 10, .time = 1000, .source = .finger }, .offset = 190 },
+        .{ .scroll = .{ .window = id, .seat = 0, .time = 3000, .source = .finger, .stop_y = true }, .offset = 190 },
+    };
+    for (steps) |st| {
+        hl.inject(.{ .scroll = st.scroll });
+        try h.runMs(20);
+        try testing.expectApproxEqAbs(st.offset, h.last(.scrolled).?.scrolled.offset.y, 1e-3);
+    }
+    // A short viewport still scrolls three lines' worth a detent.
+    _ = try h.comp.commit(id, &.{.{ .set_scroll = .{ .layer = 2, .scroll = .{ .viewport = .xywh(0, 0, 100, 300), .content = .{ .width = 100, .height = 10000 } } } }});
+    hl.inject(.{ .scroll = .{ .window = id, .seat = 0, .v120_y = 120, .source = .wheel } });
+    try h.runMs(20);
+    try testing.expectApproxEqAbs(@as(f32, 250), h.last(.scrolled).?.scrolled.offset.y, 1e-3);
 }
 
 /// A memfd holding an opaque w x h frame of one BGRX color.

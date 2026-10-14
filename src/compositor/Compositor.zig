@@ -1127,18 +1127,19 @@ fn scroll(self: *Compositor, s: platform_mod.Scroll) bool {
     const seat = &self.seats[s.seat];
     const w = self.getWindow(s.window) orelse return false;
 
-    // Wheel events may carry only discrete v120 steps.
-    const d = s.delta();
-    var delta: Point = .{ .x = @floatCast(d.x), .y = @floatCast(d.y) };
-    if (seat.mods.shift and s.source == .wheel and delta.x == 0) delta = .{ .x = delta.y, .y = 0 };
+    const in = if (seat.mods.shift and s.source == .wheel and s.dx == 0 and s.v120_x == 0) s.shifted() else s;
     const gesture = s.source == .finger or s.source == .continuous;
     const stop = s.stop_x or s.stop_y;
     const time_ms: u32 = if (s.time != 0) s.time else @truncate(Loop.now() / std.time.ns_per_ms);
 
+    // Routing needs only the direction; a wheel detent's distance depends
+    // on the viewport of the container it scrolls.
     const target: tree_mod.Route = if (gesture and seat.latch != null and seat.latch_window == s.window)
         seat.latch.?
-    else
-        w.tree.routeScroll(seat.pos, delta, seat.mods);
+    else blk: {
+        const dir = in.delta(1, 1);
+        break :blk w.tree.routeScroll(seat.pos, .{ .x = @floatCast(dir.x), .y = @floatCast(dir.y) }, seat.mods);
+    };
     if (gesture and seat.latch == null) {
         seat.latch = target;
         seat.latch_window = s.window;
@@ -1151,6 +1152,10 @@ fn scroll(self: *Compositor, s: platform_mod.Scroll) bool {
         },
         .scroll => |id| id,
     };
+    const none: raster.Rect = .xywh(0, 0, 0, 0);
+    const vp = if (w.tree.get(layer)) |l| if (l.scroll) |sc| sc.viewport else none else none;
+    const d = in.delta(vp.width(), vp.height());
+    const delta: Point = .{ .x = @floatCast(d.x), .y = @floatCast(d.y) };
     if (delta.x != 0 or delta.y != 0) {
         _ = w.tree.scrollBy(layer, delta) catch return false;
         if (gesture) seat.velocity.add(time_ms, delta);

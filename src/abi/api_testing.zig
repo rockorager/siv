@@ -92,7 +92,7 @@ pub const functions = [_]Function{
         p("y", .f32, "Window coordinates."),
         p("button", ref("siv_pointer_button"), "The button."),
     }),
-    call("siv_test_scroll", "Scrolls where the pointer is (siv_test_pointer_move), as a mouse wheel does." ++ queued ++ headless, &.{
+    call("siv_test_scroll", "Scrolls where the pointer is (siv_test_pointer_move) by exactly the distance given, as a mouse wheel that sends only a distance does (wheel detents and touchpads scroll by distances siv scales, D16)." ++ queued ++ headless, &.{
         window_param,
         p("dx", .f32, "Horizontal distance in logical pixels."),
         p("dy", .f32, "Vertical distance in logical pixels; positive scrolls down."),

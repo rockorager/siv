@@ -196,15 +196,12 @@ pub export fn siv_test_scroll(window: t.Window, dx: f32, dy: f32) t.Result {
         fn f(wh: t.Window, sx: f32, sy: f32) Error!void {
             const w = try headlessWindow(wh);
             if (!std.math.isFinite(sx) or !std.math.isFinite(sy)) return error.InvalidArgument;
-            const detents = 120 / platform.Scroll.detent_px;
             try inject(w, &.{.{ .scroll = .{
                 .window = w.win.id,
                 .seat = 0,
                 .time = nextSerial(),
                 .dx = sx,
                 .dy = sy,
-                .v120_x = @intFromFloat(@round(@as(f64, sx) * detents)),
-                .v120_y = @intFromFloat(@round(@as(f64, sy) * detents)),
                 .source = .wheel,
             } }});
         }

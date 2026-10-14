@@ -993,11 +993,16 @@ test "scroll handlers get wheel regions; declined input passes on as scroll_by" 
     try f.frame();
     try testing.expectEqual(@as(f32, 40), f.comp.get(sl).offset.y);
     try testing.expectEqual(@as(f32, 40), f.win.node(sc).data.scroll.offset.y);
+    // A wheel detent passed on moves the node by its viewport's detent:
+    // 60 px for 100 px (D16), from the steps rather than the distance.
+    f.win.handlePlatform(&.{ .scroll = .{ .window = 0, .seat = 0, .dy = 15, .v120_y = 120, .source = .wheel } });
+    try f.frame();
+    try testing.expectEqual(@as(f32, 100), f.comp.get(sl).offset.y);
     // Ctrl+wheel that no handler takes goes nowhere.
     f.win.handlePlatform(&.{ .modifiers = .{ .window = 0, .seat = 0, .mods = .{ .ctrl = true } } });
     f.win.handlePlatform(&.{ .scroll = .{ .window = 0, .seat = 0, .dy = 40 } });
     try f.frame();
-    try testing.expectEqual(@as(f32, 40), f.comp.get(sl).offset.y);
+    try testing.expectEqual(@as(f32, 100), f.comp.get(sl).offset.y);
 }
 
 const GestureLog = struct {
