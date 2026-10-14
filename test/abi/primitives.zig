@@ -203,6 +203,139 @@ test "handlers stop bubbling and prevent the default action separately" {
     try testing.expectEqualStrings("ac", buf[0..len]);
 }
 
+const Capture = struct {
+    order: [16]u8 = undefined,
+    n: usize = 0,
+    /// What the root's and the box's capture handlers return.
+    root: t.EventResult = .pass,
+    box: t.EventResult = .pass,
+    editor: t.Node = .null,
+    flags_ok: bool = true,
+
+    fn add(k: *Capture, ch: u8) void {
+        if (k.n < k.order.len) k.order[k.n] = ch;
+        k.n += 1;
+    }
+
+    fn log(k: *const Capture) []const u8 {
+        return k.order[0..k.n];
+    }
+
+    fn check(k: *Capture, ev: *const t.Event, capturing: bool) bool {
+        if (!ev.flags.pressed) return false;
+        if (ev.flags.capturing != capturing or ev.type != .key or ev.target != k.editor) k.flags_ok = false;
+        return true;
+    }
+
+    fn onRootCapture(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
+        const k: *Capture = @ptrCast(@alignCast(ud.?));
+        if (!k.check(ev, true)) return .pass;
+        k.add('R');
+        return k.root;
+    }
+
+    fn onBoxCapture(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
+        const k: *Capture = @ptrCast(@alignCast(ud.?));
+        if (!k.check(ev, true)) return .pass;
+        k.add(if (ev.flags.prevented) 'b' else 'B');
+        return k.box;
+    }
+
+    fn onEditor(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
+        const k: *Capture = @ptrCast(@alignCast(ud.?));
+        if (!k.check(ev, false)) return .pass;
+        k.add('e');
+        return .pass;
+    }
+
+    fn onEditorDefault(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
+        const k: *Capture = @ptrCast(@alignCast(ud.?));
+        if (!k.check(ev, false)) return .pass;
+        k.add('d');
+        return .pass;
+    }
+
+    fn onRoot(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
+        const k: *Capture = @ptrCast(@alignCast(ud.?));
+        if (!k.check(ev, false)) return .pass;
+        k.add(if (ev.flags.prevented) 'p' else 'r');
+        return .pass;
+    }
+};
+
+test "capture handlers see keys on the way down, before the focused node" {
+    var h: Harness = .{};
+    try h.start(100, 100, null, null);
+    defer h.stop();
+    var k: Capture = .{};
+    var txn: t.Txn = .null;
+    const root = c.siv_window_get_root(h.window);
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const box = c.siv_box(txn, root);
+    k.editor = c.siv_editor(txn, box, .{});
+    c.siv_on_capture(txn, root, .key, Capture.onRootCapture, null, &k);
+    c.siv_on_capture(txn, box, .key, Capture.onBoxCapture, null, &k);
+    c.siv_on(txn, k.editor, .key, Capture.onEditor, null, &k);
+    c.siv_on_default(txn, k.editor, .key, Capture.onEditorDefault, null, &k);
+    c.siv_on(txn, root, .key, Capture.onRoot, null, &k);
+    try ok(c.siv_txn_commit(txn));
+    try ok(c.siv_node_focus(k.editor));
+    var buf: [16]u8 = undefined;
+    var len: usize = 0;
+
+    // Pass: root, then box on the way down; the editor, its default, and
+    // the root on the way up; the editor types.
+    try h.typeKey('a', "a", .{});
+    try h.settle();
+    try testing.expectEqualStrings("RBedr", k.log());
+    try ok(c.siv_node_get_text(k.editor, &buf, buf.len, &len));
+    try testing.expectEqualStrings("a", buf[0..len]);
+
+    // Handled at the root: nothing else, no typing.
+    k.n = 0;
+    k.root = .handled;
+    try h.typeKey('b', "b", .{});
+    try h.settle();
+    try testing.expectEqualStrings("R", k.log());
+    try ok(c.siv_node_get_text(k.editor, &buf, buf.len, &len));
+    try testing.expectEqualStrings("a", buf[0..len]);
+
+    // Stop at the root: no more capture and no siv_on handler, but the
+    // editor's default handler and siv's own default (typing) run.
+    k.n = 0;
+    k.root = .stop;
+    try h.typeKey('c', "c", .{});
+    try h.settle();
+    try testing.expectEqualStrings("Rd", k.log());
+    try ok(c.siv_node_get_text(k.editor, &buf, buf.len, &len));
+    try testing.expectEqualStrings("ac", buf[0..len]);
+
+    // Prevent in the box: everything on the way up sees it prevented, no
+    // default handler runs, and the editor does not type.
+    k.n = 0;
+    k.root = .pass;
+    k.box = .prevent;
+    try h.typeKey('d', "d", .{});
+    try h.settle();
+    try testing.expectEqualStrings("RBep", k.log());
+    try ok(c.siv_node_get_text(k.editor, &buf, buf.len, &len));
+    try testing.expectEqualStrings("ac", buf[0..len]);
+    try testing.expect(k.flags_ok);
+
+    // A capture handler for anything but keys is refused; clearing works.
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_on_capture(txn, root, .activate, Capture.onRootCapture, null, &k);
+    try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_commit(txn));
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_on_capture(txn, root, .key, null, null, null);
+    c.siv_on_capture(txn, box, .key, null, null, null);
+    try ok(c.siv_txn_commit(txn));
+    k.n = 0;
+    try h.typeKey('e', "e", .{});
+    try h.settle();
+    try testing.expectEqualStrings("edr", k.log());
+}
+
 test "node data lives with its node and goes with an aborted transaction" {
     var h: Harness = .{};
     try start(&h);

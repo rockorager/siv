@@ -95,6 +95,19 @@ static siv_event_result on_search_key(void *user_data, siv_node search, const si
 
 ![The search field focused with a/b typed in it, and the status Opened Drafts](images/events-search.png)
 
+Bubbling means the focused node and its widget go first: a list row moves
+its cursor on the arrow keys before the window hears them. An application
+whose keys are its own, such as a vim-style editor or file manager, sets
+a capture handler on the root instead, with `siv_on_capture`: keys come
+down from the root to the focused node through capture handlers before
+any `siv_on` handler sees them, with `SIV_EVENT_CAPTURING` set. The
+results mean what they mean when bubbling. Handled ends the key there;
+pass lets it go on to the focused node as usual, so an editor still types
+what the keymap does not bind; stop skips every other handler but leaves
+the default actions (a widget's default handler, an editor typing);
+prevent goes on but stops the default actions. Only keys have a capture
+phase.
+
 ## Focus
 
 A node takes keyboard focus if its semantics say `SIV_SEMANTICS_FOCUSABLE`

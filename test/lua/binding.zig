@@ -247,6 +247,29 @@ test "a host's handles pushed into Lua: the same userdata, never owned" {
     try testing.expect(siv.c.siv_window_get_root(win) != .null);
 }
 
+test "capture handlers from Lua: a window's keys before the focused node" {
+    _ = try run(prologue ++
+        \\local root = win:get_root()
+        \\local log = {}
+        \\local field
+        \\win:update(function(txn)
+        \\  txn:set_layout(root, {})
+        \\  local box = txn:box(root, { on_capture = { key = function(_, ev)
+        \\    if ev.flags.pressed then log[#log + 1] = "capture:" .. ev.text end
+        \\    if ev.text == "x" then return true end
+        \\  end } })
+        \\  field = txn:editor(box, {}, { on = { key = function(_, ev)
+        \\    if ev.flags.pressed then log[#log + 1] = "editor:" .. ev.text end
+        \\  end } })
+        \\end)
+        \\field:focus()
+        \\win:test_type("ax")
+        \\assert(app:test_settle(5000))
+        \\assert(table.concat(log, " ") == "capture:a editor:a capture:x", table.concat(log, " "))
+        \\assert(field:get_text() == "a", field:get_text())
+    );
+}
+
 test "callbacks run at safe points and their errors reach the caller" {
     _ = try run(prologue ++
         \\local root = win:get_root()

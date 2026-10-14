@@ -95,6 +95,7 @@ pub fn write(w: *Writer, s: Schema) !void {
     // Properties of a builder's node: the setters that take one value.
     try w.writeAll("---Properties of a new node, applied with the setters they name: `layout` runs siv.set_layout.\n---@class siv.properties\n");
     try w.writeAll("---@field on? table<siv.event_type, siv.event_fn> Event handlers (siv.on).\n");
+    try w.writeAll("---@field on_capture? table<siv.event_type, siv.event_fn> Capture handlers (siv.on_capture).\n");
     for (s.functions) |f| {
         if (!std.mem.startsWith(u8, f.name, "siv_set_")) continue;
         const key = f.name["siv_set_".len..];

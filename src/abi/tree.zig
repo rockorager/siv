@@ -1294,16 +1294,22 @@ pub export fn siv_set_data(txn: t.Txn, node: t.Node, key: ?*anyopaque, size: usi
 }
 
 pub export fn siv_on(txn: t.Txn, node: t.Node, kind: t.EventType, callback: ?t.EventFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) void {
-    _ = on(txn, node, kind, callback, destroy, user_data, false);
+    _ = on(txn, node, kind, callback, destroy, user_data, .handler);
 }
 
 pub export fn siv_on_default(txn: t.Txn, node: t.Node, kind: t.EventType, callback: ?t.EventFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) void {
-    _ = on(txn, node, kind, callback, destroy, user_data, true);
+    _ = on(txn, node, kind, callback, destroy, user_data, .default);
 }
 
-fn on(txn: t.Txn, node: t.Node, kind: t.EventType, callback: ?t.EventFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque, default: bool) t.Result {
+pub export fn siv_on_capture(txn: t.Txn, node: t.Node, kind: t.EventType, callback: ?t.EventFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) void {
+    _ = on(txn, node, kind, callback, destroy, user_data, .capture);
+}
+
+const Slot = enum { handler, default, capture };
+
+fn on(txn: t.Txn, node: t.Node, kind: t.EventType, callback: ?t.EventFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque, which: Slot) t.Result {
     const w = txnWindow(txn) catch |err| return t.resultOf(err);
-    const result = run(txn, setHandler, .{ node, kind, callback, destroy, user_data, default });
+    const result = run(txn, setHandler, .{ node, kind, callback, destroy, user_data, which });
     // With no handler to own it, user_data is released at once; also when
     // the call failed, since the caller handed it over.
     if (callback == null or result != .ok) w.owner.release(destroy, user_data);
@@ -1335,14 +1341,23 @@ comptime {
 }
 
 comptime {
+    // Every event type is a handler kind of the same value; the tree's
+    // kinds after them (key_capture) have no event type of their own.
     for (@typeInfo(ui.HandlerKind).@"enum".field_names, 0..) |name, i| {
+        if (std.mem.eql(u8, name, "key_capture")) continue;
         if (@backingInt(@field(t.EventType, name)) != i) @compileError("siv_event_type does not match ui.HandlerKind at " ++ name);
     }
 }
 
-fn setHandler(w: *Window, node: t.Node, kind: t.EventType, callback: ?t.EventFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque, default: bool) Error!void {
+fn setHandler(w: *Window, node: t.Node, kind: t.EventType, callback: ?t.EventFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque, which: Slot) Error!void {
     const id = try nodeIn(w, node);
-    const k = try handlerKind(kind);
+    var k = try handlerKind(kind);
+    // Only keys have a capture phase so far (D16).
+    if (which == .capture) {
+        if (k != .key) return error.Unsupported;
+        k = .key_capture;
+    }
+    const default = which == .default;
     try w.txn.undo.ensureUnusedCapacity(w.owner.gpa(), 1);
     const s = if (default) w.nodes.defaultSlot(id, k) else w.nodes.slot(id, k);
     // The tree calls `dispatch` while either slot has a callback.
@@ -1358,10 +1373,12 @@ fn setHandler(w: *Window, node: t.Node, kind: t.EventType, callback: ?t.EventFn,
 fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Event) ui.HandlerResult {
     const w: *Window = @ptrCast(@alignCast(user));
     if (w.dead) return .pass;
-    const hk: ui.HandlerKind = switch (event.*) {
+    const kind: ui.HandlerKind = switch (event.*) {
         inline else => |_, tag| @field(ui.HandlerKind, @tagName(tag)),
     };
-    var ev: t.Event = .{ .window = @fromBackingInt(w.handle), .type = @fromBackingInt(@intFromEnum(hk)), .target = @fromBackingInt(w.nodes.handle(id)) };
+    // A key on its way down goes to the node's capture handler.
+    const hk: ui.HandlerKind = if (event.* == .key and event.key.capture) .key_capture else kind;
+    var ev: t.Event = .{ .window = @fromBackingInt(w.handle), .type = @fromBackingInt(@intFromEnum(kind)), .target = @fromBackingInt(w.nodes.handle(id)) };
     // A change event's text in one piece, for a text longer than a rope
     // leaf (D15).
     // The handler may destroy the window: the allocator is taken first.
@@ -1405,7 +1422,7 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
             ev.keysym = @enumFromInt(@as(i32, @bitCast(k.keysym)));
             ev.time = k.time;
             ev.modifiers = modifiers(k.mods);
-            ev.flags = .{ .pressed = k.pressed, .repeat = k.repeat, .prevented = k.prevented };
+            ev.flags = .{ .pressed = k.pressed, .repeat = k.repeat, .prevented = k.prevented, .capturing = k.capture };
             ev.text = k.text.ptr;
             ev.text_len = k.text.len;
             if (k.target != .none and uw.isLive(k.target)) ev.target = @fromBackingInt(w.nodes.handle(k.target));
@@ -1545,7 +1562,9 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
             ev.zoom = v.zoom;
         },
     }
-    return deliver(w, id, hk, &ev);
+    // A capture handler stopped the key: only default handlers run.
+    const skip = event.* == .key and event.key.stopped;
+    return deliver(w, id, hk, &ev, skip);
 }
 
 /// A handler's result from C. Values this version does not know count
@@ -1562,18 +1581,18 @@ fn handlerResult(r: t.EventResult) ui.HandlerResult {
 /// Calls the node's siv_on handler for the kind, then, unless it or a
 /// handler before it prevented the default action, its siv_on_default
 /// handler.
-fn deliver(w: *Window, id: NodeId, hk: ui.HandlerKind, ev: *const t.Event) ui.HandlerResult {
+fn deliver(w: *Window, id: NodeId, hk: ui.HandlerKind, ev: *const t.Event, skip_handler: bool) ui.HandlerResult {
     const self = w.owner;
     self.enter();
     defer self.leave();
     const handle: t.Node = @fromBackingInt(w.nodes.handle(id));
     var first: ui.HandlerResult = .pass;
-    if (w.nodes.slot(id, hk).*) |cb| {
+    if (!skip_handler) if (w.nodes.slot(id, hk).*) |cb| {
         first = handlerResult(cb.func(cb.user_data, handle, ev));
         if (first.prevents()) return first;
         // The handler may have removed the node or destroyed the window.
         if (w.dead or w.nodes.handle(id) != @backingInt(handle)) return first;
-    }
+    };
     if (ev.flags.prevented) return first;
     const d = w.nodes.defaultSlot(id, hk).* orelse return first;
     const r = handlerResult(d.func(d.user_data, handle, ev));
@@ -1780,7 +1799,7 @@ pub export fn siv_node_emit(node: t.Node, event: ?*const t.Event, handled: ?*boo
             if (w.owner.painting != 0) return error.Busy;
             ev.size = @sizeOf(t.Event);
             ev.window = @fromBackingInt(w.handle);
-            dest.* = deliver(w, id, hk, &ev) != .pass;
+            dest.* = deliver(w, id, hk, &ev, false) != .pass;
         }
     }.f(node, event, handled));
 }

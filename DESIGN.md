@@ -1884,6 +1884,26 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     `bool`, it had to track focus on each editor to leave Backspace to
     them. Alternative: two flag bits (a C `return true` would then mean
     stop alone, silently changing behavior).
+  - Keys have a capture phase. Before the focused node sees a key, it
+    goes down from the root through the capture handlers of the focused
+    node's ancestors and the node itself (`siv_on_capture`, so far keys
+    only), root first, with `SIV_EVENT_CAPTURING` set. The same results
+    apply: `pass` goes on; `handled` ends the key (no other handler, no
+    default); `stop` skips the remaining capture handlers and every
+    `siv_on` handler on the way up, while `siv_on_default` handlers and
+    siv's own defaults still run, as `stopPropagation` in the DOM's
+    capture phase leaves the default action; `prevent` goes on, marked
+    prevented. A node's capture handler is a tree handler kind of its own
+    (`key_capture`) beside the sixteen event types. Found by
+    siv-columns, a vim-style file manager: a focused list row's default
+    handler takes Space, Enter, the arrows, and the page keys before any
+    ancestor, and `bind` gets the row's body, so the application's
+    keymap had to go on the body's parent, leaning on the row's shape.
+    With a capture handler on the window's root, the keymap sees every
+    key first and passes those it does not bind. Alternatives: rows that
+    ask the view root's handler first (one widget, not the general
+    case); a window-level key callback outside the tree (no stop,
+    prevent, or focus-relative routing).
   - Focus moved by the keyboard shows a ring drawn by the core (2 px,
     outside the node), so keyboard-only use works without widget code;
     focus from a pointer press shows none. Its color is the theme's

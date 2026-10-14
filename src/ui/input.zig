@@ -335,6 +335,37 @@ fn bubble(win: *Window, target: NodeId, kind: node_mod.HandlerKind, event: Event
     return .of(false, prevented);
 }
 
+/// Runs the capture handlers of the target's ancestors and the target,
+/// root first, and returns what they decided together.
+fn capture(win: *Window, target: NodeId, event: Event) Result {
+    var path: [256]NodeId = undefined;
+    var n: usize = 0;
+    var cur = target;
+    while (cur != .none and win.isLive(cur)) : (cur = win.node(cur).parent) {
+        if (win.node(cur).handler(.key_capture) != null) {
+            if (n == path.len) break;
+            path[n] = cur;
+            n += 1;
+        }
+    }
+    if (n == 0) return .pass;
+    var ev = event;
+    ev.key.capture = true;
+    var prevented = false;
+    while (n > 0) {
+        n -= 1;
+        const id = path[n];
+        if (!win.isLive(id)) continue;
+        const r = call(win, id, .key_capture, &ev);
+        if (r.prevents()) {
+            prevented = true;
+            ev.key.prevented = true;
+        }
+        if (r.stops()) return .of(true, prevented);
+    }
+    return .of(false, prevented);
+}
+
 /// Sends `activate` to a node.
 pub fn activate(win: *Window, id: NodeId) void {
     if (!win.isLive(id) or !activatable(win, id)) return;
@@ -659,7 +690,21 @@ fn key(win: *Window, k: *const platform.Key) void {
         .text = k.text(),
         .target = target,
     } };
-    if (bubble(win, target, .key, ev).prevents()) return;
+    var bev = ev;
+    // Capture (D16): the key goes down from the root to the target through
+    // capture handlers first, so a window or container sees keys before
+    // the focused node and its widget defaults. Handled ends the key;
+    // stop skips the rest of capture and every bubbling siv_on handler,
+    // leaving default actions; prevent goes on, marked prevented.
+    switch (capture(win, target, ev)) {
+        .pass => {},
+        .handled => return,
+        .prevent => bev.key.prevented = true,
+        .stop => bev.key.stopped = true,
+    }
+    if (!win.isLive(target) and target != .root) return;
+    if (bubble(win, target, .key, bev).prevents()) return;
+    if (bev.key.prevented) return;
     if (target != .root and win.isLive(target) and win.node(target).kind == .editor and editor.key(win, target, k)) return;
     if (k.state == .released or k.composing) return;
     switch (k.keysym) {

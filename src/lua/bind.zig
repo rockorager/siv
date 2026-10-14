@@ -1274,7 +1274,8 @@ const property_setters = blk: {
 };
 
 /// Applies a builder's properties table to the node on top of the stack:
-/// `{ layout = {...}, visual = {...}, on = { activate = fn } }`. The txn
+/// `{ layout = {...}, visual = {...}, on = { activate = fn } }`, and
+/// `on_capture = { key = fn }` for capture handlers. The txn
 /// is argument 1.
 fn applyProperties(st: *State, L: *L_, props: c_int) void {
     _ = st;
@@ -1283,13 +1284,14 @@ fn applyProperties(st: *State, L: *L_, props: c_int) void {
     while (c.lua_next(L, props) != 0) {
         if (c.lua_type(L, -2) != lua.tstring) lua.raise(L, "properties are named", .{});
         const key = lua.toString(L, -2).?;
-        if (std.mem.eql(u8, key, "on")) {
-            if (c.lua_type(L, -1) != lua.ttable) lua.raise(L, "on: table of handlers expected", .{});
+        const capture = std.mem.eql(u8, key, "on_capture");
+        if (capture or std.mem.eql(u8, key, "on")) {
+            if (c.lua_type(L, -1) != lua.ttable) lua.raise(L, "{s}: table of handlers expected", .{key});
             const handlers = c.lua_gettop(L);
             c.lua_pushnil(L);
             while (c.lua_next(L, handlers) != 0) {
                 c.lua_pushvalue(L, lua.upvalue(1));
-                c.lua_pushcclosure(L, Wrapper(comptime functionIndex("siv_on")).call, 1);
+                c.lua_pushcclosure(L, if (capture) Wrapper(comptime functionIndex("siv_on_capture")).call else Wrapper(comptime functionIndex("siv_on")).call, 1);
                 c.lua_pushvalue(L, 1);
                 c.lua_pushvalue(L, node);
                 c.lua_pushvalue(L, -5);

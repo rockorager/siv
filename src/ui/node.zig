@@ -814,6 +814,11 @@ pub const Key = struct {
     target: NodeId = .none,
     /// A handler on the way here prevented the default action.
     prevented: bool = false,
+    /// Delivered to a `key_capture` handler, on the way down.
+    capture: bool = false,
+    /// A capture handler stopped the key's propagation: the nodes on the
+    /// way up run only their default handlers.
+    stopped: bool = false,
 };
 
 pub const FocusChange = struct {
@@ -1033,7 +1038,10 @@ pub const Viewport = struct { x: f32, y: f32, width: f32, height: f32, zoom: f32
 
 /// `select`, `close`, and `sort` are never sent by the tree: widgets built
 /// on the C API emit them (`siv_node_emit`).
-pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll, change, drop, drag, set_value, select, close, viewport, sort, gesture, tablet, pad };
+/// The kinds of node handlers. The first sixteen match `siv_event_type`;
+/// `key_capture` holds a node's capture-phase key handler (D16), which
+/// sees keys on their way down to the focused node.
+pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll, change, drop, drag, set_value, select, close, viewport, sort, gesture, tablet, pad, key_capture };
 
 /// What a handler did with an event: whether it stops bubbling and
 /// whether it prevents the default action (later default handlers and the

@@ -923,6 +923,7 @@ pub const decls = [_]Decl{
         .{ .name = "tip", .bit = 6, .doc = "Tablet: the tool's tip touches the tablet." },
         .{ .name = "lifted", .bit = 7, .doc = "Pad: the finger left a ring or strip; its value is meaningless." },
         .{ .name = "relative", .bit = 8, .doc = "Pointer: relative motion (siv_window_set_pointer_constraint): dx, dy, raw_dx, and raw_dy hold it." },
+        .{ .name = "capturing", .bit = 9, .doc = "Key: delivered to a capture handler (siv_on_capture), on the way down to the focused node." },
     }),
     openEnumeration("siv_key", "An XKB keysym (D16), as key events report it. Every keysym is valid, not only the named ones: a key that types a character reports its Unicode code point below 0x100 (0x61 for a, 0x41 for Shift+A) and 0x01000000 plus the code point above. The named keys are those applications commonly bind.", &.{
         .{ .name = "none", .value = 0, .doc = "No key (NoSymbol): the event is not a key event." },
@@ -1776,6 +1777,13 @@ pub const functions = [_]Function{
     }),
     setter("siv_on", "Sets, or with a NULL callback clears, the node's handler for one event type. The replaced handler's destroy-notify runs at commit; the new one's when it is replaced, its node is removed, the transaction is aborted, or the window or application is destroyed. If the call fails, or callback is NULL, destroy runs at once.", &.{
         .{ .name = "type", .type = ref("siv_event_type"), .doc = "The event type." },
+        .{ .name = "callback", .type = ref("siv_event_fn"), .doc = "The handler, or NULL." },
+        .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data; may be NULL." },
+        .{ .name = "user_data", .type = .user_data, .doc = "Passed to callback and destroy." },
+    }),
+
+    setter("siv_on_capture", "Sets, or with a NULL callback clears, the node's capture handler for one event type, so far only SIV_EVENT_TYPE_KEY (others fail with SIV_ERROR_UNSUPPORTED). A key goes down from the window's root to the focused node through the capture handlers on the way, root first, before the focused node's siv_on and siv_on_default handlers and the bubbling (D16): a window or container sees keys before the widget that has focus, as keyboard-driven applications need for their own keymaps. Results as for bubbling: pass goes on; handled ends the key there (no other handler, no default action); stop skips the remaining capture handlers and every siv_on handler on the way up, while siv_on_default handlers and siv's own default action still run; prevent goes on with SIV_EVENT_PREVENTED set, so no default runs. The event has SIV_EVENT_CAPTURING set and its target is the focused node. Destroy-notify rules as for siv_on.", &.{
+        .{ .name = "type", .type = ref("siv_event_type"), .doc = "The event type: SIV_EVENT_TYPE_KEY." },
         .{ .name = "callback", .type = ref("siv_event_fn"), .doc = "The handler, or NULL." },
         .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data; may be NULL." },
         .{ .name = "user_data", .type = .user_data, .doc = "Passed to callback and destroy." },
