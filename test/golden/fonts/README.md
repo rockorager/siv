@@ -1,7 +1,7 @@
 # Test fonts
 
-Fonts for golden-image tests. Both are Apache-2.0 and were copied from the
-HarfBuzz 14.6.0 test suite.
+Fonts for golden-image tests. Both are Apache-2.0 (`LICENSE-Apache-2.0.txt`)
+and were copied from the HarfBuzz 14.6.0 test suite.
 
 - `Roboto-Regular.ttf`: Roboto 2.137 by Christian Robertson, Google.
   Apache License 2.0 (stated in the font's name table).
