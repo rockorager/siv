@@ -566,6 +566,7 @@ fn mapOmarchy(pal: *const Palette, scheme: Scheme, out: *[token_count]?Color) vo
     }
     if (pal.get(.green)) |g| set(out, .success, g);
     if (pal.get(.yellow)) |y| set(out, .warning, y);
+    if (pal.get(.blue)) |b| set(out, .info, b);
     // Surfaces and text need both ends of the ramp.
     const bg = pal.get(.background) orelse return;
     const fg = pal.get(.foreground) orelse return;
@@ -604,6 +605,7 @@ fn mapOmarchy(pal: *const Palette, scheme: Scheme, out: *[token_count]?Color) vo
     // is its control color).
     set(out, .disabled_fg, mix(fg, bg, 0.5));
     set(out, .muted_fg, readable(fg, bg, &.{ bg, dbg, ddbg }));
+    if (pal.get(.blue)) |b| set(out, .info, legible(b, fg, &.{ bg, dbg, ddbg }));
     const sel = selection(pal.get(.selection).?, accent, &.{ bg, dbg, ddbg });
     set(out, .selection_bg, sel);
     const on_sel = if (contrast(bright, sel) >= contrast(fg, sel)) bright else fg;
@@ -625,6 +627,20 @@ fn selection(sel: Rgba, accent: Rgba, under: []const Rgba) Rgba {
         } else return c;
     }
     return mix(sel, accent, 0.6);
+}
+
+/// `c` mixed toward the text `fg` as little as keeps 4.5:1 against every
+/// one of `under`: a colored text that stays readable (rose pine's blue
+/// is 2.5:1 on its darker background).
+fn legible(c: Rgba, fg: Rgba, under: []const Rgba) Rgba {
+    var k: f32 = 0;
+    while (k <= 1 + 1e-3) : (k += 0.05) {
+        const m = mix(c, fg, k);
+        for (under) |u| {
+            if (contrast(m, u) < 4.5) break;
+        } else return m;
+    }
+    return fg;
 }
 
 /// The dimmest mix of `fg` toward `bg`, up to 40%, that keeps 4.5:1
@@ -780,6 +796,37 @@ test "omarchy: colors.toml maps to tokens for its mode" {
     for ([_]u24{ 0x1a1b26, 0x13141c, 0x0e0e14 }) |b| {
         const l = hex(b).luminance();
         try testing.expect((muted.luminance() + 0.05) / (l + 0.05) >= 4.5);
+    }
+}
+
+test "omarchy: info is the theme's blue, mixed toward the text only as far as it must be to read" {
+    // kanagawa: its accent is its text color; its blue reads as it is.
+    const k = omarchy(
+        \\mode = "dark"
+        \\accent = "#dcd7ba"
+        \\background = "#1f1f28"
+        \\dark_background = "#17171e"
+        \\darker_background = "#111116"
+        \\foreground = "#dcd7ba"
+        \\blue = "#7e9cd8"
+    , false);
+    try testing.expect(tok(&k, .dark, .accent).?.eql(hex(0xdcd7ba)));
+    try testing.expect(tok(&k, .dark, .info).?.eql(hex(0x7e9cd8)));
+    // rose pine: its blue is 2.5:1 on its darker background.
+    const r = omarchy(
+        \\mode = "light"
+        \\background = "#faf4ed"
+        \\dark_background = "#ede7e1"
+        \\darker_background = "#e1dbd5"
+        \\foreground = "#575279"
+        \\blue = "#56949f"
+    , false);
+    const info = tok(&r, .light, .info).?;
+    try testing.expect(!info.eql(hex(0x56949f)) and !info.eql(hex(0x575279)));
+    for ([_]u24{ 0xfaf4ed, 0xede7e1, 0xe1dbd5 }) |b| {
+        const hi = @max(info.luminance(), hex(b).luminance());
+        const lo = @min(info.luminance(), hex(b).luminance());
+        try testing.expect((hi + 0.05) / (lo + 0.05) >= 4.5);
     }
 }
 

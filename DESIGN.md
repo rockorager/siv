@@ -4913,7 +4913,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     colors of symbolic icons (D19), and two panes recessed from the view
     (sidebar and secondary sidebar, as libadwaita names them: navigation
     lists, the outer columns of a column browser, each a step from the
-    view and readable with view text, distinct in high contrast too). Visual descriptors take
+    view and readable with view text, distinct in high contrast too),
+    and `info`, the palette's blue for information, links, and a file
+    manager's folders. `info` does not follow the accent: a desktop or
+    theme may make the accent any color (Omarchy's kanagawa makes it
+    its text color, so siv-columns' folders, drawn in the accent,
+    looked like files). Compiled, it is the default accent, so nothing
+    that used the accent for these changes color. Visual descriptors take
     `background_token` and `border_token` and text styles `color_token`,
     each replacing the literal color when set. Text styles take a
     `size_role` (body, caption, heading, title) relative to the desktop's
@@ -4987,7 +4993,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       it, whichever contrasts more, black or white below 4.5:1; `red`,
       `green`, `yellow` → destructive (with black or white on it),
       success, and warning, which applications use for syntax and
-      status colors; knobs light (the bright foreground halfway to white
+      status colors; `blue` → info, mixed toward the foreground only as
+      far as it must be to read at 4.5:1 on the view and both sidebars
+      (rose pine's, catppuccin latte's, lupine's, and miasma's need it);
+      knobs light (the bright foreground halfway to white
       in dark themes, the background in light ones) unless the accent
       is too light for it (kanagawa's accent is its text color), then
       dark; foreground and background swapped for inverse surfaces; the
