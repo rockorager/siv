@@ -37,6 +37,7 @@ comptime {
     if (bundled) {
         @export(&siv_lua_new, .{ .name = "siv_lua_new" });
         @export(&siv_lua_run, .{ .name = "siv_lua_run" });
+        @export(&siv_lua_push_handle, .{ .name = "siv_lua_push_handle" });
     }
     // The headless tests link the binding as an object and read handles
     // through C (test/lua/api.zig).
@@ -339,6 +340,35 @@ fn runMain(Lq: ?*L_) callconv(.c) c_int {
     var i: c_int = 0;
     while (i < a.argc) : (i += 1) _ = c.lua_pushstring(L, a.argv.?[@intCast(i)]);
     lua.call(L, a.argc + 2, 0);
+    return 0;
+}
+
+/// Pushes a handle the host made, of the handle type named `type` as
+/// siv.methods names it ("app", "window", "node", ...), as the binding's
+/// userdata for it: the same userdata Lua holds for that handle if any,
+/// never owned by Lua. Pushes nil and returns -1 for an unknown type or
+/// a zero handle. The handle is not checked: a stale or mistyped one
+/// raises invalid_handle when Lua uses it, as any stale handle does.
+pub fn siv_lua_push_handle(Lq: ?*L_, type_name: [*:0]const u8, handle: u64) callconv(.c) c_int {
+    const L = Lq.?;
+    const name = std.mem.span(type_name);
+    const index: ?u16 = blk: {
+        inline for (bind.handle_names, 0..) |h, i| {
+            if (std.mem.eql(u8, name, comptime m.stem(spec, h))) break :blk i;
+        }
+        break :blk null;
+    };
+    if (index == null or handle == 0 or c.lua_checkstack(L, 4) == 0) {
+        c.lua_pushnil(L);
+        return -1;
+    }
+    // The binding's state, made by require("siv") if Lua has not yet.
+    c.luaL_requiref(L, "siv", luaopen_siv, 0);
+    lua.pop(L, 1);
+    _ = c.lua_getfield(L, lua.registry, "siv.state");
+    const st: *State = @ptrCast(@alignCast(c.lua_touserdata(L, -1)));
+    lua.pop(L, 1);
+    bind.pushHandle(st, L, index.?, handle, false);
     return 0;
 }
 

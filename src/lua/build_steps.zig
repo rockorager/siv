@@ -205,6 +205,20 @@ pub fn add(b: *std.Build, o: Options) void {
     lib.root_module.addRPathSpecial("$ORIGIN");
     b.installArtifact(lib);
 
+    // For Zig programs that link siv statically (the `siv-static` module)
+    // and embed Lua: the binding's object, which carries Lua unless
+    // -fsys=lua links the system's, with the Lua C API and siv_lua.h's
+    // functions as Zig declarations (src/lua/embed.zig).
+    const embed = b.addModule("siv-lua-static", .{
+        .root_source_file = b.path("src/lua/embed.zig"),
+        .target = o.target,
+        .optimize = o.optimize,
+        .link_libc = true,
+        .imports = &.{.{ .name = "lua_c", .module = if (system_lua) lua_c else lua_h }},
+    });
+    embed.addObject(lib_object);
+    embed.linkSystemLibrary("m", .{});
+
     b.installFile("src/lua/siv_lua.h", "include/siv-lua/siv_lua.h");
     if (lua_dep) |dep| for (lua_headers) |h| {
         b.getInstallStep().dependOn(&b.addInstallFileWithDir(dep.path(b.fmt("src/{s}", .{h})), .header, b.fmt("siv-lua/{s}", .{h})).step);
@@ -289,6 +303,8 @@ pub fn add(b: *std.Build, o: Options) void {
     notices_run.addFileArg(b.path("src/notices/zig-LICENSE.txt"));
     if (lua_dep) |dep| notices_run.addFileArg(dep.path("src/lua.h"));
     b.getInstallStep().dependOn(&b.addInstallFileWithDir(notices_out, .prefix, "share/licenses/siv-lua/NOTICES").step);
+    // What a program linking `siv-lua-static` ships beside siv's NOTICES.
+    b.addNamedLazyPath("lua-notices", notices_out);
 
     // Tests: the binding against libsiv.so on the headless backend, the
     // examples, and the generator.

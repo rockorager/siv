@@ -15,6 +15,8 @@ pub const Options = struct {
     /// The stock widgets (D22), which import only the generated wrapper.
     widgets: *std.Build.Module,
     shared: *std.Build.Step.Compile,
+    /// libsiv.a, which the `siv-static` module links.
+    static: *std.Build.Step.Compile,
     test_step: *std.Build.Step,
     /// `zig build test-integration`: tests against headless sway.
     integration_step: *std.Build.Step,
@@ -45,6 +47,14 @@ pub fn add(b: *std.Build, o: Options) void {
         .optimize = o.optimize,
     });
     wrapper.linkLibrary(o.shared);
+    // The same API linked statically, for programs that ship as one file.
+    const static_wrapper = b.addModule("siv-static", .{
+        .root_source_file = installed.path(b, "share/siv/siv.zig"),
+        .target = o.target,
+        .optimize = o.optimize,
+        .link_libc = true,
+    });
+    static_wrapper.linkLibrary(o.static);
     const siv_module = b.createModule(.{ .root_source_file = installed.path(b, "share/siv/siv.zig") });
     o.abi.addImport("siv", siv_module);
     o.widgets.addImport("siv", siv_module);

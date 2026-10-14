@@ -86,6 +86,14 @@ The package's artifacts are `siv` (libsiv.so) and `siv-static`
 with. `zig build --prefix /usr/local` installs the program, libsiv.so, and
 NOTICES together.
 
+To ship one file instead, import the `siv-static` module, the same API
+linked against libsiv.a. A program that runs its users' Lua (a
+configuration file, plugins) also imports `siv-lua-static`: Lua 5.5's C
+API and `siv_lua.h`'s functions, with the binding and Lua linked in, so
+`siv_lua_new` makes a state where `require("siv")` works, and
+`siv_lua_push_handle` hands it the program's own application and
+windows. Ship its `lua-notices` named path beside `notices`.
+
 [examples/zig-package](examples/zig-package/) is a complete package that
 depends on the siv checkout it lives in. With siv installed system-wide
 instead, import `share/siv/siv.zig` from its prefix and link the system

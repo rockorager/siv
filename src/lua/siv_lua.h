@@ -20,6 +20,7 @@
 #ifndef SIV_LUA_H
 #define SIV_LUA_H
 
+#include <stdint.h>
 #include <lua.h>
 
 #ifdef __cplusplus
@@ -47,6 +48,15 @@ lua_State *siv_lua_new(int libs);
  * application. Returns 0 on success; otherwise prints the error with a
  * traceback to stderr and returns 1. */
 int siv_lua_run(lua_State *L, const char *path, int argc, const char *const *argv, unsigned flags);
+
+/* Pushes a handle the host made onto L's stack as the binding's userdata,
+ * so Lua code it runs can use the host's application, windows, and nodes:
+ * `type` names the handle type as siv.methods does ("app", "window",
+ * "node", "image", ...). The userdata is the one Lua already holds for the
+ * handle if any, and Lua never owns it: collecting it destroys nothing.
+ * Pushes nil and returns -1 for an unknown type or a zero handle;
+ * otherwise returns 0. Loads require("siv") if Lua has not yet. */
+int siv_lua_push_handle(lua_State *L, const char *type, uint64_t handle);
 
 #ifdef __cplusplus
 }

@@ -16,6 +16,7 @@ pub const system_lua = @import("lua_options").system_lua;
 
 pub extern fn siv_lua_new(libs_mask: c_int) ?*State;
 pub extern fn siv_lua_run(L: ?*State, path: [*:0]const u8, argc: c_int, argv: ?[*]const ?[*:0]const u8, flags: c_uint) c_int;
+pub extern fn siv_lua_push_handle(L: ?*State, type: [*:0]const u8, handle: u64) c_int;
 extern fn siv_lua_test_to_handle(L: *State, idx: c_int) u64;
 
 /// The handle a binding userdata holds, 0 for anything else.

@@ -471,6 +471,7 @@ pub fn build(b: *std.Build) void {
         .abi = abi,
         .widgets = widgets,
         .shared = shared,
+        .static = static,
         .test_step = test_step,
         .integration_step = integration_step,
         .headless = headless,

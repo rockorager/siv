@@ -194,6 +194,59 @@ test "handles are userdata: identity, methods, ownership" {
     try testing.expectEqual(siv.Result.ok, siv.c.siv_app_get_fd(app, &fd));
 }
 
+test "a host's handles pushed into Lua: the same userdata, never owned" {
+    var app: siv.App = .null;
+    try testing.expectEqual(siv.Result.ok, siv.c.siv_app_create(&.{ .backend = .headless, .flags = .{ .no_system_fonts = true } }, &app));
+    defer siv.c.siv_app_destroy(app);
+    var win: siv.Window = .null;
+    try testing.expectEqual(siv.Result.ok, siv.c.siv_window_create(app, &.{ .width = 120, .height = 80 }, &win));
+    const L = try newState();
+    {
+        defer c.lua_close(L);
+        try testing.expectEqual(@as(c_int, 0), root.siv_lua_push_handle(L, "app", @intFromEnum(app)));
+        c.lua_setglobal(L, "host_app");
+        try testing.expectEqual(@as(c_int, 0), root.siv_lua_push_handle(L, "window", @intFromEnum(win)));
+        c.lua_setglobal(L, "host_win");
+        try testing.expectEqual(@as(c_int, 0), root.siv_lua_push_handle(L, "node", @intFromEnum(siv.c.siv_window_get_root(win))));
+        c.lua_setglobal(L, "host_root");
+        // An unknown type or a zero handle pushes nil.
+        try testing.expectEqual(@as(c_int, -1), root.siv_lua_push_handle(L, "nonsense", @intFromEnum(app)));
+        try testing.expectEqual(lua.tnil, c.lua_type(L, -1));
+        try testing.expectEqual(@as(c_int, -1), root.siv_lua_push_handle(L, "window", 0));
+        try testing.expectEqual(lua.tnil, c.lua_type(L, -1));
+        lua.pop(L, 2);
+        _ = try runIn(L,
+            \\local siv = require("siv")
+            \\assert(host_win:get_root() == host_root)
+            \\assert(host_win:get_app() == host_app)
+            \\local text
+            \\host_win:update(function(txn, root)
+            \\  assert(root == host_root)
+            \\  text = txn:text(root, "From Lua")
+            \\end)
+            \\host_text = text
+            \\local fired = false
+            \\host_app:timer_start(0, function() fired = true end)
+            \\host_app:dispatch(0)
+            \\assert(fired)
+            \\host_app, host_win, host_root = nil, nil, nil
+            \\collectgarbage()
+            \\collectgarbage()
+        );
+        _ = c.lua_getglobal(L, "host_text");
+        const text: siv.Node = @enumFromInt(root.toHandle(L, -1));
+        lua.pop(L, 1);
+        var buf: [16]u8 = undefined;
+        var len: usize = 0;
+        try testing.expectEqual(siv.Result.ok, siv.c.siv_node_get_text(text, &buf, buf.len, &len));
+        try testing.expectEqualStrings("From Lua", buf[0..len]);
+    }
+    // Closing the state destroyed neither the application nor its window.
+    var fd: i32 = 0;
+    try testing.expectEqual(siv.Result.ok, siv.c.siv_app_get_fd(app, &fd));
+    try testing.expect(siv.c.siv_window_get_root(win) != .null);
+}
+
 test "callbacks run at safe points and their errors reach the caller" {
     _ = try run(prologue ++
         \\local root = win:get_root()

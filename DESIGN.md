@@ -3958,6 +3958,15 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     chosen standard libraries and `require("siv")`), and `siv_lua_run`
     (runs a main chunk, with hot reload on request), under a version
     script (`SIV_LUA_0.1`), for embedders without a Lua (`siv_lua.h`).
+    `siv_lua_push_handle(L, type, handle)` pushes a handle the host made
+    (its application, a window, a node) as the binding's userdata,
+    never owned by Lua, so scripts a program runs for configuration or
+    plugins reach the program's own siv objects; the host names the type
+    as `siv.methods` does, since handles are opaque (D2). A Zig program
+    linking siv statically gets the same through the `siv-lua-static`
+    module: the binding's object (with Lua, unless `-fsys=lua`), the Lua
+    C API translated, and `siv_lua.h`'s functions, linked against
+    libsiv.a (D25).
     libsiv-lua ships its own NOTICES, with Lua's licence from `lua.h`
     (the tarball has no licence file).
   - **A Lua C module for hosts with their own Lua.** Editors, games, and
@@ -4471,6 +4480,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     the dependent's install, reporting siv as a package without a
     licence. Found by the user guide's package sample
     (`docs/guide/examples/zig-package`).
+  - A program that ships as one file links siv statically through the
+    `siv-static` module: the same generated wrapper linked against
+    libsiv.a. One that also embeds Lua for its users' scripts imports
+    `siv-lua-static` (D23) and installs the `lua-notices` named path
+    beside `notices`. Before, a static consumer recreated the module from
+    the wrapper's source and the `siv-static` artifact in its own
+    build.zig, and could not link the Lua binding statically at all.
+    Found by siv-columns, a file manager configured in Lua.
 - **Security:** fuzzing of every parser (rasterizer inputs, SVG,
   image decoders, clipboard and drag-and-drop payloads, Wayland input, D-Bus
   messages, SASL replies, addresses, match rules, portal font strings,
