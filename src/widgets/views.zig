@@ -161,7 +161,10 @@ fn create(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc, mode: Mode) Node {
     if (mode == .tree and (d.children == null or d.child == null)) return w.fail(txn, .error_invalid_argument);
     const root = c.siv_flex(txn, parent, &.{ .axis = .column });
     if (root == .null) return .null;
-    _ = c.siv_set_default_layout(txn, root, &.{ .grow = 1, .align_x = .stretch, .align_y = .stretch });
+    // The header and rows sit inside the frame's border, with their outer
+    // corners rounded to the border's inner curve, so neither paints over
+    // it nor loses an edge (a row's focus ring) under it.
+    _ = c.siv_set_default_layout(txn, root, &.{ .grow = 1, .align_x = .stretch, .align_y = .stretch, .padding = .{ .start = tk.border, .end = tk.border, .top = tk.border, .bottom = tk.border } });
     _ = c.siv_set_visual(txn, root, &.{ .background_token = .view_bg, .border_width = tk.border, .border_token = .border, .radius = w.corners(tk.radius), .flags = .{ .clip = true } });
     const v = w.create(View, txn, root) orelse return .null;
     v.* = .{
@@ -186,7 +189,8 @@ fn create(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc, mode: Mode) Node {
     if (mode == .table) {
         v.header = c.siv_grid(txn, root, null);
         _ = c.siv_set_layout(txn, v.header, &.{ .min_height = 28, .padding = .{ .start = 8, .end = 8 } });
-        _ = c.siv_set_visual(txn, v.header, &.{ .background_token = .control_bg });
+        const inner = tk.radius - tk.border;
+        _ = c.siv_set_visual(txn, v.header, &.{ .background_token = .control_bg, .radius = .{ .top_start = inner, .top_end = inner }, .flags = .{ .clip = true } });
         _ = c.siv_set_semantics(txn, v.header, &.{ .role = .row });
         const rule = c.siv_box(txn, root);
         _ = c.siv_set_layout(txn, rule, &.{ .height = w.px(1) });
@@ -194,6 +198,11 @@ fn create(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc, mode: Mode) Node {
     }
     v.scroll = c.siv_scroll(txn, root, .vertical);
     _ = c.siv_set_layout(txn, v.scroll, &.{ .grow = 1, .basis = w.px(0) });
+    {
+        const inner = tk.radius - tk.border;
+        const top: f32 = if (mode == .table) 0 else inner;
+        _ = c.siv_set_visual(txn, v.scroll, &.{ .radius = .{ .top_start = top, .top_end = top, .bottom_start = inner, .bottom_end = inner }, .flags = .{ .clip = true } });
+    }
     v.content = c.siv_stack(txn, v.scroll, null);
     _ = c.siv_set_semantics(txn, v.scroll, &.{
         .role = switch (mode) {

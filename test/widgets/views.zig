@@ -734,6 +734,27 @@ test "table view: a header over rows of cells" {
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     try h.expectGolden("table", 320, 200);
+    // The frame's border runs unbroken past the header: the header's fill
+    // does not cover the left edge, nor the rows' the bottom.
+    {
+        var len: usize = 0;
+        var cw: u32 = 0;
+        var chh: u32 = 0;
+        try ok(c.siv_test_capture(h.window, null, 0, &len, &cw, &chh));
+        const px = try testing.allocator.alloc(u8, len);
+        defer testing.allocator.free(px);
+        try ok(c.siv_test_capture(h.window, px.ptr, len, &len, &cw, &chh));
+        const at = struct {
+            fn f(p: []const u8, width: u32, x: u32, y: u32) [3]u8 {
+                const i = (y * width + x) * 4;
+                return p[i..][0..3].*;
+            }
+        }.f;
+        const edge_in_header = at(px, cw, 0, 14);
+        const edge_in_rows = at(px, cw, 0, 100);
+        try testing.expectEqual(edge_in_rows, edge_in_header);
+        try testing.expectEqual(edge_in_rows, at(px, cw, 160, chh - 1));
+    }
     const uw, _ = try uiId(table);
     const tree = try uw.semanticsTree();
     try testing.expect(tree.find(.table, "People") != null);
@@ -868,13 +889,14 @@ test "list view: rows of their own heights, placed by arithmetic, scrolled on th
     try testing.expect(b5000.y0 >= -0.5 and b5000.y1 <= 320.5);
     try testing.expectApproxEqAbs(s.hs.of(5000), b5000.y1 - b5000.y0, 0.01);
 
-    // Page Down moves by the view's height, not a row count.
+    // Page Down moves by the viewport's height (the view's 320 less its
+    // frame's border), not a row count.
     const uw, _ = try uiId(list);
     ui.input.setFocus(uw, (try itemBounds(list, "Item 5000")).?.node, true);
     try h.typeKey(ks.page_down, "", .{});
     try h.settle();
     var expect: u64 = 5000;
-    while (s.hs.top(expect + 1) <= s.hs.top(5000) + 320) expect += 1;
+    while (s.hs.top(expect + 1) <= s.hs.top(5000) + 318) expect += 1;
     try testing.expectEqual(@as(u32, @intCast(expect)), s.m.index);
 
     // A refresh asks the heights again.

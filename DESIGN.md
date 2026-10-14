@@ -3799,6 +3799,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       that size rows by text measure it with `siv_app_measure_text`.
       Reverse if applications need rows sized by content they cannot
       measure, such as embedded widgets.
+    - The frame (border, rounded corners, clip) is the view's root; its
+      header and scroll sit inside the border, the header's top corners
+      and the scroll's open corners rounded to the border's inner curve.
+      Clipping is to the border box, so a header filling the root's
+      width painted over the left and right border and the top corners'
+      arc, and selected rows over the sides (siv-files' table showed a
+      broken top-left corner next to its sidebar).
     - Selection is a bitset in node data, resized with the count (node
       data of another size replaces the old and keeps what fits); none,
       single, or multiple with Ctrl, Shift, and Ctrl+A. The cursor's row is
