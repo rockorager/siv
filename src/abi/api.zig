@@ -272,6 +272,8 @@ const color_token_values = [_]schema.EnumValue{
     .{ .name = "inverse_fg", .value = 28, .doc = "Text on inverse_bg." },
     .{ .name = "success", .value = 29, .doc = "Success in symbolic icons (D19), and other positive states." },
     .{ .name = "warning", .value = 30, .doc = "Warnings in symbolic icons (D19); their errors use destructive." },
+    .{ .name = "sidebar_bg", .value = 31, .doc = "Panes recessed from the view: sidebars, the outer columns of a column browser. Text on it is view_fg." },
+    .{ .name = "secondary_sidebar_bg", .value = 32, .doc = "Panes between sidebar_bg and view_bg: a second sidebar, a column browser's middle column. Text on it is view_fg." },
 };
 
 fn param(comptime name: []const u8, comptime t: schema.Type, comptime doc: []const u8) Param {

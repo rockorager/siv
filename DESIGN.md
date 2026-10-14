@@ -4842,8 +4842,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     separators, control rest, hover, and pressed fills and their text, the
     accent with its hover and pressed shades and the text on it,
     selections, focus rings, tracks and knobs, destructive actions, the
-    modal scrim, inverse surfaces for toasts, and the success and warning
-    colors of symbolic icons (D19). Visual descriptors take
+    modal scrim, inverse surfaces for toasts, the success and warning
+    colors of symbolic icons (D19), and two panes recessed from the view
+    (sidebar and secondary sidebar, as libadwaita names them: navigation
+    lists, the outer columns of a column browser, each a step from the
+    view and readable with view text, distinct in high contrast too). Visual descriptors take
     `background_token` and `border_token` and text styles `color_token`,
     each replacing the literal color when set. Text styles take a
     `size_role` (body, caption, heading, title) relative to the desktop's

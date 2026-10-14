@@ -267,8 +267,10 @@ in visuals, `color_token` in text styles, spans, and icons. The tokens
 cover window, view, and card surfaces and their text, muted and disabled
 text, borders and separators, controls at rest, hovered, and pressed, the
 accent and the text on it, selections, focus rings, tracks and knobs,
-destructive actions, the modal scrim, inverse surfaces for toasts, and the
-success and warning colors of icons. Text sizes follow the desktop's font
+destructive actions, the modal scrim, inverse surfaces for toasts, the
+success and warning colors of icons, and sidebar and secondary sidebar
+panes recessed from the view (navigation lists, a column browser's outer
+columns). Text sizes follow the desktop's font
 size through `size_role`.
 
 An application can choose for the user: `siv_app_set_theme` fixes the

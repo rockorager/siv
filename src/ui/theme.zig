@@ -49,6 +49,12 @@ pub const ColorToken = enum(u8) {
     /// color is `destructive`.
     success,
     warning,
+    /// Panes recessed from the view beside it, as libadwaita's sidebars:
+    /// navigation lists, the outer columns of a Miller-column browser.
+    /// `sidebar_bg` is the farther one, `secondary_sidebar_bg` sits
+    /// between it and `view_bg`. Text on both is `view_fg`.
+    sidebar_bg,
+    secondary_sidebar_bg,
 };
 
 pub const token_count = @typeInfo(ColorToken).@"enum".field_names.len;
@@ -195,6 +201,7 @@ pub const compiled: [4][token_count]Color = .{
         .focus_ring = 0x2563eb, .track = 0xd4d4d8, .knob = 0xffffff, .destructive = 0xdc2626,
         .destructive_fg = 0xffffff, .scrim = .{ 0x000000, 0x66 }, .inverse_bg = 0x27272a, .inverse_fg = 0xfafafa,
         .success = 0x16a34a, .warning = 0xd97706,
+        .sidebar_bg = 0xededf0, .secondary_sidebar_bg = 0xf6f6f8,
     }),
     palette(.{
         .window_bg = 0x18181b, .window_fg = 0xf4f4f5, .view_bg = 0x09090b, .view_fg = 0xf4f4f5,
@@ -205,6 +212,7 @@ pub const compiled: [4][token_count]Color = .{
         .focus_ring = 0x3b82f6, .track = 0x3f3f46, .knob = 0xf4f4f5, .destructive = 0xdc2626,
         .destructive_fg = 0xffffff, .scrim = .{ 0x000000, 0x99 }, .inverse_bg = 0xf4f4f5, .inverse_fg = 0x18181b,
         .success = 0x22c55e, .warning = 0xf59e0b,
+        .sidebar_bg = 0x1c1c20, .secondary_sidebar_bg = 0x131316,
     }),
     palette(.{
         .window_bg = 0xffffff, .window_fg = 0x000000, .view_bg = 0xffffff, .view_fg = 0x000000,
@@ -215,6 +223,7 @@ pub const compiled: [4][token_count]Color = .{
         .focus_ring = 0x000000, .track = 0x595959, .knob = 0xffffff, .destructive = 0xa00000,
         .destructive_fg = 0xffffff, .scrim = .{ 0x000000, 0xb3 }, .inverse_bg = 0x000000, .inverse_fg = 0xffffff,
         .success = 0x006b1f, .warning = 0x8a4b00,
+        .sidebar_bg = 0xe6e6e6, .secondary_sidebar_bg = 0xf2f2f2,
     }),
     palette(.{
         .window_bg = 0x000000, .window_fg = 0xffffff, .view_bg = 0x000000, .view_fg = 0xffffff,
@@ -225,6 +234,7 @@ pub const compiled: [4][token_count]Color = .{
         .focus_ring = 0xffff00, .track = 0xa6a6a6, .knob = 0x000000, .destructive = 0xff7070,
         .destructive_fg = 0x000000, .scrim = .{ 0x000000, 0xb3 }, .inverse_bg = 0xffffff, .inverse_fg = 0x000000,
         .success = 0x66ff99, .warning = 0xffcc33,
+        .sidebar_bg = 0x1f1f1f, .secondary_sidebar_bg = 0x101010,
     }),
 };
 
@@ -280,4 +290,26 @@ test "body text follows the desktop font size in points" {
     try std.testing.expectApproxEqAbs(@as(f32, 16), p.textSize(9, .body), 1e-4);
     try std.testing.expectEqual(@as(f32, 9), p.textSize(9, .fixed));
     try std.testing.expectApproxEqAbs(@as(f32, 24), p.textSize(9, .title), 1e-4);
+}
+
+test "sidebar surfaces are distinct steps from the view, with readable text, in every variant" {
+    for (compiled, 0..) |colors, v| {
+        const view = colors[@intFromEnum(ColorToken.view_bg)];
+        const fg = colors[@intFromEnum(ColorToken.view_fg)];
+        const side = colors[@intFromEnum(ColorToken.sidebar_bg)];
+        const second = colors[@intFromEnum(ColorToken.secondary_sidebar_bg)];
+        try std.testing.expect(!side.eql(view) and !second.eql(view) and !side.eql(second));
+        // The secondary sidebar lies between the sidebar and the view.
+        const lv = view.luminance();
+        const ls = side.luminance();
+        const l2 = second.luminance();
+        try std.testing.expect((l2 - lv) * (ls - l2) > 0);
+        // View text keeps its contrast: 7:1 in high contrast, 4.5:1 else.
+        const want: f32 = if (v >= 2) 7 else 4.5;
+        for ([_]Color{ side, second }) |bg| {
+            const a = @max(fg.luminance(), bg.luminance());
+            const b = @min(fg.luminance(), bg.luminance());
+            try std.testing.expect((a + 0.05) / (b + 0.05) >= want);
+        }
+    }
 }
