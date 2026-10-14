@@ -599,7 +599,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     that roots it. Only layers whose nodes changed are repainted, and their
     `SetContent.damage` is the old and new painted bounds of the nodes that
     changed. Moving, fading, or transforming a layer root, and scrolling,
-    send properties only. One exception: text taller than four viewports
+    send properties only. A node that moves without rooting a layer
+    changes its descendants' places too: they repaint, down to the
+    layers they root, since some paint into layers the moved node does
+    not root (a chunk after a descendant's layer, painted in its
+    container's coordinates). Marking only the moved node left a bar's
+    controls after a combo box (which roots a layer, for the wheel)
+    where they had been when a row appeared below it (siv-columns' file
+    chooser opening its command line). One exception: text taller than four viewports
     of its scroll container paints only the lines within a viewport above
     and below what it shows, and the UI repaints it when a `scrolled`
     report (or a layout) shows lines outside that band, about once per

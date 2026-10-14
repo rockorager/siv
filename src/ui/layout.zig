@@ -125,9 +125,24 @@ fn setPos(win: *Window, id: NodeId, p: Point) void {
     const s = win.state(id);
     if (!s.pos.eql(p)) {
         s.pos = p;
-        win.markPaint(id);
-        if (s.own_layer != @import("paint.zig").no_layer) win.dirty.props = true;
+        markMoved(win, id);
     }
+}
+
+/// A node moved, and its subtree with it. A layer root moves as a layer
+/// property, its content in its own coordinates; anything else repaints,
+/// and so do its descendants up to the layers they root: they paint into
+/// layers the moved node does not root (its container's, or a chunk after
+/// a descendant's layer), at offsets that changed.
+fn markMoved(win: *Window, id: NodeId) void {
+    const s = win.state(id);
+    win.markPaint(id);
+    if (s.own_layer != @import("paint.zig").no_layer and s.layer == s.own_layer) {
+        win.dirty.props = true;
+        return;
+    }
+    var it = win.shown(id);
+    while (it.next()) |ch| markMoved(win, ch);
 }
 
 fn compute(win: *Window, id: NodeId, c: Constraints) Error!Size {

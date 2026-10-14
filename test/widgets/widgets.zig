@@ -940,3 +940,66 @@ test "theme: overrides, derived accents, and resolved colors" {
     try testing.expectEqual(t.Result.error_invalid_argument, c.siv_window_get_color(h.window, .none, &col));
     try testing.expectEqual(t.Result.error_unsupported, c.siv_app_set_theme(h.app, &.{ .scheme = @fromBackingInt(9) }));
 }
+
+const Bar = struct {
+    extra: t.Node = .null,
+    fn build(h: *Harness, show_extra: bool) !Bar {
+        var b: Bar = .{};
+        var txn: t.Txn = .null;
+        try ok(c.siv_txn_begin(h.window, &txn));
+        const root = c.siv_window_get_root(h.window);
+        _ = c.siv_set_visual(txn, root, &.{ .background_token = .window_bg });
+        const main = c.siv_flex(txn, root, &.{ .axis = .column });
+        _ = c.siv_set_layout(txn, main, &.{ .width = .{ .unit = .fraction, .value = 1 }, .height = .{ .unit = .fraction, .value = 1 } });
+        const top = c.siv_box(txn, main);
+        _ = c.siv_set_layout(txn, top, &.{ .grow = 1, .basis = .{ .unit = .px, .value = 0 } });
+        _ = c.siv_set_visual(txn, top, &.{ .background_token = .view_bg });
+        const bar = c.siv_flex(txn, main, &.{ .axis = .row, .gap = 10, .align_items = .center });
+        _ = c.siv_set_layout(txn, bar, &.{ .padding = .{ .start = 12, .end = 12, .top = 8, .bottom = 8 } });
+        const hint = c.siv_text(txn, bar, "hint", 4);
+        _ = c.siv_set_layout(txn, hint, &.{ .grow = 1, .basis = .{ .unit = .px, .value = 0 } });
+        const a = c.siv_combo_box(txn, bar, &.{ .label = "A", .label_len = 1 });
+        _ = c.siv_combo_box_item(txn, a, &.{ .label = "Images", .label_len = 6 });
+        _ = c.siv_text(txn, bar, "Size", 4);
+        const bb = c.siv_combo_box(txn, bar, &.{ .label = "B", .label_len = 1 });
+        _ = c.siv_combo_box_item(txn, bb, &.{ .label = "Large", .label_len = 5 });
+        _ = c.siv_check_box(txn, bar, &.{ .label = "Link", .label_len = 4 });
+        _ = c.siv_push_button(txn, bar, &.{ .label = "Open", .label_len = 4 });
+        const status = c.siv_text(txn, main, "status", 6);
+        _ = c.siv_set_layout(txn, status, &.{ .min_height = 26 });
+        b.extra = c.siv_text(txn, main, "extra row", 9);
+        _ = c.siv_set_layout(txn, b.extra, &.{ .padding = .{ .top = 4, .bottom = 4 } });
+        _ = c.siv_set_hidden(txn, b.extra, !show_extra);
+        try ok(c.siv_txn_commit(txn));
+        try h.settle();
+        return b;
+    }
+};
+
+test "widgets: a row appearing moves every control of the bar above it, painted where it now is" {
+    // siv-columns' file chooser: opening its command line under a bar of
+    // combo boxes and check boxes moved the bar up, but what painted into
+    // a layer after the first combo box (which roots one, for the wheel)
+    // stayed where it had been. The bar moved must look like the bar
+    // built there.
+    var moved: Harness = .{};
+    try moved.start(600, 300, null, null);
+    defer moved.stop();
+    const b = try Bar.build(&moved, false);
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(moved.window, &txn));
+    _ = c.siv_set_hidden(txn, b.extra, false);
+    try ok(c.siv_txn_commit(txn));
+    try moved.settle();
+    const got = try moved.capture();
+    defer testing.allocator.free(got);
+    var fresh: Harness = .{};
+    try fresh.start(600, 300, null, null);
+    defer fresh.stop();
+    _ = try Bar.build(&fresh, true);
+    const want = try fresh.capture();
+    defer testing.allocator.free(want);
+    var diff: usize = 0;
+    for (got, want) |g, w| diff += @intFromBool(g != w);
+    try testing.expectEqual(@as(usize, 0), diff);
+}
