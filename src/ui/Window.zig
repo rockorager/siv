@@ -756,7 +756,11 @@ pub fn frame(win: *Window) Error!void {
     // The tree may have changed under a pointer that did not move: hover
     // handlers run here, at the end of the frame (D5), and what they
     // change shows in the next one.
-    if (laid_out or win.input.hover_stale) input_mod.refreshHover(win) else input_mod.updateCursor(win);
+    if (laid_out or win.input.hover_stale) {
+        input_mod.refreshHover(win);
+        // So does a drag's target.
+        dnd_mod.refresh(win);
+    } else input_mod.updateCursor(win);
     // Blocks of long texts nothing used in this frame may go (D13).
     win.fonts.residency.trim();
     win.stats.frames += 1;

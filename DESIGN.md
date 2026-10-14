@@ -3020,7 +3020,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       moves within a filesystem and copies across. Drop events carry the
       keyboard modifiers, and a modifier change during a drag routes it
       again (another `move`), so Shift and Ctrl take effect without the
-      pointer moving; found by Strider's in-window drags.
+      pointer moving; found by Strider's in-window drags. When the tree
+      changes under a drag that rests (a spring-loaded folder opened, its
+      row replaced), the frame that lays it out routes the drag again if
+      another target is under it now, as hover is refreshed; without it,
+      the release dropped on nothing.
     - Drags this client starts and drops on itself skip the pipe: the
       offer is marked `own` and the data comes from the clipboard. In-app
       drags (`in_app`) still use a real wl_data_source, offering only a

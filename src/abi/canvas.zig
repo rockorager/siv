@@ -873,7 +873,8 @@ fn imageDraw(window: t.Window, ptr: ?*const t.ImageDrawDesc, out: ?*t.Image) Err
     d.err = null;
     d.depth = 0;
     d.window = w;
-    d.node = .none;
+    // Text takes the window's direction, as at its root.
+    d.node = .root;
     d.wanted_fonts = false;
     defer d.dropImages(gpa);
     try self.root.handles.ensureUnusedCapacity(gpa);

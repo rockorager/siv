@@ -353,17 +353,28 @@ fn loadMimes(win: *Window) error{OutOfMemory}!void {
     try host.mimes(host.ctx, st.seat, st.offer, win.gpa, &st.mimes);
 }
 
+/// The drop target under the drag, if any.
+fn candidateAt(win: *Window) ?Candidate {
+    var cur = input.hitTest(win, win.dnd.pos);
+    while (cur != .none) : (cur = win.node(cur).parent) if (candidate(win, cur)) |c| return c;
+    return null;
+}
+
+/// The tree changed under a drag that did not move (a folder it rested on
+/// opened, rows scrolled under it): it goes to the target under it now,
+/// as hover does (`input.refreshHover`). A target that stays hears
+/// nothing.
+pub fn refresh(win: *Window) void {
+    const st = &win.dnd;
+    if (st.offer == 0 or st.dropped) return;
+    const next: NodeId = if (candidateAt(win)) |c| c.node else .none;
+    if (next != st.target) route(win);
+}
+
 /// Finds the drop target under the pointer and lets it take the drag.
 fn route(win: *Window) void {
     const st = &win.dnd;
-    var found: ?Candidate = null;
-    var cur = input.hitTest(win, st.pos);
-    while (cur != .none) : (cur = win.node(cur).parent) {
-        if (candidate(win, cur)) |c| {
-            found = c;
-            break;
-        }
-    }
+    const found = candidateAt(win);
     const next: NodeId = if (found) |c| c.node else .none;
     const phase: node_mod.DropPhase = if (next == st.target) .move else .enter;
     if (next != st.target) {

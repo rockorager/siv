@@ -179,6 +179,9 @@ fn fillDraw(user: ?*anyopaque, node: t.Node, draw: t.Draw, width: f32, height: f
     std.debug.assert(node == .null);
     abi.canvas.siv_draw_rect(draw, .{ .x = 0, .y = 0, .width = width, .height = height });
     abi.canvas.siv_draw_fill(draw, &.{ .size = @sizeOf(t.PaintDesc), .color = color.* }, .{});
+    // Text draws too (in the window's direction), if not in the test's
+    // missing fonts.
+    abi.canvas.siv_draw_text(draw, 0, 0, width, "x", 1, null);
 }
 
 fn drawnImage(h: *Harness, color: *const t.Color, w: f32, hgt: f32) !t.Image {
@@ -325,4 +328,53 @@ test "C API drag and drop: drawn and replaced icons, the target's action, modifi
     try testing.expectEqual(t.Result.error_unavailable, abi.testing.siv_test_capture_drag_icon(h.app, &buf, buf.len, &len, null, null));
     abi.canvas.siv_image_destroy(icon);
     abi.canvas.siv_image_destroy(icon2);
+}
+
+test "C API drag and drop: a target that replaces the one under a resting drag takes it" {
+    var h: Harness = .{};
+    try h.start(200, 100, null, null);
+    defer h.stop();
+    var s: Choose = .{ .window = h.window };
+    var b: Choose = .{ .window = h.window };
+    const wid = (try h.win()).win.id;
+    var txn: t.Txn = undefined;
+    try ok(T.siv_txn_begin(h.window, &txn));
+    const row = T.siv_flex(txn, abi.application.siv_window_get_root(h.window), null);
+    const source = T.siv_box(txn, row);
+    const target = T.siv_box(txn, row);
+    const size: t.LayoutDesc = .{ .size = @sizeOf(t.LayoutDesc), .width = .{ .unit = .px, .value = 100 }, .height = .{ .unit = .px, .value = 100 } };
+    T.siv_set_layout(txn, source, &size);
+    T.siv_set_layout(txn, target, &size);
+    const drop: t.DropTargetDesc = .{ .size = @sizeOf(t.DropTargetDesc), .mimes = "text/uri-list", .mimes_len = 13, .actions = .{ .copy = true, .move = true }, .preferred = .copy };
+    D.siv_set_drop_target(txn, target, &drop);
+    T.siv_on(txn, target, .drop, Choose.onEvent, null, &s);
+    T.siv_on(txn, source, .pointer, Choose.onEvent, null, &s);
+    try ok(T.siv_txn_commit(txn));
+    try h.settle();
+    const desc: t.DragDesc = .{ .size = @sizeOf(t.DragDesc), .mimes = "text/uri-list", .mimes_len = 13, .data = "file:///a\r\n", .data_count = 11, .actions = .{ .copy = true, .move = true } };
+    s.start = &desc;
+    try h.inject(&.{
+        .{ .pointer_motion = .{ .window = wid, .seat = 0, .x = 20, .y = 20 } },
+        .{ .pointer_button = .{ .window = wid, .seat = 0, .button = 0x110, .pressed = true, .time = 0, .serial = 9 } },
+        .{ .pointer_motion = .{ .window = wid, .seat = 0, .x = 30, .y = 20 } },
+        .{ .pointer_motion = .{ .window = wid, .seat = 0, .x = 150, .y = 50 } },
+    });
+    try h.settle();
+    try testing.expectEqual(t.PointerPhase.enter, s.phases[0]);
+    // The target goes and another takes its place, the pointer still: a
+    // spring-loaded folder that opened, say.
+    try ok(T.siv_txn_begin(h.window, &txn));
+    T.siv_remove(txn, target);
+    const other = T.siv_box(txn, row);
+    T.siv_set_layout(txn, other, &size);
+    D.siv_set_drop_target(txn, other, &drop);
+    T.siv_on(txn, other, .drop, Choose.onEvent, null, &b);
+    try ok(T.siv_txn_commit(txn));
+    try h.settle();
+    try testing.expect(b.n >= 1);
+    try testing.expectEqual(t.PointerPhase.enter, b.phases[0]);
+    // And the release drops there.
+    try h.inject(&.{.{ .pointer_button = .{ .window = wid, .seat = 0, .button = 0x110, .pressed = false, .time = 0, .serial = 10 } }});
+    try h.settle();
+    try testing.expectEqual(t.PointerPhase.drop, b.phases[b.n - 1]);
 }
