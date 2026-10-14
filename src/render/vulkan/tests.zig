@@ -123,6 +123,15 @@ test "frames match the CPU renderer, including damage-only frames" {
         try expectMatch(r, cpu, list, damage, 200, 150);
         prev = list;
     }
+    // Mask pages fit the paths (a stroke under 130 px across): fixed
+    // 2048 px pages, two layers for each frame in flight, were 16 MiB of
+    // VRAM for one text field's border.
+    var masked = false;
+    for (r.frames) |f| {
+        masked = masked or f.masks.width > 16;
+        try testing.expect(f.masks.width <= 256 and f.masks.height <= 256);
+    }
+    try testing.expect(masked);
     try testing.expectEqual(errors, Device.validation_errors.load(.monotonic));
 }
 

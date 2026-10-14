@@ -1428,16 +1428,23 @@ fn regionBounds(r: *const Renderer) IRect {
 // Paths -------------------------------------------------------------------------
 
 /// Decides where each path's coverage is needed and packs the masks into
-/// layers of one array image (all layers the size of the largest mask, at
-/// least 2048 square).
+/// layers of one array image. A layer is a square that would hold the
+/// masks' area, at most 2048 px, grown to the largest mask, in steps of
+/// 256 px: a text field's border takes 1280x256 px, not 2048 px square.
 fn planPaths(r: *Renderer) Error!void {
     const bounds = r.regionBounds();
     const limits = r.device.limits;
-    var size: [2]u32 = .{ 2048, 2048 };
+    var largest: [2]u32 = .{ 0, 0 };
+    var total: u64 = 0;
     for (r.paths.items) |*job| {
         job.region = if (bounds.isEmpty()) .empty else job.bounds.intersect(bounds);
-        if (job.region.isEmpty()) job.region = .empty else grow(&size, job.region);
+        if (job.region.isEmpty()) job.region = .empty else {
+            grow(&largest, job.region);
+            total += @intCast(area(job.region));
+        }
     }
+    const side = std.math.clamp(std.mem.alignForward(u32, @intCast(std.math.sqrt(total)), 256), 256, 2048);
+    var size: [2]u32 = .{ @max(side, std.mem.alignForward(u32, largest[0], 256)), @max(side, std.mem.alignForward(u32, largest[1], 256)) };
     size = .{ @min(size[0], limits.maxImageDimension2D), @min(size[1], limits.maxImageDimension2D) };
     r.page_size = size;
     r.pages = 0;

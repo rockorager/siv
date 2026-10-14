@@ -823,8 +823,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     rotated rectangles, transformed glyph runs) is rasterized on the worker
     pool by the shared rasterizer into R8 mask pages (layers of one array
     image), only where damage needs it, so paths match the coverage
-    contract exactly. Glyphs come from the CPU glyph cache (D14) through an
-    R8 and an RGBA16 atlas. Isolated layers render into per-depth FP16
+    contract exactly. A page is a square that would hold the frame's
+    masks, 256 to 2048 px in steps of 256, grown to the largest mask:
+    pages fixed at 2048 px, two layers for each frame in flight, cost
+    16 MiB of VRAM from the first path on (siv-columns' command line,
+    whose border is four band masks, on RADV), a quarter of its GPU
+    memory. Glyphs come from the CPU glyph cache (D14) through an R8 and
+    an RGBA16 atlas. Isolated layers render into per-depth FP16
     images and composite back with fixed-function source-over, or for other
     blend modes against a copy of their backdrop. A backdrop blur copies its
     backdrop and runs the CPU's separable passes in FP32. Layers that
