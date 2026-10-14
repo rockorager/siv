@@ -92,8 +92,9 @@ static bool reads(siv_window window, const char *text) {
 `siv_test_click`, `siv_test_pointer_move`, `siv_test_pointer_button`, and
 `siv_test_scroll` are the pointer; `siv_test_key` presses and releases one
 key with modifiers and the text it produces, and `siv_test_type` types a
-string; `siv_test_close` asks to close a window; `siv_test_drop` drags data
-in from another application and drops it. Popups (menus, popovers) are
+string; `siv_test_close` asks to close a window; `siv_test_resize` resizes
+it as the compositor would, for layouts that follow the window's width;
+`siv_test_drop` drags data in from another application and drops it. Popups (menus, popovers) are
 windows too: `siv_test_get_popup` returns the newest one shown, to find
 nodes and send keys in it.
 

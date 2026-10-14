@@ -110,6 +110,11 @@ pub const functions = [_]Function{
     call("siv_test_close", "Asks to close a window, as its close button does: the window gets SIV_WINDOW_EVENT_TYPE_CLOSE_REQUESTED." ++ queued ++ headless, &.{
         window_param,
     }),
+    call("siv_test_resize", "The compositor resizes a window, as a user dragging its edge or a tiling layout does: the window gets SIV_WINDOW_EVENT_TYPE_RESIZED with the new size and lays out again." ++ queued ++ headless, &.{
+        window_param,
+        p("width", .u32, "Logical width; at least 1."),
+        p("height", .u32, "Logical height; at least 1."),
+    }),
     call("siv_test_drop", "Another application drags data over a window to a point and drops it there, offering copy and move: the drag enters, siv dispatches until the application answered it (so not from a callback, SIV_ERROR_BUSY), and the drop is queued for siv_test_settle to deliver." ++ headless, &.{
         window_param,
         p("x", .f32, "Window coordinates."),

@@ -220,3 +220,49 @@ test "session restore: a new session's id brings its windows back in the next ru
     try waitSession(&h, &third, 1);
     try testing.expectEqual(t.SessionEventType.created, third.events[0]);
 }
+
+const Sizes = struct {
+    resized: u32 = 0,
+    width: u32 = 0,
+    height: u32 = 0,
+    fn onEvent(ud: ?*anyopaque, _: t.Window, e: *const t.WindowEvent) callconv(.c) bool {
+        const self: *Sizes = @ptrCast(@alignCast(ud.?));
+        if (e.type == .resized) {
+            self.resized += 1;
+            self.width = e.width;
+            self.height = e.height;
+        }
+        return false;
+    }
+};
+
+test "siv_test_resize: the compositor resizes a window, which lays out again" {
+    var sizes: Sizes = .{};
+    var h: Harness = .{};
+    try h.start(200, 100, Sizes.onEvent, &sizes);
+    defer h.stop();
+    // A box that fills the window, then lays out at the new size.
+    const root = c.siv_window_get_root(h.window);
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const box = c.siv_box(txn, root);
+    c.siv_set_layout(txn, box, &.{ .width = .{ .unit = .fraction, .value = 1 }, .height = .{ .unit = .fraction, .value = 1 } });
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    const before = sizes.resized;
+
+    try ok(c.siv_test_resize(h.window, 320, 90));
+    try h.settle();
+    try testing.expectEqual(before + 1, sizes.resized);
+    try testing.expectEqual(@as(u32, 320), sizes.width);
+    try testing.expectEqual(@as(u32, 90), sizes.height);
+    var size: t.Size = .{};
+    try ok(c.siv_window_get_size(h.window, &size));
+    try testing.expectEqual(@as(f32, 320), size.width);
+    var rect: t.Rect = .{};
+    try ok(c.siv_node_get_rect(box, &rect));
+    try testing.expectEqual(@as(f32, 320), rect.width);
+    try testing.expectEqual(@as(f32, 90), rect.height);
+
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_test_resize(h.window, 0, 90));
+}

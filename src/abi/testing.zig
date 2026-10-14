@@ -265,6 +265,20 @@ pub export fn siv_test_close(window: t.Window) t.Result {
     }.f(window));
 }
 
+pub export fn siv_test_resize(window: t.Window, width: u32, height: u32) t.Result {
+    return wrap(struct {
+        fn f(wh: t.Window, w_: u32, h_: u32) Error!void {
+            if (w_ == 0 or h_ == 0) return error.InvalidArgument;
+            const w = try headlessWindow(wh);
+            try onHeadless(w.owner, .{ w.win.id, platform.Size{ .width = w_, .height = h_ } }, struct {
+                fn g(hl: *platform.Headless, x: struct { platform.WindowId, platform.Size }) void {
+                    hl.configure(x[0], x[1], null);
+                }
+            }.g);
+        }
+    }.f(window, width, height));
+}
+
 pub export fn siv_test_drop(window: t.Window, x: f32, y: f32, mime_type: ?[*]const u8, mime_type_len: usize, data: ?[*]const u8, data_count: usize) t.Result {
     return wrap(struct {
         fn f(wh: t.Window, px: f32, py: f32, mp: ?[*]const u8, mn: usize, dp: ?[*]const u8, dn: usize) Error!void {
