@@ -111,7 +111,8 @@ owns its directories and does not edit another workstream's files.
 | `widgets` | `src/widgets/` | Theming and stock widgets | `siv` (the generated C API wrapper) only (D22) |
 | `lua` | `src/lua/` | Lua binding | `siv` (the generated C API wrapper), `siv_schema` (`src/abi/api.zig` as data), `lua_c` (D23) |
 
-The theming workstream also owns `src/ui/theme.zig` (D29). The icons
+The theming workstream also owns `src/ui/theme.zig`,
+`src/ui/user_theme.zig`, and `src/app/user_theme.zig` (D29). The icons
 workstream owns `src/ui/icons.zig` and the test themes in
 `test/icons/` (D19). Stock widgets
 use only the public C API; when one needs more, add a public primitive.

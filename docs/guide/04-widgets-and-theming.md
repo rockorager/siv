@@ -294,6 +294,49 @@ fn onDarkTheme(form: *Form, event: *const siv.Event) !void {
 
 ![The same form in the dark theme, with the switch on and a Settings saved toast at the bottom](images/settings-dark.png)
 
+### The user's theme
+
+Users theme every siv application at once, live, between the desktop's
+settings and your overrides: the compiled tokens, then the desktop's
+accent, then the user's theme, then `siv_app_set_theme_color`. Keep
+overrides rare, or your application stops following the user. siv reads
+the theme on a worker before the first frame and repaints every window
+when it changes.
+
+- `~/.config/siv/theme.toml` (under `$XDG_CONFIG_HOME`) sets tokens by
+  name, for both schemes or in a `[light]` or `[dark]` table. A token
+  that is missing or does not parse keeps siv's color. Tools such as
+  matugen or pywal can write it from a template.
+- Omarchy's current theme, when there is no theme.toml, or under one that
+  says `base = "omarchy"`. siv maps its `colors.toml` to the tokens:
+  `background` to the view, the darker backgrounds to the window and the
+  sidebars, `lighter_background` to controls, `muted` to borders,
+  `selection` to selected rows, and the accent and the named colors to
+  the accent, destructive, success, and warning tokens. Its `mode`
+  decides light or dark.
+- In high contrast siv uses its own high-contrast colors instead.
+  `SIV_THEME=none` turns user themes off. `SIV_THEME=FILE` reads a
+  theme.toml or an Omarchy colors.toml from elsewhere, also on the
+  headless backend, which otherwise ignores the user's files so that
+  tests do not depend on them.
+
+```toml
+# For both schemes; the accent's hover and pressed shades, the text on
+# it, and focus rings follow it.
+accent = "#d19a66"
+
+[light]
+window_bg = "#ece8e1"
+view_bg = "#faf8f4"
+view_fg = "#3a3530"
+control_bg = "#e4dfd6"
+```
+
+Under the dark half of that file, the settings form keeps its purple
+accent, since the application's override wins:
+
+![The settings form in the dark theme of a theme.toml: gray-blue surfaces, with the form's own purple accent](images/settings-theme.png)
+
 Canvases read resolved colors with `siv_window_get_color` and are drawn
 again when the theme changes (see [Custom widgets](06-custom-widgets.md)).
 Spacing, radii, and control heights are compiled into the widgets.

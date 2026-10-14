@@ -38,6 +38,7 @@ const platform = @import("platform");
 const compositor = @import("compositor");
 const ui = @import("ui");
 const desktop_mod = @import("desktop.zig");
+pub const user_theme = @import("user_theme.zig");
 const a11y = @import("a11y");
 pub const portals = @import("portals.zig");
 pub const lifecycle = @import("lifecycle.zig");
@@ -88,6 +89,8 @@ pub const Options = struct {
     reduced_motion: bool = false,
     /// Follow the portal's desktop settings (D19).
     desktop_settings: bool = true,
+    /// Follow the user's theme (D29), live; null ignores it.
+    user_theme: ?user_theme.Options = null,
     /// Publish the windows' semantics to assistive technology over
     /// AT-SPI (D18), while it listens.
     accessibility: bool = true,
@@ -137,6 +140,8 @@ pub const App = struct {
     desktop: desktop_mod.Desktop = .{},
     /// The theme choices every window follows (D29).
     theme: ui.Theme = .{},
+    /// The user's theme every window follows (D29).
+    user_theme: user_theme.UserTheme = .{},
     /// The application chose the default font family, so the desktop's
     /// does not replace it.
     font_overridden: bool = false,
@@ -225,6 +230,8 @@ pub const App = struct {
             },
             .thread = options.compositor_thread,
         }) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable;
+        // Read on the pool while the first window is made.
+        if (options.user_theme) |o| app.user_theme.start(app, o);
         return app;
     }
 
@@ -249,6 +256,7 @@ pub const App = struct {
         app.clipboard.deinit();
         app.fonts.deinit();
         app.pool.deinit();
+        app.user_theme.deinit(app);
         // Loads the pool dropped release into the icons.
         app.icons.deinit();
         app.loop.deinit();
@@ -350,10 +358,29 @@ pub const App = struct {
         for (app.windows.items) |w| if (w) |win| win.ui.setTheme(&app.theme);
     }
 
+    /// A new user theme for every window (D29).
+    pub fn setUserTheme(app: *App, u: *const ui.theme.User) void {
+        app.user_theme.value = u.*;
+        for (app.windows.items) |w| if (w) |win| win.ui.setUserTheme(&app.user_theme.value);
+    }
+
     /// The palette windows resolve now, for work outside a window (text
     /// measured for canvases).
     pub fn palette(app: *const App) ui.theme.Palette {
-        return ui.theme.resolve(&app.theme, app.desktop.values.themeInput());
+        return ui.theme.resolve(&app.theme, app.desktop.values.themeInput(), &app.user_theme.value);
+    }
+
+    /// First frames wait for what decides how they look: the desktop
+    /// settings and the user's theme, each for at most
+    /// `first_frame_wait_ns` (desktop.zig).
+    pub fn framesHeld(app: *const App) bool {
+        return app.desktop.waiting or app.user_theme.first;
+    }
+
+    /// Asks again for frames held, once nothing holds them.
+    pub fn releaseFrames(app: *App) void {
+        if (app.framesHeld()) return;
+        for (app.windows.items) |w| if (w) |win| win.releaseFrame();
     }
 
     /// Overrides the desktop's font (D19) from now on.
@@ -471,6 +498,7 @@ pub const App = struct {
             .reduced_motion = app.reduced_motion,
             .desktop = app.desktop.values,
             .theme = app.theme,
+            .user_theme = app.user_theme.value,
             .width = @floatFromInt(width),
             .height = @floatFromInt(height),
             .rtl = options.rtl orelse app.rtl,
@@ -568,6 +596,7 @@ pub const App = struct {
             .reduced_motion = app.reduced_motion,
             .desktop = app.desktop.values,
             .theme = app.theme,
+            .user_theme = app.user_theme.value,
             .width = 1,
             .height = 1,
             .scale = parent.ui.scale,
@@ -765,9 +794,10 @@ pub const App = struct {
                 if (app.accessible and old.states.activated != c.state.states.activated) app.bridge.setActive(win.a11y_id, c.state.states.activated);
                 if (!win.closed) _ = win.notify(&.{ .configure = .{ .old = old, .new = c.state } });
             },
-            // First frames wait for the desktop settings (desktop.zig).
+            // First frames wait for the desktop settings and the user's
+            // theme (`framesHeld`).
             .frame => |f| if (app.window(f.window)) |win| {
-                if (app.desktop.waiting) win.frame_held = true else {
+                if (app.framesHeld()) win.frame_held = true else {
                     win.handle(ev);
                     win.publish();
                 }
@@ -1123,7 +1153,8 @@ pub const Window = struct {
         try win.app.comp.destroyExternal(win.id, id);
     }
 
-    /// Asks again for a frame held for the desktop settings.
+    /// Asks again for a frame held for the desktop settings or the
+    /// user's theme.
     pub fn releaseFrame(win: *Window) void {
         if (!win.frame_held) return;
         win.frame_held = false;

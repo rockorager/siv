@@ -1,0 +1,32 @@
+# ~/.config/siv/theme.toml: every siv application follows it, live.
+# Keys are color tokens (siv_color_token without its prefix); values are
+# sRGB colors, "#rrggbb" or "#rrggbbaa". Tokens left out keep siv's.
+
+# Lay this file over Omarchy's current theme instead of replacing it.
+# base = "omarchy"
+
+# For both schemes; the accent's hover and pressed shades, the text on
+# it, and focus rings follow it.
+accent = "#d19a66"
+
+[light]
+window_bg = "#ece8e1"
+view_bg = "#faf8f4"
+view_fg = "#3a3530"
+control_bg = "#e4dfd6"
+
+[dark]
+window_bg = "#1e2127"
+window_fg = "#c8ccd4"
+view_bg = "#282c34"
+view_fg = "#c8ccd4"
+card_bg = "#2f343d"
+card_fg = "#c8ccd4"
+muted_fg = "#9198a4"
+border = "#4b5263"
+separator = "#3a3f4b"
+control_bg = "#323842"
+control_hover = "#3a414c"
+control_active = "#434a57"
+control_fg = "#c8ccd4"
+track = "#3e4451"

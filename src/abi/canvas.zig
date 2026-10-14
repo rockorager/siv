@@ -220,11 +220,11 @@ fn drawCanvas(user: ?*anyopaque, uw: *ui.Window, id: NodeId, b: *scene.Builder, 
 }
 
 /// The palette pages draw with: the light variant of the application's
-/// theme, for paper.
+/// theme, for paper; the user's theme (D29) is for screens.
 pub fn lightPalette(self: *App) ui.theme.Palette {
     var theme = self.app.theme;
     theme.scheme = .light;
-    return ui.theme.resolve(&theme, self.app.desktop.values.themeInput());
+    return ui.theme.resolve(&theme, self.app.desktop.values.themeInput(), &.{});
 }
 
 /// Copies a finished list into another builder.

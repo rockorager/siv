@@ -4851,8 +4851,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 
 - **Requirement:** every application follows the desktop's color scheme,
   contrast, accent, and font size live, including a high-contrast variant,
-  with compiled defaults that applications can override at run time, and
-  without the application rebuilding its tree when the desktop changes.
+  and the user's own theme (siv's theme.toml, Omarchy's themes), with
+  compiled defaults that applications can override at run time, and
+  without the application rebuilding its tree when the desktop or the
+  theme changes.
 - **Decision:** themed values are public primitives that nodes reference
   and siv resolves when it paints and shapes, not values widgets copy in.
   - Tokens (`siv_color_token`, `ui.theme.ColorToken`): window, view, and
@@ -4879,6 +4881,95 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     over the view background, or the accent itself in high contrast).
     Application overrides (`siv_app_set_theme_color`, per variant or all)
     apply last; overriding the accent also moves what derives from it.
+  - The user's theme is a layer between the desktop and the
+    application: compiled variants, then the desktop's scheme,
+    contrast, and accent, then the user's theme, then application
+    overrides, which win but should stay rare. Derived colors (accent
+    shades, the text on it, focus rings, selections) come from the final
+    accent over the final view background, except where a layer at or
+    above the accent's sets one itself: the desktop's accent under an
+    Omarchy theme takes the theme's selection, and an application's
+    accent moves the theme's selection too. A theme names the scheme it
+    is for (Omarchy's `mode`, theme.toml's `scheme`), which picks the
+    variant over the desktop's color scheme, so the palette and its
+    variant never disagree while `omarchy-theme-set` updates the portal's
+    color scheme after the files; a theme without one follows the
+    desktop. It fills only its variant, and the rest stay compiled. In
+    high contrast, from the desktop or the application, the compiled
+    high-contrast palette applies unchanged: Omarchy has no high-contrast
+    variant, and a theme's colors would undo what the user asked for.
+    - Two sources. `$XDG_CONFIG_HOME/siv/theme.toml`, siv's own format:
+      tokens by their names (`view_bg`), at the top level for both
+      schemes or in `[light]` and `[dark]` tables, which win; `scheme`;
+      colors `#rgb`, `#rrggbb`, `#rrggbbaa`. It is generic, so
+      matugen or pywal templates can write it. And Omarchy's current
+      theme, `~/.local/state/omarchy/current/theme/colors.toml`
+      (Omarchy 4), else `~/.config/omarchy/current/theme/colors.toml`
+      (3.3, the first with colors.toml; older themes have none, and
+      Omarchy now generates one from their alacritty.toml). theme.toml
+      decides when it exists, since it is a choice made for siv;
+      `base = "omarchy"` in it lays it over Omarchy's theme, to change
+      a token or two of every Omarchy theme. `SIV_THEME=none` turns user
+      themes off; `SIV_THEME=FILE` reads that theme.toml or, by its
+      name, colors.toml instead. On the headless backend, and with
+      `SIV_APP_FLAGS_NO_DESKTOP_SETTINGS`, siv looks for neither, so
+      tests do not depend on the user's files; `SIV_THEME=FILE` still
+      applies, which is how an application renders itself under a
+      theme in its tests.
+    - Omarchy's keys (its docs/theming.md) resolve as its own
+      omarchy-theme-color does: canonical names over the legacy short
+      ones (`bg`, `fg`, ...), ANSI `color0`–`color15` as fallbacks,
+      missing shades mixed in sRGB as it mixes them, the accent falling
+      back to blue; mode from `mode`, the legacy `theme_type`, a
+      `light.mode` file, then the background's brightness. Then:
+      `background` → view; `dark_background` → window and secondary
+      sidebar; `darker_background` → sidebar; `lighter_background` →
+      control rest (hover and pressed 10% and 20% toward the text) and,
+      in dark themes, cards (light themes' cards are the background);
+      `foreground` → every text token; muted text the foreground mixed
+      toward the background as far as 40% while it keeps 4.5:1 on the
+      view and both sidebars; disabled text halfway to the background
+      (Omarchy's `dark_foreground` in themes with an even ramp, legible
+      in those whose is not, such as white's); `muted` → borders, with
+      separators 60% of it over the background and tracks halfway
+      between it and `lighter_background`; `accent` → accent, with
+      siv's shades; `selection` → selected rows, tinted toward the
+      accent until it stands 1.2:1 from the view and both sidebars
+      (light themes' selection is as dark as their sidebars: catppuccin
+      latte, rose pine), with `bright_foreground` or the foreground on
+      it, whichever contrasts more, black or white below 4.5:1; `red`,
+      `green`, `yellow` → destructive (with black or white on it),
+      success, and warning, which applications use for syntax and
+      status colors; knobs light (the bright foreground halfway to white
+      in dark themes, the background in light ones) unless the accent
+      is too light for it (kanagawa's accent is its text color), then
+      dark; foreground and background swapped for inverse surfaces; the
+      scrim stays. Rendered against all 23 of Omarchy's themes; the
+      widget gallery's goldens show tokyo-night and catppuccin-latte.
+    - Parsing is a small TOML subset (`ui.user_theme.Parser`: comments,
+      tables, basic and literal strings, numbers, booleans) with a fuzz
+      target. A line that does not parse is skipped, and so is every
+      entry under a header that does not parse or an array of tables;
+      arrays, inline tables, and multi-line strings are skipped whole.
+      A bad, partial, or missing file falls back token by token to the
+      compiled palette, never to garbage: a token is set only by a color
+      that parses. Files over 64 KiB are not themes.
+    - Read on the worker pool at startup and on every change; first
+      frames wait for the first read as they wait for the desktop
+      settings (D19), within the same 100 ms. Watched with inotify on
+      the loop (D6): no thread, nothing runs while nothing changes.
+      Each file is watched through its directory and that directory's
+      parent, since Omarchy deletes the current theme and renames
+      `next-theme` into place, and a theme.toml may come with its
+      folder. Events restart a 50 ms quiet timer, so a burst is one
+      read; watches are added again before each read, so a change after
+      them is seen and one before them is read. A read that finds
+      Omarchy's theme gone but a `next-theme` keeps the theme it has
+      until the rename, so nothing flashes the compiled colors. A new
+      palette repaints every window as a desktop change does.
+    - No API names the active theme: applications see its colors through
+      the tokens and `siv_window_get_color`, and none has needed to
+      know where they came from.
   - Each window resolves a palette (`ui.theme.Palette`) from the desktop
     values and the application's choices, which the coordinator passes to
     every window like the desktop settings (D19). A changed palette

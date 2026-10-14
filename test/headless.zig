@@ -36,6 +36,7 @@ test {
     _ = @import("abi/teardown.zig");
     _ = @import("abi/primitives.zig");
     _ = @import("widgets/widgets.zig");
+    _ = @import("widgets/themes.zig");
     _ = @import("abi/cursor.zig");
     _ = @import("abi/portal.zig");
     _ = @import("abi/dbus.zig");

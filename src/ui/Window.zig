@@ -70,7 +70,10 @@ force_reduced_motion: bool = false,
 desktop: Desktop = .{},
 /// The application's theme choices (D29), from `setTheme`.
 theme_choice: theme.Theme = .{},
-/// Themed colors and sizes, resolved from `desktop` and `theme_choice`.
+/// The user's theme (D29), from `setUserTheme`.
+user_theme: theme.User = .{},
+/// Themed colors and sizes, resolved from `desktop`, `user_theme`, and
+/// `theme_choice`.
 palette: theme.Palette = .{},
 /// Nodes made modal, in that order (some may be gone or no longer modal).
 modals: std.ArrayList(NodeId) = .empty,
@@ -197,6 +200,7 @@ pub const Options = struct {
     reduced_motion: bool = false,
     desktop: Desktop = .{},
     theme: theme.Theme = .{},
+    user_theme: theme.User = .{},
     clipboard: ?*Clipboard = null,
     /// Drag and drop (`dnd.CompositorHost`); needs `clipboard` too.
     drag: ?dnd_mod.Host = null,
@@ -327,7 +331,8 @@ pub fn init(gpa: std.mem.Allocator, options: Options) Error!*Window {
         .force_reduced_motion = options.reduced_motion,
         .desktop = options.desktop,
         .theme_choice = options.theme,
-        .palette = theme.resolve(&options.theme, options.desktop.themeInput()),
+        .user_theme = options.user_theme,
+        .palette = theme.resolve(&options.theme, options.desktop.themeInput(), &options.user_theme),
         .clipboard = options.clipboard,
         .drag_host = options.drag,
         .loop = options.loop,
@@ -1279,10 +1284,17 @@ pub fn setTheme(win: *Window, t: *const theme.Theme) void {
     win.requestFrame();
 }
 
+/// Applies a new user theme (D29).
+pub fn setUserTheme(win: *Window, u: *const theme.User) void {
+    win.user_theme = u.*;
+    win.applyPalette();
+    win.requestFrame();
+}
+
 /// Resolves the palette again: changed colors repaint every layer and
 /// redraw canvases; a changed body size reshapes text with a size role.
 fn applyPalette(win: *Window) void {
-    const p = theme.resolve(&win.theme_choice, win.desktop.themeInput());
+    const p = theme.resolve(&win.theme_choice, win.desktop.themeInput(), &win.user_theme);
     const old = win.palette;
     win.palette = p;
     const colors = !p.eqlColors(&old);

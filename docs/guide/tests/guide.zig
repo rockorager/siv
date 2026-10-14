@@ -7,6 +7,7 @@
 const std = @import("std");
 const abi = @import("abi");
 const harness = @import("harness.zig");
+const ui = @import("ui");
 
 const testing = std.testing;
 const Guide = harness.Guide;
@@ -112,6 +113,18 @@ test "guide: settings.zig in the light and dark themes" {
             try g.clickOn(.button, "Save");
             try g.expectText("Settings saved");
             try g.expectImage("settings-dark");
+        }
+    }.f);
+}
+
+test "guide: settings.zig under the user's theme.toml" {
+    try harness.runZig(@import("zig_settings"), struct {
+        fn f(g: *Guide) !void {
+            // As siv reads ~/.config/siv/theme.toml (D29).
+            const app = try abi.application.App.get(@backingInt(g.app));
+            app.app.setUserTheme(&ui.user_theme.parseFile(@embedFile("../examples/theme.toml")).theme);
+            try g.clickOn(.@"switch", "Dark theme");
+            try g.expectImage("settings-theme");
         }
     }.f);
 }

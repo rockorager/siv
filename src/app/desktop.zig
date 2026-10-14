@@ -156,5 +156,5 @@ fn release(app: *App) void {
     if (!d.waiting) return;
     d.waiting = false;
     app.loop.cancelTimer(&d.timer);
-    for (app.windows.items) |w| if (w) |win| win.releaseFrame();
+    app.releaseFrames();
 }

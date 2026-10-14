@@ -542,3 +542,93 @@ test "windows follow the application's language and direction unless they set th
     try testing.expect(follows.ui.rtl);
     try testing.expect(!own.ui.rtl);
 }
+
+// The user's theme (D29) ------------------------------------------------------
+
+extern "c" fn mkdtemp(template: [*:0]u8) ?[*:0]u8;
+extern "c" fn system(cmd: [*:0]const u8) c_int;
+
+fn sh(comptime fmt: []const u8, args: anytype) !void {
+    var buf: [2048]u8 = undefined;
+    const cmd = try std.fmt.bufPrintSentinel(&buf, fmt, args, 0);
+    if (system(cmd.ptr) != 0) return error.ShellFailed;
+}
+
+const ThemeCheck = struct {
+    app: *App,
+    win: *Window,
+    want: [4]u8,
+
+    fn shows(c: *ThemeCheck) bool {
+        if (!settled(c.win)) return false;
+        const px = firstPixel(c.app, c.win.id) catch return false;
+        return std.mem.eql(u8, &px, &c.want);
+    }
+};
+
+fn idle(ut: *app_mod.user_theme.UserTheme) bool {
+    return !ut.watch.timer.armed() and !ut.running;
+}
+
+test "the user's theme: read at startup, and followed live as Omarchy renames a theme into place" {
+    var template = "/tmp/siv-theme-XXXXXX".*;
+    const home = std.mem.span(mkdtemp(&template) orelse return error.SkipZigTest);
+    defer sh("rm -rf '{s}'", .{home}) catch {};
+    const cur = "{s}/.local/state/omarchy/current";
+    // ~/.config exists; its siv folder does not yet.
+    try sh("mkdir -p '{s}/.config' '" ++ cur ++ "/theme' && printf 'mode = \"dark\"\\nbackground = \"#1a1b26\"\\nforeground = \"#a9b1d6\"\\n' > '" ++ cur ++ "/theme/colors.toml'", .{ home, home, home });
+    var config_buf: [64]u8 = undefined;
+    const config = try std.fmt.bufPrint(&config_buf, "{s}/.config", .{home});
+    const app = try App.create(testing.allocator, .{
+        .backend = .headless,
+        .headless = .{ .refresh_ns = std.time.ns_per_ms },
+        .system_fonts = false,
+        .threads = 2,
+        .desktop_settings = false,
+        .accessibility = false,
+        .user_theme = .{ .home = home, .config_home = config },
+    });
+    defer app.destroy();
+    const win = try app.createWindow(.{ .width = 16, .height = 16 }, .{});
+    const t = try win.ui.begin();
+    try t.setVisual(.root, .{ .background_token = .view_bg });
+    t.commit();
+    // The theme's background (B, G, R, A), read before the first frame
+    // unless the read took longer than first frames wait.
+    var check: ThemeCheck = .{ .app = app, .win = win, .want = .{ 0x26, 0x1b, 0x1a, 0xff } };
+    try runUntil(app, win, settled);
+    try testing.expectEqual(check.want, try firstPixel(app, win.id));
+    try testing.expectEqual(ui.theme.Scheme.dark, app.user_theme.value.scheme.?);
+
+    // omarchy-theme-set: stage the next theme, delete the current one,
+    // rename the staged one into place. Between the two the old theme
+    // stays: nothing flashes siv's compiled colors.
+    try sh("mkdir '" ++ cur ++ "/next-theme' && printf 'mode = \"light\"\\nbackground = \"#eff1f5\"\\nforeground = \"#4c4f69\"\\n' > '" ++ cur ++ "/next-theme/colors.toml' && rm -rf '" ++ cur ++ "/theme'", .{ home, home, home });
+    try runUntil(app, &app.user_theme.watch, struct {
+        fn f(w: *@import("watch.zig").Watch) bool {
+            return w.timer.armed();
+        }
+    }.f);
+    try runUntil(app, &app.user_theme, idle);
+    try testing.expectEqual(ui.theme.Scheme.dark, app.user_theme.value.scheme.?);
+    try sh("mv '" ++ cur ++ "/next-theme' '" ++ cur ++ "/theme'", .{ home, home });
+    check.want = .{ 0xf5, 0xf1, 0xef, 0xff };
+    try runUntil(app, &check, ThemeCheck.shows);
+    try testing.expectEqual(ui.theme.Scheme.light, app.user_theme.value.scheme.?);
+
+    // theme.toml, made later in a folder that did not exist, decides
+    // over Omarchy; with base = "omarchy" it lies over Omarchy's theme.
+    try sh("mkdir -p '{s}/siv' && printf 'view_bg = \"#ff0000\"\\n' > '{s}/siv/theme.toml'", .{ config, config });
+    check.want = .{ 0, 0, 0xff, 0xff };
+    try runUntil(app, &check, ThemeCheck.shows);
+    try testing.expectEqual(ui.theme.User.Source.file, app.user_theme.value.source);
+    try testing.expect(app.user_theme.value.scheme == null);
+    try sh("printf 'base = \"omarchy\"\\n[dark]\\nview_bg = \"#00ff00\"\\n' > '{s}/siv/theme.toml'", .{config});
+    // Omarchy's light theme, which the file leaves alone.
+    check.want = .{ 0xf5, 0xf1, 0xef, 0xff };
+    try runUntil(app, &check, ThemeCheck.shows);
+    // A broken file is no theme: siv's compiled light background.
+    try sh("printf 'view_bg = \"#12' > '{s}/siv/theme.toml'", .{config});
+    check.want = .{ 0xff, 0xff, 0xff, 0xff };
+    try runUntil(app, &check, ThemeCheck.shows);
+}

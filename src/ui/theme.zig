@@ -1,13 +1,16 @@
 //! Theming (D29): named colors and text sizes that nodes reference instead
 //! of literal values, resolved when a node is painted or shaped. A
 //! window's palette follows the desktop (color scheme, contrast, accent,
-//! font size; D19) and the application's overrides, so a theme change
-//! repaints and reshapes without the application touching the tree.
+//! font size; D19), the user's theme (user_theme.zig), and the
+//! application's overrides, so a theme change repaints and reshapes
+//! without the application touching the tree.
 //!
 //! The compiled tokens come in four variants (light, dark, and a high
-//! contrast version of each). The desktop's accent replaces `accent`, and
-//! the colors derived from it (hover and active shades, the text on it,
-//! focus rings, selections) follow unless the application overrides them.
+//! contrast version of each). Layers apply over them in order: the
+//! desktop's accent, the user's theme (not in high contrast), and the
+//! application's overrides. A layer that sets `accent` also sets the
+//! colors derived from it (hover and active shades, the text on it, focus
+//! rings, selections), except those it sets itself.
 
 const std = @import("std");
 const scene = @import("scene");
@@ -91,6 +94,32 @@ pub const Theme = struct {
     overrides: [4][token_count]?Color = @splat(@splat(null)),
 };
 
+pub const Scheme = enum(u1) { light, dark };
+
+/// The user's theme (D29): colors for the light and the dark variant, from
+/// `$XDG_CONFIG_HOME/siv/theme.toml` or Omarchy (user_theme.zig). Tokens
+/// it leaves null keep the compiled ones. High contrast ignores it.
+pub const User = struct {
+    pub const Source = enum(u8) { none, file, omarchy };
+
+    source: Source = .none,
+    /// The scheme the theme is for (Omarchy's mode, theme.toml's
+    /// `scheme`): it picks the variant instead of the desktop's color
+    /// scheme. Null follows the desktop.
+    scheme: ?Scheme = null,
+    /// Indexed by `Scheme`.
+    colors: [2][token_count]?Color = @splat(@splat(null)),
+
+    pub fn eql(a: *const User, b: *const User) bool {
+        if (a.source != b.source or a.scheme != b.scheme) return false;
+        for (a.colors, b.colors) |x, y| for (x, y) |p, q| {
+            if ((p == null) != (q == null)) return false;
+            if (p != null and !p.?.eql(q.?)) return false;
+        };
+        return true;
+    }
+};
+
 /// The desktop's part (from `Window.Desktop`).
 pub const DesktopInput = struct {
     dark: bool = false,
@@ -128,9 +157,9 @@ pub const Palette = struct {
     }
 };
 
-pub fn resolve(theme: *const Theme, d: DesktopInput) Palette {
+pub fn resolve(theme: *const Theme, d: DesktopInput, user: *const User) Palette {
     const dark = switch (theme.scheme) {
-        .follow => d.dark,
+        .follow => if (user.scheme) |s| s == .dark else d.dark,
         .light => false,
         .dark => true,
     };
@@ -143,33 +172,49 @@ pub fn resolve(theme: *const Theme, d: DesktopInput) Palette {
     const v = @intFromEnum(variant);
     var p: Palette = .{ .variant = variant, .colors = compiled[v] };
     if (d.font_pt > 0 and std.math.isFinite(d.font_pt)) p.body_px = @floatCast(std.math.clamp(d.font_pt, 4, 96) * 4.0 / 3.0);
-    const ov = &theme.overrides[v];
-    const a = @intFromEnum(ColorToken.accent);
-    var accent = p.colors[a];
-    if (d.accent) |c| accent = .srgb(@floatCast(c[0]), @floatCast(c[1]), @floatCast(c[2]), 1);
-    if (ov[a]) |c| accent = c;
-    if (!accent.eql(p.colors[a])) derive(&p, accent, high);
-    for (ov, 0..) |o, i| if (o) |c| {
+    // High contrast is siv's: a user theme (Omarchy's have no
+    // high-contrast variant) would undo what the user asked for.
+    const none: [token_count]?Color = @splat(null);
+    const layers = [_]*const [token_count]?Color{ if (high) &none else &user.colors[@intFromBool(dark)], &theme.overrides[v] };
+    for (layers) |layer| for (layer, 0..) |o, i| if (o) |c| {
         p.colors[i] = c;
     };
+    // The accent's layer: 0 compiled, 1 the desktop, 2 + the index in
+    // `layers`.
+    const a = @intFromEnum(ColorToken.accent);
+    var level: usize = 0;
+    if (d.accent) |c| {
+        p.colors[a] = .srgb(@floatCast(c[0]), @floatCast(c[1]), @floatCast(c[2]), 1);
+        level = 1;
+    }
+    for (layers, 2..) |layer, l| if (layer[a]) |c| {
+        p.colors[a] = c;
+        level = l;
+    };
+    // Layers at or above the accent's keep the derived colors they set;
+    // those below it give way to the accent.
+    if (level > 0) derive(&p, layers[level -| 2 ..], high);
     return p;
 }
 
-/// Colors that follow a replaced accent.
-fn derive(p: *Palette, accent: Color, high: bool) void {
+/// Colors derived from a replaced accent, over the final view background,
+/// except those one of `keep` sets.
+fn derive(p: *Palette, keep: []const *const [token_count]?Color, high: bool) void {
+    const accent = p.color(.accent);
     const dark = p.variant == .dark or p.variant == .dark_high_contrast;
     const shade: Color = if (dark) .white else .black;
-    set(p, .accent, accent);
-    set(p, .accent_hover, mix(accent, shade, 0.12));
-    set(p, .accent_active, mix(accent, shade, 0.24));
     const on = onColor(accent);
-    set(p, .accent_fg, on);
-    set(p, .focus_ring, accent);
-    if (high) {
-        set(p, .selection_bg, accent);
-        set(p, .selection_fg, on);
-    } else {
-        set(p, .selection_bg, mix(p.color(.view_bg), accent, 0.3));
+    const derived = [_]struct { ColorToken, Color }{
+        .{ .accent_hover, mix(accent, shade, 0.12) },
+        .{ .accent_active, mix(accent, shade, 0.24) },
+        .{ .accent_fg, on },
+        .{ .focus_ring, accent },
+        .{ .selection_bg, if (high) accent else mix(p.color(.view_bg), accent, 0.3) },
+        .{ .selection_fg, if (high) on else p.color(.selection_fg) },
+    };
+    next: for (derived) |e| {
+        for (keep) |layer| if (layer[@intFromEnum(e[0])] != null) continue :next;
+        set(p, e[0], e[1]);
     }
 }
 
@@ -259,18 +304,18 @@ test "translucent tokens keep their color and alpha" {
 
 test "variants follow the desktop unless the application fixes them" {
     var th: Theme = .{};
-    try std.testing.expectEqual(Variant.light, resolve(&th, .{}).variant);
-    try std.testing.expectEqual(Variant.dark, resolve(&th, .{ .dark = true }).variant);
-    try std.testing.expectEqual(Variant.dark_high_contrast, resolve(&th, .{ .dark = true, .high_contrast = true }).variant);
+    try std.testing.expectEqual(Variant.light, resolve(&th, .{}, &.{}).variant);
+    try std.testing.expectEqual(Variant.dark, resolve(&th, .{ .dark = true }, &.{}).variant);
+    try std.testing.expectEqual(Variant.dark_high_contrast, resolve(&th, .{ .dark = true, .high_contrast = true }, &.{}).variant);
     th.scheme = .light;
     th.contrast = .high;
-    try std.testing.expectEqual(Variant.light_high_contrast, resolve(&th, .{ .dark = true }).variant);
+    try std.testing.expectEqual(Variant.light_high_contrast, resolve(&th, .{ .dark = true }, &.{}).variant);
 }
 
 test "a desktop accent replaces the accent and what derives from it; overrides win" {
     var th: Theme = .{};
     // A light yellow accent needs black text on it.
-    const p = resolve(&th, .{ .accent = .{ 1, 0.9, 0.2 } });
+    const p = resolve(&th, .{ .accent = .{ 1, 0.9, 0.2 } }, &.{});
     const want = Color.srgb(1, 0.9, 0.2, 1);
     try std.testing.expect(p.color(.accent).eql(want));
     try std.testing.expect(p.color(.focus_ring).eql(want));
@@ -279,14 +324,79 @@ test "a desktop accent replaces the accent and what derives from it; overrides w
     // Untouched tokens keep their compiled values.
     try std.testing.expect(p.color(.window_bg).eql(compiled[0][@intFromEnum(ColorToken.window_bg)]));
     th.overrides[0][@intFromEnum(ColorToken.focus_ring)] = .white;
-    try std.testing.expect(resolve(&th, .{ .accent = .{ 1, 0.9, 0.2 } }).color(.focus_ring).eql(.white));
+    try std.testing.expect(resolve(&th, .{ .accent = .{ 1, 0.9, 0.2 } }, &.{}).color(.focus_ring).eql(.white));
     // Without an accent nothing is derived: the compiled shades stay.
-    try std.testing.expect(resolve(&th, .{}).color(.accent_hover).eql(compiled[0][@intFromEnum(ColorToken.accent_hover)]));
+    try std.testing.expect(resolve(&th, .{}, &.{}).color(.accent_hover).eql(compiled[0][@intFromEnum(ColorToken.accent_hover)]));
+}
+
+test "the user's theme: between the desktop and the application, not in high contrast" {
+    const D = @intFromEnum(Scheme.dark);
+    const tok = struct {
+        fn f(t: ColorToken) usize {
+            return @intFromEnum(t);
+        }
+    }.f;
+    const view = Color.srgb8(0x1a, 0x1b, 0x26, 0xff);
+    const user_accent = Color.srgb8(0x7a, 0xa2, 0xf7, 0xff);
+    const user_sel = Color.srgb8(0x29, 0x2e, 0x42, 0xff);
+    var u: User = .{ .source = .omarchy, .scheme = .dark };
+    u.colors[D][tok(.view_bg)] = view;
+    u.colors[D][tok(.accent)] = user_accent;
+    u.colors[D][tok(.selection_bg)] = user_sel;
+    var th: Theme = .{};
+    const desktop: DesktopInput = .{ .dark = false, .accent = .{ 1, 0, 0 } };
+
+    // Its scheme decides over the desktop's; its accent over the
+    // desktop's, with siv's shades; colors it sets stay.
+    var p = resolve(&th, desktop, &u);
+    try std.testing.expectEqual(Variant.dark, p.variant);
+    try std.testing.expect(p.color(.view_bg).eql(view));
+    try std.testing.expect(p.color(.accent).eql(user_accent));
+    try std.testing.expect(p.color(.focus_ring).eql(user_accent));
+    try std.testing.expect(p.color(.accent_hover).eql(mix(user_accent, .white, 0.12)));
+    try std.testing.expect(p.color(.selection_bg).eql(user_sel));
+    // Tokens it leaves out keep the compiled dark ones.
+    try std.testing.expect(p.color(.border).eql(compiled[1][tok(.border)]));
+
+    // Without its own accent the desktop's applies, and a derived color
+    // the theme leaves out mixes over the theme's view background.
+    u.colors[D][tok(.accent)] = null;
+    u.colors[D][tok(.selection_bg)] = null;
+    p = resolve(&th, desktop, &u);
+    const red = Color.srgb(1, 0, 0, 1);
+    try std.testing.expect(p.color(.accent).eql(red));
+    try std.testing.expect(p.color(.selection_bg).eql(mix(view, red, 0.3)));
+    u.colors[D][tok(.accent)] = user_accent;
+    u.colors[D][tok(.selection_bg)] = user_sel;
+
+    // The application's overrides win, and its accent moves what
+    // derives from it, the theme's selection too.
+    const green = Color.srgb(0, 1, 0, 1);
+    th.overrides[1][tok(.accent)] = green;
+    th.overrides[1][tok(.view_bg)] = .black;
+    p = resolve(&th, desktop, &u);
+    try std.testing.expect(p.color(.accent).eql(green));
+    try std.testing.expect(p.color(.view_bg).eql(.black));
+    try std.testing.expect(p.color(.selection_bg).eql(mix(.black, green, 0.3)));
+    th.overrides = @splat(@splat(null));
+
+    // A scheme the application fixes keeps the theme's colors to their
+    // variant: light is compiled.
+    th.scheme = .light;
+    p = resolve(&th, desktop, &u);
+    try std.testing.expectEqual(Variant.light, p.variant);
+    try std.testing.expect(p.color(.view_bg).eql(compiled[0][tok(.view_bg)]));
+    th.scheme = .follow;
+
+    // High contrast is siv's own, in the theme's scheme.
+    p = resolve(&th, .{ .high_contrast = true }, &u);
+    try std.testing.expectEqual(Variant.dark_high_contrast, p.variant);
+    for (p.colors, compiled[3]) |a, b| try std.testing.expect(a.eql(b));
 }
 
 test "body text follows the desktop font size in points" {
     const th: Theme = .{};
-    const p = resolve(&th, .{ .font_pt = 12 });
+    const p = resolve(&th, .{ .font_pt = 12 }, &.{});
     try std.testing.expectApproxEqAbs(@as(f32, 16), p.textSize(9, .body), 1e-4);
     try std.testing.expectEqual(@as(f32, 9), p.textSize(9, .fixed));
     try std.testing.expectApproxEqAbs(@as(f32, 24), p.textSize(9, .title), 1e-4);
