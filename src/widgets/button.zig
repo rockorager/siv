@@ -34,6 +34,8 @@ pub const Button = extern struct {
     icon_only: bool = false,
     /// The button set its label as its tooltip.
     auto_tooltip: bool = false,
+    /// The keysym that presses it in a dialog; 0 for none.
+    mnemonic: u32 = 0,
 };
 
 pub export fn siv_push_button(txn: Txn, parent: Node, desc: ?*const siv.ButtonDesc) Node {
@@ -42,7 +44,15 @@ pub export fn siv_push_button(txn: Txn, parent: Node, desc: ?*const siv.ButtonDe
     if (!validFlags(d.flags)) return w.fail(txn, .error_unsupported);
     const label = w.str(d.label, d.label_len) orelse return w.fail(txn, .error_invalid_argument);
     const icon = w.str(d.icon, d.icon_len) orelse return w.fail(txn, .error_invalid_argument);
-    return build(txn, parent, .button, label, icon, d.style, d.flags, false);
+    return withMnemonic(txn, build(txn, parent, .button, label, icon, d.style, d.flags, false), d.mnemonic);
+}
+
+fn withMnemonic(txn: Txn, root: Node, mnemonic: u32) Node {
+    if (root == .null) return .null;
+    const st = w.stateOf(Button, root, &.{ .button, .toggle_button }).?;
+    st.mnemonic = mnemonic;
+    w.underlineMnemonic(txn, st.label, mnemonic);
+    return root;
 }
 
 pub export fn siv_toggle_button(txn: Txn, parent: Node, desc: ?*const siv.ToggleDesc) Node {
@@ -50,7 +60,7 @@ pub export fn siv_toggle_button(txn: Txn, parent: Node, desc: ?*const siv.Toggle
     if (!validFlags(d.flags) or @backingInt(d.checked) < 0 or @backingInt(d.checked) > 2) return w.fail(txn, .error_unsupported);
     const label = w.str(d.label, d.label_len) orelse return w.fail(txn, .error_invalid_argument);
     const icon = w.str(d.icon, d.icon_len) orelse return w.fail(txn, .error_invalid_argument);
-    return build(txn, parent, .toggle_button, label, icon, .default, d.flags, d.checked == .on);
+    return withMnemonic(txn, build(txn, parent, .toggle_button, label, icon, .default, d.flags, d.checked == .on), d.mnemonic);
 }
 
 pub export fn siv_menu_button(txn: Txn, parent: Node, desc: ?*const siv.ButtonDesc) Node {
@@ -169,6 +179,7 @@ pub fn apply(txn: Txn, st: *Button) void {
 
 pub fn setLabel(txn: Txn, st: *Button, label: []const u8) void {
     _ = c.siv_set_text(txn, st.label, label.ptr, label.len);
+    w.underlineMnemonic(txn, st.label, st.mnemonic);
     if (alone(st)) {
         apply(txn, st);
         showTooltip(txn, st);

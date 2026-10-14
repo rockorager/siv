@@ -3755,6 +3755,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       All three report `close` (Escape, a click outside or on the scrim,
       a timeout); the default handler closes them, and an application's
       `siv_on` handler that returns true keeps them.
+    - Buttons, toggle buttons, check boxes, and switches take a mnemonic
+      keysym, underlined at the first matching letter of the label. In a
+      dialog, the key alone presses the first enabled control with it
+      (Alt and the key while a text field has focus, which types the
+      letter otherwise), so a dialog is driven from the keyboard with its
+      accelerators in view, as menu items' mnemonics drive menus.
     - Parts the application fills are reached with
       `siv_widget_get_part` (dialog content and actions, popover content,
       tabs and panels, split panes, a menu button's menu, a table's

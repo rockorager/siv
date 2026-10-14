@@ -24,6 +24,8 @@ pub const Toggle = extern struct {
     /// The check mark canvas, or the switch knob.
     inner: Node,
     label: Node,
+    /// The keysym that flips it in a dialog; 0 for none.
+    mnemonic: u32 = 0,
 };
 
 pub export fn siv_check_box(txn: Txn, parent: Node, desc: ?*const siv.ToggleDesc) Node {
@@ -74,6 +76,8 @@ fn create(txn: Txn, parent: Node, desc: ?*const siv.ToggleDesc, kind: w.Kind) No
     w.onDefault(txn, root, .pointer, onPointer, st);
     w.onDefault(txn, root, .activate, onActivate, st);
     w.setInterface(txn, root, Toggle, st, .{ .set_label = setLabel, .set_value = setValue, .get_value = value, .apply = apply });
+    st.mnemonic = d.mnemonic;
+    w.underlineMnemonic(txn, st.label, st.mnemonic);
     apply(txn, st);
     return root;
 }
@@ -141,6 +145,7 @@ fn drawMark(ud: ?*anyopaque, node: Node, draw: siv.Draw, width: f32, height: f32
 
 pub fn setLabel(txn: Txn, st: *Toggle, label: []const u8) void {
     _ = c.siv_set_text(txn, st.label, label.ptr, label.len);
+    w.underlineMnemonic(txn, st.label, st.mnemonic);
     apply(txn, st);
 }
 

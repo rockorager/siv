@@ -434,6 +434,55 @@ test "dialogs: modal over the window, focused, closed by Escape or the scrim" {
     try testing.expectEqual(try idOf(behind), try focusedIn(h.window));
 }
 
+test "dialog mnemonics: a key presses its button or flips its check box, Alt in a text field" {
+    var h: Harness = .{ .golden = "test/golden/widgets" };
+    try h.start(400, 300, null, null);
+    defer h.stop();
+    var applied: Log = .{};
+    var flips: Log = .{};
+    const txn = try begin(h.window);
+    background(txn, &h);
+    const dialog = c.siv_dialog(txn, root(&h), &.{ .title = "Permissions", .title_len = 11 });
+    const content = c.siv_widget_get_part(dialog, .content, 0);
+    const field = c.siv_editor(txn, content, .{});
+    const recursive = c.siv_check_box(txn, content, &.{ .label = "Apply to enclosed files", .label_len = 23, .mnemonic = 'e' });
+    const actions = c.siv_widget_get_part(dialog, .actions, 0);
+    _ = c.siv_push_button(txn, actions, &.{ .label = "Cancel", .label_len = 6, .mnemonic = 'c' });
+    const apply = c.siv_push_button(txn, actions, &.{ .label = "Apply", .label_len = 5, .style = .primary, .mnemonic = 'A' });
+    _ = c.siv_on(txn, apply, .activate, Log.onActivate, null, &applied);
+    _ = c.siv_on(txn, recursive, .change, Log.onChange, null, &flips);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    // The mnemonics are underlined: the A of Apply, the C of Cancel, the
+    // first e of "enclosed".
+    try h.expectGolden("dialog-mnemonics", 400, 300);
+    // Focus on the dialog: the key alone, in either case.
+    try h.typeKey('a', "a", .{});
+    try h.settle();
+    try testing.expectEqual(@as(u32, 1), applied.activates);
+    try h.typeKey('E', "E", .{ .shift = true });
+    try h.settle();
+    try testing.expectEqual(@as(u32, 1), flips.changes);
+    try testing.expectEqual(@as(f64, 1), flips.value);
+    // A text field types its letters; Alt still reaches the mnemonic.
+    try ok(c.siv_node_focus(field));
+    try h.typeKey('a', "a", .{});
+    try h.settle();
+    try testing.expectEqual(@as(u32, 1), applied.activates);
+    var buf: [8]u8 = undefined;
+    var len: usize = 0;
+    try ok(c.siv_node_get_text(field, &buf, buf.len, &len));
+    try testing.expectEqualStrings("a", buf[0..len]);
+    try h.typeKey('a', "", .{ .alt = true });
+    try h.settle();
+    try testing.expectEqual(@as(u32, 2), applied.activates);
+    // Ctrl is never a mnemonic.
+    try ok(c.siv_node_focus(dialog));
+    try h.typeKey('a', "", .{ .ctrl = true });
+    try h.settle();
+    try testing.expectEqual(@as(u32, 2), applied.activates);
+}
+
 test "tabs: one panel at a time, arrows move the selection, mirrored in RTL" {
     for ([_]bool{ false, true }) |rtl| {
         var h: Harness = .{ .golden = "test/golden/widgets" };

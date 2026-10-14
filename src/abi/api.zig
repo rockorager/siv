@@ -1103,12 +1103,16 @@ pub const decls = [_]Decl{
         .{ .name = "style", .type = ref("siv_button_style"), .doc = "Default default." },
         .{ .name = "flags", .type = ref("siv_widget_flags"), .doc = "Options." },
         .{ .name = "icon", .type = .string, .doc = "A themed icon before the label (D19), as siv_image_view_desc.icon names it, in the label's color; with SIV_WIDGET_ICON_ONLY instead of it. Empty for none." },
+        .{ .name = "mnemonic", .type = .u32, .doc = "A keysym that presses it inside a dialog (siv_dialog), letters in either case: the key alone unless a text field has focus, Alt and the key always. The label's first such letter is underlined. 0 for none." },
+        reserved("reserved0"),
     }),
     descriptor("siv_toggle_desc", "A toggle button, check box, or switch.", &.{
         .{ .name = "label", .type = .string, .doc = "The label, copied; also the accessible name." },
         .{ .name = "checked", .type = ref("siv_toggle"), .doc = "Initial state; unset is off. Mixed only for check boxes." },
         .{ .name = "flags", .type = ref("siv_widget_flags"), .doc = "Options." },
         .{ .name = "icon", .type = .string, .doc = "Toggle buttons: a themed icon before the label, as for siv_button_desc." },
+        .{ .name = "mnemonic", .type = .u32, .doc = "A keysym that presses it inside a dialog (siv_dialog), letters in either case: the key alone unless a text field has focus, Alt and the key always. The label's first such letter is underlined. 0 for none." },
+        reserved("reserved0"),
     }),
     descriptor("siv_radio_group_desc", "A group of radio buttons, added with siv_radio. The first one starts selected.", &.{
         .{ .name = "label", .type = .string, .doc = "The group's accessible name, copied." },

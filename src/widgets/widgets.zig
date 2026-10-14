@@ -196,6 +196,22 @@ fn fitUtf8(buf: []const u8, len: usize) []const u8 {
 
 /// A text node that takes no space and is not shown or announced: a
 /// widget keeps a string in the tree with it (an icon's name).
+/// Underlines a label's first letter matching `mnemonic` (either case),
+/// or clears the label's spans when there is none (D22).
+pub fn underlineMnemonic(txn: Txn, label: Node, mnemonic: u32) void {
+    var buf: [1024]u8 = undefined;
+    const text = textOf(label, &buf);
+    const at: ?usize = if (mnemonic > 0 and mnemonic < 0x80) blk: {
+        const m = std.ascii.toLower(@intCast(mnemonic));
+        for (text, 0..) |ch, i| if (std.ascii.toLower(ch) == m) break :blk i;
+        break :blk null;
+    } else null;
+    if (at) |i| {
+        const span: siv.TextSpan = .{ .start = @intCast(i), .end = @intCast(i + 1), .flags = .{ .underline = true } };
+        _ = c.siv_set_text_spans(txn, label, &.{ .spans = @ptrCast(&span), .spans_count = 1 });
+    } else _ = c.siv_set_text_spans(txn, label, &.{ .spans = null, .spans_count = 0 });
+}
+
 pub fn hiddenText(txn: Txn, parent: Node, text: []const u8) Node {
     const n = c.siv_text(txn, parent, text.ptr, text.len);
     _ = c.siv_set_visual(txn, n, &.{ .flags = .{ .hidden = true } });

@@ -3,7 +3,9 @@
 //! actions part at the end edge. The dialog is a modal node (D22), so the
 //! pointer and Tab stay inside it, and it takes focus when created, so
 //! screen readers announce it by its title. Escape and presses on the
-//! scrim report `close`; the default handler removes the dialog.
+//! scrim report `close`; the default handler removes the dialog. A
+//! button, toggle button, check box, or switch with a mnemonic is pressed
+//! by its key alone (unless a text field has focus) or with Alt (D22).
 
 const std = @import("std");
 const w = @import("widgets.zig");
@@ -90,9 +92,45 @@ fn askClose(root: Node) void {
 fn onKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Dialog = @ptrCast(@alignCast(ud.?));
     const e = ev;
-    if (!e.flags.pressed or e.keysym != w.keysym.escape) return .pass;
-    askClose(st.root);
+    if (!e.flags.pressed) return .pass;
+    if (e.keysym == w.keysym.escape) {
+        askClose(st.root);
+        return .handled;
+    }
+    const m = e.modifiers;
+    if (m.ctrl or m.super) return .pass;
+    const sym: u32 = @bitCast(@intFromEnum(e.keysym));
+    if (sym == 0 or sym >= 0x80) return .pass;
+    // A text field takes its letters, unless Alt asks for the mnemonic.
+    if (!m.alt) {
+        const focus = c.siv_window_get_focus(e.window);
+        var caret: u32 = 0;
+        var anchor: u32 = 0;
+        if (focus != .null and c.siv_node_get_selection(focus, &caret, &anchor) == .ok) return .pass;
+    }
+    const target = findMnemonic(st.card, std.ascii.toLower(@intCast(sym))) orelse return .pass;
+    var handled = false;
+    _ = c.siv_node_emit(target, &.{ .type = .activate }, &handled);
     return .handled;
+}
+
+/// The first enabled control under `node` (in tree order) whose mnemonic
+/// is `lower`.
+fn findMnemonic(node: Node, lower: u8) ?Node {
+    var child = c.siv_node_get_related(node, .first_child);
+    while (child != .null) : (child = c.siv_node_get_related(child, .next)) {
+        if (w.stateOf(@import("button.zig").Button, child, &.{ .button, .toggle_button })) |b| {
+            if (!b.hdr.disabled and matches(b.mnemonic, lower)) return child;
+        } else if (w.stateOf(@import("toggle.zig").Toggle, child, &.{ .check_box, .@"switch" })) |t| {
+            if (!t.hdr.disabled and matches(t.mnemonic, lower)) return child;
+        }
+        if (findMnemonic(child, lower)) |n| return n;
+    }
+    return null;
+}
+
+fn matches(mnemonic: u32, lower: u8) bool {
+    return mnemonic > 0 and mnemonic < 0x80 and std.ascii.toLower(@intCast(mnemonic)) == lower;
 }
 
 /// A press on the scrim, outside the card, asks to close.
