@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Runs the siv/gpui comparison scenarios on headless sway with GPU rendering.
+"""Runs the comparison scenarios (siv, gpui, Qt, GTK) on headless sway with
+GPU rendering.
 
-    harness/run.py [--runs N] [--toolkits siv,gpui] [--scenarios a,b] [--out DIR]
+    harness/run.py [--runs N] [--toolkits siv,gpui,qt,gtk] [--scenarios a,b] [--out DIR]
+                   [--warmup]
 
 Each run starts a fresh sway (headless backend, Vulkan renderer on the
 render node, one 1280x800 output at 60 Hz, scale 1, no borders), the
 toolkit's program for one scenario with presshim.so preloaded, and inject
-for input. Results go to DIR/<toolkit>-<scenario>-<run>.json; report.py
-summarizes them.
+for input. Every toolkit renders with Vulkan on the same GPU; run.py stops
+if the render node's Vulkan device is not a GPU. Results go to
+DIR/<toolkit>-<scenario>-<run>.json, the machine to DIR/machine.json;
+report.py summarizes them.
 """
 
 import argparse
@@ -25,16 +29,50 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 OUT = os.path.join(ROOT, "out")
 REFRESH_NS = 1e9 / 60
+RENDER_NODE = os.environ.get("GC_RENDER_NODE", "/dev/dri/renderD128")
 PROGRAMS = {
     # GC_SIV_BENCH runs another build of the siv program (an older siv).
     "siv": [os.environ.get("GC_SIV_BENCH", os.path.join(OUT, "siv-bench"))],
     "gpui": [os.path.join(ROOT, "gpui", "target", "release", "gpui-compare")],
+    "qt": [os.path.join(OUT, "qt-bench")],
+    "gtk": [os.path.join(OUT, "gtk-bench")],
+}
+# Every toolkit on Vulkan, named rather than left to each toolkit's choice:
+# Qt Quick's scene graph through QRhi, GTK's Vulkan renderer (its default
+# on Wayland since 4.16). siv and gpui use Vulkan only. Qt's logging rules
+# and GSK_DEBUG print the renderer and device each picked into the
+# result's app_log, as siv does on its own.
+TOOLKIT_ENV = {
+    "qt": {"QT_QPA_PLATFORM": "wayland", "QSG_RHI_BACKEND": "vulkan",
+           "QT_LOGGING_RULES": "qt.scenegraph.general=true;qt.rhi.general=true", "QT_FORCE_STDERR_LOGGING": "1"},
+    "gtk": {"GSK_RENDERER": "vulkan", "GDK_BACKEND": "wayland", "GSK_DEBUG": "renderer"},
+}
+# Toolkits whose menus are xdg_popup surfaces; gpui draws its menus inside
+# the window.
+POPUP_MENUS = {"siv", "qt", "gtk"}
+# Where the gallery's Default and Menu buttons are, in window coordinates:
+# each toolkit's stock buttons have their own widths.
+GALLERY_POINTS = {
+    "siv": {"default": (60, 80), "menu": (314, 80)},
+    "gpui": {"default": (60, 80), "menu": (314, 80)},
+    "qt": {"default": (64, 81), "menu": (328, 81)},
+    "gtk": {"default": (66, 81), "menu": (350, 81)},
 }
 SCENARIOS = ["idle", "gallery", "list", "text", "grid", "typing", "resize", "logs"]
-# Touchpad scroll per event, so that both move 30 logical px: gpui
-# multiplies touchpad deltas by 3 (gpui_linux's Wayland client,
-# `let modifier = 3.0`), siv scrolls them as they come (D8).
-SCROLL_EVENT = {"siv": 30, "gpui": 10}
+# The Qt and GTK programs leave out the 100 MB log.
+UNSUPPORTED = {"qt": {"logs"}, "gtk": {"logs"}}
+# Touchpad scroll per event, so that every toolkit moves 30 logical px:
+# gpui multiplies touchpad deltas by 3 (gpui_linux's Wayland client,
+# `let modifier = 3.0`), siv by 4 since 37a1911 (D16; 1:1 before, when
+# this was 30), GTK by 2.5. Qt's were measured: the list scrolled about
+# 8 times the distance sent. With these, 600 events end every list on
+# row 644 (Qt 643).
+SCROLL_EVENT = {"siv": 7.5, "gpui": 10, "qt": 30, "gtk": 12}
+# In the editors, as many paragraphs per second as siv's 30 px per event
+# (measured: 360 events end siv and gpui on paragraph 223, Qt on 227, GTK
+# on 222). QPlainTextEdit scrolls by lines, and line heights differ (20 px
+# in siv and gpui, about 18 in Qt and GTK).
+TEXT_SCROLL_EVENT = dict(SCROLL_EVENT, qt=29.7, gtk=10.6)
 
 
 def now():
@@ -45,7 +83,7 @@ def now():
 
 
 class Sway:
-    def __init__(self, renderer):
+    def __init__(self):
         self.dir = f"/tmp/gpui-compare-{os.getpid()}-{now()}"
         os.makedirs(self.dir, mode=0o700)
         with open(os.path.join(self.dir, "config"), "w") as f:
@@ -59,8 +97,8 @@ class Sway:
             "WAYLAND_DISPLAY": "wayland-1",
             "LC_ALL": "C.UTF-8",
         }
-        senv = dict(self.env, WLR_BACKENDS="headless", WLR_RENDERER=renderer, WLR_LIBINPUT_NO_DEVICES="1",
-                    WLR_RENDER_DRM_DEVICE="/dev/dri/renderD128")
+        senv = dict(self.env, WLR_BACKENDS="headless", WLR_RENDERER="vulkan", WLR_LIBINPUT_NO_DEVICES="1",
+                    WLR_RENDER_DRM_DEVICE=RENDER_NODE)
         if os.environ.get("GC_KMS"):
             # A KMS output with real vblank timing: sway's DRM backend on
             # the KMS device named (vkms, say), rendering on the GPU.
@@ -244,6 +282,7 @@ def proc_stats(pid):
         pass
     gpu = {}
     vram = {}
+    gtt = {}
     for fd in glob.glob(f"/proc/{pid}/fdinfo/*"):
         try:
             with open(fd) as f:
@@ -256,8 +295,12 @@ def proc_stats(pid):
         gpu[cid] = sum(int(v.split()[0]) for k, v in info.items() if k.startswith("drm-engine-"))
         if "drm-memory-vram" in info:
             vram[cid] = int(info["drm-memory-vram"].split()[0])
+        if "drm-memory-gtt" in info:
+            gtt[cid] = int(info["drm-memory-gtt"].split()[0])
     st["gpu_ns"] = sum(gpu.values())
     st["vram_kib"] = sum(vram.values())
+    st["gtt_kib"] = sum(gtt.values())
+    st["drm_clients"] = len(gpu)
     return st
 
 
@@ -308,11 +351,11 @@ def frame_stats(pres, cpu):
 
 
 class Run:
-    def __init__(self, toolkit, scenario, renderer, screenshot, perf=None):
+    def __init__(self, toolkit, scenario, screenshot, perf=None):
         self.toolkit = toolkit
         self.scenario = scenario
         self.result = {"toolkit": toolkit, "scenario": scenario}
-        self.sway = Sway(renderer)
+        self.sway = Sway()
         self.inj = Injector(self.sway.env)
         self.log_path = os.path.join(self.sway.dir, "presshim.log")
         self.shim = Shim(self.log_path)
@@ -320,6 +363,7 @@ class Run:
         app_scenario = "gallery" if scenario == "resize" else scenario
         startup_limit = 60 if scenario == "logs" else 15
         env = dict(self.sway.env, LD_PRELOAD=os.path.join(OUT, "presshim.so"), PRESSHIM_LOG=self.log_path)
+        env.update(TOOLKIT_ENV.get(toolkit, {}))
         # SIV_* variables reach the program (for experiments).
         env.update({k: v for k, v in os.environ.items() if k.startswith("SIV_")})
         self.app_log = open(os.path.join(self.sway.dir, "app.log"), "w")
@@ -359,7 +403,8 @@ class Run:
     def memory(self, key):
         st = proc_stats(self.pid)
         self.result[key] = {"rss_kib": st.get("VmRSS"), "pss_kib": st.get("Pss"), "hwm_kib": st.get("VmHWM"),
-                            "vram_kib": st.get("vram_kib"), "threads": st.get("threads")}
+                            "vram_kib": st.get("vram_kib"), "gtt_kib": st.get("gtt_kib"), "threads": st.get("threads"),
+                            "drm_clients": st.get("drm_clients"), "gpu_total_ms": st.get("gpu_ns", 0) / 1e6}
 
     def window(self, seconds):
         """Measures idle cost over `seconds`."""
@@ -447,21 +492,21 @@ def scenario_gallery(r):
     # Key: the text field has focus at start.
     r.result["key_ms"] = r.latency(["key a"], count=15)
     # Click: press on Default, which shows it pressed; release.
-    r.inj.send("move 60 80")
+    points = GALLERY_POINTS[r.toolkit]
+    r.inj.send("move %d %d" % points["default"])
     time.sleep(0.3)
     r.settle(0.2)
     r.result["click_ms"] = r.latency(["press"], after=["release"], count=15)
-    # Menu: a click on Menu until it shows (siv: its popup surface; gpui
-    # draws menus in the window).
-    r.inj.send("move 314 80")
+    # Menu: a click on Menu until it shows (siv, Qt, GTK: its popup
+    # surface; gpui draws menus in the window).
+    r.inj.send("move %d %d" % points["menu"])
     time.sleep(0.3)
     r.settle(0.2)
-    menu_surfaces = None if r.toolkit == "gpui" else set()
     out = []
     for i in range(8):
         t = r.inj.send("press")[0]
         r.inj.send("release")
-        if r.toolkit == "siv":
+        if r.toolkit in POPUP_MENUS:
             deadline = time.monotonic() + 1
             tp = None
             while time.monotonic() < deadline and tp is None:
@@ -480,7 +525,6 @@ def scenario_gallery(r):
         r.inj.send("key Escape")
         time.sleep(0.3)
     r.result["menu_ms"] = out
-    del menu_surfaces
 
 
 def scenario_list(r):
@@ -523,8 +567,9 @@ def scenario_text(r):
     r.inj.send("move 640 400")
     time.sleep(0.3)
     r.settle(0.2)
-    r.result["scroll"] = r.frames(lambda: r.inj.send(f"scrollburst {SCROLL_EVENT[r.toolkit]} 120 360", answers=360))
+    r.result["scroll"] = r.frames(lambda: r.inj.send(f"scrollburst {TEXT_SCROLL_EVENT[r.toolkit]} 120 360", answers=360))
     r.settle(0.3)
+    r.shot(r.scenario + "-scrolled")
     r.result["wheel_ms"] = r.latency(["wheel 1"], count=10)
     jumps(r)
 
@@ -605,27 +650,74 @@ def scenario_resize(r):
     r.shot("resize")
 
 
+def sh(cmd):
+    try:
+        return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def machine():
+    """The machine, GPU, driver, and toolkit versions; exits unless the
+    Vulkan devices include a GPU (vulkaninfo, from vulkan-tools)."""
+    gpus = []
+    for block in sh("vulkaninfo --summary 2>/dev/null").split("\nGPU")[1:]:
+        fields = dict(map(str.strip, line.split(" = ", 1)) for line in block.splitlines() if " = " in line)
+        gpus.append({k: fields.get(k) for k in ("deviceName", "deviceType", "driverName", "driverInfo", "apiVersion")})
+    if not any(g["deviceType"] in ("PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU", "PHYSICAL_DEVICE_TYPE_DISCRETE_GPU") for g in gpus):
+        sys.exit(f"run.py: no Vulkan GPU (vulkaninfo found {gpus}); this bench measures GPU rendering only")
+    if not os.path.exists(RENDER_NODE):
+        sys.exit(f"run.py: no render node {RENDER_NODE} (GC_RENDER_NODE names another)")
+    cpufreq = "/sys/devices/system/cpu/cpu0/cpufreq/"
+    return {
+        "vulkan_devices": gpus,
+        "render_node": RENDER_NODE,
+        "cpu": sh("grep -m1 'model name' /proc/cpuinfo | cut -d: -f2"),
+        "cpus": os.cpu_count(),
+        "memory": sh("grep MemTotal /proc/meminfo"),
+        "kernel": os.uname().release,
+        "governor": sh(f"cat {cpufreq}scaling_governor {cpufreq}energy_performance_preference 2>/dev/null").replace("\n", " "),
+        "sway": sh("sway --version"),
+        "gtk": sh("pkg-config --modversion gtk4"),
+        "qt": sh("pkg-config --modversion Qt6Quick"),
+        "siv_commit": sh(f"git -C {ROOT} rev-parse HEAD"),
+        "siv_dirty": bool(sh(f"git -C {ROOT} status --porcelain --untracked-files=no")),
+        "zed_commit": sh(f"git -C {os.path.join(ROOT, 'gpui', 'zed')} rev-parse HEAD 2>/dev/null"),
+        "date": time.strftime("%Y-%m-%d %H:%M %z"),
+    }
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--runs", type=int, default=5)
-    ap.add_argument("--toolkits", default="siv,gpui")
+    ap.add_argument("--toolkits", default="siv,gpui,qt,gtk")
     ap.add_argument("--scenarios", default=",".join(SCENARIOS))
     ap.add_argument("--out", default=os.path.join(ROOT, "results", "raw"))
-    ap.add_argument("--renderer", default="vulkan")
     ap.add_argument("--screenshots", default=None, help="directory for screenshots of the first run")
     ap.add_argument("--perf", default=None, help="record each run with perf into PREFIX-<toolkit>-<scenario>.data (distorts the numbers)")
+    ap.add_argument("--warmup", action="store_true", help="first run each program once per scenario, unrecorded (caches)")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
+    with open(os.path.join(args.out, "machine.json"), "w") as f:
+        json.dump(machine(), f, indent=1)
     if args.screenshots:
         os.makedirs(args.screenshots, exist_ok=True)
-    for run in range(args.runs):
+    for run in range(-1 if args.warmup else 0, args.runs):
         for scenario in args.scenarios.split(","):
             for toolkit in args.toolkits.split(","):
-                r = Run(toolkit, scenario, args.renderer, args.screenshots if run == 0 else None, args.perf)
+                if scenario in UNSUPPORTED.get(toolkit, ()):
+                    continue
+                r = Run(toolkit, scenario, args.screenshots if run == 0 else None, args.perf)
                 try:
                     globals()["scenario_" + scenario](r)
                 finally:
                     res = r.finish()
+                # A program that never submitted work to the GPU drew on the
+                # CPU (or on a CPU Vulkan driver): not what this bench measures.
+                if not res["memory_end"]["gpu_total_ms"]:
+                    sys.exit(f"run.py: {toolkit} {scenario} submitted no GPU work on {RENDER_NODE}; refusing a CPU-rendered result")
+                if run < 0:
+                    continue
                 res["run"] = run
                 res["loadavg"] = os.getloadavg()[0]
                 with open(os.path.join(args.out, f"{toolkit}-{scenario}-{run}.json"), "w") as f:

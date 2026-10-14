@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Summarizes harness/run.py's results as Markdown tables.
 
-    harness/report.py [RAW_DIR] > results.md
+    harness/report.py [RAW_DIR] > results.md   # a column per toolkit in RAW_DIR
     harness/report.py BEFORE_DIR AFTER_DIR   # siv before, siv after, gpui
 
 Every cell is the median over runs, with the range over runs in brackets.
@@ -24,6 +24,11 @@ def load(raw):
     for path in glob.glob(os.path.join(raw, "*.json")):
         with open(path) as f:
             r = json.load(f)
+        if "toolkit" not in r:
+            continue  # machine.json
+        for m in ("memory", "memory_end"):
+            if r.get(m) and r[m].get("vram_kib") is not None:
+                r[m]["gpu_kib"] = r[m]["vram_kib"] + (r[m].get("gtt_kib") or 0)
         data.setdefault((r["toolkit"], r["scenario"]), []).append(r)
     return data
 
@@ -74,12 +79,14 @@ METRICS = [
     ("idle", "idle wakeups (/s)", "idle.wakeups_per_s", None, "{:.1f}"),
     ("idle", "RSS after start (MiB)", "memory.rss_kib", None, "{:.1f}"),
     ("idle", "PSS after start (MiB)", "memory.pss_kib", None, "{:.1f}"),
-    ("idle", "GPU memory (MiB)", "memory.vram_kib", None, "{:.1f}"),
+    ("idle", "GPU memory, VRAM (MiB)", "memory.vram_kib", None, "{:.1f}"),
+    ("idle", "GPU memory, GTT (MiB)", "memory.gtt_kib", None, "{:.1f}"),
     ("idle", "threads", "memory.threads", None, "{:.0f}"),
     ("idle", "threads after 10 s idle", "memory_idle.threads", None, "{:.0f}"),
     ("gallery", "startup to first frame (ms)", "startup_ms", None, "{:.1f}"),
     ("gallery", "idle wakeups (/s)", "idle.wakeups_per_s", None, "{:.1f}"),
     ("gallery", "RSS (MiB)", "memory_end.rss_kib", None, "{:.1f}"),
+    ("gallery", "GPU memory, VRAM + GTT (MiB)", "memory_end.gpu_kib", None, "{:.1f}"),
     ("gallery", "key to photon, median (ms)", "key_ms", "median", "{:.2f}"),
     ("gallery", "key to photon, max (ms)", "key_ms", "max", "{:.2f}"),
     ("gallery", "click to photon, median (ms)", "click_ms", "median", "{:.2f}"),
@@ -97,6 +104,7 @@ METRICS = [
     ("list", "wheel to photon, median (ms)", "wheel_ms", "median", "{:.2f}"),
     ("text", "startup to first frame (ms)", "startup_ms", None, "{:.1f}"),
     ("text", "RSS (MiB)", "memory_end.rss_kib", None, "{:.1f}"),
+    ("text", "GPU memory, VRAM + GTT (MiB)", "memory_end.gpu_kib", None, "{:.1f}"),
     ("text", "key to photon, median (ms)", "key_ms", "median", "{:.2f}"),
     ("text", "key to photon, max (ms)", "key_ms", "max", "{:.2f}"),
     ("text", "scroll: dropped frames", "scroll.dropped", None, "{:.0f}"),
@@ -166,8 +174,17 @@ def main():
     if len(sets) == 2:
         columns = [("siv before", sets[0], "siv"), ("siv after", sets[1], "siv"), ("gpui", sets[1], "gpui")]
     else:
-        columns = [("siv", data, "siv"), ("gpui", data, "gpui")]
+        present = {tk for tk, _ in data}
+        columns = [(tk, data, tk) for tk in ("siv", "gpui", "qt", "gtk") if tk in present]
     runs = max((len(v) for v in data.values()), default=0)
+    machine = os.path.join(dirs[-1], "machine.json")
+    if os.path.exists(machine):
+        with open(machine) as f:
+            m = json.load(f)
+        gpus = "; ".join(f"{g['deviceName']}, {g['driverInfo']}" for g in m["vulkan_devices"])
+        print(f"Measured {m['date']} on {m['cpu'].strip()} ({m['cpus']} threads), {gpus}, Linux {m['kernel']}, "
+              f"{m['sway']}, GTK {m['gtk']}, Qt {m['qt']}, governor {m['governor']}; siv at {m['siv_commit'][:7]}"
+              f"{' with local changes' if m['siv_dirty'] else ''}, zed (gpui) at {m['zed_commit'][:7]}.\n")
     print(f"Median over {runs} runs per cell, [min–max over runs].\n")
     print("| scenario | metric | " + " | ".join(c[0] for c in columns) + " |")
     print("| --- | --- |" + " --- |" * len(columns))
@@ -184,7 +201,9 @@ def main():
         siv_total = sizes.get("siv-bench", 0) + sizes.get("libsiv.so", 0)
         siv_cell = f"{siv_total / 2**20:.1f} (libsiv.so {sizes.get('libsiv.so', 0) / 2**20:.1f} + program {sizes.get('siv-bench', 0) / 2**10:.0f} KiB)"
         gpui_cell = f"{sizes.get('gpui-compare', 0) / 2**20:.1f}"
-        cells = [siv_cell] * (len(columns) - 1) + [gpui_cell]
+        # Qt and GTK programs link their toolkits' shared libraries, which
+        # are not counted.
+        cells = [siv_cell if tk == "siv" else gpui_cell if tk == "gpui" else "–" for _, _, tk in columns]
         print("| all | stripped binary size (MiB) | " + " | ".join(cells) + " |")
 
 

@@ -34,6 +34,21 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <wayland-client-core.h>
+#include <wayland-version.h>
+
+#if WAYLAND_VERSION_MAJOR == 1 && WAYLAND_VERSION_MINOR < 23
+/* libwayland before 1.23 (Debian 12 has 1.21) has neither function; read
+ * them from struct wl_proxy, whose first fields (struct wl_object, then
+ * the display) have not changed since 1.0. */
+struct proxy_head {
+	const struct wl_interface *interface;
+	const void *implementation;
+	uint32_t id;
+	struct wl_display *display;
+};
+static struct wl_display *wl_proxy_get_display(struct wl_proxy *p) { return ((struct proxy_head *)p)->display; }
+static const struct wl_interface *wl_proxy_get_interface(struct wl_proxy *p) { return ((struct proxy_head *)p)->interface; }
+#endif
 
 #include "presentation-time-client-protocol.h"
 

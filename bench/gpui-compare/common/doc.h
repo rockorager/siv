@@ -49,7 +49,7 @@ static inline uint32_t doc_next(uint64_t *state) {
 static inline char *doc_generate(size_t paragraphs, size_t *len_out) {
 	uint64_t state = 12345;
 	size_t cap = paragraphs * 800 + 1, len = 0;
-	char *out = malloc(cap);
+	char *out = (char *)malloc(cap);
 	for (size_t p = 0; p < paragraphs; p++) {
 		uint32_t words = 20 + doc_next(&state) % 80;
 		for (uint32_t w = 0; w < words; w++) {
@@ -91,7 +91,7 @@ static inline size_t log_line(uint64_t *state, size_t i, char *buf) {
 static inline char *log_generate(size_t *len_out, size_t *lines_out) {
 	uint64_t state = 777;
 	size_t cap = LOG_BYTES + 256, len = 0, i = 0;
-	char *out = malloc(cap);
+	char *out = (char *)malloc(cap);
 	char line[160];
 	while (len < LOG_BYTES) {
 		if (i > 0) out[len++] = '\n';
