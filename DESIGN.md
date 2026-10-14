@@ -2400,6 +2400,21 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       properties, a second document view). Reverse if compositors
       without xdg-dialog become rare and native dialogs prove the better
       default.
+    - Another application's window can be a native dialog's parent:
+      `siv_window_desc.parent_handle` takes the handle that window
+      exported (xdg-foreign v2), as a portal request names it
+      ("wayland:HANDLE", or bare), and siv imports it
+      (`zxdg_importer_v2`, `set_parent_of`) before the first commit, so
+      the compositor stacks the window over it and, with
+      `SIV_WINDOW_MODAL`, makes it modal through xdg-dialog. siv cannot
+      keep input from another client, so modality there is the
+      compositor's. An "x11:" handle, one the compositor does not know
+      (the import is destroyed at once), and a compositor without
+      xdg-foreign leave a window without a parent rather than failing:
+      the caller asked for a dialog, and a plain window still serves.
+      Found by siv-columns, which serves the FileChooser portal: its
+      picker belongs to the window that asked for it. Sway floats a
+      toplevel with a parent, which the integration test checks.
     - Window icons (`siv_window_set_icon`, xdg-toplevel-icon-v1): a
       themed name, an image, or both. A name goes to the compositor at
       once; siv also loads it through the icon module (`ui.Icons`, so the

@@ -149,6 +149,7 @@ const Window = struct {
     /// Toplevels: the parent and modality asked for, the icon set last
     /// (its name and image sizes), idle inhibitions, and the session name.
     toplevel_parent: ?WindowId = null,
+    foreign_parent: platform.BoundedString(255) = .{},
     modal: bool = false,
     icon: ?struct { name: platform.BoundedString(255) = .{}, sizes: [16]u32 = @splat(0), count: u8 = 0 } = null,
     idle_count: u32 = 0,
@@ -343,7 +344,8 @@ fn createToplevel(hl: *Headless, options: platform.WindowOptions) Error!WindowId
     };
     w.title.set(options.title);
     w.toplevel_parent = options.parent;
-    w.modal = options.parent != null and options.modal;
+    if (options.parent == null) w.foreign_parent.set(options.foreign_parent);
+    w.modal = (options.parent != null or w.foreign_parent.len > 0) and options.modal;
     w.session_name.set(options.session_name);
     hl.windows.items[slot] = w;
     // A known name is restored before the first configure.
@@ -632,10 +634,11 @@ pub fn iconOf(hl: *Headless, id: WindowId) ?struct { name: []const u8, sizes: []
     return .{ .name = ic.name.slice(), .sizes = ic.sizes[0..ic.count] };
 }
 
-/// A window's parent and whether it asked to be modal.
-pub fn dialogOf(hl: *Headless, id: WindowId) struct { parent: ?WindowId, modal: bool } {
+/// A window's parent (of this application, or another's by its handle)
+/// and whether it asked to be modal.
+pub fn dialogOf(hl: *Headless, id: WindowId) struct { parent: ?WindowId, foreign_parent: []const u8, modal: bool } {
     const w = hl.get(id);
-    return .{ .parent = w.toplevel_parent, .modal = w.modal };
+    return .{ .parent = w.toplevel_parent, .foreign_parent = w.foreign_parent.slice(), .modal = w.modal };
 }
 
 pub fn inhibitIdle(hl: *Headless, id: WindowId, on: bool) bool {

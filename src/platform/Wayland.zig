@@ -110,6 +110,7 @@ session: ?*xdg.SessionV1 = null,
 /// Themed cursors, without cursor-shape-v1.
 cursor_theme: cursor.Theme,
 exporter: ?*zxdg.ExporterV2 = null,
+importer: ?*zxdg.ImporterV2 = null,
 activation: ?*xdg.ActivationV1 = null,
 /// Activation tokens requested and not yet done.
 tokens: std.ArrayList(*TokenRequest) = .empty,
@@ -364,6 +365,8 @@ pub const Window = struct {
     /// The xdg-foreign export, and its handle once the compositor sent it.
     exported: ?*zxdg.ExportedV2 = null,
     export_handle: ?platform.Handle = null,
+    /// Another client's toplevel imported as this one's parent.
+    imported: ?*zxdg.ImportedV2 = null,
     /// A buffer was committed: the window is mapped.
     mapped: bool = false,
     /// An activation asked for before the window was mapped, sent once
@@ -465,6 +468,7 @@ fn teardown(self: *Wayland) void {
     }
     self.tokens.deinit(self.allocator);
     if (self.exporter) |m| m.destroy();
+    if (self.importer) |m| m.destroy();
     if (self.activation) |m| m.destroy();
     for (self.seats.items) |s| if (s) |seat| seat.destroy();
     self.cursor_theme.deinit();
@@ -715,6 +719,8 @@ fn addGlobal(self: *Wayland, registry: *wl.Registry, name: u32, interface: []con
         for (self.seats.items) |s| if (s) |seat| seat.addGestures();
     } else if (is(interface, zxdg.ExporterV2)) {
         self.exporter = try registry.bind(name, zxdg.ExporterV2, 1);
+    } else if (is(interface, zxdg.ImporterV2)) {
+        self.importer = try registry.bind(name, zxdg.ImporterV2, 1);
     } else if (is(interface, xdg.ActivationV1)) {
         self.activation = try registry.bind(name, xdg.ActivationV1, 1);
     } else if (is(interface, zwlr.LayerShellV1)) {
@@ -1102,12 +1108,27 @@ fn createToplevel(self: *Wayland, options: platform.WindowOptions) Error!WindowI
     }
     if (options.title.len > 0) setString(toplevel, xdg.Toplevel.setTitle, options.title);
     if (options.app_id.len > 0) setString(toplevel, xdg.Toplevel.setAppId, options.app_id);
+    var has_parent = false;
     if (options.parent) |pid| if (self.get(pid).toplevel) |pt| {
         toplevel.setParent(pt);
-        if (options.modal) if (self.dialog_manager) |m| {
-            w.dialog = m.getXdgDialog(toplevel) catch null;
-            if (w.dialog) |d| d.setModal();
-        };
+        has_parent = true;
+    };
+    // Another client's window (a portal request's parent): imported by
+    // its handle; the compositor parents this toplevel to it.
+    if (options.parent == null and options.foreign_parent.len > 0) if (self.importer) |m| {
+        var zbuf: [256]u8 = undefined;
+        if (std.fmt.bufPrintSentinel(&zbuf, "{s}", .{options.foreign_parent}, 0)) |z| {
+            w.imported = m.importToplevel(z) catch null;
+        } else |_| {}
+        if (w.imported) |imp| {
+            imp.setListener(*Window, onImported, w);
+            imp.setParentOf(surface);
+            has_parent = true;
+        }
+    };
+    if (has_parent and options.modal) if (self.dialog_manager) |m| {
+        w.dialog = m.getXdgDialog(toplevel) catch null;
+        if (w.dialog) |d| d.setModal();
     };
     // Restored before the first commit, as the protocol requires.
     w.session_name.set(options.session_name);
@@ -1527,6 +1548,7 @@ pub fn destroyWindow(self: *Wayland, id: WindowId) void {
         x.destroy(self.allocator);
     };
     if (w.exported) |e| e.destroy();
+    if (w.imported) |i| i.destroy();
     if (w.dialog) |d| d.destroy();
     if (w.icon) |i| i.destroy();
     if (w.idle) |i| i.destroy();
@@ -2255,6 +2277,17 @@ pub fn exportToplevel(self: *Wayland, id: WindowId) void {
     const e = exporter.exportToplevel(w.surface) catch return self.queue.push(none);
     e.setListener(*Window, onExported, w);
     w.exported = e;
+}
+
+/// The parent went (or its handle was never valid): the window stays,
+/// without a parent.
+fn onImported(imp: *zxdg.ImportedV2, event: zxdg.ImportedV2.Event, w: *Window) void {
+    switch (event) {
+        .destroyed => {
+            imp.destroy();
+            w.imported = null;
+        },
+    }
 }
 
 fn onExported(_: *zxdg.ExportedV2, event: zxdg.ExportedV2.Event, w: *Window) void {

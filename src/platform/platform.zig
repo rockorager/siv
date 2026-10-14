@@ -1402,6 +1402,10 @@ pub const WindowOptions = struct {
     /// The toplevel this window belongs to (xdg_toplevel.set_parent): the
     /// compositor keeps it above its parent, as for a dialog.
     parent: ?WindowId = null,
+    /// Another client's toplevel this window belongs to, by the handle it
+    /// exported (xdg-foreign v2, imported with zxdg_importer_v2); ignored
+    /// with `parent`. Copied before the call returns.
+    foreign_parent: []const u8 = "",
     /// With a parent: a modal dialog (xdg-dialog-v1), which compositors
     /// may show attached to the parent while keeping input from it.
     modal: bool = false,

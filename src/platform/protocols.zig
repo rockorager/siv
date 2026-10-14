@@ -71,6 +71,9 @@ pub const globals = [_]struct { []const u8, u32 }{
     .{ "wp_cursor_shape_manager_v1", 2 },
     // Parent window handles for portal dialogs (D19).
     .{ "zxdg_exporter_v2", 1 },
+    // Other applications' windows as parents, for portal dialogs a
+    // program serves (D17).
+    .{ "zxdg_importer_v2", 1 },
     // Focus handoff between applications (D17, D19).
     .{ "xdg_activation_v1", 1 },
     // Input on request (D16): tablets and pads, touchpad gestures, pointer

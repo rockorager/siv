@@ -426,6 +426,7 @@ pub const decls = [_]Decl{
         .{ .name = "states", .type = ref("siv_window_states"), .doc = "Ask for these states at once; only maximized and fullscreen apply." },
         .{ .name = "parent", .type = ref("siv_window"), .doc = "A window this one belongs to, as a native dialog (D17): the compositor keeps it above that window; with SIV_WINDOW_MODAL, it is modal. 0 for none. siv_dialog makes dialogs inside a window instead. Destroying the parent destroys it first." },
         .{ .name = "session_name", .type = .string, .doc = "The window's name in the session (siv_app_start_session), the same on every run and unique among the application's windows, such as \"main\" or a document's path; empty keeps it out of the session. A window created after the session started is restored by the compositor before it maps if the session knows its name." },
+        .{ .name = "parent_handle", .type = .string, .doc = "Another application's window this one belongs to, by the handle that window exported (xdg-foreign v2), as portal requests name it: \"wayland:HANDLE\" or a bare handle. The compositor keeps this window above that one, and with SIV_WINDOW_MODAL it is modal to it (xdg-dialog-v1). An \"x11:\" or other handle, one the compositor does not know, and a compositor without xdg-foreign leave the window without a parent. Ignored with parent. Copied." },
     }),
 
     enumeration("siv_popup_placement", "Where a popup goes relative to its anchor (D17). Horizontal sides are logical: they mirror in right-to-left layouts.", &.{

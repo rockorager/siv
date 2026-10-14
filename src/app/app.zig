@@ -490,6 +490,7 @@ pub const App = struct {
             .height = options.height,
             .decoration = if (options.client_decorations) .client else .server,
             .parent = if (options.parent) |p| p.id else null,
+            .foreign_parent = options.foreign_parent,
             .modal = options.modal,
             .session_name = options.session_name,
             .role = options.role,
@@ -919,8 +920,12 @@ pub const WindowOptions = struct {
     /// The window this one belongs to, as a dialog (D17): the compositor
     /// keeps it above that window.
     parent: ?*Window = null,
+    /// Another application's toplevel this window belongs to, by its
+    /// xdg-foreign handle (without "wayland:"); ignored with `parent`.
+    foreign_parent: []const u8 = "",
     /// With a parent: a modal dialog. The compositor may keep input from
-    /// the parent (xdg-dialog-v1); siv does on every compositor.
+    /// the parent (xdg-dialog-v1); siv does on every compositor, for a
+    /// parent of this application.
     modal: bool = false,
     /// The window's name in the session (`App.startSession`), unique among
     /// the application's windows; empty keeps it out of the session.

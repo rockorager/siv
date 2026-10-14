@@ -89,6 +89,41 @@ test "native modal dialogs: a parent, input kept from it, destroyed with it" {
     try testing.expect(c.siv_window_get_app(dialog) == .null);
 }
 
+test "native dialogs for another application's window: parented by its exported handle" {
+    var h: Harness = .{};
+    try h.start(200, 100, null, null);
+    defer h.stop();
+    // A portal request names the caller's window "wayland:HANDLE".
+    var picker: t.Window = .null;
+    try ok(c.siv_window_create(h.app, &.{ .title = "Open", .title_len = 4, .parent_handle = "wayland:abc123", .parent_handle_len = 14, .flags = .{ .modal = true } }, &picker));
+    try h.settle();
+    var d = try onHeadless(&h, platform.Headless.dialogOf, .{try idOf(picker)});
+    try testing.expect(d.parent == null);
+    try testing.expectEqualStrings("abc123", d.foreign_parent);
+    try testing.expect(d.modal);
+    c.siv_window_destroy(picker);
+    // A bare handle is a Wayland one.
+    try ok(c.siv_window_create(h.app, &.{ .parent_handle = "def", .parent_handle_len = 3 }, &picker));
+    d = try onHeadless(&h, platform.Headless.dialogOf, .{try idOf(picker)});
+    try testing.expectEqualStrings("def", d.foreign_parent);
+    try testing.expect(!d.modal);
+    c.siv_window_destroy(picker);
+    // An X11 window cannot be a Wayland window's parent: none, not modal.
+    try ok(c.siv_window_create(h.app, &.{ .parent_handle = "x11:0x3a00004", .parent_handle_len = 13, .flags = .{ .modal = true } }, &picker));
+    d = try onHeadless(&h, platform.Headless.dialogOf, .{try idOf(picker)});
+    try testing.expectEqualStrings("", d.foreign_parent);
+    try testing.expect(!d.modal);
+    c.siv_window_destroy(picker);
+    // A parent of this application wins over a handle.
+    try ok(c.siv_window_create(h.app, &.{ .parent = h.window, .parent_handle = "wayland:abc", .parent_handle_len = 11 }, &picker));
+    d = try onHeadless(&h, platform.Headless.dialogOf, .{try idOf(picker)});
+    try testing.expectEqual(try idOf(h.window), d.parent.?);
+    try testing.expectEqualStrings("", d.foreign_parent);
+    c.siv_window_destroy(picker);
+    // A handle with a NUL is no handle.
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_window_create(h.app, &.{ .parent_handle = "a\x00b", .parent_handle_len = 3 }, &picker));
+}
+
 test "window icons: a themed name drawn at the compositor's sizes, and images" {
     var h: Harness = .{};
     try h.start(200, 100, null, null);

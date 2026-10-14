@@ -1278,6 +1278,32 @@ test "toplevels export xdg-foreign handles and activation tokens hand focus over
     try testing.expectEqual(@as(WindowId, 1), second);
 }
 
+test "a window parented to another client's toplevel by its exported handle floats over it on sway" {
+    var h: Harness = .{};
+    try h.start();
+    defer h.stop();
+    const app = &h.app;
+    const backend = app.backend;
+    try testing.expect(backend.exporter != null and backend.importer != null);
+    // The handle another client (a portal's caller) exported.
+    const caller = try h.mapWindow(.{ .title = "caller" });
+    backend.exportToplevel(caller);
+    try runUntil(&h.loop, app, struct {
+        fn f(a: *TestApp) bool {
+            return a.count(.exported) >= 1;
+        }
+    }.f);
+    const handle = app.last(.exported).?.exported.handle;
+    // Sway floats toplevels with a parent; the criteria match only then.
+    _ = try h.mapWindow(.{ .title = "picker", .foreign_parent = handle.slice(), .modal = true });
+    _ = backend.display.roundtrip();
+    try h.sway.command("[title=\"picker\" floating] mark found");
+    // A handle the compositor does not know leaves the window tiled.
+    _ = try h.mapWindow(.{ .title = "orphan", .foreign_parent = "no-such-handle", .modal = true });
+    _ = backend.display.roundtrip();
+    try h.sway.command("[title=\"orphan\" tiling] mark tiled");
+}
+
 // The desktop shell (D31) --------------------------------------------------------
 
 fn waitOutputs(h: *Harness, n: usize) !void {

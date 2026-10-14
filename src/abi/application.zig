@@ -545,7 +545,12 @@ fn windowCreate(app: t.App, desc_ptr: ?*const t.WindowDesc, out: ?*t.Window) Err
         if (pw.owner != self or pw.dead or pw.parent != null) return error.InvalidArgument;
         break :blk pw;
     };
-    if (flags.modal and parent == null) return error.InvalidArgument;
+    // Another application's window, by its xdg-foreign handle; other
+    // kinds of handles (x11:) leave the window without a parent.
+    const parent_handle = try runtime.string(desc.parent_handle, desc.parent_handle_len);
+    if (parent_handle.len > 255 or std.mem.indexOfScalar(u8, parent_handle, 0) != null) return error.InvalidArgument;
+    const foreign_parent: []const u8 = if (parent != null) "" else if (std.mem.startsWith(u8, parent_handle, "wayland:")) parent_handle["wayland:".len..] else if (std.mem.indexOfScalar(u8, parent_handle, ':') != null) "" else parent_handle;
+    if (flags.modal and parent == null and parent_handle.len == 0) return error.InvalidArgument;
     const dest = try runtime.out(t.Window, out);
 
     const w = try newWindow(self, .{
@@ -557,6 +562,7 @@ fn windowCreate(app: t.App, desc_ptr: ?*const t.WindowDesc, out: ?*t.Window) Err
         .rtl = if (flags.rtl) true else if (flags.ltr) false else null,
         .language = language,
         .parent = if (parent) |pw| pw.win else null,
+        .foreign_parent = foreign_parent,
         .modal = flags.modal,
         .session_name = session_name,
     }, .{ .on_event = desc.on_event, .destroy = desc.destroy, .user_data = desc.user_data, .dialog_parent = parent });
