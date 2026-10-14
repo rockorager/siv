@@ -418,6 +418,23 @@ pub const Platform = union(enum) {
         }
     }
 
+    /// Replaces the icon of this client's drag `source`, while it lasts:
+    /// false once it is over, Unsupported if it started without an icon.
+    pub fn setDragIcon(p: Platform, seat: SeatId, source: u32, icon: *const DragIcon) Error!bool {
+        return switch (p) {
+            inline else => |b| b.setDragIcon(seat, source, icon),
+        };
+    }
+
+    /// Cancels this client's drag `source`, as if dropped nowhere: a
+    /// `drag_source` event reports it cancelled, and the drag leaves the
+    /// window under it.
+    pub fn cancelDrag(p: Platform, seat: SeatId, source: u32) void {
+        switch (p) {
+            inline else => |b| b.cancelDrag(seat, source),
+        }
+    }
+
     // Desktop integration (D19).
 
     /// Exports a toplevel with xdg-foreign-v2 so that other clients can

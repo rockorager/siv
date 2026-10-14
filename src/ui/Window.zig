@@ -1065,7 +1065,36 @@ pub fn startDrag(win: *Window, id: NodeId, o: DragOptions) DragError!void {
     _ = input_mod.bubblePointer(win, capture, .cancel, .primary);
 }
 
-/// An image as a drag icon: premultiplied, sRGB-encoded BGRA.
+/// Replaces the icon of the drag `id` started (`startDrag`), while it
+/// lasts; the hotspot is in logical pixels.
+pub fn setDragIcon(win: *Window, id: NodeId, img: *Image, hotspot_x: f32, hotspot_y: f32) error{ OutOfMemory, Unsupported, Unavailable }!void {
+    const host = win.drag_host orelse return error.Unavailable;
+    const d = win.ownDrag(id) orelse return error.Unavailable;
+    if (img.vector != null) return error.Unsupported;
+    defer _ = win.scratch.reset(.retain_capacity);
+    const icon = try dragIcon(win.scratch.allocator(), img, hotspot_x, hotspot_y);
+    if (!try host.set_icon(host.ctx, d.seat, d.source, &icon)) return error.Unavailable;
+}
+
+/// Cancels the drag `id` started, as if dropped nowhere: `id` hears its
+/// end with no action.
+pub fn cancelDrag(win: *Window, id: NodeId) error{Unavailable}!void {
+    const host = win.drag_host orelse return error.Unavailable;
+    const d = win.ownDrag(id) orelse return error.Unavailable;
+    host.cancel(host.ctx, d.seat, d.source);
+}
+
+/// This application's drag in progress, if `id` of this window started it.
+fn ownDrag(win: *Window, id: NodeId) ?Clipboard.DragOut {
+    const cb = win.clipboard orelse return null;
+    const d = cb.drag orelse return null;
+    if (d.origin != win or d.node != id or d.source == 0) return null;
+    return d;
+}
+
+/// An image as a drag icon: premultiplied, sRGB-encoded BGRA, at the
+/// image's scale where that is a whole number, the hotspot (logical
+/// pixels) scaled to match.
 fn dragIcon(a: std.mem.Allocator, img: *const Image, hx: f32, hy: f32) error{OutOfMemory}!platform.DragIcon {
     const w = img.width;
     const h = img.height;
@@ -1092,7 +1121,10 @@ fn dragIcon(a: std.mem.Allocator, img: *const Image, hx: f32, hy: f32) error{Out
         for (rgba[0..3]) |*ch| ch.* = @intCast((@as(u32, ch.*) * alpha + 127) / 255);
         px[(y * w + x) * 4 ..][0..4].* = .{ rgba[2], rgba[1], rgba[0], rgba[3] };
     };
-    return .{ .pixels = px, .width = w, .height = h, .stride = w * 4, .hotspot_x = @intFromFloat(@round(hx)), .hotspot_y = @intFromFloat(@round(hy)) };
+    const s = @round(img.scale);
+    const scale: u32 = if (s >= 1 and @abs(img.scale - s) < 0.01) @intFromFloat(s) else 1;
+    const f: f32 = @floatFromInt(scale);
+    return .{ .pixels = px, .width = w, .height = h, .stride = w * 4, .hotspot_x = @intFromFloat(@round(hx * f)), .hotspot_y = @intFromFloat(@round(hy * f)), .scale = scale };
 }
 
 fn srgbEncode(l: f32) f32 {

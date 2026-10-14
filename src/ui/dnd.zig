@@ -53,6 +53,11 @@ pub const Host = struct {
     /// Takes `fd`. False (with `fd` closed) once the offer is gone.
     receive: *const fn (ctx: ?*anyopaque, seat: platform.SeatId, offer: u32, mime: []const u8, fd: i32) bool,
     finish: *const fn (ctx: ?*anyopaque, seat: platform.SeatId, offer: u32, action: DragAction) void,
+    /// `Platform.setDragIcon` for this client's drag `source`: false once
+    /// the drag is over, error.Unsupported if it has no icon.
+    set_icon: *const fn (ctx: ?*anyopaque, seat: platform.SeatId, source: u32, icon: *const platform.DragIcon) error{ OutOfMemory, Unsupported }!bool,
+    /// `Platform.cancelDrag`.
+    cancel: *const fn (ctx: ?*anyopaque, seat: platform.SeatId, source: u32) void,
 };
 
 /// `Host` on a compositor, for the window `window`. Must outlive the
@@ -65,7 +70,41 @@ pub const CompositorHost = struct {
     const Compositor = compositor.Compositor;
 
     pub fn host(h: *CompositorHost) Host {
-        return .{ .ctx = h, .start = start, .mimes = mimes, .accept = accept, .receive = receive, .finish = finish };
+        return .{ .ctx = h, .start = start, .mimes = mimes, .accept = accept, .receive = receive, .finish = finish, .set_icon = setIcon, .cancel = cancel };
+    }
+
+    fn setIcon(ctx: ?*anyopaque, seat: platform.SeatId, source: u32, icon: *const platform.DragIcon) error{ OutOfMemory, Unsupported }!bool {
+        const h: *CompositorHost = @ptrCast(@alignCast(ctx));
+        const C = struct {
+            seat: platform.SeatId,
+            source: u32,
+            icon: *const platform.DragIcon,
+            out: error{ OutOfMemory, Unsupported }!bool = false,
+            fn run(c: ?*anyopaque, comp: *Compositor) void {
+                const s: *@This() = @ptrCast(@alignCast(c));
+                s.out = if (comp.platform.setDragIcon(s.seat, s.source, s.icon)) |ok| ok else |err| switch (err) {
+                    error.Unsupported => error.Unsupported,
+                    else => error.OutOfMemory,
+                };
+            }
+        };
+        var c: C = .{ .seat = seat, .source = source, .icon = icon };
+        h.comp.call(&c, C.run) catch return error.OutOfMemory;
+        return c.out;
+    }
+
+    fn cancel(ctx: ?*anyopaque, seat: platform.SeatId, source: u32) void {
+        const h: *CompositorHost = @ptrCast(@alignCast(ctx));
+        const C = struct {
+            seat: platform.SeatId,
+            source: u32,
+            fn run(c: ?*anyopaque, comp: *Compositor) void {
+                const s: *@This() = @ptrCast(@alignCast(c));
+                comp.platform.cancelDrag(s.seat, s.source);
+            }
+        };
+        var c: C = .{ .seat = seat, .source = source };
+        h.comp.call(&c, C.run) catch {};
     }
 
     fn start(ctx: ?*anyopaque, seat: platform.SeatId, serial: u32, mime_list: []const []const u8, actions: DragActions, icon: ?*const platform.DragIcon) ?u32 {
@@ -214,6 +253,11 @@ pub const State = struct {
     pending: ?[]u8 = null,
     /// A drop with the `ask` action the application has not resolved.
     asking: bool = false,
+    /// The action the target's handler chose (`setAction`), instead of
+    /// its preferred one; none for that.
+    chosen: DragAction = .none,
+    /// A handler is taking an `enter` or `move`, so `setAction` applies.
+    choosing: bool = false,
 
     const Answer = struct { mime: ?[]const u8 = null, actions: DragActions = .{}, preferred: DragAction = .none };
 
@@ -322,13 +366,24 @@ fn route(win: *Window) void {
     }
     const next: NodeId = if (found) |c| c.node else .none;
     const phase: node_mod.DropPhase = if (next == st.target) .move else .enter;
-    if (next != st.target) leaveTarget(win);
+    if (next != st.target) {
+        leaveTarget(win);
+        st.chosen = .none;
+    }
     st.target = next;
     st.taken = false;
     var answer: State.Answer = .{};
     if (found) |c| {
-        st.taken = c.editor or deliver(win, c.node, .{ .phase = phase, .x = 0, .y = 0, .mime = c.mime });
-        if (st.taken) answer = .{ .mime = c.mime, .actions = c.actions, .preferred = c.preferred };
+        if (c.editor) {
+            st.taken = true;
+        } else {
+            st.choosing = true;
+            st.taken = deliver(win, c.node, .{ .phase = phase, .x = 0, .y = 0, .mime = c.mime });
+            st.choosing = false;
+        }
+        // The handler's choice, if it is one the target and source allow.
+        const preferred = if (st.chosen != .none and c.actions.has(st.chosen)) st.chosen else c.preferred;
+        if (st.taken) answer = .{ .mime = c.mime, .actions = c.actions, .preferred = preferred };
     }
     if (!sameAnswer(answer, st.answer)) {
         st.answer = answer;
@@ -356,7 +411,24 @@ fn deliver(win: *Window, id: NodeId, ev: node_mod.Drop) bool {
     e.y = local.y;
     e.action = st.action;
     e.source_actions = st.source_actions;
+    e.mods = win.input.mods;
     return h.func(h.user, win, id, &.{ .drop = e }) != .pass;
+}
+
+/// From a drop handler's `enter` or `move`: asks the source for `action`
+/// instead of the target's preferred one, until the drag leaves the node
+/// (none returns to the preferred one). Ignored elsewhere.
+pub fn setAction(win: *Window, action: DragAction) void {
+    const st = &win.dnd;
+    if (st.choosing) st.chosen = action;
+}
+
+/// The keyboard modifiers changed: the target hears another `move`, so
+/// that Shift or Ctrl can change what a drop would do.
+pub fn modifiersChanged(win: *Window) void {
+    const st = &win.dnd;
+    if (st.offer == 0 or st.dropped) return;
+    route(win);
 }
 
 fn leaveTarget(win: *Window) void {

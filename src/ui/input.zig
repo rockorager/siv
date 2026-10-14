@@ -589,7 +589,12 @@ pub fn handle(win: *Window, event: *const platform.Event) void {
             padEvent(win, &p);
         },
         .key => |k| key(win, &k),
-        .modifiers => |m| st.mods = m.mods,
+        .modifiers => |m| {
+            const changed = @as(u8, @bitCast(st.mods)) != @as(u8, @bitCast(m.mods));
+            st.mods = m.mods;
+            // A drag over the window: Shift or Ctrl may change the drop.
+            if (changed) @import("dnd.zig").modifiersChanged(win);
+        },
         .text_input_enter, .text_input_leave, .text_input => ime.handle(win, event),
         .drag_enter, .drag_motion, .drag_leave, .drag_drop, .drag_actions => @import("dnd.zig").handle(win, event),
         .keyboard_enter => {

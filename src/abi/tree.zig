@@ -1488,6 +1488,7 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
             ev.data_count = d.data.len;
             ev.action = dnd.actionTo(d.action);
             ev.actions = dnd.actionsTo(d.source_actions);
+            ev.modifiers = modifiers(d.mods);
         },
         .drag => |d| {
             ev.phase = switch (d.phase) {

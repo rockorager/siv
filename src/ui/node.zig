@@ -984,6 +984,8 @@ pub const Drop = struct {
     mime: []const u8 = "",
     /// `drop`: the data, valid during the call.
     data: []const u8 = "",
+    /// The keyboard modifiers held.
+    mods: @import("platform").Mods = .{},
 };
 
 pub const DragPhase = enum(u8) {

@@ -73,8 +73,8 @@ fn dragStart(node: t.Node, d_ptr: ?*const t.DragDesc) Error!void {
     const lengths = try runtime.array(usize, d.lengths, d.lengths_count);
     if (!std.math.isFinite(d.hotspot_x) or !std.math.isFinite(d.hotspot_y)) return error.InvalidArgument;
     const shown = if (d.icon == .null) null else try canvas.imageOf(self, d.icon);
-    // Vector images become pixels, one per logical pixel.
-    const icon = if (shown) |img| try @import("icon.zig").rasterize(self, img, 1) else null;
+    // Vector images become pixels at the window's whole scale.
+    const icon = if (shown) |img| try @import("icon.zig").rasterize(self, img, @max(1, @ceil(w.uiWin().scale))) else null;
     defer if (icon) |img| img.release();
 
     // One item per MIME type, with its share of the data.
@@ -106,6 +106,45 @@ fn dragStart(node: t.Node, d_ptr: ?*const t.DragDesc) Error!void {
         error.InvalidArgument => error.InvalidArgument,
         error.Unavailable => error.Unavailable,
     };
+}
+
+pub export fn siv_drag_set_icon(node: t.Node, icon: t.Image, hotspot_x: f32, hotspot_y: f32) t.Result {
+    return application.wrap(struct {
+        fn f(n: t.Node, i: t.Image, hx: f32, hy: f32) Error!void {
+            const w, const id = try tree.lookup(n);
+            const self = w.owner;
+            if (self.painting != 0) return error.Busy;
+            if (!std.math.isFinite(hx) or !std.math.isFinite(hy)) return error.InvalidArgument;
+            const shown = try canvas.imageOf(self, i);
+            if (shown.width == 0 or shown.height == 0) return error.InvalidArgument;
+            const scale = @max(1, @ceil(w.uiWin().scale));
+            const img = try @import("icon.zig").rasterize(self, shown, scale);
+            defer img.release();
+            w.uiWin().setDragIcon(id, img, hx, hy) catch |err| return switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                error.Unsupported => error.Unsupported,
+                error.Unavailable => error.Unavailable,
+            };
+        }
+    }.f(node, icon, hotspot_x, hotspot_y));
+}
+
+pub export fn siv_drag_cancel(node: t.Node) t.Result {
+    return application.wrap(struct {
+        fn f(n: t.Node) Error!void {
+            const w, const id = try tree.lookup(n);
+            w.uiWin().cancelDrag(id) catch return error.Unavailable;
+        }
+    }.f(node));
+}
+
+pub export fn siv_drop_set_action(window: t.Window, action: t.DragAction) t.Result {
+    return application.wrap(struct {
+        fn f(wh: t.Window, a: t.DragAction) Error!void {
+            const w = try App.window(@backingInt(wh), application.window_tag);
+            ui.dnd.setAction(w.uiWin(), try actionOf(a));
+        }
+    }.f(window, action));
 }
 
 pub export fn siv_drop_finish(window: t.Window, action: t.DragAction) t.Result {

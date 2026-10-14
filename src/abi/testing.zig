@@ -232,6 +232,55 @@ pub export fn siv_test_key(window: t.Window, keysym: t.Key, modifiers: t.Modifie
     }.f(window, keysym, modifiers, text, text_len));
 }
 
+pub export fn siv_test_modifiers(window: t.Window, modifiers: t.Modifiers) t.Result {
+    return wrap(struct {
+        fn f(wh: t.Window, m: t.Modifiers) Error!void {
+            const w = try headlessWindow(wh);
+            const fl = try runtime.flags(t.Modifiers, m);
+            const mods: platform.Mods = .{ .shift = fl.shift, .ctrl = fl.ctrl, .alt = fl.alt, .super = fl.super, .caps_lock = fl.caps_lock, .num_lock = fl.num_lock };
+            try inject(w, &.{.{ .modifiers = .{ .window = w.win.id, .seat = 0, .mods = mods } }});
+        }
+    }.f(window, modifiers));
+}
+
+pub export fn siv_test_capture_drag_icon(app: t.App, pixels: ?[*]u8, pixels_cap: usize, len: ?*usize, width: ?*u32, height: ?*u32) t.Result {
+    return wrap(struct {
+        fn f(a: t.App, p: ?[*]u8, cap: usize, out_len: ?*usize, out_w: ?*u32, out_h: ?*u32) Error!void {
+            const self = try App.get(@backingInt(a));
+            try headlessApp(self);
+            const C = struct {
+                buf: []u8,
+                found: bool = false,
+                width: u32 = 0,
+                height: u32 = 0,
+                fn run(hl: *platform.Headless, c: *@This()) void {
+                    const icon = hl.ownDragIcon() orelse return;
+                    c.found = true;
+                    c.width = icon.width;
+                    c.height = icon.height;
+                    // Premultiplied BGRA, as the platform got it.
+                    var i: usize = 0;
+                    while (i + 4 <= icon.pixels.len and i + 4 <= c.buf.len) : (i += 4) {
+                        const px = icon.pixels[i..][0..4];
+                        c.buf[i..][0..4].* = .{ px[2], px[1], px[0], px[3] };
+                    }
+                }
+            };
+            var c: C = .{ .buf = try runtime.buffer(p, cap) };
+            const dl = try runtime.out(usize, out_len);
+            var sw: u32 = 0;
+            var sh: u32 = 0;
+            const dw = runtime.optOut(u32, out_w, &sw);
+            const dh = runtime.optOut(u32, out_h, &sh);
+            try onHeadless(self, &c, C.run);
+            if (!c.found) return error.Unavailable;
+            dl.* = @as(usize, c.width) * c.height * 4;
+            dw.* = c.width;
+            dh.* = c.height;
+        }
+    }.f(app, pixels, pixels_cap, len, width, height));
+}
+
 pub export fn siv_test_type(window: t.Window, text: ?[*]const u8, text_len: usize) t.Result {
     return wrap(struct {
         fn f(wh: t.Window, p: ?[*]const u8, n: usize) Error!void {

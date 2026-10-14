@@ -450,6 +450,8 @@ const DragSource = struct {
     mimes: std.ArrayList([]const u8) = .empty,
     icon: ?*wl.Surface = null,
     icon_buffer: ?*wl.Buffer = null,
+    /// The hotspot the icon surface's offsets have placed so far.
+    icon_offset: [2]i32 = .{ 0, 0 },
     dropped: bool = false,
     /// The compositor's latest choice: what a finished drop performed.
     last_action: platform.DragAction = .none,
@@ -543,6 +545,43 @@ pub fn startDrag(dev: *DataDevice, origin: *wl.Surface, mimes: []const []const u
 fn makeIcon(dev: *DataDevice, s: *DragSource, icon: *const platform.DragIcon) platform.Error!void {
     const b = dev.backend;
     if (icon.width == 0 or icon.height == 0) return;
+    s.icon_buffer = try dev.iconBuffer(icon);
+    const surface = b.compositor.?.createSurface() catch return error.OutOfMemory;
+    s.icon = surface;
+    // Icons never take input.
+    const empty = b.compositor.?.createRegion() catch return error.OutOfMemory;
+    surface.setInputRegion(empty);
+    empty.destroy();
+    s.icon_offset = placeIcon(surface, s.icon_buffer.?, icon, .{ 0, 0 });
+}
+
+/// Replaces the icon of this client's drag `source`, while it lasts;
+/// false once it is over.
+pub fn setDragIcon(dev: *DataDevice, source: u32, icon: *const platform.DragIcon) platform.Error!bool {
+    const s = dev.drag_source orelse return false;
+    if (s.id != source) return false;
+    const surface = s.icon orelse return error.Unsupported;
+    const buffer = try dev.iconBuffer(icon);
+    s.icon_offset = placeIcon(surface, buffer, icon, s.icon_offset);
+    surface.commit();
+    // The surface holds the new buffer from this commit on.
+    if (s.icon_buffer) |old| old.destroy();
+    s.icon_buffer = buffer;
+    return true;
+}
+
+/// Cancels this client's drag `source`, as if dropped nowhere: its node
+/// hears `cancelled`.
+pub fn cancelDrag(dev: *DataDevice, source: u32) void {
+    const s = dev.drag_source orelse return;
+    if (s.id != source) return;
+    s.push(.cancelled, .none, false);
+    s.destroy();
+}
+
+/// The icon's pixels in a wl_shm buffer.
+fn iconBuffer(dev: *DataDevice, icon: *const platform.DragIcon) platform.Error!*wl.Buffer {
+    const b = dev.backend;
     const stride = icon.width * 4;
     const size = @as(usize, stride) * icon.height;
     if (size > std.math.maxInt(i32) or icon.stride < stride) return error.SystemResources;
@@ -558,20 +597,24 @@ fn makeIcon(dev: *DataDevice, s: *DragSource, icon: *const platform.DragIcon) pl
     _ = linux.munmap(mem, size);
     const pool = b.shm.?.createPool(fd, @intCast(size)) catch return error.OutOfMemory;
     defer pool.destroy();
-    s.icon_buffer = pool.createBuffer(0, @intCast(icon.width), @intCast(icon.height), @intCast(stride), .argb8888) catch return error.OutOfMemory;
-    const surface = b.compositor.?.createSurface() catch return error.OutOfMemory;
-    s.icon = surface;
-    // Icons never take input.
-    const empty = b.compositor.?.createRegion() catch return error.OutOfMemory;
-    surface.setInputRegion(empty);
-    empty.destroy();
+    return pool.createBuffer(0, @intCast(icon.width), @intCast(icon.height), @intCast(stride), .argb8888) catch return error.OutOfMemory;
+}
+
+/// Attaches an icon's buffer so that its hotspot is under the pointer.
+/// Surface offsets add up, so the move is from the hotspot of `before`
+/// (the offset the last icon placed, in logical pixels), which it
+/// returns updated.
+fn placeIcon(surface: *wl.Surface, buffer: *wl.Buffer, icon: *const platform.DragIcon, before: [2]i32) [2]i32 {
     const scale: i32 = @intCast(@max(icon.scale, 1));
-    if (scale != 1 and surface.getVersion() >= 3) surface.setBufferScale(scale);
+    if (surface.getVersion() >= 3) surface.setBufferScale(scale);
     const hx = @divTrunc(icon.hotspot_x, scale);
     const hy = @divTrunc(icon.hotspot_y, scale);
+    const dx = before[0] - hx;
+    const dy = before[1] - hy;
     if (surface.getVersion() >= 5) {
-        surface.attach(s.icon_buffer, 0, 0);
-        surface.offset(-hx, -hy);
-    } else surface.attach(s.icon_buffer, -hx, -hy);
+        surface.attach(buffer, 0, 0);
+        surface.offset(dx, dy);
+    } else surface.attach(buffer, dx, dy);
     if (surface.getVersion() >= 4) surface.damageBuffer(0, 0, std.math.maxInt(i32), std.math.maxInt(i32)) else surface.damage(0, 0, std.math.maxInt(i32), std.math.maxInt(i32));
+    return .{ hx, hy };
 }

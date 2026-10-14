@@ -2264,6 +2264,15 @@ pub fn finishDrag(self: *Wayland, seat: SeatId, offer: u32, action: platform.Dra
     if (self.seatData(seat)) |dev| dev.finishDrag(offer, action);
 }
 
+pub fn setDragIcon(self: *Wayland, seat: SeatId, source: u32, icon: *const platform.DragIcon) Error!bool {
+    const dev = self.seatData(seat) orelse return false;
+    return dev.setDragIcon(source, icon);
+}
+
+pub fn cancelDrag(self: *Wayland, seat: SeatId, source: u32) void {
+    if (self.seatData(seat)) |dev| dev.cancelDrag(source);
+}
+
 // Desktop integration (D19) ---------------------------------------------------
 
 pub fn exportToplevel(self: *Wayland, id: WindowId) void {

@@ -986,7 +986,7 @@ pub const decls = [_]Decl{
         .{ .name = "type", .type = ref("siv_event_type"), .doc = "What happened." },
         .{ .name = "phase", .type = ref("siv_pointer_phase"), .doc = "Pointer: what happened." },
         .{ .name = "button", .type = ref("siv_pointer_button"), .doc = "Pointer: the button pressed or released." },
-        .{ .name = "modifiers", .type = ref("siv_modifiers"), .doc = "Pointer and key: modifiers held." },
+        .{ .name = "modifiers", .type = ref("siv_modifiers"), .doc = "Pointer, key, and drop: modifiers held." },
         .{ .name = "flags", .type = ref("siv_event_flags"), .doc = "Details." },
         .{ .name = "keysym", .type = ref("siv_key"), .doc = "Key: the XKB keysym, named (SIV_KEY_ESCAPE) or not (siv_key)." },
         f32Field("x", "Pointer: position in the node's coordinates."),
@@ -1337,7 +1337,7 @@ pub const decls = [_]Decl{
         .{ .name = "constraints", .type = .{ .desc = "siv_constraints" }, .doc = "The sizes allowed, valid during the call." },
     }, ref("siv_size")),
     callback("siv_draw_fn", "Draws a canvas's content in its coordinates, (0, 0) to (width, height), in the frame phase when the canvas was invalidated or resized (D5). Must not change the tree. The content is clipped to the canvas.", &.{
-        .{ .name = "node", .type = ref("siv_node"), .doc = "The canvas." },
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The canvas; 0 when drawing into an image (siv_image_draw)." },
         .{ .name = "draw", .type = ref("siv_draw"), .doc = "The drawing context, valid during the call." },
         .{ .name = "width", .type = .f32, .doc = "The canvas's width." },
         .{ .name = "height", .type = .f32, .doc = "The canvas's height." },
@@ -1349,6 +1349,13 @@ pub const decls = [_]Decl{
         .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data when the callbacks are replaced or the canvas is destroyed." },
         f32Field("width", "Intrinsic width without measure."),
         f32Field("height", "Intrinsic height without measure."),
+    }),
+    descriptor("siv_image_draw_desc", "A drawing to make into an image (siv_image_draw).", &.{
+        .{ .name = "user_data", .type = .user_data, .doc = "Passed to draw and destroy." },
+        .{ .name = "draw", .type = ref("siv_draw_fn"), .doc = "Draws the image's content, with node 0." },
+        .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data once the image is made (or the call failed)." },
+        f32Field("width", "Logical width, above 0 and at most 1024."),
+        f32Field("height", "Logical height, above 0 and at most 1024."),
     }),
     value("siv_radii", "Physical corner radii of a rounded rectangle in a canvas.", &.{
         f32Field("top_left", "Top left."),
@@ -1479,11 +1486,11 @@ pub const decls = [_]Decl{
         .{ .name = "mimes", .type = .string, .doc = "MIME types, one per line, preferred first." },
         .{ .name = "data", .type = array(.u8), .doc = "The data (copied)." },
         .{ .name = "lengths", .type = array(.usize), .doc = "How many bytes of data each MIME type gets, in order, splitting data; empty gives every type all of data." },
-        .{ .name = "icon", .type = ref("siv_image"), .doc = "Follows the pointer, one image pixel per logical pixel; 0 for none." },
+        .{ .name = "icon", .type = ref("siv_image"), .doc = "Follows the pointer at its logical size (siv_image_get_size), at its scale where that is a whole number; 0 for none." },
         .{ .name = "actions", .type = ref("siv_drag_action_flags"), .doc = "Actions the source allows; 0 is copy." },
         .{ .name = "flags", .type = ref("siv_drag_flags"), .doc = "Options." },
-        f32Field("hotspot_x", "The point of the icon under the pointer, in image pixels."),
-        f32Field("hotspot_y", "The point of the icon under the pointer, in image pixels."),
+        f32Field("hotspot_x", "The point of the icon under the pointer, in logical pixels."),
+        f32Field("hotspot_y", "The point of the icon under the pointer, in logical pixels."),
     }),
     descriptor("siv_clipboard_desc", "Data to offer as the clipboard (D19), in one or more MIME types.", &.{
         .{ .name = "mimes", .type = .string, .doc = "MIME types, one per line, preferred first: text/uri-list for files, image/png, text/plain;charset=utf-8." },
@@ -2077,6 +2084,11 @@ pub const functions = [_]Function{
         .{ .name = "image", .type = out(ref("siv_image")), .doc = "The new image." },
     }),
     teardown("siv_image_request_cancel", "Cancels a pending load: an image still waiting is never decoded, and one being decoded is dropped when done; an icon is dropped when it arrives. Its callback never runs; destroy runs now, or for an image being decoded once the decode returns.", &.{.{ .name = "request", .type = ref("siv_image_request"), .doc = "The load." }}),
+    call("siv_image_draw", "Draws into an image, as a canvas draws (siv_draw_fn, with node 0), and rasterizes it on the CPU at the window's scale rounded up to a whole number, in the window's theme colors: a drag icon of an item's icon and name, say. Text and icons draw only if already loaded (shown somewhere, or loaded with siv_icon_load). Not from a draw or measure callback (SIV_ERROR_BUSY).", &.{
+        window_param,
+        .{ .name = "desc", .type = .{ .desc = "siv_image_draw_desc" }, .doc = "The drawing and its logical size." },
+        .{ .name = "image", .type = out(ref("siv_image")), .doc = "The new image, of logical size width by height." },
+    }),
     call("siv_image_request_set_priority", "Changes the priority of a pending load (see siv_image_load_desc); one waiting for a worker moves to its new place.", &.{
         .{ .name = "request", .type = ref("siv_image_request"), .doc = "The load." },
         .{ .name = "priority", .type = .i32, .doc = "Higher first." },
@@ -2156,6 +2168,19 @@ pub const functions = [_]Function{
     call("siv_drag_start", "Starts a drag from a node while a button or touch press on its window is held, typically from a pointer move handler once the pointer moved far enough. The node gets SIV_EVENT_DRAG events as the drag goes; the node that had the press gets a pointer cancel before this returns. SIV_ERROR_UNAVAILABLE without a press held.", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node the drag starts from." },
         .{ .name = "desc", .type = .{ .desc = "siv_drag_desc" }, .doc = "The data and options." },
+    }),
+    call("siv_drag_set_icon", "Replaces the icon of the drag a node started, while it lasts (to show what a drop would do, say). Started without an icon, a drag has none to replace: SIV_ERROR_UNSUPPORTED. SIV_ERROR_UNAVAILABLE when the node's drag is over.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The node the drag started from." },
+        .{ .name = "icon", .type = ref("siv_image"), .doc = "The new icon, shown as siv_drag_desc's." },
+        .{ .name = "hotspot_x", .type = .f32, .doc = "The point of the icon under the pointer, in logical pixels." },
+        .{ .name = "hotspot_y", .type = .f32, .doc = "The point of the icon under the pointer, in logical pixels." },
+    }),
+    call("siv_drag_cancel", "Cancels the drag a node started, as if dropped nowhere: its node gets SIV_EVENT_DRAG with phase end and action none, and a target under it hears leave. For Escape while dragging, where the compositor still sends the window keys. SIV_ERROR_UNAVAILABLE when the node's drag is over.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The node the drag started from." },
+    }),
+    call("siv_drop_set_action", "From a drop handler's enter or move, the action to ask the source for, instead of the target's preferred one: a file manager moves within a filesystem and copies across, or follows Shift and Ctrl (drop events carry the modifiers, and a modifier change during a drag delivers another move). It must be one of the target's actions the source offers; it holds until the drag leaves the node or the handler asks for another.", &.{
+        window_param,
+        .{ .name = "action", .type = ref("siv_drag_action"), .doc = "Copy, move, or ask; none returns to the target's preferred action." },
     }),
     call("siv_drop_finish", "Ends a drop whose action was ask, once the user chose: copy or move, or none to refuse it. Does nothing if no such drop waits; a new drag over the window refuses a drop still waiting.", &.{
         window_param,

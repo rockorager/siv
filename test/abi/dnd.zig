@@ -172,3 +172,157 @@ test "C API drag and drop: drop targets and drags from nodes" {
     try testing.expectEqual(t.PointerPhase.end, rec.phases[rec.n - 1]);
     try testing.expectEqual(t.DragAction.copy, rec.action);
 }
+
+/// Fills the whole image with one color (user data: *const t.Color).
+fn fillDraw(user: ?*anyopaque, node: t.Node, draw: t.Draw, width: f32, height: f32) callconv(.c) void {
+    const color: *const t.Color = @ptrCast(@alignCast(user));
+    std.debug.assert(node == .null);
+    abi.canvas.siv_draw_rect(draw, .{ .x = 0, .y = 0, .width = width, .height = height });
+    abi.canvas.siv_draw_fill(draw, &.{ .size = @sizeOf(t.PaintDesc), .color = color.* }, .{});
+}
+
+fn drawnImage(h: *Harness, color: *const t.Color, w: f32, hgt: f32) !t.Image {
+    var img: t.Image = .null;
+    try ok(abi.canvas.siv_image_draw(h.window, &.{ .size = @sizeOf(t.ImageDrawDesc), .user_data = @constCast(color), .draw = fillDraw, .width = w, .height = hgt }, &img));
+    return img;
+}
+
+/// The drag icon the compositor shows: its size and its middle pixel.
+fn dragIcon(h: *Harness) !struct { u32, u32, [4]u8 } {
+    var buf: [64 * 64 * 4]u8 = undefined;
+    var len: usize = 0;
+    var w: u32 = 0;
+    var hh: u32 = 0;
+    try ok(abi.testing.siv_test_capture_drag_icon(h.app, &buf, buf.len, &len, &w, &hh));
+    const mid = ((hh / 2) * w + w / 2) * 4;
+    return .{ w, hh, buf[mid..][0..4].* };
+}
+
+const Choose = struct {
+    window: t.Window,
+    phases: [32]t.PointerPhase = undefined,
+    n: usize = 0,
+    action: t.DragAction = .none,
+    ctrl: bool = false,
+    end_action: ?t.DragAction = null,
+    pressed: bool = false,
+    start: ?*const t.DragDesc = null,
+    start_result: t.Result = .ok,
+
+    /// Moves unless Ctrl is held, which copies, as a file manager does.
+    fn onEvent(user: ?*anyopaque, node: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
+        const s: *Choose = @ptrCast(@alignCast(user));
+        switch (ev.type) {
+            .drop => {
+                s.phases[s.n] = ev.phase;
+                s.n += 1;
+                s.action = ev.action;
+                s.ctrl = ev.modifiers.ctrl;
+                if (ev.phase == .enter or ev.phase == .move) _ = D.siv_drop_set_action(s.window, if (ev.modifiers.ctrl) .copy else .move);
+                return .handled;
+            },
+            .drag => {
+                if (ev.phase == .end) s.end_action = ev.action;
+                return .handled;
+            },
+            .pointer => {
+                if (ev.phase == .down or ev.phase == .up or ev.phase == .cancel) s.pressed = ev.phase == .down;
+                if (ev.phase == .move and s.pressed) if (s.start) |d| {
+                    s.start = null;
+                    s.start_result = D.siv_drag_start(node, d);
+                };
+                return .pass;
+            },
+            else => return .pass,
+        }
+    }
+};
+
+test "C API drag and drop: drawn and replaced icons, the target's action, modifiers, and cancelling" {
+    var h: Harness = .{};
+    try h.start(200, 100, null, null);
+    defer h.stop();
+    var s: Choose = .{ .window = h.window };
+    const wid = (try h.win()).win.id;
+    var txn: t.Txn = undefined;
+    try ok(T.siv_txn_begin(h.window, &txn));
+    const row = T.siv_flex(txn, abi.application.siv_window_get_root(h.window), null);
+    const source = T.siv_box(txn, row);
+    const target = T.siv_box(txn, row);
+    const size: t.LayoutDesc = .{ .size = @sizeOf(t.LayoutDesc), .width = .{ .unit = .px, .value = 100 }, .height = .{ .unit = .px, .value = 100 } };
+    T.siv_set_layout(txn, source, &size);
+    T.siv_set_layout(txn, target, &size);
+    // The target prefers copy; its handler asks for move instead.
+    D.siv_set_drop_target(txn, target, &.{ .size = @sizeOf(t.DropTargetDesc), .mimes = "text/uri-list", .mimes_len = 13, .actions = .{ .copy = true, .move = true }, .preferred = .copy });
+    T.siv_on(txn, target, .drop, Choose.onEvent, null, &s);
+    T.siv_on(txn, source, .pointer, Choose.onEvent, null, &s);
+    T.siv_on(txn, source, .drag, Choose.onEvent, null, &s);
+    try ok(T.siv_txn_commit(txn));
+    try h.settle();
+
+    // An icon drawn as a canvas draws: its logical size, its pixels.
+    const red: t.Color = .{ .r = 1, .g = 0, .b = 0, .a = 1 };
+    const icon = try drawnImage(&h, &red, 20, 10);
+    var isz: t.Size = .{};
+    try ok(abi.image_load.siv_image_get_size(icon, &isz));
+    try testing.expectEqual(@as(u32, 20), isz.width);
+    try testing.expectEqual(@as(u32, 10), isz.height);
+    var bad: t.Image = .null;
+    try testing.expectEqual(t.Result.error_invalid_argument, abi.canvas.siv_image_draw(h.window, &.{ .size = @sizeOf(t.ImageDrawDesc), .user_data = @constCast(&red), .draw = fillDraw, .width = 0, .height = 10 }, &bad));
+
+    // Dragged with it from the source, over the target.
+    const desc: t.DragDesc = .{ .size = @sizeOf(t.DragDesc), .mimes = "text/uri-list", .mimes_len = 13, .data = "file:///a\r\n", .data_count = 11, .icon = icon, .actions = .{ .copy = true, .move = true }, .hotspot_x = 4, .hotspot_y = 5 };
+    s.start = &desc;
+    try h.inject(&.{
+        .{ .pointer_motion = .{ .window = wid, .seat = 0, .x = 20, .y = 20 } },
+        .{ .pointer_button = .{ .window = wid, .seat = 0, .button = 0x110, .pressed = true, .time = 0, .serial = 7 } },
+        .{ .pointer_motion = .{ .window = wid, .seat = 0, .x = 30, .y = 20 } },
+    });
+    try h.settle();
+    try ok(s.start_result);
+    {
+        const w, const hh, const px = try dragIcon(&h);
+        try testing.expectEqual(@as(u32, 20), w);
+        try testing.expectEqual(@as(u32, 10), hh);
+        try testing.expect(px[0] > 200 and px[1] < 30 and px[2] < 30 and px[3] == 255);
+    }
+    try h.inject(&.{.{ .pointer_motion = .{ .window = wid, .seat = 0, .x = 150, .y = 50 } }});
+    try h.settle();
+    try testing.expectEqual(t.PointerPhase.enter, s.phases[0]);
+    // The handler's move, not the target's preferred copy.
+    try testing.expectEqual(t.DragAction.move, s.action);
+    try testing.expect(!s.ctrl);
+
+    // Ctrl goes down without the pointer moving: the target hears a move
+    // with the modifier, and copy is asked for.
+    const before = s.n;
+    try ok(abi.testing.siv_test_modifiers(h.window, .{ .ctrl = true }));
+    try h.settle();
+    try testing.expect(s.n > before);
+    try testing.expect(s.ctrl);
+    try testing.expectEqual(t.DragAction.copy, s.action);
+
+    // The icon is replaced while the drag lasts.
+    const blue: t.Color = .{ .r = 0, .g = 0, .b = 1, .a = 1 };
+    const icon2 = try drawnImage(&h, &blue, 30, 12);
+    try ok(D.siv_drag_set_icon(source, icon2, 0, 0));
+    {
+        const w, const hh, const px = try dragIcon(&h);
+        try testing.expectEqual(@as(u32, 30), w);
+        try testing.expectEqual(@as(u32, 12), hh);
+        try testing.expect(px[2] > 200 and px[0] < 30);
+    }
+
+    // Cancelled: the source hears the end with no action, the target leaves.
+    try ok(D.siv_drag_cancel(source));
+    try h.settle();
+    try testing.expectEqual(@as(?t.DragAction, .none), s.end_action);
+    try testing.expectEqual(t.PointerPhase.leave, s.phases[s.n - 1]);
+    try testing.expectEqual(t.Result.error_unavailable, D.siv_drag_cancel(source));
+    try testing.expectEqual(t.Result.error_unavailable, D.siv_drag_set_icon(source, icon2, 0, 0));
+    var buf: [4]u8 = undefined;
+    var len: usize = 0;
+    try testing.expectEqual(t.Result.error_unavailable, abi.testing.siv_test_capture_drag_icon(h.app, &buf, buf.len, &len, null, null));
+    abi.canvas.siv_image_destroy(icon);
+    abi.canvas.siv_image_destroy(icon2);
+}

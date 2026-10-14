@@ -268,7 +268,10 @@ pub const SimDrag = struct {
     source: u32 = 0,
     source_mimes: std.ArrayList([]u8) = .empty,
     own_actions: platform.DragActions = .{},
-    icon: ?struct { width: u32, height: u32, hotspot_x: i32, hotspot_y: i32 } = null,
+    icon: ?struct { width: u32, height: u32, hotspot_x: i32, hotspot_y: i32, scale: u32 = 1 } = null,
+    /// The icon's pixels as the platform got them: premultiplied BGRA,
+    /// rows of width * 4 bytes.
+    icon_pixels: std.ArrayList(u8) = .empty,
     /// This client's drag is over another client's window.
     outside: bool = false,
 
@@ -278,6 +281,7 @@ pub const SimDrag = struct {
         d.mimes.deinit(gpa);
         d.source_mimes.deinit(gpa);
         d.data.deinit(gpa);
+        d.icon_pixels.deinit(gpa);
     }
 
     pub fn acceptedMime(d: *const SimDrag) ?[]const u8 {
@@ -1373,7 +1377,8 @@ pub fn startDrag(hl: *Headless, _: WindowId, seat: SeatId, _: u32, mimes: []cons
     d.source = hl.next_source;
     d.own_actions = actions;
     d.outside = false;
-    d.icon = if (icon) |i| .{ .width = i.width, .height = i.height, .hotspot_x = i.hotspot_x, .hotspot_y = i.hotspot_y } else null;
+    d.icon = null;
+    if (icon) |i| try hl.keepIcon(d, i);
     // The pointer leaves the window for the drag, which enters the window
     // under the pointer at once.
     const p = hl.pointers[seat];
@@ -1406,6 +1411,39 @@ fn endOffer(_: *Headless, _: SeatId, d: *SimDrag) void {
 
 /// Ends this client's drag: its source learns the outcome and the
 /// pointer comes back to the window under it.
+/// The icon of this client's drag in progress on any seat.
+pub fn ownDragIcon(hl: *Headless) ?struct { pixels: []const u8, width: u32, height: u32 } {
+    for (&hl.drags) |*d| if (d.source != 0) if (d.icon) |i| return .{ .pixels = d.icon_pixels.items, .width = i.width, .height = i.height };
+    return null;
+}
+
+/// Records the drag icon, for siv_test_capture_drag_icon.
+fn keepIcon(hl: *Headless, d: *SimDrag, i: *const platform.DragIcon) Error!void {
+    d.icon_pixels.clearRetainingCapacity();
+    for (0..i.height) |y| try d.icon_pixels.appendSlice(hl.allocator, i.pixels[y * i.stride ..][0 .. i.width * 4]);
+    d.icon = .{ .width = i.width, .height = i.height, .hotspot_x = i.hotspot_x, .hotspot_y = i.hotspot_y, .scale = i.scale };
+}
+
+pub fn setDragIcon(hl: *Headless, seat: SeatId, source: u32, icon: *const platform.DragIcon) Error!bool {
+    const d = hl.dragOf(seat) orelse return false;
+    if (d.source == 0 or d.source != source) return false;
+    if (d.icon == null) return error.Unsupported;
+    try hl.keepIcon(d, icon);
+    return true;
+}
+
+/// Cancels this client's drag: an offer over its window leaves, and the
+/// source hears it cancelled.
+pub fn cancelDrag(hl: *Headless, seat: SeatId, source: u32) void {
+    const d = hl.dragOf(seat) orelse return;
+    if (d.source == 0 or d.source != source) return;
+    if (d.own and d.offer != 0) {
+        hl.queue.push(.{ .drag_leave = .{ .window = d.window, .seat = seat, .offer = d.offer } });
+        hl.endOffer(seat, d);
+    }
+    hl.endSource(seat, d, .none);
+}
+
 fn endSource(hl: *Headless, seat: SeatId, d: *SimDrag, action: platform.DragAction) void {
     if (d.source == 0) return;
     hl.queue.push(.{ .drag_source = .{ .seat = seat, .source = d.source, .phase = if (action == .none) .cancelled else .finished, .action = action } });

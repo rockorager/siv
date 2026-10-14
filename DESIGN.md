@@ -3001,9 +3001,26 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       clipboard for the drag's life and is written to whoever asks; its
       node gets `drag` events (the target under the pointer and the
       action, the drop, and the end with the action performed, after
-      which a move deletes the data). Icons are `ui.Image`s at one image
-      pixel per logical pixel; rendering a node into an icon waits for
-      a renderer the UI thread can use.
+      which a move deletes the data). Icons are `ui.Image`s shown at
+      their logical size, at their scale where it is a whole number (the
+      icon surface's buffer scale), the hotspot in logical pixels; vector
+      images are rasterized at the window's scale rounded up. Rendering
+      a node into an icon still waits for a renderer the UI thread can
+      use; `siv_image_draw` draws one instead, with canvas operations
+      rasterized on the CPU. The icon can be replaced while the drag
+      lasts (`Window.setDragIcon`: a new buffer on the same surface,
+      offset so the new hotspot is under the pointer), to show what a
+      drop would do, and the drag cancelled (`Window.cancelDrag`: the
+      source destroyed, its node hearing the end with no action), for
+      Escape where the compositor still sends the window keys. A drag
+      started without an icon has no surface to give one later.
+    - The target decides the action, not only the source: a handler's
+      `enter` or `move` may choose one (`dnd.setAction`) over its
+      preferred one, until the drag leaves it, so that a file manager
+      moves within a filesystem and copies across. Drop events carry the
+      keyboard modifiers, and a modifier change during a drag routes it
+      again (another `move`), so Shift and Ctrl take effect without the
+      pointer moving; found by Strider's in-window drags.
     - Drags this client starts and drops on itself skip the pipe: the
       offer is marked `own` and the data comes from the clipboard. In-app
       drags (`in_app`) still use a real wl_data_source, offering only a
@@ -4810,8 +4827,15 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     whatever the desktop settings say, for kiosks and for tests that
     compare frames.
   - Drag and drop: `siv_set_drop_target` and the `SIV_EVENT_DROP`
-    handler; `siv_drag_start` from a pointer handler with
-    `SIV_EVENT_DRAG` events; `siv_drop_finish` for `ask`. Mime lists are
+    handler, whose `enter` and `move` may choose the action
+    (`siv_drop_set_action`) from the event's modifiers; `siv_drag_start`
+    from a pointer handler with `SIV_EVENT_DRAG` events, and
+    `siv_drag_set_icon` and `siv_drag_cancel` while it lasts;
+    `siv_drop_finish` for `ask`. `siv_image_draw` makes an image from
+    canvas drawing operations (a drag icon of an item's icon and name),
+    rasterized on the CPU at the window's scale rounded up, as tray and
+    drag icons rasterize vector images; text and icons draw only once
+    loaded, since the call returns at once. Mime lists are
     one string with one type per line, and a drag's data is one array
     split by `lengths`, because schema arrays hold only fixed-size
     elements (D3); both stay plain C.
@@ -4819,7 +4843,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     `testing.zig`) lets an application's own tests drive it on the
     headless backend through the C API, and so the Zig wrapper and Lua:
     pointer moves, buttons, clicks, wheel scrolling, keys with their
-    text, typed strings, close requests, and another client's drop are
+    text, typed strings, modifiers held on their own, close requests,
+    and another client's drop are
     injected into the simulated seat on the compositor thread;
     `siv_test_settle` dispatches until no work is in flight, with a
     timeout: no transaction is open, every shown window presented what
@@ -4842,8 +4867,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     idle 2 ms dispatches, which returned before a frame the compositor
     owed for a wheel scroll whenever that frame waited for the next
     vblank (test/abi/settle.zig forces a 300 ms refresh to show it); `siv_test_capture` copies the last presented buffer as
-    premultiplied RGBA, and `siv_test_capture_tooltip` a window's shown
-    tooltip, which has no window handle; `siv_test_find`, `siv_test_get_name`, and
+    premultiplied RGBA, `siv_test_capture_tooltip` a window's shown
+    tooltip, which has no window handle, and `siv_test_capture_drag_icon`
+    the icon of the application's drag as the platform got it; `siv_test_find`, `siv_test_get_name`, and
     `siv_test_dump` read the semantics tree (D18) by role, exact name,
     focus, and index; `siv_test_get_popup` finds the newest shown popup.
     The simulated desktop shell (D31) is played by `siv_test_add_output`

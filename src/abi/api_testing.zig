@@ -26,6 +26,7 @@ fn call(comptime name: []const u8, comptime doc: []const u8, comptime params: []
 const headless = " Headless backend only (SIV_ERROR_UNSUPPORTED otherwise).";
 const queued = " The input is queued like a compositor's; siv_test_settle delivers it.";
 const window_param = p("window", ref("siv_window"), "The window, a popup, or a dialog.");
+const app_param = p("app", ref("siv_app"), "The application.");
 
 pub const decls = [_]Decl{
     .{ .flags = .{ .name = "siv_test_query_flags", .doc = "What else a semantics query matches.", .since = v0_1, .bits = &.{
@@ -121,6 +122,17 @@ pub const functions = [_]Function{
         p("y", .f32, "Window coordinates."),
         p("mime_type", .string, "The data's MIME type."),
         p("data", array(.u8), "The data (copied)."),
+    }),
+    call("siv_test_modifiers", "Sets the keyboard modifiers held, as the compositor reports them when a modifier key goes down or up without a key event for the window: during a drag, say." ++ queued ++ headless, &.{
+        window_param,
+        p("modifiers", ref("siv_modifiers"), "Modifiers held."),
+    }),
+    call("siv_test_capture_drag_icon", "Copies the icon of the application's drag in progress, as the compositor shows it under the pointer, like siv_test_capture: rows of width * 4 bytes of 8-bit red, green, blue, and alpha, alpha premultiplied, at its buffer scale. SIV_ERROR_UNAVAILABLE without a drag with an icon." ++ headless, &.{
+        app_param,
+        p("pixels", schema.byte_buffer, "Receives at most pixels_cap bytes; may be NULL with pixels_cap 0 to ask for the size."),
+        p("len", out(.usize), "The image's full length in bytes."),
+        .{ .name = "width", .type = out(.u32), .doc = "Width in pixels.", .optional = true },
+        .{ .name = "height", .type = out(.u32), .doc = "Height in pixels.", .optional = true },
     }),
     call("siv_test_capture", "Copies what a window presented last, as the compositor shows it: rows of width * 4 bytes, top to bottom, of 8-bit red, green, blue, and alpha, alpha premultiplied, at the window's buffer scale. SIV_ERROR_UNAVAILABLE if it has presented nothing yet (siv_test_settle first)." ++ headless, &.{
         window_param,

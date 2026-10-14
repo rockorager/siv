@@ -845,6 +845,75 @@ pub export fn siv_image_create(app: t.App, desc: ?*const t.ImageDesc, image: ?*t
     }.f(app, desc, image));
 }
 
+pub export fn siv_image_draw(window: t.Window, desc: ?*const t.ImageDrawDesc, image: ?*t.Image) t.Result {
+    return application.wrap(imageDraw(window, desc, image));
+}
+
+/// Runs the drawing as a canvas draws, with the window's palette and
+/// scale, and rasterizes it on the CPU at that scale rounded up, as
+/// vector icons are (icon.zig).
+fn imageDraw(window: t.Window, ptr: ?*const t.ImageDrawDesc, out: ?*t.Image) Error!void {
+    const w = try App.window(@backingInt(window), application.window_tag);
+    const self = w.owner;
+    const gpa = self.gpa();
+    const desc = try runtime.readDesc(t.ImageDrawDesc, ptr);
+    // The drawing's user data is released however this ends.
+    defer self.release(desc.destroy, desc.user_data);
+    if (self.painting != 0) return error.Busy;
+    const dest = try runtime.out(t.Image, out);
+    const f = desc.draw orelse return error.InvalidArgument;
+    if (!(desc.width > 0 and desc.width <= 1024 and desc.height > 0 and desc.height <= 1024)) return error.InvalidArgument;
+    const scale = @max(1, @ceil(w.uiWin().scale));
+    const pw: u32 = @intFromFloat(@ceil(desc.width * scale));
+    const ph: u32 = @intFromFloat(@ceil(desc.height * scale));
+
+    const d = &self.draw;
+    d.builder.reset();
+    d.clearPath();
+    d.err = null;
+    d.depth = 0;
+    d.window = w;
+    d.node = .none;
+    d.wanted_fonts = false;
+    defer d.dropImages(gpa);
+    try self.root.handles.ensureUnusedCapacity(gpa);
+    d.handle = self.root.handles.insert(gpa, draw_tag, 0) catch unreachable;
+    self.enter();
+    self.painting += 1;
+    f(desc.user_data, .null, @fromBackingInt(d.handle), desc.width, desc.height);
+    self.painting -= 1;
+    self.leave();
+    _ = self.root.handles.remove(d.handle, draw_tag) catch unreachable;
+    d.handle = 0;
+    while (d.err == null and d.depth > 0) : (d.depth -= 1) d.builder.popLayer() catch |err| {
+        d.err = mapScene(err);
+    };
+    if (d.err) |err| return err;
+    const list = d.builder.finish(0) catch return error.InvalidArgument;
+
+    // Logical coordinates to pixels.
+    var b = scene.Builder.init(gpa);
+    defer b.deinit();
+    b.pushLayer(.{ .transform = raster.Affine.scale(scale, scale) }) catch |err| return mapScene(err);
+    replay(&b, list) catch |err| return mapScene(err);
+    b.popLayer() catch |err| return mapScene(err);
+    const scaled = b.finish(0) catch return error.InvalidArgument;
+    const render_cpu = @import("render_cpu");
+    const r = render_cpu.Renderer.create(gpa, render_cpu.Executor.serial) catch return error.OutOfMemory;
+    defer r.destroy();
+    r.resize(pw, ph) catch return error.OutOfMemory;
+    r.render(scaled, .{}) catch return error.OutOfMemory;
+    const px = r.pixels();
+    const bytes = try gpa.alignedAlloc(u8, .@"16", @as(usize, pw) * ph * 8);
+    errdefer gpa.free(bytes);
+    @memcpy(bytes, std.mem.sliceAsBytes(px[0 .. @as(usize, pw) * ph]));
+    const img = try ui.Image.fromPixels(gpa, bytes, pw, ph, .rgba16_linear_premul, scale);
+    dest.* = adoptImage(self, img) catch |err| {
+        img.release();
+        return err;
+    };
+}
+
 /// Gives an image a handle; the handle takes over its reference. On
 /// failure the caller still holds it.
 pub fn adoptImage(self: *App, img: *ui.Image) Error!t.Image {
