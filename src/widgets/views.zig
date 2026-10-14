@@ -156,6 +156,8 @@ pub export fn siv_grid_view(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc) 
 fn create(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc, mode: Mode) Node {
     const d = w.readDesc(siv.ViewDesc, desc) orelse return w.fail(txn, .error_invalid_argument);
     if (@backingInt(d.selection) < 0 or @backingInt(d.selection) > 2) return w.fail(txn, .error_unsupported);
+    if (@as(u32, @bitCast(d.flags)) & ~@as(u32, 1) != 0 or d.reserved0 != 0) return w.fail(txn, .error_unsupported);
+    const flat = d.flags.flat;
     const label = w.str(d.label, d.label_len) orelse return w.fail(txn, .error_invalid_argument);
     if (!std.math.isFinite(d.item_height) or !std.math.isFinite(d.item_width) or d.item_height < 0 or d.item_width < 0) return w.fail(txn, .error_invalid_argument);
     if (mode == .tree and (d.children == null or d.child == null)) return w.fail(txn, .error_invalid_argument);
@@ -163,9 +165,12 @@ fn create(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc, mode: Mode) Node {
     if (root == .null) return .null;
     // The header and rows sit inside the frame's border, with their outer
     // corners rounded to the border's inner curve, so neither paints over
-    // it nor loses an edge (a row's focus ring) under it.
-    _ = c.siv_set_default_layout(txn, root, &.{ .grow = 1, .align_x = .stretch, .align_y = .stretch, .padding = .{ .start = tk.border, .end = tk.border, .top = tk.border, .bottom = tk.border } });
-    _ = c.siv_set_visual(txn, root, &.{ .background_token = .view_bg, .border_width = tk.border, .border_token = .border, .radius = w.corners(tk.radius), .flags = .{ .clip = true } });
+    // it nor loses an edge (a row's focus ring) under it. A flat view has
+    // no frame: square, edge to edge.
+    const border: f32 = if (flat) 0 else tk.border;
+    const inner: f32 = if (flat) 0 else tk.radius - tk.border;
+    _ = c.siv_set_default_layout(txn, root, &.{ .grow = 1, .align_x = .stretch, .align_y = .stretch, .padding = .{ .start = border, .end = border, .top = border, .bottom = border } });
+    _ = c.siv_set_visual(txn, root, &.{ .background_token = .view_bg, .border_width = border, .border_token = .border, .radius = w.corners(if (flat) 0 else tk.radius), .flags = .{ .clip = true } });
     const v = w.create(View, txn, root) orelse return .null;
     v.* = .{
         .hdr = .{ .kind = .view },
@@ -189,7 +194,6 @@ fn create(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc, mode: Mode) Node {
     if (mode == .table) {
         v.header = c.siv_grid(txn, root, null);
         _ = c.siv_set_layout(txn, v.header, &.{ .min_height = 28, .padding = .{ .start = 8, .end = 8 } });
-        const inner = tk.radius - tk.border;
         _ = c.siv_set_visual(txn, v.header, &.{ .background_token = .control_bg, .radius = .{ .top_start = inner, .top_end = inner }, .flags = .{ .clip = true } });
         _ = c.siv_set_semantics(txn, v.header, &.{ .role = .row });
         const rule = c.siv_box(txn, root);
@@ -199,7 +203,6 @@ fn create(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc, mode: Mode) Node {
     v.scroll = c.siv_scroll(txn, root, .vertical);
     _ = c.siv_set_layout(txn, v.scroll, &.{ .grow = 1, .basis = w.px(0) });
     {
-        const inner = tk.radius - tk.border;
         const top: f32 = if (mode == .table) 0 else inner;
         _ = c.siv_set_visual(txn, v.scroll, &.{ .radius = .{ .top_start = top, .top_end = top, .bottom_start = inner, .bottom_end = inner }, .flags = .{ .clip = true } });
     }

@@ -3832,6 +3832,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       width painted over the left and right border and the top corners'
       arc, and selected rows over the sides (siv-files' table showed a
       broken top-left corner next to its sidebar).
+    - `SIV_VIEW_FLAT` drops the frame: no border, radius, or inset, so
+      rows reach the view's edges square. A view that sits edge to edge
+      on a surface of its own (siv-columns' columns, separated by rules)
+      has no frame to stay inside; with the frame's inner rounding its
+      first selected row had round top corners over square bottom ones.
+      Framed stays the default, since a view on a window or a card reads
+      as a box. Reverse if flat views need a frame's focus treatment.
     - Selection is a bitset in node data, resized with the count (node
       data of another size replaces the old and keeps what fits); none,
       single, or multiple with Ctrl, Shift, and Ctrl+A. The cursor's row is

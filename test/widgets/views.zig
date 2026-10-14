@@ -275,6 +275,57 @@ test "list view: in a plain box it keeps its size at every layout" {
     }
 }
 
+test "list view: a flat view has no frame, so a selected first row is square" {
+    // siv-columns' columns sit edge to edge on surfaces of their own; a
+    // framed view rounded its scroll's top corners, and the first row's
+    // selection took their shape while its bottom corners stayed square.
+    for ([_]bool{ false, true }) |flat| {
+        var h: Harness = .{};
+        try h.start(240, 320, null, null);
+        defer h.stop();
+        var m: Model = .{};
+        const txn = try begin(h.window);
+        _ = c.siv_set_visual(txn, c.siv_window_get_root(h.window), &.{ .background_token = .window_bg });
+        const list = c.siv_list_view(txn, c.siv_window_get_root(h.window), &.{ .label = "Files", .label_len = 5, .count = 20, .selection = .single, .bind = Model.bind, .user_data = &m, .flags = .{ .flat = flat } });
+        _ = c.siv_set_layout(txn, list, &.{ .width = .{ .unit = .fraction, .value = 1 }, .height = .{ .unit = .fraction, .value = 1 } });
+        c.siv_view_set_selected(txn, list, 0, true);
+        try ok(c.siv_txn_commit(txn));
+        try h.settle();
+        var len: usize = 0;
+        var cw: u32 = 0;
+        var chh: u32 = 0;
+        try ok(c.siv_test_capture(h.window, null, 0, &len, &cw, &chh));
+        const px = try testing.allocator.alloc(u8, len);
+        defer testing.allocator.free(px);
+        try ok(c.siv_test_capture(h.window, px.ptr, len, &len, &cw, &chh));
+        const at = struct {
+            fn f(p: []const u8, width: u32, x: u32, y: u32) [3]u8 {
+                const i = (y * width + x) * 4;
+                return p[i..][0..3].*;
+            }
+        }.f;
+        // The selection's color, from the middle of the first row (32 px).
+        const sel = at(px, cw, cw / 2, 16);
+        const corners = [_][3]u8{ at(px, cw, 0, 0), at(px, cw, cw - 1, 0), at(px, cw, 0, 31), at(px, cw, cw - 1, 31) };
+        if (flat) {
+            // All four corners of the row are the selection's.
+            for (corners) |k| try testing.expectEqual(sel, k);
+        } else {
+            // The frame: its border and rounded corner, not the row.
+            try testing.expect(!std.mem.eql(u8, &sel, &corners[0]));
+        }
+    }
+    // Unknown flags are refused.
+    var h: Harness = .{};
+    try h.start(240, 320, null, null);
+    defer h.stop();
+    var m: Model = .{};
+    const txn = try begin(h.window);
+    const bad = c.siv_list_view(txn, c.siv_window_get_root(h.window), &.{ .label = "Bad", .label_len = 3, .bind = Model.bind, .user_data = &m, .flags = @bitCast(@as(u32, 2)) });
+    try testing.expectEqual(t.Node.null, bad);
+    c.siv_txn_abort(txn);
+}
+
 test "list view: keyboard cursor, single and multiple selection, activation" {
     var h: Harness = .{};
     try h.start(240, 320, null, null);

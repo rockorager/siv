@@ -1283,6 +1283,9 @@ pub const decls = [_]Decl{
         .{ .name = "index", .type = .u32, .doc = "The row's position among the view's rows." },
         .{ .name = "depth", .type = .u32, .doc = "Trees: the item's depth." },
     }, .f32),
+    flags("siv_view_flags", "View options.", &.{
+        .{ .name = "flat", .bit = 0, .doc = "No frame: no border, rounded corners, or inset, so the view's background and its rows reach its edges, square. For views that sit edge to edge on a surface of their own, such as the columns of a column browser; set its background with siv_set_visual. Framed is the default." },
+    }),
     descriptor("siv_view_desc", "A virtualized view: only the rows in view exist as nodes, filled by bind as they scroll in.", &.{
         .{ .name = "label", .type = .string, .doc = "The view's accessible name, copied." },
         .{ .name = "user_data", .type = .user_data, .doc = "Passed to the callbacks and destroy." },
@@ -1295,6 +1298,8 @@ pub const decls = [_]Decl{
         f32Field("item_width", "Grids: every cell's width; 0 is 96."),
         .{ .name = "selection", .type = ref("siv_selection_mode"), .doc = "Default none." },
         .{ .name = "height", .type = ref("siv_view_height_fn"), .doc = "Lists, trees, and tables: each row's height (0 is item_height); NULL makes every row item_height. Rows are still placed by arithmetic, never measured, so the compositor scrolls them as before." },
+        .{ .name = "flags", .type = ref("siv_view_flags"), .doc = "Options." },
+        reserved("reserved0"),
     }),
     flags("siv_column_flags", "Table column options.", &.{
         .{ .name = "sortable", .bit = 0, .doc = "The header sorts: a click, or Enter or Space, reports SIV_EVENT_SORT." },
