@@ -61,6 +61,13 @@ test "vulkan matches the CPU golden images" {
         named.name = try std.fmt.allocPrint(gpa, "vulkan-{s}", .{case.name});
         defer gpa.free(named.name);
         if (!try golden.compare(gpa, io, named, want, out)) failures += 1;
+        // Each glyph atlas is made with its first glyph: the 8 MiB color
+        // atlas waits for the first color glyph (colr comes after text).
+        if (std.mem.eql(u8, case.name, "text")) {
+            try std.testing.expect(r.glyph_masks.image.handle != null);
+            try std.testing.expect(r.glyph_colors.image.handle == null);
+        }
+        if (std.mem.eql(u8, case.name, "colr")) try std.testing.expect(r.glyph_colors.image.handle != null);
     }
     try std.testing.expectEqual(@as(usize, 0), failures);
     try std.testing.expectEqual(errors, Device.validation_errors.load(.monotonic));

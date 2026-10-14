@@ -829,15 +829,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     16 MiB of VRAM from the first path on (siv-columns' command line,
     whose border is four band masks, on RADV), a quarter of its GPU
     memory. Glyphs come from the CPU glyph cache (D14) through an R8 and
-    an RGBA16 atlas. Isolated layers render into per-depth FP16
-    images and composite back with fixed-function source-over, or for other
-    blend modes against a copy of their backdrop. A backdrop blur copies its
-    backdrop and runs the CPU's separable passes in FP32. Layers that
-    composite in sRGB (D11) get encoded colors at prepare time; image and
-    color glyph texels and a layer's texels on its way into a parent of
-    the other space convert in the shader through the CPU's 16-bit tables
-    (a sRGB-to-linear table joined the lookup buffer), so both renderers
-    match the `srgb` golden image.
+    an RGBA16 atlas, each made with its first glyph: most windows never
+    show a color glyph, and the RGBA16 atlas (1024 px square) is 8 MiB of
+    VRAM, a fifth of siv-columns' at startup. Isolated layers render into
+    per-depth FP16 images and composite back with fixed-function
+    source-over, or for other blend modes against a copy of their
+    backdrop. A backdrop blur copies its backdrop and runs the CPU's
+    separable passes in FP32. Layers that composite in sRGB (D11) get
+    encoded colors at prepare time; image and color glyph texels and a
+    layer's texels on its way into a parent of the other space convert in
+    the shader through the CPU's 16-bit tables (a sRGB-to-linear table
+    joined the lookup buffer), so both renderers match the `srgb` golden
+    image.
   - Both renderers skip the group buffer of a layer that is isolated only
     for its opacity and holds one fill or stroke with a solid paint, one
     image, or one box shadow (`scene.foldedOpacity`): that draw with its

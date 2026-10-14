@@ -1586,7 +1586,10 @@ fn planPools(r: *Renderer) Error!void {
     for (&r.layer_images, layer_size) |*img, s| try r.ensureImage(img, s, Device.fp16, attach | c.VK_IMAGE_USAGE_TRANSFER_SRC_BIT, &waited);
     try r.ensureImage(&r.backdrop, backdrop, Device.fp16, c.VK_IMAGE_USAGE_SAMPLED_BIT | c.VK_IMAGE_USAGE_TRANSFER_DST_BIT, &waited);
     for (&r.blur_images) |*img| try r.ensureImage(img, blur, Device.fp32, attach, &waited);
-    for ([_]*Atlas{ &r.glyph_masks, &r.glyph_colors }) |a| {
+    // An atlas's image is made with its first glyph: most windows never
+    // show a color glyph, and the color atlas is 8 MiB.
+    for (r.glyph_uploads.items) |index| {
+        const a = if (r.glyphs.entry(index).kind == .mask) &r.glyph_masks else &r.glyph_colors;
         if (a.image.handle == null) a.image = try Image.init(d, a.shelves.width, a.shelves.height, a.format, c.VK_IMAGE_USAGE_SAMPLED_BIT | c.VK_IMAGE_USAGE_TRANSFER_DST_BIT);
     }
     // Textures unused for a while go once no frame reads them, and so do
@@ -1737,8 +1740,8 @@ fn writeDescriptors(r: *Renderer, f: *Frame, layout: DataLayout) void {
     buffers[5] = .{ .buffer = f.data.handle, .offset = layout.ranges[4][0], .range = layout.ranges[4][1] };
     const read = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     const images = [3]c.VkDescriptorImageInfo{
-        .{ .sampler = d.sampler, .imageView = r.glyph_masks.image.view, .imageLayout = read },
-        .{ .sampler = d.sampler, .imageView = r.glyph_colors.image.view, .imageLayout = read },
+        .{ .sampler = d.sampler, .imageView = (if (r.glyph_masks.image.handle != null) r.glyph_masks.image else r.dummy).view, .imageLayout = read },
+        .{ .sampler = d.sampler, .imageView = (if (r.glyph_colors.image.handle != null) r.glyph_colors.image else r.dummy).view, .imageLayout = read },
         .{ .sampler = d.sampler, .imageView = f.masks.view, .imageLayout = read },
     };
     var writes: [9]c.VkWriteDescriptorSet = undefined;
@@ -2141,7 +2144,9 @@ fn record(r: *Renderer, f: *Frame, opts: Options, target: Target) Error!void {
         kd.vkCmdCopyBufferToImage.?(cmd, f.data.handle, u.image.handle, c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
     }
     for (r.uploads.items) |u| rec.transition(u.image, c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    for ([_]*Image{ &r.glyph_masks.image, &r.glyph_colors.image }) |img| rec.transition(img, c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    for ([_]*Image{ &r.glyph_masks.image, &r.glyph_colors.image }) |img| {
+        if (img.handle != null) rec.transition(img, c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
 
     // Regions.
     if (r.stale) r.working.layout = c.VK_IMAGE_LAYOUT_UNDEFINED;
