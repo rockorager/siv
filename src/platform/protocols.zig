@@ -44,13 +44,9 @@ pub const xml = [_][]const u8{
 /// management for task lists, which wayland-protocols has no equivalent
 /// of yet.
 pub const wlr_xml = [_][]const u8{
-    wlr_root ++ "unstable/wlr-layer-shell-unstable-v1.xml",
-    wlr_root ++ "unstable/wlr-foreign-toplevel-management-unstable-v1.xml",
+    "unstable/wlr-layer-shell-unstable-v1.xml",
+    "unstable/wlr-foreign-toplevel-management-unstable-v1.xml",
 };
-
-/// The fetch strips GitLab's archive's top directory, as it does any
-/// archive's single top directory.
-const wlr_root = "";
 
 /// Globals to bind, each with the highest version siv implements. Code is
 /// generated for each global and every interface reachable from it at that

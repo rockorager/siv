@@ -128,8 +128,11 @@
         // Layer surfaces and foreign toplevel management (D31), which
         // wayland-protocols lacks. No releases; pinned to a commit. Only
         // the XML is used. Each file's notice is HPND (MIT-style).
+        // Fetched over git rather than as GitLab's generated archive, which
+        // GitLab regenerates with different bytes now and then: the hash
+        // covers the commit's tree, which cannot change.
         .wlr_protocols = .{
-            .url = "https://gitlab.freedesktop.org/wlroots/wlr-protocols/-/archive/bf4fc79abc359eea5a0edec0ac6d4a2b2955f82a/wlr-protocols-bf4fc79abc359eea5a0edec0ac6d4a2b2955f82a.tar.gz",
+            .url = "git+https://gitlab.freedesktop.org/wlroots/wlr-protocols.git#bf4fc79abc359eea5a0edec0ac6d4a2b2955f82a",
             .hash = "N-V-__8AAMq4AQASESNUzI38keQUB1Pz9OXa_YoUwXAgWQQl",
         },
     },
