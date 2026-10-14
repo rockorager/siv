@@ -625,6 +625,39 @@ test "list view: the cursor is read, moved, and focused; rows are reachable" {
     c.siv_txn_abort(txn);
 }
 
+test "list view: an empty view takes the focus, from an editor beside it; rows arriving take it over" {
+    var h: Harness = .{};
+    try h.start(240, 320, null, null);
+    defer h.stop();
+    var m: Model = .{};
+    const list = try listOf(&h, &m, 0, .single);
+    var txn = try begin(h.window);
+    const ed = c.siv_editor(txn, c.siv_window_get_root(h.window), .{});
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try ok(c.siv_node_focus(ed));
+    const uw, _ = try uiId(list);
+    try testing.expectEqual(ui.Role.text_input, (try focusedRole(&h)).?.role);
+    // Focusing the empty view moves focus off the editor, onto the list.
+    try ok(c.siv_node_focus(list));
+    try h.settle();
+    const f = (try focusedRole(&h)).?;
+    try testing.expectEqual(ui.Role.list, f.role);
+    try testing.expectEqualStrings("Files", (try uw.semanticsTree()).name(f));
+    // Rows arriving: the first row has the focus; the list is no longer a stop.
+    txn = try begin(h.window);
+    c.siv_view_set_count(txn, list, 3);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try testing.expectEqualStrings("Item 0", (try uw.semanticsTree()).name((try focusedRole(&h)).?));
+    // Emptied again, the list takes it back from its last row.
+    txn = try begin(h.window);
+    c.siv_view_set_count(txn, list, 0);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try testing.expectEqual(ui.Role.list, (try focusedRole(&h)).?.role);
+}
+
 const Targets = struct {
     key_target: t.Node = .null,
     keys: u32 = 0,

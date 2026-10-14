@@ -3942,7 +3942,15 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     - Selection is a bitset in node data, resized with the count (node
       data of another size replaces the old and keeps what fits); none,
       single, or multiple with Ctrl, Shift, and Ctrl+A. The cursor's row is
-      the focused node (roving focus) and stays bound out of view. Rows
+      the focused node (roving focus) and stays bound out of view. An
+      empty view's scroll node (the list, tree, or table for assistive
+      technology) is focusable while the view has no rows, so focus can
+      rest in it: `siv_node_focus` on an empty view did nothing, and an
+      editor beside it kept the focus (Escape from siv-columns' chooser
+      path could not reach an empty folder). Focus in the view follows
+      the count after the commit: to the cursor's row when rows arrive,
+      to the view when they go. With rows it is not a stop, so Tab
+      still stops once. Rows
       handle only keys aimed at themselves (`siv_event.target`, D16) and
       leave presses in an editor inside them alone, so an application can
       rename an item in place with an editor in its row; presses on a

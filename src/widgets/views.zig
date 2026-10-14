@@ -63,6 +63,8 @@ pub const View = extern struct {
     column_count: u32 = 0,
     /// Bumped when every row must be bound again.
     gen: u32 = 0,
+    /// The scroll node takes focus: the view has no rows to focus.
+    empty_stop: bool = false,
     item_h: f32,
     item_w: f32,
     view_y: f32 = 0,
@@ -207,15 +209,7 @@ fn create(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc, mode: Mode) Node {
         _ = c.siv_set_visual(txn, v.scroll, &.{ .radius = .{ .top_start = top, .top_end = top, .bottom_start = inner, .bottom_end = inner }, .flags = .{ .clip = true } });
     }
     v.content = c.siv_stack(txn, v.scroll, null);
-    _ = c.siv_set_semantics(txn, v.scroll, &.{
-        .role = switch (mode) {
-            .tree => .tree,
-            .table => .table,
-            else => .list,
-        },
-        .label = label.ptr,
-        .label_len = label.len,
-    });
+    scrollSemantics(txn, v, label);
     w.onDefault(txn, v.scroll, .viewport, onViewport, v);
     w.onDefault(txn, root, .pointer, onEmptyPointer, v);
     w.setInterface(txn, root, View, v, .{ .set_label = setLabel, .get_part = viewPart, .apply = apply, .focus = focusTarget });
@@ -466,6 +460,7 @@ fn update(txn: Txn, v: *View) void {
     if (!buildHeights(txn, v)) return;
     _ = c.siv_set_layout(txn, v.content, &.{ .height = w.px(contentHeight(v)) });
     materialize(txn, v);
+    syncEmptyStop(txn, v);
 }
 
 /// Binds the rows of the range in view (plus overscan) from the pool.
@@ -1419,10 +1414,49 @@ pub fn setColumnValue(txn: Txn, col: *Column, width: f64) void {
 }
 
 pub fn setLabel(txn: Txn, v: *View, label: []const u8) void {
+    scrollSemantics(txn, v, label);
+}
+
+/// The scroll node is the list, tree, or table for assistive technology.
+/// While the view has no rows it takes the focus itself, so that focus
+/// can rest in an empty view (and leave an editor beside it); with rows,
+/// the cursor's row is the view's one focus stop.
+fn scrollSemantics(txn: Txn, v: *View, label: []const u8) void {
     var role: siv.Role = .list;
     if (v.mode == .tree) role = .tree;
     if (v.mode == .table) role = .table;
-    _ = c.siv_set_semantics(txn, v.scroll, &.{ .role = role, .label = label.ptr, .label_len = label.len });
+    v.empty_stop = v.count == 0 and !v.hdr.disabled;
+    _ = c.siv_set_semantics(txn, v.scroll, &.{ .role = role, .label = label.ptr, .label_len = label.len, .flags = .{ .focusable = v.empty_stop } });
+}
+
+/// After the count or the disabled state changed: the empty view's focus
+/// stop comes or goes. Focus in the view follows, once the transaction
+/// commits: to the cursor's row when rows arrive, to the view itself
+/// when its rows go.
+fn syncEmptyStop(txn: Txn, v: *View) void {
+    if (v.empty_stop == (v.count == 0 and !v.hdr.disabled)) return;
+    const focused = focusWithin(v);
+    var buf: [1024]u8 = undefined;
+    scrollSemantics(txn, v, w.labelOf(v.scroll, &buf));
+    // The handle, not the view, waits: the view may be gone by then.
+    if (focused and !v.hdr.disabled) _ = c.siv_post(w.appOf(w.windowOf(v.root)), focusLater, null, @ptrFromInt(@as(usize, @intCast(@intFromEnum(v.root)))));
+}
+
+/// Whether the focus is on the view or a node in it.
+fn focusWithin(v: *const View) bool {
+    var cur = c.siv_window_get_focus(w.windowOf(v.root));
+    while (cur != .null) : (cur = w.related(cur, .parent)) if (cur == v.root) return true;
+    return false;
+}
+
+fn focusLater(ud: ?*anyopaque) callconv(.c) void {
+    const root: Node = @enumFromInt(@intFromPtr(ud));
+    const v = viewOf(root) orelse return;
+    // Unless focus went elsewhere meanwhile; the node that had it has
+    // none to give (a row gone, the view no longer a stop).
+    const f = c.siv_window_get_focus(w.windowOf(root));
+    if (f != .null and f != v.scroll) return;
+    _ = c.siv_node_focus(root);
 }
 
 pub fn setCursor(txn: Txn, v: *View, to: f64) void {
@@ -1434,6 +1468,7 @@ pub fn setCursor(txn: Txn, v: *View, to: f64) void {
 }
 
 pub fn apply(txn: Txn, v: *View) void {
+    syncEmptyStop(txn, v);
     applyAll(txn, v);
     if (v.header != .null) applyHeader(txn, v);
 }
