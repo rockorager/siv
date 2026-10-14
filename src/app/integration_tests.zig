@@ -145,6 +145,8 @@ fn openWith(allocator: std.mem.Allocator, address: ?[]const u8, settings: bool) 
         .desktop_settings = settings,
         .accessibility = false,
         .bus_address = address,
+        // The portal's font-name, as on GNOME.
+        .desktop_fonts = true,
     });
     errdefer app.destroy();
     const win = try app.createWindow(.{ .width = 64, .height = 48 }, .{});

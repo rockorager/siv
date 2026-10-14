@@ -307,6 +307,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
         // SIV_THEME's file applies on any backend; the user's files only
         // where the desktop's settings do.
         .user_theme = .{ .lookup = backend == .wayland and !flags.no_desktop_settings },
+        .follow_fontconfig = backend == .wayland and !flags.no_desktop_settings,
         // Mandatory on a display (D18); the headless backend stays
         // independent of the desktop.
         .accessibility = backend == .wayland,

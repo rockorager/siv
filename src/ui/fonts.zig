@@ -39,6 +39,9 @@ resolved: std.AutoHashMapUnmanaged(Key, []const FontId) = .empty,
 /// chain may turn out to have one.
 sized: std.AutoHashMapUnmanaged(Key, []const FontId) = .empty,
 default_family: u32 = 0,
+/// "monospace", and the family it resolves to (`setMonospace`).
+monospace: u32 = 0,
+monospace_family: u32 = 0,
 loads: std.ArrayList(*Load) = .empty,
 listeners: std.ArrayList(Listener) = .empty,
 /// Counts finished loads, so text nodes know when to reshape.
@@ -93,6 +96,8 @@ pub fn init(gpa: std.mem.Allocator) error{OutOfMemory}!Fonts {
     errdefer f.deinit();
     _ = try f.intern("");
     f.default_family = try f.intern("sans-serif");
+    f.monospace = try f.intern("monospace");
+    f.monospace_family = f.monospace;
     // Text without a font shows boxes rather than nothing (D13).
     try f.cache.addLastResort();
     return f;
@@ -190,6 +195,21 @@ pub fn setDefault(f: *Fonts, family: []const u8) error{OutOfMemory}!void {
     f.default_family = try f.intern(family);
 }
 
+/// The family that styles naming "monospace" get: "monospace" itself,
+/// Fontconfig's alias, unless the desktop names one (D19).
+pub fn setMonospace(f: *Fonts, family: []const u8) error{OutOfMemory}!void {
+    f.monospace_family = try f.intern(family);
+}
+
+/// Replaces the Fontconfig snapshot, whose configuration changed (D19):
+/// every family resolves again. Text shaped already keeps its fonts
+/// until it is shaped again.
+pub fn setDatabase(f: *Fonts, database: text.fontconfig.Database) void {
+    if (f.database) |*db| db.deinit();
+    f.database = database;
+    f.dropChains(null);
+}
+
 pub fn addListener(f: *Fonts, listener: Listener) error{OutOfMemory}!void {
     try f.listeners.append(f.gpa, listener);
 }
@@ -208,6 +228,7 @@ pub fn removeListener(f: *Fonts, ctx: *anyopaque) void {
 pub fn chain(f: *Fonts, query: Query) error{OutOfMemory}![]const FontId {
     var q = query;
     if (q.family == 0) q.family = f.default_family;
+    if (q.family == f.monospace) q.family = f.monospace_family;
     var key: Key = .of(q);
     if (key.size != 0) if (f.sized.get(key)) |c| return c;
     const size = key.pixels();

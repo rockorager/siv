@@ -39,6 +39,7 @@ const compositor = @import("compositor");
 const ui = @import("ui");
 const desktop_mod = @import("desktop.zig");
 pub const user_theme = @import("user_theme.zig");
+const fontconfig = @import("fontconfig.zig");
 const a11y = @import("a11y");
 pub const portals = @import("portals.zig");
 pub const lifecycle = @import("lifecycle.zig");
@@ -91,6 +92,12 @@ pub const Options = struct {
     desktop_settings: bool = true,
     /// Follow the user's theme (D29), live; null ignores it.
     user_theme: ?user_theme.Options = null,
+    /// Load Fontconfig again when its configuration changes (D19).
+    follow_fontconfig: bool = false,
+    /// Whether the desktop's font names and size apply, rather than
+    /// Fontconfig's generic families at 11 pt; null decides by
+    /// $XDG_CURRENT_DESKTOP: GNOME and KDE (desktop.zig).
+    desktop_fonts: ?bool = null,
     /// Publish the windows' semantics to assistive technology over
     /// AT-SPI (D18), while it listens.
     accessibility: bool = true,
@@ -142,6 +149,7 @@ pub const App = struct {
     theme: ui.Theme = .{},
     /// The user's theme every window follows (D29).
     user_theme: user_theme.UserTheme = .{},
+    fontconfig: fontconfig.Fontconfig = .{},
     /// The application chose the default font family, so the desktop's
     /// does not replace it.
     font_overridden: bool = false,
@@ -208,6 +216,7 @@ pub const App = struct {
         // compositor connects to Wayland below.
         // An application id means portals and D-Bus activation, on any
         // backend.
+        app.desktop.owns_fonts = options.desktop_fonts orelse desktop_mod.ownsFonts(std.mem.span(std.c.getenv("XDG_CURRENT_DESKTOP") orelse ""));
         if (options.desktop_settings or options.accessibility or options.bus_fd != null or options.app_id.len > 0) app.desktop.start(app, options.bus_address, options.bus_fd, options.desktop_settings, options.app_id);
         errdefer app.desktop.deinit(app);
         app.portals.start(app);
@@ -232,6 +241,7 @@ pub const App = struct {
         }) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable;
         // Read on the pool while the first window is made.
         if (options.user_theme) |o| app.user_theme.start(app, o);
+        if (options.follow_fontconfig) if (app.fonts.database) |*db| app.fontconfig.start(app, db, null);
         return app;
     }
 
@@ -257,6 +267,7 @@ pub const App = struct {
         app.fonts.deinit();
         app.pool.deinit();
         app.user_theme.deinit(app);
+        app.fontconfig.deinit();
         // Loads the pool dropped release into the icons.
         app.icons.deinit();
         app.loop.deinit();
@@ -390,15 +401,18 @@ pub const App = struct {
         app.refreshText();
     }
 
-    /// The default font family or the text scale changed: text in the
-    /// default family reshapes, and canvases measure and draw again.
+    /// Fonts or the text scale changed (the default or monospace family,
+    /// Fontconfig's configuration): text reshapes, and canvases measure
+    /// and draw again.
     pub fn refreshText(app: *App) void {
         for (app.windows.items) |w| if (w) |win| {
             const uw = win.ui;
             for (uw.nodes.items, 0..) |*n, i| {
                 if (n.status != .live) continue;
                 const id: ui.NodeId = @enumFromInt(i);
-                if (n.isText() and n.textData().family == 0) uw.markShape(id);
+                // Any family may resolve differently: the default, the
+                // desktop's monospace, Fontconfig's configuration.
+                if (n.isText()) uw.markShape(id);
                 if (n.kind == .canvas) {
                     uw.markLayout(id);
                     uw.markPaint(id);

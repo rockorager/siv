@@ -114,6 +114,26 @@ pub const Database = struct {
         self.* = undefined;
     }
 
+    /// The directories of the configuration files Fontconfig read, each
+    /// once, so that a change to them can be followed (D19). Caller owns
+    /// the slice and its strings.
+    pub fn configDirs(self: *const Database, allocator: std.mem.Allocator) error{OutOfMemory}![][:0]u8 {
+        var out: std.ArrayList([:0]u8) = .empty;
+        errdefer {
+            for (out.items) |d| allocator.free(d);
+            out.deinit(allocator);
+        }
+        const list = fc.FcConfigGetConfigFiles(self.config) orelse return out.toOwnedSlice(allocator);
+        defer fc.FcStrListDone(list);
+        while (fc.FcStrListNext(list)) |p| {
+            const dir = std.fs.path.dirname(std.mem.span(@as([*:0]const u8, @ptrCast(p)))) orelse continue;
+            for (out.items) |d| {
+                if (std.mem.eql(u8, d, dir)) break;
+            } else try out.append(allocator, try allocator.dupeSentinel(u8, dir, 0));
+        }
+        return out.toOwnedSlice(allocator);
+    }
+
     /// Fontconfig's ordered fallback chain for `query`, trimmed to fonts
     /// that add coverage, registered in `cache` as pending fonts (or found
     /// there). The first entry is the best match. Caller owns the slice.

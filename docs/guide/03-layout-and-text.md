@@ -227,8 +227,11 @@ have it, so mixed scripts and emoji work without setup. Fonts of your own
 go in with `siv_app_add_font` (the bytes of a TrueType or OpenType file or
 collection) under a family name; siv picks faces by weight, slant, and
 width as CSS does, sets variable axes, and synthesizes bold and italic
-where a family lacks them. `siv_app_set_default_font` changes the default
-family, which otherwise follows the desktop's.
+where a family lacks them. Text styles that name no family get
+`sans-serif`, and `monospace` is there for code, both as the user's
+Fontconfig configuration resolves them, live; on GNOME and KDE the
+desktop's font settings apply instead. `siv_app_set_default_font` changes
+the default family.
 
 To size things by their text, `siv_app_measure_text` lays out a string as
 a canvas would draw it and returns its width, height, and baseline.

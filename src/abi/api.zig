@@ -1656,7 +1656,7 @@ pub const functions = [_]Function{
         app_param,
         .{ .name = "desc", .type = .{ .desc = "siv_hyphenation_desc" }, .doc = "The patterns." },
     }),
-    call("siv_app_set_default_font", "Sets the family used by text styles that name none. By default it is the desktop's font (D19), else sans-serif; once set here, the desktop's no longer replaces it.", &.{
+    call("siv_app_set_default_font", "Sets the family used by text styles that name none. By default it is Fontconfig's sans-serif, or the desktop's font on GNOME and KDE (D19); once set here, the desktop's no longer replaces it.", &.{
         app_param,
         .{ .name = "family", .type = .string, .doc = "Family name." },
     }),

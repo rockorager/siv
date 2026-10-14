@@ -632,3 +632,134 @@ test "the user's theme: read at startup, and followed live as Omarchy renames a 
     check.want = .{ 0xff, 0xff, 0xff, 0xff };
     try runUntil(app, &check, ThemeCheck.shows);
 }
+
+// Fonts (D19) -----------------------------------------------------------------
+
+const desktop = @import("desktop.zig");
+
+test "fonts: the portal's font names apply only on desktops that own a font setting" {
+    try testing.expect(desktop.ownsFonts("GNOME"));
+    try testing.expect(desktop.ownsFonts("ubuntu:GNOME"));
+    try testing.expect(desktop.ownsFonts("KDE"));
+    try testing.expect(desktop.ownsFonts("kde"));
+    try testing.expect(!desktop.ownsFonts("Hyprland"));
+    try testing.expect(!desktop.ownsFonts("sway:wlroots"));
+    try testing.expect(!desktop.ownsFonts("niri"));
+    try testing.expect(!desktop.ownsFonts("GNOME-Flashback-ish"));
+    try testing.expect(!desktop.ownsFonts(""));
+
+    // What GTK's portal backend reports on Hyprland: GNOME's defaults.
+    var v: @import("dbus").Settings.Values = .{};
+    v.font = .{ .family = .init("Adwaita Sans"), .size = 13 };
+    v.monospace_font = .{ .family = .init("Adwaita Mono"), .size = 11 };
+    v.text_scale = 1.25;
+    const elsewhere = desktop.effective(v, false);
+    try testing.expectEqualStrings("sans-serif", elsewhere.font.family.slice());
+    try testing.expectEqualStrings("monospace", elsewhere.monospace_font.family.slice());
+    try testing.expectEqual(@as(f64, 11), elsewhere.font.size);
+    // The text scale still applies everywhere (Omarchy's text size).
+    try testing.expectEqual(@as(f64, 1.25), elsewhere.text_scale);
+    const gnome = desktop.effective(v, true);
+    try testing.expectEqualStrings("Adwaita Mono", gnome.monospace_font.family.slice());
+    try testing.expectEqual(@as(f64, 13), gnome.font.size);
+}
+
+/// A hash of the presented frame.
+fn frameHash(app: *App, id: platform.WindowId) !u64 {
+    const Ctx = struct {
+        id: platform.WindowId,
+        out: ?u64 = null,
+        fn run(ctx: ?*anyopaque, comp: *compositor.Compositor) void {
+            const c: *@This() = @ptrCast(@alignCast(ctx));
+            const img = comp.platform.headless.presented(c.id) orelse return;
+            c.out = std.hash.Wyhash.hash(0, img.pixels);
+        }
+    };
+    var ctx: Ctx = .{ .id = id };
+    try app.comp.call(&ctx, Ctx.run);
+    return ctx.out orelse error.NothingPresented;
+}
+
+/// The file of the font `family` resolves to first.
+fn firstFontFile(app: *App, family: []const u8) ![]const u8 {
+    const chain = try app.fonts.chain(.{ .family = try app.fonts.intern(family), .language = 0, .weight = 400, .slant = .roman });
+    if (chain.len == 0) return error.NoFont;
+    return std.fs.path.basename(app.fonts.cache.source(chain[0]).path);
+}
+
+const FontCheck = struct {
+    app: *App,
+    win: *Window,
+    family: []const u8,
+    want: []const u8,
+
+    fn resolved(c: *FontCheck) bool {
+        const file = firstFontFile(c.app, c.family) catch return false;
+        return std.mem.eql(u8, file, c.want) and settled(c.win);
+    }
+};
+
+test "fonts: monospace follows Fontconfig's alias, live as fonts.conf changes" {
+    var template = "/tmp/siv-fc-XXXXXX".*;
+    const dir = std.mem.span(mkdtemp(&template) orelse return error.SkipZigTest);
+    defer sh("rm -rf '{s}'", .{dir}) catch {};
+    // A configuration of siv's test fonts only, as `omarchy font set`
+    // writes it: the chosen family first for monospace.
+    const conf =
+        \\printf '<?xml version="1.0"?>
+        \\<fontconfig><dir>%s/src/text/testdata</dir><cachedir>{s}/cache</cachedir>
+        \\<match target="pattern"><test name="family" qual="any"><string>monospace</string></test>
+        \\<edit name="family" mode="prepend_first" binding="strong"><string>{s}</string></edit></match>
+        \\</fontconfig>\n' "$(pwd)" > '{s}/fonts.conf'
+    ;
+    try sh(conf, .{ dir, "SivTest", dir });
+    var path_buf: [128]u8 = undefined;
+    const path = try std.fmt.bufPrintSentinel(&path_buf, "{s}/fonts.conf", .{dir}, 0);
+    const old = std.c.getenv("FONTCONFIG_FILE");
+    _ = setenv("FONTCONFIG_FILE", path.ptr, 1);
+    defer if (old) |o| {
+        _ = setenv("FONTCONFIG_FILE", o, 1);
+    } else {
+        _ = unsetenv("FONTCONFIG_FILE");
+    };
+
+    const app = try App.create(testing.allocator, .{
+        .backend = .headless,
+        .headless = .{ .refresh_ns = std.time.ns_per_ms },
+        .threads = 2,
+        .desktop_settings = false,
+        .accessibility = false,
+        .follow_fontconfig = true,
+        .desktop_fonts = false,
+    });
+    defer app.destroy();
+    if (app.fonts.database == null) return error.SkipZigTest;
+    const win = try app.createWindow(.{ .width = 160, .height = 40 }, .{});
+    const t = try win.ui.begin();
+    try t.setVisual(.root, .{ .background = .white });
+    const label = try t.create(.root, .text, .none);
+    try t.setText(label, "Mono 0123");
+    try t.setTextProps(label, .{ .style = .{ .family = "monospace", .size = 20, .color = .black }, .wrap = false });
+    t.commit();
+    var check: FontCheck = .{ .app = app, .win = win, .family = "monospace", .want = "SivTest-Regular.ttf" };
+    try runUntil(app, &check, FontCheck.resolved);
+    const before = try frameHash(app, win.id);
+
+    // `omarchy font set "Droid Sans"` rewrites fonts.conf in place.
+    try sh(conf, .{ dir, "Droid Sans", dir });
+    check.want = "DroidSans.ttf";
+    try runUntil(app, &check, FontCheck.resolved);
+    // The open window shows its text in the new font.
+    const Changed = struct {
+        app: *App,
+        win: *Window,
+        before: u64,
+        fn f(c: *@This()) bool {
+            return settled(c.win) and (frameHash(c.app, c.win.id) catch c.before) != c.before;
+        }
+    };
+    var changed: Changed = .{ .app = app, .win = win, .before = before };
+    try runUntil(app, &changed, Changed.f);
+}
+
+extern "c" fn unsetenv(name: [*:0]const u8) c_int;

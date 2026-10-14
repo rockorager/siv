@@ -5,6 +5,12 @@
 //! window's `ui.Desktop` at startup and on every change, and the desktop
 //! font becomes the default family.
 //!
+//! Fonts come from Fontconfig's generic families, `sans-serif` and
+//! `monospace`, which the user's fonts.conf decides, except on desktops
+//! that own a font setting, GNOME and KDE: there the portal's font names
+//! and size apply (`ownsFonts`). Elsewhere the portal reports a GTK
+//! default nobody chose.
+//!
 //! First frames wait for the settings, at most `first_frame_wait_ns` from
 //! application creation, so a dark-theme user never sees a light first
 //! frame: frame events that arrive while waiting are held and asked for
@@ -37,6 +43,8 @@ pub const Desktop = struct {
     timer: Timer = .{ .func = onTimeout },
     /// What every window follows.
     values: ui.Desktop = .{},
+    /// The portal's font names and size apply (`ownsFonts`).
+    owns_fonts: bool = false,
     /// For measurements: application creation and the first read.
     started_ns: u64 = 0,
     ready_ns: ?u64 = null,
@@ -79,6 +87,29 @@ pub const Desktop = struct {
     }
 };
 
+/// Whether the desktop owns a font setting that its users change rather
+/// than Fontconfig's configuration: GNOME and KDE, by
+/// $XDG_CURRENT_DESKTOP's colon-separated names (D19).
+pub fn ownsFonts(current_desktop: []const u8) bool {
+    var it = std.mem.tokenizeScalar(u8, current_desktop, ':');
+    while (it.next()) |name| {
+        if (std.ascii.eqlIgnoreCase(name, "GNOME") or std.ascii.eqlIgnoreCase(name, "KDE")) return true;
+    }
+    return false;
+}
+
+/// The portal's values siv follows: without a desktop that owns fonts,
+/// Fontconfig's generic families at 11 pt.
+pub fn effective(v: dbus.Settings.Values, owns_fonts: bool) dbus.Settings.Values {
+    if (owns_fonts) return v;
+    const def: dbus.Settings.Values = .{};
+    var out = v;
+    out.font = def.font;
+    out.document_font = def.document_font;
+    out.monospace_font = def.monospace_font;
+    return out;
+}
+
 fn desktopOf(v: dbus.Settings.Values) ui.Desktop {
     var out: ui.Desktop = .{};
     // ui.Desktop has the names of the portal's values, and their types
@@ -97,13 +128,16 @@ fn onChange(ctx: ?*anyopaque, s: *dbus.Settings, changed: dbus.Settings.Changed)
     const d = &app.desktop;
     const first = d.ready_ns == null;
     if (first) d.ready_ns = Loop.now();
-    d.values = desktopOf(s.values);
+    const v = effective(s.values, d.owns_fonts);
+    d.values = desktopOf(v);
     for (app.windows.items) |w| if (w) |win| win.ui.setDesktop(d.values);
     if (first or changed.cursor_theme or changed.cursor_size) setCursorTheme(app, s.values.cursor_theme.slice(), s.values.cursor_size);
     if ((first or changed.icon_theme) and !app.icon_theme_overridden) app.icons.setTheme(s.values.icon_theme.slice()) catch app.fail(error.OutOfMemory);
     var refresh = changed.text_scale;
-    if ((first or changed.font) and !app.font_overridden) {
-        app.fonts.setDefault(s.values.font.family.slice()) catch app.fail(error.OutOfMemory);
+    const fonts = first or (d.owns_fonts and (changed.font or changed.monospace_font));
+    if (fonts and !app.font_overridden) app.fonts.setDefault(v.font.family.slice()) catch app.fail(error.OutOfMemory);
+    if (fonts) {
+        app.fonts.setMonospace(v.monospace_font.family.slice()) catch app.fail(error.OutOfMemory);
         refresh = true;
     }
     if (refresh) app.refreshText();

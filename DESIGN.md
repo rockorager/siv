@@ -2663,10 +2663,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       with destroy-notifies; readers live only during their callback.
       Closing a connection from one of its own callbacks defers freeing
       it to a later dispatch.
-  - Settings come only from the portal (color scheme, accent, contrast, reduced
-    motion, text scale, fonts, cursor theme and size, double-click time,
-    caret blinking), applied live, with built-in defaults when no portal
-    runs.
+  - Settings come from the portal (color scheme, accent, contrast, reduced
+    motion, text scale, cursor theme and size, double-click time, caret
+    blinking, and fonts on GNOME and KDE), applied live, with built-in
+    defaults when no portal runs. Fonts come from Fontconfig elsewhere,
+    and the user's theme from its files (D29).
     - The client (`dbus.Settings`) reads with ReadAll and follows
       SettingChanged from the portal's owner only. The standardized
       org.freedesktop.appearance keys come first; the other settings have
@@ -2720,8 +2721,43 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       the desktop font the default family of the shared `ui.Fonts`,
       unless the application chose one (`siv_app_set_default_font`), as
       its reduced-motion flag also wins. A new default family or text
-      scale reshapes text in the default family and measures and redraws
-      canvases, whose text follows the text scale too (D28).
+      scale reshapes text and measures and redraws canvases, whose text
+      follows the text scale too (D28).
+    - Fonts come from Fontconfig's generic families: `sans-serif` for UI
+      and document text and `monospace` for monospace text, which the
+      user's fonts.conf and conf.d resolve, as they do for Qt
+      applications and terminals; Omarchy's `omarchy font set` rewrites
+      ~/.config/fontconfig/fonts.conf so that its font comes first for
+      `monospace`, and sets no GNOME key. The portal's font names
+      (GNOME's font-name and monospace-font-name, KDE's fonts) and the
+      size they carry apply only on desktops that own a font setting,
+      which their users change instead of Fontconfig's configuration:
+      GNOME and KDE, by $XDG_CURRENT_DESKTOP's colon-separated names
+      (`ubuntu:GNOME` counts). There "monospace" in a text style
+      resolves to the portal's monospace family (`ui.Fonts`
+      `setMonospace`). Elsewhere (sway, Hyprland and Omarchy, niri) the
+      portal's GTK backend reports GNOME's defaults, Adwaita Sans and
+      Adwaita Mono, which nobody chose there, so they are ignored and
+      the size is 11 pt, times the text scale, which the portal does
+      carry on every desktop (Omarchy's `omarchy display text size`
+      sets it). No signal in the portal is cleaner: KDE's portal answers
+      for org.kde.kdeglobals only on KDE, but GNOME's keys come from the
+      GTK backend on every desktop that runs it. `siv_app_set_default_font`
+      still wins for the default family.
+    - Fontconfig's configuration is followed live (`src/app/fontconfig.zig`):
+      the directories of every configuration file the last load read
+      (`FcConfigGetConfigFiles`: fonts.conf, conf.d, what they include),
+      and `$XDG_CONFIG_HOME/fontconfig`, its conf.d, and their parent
+      even before they exist, are watched with inotify on the loop as
+      D29 watches theme files: nothing runs while idle, a burst is one
+      reload after 50 ms of quiet. A change loads Fontconfig again on
+      the worker pool (`FcInitLoadConfigAndFonts`, which reads its
+      caches), then the loop swaps the snapshot, drops every resolved
+      chain, and reshapes text in every window, so `omarchy font set`
+      changes open windows' monospace text. Only where the desktop's
+      settings apply (a display, without
+      `SIV_APP_FLAGS_NO_DESKTOP_SETTINGS`). Newly installed fonts are
+      not watched for; a configuration change picks them up.
     - First frames wait by holding the compositor's frame events: a
       window whose frame arrives before the settings is asked for a frame
       again once they are ready, 100 ms after `App.create` passed, or the
@@ -4978,6 +5014,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     core's own colors come from it too: focus rings, editor selections,
     and placeholders, so the core and stock widgets agree. Canvases read
     resolved colors with `siv_window_get_color`.
+  - Font families are not part of the theme: Fontconfig's generic
+    families decide them, or the desktop's fonts on GNOME and KDE, live
+    (D19). theme.toml has no font setting, since fonts.conf is where
+    users choose fonts for every toolkit, and an Omarchy theme switch
+    changes no font (`omarchy font set` is its own command). Text sizes
+    follow the desktop's text scale, which Omarchy sets too.
   - Metrics (spacing, radii, control heights) are compiled design tokens
     of the widget library (`src/widgets/tokens.zig`); colors and text
     sizes are the runtime part.
