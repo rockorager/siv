@@ -274,7 +274,6 @@ const color_token_values = [_]schema.EnumValue{
     .{ .name = "warning", .value = 30, .doc = "Warnings in symbolic icons (D19); their errors use destructive." },
     .{ .name = "sidebar_bg", .value = 31, .doc = "Panes recessed from the view: sidebars, the outer columns of a column browser. Text on it is view_fg." },
     .{ .name = "secondary_sidebar_bg", .value = 32, .doc = "Panes between sidebar_bg and view_bg: a second sidebar, a column browser's middle column. Text on it is view_fg." },
-    .{ .name = "info", .value = 33, .doc = "The palette's blue: information, links, a file manager's folders. It does not follow the accent, which a desktop or theme may make any color. Compiled, the default accent; from an Omarchy theme, its blue, mixed toward the text where needed to read at 4.5:1 on view_bg, sidebar_bg, and secondary_sidebar_bg." },
 };
 
 fn param(comptime name: []const u8, comptime t: schema.Type, comptime doc: []const u8) Param {

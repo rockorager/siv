@@ -268,11 +268,9 @@ cover window, view, and card surfaces and their text, muted and disabled
 text, borders and separators, controls at rest, hovered, and pressed, the
 accent and the text on it, selections, focus rings, tracks and knobs,
 destructive actions, the modal scrim, inverse surfaces for toasts, the
-success and warning colors of icons, sidebar and secondary sidebar
+success and warning colors of icons, and sidebar and secondary sidebar
 panes recessed from the view (navigation lists, a column browser's outer
-columns), and `info`, the palette's blue for information, links, and
-folders, which unlike the accent stays blue when a desktop or theme
-changes the accent. Text sizes follow the desktop's font
+columns). Text sizes follow the desktop's font
 size through `size_role`.
 
 An application can choose for the user: `siv_app_set_theme` fixes the
