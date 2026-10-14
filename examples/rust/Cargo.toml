@@ -1,0 +1,11 @@
+[package]
+name = "siv-hello"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "A siv window from Rust, through siv's C ABI"
+license = "MIT"
+
+[build-dependencies]
+bindgen = "0.72"
+pkg-config = "0.3"
