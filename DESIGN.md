@@ -3876,6 +3876,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       width painted over the left and right border and the top corners'
       arc, and selected rows over the sides (siv-files' table showed a
       broken top-left corner next to its sidebar).
+    - A primary press on a view's own empty space (below the rows, or
+      its frame) focuses the view and goes no further. Applications
+      listen for an item's activation on the view's root, which made the
+      root activatable, so such a press, reaching no row, activated it on
+      release as a button's would, reporting item 0: siv-columns entered
+      its first folder on a click below the last entry. Clicks there
+      select nothing and leave the selection as it is; an application
+      that wants them to clear it handles the press itself.
     - `SIV_VIEW_FLAT` drops the frame: no border, radius, or inset, so
       rows reach the view's edges square. A view that sits edge to edge
       on a surface of its own (siv-columns' columns, separated by rules)

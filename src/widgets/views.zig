@@ -217,6 +217,7 @@ fn create(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc, mode: Mode) Node {
         .label_len = label.len,
     });
     w.onDefault(txn, v.scroll, .viewport, onViewport, v);
+    w.onDefault(txn, root, .pointer, onEmptyPointer, v);
     w.setInterface(txn, root, View, v, .{ .set_label = setLabel, .get_part = viewPart, .apply = apply, .focus = focusTarget });
     if (!resizeSelection(txn, v)) return .null;
     if (mode == .tree and !buildTop(txn, v)) return .null;
@@ -1020,6 +1021,19 @@ fn reveal(txn: Txn, v: *View, i: u32) void {
 fn focusCursor(v: *View) void {
     if (v.cursor < 0) return;
     if (boundRow(v, @intCast(v.cursor))) |r| _ = c.siv_node_focus(r.root);
+}
+
+/// A primary press on the view's own empty space (below the rows, or its
+/// frame) focuses the view and is done: without this, its release would
+/// activate the view's root, where applications listen for an item's
+/// activation, and report item 0. Rows, the header, and controls in them
+/// take their own presses first.
+fn onEmptyPointer(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
+    const v: *View = @ptrCast(@alignCast(ud.?));
+    if (ev.phase != .down or ev.button != .primary or v.hdr.disabled) return .pass;
+    if (ev.target != v.root and ev.target != v.scroll and ev.target != v.content) return .pass;
+    _ = c.siv_node_focus(v.root);
+    return .handled;
 }
 
 fn onViewport(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {

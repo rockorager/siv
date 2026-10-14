@@ -275,6 +275,29 @@ test "list view: in a plain box it keeps its size at every layout" {
     }
 }
 
+test "list view: a click below the rows activates and selects nothing" {
+    // The application listens for an item's activation on the view's
+    // root; a press below the rows used to reach no row and its release
+    // activated the root, as for a button, reporting item 0.
+    var h: Harness = .{};
+    try h.start(240, 320, null, null);
+    defer h.stop();
+    var m: Model = .{};
+    _ = try listOf(&h, &m, 3, .single);
+    try h.click(100, 300);
+    try h.click(100, 300);
+    try h.click(100, 300);
+    try h.settle();
+    try testing.expectEqual(@as(u32, 0), m.activations);
+    try testing.expectEqual(@as(u32, 0), m.selects);
+    // Rows still take theirs: a double click on one activates it.
+    try h.click(100, 2 * 32 + 16);
+    try h.click(100, 2 * 32 + 16);
+    try h.settle();
+    try testing.expectEqual(@as(u32, 1), m.activations);
+    try testing.expectEqual(@as(u32, 2), m.index);
+}
+
 test "list view: a flat view has no frame, so a selected first row is square" {
     // siv-columns' columns sit edge to edge on surfaces of their own; a
     // framed view rounded its scroll's top corners, and the first row's
