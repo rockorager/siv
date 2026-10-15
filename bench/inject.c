@@ -194,8 +194,10 @@ int main(void) {
 			zwlr_virtual_pointer_v1_motion_absolute(ptr, ms(), (uint32_t)x, (uint32_t)y, (uint32_t)out_w, (uint32_t)out_h);
 			zwlr_virtual_pointer_v1_frame(ptr);
 			flushed();
-		} else if (strcmp(line, "press") == 0 || strcmp(line, "release") == 0) {
-			zwlr_virtual_pointer_v1_button(ptr, ms(), BTN_LEFT, line[0] == 'p' ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED);
+		} else if (strcmp(line, "press") == 0 || strcmp(line, "release") == 0 || strcmp(line, "rpress") == 0 || strcmp(line, "rrelease") == 0) {
+			int right = line[0] == 'r' && line[1] != 'e';
+			const char *what = right ? line + 1 : line;
+			zwlr_virtual_pointer_v1_button(ptr, ms(), right ? BTN_RIGHT : BTN_LEFT, what[0] == 'p' ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED);
 			zwlr_virtual_pointer_v1_frame(ptr);
 			flushed();
 		} else if (strcmp(line, "key") == 0) {
@@ -239,6 +241,8 @@ int main(void) {
 				sleep_until(t);
 				key(name);
 			}
+		} else if (strcmp(line, "sleep") == 0) {
+			sleep_until(now_ns() + (uint64_t)atoi(arg) * 1000000u);
 		} else if (strcmp(line, "sync") == 0) {
 			wl_display_roundtrip(display);
 			printf("ok\n");

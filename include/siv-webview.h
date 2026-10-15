@@ -272,6 +272,8 @@ SIV_NODISCARD siv_result siv_webview_load_uri(siv_webview webview, const char *u
  *  (empty for about:blank). */
 SIV_NODISCARD siv_result siv_webview_load_html(siv_webview webview, const char *html, size_t html_len, const char *base_uri, size_t base_uri_len);
 
+/** Goes back or forward in the history; SIV_ERROR_BUSY with nowhere to go
+ *  (SIV_WEBVIEW_CAN_GO_BACK, SIV_WEBVIEW_CAN_GO_FORWARD). */
 SIV_NODISCARD siv_result siv_webview_go_back(siv_webview webview);
 SIV_NODISCARD siv_result siv_webview_go_forward(siv_webview webview);
 SIV_NODISCARD siv_result siv_webview_reload(siv_webview webview);
@@ -289,7 +291,8 @@ SIV_NODISCARD siv_result siv_webview_get_state(siv_webview webview, siv_webview_
 SIV_NODISCARD siv_result siv_webview_set_zoom(siv_webview webview, double zoom);
 
 /** Sets the page's prefers-color-scheme: follow (the window's theme, the
- *  default), light, or dark. */
+ *  default), light, or dark. WPE WebKit has one appearance per process:
+ *  the last web view to change it decides for all. */
 SIV_NODISCARD siv_result siv_webview_set_color_scheme(siv_webview webview, siv_color_scheme scheme);
 
 /** Runs JavaScript in the page's main frame; callback gets the completion
@@ -305,7 +308,8 @@ SIV_NODISCARD siv_result siv_webview_add_message_handler(siv_webview webview, co
 
 /** Posts a message to the page: json (a JSON value) arrives as the data of
  *  a "message" event on window.siv (siv.addEventListener("message", e =>
- *  e.data), or siv.onmessage). */
+ *  e.data), or siv.onmessage). SIV_ERROR_INVALID_ARGUMENT if it is not
+ *  JSON. */
 SIV_NODISCARD siv_result siv_webview_post_message(siv_webview webview, const char *json, size_t json_len);
 
 /** Serves URLs of `scheme` (such as "app") from the application, for every

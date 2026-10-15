@@ -23,6 +23,14 @@ static siv_result wpe_app_init(swv_app *a) {
         free(wa);
         return SIV_ERROR_UNAVAILABLE;
     }
+    /* WebKit reads the appearance (dark mode) from the primary display's
+     * settings once per process, so the first display stays the primary
+     * one for the process's life, outliving its application. */
+    static WPEDisplay *primary;
+    if (!primary) {
+        primary = g_object_ref(wa->display);
+        wpe_display_set_primary(primary);
+    }
     wa->sessions = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_object_unref);
     wa->clip = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)g_bytes_unref);
     a->engine_data = wa;
@@ -35,6 +43,7 @@ static void wpe_app_fini(swv_app *a) {
     g_clear_object(&wa->context);
     g_hash_table_unref(wa->sessions);
     g_hash_table_unref(wa->clip);
+    SWV_DISPLAY(wa->display)->app = NULL;
     g_clear_object(&wa->display);
     free(wa);
     a->engine_data = NULL;
@@ -359,8 +368,25 @@ static siv_event_result on_menu_select(void *user_data, siv_node node, const siv
     return SIV_EVENT_RESULT_HANDLED;
 }
 
-/* A siv menu of `n` items, by label, opened at (x, y) in the node. */
-static void open_menu(wpe_wv *w, guint n, const char *(*label)(wpe_wv *, guint, siv_menu_item_flags *), float x, float y) {
+/* A context menu title's GTK mnemonic: "_Back" is "Back" with B. */
+static uint32_t strip_mnemonic(const char *in, char *out, size_t cap) {
+    uint32_t key = 0;
+    size_t o = 0;
+    for (size_t i = 0; in[i] && o + 1 < cap; i++) {
+        if (in[i] == '_' && in[i + 1] != '_' && in[i + 1]) {
+            if (!key) key = (uint32_t)g_ascii_tolower(in[i + 1]);
+            continue;
+        }
+        if (in[i] == '_') i++;
+        out[o++] = in[i];
+    }
+    out[o] = 0;
+    return key;
+}
+
+/* A siv menu of `n` items, by label, opened at (x, y) in the node; with
+ * `mnemonics` the labels mark theirs with an underscore. */
+static void open_menu(wpe_wv *w, guint n, const char *(*label)(wpe_wv *, guint, siv_menu_item_flags *), bool mnemonics, float x, float y) {
     siv_txn txn;
     if (!w->wv->node || siv_txn_begin(w->wv->window, &txn) != SIV_OK) return;
     /* Menus take no space; the root holds them (an external node cannot). */
@@ -368,7 +394,14 @@ static void open_menu(wpe_wv *w, guint n, const char *(*label)(wpe_wv *, guint, 
     for (guint i = 0; i < n; i++) {
         siv_menu_item_flags flags = 0;
         const char *l = label(w, i, &flags);
-        siv_menu_item(txn, menu, SIV_DESC(siv_menu_item_desc, .label = l ? l : "", .label_len = l ? strlen(l) : 0, .flags = flags));
+        char buf[256];
+        uint32_t key = 0;
+        if (!l) l = "";
+        if (mnemonics) {
+            key = strip_mnemonic(l, buf, sizeof buf);
+            l = buf;
+        }
+        siv_menu_item(txn, menu, SIV_DESC(siv_menu_item_desc, .label = l, .label_len = strlen(l), .flags = flags, .mnemonic = key));
     }
     void *id = (void *)(uintptr_t)w->wv->handle;
     siv_on(txn, menu, SIV_EVENT_TYPE_SELECT, on_menu_select, NULL, id);
@@ -406,7 +439,7 @@ static gboolean on_show_option_menu(WebKitWebView *web_view, WebKitOptionMenu *m
     for (guint i = 0; i < n; i++)
         if (!webkit_option_menu_item_is_group_label(webkit_option_menu_get_item(menu, i))) g_array_append_val(w->option_items, i);
     g_signal_connect(menu, "close", G_CALLBACK(on_option_menu_close), w);
-    open_menu(w, w->option_items->len, option_label, (float)rect->x, (float)(rect->y + rect->height));
+    open_menu(w, w->option_items->len, option_label, false, (float)rect->x, (float)(rect->y + rect->height));
     return TRUE;
 }
 
@@ -427,7 +460,7 @@ static gboolean on_context_menu(WebKitWebView *web_view, WebKitContextMenu *menu
     close_menu(w);
     if (!webkit_context_menu_get_n_items(menu)) return TRUE;
     w->context_menu = g_object_ref(menu);
-    open_menu(w, webkit_context_menu_get_n_items(menu), context_label, (float)w->px, (float)w->py);
+    open_menu(w, webkit_context_menu_get_n_items(menu), context_label, true, (float)w->px, (float)w->py);
     return TRUE;
 }
 
@@ -485,7 +518,10 @@ static gboolean on_run_file_chooser(WebKitWebView *web_view, WebKitFileChooserRe
         if (siv_file_chooser_add_filter(c->chooser, SIV_STR("All files")) == SIV_OK) (void)siv_file_chooser_add_pattern(c->chooser, SIV_FILE_PATTERN_KIND_GLOB, SIV_STR("*"));
     }
     if (r == SIV_OK) r = siv_file_chooser_show(c->chooser, w->wv->window, on_chosen, choose_free, c);
-    else choose_free(c);
+    if (r != SIV_OK) {
+        fprintf(stderr, "siv-webview: no file chooser: %s\n", siv_result_name(r));
+        choose_free(c);
+    }
     return TRUE;
 }
 
@@ -584,9 +620,21 @@ static siv_result wpe_run_script(swv_webview *wv, const char *script, size_t len
 }
 
 static siv_result wpe_post_message(swv_webview *wv, const char *json, size_t len) {
-    /* JSON is a JavaScript expression; the page parses nothing. */
+    /* Parsed here, so only JSON reaches the page, written out again as a
+     * JavaScript expression. */
+    static JSCContext *ctx;
+    if (!ctx) ctx = jsc_context_new();
+    char *src = g_strndup(json, len);
+    JSCValue *v = jsc_value_new_from_json(ctx, src);
+    g_free(src);
+    JSCException *ex = jsc_context_get_exception(ctx);
+    char *out = v && !ex ? jsc_value_to_json(v, 0) : NULL;
+    jsc_context_clear_exception(ctx);
+    g_clear_object(&v);
+    if (!out) return SIV_ERROR_INVALID_ARGUMENT;
     GString *s = g_string_new("window.siv && window.siv._receive(");
-    g_string_append_len(s, json, (gssize)len);
+    g_string_append(s, out);
+    g_free(out);
     g_string_append(s, "); undefined");
     webkit_web_view_evaluate_javascript(of(wv)->web_view, s->str, (gssize)s->len, NULL, NULL, NULL, NULL, NULL);
     g_string_free(s, TRUE);
@@ -743,7 +791,8 @@ static void wpe_destroy(swv_webview *wv) {
 
 static void wpe_set_dark(swv_webview *wv, bool dark) {
     wv->dark = dark;
-    wpe_settings_set_boolean(wpe_display_get_settings(of(wv)->app->display), WPE_SETTING_DARK_MODE, dark, WPE_SETTINGS_SOURCE_APPLICATION, NULL);
+    /* One appearance per process: the last web view to set it decides. */
+    wpe_settings_set_boolean(wpe_display_get_settings(wpe_display_get_primary()), WPE_SETTING_DARK_MODE, dark, WPE_SETTINGS_SOURCE_APPLICATION, NULL);
 }
 
 static void wpe_configure(swv_webview *wv, uint32_t width, uint32_t height, double scale) {

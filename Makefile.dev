@@ -7,3 +7,5 @@ out/libsiv-webview.so: src/*.c src/*.h src/*.inc include/*.h
 	$(CC) $(CFLAGS) -shared -Iinclude -I$(SIV)/include $(shell pkg-config --cflags $(PKGS)) -o $@ src/webview.c src/glib_loop.c src/wpe.c -L$(SIV)/lib -lsiv -Wl,-rpath,$(SIV)/lib $(shell pkg-config --libs $(PKGS))
 out/browser: examples/browser.c out/libsiv-webview.so
 	$(CC) $(CFLAGS) -D_GNU_SOURCE -Iinclude -I$(SIV)/include -o $@ $< -Lout -lsiv-webview -Wl,-rpath,$(CURDIR)/out -L$(SIV)/lib -lsiv -Wl,-rpath,$(SIV)/lib
+out/siv-webview-test: tests/headless.c out/libsiv-webview.so
+	$(CC) $(CFLAGS) -D_GNU_SOURCE -Iinclude -I$(SIV)/include -o $@ $< -Lout -lsiv-webview -Wl,-rpath,$(CURDIR)/out -L$(SIV)/lib -lsiv -Wl,-rpath,$(SIV)/lib

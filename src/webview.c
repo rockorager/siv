@@ -146,6 +146,7 @@ static void on_slot_event(void *user_data, siv_external slot, const siv_external
     struct slot_ctx *c = user_data;
     swv_webview *wv = get(c->handle);
     if (!wv || !wv->engine) return;
+    if (getenv("SWV_DEBUG_SLOT")) fprintf(stderr, "slot event %d %ux%u scale %g key %llx\n", e->type, e->width, e->height, e->scale, (unsigned long long)e->key);
     if (e->type == SIV_EXTERNAL_EVENT_TYPE_CONFIGURE) wv->engine->configure(wv, e->width, e->height, e->scale);
     else if (e->type == SIV_EXTERNAL_EVENT_TYPE_PRESENTED) wv->engine->presented(wv, e->key);
     else if (e->type == SIV_EXTERNAL_EVENT_TYPE_RELEASED) wv->engine->released(wv, e->key);
@@ -159,7 +160,9 @@ static siv_event_result on_input(void *user_data, siv_node node, const siv_event
 }
 
 siv_result swv_submit(swv_webview *wv, const siv_external_frame_desc *frame) {
-    return wv->slot ? siv_external_submit(wv->slot, frame) : SIV_ERROR_UNAVAILABLE;
+    siv_result r = wv->slot ? siv_external_submit(wv->slot, frame) : SIV_ERROR_UNAVAILABLE;
+    if (getenv("SWV_DEBUG_SLOT")) fprintf(stderr, "submit %ux%u mem %d stride %u fmt %x mod %llx: %s\n", frame->width, frame->height, frame->memory, frame->stride, frame->drm_format, (unsigned long long)frame->modifier, siv_result_name(r));
+    return r;
 }
 
 void swv_set_cursor(swv_webview *wv, siv_cursor cursor) {
@@ -324,12 +327,18 @@ siv_result siv_webview_load_html(siv_webview webview, const char *html, size_t h
 
 siv_result siv_webview_go_back(siv_webview webview) {
     WV(webview);
+    siv_webview_state st = {.size = sizeof st};
+    wv->engine->get_state(wv, &st);
+    if (!(st.flags & SIV_WEBVIEW_CAN_GO_BACK)) return SIV_ERROR_BUSY;
     wv->engine->go_back(wv);
     return SIV_OK;
 }
 
 siv_result siv_webview_go_forward(siv_webview webview) {
     WV(webview);
+    siv_webview_state st = {.size = sizeof st};
+    wv->engine->get_state(wv, &st);
+    if (!(st.flags & SIV_WEBVIEW_CAN_GO_FORWARD)) return SIV_ERROR_BUSY;
     wv->engine->go_forward(wv);
     return SIV_OK;
 }
