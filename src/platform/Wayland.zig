@@ -347,6 +347,12 @@ pub const Window = struct {
     clock: FrameClock = .{},
     frame_task: Loop.Task = .{ .func = runFrame },
     frame_callback: ?*wl.Callback = null,
+    /// Frame callbacks asked for with `frame_callback` on the window's
+    /// shown frame-slot subsurfaces (D17): a compositor sends frame
+    /// callbacks only to visible surfaces, and an opaque subsurface that
+    /// covers the window hides it. The first callback of the set to fire
+    /// ends the frame; the rest are destroyed with it.
+    sub_frame_callbacks: std.ArrayList(*wl.Callback) = .empty,
     /// Predicted presentation time of the frame being rendered.
     frame_target_ns: ?u64 = null,
     feedbacks: [4]Feedback = @splat(.{}),
@@ -1536,7 +1542,8 @@ pub fn destroyWindow(self: *Wayland, id: WindowId) void {
     self.loop.unschedule(&w.frame_task);
     self.loop.cancelTimer(&w.ack_timer);
     for (w.feedbacks) |f| if (f.proxy) |fb| fb.destroy();
-    if (w.frame_callback) |cb| cb.destroy();
+    endFrameCallbacks(w);
+    w.sub_frame_callbacks.deinit(self.allocator);
     if (w.effect) |e| e.destroy();
     w.blur_region.deinit(self.allocator);
     if (w.fifo) |f| f.destroy();
@@ -1676,6 +1683,7 @@ fn beforeCommit(self: *Wayland, w: *Window) void {
         if (surface.frame()) |cb| {
             cb.setListener(*Window, onFrameDone, w);
             w.frame_callback = cb;
+            self.requestSubsurfaceFrames(w);
         } else |_| {}
     }
     // FIFO (D12): an animation frame waits for the previous commit's
@@ -2508,11 +2516,39 @@ fn onFractionalScale(_: *wp.FractionalScaleV1, event: wp.FractionalScaleV1.Event
     }
 }
 
+/// Asks for a frame callback on each shown frame-slot subsurface, so that
+/// the window's frame ends even when they hide it (see
+/// `Window.sub_frame_callbacks`). Each is synchronized, so its commit
+/// waits for the window's, which follows. Embedders' surfaces are left
+/// alone: committing them is the embedder's (D17).
+fn requestSubsurfaceFrames(self: *Wayland, w: *Window) void {
+    for (w.subsurfaces.items) |sub| {
+        const s = sub orelse continue;
+        if (s.embed or s.subsurface == null or !s.attached) continue;
+        w.sub_frame_callbacks.ensureUnusedCapacity(self.allocator, 1) catch return;
+        const cb = s.surface.frame() catch return;
+        cb.setListener(*Window, onFrameDone, w);
+        w.sub_frame_callbacks.appendAssumeCapacity(cb);
+        s.surface.commit();
+    }
+}
+
+/// Destroys the window's outstanding frame callbacks; events already
+/// queued for them are dropped.
+fn endFrameCallbacks(w: *Window) void {
+    if (w.frame_callback) |cb| cb.destroy();
+    w.frame_callback = null;
+    for (w.sub_frame_callbacks.items) |cb| cb.destroy();
+    w.sub_frame_callbacks.clearRetainingCapacity();
+}
+
 fn onFrameDone(cb: *wl.Callback, event: wl.Callback.Event, w: *Window) void {
+    _ = cb;
     switch (event) {
         .done => {
-            cb.destroy();
-            w.frame_callback = null;
+            // The first of the set: the window or one of its subsurfaces
+            // reached the screen.
+            endFrameCallbacks(w);
             w.clock.doneAt(Loop.now());
             // Until presentation feedback arrives, trust the output mode.
             if (w.clock.last_present_ns == null) w.clock.refresh_ns = outputRefresh(w);

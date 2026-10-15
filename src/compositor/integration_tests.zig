@@ -933,6 +933,42 @@ const SolidProbe = struct {
     }
 };
 
+test "a promoted frame covering a Vulkan window keeps the window presenting" {
+    // An opaque subsurface over the whole window hides it, and wlroots
+    // then sends the window no frame callbacks: its frames end on the
+    // subsurface's callbacks instead (D17). Found by a webview filling its
+    // window, which stopped presenting after its first frame.
+    var h: Harness = .{};
+    const id = try startVulkan(&h, .auto);
+    defer h.stop();
+    const Supports = struct {
+        yes: bool = false,
+        fn f(ctx: ?*anyopaque, c: *Compositor) void {
+            const s: *@This() = @ptrCast(@alignCast(ctx));
+            s.yes = c.platform.wayland.supportsDmabuf(scene.Dmabuf.xrgb8888, scene.Dmabuf.modifier_linear);
+        }
+    };
+    var supports: Supports = .{};
+    try h.comp.call(&supports, Supports.f);
+    if (!supports.yes) return error.SkipZigTest;
+    const frame = (try udmabufFrame(640, 360, .{ 0x40, 0x80, 0xff, 0 }, 1)) orelse return error.SkipZigTest;
+    defer frame.close();
+    const ext = try h.comp.createExternal(id);
+    try h.comp.setExternalFrame(id, ext, frame);
+    h.seq = try h.comp.commit(id, &.{
+        .{ .create = 5 },
+        .{ .insert = .{ .layer = 5, .parent = 1 } },
+        .{ .set_external = .{ .layer = 5, .external = .{ .id = ext, .rect = .xywh(0, 0, 640, 360) } } },
+    });
+    try h.settle();
+    try SubProbe.waitShown(&h, id, 1);
+    // A layer below the frame animates; every step needs a frame.
+    const before = (try Probe.read(h.comp, id)).frames;
+    _ = try h.comp.commit(id, &.{.{ .animate = .{ .layer = 4, .animation = .{ .to = .{ .transform = .offset(20, 20) }, .duration_ns = 300 * std.time.ns_per_ms } } }});
+    try dispatchMs(&h, 500);
+    try testing.expect((try Probe.read(h.comp, id)).frames >= before + 10);
+}
+
 test "subsurfaces on sway: translucent through alpha-modifier, backgrounds on single-pixel buffers" {
     var h: Harness = .{};
     try h.start();

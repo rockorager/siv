@@ -2236,6 +2236,25 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
         replaced frame stays in use until sway runs again and releases
         it. A translucent placement composites through the Vulkan
         renderer's explicit-modifier import there too.
+    - Frame callbacks under covering frames: compositors send frame
+      callbacks only to surfaces that are visible (wlroots culls occluded
+      scene buffers), and an opaque promoted frame over the whole window
+      (fullscreen video, a webview filling its window) hides the window,
+      so the frame clock waited forever for the window's callback and the
+      window never presented again, black if it happened before its first
+      frame reached the screen. Each frame that asks for a callback on the
+      window now also asks on every shown frame-slot subsurface (a frame
+      request and a bare commit, cached until the window's commit), and the
+      first callback of the set ends the frame; the others are destroyed.
+      Embedders' surfaces are left out (their commits are theirs), so an
+      embedder surface covering the window still hides its callbacks.
+      Presentation feedback stays on the window, so a covered window's
+      frame clock predicts from the output's refresh. Found by
+      siv-webview's spike; checked on sway 1.12 with its Vulkan renderer
+      (`zig build test-integration`: a Vulkan window covered by a
+      promoted udmabuf frame animates; without the change it stops).
+      Alternative: never promote a frame that covers the window (a
+      fullscreen video would then be copied every frame).
     - Explicit synchronization (linux-drm-syncobj-v1) for every buffer
       siv attaches itself. Requirement: NVIDIA's driver sets no implicit
       fences on the dma-bufs it writes or reads, so polling a frame's
