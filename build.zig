@@ -86,6 +86,7 @@ pub fn build(b: *std.Build) void {
     const icon = ctx.module("src/icon/icon.zig", &.{});
     // Documents (D32): HTML parsing.
     const html = ctx.module("src/html/html.zig", &.{});
+    const css = ctx.module("src/css/css.zig", &.{});
     const images = @import("src/image/build_steps.zig").add(b, .{ .target = target, .optimize = optimize, .scene = scene });
     const image = images.image;
     const svg = ctx.module("src/svg/svg.zig", &.{
@@ -283,6 +284,7 @@ pub fn build(b: *std.Build) void {
         .{ "svg", svg },
         .{ "icon", icon },
         .{ "html", html },
+        .{ "css", css },
         .{ "image", image },
         .{ "render-cpu", render_cpu },
         .{ "render-vulkan", render_vulkan },
