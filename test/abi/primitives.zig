@@ -679,6 +679,87 @@ test "watched descriptors call back at safe points until destroyed" {
     try testing.expectEqual(@as(u32, 1), other.destroyed);
 }
 
+const Preparer = struct {
+    calls: u32 = 0,
+    destroyed: u32 = 0,
+    timeout: i32 = -1,
+    /// Destroyed from the callback: another prepare function, or itself.
+    victim: t.Prepare = .null,
+
+    fn run(user_data: ?*anyopaque, prepare: t.Prepare) callconv(.c) i32 {
+        const p: *Preparer = @ptrCast(@alignCast(user_data));
+        p.calls += 1;
+        if (p.victim != .null) {
+            c.siv_prepare_destroy(p.victim);
+            p.victim = .null;
+        }
+        _ = prepare;
+        return p.timeout;
+    }
+
+    fn destroy(user_data: ?*anyopaque) callconv(.c) void {
+        const p: *Preparer = @ptrCast(@alignCast(user_data));
+        p.destroyed += 1;
+    }
+};
+
+test "prepare functions run before every wait and bound it" {
+    var h: Harness = .{};
+    try start(&h);
+    defer h.stop();
+    const linux = std.os.linux;
+    var fd: i32 = -1;
+    try ok(c.siv_app_get_fd(h.app, &fd));
+    try h.settle();
+    var a: Preparer = .{};
+    var pa: t.Prepare = .null;
+    try ok(c.siv_app_add_prepare(h.app, Preparer.run, Preparer.destroy, &a, &pa));
+    // Once per iteration, the first right away.
+    try ok(c.siv_app_dispatch(h.app, 0));
+    try ok(c.siv_app_dispatch(h.app, 0));
+    try testing.expectEqual(@as(u32, 2), a.calls);
+    // A limit wakes an embedder's poll when it runs out; 0 at once.
+    var pfd = [_]linux.pollfd{.{ .fd = fd, .events = linux.POLL.IN, .revents = 0 }};
+    a.timeout = 20;
+    try ok(c.siv_app_dispatch(h.app, 0));
+    try testing.expectEqual(@as(usize, 1), linux.poll(&pfd, 1, 5000));
+    try ok(c.siv_app_dispatch(h.app, 0));
+    try testing.expectEqual(@as(u32, 4), a.calls);
+    a.timeout = 0;
+    try ok(c.siv_app_dispatch(h.app, 0));
+    try testing.expectEqual(@as(usize, 1), linux.poll(&pfd, 1, 0));
+    a.timeout = -1;
+    // One destroying another that runs after it in the same phase: the
+    // other never runs again, and its destroy-notify runs once.
+    var b: Preparer = .{};
+    var pb: t.Prepare = .null;
+    try ok(c.siv_app_add_prepare(h.app, Preparer.run, Preparer.destroy, &b, &pb));
+    try ok(c.siv_app_dispatch(h.app, 0));
+    const b_calls = b.calls;
+    // b was added last, so it runs first: it destroys a, which runs next.
+    const a_calls = a.calls;
+    b.victim = pa;
+    try ok(c.siv_app_dispatch(h.app, 0));
+    try ok(c.siv_app_dispatch(h.app, 0));
+    try testing.expectEqual(@as(u32, 1), a.destroyed);
+    try testing.expectEqual(a_calls, a.calls);
+    try testing.expectEqual(b_calls + 2, b.calls);
+    // Destroying itself, and handles are checked.
+    b.victim = pb;
+    try ok(c.siv_app_dispatch(h.app, 0));
+    try testing.expectEqual(@as(u32, 1), b.destroyed);
+    c.siv_prepare_destroy(pb);
+    try testing.expectEqual(@as(u32, 1), b.destroyed);
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_app_add_prepare(h.app, null, Preparer.destroy, &b, &pb));
+    try testing.expectEqual(@as(u32, 2), b.destroyed);
+    // One the application never destroys goes with it.
+    var other: Preparer = .{};
+    try ok(c.siv_app_add_prepare(h.app, Preparer.run, Preparer.destroy, &other, &pb));
+    h.stop();
+    h.app = .null;
+    try testing.expectEqual(@as(u32, 1), other.destroyed);
+}
+
 test "default layouts fill the fields the application's layout leaves zero" {
     var h: Harness = .{};
     try start(&h);

@@ -1083,6 +1083,10 @@ pub const decls = [_]Decl{
         .{ .name = "hangup", .bit = 2, .doc = "Reported only: the other end closed (EPOLLHUP or EPOLLRDHUP). It stays reported until the watch is destroyed." },
         .{ .name = "error", .bit = 3, .doc = "Reported only: an error is pending on the descriptor (EPOLLERR). It stays reported until the watch is destroyed." },
     }),
+    handle("siv_prepare", "A function the application's loop runs before each wait (siv_app_add_prepare). Valid until siv_prepare_destroy or the application's destruction.", false),
+    callback("siv_prepare_fn", "Runs at a safe point on the application's thread (D5) at the end of every loop iteration, after its frames, just before siv waits for events (D6): another event loop running inside siv's (GLib's GMainContext, a PipeWire or libdbus loop) dispatches what became ready since the last call, gets ready to wait, and says how long siv may wait. Its descriptors go in siv's loop with siv_app_watch_fd. Work it starts that needs siv (a transaction, a post) runs in the next iteration, which then follows at once.", &.{
+        .{ .name = "prepare", .type = ref("siv_prepare"), .doc = "The prepare function's handle." },
+    }, .i32),
     callback("siv_watch_fn", "A watched file descriptor is ready; runs at a safe point on the application's thread (D5), in the dispatch phase of the loop iteration whose poll saw it. Watches are level-triggered: read or write until the descriptor would block, or the callback runs again in the next iteration.", &.{
         .{ .name = "watch", .type = ref("siv_watch"), .doc = "The watch." },
         .{ .name = "events", .type = ref("siv_watch_flags"), .doc = "What the descriptor is ready for, of what the watch asked for, and hangup or error." },
@@ -1927,6 +1931,14 @@ pub const functions = [_]Function{
         .{ .name = "watch", .type = ref("siv_watch"), .doc = "The watch." },
         .{ .name = "events", .type = ref("siv_watch_flags"), .doc = "Readable, writable, both, or neither (only hangup and error)." },
     }),
+    call("siv_app_add_prepare", "Runs callback(user_data) before every wait of the application's loop, which then waits at most the milliseconds it returns (-1 for no limit, 0 for none): the hook another event loop needs to run inside siv's (D6), since watching its descriptors is not enough for work that its own thread queues, such as GLib sources attached outside its dispatch. Also when siv is embedded (siv_app_get_fd): the descriptor turns readable when the time runs out.", &.{
+        app_param,
+        .{ .name = "callback", .type = ref("siv_prepare_fn"), .doc = "Runs before each wait; returns the longest wait in milliseconds." },
+        .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data when the prepare function is destroyed; may be NULL." },
+        .{ .name = "user_data", .type = .user_data, .doc = "Passed to both." },
+        .{ .name = "prepare", .type = out(ref("siv_prepare")), .doc = "The prepare function." },
+    }),
+    teardown("siv_prepare_destroy", "Stops running the prepare function and runs its destroy-notify. Safe from its own callback.", &.{.{ .name = "prepare", .type = ref("siv_prepare"), .doc = "The prepare function." }}),
     teardown("siv_watch_destroy", "Stops watching the descriptor (which stays open) and runs the destroy-notify. Safe from the watch's own callback.", &.{.{ .name = "watch", .type = ref("siv_watch"), .doc = "The watch." }}),
     call("siv_job_start", "Runs work(user_data) on the application's worker pool (D6), then done(user_data) at a safe point on the application's thread (D5), then destroy(user_data). Work runs on another thread and may call only siv_post. By default a job is blocking work, such as file I/O, and runs on the pool's blocking lane (up to 8 at once, the rest queued in order); SIV_JOB_COMPUTE puts CPU-bound work on the compute workers that decode images and render tiles. A job cannot be stopped once it runs; long jobs check a flag of their own. Destroying the application waits for running jobs and drops queued ones: then only destroy runs.", &.{
         app_param,

@@ -473,6 +473,28 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     needs. Found by the file manager in `apps/files`. Alternative: an
     edge-triggered watch (the application must drain every time or
     lose wakeups, an easy bug to write in every binding).
+  - Other event loops run inside siv's through `siv_app_add_prepare`: a
+    function the loop calls at the end of every iteration (the prepare
+    phase, after frames, before it waits), which returns how long siv may
+    wait (-1 without limit, 0 not at all). With `siv_app_watch_fd` for
+    their descriptors, that is the whole of GLib's contract (prepare,
+    query, poll, check, dispatch): the function checks and dispatches what
+    became ready, then prepares and queries again. Watching descriptors
+    alone is not enough: GLib wakes its poll for sources attached by
+    other threads but not for those attached on its own thread outside
+    its dispatch (an idle or timeout an application callback adds), and
+    its timeouts are its own. Found by siv-webview, whose WebKit needs the
+    thread-default GMainContext dispatched; its spike had to make GLib the
+    main loop and siv a GSource. A limit arms a loop timer, so an embedded
+    loop's descriptor turns readable when it runs out; 0 wakes the loop.
+    Work the function starts that needs siv (a commit) runs in the next
+    iteration, which then follows at once. A prepare function destroyed
+    during the prepare phase is freed in the next dispatch phase, since
+    the loop may hold its hook as the next to run. Alternatives: a
+    GLib-specific integration in siv (a dependency for one loop, D25);
+    running the other loop on a thread of its own (WebKit, GStreamer's
+    bus, and libdbus want their thread-default context on the thread that
+    calls them).
 - **Alternatives:** io_uring. Rejected: a GUI client issues tens of syscalls per
   frame, so batching gains are negligible; Docker's default seccomp profile
   blocks io_uring, Android and ChromeOS disable it, and seccomp sandboxes cannot

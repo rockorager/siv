@@ -83,6 +83,7 @@ pub const App = struct {
     timers: std.ArrayList(?*Timer),
     /// By watch index (handle payload); null slots are reused.
     watches: std.ArrayList(?*watch.Watch),
+    prepares: std.ArrayList(?*watch.Prepare),
     /// Pending image loads by index (handle payload); null slots are
     /// reused. The pool owns them until they complete or are dropped.
     image_requests: std.ArrayList(?*@import("image_load.zig").Request),
@@ -283,6 +284,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     self.closing = .init(false);
     self.timers = .empty;
     self.watches = .empty;
+    self.prepares = .empty;
     self.image_requests = .empty;
     self.desktop = .{};
     self.dbus = .{};
@@ -354,6 +356,8 @@ fn destroyNow(self: *App) void {
     self.timers.deinit(gpa);
     for (self.watches.items) |slot| if (slot) |w| w.remove();
     self.watches.deinit(gpa);
+    for (self.prepares.items) |slot| if (slot) |p| p.remove();
+    self.prepares.deinit(gpa);
     self.app.fonts.removeListener(self);
     for (self.images.items) |img| if (img) |i| i.release();
     // Runs the destroy-notify of posted work that never ran (D5).
