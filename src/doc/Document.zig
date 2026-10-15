@@ -161,9 +161,10 @@ pub fn create(gpa: Allocator, bytes: []const u8, options: Options, ua_sheet: *co
         }
     }
     try d.sheets.append(gpa, .{ .sheet = ua_sheet, .origin = .user_agent, .owned = false });
-    if (options.kind == .html and d.dom.quirks == .quirks) {
+    if (options.kind == .html and d.dom.quirks == .quirks and !isXml(bytes)) {
         // Quirks mode (no doctype, as most email has): tables do not
-        // inherit text styles (HTML, rendering 15.3.6).
+        // inherit text styles (HTML, rendering 15.3.6). XHTML, such as
+        // an EPUB chapter, is never in quirks mode, doctype or not.
         const s = try gpa.create(css.Sheet);
         s.* = try css.sheet.parse(gpa, ua.quirks_css, .{});
         try d.sheets.append(gpa, .{ .sheet = s, .origin = .user_agent, .owned = true });
@@ -242,6 +243,13 @@ fn resolve(d: *Document, ref: []const u8) Error![]const u8 {
 
 fn isRemote(u: []const u8) bool {
     return std.ascii.startsWithIgnoreCase(u, "http:") or std.ascii.startsWithIgnoreCase(u, "https:") or std.mem.startsWith(u8, u, "//");
+}
+
+/// Whether a source is an XML document (an XML declaration first).
+fn isXml(bytes: []const u8) bool {
+    var b = bytes;
+    if (std.mem.startsWith(u8, b, "\xef\xbb\xbf")) b = b[3..];
+    return std.mem.startsWith(u8, std.mem.trimStart(u8, b, " \t\r\n"), "<?xml");
 }
 
 fn addResource(d: *Document, kind: @TypeOf(@as(Resource, undefined).kind), raw: []const u8) Error!?u32 {
@@ -544,23 +552,30 @@ pub fn resolveFonts(d: *Document, resolver: FontResolver) Error!void {
             try chain.appendSlice(a, found);
         }
         var fi: inline_mod.FontInfo = .{ .chain = chain.items, .size = st.inh.font_size, .language = if (lang.len > 0) try a.dupe(u8, lang) else "und" };
-        cache.lockShared();
-        defer cache.unlockShared();
-        for (chain.items) |id| if (cache.face(id)) |face| {
-            const m = face.metrics(fi.size);
-            fi.ascent = m.ascent;
-            fi.descent = m.descent;
-            fi.primary = id;
-            fi.x_height = if (face.glyphBounds(face.nominalGlyph('x') orelse 0, fi.size)) |bb| -bb.y else fi.size * 0.5;
-            break;
-        } else if (cache.last_resort) |lr| if (cache.face(lr)) |face| {
-            const m = face.metrics(fi.size);
-            fi.ascent = m.ascent;
-            fi.descent = m.descent;
-        };
+        fontMetrics(cache, &fi);
         try memo.put(d.gpa, try a.dupe(u8, key.items), fi);
         try d.font_table.append(d.gpa, fi);
     }
+}
+
+/// A font's metrics from the first loaded face of its chain (the last
+/// resort's while none is; fontsLoaded tries again).
+fn fontMetrics(cache: *const text.FontCache, fi: *inline_mod.FontInfo) void {
+    cache.lockShared();
+    defer cache.unlockShared();
+    for (fi.chain) |id| if (cache.face(id)) |face| {
+        const m = face.metrics(fi.size);
+        fi.ascent = m.ascent;
+        fi.descent = m.descent;
+        fi.primary = id;
+        fi.x_height = if (face.glyphBounds(face.nominalGlyph('x') orelse 0, fi.size)) |bb| -bb.y else fi.size * 0.5;
+        return;
+    };
+    if (cache.last_resort) |lr| if (cache.face(lr)) |face| {
+        const m = face.metrics(fi.size);
+        fi.ascent = m.ascent;
+        fi.descent = m.descent;
+    };
 }
 
 fn rankFaces(d: *Document, cache: *text.FontCache, faces: []const text.FontId, st: *const css.Style, out: *std.ArrayList(text.FontId)) Error!void {
@@ -827,6 +842,9 @@ pub fn wantedFonts(d: *Document, out: *std.ArrayList(text.FontId)) Error!void {
 /// Fonts finished loading: shape and lay out everything again.
 pub fn fontsLoaded(d: *Document) void {
     if (d.engine) |*e| {
+        // Metrics (and the primary face, which hyphens and small caps
+        // measure with) come from the faces that have loaded since.
+        for (d.font_table.items) |*fi| if (fi.primary == null) fontMetrics(e.fonts.cache, fi);
         e.reshapeAll();
         e.incomplete = false;
     }
@@ -1096,4 +1114,127 @@ pub fn locatorPath(d: *Document, y: f32, out: *std.ArrayList(u32), gpa: Allocato
         }
         return;
     }
+}
+
+/// Where a laid out document breaks into pages of content height
+/// `page_h` (CSS Fragmentation 3, simplified): the y of each page's top
+/// after the first, in document coordinates. Breaks fall between blocks,
+/// table rows, and lines (keeping `orphans` lines before a break and
+/// `widows` after it), never inside a line or a replaced element;
+/// `break-before` and `break-after: page` (and their legacy aliases)
+/// force one, `avoid` and `break-inside: avoid` avoid one where another
+/// fits. Content taller than a page is cut. Lay out to the end first.
+pub fn pageBreaks(d: *Document, page_h: f32, out: *std.ArrayList(f32), gpa: Allocator) Error!void {
+    out.clearRetainingCapacity();
+    const e = &(d.engine orelse return);
+    if (d.tree.root == none or !(page_h > 1)) return;
+    var cands: std.ArrayList(Cand) = .empty;
+    defer cands.deinit(gpa);
+    try d.breakCands(e, d.tree.root, 0, false, &cands, gpa);
+    std.mem.sort(Cand, cands.items, {}, struct {
+        fn lt(_: void, a: Cand, b: Cand) bool {
+            return a.y < b.y;
+        }
+    }.lt);
+    const end = d.height();
+    var start: f32 = 0;
+    var i: usize = 0;
+    while (start < end - 0.5) {
+        const limit = start + page_h;
+        // The rest fits: only a forced break makes another page.
+        const fits = limit >= end - 0.5;
+        var best: ?f32 = null;
+        var best_avoid: ?f32 = null;
+        var forced: ?f32 = null;
+        while (i < cands.items.len and cands.items[i].y <= start + 0.5) i += 1;
+        var k = i;
+        while (k < cands.items.len and cands.items[k].y <= limit) : (k += 1) {
+            const c = cands.items[k];
+            if (c.forced) {
+                forced = c.y;
+                break;
+            }
+            if (c.avoid) best_avoid = c.y else best = c.y;
+        }
+        if (fits and forced == null) break;
+        const y = forced orelse best orelse best_avoid orelse limit;
+        try out.append(gpa, y);
+        start = y;
+    }
+}
+
+const Cand = struct { y: f32, forced: bool = false, avoid: bool = false };
+
+fn forcesBreak(b: css.style.Break) bool {
+    return switch (b) {
+        .page, .left, .right, .recto, .verso, .always => true,
+        else => false,
+    };
+}
+
+fn avoidsBreak(b: css.style.Break) bool {
+    return b == .avoid or b == .avoid_page;
+}
+
+fn breakCands(d: *Document, e: *layout_mod.Engine, id: BoxId, py: f32, avoid_inside: bool, out: *std.ArrayList(Cand), gpa: Allocator) Error!void {
+    const b = d.tree.get(id);
+    const y = py + b.y;
+    const st = d.store.get(b.style);
+    const avoid = avoid_inside or avoidsBreak(st.box.break_inside);
+    switch (b.kind) {
+        .inline_root => {
+            const cw = @max(0, b.w - b.border[1] - b.border[3] - b.padding[1] - b.padding[3]);
+            const l = try e.laid(b.data, cw);
+            const top = y + b.border[0] + b.padding[0];
+            const n = l.lines.len;
+            for (l.lines, 0..) |line, k| {
+                if (k == 0) continue;
+                const keeps = k >= st.inh.orphans and n - k >= st.inh.widows;
+                try out.append(gpa, .{ .y = top + line.top, .avoid = avoid or !keeps });
+            }
+        },
+        .block, .table_row_group, .table, .table_caption => {
+            var it = d.tree.children(id);
+            var prev: BoxId = none;
+            while (it.next()) |c| {
+                const cb = d.tree.get(c);
+                if (cb.out_of_flow or cb.inline_float) continue;
+                const cs = d.store.get(cb.style);
+                if (prev != none) {
+                    const ps = d.store.get(d.tree.get(prev).style);
+                    const at = y + cb.y - cb.margin[0];
+                    try out.append(gpa, .{
+                        .y = at,
+                        .forced = forcesBreak(cs.box.break_before) or forcesBreak(ps.box.break_after),
+                        .avoid = avoid or avoidsBreak(cs.box.break_before) or avoidsBreak(ps.box.break_after),
+                    });
+                }
+                prev = c;
+                try d.breakCands(e, c, y, avoid, out, gpa);
+            }
+        },
+        .table_row => {
+            // Rows break between them (their group lists them), not inside.
+        },
+        else => {},
+    }
+}
+
+/// A link's role: its `epub:type` (an e-book's "noteref") or `rel`.
+pub fn linkRel(d: *const Document, node: NodeId) []const u8 {
+    if (d.dom.lookup("epub:type")) |a| if (d.dom.attr(node, a)) |v| return v;
+    return d.dom.attr(node, .rel) orelse "";
+}
+
+/// The markup of the element with an id (a footnote, to show in a
+/// popup), into `out`; false when there is none.
+pub fn elementHtml(d: *const Document, id: []const u8, out: *std.ArrayList(u8), gpa: Allocator) Error!bool {
+    const el = d.elementById(id);
+    if (el == .none) return false;
+    var w: std.Io.Writer.Allocating = .init(gpa);
+    defer w.deinit();
+    html.serialize.outer(&d.dom, &w.writer, el) catch return error.OutOfMemory;
+    out.clearRetainingCapacity();
+    try out.appendSlice(gpa, w.written());
+    return true;
 }

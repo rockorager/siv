@@ -9,7 +9,10 @@
 //!   and the layout slice that extends a lazily laid out document (budget:
 //!   well under a millisecond per frame).
 //!
-//! FILE arguments are HTML (or .md) files measured like the article.
+//! FILE arguments are HTML (or .md) files measured like the article;
+//! `-- --epub BOOK.epub` measures an e-book instead: opening it, then
+//! each chapter with the reading defaults, laid out and paginated, and
+//! its pages painted.
 //! Inputs are generated, so that the numbers do not depend on anything
 //! outside the repository; fonts are the machine's, loaded before timing.
 
@@ -19,6 +22,7 @@ const scene = @import("scene");
 const text = @import("text");
 const raster = @import("raster");
 const pool = @import("pool");
+const epub = @import("epub");
 
 /// The workers shaping uses, as the application's pool gives a document.
 var executor: ?pool.Executor = null;
@@ -241,6 +245,7 @@ pub fn main(init: std.process.Init) !void {
         try dir.writeFile(io, .{ .sub_path = "long.html", .data = long });
         return;
     }
+    if (argv.len > 2 and std.mem.eql(u8, argv[1], "--epub")) return measureBook(gpa, io, fonts, &ua, argv[2]);
     if (argv.len > 1 and !(argv.len == 2 and serial)) {
         for (argv[1..]) |path| {
             if (std.mem.eql(u8, path, "--serial")) continue;
@@ -322,4 +327,108 @@ pub fn main(init: std.process.Init) !void {
         _ = try d.layout(&fonts.cache, width - 100, viewport, 2 * viewport);
         std.debug.print("{s:<28} {d:>8.2} ms\n", .{ "resize: first screen again", ms(now() - t1) });
     }
+}
+
+var chapter_bytes: usize = 0;
+
+/// A chapter with the reading defaults: parsed with its style sheets from
+/// the book, styled, fonts resolved.
+fn chapter(gpa: std.mem.Allocator, fonts: *doc.sysfonts.SystemFonts, ua: *const @import("css").Sheet, book: *epub.Book, path: []const u8, page_w: f32, page_h: f32) !*Document {
+    const src = (try book.read(gpa, path)) orelse return error.Missing;
+    defer gpa.free(src);
+    chapter_bytes = src.len;
+    var base_buf: [512]u8 = undefined;
+    const base = try std.fmt.bufPrint(&base_buf, "epub:///{s}", .{path});
+    const d = try Document.create(gpa, src, .{ .kind = .html, .base_url = base, .user_css = doc.ua.reading_css }, ua);
+    errdefer d.destroy();
+    d.executor = executor;
+    for (d.resources.items, 0..) |r, i| if (r.kind == .stylesheet and std.mem.startsWith(u8, r.url, "epub:///")) {
+        const bytes = (try book.read(gpa, r.url["epub:///".len..])) orelse continue;
+        defer gpa.free(bytes);
+        try d.supplyStylesheet(@intCast(i), bytes);
+    };
+    try d.styleAndBuild(.{ .width = page_w, .height = page_h });
+    try d.resolveFonts(fonts.resolver());
+    return d;
+}
+
+/// An e-book: opening it, then each chapter laid out and paginated at a
+/// page of 34 em by 760 px (a 1200 × 860 spread's page), and its pages
+/// painted one by one, as turning pages does.
+fn measureBook(gpa: std.mem.Allocator, io: std.Io, fonts: *doc.sysfonts.SystemFonts, ua: *const @import("css").Sheet, path: []const u8) !void {
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(256 << 20));
+    defer gpa.free(bytes);
+    const page_w: f32 = 34 * 16;
+    const page_h: f32 = 760;
+    var t = now();
+    const runs = 20;
+    for (0..runs - 1) |_| (try epub.Book.open(gpa, bytes)).destroy();
+    const book = try epub.Book.open(gpa, bytes);
+    defer book.destroy();
+    std.debug.print("{s:<28} {d:>8.3} ms  ({d} KB, {d} chapters, {d} contents entries)\n", .{ "open", ms((now() - t) / runs), bytes.len / 1024, book.spine.len, book.toc.len });
+    var total_pages: usize = 0;
+    var b: scene.Builder = .init(gpa);
+    defer b.deinit();
+    var breaks: std.ArrayList(f32) = .empty;
+    defer breaks.deinit(gpa);
+    for (book.spine) |item| {
+        const p = book.manifest[item.item].path;
+        // Warm the fonts once, then time.
+        {
+            const d = try chapter(gpa, fonts, ua, book, p, page_w, page_h);
+            defer d.destroy();
+            _ = try d.layout(&fonts.cache, page_w, page_h, std.math.inf(f32));
+            var wanted: std.ArrayList(text.FontId) = .empty;
+            defer wanted.deinit(gpa);
+            try d.wantedFonts(&wanted);
+            for (wanted.items) |id| fonts.load(id);
+        }
+        const reps = 5;
+        var load_ns: u64 = 0;
+        var first_ns: u64 = 0;
+        var paginate_ns: u64 = 0;
+        var paint_ns: u64 = 0;
+        var paint_worst: u64 = 0;
+        var pages: usize = 0;
+        var size: usize = 0;
+        for (0..reps) |_| {
+            t = now();
+            const d = try chapter(gpa, fonts, ua, book, p, page_w, page_h);
+            defer d.destroy();
+            _ = try d.layout(&fonts.cache, page_w, page_h, 2 * page_h);
+            first_ns += now() - t;
+            _ = try d.layout(&fonts.cache, page_w, page_h, std.math.inf(f32));
+            load_ns += now() - t;
+            t = now();
+            try d.pageBreaks(page_h, &breaks, gpa);
+            paginate_ns += now() - t;
+            pages = breaks.items.len + 1;
+            size = chapter_bytes;
+            // Each page: the band a page turn paints.
+            var top: f32 = 0;
+            for (0..pages) |k| {
+                const bottom = if (k < breaks.items.len) breaks.items[k] else d.height();
+                const t0 = now();
+                b.reset();
+                try d.paint(&b, top, bottom, .{}, Hooks.of(d), &.{});
+                _ = try b.finish(0);
+                const dt = now() - t0;
+                paint_ns += dt;
+                paint_worst = @max(paint_worst, dt);
+                top = bottom;
+            }
+        }
+        total_pages += pages;
+        var label: [64]u8 = undefined;
+        std.debug.print("{s:<34} {d:>8.2} ms  (first page {d:.2}, paginate {d:.3}; {d} pages, page paint {d:.3} ms, worst {d:.3})\n", .{
+            std.fmt.bufPrint(&label, "{s} ({d} KB)", .{ std.fs.path.basename(p), size / 1024 }) catch p,
+            ms(load_ns / reps),
+            ms(first_ns / reps),
+            ms(paginate_ns / reps),
+            pages,
+            ms(paint_ns / (reps * pages)),
+            ms(paint_worst),
+        });
+    }
+    std.debug.print("{s:<28} {d:>8}\n", .{ "pages", total_pages });
 }

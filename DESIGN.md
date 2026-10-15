@@ -5733,6 +5733,56 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     mail) get quirks mode's table rules. The canvas takes the root's
     background, else the body's, else the theme's (the user agent's
     `html { background: Canvas }` had kept body colors from it).
+  - **E-books.** `epub` (no imports): a zip reader (stored and deflated
+    entries through `std.compress.flate`; siv had none), a small XML pull
+    tokenizer, and EPUB 2 and 3 packages: `META-INF/container.xml`, the
+    OPF's metadata, manifest, and spine, and the table of contents from
+    the EPUB 3 navigation document or else the NCX, with paths resolved
+    against the package. `siv_epub_open` copies the publication and
+    answers metadata, spine paths, and contents entries; a document node
+    given a publication and a spine path reads the chapter, its style
+    sheets, fonts (publisher `@font-face`), and images from the container
+    at `epub:///` URLs without the loader. An XML document (an XML
+    declaration first, as every chapter has) is never in quirks mode.
+  - **Pagination** (`siv_docview_flags.paged`): the chapter is laid out
+    completely at the page's content width, then `Document.pageBreaks`
+    walks the laid-out flow for break points: between blocks, between
+    table rows, and between lines, keeping `orphans` and `widows`,
+    forcing `break-before`/`break-after: page` (and the legacy
+    `page-break-*`), avoiding `break-inside: avoid` and breaks after a
+    `break-after: avoid` heading, and taking the last point that fits
+    (or a forced overflow when none does). A page is a clip and a
+    translation of the one flow, so painting a page is painting a band.
+    Simplified fragmentation: a box split across pages is not given
+    repeated borders or padding (`box-decoration-break: slice` is what
+    happens), and margins at a break are not truncated. `spread` shows
+    two pages side by side (a two-column spread, the multi-column case
+    books need) when the node is wider than 1.2 times its height; turning
+    goes a spread at a time.
+  - **Reading defaults** (`siv_docview_flags.reading`): a user style
+    sheet (`doc.ua.reading_css`: a serif face from Fontconfig, 1.45
+    leading, `text-align: justify`, `hyphens: auto`, `text-wrap: pretty`
+    so justified lines come from Knuth and Plass with hyphenation
+    points as penalized breaks, and balanced headings), page margins of
+    6 % of the width and 5 % of the height (at least 24 px), and a
+    measure of 34 em (about 66 characters) centered in wider pages. The
+    publisher's CSS is the author origin, so it overrides any of them it
+    sets (Standard Ebooks keeps its own indents and small caps, and its
+    `hyphens: auto` on body agrees). `siv_docview_set_user_css` replaces
+    the application's part (a font size, a face) and keeps the reading
+    position. `font-variant: small-caps` without the font's `smcp` is
+    synthesized: lowercase letters as capitals at 70 %.
+  - **Positions and notes.** `siv_docview_get_position` is a locator of
+    what shows at the page's top (the path of child indices to the
+    deepest element there, as for scroll positions), so a position
+    survives another width, font size, or theme to within that element; `siv_docview_go_to` takes a locator or a fragment (a
+    contents entry's). Links carry their `epub:type` or `rel` in the
+    link event; a `noteref` lets the application show
+    `siv_docview_get_element_html` of the note in a popup (or, for
+    endnotes in another chapter, a node showing that chapter at the
+    note). The example e-reader (`examples/reader.c`) does all of this:
+    spreads, turning across chapters, the contents, text size, and
+    footnote popups.
   - **Accessibility** (D18): a canvas's `semantics` hook lists virtual
     objects under its node: headings with levels, links, lists and items
     with positions, tables, rows, and cells, images by their alt text,
@@ -5745,7 +5795,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     is built with a section per function, so a static program that never
     calls `siv_docview` drops the renderer when it links with
     `--gc-sections`.
-  - **Known simplifications** (phase 1): no re-shaping across line
+  - **Known simplifications**: no re-shaping across line
     breaks at unsafe-to-break edges; `text-transform` is ASCII;
     `letter-spacing` is added per character outside shaping; WOFF2
     sources are skipped (no Brotli); no
@@ -5771,6 +5821,24 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | Email (receipt, newsletter, Outlook reply; 2–3 KB each) | — | 0.2–0.5 ms each |
   | 2 000-row mail table (222 KB) | — | 30 ms (46 before parsing hints once and sharing anonymous cell styles) |
   | 300 paragraphs beside 300 floats (159 KB) | — | 9 ms |
+
+  E-books (`bench-doc -- --epub BOOK`, a 544 × 760 px page, Standard
+  Ebooks titles in `test/doc/epub`, chapters with their CSS and the
+  reading defaults, laid out completely and paginated):
+
+  | Measure | Budget | Result |
+  | --- | --- | --- |
+  | Open a publication (zip, OPF, contents) | — | 0.07–0.10 ms |
+  | A 14–19 KB novel chapter (Jekyll): style, lay out, paginate | tens of ms | 4.2–6.5 ms, 7–9 pages |
+  | A 38 KB chapter (Jekyll 10), 19 pages | tens of ms | 12 ms (first screen alone 4.5) |
+  | A 138 KB act of a play (Earnest, all drama tables), 45 pages | tens of ms | 19 ms |
+  | Pagination of a laid-out chapter | — | under 0.015 ms |
+  | Page turn: painting a page | well under 1 ms | 0.01–0.04 ms average, 0.12 ms worst |
+
+  A small chapter costs 1–2 ms, most of it parsing Standard Ebooks'
+  10 KB of CSS again; paged chapters are laid out to their end before
+  the first page shows (the page count needs it), which a chapter of
+  tables does anyway.
 
   The article misses "a few milliseconds" on one thread and meets it
   with the pool; the worst band repaint (a band whose IFCs were dropped
@@ -5802,8 +5870,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   replies with their quotes collapsed and open), close to Chromium's
   rendering of the same files apart from the test font's missing bold; a golden corpus (`test/doc/corpus`: siv's
   README, RSS items with messy HTML, a Standard Ebooks chapter with its
-  CSS); golden images through the C API (`test/abi/docview.zig`); fuzz
-  targets for the HTML parser, the CSS parser, and the Markdown parser.
+  CSS); golden images through the C API (`test/abi/docview.zig`);
+  e-books through the C API (`test/doc/epub.zig`: three Standard Ebooks
+  titles, trimmed of images, public domain and CC0: Jekyll's chapter
+  paged with widows and orphans, positions surviving a font size
+  change, Earnest's drama tables as a spread, Alice's verse and
+  epigraph, contents, and note HTML), with Droid Serif (Apache-2.0) as
+  the test's serif face; fuzz targets for the HTML parser, the CSS
+  parser, the Markdown parser, and the EPUB package parser.
 - **Layout unification.** Should siv's widget layout (D26) become this
   CSS engine? The evidence says no, not now:
   - The models differ on purpose. D26 is one-way constraint layout

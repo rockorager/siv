@@ -500,13 +500,28 @@ fn graphemeFit(b: *Builder, from: u32, to: u32, limit: f32) u32 {
 /// The last hyphenation point in a unit where its start and a hyphen fit
 /// in `room`.
 fn hyphenate(b: *Builder, u: Unit, room: f32) Error!?u32 {
+    var points: std.ArrayList(u32) = .empty;
+    try hyphenPoints(b, u, &points);
+    const hw = hyphenWidth(b, u.start) orelse return null;
+    var k = points.items.len;
+    while (k > 0) {
+        k -= 1;
+        const at = points.items[k];
+        if (shapedAdvance(b.para(), u.start, at) + hw <= room) return at;
+    }
+    return null;
+}
+
+/// The hyphenation points of a unit's word (`hyphens: auto`), as text
+/// offsets in increasing order, on grapheme boundaries.
+fn hyphenPoints(b: *Builder, u: Unit, out: *std.ArrayList(u32)) Error!void {
     const cx = b.cx;
-    const h = cx.fonts.hyphenation orelse return null;
+    const h = cx.fonts.hyphenation orelse return;
     const ifc = cx.ifc;
     const rs = b.style(runStyle(ifc, u.start));
-    if (rs.inh.hyphens != .auto) return null;
+    if (rs.inh.hyphens != .auto) return;
     const fi = cx.fonts.info(runStyle(ifc, u.start));
-    const hyph = (try h.get(fi.language)) orelse return null;
+    const hyph = (try h.get(fi.language)) orelse return;
     const s = ifc.text[u.start..u.end];
     // The word: letters from the start (skip leading punctuation).
     var ws: usize = 0;
@@ -518,18 +533,14 @@ fn hyphenate(b: *Builder, u: Unit, room: f32) Error!?u32 {
         if (!text.hyphen.isWordChar(cp)) break;
         we += l;
     }
-    if (we - ws < 4) return null;
+    if (we - ws < 4) return;
     var points: std.ArrayList(u32) = .empty;
-    hyph.points(cx.scratch, s[ws..we], &points, cx.scratch) catch return null;
-    const hw = hyphenWidth(b, u.start) orelse return null;
-    var k = points.items.len;
-    while (k > 0) {
-        k -= 1;
-        const at: u32 = u.start + @as(u32, @intCast(ws)) + points.items[k];
+    hyph.points(cx.scratch, s[ws..we], &points, cx.scratch) catch return;
+    for (points.items) |pt| {
+        const at: u32 = u.start + @as(u32, @intCast(ws)) + pt;
         if (b.para().graphemes.atOrBefore(at) != at) continue;
-        if (shapedAdvance(b.para(), u.start, at) + hw <= room) return at;
+        try out.append(cx.scratch, at);
     }
-    return null;
 }
 
 fn hyphenWidth(b: *const Builder, at: u32) ?f32 {
@@ -548,8 +559,19 @@ fn pretty(b: *Builder, us: []const Unit, width: f32, indent: f32, out: *std.Arra
     try cands.append(scratch, .{ .at = 0, .w_end = 0, .w_next = 0, .s_end = 0, .s_next = 0 });
     var w: f64 = 0;
     var s: f64 = 0;
+    var points: std.ArrayList(u32) = .empty;
     for (us, 0..) |u, j| {
         const hanging: f64 = u.trailing;
+        // Hyphenation points inside the unit, at a penalty that keeps them
+        // for lines that would be loose without them.
+        if (u.breakable) {
+            points.clearRetainingCapacity();
+            try hyphenPoints(b, u, &points);
+            if (points.items.len > 0) if (hyphenWidth(b, u.start)) |hw| for (points.items) |pt| {
+                const part: f64 = shapedAdvance(b.para(), u.start, pt);
+                try cands.append(scratch, .{ .at = pt, .w_end = w + part, .w_next = w + part, .s_end = s, .s_next = s, .hyphen = hw, .penalty = 100 });
+            };
+        }
         try cands.append(scratch, .{
             .at = u.end,
             .w_end = w + u.advance - hanging,
@@ -567,7 +589,7 @@ fn pretty(b: *Builder, us: []const Unit, width: f32, indent: f32, out: *std.Arra
             return if (at == 0) c.width - c.indent else c.width;
         }
     }.f);
-    for (chain) |k| try out.append(scratch, .{ .at = cands.items[k].at });
+    for (chain) |k| try out.append(scratch, .{ .at = cands.items[k].at, .hyphen = cands.items[k].hyphen != null });
 }
 
 /// Lays out the IFC at a content width.
@@ -924,7 +946,9 @@ fn emitLine(b: *Builder, start: u32, end_: u32, hyphen: bool, first: bool, top: 
         else => {
             const s = if (f.inline_box != box_mod.none) ifc.inline_boxes[f.inline_box].style else f.style;
             const st = b.style(s);
-            if (st.box.vertical_align == .top or st.box.vertical_align == .bottom) {
+            // Text straight in the block sits on the baseline: the
+            // block's own vertical-align (a table cell's) is not the text's.
+            if (f.inline_box != box_mod.none and (st.box.vertical_align == .top or st.box.vertical_align == .bottom)) {
                 const x = ad(b, s);
                 top_aligned = @max(top_aligned, x[0] + x[1]);
                 continue;
@@ -946,7 +970,8 @@ fn emitLine(b: *Builder, start: u32, end_: u32, hyphen: bool, first: bool, top: 
     }
     // top/bottom aligned boxes: placed against the line box.
     for (b.frags.items[frag_start..frag_end]) |*f| {
-        const s = if (f.kind == .atomic) cx.tree.get(f.box).style else if (f.inline_box != box_mod.none) ifc.inline_boxes[f.inline_box].style else f.style;
+        if (f.kind != .atomic and f.inline_box == box_mod.none) continue;
+        const s = if (f.kind == .atomic) cx.tree.get(f.box).style else ifc.inline_boxes[f.inline_box].style;
         const st = b.style(s);
         switch (st.box.vertical_align) {
             .top => if (f.kind == .atomic) {

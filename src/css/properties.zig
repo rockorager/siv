@@ -351,6 +351,8 @@ const name_list = blk: {
         .{ "grid-row-gap", Prop{ .longhand = .row_gap } },
         .{ "grid-column-gap", Prop{ .longhand = .column_gap } },
         .{ "word-wrap", Prop{ .longhand = .overflow_wrap } },
+        // The caps part of the shorthand (other values are dropped).
+        .{ "font-variant", Prop{ .longhand = .font_variant_caps } },
         .{ "page-break-before", Prop{ .longhand = .break_before } },
         .{ "page-break-after", Prop{ .longhand = .break_after } },
         .{ "page-break-inside", Prop{ .longhand = .break_inside } },

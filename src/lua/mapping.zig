@@ -96,6 +96,7 @@ pub const owned = [_]struct { []const u8, []const u8 }{
     .{ "siv_dbus_name", "siv_dbus_name_release" },
     .{ "siv_dbus_name_watch", "siv_dbus_name_watch_destroy" },
     .{ "siv_dbus_object", "siv_dbus_object_destroy" },
+    .{ "siv_epub", "siv_epub_destroy" },
 };
 
 pub const borrowed = [_][]const u8{ "siv_window", "siv_txn", "siv_node", "siv_timer", "siv_watch", "siv_prepare", "siv_image_request", "siv_draw", "siv_external", "siv_output", "siv_toplevel", "siv_workspace", "siv_dbus_reader", "siv_dbus_invocation" };
@@ -122,6 +123,7 @@ pub const constructors = [_][]const u8{
     "siv_dbus_own_name",
     "siv_dbus_watch_name",
     "siv_dbus_export",
+    "siv_epub_open",
 };
 
 pub fn isUnbound(name: []const u8) bool {

@@ -213,7 +213,9 @@ pub fn build(b: *std.Build) void {
     };
     const app = ctx.module("src/app/app.zig", &app_imports);
     app.addImport("integration", not_integration);
+    const epub = ctx.module("src/epub/epub.zig", &.{});
     const docview = ctx.module("src/docview/docview.zig", &.{
+        .{ .name = "epub", .module = epub },
         .{ .name = "ui", .module = ui },
         .{ .name = "doc", .module = doc },
         .{ .name = "css", .module = css },
@@ -328,6 +330,7 @@ pub fn build(b: *std.Build) void {
         .{ "markdown", markdown_tests },
         .{ "doc", doc },
         .{ "docview", docview },
+        .{ "epub", epub },
         .{ "image", image },
         .{ "render-cpu", render_cpu },
         .{ "render-vulkan", render_vulkan },
@@ -506,6 +509,7 @@ pub fn build(b: *std.Build) void {
         .name = "bench-doc",
         .root_module = ctx.module("src/doc/bench.zig", &.{
             .{ .name = "doc", .module = doc },
+            .{ .name = "epub", .module = epub },
             .{ .name = "css", .module = css },
             .{ .name = "scene", .module = scene },
             .{ .name = "raster", .module = raster },

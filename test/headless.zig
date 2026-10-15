@@ -56,6 +56,7 @@ test {
     _ = @import("doc/wpt.zig");
     _ = @import("doc/corpus.zig");
     _ = @import("doc/email.zig");
+    _ = @import("doc/epub.zig");
     _ = @import("lua/lua.zig");
     _ = @import("lua/binding.zig");
 }

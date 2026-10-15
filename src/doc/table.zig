@@ -251,6 +251,23 @@ pub fn layout(e: *Engine, id: BoxId, content_w_: f32, content_h: ?f32) Error!f32
             if (h > cur) heights[c.row + c.rows - 1] += h - cur;
         }
     };
+    // Cells aligned on their first baselines (vertical-align: baseline,
+    // the default): a row is as tall as its tallest such content above
+    // and below the shared baseline.
+    const bases = try e.scratch.alloc(f32, nrows);
+    @memset(bases, 0);
+    {
+        const below = try e.scratch.alloc(f32, nrows);
+        @memset(below, 0);
+        for (g.cells.items) |c| {
+            if (c.rows != 1 or e.style(c.id).box.vertical_align != .baseline) continue;
+            const cb = e.tree.get(c.id);
+            if (std.math.isNan(cb.baseline)) continue;
+            bases[c.row] = @max(bases[c.row], cb.baseline);
+            below[c.row] = @max(below[c.row], cb.h - cb.baseline);
+        }
+        for (heights, bases, below) |*h, base, bl| h.* = @max(h.*, base + bl);
+    }
     // Rows and groups positions. Groups and rows are laid out as boxes
     // spanning the table's content width.
     const row_y = try e.scratch.alloc(f32, nrows + 1);
@@ -291,6 +308,7 @@ pub fn layout(e: *Engine, id: BoxId, content_w_: f32, content_h: ?f32) Error!f32
         const shift = switch (st.box.vertical_align) {
             .middle => (h - content_height) / 2,
             .bottom => h - content_height,
+            .baseline => if (c.rows == 1 and !std.math.isNan(cb.baseline)) bases[c.row] - cb.baseline else 0,
             else => 0,
         };
         if (shift > 0) shiftChildren(e, c.id, shift);

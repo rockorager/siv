@@ -141,6 +141,14 @@ pub const markdown_css =
     \\.task-list-item input { margin: 0 0.4em 0 -1.4em; vertical-align: middle }
 ;
 
+/// A book's reading defaults, as a user style sheet (D32): a serif face,
+/// 1.45 leading, justified text broken with Knuth and Plass, and
+/// hyphenation. Author rules (the publisher's CSS) override them.
+pub const reading_css =
+    \\body { margin: 0; font-family: serif; line-height: 1.45; text-align: justify; hyphens: auto; text-wrap: pretty }
+    \\h1, h2, h3, h4, h5, h6 { line-height: 1.2; text-wrap: balance; hyphens: manual }
+;
+
 /// Quirks mode's extra user agent styles (HTML, rendering 15.3.6).
 pub const quirks_css =
     \\table { font-weight: initial; font-style: initial; font-variant: initial; font-size: initial; line-height: initial; white-space: initial; text-align: initial }

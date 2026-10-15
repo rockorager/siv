@@ -96,6 +96,8 @@ pub const App = struct {
     shell: shell.State,
     /// Public D-Bus connections and what was made on them (D19).
     dbus: dbus_abi.State,
+    /// Open EPUB publications (D32), by handle payload.
+    epubs: std.ArrayList(?*@import("document.zig").Epub),
 
     pub fn gpa(self: *App) std.mem.Allocator {
         return self.root.gpa;
@@ -290,6 +292,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     self.dbus = .{};
     self.jobs = 0;
     self.shell = .{};
+    self.epubs = .empty;
     const gpa = self.gpa();
     self.draw = .init(gpa);
     errdefer self.draw.deinit(gpa);
@@ -351,6 +354,7 @@ fn destroyNow(self: *App) void {
         w.destroyTree() catch {};
     };
     shell.teardown(self);
+    @import("document.zig").teardown(self);
     const gpa = self.gpa();
     for (self.timers.items) |slot| if (slot) |tm| tm.cancel();
     self.timers.deinit(gpa);

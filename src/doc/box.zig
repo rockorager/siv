@@ -183,6 +183,8 @@ pub const Tree = struct {
 pub const Builder = struct {
     /// Anonymous blocks' styles by their parent's.
     anonymous: std.AutoHashMapUnmanaged(StyleId, StyleId) = .empty,
+    /// Synthesized small capitals' styles by their text's.
+    small_caps: std.AutoHashMapUnmanaged(StyleId, StyleId) = .empty,
     /// Elements left out with their content (collapsed quoted replies).
     skip: []const NodeId = &.{},
     gpa: Allocator,
@@ -218,6 +220,7 @@ pub const Builder = struct {
 
     pub fn deinit(b: *Builder) void {
         b.anonymous.deinit(b.gpa);
+        b.small_caps.deinit(b.gpa);
         b.open_inlines.deinit(b.gpa);
         b.counters.deinit(b.gpa);
     }
@@ -500,6 +503,68 @@ pub const Builder = struct {
     }
 
     fn addRun(b: *Builder, f: *IfcBuilder, s: []const u8, sid: StyleId, node: NodeId) Error!void {
+        if (s.len == 0) return;
+        switch (b.style(sid).inh.font_variant_caps) {
+            .small_caps, .all_small_caps, .petite_caps, .all_petite_caps => return b.smallCaps(f, s, sid, node),
+            else => {},
+        }
+        return b.addPlainRun(f, s, sid, node);
+    }
+
+    /// Synthesized small capitals (CSS Fonts 4, 6.4, without the font's
+    /// own): lowercase letters as capitals at 70% of the size, and with
+    /// `all-` the capitals too. Case changes keep the bytes' length.
+    fn smallCaps(b: *Builder, f: *IfcBuilder, s: []const u8, sid: StyleId, node: NodeId) Error!void {
+        const all = switch (b.style(sid).inh.font_variant_caps) {
+            .all_small_caps, .all_petite_caps => true,
+            else => false,
+        };
+        const small = try b.smallStyle(sid);
+        const up = try b.arena.dupe(u8, s);
+        var i: usize = 0;
+        while (i < up.len) {
+            const lower = isLowerAt(up, i);
+            const shrink = lower or (all and isUpperAt(up, i));
+            var j = i;
+            while (j < up.len and (if (shrink) (isLowerAt(up, j) or (all and isUpperAt(up, j))) else !(isLowerAt(up, j) or (all and isUpperAt(up, j))))) {
+                const n = std.unicode.utf8ByteSequenceLength(up[j]) catch 1;
+                if (isLowerAt(up, j)) {
+                    if (n == 1) up[j] = std.ascii.toUpper(up[j]) else up[j + 1] -= 0x20;
+                }
+                j += @min(n, up.len - j);
+            }
+            try b.addPlainRun(f, up[i..j], if (shrink) small else sid, node);
+            i = j;
+        }
+    }
+
+    fn smallStyle(b: *Builder, sid: StyleId) Error!StyleId {
+        if (b.small_caps.get(sid)) |id| return id;
+        var st = b.style(sid).*;
+        st.inh.font_variant_caps = .normal;
+        st.inh.font_size *= 0.7;
+        const id = try b.store.intern(b.gpa, &st);
+        try b.small_caps.put(b.gpa, sid, id);
+        return id;
+    }
+
+    /// Lowercase ASCII and Latin-1 letters (whose capitals keep their
+    /// length in UTF-8).
+    fn isLowerAt(s: []const u8, i: usize) bool {
+        const c = s[i];
+        if (c >= 'a' and c <= 'z') return true;
+        if (c == 0xc3 and i + 1 < s.len) return s[i + 1] >= 0xa0 and s[i + 1] <= 0xbe and s[i + 1] != 0xb7;
+        return false;
+    }
+
+    fn isUpperAt(s: []const u8, i: usize) bool {
+        const c = s[i];
+        if (c >= 'A' and c <= 'Z') return true;
+        if (c == 0xc3 and i + 1 < s.len) return s[i + 1] >= 0x80 and s[i + 1] <= 0x9e and s[i + 1] != 0x97;
+        return false;
+    }
+
+    fn addPlainRun(b: *Builder, f: *IfcBuilder, s: []const u8, sid: StyleId, node: NodeId) Error!void {
         if (s.len == 0) return;
         try f.text.appendSlice(b.gpa, s);
         const end: u32 = @intCast(f.text.items.len);

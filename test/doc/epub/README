@@ -1,0 +1,7 @@
+Standard Ebooks publications (https://standardebooks.org) for the e-book
+tests (test/doc/epub.zig): The Strange Case of Dr. Jekyll and Mr. Hyde,
+The Importance of Being Earnest (drama), and Alice's Adventures in
+Wonderland (verse, illustrations). The texts are in the public domain in
+the United States; Standard Ebooks dedicates its markup, CSS, and
+production to the public domain (CC0 1.0). Images were removed to keep
+the repository small; everything else is as published.

@@ -319,3 +319,26 @@ test "find, selected text, and the accessibility tree" {
     try testing.expectEqualStrings("a pear", nodes.items[6].name);
     try testing.expectEqual(5, nodes.items[6].parent);
 }
+
+test "page breaks keep widows and orphans and honor break-before" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+    // Ten lines of 20 px in one paragraph, then a chapter that starts a page.
+    const d = try f.load(gpa,
+        \\<style>body { margin: 0; font: 16px/20px serif } p { margin: 0 } h2 { break-before: page; margin: 0; font: 16px/20px serif }</style>
+        \\<p>x x x x x x x x x x<br>x<br>x<br>x<br>x<br>x<br>x<br>x<br>x<br>x</p><h2>Two</h2><p>y</p>
+    , .{}, 400);
+    defer d.destroy();
+    var breaks: std.ArrayList(f32) = .empty;
+    defer breaks.deinit(gpa);
+    // 190 px fits nine lines: breaking there would leave one widow, so the
+    // break moves up a line; then the forced break before the heading.
+    try d.pageBreaks(190, &breaks, gpa);
+    try testing.expectEqual(2, breaks.items.len);
+    try testing.expectApproxEqAbs(@as(f32, 160), breaks.items[0], 0.5);
+    try testing.expectApproxEqAbs(@as(f32, 200), breaks.items[1], 0.5);
+    // A page taller than everything: no breaks but the forced one.
+    try d.pageBreaks(1000, &breaks, gpa);
+    try testing.expectEqual(1, breaks.items.len);
+}

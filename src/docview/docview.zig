@@ -16,6 +16,7 @@ const text = @import("text");
 const scene = @import("scene");
 const raster = @import("raster");
 const loop = @import("loop");
+pub const epub = @import("epub");
 
 const Document = doc.Document;
 const NodeId = ui.NodeId;
@@ -50,14 +51,32 @@ pub const Options = struct {
     collapse_quotes: bool = false,
     /// CSS `medium`; 0 follows the window's text size.
     font_size: f32 = 0,
+    /// Pages instead of scrolling: the node fills the space it is given
+    /// and shows one page (two side by side with `spread` when wider than
+    /// tall), turned with `setPage`.
+    paged: bool = false,
+    spread: bool = false,
+    /// A book's reading defaults: page margins, a measure of about 66
+    /// characters, and a user style sheet of a serif face, 1.45 leading,
+    /// justified text broken with Knuth and Plass, and hyphenation, all of
+    /// which the publisher's CSS overrides where it sets them.
+    reading: bool = false,
+    /// A chapter of a publication (its path in the container): the source
+    /// comes from it, and so do its style sheets, fonts, and images.
+    book: ?*epub.Book = null,
+    book_path: []const u8 = "",
 };
+
+/// The reading defaults' user style sheet (`Options.reading`).
+pub const reading_css = doc.ua.reading_css;
 
 pub const ResourceKind = enum(u8) { stylesheet, image, font };
 
 pub const Event = union(enum) {
     /// A link was clicked (not a fragment of this document, which
-    /// scrolls): its URL, resolved.
-    link: []const u8,
+    /// scrolls): its URL, resolved, and its role (`epub:type` or `rel`,
+    /// "noteref" for a footnote reference).
+    link: struct { url: []const u8, rel: []const u8 },
     /// Layout finished: the height is exact.
     loaded,
     /// The document's height changed.
@@ -69,6 +88,8 @@ pub const Event = union(enum) {
     selection,
     /// Remote images were blocked by the policy.
     blocked_images: u32,
+    /// Paged: the page shown (0-based) and how many there are.
+    page: struct { index: u32, count: u32 },
 };
 
 pub const Host = struct {
@@ -96,6 +117,18 @@ fn userAgentSheet() Error!*const css.Sheet {
 }
 
 const Supply = struct { request: u32, bytes: ?[]u8 };
+
+/// Where the document goes in the node: its left and top edge, the width
+/// it lays out at, and paged, the pages' content height and columns.
+const Geometry = struct {
+    ox: f32 = 0,
+    oy: f32 = 0,
+    content_w: f32 = 0,
+    page_h: f32 = 0,
+    columns: u32 = 1,
+    /// From one column's left edge to the next's.
+    col_step: f32 = 0,
+};
 
 pub const View = struct {
     gpa: Allocator,
@@ -141,6 +174,21 @@ pub const View = struct {
     highlights: std.ArrayList(doc.paint.Highlight) = .empty,
     wanted: std.ArrayList(text.FontId) = .empty,
     listening: bool = false,
+    /// The user style sheet changed while a job had the document.
+    want_reparse: bool = false,
+    /// Paged: the page size changed; break the pages again.
+    repage: bool = false,
+    /// The role of the link being followed (`Event.link`).
+    link_rel: []const u8 = "",
+    /// The node's size and where the document goes in it.
+    node_w: f32 = 0,
+    node_h: f32 = 0,
+    geo: Geometry = .{},
+    /// Paged: the y of each page's top after the first, the page shown,
+    /// and a reading position to return to after the pages change.
+    pages: std.ArrayList(f32) = .empty,
+    page: u32 = 0,
+    reading_anchor: std.ArrayList(u8) = .empty,
 
     /// Makes a canvas node, created in the open transaction `t`, show a
     /// document. The source is copied. The view lives as long as the
@@ -153,7 +201,18 @@ pub const View = struct {
         errdefer gpa.free(v.source);
         const o = &v.options;
         o.base_url = try gpa.dupe(u8, options.base_url);
-        o.user_css = try gpa.dupe(u8, options.user_css);
+        o.user_css = if (options.reading) try std.mem.concat(gpa, u8, &.{ reading_css, "\n", options.user_css }) else try gpa.dupe(u8, options.user_css);
+        o.book_path = try gpa.dupe(u8, options.book_path);
+        if (options.book) |book| {
+            // A chapter (or, with a source, a fragment of one): its
+            // bytes, and URLs in the container.
+            if (v.source.len == 0) {
+                gpa.free(v.source);
+                v.source = (book.read(gpa, options.book_path) catch null) orelse try gpa.alloc(u8, 0);
+            }
+            gpa.free(o.base_url);
+            o.base_url = try std.mem.concat(gpa, u8, &.{ "epub:///", options.book_path });
+        }
         try t.setCanvas(id, .{ .draw = draw, .measure = measure, .user = v, .banded = true, .semantics = semantics });
         try t.on(id, .pointer, .{ .func = onPointer, .user = v });
         try t.setSemantics(id, .{ .role = .document });
@@ -194,6 +253,9 @@ pub const View = struct {
         v.wanted.deinit(gpa);
         gpa.free(v.options.base_url);
         gpa.free(v.options.user_css);
+        gpa.free(v.options.book_path);
+        v.pages.deinit(gpa);
+        v.reading_anchor.deinit(gpa);
         gpa.free(v.source);
         gpa.destroy(v);
     }
@@ -267,6 +329,7 @@ pub const View = struct {
     /// What to do next once the document is free.
     fn schedule(v: *View) void {
         if (v.busy or v.dead) return;
+        if (v.want_reparse) return v.reparse();
         const d = v.d orelse return;
         v.applySupplies() catch {};
         if (v.want_fonts_loaded) {
@@ -282,14 +345,15 @@ pub const View = struct {
             return;
         }
         if (v.width <= 0) return;
-        if (d.width != v.width) {
+        if (d.width != v.width or v.repage) {
+            v.repage = false;
             v.complete = false;
             v.stop_y = v.firstStop();
             v.submit(.layout, 1);
             return;
         }
         if (!v.complete) {
-            v.stop_y = if (v.stop_y <= 0) v.firstStop() else v.stop_y + slice_px;
+            v.stop_y = if (v.stop_y <= 0) v.firstStop() else if (v.options.paged) std.math.inf(f32) else v.stop_y + slice_px;
             v.submit(.layout, -1);
         }
     }
@@ -306,14 +370,89 @@ pub const View = struct {
             v.media_dark = v.media().dark;
             v.complete = false;
             v.submit(.style, 1);
-        } else if (v.width > 0 and d.width != v.width) {
+        } else if (v.width > 0 and (d.width != v.width or v.repage)) {
+            v.repage = false;
             v.complete = false;
             v.stop_y = v.firstStop();
             v.submit(.layout, 1);
         }
     }
 
+    /// The geometry for a node of `w` by `h`.
+    fn geometry(v: *View, w: f32, h: f32) Geometry {
+        const o = v.options;
+        if (!o.paged and !o.reading) return .{ .content_w = w };
+        // About 66 characters of a serif text face.
+        const measure_px = v.fontSize() * 34;
+        if (!o.paged) {
+            const mx = @max(16, w * 0.05);
+            const cw = @min(@max(1, w - 2 * mx), measure_px);
+            return .{ .ox = (w - cw) / 2, .oy = mx, .content_w = cw };
+        }
+        const mx: f32 = if (o.reading) @max(24, w * 0.06) else 16;
+        const my: f32 = if (o.reading) @max(24, h * 0.05) else 16;
+        const columns: u32 = if (o.spread and w > h * 1.2) 2 else 1;
+        const gap = 2 * mx;
+        const area = @max(1, (w - 2 * mx - gap * @as(f32, @floatFromInt(columns - 1))) / @as(f32, @floatFromInt(columns)));
+        const cw = if (o.reading) @min(area, measure_px) else area;
+        return .{ .ox = mx + (area - cw) / 2, .oy = my, .content_w = cw, .page_h = @max(1, h - 2 * my), .columns = columns, .col_step = area + gap };
+    }
+
+    fn pageTop(v: *const View, p: usize) f32 {
+        return if (p == 0) 0 else if (p - 1 < v.pages.items.len) v.pages.items[p - 1] else std.math.inf(f32);
+    }
+
+    pub fn pageCount(v: *const View) u32 {
+        return @intCast(v.pages.items.len + 1);
+    }
+
+    /// The page holding document y.
+    fn pageOf(v: *const View, y: f32) u32 {
+        var p: u32 = 0;
+        while (p < v.pages.items.len and v.pages.items[p] <= y) p += 1;
+        return p;
+    }
+
+    /// Shows a page (the first of a spread), clamped.
+    pub fn setPage(v: *View, index: u32) void {
+        if (!v.options.paged) return;
+        const last = v.pageCount() - 1;
+        var p = @min(index, last);
+        if (v.geo.columns == 2) p -= p % 2;
+        if (p == v.page) return;
+        v.page = p;
+        v.repaint();
+        v.emit(.{ .page = .{ .index = p, .count = v.pageCount() } });
+    }
+
+    /// Document coordinates of a node point, or null outside the pages.
+    fn toDoc(v: *const View, x: f32, y: f32) ?[2]f32 {
+        const g = v.geo;
+        if (!v.options.paged) return .{ x - g.ox, y - g.oy };
+        var c: u32 = 0;
+        while (c + 1 < g.columns and x >= g.ox + g.col_step * @as(f32, @floatFromInt(c + 1)) - g.col_step / 2) c += 1;
+        const p = v.page + c;
+        if (p >= v.pageCount()) return null;
+        const top = v.pageTop(p);
+        const dy = y - g.oy + top;
+        if (dy >= v.pageTop(p + 1)) return null;
+        return .{ x - g.ox - g.col_step * @as(f32, @floatFromInt(c)), dy };
+    }
+
+    /// Node coordinates of a document point (off the node when its page
+    /// is not shown).
+    fn fromDoc(v: *const View, x: f32, y: f32) [2]f32 {
+        const g = v.geo;
+        if (!v.options.paged) return .{ x + g.ox, y + g.oy };
+        const p = v.pageOf(y);
+        if (p < v.page or p >= v.page + g.columns) return .{ x, -1e6 };
+        const c: f32 = @floatFromInt(p - v.page);
+        return .{ x + g.ox + g.col_step * c, y - v.pageTop(p) + g.oy };
+    }
+
     fn firstStop(v: *View) f32 {
+        // Pages need the whole chapter laid out.
+        if (v.options.paged) return std.math.inf(f32);
         var stop = 2 * v.viewportHeight();
         if (v.win.isLive(v.node)) if (ui.visibleBand(v.win, v.node)) |b| {
             stop = @max(stop, b[1] + (b[1] - b[0]));
@@ -361,12 +500,91 @@ pub const View = struct {
                     v.win.fonts.request(v.wanted.items);
                 }
                 if (v.complete) {
+                    if (v.options.paged) v.paginate() else if (v.reading_anchor.items.len > 0) {
+                        // Back to the position kept across a new style sheet.
+                        if (v.locatorY(v.reading_anchor.items)) |y| v.reveal(y, 0, true);
+                        v.reading_anchor.clearRetainingCapacity();
+                    }
                     v.refreshFind();
                     v.emit(.loaded);
                 }
             },
         }
         v.schedule();
+    }
+
+    /// Breaks the laid out chapter into pages and returns to the reading
+    /// position kept before they changed.
+    fn paginate(v: *View) void {
+        const d = v.d orelse return;
+        d.pageBreaks(v.geo.page_h, &v.pages, v.gpa) catch return;
+        var p = @min(v.page, v.pageCount() - 1);
+        if (v.reading_anchor.items.len > 0) {
+            if (v.locatorY(v.reading_anchor.items)) |y| p = v.pageOf(y + 0.5);
+            v.reading_anchor.clearRetainingCapacity();
+        }
+        if (v.geo.columns == 2) p -= p % 2;
+        v.page = p;
+        v.repaint();
+        v.emit(.{ .page = .{ .index = p, .count = v.pageCount() } });
+    }
+
+    /// Keeps the reading position (the top of what shows) to return to.
+    fn keepPosition(v: *View) void {
+        if (v.reading_anchor.items.len > 0) return;
+        if (v.document() == null) return;
+        v.positionLocator(&v.reading_anchor) catch {};
+    }
+
+    /// The locator of what shows at the top: the current page's, or the
+    /// scroll position's.
+    pub fn positionLocator(v: *View, out: *std.ArrayList(u8)) Error!void {
+        const y: f32 = if (v.options.paged) v.pageTop(v.page) else if (v.win.isLive(v.node)) if (ui.visibleBand(v.win, v.node)) |b| @max(0, b[0] - v.geo.oy) else 0 else 0;
+        try v.locatorAt(y, out);
+    }
+
+    /// Goes to a fragment ("#id") or a locator: the page holding it, or
+    /// scrolled to the top. False when there is no such place.
+    pub fn goTo(v: *View, target: []const u8) bool {
+        const d = v.document() orelse return false;
+        const y: f32 = if (std.mem.startsWith(u8, target, "#")) blk: {
+            const el = d.elementById(target[1..]);
+            if (el == .none) return false;
+            break :blk d.elementY(el) orelse return false;
+        } else v.locatorY(target) orelse return false;
+        v.reveal(y, 0, true);
+        return true;
+    }
+
+    /// Replaces the application's style sheet (the reading defaults stay
+    /// before it): fonts, sizes, leading, justification the user chose.
+    pub fn setUserCss(v: *View, css_text: []const u8) Error!void {
+        const next = if (v.options.reading) try std.mem.concat(v.gpa, u8, &.{ reading_css, "\n", css_text }) else try v.gpa.dupe(u8, css_text);
+        v.gpa.free(v.options.user_css);
+        v.options.user_css = next;
+        v.keepPosition();
+        // The user sheet is parsed with the document: parse it again.
+        if (v.busy) {
+            v.want_reparse = true;
+            return;
+        }
+        v.reparse();
+    }
+
+    fn reparse(v: *View) void {
+        v.want_reparse = false;
+        if (v.d) |d| d.destroy();
+        v.d = null;
+        v.complete = false;
+        v.stop_y = 0;
+        v.matches.clearRetainingCapacity();
+        v.submit(.parse, 1);
+    }
+
+    /// An element's markup by id (a footnote to show in a popup).
+    pub fn elementHtml(v: *View, id: []const u8, out: *std.ArrayList(u8)) Error!bool {
+        const d = v.document() orelse return false;
+        return d.elementHtml(id, out, v.gpa);
     }
 
     fn afterStyle(v: *View) void {
@@ -409,11 +627,18 @@ pub const View = struct {
 
     fn requestResources(v: *View) void {
         const d = v.d orelse return;
-        const load = v.host.load orelse return;
         var i: u32 = 0;
         while (i < d.resources.items.len) : (i += 1) {
             const r = &d.resources.items[i];
             if (r.state != .wanted) continue;
+            if (v.options.book) |book| if (std.mem.startsWith(u8, r.url, "epub:///")) {
+                // The publication's own files, queued for `applySupplies`.
+                r.state = .loading;
+                const bytes = book.read(v.gpa, r.url["epub:///".len..]) catch null;
+                v.supplies.append(v.gpa, .{ .request = i, .bytes = bytes }) catch if (bytes) |bb| v.gpa.free(bb);
+                continue;
+            };
+            const load = v.host.load orelse continue;
             r.state = .loading;
             load(v.host.ctx, v, i, r.url, switch (r.kind) {
                 .stylesheet => .stylesheet,
@@ -575,15 +800,33 @@ pub const View = struct {
     fn measure(user: ?*anyopaque, win: *Window, node: NodeId, min_w: f32, max_w: f32, min_h: f32, max_h: f32) ui.CanvasSize {
         _ = win;
         _ = node;
-        _ = min_h;
-        _ = max_h;
         const v: *View = @ptrCast(@alignCast(user));
-        if (!std.math.isFinite(max_w)) return .{ .width = @max(min_w, 600), .height = if (v.reported_height > 0) v.reported_height else 0 };
-        if (max_w != v.width) {
-            v.width = max_w;
-            v.kick();
+        if (v.options.paged) {
+            // Pages fill the space given.
+            const w = if (std.math.isFinite(max_w)) max_w else @max(min_w, 600);
+            const h = if (std.math.isFinite(max_h)) max_h else @max(min_h, v.win.height);
+            v.setSize(w, h);
+            return .{ .width = w, .height = h };
         }
-        return .{ .width = max_w, .height = @max(0, v.reported_height) };
+        if (!std.math.isFinite(max_w)) return .{ .width = @max(min_w, 600), .height = if (v.reported_height > 0) v.reported_height + 2 * v.geo.oy else 0 };
+        v.setSize(max_w, v.node_h);
+        return .{ .width = max_w, .height = @max(0, v.reported_height) + 2 * v.geo.oy };
+    }
+
+    fn setSize(v: *View, w: f32, h: f32) void {
+        if (w == v.node_w and h == v.node_h) return;
+        v.node_w = w;
+        v.node_h = h;
+        const g = v.geometry(w, h);
+        const changed = g.content_w != v.geo.content_w or g.page_h != v.geo.page_h;
+        v.geo = g;
+        if (!changed) return;
+        if (v.options.paged and v.pages.items.len > 0) v.keepPosition();
+        v.width = g.content_w;
+        // A layout job (quick when only the page height changed) breaks
+        // the pages again at a safe point.
+        v.repage = v.options.paged;
+        v.kick();
     }
 
     fn palette(v: *View) doc.Palette {
@@ -630,7 +873,6 @@ pub const View = struct {
     fn draw(user: ?*anyopaque, win: *Window, node: NodeId, b: *scene.Builder, width: f32, height: f32) scene.Error!void {
         const v: *View = @ptrCast(@alignCast(user));
         const band = win.state(node).painted_band orelse [2]f32{ 0, height };
-        _ = width;
         // The theme's scheme changed: style again for prefers-color-scheme.
         if (v.options.color_scheme == .theme and v.media().dark != v.media_dark and v.d != null) {
             v.want_style = true;
@@ -638,9 +880,10 @@ pub const View = struct {
         }
         const d = v.d orelse return;
         if (v.busy) return v.replayLast(b);
-        if (!v.complete and band[1] > v.stop_y) {
+        const g = v.geo;
+        if (!v.options.paged and !v.complete and band[1] - g.oy > v.stop_y) {
             // Scrolled past what is laid out: lay out to there first.
-            v.stop_y = band[1] + (band[1] - band[0]);
+            v.stop_y = band[1] - g.oy + (band[1] - band[0]);
             v.submit(.layout, 1);
             if (v.busy) return v.replayLast(b);
         }
@@ -648,7 +891,32 @@ pub const View = struct {
         v.last.reset();
         try v.buildHighlights();
         const hooks: doc.Hooks = .{ .ctx = v, .drawReplaced = drawReplaced, .imageSize = imageSize, .drawImage = drawImage, .marker = marker };
-        d.paint(&v.last, band[0], band[1], v.palette(), hooks, v.highlights.items) catch return error.OutOfMemory;
+        const pal = v.palette();
+        if (v.options.paged or v.options.reading) {
+            // Margins in the page's color.
+            const bg = pal.canvas;
+            try v.last.fillRect(.xywh(0, 0, width, height), .color(.{ .r = bg.r, .g = bg.g, .b = bg.b, .a = bg.a }));
+        }
+        if (v.options.paged) {
+            for (0..g.columns) |c| {
+                const p = v.page + c;
+                if (p >= v.pageCount()) break;
+                const y0 = v.pageTop(p);
+                const y1 = @min(v.pageTop(p + 1), y0 + g.page_h);
+                const x = g.ox + g.col_step * @as(f32, @floatFromInt(c));
+                try v.last.pushLayer(.{ .clip = .{ .shape = .{ .rect = .xywh(x - g.ox / 2, g.oy, g.content_w + g.ox, y1 - y0) } } });
+                try v.last.pushLayer(.{ .transform = raster.Affine.translate(x, g.oy - y0) });
+                d.paint(&v.last, y0, y1, pal, hooks, v.highlights.items) catch return error.OutOfMemory;
+                try v.last.popLayer();
+                try v.last.popLayer();
+            }
+        } else if (g.ox != 0 or g.oy != 0) {
+            try v.last.pushLayer(.{ .transform = raster.Affine.translate(g.ox, g.oy) });
+            d.paint(&v.last, band[0] - g.oy, band[1] - g.oy, pal, hooks, v.highlights.items) catch return error.OutOfMemory;
+            try v.last.popLayer();
+        } else {
+            d.paint(&v.last, band[0], band[1], pal, hooks, v.highlights.items) catch return error.OutOfMemory;
+        }
         v.last_list = try v.last.finish(0);
         v.drawn_band = band;
         try v.replayLast(b);
@@ -746,7 +1014,8 @@ pub const View = struct {
         switch (p.phase) {
             .down => {
                 if (p.button != .primary) return .pass;
-                const hit = d.hitTest(p.x, p.y) catch return .pass;
+                const at = v.toDoc(p.x, p.y) orelse return .pass;
+                const hit = d.hitTest(at[0], at[1]) catch return .pass;
                 v.press = .{ p.x, p.y };
                 if (hit.ifc != none) {
                     const pos: Document.Pos = .{ .ifc = hit.ifc, .offset = hit.offset };
@@ -769,7 +1038,8 @@ pub const View = struct {
             },
             .move => {
                 if (!v.selecting) return .pass;
-                const hit = d.hitTest(p.x, p.y) catch return .pass;
+                const at = v.toDoc(p.x, p.y) orelse return .handled;
+                const hit = d.hitTest(at[0], at[1]) catch return .pass;
                 if (hit.ifc != none) {
                     v.focus = .{ .ifc = hit.ifc, .offset = hit.offset };
                     v.repaint();
@@ -787,8 +1057,12 @@ pub const View = struct {
                     v.anchor = null;
                     v.focus = null;
                     v.repaint();
-                    const hit = d.hitTest(p.x, p.y) catch return .handled;
-                    if (d.linkAt(hit.node)) |link| v.activate(link.href);
+                    const at = v.toDoc(p.x, p.y) orelse return .handled;
+                    const hit = d.hitTest(at[0], at[1]) catch return .handled;
+                    if (d.linkAt(hit.node)) |link| {
+                        v.link_rel = d.linkRel(link.node);
+                        v.activate(link.href);
+                    }
                     return .handled;
                 }
                 v.emit(.selection);
@@ -838,7 +1112,8 @@ pub const View = struct {
                 if (v.scrollToFragment(href[hash + 1 ..])) return;
             }
         }
-        v.emit(.{ .link = href });
+        v.emit(.{ .link = .{ .url = href, .rel = v.link_rel } });
+        v.link_rel = "";
     }
 
     /// Scrolls the element with this id (or name) into view; false when
@@ -854,7 +1129,9 @@ pub const View = struct {
 
     /// Scrolls the nearest scroll node so that document y..y+h shows,
     /// at the top when `top`.
-    pub fn reveal(v: *View, y: f32, h: f32, top: bool) void {
+    pub fn reveal(v: *View, y_doc: f32, h: f32, top: bool) void {
+        if (v.options.paged) return v.setPage(v.pageOf(y_doc + 0.5));
+        const y = y_doc + v.geo.oy;
         const win = v.win;
         if (!win.isLive(v.node)) return;
         const band = ui.visibleBand(win, v.node) orelse return;
@@ -887,7 +1164,7 @@ pub const View = struct {
         if (!same or v.matches.items.len == 0) {
             try d.findAll(needle, &v.matches, v.gpa, max_matches);
             // The first at or after the view's top.
-            const top = if (ui.visibleBand(v.win, v.node)) |b| b[0] else 0;
+            const top = if (v.options.paged) v.pageTop(v.page) else if (ui.visibleBand(v.win, v.node)) |b| b[0] - v.geo.oy else 0;
             for (v.matches.items, 0..) |m, i| {
                 const r = (d.offsetRect(m) catch null) orelse continue;
                 if (r[1] >= top) {
@@ -1002,7 +1279,10 @@ pub const View = struct {
             .name = n.name,
             .parent = n.parent,
             .end = n.end,
-            .bounds = .xywh(n.bounds[0], n.bounds[1], n.bounds[2], n.bounds[3]),
+            .bounds = blk: {
+                const at = v.fromDoc(n.bounds[0], n.bounds[1]);
+                break :blk .xywh(at[0], at[1], n.bounds[2], n.bounds[3]);
+            },
             .level = n.level,
             .position = n.position,
             .set_size = n.set_size,
