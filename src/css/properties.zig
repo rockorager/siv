@@ -1059,78 +1059,72 @@ fn parseListStyleType(c: *Cursor) ?Value {
 
 pub fn parseDisplay(c: *Cursor) ?Value {
     const D = style.Display;
-    var d: D = .{ .outer = .@"inline", .inner = .flow };
+    const eq = std.ascii.eqlIgnoreCase;
+    // Legacy one-word values stand alone; the two-value syntax names an
+    // outer type, an inner type, and list-item, each at most once.
+    const legacy = [_]struct { []const u8, D }{
+        .{ "inline-block", .{ .outer = .@"inline", .inner = .flow_root } },
+        .{ "inline-flex", .{ .outer = .@"inline", .inner = .flex } },
+        .{ "-webkit-inline-flex", .{ .outer = .@"inline", .inner = .flex } },
+        .{ "-webkit-inline-box", .{ .outer = .@"inline", .inner = .flex } },
+        .{ "inline-grid", .{ .outer = .@"inline", .inner = .grid } },
+        .{ "inline-table", .{ .outer = .@"inline", .inner = .table } },
+        .{ "table-row-group", .{ .outer = .block, .inner = .table_row_group } },
+        .{ "table-header-group", .{ .outer = .block, .inner = .table_header_group } },
+        .{ "table-footer-group", .{ .outer = .block, .inner = .table_footer_group } },
+        .{ "table-row", .{ .outer = .block, .inner = .table_row } },
+        .{ "table-cell", .{ .outer = .block, .inner = .table_cell } },
+        .{ "table-column-group", .{ .outer = .block, .inner = .table_column_group } },
+        .{ "table-column", .{ .outer = .block, .inner = .table_column } },
+        .{ "table-caption", .{ .outer = .block, .inner = .table_caption } },
+        .{ "none", D.none },
+        .{ "contents", .{ .outer = .contents } },
+    };
+    const first = c.peek();
+    if (first.kind != .ident) return null;
+    for (legacy) |l| if (eq(first.text, l[0])) {
+        _ = c.take();
+        return .{ .display = l[1] };
+    };
     var outer: ?D.Outer = null;
     var inner: ?D.Inner = null;
     var list_item = false;
-    var any = false;
     while (c.peek().kind == .ident) {
-        const t = c.take();
-        any = true;
-        const eq = std.ascii.eqlIgnoreCase;
-        const s = t.text;
-        if (eq(s, "none")) return .{ .display = D.none };
-        if (eq(s, "contents")) return .{ .display = .{ .outer = .contents } };
-        if (eq(s, "block")) {
-            outer = .block;
-        } else if (eq(s, "inline")) {
-            outer = .@"inline";
-        } else if (eq(s, "run-in")) {
-            outer = .block;
+        const s = c.take().text;
+        var o: ?D.Outer = null;
+        var i: ?D.Inner = null;
+        if (eq(s, "block") or eq(s, "run-in")) {
+            o = .block;
+        } else if (eq(s, "inline") or eq(s, "ruby") or eq(s, "ruby-base") or eq(s, "ruby-text")) {
+            o = .@"inline";
         } else if (eq(s, "flow")) {
-            inner = .flow;
+            i = .flow;
         } else if (eq(s, "flow-root")) {
-            inner = .flow_root;
+            i = .flow_root;
         } else if (eq(s, "flex") or eq(s, "-webkit-flex") or eq(s, "-webkit-box") or eq(s, "-ms-flexbox")) {
-            inner = .flex;
+            i = .flex;
         } else if (eq(s, "grid") or eq(s, "-ms-grid")) {
-            inner = .grid;
+            i = .grid;
         } else if (eq(s, "table")) {
-            inner = .table;
+            i = .table;
         } else if (eq(s, "list-item")) {
+            if (list_item) return null;
             list_item = true;
-        } else if (eq(s, "inline-block")) {
-            outer = .@"inline";
-            inner = .flow_root;
-        } else if (eq(s, "inline-flex") or eq(s, "-webkit-inline-flex") or eq(s, "-webkit-inline-box")) {
-            outer = .@"inline";
-            inner = .flex;
-        } else if (eq(s, "inline-grid")) {
-            outer = .@"inline";
-            inner = .grid;
-        } else if (eq(s, "inline-table")) {
-            outer = .@"inline";
-            inner = .table;
-        } else if (eq(s, "table-row-group")) {
-            inner = .table_row_group;
-        } else if (eq(s, "table-header-group")) {
-            inner = .table_header_group;
-        } else if (eq(s, "table-footer-group")) {
-            inner = .table_footer_group;
-        } else if (eq(s, "table-row")) {
-            inner = .table_row;
-        } else if (eq(s, "table-cell")) {
-            inner = .table_cell;
-        } else if (eq(s, "table-column-group")) {
-            inner = .table_column_group;
-        } else if (eq(s, "table-column")) {
-            inner = .table_column;
-        } else if (eq(s, "table-caption")) {
-            inner = .table_caption;
-        } else if (eq(s, "ruby") or eq(s, "ruby-base") or eq(s, "ruby-text")) {
-            outer = .@"inline";
+            continue;
         } else return null;
+        if (o) |x| {
+            if (outer != null) return null;
+            outer = x;
+        }
+        if (i) |x| {
+            if (inner != null) return null;
+            inner = x;
+        }
     }
-    if (!any) return null;
-    if (inner) |i| {
-        d.inner = i;
-        // A lone inner type is block-level (flex, grid, table, flow-root).
-        d.outer = outer orelse .block;
-    } else d.outer = outer orelse .block;
-    if (list_item) {
-        d.list_item = true;
-        if (outer == null) d.outer = .block;
-    }
+    // list-item goes only with flow and flow-root.
+    if (list_item) if (inner) |i| if (i != .flow and i != .flow_root) return null;
+    var d: D = .{ .outer = outer orelse .block, .inner = inner orelse .flow };
+    d.list_item = list_item;
     return .{ .display = d };
 }
 
@@ -1362,9 +1356,20 @@ fn parseDecoration(c: *Cursor) ?Value {
     return if (any) .{ .decoration = d } else null;
 }
 
+/// Alignment keywords; `safe` sets the keyword's high bit (`safe_bit`).
 fn parseAlign(c: *Cursor) ?Value {
-    _ = c.ident("safe");
-    _ = c.ident("unsafe");
+    const safe = c.ident("safe");
+    if (!safe) _ = c.ident("unsafe");
+    if (safe) {
+        const v = parseAlignKeyword(c) orelse return null;
+        return .{ .keyword = v.keyword | safe_bit };
+    }
+    return parseAlignKeyword(c);
+}
+
+pub const safe_bit: u8 = 0x80;
+
+fn parseAlignKeyword(c: *Cursor) ?Value {
     if (c.ident("first")) {
         if (!c.ident("baseline")) return null;
         return kw(style.Align.baseline);
@@ -2153,6 +2158,18 @@ pub fn apply(s: *style.Style, id: Id, v: Value, cx: *const Ctx) Error!void {
                 else => Len.zero,
             };
         }
+        fn alignOf(x: Value) style.Align {
+            return switch (x) {
+                .keyword => |n| @enumFromInt(n & ~safe_bit),
+                else => .normal,
+            };
+        }
+        fn safe(x: Value) bool {
+            return switch (x) {
+                .keyword => |n| n & safe_bit != 0,
+                else => false,
+            };
+        }
         fn k(comptime E: type, x: Value) E {
             return switch (x) {
                 .keyword => |n| @enumFromInt(n),
@@ -2307,12 +2324,30 @@ pub fn apply(s: *style.Style, id: Id, v: Value, cx: *const Ctx) Error!void {
         .flex_shrink => s.box.flex_shrink = if (v == .number) v.number else 1,
         .flex_basis => s.box.flex_basis = try S.len(v, a, &vc),
         .order => s.box.order = if (v == .integer) v.integer else 0,
-        .justify_content => s.box.justify_content = S.k(style.Align, v),
-        .align_items => s.box.align_items = S.k(style.Align, v),
-        .align_self => s.box.align_self = S.k(style.Align, v),
-        .align_content => s.box.align_content = S.k(style.Align, v),
-        .justify_items => s.box.justify_items = S.k(style.Align, v),
-        .justify_self => s.box.justify_self = S.k(style.Align, v),
+        .justify_content => {
+            s.box.justify_content = S.alignOf(v);
+            s.box.align_safe.justify_content = S.safe(v);
+        },
+        .align_items => {
+            s.box.align_items = S.alignOf(v);
+            s.box.align_safe.align_items = S.safe(v);
+        },
+        .align_self => {
+            s.box.align_self = S.alignOf(v);
+            s.box.align_safe.align_self = S.safe(v);
+        },
+        .align_content => {
+            s.box.align_content = S.alignOf(v);
+            s.box.align_safe.align_content = S.safe(v);
+        },
+        .justify_items => {
+            s.box.justify_items = S.alignOf(v);
+            s.box.align_safe.justify_items = S.safe(v);
+        },
+        .justify_self => {
+            s.box.justify_self = S.alignOf(v);
+            s.box.align_safe.justify_self = S.safe(v);
+        },
         .row_gap => s.box.row_gap = try S.len(v, a, &vc),
         .column_gap => s.box.column_gap = try S.len(v, a, &vc),
         .grid_template_columns => s.box.grid_template_columns = if (v == .tracks) v.tracks else null,
@@ -2511,12 +2546,30 @@ fn copyFrom(s: *style.Style, id: Id, from: *const style.Style, cx: *const Ctx) v
         .flex_shrink => s.box.flex_shrink = from.box.flex_shrink,
         .flex_basis => s.box.flex_basis = from.box.flex_basis,
         .order => s.box.order = from.box.order,
-        .justify_content => s.box.justify_content = from.box.justify_content,
-        .align_items => s.box.align_items = from.box.align_items,
-        .align_self => s.box.align_self = from.box.align_self,
-        .align_content => s.box.align_content = from.box.align_content,
-        .justify_items => s.box.justify_items = from.box.justify_items,
-        .justify_self => s.box.justify_self = from.box.justify_self,
+        .justify_content => {
+            s.box.justify_content = from.box.justify_content;
+            s.box.align_safe.justify_content = from.box.align_safe.justify_content;
+        },
+        .align_items => {
+            s.box.align_items = from.box.align_items;
+            s.box.align_safe.align_items = from.box.align_safe.align_items;
+        },
+        .align_self => {
+            s.box.align_self = from.box.align_self;
+            s.box.align_safe.align_self = from.box.align_safe.align_self;
+        },
+        .align_content => {
+            s.box.align_content = from.box.align_content;
+            s.box.align_safe.align_content = from.box.align_safe.align_content;
+        },
+        .justify_items => {
+            s.box.justify_items = from.box.justify_items;
+            s.box.align_safe.justify_items = from.box.align_safe.justify_items;
+        },
+        .justify_self => {
+            s.box.justify_self = from.box.justify_self;
+            s.box.align_safe.justify_self = from.box.align_safe.justify_self;
+        },
         .row_gap => s.box.row_gap = from.box.row_gap,
         .column_gap => s.box.column_gap = from.box.column_gap,
         .grid_template_columns => s.box.grid_template_columns = from.box.grid_template_columns,

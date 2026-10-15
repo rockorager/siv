@@ -452,6 +452,17 @@ pub const BoxProps = struct {
     align_content: Align = .normal,
     justify_items: Align = .legacy,
     justify_self: Align = .auto,
+    /// Which alignment properties have the `safe` keyword (CSS Align 4.4):
+    /// an overflowing subject aligns to the start.
+    align_safe: packed struct(u8) {
+        justify_content: bool = false,
+        align_items: bool = false,
+        align_self: bool = false,
+        align_content: bool = false,
+        justify_items: bool = false,
+        justify_self: bool = false,
+        _: u2 = 0,
+    } = .{},
     row_gap: Len = .normal,
     column_gap: Len = .normal,
     grid_template_columns: ?*const Tracks = null,
