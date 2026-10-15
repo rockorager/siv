@@ -354,7 +354,7 @@ pub const Txn = struct {
             win.dirty.props = true;
         if (!std.meta.eql(old.background, v.background) or old.border_width != v.border_width or
             !std.meta.eql(old.border_color, v.border_color) or !std.meta.eql(old.radius, v.radius) or old.clip != v.clip or
-            old.background_token != v.background_token or old.border_token != v.border_token)
+            old.background_token != v.background_token or old.border_token != v.border_token or old.focus_ring != v.focus_ring)
             win.markPaint(id);
         if (old.hit_test != v.hit_test) win.markLayers();
         if (was_hidden != n.isHidden()) visibilityChanged(win, id, n.isHidden());

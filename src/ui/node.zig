@@ -222,6 +222,8 @@ pub const Visual = struct {
     /// Gives the node its own layer, whose transforms, clips, scrolling,
     /// and animations the blur region follows.
     window_blur: bool = false,
+    /// Draw the focus ring when the node has visible keyboard focus.
+    focus_ring: bool = true,
     /// Themed colors (D29) that replace `background` and `border_color`
     /// when set, resolved at paint time.
     background_token: ColorToken = .none,

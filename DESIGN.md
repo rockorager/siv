@@ -1813,6 +1813,26 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       scrolling), or place a popup at a word in the same frame as the
       edit. AT-SPI's geometry (`ui.access`) describes the last frame in
       window coordinates and stays as it was.
+    - A multiline editor clips its text to its border box, not its
+      content box, so a negative first-line indent hangs into the
+      padding as it does in a text node: Markdown's list markers and
+      heading marks outside the text column. Single-line editors scroll
+      sideways and still clip to the content box.
+    - Restyling after every edit is linear in the spans: a text's style
+      runs walk its spans once (they had searched them from the start
+      for every run, quadratic in a Markdown document's thousands of
+      spans) with the few font chains they ask for remembered, and
+      paragraph styles snap to paragraphs from the spans, looking only
+      at spans not already on paragraph boundaries (they had scanned the
+      whole text after every edit). Typing in a 128 KB Markdown document
+      with a span per few words went from 30 ms of UI thread time a key
+      to 2; 1 MB takes 12.
+    - `SIV_VISUAL_NO_FOCUS_RING` leaves out the focus ring of a node
+      that shows focus itself: a writing surface that fills the window,
+      whose caret says where the keys go (CSS's `outline: none`). siv
+      gives an editor focused by a key handler a ring, as CSS
+      `:focus-visible` does, and a modal editor moves focus from its
+      command line back to the text by key.
     - Alternatives: the application's own text node on a canvas (it
       would repeat shaping, blocks, residency, selection, the input
       method, and accessibility); undo groups in the editor's history

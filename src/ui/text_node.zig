@@ -234,13 +234,36 @@ fn styleRuns(win: *Window, id: NodeId, content_len: usize, list: []const node_mo
     var runs: std.ArrayList(text.StyleRun) = .empty;
     const a = win.scratch.allocator();
     if (run_styles) |rs| rs.clearRetainingCapacity();
+    // The runs in order: each span, and the unstyled stretches between.
+    // A long styled text has a run per span (Markdown's markup and
+    // emphasis: one per few words), and a text reshapes its runs after
+    // every edit, so the spans are walked once, not searched per run, and
+    // the few distinct fonts they ask for are remembered here rather than
+    // looked up per run.
+    try runs.ensureTotalCapacity(a, 2 * list.len + 1);
+    const Memo = struct { query: Fonts.Query, chain: []const text.FontId };
+    var memo: [8]?Memo = @splat(null);
+    var memo_next: usize = 0;
     var at: u32 = 0;
+    var i: usize = 0;
     while (true) {
-        const run = spans.runAt(list, at, len);
+        var run: node_mod.Span = .{ .start = at, .end = len, .style = .{} };
+        if (i < list.len and list[i].start <= at) {
+            run = list[i];
+            i += 1;
+        } else if (i < list.len) run.end = list[i].start;
         const sp = run.style;
         const run_size = if (sp.size) |z| z * scale else size;
-        const chain = try fonts.chain(.{ .family = sp.family orelse d.family, .language = language, .weight = node_mod.cssWeight(style, sp.weight), .slant = sp.slant orelse style.slant, .width = sp.width orelse style.width, .size = run_size });
-        try runs.append(a, .{ .end = run.end, .style = .{ .fonts = chain, .size = run_size, .language = lang_name } });
+        const query: Fonts.Query = .{ .family = sp.family orelse d.family, .language = language, .weight = node_mod.cssWeight(style, sp.weight), .slant = sp.slant orelse style.slant, .width = sp.width orelse style.width, .size = run_size };
+        const chain = for (memo) |m| {
+            if (m) |x| if (std.meta.eql(x.query, query)) break x.chain;
+        } else blk: {
+            const ch = try fonts.chain(query);
+            memo[memo_next] = .{ .query = query, .chain = ch };
+            memo_next = (memo_next + 1) % memo.len;
+            break :blk ch;
+        };
+        runs.appendAssumeCapacity(.{ .end = run.end, .style = .{ .fonts = chain, .size = run_size, .language = lang_name } });
         if (run_styles) |rs| try rs.append(win.gpa, sp);
         if (run.end >= len) break;
         at = run.end;

@@ -964,7 +964,7 @@ fn drawNode(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point
         },
         else => {},
     }
-    if (win.input.focus == nid and win.input.focus_visible) {
+    if (win.input.focus == nid and win.input.focus_visible and v.focus_ring) {
         const g = focus_ring_width;
         var ring = r.outset(g / 2 + 1);
         // Within its scroll node's content, where the viewport can show
@@ -1026,7 +1026,11 @@ fn drawEditor(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Poi
     editor.scrollToCaret(win, nid);
     const scroll = s.editor_scroll;
     const focused = win.input.focus == nid;
-    try b.pushLayer(.{ .clip = .{ .shape = .{ .rect = box.outset(layout.caret_width) } } });
+    // A multiline editor's text may hang into its padding (a negative
+    // first-line indent: list markers, heading marks); a single-line
+    // editor scrolls sideways, so it clips to its content box.
+    const clip = if (e.editor.multiline) Rect.xywh(off.x, off.y, s.size.w, s.size.h) else box.outset(layout.caret_width);
+    try b.pushLayer(.{ .clip = .{ .shape = .{ .rect = clip } } });
     if (editor.preeditRange(win, nid)) |range| {
         // The preedit is underlined; the selection waits behind it.
         var rects: std.ArrayList(text.layout.Rect) = .empty;

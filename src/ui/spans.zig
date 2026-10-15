@@ -35,13 +35,20 @@ pub fn styleAt(spans: anytype, offset: u32) StyleOf(@TypeOf(spans)) {
 /// The run containing `offset` in text of length `len`: a span, or the
 /// unstyled stretch between spans.
 pub fn runAt(spans: anytype, offset: u32, len: u32) Elem(@TypeOf(spans)) {
-    var start: u32 = 0;
-    for (spans) |s| {
-        if (offset < s.start) return .{ .start = start, .end = s.start, .style = .{} };
-        if (offset < s.end) return s;
-        start = s.end;
+    // The first span that ends after `offset`, by bisection: spans are
+    // sorted and disjoint, and walking the runs of a text calls this once
+    // per run, so a linear search made styling a long text quadratic.
+    var lo: usize = 0;
+    var hi: usize = spans.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if (spans[mid].end <= offset) lo = mid + 1 else hi = mid;
     }
-    return .{ .start = @min(start, len), .end = len, .style = .{} };
+    const start: u32 = if (lo == 0) 0 else spans[lo - 1].end;
+    if (lo == spans.len) return .{ .start = @min(start, len), .end = len, .style = .{} };
+    const s = spans[lo];
+    if (offset < s.start) return .{ .start = start, .end = s.start, .style = .{} };
+    return s;
 }
 
 /// The style text inserted at `at` takes without a typing style: that of
@@ -176,19 +183,43 @@ pub fn paragraphAt(content: Rope, offset: u32) struct { start: u32, end: u32 } {
 }
 
 /// Paragraph spans snapped to whole paragraphs: each paragraph takes the
-/// style at its first byte.
+/// style at its first byte. Found from the spans, looking only at the
+/// paragraphs at their ends, so it costs the spans, not the text: every
+/// edit of a text with paragraph styles snaps them again.
 pub fn snapped(a: Allocator, content: Rope, spans: []const ParagraphSpan) Allocator.Error![]ParagraphSpan {
     var list: std.ArrayList(ParagraphSpan) = .empty;
-    if (spans.len == 0) return list.items;
-    var at: u32 = 0;
-    while (true) {
-        const p = paragraphAt(content, at);
-        try list.append(a, .{ .start = p.start, .end = p.end, .style = styleAt(spans, p.start) });
-        if (p.end >= content.len()) break;
-        at = p.end;
+    try list.ensureTotalCapacity(a, spans.len);
+    var rd = content.reader();
+    const len = content.len();
+    for (spans) |s| {
+        // Already whole paragraphs (every span but those at an edit).
+        if (boundary(&rd, len, s.start) and (s.end == len or boundary(&rd, len, s.end))) {
+            list.appendAssumeCapacity(s);
+            continue;
+        }
+        // The paragraphs that start in the span: from the first (the
+        // span's start, or the paragraph after the one it starts inside)
+        // to the one holding its last byte.
+        const p = paragraphAt(content, s.start);
+        const first = if (p.start == s.start) s.start else p.end;
+        if (first >= s.end) continue;
+        const last = paragraphAt(content, s.end - 1);
+        list.appendAssumeCapacity(.{ .start = first, .end = last.end, .style = s.style });
     }
     normalize(&list);
     return list.items;
+}
+
+/// Whether a paragraph starts at `o`: the text's start, or just after a
+/// separator.
+fn boundary(rd: *Rope.Reader, len: usize, o: usize) bool {
+    if (o == 0) return true;
+    var k = o -| 3;
+    while (k < o) : (k += 1) {
+        const sep = separatorLen(rd, len, k);
+        if (sep != 0 and k + sep == o) return true;
+    }
+    return false;
 }
 
 const testing = std.testing;
@@ -238,6 +269,50 @@ test "restyling a range splits spans at its edges and merges equal neighbors" {
     defer short.release(testing.allocator);
     try testing.expect(valid(long, out));
     try testing.expect(!valid(short, out));
+}
+
+test "snapping paragraph styles from the spans matches styling every paragraph by its first byte" {
+    const gpa = testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var prng: std.Random.DefaultPrng = .init(5);
+    const rand = prng.random();
+    const pieces = [_][]const u8{ "ab", "\n", "\r\n", "\u{2029}", "xyz", "\n\n" };
+    const styles = [_]node_mod.ParagraphPatch{ .{ .indent = .{ .start = 4 } }, .{ .indent = .{ .start = 8, .first_line = -4 } } };
+    for (0..300) |_| {
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(gpa);
+        for (0..rand.uintLessThan(usize, 24)) |_| try buf.appendSlice(gpa, pieces[rand.uintLessThan(usize, pieces.len)]);
+        const r: Rope = try .initBytes(gpa, buf.items);
+        defer r.release(gpa);
+        const len: u32 = @intCast(buf.items.len);
+        // Sorted, disjoint spans at character boundaries.
+        var list: std.ArrayList(ParagraphSpan) = .empty;
+        var at: u32 = 0;
+        while (at < len) {
+            var s = at + rand.uintLessThan(u32, 6);
+            var e = s + 1 + rand.uintLessThan(u32, 8);
+            if (e > len) break;
+            var rd = r.reader();
+            while (s < len and rd.at(s) & 0xc0 == 0x80) s += 1;
+            while (e < len and rd.at(e) & 0xc0 == 0x80) e += 1;
+            if (s >= e or e > len) break;
+            try list.append(a, .{ .start = s, .end = e, .style = styles[rand.uintLessThan(usize, styles.len)] });
+            at = e;
+        }
+        // The definition: every paragraph, by the style at its first byte.
+        var want: std.ArrayList(ParagraphSpan) = .empty;
+        var p_at: u32 = 0;
+        while (len > 0) {
+            const p = paragraphAt(r, p_at);
+            try want.append(a, .{ .start = p.start, .end = p.end, .style = styleAt(list.items, p.start) });
+            if (p.end >= len) break;
+            p_at = p.end;
+        }
+        normalize(&want);
+        try testing.expectEqualDeep(want.items, try snapped(a, r, list.items));
+    }
 }
 
 test "paragraphAt finds what scanning from the start finds, in a rope" {

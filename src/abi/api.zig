@@ -524,6 +524,7 @@ pub const decls = [_]Decl{
         .{ .name = "no_hit_test", .bit = 2, .doc = "Pointer events pass through the node to what is below." },
         .{ .name = "hidden", .bit = 3, .doc = "The node and its subtree take no space and are not painted, hit, focusable, or in the semantics tree; its state is kept." },
         .{ .name = "window_blur", .bit = 4, .doc = "Ask the compositor to blur what is behind the window under the node's rounded border box (D31, ext-background-effect-v1), so a translucent background reads as frosted glass: bars, notifications, launchers, translucent windows and popups. The region follows the node through layout, scrolling, clips, and animations, in the same frame as its content. Where the compositor cannot blur (SIV_CAPABILITIES_BLUR unset; sway cannot), nothing is blurred, so pick a more opaque background then. siv_draw_backdrop_blur blurs the window's own content instead." },
+        .{ .name = "no_focus_ring", .bit = 5, .doc = "No focus ring when the node has keyboard focus: it shows focus itself, as a writing surface that fills the window shows it with its caret (D15)." },
     }),
     descriptor("siv_visual_desc", "A node's appearance. Repaints without layout; does not change opacity or transform.", &.{
         .{ .name = "background", .type = ref("siv_color"), .doc = "Fill of the border box; default transparent." },

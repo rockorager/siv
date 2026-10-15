@@ -319,3 +319,52 @@ test "text: ellipses, line clamps, and a base direction of its own" {
     try testing.expectEqualStrings("2026-10-13 14:05", buf[0..len]);
     _ = swapped;
 }
+
+test "editors: a hanging first line shows in the padding, and a focus ring can be left out" {
+    var h: Harness = .{};
+    try h.start(200, 80, null, null);
+    defer h.stop();
+    const white: t.Color = .{ .r = 1, .g = 1, .b = 1, .a = 1 };
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const root = c.siv_window_get_root(h.window);
+    _ = c.siv_set_visual(txn, root, &.{ .background = white });
+    const col = c.siv_flex(txn, root, &.{ .axis = .column, .align_items = .start });
+    _ = c.siv_set_layout(txn, col, &.{ .padding = .{ .start = 20, .top = 20 } });
+    // The editor's box starts at x 20 and its text at 60; the first line
+    // hangs 36 px out, into the padding, as a Markdown list marker does.
+    const ed = c.siv_editor(txn, col, .{ .multiline = true });
+    _ = c.siv_set_layout(txn, ed, &.{ .width = .{ .unit = .px, .value = 160 }, .height = .{ .unit = .px, .value = 40 }, .padding = .{ .start = 40 } });
+    _ = c.siv_set_visual(txn, ed, &.{ .background = white, .flags = .{ .no_focus_ring = true } });
+    _ = c.siv_set_text(txn, ed, "MM", 2);
+    const hang = [_]t.ParagraphSpan{.{ .start = 0, .end = 1, .flags = .{ .indent = true }, .first_line_indent = -36 }};
+    _ = c.siv_set_paragraph_spans(txn, ed, &.{ .spans = &hang, .spans_count = hang.len });
+    try ok(c.siv_txn_commit(txn));
+    // Focus moved after a key shows a ring, unless the node declines it.
+    try h.typeKey(0xff09, "", .{});
+    try ok(c.siv_node_focus(ed));
+    try h.settle();
+
+    const dark = struct {
+        fn f(img: []const u8, x0: usize, x1: usize, y0: usize, y1: usize) bool {
+            for (y0..y1) |y| for (x0..x1) |x| {
+                if (img[(y * 200 + x) * 4] < 128) return true;
+            };
+            return false;
+        }
+    }.f;
+    var img = try h.capture();
+    try testing.expect(dark(img, 21, 58, 20, 60));
+    // No ring: the column left of the box is the background.
+    try testing.expect(!dark(img, 16, 20, 30, 50));
+    testing.allocator.free(img);
+
+    try ok(c.siv_txn_begin(h.window, &txn));
+    _ = c.siv_set_visual(txn, ed, &.{ .background = white });
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    img = try h.capture();
+    defer testing.allocator.free(img);
+    const ring = img[(40 * 200 + 18) * 4 ..][0..4];
+    try testing.expect(!(ring[0] == 255 and ring[1] == 255 and ring[2] == 255));
+}
