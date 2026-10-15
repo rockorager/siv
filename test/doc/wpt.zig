@@ -17,24 +17,24 @@ const origin = "http://wpt";
 
 /// Passing tests per suite, recorded: fewer fails the test.
 const floors = .{
-    .{ "css2", 233 },
-    .{ "css-flexbox", 218 },
-    .{ "css-grid", 59 },
-    .{ "css-values", 56 },
+    .{ "css2", 235 },
+    .{ "css-flexbox", 227 },
+    .{ "css-grid", 112 },
+    .{ "css-values", 65 },
     .{ "css-variables", 46 },
-    .{ "css-tables", 117 },
-    .{ "floats", 86 },
-    .{ "css-sizing", 103 },
+    .{ "css-tables", 125 },
+    .{ "floats", 88 },
+    .{ "css-sizing", 111 },
     .{ "css-display", 59 },
     .{ "css-pseudo", 33 },
     .{ "css-lists", 166 },
-    .{ "css-text", 92 },
+    .{ "css-text", 116 },
     .{ "css-backgrounds", 111 },
-    .{ "css-overflow", 67 },
-    .{ "css-position", 22 },
-    .{ "css-break", 40 },
-    .{ "css-multicol", 62 },
-    .{ "css-writing-modes", 50 },
+    .{ "css-overflow", 69 },
+    .{ "css-position", 23 },
+    .{ "css-break", 44 },
+    .{ "css-multicol", 63 },
+    .{ "css-writing-modes", 52 },
 };
 
 /// Whether test/wpt/SKIP lists a test as out of scope ("path reason"

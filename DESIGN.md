@@ -5690,7 +5690,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     with `banded` draws the viewport plus a screen above and below, and
     scrolling out of that band draws again (`Window.checkCulled`, as long
     texts do, D8). Box edges and text baselines are snapped to whole CSS
-    pixels as browsers snap them. Images come through paint hooks: the
+    pixels as browsers snap them. Stacking contexts (CSS 2.1 Appendix
+    E): positioned boxes, flex and grid items with a `z-index`, and boxes
+    with `opacity` below 1 are deferred to their stacking context and
+    painted after its flow in `z-index` order, negative ones under it
+    (their commands rotated before the flow's), inside the clips of the
+    overflow boxes between them (absolute boxes escape those, their
+    containing block being the context); flex and grid items paint in
+    order-modified document order; the root's and body's `overflow` go
+    to the viewport (CSS Overflow 3.3). Simplified: a box's block
+    descendants' backgrounds and its inline content are painted in tree
+    order, not in Appendix E's separate passes, and positioned boxes
+    with `z-index: auto` are full stacking contexts. Images come through paint hooks: the
     widget decodes with `ui.Image.load` on the pool and keeps the images
     alive with the display lists that draw them; SVG (files and inline
     `<svg>`) is parsed by the `svg` module.
@@ -5869,16 +5880,16 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   scope for documents, with the reason, left out of the pass rate.
   `zig build doc-wpt -- FILTER` runs tests one by one and dumps the
   renders of failures (triage). Per suite (a regression fails the
-  test): css2 233 of 316, css-flexbox 218 of 398, css-grid 59 of 198,
-  css-values 56 of 123, css-variables 46 of 70, css-tables (CSS2 tables
-  and css-tables) 117 of 288, floats (CSS2 floats and floats-clear) 86
-  of 170 (815 of 1563, 52 %); and, measured since, css-sizing 103 of
+  test): css2 235 of 316, css-flexbox 227 of 398, css-grid 112 of 198,
+  css-values 65 of 123, css-variables 46 of 70, css-tables (CSS2 tables
+  and css-tables) 125 of 288, floats (CSS2 floats and floats-clear) 88
+  of 170 (898 of 1563, 57 %); and, measured since, css-sizing 111 of
   278, css-display 59 of 106, css-pseudo 33 of 72, css-lists (and CSS2
   generated content) 166 of 326, css-text (white space, transforms,
-  spacing, breaking, indents, alignment) 92 of 320, css-backgrounds
-  (and css-borders) 111 of 230, css-overflow 67 of 310, css-position 22
-  of 68, css-break 40 of 400, css-multicol 62 of 312, css-writing-modes
-  50 of 395 (805 of 2817, 29 %); an email
+  spacing, breaking, indents, alignment) 116 of 320, css-backgrounds
+  (and css-borders) 111 of 230, css-overflow 69 of 310, css-position 23
+  of 68, css-break 44 of 400, css-multicol 63 of 312, css-writing-modes
+  52 of 395 (847 of 2817, 30 %); an email
   corpus (`test/doc/email`: a receipt with a `cid:` logo and a tracking
   pixel, a Mailchimp-style newsletter, Gmail, Outlook, and Apple Mail
   replies with their quotes collapsed and open), close to Chromium's

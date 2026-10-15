@@ -88,10 +88,15 @@ pub const Painter = struct {
     /// The box whose background the canvas took (the root element's or
     /// the body's, CSS 2.1 14.2): it does not paint it again.
     canvas_src: BoxId = none,
+    /// Layers deferred to their stacking context (`stackingZ`).
     positioned: std.ArrayList(Positioned) = .empty,
+    /// Overflow clips open, and where the current stacking context's own
+    /// begin.
+    clips: std.ArrayList(Rect) = .empty,
+    ctx_clips: usize = 0,
     glyphs: std.ArrayList(scene.Glyph) = .empty,
 
-    const Positioned = struct { id: BoxId, x: f32, y: f32, z: i32, order: u32 };
+    const Positioned = struct { id: BoxId, x: f32, y: f32, z: i32, order: u32, clip: ?Rect };
 
     fn tree(p: *const Painter) *box_mod.Tree {
         return p.engine.tree;
@@ -141,22 +146,27 @@ pub const Painter = struct {
         const root = p.tree().root;
         if (root == none) return;
         // The canvas: the root element's (or body's) background fills it.
-        try p.box(root, 0, 0, 0);
-        // Positioned boxes in z-index order (stable).
-        var i: usize = 0;
-        while (i < p.positioned.items.len) : (i += 1) {
-            std.mem.sort(Positioned, p.positioned.items[i..], {}, struct {
-                fn lt(_: void, a: Positioned, b: Positioned) bool {
-                    return if (a.z != b.z) a.z < b.z else a.order < b.order;
-                }
-            }.lt);
-            const pos = p.positioned.items[i];
-            try p.boxContent(pos.id, pos.x, pos.y, 1);
-        }
+        try p.boxContent(root, 0, 0, 0, true);
     }
 
     fn visible(p: *const Painter, y0: f32, y1: f32) bool {
         return y1 >= p.band[0] and y0 <= p.band[1];
+    }
+
+    /// The z-index of a box painted as a stacking context of its own
+    /// (CSS 2.1 Appendix E, CSS Flexbox 5.4, CSS Grid 9.1): positioned
+    /// boxes (z-index auto as 0), flex and grid items with a z-index, and
+    /// boxes with opacity below 1; null for boxes painted in the flow.
+    fn stackingZ(p: *const Painter, id: BoxId) ?i32 {
+        const st = p.style(id);
+        if (st.isPositioned()) return st.box.z_index orelse 0;
+        const b = p.tree().get(id);
+        if (st.box.z_index) |z| if (b.parent != none and !b.atomic) switch (p.tree().get(b.parent).kind) {
+            .flex, .grid => return z,
+            else => {},
+        };
+        if (st.box.opacity < 1) return 0;
+        return null;
     }
 
     /// A box and its descendants at document offset (x, y) of its parent.
@@ -164,15 +174,38 @@ pub const Painter = struct {
         const b = p.tree().get(id);
         const x = px + b.x;
         const y = py + b.y;
-        const st = p.style(id);
-        if (st.isPositioned() and depth > 0 and b.parent != none) {
-            try p.positioned.append(p.scratch, .{ .id = id, .x = x, .y = y, .z = st.box.z_index orelse 0, .order = @intCast(p.positioned.items.len) });
+        if (depth > 0 and b.parent != none) if (p.stackingZ(id)) |z| {
+            // Painted with the stacking context's other layers, inside
+            // the clips of the overflow boxes between them unless an
+            // absolute box's containing block is outside those.
+            var clip: ?Rect = null;
+            const pos = p.style(id).box.position;
+            if (pos != .absolute and pos != .fixed) for (p.clips.items[p.ctx_clips..]) |c| {
+                clip = if (clip) |cl| cl.intersect(c) else c;
+            };
+            try p.positioned.append(p.scratch, .{ .id = id, .x = x, .y = y, .z = z, .order = @intCast(p.positioned.items.len), .clip = clip });
             return;
-        }
-        try p.boxContent(id, x, y, depth);
+        };
+        try p.boxContent(id, x, y, depth, false);
     }
 
-    fn boxContent(p: *Painter, id: BoxId, x: f32, y: f32, depth: u32) Error!void {
+    /// Whether a box's overflow went to the viewport (CSS Overflow 3,
+    /// 3.3): the root element's, and the body's when the root's is
+    /// visible. The viewport is the page, so it clips nothing here.
+    fn propagated(p: *const Painter, id: BoxId) bool {
+        const html = p.tree().get(p.tree().root).first;
+        if (html == none) return false;
+        if (id == html) return true;
+        const body = p.tree().get(html).first;
+        if (id != body or p.tree().get(body).node == .none) return false;
+        const hs = p.style(html);
+        return hs.box.overflow_x == .visible and hs.box.overflow_y == .visible;
+    }
+
+    /// A box's content; `context`: it is the root of a stacking context,
+    /// whose deferred layers it paints in z-index order (negative ones
+    /// under its flow, CSS 2.1 Appendix E).
+    fn boxContent(p: *Painter, id: BoxId, x: f32, y: f32, depth: u32, context: bool) Error!void {
         const b = p.tree().get(id);
         const st = p.style(id);
         if (st.inh.visibility != .visible and b.first == none and b.kind != .inline_root) return;
@@ -198,12 +231,21 @@ pub const Painter = struct {
         }
         // Outside list markers.
         if (b.marker != none and st.inh.visibility == .visible) try p.marker(id, x, y);
-        const clip = st.box.overflow_x != .visible or st.box.overflow_y != .visible;
-        if (clip and b.kind != .replaced) {
+        const clip = (st.box.overflow_x != .visible or st.box.overflow_y != .visible) and b.kind != .replaced and !p.propagated(id);
+        if (clip) {
             const inner = snap(Rect.xywh(x + b.border[3], y + b.border[0], b.w - b.border[1] - b.border[3], b.h - b.border[0] - b.border[2]));
             try p.b.pushLayer(.{ .clip = .{ .shape = .{ .rect = inner } } });
+            try p.clips.append(p.scratch, inner);
         }
-        defer if (clip and b.kind != .replaced) p.b.popLayer() catch {};
+        defer if (clip) {
+            p.b.popLayer() catch {};
+            _ = p.clips.pop();
+        };
+        const start = p.positioned.items.len;
+        const mark = p.b.commands.items.len;
+        const saved_clips = p.ctx_clips;
+        if (context) p.ctx_clips = p.clips.items.len;
+        defer p.ctx_clips = saved_clips;
         switch (b.kind) {
             .inline_root => {
                 // Floats among the text, under it (CSS 2.1 E.2).
@@ -212,6 +254,27 @@ pub const Painter = struct {
                 try p.ifc(id, x, y, depth);
             },
             .replaced => try p.replaced(id, r),
+            .flex, .grid => {
+                // Order-modified document order (CSS Flexbox 5.4.1).
+                var kids: std.ArrayList(BoxId) = .empty;
+                var reordered = false;
+                var it = p.tree().children(id);
+                while (it.next()) |c| {
+                    if (p.tree().get(c).atomic) continue;
+                    try kids.append(p.scratch, c);
+                    reordered = reordered or p.style(c).box.order != 0;
+                }
+                // Out-of-flow children keep their place.
+                if (reordered) std.sort.insertion(BoxId, kids.items, p, struct {
+                    fn key(pp: *Painter, c: BoxId) i32 {
+                        return if (pp.tree().get(c).out_of_flow) 0 else pp.style(c).box.order;
+                    }
+                    fn lt(pp: *Painter, a: BoxId, c: BoxId) bool {
+                        return key(pp, a) < key(pp, c);
+                    }
+                }.lt);
+                for (kids.items) |c| try p.box(c, x, y, depth + 1);
+            },
             else => {
                 var it = p.tree().children(id);
                 while (it.next()) |c| {
@@ -220,6 +283,46 @@ pub const Painter = struct {
                 }
             },
         }
+        if (context) try p.layers(start, mark);
+    }
+
+    /// Paints the layers deferred since `start` in z-index order, those
+    /// below zero moved under the commands painted since `mark`.
+    fn layers(p: *Painter, start: usize, mark: usize) Error!void {
+        defer p.positioned.shrinkRetainingCapacity(start);
+        if (p.positioned.items.len == start) return;
+        std.sort.insertion(Positioned, p.positioned.items[start..], {}, struct {
+            fn lt(_: void, a: Positioned, c: Positioned) bool {
+                return if (a.z != c.z) a.z < c.z else a.order < c.order;
+            }
+        }.lt);
+        var i = start;
+        const flow_end = p.b.commands.items.len;
+        while (i < p.positioned.items.len and p.positioned.items[i].z < 0) : (i += 1) try p.layer(p.positioned.items[i]);
+        const end = p.b.commands.items.len;
+        if (end > flow_end and flow_end > mark) {
+            // Under the flow: the negative layers' commands rotate before
+            // it, and the layer ends move with them.
+            const cmds = p.b.commands.items[mark..end];
+            const flow: u32 = @intCast(flow_end - mark);
+            const neg: u32 = @intCast(end - flow_end);
+            std.mem.rotate(@TypeOf(cmds[0]), cmds, flow);
+            for (cmds, 0..) |*c, k| switch (c.*) {
+                .push => |*push| if (k < neg) {
+                    push.end -= flow;
+                } else {
+                    push.end += neg;
+                },
+                else => {},
+            };
+        }
+        while (i < p.positioned.items.len) : (i += 1) try p.layer(p.positioned.items[i]);
+    }
+
+    fn layer(p: *Painter, d: Positioned) Error!void {
+        if (d.clip) |c| try p.b.pushLayer(.{ .clip = .{ .shape = .{ .rect = c } } });
+        defer if (d.clip != null) p.b.popLayer() catch {};
+        try p.boxContent(d.id, d.x, d.y, 1, true);
     }
 
     /// The canvas background: the root's, else the body's (CSS 2.1 14.2).
