@@ -144,15 +144,18 @@ def run_once(args, url, inj, tag):
     app_log = os.path.join(rt, f"app-{now()}.log")
     env = dict(os.environ, LD_PRELOAD=os.path.join(OUT, "presshim.so"), PRESSHIM_LOG=shim_log)
     env.update(args.env)
+    env["SIV_WEBVIEW_TRACE"] = "1"
     t0 = now()
     proc = subprocess.Popen([args.prog, url], env=env, stdout=open(app_log, "w"), stderr=subprocess.STDOUT)
     shim = Shim(shim_log)
     res = {"url": url, "tag": tag}
-    m = wait_log(app_log, r"first render_buffer at ([0-9.]+) ms", 30)
+    # The spike logs program-relative ms; the library (SIV_WEBVIEW_TRACE)
+    # CLOCK_MONOTONIC ns, the clock now() reads.
+    m = wait_log(app_log, r"first render_buffer at ([0-9.]+) ms|first frame submitted at ([0-9]+) ns", 30)
     if not m:
         res["error"] = "no web frame"
     else:
-        t_frame = t0 + int(float(m.group(1)) * 1e6)  # program-relative; t0 is fork, a little earlier
+        t_frame = int(m.group(2)) if m.group(2) else t0 + int(float(m.group(1)) * 1e6)
         tp = shim.first_present_after(t_frame, 5)
         res["first_frame_ms"] = (tp - t0) / 1e6 if tp else None
         wait_log(app_log, r"load finished", 30)
@@ -173,7 +176,10 @@ def run_once(args, url, inj, tag):
                 time.sleep(0.15)
             res["key_to_photon_ms"] = lat
         if args.wheel:
-            inj.cmd("move 640 500")
+            # A step first: Hyprland gives a new window pointer focus only on
+            # motion, and the pointer may already be there from the last run.
+            inj.cmd("move %d %d" % (args.wheel_pos[0] + 5, args.wheel_pos[1]))
+            inj.cmd("move %d %d" % tuple(args.wheel_pos))
             time.sleep(0.2)
             lat = []
             for i in range(15):
@@ -190,7 +196,9 @@ def run_once(args, url, inj, tag):
             ts = inj.cmd("scrollburst 7.5 120 360", answers=360)
             time.sleep(0.3)
             shim.poll()
-            pres = [tp for _, tp in shim.presents() if ts[0] <= tp <= ts[-1] + 20_000_000]
+            # One per presentation time: Hyprland reports the window and its
+            # synchronized subsurface separately.
+            pres = sorted({tp for _, tp in shim.presents() if ts[0] <= tp <= ts[-1] + 20_000_000})
             period = 1e9 / 60
             dropped = sum(max(0, round((b - a) / period) - 1) for a, b in zip(pres, pres[1:]))
             res["scroll"] = {"presents": len(pres), "seconds": (ts[-1] - ts[0]) / 1e9, "dropped": dropped}
@@ -213,6 +221,7 @@ def main():
     ap.add_argument("--no-keys", dest="keys", action="store_false")
     ap.add_argument("--no-wheel", dest="wheel", action="store_false")
     ap.add_argument("--env", action="append", default=[], help="NAME=VALUE for the program")
+    ap.add_argument("--wheel-pos", type=lambda v: [int(x) for x in v.split(",")], default=[640, 500], help="X,Y of the pointer for wheel and touchpad scrolling")
     args = ap.parse_args()
     args.env = dict(e.split("=", 1) for e in args.env)
     urls = args.url or ["file://" + os.path.join(ROOT, "spike", "pages", "test.html"), "https://en.wikipedia.org/wiki/Wayland_(protocol)"]

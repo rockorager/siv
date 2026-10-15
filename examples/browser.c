@@ -90,6 +90,14 @@ static siv_event_result on_capture_key(void *user_data, siv_node node, const siv
     if (!(e->flags & SIV_EVENT_PRESSED)) return SIV_EVENT_RESULT_PASS;
     bool ctrl = e->modifiers & SIV_MODIFIERS_CTRL, alt = e->modifiers & SIV_MODIFIERS_ALT;
     if (ctrl && (e->keysym == 'l' || e->keysym == 'L')) {
+        /* Focused with its text selected, so typing replaces it. */
+        char text[4096];
+        size_t len = 0;
+        siv_txn txn;
+        if (siv_node_get_text(b->address, text, sizeof text, &len) == SIV_OK && siv_txn_begin(b->window, &txn) == SIV_OK) {
+            siv_set_selection(txn, b->address, (uint32_t)len, 0);
+            (void)siv_txn_commit(txn);
+        }
         if (siv_node_focus(b->address) != SIV_OK) fprintf(stderr, "browser: cannot focus the address\n");
         return SIV_EVENT_RESULT_HANDLED;
     }
@@ -135,7 +143,7 @@ static siv_result build(struct browser *b) {
 int main(int argc, char **argv) {
     struct browser b = {0};
     const char *url = argc > 1 ? argv[1] : "https://example.com";
-    siv_result r = siv_app_create(SIV_DESC(siv_app_desc, .app_id = SIV_STR("dev.siv.WebviewBrowser")), &b.app);
+    siv_result r = siv_app_create(SIV_DESC(siv_app_desc, .name = SIV_STR("Browser"), .app_id = SIV_STR("dev.siv.WebviewBrowser")), &b.app);
     if (r == SIV_OK) r = siv_window_create(b.app, SIV_DESC(siv_window_desc, .title = SIV_STR("Browser"), .app_id = SIV_STR("dev.siv.WebviewBrowser"), .width = 1280, .height = 800), &b.window);
     if (r == SIV_OK) r = siv_webview_create(b.window, SIV_DESC(siv_webview_desc, .user_data = &b, .on_event = on_webview, .flags = getenv("BROWSER_INSPECTOR") ? SIV_WEBVIEW_DEVELOPER_EXTRAS : 0, .inspector_port = 9222), &b.webview);
     if (r == SIV_OK) r = build(&b);

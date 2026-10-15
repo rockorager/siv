@@ -5,3 +5,4 @@ out/
 /.zig-cache/
 /zig-out/
 zig-out/
+/spike/pages/clip.webm

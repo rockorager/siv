@@ -165,3 +165,59 @@ keycodes, so `event.code` and layouts work) and cursor images (11).
   `tests/zig.zig` (layout against the C header, a page through the Zig
   module), `tests/headless.lua`. All on siv's headless backend with the
   engine in software: no compositor, no GPU, about 3 s.
+
+## Phase 4: on the panel, sway and Hyprland (2026-10-15)
+
+The laptop's eDP panel (1280x800, 60.003 Hz) on the 760M, driven by sway
+1.12 (`spike/sway-drm.sh`) and by Hyprland 0.56.2
+(`spike/hyprland-drm.sh`), DRM backends on `/dev/dri/card1`, scale 1.
+siv and the library ReleaseFast, the example browser, 3 runs each
+(`bench/run.py`; raw data in `bench/results/phase4-*.json`). Latencies
+include the wait for the panel's next vblank (up to 16.7 ms).
+
+| | sway, test page | sway, Wikipedia | Hyprland, test page | Hyprland, Wikipedia |
+| --- | --- | --- | --- | --- |
+| first web frame (fork to presentation) | 200 ms | 179 ms | 187 ms | 180 ms |
+| key to photon, median / p90 | 26.7 / 32.1 ms | | 20.7 / 29.9 ms | |
+| wheel notch to photon, median / p90 | 25.3 / 29.9 ms | 29.2 / 38.5 ms | 26.1 / 30.6 ms | 28.4 / 41.9 ms |
+| touchpad scrolling, 120 events/s for 3 s | 60.2 presents/s, 0 dropped | 59.8/s, 0 dropped | 60.2/s, 0 dropped | 59.8/s, 0 dropped |
+| memory total, RSS / PSS / GPU (MiB) | 383 / 243 / 174 | 496 / 344 / 226 | 386 / 232 / 169 | 512 / 345 / 230 |
+
+Per process (sway, test page): browser 114/63/44, WPEWebProcess
+197/146/130, WPENetworkProcess 58/32/0, xdg-dbus-proxy and five bwrap
+stubs about 2 MiB PSS.
+
+Checked on both compositors, by screenshots, logs, and AT-SPI:
+
+- Typing (real `KeyboardEvent.code`s), wheel and touchpad scrolling.
+- Input method: `bench/ime` (an input-method-unstable-v2 client) composed
+  "n~" as preedit and committed "ñandú" into a page field; it saw the
+  field's surrounding text, content type, and an 18 px caret rectangle.
+  (No CJK font is installed, so the demo uses Latin text.)
+- `<select>` as a siv menu (choose, Escape, reopen), the context menu.
+- File input through the portal: xdg-desktop-portal-gtk's chooser opened
+  over the window; a chosen file reached the page.
+- Video through GStreamer: VP9/Opus WebM over HTTP, 30 fps, 0 dropped
+  frames. `file://` media fails: GStreamer's filesrc runs in the
+  bubblewrap sandbox, which does not see the page's directory (pages
+  should use `app://` or HTTP; an API for extra sandbox paths could
+  follow).
+- AT-SPI (`tools/atspi-dump.py`, accerciser is not packaged): the page's
+  tree (document, heading, entry, button, combo box with its options,
+  link) is under the siv node's "Web page" document frame
+  (`bench/results/phase4-atspi-*.txt`).
+- Fractional scale: Hyprland at 1.6 (it rounds 1.5 to a divisor of the
+  mode): `devicePixelRatio` 1.6, `innerWidth` 800, and a canvas of
+  1-device-pixel lines reached the panel with every edge sharp and no
+  grey pixel.
+
+Found and fixed on the way: Ctrl+L in the examples now selects the
+address; a wheel without value120 (Hyprland's virtual pointer) counts 15
+per detent. Bench artifacts: Hyprland gives a new window pointer focus
+only on motion (`run.py` wiggles first) and reports the window's and
+subsurface's presentations separately (counted once). A Wikipedia
+fundraising banner swallows wheel events over it (page behavior; the
+Hyprland Wikipedia row scrolls with the pointer over the article).
+
+Video: `spike/demo.sh` records typing, composition, `<select>`, the
+context menu, scrolling, and video on sway (wf-recorder).

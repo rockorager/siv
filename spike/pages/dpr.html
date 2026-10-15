@@ -1,0 +1,11 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>dpr</title>
+<style>body{margin:16px;font:15px sans-serif} #g{width:300px;height:60px}</style></head>
+<body><h2 id="s"></h2><p>Lines one device pixel wide (alternating black and white):</p><canvas id="g"></canvas>
+<p>The quick brown fox jumps over the lazy dog. 0123456789</p>
+<script>
+const f = () => { const c = document.getElementById('g'); c.width = Math.round(300 * devicePixelRatio); c.height = Math.round(60 * devicePixelRatio);
+  const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.fillStyle = '#000'; for (let i = 0; i < c.width; i += 2) x.fillRect(i, 0, 1, c.height);
+  document.getElementById('s').textContent = document.title = `devicePixelRatio ${devicePixelRatio}, innerWidth ${innerWidth}`; };
+f(); matchMedia(`(resolution: ${devicePixelRatio}dppx)`).addEventListener('change', f); addEventListener('resize', f);
+</script></body></html>

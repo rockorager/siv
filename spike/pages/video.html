@@ -1,0 +1,14 @@
+<!doctype html>
+<!-- clip.webm: ffmpeg -f lavfi -i testsrc2=size=640x360:rate=30 -f lavfi -i sine=frequency=440 -t 12
+     -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -b:v 800k -c:a libopus clip.webm
+     Serve this directory over HTTP (python3 -m http.server 8765): the web
+     process's sandbox cannot read file:// media. -->
+<html><head><meta charset="utf-8"><title>video</title>
+<style>body{margin:24px;font:16px sans-serif} video{width:640px;height:360px;background:#000}</style></head>
+<body><h1>GStreamer video</h1>
+<video id="v" src="clip.webm" autoplay muted loop playsinline></video>
+<p id="s">…</p>
+<script>
+const v = document.getElementById('v'), s = document.getElementById('s');
+setInterval(() => { const q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : {}; s.textContent = `t=${v.currentTime.toFixed(2)} paused=${v.paused} frames=${q.totalVideoFrames} dropped=${q.droppedVideoFrames} ${v.videoWidth}x${v.videoHeight}`; document.title = s.textContent; }, 250);
+</script></body></html>

@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 swv_handles swv_webviews;
 swv_handles swv_requests;
@@ -100,7 +101,19 @@ static siv_result app_engine(swv_app *a, siv_webview_engine want) {
 
 /* ---------- events ---------- */
 
+/* SIV_WEBVIEW_TRACE=1: milestones on stderr, CLOCK_MONOTONIC in ns, for
+ * benchmarks that measure from outside the process (bench/run.py). */
+static void trace(const char *what) {
+    static int on = -1;
+    if (on < 0) on = getenv("SIV_WEBVIEW_TRACE") != NULL;
+    if (!on) return;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    fprintf(stderr, "siv-webview: %s at %lld ns\n", what, (long long)ts.tv_sec * 1000000000LL + ts.tv_nsec);
+}
+
 bool swv_emit(swv_webview *wv, const siv_webview_event *event) {
+    if (event->type == SIV_WEBVIEW_EVENT_LOAD && event->load_state == SIV_WEBVIEW_LOAD_FINISHED) trace("load finished");
     if (!wv->on_event || wv->dead) return false;
     siv_webview_event e = *event;
     e.size = sizeof e;
@@ -172,6 +185,8 @@ static siv_event_result on_drop(void *user_data, siv_node node, const siv_event 
 }
 
 siv_result swv_submit(swv_webview *wv, const siv_external_frame_desc *frame) {
+    static bool first = true;
+    if (first) trace("first frame submitted"), first = false;
     return wv->slot ? siv_external_submit(wv->slot, frame) : SIV_ERROR_UNAVAILABLE;
 }
 

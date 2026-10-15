@@ -431,6 +431,29 @@ static void check_drop(void) {
     stop(&f);
 }
 
+/* A wheel that sends only a distance (no value120: Hyprland's virtual
+ * pointers, older compositors) scrolls the page: by line steps, 15 per
+ * detent, so 45 is three of them. */
+static void check_wheel(void) {
+    struct fixture f;
+    CHECK(start(&f, SIV_WEBVIEW_EPHEMERAL, NULL));
+    CHECK(load(&f, "<body style='margin:0;height:5000px'>", NULL));
+    CHECK(siv_test_pointer_move(f.window, 100, 100) == SIV_OK);
+    CHECK(siv_test_scroll(f.window, 0, 45) == SIV_OK);
+    bool settled;
+    CHECK(siv_test_settle(f.app, 1000, &settled) == SIV_OK);
+    struct answer a;
+    double end = now() + 10;
+    int y = 0;
+    do {
+        pump(&f, 50);
+        CHECK(eval(&f, "scrollY", &a));
+        y = atoi(a.json);
+    } while (y < 100 && now() < end);
+    CHECK(y >= 100);
+    stop(&f);
+}
+
 static const struct {
     const char *name;
     void (*fn)(void);
@@ -446,6 +469,7 @@ static const struct {
     {"zoom and color scheme", check_zoom_and_scheme},
     {"history", check_history},
     {"drop", check_drop},
+    {"wheel", check_wheel},
 };
 
 int main(int argc, char **argv) {

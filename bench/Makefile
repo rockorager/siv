@@ -1,5 +1,6 @@
 # The measurement tools: presshim.so (presentation feedback for any client),
-# inject (virtual keyboard and pointer), and capture (screen frames). Needs
+# inject (virtual keyboard and pointer), capture (screen frames), and ime
+# (a test input method). Needs
 # wayland-scanner, wayland-protocols, libwayland-client, and xkbcommon.
 CC ?= cc
 CFLAGS ?= -O2 -g -Wall -Wextra
@@ -8,7 +9,7 @@ WP = $(shell pkg-config --variable=pkgdatadir wayland-protocols)
 vpath %.xml protocols $(WP)/stable/presentation-time $(WP)/staging/ext-image-copy-capture $(WP)/staging/ext-image-capture-source \
 	$(WP)/staging/ext-foreign-toplevel-list
 
-all: $(OUT)/presshim.so $(OUT)/inject $(OUT)/capture
+all: $(OUT)/presshim.so $(OUT)/inject $(OUT)/capture $(OUT)/ime
 
 $(OUT)/gen:
 	mkdir -p $@
@@ -32,3 +33,6 @@ $(OUT)/capture: capture.c $(OUT)/gen/ext-image-copy-capture-v1-client-protocol.h
 		$(OUT)/gen/ext-image-capture-source-v1-protocol.c $(OUT)/gen/ext-foreign-toplevel-list-v1-protocol.c -lwayland-client
 
 .PHONY: all
+
+$(OUT)/ime: ime.c $(OUT)/gen/input-method-unstable-v2-client-protocol.h $(OUT)/gen/input-method-unstable-v2-protocol.c
+	$(CC) $(CFLAGS) -I$(OUT)/gen -o $@ ime.c $(OUT)/gen/input-method-unstable-v2-protocol.c -lwayland-client

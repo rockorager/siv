@@ -1014,9 +1014,13 @@ static siv_event_result wpe_input(swv_webview *wv, const siv_event *e) {
     }
     case SIV_EVENT_TYPE_SCROLL: {
         WPEModifiers m = mods(w, e->modifiers);
-        if (e->steps_x != 0 || e->steps_y != 0) {
+        double sx = e->steps_x, sy = e->steps_y;
+        /* A wheel without value120 (Hyprland's virtual pointers, older
+         * compositors): 15 per detent, as libinput and wlroots count. */
+        if (sx == 0 && sy == 0 && e->scroll_source == SIV_SCROLL_SOURCE_WHEEL) sx = e->raw_dx / 15, sy = e->raw_dy / 15;
+        if (sx != 0 || sy != 0) {
             /* Wheel detents: the engine's own line steps. */
-            send(w, wpe_event_scroll_new(w->view, WPE_INPUT_SOURCE_MOUSE, e->time, m, -e->steps_x, -e->steps_y, FALSE, FALSE, w->px, w->py));
+            send(w, wpe_event_scroll_new(w->view, WPE_INPUT_SOURCE_MOUSE, e->time, m, -sx, -sy, FALSE, FALSE, w->px, w->py));
         } else if (e->scroll_source == SIV_SCROLL_SOURCE_FINGER || e->scroll_source == SIV_SCROLL_SOURCE_CONTINUOUS) {
             /* Touchpad pixels as sent, and the stop that starts the
              * engine's own kinetic scrolling. */

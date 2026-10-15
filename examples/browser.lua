@@ -9,7 +9,7 @@ local webview = require("siv.webview")
 
 local start = ... or "https://example.com"
 
-local app = siv.app_create{ app_id = "dev.siv.WebviewBrowserLua" }
+local app = siv.app_create{ name = "Browser (Lua)", app_id = "dev.siv.WebviewBrowserLua" }
 local win = app:window_create{ title = "Browser", app_id = "dev.siv.WebviewBrowserLua", width = 1280, height = 800 }
 
 local back, forward, address, page
@@ -66,6 +66,11 @@ win:update(function(txn, root)
 		end
 		local ctrl, alt = ev.modifiers.ctrl, ev.modifiers.alt
 		if ctrl and (ev.keysym == "l" or ev.keysym == "L") then
+			-- Focused with its text selected, so typing replaces it.
+			local text = address:get_text()
+			win:update(function(t)
+				t:set_selection(address, #text, 0)
+			end)
 			address:focus()
 			return true
 		elseif alt and ev.keysym == "left" then
