@@ -5863,8 +5863,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   compared allowing 20 pixels to differ by more than 32 in a channel),
   per suite: css2 233 of 316, css-flexbox 218 of 400, css-grid 59 of 198,
   css-values 56 of 123, css-variables 46 of 70, css-tables (CSS2 tables
-  and css-tables) 110 of 288, floats (CSS2 floats and floats-clear) 87
-  of 171 (809 of 1566, 52 %; a regression fails the test); an email
+  and css-tables) 117 of 288, floats (CSS2 floats and floats-clear) 87
+  of 171 (816 of 1566, 52 %; a regression fails the test); an email
   corpus (`test/doc/email`: a receipt with a `cid:` logo and a tracking
   pixel, a Mailchimp-style newsletter, Gmail, Outlook, and Apple Mail
   replies with their quotes collapsed and open), close to Chromium's

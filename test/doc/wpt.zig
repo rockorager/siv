@@ -22,7 +22,7 @@ const floors = .{
     .{ "css-grid", 59 },
     .{ "css-values", 56 },
     .{ "css-variables", 46 },
-    .{ "css-tables", 110 },
+    .{ "css-tables", 117 },
     .{ "floats", 87 },
 };
 
