@@ -273,6 +273,37 @@ parsing the header. libsiv.so exports only `siv_*` symbols, checked by
   drive an application and compare what it shows
   ([Testing](docs/guide/17-testing.md)).
 
+### Web view (optional)
+
+siv-webview (`webview/`, D33) embeds web pages on WPE WebKit: a library
+beside libsiv, as WebKitGTK is beside GTK, using only siv's public C ABI.
+`zig build` builds it when pkg-config finds WPE WebKit and otherwise
+skips it with a notice; `-Dwebview=true` requires it, `-Dwebview=false`
+leaves it out. libsiv never links WebKit.
+
+```sh
+zig build                         # also libsiv-webview, include/siv-webview.h, siv-webview.pc,
+                                  #   the siv_webview Zig module, lib/lua/5.5/siv/webview.so,
+                                  #   bin/siv-webview-browser and bin/siv-webview-lua
+zig build test-webview            # its headless tests (also in `zig build test`)
+./zig-out/bin/siv-webview-browser https://example.com
+./zig-out/bin/siv-webview-lua examples/webview-browser.lua
+```
+
+```c
+siv_webview wv;
+siv_webview_create(window, SIV_DESC(siv_webview_desc, .on_event = on_event), &wv);
+siv_node page = siv_webview_view(txn, root, wv);
+siv_webview_load_uri(wv, SIV_STR("https://example.com"));
+```
+
+It needs WPE WebKit 2.50 or later with WPEPlatform (Arch: `wpewebkit`;
+its processes need `bubblewrap` and `xdg-dbus-proxy`, and video the
+GStreamer plugins). It loads URLs and HTML, runs scripts, passes messages
+both ways, serves `app://` schemes, and shows `<select>`, context menus,
+and file choosers through siv; [docs/webview.md](docs/webview.md) has the
+details and measurements.
+
 siv does not run on X11, macOS, or Windows, and has no bindings other than
 C, Zig, and Lua.
 
@@ -282,4 +313,6 @@ See [AGENTS.md](AGENTS.md) for the module layout and contribution rules.
 
 siv is released under the MIT license; see [LICENSE](LICENSE). The
 licences of the libraries and data compiled into libsiv are installed with
-it as `share/licenses/siv/NOTICES`.
+it as `share/licenses/siv/NOTICES`. libsiv-webview is MIT too: it links WPE WebKit and
+GLib (LGPL-2.1-or-later) from the system, dynamically, and contains none
+of their code (`share/licenses/siv-webview/NOTICES`).

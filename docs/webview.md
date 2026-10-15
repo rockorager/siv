@@ -1,4 +1,12 @@
-# siv-webview: working notes
+# siv-webview: notes and measurements
+
+siv-webview is the web view library in `webview/` (D33): `zig build`
+builds it when pkg-config finds WPE WebKit (`-Dwebview=auto`, the
+default; `true` requires it, `false` skips it), and
+`zig build test-webview` runs its headless tests. These are its notes from the
+four phases it was built in: the spike, the hooks it needed in siv, the
+library, and the checks on real compositors. Paths are under `webview/`
+unless they start with `examples/` or `docs/`.
 
 ## Phase 1: the spike (2026-10-15)
 
@@ -134,14 +142,14 @@ keycodes, so `event.code` and layouts work) and cursor images (11).
 
 ## Phase 3: the library
 
-- `include/siv-webview.h`: handles, descriptors, `siv_result`, and one
-  event callback per web view, in siv's style (D2). `src/webview.c` is
+- `siv-webview.h` (installed as `include/siv-webview.h`): handles, descriptors, `siv_result`, and one
+  event callback per web view, in siv's style (D2). `webview.c` is
   the siv side (frame slot, node, input handlers, cursor, text input,
-  accessibility embed, drops); `src/swv.h` the engine table; `src/wpe.c`
-  and `src/wpe_webkit.inc` the WPE engine; `src/glib_loop.c` runs GLib's
+  accessibility embed, drops); `swv.h` the engine table; `wpe.c`
+  and `wpe_webkit.inc` the WPE engine; `glib_loop.c` runs GLib's
   default context inside siv's loop with `siv_app_add_prepare`.
-- `zig/siv_webview.zig`: the Zig module (siv's types; slices, errors,
-  methods). `src/lua.c`: `require("siv.webview")`, as
+- `siv_webview.zig`: the Zig module `siv_webview` (siv's types; slices,
+  errors, methods). `lua.c`: `require("siv.webview")`, as
   `lib/lua/5.5/siv/webview.so` beside `siv.so`, and preloaded by the
   `siv-webview-lua` runner (siv-lua loads no C modules).
 - Popups: `<select>` and the context menu are siv menus at the element
@@ -158,10 +166,11 @@ keycodes, so `event.code` and layouts work) and cursor images (11).
   process's life and the last web view to set a color scheme decides.
 - `load_html` replaces the current history entry in WPE 2.52 rather
   than adding one; `load_uri` adds one.
-- Tests (`zig build test`): `tests/headless.c` (11 checks: load and
+- Tests (`zig build test-webview`, also part of `zig build test` when
+  the web view is built): `tests/headless.c` (now 13 checks: load and
   title, scripts, messages both ways, `app://` schemes, navigation and
   new-window policy with real clicks, typing, frames in a capture, data
-  directory vs ephemeral, zoom and dark mode, history, drops),
+  directory vs ephemeral, zoom and dark mode, history, drops, a wheel without value120, no scripts),
   `tests/zig.zig` (layout against the C header, a page through the Zig
   module), `tests/headless.lua`. All on siv's headless backend with the
   engine in software: no compositor, no GPU, about 3 s.

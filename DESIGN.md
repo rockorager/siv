@@ -5971,6 +5971,101 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   dominating scrolling on real content (then paint in a job ahead of the
   viewport); D26's reverse-if comes true (see layout unification).
 
+### D33. The web view: an optional library in the repository
+
+- **Requirement:** applications embed the web: help pages, OAuth sign-in,
+  a feed reader's article, a whole browser. That needs a real engine with
+  JavaScript, networking, media, and a sandbox, which D32 deliberately is
+  not, and it must not make every siv application carry, build, or
+  license a browser engine.
+- **Decision:** siv-webview, a library of its own beside libsiv in
+  `webview/`, the way WebKitGTK sits beside GTK: `libsiv-webview.so` and
+  `.a`, `siv-webview.h` (installed as `include/siv-webview.h`), the
+  `siv-webview.pc` file, the `siv_webview` Zig module, and the Lua module
+  `require("siv.webview")` (`lib/lua/5.5/siv/webview.so`, preloaded by
+  `siv-webview-lua`, since siv-lua loads no C modules). Its API follows
+  D2: handles, descriptors, `siv_result`, one event callback per web
+  view. The engine is WPE WebKit through its platform API (WPEPlatform,
+  2.50 or later): the library implements `WPEDisplay`, `WPEView`,
+  `WPEToplevel`, `WPEScreen`, the input method context, the clipboard,
+  and the accessible; WebKit renders in its own processes and hands
+  finished frames to a frame slot (D17) as dma-bufs with their rendering
+  fences, which siv promotes to a subsurface without a copy; input on the
+  external node goes to the page; GLib's main context runs inside siv's
+  loop through `siv_app_add_prepare`. An engine table inside the library
+  leaves room for CEF or Servo.
+  - **Only the public C ABI.** The library is a client of `siv.h` like
+    any application. What it lacked became general hooks in siv, each
+    with its own note, not webview calls: frame callbacks on covering
+    subsurfaces and frame slots' `configure` and `presented` (D17),
+    `siv_app_add_prepare` (D6), key codes, raw scrolling with value120
+    and sources, and touch events (D16), `siv_set_text_input` (D15),
+    `siv_set_accessible_embed` (D18), multi-plane dma-buf import (D17),
+    `close` from menus closed unchosen (D22), and `siv.handle` and
+    `siv.wrap` in Lua (D23). Popups, the file chooser, notifications, and
+    the clipboard are siv's own: `<select>` and the context menu are siv
+    menus, file inputs open the portal's file chooser.
+  - **In the repository.** It moves with the hooks it depends on: a
+    change to frame slots, input events, or the Lua handle functions is
+    tested against the web view in the same commit, and the hooks and
+    their one demanding client are reviewed together. A separate
+    repository would test against released siv only. The library itself
+    stays separate: its own directory, build step
+    (`webview/build_steps.zig`), header, and modules; nothing in libsiv
+    or the other modules imports it.
+  - **Built when WebKit is there.** `-Dwebview=auto|true|false`, auto by
+    default: a plain `zig build` builds everything it can, and since
+    libsiv-webview is a shared object of its own, applications link only
+    what they use. Auto asks pkg-config at configure time for
+    `wpe-webkit-2.0` (2.50 or later), `wpe-platform-2.0`, GBM, EGL, and
+    GLib; when one is missing it skips the web view with one notice line
+    naming what is missing and how to get it, and the rest of siv builds
+    and tests as before (orbs and the main CI job have no WebKit). Zig
+    caches the configure phase, so the probe depends on the entries of
+    pkg-config's search directories: installing or removing WebKit
+    configures again, and the notice prints when the build configures.
+    `true` requires it and fails with the missing packages named; `false`
+    never builds it. When it is built, `zig build test` runs its headless
+    tests too (`test-webview` alone). CI runs them as a separate small job
+    in the Arch container with `wpewebkit`, `bubblewrap`, and
+    `xdg-dbus-proxy`, with `-Dwebview=true` so a broken install fails
+    rather than skipping.
+  - **The licence boundary.** WPE WebKit is LGPL-2.1-or-later (with
+    BSD-licensed parts), and so is GLib. The library links the system's
+    copies dynamically and compiles none of their code, so
+    `libsiv-webview` stays MIT, users can replace the engine, and libsiv
+    never links it at all. Its NOTICES (`share/licenses/siv-webview`)
+    says so; siv's own NOTICES (D25) is unchanged, since none of it is in
+    libsiv.
+  - **What the engine cannot do.** WPE 2.52's platform API has no drag
+    and drop: text and URLs dropped on the node become DOM drag events,
+    files cannot be dropped in, and drags do not start from a page. It has
+    one light or dark appearance per process. Its sandbox does not see a
+    `file://` page's directory, so media there fails; applications serve
+    their pages with `siv_webview_register_scheme` (`app://`).
+  - **Measured** on a Radeon 760M at 1280x800 60 Hz, sway 1.12 and
+    Hyprland 0.56 on the DRM backend, ReleaseFast: first web frame
+    180–200 ms after launch, key to photon 21–27 ms median, wheel to photon
+    25–31 ms median (vblank included), touchpad scrolling at 60 frames a
+    second with none dropped, 383 MiB RSS, 243 MiB PSS, and 174 MiB of GPU
+    memory over all processes for a simple page. Details, methods, and the
+    checks on both compositors (input method, `<select>`, the portal file
+    chooser, GStreamer video, the AT-SPI tree, fractional scale) are in
+    `docs/webview.md`.
+- **Alternatives:** a separate repository (rejected: hooks and client
+  drift apart, as above); linked into libsiv (rejected: every application
+  would need WebKit, and libsiv would link LGPL code); off unless asked
+  for (rejected: a plain build should build everything the machine can,
+  and a separate library costs applications that do not link it
+  nothing); a web view drawn by siv itself (that is D32, without the
+  web's scripts and networking, by design); CEF or Servo first (CEF is
+  far larger and its frames arrive by copy or by a GPU path that needs
+  its own process model; Servo's embedding API was not stable).
+- **Reverse if** WPE's platform API stops being maintained or a lighter
+  engine with an embedder frame API appears (the engine table takes it),
+  or if keeping the web view building slows siv's own work more than its
+  tests catch.
+
 ## Lessons from ourokit
 
 | ourokit | siv |
