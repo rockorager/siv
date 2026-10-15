@@ -293,7 +293,7 @@ test "C API docview: an unchecked task box stands out from a dark theme's canvas
     }.f;
     const canvas = lum(img[0..4]);
     var most: i32 = 0;
-    for (0..40) |y| for (0..50) |x| {
+    for (0..40) |y| for (0..44) |x| {
         most = @max(most, @as(i32, @intCast(@abs(lum(img[(y * 120 + x) * 4 ..][0..4]) - canvas))));
     };
     try testing.expect(most > 60);

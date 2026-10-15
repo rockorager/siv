@@ -106,6 +106,7 @@ pub const css =
     \\input:not([type=image i]), textarea { box-sizing: border-box }
     \\button, input:is([type=reset i], [type=button i], [type=submit i]) { border: 2px outset ButtonBorder; background-color: ButtonFace; color: ButtonText; padding: 1px 6px }
     \\input, textarea, select { border: 2px inset ButtonBorder; background-color: Field; color: FieldText; padding: 1px 2px }
+    \\input:is([type=checkbox i], [type=radio i]) { border: 0 none; padding: 0; background-color: transparent; margin: 3px 3px 3px 4px }
     \\hr { color: gray; border-style: inset; border-width: 1px; margin: 0.5em auto }
     \\fieldset { margin-left: 2px; margin-right: 2px; border: groove 2px ThreeDFace; padding: 0.35em 0.75em 0.625em; min-width: min-content }
     \\legend { padding-left: 2px; padding-right: 2px }
