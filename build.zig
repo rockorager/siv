@@ -111,6 +111,15 @@ pub fn build(b: *std.Build) void {
         .{ .name = "vulkan", .module = vk.vulkan },
         .{ .name = "shaders", .module = vk.shaders },
     });
+    const doc = ctx.module("src/doc/doc.zig", &.{
+        .{ .name = "html", .module = html },
+        .{ .name = "css", .module = css },
+        .{ .name = "text", .module = text },
+        .{ .name = "scene", .module = scene },
+        .{ .name = "raster", .module = raster },
+        .{ .name = "image", .module = image },
+        .{ .name = "svg", .module = svg },
+    });
     const pdf_imports = [_]std.Build.Module.Import{
         .{ .name = "scene", .module = scene },
         .{ .name = "raster", .module = raster },
@@ -285,6 +294,7 @@ pub fn build(b: *std.Build) void {
         .{ "icon", icon },
         .{ "html", html },
         .{ "css", css },
+        .{ "doc", doc },
         .{ "image", image },
         .{ "render-cpu", render_cpu },
         .{ "render-vulkan", render_vulkan },

@@ -481,6 +481,9 @@ pub const BoxProps = struct {
 };
 
 pub const Style = struct {
+    /// A style interned in a `Store`.
+    pub const Id = u32;
+
     inh: Inherited = .{},
     box: BoxProps = .{},
     custom: ?*const Custom = null,
