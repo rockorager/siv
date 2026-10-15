@@ -366,3 +366,23 @@ test "an image's size that arrives after its line was laid out reaches layout" {
     try testing.expect(absY(d, elementBox(d, .img, 1)) >= absY(d, p0) + p0.h);
     try testing.expect(absY(d, elementBox(d, .p, 2)) >= absY(d, p1) + 80);
 }
+
+test "linked and inline style sheets cascade in document order" {
+    // A <style> after a <link> overrides it at equal specificity (and a
+    // <link> after a <style> overrides that).
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+    const src = "<link rel=stylesheet href=a.css><style>p { width: 30px } div { width: 40px }</style><link rel=stylesheet href=b.css><p>x</p><div>y</div>";
+    const d = try Document.create(gpa, src, .{ .base_url = "file:///s/" }, &f.ua);
+    defer d.destroy();
+    try d.styleAndBuild(.{ .width = 400, .height = 600 });
+    for (d.resources.items, 0..) |r, i| if (r.kind == .stylesheet) {
+        try d.supplyStylesheet(@intCast(i), if (std.mem.endsWith(u8, r.url, "a.css")) "p { width: 10px }" else "div { width: 50px }");
+    };
+    try d.styleAndBuild(.{ .width = 400, .height = 600 });
+    try d.resolveFonts(f.resolver());
+    _ = try d.layout(&f.cache, 400, 600, std.math.inf(f32));
+    try testing.expectEqual(@as(f32, 30), elementBox(d, .p, 0).w);
+    try testing.expectEqual(@as(f32, 50), elementBox(d, .div, 0).w);
+}

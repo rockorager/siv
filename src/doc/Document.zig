@@ -122,7 +122,8 @@ xml: bool = false,
 width: f32 = 0,
 complete: bool = false,
 
-const SheetRef = struct { sheet: *const css.Sheet, origin: cascade_mod.Origin, owned: bool };
+/// A style sheet in document order: parsed, or a linked one by resource.
+const SheetRef = struct { sheet: ?*const css.Sheet, origin: cascade_mod.Origin, owned: bool, link: u32 = none };
 
 /// Parses a document. `ua_sheet` is the shared user-agent sheet
 /// (`parseUserAgentSheet`).
@@ -199,8 +200,8 @@ pub fn destroy(d: *Document) void {
         s.pseudo.deinit(gpa);
     }
     for (d.sheets.items) |s| if (s.owned) {
-        @constCast(s.sheet).deinit();
-        gpa.destroy(@constCast(s.sheet));
+        @constCast(s.sheet.?).deinit();
+        gpa.destroy(@constCast(s.sheet.?));
     };
     d.sheets.deinit(gpa);
     for (d.resources.items) |r| {
@@ -331,7 +332,8 @@ fn collect(d: *Document) Error!void {
                     if (std.ascii.eqlIgnoreCase(w, "alternate")) alternate = true;
                 }
                 if (is_sheet and !alternate) if (dom.attr(cur, .href)) |h| {
-                    _ = try d.addResource(.stylesheet, h);
+                    // Its place among the style elements, for the cascade.
+                    if (try d.addResource(.stylesheet, h)) |idx| try d.sheets.append(d.gpa, .{ .sheet = null, .origin = .author, .owned = false, .link = idx });
                 };
             },
             else => {},
@@ -466,9 +468,20 @@ pub fn styleAndBuild(d: *Document, media: css.media.Env) Error!void {
     const c = &d.cascade.?;
     c.env = .{ .media = media, .font_size = d.options.font_size, .untrusted = d.options.untrusted };
     try c.prepare();
-    for (d.sheets.items) |s| try c.addSheet(s.sheet, s.origin);
-    // Linked and imported sheets, in the order they were listed.
-    for (d.resources.items) |r| if (r.kind == .stylesheet) if (r.sheet) |s| try c.addSheet(s, .author);
+    // Sheets in document order, each after the sheets it imports (CSS
+    // Cascade 4, 6.4); imports found only later go last.
+    var added = try std.DynamicBitSetUnmanaged.initEmpty(d.gpa, d.resources.items.len);
+    defer added.deinit(d.gpa);
+    for (d.sheets.items) |s| {
+        if (s.sheet) |sh| {
+            try d.addSheetTree(c, sh, d.base_url, s.origin, &added);
+        } else if (s.link != none and !added.isSet(s.link)) {
+            const r = d.resources.items[s.link];
+            added.set(s.link);
+            if (r.sheet) |sh| try d.addSheetTree(c, sh, r.url, .author, &added);
+        }
+    }
+    for (d.resources.items, 0..) |r, i| if (r.kind == .stylesheet and !added.isSet(i)) if (r.sheet) |sh| try c.addSheet(sh, .author);
     d.styles = try c.run();
     var closed: std.ArrayList(html.NodeId) = .empty;
     defer closed.deinit(d.gpa);
@@ -482,6 +495,18 @@ pub fn styleAndBuild(d: *Document, media: css.media.Env) Error!void {
         if (!gop.found_existing) gop.value_ptr.* = @intCast(i);
     }
     try d.linkResources();
+}
+
+fn addSheetTree(d: *Document, c: *cascade_mod.Cascade, sheet: *const css.Sheet, base: []const u8, origin: cascade_mod.Origin, added: *std.DynamicBitSetUnmanaged) Error!void {
+    for (sheet.imports) |imp| {
+        const u = try url_mod.resolve(d.scratch.allocator(), base, imp.url);
+        for (d.resources.items, 0..) |r, i| if (r.kind == .stylesheet and !added.isSet(i) and std.mem.eql(u8, r.url, u)) {
+            added.set(i);
+            if (r.sheet) |sh| try d.addSheetTree(c, sh, r.url, origin, added);
+            break;
+        };
+    }
+    try c.addSheet(sheet, origin);
 }
 
 /// Lists images and fonts the styled document needs.
@@ -519,7 +544,7 @@ fn linkResources(d: *Document) Error!void {
         else => {},
     };
     // @font-face sources: the first that is a URL, for families used.
-    for (d.sheets.items) |s| for (s.sheet.font_faces) |*ff| {
+    for (d.sheets.items) |s| for (if (s.sheet) |sh| sh.font_faces else &.{}) |*ff| {
         for (ff.sources) |src| if (!src.local) {
             if (std.mem.indexOf(u8, src.format, "woff2") != null) continue;
             if (try d.addResource(.font, src.url)) |idx| {
