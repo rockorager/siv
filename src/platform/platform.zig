@@ -1702,6 +1702,10 @@ pub const Touch = struct {
     serial: u32 = 0,
 };
 
+/// The compositor took the seat's touch sequences on a window (a gesture
+/// of its own): every point down on it is gone.
+pub const TouchCancel = struct { window: WindowId, seat: SeatId };
+
 pub const GestureKind = enum(u8) {
     /// Three or more fingers moving together (two-finger motion is
     /// scrolling).
@@ -1880,7 +1884,7 @@ pub const Event = union(enum) {
     /// Ends a group of touch events that happened together.
     touch_frame: SeatId,
     /// The compositor took over the touch sequence; forget every point.
-    touch_cancel: SeatId,
+    touch_cancel: TouchCancel,
     /// Touchpad swipe, pinch, and hold gestures.
     gesture: Gesture,
     /// Tablet tools (pens, erasers, ...) over a window, and tablet pads.

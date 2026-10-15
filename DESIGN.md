@@ -2003,6 +2003,33 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     can still take focus. Nested dialogs unwind in order. The stack lives
     in the core, not the dialog widget, so it works however the dialog
     is closed.
+  - Custom widgets that interpret input by rules of their own (a web
+    engine, a terminal, a game view) get it as the devices sent it,
+    beside siv's interpretation. Found by siv-webview, whose engine had
+    `event.code` "Unidentified", scrolled by siv's distances without its
+    own line steps or kinetic scrolling, and saw touch only as a pointer.
+    - Keys carry the physical key's XKB keycode (`siv_event.keycode`, in
+      the compositor's keymap), which names the key whatever the layout:
+      the web's `KeyboardEvent.code`, games' WASD on any layout. The
+      keymap itself is not exposed yet; a widget that needs keysyms for
+      other keycodes builds one from the same RMLVO names.
+    - Scroll events carry, besides siv's distance (`dx`, `dy`), the input
+      as the compositor sent it: the distance in logical pixels
+      (`raw_dx`, `raw_dy`, otherwise relative motion's), wheel detents
+      (`steps_x`, `steps_y`, value120 / 120), the device
+      (`scroll_source`), and `SIV_EVENT_STOP` when the fingers lift or the
+      wheel stops, the event kinetic scrolling starts from (dx and dy
+      zero). The compositor flings only scroll containers, so a handler
+      node sees no synthesized motion and does its own.
+    - Touch: a node with a touch handler (`SIV_EVENT_TYPE_TOUCH`) gets
+      every event of each touch sequence that begins on it or a
+      descendant (down, move, up, cancel; `touch_id`; its coordinates),
+      not bubbled, the first touch handler from the node hit upward; no
+      pointer is emulated for those sequences. Touches that begin
+      elsewhere drive the pointer as before. Ten simultaneous sequences
+      per window are tracked; more drive the pointer. `touch_cancel` now
+      names its window (one per window with points down); before, it
+      named only the seat, and no window ever saw a cancel.
   - Pointer cursors: each node may set a cursor shape (the CSS names, as
     cursor-shape-v1 numbers them, and hidden), inherited by descendants
     that set none; enabled editors show the text cursor. The cursor is

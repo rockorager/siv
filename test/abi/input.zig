@@ -412,3 +412,111 @@ test "side buttons are back and forward, and every button carries its evdev code
     try testing.expectEqual(t.PointerButton.forward, log.events[0].button);
     try testing.expectEqual(@as(u32, 0x114), log.events[0].button_code);
 }
+
+const Raw = struct {
+    events: [16]t.Event = undefined,
+    n: usize = 0,
+
+    fn on(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
+        const l: *Raw = @ptrCast(@alignCast(ud.?));
+        if (l.n < l.events.len) l.events[l.n] = ev.*;
+        l.n += 1;
+        return .handled;
+    }
+};
+
+test "custom widgets get raw input: keycodes, scroll as the compositor sent it, and touch sequences" {
+    var h: Harness = .{};
+    try h.start(200, 100, null, null);
+    defer h.stop();
+    var keys: Raw = .{};
+    var scrolls: Raw = .{};
+    var touches: Raw = .{};
+    var pointers: Raw = .{};
+    var others: Raw = .{};
+    const root = c.siv_window_get_root(h.window);
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const row = c.siv_flex(txn, root, &.{ .size = @sizeOf(t.FlexDesc), .axis = .row });
+    // A widget at (0, 0) that handles touch itself, and one at (100, 0)
+    // that leaves touch to the pointer.
+    const pad = c.siv_box(txn, row);
+    c.siv_set_layout(txn, pad, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(100), .height = px(100) });
+    c.siv_set_semantics(txn, pad, &.{ .size = @sizeOf(t.SemanticsDesc), .flags = .{ .focusable = true } });
+    c.siv_on(txn, pad, .key, Raw.on, null, &keys);
+    c.siv_on(txn, pad, .scroll, Raw.on, null, &scrolls);
+    c.siv_on(txn, pad, .touch, Raw.on, null, &touches);
+    c.siv_on(txn, pad, .pointer, Raw.on, null, &pointers);
+    const other = c.siv_box(txn, row);
+    c.siv_set_layout(txn, other, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(100), .height = px(100) });
+    c.siv_on(txn, other, .pointer, Raw.on, null, &others);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try ok(c.siv_node_focus(pad));
+    const id = (try h.win()).win.id;
+
+    // Keys carry the physical key: KEY_A is evdev 30, XKB keycode 38.
+    try h.inject(&.{.{ .key = .{ .window = id, .seat = 0, .keycode = 38, .keysym = 'a', .state = .pressed, .mods = .{}, .time = 5, .serial = 1 } }});
+    try h.settle();
+    try testing.expectEqual(@as(usize, 1), keys.n);
+    try testing.expectEqual(@as(u32, 38), keys.events[0].keycode);
+
+    // Half a high-resolution detent: siv's distance for the window, and the
+    // input as sent; then a touchpad's fingers lifting.
+    try h.inject(&.{.{ .pointer_motion = .{ .window = id, .seat = 0, .x = 20, .y = 20 } }});
+    try h.inject(&.{.{ .scroll = .{ .window = id, .seat = 0, .dy = 7.5, .v120_y = 60, .source = .wheel } }});
+    try h.inject(&.{.{ .scroll = .{ .window = id, .seat = 0, .dy = 3, .source = .finger } }});
+    try h.inject(&.{.{ .scroll = .{ .window = id, .seat = 0, .source = .finger, .stop_y = true } }});
+    try h.settle();
+    try testing.expectEqual(@as(usize, 3), scrolls.n);
+    const wheel = scrolls.events[0];
+    try testing.expectEqual(t.ScrollSource.wheel, wheel.scroll_source);
+    try testing.expectEqual(@as(f32, 0.5), wheel.steps_y);
+    try testing.expectEqual(@as(f32, 7.5), wheel.raw_dy);
+    // The window's 100 px: a detent scrolls 60 px (D16), half of it 30.
+    try testing.expectEqual(@as(f32, 30), wheel.dy);
+    try testing.expect(!wheel.flags.stop);
+    const finger = scrolls.events[1];
+    try testing.expectEqual(t.ScrollSource.finger, finger.scroll_source);
+    try testing.expectEqual(@as(f32, 3), finger.raw_dy);
+    try testing.expectEqual(@as(f32, 12), finger.dy);
+    try testing.expectEqual(@as(f32, 0), finger.steps_y);
+    try testing.expect(scrolls.events[2].flags.stop);
+    try testing.expectEqual(@as(f32, 0), scrolls.events[2].dy);
+
+    // Two fingers on the widget: each sequence goes to it, in its
+    // coordinates, and no pointer press is emulated.
+    const pointers_before = pointers.n;
+    try h.inject(&.{
+        .{ .touch_down = .{ .window = id, .seat = 0, .id = 7, .x = 10, .y = 20, .time = 1 } },
+        .{ .touch_down = .{ .window = id, .seat = 0, .id = 8, .x = 30, .y = 40, .time = 2 } },
+        .{ .touch_motion = .{ .window = id, .seat = 0, .id = 7, .x = 15, .y = 25, .time = 3 } },
+        .{ .touch_up = .{ .window = id, .seat = 0, .id = 7, .time = 4 } },
+        .{ .touch_cancel = .{ .window = id, .seat = 0 } },
+    });
+    try h.settle();
+    try testing.expectEqual(@as(usize, 5), touches.n);
+    try testing.expectEqual(t.PointerPhase.down, touches.events[0].phase);
+    try testing.expectEqual(@as(i32, 7), touches.events[0].touch_id);
+    try testing.expectEqual(@as(f32, 10), touches.events[0].x);
+    try testing.expectEqual(@as(i32, 8), touches.events[1].touch_id);
+    try testing.expectEqual(@as(f32, 40), touches.events[1].y);
+    try testing.expectEqual(t.PointerPhase.move, touches.events[2].phase);
+    try testing.expectEqual(@as(f32, 25), touches.events[2].y);
+    try testing.expectEqual(t.PointerPhase.up, touches.events[3].phase);
+    // Only the sequence still down is cancelled.
+    try testing.expectEqual(t.PointerPhase.cancel, touches.events[4].phase);
+    try testing.expectEqual(@as(i32, 8), touches.events[4].touch_id);
+    for (pointers.events[pointers_before..@min(pointers.n, pointers.events.len)]) |e| try testing.expect(e.phase != .down);
+    // A touch elsewhere still drives the pointer, in that node's
+    // coordinates.
+    try h.inject(&.{
+        .{ .touch_down = .{ .window = id, .seat = 0, .id = 9, .x = 150, .y = 50, .time = 5 } },
+        .{ .touch_up = .{ .window = id, .seat = 0, .id = 9, .time = 6 } },
+    });
+    try h.settle();
+    try testing.expectEqual(@as(usize, 5), touches.n);
+    var down = false;
+    for (others.events[0..@min(others.n, others.events.len)]) |e| down = down or (e.phase == .down and e.x == 50);
+    try testing.expect(down);
+}

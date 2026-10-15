@@ -247,11 +247,7 @@ fn setCapabilities(seat: *Seat, caps: wl.Seat.Capability) void {
         const t = seat.touch.?;
         if (v3) t.release() else t.destroy();
         seat.touch = null;
-        for (seat.points) |p| if (p.active) {
-            seat.push(.{ .touch_cancel = seat.id });
-            break;
-        };
-        seat.points = @splat(.{});
+        seat.cancelTouches();
     }
 }
 
@@ -855,9 +851,18 @@ pub fn onTouch(_: *wl.Touch, event: wl.Touch.Event, seat: *Seat) void {
             }
             if (any) seat.push(.{ .touch_frame = seat.id });
         },
-        .cancel => {
-            seat.points = @splat(.{});
-            seat.push(.{ .touch_cancel = seat.id });
-        },
+        .cancel => seat.cancelTouches(),
     }
+}
+
+/// Ends every touch point: one cancel per window with points down on it.
+fn cancelTouches(seat: *Seat) void {
+    for (seat.points, 0..) |p, i| {
+        if (!p.active) continue;
+        const seen = for (seat.points[0..i]) |q| {
+            if (q.active and q.touch.window == p.touch.window) break true;
+        } else false;
+        if (!seen) seat.push(.{ .touch_cancel = .{ .window = p.touch.window, .seat = seat.id } });
+    }
+    seat.points = @splat(.{});
 }

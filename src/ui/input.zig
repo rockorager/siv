@@ -118,6 +118,12 @@ pub const State = struct {
     /// The node each tool's tip is pressed on, which gets its events
     /// until the tip lifts.
     tools: [max_tools]ToolState = @splat(.{}),
+    /// Touch sequences that began on a node with a touch handler, which
+    /// gets the sequence's events instead of the emulated pointer (D16).
+    touches: [max_touches]TouchState = @splat(.{}),
+
+    pub const max_touches = 10;
+    pub const TouchState = struct { active: bool = false, seat: platform.SeatId = 0, id: i32 = 0, target: NodeId = .none };
 
     pub const ModalEntry = struct { modal: NodeId, opener: NodeId, visible: bool };
 
@@ -144,6 +150,10 @@ pub const State = struct {
         if (st.tooltip == id) requestTooltip(win, .none);
         for (&st.gesture_target) |*g| if (g.* == id) {
             g.* = .none;
+        };
+        // The rest of the sequence goes nowhere.
+        for (&st.touches) |*t| if (t.target == id) {
+            t.target = .none;
         };
         for (&st.tools) |*t| if (t.capture == id) {
             t.capture = .none;
@@ -567,15 +577,24 @@ pub fn handle(win: *Window, event: *const platform.Event) void {
             st.keyboard_modality = false;
             st.seat = t.seat;
             st.press_serial = t.serial;
+            if (touchDown(win, &t)) return;
             st.pointer = .{ .x = @floatCast(t.x), .y = @floatCast(t.y) };
             pointerButton(win, btn_left, true, t.time);
         },
         .touch_motion => |t| {
+            if (touchSequence(win, &t, .move)) return;
             st.pointer = .{ .x = @floatCast(t.x), .y = @floatCast(t.y) };
             if (st.capture != .none) _ = bubblePointer(win, st.capture, .move, .primary);
         },
-        .touch_up => |t| pointerButton(win, btn_left, false, t.time),
-        .touch_cancel => {
+        .touch_up => |t| {
+            if (touchSequence(win, &t, .up)) return;
+            pointerButton(win, btn_left, false, t.time);
+        },
+        .touch_cancel => |tc| {
+            for (&st.touches) |*ts| if (ts.active and ts.seat == tc.seat) {
+                ts.active = false;
+                if (win.isLive(ts.target)) callHandler(win, ts.target, .touch, &.{ .touch = .{ .phase = .cancel, .id = ts.id, .mods = st.mods } });
+            };
             if (st.capture != .none) _ = bubblePointer(win, st.capture, .cancel, .primary);
             st.capture = .none;
             st.pressed = .none;
@@ -673,6 +692,40 @@ fn pointerButton(win: *Window, code: u32, pressed: bool, time: u32) void {
     }
 }
 
+/// A touch began: the nearest node under it with a touch handler, if any,
+/// gets the sequence (D16), and the pointer is not emulated for it.
+fn touchDown(win: *Window, t: *const platform.Touch) bool {
+    const st = &win.input;
+    const p: Point = .{ .x = @floatCast(t.x), .y = @floatCast(t.y) };
+    var cur = hitTest(win, p);
+    while (cur != .none and win.isLive(cur)) : (cur = win.node(cur).parent) {
+        if (win.node(cur).handler(.touch) != null) break;
+    } else return false;
+    const slot = for (&st.touches) |*ts| {
+        if (!ts.active) break ts;
+    } else return false; // more fingers than tracked: the pointer has them
+    slot.* = .{ .active = true, .seat = t.seat, .id = t.id, .target = cur };
+    const local = toLocal(win, cur, p);
+    callHandler(win, cur, .touch, &.{ .touch = .{ .phase = .down, .id = t.id, .x = local.x, .y = local.y, .time = t.time, .mods = st.mods } });
+    return true;
+}
+
+/// Motion or the end of a sequence a touch handler has.
+fn touchSequence(win: *Window, t: *const platform.Touch, phase: node_mod.TouchPhase) bool {
+    const st = &win.input;
+    const ts = for (&st.touches) |*ts| {
+        if (ts.active and ts.seat == t.seat and ts.id == t.id) break ts;
+    } else return false;
+    if (phase == .up) ts.active = false;
+    if (!win.isLive(ts.target)) {
+        ts.active = false;
+        return true;
+    }
+    const local = toLocal(win, ts.target, .{ .x = @floatCast(t.x), .y = @floatCast(t.y) });
+    callHandler(win, ts.target, .touch, &.{ .touch = .{ .phase = phase, .id = t.id, .x = local.x, .y = local.y, .time = t.time, .mods = st.mods } });
+    return true;
+}
+
 fn key(win: *Window, k: *const platform.Key) void {
     const st = &win.input;
     if (k.state == .pressed) {
@@ -689,6 +742,7 @@ fn key(win: *Window, k: *const platform.Key) void {
     const ev: Event = .{ .key = .{
         .time = k.time,
         .keysym = k.keysym,
+        .keycode = k.keycode,
         .pressed = k.state != .released,
         .repeat = k.state == .repeated,
         .mods = k.mods,
@@ -766,7 +820,17 @@ fn scroll(win: *Window, s: platform.Scroll) void {
     var near: NodeId = target;
     while (near != .none and win.node(near).kind != .scroll) near = win.node(near).parent;
     const d = scrollDelta(win, near, s);
-    const ev: Event = .{ .scroll = .{ .dx = d.x, .dy = d.y, .target = target } };
+    const ev: Event = .{ .scroll = .{
+        .dx = d.x,
+        .dy = d.y,
+        .target = target,
+        .raw_dx = @floatCast(s.dx),
+        .raw_dy = @floatCast(s.dy),
+        .steps_x = @as(f32, @floatFromInt(s.v120_x)) / 120,
+        .steps_y = @as(f32, @floatFromInt(s.v120_y)) / 120,
+        .source = s.source,
+        .stop = s.stop_x or s.stop_y,
+    } };
     if (bubble(win, target, .scroll, ev).prevents()) return;
     const mods = win.input.mods;
     // Ctrl+wheel zooms the nearest zoomable scroll node: 10% per detent.

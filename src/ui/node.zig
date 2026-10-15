@@ -806,6 +806,9 @@ pub const Key = struct {
     /// The input's timestamp in milliseconds.
     time: u32 = 0,
     keysym: u32,
+    /// The XKB keycode (evdev code + 8) of the physical key, in the
+    /// compositor's keymap; 0 for keys siv makes up (siv_test_key).
+    keycode: u32 = 0,
     pressed: bool,
     repeat: bool = false,
     mods: Mods = .{},
@@ -827,7 +830,38 @@ pub const FocusChange = struct {
     visible: bool,
 };
 
-pub const ScrollDelta = struct { dx: f32, dy: f32, target: NodeId = .none, prevented: bool = false };
+pub const ScrollDelta = struct {
+    /// The distance siv scrolls for it (`platform.Scroll.delta`, D16).
+    dx: f32,
+    dy: f32,
+    target: NodeId = .none,
+    prevented: bool = false,
+    /// The input as the compositor sent it, for widgets that scroll by
+    /// their own rules (a web engine's line steps and kinetic scrolling):
+    /// the distance in logical pixels, wheel steps (1 a detent, fractions
+    /// for high-resolution wheels), the device, and whether the fingers
+    /// left the touchpad or the wheel stopped (kinetic scrolling starts).
+    raw_dx: f32 = 0,
+    raw_dy: f32 = 0,
+    steps_x: f32 = 0,
+    steps_y: f32 = 0,
+    source: @import("platform").ScrollSource = .unknown,
+    stop: bool = false,
+};
+
+pub const TouchPhase = enum { down, move, up, cancel };
+
+/// One touch point of a sequence that began on a node with a touch
+/// handler (D16), in that node's coordinates.
+pub const Touch = struct {
+    phase: TouchPhase,
+    /// Tells the sequences of simultaneous touches apart.
+    id: i32,
+    x: f32 = 0,
+    y: f32 = 0,
+    time: u32 = 0,
+    mods: Mods = .{},
+};
 
 pub const ToolKind = @import("platform").ToolKind;
 pub const ToolAxes = @import("platform").ToolAxes;
@@ -1017,6 +1051,7 @@ pub const Event = union(enum) {
     gesture: Gesture,
     tablet: Tablet,
     pad: Pad,
+    touch: Touch,
     /// The user edited an editor's text (delivered to the editor only,
     /// after the edit is committed).
     change,
@@ -1040,10 +1075,10 @@ pub const Viewport = struct { x: f32, y: f32, width: f32, height: f32, zoom: f32
 
 /// `select`, `close`, and `sort` are never sent by the tree: widgets built
 /// on the C API emit them (`siv_node_emit`).
-/// The kinds of node handlers. The first sixteen match `siv_event_type`;
+/// The kinds of node handlers. The first seventeen match `siv_event_type`;
 /// `key_capture` holds a node's capture-phase key handler (D16), which
 /// sees keys on their way down to the focused node.
-pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll, change, drop, drag, set_value, select, close, viewport, sort, gesture, tablet, pad, key_capture };
+pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll, change, drop, drag, set_value, select, close, viewport, sort, gesture, tablet, pad, touch, key_capture };
 
 /// What a handler did with an event: whether it stops bubbling and
 /// whether it prevents the default action (later default handlers and the

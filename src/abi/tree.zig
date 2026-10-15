@@ -1420,6 +1420,7 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
         },
         .key => |k| {
             ev.keysym = @enumFromInt(@as(i32, @bitCast(k.keysym)));
+            ev.keycode = k.keycode;
             ev.time = k.time;
             ev.modifiers = modifiers(k.mods);
             ev.flags = .{ .pressed = k.pressed, .repeat = k.repeat, .prevented = k.prevented, .capturing = k.capture };
@@ -1431,7 +1432,19 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
         .scroll => |s| {
             ev.dx = s.dx;
             ev.dy = s.dy;
+            ev.raw_dx = s.raw_dx;
+            ev.raw_dy = s.raw_dy;
+            ev.steps_x = s.steps_x;
+            ev.steps_y = s.steps_y;
+            ev.scroll_source = switch (s.source) {
+                .unknown => .unknown,
+                .wheel => .wheel,
+                .finger => .finger,
+                .continuous => .continuous,
+                .wheel_tilt => .wheel_tilt,
+            };
             ev.flags.prevented = s.prevented;
+            ev.flags.stop = s.stop;
             if (s.target != .none and uw.isLive(s.target)) ev.target = @fromBackingInt(w.nodes.handle(s.target));
         },
         .gesture => |g| {
@@ -1554,6 +1567,19 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
             ev.time = pd.time;
             ev.flags = .{ .pressed = pd.pressed, .lifted = pd.lifted, .prevented = pd.prevented };
             if (pd.target != .none and uw.isLive(pd.target)) ev.target = @fromBackingInt(w.nodes.handle(pd.target));
+        },
+        .touch => |tc| {
+            ev.phase = switch (tc.phase) {
+                .down => .down,
+                .move => .move,
+                .up => .up,
+                .cancel => .cancel,
+            };
+            ev.touch_id = tc.id;
+            ev.x = tc.x;
+            ev.y = tc.y;
+            ev.time = tc.time;
+            ev.modifiers = modifiers(tc.mods);
         },
         .viewport => |v| {
             ev.x = v.x;
