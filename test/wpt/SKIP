@@ -1,0 +1,5 @@
+# Tests in MANIFEST that are out of scope for documents (D32), left out of
+# the pass rates: "path reason".
+css/css-flexbox/flexbox-basic-textarea-horiz-001.xhtml form controls (textarea)
+css/css-flexbox/flexbox-basic-textarea-vert-001.xhtml form controls (textarea)
+css/CSS2/floats/floats-wrap-bfc-outside-001.xht form controls (textarea)

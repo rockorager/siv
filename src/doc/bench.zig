@@ -5,6 +5,8 @@
 //!   out (budget: a few milliseconds);
 //! - long: a 1.5 MB document, to its first screen (budget: tens of
 //!   milliseconds), then to its end;
+//! - mail: the email corpus's messages, a 2000-row table as newsletters
+//!   and receipts are made of, and 300 paragraphs beside floats;
 //! - scroll: painting the band a scroll frame repaints (three viewports),
 //!   and the layout slice that extends a lazily laid out document (budget:
 //!   well under a millisecond per frame).
@@ -151,6 +153,38 @@ fn article(gpa: std.mem.Allocator, body_bytes: usize, css_bytes: usize) ![]u8 {
     return out.toOwnedSlice(gpa);
 }
 
+/// HTML mail's table layout: a centered 600 px table of `rows` rows with
+/// presentational attributes and inline styles, in quirks mode.
+fn mailTable(gpa: std.mem.Allocator, rows: usize) ![]u8 {
+    var prng: std.Random.DefaultPrng = .init(7);
+    const rng = prng.random();
+    var out: std.ArrayList(u8) = .empty;
+    try out.appendSlice(gpa, "<html><body bgcolor=\"#f4f4f4\"><table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\"><tr><td align=\"center\">" ++
+        "<table width=\"600\" cellpadding=\"6\" cellspacing=\"0\" border=\"0\" bgcolor=\"#ffffff\" style=\"font-family:Arial,sans-serif\">\n");
+    for (0..rows) |r| {
+        try out.print(gpa, "<tr><td width=\"90\" valign=\"top\"><font size=\"2\" color=\"#333333\">Item {d}</font></td><td style=\"border-bottom:1px solid #eee\">", .{r});
+        try sentence(&out, gpa, rng, 4);
+        try out.print(gpa, "</td><td align=\"right\" nowrap>${d}.{d:0>2}</td></tr>\n", .{ rng.uintLessThan(u16, 500), rng.uintLessThan(u8, 100) });
+    }
+    try out.appendSlice(gpa, "</table></td></tr></table></body></html>\n");
+    return out.toOwnedSlice(gpa);
+}
+
+/// `n` paragraphs, each after a float that its lines wrap beside.
+fn floats(gpa: std.mem.Allocator, n: usize) ![]u8 {
+    var prng: std.Random.DefaultPrng = .init(9);
+    const rng = prng.random();
+    var out: std.ArrayList(u8) = .empty;
+    try out.appendSlice(gpa, "<!doctype html><html><head><style>.f{float:left;width:120px;height:60px;margin:0 8px 8px 0;background:#ddd}.r{float:right;width:90px;height:90px;margin:0 0 8px 8px;background:#cde}</style></head><body>\n");
+    for (0..n) |i| {
+        try out.print(gpa, "<div class=\"{s}\"></div><p>", .{if (i % 3 == 2) "r" else "f"});
+        for (0..4) |_| try sentence(&out, gpa, rng, 12);
+        try out.appendSlice(gpa, "</p>\n");
+    }
+    try out.appendSlice(gpa, "</body></html>\n");
+    return out.toOwnedSlice(gpa);
+}
+
 const Hooks = struct {
     fn draw(_: *anyopaque, _: *scene.Builder, _: u32, _: raster.Rect, _: f32) scene.Error!bool {
         return false;
@@ -243,6 +277,12 @@ pub fn main(init: std.process.Init) !void {
         defer dir.close(io);
         try dir.writeFile(io, .{ .sub_path = "article.html", .data = art });
         try dir.writeFile(io, .{ .sub_path = "long.html", .data = long });
+        const mail = try mailTable(gpa, 2000);
+        defer gpa.free(mail);
+        try dir.writeFile(io, .{ .sub_path = "mail-table.html", .data = mail });
+        const fl = try floats(gpa, 300);
+        defer gpa.free(fl);
+        try dir.writeFile(io, .{ .sub_path = "floats.html", .data = fl });
         return;
     }
     if (argv.len > 2 and std.mem.eql(u8, argv[1], "--epub")) return measureBook(gpa, io, fonts, &ua, argv[2]);
@@ -260,6 +300,24 @@ pub fn main(init: std.process.Init) !void {
     const art = try article(gpa, 50 << 10, 20 << 10);
     defer gpa.free(art);
     try measureFull(gpa, fonts, &ua, "article + 20 KB CSS", art, .html);
+
+    // HTML mail: the corpus's messages, and a long table of the kind
+    // newsletters and receipts are made of.
+    for ([_][]const u8{ "receipt", "newsletter", "reply-gmail", "reply-outlook", "reply-apple" }) |name| {
+        var path_buf: [64]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "test/doc/email/{s}.html", .{name});
+        const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1 << 20)) catch continue;
+        defer gpa.free(bytes);
+        try measureFull(gpa, fonts, &ua, name, bytes, .html);
+    }
+    {
+        const mail = try mailTable(gpa, 2000);
+        defer gpa.free(mail);
+        try measureFull(gpa, fonts, &ua, "mail table, 2000 rows", mail, .html);
+        const fl = try floats(gpa, 300);
+        defer gpa.free(fl);
+        try measureFull(gpa, fonts, &ua, "300 floats and paragraphs", fl, .html);
+    }
 
     // The UA sheet, parsed once per process.
     {

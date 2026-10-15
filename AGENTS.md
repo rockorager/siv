@@ -38,6 +38,7 @@ zig build test -Dtest-filter=bidi
 zig build shaders              # after editing src/render/vulkan/shaders/*: compile them with
                                #   glslang and update the committed SPIR-V (the render-vulkan
                                #   tests fail until then); -fsys=glslang uses glslangValidator
+zig build doc-wpt -- css-grid --failures --dump DIR  # WPT reftests one by one (triage, D32)
 zig build examples             # build and install the C programs in examples/
 ./zig-out/bin/siv-lua examples/todo.lua  # run a Lua example; --watch reloads it on edits
 zig build test -Djxl           # include libjxl in a Debug build, and its test

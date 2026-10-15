@@ -1,0 +1,164 @@
+# Tests left out of each suite at import (test/wpt/import.py): suite, count, reason.
+css2 1501 beyond the per-suite cap of 400
+css2 761 embedded content (images, SVG, frames, canvas, video)
+css2 627 not a reftest
+css2 112 needs JavaScript
+css2 106 writing modes and right-to-left
+css2 78 resources other than style sheets and the Ahem font
+css2 2 mismatch reftest
+css2 1 form controls
+css-flexbox 443 needs JavaScript
+css-flexbox 283 beyond the per-suite cap of 400
+css-flexbox 131 writing modes and right-to-left
+css-flexbox 115 embedded content (images, SVG, frames, canvas, video)
+css-flexbox 54 not a reftest
+css-flexbox 12 form controls
+css-flexbox 10 larger than 12 KB
+css-flexbox 2 interactive state (:hover, :focus)
+css-flexbox 2 vendor prefixes, @supports, zoom, contain
+css-flexbox 1 resources other than style sheets and the Ahem font
+css-flexbox 1 mismatch reftest
+css-grid 422 needs JavaScript
+css-grid 58 writing modes and right-to-left
+css-grid 42 larger than 12 KB
+css-grid 42 embedded content (images, SVG, frames, canvas, video)
+css-grid 14 beyond the per-suite cap of 400
+css-grid 2 not a reftest
+css-grid 1 form controls
+css-values 305 needs JavaScript
+css-values 22 resources other than style sheets and the Ahem font
+css-values 18 writing modes and right-to-left
+css-values 17 not a reftest
+css-values 9 larger than 12 KB
+css-values 3 embedded content (images, SVG, frames, canvas, video)
+css-values 1 mismatch reftest
+css-values 1 vendor prefixes, @supports, zoom, contain
+css-variables 68 vendor prefixes, @supports, zoom, contain
+css-variables 56 needs JavaScript
+css-variables 2 not a reftest
+css-tables 740 not a reftest
+css-tables 341 needs JavaScript
+css-tables 28 beyond the per-suite cap of 400
+css-tables 14 embedded content (images, SVG, frames, canvas, video)
+css-tables 12 resources other than style sheets and the Ahem font
+css-tables 11 writing modes and right-to-left
+css-tables 8 several references
+css-tables 5 larger than 12 KB
+css-tables 3 mismatch reftest
+css-tables 1 vendor prefixes, @supports, zoom, contain
+css-tables 1 interactive state (:hover, :focus)
+floats 93 embedded content (images, SVG, frames, canvas, video)
+floats 43 not a reftest
+floats 42 needs JavaScript
+floats 11 mismatch reftest
+floats 10 resources other than style sheets and the Ahem font
+floats 4 writing modes and right-to-left
+floats 2 several references
+floats 1 chained references
+floats 1 larger than 12 KB
+floats 1 form controls
+css-sizing 241 needs JavaScript
+css-sizing 168 embedded content (images, SVG, frames, canvas, video)
+css-sizing 40 writing modes and right-to-left
+css-sizing 31 vendor prefixes, @supports, zoom, contain
+css-sizing 13 not a reftest
+css-sizing 7 form controls
+css-sizing 5 larger than 12 KB
+css-sizing 1 resources other than style sheets and the Ahem font
+css-display 133 needs JavaScript
+css-display 94 not a reftest
+css-display 3 embedded content (images, SVG, frames, canvas, video)
+css-display 3 mismatch reftest
+css-display 2 form controls
+css-display 1 resources other than style sheets and the Ahem font
+css-display 1 larger than 12 KB
+css-display 1 writing modes and right-to-left
+css-pseudo 222 needs JavaScript
+css-pseudo 20 mismatch reftest
+css-pseudo 15 not a reftest
+css-pseudo 6 writing modes and right-to-left
+css-pseudo 5 resources other than style sheets and the Ahem font
+css-pseudo 5 form controls
+css-pseudo 5 several references
+css-pseudo 2 embedded content (images, SVG, frames, canvas, video)
+css-pseudo 2 vendor prefixes, @supports, zoom, contain
+css-pseudo 1 larger than 12 KB
+css-lists 101 needs JavaScript
+css-lists 94 not a reftest
+css-lists 8 writing modes and right-to-left
+css-lists 6 embedded content (images, SVG, frames, canvas, video)
+css-lists 5 resources other than style sheets and the Ahem font
+css-lists 1 mismatch reftest
+css-lists 1 vendor prefixes, @supports, zoom, contain
+css-lists 1 reference missing
+css-text 303 beyond the per-suite cap of 400
+css-text 110 needs JavaScript
+css-text 96 mismatch reftest
+css-text 70 resources other than style sheets and the Ahem font
+css-text 42 writing modes and right-to-left
+css-text 28 not a reftest
+css-text 26 several references
+css-text 24 form controls
+css-text 13 embedded content (images, SVG, frames, canvas, video)
+css-text 7 vendor prefixes, @supports, zoom, contain
+css-text 3 larger than 12 KB
+css-text 1 ruby
+css-backgrounds 351 resources other than style sheets and the Ahem font
+css-backgrounds 349 needs JavaScript
+css-backgrounds 106 not a reftest
+css-backgrounds 87 embedded content (images, SVG, frames, canvas, video)
+css-backgrounds 9 mismatch reftest
+css-backgrounds 7 vendor prefixes, @supports, zoom, contain
+css-backgrounds 5 larger than 12 KB
+css-backgrounds 3 writing modes and right-to-left
+css-backgrounds 2 chained references
+css-backgrounds 1 form controls
+css-overflow 384 needs JavaScript
+css-overflow 108 vendor prefixes, @supports, zoom, contain
+css-overflow 27 not a reftest
+css-overflow 27 writing modes and right-to-left
+css-overflow 20 embedded content (images, SVG, frames, canvas, video)
+css-overflow 20 larger than 12 KB
+css-overflow 13 form controls
+css-overflow 12 resources other than style sheets and the Ahem font
+css-overflow 10 mismatch reftest
+css-overflow 8 ruby
+css-overflow 2 reference missing
+css-overflow 2 several references
+css-position 255 needs JavaScript
+css-position 45 writing modes and right-to-left
+css-position 9 resources other than style sheets and the Ahem font
+css-position 5 embedded content (images, SVG, frames, canvas, video)
+css-position 4 not a reftest
+css-position 3 form controls
+css-position 1 larger than 12 KB
+css-position 1 mismatch reftest
+css-position 1 vendor prefixes, @supports, zoom, contain
+css-break 472 beyond the per-suite cap of 400
+css-break 142 vendor prefixes, @supports, zoom, contain
+css-break 100 needs JavaScript
+css-break 98 not a reftest
+css-break 56 writing modes and right-to-left
+css-break 4 ruby
+css-break 3 embedded content (images, SVG, frames, canvas, video)
+css-break 2 mismatch reftest
+css-break 1 resources other than style sheets and the Ahem font
+css-break 1 form controls
+css-break 1 reference missing
+css-multicol 222 needs JavaScript
+css-multicol 95 not a reftest
+css-multicol 62 embedded content (images, SVG, frames, canvas, video)
+css-multicol 19 vendor prefixes, @supports, zoom, contain
+css-multicol 8 writing modes and right-to-left
+css-multicol 3 form controls
+css-multicol 1 ruby
+css-writing-modes 463 embedded content (images, SVG, frames, canvas, video)
+css-writing-modes 161 resources other than style sheets and the Ahem font
+css-writing-modes 136 not a reftest
+css-writing-modes 130 needs JavaScript
+css-writing-modes 64 mismatch reftest
+css-writing-modes 10 form controls
+css-writing-modes 7 vendor prefixes, @supports, zoom, contain
+css-writing-modes 2 several references
+css-writing-modes 2 larger than 12 KB
+css-writing-modes 1 ruby

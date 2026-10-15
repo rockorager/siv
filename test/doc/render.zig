@@ -168,19 +168,68 @@ pub const Runner = struct {
     /// than 32 in a channel (antialiasing of the same edges drawn as
     /// glyphs in one and boxes in the other).
     pub fn same(r: *Runner) bool {
+        return r.within(32, 20);
+    }
+
+    /// `same`, widened by a WPT test's fuzzy metadata
+    /// (`<meta name=fuzzy content="maxDifference=0-40;totalPixels=0-300">`)
+    /// when it allows larger differences than `same` does.
+    pub fn sameAs(r: *Runner, test_path: []const u8) bool {
+        const base = std.fmt.allocPrint(r.gpa, "{s}/{s}", .{ r.origin, test_path }) catch return r.same();
+        defer r.gpa.free(base);
+        const src = r.file(base) orelse return r.same();
+        defer r.gpa.free(src);
+        const f = fuzzy(src) orelse return r.same();
+        if (f[0] <= 32) return r.same();
+        return r.within(f[0], @max(20, f[1]));
+    }
+
+    /// The upper bounds of a fuzzy annotation: the largest channel
+    /// difference and the number of pixels that may differ.
+    pub fn fuzzy(src: []const u8) ?[2]u32 {
+        const at = std.mem.indexOf(u8, src, "name=\"fuzzy\"") orelse std.mem.indexOf(u8, src, "name=fuzzy") orelse return null;
+        const tag_end = std.mem.indexOfScalarPos(u8, src, at, '>') orelse return null;
+        const tag_start = std.mem.lastIndexOfScalar(u8, src[0..at], '<') orelse return null;
+        const tag = src[tag_start..tag_end];
+        const c = std.mem.indexOf(u8, tag, "content=") orelse return null;
+        var v = tag[c + 8 ..];
+        if (v.len > 0 and (v[0] == '"' or v[0] == '\'')) {
+            const q = v[0];
+            v = v[1..];
+            v = v[0 .. std.mem.indexOfScalar(u8, v, q) orelse v.len];
+        }
+        // An optional reference URL before a colon.
+        if (std.mem.lastIndexOfScalar(u8, v, ':')) |k| v = v[k + 1 ..];
+        var result: [2]u32 = .{ 0, 0 };
+        var parts = std.mem.tokenizeScalar(u8, v, ';');
+        var n: usize = 0;
+        while (parts.next()) |part| : (n += 1) {
+            var p = std.mem.trim(u8, part, " ");
+            var slot: usize = @min(n, 1);
+            if (std.mem.indexOfScalar(u8, p, '=')) |eq| {
+                slot = if (std.mem.startsWith(u8, p, "maxDifference")) 0 else 1;
+                p = p[eq + 1 ..];
+            }
+            const hi = if (std.mem.indexOfScalar(u8, p, '-')) |d| p[d + 1 ..] else p;
+            result[slot] = std.fmt.parseInt(u32, std.mem.trim(u8, hi, " "), 10) catch return null;
+        }
+        return result;
+    }
+
+    fn within(r: *Runner, threshold: u32, allowed: usize) bool {
         var off: usize = 0;
         var i: usize = 0;
         while (i < @as(usize, r.width) * r.height * 4) : (i += 4) {
             for (0..3) |c| {
                 const a = r.pixels[0][i + c];
                 const b = r.pixels[1][i + c];
-                if ((if (a > b) a - b else b - a) > 32) {
+                if ((if (a > b) a - b else b - a) > threshold) {
                     off += 1;
                     break;
                 }
             }
         }
-        return off <= 20;
+        return off <= allowed;
     }
 };
 

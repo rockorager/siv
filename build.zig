@@ -538,6 +538,24 @@ pub fn build(b: *std.Build) void {
     doc_render_run.addPassthruArgs();
     b.step("doc-render", "Render a document to a PNG: -- IN OUT [WIDTH] [--markdown] [--dark]").dependOn(&doc_render_run.step);
 
+    // The WPT reftests one by one, for triage (D32): not part of `test`.
+    const doc_wpt = b.addExecutable(.{
+        .name = "doc-wpt",
+        .root_module = ctx.module("test/doc/wpt_tool.zig", &.{
+            .{ .name = "doc", .module = doc },
+            .{ .name = "css", .module = css },
+            .{ .name = "scene", .module = scene },
+            .{ .name = "raster", .module = raster },
+            .{ .name = "text", .module = text },
+            .{ .name = "render_cpu", .module = render_cpu },
+            .{ .name = "pool", .module = pool },
+            .{ .name = "png", .module = ctx.module("test/render/png.zig", &.{}) },
+        }),
+    });
+    const doc_wpt_run = b.addRunArtifact(doc_wpt);
+    doc_wpt_run.addPassthruArgs();
+    b.step("doc-wpt", "Run WPT reftests one by one: -- [FILTER...] [--manifest FILE] [--root DIR] [--dump DIR] [--failures]").dependOn(&doc_wpt_run.step);
+
     // Image decoding benchmarks, likewise; `-- FILE...` decodes those files.
     const bench_image = b.addExecutable(.{
         .name = "bench-image",

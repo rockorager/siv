@@ -23,14 +23,39 @@ const floors = .{
     .{ "css-values", 56 },
     .{ "css-variables", 46 },
     .{ "css-tables", 117 },
-    .{ "floats", 87 },
+    .{ "floats", 86 },
+    .{ "css-sizing", 103 },
+    .{ "css-display", 59 },
+    .{ "css-pseudo", 33 },
+    .{ "css-lists", 166 },
+    .{ "css-text", 92 },
+    .{ "css-backgrounds", 111 },
+    .{ "css-overflow", 67 },
+    .{ "css-position", 22 },
+    .{ "css-break", 40 },
+    .{ "css-multicol", 62 },
+    .{ "css-writing-modes", 50 },
 };
+
+/// Whether test/wpt/SKIP lists a test as out of scope ("path reason"
+/// lines): it is left out of the pass rate.
+pub fn skipped(skip: []const u8, test_path: []const u8) bool {
+    var lines = std.mem.tokenizeScalar(u8, skip, '\n');
+    while (lines.next()) |line| {
+        if (line[0] == '#') continue;
+        const end = std.mem.indexOfScalar(u8, line, ' ') orelse line.len;
+        if (std.mem.eql(u8, line[0..end], test_path)) return true;
+    }
+    return false;
+}
 
 fn runSuite(comptime suite: []const u8) !void {
     const gpa = testing.allocator;
     const io = testing.io;
     const manifest = try std.Io.Dir.cwd().readFileAlloc(io, root ++ "/MANIFEST", gpa, .limited(1 << 20));
     defer gpa.free(manifest);
+    const skip = try std.Io.Dir.cwd().readFileAlloc(io, root ++ "/SKIP", gpa, .limited(1 << 20));
+    defer gpa.free(skip);
     const r = try Runner.init(gpa, io, root, origin, W, H);
     defer r.deinit();
     const verbose = testing.environ.getPosix("SIV_WPT_VERBOSE") != null;
@@ -43,11 +68,12 @@ fn runSuite(comptime suite: []const u8) !void {
         if (!std.mem.eql(u8, parts.next() orelse continue, suite)) continue;
         const test_path = parts.next() orelse continue;
         const ref_path = parts.next() orelse continue;
+        if (skipped(skip, test_path)) continue;
         total += 1;
         const ok = blk: {
             r.render(test_path, .html, 0, r.pixels[0]) catch break :blk false;
             r.render(ref_path, .html, 0, r.pixels[1]) catch break :blk false;
-            break :blk r.same();
+            break :blk r.sameAs(test_path);
         };
         if (ok) {
             passed += 1;
@@ -95,4 +121,48 @@ test "WPT css-tables reftests" {
 
 test "WPT floats reftests" {
     try runSuite("floats");
+}
+
+test "WPT css-sizing reftests" {
+    try runSuite("css-sizing");
+}
+
+test "WPT css-display reftests" {
+    try runSuite("css-display");
+}
+
+test "WPT css-pseudo reftests" {
+    try runSuite("css-pseudo");
+}
+
+test "WPT css-lists reftests" {
+    try runSuite("css-lists");
+}
+
+test "WPT css-text reftests" {
+    try runSuite("css-text");
+}
+
+test "WPT css-backgrounds reftests" {
+    try runSuite("css-backgrounds");
+}
+
+test "WPT css-overflow reftests" {
+    try runSuite("css-overflow");
+}
+
+test "WPT css-position reftests" {
+    try runSuite("css-position");
+}
+
+test "WPT css-break reftests" {
+    try runSuite("css-break");
+}
+
+test "WPT css-multicol reftests" {
+    try runSuite("css-multicol");
+}
+
+test "WPT css-writing-modes reftests" {
+    try runSuite("css-writing-modes");
 }

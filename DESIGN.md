@@ -5858,13 +5858,27 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   (`src/html/testdata`, MIT); the CommonMark spec's examples, 652 of
   652 (fetched, CC-BY-SA, D25); web-platform-tests CSS reftests
   imported by `test/wpt/import.py` (BSD-3-Clause; reftests without
-  scripts, images, or resources other than the Ahem font, rendered at
-  800 × 600 with Ahem and siv's Droid test font, test and reference
-  compared allowing 20 pixels to differ by more than 32 in a channel),
-  per suite: css2 233 of 316, css-flexbox 218 of 400, css-grid 59 of 198,
+  scripts, images, or resources other than the Ahem font, at most 400
+  per suite, rendered at 800 × 600 with Ahem and siv's Droid test font,
+  test and reference compared allowing 20 pixels to differ by more than
+  32 in a channel, or what a test's fuzzy metadata allows beyond that).
+  `test/wpt/EXCLUDED` counts the tests each suite leaves out by reason
+  (testharness.js and other scripts, embedded images and SVG, form
+  controls, writing modes outside their own suite, mismatch reftests,
+  the cap), and `test/wpt/SKIP` lists imported tests that are out of
+  scope for documents, with the reason, left out of the pass rate.
+  `zig build doc-wpt -- FILTER` runs tests one by one and dumps the
+  renders of failures (triage). Per suite (a regression fails the
+  test): css2 233 of 316, css-flexbox 218 of 398, css-grid 59 of 198,
   css-values 56 of 123, css-variables 46 of 70, css-tables (CSS2 tables
-  and css-tables) 117 of 288, floats (CSS2 floats and floats-clear) 87
-  of 171 (816 of 1566, 52 %; a regression fails the test); an email
+  and css-tables) 117 of 288, floats (CSS2 floats and floats-clear) 86
+  of 170 (815 of 1563, 52 %); and, measured since, css-sizing 103 of
+  278, css-display 59 of 106, css-pseudo 33 of 72, css-lists (and CSS2
+  generated content) 166 of 326, css-text (white space, transforms,
+  spacing, breaking, indents, alignment) 92 of 320, css-backgrounds
+  (and css-borders) 111 of 230, css-overflow 67 of 310, css-position 22
+  of 68, css-break 40 of 400, css-multicol 62 of 312, css-writing-modes
+  50 of 395 (805 of 2817, 29 %); an email
   corpus (`test/doc/email`: a receipt with a `cid:` logo and a tracking
   pixel, a Mailchimp-style newsletter, Gmail, Outlook, and Apple Mail
   replies with their quotes collapsed and open), close to Chromium's
