@@ -99,18 +99,37 @@ pub fn analyze(allocator: std.mem.Allocator, text: []const u8, graphemes: Bounda
     errdefer runs.deinit(allocator);
     if (start == end) return runs.toOwnedSlice(allocator);
 
-    // ASCII has only Latin letters and Common characters without extensions,
-    // so every cluster resolves to the same script.
+    // Text of only Latin characters and Common or Inherited ones without
+    // other scripts' extensions (ASCII, accented letters, curly quotes,
+    // dashes: most European text) resolves to one script for every
+    // cluster: Latin if any character is.
     var letters = false;
-    const ascii = for (text[start..end]) |byte| {
-        if (byte >= 0x80) break false;
-        letters = letters or std.ascii.isAlphabetic(byte);
+    var i = start;
+    const simple = while (i < end) {
+        const byte = text[i];
+        if (byte < 0x80) {
+            letters = letters or std.ascii.isAlphabetic(byte);
+            i += 1;
+            continue;
+        }
+        const len = std.unicode.utf8ByteSequenceLength(byte) catch break false;
+        const cp = std.unicode.utf8Decode(text[i..][0..len]) catch break false;
+        i += len;
+        const candidates: Candidates = .of(cp);
+        if (candidates.multi.len != 0 or (candidates.single != 0 and candidates.single != latin)) break false;
+        const script = uucode.get(.iso_script, cp);
+        if (!isGeneric(script) and script != latin) break false;
+        letters = letters or candidates.single == latin;
     } else true;
-    if (ascii) {
+    if (simple) {
         try runs.append(allocator, .{ .start = start, .end = end, .script = if (letters) latin else common });
         return runs.toOwnedSlice(allocator);
     }
+    return analyzeClusters(allocator, text, graphemes, start, end, &runs);
+}
 
+/// `analyze` for text of several scripts, cluster by cluster.
+fn analyzeClusters(allocator: std.mem.Allocator, text: []const u8, graphemes: Boundaries, start: u32, end: u32, runs: *std.ArrayList(Run)) ![]Run {
     var clusters: std.ArrayList(Cluster) = .empty;
     defer clusters.deinit(allocator);
     var cluster_start = start;
@@ -264,20 +283,18 @@ test "clusters stay whole and paired brackets take the enclosed script" {
     try std.testing.expectEqual(tag("Grek"), leading[0].script);
 }
 
-test "ASCII shortcut agrees with full resolution" {
+test "Latin shortcut agrees with full resolution" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    for ([_][]const u8{ "([12]) --", "(abc[123])\r\nZ", "x" }) |text| {
+    // ASCII, accented letters and combining marks, typographic
+    // punctuation, Common symbols, and text without letters.
+    for ([_][]const u8{ "([12]) --", "(abc[123])\r\nZ", "x", "Café naïve Zürich — “quoted” ‘text’…", "e\u{0301}\u{0323} ½ × € © ¶", "«» – 12 €", "Œuvre ǅ ȷ ɐ" }) |text| {
         const a = arena.allocator();
         const graphemes = try @import("segmentation.zig").graphemes(a, text);
-        var clusters: std.ArrayList(Cluster) = .empty;
-        var offset: u32 = 0;
-        while (graphemes.after(offset)) |next| : (offset = next)
-            try clusters.append(a, try analyzeCluster(a, text, offset, next));
-        resolveContext(clusters.items);
-        try resolvePairedBrackets(a, clusters.items);
-        reresolveGeneric(clusters.items);
+        var slow: std.ArrayList(Run) = .empty;
+        const full = try analyzeClusters(a, text, graphemes, 0, @intCast(text.len), &slow);
         const fast = try testing.runs(a, text);
-        for (clusters.items) |cluster| try std.testing.expectEqual(fast[0].script, cluster.resolved orelse common);
+        try std.testing.expectEqual(1, fast.len);
+        try std.testing.expectEqualSlices(Run, full, fast);
     }
 }

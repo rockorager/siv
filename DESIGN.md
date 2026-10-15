@@ -1494,9 +1494,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     1996, French, Spanish, Dutch, Portuguese, Polish, Ukrainian, Slovak;
     American English is under the FSF all-permissive notice, which
     permits copying and modification with the notice kept, like MIT).
-    The patterns are embedded and parsed per language the first time
-    text in it is hyphenated (`text.hyphen.Hyphenation`, one per
-    application in `ui.Fonts`), with the hyphenmins their headers give.
+    The patterns are embedded and parsed into a trie per language the
+    first time text in it is hyphenated (`text.hyphen.Hyphenation`, one
+    per application in `ui.Fonts`), with the hyphenmins their headers
+    give.
     A text's language finds them by its tag, its language and region,
     British English for British-spelling regions, else its language's
     first patterns. Applications add patterns for other languages, which

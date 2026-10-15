@@ -11,16 +11,24 @@ const Allocator = std.mem.Allocator;
 
 pub const Hyphenator = struct {
     arena: std.heap.ArenaAllocator,
-    /// Pattern letters (lowercase UTF-8, '.' marking a word edge) to the
-    /// value at each gap: one per code point, plus one.
-    patterns: std.StringHashMapUnmanaged([]const u8) = .empty,
+    /// Patterns in a trie over their letters (lowercase UTF-8, '.'
+    /// marking a word edge): node 0 is the root, a node's children are
+    /// `edge_byte` and `edge_child` from `first`, sorted by byte, and a
+    /// pattern's node holds its value at each gap (one per code point,
+    /// plus one). Matching walks the trie from each position of a word
+    /// rather than hashing every substring.
+    nodes: []const Node = &.{},
+    /// The root's children by byte (0: none), the most searched.
+    root: [256]u32 = @splat(0),
+    edge_byte: []const u8 = &.{},
+    edge_child: []const u32 = &.{},
     /// Lowercase words to the code point indices they break before.
     exceptions: std.StringHashMapUnmanaged([]const u32) = .empty,
     /// Code points kept together at a word's start and end.
     left_min: u8,
     right_min: u8,
-    /// The longest pattern, in code points.
-    max_len: u32 = 0,
+
+    const Node = struct { first: u32 = 0, count: u32 = 0, values: []const u8 = &.{} };
 
     /// Parses TeX patterns (whitespace-separated, such as `.ab4c`) and
     /// exceptions (such as `as-so-ciate`). Nothing is kept from the
@@ -33,6 +41,12 @@ pub const Hyphenator = struct {
         var it = std.mem.tokenizeAny(u8, patterns, " \t\r\n");
         var letters: std.ArrayList(u8) = .empty;
         var values: std.ArrayList(u8) = .empty;
+        // The trie while it is built: children by parent and byte.
+        var kids: std.AutoHashMapUnmanaged(u64, u32) = .empty;
+        defer kids.deinit(gpa);
+        var node_values: std.ArrayList([]const u8) = .empty;
+        defer node_values.deinit(gpa);
+        try node_values.append(gpa, &.{});
         while (it.next()) |tok| {
             if (tok[0] == '%') {
                 // A comment runs to the end of its line.
@@ -54,10 +68,44 @@ pub const Hyphenator = struct {
                 }
             }
             if (letters.items.len == 0) return error.InvalidPatterns;
-            const gop = try h.patterns.getOrPut(a, try a.dupe(u8, letters.items));
-            gop.value_ptr.* = try a.dupe(u8, values.items);
-            h.max_len = @max(h.max_len, @as(u32, @intCast(values.items.len - 1)));
+            var node: u32 = 0;
+            for (letters.items) |byte| {
+                const gop = try kids.getOrPut(gpa, @as(u64, node) << 8 | byte);
+                if (!gop.found_existing) {
+                    gop.value_ptr.* = @intCast(node_values.items.len);
+                    try node_values.append(gpa, &.{});
+                }
+                node = gop.value_ptr.*;
+            }
+            node_values.items[node] = try a.dupe(u8, values.items);
         }
+        // Flattened: edges sorted by parent, then byte.
+        const Edge = struct { key: u64, child: u32 };
+        const edges = try gpa.alloc(Edge, kids.count());
+        defer gpa.free(edges);
+        var kit = kids.iterator();
+        var ei: usize = 0;
+        while (kit.next()) |kv| : (ei += 1) edges[ei] = .{ .key = kv.key_ptr.*, .child = kv.value_ptr.* };
+        std.mem.sort(Edge, edges, {}, struct {
+            fn lt(_: void, x: Edge, y: Edge) bool {
+                return x.key < y.key;
+            }
+        }.lt);
+        const nodes = try a.alloc(Node, node_values.items.len);
+        for (nodes, node_values.items) |*n, v| n.* = .{ .values = v };
+        const edge_byte = try a.alloc(u8, edges.len);
+        const edge_child = try a.alloc(u32, edges.len);
+        for (edges, 0..) |e, k| {
+            const parent: u32 = @intCast(e.key >> 8);
+            if (nodes[parent].count == 0) nodes[parent].first = @intCast(k);
+            nodes[parent].count += 1;
+            edge_byte[k] = @truncate(e.key);
+            edge_child[k] = e.child;
+        }
+        for (edge_byte[0..nodes[0].count], edge_child[0..nodes[0].count]) |b, c| h.root[b] = c;
+        h.nodes = nodes;
+        h.edge_byte = edge_byte;
+        h.edge_child = edge_child;
         var ex = std.mem.tokenizeAny(u8, exceptions, " \t\r\n");
         while (ex.next()) |tok| {
             if (tok[0] == '%') {
@@ -89,54 +137,80 @@ pub const Hyphenator = struct {
     }
 
     /// Appends the byte offsets in `word` (letters only) before which it
-    /// may break, in increasing order. `scratch` holds intermediates.
+    /// may break, in increasing order. `scratch` holds intermediates of
+    /// long words.
     pub fn points(h: *const Hyphenator, scratch: Allocator, word: []const u8, out: *std.ArrayList(u32), gpa: Allocator) Allocator.Error!void {
-        // The word lowercased between dots, and where each code point
-        // starts in it and in the word.
-        var dotted: std.ArrayList(u8) = .empty;
-        var starts: std.ArrayList(u32) = .empty; // in dotted, per code point, plus the end
-        var origin: std.ArrayList(u32) = .empty; // in word, per word code point
-        try dotted.append(scratch, '.');
-        try starts.append(scratch, 0);
-        var view = std.unicode.Utf8View.initUnchecked(word).iterator();
+        // The word lowercased between dots, where each code point starts
+        // in it (plus the end), and where each starts in the word.
+        const short = 48;
+        var dotted_buf: [short * 4 + 2]u8 = undefined;
+        var starts_buf: [short + 3]u32 = undefined;
+        var origin_buf: [short]u32 = undefined;
+        const long = word.len > short;
+        const dotted = if (long) try scratch.alloc(u8, word.len * 4 + 2) else &dotted_buf;
+        const starts = if (long) try scratch.alloc(u32, word.len + 3) else &starts_buf;
+        const origin = if (long) try scratch.alloc(u32, word.len) else &origin_buf;
+        dotted[0] = '.';
+        starts[0] = 0;
+        var len: u32 = 1;
+        var n: u32 = 0;
         var at: u32 = 0;
-        while (view.nextCodepointSlice()) |slice| {
-            const cp = std.unicode.utf8Decode(slice) catch unreachable;
-            try origin.append(scratch, at);
-            at += @intCast(slice.len);
-            try starts.append(scratch, @intCast(dotted.items.len));
-            var buf: [4]u8 = undefined;
-            const n = std.unicode.utf8Encode(lower(cp), &buf) catch unreachable;
-            try dotted.appendSlice(scratch, buf[0..n]);
+        while (at < word.len) {
+            origin[n] = at;
+            n += 1;
+            starts[n] = len;
+            const c = word[at];
+            if (c < 0x80) {
+                dotted[len] = std.ascii.toLower(c);
+                len += 1;
+                at += 1;
+                continue;
+            }
+            const l = std.unicode.utf8ByteSequenceLength(c) catch unreachable;
+            const cp = std.unicode.utf8Decode(word[at..][0..l]) catch unreachable;
+            at += l;
+            len += std.unicode.utf8Encode(lower(cp), dotted[len..][0..4]) catch unreachable;
         }
-        const n: u32 = @intCast(origin.items.len);
         if (n < @as(u32, h.left_min) + h.right_min) return;
-        try starts.append(scratch, @intCast(dotted.items.len));
-        try dotted.append(scratch, '.');
-        try starts.append(scratch, @intCast(dotted.items.len));
+        starts[n + 1] = len;
+        dotted[len] = '.';
+        len += 1;
+        starts[n + 2] = len;
 
         // The values at the gap before each dotted code point.
-        const values = try scratch.alloc(u8, n + 3);
+        var values_buf: [short + 3]u8 = undefined;
+        const values = if (long) try scratch.alloc(u8, n + 3) else values_buf[0 .. n + 3];
         @memset(values, 0);
-        const lowered = dotted.items[1 .. dotted.items.len - 1];
-        if (h.exceptions.get(lowered)) |ex| {
+        if (h.exceptions.get(dotted[1 .. len - 1])) |ex| {
             for (ex) |k| values[k + 1] = 1;
         } else {
-            const len = n + 2;
-            for (0..len) |i| {
-                var j = i + 1;
-                while (j <= len and j - i <= h.max_len) : (j += 1) {
-                    const key = dotted.items[starts.items[i]..starts.items[j]];
-                    const pattern = h.patterns.get(key) orelse continue;
-                    for (pattern, 0..) |v, k| values[i + k] = @max(values[i + k], v);
+            // From each code point, the patterns the text there starts with.
+            for (0..n + 2) |i| {
+                var node = h.root[dotted[starts[i]]];
+                var b = starts[i];
+                while (node != 0) {
+                    b += 1;
+                    const pattern = h.nodes[node].values;
+                    for (pattern, values[i..][0..pattern.len]) |v, *x| x.* = @max(x.*, v);
+                    if (b == len) break;
+                    node = h.child(node, dotted[b]) orelse break;
                 }
             }
         }
         // A break before word code point k is the gap before dotted k + 1.
         var k: u32 = h.left_min;
         while (k + h.right_min <= n) : (k += 1) {
-            if (values[k + 1] % 2 == 1) try out.append(gpa, origin.items[k]);
+            if (values[k + 1] % 2 == 1) try out.append(gpa, origin[k]);
         }
+    }
+
+    fn child(h: *const Hyphenator, node: u32, byte: u8) ?u32 {
+        const nd = h.nodes[node];
+        for (h.edge_byte[nd.first..][0..nd.count], nd.first..) |b, k| {
+            if (b == byte) return h.edge_child[k];
+            if (b > byte) return null;
+        }
+        return null;
     }
 };
 
