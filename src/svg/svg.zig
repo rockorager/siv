@@ -5,7 +5,9 @@
 //! opacity and blend modes, fills and strokes, linear and radial
 //! gradients, clip paths, luminance and alpha masks, `<style>` sheets and
 //! `style` attributes, and the filters icons use (one feColorMatrix, or
-//! one feGaussianBlur). Colors can stand for roles (GTK's symbolic
+//! one feGaussianBlur). `<text>` becomes text ops that the caller's
+//! `Document.TextHook` shapes (this module has no fonts). Colors can
+//! stand for roles (GTK's symbolic
 //! convention, KDE's color scheme classes) that take the theme's colors
 //! when drawn.
 //!

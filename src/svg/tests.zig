@@ -391,3 +391,29 @@ test "embedded images draw in their viewport, wrapped base64 and all" {
     // Files are not loaded.
     try testing.expectEqual(@as(usize, 1), images);
 }
+
+test "text becomes a text op with its inherited font and anchor, for the caller to shape" {
+    const doc = try parse(
+        \\<svg xmlns="http://www.w3.org/2000/svg" width="88" height="20"><g fill="#fff" text-anchor="middle" font-family="Verdana,sans-serif" font-size="110">
+        \\<text x="195 200" y="140" transform="scale(.1)" textLength="270"> build
+        \\ <tspan>ok</tspan></text></g></svg>
+    , .{});
+    defer doc.deinit();
+    var texts: std.ArrayList(*const svg.Document.Text) = .empty;
+    defer texts.deinit(testing.allocator);
+    try doc.texts(&texts, testing.allocator);
+    try testing.expectEqual(1, texts.items.len);
+    const t = texts.items[0];
+    try testing.expectEqualStrings("build ok", t.content);
+    try testing.expectEqualStrings("Verdana,sans-serif", t.family);
+    try testing.expectEqual(svg.Document.Text.Anchor.middle, t.anchor);
+    try testing.expectEqual(@as(f32, 110), t.size);
+    try testing.expectEqual(@as(f32, 195), t.x);
+    try testing.expectEqual(@as(f32, 270), t.length);
+    try testing.expectApproxEqAbs(@as(f32, 0.1), t.transform.a, 1e-6);
+    // Without a hook, drawing leaves the text out.
+    var b: scene.Builder = .init(testing.allocator);
+    defer b.deinit();
+    const list = try drawn(&b, doc, .xywh(0, 0, 88, 20), null);
+    for (list.commands) |c| try testing.expect(c != .glyphs);
+}

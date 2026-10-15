@@ -955,10 +955,7 @@ pub const View = struct {
         if (resource >= d.resources.items.len) return false;
         const r = d.resources.items[resource];
         if (r.state != .ready) return false;
-        if (r.svg_doc) |sd| {
-            try sd.draw(b, dst, null);
-            return true;
-        }
+        if (r.svg_doc != null) return d.drawSvg(b, resource, dst, &v.win.fonts.cache);
         const img = v.imageOf(resource) orelse return false;
         try v.holdImage(img);
         try b.image(.{ .image = img.sceneRef(), .src = .xywh(0, 0, @floatFromInt(img.width), @floatFromInt(img.height)), .dst = dst, .filter = .linear });

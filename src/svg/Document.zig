@@ -126,6 +126,9 @@ pub const Op = union(enum) {
     /// An embedded image: its pixels (in the document's arena) drawn as
     /// the rectangle (0, 0, width, height) through `transform`.
     image: struct { ref: scene.ImageRef, transform: Affine },
+    /// Text, which the module cannot shape: drawn by the caller's
+    /// `TextHook`, else not at all.
+    text: Text,
 
     pub const Push = struct {
         transform: Affine = .identity,
@@ -137,6 +140,43 @@ pub const Op = union(enum) {
         clip: ?struct { path: raster.Path, rule: scene.FillRule } = null,
     };
 };
+
+/// A `<text>` element's content on one line, its tspans' text joined.
+pub const Text = struct {
+    content: []const u8,
+    /// The anchor point of the baseline, in `transform`'s coordinates.
+    x: f32,
+    y: f32,
+    size: f32,
+    /// The font-family list as written ("Verdana,DejaVu Sans,sans-serif").
+    family: []const u8,
+    weight: u16 = 400,
+    italic: bool = false,
+    anchor: Anchor = .start,
+    /// textLength (0: none): the advance the text is fitted to, by
+    /// spacing or (`stretch`) by scaling the glyphs too.
+    length: f32 = 0,
+    stretch: bool = false,
+    paint: u32,
+    transform: Affine,
+
+    pub const Anchor = enum(u8) { start, middle, end };
+};
+
+/// Draws text ops: shapes `t.content` and appends glyphs to `b` in user
+/// space (the layer `draw` pushed has the transform), painted with `paint`.
+pub const TextHook = struct {
+    ctx: *anyopaque,
+    drawFn: *const fn (ctx: *anyopaque, b: *scene.Builder, t: *const Text, index: u32, paint: scene.Paint) scene.Error!void,
+};
+
+/// The text ops in order (what `TextHook` gets as `index`).
+pub fn texts(doc: *const Document, out: *std.ArrayList(*const Text), gpa: std.mem.Allocator) error{OutOfMemory}!void {
+    for (doc.ops) |*op| switch (op.*) {
+        .text => |*t| try out.append(gpa, t),
+        else => {},
+    };
+}
 
 pub fn deinit(doc: *Document) void {
     var arena = doc.arena;
@@ -173,9 +213,16 @@ fn alignOffset(al: Aspect.Align, free: f32) f32 {
 }
 
 /// Appends the drawing, mapped into `dst` and clipped to it, to `b`.
-/// Without `colors` every role keeps the color the file gives it.
+/// Without `colors` every role keeps the color the file gives it. Text
+/// is left out (`drawWithText` draws it).
 pub fn draw(doc: *const Document, b: *scene.Builder, dst: Rect, colors: ?*const Colors) scene.Error!void {
+    return doc.drawWithText(b, dst, colors, null);
+}
+
+/// `draw`, with `hook` drawing the text.
+pub fn drawWithText(doc: *const Document, b: *scene.Builder, dst: Rect, colors: ?*const Colors, hook: ?TextHook) scene.Error!void {
     if (dst.isEmpty()) return;
+    var text_index: u32 = 0;
     // The root clips to its viewport, which with meet is larger than the
     // view box: content beyond the view box but in the viewport shows.
     const m = doc.viewTransform(dst);
@@ -223,6 +270,16 @@ pub fn draw(doc: *const Document, b: *scene.Builder, dst: Rect, colors: ?*const 
             try b.pushLayer(.{ .transform = im.transform });
             try b.image(.{ .image = im.ref, .src = r, .dst = r });
             try b.popLayer();
+        },
+        .text => |*t| {
+            defer text_index += 1;
+            const h = hook orelse continue;
+            var buf: StopBuffer = undefined;
+            const paint = doc.resolve(t.paint, colors, &buf);
+            if (paint.isInvisible()) continue;
+            try b.pushLayer(.{ .transform = t.transform });
+            defer b.popLayer() catch {};
+            try h.drawFn(h.ctx, b, t, text_index, paint);
         },
     };
     try b.popLayer();

@@ -63,8 +63,10 @@ pub const Resource = struct {
     width: f32 = 0,
     height: f32 = 0,
     handle: u64 = 0,
-    /// An SVG image, parsed by the document.
+    /// An SVG image, parsed by the document, and a font for each of its
+    /// text ops (`resolveSvgFonts`).
     svg_doc: ?*svg.Document = null,
+    svg_fonts: []?text.FontId = &.{},
     /// Stylesheets: the parsed sheet (and which origin).
     sheet: ?*css.Sheet = null,
     /// Fonts: the faces added to the font cache, and their @font-face.
@@ -96,6 +98,8 @@ tree: box_mod.Tree = .{},
 engine: ?layout_mod.Engine = null,
 /// Per style: its fonts, resolved before layout.
 font_table: std.ArrayList(inline_mod.FontInfo) = .empty,
+/// The resolver `resolveFonts` last had, for SVG text that arrives later.
+resolver: ?FontResolver = null,
 hyphenation: text.hyphen.Hyphenation,
 resources: std.ArrayList(Resource) = .empty,
 /// Remote images not listed because of the policy.
@@ -206,6 +210,7 @@ pub fn destroy(d: *Document) void {
     d.sheets.deinit(gpa);
     for (d.resources.items) |r| {
         if (r.svg_doc) |s| s.deinit();
+        gpa.free(r.svg_fonts);
         if (r.sheet) |s| {
             s.deinit();
             gpa.destroy(s);
@@ -406,8 +411,130 @@ pub fn supplySvg(d: *Document, index: u32, bytes: []const u8) Error!void {
     r.width = doc.width;
     r.height = doc.height;
     r.state = .ready;
+    try d.resolveSvgFonts(index);
     d.applyImageSizes();
 }
+
+/// Picks a font for each text op of SVG resource `index`: the first face
+/// of its family list that has every character, else the first found.
+fn resolveSvgFonts(d: *Document, index: u32) Error!void {
+    const resolver = d.resolver orelse return;
+    const r = &d.resources.items[index];
+    const doc = r.svg_doc orelse return;
+    var ops: std.ArrayList(*const svg.Document.Text) = .empty;
+    defer ops.deinit(d.gpa);
+    try doc.texts(&ops, d.gpa);
+    if (ops.items.len == 0) return;
+    const fonts = try d.gpa.alloc(?text.FontId, ops.items.len);
+    errdefer d.gpa.free(fonts);
+    var chain: std.ArrayList(text.FontId) = .empty;
+    defer chain.deinit(d.gpa);
+    for (ops.items, fonts) |t, *font| {
+        chain.clearRetainingCapacity();
+        var it = std.mem.tokenizeScalar(u8, t.family, ',');
+        while (it.next()) |raw| {
+            const name = std.mem.trim(u8, raw, " \t\r\n\"'");
+            if (name.len == 0) continue;
+            const generic = for ([_][]const u8{ "serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui" }) |g| {
+                if (std.ascii.eqlIgnoreCase(name, g)) break true;
+            } else false;
+            const found = try resolver.chainFn(resolver.ctx, if (std.ascii.eqlIgnoreCase(name, "system-ui")) "sans-serif" else name, "und", t.weight, t.italic, 100, t.size);
+            for (found) |id| if (std.mem.indexOfScalar(text.FontId, chain.items, id) == null) try chain.append(d.gpa, id);
+            if (generic) break;
+        }
+        if (chain.items.len == 0) try chain.appendSlice(d.gpa, try resolver.chainFn(resolver.ctx, "serif", "und", t.weight, t.italic, 100, t.size));
+        const cache = resolver.cache;
+        cache.lockShared();
+        defer cache.unlockShared();
+        font.* = if (chain.items.len > 0) chain.items[0] else null;
+        for (chain.items) |id| {
+            const face = cache.face(id) orelse continue;
+            const view = std.unicode.Utf8View.init(t.content) catch break;
+            var cps = view.iterator();
+            const all = while (cps.nextCodepoint()) |cp| {
+                if (cp != ' ' and !face.hasCodepoint(cp)) break false;
+            } else true;
+            if (all) {
+                font.* = id;
+                break;
+            }
+        }
+    }
+    d.gpa.free(r.svg_fonts);
+    r.svg_fonts = fonts;
+}
+
+/// Draws SVG resource `index` into `dst`, its text shaped with the fonts
+/// `resolveSvgFonts` picked. False if it is not an SVG ready to draw.
+pub fn drawSvg(d: *const Document, b: *scene.Builder, index: u32, dst: raster.Rect, cache: *text.FontCache) scene.Error!bool {
+    if (index >= d.resources.items.len) return false;
+    const r = &d.resources.items[index];
+    const doc = r.svg_doc orelse return false;
+    if (r.state != .ready) return false;
+    var ctx: SvgText = .{ .fonts = r.svg_fonts, .cache = cache };
+    try doc.drawWithText(b, dst, null, .{ .ctx = &ctx, .drawFn = SvgText.draw });
+    return true;
+}
+
+const SvgText = struct {
+    fonts: []const ?text.FontId,
+    cache: *text.FontCache,
+
+    fn draw(ptr: *anyopaque, b: *scene.Builder, t: *const svg.Document.Text, index: u32, fill: scene.Paint) scene.Error!void {
+        const ctx: *SvgText = @ptrCast(@alignCast(ptr));
+        if (index >= ctx.fonts.len or !(t.size > 0)) return;
+        const face = ctx.cache.face(ctx.fonts[index] orelse return) orelse return;
+        const a = std.heap.smp_allocator;
+        var shaper = text.shape.Shaper.init() catch return error.OutOfMemory;
+        defer shaper.deinit();
+        var shaped: std.ArrayList(text.shape.Glyph) = .empty;
+        defer shaped.deinit(a);
+        const n: u32 = @intCast(@min(t.content.len, 4096));
+        shaper.shape(a, .{
+            .face = face,
+            .size = t.size,
+            .text = t.content[0..n],
+            .paragraph_start = 0,
+            .paragraph_end = n,
+            .start = 0,
+            .end = n,
+            .rtl = false,
+            .script = text.script.tag("Latn"),
+            .language = null,
+        }, &shaped) catch return error.OutOfMemory;
+        if (shaped.items.len == 0) return;
+        var width: f32 = 0;
+        for (shaped.items) |g| width += g.advance;
+        // textLength: extra space between glyphs, or the glyphs scaled.
+        var gap: f32 = 0;
+        var scale: f32 = 1;
+        if (t.length > 0 and width > 0) {
+            if (t.stretch) scale = t.length / width else if (shaped.items.len > 1) gap = (t.length - width) / @as(f32, @floatFromInt(shaped.items.len - 1));
+        }
+        const total = if (t.length > 0) t.length else width;
+        const x0 = t.x - switch (t.anchor) {
+            .start => 0,
+            .middle => total / 2,
+            .end => total,
+        };
+        const glyphs = try a.alloc(scene.Glyph, shaped.items.len);
+        defer a.free(glyphs);
+        var x: f32 = 0;
+        for (shaped.items, glyphs) |g, *out| {
+            out.* = .{ .id = g.id, .x = x + g.x_offset, .y = g.y_offset };
+            x += g.advance + gap;
+        }
+        try b.pushLayer(.{ .transform = raster.Affine.scale(scale, 1).then(.translate(x0, t.y)) });
+        defer b.popLayer() catch {};
+        try b.glyphs(.{
+            .font = .{ .handle = face.font, .key = face.key },
+            .size = t.size,
+            .glyphs = glyphs,
+            .paint = fill,
+            .bounds = .{ .x0 = -t.size, .y0 = -t.size * 1.5, .x1 = x + t.size, .y1 = t.size },
+        });
+    }
+};
 
 /// Supplies a font's bytes for an @font-face source.
 pub fn supplyFont(d: *Document, index: u32, cache: *text.FontCache, bytes: []const u8) Error!void {
@@ -558,6 +685,8 @@ fn linkResources(d: *Document) Error!void {
 
 /// The fonts each style needs, for the owner to resolve on its thread.
 pub fn resolveFonts(d: *Document, resolver: FontResolver) Error!void {
+    d.resolver = resolver;
+    for (d.resources.items, 0..) |r, i| if (r.svg_doc != null) try d.resolveSvgFonts(@intCast(i));
     d.font_table.clearRetainingCapacity();
     try d.font_table.ensureTotalCapacity(d.gpa, d.store.count());
     const a = d.arena.allocator();

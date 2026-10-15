@@ -79,6 +79,11 @@ const Style = struct {
     /// color-interpolation: linearRGB (else sRGB, the default).
     interp_linear: bool = false,
     stroke_first: bool = false,
+    font_size: f32 = 16,
+    font_family: []const u8 = "serif",
+    font_weight: u16 = 400,
+    italic: bool = false,
+    anchor: Document.Text.Anchor = .start,
     // Not inherited.
     opacity: f32 = 1,
     display: bool = true,
@@ -136,6 +141,11 @@ const Prop = enum {
     @"mix-blend-mode",
     isolation,
     @"mask-type",
+    @"font-size",
+    @"font-family",
+    @"font-weight",
+    @"font-style",
+    @"text-anchor",
 };
 
 const props: std.StaticStringMap(Prop) = blk: {
@@ -145,7 +155,7 @@ const props: std.StaticStringMap(Prop) = blk: {
     break :blk .initComptime(kvs);
 };
 
-const Kind = enum { svg, g, a, @"switch", use, path, rect, circle, ellipse, line, polyline, polygon, image };
+const Kind = enum { svg, g, a, @"switch", use, path, rect, circle, ellipse, line, polyline, polygon, image, text };
 
 const kinds: std.StaticStringMap(Kind) = blk: {
     const fields = @typeInfo(Kind).@"enum".field_names;
@@ -400,6 +410,25 @@ const Lower = struct {
                     s.stroke_first = if (stroke_at) |st| (fill_at == null or st < fill_at.?) else false;
                 }
             },
+            .@"font-size" => if (parseLength(value)) |v| {
+                if (v.v > 0) s.font_size = if (v.pct) parent.font_size * v.v / 100 else v.v;
+            } else if (std.mem.endsWith(u8, value, "em")) {
+                if (std.fmt.parseFloat(f32, value[0 .. value.len - 2]) catch null) |v| s.font_size = parent.font_size * v;
+            },
+            .@"font-family" => s.font_family = value,
+            .@"font-weight" => {
+                if (std.mem.eql(u8, value, "bold") or std.mem.eql(u8, value, "bolder")) {
+                    s.font_weight = 700;
+                } else if (std.mem.eql(u8, value, "normal") or std.mem.eql(u8, value, "lighter")) {
+                    s.font_weight = 400;
+                } else if (std.fmt.parseInt(u16, value, 10) catch null) |v| s.font_weight = std.math.clamp(v, 1, 1000);
+            },
+            .@"font-style" => s.italic = std.mem.eql(u8, value, "italic") or std.mem.eql(u8, value, "oblique"),
+            .@"text-anchor" => {
+                if (std.mem.eql(u8, value, "start")) s.anchor = .start;
+                if (std.mem.eql(u8, value, "middle")) s.anchor = .middle;
+                if (std.mem.eql(u8, value, "end")) s.anchor = .end;
+            },
             .@"clip-path" => s.clip_path = parseUrl(value),
             .mask => s.mask = parseUrl(value),
             .filter => s.filter = parseUrl(value),
@@ -464,8 +493,79 @@ const Lower = struct {
             },
             .use => try l.use(node, &st, m),
             .image => try l.image(node, &st, m),
+            .text => try l.text(node, &st, m),
             else => try l.shape(node, kind, &st, m),
         }
+    }
+
+    /// A `<text>` on one line: its own and its tspans' character data
+    /// with white space collapsed, at its first x and y, for the caller's
+    /// text hook to shape (`Document.TextHook`). Strokes, per-glyph
+    /// positions, and text paths are left out.
+    fn text(l: *Lower, node: u32, st: *const Style, m: Affine) Error!void {
+        if (!st.visible) return;
+        var raw: std.ArrayList(u8) = .empty;
+        try l.textOf(node, &raw, 0);
+        var content: std.ArrayList(u8) = .empty;
+        var space = false;
+        for (raw.items) |c| {
+            if (c == ' ' or c == '\t' or c == '\n' or c == '\r') {
+                space = content.items.len > 0;
+                continue;
+            }
+            if (space) try content.append(l.out, ' ');
+            space = false;
+            try content.append(l.out, c);
+        }
+        if (content.items.len == 0) return;
+        const n = &l.doc.nodes[node];
+        const first = struct {
+            fn f(v: ?[]const u8) ?[]const u8 {
+                var it = std.mem.tokenizeAny(u8, v orelse return null, " ,\t\r\n");
+                return it.next();
+            }
+        }.f;
+        const x = if (first(n.attr("x"))) |v| if (parseLength(v)) |len_| l.len(len_, .x) else 0 else 0;
+        const y = if (first(n.attr("y"))) |v| if (parseLength(v)) |len_| l.len(len_, .y) else 0 else 0;
+        const size = st.font_size;
+        const length = if (n.attr("textLength")) |v| if (parseLength(v)) |len_| l.len(len_, .x) else 0 else 0;
+        // An estimate of its box, for gradients and effects.
+        const w = size * 0.6 * @as(f32, @floatFromInt(content.items.len));
+        const x0 = switch (st.anchor) {
+            .start => x,
+            .middle => x - w / 2,
+            .end => x - w,
+        };
+        const bbox = Rect.xywh(x0, y - size, w, size * 1.2);
+        const fill = (try l.paintOf(node, st.fill, st, st.fill_opacity, bbox, m)) orelse return;
+        const fold = st.opacity < 1 and st.clip_path == null and st.mask == null and st.filter == null and st.blend == .src_over and !st.isolate;
+        if (fold) l.paints.items[fill].opacity *= st.opacity;
+        const fx = (try l.beginEffects(node, st, m, bbox, fold)) orelse return;
+        try l.emit(.{ .text = .{
+            .content = content.items,
+            .x = x,
+            .y = y,
+            .size = size,
+            .family = try l.out.dupe(u8, st.font_family),
+            .weight = st.font_weight,
+            .italic = st.italic,
+            .anchor = st.anchor,
+            .length = if (length > 0) length else 0,
+            .stretch = if (n.attr("lengthAdjust")) |v| std.mem.eql(u8, v, "spacingAndGlyphs") else false,
+            .paint = fill,
+            .transform = m,
+        } });
+        try l.endEffects(fx, node, m, bbox);
+    }
+
+    fn textOf(l: *Lower, node: u32, out: *std.ArrayList(u8), depth: u32) Error!void {
+        if (depth > 8) return;
+        const n = &l.doc.nodes[node];
+        try out.appendSlice(l.tmp, n.text);
+        var it = l.doc.children(node);
+        while (it.next()) |c| if (std.mem.eql(u8, l.doc.nodes[c].name, "tspan")) {
+            try l.textOf(c, out, depth + 1);
+        };
     }
 
     fn group(l: *Lower, node: u32, st: *const Style, m: Affine, which: Children) Error!void {
@@ -1282,6 +1382,11 @@ fn fieldOf(p: Prop) []const u8 {
         .@"mix-blend-mode" => "blend",
         .isolation => "isolate",
         .@"mask-type" => "mask_alpha",
+        .@"font-size" => "font_size",
+        .@"font-family" => "font_family",
+        .@"font-weight" => "font_weight",
+        .@"font-style" => "italic",
+        .@"text-anchor" => "anchor",
     };
 }
 

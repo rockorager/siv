@@ -235,10 +235,7 @@ pub const Runner = struct {
         const d = r.doc orelse return false;
         const res = d.resources.items[resource];
         if (res.state != .ready) return false;
-        if (res.svg_doc) |sd| {
-            try sd.draw(b, dst, null);
-            return true;
-        }
+        if (res.svg_doc != null) return d.drawSvg(b, resource, dst, &r.cache);
         if (resource >= r.images.items.len) return false;
         const img = r.images.items[resource] orelse return false;
         r.key += 1;

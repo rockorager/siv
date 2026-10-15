@@ -5764,7 +5764,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     attributes against the document's base. Images come through paint hooks: the
     widget decodes with `ui.Image.load` on the pool and keeps the images
     alive with the display lists that draw them; SVG (files and inline
-    `<svg>`) is parsed by the `svg` module.
+    `<svg>`) is parsed by the `svg` module. Its `<text>` (README
+    badges) lowers to text ops, one line each with the tspans' text
+    joined, that the module cannot shape: `Document.drawSvg` shapes
+    them with a font picked per op from its family list when fonts
+    resolve, and fits textLength by spacing or scaling; per-glyph
+    positions, text paths, and strokes on text are left out.
   - **Public API** (`siv_docview`, `src/abi/api_document.zig`; Zig and
     Lua from the schema). A document node created from bytes, a kind
     (HTML, Markdown, plain text), a base URL, a user style sheet, a
