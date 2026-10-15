@@ -5670,9 +5670,22 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     (`Engine.intrinsic`); a parent sizes a box's height with
     `Engine.layoutSized` (a given height, definite or not, or the height
     from content alone, which flex items' minimum sizes measure). Tables: the HTML table
-    model with anonymous rows and cells, automatic and fixed layout
-    (CSS 2.1 17.5.2), row and column spans, `border-spacing` and
-    collapsed borders, captions; columns (`<col>`) generate no boxes.
+    model with anonymous tables, rows, and cells (table-internal boxes
+    outside a table get an anonymous block-level table; inside inline
+    content they would need an anonymous inline table, which is not
+    built), automatic layout by CSS Tables 3's sizing guesses (minimum,
+    percentage columns at their share, fixed columns at their width,
+    maximum; space beyond goes to auto columns first, so mail's fixed
+    gutters keep their width), fixed layout (CSS 2.1 17.5.2), row and
+    column spans, `border-spacing`, a table height stretching its rows,
+    captions outside the table's border (the wrapper box), and the
+    collapsing border model (CSS 2.1 17.6.2: cells, rows, row groups,
+    and the table compete; each cell lays out and paints its share of
+    each winning border, split on whole pixels, and the table its
+    share at its edges). Rows and row groups paint their backgrounds
+    under their cells only. Columns (`<col>`) generate no boxes, so
+    they set no widths or backgrounds and take no part in collapsing.
+    Text at `font-size: 0` (mail's spacer cells) shapes at a tiny size.
   - **Floats** (CSS 2.1 9.5) keep a list of margin boxes per block
     formatting context, in its root's coordinates (`Engine.floats`,
     `float_base`, `org`): a float is placed at the flow's current y, as
@@ -5945,25 +5958,25 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   <!-- wpt-rates -->
   | Suite | Without images | All (with images) |
   | --- | --- | --- |
-  | css2 (normal flow, box, margins, colors, borders, positioning, line box, lists) | 235 of 316 | 441 of 569 |
+  | css2 (normal flow, box, margins, colors, borders, positioning, line box, lists) | 248 of 316 | 460 of 569 |
   | css-flexbox | 361 of 395 | 428 of 482 |
   | css-grid | 176 of 198 | 188 of 218 |
   | css-values | 65 of 123 | 67 of 126 |
   | css-variables | 47 of 70 | 47 of 70 |
-  | css-tables (and CSS2 tables) | 125 of 288 | 127 of 309 |
-  | floats (CSS2 floats, floats-clear) | 96 of 170 | 160 of 269 |
+  | css-tables (and CSS2 tables) | 177 of 288 | 187 of 309 |
+  | floats (CSS2 floats, floats-clear) | 103 of 170 | 167 of 269 |
   | css-sizing | 181 of 278 | 239 of 366 |
   | css-display | 60 of 106 | 60 of 109 |
   | css-pseudo | 33 of 72 | 34 of 74 |
   | css-lists (and CSS2 generated content) | 167 of 326 | 169 of 334 |
   | css-text (white space, transforms, spacing, breaking, indents, alignment) | 116 of 320 | 122 of 333 |
-  | css-backgrounds (and css-borders) | 113 of 230 | 214 of 448 |
+  | css-backgrounds (and css-borders) | 116 of 230 | 217 of 448 |
   | css-overflow | 69 of 310 | 73 of 324 |
   | css-position | 23 of 68 | 24 of 79 |
   | css-break | 44 of 400 | 45 of 403 |
   | css-multicol | 63 of 312 | 69 of 373 |
   | css-writing-modes | 52 of 395 | 73 of 795 |
-  | Total | 2026 of 4377 (46 %) | 2580 of 5681 (45 %) |
+  | Total | 2101 of 4377 (48 %) | 2669 of 5681 (47 %) |
   <!-- /wpt-rates -->
 
 - **Layout unification.** Should siv's widget layout (D26) become this

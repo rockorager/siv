@@ -386,3 +386,71 @@ test "linked and inline style sheets cascade in document order" {
     try testing.expectEqual(@as(f32, 30), elementBox(d, .p, 0).w);
     try testing.expectEqual(@as(f32, 50), elementBox(d, .div, 0).w);
 }
+
+test "text at font-size 0 lays out to finite geometry" {
+    // Mail's spacer cells: `font-size: 0; line-height: 0` around a
+    // no-break space.
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+    const d = try f.load(gpa, "<table width=600><tr><td>row</td></tr><tr><td height=40 style=\"font-size: 0px; line-height: 0px\">&nbsp;</td></tr><tr><td>after</td></tr></table><p>end</p>", .{}, 800);
+    defer d.destroy();
+    for (d.tree.boxes.items) |b| {
+        for ([_]f32{ b.x, b.y, b.w, b.h }) |v| try testing.expect(std.math.isFinite(v));
+    }
+    try testing.expect(elementBox(d, .td, 1).h >= 40);
+}
+
+test "tables keep their margins; captions sit outside the border" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+    const d = try f.load(gpa,
+        \\<style>body { margin: 0 } table { margin: 5px 3px 2px 40px; border: 4px solid; border-spacing: 0 }
+        \\td { padding: 0 } caption { height: 20px }</style>
+        \\<table><caption></caption><tr><td><div style="width:50px;height:10px"></div></td></tr></table>
+    , .{}, 800);
+    defer d.destroy();
+    const t = elementBox(d, .table, 0);
+    try testing.expectEqual(@as(f32, 40), absX(d, t));
+    try testing.expectEqual(@as(f32, 5), absY(d, t));
+    // The caption above the border; the cell inside it.
+    try testing.expectEqual(@as(f32, 5), absY(d, elementBox(d, .caption, 0)));
+    try testing.expectEqual(@as(f32, 5 + 20 + 4), absY(d, elementBox(d, .td, 0)));
+    try testing.expectEqual(@as(f32, 40 + 4), absX(d, elementBox(d, .td, 0)));
+}
+
+test "table columns: excess width to auto columns, percentages of the table" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+    const d = try f.load(gpa,
+        \\<style>body { margin: 0 } td { padding: 0 }</style>
+        \\<table width=600 cellspacing=0><tr><td width=20>a</td><td>b</td><td width=20>c</td></tr></table>
+        \\<table width=600 cellspacing=0><tr><td width="25%">a</td><td>b</td></tr></table>
+    , .{}, 800);
+    defer d.destroy();
+    // Mail's gutters keep their width; the auto column takes the rest.
+    try testing.expectEqual(@as(f32, 20), elementBox(d, .td, 0).w);
+    try testing.expectEqual(@as(f32, 560), elementBox(d, .td, 1).w);
+    try testing.expectEqual(@as(f32, 150), elementBox(d, .td, 3).w);
+    try testing.expectEqual(@as(f32, 450), elementBox(d, .td, 4).w);
+}
+
+test "collapsed table borders are shared between cells" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+    const d = try f.load(gpa,
+        \\<style>body { margin: 0 } table { border: 1px solid; border-collapse: collapse; padding: 9px }
+        \\td { border: 1px solid; padding: 0 } td + td { border-left-width: 3px }</style>
+        \\<table><tr><td><div style="width:50px;height:10px"></div><td><div style="width:50px;height:10px"></div></table>
+    , .{}, 800);
+    defer d.destroy();
+    // One line between the cells (the wider, 3px), one at each edge,
+    // and no table padding.
+    try testing.expectEqual(@as(f32, 1 + 50 + 3 + 50 + 1), elementBox(d, .table, 0).w);
+    try testing.expectEqual(@as(f32, 1 + 10 + 1), elementBox(d, .table, 0).h);
+    // The 3px line straddles the cells' edge: one pixel in the first.
+    try testing.expectEqual(@as(f32, 1 + 50 + 1), absX(d, elementBox(d, .td, 1)));
+}

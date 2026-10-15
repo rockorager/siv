@@ -403,10 +403,25 @@ pub const Painter = struct {
     }
 
     /// Shadows, background, and borders of a box.
-    fn decorations(p: *Painter, id: BoxId, r: Rect, is_root_element: bool) Error!void {
+    fn decorations(p: *Painter, id: BoxId, r_box: Rect, is_root_element: bool) Error!void {
         const st = p.style(id);
         if (st.inh.visibility != .visible) return;
         const b = p.tree().get(id);
+        // A table's captions sit in its wrapper box, outside the
+        // table's own background and borders.
+        var r = r_box;
+        if (b.kind == .table) {
+            var c = b.first;
+            while (c != none) : (c = p.tree().get(c).next) {
+                const cb = p.tree().get(c);
+                if (cb.kind != .table_caption) continue;
+                if (p.style(c).inh.caption_side == .top) {
+                    r.y0 = @max(r.y0, r_box.y0 + @round(cb.y + cb.h + cb.margin[2]));
+                } else {
+                    r.y1 = @min(r.y1, r_box.y0 + @round(cb.y - cb.margin[0]));
+                }
+            }
+        }
         if (r.isEmpty()) return;
         const rr = p.radii(id, r);
         const current = p.textColor(st);
@@ -425,14 +440,57 @@ pub const Painter = struct {
                 });
             }
         }
-        // The root element's background went to the canvas.
-        if (!is_root_element) try p.background(id, r, rr, current);
-        try p.borders(id, r, rr, current, b.border, st.box.border_style, st.box.border_color);
+        // The root element's background went to the canvas. A row's or
+        // row group's shows only under its cells, not in the spacing.
+        if (b.kind == .table_row or b.kind == .table_row_group) {
+            try p.rowBackground(id, r, r.x0, r.y0, rr, current);
+        } else if (!is_root_element) try p.background(id, r, rr, current);
+        if (st.inh.border_collapse == .collapse and (b.kind == .table or b.kind == .table_cell)) {
+            // Collapsed borders: each cell draws its share of the winning
+            // borders, and at the table's edges the table's share too.
+            if (b.kind == .table_cell and b.data != none) {
+                const cs = p.tree().collapsed.items[b.data];
+                var widths: [4]f32 = undefined;
+                var styles: [4]css.style.BorderStyle = undefined;
+                var colors: [4]Color = undefined;
+                for (cs, 0..) |sd, i| {
+                    widths[i] = sd.part + sd.ext;
+                    styles[i] = sd.style;
+                    colors[i] = sd.color;
+                }
+                const outer: Rect = .{ .x0 = r.x0 - cs[3].ext, .y0 = r.y0 - cs[0].ext, .x1 = r.x1 + cs[1].ext, .y1 = r.y1 + cs[2].ext };
+                try p.borders(id, outer, .{ .tl = .{ .x = 0, .y = 0 }, .tr = .{ .x = 0, .y = 0 }, .br = .{ .x = 0, .y = 0 }, .bl = .{ .x = 0, .y = 0 } }, current, widths, styles, colors);
+            }
+        } else try p.borders(id, r, rr, current, b.border, st.box.border_style, st.box.border_color);
         if (st.box.outline_style != .none and st.box.outline_width > 0) {
             const o = st.box.outline_width;
             const off = st.box.outline_offset;
             const orr = Rect{ .x0 = r.x0 - off - o, .y0 = r.y0 - off - o, .x1 = r.x1 + off + o, .y1 = r.y1 + off + o };
             try p.borders(id, orr, .{ .tl = .{ .x = 0, .y = 0 }, .tr = .{ .x = 0, .y = 0 }, .br = .{ .x = 0, .y = 0 }, .bl = .{ .x = 0, .y = 0 } }, current, .{ o, o, o, o }, @splat(st.box.outline_style), @splat(st.box.outline_color));
+        }
+    }
+
+    /// A row's or row group's background over `r` (its border box, at
+    /// `x`, `y`), clipped to each of its cells.
+    fn rowBackground(p: *Painter, id: BoxId, r: Rect, x: f32, y: f32, rr: raster.Radii, current: Color) Error!void {
+        const st = p.style(id);
+        if (st.box.background_image == null and p.resolve(st.box.background_color, current).a == 0) return;
+        if (p.tree().get(id).kind == .table_row) return p.rowCells(id, id, r, x, y, rr, current);
+        var c = p.tree().get(id).first;
+        while (c != none) : (c = p.tree().get(c).next) {
+            const cb = p.tree().get(c);
+            if (cb.kind == .table_row) try p.rowCells(id, c, r, x + cb.x, y + cb.y, rr, current);
+        }
+    }
+
+    fn rowCells(p: *Painter, id: BoxId, row: BoxId, r: Rect, x: f32, y: f32, rr: raster.Radii, current: Color) Error!void {
+        var c = p.tree().get(row).first;
+        while (c != none) : (c = p.tree().get(c).next) {
+            const cb = p.tree().get(c);
+            if (cb.kind != .table_cell) continue;
+            try p.b.pushLayer(.{ .clip = .{ .shape = .{ .rect = snap(Rect.xywh(x + cb.x, y + cb.y, cb.w, cb.h)) } } });
+            defer p.b.popLayer() catch {};
+            try p.background(id, r, rr, current);
         }
     }
 
@@ -1012,7 +1070,7 @@ pub const Painter = struct {
             p.glyphs.clearRetainingCapacity();
             for (l.fragGlyphs(f)) |g| try p.glyphs.append(p.scratch, .{ .id = g.id, .x = x + g.x, .y = baseline + g.y });
             const size = f.size;
-            if (p.glyphs.items.len > 0 and f.w > 0) {
+            if (p.glyphs.items.len > 0 and f.w > 0 and size > 0) {
                 try p.b.glyphs(.{
                     .font = .{ .handle = face.font, .key = face.key },
                     .size = size,

@@ -300,10 +300,31 @@ pub const Engine = struct {
         const b = e.get(id);
         const st = e.style(id);
         for (0..4) |i| {
-            b.padding[i] = st.box.padding[i].resolve(cb_w);
-            b.border[i] = st.borderWidth(i);
+            b.padding[i] = e.paddingOf(id, i, cb_w);
+            b.border[i] = e.borderOf(id, i);
             b.margin[i] = if (st.box.margin[i].isAuto()) 0 else st.box.margin[i].resolve(cb_w);
         }
+    }
+
+    /// A box's border width on `side`. In the collapsing border model a
+    /// table and its cells have their shares of the collapsed borders
+    /// instead (table.zig).
+    pub fn borderOf(e: *const Engine, id: BoxId, side: usize) f32 {
+        const st = e.style(id);
+        if (st.inh.border_collapse == .collapse) {
+            const b = e.get(id);
+            if (b.kind == .table) return table_mod.tablePart(st, side);
+            if (b.kind == .table_cell and b.data != box_mod.none) return e.tree.collapsed.items[b.data][side].part;
+        }
+        return st.borderWidth(side);
+    }
+
+    /// A box's padding on `side`; a table with collapsing borders has
+    /// none (CSS 2.1 17.6.2).
+    pub fn paddingOf(e: *const Engine, id: BoxId, side: usize, cb_w: ?f32) f32 {
+        const st = e.style(id);
+        if (st.inh.border_collapse == .collapse and e.get(id).kind == .table) return 0;
+        return st.box.padding[side].resolve(cb_w);
     }
 
     pub fn horizontalExtras(b: *const Box) f32 {
@@ -396,10 +417,9 @@ pub const Engine = struct {
     /// Padding and borders on one axis with percentages against zero, as
     /// intrinsic sizes take them (CSS Sizing 3, 5.2.1).
     pub fn extras0(e: *const Engine, id: BoxId, horizontal: bool) f32 {
-        const st = e.style(id);
         const a: usize = if (horizontal) 1 else 0;
         const c: usize = if (horizontal) 3 else 2;
-        return st.box.padding[a].resolve(0) + st.box.padding[c].resolve(0) + st.borderWidth(a) + st.borderWidth(c);
+        return e.paddingOf(id, a, 0) + e.paddingOf(id, c, 0) + e.borderOf(id, a) + e.borderOf(id, c);
     }
 
     /// `borderBoxLen` for intrinsic sizes: no percentage basis.
@@ -524,6 +544,8 @@ pub const Engine = struct {
             if (e.borderBoxLen0(id, st.box.min_width, true)) |mn| w = @max(w, mn);
         } else if (try e.keywordWidth(id, st.box.min_width, max)) |mn| w = @max(w, mn);
         w = @max(w, hx);
+        // A table is never narrower than its columns' minimums.
+        if (b.kind == .table) w = @max(w, try e.contentWidth(id, false));
         if (!margins) return w;
         const ml = if (st.box.margin[3].isAuto()) 0 else st.box.margin[3].resolve(0);
         const mr = if (st.box.margin[1].isAuto()) 0 else st.box.margin[1].resolve(0);
@@ -585,6 +607,7 @@ pub const Engine = struct {
             w = cb_w - b.margin[1] - b.margin[3];
         }
         w = e.clampWidth(id, w, cb_w);
+        if (b.kind == .table) w = @max(w, try e.contentWidth(id, false));
         e.autoMargins(id, w, cb_w);
         try e.layoutAt(id, w, cb_w, cb_h, null);
     }
@@ -682,11 +705,13 @@ pub const Engine = struct {
             if (h <= rh) h = @max(rh, try e.layoutContent(id, content_w, content_h, pct_h, cb_w, cb_h, sizing));
         } else {
             h = try e.layoutContent(id, content_w, content_h, pct_h, cb_w, cb_h, sizing);
-            if (own_h) |oh| {
+            // A table's height stretched its rows already, and it is
+            // never shorter than they are.
+            if (b.kind == .table) {} else if (own_h) |oh| {
                 h = oh;
             } else if (ratio_h) |rh| h = rh;
         }
-        if (!sizing.content) h = e.clampHeight(id, h, cb_h);
+        if (!sizing.content) h = if (b.kind == .table) @max(h, e.clampHeight(id, h, cb_h)) else e.clampHeight(id, h, cb_h);
         const bb = e.get(id);
         bb.h = h;
         if (!e.resume_map.contains(id) and cacheable) {

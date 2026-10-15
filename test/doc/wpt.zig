@@ -18,19 +18,19 @@ const origin = "http://wpt";
 /// Passing tests per suite, recorded: all of them, and those without
 /// images; fewer fails the test.
 const floors = .{
-    .{ "css2", 441, 235 },
+    .{ "css2", 460, 248 },
     .{ "css-flexbox", 428, 361 },
     .{ "css-grid", 188, 176 },
     .{ "css-values", 67, 65 },
     .{ "css-variables", 47, 47 },
-    .{ "css-tables", 127, 125 },
-    .{ "floats", 160, 96 },
+    .{ "css-tables", 187, 177 },
+    .{ "floats", 167, 103 },
     .{ "css-sizing", 239, 181 },
     .{ "css-display", 60, 60 },
     .{ "css-pseudo", 34, 33 },
     .{ "css-lists", 169, 167 },
     .{ "css-text", 122, 116 },
-    .{ "css-backgrounds", 214, 113 },
+    .{ "css-backgrounds", 217, 116 },
     .{ "css-overflow", 73, 69 },
     .{ "css-position", 24, 23 },
     .{ "css-break", 45, 44 },

@@ -143,6 +143,8 @@ pub const Cascade = struct {
     inline_decls: std.ArrayList(props.Declaration) = .empty,
     inline_customs: std.ArrayList(css.sheet.Custom) = .empty,
     hint_decls: std.ArrayList(props.Declaration) = .empty,
+    /// The parent's style while `hints` runs.
+    hint_parent: Style.Id = 0,
     /// Parsed hints by property name and attribute value.
     hint_memo: std.StringHashMapUnmanaged([]const props.Declaration) = .empty,
     /// Per element: whether a quirks-mode or hint rule applies (unused
@@ -712,6 +714,7 @@ pub const Cascade = struct {
         var inline_text: []const u8 = "";
         if (element_decls) {
             if (d.attr(id, .style)) |v| inline_text = v;
+            c.hint_parent = parent_id;
             try c.hints(id);
             if (inline_text.len > 0) try css.sheet.parseInline(c.arena, inline_text, &c.inline_decls, &c.inline_customs);
         }
@@ -1083,6 +1086,8 @@ pub const Cascade = struct {
                 if (A.get(d, id, .background)) |v| try c.hint("background-image", try std.fmt.allocPrint(c.arena, "url(\"{s}\")", .{v}));
                 if (A.get(d, id, .@"align")) |v| try c.alignHint(v);
                 if (A.get(d, id, .valign)) |v| try c.hint("vertical-align", v);
+                // HTML's th centers unless its parent aligns otherwise.
+                if (n.name == .th and A.get(d, id, .@"align") == null and c.store.get(c.hint_parent).inh.text_align == .start) try c.hint("text-align", "center");
                 if (n.name == .td or n.name == .th) {
                     if (A.get(d, id, .width)) |v| try c.hintLength("width", v, true);
                     if (A.get(d, id, .height)) |v| try c.hintLength("height", v, true);

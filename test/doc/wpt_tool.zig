@@ -98,8 +98,14 @@ pub fn main(init: std.process.Init) !void {
         gop.value_ptr[1] += 1;
         if (with_images) gop.value_ptr[3] += 1;
         const ok = blk: {
-            r.render(test_path, .html, 0, r.pixels[0]) catch break :blk false;
-            r.render(ref_path, .html, 0, r.pixels[1]) catch break :blk false;
+            r.render(test_path, .html, 0, r.pixels[0]) catch |err| {
+                try w.print("ERROR {s}: {t}\n", .{ test_path, err });
+                break :blk false;
+            };
+            r.render(ref_path, .html, 0, r.pixels[1]) catch |err| {
+                try w.print("ERROR {s}: {t}\n", .{ ref_path, err });
+                break :blk false;
+            };
             break :blk r.sameAs(test_path);
         };
         if (ok) gop.value_ptr[0] += 1;

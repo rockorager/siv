@@ -43,7 +43,8 @@ pub const Box = struct {
     first: BoxId = none,
     last: BoxId = none,
     next: BoxId = none,
-    /// inline_root: the IFC; replaced: the replaced content; list items:
+    /// inline_root: the IFC; replaced: the replaced content; table cells
+    /// in collapsing borders: their borders (`collapsed`); list items:
     /// their marker (`markers`) in `marker`.
     data: u32 = none,
     marker: u32 = none,
@@ -144,11 +145,25 @@ pub const Marker = struct {
     outside: bool,
 };
 
+/// One side of a table cell's border in the collapsing border model
+/// (CSS 2.1 17.6.2): the cell's share of the winning border's width (its
+/// layout border), how far the border reaches past the cell (into the
+/// table's own border, at the table's edges), and the winner's style and
+/// color (currentColor resolved against its owner).
+pub const CollapsedSide = struct {
+    part: f32 = 0,
+    ext: f32 = 0,
+    style: css.style.BorderStyle = .none,
+    color: css.Color = css.Color.current,
+};
+
 pub const Tree = struct {
     boxes: std.ArrayList(Box) = .empty,
     ifcs: std.ArrayList(Ifc) = .empty,
     replaced: std.ArrayList(Replaced) = .empty,
     markers: std.ArrayList(Marker) = .empty,
+    /// Collapsed borders of table cells (`Box.data`), set by layout.
+    collapsed: std.ArrayList([4]CollapsedSide) = .empty,
     root: BoxId = none,
 
     pub fn deinit(t: *Tree, gpa: Allocator) void {
@@ -156,6 +171,7 @@ pub const Tree = struct {
         t.ifcs.deinit(gpa);
         t.replaced.deinit(gpa);
         t.markers.deinit(gpa);
+        t.collapsed.deinit(gpa);
     }
 
     pub fn get(t: *const Tree, id: BoxId) *Box {
@@ -912,10 +928,49 @@ pub const Builder = struct {
 
     // Tables: anonymous rows and cells (CSS 2.1 17.2.1, the common cases).
 
+    /// Table boxes outside a table (CSS 2.1 17.2.1, 3): each run of
+    /// consecutive cells, rows, row groups, and captions in another box
+    /// goes into an anonymous table, which `fixTable` completes.
+    fn wrapOrphans(b: *Builder, id: BoxId) Error!void {
+        const t = b.tree;
+        const internal = struct {
+            fn f(k: Kind) bool {
+                return k == .table_cell or k == .table_row or k == .table_row_group or k == .table_caption;
+            }
+        }.f;
+        var any = false;
+        var it = t.children(id);
+        while (it.next()) |c| any = any or (internal(t.boxes.items[c].kind) and !t.boxes.items[c].out_of_flow);
+        if (!any) return;
+        var cur = t.boxes.items[id].first;
+        t.boxes.items[id].first = none;
+        t.boxes.items[id].last = none;
+        var table: BoxId = none;
+        while (cur != none) {
+            const next = t.boxes.items[cur].next;
+            t.boxes.items[cur].next = none;
+            if (internal(t.boxes.items[cur].kind) and !t.boxes.items[cur].out_of_flow) {
+                if (table == none) {
+                    var st: Style = .{ .inh = b.style(t.boxes.items[id].style).inh };
+                    st.box.display = .{ .outer = .block, .inner = .table };
+                    table = try b.add(.{ .kind = .table, .node = .none, .style = try b.store.intern(b.gpa, &st) });
+                    b.appendChild(id, table);
+                }
+                b.appendChild(table, cur);
+            } else {
+                if (table != none) try b.fixTable(table);
+                table = none;
+                b.appendChild(id, cur);
+            }
+            cur = next;
+        }
+        if (table != none) try b.fixTable(table);
+    }
+
     fn fixTable(b: *Builder, id: BoxId) Error!void {
         const t = b.tree;
         const kind = t.boxes.items[id].kind;
-        if (kind != .table and kind != .table_row_group and kind != .table_row) return;
+        if (kind != .table and kind != .table_row_group and kind != .table_row) return b.wrapOrphans(id);
         // Wrap children that do not belong in anonymous ones.
         const want: Kind = switch (kind) {
             .table => .table_row_group,

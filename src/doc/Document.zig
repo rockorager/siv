@@ -612,7 +612,9 @@ pub fn resolveFonts(d: *Document, resolver: FontResolver) Error!void {
             const found = try resolver.chainFn(resolver.ctx, "serif", lang, st.inh.font_weight, italic, st.inh.font_stretch, st.inh.font_size);
             try chain.appendSlice(a, found);
         }
-        var fi: inline_mod.FontInfo = .{ .chain = chain.items, .size = st.inh.font_size, .language = if (lang.len > 0) try a.dupe(u8, lang) else "und" };
+        // Text at font-size 0 (mail's spacer cells) is shaped at a size the
+        // text engine takes, too small to show.
+        var fi: inline_mod.FontInfo = .{ .chain = chain.items, .size = @max(st.inh.font_size, 0.01), .language = if (lang.len > 0) try a.dupe(u8, lang) else "und" };
         fontMetrics(cache, &fi);
         try memo.put(d.gpa, try a.dupe(u8, key.items), fi);
         try d.font_table.append(d.gpa, fi);
