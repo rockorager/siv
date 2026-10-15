@@ -454,7 +454,10 @@ pub const Painter = struct {
             else => .{ .x0 = r.x0 + b.border[3], .y0 = r.y0 + b.border[0], .x1 = r.x1 - b.border[1], .y1 = r.y1 - b.border[2] },
         };
         switch (img.*) {
-            .gradient => |g| try p.gradient(g, origin, shape(clip_box, clip_rr), current),
+            .gradient => |g| if (st.box.background_size.kind == .explicit and st.box.background_size.w.isAuto() and st.box.background_size.h.isAuto() and st.box.background_repeat == .repeat) {
+                // The common case: one gradient over the box.
+                try p.gradient(g, origin, shape(clip_box, clip_rr), current);
+            } else try p.tiles(.{ .gradient = .{ .g = g, .current = current } }, st.box.background_size, st.box.background_position, st.box.background_repeat, origin, clip_box),
             .url => |u| try p.imageTiles(u, st.box.background_size, st.box.background_position, st.box.background_repeat, origin, clip_box),
         }
     }
@@ -475,18 +478,39 @@ pub const Painter = struct {
         return url_mod.resolve(p.scratch, p.base_url, raw);
     }
 
+    /// What a background or mask layer tiles: an image by URL, or a
+    /// gradient (which has no natural size).
+    const Tile = union(enum) {
+        url: []const u8,
+        gradient: struct { g: css.style.Gradient, current: Color },
+    };
+
     fn imageTiles(p: *Painter, raw: []const u8, bs: css.style.BackgroundSize, position: [2]css.Len, rep: css.style.Repeat, origin: Rect, clip_box: Rect) Error!void {
-        const u = try p.imageUrl(raw);
-        const size = p.hooks.imageSize(p.hooks.ctx, u) orelse return;
-        var w = size[0];
-        var h = size[1];
+        return p.tiles(.{ .url = raw }, bs, position, rep, origin, clip_box);
+    }
+
+    fn tiles(p: *Painter, tile: Tile, bs: css.style.BackgroundSize, position: [2]css.Len, rep: css.style.Repeat, origin: Rect, clip_box: Rect) Error!void {
+        var u: []const u8 = "";
+        var w: f32 = origin.width();
+        var h: f32 = origin.height();
+        var natural = false;
+        switch (tile) {
+            .url => |raw| {
+                u = try p.imageUrl(raw);
+                const size = p.hooks.imageSize(p.hooks.ctx, u) orelse return;
+                w = size[0];
+                h = size[1];
+                natural = true;
+            },
+            .gradient => {},
+        }
         switch (bs.kind) {
-            .cover, .contain => {
+            .cover, .contain => if (natural) {
                 const sx = origin.width() / @max(w, 1);
                 const sy = origin.height() / @max(h, 1);
-                const s = if (bs.kind == .cover) @max(sx, sy) else @min(sx, sy);
-                w *= s;
-                h *= s;
+                const sc = if (bs.kind == .cover) @max(sx, sy) else @min(sx, sy);
+                w *= sc;
+                h *= sc;
             },
             .explicit => {
                 const ew: ?f32 = if (bs.w.tag == .length) bs.w.resolve(origin.width()) else null;
@@ -495,36 +519,74 @@ pub const Painter = struct {
                     w = ew.?;
                     h = eh.?;
                 } else if (ew) |v| {
-                    h = h * v / @max(w, 1);
+                    if (natural) h = h * v / @max(w, 1);
                     w = v;
                 } else if (eh) |v| {
-                    w = w * v / @max(h, 1);
+                    if (natural) w = w * v / @max(h, 1);
                     h = v;
                 }
             },
         }
         if (w <= 0 or h <= 0) return;
-        const px0 = origin.x0 + position[0].resolve(origin.width() - w);
-        const py0 = origin.y0 + position[1].resolve(origin.height() - h);
+        // A gradient in tiles too small to draw one by one: its colors
+        // spread over the area.
+        if (tile == .gradient and (w * h < 4) and rep != .no_repeat) {
+            return p.gradient(tile.gradient.g, clip_box, .{ .rect = clip_box }, tile.gradient.current);
+        }
+        // round: as many whole tiles as come nearest, scaled to fit.
+        if (rep == .round) {
+            const nx = @max(1, @round(origin.width() / w));
+            const ny = @max(1, @round(origin.height() / h));
+            w = origin.width() / nx;
+            h = origin.height() / ny;
+        }
+        var px0 = origin.x0 + position[0].resolve(origin.width() - w);
+        var py0 = origin.y0 + position[1].resolve(origin.height() - h);
         const rx = rep == .repeat or rep == .repeat_x or rep == .space or rep == .round;
         const ry = rep == .repeat or rep == .repeat_y or rep == .space or rep == .round;
+        // space: as many whole tiles as fit, the space between them.
+        var step_x = w;
+        var step_y = h;
+        if (rep == .space) {
+            const nx = @floor(origin.width() / w);
+            const ny = @floor(origin.height() / h);
+            if (nx >= 2) {
+                step_x = w + (origin.width() - nx * w) / (nx - 1);
+                px0 = origin.x0;
+            }
+            if (ny >= 2) {
+                step_y = h + (origin.height() - ny * h) / (ny - 1);
+                py0 = origin.y0;
+            }
+        }
+        const repeat_x = rx and !(rep == .space and @floor(origin.width() / w) < 2);
+        const repeat_y = ry and !(rep == .space and @floor(origin.height() / h) < 2);
         var x0 = px0;
         var y0 = py0;
-        if (rx) x0 = px0 - @ceil((px0 - clip_box.x0) / w) * w;
-        if (ry) y0 = py0 - @ceil((py0 - clip_box.y0) / h) * h;
+        if (repeat_x and rep != .space) x0 = px0 - @ceil((px0 - clip_box.x0) / step_x) * step_x;
+        if (repeat_y and rep != .space) y0 = py0 - @ceil((py0 - clip_box.y0) / step_y) * step_y;
         // Only the tiles in the band.
-        if (ry and y0 + h < p.band[0]) y0 += @floor((p.band[0] - y0) / h) * h;
+        if (repeat_y and y0 + h < p.band[0]) y0 += @floor((p.band[0] - y0) / step_y) * step_y;
         var ty = y0;
-        var tiles: usize = 0;
-        while (ty < clip_box.y1 and tiles < 4096) : (ty += h) {
+        var count: usize = 0;
+        while (ty < clip_box.y1 and count < 4096) : (ty += step_y) {
             if (ty > p.band[1]) break;
+            if (rep == .space and ty + h > origin.y1 + 0.5) break;
             var tx = x0;
-            while (tx < clip_box.x1 and tiles < 4096) : (tx += w) {
-                tiles += 1;
-                try p.hooks.drawImage(p.hooks.ctx, p.b, u, Rect.xywh(tx, ty, w, h), clip_box);
-                if (!rx) break;
+            while (tx < clip_box.x1 and count < 4096) : (tx += step_x) {
+                if (rep == .space and tx + w > origin.x1 + 0.5) break;
+                count += 1;
+                const dst = Rect.xywh(tx, ty, w, h);
+                switch (tile) {
+                    .url => try p.hooks.drawImage(p.hooks.ctx, p.b, u, dst, clip_box),
+                    .gradient => |gr| {
+                        const shown = dst.intersect(clip_box);
+                        if (!shown.isEmpty()) try p.gradient(gr.g, dst, .{ .rect = shown }, gr.current);
+                    },
+                }
+                if (!repeat_x) break;
             }
-            if (!ry) break;
+            if (!repeat_y) break;
         }
     }
 
