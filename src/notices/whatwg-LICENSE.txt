@@ -1,0 +1,8 @@
+HTML named character references (src/html/entities.zig)
+
+The table of named character references is generated from entities.json,
+published with the HTML Living Standard, https://html.spec.whatwg.org/,
+Copyright © WHATWG (Apple, Google, Mozilla, Microsoft). It is licensed
+under the Creative Commons Attribution 4.0 International License,
+https://creativecommons.org/licenses/by/4.0/. siv changed its format
+(a Zig array sorted by name); the names and code points are unchanged.

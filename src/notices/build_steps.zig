@@ -74,6 +74,7 @@ const entries = [_]Entry{
     .{ .title = "wayland-protocols (MIT)", .package = "wayland_protocols", .files = &.{"COPYING"} },
     .{ .title = "wlr-protocols (HPND)", .package = "wlr_protocols", .siv_files = &.{"src/notices/wlr-protocols-LICENSE.txt"} },
     .{ .title = "Hyphenation patterns from hyph-utf8 (MIT, BSD-3-Clause, FSF all-permissive)", .siv_files = &hyphenation },
+    .{ .title = "HTML named character references from the WHATWG HTML Living Standard (CC BY 4.0)", .siv_files = &.{"src/notices/whatwg-LICENSE.txt"} },
 };
 
 /// Packages whose tools run at build time and whose output is not derived

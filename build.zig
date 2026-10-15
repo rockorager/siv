@@ -84,6 +84,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "uucode", .module = uucode },
     });
     const icon = ctx.module("src/icon/icon.zig", &.{});
+    // Documents (D32): HTML parsing.
+    const html = ctx.module("src/html/html.zig", &.{});
     const images = @import("src/image/build_steps.zig").add(b, .{ .target = target, .optimize = optimize, .scene = scene });
     const image = images.image;
     const svg = ctx.module("src/svg/svg.zig", &.{
@@ -280,6 +282,7 @@ pub fn build(b: *std.Build) void {
         .{ "scene", scene },
         .{ "svg", svg },
         .{ "icon", icon },
+        .{ "html", html },
         .{ "image", image },
         .{ "render-cpu", render_cpu },
         .{ "render-vulkan", render_vulkan },
