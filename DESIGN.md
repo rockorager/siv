@@ -2276,7 +2276,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
         ends one attachment (re-attaching a buffer whose release may be in
         flight would make the release ambiguous).
       - Composited (not promotable, or a format the compositor does not
-        take): the Vulkan renderer imports it (D10). Without Vulkan, the
+        take): the Vulkan renderer imports it (D10), with every memory
+        plane its modifier has laid out explicitly (compression metadata,
+        such as AMD's DCC: WebKit's and Mesa's XRGB8888 on RADV are two
+        planes in one dma-buf); planes in separate dma-bufs (disjoint) are
+        not imported. Before, only single-plane modifiers were, so a
+        webview with rounded corners or a translucent fade drew nothing
+        (found by siv-webview). Without Vulkan, the
         CPU renderer reads it through a mapping only when it is linear,
         single-plane XRGB8888 (bracketed by `DMA_BUF_IOCTL_SYNC`). Any
         other dma-buf (tiled, YUV, or another RGB format) is not drawn

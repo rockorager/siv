@@ -72,7 +72,7 @@ pub const Importer = struct {
     pub fn copy(im: *Importer, d: *Device, buf: *const scene.Dmabuf, width: u32, height: u32, dst: *Device.Image) Error!void {
         if (!d.dmabuf_import) return error.Unsupported;
         const fmt = format(buf.format) orelse return error.Unsupported;
-        if (buf.plane_count != 1 or fmt != dst.format) return error.Unsupported;
+        if (buf.plane_count < 1 or fmt != dst.format) return error.Unsupported;
         try im.ensure(d);
         var src: Source = .{};
         defer src.deinit(d);
@@ -85,7 +85,7 @@ pub const Importer = struct {
                 src.deinit(d);
                 try src.importBuffer(d, buf, width, height);
             };
-        } else if (buf.modifier == scene.Dmabuf.modifier_linear) {
+        } else if (buf.modifier == scene.Dmabuf.modifier_linear and buf.plane_count == 1) {
             try src.importBuffer(d, buf, width, height);
         } else return error.Unsupported;
         try im.record(d, &src, buf, width, height, dst);
@@ -187,15 +187,22 @@ const Source = struct {
         s.* = .{};
     }
 
+    /// A modifier's memory planes beyond the first (compression metadata,
+    /// such as AMD's DCC, which makes GL and Vulkan producers' XRGB8888
+    /// two or three planes) are laid out explicitly, all in the one
+    /// dma-buf: disjoint planes (several dma-bufs) are not imported.
     fn importImage(s: *Source, d: *Device, buf: *const scene.Dmabuf, fmt: c.VkFormat, width: u32, height: u32) Error!void {
         const plane = buf.planes[0];
-        if (!modifierSupported(d, fmt, buf.modifier)) return error.Unsupported;
-        const layout: c.VkSubresourceLayout = .{ .offset = plane.offset, .rowPitch = plane.stride };
+        const count = modifierPlanes(d, fmt, buf.modifier) orelse return error.Unsupported;
+        if (count != buf.plane_count) return error.Unsupported;
+        for (buf.planes[1..buf.plane_count]) |p| if (!sameFile(p.fd, plane.fd)) return error.Unsupported;
+        var layouts: [4]c.VkSubresourceLayout = undefined;
+        for (buf.planes[0..buf.plane_count], 0..) |p, i| layouts[i] = .{ .offset = p.offset, .rowPitch = p.stride };
         const explicit: c.VkImageDrmFormatModifierExplicitCreateInfoEXT = .{
             .sType = c.VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT,
             .drmFormatModifier = buf.modifier,
-            .drmFormatModifierPlaneCount = 1,
-            .pPlaneLayouts = &layout,
+            .drmFormatModifierPlaneCount = buf.plane_count,
+            .pPlaneLayouts = &layouts,
         };
         const external: c.VkExternalMemoryImageCreateInfo = .{
             .sType = c.VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
@@ -245,8 +252,18 @@ const Source = struct {
     }
 };
 
-/// Whether the device can copy from an image of `fmt` with `modifier`.
-fn modifierSupported(d: *Device, fmt: c.VkFormat, modifier: u64) bool {
+/// Whether two fds are the same file (the same dma-buf).
+fn sameFile(a: i32, b: i32) bool {
+    var sa: linux.Statx = undefined;
+    var sb: linux.Statx = undefined;
+    if (linux.errno(linux.statx(a, "", linux.AT.EMPTY_PATH, .{ .INO = true }, &sa)) != .SUCCESS) return false;
+    if (linux.errno(linux.statx(b, "", linux.AT.EMPTY_PATH, .{ .INO = true }, &sb)) != .SUCCESS) return false;
+    return sa.ino == sb.ino and sa.dev_major == sb.dev_major and sa.dev_minor == sb.dev_minor;
+}
+
+/// The memory planes of `modifier` for `fmt` if the device can import
+/// and copy from such an image.
+fn modifierPlanes(d: *Device, fmt: c.VkFormat, modifier: u64) ?u32 {
     const k = &d.vki;
     var mods: [64]c.VkDrmFormatModifierPropertiesEXT = undefined;
     var list: c.VkDrmFormatModifierPropertiesListEXT = .{ .sType = c.VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT, .drmFormatModifierCount = mods.len, .pDrmFormatModifierProperties = &mods };
@@ -254,8 +271,8 @@ fn modifierSupported(d: *Device, fmt: c.VkFormat, modifier: u64) bool {
     k.vkGetPhysicalDeviceFormatProperties2.?(d.physical, fmt, &fp);
     const found = for (mods[0..@min(list.drmFormatModifierCount, mods.len)]) |m| {
         if (m.drmFormatModifier == modifier) break m;
-    } else return false;
-    if (found.drmFormatModifierPlaneCount != 1 or found.drmFormatModifierTilingFeatures & c.VK_FORMAT_FEATURE_TRANSFER_SRC_BIT == 0) return false;
+    } else return null;
+    if (found.drmFormatModifierPlaneCount < 1 or found.drmFormatModifierPlaneCount > 4 or found.drmFormatModifierTilingFeatures & c.VK_FORMAT_FEATURE_TRANSFER_SRC_BIT == 0) return null;
     // And importable as a dma-buf.
     var mod_info: c.VkPhysicalDeviceImageDrmFormatModifierInfoEXT = .{
         .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT,
@@ -277,8 +294,9 @@ fn modifierSupported(d: *Device, fmt: c.VkFormat, modifier: u64) bool {
     };
     var ext_props: c.VkExternalImageFormatProperties = .{ .sType = c.VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES };
     var props: c.VkImageFormatProperties2 = .{ .sType = c.VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2, .pNext = &ext_props };
-    if (k.vkGetPhysicalDeviceImageFormatProperties2.?(d.physical, &info, &props) != c.VK_SUCCESS) return false;
-    return ext_props.externalMemoryProperties.externalMemoryFeatures & c.VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT != 0;
+    if (k.vkGetPhysicalDeviceImageFormatProperties2.?(d.physical, &info, &props) != c.VK_SUCCESS) return null;
+    if (ext_props.externalMemoryProperties.externalMemoryFeatures & c.VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT == 0) return null;
+    return found.drmFormatModifierPlaneCount;
 }
 
 /// Imports a duplicate of `fd` as memory for `image` or `buffer`

@@ -286,6 +286,20 @@ fn udmabufFrom(bytes: []const u8) ?std.posix.fd_t {
 }
 
 test "tiled dma-bufs are imported with their explicit modifier" {
+    try tiledRoundTrip(false);
+}
+
+test "tiled dma-bufs with compression planes are imported with every plane's layout" {
+    // AMD's DCC: GL and Vulkan producers' XRGB8888 on RADV is two or three
+    // memory planes in one dma-buf (D17). Skipped where the device offers
+    // no such modifier (lavapipe).
+    try tiledRoundTrip(true);
+}
+
+/// A producer's image with a tiled modifier (one memory plane, or more
+/// for `multi`), exported and imported as a dma-buf frame, renders as its
+/// pixels do.
+fn tiledRoundTrip(multi: bool) !void {
     const vk = @import("vk.zig");
     const c = vk.c;
     const gpa = testing.allocator;
@@ -306,7 +320,7 @@ test "tiled dma-bufs are imported with their explicit modifier" {
     d.vki.vkGetPhysicalDeviceFormatProperties2.?(d.physical, fmt, &fp);
     const transfer = c.VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | c.VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
     const modifier = for (mods[0..@min(list.drmFormatModifierCount, mods.len)]) |m| {
-        if (m.drmFormatModifier != scene.Dmabuf.modifier_linear and m.drmFormatModifierPlaneCount == 1 and m.drmFormatModifierTilingFeatures & transfer == transfer) break m.drmFormatModifier;
+        if (m.drmFormatModifier != scene.Dmabuf.modifier_linear and (m.drmFormatModifierPlaneCount > 1) == multi and m.drmFormatModifierTilingFeatures & transfer == transfer) break m.drmFormatModifier;
     } else return error.SkipZigTest;
 
     // The producer's image, exported as a dma-buf.
@@ -391,10 +405,16 @@ test "tiled dma-bufs are imported with their explicit modifier" {
     var mod_props: c.VkImageDrmFormatModifierPropertiesEXT = .{ .sType = c.VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_PROPERTIES_EXT };
     try vk.call(get_modifier, .{ d.device, image, &mod_props });
     const get_layout: c.PFN_vkGetImageSubresourceLayout = @ptrCast(d.vki.vkGetDeviceProcAddr.?(d.device, "vkGetImageSubresourceLayout"));
-    var layout: c.VkSubresourceLayout = undefined;
-    get_layout.?(d.device, image, &c.VkImageSubresource{ .aspectMask = c.VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT }, &layout);
-    var buf: scene.Dmabuf = .{ .format = scene.Dmabuf.xrgb8888, .modifier = mod_props.drmFormatModifier, .plane_count = 1 };
-    buf.planes[0] = .{ .fd = fd, .offset = @intCast(layout.offset), .stride = @intCast(layout.rowPitch) };
+    const plane_count: u32 = for (mods[0..@min(list.drmFormatModifierCount, mods.len)]) |m| {
+        if (m.drmFormatModifier == mod_props.drmFormatModifier) break m.drmFormatModifierPlaneCount;
+    } else 1;
+    var buf: scene.Dmabuf = .{ .format = scene.Dmabuf.xrgb8888, .modifier = mod_props.drmFormatModifier, .plane_count = @intCast(plane_count) };
+    const aspects = [_]u32{ c.VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT, c.VK_IMAGE_ASPECT_MEMORY_PLANE_1_BIT_EXT, c.VK_IMAGE_ASPECT_MEMORY_PLANE_2_BIT_EXT, c.VK_IMAGE_ASPECT_MEMORY_PLANE_3_BIT_EXT };
+    for (0..plane_count) |i| {
+        var layout: c.VkSubresourceLayout = undefined;
+        get_layout.?(d.device, image, &c.VkImageSubresource{ .aspectMask = aspects[i] }, &layout);
+        buf.planes[i] = .{ .fd = fd, .offset = @intCast(layout.offset), .stride = @intCast(layout.rowPitch) };
+    }
 
     const r = try Renderer.create(gpa, d, .serial);
     defer r.destroy();
