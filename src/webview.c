@@ -146,7 +146,6 @@ static void on_slot_event(void *user_data, siv_external slot, const siv_external
     struct slot_ctx *c = user_data;
     swv_webview *wv = get(c->handle);
     if (!wv || !wv->engine) return;
-    if (getenv("SWV_DEBUG_SLOT")) fprintf(stderr, "slot event %d %ux%u scale %g key %llx\n", e->type, e->width, e->height, e->scale, (unsigned long long)e->key);
     if (e->type == SIV_EXTERNAL_EVENT_TYPE_CONFIGURE) wv->engine->configure(wv, e->width, e->height, e->scale);
     else if (e->type == SIV_EXTERNAL_EVENT_TYPE_PRESENTED) wv->engine->presented(wv, e->key);
     else if (e->type == SIV_EXTERNAL_EVENT_TYPE_RELEASED) wv->engine->released(wv, e->key);
@@ -159,10 +158,21 @@ static siv_event_result on_input(void *user_data, siv_node node, const siv_event
     return wv->engine->input(wv, e);
 }
 
+/* Drops: text and URLs go to the page (files cannot: the engine has no
+ * drag and drop of its own). */
+static siv_event_result on_drop(void *user_data, siv_node node, const siv_event *e) {
+    (void)node;
+    swv_webview *wv = get((siv_webview)(uintptr_t)user_data);
+    if (!wv || !wv->engine || !wv->engine->drop) return SIV_EVENT_RESULT_PASS;
+    if (e->phase == SIV_POINTER_PHASE_ENTER || e->phase == SIV_POINTER_PHASE_MOVE) return SIV_EVENT_RESULT_HANDLED;
+    if (e->phase != SIV_POINTER_PHASE_DROP || !e->data) return SIV_EVENT_RESULT_PASS;
+    bool uris = e->mime && e->mime_len >= 13 && !memcmp(e->mime, "text/uri-list", 13);
+    wv->engine->drop(wv, e->x, e->y, uris, (const char *)e->data, e->data_count);
+    return SIV_EVENT_RESULT_HANDLED;
+}
+
 siv_result swv_submit(swv_webview *wv, const siv_external_frame_desc *frame) {
-    siv_result r = wv->slot ? siv_external_submit(wv->slot, frame) : SIV_ERROR_UNAVAILABLE;
-    if (getenv("SWV_DEBUG_SLOT")) fprintf(stderr, "submit %ux%u mem %d stride %u fmt %x mod %llx: %s\n", frame->width, frame->height, frame->memory, frame->stride, frame->drm_format, (unsigned long long)frame->modifier, siv_result_name(r));
-    return r;
+    return wv->slot ? siv_external_submit(wv->slot, frame) : SIV_ERROR_UNAVAILABLE;
 }
 
 void swv_set_cursor(swv_webview *wv, siv_cursor cursor) {
@@ -290,6 +300,8 @@ siv_node siv_webview_view(siv_txn txn, siv_node parent, siv_webview webview) {
     siv_set_semantics(txn, n, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_DOCUMENT, .label = SIV_STR("Web page"), .flags = SIV_SEMANTICS_FOCUSABLE));
     static const siv_event_type kinds[] = {SIV_EVENT_TYPE_POINTER, SIV_EVENT_TYPE_SCROLL, SIV_EVENT_TYPE_KEY, SIV_EVENT_TYPE_FOCUS, SIV_EVENT_TYPE_TOUCH, SIV_EVENT_TYPE_TEXT_INPUT, SIV_EVENT_TYPE_GESTURE};
     for (size_t i = 0; i < sizeof kinds / sizeof *kinds; i++) siv_on(txn, n, kinds[i], on_input, NULL, id);
+    siv_set_drop_target(txn, n, SIV_DESC(siv_drop_target_desc, .mimes = SIV_STR("text/uri-list\ntext/plain;charset=utf-8\ntext/plain")));
+    siv_on(txn, n, SIV_EVENT_TYPE_DROP, on_drop, NULL, id);
     if (wv->node && wv->node != n) siv_remove(txn, wv->node);
     wv->node = n;
     wv->cursor = SIV_CURSOR_AUTO;

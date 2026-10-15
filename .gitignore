@@ -1,4 +1,7 @@
-out/
-zig-out/
-.zig-cache/
 /.amp/in/
+/out/
+out/
+.zig-cache/
+/.zig-cache/
+/zig-out/
+zig-out/

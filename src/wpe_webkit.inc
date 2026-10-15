@@ -406,13 +406,9 @@ static void open_menu(wpe_wv *w, guint n, const char *(*label)(wpe_wv *, guint, 
     void *id = (void *)(uintptr_t)w->wv->handle;
     siv_on(txn, menu, SIV_EVENT_TYPE_SELECT, on_menu_select, NULL, id);
     siv_on(txn, menu, SIV_EVENT_TYPE_CLOSE, on_menu_select, NULL, id);
-    siv_result cr = siv_txn_commit(txn);
-    if (getenv("SWV_DEBUG")) fprintf(stderr, "siv-webview: menu of %u items at %g,%g: commit %s\n", n, x, y, siv_result_name(cr));
-    if (cr != SIV_OK) return;
+    if (siv_txn_commit(txn) != SIV_OK) return;
     w->menu = menu;
-    siv_result orr = siv_menu_open_at(menu, w->wv->node, x, y);
-    if (getenv("SWV_DEBUG")) fprintf(stderr, "siv-webview: open %s\n", siv_result_name(orr));
-    if (orr != SIV_OK) close_menu(w);
+    if (siv_menu_open_at(menu, w->wv->node, x, y) != SIV_OK) close_menu(w);
 }
 
 static const char *option_label(wpe_wv *w, guint i, siv_menu_item_flags *flags) {
@@ -431,7 +427,6 @@ static void on_option_menu_close(WebKitOptionMenu *menu, wpe_wv *w) {
 
 static gboolean on_show_option_menu(WebKitWebView *web_view, WebKitOptionMenu *menu, WebKitRectangle *rect, wpe_wv *w) {
     (void)web_view;
-    if (getenv("SWV_DEBUG")) fprintf(stderr, "siv-webview: option menu\n");
     close_menu(w);
     w->option_menu = g_object_ref(menu);
     w->option_items = g_array_new(FALSE, FALSE, sizeof(guint));
@@ -462,6 +457,54 @@ static gboolean on_context_menu(WebKitWebView *web_view, WebKitContextMenu *menu
     w->context_menu = g_object_ref(menu);
     open_menu(w, webkit_context_menu_get_n_items(menu), context_label, true, (float)w->px, (float)w->py);
     return TRUE;
+}
+
+/* ---------- drops ---------- */
+
+/* WPE has no drag and drop, so a drop becomes the DOM events a page
+ * listens for: dragenter, dragover, and drop on the element under the
+ * point, with a DataTransfer holding the text (or the URLs, and the first
+ * one as text). A page that does not take it gets the text inserted when
+ * the element is editable, as a browser does. */
+static const char drop_script[] =
+    "const t = document.elementFromPoint(x, y) || document.body;\n"
+    "const urls = uris ? data.split(/\\r?\\n/).filter(l => l && !l.startsWith('#')) : [];\n"
+    "const text = uris ? (urls[0] || '') : data;\n"
+    "let dt;\n"
+    "try { dt = new DataTransfer(); if (uris) dt.setData('text/uri-list', urls.join('\\r\\n')); dt.setData('text/plain', text); }\n"
+    "catch (e) { const m = new Map(); if (uris) m.set('text/uri-list', urls.join('\\r\\n')); m.set('text/plain', text);\n"
+    "  dt = { types: [...m.keys()], files: [], items: [], dropEffect: 'copy', effectAllowed: 'copy', getData: k => m.get(k === 'text' ? 'text/plain' : k === 'url' ? 'text/uri-list' : k) || '', setData() {}, clearData() {} }; }\n"
+    "const make = type => { const o = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y };\n"
+    "  let ev; try { ev = new DragEvent(type, Object.assign({ dataTransfer: dt }, o)); } catch (e) { ev = new MouseEvent(type, o); }\n"
+    "  if (!ev.dataTransfer) Object.defineProperty(ev, 'dataTransfer', { value: dt }); return ev; };\n"
+    "t.dispatchEvent(make('dragenter'));\n"
+    "if (!t.dispatchEvent(make('dragover'))) { t.dispatchEvent(make('drop')); return true; }\n"
+    "if (t.isContentEditable || t instanceof HTMLTextAreaElement || (t instanceof HTMLInputElement && /^(text|search|url|email|tel|password|)$/.test(t.type))) {\n"
+    "  t.focus(); document.execCommand('insertText', false, text); return true; }\n"
+    "return false;\n";
+
+static void on_drop_done(GObject *src, GAsyncResult *res, gpointer data) {
+    (void)data;
+    GError *err = NULL;
+    JSCValue *v = webkit_web_view_call_async_javascript_function_finish(WEBKIT_WEB_VIEW(src), res, &err);
+    if (err && getenv("SWV_DEBUG")) fprintf(stderr, "siv-webview: drop: %s\n", err->message);
+    g_clear_error(&err);
+    g_clear_object(&v);
+}
+
+static void wpe_drop(swv_webview *wv, float x, float y, bool uri_list, const char *data, size_t len) {
+    wpe_wv *w = of(wv);
+    double zoom = webkit_web_view_get_zoom_level(w->web_view);
+    if (zoom <= 0) zoom = 1;
+    char *text = g_utf8_make_valid(data, (gssize)len);
+    GVariantDict args;
+    g_variant_dict_init(&args, NULL);
+    g_variant_dict_insert(&args, "x", "d", x / zoom);
+    g_variant_dict_insert(&args, "y", "d", y / zoom);
+    g_variant_dict_insert(&args, "uris", "d", uri_list ? 1.0 : 0.0);
+    g_variant_dict_insert(&args, "data", "s", text);
+    webkit_web_view_call_async_javascript_function(w->web_view, drop_script, -1, g_variant_dict_end(&args), NULL, NULL, NULL, on_drop_done, NULL);
+    g_free(text);
 }
 
 /* ---------- file inputs through siv's portal file chooser ---------- */
@@ -1070,6 +1113,7 @@ const swv_engine swv_engine_wpe = {
     .presented = wpe_presented,
     .released = wpe_released,
     .input = wpe_input,
+    .drop = wpe_drop,
     .load_uri = wpe_load_uri,
     .load_html = wpe_load_html,
     .go_back = wpe_go_back,

@@ -404,6 +404,33 @@ static void check_history(void) {
     stop(&f);
 }
 
+/* Text and URLs dropped on the node reach the page as DOM drag events;
+ * editable elements take text a page does not handle. */
+static void check_drop(void) {
+    struct fixture f;
+    CHECK(start(&f, SIV_WEBVIEW_EPHEMERAL, NULL));
+    CHECK(load(&f,
+               "<style>body{margin:0} #z{height:100px} input{display:block;width:300px}</style>"
+               "<div id=z></div><input id=f>"
+               "<script>z.addEventListener('dragover', e => e.preventDefault());"
+               "z.addEventListener('drop', e => { e.preventDefault(); document.title = e.dataTransfer.getData('text/plain') + ' ' + e.dataTransfer.getData('text/uri-list'); });</script>",
+               "https://example.test/"));
+    bool settled;
+    const char *uris = "# comment\r\nhttps://example.test/a\r\nhttps://example.test/b\r\n";
+    CHECK(siv_test_drop(f.window, 50, 50, SIV_STR("text/uri-list"), (const uint8_t *)uris, strlen(uris)) == SIV_OK);
+    CHECK(siv_test_settle(f.app, 1000, &settled) == SIV_OK);
+    /* (The title collapses the list's line break.) */
+    CHECK(wait_title(&f, "https://example.test/a https://example.test/a https://example.test/b"));
+    CHECK(siv_test_drop(f.window, 50, 110, SIV_STR("text/plain;charset=utf-8"), (const uint8_t *)"dropped", 7) == SIV_OK);
+    CHECK(siv_test_settle(f.app, 1000, &settled) == SIV_OK);
+    struct answer a;
+    double end = now() + 10;
+    do CHECK(eval(&f, "document.getElementById('f').value", &a));
+    while (strcmp(a.json, "\"dropped\"") && now() < end);
+    CHECK(!strcmp(a.json, "\"dropped\""));
+    stop(&f);
+}
+
 static const struct {
     const char *name;
     void (*fn)(void);
@@ -418,6 +445,7 @@ static const struct {
     {"data dir", check_data_dir},
     {"zoom and color scheme", check_zoom_and_scheme},
     {"history", check_history},
+    {"drop", check_drop},
 };
 
 int main(int argc, char **argv) {

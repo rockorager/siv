@@ -259,7 +259,12 @@ void siv_webview_destroy(siv_webview webview);
  *  window: an external node (focusable, with the page's input handlers,
  *  cursors, input method, and accessibility tree) that the application
  *  lays out like any other. A web view has one node; creating another
- *  moves the page there. Returns 0 if the transaction failed. */
+ *  moves the page there. Returns 0 if the transaction failed.
+ *
+ *  The node is a drop target for text and URLs, which reach the page as
+ *  DOM dragenter, dragover, and drop events (or are inserted into an
+ *  editable element). WPE WebKit has no drag and drop of its own, so files
+ *  cannot be dropped into a page and drags do not start from one. */
 siv_node siv_webview_view(siv_txn txn, siv_node parent, siv_webview webview);
 
 /** The node showing the web view, or 0. */

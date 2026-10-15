@@ -55,6 +55,9 @@ typedef struct swv_engine {
     void (*released)(struct swv_webview *wv, uint64_t key);
     /* Input on the node; returns what siv's handler returns. */
     siv_event_result (*input)(struct swv_webview *wv, const siv_event *event);
+    /* Text or URLs (a URI list) dropped on the node at (x, y), logical
+     * pixels. */
+    void (*drop)(struct swv_webview *wv, float x, float y, bool uri_list, const char *data, size_t len);
     void (*load_uri)(struct swv_webview *wv, const char *uri);
     void (*load_html)(struct swv_webview *wv, const char *html, size_t len, const char *base_uri);
     void (*go_back)(struct swv_webview *wv);

@@ -114,3 +114,54 @@ while idle.
 
 Other observations: siv's prebuilt `zig-out/bin` examples were stale against the
 current libsiv (`siv_window_root`).
+
+## Phase 2: the siv hooks (pushed to siv main)
+
+| commit | hook |
+| --- | --- |
+| f0b153a | frame callbacks on covering subsurfaces (fixes the stall in 1) |
+| 1f765a6 | frame slots get `configure` (size, buffer size, scale) and `presented` per shown frame (2, 3) |
+| adbdec2 | `siv_app_add_prepare`: a hook before each wait, returning a timeout (4) |
+| c6199a1 | `keycode`, raw scroll (`raw_dx/dy`, `steps_x/y` value120, `scroll_source`, stop), touch events (5, 6, 7) |
+| a03e066 | `siv_set_text_input` and `text_input` events for custom nodes (8) |
+| 0880928 | `siv_set_accessible_embed`: a remote AT-SPI root under a node (9) |
+| db34105 | Vulkan import of multi-plane (DCC) dma-bufs (10) |
+| fadec5c | Lua `siv.handle(h)` and `siv.wrap(type, n)`, so other libraries' Lua modules take and return siv userdata |
+| 1d46df8 | a menu closed without a choice reports `close` (WebKit's `<select>` must hear it) |
+
+Left for later: the XKB keymap text (WebKit builds its own from the
+keycodes, so `event.code` and layouts work) and cursor images (11).
+
+## Phase 3: the library
+
+- `include/siv-webview.h`: handles, descriptors, `siv_result`, and one
+  event callback per web view, in siv's style (D2). `src/webview.c` is
+  the siv side (frame slot, node, input handlers, cursor, text input,
+  accessibility embed, drops); `src/swv.h` the engine table; `src/wpe.c`
+  and `src/wpe_webkit.inc` the WPE engine; `src/glib_loop.c` runs GLib's
+  default context inside siv's loop with `siv_app_add_prepare`.
+- `zig/siv_webview.zig`: the Zig module (siv's types; slices, errors,
+  methods). `src/lua.c`: `require("siv.webview")`, as
+  `lib/lua/5.5/siv/webview.so` beside `siv.so`, and preloaded by the
+  `siv-webview-lua` runner (siv-lua loads no C modules).
+- Popups: `<select>` and the context menu are siv menus at the element
+  or the click (context menu titles' GTK mnemonics become siv
+  mnemonics); file inputs open siv's portal file chooser; notifications
+  go to `siv_notification_send` unless the application shows them;
+  permission requests are events the application answers.
+- Drag and drop: WPE 2.52's platform API has none. Text and URLs dropped
+  on the node become DOM `dragenter`/`dragover`/`drop` events (or are
+  inserted into editable elements); files cannot be dropped in, and
+  drags out of a page do not start.
+- Dark mode: WebKit reads the appearance once per process from the
+  primary WPE display, so the first display stays primary for the
+  process's life and the last web view to set a color scheme decides.
+- `load_html` replaces the current history entry in WPE 2.52 rather
+  than adding one; `load_uri` adds one.
+- Tests (`zig build test`): `tests/headless.c` (11 checks: load and
+  title, scripts, messages both ways, `app://` schemes, navigation and
+  new-window policy with real clicks, typing, frames in a capture, data
+  directory vs ephemeral, zoom and dark mode, history, drops),
+  `tests/zig.zig` (layout against the C header, a page through the Zig
+  module), `tests/headless.lua`. All on siv's headless backend with the
+  engine in software: no compositor, no GPU, about 3 s.
