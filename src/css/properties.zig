@@ -101,6 +101,10 @@ pub const Id = enum(u8) {
     background_size,
     background_clip,
     background_origin,
+    mask_image,
+    mask_repeat,
+    mask_position,
+    mask_size,
     box_shadow,
     opacity,
     overflow_x,
@@ -257,6 +261,7 @@ pub const Shorthand = enum(u8) {
     border_color,
     border_radius,
     background,
+    mask,
     font,
     flex,
     flex_flow,
@@ -299,6 +304,7 @@ pub const Shorthand = enum(u8) {
             .border_color => &.{ .border_top_color, .border_right_color, .border_bottom_color, .border_left_color },
             .border_radius => &.{ .border_top_left_radius, .border_top_right_radius, .border_bottom_right_radius, .border_bottom_left_radius },
             .background => &.{ .background_color, .background_image, .background_repeat, .background_position, .background_size, .background_clip, .background_origin },
+            .mask => &.{ .mask_image, .mask_repeat, .mask_position, .mask_size },
             .font => &.{ .font_style, .font_variant_caps, .font_weight, .font_stretch, .font_size, .line_height, .font_family },
             .flex => &.{ .flex_grow, .flex_shrink, .flex_basis },
             .flex_flow => &.{ .flex_direction, .flex_wrap },
@@ -360,6 +366,11 @@ const name_list = blk: {
         .{ "-ms-hyphens", Prop{ .longhand = .hyphens } },
         .{ "-epub-hyphens", Prop{ .longhand = .hyphens } },
         .{ "-webkit-box-shadow", Prop{ .longhand = .box_shadow } },
+        .{ "-webkit-mask", Prop{ .shorthand = .mask } },
+        .{ "-webkit-mask-image", Prop{ .longhand = .mask_image } },
+        .{ "-webkit-mask-repeat", Prop{ .longhand = .mask_repeat } },
+        .{ "-webkit-mask-position", Prop{ .longhand = .mask_position } },
+        .{ "-webkit-mask-size", Prop{ .longhand = .mask_size } },
         .{ "-webkit-text-decoration-line", Prop{ .longhand = .text_decoration_line } },
         .{ "margin-block-start", Prop{ .longhand = .margin_top } },
         .{ "margin-block-end", Prop{ .longhand = .margin_bottom } },
@@ -838,10 +849,10 @@ fn parseLonghand(c: *Cursor, id: Id) Error!?Value {
             const y = (try parseLen(c, .{ .negative = false })) orelse x;
             break :blk .{ .pair = .{ x, y } };
         },
-        .background_image => if (c.ident("none")) Value{ .image = null } else if (try parseImage(c)) |img| .{ .image = img } else null,
-        .background_repeat => parseRepeat(c),
-        .background_position, .object_position => if (try parsePosition(c)) |p| .{ .pair = p } else null,
-        .background_size => try parseBgSize(c),
+        .background_image, .mask_image => if (c.ident("none")) Value{ .image = null } else if (try parseImage(c)) |img| .{ .image = img } else null,
+        .background_repeat, .mask_repeat => parseRepeat(c),
+        .background_position, .object_position, .mask_position => if (try parsePosition(c)) |p| .{ .pair = p } else null,
+        .background_size, .mask_size => try parseBgSize(c),
         .background_clip, .background_origin => blk: {
             if (c.ident("border-box")) break :blk kw(style.Box.border_box);
             if (c.ident("padding-box")) break :blk kw(style.Box.padding_box);
@@ -1746,6 +1757,52 @@ fn parseShorthand(c: *Cursor, s: Shorthand, important: bool, out: *std.ArrayList
             try add(c.a, out, .background_clip, important, boxes[1] orelse boxes[0] orelse kw(style.Box.border_box));
             return true;
         },
+        .mask => {
+            // One layer (more are dropped): an image, its position and
+            // size, its repeat; mode, composite, and box keywords pass.
+            var image: ?*const style.Image = null;
+            var have_image = false;
+            var repeat: ?Value = null;
+            var pos: ?[2]SLen = null;
+            var size: ?Value = null;
+            while (!c.done()) {
+                if (c.peek().kind == .comma) break;
+                if (!have_image) {
+                    if (c.ident("none")) {
+                        have_image = true;
+                        continue;
+                    }
+                    if (try parseImage(c)) |img| {
+                        image = img;
+                        have_image = true;
+                        continue;
+                    }
+                }
+                if (pos == null) if (try parsePosition(c)) |p| {
+                    pos = p;
+                    if (c.peek().isDelim('/')) {
+                        _ = c.take();
+                        size = (try parseBgSize(c)) orelse return false;
+                    }
+                    continue;
+                };
+                if (repeat == null) if (parseRepeat(c)) |r| {
+                    repeat = r;
+                    continue;
+                };
+                const passes = [_][]const u8{ "alpha", "luminance", "match-source", "add", "subtract", "intersect", "exclude", "border-box", "padding-box", "content-box", "margin-box", "fill-box", "stroke-box", "view-box", "no-clip" };
+                const skipped = for (passes) |k| {
+                    if (c.ident(k)) break true;
+                } else false;
+                if (skipped) continue;
+                return false;
+            }
+            try add(c.a, out, .mask_image, important, .{ .image = image });
+            try add(c.a, out, .mask_repeat, important, repeat orelse kw(style.Repeat.repeat));
+            try add(c.a, out, .mask_position, important, .{ .pair = pos orelse .{ SLen.zero, SLen.zero } });
+            try add(c.a, out, .mask_size, important, size orelse Value{ .bg_size = .{ .kind = .explicit, .w = SLen.auto, .h = SLen.auto } });
+            return true;
+        },
         .font => {
             var st: ?Value = null;
             var variant: ?Value = null;
@@ -2222,6 +2279,10 @@ pub fn apply(s: *style.Style, id: Id, v: Value, cx: *const Ctx) Error!void {
         .background_size => s.box.background_size = if (v == .bg_size) .{ .kind = v.bg_size.kind, .w = try v.bg_size.w.compute(a, &vc), .h = try v.bg_size.h.compute(a, &vc) } else .{},
         .background_clip => s.box.background_clip = S.k(style.Box, v),
         .background_origin => s.box.background_origin = S.k(style.Box, v),
+        .mask_image => s.box.mask_image = if (v == .image) v.image else null,
+        .mask_repeat => s.box.mask_repeat = S.k(style.Repeat, v),
+        .mask_position => s.box.mask_position = try S.pair(v, a, &vc),
+        .mask_size => s.box.mask_size = if (v == .bg_size) .{ .kind = v.bg_size.kind, .w = try v.bg_size.w.compute(a, &vc), .h = try v.bg_size.h.compute(a, &vc) } else .{},
         .box_shadow => s.box.box_shadow = if (v == .shadows) v.shadows else null,
         .opacity => s.box.opacity = if (v == .number) v.number else 1,
         .overflow_x => s.box.overflow_x = S.k(style.Overflow, v),
@@ -2425,6 +2486,10 @@ fn copyFrom(s: *style.Style, id: Id, from: *const style.Style, cx: *const Ctx) v
         .background_size => s.box.background_size = from.box.background_size,
         .background_clip => s.box.background_clip = from.box.background_clip,
         .background_origin => s.box.background_origin = from.box.background_origin,
+        .mask_image => s.box.mask_image = from.box.mask_image,
+        .mask_repeat => s.box.mask_repeat = from.box.mask_repeat,
+        .mask_position => s.box.mask_position = from.box.mask_position,
+        .mask_size => s.box.mask_size = from.box.mask_size,
         .box_shadow => s.box.box_shadow = from.box.box_shadow,
         .opacity => s.box.opacity = from.box.opacity,
         .overflow_x => s.box.overflow_x = from.box.overflow_x,

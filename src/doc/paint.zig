@@ -14,6 +14,7 @@ const raster = @import("raster");
 const box_mod = @import("box.zig");
 const layout = @import("layout.zig");
 const inline_mod = @import("inline.zig");
+const url_mod = @import("url.zig");
 
 const Rect = raster.Rect;
 const Color = css.Color;
@@ -95,6 +96,9 @@ pub const Painter = struct {
     clips: std.ArrayList(Rect) = .empty,
     ctx_clips: usize = 0,
     glyphs: std.ArrayList(scene.Glyph) = .empty,
+    /// Where image URLs of style attributes resolve from (style sheets'
+    /// are resolved when parsed).
+    base_url: []const u8 = "",
 
     const Positioned = struct { id: BoxId, x: f32, y: f32, z: i32, order: u32, clip: ?Rect };
 
@@ -165,7 +169,7 @@ pub const Painter = struct {
             .flex, .grid => return z,
             else => {},
         };
-        if (st.box.opacity < 1) return 0;
+        if (st.box.opacity < 1 or st.box.mask_image != null) return 0;
         return null;
     }
 
@@ -224,6 +228,18 @@ pub const Painter = struct {
         // Box edges on whole pixels, as browsers snap them: no
         // antialiased seams where boxes meet or overlap.
         const r = snap(Rect.xywh(x, y, b.w, b.h));
+        // A mask (CSS Masking 1): the box in an isolated layer whose last
+        // child is the mask image, composited with dst_in, so that only
+        // its alpha shows the box. Until the image loads, nothing shows.
+        const mask = st.box.mask_image;
+        if (mask) |m| {
+            if (m.* == .url and p.hooks.imageSize(p.hooks.ctx, try p.imageUrl(m.url)) == null) return;
+            try p.b.pushLayer(.{ .isolate = true });
+        }
+        defer if (mask) |m| {
+            p.drawMask(st, m, r) catch {};
+            p.b.popLayer() catch {};
+        };
         if (id == p.tree().root) {
             try p.canvas(r);
         } else if (b.node != .none or b.kind != .inline_root) {
@@ -439,59 +455,76 @@ pub const Painter = struct {
         };
         switch (img.*) {
             .gradient => |g| try p.gradient(g, origin, shape(clip_box, clip_rr), current),
-            .url => |u| {
-                const size = p.hooks.imageSize(p.hooks.ctx, u) orelse return;
-                var w = size[0];
-                var h = size[1];
-                const bs = st.box.background_size;
-                switch (bs.kind) {
-                    .cover, .contain => {
-                        const sx = origin.width() / @max(w, 1);
-                        const sy = origin.height() / @max(h, 1);
-                        const s = if (bs.kind == .cover) @max(sx, sy) else @min(sx, sy);
-                        w *= s;
-                        h *= s;
-                    },
-                    .explicit => {
-                        const ew: ?f32 = if (bs.w.tag == .length) bs.w.resolve(origin.width()) else null;
-                        const eh: ?f32 = if (bs.h.tag == .length) bs.h.resolve(origin.height()) else null;
-                        if (ew != null and eh != null) {
-                            w = ew.?;
-                            h = eh.?;
-                        } else if (ew) |v| {
-                            h = h * v / @max(w, 1);
-                            w = v;
-                        } else if (eh) |v| {
-                            w = w * v / @max(h, 1);
-                            h = v;
-                        }
-                    },
-                }
-                if (w <= 0 or h <= 0) return;
-                const px0 = origin.x0 + st.box.background_position[0].resolve(origin.width() - w);
-                const py0 = origin.y0 + st.box.background_position[1].resolve(origin.height() - h);
-                const rep = st.box.background_repeat;
-                const rx = rep == .repeat or rep == .repeat_x or rep == .space or rep == .round;
-                const ry = rep == .repeat or rep == .repeat_y or rep == .space or rep == .round;
-                var x0 = px0;
-                var y0 = py0;
-                if (rx) x0 = px0 - @ceil((px0 - clip_box.x0) / w) * w;
-                if (ry) y0 = py0 - @ceil((py0 - clip_box.y0) / h) * h;
-                // Only the tiles in the band.
-                if (ry and y0 + h < p.band[0]) y0 += @floor((p.band[0] - y0) / h) * h;
-                var ty = y0;
-                var tiles: usize = 0;
-                while (ty < clip_box.y1 and tiles < 4096) : (ty += h) {
-                    if (ty > p.band[1]) break;
-                    var tx = x0;
-                    while (tx < clip_box.x1 and tiles < 4096) : (tx += w) {
-                        tiles += 1;
-                        try p.hooks.drawImage(p.hooks.ctx, p.b, u, Rect.xywh(tx, ty, w, h), clip_box);
-                        if (!rx) break;
-                    }
-                    if (!ry) break;
+            .url => |u| try p.imageTiles(u, st.box.background_size, st.box.background_position, st.box.background_repeat, origin, clip_box),
+        }
+    }
+
+    fn drawMask(p: *Painter, st: *const Style, m: *const css.style.Image, r: Rect) Error!void {
+        try p.b.pushLayer(.{ .blend = .dst_in });
+        defer p.b.popLayer() catch {};
+        switch (m.*) {
+            .gradient => |g| try p.gradient(g, r, .{ .rect = r }, p.textColor(st)),
+            .url => |u| try p.imageTiles(u, st.box.mask_size, st.box.mask_position, st.box.mask_repeat, r, r),
+        }
+    }
+
+    /// An image's tiles in `origin` (sized, positioned, and repeated as
+    /// backgrounds and masks are, CSS Backgrounds 3), clipped to `clip`;
+    /// only those in the band.
+    fn imageUrl(p: *Painter, raw: []const u8) Error![]const u8 {
+        return url_mod.resolve(p.scratch, p.base_url, raw);
+    }
+
+    fn imageTiles(p: *Painter, raw: []const u8, bs: css.style.BackgroundSize, position: [2]css.Len, rep: css.style.Repeat, origin: Rect, clip_box: Rect) Error!void {
+        const u = try p.imageUrl(raw);
+        const size = p.hooks.imageSize(p.hooks.ctx, u) orelse return;
+        var w = size[0];
+        var h = size[1];
+        switch (bs.kind) {
+            .cover, .contain => {
+                const sx = origin.width() / @max(w, 1);
+                const sy = origin.height() / @max(h, 1);
+                const s = if (bs.kind == .cover) @max(sx, sy) else @min(sx, sy);
+                w *= s;
+                h *= s;
+            },
+            .explicit => {
+                const ew: ?f32 = if (bs.w.tag == .length) bs.w.resolve(origin.width()) else null;
+                const eh: ?f32 = if (bs.h.tag == .length) bs.h.resolve(origin.height()) else null;
+                if (ew != null and eh != null) {
+                    w = ew.?;
+                    h = eh.?;
+                } else if (ew) |v| {
+                    h = h * v / @max(w, 1);
+                    w = v;
+                } else if (eh) |v| {
+                    w = w * v / @max(h, 1);
+                    h = v;
                 }
             },
+        }
+        if (w <= 0 or h <= 0) return;
+        const px0 = origin.x0 + position[0].resolve(origin.width() - w);
+        const py0 = origin.y0 + position[1].resolve(origin.height() - h);
+        const rx = rep == .repeat or rep == .repeat_x or rep == .space or rep == .round;
+        const ry = rep == .repeat or rep == .repeat_y or rep == .space or rep == .round;
+        var x0 = px0;
+        var y0 = py0;
+        if (rx) x0 = px0 - @ceil((px0 - clip_box.x0) / w) * w;
+        if (ry) y0 = py0 - @ceil((py0 - clip_box.y0) / h) * h;
+        // Only the tiles in the band.
+        if (ry and y0 + h < p.band[0]) y0 += @floor((p.band[0] - y0) / h) * h;
+        var ty = y0;
+        var tiles: usize = 0;
+        while (ty < clip_box.y1 and tiles < 4096) : (ty += h) {
+            if (ty > p.band[1]) break;
+            var tx = x0;
+            while (tx < clip_box.x1 and tiles < 4096) : (tx += w) {
+                tiles += 1;
+                try p.hooks.drawImage(p.hooks.ctx, p.b, u, Rect.xywh(tx, ty, w, h), clip_box);
+                if (!rx) break;
+            }
+            if (!ry) break;
         }
     }
 

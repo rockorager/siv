@@ -421,6 +421,12 @@ pub const BoxProps = struct {
     background_size: BackgroundSize = .{},
     background_clip: Box = .border_box,
     background_origin: Box = .padding_box,
+    /// One mask layer (CSS Masking 1): an image's alpha, positioned and
+    /// sized as a background is in the border box.
+    mask_image: ?*const Image = null,
+    mask_repeat: Repeat = .repeat,
+    mask_position: [2]Len = .{ .zero, .zero },
+    mask_size: BackgroundSize = .{},
     box_shadow: ?*const Shadows = null,
     opacity: f32 = 1,
     overflow_x: Overflow = .visible,

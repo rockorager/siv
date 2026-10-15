@@ -62,3 +62,22 @@ test "corpus: RSS items with messy HTML" {
 test "corpus: a Standard Ebooks chapter with its CSS" {
     try check("se-chapter", "se/text/chapter-1.xhtml", .html, 560, 800, 0);
 }
+
+test "corpus: a CSS mask shows its box through the image's alpha" {
+    // Wikipedia's icons: a box of currentColor under mask-image.
+    const r = try Runner.init(testing.allocator, testing.io, "test/doc/corpus", "https://corpus.example", 100, 50);
+    defer r.deinit();
+    try r.render("mask.html", .html, 0, r.pixels[0]);
+    const px = r.pixels[0];
+    const at = struct {
+        fn f(p: []const u8, x: usize, y: usize) u8 {
+            return p[(y * 100 + x) * 4];
+        }
+    }.f;
+    // The circle's center shows the box; its corners do not.
+    try testing.expect(at(px, 20, 20) < 40);
+    try testing.expect(at(px, 2, 2) > 215);
+    try testing.expect(at(px, 37, 37) > 215);
+    // A mask whose image never loads shows nothing, not a solid box.
+    try testing.expect(at(px, 60, 20) > 215);
+}

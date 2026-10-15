@@ -304,6 +304,7 @@ fn collect(d: *Document) Error!void {
                     defer d.gpa.free(wrapped);
                     s.* = try css.sheet.parse(d.gpa, wrapped, .{});
                 } else s.* = try css.sheet.parse(d.gpa, t.items, .{});
+                try absolutize(s, d.base_url);
                 try d.sheets.append(d.gpa, .{ .sheet = s, .origin = .author, .owned = true });
                 for (s.imports) |imp| _ = try d.addResource(.stylesheet, imp.url);
             },
@@ -331,6 +332,7 @@ pub fn supplyStylesheet(d: *Document, index: u32, bytes: []const u8) Error!void 
     const s = try d.gpa.create(css.Sheet);
     errdefer d.gpa.destroy(s);
     s.* = try css.sheet.parse(d.gpa, bytes, .{});
+    try absolutize(s, r.url);
     r.sheet = s;
     r.state = .ready;
     for (s.imports) |imp| {
@@ -338,6 +340,27 @@ pub fn supplyStylesheet(d: *Document, index: u32, bytes: []const u8) Error!void 
         const u = try url_mod.resolve(d.arena.allocator(), r.url, imp.url);
         _ = try d.addResource(.stylesheet, u);
     }
+}
+
+/// Resolves a sheet's image URLs against the sheet's own URL (CSS Values
+/// 4, 4.5.1), so that its relative URLs name the same resources wherever
+/// the sheet is used. Style attributes' resolve against the document's
+/// base when painted.
+fn absolutize(s: *css.Sheet, base: []const u8) Error!void {
+    const a = s.arena.allocator();
+    for (@constCast(s.decls)) |*decl| switch (decl.value) {
+        .image => |maybe| if (maybe) |img| switch (img.*) {
+            .url => |u| {
+                const abs = try url_mod.resolve(a, base, u);
+                if (std.mem.eql(u8, abs, u)) continue;
+                const copy = try a.create(css.style.Image);
+                copy.* = .{ .url = abs };
+                decl.value = .{ .image = copy };
+            },
+            else => {},
+        },
+        else => {},
+    };
 }
 
 pub fn failResource(d: *Document, index: u32) void {
@@ -478,7 +501,7 @@ fn linkResources(d: *Document) Error!void {
         if (rep.natural_h == 0) rep.natural_h = if (doc.height > 0) doc.height else 150;
     }
     // Background images.
-    for (d.store.styles.items) |st| if (st.box.background_image) |img| switch (img.*) {
+    for (d.store.styles.items) |st| for ([_]?*const css.style.Image{ st.box.background_image, st.box.mask_image }) |image| if (image) |img| switch (img.*) {
         .url => |u| _ = try d.addResource(.image, u),
         else => {},
     };
@@ -685,6 +708,7 @@ pub fn paint(d: *Document, b: *scene.Builder, y0: f32, y1: f32, palette: paint_m
         .band = .{ y0, y1 },
         .highlights = highlights,
         .scratch = d.scratch.allocator(),
+        .base_url = d.base_url,
     };
     p.paint() catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,

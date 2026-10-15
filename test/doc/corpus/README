@@ -9,3 +9,5 @@ against test/golden/doc/.
   Standard Ebooks (https://standardebooks.org), with its style sheets.
   The text is in the public domain; Standard Ebooks dedicates its markup
   and CSS to the public domain (CC0 1.0).
+- mask.html, icon.svg: a CSS mask over a box, as Wikipedia draws its
+  icons, written for this corpus (MIT, siv).

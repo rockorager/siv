@@ -5701,7 +5701,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     to the viewport (CSS Overflow 3.3). Simplified: a box's block
     descendants' backgrounds and its inline content are painted in tree
     order, not in Appendix E's separate passes, and positioned boxes
-    with `z-index: auto` are full stacking contexts. Images come through paint hooks: the
+    with `z-index: auto` are full stacking contexts. Masks (`mask-image`
+    and the `mask` shorthand, one layer, alpha): the box in an isolated
+    layer whose last child is the mask image composited with `dst_in`;
+    a box whose mask has not loaded paints nothing. Image URLs in style
+    sheets resolve against the sheet's URL when parsed, those in style
+    attributes against the document's base. Images come through paint hooks: the
     widget decodes with `ui.Image.load` on the pool and keeps the images
     alive with the display lists that draw them; SVG (files and inline
     `<svg>`) is parsed by the `svg` module.
@@ -5903,25 +5908,25 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   <!-- wpt-rates -->
   | Suite | Without images | All (with images) |
   | --- | --- | --- |
-  | css2 (normal flow, box, margins, colors, borders, positioning, line box, lists) | 235 of 316 | 432 of 569 |
+  | css2 (normal flow, box, margins, colors, borders, positioning, line box, lists) | 235 of 316 | 441 of 569 |
   | css-flexbox | 227 of 395 | 243 of 482 |
   | css-grid | 112 of 198 | 122 of 218 |
   | css-values | 65 of 123 | 67 of 126 |
   | css-variables | 46 of 70 | 46 of 70 |
   | css-tables (and CSS2 tables) | 125 of 288 | 127 of 309 |
-  | floats (CSS2 floats, floats-clear) | 88 of 170 | 151 of 269 |
+  | floats (CSS2 floats, floats-clear) | 88 of 170 | 152 of 269 |
   | css-sizing | 111 of 278 | 154 of 366 |
   | css-display | 59 of 106 | 59 of 109 |
   | css-pseudo | 33 of 72 | 34 of 74 |
   | css-lists (and CSS2 generated content) | 166 of 326 | 168 of 334 |
   | css-text (white space, transforms, spacing, breaking, indents, alignment) | 116 of 320 | 122 of 333 |
-  | css-backgrounds (and css-borders) | 111 of 230 | 167 of 448 |
+  | css-backgrounds (and css-borders) | 111 of 230 | 197 of 448 |
   | css-overflow | 69 of 310 | 72 of 324 |
   | css-position | 23 of 68 | 24 of 79 |
-  | css-break | 44 of 400 | 46 of 403 |
+  | css-break | 44 of 400 | 45 of 403 |
   | css-multicol | 63 of 312 | 69 of 373 |
-  | css-writing-modes | 52 of 395 | 66 of 795 |
-  | Total | 1745 of 4377 (40 %) | 2169 of 5681 (38 %) |
+  | css-writing-modes | 52 of 395 | 73 of 795 |
+  | Total | 1745 of 4377 (40 %) | 2215 of 5681 (39 %) |
   <!-- /wpt-rates -->
 
 - **Layout unification.** Should siv's widget layout (D26) become this
