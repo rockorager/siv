@@ -1,0 +1,6 @@
+{
+	global:
+		siv_webview_*;
+	local:
+		*;
+};

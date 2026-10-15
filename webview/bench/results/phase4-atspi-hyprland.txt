@@ -1,0 +1,24 @@
+[application] 'Browser' (1 children)
+  [frame] 'typed: Hypr ñandú' (5 children)
+    [button] 'Back' (1 children)
+      [image] ''
+    [button] 'Forward' (1 children)
+      [image] ''
+    [button] 'Reload' (1 children)
+      [image] ''
+    [entry] 'Address'
+    [document frame] 'Web page' (1 children)
+      [filler] '' (1 children)
+        [scroll pane] '' (2 children)
+          [document web] 'typed: Hypr ñandú' (805 children)
+            [heading] 'siv-webview'
+            [paragraph] '' (2 children)
+              [entry] 'Type here'
+              [button] 'Click me'
+            [paragraph] '' (3 children)
+              [combo box] '' (1 children)
+                [menu] '' (3 children)
+                  [menu item] 'One'
+                  [menu item] 'Two'
+                  [menu item] 'Three'
+              [button] 'Choose File'

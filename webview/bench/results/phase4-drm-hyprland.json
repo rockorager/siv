@@ -1,0 +1,529 @@
+{
+ "results": [
+  {
+   "url": "http://127.0.0.1:8765/test.html",
+   "tag": "run0",
+   "first_frame_ms": 174.984995,
+   "memory": {
+    "siv-webview-bro[2180510]": {
+     "rss_kib": 116260,
+     "pss_kib": 63066,
+     "gpu_kib": 40656
+    },
+    "WPENetworkProce[2180520]": {
+     "rss_kib": 62696,
+     "pss_kib": 34531,
+     "gpu_kib": 0
+    },
+    "bwrap[2180533]": {
+     "rss_kib": 2360,
+     "pss_kib": 188,
+     "gpu_kib": 0
+    },
+    "bwrap[2180543]": {
+     "rss_kib": 2356,
+     "pss_kib": 184,
+     "gpu_kib": 0
+    },
+    "bwrap[2180544]": {
+     "rss_kib": 1548,
+     "pss_kib": 184,
+     "gpu_kib": 0
+    },
+    "WPEWebProcess[2180545]": {
+     "rss_kib": 201660,
+     "pss_kib": 138441,
+     "gpu_kib": 134708
+    },
+    "bwrap[2180534]": {
+     "rss_kib": 1552,
+     "pss_kib": 188,
+     "gpu_kib": 0
+    },
+    "xdg-dbus-proxy[2180536]": {
+     "rss_kib": 6508,
+     "pss_kib": 807,
+     "gpu_kib": 0
+    }
+   },
+   "memory_total": {
+    "rss_kib": 394940,
+    "pss_kib": 237589,
+    "gpu_kib": 175364
+   },
+   "key_to_photon_ms": [
+    33.267092,
+    27.735127,
+    23.834186,
+    24.832748,
+    29.840889,
+    14.915542,
+    22.996325,
+    7.30966,
+    9.57668,
+    11.058703,
+    12.934897,
+    14.640504,
+    20.564435,
+    11.329377,
+    12.445276,
+    13.832145,
+    21.719326,
+    26.523927,
+    26.783588,
+    12.446385
+   ],
+   "wheel_to_photon_ms": [
+    27.496014,
+    29.480243,
+    10.354777,
+    31.288751,
+    10.81909,
+    29.329982,
+    22.834971,
+    25.779301,
+    8.439453,
+    26.07053,
+    21.697351,
+    27.962127,
+    30.64831,
+    13.137498,
+    29.223135
+   ],
+   "scroll": {
+    "presents": 181,
+    "seconds": 2.991742548,
+    "dropped": 0
+   },
+   "log_tail": [
+    "ERROR: ld.so: object '/root/siv-webview/bench/out/presshim.so' from LD_PRELOAD cannot be preloaded (cannot open shared object file): ignored.",
+    "siv-webview: first frame submitted at 3775104875676487 ns",
+    "siv-webview: load finished at 3775104880942993 ns"
+   ]
+  },
+  {
+   "url": "https://en.wikipedia.org/wiki/Wayland_(protocol)",
+   "tag": "run0",
+   "first_frame_ms": 182.298167,
+   "memory": {
+    "siv-webview-bro[2180737]": {
+     "rss_kib": 119420,
+     "pss_kib": 63547,
+     "gpu_kib": 40536
+    },
+    "WPENetworkProce[2180747]": {
+     "rss_kib": 79580,
+     "pss_kib": 46562,
+     "gpu_kib": 0
+    },
+    "bwrap[2180760]": {
+     "rss_kib": 2360,
+     "pss_kib": 188,
+     "gpu_kib": 0
+    },
+    "bwrap[2180770]": {
+     "rss_kib": 2352,
+     "pss_kib": 183,
+     "gpu_kib": 0
+    },
+    "bwrap[2180771]": {
+     "rss_kib": 1548,
+     "pss_kib": 184,
+     "gpu_kib": 0
+    },
+    "WPEWebProcess[2180772]": {
+     "rss_kib": 293824,
+     "pss_kib": 227108,
+     "gpu_kib": 173652
+    },
+    "bwrap[2180761]": {
+     "rss_kib": 1552,
+     "pss_kib": 188,
+     "gpu_kib": 0
+    },
+    "xdg-dbus-proxy[2180763]": {
+     "rss_kib": 6492,
+     "pss_kib": 783,
+     "gpu_kib": 0
+    }
+   },
+   "memory_total": {
+    "rss_kib": 507128,
+    "pss_kib": 338743,
+    "gpu_kib": 214188
+   },
+   "wheel_to_photon_ms": [
+    34.634137,
+    43.910913,
+    25.858187,
+    24.478094,
+    41.730425,
+    39.112371,
+    30.073206,
+    30.126112
+   ],
+   "scroll": {
+    "presents": 0,
+    "seconds": 2.992003613,
+    "dropped": 0
+   },
+   "log_tail": [
+    "ERROR: ld.so: object '/root/siv-webview/bench/out/presshim.so' from LD_PRELOAD cannot be preloaded (cannot open shared object file): ignored.",
+    "siv-webview: first frame submitted at 3775120832598663 ns",
+    "siv-webview: load finished at 3775121175173726 ns"
+   ]
+  },
+  {
+   "url": "http://127.0.0.1:8765/test.html",
+   "tag": "run1",
+   "first_frame_ms": 201.618577,
+   "memory": {
+    "siv-webview-bro[2180957]": {
+     "rss_kib": 116756,
+     "pss_kib": 63232,
+     "gpu_kib": 41168
+    },
+    "WPENetworkProce[2180967]": {
+     "rss_kib": 62924,
+     "pss_kib": 34641,
+     "gpu_kib": 0
+    },
+    "bwrap[2180980]": {
+     "rss_kib": 2356,
+     "pss_kib": 187,
+     "gpu_kib": 0
+    },
+    "bwrap[2180990]": {
+     "rss_kib": 2356,
+     "pss_kib": 184,
+     "gpu_kib": 0
+    },
+    "bwrap[2180991]": {
+     "rss_kib": 1548,
+     "pss_kib": 184,
+     "gpu_kib": 0
+    },
+    "WPEWebProcess[2180992]": {
+     "rss_kib": 201816,
+     "pss_kib": 138420,
+     "gpu_kib": 134708
+    },
+    "bwrap[2180981]": {
+     "rss_kib": 1552,
+     "pss_kib": 188,
+     "gpu_kib": 0
+    },
+    "xdg-dbus-proxy[2180983]": {
+     "rss_kib": 6520,
+     "pss_kib": 799,
+     "gpu_kib": 0
+    }
+   },
+   "memory_total": {
+    "rss_kib": 395828,
+    "pss_kib": 237835,
+    "gpu_kib": 175876
+   },
+   "key_to_photon_ms": [
+    16.845948,
+    23.840596,
+    24.847932,
+    27.916562,
+    28.792353,
+    14.377295,
+    22.153267,
+    13.348908,
+    13.76746,
+    21.836645,
+    13.500041,
+    21.476824,
+    11.860055,
+    12.466827,
+    14.942344,
+    6.258483,
+    25.002299,
+    10.440128,
+    29.929548,
+    32.334157
+   ],
+   "wheel_to_photon_ms": [
+    23.147381,
+    23.900223,
+    28.091717,
+    25.595916,
+    38.261527,
+    29.779994,
+    26.426051,
+    27.691169,
+    28.326903,
+    12.136542,
+    26.574938,
+    25.130799,
+    30.208944,
+    23.317247,
+    28.361149
+   ],
+   "scroll": {
+    "presents": 179,
+    "seconds": 2.99167977,
+    "dropped": 0
+   },
+   "log_tail": [
+    "ERROR: ld.so: object '/root/siv-webview/bench/out/presshim.so' from LD_PRELOAD cannot be preloaded (cannot open shared object file): ignored.",
+    "siv-webview: first frame submitted at 3775140202651982 ns",
+    "siv-webview: load finished at 3775140206185076 ns"
+   ]
+  },
+  {
+   "url": "https://en.wikipedia.org/wiki/Wayland_(protocol)",
+   "tag": "run1",
+   "first_frame_ms": 401.931965,
+   "memory": {
+    "siv-webview-bro[2181185]": {
+     "rss_kib": 119284,
+     "pss_kib": 63445,
+     "gpu_kib": 40656
+    },
+    "WPENetworkProce[2181200]": {
+     "rss_kib": 78796,
+     "pss_kib": 46029,
+     "gpu_kib": 0
+    },
+    "bwrap[2181213]": {
+     "rss_kib": 2360,
+     "pss_kib": 188,
+     "gpu_kib": 0
+    },
+    "bwrap[2181219]": {
+     "rss_kib": 2360,
+     "pss_kib": 188,
+     "gpu_kib": 0
+    },
+    "bwrap[2181223]": {
+     "rss_kib": 1552,
+     "pss_kib": 188,
+     "gpu_kib": 0
+    },
+    "WPEWebProcess[2181225]": {
+     "rss_kib": 293380,
+     "pss_kib": 226328,
+     "gpu_kib": 180236
+    },
+    "bwrap[2181214]": {
+     "rss_kib": 1552,
+     "pss_kib": 188,
+     "gpu_kib": 0
+    },
+    "xdg-dbus-proxy[2181215]": {
+     "rss_kib": 6588,
+     "pss_kib": 793,
+     "gpu_kib": 0
+    }
+   },
+   "memory_total": {
+    "rss_kib": 505872,
+    "pss_kib": 337347,
+    "gpu_kib": 220892
+   },
+   "wheel_to_photon_ms": [
+    22.701164,
+    39.560416,
+    27.723359,
+    28.788123,
+    29.042538,
+    29.024808,
+    29.336934,
+    30.815462
+   ],
+   "scroll": {
+    "presents": 0,
+    "seconds": 2.992004979,
+    "dropped": 0
+   },
+   "log_tail": [
+    "ERROR: ld.so: object '/root/siv-webview/bench/out/presshim.so' from LD_PRELOAD cannot be preloaded (cannot open shared object file): ignored.",
+    "siv-webview: first frame submitted at 3775156466819908 ns",
+    "siv-webview: load finished at 3775156579907034 ns"
+   ]
+  },
+  {
+   "url": "http://127.0.0.1:8765/test.html",
+   "tag": "run2",
+   "first_frame_ms": 186.848078,
+   "memory": {
+    "siv-webview-bro[2181451]": {
+     "rss_kib": 116296,
+     "pss_kib": 62963,
+     "gpu_kib": 40656
+    },
+    "WPENetworkProce[2181461]": {
+     "rss_kib": 62720,
+     "pss_kib": 34542,
+     "gpu_kib": 0
+    },
+    "bwrap[2181474]": {
+     "rss_kib": 2360,
+     "pss_kib": 186,
+     "gpu_kib": 0
+    },
+    "bwrap[2181484]": {
+     "rss_kib": 2360,
+     "pss_kib": 186,
+     "gpu_kib": 0
+    },
+    "bwrap[2181485]": {
+     "rss_kib": 1552,
+     "pss_kib": 186,
+     "gpu_kib": 0
+    },
+    "WPEWebProcess[2181486]": {
+     "rss_kib": 202016,
+     "pss_kib": 138613,
+     "gpu_kib": 132660
+    },
+    "bwrap[2181475]": {
+     "rss_kib": 1552,
+     "pss_kib": 186,
+     "gpu_kib": 0
+    },
+    "xdg-dbus-proxy[2181477]": {
+     "rss_kib": 6524,
+     "pss_kib": 805,
+     "gpu_kib": 0
+    }
+   },
+   "memory_total": {
+    "rss_kib": 395380,
+    "pss_kib": 237667,
+    "gpu_kib": 173316
+   },
+   "key_to_photon_ms": [
+    27.872042,
+    9.777109,
+    29.473274,
+    29.697712,
+    21.436785,
+    9.602251,
+    10.905006,
+    12.499172,
+    14.319428,
+    23.484259,
+    20.924597,
+    11.856631,
+    12.804787,
+    13.749864,
+    21.573764,
+    12.786639,
+    31.606612,
+    25.666162,
+    29.878865,
+    31.911735
+   ],
+   "wheel_to_photon_ms": [
+    14.419042,
+    31.618186,
+    28.868557,
+    21.679905,
+    28.910447,
+    28.763369,
+    25.115113,
+    11.181205,
+    25.175821,
+    22.709138,
+    24.82759,
+    22.259207,
+    28.837639,
+    30.638148,
+    10.63272
+   ],
+   "scroll": {
+    "presents": 180,
+    "seconds": 2.991737449,
+    "dropped": 0
+   },
+   "log_tail": [
+    "ERROR: ld.so: object '/root/siv-webview/bench/out/presshim.so' from LD_PRELOAD cannot be preloaded (cannot open shared object file): ignored.",
+    "siv-webview: first frame submitted at 3775175579242443 ns",
+    "siv-webview: load finished at 3775175582979231 ns"
+   ]
+  },
+  {
+   "url": "https://en.wikipedia.org/wiki/Wayland_(protocol)",
+   "tag": "run2",
+   "first_frame_ms": 181.843899,
+   "memory": {
+    "siv-webview-bro[2181637]": {
+     "rss_kib": 119120,
+     "pss_kib": 63471,
+     "gpu_kib": 40536
+    },
+    "WPENetworkProce[2181647]": {
+     "rss_kib": 79084,
+     "pss_kib": 45882,
+     "gpu_kib": 0
+    },
+    "bwrap[2181660]": {
+     "rss_kib": 2356,
+     "pss_kib": 186,
+     "gpu_kib": 0
+    },
+    "bwrap[2181670]": {
+     "rss_kib": 2360,
+     "pss_kib": 188,
+     "gpu_kib": 0
+    },
+    "bwrap[2181671]": {
+     "rss_kib": 1552,
+     "pss_kib": 188,
+     "gpu_kib": 0
+    },
+    "WPEWebProcess[2181672]": {
+     "rss_kib": 290396,
+     "pss_kib": 223312,
+     "gpu_kib": 185980
+    },
+    "bwrap[2181661]": {
+     "rss_kib": 1548,
+     "pss_kib": 186,
+     "gpu_kib": 0
+    },
+    "xdg-dbus-proxy[2181665]": {
+     "rss_kib": 6464,
+     "pss_kib": 791,
+     "gpu_kib": 0
+    }
+   },
+   "memory_total": {
+    "rss_kib": 502880,
+    "pss_kib": 334204,
+    "gpu_kib": 226516
+   },
+   "wheel_to_photon_ms": [
+    31.927863,
+    27.621531,
+    28.559903,
+    28.603757,
+    44.911478,
+    40.386248,
+    29.681916,
+    46.129216
+   ],
+   "scroll": {
+    "presents": 0,
+    "seconds": 2.99206492,
+    "dropped": 0
+   },
+   "log_tail": [
+    "ERROR: ld.so: object '/root/siv-webview/bench/out/presshim.so' from LD_PRELOAD cannot be preloaded (cannot open shared object file): ignored.",
+    "siv-webview: first frame submitted at 3775191572158867 ns",
+    "siv-webview: load finished at 3775191900958759 ns"
+   ]
+  }
+ ],
+ "load": [
+  0.51953125,
+  0.31787109375,
+  0.29296875
+ ],
+ "time": 1792051776.6676366
+}
