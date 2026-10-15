@@ -111,8 +111,12 @@ pub fn build(b: *std.Build) void {
         .{ .name = "vulkan", .module = vk.vulkan },
         .{ .name = "shaders", .module = vk.shaders },
     });
+    const markdown = ctx.module("src/markdown/markdown.zig", &.{
+        .{ .name = "html", .module = html },
+    });
     const doc = ctx.module("src/doc/doc.zig", &.{
         .{ .name = "html", .module = html },
+        .{ .name = "markdown", .module = markdown },
         .{ .name = "css", .module = css },
         .{ .name = "text", .module = text },
         .{ .name = "scene", .module = scene },
@@ -294,6 +298,7 @@ pub fn build(b: *std.Build) void {
         .{ "icon", icon },
         .{ "html", html },
         .{ "css", css },
+        .{ "markdown", markdown },
         .{ "doc", doc },
         .{ "image", image },
         .{ "render-cpu", render_cpu },
