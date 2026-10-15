@@ -27,6 +27,7 @@ const FontCache = font_.FontCache;
 const Glyph = shape_.Glyph;
 const ShapedParagraph = paragraph_.ShapedParagraph;
 const hyphen_ = @import("hyphen.zig");
+const knuth_plass = @import("knuth_plass.zig");
 
 /// `justify` widens the spaces of every line but a paragraph's last to
 /// fill the width, which then goes at the start.
@@ -898,46 +899,17 @@ const Builder = struct {
         return w;
     }
 
-    /// A place a line may end, for total-fit breaking: the end of a
-    /// segment, or a hyphenation point inside one.
-    const Candidate = struct {
-        at: u32,
-        /// Totals from the text's start: natural width, stretch, and
-        /// shrink, up to the end of a line ending here (without its
-        /// hanging whitespace) and up to where the next line starts.
-        w_end: f64,
-        w_next: f64,
-        s_end: f64,
-        s_next: f64,
-        z_end: f64,
-        z_next: f64,
-        hyphen: ?Hyphen = null,
-        forced: bool = false,
-        unsafe: bool = false,
-        penalty: f64 = 0,
-    };
-
-    /// Knuth and Plass's total-fit line breaking: the breaks minimizing
-    /// the paragraph's demerits, by dynamic programming over every
-    /// opportunity (forced breaks split the text). Interword spaces (each
-    /// segment's hanging whitespace when the line goes on) stretch by
-    /// half their width and never shrink, since justification only widens
-    /// them and ragged lines must fit; a paragraph's last line
-    /// may fall short freely. The adjustment ratio r is the room left over
-    /// the stretch plus 3% of the width (so lines without spaces are not
-    /// all equally bad, as with TeX's capped badness, where a first line
-    /// of one hyphenated syllable tied with a loose line of words);
-    /// badness is 100 |r|³, demerits (10 + badness)² plus the square of a
-    /// hyphen's penalty (50) and 3000 for consecutive hyphenated lines. A line no break
-    /// can make fit overflows, with demerits growing with the overflow.
+    /// Knuth and Plass's total-fit line breaking (`knuth_plass.zig`) over
+    /// every segment end and, when hyphenating, every hyphenation point.
     fn breakOptimal(self: *Builder) !void {
         const p = self.p;
         const segments = p.segments;
-        var cands: std.ArrayList(Candidate) = .empty;
-        try cands.append(self.scratch, .{ .at = 0, .w_end = 0, .w_next = 0, .s_end = 0, .s_next = 0, .z_end = 0, .z_next = 0 });
+        var cands: std.ArrayList(knuth_plass.Candidate) = .empty;
+        var hyphens: std.ArrayList(?Hyphen) = .empty;
+        try cands.append(self.scratch, .{ .at = 0, .w_end = 0, .w_next = 0, .s_end = 0, .s_next = 0 });
+        try hyphens.append(self.scratch, null);
         var w: f64 = 0;
         var s: f64 = 0;
-        const z: f64 = 0;
         var points: std.ArrayList(u32) = .empty;
         for (segments, 0..) |seg, j| {
             const from: u32 = if (j == 0) 0 else segments[j - 1].end;
@@ -947,7 +919,8 @@ const Builder = struct {
                 for (points.items) |at| {
                     const hy = self.hyphenAt(at) orelse continue;
                     const prefix: f64 = self.advanceOf(from, at);
-                    try cands.append(self.scratch, .{ .at = at, .w_end = w + prefix, .w_next = w + prefix, .s_end = s, .s_next = s, .z_end = z, .z_next = z, .hyphen = hy, .unsafe = true, .penalty = 50 });
+                    try cands.append(self.scratch, .{ .at = at, .w_end = w + prefix, .w_next = w + prefix, .s_end = s, .s_next = s, .hyphen = hy.advance, .unsafe = true, .penalty = 50 });
+                    try hyphens.append(self.scratch, hy);
                 }
             }
             const hanging: f64 = seg.trailing;
@@ -957,69 +930,27 @@ const Builder = struct {
                 .w_next = w + seg.advance,
                 .s_end = s,
                 .s_next = s + hanging / 2,
-                .z_end = z,
-                .z_next = z,
                 .forced = seg.mandatory or j + 1 == segments.len,
                 .unsafe = seg.unsafe,
             });
+            try hyphens.append(self.scratch, null);
             w += seg.advance;
             s += hanging / 2;
         }
         const c = cands.items;
-        const best = try self.scratch.alloc(f64, c.len);
-        const prev = try self.scratch.alloc(u32, c.len);
-        best[0] = 0;
-        var floor: usize = 0;
-        for (1..c.len) |k| {
-            best[k] = std.math.inf(f64);
-            prev[k] = @intCast(k - 1);
-            var a = k;
-            while (a > floor) {
-                a -= 1;
-                const limit: f64 = self.frame(c[a].at).limit.?;
-                const natural = c[k].w_end - c[a].w_next + if (c[k].hyphen) |hy| @as(f64, hy.advance) else 0;
-                const stretch = c[k].s_end - c[a].s_next;
-                const shrink = c[k].z_end - c[a].z_next;
-                var d: f64 = undefined;
-                if (natural > limit + shrink + 0.001) {
-                    // Overfull: only as the one way out.
-                    if (a + 1 != k and best[k] < std.math.inf(f64)) break;
-                    d = 1e12 + (natural - limit) * 1e6;
-                } else {
-                    // Lines without spaces still give a little (3% of
-                    // the width), so a loose line is worse the looser it
-                    // is rather than all equally bad.
-                    const give = stretch + 0.03 * limit;
-                    const r: f64 = if (natural <= limit)
-                        (if (c[k].forced) 0 else (limit - natural) / give)
-                    else
-                        (limit - natural) / @max(shrink, 1e-9);
-                    const badness = @min(1e10, 100 * @abs(r) * @abs(r) * @abs(r));
-                    d = (10 + badness) * (10 + badness) + c[k].penalty * c[k].penalty;
-                    if (c[k].hyphen != null and c[a].hyphen != null) d += 3000;
-                }
-                if (best[a] + d < best[k]) {
-                    best[k] = best[a] + d;
-                    prev[k] = @intCast(a);
-                }
+        const chain = try knuth_plass.breaks(self.scratch, c, self, struct {
+            fn f(b: *Builder, at: u32) f64 {
+                return b.frame(at).limit.?;
             }
-            if (c[k].forced) floor = k;
-        }
-        // Back from the end, then forward.
-        var chain: std.ArrayList(u32) = .empty;
-        var k: u32 = @intCast(c.len - 1);
-        while (k != 0) : (k = prev[k]) try chain.append(self.scratch, k);
+        }.f);
         var a: u32 = 0;
-        var i = chain.items.len;
-        while (i > 0) {
-            i -= 1;
-            const b = chain.items[i];
+        for (chain) |b| {
             const start = c[a].at;
             const end = c[b].at;
             const f = self.frame(start);
             const pieces = try self.linePieces(start, end, c[a].unsafe, c[b].unsafe);
             try self.placeTabs(pieces, f.indent, f.style);
-            try self.emitLine(start, end, pieces, f, c[b].hyphen);
+            try self.emitLine(start, end, pieces, f, hyphens.items[b]);
             a = b;
         }
         if (self.lines.items.len == 0 or (self.final_line and self.endsWithBreak())) {

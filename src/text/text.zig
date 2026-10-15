@@ -24,6 +24,7 @@ pub const hyphen = @import("hyphen.zig");
 pub const shape = @import("shape.zig");
 pub const paragraph = @import("paragraph.zig");
 pub const layout = @import("layout.zig");
+pub const knuth_plass = @import("knuth_plass.zig");
 pub const cursor = @import("cursor.zig");
 pub const blocks = @import("blocks.zig");
 pub const rope = @import("rope.zig");

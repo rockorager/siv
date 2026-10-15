@@ -202,6 +202,18 @@ pub const Face = struct {
         return hb.hb_font_get_nominal_glyph(self.font, cp, &glyph) != 0;
     }
 
+    /// The glyph a code point maps to without shaping, if any.
+    pub fn nominalGlyph(self: *const Face, cp: u21) ?u32 {
+        var glyph: hb.hb_codepoint_t = 0;
+        if (hb.hb_font_get_nominal_glyph(self.font, cp, &glyph) == 0) return null;
+        return glyph;
+    }
+
+    /// A glyph's horizontal advance in pixels at `size`.
+    pub fn advance(self: *const Face, glyph: u32, size: f32) f32 {
+        return @as(f32, @floatFromInt(hb.hb_font_get_glyph_h_advance(self.font, glyph))) * self.scale(size);
+    }
+
     /// Ink bounds of a glyph in pixels at `size`, y down, relative to the
     /// glyph origin. Null for glyphs without outlines.
     ///
