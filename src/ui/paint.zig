@@ -948,6 +948,7 @@ fn drawNode(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point
             bounds = bounds.unite(if (v.clip) drawn.intersect(r) else drawn);
         },
         .canvas => if (n.data.canvas.draw) |draw| {
+            if (n.data.canvas.banded) try canvasBand(win, nid);
             const box = Rect.xywh(0, 0, s.size.w, s.size.h);
             const shape: scene.Shape = if (v.clip and rounded) .{ .rounded_rect = .{ .rect = box, .radii = radii } } else .{ .rect = box };
             try b.pushLayer(.{ .transform = .translate(off.x, off.y), .clip = .{ .shape = shape } });
@@ -1113,6 +1114,17 @@ fn textBand(win: *Window, nid: NodeId, l: *const text.TextLayout) error{OutOfMem
     s.painted_band = around;
     if (std.mem.indexOfScalar(NodeId, win.culled.items, nid) == null) try win.culled.append(win.gpa, nid);
     return .{ around[0] - pad.top, around[1] - pad.top };
+}
+
+/// A banded canvas's band (`Canvas.banded`), like a long text's.
+fn canvasBand(win: *Window, nid: NodeId) error{OutOfMemory}!void {
+    const s = win.state(nid);
+    s.painted_band = null;
+    const shown = visibleBand(win, nid) orelse return;
+    const h = shown[1] - shown[0];
+    if (!(h > 0 and s.size.h > 4 * h)) return;
+    s.painted_band = .{ shown[0] - h, shown[1] + h };
+    if (std.mem.indexOfScalar(NodeId, win.culled.items, nid) == null) try win.culled.append(win.gpa, nid);
 }
 
 /// The band of a node's own y coordinates its nearest scroll container

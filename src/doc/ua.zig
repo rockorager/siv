@@ -122,3 +122,21 @@ pub const css =
     \\img, svg, video, canvas, audio, iframe, embed, object { overflow: clip }
     \\math { font-family: math }
 ;
+
+/// Markdown documents' extra user agent styles: readable defaults for
+/// what Markdown makes (tables with rules, code on a tint, task lists
+/// without bullets), in grays that work on light and dark backgrounds.
+pub const markdown_css =
+    \\body { line-height: 1.5 }
+    \\h1, h2 { padding-bottom: 0.3em; border-bottom: 1px solid rgb(128 128 128 / 0.3) }
+    \\table { border-collapse: collapse }
+    \\th, td { border: 1px solid rgb(128 128 128 / 0.4); padding: 4px 12px }
+    \\code { font-family: monospace; font-size: 0.875em; padding: 0.1em 0.3em; border-radius: 4px; background: rgb(128 128 128 / 0.15) }
+    \\pre { padding: 12px 16px; border-radius: 6px; background: rgb(128 128 128 / 0.12); white-space: pre-wrap }
+    \\pre code { padding: 0; background: none; font-size: 0.875em }
+    \\blockquote { margin-left: 0; margin-right: 0; padding: 0 1em; border-left: 0.25em solid rgb(128 128 128 / 0.4); color: color-mix(in srgb, currentcolor 70%, transparent) }
+    \\hr { border: 0; height: 0.25em; background: rgb(128 128 128 / 0.25) }
+    \\img { max-width: 100% }
+    \\.task-list-item { list-style: none }
+    \\.task-list-item input { margin: 0 0.4em 0 -1.4em; vertical-align: middle }
+;

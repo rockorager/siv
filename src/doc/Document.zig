@@ -138,6 +138,11 @@ pub fn create(gpa: Allocator, bytes: []const u8, options: Options, ua_sheet: *co
     };
     errdefer d.dom.deinit();
     try d.sheets.append(gpa, .{ .sheet = ua_sheet, .origin = .user_agent, .owned = false });
+    if (options.kind == .markdown) {
+        const s = try gpa.create(css.Sheet);
+        s.* = try css.sheet.parse(gpa, ua.markdown_css, .{});
+        try d.sheets.append(gpa, .{ .sheet = s, .origin = .user_agent, .owned = true });
+    }
     if (d.options.user_css.len > 0) {
         const s = try gpa.create(css.Sheet);
         s.* = try css.sheet.parse(gpa, d.options.user_css, .{});
@@ -352,6 +357,7 @@ fn applyImageSizes(d: *Document) void {
         }
     }
     if (d.engine) |*e| e.invalidate(true);
+    d.complete = false;
 }
 
 /// Runs the cascade and builds the box tree (sheets as supplied so far).
@@ -758,4 +764,262 @@ pub fn fontsLoaded(d: *Document) void {
     }
     d.markers.clearRetainingCapacity();
     d.complete = false;
+}
+
+/// A text position: an IFC and a byte offset in its text.
+pub const Pos = struct { ifc: u32, offset: u32 };
+
+fn before(a: Pos, b: Pos) bool {
+    return a.ifc < b.ifc or (a.ifc == b.ifc and a.offset < b.offset);
+}
+
+/// The line holding a text offset, in document coordinates: x, top,
+/// and height. Null when its IFC is not laid out.
+pub fn offsetRect(d: *Document, p: Pos) Error!?[4]f32 {
+    const e = &(d.engine orelse return null);
+    const id = d.ifcBox(p.ifc);
+    if (id == none) return null;
+    const b = d.tree.get(id);
+    const o = (d.ifcOrigin(p.ifc)) orelse return null;
+    const cw = @max(0, b.w - b.border[1] - b.border[3] - b.padding[1] - b.padding[3]);
+    const l = try e.laid(p.ifc, cw);
+    for (l.lines) |line| {
+        if (p.offset >= line.end and line.end != line.start) continue;
+        var xs: std.ArrayList([2]f32) = .empty;
+        defer xs.deinit(d.gpa);
+        try inline_mod.rangeRects(l, line, p.offset, p.offset + 1, &xs, d.gpa);
+        const x = if (xs.items.len > 0) xs.items[0][0] else line.left;
+        return .{ o[0] + x, o[1] + line.top, if (xs.items.len > 0) xs.items[0][1] - xs.items[0][0] else 0, line.height };
+    }
+    return .{ o[0], o[1], 0, b.h };
+}
+
+/// Highlights for the text between two positions (in either order).
+pub fn rangeHighlights(d: *const Document, a: Pos, b: Pos, color: css.Color, out: *std.ArrayList(paint_mod.Highlight), gpa: Allocator) Error!void {
+    const lo = if (before(b, a)) b else a;
+    const hi = if (before(b, a)) a else b;
+    var i = lo.ifc;
+    while (i <= hi.ifc and i < d.tree.ifcs.items.len) : (i += 1) {
+        const len: u32 = @intCast(d.tree.ifcs.items[i].text.len);
+        const s = if (i == lo.ifc) lo.offset else 0;
+        const e = if (i == hi.ifc) hi.offset else len;
+        if (e > s) try out.append(gpa, .{ .ifc = i, .start = s, .end = e, .color = color });
+    }
+}
+
+/// The text between two positions, a line break between blocks, without
+/// the object replacement characters atomic inlines take.
+pub fn textBetween(d: *const Document, gpa: Allocator, a: Pos, b: Pos) Error![]u8 {
+    const lo = if (before(b, a)) b else a;
+    const hi = if (before(b, a)) a else b;
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var i = lo.ifc;
+    while (i <= hi.ifc and i < d.tree.ifcs.items.len) : (i += 1) {
+        const t = d.tree.ifcs.items[i].text;
+        const s = @min(t.len, if (i == lo.ifc) lo.offset else 0);
+        const e = @min(t.len, if (i == hi.ifc) hi.offset else t.len);
+        if (i != lo.ifc) try out.append(gpa, '\n');
+        var k = s;
+        while (k < e) {
+            if (std.mem.startsWith(u8, t[k..e], "\u{FFFC}")) {
+                k += 3;
+                continue;
+            }
+            try out.append(gpa, t[k]);
+            k += 1;
+        }
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+/// Where a text occurs, ignoring ASCII case, from a position on (or
+/// before it, searching backwards); wraps around. Matches do not span
+/// IFCs.
+pub fn find(d: *const Document, needle: []const u8, from: Pos, backwards: bool) ?Pos {
+    const n = d.tree.ifcs.items.len;
+    if (n == 0 or needle.len == 0) return null;
+    var step: usize = 0;
+    var i: usize = from.ifc;
+    while (step <= n) : (step += 1) {
+        const t = d.tree.ifcs.items[i].text;
+        if (backwards) {
+            var end: usize = if (step == 0) @min(t.len, from.offset) else t.len;
+            while (end >= needle.len) : (end -= 1) {
+                if (std.ascii.eqlIgnoreCase(t[end - needle.len .. end], needle)) return .{ .ifc = @intCast(i), .offset = @intCast(end - needle.len) };
+            }
+            i = if (i == 0) n - 1 else i - 1;
+        } else {
+            const start: usize = if (step == 0) @min(t.len, from.offset) else 0;
+            if (std.ascii.findIgnoreCasePos(t, start, needle)) |k| return .{ .ifc = @intCast(i), .offset = @intCast(k) };
+            i = (i + 1) % n;
+        }
+    }
+    return null;
+}
+
+/// Every match of a text, ignoring ASCII case, up to `limit`.
+pub fn findAll(d: *const Document, needle: []const u8, out: *std.ArrayList(Pos), gpa: Allocator, limit: usize) Error!void {
+    if (needle.len == 0) return;
+    for (d.tree.ifcs.items, 0..) |ifc, i| {
+        var k: usize = 0;
+        while (std.ascii.findIgnoreCasePos(ifc.text, k, needle)) |m| {
+            if (out.items.len >= limit) return;
+            try out.append(gpa, .{ .ifc = @intCast(i), .offset = @intCast(m) });
+            k = m + needle.len;
+        }
+    }
+}
+
+/// A node of the accessibility tree (D32): headings, links, lists,
+/// tables, images with alternative text, and paragraphs, in tree order.
+pub const AccessNode = struct {
+    role: enum(u8) { heading, link, list, list_item, table, row, cell, column_header, image, paragraph, group },
+    /// Heading level; for links, the element (for activation).
+    level: u8 = 0,
+    node: NodeId,
+    /// Index of the parent in the list, or `none` for the document.
+    parent: u32,
+    /// Descendants follow up to (not including) `end`.
+    end: u32 = 0,
+    name: []const u8,
+    /// Document coordinates: x, y, width, height.
+    bounds: [4]f32,
+    /// List items' and rows' position, 1-based.
+    position: u32 = 0,
+    set_size: u32 = 0,
+};
+
+/// The accessibility tree, names allocated with `gpa`'s arena `a`.
+pub fn accessibility(d: *Document, a: Allocator, out: *std.ArrayList(AccessNode)) Error!void {
+    // Inline elements' text ranges, for their bounds.
+    var inlines: InlineRanges = .empty;
+    defer inlines.deinit(d.gpa);
+    for (d.tree.ifcs.items, 0..) |ifc, i| for (ifc.inline_boxes) |ib| {
+        try inlines.put(d.gpa, ib.node.index(), .{ .ifc = @intCast(i), .offset = ib.start, .end = ib.end });
+    };
+    try d.accessVisit(a, &inlines, d.dom.body(), none, out);
+}
+
+const InlineRanges = std.AutoHashMapUnmanaged(u32, struct { ifc: u32, offset: u32, end: u32 });
+
+/// The bounds of an inline element's text: from its first character's
+/// line to its last's.
+fn inlineBounds(d: *Document, inlines: *const InlineRanges, node: NodeId) Error!?[4]f32 {
+    const r = inlines.get(node.index()) orelse return null;
+    if (r.end <= r.offset) return null;
+    const first = (try d.offsetRect(.{ .ifc = r.ifc, .offset = r.offset })) orelse return null;
+    const last = (try d.offsetRect(.{ .ifc = r.ifc, .offset = r.end - 1 })) orelse return null;
+    if (last[1] > first[1]) {
+        // Several lines: the first line's part.
+        const o = d.ifcOrigin(r.ifc) orelse return null;
+        const b = d.tree.get(d.ifcBox(r.ifc));
+        return .{ first[0], first[1], @max(1, o[0] + b.w - first[0]), first[3] };
+    }
+    return .{ first[0], first[1], @max(1, last[0] + last[2] - first[0]), first[3] };
+}
+
+fn accessVisit(d: *Document, a: Allocator, inlines: *const InlineRanges, id: NodeId, parent: u32, out: *std.ArrayList(AccessNode)) Error!void {
+    var it = d.dom.children(id);
+    var position: u32 = 0;
+    while (it.next()) |c| {
+        const n = d.dom.node(c);
+        if (n.kind != .element) continue;
+        // Inline elements have no box of their own (links' bounds are
+        // their parent's then); hidden elements have none at all.
+        const bx = d.node_boxes.get(c.index()) orelse none;
+        const role: ?@FieldType(AccessNode, "role") = if (n.ns != .html) null else switch (n.name) {
+            .h1, .h2, .h3, .h4, .h5, .h6 => .heading,
+            .a => if (d.dom.attr(c, .href) != null) .link else null,
+            .ul, .ol, .menu => .list,
+            .li => .list_item,
+            .table => .table,
+            .tr => .row,
+            .td => .cell,
+            .th => .column_header,
+            .img => .image,
+            .p => .paragraph,
+            .blockquote, .figure, .aside, .details => .group,
+            else => null,
+        };
+        if (bx == none and role != .link) {
+            if (role == null) try d.accessVisit(a, inlines, c, parent, out);
+            continue;
+        }
+        if (role) |r| {
+            var name: std.ArrayList(u8) = .empty;
+            switch (r) {
+                .image => try name.appendSlice(a, d.dom.attr(c, .alt) orelse ""),
+                .heading, .link, .paragraph, .list_item, .cell, .column_header => {
+                    var raw: std.ArrayList(u8) = .empty;
+                    defer raw.deinit(d.gpa);
+                    try d.dom.textContent(d.gpa, c, &raw);
+                    // Collapse white space.
+                    var space = false;
+                    for (std.mem.trim(u8, raw.items, " \t\r\n")) |ch| {
+                        if (ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r') {
+                            space = true;
+                            continue;
+                        }
+                        if (space) try name.append(a, ' ');
+                        space = false;
+                        try name.append(a, ch);
+                    }
+                },
+                else => {},
+            }
+            if (r == .list_item or r == .row) position += 1;
+            const me: u32 = @intCast(out.items.len);
+            const e = &(d.engine orelse return);
+            const bounds: [4]f32 = if (bx != none) .{ e.absoluteX(bx), e.absoluteY(bx), d.tree.get(bx).w, d.tree.get(bx).h } else if (try d.inlineBounds(inlines, c)) |ib| ib else if (parent != none) out.items[parent].bounds else @splat(0);
+            try out.append(d.gpa, .{
+                .role = r,
+                .level = if (r == .heading) @intCast(@intFromEnum(n.name) - @intFromEnum(html.Atom.h1) + 1) else 0,
+                .node = c,
+                .parent = parent,
+                .name = name.items,
+                .bounds = bounds,
+                .position = if (r == .list_item or r == .row) position else 0,
+            });
+            // Headings, links, paragraphs, and images are leaves (their
+            // text is their name), apart from links inside paragraphs.
+            if (r == .paragraph or r == .list_item or r == .cell or r == .column_header or r == .group or r == .list or r == .table or r == .row) try d.accessVisit(a, inlines, c, me, out);
+            out.items[me].end = @intCast(out.items.len);
+            // Set sizes once the siblings are counted.
+            if (r == .list or r == .table) {
+                var count: u32 = 0;
+                var k = me + 1;
+                while (k < out.items.len) : (k = out.items[k].end) {
+                    if (out.items[k].parent == me) count += 1;
+                }
+                k = me + 1;
+                while (k < out.items.len) : (k = out.items[k].end) {
+                    if (out.items[k].parent == me) out.items[k].set_size = count;
+                }
+            }
+        } else try d.accessVisit(a, inlines, c, parent, out);
+    }
+}
+
+/// The element indices from the body down to the innermost element whose
+/// box reaches past document y (the first such at each level): a reading
+/// position that survives other widths and fonts.
+pub fn locatorPath(d: *Document, y: f32, out: *std.ArrayList(u32), gpa: Allocator) Error!void {
+    const e = &(d.engine orelse return);
+    var cur = d.dom.body();
+    outer: while (true) {
+        var i: u32 = 0;
+        var c = d.dom.node(cur).first;
+        while (c != .none) : (c = d.dom.node(c).next) {
+            if (d.dom.node(c).kind != .element) continue;
+            defer i += 1;
+            const bx = d.node_boxes.get(c.index()) orelse continue;
+            if (y < e.absoluteY(bx) + d.tree.get(bx).h) {
+                try out.append(gpa, i);
+                cur = c;
+                continue :outer;
+            }
+        }
+        return;
+    }
 }

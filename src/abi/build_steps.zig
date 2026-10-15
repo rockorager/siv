@@ -177,7 +177,7 @@ pub fn add(b: *std.Build, o: Options) void {
     // main renamed, so they keep up with the API without a program each
     // (shell.c runs there too, below).
     const examples = b.step("examples", "Build the C example programs");
-    for ([_][]const u8{ "hello", "todo", "embed", "gauge", "widgets", "shell" }) |name| {
+    for ([_][]const u8{ "hello", "todo", "embed", "gauge", "widgets", "shell", "docview" }) |name| {
         const exe = b.addExecutable(.{
             .name = name,
             .root_module = b.createModule(.{ .target = o.target, .optimize = o.optimize, .link_libc = true }),

@@ -18,6 +18,9 @@ pub const none: u32 = std.math.maxInt(u32);
 
 pub const Node = struct {
     node: NodeId,
+    /// One of a canvas's own objects (`Canvas.semantics`), 1-based in
+    /// the order it listed them; 0 for the node itself.
+    virtual: u32 = 0,
     role: Role,
     /// Index of the parent in `Tree.nodes`, or `none` for the window.
     parent: u32,
@@ -65,13 +68,38 @@ pub const Node = struct {
     embed: []const u8 = "",
 };
 
+/// What a canvas lists of its content (`Canvas.semantics`): objects in
+/// tree order, each with its parent's index in `nodes` (or `none` for
+/// the canvas) and the end of its descendants, bounds in the canvas's
+/// coordinates. Names may be allocated with `arena`, which lives until
+/// the next rebuild.
+pub const Virtual = struct {
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    nodes: std.ArrayList(VirtualNode) = .empty,
+};
+
+pub const VirtualNode = struct {
+    role: Role,
+    name: []const u8 = "",
+    parent: u32 = none,
+    end: u32 = 0,
+    bounds: Rect = .empty,
+    level: u8 = 0,
+    position: u32 = 0,
+    set_size: u32 = 0,
+};
+
 pub const Tree = struct {
     nodes: std.ArrayList(Node) = .empty,
     names: std.ArrayList(u8) = .empty,
+    /// Canvases' names (`Virtual.arena`).
+    arena: ?std.heap.ArenaAllocator = null,
     /// Counts rebuilds: an unchanged count means an unchanged tree.
     generation: u64 = 0,
 
     pub fn deinit(t: *Tree, gpa: std.mem.Allocator) void {
+        if (t.arena) |*a| a.deinit();
         t.nodes.deinit(gpa);
         t.names.deinit(gpa);
     }
@@ -114,6 +142,7 @@ pub const Tree = struct {
     pub fn rebuild(t: *Tree, win: *Window) Window.Error!void {
         t.nodes.clearRetainingCapacity();
         t.names.clearRetainingCapacity();
+        if (t.arena) |*a| _ = a.reset(.retain_capacity);
         t.generation += 1;
         try t.visit(win, .root, none);
     }
@@ -183,7 +212,46 @@ pub const Tree = struct {
         }
         var it = win.shown(id);
         while (it.next()) |c| try t.visit(win, c, me);
+        if (n.kind == .canvas) if (n.data.canvas.semantics) |f| try t.virtualChildren(win, id, f, me);
         if (included) t.nodes.items[me].end = @intCast(t.nodes.items.len);
+    }
+
+    fn virtualChildren(t: *Tree, win: *Window, id: NodeId, f: anytype, parent: u32) Window.Error!void {
+        if (t.arena == null) t.arena = .init(win.gpa);
+        var v: Virtual = .{ .gpa = win.gpa, .arena = t.arena.?.allocator() };
+        defer v.nodes.deinit(win.gpa);
+        try f(win.node(id).data.canvas.user, win, id, &v);
+        const base: u32 = @intCast(t.nodes.items.len);
+        const origin = win.windowRect(id);
+        try t.nodes.ensureUnusedCapacity(win.gpa, v.nodes.items.len);
+        for (v.nodes.items, 0..) |vn, i| {
+            const start: u32 = @intCast(t.names.items.len);
+            try t.names.appendSlice(win.gpa, vn.name);
+            t.nodes.appendAssumeCapacity(.{
+                .node = id,
+                .virtual = @intCast(i + 1),
+                .role = vn.role,
+                .parent = if (vn.parent == none) parent else base + vn.parent,
+                .end = base + @max(vn.end, @as(u32, @intCast(i + 1))),
+                .name_start = start,
+                .name_len = @intCast(vn.name.len),
+                .description = "",
+                .bounds = .{ .x0 = vn.bounds.x0 + origin.x0, .y0 = vn.bounds.y0 + origin.y0, .x1 = vn.bounds.x1 + origin.x0, .y1 = vn.bounds.y1 + origin.y0 },
+                .focusable = false,
+                .focused = false,
+                .disabled = false,
+                .checked = .unset,
+                .pressed = .unset,
+                .selected = .unset,
+                .expanded = .unset,
+                .value = null,
+                .live = .off,
+                .actionable = false,
+                .level = vn.level,
+                .position = vn.position,
+                .set_size = vn.set_size,
+            });
+        }
     }
 
     /// Descendant text, space-separated: the name of a button or link.

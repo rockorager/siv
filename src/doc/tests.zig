@@ -274,3 +274,48 @@ test "painting produces glyphs and backgrounds in the band only" {
     try testing.expect(fills >= 4);
 }
 
+
+test "find, selected text, and the accessibility tree" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+    const d = try f.load(gpa,
+        \\<h2>Fruit</h2><p>Apples and <a href="/pears">pears</a>.</p>
+        \\<ul><li>one</li><li>two <img alt="a pear" width=10 height=10></li></ul>
+        \\<p>More apples.</p>
+    , .{ .base_url = "https://example.com/a/" }, 400);
+    defer d.destroy();
+    var all: std.ArrayList(Document.Pos) = .empty;
+    defer all.deinit(gpa);
+    try d.findAll("APPLES", &all, gpa, 100);
+    try testing.expectEqual(2, all.items.len);
+    // Forwards from just past the first match finds the second; wrapping
+    // backwards from the start finds the last.
+    const second = d.find("apples", .{ .ifc = all.items[0].ifc, .offset = all.items[0].offset + 1 }, false).?;
+    try testing.expectEqual(all.items[1], second);
+    try testing.expectEqual(all.items[1], d.find("apples", .{ .ifc = 0, .offset = 0 }, true).?);
+    // Between the heading's middle and the second item: blocks on lines,
+    // and the image's replacement character left out.
+    const sel = try d.textBetween(gpa, .{ .ifc = 3, .offset = 3 }, .{ .ifc = 0, .offset = 2 });
+    defer gpa.free(sel);
+    try testing.expectEqualStrings("uit\nApples and pears.\none\ntwo", std.mem.trimEnd(u8, sel, " "));
+    try testing.expect((try d.offsetRect(second)).?[1] > (try d.offsetRect(all.items[0])).?[1]);
+
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    var nodes: std.ArrayList(Document.AccessNode) = .empty;
+    defer nodes.deinit(gpa);
+    try d.accessibility(arena.allocator(), &nodes);
+    const roles = [_]@FieldType(Document.AccessNode, "role"){ .heading, .paragraph, .link, .list, .list_item, .list_item, .image, .paragraph };
+    try testing.expectEqual(roles.len, nodes.items.len);
+    for (roles, nodes.items) |r, n| try testing.expectEqual(r, n.role);
+    try testing.expectEqual(2, nodes.items[0].level);
+    try testing.expectEqualStrings("Apples and pears.", nodes.items[1].name);
+    try testing.expectEqualStrings("pears", nodes.items[2].name);
+    try testing.expectEqual(1, nodes.items[2].parent);
+    try testing.expectEqualStrings("https://example.com/pears", d.linkAt(nodes.items[2].node).?.href);
+    try testing.expectEqual(2, nodes.items[5].position);
+    try testing.expectEqual(2, nodes.items[5].set_size);
+    try testing.expectEqualStrings("a pear", nodes.items[6].name);
+    try testing.expectEqual(5, nodes.items[6].parent);
+}

@@ -507,9 +507,10 @@ pub fn resolve(b: *const Bridge, path: []const u8) ?Target {
     const wid = std.fmt.parseInt(u32, it.next() orelse return null, 10) catch return null;
     const node = std.fmt.parseInt(u32, it.next() orelse return null, 10) catch return null;
     const gen = std.fmt.parseInt(u32, it.next() orelse return null, 10) catch return null;
+    const virtual: u64 = if (it.next()) |v| std.fmt.parseInt(u32, v, 10) catch return null else 0;
     if (it.next() != null) return null;
     const w = b.window(wid) orelse return null;
-    const index = w.cur.index.get(node) orelse return null;
+    const index = w.cur.index.get(virtual << 32 | node) orelse return null;
     if (w.cur.nodes.items[index].gen != gen) return null;
     return .{ .node = .{ .win = w, .index = index } };
 }
@@ -589,6 +590,8 @@ pub const Str = struct {
 /// One published node.
 pub const SNode = struct {
     node: u32,
+    /// One of a canvas's own objects (D32), 1-based; 0 for the node.
+    virtual: u32 = 0,
     gen: u32,
     role: ui.Role,
     /// Index of the parent, or `none` for top-level nodes.
@@ -630,6 +633,12 @@ pub const SNode = struct {
     attrs: u64 = 0,
     /// Another process's object, its last child: "BUS:/path" (D18).
     embed: Str = .{},
+
+    /// The snapshot index's key: the node, and which of its canvas's
+    /// objects.
+    pub fn key(n: SNode) u64 {
+        return @as(u64, n.virtual) << 32 | n.node;
+    }
 };
 
 /// The reference to a node's embedded object, if it has one.
@@ -679,8 +688,8 @@ fn hashValue(h: *std.hash.Wyhash, v: anytype) void {
 pub const Snapshot = struct {
     nodes: std.ArrayList(SNode) = .empty,
     strings: std.ArrayList(u8) = .empty,
-    /// Node index to position in `nodes`.
-    index: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// Node index (and canvas object, `SNode.key`) to position in `nodes`.
+    index: std.AutoHashMapUnmanaged(u64, u32) = .empty,
     top_count: u32 = 0,
     /// Positions of the top-level nodes.
     tops: std.ArrayList(u32) = .empty,
@@ -789,7 +798,7 @@ pub const Win = struct {
         w.embedNew();
         // Nodes that left the tree get a new generation.
         for (w.cur.nodes.items) |n| {
-            if (!w.next.index.contains(n.node)) w.bumpGen(n.node);
+            if (n.virtual == 0 and !w.next.index.contains(n.key())) w.bumpGen(n.node);
         }
         std.mem.swap(Snapshot, &w.cur, &w.next);
         w.next.clear();
@@ -816,6 +825,7 @@ pub const Win = struct {
             };
             var sn: SNode = .{
                 .node = node,
+                .virtual = n.virtual,
                 .gen = try w.genOf(node),
                 .role = n.role,
                 .parent = n.parent,
@@ -860,7 +870,7 @@ pub const Win = struct {
                 p.child_count += 1;
             }
             s.nodes.appendAssumeCapacity(sn);
-            s.index.putAssumeCapacity(node, @intCast(i));
+            s.index.putAssumeCapacity(sn.key(), @intCast(i));
         }
     }
 
@@ -929,7 +939,7 @@ pub const Win = struct {
         const new = &w.next;
         for (new.nodes.items, 0..) |*n, i| {
             const r = embedRef(new, n) orelse continue;
-            if (w.built) if (w.cur.index.get(n.node)) |j| {
+            if (w.built) if (w.cur.index.get(n.key())) |j| {
                 const o = &w.cur.nodes.items[j];
                 if (o.gen == n.gen and std.mem.eql(u8, w.cur.str(o.embed), new.str(n.embed))) continue;
             };
@@ -951,7 +961,7 @@ pub const Win = struct {
         // Children: per parent present in both, removals then additions.
         try w.diffChildren(none, none);
         for (new.nodes.items, 0..) |n, i| {
-            const j = old.index.get(n.node) orelse continue;
+            const j = old.index.get(n.key()) orelse continue;
             if (old.nodes.items[j].gen != n.gen) continue;
             try w.diffChildren(@intCast(j), @intCast(i));
         }
@@ -959,7 +969,7 @@ pub const Win = struct {
         // new path, which equals the old one.
         var focus_gained: ?u32 = null;
         for (new.nodes.items, 0..) |*n, i| {
-            const j = old.index.get(n.node) orelse {
+            const j = old.index.get(n.key()) orelse {
                 if (n.states.has(.focused)) focus_gained = @intCast(i);
                 if (n.live != .off or w.inLiveRegion(new, @intCast(i))) w.announceNew(@intCast(i));
                 continue;
@@ -1008,6 +1018,7 @@ pub const Win = struct {
 
     fn pathIn(w: *const Win, s: *const Snapshot, buf: []u8, index: u32) []const u8 {
         const n = s.nodes.items[index];
+        if (n.virtual != 0) return std.fmt.bufPrint(buf, atspi.accessible_prefix ++ "/{d}_{d}_{d}_{d}", .{ w.id, n.node, n.gen, n.virtual }) catch unreachable;
         return std.fmt.bufPrint(buf, atspi.accessible_prefix ++ "/{d}_{d}_{d}", .{ w.id, n.node, n.gen }) catch unreachable;
     }
 
@@ -1031,14 +1042,14 @@ pub const Win = struct {
         var removed: usize = 0;
         while (it.next()) |c| {
             const n = old.nodes.items[c];
-            if (w.sameParent(new, n.node, n.gen, ni)) continue;
+            if (w.sameParent(new, n.key(), n.gen, ni)) continue;
             b.emitObject(parent_path, "ChildrenChanged", "remove", @intCast(base + n.child_index - removed), 0, .{ .ref = w.refIn(old, c) });
             removed += 1;
         }
         var it2 = childIter(new, ni);
         while (it2.next()) |c| {
             const n = new.nodes.items[c];
-            if (w.sameParentOld(old, n.node, n.gen, oi)) continue;
+            if (w.sameParentOld(old, n.key(), n.gen, oi)) continue;
             b.emitObject(parent_path, "ChildrenChanged", "add", @intCast(base + n.child_index), 0, .{ .ref = w.refIn(new, c) });
         }
     }
@@ -1065,7 +1076,7 @@ pub const Win = struct {
 
     /// Whether node `node` with `gen` sits in `s` under the node at `ni`
     /// of the new snapshot (`none`: top level).
-    fn sameParent(w: *const Win, s: *const Snapshot, node: u32, gen: u32, ni: u32) bool {
+    fn sameParent(w: *const Win, s: *const Snapshot, node: u64, gen: u32, ni: u32) bool {
         _ = w;
         const k = s.index.get(node) orelse return false;
         const n = s.nodes.items[k];
@@ -1074,7 +1085,7 @@ pub const Win = struct {
     }
 
     /// The same, for a new child against the old snapshot's parent `oi`.
-    fn sameParentOld(w: *const Win, s: *const Snapshot, node: u32, gen: u32, oi: u32) bool {
+    fn sameParentOld(w: *const Win, s: *const Snapshot, node: u64, gen: u32, oi: u32) bool {
         _ = w;
         const k = s.index.get(node) orelse return false;
         const n = s.nodes.items[k];
@@ -1128,7 +1139,7 @@ pub const Win = struct {
         var p = n.parent;
         while (live == .off and p != none) : (p = s.nodes.items[p].parent) live = s.nodes.items[p].live;
         // Only the topmost new node of an added subtree speaks.
-        if (n.parent != none and !w.cur.index.contains(s.nodes.items[n.parent].node) and s.nodes.items[n.parent].live == .off) return;
+        if (n.parent != none and !w.cur.index.contains(s.nodes.items[n.parent].key()) and s.nodes.items[n.parent].live == .off) return;
         var buf: [96]u8 = undefined;
         w.bridge.emitObject(w.pathIn(s, &buf, index), "Announcement", "", atspi.live(live), 0, .{ .str = text });
     }

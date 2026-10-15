@@ -305,6 +305,7 @@ const desktop = @import("api_desktop.zig");
 const testing = @import("api_testing.zig");
 const shell = @import("api_shell.zig");
 const dbus = @import("api_dbus.zig");
+const document = @import("api_document.zig");
 
 pub const decls = [_]Decl{
     result,
@@ -2374,8 +2375,8 @@ pub const spec: schema.Schema = .{
     .source = "src/abi/api.zig",
     .doc = "siv: a GUI toolkit for Wayland.",
     .result = "siv_result",
-    .decls = &(decls ++ desktop.decls ++ dbus.decls ++ shell.decls ++ testing.decls),
-    .functions = &(functions ++ desktop.functions ++ dbus.functions ++ shell.functions ++ testing.functions),
+    .decls = &(decls ++ desktop.decls ++ dbus.decls ++ shell.decls ++ document.decls ++ testing.decls),
+    .functions = &(functions ++ desktop.functions ++ dbus.functions ++ shell.functions ++ document.functions ++ testing.functions),
 };
 
 /// Encodes a version as (major << 16) | (minor << 8) | patch.

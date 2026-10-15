@@ -546,6 +546,15 @@ pub const Canvas = struct {
     /// Intrinsic size without `measure`.
     width: f32 = 0,
     height: f32 = 0,
+    /// A canvas taller than four viewports of its scroll container draws
+    /// only around what shows, as long texts paint (D8): `draw` reads the
+    /// band from `State.painted_band` (null: everything), and scrolling
+    /// out of it draws again. For content much taller than the screen,
+    /// such as documents (D32).
+    banded: bool = false,
+    /// Adds the content's own accessible objects below the node (D18,
+    /// D32), in node coordinates.
+    semantics: ?*const fn (user: ?*anyopaque, win: *Window, node: NodeId, out: *@import("semantics.zig").Virtual) error{OutOfMemory}!void = null,
 };
 
 pub const CanvasSize = struct { width: f32 = 0, height: f32 = 0 };

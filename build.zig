@@ -45,6 +45,10 @@ pub fn build(b: *std.Build) void {
 
     const options = b.addOptions();
     options.addOption(std.SemanticVersion, "version", version);
+    // The document renderer (D32): -Ddocument=false builds it out, and
+    // its functions return SIV_ERROR_UNSUPPORTED.
+    const document = b.option(bool, "document", "Build the HTML, CSS, and Markdown document renderer (default: true)") orelse true;
+    options.addOption(bool, "document", document);
     const build_options = options.createModule();
 
     // C and external dependencies. Each C library is a module that carries
@@ -208,6 +212,15 @@ pub fn build(b: *std.Build) void {
     };
     const app = ctx.module("src/app/app.zig", &app_imports);
     app.addImport("integration", not_integration);
+    const docview = ctx.module("src/docview/docview.zig", &.{
+        .{ .name = "ui", .module = ui },
+        .{ .name = "doc", .module = doc },
+        .{ .name = "css", .module = css },
+        .{ .name = "text", .module = text },
+        .{ .name = "scene", .module = scene },
+        .{ .name = "raster", .module = raster },
+        .{ .name = "loop", .module = loop },
+    });
     const internal = [_]std.Build.Module.Import{
         .{ .name = "pool", .module = pool },
         .{ .name = "scene", .module = scene },
@@ -234,6 +247,7 @@ pub fn build(b: *std.Build) void {
     const abi = ctx.module("src/abi/abi.zig", &internal);
     abi.addImport("build_options", build_options);
     abi.addImport("widgets", widgets);
+    if (document) abi.addImport("docview", docview);
 
     // Unicode conformance data for the text tests, embedded with
     // @embedFile("<name>"). Property files can be added the same way.
@@ -307,6 +321,7 @@ pub fn build(b: *std.Build) void {
         .{ "css", css },
         .{ "markdown", markdown_tests },
         .{ "doc", doc },
+        .{ "docview", docview },
         .{ "image", image },
         .{ "render-cpu", render_cpu },
         .{ "render-vulkan", render_vulkan },

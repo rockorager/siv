@@ -20,6 +20,7 @@ zig build                      # zig-out: libsiv.so, libsiv.a, include/siv.h, li
 zig build test -j16            # every module's tests, the headless test binary (C API, guide,
                                #   files app, Lua), C ABI programs; JPEG XL only with -Djxl
 zig build test-text            # one module: test-abi, test-text, test-raster, test-scene, test-image, test-svg, test-icon,
+                               #   test-html, test-css, test-markdown, test-doc, test-docview,
                                #   test-render-cpu, test-render-vulkan, test-pool, test-loop,
                                #   test-dbus, test-portal, test-pdf, test-tray, test-platform,
                                #   test-compositor, test-ui, test-a11y, test-app
@@ -102,10 +103,15 @@ owns its directories and does not edit another workstream's files.
 | `dbus` | `src/dbus/` | D-Bus and desktop settings | `loop` |
 | `portal` | `src/portal/` | Desktop integration | `dbus`, `loop` |
 | `tray` | `src/tray/` | Desktop integration | `dbus`, `loop` |
+| `html` | `src/html/` | Document renderer | none |
+| `css` | `src/css/` | Document renderer | none |
+| `markdown` | `src/markdown/` | Document renderer | `html` |
+| `doc` | `src/doc/` | Document renderer | `html`, `markdown`, `css`, `text`, `scene`, `raster`, `image`, `svg` |
 | `pdf` | `src/pdf/` | Desktop integration | `scene`, `raster`, `render_cpu`, `text`, `harfbuzz_subset` |
 | `platform` | `src/platform/` | Event loop and Wayland platform | `loop`, `wayland`, `xkbcommon` |
 | `compositor` | `src/compositor/` | Compositor thread | `scene`, `raster`, `render_cpu`, `render_vulkan`, `pool`, `loop`, `platform` |
 | `ui` | `src/ui/` | UI core | `scene`, `svg`, `icon`, `raster`, `text`, `image`, `loop`, `platform`, `compositor` |
+| `docview` | `src/docview/` | Document renderer | `ui`, `doc`, `css`, `text`, `scene`, `raster`, `loop` |
 | `a11y` | `src/a11y/` | D-Bus and desktop settings (AT-SPI) | `dbus`, `ui`, `loop`, `raster`, `text` |
 | `app` | `src/app/` | Public C API | `text`, `loop`, `platform`, `compositor`, `ui`, `dbus`, `a11y`, `portal` |
 | `widgets` | `src/widgets/` | Theming and stock widgets | `siv` (the generated C API wrapper) only (D22) |

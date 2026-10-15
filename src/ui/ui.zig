@@ -68,6 +68,8 @@ pub const Image = @import("image.zig").Image;
 pub const Icons = @import("icons.zig");
 /// The colors symbolic icons take from a palette (D19).
 pub const iconColors = @import("paint.zig").iconColors;
+/// The band of a node's y coordinates its scroll container shows.
+pub const visibleBand = @import("paint.zig").visibleBand;
 pub const Player = @import("image.zig").Player;
 pub const ImageView = node.ImageView;
 pub const Canvas = node.Canvas;
