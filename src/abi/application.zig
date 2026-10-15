@@ -655,6 +655,10 @@ fn onWindowEvent(ctx: ?*anyopaque, _: *app_mod.Window, ev: *const app_mod.Window
             external.deliver(w, x.id, .{ .type = .released, .key = x.key });
             return false;
         },
+        .external_presented => |x| {
+            external.deliver(w, x.id, .{ .type = .presented, .key = x.key, .present_ns = x.present_ns });
+            return false;
+        },
         .presented => |p| {
             const cb = w.on_event orelse return false;
             var e = windowEvent(.presented, w.win.state);

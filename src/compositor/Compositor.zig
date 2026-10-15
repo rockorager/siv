@@ -1319,6 +1319,8 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
         .buffer_height = cf.buffer_height,
     } });
     w.externals.configures.clearRetainingCapacity();
+    for (w.externals.shown.items) |sh| self.outbox.push(.{ .external_presented = .{ .window = w.id, .id = sh.id, .key = sh.key, .present_ns = t } });
+    w.externals.shown.clearRetainingCapacity();
 
     for (w.tree.scrolled.items) |id| {
         const l = &w.tree.layers.items[id];

@@ -151,6 +151,9 @@ pub const Found = struct {
     /// leave visible (surface coordinates; empty without a background).
     background: scene.Color = .transparent,
     box: Rect = Rect.empty,
+    /// The placement's content box, unclipped (surface coordinates); its
+    /// rect when the placement has none.
+    content: Rect = Rect.empty,
 };
 
 pub const Tree = struct {
@@ -758,6 +761,7 @@ pub const Tree = struct {
                 .opacity = opacity,
                 .background = if (box.isEmpty()) .transparent else pl.background,
                 .box = if (box.isEmpty()) Rect.empty else box,
+                .content = if (pl.box.isEmpty()) r else m.applyRect(pl.box),
             });
         }
         var cm = m;

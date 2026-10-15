@@ -22,6 +22,9 @@ const Log = struct {
     releases: usize = 0,
     configures: usize = 0,
     last: t.ExternalEvent = .{},
+    presented: [4]u64 = undefined,
+    presents: usize = 0,
+    present_ns: u64 = 0,
     destroyed: u32 = 0,
 
     fn onEvent(user_data: ?*anyopaque, _: t.External, event: *const t.ExternalEvent) callconv(.c) void {
@@ -35,6 +38,11 @@ const Log = struct {
             .configure => {
                 log.configures += 1;
                 log.last = e.*;
+            },
+            .presented => {
+                log.presented[log.presents] = e.key;
+                log.presents += 1;
+                log.present_ns = e.present_ns;
             },
             else => {},
         }
@@ -194,6 +202,76 @@ test "C API external: an embedder surface is configured to its node's size" {
     A.siv_window_destroy(h.window);
     try testing.expectEqual(1, log.destroyed);
     try testing.expectEqual(t.Result.error_invalid_handle, X.siv_external_get_wayland(ext, &display, &surface));
+}
+
+test "C API external: a frame slot is configured to its content box and told when each frame shows" {
+    var h: Harness = .{};
+    try h.start(100, 80, null, null);
+    defer h.stop();
+    var log: Log = .{};
+    var ext: t.External = .null;
+    try ok(X.siv_external_create(h.window, &.{ .on_event = Log.onEvent, .user_data = &log }, &ext));
+    var txn: t.Txn = .null;
+    try ok(T.siv_txn_begin(h.window, &txn));
+    // A 2:1 frame contained in an 80x60 box shows 80x40, but the producer
+    // is told the box: frames of the box's size fill it.
+    const view = X.siv_external_view(txn, A.siv_window_get_root(h.window), &.{ .external = ext, .content_size = .{ .width = 2, .height = 1 }, .fit = .contain });
+    _ = T.siv_set_layout(txn, view, &.{ .width = .{ .unit = .px, .value = 80 }, .height = .{ .unit = .px, .value = 60 } });
+    try ok(T.siv_txn_commit(txn));
+    try h.settle();
+    // Before any frame.
+    try testing.expectEqual(1, log.configures);
+    try testing.expectEqual(t.ExternalEventType.configure, log.last.type);
+    try testing.expectEqual(80, log.last.width);
+    try testing.expectEqual(60, log.last.height);
+    try testing.expectEqual(80, log.last.buffer_width);
+    try testing.expectEqual(60, log.last.buffer_height);
+    // At 150%, the buffer size is the logical size times the scale.
+    const Scale = struct {
+        id: platform.WindowId,
+        fn run(ctx: ?*anyopaque, comp: *compositor.Compositor) void {
+            const c: *@This() = @ptrCast(@alignCast(ctx));
+            comp.platform.headless.setScale(c.id, .{ .v120 = 180 });
+        }
+    };
+    var sc: Scale = .{ .id = (try h.win()).win.id };
+    try (try h.internal()).app.comp.call(&sc, Scale.run);
+    try h.settle();
+    try testing.expectEqual(2, log.configures);
+    try testing.expectEqual(80, log.last.width);
+    try testing.expectEqual(120, log.last.buffer_width);
+    try testing.expectEqual(90, log.last.buffer_height);
+    try testing.expectEqual(@as(f32, 1.5), log.last.scale);
+
+    // Each frame is reported once, when it first shows.
+    const blue = [4]u8{ 0xff, 0, 0, 0 };
+    const fd = try frameFd(blue, blue);
+    defer _ = linux.close(fd);
+    try ok(X.siv_external_submit(ext, &.{ .fd = fd, .width = 2, .height = 1, .key = 1 }));
+    var waited: usize = 0;
+    while (log.presents == 0) : (waited += 1) {
+        if (waited > 2000) return error.Timeout;
+        try ok(A.siv_app_dispatch(h.app, 5));
+    }
+    try h.settle();
+    try testing.expectEqual(1, log.presents);
+    try testing.expectEqual(1, log.presented[0]);
+    try testing.expect(log.present_ns > 0);
+    // Not while no node shows the slot: the frame waits until it does.
+    try ok(T.siv_txn_begin(h.window, &txn));
+    _ = T.siv_set_hidden(txn, view, true);
+    try ok(T.siv_txn_commit(txn));
+    try h.settle();
+    try ok(X.siv_external_submit(ext, &.{ .fd = fd, .width = 2, .height = 1, .key = 2 }));
+    try h.settle();
+    try testing.expectEqual(1, log.presents);
+    try ok(T.siv_txn_begin(h.window, &txn));
+    _ = T.siv_set_hidden(txn, view, false);
+    try ok(T.siv_txn_commit(txn));
+    try h.settle();
+    try testing.expectEqual(2, log.presents);
+    try testing.expectEqual(2, log.presented[1]);
+    try testing.expectEqual(2, log.configures);
 }
 
 test "C API external: a producer thread submits and gets frames back while the UI thread is blocked" {

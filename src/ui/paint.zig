@@ -903,7 +903,7 @@ fn externalPlacement(win: *const Window, nid: NodeId) ?compositor.ExternalPlacem
         const h = x.height * k;
         r = .xywh(box.x0 + (box.width() - w) / 2, box.y0 + (box.height() - h) / 2, w, h);
     }
-    return .{ .id = x.id, .rect = r, .background = x.background, .box = if (x.background.a > 0) box else Rect.empty };
+    return .{ .id = x.id, .rect = r, .background = x.background, .box = box };
 }
 
 /// Draws a node's own content (not its children) at `off`; returns its

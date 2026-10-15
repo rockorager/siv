@@ -1541,16 +1541,18 @@ pub const decls = [_]Decl{
     handle("siv_external", "A slot in a window for content rendered outside siv: frames a producer submits, or a wl_surface an embedder renders into. External nodes (siv_external_view) show it.", false),
     enumeration("siv_external_event_type", "What a siv_external_event reports.", &.{
         .{ .name = "released", .value = 0, .doc = "Frames: no frame reads the frame with this key any more; its memory may be reused. Only for slots without a release callback." },
-        .{ .name = "configure", .value = 1, .doc = "Surfaces: render frames of buffer_width x buffer_height pixels from now on, and one soon even if nothing else changed." },
+        .{ .name = "configure", .value = 1, .doc = "The placement has a new size: render frames of buffer_width x buffer_height pixels from now on. Surfaces: render one soon even if nothing else changed. Frames: the size of the external node's content box at the window's scale, whatever the frames' own aspect ratio and fit; sent before the first frame once the node is laid out and shown." },
+        .{ .name = "presented", .value = 2, .doc = "Frames: the frame with this key is on screen for the first time, in the window frame predicted to show at present_ns: a frame callback, the time to render the next frame (D17). One per frame shown, none while no external node shows the slot; frames replaced before they were shown get none." },
     }),
     descriptor("siv_external_event", "An external slot's event. Filled by siv.", &.{
-        .{ .name = "key", .type = .u64, .doc = "Released: the frame's key." },
+        .{ .name = "key", .type = .u64, .doc = "Released and presented: the frame's key." },
         .{ .name = "type", .type = ref("siv_external_event_type"), .doc = "What happened." },
         .{ .name = "width", .type = .u32, .doc = "Configure: logical width." },
         .{ .name = "height", .type = .u32, .doc = "Configure: logical height." },
         .{ .name = "buffer_width", .type = .u32, .doc = "Configure: width in buffer pixels (the logical width times the window's scale)." },
         .{ .name = "buffer_height", .type = .u32, .doc = "Configure: height in buffer pixels." },
         f32Field("scale", "Configure: the window's buffer scale."),
+        .{ .name = "present_ns", .type = .u64, .doc = "Presented: when the frame is predicted to show, CLOCK_MONOTONIC nanoseconds, as SIV_WINDOW_EVENT_TYPE_PRESENTED predicts it." },
     }),
     callback("siv_external_event_fn", "Receives an external slot's events at safe points on the application's thread (D5).", &.{
         .{ .name = "external", .type = ref("siv_external"), .doc = "The slot." },
@@ -1562,7 +1564,7 @@ pub const decls = [_]Decl{
     }, .void)),
     descriptor("siv_external_desc", "Options for an external slot.", &.{
         .{ .name = "user_data", .type = .user_data, .doc = "Passed to on_event, release, and destroy." },
-        .{ .name = "on_event", .type = ref("siv_external_event_fn"), .doc = "Receives configures, and releases when release is NULL, on the application's thread; may be NULL." },
+        .{ .name = "on_event", .type = ref("siv_external_event_fn"), .doc = "Receives configures, presented frames, and releases when release is NULL, on the application's thread; may be NULL." },
         .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data when the slot or its window is destroyed (later with release; see there), on the application's thread." },
         .{ .name = "release", .type = ref("siv_external_release_fn"), .doc = "Frame slots: receives releases on the compositor thread instead of on_event. Then destroy runs only after the slot is destroyed and its last frame released, and user_data must stay valid until then." },
     }),

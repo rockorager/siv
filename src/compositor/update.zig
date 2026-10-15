@@ -251,8 +251,9 @@ pub const ExternalReleaseHook = struct {
 pub const ExternalPlacement = struct {
     id: ExternalId,
     rect: Rect,
-    /// A solid color behind the content over `box` (layer coordinates),
-    /// such as the bars around letterboxed video; transparent for none.
+    /// A solid color behind the content over `box` (the content box, in
+    /// layer coordinates), such as the bars around letterboxed video;
+    /// transparent for none. Frame slots' configures give `box`'s size.
     /// On a subsurface of its own (single-pixel-buffer-v1) while the
     /// content is on one (D17), painted in the window otherwise.
     background: scene.Color = .transparent,
@@ -414,12 +415,17 @@ pub const Event = union(enum) {
     /// No frame reads this external frame any more; its producer may
     /// reuse the memory. Delivered to the producer's sink like the rest.
     external_released: struct { window: WindowId, id: ExternalId, key: u64 },
-    /// An embedder's surface (`Compositor.createExternalSurface`) has a new
-    /// size: render frames of `buffer_width` × `buffer_height` pixels
-    /// from now on (its logical size times the window's scale), and
-    /// render one soon even if nothing else changed, since the new size
-    /// applies with the surface's next commit.
+    /// An external slot's placement has a new size: render frames of
+    /// `buffer_width` × `buffer_height` pixels from now on (its logical
+    /// size times the window's scale). An embedder's surface
+    /// (`Compositor.createExternalSurface`) renders one soon even if
+    /// nothing else changed, since the new size applies with the surface's
+    /// next commit; a frame slot's size is its placement's content box.
     external_configure: struct { window: WindowId, id: ExternalId, width: u32, height: u32, buffer_width: u32, buffer_height: u32 },
+    /// A frame slot's frame `key` is on screen for the first time, in the
+    /// window frame predicted to show at `present_ns` (CLOCK_MONOTONIC):
+    /// the producer's frame callback (D17).
+    external_presented: struct { window: WindowId, id: ExternalId, key: u64, present_ns: u64 },
     /// The compositor owes no frame any more (`Compositor.owesFrames`
     /// asked for this). Carries nothing: it wakes the UI loop.
     idle,
@@ -430,7 +436,7 @@ pub const Event = union(enum) {
         return switch (ev.*) {
             .platform => |*p| p.window(),
             .frame => |f| f.window,
-            inline .configure, .presented, .scrolled, .animation_finished, .external_released, .external_configure => |e| e.window,
+            inline .configure, .presented, .scrolled, .animation_finished, .external_released, .external_configure, .external_presented => |e| e.window,
             .released, .idle => null,
         };
     }

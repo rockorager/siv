@@ -138,6 +138,10 @@ const External = struct {
     embed: ?Embed = null,
     /// Receives released frames on this thread instead of the UI.
     hook: ?ReleaseHook = null,
+    /// Frame slots: the buffer size the producer was last told
+    /// (`configures`), and the key of the last frame reported shown.
+    told: Size = .{},
+    reported: ?u64 = null,
 };
 
 /// An embedder's surface: the size it was told to render at, and what it
@@ -154,6 +158,8 @@ const Size = struct { width: u32 = 0, height: u32 = 0 };
 
 pub const Configure = struct { id: ExternalId, width: u32, height: u32, buffer_width: u32, buffer_height: u32 };
 
+pub const Shown = struct { id: ExternalId, key: u64 };
+
 pub const Externals = struct {
     gpa: Allocator,
     /// Watches pending dma-buf frames; without it they show at once.
@@ -164,8 +170,10 @@ pub const Externals = struct {
     found: std.ArrayList(tree_mod.Found) = .empty,
     /// Frames replaced or removed since the last frame; released after it.
     retired: std.ArrayList(Retired) = .empty,
-    /// New sizes for embedders, sent after the frame.
+    /// New sizes for slots, sent after the frame.
     configures: std.ArrayList(Configure) = .empty,
+    /// Frame slots' frames shown for the first time this frame.
+    shown: std.ArrayList(Shown) = .empty,
     /// Retired frames a subsurface showed, until the compositor releases
     /// them (`subsurfaceReleased`).
     waiting: std.ArrayList(Retired) = .empty,
@@ -212,6 +220,7 @@ pub const Externals = struct {
         e.retired.deinit(e.gpa);
         e.waiting.deinit(e.gpa);
         e.configures.deinit(e.gpa);
+        e.shown.deinit(e.gpa);
     }
 
     fn dropPending(e: *Externals, pd: *Pending) void {
@@ -420,6 +429,11 @@ pub const Externals = struct {
             // it; a hole cannot show it at less than full opacity, so
             // otherwise it is composited. One external shown twice is
             // composited.
+            try e.configureFrames(f, x, scale);
+            if (x.frame) |m| if (x.reported != m.frame.key) {
+                try e.shown.append(e.gpa, .{ .id = f.id, .key = m.frame.key });
+                x.reported = m.frame.key;
+            };
             // A dma-buf only if the compositor takes its format and modifier.
             const takes = if (x.frame) |m| if (m.frame.dmabuf) |d| p.supportsDmabuf(d.format, d.modifier) else true else false;
             const translucent = f.opacity < 1;
@@ -491,6 +505,21 @@ pub const Externals = struct {
             }
         };
         return changed;
+    }
+
+    /// Tells a frame slot's producer its placement's size: the content box,
+    /// which frames fill whatever their own aspect ratio (a frame of the
+    /// last size placed with `contain` must not shrink the next one).
+    fn configureFrames(e: *Externals, f: tree_mod.Found, x: *External, scale: f64) Allocator.Error!void {
+        const box = round(if (f.content.isEmpty()) f.rect else f.content);
+        if (f.visible.isEmpty() or box.width <= 0 or box.height <= 0) return;
+        const buffer: Size = .{
+            .width = @intFromFloat(@max(1, @round(@as(f64, @floatFromInt(box.width)) * scale))),
+            .height = @intFromFloat(@max(1, @round(@as(f64, @floatFromInt(box.height)) * scale))),
+        };
+        if (std.meta.eql(buffer, x.told)) return;
+        try e.configures.append(e.gpa, .{ .id = f.id, .width = @intCast(box.width), .height = @intCast(box.height), .buffer_width = buffer.width, .buffer_height = buffer.height });
+        x.told = buffer;
     }
 
     /// Places an embedder's surface. Nothing can composite its pixels, so

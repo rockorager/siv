@@ -2422,6 +2422,31 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
         it, and every frame-clock bug would be theirs and siv's at once).
         Reverse if applications need state in the same commit as a
         particular frame; then add the hook.
+    - Frame slots are told their size and when each frame shows, as an
+      embedder's surface is told by its configure and its frame callbacks.
+      Requirement: a producer that renders for the window (a web engine,
+      a canvas library, a game) has to render at the placement's size and
+      window scale, and pace itself to the display; before, it polled the
+      node's rectangle after every dispatch and rendered as fast as it
+      liked, and the window's `presented` event follows UI commits, not
+      frames. Found by siv-webview, whose engine waits for a frame
+      callback after each frame (WPE's `buffer_rendered`).
+      - `configure` (also for frame slots now): the external node's
+        content box (logical) and that times the window's scale (buffer
+        pixels, rounded), sent once the node is laid out and shown, before
+        the first frame, and again when either changes. The content box
+        rather than the fitted rectangle: frames of the last size placed
+        with `contain` would otherwise shrink the next request whenever
+        the box's aspect ratio changes.
+      - `presented`: once per frame, when the compositor first shows it
+        (promoted or composited), with the key and the window frame's
+        predicted presentation time, as the window's event predicts it. It
+        comes from the window's frame, so it is paced by the frame clock:
+        a producer that renders its next frame on it renders at most once
+        a refresh (a requestAnimationFrame page measured 62 frames/s on
+        sway's 60 Hz headless output). None while no node shows the slot
+        (the frame is reported once one does), and none for frames replaced
+        before they showed, like frame callbacks of hidden surfaces.
     - External nodes are in the C API (D27): `siv_external_view` over
       `siv_external_create` and `siv_external_create_surface` slots.
   - Fractional scale, preferred buffer scale, output hotplug, `xdg-activation`,

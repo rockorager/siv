@@ -823,6 +823,9 @@ pub const App = struct {
             .external_configure => |x| if (app.window(x.window)) |win| {
                 _ = win.notify(&.{ .external_configure = .{ .id = x.id, .width = x.width, .height = x.height, .buffer_width = x.buffer_width, .buffer_height = x.buffer_height } });
             },
+            .external_presented => |x| if (app.window(x.window)) |win| {
+                _ = win.notify(&.{ .external_presented = .{ .id = x.id, .key = x.key, .present_ns = x.present_ns } });
+            },
             .presented => |p| if (app.window(p.window)) |win| {
                 win.presented_seq = p.seq;
                 win.handle(ev);
@@ -940,8 +943,10 @@ pub const WindowEvent = union(enum) {
     configure: struct { old: platform.WindowState, new: platform.WindowState },
     /// No frame reads an external frame any more (D17).
     external_released: struct { id: compositor.ExternalId, key: u64 },
-    /// An embedder's surface has a new size.
+    /// An external slot's placement has a new size.
     external_configure: struct { id: compositor.ExternalId, width: u32, height: u32, buffer_width: u32, buffer_height: u32 },
+    /// A frame slot's frame is on screen for the first time (D17).
+    external_presented: struct { id: compositor.ExternalId, key: u64, present_ns: u64 },
     /// Everything committed up to `seq` reached the screen: predicted
     /// presentation and commit times on CLOCK_MONOTONIC.
     presented: struct { seq: u64, present_ns: u64, commit_ns: u64 },
