@@ -5639,9 +5639,28 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     `fr`, named areas, auto placement with `dense`, the track
     sizing algorithm), positioning (relative; absolute and fixed against
     the document), lists with markers, images and SVG as replaced
-    elements (`object-fit`), `overflow` clipping. Tables lay out with
-    the auto algorithm already (phase 2 completes them); floats are
-    blocks until phase 2.
+    elements (`object-fit`), `overflow` clipping. Tables: the HTML table
+    model with anonymous rows and cells, automatic and fixed layout
+    (CSS 2.1 17.5.2), row and column spans, `border-spacing` and
+    collapsed borders, captions; columns (`<col>`) generate no boxes.
+  - **Floats** (CSS 2.1 9.5) keep a list of margin boxes per block
+    formatting context, in its root's coordinates (`Engine.floats`,
+    `float_base`, `org`): a float is placed at the flow's current y, as
+    high as it fits beside earlier ones; `clear` moves a block below the
+    floats it clears without collapsing margins across the clearance; a
+    box with its own formatting context (tables, `overflow`, flex, grid,
+    replaced elements) narrows to fit beside them; a formatting context's
+    root grows to contain its floats. Line boxes beside floats get their
+    own inset and width (`inline.lineSpace`): lines are broken greedily
+    at the widths of the strut's estimated line positions, placed, and
+    broken again at the widths of where they landed. A float among text
+    (`<img align=left>` in a paragraph) stays in its IFC as an empty item
+    and is placed beside the line it falls on, then the lines are laid
+    out again beside it. The floats beside an IFC are stored with it, so
+    lines laid out again after eviction wrap the same way. Simplified:
+    Knuth and Plass and `balance` give way to greedy breaking beside
+    floats, and a float does not move a following line box down when no
+    word fits beside it.
   - **Pipeline and threads.** A `Document` is used by one thread at a
     time. The widget runs one job at a time on the worker pool: parse,
     cascade, and box tree; then layout in slices. The first slice stops
@@ -5689,6 +5708,31 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     sizes to its content at its width; applications put it in a scroll
     node. `siv_docview_*` is named so because the document portal owns
     `siv_document_*` (D19).
+  - **Email** (`src/doc/email.zig`): `siv_docview_flags.untrusted`
+    drops scripts, embedded frames and objects, links whose scheme is not
+    http, https, mailto, tel, cid, mid, news, or ftp, `<base>`, and
+    `<meta http-equiv>`, and computes `position: fixed` and `absolute` as
+    `static` (Gmail's rule: nothing covers the message). `collapse_quotes`
+    wraps each outermost quoted reply (`blockquote type=cite` of Apple
+    Mail and Thunderbird, `.gmail_quote`, `.yahoo_quoted`,
+    `.protonmail_quote`, Outlook's `#divRplyFwdMsg`, `#appendonsend`, and
+    the reply header with a top border that Outlook for Windows writes,
+    with everything after it) after a `•••` link to `siv:quote/N`; the
+    box builder leaves closed ones out, and the link toggles them and
+    styles again. Remote images, style sheets, and fonts are blocked
+    unless the application allows them (a blocked style sheet reports an
+    open as surely as a tracking pixel), counted in an event; `cid:` URLs
+    reach the loader like any other. Presentational attributes are hints
+    of zero specificity before author rules (`bgcolor`, `background`,
+    `width`, `height`, `align`, `valign`, `cellpadding`, `cellspacing`,
+    `border`, `hspace`, `vspace`, `<font>`, `<center>`, `nowrap`, body
+    margins and colors), parsed once per name and value (mail repeats
+    them on every cell). `align` on a block and `<center>` are
+    `-webkit-center` and kin: they also align narrower block children,
+    which centers mail's table layouts. Documents without a doctype (most
+    mail) get quirks mode's table rules. The canvas takes the root's
+    background, else the body's, else the theme's (the user agent's
+    `html { background: Canvas }` had kept body colors from it).
   - **Accessibility** (D18): a canvas's `semantics` hook lists virtual
     objects under its node: headings with levels, links, lists and items
     with positions, tables, rows, and cells, images by their alt text,
@@ -5704,7 +5748,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - **Known simplifications** (phase 1): no re-shaping across line
     breaks at unsafe-to-break edges; `text-transform` is ASCII;
     `letter-spacing` is added per character outside shaping; WOFF2
-    sources are skipped (no Brotli); floats lay out as blocks; no
+    sources are skipped (no Brotli); no
     `writing-mode`; virtual accessible objects have no actions; siv and
     its apps have no syntax highlighter, so code blocks are monochrome.
 - **Measurements** (`zig build bench-doc -Doptimize=ReleaseFast`, a
@@ -5723,6 +5767,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | Scroll: a band repaint (3 viewports), once per viewport scrolled | well under 1 ms per frame | 0.66 ms average, 3.2 ms worst; 0.07 ms per frame scrolling a viewport per 10 frames |
   | Width change, back to the first screen (1.5 MB) | — | 10 ms |
   | User agent style sheet, parsed once per process | — | 0.09 ms |
+
+  | Email (receipt, newsletter, Outlook reply; 2–3 KB each) | — | 0.2–0.5 ms each |
+  | 2 000-row mail table (222 KB) | — | 30 ms (46 before parsing hints once and sharing anonymous cell styles) |
+  | 300 paragraphs beside 300 floats (159 KB) | — | 9 ms |
 
   The article misses "a few milliseconds" on one thread and meets it
   with the pool; the worst band repaint (a band whose IFCs were dropped
@@ -5745,9 +5793,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   scripts, images, or resources other than the Ahem font, rendered at
   800 × 600 with Ahem and siv's Droid test font, test and reference
   compared allowing 20 pixels to differ by more than 32 in a channel),
-  per suite: css2 227 of 316, css-flexbox 210 of 400, css-grid 58 of 198,
-  css-values 56 of 123, css-variables 46 of 70 (597 of 1107, 54 %; a
-  regression fails the test); a golden corpus (`test/doc/corpus`: siv's
+  per suite: css2 233 of 316, css-flexbox 218 of 400, css-grid 59 of 198,
+  css-values 56 of 123, css-variables 46 of 70, css-tables (CSS2 tables
+  and css-tables) 110 of 288, floats (CSS2 floats and floats-clear) 87
+  of 171 (809 of 1566, 52 %; a regression fails the test); an email
+  corpus (`test/doc/email`: a receipt with a `cid:` logo and a tracking
+  pixel, a Mailchimp-style newsletter, Gmail, Outlook, and Apple Mail
+  replies with their quotes collapsed and open), close to Chromium's
+  rendering of the same files apart from the test font's missing bold; a golden corpus (`test/doc/corpus`: siv's
   README, RSS items with messy HTML, a Standard Ebooks chapter with its
   CSS); golden images through the C API (`test/abi/docview.zig`); fuzz
   targets for the HTML parser, the CSS parser, and the Markdown parser.

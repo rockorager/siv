@@ -11,7 +11,7 @@ pub const css =
     \\h4, h5, h6, hgroup, nav, section, dir, dd, dl, dt, menu, ol, ul, li, fieldset, optgroup, option { display: block }
     \\area, base, basefont, datalist, head, link, meta, noembed, noframes, param, rp, script, style, template,
     \\title, [hidden]:not([hidden=until-found i]), noscript, embed[hidden], dialog:not([open]) { display: none }
-    \\html { color: CanvasText; background-color: Canvas; line-height: normal }
+    \\html { color: CanvasText; line-height: normal }
     \\body { margin: 8px }
     \\address, blockquote, center, dialog, div, figure, figcaption, footer, form, header, hr, legend, listing,
     \\main, p, plaintext, pre, search, xmp { display: block }
@@ -21,7 +21,7 @@ pub const css =
     \\listing, plaintext, pre, xmp { font-family: monospace; white-space: pre }
     \\dialog { position: absolute; left: 0; right: 0; width: fit-content; height: fit-content; margin: auto; border: solid; padding: 1em; background-color: Canvas; color: CanvasText }
     \\pre[wrap] { white-space: pre-wrap }
-    \\center { text-align: center }
+    \\center { text-align: -webkit-center }
     \\cite, dfn, em, i, var { font-style: italic }
     \\b, strong { font-weight: bolder }
     \\code, kbd, samp, tt { font-family: monospace }
@@ -139,4 +139,16 @@ pub const markdown_css =
     \\img { max-width: 100% }
     \\.task-list-item { list-style: none }
     \\.task-list-item input { margin: 0 0.4em 0 -1.4em; vertical-align: middle }
+;
+
+/// Quirks mode's extra user agent styles (HTML, rendering 15.3.6).
+pub const quirks_css =
+    \\table { font-weight: initial; font-style: initial; font-variant: initial; font-size: initial; line-height: initial; white-space: initial; text-align: initial }
+    \\img[align=left i] { margin-right: 3px }
+    \\img[align=right i] { margin-left: 3px }
+;
+
+/// The toggles of collapsed quoted replies in email.
+pub const email_css =
+    \\a.siv-quote-toggle { display: inline-block; margin: 0.5em 0; padding: 0 0.5em; border-radius: 0.4em; background: rgb(128 128 128 / 0.2); color: inherit !important; text-decoration: none !important; font-size: 0.85em; line-height: 1.4; letter-spacing: 0.1em }
 ;

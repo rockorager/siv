@@ -44,6 +44,10 @@ pub const Options = struct {
     /// `loadImages`.
     remote_images: bool = false,
     author_styles: bool = true,
+    /// Untrusted HTML (email): see `doc.Document.Options.untrusted`.
+    untrusted: bool = false,
+    /// Quoted replies collapsed behind toggles.
+    collapse_quotes: bool = false,
     /// CSS `medium`; 0 follows the window's text size.
     font_size: f32 = 0,
 };
@@ -818,6 +822,15 @@ pub const View = struct {
     /// anything else goes to the application.
     pub fn activate(v: *View, href: []const u8) void {
         const d = v.d orelse return;
+        if (std.mem.startsWith(u8, href, "siv:quote/")) {
+            // A quoted reply's toggle.
+            const k = std.fmt.parseInt(usize, href["siv:quote/".len..], 10) catch return;
+            if (d.toggleQuote(k)) {
+                v.want_style = true;
+                v.schedule();
+            }
+            return;
+        }
         if (std.mem.indexOfScalar(u8, href, '#')) |hash| {
             const base = d.base_url;
             const base_end = std.mem.indexOfScalar(u8, base, '#') orelse base.len;
@@ -1029,6 +1042,8 @@ pub const Job = struct {
                     .font_size = j.media.font_size,
                     .remote_images = o.remote_images,
                     .author_styles = o.author_styles,
+                    .untrusted = o.untrusted,
+                    .collapse_quotes = o.collapse_quotes,
                 }, try userAgentSheet());
                 errdefer d.destroy();
                 // Layout jobs shape text ahead on the other workers.

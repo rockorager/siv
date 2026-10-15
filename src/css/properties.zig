@@ -750,9 +750,9 @@ fn parseLonghand(c: *Cursor, id: Id) Error!?Value {
             break :blk .{ .line_height = .{ .kind = .length, .len = l } };
         },
         .text_align => blk: {
-            if (c.ident("-webkit-center") or c.ident("-moz-center")) break :blk kw(style.TextAlign.center);
-            if (c.ident("-webkit-left")) break :blk kw(style.TextAlign.left);
-            if (c.ident("-webkit-right")) break :blk kw(style.TextAlign.right);
+            if (c.ident("-webkit-center") or c.ident("-moz-center")) break :blk kw(style.TextAlign.legacy_center);
+            if (c.ident("-webkit-left") or c.ident("-moz-left")) break :blk kw(style.TextAlign.legacy_left);
+            if (c.ident("-webkit-right") or c.ident("-moz-right")) break :blk kw(style.TextAlign.legacy_right);
             break :blk if (parseKeyword(style.TextAlign, c)) |k| kw(k) else null;
         },
         .text_align_last => if (parseKeyword(style.TextAlignLast, c)) |k| kw(k) else null,

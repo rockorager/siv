@@ -92,6 +92,17 @@ pub const Engine = struct {
     frontier: u32 = 0,
     /// Per box: text bytes in its subtree (estimates).
     subtree_bytes: []u32 = &.{},
+    /// Floats placed (CSS 2.1 9.5): margin boxes in their block
+    /// formatting context's coordinates (its root's border box), those of
+    /// the context being laid out from `float_base` on.
+    floats: std.ArrayList(inline_mod.FloatRect) = .empty,
+    float_base: usize = 0,
+    /// The border box of the box being laid out in its formatting
+    /// context's coordinates.
+    org: [2]f32 = .{ 0, 0 },
+    /// Floats beside IFCs, in their content coordinates, kept with them
+    /// so that lines laid out again (after eviction) wrap the same way.
+    ifc_floats: std.AutoHashMapUnmanaged(u32, []inline_mod.FloatRect) = .empty,
 
     pub fn deinit(e: *Engine) void {
         for (e.ifc_cache) |*c| e.drop(c);
@@ -100,6 +111,15 @@ pub const Engine = struct {
         e.frames.deinit(e.gpa);
         e.resume_map.deinit(e.gpa);
         e.gpa.free(e.subtree_bytes);
+        e.floats.deinit(e.gpa);
+        e.clearIfcFloats();
+        e.ifc_floats.deinit(e.gpa);
+    }
+
+    fn clearIfcFloats(e: *Engine) void {
+        var it = e.ifc_floats.valueIterator();
+        while (it.next()) |v| e.gpa.free(v.*);
+        e.ifc_floats.clearRetainingCapacity();
     }
 
     pub fn style(e: *const Engine, id: BoxId) *const Style {
@@ -212,6 +232,7 @@ pub const Engine = struct {
 
     fn ifcContext(e: *Engine, ifc: u32, s: *const inline_mod.Shaped) inline_mod.Context {
         return .{
+            .floats = e.ifc_floats.get(ifc) orelse &.{},
             .gpa = e.gpa,
             .scratch = e.scratch,
             .ifc = &e.tree.ifcs.items[ifc],
@@ -479,6 +500,8 @@ pub const Engine = struct {
     /// Auto horizontal margins center a block (CSS 2.1 10.3.3).
     fn autoMargins(e: *Engine, id: BoxId, w: f32, cb_w: f32) void {
         const st = e.style(id);
+        // Floats keep their margins (auto is 0, CSS 2.1 10.3.5).
+        if (st.floats()) return;
         const b = e.get(id);
         const ml_auto = st.box.margin[3].isAuto();
         const mr_auto = st.box.margin[1].isAuto();
@@ -490,6 +513,14 @@ pub const Engine = struct {
             b.margin[3] = @max(0, free);
         } else if (mr_auto) {
             b.margin[1] = free;
+        } else if (b.parent != none and free > 0 and switch (e.style(b.parent).inh.text_align) {
+            .legacy_center, .legacy_right => true,
+            else => false,
+        }) {
+            // HTML's align on the parent moves narrower blocks too.
+            const shift = if (e.style(b.parent).inh.text_align == .legacy_center) free / 2 else free;
+            b.margin[3] += shift;
+            b.margin[1] += free - shift;
         } else if (st.inh.direction == .ltr) {
             // Over-constrained: the right margin gives way.
             b.margin[1] = free + b.margin[1];
@@ -501,7 +532,8 @@ pub const Engine = struct {
         const b = e.get(id);
         const st = e.style(id);
         b.w = w;
-        if (b.laid_w == w and b.laid_h >= 0 and fixed_h == null and !e.resume_map.contains(id)) {
+        const beside_floats = e.floats.items.len > e.float_base and !st.establishesBfc();
+        if (b.laid_w == w and b.laid_h >= 0 and fixed_h == null and !e.resume_map.contains(id) and !beside_floats) {
             b.h = b.laid_h;
             return;
         }
@@ -540,10 +572,55 @@ pub const Engine = struct {
     }
 
     fn layoutInline(e: *Engine, id: BoxId, content_w: f32) Error!void {
-        const b = e.get(id);
-        const l = try e.laid(b.data, content_w);
+        // A box with its own formatting context keeps the floats in its
+        // text to itself.
+        const ib = e.get(id);
+        const own = e.style(id).establishesBfc() or ib.parent == none or e.get(ib.parent).kind != .block;
+        const saved_base = e.float_base;
+        const saved_org = e.org;
+        if (own) {
+            e.float_base = e.floats.items.len;
+            e.org = .{ 0, 0 };
+        }
+        defer if (own) {
+            e.floats.shrinkRetainingCapacity(e.float_base);
+            e.float_base = saved_base;
+            e.org = saved_org;
+        };
+        try e.ifcFloats(id);
+        var l = try e.laid(ib.data, content_w);
+        // Floats among the text, each beside the line it occurs on; then
+        // the lines again beside them.
+        {
+            const ifc = &e.tree.ifcs.items[ib.data];
+            var placed = false;
+            for (ifc.items) |it| {
+                if (it.kind != .atomic or !e.get(it.index).inline_float) continue;
+                const pb = e.get(id);
+                const ox = e.org[0] + pb.border[3] + pb.padding[3];
+                const oy = e.org[1] + pb.border[0] + pb.padding[0];
+                var line_top: f32 = 0;
+                for (l.lines) |line| if (it.offset >= line.start and it.offset <= line.end) {
+                    line_top = line.top;
+                    break;
+                };
+                try e.layoutBlock(it.index, content_w, null);
+                const at = try e.placeFloat(it.index, ox, ox + content_w, oy + line_top);
+                const fb = e.get(it.index);
+                fb.x = at[0] - e.org[0] + fb.margin[3];
+                fb.y = at[1] - e.org[1] + fb.margin[0];
+                placed = true;
+            }
+            if (placed) {
+                try e.ifcFloats(id);
+                l = try e.laid(e.get(id).data, content_w);
+            }
+        }
         const bb = e.get(id);
         bb.laid_h = l.height;
+        if (own) for (e.floats.items[e.float_base..]) |f| {
+            bb.laid_h = @max(bb.laid_h, f.y1 - bb.border[0] - bb.padding[0]);
+        };
         const top = bb.border[0] + bb.padding[0];
         const left = bb.border[3] + bb.padding[3];
         bb.baseline = if (l.firstBaseline()) |v| top + v else std.math.nan(f32);
@@ -572,6 +649,105 @@ pub const Engine = struct {
                 break;
             };
             try e.outOfFlow(it.index, x, y);
+        }
+    }
+
+    /// Notes the floats of the formatting context beside an IFC's box
+    /// (none when the box starts a context of its own), and drops lines
+    /// laid out beside other floats.
+    fn ifcFloats(e: *Engine, id: BoxId) Error!void {
+        const b = e.get(id);
+        var list: std.ArrayList(inline_mod.FloatRect) = .empty;
+        defer list.deinit(e.gpa);
+        {
+            const ox = e.org[0] + b.border[3] + b.padding[3];
+            const oy = e.org[1] + b.border[0] + b.padding[0];
+            for (e.floats.items[e.float_base..]) |f| {
+                if (f.y1 <= oy) continue;
+                try list.append(e.gpa, .{ .x0 = f.x0 - ox, .y0 = f.y0 - oy, .x1 = f.x1 - ox, .y1 = f.y1 - oy, .left = f.left });
+            }
+        }
+        const old = e.ifc_floats.get(b.data);
+        const same = if (old) |o| std.mem.eql(u8, std.mem.sliceAsBytes(o), std.mem.sliceAsBytes(list.items)) else list.items.len == 0;
+        if (same) return;
+        if (old) |o| e.gpa.free(o);
+        if (list.items.len == 0) {
+            _ = e.ifc_floats.remove(b.data);
+        } else try e.ifc_floats.put(e.gpa, b.data, try e.gpa.dupe(inline_mod.FloatRect, list.items));
+        // Lines laid out beside other floats are stale.
+        const c = &e.ifc_cache[b.data];
+        if (c.laid) |l| {
+            e.cache_bytes -|= l.bytes();
+            l.deinit(e.gpa);
+            e.gpa.destroy(l);
+            c.laid = null;
+        }
+    }
+
+    /// The lowest bottom of the context's floats on a side (`clear`), in
+    /// its coordinates; null without any.
+    fn clearance(e: *const Engine, clear: css.style.Clear) ?f32 {
+        var y: ?f32 = null;
+        for (e.floats.items[e.float_base..]) |f| {
+            const hit = switch (clear) {
+                .none => false,
+                .left, .inline_start => f.left,
+                .right, .inline_end => !f.left,
+                .both => true,
+            };
+            if (hit) y = @max(y orelse f.y1, f.y1);
+        }
+        return y;
+    }
+
+    /// The left and right edges free of floats between `y0` and `y1` in
+    /// `x0..x1` (formatting context coordinates).
+    fn freeSpace(e: *const Engine, x0: f32, x1: f32, y0: f32, y1: f32) [2]f32 {
+        var l = x0;
+        var r = x1;
+        for (e.floats.items[e.float_base..]) |f| {
+            if (f.y1 <= y0 or f.y0 >= y1) continue;
+            if (f.left) l = @max(l, f.x1) else r = @min(r, f.x0);
+        }
+        return .{ l, r };
+    }
+
+    /// Places a laid out float at or below `y` (formatting context
+    /// coordinates) in the containing block `x0..x1`; returns its margin
+    /// box's top left.
+    fn placeFloat(e: *Engine, id: BoxId, x0: f32, x1: f32, y: f32) Error![2]f32 {
+        const b = e.get(id);
+        const st = e.style(id);
+        const left = st.box.float == .left or st.box.float == .inline_start;
+        const w = b.margin[3] + b.w + b.margin[1];
+        const h = b.margin[0] + b.h + b.margin[2];
+        // Laid out again: its old place goes.
+        var k: usize = e.float_base;
+        while (k < e.floats.items.len) {
+            if (e.floats.items[k].box == id) _ = e.floats.orderedRemove(k) else k += 1;
+        }
+        var top = y;
+        if (e.clearance(st.box.clear)) |cy| top = @max(top, cy);
+        // Not above earlier floats.
+        for (e.floats.items[e.float_base..]) |f| top = @max(top, f.y0);
+        while (true) {
+            const sp = e.freeSpace(x0, x1, top, top + @max(h, 0.01));
+            if (sp[1] - sp[0] >= w - 0.01 or sp[0] == x0 and sp[1] == x1) {
+                const fx = if (left) sp[0] else sp[1] - w;
+                try e.floats.append(e.gpa, .{ .x0 = fx, .y0 = top, .x1 = fx + w, .y1 = top + h, .left = left, .box = id });
+                return .{ fx, top };
+            }
+            // Down to where the next float ends.
+            var next: f32 = std.math.inf(f32);
+            for (e.floats.items[e.float_base..]) |f| if (f.y1 > top) {
+                next = @min(next, f.y1);
+            };
+            if (std.math.isInf(next)) {
+                const fx = if (left) x0 else x1 - w;
+                try e.floats.append(e.gpa, .{ .x0 = fx, .y0 = top, .x1 = fx + w, .y1 = top + h, .left = left, .box = id });
+                return .{ fx, top };
+            }
+            top = next;
         }
     }
 
@@ -605,6 +781,18 @@ pub const Engine = struct {
         const left = b.border[3] + b.padding[3];
         const bfc = st.establishesBfc() or b.parent == none or e.get(b.parent).kind != .block;
         const top_open = !bfc and b.border[0] == 0 and b.padding[0] == 0;
+        // A new formatting context hides the floats around it and starts
+        // its own coordinates.
+        const saved_base = e.float_base;
+        const my_org: [2]f32 = if (bfc) .{ 0, 0 } else e.org;
+        if (bfc) e.float_base = e.floats.items.len;
+        defer {
+            if (bfc) {
+                e.floats.shrinkRetainingCapacity(e.float_base);
+                e.float_base = saved_base;
+            }
+            e.org = my_org;
+        }
         var state: Resume = if (e.resume_map.get(id)) |r| r else .{ .next = b.first, .y = top, .pos = 0, .neg = 0, .first = true, .content_top = top, .top_collapsed = false };
         var pending: Collapse = .{ .pos = state.pos, .neg = state.neg };
         var cur = state.next;
@@ -627,10 +815,47 @@ pub const Engine = struct {
                 try e.resume_map.put(e.gpa, id, state);
                 return state.y + pending.value() - top + e.estimateFrom(cur);
             }
-            if (!resuming) c.y = state.y + pending.value();
-            try e.layoutBlock(cur, content_w, content_h);
+            const cst = e.style(cur);
+            if (cst.floats()) {
+                // Out of the flow: beside the content after it.
+                try e.layoutBlock(cur, content_w, content_h);
+                const fb = e.get(cur);
+                const at = try e.placeFloat(cur, my_org[0] + left, my_org[0] + left + content_w, my_org[1] + state.y + pending.value());
+                fb.x = at[0] - my_org[0] + fb.margin[3];
+                fb.y = at[1] - my_org[1] + fb.margin[0];
+                e.relativeOffset(cur, content_w);
+                cur = fb.next;
+                continue;
+            }
+            var avail_w = content_w;
+            var shift_x: f32 = 0;
+            if (!resuming) {
+                c.y = state.y + pending.value();
+                // Clearance: below the floats it clears, without collapsing
+                // margins across it.
+                if (e.clearance(cst.box.clear)) |cy| {
+                    e.resolveEdges(cur, content_w);
+                    const below = cy - my_org[1] - e.get(cur).margin[0];
+                    if (below > state.y + pending.value()) {
+                        state.y = below;
+                        pending = .{};
+                        c.y = state.y;
+                    }
+                }
+                // A box with its own formatting context fits beside floats.
+                if (e.floats.items.len > e.float_base and (cst.establishesBfc() or c.kind == .table or c.kind == .flex or c.kind == .grid or c.kind == .replaced)) {
+                    const y0 = my_org[1] + c.y;
+                    const sp = e.freeSpace(my_org[0] + left, my_org[0] + left + content_w, y0, y0 + 1);
+                    shift_x = sp[0] - (my_org[0] + left);
+                    avail_w = @max(0, sp[1] - sp[0]);
+                }
+            }
+            e.resolveEdges(cur, content_w);
+            e.org = .{ my_org[0] + left + shift_x + e.get(cur).margin[3], my_org[1] + c.y };
+            try e.layoutBlock(cur, avail_w, content_h);
+            e.org = my_org;
             const cc = e.get(cur);
-            cc.x = left + cc.margin[3];
+            cc.x = left + shift_x + cc.margin[3];
             if (resuming) {
                 // Its margins and place were settled when it started.
                 cc.y = state.y;
@@ -678,6 +903,10 @@ pub const Engine = struct {
         if (bottom_open) {
             b.margin[2] = mergeMargins(b.margin[2], pending.value());
         } else state.y += pending.value();
+        // A formatting context's root is as tall as its floats.
+        if (bfc) for (e.floats.items[e.float_base..]) |f| {
+            state.y = @max(state.y, f.y1);
+        };
         // Absolutely positioned descendants of the root or a BFC root
         // that is positioned are laid out by `layoutAt`'s frame.
         return state.y - top;
@@ -836,6 +1065,9 @@ pub const Engine = struct {
     /// layout. Returns whether layout finished.
     pub fn run(e: *Engine) Error!bool {
         e.stopped = false;
+        e.floats.clearRetainingCapacity();
+        e.float_base = 0;
+        e.org = .{ 0, 0 };
         e.clock += 1;
         const root = e.tree.root;
         if (root == none) return true;

@@ -19,6 +19,12 @@ pub const Runner = struct {
     origin: []const u8,
     width: u32,
     height: u32,
+    /// Email: untrusted HTML with quoted replies collapsed (or opened).
+    untrusted: bool = false,
+    collapse_quotes: bool = false,
+    open_quotes: bool = false,
+    /// Remote content (the server's style sheets) loads.
+    remote: bool = true,
     gpa: std.mem.Allocator,
     io: std.Io,
     cache: text.FontCache,
@@ -90,7 +96,10 @@ pub const Runner = struct {
         defer r.gpa.free(base);
         const src = r.file(base) orelse return error.Missing;
         defer r.gpa.free(src);
-        const d = try Document.create(r.gpa, src, .{ .base_url = base, .kind = kind, .remote_images = false }, &r.ua);
+        const d = try Document.create(r.gpa, src, .{ .base_url = base, .kind = kind, .remote_images = r.remote, .untrusted = r.untrusted, .collapse_quotes = r.collapse_quotes }, &r.ua);
+        if (r.open_quotes) for (0..d.quotes.len) |k| {
+            _ = d.toggleQuote(k);
+        };
         defer d.destroy();
         const W: f32 = @floatFromInt(r.width);
         const H: f32 = @floatFromInt(r.height);
@@ -103,6 +112,18 @@ pub const Runner = struct {
             var supplied = false;
             for (d.resources.items, 0..) |res, i| {
                 if (res.state != .wanted) continue;
+                if (res.kind == .image and std.mem.startsWith(u8, res.url, "cid:")) {
+                    // An email's part, as SVG under cid/.
+                    const part = try std.fmt.allocPrint(r.gpa, "{s}/cid/{s}", .{ r.root, res.url[4..] });
+                    defer r.gpa.free(part);
+                    const bytes = std.Io.Dir.cwd().readFileAlloc(r.io, part, r.gpa, .limited(1 << 20)) catch {
+                        d.failResource(@intCast(i));
+                        continue;
+                    };
+                    defer r.gpa.free(bytes);
+                    try d.supplySvg(@intCast(i), bytes);
+                    continue;
+                }
                 if (res.kind != .stylesheet) {
                     d.failResource(@intCast(i));
                     continue;
@@ -127,8 +148,12 @@ pub const Runner = struct {
         try r.renderer.render(list, .{ .background = .white, .target = .{ .pixels = out.ptr, .stride = r.width * 4, .format = .abgr8888 } });
     }
 
-    fn noReplaced(_: *anyopaque, _: *scene.Builder, _: u32, _: raster.Rect, _: f32) scene.Error!bool {
-        return false;
+    fn noReplaced(ctx: *anyopaque, b: *scene.Builder, resource: u32, dst: raster.Rect, _: f32) scene.Error!bool {
+        const d: *Document = @ptrCast(@alignCast(ctx));
+        const res = d.resources.items[resource];
+        const sd = res.svg_doc orelse return false;
+        try sd.draw(b, dst, null);
+        return true;
     }
     fn noSize(_: *anyopaque, _: []const u8) ?[2]f32 {
         return null;

@@ -85,6 +85,9 @@ pub const Painter = struct {
     band: [2]f32,
     highlights: []const Highlight = &.{},
     scratch: std.mem.Allocator,
+    /// The box whose background the canvas took (the root element's or
+    /// the body's, CSS 2.1 14.2): it does not paint it again.
+    canvas_src: BoxId = none,
     positioned: std.ArrayList(Positioned) = .empty,
     glyphs: std.ArrayList(scene.Glyph) = .empty,
 
@@ -191,7 +194,7 @@ pub const Painter = struct {
         if (id == p.tree().root) {
             try p.canvas(r);
         } else if (b.node != .none or b.kind != .inline_root) {
-            try p.decorations(id, r, b.node == p.engine.tree.get(p.tree().root).node);
+            try p.decorations(id, r, id == p.canvas_src or id == p.tree().get(p.tree().root).first);
         }
         // Outside list markers.
         if (b.marker != none and st.inh.visibility == .visible) try p.marker(id, x, y);
@@ -202,7 +205,12 @@ pub const Painter = struct {
         }
         defer if (clip and b.kind != .replaced) p.b.popLayer() catch {};
         switch (b.kind) {
-            .inline_root => try p.ifc(id, x, y, depth),
+            .inline_root => {
+                // Floats among the text, under it (CSS 2.1 E.2).
+                var it = p.tree().children(id);
+                while (it.next()) |c| if (p.tree().get(c).inline_float) try p.box(c, x, y, depth + 1);
+                try p.ifc(id, x, y, depth);
+            },
             .replaced => try p.replaced(id, r),
             else => {
                 var it = p.tree().children(id);
@@ -229,7 +237,10 @@ pub const Painter = struct {
             }
         }
         const band = Rect{ .x0 = r.x0, .y0 = @max(r.y0, p.band[0]), .x1 = @max(r.x1, p.engine.viewport_w), .y1 = @min(@max(r.y1, p.band[1]), p.band[1]) };
-        const bg = p.resolve(st.box.background_color, p.textColor(st));
+        p.canvas_src = src;
+        var bg = p.resolve(st.box.background_color, p.textColor(st));
+        // Neither has one: the theme's canvas color.
+        if (bg.a == 0) bg = p.palette.canvas;
         if (bg.a > 0) try p.b.fillRect(band, .color(p.color(bg, Color.black)));
     }
 
@@ -725,10 +736,10 @@ pub const Painter = struct {
             if (!(x1 > x0)) continue;
             const fi = p.engine.fonts.info(ib.style);
             const shift = shiftOf(frags, i);
-            const baseline = cy + line.baseline + shift;
+            const baseline = @round(cy + line.baseline + shift);
             const top = baseline - fi.ascent - st.box.padding[0].resolve(0) - st.borderWidth(0);
             const bottom = baseline + fi.descent + st.box.padding[2].resolve(0) + st.borderWidth(2);
-            const r = Rect{ .x0 = cx + x0, .y0 = top, .x1 = cx + x1, .y1 = bottom };
+            const r = snap(.{ .x0 = cx + x0, .y0 = top, .x1 = cx + x1, .y1 = bottom });
             const current = p.textColor(st);
             const bg = p.resolve(st.box.background_color, current);
             const rr = p.inlineRadii(st, r, open_here, close_here);

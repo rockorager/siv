@@ -17,11 +17,13 @@ const origin = "http://wpt";
 
 /// Passing tests per suite, recorded: fewer fails the test.
 const floors = .{
-    .{ "css2", 227 },
-    .{ "css-flexbox", 210 },
-    .{ "css-grid", 58 },
+    .{ "css2", 233 },
+    .{ "css-flexbox", 218 },
+    .{ "css-grid", 59 },
     .{ "css-values", 56 },
     .{ "css-variables", 46 },
+    .{ "css-tables", 110 },
+    .{ "floats", 87 },
 };
 
 fn runSuite(comptime suite: []const u8) !void {
@@ -85,4 +87,12 @@ test "WPT css-values reftests" {
 
 test "WPT css-variables reftests" {
     try runSuite("css-variables");
+}
+
+test "WPT css-tables reftests" {
+    try runSuite("css-tables");
+}
+
+test "WPT floats reftests" {
+    try runSuite("floats");
 }

@@ -51,6 +51,8 @@ pub const Box = struct {
     atomic: bool = false,
     /// Out of flow (absolutely positioned or fixed).
     out_of_flow: bool = false,
+    /// A float in inline content, placed at the line where it occurs.
+    inline_float: bool = false,
 
     // Layout results: the border box relative to the parent's border box.
     x: f32 = 0,
@@ -179,6 +181,10 @@ pub const Tree = struct {
 
 /// Builds the box tree of a styled document. Strings live in `arena`.
 pub const Builder = struct {
+    /// Anonymous blocks' styles by their parent's.
+    anonymous: std.AutoHashMapUnmanaged(StyleId, StyleId) = .empty,
+    /// Elements left out with their content (collapsed quoted replies).
+    skip: []const NodeId = &.{},
     gpa: Allocator,
     arena: Allocator,
     dom: *const Dom,
@@ -211,6 +217,7 @@ pub const Builder = struct {
     };
 
     pub fn deinit(b: *Builder) void {
+        b.anonymous.deinit(b.gpa);
         b.open_inlines.deinit(b.gpa);
         b.counters.deinit(b.gpa);
     }
@@ -278,6 +285,9 @@ pub const Builder = struct {
         const st = b.style(sid);
         const d = st.box.display;
         if (d.isNone()) return;
+        if (b.skip.len > 0 and std.mem.indexOfScalar(NodeId, b.skip, node) != null) return;
+        // Columns style cells; they have no boxes of their own.
+        if (d.inner == .table_column or d.inner == .table_column_group) return;
         const n = b.dom.node(node);
         // Ignore content that never renders.
         if (n.ns == .html and (n.name == .template or n.name == .head)) return;
@@ -298,6 +308,13 @@ pub const Builder = struct {
         try b.applyCounters(node, st);
 
         const replaced = b.isReplaced(node);
+        if (st.floats() and b.ifc != null) {
+            // A float among text: a place in the IFC, beside its line.
+            const id = try b.blockBox(node, sid, replaced);
+            b.tree.boxes.items[id].inline_float = true;
+            try b.atomicInIfc(parent, id, true);
+            return;
+        }
         if (st.isOutOfFlow()) {
             const id = try b.blockBox(node, sid, replaced);
             b.tree.boxes.items[id].out_of_flow = true;
@@ -645,10 +662,14 @@ pub const Builder = struct {
     /// An anonymous block's style: the parent's inherited values, initial
     /// box values, displayed as a block.
     fn anonymousStyle(b: *Builder, parent: StyleId) Error!StyleId {
+        // Every cell of a table makes one: hash the style once per parent.
+        if (b.anonymous.get(parent)) |id| return id;
         const p = b.style(parent);
         var s: Style = .{ .inh = p.inh, .custom = p.custom };
         s.box.display = css.style.Display.block;
-        return b.store.intern(b.gpa, &s);
+        const id = try b.store.intern(b.gpa, &s);
+        try b.anonymous.put(b.gpa, parent, id);
+        return id;
     }
 
     // Generated content.

@@ -184,6 +184,9 @@ pub const Context = struct {
     store: *const css.style.Store,
     atomics: Atomics,
     tree: *const box_mod.Tree,
+    /// Floats beside the IFC (CSS 2.1 9.5): their margin boxes in its
+    /// content coordinates; lines next to them are shortened.
+    floats: []const FloatRect = &.{},
 };
 
 const Unit = struct {
@@ -199,9 +202,28 @@ const Unit = struct {
     breakable: bool,
 };
 
+/// A float's margin box beside an IFC.
+pub const FloatRect = struct { x0: f32, y0: f32, x1: f32, y1: f32, left: bool, box: u32 = box_mod.none };
+
+/// The inset and width a line from `top` to `top + h` has beside floats.
+pub fn lineSpace(floats: []const FloatRect, width: f32, top: f32, h: f32) [2]f32 {
+    var l: f32 = 0;
+    var r: f32 = width;
+    for (floats) |f| {
+        if (f.y1 <= top or f.y0 >= top + h) continue;
+        if (f.left) l = @max(l, f.x1) else r = @min(r, f.x0);
+    }
+    return .{ l, @max(0, r - l) };
+}
+
 const Builder = struct {
     cx: *const Context,
     width: f32,
+    /// Per line beside floats: inset and width (beyond the list, none).
+    spaces: []const [2]f32 = &.{},
+    /// Lines broken so far by `greedy` (it restarts after hyphenating).
+    greedy_line: usize = 0,
+
     lines: std.ArrayList(Line) = .empty,
     frags: std.ArrayList(Frag) = .empty,
     glyphs: std.ArrayList(Glyph) = .empty,
@@ -211,6 +233,10 @@ const Builder = struct {
     ib_shift: []f32 = &.{},
     used_items: []bool = &.{},
     hyphen_after: ?u32 = null,
+
+    fn space(b: *const Builder, line: usize) [2]f32 {
+        return if (line < b.spaces.len) b.spaces[line] else .{ 0, b.width };
+    }
 
     fn para(b: *const Builder) *const text.ShapedParagraph {
         return &b.cx.shaped.para;
@@ -294,7 +320,7 @@ fn units(b: *Builder, intrinsic_mode: ?bool) Error![]Unit {
             switch (it.kind) {
                 .atomic => {
                     const bx = cx.tree.get(it.index);
-                    if (bx.out_of_flow) continue;
+                    if (bx.out_of_flow or bx.inline_float) continue;
                     const w = if (intrinsic_mode) |max| try cx.atomics.intrinsicFn(cx.atomics.ctx, it.index, max) else (try atomic(b, it.index)).w;
                     u.advance += w - shapedAdvance(p, it.offset, it.offset + 3);
                 },
@@ -378,11 +404,12 @@ fn greedy(b: *Builder, us: []const Unit, width: f32, indent: f32, out: *std.Arra
     var line_start: usize = 0;
     while (i < us.len) {
         const u = us[i];
-        const limit = width - if (first_line) indent else 0;
+        const limit = (if (b.spaces.len > 0) b.space(b.greedy_line)[1] else width) - if (first_line) indent else 0;
         if (i > line_start and x + u.advance - u.trailing > limit + 0.01) {
             // Break before this unit, unless hyphenation fits part of it.
             if (u.breakable) if (try hyphenate(b, u, limit - x)) |at| {
                 try out.append(b.cx.scratch, .{ .at = at, .hyphen = true });
+                b.greedy_line += 1;
                 x = 0;
                 first_line = false;
                 // The rest of the unit starts the next line.
@@ -394,6 +421,7 @@ fn greedy(b: *Builder, us: []const Unit, width: f32, indent: f32, out: *std.Arra
                 return greedyFrom(b, merged, i, width, out);
             };
             try out.append(b.cx.scratch, .{ .at = u.start });
+            b.greedy_line += 1;
             x = 0;
             first_line = false;
             line_start = i;
@@ -403,6 +431,7 @@ fn greedy(b: *Builder, us: []const Unit, width: f32, indent: f32, out: *std.Arra
             // A unit too wide alone: hyphenate, or break between graphemes.
             if (try hyphenate(b, u, limit)) |at| {
                 try out.append(b.cx.scratch, .{ .at = at, .hyphen = true });
+                b.greedy_line += 1;
                 var rest = u;
                 rest.start = at;
                 rest.advance = u.advance - shapedAdvance(b.para(), u.start, at);
@@ -415,6 +444,7 @@ fn greedy(b: *Builder, us: []const Unit, width: f32, indent: f32, out: *std.Arra
                 const at = graphemeFit(b, u.start, u.end - trailingBytes(b.cx.ifc.text[u.start..u.end]), limit);
                 if (at > u.start and at < u.end) {
                     try out.append(b.cx.scratch, .{ .at = at });
+                    b.greedy_line += 1;
                     var rest = u;
                     rest.start = at;
                     rest.advance = u.advance - shapedAdvance(b.para(), u.start, at);
@@ -428,6 +458,7 @@ fn greedy(b: *Builder, us: []const Unit, width: f32, indent: f32, out: *std.Arra
         i += 1;
         if (u.mandatory) {
             try out.append(b.cx.scratch, .{ .at = u.end });
+            b.greedy_line += 1;
             x = 0;
             first_line = false;
             line_start = i;
@@ -548,7 +579,32 @@ pub fn layout(cx: *const Context, width: f32) Error!Laid {
     const indent = root_style.inh.text_indent.resolve(width);
     var breaks: std.ArrayList(Break) = .empty;
     const wrap_style = root_style.inh.text_wrap_style;
-    if (wrap_style == .pretty and us.len > 1) {
+    if (cx.floats.len > 0) {
+        // Beside floats: greedy lines, each as wide as the space at its
+        // place. Lines are placed first at the strut's height, then again
+        // at the tops and heights that placement found.
+        const fi = cx.fonts.info(ifc.style);
+        const strut = root_style.lineHeightPx(fi.ascent + fi.descent);
+        var spaces: std.ArrayList([2]f32) = .empty;
+        for (0..us.len + 1) |li| try spaces.append(cx.scratch, lineSpace(cx.floats, width, @as(f32, @floatFromInt(li)) * strut, strut));
+        b.spaces = spaces.items;
+        b.greedy_line = 0;
+        try greedy(&b, us, width, indent, &breaks);
+        const trial = try layoutLines(&b, breaks.items);
+        var refined: std.ArrayList([2]f32) = .empty;
+        for (trial.lines.items, 0..) |line, li| {
+            _ = li;
+            try refined.append(cx.scratch, lineSpace(cx.floats, width, line.top, line.height));
+        }
+        // Lines beyond the first placement keep the strut estimate.
+        const known = refined.items.len;
+        const last_top: f32 = if (known > 0) trial.lines.items[known - 1].top + trial.lines.items[known - 1].height else 0;
+        for (0..us.len + 1) |k| try refined.append(cx.scratch, lineSpace(cx.floats, width, last_top + @as(f32, @floatFromInt(k)) * strut, strut));
+        b.spaces = refined.items;
+        b.greedy_line = 0;
+        breaks.clearRetainingCapacity();
+        try greedy(&b, us, width, indent, &breaks);
+    } else if (wrap_style == .pretty and us.len > 1) {
         try pretty(&b, us, width, indent, &breaks);
     } else {
         try greedy(&b, us, width, indent, &breaks);
@@ -571,20 +627,7 @@ pub fn layout(cx: *const Context, width: f32) Error!Laid {
             try breaks.appendSlice(cx.scratch, best);
         }
     }
-    // The text's end ends the last line.
-    const n: u32 = @intCast(ifc.text.len);
-    if (breaks.items.len == 0 or breaks.items[breaks.items.len - 1].at != n) try breaks.append(cx.scratch, .{ .at = n });
-    // A final forced break leaves an empty line only for preserved text.
-    try precomputeShifts(&b);
-    b.used_items = try cx.scratch.alloc(bool, ifc.items.len);
-    @memset(b.used_items, false);
-    var start: u32 = 0;
-    var top: f32 = 0;
-    for (breaks.items, 0..) |br, li| {
-        if (br.at <= start and li > 0 and br.at != n) continue;
-        try emitLine(&b, start, br.at, br.hyphen, li == 0, &top, br.at == n);
-        start = br.at;
-    }
+    const top = (try layoutLines(&b, breaks.items)).top;
     var laid: Laid = .{
         .width = width,
         .lines = try b.lines.toOwnedSlice(cx.gpa),
@@ -597,6 +640,37 @@ pub fn layout(cx: *const Context, width: f32) Error!Laid {
     errdefer cx.gpa.free(laid.frags);
     laid.glyphs = try b.glyphs.toOwnedSlice(cx.gpa);
     return laid;
+}
+
+/// Places the lines `breaks` end into `b.lines`, `b.frags`, and
+/// `b.glyphs` (emptied first); returns them and the height.
+fn layoutLines(b: *Builder, breaks_: []const Break) Error!struct { lines: *std.ArrayList(Line), frags: *std.ArrayList(Frag), glyphs: *std.ArrayList(Glyph), top: f32 } {
+    const cx = b.cx;
+    const ifc = cx.ifc;
+    b.lines.clearRetainingCapacity();
+    b.frags.clearRetainingCapacity();
+    b.glyphs.clearRetainingCapacity();
+    // The text's end ends the last line.
+    const n: u32 = @intCast(ifc.text.len);
+    var breaks = breaks_;
+    if (breaks.len == 0 or breaks[breaks.len - 1].at != n) {
+        const more = try cx.scratch.alloc(Break, breaks.len + 1);
+        @memcpy(more[0..breaks.len], breaks);
+        more[breaks.len] = .{ .at = n };
+        breaks = more;
+    }
+    // A final forced break leaves an empty line only for preserved text.
+    try precomputeShifts(b);
+    b.used_items = try cx.scratch.alloc(bool, ifc.items.len);
+    @memset(b.used_items, false);
+    var start: u32 = 0;
+    var top: f32 = 0;
+    for (breaks, 0..) |br, li| {
+        if (br.at <= start and li > 0 and br.at != n) continue;
+        try emitLine(b, start, br.at, br.hyphen, li == 0, &top, br.at == n);
+        start = br.at;
+    }
+    return .{ .lines = &b.lines, .frags = &b.frags, .glyphs = &b.glyphs, .top = top };
 }
 
 fn precomputeShifts(b: *Builder) Error!void {
@@ -896,7 +970,12 @@ fn emitLine(b: *Builder, start: u32, end_: u32, hyphen: bool, first: bool, top: 
     const rtl = b.style(ifc.style).inh.direction == .rtl;
     const forced_end = end > start and (ifc.text[end - 1] == '\n' or std.mem.endsWith(u8, ifc.text[start..end], "\u{2028}"));
     const is_last = last or forced_end;
-    var al = b.style(ifc.style).inh.text_align;
+    var al = switch (b.style(ifc.style).inh.text_align) {
+        .legacy_left => .left,
+        .legacy_right => .right,
+        .legacy_center => .center,
+        else => |x| x,
+    };
     if (is_last and al == .justify) {
         al = switch (b.style(ifc.style).inh.text_align_last) {
             .auto, .start => .start,
@@ -907,14 +986,17 @@ fn emitLine(b: *Builder, start: u32, end_: u32, hyphen: bool, first: bool, top: 
             .justify => .justify,
         };
     }
-    const avail = b.width - line_indent;
+    // Beside floats, the line's own space.
+    const sp = b.space(b.lines.items.len);
+    const lw = sp[1];
+    const avail = lw - line_indent;
     const free = avail - content_w;
-    var offset: f32 = if (rtl) b.width - line_indent - content_w else line_indent;
+    var offset: f32 = if (rtl) lw - line_indent - content_w else line_indent;
     switch (al) {
-        .start, .match_parent => {},
+        .start, .match_parent, .legacy_left, .legacy_right, .legacy_center => {},
         .end => offset = if (rtl) 0 else line_indent + free,
         .left => offset = if (rtl) 0 else line_indent,
-        .right => offset = if (rtl) b.width - content_w else line_indent + free,
+        .right => offset = if (rtl) lw - content_w else line_indent + free,
         .center => offset = (if (rtl) 0 else line_indent) + free / 2,
         .justify => if (free > 0) {
             // Widen spaces before the hanging tail.
@@ -941,6 +1023,7 @@ fn emitLine(b: *Builder, start: u32, end_: u32, hyphen: bool, first: bool, top: 
             }
         },
     }
+    offset += sp[0];
     if (offset != 0) for (b.frags.items[frag_start..frag_end]) |*f| {
         f.x += offset;
     };

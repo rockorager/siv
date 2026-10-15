@@ -59,8 +59,10 @@ pub const decls = [_]Decl{
         .{ .name = "dark", .value = 2, .doc = "Light text on a dark background, and prefers-color-scheme: dark." },
     }),
     flags("siv_docview_flags", "Document options.", &.{
-        .{ .name = "remote_images", .bit = 0, .doc = "Ask the loader for remote (http, https) images. Without it they are blocked, a blocked_images event counts them, and siv_docview_load_images asks for them later: the policy for email." },
+        .{ .name = "remote_images", .bit = 0, .doc = "Ask the loader for remote (http, https) images, style sheets, and fonts. Without it they are blocked, a blocked_images event counts them, and siv_docview_load_images asks for them later: the policy for email." },
         .{ .name = "no_author_styles", .bit = 1, .doc = "Ignore the document's own style sheets and style attributes." },
+        .{ .name = "untrusted", .bit = 2, .doc = "The HTML comes from a stranger (email): scripts, embedded frames and objects, links with schemes other than http, https, mailto, tel, cid, mid, news, and ftp, <base>, and <meta http-equiv> are dropped, and nothing is positioned over the page." },
+        .{ .name = "collapse_quotes", .bit = 3, .doc = "Collapse quoted replies (blockquote type=cite, Gmail's, Yahoo's, Proton's, and Outlook's quote markers) behind a toggle that shows and hides them." },
     }),
     enumeration("siv_resource_kind", "What a document asks its loader for.", &.{
         .{ .name = "stylesheet", .value = 0, .doc = "A style sheet (<link rel=stylesheet>, @import)." },

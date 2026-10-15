@@ -97,6 +97,8 @@ pub const Env = struct {
     media: css.media.Env = .{},
     /// The user's default font size (`medium`).
     font_size: f32 = 16,
+    /// Untrusted HTML (email): nothing is positioned over the page.
+    untrusted: bool = false,
 };
 
 /// The styles of a document's elements.
@@ -141,6 +143,8 @@ pub const Cascade = struct {
     inline_decls: std.ArrayList(props.Declaration) = .empty,
     inline_customs: std.ArrayList(css.sheet.Custom) = .empty,
     hint_decls: std.ArrayList(props.Declaration) = .empty,
+    /// Parsed hints by property name and attribute value.
+    hint_memo: std.StringHashMapUnmanaged([]const props.Declaration) = .empty,
     /// Per element: whether a quirks-mode or hint rule applies (unused
     /// in matching, kept for sharing keys).
     pub const ShareKey = struct { parent: Style.Id, rules: u64, extra: u64 };
@@ -153,6 +157,7 @@ pub const Cascade = struct {
     }
 
     pub fn deinit(c: *Cascade) void {
+        c.hint_memo.deinit(c.gpa);
         for (c.sources.items) |s| {
             c.gpa.free(s.bound);
             c.gpa.free(s.bound_lower);
@@ -830,6 +835,7 @@ pub const Cascade = struct {
         if (element_decls) if (d.attr(id, .lang)) |l| {
             s.inh.lang = try c.internLanguage(l);
         };
+        if (c.env.untrusted and (s.box.position == .fixed or s.box.position == .absolute)) s.box.position = .static;
         fixup(&s, parent, is_root);
         const out = try c.store.intern(c.gpa, &s);
         try c.share.put(c.gpa, key, out);
@@ -956,9 +962,19 @@ pub const Cascade = struct {
 
     fn hint(c: *Cascade, name: []const u8, value: []const u8) Error!void {
         const prop = props.lookup(name) orelse return;
+        // Mail repeats the same few attributes on thousands of cells: parse
+        // each name and value once.
+        var kb: [256]u8 = undefined;
+        const key = std.fmt.bufPrint(&kb, "{s}\x00{s}", .{ name, value }) catch null;
+        if (key) |k| if (c.hint_memo.get(k)) |decls| {
+            try c.hint_decls.appendSlice(c.arena, decls);
+            return;
+        };
         const text = try c.arena.dupe(u8, value);
         const toks = try css.tokenizer.tokenizeInto(c.arena, c.arena, text);
+        const start = c.hint_decls.items.len;
         try props.parse(c.arena, prop, toks[0 .. toks.len - 1], false, &c.hint_decls);
+        if (key) |k| try c.hint_memo.put(c.gpa, try c.arena.dupe(u8, k), try c.arena.dupe(props.Declaration, c.hint_decls.items[start..]));
     }
 
     fn hintLength(c: *Cascade, name: []const u8, value: []const u8, allow_percent: bool) Error!void {

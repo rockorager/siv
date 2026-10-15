@@ -17,6 +17,7 @@ const inline_mod = @import("inline.zig");
 const paint_mod = @import("paint.zig");
 const ua = @import("ua.zig");
 const url_mod = @import("url.zig");
+const email = @import("email.zig");
 pub const markdown = @import("markdown");
 
 const Document = @This();
@@ -38,11 +39,17 @@ pub const Options = struct {
     user_css: []const u8 = "",
     /// The user's default font size (CSS `medium`).
     font_size: f32 = 16,
-    /// Remote images (http, https) are listed as resources only when
-    /// allowed; blocked ones count in `blocked_images`.
+    /// Remote images, style sheets, and fonts (http, https) are listed as
+    /// resources only when allowed; blocked ones count in
+    /// `blocked_images`.
     remote_images: bool = true,
     /// Author styles (<style>, style attributes, linked sheets) apply.
     author_styles: bool = true,
+    /// Untrusted HTML (email): scripts, embedded content, active link
+    /// schemes, and `<base>` are dropped, and nothing is positioned.
+    untrusted: bool = false,
+    /// Quoted replies are collapsed behind a toggle link (`siv:quote/N`).
+    collapse_quotes: bool = false,
 };
 
 pub const Resource = struct {
@@ -102,6 +109,9 @@ generation: u64 = 0,
 /// Workers that shape text ahead of layout (D32); null shapes as layout
 /// goes, on the calling thread.
 executor: ?@import("pool").Executor = null,
+/// Quoted replies' wrappers (`email.wrapQuotes`), and which are open.
+quotes: []html.NodeId = &.{},
+quote_open: std.DynamicBitSetUnmanaged = .{},
 /// The width layout ran at, and whether it finished.
 width: f32 = 0,
 complete: bool = false,
@@ -140,7 +150,24 @@ pub fn create(gpa: Allocator, bytes: []const u8, options: Options, ua_sheet: *co
         },
     };
     errdefer d.dom.deinit();
+    if (options.untrusted) email.sanitize(&d.dom);
+    if (options.collapse_quotes) {
+        d.quotes = try email.wrapQuotes(gpa, &d.dom);
+        d.quote_open = try .initEmpty(gpa, d.quotes.len);
+        if (d.quotes.len > 0) {
+            const s = try gpa.create(css.Sheet);
+            s.* = try css.sheet.parse(gpa, ua.email_css, .{});
+            try d.sheets.append(gpa, .{ .sheet = s, .origin = .user_agent, .owned = true });
+        }
+    }
     try d.sheets.append(gpa, .{ .sheet = ua_sheet, .origin = .user_agent, .owned = false });
+    if (options.kind == .html and d.dom.quirks == .quirks) {
+        // Quirks mode (no doctype, as most email has): tables do not
+        // inherit text styles (HTML, rendering 15.3.6).
+        const s = try gpa.create(css.Sheet);
+        s.* = try css.sheet.parse(gpa, ua.quirks_css, .{});
+        try d.sheets.append(gpa, .{ .sheet = s, .origin = .user_agent, .owned = true });
+    }
     if (options.kind == .markdown) {
         const s = try gpa.create(css.Sheet);
         s.* = try css.sheet.parse(gpa, ua.markdown_css, .{});
@@ -184,6 +211,8 @@ pub fn destroy(d: *Document) void {
     }
     d.markers.deinit(gpa);
     d.node_boxes.deinit(gpa);
+    gpa.free(d.quotes);
+    d.quote_open.deinit(gpa);
     d.font_table.deinit(gpa);
     d.tree.deinit(gpa);
     d.hyphenation.deinit();
@@ -218,7 +247,8 @@ fn isRemote(u: []const u8) bool {
 fn addResource(d: *Document, kind: @TypeOf(@as(Resource, undefined).kind), raw: []const u8) Error!?u32 {
     if (raw.len == 0) return null;
     const u = try d.resolve(raw);
-    if (kind == .image and isRemote(u) and !d.options.remote_images) {
+    // Remote style sheets and fonts tell a sender as much as images do.
+    if (isRemote(u) and !d.options.remote_images) {
         d.blocked_images += 1;
         return null;
     }
@@ -390,13 +420,16 @@ pub fn styleAndBuild(d: *Document, media: css.media.Env) Error!void {
     const a = d.arena.allocator();
     d.cascade = cascade_mod.Cascade.init(d.gpa, a, &d.dom, &d.store);
     const c = &d.cascade.?;
-    c.env = .{ .media = media, .font_size = d.options.font_size };
+    c.env = .{ .media = media, .font_size = d.options.font_size, .untrusted = d.options.untrusted };
     try c.prepare();
     for (d.sheets.items) |s| try c.addSheet(s.sheet, s.origin);
     // Linked and imported sheets, in the order they were listed.
     for (d.resources.items) |r| if (r.kind == .stylesheet) if (r.sheet) |s| try c.addSheet(s, .author);
     d.styles = try c.run();
-    var b: box_mod.Builder = .{ .gpa = d.gpa, .arena = a, .dom = &d.dom, .styles = &d.styles.?, .store = &d.store, .tree = &d.tree };
+    var closed: std.ArrayList(html.NodeId) = .empty;
+    defer closed.deinit(d.gpa);
+    for (d.quotes, 0..) |q, k| if (!d.quote_open.isSet(k)) try closed.append(d.gpa, q);
+    var b: box_mod.Builder = .{ .gpa = d.gpa, .arena = a, .dom = &d.dom, .styles = &d.styles.?, .store = &d.store, .tree = &d.tree, .skip = closed.items };
     defer b.deinit();
     try b.build();
     for (d.tree.boxes.items, 0..) |bx, i| {
@@ -609,6 +642,14 @@ fn preshape(d: *Document, e: *layout_mod.Engine, exec: @import("pool").Executor,
     // Not worth waking workers for a few lines.
     if (bytes < 2048) return;
     try e.preshape(exec, list.items);
+}
+
+/// Opens or closes quoted reply `k` (a `siv:quote/k` link); styles and
+/// layout must run again. False for no such quote.
+pub fn toggleQuote(d: *Document, k: usize) bool {
+    if (k >= d.quotes.len) return false;
+    d.quote_open.toggle(k);
+    return true;
 }
 
 /// The document's height (estimated below what is laid out).

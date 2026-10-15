@@ -1,0 +1,5 @@
+Email corpus for the document renderer (D32), rendered by test/doc/email.zig
+against test/golden/doc/email-*.png. Written for this corpus to mimic the
+HTML that common senders and clients produce (a store's receipt, a
+Mailchimp-style newsletter, Gmail, Outlook, and Apple Mail replies); the
+names, addresses, and text are invented.

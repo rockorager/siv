@@ -12,7 +12,7 @@ const Runner = @import("render.zig").Runner;
 const testing = std.testing;
 const golden_dir = "test/golden/doc";
 
-fn expectGolden(r: *Runner, name: []const u8, got: []const u8) !void {
+pub fn expectGolden(r: *Runner, name: []const u8, got: []const u8) !void {
     const gpa = testing.allocator;
     const io = testing.io;
     const path = try std.fmt.allocPrint(gpa, golden_dir ++ "/{s}.png", .{name});

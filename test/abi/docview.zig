@@ -71,7 +71,7 @@ fn waitLoaded(h: *Harness, ev: *const Events, n: u32) !void {
     try h.settle();
 }
 
-fn build(h: *Harness, ev: *Events, kind: t.DocviewKind, source: []const u8, flags: t.DocviewFlags) !t.Node {
+fn build(h: *Harness, ev: *Events, kind: t.DocviewKind, source: []const u8, flags: t.DocviewFlags, base: []const u8) !t.Node {
     const root = A.siv_window_get_root(h.window);
     var txn: t.Txn = .null;
     try ok(T.siv_txn_begin(h.window, &txn));
@@ -80,8 +80,8 @@ fn build(h: *Harness, ev: *Events, kind: t.DocviewKind, source: []const u8, flag
     const node = D.siv_docview(txn, sc, &.{
         .source = source.ptr,
         .source_count = source.len,
-        .base_url = "https://example.com/docs/",
-        .base_url_len = 25,
+        .base_url = base.ptr,
+        .base_url_len = base.len,
         .kind = kind,
         .color_scheme = .light,
         .flags = flags,
@@ -122,7 +122,7 @@ test "C API docview: Markdown rendered, links, find, selection, locators, access
     try h.start(400, 300, null, null);
     defer h.stop();
     var ev: Events = .{};
-    const node = try build(&h, &ev, .markdown, readme, .{});
+    const node = try build(&h, &ev, .markdown, readme, .{}, "https://example.com/docs/");
     try waitLoaded(&h, &ev, 1);
     try h.expectGolden("docview-markdown", 400, 300);
 
@@ -182,7 +182,8 @@ test "C API docview: HTML with a stylesheet and images from the loader, remote i
         \\<img src="https://tracker.example/pixel.gif" width=1 height=1>
         \\<p><img src="cid:logo" alt="logo" width=40 height=20>
     ;
-    const node = try build(&h, &ev, .html, html, .{});
+    // A message's parts are local; the tracking pixel is remote.
+    const node = try build(&h, &ev, .html, html, .{}, "file:///mail/");
     const deadline = Loop.now() + 10 * std.time.ns_per_s;
     while (ev.requests < 2) {
         if (Loop.now() > deadline) return error.Timeout;
@@ -202,4 +203,35 @@ test "C API docview: HTML with a stylesheet and images from the loader, remote i
     try ok(D.siv_docview_get_title(node, &buf, buf.len, &len));
     try testing.expectEqualStrings("Receipt", buf[0..len]);
     try h.expectGolden("docview-html", 300, 200);
+}
+
+test "C API docview: email with a collapsed quote that a click opens" {
+    var h: Harness = .{};
+    try h.start(300, 200, null, null);
+    defer h.stop();
+    var ev: Events = .{};
+    const mail =
+        \\<div dir=ltr>See you then.</div><div class="gmail_quote"><div>On Mon, Ann wrote:</div>
+        \\<blockquote class="gmail_quote">Lunch at noon?<br>Ann</blockquote></div>
+        \\<script>alert(1)</script><a href="javascript:alert(2)">no link</a>
+    ;
+    const node = try build(&h, &ev, .html, mail, .{ .untrusted = true, .collapse_quotes = true }, "file:///mail/");
+    try waitLoaded(&h, &ev, 1);
+    const w = try h.win();
+    var sem = try w.uiWin().semanticsTree();
+    // The quote is hidden behind its toggle; the javascript: link is no
+    // link at all.
+    try testing.expect(sem.find(.paragraph, "Lunch at noon? Ann") == null);
+    const toggle = sem.find(.link, "\u{2022}\u{2022}\u{2022}") orelse return error.NoToggle;
+    try testing.expect(sem.find(.link, "no link") == null);
+    const loaded = ev.loaded;
+    try h.click((toggle.bounds.x0 + toggle.bounds.x1) / 2, (toggle.bounds.y0 + toggle.bounds.y1) / 2);
+    try waitLoaded(&h, &ev, loaded + 1);
+    // Open: its text is part of the document now.
+    try ok(D.siv_docview_select_all(node));
+    var buf: [256]u8 = undefined;
+    var len: usize = 0;
+    try ok(D.siv_docview_get_selection(node, &buf, buf.len, &len));
+    try testing.expect(std.mem.indexOf(u8, buf[0..len], "Lunch at noon?") != null);
+    try testing.expect(std.mem.indexOf(u8, buf[0..len], "alert") == null);
 }

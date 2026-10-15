@@ -172,7 +172,40 @@ pub fn layout(e: *Engine, id: BoxId, content_w_: f32, content_h: ?f32) Error!f32
         sum_max += mx;
     }
     const widths = try e.scratch.alloc(f32, g.ncols);
-    if (avail >= sum_max) {
+    const fixed = e.style(id).box.table_layout == .fixed and !e.style(id).box.width.isAuto();
+    if (fixed) {
+        // CSS 2.1 17.5.2.1: widths the first row's cells set, and the rest
+        // shared equally; content does not matter.
+        const set = try e.scratch.alloc(bool, g.ncols);
+        @memset(set, false);
+        @memset(widths, 0);
+        for (g.cells.items) |c| {
+            if (c.row != 0) continue;
+            const st = e.style(c.id);
+            if (st.box.width.tag != .length or st.box.width.hasPercent()) continue;
+            const b = e.tree.get(c.id);
+            const w = st.box.width.resolve(0) + (if (st.box.box_sizing == .border_box) 0 else b.padding[1] + b.padding[3] + b.border[1] + b.border[3]);
+            const n: f32 = @floatFromInt(c.cols);
+            for (c.col..c.col + c.cols) |k| {
+                widths[k] = w / n - sp[0] * (n - 1) / n;
+                set[k] = true;
+            }
+        }
+        var used: f32 = 0;
+        var free_cols: f32 = 0;
+        for (widths, set) |w, st| {
+            used += w;
+            if (!st) free_cols += 1;
+        }
+        const share = if (free_cols > 0) @max(0, avail - used) / free_cols else 0;
+        for (widths, set) |*w, st| {
+            if (!st) w.* = share;
+        }
+        // Space left with every column set widens them in proportion.
+        if (free_cols == 0 and used > 0 and avail > used) for (widths) |*w| {
+            w.* += (avail - used) * w.* / used;
+        };
+    } else if (avail >= sum_max) {
         // Extra space goes to the columns in proportion to their widths.
         for (widths, cols[1]) |*w, mx| w.* = if (sum_max > 0) mx + (avail - sum_max) * mx / sum_max else avail / @as(f32, @floatFromInt(@max(1, g.ncols)));
     } else if (avail > sum_min) {

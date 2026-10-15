@@ -151,6 +151,8 @@ fn create(w: *Window, parent: t.Node, ptr: ?*const t.DocviewDesc) Error!NodeId {
         },
         .remote_images = fl.remote_images,
         .author_styles = !fl.no_author_styles,
+        .untrusted = fl.untrusted,
+        .collapse_quotes = fl.collapse_quotes,
         .font_size = desc.font_size,
     }, .{ .ctx = d, .event = Doc.onEvent, .load = Doc.onLoad }) catch |err| return switch (err) {
         error.OutOfMemory => error.OutOfMemory,

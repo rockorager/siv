@@ -65,7 +65,9 @@ pub const NonLinear = struct { calc: values.Calc, ctx: values.Context };
 
 pub const FontStyle = enum(u8) { normal, italic, oblique };
 pub const FontVariantCaps = enum(u8) { normal, small_caps, all_small_caps, petite_caps, all_petite_caps, unicase, titling_caps };
-pub const TextAlign = enum(u8) { start, end, left, right, center, justify, match_parent };
+/// `legacy_*`: HTML's align attribute (`-webkit-center` and its kin),
+/// which also aligns block-level children narrower than their parent.
+pub const TextAlign = enum(u8) { start, end, left, right, center, justify, match_parent, legacy_left, legacy_right, legacy_center };
 pub const TextAlignLast = enum(u8) { auto, start, end, left, right, center, justify };
 pub const TextTransform = enum(u8) { none, uppercase, lowercase, capitalize, full_width };
 pub const WhiteSpaceCollapse = enum(u8) { collapse, preserve, preserve_breaks, preserve_spaces, break_spaces };
