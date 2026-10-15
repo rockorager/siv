@@ -5808,7 +5808,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     shaping and relays out from the top to the first screen; a theme
     change restyles only when the color scheme changes (media queries),
     and system colors resolve at paint time from the theme's palette, so
-    a palette change only repaints.
+    a palette change only repaints. An unchecked check box or radio
+    button is outlined in the muted text color, not the theme's control
+    border, so it stands out from the canvas in dark themes too.
   - **Painting.** Into `scene.Builder`, so documents render on the CPU
     and Vulkan renderers and into PDF. Only a band is painted: a canvas
     with `banded` draws the viewport plus a screen above and below, and

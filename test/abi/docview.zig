@@ -268,3 +268,33 @@ test "C API docview: email with a collapsed quote that a click opens" {
     try testing.expect(std.mem.indexOf(u8, buf[0..len], "Lunch at noon?") != null);
     try testing.expect(std.mem.indexOf(u8, buf[0..len], "alert") == null);
 }
+
+test "C API docview: an unchecked task box stands out from a dark theme's canvas" {
+    var h: Harness = .{};
+    try h.start(120, 40, null, null);
+    defer h.stop();
+    try ok(abi.theme.siv_app_set_theme(h.app, &.{ .scheme = .dark }));
+    var ev: Events = .{};
+    const root = A.siv_window_get_root(h.window);
+    var txn: t.Txn = .null;
+    try ok(T.siv_txn_begin(h.window, &txn));
+    const src = "- [ ] x";
+    _ = D.siv_docview(txn, root, &.{ .source = src.ptr, .source_count = src.len, .kind = .markdown, .color_scheme = .theme, .user_data = &ev, .on_event = Events.onEvent });
+    try ok(T.siv_txn_commit(txn));
+    try waitLoaded(&h, &ev, 1);
+    const img = try h.capture();
+    defer testing.allocator.free(img);
+    // The box's outline, left of the text, against the canvas in the
+    // corner: a dark theme's control border had all but vanished there.
+    const lum = struct {
+        fn f(px: []const u8) i32 {
+            return @divTrunc(@as(i32, px[0]) * 3 + @as(i32, px[1]) * 6 + px[2], 10);
+        }
+    }.f;
+    const canvas = lum(img[0..4]);
+    var most: i32 = 0;
+    for (0..40) |y| for (0..50) |x| {
+        most = @max(most, @as(i32, @intCast(@abs(lum(img[(y * 120 + x) * 4 ..][0..4]) - canvas))));
+    };
+    try testing.expect(most > 60);
+}

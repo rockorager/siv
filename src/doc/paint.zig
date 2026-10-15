@@ -877,7 +877,11 @@ pub const Painter = struct {
         switch (rep.kind) {
             .checkbox, .radio => {
                 const c = p.color(p.palette.accent, Color.black);
-                const border = p.color(p.palette.button_border, Color.black);
+                // The outline of an unchecked box in the muted text color,
+                // which contrasts with the canvas in every theme; the
+                // theme's control border is a hairline meant beside a
+                // field, and in a dark theme the box all but vanished.
+                const border = p.color(p.palette.gray, Color.black);
                 const k = @min(content.width(), content.height());
                 const sq = Rect.xywh(content.x0 + (content.width() - k) / 2, content.y0 + (content.height() - k) / 2, k, k);
                 const rad: f32 = if (rep.kind == .radio) k / 2 else 2;
@@ -894,7 +898,7 @@ pub const Painter = struct {
                     } else try p.b.fillRoundedRect(sq.outset(-k * 0.3), .{ .tl = .{ .x = k, .y = k }, .tr = .{ .x = k, .y = k }, .br = .{ .x = k, .y = k }, .bl = .{ .x = k, .y = k } }, .color(p.color(p.palette.accent_text, Color.black)));
                 } else {
                     try p.b.fillRoundedRect(sq, rr, .color(p.color(p.palette.field, Color.black)));
-                    try p.b.stroke(.{ .rounded_rect = .{ .rect = sq.outset(-0.5), .radii = rr } }, .{ .width = 1 }, .color(border));
+                    try p.b.stroke(.{ .rounded_rect = .{ .rect = sq.outset(-0.75), .radii = rr } }, .{ .width = 1.5 }, .color(border));
                 }
             },
             else => {
