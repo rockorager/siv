@@ -3,7 +3,7 @@
 //! document renderer and siv's CPU renderer and compared; the pass rate
 //! per suite must not fall below the one recorded here (and in DESIGN.md).
 //! Fonts: Ahem from WPT for `font-family: Ahem`, siv's Droid test font for
-//! everything else. SIV_WPT_VERBOSE=1 prints the failures.
+//! everything else. Tests marked "img" use images; the floors count them. SIV_WPT_VERBOSE=1 prints the failures.
 
 const std = @import("std");
 const png = @import("png");
@@ -15,26 +15,27 @@ const H = 600;
 const root = "test/wpt";
 const origin = "http://wpt";
 
-/// Passing tests per suite, recorded: fewer fails the test.
+/// Passing tests per suite, recorded: all of them, and those without
+/// images; fewer fails the test.
 const floors = .{
-    .{ "css2", 235 },
-    .{ "css-flexbox", 227 },
-    .{ "css-grid", 112 },
-    .{ "css-values", 65 },
-    .{ "css-variables", 46 },
-    .{ "css-tables", 125 },
-    .{ "floats", 88 },
-    .{ "css-sizing", 111 },
-    .{ "css-display", 59 },
-    .{ "css-pseudo", 33 },
-    .{ "css-lists", 166 },
-    .{ "css-text", 116 },
-    .{ "css-backgrounds", 111 },
-    .{ "css-overflow", 69 },
-    .{ "css-position", 23 },
-    .{ "css-break", 44 },
-    .{ "css-multicol", 63 },
-    .{ "css-writing-modes", 52 },
+    .{ "css2", 432, 235 },
+    .{ "css-flexbox", 243, 227 },
+    .{ "css-grid", 122, 112 },
+    .{ "css-values", 67, 65 },
+    .{ "css-variables", 46, 46 },
+    .{ "css-tables", 127, 125 },
+    .{ "floats", 151, 88 },
+    .{ "css-sizing", 154, 111 },
+    .{ "css-display", 59, 59 },
+    .{ "css-pseudo", 34, 33 },
+    .{ "css-lists", 168, 166 },
+    .{ "css-text", 122, 116 },
+    .{ "css-backgrounds", 167, 111 },
+    .{ "css-overflow", 72, 69 },
+    .{ "css-position", 24, 23 },
+    .{ "css-break", 46, 44 },
+    .{ "css-multicol", 69, 63 },
+    .{ "css-writing-modes", 66, 52 },
 };
 
 /// Whether test/wpt/SKIP lists a test as out of scope ("path reason"
@@ -62,6 +63,10 @@ fn runSuite(comptime suite: []const u8) !void {
     const dump = testing.environ.getPosix("SIV_WPT_DUMP");
     var total: usize = 0;
     var passed: usize = 0;
+    // Tests with images, apart: the rates before they were measured stay
+    // comparable.
+    var img_total: usize = 0;
+    var img_passed: usize = 0;
     var lines = std.mem.tokenizeScalar(u8, manifest, '\n');
     while (lines.next()) |line| {
         var parts = std.mem.tokenizeScalar(u8, line, ' ');
@@ -69,7 +74,9 @@ fn runSuite(comptime suite: []const u8) !void {
         const test_path = parts.next() orelse continue;
         const ref_path = parts.next() orelse continue;
         if (skipped(skip, test_path)) continue;
+        const with_images = if (parts.next()) |flag| std.mem.eql(u8, flag, "img") else false;
         total += 1;
+        if (with_images) img_total += 1;
         const ok = blk: {
             r.render(test_path, .html, 0, r.pixels[0]) catch break :blk false;
             r.render(ref_path, .html, 0, r.pixels[1]) catch break :blk false;
@@ -77,6 +84,7 @@ fn runSuite(comptime suite: []const u8) !void {
         };
         if (ok) {
             passed += 1;
+            if (with_images) img_passed += 1;
         } else {
             if (verbose) std.debug.print("WPT FAIL {s}\n", .{test_path});
             if (dump) |dir| {
@@ -90,8 +98,11 @@ fn runSuite(comptime suite: []const u8) !void {
             }
         }
     }
-    if (verbose or testing.environ.getPosix("SIV_WPT_RATES") != null) std.debug.print("WPT {s}: {d}/{d}\n", .{ suite, passed, total });
-    inline for (floors) |f| if (comptime std.mem.eql(u8, f[0], suite)) try testing.expect(passed >= f[1]);
+    if (verbose or testing.environ.getPosix("SIV_WPT_RATES") != null) std.debug.print("WPT {s}: {d}/{d} (without images {d}/{d})\n", .{ suite, passed, total, passed - img_passed, total - img_total });
+    inline for (floors) |f| if (comptime std.mem.eql(u8, f[0], suite)) {
+        try testing.expect(passed >= f[1]);
+        try testing.expect(passed - img_passed >= f[2]);
+    };
     try testing.expect(total > 0);
 }
 

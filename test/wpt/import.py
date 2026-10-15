@@ -12,7 +12,9 @@ test/wpt/EXCLUDED, the tests left out of each suite counted by reason.
 
 With suites named, only those are imported again: the other suites keep
 their manifest lines (and pass rates comparable across imports), and no
-files are removed. Tests in the manifest that are out of scope for
+files are removed. Tests that use images (<img>, inline <svg>, image
+URLs in CSS) are marked "img" at the end of their line and capped
+separately; `--images [SUITE...]` imports only those again. Tests in the manifest that are out of scope for
 documents are listed in test/wpt/SKIP with a reason; the runner leaves
 them out of the pass rate.
 
@@ -61,8 +63,8 @@ MAX_TESTS = 400
 # reference. Writing modes are left out except from their own suite.
 REASONS = [
     ("needs JavaScript", re.compile(r"<script|class=\"?reftest-wait", re.I)),
-    ("embedded content (images, SVG, frames, canvas, video)",
-     re.compile(r"<iframe|<object|<embed|<video|<canvas|<img|<image|<svg|<math", re.I)),
+    ("embedded content (frames, objects, canvas, video, MathML)",
+     re.compile(r"<iframe|<object|<embed|<video|<audio|<canvas|<image\b|<math", re.I)),
     ("form controls", re.compile(r"<input|<textarea|<select|<button", re.I)),
     ("writing modes and right-to-left", re.compile(
         r"writing-mode|direction:\s*rtl|vertical-lr|vertical-rl|text-orientation", re.I)),
@@ -72,6 +74,10 @@ REASONS = [
     ("mismatch reftest", re.compile(r"rel=\"?mismatch", re.I)),
 ]
 WRITING_MODES = "writing modes and right-to-left"
+# Images the harness decodes: <img>, inline <svg>, and image URLs in CSS.
+IMAGES = re.compile(r"<img|<svg|<picture", re.I)
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".avif")
+SRC = re.compile(r"<img[^>]*?\ssrc=(?:\"([^\"]*)\"|'([^']*)'|([^\s>]+))", re.I | re.S)
 URL = re.compile(r"url\(\s*['\"]?([^'\")]+)", re.I)
 LINK = re.compile(r"<link[^>]*rel=['\"]?stylesheet['\"]?[^>]*>", re.I)
 HREF = re.compile(r"href=['\"]?([^'\" >]+)", re.I)
@@ -87,7 +93,15 @@ def reason_for(suite, text):
     return None
 
 
-def resources(path, text, root):
+def is_image_url(u):
+    return u.lower().startswith("data:image") or u.lower().split("?")[0].endswith(IMAGE_EXTS)
+
+
+def uses_images(text):
+    return bool(IMAGES.search(text)) or any(is_image_url(u) for u in URL.findall(text))
+
+
+def resources(path, text, root, images):
     """The files a test needs besides itself, or None if unsupported."""
     out = []
     for m in LINK.finditer(text):
@@ -95,21 +109,29 @@ def resources(path, text, root):
         if not h:
             return None
         out.append(h.group(1))
+    if images:
+        for m in SRC.finditer(text):
+            out.append(next(g for g in m.groups() if g is not None))
     for u in URL.findall(text):
-        if not (u.lower().endswith(".css") or os.path.basename(u) == "Ahem.ttf"):
+        if not (u.lower().endswith(".css") or os.path.basename(u) == "Ahem.ttf" or (images and is_image_url(u))):
             return None
         out.append(u)
     files = []
     for ref in out:
+        if images and ref.lower().startswith("data:image"):
+            continue
         if ref.startswith(("http:", "https:", "data:")):
             return None
         full = os.path.normpath(os.path.join(root, ref.lstrip("/")) if ref.startswith("/") else os.path.join(os.path.dirname(path), ref))
+        full = full.split("?")[0].split("#")[0]
         if not os.path.isfile(full):
             return None
         if full.endswith(".css"):
             css = open(full, encoding="utf-8", errors="replace").read()
             for u in URL.findall(css):
-                if os.path.basename(u) != "Ahem.ttf":
+                if images and u.lower().startswith("data:image"):
+                    continue
+                if not (os.path.basename(u) == "Ahem.ttf" or (images and is_image_url(u))):
                     return None
                 f = os.path.normpath(os.path.join(root, u.lstrip("/")) if u.startswith("/") else os.path.join(os.path.dirname(full), u))
                 if not os.path.isfile(f):
@@ -119,8 +141,9 @@ def resources(path, text, root):
     return files
 
 
-def classify(suite, path, root):
-    """(reference, files) for a test that runs, or (None, reason)."""
+def classify(suite, path, root, images=False):
+    """(reference, files) for a test that runs, or (None, reason). With
+    `images`, tests may use images (and only those that do are taken)."""
     if os.path.getsize(path) > MAX_BYTES:
         return None, "larger than 12 KB"
     text = open(path, encoding="utf-8", errors="replace").read()
@@ -151,49 +174,81 @@ def classify(suite, path, root):
     r = reason_for(suite, ref_text)
     if r:
         return None, r
-    need = resources(path, text, root)
-    need_ref = resources(ref, ref_text, root)
+    if not images and (uses_images(text) or uses_images(ref_text)):
+        return None, "images"
+    need = resources(path, text, root, images)
+    need_ref = resources(ref, ref_text, root, images)
+    if need is None and not images and resources(path, text, root, True) is not None:
+        return None, "images"
+    if need_ref is None and not images and resources(ref, ref_text, root, True) is not None:
+        return None, "images"
     if need is None or need_ref is None:
-        return None, "resources other than style sheets and the Ahem font"
-    return ref, [path, ref] + need + need_ref
+        return None, "resources other than style sheets, images, and the Ahem font"
+    files = [path, ref] + need + need_ref
+    imaged = uses_images(text) or uses_images(ref_text) or any(
+        f.endswith(".css") and uses_images(open(f, encoding="utf-8", errors="replace").read()) for f in files)
+    if imaged != images:
+        return None, "images" if imaged else "no images"
+    return ref, files
 
 
 def main():
     root = sys.argv[1]
     only = [a for a in sys.argv[2:] if not a.startswith("--")]
     # --excluded: count every suite's left-out tests again, without
-    # importing anything.
+    # importing anything. --images: import the tests that use images
+    # again, keeping every suite's other tests.
     count_only = "--excluded" in sys.argv
+    images_only = "--images" in sys.argv
     for s in only:
         if s not in SUITES:
             sys.exit(f"unknown suite {s}")
+    selected = only or list(SUITES)
     here = os.path.dirname(os.path.abspath(__file__))
     kept = []
-    excluded_kept = []
     if count_only:
         pass
-    elif only:
+    elif only or images_only:
         with open(os.path.join(here, "MANIFEST")) as f:
-            kept = [line for line in f.read().splitlines() if line and line.split()[0] not in only]
-        if os.path.isfile(os.path.join(here, "EXCLUDED")):
-            with open(os.path.join(here, "EXCLUDED")) as f:
-                excluded_kept = [line for line in f.read().splitlines()
-                                 if line and not line.startswith("#") and line.split()[0] not in only]
+            for line in f.read().splitlines():
+                parts = line.split()
+                if not parts:
+                    continue
+                gone = parts[0] in selected and (not images_only or parts[-1] == "img")
+                if not gone:
+                    kept.append(line)
     else:
         for d in os.listdir(here):
             if d in ("css", "fonts"):
                 shutil.rmtree(os.path.join(here, d))
+    excluded_kept = []
+    if os.path.isfile(os.path.join(here, "EXCLUDED")) and not count_only:
+        with open(os.path.join(here, "EXCLUDED")) as f:
+            excluded_kept = [line for line in f.read().splitlines()
+                             if line and not line.startswith("#") and line.split()[0] not in selected]
     manifest = []
     excluded = []
     copied = set()
+
+    def copy(files):
+        for f in ([] if count_only else files):
+            rel = os.path.relpath(f, root)
+            if rel in copied:
+                continue
+            copied.add(rel)
+            dst = os.path.join(here, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copyfile(f, dst)
+
     for suite, dirs in SUITES.items():
-        if only and suite not in only and not count_only:
+        if suite not in selected and not count_only:
             continue
-        count = 0
+        # Tests without images and tests with images, each kind capped.
+        count = [0, 0]
         reasons = collections.Counter()
         for d in dirs:
             # Each directory its share, so that no area crowds out the rest.
-            cap = count + MAX_TESTS // len(dirs)
+            cap = [count[0] + MAX_TESTS // len(dirs), count[1] + MAX_TESTS // len(dirs)]
             base = os.path.join(root, d)
             for dirpath, _, names in sorted(os.walk(base)):
                 if "/support" in dirpath or "/reference" in dirpath:
@@ -206,34 +261,32 @@ def main():
                     if not name.endswith(EXTS) or "-ref" in name or name.endswith("-notref.html"):
                         continue
                     path = os.path.join(dirpath, name)
+                    kind = 0
                     ref, files = classify(suite, path, root)
+                    if ref is None and files == "images":
+                        kind = 1
+                        ref, files = classify(suite, path, root, images=True)
                     if ref is None:
                         reasons[files] += 1
                         continue
-                    if count >= cap:
-                        reasons["beyond the per-suite cap of 400"] += 1
+                    if count[kind] >= cap[kind]:
+                        reasons["beyond the per-suite cap of 400" + (" tests with images" if kind else "")] += 1
                         continue
-                    for f in ([] if count_only else files):
-                        rel = os.path.relpath(f, root)
-                        if rel in copied:
-                            continue
-                        copied.add(rel)
-                        dst = os.path.join(here, rel)
-                        os.makedirs(os.path.dirname(dst), exist_ok=True)
-                        shutil.copyfile(f, dst)
-                    manifest.append(f"{suite} {os.path.relpath(path, root)} {os.path.relpath(ref, root)}")
-                    count += 1
+                    count[kind] += 1
+                    if images_only and kind == 0:
+                        continue
+                    copy(files)
+                    manifest.append(f"{suite} {os.path.relpath(path, root)} {os.path.relpath(ref, root)}" + (" img" if kind else ""))
         for reason, n in sorted(reasons.items(), key=lambda kv: -kv[1]):
             excluded.append(f"{suite} {n} {reason}")
-        print(f"{suite}: {count} imported, {sum(reasons.values())} left out")
+        print(f"{suite}: {count[0]} without images, {count[1]} with images, {sum(reasons.values())} left out")
     if not count_only:
         with open(os.path.join(here, "MANIFEST"), "w") as f:
             f.write("\n".join(kept + manifest) + "\n")
+        shutil.copyfile(os.path.join(root, "LICENSE.md"), os.path.join(here, "LICENSE.md"))
     with open(os.path.join(here, "EXCLUDED"), "w") as f:
         f.write("# Tests left out of each suite at import (test/wpt/import.py): suite, count, reason.\n")
         f.write("\n".join(excluded_kept + excluded) + "\n")
-    if not count_only:
-        shutil.copyfile(os.path.join(root, "LICENSE.md"), os.path.join(here, "LICENSE.md"))
 
 
 if __name__ == "__main__":

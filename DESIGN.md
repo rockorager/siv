@@ -5869,27 +5869,22 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   (`src/html/testdata`, MIT); the CommonMark spec's examples, 652 of
   652 (fetched, CC-BY-SA, D25); web-platform-tests CSS reftests
   imported by `test/wpt/import.py` (BSD-3-Clause; reftests without
-  scripts, images, or resources other than the Ahem font, at most 400
-  per suite, rendered at 800 × 600 with Ahem and siv's Droid test font,
-  test and reference compared allowing 20 pixels to differ by more than
-  32 in a channel, or what a test's fuzzy metadata allows beyond that).
-  `test/wpt/EXCLUDED` counts the tests each suite leaves out by reason
-  (testharness.js and other scripts, embedded images and SVG, form
-  controls, writing modes outside their own suite, mismatch reftests,
-  the cap), and `test/wpt/SKIP` lists imported tests that are out of
-  scope for documents, with the reason, left out of the pass rate.
-  `zig build doc-wpt -- FILTER` runs tests one by one and dumps the
-  renders of failures (triage). Per suite (a regression fails the
-  test): css2 235 of 316, css-flexbox 227 of 398, css-grid 112 of 198,
-  css-values 65 of 123, css-variables 46 of 70, css-tables (CSS2 tables
-  and css-tables) 125 of 288, floats (CSS2 floats and floats-clear) 88
-  of 170 (898 of 1563, 57 %); and, measured since, css-sizing 111 of
-  278, css-display 59 of 106, css-pseudo 33 of 72, css-lists (and CSS2
-  generated content) 166 of 326, css-text (white space, transforms,
-  spacing, breaking, indents, alignment) 116 of 320, css-backgrounds
-  (and css-borders) 111 of 230, css-overflow 69 of 310, css-position 23
-  of 68, css-break 44 of 400, css-multicol 63 of 312, css-writing-modes
-  52 of 395 (847 of 2817, 30 %); an email
+  scripts or resources other than style sheets, images, and the Ahem
+  font, at most 400 per suite and 400 more that use images, rendered at
+  800 × 600 with Ahem and siv's Droid test font, images (files and
+  `data:` URLs) decoded with siv's decoders and SVG with its SVG
+  module, test and reference compared allowing 20 pixels to differ by
+  more than 32 in a channel, or what a test's fuzzy metadata allows
+  beyond that). `test/wpt/EXCLUDED` counts the tests each suite leaves
+  out by reason (testharness.js and other scripts, frames and canvas,
+  form controls, writing modes outside their own suite, mismatch
+  reftests, the cap), and `test/wpt/SKIP` lists imported tests that are
+  out of scope for documents, with the reason, left out of the pass
+  rate. `zig build doc-wpt -- FILTER` runs tests one by one and dumps
+  the renders of failures (triage). Tests that use images are marked in
+  the manifest and counted apart as well, so the rates before they
+  were measured stay comparable; a regression in either fails the test
+  (the table below); an email
   corpus (`test/doc/email`: a receipt with a `cid:` logo and a tracking
   pixel, a Mailchimp-style newsletter, Gmail, Outlook, and Apple Mail
   replies with their quotes collapsed and open), close to Chromium's
@@ -5903,6 +5898,32 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   epigraph, contents, and note HTML), with Droid Serif (Apache-2.0) as
   the test's serif face; fuzz targets for the HTML parser, the CSS
   parser, the Markdown parser, and the EPUB package parser.
+  WPT reftests passing, per suite:
+
+  <!-- wpt-rates -->
+  | Suite | Without images | All (with images) |
+  | --- | --- | --- |
+  | css2 (normal flow, box, margins, colors, borders, positioning, line box, lists) | 235 of 316 | 432 of 569 |
+  | css-flexbox | 227 of 395 | 243 of 482 |
+  | css-grid | 112 of 198 | 122 of 218 |
+  | css-values | 65 of 123 | 67 of 126 |
+  | css-variables | 46 of 70 | 46 of 70 |
+  | css-tables (and CSS2 tables) | 125 of 288 | 127 of 309 |
+  | floats (CSS2 floats, floats-clear) | 88 of 170 | 151 of 269 |
+  | css-sizing | 111 of 278 | 154 of 366 |
+  | css-display | 59 of 106 | 59 of 109 |
+  | css-pseudo | 33 of 72 | 34 of 74 |
+  | css-lists (and CSS2 generated content) | 166 of 326 | 168 of 334 |
+  | css-text (white space, transforms, spacing, breaking, indents, alignment) | 116 of 320 | 122 of 333 |
+  | css-backgrounds (and css-borders) | 111 of 230 | 167 of 448 |
+  | css-overflow | 69 of 310 | 72 of 324 |
+  | css-position | 23 of 68 | 24 of 79 |
+  | css-break | 44 of 400 | 46 of 403 |
+  | css-multicol | 63 of 312 | 69 of 373 |
+  | css-writing-modes | 52 of 395 | 66 of 795 |
+  | Total | 1745 of 4377 (40 %) | 2169 of 5681 (38 %) |
+  <!-- /wpt-rates -->
+
 - **Layout unification.** Should siv's widget layout (D26) become this
   CSS engine? The evidence says no, not now:
   - The models differ on purpose. D26 is one-way constraint layout

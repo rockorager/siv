@@ -543,6 +543,7 @@ pub fn build(b: *std.Build) void {
         .name = "doc-wpt",
         .root_module = ctx.module("test/doc/wpt_tool.zig", &.{
             .{ .name = "doc", .module = doc },
+            .{ .name = "image", .module = image },
             .{ .name = "css", .module = css },
             .{ .name = "scene", .module = scene },
             .{ .name = "raster", .module = raster },

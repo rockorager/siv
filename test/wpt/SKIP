@@ -3,3 +3,6 @@
 css/css-flexbox/flexbox-basic-textarea-horiz-001.xhtml form controls (textarea)
 css/css-flexbox/flexbox-basic-textarea-vert-001.xhtml form controls (textarea)
 css/CSS2/floats/floats-wrap-bfc-outside-001.xht form controls (textarea)
+css/css-flexbox/fieldset-baseline-alignment.html form controls (fieldset and legend rendering)
+css/css-flexbox/flexbox-basic-fieldset-horiz-001.xhtml form controls (fieldset and legend rendering)
+css/css-flexbox/flexbox-basic-fieldset-vert-001.xhtml form controls (fieldset and legend rendering)

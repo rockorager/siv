@@ -63,7 +63,8 @@ pub fn main(init: std.process.Init) !void {
     const filter_is_suite = try gpa.alloc(bool, filters.items.len);
     defer gpa.free(filter_is_suite);
     for (filters.items, filter_is_suite) |f, *is| is.* = isSuite(manifest, f);
-    var totals: std.StringArrayHashMapUnmanaged([2]usize) = .empty;
+    // Per suite: passed and total, then the same for tests with images.
+    var totals: std.StringArrayHashMapUnmanaged([4]usize) = .empty;
     defer totals.deinit(gpa);
     var out_buf: [4096]u8 = undefined;
     var out = std.Io.File.stdout().writer(io, &out_buf);
@@ -86,14 +87,17 @@ pub fn main(init: std.process.Init) !void {
             continue;
         }
         const gop = try totals.getOrPut(gpa, suite);
-        if (!gop.found_existing) gop.value_ptr.* = .{ 0, 0 };
+        if (!gop.found_existing) gop.value_ptr.* = .{ 0, 0, 0, 0 };
+        const with_images = if (parts.next()) |flag| std.mem.eql(u8, flag, "img") else false;
         gop.value_ptr[1] += 1;
+        if (with_images) gop.value_ptr[3] += 1;
         const ok = blk: {
             r.render(test_path, .html, 0, r.pixels[0]) catch break :blk false;
             r.render(ref_path, .html, 0, r.pixels[1]) catch break :blk false;
             break :blk r.sameAs(test_path);
         };
         if (ok) gop.value_ptr[0] += 1;
+        if (ok and with_images) gop.value_ptr[2] += 1;
         if (!ok or !failures_only) try w.print("{s} {s}\n", .{ if (ok) "PASS" else "FAIL", test_path });
         if (!ok) if (dump) |dir| {
             for (r.pixels, [_][]const u8{ "test", "ref" }) |px, which| {
@@ -107,6 +111,9 @@ pub fn main(init: std.process.Init) !void {
         try w.flush();
     }
     var it = totals.iterator();
-    while (it.next()) |kv| try w.print("WPT {s}: {d}/{d}\n", .{ kv.key_ptr.*, kv.value_ptr[0], kv.value_ptr[1] });
+    while (it.next()) |kv| {
+        const v = kv.value_ptr.*;
+        try w.print("WPT {s}: {d}/{d} (without images {d}/{d})\n", .{ kv.key_ptr.*, v[0], v[1], v[0] - v[2], v[1] - v[3] });
+    }
     try w.flush();
 }

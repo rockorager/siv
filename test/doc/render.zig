@@ -1,6 +1,8 @@
 //! Renders documents for the document renderer's tests (D32): siv's
-//! Droid test fonts (and Ahem by name, for WPT), style sheets read from a
-//! directory standing for a server, painted with the CPU renderer.
+//! Droid test fonts (and Ahem by name, for WPT), style sheets and images
+//! read from a directory standing for a server (or `data:` URLs), images
+//! decoded with siv's decoders and SVG with its SVG module, painted with
+//! the CPU renderer.
 
 const std = @import("std");
 const doc = @import("doc");
@@ -10,6 +12,7 @@ const scene = @import("scene");
 const raster = @import("raster");
 const render_cpu = @import("render_cpu");
 const pool = @import("pool");
+const image = @import("image");
 
 const Document = doc.Document;
 
@@ -35,6 +38,10 @@ pub const Runner = struct {
     workers: pool.Pool,
     renderer: *render_cpu.Renderer,
     pixels: [2][]u8,
+    /// The images of the document being rendered, by resource.
+    images: std.ArrayList(?image.Image) = .empty,
+    doc: ?*Document = null,
+    key: u64 = 0,
 
     pub fn init(gpa: std.mem.Allocator, io: std.Io, root: []const u8, origin: []const u8, width: u32, height: u32) !*Runner {
         const r = try gpa.create(Runner);
@@ -65,6 +72,8 @@ pub const Runner = struct {
     }
 
     pub fn deinit(r: *Runner) void {
+        r.dropImages();
+        r.images.deinit(r.gpa);
         r.renderer.destroy();
         r.workers.deinit();
         r.ua.deinit();
@@ -79,8 +88,47 @@ pub const Runner = struct {
         return if (std.ascii.eqlIgnoreCase(family, "ahem")) &r.ahem else &r.droid;
     }
 
-    /// The file a URL of the WPT server names.
+    fn dropImages(r: *Runner) void {
+        for (r.images.items) |img| if (img) |i| i.deinit(r.gpa);
+        r.images.clearRetainingCapacity();
+    }
+
+    /// A `data:` URL's bytes (RFC 2397), base64 or percent-encoded.
+    fn dataUrl(r: *Runner, url: []const u8) ?[]u8 {
+        const comma = std.mem.indexOfScalar(u8, url, ',') orelse return null;
+        const meta = url[5..comma];
+        const payload = url[comma + 1 ..];
+        if (std.mem.endsWith(u8, meta, ";base64")) {
+            var clean: std.ArrayList(u8) = .empty;
+            defer clean.deinit(r.gpa);
+            for (payload) |c| if (!std.ascii.isWhitespace(c)) clean.append(r.gpa, c) catch return null;
+            const dec = std.base64.standard.Decoder;
+            const n = dec.calcSizeForSlice(clean.items) catch return null;
+            const out = r.gpa.alloc(u8, n) catch return null;
+            dec.decode(out, clean.items) catch {
+                r.gpa.free(out);
+                return null;
+            };
+            return out;
+        }
+        var out: std.ArrayList(u8) = .empty;
+        var i: usize = 0;
+        while (i < payload.len) : (i += 1) {
+            if (payload[i] == '%' and i + 2 < payload.len) {
+                if (std.fmt.parseInt(u8, payload[i + 1 .. i + 3], 16)) |b| {
+                    out.append(r.gpa, b) catch return null;
+                    i += 2;
+                    continue;
+                } else |_| {}
+            }
+            out.append(r.gpa, payload[i]) catch return null;
+        }
+        return out.toOwnedSlice(r.gpa) catch null;
+    }
+
+    /// The file a URL of the WPT server names, or a `data:` URL's bytes.
     pub fn file(r: *Runner, url: []const u8) ?[]u8 {
+        if (std.ascii.startsWithIgnoreCase(url, "data:")) return r.dataUrl(url);
         if (!std.mem.startsWith(u8, url, r.origin)) return null;
         var path = url[r.origin.len..];
         if (std.mem.indexOfAny(u8, path, "?#")) |k| path = path[0..k];
@@ -101,6 +149,9 @@ pub const Runner = struct {
             _ = d.toggleQuote(k);
         };
         defer d.destroy();
+        r.dropImages();
+        r.doc = d;
+        defer r.doc = null;
         const W: f32 = @floatFromInt(r.width);
         const H: f32 = @floatFromInt(r.height);
         const env: css.media.Env = .{ .width = W, .height = H };
@@ -124,6 +175,7 @@ pub const Runner = struct {
                     try d.supplySvg(@intCast(i), bytes);
                     continue;
                 }
+                if (res.kind == .image) continue;
                 if (res.kind != .stylesheet) {
                     d.failResource(@intCast(i));
                     continue;
@@ -137,31 +189,93 @@ pub const Runner = struct {
             if (!supplied) break;
             try d.styleAndBuild(env);
         }
+        try r.supplyImages(d);
         try d.resolveFonts(.{ .ctx = r, .cache = &r.cache, .chainFn = chainFn });
         _ = try d.layout(&r.cache, W, H, std.math.inf(f32));
         var b: scene.Builder = .init(r.gpa);
         defer b.deinit();
         try b.pushLayer(.{ .transform = raster.Affine.translate(0, -top) });
-        try d.paint(&b, top, top + H, .{}, .{ .ctx = d, .drawReplaced = noReplaced, .imageSize = noSize, .drawImage = noImage, .marker = marker }, &.{});
+        try d.paint(&b, top, top + H, .{}, .{ .ctx = r, .drawReplaced = drawReplaced, .imageSize = imageSize, .drawImage = drawImage, .marker = marker }, &.{});
         try b.popLayer();
         const list = try b.finish(0);
         try r.renderer.render(list, .{ .background = .white, .target = .{ .pixels = out.ptr, .stride = r.width * 4, .format = .abgr8888 } });
     }
 
-    fn noReplaced(ctx: *anyopaque, b: *scene.Builder, resource: u32, dst: raster.Rect, _: f32) scene.Error!bool {
-        const d: *Document = @ptrCast(@alignCast(ctx));
+    /// Decodes the images the document wants: SVG with the document's
+    /// SVG module, the rest with siv's image decoders.
+    fn supplyImages(r: *Runner, d: *Document) !void {
+        for (d.resources.items, 0..) |res, i| {
+            if (res.kind != .image or res.state != .wanted) continue;
+            if (std.mem.startsWith(u8, res.url, "cid:")) continue;
+            const bytes = r.file(res.url) orelse {
+                d.failResource(@intCast(i));
+                continue;
+            };
+            defer r.gpa.free(bytes);
+            const trimmed = std.mem.trimStart(u8, bytes, " \t\r\n\xef\xbb\xbf");
+            if (image.sniff(bytes) == null and trimmed.len > 0 and trimmed[0] == '<') {
+                try d.supplySvg(@intCast(i), bytes);
+                continue;
+            }
+            const img = image.decode(r.gpa, bytes, .{ .first_frame = true }) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    d.failResource(@intCast(i));
+                    continue;
+                },
+            };
+            while (r.images.items.len <= i) try r.images.append(r.gpa, null);
+            r.images.items[i] = img;
+            d.supplyImage(@intCast(i), @floatFromInt(img.width), @floatFromInt(img.height), i);
+        }
+    }
+
+    fn drawReplaced(ctx: *anyopaque, b: *scene.Builder, resource: u32, dst: raster.Rect, opacity: f32) scene.Error!bool {
+        const r: *Runner = @ptrCast(@alignCast(ctx));
+        const d = r.doc orelse return false;
         const res = d.resources.items[resource];
-        const sd = res.svg_doc orelse return false;
-        try sd.draw(b, dst, null);
+        if (res.state != .ready) return false;
+        if (res.svg_doc) |sd| {
+            try sd.draw(b, dst, null);
+            return true;
+        }
+        if (resource >= r.images.items.len) return false;
+        const img = r.images.items[resource] orelse return false;
+        r.key += 1;
+        try b.image(.{
+            .image = .{ .pixels = img.frames[0].pixels.ptr, .width = img.width, .height = img.height, .stride = img.stride(), .format = img.format, .key = r.key },
+            .src = .xywh(0, 0, @floatFromInt(img.width), @floatFromInt(img.height)),
+            .dst = dst,
+            .opacity = opacity,
+        });
         return true;
     }
-    fn noSize(_: *anyopaque, _: []const u8) ?[2]f32 {
+
+    fn resourceOf(r: *Runner, url: []const u8) ?u32 {
+        const d = r.doc orelse return null;
+        for (d.resources.items, 0..) |res, i| if (res.kind == .image and std.mem.eql(u8, res.url, url)) return @intCast(i);
         return null;
     }
-    fn noImage(_: *anyopaque, _: *scene.Builder, _: []const u8, _: raster.Rect, _: raster.Rect) scene.Error!void {}
+
+    fn imageSize(ctx: *anyopaque, url: []const u8) ?[2]f32 {
+        const r: *Runner = @ptrCast(@alignCast(ctx));
+        const i = r.resourceOf(url) orelse return null;
+        const res = r.doc.?.resources.items[i];
+        if (res.state != .ready) return null;
+        return .{ res.width, res.height };
+    }
+
+    fn drawImage(ctx: *anyopaque, b: *scene.Builder, url: []const u8, dst: raster.Rect, clip: raster.Rect) scene.Error!void {
+        const r: *Runner = @ptrCast(@alignCast(ctx));
+        const i = r.resourceOf(url) orelse return;
+        try b.pushLayer(.{ .clip = .{ .shape = .{ .rect = clip } } });
+        defer b.popLayer() catch {};
+        _ = try drawReplaced(ctx, b, i, dst, 1);
+    }
+
     fn marker(ctx: *anyopaque, i: u32) ?*const doc.paint.MarkerGlyphs {
-        const d: *Document = @ptrCast(@alignCast(ctx));
-        return d.markerGlyphs(i);
+        const r: *Runner = @ptrCast(@alignCast(ctx));
+        return r.doc.?.markerGlyphs(i);
     }
 
     /// Whether the two renders match: at most 20 pixels differ by more
