@@ -145,6 +145,10 @@
         "build.zig",
         "build.zig.zon",
         "src",
+        // build.zig imports these, so a fetched package needs them.
+        "apps/files/build_steps.zig",
+        "docs/guide/build_steps.zig",
+        "webview",
         "LICENSE",
         "README.md",
     },
