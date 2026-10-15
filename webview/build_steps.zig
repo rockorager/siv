@@ -52,7 +52,12 @@ pub fn missing(b: *std.Build) ?[]const u8 {
         var it = std.mem.tokenizeScalar(u8, extra, ':');
         while (it.next()) |d| dirs.append(b.allocator, d) catch @panic("OOM");
     }
-    for (dirs.items) |d| if (std.fs.path.isAbsolute(d)) b.dependOnDirectoryContents(.{ .cwd_relative = d });
+    // Only directories that exist: pkg-config lists its whole search path,
+    // and a missing one fails the configuration (Debian lists several).
+    for (dirs.items) |d| if (std.fs.path.isAbsolute(d)) {
+        std.Io.Dir.accessAbsolute(b.graph.io, d, .{}) catch continue;
+        b.dependOnDirectoryContents(.{ .cwd_relative = d });
+    };
     var list: std.ArrayList(u8) = .empty;
     for (required) |spec| {
         const found = switch (b.runFallible(&.{ "pkg-config", "--exists", spec }, .{ .stderr_behavior = .ignore })) {
