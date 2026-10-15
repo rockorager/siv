@@ -1107,6 +1107,18 @@ pub const Engine = struct {
                 b.max_content = -1;
             }
         }
+        // Lines hold their atomic inlines' sizes (images that arrived,
+        // say): those with any are broken again. Shaping stays.
+        if (intrinsic_too) for (e.ifc_cache, e.tree.ifcs.items) |*c, ifc| {
+            const l = c.laid orelse continue;
+            for (ifc.items) |it| if (it.kind == .atomic) {
+                e.cache_bytes -|= l.bytes();
+                l.deinit(e.gpa);
+                e.gpa.destroy(l);
+                c.laid = null;
+                break;
+            };
+        };
         e.resume_map.clearRetainingCapacity();
         e.absolutes.clearRetainingCapacity();
         e.bytes_laid = 0;

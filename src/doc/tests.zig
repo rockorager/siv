@@ -342,3 +342,27 @@ test "page breaks keep widows and orphans and honor break-before" {
     try d.pageBreaks(1000, &breaks, gpa);
     try testing.expectEqual(1, breaks.items.len);
 }
+
+test "an image's size that arrives after its line was laid out reaches layout" {
+    // The README's logo: a paragraph with an image is laid out before the
+    // image decodes (0 × 0), then its size arrives and layout runs again
+    // at the same width. The paragraph's lines must take the new size.
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+    const d = try f.load(gpa, "<p><img src=\"logo.png\"> after</p><p><img src=\"b.png\"></p><p>last</p>", .{ .base_url = "file:///r/" }, 400);
+    defer d.destroy();
+    const before = elementBox(d, .img, 0).h;
+    try testing.expect(before < 1);
+    for (d.resources.items, 0..) |r, i| if (r.kind == .image) d.supplyImage(@intCast(i), 120, 80, i);
+    _ = try d.layout(&f.cache, 400, 600, std.math.inf(f32));
+    const logo = elementBox(d, .img, 0);
+    try testing.expectEqual(@as(f32, 120), logo.w);
+    try testing.expectEqual(@as(f32, 80), logo.h);
+    // The lines grew around the images: nothing overlaps.
+    const p0 = elementBox(d, .p, 0);
+    const p1 = elementBox(d, .p, 1);
+    try testing.expect(p0.h >= 80);
+    try testing.expect(absY(d, elementBox(d, .img, 1)) >= absY(d, p0) + p0.h);
+    try testing.expect(absY(d, elementBox(d, .p, 2)) >= absY(d, p1) + 80);
+}
