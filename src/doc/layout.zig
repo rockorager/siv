@@ -14,6 +14,7 @@
 //! evicted beyond a memory budget and rebuilt when painted again.
 
 const std = @import("std");
+const pool = @import("pool");
 const css = @import("css");
 const text = @import("text");
 const box_mod = @import("box.zig");
@@ -86,6 +87,9 @@ pub const Engine = struct {
     /// Height per text byte measured so far, for estimates.
     bytes_laid: usize = 0,
     height_laid: f32 = 0,
+    /// One past the last IFC laid out: where layout resumes in tree
+    /// order, roughly (shaping ahead starts there).
+    frontier: u32 = 0,
     /// Per box: text bytes in its subtree (estimates).
     subtree_bytes: []u32 = &.{},
 
@@ -156,6 +160,54 @@ pub const Engine = struct {
         c.shaped = s;
         e.cache_bytes += s.bytes();
         return s;
+    }
+
+    /// Shapes the IFCs in `ifcs` that are not shaped yet on the
+    /// executor's workers, for layout to find shaped: shaping is most of
+    /// the cost of laying out text, and IFCs shape independently. The
+    /// caller holds the font cache's shared lock, which keeps it from
+    /// changing for the workers too.
+    pub fn preshape(e: *Engine, exec: pool.Executor, ifcs: []const u32) Error!void {
+        if (ifcs.len == 0) return;
+        const results = try e.gpa.alloc(?*inline_mod.Shaped, ifcs.len);
+        defer e.gpa.free(results);
+        @memset(results, null);
+        const Ctx = struct {
+            e: *Engine,
+            ifcs: []const u32,
+            results: []?*inline_mod.Shaped,
+            next: pool.Counter,
+
+            fn work(ctx: *anyopaque, _: u32) void {
+                const c: *@This() = @ptrCast(@alignCast(ctx));
+                var arena: std.heap.ArenaAllocator = .init(c.e.gpa);
+                defer arena.deinit();
+                while (c.next.take()) |i| {
+                    _ = arena.reset(.retain_capacity);
+                    const s = c.e.gpa.create(inline_mod.Shaped) catch return;
+                    s.* = inline_mod.shape(c.e.gpa, arena.allocator(), &c.e.tree.ifcs.items[c.ifcs[i]], c.e.fonts, c.e.store) catch {
+                        c.e.gpa.destroy(s);
+                        continue;
+                    };
+                    c.results[i] = s;
+                }
+            }
+        };
+        var ctx: Ctx = .{ .e = e, .ifcs = ifcs, .results = results, .next = .{ .count = @intCast(ifcs.len) } };
+        exec.run(exec.ctx, .{ .ctx = &ctx, .func = Ctx.work });
+        for (ifcs, results) |ifc, r| {
+            const s = r orelse continue;
+            const c = &e.ifc_cache[ifc];
+            if (c.shaped != null) {
+                s.deinit();
+                e.gpa.destroy(s);
+                continue;
+            }
+            c.shaped = s;
+            c.used = e.clock;
+            if (!s.complete) e.incomplete = true;
+            e.cache_bytes += s.bytes();
+        }
     }
 
     fn ifcContext(e: *Engine, ifc: u32, s: *const inline_mod.Shaped) inline_mod.Context {
@@ -498,6 +550,7 @@ pub const Engine = struct {
         bb.last_baseline = if (l.lastBaseline()) |v| top + v else std.math.nan(f32);
         e.bytes_laid += e.tree.ifcs.items[bb.data].text.len;
         e.height_laid += l.height;
+        e.frontier = @max(e.frontier, bb.data + 1);
         // Place atomic inlines from their fragments.
         for (l.lines) |line| for (l.lineFrags(line)) |f| {
             if (f.kind != .atomic) continue;
@@ -826,6 +879,7 @@ pub const Engine = struct {
         e.absolutes.clearRetainingCapacity();
         e.bytes_laid = 0;
         e.height_laid = 0;
+        e.frontier = 0;
     }
 
     /// Drops all shaping (fonts changed).

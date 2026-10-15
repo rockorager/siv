@@ -77,6 +77,44 @@ pub fn analyze(allocator: std.mem.Allocator, text: []const u8, direction: BaseDi
         return .{ .paragraphs = try paragraphs.toOwnedSlice(allocator), .levels = levels, .classes = classes };
     }
 
+    if ((direction == .ltr or direction == .auto_ltr) and simpleLtr(text)) {
+        analyzeSimple(text, levels, classes);
+        var start: usize = 0;
+        var i: usize = 0;
+        while (i < text.len) {
+            const sep: usize = switch (text[i]) {
+                '\r' => if (i + 1 < text.len and text[i + 1] == '\n') 2 else 1,
+                '\n', 0x1c, 0x1d, 0x1e => 1,
+                else => 0,
+            };
+            if (sep == 0) {
+                i += 1;
+                continue;
+            }
+            i += sep;
+            try paragraphs.append(allocator, .{ .start = @intCast(start), .end = @intCast(i), .separator_len = @intCast(sep), .base_level = 0 });
+            start = i;
+        }
+        if (start < text.len) try paragraphs.append(allocator, .{ .start = @intCast(start), .end = @intCast(text.len), .separator_len = 0, .base_level = 0 });
+        return .{ .paragraphs = try paragraphs.toOwnedSlice(allocator), .levels = levels, .classes = classes };
+    }
+    allocator.free(classes);
+    allocator.free(levels);
+    return analyzeSheenBidi(allocator, text, direction);
+}
+
+fn analyzeSheenBidi(allocator: std.mem.Allocator, text: []const u8, direction: BaseDirection) error{OutOfMemory}!Analysis {
+    const levels = try allocator.alloc(u8, text.len);
+    errdefer allocator.free(levels);
+    const classes = try allocator.alloc(LineClass, text.len);
+    errdefer allocator.free(classes);
+    var paragraphs: std.ArrayList(Paragraph) = .empty;
+    errdefer paragraphs.deinit(allocator);
+    if (text.len == 0) {
+        try paragraphs.append(allocator, .{ .start = 0, .end = 0, .separator_len = 0, .base_level = direction.fallbackLevel() });
+        return .{ .paragraphs = try paragraphs.toOwnedSlice(allocator), .levels = levels, .classes = classes };
+    }
+
     const sequence: sb.SBCodepointSequence = .{
         .stringEncoding = sb.SBStringEncodingUTF8,
         .stringBuffer = text.ptr,
@@ -116,6 +154,45 @@ pub fn analyze(allocator: std.mem.Allocator, text: []const u8, direction: BaseDi
         offset += length;
     }
     return .{ .paragraphs = try paragraphs.toOwnedSlice(allocator), .levels = levels, .classes = classes };
+}
+
+/// Whether text has only characters whose bidi types make every level 0
+/// in a left-to-right paragraph and whose L1 classes `analyzeSimple`
+/// knows: ASCII, Latin-1 but NEL and the soft hyphen, the Latin, Greek,
+/// Cyrillic, and Armenian blocks, and common punctuation and currency
+/// signs. Documents in European languages are; they skip SheenBidi.
+fn simpleLtr(text: []const u8) bool {
+    var i: usize = 0;
+    while (i < text.len) {
+        const b = text[i];
+        if (b < 0x80) {
+            i += 1;
+            continue;
+        }
+        if (b == 0xc2) {
+            const c = text[i + 1];
+            if (c == 0x85 or c == 0xad) return false;
+            i += 2;
+        } else if (b >= 0xc3 and b <= 0xd5 or b == 0xd6 and text[i + 1] < 0x90) {
+            i += 2;
+        } else if (b == 0xe2) {
+            const cp = @as(u21, b & 0x0f) << 12 | @as(u21, text[i + 1] & 0x3f) << 6 | (text[i + 2] & 0x3f);
+            if (!(cp >= 0x2010 and cp <= 0x2027 or cp >= 0x2030 and cp <= 0x205e or cp >= 0x20a0 and cp <= 0x20cf)) return false;
+            i += 3;
+        } else return false;
+    }
+    return true;
+}
+
+/// Levels and L1 classes of `simpleLtr` text.
+fn analyzeSimple(text: []const u8, levels: []u8, classes: []LineClass) void {
+    @memset(levels, 0);
+    for (text, classes) |b, *c| c.* = switch (b) {
+        ' ', 0x0c => .whitespace,
+        '\t', 0x0b, 0x1f, '\n', '\r', 0x1c, 0x1d, 0x1e => .separator,
+        0x00...0x08, 0x0e...0x1b, 0x7f => .whitespace,
+        else => .other,
+    };
 }
 
 /// Applies rule L1 to one line of a paragraph: `levels` and `classes` are the
@@ -241,6 +318,40 @@ fn checkCase(
     if (order.len != expected_order.len) return false;
     for (order, expected_order) |visual, expected| if (kept_index.items[visual] != expected) return false;
     return true;
+}
+
+test "European text skips SheenBidi with the same result" {
+    const gpa = std.testing.allocator;
+    const samples = [_][]const u8{
+        "Plain ASCII, with tabs\tand\r\nCRLF\nlines\x1cand\x0bmore \x7f.",
+        "Caf\u{e9} na\u{ef}ve \u{2014} \u{201c}quoted\u{201d} 12,5 \u{20ac} \u{3b1}\u{3b2}\u{3b3} \u{436}\u{443}\u{43a} \u{301}x\n",
+        "\r",
+        "  trailing  \n\n",
+    };
+    for (samples) |text| {
+        try std.testing.expect(simpleLtr(text));
+        for ([_]BaseDirection{ .ltr, .auto_ltr }) |dir| {
+            const fast = try analyze(gpa, text, dir);
+            defer {
+                gpa.free(fast.paragraphs);
+                gpa.free(fast.levels);
+                gpa.free(fast.classes);
+            }
+            // SheenBidi's answer, with the fast path out of the way.
+            const slow = try analyzeSheenBidi(gpa, text, dir);
+            defer {
+                gpa.free(slow.paragraphs);
+                gpa.free(slow.levels);
+                gpa.free(slow.classes);
+            }
+            try std.testing.expectEqualSlices(u8, slow.levels, fast.levels);
+            try std.testing.expectEqualSlices(LineClass, slow.classes, fast.classes);
+            try std.testing.expectEqualSlices(Paragraph, slow.paragraphs, fast.paragraphs);
+        }
+    }
+    try std.testing.expect(!simpleLtr("\u{5d0}"));
+    try std.testing.expect(!simpleLtr("a\u{202b}b"));
+    try std.testing.expect(!simpleLtr("soft\u{ad}hyphen"));
 }
 
 test "UAX #9 conformance (BidiCharacterTest-18.0.0)" {

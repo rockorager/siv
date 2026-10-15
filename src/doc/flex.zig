@@ -135,7 +135,7 @@ pub fn layout(e: *Engine, id: BoxId, content_w: f32, content_h: ?f32) Error!f32 
         item.margin_cross = if (row) b.margin[0] + b.margin[2] else b.margin[1] + b.margin[3];
         const ml = if (row) ist.box.margin[3] else ist.box.margin[0];
         const mr = if (row) ist.box.margin[1] else ist.box.margin[2];
-        item.auto_margins_main = @intFromBool(ml.isAuto()) + @intFromBool(mr.isAuto());
+        item.auto_margins_main = @as(u8, @intFromBool(ml.isAuto())) + @intFromBool(mr.isAuto());
         const basis = ist.box.flex_basis;
         const main_prop = if (row) ist.box.width else ist.box.height;
         var base: ?f32 = null;

@@ -1031,6 +1031,8 @@ pub const Job = struct {
                     .author_styles = o.author_styles,
                 }, try userAgentSheet());
                 errdefer d.destroy();
+                // Layout jobs shape text ahead on the other workers.
+                if (v.win.fonts.pool) |pool| d.executor = pool.executor();
                 try d.styleAndBuild(j.media);
                 j.result = d;
             },

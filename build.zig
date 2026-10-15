@@ -134,6 +134,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "raster", .module = raster },
         .{ .name = "image", .module = image },
         .{ .name = "svg", .module = svg },
+        .{ .name = "pool", .module = pool },
     });
     const pdf_imports = [_]std.Build.Module.Import{
         .{ .name = "scene", .module = scene },
@@ -282,6 +283,11 @@ pub fn build(b: *std.Build) void {
     // Vendored C code is built with UBSan in safe modes; carry its runtime so
     // that C programs can link libsiv.a without Zig.
     static.bundle_ubsan_rt = true;
+    // A section per function and datum, so that a program linking with
+    // --gc-sections keeps only what it calls: the document renderer
+    // (D32) costs nothing to one that never creates a document.
+    static.link_function_sections = true;
+    static.link_data_sections = true;
     b.installArtifact(shared);
     b.getInstallStep().dependOn(&b.addInstallArtifact(static, .{ .dest_sub_path = "libsiv.a" }).step);
 
@@ -357,6 +363,9 @@ pub fn build(b: *std.Build) void {
         .root_module = ctx.module("tests.zig", &(internal ++ [_]std.Build.Module.Import{
             .{ .name = "abi", .module = abi },
             .{ .name = "png", .module = b.createModule(.{ .root_source_file = b.path("test/render/png.zig") }) },
+            // The WPT reftests render documents directly (test/doc).
+            .{ .name = "doc", .module = doc },
+            .{ .name = "css", .module = css },
         })),
         .filters = test_filters,
         .test_runner = test_runner,
@@ -491,6 +500,22 @@ pub fn build(b: *std.Build) void {
         }),
     });
     b.step("bench-render-cpu", "Run the CPU renderer benchmarks").dependOn(&b.addRunArtifact(bench_render_cpu).step);
+
+    // Document renderer benchmarks (D32), likewise not part of `test`.
+    const bench_doc = b.addExecutable(.{
+        .name = "bench-doc",
+        .root_module = ctx.module("src/doc/bench.zig", &.{
+            .{ .name = "doc", .module = doc },
+            .{ .name = "css", .module = css },
+            .{ .name = "scene", .module = scene },
+            .{ .name = "raster", .module = raster },
+            .{ .name = "text", .module = text },
+            .{ .name = "pool", .module = pool },
+        }),
+    });
+    const bench_doc_run = b.addRunArtifact(bench_doc);
+    bench_doc_run.addPassthruArgs();
+    b.step("bench-doc", "Run the document renderer benchmarks [-- FILE...]").dependOn(&bench_doc_run.step);
 
     // The document renderer's tool: a document to a PNG (D32).
     const doc_render = b.addExecutable(.{

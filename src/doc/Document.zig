@@ -99,6 +99,9 @@ markers: std.AutoHashMapUnmanaged(u32, *paint_mod.MarkerGlyphs) = .empty,
 scratch: std.heap.ArenaAllocator,
 /// Bumped when layout changes (positions of anything may move).
 generation: u64 = 0,
+/// Workers that shape text ahead of layout (D32); null shapes as layout
+/// goes, on the calling thread.
+executor: ?@import("pool").Executor = null,
 /// The width layout ran at, and whether it finished.
 width: f32 = 0,
 complete: bool = false,
@@ -247,6 +250,14 @@ fn collect(d: *Document) Error!void {
                 var t: std.ArrayList(u8) = .empty;
                 defer t.deinit(d.gpa);
                 try dom.textContent(d.gpa, cur, &t);
+                // XHTML (e-books, test suites) wraps style sheets in CDATA
+                // sections, which an HTML parser keeps as text.
+                const trimmed = std.mem.trim(u8, t.items, " \t\r\n");
+                if (std.mem.startsWith(u8, trimmed, "<![CDATA[") and std.mem.endsWith(u8, trimmed, "]]>")) {
+                    const inner = try d.gpa.dupe(u8, trimmed[9 .. trimmed.len - 3]);
+                    t.deinit(d.gpa);
+                    t = .fromOwnedSlice(inner);
+                }
                 const media = dom.attr(cur, .media);
                 const s = try d.gpa.create(css.Sheet);
                 errdefer d.gpa.destroy(s);
@@ -572,10 +583,32 @@ pub fn layout(d: *Document, cache: *text.FontCache, width: f32, viewport_h: f32,
     d.width = width;
     if (d.complete) return true;
     e.stop_y = stop_y;
+    if (d.executor) |exec| if (exec.workers > 1) try d.preshape(e, exec, stop_y);
     d.complete = try e.run();
     d.generation += 1;
     e.trim(e.clock);
     return d.complete;
+}
+
+/// Shapes ahead, on the executor, the IFCs layout to `stop_y` will want:
+/// the first unshaped ones in tree order, as many text bytes as the
+/// height from what is laid out to `stop_y` holds (by the bytes per pixel
+/// measured so far, else four, a 16 px text's), with a margin.
+fn preshape(d: *Document, e: *layout_mod.Engine, exec: @import("pool").Executor, stop_y: f32) Error!void {
+    const per_px: f32 = if (e.bytes_laid > 4096 and e.height_laid > 0) @as(f32, @floatFromInt(e.bytes_laid)) / e.height_laid else 4;
+    const budget: f32 = if (std.math.isInf(stop_y)) std.math.inf(f32) else @max(0, stop_y - e.height_laid) * per_px * 1.5 + 2048;
+    var list: std.ArrayList(u32) = .empty;
+    defer list.deinit(d.gpa);
+    var bytes: usize = 0;
+    for (d.tree.ifcs.items[e.frontier..], e.frontier..) |ifc, i| {
+        if (e.ifc_cache[i].shaped != null) continue;
+        if (@as(f32, @floatFromInt(bytes)) >= budget) break;
+        try list.append(d.gpa, @intCast(i));
+        bytes += ifc.text.len;
+    }
+    // Not worth waking workers for a few lines.
+    if (bytes < 2048) return;
+    try e.preshape(exec, list.items);
 }
 
 /// The document's height (estimated below what is laid out).

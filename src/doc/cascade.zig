@@ -681,11 +681,12 @@ pub const Cascade = struct {
             c.root_font_size = st.inh.font_size;
             c.root_line_height = st.lineHeightPx(st.inh.font_size * 1.2);
         }
-        // Pseudo-elements that some rule targets.
-        const st = c.store.get(s);
-        if (!st.box.display.isNone()) {
+        // Pseudo-elements that some rule targets. (Copies: computing
+        // their styles may grow the store, which `get` points into.)
+        const display = c.store.get(s).box.display;
+        if (!display.isNone()) {
             inline for (.{ sel.PseudoElement.before, sel.PseudoElement.after, sel.PseudoElement.marker }) |p| {
-                if (p != .marker or st.box.display.list_item) {
+                if (p != .marker or display.list_item) {
                     try c.match(id, p);
                     if (c.matched.items.len > 0) {
                         const ps = try c.computeMatched(id, s, false, false);

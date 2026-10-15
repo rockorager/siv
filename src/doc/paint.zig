@@ -71,6 +71,11 @@ pub const MarkerGlyphs = struct {
 /// A text range in an IFC, highlighted.
 pub const Highlight = struct { ifc: u32, start: u32, end: u32, color: Color };
 
+/// A rectangle with its edges rounded to whole (CSS) pixels.
+fn snap(r: Rect) Rect {
+    return .{ .x0 = @round(r.x0), .y0 = @round(r.y0), .x1 = @round(r.x1), .y1 = @round(r.y1) };
+}
+
 pub const Painter = struct {
     engine: *layout.Engine,
     palette: Palette,
@@ -180,7 +185,9 @@ pub const Painter = struct {
         const opacity = st.box.opacity;
         if (opacity < 1) try p.b.pushLayer(.{ .opacity = opacity });
         defer if (opacity < 1) p.b.popLayer() catch {};
-        const r = Rect.xywh(x, y, b.w, b.h);
+        // Box edges on whole pixels, as browsers snap them: no
+        // antialiased seams where boxes meet or overlap.
+        const r = snap(Rect.xywh(x, y, b.w, b.h));
         if (id == p.tree().root) {
             try p.canvas(r);
         } else if (b.node != .none or b.kind != .inline_root) {
@@ -190,7 +197,7 @@ pub const Painter = struct {
         if (b.marker != none and st.inh.visibility == .visible) try p.marker(id, x, y);
         const clip = st.box.overflow_x != .visible or st.box.overflow_y != .visible;
         if (clip and b.kind != .replaced) {
-            const inner = Rect.xywh(x + b.border[3], y + b.border[0], b.w - b.border[1] - b.border[3], b.h - b.border[0] - b.border[2]);
+            const inner = snap(Rect.xywh(x + b.border[3], y + b.border[0], b.w - b.border[1] - b.border[3], b.h - b.border[0] - b.border[2]));
             try p.b.pushLayer(.{ .clip = .{ .shape = .{ .rect = inner } } });
         }
         defer if (clip and b.kind != .replaced) p.b.popLayer() catch {};
@@ -573,7 +580,7 @@ pub const Painter = struct {
         const content_left = x + b.border[3] + b.padding[3];
         const rtl = st.inh.direction == .rtl;
         var pen = if (rtl) x + b.w - b.border[1] - b.padding[1] else content_left - g.width;
-        const baseline = y + b.baseline;
+        const baseline = @round(y + b.baseline);
         for (g.runs) |run| {
             const face = p.engine.fonts.cache.face(run.font) orelse continue;
             p.glyphs.clearRetainingCapacity();
@@ -791,7 +798,7 @@ pub const Painter = struct {
             const face = p.engine.fonts.cache.face(f.font) orelse continue;
             const c = p.textColor(st);
             const paint_color = p.color(c, Color.black);
-            const baseline = cy + line.baseline + f.shift;
+            const baseline = @round(cy + line.baseline + f.shift);
             const x = cx + f.x;
             p.glyphs.clearRetainingCapacity();
             for (l.fragGlyphs(f)) |g| try p.glyphs.append(p.scratch, .{ .id = g.id, .x = x + g.x, .y = baseline + g.y });

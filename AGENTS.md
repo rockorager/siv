@@ -106,7 +106,7 @@ owns its directories and does not edit another workstream's files.
 | `html` | `src/html/` | Document renderer | none |
 | `css` | `src/css/` | Document renderer | none |
 | `markdown` | `src/markdown/` | Document renderer | `html` |
-| `doc` | `src/doc/` | Document renderer | `html`, `markdown`, `css`, `text`, `scene`, `raster`, `image`, `svg` |
+| `doc` | `src/doc/` | Document renderer | `html`, `markdown`, `css`, `text`, `scene`, `raster`, `image`, `svg`, `pool` |
 | `pdf` | `src/pdf/` | Desktop integration | `scene`, `raster`, `render_cpu`, `text`, `harfbuzz_subset` |
 | `platform` | `src/platform/` | Event loop and Wayland platform | `loop`, `wayland`, `xkbcommon` |
 | `compositor` | `src/compositor/` | Compositor thread | `scene`, `raster`, `render_cpu`, `render_vulkan`, `pool`, `loop`, `platform` |

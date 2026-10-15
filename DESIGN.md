@@ -5591,6 +5591,206 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   edge of layer-shell version 5, not exposed since an automatic zone
   covers the bars and docks it is for.
 
+### D32. The document renderer
+
+- **Requirement:** siv applications show documents, not the web:
+  Markdown files, RSS and Atom items, HTML email, and EPUB e-books, with
+  real CSS, at native speed, through the same display lists, text engine,
+  accessibility, and C ABI as everything else. No JavaScript and no
+  networking: the application decides what may be fetched.
+- **Decision:** a document renderer inside siv, pure Zig without new
+  dependencies, in modules of its own below a small public API.
+  - **Modules.** `html` (no imports): the WHATWG tokenizer and tree
+    construction with error recovery, character references, encoding
+    sniffing (BOM, `<meta charset>`, windows-1252 fallback), into a
+    compact DOM of plain indices with interned names (`gen_atoms.py`
+    writes the atom and entity tables). `css` (no imports): the CSS Syntax
+    tokenizer, the sheet parser (`@media`, `@supports`, `@import`,
+    `@layer`, `@font-face`), selectors Level 4 (compound and complex
+    selectors, `:is()`, `:where()`, `:not()`, `:has()`, the nth- family,
+    attribute selectors with flags), specificity, media queries Level 4
+    (width, height, `prefers-color-scheme`, `prefers-reduced-motion`,
+    `prefers-contrast`, ranges), values with `calc()`, `min()`, `max()`,
+    `clamp()`, custom properties and `var()`, Color Level 4 and 5
+    (`oklch`, `oklab`, `lab`, `lch`, `hwb`, `color-mix()`,
+    system colors), and computed styles interned in a
+    store: elements with equal computed values share one `css.Style`
+    (a struct split into inherited and box parts, hashed and interned).
+    `markdown` (imports `html`): CommonMark 0.31.2 (the reference
+    implementation's block and inline algorithms) plus GFM tables, task
+    lists, strikethrough, and autolinks, rendered to HTML and parsed by
+    `html`, so raw HTML inside Markdown is just HTML. `doc` (imports
+    `html`, `markdown`, `css`, `text`, `scene`, `raster`, `image`, `svg`,
+    `pool`): the cascade (user agent, user, author origins, `!important`,
+    inheritance, a Bloom filter of ancestors for descendant selectors,
+    rules bucketed by id, class, and tag), the box tree, layout, painting,
+    hit testing, find, selection, locators, and the accessibility tree.
+    `docview` (imports `ui`, `doc`, and the low-level modules): the widget.
+    `ui` never references `doc`: the widget is a canvas node with two new
+    canvas hooks (`Canvas.banded`, `Canvas.semantics`).
+  - **Layout.** Block flow with margin collapsing, inline formatting
+    contexts over `text.ShapedParagraph` (siv's shaping, bidi, font
+    fallback, line breaking, hyphenation; `text-wrap: pretty` with
+    Knuth and Plass, `balance` by searching the narrowest width with the
+    same line count), atomic inlines as U+FFFC, flexbox (the spec's
+    algorithm: base sizes, automatic minimum sizes, wrapping, `order`,
+    `align-content`, auto margins, baselines), grid (explicit and
+    implicit tracks, `repeat()` with `auto-fill`/`auto-fit`, `minmax()`,
+    `fr`, named areas, auto placement with `dense`, the track
+    sizing algorithm), positioning (relative; absolute and fixed against
+    the document), lists with markers, images and SVG as replaced
+    elements (`object-fit`), `overflow` clipping. Tables lay out with
+    the auto algorithm already (phase 2 completes them); floats are
+    blocks until phase 2.
+  - **Pipeline and threads.** A `Document` is used by one thread at a
+    time. The widget runs one job at a time on the worker pool: parse,
+    cascade, and box tree; then layout in slices. The first slice stops
+    once content passes the bottom of the viewport plus a screen
+    (`Engine.stop_y`; flows are resumable), so the first screen of a long
+    document shows after its parse and cascade, and later slices of
+    20 000 px each run at low priority until the end. Font resolution
+    runs on the UI thread between jobs (`ui.Fonts` is not thread-safe).
+    Layout jobs hold the font cache's shared lock, as text nodes' shaping
+    jobs do, and shape the IFCs ahead of the flow in parallel on the
+    other workers (`Engine.preshape`, a fork-join over the pool):
+    shaping is most of the cost of laying out text, and IFCs shape
+    independently. While a job has the document, a frame replays the
+    widget's last drawing. Destroying the node cancels a queued job and
+    orphans a running one, which frees the document when it returns.
+  - **Bounded memory and incremental work.** An IFC's shaping and lines
+    are caches (24 MB per document, least recently used dropped, rebuilt
+    on demand); boxes keep only geometry. Heights below what is laid out
+    are estimates from the text per pixel measured so far, so the
+    scroll range is close before layout ends. A width change keeps
+    shaping and relays out from the top to the first screen; a theme
+    change restyles only when the color scheme changes (media queries),
+    and system colors resolve at paint time from the theme's palette, so
+    a palette change only repaints.
+  - **Painting.** Into `scene.Builder`, so documents render on the CPU
+    and Vulkan renderers and into PDF. Only a band is painted: a canvas
+    with `banded` draws the viewport plus a screen above and below, and
+    scrolling out of that band draws again (`Window.checkCulled`, as long
+    texts do, D8). Box edges and text baselines are snapped to whole CSS
+    pixels as browsers snap them. Images come through paint hooks: the
+    widget decodes with `ui.Image.load` on the pool and keeps the images
+    alive with the display lists that draw them; SVG (files and inline
+    `<svg>`) is parsed by the `svg` module.
+  - **Public API** (`siv_docview`, `src/abi/api_document.zig`; Zig and
+    Lua from the schema). A document node created from bytes, a kind
+    (HTML, Markdown, plain text), a base URL, a user style sheet, a
+    color scheme (the window's theme, light, or dark), flags (remote
+    images, no author styles), a font size, a loader callback that the
+    application answers with `siv_docview_supply` (now or later, for
+    style sheets, images, and fonts; siv never fetches), and an event
+    callback (link activation, loaded, size, find results, selection,
+    blocked remote images). Calls: supply, load the blocked images, find
+    (next and previous), selected text, select all, scroll to a
+    fragment, locator at a y and the y of a locator, title. The node
+    sizes to its content at its width; applications put it in a scroll
+    node. `siv_docview_*` is named so because the document portal owns
+    `siv_document_*` (D19).
+  - **Accessibility** (D18): a canvas's `semantics` hook lists virtual
+    objects under its node: headings with levels, links, lists and items
+    with positions, tables, rows, and cells, images by their alt text,
+    paragraphs. The AT-SPI bridge keys snapshot nodes by node and virtual
+    index, so they get paths of their own; they are read-only (no
+    actions) in phase 1.
+  - **Build option and static users.** `-Ddocument=false` leaves the
+    renderer out: every `siv_docview` function returns
+    `SIV_ERROR_UNSUPPORTED` and none of its code is compiled. `libsiv.a`
+    is built with a section per function, so a static program that never
+    calls `siv_docview` drops the renderer when it links with
+    `--gc-sections`.
+  - **Known simplifications** (phase 1): no re-shaping across line
+    breaks at unsafe-to-break edges; `text-transform` is ASCII;
+    `letter-spacing` is added per character outside shaping; WOFF2
+    sources are skipped (no Brotli); floats lay out as blocks; no
+    `writing-mode`; virtual accessible objects have no actions; siv and
+    its apps have no syntax highlighter, so code blocks are monochrome.
+- **Measurements** (`zig build bench-doc -Doptimize=ReleaseFast`, a
+  4-core orb, the system's DejaVu fonts, generated inputs: an article of
+  50 KB of text in sections, lists, quotes, tables, code, and grids,
+  with 20 KB of CSS with custom properties, `calc()`, `color-mix()`,
+  media queries, `text-wrap: pretty`, and `hyphens: auto`; a 1.5 MB
+  document of the same; scrolling at 800 × 1000):
+
+
+  | Measure | Budget | Result |
+  | --- | --- | --- |
+  | Article (72 KB with its CSS): parse, style, lay out | a few ms | 5.5 ms (parse 0.9, cascade and boxes 1.3, layout 3.2); 10.6 ms on one thread |
+  | 1.5 MB document, first screen | tens of ms | 48 ms (parse 16, cascade and boxes 30, layout 1.3) |
+  | 1.5 MB document, the rest (background slices) | — | 139 ms; 525 000 px tall; 33 MB held after |
+  | Scroll: a band repaint (3 viewports), once per viewport scrolled | well under 1 ms per frame | 0.66 ms average, 3.2 ms worst; 0.07 ms per frame scrolling a viewport per 10 frames |
+  | Width change, back to the first screen (1.5 MB) | — | 10 ms |
+  | User agent style sheet, parsed once per process | — | 0.09 ms |
+
+  The article misses "a few milliseconds" on one thread and meets it
+  with the pool; the worst band repaint (a band whose IFCs were dropped
+  from the cache and are shaped again) is a frame over budget once per
+  viewport scrolled.
+  Where the time goes (callgrind, the article on one thread): 61 % in
+  `text.ShapedParagraph.init` (HarfBuzz 20 %, line break classes 9 %,
+  bidi 6 %, scripts 7 %, segmentation 5 %), 10 % inline layout and
+  Knuth and Plass, 8 % the cascade, 8 % the HTML parser, the rest the box
+  tree and style interning. Two changes followed: left-to-right text of
+  European scripts skips SheenBidi (`bidi.simpleLtr`, checked against it
+  in a test), −5 %, and shaping ahead in parallel, 10.6 → 5.5 ms for
+  the article. The long document's first screen is its parse (16 ms)
+  and cascade (28 ms); its layout to the first screen is 1.3 ms.
+- **Correctness** (all in `zig build test`): html5lib's tree
+  construction tests without scripting, 1754 of 1754
+  (`src/html/testdata`, MIT); the CommonMark spec's examples, 652 of
+  652 (fetched, CC-BY-SA, D25); web-platform-tests CSS reftests
+  imported by `test/wpt/import.py` (BSD-3-Clause; reftests without
+  scripts, images, or resources other than the Ahem font, rendered at
+  800 × 600 with Ahem and siv's Droid test font, test and reference
+  compared allowing 20 pixels to differ by more than 32 in a channel),
+  per suite: css2 223 of 316, css-flexbox 209 of 400, css-grid 58 of 198,
+  css-values 56 of 123, css-variables 46 of 70 (592 of 1107, 53 %; a
+  regression fails the test); golden images through the C API (`test/abi/docview.zig`); fuzz
+  targets for the HTML parser, the CSS parser, and the Markdown parser.
+- **Layout unification.** Should siv's widget layout (D26) become this
+  CSS engine? The evidence says no, not now:
+  - The models differ on purpose. D26 is one-way constraint layout
+    whose cost is proportional to what changed: each node caches its
+    last constraints and sizes, and a clean subtree costs one
+    comparison. The document engine is built for flow documents: it lays
+    out lazily by y, resumes, and keeps bounded caches, but a width
+    change relays out from the top (10.6 ms to the first screen of the
+    1.5 MB document, against D26's comparisons for an unchanged
+    subtree), and its inputs are interned CSS styles from a cascade.
+    Widgets would need either a style store entry per node change or an
+    adapter from `siv_layout_desc` to CSS styles; both put allocation
+    and hashing on paths D26 keeps allocation-free.
+  - What widgets would gain is narrow: min-content sizes, margins and
+    auto margins, `minmax()` and named grid areas, baseline alignment.
+    D26 already decided against margins and min-content (its reverse-if
+    is stock widgets needing min-content, which none does yet), and
+    every stock widget and the user guide's golden images depend on
+    D26's rules (a node's `max_width` beating a stretching parent,
+    fractions, no margins), which CSS defines differently.
+  - Migration cost and risk: every application's layout changes, the
+    C API's layout descriptors change meaning before 1.0's freeze (D30),
+    and the headless golden images of the widgets, the guide, and the
+    files app all move, for no user-visible gain today.
+  - **Decision:** no unification. The engines stay separate and share
+    what is shared below them (text shaping, line breaking, display
+    lists, images, SVG). If stock widgets come to need min-content or
+    grid areas (D26's reverse-if), port those algorithms from `doc`
+    (its grid track sizing is the spec's) into D26's model rather than
+    replacing it.
+- **Alternatives:** WebKit or Servo embedded (the other thread's
+  siv-webview covers the web; for documents they bring JavaScript,
+  networking, and a process model siv does not want); litehtml or a
+  C library (C++, its own text stack, and no lazy layout); rendering
+  Markdown to siv's text nodes (no CSS, no email or e-books); laying out
+  the whole document before showing it (the first screen of a 1.5 MB
+  document would take 260 ms instead of 46).
+- **Reverse if:** documents need scripts (then they are the web: use
+  siv-webview); a frame-budget profile shows the widget's band repaints
+  dominating scrolling on real content (then paint in a job ahead of the
+  viewport); D26's reverse-if comes true (see layout unification).
+
 ## Lessons from ourokit
 
 | ourokit | siv |

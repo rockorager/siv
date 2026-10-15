@@ -228,6 +228,13 @@ fn edge(st: *const Style, start: bool, basis: f32) f32 {
     return st.box.margin[side].resolve(basis) + st.borderWidth(side) + st.box.padding[side].resolve(basis);
 }
 
+/// The style of the text at `at`: its run's, or the IFC's without runs
+/// (only atomic inlines).
+fn runStyle(ifc: *const box_mod.Ifc, at: u32) StyleId {
+    if (ifc.runs.len == 0) return ifc.style;
+    return ifc.runs[runStyleAt(ifc, at)].style;
+}
+
 fn runStyleAt(ifc: *const box_mod.Ifc, at: u32) usize {
     var lo: usize = 0;
     var hi: usize = ifc.runs.len;
@@ -299,7 +306,7 @@ fn units(b: *Builder, intrinsic_mode: ?bool) Error![]Unit {
         while (item_i < ifc.items.len and ifc.items[item_i].offset == seg.end and ifc.items[item_i].kind == .close) : (item_i += 1) {
             u.advance += edge(b.style(ifc.inline_boxes[ifc.items[item_i].index].style), false, b.width);
         }
-        const rs = cx.store.get(ifc.runs[runStyleAt(ifc, seg.end -| 1)].style);
+        const rs = cx.store.get(runStyle(ifc, seg.end -| 1));
         // Letter and word spacing.
         if (rs.inh.letter_spacing != 0 or rs.inh.word_spacing != 0) {
             var n_chars: f32 = 0;
@@ -403,7 +410,7 @@ fn greedy(b: *Builder, us: []const Unit, width: f32, indent: f32, out: *std.Arra
                 merged[i] = rest;
                 return greedyFromState(b, merged, i, width, out, false);
             }
-            const style = b.style(b.cx.ifc.runs[runStyleAt(b.cx.ifc, u.start)].style);
+            const style = b.style(runStyle(b.cx.ifc, u.start));
             if (style.inh.overflow_wrap != .normal or style.inh.word_break == .break_all or style.inh.word_break == .break_word) {
                 const at = graphemeFit(b, u.start, u.end - trailingBytes(b.cx.ifc.text[u.start..u.end]), limit);
                 if (at > u.start and at < u.end) {
@@ -465,9 +472,9 @@ fn hyphenate(b: *Builder, u: Unit, room: f32) Error!?u32 {
     const cx = b.cx;
     const h = cx.fonts.hyphenation orelse return null;
     const ifc = cx.ifc;
-    const rs = b.style(ifc.runs[runStyleAt(ifc, u.start)].style);
+    const rs = b.style(runStyle(ifc, u.start));
     if (rs.inh.hyphens != .auto) return null;
-    const fi = cx.fonts.info(ifc.runs[runStyleAt(ifc, u.start)].style);
+    const fi = cx.fonts.info(runStyle(ifc, u.start));
     const hyph = (try h.get(fi.language)) orelse return null;
     const s = ifc.text[u.start..u.end];
     // The word: letters from the start (skip leading punctuation).
@@ -496,7 +503,7 @@ fn hyphenate(b: *Builder, u: Unit, room: f32) Error!?u32 {
 
 fn hyphenWidth(b: *const Builder, at: u32) ?f32 {
     const ifc = b.cx.ifc;
-    const fi = b.cx.fonts.info(ifc.runs[runStyleAt(ifc, at)].style);
+    const fi = b.cx.fonts.info(runStyle(ifc, at));
     const id = fi.primary orelse return null;
     const face = b.cx.fonts.cache.face(id) orelse return null;
     const g = face.nominalGlyph(0x2010) orelse face.nominalGlyph('-') orelse return null;
@@ -792,7 +799,7 @@ fn emitLine(b: *Builder, start: u32, end_: u32, hyphen: bool, first: bool, top: 
     // A hyphen ends a line broken inside a word.
     if (hyphen) {
         const at = end;
-        const fi = cx.fonts.info(ifc.runs[runStyleAt(ifc, at -| 1)].style);
+        const fi = cx.fonts.info(runStyle(ifc, at -| 1));
         if (fi.primary) |fid| if (cx.fonts.cache.face(fid)) |face| {
             if (face.nominalGlyph(0x2010) orelse face.nominalGlyph('-')) |g| {
                 const gs: u32 = @intCast(b.glyphs.items.len);

@@ -457,6 +457,7 @@ fn sizeTracks(e: *Engine, g: *Grid, columns: bool, avail: ?f32, contribution: an
 }
 
 fn areaSize(ax: *const Axis, start: u32, span: u32, gap: f32) f32 {
+    if (span == 0) return 0;
     var s: f32 = gap * @as(f32, @floatFromInt(span - 1));
     for (ax.tracks.items[start..][0..span]) |t| s += t.base;
     return s;
