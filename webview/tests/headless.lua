@@ -1,4 +1,4 @@
--- siv.webview on siv's headless backend: run by `zig build test` through
+-- siv.webview on siv's headless backend: run by `zig build test-webview` through
 -- siv-webview-lua, with the engine rendering in software.
 local siv = require("siv")
 local webview = require("siv.webview")

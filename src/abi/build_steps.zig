@@ -26,7 +26,14 @@ pub const Options = struct {
     test_headless: *std.Build.Step,
 };
 
-pub fn add(b: *std.Build, o: Options) void {
+/// What other parts of the build use: the generated headers' directory
+/// and the `siv` module (linking libsiv.so).
+pub const Outputs = struct {
+    include: std.Build.LazyPath,
+    wrapper: *std.Build.Module,
+};
+
+pub fn add(b: *std.Build, o: Options) Outputs {
     // Generators (D3).
     const gen = b.addExecutable(.{
         .name = "siv-abi-gen",
@@ -255,6 +262,7 @@ pub fn add(b: *std.Build, o: Options) void {
 
     o.test_step.dependOn(test_abi);
     o.test_step.dependOn(test_c);
+    return .{ .include = installed.path(b, "include"), .wrapper = wrapper };
 }
 
 fn linkAbi(lib: *std.Build.Step.Compile, version_script: std.Build.LazyPath) void {

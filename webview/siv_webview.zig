@@ -1,4 +1,4 @@
-//! siv-webview for Zig: the C API (include/siv-webview.h) with siv's Zig
+//! siv-webview for Zig: the C API (siv-webview.h) with siv's Zig
 //! types, and idiomatic wrappers in the style of siv's generated module:
 //! slices for strings, errors for results, methods on the handle.
 //!
@@ -9,8 +9,8 @@
 //!     const page = wv.view(txn, root);
 //!     try wv.loadUri("https://example.com");
 //!
-//! Build it with the `siv` module (share/siv/siv.zig of an installed siv)
-//! as its import and link libsiv-webview.
+//! siv's build exposes it to dependents as `siv_webview` when it builds
+//! siv-webview (it links libsiv-webview); see webview/build_steps.zig.
 
 const std = @import("std");
 const siv = @import("siv");

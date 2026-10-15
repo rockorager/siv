@@ -1,7 +1,7 @@
 /* A small browser: an address bar, back, forward, and reload, and a web
  * view below them.
  *
- *     siv-webview-browser [URL]
+ *     zig build && ./zig-out/bin/siv-webview-browser [URL]
  *
  * Ctrl+L focuses the address bar; the page's title is the window's.
  * BROWSER_NO_SCRIPTS=1 turns JavaScript off; BROWSER_INSPECTOR=1 turns on

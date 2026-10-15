@@ -18,12 +18,19 @@
 //!                             D12's thresholds (on a quiet machine)
 //!   zig build bench-latency   input-to-photon on the headless backend,
 //!                             against D25's budget (on a quiet machine)
+//!   zig build test-webview    siv-webview's headless tests (webview/), when
+//!                             it is built (also part of `test` then)
 //!
 //! Options:
 //!   -Dtest-filter=<text>      only run tests whose name contains <text>
 //!   -fsys=harfbuzz            link the system HarfBuzz instead of building it
 //!   -fsys=sheenbidi           link the system SheenBidi instead of building it
 //!   -fsys=lua                 link the system Lua 5.5 into libsiv-lua
+//!   -Dwebview=auto|true|false siv-webview (webview/build_steps.zig):
+//!                             libsiv-webview, its Zig and Lua modules, the
+//!                             example browsers. auto (the default) builds it
+//!                             when pkg-config finds WPE WebKit 2.50+ with
+//!                             WPEPlatform, true requires it, false skips it
 //!   -fsys=lcms2, libwebp, libavif, dav1d, libjxl
 //!                             link the system image decoders and Little CMS
 //!                             (src/image/build_steps.zig)
@@ -50,6 +57,13 @@ pub fn build(b: *std.Build) void {
     const document = b.option(bool, "document", "Build the HTML, CSS, and Markdown document renderer (default: true)") orelse true;
     options.addOption(bool, "document", document);
     const build_options = options.createModule();
+    // siv-webview (webview/, D33): libsiv-webview, its Zig and Lua modules,
+    // the example browsers, and their tests. Needs WPE WebKit; auto builds
+    // it when pkg-config finds it.
+    const webview_mode = b.option(enum { auto, @"true", @"false" }, "webview", "Build siv-webview, the web view on WPE WebKit: auto (default: when pkg-config finds WPE WebKit 2.50+ with WPEPlatform), true, or false") orelse .auto;
+    const webview_steps = @import("webview/build_steps.zig");
+    const webview_missing: ?[]const u8 = if (webview_mode == .@"false") null else webview_steps.missing(b);
+    const webview = webview_mode != .@"false" and webview_missing == null;
 
     // C and external dependencies. Each C library is a module that carries
     // its translated header and, when vendored, an object with its compiled
@@ -569,7 +583,7 @@ pub fn build(b: *std.Build) void {
     // Generated headers and bindings, libsiv.so link setup (SONAME, symbol
     // versions), the `siv` Zig module, and the abi, ABI library, and C
     // tests (D2, D3). Owned by the ABI workstream.
-    @import("src/abi/build_steps.zig").add(b, .{
+    const abi_out = @import("src/abi/build_steps.zig").add(b, .{
         .target = target,
         .optimize = optimize,
         .version = version,
@@ -588,7 +602,7 @@ pub fn build(b: *std.Build) void {
     // libsiv-lua on top of libsiv.so, the siv-lua runner, its annotations,
     // and the Lua binding's tests (D23). Owned by the Lua binding
     // workstream.
-    @import("src/lua/build_steps.zig").add(b, .{
+    const lua_out = @import("src/lua/build_steps.zig").add(b, .{
         .target = target,
         .optimize = optimize,
         .version = version,
@@ -622,6 +636,41 @@ pub fn build(b: *std.Build) void {
         .shared = shared,
         .headless = headless,
         .test_headless = test_headless,
+        .test_step = test_step,
+    });
+
+    // siv-webview (D33): a web view on the system's WPE WebKit, a library
+    // of its own on top of libsiv's C ABI. Nothing else depends on it, so
+    // without WebKit the rest builds and tests as before: auto skips it
+    // with a notice, true fails.
+    // (The notice prints when the build configures; Zig caches that until
+    // build.zig, the options, or pkg-config's directories change.)
+    if (webview_missing) |what| switch (webview_mode) {
+        .auto => {
+            std.debug.print("siv-webview: skipped, pkg-config does not find {s}; install WPE WebKit 2.50+ with WPEPlatform (Arch: wpewebkit) to build it, or pass -Dwebview=false\n", .{what});
+            const fail = b.addFail(b.fmt("siv-webview is not built: pkg-config does not find {s}", .{what}));
+            b.step("test-webview", "Run siv-webview's headless tests").dependOn(&fail.step);
+        },
+        .@"true" => {
+            const fail = b.addFail(b.fmt("-Dwebview=true, but pkg-config does not find {s}: install WPE WebKit 2.50+ with WPEPlatform (Arch: wpewebkit), or pass -Dwebview=auto or false", .{what}));
+            b.getInstallStep().dependOn(&fail.step);
+            test_step.dependOn(&fail.step);
+            b.step("test-webview", "Run siv-webview's headless tests").dependOn(&fail.step);
+        },
+        .@"false" => unreachable,
+    } else if (!webview) {
+        const fail = b.addFail("siv-webview is not built: -Dwebview=false");
+        b.step("test-webview", "Run siv-webview's headless tests").dependOn(&fail.step);
+    }
+    if (webview) webview_steps.add(b, .{
+        .target = target,
+        .optimize = optimize,
+        .version = version,
+        .shared = shared,
+        .siv_include = abi_out.include,
+        .siv_module = abi_out.wrapper,
+        .lua_lib = lua_out.lib,
+        .lua_include = lua_out.include,
         .test_step = test_step,
     });
 

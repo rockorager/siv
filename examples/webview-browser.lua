@@ -1,7 +1,7 @@
 -- A small browser in Lua: back, forward, reload, an address bar, and a web
 -- view. The Lua version of browser.c.
 --
---     siv-webview-lua examples/browser.lua [URL]
+--     zig build && ./zig-out/bin/siv-webview-lua examples/webview-browser.lua [URL]
 --
 -- Ctrl+L focuses the address bar; the page's title is the window's.
 local siv = require("siv")

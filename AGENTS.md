@@ -41,6 +41,9 @@ zig build shaders              # after editing src/render/vulkan/shaders/*: comp
 zig build doc-wpt -- css-grid --failures --dump DIR  # WPT reftests one by one (triage, D32)
 zig build examples             # build and install the C programs in examples/
 ./zig-out/bin/siv-lua examples/todo.lua  # run a Lua example; --watch reloads it on edits
+zig build -Dwebview=true       # require siv-webview (webview/, D33); auto (the default)
+                               #   builds it when pkg-config finds WPE WebKit 2.50+, false skips it
+zig build test-webview         # its headless tests (also in `test` when it is built)
 zig build test -Djxl           # include libjxl in a Debug build, and its test
 zig build test-dbus --fuzz -Doptimize=ReleaseSafe  # fuzz a module's parsers
 zig build bench-text -Doptimize=ReleaseFast   # headless text engine benchmarks
@@ -118,6 +121,7 @@ owns its directories and does not edit another workstream's files.
 | `app` | `src/app/` | Public C API | `text`, `loop`, `platform`, `compositor`, `ui`, `dbus`, `a11y`, `portal` |
 | `widgets` | `src/widgets/` | Theming and stock widgets | `siv` (the generated C API wrapper) only (D22) |
 | `lua` | `src/lua/` | Lua binding | `siv` (the generated C API wrapper), `siv_schema` (`src/abi/api.zig` as data), `lua_c` (D23) |
+| `webview` | `webview/` | Web view (siv-webview, D33) | siv's public C ABI (`siv.h`) and the `siv` Zig module only; the system's WPE WebKit, GLib, GBM, EGL. Built when WPE is found (`-Dwebview=auto`); nothing imports it |
 
 The theming workstream also owns `src/ui/theme.zig`,
 `src/ui/user_theme.zig`, and `src/app/user_theme.zig` (D29). The icons
@@ -150,6 +154,9 @@ commit message. In particular:
     writes the committed SPIR-V.
   - `src/image/build_steps.zig`: the image decoders' C sources, generated
     headers, `-fsys` options, and NASM (built from source for dav1d).
+  - `webview/build_steps.zig`: siv-webview's libraries, Zig and Lua
+    modules, example browsers, and tests, and the pkg-config probe for
+    `-Dwebview=auto`.
   - `src/lua/build_steps.zig`: Lua's sources and allowlist of standard
     libraries, libsiv-lua, the siv-lua runner, the generated annotations,
     and the Lua tests (D23).

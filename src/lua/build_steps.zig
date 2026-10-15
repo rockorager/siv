@@ -64,7 +64,15 @@ const allowed_libs = [_][]const u8{
 
 const lua_headers = [_][]const u8{ "lua.h", "luaconf.h", "lualib.h", "lauxlib.h" };
 
-pub fn add(b: *std.Build, o: Options) void {
+/// What other parts of the build use: libsiv-lua, and the directory of
+/// Lua's headers (null with -fsys=lua: the system's are on the default
+/// path).
+pub const Outputs = struct {
+    lib: *std.Build.Step.Compile,
+    include: ?std.Build.LazyPath,
+};
+
+pub fn add(b: *std.Build, o: Options) Outputs {
     const system_lua = b.systemIntegrationOption("lua", .{});
     const lua_dep = if (system_lua) null else b.lazyDependency("lua", .{});
 
@@ -395,6 +403,7 @@ pub fn add(b: *std.Build, o: Options) void {
     integration_run.step.dependOn(&runner.step);
     o.integration_step.dependOn(&integration_run.step);
     b.step("test-integration-lua", "Run the Lua binding against headless sway").dependOn(&integration_run.step);
+    return .{ .lib = lib, .include = if (lua_dep) |dep| dep.path("src") else null };
 }
 
 /// A module with no source of its own that links `module` compiled to an
