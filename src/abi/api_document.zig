@@ -67,7 +67,7 @@ pub const decls = [_]Decl{
         .{ .name = "image", .value = 1, .doc = "An image (<img>, background-image): any format siv decodes (D19), SVG too." },
         .{ .name = "font", .value = 2, .doc = "A font file for @font-face (TrueType or OpenType; WOFF2 sources are skipped)." },
     }),
-    callback("siv_docview_load_fn", "Asks the application for a resource of a document: it decides what may be fetched (files of an e-book, an email's cid: parts, remote images under its policy) and answers with siv_docview_supply or siv_docview_fail, now or later. siv never fetches anything itself.", &.{
+    callback("siv_docview_load_fn", "Asks the application for a resource of a document: it decides what may be fetched (files of an e-book, an email's cid: parts, remote images under its policy) and answers with siv_docview_supply (empty data fails the request), now or later. siv never fetches anything itself.", &.{
         p("node", ref("siv_node"), "The document."),
         p("request", .u32, "Identifies the request in siv_docview_supply."),
         p("url", .string, "The resource's URL, resolved against the document's base URL. Valid during the call."),

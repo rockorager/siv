@@ -5745,9 +5745,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   scripts, images, or resources other than the Ahem font, rendered at
   800 × 600 with Ahem and siv's Droid test font, test and reference
   compared allowing 20 pixels to differ by more than 32 in a channel),
-  per suite: css2 223 of 316, css-flexbox 209 of 400, css-grid 58 of 198,
-  css-values 56 of 123, css-variables 46 of 70 (592 of 1107, 53 %; a
-  regression fails the test); golden images through the C API (`test/abi/docview.zig`); fuzz
+  per suite: css2 227 of 316, css-flexbox 210 of 400, css-grid 58 of 198,
+  css-values 56 of 123, css-variables 46 of 70 (597 of 1107, 54 %; a
+  regression fails the test); a golden corpus (`test/doc/corpus`: siv's
+  README, RSS items with messy HTML, a Standard Ebooks chapter with its
+  CSS); golden images through the C API (`test/abi/docview.zig`); fuzz
   targets for the HTML parser, the CSS parser, and the Markdown parser.
 - **Layout unification.** Should siv's widget layout (D26) become this
   CSS engine? The evidence says no, not now:

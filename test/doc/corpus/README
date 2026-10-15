@@ -1,0 +1,11 @@
+The document renderer's golden corpus (D32), rendered by test/doc/corpus.zig
+against test/golden/doc/.
+
+- readme.md: siv's own README at the time it was added (MIT, siv).
+- rss-*.html: RSS and Atom item bodies written for this corpus to mimic
+  what feeds carry (WordPress, a newsletter platform, a forum digest):
+  unclosed tags, inline styles, stray entities, tables for layout.
+- se/: chapter 1 of The Strange Case of Dr. Jekyll and Mr. Hyde from
+  Standard Ebooks (https://standardebooks.org), with its style sheets.
+  The text is in the public domain; Standard Ebooks dedicates its markup
+  and CSS to the public domain (CC0 1.0).

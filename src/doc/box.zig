@@ -246,7 +246,7 @@ pub const Builder = struct {
         // The initial containing block holds the root box.
         b.tree.root = try b.add(.{ .kind = .block, .node = .none, .style = 0 });
         try b.element(b.tree.root, root);
-        try b.finishIfc(b.tree.root);
+        try b.finishIfc(b.tree.root, true);
     }
 
     fn kindOf(d: css.style.Display) Kind {
@@ -305,7 +305,7 @@ pub const Builder = struct {
             if (b.ifc != null) {
                 try b.atomicInIfc(parent, id, true);
             } else {
-                try b.finishIfc(parent);
+                try b.finishIfc(parent, false);
                 b.appendChild(parent, id);
             }
             return;
@@ -324,7 +324,7 @@ pub const Builder = struct {
             b.tree.boxes.items[id].atomic = true;
             try b.atomicInIfc(parent, id, false);
         } else {
-            try b.finishIfc(parent);
+            try b.finishIfc(parent, false);
             b.appendChild(parent, id);
         }
     }
@@ -357,7 +357,7 @@ pub const Builder = struct {
         try b.pseudo(id, node, sid, .before);
         try b.childrenOf(id, node, sid);
         try b.pseudo(id, node, sid, .after);
-        try b.finishIfc(id);
+        try b.finishIfc(id, true);
         b.ifc = saved_ifc;
         b.open_inlines.clearRetainingCapacity();
         try b.open_inlines.appendSlice(b.gpa, saved_open_items);
@@ -582,8 +582,9 @@ pub const Builder = struct {
     }
 
     /// Ends the IFC being collected: an anonymous block of it, or the
-    /// parent's own content when the parent has no block children.
-    fn finishIfc(b: *Builder, parent: BoxId) Error!void {
+    /// parent's own content when the parent has no block children
+    /// (`final`: none follow).
+    fn finishIfc(b: *Builder, parent: BoxId, final: bool) Error!void {
         var f = b.ifc orelse return;
         b.ifc = null;
         defer {
@@ -632,7 +633,7 @@ pub const Builder = struct {
         // and is a plain block container; otherwise an anonymous block.
         const p = &b.tree.boxes.items[parent];
         var holder: BoxId = parent;
-        if (p.kind != .block or p.first != none or p.data != none or p.node == .none) {
+        if (!final or p.kind != .block or p.first != none or p.data != none or p.node == .none) {
             holder = try b.add(.{ .kind = .inline_root, .node = .none, .style = try b.anonymousStyle(p.style) });
             b.appendChild(parent, holder);
         } else p.kind = .inline_root;
@@ -689,12 +690,12 @@ pub const Builder = struct {
         if (out.items.len == 0 and !st.box.display.isBlockLevel()) return;
         if (st.box.display.isBlockLevel()) {
             const id = try b.add(.{ .kind = .block, .node = node, .style = sid });
-            try b.finishIfc(parent);
+            try b.finishIfc(parent, false);
             b.appendChild(parent, id);
             const saved = b.ifc;
             b.ifc = null;
             try b.text(id, out.items, sid, node, false);
-            try b.finishIfc(id);
+            try b.finishIfc(id, true);
             b.ifc = saved;
             return;
         }

@@ -196,6 +196,21 @@ test "lua: viewer.lua loads an image from a coroutine" {
     try app.h.expectGolden("viewer", 640, 480);
 }
 
+test "lua: docview.lua shows a Markdown file" {
+    var app = try LuaApp.start("examples/docview.lua", .{ .arg = "test/lua/docview.md" });
+    defer app.stop();
+    // The document is parsed and laid out on the pool: wait for its
+    // heading to reach the semantics tree.
+    const w = try app.h.win();
+    var tries: usize = 0;
+    while ((try w.uiWin().semanticsTree()).find(.heading, "Lua docview") == null) : (tries += 1) {
+        if (tries > 1000) return error.Timeout;
+        try app.run("captured.app:dispatch(5)");
+    }
+    try app.h.settle();
+    try app.h.expectGolden("docview", 800, 900);
+}
+
 test "lua: sketch.lua draws a pen's strokes from every sample, erases, and zooms" {
     var app = try LuaApp.start("examples/sketch.lua", .{});
     defer app.stop();
