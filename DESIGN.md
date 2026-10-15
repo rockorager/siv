@@ -3958,6 +3958,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       its item again. Choosing in a submenu reports `select` on the
       submenu and closes the whole chain; a click outside dismisses the
       chain, since the compositor destroys a popup's children with it.
+      A top menu closed without a choice (Escape, or the compositor's
+      dismissal on a click outside) reports `close` to the node that would
+      have got `select`, after its popup is gone. Found by siv-webview:
+      a web engine draws its `<select>` and context menus as siv menus and
+      must be told when one went away unchosen, or it keeps the page's
+      menu open and never shows another.
     - A combo box (`siv_combo_box`, options added with
       `siv_combo_box_item`) is a button showing the selected option that
       opens the options below it in a popup (WAI-ARIA's select-only

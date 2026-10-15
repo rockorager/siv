@@ -499,7 +499,7 @@ fn onRowKey(ud: ?*anyopaque, node: Node, ev: *const siv.Event) callconv(.c) siv.
                 closeMenu(m);
                 _ = c.siv_node_focus(row);
             } else if (e.keysym == k.escape) {
-                closeMenu(m);
+                dismiss(m);
             } else return .pass;
         },
         k.up, k.down => focusStep(node, if (e.keysym == k.down) .next else .previous, true),
@@ -563,9 +563,19 @@ fn onMenuPopupEvent(ud: ?*anyopaque, _: siv.Window, ev: *const siv.WindowEvent) 
     if (w.stateOf(Menu, w.dataHandle(ud), &.{.menu})) |m| {
         // The compositor destroys the popup's children with it.
         m.popup = .null;
-        closeMenu(m);
+        if (m.parent == .null) dismiss(m) else closeMenu(m);
     }
     return false;
+}
+
+/// A top menu closed without a choice (Escape, a click outside) reports
+/// `close` to the node that gets its `select`, so whoever opened it, a
+/// combo box drawn by a web engine for one, knows it is gone.
+fn dismiss(m: *Menu) void {
+    const owner = m.owner;
+    closeMenu(m);
+    var handled = false;
+    _ = c.siv_node_emit(owner, &.{ .type = .close }, &handled);
 }
 
 // Popovers ---------------------------------------------------------------------

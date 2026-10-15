@@ -141,6 +141,7 @@ fn buildMenu(h: *Harness, log: *Log) !MenuFixture {
     };
     for (&f.items, &items) |*n, *d| n.* = c.siv_menu_item(txn, f.button, d);
     _ = c.siv_on(txn, f.button, .select, Log.onSelect, null, log);
+    _ = c.siv_on(txn, f.button, .close, Log.onClose, null, log);
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     return f;
@@ -203,6 +204,9 @@ test "menus: a menu button opens its menu in a popup; keys and clicks choose" {
     try h.settle();
     try testing.expect((try openPopup(&h)) == null);
     try testing.expectEqual(@as(u32, 2), log.selects);
+    // Closed unchosen, the menu says so; choosing did not.
+    try testing.expectEqual(@as(u32, 1), log.closes);
+    try testing.expectEqual(f.button, log.node);
 
     // A click on an item chooses it; a click outside dismisses the menu.
     try h.click(bc[0], bc[1]);
@@ -226,6 +230,7 @@ test "menus: a menu button opens its menu in a popup; keys and clicks choose" {
     try testing.expect((try openPopup(&h)) == null);
     try testing.expectEqual(ui.Toggle.off, (try sem(f.button)).expanded);
     try testing.expectEqual(@as(u32, 3), log.selects);
+    try testing.expectEqual(@as(u32, 2), log.closes);
 }
 
 test "menus: a context menu opens against any node; disabled items cannot be chosen" {
