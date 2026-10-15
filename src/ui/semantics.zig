@@ -60,6 +60,9 @@ pub const Node = struct {
     /// A column header's sort order.
     sort: node_mod.Sort = .none,
     column: u32 = 0,
+    /// Another process's object shown as the last child (D18):
+    /// "BUS_NAME:/object/path", or empty.
+    embed: []const u8 = "",
 };
 
 pub const Tree = struct {
@@ -173,6 +176,7 @@ pub const Tree = struct {
                 .set_size = sem.set_size,
                 .row = sem.row,
                 .sort = sem.sort,
+                .embed = n.a11y_embed,
                 .column = sem.column,
                 .placeholder = if (n.kind == .editor) n.data.editor.placeholder else "",
             });

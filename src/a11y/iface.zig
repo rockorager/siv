@@ -187,6 +187,8 @@ fn childAt(o: Obj, index: i32) ?Ref {
             var it = x.snap().children(x.i);
             var k: i32 = 0;
             while (it.next()) |c| : (k += 1) if (k == index) return x.ref(c);
+            // The embedded object comes last.
+            if (k == index) return Bridge.embedRef(x.snap(), x.n());
             return null;
         },
     }
@@ -210,6 +212,7 @@ fn getChildren(r: *Request) anyerror!void {
         .node => |x| {
             var it = x.snap().children(x.i);
             while (it.next()) |c| try x.ref(c).write(&m.body);
+            if (Bridge.embedRef(x.snap(), x.n())) |e| try e.write(&m.body);
         },
     }
     try m.body.endArray();
@@ -349,7 +352,7 @@ fn propChildCount(ctx: PropertyContext, out: *Encoder) anyerror!void {
             };
             break :blk n;
         },
-        .node => |x| x.n().child_count,
+        .node => |x| x.n().child_count + @intFromBool(x.n().embed.len != 0),
     };
     try out.writeInt32(@intCast(count));
 }

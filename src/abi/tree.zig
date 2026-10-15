@@ -729,6 +729,15 @@ pub export fn siv_set_text_input(txn: t.Txn, node: t.Node, desc: ?*const t.TextI
     }.f, .{ node, desc });
 }
 
+pub export fn siv_set_accessible_embed(txn: t.Txn, node: t.Node, plug: ?[*]const u8, plug_len: usize) void {
+    _ = run(txn, struct {
+        fn f(w: *Window, n: t.Node, ptr: ?[*]const u8, len: usize) Error!void {
+            const id = try nodeIn(w, n);
+            w.txn.ut.setAccessibleEmbed(id, try runtime.string(ptr, len)) catch |err| return mapTxn(err);
+        }
+    }.f, .{ node, plug, plug_len });
+}
+
 pub export fn siv_set_tooltip(txn: t.Txn, node: t.Node, text: ?[*]const u8, text_len: usize) void {
     _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, ptr: ?[*]const u8, len: usize) Error!void {

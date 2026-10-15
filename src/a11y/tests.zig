@@ -565,3 +565,92 @@ test "Application.GetLocale reports the application's language" {
     r = try h.call(atspi.root_path, atspi.iface.application, "GetLocale", .{@as(u32, 0)});
     try testing.expectEqualStrings("sr_RS", try r.read([]const u8));
 }
+
+/// Another process's accessible root, like WebKit's web process: it
+/// answers Socket.Embedded, which tells it its parent.
+const Plug = struct {
+    conn: Connection = undefined,
+    obj: dbus.Object = undefined,
+    embedded: usize = 0,
+    parent: [96]u8 = undefined,
+    parent_len: usize = 0,
+
+    const path = "/org/a11y/webkit/accessible/plug1";
+    const socket: dbus.Interface = .{
+        .name = atspi.iface.socket,
+        .methods = &.{.{ .name = "Embedded", .in = "s", .func = onEmbedded }},
+    };
+
+    fn onEmbedded(r: *dbus.Request) anyerror!void {
+        const self: *Plug = @ptrCast(@alignCast(r.node.ctx));
+        var d = r.args();
+        const p = try d.readString();
+        @memcpy(self.parent[0..p.len], p);
+        self.parent_len = p.len;
+        self.embedded += 1;
+        try r.reply(.{});
+    }
+};
+
+test "another process's object is a node's last child and learns its parent" {
+    var h: Harness = undefined;
+    try h.init();
+    defer h.deinit();
+    var plug: Plug = .{};
+    try plug.conn.initFd(gpa, &h.loop, try h.bus.connect(), .{});
+    defer plug.conn.deinit();
+    plug.obj = .{ .path = Plug.path, .ctx = &plug, .interfaces = &.{&Plug.socket} };
+    try plug.conn.exportObject(&plug.obj);
+    try h.settle();
+
+    var buf: [96]u8 = undefined;
+    const node = h.nodes.list;
+    const before = try (try h.get(h.path(node, &buf), atspi.iface.accessible, "ChildCount")).read(i32);
+    var id_buf: [160]u8 = undefined;
+    const plug_id = try std.fmt.bufPrint(&id_buf, "{s}:{s}", .{ plug.conn.uniqueName(), Plug.path });
+    {
+        const t = try h.win.begin();
+        try t.setAccessibleEmbed(node, plug_id);
+        t.commit();
+    }
+    try h.frame();
+    try h.until(&plug, struct {
+        fn f(p: *Plug) bool {
+            return p.embedded == 1;
+        }
+    }.f);
+    const np = h.path(node, &buf);
+    try testing.expectEqualStrings(np, plug.parent[0..plug.parent_len]);
+    try testing.expectEqual(before + 1, try (try h.get(np, atspi.iface.accessible, "ChildCount")).read(i32));
+    const last = try (try h.call(np, atspi.iface.accessible, "GetChildAtIndex", .{before})).read(Ref);
+    try testing.expectEqualStrings(plug.conn.uniqueName(), last[0]);
+    try testing.expectEqualStrings(Plug.path, last[1].path);
+    var children = try h.call(np, atspi.iface.accessible, "GetChildren", .{});
+    var d = children.decoder();
+    const arr = try d.beginArray();
+    var n: i32 = 0;
+    var tail: Ref = undefined;
+    while (arr.next(&d)) : (n += 1) tail = try d.read(Ref);
+    try testing.expectEqual(before + 1, n);
+    try testing.expectEqualStrings(Plug.path, tail[1].path);
+
+    // Other changes do not embed it again; removing it drops the child.
+    {
+        const t = try h.win.begin();
+        try t.setText(h.nodes.label, "Changed");
+        t.commit();
+    }
+    try h.frame();
+    try testing.expectEqual(@as(usize, 1), plug.embedded);
+    {
+        const t = try h.win.begin();
+        try t.setAccessibleEmbed(node, "");
+        t.commit();
+    }
+    try h.frame();
+    try testing.expectEqual(before, try (try h.get(h.path(node, &buf), atspi.iface.accessible, "ChildCount")).read(i32));
+    // A plug id needs a bus name and an object path.
+    const t = try h.win.begin();
+    try testing.expectError(error.InvalidArgument, t.setAccessibleEmbed(node, "/no/bus"));
+    t.abort();
+}

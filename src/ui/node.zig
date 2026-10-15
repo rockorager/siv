@@ -1166,6 +1166,10 @@ pub const Node = struct {
     hidden: bool = false,
     /// A custom text widget's state for the input method.
     text_input: TextInput = .{},
+    /// Another process's accessible object shown as the node's last
+    /// accessible child (D18): "BUS_NAME:/object/path". Owned; empty for
+    /// none.
+    a11y_embed: []const u8 = "",
 
     pub const Status = enum(u8) {
         /// On the free list (`next` links it).

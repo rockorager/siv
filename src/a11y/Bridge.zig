@@ -628,7 +628,17 @@ pub const SNode = struct {
     /// Identifies the text attributes (styled ranges and paragraph
     /// styles), so a change without a text change is reported.
     attrs: u64 = 0,
+    /// Another process's object, its last child: "BUS:/path" (D18).
+    embed: Str = .{},
 };
+
+/// The reference to a node's embedded object, if it has one.
+pub fn embedRef(s: *const Snapshot, n: *const SNode) ?Ref {
+    if (n.embed.len == 0) return null;
+    const plug = s.str(n.embed);
+    const sep = std.mem.indexOf(u8, plug, ":/") orelse return null;
+    return .init(plug[0..sep], plug[sep + 1 ..]);
+}
 
 pub const none: u32 = std.math.maxInt(u32);
 
@@ -776,6 +786,7 @@ pub const Win = struct {
         try w.build(&w.next, tree);
         defer _ = w.bridge.arena.reset(.retain_capacity);
         if (w.built and events) try w.diff();
+        w.embedNew();
         // Nodes that left the tree get a new generation.
         for (w.cur.nodes.items) |n| {
             if (!w.next.index.contains(n.node)) w.bumpGen(n.node);
@@ -830,6 +841,7 @@ pub const Win = struct {
                 .sort = n.sort,
                 .column = n.column,
                 .row = n.row,
+                .embed = try addStr(gpa, s, n.embed),
             };
             sn.text = if (editor)
                 try addRope(gpa, s, n.value_text)
@@ -905,6 +917,30 @@ pub const Win = struct {
             if (w.active) s = s.with(.active);
         }
         return s;
+    }
+
+    /// Tells each object newly embedded in `next` its parent
+    /// (org.a11y.atspi.Socket.Embedded, as at-spi2-atk's sockets do), so
+    /// that its Parent names the node. Objects embedded before keep it.
+    fn embedNew(w: *Win) void {
+        const b = w.bridge;
+        const c = b.conn orelse return;
+        if (!b.ready) return;
+        const new = &w.next;
+        for (new.nodes.items, 0..) |*n, i| {
+            const r = embedRef(new, n) orelse continue;
+            if (w.built) if (w.cur.index.get(n.node)) |j| {
+                const o = &w.cur.nodes.items[j];
+                if (o.gen == n.gen and std.mem.eql(u8, w.cur.str(o.embed), new.str(n.embed))) continue;
+            };
+            var buf: [96]u8 = undefined;
+            var m = c.methodCall(r.name, r.path(), atspi.iface.socket, "Embedded");
+            m.body.writeString(w.pathIn(new, &buf, @intCast(i))) catch {
+                m.deinit();
+                continue;
+            };
+            _ = c.send(&m) catch {};
+        }
     }
 
     /// Emits the events that take `cur` to `next`.

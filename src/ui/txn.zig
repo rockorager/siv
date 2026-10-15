@@ -467,6 +467,23 @@ pub const Txn = struct {
         t.win.ime.dirty = true;
     }
 
+    /// Shows another process's accessible object under the node (D18):
+    /// "BUS_NAME:/object/path"; empty removes it.
+    pub fn setAccessibleEmbed(t: *Txn, id: NodeId, plug: []const u8) Error!void {
+        const n = try t.live(id);
+        if (plug.len != 0) {
+            const sep = std.mem.indexOf(u8, plug, ":/") orelse return error.InvalidArgument;
+            if (sep == 0 or plug.len - sep - 1 > 95 or !std.unicode.utf8ValidateSlice(plug)) return error.InvalidArgument;
+            for (plug[sep + 1 ..]) |ch| if (!(std.ascii.isAlphanumeric(ch) or ch == '_' or ch == '/')) return error.InvalidArgument;
+        }
+        try t.reserve();
+        const owned = try t.own(u8, plug);
+        t.touch(id);
+        t.release(u8, n.a11y_embed);
+        n.a11y_embed = owned;
+        t.win.dirty.semantics = true;
+    }
+
     /// Sets the node's tooltip text; empty removes it.
     pub fn setTooltip(t: *Txn, id: NodeId, text: []const u8) Error!void {
         const n = try t.live(id);

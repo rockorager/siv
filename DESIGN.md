@@ -2732,6 +2732,20 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     "Remember check box not checked." for activation and focus changes
     (read from its debug log; a stub stands in for X's xkbcomp, which
     Orca 43 calls at startup).
+  - Out-of-process content keeps its own accessibility tree, grafted
+    under a node: `siv_set_accessible_embed` names another connection's
+    object ("BUS_NAME:/path", an AT-SPI plug id), which becomes the
+    node's last child (GetChildren, GetChildAtIndex, ChildCount), and siv
+    calls `org.a11y.atspi.Socket.Embedded(node path)` on it whenever a
+    node first shows it, as at-spi2-atk's sockets do, so its Parent names
+    the node and screen readers walk both ways. The object answers for
+    its own subtree. Found by siv-webview: WebKit's web process
+    publishes each page's tree and hands its plug id to the embedder
+    (`WPEViewAccessible.bind`); without the graft a page was an empty
+    image to Orca. Alternatives: proxying the remote tree through siv's
+    bridge (every call a round trip through the UI thread, and the
+    remote's events re-emitted); a separate top-level accessible for the
+    page (screen readers would not find it inside the window).
 - **Alternatives:** AccessKit's Linux adapter (adds a Rust toolchain).
 - **Reverse if:** AccessKit offers a C build without Rust and covers every
   interface listed above.

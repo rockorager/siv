@@ -407,6 +407,7 @@ pub fn freeNodeData(gpa: std.mem.Allocator, n: *const Node) void {
     gpa.free(n.semantics.description);
     gpa.free(n.tooltip);
     gpa.free(n.text_input.surrounding);
+    gpa.free(n.a11y_embed);
     gpa.free(n.drop.mimes);
     switch (n.data) {
         .text => |t| {
