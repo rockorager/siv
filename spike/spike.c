@@ -180,7 +180,7 @@ static gboolean siv_view_render_buffer(WPEView *view, WPEBuffer *buffer, const W
 	if (S.in_flight > S.max_in_flight) S.max_in_flight = S.in_flight;
 	g_hash_table_insert(S.submit_time, buffer, GSIZE_TO_POINTER((gsize)now_ns()));
 	g_ptr_array_add(S.awaiting, g_object_ref(buffer));
-	if (!S.pace_presented && !S.rendered_idle) S.rendered_idle = g_idle_add(report_rendered, NULL);
+	if (getenv("SPIKE_OLD") && !S.pace_presented && !S.rendered_idle) S.rendered_idle = g_idle_add(report_rendered, NULL);
 	return TRUE;
 }
 
@@ -318,7 +318,34 @@ static void on_release(void *user_data, siv_external slot, uint64_t key) {
 	if (siv_post(S.app, released_on_main, NULL, (void *)(uintptr_t)key) != SIV_OK) fprintf(stderr, "spike: cannot post a release\n");
 }
 
+/* siv 2026-10: configure for frame slots (size and scale), presented per
+ * frame (WebKit's frame callback). */
+static void on_external_event(void *user_data, siv_external slot, const siv_external_event *e) {
+	(void)user_data, (void)slot;
+	if (getenv("SPIKE_OLD")) return;
+	if (e->type == SIV_EXTERNAL_EVENT_TYPE_CONFIGURE) {
+		if (e->scale != S.scale) {
+			S.scale = e->scale;
+			wpe_screen_set_scale(wpe_display_get_screen(wpe_view_get_display(S.view), 0), e->scale);
+			wpe_toplevel_scale_changed(S.toplevel, e->scale);
+		}
+		if (S.log) fprintf(stderr, "spike: configure %ux%u (%ux%u) scale %g\n", e->width, e->height, e->buffer_width, e->buffer_height, e->scale);
+		S.width = (float)e->width, S.height = (float)e->height;
+		wpe_toplevel_resized(S.toplevel, (int)e->width, (int)e->height);
+		wpe_view_resized(S.view, (int)e->width, (int)e->height);
+	} else if (e->type == SIV_EXTERNAL_EVENT_TYPE_PRESENTED) {
+		WPEBuffer *b = (WPEBuffer *)(uintptr_t)e->key;
+		for (guint i = 0; i < S.awaiting->len; i++)
+			if (g_ptr_array_index(S.awaiting, i) == b) {
+				wpe_view_buffer_rendered(S.view, b);
+				g_ptr_array_remove_index(S.awaiting, i);
+				break;
+			}
+	}
+}
+
 static void sync_geometry(void) {
+	if (!getenv("SPIKE_OLD")) return;
 	siv_rect rect;
 	if (siv_node_get_rect(S.node, &rect) != SIV_OK) return;
 	double scale = 1;
@@ -478,7 +505,7 @@ static gboolean on_term(gpointer data) {
 }
 
 static siv_result build(void) {
-	siv_result r = siv_external_create(S.window, SIV_DESC(siv_external_desc, .release = on_release), &S.slot);
+	siv_result r = siv_external_create(S.window, SIV_DESC(siv_external_desc, .release = on_release, .on_event = on_external_event), &S.slot);
 	siv_txn txn;
 	if (r == SIV_OK) r = siv_txn_begin(S.window, &txn);
 	if (r != SIV_OK) return r;
@@ -502,6 +529,8 @@ static siv_result build(void) {
 	S.node = siv_external_view(txn, column, SIV_DESC(siv_external_view_desc, .external = S.slot, .fit = SIV_FIT_FILL, .background = {1, 1, 1, 1}));
 	siv_set_layout(txn, S.node, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_FRACTION, 1}, .basis = {SIV_UNIT_PX, 0}, .grow = 1));
 	siv_set_semantics(txn, S.node, SIV_DESC(siv_semantics_desc, .label = SIV_STR("Web page"), .flags = SIV_SEMANTICS_FOCUSABLE));
+	/* Rounded corners make siv composite the frame instead of promoting it. */
+	if (getenv("SPIKE_ROUND")) siv_set_visual(txn, S.node, SIV_DESC(siv_visual_desc, .radius = {24, 24, 24, 24}, .flags = SIV_VISUAL_CLIP));
 	siv_on(txn, S.node, SIV_EVENT_TYPE_POINTER, on_pointer, NULL, NULL);
 	siv_on(txn, S.node, SIV_EVENT_TYPE_SCROLL, on_scroll, NULL, NULL);
 	siv_on(txn, S.node, SIV_EVENT_TYPE_KEY, on_key, NULL, NULL);

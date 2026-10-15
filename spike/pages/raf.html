@@ -1,0 +1,3 @@
+<!doctype html><html><head><meta charset="utf-8"><title>raf</title></head><body style="margin:0">
+<div id="b" style="width:100px;height:100px;background:#36c;position:absolute"></div>
+<script>let n=0,t0=performance.now();function f(t){n++;b.style.left=(t/5%1000)+'px';if(t-t0>3000){document.title='raf '+(n*1000/(t-t0)).toFixed(1);n=0;t0=t;}requestAnimationFrame(f);}requestAnimationFrame(f);</script></body></html>
