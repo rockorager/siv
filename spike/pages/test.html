@@ -1,0 +1,22 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>siv-webview test page</title>
+<style>
+body { font: 16px sans-serif; margin: 24px; background: #fdfdfd; }
+.box { width: 200px; height: 120px; background: linear-gradient(135deg,#3b82f6,#ec4899); border-radius: 12px; }
+p { max-width: 60ch; }
+#log { font-family: monospace; white-space: pre; }
+</style></head>
+<body>
+<h1>siv-webview</h1>
+<div class="box"></div>
+<p><input id="field" placeholder="Type here" autofocus size="40"> <button id="btn" onclick="document.getElementById('log').textContent += 'clicked\n'">Click me</button></p>
+<p><select id="sel"><option>One</option><option>Two</option><option>Three</option></select>
+<input type="file" id="file"> <a href="#bottom">jump</a></p>
+<div id="log"></div>
+<script>
+document.getElementById('field').addEventListener('input', e => document.title = 'typed: ' + e.target.value);
+document.addEventListener('keydown', e => document.getElementById('log').textContent += 'key ' + e.key + ' code ' + e.code + '\n');
+for (let i = 0; i < 800; i++) { const p = document.createElement('p'); p.textContent = 'Paragraph ' + i + ': Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.'; document.body.appendChild(p); }
+const b = document.createElement('a'); b.id = 'bottom'; b.textContent = 'bottom'; document.body.appendChild(b);
+</script>
+</body></html>

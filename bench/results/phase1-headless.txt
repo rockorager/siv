@@ -1,0 +1,35 @@
+{"url": "file:///root/siv-webview/spike/pages/test.html", "tag": "run0", "first_frame_ms": 139.508369, "memory_total": {"rss_kib": 391876, "pss_kib": 237562, "gpu_kib": 178336}, "key_to_photon_ms": [19.701289, 21.398012, 10.763785, 24.633379, 17.854738, 23.867959, 9.886911, 23.56962, 17.476943, 20.466547, 8.633233, 7.25742, 23.89084, 16.912935, 8.091956, 8.800992, 1.527552, 21.778583, 17.180668, 6.447239], "wheel_to_photon_ms": [17.202167, 10.638534, 14.067566, 14.494713, 16.07915, 21.216286, 19.030283, 17.20373, 20.152578, 13.94471, 7.569464, 9.287336, 10.161104, 16.524289, 6.767488], "scroll": {"presents": 186, "seconds": 2.991728709, "dropped": 0}, "log_tail": ["spike: load finished file:///root/siv-webview/spike/pages/test.html at 131.1 ms", "spike: 393 frames in 14.7 s, at most 3 buffers held by siv, 36.8 ms held on average", "spike: cannot post a release"]}
+{"url": "https://en.wikipedia.org/wiki/Wayland_(protocol)", "tag": "run0", "first_frame_ms": 137.744948, "memory_total": {"rss_kib": 524108, "pss_kib": 356711, "gpu_kib": 231960}, "wheel_to_photon_ms": [10.005788, 13.674462, 10.612575, 24.749809, 11.411616, 21.242602, 70.062016, 25.136199, 3.011754, 23.791342, 19.790489, 16.328506, 24.732485, 20.097033, 20.989376], "scroll": {"presents": 183, "seconds": 2.991695238, "dropped": 0}, "log_tail": ["spike: load finished https://en.wikipedia.org/wiki/Wayland_(protocol) at 518.7 ms", "spike: 476 frames in 11.4 s, at most 3 buffers held by siv, 24.7 ms held on average", "spike: cannot post a release"]}
+{"url": "file:///root/siv-webview/spike/pages/test.html", "tag": "run1", "first_frame_ms": 176.387017, "memory_total": {"rss_kib": 390980, "pss_kib": 195462, "gpu_kib": 182432}, "key_to_photon_ms": [13.162297, 19.610195, 18.337492, 21.868411, 16.666878, 7.899179, 8.734296, 7.922422, 7.620717, 20.155388, 17.984753, 9.749325, 7.294106, 24.766335, 16.405827, 9.85001, 26.968789, 16.031958, 8.537154, 3.466561], "wheel_to_photon_ms": [18.555864, 15.969423, 18.195039, 13.684988, 15.612195, 19.850867, 19.257446, 16.669922, 7.724407, 8.259302, 17.89182, 6.051759, 9.309023, 12.690297, 21.424312], "scroll": {"presents": 184, "seconds": 2.991810754, "dropped": 0}, "log_tail": ["spike: load finished file:///root/siv-webview/spike/pages/test.html at 162.4 ms", "spike: 390 frames in 14.7 s, at most 2 buffers held by siv, 37.0 ms held on average", "spike: cannot post a release"]}
+{"url": "https://en.wikipedia.org/wiki/Wayland_(protocol)", "tag": "run1", "first_frame_ms": 144.595736, "memory_total": {"rss_kib": 499932, "pss_kib": 333551, "gpu_kib": 239348}, "wheel_to_photon_ms": [15.150504, 10.033335, 14.467006, 19.035243, 9.798965, 23.246143, 15.566869, 3.844415, 21.122685, 15.138521, 23.188286, 18.523291, 25.247957, 21.915524, 17.891216], "scroll": {"presents": 184, "seconds": 2.991681661, "dropped": 0}, "log_tail": ["spike: load finished https://en.wikipedia.org/wiki/Wayland_(protocol) at 463.7 ms", "spike: 455 frames in 11.3 s, at most 3 buffers held by siv, 25.2 ms held on average", "spike: cannot post a release"]}
+{"url": "file:///root/siv-webview/spike/pages/test.html", "tag": "run2", "first_frame_ms": 176.537824, "memory_total": {"rss_kib": 391220, "pss_kib": 195808, "gpu_kib": 197384}, "key_to_photon_ms": [1.209225, 10.299364, 18.240318, 5.506975, 20.730932, 17.618163, 7.648426, 8.070933, 5.637414, 9.806868, 9.556998, 9.668112, 22.656505, 9.874312, 23.674288, 12.125585, 23.802976, 15.074611, 7.578346, 1.890199], "wheel_to_photon_ms": [16.359597, 12.268207, 6.860335, 12.454049, 9.626516, 7.214136, 7.985636, 14.979827, 5.941814, 20.123183, 15.989144, 7.91205, 8.380102, 8.784405, 14.717474], "scroll": {"presents": 185, "seconds": 2.991662035, "dropped": 0}, "log_tail": ["spike: load finished file:///root/siv-webview/spike/pages/test.html at 164.1 ms", "spike: 386 frames in 14.6 s, at most 3 buffers held by siv, 37.1 ms held on average", "spike: cannot post a release"]}
+{"url": "https://en.wikipedia.org/wiki/Wayland_(protocol)", "tag": "run2", "first_frame_ms": 141.689418, "memory_total": {"rss_kib": 504132, "pss_kib": 337591, "gpu_kib": 219404}, "wheel_to_photon_ms": [28.695795, 15.05809, 19.49245, 22.842655, 30.533486, 4.286208, 22.011204, 11.187557, 9.995384, 24.757438, 21.43859, 15.913704, 25.636194, 19.034416, 13.682127], "scroll": {"presents": 183, "seconds": 2.991683601, "dropped": 0}, "log_tail": ["spike: load finished https://en.wikipedia.org/wiki/Wayland_(protocol) at 479.6 ms", "spike: 467 frames in 11.4 s, at most 3 buffers held by siv, 24.6 ms held on average", "spike: cannot post a release"]}
+
+file:///root/siv-webview/spike/pages/test.html
+  first frame ms: median 176.4
+  key to photon ms: median 12.6 p90 23.8 (n=60)
+  wheel to photon ms: median 14.1 p90 19.9 (n=45)
+  scrolling: presents/s 61.8, dropped [0, 0, 0]
+  spike-release[2063623]       RSS   113.8 MiB  PSS    52.8 MiB  GPU    44.6 MiB
+  WPENetworkProce[2063633]     RSS    58.4 MiB  PSS    29.6 MiB  GPU     0.0 MiB
+  bwrap[2063639]               RSS     2.3 MiB  PSS     0.2 MiB  GPU     0.0 MiB
+  bwrap[2063647]               RSS     2.3 MiB  PSS     0.2 MiB  GPU     0.0 MiB
+  bwrap[2063648]               RSS     1.5 MiB  PSS     0.2 MiB  GPU     0.0 MiB
+  WPEWebProcess[2063650]       RSS   196.0 MiB  PSS   107.2 MiB  GPU   148.2 MiB
+  bwrap[2063640]               RSS     1.5 MiB  PSS     0.2 MiB  GPU     0.0 MiB
+  xdg-dbus-proxy[2063644]      RSS     6.3 MiB  PSS     0.8 MiB  GPU     0.0 MiB
+  total                        RSS   382.1 MiB  PSS   191.2 MiB  GPU   192.8 MiB
+
+https://en.wikipedia.org/wiki/Wayland_(protocol)
+  first frame ms: median 141.7
+  wheel to photon ms: median 19.0 p90 25.2 (n=45)
+  scrolling: presents/s 61.2, dropped [0, 0, 0]
+  spike-release[2063807]       RSS   116.2 MiB  PSS    56.9 MiB  GPU    44.1 MiB
+  WPENetworkProce[2063817]     RSS    75.1 MiB  PSS    43.1 MiB  GPU     0.0 MiB
+  bwrap[2063823]               RSS     2.3 MiB  PSS     0.2 MiB  GPU     0.0 MiB
+  bwrap[2063831]               RSS     2.3 MiB  PSS     0.2 MiB  GPU     0.0 MiB
+  bwrap[2063832]               RSS     1.5 MiB  PSS     0.2 MiB  GPU     0.0 MiB
+  WPEWebProcess[2063834]       RSS   287.0 MiB  PSS   228.1 MiB  GPU   170.2 MiB
+  bwrap[2063824]               RSS     1.5 MiB  PSS     0.2 MiB  GPU     0.0 MiB
+  xdg-dbus-proxy[2063828]      RSS     6.4 MiB  PSS     0.8 MiB  GPU     0.0 MiB
+  total                        RSS   492.3 MiB  PSS   329.7 MiB  GPU   214.3 MiB
