@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use gpui::{
     AnyElement, App, Bounds, Context, CursorStyle, ElementId, ElementInputHandler, Entity, EntityInputHandler, FocusHandle,
-    Focusable, GlobalElementId, Hsla, KeyBinding, LayoutId, ListAlignment, ListState, MouseButton, MouseDownEvent, PaintQuad,
+    Focusable, GlobalElementId, Hsla, KeyBinding, LayoutId, ListAlignment, ListOffset, ListState, MouseButton, MouseDownEvent, PaintQuad,
     PathBuilder, Pixels, ShapedLine, SharedString, Style, StyledText, TextRun, UTF16Selection, Window, WindowBounds,
     WindowOptions, actions, anchored, canvas, deferred, div, fill, list, point, prelude::*, px, relative, rgb, size,
     uniform_list,
@@ -517,7 +517,10 @@ impl Editor {
     fn jump_end(&mut self, _: &JumpEnd, _: &mut Window, cx: &mut Context<Self>) {
         let last = self.paras.len() - 1;
         self.caret = (last, self.paras[last].len());
-        self.list.scroll_to_reveal_item(last);
+        // scroll_to_reveal_item finds its goal from the heights of the
+        // paragraphs measured so far, so it stops short of paragraphs never
+        // laid out; scroll_to_end and scroll_to go by index.
+        self.list.scroll_to_end();
         cx.notify();
     }
 
@@ -536,7 +539,8 @@ impl Editor {
             let p = (self.caret.0 + k) % n;
             if let Some(off) = self.paras[p].find(DOC_NEEDLE) {
                 self.caret = (p, off + DOC_NEEDLE.len());
-                self.list.scroll_to_reveal_item(p);
+                // The paragraph at the top of the view (see jump_end).
+                self.list.scroll_to(ListOffset { item_ix: p, offset_in_item: px(0.) });
                 cx.notify();
                 return;
             }
