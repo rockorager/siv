@@ -874,8 +874,9 @@ pub const View = struct {
         return p;
     }
 
+    /// A theme color (linear, as scenes take them) as CSS has it (sRGB).
     fn color(c: scene.Color) css.Color {
-        return .{ .r = c.r, .g = c.g, .b = c.b, .a = c.a };
+        return .{ .r = scene.linearToSrgb(c.r), .g = scene.linearToSrgb(c.g), .b = scene.linearToSrgb(c.b), .a = c.a };
     }
 
     fn dropLast(v: *View) void {
@@ -909,7 +910,7 @@ pub const View = struct {
         if (v.options.paged or v.options.reading) {
             // Margins in the page's color.
             const bg = pal.canvas;
-            try v.last.fillRect(.xywh(0, 0, width, height), .color(.{ .r = bg.r, .g = bg.g, .b = bg.b, .a = bg.a }));
+            try v.last.fillRect(.xywh(0, 0, width, height), .color(scene.Color.srgb(bg.r, bg.g, bg.b, bg.a)));
         }
         if (v.options.paged) {
             for (0..g.columns) |c| {
