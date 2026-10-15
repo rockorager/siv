@@ -86,6 +86,8 @@ pub fn Builder(comptime Tokenizer: type) type {
         context: NodeId = .none,
         attrs_scratch: std.ArrayList(Dom.NewAttr) = .empty,
         stopped: bool = false,
+        /// Self-closing start tags end their elements (`Options.xml`).
+        xml: bool = false,
 
         pub fn deinit(b: *B) void {
             b.template_modes.deinit(b.gpa);
@@ -108,7 +110,16 @@ pub fn Builder(comptime Tokenizer: type) type {
             b.skip_newline = false;
             switch (t) {
                 .doctype => |d| try b.dispatch(.{ .doctype = d }),
-                .start_tag => |s| try b.dispatch(.{ .start = .{ .name = try b.dom.atom(s.name), .attrs = s.attrs, .self_closing = s.self_closing } }),
+                .start_tag => |s| {
+                    const name = try b.dom.atom(s.name);
+                    try b.dispatch(.{ .start = .{ .name = name, .attrs = s.attrs, .self_closing = s.self_closing } });
+                    if (b.xml and s.self_closing and !b.stopped and b.open.items.len > 0 and b.dom.node(b.open.items[b.open.items.len - 1]).name == name and b.dom.node(b.open.items[b.open.items.len - 1]).ns == .html) {
+                        // XML: the element ends here; text after it is
+                        // not its content (raw text elements included).
+                        b.tokenizer.state = .data;
+                        try b.dispatch(.{ .end = name });
+                    }
+                },
                 .end_tag => |e| try b.dispatch(.{ .end = try b.dom.atom(e.name) }),
                 .comment => |c| try b.dispatch(.{ .comment = c }),
                 .eof => try b.dispatch(.eof),

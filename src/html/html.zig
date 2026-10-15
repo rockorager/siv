@@ -23,6 +23,10 @@ pub const Options = struct {
     /// Fragment parsing (innerHTML) in this context element; null parses
     /// a whole document.
     context: ?Context = null,
+    /// XHTML parsed as HTML (e-book chapters, `.xht` files): a
+    /// self-closing start tag of an element that is not void ends it, as
+    /// XML has it (`<div/>`, `<a id="note"/>`).
+    xml: bool = false,
 
     pub const Context = struct { name: []const u8, ns: Dom.Namespace = .html };
 };
@@ -58,7 +62,7 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: Options) error{
     try dom.nodes.ensureTotalCapacity(gpa, input.len / 24 + 8);
     try dom.bytes.ensureTotalCapacity(gpa, input.len / 2 + 64);
 
-    var b: Builder = .{ .dom = &dom, .gpa = gpa };
+    var b: Builder = .{ .dom = &dom, .gpa = gpa, .xml = options.xml };
     defer b.deinit();
     var t = Tokenizer.init(gpa, input, .{ .b = &b });
     defer t.deinit();

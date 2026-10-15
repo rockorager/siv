@@ -117,6 +117,16 @@ test "email-grade broken markup recovers like browsers" {
     try testing.expectEqualStrings("<table><tbody><tr><td>a<b>bold</b></td><td>b</td></tr></tbody></table><p>one</p><p>two</p><div><font color=\"red\"><i>x</i></font></div><font color=\"red\"><i>y</i></font>", out.written());
 }
 
+test "XHTML: self-closing tags end their elements" {
+    const src = "<p><a id=\"n1\"/>Note<span/>text</p><div/><title/><p>after</p><svg><circle/></svg>";
+    var dom = try html.parse(testing.allocator, src, .{ .xml = true });
+    defer dom.deinit();
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try html.serialize.html(&dom, &out.writer, dom.body());
+    try testing.expectEqualStrings("<p><a id=\"n1\"></a>Note<span></span>text</p><div></div><title></title><p>after</p><svg><circle></circle></svg>", out.written());
+}
+
 test "fuzz the parser" {
     try testing.fuzz({}, fuzzParse, .{ .corpus = &.{
         "<!DOCTYPE html><html><head><title>t</title></head><body><p class=a>x<b>y<i>z</b>w</i></p></body></html>",

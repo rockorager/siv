@@ -144,7 +144,7 @@ pub const Runner = struct {
         defer r.gpa.free(base);
         const src = r.file(base) orelse return error.Missing;
         defer r.gpa.free(src);
-        const d = try Document.create(r.gpa, src, .{ .base_url = base, .kind = kind, .remote_images = r.remote, .untrusted = r.untrusted, .collapse_quotes = r.collapse_quotes }, &r.ua);
+        const d = try Document.create(r.gpa, src, .{ .base_url = base, .kind = kind, .xml = if (std.mem.endsWith(u8, path, ".xht") or std.mem.endsWith(u8, path, ".xhtml")) true else null, .remote_images = r.remote, .untrusted = r.untrusted, .collapse_quotes = r.collapse_quotes }, &r.ua);
         if (r.open_quotes) for (0..d.quotes.len) |k| {
             _ = d.toggleQuote(k);
         };

@@ -35,6 +35,9 @@ pub const Options = struct {
     base_url: []const u8 = "",
     /// A charset from outside (an email part's Content-Type).
     charset: []const u8 = "",
+    /// XHTML (self-closing tags end their elements); null: when the
+    /// source starts with an XML declaration.
+    xml: ?bool = null,
     /// A user stylesheet the application adds (its own document style).
     user_css: []const u8 = "",
     /// The user's default font size (CSS `medium`).
@@ -112,6 +115,9 @@ executor: ?@import("pool").Executor = null,
 /// Quoted replies' wrappers (`email.wrapQuotes`), and which are open.
 quotes: []html.NodeId = &.{},
 quote_open: std.DynamicBitSetUnmanaged = .{},
+/// XHTML: self-closing tags end their elements, and comments in style
+/// sheets are comments.
+xml: bool = false,
 /// The width layout ran at, and whether it finished.
 width: f32 = 0,
 complete: bool = false,
@@ -133,13 +139,14 @@ pub fn create(gpa: Allocator, bytes: []const u8, options: Options, ua_sheet: *co
         .ua_sheet = ua_sheet,
         .hyphenation = .init(gpa),
         .scratch = .init(gpa),
+        .xml = options.kind == .html and (options.xml orelse isXml(bytes)),
     };
     errdefer d.store.deinit(gpa);
     const a = d.arena.allocator();
     d.options.user_css = try a.dupe(u8, options.user_css);
     d.base_url = try a.dupe(u8, options.base_url);
     d.dom = switch (options.kind) {
-        .html => try html.parse(gpa, bytes, .{ .charset = options.charset }),
+        .html => try html.parse(gpa, bytes, .{ .charset = options.charset, .xml = d.xml }),
         .markdown => try markdown.parse(gpa, bytes, .{}),
         .text => blk: {
             var dom = try html.parse(gpa, "<pre>", .{});
@@ -161,7 +168,7 @@ pub fn create(gpa: Allocator, bytes: []const u8, options: Options, ua_sheet: *co
         }
     }
     try d.sheets.append(gpa, .{ .sheet = ua_sheet, .origin = .user_agent, .owned = false });
-    if (options.kind == .html and d.dom.quirks == .quirks and !isXml(bytes)) {
+    if (options.kind == .html and d.dom.quirks == .quirks and !d.xml) {
         // Quirks mode (no doctype, as most email has): tables do not
         // inherit text styles (HTML, rendering 15.3.6). XHTML, such as
         // an EPUB chapter, is never in quirks mode, doctype or not.
@@ -296,6 +303,12 @@ fn collect(d: *Document) Error!void {
                     t.deinit(d.gpa);
                     t = .fromOwnedSlice(inner);
                 }
+                // In XML, comments in a style element are comments, not
+                // style sheet text (where `<!--` swallows the next rule).
+                if (d.xml) while (std.mem.indexOf(u8, t.items, "<!--")) |at| {
+                    const end = if (std.mem.indexOfPos(u8, t.items, at + 4, "-->")) |k| k + 3 else t.items.len;
+                    t.replaceRangeAssumeCapacity(at, end - at, "");
+                };
                 const media = dom.attr(cur, .media);
                 const s = try d.gpa.create(css.Sheet);
                 errdefer d.gpa.destroy(s);

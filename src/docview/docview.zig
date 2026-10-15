@@ -1324,6 +1324,8 @@ pub const Job = struct {
                 const d = try Document.create(v.gpa, v.source, .{
                     .kind = o.kind,
                     .base_url = o.base_url,
+                    // E-book chapters are XHTML.
+                    .xml = if (o.book != null and (std.mem.endsWith(u8, o.book_path, ".xhtml") or std.mem.endsWith(u8, o.book_path, ".xht") or std.mem.endsWith(u8, o.book_path, ".xml"))) true else null,
                     .user_css = o.user_css,
                     .font_size = j.media.font_size,
                     .remote_images = o.remote_images,
