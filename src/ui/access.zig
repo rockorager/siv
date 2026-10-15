@@ -25,7 +25,7 @@ const spans = @import("spans.zig");
 
 const NodeId = node_mod.NodeId;
 const Point = raster.Point;
-const Rect = raster.Rect;
+pub const Rect = raster.Rect;
 const Layout = text.TextLayout;
 
 pub const EditError = error{
@@ -175,6 +175,45 @@ pub fn offsetAt(win: *const Window, id: NodeId, p: Point) ?u32 {
     const line = l.lineAt(y) catch return null;
     const pos = l.hitTest(p.x - g.origin.x - (g.shift(line) catch return null), y) catch return null;
     return g.fromShown(pos.offset);
+}
+
+/// Brings a text or editor node's layout up to its latest text, at the
+/// width it was last laid out for, so that a query between an edit and
+/// the next frame sees the edit (D15).
+fn freshen(win: *Window, id: NodeId) void {
+    const s = win.state(id);
+    if (!s.needs_shape and text_node.current(win, id) != null) return;
+    const width = if (s.text) |c| c.layout_width else null;
+    _ = text_node.layoutFor(win, id, width) catch {};
+}
+
+/// Where the caret at `offset` is drawn in the node's coordinates, laid
+/// out for the latest text: the character's width for an editor with a
+/// block caret. Null if the node has no text geometry.
+pub fn caretRect(win: *Window, id: NodeId, offset: u32) ?Rect {
+    if (!win.isLive(id) or !win.node(id).isText()) return null;
+    freshen(win, id);
+    const g = Geometry.of(win, id) orelse return null;
+    const n = win.node(id);
+    const content = n.textData().content;
+    var at = @min(offset, g.len);
+    var rd = content.reader();
+    while (at > 0 and at < g.len and rd.at(at) & 0xc0 == 0x80) at -= 1;
+    const block = n.kind == .editor and n.data.editor.editor.block_caret;
+    const r = editor.caretRectAt(win, id, g.layout, .{ .offset = g.shown(at), .affinity = .downstream }, block) catch return null;
+    const box = win.windowRect(id);
+    const dx = g.origin.x - box.x0;
+    const dy = g.origin.y - box.y0;
+    return .{ .x0 = r.x0 + dx, .y0 = r.y0 + dy, .x1 = r.x1 + dx, .y1 = r.y1 + dy };
+}
+
+/// The offset nearest a point in the node's coordinates, laid out for
+/// the latest text. Null if the node has no text geometry.
+pub fn offsetAtLocal(win: *Window, id: NodeId, p: Point) ?u32 {
+    if (!win.isLive(id) or !win.node(id).isText()) return null;
+    freshen(win, id);
+    const box = win.windowRect(id);
+    return offsetAt(win, id, .{ .x = p.x + box.x0, .y = p.y + box.y0 });
 }
 
 /// The byte range of the visual line containing `offset`, including its

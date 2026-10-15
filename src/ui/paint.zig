@@ -68,6 +68,7 @@ const Layer = struct {
     /// Caret layers: what the content shows, and what the running blink
     /// started from (it restarts when this changes).
     caret_h: f32 = 0,
+    caret_w: f32 = 0,
     caret_color: scene.Color = .transparent,
     blink_key: u64 = 0,
     /// Properties were sent once, and the owner's own transform then:
@@ -385,9 +386,10 @@ pub const State = struct {
         for (st.order.items) |i| {
             const l = &st.layers.items[i];
             if (l.kind != .caret) continue;
-            const h, const color = caretLook(win, l.owner);
-            if (h != l.caret_h or !std.meta.eql(color, l.caret_color)) {
+            const w, const h, const color = caretLook(win, l.owner);
+            if (h != l.caret_h or w != l.caret_w or !std.meta.eql(color, l.caret_color)) {
                 l.caret_h = h;
+                l.caret_w = w;
                 l.caret_color = color;
                 st.markLayer(i);
             }
@@ -433,7 +435,7 @@ pub const State = struct {
             const l = &st.layers.items[i];
             const b = l.builder orelse continue;
             if (l.kind == .caret and l.caret_h > 0)
-                b.fillRect(.xywh(0, 0, layout.caret_width, l.caret_h), .color(l.caret_color)) catch |e| return oom(e);
+                b.fillRect(.xywh(0, 0, l.caret_w, l.caret_h), .color(l.caret_color)) catch |e| return oom(e);
             for (l.open.items) |_| b.popLayer() catch |e| return oom(e);
             l.open.clearRetainingCapacity();
             l.version +%= 1;
@@ -1068,11 +1070,15 @@ fn blinkHalves(d: Window.Desktop) u32 {
     return @intCast(@max(2, @min(halves, 1 << 20) & ~@as(u64, 1)));
 }
 
-/// A focused editor's caret height and color.
-fn caretLook(win: *Window, nid: NodeId) struct { f32, scene.Color } {
-    const l = text_node.current(win, nid) orelse return .{ 0, .transparent };
-    const c = editor.caretRect(win, nid, l) catch return .{ 0, .transparent };
-    return .{ c.height(), textColor(win, &win.node(nid).data.editor.text.props.style) };
+/// A focused editor's caret width, height, and color: a block caret is
+/// translucent, so the character it covers shows through.
+fn caretLook(win: *Window, nid: NodeId) struct { f32, f32, scene.Color } {
+    const l = text_node.current(win, nid) orelse return .{ 0, 0, .transparent };
+    const c = editor.caretRect(win, nid, l) catch return .{ 0, 0, .transparent };
+    const e = &win.node(nid).data.editor;
+    var color = textColor(win, &e.text.props.style);
+    if (e.editor.block_caret and c.width() > layout.caret_width) color = color.withAlpha(color.a * 0.4);
+    return .{ c.width(), c.height(), color };
 }
 
 /// A text style's color, themed or literal (D29).

@@ -486,7 +486,7 @@ pub export fn siv_editor(txn: t.Txn, parent: t.Node, flags: t.EditorFlags) t.Nod
         fn f(w: *Window, p: t.Node, fl: t.EditorFlags) Error!NodeId {
             const e = try runtime.flags(t.EditorFlags, fl);
             const id = try create(w, p, .editor);
-            w.txn.ut.setEditor(id, .{ .multiline = e.multiline, .masked = e.masked }) catch |err| return mapTxn(err);
+            w.txn.ut.setEditor(id, .{ .multiline = e.multiline, .masked = e.masked, .no_undo = e.no_undo, .block_caret = e.block_caret, .no_input_method = e.no_input_method }) catch |err| return mapTxn(err);
             return id;
         }
     }.f, .{ parent, flags });
@@ -683,6 +683,15 @@ pub export fn siv_set_text(txn: t.Txn, node: t.Node, text: ?[*]const u8, text_le
             w.txn.ut.setText(id, try runtime.string(ptr, len)) catch |err| return mapTxn(err);
         }
     }.f, .{ node, text, text_len });
+}
+
+pub export fn siv_replace_text(txn: t.Txn, node: t.Node, start: u32, end: u32, text: ?[*]const u8, text_len: usize) void {
+    _ = run(txn, struct {
+        fn f(w: *Window, n: t.Node, from: u32, to: u32, ptr: ?[*]const u8, len: usize) Error!void {
+            const id = try nodeIn(w, n);
+            w.txn.ut.spliceText(id, from, to, try runtime.string(ptr, len)) catch |err| return mapTxn(err);
+        }
+    }.f, .{ node, start, end, text, text_len });
 }
 
 pub export fn siv_set_hidden(txn: t.Txn, node: t.Node, hidden: bool) void {
@@ -1068,7 +1077,7 @@ pub export fn siv_set_editor_flags(txn: t.Txn, node: t.Node, flags: t.EditorFlag
         fn f(w: *Window, n: t.Node, fl: t.EditorFlags) Error!void {
             const id = try nodeIn(w, n);
             const e = try runtime.flags(t.EditorFlags, fl);
-            w.txn.ut.setEditor(id, .{ .multiline = e.multiline, .masked = e.masked }) catch |err| return mapTxn(err);
+            w.txn.ut.setEditor(id, .{ .multiline = e.multiline, .masked = e.masked, .no_undo = e.no_undo, .block_caret = e.block_caret, .no_input_method = e.no_input_method }) catch |err| return mapTxn(err);
         }
     }.f, .{ node, flags });
 }
@@ -1505,7 +1514,7 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
             ev.flags.prevented = g.prevented;
             if (g.target != .none and uw.isLive(g.target)) ev.target = @fromBackingInt(w.nodes.handle(g.target));
         },
-        .change => {
+        .change => |c| {
             const e = &uw.node(id).data.editor;
             const s = editorText(e);
             const whole = switch (s.text) {
@@ -1519,6 +1528,9 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
             ev.text_len = whole.len;
             ev.caret = s.caret;
             ev.anchor = s.anchor;
+            ev.edit_start = c.start;
+            ev.edit_end = c.end;
+            ev.edit_length = c.length;
         },
         .drop => |d| {
             ev.phase = switch (d.phase) {
@@ -1784,6 +1796,34 @@ pub export fn siv_node_get_selection(node: t.Node, caret: ?*u32, anchor: ?*u32) 
             da.* = s.anchor;
         }
     }.f(node, caret, anchor));
+}
+
+pub export fn siv_node_get_caret_rect(node: t.Node, offset: u32, rect: ?*t.Rect) t.Result {
+    return application.wrap(struct {
+        fn f(n: t.Node, o: u32, out: ?*t.Rect) Error!void {
+            const w, const id = try lookup(n);
+            const dest = try runtime.out(t.Rect, out);
+            const uw = w.uiWin();
+            const un = uw.node(id);
+            if (!un.isText() or (un.kind == .editor and un.data.editor.editor.masked)) return error.InvalidArgument;
+            const r = ui.access.caretRect(uw, id, o) orelse ui.access.Rect{ .x0 = 0, .y0 = 0, .x1 = 0, .y1 = 0 };
+            dest.* = .{ .x = r.x0, .y = r.y0, .width = r.x1 - r.x0, .height = r.y1 - r.y0 };
+        }
+    }.f(node, offset, rect));
+}
+
+pub export fn siv_node_get_offset_at(node: t.Node, x: f32, y: f32, offset: ?*u32) t.Result {
+    return application.wrap(struct {
+        fn f(n: t.Node, px: f32, py: f32, out: ?*u32) Error!void {
+            const w, const id = try lookup(n);
+            const dest = try runtime.out(u32, out);
+            if (!std.math.isFinite(px) or !std.math.isFinite(py)) return error.InvalidArgument;
+            const uw = w.uiWin();
+            const un = uw.node(id);
+            if (!un.isText() or (un.kind == .editor and un.data.editor.editor.masked)) return error.InvalidArgument;
+            dest.* = ui.access.offsetAtLocal(uw, id, .{ .x = px, .y = py }) orelse 0;
+        }
+    }.f(node, x, y, offset));
 }
 
 pub export fn siv_node_get_rect(node: t.Node, rect: ?*t.Rect) t.Result {

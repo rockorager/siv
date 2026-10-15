@@ -1777,6 +1777,49 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     portal backend exposes a distance, so that stays a toolkit default.
     Pointer events report the count to handlers. Masked
     editors select everything on a double click.
+  - Applications with an editing model of their own (a modal, vim-style
+    editor; a document editor with one history across several editors)
+    keep the editor as the view and drive it (October 2026):
+    - `siv_replace_text` replaces a range in time proportional to the
+      edit (`Txn.spliceText` over `Txn.replaceText`'s rope splice).
+      Spans and paragraph styles move as for the user's edits, and an
+      editor's caret and anchor move with the text after the range (to
+      its start from inside it), so an application that restyles after
+      each edit (syntax highlighting) hands siv spans that differ only
+      near the edit and only the blocks there reshape. Like
+      `siv_set_text` it drops the undo history and sends no change
+      event. Before, an application edit meant `siv_set_text` of the
+      whole text: a copy of a long document per keystroke, and every
+      span gone, so every block reshaped.
+    - `SIV_EDITOR_NO_UNDO`: the editor records no steps and leaves the
+      undo keys to bubble. Its change events carry what each edit
+      replaced (`edit_start`, `edit_end` in the old text, `edit_length`
+      in the new), so the application follows the user's typing, input
+      method commits, pastes, and cuts in its own model without reading
+      the text. Steps record the node's whole span list before and after
+      (D22), so an editor whose spans are syntax highlighting kept 100
+      copies of them for an undo the application did not want.
+    - `SIV_EDITOR_BLOCK_CARET`: the caret covers the grapheme after it
+      (half the line's height wide at a line's end), in the text color
+      at 40% opacity so the character shows through; it is the same
+      caret layer, so moving it stays a transform and it blinks as
+      before. `SIV_EDITOR_NO_INPUT_METHOD` keeps the seat's input method
+      disabled while the editor has focus, so a command mode's letters
+      are keys, not composition (xkbcommon compose still types).
+    - `siv_node_get_caret_rect` and `siv_node_get_offset_at` answer in
+      node coordinates for the latest text, laying it out at its last
+      width if an edit is not laid out yet, so an application can move
+      by displayed lines, keep the caret's line centered (typewriter
+      scrolling), or place a popup at a word in the same frame as the
+      edit. AT-SPI's geometry (`ui.access`) describes the last frame in
+      window coordinates and stays as it was.
+    - Alternatives: the application's own text node on a canvas (it
+      would repeat shaping, blocks, residency, selection, the input
+      method, and accessibility); undo groups in the editor's history
+      (they still copy spans per step, and modal editors group by
+      command, which only the application knows); a public call to
+      simulate keys (Up and Down) for display-line movement (it would
+      depend on the editor's key bindings).
 
 ### D16. Input
 

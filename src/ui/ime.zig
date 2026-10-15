@@ -60,7 +60,7 @@ fn wants(win: *const Window, id: NodeId) bool {
     if (id == .none or !win.isLive(id)) return false;
     const n = win.node(id);
     if (n.semantics.disabled) return false;
-    return (n.kind == .editor and !n.data.editor.editor.masked) or custom(win, id);
+    return (n.kind == .editor and !n.data.editor.editor.masked and !n.data.editor.editor.no_input_method) or custom(win, id);
 }
 
 /// A custom text widget (`siv_set_text_input`): it applies the input
@@ -83,6 +83,19 @@ fn clearPreedit(win: *Window) void {
 pub fn reset(win: *Window) void {
     clearPreedit(win);
     win.ime.dirty = true;
+}
+
+/// The focused editor's options changed: the input method is enabled or
+/// disabled for it again.
+pub fn optionsChanged(win: *Window) void {
+    const st = &win.ime;
+    const focus = win.input.focus;
+    const target: NodeId = if (wants(win, focus)) focus else .none;
+    if (st.target != target) {
+        clearPreedit(win);
+        st.target = target;
+    }
+    st.dirty = true;
 }
 
 /// Focus changed: the input method follows to the new editor.

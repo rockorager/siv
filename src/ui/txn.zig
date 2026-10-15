@@ -545,6 +545,44 @@ pub const Txn = struct {
         t.putText(id, n, copy, "");
     }
 
+    /// Replaces `start..end` of a text or editor node's text with
+    /// `insert` for the application (siv_replace_text), at the cost of
+    /// the edit (D15): styled ranges and paragraph styles move with the
+    /// text as they do for a user's edit, and an editor's caret and anchor
+    /// move with the text after the range, or to its start from inside
+    /// it. Not for masked editors.
+    pub fn spliceText(t: *Txn, id: NodeId, from: u32, to: u32, insert: []const u8) Error!void {
+        const n = try t.textNode(id);
+        if (n.kind == .editor and n.data.editor.editor.masked) return error.InvalidArgument;
+        const a = t.win.scratch.allocator();
+        const d = n.textData();
+        const old = d.content;
+        const old_spans = try a.dupe(node_mod.Span, d.spans);
+        const old_paragraphs = try a.dupe(node_mod.ParagraphSpan, d.paragraphs);
+        const sel: [2]u32 = if (n.kind == .editor) .{ n.data.editor.caret, n.data.editor.anchor } else .{ 0, 0 };
+        // The old text stays alive until the transaction ends.
+        try t.replaceText(id, from, to, insert);
+        const len: u32 = @intCast(insert.len);
+        const style = if (from < to) spans_mod.styleAt(old_spans, from) else spans_mod.inherited(old_spans, from);
+        try t.setSpans(id, try spans_mod.replaced(a, old_spans, from, to, len, style));
+        if (old_paragraphs.len != 0) {
+            const paragraph_style = spans_mod.styleAt(old_paragraphs, spans_mod.paragraphAt(old, from).start);
+            const moved = try spans_mod.replaced(a, old_paragraphs, from, to, len, paragraph_style);
+            try t.setParagraphSpans(id, moved);
+        }
+        if (n.kind == .editor) {
+            const e = &t.win.node(id).data.editor;
+            const map = struct {
+                fn f(o: u32, s0: u32, e0: u32, l: u32) u32 {
+                    if (o >= e0) return o - (e0 - s0) + l;
+                    return @min(o, s0);
+                }
+            }.f;
+            e.caret = map(sel[0], from, to, len);
+            e.anchor = map(sel[1], from, to, len);
+        }
+    }
+
     /// Gives a text node new text (owned, `hidden` the secret of a masked
     /// editor); its spans go with the old text. Room for four frees and a
     /// snapshot is reserved.
@@ -657,8 +695,10 @@ pub const Txn = struct {
             t.win.markShape(id);
             t.win.dirty.semantics = true;
         } else t.touch(id);
+        const ime_changed = ed.editor.no_input_method != e.no_input_method;
         ed.editor = e;
         t.win.markLayout(id);
+        if (ime_changed and t.win.input.focus == id) @import("ime.zig").optionsChanged(t.win);
     }
 
     /// Sets the text an empty editor shows in the muted color.

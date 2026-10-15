@@ -1402,6 +1402,94 @@ test "editor: undo and redo merge typing and deleting; app edits reset history" 
     try f.frame();
 }
 
+const ChangeLog = struct {
+    last: ui.Change = .{},
+    count: usize = 0,
+
+    fn on(user: ?*anyopaque, _: *ui.Window, _: NodeId, ev: *const ui.Event) ui.HandlerResult {
+        const l: *ChangeLog = @ptrCast(@alignCast(user));
+        if (ev.* == .change) {
+            l.last = ev.change;
+            l.count += 1;
+        }
+        return .handled;
+    }
+};
+
+test "editor: an application's own editing model (range edits, its history, change deltas, caret geometry)" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 300, .height = 100 });
+    defer f.deinit();
+    var log: ChangeLog = .{};
+    var t = try f.win.begin();
+    const ed = try box(t, .root, .editor, .{ .padding = .all(4), .align_y = .start });
+    try t.setEditor(ed, .{ .multiline = true, .no_undo = true });
+    try t.setText(ed, "one two three");
+    const bold: ui.SpanStyle = .{ .weight = .bold };
+    try t.setSpans(ed, &.{ .{ .start = 4, .end = 7, .style = bold }, .{ .start = 8, .end = 13, .style = bold } });
+    try t.setSelection(ed, 10, 9, .downstream);
+    try t.on(ed, .change, .{ .func = ChangeLog.on, .user = &log });
+    t.commit();
+    try f.frame();
+    const e = &f.win.node(ed).data.editor;
+
+    // A range edit moves the spans after it and the selection with the
+    // text: "two" becomes "2", so the second span starts two bytes
+    // earlier and the caret and anchor in "three" follow.
+    t = try f.win.begin();
+    try t.spliceText(ed, 4, 7, "2");
+    t.commit();
+    try testing.expectEqualStrings("one 2 three", e.text.content.flat().?);
+    try testing.expectEqualDeep(&[_]ui.Span{ .{ .start = 4, .end = 5, .style = bold }, .{ .start = 6, .end = 11, .style = bold } }, e.text.spans);
+    try testing.expectEqual(@as(u32, 8), e.caret);
+    try testing.expectEqual(@as(u32, 7), e.anchor);
+    // Offsets inside a removed range go to its start; an insertion at an
+    // offset moves it past the inserted text.
+    t = try f.win.begin();
+    try t.spliceText(ed, 6, 11, "");
+    try t.spliceText(ed, 0, 0, ">");
+    t.commit();
+    try testing.expectEqualStrings(">one 2 ", e.text.content.flat().?);
+    try testing.expectEqual(@as(u32, 7), e.caret);
+    try testing.expectEqual(@as(u32, 7), e.anchor);
+    try testing.expectEqual(@as(usize, 0), log.count);
+
+    // The user's edits report what they replaced, and record no history:
+    // undo is the application's.
+    const k: Keys = .{ .f = &f };
+    k.press(ui.keysym.tab, .{});
+    k.typeText("x");
+    try testing.expectEqual(ui.Change{ .start = 7, .end = 7, .length = 1 }, log.last);
+    k.press(ui.keysym.left, .{ .shift = true, .ctrl = true });
+    k.typeText("yz");
+    try testing.expectEqualStrings(">one 2 yz", e.text.content.flat().?);
+    try testing.expectEqual(ui.Change{ .start = 7, .end = 8, .length = 2 }, log.last);
+    k.press(0xff08, .{});
+    try testing.expectEqual(ui.Change{ .start = 8, .end = 9, .length = 0 }, log.last);
+    k.press('z', .{ .ctrl = true });
+    try testing.expectEqualStrings(">one 2 y", e.text.content.flat().?);
+    try testing.expect(f.win.histories.get(ed) == null or f.win.histories.get(ed).?.undo.items.len == 0);
+
+    // Caret geometry for the latest text, before the frame lays it out:
+    // a block caret covers its character, and the offset at the middle of
+    // a caret is the caret's.
+    t = try f.win.begin();
+    try t.setEditor(ed, .{ .multiline = true, .no_undo = true, .block_caret = true });
+    try t.setText(ed, "wide\nnext line");
+    t.commit();
+    const w = ui.access.caretRect(f.win, ed, 0).?;
+    const i_ = ui.access.caretRect(f.win, ed, 1).?;
+    try testing.expect(w.width() > i_.width());
+    try testing.expectApproxEqAbs(w.x1, i_.x0, 0.01);
+    try testing.expectApproxEqAbs(@as(f32, 4), w.x0, 0.01);
+    const second = ui.access.caretRect(f.win, ed, 7).?;
+    try testing.expect(second.y0 >= w.y1);
+    try testing.expectEqual(@as(?u32, 7), ui.access.offsetAtLocal(f.win, ed, .{ .x = second.x0 + 0.1, .y = (second.y0 + second.y1) / 2 }));
+    // Past the text's end, the last line.
+    try testing.expectEqual(@as(?u32, 14), ui.access.offsetAtLocal(f.win, ed, .{ .x = 1000, .y = 1000 }));
+    try f.frame();
+}
+
 test "styled text: spans shape as runs, follow edits, format as undo steps, and set the typing style" {
     var f: Fixture = undefined;
     try f.init(.{ .width = 300, .height = 100 });

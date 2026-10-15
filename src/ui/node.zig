@@ -600,6 +600,13 @@ pub const Editor = struct {
     /// has no undo or input method, and is hidden from assistive
     /// technology.
     masked: bool = false,
+    /// The application keeps the undo history: no steps are recorded,
+    /// and the undo keys bubble on.
+    no_undo: bool = false,
+    /// The caret covers the character after it.
+    block_caret: bool = false,
+    /// The input method stays disabled while the editor has focus.
+    no_input_method: bool = false,
 };
 
 /// An editor's text, settings, and selection (byte offsets at grapheme
@@ -1090,7 +1097,7 @@ pub const Event = union(enum) {
     text_input: ImeEdit,
     /// The user edited an editor's text (delivered to the editor only,
     /// after the edit is committed).
-    change,
+    change: Change,
     /// A drag over a drop target (not bubbled).
     drop: Drop,
     /// A drag the node started progressed (not bubbled).
@@ -1104,6 +1111,11 @@ pub const Event = union(enum) {
     /// layout changed it).
     viewport: Viewport,
 };
+
+/// What an edit replaced: `start..end` of the old text by `length` bytes
+/// of the new. All zero for a change of styles only, and in masked
+/// editors.
+pub const Change = struct { start: u32 = 0, end: u32 = 0, length: u32 = 0 };
 
 /// The visible content is the rectangle (x, y, width, height) divided by
 /// `zoom`.

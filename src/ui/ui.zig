@@ -77,6 +77,7 @@ pub const CanvasSize = node.CanvasSize;
 pub const Editor = node.Editor;
 pub const External = node.External;
 pub const Event = node.Event;
+pub const Change = node.Change;
 pub const HandlerKind = node.HandlerKind;
 pub const Handler = node.Handler;
 pub const HandlerResult = node.Result;

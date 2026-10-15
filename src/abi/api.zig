@@ -800,6 +800,9 @@ pub const decls = [_]Decl{
     flags("siv_editor_flags", "Editor options.", &.{
         .{ .name = "multiline", .bit = 0, .doc = "Enter inserts a line break and lines wrap; otherwise one line that scrolls to keep the caret visible." },
         .{ .name = "masked", .bit = 1, .doc = "A password field (D15): the text lives in locked memory excluded from core dumps, shows one bullet per character, has no undo or input method, and is hidden from assistive technology. Offsets still index the real text." },
+        .{ .name = "no_undo", .bit = 2, .doc = "The application keeps the undo history (D15), as an editor with a model of its own does: the editor records no steps, Ctrl+Z, Ctrl+Shift+Z, and Ctrl+Y do nothing in it and bubble on, and change events (edit_start, edit_end, edit_length) say what each edit replaced." },
+        .{ .name = "block_caret", .bit = 3, .doc = "The caret covers the character after it, translucent, instead of standing between characters: a modal editor's normal mode (D15)." },
+        .{ .name = "no_input_method", .bit = 4, .doc = "The seat's input method stays disabled while the editor has focus, so keys arrive as keys: a modal editor's command mode (D15). Composed text from xkbcommon still types." },
     }),
 
     // Pointer cursors (D16).
@@ -1087,8 +1090,10 @@ pub const decls = [_]Decl{
         .{ .name = "preedit_cursor_end", .type = .i32, .doc = "Text input: where it ends." },
         .{ .name = "delete_before", .type = .u32, .doc = "Text input: bytes to delete before the cursor, before inserting text." },
         .{ .name = "delete_after", .type = .u32, .doc = "Text input: bytes to delete after the cursor." },
+        .{ .name = "edit_start", .type = .u32, .doc = "Change, from an editor: where the text the edit replaced starts, a byte offset into the text before it. With edit_end and edit_length it lets an application that keeps a model of the text (SIV_EDITOR_NO_UNDO) follow the edit without reading the whole text; all three are 0 for a change of styles only, and in masked editors." },
+        .{ .name = "edit_end", .type = .u32, .doc = "Change, from an editor: where the replaced text ended in the text before the edit." },
+        .{ .name = "edit_length", .type = .u32, .doc = "Change, from an editor: the length of the text that replaced it, which starts at edit_start in text." },
         reserved("reserved0"),
-        reserved("reserved1"),
     }),
     enumeration("siv_event_result", "What a handler did with an event: two independent requests, to stop bubbling and to prevent the default action, in one value. The default actions are the node's siv_on_default handler, those of the nodes it would bubble to, and siv's own (an editor typing the key, a press focusing and activating, Tab moving focus). For events that do not bubble, any result but pass counts as handled. In C, returning true still means handled and false pass.", &.{
         .{ .name = "pass", .value = 0, .doc = "Not handled: the event bubbles on and the default action runs." },
@@ -1822,6 +1827,11 @@ pub const functions = [_]Function{
     setter("siv_set_transform", "Sets a node's transform. A non-identity transform gives the node its own layer.", &.{.{ .name = "transform", .type = ref("siv_transform"), .doc = "The transform." }}),
     setter("siv_set_semantics", "Sets a node's semantics.", &.{.{ .name = "desc", .type = .{ .desc = "siv_semantics_desc" }, .doc = "The semantics; NULL for defaults." }}),
     setter("siv_set_text", "Sets the text of a text or editor node. An editor keeps its selection where it still fits.", &.{.{ .name = "text", .type = .string, .doc = "UTF-8, copied." }}),
+    setter("siv_replace_text", "Replaces a range of the text of a text or editor node, as siv_set_text with the spliced text would, but in time proportional to the edit rather than the text (D15): for an application that edits a long text by commands of its own. Styled ranges and paragraph styles move with the text as an editor moves them for the user's edits (the inserted text takes the style of the first replaced character, else of the character before it); an editor's caret and anchor move with the text after the range when at or past its end, and to its start when inside it. As siv_set_text, it drops the editor's undo history and sends no change event. Not for masked editors (SIV_ERROR_INVALID_ARGUMENT).", &.{
+        .{ .name = "start", .type = .u32, .doc = "Byte offset of the range's start, at a character boundary." },
+        .{ .name = "end", .type = .u32, .doc = "Byte offset of its end, at a character boundary, at least start and at most the text's length." },
+        .{ .name = "text", .type = .string, .doc = "UTF-8 that replaces it, copied." },
+    }),
     setter("siv_set_text_style", "Sets the style of a text or editor node.", &.{.{ .name = "desc", .type = .{ .desc = "siv_text_style_desc" }, .doc = "The style; NULL for defaults." }}),
     setter("siv_set_flex", "Sets a flex container's options.", &.{.{ .name = "desc", .type = .{ .desc = "siv_flex_desc" }, .doc = "Options; NULL for defaults." }}),
     setter("siv_set_grid", "Sets a grid container's tracks and options.", &.{.{ .name = "desc", .type = .{ .desc = "siv_grid_desc" }, .doc = "Options; NULL for defaults." }}),
@@ -1913,6 +1923,17 @@ pub const functions = [_]Function{
         .{ .name = "node", .type = ref("siv_node"), .doc = "An editor node." },
         .{ .name = "caret", .type = out(.u32), .doc = "Caret offset." },
         .{ .name = "anchor", .type = out(.u32), .doc = "Anchor offset." },
+    }),
+    call("siv_node_get_caret_rect", "Where the caret at a byte offset of a text or editor node is drawn, in the node's coordinates, laid out for its latest text at its last width (D15): for a popup or an overlay at a word, typewriter scrolling, or moving by displayed lines. The width is the caret's (the character's with SIV_EDITOR_BLOCK_CARET). An offset inside a character counts as its start.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "A text or editor node, not masked." },
+        .{ .name = "offset", .type = .u32, .doc = "Byte offset; clamped to the text." },
+        .{ .name = "rect", .type = out(ref("siv_rect")), .doc = "The caret's rectangle: its line's top and height." },
+    }),
+    call("siv_node_get_offset_at", "The byte offset of a text or editor node nearest to a point in the node's coordinates, as a click there would place the caret, laid out for its latest text at its last width (D15). Points above the text find its first line, below it its last.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "A text or editor node, not masked." },
+        .{ .name = "x", .type = .f32, .doc = "Horizontal position." },
+        .{ .name = "y", .type = .f32, .doc = "Vertical position." },
+        .{ .name = "offset", .type = out(.u32), .doc = "The offset." },
     }),
     call("siv_node_get_rect", "A node's border box in window coordinates, as of the last frame.", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },

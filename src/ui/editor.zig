@@ -95,9 +95,28 @@ pub fn imeCommit(win: *Window, id: NodeId, before: u32, after: u32, str: []const
 /// The caret rectangle in content coordinates (before editor scrolling).
 pub fn caretRect(win: *const Window, id: NodeId, l: *const Layout) error{OutOfMemory}!Rect {
     const e = data(win, id);
-    const c = try l.caret(.{ .offset = displayCaret(win, id), .affinity = e.affinity });
-    const x = c.x + text_node.lineShift(win, id, try l.line(c.line), contentWidth(win, id));
-    return .xywh(x, c.top, layout.caret_width, c.height);
+    const block = e.editor.block_caret and win.ime.preeditFor(id) == null;
+    return caretRectAt(win, id, l, .{ .offset = displayCaret(win, id), .affinity = e.affinity }, block);
+}
+
+/// The caret rectangle at `pos` in content coordinates. A block caret
+/// covers the grapheme after it on its line: half the line's height wide
+/// at the line's end.
+pub fn caretRectAt(win: *const Window, id: NodeId, l: *const Layout, pos: Position, block: bool) error{OutOfMemory}!Rect {
+    const c = try l.caret(pos);
+    const shift = text_node.lineShift(win, id, try l.line(c.line), contentWidth(win, id));
+    if (!block) return .xywh(c.x + shift, c.top, layout.caret_width, c.height);
+    var x0 = c.x;
+    var x1 = c.x + c.height / 2;
+    const next = try l.nextGrapheme(pos.offset);
+    if (next != pos.offset) {
+        const n = try l.caret(.{ .offset = next, .affinity = .upstream });
+        if (n.line == c.line and n.x != c.x) {
+            x0 = @min(c.x, n.x);
+            x1 = @max(c.x, n.x);
+        }
+    }
+    return .xywh(x0 + shift, c.top, x1 - x0, c.height);
 }
 
 /// Keeps a single-line editor's caret in view; call after layout.
@@ -122,7 +141,7 @@ pub fn scrollToCaret(win: *Window, id: NodeId) void {
 }
 
 /// The text position under a point in the editor's coordinates.
-fn positionAt(win: *Window, id: NodeId, local: Point) ?Position {
+pub fn positionAt(win: *Window, id: NodeId, local: Point) ?Position {
     const l = fresh(win, id) orelse return null;
     const o = contentOrigin(win, id);
     const x = local.x - o.x;
@@ -268,7 +287,7 @@ fn replace(win: *Window, id: NodeId, start: u32, end: u32, insert: []const u8, r
         .paragraphs_before = paragraphs_before,
         .paragraphs_after = paragraphs_after,
     });
-    changed(win, id);
+    changed(win, id, .{ .start = start, .end = end, .length = @intCast(insert.len) });
 }
 
 /// Masked: offsets index the bullets, one per code point of the secret.
@@ -287,7 +306,7 @@ fn replaceMasked(win: *Window, id: NodeId, start: u32, end: u32, insert: []const
     const inserted_cps = std.unicode.utf8CountCodepoints(insert) catch return;
     const caret: u32 = @intCast((cp_start + inserted_cps) * bullet.len);
     if (!commitEdit(win, id, .{ .all = plain }, caret, &.{}, &.{})) return;
-    changed(win, id);
+    changed(win, id, .{});
 }
 
 fn byteOfCodepoint(s: []const u8, cp: usize) usize {
@@ -329,9 +348,9 @@ fn commitEdit(win: *Window, id: NodeId, new: NewText, caret: u32, styled: []cons
     return true;
 }
 
-fn changed(win: *Window, id: NodeId) void {
+fn changed(win: *Window, id: NodeId, change: node_mod.Change) void {
     if (win.isLive(id)) if (win.node(id).handler(.change)) |h| {
-        _ = h.func(h.user, win, id, &.change);
+        _ = h.func(h.user, win, id, &.{ .change = change });
     };
 }
 
@@ -402,6 +421,8 @@ fn isSpace(s: []const u8) bool {
 }
 
 fn remember(win: *Window, id: NodeId, before: Snapshot, edit: Edit) void {
+    // The application keeps the history.
+    if (data(win, id).editor.no_undo) return;
     const gpa = win.gpa;
     const h = history(win, id, before.revision) orelse return;
     h.revision = data(win, id).revision;
@@ -477,7 +498,7 @@ fn remember(win: *Window, id: NodeId, before: Snapshot, edit: Edit) void {
 /// Undoes (or redoes) the last step. Returns whether there was one.
 pub fn undo(win: *Window, id: NodeId, redo: bool) bool {
     const e = data(win, id);
-    if (e.editor.masked) return false;
+    if (e.editor.masked or e.editor.no_undo) return false;
     const h = win.histories.getPtr(id) orelse return false;
     if (h.revision != e.revision) {
         h.clear(win.gpa);
@@ -501,7 +522,7 @@ pub fn undo(win: *Window, id: NodeId, redo: bool) bool {
     if (!redo) setSelection(win, id, ed.caret, ed.anchor, .downstream);
     to.appendAssumeCapacity(ed);
     h.revision = data(win, id).revision;
-    changed(win, id);
+    changed(win, id, .{ .start = ed.start, .end = @intCast(ed.start + gone.len), .length = @intCast(back.len) });
     return true;
 }
 
@@ -539,7 +560,7 @@ pub fn format(win: *Window, id: NodeId, values: node_mod.SpanStyle, mask: node_m
     t.commit();
     const paragraphs = e.text.paragraphs;
     remember(win, id, snap, .{ .start = lo, .removed = "", .inserted = "", .kind = .format, .spans_before = before, .spans_after = after, .paragraphs_before = paragraphs, .paragraphs_after = paragraphs });
-    changed(win, id);
+    changed(win, id, .{});
     return true;
 }
 
@@ -568,7 +589,7 @@ pub fn formatParagraph(win: *Window, id: NodeId, values: node_mod.ParagraphPatch
     t.commit();
     const styled = e.text.spans;
     remember(win, id, snap, .{ .start = lo, .removed = "", .inserted = "", .kind = .format, .spans_before = styled, .spans_after = styled, .paragraphs_before = before, .paragraphs_after = after });
-    changed(win, id);
+    changed(win, id, .{});
     return true;
 }
 
@@ -695,10 +716,13 @@ fn keyIn(win: *Window, id: NodeId, k: *const platform.Key, l: *const Layout) err
         },
         'z', 'Z' => {
             if (!mods.ctrl) return typed(win, id, k);
+            // The application's history: the keys are its own.
+            if (e.editor.no_undo) return false;
             _ = undo(win, id, mods.shift);
         },
         'y', 'Y' => {
             if (!mods.ctrl) return typed(win, id, k);
+            if (e.editor.no_undo) return false;
             _ = undo(win, id, true);
         },
         else => return typed(win, id, k),
