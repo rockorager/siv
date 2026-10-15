@@ -31,6 +31,7 @@ const BoxId = box_mod.BoxId;
 const Box = box_mod.Box;
 const none = box_mod.none;
 pub const Error = error{OutOfMemory};
+const inf = std.math.inf(f32);
 
 pub const IfcCache = struct {
     shaped: ?*inline_mod.Shaped = null,
@@ -103,6 +104,9 @@ pub const Engine = struct {
     /// Floats beside IFCs, in their content coordinates, kept with them
     /// so that lines laid out again (after eviction) wrap the same way.
     ifc_floats: std.AutoHashMapUnmanaged(u32, []inline_mod.FloatRect) = .empty,
+    /// A border-box height that an absolutely positioned flex container
+    /// has from its insets while its width is measured.
+    cross_hint: ?struct { id: BoxId, h: f32 } = null,
 
     pub fn deinit(e: *Engine) void {
         for (e.ifc_cache) |*c| e.drop(c);
@@ -272,7 +276,11 @@ pub const Engine = struct {
         // Inline-blocks align their last line's baseline; others (and
         // overflow other than visible) their bottom margin edge.
         const st = e.style(id);
-        const base = if (!std.math.isNan(b.last_baseline) and b.kind != .replaced and st.box.overflow_y == .visible) b.margin[0] + b.last_baseline else mh;
+        // Inline flex and grid containers (and tables) align their first
+        // baseline (CSS Flexbox 8.5, CSS Grid 9.3).
+        const first = b.kind == .flex or b.kind == .grid or b.kind == .table;
+        const bl = if (first) b.baseline else b.last_baseline;
+        const base = if (!std.math.isNan(bl) and b.kind != .replaced and (first or st.box.overflow_y == .visible)) b.margin[0] + bl else mh;
         return .{ .w = b.margin[3] + b.w + b.margin[1], .h = mh, .baseline = base };
     }
 
@@ -283,7 +291,7 @@ pub const Engine = struct {
 
     // Sizes.
 
-    fn resolveEdges(e: *Engine, id: BoxId, cb_w: f32) void {
+    pub fn resolveEdges(e: *Engine, id: BoxId, cb_w: f32) void {
         const b = e.get(id);
         const st = e.style(id);
         for (0..4) |i| {
@@ -293,16 +301,16 @@ pub const Engine = struct {
         }
     }
 
-    fn horizontalExtras(b: *const Box) f32 {
+    pub fn horizontalExtras(b: *const Box) f32 {
         return b.padding[1] + b.padding[3] + b.border[1] + b.border[3];
     }
 
-    fn verticalExtras(b: *const Box) f32 {
+    pub fn verticalExtras(b: *const Box) f32 {
         return b.padding[0] + b.padding[2] + b.border[0] + b.border[2];
     }
 
     /// A length as a border-box size (box-sizing applied), or null.
-    fn borderBoxLen(e: *const Engine, id: BoxId, l: Len, basis: ?f32, horizontal: bool) ?f32 {
+    pub fn borderBoxLen(e: *const Engine, id: BoxId, l: Len, basis: ?f32, horizontal: bool) ?f32 {
         const v = l.definite(basis) orelse return null;
         const b = e.get(id);
         const extra = if (horizontal) horizontalExtras(b) else verticalExtras(b);
@@ -310,7 +318,7 @@ pub const Engine = struct {
         return v + extra;
     }
 
-    fn clampWidth(e: *const Engine, id: BoxId, w: f32, cb_w: f32) f32 {
+    pub fn clampWidth(e: *const Engine, id: BoxId, w: f32, cb_w: f32) f32 {
         const st = e.style(id);
         var r = w;
         if (st.box.max_width.tag == .length) if (e.borderBoxLen(id, st.box.max_width, cb_w, true)) |m| {
@@ -322,7 +330,7 @@ pub const Engine = struct {
         return @max(r, horizontalExtras(e.get(id)));
     }
 
-    fn clampHeight(e: *const Engine, id: BoxId, h: f32, cb_h: ?f32) f32 {
+    pub fn clampHeight(e: *const Engine, id: BoxId, h: f32, cb_h: ?f32) f32 {
         const st = e.style(id);
         var r = h;
         if (st.box.max_height.tag == .length) if (e.borderBoxLen(id, st.box.max_height, cb_h, false)) |m| {
@@ -335,7 +343,7 @@ pub const Engine = struct {
     }
 
     /// The box's natural size and ratio (replaced elements).
-    fn natural(e: *const Engine, id: BoxId) struct { w: f32, h: f32, ratio: f32 } {
+    pub fn natural(e: *const Engine, id: BoxId) struct { w: f32, h: f32, ratio: f32 } {
         const b = e.get(id);
         const r = e.tree.replaced.items[b.data];
         const st = e.style(id);
@@ -345,7 +353,7 @@ pub const Engine = struct {
     }
 
     /// CSS 2.1 10.3.2 and 10.6.2: a replaced element's used size.
-    fn replacedSize(e: *Engine, id: BoxId, cb_w: f32, cb_h: ?f32) [2]f32 {
+    pub fn replacedSize(e: *Engine, id: BoxId, cb_w: f32, cb_h: ?f32) [2]f32 {
         const st = e.style(id);
         const b = e.get(id);
         const nat = e.natural(id);
@@ -380,65 +388,140 @@ pub const Engine = struct {
         return .{ ww + hx, hh + vx };
     }
 
-    /// Intrinsic width (min-content or max-content) of a box's margin box
-    /// (`margins`) or border box.
-    pub fn intrinsic(e: *Engine, id: BoxId, max: bool, margins: bool) Error!f32 {
-        const b = e.get(id);
+    /// Padding and borders on one axis with percentages against zero, as
+    /// intrinsic sizes take them (CSS Sizing 3, 5.2.1).
+    pub fn extras0(e: *const Engine, id: BoxId, horizontal: bool) f32 {
         const st = e.style(id);
+        const a: usize = if (horizontal) 1 else 0;
+        const c: usize = if (horizontal) 3 else 2;
+        return st.box.padding[a].resolve(0) + st.box.padding[c].resolve(0) + st.borderWidth(a) + st.borderWidth(c);
+    }
+
+    /// `borderBoxLen` for intrinsic sizes: no percentage basis.
+    pub fn borderBoxLen0(e: *const Engine, id: BoxId, l: Len, horizontal: bool) ?f32 {
+        const v = l.definite(null) orelse return null;
+        const extra = e.extras0(id, horizontal);
+        if (e.style(id).box.box_sizing == .border_box) return @max(v, extra);
+        return v + extra;
+    }
+
+    /// A replaced element's width from its content alone (CSS Sizing 3,
+    /// 5.1): its natural width, or one transferred from a definite height
+    /// through its ratio; the width property and its limits apart.
+    fn replacedContentWidth(e: *Engine, id: BoxId) f32 {
+        const st = e.style(id);
+        const nat = e.natural(id);
+        const hx = e.extras0(id, true);
+        if (nat.ratio > 0) if (e.borderBoxLen0(id, st.box.height, false)) |h| {
+            return (h - e.extras0(id, false)) * nat.ratio + hx;
+        };
+        if (nat.w > 0) return nat.w + hx;
+        if (nat.ratio > 0 and nat.h > 0) return nat.h * nat.ratio + hx;
+        return hx;
+    }
+
+    /// The min-content or max-content width of a box's content as a
+    /// border-box width: what an auto width would make of it, with the
+    /// box's width, min-width, and max-width apart (CSS Sizing 3, 5.1).
+    pub fn contentWidth(e: *Engine, id: BoxId, max: bool) Error!f32 {
+        const b = e.get(id);
         const cached = if (max) b.max_content else b.min_content;
-        var w: f32 = 0;
-        if (cached >= 0) {
-            w = cached;
-        } else {
-            e.resolveEdges(id, 0);
-            const hx = horizontalExtras(e.get(id));
-            if (e.borderBoxLen(id, st.box.width, null, true)) |fixed| {
-                w = fixed;
-            } else switch (e.get(id).kind) {
-                .replaced => {
-                    const sz = e.replacedSize(id, 0, null);
-                    w = sz[0];
-                    // A percentage width makes the min-content zero.
-                    if (!max and st.box.width.hasPercent()) w = hx;
-                },
-                .inline_root => {
-                    const ifc = e.get(id).data;
-                    const s = try e.shaped(ifc);
-                    const cx = e.ifcContext(ifc, s);
-                    e.fonts.cache.lockShared();
-                    const r = inline_mod.intrinsic(&cx);
-                    e.fonts.cache.unlockShared();
-                    const v = try r;
-                    w = (if (max) v[1] else v[0]) + hx;
-                },
-                .flex => w = try flex_mod.intrinsic(e, id, max) + hx,
-                .grid => w = try grid_mod.intrinsic(e, id, max) + hx,
-                .table => w = try table_mod.intrinsic(e, id, max),
-                else => {
-                    var m: f32 = 0;
-                    var it = e.tree.children(id);
-                    while (it.next()) |c| {
-                        if (e.get(c).out_of_flow) continue;
-                        m = @max(m, try e.intrinsic(c, max, true));
-                    }
-                    w = m + hx;
-                    if (e.get(id).marker != none and !max) {}
-                },
-            }
-            if (st.box.min_width.tag == .length) if (e.borderBoxLen(id, st.box.min_width, null, true)) |mn| {
-                w = @max(w, mn);
-            };
-            if (st.box.max_width.tag == .length) if (e.borderBoxLen(id, st.box.max_width, null, true)) |mx| {
-                w = @min(w, mx);
-            };
-            const bb = e.get(id);
-            if (max) bb.max_content = w else bb.min_content = w;
-        }
-        if (!margins) return w;
+        if (cached >= 0) return cached;
+        const hx = e.extras0(id, true);
+        const w: f32 = switch (e.get(id).kind) {
+            .replaced => e.replacedContentWidth(id),
+            .inline_root => blk: {
+                const ifc = e.get(id).data;
+                const s = try e.shaped(ifc);
+                const cx = e.ifcContext(ifc, s);
+                e.fonts.cache.lockShared();
+                const r = inline_mod.intrinsic(&cx);
+                e.fonts.cache.unlockShared();
+                const v = try r;
+                break :blk (if (max) v[1] else v[0]) + hx;
+            },
+            .flex => blk: {
+                // A definite height stretches items with a ratio, whose
+                // widths follow it.
+                const st = e.style(id);
+                var bh: ?f32 = e.borderBoxLen0(id, st.box.height, false);
+                if (e.cross_hint) |hint| if (hint.id == id) {
+                    bh = hint.h;
+                };
+                const inner_h: ?f32 = if (bh) |v| @max(0, v - e.extras0(id, false)) else null;
+                break :blk try flex_mod.intrinsic(e, id, max, inner_h) + hx;
+            },
+            .grid => try grid_mod.intrinsic(e, id, max) + hx,
+            .table => try table_mod.intrinsic(e, id, max),
+            else => blk: {
+                var m: f32 = 0;
+                var it = e.tree.children(id);
+                while (it.next()) |c| {
+                    if (e.get(c).out_of_flow) continue;
+                    m = @max(m, try e.intrinsic(c, max, true));
+                }
+                break :blk m + hx;
+            },
+        };
         const bb = e.get(id);
+        if (max) bb.max_content = w else bb.min_content = w;
+        return w;
+    }
+
+    /// A width property's keyword sized from content (min-content,
+    /// max-content, fit-content), or null.
+    pub fn keywordWidth(e: *Engine, id: BoxId, l: Len, max: bool) Error!?f32 {
+        return switch (l.tag) {
+            .min_content => try e.contentWidth(id, false),
+            .max_content => try e.contentWidth(id, true),
+            .fit_content => try e.contentWidth(id, max),
+            else => null,
+        };
+    }
+
+    /// The min-content or max-content contribution of a box (CSS Sizing
+    /// 3, 5.2): its border box (and margins, with `margins`) as its width
+    /// property, its limits, and its content make it.
+    pub fn intrinsic(e: *Engine, id: BoxId, max: bool, margins: bool) Error!f32 {
+        const st = e.style(id);
+        const b = e.get(id);
+        const hx = e.extras0(id, true);
+        var w: f32 = undefined;
+        if (e.borderBoxLen0(id, st.box.width, true)) |fixed| {
+            w = fixed;
+        } else if (try e.keywordWidth(id, st.box.width, max)) |k| {
+            w = k;
+        } else if (b.kind == .replaced) {
+            // A percentage width makes the min-content zero.
+            w = if (!max and (st.box.width.hasPercent() or st.box.max_width.hasPercent())) hx else e.replacedContentWidth(id);
+        } else if (st.box.aspect_ratio > 0 and b.kind != .table and e.borderBoxLen0(id, st.box.height, false) != null) {
+            // A preferred aspect ratio transfers a definite height.
+            const vx = e.extras0(id, false);
+            const h = e.borderBoxLen0(id, st.box.height, false).?;
+            w = if (st.box.box_sizing == .border_box) h * st.box.aspect_ratio else (h - vx) * st.box.aspect_ratio + hx;
+            w = @max(w, try e.contentWidth(id, false));
+        } else w = try e.contentWidth(id, max);
+        if (st.box.aspect_ratio > 0 and b.kind != .replaced and b.kind != .table and st.box.width.isAuto()) {
+            // The height's limits, transferred through the ratio.
+            const vx = e.extras0(id, false);
+            const to_w = struct {
+                fn f(stl: *const Style, h: f32, hxx: f32, vxx: f32) f32 {
+                    return if (stl.box.box_sizing == .border_box) h * stl.box.aspect_ratio else @max(0, h - vxx) * stl.box.aspect_ratio + hxx;
+                }
+            }.f;
+            if (e.borderBoxLen0(id, st.box.max_height, false)) |mh| w = @min(w, to_w(st, mh, hx, vx));
+            if (e.borderBoxLen0(id, st.box.min_height, false)) |mh| w = @max(w, to_w(st, mh, hx, vx));
+        }
+        if (st.box.max_width.tag == .length) {
+            if (e.borderBoxLen0(id, st.box.max_width, true)) |mx| w = @min(w, mx);
+        } else if (try e.keywordWidth(id, st.box.max_width, max)) |mx| w = @min(w, mx);
+        if (st.box.min_width.tag == .length) {
+            if (e.borderBoxLen0(id, st.box.min_width, true)) |mn| w = @max(w, mn);
+        } else if (try e.keywordWidth(id, st.box.min_width, max)) |mn| w = @max(w, mn);
+        w = @max(w, hx);
+        if (!margins) return w;
         const ml = if (st.box.margin[3].isAuto()) 0 else st.box.margin[3].resolve(0);
         const mr = if (st.box.margin[1].isAuto()) 0 else st.box.margin[1].resolve(0);
-        _ = bb;
         return w + ml + mr;
     }
 
@@ -482,6 +565,10 @@ pub const Engine = struct {
         var w: f32 = undefined;
         if (e.borderBoxLen(id, st.box.width, cb_w, true)) |fixed| {
             w = fixed;
+        } else if (st.box.width.isAuto() and st.box.aspect_ratio > 0 and b.kind != .table and e.borderBoxLen(id, st.box.height, cb_h, false) != null) {
+            // A preferred aspect ratio transfers a definite height.
+            const h = e.borderBoxLen(id, st.box.height, cb_h, false).?;
+            w = if (st.box.box_sizing == .border_box) h * st.box.aspect_ratio else (h - verticalExtras(b)) * st.box.aspect_ratio + horizontalExtras(b);
         } else if (b.kind == .table or st.floats() or st.box.width.tag == .fit_content or st.box.width.tag == .max_content or st.box.width.tag == .min_content) {
             const avail = cb_w - b.margin[1] - b.margin[3];
             w = switch (st.box.width.tag) {
@@ -527,48 +614,102 @@ pub const Engine = struct {
         }
     }
 
+    /// How a parent's layout sizes a box's height (`layoutSized`).
+    pub const Sizing = struct {
+        /// A border-box height the parent gives (flex, grid, stretching),
+        /// or null for the box's own.
+        h: ?f32 = null,
+        /// Whether that height is definite, so that percentages inside
+        /// resolve against it (CSS Flexbox 9.8).
+        definite: bool = true,
+        /// The height from content alone: the height property, the
+        /// aspect ratio, min-height, and max-height apart (content-based
+        /// sizes of flex and grid items). Not kept as the box's layout.
+        content: bool = false,
+    };
+
     /// Lays out a box's content at border-box width `w`.
     pub fn layoutAt(e: *Engine, id: BoxId, w: f32, cb_w: f32, cb_h: ?f32, fixed_h: ?f32) Error!void {
+        return e.layoutSized(id, w, cb_w, cb_h, .{ .h = fixed_h });
+    }
+
+    /// The border-box height a preferred aspect ratio gives a box that is
+    /// not replaced at border-box width `w` (CSS Sizing 4, 5.1), or null.
+    pub fn ratioHeight(e: *const Engine, id: BoxId, w: f32) ?f32 {
+        const st = e.style(id);
+        const b = e.get(id);
+        if (st.box.aspect_ratio <= 0 or b.kind == .replaced or b.kind == .table) return null;
+        if (st.box.box_sizing == .border_box) return @max(w / st.box.aspect_ratio, verticalExtras(b));
+        return @max(0, w - horizontalExtras(b)) / st.box.aspect_ratio + verticalExtras(b);
+    }
+
+    pub fn layoutSized(e: *Engine, id: BoxId, w: f32, cb_w: f32, cb_h: ?f32, sizing: Sizing) Error!void {
         const b = e.get(id);
         const st = e.style(id);
         b.w = w;
         const beside_floats = e.floats.items.len > e.float_base and !st.establishesBfc();
-        if (b.laid_w == w and b.laid_h >= 0 and fixed_h == null and !e.resume_map.contains(id) and !beside_floats) {
+        const cb_key: f32 = cb_h orelse -1;
+        const cacheable = sizing.h == null and !sizing.content;
+        if (cacheable and b.laid_w == w and b.laid_h >= 0 and b.laid_cb_h == cb_key and !e.resume_map.contains(id) and !beside_floats) {
             b.h = b.laid_h;
             return;
         }
         const content_w = @max(0, w - horizontalExtras(b));
-        const own_h: ?f32 = if (fixed_h) |fh| fh else if (e.borderBoxLen(id, st.box.height, cb_h, false)) |h| h else null;
-        const content_h: ?f32 = if (own_h) |h| @max(0, h - verticalExtras(b)) else null;
+        var ratio_h: ?f32 = null;
+        const own_h: ?f32 = if (sizing.h) |fh| fh else if (sizing.content) null else if (e.borderBoxLen(id, st.box.height, cb_h, false)) |h| h else blk: {
+            ratio_h = e.ratioHeight(id, w);
+            break :blk null;
+        };
+        // A height from an aspect ratio is definite, and content taller
+        // than it extends it (an automatic minimum height).
+        const used_h = own_h orelse ratio_h;
+        const content_h: ?f32 = if (used_h) |h| @max(0, h - verticalExtras(b)) else null;
+        const pct_h: ?f32 = if (sizing.definite or sizing.h == null) content_h else null;
         const positioned = st.isPositioned();
         if (positioned) try e.frames.append(e.gpa, .{ .box = id, .start = e.absolutes.items.len });
-        var h: f32 = 0;
-        switch (b.kind) {
-            .replaced => h = fixed_h orelse e.replacedSize(id, cb_w, cb_h)[1],
-            .inline_root => {
-                try e.layoutInline(id, content_w);
-                h = e.get(id).laid_h + verticalExtras(e.get(id));
-            },
-            .flex => h = try flex_mod.layout(e, id, content_w, content_h) + verticalExtras(e.get(id)),
-            .grid => h = try grid_mod.layout(e, id, content_w, content_h) + verticalExtras(e.get(id)),
-            .table => h = try table_mod.layout(e, id, content_w, content_h),
-            .table_row_group, .table_row, .table_cell, .table_caption, .block => {
-                const ch = try e.blockFlow(id, content_w, content_h);
-                h = ch + verticalExtras(e.get(id));
-            },
+        var h: f32 = undefined;
+        if (ratio_h != null and b.kind != .replaced and st.box.min_height.isAuto() and st.box.overflow_y == .visible) {
+            // The ratio's height, unless the content is taller (an
+            // automatic minimum height): the content laid out without it
+            // first, then at it when it fits.
+            const rh = ratio_h.?;
+            h = try e.layoutContent(id, content_w, null, null, cb_w, cb_h, sizing);
+            if (h <= rh) h = @max(rh, try e.layoutContent(id, content_w, content_h, pct_h, cb_w, cb_h, sizing));
+        } else {
+            h = try e.layoutContent(id, content_w, content_h, pct_h, cb_w, cb_h, sizing);
+            if (own_h) |oh| {
+                h = oh;
+            } else if (ratio_h) |rh| h = rh;
         }
+        if (!sizing.content) h = e.clampHeight(id, h, cb_h);
         const bb = e.get(id);
-        if (own_h) |oh| h = oh;
-        h = e.clampHeight(id, h, cb_h);
         bb.h = h;
-        if (!e.resume_map.contains(id)) {
+        if (!e.resume_map.contains(id) and cacheable) {
             bb.laid_w = w;
             bb.laid_h = h;
-        }
+            bb.laid_cb_h = cb_key;
+        } else if (!cacheable) bb.laid_w = -1;
         if (positioned) {
             const f = e.frames.pop().?;
             try e.layoutAbsolutes(f);
         }
+    }
+
+    /// Lays out a box's content by its kind; returns its border-box
+    /// height from content.
+    fn layoutContent(e: *Engine, id: BoxId, content_w: f32, content_h: ?f32, pct_h: ?f32, cb_w: f32, cb_h: ?f32, sizing: Sizing) Error!f32 {
+        const b = e.get(id);
+        return switch (b.kind) {
+            .replaced => sizing.h orelse e.replacedSize(id, cb_w, cb_h)[1],
+            .inline_root => blk: {
+                try e.layoutInline(id, content_w);
+                break :blk e.get(id).laid_h + verticalExtras(e.get(id));
+            },
+            .flex => try flex_mod.layout(e, id, content_w, content_h, pct_h, cb_h) + verticalExtras(e.get(id)),
+            .grid => try grid_mod.layout(e, id, content_w, pct_h) + verticalExtras(e.get(id)),
+            .table => try table_mod.layout(e, id, content_w, pct_h),
+            .table_row_group, .table_row, .table_cell, .table_caption, .block => try e.blockFlow(id, content_w, pct_h) + verticalExtras(e.get(id)),
+        };
     }
 
     fn layoutInline(e: *Engine, id: BoxId, content_w: f32) Error!void {
@@ -844,8 +985,27 @@ pub const Engine = struct {
                 }
                 // A box with its own formatting context fits beside floats.
                 if (e.floats.items.len > e.float_base and (cst.establishesBfc() or c.kind == .table or c.kind == .flex or c.kind == .grid or c.kind == .replaced)) {
-                    const y0 = my_org[1] + c.y;
-                    const sp = e.freeSpace(my_org[0] + left, my_org[0] + left + content_w, y0, y0 + 1);
+                    // Below the floats where a definite width does not fit
+                    // beside them (CSS 2.1 9.5).
+                    e.resolveEdges(cur, content_w);
+                    const need: f32 = e.borderBoxLen(cur, cst.box.width, content_w, true) orelse 0;
+                    var y0 = my_org[1] + c.y;
+                    var sp = e.freeSpace(my_org[0] + left, my_org[0] + left + content_w, y0, y0 + 1);
+                    while (sp[1] - sp[0] < need - 0.01 and (sp[0] > my_org[0] + left or sp[1] < my_org[0] + left + content_w)) {
+                        var next: f32 = inf;
+                        for (e.floats.items[e.float_base..]) |f| if (f.y1 > y0) {
+                            next = @min(next, f.y1);
+                        };
+                        if (next == inf) break;
+                        y0 = next;
+                        sp = e.freeSpace(my_org[0] + left, my_org[0] + left + content_w, y0, y0 + 1);
+                    }
+                    if (y0 > my_org[1] + c.y) {
+                        // As clearance: the border box at the floats' bottom.
+                        state.y = y0 - my_org[1] - e.get(cur).margin[0];
+                        pending = .{};
+                        c.y = state.y;
+                    }
                     shift_x = sp[0] - (my_org[0] + left);
                     avail_w = @max(0, sp[1] - sp[0]);
                 }
@@ -975,7 +1135,7 @@ pub const Engine = struct {
     }
 
     /// Moves a relatively positioned box by its insets.
-    fn relativeOffset(e: *Engine, id: BoxId, cb_w: f32) void {
+    pub fn relativeOffset(e: *Engine, id: BoxId, cb_w: f32) void {
         const st = e.style(id);
         if (st.box.position != .relative) return;
         const b = e.get(id);
@@ -1013,6 +1173,10 @@ pub const Engine = struct {
         const right = st.box.inset[1];
         const top = st.box.inset[0];
         const bottom = st.box.inset[2];
+        var fixed_h: ?f32 = null;
+        if (st.box.height.isAuto() and !top.isAuto() and !bottom.isAuto() and b.kind != .replaced) {
+            fixed_h = e.clampHeight(id, cb_h - top.resolve(cb_h) - bottom.resolve(cb_h) - b.margin[0] - b.margin[2], cb_h);
+        }
         var w: f32 = undefined;
         if (b.kind == .replaced) {
             w = e.replacedSize(id, cb_w, cb_h)[0];
@@ -1020,12 +1184,23 @@ pub const Engine = struct {
             w = fixed;
         } else if (!left.isAuto() and !right.isAuto()) {
             w = cb_w - left.resolve(cb_w) - right.resolve(cb_w) - b.margin[1] - b.margin[3];
-        } else w = try e.shrinkToFit(id, cb_w - b.margin[1] - b.margin[3] - (if (left.isAuto()) 0 else left.resolve(cb_w)) - (if (right.isAuto()) 0 else right.resolve(cb_w)));
-        w = e.clampWidth(id, w, cb_w);
-        var fixed_h: ?f32 = null;
-        if (st.box.height.isAuto() and !top.isAuto() and !bottom.isAuto() and b.kind != .replaced) {
-            fixed_h = e.clampHeight(id, cb_h - top.resolve(cb_h) - bottom.resolve(cb_h) - b.margin[0] - b.margin[2], cb_h);
+        } else {
+            // The height from the insets sizes a flex container's
+            // content (items with a ratio), not kept in its caches.
+            const hinted = fixed_h != null and b.kind == .flex;
+            if (hinted) {
+                e.cross_hint = .{ .id = id, .h = fixed_h.? };
+                b.min_content = -1;
+                b.max_content = -1;
+            }
+            defer if (hinted) {
+                e.cross_hint = null;
+                e.get(id).min_content = -1;
+                e.get(id).max_content = -1;
+            };
+            w = try e.shrinkToFit(id, cb_w - b.margin[1] - b.margin[3] - (if (left.isAuto()) 0 else left.resolve(cb_w)) - (if (right.isAuto()) 0 else right.resolve(cb_w)));
         }
+        w = e.clampWidth(id, w, cb_w);
         try e.layoutAt(id, w, cb_w, cb_h, fixed_h);
         const bb = e.get(id);
         // Position in the containing block's padding box.
@@ -1038,15 +1213,23 @@ pub const Engine = struct {
             x = pad_x + left.resolve(cb_w) + bb.margin[3];
         } else if (!right.isAuto()) {
             x = pad_x + cb_w - right.resolve(cb_w) - bb.w - bb.margin[1];
-        } else x = parent_in_cb[0] + bb.static_x + bb.margin[3];
+        } else x = parent_in_cb[0] + bb.static_x + bb.margin[3] + staticShift(bb.static_align[0], bb.static_area[0] - bb.w - bb.margin[1] - bb.margin[3]);
         var y: f32 = undefined;
         if (!top.isAuto()) {
             y = pad_y + top.resolve(cb_h) + bb.margin[0];
         } else if (!bottom.isAuto()) {
             y = pad_y + cb_h - bottom.resolve(cb_h) - bb.h - bb.margin[2];
-        } else y = parent_in_cb[1] + bb.static_y + bb.margin[0];
+        } else y = parent_in_cb[1] + bb.static_y + bb.margin[0] + staticShift(bb.static_align[1], bb.static_area[1] - bb.h - bb.margin[0] - bb.margin[2]);
         bb.x = x - parent_in_cb[0];
         bb.y = y - parent_in_cb[1];
+    }
+
+    fn staticShift(al: u8, free: f32) f32 {
+        return switch (al) {
+            1 => free / 2,
+            2 => free,
+            else => 0,
+        };
     }
 
     /// The offset of box `id`'s border box within `ancestor`'s.
@@ -1100,6 +1283,7 @@ pub const Engine = struct {
         for (e.tree.boxes.items) |*b| {
             b.laid_w = -1;
             b.laid_h = -1;
+            b.laid_cb_h = -1;
             b.baseline = std.math.nan(f32);
             b.last_baseline = std.math.nan(f32);
             if (intrinsic_too) {

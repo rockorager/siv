@@ -1030,6 +1030,13 @@ pub const Cascade = struct {
     fn hints(c: *Cascade, id: NodeId) Error!void {
         const d = c.dom;
         const n = d.node(id);
+        if (n.ns == .svg and n.name == .svg and (n.parent == .none or d.node(n.parent).ns != .svg)) {
+            // An outer <svg>'s width and height are presentation
+            // attributes (SVG 2, 8.2): `width="100%" height="225"`.
+            if (d.attr(id, .width)) |v| try c.hintLength("width", v, true);
+            if (d.attr(id, .height)) |v| try c.hintLength("height", v, true);
+            return;
+        }
         if (n.ns != .html) return;
         const A = struct {
             fn get(dd: *Dom, i: NodeId, a: Atom) ?[]const u8 {

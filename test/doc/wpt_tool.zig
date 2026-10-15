@@ -2,7 +2,7 @@
 //! and prints each result: a development tool for triage, not a gate.
 //!
 //!     zig build doc-wpt -- [FILTER...] [--manifest FILE] [--root DIR]
-//!                          [--dump DIR] [--failures]
+//!                          [--dump DIR] [--failures] [--size WxH]
 //!
 //! FILTER is a suite name or a substring of a test's path; without one,
 //! every test of the manifest runs (test/wpt/MANIFEST by default).
@@ -14,8 +14,8 @@ const std = @import("std");
 const png = @import("png");
 const Runner = @import("render.zig").Runner;
 
-const W = 800;
-const H = 600;
+var W: u32 = 800;
+var H: u32 = 600;
 
 fn isSuite(manifest: []const u8, name: []const u8) bool {
     var lines = std.mem.tokenizeScalar(u8, manifest, '\n');
@@ -48,6 +48,12 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, a, "--dump")) {
             i += 1;
             dump = argv[i];
+        } else if (std.mem.eql(u8, a, "--size")) {
+            // WIDTHxHEIGHT, for looking at pages by hand.
+            i += 1;
+            var it = std.mem.splitScalar(u8, argv[i], 'x');
+            W = try std.fmt.parseInt(u32, it.next() orelse "800", 10);
+            H = try std.fmt.parseInt(u32, it.next() orelse "600", 10);
         } else if (std.mem.eql(u8, a, "--failures")) {
             failures_only = true;
         } else try filters.append(gpa, a);

@@ -5632,14 +5632,32 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     contexts over `text.ShapedParagraph` (siv's shaping, bidi, font
     fallback, line breaking, hyphenation; `text-wrap: pretty` with
     Knuth and Plass, `balance` by searching the narrowest width with the
-    same line count), atomic inlines as U+FFFC, flexbox (the spec's
-    algorithm: base sizes, automatic minimum sizes, wrapping, `order`,
-    `align-content`, auto margins, baselines), grid (explicit and
+    same line count), atomic inlines as U+FFFC, flexbox (CSS Flexbox 1,
+    section 9: flex base sizes from definite bases, main sizes, aspect
+    ratios through definite or stretched cross sizes, or max-content;
+    content-based automatic minimum sizes with the specified, transferred,
+    and content suggestions; lines; the freezing loop on inner base
+    sizes; hypothetical cross sizes; stretching, which makes the cross
+    size definite for percentages inside; first and last baseline
+    alignment; auto margins, `justify-content`, `align-self`, and
+    `align-content` with `safe`, `wrap-reverse`, and reversed directions;
+    `visibility: collapse` items as struts; out-of-flow children's static
+    positions aligned in the content box; intrinsic sizes summed along
+    rows and maxed across columns, items with a ratio following a
+    definite height; first baselines for inline flex containers), grid (explicit and
     implicit tracks, `repeat()` with `auto-fill`/`auto-fit`, `minmax()`,
     `fr`, named areas, auto placement with `dense`, the track
     sizing algorithm), positioning (relative; absolute and fixed against
     the document), lists with markers, images and SVG as replaced
-    elements (`object-fit`), `overflow` clipping. Tables: the HTML table
+    elements (`object-fit`; an outer `<svg>`'s `width` and `height` as
+    presentation attributes), `aspect-ratio` on boxes that are not
+    replaced (a height from the width, extended by taller content, and a
+    width from a definite height or its limits), `overflow` clipping.
+    Intrinsic sizes are the content's (`Engine.contentWidth`, cached
+    per box, the box's own width and limits apart) and contributions
+    (`Engine.intrinsic`); a parent sizes a box's height with
+    `Engine.layoutSized` (a given height, definite or not, or the height
+    from content alone, which flex items' minimum sizes measure). Tables: the HTML table
     model with anonymous rows and cells, automatic and fixed layout
     (CSS 2.1 17.5.2), row and column spans, `border-spacing` and
     collapsed borders, captions; columns (`<col>`) generate no boxes.
@@ -5649,7 +5667,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     high as it fits beside earlier ones; `clear` moves a block below the
     floats it clears without collapsing margins across the clearance; a
     box with its own formatting context (tables, `overflow`, flex, grid,
-    replaced elements) narrows to fit beside them; a formatting context's
+    replaced elements) narrows to fit beside them, or moves below them
+    when its definite width does not fit; a formatting context's
     root grows to contain its floats. Line boxes beside floats get their
     own inset and width (`inline.lineSpace`): lines are broken greedily
     at the widths of the strut's estimated line positions, placed, and
@@ -5759,7 +5778,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     given a publication and a spine path reads the chapter, its style
     sheets, fonts (publisher `@font-face`), and images from the container
     at `epub:///` URLs without the loader. An XML document (an XML
-    declaration first, as every chapter has) is never in quirks mode.
+    declaration first, as every chapter has, or an `.xhtml` chapter) is
+    never in quirks mode, its self-closing tags end their elements
+    (`<a id="note"/>`), and comments in its style elements are comments.
   - **Pagination** (`siv_docview_flags.paged`): the chapter is laid out
     completely at the page's content width, then `Document.pageBreaks`
     walks the laid-out flow for break points: between blocks, between
@@ -5909,24 +5930,24 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | Suite | Without images | All (with images) |
   | --- | --- | --- |
   | css2 (normal flow, box, margins, colors, borders, positioning, line box, lists) | 235 of 316 | 441 of 569 |
-  | css-flexbox | 227 of 395 | 243 of 482 |
-  | css-grid | 112 of 198 | 122 of 218 |
+  | css-flexbox | 361 of 395 | 428 of 482 |
+  | css-grid | 115 of 198 | 124 of 218 |
   | css-values | 65 of 123 | 67 of 126 |
   | css-variables | 46 of 70 | 46 of 70 |
   | css-tables (and CSS2 tables) | 125 of 288 | 127 of 309 |
-  | floats (CSS2 floats, floats-clear) | 88 of 170 | 152 of 269 |
-  | css-sizing | 111 of 278 | 154 of 366 |
-  | css-display | 59 of 106 | 59 of 109 |
+  | floats (CSS2 floats, floats-clear) | 96 of 170 | 160 of 269 |
+  | css-sizing | 172 of 278 | 230 of 366 |
+  | css-display | 60 of 106 | 60 of 109 |
   | css-pseudo | 33 of 72 | 34 of 74 |
-  | css-lists (and CSS2 generated content) | 166 of 326 | 168 of 334 |
+  | css-lists (and CSS2 generated content) | 167 of 326 | 169 of 334 |
   | css-text (white space, transforms, spacing, breaking, indents, alignment) | 116 of 320 | 122 of 333 |
   | css-backgrounds (and css-borders) | 111 of 230 | 197 of 448 |
-  | css-overflow | 69 of 310 | 72 of 324 |
+  | css-overflow | 69 of 310 | 73 of 324 |
   | css-position | 23 of 68 | 24 of 79 |
   | css-break | 44 of 400 | 45 of 403 |
   | css-multicol | 63 of 312 | 69 of 373 |
   | css-writing-modes | 52 of 395 | 73 of 795 |
-  | Total | 1745 of 4377 (40 %) | 2215 of 5681 (39 %) |
+  | Total | 1953 of 4377 (45 %) | 2489 of 5681 (44 %) |
   <!-- /wpt-rates -->
 
 - **Layout unification.** Should siv's widget layout (D26) become this

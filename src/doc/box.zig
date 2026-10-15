@@ -68,12 +68,19 @@ pub const Box = struct {
     /// The content height laid out at `laid_w` (layout reuse).
     laid_w: f32 = -1,
     laid_h: f32 = -1,
+    /// The containing block height it was laid out against (-1: none).
+    laid_cb_h: f32 = -1,
     /// Intrinsic inline sizes of the border box (-1: not measured).
     min_content: f32 = -1,
     max_content: f32 = -1,
     /// The static position of an out-of-flow box (relative to its parent).
     static_x: f32 = 0,
     static_y: f32 = 0,
+    /// Flex and grid containers align an out-of-flow child's static
+    /// position in an area this large from (static_x, static_y): 0 start,
+    /// 1 center, 2 end, per axis.
+    static_area: [2]f32 = .{ 0, 0 },
+    static_align: [2]u8 = .{ 0, 0 },
     /// Table cells: spans.
     colspan: u16 = 1,
     rowspan: u16 = 1,
