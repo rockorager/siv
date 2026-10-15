@@ -454,6 +454,21 @@ static void check_wheel(void) {
     stop(&f);
 }
 
+/* SIV_WEBVIEW_NO_SCRIPTS: neither the page's scripts nor run_script's
+ * run. */
+static void check_no_scripts(void) {
+    struct fixture f;
+    CHECK(start(&f, SIV_WEBVIEW_EPHEMERAL | SIV_WEBVIEW_NO_SCRIPTS, NULL));
+    CHECK(load(&f, "<title>static</title><script>document.title = 'ran'</script>", NULL));
+    CHECK(wait_title(&f, "static"));
+    pump(&f, 200);
+    CHECK(!strcmp(f.seen.title, "static"));
+    struct answer a;
+    CHECK(eval(&f, "typeof window.siv", &a));
+    CHECK(a.result == SIV_ERROR_UNAVAILABLE);
+    stop(&f);
+}
+
 static const struct {
     const char *name;
     void (*fn)(void);
@@ -470,6 +485,7 @@ static const struct {
     {"history", check_history},
     {"drop", check_drop},
     {"wheel", check_wheel},
+    {"no scripts", check_no_scripts},
 };
 
 int main(int argc, char **argv) {

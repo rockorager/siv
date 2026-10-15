@@ -759,6 +759,7 @@ static siv_result wpe_create(swv_webview *wv, const siv_webview_desc *d) {
     g_signal_connect(w->content, "script-message-received::siv", G_CALLBACK(on_script_message), w);
     WebKitSettings *settings = webkit_settings_new();
     webkit_settings_set_enable_developer_extras(settings, (d->flags & SIV_WEBVIEW_DEVELOPER_EXTRAS) != 0);
+    if (d->flags & SIV_WEBVIEW_NO_SCRIPTS) webkit_settings_set_enable_javascript(settings, FALSE);
     if (d->user_agent_len) {
         char *ua = g_strndup(d->user_agent, d->user_agent_len);
         webkit_settings_set_user_agent(settings, ua);

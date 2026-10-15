@@ -239,6 +239,7 @@ static const struct {
     {"developer_extras", SIV_WEBVIEW_DEVELOPER_EXTRAS},
     {"no_theme", SIV_WEBVIEW_NO_THEME},
     {"no_context_menu", SIV_WEBVIEW_NO_CONTEXT_MENU},
+    {"no_scripts", SIV_WEBVIEW_NO_SCRIPTS},
 };
 
 static siv_webview_flags check_flags(lua_State *L, int table) {

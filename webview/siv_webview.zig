@@ -29,7 +29,9 @@ pub const Flags = packed struct(u32) {
     no_theme: bool = false,
     /// Do not show the engine's context menu.
     no_context_menu: bool = false,
-    _bit4: u28 = 0,
+    /// Run no JavaScript (WebKit's enable-javascript off).
+    no_scripts: bool = false,
+    _bit5: u27 = 0,
 };
 
 pub const EventType = enum(i32) {

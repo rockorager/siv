@@ -3,7 +3,9 @@
  *
  *     siv-webview-browser [URL]
  *
- * Ctrl+L focuses the address bar; the page's title is the window's. */
+ * Ctrl+L focuses the address bar; the page's title is the window's.
+ * BROWSER_NO_SCRIPTS=1 turns JavaScript off; BROWSER_INSPECTOR=1 turns on
+ * the inspector. */
 #include <siv-webview.h>
 
 #include <stdio.h>
@@ -145,7 +147,7 @@ int main(int argc, char **argv) {
     const char *url = argc > 1 ? argv[1] : "https://example.com";
     siv_result r = siv_app_create(SIV_DESC(siv_app_desc, .name = SIV_STR("Browser"), .app_id = SIV_STR("dev.siv.WebviewBrowser")), &b.app);
     if (r == SIV_OK) r = siv_window_create(b.app, SIV_DESC(siv_window_desc, .title = SIV_STR("Browser"), .app_id = SIV_STR("dev.siv.WebviewBrowser"), .width = 1280, .height = 800), &b.window);
-    if (r == SIV_OK) r = siv_webview_create(b.window, SIV_DESC(siv_webview_desc, .user_data = &b, .on_event = on_webview, .flags = getenv("BROWSER_INSPECTOR") ? SIV_WEBVIEW_DEVELOPER_EXTRAS : 0, .inspector_port = 9222), &b.webview);
+    if (r == SIV_OK) r = siv_webview_create(b.window, SIV_DESC(siv_webview_desc, .user_data = &b, .on_event = on_webview, .flags = (getenv("BROWSER_INSPECTOR") ? SIV_WEBVIEW_DEVELOPER_EXTRAS : 0) | (getenv("BROWSER_NO_SCRIPTS") ? SIV_WEBVIEW_NO_SCRIPTS : 0), .inspector_port = 9222), &b.webview);
     if (r == SIV_OK) r = build(&b);
     if (r == SIV_OK) r = siv_webview_load_uri(b.webview, url, strlen(url));
     if (r == SIV_OK && siv_node_focus(b.page) != SIV_OK) fprintf(stderr, "browser: cannot focus the page\n");

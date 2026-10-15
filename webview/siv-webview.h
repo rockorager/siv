@@ -72,6 +72,9 @@ typedef uint32_t siv_webview_flags;
 #define SIV_WEBVIEW_NO_THEME ((siv_webview_flags)1u << 2)
 /** Do not show the engine's context menu. */
 #define SIV_WEBVIEW_NO_CONTEXT_MENU ((siv_webview_flags)1u << 3)
+/** Run no JavaScript: neither the page's nor siv_webview_run_script's
+ *  (WebKit's enable-javascript setting off), so window.siv is absent. */
+#define SIV_WEBVIEW_NO_SCRIPTS ((siv_webview_flags)1u << 4)
 
 /** What a siv_webview_event reports. */
 typedef enum siv_webview_event_type {
