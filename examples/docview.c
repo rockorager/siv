@@ -4,7 +4,8 @@
  *     zig build examples && ./zig-out/bin/docview README.md
  *
  * Ctrl+F finds (Enter for the next match, Shift+Enter for the previous),
- * Ctrl+C copies the selection, Ctrl+A selects everything. Links to local
+ * Ctrl+C copies the selection, Ctrl+A selects everything; Page Up, Page
+ * Down, Home, End, and the arrows scroll. Links to local
  * Markdown and HTML files open here; others are printed. The loader reads
  * only local files: siv never fetches anything, so the application decides
  * (remote images stay blocked). */
@@ -23,6 +24,8 @@ struct viewer {
 	siv_node find;
 	siv_node status;
 	char path[4096];
+	float scroll_y, view_h; /* the scroll node's offset and viewport */
+	float doc_h;            /* the document's height */
 };
 
 static char *read_file(const char *path, size_t *len) {
@@ -99,6 +102,9 @@ static void on_doc_event(void *user_data, siv_node node, const siv_docview_event
 		else snprintf(text, sizeof text, "%u of %u", e->current, e->count);
 		set_status(v, text);
 		break;
+	case SIV_DOCVIEW_EVENT_TYPE_SIZE:
+		v->doc_h = e->height;
+		break;
 	case SIV_DOCVIEW_EVENT_TYPE_BLOCKED_IMAGES:
 		snprintf(text, sizeof text, "%u remote images blocked", e->count);
 		set_status(v, text);
@@ -155,10 +161,41 @@ static siv_event_result on_find_key(void *user_data, siv_node node, const siv_ev
 	return SIV_EVENT_RESULT_HANDLED;
 }
 
+static siv_event_result on_viewport(void *user_data, siv_node node, const siv_event *event) {
+	(void)node;
+	struct viewer *v = user_data;
+	v->scroll_y = event->y;
+	v->view_h = event->height;
+	return SIV_EVENT_RESULT_PASS;
+}
+
+/* Keys that scroll the document, unless the find field has them. */
+static siv_event_result scroll_key(struct viewer *v, const siv_event *event) {
+	if (event->target == v->find || (event->modifiers & (SIV_MODIFIERS_SHIFT | SIV_MODIFIERS_ALT | SIV_MODIFIERS_SUPER))) return SIV_EVENT_RESULT_PASS;
+	float y = v->scroll_y;
+	switch (event->keysym) {
+	case SIV_KEY_PAGE_DOWN: y += v->view_h * 0.9f; break;
+	case SIV_KEY_PAGE_UP: y -= v->view_h * 0.9f; break;
+	case SIV_KEY_DOWN: y += 40; break;
+	case SIV_KEY_UP: y -= 40; break;
+	case SIV_KEY_HOME: y = 0; break;
+	case SIV_KEY_END: y = v->doc_h; break;
+	default: return SIV_EVENT_RESULT_PASS;
+	}
+	float end = v->doc_h + 16 - v->view_h; /* with the node's padding */
+	if (y > end) y = end;
+	siv_txn txn;
+	if (siv_txn_begin(v->window, &txn) != SIV_OK) return SIV_EVENT_RESULT_PASS;
+	siv_scroll_to(txn, v->scroll, 0, y < 0 ? 0 : y);
+	(void)siv_txn_commit(txn);
+	return SIV_EVENT_RESULT_HANDLED;
+}
+
 static siv_event_result on_key(void *user_data, siv_node node, const siv_event *event) {
 	(void)node;
 	struct viewer *v = user_data;
-	if (!(event->flags & SIV_EVENT_PRESSED) || !(event->modifiers & SIV_MODIFIERS_CTRL)) return SIV_EVENT_RESULT_PASS;
+	if (!(event->flags & SIV_EVENT_PRESSED)) return SIV_EVENT_RESULT_PASS;
+	if (!(event->modifiers & SIV_MODIFIERS_CTRL)) return scroll_key(v, event);
 	int key = (int)event->keysym;
 	if (key == 'f') {
 		(void)siv_node_focus(v->find);
@@ -200,6 +237,7 @@ int main(int argc, char **argv) {
 	r = siv_txn_begin(v.window, &txn);
 	if (r == SIV_OK) {
 		siv_node root = siv_window_get_root(v.window);
+		siv_set_visual(txn, root, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_WINDOW_BG));
 		siv_on(txn, root, SIV_EVENT_TYPE_KEY, on_key, NULL, &v);
 		siv_node column = siv_flex(txn, root, SIV_DESC(siv_flex_desc, .axis = SIV_AXIS_COLUMN));
 		siv_set_layout(txn, column, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_FRACTION, 1}, .height = {SIV_UNIT_FRACTION, 1}));
@@ -212,6 +250,7 @@ int main(int argc, char **argv) {
 		v.status = siv_text(txn, bar, "", 0);
 		v.scroll = siv_scroll(txn, column, SIV_SCROLL_AXIS_VERTICAL);
 		siv_set_layout(txn, v.scroll, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_FRACTION, 1}, .grow = 1));
+		siv_on(txn, v.scroll, SIV_EVENT_TYPE_VIEWPORT, on_viewport, NULL, &v);
 		r = siv_txn_commit(txn);
 	}
 	if (r != SIV_OK || open_file(&v, argv[1]) != 0) {

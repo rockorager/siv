@@ -545,6 +545,15 @@ test "long text paints the lines near its scroll viewport; scrolling past them r
     const far = runs(&f.comp);
     try testing.expect(far[0] > 5 and far[0] < 40);
     try testing.expect(far[1] <= 3040 and far[2] >= 3140);
+
+    // The application's scroll_to, which the compositor does not report,
+    // repaints the same way.
+    t = try f.win.begin();
+    try t.setScroll(sc, .{ .axis = .vertical, .offset = .{ .x = 0, .y = 1000 } });
+    t.commit();
+    try f.frame();
+    const moved = runs(&f.comp);
+    try testing.expect(moved[1] <= 1000 and moved[2] >= 1100);
 }
 
 test "a long text shapes its start at once and the rest on the pool, ending as if shaped whole" {

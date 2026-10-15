@@ -143,6 +143,8 @@ pub const View = struct {
     busy: bool = false,
     /// The node is gone: the view goes when its job is done.
     dead: bool = false,
+    /// Inside the loader callbacks: supplies wait for `schedule`.
+    requesting: bool = false,
     /// Work waiting for the document to be free.
     want_style: bool = false,
     want_fonts_loaded: bool = false,
@@ -627,6 +629,8 @@ pub const View = struct {
 
     fn requestResources(v: *View) void {
         const d = v.d orelse return;
+        v.requesting = true;
+        defer v.requesting = false;
         var i: u32 = 0;
         while (i < d.resources.items.len) : (i += 1) {
             const r = &d.resources.items[i];
@@ -645,7 +649,7 @@ pub const View = struct {
                 .image => .image,
                 .font => .font,
             });
-            // The callback may have supplied it already.
+            // The callback may have supplied it already (queued).
             if (v.dead) return;
         }
     }
@@ -655,7 +659,7 @@ pub const View = struct {
         const copy = if (bytes) |b| try v.gpa.dupe(u8, b) else null;
         errdefer if (copy) |c| v.gpa.free(c);
         try v.supplies.append(v.gpa, .{ .request = request, .bytes = copy });
-        if (!v.busy) {
+        if (!v.busy and !v.requesting) {
             try v.applySupplies();
             v.schedule();
         }
@@ -665,6 +669,16 @@ pub const View = struct {
         const d = v.d orelse return;
         var restyle = false;
         var relayout = false;
+        // After the list below is emptied (defers run last to first), so
+        // what a loader supplies from its callback stays queued. Style
+        // sheets may import more.
+        defer if (restyle) {
+            v.requestResources();
+            v.want_style = true;
+        } else if (relayout) {
+            v.complete = false;
+            v.stop_y = 0;
+        };
         defer v.supplies.clearRetainingCapacity();
         for (v.supplies.items) |s| {
             defer if (s.bytes) |b| v.gpa.free(b);
@@ -713,14 +727,6 @@ pub const View = struct {
                     };
                 },
             }
-        }
-        if (restyle) {
-            // Stylesheets may import more.
-            v.requestResources();
-            v.want_style = true;
-        } else if (relayout) {
-            v.complete = false;
-            v.stop_y = 0;
         }
     }
 

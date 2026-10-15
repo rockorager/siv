@@ -85,6 +85,10 @@ viewport_dirty: bool = false,
 /// viewport (some may be gone); a scroll that leaves that band repaints
 /// them (D8).
 culled: std.ArrayList(NodeId) = .empty,
+/// The application moved a scroll offset (`scroll_to`, which the
+/// compositor does not report back): the frame checks `culled` as a
+/// reported scroll would.
+app_scrolled: bool = false,
 /// Long texts (D13), which `text_node.settle` keeps in place in their
 /// scroll containers after each layout.
 long_texts: std.ArrayList(NodeId) = .empty,
@@ -735,7 +739,8 @@ pub fn frame(win: *Window) Error!void {
         laid_out = true;
         try layout.run(win);
     }
-    if (laid_out) {
+    if (laid_out or win.app_scrolled) {
+        win.app_scrolled = false;
         win.checkViewports();
         win.checkCulled();
     }

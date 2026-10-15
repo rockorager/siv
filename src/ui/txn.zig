@@ -796,6 +796,7 @@ pub const Txn = struct {
         if (old.min_zoom != s.min_zoom or old.max_zoom != s.max_zoom or old.zoom != n.data.scroll.zoom) t.win.dirty.props = true;
         if (!old.offset.eql(s.offset)) {
             t.win.state(id).scroll_pending = true;
+            t.win.app_scrolled = true;
             t.win.dirty.props = true;
         }
     }

@@ -205,6 +205,39 @@ test "C API docview: HTML with a stylesheet and images from the loader, remote i
     try h.expectGolden("docview-html", 300, 200);
 }
 
+test "C API docview: a loader that supplies from its callback, two stylesheets" {
+    var h: Harness = .{};
+    try h.start(300, 200, null, null);
+    defer h.stop();
+    const Sync = struct {
+        var requests: u32 = 0;
+        const pad: [8000]u8 = @splat('x');
+        const big = "h1 { color: rgb(200 0 0); font-family: sans-serif } /*" ++ pad ++ "*/";
+        fn onLoad(_: ?*anyopaque, node: t.Node, request: u32, _: ?[*]const u8, _: usize, _: t.ResourceKind) callconv(.c) void {
+            requests += 1;
+            // Sizes far apart, so the allocator does not hand the first
+            // sheet's freed copy to the second.
+            const css: []const u8 = if (request == 0) big else "p { color: rgb(0 0 200); font-family: serif }";
+            ok(D.siv_docview_supply(node, request, css.ptr, css.len)) catch unreachable;
+        }
+    };
+    var ev: Events = .{};
+    const html =
+        \\<!doctype html><link rel=stylesheet href="a.css"><link rel=stylesheet href="b.css">
+        \\<h1>Title</h1><p>Text
+    ;
+    const root = A.siv_window_get_root(h.window);
+    var txn: t.Txn = .null;
+    try ok(T.siv_txn_begin(h.window, &txn));
+    const sc = T.siv_scroll(txn, root, .vertical);
+    _ = D.siv_docview(txn, sc, &.{ .source = html.ptr, .source_count = html.len, .base_url = "file:///doc/", .base_url_len = 12, .kind = .html, .user_data = &ev, .on_event = Events.onEvent, .load = Sync.onLoad });
+    try ok(T.siv_txn_commit(txn));
+    // Both answered inside the callbacks, while the parsed document is
+    // still being set up: each is applied once, after that.
+    try waitLoaded(&h, &ev, 1);
+    try testing.expectEqual(@as(u32, 2), Sync.requests);
+}
+
 test "C API docview: email with a collapsed quote that a click opens" {
     var h: Harness = .{};
     try h.start(300, 200, null, null);
