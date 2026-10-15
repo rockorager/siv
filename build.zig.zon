@@ -135,6 +135,11 @@
             .url = "git+https://gitlab.freedesktop.org/wlroots/wlr-protocols.git#bf4fc79abc359eea5a0edec0ac6d4a2b2955f82a",
             .hash = "N-V-__8AAMq4AQASESNUzI38keQUB1Pz9OXa_YoUwXAgWQQl",
         },
+        .commonmark_spec = .{
+            .url = "https://github.com/commonmark/commonmark-spec/archive/refs/tags/0.31.2.tar.gz",
+            .lazy = true,
+            .hash = "N-V-__8AAONuBAD-PVybaAwpHC3ymgRfmKlnrH5tdJtUE0Cu",
+        },
     },
     .paths = .{
         "build.zig",

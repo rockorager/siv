@@ -734,3 +734,28 @@ pub fn ifcBox(d: *const Document, ifc: u32) BoxId {
     for (d.tree.boxes.items, 0..) |b, i| if (b.kind == .inline_root and b.data == ifc) return @intCast(i);
     return none;
 }
+
+/// Fonts that shaping wanted but were still loading; load them, then call
+/// `fontsLoaded`.
+pub fn wantedFonts(d: *Document, out: *std.ArrayList(text.FontId)) Error!void {
+    const e = &(d.engine orelse return);
+    for (e.ifc_cache) |c| if (c.shaped) |s| for (s.para.wanted) |id| {
+        if (std.mem.indexOfScalar(text.FontId, out.items, id) == null) try out.append(d.gpa, id);
+    };
+}
+
+/// Fonts finished loading: shape and lay out everything again.
+pub fn fontsLoaded(d: *Document) void {
+    if (d.engine) |*e| {
+        e.reshapeAll();
+        e.incomplete = false;
+    }
+    var mit = d.markers.valueIterator();
+    while (mit.next()) |m| {
+        for (m.*.runs) |r| d.gpa.free(r.glyphs);
+        d.gpa.free(m.*.runs);
+        d.gpa.destroy(m.*);
+    }
+    d.markers.clearRetainingCapacity();
+    d.complete = false;
+}

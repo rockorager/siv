@@ -114,6 +114,13 @@ pub fn build(b: *std.Build) void {
     const markdown = ctx.module("src/markdown/markdown.zig", &.{
         .{ .name = "html", .module = html },
     });
+    // The markdown tests' module also has the CommonMark spec's examples
+    // (CC-BY-SA, so fetched rather than kept in the repository, and never
+    // reached by libsiv, D25).
+    const markdown_tests = ctx.module("src/markdown/markdown.zig", &.{
+        .{ .name = "html", .module = html },
+    });
+    if (b.lazyDependency("commonmark_spec", .{})) |dep| markdown_tests.addAnonymousImport("commonmark-spec.txt", .{ .root_source_file = dep.path("spec.txt") });
     const doc = ctx.module("src/doc/doc.zig", &.{
         .{ .name = "html", .module = html },
         .{ .name = "markdown", .module = markdown },
@@ -298,7 +305,7 @@ pub fn build(b: *std.Build) void {
         .{ "icon", icon },
         .{ "html", html },
         .{ "css", css },
-        .{ "markdown", markdown },
+        .{ "markdown", markdown_tests },
         .{ "doc", doc },
         .{ "image", image },
         .{ "render-cpu", render_cpu },
@@ -469,6 +476,23 @@ pub fn build(b: *std.Build) void {
         }),
     });
     b.step("bench-render-cpu", "Run the CPU renderer benchmarks").dependOn(&b.addRunArtifact(bench_render_cpu).step);
+
+    // The document renderer's tool: a document to a PNG (D32).
+    const doc_render = b.addExecutable(.{
+        .name = "doc-render",
+        .root_module = ctx.module("src/doc/render_tool.zig", &.{
+            .{ .name = "doc", .module = doc },
+            .{ .name = "scene", .module = scene },
+            .{ .name = "raster", .module = raster },
+            .{ .name = "text", .module = text },
+            .{ .name = "render_cpu", .module = render_cpu },
+            .{ .name = "pool", .module = pool },
+            .{ .name = "png", .module = ctx.module("test/render/png.zig", &.{}) },
+        }),
+    });
+    const doc_render_run = b.addRunArtifact(doc_render);
+    doc_render_run.addPassthruArgs();
+    b.step("doc-render", "Render a document to a PNG: -- IN OUT [WIDTH] [--markdown] [--dark]").dependOn(&doc_render_run.step);
 
     // Image decoding benchmarks, likewise; `-- FILE...` decodes those files.
     const bench_image = b.addExecutable(.{

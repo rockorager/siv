@@ -13,6 +13,7 @@ pub const inline_layout = @import("inline.zig");
 pub const paint = @import("paint.zig");
 pub const url = @import("url.zig");
 pub const ua = @import("ua.zig");
+pub const sysfonts = @import("sysfonts.zig");
 
 pub const Palette = paint.Palette;
 pub const Hooks = paint.Hooks;
