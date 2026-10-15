@@ -593,6 +593,12 @@ pub const Builder = struct {
         // Text with only collapsible white space and no IFC yet adds
         // nothing (white space between blocks).
         if (b.ifc == null and ws == .collapse and isAllSpace(s) and !forced) return;
+        // In a flex or grid container, text of white space alone makes no
+        // anonymous item whatever white-space says (CSS Flexbox 4, Grid 6).
+        if (b.ifc == null and isAllSpace(s) and !forced) switch (b.tree.boxes.items[parent].kind) {
+            .flex, .grid => return,
+            else => {},
+        };
         const f = try b.ensureIfc(parent);
         if (forced) {
             try b.addRun(f, s, sid, node);

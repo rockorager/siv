@@ -270,6 +270,7 @@ pub const Shorthand = enum(u8) {
     grid_row,
     grid_column,
     grid_template,
+    grid,
     list_style,
     overflow,
     text_decoration,
@@ -313,6 +314,7 @@ pub const Shorthand = enum(u8) {
             .grid_row => &.{ .grid_row_start, .grid_row_end },
             .grid_column => &.{ .grid_column_start, .grid_column_end },
             .grid_template => &.{ .grid_template_rows, .grid_template_columns, .grid_template_areas },
+            .grid => &.{ .grid_template_rows, .grid_template_columns, .grid_template_areas, .grid_auto_rows, .grid_auto_columns, .grid_auto_flow },
             .list_style => &.{ .list_style_type, .list_style_position, .list_style_image },
             .overflow => &.{ .overflow_x, .overflow_y },
             .text_decoration => &.{ .text_decoration_line, .text_decoration_style, .text_decoration_color, .text_decoration_thickness },
@@ -1457,16 +1459,25 @@ fn parseTracks(c: *Cursor, template: bool) Error!?*const style.Tracks {
             }
             if (s.take().kind != .comma) return null;
             var sizes: std.ArrayList(style.TrackSize) = .empty;
+            // Line names before each size and after the last.
+            var names: std.ArrayList([]const []const u8) = .empty;
+            var pending: []const []const u8 = &.{};
             while (!s.done()) {
-                if ((try parseLineNames(&s)) != null) continue;
+                if (try parseLineNames(&s)) |n| {
+                    pending = if (pending.len == 0) n else try std.mem.concat(c.a, []const u8, &.{ pending, n });
+                    continue;
+                }
+                try names.append(c.a, pending);
+                pending = &.{};
                 try sizes.append(c.a, (try parseTrackSize(&s)) orelse return null);
             }
             if (sizes.items.len == 0) return null;
+            try names.append(c.a, pending);
             try items.append(c.a, .{ .repeat = .{ .count = count_, .auto = switch (mode) {
                 .none => .none,
                 .fill => .fill,
                 .fit => .fit,
-            }, .sizes = sizes.items } });
+            }, .sizes = sizes.items, .names = names.items } });
             continue;
         }
         try items.append(c.a, .{ .size = (try parseTrackSize(c)) orelse return null });
@@ -1475,6 +1486,53 @@ fn parseTracks(c: *Cursor, template: bool) Error!?*const style.Tracks {
     const out = try c.a.create(style.Tracks);
     out.* = .{ .items = items.items };
     return out;
+}
+
+/// grid-template's areas form: line names, area strings, and the row
+/// sizes after them.
+fn parseTemplateAreas(c: *Cursor) Error!?struct { rows: *const style.Tracks, areas: *const style.Areas } {
+    const save = c.i;
+    var items: std.ArrayList(style.Track) = .empty;
+    var cells: std.ArrayList([]const u8) = .empty;
+    var rows: u32 = 0;
+    var columns: u32 = 0;
+    while (!c.done() and !c.peek().isDelim('/')) {
+        if (try parseLineNames(c)) |names| {
+            try items.append(c.a, .{ .names = names });
+            continue;
+        }
+        if (c.peek().kind != .string) break;
+        const row = c.take().text;
+        var n: u32 = 0;
+        var it = std.mem.tokenizeAny(u8, row, " \t\n");
+        while (it.next()) |w| {
+            const all_dots = std.mem.indexOfNone(u8, w, ".") == null;
+            try cells.append(c.a, if (all_dots) "" else try c.a.dupe(u8, w));
+            n += 1;
+        }
+        if (rows == 0) columns = n else if (n != columns) {
+            c.i = save;
+            return null;
+        }
+        rows += 1;
+        // The row's size, auto without one.
+        const before = c.i;
+        const size: style.TrackSize = if (c.peek().kind == .string or c.peek().kind == .lbracket or c.peek().isDelim('/') or c.done()) .{ .min = .auto, .max = .auto } else (try parseTrackSize(c)) orelse {
+            c.i = before;
+            c.i = save;
+            return null;
+        };
+        try items.append(c.a, .{ .size = size });
+    }
+    if (rows == 0 or columns == 0) {
+        c.i = save;
+        return null;
+    }
+    const t = try c.a.create(style.Tracks);
+    t.* = .{ .items = items.items };
+    const a = try c.a.create(style.Areas);
+    a.* = .{ .rows = rows, .columns = columns, .cells = cells.items };
+    return .{ .rows = t, .areas = a };
 }
 
 fn parseAreas(c: *Cursor) Error!?*const style.Areas {
@@ -1947,23 +2005,83 @@ fn parseShorthand(c: *Cursor, s: Shorthand, important: bool, out: *std.ArrayList
             for (lh, 0..) |id, i| try add(c.a, out, id, important, .{ .line = lines[i] });
             return true;
         },
+        .grid => {
+            // <grid-template>, or auto-flow on one side of the slash with
+            // the implicit tracks' sizes, explicit tracks on the other.
+            var slash: ?usize = null;
+            for (c.t[c.i..], c.i..) |t, i| if (t.isDelim('/')) {
+                slash = i;
+                break;
+            };
+            const AutoFlow = struct {
+                fn parse(cc: *Cursor) ?bool {
+                    var flow = false;
+                    var dense = false;
+                    while (true) {
+                        if (!flow and cc.ident("auto-flow")) {
+                            flow = true;
+                        } else if (!dense and cc.ident("dense")) {
+                            dense = true;
+                        } else break;
+                    }
+                    return if (flow) dense else null;
+                }
+            };
+            if (slash) |sl| {
+                var left = c.sub(c.t[c.i..sl]);
+                var right = c.sub(c.t[sl + 1 ..]);
+                if (AutoFlow.parse(&left)) |dense| {
+                    const auto_rows = if (left.done()) null else (try parseTracks(&left, false)) orelse return false;
+                    const cols = (try parseTracks(&right, true)) orelse return false;
+                    c.i = c.t.len;
+                    try add(c.a, out, .grid_template_rows, important, .{ .tracks = null });
+                    try add(c.a, out, .grid_template_columns, important, .{ .tracks = cols });
+                    try add(c.a, out, .grid_template_areas, important, .{ .areas = null });
+                    try add(c.a, out, .grid_auto_rows, important, .{ .tracks = auto_rows });
+                    try add(c.a, out, .grid_auto_columns, important, .{ .tracks = null });
+                    try add(c.a, out, .grid_auto_flow, important, .{ .flow = .{ .dense = dense } });
+                    return true;
+                }
+                if (AutoFlow.parse(&right)) |dense| {
+                    const rows = (try parseTracks(&left, true)) orelse return false;
+                    const auto_cols = if (right.done()) null else (try parseTracks(&right, false)) orelse return false;
+                    c.i = c.t.len;
+                    try add(c.a, out, .grid_template_rows, important, .{ .tracks = rows });
+                    try add(c.a, out, .grid_template_columns, important, .{ .tracks = null });
+                    try add(c.a, out, .grid_template_areas, important, .{ .areas = null });
+                    try add(c.a, out, .grid_auto_rows, important, .{ .tracks = null });
+                    try add(c.a, out, .grid_auto_columns, important, .{ .tracks = auto_cols });
+                    try add(c.a, out, .grid_auto_flow, important, .{ .flow = .{ .column = true, .dense = dense } });
+                    return true;
+                }
+            }
+            const mark = out.items.len;
+            if (!try parseShorthand(c, .grid_template, important, out)) {
+                out.shrinkRetainingCapacity(mark);
+                return false;
+            }
+            try add(c.a, out, .grid_auto_rows, important, .{ .tracks = null });
+            try add(c.a, out, .grid_auto_columns, important, .{ .tracks = null });
+            try add(c.a, out, .grid_auto_flow, important, .{ .flow = .{} });
+            return true;
+        },
         .grid_template => {
             if (c.ident("none")) {
                 for (lh) |id| try add(c.a, out, id, important, if (id == .grid_template_areas) Value{ .areas = null } else Value{ .tracks = null });
                 return true;
             }
-            // rows / columns (areas form not supported beyond strings).
+            // The areas form: [names]? "row" size? [names]? ... (/ columns)?
             const save = c.i;
-            if (c.peek().kind == .string) {
-                const areas = (try parseAreas(c)) orelse return false;
+            if (try parseTemplateAreas(c)) |t| {
                 var cols: ?*const style.Tracks = null;
                 if (c.peek().isDelim('/')) {
                     _ = c.take();
                     cols = (try parseTracks(c, true)) orelse return false;
                 }
-                try add(c.a, out, .grid_template_rows, important, .{ .tracks = null });
+                if (!c.done()) return false;
+                try add(c.a, out, .grid_template_rows, important, .{ .tracks = t.rows });
                 try add(c.a, out, .grid_template_columns, important, .{ .tracks = cols });
-                try add(c.a, out, .grid_template_areas, important, .{ .areas = areas });
+                try add(c.a, out, .grid_template_areas, important, .{ .areas = t.areas });
                 return true;
             }
             c.i = save;

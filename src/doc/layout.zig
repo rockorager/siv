@@ -107,6 +107,10 @@ pub const Engine = struct {
     /// A border-box height that an absolutely positioned flex container
     /// has from its insets while its width is measured.
     cross_hint: ?struct { id: BoxId, h: f32 } = null,
+    /// Absolutely positioned children of positioned grid containers:
+    /// their grid area in the container's padding box (x, y, w, h), which
+    /// is their containing block (CSS Grid 10.1).
+    grid_areas: std.AutoHashMapUnmanaged(BoxId, [4]f32) = .empty,
 
     pub fn deinit(e: *Engine) void {
         for (e.ifc_cache) |*c| e.drop(c);
@@ -118,6 +122,7 @@ pub const Engine = struct {
         e.floats.deinit(e.gpa);
         e.clearIfcFloats();
         e.ifc_floats.deinit(e.gpa);
+        e.grid_areas.deinit(e.gpa);
     }
 
     fn clearIfcFloats(e: *Engine) void {
@@ -1164,8 +1169,17 @@ pub const Engine = struct {
     /// CSS 2.1 10.3.7 and 10.6.4 in the common cases.
     fn layoutAbsolute(e: *Engine, id: BoxId, cb: BoxId) Error!void {
         const cbb = e.get(cb);
-        const cb_w = if (cbb.parent == none) e.viewport_w else cbb.w - cbb.border[1] - cbb.border[3];
-        const cb_h = if (cbb.parent == none) e.viewport_h else cbb.h - cbb.border[0] - cbb.border[2];
+        var cb_w = if (cbb.parent == none) e.viewport_w else cbb.w - cbb.border[1] - cbb.border[3];
+        var cb_h = if (cbb.parent == none) e.viewport_h else cbb.h - cbb.border[0] - cbb.border[2];
+        // A grid container's child: its grid area.
+        var area_x: f32 = 0;
+        var area_y: f32 = 0;
+        if (e.get(id).parent == cb and cbb.kind == .grid) if (e.grid_areas.get(id)) |area| {
+            area_x = area[0];
+            area_y = area[1];
+            cb_w = area[2];
+            cb_h = area[3];
+        };
         const st = e.style(id);
         e.resolveEdges(id, cb_w);
         const b = e.get(id);
@@ -1204,8 +1218,8 @@ pub const Engine = struct {
         try e.layoutAt(id, w, cb_w, cb_h, fixed_h);
         const bb = e.get(id);
         // Position in the containing block's padding box.
-        const pad_x = cbb.border[3];
-        const pad_y = cbb.border[0];
+        const pad_x = cbb.border[3] + area_x;
+        const pad_y = cbb.border[0] + area_y;
         // The static position is relative to the box's parent.
         const parent_in_cb = e.offsetIn(bb.parent, cb);
         var x: f32 = undefined;

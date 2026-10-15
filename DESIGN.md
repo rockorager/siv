@@ -5644,10 +5644,22 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     `visibility: collapse` items as struts; out-of-flow children's static
     positions aligned in the content box; intrinsic sizes summed along
     rows and maxed across columns, items with a ratio following a
-    definite height; first baselines for inline flex containers), grid (explicit and
-    implicit tracks, `repeat()` with `auto-fill`/`auto-fit`, `minmax()`,
-    `fr`, named areas, auto placement with `dense`, the track
-    sizing algorithm), positioning (relative; absolute and fixed against
+    definite height; first baselines for inline flex containers), grid (CSS Grid 2: the explicit grid from templates with `repeat()`
+    counts, `auto-fill`, and `auto-fit` (empty tracks collapse), line
+    names and named areas with their implicit `-start` and `-end` lines,
+    `grid-template` and `grid` shorthands; placement by integers, names,
+    negative indices, and spans with implicit tracks on both sides; auto
+    placement, sparse or dense, by rows or columns, over a bitmap of
+    occupied cells; the track sizing algorithm of 12.3 to 12.8 with
+    items of one span, then by increasing span through the distribution
+    of extra space, then items crossing flexible tracks, maximizing, the
+    fr size, and stretching auto tracks; items' automatic minimum sizes,
+    limited by fixed tracks; percentages of items' margins and padding
+    against their area; self alignment with auto margins, `safe`, and
+    first baselines in a row; content alignment; absolutely positioned
+    children with their grid area as containing block
+    (`Engine.grid_areas`); intrinsic sizes under min-content and
+    max-content constraints; subgrid is not supported), positioning (relative; absolute and fixed against
     the document), lists with markers, images and SVG as replaced
     elements (`object-fit`; an outer `<svg>`'s `width` and `height` as
     presentation attributes), `aspect-ratio` on boxes that are not
@@ -5717,13 +5729,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     overflow boxes between them (absolute boxes escape those, their
     containing block being the context); flex and grid items paint in
     order-modified document order; the root's and body's `overflow` go
-    to the viewport (CSS Overflow 3.3). Simplified: a box's block
+    to the viewport (CSS Overflow 3.3). Gradients are sized,
+    positioned, and tiled as images are, with `space` and `round`.
+    Simplified: a box's block
     descendants' backgrounds and its inline content are painted in tree
     order, not in Appendix E's separate passes, and positioned boxes
     with `z-index: auto` are full stacking contexts. Masks (`mask-image`
     and the `mask` shorthand, one layer, alpha): the box in an isolated
     layer whose last child is the mask image composited with `dst_in`;
-    a box whose mask has not loaded paints nothing. Image URLs in style
+    a box whose mask has not loaded paints nothing. Style sheets cascade in
+    document order, `<link>`ed ones among `<style>` elements, each after
+    the sheets it imports. Image URLs in style
     sheets resolve against the sheet's URL when parsed, those in style
     attributes against the document's base. Images come through paint hooks: the
     widget decodes with `ui.Image.load` on the pool and keeps the images
@@ -5931,23 +5947,23 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | --- | --- | --- |
   | css2 (normal flow, box, margins, colors, borders, positioning, line box, lists) | 235 of 316 | 441 of 569 |
   | css-flexbox | 361 of 395 | 428 of 482 |
-  | css-grid | 115 of 198 | 124 of 218 |
+  | css-grid | 176 of 198 | 188 of 218 |
   | css-values | 65 of 123 | 67 of 126 |
-  | css-variables | 46 of 70 | 46 of 70 |
+  | css-variables | 47 of 70 | 47 of 70 |
   | css-tables (and CSS2 tables) | 125 of 288 | 127 of 309 |
   | floats (CSS2 floats, floats-clear) | 96 of 170 | 160 of 269 |
-  | css-sizing | 172 of 278 | 230 of 366 |
+  | css-sizing | 181 of 278 | 239 of 366 |
   | css-display | 60 of 106 | 60 of 109 |
   | css-pseudo | 33 of 72 | 34 of 74 |
   | css-lists (and CSS2 generated content) | 167 of 326 | 169 of 334 |
   | css-text (white space, transforms, spacing, breaking, indents, alignment) | 116 of 320 | 122 of 333 |
-  | css-backgrounds (and css-borders) | 111 of 230 | 197 of 448 |
+  | css-backgrounds (and css-borders) | 113 of 230 | 214 of 448 |
   | css-overflow | 69 of 310 | 73 of 324 |
   | css-position | 23 of 68 | 24 of 79 |
   | css-break | 44 of 400 | 45 of 403 |
   | css-multicol | 63 of 312 | 69 of 373 |
   | css-writing-modes | 52 of 395 | 73 of 795 |
-  | Total | 1953 of 4377 (45 %) | 2489 of 5681 (44 %) |
+  | Total | 2026 of 4377 (46 %) | 2580 of 5681 (45 %) |
   <!-- /wpt-rates -->
 
 - **Layout unification.** Should siv's widget layout (D26) become this
