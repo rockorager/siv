@@ -648,6 +648,28 @@ pub const ShapedText = struct {
         return .{ s + start, s + (words.after(start) orelse blen) };
     }
 
+    /// The advance of an "x" in the font and size of the style at
+    /// `offset` (the last style at the text's end): the width of a
+    /// character where there is none. Null if no font of the style that
+    /// is loaded has an "x".
+    pub fn xAdvance(self: *const ShapedText, offset: u32) ?f32 {
+        const b = self.blockAt(offset);
+        const blk = self.blocks[b];
+        if (blk.styles.len == 0) return null;
+        const local = offset - @min(offset, self.starts[b]);
+        var st = blk.styles[blk.styles.len - 1].style;
+        for (blk.styles) |r| if (r.end > local) {
+            st = r.style;
+            break;
+        };
+        for (st.fonts) |id| {
+            const face = blk.cache.face(id) orelse continue;
+            const g = face.nominalGlyph('x') orelse continue;
+            return face.advance(g, st.size);
+        }
+        return null;
+    }
+
     pub fn nextGrapheme(self: *const ShapedText, offset: u32) error{OutOfMemory}!u32 {
         const b = self.blockAt(offset);
         const p = try self.shapedAt(b);

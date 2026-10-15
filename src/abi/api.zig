@@ -802,7 +802,7 @@ pub const decls = [_]Decl{
         .{ .name = "multiline", .bit = 0, .doc = "Enter inserts a line break and lines wrap; otherwise one line that scrolls to keep the caret visible." },
         .{ .name = "masked", .bit = 1, .doc = "A password field (D15): the text lives in locked memory excluded from core dumps, shows one bullet per character, has no undo or input method, and is hidden from assistive technology. Offsets still index the real text." },
         .{ .name = "no_undo", .bit = 2, .doc = "The application keeps the undo history (D15), as an editor with a model of its own does: the editor records no steps, Ctrl+Z, Ctrl+Shift+Z, and Ctrl+Y do nothing in it and bubble on, and change events (edit_start, edit_end, edit_length) say what each edit replaced." },
-        .{ .name = "block_caret", .bit = 3, .doc = "The caret covers the character after it, translucent, instead of standing between characters: a modal editor's normal mode (D15)." },
+        .{ .name = "block_caret", .bit = 3, .doc = "The caret covers the character after it, translucent, instead of standing between characters: a modal editor's normal mode (D15). Where there is no character (a line's end, an empty line), it is as wide as an x in the font and size there." },
         .{ .name = "no_input_method", .bit = 4, .doc = "The seat's input method stays disabled while the editor has focus, so keys arrive as keys: a modal editor's command mode (D15). Composed text from xkbcommon still types." },
     }),
 

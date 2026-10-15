@@ -1800,7 +1800,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       (D22), so an editor whose spans are syntax highlighting kept 100
       copies of them for an undo the application did not want.
     - `SIV_EDITOR_BLOCK_CARET`: the caret covers the grapheme after it
-      (half the line's height wide at a line's end), in the text color
+      (where there is none, at a line's end, on an empty line, or at the
+      text's end, it is an "x" wide in the font and size there: the
+      line's last character's, else the line break's, so it follows a
+      heading or a code span), in the text color
       at 40% opacity so the character shows through; it is the same
       caret layer, so moving it stays a transform and it blinks as
       before. `SIV_EDITOR_NO_INPUT_METHOD` keeps the seat's input method

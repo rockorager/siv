@@ -1487,6 +1487,19 @@ test "editor: an application's own editing model (range edits, its history, chan
     try testing.expectEqual(@as(?u32, 7), ui.access.offsetAtLocal(f.win, ed, .{ .x = second.x0 + 0.1, .y = (second.y0 + second.y1) / 2 }));
     // Past the text's end, the last line.
     try testing.expectEqual(@as(?u32, 14), ui.access.offsetAtLocal(f.win, ed, .{ .x = 1000, .y = 1000 }));
+    // With no character under it (a line's end, an empty line, the
+    // text's end), a block caret is an "x" wide in the font and size
+    // there: the last character's on the line.
+    t = try f.win.begin();
+    try t.setText(ed, "ox\n\nBIG\n");
+    try t.setSpans(ed, &.{.{ .start = 4, .end = 7, .style = .{ .size = 40 } }});
+    t.commit();
+    const x = ui.access.caretRect(f.win, ed, 1).?.width();
+    try testing.expectApproxEqAbs(x, ui.access.caretRect(f.win, ed, 2).?.width(), 0.01);
+    try testing.expectApproxEqAbs(x, ui.access.caretRect(f.win, ed, 3).?.width(), 0.01);
+    try testing.expectApproxEqAbs(x, ui.access.caretRect(f.win, ed, 8).?.width(), 0.01);
+    const big = ui.access.caretRect(f.win, ed, 7).?.width();
+    try testing.expect(big > x * 1.5);
     try f.frame();
 }
 

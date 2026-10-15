@@ -100,23 +100,23 @@ pub fn caretRect(win: *const Window, id: NodeId, l: *const Layout) error{OutOfMe
 }
 
 /// The caret rectangle at `pos` in content coordinates. A block caret
-/// covers the grapheme after it on its line: half the line's height wide
-/// at the line's end.
+/// covers the grapheme after it on its line; where there is none (a
+/// line's end, an empty line), it is as wide as an "x" in the font and
+/// size there: the last character's on the line, else the line break's.
 pub fn caretRectAt(win: *const Window, id: NodeId, l: *const Layout, pos: Position, block: bool) error{OutOfMemory}!Rect {
     const c = try l.caret(pos);
-    const shift = text_node.lineShift(win, id, try l.line(c.line), contentWidth(win, id));
+    const line = try l.line(c.line);
+    const shift = text_node.lineShift(win, id, line, contentWidth(win, id));
     if (!block) return .xywh(c.x + shift, c.top, layout.caret_width, c.height);
-    var x0 = c.x;
-    var x1 = c.x + c.height / 2;
     const next = try l.nextGrapheme(pos.offset);
     if (next != pos.offset) {
         const n = try l.caret(.{ .offset = next, .affinity = .upstream });
-        if (n.line == c.line and n.x != c.x) {
-            x0 = @min(c.x, n.x);
-            x1 = @max(c.x, n.x);
-        }
+        if (n.line == c.line and n.x != c.x)
+            return .xywh(@min(c.x, n.x) + shift, c.top, @abs(n.x - c.x), c.height);
     }
-    return .xywh(x0 + shift, c.top, x1 - x0, c.height);
+    const at = if (pos.offset > line.start) try l.previousGrapheme(pos.offset) else pos.offset;
+    const w = l.shaped.xAdvance(at) orelse c.height / 2;
+    return .xywh(c.x + shift, c.top, w, c.height);
 }
 
 /// Keeps a single-line editor's caret in view; call after layout.
