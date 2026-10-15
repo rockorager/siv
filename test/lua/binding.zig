@@ -225,6 +225,13 @@ test "a host's handles pushed into Lua: the same userdata, never owned" {
             \\  text = txn:text(root, "From Lua")
             \\end)
             \\host_text = text
+            \\-- Other libraries' modules: integers out, the same userdata back.
+            \\local n, kind = siv.handle(host_win)
+            \\assert(kind == "window" and math.type(n) == "integer")
+            \\assert(siv.wrap("window", n) == host_win)
+            \\assert(siv.wrap("node", (siv.handle(text))) == text)
+            \\assert(not pcall(siv.handle, {}))
+            \\assert(not pcall(siv.wrap, "nonsense", n))
             \\local fired = false
             \\host_app:timer_start(0, function() fired = true end)
             \\host_app:dispatch(0)

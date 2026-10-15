@@ -4262,6 +4262,16 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     libsiv.a (D25).
     libsiv-lua ships its own NOTICES, with Lua's licence from `lua.h`
     (the tarball has no licence file).
+  - **Handles across libraries' Lua modules.** `siv.handle(h)` gives the
+    C handle a siv userdata holds, as an integer, and its type;
+    `siv.wrap(type, n)` gives the userdata back for an integer (the same
+    one Lua holds, never owned). A library built on siv's C ABI with a
+    Lua module of its own (siv-webview's `require("siv.webview")`) takes
+    windows and nodes and returns its nodes through these, in Lua, so it
+    needs no symbol from `siv.so` or libsiv-lua (C modules are loaded
+    with RTLD_LOCAL, and the userdata's layout is the binding's own).
+    Alternative: a C function in `siv_lua.h` (unreachable from a module
+    loaded beside `siv.so`).
   - **A Lua C module for hosts with their own Lua.** Editors, games, and
     other programs that already embed Lua 5.5 load `siv.so`
     (`lib/lua/5.5/siv.so`, on the default `package.cpath` under a

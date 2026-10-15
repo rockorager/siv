@@ -8,6 +8,20 @@
 ---@field message string Where and what: "app.lua:12: siv_txn_begin: SIV_ERROR_BUSY".
 ---@field traceback? string Added when the error passes through a callback or coroutine.
 
+---The C handle `h` holds, as an integer, and its type ("node", "window", ...):
+---for other libraries' Lua modules, whose C code takes siv handles.
+---@param h any A siv handle.
+---@return integer
+---@return string
+function siv.handle(h) end
+
+---The siv handle of `type` ("node", "window", ...) for the C handle `n`, as
+---siv.handle returns it; the same userdata Lua holds for it, never owned.
+---@param type string
+---@param n integer
+---@return any
+function siv.wrap(type, n) end
+
 ---Whether `v` is an error raised for a siv result code.
 ---@param v any
 ---@return boolean

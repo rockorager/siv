@@ -143,6 +143,12 @@ pub fn luaopen_siv(Lq: ?*L_) callconv(.c) c_int {
         }
     }
     c.lua_setfield(L, module, "methods");
+    // Handles across libraries: other libraries' Lua modules take siv
+    // handles as integers and give theirs back as siv's userdata.
+    pushFn(L, st, handleOf);
+    c.lua_setfield(L, module, "handle");
+    pushFn(L, st, wrapHandle);
+    c.lua_setfield(L, module, "wrap");
 
     // What the prelude needs from here.
     c.lua_createtable(L, 0, 8);
@@ -270,6 +276,38 @@ fn handleValue(Lq: ?*L_) callconv(.c) c_int {
     const h = bind.toHandleUd(L, 1) orelse return 0;
     c.lua_pushinteger(L, @bitCast(h.value));
     return 1;
+}
+
+/// siv.handle(h): the C handle a siv userdata holds, as an integer, and
+/// its type ("node", "window", ...), for C code of other libraries.
+fn handleOf(Lq: ?*L_) callconv(.c) c_int {
+    const L = Lq.?;
+    const h = bind.toHandleUd(L, 1) orelse {
+        _ = c.luaL_typeerror(L, 1, "siv handle");
+        return 0;
+    };
+    c.lua_pushinteger(L, @bitCast(h.value));
+    inline for (bind.handle_names, 0..) |name, i| {
+        if (i == h.type) lua.pushString(L, comptime m.stem(spec, name));
+    }
+    return 2;
+}
+
+/// siv.wrap(type, n): the userdata for the C handle `n` of `type` ("node",
+/// "window", ...), as siv_lua_push_handle pushes it; nil for 0.
+fn wrapHandle(Lq: ?*L_) callconv(.c) c_int {
+    const L = Lq.?;
+    const st = State.get(L);
+    const name = std.mem.span(c.luaL_checklstring(L, 1, null));
+    const value: u64 = @bitCast(c.luaL_checkinteger(L, 2));
+    inline for (bind.handle_names, 0..) |h, i| {
+        if (std.mem.eql(u8, name, comptime m.stem(spec, h))) {
+            bind.pushHandle(st, L, i, value, false);
+            return 1;
+        }
+    }
+    _ = c.luaL_argerror(L, 1, "unknown handle type");
+    return 0;
 }
 
 /// The handle a siv userdata at `idx` holds, or 0.
