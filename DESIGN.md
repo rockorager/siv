@@ -1751,6 +1751,24 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     underlined, and is never part of the text. Editing keys that still
     arrive while the input method composes are ignored; a click resets
     the preedit. Masked editors keep the input method disabled.
+  - Custom text widgets (a terminal, a code editor of its own, a web
+    page's fields) use the same input method through
+    `siv_set_text_input`: while such a node has focus, siv enables the
+    seat's text input and sends it the surrounding text, cursor, anchor,
+    purpose, hints, and caret rectangle the widget last set (node
+    coordinates, sent in window coordinates after each frame, so the
+    candidate window follows layout), and delivers each `done` as a
+    `text_input` event to the node only: delete before and after the
+    cursor, the commit (`text`), then the preedit and its cursor range.
+    The widget applies the edit, shows the preedit itself, and sets its
+    new state; siv shows nothing. Before, only siv's editors could take
+    input methods, so siv-webview's pages could not compose CJK text.
+    Found by siv-webview (WPE's `WPEInputMethodContext` maps onto it one
+    to one). Alternatives: an editor node the widget hides behind (its
+    text would have to mirror the widget's, and its caret rectangle would
+    be wrong); a separate preedit callback and commit callback (two
+    events per `done`, and the order of deletion, commit, and preedit
+    would be the widget's to reconstruct).
   - A double click selects the word (UAX #29 segment) under the pointer,
     a triple click its paragraph, and dragging after either extends by
     whole words or paragraphs. Presses count as one multi-click within

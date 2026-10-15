@@ -704,6 +704,31 @@ pub export fn siv_node_is_hidden(node: t.Node, hidden: ?*bool) t.Result {
     }.f(node, hidden));
 }
 
+pub export fn siv_set_text_input(txn: t.Txn, node: t.Node, desc: ?*const t.TextInputDesc) void {
+    _ = run(txn, struct {
+        fn f(w: *Window, n: t.Node, d: ?*const t.TextInputDesc) Error!void {
+            const id = try nodeIn(w, n);
+            var ti: ui.TextInput = .{};
+            if (d) |dp| {
+                const v = try runtime.readDesc(t.TextInputDesc, dp);
+                const r = v.cursor_rect;
+                if (!std.math.isFinite(r.x) or !std.math.isFinite(r.y) or !(r.width >= 0) or !(r.height >= 0) or !std.math.isFinite(r.width) or !std.math.isFinite(r.height)) return error.InvalidArgument;
+                const hints = try runtime.flags(t.TextInputHints, v.hints);
+                ti = .{
+                    .enabled = true,
+                    .surrounding = try runtime.string(v.surrounding, v.surrounding_len),
+                    .cursor = v.cursor,
+                    .anchor = v.anchor,
+                    .hint = @bitCast(@as(u32, @bitCast(hints))),
+                    .purpose = @enumFromInt(@backingInt(try runtime.enumValue(t.TextInputPurpose, v.purpose))),
+                    .cursor_rect = .{ .x0 = r.x, .y0 = r.y, .x1 = r.x + r.width, .y1 = r.y + r.height },
+                };
+            }
+            w.txn.ut.setTextInput(id, ti) catch |err| return mapTxn(err);
+        }
+    }.f, .{ node, desc });
+}
+
 pub export fn siv_set_tooltip(txn: t.Txn, node: t.Node, text: ?[*]const u8, text_len: usize) void {
     _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, ptr: ?[*]const u8, len: usize) Error!void {
@@ -1567,6 +1592,16 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
             ev.time = pd.time;
             ev.flags = .{ .pressed = pd.pressed, .lifted = pd.lifted, .prevented = pd.prevented };
             if (pd.target != .none and uw.isLive(pd.target)) ev.target = @fromBackingInt(w.nodes.handle(pd.target));
+        },
+        .text_input => |ti| {
+            ev.text = ti.commit.ptr;
+            ev.text_len = ti.commit.len;
+            ev.preedit = ti.preedit.ptr;
+            ev.preedit_len = ti.preedit.len;
+            ev.preedit_cursor_begin = ti.cursor_begin;
+            ev.preedit_cursor_end = ti.cursor_end;
+            ev.delete_before = ti.delete_before;
+            ev.delete_after = ti.delete_after;
         },
         .touch => |tc| {
             ev.phase = switch (tc.phase) {

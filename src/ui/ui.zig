@@ -48,6 +48,7 @@ pub const Live = node.Live;
 pub const Sort = node.Sort;
 pub const Range = node.Range;
 pub const Semantics = node.Semantics;
+pub const TextInput = node.TextInput;
 pub const Axis = node.Axis;
 pub const Justify = node.Justify;
 pub const Flex = node.Flex;

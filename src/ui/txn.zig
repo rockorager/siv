@@ -11,6 +11,7 @@
 //! freed at commit, and removed nodes are destroyed then.
 
 const std = @import("std");
+const platform = @import("platform");
 const node_mod = @import("node.zig");
 const Window = @import("Window.zig");
 const secret = @import("secret.zig");
@@ -450,6 +451,20 @@ pub const Txn = struct {
         try t.reserve();
         t.touch(id);
         n.cursor = shape;
+    }
+
+    /// Sets a custom text widget's state for the input method (D15).
+    pub fn setTextInput(t: *Txn, id: NodeId, ti: node_mod.TextInput) Error!void {
+        const n = try t.live(id);
+        if (!std.unicode.utf8ValidateSlice(ti.surrounding)) return error.InvalidArgument;
+        if (ti.surrounding.len > platform.TextInputState.max_surrounding or ti.cursor > ti.surrounding.len or ti.anchor > ti.surrounding.len) return error.InvalidArgument;
+        try t.reserve();
+        var next = ti;
+        next.surrounding = try t.own(u8, ti.surrounding);
+        t.touch(id);
+        t.release(u8, n.text_input.surrounding);
+        n.text_input = next;
+        t.win.ime.dirty = true;
     }
 
     /// Sets the node's tooltip text; empty removes it.

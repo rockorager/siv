@@ -849,6 +849,32 @@ pub const ScrollDelta = struct {
     stop: bool = false,
 };
 
+/// An input method's edit of a custom text widget (D15): delete around
+/// the cursor, then insert `commit`, then show `preedit` (with its cursor
+/// range in bytes; both -1 hide it). The widget applies it.
+pub const ImeEdit = struct {
+    commit: []const u8 = "",
+    preedit: []const u8 = "",
+    cursor_begin: i32 = 0,
+    cursor_end: i32 = 0,
+    delete_before: u32 = 0,
+    delete_after: u32 = 0,
+};
+
+/// A custom widget's text as the input method should see it while the
+/// node has focus (`siv_set_text_input`, D15).
+pub const TextInput = struct {
+    enabled: bool = false,
+    /// Text around the cursor (owned); byte offsets into it.
+    surrounding: []const u8 = "",
+    cursor: u32 = 0,
+    anchor: u32 = 0,
+    hint: @import("platform").ContentHint = .{},
+    purpose: @import("platform").ContentPurpose = .normal,
+    /// The caret in the node's coordinates.
+    cursor_rect: Rect = .{ .x0 = 0, .y0 = 0, .x1 = 0, .y1 = 0 },
+};
+
 pub const TouchPhase = enum { down, move, up, cancel };
 
 /// One touch point of a sequence that began on a node with a touch
@@ -1052,6 +1078,7 @@ pub const Event = union(enum) {
     tablet: Tablet,
     pad: Pad,
     touch: Touch,
+    text_input: ImeEdit,
     /// The user edited an editor's text (delivered to the editor only,
     /// after the edit is committed).
     change,
@@ -1075,10 +1102,10 @@ pub const Viewport = struct { x: f32, y: f32, width: f32, height: f32, zoom: f32
 
 /// `select`, `close`, and `sort` are never sent by the tree: widgets built
 /// on the C API emit them (`siv_node_emit`).
-/// The kinds of node handlers. The first seventeen match `siv_event_type`;
+/// The kinds of node handlers. The first eighteen match `siv_event_type`;
 /// `key_capture` holds a node's capture-phase key handler (D16), which
 /// sees keys on their way down to the focused node.
-pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll, change, drop, drag, set_value, select, close, viewport, sort, gesture, tablet, pad, touch, key_capture };
+pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll, change, drop, drag, set_value, select, close, viewport, sort, gesture, tablet, pad, touch, text_input, key_capture };
 
 /// What a handler did with an event: whether it stops bubbling and
 /// whether it prevents the default action (later default handlers and the
@@ -1137,6 +1164,8 @@ pub const Node = struct {
     /// visual's own `hidden`, so that hiding a widget never replaces the
     /// visual it draws itself with. Either one hides the subtree.
     hidden: bool = false,
+    /// A custom text widget's state for the input method.
+    text_input: TextInput = .{},
 
     pub const Status = enum(u8) {
         /// On the free list (`next` links it).

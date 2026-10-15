@@ -15,6 +15,7 @@ const platform = @import("platform");
 const Window = @import("Window.zig");
 const node_mod = @import("node.zig");
 const editor = @import("editor.zig");
+const input = @import("input.zig");
 const text_node = @import("text_node.zig");
 
 const NodeId = node_mod.NodeId;
@@ -58,7 +59,15 @@ pub const State = struct {
 fn wants(win: *const Window, id: NodeId) bool {
     if (id == .none or !win.isLive(id)) return false;
     const n = win.node(id);
-    return n.kind == .editor and !n.data.editor.editor.masked and !n.semantics.disabled;
+    if (n.semantics.disabled) return false;
+    return (n.kind == .editor and !n.data.editor.editor.masked) or custom(win, id);
+}
+
+/// A custom text widget (`siv_set_text_input`): it applies the input
+/// method's edits itself, from text_input events.
+fn custom(win: *const Window, id: NodeId) bool {
+    const n = win.node(id);
+    return n.kind != .editor and n.text_input.enabled;
 }
 
 fn clearPreedit(win: *Window) void {
@@ -111,6 +120,20 @@ fn apply(win: *Window, e: *const platform.TextInput) void {
     const st = &win.ime;
     const id = st.target;
     if (st.seat != e.seat or !wants(win, id) or win.input.focus != id) return;
+    if (custom(win, id)) {
+        input.callHandler(win, id, .text_input, &.{ .text_input = .{
+            .commit = e.commit(),
+            .preedit = if (e.more) "" else e.preedit(),
+            .cursor_begin = e.cursor_begin,
+            .cursor_end = e.cursor_end,
+            .delete_before = e.delete_before,
+            .delete_after = e.delete_after,
+        } });
+        st.from_input_method = true;
+        st.dirty = true;
+        win.requestFrame();
+        return;
+    }
     // The old preedit goes first, then deletion and commit, then the new
     // preedit (the protocol's order).
     if (e.delete_before != 0 or e.delete_after != 0 or e.commit_len != 0 or !e.more) clearPreedit(win);
@@ -157,6 +180,19 @@ pub fn sync(win: *Window) void {
 
 fn fill(win: *Window, id: NodeId, state: *platform.TextInputState) void {
     const n = win.node(id);
+    if (custom(win, id)) {
+        const ti = n.text_input;
+        const r = win.windowRect(id);
+        state.enabled = true;
+        state.surrounding = ti.surrounding;
+        state.cursor = ti.cursor;
+        state.anchor = ti.anchor;
+        state.hint = ti.hint;
+        state.purpose = ti.purpose;
+        const c = ti.cursor_rect;
+        state.cursor_rect = .{ .x = @intFromFloat(@floor(r.x0 + c.x0)), .y = @intFromFloat(@floor(r.y0 + c.y0)), .width = @intFromFloat(@ceil(c.width())), .height = @intFromFloat(@ceil(c.height())) };
+        return;
+    }
     const e = n.data.editor;
     const content = e.text.content;
     const len = content.len();

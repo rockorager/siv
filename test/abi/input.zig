@@ -520,3 +520,110 @@ test "custom widgets get raw input: keycodes, scroll as the compositor sent it, 
     for (others.events[0..@min(others.n, others.events.len)]) |e| down = down or (e.phase == .down and e.x == 50);
     try testing.expect(down);
 }
+
+const Ime = struct {
+    n: usize = 0,
+    text: [32]u8 = undefined,
+    text_len: usize = 0,
+    preedit: [32]u8 = undefined,
+    preedit_len: usize = 0,
+    last: t.Event = .{},
+
+    fn on(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
+        const l: *Ime = @ptrCast(@alignCast(ud.?));
+        l.n += 1;
+        l.last = ev.*;
+        l.text_len = ev.text_len;
+        @memcpy(l.text[0..ev.text_len], ev.text.?[0..ev.text_len]);
+        l.preedit_len = ev.preedit_len;
+        if (ev.preedit_len != 0) @memcpy(l.preedit[0..ev.preedit_len], ev.preedit.?[0..ev.preedit_len]);
+        return .handled;
+    }
+};
+
+/// What the headless seat's input method was last told.
+fn imeState(h: *Harness) !struct { enabled: bool, surrounding: [64]u8, len: usize, cursor: u32, purpose: platform.ContentPurpose, rect: platform.Rect } {
+    const C = struct {
+        out: @typeInfo(@typeInfo(@TypeOf(imeState)).@"fn".return_type.?).error_union.payload = undefined,
+        fn run(ctx: ?*anyopaque, comp: *@import("compositor").Compositor) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            const st = comp.platform.headless.textInput(0).state;
+            self.out.enabled = st.enabled;
+            self.out.len = @min(st.surrounding.len, 64);
+            @memcpy(self.out.surrounding[0..self.out.len], st.surrounding[0..self.out.len]);
+            self.out.cursor = st.cursor;
+            self.out.purpose = st.purpose;
+            self.out.rect = st.cursor_rect;
+        }
+    };
+    var ctx: C = .{};
+    try (try h.internal()).app.comp.call(&ctx, C.run);
+    return ctx.out;
+}
+
+test "custom text widgets talk to the input method: their text and caret out, its edits in" {
+    var h: Harness = .{};
+    try h.start(200, 100, null, null);
+    defer h.stop();
+    var log: Ime = .{};
+    const root = c.siv_window_get_root(h.window);
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const col = c.siv_flex(txn, root, &.{ .size = @sizeOf(t.FlexDesc), .axis = .column });
+    const spacer = c.siv_box(txn, col);
+    c.siv_set_layout(txn, spacer, &.{ .size = @sizeOf(t.LayoutDesc), .height = px(30) });
+    // A terminal-like widget 30 px down, its caret 10 px in.
+    const term = c.siv_box(txn, col);
+    c.siv_set_layout(txn, term, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(200), .height = px(50) });
+    c.siv_set_semantics(txn, term, &.{ .size = @sizeOf(t.SemanticsDesc), .flags = .{ .focusable = true } });
+    c.siv_on(txn, term, .text_input, Ime.on, null, &log);
+    const text = "hello";
+    c.siv_set_text_input(txn, term, &.{ .size = @sizeOf(t.TextInputDesc), .surrounding = text, .surrounding_len = text.len, .cursor = 5, .anchor = 5, .cursor_rect = .{ .x = 10, .y = 4, .width = 2, .height = 16 }, .purpose = .terminal, .hints = .{ .multiline = true } });
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    const id = (try h.win()).win.id;
+    try h.inject(&.{.{ .text_input_enter = .{ .window = id, .seat = 0, .serial = 0 } }});
+    try ok(c.siv_node_focus(term));
+    try h.settle();
+    var st = try imeState(&h);
+    try testing.expect(st.enabled);
+    try testing.expectEqualStrings("hello", st.surrounding[0..st.len]);
+    try testing.expectEqual(@as(u32, 5), st.cursor);
+    try testing.expectEqual(platform.ContentPurpose.terminal, st.purpose);
+    // The caret in window coordinates.
+    try testing.expectEqual(platform.Rect{ .x = 10, .y = 34, .width = 2, .height = 16 }, st.rect);
+
+    // An edit: delete one byte, commit "p", compose "ab" with its cursor
+    // after the "a". The widget applies it.
+    var e: platform.TextInput = .{ .window = id, .seat = 0, .delete_before = 1, .cursor_begin = 1, .cursor_end = 1 };
+    @memcpy(e.commit_buf[0..1], "p");
+    e.commit_len = 1;
+    @memcpy(e.preedit_buf[0..2], "ab");
+    e.preedit_len = 2;
+    try h.inject(&.{.{ .text_input = e }});
+    try h.settle();
+    try testing.expectEqual(@as(usize, 1), log.n);
+    try testing.expectEqual(t.EventType.text_input, log.last.type);
+    try testing.expectEqualStrings("p", log.text[0..log.text_len]);
+    try testing.expectEqualStrings("ab", log.preedit[0..log.preedit_len]);
+    try testing.expectEqual(@as(u32, 1), log.last.delete_before);
+    try testing.expectEqual(@as(i32, 1), log.last.preedit_cursor_begin);
+
+    // The widget tells siv its new text; then turns text input off.
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const text2 = "hellp";
+    c.siv_set_text_input(txn, term, &.{ .size = @sizeOf(t.TextInputDesc), .surrounding = text2, .surrounding_len = text2.len, .cursor = 5, .anchor = 5 });
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    st = try imeState(&h);
+    try testing.expectEqualStrings("hellp", st.surrounding[0..st.len]);
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_set_text_input(txn, term, null);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try testing.expect(!(try imeState(&h)).enabled);
+    // A cursor past the text is refused.
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_set_text_input(txn, term, &.{ .size = @sizeOf(t.TextInputDesc), .surrounding = text2, .surrounding_len = text2.len, .cursor = 9 });
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
+}
