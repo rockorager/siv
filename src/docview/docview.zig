@@ -355,7 +355,7 @@ pub const View = struct {
             return;
         }
         if (!v.complete) {
-            v.stop_y = if (v.stop_y <= 0) v.firstStop() else if (v.options.paged) std.math.inf(f32) else v.stop_y + slice_px;
+            v.stop_y = if (v.stop_y <= 0) v.firstStop() else v.stop_y + slice_px;
             v.submit(.layout, -1);
         }
     }
@@ -453,8 +453,13 @@ pub const View = struct {
     }
 
     fn firstStop(v: *View) f32 {
-        // Pages need the whole chapter laid out.
-        if (v.options.paged) return std.math.inf(f32);
+        // The first spread shows once laid out, and the rest follows; a
+        // position deeper in the chapter waits for all of it (its page
+        // count too).
+        if (v.options.paged) {
+            if (v.page != 0 or v.reading_anchor.items.len > 0) return std.math.inf(f32);
+            return v.geo.page_h * @as(f32, @floatFromInt(v.geo.columns + 2));
+        }
         var stop = 2 * v.viewportHeight();
         if (v.win.isLive(v.node)) if (ui.visibleBand(v.win, v.node)) |b| {
             stop = @max(stop, b[1] + (b[1] - b[0]));
@@ -491,6 +496,9 @@ pub const View = struct {
                     v.relayoutNode();
                     v.emit(.{ .size = h });
                 }
+                // The first pages show while the rest is laid out; the
+                // count and the page event come when it is (`paginate`).
+                if (v.options.paged and !v.complete and std.math.isFinite(j.stop_y)) d.pageBreaks(v.geo.page_h, j.stop_y, &v.pages, v.gpa) catch {};
                 v.repaint();
                 v.wanted.clearRetainingCapacity();
                 d.wantedFonts(&v.wanted) catch {};
@@ -519,7 +527,7 @@ pub const View = struct {
     /// position kept before they changed.
     fn paginate(v: *View) void {
         const d = v.d orelse return;
-        d.pageBreaks(v.geo.page_h, &v.pages, v.gpa) catch return;
+        d.pageBreaks(v.geo.page_h, std.math.inf(f32), &v.pages, v.gpa) catch return;
         var p = @min(v.page, v.pageCount() - 1);
         if (v.reading_anchor.items.len > 0) {
             if (v.locatorY(v.reading_anchor.items)) |y| p = v.pageOf(y + 0.5);
@@ -1333,6 +1341,19 @@ pub const Job = struct {
                 errdefer d.destroy();
                 // Layout jobs shape text ahead on the other workers.
                 if (v.win.fonts.pool) |pool| d.executor = pool.executor();
+                // A book's style sheets (and those they import) are its
+                // own files: read them now, so that the chapter is styled
+                // once rather than again when they arrive.
+                if (o.book) |book| {
+                    var i: u32 = 0;
+                    while (i < d.resources.items.len) : (i += 1) {
+                        const r = d.resources.items[i];
+                        if (r.kind != .stylesheet or r.state != .wanted or !std.mem.startsWith(u8, r.url, "epub:///")) continue;
+                        const bytes = (book.read(v.gpa, r.url["epub:///".len..]) catch null) orelse continue;
+                        defer v.gpa.free(bytes);
+                        try d.supplyStylesheet(i, bytes);
+                    }
+                }
                 try d.styleAndBuild(j.media);
                 j.result = d;
             },

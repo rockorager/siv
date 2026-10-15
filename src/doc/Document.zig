@@ -100,7 +100,6 @@ engine: ?layout_mod.Engine = null,
 font_table: std.ArrayList(inline_mod.FontInfo) = .empty,
 /// The resolver `resolveFonts` last had, for SVG text that arrives later.
 resolver: ?FontResolver = null,
-hyphenation: text.hyphen.Hyphenation,
 resources: std.ArrayList(Resource) = .empty,
 /// Remote images not listed because of the policy.
 blocked_images: u32 = 0,
@@ -142,7 +141,6 @@ pub fn create(gpa: Allocator, bytes: []const u8, options: Options, ua_sheet: *co
         .dom = undefined,
         .store = try css.style.Store.init(gpa),
         .ua_sheet = ua_sheet,
-        .hyphenation = .init(gpa),
         .scratch = .init(gpa),
         .xml = options.kind == .html and (options.xml orelse isXml(bytes)),
     };
@@ -229,7 +227,6 @@ pub fn destroy(d: *Document) void {
     d.quote_open.deinit(gpa);
     d.font_table.deinit(gpa);
     d.tree.deinit(gpa);
-    d.hyphenation.deinit();
     d.store.deinit(gpa);
     d.dom.deinit();
     d.scratch.deinit();
@@ -793,6 +790,19 @@ fn fontInfo(ctx: *const anyopaque, s: css.Style.Id) *const inline_mod.FontInfo {
 
 const default_font: inline_mod.FontInfo = .{};
 
+/// Hyphenation patterns, parsed once per process for every document
+/// (English's take about 2 ms, which each e-book chapter paid).
+/// Hyphenators do not change once parsed; finding one takes the lock.
+var hyphenation: ?text.hyphen.Hyphenation = null;
+var hyphenation_lock: std.atomic.Mutex = .unlocked;
+
+fn hyphenator(language: []const u8) ?*const text.hyphen.Hyphenator {
+    while (!hyphenation_lock.tryLock()) std.atomic.spinLoopHint();
+    defer hyphenation_lock.unlock();
+    if (hyphenation == null) hyphenation = .init(std.heap.page_allocator);
+    return hyphenation.?.get(language) catch null;
+}
+
 /// Lays out at `width` (the viewport's) until content passes `stop_y`
 /// (infinity: everything). Returns whether layout is complete. Styles
 /// created since fonts were resolved use defaults until they are.
@@ -804,7 +814,7 @@ pub fn layout(d: *Document, cache: *text.FontCache, width: f32, viewport_h: f32,
             .scratch = d.scratch.allocator(),
             .tree = &d.tree,
             .store = &d.store,
-            .fonts = .{ .cache = cache, .hyphenation = &d.hyphenation, .ctx = d, .infoFn = fontInfo },
+            .fonts = .{ .cache = cache, .hyphenator = hyphenator, .ctx = d, .infoFn = fontInfo },
             .ifc_cache = try d.gpa.alloc(layout_mod.IfcCache, d.tree.ifcs.items.len),
             .viewport_w = width,
             .viewport_h = viewport_h,
@@ -1316,14 +1326,17 @@ pub fn locatorPath(d: *Document, y: f32, out: *std.ArrayList(u32), gpa: Allocato
 /// `widows` after it), never inside a line or a replaced element;
 /// `break-before` and `break-after: page` (and their legacy aliases)
 /// force one, `avoid` and `break-inside: avoid` avoid one where another
-/// fits. Content taller than a page is cut. Lay out to the end first.
-pub fn pageBreaks(d: *Document, page_h: f32, out: *std.ArrayList(f32), gpa: Allocator) Error!void {
+/// fits. Content taller than a page is cut. `through` is how far the
+/// document is laid out (infinity: to its end); only pages that end
+/// above it are broken, so the first pages of a chapter show while the
+/// rest is laid out.
+pub fn pageBreaks(d: *Document, page_h: f32, through: f32, out: *std.ArrayList(f32), gpa: Allocator) Error!void {
     out.clearRetainingCapacity();
     const e = &(d.engine orelse return);
     if (d.tree.root == none or !(page_h > 1)) return;
     var cands: std.ArrayList(Cand) = .empty;
     defer cands.deinit(gpa);
-    try d.breakCands(e, d.tree.root, 0, false, &cands, gpa);
+    try d.breakCands(e, d.tree.root, 0, false, through, &cands, gpa);
     std.mem.sort(Cand, cands.items, {}, struct {
         fn lt(_: void, a: Cand, b: Cand) bool {
             return a.y < b.y;
@@ -1334,6 +1347,7 @@ pub fn pageBreaks(d: *Document, page_h: f32, out: *std.ArrayList(f32), gpa: Allo
     var i: usize = 0;
     while (start < end - 0.5) {
         const limit = start + page_h;
+        if (limit > through) break;
         // The rest fits: only a forced break makes another page.
         const fits = limit >= end - 0.5;
         var best: ?f32 = null;
@@ -1369,9 +1383,11 @@ fn avoidsBreak(b: css.style.Break) bool {
     return b == .avoid or b == .avoid_page;
 }
 
-fn breakCands(d: *Document, e: *layout_mod.Engine, id: BoxId, py: f32, avoid_inside: bool, out: *std.ArrayList(Cand), gpa: Allocator) Error!void {
+fn breakCands(d: *Document, e: *layout_mod.Engine, id: BoxId, py: f32, avoid_inside: bool, through: f32, out: *std.ArrayList(Cand), gpa: Allocator) Error!void {
     const b = d.tree.get(id);
     const y = py + b.y;
+    // Below what is laid out: positions are estimates.
+    if (y > through) return;
     const st = d.store.get(b.style);
     const avoid = avoid_inside or avoidsBreak(st.box.break_inside);
     switch (b.kind) {
@@ -1403,7 +1419,7 @@ fn breakCands(d: *Document, e: *layout_mod.Engine, id: BoxId, py: f32, avoid_ins
                     });
                 }
                 prev = c;
-                try d.breakCands(e, c, y, avoid, out, gpa);
+                try d.breakCands(e, c, y, avoid, through, out, gpa);
             }
         },
         .table_row => {

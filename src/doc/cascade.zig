@@ -52,6 +52,10 @@ const Index = struct {
     ids: std.AutoHashMapUnmanaged(u32, std.ArrayList(Entry)) = .empty,
     classes: std.AutoHashMapUnmanaged(u32, std.ArrayList(Entry)) = .empty,
     tags: std.AutoHashMapUnmanaged(u32, std.ArrayList(Entry)) = .empty,
+    /// By an attribute the element must have.
+    attrs: std.AutoHashMapUnmanaged(u32, std.ArrayList(Entry)) = .empty,
+    /// :root's, for the document element.
+    root: std.ArrayList(Entry) = .empty,
     universal: std.ArrayList(Entry) = .empty,
 };
 
@@ -121,6 +125,10 @@ pub const Cascade = struct {
     dom: *Dom,
     sources: std.ArrayList(Source) = .empty,
     index: Index = .{},
+    /// Rules for pseudo-elements, apart: an element looks for each
+    /// pseudo-element's rules, and most sheets have few.
+    pseudo_index: Index = .{},
+    pseudo_rules: [@typeInfo(sel.PseudoElement).@"enum".field_names.len]u32 = @splat(0),
     info: []Info = &.{},
     classes: std.ArrayList(u32) = .empty,
     env: Env = .{},
@@ -138,6 +146,10 @@ pub const Cascade = struct {
     root_line_height: f32 = 19.2,
     matched: std.ArrayList(Matched) = .empty,
     winners: [props.count]?Winner = @splat(null),
+    /// The properties with a winner, in the order first set (cleared
+    /// after each element, rather than every property).
+    winner_ids: [props.count]u8 = undefined,
+    winner_len: usize = 0,
     customs_scratch: std.ArrayList(css.sheet.Custom) = .empty,
     /// Grown in `arena`, like what they point to.
     inline_decls: std.ArrayList(props.Declaration) = .empty,
@@ -165,12 +177,15 @@ pub const Cascade = struct {
             c.gpa.free(s.bound_lower);
         }
         c.sources.deinit(c.gpa);
-        inline for (.{ &c.index.ids, &c.index.classes, &c.index.tags }) |m| {
-            var it = m.valueIterator();
-            while (it.next()) |l| l.deinit(c.gpa);
-            m.deinit(c.gpa);
+        inline for (.{ &c.index, &c.pseudo_index }) |index| {
+            inline for (.{ &index.ids, &index.classes, &index.tags, &index.attrs }) |m| {
+                var it = m.valueIterator();
+                while (it.next()) |l| l.deinit(c.gpa);
+                m.deinit(c.gpa);
+            }
+            index.universal.deinit(c.gpa);
+            index.root.deinit(c.gpa);
         }
-        c.index.universal.deinit(c.gpa);
         c.gpa.free(c.info);
         c.classes.deinit(c.gpa);
         c.share.deinit(c.gpa);
@@ -238,7 +253,8 @@ pub const Cascade = struct {
     }
 
     /// Adds a sheet (after `prepare`, so that its names find the
-    /// document's atoms) and indexes its rules.
+    /// document's atoms, and with `env` set: rules whose media do not
+    /// match are left out) and indexes its rules.
     pub fn addSheet(c: *Cascade, sheet: *const css.Sheet, origin: Origin) Error!void {
         const names = sheet.store.names.items;
         const bound = try c.gpa.alloc(u32, names.len);
@@ -254,6 +270,11 @@ pub const Cascade = struct {
         try c.sources.append(c.gpa, .{ .sheet = sheet, .origin = origin, .bound = bound, .bound_lower = lower });
         const src = &c.sources.items[si];
         for (sheet.rules, 0..) |r, ri| {
+            // The environment is fixed for the cascade's life.
+            if (!sheet.mediaMatches(r.media, &c.env.media)) {
+                c.order += r.selectors[1];
+                continue;
+            }
             for (r.selectors[0]..r.selectors[0] + r.selectors[1]) |s_index| {
                 const s = sheet.store.selectors.items[s_index];
                 c.order += 1;
@@ -291,49 +312,106 @@ pub const Cascade = struct {
                     ancestor = cp.combinator == .descendant or cp.combinator == .child or (ancestor and (cp.combinator == .next_sibling or cp.combinator == .subsequent_sibling) and false);
                     if (cp.combinator == .next_sibling or cp.combinator == .subsequent_sibling) ancestor = false;
                 }
-                // Bucket by the rightmost compound.
-                var bucket: ?*std.ArrayList(Entry) = null;
+                // Bucket by the rightmost compound: its id, else a class,
+                // else its type, else an attribute it needs; :root for
+                // the root alone, and :is() of types and :link under
+                // each of their types.
                 var kind: u8 = 0;
                 var key: u32 = 0;
                 for (sheet.store.simplesOf(compounds[0])) |simple| switch (simple.kind) {
-                    .id => if (kind < 3) {
+                    .id => if (kind < 4) {
+                        kind = 4;
+                        key = src.bound[simple.name];
+                    },
+                    .class => if (kind < 3) {
                         kind = 3;
                         key = src.bound[simple.name];
                     },
-                    .class => if (kind < 2) {
+                    .type => if (kind < 2) {
                         kind = 2;
-                        key = src.bound[simple.name];
+                        key = src.bound_lower[simple.name];
                     },
-                    .type => if (kind < 1) {
+                    .attr => if (kind < 1) {
                         kind = 1;
                         key = src.bound_lower[simple.name];
                     },
                     else => {},
                 };
+                const index = if (s.pseudo == .none) &c.index else &c.pseudo_index;
+                c.pseudo_rules[@intFromEnum(s.pseudo)] += 1;
                 const map = switch (kind) {
-                    3 => &c.index.ids,
-                    2 => &c.index.classes,
-                    1 => &c.index.tags,
+                    4 => &index.ids,
+                    3 => &index.classes,
+                    2 => &index.tags,
+                    1 => &index.attrs,
                     else => null,
                 };
                 if (map) |m| {
+                    if (key == unbound) continue;
                     const gop = try m.getOrPut(c.gpa, key);
                     if (!gop.found_existing) gop.value_ptr.* = .empty;
-                    bucket = gop.value_ptr;
-                } else bucket = &c.index.universal;
-                try bucket.?.append(c.gpa, e);
+                    try gop.value_ptr.append(c.gpa, e);
+                    continue;
+                }
+                var tags: std.ArrayList(u32) = .empty;
+                defer tags.deinit(c.gpa);
+                const special: enum { root, tags, universal } = for (sheet.store.simplesOf(compounds[0])) |simple| switch (simple.kind) {
+                    .pseudo => switch (simple.pseudo) {
+                        .root => break .root,
+                        .link, .any_link => {
+                            try tags.appendSlice(c.gpa, &.{ @intFromEnum(Atom.a), @intFromEnum(Atom.area) });
+                            break .tags;
+                        },
+                        else => {},
+                    },
+                    .is, .where => if (try c.typeList(src, simple, &tags)) break .tags,
+                    else => {},
+                } else .universal;
+                switch (special) {
+                    .root => try index.root.append(c.gpa, e),
+                    .universal => try index.universal.append(c.gpa, e),
+                    .tags => for (tags.items) |t| {
+                        const gop = try index.tags.getOrPut(c.gpa, t);
+                        if (!gop.found_existing) gop.value_ptr.* = .empty;
+                        try gop.value_ptr.append(c.gpa, e);
+                    },
+                }
             }
         }
     }
 
+    /// The types an :is() or :where() whose selectors are each a type
+    /// alone matches, into `out` (those the document has); false for
+    /// other lists.
+    fn typeList(c: *Cascade, src: *const Source, simple: sel.Simple, out: *std.ArrayList(u32)) Error!bool {
+        const store = &src.sheet.store;
+        for (store.selectors.items[simple.list_start..][0..simple.list_len]) |alt| {
+            const cps = store.compoundsOf(alt);
+            if (cps.len != 1) return false;
+            const simples = store.simplesOf(cps[0]);
+            if (simples.len != 1 or simples[0].kind != .type) return false;
+        }
+        out.clearRetainingCapacity();
+        for (store.selectors.items[simple.list_start..][0..simple.list_len]) |alt| {
+            const t = src.bound_lower[store.simplesOf(store.compoundsOf(alt)[0])[0].name];
+            if (t != unbound and std.mem.indexOfScalar(u32, out.items, t) == null) try out.append(c.gpa, t);
+        }
+        return true;
+    }
+
     /// Whether every id, class, and type the selector needs exists in the
-    /// document (outside :not and other lists).
+    /// document (outside :not and other lists), and it needs no state a
+    /// document never has (:hover and the other user actions).
     fn possible(c: *const Cascade, src: *const Source, s: sel.Selector) bool {
         _ = c;
         const store = &src.sheet.store;
         for (store.compoundsOf(s)) |cp| for (store.simplesOf(cp)) |simple| switch (simple.kind) {
             .id, .class => if (src.bound[simple.name] == unbound) return false,
             .type => if (src.bound_lower[simple.name] == unbound) return false,
+            .pseudo => switch (simple.pseudo) {
+                .visited, .hover, .active, .focus, .focus_visible, .focus_within, .target, .never, .placeholder_shown => return false,
+                else => {},
+            },
             else => {},
         };
         return true;
@@ -586,7 +664,6 @@ pub const Cascade = struct {
             }
             if (!ok) continue;
             const src = &c.sources.items[e.source];
-            if (!src.sheet.mediaMatches(src.sheet.rules[e.rule].media, &c.env.media)) continue;
             const s = src.sheet.store.selectors.items[e.selector];
             if (!c.matchComplex(src, s, id)) continue;
             const r = src.sheet.rules[e.rule];
@@ -600,15 +677,21 @@ pub const Cascade = struct {
     /// sorted by cascade priority, in `c.matched`.
     fn match(c: *Cascade, id: NodeId, pseudo: sel.PseudoElement) Error!void {
         c.matched.clearRetainingCapacity();
+        if (c.pseudo_rules[@intFromEnum(pseudo)] == 0) return;
+        const index = if (pseudo == .none) &c.index else &c.pseudo_index;
         const n = c.dom.node(id);
         const info = c.info[id.index()];
-        try c.collect(c.index.universal.items, id, pseudo);
-        if (c.index.tags.get(@intFromEnum(n.name))) |l| try c.collect(l.items, id, pseudo);
-        if (info.id != unbound) if (c.index.ids.get(info.id)) |l| try c.collect(l.items, id, pseudo);
+        try c.collect(index.universal.items, id, pseudo);
+        if (index.root.items.len > 0 and id == c.dom.documentElement()) try c.collect(index.root.items, id, pseudo);
+        if (index.tags.get(@intFromEnum(n.name))) |l| try c.collect(l.items, id, pseudo);
+        if (index.attrs.count() > 0) for (c.dom.attributes(id)) |at| if (at.prefix == .none) {
+            if (index.attrs.get(@intFromEnum(at.name))) |l| try c.collect(l.items, id, pseudo);
+        };
+        if (info.id != unbound) if (index.ids.get(info.id)) |l| try c.collect(l.items, id, pseudo);
         for (c.classes.items[info.class_start..][0..info.class_len], 0..) |cls, k| {
             // A class listed twice matches once.
             if (std.mem.indexOfScalar(u32, c.classes.items[info.class_start..][0..k], cls) != null) continue;
-            if (c.index.classes.get(cls)) |l| try c.collect(l.items, id, pseudo);
+            if (index.classes.get(cls)) |l| try c.collect(l.items, id, pseudo);
         }
         std.mem.sort(Matched, c.matched.items, {}, struct {
             fn lt(_: void, a: Matched, b: Matched) bool {
@@ -738,12 +821,18 @@ pub const Cascade = struct {
 
         // Winners per property, in priority order: hints (author, zero
         // specificity), matched rules, inline; then important ones.
-        @memset(&c.winners, null);
+        for (c.winner_ids[0..c.winner_len]) |pi| c.winners[pi] = null;
+        c.winner_len = 0;
         c.customs_scratch.clearRetainingCapacity();
         const P = struct {
             fn set(cc: *Cascade, decls: []const props.Declaration, important: bool) void {
                 for (decls) |dd| if (dd.important == important) {
-                    cc.winners[@intFromEnum(dd.id)] = .{ .value = dd.value };
+                    const pi = @intFromEnum(dd.id);
+                    if (cc.winners[pi] == null) {
+                        cc.winner_ids[cc.winner_len] = pi;
+                        cc.winner_len += 1;
+                    }
+                    cc.winners[pi] = .{ .value = dd.value };
                 };
             }
         };
@@ -817,8 +906,10 @@ pub const Cascade = struct {
             .viewport_height = c.env.media.height,
             .medium = c.env.font_size,
         };
-        // var() substitution.
-        for (&c.winners, 0..) |*w, pi| if (w.*) |win| if (win.value == .unparsed) {
+        // var() substitution, in property order.
+        std.mem.sort(u8, c.winner_ids[0..c.winner_len], {}, std.sort.asc(u8));
+        for (c.winner_ids[0..c.winner_len]) |pi| if (c.winners[pi]) |win| if (win.value == .unparsed) {
+            const w = &c.winners[pi];
             w.* = if (try c.substitute(win.value.unparsed, @enumFromInt(pi), s.custom)) |v| .{ .value = v } else .{ .value = .{ .wide = .unset } };
         };
         const fs = c.winners[@intFromEnum(props.Id.font_size)];
@@ -829,10 +920,10 @@ pub const Cascade = struct {
         // Color first: currentcolor in other properties reads it.
         if (c.winners[@intFromEnum(props.Id.color)]) |w| try props.apply(&s, .color, w.value, &cx);
         if (c.winners[@intFromEnum(props.Id.line_height)]) |w| try props.apply(&s, .line_height, w.value, &cx);
-        for (c.winners, 0..) |w, pi| {
+        for (c.winner_ids[0..c.winner_len]) |pi| {
             const pid: props.Id = @enumFromInt(pi);
             if (pid == .font_size or pid == .color or pid == .line_height) continue;
-            if (w) |win| try props.apply(&s, pid, win.value, &cx);
+            try props.apply(&s, pid, c.winners[pi].?.value, &cx);
         }
         // Language.
         if (element_decls) if (d.attr(id, .lang)) |l| {
@@ -986,11 +1077,16 @@ pub const Cascade = struct {
         var e: usize = 0;
         while (e < v.len and (std.ascii.isDigit(v[e]) or v[e] == '.')) e += 1;
         if (e == 0) return;
-        const num = std.fmt.parseFloat(f32, v[0..e]) catch return;
         var buf: [32]u8 = undefined;
         const pct = e < v.len and v[e] == '%';
         if (pct and !allow_percent) return;
-        const s = std.fmt.bufPrint(&buf, "{d}{s}", .{ num, if (pct) "%" else "px" }) catch return;
+        const unit = if (pct) "%" else "px";
+        // Digits alone are CSS as they are (mail repeats them on every
+        // cell); a fraction is normalized ("1." is not CSS).
+        const s = if (e <= 16 and std.mem.indexOfScalar(u8, v[0..e], '.') == null)
+            std.fmt.bufPrint(&buf, "{s}{s}", .{ v[0..e], unit }) catch return
+        else
+            std.fmt.bufPrint(&buf, "{d}{s}", .{ std.fmt.parseFloat(f32, v[0..e]) catch return, unit }) catch return;
         try c.hint(name, s);
     }
 
@@ -1279,9 +1375,9 @@ test "matching and the cascade" {
         \\li::marker { color: orange }
     , .{});
     defer author.deinit();
+    c.env.media.width = 800;
     try c.addSheet(&ua, .user_agent);
     try c.addSheet(&author, .author);
-    c.env.media.width = 800;
     var r = try c.run();
     defer {
         gpa.free(r.styles);

@@ -458,7 +458,7 @@ fn measureBook(gpa: std.mem.Allocator, io: std.Io, fonts: *doc.sysfonts.SystemFo
             _ = try d.layout(&fonts.cache, page_w, page_h, std.math.inf(f32));
             load_ns += now() - t;
             t = now();
-            try d.pageBreaks(page_h, &breaks, gpa);
+            try d.pageBreaks(page_h, std.math.inf(f32), &breaks, gpa);
             paginate_ns += now() - t;
             pages = breaks.items.len + 1;
             size = chapter_bytes;

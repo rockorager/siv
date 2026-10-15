@@ -1496,8 +1496,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     permits copying and modification with the notice kept, like MIT).
     The patterns are embedded and parsed into a trie per language the
     first time text in it is hyphenated (`text.hyphen.Hyphenation`, one
-    per application in `ui.Fonts`), with the hyphenmins their headers
-    give.
+    per application in `ui.Fonts` and one per process for documents,
+    D32), with the hyphenmins their headers give.
     A text's language finds them by its tag, its language and region,
     British English for British-spelling regions, else its language's
     first patterns. Applications add patterns for other languages, which
@@ -5624,7 +5624,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     `html`, `markdown`, `css`, `text`, `scene`, `raster`, `image`, `svg`,
     `pool`): the cascade (user agent, user, author origins, `!important`,
     inheritance, a Bloom filter of ancestors for descendant selectors,
-    rules bucketed by id, class, and tag), the box tree, layout, painting,
+    rules bucketed by id, class, tag, attribute name, and `:root`, with
+    `:is()`/`:where()` of plain tags filed under each tag, rules for
+    pseudo-elements apart, media queries evaluated when a sheet is
+    added, and selectors that need a dynamic state such as `:hover`
+    dropped), the box tree, layout, painting,
     hit testing, find, selection, locators, and the accessibility tree.
     `docview` (imports `ui`, `doc`, and the low-level modules): the widget.
     `ui` never references `doc`: the widget is a canvas node with two new
@@ -5730,7 +5734,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     orphans a running one, which frees the document when it returns.
   - **Bounded memory and incremental work.** An IFC's shaping and lines
     are caches (24 MB per document, least recently used dropped, rebuilt
-    on demand); boxes keep only geometry. Heights below what is laid out
+    on demand); boxes keep only geometry. The temporaries of shaping and
+    laying out an IFC go into an arena reset when the IFC is done (it
+    keeps 1 MB), not one held for the whole pass. Hyphenation patterns
+    are parsed once per process for every document, and a layout engine
+    keeps the points of the last 65 536 words it hyphenated. Heights
+    below what is laid out
     are estimates from the text per pixel measured so far, so the
     scroll range is close before layout ends. A width change keeps
     shaping and relays out from the top to the first screen; a theme
@@ -5819,13 +5828,20 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     answers metadata, spine paths, and contents entries; a document node
     given a publication and a spine path reads the chapter, its style
     sheets, fonts (publisher `@font-face`), and images from the container
-    at `epub:///` URLs without the loader. An XML document (an XML
+    at `epub:///` URLs without the loader; the parse job reads the
+    chapter's style sheets (and their imports) before the cascade, so a
+    chapter is styled once. An XML document (an XML
     declaration first, as every chapter has, or an `.xhtml` chapter) is
     never in quirks mode, its self-closing tags end their elements
     (`<a id="note"/>`), and comments in its style elements are comments.
   - **Pagination** (`siv_docview_flags.paged`): the chapter is laid out
-    completely at the page's content width, then `Document.pageBreaks`
-    walks the laid-out flow for break points: between blocks, between
+    at the page's content width, and `Document.pageBreaks` walks the
+    laid-out flow for break points. Opening at the first page lays out
+    the first spread and two pages more, breaks the pages that end above
+    that, and shows them; the rest is laid out in slices, as scrolling
+    documents are, and the page count and page event come when the
+    chapter is complete (a position deeper in the chapter waits for
+    that). Break points fall between blocks, between
     table rows, and between lines, keeping `orphans` and `widows`,
     forcing `break-before`/`break-after: page` (and the legacy
     `page-break-*`), avoiding `break-inside: avoid` and breaks after a
@@ -5885,53 +5901,82 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   50 KB of text in sections, lists, quotes, tables, code, and grids,
   with 20 KB of CSS with custom properties, `calc()`, `color-mix()`,
   media queries, `text-wrap: pretty`, and `hyphens: auto`; a 1.5 MB
-  document of the same; scrolling at 800 × 1000):
+  document of the same; scrolling at 800 × 1000). Phase 1's numbers
+  came from a faster orb (about 1.3 times); "before" is the same orb
+  as "now", just before the performance pass (after e-books and the
+  conformance work):
 
-
-  | Measure | Budget | Result |
-  | --- | --- | --- |
-  | Article (72 KB with its CSS): parse, style, lay out | a few ms | 5.5 ms (parse 0.9, cascade and boxes 1.3, layout 3.2); 10.6 ms on one thread |
-  | 1.5 MB document, first screen | tens of ms | 48 ms (parse 16, cascade and boxes 30, layout 1.3) |
-  | 1.5 MB document, the rest (background slices) | — | 139 ms; 525 000 px tall; 33 MB held after |
-  | Scroll: a band repaint (3 viewports), once per viewport scrolled | well under 1 ms per frame | 0.66 ms average, 3.2 ms worst; 0.07 ms per frame scrolling a viewport per 10 frames |
-  | Width change, back to the first screen (1.5 MB) | — | 10 ms |
-  | User agent style sheet, parsed once per process | — | 0.09 ms |
-
-  | Email (receipt, newsletter, Outlook reply; 2–3 KB each) | — | 0.2–0.5 ms each |
-  | 2 000-row mail table (222 KB) | — | 30 ms (46 before parsing hints once and sharing anonymous cell styles) |
-  | 300 paragraphs beside 300 floats (159 KB) | — | 9 ms |
+  | Measure | Budget | Phase 1 | Before | Now |
+  | --- | --- | --- | --- | --- |
+  | Article (72 KB with its CSS): parse, style, lay out | a few ms | 5.5 ms; 10.6 on one thread | 14.0 ms (layout 11.0); 21.7 on one thread | 8.4 ms (parse 1.3, cascade and boxes 1.1, layout 6.0); 13.7 on one thread |
+  | 1.5 MB document, first screen | tens of ms | 48 ms (parse 16, cascade and boxes 30, layout 1.3) | 62 ms (parse 23, style 36, layout 3.4) | 45 ms (parse 20, style 23, layout 1.8) |
+  | 1.5 MB document, the rest (background slices) | — | 139 ms | 311 ms | 180 ms; 521 000 px tall; 33 MB held after |
+  | Scroll: a band repaint (3 viewports), once per viewport scrolled | well under 1 ms per frame | 0.66 ms average, 3.2 worst | 1.35 ms average, 3.4 worst | 0.76–0.94 ms average, 3.5 worst; 0.09 ms per frame scrolling a viewport per 10 frames |
+  | Width change, back to the first screen (1.5 MB) | — | 10 ms | 18–29 ms | 1.9 ms |
+  | User agent style sheet, parsed once per process | — | 0.09 ms | 0.12 ms | 0.12 ms |
+  | Email (receipt, newsletter, Outlook reply; 1–3 KB each) | — | 0.2–0.5 ms each | 0.2–0.7 ms | 0.14–0.48 ms |
+  | 2 000-row mail table (401 KB; 222 KB in phase 1) | — | 30 ms | 42 ms (style 15, layout 20) | 35 ms (style 10, layout 18) |
+  | 300 paragraphs beside 300 floats (126 KB; 159 KB in phase 1) | — | 9 ms | 14.8 ms | 13.5 ms |
+  | A saved Wikipedia article (594 KB with its 149 KB of CSS) | — | — | 31 ms (parse 7, style 15, layout 8.5) | 23 ms (parse 7.5, style 7.8, layout 7.9) |
+  | A 3 MB saved Wikipedia article | — | — | 135 ms (style 58) | 105 ms (style 30) |
+  | A 76 KB README in Markdown | — | — | 7.4 ms | 7.1 ms |
 
   E-books (`bench-doc -- --epub BOOK`, a 544 × 760 px page, Standard
   Ebooks titles in `test/doc/epub`, chapters with their CSS and the
-  reading defaults, laid out completely and paginated):
+  reading defaults, laid out completely and paginated; the same orb):
 
-  | Measure | Budget | Result |
-  | --- | --- | --- |
-  | Open a publication (zip, OPF, contents) | — | 0.07–0.10 ms |
-  | A 14–19 KB novel chapter (Jekyll): style, lay out, paginate | tens of ms | 4.2–6.5 ms, 7–9 pages |
-  | A 38 KB chapter (Jekyll 10), 19 pages | tens of ms | 12 ms (first screen alone 4.5) |
-  | A 138 KB act of a play (Earnest, all drama tables), 45 pages | tens of ms | 19 ms |
-  | Pagination of a laid-out chapter | — | under 0.015 ms |
-  | Page turn: painting a page | well under 1 ms | 0.01–0.04 ms average, 0.12 ms worst |
+  | Measure | Budget | Before | Now |
+  | --- | --- | --- | --- |
+  | Open a publication (zip, OPF, contents) | — | 0.09–0.21 ms | 0.09–0.16 ms |
+  | Front matter (title page, imprint, colophon; 0–3 KB) | — | 0.4–2.5 ms | 0.3–1.2 ms |
+  | A 14–19 KB novel chapter (Jekyll): style, lay out, paginate | tens of ms | 8.7–10 ms, 7–9 pages | 4.1–4.4 ms |
+  | A 38 KB chapter (Jekyll 10), 19 pages | tens of ms | 13.3 ms (first screen 5.1) | 7.7 ms (first screen 2.8) |
+  | A 138 KB act of a play (Earnest, all drama tables), 45 pages | tens of ms | 26 ms | 20 ms |
+  | Pagination of a laid-out chapter | — | under 0.02 ms | under 0.02 ms |
+  | Page turn: painting a page | well under 1 ms | 0.01–0.05 ms average, 0.1 ms worst | the same |
 
-  A small chapter costs 1–2 ms, most of it parsing Standard Ebooks'
-  10 KB of CSS again; paged chapters are laid out to their end before
-  the first page shows (the page count needs it), which a chapter of
-  tables does anyway.
+  The performance pass found the article's layout twice what phase 1
+  measured: Knuth and Plass with hyphenation points (added with
+  e-books) found each word's points again on every pass, from patterns
+  each document parsed (2.3 ms, once per chapter, most of what a small
+  chapter cost; parsing the book's CSS again was 2 %). Patterns are now
+  a trie parsed once per process, and the engine keeps words' points.
+  The cascade stopped trying rules a document cannot match (selectors
+  for pseudo-elements on every element, `:hover`, media that do not
+  apply, rules keyed on attributes or `:root` and `:is()` of tags
+  that were in the universal bucket), the style store keeps each
+  style's hash, and the inline layout finds runs and items by binary
+  search instead of scanning them per line. Left-to-right text whose
+  characters are all Latin, Common, or Inherited skips script
+  resolution, as ASCII did. Memory held at the end of laying out a
+  whole document in one pass (what a paged chapter did): the Wikipedia
+  article 19 → 14 MiB of heap, the 3 MB one 67 → 47, the 1.5 MB
+  document 203 → 97. A paged chapter shows its first spread when that
+  is laid out (Jekyll 10: 2.8 ms of the 7.7), and a book's style
+  sheets no longer style each chapter twice.
 
-  The article misses "a few milliseconds" on one thread and meets it
-  with the pool; the worst band repaint (a band whose IFCs were dropped
-  from the cache and are shaped again) is a frame over budget once per
-  viewport scrolled.
-  Where the time goes (callgrind, the article on one thread): 61 % in
+  Where the time goes now (perf, the article and the floats): text
+  shaping is still half: HarfBuzz 22–26 %, `ShapedParagraph.init`'s
+  own per code point passes about 19 % (Unicode property lookups for
+  graphemes, words, which documents never use, and line break classes,
+  6 %, with ASCII shortcuts only in some), and Zig's arena allocator,
+  which takes an atomic operation per allocation, 4–10 % (most of it
+  each paragraph's arena). The long document's first screen is its
+  parse (20 ms) and cascade (23 ms). Remaining: Wikipedia's skin puts
+  its content in grid and flex containers, which lay out whole, so its
+  first screen is the whole page; a chapter that is one table (Earnest)
+  is laid out to its end before its first page; and the worst band
+  repaint (IFCs dropped from the cache shaped again) is still a frame
+  over budget once per viewport scrolled.
+
+  Phase 1's analysis (callgrind, the article on one thread): 61 % in
   `text.ShapedParagraph.init` (HarfBuzz 20 %, line break classes 9 %,
   bidi 6 %, scripts 7 %, segmentation 5 %), 10 % inline layout and
   Knuth and Plass, 8 % the cascade, 8 % the HTML parser, the rest the box
   tree and style interning. Two changes followed: left-to-right text of
   European scripts skips SheenBidi (`bidi.simpleLtr`, checked against it
   in a test), −5 %, and shaping ahead in parallel, 10.6 → 5.5 ms for
-  the article. The long document's first screen is its parse (16 ms)
-  and cascade (28 ms); its layout to the first screen is 1.3 ms.
+  the article.
 - **Correctness** (all in `zig build test`): html5lib's tree
   construction tests without scripting, 1754 of 1754
   (`src/html/testdata`, MIT); the CommonMark spec's examples, 652 of

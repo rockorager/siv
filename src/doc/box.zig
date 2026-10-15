@@ -725,6 +725,8 @@ pub const Builder = struct {
         defer out.deinit(b.gpa);
         switch (ws) {
             .collapse, .preserve_breaks => {
+                // Collapsing never lengthens the text.
+                try out.ensureTotalCapacity(b.gpa, s.len);
                 var i: usize = 0;
                 while (i < s.len) {
                     const ch = s[i];
@@ -740,11 +742,16 @@ pub const Builder = struct {
                         }
                         i += 1;
                     } else {
-                        const l = std.unicode.utf8ByteSequenceLength(ch) catch 1;
-                        try out.appendSlice(b.gpa, s[i..@min(s.len, i + l)]);
+                        // The text up to the next white space at once.
+                        var j = i + 1;
+                        while (j < s.len) : (j += 1) switch (s[j]) {
+                            ' ', '\t', '\n', '\r', 0x0C => break,
+                            else => {},
+                        };
+                        out.appendSliceAssumeCapacity(s[i..j]);
                         f.space_before = false;
                         f.visible = true;
-                        i += l;
+                        i = j;
                     }
                 }
             },

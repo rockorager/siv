@@ -204,7 +204,7 @@ pub const functions = [_]Function{
     call("siv_docview_set_page", "Paged: shows a page (the left one of a spread), clamped to the last; a page event reports it." ++ busy, &.{
         p("index", .u32, "The page, 0-based."),
     }),
-    call("siv_docview_get_page", "Paged: the page shown and how many there are (1 and 0 before the first layout)." ++ busy, &.{
+    call("siv_docview_get_page", "Paged: the page shown and how many there are (1 and 0 before the first layout; the pages laid out so far until the loaded event)." ++ busy, &.{
         p("index", out(.u32), "The page shown, 0-based."),
         p("count", out(.u32), "Pages."),
     }),

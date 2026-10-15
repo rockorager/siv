@@ -37,7 +37,8 @@ pub const FontInfo = struct {
 
 pub const Fonts = struct {
     cache: *const text.FontCache,
-    hyphenation: ?*text.hyphen.Hyphenation = null,
+    /// The hyphenation patterns for a language, if any (null: none).
+    hyphenator: ?*const fn (language: []const u8) ?*const text.hyphen.Hyphenator = null,
     ctx: *const anyopaque,
     infoFn: *const fn (ctx: *const anyopaque, StyleId) *const FontInfo,
 
@@ -187,6 +188,26 @@ pub const Context = struct {
     /// Floats beside the IFC (CSS 2.1 9.5): their margin boxes in its
     /// content coordinates; lines next to them are shortened.
     floats: []const FloatRect = &.{},
+    hyphen_memo: ?*HyphenMemo = null,
+};
+
+/// Hyphenation points by word for a document's layout: the same words
+/// recur, and finding a word's points walks the patterns from each of
+/// its letters. Offsets in the word; at most `limit` words.
+pub const HyphenMemo = struct {
+    arena: std.heap.ArenaAllocator,
+    map: std.StringHashMapUnmanaged(Entry) = .empty,
+
+    const Entry = struct { hyph: *const text.hyphen.Hyphenator, points: []const u8 };
+    const limit = 1 << 16;
+
+    pub fn init(gpa: Allocator) HyphenMemo {
+        return .{ .arena = .init(gpa) };
+    }
+
+    pub fn deinit(m: *HyphenMemo) void {
+        m.arena.deinit();
+    }
 };
 
 const Unit = struct {
@@ -236,6 +257,14 @@ const Builder = struct {
     ib_shift: []f32 = &.{},
     used_items: []bool = &.{},
     hyphen_after: ?u32 = null,
+    /// Per line, kept for the next (in scratch memory).
+    pieces: std.ArrayList(Piece) = .empty,
+    split: std.ArrayList(Piece) = .empty,
+    levels: std.ArrayList(u8) = .empty,
+    order: std.ArrayList(u32) = .empty,
+    /// The patterns of the last language hyphenated.
+    hyph_language: ?[]const u8 = null,
+    hyph: ?*const text.hyphen.Hyphenator = null,
 
     fn space(b: *const Builder, line: usize) [2]f32 {
         return if (line < b.spaces.len) b.spaces[line] else .{ 0, b.width };
@@ -275,29 +304,60 @@ fn runStyleAt(ifc: *const box_mod.Ifc, at: u32) usize {
 }
 
 /// The glyphs of shaped run `r` whose clusters fall in `from..to`, in the
-/// run's (visual) order.
+/// run's (visual) order: searched, as lines and hyphenation points ask
+/// for pieces of long runs.
 fn runGlyphs(p: *const text.ShapedParagraph, r: text.paragraph.Run, from: u32, to: u32) []const text.shape.Glyph {
     const g = p.runGlyphs(r);
     if (g.len == 0) return g;
     // Clusters increase (LTR) or decrease (RTL) along the run.
-    var lo: usize = 0;
-    var hi: usize = g.len;
+    const Ctx = struct {
+        fn before(rtl: bool, glyph: text.shape.Glyph, at: u32) bool {
+            return if (rtl) glyph.cluster >= at else glyph.cluster < at;
+        }
+        /// The first glyph not `before` `at`.
+        fn bound(glyphs: []const text.shape.Glyph, rtl: bool, at: u32) usize {
+            var lo: usize = 0;
+            var hi: usize = glyphs.len;
+            while (lo < hi) {
+                const mid = lo + (hi - lo) / 2;
+                if (before(rtl, glyphs[mid], at)) lo = mid + 1 else hi = mid;
+            }
+            return lo;
+        }
+    };
     if (!r.rtl()) {
-        while (lo < g.len and g[lo].cluster < from) lo += 1;
-        hi = lo;
-        while (hi < g.len and g[hi].cluster < to) hi += 1;
-    } else {
-        while (lo < g.len and g[lo].cluster >= to) lo += 1;
-        hi = lo;
-        while (hi < g.len and g[hi].cluster >= from) hi += 1;
+        const lo = Ctx.bound(g, false, from);
+        return g[lo .. lo + Ctx.bound(g[lo..], false, to)];
     }
-    return g[lo..hi];
+    const lo = Ctx.bound(g, true, to);
+    return g[lo .. lo + Ctx.bound(g[lo..], true, from)];
+}
+
+/// The first shaped run ending after `at` (runs are in text order).
+fn runAfter(p: *const text.ShapedParagraph, at: u32) usize {
+    var lo: usize = 0;
+    var hi: usize = p.runs.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if (p.runs[mid].end <= at) lo = mid + 1 else hi = mid;
+    }
+    return lo;
+}
+
+/// The first item at or after text offset `at` (items are in text order).
+fn itemAt(ifc: *const box_mod.Ifc, at: u32) usize {
+    var lo: usize = 0;
+    var hi: usize = ifc.items.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if (ifc.items[mid].offset < at) lo = mid + 1 else hi = mid;
+    }
+    return lo;
 }
 
 fn shapedAdvance(p: *const text.ShapedParagraph, from: u32, to: u32) f32 {
     var w: f32 = 0;
-    for (p.runs) |r| {
-        if (r.end <= from) continue;
+    for (p.runs[runAfter(p, from)..]) |r| {
         if (r.start >= to) break;
         for (runGlyphs(p, r, @max(from, r.start), @min(to, r.end))) |g| w += g.advance;
     }
@@ -519,31 +579,60 @@ fn hyphenate(b: *Builder, u: Unit, room: f32) Error!?u32 {
 /// offsets in increasing order, on grapheme boundaries.
 fn hyphenPoints(b: *Builder, u: Unit, out: *std.ArrayList(u32)) Error!void {
     const cx = b.cx;
-    const h = cx.fonts.hyphenation orelse return;
+    const get = cx.fonts.hyphenator orelse return;
     const ifc = cx.ifc;
     const rs = b.style(runStyle(ifc, u.start));
     if (rs.inh.hyphens != .auto) return;
     const fi = cx.fonts.info(runStyle(ifc, u.start));
-    const hyph = (try h.get(fi.language)) orelse return;
+    if (b.hyph_language == null or !std.mem.eql(u8, b.hyph_language.?, fi.language)) {
+        b.hyph_language = fi.language;
+        b.hyph = get(fi.language);
+    }
+    const hyph = b.hyph orelse return;
     const s = ifc.text[u.start..u.end];
     // The word: letters from the start (skip leading punctuation).
     var ws: usize = 0;
     while (ws < s.len and !std.ascii.isAlphabetic(s[ws]) and s[ws] < 0x80) ws += 1;
     var we = ws;
     while (we < s.len) {
+        if (s[we] < 0x80) {
+            if (!std.ascii.isAlphabetic(s[we]) and s[we] != '\'') break;
+            we += 1;
+            continue;
+        }
         const l = std.unicode.utf8ByteSequenceLength(s[we]) catch 1;
         const cp = std.unicode.utf8Decode(s[we..@min(s.len, we + l)]) catch 0;
         if (!text.hyphen.isWordChar(cp)) break;
         we += l;
     }
     if (we - ws < 4) return;
+    const word = s[ws..we];
+    const base = u.start + @as(u32, @intCast(ws));
+    const memo = if (word.len <= 255) cx.hyphen_memo else null;
+    if (memo) |m| if (m.map.get(word)) |e| if (e.hyph == hyph) {
+        for (e.points) |pt| try hyphenPoint(b, base + pt, out);
+        return;
+    };
     var points: std.ArrayList(u32) = .empty;
-    hyph.points(cx.scratch, s[ws..we], &points, cx.scratch) catch return;
-    for (points.items) |pt| {
-        const at: u32 = u.start + @as(u32, @intCast(ws)) + pt;
-        if (b.para().graphemes.atOrBefore(at) != at) continue;
-        try out.append(cx.scratch, at);
+    try hyph.points(cx.scratch, word, &points, cx.scratch);
+    for (points.items) |pt| try hyphenPoint(b, base + pt, out);
+    if (memo) |m| {
+        if (m.map.count() >= HyphenMemo.limit) {
+            _ = m.arena.reset(.retain_capacity);
+            m.map = .empty;
+        }
+        const a = m.arena.allocator();
+        const rel = try a.alloc(u8, points.items.len);
+        for (rel, points.items) |*r, pt| r.* = @intCast(pt);
+        const gop = try m.map.getOrPut(a, word);
+        if (!gop.found_existing) gop.key_ptr.* = try a.dupe(u8, word);
+        gop.value_ptr.* = .{ .hyph = hyph, .points = rel };
     }
+}
+
+fn hyphenPoint(b: *Builder, at: u32, out: *std.ArrayList(u32)) Error!void {
+    if (b.para().graphemes.atOrBefore(at) != at) return;
+    try out.append(b.cx.scratch, at);
 }
 
 fn hyphenWidth(b: *const Builder, at: u32) ?f32 {
@@ -797,9 +886,10 @@ fn emitLine(b: *Builder, start: u32, end_: u32, hyphen: bool, first: bool, top: 
     // A forced break at the end: its character is not drawn.
     const frag_start: u32 = @intCast(b.frags.items.len);
     // Pieces in logical order: shaped runs split by IFC runs.
-    var pieces: std.ArrayList(Piece) = .empty;
-    for (p.runs, 0..) |r, ri| {
-        if (r.end <= start) continue;
+    var pieces = &b.pieces;
+    pieces.clearRetainingCapacity();
+    const first_run = runAfter(p, start);
+    for (p.runs[first_run..], first_run..) |r, ri| {
         if (r.start >= end) break;
         var from = @max(start, r.start);
         const to = @min(end, r.end);
@@ -814,9 +904,11 @@ fn emitLine(b: *Builder, start: u32, end_: u32, hyphen: bool, first: bool, top: 
     if (end > start and pieces.items.len > 0) {
         const pi = p.paragraphAt(start);
         const base = p.paragraphs[pi].base_level;
-        const levels = try cx.scratch.alloc(u8, end - start);
+        try b.levels.resize(cx.scratch, end - start);
+        const levels = b.levels.items;
         text.bidi.lineLevels(p.levels[start..end], p.classes[start..end], base, levels);
-        var split: std.ArrayList(Piece) = .empty;
+        const split = &b.split;
+        split.clearRetainingCapacity();
         for (pieces.items) |pc| {
             var from = pc.from;
             while (from < pc.to) {
@@ -833,9 +925,12 @@ fn emitLine(b: *Builder, start: u32, end_: u32, hyphen: bool, first: bool, top: 
         }
         pieces = split;
     }
-    const order = try cx.scratch.alloc(u32, pieces.items.len);
+    try b.order.resize(cx.scratch, pieces.items.len);
+    const order = b.order.items;
     if (pieces.items.len > 0) {
-        const lv = try cx.scratch.alloc(u8, pieces.items.len);
+        // The levels list is free again.
+        try b.levels.resize(cx.scratch, pieces.items.len);
+        const lv = b.levels.items;
         for (lv, pieces.items) |*l, pc| l.* = pc.level;
         text.bidi.reorder(lv, order);
     }
@@ -852,8 +947,9 @@ fn emitLine(b: *Builder, start: u32, end_: u32, hyphen: bool, first: bool, top: 
         const ib = ifc.runs[pc.ifc_run].inline_box;
         const st = b.style(run_style);
         // Opening edges at this piece's start.
-        for (ifc.items, 0..) |it, k| {
-            if (b.used_items[k] or it.kind != .open or it.offset != pc.from) continue;
+        for (ifc.items[itemAt(ifc, pc.from)..], itemAt(ifc, pc.from)..) |it, k| {
+            if (it.offset != pc.from) break;
+            if (b.used_items[k] or it.kind != .open) continue;
             if (it.offset < start or it.offset >= end) continue;
             b.used_items[k] = true;
             const w = edge(b.style(ifc.inline_boxes[it.index].style), true, b.width);
@@ -889,8 +985,9 @@ fn emitLine(b: *Builder, start: u32, end_: u32, hyphen: bool, first: bool, top: 
                 }
                 pen += gx;
                 gx = 0;
-                const atom_box = for (ifc.items) |it| {
-                    if (it.kind == .atomic and it.offset == g.cluster and !cx.tree.get(it.index).out_of_flow) break it.index;
+                const atom_box = for (ifc.items[itemAt(ifc, g.cluster)..]) |it| {
+                    if (it.offset != g.cluster) break box_mod.none;
+                    if (it.kind == .atomic and !cx.tree.get(it.index).out_of_flow) break it.index;
                 } else box_mod.none;
                 if (atom_box != box_mod.none) {
                     const sz = try atomic(b, atom_box);
@@ -915,8 +1012,9 @@ fn emitLine(b: *Builder, start: u32, end_: u32, hyphen: bool, first: bool, top: 
         if (frag.glyph_end > frag.glyph_start) try b.frags.append(cx.gpa, frag);
         pen += gx;
         // Closing edges at this piece's end.
-        for (ifc.items, 0..) |it, k| {
-            if (b.used_items[k] or it.kind != .close or it.offset != pc.to) continue;
+        for (ifc.items[itemAt(ifc, pc.to)..], itemAt(ifc, pc.to)..) |it, k| {
+            if (it.offset != pc.to) break;
+            if (b.used_items[k] or it.kind != .close) continue;
             if (it.offset <= start and start != end) continue;
             b.used_items[k] = true;
             const w = edge(b.style(ifc.inline_boxes[it.index].style), false, b.width);
@@ -926,8 +1024,9 @@ fn emitLine(b: *Builder, start: u32, end_: u32, hyphen: bool, first: bool, top: 
     }
     // Edges of empty inline boxes on this line (opened and closed with
     // nothing between).
-    for (ifc.items, 0..) |it, k| {
-        if (b.used_items[k] or it.offset < start or it.offset > end) continue;
+    for (ifc.items[itemAt(ifc, start)..], itemAt(ifc, start)..) |it, k| {
+        if (it.offset > end) break;
+        if (b.used_items[k]) continue;
         if (it.offset == end and !last and it.kind == .open) continue;
         if (it.kind == .atomic) continue;
         if (it.offset == start and start != 0 and it.kind == .close and pieces.items.len > 0) continue;

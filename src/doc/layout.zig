@@ -111,8 +111,16 @@ pub const Engine = struct {
     /// their grid area in the container's padding box (x, y, w, h), which
     /// is their containing block (CSS Grid 10.1).
     grid_areas: std.AutoHashMapUnmanaged(BoxId, [4]f32) = .empty,
+    hyphen_memo: ?inline_mod.HyphenMemo = null,
+    /// Temporaries of shaping and laying out an IFC (and the IFCs of
+    /// atomic inlines inside it), freed when it is done rather than at
+    /// the end of the layout pass, which held a whole chapter's.
+    ifc_arena: ?std.heap.ArenaAllocator = null,
+    ifc_depth: u32 = 0,
 
     pub fn deinit(e: *Engine) void {
+        if (e.hyphen_memo) |*m| m.deinit();
+        if (e.ifc_arena) |*a| a.deinit();
         for (e.ifc_cache) |*c| e.drop(c);
         e.gpa.free(e.ifc_cache);
         e.absolutes.deinit(e.gpa);
@@ -184,7 +192,9 @@ pub const Engine = struct {
         errdefer e.gpa.destroy(s);
         e.fonts.cache.lockShared();
         defer e.fonts.cache.unlockShared();
-        s.* = try inline_mod.shape(e.gpa, e.scratch, &e.tree.ifcs.items[ifc], e.fonts, e.store);
+        const scratch = e.ifcScratch();
+        defer e.ifcDone();
+        s.* = try inline_mod.shape(e.gpa, scratch, &e.tree.ifcs.items[ifc], e.fonts, e.store);
         if (!s.complete) e.incomplete = true;
         c.shaped = s;
         e.cache_bytes += s.bytes();
@@ -239,17 +249,32 @@ pub const Engine = struct {
         }
     }
 
-    fn ifcContext(e: *Engine, ifc: u32, s: *const inline_mod.Shaped) inline_mod.Context {
+    fn ifcScratch(e: *Engine) Allocator {
+        if (e.ifc_arena == null) e.ifc_arena = .init(e.gpa);
+        e.ifc_depth += 1;
+        return e.ifc_arena.?.allocator();
+    }
+
+    fn ifcDone(e: *Engine) void {
+        e.ifc_depth -= 1;
+        if (e.ifc_depth == 0) _ = e.ifc_arena.?.reset(.{ .retain_with_limit = 1 << 20 });
+    }
+
+    fn ifcContext(e: *Engine, ifc: u32, s: *const inline_mod.Shaped, scratch: Allocator) inline_mod.Context {
         return .{
             .floats = e.ifc_floats.get(ifc) orelse &.{},
             .gpa = e.gpa,
-            .scratch = e.scratch,
+            .scratch = scratch,
             .ifc = &e.tree.ifcs.items[ifc],
             .shaped = s,
             .fonts = e.fonts,
             .store = e.store,
             .atomics = .{ .ctx = e, .sizeFn = atomicSize, .intrinsicFn = atomicIntrinsic },
             .tree = e.tree,
+            .hyphen_memo = if (e.hyphen_memo) |*m| m else blk: {
+                e.hyphen_memo = .init(e.gpa);
+                break :blk &e.hyphen_memo.?;
+            },
         };
     }
 
@@ -259,7 +284,9 @@ pub const Engine = struct {
         c.used = e.clock;
         if (c.laid) |l| if (l.width == width) return l;
         const s = try e.shaped(ifc);
-        const cx = e.ifcContext(ifc, s);
+        const scratch = e.ifcScratch();
+        defer e.ifcDone();
+        const cx = e.ifcContext(ifc, s, scratch);
         e.fonts.cache.lockShared();
         const result = inline_mod.layout(&cx, width);
         e.fonts.cache.unlockShared();
@@ -461,7 +488,9 @@ pub const Engine = struct {
             .inline_root => blk: {
                 const ifc = e.get(id).data;
                 const s = try e.shaped(ifc);
-                const cx = e.ifcContext(ifc, s);
+                const scratch = e.ifcScratch();
+                defer e.ifcDone();
+                const cx = e.ifcContext(ifc, s, scratch);
                 e.fonts.cache.lockShared();
                 const r = inline_mod.intrinsic(&cx);
                 e.fonts.cache.unlockShared();

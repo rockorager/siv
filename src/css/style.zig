@@ -551,12 +551,34 @@ pub const Style = struct {
 /// Hashes and compares styles field by field (floats by bits, pointers
 /// by address), so shared styles never depend on padding bytes.
 pub fn hash(s: *const Style) u64 {
-    var h: std.hash.Wyhash = .init(0);
+    var h: Feed = .{};
     hashValue(&h, s.*);
     return h.final();
 }
 
-fn hashValue(h: *std.hash.Wyhash, v: anytype) void {
+/// Wyhash fed fields through a buffer: a style is hundreds of small
+/// fields, and each `update` of a few bytes costs more than the copy.
+const Feed = struct {
+    h: std.hash.Wyhash = .init(0),
+    buf: [512]u8 = undefined,
+    len: usize = 0,
+
+    fn update(f: *Feed, bytes: []const u8) void {
+        if (f.len + bytes.len > f.buf.len) {
+            f.h.update(f.buf[0..f.len]);
+            f.len = 0;
+        }
+        @memcpy(f.buf[f.len..][0..bytes.len], bytes);
+        f.len += bytes.len;
+    }
+
+    fn final(f: *Feed) u64 {
+        f.h.update(f.buf[0..f.len]);
+        return f.h.final();
+    }
+};
+
+fn hashValue(h: *Feed, v: anytype) void {
     const T = @TypeOf(v);
     switch (@typeInfo(T)) {
         .@"struct" => |info| {
@@ -620,6 +642,9 @@ fn eqlValue(a: anytype, b: @TypeOf(a)) bool {
 /// initial style.
 pub const Store = struct {
     styles: std.ArrayList(Style) = .empty,
+    /// Each style's hash, so that growing the map does not hash every
+    /// style again (a style is about a kilobyte of fields).
+    hashes: std.ArrayList(u64) = .empty,
     map: std.HashMapUnmanaged(u32, void, MapCtx, 80) = .empty,
 
     pub const Id = u32;
@@ -627,20 +652,22 @@ pub const Store = struct {
     const MapCtx = struct {
         store: *const Store,
         pub fn hash(c: MapCtx, k: u32) u64 {
-            return @import("style.zig").hash(&c.store.styles.items[k]);
+            return c.store.hashes.items[k];
         }
-        pub fn eql(c: MapCtx, a: u32, b: u32) bool {
-            return @import("style.zig").eql(&c.store.styles.items[a], &c.store.styles.items[b]);
+        pub fn eql(_: MapCtx, a: u32, b: u32) bool {
+            return a == b;
         }
     };
 
+    const Key = struct { style: *const Style, hash: u64 };
+
     const Adapted = struct {
         store: *const Store,
-        pub fn hash(_: Adapted, k: *const Style) u64 {
-            return @import("style.zig").hash(k);
+        pub fn hash(_: Adapted, k: Key) u64 {
+            return k.hash;
         }
-        pub fn eql(c: Adapted, a: *const Style, b: u32) bool {
-            return @import("style.zig").eql(a, &c.store.styles.items[b]);
+        pub fn eql(c: Adapted, a: Key, b: u32) bool {
+            return c.store.hashes.items[b] == a.hash and @import("style.zig").eql(a.style, &c.store.styles.items[b]);
         }
     };
 
@@ -652,6 +679,7 @@ pub const Store = struct {
 
     pub fn deinit(s: *Store, gpa: std.mem.Allocator) void {
         s.styles.deinit(gpa);
+        s.hashes.deinit(gpa);
         s.map.deinit(gpa);
     }
 
@@ -660,13 +688,14 @@ pub const Store = struct {
     }
 
     pub fn intern(s: *Store, gpa: std.mem.Allocator, style: *const Style) error{OutOfMemory}!Id {
-        const gop = try s.map.getOrPutContextAdapted(gpa, style, Adapted{ .store = s }, MapCtx{ .store = s });
+        const key: Key = .{ .style = style, .hash = hash(style) };
+        try s.styles.ensureUnusedCapacity(gpa, 1);
+        try s.hashes.ensureUnusedCapacity(gpa, 1);
+        const gop = try s.map.getOrPutContextAdapted(gpa, key, Adapted{ .store = s }, MapCtx{ .store = s });
         if (gop.found_existing) return gop.key_ptr.*;
         const id: u32 = @intCast(s.styles.items.len);
-        s.styles.append(gpa, style.*) catch |err| {
-            s.map.removeByPtr(gop.key_ptr);
-            return err;
-        };
+        s.styles.appendAssumeCapacity(style.*);
+        s.hashes.appendAssumeCapacity(key.hash);
         gop.key_ptr.* = id;
         return id;
     }

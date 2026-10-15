@@ -334,12 +334,16 @@ test "page breaks keep widows and orphans and honor break-before" {
     defer breaks.deinit(gpa);
     // 190 px fits nine lines: breaking there would leave one widow, so the
     // break moves up a line; then the forced break before the heading.
-    try d.pageBreaks(190, &breaks, gpa);
+    try d.pageBreaks(190, std.math.inf(f32), &breaks, gpa);
     try testing.expectEqual(2, breaks.items.len);
     try testing.expectApproxEqAbs(@as(f32, 160), breaks.items[0], 0.5);
     try testing.expectApproxEqAbs(@as(f32, 200), breaks.items[1], 0.5);
+    // Laid out only to 300 px: the pages that end above it, as before.
+    try d.pageBreaks(190, 300, &breaks, gpa);
+    try testing.expectEqual(1, breaks.items.len);
+    try testing.expectApproxEqAbs(@as(f32, 160), breaks.items[0], 0.5);
     // A page taller than everything: no breaks but the forced one.
-    try d.pageBreaks(1000, &breaks, gpa);
+    try d.pageBreaks(1000, std.math.inf(f32), &breaks, gpa);
     try testing.expectEqual(1, breaks.items.len);
 }
 
