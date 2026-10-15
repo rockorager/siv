@@ -223,9 +223,16 @@ pub const Builder = struct {
     open_inlines: std.ArrayList(OpenInline) = .empty,
     counters: std.ArrayList(Counter) = .empty,
     quote_depth: u32 = 0,
+    /// The element nesting depth (for counter scopes).
+    depth: u32 = 0,
+    /// A block's ::first-letter waiting for the block's first text.
+    first_letter: ?struct { node: NodeId, style: StyleId } = null,
 
     const OpenInline = struct { node: NodeId, style: StyleId };
-    const Counter = struct { name: []const u8, value: i32, depth: u32 };
+    /// `shadow`: it hides an ancestor's counter of its name, so it stays
+    /// with its element (CSS Lists 3, 4.4: the parent's counter wins over
+    /// a preceding sibling's).
+    const Counter = struct { name: []const u8, value: i32, depth: u32, shadow: bool = false };
 
     const IfcBuilder = struct {
         text: std.ArrayList(u8) = .empty,
@@ -318,7 +325,8 @@ pub const Builder = struct {
         // Ignore content that never renders.
         if (n.ns == .html and (n.name == .template or n.name == .head)) return;
         if (d.outer == .contents) {
-            try b.childrenOf(parent, node, sid);
+            // Its children are its parent's for counters too.
+            try b.childrenIn(parent, node, sid);
             return;
         }
         if (n.ns == .html and n.name == .br) {
@@ -329,8 +337,17 @@ pub const Builder = struct {
             try b.text(parent, "\u{200B}", sid, node, true);
             return;
         }
-        const counters_depth = b.counters.items.len;
-        defer b.popCounters(counters_depth);
+        // Counters it resets stay in scope for its following siblings
+        // too (CSS Lists 3, 4.5): `childrenOf` drops them, but those
+        // hiding an ancestor's go at its end.
+        const counters_start = b.counters.items.len;
+        defer {
+            var k = b.counters.items.len;
+            while (k > counters_start) {
+                k -= 1;
+                if (b.counters.items[k].shadow) _ = b.counters.orderedRemove(k);
+            }
+        }
         try b.applyCounters(node, st);
 
         const replaced = b.isReplaced(node);
@@ -364,6 +381,8 @@ pub const Builder = struct {
         }
         const id = try b.blockBox(node, sid, replaced);
         if (d.isInlineLevel() or (replaced and d.outer == .@"inline")) {
+            // An atomic inline first: no first letter (CSS Pseudo 4, 3.2).
+            b.first_letter = null;
             b.tree.boxes.items[id].atomic = true;
             try b.atomicInIfc(parent, id, false);
         } else {
@@ -397,9 +416,20 @@ pub const Builder = struct {
         defer b.gpa.free(saved_open_items);
         b.open_inlines.clearRetainingCapacity();
         if (st.box.display.list_item) try b.marker(id, node, sid);
+        // Floats and positioned boxes keep an outer ::first-letter out;
+        // a block container may have its own.
+        const saved_letter = b.first_letter;
+        const own_flow = st.floats() or st.isOutOfFlow();
+        defer if (own_flow) {
+            b.first_letter = saved_letter;
+        };
+        if (own_flow) b.first_letter = null;
+        if (b.styles.pseudoStyle(node, .first_letter)) |fl| b.first_letter = .{ .node = node, .style = fl };
         try b.pseudo(id, node, sid, .before);
         try b.childrenOf(id, node, sid);
         try b.pseudo(id, node, sid, .after);
+        // The first formatted line was in this block, letter or not.
+        if (!own_flow) b.first_letter = null;
         try b.finishIfc(id, true);
         b.ifc = saved_ifc;
         b.open_inlines.clearRetainingCapacity();
@@ -471,6 +501,17 @@ pub const Builder = struct {
     }
 
     fn childrenOf(b: *Builder, parent: BoxId, node: NodeId, sid: StyleId) Error!void {
+        const counters = b.counters.items.len;
+        b.depth += 1;
+        defer {
+            b.depth -= 1;
+            b.popCounters(counters);
+        }
+        try b.childrenIn(parent, node, sid);
+    }
+
+    /// `childrenOf` without a counter scope of their own.
+    fn childrenIn(b: *Builder, parent: BoxId, node: NodeId, sid: StyleId) Error!void {
         var it = b.dom.children(node);
         while (it.next()) |c| {
             const n = b.dom.node(c);
@@ -602,6 +643,60 @@ pub const Builder = struct {
         try f.runs.append(b.gpa, .{ .end = end, .style = sid, .node = node, .inline_box = ib });
     }
 
+    /// Text that starts with its block's first letter (CSS Pseudo 4,
+    /// 3.2): punctuation before and after it, and the letter with its
+    /// combining marks, in a box of the ::first-letter style: an inline
+    /// box, or a float when it floats (drop caps).
+    fn firstLetter(b: *Builder, parent: BoxId, s: []const u8, sid: StyleId, node: NodeId) Error!void {
+        const fl = b.first_letter.?;
+        b.first_letter = null;
+        var i: usize = 0;
+        while (i < s.len and isSpace(s[i])) i += 1;
+        const start = i;
+        // A preserved line break first: the first line has no letter.
+        if (b.style(sid).inh.white_space_collapse != .collapse and std.mem.indexOfScalar(u8, s[0..start], '\n') != null) return b.text(parent, s, sid, node, false);
+        var seen_letter = false;
+        while (i < s.len) {
+            const n = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
+            if (i + n > s.len) break;
+            const cp = std.unicode.utf8Decode(s[i .. i + n]) catch s[i];
+            if (isUnicodeSpace(cp)) {
+                // A no-break or other space first: no first letter, as
+                // browsers do.
+                if (!seen_letter) return b.text(parent, s, sid, node, false);
+                break;
+            } else if (isLetterPunctuation(cp) or (seen_letter and cp >= 0x300 and cp <= 0x36F)) {
+                i += n;
+            } else if (!seen_letter and !isSpace(s[i]) and !isUnicodeSpace(cp)) {
+                seen_letter = true;
+                i += n;
+            } else break;
+        }
+        if (!seen_letter) return b.text(parent, s, sid, node, false);
+        if (start > 0) try b.text(parent, s[0..start], sid, node, false);
+        const letter = s[start..i];
+        const st = b.style(fl.style);
+        if (st.floats()) {
+            const id = try b.add(.{ .kind = .block, .node = fl.node, .style = fl.style });
+            b.tree.boxes.items[id].inline_float = true;
+            const saved = b.ifc;
+            const saved_open = try b.gpa.dupe(OpenInline, b.open_inlines.items);
+            defer b.gpa.free(saved_open);
+            b.ifc = null;
+            b.open_inlines.clearRetainingCapacity();
+            try b.text(id, letter, fl.style, node, false);
+            try b.finishIfc(id, true);
+            b.ifc = saved;
+            try b.open_inlines.appendSlice(b.gpa, saved_open);
+            try b.atomicInIfc(parent, id, true);
+        } else {
+            try b.openInline(parent, fl.node, fl.style);
+            try b.text(parent, letter, fl.style, node, false);
+            try b.closeInline(parent);
+        }
+        if (i < s.len) try b.text(parent, s[i..], sid, node, false);
+    }
+
     /// Adds text with white space processed by its style.
     fn text(b: *Builder, parent: BoxId, s: []const u8, sid: StyleId, node: NodeId, forced: bool) Error!void {
         const st = b.style(sid);
@@ -615,6 +710,10 @@ pub const Builder = struct {
             .flex, .grid => return,
             else => {},
         };
+        if (b.first_letter != null and !isAllSpace(s)) {
+            // A line break first leaves the first line without a letter.
+            if (forced) b.first_letter = null else return b.firstLetter(parent, s, sid, node);
+        }
         const f = try b.ensureIfc(parent);
         if (forced) {
             try b.addRun(f, s, sid, node);
@@ -874,6 +973,15 @@ pub const Builder = struct {
         return null;
     }
 
+    /// A new counter at this depth; one a preceding sibling made goes.
+    fn resetCounter(b: *Builder, name: []const u8, value: i32) Error!void {
+        if (b.findCounter(name)) |ctr| if (ctr.depth == b.depth) {
+            ctr.value = value;
+            return;
+        };
+        try b.counters.append(b.gpa, .{ .name = name, .value = value, .depth = b.depth, .shadow = b.findCounter(name) != null });
+    }
+
     fn applyCounters(b: *Builder, node: NodeId, st: *const Style) Error!void {
         const d = b.dom;
         const n = d.node(node);
@@ -883,23 +991,38 @@ pub const Builder = struct {
             var step: i32 = 1;
             if (n.name == .ol) {
                 if (d.hasAttr(node, .reversed)) {
-                    // Counts its items.
-                    var count: i32 = 0;
+                    // Counting down so that the last item is 1, or so
+                    // that the items before the first value= count down
+                    // to it (CSS Lists 3, 4.4.2): the increments of its
+                    // children, list items or not, up to that item.
+                    var sum: i32 = 0;
+                    var first_set: ?i32 = null;
                     var it = d.children(node);
-                    while (it.next()) |c| if (d.isHtml(c, .li)) {
-                        count += 1;
-                    };
-                    start = count;
+                    while (it.next()) |c| {
+                        if (d.node(c).kind != .element) continue;
+                        const cst = b.style(b.styleOf(c));
+                        if (cst.box.display.isNone()) continue;
+                        var inc: i32 = if (cst.box.display.list_item) -1 else 0;
+                        if (cst.box.counter_increment) |list| for (list.items) |ci| if (std.mem.eql(u8, ci.name, "list-item")) {
+                            inc = ci.value;
+                        };
+                        sum += inc;
+                        if (d.isHtml(c, .li)) if (d.attr(c, .value)) |v| if (std.fmt.parseInt(i32, std.mem.trim(u8, v, " "), 10) catch null) |val| {
+                            first_set = val - sum;
+                            break;
+                        };
+                    }
+                    start = (first_set orelse 1 - sum) - 1;
                     step = -1;
                 }
                 if (d.attr(node, .start)) |v| start = std.fmt.parseInt(i32, std.mem.trim(u8, v, " "), 10) catch start;
             }
-            try b.counters.append(b.gpa, .{ .name = "list-item", .value = start - step, .depth = 0 });
-            try b.counters.append(b.gpa, .{ .name = "\x00step", .value = step, .depth = 0 });
+            try b.resetCounter("list-item", start - step);
+            try b.resetCounter("\x00step", step);
         }
-        if (st.box.counter_reset) |r| for (r.items) |c| try b.counters.append(b.gpa, .{ .name = c.name, .value = c.value, .depth = 0 });
+        if (st.box.counter_reset) |r| for (r.items) |c| try b.resetCounter(c.name, c.value);
         if (st.box.counter_set) |r| for (r.items) |c| {
-            if (b.findCounter(c.name)) |ctr| ctr.value = c.value else try b.counters.append(b.gpa, .{ .name = c.name, .value = c.value, .depth = 0 });
+            if (b.findCounter(c.name)) |ctr| ctr.value = c.value else try b.resetCounter(c.name, c.value);
         };
         if (st.box.display.list_item) {
             const step = b.counterValue("\x00step");
@@ -912,17 +1035,15 @@ pub const Builder = struct {
                     ctr.value = (std.fmt.parseInt(i32, std.mem.trim(u8, v, " "), 10) catch ctr.value + step) - step;
                 };
                 if (!incremented) ctr.value += if (step == 0) 1 else step;
-            } else try b.counters.append(b.gpa, .{ .name = "list-item", .value = 1, .depth = 0 });
+            } else try b.resetCounter("list-item", 1);
         }
         if (st.box.counter_increment) |inc| for (inc.items) |c| {
-            if (b.findCounter(c.name)) |ctr| ctr.value += c.value else try b.counters.append(b.gpa, .{ .name = c.name, .value = c.value, .depth = 0 });
+            if (b.findCounter(c.name)) |ctr| ctr.value += c.value else try b.resetCounter(c.name, c.value);
         };
     }
 
     fn popCounters(b: *Builder, depth: usize) void {
-        // Counters reset by an element go out of scope after its
-        // siblings too; keeping them until the parent ends is CSS's
-        // rule, approximated by the element's own extent for lists.
+        // The counters an element's children made, at its end.
         b.counters.shrinkRetainingCapacity(@min(depth, b.counters.items.len));
     }
 
@@ -1017,6 +1138,24 @@ pub const Builder = struct {
         }
     }
 };
+
+fn isUnicodeSpace(cp: u21) bool {
+    return cp == 0xA0 or cp == 0x1680 or (cp >= 0x2000 and cp <= 0x200A) or cp == 0x202F or cp == 0x205F or cp == 0x3000;
+}
+
+fn isSpace(c: u8) bool {
+    return c == ' ' or c == '\t' or c == '\n' or c == '\r' or c == 0x0C;
+}
+
+/// Punctuation that goes with a first letter: quotes, brackets, and the
+/// common marks (Unicode Ps, Pe, Pi, Pf, and Po, for the usual ones).
+fn isLetterPunctuation(cp: u21) bool {
+    return switch (cp) {
+        '"', '\'', '(', ')', '[', ']', '{', '}', '.', ',', ';', ':', '!', '?', '*', '/', '\\', '#', '%', '&', '@',
+        0xA1, 0xA7, 0xAB, 0xB6, 0xB7, 0xBB, 0xBF, 0x2018...0x201F, 0x2039, 0x203A, 0x2016, 0x2020...0x2027, 0x2030...0x2038, 0x300C...0x300F, 0xFF08, 0xFF09 => true,
+        else => false,
+    };
+}
 
 fn isAllSpace(s: []const u8) bool {
     for (s) |c| switch (c) {

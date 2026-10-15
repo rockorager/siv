@@ -18,24 +18,24 @@ const origin = "http://wpt";
 /// Passing tests per suite, recorded: all of them, and those without
 /// images; fewer fails the test.
 const floors = .{
-    .{ "css2", 460, 248 },
-    .{ "css-flexbox", 428, 361 },
+    .{ "css2", 464, 252 },
+    .{ "css-flexbox", 429, 362 },
     .{ "css-grid", 188, 176 },
     .{ "css-values", 67, 65 },
     .{ "css-variables", 47, 47 },
     .{ "css-tables", 187, 177 },
-    .{ "floats", 167, 103 },
-    .{ "css-sizing", 239, 181 },
+    .{ "floats", 177, 113 },
+    .{ "css-sizing", 244, 181 },
     .{ "css-display", 60, 60 },
-    .{ "css-pseudo", 34, 33 },
-    .{ "css-lists", 169, 167 },
-    .{ "css-text", 122, 116 },
-    .{ "css-backgrounds", 217, 116 },
+    .{ "css-pseudo", 43, 42 },
+    .{ "css-lists", 182, 180 },
+    .{ "css-text", 123, 117 },
+    .{ "css-backgrounds", 211, 110 },
     .{ "css-overflow", 73, 69 },
     .{ "css-position", 24, 23 },
-    .{ "css-break", 45, 44 },
+    .{ "css-break", 46, 45 },
     .{ "css-multicol", 69, 63 },
-    .{ "css-writing-modes", 73, 52 },
+    .{ "css-writing-modes", 74, 53 },
 };
 
 /// Whether test/wpt/SKIP lists a test as out of scope ("path reason"

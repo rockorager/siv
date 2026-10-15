@@ -454,3 +454,68 @@ test "collapsed table borders are shared between cells" {
     // The 3px line straddles the cells' edge: one pixel in the first.
     try testing.expectEqual(@as(f32, 1 + 50 + 1), absX(d, elementBox(d, .td, 1)));
 }
+
+test "floats: <br clear> and lines too wide beside floats move below them" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+    const d = try f.load(gpa,
+        \\<style>body { margin: 0 } .f { float: left; width: 150px; height: 60px } span { display: inline-block; width: 200px; height: 20px }</style>
+        \\<div style="width: 300px"><div class=f></div><span></span></div>
+        \\<div style="clear: both"></div>
+        \\<div class=f></div>before<br clear=all><p style="margin: 0">after</p>
+    , .{}, 800);
+    defer d.destroy();
+    // 200px does not fit in the 150px beside the float: below it.
+    try testing.expectEqual(@as(f32, 60), absY(d, elementBox(d, .span, 0)));
+    try testing.expectEqual(@as(f32, 0), absX(d, elementBox(d, .span, 0)));
+    // The line after the <br> starts below the float: the paragraph
+    // after it too.
+    try testing.expect(absY(d, elementBox(d, .p, 0)) >= absY(d, elementBox(d, .div, 3)) + 60);
+}
+
+test "generated content: counter scopes, reversed lists, ::first-letter" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+    const d = try f.load(gpa,
+        \\<style>h2 { counter-increment: h2; counter-reset: h3 } h3 { counter-increment: h3 }
+        \\h3::before { content: counter(h2) "." counter(h3) " " } p::first-letter { float: left; font-size: 3em }</style>
+        \\<h2>A</h2><h3>x</h3><h3>y</h3><h2>B</h2><h3>z</h3>
+        \\<ol reversed><li>a<li value=6>b<li>c</ol>
+        \\<p>“Lorem ipsum</p>
+    , .{}, 800);
+    defer d.destroy();
+    var all: std.ArrayList(u8) = .empty;
+    defer all.deinit(gpa);
+    for (d.tree.ifcs.items) |ifc| {
+        try all.appendSlice(gpa, ifc.text);
+        try all.append(gpa, '|');
+    }
+    // A reset on h2 reaches the h3s after it (its following siblings).
+    for ([_][]const u8{ "1.1 x", "1.2 y", "2.1 z" }) |want| try testing.expect(std.mem.indexOf(u8, all.items, want) != null);
+    // Items before value=6 count down to it.
+    var markers: std.ArrayList(u8) = .empty;
+    defer markers.deinit(gpa);
+    for (d.tree.markers.items) |m| try markers.appendSlice(gpa, m.text);
+    try testing.expectEqualStrings("7. 6. 5. ", markers.items);
+    // The drop cap: a float with the quote and the letter.
+    var float_text: []const u8 = "";
+    for (d.tree.boxes.items) |b| if (b.inline_float and b.kind == .inline_root) {
+        float_text = d.tree.ifcs.items[b.data].text;
+    };
+    try testing.expectEqualStrings("“L", float_text);
+}
+
+test "an image with a percentage height against an auto one keeps its ratio" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+    const d = try f.load(gpa, "<div style=\"width: 100px\"><img src=\"a.png\" style=\"max-width: 100%; height: 100%\"></div>", .{ .base_url = "file:///r/" }, 400);
+    defer d.destroy();
+    for (d.resources.items, 0..) |r, i| if (r.kind == .image) d.supplyImage(@intCast(i), 200, 200, i);
+    _ = try d.layout(&f.cache, 400, 600, std.math.inf(f32));
+    // height: 100% of an auto height is auto: max-width scales both.
+    try testing.expectEqual(@as(f32, 100), elementBox(d, .img, 0).w);
+    try testing.expectEqual(@as(f32, 100), elementBox(d, .img, 0).h);
+}

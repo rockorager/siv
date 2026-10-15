@@ -1000,6 +1000,21 @@ pub const Painter = struct {
             const bg = p.resolve(st.box.background_color, current);
             const rr = p.inlineRadii(st, r, open_here, close_here);
             if (bg.a > 0) try p.b.fill(shape(r, rr), .nonzero, .color(p.color(bg, current)));
+            // Background images (link icons, highlights) over the padding
+            // box of this line's fragment.
+            if (st.box.background_image) |img| {
+                const pad: Rect = .{
+                    .x0 = r.x0 + (if (open_here) st.borderWidth(3) else 0),
+                    .y0 = r.y0 + st.borderWidth(0),
+                    .x1 = r.x1 - (if (close_here) st.borderWidth(1) else 0),
+                    .y1 = r.y1 - st.borderWidth(2),
+                };
+                const bx = st.box;
+                switch (img.*) {
+                    .gradient => |g| try p.tiles(.{ .gradient = .{ .g = g, .current = current } }, bx.background_size, bx.background_position, bx.background_repeat, pad, pad),
+                    .url => |u| try p.imageTiles(u, bx.background_size, bx.background_position, bx.background_repeat, pad, pad),
+                }
+            }
             if (has_border) {
                 var w = [4]f32{ st.borderWidth(0), st.borderWidth(1), st.borderWidth(2), st.borderWidth(3) };
                 if (!open_here) w[3] = 0;

@@ -5660,7 +5660,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     children with their grid area as containing block
     (`Engine.grid_areas`); intrinsic sizes under min-content and
     max-content constraints; subgrid is not supported), positioning (relative; absolute and fixed against
-    the document), lists with markers, images and SVG as replaced
+    the document), lists with markers, generated content (`::before`,
+    `::after`, `::marker`, and `::first-letter`, inline or floated as a
+    drop cap; `::first-line` is not applied), counters scoped by CSS
+    Lists 3 (a reset reaches its element's following siblings, unless it
+    hides an ancestor's counter; reversed lists count down to 1 or to
+    the first `value`), images and SVG as replaced
     elements (`object-fit`; an outer `<svg>`'s `width` and `height` as
     presentation attributes), `aspect-ratio` on boxes that are not
     replaced (a height from the width, extended by taller content, and a
@@ -5701,10 +5706,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     (`<img align=left>` in a paragraph) stays in its IFC as an empty item
     and is placed beside the line it falls on, then the lines are laid
     out again beside it. The floats beside an IFC are stored with it, so
-    lines laid out again after eviction wrap the same way. Simplified:
-    Knuth and Plass and `balance` give way to greedy breaking beside
-    floats, and a float does not move a following line box down when no
-    word fits beside it.
+    lines laid out again after eviction wrap the same way. A line whose
+    first word does not fit beside the floats moves down past them (a
+    few rounds of placing and breaking settle it), and a `<br>` with
+    `clear` (or `<br clear>`) starts the next line below the floats it
+    clears. Simplified: Knuth and Plass and `balance` give way to greedy
+    breaking beside floats.
   - **Pipeline and threads.** A `Document` is used by one thread at a
     time. The widget runs one job at a time on the worker pool: parse,
     cascade, and box tree; then layout in slices. The first slice stops
@@ -5958,25 +5965,25 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   <!-- wpt-rates -->
   | Suite | Without images | All (with images) |
   | --- | --- | --- |
-  | css2 (normal flow, box, margins, colors, borders, positioning, line box, lists) | 248 of 316 | 460 of 569 |
-  | css-flexbox | 361 of 395 | 428 of 482 |
+  | css2 (normal flow, box, margins, colors, borders, positioning, line box, lists) | 252 of 316 | 464 of 569 |
+  | css-flexbox | 362 of 395 | 429 of 482 |
   | css-grid | 176 of 198 | 188 of 218 |
-  | css-values | 65 of 123 | 67 of 126 |
+  | css-values | 65 of 119 | 67 of 122 |
   | css-variables | 47 of 70 | 47 of 70 |
   | css-tables (and CSS2 tables) | 177 of 288 | 187 of 309 |
-  | floats (CSS2 floats, floats-clear) | 103 of 170 | 167 of 269 |
-  | css-sizing | 181 of 278 | 239 of 366 |
+  | floats (CSS2 floats, floats-clear) | 113 of 170 | 177 of 269 |
+  | css-sizing | 181 of 278 | 244 of 366 |
   | css-display | 60 of 106 | 60 of 109 |
-  | css-pseudo | 33 of 72 | 34 of 74 |
-  | css-lists (and CSS2 generated content) | 167 of 326 | 169 of 334 |
-  | css-text (white space, transforms, spacing, breaking, indents, alignment) | 116 of 320 | 122 of 333 |
-  | css-backgrounds (and css-borders) | 116 of 230 | 217 of 448 |
+  | css-pseudo | 42 of 72 | 43 of 74 |
+  | css-lists (and CSS2 generated content) | 180 of 326 | 182 of 334 |
+  | css-text (white space, transforms, spacing, breaking, indents, alignment) | 117 of 320 | 123 of 333 |
+  | css-backgrounds (and css-borders) | 110 of 223 | 211 of 440 |
   | css-overflow | 69 of 310 | 73 of 324 |
   | css-position | 23 of 68 | 24 of 79 |
-  | css-break | 44 of 400 | 45 of 403 |
+  | css-break | 45 of 400 | 46 of 403 |
   | css-multicol | 63 of 312 | 69 of 373 |
-  | css-writing-modes | 52 of 395 | 73 of 795 |
-  | Total | 2101 of 4377 (48 %) | 2669 of 5681 (47 %) |
+  | css-writing-modes | 53 of 395 | 74 of 795 |
+  | Total | 2135 of 4366 (49 %) | 2708 of 5669 (48 %) |
   <!-- /wpt-rates -->
 
 - **Layout unification.** Should siv's widget layout (D26) become this

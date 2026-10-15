@@ -387,6 +387,9 @@ pub const Engine = struct {
         const vx = verticalExtras(b);
         var w: ?f32 = if (e.borderBoxLen(id, st.box.width, cb_w, true)) |v| v - hx else null;
         var h: ?f32 = if (e.borderBoxLen(id, st.box.height, cb_h, false)) |v| v - vx else null;
+        // A percentage against an indefinite basis behaves as auto.
+        const w_auto = w == null;
+        const h_auto = h == null;
         if (w == null and h == null) {
             if (nat.w > 0) w = nat.w;
             if (nat.h > 0) h = nat.h;
@@ -400,15 +403,15 @@ pub const Engine = struct {
         var ww = w orelse if (nat.ratio > 0 and h != null) h.? * nat.ratio else 0;
         var hh = h orelse if (nat.ratio > 0) ww / nat.ratio else 0;
         // Min and max, keeping the ratio when only one side was given.
-        const keep = nat.ratio > 0 and (st.box.width.isAuto() or st.box.height.isAuto());
+        const keep = nat.ratio > 0 and (w_auto or h_auto);
         const cw = e.clampWidth(id, ww + hx, cb_w) - hx;
         if (cw != ww) {
-            if (keep and st.box.height.isAuto()) hh = cw / nat.ratio;
+            if (keep and h_auto) hh = cw / nat.ratio;
             ww = cw;
         }
         const ch = e.clampHeight(id, hh + vx, cb_h) - vx;
         if (ch != hh) {
-            if (keep and st.box.width.isAuto()) ww = ch * nat.ratio;
+            if (keep and w_auto) ww = ch * nat.ratio;
             hh = ch;
         }
         return .{ ww + hx, hh + vx };

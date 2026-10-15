@@ -219,8 +219,11 @@ pub fn lineSpace(floats: []const FloatRect, width: f32, top: f32, h: f32) [2]f32
 const Builder = struct {
     cx: *const Context,
     width: f32,
-    /// Per line beside floats: inset and width (beyond the list, none).
+    /// Per line beside floats: inset and width (beyond the list, none),
+    /// and the lowest top it may have (below floats it did not fit
+    /// beside).
     spaces: []const [2]f32 = &.{},
+    drops: []const f32 = &.{},
     /// Lines broken so far by `greedy` (it restarts after hyphenating).
     greedy_line: usize = 0,
 
@@ -612,20 +615,45 @@ pub fn layout(cx: *const Context, width: f32) Error!Laid {
         b.spaces = spaces.items;
         b.greedy_line = 0;
         try greedy(&b, us, width, indent, &breaks);
-        const trial = try layoutLines(&b, breaks.items);
-        var refined: std.ArrayList([2]f32) = .empty;
-        for (trial.lines.items, 0..) |line, li| {
-            _ = li;
-            try refined.append(cx.scratch, lineSpace(cx.floats, width, line.top, line.height));
+        // A line whose first unit does not fit beside the floats moves
+        // down past them (CSS 2.1 9.5), which can move the lines after
+        // it: a few rounds settle it.
+        const drops = try cx.scratch.alloc(f32, us.len + 1);
+        @memset(drops, 0);
+        b.drops = drops;
+        var round: usize = 0;
+        while (true) : (round += 1) {
+            const trial = try layoutLines(&b, breaks.items);
+            var refined: std.ArrayList([2]f32) = .empty;
+            var moved = false;
+            var ui: usize = 0;
+            for (trial.lines.items, 0..) |line, li| {
+                var sp = lineSpace(cx.floats, width, line.top, line.height);
+                while (ui < us.len and us[ui].end <= line.start) ui += 1;
+                const need = if (ui < us.len) us[ui].advance - us[ui].trailing else 0;
+                if (round < 4 and sp[1] < width and need > sp[1] + 0.01) {
+                    var next: f32 = std.math.inf(f32);
+                    for (cx.floats) |f| if (f.y0 < line.top + line.height and f.y1 > line.top) {
+                        next = @min(next, f.y1);
+                    };
+                    if (!std.math.isInf(next) and next > drops[li]) {
+                        drops[li] = next;
+                        moved = true;
+                        sp = lineSpace(cx.floats, width, next, line.height);
+                    }
+                }
+                try refined.append(cx.scratch, sp);
+            }
+            // Lines beyond the first placement keep the strut estimate.
+            const known = refined.items.len;
+            const last_top: f32 = if (known > 0) @max(trial.lines.items[known - 1].top, drops[known - 1]) + trial.lines.items[known - 1].height else 0;
+            for (0..us.len + 1) |k| try refined.append(cx.scratch, lineSpace(cx.floats, width, last_top + @as(f32, @floatFromInt(k)) * strut, strut));
+            b.spaces = refined.items;
+            b.greedy_line = 0;
+            breaks.clearRetainingCapacity();
+            try greedy(&b, us, width, indent, &breaks);
+            if (!moved or round >= 4) break;
         }
-        // Lines beyond the first placement keep the strut estimate.
-        const known = refined.items.len;
-        const last_top: f32 = if (known > 0) trial.lines.items[known - 1].top + trial.lines.items[known - 1].height else 0;
-        for (0..us.len + 1) |k| try refined.append(cx.scratch, lineSpace(cx.floats, width, last_top + @as(f32, @floatFromInt(k)) * strut, strut));
-        b.spaces = refined.items;
-        b.greedy_line = 0;
-        breaks.clearRetainingCapacity();
-        try greedy(&b, us, width, indent, &breaks);
     } else if (wrap_style == .pretty and us.len > 1) {
         try pretty(&b, us, width, indent, &breaks);
     } else {
@@ -689,8 +717,24 @@ fn layoutLines(b: *Builder, breaks_: []const Break) Error!struct { lines: *std.A
     var top: f32 = 0;
     for (breaks, 0..) |br, li| {
         if (br.at <= start and li > 0 and br.at != n) continue;
+        const line = b.lines.items.len;
+        if (line < b.drops.len) top = @max(top, b.drops[line]);
         try emitLine(b, start, br.at, br.hyphen, li == 0, &top, br.at == n);
         start = br.at;
+        // A line broken by a <br> with clear: the next starts below the
+        // floats it clears, as browsers do.
+        if (br.at >= 3 and std.mem.eql(u8, ifc.text[br.at - 3 .. br.at], "\u{2028}")) {
+            const clear = cx.store.get(runStyle(ifc, br.at - 1)).box.clear;
+            if (clear != .none) for (cx.floats) |f| {
+                const hit = switch (clear) {
+                    .none => false,
+                    .left, .inline_start => f.left,
+                    .right, .inline_end => !f.left,
+                    .both => true,
+                };
+                if (hit) top = @max(top, f.y1);
+            };
+        }
     }
     return .{ .lines = &b.lines, .frags = &b.frags, .glyphs = &b.glyphs, .top = top };
 }

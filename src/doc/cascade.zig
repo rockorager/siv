@@ -692,8 +692,8 @@ pub const Cascade = struct {
         // their styles may grow the store, which `get` points into.)
         const display = c.store.get(s).box.display;
         if (!display.isNone()) {
-            inline for (.{ sel.PseudoElement.before, sel.PseudoElement.after, sel.PseudoElement.marker }) |p| {
-                if (p != .marker or display.list_item) {
+            inline for (.{ sel.PseudoElement.before, sel.PseudoElement.after, sel.PseudoElement.marker, sel.PseudoElement.first_letter }) |p| {
+                if ((p != .marker or display.list_item) and (p != .first_letter or display.inner == .flow or display.inner == .flow_root)) {
                     try c.match(id, p);
                     if (c.matched.items.len > 0) {
                         const ps = try c.computeMatched(id, s, false, false);
@@ -1149,6 +1149,13 @@ pub const Cascade = struct {
                         try c.hint("font-size", names[@intCast(size - 1)]);
                     }
                 }
+            },
+            .br => if (A.get(d, id, .clear)) |v| {
+                // HTML's <br clear>: all and both clear both sides.
+                const t = std.mem.trim(u8, v, " ");
+                if (std.ascii.eqlIgnoreCase(t, "all") or std.ascii.eqlIgnoreCase(t, "both")) {
+                    try c.hint("clear", "both");
+                } else if (std.ascii.eqlIgnoreCase(t, "left")) try c.hint("clear", "left") else if (std.ascii.eqlIgnoreCase(t, "right")) try c.hint("clear", "right");
             },
             .hr => {
                 if (A.get(d, id, .width)) |v| try c.hintLength("width", v, true);
