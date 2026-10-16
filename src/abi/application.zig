@@ -98,6 +98,9 @@ pub const App = struct {
     dbus: dbus_abi.State,
     /// Open EPUB publications (D32), by handle payload.
     epubs: std.ArrayList(?*@import("document.zig").Epub),
+    /// Tells the windows that fonts finished loading, once for a burst of
+    /// loads.
+    fonts_task: loop_mod.Loop.Task,
 
     pub fn gpa(self: *App) std.mem.Allocator {
         return self.root.gpa;
@@ -293,6 +296,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     self.jobs = 0;
     self.shell = .{};
     self.epubs = .empty;
+    self.fonts_task = .{ .func = onFontsTask };
     const gpa = self.gpa();
     self.draw = .init(gpa);
     errdefer self.draw.deinit(gpa);
@@ -323,11 +327,33 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
         .rtl = if (flags.rtl) true else if (flags.ltr) false else null,
     }) catch |err| return mapAppError(err);
     errdefer self.app.destroy();
-    try self.app.fonts.addListener(.{ .ctx = self, .func = canvas.onFontsLoaded });
+    try self.app.fonts.addListener(.{ .ctx = self, .func = onFontsLoaded });
     // Canvases and pages that drew while icons loaded draw again too.
     try self.app.icons.addListener(.{ .ctx = self, .func = canvas.onFontsLoaded });
     shell.start(self);
     dest.* = @fromBackingInt(self.root.handle);
+}
+
+/// Fonts finished loading: canvases draw again, and the windows hear of
+/// it at the next dispatch, since text measured before may measure
+/// differently now.
+fn onFontsLoaded(ctx: *anyopaque) void {
+    canvas.onFontsLoaded(ctx);
+    const self: *App = @ptrCast(@alignCast(ctx));
+    self.app.loop.schedule(&self.fonts_task, .dispatch);
+}
+
+fn onFontsTask(task: *loop_mod.Loop.Task) void {
+    const self: *App = @fieldParentPtr("fonts_task", task);
+    for (self.windows.items) |slot| {
+        const w = slot orelse continue;
+        if (w.dead) continue;
+        const cb = w.on_event orelse continue;
+        var e = windowEvent(.fonts_changed, w.win.state);
+        self.enter();
+        defer self.leave();
+        _ = cb(w.user_data, @fromBackingInt(w.handle), &e);
+    }
 }
 
 pub export fn siv_app_destroy(app: t.App) void {
@@ -363,6 +389,7 @@ fn destroyNow(self: *App) void {
     for (self.prepares.items) |slot| if (slot) |p| p.remove();
     self.prepares.deinit(gpa);
     self.app.fonts.removeListener(self);
+    self.app.loop.unschedule(&self.fonts_task);
     for (self.images.items) |img| if (img) |i| i.release();
     // Runs the destroy-notify of posted work that never ran (D5).
     self.app.destroy();

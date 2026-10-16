@@ -301,3 +301,25 @@ test "siv_test_resize: the compositor resizes a window, which lays out again" {
 
     try testing.expectEqual(t.Result.error_invalid_argument, c.siv_test_resize(h.window, 0, 90));
 }
+
+test "fonts_changed: windows hear once when a burst of font loads finishes" {
+    const Count = struct {
+        n: u32 = 0,
+        fn onEvent(ud: ?*anyopaque, _: t.Window, e: *const t.WindowEvent) callconv(.c) bool {
+            const self: *@This() = @ptrCast(@alignCast(ud.?));
+            if (e.type == .fonts_changed) self.n += 1;
+            return false;
+        }
+    };
+    var count: Count = .{};
+    var h: Harness = .{};
+    try h.start(100, 60, Count.onEvent, &count);
+    defer h.stop();
+    try h.settle();
+    try testing.expectEqual(@as(u32, 0), count.n);
+    // Two fonts finish loading, as the pool reports them.
+    const fonts = (try h.internal()).app.fonts;
+    for (0..2) |_| for (fonts.listeners.items) |l| l.func(l.ctx);
+    try h.settle();
+    try testing.expectEqual(@as(u32, 1), count.n);
+}

@@ -387,6 +387,7 @@ pub const decls = [_]Decl{
         .{ .name = "shortcuts_restored", .value = 8, .doc = "The compositor handles its shortcuts again (the user overrode the inhibition, or it was ended)." },
         .{ .name = "restored", .value = 9, .doc = "The compositor restored the window's size, place, and states from the session (siv_app_start_session, session_name), before its first resize. Sent at most once, soon after creation." },
         .{ .name = "closed", .value = 10, .doc = "The compositor took the window away (D31): a layer window whose output went away, a lock window whose output or lock ended. siv destroys it after this event, whatever the callback returns." },
+        .{ .name = "fonts_changed", .value = 11, .doc = "Fonts that were loading finished (D13), once for a burst of loads: text measured with siv_app_measure_text before may measure differently now, so an application that sizes its layout from measured text (a text column a number of characters wide, rows of a view) measures again. Nodes relayout on their own." },
     }),
     enumeration("siv_pointer_constraint", "What a pointer constraint does (D16).", &.{
         .{ .name = "none", .value = 0, .doc = "No constraint." },
