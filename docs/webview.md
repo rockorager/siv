@@ -194,13 +194,15 @@ keycodes, so `event.code` and layouts work) and cursor images (11).
 - `load_html` replaces the current history entry in WPE 2.52 rather
   than adding one; `load_uri` adds one.
 - Tests (`zig build test-webview`, also part of `zig build test` when
-  the web view is built): `tests/headless.c` (now 16 checks: load and
+  the web view is built): `tests/headless.c` (now 21 checks: load and
   title, scripts, messages both ways, user scripts (document start and
   end, frames, after a navigation, removal), `app://` schemes, navigation and
   new-window policy with real clicks, typing, frames in a capture, data
   directory vs ephemeral, cookies kept in the data directory's
   `cookies.sqlite` after the application exits (none from an ephemeral
-  web view), zoom and dark mode, history, drops, a wheel without value120, no scripts,
+  web view), zoom and dark mode, input devices, history, drops, Ctrl+C
+  on page text (copied once, in a later application, without GLib
+  criticals), a wheel without value120, no scripts,
   a page playing audio with GStreamer's autoaudiosink hidden),
   `tests/zig.zig` (layout against the C header, a page through the Zig
   module), `tests/headless.lua`. All on siv's headless backend with the

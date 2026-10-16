@@ -70,13 +70,16 @@ typedef struct wpe_app {
     WPEDisplay *display;
     WebKitWebContext *context;
     GHashTable *sessions; /* data dir -> WebKitNetworkSession */
-    /* The web view that last had focus: clipboard writes go to its window. */
-    siv_webview focus;
     GHashTable *clip; /* format -> GBytes, the clipboard as last read */
     uint64_t next_id;
 } wpe_app;
 
 static wpe_wv *of(swv_webview *wv) { return wv->engine_data; }
+
+/* The web view that last had focus, in any application: clipboard writes
+ * go to its window. WebKit uses the primary display's clipboard for every
+ * application in the process. */
+static siv_webview swv_focus;
 
 /* ---------- DRM device ---------- */
 
@@ -551,12 +554,17 @@ static void im_apply(SwvIM *im, const siv_event *e) {
 G_DECLARE_FINAL_TYPE(SwvClipboard, swv_clipboard, SWV, CLIPBOARD, WPEClipboard)
 struct _SwvClipboard {
     WPEClipboard parent;
-    wpe_app *app;
 };
 G_DEFINE_FINAL_TYPE(SwvClipboard, swv_clipboard, WPE_TYPE_CLIPBOARD)
 
+/* The application of the focused web view. */
+static wpe_app *focused_app(void) {
+    swv_webview *wv = swv_handle_get(&swv_webviews, swv_focus);
+    return wv && wv->engine_data ? of(wv)->app : NULL;
+}
+
 static GBytes *swv_clipboard_read(WPEClipboard *clipboard, const char *format) {
-    wpe_app *a = SWV_CLIPBOARD(clipboard)->app;
+    wpe_app *a = focused_app();
     GBytes *b = a && a->clip ? g_hash_table_lookup(a->clip, format) : NULL;
     return b ? g_bytes_ref(b) : NULL;
 }
@@ -565,15 +573,15 @@ static GBytes *swv_clipboard_read(WPEClipboard *clipboard, const char *format) {
  * view's window. */
 static void swv_clipboard_changed(WPEClipboard *clipboard, GPtrArray *formats, gboolean is_local, WPEClipboardContent *content) {
     WPE_CLIPBOARD_CLASS(swv_clipboard_parent_class)->changed(clipboard, formats, is_local, content);
-    wpe_app *a = SWV_CLIPBOARD(clipboard)->app;
-    if (!is_local || !content || !formats || !a) return;
-    swv_webview *wv = swv_handle_get(&swv_webviews, a->focus);
-    if (!wv) return;
+    swv_webview *wv = swv_handle_get(&swv_webviews, swv_focus);
+    if (!is_local || !content || !formats || !wv) return;
     GString *mimes = g_string_new(NULL);
     GByteArray *data = g_byte_array_new();
     GArray *lengths = g_array_new(FALSE, FALSE, sizeof(size_t));
     for (guint i = 0; i < formats->len; i++) {
         const char *fmt = g_ptr_array_index(formats, i);
+        /* WebKit can pass NULL or empty entries. */
+        if (!fmt || !*fmt) continue;
         GBytes *b = NULL;
         const char *text = wpe_clipboard_content_get_text(content);
         if (g_str_has_prefix(fmt, "text/plain") && text) b = g_bytes_new(text, strlen(text));
@@ -673,10 +681,7 @@ static WPEKeymap *swv_display_get_keymap(WPEDisplay *display) {
 
 static WPEClipboard *swv_display_get_clipboard(WPEDisplay *display) {
     SwvDisplay *self = SWV_DISPLAY(display);
-    if (!self->clipboard) {
-        self->clipboard = g_object_new(swv_clipboard_get_type(), "display", display, NULL);
-        self->clipboard->app = self->app;
-    }
+    if (!self->clipboard) self->clipboard = g_object_new(swv_clipboard_get_type(), "display", display, NULL);
     return WPE_CLIPBOARD(self->clipboard);
 }
 

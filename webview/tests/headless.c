@@ -493,6 +493,79 @@ static void check_drop(void) {
     stop(&f);
 }
 
+struct pasted {
+    int done;
+    char text[256];
+};
+
+static void on_pasted(void *user_data, const char *text, size_t len) {
+    struct pasted *p = user_data;
+    copy(p->text, sizeof p->text, text, len);
+    p->done = 1;
+}
+
+static bool clipboard_text(struct fixture *f, struct pasted *p) {
+    memset(p, 0, sizeof *p);
+    if (siv_clipboard_read(f->window, SIV_SELECTION_CLIPBOARD, on_pasted, NULL, p) != SIV_OK) return false;
+    return wait_for(f, &p->done);
+}
+
+/* Ctrl+C copies a selection of page text, which WebKit before 2.54 leaves
+ * to the embedder outside editable content, and fires the page's copy
+ * event once. The text reaches siv's clipboard from an application other
+ * than the process's first (the checks before this one ran theirs), though
+ * WebKit copies through the first one's display. */
+static void check_copy(void) {
+    struct fixture f;
+    CHECK(start(&f, SIV_WEBVIEW_EPHEMERAL, NULL));
+    CHECK(load(&f,
+               "<style>body{margin:0;height:300px}</style><p id=p>page text</p>"
+               "<script>let n = 0; document.addEventListener('copy', () => document.title = 'copied ' + ++n)</script>",
+               "https://example.test/"));
+    CHECK(siv_clipboard_write(f.window, SIV_SELECTION_CLIPBOARD, SIV_STR("before")) == SIV_OK);
+    struct pasted p;
+    CHECK(clipboard_text(&f, &p) && !strcmp(p.text, "before"));
+    /* Focus the page, then select the paragraph. */
+    CHECK(siv_test_click(f.window, 200, 200, SIV_POINTER_BUTTON_PRIMARY) == SIV_OK);
+    pump(&f, 200);
+    struct answer a;
+    CHECK(eval(&f, "getSelection().selectAllChildren(p); getSelection().toString()", &a));
+    CHECK(!strcmp(a.json, "\"page text\""));
+    /* WebKit's formats end in a NULL entry, which GLib criticals would
+     * report on this process's stderr. */
+    fflush(stderr);
+    FILE *log = tmpfile();
+    CHECK(log != NULL);
+    int saved = dup(2);
+    dup2(fileno(log), 2);
+    siv_result key = siv_test_key(f.window, (siv_key)'c', SIV_MODIFIERS_CTRL, SIV_STR(""));
+    bool settled;
+    (void)siv_test_settle(f.app, 1000, &settled);
+    double end = now() + 10;
+    do {
+        pump(&f, 50);
+        if (!clipboard_text(&f, &p)) break;
+    } while (strcmp(p.text, "page text") && now() < end);
+    fflush(stderr);
+    dup2(saved, 2);
+    close(saved);
+    char err[4096] = "";
+    rewind(log);
+    err[fread(err, 1, sizeof err - 1, log)] = 0;
+    fclose(log);
+    fputs(err, stderr);
+    CHECK(key == SIV_OK);
+    if (strcmp(p.text, "page text")) fprintf(stderr, "clipboard: \"%s\"\n", p.text);
+    CHECK(!strcmp(p.text, "page text"));
+    CHECK(!strstr(err, "CRITICAL"));
+    /* Once: WebKit 2.54 and later copy on their own. */
+    CHECK(wait_title(&f, "copied 1"));
+    pump(&f, 200);
+    CHECK(eval(&f, "document.title", &a));
+    CHECK(!strcmp(a.json, "\"copied 1\""));
+    stop(&f);
+}
+
 /* A wheel that sends only a distance (no value120: Hyprland's virtual
  * pointers, older compositors) scrolls the page: by line steps, 15 per
  * detent, so 45 is three of them. */
@@ -791,6 +864,7 @@ static const struct {
     {"input devices", check_input_devices},
     {"history", check_history},
     {"drop", check_drop},
+    {"copy", check_copy},
     {"wheel", check_wheel},
     {"no scripts", check_no_scripts},
     {"visibility", check_visibility},

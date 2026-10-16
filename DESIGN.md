@@ -6471,7 +6471,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     files cannot be dropped in, and drags do not start from a page. It has
     one light or dark appearance per process. Its sandbox does not see a
     `file://` page's directory, so media there fails; applications serve
-    their pages with `siv_webview_register_scheme` (`app://`).
+    their pages with `siv_webview_register_scheme` (`app://`). Before
+    2.54 its Ctrl+C and Ctrl+Insert copy only in editable content, and no
+    version binds the Copy key, so the library runs WebKit's Copy command
+    after sending those keys to the page (and on 2.54 or later only after
+    the Copy key, since a second Copy would fire the page's `copy` event
+    twice). WebKit copies through the primary display's clipboard for
+    every application in the process, so the clipboard goes to the
+    window of whichever web view last had focus, in any application.
   - **Media off without an audio sink.** WebKit's media pipelines end in
     GStreamer's `autoaudiosink` (gst-plugins-good, only an optional
     dependency of Arch's wpewebkit); without it the web process aborts

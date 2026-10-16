@@ -903,7 +903,7 @@ static void wpe_destroy(swv_webview *wv) {
     g_hash_table_unref(w->downloads);
     g_hash_table_unref(w->user_scripts);
     SWV_VIEW(w->view)->w = NULL;
-    if (w->app->focus == wv->handle) w->app->focus = 0;
+    if (swv_focus == wv->handle) swv_focus = 0;
     g_object_unref(w->web_view);
     g_clear_object(&w->toplevel);
     g_object_unref(w->content);
@@ -1020,6 +1020,18 @@ static bool is_paste(const siv_event *e) {
     bool ctrl = e->modifiers & SIV_MODIFIERS_CTRL, shift = e->modifiers & SIV_MODIFIERS_SHIFT;
     unsigned k = (unsigned)e->keysym;
     return (ctrl && (k == 'v' || k == 'V')) || (shift && k == SIV_KEY_INSERT) || k == SIV_KEY_PASTE;
+}
+
+/* A copy shortcut WebKit does not run itself: no version binds the Copy
+ * key, and before 2.54 Ctrl+C and Ctrl+Insert copied only in editable
+ * content (WebEditorClient::handleKeyboardEvent returned early otherwise),
+ * not a selection of page text. */
+static bool needs_copy(const siv_event *e) {
+    if (!(e->flags & SIV_EVENT_PRESSED)) return false;
+    unsigned k = (unsigned)e->keysym;
+    if (k == SIV_KEY_COPY) return true;
+    bool ctrl = (e->modifiers & (SIV_MODIFIERS_CTRL | SIV_MODIFIERS_SHIFT | SIV_MODIFIERS_ALT)) == SIV_MODIFIERS_CTRL;
+    return ctrl && (k == 'c' || k == 'C' || k == SIV_KEY_INSERT) && webkit_get_major_version() == 2 && webkit_get_minor_version() < 54;
 }
 
 /* Reading the clipboard ahead of a paste: WPE reads it synchronously, siv
@@ -1156,10 +1168,16 @@ static siv_event_result wpe_input(swv_webview *wv, const siv_event *e) {
             return SIV_EVENT_RESULT_HANDLED;
         }
         send_key(w, e);
+        /* Over the same connection, so after the page's keydown unless
+         * WebKit holds the key behind an earlier unacknowledged one. WPE
+         * does not say whether the page prevented the key. In an editable
+         * field WebKit 2.50 and 2.52 copy too, the same contents; with no
+         * selection the command does nothing. */
+        if (needs_copy(e)) webkit_web_view_execute_editing_command(w->web_view, WEBKIT_EDITING_COMMAND_COPY);
         return SIV_EVENT_RESULT_HANDLED;
     case SIV_EVENT_TYPE_FOCUS:
         if (e->flags & SIV_EVENT_GAINED) {
-            w->app->focus = wv->handle;
+            swv_focus = wv->handle;
             wpe_view_focus_in(w->view);
         } else {
             wpe_view_focus_out(w->view);
