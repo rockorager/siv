@@ -8,6 +8,26 @@ four phases it was built in: the spike, the hooks it needed in siv, the
 library, and the checks on real compositors. Paths are under `webview/`
 unless they start with `examples/` or `docs/`.
 
+## What applications need at run time
+
+- WPE WebKit 2.50 or later with WPEPlatform (Arch: `wpewebkit`, which
+  brings GStreamer, bubblewrap, and xdg-dbus-proxy).
+- GStreamer's `autoaudiosink` element, from gst-plugins-good: Arch
+  `gst-plugins-good` (wpewebkit lists it only as optional), Debian and
+  Ubuntu `gstreamer1.0-plugins-good`, Fedora `gstreamer1-plugins-good`.
+  Without it WPE WebKit's web process aborts (`GStreamer element
+  autoaudiosink not found. Please install it`, then SIGABRT) as soon as a
+  page gives a media element a source: `<audio src>`, `<video>`,
+  `new Audio(url)`. Plain pages, and a bare `new AudioContext()`, are
+  unaffected. So siv-webview asks GStreamer's registry when it starts its
+  first web view, prints one line naming the element and the package
+  when it is missing, and turns media off (D33): audio and video
+  elements, Web Audio, and WebRTC; pages load without them instead of
+  crashing. `SIV_WEBVIEW_KEEP_MEDIA` (Zig `.keep_media`, Lua
+  `"keep_media"`) keeps media on regardless.
+- Decoders for the media pages play: gst-plugins-bad and gst-libav on
+  Arch (also optional dependencies of wpewebkit).
+
 ## Phase 1: the spike (2026-10-15)
 
 `spike/spike.c` renders pages through WPE WebKit's platform API
@@ -173,11 +193,12 @@ keycodes, so `event.code` and layouts work) and cursor images (11).
 - `load_html` replaces the current history entry in WPE 2.52 rather
   than adding one; `load_uri` adds one.
 - Tests (`zig build test-webview`, also part of `zig build test` when
-  the web view is built): `tests/headless.c` (now 14 checks: load and
+  the web view is built): `tests/headless.c` (now 15 checks: load and
   title, scripts, messages both ways, user scripts (document start and
   end, frames, after a navigation, removal), `app://` schemes, navigation and
   new-window policy with real clicks, typing, frames in a capture, data
-  directory vs ephemeral, zoom and dark mode, history, drops, a wheel without value120, no scripts),
+  directory vs ephemeral, zoom and dark mode, history, drops, a wheel without value120, no scripts,
+  a page playing audio with GStreamer's autoaudiosink hidden),
   `tests/zig.zig` (layout against the C header, a page through the Zig
   module), `tests/headless.lua`. All on siv's headless backend with the
   engine in software: no compositor, no GPU, about 3 s.

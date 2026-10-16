@@ -16,6 +16,7 @@ test "the Zig types match the C header" {
     }
     try std.testing.expectEqual(@as(u32, h.SIV_WEBVIEW_DEVELOPER_EXTRAS), @as(u32, @bitCast(webview.Flags{ .developer_extras = true })));
     try std.testing.expectEqual(@as(u32, h.SIV_WEBVIEW_SCRIPT_DOCUMENT_END), @as(u32, @bitCast(webview.ScriptFlags{ .document_end = true })));
+    try std.testing.expectEqual(@as(u32, h.SIV_WEBVIEW_KEEP_MEDIA), @as(u32, @bitCast(webview.Flags{ .keep_media = true })));
     try std.testing.expectEqual(@as(u32, h.SIV_WEBVIEW_CAN_GO_FORWARD), @as(u32, @bitCast(webview.EventFlags{ .can_go_forward = true })));
     try std.testing.expectEqual(@as(c_int, h.SIV_WEBVIEW_EVENT_LOAD_FAILED), @intFromEnum(webview.EventType.load_failed));
 }

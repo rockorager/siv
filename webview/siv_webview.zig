@@ -31,7 +31,11 @@ pub const Flags = packed struct(u32) {
     no_context_menu: bool = false,
     /// Run no JavaScript (WebKit's enable-javascript off).
     no_scripts: bool = false,
-    _bit5: u27 = 0,
+    /// Keep media on even when GStreamer has no autoaudiosink, where a
+    /// page that plays media crashes WebKit's web process; without it,
+    /// media is off then.
+    keep_media: bool = false,
+    _bit6: u26 = 0,
 };
 
 /// Where and when a user script runs (siv_webview_script_flags); the

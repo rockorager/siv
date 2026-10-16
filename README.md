@@ -187,8 +187,12 @@ app:run()
 ```
 
 `zig build` builds siv-webview when it finds WPE WebKit 2.50 or later
-(Arch: `wpewebkit`). [docs/webview.md](docs/webview.md) has the C API, what
-it needs at run time, and measurements.
+(Arch: `wpewebkit`). Applications also need GStreamer's `autoaudiosink`
+(Arch: `gst-plugins-good`; Debian and Ubuntu: `gstreamer1.0-plugins-good`;
+Fedora: `gstreamer1-plugins-good`): without it siv-webview turns media off
+so that pages that play audio do not crash WebKit.
+[docs/webview.md](docs/webview.md) has the C API, what it needs at run
+time, and measurements.
 
 ## Learn more
 

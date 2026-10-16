@@ -242,6 +242,7 @@ static const flag_name flag_names[] = {
     {"no_theme", SIV_WEBVIEW_NO_THEME},
     {"no_context_menu", SIV_WEBVIEW_NO_CONTEXT_MENU},
     {"no_scripts", SIV_WEBVIEW_NO_SCRIPTS},
+    {"keep_media", SIV_WEBVIEW_KEEP_MEDIA},
 };
 
 static const flag_name script_flag_names[] = {

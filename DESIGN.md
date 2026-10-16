@@ -6348,6 +6348,26 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     one light or dark appearance per process. Its sandbox does not see a
     `file://` page's directory, so media there fails; applications serve
     their pages with `siv_webview_register_scheme` (`app://`).
+  - **Media off without an audio sink.** WebKit's media pipelines end in
+    GStreamer's `autoaudiosink` (gst-plugins-good, only an optional
+    dependency of Arch's wpewebkit); without it the web process aborts
+    as soon as a page gives a media element a source, and an application
+    that reloads on `SIV_WEBVIEW_EVENT_CRASHED` loops. At its first web
+    view the library asks GStreamer's registry (WebKit links GStreamer,
+    so `dlopen` with `RTLD_NOLOAD` finds it and adds no dependency, at
+    build or run time; about 8 ms with a warm registry) and, when the
+    element is missing, prints one line naming it and the package. Web
+    views then get `enable-media`, `enable-webaudio`,
+    `enable-media-stream`, and `enable-webrtc` off, and a user script
+    makes `new Audio(url)` build what `document.createElement("audio")`
+    does, since WebKit's constructor still makes a media element with
+    media off. That is the default, and `SIV_WEBVIEW_KEEP_MEDIA` opts
+    out. The tradeoff: a page silently has no audio or video (no
+    `<audio>`, `<video>`, `AudioContext`, or WebRTC, and calling
+    `play()` on the elements throws), which is far better than a crash
+    loop, but the line on stderr is all that says why. The check sees the
+    application's GStreamer environment (`GST_PLUGIN_PATH` and the like),
+    which the web process and its sandbox inherit, so the two agree.
   - **Measured** on a Radeon 760M at 1280x800 60 Hz, sway 1.12 and
     Hyprland 0.56 on the DRM backend, ReleaseFast: first web frame
     180–200 ms after launch, key to photon 21–27 ms median, wheel to photon

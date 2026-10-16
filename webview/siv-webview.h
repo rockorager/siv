@@ -75,6 +75,12 @@ typedef uint32_t siv_webview_flags;
 /** Run no JavaScript: neither the page's nor siv_webview_run_script's
  *  (WebKit's enable-javascript setting off), so window.siv is absent. */
 #define SIV_WEBVIEW_NO_SCRIPTS ((siv_webview_flags)1u << 4)
+/** Keep media (audio and video elements, Web Audio, WebRTC) on even when
+ *  GStreamer has no autoaudiosink element (gst-plugins-good), where WPE
+ *  WebKit's web process aborts as soon as a page plays media
+ *  (SIV_WEBVIEW_EVENT_CRASHED). Without this flag siv-webview turns media
+ *  off then, and pages load without it. */
+#define SIV_WEBVIEW_KEEP_MEDIA ((siv_webview_flags)1u << 5)
 
 /** What a siv_webview_event reports. */
 typedef enum siv_webview_event_type {

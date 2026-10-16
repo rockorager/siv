@@ -723,6 +723,45 @@ static siv_result wpe_download_cancel(swv_webview *wv, uint64_t id) {
 
 /* ---------- web views ---------- */
 
+/* Whether GStreamer lacks autoaudiosink (gst-plugins-good), where WebKit's
+ * web process aborts as soon as a page plays audio or video: asked once
+ * per process from GStreamer's registry, at the first web view, saying
+ * what to install. WebKit links GStreamer, so it is loaded already
+ * (RTLD_NOLOAD); a WebKit without it has no GStreamer media to crash. */
+static bool audio_sink_missing(bool keep_media) {
+    static int missing = -1;
+    if (missing >= 0) return missing;
+    missing = 0;
+    void *gst = dlopen("libgstreamer-1.0.so.0", RTLD_NOW | RTLD_NOLOAD);
+    if (!gst) return false;
+    gboolean (*init_check)(int *, char ***, GError **) = (gboolean (*)(int *, char ***, GError **))dlsym(gst, "gst_init_check");
+    void *(*find)(const char *) = (void *(*)(const char *))dlsym(gst, "gst_element_factory_find");
+    void (*unref)(void *) = (void (*)(void *))dlsym(gst, "gst_object_unref");
+    if (init_check && find && unref && init_check(NULL, NULL, NULL)) {
+        void *factory = find("autoaudiosink");
+        if (factory) unref(factory);
+        else missing = 1;
+    }
+    dlclose(gst);
+    if (missing)
+        fprintf(stderr, "siv-webview: GStreamer has no autoaudiosink element: install gst-plugins-good (Arch; gstreamer1.0-plugins-good on Debian and Ubuntu, "
+                        "gstreamer1-plugins-good on Fedora). %s\n",
+                keep_media ? "Until then a page that plays audio or video crashes WebKit's web process." : "Until then web views have no audio or video.");
+    return missing;
+}
+
+/* With media off (enable-media), WebKit makes <audio> and <video> plain
+ * elements, but the Audio constructor still makes a media element, which
+ * reaches the sink once it has a source: it makes what
+ * document.createElement does instead. */
+static const char no_audio_script[] =
+    "window.Audio = function Audio(src) {\n"
+    "  const a = document.createElement('audio');\n"
+    "  a.setAttribute('preload', 'auto');\n"
+    "  if (src !== undefined) a.setAttribute('src', src);\n"
+    "  return a;\n"
+    "};\n";
+
 static char *dir_or_default(const char *dir, size_t len, const char *base) {
     if (dir && len) return g_strndup(dir, len);
     const char *prg = g_get_prgname();
@@ -776,11 +815,25 @@ static siv_result wpe_create(swv_webview *wv, const siv_webview_desc *d) {
     WebKitUserScript *script = webkit_user_script_new(siv_script, WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES, WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, NULL, NULL);
     webkit_user_content_manager_add_script(w->content, script);
     webkit_user_script_unref(script);
+    bool no_media = audio_sink_missing(d->flags & SIV_WEBVIEW_KEEP_MEDIA) && !(d->flags & SIV_WEBVIEW_KEEP_MEDIA);
+    if (no_media) {
+        script = webkit_user_script_new(no_audio_script, WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES, WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, NULL, NULL);
+        webkit_user_content_manager_add_script(w->content, script);
+        webkit_user_script_unref(script);
+    }
     webkit_user_content_manager_register_script_message_handler(w->content, "siv", NULL);
     g_signal_connect(w->content, "script-message-received::siv", G_CALLBACK(on_script_message), w);
     WebKitSettings *settings = webkit_settings_new();
     webkit_settings_set_enable_developer_extras(settings, (d->flags & SIV_WEBVIEW_DEVELOPER_EXTRAS) != 0);
     if (d->flags & SIV_WEBVIEW_NO_SCRIPTS) webkit_settings_set_enable_javascript(settings, FALSE);
+    if (no_media) {
+        /* Every way a page reaches the sink: media elements, Web Audio,
+         * and WebRTC (which turns media streams back on). */
+        webkit_settings_set_enable_webrtc(settings, FALSE);
+        webkit_settings_set_enable_media_stream(settings, FALSE);
+        webkit_settings_set_enable_webaudio(settings, FALSE);
+        webkit_settings_set_enable_media(settings, FALSE);
+    }
     if (d->user_agent_len) {
         char *ua = g_strndup(d->user_agent, d->user_agent_len);
         webkit_settings_set_user_agent(settings, ua);

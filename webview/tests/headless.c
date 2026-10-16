@@ -7,8 +7,10 @@
  * The engine renders in software (LIBGL_ALWAYS_SOFTWARE=1: shared memory
  * frames the headless backend can read, and no GPU needed) unless
  * SIV_WEBVIEW_TEST_GPU is set. */
+#define _GNU_SOURCE
 #include <siv-webview.h>
 
+#include <dlfcn.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +43,7 @@ struct seen {
     char new_window[512];
     int new_windows;
     int load_failed;
+    int crashed;
     const char *block; /* NAVIGATE: block URLs containing this */
 };
 
@@ -60,6 +63,7 @@ static bool on_event(void *user_data, siv_webview webview, const siv_webview_eve
         if (e->load_state == SIV_WEBVIEW_LOAD_FINISHED) s->loads_finished++;
         break;
     case SIV_WEBVIEW_EVENT_LOAD_FAILED: s->load_failed++; break;
+    case SIV_WEBVIEW_EVENT_CRASHED: s->crashed++; break;
     case SIV_WEBVIEW_EVENT_MESSAGE:
         copy(s->message_name, sizeof s->message_name, e->name, e->name_len);
         copy(s->message, sizeof s->message, e->text, e->text_len);
@@ -534,6 +538,73 @@ static void check_no_scripts(void) {
     stop(&f);
 }
 
+/* A page that plays audio, from markup and from script. */
+#define WAV "data:audio/wav;base64,UklGRiwAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQgAAAAAAAAAAAAAAA=="
+static const char audio_page[] =
+    "<title>audio</title><audio autoplay src='" WAV "'></audio><script>"
+    "new Audio('" WAV "').play().catch(function () {});"
+    "var a = document.createElement('audio'); a.src = '" WAV "'; document.body.appendChild(a); a.play();"
+    "</script>";
+
+/* The no-audio-sink check's child: the page loads, and its web process
+ * lives on. */
+static void check_audio_page(void) {
+    struct fixture f;
+    CHECK(start(&f, SIV_WEBVIEW_EPHEMERAL, NULL));
+    CHECK(load(&f, audio_page, NULL));
+    pump(&f, 1000);
+    CHECK(f.seen.crashed == 0);
+    struct answer a;
+    CHECK(eval(&f, "document.title", &a));
+    CHECK(a.result == SIV_OK && !strcmp(a.json, "\"audio\""));
+    stop(&f);
+}
+
+/* Without GStreamer's autoaudiosink (gst-plugins-good), WebKit's web
+ * process aborts when a page plays audio: siv-webview says what to install
+ * and turns media off, and the page loads. check_audio_page runs in a
+ * child whose GStreamer sees the system's plugins except autodetect's,
+ * since the environment must be set before GStreamer starts (in the test
+ * and in the web process). The plugins are next to libgstreamer, which
+ * WebKit loaded. */
+static void check_no_audio_sink(void) {
+    void *gst = dlopen("libgstreamer-1.0.so.0", RTLD_NOW | RTLD_NOLOAD);
+    Dl_info info = {0};
+    if (gst) (void)dladdr(dlsym(gst, "gst_init"), &info);
+    const char *slash = info.dli_fname ? strrchr(info.dli_fname, '/') : NULL;
+    char plugins[512] = "";
+    if (slash) snprintf(plugins, sizeof plugins, "%.*s/gstreamer-1.0", (int)(slash - info.dli_fname), info.dli_fname);
+    if (gst) dlclose(gst);
+    struct stat st;
+    if (!*plugins || stat(plugins, &st) != 0) {
+        printf("     no GStreamer plugins beside WebKit's libgstreamer; skipped\n");
+        return;
+    }
+    char exe[512];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    CHECK(n > 0);
+    exe[n] = 0;
+    char dir[] = "/tmp/siv-webview-test-XXXXXX";
+    CHECK(mkdtemp(dir) != NULL);
+    char cmd[4096];
+    snprintf(cmd, sizeof cmd,
+             "mkdir '%s/plugins' && for p in '%s'/*.so; do [ \"${p##*/}\" = libgstautodetect.so ] || ln -s \"$p\" '%s/plugins/'; done && "
+             "env -u GST_PLUGIN_PATH -u GST_PLUGIN_PATH_1_0 -u GST_PLUGIN_SYSTEM_PATH_1_0 -u GST_REGISTRY_1_0 "
+             "GST_PLUGIN_SYSTEM_PATH='%s/plugins' GST_REGISTRY='%s/registry.bin' SIV_WEBVIEW_TEST_AUDIO_PAGE=1 '%s' 2>'%s/stderr'",
+             dir, plugins, dir, dir, dir, exe, dir);
+    int status = system(cmd);
+    char err[16384] = "";
+    snprintf(cmd, sizeof cmd, "%s/stderr", dir);
+    FILE *file = fopen(cmd, "r");
+    if (file) err[fread(err, 1, sizeof err - 1, file)] = 0, fclose(file);
+    bool told = strstr(err, "autoaudiosink") && strstr(err, "gst-plugins-good");
+    if (status != 0 || !told) fprintf(stderr, "the child's stderr:\n%s\n", err);
+    snprintf(cmd, sizeof cmd, "rm -rf '%s'", dir);
+    CHECK(system(cmd) == 0);
+    CHECK(status == 0);
+    CHECK(told);
+}
+
 static const struct {
     const char *name;
     void (*fn)(void);
@@ -552,6 +623,7 @@ static const struct {
     {"drop", check_drop},
     {"wheel", check_wheel},
     {"no scripts", check_no_scripts},
+    {"no audio sink", check_no_audio_sink},
 };
 
 int main(int argc, char **argv) {
@@ -559,6 +631,10 @@ int main(int argc, char **argv) {
     if (siv_webview_engine_available(SIV_WEBVIEW_ENGINE_AUTO) != SIV_OK) {
         fprintf(stderr, "siv-webview-test: no engine available; skipped\n");
         return 77;
+    }
+    if (getenv("SIV_WEBVIEW_TEST_AUDIO_PAGE")) {
+        check_audio_page();
+        return failures ? 1 : 0;
     }
     int ran = 0;
     for (size_t i = 0; i < sizeof checks / sizeof checks[0]; i++) {

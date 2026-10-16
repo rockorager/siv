@@ -15,6 +15,7 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <dirent.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <gbm.h>
 #include <stdio.h>
