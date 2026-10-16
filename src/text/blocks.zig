@@ -1491,8 +1491,20 @@ pub const TextLayout = struct {
     fn measuredBlockAtY(self: *const TextLayout, y: f64) error{OutOfMemory}!u32 {
         while (true) {
             const b = self.blockAtY(y);
-            if (self.blocks[b].measured) return b;
-            _ = try self.measure(b);
+            if (!self.blocks[b].measured) {
+                _ = try self.measure(b);
+                continue;
+            }
+            // In the space between paragraphs before the next block: the
+            // nearer of the two.
+            if (b + 1 < self.blocks.len) {
+                const bottom = self.tops[b] + self.blocks[b].metrics.height;
+                if (y > bottom and self.tops[b + 1] - y < y - bottom) {
+                    _ = try self.measure(b + 1);
+                    return b + 1;
+                }
+            }
+            return b;
         }
     }
 

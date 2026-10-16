@@ -88,7 +88,8 @@ pub fn caret(self: *const Layout, position: Position) CaretRect {
     return .{ .line = stop.line, .x = line.x + stopAt(self, stop).x, .top = line.top, .height = line.height };
 }
 
-/// The line at vertical position `y` (clamped to the first and last line).
+/// The line at vertical position `y` (clamped to the first and last
+/// line); in the space between paragraphs, the nearer line.
 pub fn lineAt(self: *const Layout, y: f32) u32 {
     var low: usize = 0;
     var high = self.lines.len;
@@ -96,7 +97,12 @@ pub fn lineAt(self: *const Layout, y: f32) u32 {
         const middle = low + (high - low) / 2;
         if (self.lines[middle].top <= y) low = middle + 1 else high = middle;
     }
-    return @intCast(low -| 1);
+    const i = low -| 1;
+    if (i + 1 < self.lines.len) {
+        const bottom = self.lines[i].top + self.lines[i].height;
+        if (y > bottom and self.lines[i + 1].top - y < y - bottom) return @intCast(i + 1);
+    }
+    return @intCast(i);
 }
 
 /// The stop closest to `x` among a line's stops.
@@ -289,6 +295,21 @@ test "carets and hit testing agree on left-to-right text" {
     try std.testing.expectEqual(0, l.hitTest(-50, 5).offset);
     try std.testing.expectEqual(6, l.hitTest(5000, 5).offset);
     try std.testing.expectEqual(6, l.hitTest(5000, 500).offset);
+}
+
+test "points in the space between paragraphs hit the nearer line" {
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    var p = try fixture.shape("ab\ncd", .auto_ltr);
+    defer p.deinit();
+    const spaced: layout_.ParagraphStyle = .{ .space_before = 40 };
+    var l = try Layout.init(std.testing.allocator, fixture.arena.allocator(), &fixture.cache, &p, .{ .paragraphs = &.{ .{ .end = 3, .style = .{} }, .{ .end = std.math.maxInt(u32), .style = spaced } } });
+    defer l.deinit();
+    const bottom = l.lines[0].top + l.lines[0].height;
+    try std.testing.expect(l.lines[1].top > bottom + 30);
+    try std.testing.expectEqual(0, l.lineAt(bottom + 5));
+    try std.testing.expectEqual(1, l.lineAt(l.lines[1].top - 5));
+    try std.testing.expectEqual(3, l.hitTest(0, l.lines[1].top - 5).offset);
 }
 
 test "visual movement crosses bidi boundaries once per visual position" {

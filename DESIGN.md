@@ -4350,6 +4350,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       come from its text style. Editors keep them through edits: text
       typed into a paragraph joins it, a line break starts a paragraph
       with the same style, and joining two paragraphs keeps the first's.
+      Space before and after paragraphs works in editors too, and a
+      point in that space hits the nearer of the lines around it (a
+      click there, an editor's hit test, `siv_node_get_offset_at`), so
+      a writing app can space its document's sections apart without
+      dead bands between them (October 2026).
       Undo steps keep them before and after like spans, and
       `siv_editor_format_paragraph` is the user's command over the
       paragraphs a selection touches. An empty paragraph (empty text, or
