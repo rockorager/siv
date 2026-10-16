@@ -4992,9 +4992,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     `siv-static` module: the same generated wrapper linked against
     libsiv.a. One that also embeds Lua for its users' scripts imports
     `siv-lua-static` (D23) and installs the `lua-notices` named path
-    beside `notices`. Before, a static consumer recreated the module from
-    the wrapper's source and the `siv-static` artifact in its own
-    build.zig, and could not link the Lua binding statically at all.
+    beside `notices`; one that embeds the web view imports
+    `siv_webview-static` (D33). Before, a static consumer recreated the
+    module from the wrapper's source and the `siv-static` artifact in its
+    own build.zig, and could not link the Lua binding statically at all.
     Found by siv-columns, a file manager configured in Lua.
 - **Security:** fuzzing of every parser (rasterizer inputs, SVG,
   image decoders, clipboard and drag-and-drop payloads, Wayland input, D-Bus
@@ -6327,7 +6328,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **Decision:** siv-webview, a library of its own beside libsiv in
   `webview/`, the way WebKitGTK sits beside GTK: `libsiv-webview.so` and
   `.a`, `siv-webview.h` (installed as `include/siv-webview.h`), the
-  `siv-webview.pc` file, the `siv_webview` Zig module, and the Lua module
+  `siv-webview.pc` file, the `siv_webview` Zig module (and
+  `siv_webview-static`, see below), and the Lua module
   `require("siv.webview")` (`lib/lua/5.5/siv/webview.so`, preloaded by
   `siv-webview-lua`, since siv-lua loads no C modules). Its API follows
   D2: handles, descriptors, `siv_result`, one event callback per web
@@ -6442,6 +6444,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     never links it at all. Its NOTICES (`share/licenses/siv-webview`)
     says so; siv's own NOTICES (D25) is unchanged, since none of it is in
     libsiv.
+  - **Linked statically.** A program that ships as one file imports
+    `siv_webview-static` beside `siv-static` (D25): the same Zig module
+    linked against libsiv-webview.a (the `siv-webview-static` artifact),
+    which links libsiv.a in turn, so the executable needs no libsiv*.so.
+    WPE WebKit, GLib, GBM, EGL, Wayland, and libc stay the system's
+    shared libraries: WebKit starts its own helper processes and loads
+    the system's GPU drivers, and the licence boundary above holds. The
+    program ships siv-webview's NOTICES beside siv's. Before, there was
+    no static Zig module, and the archive's artifact linked libsiv.so
+    into whatever linked it. Found by the Amp Linux shell; `test-webview`
+    runs the Zig module's tests through the static modules, in a binary
+    that fails if any libsiv*.so is loaded.
   - **Input devices.** WebKit answers `pointer`, `hover`, `any-pointer`,
     and `any-hover` from the primary `WPEDisplay`'s available input
     devices, read as it starts a web process (a later change reaches only

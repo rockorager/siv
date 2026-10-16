@@ -1,10 +1,11 @@
 //! siv-webview's part of the build graph (D33), called from build.zig when
 //! `-Dwebview` is true, or auto (the default) and `missing` finds every
-//! system library: libsiv-webview (shared and static) on top of
-//! libsiv.so, its header and pkg-config file, the `siv_webview` Zig
-//! module, the Lua module (lib/lua/5.5/siv/webview.so) and the
-//! siv-webview-lua runner, the example browsers, and the headless tests
-//! (`zig build test-webview`, also part of `test`).
+//! system library: libsiv-webview (shared, on top of libsiv.so, and
+//! static, on top of libsiv.a), its header and pkg-config file, the
+//! `siv_webview` and `siv_webview-static` Zig modules, the Lua module
+//! (lib/lua/5.5/siv/webview.so) and the siv-webview-lua runner, the
+//! example browsers, and the headless tests (`zig build test-webview`,
+//! also part of `test`).
 //!
 //! The library uses only siv's public C ABI and links WPE WebKit 2.50 or
 //! later with WPEPlatform from the system (wpe-webkit-2.0 and
@@ -19,10 +20,14 @@ pub const Options = struct {
     version: std.SemanticVersion,
     /// libsiv.so.
     shared: *std.Build.Step.Compile,
+    /// libsiv.a.
+    static: *std.Build.Step.Compile,
     /// siv's generated headers (siv.h).
     siv_include: std.Build.LazyPath,
     /// The `siv` Zig module.
     siv_module: *std.Build.Module,
+    /// The `siv-static` Zig module.
+    siv_static_module: *std.Build.Module,
     /// libsiv-lua.so and Lua's headers (null: the system's).
     lua_lib: *std.Build.Step.Compile,
     lua_include: ?std.Build.LazyPath,
@@ -77,13 +82,18 @@ pub fn add(b: *std.Build, o: Options) void {
         b: *std.Build,
         o: Options,
 
-        /// A C module that sees siv.h and siv-webview.h and links libsiv.
+        /// A C module that sees siv.h and siv-webview.h and links libsiv.so.
         fn c(m: @This(), files: []const []const u8) *std.Build.Module {
+            return m.cWith(files, m.o.shared);
+        }
+
+        /// The same, linking `siv` (libsiv.so or libsiv.a).
+        fn cWith(m: @This(), files: []const []const u8, siv: *std.Build.Step.Compile) *std.Build.Module {
             const mod = m.b.createModule(.{ .target = m.o.target, .optimize = m.o.optimize, .link_libc = true });
             mod.addIncludePath(m.b.path("webview"));
             mod.addIncludePath(m.o.siv_include);
             mod.addCSourceFiles(.{ .files = files, .flags = &cflags });
-            mod.linkLibrary(m.o.shared);
+            mod.linkLibrary(siv);
             return mod;
         }
     };
@@ -91,7 +101,8 @@ pub fn add(b: *std.Build, o: Options) void {
 
     // The library. Only the siv_webview_ ABI is exported (the version
     // script needs LLD, as libsiv's does).
-    const lib_module = mod.c(&.{ "webview/webview.c", "webview/glib_loop.c", "webview/wpe.c" });
+    const lib_files = [_][]const u8{ "webview/webview.c", "webview/glib_loop.c", "webview/wpe.c" };
+    const lib_module = mod.c(&lib_files);
     for (system_libs) |l| lib_module.linkSystemLibrary(l, .{});
     const lib = b.addLibrary(.{ .name = "siv-webview", .linkage = .dynamic, .version = o.version, .root_module = lib_module });
     lib.use_llvm = true;
@@ -99,7 +110,12 @@ pub fn add(b: *std.Build, o: Options) void {
     lib.setVersionScript(b.path("webview/siv-webview.map"));
     lib.root_module.addRPathSpecial("$ORIGIN");
     b.installArtifact(lib);
-    const static = b.addLibrary(.{ .name = "siv-webview-static", .linkage = .static, .root_module = lib_module });
+    // The archive holds only siv-webview's objects, like any archive, but
+    // what links its artifact links libsiv.a with it, not libsiv.so: a
+    // program built from both static modules needs no libsiv*.so.
+    const static_module = mod.cWith(&lib_files, o.static);
+    for (system_libs) |l| static_module.linkSystemLibrary(l, .{});
+    const static = b.addLibrary(.{ .name = "siv-webview-static", .linkage = .static, .root_module = static_module });
     b.getInstallStep().dependOn(&b.addInstallArtifact(static, .{ .dest_sub_path = "libsiv-webview.a" }).step);
     b.installFile("webview/siv-webview.h", "include/siv-webview.h");
     const pc = b.addWriteFiles().add("siv-webview.pc", b.fmt(
@@ -141,6 +157,17 @@ pub fn add(b: *std.Build, o: Options) void {
         .imports = &.{.{ .name = "siv", .module = o.siv_module }},
     });
     zig_module.linkLibrary(lib);
+    // The same linked statically, beside `siv-static`, for programs that
+    // ship as one file; WPE WebKit, GLib, GBM, EGL, and libc stay the
+    // system's shared libraries.
+    const zig_static_module = b.addModule("siv_webview-static", .{
+        .root_source_file = b.path("webview/siv_webview.zig"),
+        .target = o.target,
+        .optimize = o.optimize,
+        .link_libc = true,
+        .imports = &.{.{ .name = "siv", .module = o.siv_static_module }},
+    });
+    zig_static_module.linkLibrary(static);
 
     // The Lua module: siv/webview.so for hosts with their own Lua 5.5 (lua_*
     // resolve from the process), where package.cpath looks under a prefix,
@@ -197,6 +224,20 @@ pub fn add(b: *std.Build, o: Options) void {
         },
     }) });
     test_webview.dependOn(&b.addRunArtifact(zig_test).step);
+    // The same tests through the static modules, in a binary that must
+    // load no libsiv*.so (webview/tests/static.zig).
+    const static_test = b.addTest(.{ .name = "siv-webview-static-test", .root_module = b.createModule(.{
+        .root_source_file = b.path("webview/tests/static.zig"),
+        .target = o.target,
+        .optimize = o.optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "siv", .module = o.siv_static_module },
+            .{ .name = "siv_webview", .module = zig_static_module },
+            .{ .name = "c_header", .module = header.createModule() },
+        },
+    }) });
+    test_webview.dependOn(&b.addRunArtifact(static_test).step);
 
     const run_lua_test = b.addRunArtifact(runner);
     run_lua_test.addFileArg(b.path("webview/tests/headless.lua"));

@@ -10,7 +10,9 @@
 //!     try wv.loadUri("https://example.com");
 //!
 //! siv's build exposes it to dependents as `siv_webview` when it builds
-//! siv-webview (it links libsiv-webview); see webview/build_steps.zig.
+//! siv-webview (it links libsiv-webview.so), and as `siv_webview-static`
+//! (libsiv-webview.a and libsiv.a) for programs that import `siv-static`;
+//! see webview/build_steps.zig.
 
 const std = @import("std");
 const siv = @import("siv");

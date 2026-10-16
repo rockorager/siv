@@ -26,11 +26,13 @@ pub const Options = struct {
     test_headless: *std.Build.Step,
 };
 
-/// What other parts of the build use: the generated headers' directory
-/// and the `siv` module (linking libsiv.so).
+/// What other parts of the build use: the generated headers' directory,
+/// the `siv` module (linking libsiv.so), and the `siv-static` module
+/// (linking libsiv.a).
 pub const Outputs = struct {
     include: std.Build.LazyPath,
     wrapper: *std.Build.Module,
+    static_wrapper: *std.Build.Module,
 };
 
 pub fn add(b: *std.Build, o: Options) Outputs {
@@ -262,7 +264,7 @@ pub fn add(b: *std.Build, o: Options) Outputs {
 
     o.test_step.dependOn(test_abi);
     o.test_step.dependOn(test_c);
-    return .{ .include = installed.path(b, "include"), .wrapper = wrapper };
+    return .{ .include = installed.path(b, "include"), .wrapper = wrapper, .static_wrapper = static_wrapper };
 }
 
 fn linkAbi(lib: *std.Build.Step.Compile, version_script: std.Build.LazyPath) void {

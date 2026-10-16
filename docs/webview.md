@@ -169,7 +169,8 @@ keycodes, so `event.code` and layouts work) and cursor images (11).
   and `wpe_webkit.inc` the WPE engine; `glib_loop.c` runs GLib's
   default context inside siv's loop with `siv_app_add_prepare`.
 - `siv_webview.zig`: the Zig module `siv_webview` (siv's types; slices,
-  errors, methods). `lua.c`: `require("siv.webview")`, as
+  errors, methods), and `siv_webview-static`, the same linked against
+  libsiv-webview.a and libsiv.a, beside `siv-static`. `lua.c`: `require("siv.webview")`, as
   `lib/lua/5.5/siv/webview.so` beside `siv.so`, and preloaded by the
   `siv-webview-lua` runner (siv-lua loads no C modules).
 - Popups: `<select>` and the context menu are siv menus at the element
