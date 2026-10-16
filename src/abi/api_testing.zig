@@ -120,6 +120,10 @@ pub const functions = [_]Function{
         window_param,
         p("states", ref("siv_window_states"), "Its new states."),
     }),
+    call("siv_test_set_occluded", "The compositor stops or resumes drawing a window without suspending it, as behind a lock screen, under a fullscreen window, or with its output off on compositors that do not say so: while occluded, the window's frame callbacks wait, so it draws no frames, frame slots get no frame events, and after a second its frame slots are hidden." ++ headless, &.{
+        window_param,
+        p("occluded", .bool, "Whether the compositor stops drawing it."),
+    }),
     call("siv_test_drop", "Another application drags data over a window to a point and drops it there, offering copy and move: the drag enters, siv dispatches until the application answered it (so not from a callback, SIV_ERROR_BUSY), and the drop is queued for siv_test_settle to deliver." ++ headless, &.{
         window_param,
         p("x", .f32, "Window coordinates."),

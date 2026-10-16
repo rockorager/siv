@@ -246,6 +246,7 @@ const Msg = union(enum) {
     destroy_external: struct { window: WindowId, id: update.ExternalId },
     external_hook: struct { window: WindowId, id: update.ExternalId, hook: ?update.ExternalReleaseHook },
     external_committed: struct { window: WindowId, id: update.ExternalId, width: u32, height: u32 },
+    external_frame_request: struct { window: WindowId, id: update.ExternalId },
     stop,
 };
 
@@ -622,6 +623,12 @@ pub fn externalSurfaceCommitted(self: *Compositor, window: WindowId, id: update.
     return self.send(.{ .external_committed = .{ .window = window, .id = id, .width = width, .height = height } });
 }
 
+/// Asks for one `Event.external_frame` for a frame slot at the window's
+/// next frame that shows it. Any thread.
+pub fn requestExternalFrame(self: *Compositor, window: WindowId, id: update.ExternalId) Allocator.Error!void {
+    return self.send(.{ .external_frame_request = .{ .window = window, .id = id } });
+}
+
 /// Sends a slot's released frames to `hook` on the compositor thread
 /// instead of `Event.external_released` (null goes back to the event).
 /// The hook's `dropped` runs once the slot is gone and its last frame
@@ -775,6 +782,9 @@ fn drain(self: *Compositor) void {
             }
         } else {
             _ = std.os.linux.close(f.frame.fd);
+        },
+        .external_frame_request => |r| if (self.getWindow(r.window)) |w| {
+            if (w.externals.requestFrame(r.id)) self.want(r.window);
         },
         .external_committed => |ec| if (self.getWindow(ec.window)) |w| {
             if (w.externals.surfaceCommitted(ec.id, ec.width, ec.height)) self.want(ec.window);
@@ -1309,6 +1319,9 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
     const bounds = raster.Rect.xywh(0, 0, @floatFromInt(state.width), @floatFromInt(state.height));
     const subsurfaces_changed = w.externals.place(self.platform, w.id, &w.tree, bounds, state.scale.toFloat(), !state.states.suspended) catch return self.outOfMemory(w);
     w.tree.externals = w.externals.resolver();
+    // Frames asked for are frame callbacks: this frame commits, so the
+    // next waits for the display server.
+    if (w.externals.frames.items.len > 0) w.commit_wanted = true;
     // The blur region (D31) goes with this frame's commit, so it follows
     // what this frame shows.
     const blur_changed = self.updateBlur(w, bounds) catch return self.outOfMemory(w);
@@ -1361,6 +1374,8 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
     } });
     w.externals.configures.clearRetainingCapacity();
     self.pushVisibility(w);
+    for (w.externals.frames.items) |id| self.outbox.push(.{ .external_frame = .{ .window = w.id, .id = id, .present_ns = t } });
+    w.externals.frames.clearRetainingCapacity();
     for (w.externals.shown.items) |sh| self.outbox.push(.{ .external_presented = .{ .window = w.id, .id = sh.id, .key = sh.key, .present_ns = t } });
     w.externals.shown.clearRetainingCapacity();
 

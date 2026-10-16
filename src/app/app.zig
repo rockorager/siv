@@ -858,6 +858,9 @@ pub const App = struct {
             .external_visibility => |x| if (app.window(x.window)) |win| {
                 _ = win.notify(&.{ .external_visibility = .{ .id = x.id, .visible = x.visible } });
             },
+            .external_frame => |x| if (app.window(x.window)) |win| {
+                _ = win.notify(&.{ .external_frame = .{ .id = x.id, .present_ns = x.present_ns } });
+            },
             .presented => |p| if (app.window(p.window)) |win| {
                 win.presented_seq = p.seq;
                 win.handle(ev);
@@ -981,6 +984,8 @@ pub const WindowEvent = union(enum) {
     external_presented: struct { id: compositor.ExternalId, key: u64, present_ns: u64 },
     /// Whether a frame slot can be seen changed (D17).
     external_visibility: struct { id: compositor.ExternalId, visible: bool },
+    /// A frame slot's requested frame is being drawn (D17).
+    external_frame: struct { id: compositor.ExternalId, present_ns: u64 },
     /// Everything committed up to `seq` reached the screen: predicted
     /// presentation and commit times on CLOCK_MONOTONIC.
     presented: struct { seq: u64, present_ns: u64, commit_ns: u64 },

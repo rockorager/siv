@@ -138,6 +138,9 @@ const External = struct {
     /// producer was last told the slot is visible (`visibility`).
     on_screen: bool = false,
     visible: bool = false,
+    /// Frame slots: the producer asked for a frame event
+    /// (`requestFrame`).
+    frame_requested: bool = false,
     /// An embedder renders into the subsurface's own wl_surface.
     embed: ?Embed = null,
     /// Receives released frames on this thread instead of the UI.
@@ -182,6 +185,9 @@ pub const Externals = struct {
     shown: std.ArrayList(Shown) = .empty,
     /// Frame slots whose visibility changed, sent after the frame.
     visibility: std.ArrayList(Visibility) = .empty,
+    /// Visible frame slots that asked for a frame event, sent after the
+    /// frame.
+    frames: std.ArrayList(ExternalId) = .empty,
     /// Retired frames a subsurface showed, until the compositor releases
     /// them (`subsurfaceReleased`).
     waiting: std.ArrayList(Retired) = .empty,
@@ -233,6 +239,7 @@ pub const Externals = struct {
         e.configures.deinit(e.gpa);
         e.shown.deinit(e.gpa);
         e.visibility.deinit(e.gpa);
+        e.frames.deinit(e.gpa);
     }
 
     fn dropPending(e: *Externals, pd: *Pending) void {
@@ -514,6 +521,10 @@ pub const Externals = struct {
                 continue;
             }
             try e.setVisible(@intCast(i + 1), x, x.on_screen and can_show);
+            if (x.visible and x.frame_requested) {
+                try e.frames.append(e.gpa, @intCast(i + 1));
+                x.frame_requested = false;
+            }
             const keep = x.seen and x.mode != .composited;
             if (!keep) {
                 if (x.mode != .composited or x.solid) t.touchExternal(@intCast(i + 1));
@@ -533,6 +544,15 @@ pub const Externals = struct {
         if (x.visible == visible) return;
         try e.visibility.append(e.gpa, .{ .id = id, .visible = visible });
         x.visible = visible;
+    }
+
+    /// A frame slot's producer asks for a frame event at the next frame
+    /// that shows it. False if it is not a frame slot.
+    pub fn requestFrame(e: *Externals, id: ExternalId) bool {
+        const x = e.get(id) orelse return false;
+        if (x.embed != null) return false;
+        x.frame_requested = true;
+        return true;
     }
 
     /// Whether a frame slot is visible, as its producer was last told.

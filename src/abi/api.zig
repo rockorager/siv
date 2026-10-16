@@ -1630,6 +1630,7 @@ pub const decls = [_]Decl{
         .{ .name = "hidden", .value = 3, .doc = "Frames: the slot cannot be seen until shown: no external node shows any of it, its window is suspended (SIV_WINDOW_STATES_SUSPENDED: minimized, on a hidden workspace, or behind a lock screen, as the compositor says), or the display server has not let the window draw for a second while it had a frame to show (an output turned off, a lock screen or hidden workspace on a compositor that does not suspend windows) (D17). Stop rendering, and pause what only runs to be seen (animations, a web page's scripts); frames submitted meanwhile are kept, and the last is presented once the slot shows. A slot starts hidden." },
         .{ .name = "shown", .value = 4, .doc = "Frames: the slot can be seen: an external node shows some of it, after its configure, in a window that draws. Sent when it is first laid out and shown and after each hidden." },
         .{ .name = "states_changed", .value = 5, .doc = "The window's states changed; states has them (a web page follows activated, the window having the user's attention)." },
+        .{ .name = "frame", .value = 6, .doc = "Frames: the window is drawing a frame that shows the slot, as siv_external_request_frame asked: render the next frame now, for present_ns. One per request, at the next frame the display server asks the window for, so none while it does not draw the window (covered, behind a lock screen, its output off) or the slot is hidden, as wl_surface.frame and requestAnimationFrame (D17)." },
     }),
     descriptor("siv_external_event", "An external slot's event. Filled by siv.", &.{
         .{ .name = "key", .type = .u64, .doc = "Released and presented: the frame's key." },
@@ -1639,7 +1640,7 @@ pub const decls = [_]Decl{
         .{ .name = "buffer_width", .type = .u32, .doc = "Configure: width in buffer pixels (the logical width times the window's scale)." },
         .{ .name = "buffer_height", .type = .u32, .doc = "Configure: height in buffer pixels." },
         f32Field("scale", "Configure: the window's buffer scale."),
-        .{ .name = "present_ns", .type = .u64, .doc = "Presented: when the frame is predicted to show, CLOCK_MONOTONIC nanoseconds, as SIV_WINDOW_EVENT_TYPE_PRESENTED predicts it." },
+        .{ .name = "present_ns", .type = .u64, .doc = "Presented and frame: when the frame is predicted to show, CLOCK_MONOTONIC nanoseconds, as SIV_WINDOW_EVENT_TYPE_PRESENTED predicts it." },
         .{ .name = "states", .type = ref("siv_window_states"), .doc = "The window's states as of the event." },
         .{ .name = "reserved0", .type = .u32, .doc = "Reserved; zero.", .reserved = true },
     }),
@@ -2410,6 +2411,9 @@ pub const functions = [_]Function{
     anyThread(call("siv_external_submit", "Shows a new frame in a frame slot, even while the application's thread is busy: the frame goes straight to the compositor thread, in order with other frames of the slot. The previous frame is reported released once no frame reads it; until then its pixels must not change.", &.{
         .{ .name = "external", .type = ref("siv_external"), .doc = "A frame slot." },
         .{ .name = "frame", .type = .{ .desc = "siv_external_frame_desc" }, .doc = "The frame." },
+    })),
+    anyThread(call("siv_external_request_frame", "Asks for one SIV_EXTERNAL_EVENT_TYPE_FRAME event at the window's next frame that shows the slot: a frame callback for a producer that paces itself to the display, such as a web engine's display link, rather than to its own timer. That frame commits the window, so the next one waits for the display server; while the server does not draw the window, no frame comes, and after a second the slot is hidden. Any thread.", &.{
+        .{ .name = "external", .type = ref("siv_external"), .doc = "A frame slot." },
     })),
     anyThread(call("siv_external_surface_committed", "Tells siv that the embedder committed a frame of width x height buffer pixels to a surface slot.", &.{
         .{ .name = "external", .type = ref("siv_external"), .doc = "A surface slot." },

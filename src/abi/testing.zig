@@ -350,6 +350,19 @@ pub export fn siv_test_set_states(window: t.Window, states: t.WindowStates) t.Re
     }.f(window, states));
 }
 
+pub export fn siv_test_set_occluded(window: t.Window, occluded: bool) t.Result {
+    return wrap(struct {
+        fn f(wh: t.Window, on: bool) Error!void {
+            const w = try headlessWindow(wh);
+            try onHeadless(w.owner, .{ w.win.id, on }, struct {
+                fn g(hl: *platform.Headless, x: struct { platform.WindowId, bool }) void {
+                    hl.setOccluded(x[0], x[1]);
+                }
+            }.g);
+        }
+    }.f(window, occluded));
+}
+
 pub export fn siv_test_drop(window: t.Window, x: f32, y: f32, mime_type: ?[*]const u8, mime_type_len: usize, data: ?[*]const u8, data_count: usize) t.Result {
     return wrap(struct {
         fn f(wh: t.Window, px: f32, py: f32, mp: ?[*]const u8, mn: usize, dp: ?[*]const u8, dn: usize) Error!void {

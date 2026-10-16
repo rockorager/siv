@@ -352,16 +352,7 @@ test "C API external: a frame slot is hidden while no node shows it, its window 
 
     // A window the compositor stops drawing (a lock screen, an output
     // turned off) owes a frame for a second: hidden, until it draws again.
-    const Occlude = struct {
-        id: platform.WindowId,
-        on: bool,
-        fn run(ctx: ?*anyopaque, comp: *compositor.Compositor) void {
-            const c: *@This() = @ptrCast(@alignCast(ctx));
-            comp.platform.headless.setOccluded(c.id, c.on);
-        }
-    };
-    var occ: Occlude = .{ .id = (try h.win()).win.id, .on = true };
-    try (try h.internal()).app.comp.call(&occ, Occlude.run);
+    try ok(abi.testing.siv_test_set_occluded(h.window, true));
     const blue = [4]u8{ 0xff, 0, 0, 0 };
     const fd = try frameFd(blue, blue);
     defer _ = linux.close(fd);
@@ -376,10 +367,64 @@ test "C API external: a frame slot is hidden while no node shows it, its window 
     try waitVisible(&h, &seen, false);
     // A second after the last frame.
     try testing.expect(Loop.now() - before >= std.time.ns_per_s);
-    occ.on = false;
-    try (try h.internal()).app.comp.call(&occ, Occlude.run);
+    try ok(abi.testing.siv_test_set_occluded(h.window, false));
     try waitVisible(&h, &seen, true);
     try testing.expectEqual(7, seen.changes);
+}
+
+/// Counts frame events, asking for the next one from each, as a display
+/// link does.
+const Ticks = struct {
+    ext: t.External = .null,
+    count: usize = 0,
+    again: bool = true,
+
+    fn onEvent(user_data: ?*anyopaque, _: t.External, e: *const t.ExternalEvent) callconv(.c) void {
+        const k: *Ticks = @ptrCast(@alignCast(user_data));
+        if (e.type != .frame) return;
+        k.count += 1;
+        if (k.again) _ = X.siv_external_request_frame(k.ext);
+    }
+};
+
+fn pumpFor(h: *Harness, ms: u64) !void {
+    const until = Loop.now() + ms * std.time.ns_per_ms;
+    while (Loop.now() < until) try ok(A.siv_app_dispatch(h.app, 5));
+}
+
+test "C API external: frame events come at the window's frames, none while it does not draw" {
+    var h: Harness = .{};
+    try h.start(100, 80, null, null);
+    defer h.stop();
+    var ticks: Ticks = .{};
+    try ok(X.siv_external_create(h.window, &.{ .on_event = Ticks.onEvent, .user_data = &ticks }, &ticks.ext));
+    // Asked for before a node shows the slot: it comes once one does.
+    try ok(X.siv_external_request_frame(ticks.ext));
+    try pumpFor(&h, 100);
+    try testing.expectEqual(0, ticks.count);
+    var txn: t.Txn = .null;
+    try ok(T.siv_txn_begin(h.window, &txn));
+    const view = X.siv_external_view(txn, A.siv_window_get_root(h.window), &.{ .external = ticks.ext });
+    _ = T.siv_set_layout(txn, view, &.{ .width = .{ .unit = .px, .value = 80 }, .height = .{ .unit = .px, .value = 60 } });
+    try ok(T.siv_txn_commit(txn));
+    // Asking from each one: one a refresh (60 Hz), not as fast as the
+    // loop runs.
+    try pumpFor(&h, 500);
+    try testing.expect(ticks.count >= 5 and ticks.count <= 40);
+
+    // None while the compositor does not draw the window.
+    try ok(abi.testing.siv_test_set_occluded(h.window, true));
+    try pumpFor(&h, 100);
+    const before = ticks.count;
+    try pumpFor(&h, 300);
+    try testing.expectEqual(before, ticks.count);
+    try ok(abi.testing.siv_test_set_occluded(h.window, false));
+    try pumpFor(&h, 200);
+    try testing.expect(ticks.count > before);
+    // Frame slots only.
+    var surface: t.External = .null;
+    try ok(X.siv_external_create_surface(h.window, null, &surface));
+    try testing.expectEqual(t.Result.error_invalid_argument, X.siv_external_request_frame(surface));
 }
 
 test "C API external: a producer thread submits and gets frames back while the UI thread is blocked" {

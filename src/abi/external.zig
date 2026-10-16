@@ -249,6 +249,15 @@ pub export fn siv_external_submit(external: t.External, frame: ?*const t.Externa
     }.f, .{frame}));
 }
 
+pub export fn siv_external_request_frame(external: t.External) t.Result {
+    return application.wrap(withSlot(external, struct {
+        fn f(self: *App, x: *External) Error!void {
+            if (x.surface != null) return error.InvalidArgument;
+            self.app.comp.requestExternalFrame(x.platform_window, x.id) catch |err| return mapApp(err);
+        }
+    }.f, .{}));
+}
+
 pub export fn siv_external_surface_committed(external: t.External, width: u32, height: u32) t.Result {
     return application.wrap(withSlot(external, struct {
         fn f(self: *App, x: *External, wd: u32, ht: u32) Error!void {

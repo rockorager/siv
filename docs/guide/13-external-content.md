@@ -87,6 +87,12 @@ server has stopped drawing the window (a lock screen, an output turned
 off). Stop rendering and pause what only runs to be seen until it is shown
 again.
 
+To pace yourself to the display rather than a timer of your own, call
+`siv_external_request_frame` and render when
+`SIV_EXTERNAL_EVENT_TYPE_FRAME` arrives, then ask again: one event per
+request, at the window's next frame, none while the compositor does not
+draw the window.
+
 Dma-buf frames (`SIV_EXTERNAL_MEMORY_DMABUF`) take a DRM format and
 modifier and up to four planes; a frame shows once its implicit fences
 signal, so neither siv nor the compositor waits on your GPU. Drivers that

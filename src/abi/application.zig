@@ -701,6 +701,10 @@ fn onWindowEvent(ctx: ?*anyopaque, _: *app_mod.Window, ev: *const app_mod.Window
             external.deliver(w, x.id, .{ .type = if (x.visible) .shown else .hidden });
             return false;
         },
+        .external_frame => |x| {
+            external.deliver(w, x.id, .{ .type = .frame, .present_ns = x.present_ns });
+            return false;
+        },
         .presented => |p| {
             const cb = w.on_event orelse return false;
             var e = windowEvent(.presented, w.win.state);

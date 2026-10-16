@@ -2684,12 +2684,28 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
         carries the window's `states`, and `states_changed` tells slots
         when they change (a web page's focus follows `activated`).
         `siv_test_set_states` sets states on the headless backend, and
-        the headless backend can withhold frame callbacks
-        (`Headless.setOccluded`) to test the stall. Alternatives: the
+        `siv_test_set_occluded` withholds a window's frame callbacks
+        there (`Headless.setOccluded`) to test the stall. Alternatives: the
         producer watching `presented` stop (it cannot tell when to start
         again without rendering); only `suspended` (a compositor may
         stop drawing a window, behind a lock screen, a covering window
         or a powered-off output, without sending it).
+      - `frame` on request (`siv_external_request_frame`): a frame
+        callback for producers that pace themselves to the display
+        rather than to a timer of their own, such as a web engine's
+        display link. One event per request, at the next window frame
+        that shows the slot, with its predicted presentation time; that
+        frame commits the window, so the next waits for the display
+        server, one a refresh, and none come while the server does not
+        draw the window. Requirement: a compositor may stop a window's
+        frame callbacks (covered, locked, output off) without sending
+        `suspended`, and siv-webview's WebKit, whose display link was a
+        60 Hz timer, kept animating until the slot was hidden, and
+        forever for a page whose animation paints nothing.
+        A producer that renders only on these events stops with the
+        compositor, and runs at the display's refresh rather than 60 Hz.
+        Alternative: ticking on `presented` (none comes while the
+        producer has nothing new, so it could never start again).
     - External nodes are in the C API (D27): `siv_external_view` over
       `siv_external_create` and `siv_external_create_surface` slots.
   - Fractional scale, preferred buffer scale, output hotplug, `xdg-activation`,
