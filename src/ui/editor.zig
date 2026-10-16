@@ -105,24 +105,34 @@ pub fn caretRect(win: *const Window, id: NodeId, l: *const Layout) error{OutOfMe
     return caretRectAt(win, id, l, .{ .offset = displayCaret(win, id), .affinity = e.affinity }, block);
 }
 
-/// The caret rectangle at `pos` in content coordinates. A block caret
-/// covers the grapheme after it on its line; where there is none (a
-/// line's end, an empty line), it is as wide as an "x" in the font and
-/// size there: the last character's on the line, else the line break's.
+/// The caret rectangle at `pos` in content coordinates. It is as tall as
+/// the content area of the font at the character it is at (its ascent
+/// to its descent around the baseline), as in browsers: line spacing
+/// adds none. That character is the one after it on its line, else the
+/// line's last, else the line break. A block caret covers it; where
+/// there is none (a line's end, an empty line), it is as wide as an "x"
+/// in the font and size there.
 pub fn caretRectAt(win: *const Window, id: NodeId, l: *const Layout, pos: Position, block: bool) error{OutOfMemory}!Rect {
     const c = try l.caret(pos);
     const line = try l.line(c.line);
     const shift = text_node.lineShift(win, id, line, contentWidth(win, id));
-    if (!block) return .xywh(c.x + shift, c.top, layout.caret_width, c.height);
+    var x = c.x;
+    var w: f32 = layout.caret_width;
+    var at = pos.offset;
     const next = try l.nextGrapheme(pos.offset);
-    if (next != pos.offset) {
-        const n = try l.caret(.{ .offset = next, .affinity = .upstream });
-        if (n.line == c.line and n.x != c.x)
-            return .xywh(@min(c.x, n.x) + shift, c.top, @abs(n.x - c.x), c.height);
+    const n = if (next != pos.offset) try l.caret(.{ .offset = next, .affinity = .upstream }) else c;
+    if (n.line == c.line and n.x != c.x) {
+        if (block) {
+            x = @min(c.x, n.x);
+            w = @abs(n.x - c.x);
+        }
+    } else {
+        if (pos.offset > line.start) at = try l.previousGrapheme(pos.offset);
+        if (block) w = l.shaped.xAdvance(at) orelse c.height / 2;
     }
-    const at = if (pos.offset > line.start) try l.previousGrapheme(pos.offset) else pos.offset;
-    const w = l.shaped.xAdvance(at) orelse c.height / 2;
-    return .xywh(c.x + shift, c.top, w, c.height);
+    // Without a loaded font for the style there, the line's own metrics.
+    const m = l.shaped.fontMetrics(at) orelse text.font.Metrics{ .ascent = line.ascent, .descent = line.descent, .line_gap = 0 };
+    return .xywh(x + shift, line.baseline - m.ascent, w, m.ascent + m.descent);
 }
 
 /// Keeps a single-line editor's caret in view; call after layout.

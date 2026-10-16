@@ -1500,6 +1500,22 @@ test "editor: an application's own editing model (range edits, its history, chan
     try testing.expectApproxEqAbs(x, ui.access.caretRect(f.win, ed, 8).?.width(), 0.01);
     const big = ui.access.caretRect(f.win, ed, 7).?.width();
     try testing.expect(big > x * 1.5);
+    // A caret is as tall as the font's content area there, wherever it
+    // stands on the line, and line spacing makes it no taller: at the
+    // end of the big line, it is as tall as on its characters.
+    t = try f.win.begin();
+    try t.setParagraphSpans(ed, &.{.{ .start = 0, .end = 8, .style = .{ .spacing = .{ .line_spacing = 2 } } }});
+    t.commit();
+    const on_x = ui.access.caretRect(f.win, ed, 1).?;
+    const empty = ui.access.caretRect(f.win, ed, 3).?;
+    const pitch = empty.y0 - on_x.y0;
+    try testing.expect(on_x.height() < pitch * 0.6);
+    try testing.expectApproxEqAbs(on_x.height(), ui.access.caretRect(f.win, ed, 2).?.height(), 0.01);
+    try testing.expectApproxEqAbs(on_x.height(), empty.height(), 0.01);
+    const on_big = ui.access.caretRect(f.win, ed, 5).?;
+    try testing.expect(on_big.height() > on_x.height() * 2);
+    try testing.expectEqual(on_big.y0, ui.access.caretRect(f.win, ed, 7).?.y0);
+    try testing.expectApproxEqAbs(on_big.height(), ui.access.caretRect(f.win, ed, 7).?.height(), 0.01);
     try f.frame();
     // At the end of a selection, a block caret covers the selection's
     // last character (visual mode's cursor); at its start, the first.

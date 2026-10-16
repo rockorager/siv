@@ -653,6 +653,25 @@ pub const ShapedText = struct {
     /// character where there is none. Null if no font of the style that
     /// is loaded has an "x".
     pub fn xAdvance(self: *const ShapedText, offset: u32) ?f32 {
+        const blk, const st = self.styleAt(offset) orelse return null;
+        for (st.fonts) |id| {
+            const face = blk.cache.face(id) orelse continue;
+            const g = face.nominalGlyph('x') orelse continue;
+            return face.advance(g, st.size);
+        }
+        return null;
+    }
+
+    /// The metrics of the first loaded font of the style at `offset` (the
+    /// last style at the text's end), at its size: the content area a
+    /// caret there spans, as in CSS. Null if none of its fonts is loaded.
+    pub fn fontMetrics(self: *const ShapedText, offset: u32) ?font.Metrics {
+        const blk, const st = self.styleAt(offset) orelse return null;
+        for (st.fonts) |id| if (blk.cache.face(id)) |face| return face.metrics(st.size);
+        return null;
+    }
+
+    fn styleAt(self: *const ShapedText, offset: u32) ?struct { *ShapedBlock, Style } {
         const b = self.blockAt(offset);
         const blk = self.blocks[b];
         if (blk.styles.len == 0) return null;
@@ -662,12 +681,7 @@ pub const ShapedText = struct {
             st = r.style;
             break;
         };
-        for (st.fonts) |id| {
-            const face = blk.cache.face(id) orelse continue;
-            const g = face.nominalGlyph('x') orelse continue;
-            return face.advance(g, st.size);
-        }
-        return null;
+        return .{ blk, st };
     }
 
     pub fn nextGrapheme(self: *const ShapedText, offset: u32) error{OutOfMemory}!u32 {

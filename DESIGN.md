@@ -1751,7 +1751,19 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     semantics tree exposes neither the value nor caret offsets. A memlock
     limit too small for the text is an allocation failure.
   - The focused editor roots a layer whose child layer holds the caret,
-    so moving the caret is a transform. Each caret change shows it solid
+    so moving the caret is a transform. The caret, a bar or a block, is
+    as tall as the content area of the font at the character it stands
+    at (the style's first loaded font, ascent to descent around the
+    baseline, by the metrics line heights use), as browsers and native
+    text fields draw it (October 2026): line spacing and taller runs
+    elsewhere on the line make it no taller, a larger run makes it
+    taller. That character is the one after the caret on its line, else
+    the line's last, else the line break, the same one that sets a block
+    caret's width. Selection highlights keep the line's full height, so
+    lines of a selection meet. Alternatives: the line's full box (the
+    earlier choice, and GTK's), which with generous line spacing reached
+    well past the descenders; a size multiple, which needs a setting and
+    sits on no metric of the font. Each caret change shows it solid
     and starts a compositor opacity animation that blinks for the
     desktop's blink timeout and ends visible, so an idle window makes no
     wakeups (D25). The cycle and timeout come from the desktop settings
