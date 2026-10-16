@@ -426,11 +426,14 @@ pub fn presentExternal(_: *Headless, _: WindowId, _: platform.ExternalCommit) an
     return error.Unsupported; // vulkanSurface is null, so nothing presents externally
 }
 
+/// Like Wayland's, a bare commit waits for a frame callback, at the next
+/// vblank.
 pub fn commitWindow(hl: *Headless, id: WindowId) void {
     const w = hl.get(id);
     w.bare_commits += 1;
     applySubsurfaces(w);
     applyBlur(w);
+    hl.frameCallback(w);
 }
 
 fn applyBlur(w: *Window) void {
@@ -1154,6 +1157,11 @@ pub fn present(hl: *Headless, id: WindowId, buffer: Buffer, damage: ?[]const Rec
         .width = @intCast(buffer.width),
         .height = @intCast(buffer.height),
     };
+    hl.frameCallback(w);
+}
+
+/// A frame callback for the commit just made, at the next vblank.
+fn frameCallback(hl: *Headless, w: *Window) void {
     w.clock.committed();
     const now = Loop.now();
     const vblank = hl.epoch_ns + ((now - hl.epoch_ns) / hl.refresh_ns + 1) * hl.refresh_ns;

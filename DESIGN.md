@@ -2650,6 +2650,19 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
         sway's 60 Hz headless output). None while no node shows the slot
         (the frame is reported once one does), and none for frames replaced
         before they showed, like frame callbacks of hidden surfaces.
+      - Bare commits ask for a frame callback too. A frame that only
+        changes subsurfaces (a promoted frame, the common case for a web
+        view filling its window) committed the window without one, so the
+        frame clock never waited: each submitted frame ran a frame at
+        once and was reported `presented` at once, whether or not the
+        display server drew the window. The 62 frames/s above were the
+        producer's own 60 Hz timer, and with the screen locked or off a
+        web view kept rendering at full speed (siv-webview on sway with
+        its output powered off: about 70 frames a second, each reported
+        presented). Now `commitWindow` asks
+        for a callback on the window and its shown frame-slot
+        subsurfaces like a present does, on both backends, so promoted
+        frames are paced by the compositor and stop when it stops drawing.
     - External nodes are in the C API (D27): `siv_external_view` over
       `siv_external_create` and `siv_external_create_surface` slots.
   - Fractional scale, preferred buffer scale, output hotplug, `xdg-activation`,

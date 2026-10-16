@@ -1659,6 +1659,17 @@ pub fn presentExternal(self: *Wayland, id: WindowId, commit: platform.ExternalCo
     self.mappedNow(w);
 }
 
+/// Asks for the window's next frame callback, and on its shown frame-slot
+/// subsurfaces, unless one is outstanding; it applies with the next
+/// commit.
+fn askFrameCallback(self: *Wayland, w: *Window) void {
+    if (w.frame_callback != null) return;
+    const cb = w.surface.frame() catch return;
+    cb.setListener(*Window, onFrameDone, w);
+    w.frame_callback = cb;
+    self.requestSubsurfaceFrames(w);
+}
+
 /// Everything a frame's commit carries besides its buffer and damage: the
 /// configure ack, the viewport or buffer scale, the frame callback, FIFO
 /// barriers, and presentation feedback.
@@ -1679,13 +1690,7 @@ fn beforeCommit(self: *Wayland, w: *Window) void {
         setBufferScale(w, @intCast(w.state.scale.v120 / 120));
     }
 
-    if (w.frame_callback == null) {
-        if (surface.frame()) |cb| {
-            cb.setListener(*Window, onFrameDone, w);
-            w.frame_callback = cb;
-            self.requestSubsurfaceFrames(w);
-        } else |_| {}
-    }
+    self.askFrameCallback(w);
     // FIFO (D12): an animation frame waits for the previous commit's
     // barrier, so no frame replaces one that was never shown. Answers to
     // configures go out at once.
@@ -2014,8 +2019,15 @@ fn setEmbedSurface(self: *Wayland, w: *Window, s: *Subsurface, state: *const pla
     self.setSolid(w, s, state.background, state.alpha, restack);
 }
 
+/// A bare commit asks for a frame callback too, so that frames that only
+/// change subsurfaces (a promoted external frame) are paced by the
+/// compositor like the rest: one per refresh while it draws the window,
+/// none while it does not (D12, D17).
 pub fn commitWindow(self: *Wayland, id: WindowId) void {
-    self.get(id).surface.commit();
+    const w = self.get(id);
+    self.askFrameCallback(w);
+    w.surface.commit();
+    if (w.frame_callback != null) w.clock.committed();
 }
 
 fn seatData(self: *Wayland, id: SeatId) ?*DataDevice {
