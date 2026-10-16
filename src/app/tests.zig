@@ -82,6 +82,7 @@ test "a window presents its tree, on and off the compositor thread" {
 const Recorder = struct {
     closes: usize = 0,
     configures: usize = 0,
+    theme_changes: usize = 0,
     last: platform.WindowState = .{},
     keep_open: bool = false,
 
@@ -97,6 +98,7 @@ const Recorder = struct {
                 r.configures += 1;
                 r.last = c.new;
             },
+            .theme_changed => r.theme_changes += 1,
             .external_released, .external_configure, .external_presented, .presented, .pointer_constraint, .shortcuts_inhibit, .restored, .closed => {},
         }
         return r.keep_open;
@@ -570,7 +572,7 @@ fn idle(ut: *app_mod.user_theme.UserTheme) bool {
     return !ut.watch.timer.armed() and !ut.running;
 }
 
-test "the user's theme: read at startup, and followed live as Omarchy renames a theme into place" {
+test "the user's theme: read at startup, and followed live as Omarchy renames a theme into place; windows hear when their colors change" {
     var template = "/tmp/siv-theme-XXXXXX".*;
     const home = std.mem.span(mkdtemp(&template) orelse return error.SkipZigTest);
     defer sh("rm -rf '{s}'", .{home}) catch {};
@@ -589,7 +591,8 @@ test "the user's theme: read at startup, and followed live as Omarchy renames a 
         .user_theme = .{ .home = home, .config_home = config },
     });
     defer app.destroy();
-    const win = try app.createWindow(.{ .width = 16, .height = 16 }, .{});
+    var rec: Recorder = .{};
+    const win = try app.createWindow(.{ .width = 16, .height = 16 }, rec.listener());
     const t = try win.ui.begin();
     try t.setVisual(.root, .{ .background_token = .view_bg });
     t.commit();
@@ -599,6 +602,8 @@ test "the user's theme: read at startup, and followed live as Omarchy renames a 
     try runUntil(app, win, settled);
     try testing.expectEqual(check.want, try firstPixel(app, win.id));
     try testing.expectEqual(ui.theme.Scheme.dark, app.user_theme.value.scheme.?);
+    // From siv's compiled colors to the theme's.
+    try testing.expectEqual(@as(usize, 1), rec.theme_changes);
 
     // omarchy-theme-set: stage the next theme, delete the current one,
     // rename the staged one into place. Between the two the old theme
@@ -611,10 +616,15 @@ test "the user's theme: read at startup, and followed live as Omarchy renames a 
     }.f);
     try runUntil(app, &app.user_theme, idle);
     try testing.expectEqual(ui.theme.Scheme.dark, app.user_theme.value.scheme.?);
+    try testing.expectEqual(@as(usize, 1), rec.theme_changes);
     try sh("mv '" ++ cur ++ "/next-theme' '" ++ cur ++ "/theme'", .{ home, home });
     check.want = .{ 0xf5, 0xf1, 0xef, 0xff };
     try runUntil(app, &check, ThemeCheck.shows);
     try testing.expectEqual(ui.theme.Scheme.light, app.user_theme.value.scheme.?);
+    try testing.expectEqual(@as(usize, 2), rec.theme_changes);
+    // Below, a read may catch a file half written (empty, so siv's
+    // colors for a moment); each change is at least one event.
+    var changes = rec.theme_changes;
 
     // theme.toml, made later in a folder that did not exist, decides
     // over Omarchy; with base = "omarchy" it lies over Omarchy's theme.
@@ -623,14 +633,30 @@ test "the user's theme: read at startup, and followed live as Omarchy renames a 
     try runUntil(app, &check, ThemeCheck.shows);
     try testing.expectEqual(ui.theme.User.Source.file, app.user_theme.value.source);
     try testing.expect(app.user_theme.value.scheme == null);
+    try testing.expect(rec.theme_changes > changes);
+    changes = rec.theme_changes;
     try sh("printf 'base = \"omarchy\"\\n[dark]\\nview_bg = \"#00ff00\"\\n' > '{s}/siv/theme.toml'", .{config});
     // Omarchy's light theme, which the file leaves alone.
     check.want = .{ 0xf5, 0xf1, 0xef, 0xff };
     try runUntil(app, &check, ThemeCheck.shows);
+    try testing.expect(rec.theme_changes > changes);
+    changes = rec.theme_changes;
     // A broken file is no theme: siv's compiled light background.
     try sh("printf 'view_bg = \"#12' > '{s}/siv/theme.toml'", .{config});
     check.want = .{ 0xff, 0xff, 0xff, 0xff };
     try runUntil(app, &check, ThemeCheck.shows);
+    try testing.expect(rec.theme_changes > changes);
+    changes = rec.theme_changes;
+    // A theme for the dark variant only is a new theme, but the light
+    // window's colors stay, as they would half written: no event.
+    try sh("printf '[dark]\\nview_bg = \"#00ff00\"\\n' > '{s}/siv/theme.toml'", .{config});
+    try runUntil(app, &app.user_theme.value, struct {
+        fn f(u: *const ui.theme.User) bool {
+            return u.colors[@intFromEnum(ui.theme.Scheme.dark)][@intFromEnum(ui.theme.ColorToken.view_bg)] != null;
+        }
+    }.f);
+    for (0..2) |_| try app.dispatch(0);
+    try testing.expectEqual(changes, rec.theme_changes);
 }
 
 // Fonts (D19) -----------------------------------------------------------------

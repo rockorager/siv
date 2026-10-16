@@ -5400,6 +5400,22 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     core's own colors come from it too: focus rings, editor selections,
     and placeholders, so the core and stock widgets agree. Canvases read
     resolved colors with `siv_window_get_color`.
+  - Applications that copy resolved colors out of siv (a web page
+    themed through CSS variables, a terminal's palette) hear of changes
+    with a `theme_changed` window event (October 2026), whatever
+    changed them: the desktop's scheme, contrast, or accent, the user's
+    theme, or the application's theme calls. It comes at the next
+    dispatch, once for everything since the last (a burst of
+    `siv_app_set_theme_color` calls is one event), and only when a color
+    `siv_window_get_color` returns differs: a theme that changes only
+    the variant the window does not show, or a size, sends none. Each
+    window hears it, as each reads its colors, though they share one
+    palette today. Found by an Amp desktop shell on siv-webview that
+    styles a web app from the user's siv theme and had only a hidden
+    canvas's redraws to tell it. Alternatives: an application-wide
+    event (colors are read per window); calling back from inside the
+    call that changed the theme (it would re-enter the application from
+    its own `siv_app_set_theme_color`, once per call of a burst).
   - Font families are not part of the theme: Fontconfig's generic
     families decide them, or the desktop's fonts on GNOME and KDE, live
     (D19). theme.toml has no font setting, since fonts.conf is where

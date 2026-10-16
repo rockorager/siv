@@ -717,12 +717,13 @@ fn onWindowEvent(ctx: ?*anyopaque, _: *app_mod.Window, ev: *const app_mod.Window
             if (!w.dead) w.destroyTree() catch {};
             return true;
         },
-        .pointer_constraint, .shortcuts_inhibit, .restored => {
+        .pointer_constraint, .shortcuts_inhibit, .restored, .theme_changed => {
             const cb = w.on_event orelse return false;
             const kind: t.WindowEventType = switch (ev.*) {
                 .pointer_constraint => |c| if (c.active) .pointer_constrained else .pointer_unconstrained,
                 .shortcuts_inhibit => |on| if (on) .shortcuts_inhibited else .shortcuts_restored,
                 .restored => .restored,
+                .theme_changed => .theme_changed,
                 else => unreachable,
             };
             var e = windowEvent(kind, w.win.state);

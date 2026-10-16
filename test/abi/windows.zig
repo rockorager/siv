@@ -323,3 +323,53 @@ test "fonts_changed: windows hear once when a burst of font loads finishes" {
     try h.settle();
     try testing.expectEqual(@as(u32, 1), count.n);
 }
+
+test "theme_changed: windows hear once when their resolved colors change, and only then" {
+    const Count = struct {
+        n: u32 = 0,
+        view_bg: t.Color = .{},
+        fn onEvent(ud: ?*anyopaque, window: t.Window, e: *const t.WindowEvent) callconv(.c) bool {
+            const self: *@This() = @ptrCast(@alignCast(ud.?));
+            if (e.type != .theme_changed) return false;
+            self.n += 1;
+            // The new colors are what the window resolves now.
+            ok(c.siv_window_get_color(window, .view_bg, &self.view_bg)) catch unreachable;
+            return false;
+        }
+    };
+    var count: Count = .{};
+    var h: Harness = .{};
+    try h.start(100, 60, Count.onEvent, &count);
+    defer h.stop();
+    try h.settle();
+    try testing.expectEqual(@as(u32, 0), count.n);
+
+    // A burst of overrides is one event, with the colors after all of them.
+    const red: t.Color = .{ .r = 1, .g = 0, .b = 0, .a = 1 };
+    try ok(c.siv_app_set_theme_color(h.app, .all, .accent, .{ .r = 0, .g = 0, .b = 1, .a = 1 }));
+    try ok(c.siv_app_set_theme_color(h.app, .all, .view_bg, .{ .r = 0, .g = 1, .b = 0, .a = 1 }));
+    try ok(c.siv_app_set_theme_color(h.app, .all, .view_bg, red));
+    try h.settle();
+    try testing.expectEqual(@as(u32, 1), count.n);
+    try expectColor(red, count.view_bg);
+
+    // The same color again, or a color of a variant the window does not
+    // show, changes nothing it resolves.
+    try ok(c.siv_app_set_theme_color(h.app, .all, .view_bg, red));
+    try ok(c.siv_app_set_theme_color(h.app, .dark, .window_bg, red));
+    try ok(c.siv_app_set_theme(h.app, &.{ .scheme = .light }));
+    try h.settle();
+    try testing.expectEqual(@as(u32, 1), count.n);
+
+    // The scheme: the dark variant, whose window_bg was just set.
+    try ok(c.siv_app_set_theme(h.app, &.{ .scheme = .dark }));
+    try h.settle();
+    try testing.expectEqual(@as(u32, 2), count.n);
+    var bg: t.Color = .{};
+    try ok(c.siv_window_get_color(h.window, .window_bg, &bg));
+    try expectColor(red, bg);
+}
+
+fn expectColor(want: t.Color, got: t.Color) !void {
+    inline for (.{ "r", "g", "b", "a" }) |f| try testing.expectApproxEqAbs(@field(want, f), @field(got, f), 1e-4);
+}

@@ -130,7 +130,11 @@ fn onChange(ctx: ?*anyopaque, s: *dbus.Settings, changed: dbus.Settings.Changed)
     if (first) d.ready_ns = Loop.now();
     const v = effective(s.values, d.owns_fonts);
     d.values = desktopOf(v);
-    for (app.windows.items) |w| if (w) |win| win.ui.setDesktop(d.values);
+    for (app.windows.items) |w| if (w) |win| {
+        const old = win.ui.palette;
+        win.ui.setDesktop(d.values);
+        win.paletteApplied(&old);
+    };
     if (first or changed.cursor_theme or changed.cursor_size) setCursorTheme(app, s.values.cursor_theme.slice(), s.values.cursor_size);
     if ((first or changed.icon_theme) and !app.icon_theme_overridden) app.icons.setTheme(s.values.icon_theme.slice()) catch app.fail(error.OutOfMemory);
     var refresh = changed.text_scale;

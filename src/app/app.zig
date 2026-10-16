@@ -149,6 +149,8 @@ pub const App = struct {
     theme: ui.Theme = .{},
     /// The user's theme every window follows (D29).
     user_theme: user_theme.UserTheme = .{},
+    /// Delivers `theme_changed` to the windows marked for it.
+    theme_task: Loop.Task = .{ .func = onThemeTask },
     fontconfig: fontconfig.Fontconfig = .{},
     /// The application chose the default font family, so the desktop's
     /// does not replace it.
@@ -366,13 +368,40 @@ pub const App = struct {
     /// New theme choices for every window (D29).
     pub fn setTheme(app: *App, theme: *const ui.Theme) void {
         app.theme = theme.*;
-        for (app.windows.items) |w| if (w) |win| win.ui.setTheme(&app.theme);
+        for (app.windows.items) |w| if (w) |win| {
+            const old = win.ui.palette;
+            win.ui.setTheme(&app.theme);
+            win.paletteApplied(&old);
+        };
     }
 
     /// A new user theme for every window (D29).
     pub fn setUserTheme(app: *App, u: *const ui.theme.User) void {
         app.user_theme.value = u.*;
-        for (app.windows.items) |w| if (w) |win| win.ui.setUserTheme(&app.user_theme.value);
+        for (app.windows.items) |w| if (w) |win| {
+            const old = win.ui.palette;
+            win.ui.setUserTheme(&app.user_theme.value);
+            win.paletteApplied(&old);
+        };
+    }
+
+    /// Windows whose resolved colors changed hear `theme_changed`, once
+    /// for everything that changed them since the last dispatch (D29).
+    fn onThemeTask(task: *Loop.Task) void {
+        const app: *App = @fieldParentPtr("theme_task", task);
+        app.delivering += 1;
+        defer {
+            app.delivering -= 1;
+            app.freeZombies();
+        }
+        // By index: a listener may create or destroy windows.
+        var i: usize = 0;
+        while (i < app.windows.items.len) : (i += 1) {
+            const win = app.windows.items[i] orelse continue;
+            if (!win.theme_changed) continue;
+            win.theme_changed = false;
+            _ = win.notify(&.theme_changed);
+        }
     }
 
     /// The palette windows resolve now, for work outside a window (text
@@ -958,6 +987,11 @@ pub const WindowEvent = union(enum) {
     /// The compositor restored the window from the session, before its
     /// first configure.
     restored,
+    /// The window's resolved colors (`ui.Window.palette`) changed: the
+    /// desktop's scheme, contrast, or accent, the user's theme, or the
+    /// application's theme choices (D29). Sent at a dispatch, once for
+    /// everything that changed them since the last.
+    theme_changed,
     /// The compositor took the window's role away (a layer window whose
     /// output went away, a lock window whose lock or output ended); it
     /// is destroyed after this.
@@ -1028,6 +1062,8 @@ pub const Window = struct {
     is_tooltip: bool = false,
     /// What kind of surface it is (D31); popups are `.toplevel` here.
     role: std.meta.Tag(platform.Role) = .toplevel,
+    /// Its resolved colors changed since it last heard `theme_changed`.
+    theme_changed: bool = false,
 
     /// How long the pointer rests or keyboard focus stays before a
     /// tooltip shows. The desktop settings portal has no such setting;
@@ -1139,6 +1175,14 @@ pub const Window = struct {
     fn notify(win: *Window, ev: *const WindowEvent) bool {
         const f = win.listener.func orelse return false;
         return f(win.listener.ctx, win, ev);
+    }
+
+    /// The window resolved its palette again, from `old`: if its colors
+    /// changed, it hears `theme_changed` at the next dispatch.
+    pub fn paletteApplied(win: *Window, old: *const ui.theme.Palette) void {
+        if (win.ui.palette.eqlColors(old)) return;
+        win.theme_changed = true;
+        win.app.loop.schedule(&win.app.theme_task, .dispatch);
     }
 
     fn commit(ctx: ?*anyopaque, ops: []const compositor.Op) error{OutOfMemory}!u64 {

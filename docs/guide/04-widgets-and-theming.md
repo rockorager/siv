@@ -341,6 +341,17 @@ Canvases read resolved colors with `siv_window_get_color` and are drawn
 again when the theme changes (see [Custom widgets](06-custom-widgets.md)).
 Spacing, radii, and control heights are compiled into the widgets.
 
+Colors you copy out of siv, into a web page's CSS variables or a
+terminal's palette, need reading again when the theme changes. Windows
+get `SIV_WINDOW_EVENT_TYPE_THEME_CHANGED` in their `on_event` when a
+color `siv_window_get_color` returns changed: the desktop's scheme,
+contrast, or accent, the user's theme, or your own `siv_app_set_theme`
+and `siv_app_set_theme_color` calls. It arrives at the next dispatch,
+once for a burst of changes, and not at all when a change leaves the
+window's colors as they were, such as a theme for the variant it does
+not show. Read the colors when the window is created and again on each
+event.
+
 Motion follows the desktop too: with reduced motion (the desktop's
 setting, or `SIV_APP_REDUCED_MOTION`), transitions jump, animations stop,
 and carets stop blinking.
