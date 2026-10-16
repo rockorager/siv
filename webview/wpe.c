@@ -30,6 +30,11 @@
 
 struct wpe_app;
 
+/* A rectangle by its edges, in buffer pixels. */
+struct box {
+    int x0, y0, x1, y1;
+};
+
 /* One web view's engine state. */
 typedef struct wpe_wv {
     swv_webview *wv;
@@ -44,6 +49,14 @@ typedef struct wpe_wv {
     GPtrArray *awaiting;
     /* siv shows the node (the view is mapped). */
     bool shown;
+    /* WebKit reports each frame's damage (PropagateDamagingInformation,
+     * on by default since 2.54), so a frame without any changed nothing. */
+    bool damage_known;
+    /* Shared-memory frames: their count, and the bounding box of each
+     * recent one's damage by its number, so that a buffer's copy takes
+     * only what changed since it was last copied. */
+    uint64_t shm_frames;
+    struct box shm_damage[8];
     double scale;
     int width, height;
     unsigned buttons;
@@ -257,6 +270,8 @@ struct shm_copy {
     int fd;
     size_t size;
     void *map;
+    /* The frame number of its last copy; 0 before the first. */
+    uint64_t copied;
 };
 
 static void shm_copy_free(gpointer p) {
@@ -266,14 +281,37 @@ static void shm_copy_free(gpointer p) {
     g_free(c);
 }
 
+/* WebKit's frame damage, what changed since its previous frame in buffer
+ * pixels, goes to siv, so that siv and the display server redraw only
+ * that. Without damage tracking a frame has no rectangles and changed
+ * all over; with it (WebKit 2.54's default), a frame without any changed
+ * nothing, as when a running animation's step did not move: siv gets one
+ * empty rectangle. */
 static gboolean swv_view_render_buffer(WPEView *view, WPEBuffer *buffer, const WPERectangle *damage, guint n_damage, GError **error) {
-    (void)damage, (void)n_damage;
     wpe_wv *w = SWV_VIEW(view)->w;
     if (!w) {
         g_set_error_literal(error, WPE_VIEW_ERROR, WPE_VIEW_ERROR_RENDER_FAILED, "web view gone");
         return FALSE;
     }
-    siv_external_frame_desc f = {.size = sizeof f, .key = (uint64_t)(uintptr_t)buffer, .width = (uint32_t)wpe_buffer_get_width(buffer), .height = (uint32_t)wpe_buffer_get_height(buffer)};
+    int width = wpe_buffer_get_width(buffer), height = wpe_buffer_get_height(buffer);
+    siv_external_frame_desc f = {.size = sizeof f, .key = (uint64_t)(uintptr_t)buffer, .width = (uint32_t)width, .height = (uint32_t)height};
+    siv_rect rects[16];
+    struct box box = {0, 0, width, height};
+    if (n_damage && n_damage <= G_N_ELEMENTS(rects)) {
+        box = (struct box){width, height, 0, 0};
+        for (guint i = 0; i < n_damage; i++) {
+            const WPERectangle *r = &damage[i];
+            rects[i] = (siv_rect){(float)r->x, (float)r->y, (float)r->width, (float)r->height};
+            box = (struct box){MIN(box.x0, r->x), MIN(box.y0, r->y), MAX(box.x1, r->x + r->width), MAX(box.y1, r->y + r->height)};
+        }
+        f.damage = rects;
+        f.damage_count = n_damage;
+    } else if (!n_damage && w->damage_known) {
+        rects[0] = (siv_rect){0};
+        box = (struct box){width, height, 0, 0};
+        f.damage = rects;
+        f.damage_count = 1;
+    }
     siv_external_plane planes[3];
     int fence = -1;
     if (WPE_IS_BUFFER_DMA_BUF(buffer)) {
@@ -309,9 +347,27 @@ static gboolean swv_view_render_buffer(WPEView *view, WPEBuffer *buffer, const W
             }
             wpe_buffer_set_user_data(buffer, c, shm_copy_free);
         }
-        memcpy(c->map, src, MIN(len, c->size));
+        /* What changed since this buffer's last copy: the damage of every
+         * frame after it, or all of it when that is no longer known. */
+        guint stride = wpe_buffer_shm_get_stride(s);
+        uint64_t n = ++w->shm_frames;
+        w->shm_damage[n % G_N_ELEMENTS(w->shm_damage)] = box;
+        struct box copy = {0, 0, width, height};
+        if (c->copied && n - c->copied <= G_N_ELEMENTS(w->shm_damage)) {
+            copy = (struct box){width, height, 0, 0};
+            for (uint64_t i = c->copied + 1; i <= n; i++) {
+                struct box b = w->shm_damage[i % G_N_ELEMENTS(w->shm_damage)];
+                copy = (struct box){MIN(copy.x0, b.x0), MIN(copy.y0, b.y0), MAX(copy.x1, b.x1), MAX(copy.y1, b.y1)};
+            }
+            copy = (struct box){MAX(copy.x0, 0), MAX(copy.y0, 0), MIN(copy.x1, width), MIN(copy.y1, height)};
+        }
+        c->copied = n;
+        for (int y = copy.y0; y < copy.y1 && copy.x0 < copy.x1; y++) {
+            size_t at = (size_t)y * stride + (size_t)copy.x0 * 4, row = (size_t)(copy.x1 - copy.x0) * 4;
+            if (at + row <= MIN(len, c->size)) memcpy((char *)c->map + at, (const char *)src + at, row);
+        }
         f.fd = c->fd;
-        f.stride = wpe_buffer_shm_get_stride(s);
+        f.stride = stride;
     } else {
         g_set_error_literal(error, WPE_VIEW_ERROR, WPE_VIEW_ERROR_RENDER_FAILED, "unknown buffer type");
         return FALSE;

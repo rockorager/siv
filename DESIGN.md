@@ -6418,6 +6418,30 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     page's last animation frame came at least half a second before it
     was hidden; with WebKit's timer, a page whose animation paints
     nothing is never hidden and animates forever.
+  - **Frame damage.** WebKit passes each frame's damage to
+    `WPEView.render_buffer`, and siv-webview hands it to the frame slot
+    (D17), so a small animation costs siv and the display server only
+    its rectangle. WebKit 2.54 tracks damage by default on WPE
+    (`PropagateDamagingInformation`, `UnifyDamagedRegions`, and
+    `UseDamagingInformationForCompositing`, which also limits WebKit's
+    own composition to it); 2.52 does not by default and gives no
+    rectangles, so every frame is all new there, as before. With tracking on, a frame
+    without rectangles changed nothing (WebKit skips empty damage), as
+    when an animation's `steps()` did not move this tick: siv-webview
+    sends one empty rectangle, where WPE's own Wayland platform damages
+    the whole surface. Shared-memory frames (CPU rendering) are copied
+    into their memfd only over the damage since that buffer's last copy
+    (the bounding boxes of the last eight frames; older is all of it).
+    Measured on headless sway with CPU rendering, a 942x1150 window at
+    scale 1.5 with a 16 px CSS spinner: WebKit 2.54.1 reports about
+    1,000 px a frame; WPEWebProcess 23-32% CPU before and 25-31% after
+    (the same frames, and a few more a second once sway keeps up;
+    WebKit's shared-memory path reads every whole frame back into its
+    buffer, `RenderTargetSHMImage::didRenderFrame`, a WebKit matter), the siv process 9-11% before and 2-3% after, sway
+    10-12% before and 1% after.
+    With a `steps(8)` spinner that moves twice a second, 57 frames a
+    second were all new before; after, 2 frames a second damage
+    1,100 px and the rest nothing.
   - **User scripts.** `siv_webview_add_user_script` adds JavaScript that
     runs in every page the web view loads afterwards (loads, reloads,
     navigations), in the page's own world after `window.siv`, in the

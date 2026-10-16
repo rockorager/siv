@@ -768,6 +768,18 @@ static char *dir_or_default(const char *dir, size_t len, const char *base) {
     return g_build_filename(base, prg && *prg ? prg : "siv", "webview", NULL);
 }
 
+/* Whether a WebKit feature (a preference by its identifier) is on. */
+static bool feature_enabled(WebKitSettings *settings, const char *id) {
+    WebKitFeatureList *list = webkit_settings_get_all_features();
+    bool on = false;
+    for (gsize i = 0; i < webkit_feature_list_get_length(list); i++) {
+        WebKitFeature *f = webkit_feature_list_get(list, i);
+        if (!strcmp(webkit_feature_get_identifier(f), id)) on = webkit_settings_get_feature_enabled(settings, f);
+    }
+    webkit_feature_list_unref(list);
+    return on;
+}
+
 static WebKitNetworkSession *session_for(wpe_app *wa, const siv_webview_desc *d) {
     if (d->flags & SIV_WEBVIEW_EPHEMERAL) {
         WebKitNetworkSession *s = webkit_network_session_new_ephemeral();
@@ -844,6 +856,7 @@ static siv_result wpe_create(swv_webview *wv, const siv_webview_desc *d) {
         webkit_settings_set_user_agent(settings, ua);
         g_free(ua);
     }
+    w->damage_known = feature_enabled(settings, "PropagateDamagingInformation");
     WebKitNetworkSession *session = session_for(wa, d);
     w->web_view = g_object_new(WEBKIT_TYPE_WEB_VIEW, "display", wa->display, "web-context", wa->context, "network-session", session, "user-content-manager", w->content, "settings", settings, NULL);
     g_object_unref(session);
