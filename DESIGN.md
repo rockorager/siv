@@ -1807,7 +1807,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       selection's last grapheme, a visual mode's cursor), in the text color
       at 40% opacity so the character shows through; it is the same
       caret layer, so moving it stays a transform and it blinks as
-      before. `SIV_EDITOR_NO_INPUT_METHOD` keeps the seat's input method
+      before. `siv_show_caret_at` draws the caret apart from the
+      selection's ends, the selection unchanged, until the selection or
+      the text next changes: Vim's visual-line mode selects whole lines
+      while its cursor stays at its column, which a caret that must be
+      an end of the selection cannot show. The application sets it after
+      the selection in the same transaction; a click or a key that moves
+      the selection drops it, so it never lingers where the user is not.
+      `SIV_EDITOR_NO_INPUT_METHOD` keeps the seat's input method
       disabled while the editor has focus, so a command mode's letters
       are keys, not composition (xkbcommon compose still types).
     - `siv_node_get_caret_rect` and `siv_node_get_offset_at` answer in

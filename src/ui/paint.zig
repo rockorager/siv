@@ -618,7 +618,7 @@ pub const State = struct {
                     // motion or when the desktop turned blinking off.
                     const e = win.node(l.owner).data.editor;
                     var hasher = std.hash.Wyhash.init(st.blink_epoch);
-                    std.hash.autoHash(&hasher, .{ e.caret, e.anchor, e.revision });
+                    std.hash.autoHash(&hasher, .{ e.caret, e.anchor, e.revision, e.shown_caret });
                     const key = hasher.final() | 1;
                     if (key != l.blink_key) {
                         l.blink_key = key;

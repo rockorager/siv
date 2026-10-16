@@ -580,6 +580,7 @@ pub const Txn = struct {
             }.f;
             e.caret = map(sel[0], from, to, len);
             e.anchor = map(sel[1], from, to, len);
+            e.shown_caret = null;
         }
     }
 
@@ -606,6 +607,7 @@ pub const Txn = struct {
             }
             e.caret = charBoundary(copy, e.caret);
             e.anchor = charBoundary(copy, e.anchor);
+            e.shown_caret = null;
             e.revision +%= 1;
         }
         t.win.markShape(id);
@@ -691,6 +693,7 @@ pub const Txn = struct {
             }
             ed.caret = @intCast(shown.len());
             ed.anchor = ed.caret;
+            ed.shown_caret = null;
             ed.revision +%= 1;
             t.win.markShape(id);
             t.win.dirty.semantics = true;
@@ -726,7 +729,10 @@ pub const Txn = struct {
         if (e.caret == c and e.anchor == a and e.affinity == affinity) return;
         try t.reserve();
         t.touch(id);
-        if (e.caret != c or e.anchor != a) e.typing = null;
+        if (e.caret != c or e.anchor != a) {
+            e.typing = null;
+            e.shown_caret = null;
+        }
         e.caret = c;
         e.anchor = a;
         e.affinity = affinity;
@@ -735,6 +741,22 @@ pub const Txn = struct {
         t.win.reveal = id;
         t.win.markPaint(id);
         t.win.dirty.semantics = true;
+    }
+
+    /// Draws an editor's caret at `offset` (moved back to a character
+    /// boundary and clamped to the text) instead of at the selection's
+    /// caret, until the selection or the text next changes; null draws
+    /// it at the selection's caret again. The selection is unchanged.
+    pub fn showCaretAt(t: *Txn, id: NodeId, offset: ?u32) Error!void {
+        const n = try t.data(id, .editor);
+        const e = &n.data.editor;
+        if (e.editor.masked and offset != null) return error.InvalidArgument;
+        const at = if (offset) |o| charBoundary(e.text.content, o) else null;
+        if (std.meta.eql(e.shown_caret, at)) return;
+        try t.reserve();
+        t.touch(id);
+        e.shown_caret = at;
+        t.win.markPaint(id);
     }
 
     /// Text style, alignment, wrapping, and paragraph defaults. Color and

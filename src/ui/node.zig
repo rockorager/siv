@@ -620,6 +620,9 @@ pub const EditorData = struct {
     anchor: u32 = 0,
     /// Which side of a bidi or wrap boundary the caret is drawn on.
     affinity: text.layout.Affinity = .downstream,
+    /// Where the caret is drawn instead, apart from the selection's ends
+    /// (`Txn.showCaretAt`), until the selection or the text changes.
+    shown_caret: ?u32 = null,
     /// Counts text changes, so undo history knows when the application
     /// replaced the text underneath it.
     revision: u32 = 0,

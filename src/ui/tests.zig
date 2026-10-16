@@ -1513,6 +1513,23 @@ test "editor: an application's own editing model (range edits, its history, chan
         const want = try editor.caretRectAt(f.win, ed, l, .{ .offset = c[2], .affinity = .downstream }, true);
         try testing.expectEqual(want, try editor.caretRect(f.win, ed, l));
     }
+    // A caret shown apart from the selection (visual-line mode's cursor
+    // at its column) stays until the selection changes.
+    t = try f.win.begin();
+    try t.setSelection(ed, 8, 4, .downstream);
+    try t.showCaretAt(ed, 5);
+    t.commit();
+    try f.frame();
+    var l = text_node.current(f.win, ed).?;
+    const at5 = try editor.caretRectAt(f.win, ed, l, .{ .offset = 5, .affinity = .downstream }, true);
+    try testing.expectEqual(at5, try editor.caretRect(f.win, ed, l));
+    try testing.expectEqual(@as(u32, 8), f.win.node(ed).data.editor.caret);
+    t = try f.win.begin();
+    try t.setSelection(ed, 2, 0, .downstream);
+    t.commit();
+    try f.frame();
+    l = text_node.current(f.win, ed).?;
+    try testing.expectEqual(try editor.caretRectAt(f.win, ed, l, .{ .offset = 1, .affinity = .downstream }, true), try editor.caretRect(f.win, ed, l));
 }
 
 test "styled text: spans shape as runs, follow edits, format as undo steps, and set the typing style" {

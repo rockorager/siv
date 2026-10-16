@@ -1101,6 +1101,16 @@ pub export fn siv_set_selection(txn: t.Txn, node: t.Node, caret: u32, anchor: u3
     }.f, .{ node, caret, anchor });
 }
 
+pub export fn siv_show_caret_at(txn: t.Txn, node: t.Node, offset: u32) void {
+    _ = run(txn, struct {
+        fn f(w: *Window, n: t.Node, o: u32) Error!void {
+            const id = try nodeIn(w, n);
+            if (w.uiWin().node(id).kind != .editor) return error.InvalidArgument;
+            w.txn.ut.showCaretAt(id, if (o == std.math.maxInt(u32)) null else o) catch |err| return mapTxn(err);
+        }
+    }.f, .{ node, offset });
+}
+
 pub export fn siv_set_transition(txn: t.Txn, node: t.Node, duration_ms: u32) void {
     _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, ms: u32) Error!void {
