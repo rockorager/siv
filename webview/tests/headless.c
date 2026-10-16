@@ -434,6 +434,19 @@ static void check_zoom_and_scheme(void) {
     stop(&f);
 }
 
+/* The page sees the headless seat's pointer: hover-only controls (Tailwind's
+ * pointer-fine:group-hover:...) show. */
+static void check_input_devices(void) {
+    struct fixture f;
+    CHECK(start(&f, SIV_WEBVIEW_EPHEMERAL, NULL));
+    CHECK(load(&f, "<p>x", NULL));
+    struct answer a;
+    CHECK(eval(&f, "['(pointer: fine)', '(hover: hover)', '(any-pointer: fine)', '(any-hover: hover)', '(any-pointer: coarse)'].map(q => matchMedia(q).matches)", &a));
+    if (strcmp(a.json, "[true,true,true,true,false]")) fprintf(stderr, "media queries: %s\n", a.json);
+    CHECK(!strcmp(a.json, "[true,true,true,true,false]"));
+    stop(&f);
+}
+
 static void check_history(void) {
     struct fixture f;
     CHECK(start(&f, SIV_WEBVIEW_EPHEMERAL, NULL));
@@ -665,6 +678,7 @@ static const struct {
     {"data dir", check_data_dir},
     {"cookies", check_cookies},
     {"zoom and color scheme", check_zoom_and_scheme},
+    {"input devices", check_input_devices},
     {"history", check_history},
     {"drop", check_drop},
     {"wheel", check_wheel},

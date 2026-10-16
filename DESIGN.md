@@ -6342,6 +6342,16 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     never links it at all. Its NOTICES (`share/licenses/siv-webview`)
     says so; siv's own NOTICES (D25) is unchanged, since none of it is in
     libsiv.
+  - **Input devices.** WebKit answers `pointer`, `hover`, `any-pointer`,
+    and `any-hover` from the primary `WPEDisplay`'s available input
+    devices, read as it starts a web process (a later change reaches only
+    later evaluations; open pages' queries are not re-evaluated). With
+    none, pages see `(pointer: none)` and hide hover-only controls. siv's
+    API does not say which devices the seat has, so the display reports a
+    mouse and a keyboard from its connection, before the first web view:
+    siv is a desktop toolkit. No touchscreen, which would make
+    `(any-pointer: coarse)` true on every desktop. Reverse if siv exposes
+    the seat's capabilities and touch-only devices matter.
   - **What the engine cannot do.** WPE 2.52's platform API has no drag
     and drop: text and URLs dropped on the node become DOM drag events,
     files cannot be dropped in, and drags do not start from a page. It has

@@ -534,6 +534,15 @@ static gboolean swv_display_connect(WPEDisplay *display, GError **error) {
     self->screen = g_object_new(swv_screen_get_type(), "id", 1, NULL);
     wpe_screen_set_scale(self->screen, 1.0);
     wpe_screen_set_refresh_rate(self->screen, 60000);
+    /* WebKit answers the pointer, hover, any-pointer, and any-hover media
+     * queries from the primary display's input devices, which it reads as
+     * it starts a web process; without any, pages see (pointer: none) and
+     * hide their hover-only controls. siv's API does not say which devices
+     * the seat has, and siv is a desktop toolkit: a mouse and a keyboard,
+     * set here, before the first web view. Not a touchscreen, which would
+     * make (any-pointer: coarse) true and pages enlarge their targets on
+     * every desktop. */
+    wpe_display_set_available_input_devices(display, WPE_AVAILABLE_INPUT_DEVICE_MOUSE | WPE_AVAILABLE_INPUT_DEVICE_KEYBOARD);
     return TRUE;
 }
 
