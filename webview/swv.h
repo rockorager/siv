@@ -71,6 +71,10 @@ typedef struct swv_engine {
     void (*set_zoom)(struct swv_webview *wv, double zoom);
     void (*set_dark)(struct swv_webview *wv, bool dark);
     siv_result (*run_script)(struct swv_webview *wv, const char *script, size_t len, siv_webview_script_fn cb, siv_destroy_fn destroy, void *user_data);
+    /* Flags checked by the siv side; *id is nonzero and unique within the
+     * web view. */
+    siv_result (*add_user_script)(struct swv_webview *wv, const char *source, size_t len, siv_webview_script_flags flags, uint64_t *id);
+    siv_result (*remove_user_script)(struct swv_webview *wv, uint64_t id);
     siv_result (*add_message_handler)(struct swv_webview *wv, const char *name);
     siv_result (*post_message)(struct swv_webview *wv, const char *json, size_t len);
     siv_result (*permission_reply)(struct swv_webview *wv, uint64_t id, bool allow);

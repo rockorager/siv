@@ -231,10 +231,12 @@ static void on_destroy(void *user_data) {
 
 /* ---------- web views ---------- */
 
-static const struct {
+typedef struct {
     const char *name;
-    siv_webview_flags flag;
-} flag_names[] = {
+    uint32_t flag;
+} flag_name;
+
+static const flag_name flag_names[] = {
     {"ephemeral", SIV_WEBVIEW_EPHEMERAL},
     {"developer_extras", SIV_WEBVIEW_DEVELOPER_EXTRAS},
     {"no_theme", SIV_WEBVIEW_NO_THEME},
@@ -242,25 +244,37 @@ static const struct {
     {"no_scripts", SIV_WEBVIEW_NO_SCRIPTS},
 };
 
-static siv_webview_flags check_flags(lua_State *L, int table) {
-    siv_webview_flags flags = 0;
-    lua_getfield(L, table, "flags");
-    if (lua_isstring(L, -1)) {
+static const flag_name script_flag_names[] = {
+    {"all_frames", SIV_WEBVIEW_SCRIPT_ALL_FRAMES},
+    {"document_end", SIV_WEBVIEW_SCRIPT_DOCUMENT_END},
+};
+
+/* Flags from the value at idx: nil, a name, or a list of names. */
+static uint32_t opt_flags(lua_State *L, int idx, const flag_name *names, size_t count) {
+    uint32_t flags = 0;
+    idx = lua_absindex(L, idx);
+    if (lua_type(L, idx) == LUA_TSTRING) {
         lua_createtable(L, 1, 0);
-        lua_insert(L, -2);
+        lua_pushvalue(L, idx);
         lua_rawseti(L, -2, 1);
-    }
-    if (lua_istable(L, -1)) {
-        for (lua_Integer i = 1; lua_rawgeti(L, -1, i) != LUA_TNIL; i++) {
-            const char *n = luaL_checkstring(L, -1);
-            size_t k = 0;
-            while (k < sizeof flag_names / sizeof flag_names[0] && strcmp(flag_names[k].name, n)) k++;
-            if (k == sizeof flag_names / sizeof flag_names[0]) luaL_error(L, "siv.webview: unknown flag '%s'", n);
-            flags |= flag_names[k].flag;
-            lua_pop(L, 1);
-        }
+    } else if (lua_istable(L, idx)) lua_pushvalue(L, idx);
+    else if (lua_isnoneornil(L, idx)) return 0;
+    else return (uint32_t)luaL_error(L, "siv.webview: flags is a string or a list of strings");
+    for (lua_Integer i = 1; lua_rawgeti(L, -1, i) != LUA_TNIL; i++) {
+        const char *n = luaL_checkstring(L, -1);
+        size_t k = 0;
+        while (k < count && strcmp(names[k].name, n)) k++;
+        if (k == count) luaL_error(L, "siv.webview: unknown flag '%s'", n);
+        flags |= names[k].flag;
         lua_pop(L, 1);
-    } else if (!lua_isnil(L, -1)) luaL_error(L, "siv.webview: flags is a string or a list of strings");
+    }
+    lua_pop(L, 2);
+    return flags;
+}
+
+static siv_webview_flags check_flags(lua_State *L, int table) {
+    lua_getfield(L, table, "flags");
+    siv_webview_flags flags = opt_flags(L, -1, flag_names, sizeof flag_names / sizeof flag_names[0]);
     lua_pop(L, 1);
     return flags;
 }
@@ -477,6 +491,25 @@ static int l_run_script(lua_State *L) {
     return 0;
 }
 
+/* wv:add_user_script(js [, flags]) -> id; flags "all_frames",
+ * "document_end", or a list of them. */
+static int l_add_user_script(lua_State *L) {
+    siv_webview h = check_webview(L, 1);
+    size_t len;
+    const char *js = luaL_checklstring(L, 2, &len);
+    siv_webview_script_flags flags = opt_flags(L, 3, script_flag_names, sizeof script_flag_names / sizeof script_flag_names[0]);
+    uint64_t id = 0;
+    siv_result r = siv_webview_add_user_script(h, js, len, flags, &id);
+    if (r != SIV_OK) return fail(L, "add_user_script", r);
+    lua_pushinteger(L, (lua_Integer)id);
+    return 1;
+}
+
+static int l_remove_user_script(lua_State *L) {
+    siv_result r = siv_webview_remove_user_script(check_webview(L, 1), (uint64_t)luaL_checkinteger(L, 2));
+    return r == SIV_OK ? 0 : fail(L, "remove_user_script", r);
+}
+
 static int l_add_message_handler(lua_State *L) {
     size_t len;
     const char *n = luaL_checklstring(L, 2, &len);
@@ -590,6 +623,8 @@ static const luaL_Reg webview_methods[] = {
     {"set_zoom", l_set_zoom},
     {"set_color_scheme", l_set_color_scheme},
     {"run_script", l_run_script},
+    {"add_user_script", l_add_user_script},
+    {"remove_user_script", l_remove_user_script},
     {"add_message_handler", l_add_message_handler},
     {"post_message", l_post_message},
     {"permission_reply", l_permission_reply},

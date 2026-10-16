@@ -308,6 +308,31 @@ SIV_NODISCARD siv_result siv_webview_set_color_scheme(siv_webview webview, siv_c
  *  (SIV_ERROR_UNAVAILABLE). Promises are not awaited. */
 SIV_NODISCARD siv_result siv_webview_run_script(siv_webview webview, const char *script, size_t script_len, siv_webview_script_fn callback, siv_destroy_fn destroy, void *user_data);
 
+/** Where and when a user script runs (siv_webview_add_user_script). The
+ *  default, 0, is the main frame at document start: before any of the
+ *  page's own scripts, with document.documentElement already there. */
+typedef uint32_t siv_webview_script_flags;
+/** Run in every frame, iframes included, not only the main frame. */
+#define SIV_WEBVIEW_SCRIPT_ALL_FRAMES ((siv_webview_script_flags)1u << 0)
+/** Run at document end (the document parsed, before subresources such as
+ *  images finish loading) instead of document start. */
+#define SIV_WEBVIEW_SCRIPT_DOCUMENT_END ((siv_webview_script_flags)1u << 1)
+
+/** Adds JavaScript that runs in every page the web view loads from the
+ *  next load on (loads, reloads, navigations) until removed. It runs in
+ *  the page's own JavaScript world (it sees and changes what the page's
+ *  scripts see), after window.siv is set up, and user scripts run in the
+ *  order they were added. It does not run in the current page
+ *  (siv_webview_run_script does), nor with SIV_WEBVIEW_NO_SCRIPTS. id, if
+ *  not NULL, gets what siv_webview_remove_user_script takes.
+ *  SIV_ERROR_INVALID_ARGUMENT for unknown flags. */
+SIV_NODISCARD siv_result siv_webview_add_user_script(siv_webview webview, const char *source, size_t source_len, siv_webview_script_flags flags, uint64_t *id);
+
+/** Removes a user script, from the next load on (the current page keeps
+ *  what it ran). SIV_ERROR_INVALID_ARGUMENT if id is not one of the web
+ *  view's user scripts. */
+SIV_NODISCARD siv_result siv_webview_remove_user_script(siv_webview webview, uint64_t id);
+
 /** Lets the page post messages to the application:
  *  window.webkit.messageHandlers[name].postMessage(value) arrives as
  *  SIV_WEBVIEW_EVENT_MESSAGE with value as JSON. siv.postMessage(value),

@@ -6293,6 +6293,23 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     `siv.wrap` in Lua (D23). Popups, the file chooser, notifications, and
     the clipboard are siv's own: `<select>` and the context menu are siv
     menus, file inputs open the portal's file chooser.
+  - **User scripts.** `siv_webview_add_user_script` adds JavaScript that
+    runs in every page the web view loads afterwards (loads, reloads,
+    navigations), in the page's own world after `window.siv`, in the
+    order added: at document start, before the page's own scripts, or at
+    document end; in the main frame or in all frames. It is how a native
+    shell tells a web app at module load that it runs inside one,
+    publishes native state, or replaces page APIs such as clipboard
+    writes, as WKUserScript does on macOS. The default (flags 0) is the
+    main frame at document start, the common case, so third-party iframes
+    see nothing unless asked. Each script gets an id, and
+    `siv_webview_remove_user_script` removes that one from the next load
+    on: an application that republishes state replaces its own script
+    without touching others' or siv's bridge, which a clear-all call (the
+    only form WKUserContentController has) would take too. Not yet:
+    WebKit's URL allow and block lists and isolated script worlds. The
+    engine table carries add and remove; another engine needs
+    document-start injection.
   - **In the repository.** It moves with the hooks it depends on: a
     change to frame slots, input events, or the Lua handle functions is
     tested against the web view in the same commit, and the hooks and

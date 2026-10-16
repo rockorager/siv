@@ -164,11 +164,18 @@ keycodes, so `event.code` and layouts work) and cursor images (11).
 - Dark mode: WebKit reads the appearance once per process from the
   primary WPE display, so the first display stays primary for the
   process's life and the last web view to set a color scheme decides.
+- User scripts (`siv_webview_add_user_script`, `wv:addUserScript`,
+  `wv:add_user_script`): WebKit user scripts in the web view's content
+  manager, at document start or end, in the main frame or all frames,
+  after siv's own `window.siv` script. They take effect from the next
+  load (WebKit does not inject into the current document); each has an
+  id for `siv_webview_remove_user_script`.
 - `load_html` replaces the current history entry in WPE 2.52 rather
   than adding one; `load_uri` adds one.
 - Tests (`zig build test-webview`, also part of `zig build test` when
-  the web view is built): `tests/headless.c` (now 13 checks: load and
-  title, scripts, messages both ways, `app://` schemes, navigation and
+  the web view is built): `tests/headless.c` (now 14 checks: load and
+  title, scripts, messages both ways, user scripts (document start and
+  end, frames, after a navigation, removal), `app://` schemes, navigation and
   new-window policy with real clicks, typing, frames in a capture, data
   directory vs ephemeral, zoom and dark mode, history, drops, a wheel without value120, no scripts),
   `tests/zig.zig` (layout against the C header, a page through the Zig

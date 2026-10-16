@@ -454,6 +454,71 @@ static void check_wheel(void) {
     stop(&f);
 }
 
+/* Pages for the user script check: the inline script reads what the user
+ * scripts left, and the frame reports to its parent. */
+static void serve_user(void *user_data, siv_webview_request request, const char *uri, size_t uri_len, const char *method, size_t method_len) {
+    (void)user_data, (void)method, (void)method_len;
+    const char *page = NULL;
+    if (uri_len == strlen("app://u/one.html") && !memcmp(uri, "app://u/one.html", uri_len))
+        page = "<iframe src='app://u/frame.html'></iframe>"
+               "<script>document.title = ['one', document.documentElement.dataset.shell, window.order].join(' ')</script>";
+    else if (uri_len == strlen("app://u/two.html") && !memcmp(uri, "app://u/two.html", uri_len))
+        page = "<script>document.title = ['two', document.documentElement.dataset.shell, window.order].join(' ')</script>";
+    else if (uri_len == strlen("app://u/frame.html") && !memcmp(uri, "app://u/frame.html", uri_len))
+        page = "<script>parent.frameReport = [document.documentElement.dataset.shell, window.allFrames].join(',')</script>";
+    if (page) (void)siv_webview_request_finish(request, 0, SIV_STR("text/html"), (const uint8_t *)page, strlen(page));
+    else (void)siv_webview_request_fail(request);
+}
+
+/* User scripts: at document start before the page's own scripts (after
+ * window.siv, in the order added), at document end after them, in the main
+ * frame unless all frames are asked for, again after a navigation, and
+ * gone after removal. */
+static void check_user_scripts(void) {
+    struct fixture f;
+    CHECK(start(&f, SIV_WEBVIEW_EPHEMERAL, NULL));
+    CHECK(siv_webview_register_scheme(f.app, SIV_STR("app"), serve_user, NULL, NULL) == SIV_OK);
+    uint64_t shell = 0, second = 0, end = 0, frames = 0;
+    CHECK(siv_webview_add_user_script(f.webview, SIV_STR("document.documentElement.dataset.shell = 'siv'; window.order = typeof siv + ',start'"), 0, &shell) == SIV_OK);
+    CHECK(siv_webview_add_user_script(f.webview, SIV_STR("window.order += ',second'"), 0, &second) == SIV_OK);
+    CHECK(siv_webview_add_user_script(f.webview, SIV_STR("document.title += ' end'"), SIV_WEBVIEW_SCRIPT_DOCUMENT_END, &end) == SIV_OK);
+    CHECK(siv_webview_add_user_script(f.webview, SIV_STR("window.allFrames = 'all'"), SIV_WEBVIEW_SCRIPT_ALL_FRAMES, &frames) == SIV_OK);
+    CHECK(shell && second && end && frames && shell != second && end != frames);
+    CHECK(siv_webview_add_user_script(f.webview, SIV_STR("1"), 1u << 2, NULL) == SIV_ERROR_INVALID_ARGUMENT);
+
+    CHECK(siv_webview_load_uri(f.webview, SIV_STR("app://u/one.html")) == SIV_OK);
+    CHECK(wait_title(&f, "one siv object,start,second end"));
+    /* The frame got the all-frames script only. */
+    struct answer a;
+    double until = now() + 30;
+    do {
+        CHECK(eval(&f, "window.frameReport || ''", &a));
+        if (strcmp(a.json, "\"\"")) break;
+        pump(&f, 20);
+    } while (now() < until);
+    CHECK(!strcmp(a.json, "\",all\""));
+    /* Added scripts wait for the next load. */
+    CHECK(siv_webview_add_user_script(f.webview, SIV_STR("window.late = 1"), 0, NULL) == SIV_OK);
+    CHECK(eval(&f, "typeof window.late", &a));
+    CHECK(!strcmp(a.json, "\"undefined\""));
+
+    /* A navigation by the page runs them again. */
+    CHECK(eval(&f, "location.href = 'app://u/two.html'; 1", &a));
+    CHECK(wait_title(&f, "two siv object,start,second end"));
+    CHECK(eval(&f, "window.late", &a));
+    CHECK(!strcmp(a.json, "1"));
+
+    /* Removed scripts stay out from the next load on. */
+    CHECK(siv_webview_remove_user_script(f.webview, second) == SIV_OK);
+    CHECK(siv_webview_remove_user_script(f.webview, end) == SIV_OK);
+    CHECK(siv_webview_remove_user_script(f.webview, end) == SIV_ERROR_INVALID_ARGUMENT);
+    CHECK(siv_webview_remove_user_script(f.webview, 0) == SIV_ERROR_INVALID_ARGUMENT);
+    CHECK(!strcmp(f.seen.title, "two siv object,start,second end"));
+    CHECK(siv_webview_reload(f.webview) == SIV_OK);
+    CHECK(wait_title(&f, "two siv object,start"));
+    stop(&f);
+}
+
 /* SIV_WEBVIEW_NO_SCRIPTS: neither the page's scripts nor run_script's
  * run. */
 static void check_no_scripts(void) {
@@ -476,6 +541,7 @@ static const struct {
     {"load and title", check_load_and_title},
     {"run script", check_run_script},
     {"messages", check_messages},
+    {"user scripts", check_user_scripts},
     {"scheme", check_scheme},
     {"navigation policy", check_navigation_policy},
     {"input and new window", check_input_and_new_window},

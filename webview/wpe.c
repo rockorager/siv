@@ -46,6 +46,8 @@ typedef struct wpe_wv {
     /* Permission requests and downloads by id. */
     GHashTable *permissions;
     GHashTable *downloads;
+    /* The application's user scripts by id (WebKitUserScript). */
+    GHashTable *user_scripts;
     /* The open option or context menu and its siv node. */
     siv_node menu;
     WebKitOptionMenu *option_menu;

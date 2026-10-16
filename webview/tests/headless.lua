@@ -50,6 +50,8 @@ webview.register_scheme(app, "app", function(req, uri, method)
 	requests = requests + 1
 	if uri == "app://lua/index.html" and method == "GET" then
 		req:finish("<title>from Lua</title><script>siv.postMessage({n: 1})</script>", "text/html")
+	elseif uri == "app://lua/user.html" then
+		req:finish("<script>document.title = String(document.documentElement.dataset.shell)</script>", "text/html")
 	else
 		req:fail()
 	end
@@ -89,6 +91,17 @@ wv:set_zoom(1.5)
 local st = wv:state()
 assert(st.zoom == 1.5 and not st.can_go_back)
 assert(wv:go_back() == false)
+
+-- User scripts: before the page's own at document start, or after them.
+local shell = wv:add_user_script("document.documentElement.dataset.shell = 'lua'")
+wv:add_user_script("document.title += '!'", { "document_end", "all_frames" })
+assert(not pcall(wv.add_user_script, wv, "1", "bogus"))
+wv:load_uri("app://lua/user.html")
+wait(function() return seen.title == "lua!" end, "the user scripts")
+wv:remove_user_script(shell)
+assert(not pcall(wv.remove_user_script, wv, shell))
+wv:reload()
+wait(function() return seen.title == "undefined!" end, "the reload without the shell script")
 
 wv:destroy()
 assert(not pcall(wv.load_uri, wv, "about:blank"), "a destroyed web view refuses calls")

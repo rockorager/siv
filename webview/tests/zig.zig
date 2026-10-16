@@ -15,6 +15,7 @@ test "the Zig types match the C header" {
         }
     }
     try std.testing.expectEqual(@as(u32, h.SIV_WEBVIEW_DEVELOPER_EXTRAS), @as(u32, @bitCast(webview.Flags{ .developer_extras = true })));
+    try std.testing.expectEqual(@as(u32, h.SIV_WEBVIEW_SCRIPT_DOCUMENT_END), @as(u32, @bitCast(webview.ScriptFlags{ .document_end = true })));
     try std.testing.expectEqual(@as(u32, h.SIV_WEBVIEW_CAN_GO_FORWARD), @as(u32, @bitCast(webview.EventFlags{ .can_go_forward = true })));
     try std.testing.expectEqual(@as(c_int, h.SIV_WEBVIEW_EVENT_LOAD_FAILED), @intFromEnum(webview.EventType.load_failed));
 }
@@ -50,11 +51,12 @@ test "a page's title through the Zig module" {
     try siv.txnCommit(txn);
     try std.testing.expect(node != .null);
     try std.testing.expectEqual(node, wv.node());
+    _ = try wv.addUserScript("document.title += '!'", .{ .document_end = true });
     try wv.loadHtml("<title>Zig</title>", "");
     var tries: u32 = 0;
-    while (!std.mem.eql(u8, seen.title[0..seen.title_len], "Zig") and tries < 1500) : (tries += 1) try siv.appDispatch(app, 20);
-    try std.testing.expectEqualStrings("Zig", seen.title[0..seen.title_len]);
+    while (!std.mem.eql(u8, seen.title[0..seen.title_len], "Zig!") and tries < 1500) : (tries += 1) try siv.appDispatch(app, 20);
+    try std.testing.expectEqualStrings("Zig!", seen.title[0..seen.title_len]);
     var buf: [16]u8 = undefined;
-    try std.testing.expectEqualStrings("Zig", try wv.title(&buf));
+    try std.testing.expectEqualStrings("Zig!", try wv.title(&buf));
     try std.testing.expectError(error.Busy, wv.goBack());
 }

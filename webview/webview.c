@@ -436,6 +436,20 @@ siv_result siv_webview_run_script(siv_webview webview, const char *script, size_
     return wv->engine->run_script(wv, script, script_len, callback, destroy, user_data);
 }
 
+siv_result siv_webview_add_user_script(siv_webview webview, const char *source, size_t source_len, siv_webview_script_flags flags, uint64_t *id) {
+    WV(webview);
+    if ((!source && source_len) || (flags & ~(SIV_WEBVIEW_SCRIPT_ALL_FRAMES | SIV_WEBVIEW_SCRIPT_DOCUMENT_END))) return SIV_ERROR_INVALID_ARGUMENT;
+    uint64_t added = 0;
+    siv_result r = wv->engine->add_user_script(wv, source ? source : "", source_len, flags, &added);
+    if (r == SIV_OK && id) *id = added;
+    return r;
+}
+
+siv_result siv_webview_remove_user_script(siv_webview webview, uint64_t id) {
+    WV(webview);
+    return wv->engine->remove_user_script(wv, id);
+}
+
 siv_result siv_webview_add_message_handler(siv_webview webview, const char *name, size_t name_len) {
     WV(webview);
     if (!name || !name_len || name_len > 64) return SIV_ERROR_INVALID_ARGUMENT;

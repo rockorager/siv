@@ -662,6 +662,26 @@ static siv_result wpe_run_script(swv_webview *wv, const char *script, size_t len
     return SIV_OK;
 }
 
+static siv_result wpe_add_user_script(swv_webview *wv, const char *source, size_t len, siv_webview_script_flags flags, uint64_t *id) {
+    wpe_wv *w = of(wv);
+    char *src = g_strndup(source, len);
+    WebKitUserScript *script = webkit_user_script_new(src, (flags & SIV_WEBVIEW_SCRIPT_ALL_FRAMES) ? WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES : WEBKIT_USER_CONTENT_INJECT_TOP_FRAME, (flags & SIV_WEBVIEW_SCRIPT_DOCUMENT_END) ? WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END : WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, NULL, NULL);
+    g_free(src);
+    webkit_user_content_manager_add_script(w->content, script);
+    *id = ++w->app->next_id;
+    g_hash_table_insert(w->user_scripts, GSIZE_TO_POINTER(*id), script);
+    return SIV_OK;
+}
+
+static siv_result wpe_remove_user_script(swv_webview *wv, uint64_t id) {
+    wpe_wv *w = of(wv);
+    WebKitUserScript *script = g_hash_table_lookup(w->user_scripts, GSIZE_TO_POINTER(id));
+    if (!script) return SIV_ERROR_INVALID_ARGUMENT;
+    webkit_user_content_manager_remove_script(w->content, script);
+    g_hash_table_remove(w->user_scripts, GSIZE_TO_POINTER(id));
+    return SIV_OK;
+}
+
 static siv_result wpe_post_message(swv_webview *wv, const char *json, size_t len) {
     /* Parsed here, so only JSON reaches the page, written out again as a
      * JavaScript expression. */
@@ -749,6 +769,7 @@ static siv_result wpe_create(swv_webview *wv, const siv_webview_desc *d) {
     w->awaiting = g_ptr_array_new();
     w->permissions = g_hash_table_new_full(NULL, NULL, NULL, g_object_unref);
     w->downloads = g_hash_table_new_full(NULL, NULL, NULL, g_object_unref);
+    w->user_scripts = g_hash_table_new_full(NULL, NULL, NULL, (GDestroyNotify)webkit_user_script_unref);
     w->title = g_strdup("");
     w->uri = g_strdup("");
     w->content = webkit_user_content_manager_new();
@@ -822,6 +843,7 @@ static void wpe_destroy(swv_webview *wv) {
     while (g_hash_table_iter_next(&it, &k, &v)) webkit_permission_request_deny(v);
     g_hash_table_unref(w->permissions);
     g_hash_table_unref(w->downloads);
+    g_hash_table_unref(w->user_scripts);
     SWV_VIEW(w->view)->w = NULL;
     if (w->app->focus == wv->handle) w->app->focus = 0;
     g_object_unref(w->web_view);
@@ -1131,6 +1153,8 @@ const swv_engine swv_engine_wpe = {
     .set_zoom = wpe_set_zoom,
     .set_dark = wpe_set_dark,
     .run_script = wpe_run_script,
+    .add_user_script = wpe_add_user_script,
+    .remove_user_script = wpe_remove_user_script,
     .add_message_handler = wpe_add_message_handler,
     .post_message = wpe_post_message,
     .permission_reply = wpe_permission_reply,

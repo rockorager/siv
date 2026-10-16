@@ -34,6 +34,16 @@ pub const Flags = packed struct(u32) {
     _bit5: u27 = 0,
 };
 
+/// Where and when a user script runs (siv_webview_script_flags); the
+/// default is the main frame at document start.
+pub const ScriptFlags = packed struct(u32) {
+    /// Every frame, iframes included.
+    all_frames: bool = false,
+    /// Document end instead of document start.
+    document_end: bool = false,
+    _bit2: u30 = 0,
+};
+
 pub const EventType = enum(i32) {
     load = 0,
     progress = 1,
@@ -189,6 +199,8 @@ pub const c = struct {
     pub extern fn siv_webview_set_zoom(webview: Webview, zoom: f64) siv.Result;
     pub extern fn siv_webview_set_color_scheme(webview: Webview, scheme: siv.ColorScheme) siv.Result;
     pub extern fn siv_webview_run_script(webview: Webview, script: [*]const u8, len: usize, callback: ?ScriptFn, destroy: ?siv.DestroyFn, user_data: ?*anyopaque) siv.Result;
+    pub extern fn siv_webview_add_user_script(webview: Webview, source: [*]const u8, len: usize, flags: ScriptFlags, id: ?*u64) siv.Result;
+    pub extern fn siv_webview_remove_user_script(webview: Webview, id: u64) siv.Result;
     pub extern fn siv_webview_add_message_handler(webview: Webview, name: [*]const u8, len: usize) siv.Result;
     pub extern fn siv_webview_post_message(webview: Webview, json: [*]const u8, len: usize) siv.Result;
     pub extern fn siv_webview_register_scheme(app: siv.App, scheme: [*]const u8, len: usize, callback: SchemeFn, destroy: ?siv.DestroyFn, user_data: ?*anyopaque) siv.Result;
@@ -292,6 +304,17 @@ pub const Webview = enum(u64) {
     }
     pub fn runScript(wv: Webview, script: []const u8, callback: ?ScriptFn, destroy_fn: ?siv.DestroyFn, user_data: ?*anyopaque) Error!void {
         try check(c.siv_webview_run_script(wv, script.ptr, script.len, callback, destroy_fn, user_data));
+    }
+    /// Runs `source` in every page loaded from now on, before the page's
+    /// own scripts by default; returns the id removeUserScript takes.
+    pub fn addUserScript(wv: Webview, source: []const u8, flags: ScriptFlags) Error!u64 {
+        var id: u64 = 0;
+        try check(c.siv_webview_add_user_script(wv, source.ptr, source.len, flags, &id));
+        return id;
+    }
+    /// From the next load on.
+    pub fn removeUserScript(wv: Webview, id: u64) Error!void {
+        try check(c.siv_webview_remove_user_script(wv, id));
     }
     pub fn addMessageHandler(wv: Webview, name: []const u8) Error!void {
         try check(c.siv_webview_add_message_handler(wv, name.ptr, name.len));
