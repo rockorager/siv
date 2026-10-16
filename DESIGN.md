@@ -6476,9 +6476,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     version binds the Copy key, so the library runs WebKit's Copy command
     after sending those keys to the page (and on 2.54 or later only after
     the Copy key, since a second Copy would fire the page's `copy` event
-    twice). WebKit copies through the primary display's clipboard for
-    every application in the process, so the clipboard goes to the
-    window of whichever web view last had focus, in any application.
+    twice). WebKit copies and pastes through the primary display's
+    clipboard for every application in the process, so copies go to the
+    window of whichever web view last had focus, in any application, and
+    the siv clipboard read ahead of a paste replaces the primary
+    display's contents.
   - **Media off without an audio sink.** WebKit's media pipelines end in
     GStreamer's `autoaudiosink` (gst-plugins-good, only an optional
     dependency of Arch's wpewebkit); without it the web process aborts

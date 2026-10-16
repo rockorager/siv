@@ -1048,7 +1048,11 @@ static void paste_done(wpe_wv *w) {
     gpointer k, v;
     g_hash_table_iter_init(&it, w->app->clip);
     while (g_hash_table_iter_next(&it, &k, &v)) g_ptr_array_add(formats, (gpointer)g_intern_string(k));
-    WPEClipboard *clip = wpe_display_get_clipboard(w->app->display);
+    /* NULL-terminated, as wpe_clipboard_get_formats returns them; on the
+     * primary display's clipboard, which WebKit reads for every
+     * application in the process. */
+    g_ptr_array_add(formats, NULL);
+    WPEClipboard *clip = wpe_display_get_clipboard(wpe_display_get_primary());
     WPE_CLIPBOARD_CLASS(swv_clipboard_parent_class)->changed(clip, formats, FALSE, NULL);
     g_ptr_array_unref(formats);
     if (w->paste_pending) {

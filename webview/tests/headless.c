@@ -566,6 +566,48 @@ static void check_copy(void) {
     stop(&f);
 }
 
+/* Ctrl+V pastes siv's clipboard into a field, after the page copied text
+ * of its own, from an application other than the process's first: WebKit
+ * reads the first one's display's clipboard, which keeps the page's copy
+ * until siv's contents replace it. */
+static void check_paste(void) {
+    struct fixture f;
+    /* An application before this one, even when the check runs alone. */
+    CHECK(start(&f, SIV_WEBVIEW_EPHEMERAL, NULL));
+    stop(&f);
+    CHECK(start(&f, SIV_WEBVIEW_EPHEMERAL, NULL));
+    CHECK(load(&f,
+               "<style>body{margin:0} input{display:block;width:300px;height:40px}</style>"
+               "<input id=i><p id=p>page text</p>",
+               "https://example.test/"));
+    CHECK(siv_test_click(f.window, 50, 20, SIV_POINTER_BUTTON_PRIMARY) == SIV_OK);
+    pump(&f, 200);
+    struct answer a;
+    CHECK(eval(&f, "getSelection().selectAllChildren(p); getSelection().toString()", &a));
+    CHECK(!strcmp(a.json, "\"page text\""));
+    CHECK(siv_test_key(f.window, (siv_key)'c', SIV_MODIFIERS_CTRL, SIV_STR("")) == SIV_OK);
+    struct pasted p;
+    double end = now() + 10;
+    do {
+        pump(&f, 50);
+        CHECK(clipboard_text(&f, &p));
+    } while (strcmp(p.text, "page text") && now() < end);
+    CHECK(!strcmp(p.text, "page text"));
+    /* Another program copies; the field pastes it. */
+    CHECK(siv_clipboard_write(f.window, SIV_SELECTION_CLIPBOARD, SIV_STR("from siv")) == SIV_OK);
+    CHECK(eval(&f, "i.focus(); i.setSelectionRange(0, 0); document.activeElement.id", &a));
+    CHECK(!strcmp(a.json, "\"i\""));
+    CHECK(siv_test_key(f.window, (siv_key)'v', SIV_MODIFIERS_CTRL, SIV_STR("")) == SIV_OK);
+    end = now() + 10;
+    do {
+        pump(&f, 50);
+        CHECK(eval(&f, "i.value", &a));
+    } while (strcmp(a.json, "\"from siv\"") && now() < end);
+    if (strcmp(a.json, "\"from siv\"")) fprintf(stderr, "field: %s\n", a.json);
+    CHECK(!strcmp(a.json, "\"from siv\""));
+    stop(&f);
+}
+
 /* A wheel that sends only a distance (no value120: Hyprland's virtual
  * pointers, older compositors) scrolls the page: by line steps, 15 per
  * detent, so 45 is three of them. */
@@ -865,6 +907,7 @@ static const struct {
     {"history", check_history},
     {"drop", check_drop},
     {"copy", check_copy},
+    {"paste", check_paste},
     {"wheel", check_wheel},
     {"no scripts", check_no_scripts},
     {"visibility", check_visibility},
