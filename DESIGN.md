@@ -5694,7 +5694,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     `markdown` (imports `html`): CommonMark 0.31.2 (the reference
     implementation's block and inline algorithms) plus GFM tables, task
     lists, strikethrough, and autolinks, rendered to HTML and parsed by
-    `html`, so raw HTML inside Markdown is just HTML. `doc` (imports
+    `html`, so raw HTML inside Markdown is just HTML; that HTML is
+    public too (`siv_markdown_to_html`), so an application that edits
+    Markdown exports exactly what its document nodes show. `doc` (imports
     `html`, `markdown`, `css`, `text`, `scene`, `raster`, `image`, `svg`,
     `pool`): the cascade (user agent, user, author origins, `!important`,
     inheritance, a Bloom filter of ancestors for descendant selectors,

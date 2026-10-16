@@ -137,6 +137,12 @@ pub const functions = [_]Function{
         p("data", schema.array(.u8), "The .epub file's bytes."),
         p("epub", out(ref("siv_epub")), "The publication."),
     }, .ret = ref("siv_result") },
+    .{ .name = "siv_markdown_to_html", .doc = "Renders Markdown (CommonMark with GitHub's extensions, as document nodes read it, D32) to an HTML fragment, the CommonMark reference renderer's output: for exporting a Markdown document." ++ unsupported, .since = v0_1, .params = &.{
+        p("app", ref("siv_app"), "The application."),
+        p("markdown", .string, "The Markdown, UTF-8."),
+        p("html", schema.text_buffer, "Receives at most html_cap bytes; may be NULL with html_cap 0 to learn the length."),
+        p("len", out(.usize), "The HTML's full length."),
+    }, .ret = ref("siv_result") },
     .{ .name = "siv_epub_destroy", .doc = "Closes a publication; document nodes showing a chapter keep it until they go. A stale handle does nothing.", .since = v0_1, .params = &.{p("epub", ref("siv_epub"), "The publication.")} },
     epubCall("siv_epub_get_counts", "How many chapters the spine has and how many entries the table of contents.", &.{
         p("spine", out(.u32), "Spine items, in reading order."),

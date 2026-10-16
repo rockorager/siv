@@ -34,6 +34,9 @@ const stub = struct {
             }
         };
     };
+    pub fn toHtml(_: std.mem.Allocator, _: []const u8) error{OutOfMemory}![]u8 {
+        unreachable;
+    }
     pub const ResourceKind = enum { stylesheet, image, font };
     pub const Event = union(enum) { link: struct { url: []const u8, rel: []const u8 }, loaded, size: f32, find: struct { count: u32, current: u32 }, selection, blocked_images: u32, page: struct { index: u32, count: u32 } };
     pub const View = struct {
@@ -365,6 +368,20 @@ pub export fn siv_docview_get_title(node: t.Node, title: ?[*]u8, title_cap: usiz
 }
 
 // Publications ----------------------------------------------------------------
+
+pub export fn siv_markdown_to_html(app: t.App, md: ?[*]const u8, md_len: usize, html: ?[*]u8, html_cap: usize, len: ?*usize) t.Result {
+    return application.wrap(struct {
+        fn f(a: t.App, mp: ?[*]const u8, ml: usize, ptr: ?[*]u8, cap: usize, out: ?*usize) Error!void {
+            if (!enabled) return error.Unsupported;
+            const self = try App.get(@backingInt(a));
+            const src = try runtime.string(mp, ml);
+            const gpa = self.gpa();
+            const h = try docview.toHtml(gpa, src);
+            defer gpa.free(h);
+            try copyOut(h, ptr, cap, out);
+        }
+    }.f(app, md, md_len, html, html_cap, len));
+}
 
 pub export fn siv_epub_open(app: t.App, data: ?[*]const u8, data_count: usize, out_epub: ?*t.Epub) t.Result {
     return application.wrap(struct {

@@ -70,6 +70,11 @@ pub const Options = struct {
 /// The reading defaults' user style sheet (`Options.reading`).
 pub const reading_css = doc.ua.reading_css;
 
+/// Markdown as document nodes read it, rendered to an HTML fragment.
+pub fn toHtml(gpa: std.mem.Allocator, markdown: []const u8) Error![]u8 {
+    return doc.Document.markdown.toHtml(gpa, markdown, .{});
+}
+
 pub const ResourceKind = enum(u8) { stylesheet, image, font };
 
 pub const Event = union(enum) {

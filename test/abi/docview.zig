@@ -298,3 +298,15 @@ test "C API docview: an unchecked task box stands out from a dark theme's canvas
     };
     try testing.expect(most > 60);
 }
+
+test "C API docview: Markdown rendered to HTML for export" {
+    var h: Harness = .{};
+    try h.start(40, 40, null, null);
+    defer h.stop();
+    const md = "# Notes\n\n- [x] *done*\n";
+    var len: usize = 0;
+    try ok(D.siv_markdown_to_html(h.app, md.ptr, md.len, null, 0, &len));
+    var buf: [256]u8 = undefined;
+    try ok(D.siv_markdown_to_html(h.app, md.ptr, md.len, &buf, buf.len, &len));
+    try testing.expectEqualStrings("<h1>Notes</h1>\n<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" checked=\"\" disabled=\"\" /> <em>done</em></li>\n</ul>\n", buf[0..len]);
+}
