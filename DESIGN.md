@@ -2335,6 +2335,28 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       A new frame that changes only a subsurface costs a bare commit, not a
       present. Replaced frames are released (`Event.external_released`)
       after the next frame.
+    - Frame damage: a frame says what changed since the slot's previous
+      one (`siv_external_frame_desc.damage`, rectangles in its pixels;
+      none is all of it, a lone empty one nothing). siv keeps up to four
+      rectangles (`platform.FrameDamage`; more merge into the one they
+      grow least). A frame replaced before it showed (pending fences)
+      adds its damage to its successor's, and a new size damages all.
+      Promoted, the damage goes to the subsurface's
+      `wl_surface.damage_buffer` (all of it when the subsurface showed
+      nothing), and the window's layers are not touched, so a frame
+      below the window costs no redraw of its hole either; composited,
+      only the changed part of the layer is damaged, a frame pixel wider
+      on each side for filtering. Before, every frame damaged the whole
+      subsurface or layer, so a 16 px animation in a large web view cost
+      the display server (and siv's renderer, composited) as much as a
+      full-window one. Measured with siv-webview on WebKit 2.54.1 and
+      headless sway (pixman, CPU rendering), a 16 px CSS spinner in a
+      942x1150 window at scale 1.5: about 2.3 megapixels damaged per
+      frame before, 1,000 after; sway 10-12% CPU before, 1% after; the
+      siv process 9-11% before, 2-3% after; composited through a
+      rounded clip on siv's CPU renderer, siv 380% at 6 frames a second
+      before, 32% at 60 after. Alternative: frame damage only for
+      promoted frames; a web view inside rounded corners is composited.
     - Embedders that render themselves (EGL, Vulkan WSI, GStreamer, an
       application drawing libmpv's GL output) get a `wl_surface*` of their
       own and the `wl_display*` (`Compositor.createExternalSurface`), on a
@@ -5588,6 +5610,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | `siv_app_get_wayland`, `siv_window_get_wayland`, `siv_window_request_commit` (D17, D27) | the display only through a surface slot, and no window objects | protocols siv does not support (content type, tearing control, toplevel tags) need no fork of siv; the rules keep siv's commits and frame clock its own |
   | `siv_external_frame_desc.flags` and `fence`, `SIV_EXTERNAL_FRAME_FENCE` (D17) | implicit fences only | drivers without implicit synchronization (NVIDIA's) could not say when a dma-buf frame was written |
   | `siv_external_view_desc.background` (D17) | a background the window painted under the video | bars behind video and punch-through holes become solid-color subsurfaces (single-pixel-buffer-v1) |
+  | `siv_external_frame_desc.damage` (D17) | every frame all new | a 16 px animation in a web view cost the display server and siv's renderer as much as a full-window one |
   | translucent external placements stay on their subsurface when uncovered (D17) | composited frames, embedders' surfaces at full opacity | alpha-modifier-v1 applies the opacity; fades cost bare commits |
   | the shell module (D31): `siv_layer_create`, `siv_window_set_layer`, `siv_app_watch_outputs`, `siv_lock_*`, `siv_toplevel_*`, `siv_workspace_*`, `siv_idle_watch_*`, `siv_app_get_capabilities` and their types | — | bars, docks, launchers, notifications, and lock screens through siv's windows and events, `SIV_ERROR_UNSUPPORTED` where the compositor lacks a protocol |
   | `SIV_VISUAL_WINDOW_BLUR` (D31) | — | the compositor's blur behind translucent windows (ext-background-effect-v1), region kept in step with every frame |

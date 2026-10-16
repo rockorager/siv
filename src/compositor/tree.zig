@@ -698,11 +698,19 @@ pub const Tree = struct {
     }
 
     /// Marks the layers showing external `id` changed (a new frame, or
-    /// promotion changed how it is drawn).
-    pub fn touchExternal(t: *Tree, id: update.ExternalId) void {
+    /// promotion changed how it is drawn): `part` of the frame, as
+    /// fractions of its width and height, or all of it when null.
+    pub fn touchExternal(t: *Tree, id: update.ExternalId, part: ?Rect) void {
         for (t.layers.items) |*l| if (l.alive) if (l.external) |pl| if (pl.id == id) {
             l.version +%= 1;
-            l.damage_all = true;
+            const p = part orelse {
+                l.damage_all = true;
+                continue;
+            };
+            if (p.isEmpty()) continue;
+            const r = pl.rect;
+            const d: Rect = .{ .x0 = r.x0 + p.x0 * r.width(), .y0 = r.y0 + p.y0 * r.height(), .x1 = r.x0 + p.x1 * r.width(), .y1 = r.y0 + p.y1 * r.height() };
+            l.damage = if (l.damage) |prev| prev.unite(d) else d;
         };
     }
 

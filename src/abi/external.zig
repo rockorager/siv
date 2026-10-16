@@ -241,9 +241,24 @@ pub export fn siv_external_submit(external: t.External, frame: ?*const t.Externa
                 // Shared memory: one XRGB8888 plane.
                 if (planes.len > 0 or d.drm_format != 0 or d.modifier != 0 or stride < d.width * 4) return error.InvalidArgument;
             }
+            // In whole pixels inside the frame; none listed is all of it.
+            var damage: platform.FrameDamage = .{};
+            const rects = try runtime.array(t.Rect, d.damage, d.damage_count);
+            if (rects.len > 0) damage = .none;
+            const fw: f32 = @floatFromInt(d.width);
+            const fh: f32 = @floatFromInt(d.height);
+            for (rects) |r| {
+                for ([_]f32{ r.x, r.y, r.width, r.height }) |v| if (!std.math.isFinite(v)) return error.InvalidArgument;
+                if (r.width < 0 or r.height < 0) return error.InvalidArgument;
+                const x0: i32 = @intFromFloat(std.math.clamp(@floor(r.x), 0, fw));
+                const y0: i32 = @intFromFloat(std.math.clamp(@floor(r.y), 0, fh));
+                const x1: i32 = @intFromFloat(std.math.clamp(@ceil(r.x + r.width), 0, fw));
+                const y1: i32 = @intFromFloat(std.math.clamp(@ceil(r.y + r.height), 0, fh));
+                damage.add(.{ .x = x0, .y = y0, .width = x1 - x0, .height = y1 - y0 });
+            }
             // Straight to the compositor: thread-safe, and in order with
             // the slot's other messages.
-            self.app.comp.setExternalFrame(x.platform_window, x.id, .{ .fd = d.fd, .offset = d.offset, .width = d.width, .height = d.height, .stride = stride, .key = d.key, .dmabuf = dmabuf, .fence = if (fl.fence) d.fence else null }) catch |err|
+            self.app.comp.setExternalFrame(x.platform_window, x.id, .{ .fd = d.fd, .offset = d.offset, .width = d.width, .height = d.height, .stride = stride, .key = d.key, .dmabuf = dmabuf, .fence = if (fl.fence) d.fence else null, .damage = damage }) catch |err|
                 return mapApp(err);
         }
     }.f, .{frame}));

@@ -687,7 +687,7 @@ const ReleaseTo = struct {
 /// A dma-buf frame's fences signaled: it is current now.
 fn onExternalReady(ctx: *anyopaque, id: update.ExternalId) void {
     const w: *Window = @ptrCast(@alignCast(ctx));
-    w.tree.touchExternal(id);
+    w.externals.touchNew(&w.tree, id);
     w.compositor.want(w.id);
 }
 
@@ -777,7 +777,7 @@ fn drain(self: *Compositor) void {
         .post => |p| p.func(p.ctx, self),
         .external_frame => |f| if (self.getWindow(f.window)) |w| {
             if (w.externals.setFrame(f.id, f.frame)) {
-                w.tree.touchExternal(f.id);
+                w.externals.touchNew(&w.tree, f.id);
                 self.want(f.window);
             }
         } else {
@@ -794,7 +794,7 @@ fn drain(self: *Compositor) void {
         } else if (eh.hook) |h| h.dropped(h.ctx),
         .destroy_external => |d| if (self.getWindow(d.window)) |w| {
             w.externals.destroy(self.platform, d.window, d.id);
-            w.tree.touchExternal(d.id);
+            w.tree.touchExternal(d.id, null);
             self.want(d.window);
         },
         .call => |cl| {

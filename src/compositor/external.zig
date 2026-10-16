@@ -125,6 +125,9 @@ const Mode = enum { composited, above, below };
 
 const External = struct {
     frame: ?Mapped = null,
+    /// What changed in `frame` since the one its subsurface or composition
+    /// last showed, in the frame's pixels.
+    dirty: platform.FrameDamage = .{},
     /// The next frame, until its fences signal.
     pending: ?*Pending = null,
     sub: ?platform.SubsurfaceId = null,
@@ -340,12 +343,16 @@ pub const Externals = struct {
             frame.close();
             return false;
         };
-        const m = Mapped.init(e.gpa, frame) catch {
+        var m = Mapped.init(e.gpa, frame) catch {
             frame.close();
             return false;
         };
-        // A newer frame replaces one still pending, which was never shown.
+        // A newer frame replaces one still pending, which was never shown:
+        // it changes what that one did too.
         if (x.pending) |pd| {
+            var d = pd.mapped.frame.damage;
+            d.merge(since(pd.mapped.frame, m.frame));
+            m.frame.damage = d;
             if (e.loop) |l| l.removeSource(&pd.source);
             e.retire(id, pd.mapped, x.hook);
             e.gpa.destroy(pd);
@@ -370,8 +377,17 @@ pub const Externals = struct {
     }
 
     fn makeCurrent(e: *Externals, id: ExternalId, x: *External, m: Mapped) void {
-        if (x.frame) |old| e.retire(id, old, x.hook);
+        if (x.frame) |old| {
+            x.dirty.merge(since(old.frame, m.frame));
+            e.retire(id, old, x.hook);
+        } else x.dirty = .{};
         x.frame = m;
+    }
+
+    /// What changed from frame `a` to the frame `b` after it: all of it
+    /// at a new size.
+    fn since(a: update_mod.ExternalFrame, b: update_mod.ExternalFrame) platform.FrameDamage {
+        return if (a.width != b.width or a.height != b.height) .{} else b.damage;
     }
 
     fn onPendingReady(source: *Loop.Source, _: u32) void {
@@ -400,6 +416,28 @@ pub const Externals = struct {
             _ = e.waiting.swapRemove(i);
             e.releaseRetired(r, release);
         }
+    }
+
+    /// A new frame of `id` is current: composition redraws what changed
+    /// of it, and nothing while a subsurface shows it (its commit damages
+    /// what changed instead).
+    pub fn touchNew(e: *Externals, t: *tree_mod.Tree, id: ExternalId) void {
+        const x = e.get(id) orelse return;
+        if (x.mode != .composited) return;
+        const f = x.frame.?.frame;
+        defer x.dirty = .none;
+        if (x.dirty.all) return t.touchExternal(id, null);
+        // A pixel beyond each edge, for filtering when scaled.
+        const w: f32 = @floatFromInt(f.width);
+        const h: f32 = @floatFromInt(f.height);
+        var part = raster.Rect.empty;
+        for (x.dirty.rects[0..x.dirty.len]) |r| part = part.unite(.{
+            .x0 = @as(f32, @floatFromInt(r.x - 1)) / w,
+            .y0 = @as(f32, @floatFromInt(r.y - 1)) / h,
+            .x1 = @as(f32, @floatFromInt(r.x + r.width + 1)) / w,
+            .y1 = @as(f32, @floatFromInt(r.y + r.height + 1)) / h,
+        });
+        t.touchExternal(id, part.intersect(.xywh(0, 0, 1, 1)));
     }
 
     /// Composition draws frames that are not on a subsurface, and holes
@@ -470,9 +508,13 @@ pub const Externals = struct {
             else if (f.covered) .below else .above;
             x.seen = true;
             const background = solid(f, mode, features);
-            if (mode != x.mode or (background != null) != x.solid) t.touchExternal(f.id);
+            if (mode != x.mode or (background != null) != x.solid) t.touchExternal(f.id, null);
             x.mode = mode;
             x.solid = background != null;
+            // Composition took what changed as each frame came, or redraws
+            // all of it now that its mode changed.
+            const dirty = x.dirty;
+            x.dirty = .none;
             if (mode == .composited) continue;
             const fw: f32 = @floatFromInt(x.frame.?.frame.width);
             const fh: f32 = @floatFromInt(x.frame.?.frame.height);
@@ -492,13 +534,17 @@ pub const Externals = struct {
                     .stride = x.frame.?.frame.stride,
                     .key = x.frame.?.frame.key,
                     .dmabuf = if (x.frame.?.dmabuf) |d| toPlatform(d.*) else null,
+                    // All of a subsurface that showed nothing; the frame
+                    // shown already keeps its damage, so that the state
+                    // compares equal.
+                    .damage = if (x.shown.frame) |sf| if (sf.key == x.frame.?.frame.key) sf.damage else dirty else .{},
                 },
             };
             if (x.sub == null) x.sub = p.createSubsurface(window) catch {
                 // Without a subsurface, composite it.
                 x.mode = .composited;
                 x.solid = false;
-                t.touchExternal(f.id);
+                t.touchExternal(f.id, null);
                 continue;
             };
             if (!std.meta.eql(state, x.shown)) {
@@ -515,7 +561,7 @@ pub const Externals = struct {
                     x.shown.background = null;
                     x.solid = false;
                     p.setSubsurface(window, x.sub.?, &x.shown) catch {};
-                    t.touchExternal(@intCast(i + 1));
+                    t.touchExternal(@intCast(i + 1), null);
                     changed = true;
                 }
                 continue;
@@ -527,7 +573,7 @@ pub const Externals = struct {
             }
             const keep = x.seen and x.mode != .composited;
             if (!keep) {
-                if (x.mode != .composited or x.solid) t.touchExternal(@intCast(i + 1));
+                if (x.mode != .composited or x.solid) t.touchExternal(@intCast(i + 1), null);
                 x.mode = .composited;
                 x.solid = false;
                 if (x.sub != null and x.shown.visible) {
@@ -624,7 +670,7 @@ pub const Externals = struct {
         }
         const mode: Mode = if (state.below) .below else .above;
         if (state.visible) state.background = solid(f, mode, features);
-        if (mode != x.mode or state.visible != x.shown.visible or (state.background != null) != x.solid) t.touchExternal(id);
+        if (mode != x.mode or state.visible != x.shown.visible or (state.background != null) != x.solid) t.touchExternal(id, null);
         x.mode = mode;
         x.solid = state.background != null;
         if (std.meta.eql(state, x.shown)) return false;

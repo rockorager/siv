@@ -1835,6 +1835,8 @@ pub fn setSubsurface(self: *Wayland, id: WindowId, sub: platform.SubsurfaceId, s
         self.setSolid(w, s, null, 1, false);
         return;
     };
+    // The surface shows a frame: a new one damages only what changed.
+    const showing = s.attached;
     if (s.buffer == null or s.key != frame.key) {
         const buffer = if (frame.dmabuf) |d| blk: {
             const params = (self.dmabuf orelse return error.MissingGlobal).createParams() catch return error.OutOfMemory;
@@ -1874,7 +1876,9 @@ pub fn setSubsurface(self: *Wayland, id: WindowId, sub: platform.SubsurfaceId, s
     if (!s.attached) {
         if (s.dmabuf) |b| self.syncAttach(s, b) else unsync(s);
         s.surface.attach(s.buffer, 0, 0);
-        s.surface.damageBuffer(0, 0, std.math.maxInt(i32), std.math.maxInt(i32));
+        const all = [_]platform.Rect{.{ .x = 0, .y = 0, .width = std.math.maxInt(i32), .height = std.math.maxInt(i32) }};
+        const damage = (if (showing) frame.damage.slice() else null) orelse &all;
+        for (damage) |r| s.surface.damageBuffer(r.x, r.y, r.width, r.height);
         s.attached = true;
     }
     s.subsurface.?.setPosition(state.rect.x, state.rect.y);

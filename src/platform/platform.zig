@@ -1162,6 +1162,63 @@ pub const ShmFrame = struct {
     /// ignored): shown as a linux-dmabuf wl_buffer, released with a
     /// `subsurface_released` event once the compositor lets it go.
     dmabuf: ?Dmabuf = null,
+    /// What changed since the frame the subsurface showed before; the
+    /// commit damages only that (ignored when it showed none).
+    damage: FrameDamage = .{},
+};
+
+/// What changed in a frame since the one before it, in buffer pixels: the
+/// rectangles a commit damages (D17).
+pub const FrameDamage = struct {
+    pub const max_rects = 4;
+    /// Unused entries stay zero, so that equal damage compares equal.
+    rects: [max_rects]Rect = @splat(.{ .x = 0, .y = 0, .width = 0, .height = 0 }),
+    len: u8 = 0,
+    /// Every pixel changed, or what did is unknown.
+    all: bool = true,
+
+    pub const none: FrameDamage = .{ .all = false };
+
+    /// The rectangles, or null for every pixel.
+    pub fn slice(d: *const FrameDamage) ?[]const Rect {
+        return if (d.all) null else d.rects[0..d.len];
+    }
+
+    /// Adds a rectangle; past `max_rects`, it merges into the one whose
+    /// area grows least.
+    pub fn add(d: *FrameDamage, r: Rect) void {
+        if (d.all or r.width <= 0 or r.height <= 0) return;
+        if (d.len < max_rects) {
+            d.rects[d.len] = r;
+            d.len += 1;
+            return;
+        }
+        var best: usize = 0;
+        var growth: i64 = std.math.maxInt(i64);
+        for (d.rects, 0..) |q, i| {
+            const g = area(unite(q, r)) - area(q);
+            if (g < growth) {
+                best = i;
+                growth = g;
+            }
+        }
+        d.rects[best] = unite(d.rects[best], r);
+    }
+
+    /// Adds everything `o` damages.
+    pub fn merge(d: *FrameDamage, o: FrameDamage) void {
+        if (o.all) d.* = .{} else for (o.rects[0..o.len]) |r| d.add(r);
+    }
+
+    fn area(r: Rect) i64 {
+        return @as(i64, r.width) * r.height;
+    }
+
+    fn unite(a: Rect, b: Rect) Rect {
+        const x0 = @min(a.x, b.x);
+        const y0 = @min(a.y, b.y);
+        return .{ .x = x0, .y = y0, .width = @max(a.x + a.width, b.x + b.width) - x0, .height = @max(a.y + a.height, b.y + b.height) - y0 };
+    }
 };
 
 /// A Linux dma-buf: DRM fourcc format and modifier, one to four planes.

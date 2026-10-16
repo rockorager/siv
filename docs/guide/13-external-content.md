@@ -93,6 +93,12 @@ To pace yourself to the display rather than a timer of your own, call
 request, at the window's next frame, none while the compositor does not
 draw the window.
 
+When only part of a frame changed, say which part: `damage` lists
+rectangles in the frame's pixels that changed since the slot's previous
+frame (none listed means all of it), and siv and the display server
+redraw only those, so a small animation in a large frame stays cheap. A
+web engine's frame damage is exactly this.
+
 Dma-buf frames (`SIV_EXTERNAL_MEMORY_DMABUF`) take a DRM format and
 modifier and up to four planes; a frame shows once its implicit fences
 signal, so neither siv nor the compositor waits on your GPU. Drivers that

@@ -750,6 +750,103 @@ test "external content: a subsurface when unobstructed, composited otherwise" {
     try testing.expectEqual(bgra_white, h.pixel(id, 20, 20));
 }
 
+/// `f` with damage: what changed since the slot's previous frame.
+fn damaged(f: update.ExternalFrame, rects: []const platform.Rect) update.ExternalFrame {
+    var d = f;
+    d.damage = .none;
+    for (rects) |r| d.damage.add(r);
+    return d;
+}
+
+/// Submits a w x h frame of one BGRX color that says `rects` changed.
+fn submitDamaged(h: *Harness, id: platform.WindowId, ext: update.ExternalId, w: u32, ht: u32, bgrx: [4]u8, key: u64, rects: []const platform.Rect) !void {
+    const f = try memfdFrame(w, ht, bgrx, key);
+    defer _ = std.os.linux.close(f.fd);
+    try h.comp.setExternalFrame(id, ext, damaged(f, rects));
+}
+
+test "external content: a new frame redraws only what changed" {
+    var h: Harness = .{};
+    try h.start(false);
+    defer h.stop();
+    const id = try h.window();
+    const hl = h.headless();
+    try hl.addDmabufFormat(scene.Dmabuf.xrgb8888, scene.Dmabuf.modifier_linear);
+    const ext = try h.comp.createExternal(id);
+    const bgrx_red = [4]u8{ 0, 0, 0xff, 0 };
+    try submitDamaged(&h, id, ext, 40, 30, bgrx_red, 1, &.{.{ .x = 1, .y = 1, .width = 1, .height = 1 }});
+    _ = try h.comp.commit(id, &.{
+        .{ .create = 2 },
+        .{ .insert = .{ .layer = 2, .parent = 1 } },
+        .{ .set_transform = .{ .layer = 2, .transform = .offset(10, 10) } },
+        .{ .set_external = .{ .layer = 2, .external = .{ .id = ext, .rect = .xywh(0, 0, 40, 30) } } },
+    });
+    try h.runMs(20);
+    // The slot's first frame is new everywhere, whatever it says.
+    try testing.expect(hl.subsurfaces(id)[0].?.frame.?.damage.all);
+
+    // On a subsurface, a frame's damage goes to the subsurface's commit
+    // and the window is not drawn.
+    const frames = h.comp.frameStats(id).?.frames;
+    try submitDamaged(&h, id, ext, 40, 30, bgrx_red, 2, &.{.{ .x = 4, .y = 5, .width = 6, .height = 7 }});
+    try h.runMs(20);
+    var sub = hl.subsurfaces(id)[0].?;
+    try testing.expectEqual(@as(u64, 2), sub.frame.?.key);
+    try testing.expectEqualSlices(platform.Rect, &.{.{ .x = 4, .y = 5, .width = 6, .height = 7 }}, sub.frame.?.damage.slice().?);
+    try testing.expectEqual(frames, h.comp.frameStats(id).?.frames);
+
+    // A frame replaced before it showed (its writes were pending; a pipe
+    // stands in for the dma-buf) adds what it changed to its successor's.
+    var pipe: [2]i32 = undefined;
+    if (std.os.linux.errno(std.os.linux.pipe2(&pipe, .{ .CLOEXEC = true })) != .SUCCESS) return error.SkipZigTest;
+    defer _ = std.os.linux.close(pipe[0]);
+    defer _ = std.os.linux.close(pipe[1]);
+    var busy: update.ExternalFrame = .{ .fd = pipe[0], .width = 40, .height = 30, .stride = 160, .key = 3 };
+    busy.dmabuf = .{ .format = scene.Dmabuf.xrgb8888, .modifier = scene.Dmabuf.modifier_linear, .plane_count = 1 };
+    try h.comp.setExternalFrame(id, ext, damaged(busy, &.{.{ .x = 20, .y = 20, .width = 2, .height = 2 }}));
+    busy.key = 4;
+    try h.comp.setExternalFrame(id, ext, damaged(busy, &.{.{ .x = 0, .y = 0, .width = 1, .height = 1 }}));
+    try h.runMs(20);
+    _ = std.os.linux.write(pipe[1], "x", 1);
+    try h.runMs(40);
+    sub = hl.subsurfaces(id)[0].?;
+    try testing.expectEqual(@as(u64, 4), sub.frame.?.key);
+    try testing.expectEqualSlices(platform.Rect, &.{ .{ .x = 20, .y = 20, .width = 2, .height = 2 }, .{ .x = 0, .y = 0, .width = 1, .height = 1 } }, sub.frame.?.damage.slice().?);
+    // At a new size, all of it.
+    try submitDamaged(&h, id, ext, 20, 15, bgrx_red, 5, &.{.{ .x = 1, .y = 1, .width = 1, .height = 1 }});
+    try h.runMs(20);
+    try testing.expect(hl.subsurfaces(id)[0].?.frame.?.damage.all);
+
+    // Below the window, behind a hole for what covers it, a new frame
+    // still leaves the window alone.
+    _ = try h.comp.commit(id, &.{
+        .{ .create = 3 },
+        .{ .insert = .{ .layer = 3, .parent = 1 } },
+        .{ .set_content = .{ .layer = 3, .content = try h.rect(.xywh(40, 30, 20, 20), red) } },
+    });
+    try h.runMs(20);
+    try testing.expect(hl.subsurfaces(id)[0].?.below);
+    const covered = h.comp.frameStats(id).?.frames;
+    try submitDamaged(&h, id, ext, 40, 30, bgrx_red, 6, &.{.{ .x = 4, .y = 5, .width = 6, .height = 7 }});
+    try h.runMs(20);
+    try testing.expectEqual(@as(u64, 6), hl.subsurfaces(id)[0].?.frame.?.key);
+    try testing.expectEqual(covered, h.comp.frameStats(id).?.frames);
+
+    // Composited (a rounded clip), the window's damage is only the
+    // changed part, and a pixel around it for filtering.
+    _ = try h.comp.commit(id, &.{
+        .{ .destroy = 3 },
+        .{ .set_clip = .{ .layer = 2, .clip = .{ .rect = .xywh(0, 0, 40, 30), .radii = .uniform(4, 4) } } },
+    });
+    try h.runMs(20);
+    try testing.expect(!hl.subsurfaces(id)[0].?.visible);
+    try testing.expectEqual(bgra_red, h.pixel(id, 30, 25));
+    try submitDamaged(&h, id, ext, 40, 30, .{ 0xff, 0, 0, 0 }, 7, &.{.{ .x = 4, .y = 5, .width = 6, .height = 7 }});
+    try h.runMs(20);
+    try testing.expectEqual(platform.Rect{ .x = 13, .y = 14, .width = 8, .height = 9 }, hl.presented(id).?.damage.?);
+    try testing.expectEqual(bgra_blue, h.pixel(id, 17, 18));
+}
+
 test "external content: a background is a solid subsurface with the content, painted otherwise" {
     var h: Harness = .{};
     try h.start(false);

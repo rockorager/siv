@@ -221,6 +221,9 @@ pub const ExternalFrame = struct {
     /// dma-bufs: a sync_file that signals when the frame's writes are
     /// done, waited for instead of the implicit fences.
     fence: ?i32 = null,
+    /// What changed since the slot's previous frame, in the frame's
+    /// pixels: all that a subsurface's commit or composition redraws.
+    damage: platform.FrameDamage = .{},
 
     /// Closes every fd the frame holds.
     pub fn close(f: ExternalFrame) void {

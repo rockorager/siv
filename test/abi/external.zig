@@ -172,6 +172,43 @@ test "C API external: submitted frames show, and replaced ones are released" {
     try h.settle();
 }
 
+test "C API external: a frame's damage reaches the subsurface's commit in whole pixels" {
+    var h: Harness = .{};
+    try h.start(100, 60, null, null);
+    defer h.stop();
+    var ext: t.External = .null;
+    try ok(X.siv_external_create(h.window, null, &ext));
+    var txn: t.Txn = .null;
+    try ok(T.siv_txn_begin(h.window, &txn));
+    _ = X.siv_external_view(txn, A.siv_window_get_root(h.window), &.{ .external = ext, .content_size = .{ .width = 8, .height = 4 } });
+    try ok(T.siv_txn_commit(txn));
+    const rc = linux.memfd_create("siv-test-frame", linux.MFD.CLOEXEC);
+    try testing.expectEqual(.SUCCESS, linux.errno(rc));
+    const fd: i32 = @intCast(rc);
+    defer _ = linux.close(fd);
+    _ = linux.ftruncate(fd, 8 * 4 * 4);
+    try ok(X.siv_external_submit(ext, &.{ .fd = fd, .width = 8, .height = 4, .key = 1 }));
+    try h.settle();
+    try testing.expectEqual(@as(u64, 1), (try h.subsurface()).?.frame.?.key);
+
+    // Rounded outward and cut to the frame.
+    const damage = [_]t.Rect{ .{ .x = 1.5, .y = 0.25, .width = 2, .height = 1 }, .{ .x = 6, .y = 3, .width = 10, .height = 10 } };
+    try ok(X.siv_external_submit(ext, &.{ .fd = fd, .width = 8, .height = 4, .key = 2, .damage = &damage, .damage_count = damage.len }));
+    var waited: usize = 0;
+    var sub = (try h.subsurface()).?;
+    while (sub.frame.?.key != 2) : (waited += 1) {
+        if (waited > 2000) return error.Timeout;
+        try ok(A.siv_app_dispatch(h.app, 5));
+        sub = (try h.subsurface()).?;
+    }
+    try testing.expectEqualSlices(platform.Rect, &.{ .{ .x = 1, .y = 0, .width = 3, .height = 2 }, .{ .x = 6, .y = 3, .width = 2, .height = 1 } }, sub.frame.?.damage.slice().?);
+
+    for ([_]t.Rect{ .{ .x = 0, .y = 0, .width = -1, .height = 1 }, .{ .x = std.math.nan(f32), .y = 0, .width = 1, .height = 1 } }) |bad|
+        try testing.expectEqual(t.Result.error_invalid_argument, X.siv_external_submit(ext, &.{ .fd = fd, .width = 8, .height = 4, .key = 3, .damage = &.{bad}, .damage_count = 1 }));
+    X.siv_external_destroy(ext);
+    try h.settle();
+}
+
 test "C API external: an embedder surface is configured to its node's size" {
     var h: Harness = .{};
     try h.start(100, 60, null, null);

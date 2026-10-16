@@ -1694,6 +1694,7 @@ pub const decls = [_]Decl{
         .{ .name = "planes", .type = array(ref("siv_external_plane")), .doc = "dma-buf: planes after the first (fd, offset, stride), at most three; copied." },
         .{ .name = "flags", .type = ref("siv_external_frame_flags"), .doc = "Options." },
         .{ .name = "fence", .type = .i32, .doc = "With SIV_EXTERNAL_FRAME_FENCE, dma-buf frames: a sync_file that signals once the frame's writes are done (an exported Vulkan semaphore or EGL fence), for drivers that set no implicit fences on the dma-buf, such as NVIDIA's. siv duplicates it and shows the frame once it signals, instead of waiting for implicit fences (D17)." },
+        .{ .name = "damage", .type = array(ref("siv_rect")), .doc = "The pixels that changed since the slot's previous frame, as rectangles in the frame's pixels (rounded outward), such as a web engine's frame damage; none means every pixel, and an empty rectangle alone means none. siv and the display server redraw only those (D17): a small animation in a large frame costs a small one. Copied." },
     }),
 };
 
