@@ -2451,6 +2451,18 @@ test "editor placeholders show while empty and are exposed to assistive technolo
     }.count;
     try testing.expect(glyphRuns(&f.comp) > 0);
     try testing.expectEqualStrings("Search", (try f.win.semanticsTree()).find(.text_input, "").?.placeholder);
+    // With roomy lines the hint sits on the empty line's baseline, where
+    // the caret and the first typed line are.
+    t = try f.win.begin();
+    try t.setTextProps(ed, .{ .paragraph = .{ .line_spacing = 2, .indent_start = 7 } });
+    t.commit();
+    try f.frame();
+    const empty_line = try text_node.current(f.win, ed).?.line(0);
+    const hint_line = try (try text_node.placeholder(f.win, ed)).?.line(0);
+    try testing.expect(empty_line.height > empty_line.ascent + empty_line.descent + 4);
+    try testing.expectEqual(empty_line.baseline, hint_line.baseline);
+    try testing.expectEqual(empty_line.height, hint_line.height);
+    try testing.expectEqual(empty_line.x, hint_line.x);
     t = try f.win.begin();
     try t.setText(ed, " ");
     t.commit();

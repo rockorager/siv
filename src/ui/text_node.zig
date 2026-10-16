@@ -486,7 +486,14 @@ pub fn placeholder(win: *Window, id: NodeId) error{OutOfMemory}!?*const text.Tex
     c.placeholder = .{ .paragraph = try shapeString(win, id, n.data.editor.placeholder, &.{}, null, null), .layout = undefined };
     const ph = &c.placeholder.?;
     if (ph.paragraph.wanted.len != 0) win.fonts.request(ph.paragraph.wanted);
-    ph.layout = text.TextLayout.init(win.gpa, win.scratch.allocator(), &ph.paragraph, .{ .alignment = .start }, null, false) catch |err| {
+    // In the paragraph style the first typed line would take, so the
+    // hint has its line box and baseline, where the caret is.
+    const first = (try paragraphRuns(win, id))[0].style;
+    ph.layout = text.TextLayout.init(win.gpa, win.scratch.allocator(), &ph.paragraph, .{
+        .alignment = .start,
+        .paragraphs = &.{.{ .end = std.math.maxInt(u32), .style = first }},
+        .tab_stops = n.data.editor.text.props.tab_stops,
+    }, null, false) catch |err| {
         ph.paragraph.deinit();
         c.placeholder = null;
         return switch (err) {
@@ -536,6 +543,8 @@ pub fn layoutFor(win: *Window, id: NodeId, width: ?f32) error{OutOfMemory}!?*con
     };
     c.dropPrevious();
     c.dropLayout();
+    // It takes the paragraph style at the start, which spans may change.
+    c.dropPlaceholder();
     c.layout = l;
     c.layout_width = width;
     win.stats.text_layouts += 1;

@@ -1659,6 +1659,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   and bidi levels. IME uses `text-input-v3`; xkbcommon compose sequences work
   without an IME. Masked fields keep values in locked, dump-excluded memory with
   no undo or IME.
+  - An empty editor's placeholder is laid out in the paragraph style the
+    first typed line would take (line spacing, indents, tab stops), so it
+    shares that line's box and baseline with the caret.
   - The editor node (`src/ui/editor.zig`) stores only its text, caret,
     anchor, and caret affinity; movement, hit testing, and selection
     rectangles come from the text's `TextLayout` (D13), which finds the
