@@ -938,11 +938,29 @@ static void wpe_configure(swv_webview *wv, uint32_t width, uint32_t height, doub
     }
 }
 
+/* While WebKit observes the screen's sync, every shown web view asks siv
+ * for its next frame. */
+static void request_frames(void) {
+    for (uint32_t i = 0; i < swv_webviews.len; i++) {
+        swv_webview *wv = swv_webviews.items[i];
+        if (wv && wv->engine == &swv_engine_wpe && wv->engine_data && of(wv)->shown) swv_request_frame(wv);
+    }
+}
+
+static void wpe_frame(swv_webview *wv) {
+    wpe_wv *w = of(wv);
+    if (!sync_active(the_sync)) return;
+    sync_tick(the_sync);
+    if (w->shown) swv_request_frame(wv);
+}
+
 /* WebKit's page visibility is the view being mapped. */
 static void wpe_set_shown(swv_webview *wv, bool shown) {
     wpe_wv *w = of(wv);
+    w->shown = shown;
     if (shown) wpe_view_map(w->view);
     else wpe_view_unmap(w->view);
+    if (shown && sync_active(the_sync)) swv_request_frame(wv);
 }
 
 /* Active is the window having the user's attention: the page's focus
@@ -1212,6 +1230,7 @@ const swv_engine swv_engine_wpe = {
     .released = wpe_released,
     .set_shown = wpe_set_shown,
     .set_states = wpe_set_states,
+    .frame = wpe_frame,
     .input = wpe_input,
     .drop = wpe_drop,
     .load_uri = wpe_load_uri,

@@ -42,6 +42,8 @@ typedef struct wpe_wv {
      * yet reported presented. */
     GHashTable *held;
     GPtrArray *awaiting;
+    /* siv shows the node (the view is mapped). */
+    bool shown;
     double scale;
     int width, height;
     unsigned buttons;
@@ -119,10 +121,97 @@ static bool find_drm(char *render, size_t rlen, char *primary, size_t plen) {
 
 /* ---------- WPEScreen, WPEToplevel ---------- */
 
+/* WebKit's display link (requestAnimationFrame, animations, scrolling)
+ * ticks on the screen's sync observer, or else on a 60 Hz timer that runs
+ * whether or not anything is drawn. siv's frames drive it instead: while
+ * WebKit observes, each shown web view asks siv for a frame
+ * (siv_external_request_frame), and each frame siv draws for one ticks
+ * the display link once. The compositor sends frame callbacks only while
+ * it draws the window, so a covered window, a lock screen, or an output
+ * turned off stops the ticks, and the display's own refresh rate paces
+ * them. */
+G_DECLARE_FINAL_TYPE(SwvSync, swv_sync, SWV, SYNC, WPEScreenSyncObserver)
+struct _SwvSync {
+    WPEScreenSyncObserver parent;
+    /* WebKit observes (atomic: it may stop from the tick thread). */
+    gint active;
+    /* The tick thread waits for `due`, as WebKit's own vblank monitors
+     * tick from a thread of their own: the display link expects it, and
+     * sends its messages from there. */
+    GMutex lock;
+    GCond cond;
+    bool due;
+    GThread *thread;
+    gint64 last_tick_us;
+};
+G_DEFINE_FINAL_TYPE(SwvSync, swv_sync, WPE_TYPE_SCREEN_SYNC_OBSERVER)
+
+static void request_frames(void);
+
+static gpointer sync_thread(gpointer data) {
+    SwvSync *s = data;
+    for (;;) {
+        g_mutex_lock(&s->lock);
+        while (!s->due) g_cond_wait(&s->cond, &s->lock);
+        s->due = false;
+        g_mutex_unlock(&s->lock);
+        if (g_atomic_int_get(&s->active)) WPE_SCREEN_SYNC_OBSERVER_CLASS(swv_sync_parent_class)->sync(WPE_SCREEN_SYNC_OBSERVER(s));
+    }
+    return NULL;
+}
+
+/* WebKit starts observing on the application's thread (DisplayLink's
+ * addObserver), so the web views can ask siv for frames from here. */
+static void swv_sync_start(WPEScreenSyncObserver *observer) {
+    SwvSync *s = SWV_SYNC(observer);
+    if (!s->thread) s->thread = g_thread_new("siv-webview-sync", sync_thread, s);
+    g_atomic_int_set(&s->active, 1);
+    request_frames();
+}
+
+static void swv_sync_stop(WPEScreenSyncObserver *observer) { g_atomic_int_set(&SWV_SYNC(observer)->active, 0); }
+
+static void swv_sync_class_init(SwvSyncClass *klass) {
+    WPE_SCREEN_SYNC_OBSERVER_CLASS(klass)->start = swv_sync_start;
+    WPE_SCREEN_SYNC_OBSERVER_CLASS(klass)->stop = swv_sync_stop;
+}
+
+static void swv_sync_init(SwvSync *self) {
+    g_mutex_init(&self->lock);
+    g_cond_init(&self->cond);
+}
+
+static bool sync_active(SwvSync *s) { return s && g_atomic_int_get(&s->active); }
+
+/* A frame siv draws for a web view: one tick of the display link however
+ * many windows draw at that refresh. */
+static void sync_tick(SwvSync *s) {
+    gint64 now = g_get_monotonic_time();
+    if (now - s->last_tick_us < 2000) return;
+    s->last_tick_us = now;
+    g_mutex_lock(&s->lock);
+    s->due = true;
+    g_cond_signal(&s->cond);
+    g_mutex_unlock(&s->lock);
+}
+
 G_DECLARE_FINAL_TYPE(SwvScreen, swv_screen, SWV, SCREEN, WPEScreen)
 struct _SwvScreen { WPEScreen parent; };
 G_DEFINE_FINAL_TYPE(SwvScreen, swv_screen, WPE_TYPE_SCREEN)
-static void swv_screen_class_init(SwvScreenClass *klass) { (void)klass; }
+
+/* One for the process: WebKit keeps the display link of a screen id for
+ * as long as it runs, across siv applications and their displays. */
+static SwvSync *the_sync;
+
+/* WebKit adopts the reference it gets (2.50 to 2.54), though the call is
+ * documented as transfer none: one for each caller. */
+static WPEScreenSyncObserver *swv_screen_get_sync_observer(WPEScreen *screen) {
+    (void)screen;
+    if (!the_sync) the_sync = g_object_new(swv_sync_get_type(), NULL);
+    return g_object_ref(WPE_SCREEN_SYNC_OBSERVER(the_sync));
+}
+
+static void swv_screen_class_init(SwvScreenClass *klass) { WPE_SCREEN_CLASS(klass)->get_sync_observer = swv_screen_get_sync_observer; }
 static void swv_screen_init(SwvScreen *self) { (void)self; }
 
 G_DECLARE_FINAL_TYPE(SwvToplevel, swv_toplevel, SWV, TOPLEVEL, WPEToplevel)

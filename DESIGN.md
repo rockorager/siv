@@ -6358,7 +6358,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     hidden, so a page in a suspended or undrawn window, or whose node is
     hidden, is hidden to the page (`document.visibilityState`), and its
     requestAnimationFrame callbacks stop, and with them WebKit's display
-    link, a 60 Hz timer here since the `WPEScreen` has no sync observer.
+    link.
     On sway with ampcode.com, CPU rendering, the web process went from
     about 210% CPU and the display link from 61 wakeups a second to 2%
     and none, both on a hidden workspace and with the output powered
@@ -6366,6 +6366,33 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     activated (the page's focus, `document.hasFocus`), and maximized and
     fullscreen. Before, the view was mapped and active once, at the
     first configure, forever.
+  - **Display link on siv's frames.** WebKit ticks its display link
+    (requestAnimationFrame, animations, scrolling) on the screen's
+    `WPEScreenSyncObserver` (WPEPlatform 2.50 and later; WPE's DRM
+    platform drives it from vblanks), and without one on a 60 Hz timer
+    that runs whether or not anything is drawn. siv-webview's screen
+    has an observer: while WebKit observes it, each shown web view asks
+    siv for a frame event (`siv_external_request_frame`, D17), and each
+    frame siv draws for one ticks the display link once, however many
+    windows draw at that refresh. Ticks run on a thread of their own
+    (`siv-webview-sync`), which the frame events wake, since WebKit's
+    display link asserts it is not notified on the main thread. So
+    the page animates at the display's
+    refresh, and stops at once when the compositor stops sending the
+    window frame callbacks (a covering window, a lock screen, an output
+    turned off), without waiting for the slot to be hidden a second
+    later. One observer serves the process, since WebKit keeps a
+    screen's display link for as long as it runs, across siv
+    applications. WebKit adopts the reference
+    `wpe_screen_get_sync_observer` returns, though it is documented as
+    transfer none, so each call returns a new one. On sway, CPU
+    rendering, ampcode.com: about 190% CPU visible; covered by a
+    fullscreen window or with the output off, 1-2%; the UI process's
+    60 Hz VBlankMonitor thread is gone. A headless check withholds
+    frame callbacks (`siv_test_set_occluded`) and asserts that the
+    page's last animation frame came at least half a second before it
+    was hidden; with WebKit's timer, a page whose animation paints
+    nothing is never hidden and animates forever.
   - **User scripts.** `siv_webview_add_user_script` adds JavaScript that
     runs in every page the web view loads afterwards (loads, reloads,
     navigations), in the page's own world after `window.siv`, in the

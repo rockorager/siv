@@ -164,6 +164,7 @@ static void on_slot_event(void *user_data, siv_external slot, const siv_external
     else if (e->type == SIV_EXTERNAL_EVENT_TYPE_RELEASED) wv->engine->released(wv, e->key);
     else if (e->type == SIV_EXTERNAL_EVENT_TYPE_SHOWN || e->type == SIV_EXTERNAL_EVENT_TYPE_HIDDEN) wv->engine->set_shown(wv, e->type == SIV_EXTERNAL_EVENT_TYPE_SHOWN);
     else if (e->type == SIV_EXTERNAL_EVENT_TYPE_STATES_CHANGED) wv->engine->set_states(wv, e->states);
+    else if (e->type == SIV_EXTERNAL_EVENT_TYPE_FRAME) wv->engine->frame(wv);
 }
 
 static siv_event_result on_input(void *user_data, siv_node node, const siv_event *e) {
@@ -190,6 +191,10 @@ siv_result swv_submit(swv_webview *wv, const siv_external_frame_desc *frame) {
     static bool first = true;
     if (first) trace("first frame submitted"), first = false;
     return wv->slot ? siv_external_submit(wv->slot, frame) : SIV_ERROR_UNAVAILABLE;
+}
+
+void swv_request_frame(swv_webview *wv) {
+    if (wv->slot) (void)siv_external_request_frame(wv->slot);
 }
 
 void swv_set_cursor(swv_webview *wv, siv_cursor cursor) {

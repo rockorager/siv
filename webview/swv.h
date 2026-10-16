@@ -58,6 +58,8 @@ typedef struct swv_engine {
      * window's states. */
     void (*set_shown)(struct swv_webview *wv, bool shown);
     void (*set_states)(struct swv_webview *wv, siv_window_states states);
+    /* The window draws the frame swv_request_frame asked for. */
+    void (*frame)(struct swv_webview *wv);
     /* Input on the node; returns what siv's handler returns. */
     siv_event_result (*input)(struct swv_webview *wv, const siv_event *event);
     /* Text or URLs (a URI list) dropped on the node at (x, y), logical
@@ -139,6 +141,9 @@ void swv_set_text_input(swv_webview *wv, const siv_text_input_desc *desc);
 void swv_set_accessible_embed(swv_webview *wv, const char *plug);
 /* Submits a frame to the node's slot. */
 siv_result swv_submit(swv_webview *wv, const siv_external_frame_desc *frame);
+/* Asks for the engine's frame call at the window's next frame that shows
+ * the node: siv's frame callback. */
+void swv_request_frame(swv_webview *wv);
 /* Whether the window's theme is dark. */
 bool swv_theme_dark(swv_webview *wv);
 

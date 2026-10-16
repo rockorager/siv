@@ -499,7 +499,10 @@ static void check_drop(void) {
 static void check_wheel(void) {
     struct fixture f;
     CHECK(start(&f, SIV_WEBVIEW_EPHEMERAL, NULL));
-    CHECK(load(&f, "<body style='margin:0;height:5000px'>", NULL));
+    /* After a rendering update: until one, the scrolling thread knows
+     * the previous page, with nothing to scroll and no listeners. */
+    CHECK(load(&f, "<body style='margin:0;height:5000px'><script>requestAnimationFrame(() => requestAnimationFrame(() => document.title = 'ready'))</script>", NULL));
+    CHECK(wait_title(&f, "ready"));
     CHECK(siv_test_pointer_move(f.window, 100, 100) == SIV_OK);
     CHECK(siv_test_scroll(f.window, 0, 45) == SIV_OK);
     bool settled;
@@ -722,6 +725,38 @@ static void check_visibility(void) {
     stop(&f);
 }
 
+/* WebKit's display link ticks on siv's frames: when the compositor stops
+ * drawing the window without suspending it (a covering window, a lock
+ * screen, an output turned off), requestAnimationFrame stops at once,
+ * well before siv hides the web view a second later; both resume when it
+ * draws again. */
+static void check_frames_drive_animation(void) {
+    struct fixture f;
+    CHECK(start(&f, SIV_WEBVIEW_EPHEMERAL, NULL));
+    CHECK(load(&f,
+               "<script>window.n = 0; window.last = 0; window.hiddenAt = 0;"
+               "document.addEventListener('visibilitychange', () => { if (document.hidden && !hiddenAt) hiddenAt = performance.now(); });"
+               "(function tick() { n++; last = performance.now(); requestAnimationFrame(tick); })();</script>",
+               NULL));
+    CHECK(wait_eval(&f, "document.visibilityState", "\"visible\""));
+    long a = eval_long(&f, "n");
+    pump(&f, 300);
+    CHECK(eval_long(&f, "n") > a + 3);
+
+    CHECK(siv_test_set_occluded(f.window, true) == SIV_OK);
+    CHECK(wait_eval(&f, "document.visibilityState", "\"hidden\""));
+    long gap = eval_long(&f, "Math.round(hiddenAt - last)");
+    if (gap < 500) fprintf(stderr, "the last animation frame came %ld ms before the page was hidden\n", gap);
+    CHECK(gap >= 500);
+
+    CHECK(siv_test_set_occluded(f.window, false) == SIV_OK);
+    CHECK(wait_eval(&f, "document.visibilityState", "\"visible\""));
+    a = eval_long(&f, "n");
+    pump(&f, 300);
+    CHECK(eval_long(&f, "n") > a + 3);
+    stop(&f);
+}
+
 /* The page has focus while the window is activated (the user's
  * attention), not otherwise. */
 static void check_window_active(void) {
@@ -759,6 +794,7 @@ static const struct {
     {"wheel", check_wheel},
     {"no scripts", check_no_scripts},
     {"visibility", check_visibility},
+    {"frames drive animation", check_frames_drive_animation},
     {"window active", check_window_active},
     {"no audio sink", check_no_audio_sink},
 };
