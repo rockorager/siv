@@ -669,6 +669,9 @@ fn onWindowEvent(ctx: ?*anyopaque, _: *app_mod.Window, ev: *const app_mod.Window
             return true;
         },
         .configure => |c| {
+            // Frame slots follow the window's states too (a web page's
+            // focus), after the window's own callback.
+            defer if (states(c.old.states) != states(c.new.states) and !w.dead) external.deliverAll(w, .{ .type = .states_changed });
             const cb = w.on_event orelse return false;
             self.enter();
             defer self.leave();
@@ -692,6 +695,10 @@ fn onWindowEvent(ctx: ?*anyopaque, _: *app_mod.Window, ev: *const app_mod.Window
         },
         .external_presented => |x| {
             external.deliver(w, x.id, .{ .type = .presented, .key = x.key, .present_ns = x.present_ns });
+            return false;
+        },
+        .external_visibility => |x| {
+            external.deliver(w, x.id, .{ .type = if (x.visible) .shown else .hidden });
             return false;
         },
         .presented => |p| {
@@ -750,7 +757,7 @@ fn windowEvent(kind: t.WindowEventType, s: platform.WindowState) t.WindowEvent {
     return .{ .type = kind, .width = s.width, .height = s.height, .states = @bitCast(states(s.states)), .scale = s.scale.toFloat() };
 }
 
-fn states(s: platform.WindowStates) u32 {
+pub fn states(s: platform.WindowStates) u32 {
     const out: t.WindowStates = .{
         .maximized = s.maximized,
         .fullscreen = s.fullscreen,

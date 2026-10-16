@@ -325,6 +325,31 @@ pub export fn siv_test_resize(window: t.Window, width: u32, height: u32) t.Resul
     }.f(window, width, height));
 }
 
+pub export fn siv_test_set_states(window: t.Window, states: t.WindowStates) t.Result {
+    return wrap(struct {
+        fn f(wh: t.Window, states_: t.WindowStates) Error!void {
+            const s = try runtime.flags(t.WindowStates, states_);
+            const w = try headlessWindow(wh);
+            const next: platform.WindowStates = .{
+                .maximized = s.maximized,
+                .fullscreen = s.fullscreen,
+                .resizing = s.resizing,
+                .activated = s.activated,
+                .tiled_left = s.tiled_left,
+                .tiled_right = s.tiled_right,
+                .tiled_top = s.tiled_top,
+                .tiled_bottom = s.tiled_bottom,
+                .suspended = s.suspended,
+            };
+            try onHeadless(w.owner, .{ w.win.id, next }, struct {
+                fn g(hl: *platform.Headless, x: struct { platform.WindowId, platform.WindowStates }) void {
+                    hl.configure(x[0], null, x[1]);
+                }
+            }.g);
+        }
+    }.f(window, states));
+}
+
 pub export fn siv_test_drop(window: t.Window, x: f32, y: f32, mime_type: ?[*]const u8, mime_type_len: usize, data: ?[*]const u8, data_count: usize) t.Result {
     return wrap(struct {
         fn f(wh: t.Window, px: f32, py: f32, mp: ?[*]const u8, mn: usize, dp: ?[*]const u8, dn: usize) Error!void {

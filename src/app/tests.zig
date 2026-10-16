@@ -99,7 +99,7 @@ const Recorder = struct {
                 r.last = c.new;
             },
             .theme_changed => r.theme_changes += 1,
-            .external_released, .external_configure, .external_presented, .presented, .pointer_constraint, .shortcuts_inhibit, .restored, .closed => {},
+            .external_released, .external_configure, .external_presented, .external_visibility, .presented, .pointer_constraint, .shortcuts_inhibit, .restored, .closed => {},
         }
         return r.keep_open;
     }

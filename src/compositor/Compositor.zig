@@ -305,8 +305,20 @@ const Window = struct {
     /// Retries a frame when no buffer was free, or starts delayed
     /// animations.
     timer: Timer = .{ .func = onWindowTimer },
+    /// When the last frame began (loop time), and the timer that hides
+    /// visible frame slots once a frame was owed for `stall_ns` without
+    /// one (`onStallTimer`).
+    last_frame_ns: u64 = 0,
+    stall_timer: Timer = .{ .func = onStallTimer },
     compositor: *Compositor,
 };
+
+/// How long a window may owe a frame before its frame slots count as
+/// hidden: the display server stopped asking it for frames (an output
+/// turned off, a lock screen, a hidden workspace on a compositor that
+/// does not suspend windows), and at a few frames a second at worst
+/// while it shows them.
+const stall_ns: u64 = std.time.ns_per_s;
 
 /// Starts the compositor and its platform backend.
 pub fn create(options: Options) !*Compositor {
@@ -809,7 +821,12 @@ fn applyCommit(self: *Compositor, id: WindowId, seq: u64, ops: []const Op) void 
 /// Asks the platform for a frame of window `id`, owed until it is
 /// composed (`owesFrames`).
 fn want(self: *Compositor, id: WindowId) void {
-    if (self.getWindow(id)) |w| w.owed = true;
+    if (self.getWindow(id)) |w| {
+        w.owed = true;
+        if (!w.stall_timer.armed() and w.externals.anyVisible()) {
+            self.loop.startTimer(&w.stall_timer, @max(Loop.now(), w.last_frame_ns) + stall_ns, 0) catch {};
+        }
+    }
     self.platform.requestFrame(id);
 }
 
@@ -931,6 +948,7 @@ fn closeWindow(self: *Compositor, w: *Window) void {
 
 fn freeWindow(self: *Compositor, w: *Window) void {
     self.loop.cancelTimer(&w.timer);
+    self.loop.cancelTimer(&w.stall_timer);
     w.blur.deinit(self.gpa);
     w.externals.deinit();
     w.tree.deinit();
@@ -1072,6 +1090,28 @@ fn releaseAll(self: *Compositor, builders: []const *scene.Builder) void {
 fn onWindowTimer(timer: *Timer) void {
     const w: *Window = @fieldParentPtr("timer", timer);
     w.compositor.want(w.id);
+}
+
+/// A frame is owed: if none ran for `stall_ns`, the window's frame slots
+/// are hidden until the next frame places them, so that their producers
+/// stop rendering frames nobody sees (D17). Otherwise it checks again
+/// `stall_ns` after the last frame, while one is owed.
+fn onStallTimer(timer: *Timer) void {
+    const w: *Window = @fieldParentPtr("stall_timer", timer);
+    const self = w.compositor;
+    if (!w.owed) return;
+    const due = w.last_frame_ns + stall_ns;
+    if (Loop.now() < due) {
+        self.loop.startTimer(&w.stall_timer, due, 0) catch {};
+        return;
+    }
+    w.externals.hideAll() catch return self.outOfMemory(w);
+    self.pushVisibility(w);
+}
+
+fn pushVisibility(self: *Compositor, w: *Window) void {
+    for (w.externals.visibility.items) |v| self.outbox.push(.{ .external_visibility = .{ .window = w.id, .id = v.id, .visible = v.visible } });
+    w.externals.visibility.clearRetainingCapacity();
 }
 
 // Platform events -----------------------------------------------------------
@@ -1232,6 +1272,7 @@ fn routeGesture(self: *Compositor, g: platform_mod.Gesture) bool {
 
 fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
     const w = self.getWindow(f.window) orelse return;
+    w.last_frame_ns = Loop.now();
     const t = f.time.present_ns;
     const next: platform_mod.FrameClock.Time = .{ .present_ns = t + f.time.interval_ns, .interval_ns = f.time.interval_ns };
 
@@ -1266,7 +1307,7 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
     const root = raster.Affine.scale(s, s);
     // External content: subsurfaces where possible, composited elsewhere.
     const bounds = raster.Rect.xywh(0, 0, @floatFromInt(state.width), @floatFromInt(state.height));
-    const subsurfaces_changed = w.externals.place(self.platform, w.id, &w.tree, bounds, state.scale.toFloat()) catch return self.outOfMemory(w);
+    const subsurfaces_changed = w.externals.place(self.platform, w.id, &w.tree, bounds, state.scale.toFloat(), !state.states.suspended) catch return self.outOfMemory(w);
     w.tree.externals = w.externals.resolver();
     // The blur region (D31) goes with this frame's commit, so it follows
     // what this frame shows.
@@ -1319,6 +1360,7 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
         .buffer_height = cf.buffer_height,
     } });
     w.externals.configures.clearRetainingCapacity();
+    self.pushVisibility(w);
     for (w.externals.shown.items) |sh| self.outbox.push(.{ .external_presented = .{ .window = w.id, .id = sh.id, .key = sh.key, .present_ns = t } });
     w.externals.shown.clearRetainingCapacity();
 

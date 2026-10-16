@@ -426,6 +426,11 @@ pub const Event = union(enum) {
     /// window frame predicted to show at `present_ns` (CLOCK_MONOTONIC):
     /// the producer's frame callback (D17).
     external_presented: struct { window: WindowId, id: ExternalId, key: u64, present_ns: u64 },
+    /// Whether a frame slot can be seen changed: it is visible while an
+    /// external node shows it in a window that is not suspended and whose
+    /// frames the display server lets run (D17). Producers stop rendering
+    /// while it is not.
+    external_visibility: struct { window: WindowId, id: ExternalId, visible: bool },
     /// The compositor owes no frame any more (`Compositor.owesFrames`
     /// asked for this). Carries nothing: it wakes the UI loop.
     idle,
@@ -436,7 +441,7 @@ pub const Event = union(enum) {
         return switch (ev.*) {
             .platform => |*p| p.window(),
             .frame => |f| f.window,
-            inline .configure, .presented, .scrolled, .animation_finished, .external_released, .external_configure, .external_presented => |e| e.window,
+            inline .configure, .presented, .scrolled, .animation_finished, .external_released, .external_configure, .external_presented, .external_visibility => |e| e.window,
             .released, .idle => null,
         };
     }

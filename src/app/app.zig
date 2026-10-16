@@ -855,6 +855,9 @@ pub const App = struct {
             .external_presented => |x| if (app.window(x.window)) |win| {
                 _ = win.notify(&.{ .external_presented = .{ .id = x.id, .key = x.key, .present_ns = x.present_ns } });
             },
+            .external_visibility => |x| if (app.window(x.window)) |win| {
+                _ = win.notify(&.{ .external_visibility = .{ .id = x.id, .visible = x.visible } });
+            },
             .presented => |p| if (app.window(p.window)) |win| {
                 win.presented_seq = p.seq;
                 win.handle(ev);
@@ -976,6 +979,8 @@ pub const WindowEvent = union(enum) {
     external_configure: struct { id: compositor.ExternalId, width: u32, height: u32, buffer_width: u32, buffer_height: u32 },
     /// A frame slot's frame is on screen for the first time (D17).
     external_presented: struct { id: compositor.ExternalId, key: u64, present_ns: u64 },
+    /// Whether a frame slot can be seen changed (D17).
+    external_visibility: struct { id: compositor.ExternalId, visible: bool },
     /// Everything committed up to `seq` reached the screen: predicted
     /// presentation and commit times on CLOCK_MONOTONIC.
     presented: struct { seq: u64, present_ns: u64, commit_ns: u64 },

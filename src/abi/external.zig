@@ -284,17 +284,36 @@ pub fn forgetWindow(w: *Window) void {
     for (self.externals.items.items) |slot| if (slot) |x| if (x.window == w) forget(self, x);
 }
 
-/// An event for one of the window's slots (application.zig).
+/// An event for one of the window's slots (application.zig), with the
+/// window's states.
 pub fn deliver(w: *Window, id: compositor.ExternalId, ev: t.ExternalEvent) void {
     const self = w.owner;
     for (self.externals.items.items) |slot| if (slot) |x| if (x.window == w and x.id == id) {
         const f = x.on_event orelse return;
         var e = ev;
+        e.states = @bitCast(application.states(w.win.state.states));
         self.enter();
         defer self.leave();
         f(x.user_data, @fromBackingInt(x.handle), &e);
         return;
     };
+}
+
+/// An event for each of the window's slots; callbacks may destroy slots
+/// or the window.
+pub fn deliverAll(w: *Window, ev: t.ExternalEvent) void {
+    const self = w.owner;
+    var i: usize = 0;
+    while (i < self.externals.items.items.len and !w.dead) : (i += 1) {
+        const x = self.externals.items.items[i] orelse continue;
+        if (x.window != w) continue;
+        const f = x.on_event orelse continue;
+        var e = ev;
+        e.states = @bitCast(application.states(w.win.state.states));
+        self.enter();
+        defer self.leave();
+        f(x.user_data, @fromBackingInt(x.handle), &e);
+    }
 }
 
 // External nodes --------------------------------------------------------------

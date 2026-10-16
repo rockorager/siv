@@ -8,6 +8,7 @@ const abi = @import("abi");
 const harness = @import("harness.zig");
 const platform = @import("platform");
 const compositor = @import("compositor");
+const Loop = @import("loop").Loop;
 
 const testing = std.testing;
 const t = abi.types;
@@ -272,6 +273,113 @@ test "C API external: a frame slot is configured to its content box and told whe
     try testing.expectEqual(2, log.presents);
     try testing.expectEqual(2, log.presented[1]);
     try testing.expectEqual(2, log.configures);
+}
+
+/// What a frame slot was last told about being seen, and the window's
+/// states as of its last states_changed.
+const Seen = struct {
+    visible: ?bool = null,
+    changes: usize = 0,
+    states: t.WindowStates = .{},
+    states_changes: usize = 0,
+
+    fn onEvent(user_data: ?*anyopaque, _: t.External, e: *const t.ExternalEvent) callconv(.c) void {
+        const s: *Seen = @ptrCast(@alignCast(user_data));
+        switch (e.type) {
+            .shown, .hidden => {
+                s.visible = e.type == .shown;
+                s.changes += 1;
+            },
+            .states_changed => {
+                s.states = e.states;
+                s.states_changes += 1;
+            },
+            else => {},
+        }
+    }
+};
+
+fn waitVisible(h: *Harness, s: *const Seen, want: bool) !void {
+    const deadline = Loop.now() + 5 * std.time.ns_per_s;
+    while (s.visible != want) {
+        if (Loop.now() > deadline) return error.Timeout;
+        try ok(A.siv_app_dispatch(h.app, 5));
+    }
+}
+
+test "C API external: a frame slot is hidden while no node shows it, its window is suspended, or the window does not draw" {
+    var h: Harness = .{};
+    try h.start(100, 80, null, null);
+    defer h.stop();
+    var seen: Seen = .{};
+    var ext: t.External = .null;
+    try ok(X.siv_external_create(h.window, &.{ .on_event = Seen.onEvent, .user_data = &seen }, &ext));
+    try h.settle();
+    // Hidden until a node shows it; nothing is said before.
+    try testing.expect(seen.visible == null);
+    var txn: t.Txn = .null;
+    try ok(T.siv_txn_begin(h.window, &txn));
+    const view = X.siv_external_view(txn, A.siv_window_get_root(h.window), &.{ .external = ext });
+    _ = T.siv_set_layout(txn, view, &.{ .width = .{ .unit = .px, .value = 80 }, .height = .{ .unit = .px, .value = 60 } });
+    try ok(T.siv_txn_commit(txn));
+    try h.settle();
+    try testing.expect(seen.visible == true);
+    try testing.expectEqual(1, seen.changes);
+
+    // A hidden node.
+    try ok(T.siv_txn_begin(h.window, &txn));
+    _ = T.siv_set_hidden(txn, view, true);
+    try ok(T.siv_txn_commit(txn));
+    try h.settle();
+    try testing.expect(seen.visible == false);
+    try ok(T.siv_txn_begin(h.window, &txn));
+    _ = T.siv_set_hidden(txn, view, false);
+    try ok(T.siv_txn_commit(txn));
+    try h.settle();
+    try testing.expect(seen.visible == true);
+    try testing.expectEqual(3, seen.changes);
+
+    // A suspended window; its states reach the slot too.
+    const states_before = seen.states_changes;
+    try ok(abi.testing.siv_test_set_states(h.window, .{ .suspended = true }));
+    try waitVisible(&h, &seen, false);
+    try testing.expect(seen.states.suspended);
+    try ok(abi.testing.siv_test_set_states(h.window, .{ .activated = true }));
+    try waitVisible(&h, &seen, true);
+    try testing.expect(seen.states.activated and !seen.states.suspended);
+    try testing.expectEqual(5, seen.changes);
+    try testing.expectEqual(states_before + 2, seen.states_changes);
+
+    // A window the compositor stops drawing (a lock screen, an output
+    // turned off) owes a frame for a second: hidden, until it draws again.
+    const Occlude = struct {
+        id: platform.WindowId,
+        on: bool,
+        fn run(ctx: ?*anyopaque, comp: *compositor.Compositor) void {
+            const c: *@This() = @ptrCast(@alignCast(ctx));
+            comp.platform.headless.setOccluded(c.id, c.on);
+        }
+    };
+    var occ: Occlude = .{ .id = (try h.win()).win.id, .on = true };
+    try (try h.internal()).app.comp.call(&occ, Occlude.run);
+    const blue = [4]u8{ 0xff, 0, 0, 0 };
+    const fd = try frameFd(blue, blue);
+    defer _ = linux.close(fd);
+    // The first frame may still show; the next waits for a callback that
+    // does not come.
+    const before = Loop.now();
+    try ok(X.siv_external_submit(ext, &.{ .fd = fd, .width = 2, .height = 1, .key = 1 }));
+    const until = Loop.now() + 100 * std.time.ns_per_ms;
+    while (Loop.now() < until) try ok(A.siv_app_dispatch(h.app, 10));
+    try testing.expect(seen.visible == true);
+    try ok(X.siv_external_submit(ext, &.{ .fd = fd, .width = 2, .height = 1, .key = 2 }));
+    try waitVisible(&h, &seen, false);
+    // A second after the last frame.
+    try testing.expect(Loop.now() - before >= std.time.ns_per_s);
+    occ.on = false;
+    try (try h.internal()).app.comp.call(&occ, Occlude.run);
+    try waitVisible(&h, &seen, true);
+    try testing.expectEqual(7, seen.changes);
 }
 
 test "C API external: a producer thread submits and gets frames back while the UI thread is blocked" {

@@ -116,6 +116,10 @@ pub const functions = [_]Function{
         p("width", .u32, "Logical width; at least 1."),
         p("height", .u32, "Logical height; at least 1."),
     }),
+    call("siv_test_set_states", "The compositor sets a window's states, as it does when the window gets or loses focus (activated), is maximized or made fullscreen, or is minimized or hidden (suspended): the window gets SIV_WINDOW_EVENT_TYPE_STATES_CHANGED, and while it is suspended it draws no frames and its frame slots are hidden." ++ queued ++ headless, &.{
+        window_param,
+        p("states", ref("siv_window_states"), "Its new states."),
+    }),
     call("siv_test_drop", "Another application drags data over a window to a point and drops it there, offering copy and move: the drag enters, siv dispatches until the application answered it (so not from a callback, SIV_ERROR_BUSY), and the drop is queued for siv_test_settle to deliver." ++ headless, &.{
         window_param,
         p("x", .f32, "Window coordinates."),

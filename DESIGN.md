@@ -2663,6 +2663,33 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
         for a callback on the window and its shown frame-slot
         subsurfaces like a present does, on both backends, so promoted
         frames are paced by the compositor and stop when it stops drawing.
+      - `hidden` and `shown`: whether a frame slot can be seen, so that a
+        producer stops the work that only exists to be seen (a web page's
+        animations and requestAnimationFrame, a video's decoding) rather
+        than merely being paced. A slot starts hidden; it is shown once a
+        frame places a node that shows some of it (after its
+        `configure`) in a window that is not suspended, and hidden when
+        no node shows it, the window is suspended (the compositor's
+        `suspended` state: minimized, a hidden workspace, a lock screen,
+        on compositors that say so), or the window owed a frame for a
+        second without one: the display server stopped drawing it (an
+        output turned off, a lock screen or hidden workspace on
+        compositors that do not suspend windows), the case
+        `xdg_toplevel` cannot tell. The compositor checks that with a
+        timer armed only while the window has a visible slot and owes a
+        frame, and the next frame that places the slot shows it again
+        (its pending frame is reported `presented` then). Found by
+        siv-webview: Amp's web app kept WebKit at 58% CPU and its GPU
+        50-56% busy with the screen locked and off. Every slot event
+        carries the window's `states`, and `states_changed` tells slots
+        when they change (a web page's focus follows `activated`).
+        `siv_test_set_states` sets states on the headless backend, and
+        the headless backend can withhold frame callbacks
+        (`Headless.setOccluded`) to test the stall. Alternatives: the
+        producer watching `presented` stop (it cannot tell when to start
+        again without rendering); only `suspended` (a compositor may
+        stop drawing a window, behind a lock screen, a covering window
+        or a powered-off output, without sending it).
     - External nodes are in the C API (D27): `siv_external_view` over
       `siv_external_create` and `siv_external_create_surface` slots.
   - Fractional scale, preferred buffer scale, output hotplug, `xdg-activation`,

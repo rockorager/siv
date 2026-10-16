@@ -1627,6 +1627,9 @@ pub const decls = [_]Decl{
         .{ .name = "released", .value = 0, .doc = "Frames: no frame reads the frame with this key any more; its memory may be reused. Only for slots without a release callback." },
         .{ .name = "configure", .value = 1, .doc = "The placement has a new size: render frames of buffer_width x buffer_height pixels from now on. Surfaces: render one soon even if nothing else changed. Frames: the size of the external node's content box at the window's scale, whatever the frames' own aspect ratio and fit; sent before the first frame once the node is laid out and shown." },
         .{ .name = "presented", .value = 2, .doc = "Frames: the frame with this key is on screen for the first time, in the window frame predicted to show at present_ns: a frame callback, the time to render the next frame (D17). One per frame shown, none while no external node shows the slot; frames replaced before they were shown get none." },
+        .{ .name = "hidden", .value = 3, .doc = "Frames: the slot cannot be seen until shown: no external node shows any of it, its window is suspended (SIV_WINDOW_STATES_SUSPENDED: minimized, on a hidden workspace, or behind a lock screen, as the compositor says), or the display server has not let the window draw for a second while it had a frame to show (an output turned off, a lock screen or hidden workspace on a compositor that does not suspend windows) (D17). Stop rendering, and pause what only runs to be seen (animations, a web page's scripts); frames submitted meanwhile are kept, and the last is presented once the slot shows. A slot starts hidden." },
+        .{ .name = "shown", .value = 4, .doc = "Frames: the slot can be seen: an external node shows some of it, after its configure, in a window that draws. Sent when it is first laid out and shown and after each hidden." },
+        .{ .name = "states_changed", .value = 5, .doc = "The window's states changed; states has them (a web page follows activated, the window having the user's attention)." },
     }),
     descriptor("siv_external_event", "An external slot's event. Filled by siv.", &.{
         .{ .name = "key", .type = .u64, .doc = "Released and presented: the frame's key." },
@@ -1637,6 +1640,8 @@ pub const decls = [_]Decl{
         .{ .name = "buffer_height", .type = .u32, .doc = "Configure: height in buffer pixels." },
         f32Field("scale", "Configure: the window's buffer scale."),
         .{ .name = "present_ns", .type = .u64, .doc = "Presented: when the frame is predicted to show, CLOCK_MONOTONIC nanoseconds, as SIV_WINDOW_EVENT_TYPE_PRESENTED predicts it." },
+        .{ .name = "states", .type = ref("siv_window_states"), .doc = "The window's states as of the event." },
+        .{ .name = "reserved0", .type = .u32, .doc = "Reserved; zero.", .reserved = true },
     }),
     callback("siv_external_event_fn", "Receives an external slot's events at safe points on the application's thread (D5).", &.{
         .{ .name = "external", .type = ref("siv_external"), .doc = "The slot." },
@@ -1648,7 +1653,7 @@ pub const decls = [_]Decl{
     }, .void)),
     descriptor("siv_external_desc", "Options for an external slot.", &.{
         .{ .name = "user_data", .type = .user_data, .doc = "Passed to on_event, release, and destroy." },
-        .{ .name = "on_event", .type = ref("siv_external_event_fn"), .doc = "Receives configures, presented frames, and releases when release is NULL, on the application's thread; may be NULL." },
+        .{ .name = "on_event", .type = ref("siv_external_event_fn"), .doc = "Receives configures, presented frames, visibility, the window's states, and releases when release is NULL, on the application's thread; may be NULL." },
         .{ .name = "destroy", .type = ref("siv_destroy_fn"), .doc = "Releases user_data when the slot or its window is destroyed (later with release; see there), on the application's thread." },
         .{ .name = "release", .type = ref("siv_external_release_fn"), .doc = "Frame slots: receives releases on the compositor thread instead of on_event. Then destroy runs only after the slot is destroyed and its last frame released, and user_data must stay valid until then." },
     }),

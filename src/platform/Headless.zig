@@ -117,6 +117,10 @@ const Window = struct {
     clock: FrameClock = .{},
     frame_task: Loop.Task = .{ .func = runFrame },
     vblank: Timer = .{ .func = onVblank },
+    /// The simulated compositor does not draw the window (`setOccluded`):
+    /// its frame callback waits, `held` once its vblank passed.
+    occluded: bool = false,
+    held: bool = false,
     slots: [2]Slot = .{ .{}, .{} },
     /// Slot shown on the simulated screen.
     front: ?u8 = null,
@@ -1672,6 +1676,18 @@ pub fn configure(hl: *Headless, id: WindowId, size: ?Size, states: ?platform.Win
     hl.sendConfigure(w);
 }
 
+/// Stops or resumes drawing a window, as a compositor does behind a lock
+/// screen or with its output off without suspending it: its frame
+/// callback waits until it draws the window again.
+pub fn setOccluded(hl: *Headless, id: WindowId, on: bool) void {
+    const w = hl.get(id);
+    w.occluded = on;
+    if (on or !w.held) return;
+    w.held = false;
+    w.clock.done();
+    hl.scheduleFrame(w);
+}
+
 /// Sets a window's preferred scale, as fractional-scale-v1 would.
 pub fn setScale(hl: *Headless, id: WindowId, scale: platform.Scale) void {
     const w = hl.get(id);
@@ -1793,6 +1809,10 @@ fn onAckTimeout(timer: *Timer) void {
 
 fn onVblank(timer: *Timer) void {
     const w: *Window = @fieldParentPtr("vblank", timer);
+    if (w.occluded) {
+        w.held = true;
+        return;
+    }
     w.clock.done();
     w.clock.presented(timer.deadline, w.hl.refresh_ns, null);
     w.hl.scheduleFrame(w);

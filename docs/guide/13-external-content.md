@@ -79,6 +79,14 @@ static void on_release(void *user_data, siv_external slot, uint64_t key) {
 Without a `release` callback, releases arrive as
 `SIV_EXTERNAL_EVENT_TYPE_RELEASED` events on your thread instead.
 
+A frame slot starts hidden. `SIV_EXTERNAL_EVENT_TYPE_SHOWN` says it can be
+seen: a node shows some of it in a window that draws.
+`SIV_EXTERNAL_EVENT_TYPE_HIDDEN` says it cannot: no node shows it, the
+window is suspended (minimized, on a hidden workspace), or the display
+server has stopped drawing the window (a lock screen, an output turned
+off). Stop rendering and pause what only runs to be seen until it is shown
+again.
+
 Dma-buf frames (`SIV_EXTERNAL_MEMORY_DMABUF`) take a DRM format and
 modifier and up to four planes; a frame shows once its implicit fences
 signal, so neither siv nor the compositor waits on your GPU. Drivers that

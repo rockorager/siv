@@ -134,6 +134,10 @@ const External = struct {
     /// What the subsurface was last told.
     shown: platform.SubsurfaceState = .{},
     seen: bool = false,
+    /// Frame slots: a placement this frame shows some of, and whether the
+    /// producer was last told the slot is visible (`visibility`).
+    on_screen: bool = false,
+    visible: bool = false,
     /// An embedder renders into the subsurface's own wl_surface.
     embed: ?Embed = null,
     /// Receives released frames on this thread instead of the UI.
@@ -160,6 +164,8 @@ pub const Configure = struct { id: ExternalId, width: u32, height: u32, buffer_w
 
 pub const Shown = struct { id: ExternalId, key: u64 };
 
+pub const Visibility = struct { id: ExternalId, visible: bool };
+
 pub const Externals = struct {
     gpa: Allocator,
     /// Watches pending dma-buf frames; without it they show at once.
@@ -174,6 +180,8 @@ pub const Externals = struct {
     configures: std.ArrayList(Configure) = .empty,
     /// Frame slots' frames shown for the first time this frame.
     shown: std.ArrayList(Shown) = .empty,
+    /// Frame slots whose visibility changed, sent after the frame.
+    visibility: std.ArrayList(Visibility) = .empty,
     /// Retired frames a subsurface showed, until the compositor releases
     /// them (`subsurfaceReleased`).
     waiting: std.ArrayList(Retired) = .empty,
@@ -224,6 +232,7 @@ pub const Externals = struct {
         e.waiting.deinit(e.gpa);
         e.configures.deinit(e.gpa);
         e.shown.deinit(e.gpa);
+        e.visibility.deinit(e.gpa);
     }
 
     fn dropPending(e: *Externals, pd: *Pending) void {
@@ -413,12 +422,15 @@ pub const Externals = struct {
     /// Decides promotion for this frame and updates the subsurfaces.
     /// Returns whether a subsurface changed (it applies with the window's
     /// next commit). Externals whose drawing changed are touched in `t`.
-    pub fn place(e: *Externals, p: platform.Platform, window: platform.WindowId, t: *tree_mod.Tree, bounds: raster.Rect, scale: f64) Allocator.Error!bool {
+    /// Frame slots are visible when a placement shows some of them and
+    /// the window `can_show` (it is not suspended).
+    pub fn place(e: *Externals, p: platform.Platform, window: platform.WindowId, t: *tree_mod.Tree, bounds: raster.Rect, scale: f64, can_show: bool) Allocator.Error!bool {
         try t.externalPlacements(&e.found, bounds);
         const features = p.subsurfaceFeatures();
         var changed = false;
         for (e.items.items) |*item| if (item.*) |*x| {
             x.seen = false;
+            x.on_screen = false;
             if (x.embed) |*em| if (em.committed) {
                 em.committed = false;
                 changed = true;
@@ -438,6 +450,7 @@ pub const Externals = struct {
             // otherwise it is composited. One external shown twice is
             // composited.
             try e.configureFrames(f, x, scale);
+            if (!f.visible.isEmpty()) x.on_screen = true;
             if (x.frame) |m| if (x.reported != m.frame.key) {
                 try e.shown.append(e.gpa, .{ .id = f.id, .key = m.frame.key });
                 x.reported = m.frame.key;
@@ -500,6 +513,7 @@ pub const Externals = struct {
                 }
                 continue;
             }
+            try e.setVisible(@intCast(i + 1), x, x.on_screen and can_show);
             const keep = x.seen and x.mode != .composited;
             if (!keep) {
                 if (x.mode != .composited or x.solid) t.touchExternal(@intCast(i + 1));
@@ -513,6 +527,24 @@ pub const Externals = struct {
             }
         };
         return changed;
+    }
+
+    fn setVisible(e: *Externals, id: ExternalId, x: *External, visible: bool) Allocator.Error!void {
+        if (x.visible == visible) return;
+        try e.visibility.append(e.gpa, .{ .id = id, .visible = visible });
+        x.visible = visible;
+    }
+
+    /// Whether a frame slot is visible, as its producer was last told.
+    pub fn anyVisible(e: *const Externals) bool {
+        for (e.items.items) |item| if (item) |x| if (x.visible) return true;
+        return false;
+    }
+
+    /// The window's frames stopped: no frame slot can be seen until the
+    /// next frame places them again.
+    pub fn hideAll(e: *Externals) Allocator.Error!void {
+        for (e.items.items, 0..) |*item, i| if (item.*) |*x| try e.setVisible(@intCast(i + 1), x, false);
     }
 
     /// Tells a frame slot's producer its placement's size: the content box,
