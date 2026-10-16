@@ -3,38 +3,16 @@
 A fast, native GUI toolkit for Linux desktops on Wayland. Write your
 application in Lua, C, Zig, or any language that can call C.
 
-![A file manager written with siv, in the dark theme](apps/files/tests/golden/list-dark.png)
-
-*[apps/files](apps/files), a file manager written against siv's public API.*
+![A settings form built from siv's stock widgets, in the light theme](docs/guide/images/settings.png) ![The same form in the dark theme](docs/guide/images/settings-dark.png)
 
 ## Why siv
 
-- **It starts fast and stays light.** An idle window shows its first frame
-  in about 26 ms and holds 48 MiB of memory. GTK 4, Qt Quick, and gpui take
-  60 to 75 ms and hold 65 to 85 MiB. Scrolling and animation run on their
-  own thread, so a busy application does not stutter, and an idle
-  application never wakes up. [The benchmarks](bench/gpui-compare/README.md)
-  have the numbers and how they were measured.
-- **It looks like the user's desktop.** siv follows the desktop's light or
-  dark scheme, contrast, and accent color, and repaints live when they
-  change. Users can theme every siv application at once with
-  `~/.config/siv/theme.toml`, which tools like matugen and pywal can write,
-  and siv picks up Omarchy's theme on its own.
-- **The stock widgets are complete.** Buttons, fields, a real text editor,
-  lists and tables that scroll through 100,000 rows, trees, menus, and
-  dialogs. Every widget works from the keyboard, with input methods, and
-  with screen readers through AT-SPI.
-- **It talks to the desktop.** File choosers and settings through
-  xdg-desktop-portal, notifications, a tray item, printing and PDF, D-Bus
-  activation, and Flatpak packaging.
-- **You pick the language.** Lua for scripts and quick iteration, with
-  reload on save. C, since the ABI is C, and a native Zig API. Rust
-  through bindgen. Every binding is generated from one schema, so they
-  stay in step.
-- **It is one library.** No GLib or Qt runtime underneath, and MIT
-  licensed.
-- **You can test without a display.** The headless backend drives your
-  application like a user and compares what it shows, in CI.
+- **Fast:** first frame in 26 ms and 48 MiB for an idle window, against 60–75 ms and 65–85 MiB for GTK 4, Qt Quick, and gpui ([benchmarks](bench/gpui-compare/README.md)).
+- **Follows the desktop:** light or dark, accent, and contrast, live. One `theme.toml`, or your Omarchy theme, styles every siv app.
+- **Complete widgets:** text editors, 100,000-row lists, tables, trees, menus, and dialogs, with keyboard, input method, and screen reader support.
+- **Desktop integration:** portals, notifications, a tray item, printing, and Flatpak.
+- **Your language:** Lua with live reload, C, Zig, or Rust.
+- **One library:** no GLib or Qt underneath, MIT licensed, testable without a display.
 
 ## Hello, world
 
