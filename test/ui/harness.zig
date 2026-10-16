@@ -44,7 +44,9 @@ pub const App = struct {
     pub const Options = struct {
         width: u32 = 320,
         height: u32 = 240,
-        scale: u32 = 1,
+        /// A fractional scale comes as fractional-scale-v1 sends it, over
+        /// an output of the integer scale below it.
+        scale: f32 = 1,
         rtl: bool = false,
         output_width: i32 = 1920,
         output_height: i32 = 1080,
@@ -150,7 +152,7 @@ pub const App = struct {
             .host = .{ .ctx = app, .request_frame = requestFrame, .text_input = textInput, .set_cursor = setCursor },
             .width = @floatFromInt(options.width),
             .height = @floatFromInt(options.height),
-            .scale = @floatFromInt(options.scale),
+            .scale = options.scale,
             .rtl = options.rtl,
             .reduced_motion = true,
             .clipboard = &app.clipboard,
@@ -158,7 +160,7 @@ pub const App = struct {
             .loop = &app.loop,
         });
         errdefer app.win.deinit();
-        var output: platform.OutputInfo = .{ .width = options.output_width, .height = options.output_height, .refresh_mhz = 60000, .scale = @intCast(options.scale) };
+        var output: platform.OutputInfo = .{ .width = options.output_width, .height = options.output_height, .refresh_mhz = 60000, .scale = @intFromFloat(@max(1, @floor(options.scale))) };
         output.name.set("HEADLESS-1");
         app.comp = try Compositor.create(.{
             .allocator = gpa,
@@ -169,6 +171,12 @@ pub const App = struct {
             .thread = false,
         });
         app.wid = try app.comp.createWindow(.{ .width = options.width, .height = options.height });
+        const Preferred = struct { platform.WindowId, platform.Scale };
+        if (options.scale != @floor(options.scale)) app.onHeadless(Preferred{ app.wid, .{ .v120 = @intFromFloat(@round(options.scale * 120)) } }, struct {
+            fn f(hl: *platform.Headless, c: Preferred) void {
+                hl.setScale(c[0], c[1]);
+            }
+        }.f);
         app.drag.comp = app.comp;
         app.drag.window = app.wid;
     }

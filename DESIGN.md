@@ -1675,6 +1675,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - An empty editor's placeholder is laid out in the paragraph style the
     first typed line would take (line spacing, indents, tab stops), so it
     shares that line's box and baseline with the caret.
+  - A selection over more than one rectangle is filled as one path, not
+    rectangle by rectangle: at a fractional scale the rows' shared edges
+    fall inside device pixels, and two antialiased edges each covering
+    part of a pixel leave it partly uncovered, a light seam between the
+    rows. In one path the coverage of the rows meeting there adds up to
+    the whole pixel, at any scale and on either renderer (both rasterize
+    paths with the shared coverage rasterizer); a single rectangle stays
+    a rectangle.
   - The editor node (`src/ui/editor.zig`) stores only its text, caret,
     anchor, and caret affinity; movement, hit testing, and selection
     rectangles come from the text's `TextLayout` (D13), which finds the

@@ -889,3 +889,47 @@ test "external content: above the window, below it with a hole under controls, c
     try expectDamageExact(&app);
     try expectGolden(&app, "external-composited");
 }
+
+test "a selection across wrapped lines, paragraphs and an empty line has no seams at 1.5x" {
+    var app: App = undefined;
+    try app.init(testing.allocator, .{ .width = 160, .height = 200, .scale = 1.5 });
+    defer app.deinit();
+    var ed: NodeId = undefined;
+    // No ink where the rows meet: x stays within the x-height.
+    const str = "x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x\n\nx x x x x x x x";
+    {
+        const t = try app.win.begin();
+        const col = try node(t, .root, .flex, .{ .padding = .all(8) }, .{ .background = .white });
+        try t.setFlex(col, .{ .axis = .column, .align_items = .start });
+        ed = try node(t, col, .editor, .{ .width = .{ .px = 100 }, .height = .{ .px = 180 } }, .{ .background = .white });
+        try t.setEditor(ed, .{ .multiline = true });
+        try t.setTextProps(ed, .{ .style = .{ .size = 13, .color = ink }, .wrap = true });
+        try t.setText(ed, str);
+        try t.setSelection(ed, 0, str.len, .downstream);
+        t.commit();
+    }
+    try app.settle();
+    try testing.expectEqual(@as(f32, 1.5), app.win.scale);
+    const w: u32 = 240;
+    const px = try app.fullRender(w, 300);
+    defer testing.allocator.free(px);
+    const r = app.win.windowRect(ed);
+    // Down the selection's left edge to where it ends, nothing is lighter
+    // than its color: where rows meet, coverage adds up to the whole pixel.
+    const x: usize = @intFromFloat((r.x0 + 1) * 1.5);
+    const y0: usize = @intFromFloat(@ceil(r.y0 * 1.5) + 1);
+    const c0 = px[(y0 * w + x) * 4 ..][0..3].*;
+    try testing.expect(c0[0] < 250 or c0[1] < 250 or c0[2] < 250); // selected, not the white page
+    // The selection's last device row is its antialiased bottom edge.
+    var end = y0;
+    while (end < 300 and !std.mem.eql(u8, px[(end * w + x) * 4 ..][0..3], &.{ 255, 255, 255 })) end += 1;
+    for (y0..end - 1) |y| {
+        const c = px[(y * w + x) * 4 ..][0..3];
+        for (c, c0) |a, b| if (a > b + 2) {
+            std.debug.print("seam at device row {d}: {any} over {any}\n", .{ y, c.*, c0 });
+            return error.TestUnexpectedResult;
+        };
+    }
+    // Past several rows, the empty line, and the next paragraph.
+    try testing.expect(@as(f32, @floatFromInt(end - y0)) > 100 * 1.5);
+}

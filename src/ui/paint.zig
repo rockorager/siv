@@ -1083,11 +1083,26 @@ fn drawEditor(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Poi
         // A long text's selection is drawn where its lines are (D13).
         try l.selectionRects(win.gpa, @min(e.caret, e.anchor), @max(e.caret, e.anchor), &rects, try textBand(win, nid, l));
         const color = if (focused) win.palette.color(.selection_bg) else win.palette.color(.control_hover);
+        // One path for all of it: rows that meet at a fractional device
+        // pixel then cover it whole, where rectangles filled one by one
+        // would each cover part of it and leave a seam (D13).
+        var path = raster.PathBuilder.init(win.gpa);
+        defer path.deinit();
         for (rects.items) |r| {
             const line = try l.line(try l.lineAt(r.y + r.height / 2));
             const x = box.x0 - scroll + r.x + text_node.lineShift(win, nid, line, cw);
-            try b.fillRect(.xywh(x, box.y0 + r.y, r.width, r.height), .color(color));
+            const y = box.y0 + r.y;
+            try path.moveTo(x, y);
+            try path.lineTo(x + r.width, y);
+            try path.lineTo(x + r.width, y + r.height);
+            try path.lineTo(x, y + r.height);
+            try path.close();
         }
+        if (rects.items.len == 1) {
+            const r = rects.items[0];
+            const p = path.points.items[0];
+            try b.fillRect(.xywh(p.x, p.y, r.width, r.height), .color(color));
+        } else if (rects.items.len > 1) try b.fillPath(path.path(), .nonzero, .color(color));
     }
     if (e.text.content.len() == 0 and e.placeholder.len != 0 and editor.preeditRange(win, nid) == null) {
         _ = try drawPlaceholder(st, win, nid, b, box);
