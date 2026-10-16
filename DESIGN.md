@@ -5067,12 +5067,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     callback runs on the compositor thread (quick, calling at most
     `siv_external_submit` and `siv_post`), so a decoder recycles its
     buffers while the UI thread is blocked; then the slot's
-    destroy-notify waits for its last frame's release and runs on the
-    application's thread. Without `release`, releases arrive as events
-    on the application's thread. Creating and destroying slots stays on
-    the application's thread. Slot handles are therefore not in the
-    root's handle table (which the UI thread grows): they index a slot
-    array under a mutex with generations of their own, and any-thread
+    destroy-notify waits until every frame of the slot is released (they
+    come back in any order: one a subsurface showed only once the
+    display server lets go of it) and runs on the application's thread.
+    Without `release`, releases arrive as events on the application's
+    thread. Creating and destroying slots stays on the application's
+    thread. Slot handles are therefore not in the root's handle table
+    (which the UI thread grows): they index a slot array under a mutex
+    with generations of their own, and any-thread
     calls pin the root through the object handle (`Registry.pinOwner`)
     after checking a `closing` flag that destruction sets before
     retiring the root. Each function's threading is in the header.

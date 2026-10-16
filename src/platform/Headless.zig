@@ -440,12 +440,15 @@ fn applyBlur(w: *Window) void {
 
 /// Applies pending subsurface states. Like a compositor, it releases a
 /// dma-buf frame as soon as no state shows it.
+/// Each state is replaced before its old frame is checked, so that the
+/// check does not find the state that just stopped showing it.
 fn applySubsurfaces(w: *Window) void {
-    for (w.subsurfaces.items, w.pending_subsurfaces.items) |old, new| {
+    for (w.subsurfaces.items, w.pending_subsurfaces.items) |*state, new| {
+        const old = state.*;
+        state.* = new;
         const key = dmabufKey(old) orelse continue;
         if (dmabufKey(new) != key) releaseDmabuf(w, key);
     }
-    @memcpy(w.subsurfaces.items, w.pending_subsurfaces.items);
 }
 
 fn dmabufKey(state: ?platform.SubsurfaceState) ?u64 {

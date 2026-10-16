@@ -186,7 +186,8 @@ pub const Externals = struct {
         id: ExternalId,
         mapped: Mapped,
         hook: ?ReleaseHook = null,
-        /// The slot is gone: drop the hook after this release.
+        /// The slot is gone: drop the hook after this release, unless
+        /// another frame of the slot is still out (`dropAfterFrames`).
         last: bool = false,
     };
 
@@ -195,7 +196,7 @@ pub const Externals = struct {
     }
 
     /// Frames still held are released (no frame reads them any more) and
-    /// hooks dropped.
+    /// hooks dropped, each after its slot's last frame.
     pub fn deinit(e: *Externals) void {
         for (e.items.items) |item| if (item) |x| {
             if (x.pending) |pd| {
@@ -206,15 +207,17 @@ pub const Externals = struct {
                 if (x.hook) |h| h.released(h.ctx, m.frame.key);
                 m.deinit(e.gpa);
             }
-            if (x.hook) |h| h.dropped(h.ctx);
+            if (x.hook) |h| e.dropAfterFrames(h);
         };
-        for ([_][]Retired{ e.retired.items, e.waiting.items }) |list| for (list) |r| {
+        // Each leaves its list before its release, so that a last one
+        // finds those still out.
+        while (e.retired.pop() orelse e.waiting.pop()) |r| {
             if (r.hook) |h| {
                 h.released(h.ctx, r.mapped.frame.key);
-                if (r.last) h.dropped(h.ctx);
+                if (r.last) e.dropAfterFrames(h);
             }
             r.mapped.deinit(e.gpa);
-        };
+        }
         e.items.deinit(e.gpa);
         e.found.deinit(e.gpa);
         e.retired.deinit(e.gpa);
@@ -276,10 +279,25 @@ pub const Externals = struct {
             e.gpa.destroy(pd);
             x.pending = null;
         }
-        if (x.frame) |m| {
-            e.retireLast(id, m, x.hook);
-        } else if (x.hook) |h| h.dropped(h.ctx);
+        if (x.frame) |m| e.retire(id, m, x.hook);
+        if (x.hook) |h| e.dropAfterFrames(h);
         e.items.items[id - 1] = null;
+    }
+
+    /// Drops a hook whose slot is gone once the compositor gave back every
+    /// frame of the slot: the producer may free the hook's context then.
+    /// Its frames come back in any order (a subsurface's only when the
+    /// display server lets go of it), so the hook goes with whichever is
+    /// still out, or now if none is.
+    fn dropAfterFrames(e: *Externals, h: ReleaseHook) void {
+        for ([_][]Retired{ e.retired.items, e.waiting.items }) |list| for (list) |*r| {
+            const rh = r.hook orelse continue;
+            if (rh.ctx == h.ctx and rh.released == h.released) {
+                r.last = true;
+                return;
+            }
+        };
+        h.dropped(h.ctx);
     }
 
     /// Sets (or with null clears) where a slot's released frames go.
@@ -294,16 +312,6 @@ pub const Externals = struct {
             // Released early rather than leaked; nothing has shown it
             // since the frame that replaced it was taken.
             if (hook) |h| h.released(h.ctx, m.frame.key);
-            m.deinit(e.gpa);
-        };
-    }
-
-    fn retireLast(e: *Externals, id: ExternalId, m: Mapped, hook: ?ReleaseHook) void {
-        e.retired.append(e.gpa, .{ .id = id, .mapped = m, .hook = hook, .last = true }) catch {
-            if (hook) |h| {
-                h.released(h.ctx, m.frame.key);
-                h.dropped(h.ctx);
-            }
             m.deinit(e.gpa);
         };
     }
@@ -374,7 +382,7 @@ pub const Externals = struct {
                 continue;
             }
             _ = e.waiting.swapRemove(i);
-            releaseRetired(e.gpa, r, release);
+            e.releaseRetired(r, release);
         }
     }
 
@@ -622,22 +630,24 @@ pub const Externals = struct {
 
     /// After a frame: frames retired before it are no longer read by siv;
     /// those a subsurface showed wait until the compositor is done too.
+    /// In order, each leaving the list before its release, so that a last
+    /// one finds those still out.
     pub fn endFrame(e: *Externals, p: platform.Platform, window: platform.WindowId, release: anytype) void {
-        for (e.retired.items) |r| {
+        while (e.retired.items.len > 0) {
+            const r = e.retired.orderedRemove(0);
             if (r.mapped.promoted and p.dmabufBusy(window, r.mapped.frame.key)) {
                 if (e.waiting.append(e.gpa, r)) continue else |_| {} // released early rather than leaked
             }
-            releaseRetired(e.gpa, r, release);
+            e.releaseRetired(r, release);
         }
-        e.retired.clearRetainingCapacity();
     }
 
-    fn releaseRetired(gpa: Allocator, r: Retired, release: anytype) void {
+    fn releaseRetired(e: *Externals, r: Retired, release: anytype) void {
         if (r.hook) |h| {
             h.released(h.ctx, r.mapped.frame.key);
-            if (r.last) h.dropped(h.ctx);
+            if (r.last) e.dropAfterFrames(h);
         } else release.external(r.id, r.mapped.frame.key);
-        r.mapped.deinit(gpa);
+        r.mapped.deinit(e.gpa);
     }
 };
 

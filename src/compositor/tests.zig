@@ -910,3 +910,106 @@ test "external dma-buf frames: promoted when the compositor takes them, read or 
     try h.runMs(20);
     try testing.expect(wasReleased(&h, 4));
 }
+
+/// A release hook's calls, as a producer sees them.
+const HookLog = struct {
+    keys: [8]u64 = undefined,
+    count: usize = 0,
+    gone: bool = false,
+    /// Releases after the drop: the producer's context may be freed then.
+    late: usize = 0,
+
+    fn hook(l: *HookLog) update.ExternalReleaseHook {
+        return .{ .ctx = l, .released = released, .dropped = dropped };
+    }
+
+    fn released(ctx: ?*anyopaque, key: u64) void {
+        const l: *HookLog = @ptrCast(@alignCast(ctx));
+        if (l.gone) l.late += 1;
+        l.keys[l.count] = key;
+        l.count += 1;
+    }
+
+    fn dropped(ctx: ?*anyopaque) void {
+        const l: *HookLog = @ptrCast(@alignCast(ctx));
+        l.gone = true;
+    }
+
+    fn expect(l: *const HookLog, keys: []const u64) !void {
+        try testing.expect(l.gone);
+        try testing.expectEqual(0, l.late);
+        try testing.expectEqual(keys.len, l.count);
+        for (keys) |k| try testing.expect(std.mem.indexOfScalar(u64, l.keys[0..l.count], k) != null);
+    }
+};
+
+test "a release hook is dropped only after every frame of its slot came back" {
+    var h: Harness = .{};
+    try h.start(false);
+    defer h.stop();
+    const id = try h.window();
+    try h.headless().addDmabufFormat(scene.Dmabuf.xrgb8888, scene.Dmabuf.modifier_linear);
+    var frames: [5]update.ExternalFrame = undefined;
+    for (&frames, 0..) |*f, i| f.* = try dmabufFrame(40, 30, .{ 0, 0, 0xff, 0 }, i, scene.Dmabuf.modifier_linear);
+    defer for (frames) |f| f.close();
+    const place = struct {
+        fn place(hh: *Harness, window: platform.WindowId, layer: update.LayerId, ext: update.ExternalId, x: f32) !void {
+            _ = try hh.comp.commit(window, &.{
+                .{ .create = layer },
+                .{ .insert = .{ .layer = layer, .parent = 1 } },
+                .{ .set_external = .{ .layer = layer, .external = .{ .id = ext, .rect = .xywh(x, 0, 40, 30) } } },
+            });
+        }
+    }.place;
+
+    // A slot destroyed while its only frame waits for its fences.
+    var pipe: [2]i32 = undefined;
+    if (std.os.linux.errno(std.os.linux.pipe2(&pipe, .{ .CLOEXEC = true })) != .SUCCESS) return error.SkipZigTest;
+    defer _ = std.os.linux.close(pipe[0]);
+    defer _ = std.os.linux.close(pipe[1]);
+    var pending: HookLog = .{};
+    const a = try h.comp.createExternal(id);
+    try h.comp.setExternalReleaseHook(id, a, pending.hook());
+    var busy: update.ExternalFrame = .{ .fd = pipe[0], .width = 40, .height = 30, .stride = 160, .key = 9 };
+    busy.dmabuf = .{ .format = scene.Dmabuf.xrgb8888, .modifier = scene.Dmabuf.modifier_linear, .plane_count = 1 };
+    try h.comp.setExternalFrame(id, a, busy);
+    try place(&h, id, 2, a, 0);
+    try h.runMs(20);
+    try h.comp.destroyExternal(id, a);
+    try h.runMs(20);
+    try pending.expect(&.{9});
+    _ = try h.comp.commit(id, &.{.{ .destroy = 2 }});
+
+    // A slot destroyed while the compositor still shows a frame it
+    // replaced: another slot shows a frame with the same key.
+    var held: HookLog = .{};
+    const b = try h.comp.createExternal(id);
+    const c = try h.comp.createExternal(id);
+    try h.comp.setExternalReleaseHook(id, b, held.hook());
+    try place(&h, id, 3, b, 0);
+    try place(&h, id, 4, c, 50);
+    try h.comp.setExternalFrame(id, c, frames[1]);
+    try h.comp.setExternalFrame(id, b, frames[1]);
+    try h.runMs(20);
+    try h.comp.setExternalFrame(id, b, frames[2]);
+    try h.runMs(20);
+    try h.comp.destroyExternal(id, b);
+    try h.runMs(20);
+    try h.comp.setExternalFrame(id, c, frames[3]);
+    try h.runMs(20);
+    try held.expect(&.{ 1, 2 });
+    _ = try h.comp.commit(id, &.{.{ .destroy = 3 }});
+
+    // The same, with the window closed while the slot is still there.
+    var closed: HookLog = .{};
+    const d = try h.comp.createExternal(id);
+    try h.comp.setExternalReleaseHook(id, d, closed.hook());
+    try place(&h, id, 5, d, 0);
+    try h.comp.setExternalFrame(id, d, frames[3]);
+    try h.runMs(20);
+    try h.comp.setExternalFrame(id, d, frames[4]);
+    try h.runMs(20);
+    try h.comp.destroyWindow(id);
+    try h.runMs(20);
+    try closed.expect(&.{ 3, 4 });
+}
