@@ -1766,7 +1766,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     taller box. There it is drawn as a solid outline in the text's color
     around a faint fill, since a translucent fill vanishes into some
     themes' selection colors (Tokyo Night's) and an opaque one would hide
-    the character it covers. Alternatives: the line's full box (the
+    the character it covers. A selected empty line shows as a box an "x"
+    wide in its line break's font (a quarter of the line's height before
+    its fonts load), the block caret's width there, as Vim highlights
+    one cell; the caret covers it exactly. Alternatives: the line's full box (the
     earlier choice, and GTK's), which with generous line spacing reached
     well past the descenders; a size multiple, which needs a setting and
     sits on no metric of the font. Each caret change shows it solid
@@ -4350,9 +4353,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       Undo steps keep them before and after like spans, and
       `siv_editor_format_paragraph` is the user's command over the
       paragraphs a selection touches. An empty paragraph (empty text, or
-      after a final line break) has no character to carry a style, so it
-      shows the style of the paragraph before it and cannot be styled on
-      its own; lists (bullets and numbering) are not built.
+      after a final line break) has no character to carry a style and
+      cannot be styled on its own: it takes the node's own style. For
+      the empty paragraph after a final line break (October 2026), that
+      is also the style text typed into it takes, since no span holds its
+      offset, so the line Enter opens after a heading stays put when
+      typing starts. It used to show the style of the paragraph before
+      it, then jumped to the node's own at the first keystroke. Lists
+      (bullets and numbering) are not built.
 - **Non-goal:** a full document model with embedded tables and images.
 
 ### D23. Lua 5.5

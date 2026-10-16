@@ -1588,6 +1588,16 @@ pub const TextLayout = struct {
         return .{ .position = self.global(b, m.position), .x = m.x };
     }
 
+    /// An "x" in the font at a block's offset: the width of a selected
+    /// empty line, as of a block caret there.
+    const XWidth = struct {
+        shaped: *const ShapedText,
+        base: u32,
+        pub fn width(x: XWidth, offset: u32) ?f32 {
+            return x.shaped.xAdvance(x.base + offset);
+        }
+    };
+
     /// Appends rectangles covering the graphemes in `start..end`
     /// (`cursor.selectionRects`); with `band`, only those of blocks that
     /// reach into it (a selection of a long text, painted).
@@ -1600,7 +1610,7 @@ pub const TextLayout = struct {
             const s = self.shaped.starts[b];
             const e = self.shaped.starts[b + 1];
             const first = out.items.len;
-            try (try self.measure(b)).selectionRects(gpa, @max(start, s) - s, @min(end, e) - s, out);
+            try (try self.measure(b)).selectionRects(gpa, @max(start, s) - s, @min(end, e) - s, out, XWidth{ .shaped = self.shaped, .base = s });
             for (out.items[first..]) |*r| r.y = @floatCast(self.tops[b] + r.y);
         }
     }
@@ -1696,7 +1706,7 @@ fn expectSameLayout(flat: *const Layout, text: *const TextLayout, gpa: Allocator
         a.clearRetainingCapacity();
         b.clearRetainingCapacity();
         const e = @min(len, s + 23);
-        try flat.selectionRects(gpa, s, e, &a);
+        try flat.selectionRects(gpa, s, e, &a, TextLayout.XWidth{ .shaped = text.shaped, .base = 0 });
         try text.selectionRects(gpa, s, e, &b, null);
         // Rectangles of one line that meet across a block boundary stay
         // apart: compare the area they cover per line.

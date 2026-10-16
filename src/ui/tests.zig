@@ -1500,6 +1500,19 @@ test "editor: an application's own editing model (range edits, its history, chan
     try testing.expectApproxEqAbs(x, ui.access.caretRect(f.win, ed, 8).?.width(), 0.01);
     const big = ui.access.caretRect(f.win, ed, 7).?.width();
     try testing.expect(big > x * 1.5);
+    // A selected empty line is as wide as the block caret there, so the
+    // caret covers it exactly.
+    {
+        try f.frame();
+        const l = text_node.current(f.win, ed).?;
+        var rects: std.ArrayList(text.layout.Rect) = .empty;
+        defer rects.deinit(testing.allocator);
+        try l.selectionRects(testing.allocator, 3, 4, &rects, null);
+        try testing.expectEqual(1, rects.items.len);
+        const caret = try @import("editor.zig").caretRectAt(f.win, ed, l, .{ .offset = 3, .affinity = .downstream }, true);
+        try testing.expectApproxEqAbs(caret.x0, rects.items[0].x, 0.01);
+        try testing.expectApproxEqAbs(caret.width(), rects.items[0].width, 0.01);
+    }
     // A caret is as tall as the font's content area there, wherever it
     // stands on the line, and line spacing makes it no taller: at the
     // end of the big line, it is as tall as on its characters.
@@ -1698,6 +1711,19 @@ test "paragraph styles: whole paragraphs, laid out, kept through edits and undo"
     try testing.expectEqual(20, (try text_node.current(f.win, ed).?.line(0)).indent_start);
     k.press('z', .{ .ctrl = true });
     try testing.expectEqualDeep(&[_]ui.ParagraphSpan{.{ .start = 6, .end = 13, .style = centered }}, e.text.paragraphs);
+
+    // Enter at the end of a styled last paragraph opens an empty one in
+    // the node's own style: it has no character to take one from.
+    t = try f.win.begin();
+    try t.setParagraphSpans(ed, &.{.{ .start = 13, .end = 18, .style = indent }});
+    try t.setSelection(ed, 18, 18, .downstream);
+    t.commit();
+    k.press(ui.keysym.@"return", .{});
+    try f.frame();
+    try testing.expectEqualStrings("first\nsecond\nthird\n", e.text.content.flat().?);
+    const opened = text_node.current(f.win, ed).?;
+    try testing.expectEqual(20, (try opened.line(2)).indent_start);
+    try testing.expectEqual(0, (try opened.line(3)).indent_start);
 
     // Text the application sets drops them.
     t = try f.win.begin();

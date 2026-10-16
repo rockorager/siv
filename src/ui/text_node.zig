@@ -704,6 +704,12 @@ fn paragraphRuns(win: *Window, id: NodeId) error{OutOfMemory}![]const text.layou
         if (run.end >= total) break;
         at = run.end;
     }
+    // The empty paragraph after a final line break has no first
+    // character to take a style from: the node's own, not the style of
+    // the paragraph before it (a heading's hanging indent on the line
+    // Enter just opened).
+    if (total > 0 and total == d.content.len() and spans.paragraphAt(d.content, total).start == total)
+        try runs.append(a, .{ .end = std.math.maxInt(u32), .style = base });
     return runs.items;
 }
 

@@ -224,7 +224,11 @@ pub fn moveVertical(self: *const Layout, position: Position, preferred_x: ?f32, 
 
 /// Appends rectangles covering the graphemes in `start..end`, one per
 /// visually contiguous fragment (a bidi selection can be discontiguous).
-pub fn selectionRects(self: *const Layout, gpa: std.mem.Allocator, start: u32, end: u32, out: *std.ArrayList(Rect)) !void {
+/// An empty line's selected separator shows as a box `empty.width(offset)`
+/// wide, the width a block caret has there (an "x" in the line break's
+/// font), or a quarter of the line's height where that is null or
+/// `empty` is void.
+pub fn selectionRects(self: *const Layout, gpa: std.mem.Allocator, start: u32, end: u32, out: *std.ArrayList(Rect), empty: anytype) !void {
     if (start >= end) return;
     for (self.lines) |line| {
         if (line.end <= start or line.start >= end) continue;
@@ -232,8 +236,10 @@ pub fn selectionRects(self: *const Layout, gpa: std.mem.Allocator, start: u32, e
         const first_rect = out.items.len;
         if (stops.len == 1) {
             // An empty line shows its selected separator as a narrow box.
-            if (line.end > line.start and start <= line.start and end >= line.end)
-                try out.append(gpa, .{ .x = line.x + stops[0].x - if (line.rtl()) line.height / 4 else 0, .y = line.top, .width = line.height / 4, .height = line.height });
+            if (line.end > line.start and start <= line.start and end >= line.end) {
+                const w = (if (@TypeOf(empty) == void) null else empty.width(line.start)) orelse line.height / 4;
+                try out.append(gpa, .{ .x = line.x + stops[0].x - if (line.rtl()) w else 0, .y = line.top, .width = w, .height = line.height });
+            }
             continue;
         }
         var i: usize = 0;
@@ -379,7 +385,7 @@ test "word movement and selection rectangles" {
 
     var rects: std.ArrayList(Rect) = .empty;
     defer rects.deinit(std.testing.allocator);
-    try l.selectionRects(std.testing.allocator, 0, 14, &rects);
+    try l.selectionRects(std.testing.allocator, 0, 14, &rects, {});
     try std.testing.expectEqual(1, rects.items.len);
     try std.testing.expectApproxEqAbs(l.lines[0].advance, rects.items[0].width, 0.01);
 
@@ -389,6 +395,6 @@ test "word movement and selection rectangles" {
     var ml = try layoutOf(&fixture, &mixed, null);
     defer ml.deinit();
     rects.clearRetainingCapacity();
-    try ml.selectionRects(std.testing.allocator, 1, 5, &rects);
+    try ml.selectionRects(std.testing.allocator, 1, 5, &rects, {});
     try std.testing.expectEqual(2, rects.items.len);
 }
