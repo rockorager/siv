@@ -70,6 +70,9 @@ const Layer = struct {
     caret_h: f32 = 0,
     caret_w: f32 = 0,
     caret_color: scene.Color = .transparent,
+    /// A block caret in a selection: outlined, so it stands out from the
+    /// selection's color.
+    caret_outline: bool = false,
     blink_key: u64 = 0,
     /// Properties were sent once, and the owner's own transform then:
     /// transitions animate changes of it, not the first value or moves
@@ -395,11 +398,12 @@ pub const State = struct {
         for (st.order.items) |i| {
             const l = &st.layers.items[i];
             if (l.kind != .caret) continue;
-            const w, const h, const color = caretLook(win, l.owner);
-            if (h != l.caret_h or w != l.caret_w or !std.meta.eql(color, l.caret_color)) {
+            const w, const h, const color, const outline = caretLook(win, l.owner);
+            if (h != l.caret_h or w != l.caret_w or !std.meta.eql(color, l.caret_color) or outline != l.caret_outline) {
                 l.caret_h = h;
                 l.caret_w = w;
                 l.caret_color = color;
+                l.caret_outline = outline;
                 st.markLayer(i);
             }
         }
@@ -443,8 +447,7 @@ pub const State = struct {
         for (st.order.items) |i| {
             const l = &st.layers.items[i];
             const b = l.builder orelse continue;
-            if (l.kind == .caret and l.caret_h > 0)
-                b.fillRect(.xywh(0, 0, l.caret_w, l.caret_h), .color(l.caret_color)) catch |e| return oom(e);
+            if (l.kind == .caret and l.caret_h > 0) drawCaret(b, l) catch |e| return oom(e);
             for (l.open.items) |_| b.popLayer() catch |e| return oom(e);
             l.open.clearRetainingCapacity();
             l.version +%= 1;
@@ -1107,15 +1110,33 @@ fn blinkHalves(d: Window.Desktop) u32 {
     return @intCast(@max(2, @min(halves, 1 << 20) & ~@as(u64, 1)));
 }
 
-/// A focused editor's caret width, height, and color: a block caret is
-/// translucent, so the character it covers shows through.
-fn caretLook(win: *Window, nid: NodeId) struct { f32, f32, scene.Color } {
-    const l = text_node.current(win, nid) orelse return .{ 0, 0, .transparent };
-    const c = editor.caretRect(win, nid, l) catch return .{ 0, 0, .transparent };
+/// A focused editor's caret width, height, color, and whether it is
+/// outlined: a block caret is translucent, so the character it covers
+/// shows through, and in a selection a faint fill inside a solid outline
+/// in the text's color, which stands out from any selection color.
+fn caretLook(win: *Window, nid: NodeId) struct { f32, f32, scene.Color, bool } {
+    const l = text_node.current(win, nid) orelse return .{ 0, 0, .transparent, false };
+    const c = editor.caretRect(win, nid, l) catch return .{ 0, 0, .transparent, false };
     const e = &win.node(nid).data.editor;
-    var color = textColor(win, &e.text.props.style);
-    if (e.editor.block_caret and c.width() > layout.caret_width) color = color.withAlpha(color.a * 0.4);
-    return .{ c.width(), c.height(), color };
+    const color = textColor(win, &e.text.props.style);
+    const block = e.editor.block_caret and c.width() > layout.caret_width;
+    if (!block) return .{ c.width(), c.height(), color, false };
+    const in_selection = e.anchor != e.caret and win.ime.preeditFor(nid) == null;
+    return .{ c.width(), c.height(), if (in_selection) color else color.withAlpha(color.a * 0.4), in_selection };
+}
+
+/// The caret layer's content.
+fn drawCaret(b: *scene.Builder, l: *const Layer) !void {
+    const w = l.caret_w;
+    const h = l.caret_h;
+    if (!l.caret_outline) return b.fillRect(.xywh(0, 0, w, h), .color(l.caret_color));
+    const c = l.caret_color;
+    const t: f32 = @min(1.5, w / 3);
+    try b.fillRect(.xywh(0, 0, w, h), .color(c.withAlpha(c.a * 0.15)));
+    try b.fillRect(.xywh(0, 0, w, t), .color(c));
+    try b.fillRect(.xywh(0, h - t, w, t), .color(c));
+    try b.fillRect(.xywh(0, t, t, h - 2 * t), .color(c));
+    try b.fillRect(.xywh(w - t, t, t, h - 2 * t), .color(c));
 }
 
 /// A text style's color, themed or literal (D29).

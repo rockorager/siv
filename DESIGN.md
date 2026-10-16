@@ -1760,7 +1760,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     taller. That character is the one after the caret on its line, else
     the line's last, else the line break, the same one that sets a block
     caret's width. Selection highlights keep the line's full height, so
-    lines of a selection meet. Alternatives: the line's full box (the
+    lines of a selection meet, and a block caret in a selection (a modal
+    editor's visual modes) takes the highlight's top and bottom on its
+    line, so it reads as part of the selection rather than a stub in a
+    taller box. There it is drawn as a solid outline in the text's color
+    around a faint fill, since a translucent fill vanishes into some
+    themes' selection colors (Tokyo Night's) and an opaque one would hide
+    the character it covers. Alternatives: the line's full box (the
     earlier choice, and GTK's), which with generous line spacing reached
     well past the descenders; a size multiple, which needs a setting and
     sits on no metric of the font. Each caret change shows it solid

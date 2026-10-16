@@ -1518,16 +1518,27 @@ test "editor: an application's own editing model (range edits, its history, chan
     try testing.expectApproxEqAbs(on_big.height(), ui.access.caretRect(f.win, ed, 7).?.height(), 0.01);
     try f.frame();
     // At the end of a selection, a block caret covers the selection's
-    // last character (visual mode's cursor); at its start, the first.
+    // last character (visual mode's cursor); at its start, the first. In
+    // a selection it is as tall as the selection's highlight there (the
+    // line), not the text.
     const editor = @import("editor.zig");
+    const inSelection = struct {
+        fn check(win: *ui.Window, id: ui.NodeId, l: *const text.TextLayout, at: u32) !void {
+            const want = try editor.caretRectAt(win, id, l, .{ .offset = at, .affinity = .downstream }, true);
+            const got = try editor.caretRect(win, id, l);
+            const c = try l.caret(.{ .offset = at, .affinity = .downstream });
+            try testing.expectEqual(want.x0, got.x0);
+            try testing.expectEqual(want.x1, got.x1);
+            try testing.expectApproxEqAbs(c.top, got.y0, 0.01);
+            try testing.expectApproxEqAbs(c.height, got.height(), 0.01);
+        }
+    }.check;
     for ([_][3]u32{ .{ 2, 0, 1 }, .{ 0, 2, 0 }, .{ 7, 4, 6 } }) |c| {
         t = try f.win.begin();
         try t.setSelection(ed, c[0], c[1], .downstream);
         t.commit();
         try f.frame();
-        const l = text_node.current(f.win, ed).?;
-        const want = try editor.caretRectAt(f.win, ed, l, .{ .offset = c[2], .affinity = .downstream }, true);
-        try testing.expectEqual(want, try editor.caretRect(f.win, ed, l));
+        try inSelection(f.win, ed, text_node.current(f.win, ed).?, c[2]);
     }
     // A caret shown apart from the selection (visual-line mode's cursor
     // at its column) stays until the selection changes.
@@ -1536,16 +1547,21 @@ test "editor: an application's own editing model (range edits, its history, chan
     try t.showCaretAt(ed, 5);
     t.commit();
     try f.frame();
-    var l = text_node.current(f.win, ed).?;
-    const at5 = try editor.caretRectAt(f.win, ed, l, .{ .offset = 5, .affinity = .downstream }, true);
-    try testing.expectEqual(at5, try editor.caretRect(f.win, ed, l));
+    try inSelection(f.win, ed, text_node.current(f.win, ed).?, 5);
     try testing.expectEqual(@as(u32, 8), f.win.node(ed).data.editor.caret);
     t = try f.win.begin();
     try t.setSelection(ed, 2, 0, .downstream);
     t.commit();
     try f.frame();
-    l = text_node.current(f.win, ed).?;
+    try inSelection(f.win, ed, text_node.current(f.win, ed).?, 1);
+    // Without a selection, the text's height again.
+    t = try f.win.begin();
+    try t.setSelection(ed, 1, 1, .downstream);
+    t.commit();
+    try f.frame();
+    const l = text_node.current(f.win, ed).?;
     try testing.expectEqual(try editor.caretRectAt(f.win, ed, l, .{ .offset = 1, .affinity = .downstream }, true), try editor.caretRect(f.win, ed, l));
+    try testing.expect((try editor.caretRect(f.win, ed, l)).height() < pitch * 0.6);
 }
 
 test "styled text: spans shape as runs, follow edits, format as undo steps, and set the typing style" {

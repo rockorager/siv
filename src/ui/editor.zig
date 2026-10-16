@@ -96,13 +96,21 @@ pub fn imeCommit(win: *Window, id: NodeId, before: u32, after: u32, str: []const
 pub fn caretRect(win: *const Window, id: NodeId, l: *const Layout) error{OutOfMemory}!Rect {
     const e = data(win, id);
     const block = e.editor.block_caret and win.ime.preeditFor(id) == null;
-    if (e.shown_caret) |at| if (win.ime.preeditFor(id) == null)
-        return caretRectAt(win, id, l, .{ .offset = at, .affinity = .downstream }, block);
-    // A block caret at the end of a selection covers the selection's
-    // last grapheme: the cursor of a modal editor's visual mode.
-    if (block and e.anchor < e.caret)
-        return caretRectAt(win, id, l, .{ .offset = try l.previousGrapheme(e.caret), .affinity = .downstream }, true);
-    return caretRectAt(win, id, l, .{ .offset = displayCaret(win, id), .affinity = e.affinity }, block);
+    // A block caret in a selection is as tall as the selection's
+    // highlight on its line, so it reads as part of it.
+    const in_selection = block and e.anchor != e.caret;
+    const pos: Position = if (e.shown_caret != null and win.ime.preeditFor(id) == null)
+        .{ .offset = e.shown_caret.?, .affinity = .downstream }
+    else if (block and e.anchor < e.caret)
+        // At the end of a selection it covers the selection's last
+        // grapheme: the cursor of a modal editor's visual mode.
+        .{ .offset = try l.previousGrapheme(e.caret), .affinity = .downstream }
+    else
+        .{ .offset = displayCaret(win, id), .affinity = e.affinity };
+    const r = try caretRectAt(win, id, l, pos, block);
+    if (!in_selection) return r;
+    const c = try l.caret(pos);
+    return .{ .x0 = r.x0, .y0 = c.top, .x1 = r.x1, .y1 = c.top + c.height };
 }
 
 /// The caret rectangle at `pos` in content coordinates. It is as tall as
