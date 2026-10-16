@@ -1501,6 +1501,18 @@ test "editor: an application's own editing model (range edits, its history, chan
     const big = ui.access.caretRect(f.win, ed, 7).?.width();
     try testing.expect(big > x * 1.5);
     try f.frame();
+    // At the end of a selection, a block caret covers the selection's
+    // last character (visual mode's cursor); at its start, the first.
+    const editor = @import("editor.zig");
+    for ([_][3]u32{ .{ 2, 0, 1 }, .{ 0, 2, 0 }, .{ 7, 4, 6 } }) |c| {
+        t = try f.win.begin();
+        try t.setSelection(ed, c[0], c[1], .downstream);
+        t.commit();
+        try f.frame();
+        const l = text_node.current(f.win, ed).?;
+        const want = try editor.caretRectAt(f.win, ed, l, .{ .offset = c[2], .affinity = .downstream }, true);
+        try testing.expectEqual(want, try editor.caretRect(f.win, ed, l));
+    }
 }
 
 test "styled text: spans shape as runs, follow edits, format as undo steps, and set the typing style" {

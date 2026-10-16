@@ -96,6 +96,10 @@ pub fn imeCommit(win: *Window, id: NodeId, before: u32, after: u32, str: []const
 pub fn caretRect(win: *const Window, id: NodeId, l: *const Layout) error{OutOfMemory}!Rect {
     const e = data(win, id);
     const block = e.editor.block_caret and win.ime.preeditFor(id) == null;
+    // A block caret at the end of a selection covers the selection's
+    // last grapheme: the cursor of a modal editor's visual mode.
+    if (block and e.anchor < e.caret)
+        return caretRectAt(win, id, l, .{ .offset = try l.previousGrapheme(e.caret), .affinity = .downstream }, true);
     return caretRectAt(win, id, l, .{ .offset = displayCaret(win, id), .affinity = e.affinity }, block);
 }
 

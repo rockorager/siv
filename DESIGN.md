@@ -1803,7 +1803,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       (where there is none, at a line's end, on an empty line, or at the
       text's end, it is an "x" wide in the font and size there: the
       line's last character's, else the line break's, so it follows a
-      heading or a code span), in the text color
+      heading or a code span; at the end of a selection, it covers the
+      selection's last grapheme, a visual mode's cursor), in the text color
       at 40% opacity so the character shows through; it is the same
       caret layer, so moving it stays a transform and it blinks as
       before. `SIV_EDITOR_NO_INPUT_METHOD` keeps the seat's input method
