@@ -5,7 +5,11 @@
  * (or shared memory when it renders on the CPU); it goes to the web
  * view's frame slot with its rendering fence, and WebKit hears
  * buffer_rendered when siv reports it presented and buffer_released when
- * siv lets go of it. */
+ * siv lets go of it. The view is mapped while siv shows the web view's
+ * node and its window can be seen, which WebKit takes as the page being
+ * visible: unmapped, the page is hidden (document.visibilityState), its
+ * requestAnimationFrame callbacks stop, and so does WebKit's display
+ * link. */
 #define _GNU_SOURCE
 #include "swv.h"
 
@@ -38,7 +42,6 @@ typedef struct wpe_wv {
      * yet reported presented. */
     GHashTable *held;
     GPtrArray *awaiting;
-    bool mapped;
     double scale;
     int width, height;
     unsigned buttons;

@@ -53,6 +53,11 @@ typedef struct swv_engine {
     /* A frame (by key) reached the screen, or siv let go of it. */
     void (*presented)(struct swv_webview *wv, uint64_t key);
     void (*released)(struct swv_webview *wv, uint64_t key);
+    /* Whether the node can be seen (siv's shown and hidden: a node that
+     * shows it, in a window that is not suspended and draws), and the
+     * window's states. */
+    void (*set_shown)(struct swv_webview *wv, bool shown);
+    void (*set_states)(struct swv_webview *wv, siv_window_states states);
     /* Input on the node; returns what siv's handler returns. */
     siv_event_result (*input)(struct swv_webview *wv, const siv_event *event);
     /* Text or URLs (a URI list) dropped on the node at (x, y), logical

@@ -663,6 +663,81 @@ static void check_no_audio_sink(void) {
     CHECK(told);
 }
 
+/* Waits until the script's JSON answer is `want`. */
+static bool wait_eval(struct fixture *f, const char *script, const char *want) {
+    struct answer a = {0};
+    double end = now() + 10;
+    while (now() < end) {
+        if (!eval(f, script, &a)) return false;
+        if (!strcmp(a.json, want)) return true;
+        pump(f, 20);
+    }
+    fprintf(stderr, "%s: want %s, have %s\n", script, want, a.json);
+    return false;
+}
+
+static long eval_long(struct fixture *f, const char *script) {
+    struct answer a;
+    if (!eval(f, script, &a) || a.result != SIV_OK) return -1;
+    return atol(a.json);
+}
+
+/* The page is hidden, and its animation frames stop, while the window is
+ * suspended or the node is hidden; both come back after. */
+static void check_visibility(void) {
+    struct fixture f;
+    CHECK(start(&f, SIV_WEBVIEW_EPHEMERAL, NULL));
+    CHECK(load(&f, "<script>window.n = 0; (function tick() { n++; requestAnimationFrame(tick); })();</script>", NULL));
+    CHECK(wait_eval(&f, "document.visibilityState", "\"visible\""));
+    long a = eval_long(&f, "n");
+    pump(&f, 300);
+    CHECK(eval_long(&f, "n") > a + 3);
+
+    CHECK(siv_test_set_states(f.window, SIV_WINDOW_STATES_SUSPENDED) == SIV_OK);
+    CHECK(wait_eval(&f, "document.visibilityState", "\"hidden\""));
+    a = eval_long(&f, "n");
+    pump(&f, 500);
+    CHECK(eval_long(&f, "n") == a);
+    CHECK(siv_test_set_states(f.window, 0) == SIV_OK);
+    CHECK(wait_eval(&f, "document.visibilityState", "\"visible\""));
+    a = eval_long(&f, "n");
+    pump(&f, 300);
+    CHECK(eval_long(&f, "n") > a + 3);
+
+    siv_txn txn;
+    CHECK(siv_txn_begin(f.window, &txn) == SIV_OK);
+    siv_set_hidden(txn, f.node, true);
+    CHECK(siv_txn_commit(txn) == SIV_OK);
+    CHECK(wait_eval(&f, "document.visibilityState", "\"hidden\""));
+    a = eval_long(&f, "n");
+    pump(&f, 500);
+    CHECK(eval_long(&f, "n") == a);
+    CHECK(siv_txn_begin(f.window, &txn) == SIV_OK);
+    siv_set_hidden(txn, f.node, false);
+    CHECK(siv_txn_commit(txn) == SIV_OK);
+    CHECK(wait_eval(&f, "document.visibilityState", "\"visible\""));
+    a = eval_long(&f, "n");
+    pump(&f, 300);
+    CHECK(eval_long(&f, "n") > a + 3);
+    stop(&f);
+}
+
+/* The page has focus while the window is activated (the user's
+ * attention), not otherwise. */
+static void check_window_active(void) {
+    struct fixture f;
+    CHECK(start(&f, SIV_WEBVIEW_EPHEMERAL, NULL));
+    CHECK(load(&f, "<input autofocus>", NULL));
+    CHECK(siv_test_click(f.window, 10, 10, SIV_POINTER_BUTTON_PRIMARY) == SIV_OK);
+    CHECK(siv_test_set_states(f.window, SIV_WINDOW_STATES_ACTIVATED) == SIV_OK);
+    CHECK(wait_eval(&f, "document.hasFocus()", "true"));
+    CHECK(siv_test_set_states(f.window, 0) == SIV_OK);
+    CHECK(wait_eval(&f, "document.hasFocus()", "false"));
+    CHECK(siv_test_set_states(f.window, SIV_WINDOW_STATES_ACTIVATED) == SIV_OK);
+    CHECK(wait_eval(&f, "document.hasFocus()", "true"));
+    stop(&f);
+}
+
 static const struct {
     const char *name;
     void (*fn)(void);
@@ -683,6 +758,8 @@ static const struct {
     {"drop", check_drop},
     {"wheel", check_wheel},
     {"no scripts", check_no_scripts},
+    {"visibility", check_visibility},
+    {"window active", check_window_active},
     {"no audio sink", check_no_audio_sink},
 };
 

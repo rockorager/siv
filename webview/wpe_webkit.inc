@@ -931,16 +931,29 @@ static void wpe_configure(swv_webview *wv, uint32_t width, uint32_t height, doub
         wpe_toplevel_resized(w->toplevel, w->width, w->height);
         wpe_view_resized(w->view, w->width, w->height);
     }
-    if (!w->mapped) {
-        w->mapped = true;
-        wpe_toplevel_state_changed(w->toplevel, WPE_TOPLEVEL_STATE_ACTIVE);
-        wpe_view_map(w->view);
-    }
     /* The theme may have changed since: follow it. */
     if (wv->scheme == SIV_COLOR_SCHEME_FOLLOW && !(wv->flags & SIV_WEBVIEW_NO_THEME)) {
         bool dark = swv_theme_dark(wv);
         if (dark != wv->dark) wpe_set_dark(wv, dark);
     }
+}
+
+/* WebKit's page visibility is the view being mapped. */
+static void wpe_set_shown(swv_webview *wv, bool shown) {
+    wpe_wv *w = of(wv);
+    if (shown) wpe_view_map(w->view);
+    else wpe_view_unmap(w->view);
+}
+
+/* Active is the window having the user's attention: the page's focus
+ * and blur events, document.hasFocus, and inactive selections. */
+static void wpe_set_states(swv_webview *wv, siv_window_states states) {
+    wpe_wv *w = of(wv);
+    WPEToplevelState s = WPE_TOPLEVEL_STATE_NONE;
+    if (states & SIV_WINDOW_STATES_ACTIVATED) s |= WPE_TOPLEVEL_STATE_ACTIVE;
+    if (states & SIV_WINDOW_STATES_MAXIMIZED) s |= WPE_TOPLEVEL_STATE_MAXIMIZED;
+    if (states & SIV_WINDOW_STATES_FULLSCREEN) s |= WPE_TOPLEVEL_STATE_FULLSCREEN;
+    if (s != wpe_toplevel_get_state(w->toplevel)) wpe_toplevel_state_changed(w->toplevel, s);
 }
 
 static void wpe_presented(swv_webview *wv, uint64_t key) {
@@ -1197,6 +1210,8 @@ const swv_engine swv_engine_wpe = {
     .configure = wpe_configure,
     .presented = wpe_presented,
     .released = wpe_released,
+    .set_shown = wpe_set_shown,
+    .set_states = wpe_set_states,
     .input = wpe_input,
     .drop = wpe_drop,
     .load_uri = wpe_load_uri,

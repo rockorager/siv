@@ -162,6 +162,8 @@ static void on_slot_event(void *user_data, siv_external slot, const siv_external
     if (e->type == SIV_EXTERNAL_EVENT_TYPE_CONFIGURE) wv->engine->configure(wv, e->width, e->height, e->scale);
     else if (e->type == SIV_EXTERNAL_EVENT_TYPE_PRESENTED) wv->engine->presented(wv, e->key);
     else if (e->type == SIV_EXTERNAL_EVENT_TYPE_RELEASED) wv->engine->released(wv, e->key);
+    else if (e->type == SIV_EXTERNAL_EVENT_TYPE_SHOWN || e->type == SIV_EXTERNAL_EVENT_TYPE_HIDDEN) wv->engine->set_shown(wv, e->type == SIV_EXTERNAL_EVENT_TYPE_SHOWN);
+    else if (e->type == SIV_EXTERNAL_EVENT_TYPE_STATES_CHANGED) wv->engine->set_states(wv, e->states);
 }
 
 static siv_event_result on_input(void *user_data, siv_node node, const siv_event *e) {
@@ -283,6 +285,8 @@ siv_result siv_webview_create(siv_window window, const siv_webview_desc *desc, s
     }
     wv->dark = swv_theme_dark(wv);
     if (!(wv->flags & SIV_WEBVIEW_NO_THEME)) wv->engine->set_dark(wv, wv->dark);
+    siv_window_states states = 0;
+    if (siv_window_get_states(window, &states) == SIV_OK) wv->engine->set_states(wv, states);
     *out = wv->handle;
     return SIV_OK;
 }

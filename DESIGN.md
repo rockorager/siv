@@ -6335,6 +6335,21 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     `siv.wrap` in Lua (D23). Popups, the file chooser, notifications, and
     the clipboard are siv's own: `<select>` and the context menu are siv
     menus, file inputs open the portal's file chooser.
+  - **Visibility.** WebKit takes the `WPEView` being mapped as the page
+    being visible (WebKit 2.50 to 2.54 alike: `notify::mapped` sets
+    `ActivityState::IsVisible`). The view is mapped while the frame slot
+    is shown (D17's `shown` and `hidden`) and unmapped while it is
+    hidden, so a page in a suspended or undrawn window, or whose node is
+    hidden, is hidden to the page (`document.visibilityState`), and its
+    requestAnimationFrame callbacks stop, and with them WebKit's display
+    link, a 60 Hz timer here since the `WPEScreen` has no sync observer.
+    On sway with ampcode.com, CPU rendering, the web process went from
+    about 210% CPU and the display link from 61 wakeups a second to 2%
+    and none, both on a hidden workspace and with the output powered
+    off (before: 229% and 61 in both). The toplevel's state follows the window's: active while it is
+    activated (the page's focus, `document.hasFocus`), and maximized and
+    fullscreen. Before, the view was mapped and active once, at the
+    first configure, forever.
   - **User scripts.** `siv_webview_add_user_script` adds JavaScript that
     runs in every page the web view loads afterwards (loads, reloads,
     navigations), in the page's own world after `window.siv`, in the
