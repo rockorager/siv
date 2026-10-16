@@ -37,8 +37,8 @@ pub const SystemFonts = struct {
     }
 
     fn chainFn(ctx: *anyopaque, family: []const u8, language: []const u8, weight: u16, italic: bool, stretch: f32, size: f32) Document.Error![]const text.FontId {
-        _ = stretch;
-        _ = size;
+        // No desktop here: system-ui is Fontconfig's sans-serif.
+        if (std.ascii.eqlIgnoreCase(family, "system-ui")) return chainFn(ctx, "sans-serif", language, weight, italic, stretch, size);
         const s: *SystemFonts = @ptrCast(@alignCast(ctx));
         const key = std.fmt.allocPrint(s.gpa, "{s}|{s}|{d}|{}", .{ family, language, weight, italic }) catch return error.OutOfMemory;
         if (s.chains.get(key)) |c| {

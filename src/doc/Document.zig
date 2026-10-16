@@ -79,7 +79,8 @@ pub const Resource = struct {
 pub const FontResolver = struct {
     ctx: *anyopaque,
     cache: *text.FontCache,
-    /// A chain for one family name ("serif", "Georgia", ...).
+    /// A chain for one family name ("serif", "Georgia", ...); "system-ui"
+    /// is the platform's UI font, where there is one.
     chainFn: *const fn (ctx: *anyopaque, family: []const u8, language: []const u8, weight: u16, italic: bool, stretch: f32, size: f32) Error![]const text.FontId,
 };
 
@@ -435,7 +436,7 @@ fn resolveSvgFonts(d: *Document, index: u32) Error!void {
             const generic = for ([_][]const u8{ "serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui" }) |g| {
                 if (std.ascii.eqlIgnoreCase(name, g)) break true;
             } else false;
-            const found = try resolver.chainFn(resolver.ctx, if (std.ascii.eqlIgnoreCase(name, "system-ui")) "sans-serif" else name, "und", t.weight, t.italic, 100, t.size);
+            const found = try resolver.chainFn(resolver.ctx, name, "und", t.weight, t.italic, 100, t.size);
             for (found) |id| if (std.mem.indexOfScalar(text.FontId, chain.items, id) == null) try chain.append(d.gpa, id);
             if (generic) break;
         }
@@ -718,7 +719,8 @@ pub fn resolveFonts(d: *Document, resolver: FontResolver) Error!void {
             }
             const name: []const u8 = if (fam.name.len > 0) fam.name else switch (fam.generic) {
                 .serif, .ui_serif, .fangsong => "serif",
-                .sans_serif, .system_ui, .ui_sans_serif, .ui_rounded => "sans-serif",
+                .system_ui => "system-ui",
+                .sans_serif, .ui_sans_serif, .ui_rounded => "sans-serif",
                 .monospace, .ui_monospace => "monospace",
                 .cursive => "cursive",
                 .fantasy => "fantasy",

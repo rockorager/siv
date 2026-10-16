@@ -618,7 +618,9 @@ pub const View = struct {
         const v: *View = @ptrCast(@alignCast(ctx));
         const f = v.win.fonts;
         return f.chain(.{
-            .family = try f.intern(family),
+            // system-ui is the window's default family: the desktop's
+            // font, else Fontconfig's sans-serif (D19).
+            .family = if (std.ascii.eqlIgnoreCase(family, "system-ui")) 0 else try f.intern(family),
             .language = try f.intern(language),
             .weight = weight,
             .slant = if (italic) .italic else .roman,

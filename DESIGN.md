@@ -3056,6 +3056,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       for org.kde.kdeglobals only on KDE, but GNOME's keys come from the
       GTK backend on every desktop that runs it. `siv_app_set_default_font`
       still wins for the default family.
+    - In documents (docview, D32) CSS's `system-ui` is the window's
+      default family, the one UI text uses, so a page can match the
+      application's own text; `sans-serif` stays Fontconfig's.
     - Fontconfig's configuration is followed live (`src/app/fontconfig.zig`):
       the directories of every configuration file the last load read
       (`FcConfigGetConfigFiles`: fonts.conf, conf.d, what they include),

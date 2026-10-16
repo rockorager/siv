@@ -310,3 +310,32 @@ test "C API docview: Markdown rendered to HTML for export" {
     try ok(D.siv_markdown_to_html(h.app, md.ptr, md.len, &buf, buf.len, &len));
     try testing.expectEqualStrings("<h1>Notes</h1>\n<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" checked=\"\" disabled=\"\" /> <em>done</em></li>\n</ul>\n", buf[0..len]);
 }
+
+/// A page of "HIOn" in `family`, rendered with the default font set to
+/// SivTest and Droid standing in for Fontconfig's sans-serif.
+fn renderFamily(family: []const u8) ![]u8 {
+    var h: Harness = .{};
+    try h.start(120, 40, null, null);
+    defer h.stop();
+    const tf = @import("text").font.test_fonts;
+    try ok(A.siv_app_add_font(h.app, "SivTest", 7, tf.siv_regular.ptr, tf.siv_regular.len));
+    try ok(A.siv_app_add_font(h.app, "sans-serif", 10, tf.latin.ptr, tf.latin.len));
+    try ok(A.siv_app_set_default_font(h.app, "SivTest", 7));
+    var ev: Events = .{};
+    var buf: [128]u8 = undefined;
+    const html = try std.fmt.bufPrint(&buf, "<p style=\"font: 20px {s}; margin: 4px\">HIOn HIOn</p>", .{family});
+    _ = try build(&h, &ev, .html, html, .{}, "file:///");
+    try waitLoaded(&h, &ev, 1);
+    return h.capture();
+}
+
+test "C API docview: system-ui is the application's default family" {
+    const ui = try renderFamily("system-ui");
+    defer testing.allocator.free(ui);
+    const named = try renderFamily("SivTest");
+    defer testing.allocator.free(named);
+    const sans = try renderFamily("sans-serif");
+    defer testing.allocator.free(sans);
+    try testing.expectEqualSlices(u8, named, ui);
+    try testing.expect(!std.mem.eql(u8, sans, ui));
+}
