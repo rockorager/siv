@@ -262,15 +262,15 @@ contrast through the settings portal, and the desktop's accent color
 replaces the theme's. When the desktop changes, every window repaints in
 the new colors; your tree does not change.
 
-Refer to themed colors with tokens: `background_token` and `border_token`
-in visuals, `color_token` in text styles, spans, and icons. The tokens
+Refer to themed colors with tokens: `background_token`, `border_token`,
+and shadows' `color_token` in visuals, `color_token` in text styles, spans, and icons. The tokens
 cover window, view, and card surfaces and their text, muted and disabled
 text, borders and separators, controls at rest, hovered, and pressed, the
 accent and the text on it, selections, focus rings, tracks and knobs,
 destructive actions, the modal scrim, inverse surfaces for toasts, the
 success and warning colors of icons, and sidebar and secondary sidebar
 panes recessed from the view (navigation lists, a column browser's outer
-columns). Text sizes follow the desktop's font
+columns), and the color of shadows under raised surfaces. Text sizes follow the desktop's font
 size through `size_role`.
 
 An application can choose for the user: `siv_app_set_theme` fixes the

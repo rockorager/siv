@@ -274,6 +274,7 @@ const color_token_values = [_]schema.EnumValue{
     .{ .name = "warning", .value = 30, .doc = "Warnings in symbolic icons (D19); their errors use destructive." },
     .{ .name = "sidebar_bg", .value = 31, .doc = "Panes recessed from the view: sidebars, the outer columns of a column browser. Text on it is view_fg." },
     .{ .name = "secondary_sidebar_bg", .value = 32, .doc = "Panes between sidebar_bg and view_bg: a second sidebar, a column browser's middle column. Text on it is view_fg." },
+    .{ .name = "shadow", .value = 33, .doc = "Box shadows under raised surfaces (siv_visual_desc.shadows): translucent black, deeper in dark variants, where a faint one would vanish." },
 };
 
 fn param(comptime name: []const u8, comptime t: schema.Type, comptime doc: []const u8) Param {
@@ -526,6 +527,18 @@ pub const decls = [_]Decl{
         .{ .name = "window_blur", .bit = 4, .doc = "Ask the compositor to blur what is behind the window under the node's rounded border box (D31, ext-background-effect-v1), so a translucent background reads as frosted glass: bars, notifications, launchers, translucent windows and popups. The region follows the node through layout, scrolling, clips, and animations, in the same frame as its content. Where the compositor cannot blur (SIV_CAPABILITIES_BLUR unset; sway cannot), nothing is blurred, so pick a more opaque background then. siv_draw_backdrop_blur blurs the window's own content instead." },
         .{ .name = "no_focus_ring", .bit = 5, .doc = "No focus ring when the node has keyboard focus: it shows focus itself, as a writing surface that fills the window shows it with its caret (D15)." },
     }),
+    flags("siv_shadow_flags", "Shadow options.", &.{
+        .{ .name = "inset", .bit = 0, .doc = "Drawn inside the border box, from its edges inward, instead of outside it." },
+    }),
+    value("siv_shadow", "A box shadow of a node's rounded border box, like CSS box-shadow (D9): the box moved by the offset, grown by spread (shrunk for inset shadows), and blurred. An outset shadow is not drawn under the box, so a translucent background does not show it; the node's own clip does not cut it, an ancestor's does.", &.{
+        f32Field("offset_x", "Horizontal offset; positive is rightward."),
+        f32Field("offset_y", "Vertical offset; positive is downward."),
+        f32Field("blur", "Blur radius as in CSS: the Gaussian's standard deviation is half of it; 0 is sharp. Not negative."),
+        f32Field("spread", "Grows the box before blurring (shrinks it for inset shadows); may be negative."),
+        .{ .name = "color", .type = ref("siv_color"), .doc = "Color; all zero is transparent." },
+        .{ .name = "color_token", .type = ref("siv_color_token"), .doc = "A themed color that replaces color." },
+        .{ .name = "flags", .type = ref("siv_shadow_flags"), .doc = "Options." },
+    }),
     descriptor("siv_visual_desc", "A node's appearance. Repaints without layout; does not change opacity or transform.", &.{
         .{ .name = "background", .type = ref("siv_color"), .doc = "Fill of the border box; default transparent." },
         .{ .name = "border_color", .type = ref("siv_color"), .doc = "Border color." },
@@ -534,6 +547,7 @@ pub const decls = [_]Decl{
         .{ .name = "flags", .type = ref("siv_visual_flags"), .doc = "Options." },
         .{ .name = "background_token", .type = ref("siv_color_token"), .doc = "A themed background that replaces background." },
         .{ .name = "border_token", .type = ref("siv_color_token"), .doc = "A themed border color that replaces border_color." },
+        .{ .name = "shadows", .type = array(ref("siv_shadow")), .doc = "Up to three box shadows (copied), drawn under the background from the last to the first as in CSS: a raised surface takes a tight contact shadow and a wide soft one. More is SIV_ERROR_LIMIT_EXCEEDED." },
     }),
     value("siv_transform", "A transform in components (D8), so the compositor can animate it. Maps p to translate + origin + rotate(scale * (p - origin)); the identity has scale 1, not 0.", &.{
         f32Field("translate_x", "Horizontal translation."),

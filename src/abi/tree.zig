@@ -608,6 +608,23 @@ pub export fn siv_set_visual(txn: t.Txn, node: t.Node, desc: ?*const t.VisualDes
             v.focus_ring = !fl.no_focus_ring;
             v.background_token = try colorToken(d.background_token, true);
             v.border_token = try colorToken(d.border_token, true);
+            const shadows = try runtime.array(t.Shadow, d.shadows, d.shadows_count);
+            if (shadows.len > ui.Visual.max_shadows) return error.LimitExceeded;
+            v.shadows = @splat(.{});
+            v.shadow_count = @intCast(shadows.len);
+            for (shadows, v.shadows[0..shadows.len]) |sh, *o| {
+                const sfl = try runtime.flags(t.ShadowFlags, sh.flags);
+                if (!(sh.blur >= 0) or !std.math.isFinite(sh.blur)) return error.InvalidArgument;
+                o.* = .{
+                    .offset_x = sh.offset_x,
+                    .offset_y = sh.offset_y,
+                    .sigma = sh.blur / 2,
+                    .spread = sh.spread,
+                    .color = try color(sh.color, .transparent),
+                    .color_token = try colorToken(sh.color_token, true),
+                    .inset = sfl.inset,
+                };
+            }
             w.txn.ut.setVisual(id, v) catch |err| return mapTxn(err);
         }
     }.f, .{ node, desc });

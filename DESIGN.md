@@ -727,6 +727,16 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     CPU frame and 194 ms for a hover, against 72 ms and 4 ms analytic).
     Corner radii grow or shrink with the spread (zero stays sharp). PDF:
     a soft mask image of the blur, clipped to the shape (D19, Printing).
+  - Nodes take up to three box shadows in their visual
+    (`siv_visual_desc.shadows`, a CSS blur radius, themed colors), drawn
+    with the node's own content: a raised surface takes a tight contact
+    shadow and a wide soft one. Three cover the usual elevation recipes
+    and keep the visual a fixed-size value. As in CSS the node's own clip
+    does not cut them and an ancestor's does: a clipping node that roots a
+    layer, whose layer clip would cut them, clips its children in a child
+    layer instead, so they keep the rounded clip and the shadows stay
+    outside it. Opening or resizing such a panel redraws only the
+    shadows' footprint, analytically.
   - Colors are linear light, sRGB primaries, straight alpha. Paints are solid
     colors and linear, two-point conical, and sweep gradients; gradients
     interpolate premultiplied in linear light, and repeat/reflect use the
@@ -5221,8 +5231,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     colors of symbolic icons (D19), and two panes recessed from the view
     (sidebar and secondary sidebar, as libadwaita names them: navigation
     lists, the outer columns of a column browser, each a step from the
-    view and readable with view text, distinct in high contrast too). Visual descriptors take
-    `background_token` and `border_token` and text styles `color_token`,
+    view and readable with view text, distinct in high contrast too), and
+    the shadow color under raised surfaces (translucent black, deeper in
+    dark variants, where a faint one would vanish). Visual descriptors take
+    `background_token`, `border_token`, and shadows' `color_token`, and text styles `color_token`,
     each replacing the literal color when set. Text styles take a
     `size_role` (body, caption, heading, title) relative to the desktop's
     UI font size (11 pt by default, 1 pt = 4/3 logical px), multiplied by

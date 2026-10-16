@@ -196,6 +196,19 @@ pub const Corners = struct {
     }
 };
 
+/// A box shadow of a node's rounded border box (CSS box-shadow).
+pub const Shadow = struct {
+    offset_x: f32 = 0,
+    offset_y: f32 = 0,
+    /// Gaussian standard deviation (half the CSS blur radius).
+    sigma: f32 = 0,
+    spread: f32 = 0,
+    color: Color = .transparent,
+    /// Replaces `color` when set (D29).
+    color_token: ColorToken = .none,
+    inset: bool = false,
+};
+
 /// Appearance. Changing it repaints without layout; changing opacity or
 /// transform of a node that already has its own layer only updates that
 /// layer's properties.
@@ -228,6 +241,11 @@ pub const Visual = struct {
     /// when set, resolved at paint time.
     background_token: ColorToken = .none,
     border_token: ColorToken = .none,
+    /// Box shadows, the first on top; `shadows[shadow_count..]` stay zero.
+    /// The node's own clip does not cut them: a clipping node that roots a
+    /// layer clips its children in a child layer instead.
+    shadows: [max_shadows]Shadow = @splat(.{}),
+    shadow_count: u8 = 0,
     /// The node and its subtree are not laid out, painted, hit, focused,
     /// or in the semantics tree.
     hidden: bool = false,
@@ -237,6 +255,12 @@ pub const Visual = struct {
     /// A running animation of one property on the compositor; one that
     /// runs gives the node its own layer.
     animation: Animation = .{},
+
+    pub const max_shadows = 3;
+
+    pub fn shadowList(v: *const Visual) []const Shadow {
+        return v.shadows[0..v.shadow_count];
+    }
 };
 
 /// An animation the compositor runs on a node's layer (D29): repeating

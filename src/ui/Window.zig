@@ -313,6 +313,9 @@ pub const State = struct {
     own_layer: u32 = paint_mod.no_layer,
     /// Scroll: the layer of its scrolled content.
     content_layer: u32 = paint_mod.no_layer,
+    /// A clipping node with shadows: the child layer that clips its
+    /// children, so that its own layer does not clip the shadows.
+    clip_layer: u32 = paint_mod.no_layer,
     /// Layer for content painted after the node's layer subtree.
     chunk_layer: u32 = paint_mod.no_layer,
     /// What the node painted last, in its layer's coordinates.

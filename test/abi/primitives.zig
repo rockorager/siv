@@ -855,3 +855,69 @@ test "siv_result_name" {
     try testing.expectEqualStrings("SIV_ERROR_OUT_OF_MEMORY", std.mem.span(abi.siv_result_name(.error_out_of_memory)));
     try testing.expectEqualStrings("SIV_RESULT_UNKNOWN", std.mem.span(abi.siv_result_name(@fromBackingInt(-1000))));
 }
+
+test "box shadows draw outside the box, offset, and a clipping layer node keeps them while clipping its children" {
+    var h: Harness = .{};
+    try h.start(120, 80, null, null);
+    defer h.stop();
+    const white: t.Color = .{ .r = 1, .g = 1, .b = 1, .a = 1 };
+    const red: t.Color = .{ .r = 1, .a = 1 };
+    const px = struct {
+        fn f(v: f32) t.Dimension {
+            return .{ .unit = .px, .value = v };
+        }
+    }.f;
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const root = c.siv_window_get_root(h.window);
+    _ = c.siv_set_visual(txn, root, &.{ .background = white });
+    const column = c.siv_flex(txn, root, &.{ .axis = .column });
+    _ = c.siv_set_layout(txn, column, &.{ .padding = .{ .start = 30, .top = 20 } });
+    // The panel clips a child with its own layer (it is translucent), so
+    // the panel roots a layer too.
+    const panel = c.siv_box(txn, column);
+    _ = c.siv_set_layout(txn, panel, &.{ .width = px(60), .height = px(30) });
+    const shadows = [_]t.Shadow{
+        .{ .offset_y = 1, .blur = 2, .color = .{ .a = 0.3 } },
+        .{ .offset_y = 6, .blur = 8, .color = .{ .a = 0.5 } },
+    };
+    _ = c.siv_set_visual(txn, panel, &.{ .background = white, .radius = .{ .top_start = 6, .top_end = 6, .bottom_end = 6, .bottom_start = 6 }, .flags = .{ .clip = true }, .shadows = &shadows, .shadows_count = shadows.len });
+    const wide = c.siv_box(txn, panel);
+    _ = c.siv_set_layout(txn, wide, &.{ .width = px(100), .height = px(30) });
+    _ = c.siv_set_visual(txn, wide, &.{ .background = red });
+    c.siv_set_opacity(txn, wide, 0.9);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+
+    var img: [120 * 80 * 4]u8 = undefined;
+    var len: usize = 0;
+    try ok(c.siv_test_capture(h.window, &img, img.len, &len, null, null));
+    const at = struct {
+        fn f(i: []const u8, x: usize, y: usize) [4]u8 {
+            return i[(y * 120 + x) * 4 ..][0..4].*;
+        }
+    }.f;
+    // The panel spans x 30..90, y 20..50. Below it the shadow darkens the
+    // page, more than above it (the offset is downward).
+    const below = at(&img, 60, 53);
+    const above = at(&img, 60, 18);
+    try testing.expect(below[0] < 230 and below[0] == below[1] and below[1] == below[2]);
+    try testing.expect(above[0] > below[0] + 30);
+    // The rounded corner clips the child.
+    try testing.expect(at(&img, 31, 21)[1] > 200);
+    // To the right, the child is clipped to the panel: shadow gray there,
+    // not red.
+    const right = at(&img, 93, 40);
+    try testing.expect(right[0] < 255 and right[0] == right[1]);
+    try testing.expect(at(&img, 60, 35)[1] < 128); // the child, inside
+
+    // At most three shadows; blur is not negative.
+    const four: [4]t.Shadow = @splat(.{ .blur = 1, .color = .{ .a = 1 } });
+    try ok(c.siv_txn_begin(h.window, &txn));
+    _ = c.siv_set_visual(txn, panel, &.{ .shadows = &four, .shadows_count = four.len });
+    try testing.expectEqual(t.Result.error_limit_exceeded, c.siv_txn_commit(txn));
+    const negative = [_]t.Shadow{.{ .blur = -1, .color = .{ .a = 1 } }};
+    try ok(c.siv_txn_begin(h.window, &txn));
+    _ = c.siv_set_visual(txn, panel, &.{ .shadows = &negative, .shadows_count = 1 });
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
+}

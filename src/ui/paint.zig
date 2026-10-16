@@ -42,7 +42,7 @@ pub const no_layer: u32 = std.math.maxInt(u32);
 pub const focus_ring_color = scene.Color.srgb8(0x25, 0x63, 0xeb, 0xff);
 pub const focus_ring_width: f32 = 2;
 
-const LayerKind = enum { root, node, scroll_content, chunk, caret };
+const LayerKind = enum { root, node, clip_content, scroll_content, chunk, caret };
 
 const Layer = struct {
     kind: LayerKind,
@@ -308,6 +308,12 @@ pub const State = struct {
             wantsWheel(n) or hasCaret(win, nid) or n.kind == .external;
     }
 
+    /// A clipping node with shadows clips its children in a child layer,
+    /// so its own layer, which holds the shadows, is not clipped.
+    fn clipsInChild(v: node_mod.Visual) bool {
+        return v.clip and v.shadow_count != 0;
+    }
+
     /// The focused editor roots a layer with its caret in a child layer, so
     /// the caret moves and blinks as layer properties.
     fn hasCaret(win: *const Window, nid: NodeId) bool {
@@ -327,8 +333,11 @@ pub const State = struct {
             const l = try st.claim(win, &s.own_layer, .node, nid, container);
             st.setLayer(win, nid, l);
             var inner_container = l;
+            if (clipsInChild(n.visual)) {
+                inner_container = try st.claim(win, &s.clip_layer, .clip_content, nid, l);
+            }
             if (n.kind == .scroll) {
-                inner_container = try st.claim(win, &s.content_layer, .scroll_content, nid, l);
+                inner_container = try st.claim(win, &s.content_layer, .scroll_content, nid, inner_container);
             }
             var inner: Cursor = .{ .layer = inner_container };
             var it = win.shown(nid);
@@ -745,6 +754,11 @@ pub const State = struct {
                 const c = editor.caretRect(win, l.owner, l_) catch return .{};
                 return .{ .transform = .offset(n.layout.padding.left(s.rtl) - s.editor_scroll + c.x0, n.layout.padding.top + c.y0) };
             },
+            .clip_content => {
+                const n = win.node(l.owner);
+                const s = win.state(l.owner);
+                return .{ .clip = .{ .rect = .xywh(0, 0, s.size.w, s.size.h), .radii = n.visual.radius.physical(s.rtl) } };
+            },
             .scroll_content => {
                 const s = win.state(l.owner);
                 const pad = win.node(l.owner).layout.padding;
@@ -760,7 +774,7 @@ pub const State = struct {
                     t.translate.y += off.y;
                 }
                 var p: Props = .{ .transform = t, .opacity = n.visual.opacity };
-                if (n.visual.clip) p.clip = .{ .rect = .xywh(0, 0, s.size.w, s.size.h), .radii = n.visual.radius.physical(s.rtl) };
+                if (n.visual.clip and !clipsInChild(n.visual)) p.clip = .{ .rect = .xywh(0, 0, s.size.w, s.size.h), .radii = n.visual.radius.physical(s.rtl) };
                 if (n.kind == .scroll) {
                     const pad = n.layout.padding;
                     p.scroll = .{
@@ -918,6 +932,25 @@ fn drawNode(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point
     const radii = v.radius.physical(s.rtl);
     const rounded = !v.radius.isZero();
     var bounds = Rect.empty;
+    if (!r.isEmpty()) {
+        var i = v.shadow_count;
+        while (i > 0) {
+            i -= 1;
+            const sh = v.shadows[i];
+            const color = win.palette.pick(sh.color, sh.color_token);
+            if (color.a == 0) continue;
+            const shadow: scene.Shadow = .{
+                .shape = .{ .rect = r, .radii = radii },
+                .offset = .{ .x = sh.offset_x, .y = sh.offset_y },
+                .sigma = sh.sigma,
+                .spread = sh.spread,
+                .color = color,
+                .inset = sh.inset,
+            };
+            try b.shadow(shadow);
+            bounds = bounds.unite(shadow.bounds());
+        }
+    }
     const background = win.palette.pick(v.background, v.background_token);
     const border_color = win.palette.pick(v.border_color, v.border_token);
     if (background.a > 0 and !r.isEmpty()) {
