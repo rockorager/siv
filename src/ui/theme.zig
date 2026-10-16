@@ -7,8 +7,9 @@
 //!
 //! The compiled tokens come in four variants (light, dark, and a high
 //! contrast version of each). Layers apply over them in order: the
-//! desktop's accent, the user's theme (not in high contrast), and the
-//! application's overrides. A layer that sets `accent` also sets the
+//! application's defaults (its own palette in place of the compiled
+//! one, without a user theme), the desktop's accent, the user's theme (not in high contrast),
+//! and the application's overrides. A layer that sets `accent` also sets the
 //! colors derived from it (hover and active shades, the text on it, focus
 //! rings, selections), except those it sets itself.
 
@@ -90,10 +91,13 @@ pub const SchemeChoice = enum(u8) { follow, light, dark };
 pub const ContrastChoice = enum(u8) { follow, normal, high };
 
 /// What the application chose: a fixed scheme or contrast instead of the
-/// desktop's, and colors that replace the compiled tokens per variant.
+/// desktop's, its defaults for the compiled tokens per variant (beneath
+/// the desktop, and only without a user theme), and overrides above
+/// them all.
 pub const Theme = struct {
     scheme: SchemeChoice = .follow,
     contrast: ContrastChoice = .follow,
+    defaults: [4][token_count]?Color = @splat(@splat(null)),
     overrides: [4][token_count]?Color = @splat(@splat(null)),
 };
 
@@ -178,25 +182,28 @@ pub fn resolve(theme: *const Theme, d: DesktopInput, user: *const User) Palette 
     // High contrast is siv's: a user theme (Omarchy's have no
     // high-contrast variant) would undo what the user asked for.
     const none: [token_count]?Color = @splat(null);
-    const layers = [_]*const [token_count]?Color{ if (high) &none else &user.colors[@intFromBool(dark)], &theme.overrides[v] };
-    for (layers) |layer| for (layer, 0..) |o, i| if (o) |c| {
-        p.colors[i] = c;
-    };
-    // The accent's layer: 0 compiled, 1 the desktop, 2 + the index in
-    // `layers`.
+    // In order: the application's defaults (all or nothing: a user
+    // theme fills its gaps from the compiled palette, so every
+    // application looks the same under it), the desktop (its accent,
+    // applied apart), the user's theme, the application's overrides.
+    const layers = [_]*const [token_count]?Color{ if (user.source == .none) &theme.defaults[v] else &none, &none, if (high) &none else &user.colors[@intFromBool(dark)], &theme.overrides[v] };
     const a = @intFromEnum(ColorToken.accent);
+    const desktop_accent: ?Color = if (d.accent) |c| .srgb(@floatCast(c[0]), @floatCast(c[1]), @floatCast(c[2]), 1) else null;
+    // The accent's layer: 0 compiled, else 1 + its index in `layers`.
     var level: usize = 0;
-    if (d.accent) |c| {
-        p.colors[a] = .srgb(@floatCast(c[0]), @floatCast(c[1]), @floatCast(c[2]), 1);
-        level = 1;
+    for (layers, 1..) |layer, l| {
+        for (layer, 0..) |o, i| if (o) |c| {
+            p.colors[i] = c;
+        };
+        if (layer[a] != null) level = l;
+        if (l == 2) if (desktop_accent) |c| {
+            p.colors[a] = c;
+            level = l;
+        };
     }
-    for (layers, 2..) |layer, l| if (layer[a]) |c| {
-        p.colors[a] = c;
-        level = l;
-    };
     // Layers at or above the accent's keep the derived colors they set;
     // those below it give way to the accent.
-    if (level > 0) derive(&p, layers[level -| 2 ..], high);
+    if (level > 0) derive(&p, layers[level - 1 ..], high);
     return p;
 }
 
@@ -395,6 +402,43 @@ test "the user's theme: between the desktop and the application, not in high con
     p = resolve(&th, .{ .high_contrast = true }, &u);
     try std.testing.expectEqual(Variant.dark_high_contrast, p.variant);
     for (p.colors, compiled[3]) |a, b| try std.testing.expect(a.eql(b));
+}
+
+test "the application's defaults replace the compiled palette beneath the desktop, without a user theme" {
+    const tok = struct {
+        fn f(t: ColorToken) usize {
+            return @intFromEnum(t);
+        }
+    }.f;
+    const paper = Color.srgb8(0xf7, 0xf7, 0xf5, 0xff);
+    const ink = Color.srgb8(0x1f, 0x1f, 0x1f, 0xff);
+    const teal = Color.srgb8(0x00, 0x80, 0x80, 0xff);
+    var th: Theme = .{};
+    th.defaults[0][tok(.view_bg)] = paper;
+    th.defaults[0][tok(.view_fg)] = ink;
+    th.defaults[0][tok(.accent)] = teal;
+    // Alone, they stand in for the compiled colors, and the colors
+    // derived from their accent mix over their view background.
+    var p = resolve(&th, .{}, &.{});
+    try std.testing.expect(p.color(.view_bg).eql(paper));
+    try std.testing.expect(p.color(.accent).eql(teal));
+    try std.testing.expect(p.color(.selection_bg).eql(mix(paper, teal, 0.3)));
+    try std.testing.expect(p.color(.border).eql(compiled[0][tok(.border)]));
+    // The desktop's accent wins over theirs.
+    p = resolve(&th, .{ .accent = .{ 1, 0, 0 } }, &.{});
+    try std.testing.expect(p.color(.accent).eql(Color.srgb(1, 0, 0, 1)));
+    try std.testing.expect(p.color(.selection_bg).eql(mix(paper, Color.srgb(1, 0, 0, 1), 0.3)));
+    // Any user theme replaces them whole: its gaps fill from the
+    // compiled palette, as in every other application.
+    const view = Color.srgb8(0xfa, 0xf4, 0xed, 0xff);
+    var u: User = .{ .source = .omarchy, .scheme = .light };
+    u.colors[0][tok(.view_bg)] = view;
+    p = resolve(&th, .{}, &u);
+    try std.testing.expect(p.color(.view_bg).eql(view));
+    try std.testing.expect(p.color(.view_fg).eql(compiled[0][tok(.view_fg)]));
+    try std.testing.expect(p.color(.accent).eql(compiled[0][tok(.accent)]));
+    // Other variants keep the compiled colors.
+    try std.testing.expect(resolve(&th, .{ .dark = true }, &.{}).color(.view_bg).eql(compiled[1][tok(.view_bg)]));
 }
 
 test "body text follows the desktop font size in points" {

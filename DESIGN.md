@@ -5270,10 +5270,24 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     over the view background, or the accent itself in high contrast).
     Application overrides (`siv_app_set_theme_color`, per variant or all)
     apply last; overriding the accent also moves what derives from it.
+  - Application defaults (`siv_app_set_theme_default`, per variant or
+    all, October 2026) are an application's own palette in place of the
+    compiled one, for users without a theme: a writing app's paper
+    colors. They apply all or nothing: only while no user theme is
+    active (none found, or `SIV_THEME=none`), beneath the desktop's
+    accent, with derived colors from the final values. Any user theme
+    (Omarchy's, theme.toml, its `base = "omarchy"`, a `SIV_THEME` file)
+    replaces them whole, and its gaps fill from the compiled palette, so
+    every application looks the same under a theme. Alternatives:
+    overrides, which would win over the user's theme; defaults filling
+    the theme's gaps token by token, which would mix an application's
+    palette into the user's theme and make applications disagree under
+    it; reading the theme files to decide, which no application should
+    do (no API names the active theme).
   - The user's theme is a layer between the desktop and the
-    application: compiled variants, then the desktop's scheme,
-    contrast, and accent, then the user's theme, then application
-    overrides, which win but should stay rare. Derived colors (accent
+    application: compiled variants, then the application's defaults
+    (without a user theme), then the desktop's scheme, contrast, and accent, then the user's
+    theme, then application overrides, which win but should stay rare. Derived colors (accent
     shades, the text on it, focus rings, selections) come from the final
     accent over the final view background, except where a layer at or
     above the accent's sets one itself: the desktop's accent under an

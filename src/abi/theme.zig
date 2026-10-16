@@ -1,5 +1,5 @@
 //! Exports for theming (D29): the application's scheme and contrast
-//! choices, color overrides, and resolved colors for canvases. The theme
+//! choices, color defaults and overrides, and resolved colors for canvases. The theme
 //! itself is `ui.theme`; the coordinator hands it to every window.
 
 const std = @import("std");
@@ -48,6 +48,23 @@ pub export fn siv_app_set_theme_color(app: t.App, variant: t.ThemeVariant, token
             if (v == .all) {
                 for (&th.overrides) |*o| o[i] = value;
             } else th.overrides[@intCast(@backingInt(v) - 1)][i] = value;
+            self.app.setTheme(&th);
+        }
+    }.f(app, variant, token, color));
+}
+
+pub export fn siv_app_set_theme_default(app: t.App, variant: t.ThemeVariant, token: t.ColorToken, color: t.Color) t.Result {
+    return application.wrap(struct {
+        fn f(a: t.App, v: t.ThemeVariant, tok: t.ColorToken, c: t.Color) Error!void {
+            const self = try App.get(@backingInt(a));
+            _ = try runtime.enumValue(t.ThemeVariant, v);
+            const i = @intFromEnum(try tree.colorToken(tok, false));
+            const zero = c.r == 0 and c.g == 0 and c.b == 0 and c.a == 0;
+            const value: ?scene.Color = if (zero) null else try tree.color(c, .transparent);
+            var th = self.app.theme;
+            if (v == .all) {
+                for (&th.defaults) |*d| d[i] = value;
+            } else th.defaults[@intCast(@backingInt(v) - 1)][i] = value;
             self.app.setTheme(&th);
         }
     }.f(app, variant, token, color));

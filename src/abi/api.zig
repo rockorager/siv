@@ -2002,6 +2002,12 @@ pub const functions = [_]Function{
         .{ .name = "token", .type = ref("siv_color_token"), .doc = "The color; not none." },
         .{ .name = "color", .type = ref("siv_color"), .doc = "sRGB with straight alpha." },
     }),
+    call("siv_app_set_theme_default", "Sets the application's own default for a themed color in one variant, or in all of them: it replaces siv's compiled color for the application while the user has no theme, beneath the desktop's accent (D29). Under a user theme the defaults do not apply at all; the theme's gaps fill from the compiled palette, as in every application. Setting accent also moves the colors derived from it, unless they are set too; colors derive from the final values. A color of all zeros removes the default.", &.{
+        app_param,
+        .{ .name = "variant", .type = ref("siv_theme_variant"), .doc = "The variant." },
+        .{ .name = "token", .type = ref("siv_color_token"), .doc = "The color; not none." },
+        .{ .name = "color", .type = ref("siv_color"), .doc = "sRGB with straight alpha." },
+    }),
     call("siv_window_get_color", "A themed color as the window resolves it now, for canvases; they are drawn again when the theme changes.", &.{
         window_param,
         .{ .name = "token", .type = ref("siv_color_token"), .doc = "The color; not none." },
