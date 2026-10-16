@@ -320,6 +320,33 @@ test "text: ellipses, line clamps, and a base direction of its own" {
     _ = swapped;
 }
 
+test "text: an ellipsis cuts through and before styled ranges" {
+    var h: Harness = .{};
+    try h.start(200, 80, null, null);
+    defer h.stop();
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const root = c.siv_window_get_root(h.window);
+    const col = c.siv_flex(txn, root, &.{ .axis = .column });
+    // A muted range from the subject's end, as mail lists style a
+    // snippet: the cut falls inside it, and in the second line before it
+    // (inside the white space it starts after).
+    const subject = "Quarterly planning";
+    const line = subject ++ "  and a snippet much longer than the line";
+    const spans = [_]t.TextSpan{.{ .start = subject.len, .end = line.len, .flags = .{ .weight = true }, .weight = .bold }};
+    var nodes: [2]t.Node = undefined;
+    for (&nodes, [2]f32{ 150, 100 }) |*n, wpx| {
+        n.* = label(txn, col, line);
+        _ = c.siv_set_layout(txn, n.*, &.{ .width = .{ .unit = .px, .value = wpx } });
+        _ = c.siv_set_text_style(txn, n.*, &.{ .flags = .{ .no_wrap = true, .ellipsize = true } });
+        _ = c.siv_set_text_spans(txn, n.*, &.{ .spans = &spans, .spans_count = spans.len });
+    }
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try testing.expect(try width(nodes[0]) <= 150);
+    try testing.expect(try width(nodes[1]) <= 100);
+}
+
 test "editors: a hanging first line shows in the padding, and a focus ring can be left out" {
     var h: Harness = .{};
     try h.start(200, 80, null, null);

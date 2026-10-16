@@ -1483,10 +1483,16 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     the text up to a grapheme boundary of its last allowed line, trailing
     white space trimmed, plus "…" (nothing without ellipsizing), shaped
     and laid out like the original. The boundary is the largest one at
-    which the copy still ends on that line and fits, found by bisection
-    over the line's caret stops: about log2 of its graphemes extra
-    layouts, only for text that does not fit, kept until the width or
-    the text changes. The ellipsis is a neutral character at the logical
+    which the copy still ends on that line and fits. The carets' x on
+    the full line guess it (exact for a left-to-right line), two layouts
+    confirm the guess (it fits, the next stop does not), and otherwise
+    bisection over the line's caret stops finds it within the bounds the
+    probes left: usually three extra layouts, at worst about log2 of its
+    graphemes, only for text that does not fit, kept until the width or
+    the text changes. Ranges styled past the cut are dropped from the
+    copy, and the range the cut ends covers the ellipsis, which so takes
+    the style of the text before it (a mail list's muted snippet cut
+    mid-range crashed the shaper). The ellipsis is a neutral character at the logical
     end, so it lands on the visual end of the paragraph's direction. The
     node's text, accessible name, and max-content width stay whole, so a
     table cell grows back when its column does. Found by the file

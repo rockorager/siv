@@ -611,16 +611,29 @@ fn cutText(win: *Window, id: NodeId, c: *Cache, full: *const text.TextLayout, la
     // Grapheme edges of the line, without its trailing white space.
     var end = line.end;
     while (end > line.start and std.ascii.isWhitespace(content[end - 1])) end -= 1;
+    // Each edge with its caret's x on the line, in offset order.
     var edges: std.ArrayList(u32) = .empty;
+    var xs: std.ArrayList(f32) = .empty;
     try edges.append(a, line.start);
+    try xs.append(a, 0);
     const bi = full.blockOfLine(@intCast(last));
     const base = full.shaped.starts[bi];
     const block = try full.measure(bi);
+    const Edge = struct { offset: u32, x: f32 };
+    var found: std.ArrayList(Edge) = .empty;
     for (block.lineCarets(block.lines[last - full.line_starts[bi]])) |k| {
         const offset = base + k.offset;
-        if (offset > line.start and offset <= end) try edges.append(a, offset);
+        if (offset > line.start and offset <= end) try found.append(a, .{ .offset = offset, .x = k.x });
     }
-    std.mem.sort(u32, edges.items, {}, std.sort.asc(u32));
+    std.mem.sort(Edge, found.items, {}, struct {
+        fn lt(_: void, x: Edge, y: Edge) bool {
+            return x.offset < y.offset;
+        }
+    }.lt);
+    for (found.items) |e| {
+        try edges.append(a, e.offset);
+        try xs.append(a, e.x);
+    }
     const ellipsis = if (d.props.ellipsize) "…" else "";
     // The largest edge that fits, by bisection; the line's start stands
     // in when none does. Without an ellipsis the text stops at the line's
@@ -630,6 +643,36 @@ fn cutText(win: *Window, id: NodeId, c: *Cache, full: *const text.TextLayout, la
     var best: ?Cut = null;
     var best_at: usize = 0;
     errdefer if (best) |*b| b.deinit();
+    // Each cut is shaped and laid out whole, so bisection costs several
+    // shapes of the line. The carets' positions on the full line guess
+    // the edge first (exactly, for a line laid out left to right), which
+    // two cuts confirm: it fits and the next edge does not. A wrong
+    // guess still narrows the bisection by what the cuts showed.
+    if (fit != null and lo < hi) {
+        var probe = try cutAt(win, id, content, edges.items[0], line.start, ellipsis, width);
+        const suffix_w = probe.layout.width();
+        probe.deinit();
+        var guess: usize = 0;
+        for (xs.items, 0..) |x, i| {
+            if (x + suffix_w <= fit.? + 0.01) guess = i;
+        }
+        if (guess > lo) {
+            var ct = try cutAt(win, id, content, edges.items[guess], line.start, ellipsis, width);
+            if (ct.layout.lineCount() <= last + 1 and ct.layout.width() <= fit.? + 0.01) {
+                best = ct;
+                best_at = guess;
+                lo = guess;
+                if (guess < hi) {
+                    var next = try cutAt(win, id, content, edges.items[guess + 1], line.start, ellipsis, width);
+                    defer next.deinit();
+                    if (next.layout.lineCount() > last + 1 or next.layout.width() > fit.? + 0.01) hi = guess;
+                }
+            } else {
+                ct.deinit();
+                hi = guess - 1;
+            }
+        }
+    }
     while (lo < hi) {
         const mid = (lo + hi + 1) / 2;
         var ct = try cutAt(win, id, content, edges.items[mid], line.start, ellipsis, width);
@@ -660,7 +703,7 @@ fn cutAt(win: *Window, id: NodeId, content: []const u8, at: u32, floor: u32, suf
     var trimmed = at;
     while (trimmed > floor and std.ascii.isWhitespace(content[trimmed - 1])) trimmed -= 1;
     const s = try std.mem.concat(a, u8, &.{ content[0..trimmed], suffix });
-    var ct: Cut = .{ .paragraph = try shapeString(win, id, s, d.spans, null, null), .layout = undefined };
+    var ct: Cut = .{ .paragraph = try shapeString(win, id, s, try clipSpans(a, d.spans, trimmed, @intCast(s.len)), null, null), .layout = undefined };
     errdefer ct.paragraph.deinit();
     if (ct.paragraph.wanted.len != 0) win.fonts.request(ct.paragraph.wanted);
     ct.layout = text.TextLayout.init(win.gpa, a, &ct.paragraph, .{
@@ -677,6 +720,21 @@ fn cutAt(win: *Window, id: NodeId, content: []const u8, at: u32, floor: u32, suf
         else => unreachable,
     };
     return ct;
+}
+
+/// `list` for the text cut at `at` and a suffix after it, `total` bytes
+/// in all: ranges after the cut go, and the range the cut ends (or
+/// passes through) covers the suffix, so the ellipsis takes the style of
+/// the text it follows.
+fn clipSpans(a: std.mem.Allocator, list: []const node_mod.Span, at: u32, total: u32) error{OutOfMemory}![]const node_mod.Span {
+    var out: std.ArrayList(node_mod.Span) = try .initCapacity(a, list.len);
+    for (list) |sp| {
+        if (sp.start >= at) break;
+        var x = sp;
+        if (x.end >= at) x.end = total;
+        out.appendAssumeCapacity(x);
+    }
+    return out.items;
 }
 
 /// The node's paragraph styles as layout runs: its defaults, patched by
