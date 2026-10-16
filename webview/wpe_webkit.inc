@@ -782,6 +782,11 @@ static WebKitNetworkSession *session_for(wpe_app *wa, const siv_webview_desc *d)
     }
     char *cache = dir_or_default(d->cache_dir, d->cache_dir_len, g_get_user_cache_dir());
     s = webkit_network_session_new(data, cache);
+    /* Without this the cookie manager keeps cookies only in memory, and
+     * they are gone when the application exits. */
+    char *cookies = g_build_filename(data, "cookies.sqlite", NULL);
+    webkit_cookie_manager_set_persistent_storage(webkit_network_session_get_cookie_manager(s), cookies, WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
+    g_free(cookies);
     g_signal_connect(s, "download-started", G_CALLBACK(on_download_started), NULL);
     g_hash_table_insert(wa->sessions, data, g_object_ref(s));
     g_free(cache);

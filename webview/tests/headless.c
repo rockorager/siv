@@ -367,6 +367,51 @@ static void check_data_dir(void) {
     CHECK(system(cmd) == 0);
 }
 
+/* Whether a file in dir whose name starts with prefix contains needle. */
+static bool dir_has(const char *dir, const char *prefix, const char *needle) {
+    char cmd[256];
+    snprintf(cmd, sizeof cmd, "grep -qs -F '%s' '%s'/%s*", needle, dir, prefix);
+    return system(cmd) == 0;
+}
+
+/* A data directory keeps persistent cookies after the application exits
+ * (WebKit keeps them only in memory unless told where to store them); an
+ * ephemeral web view stores none. */
+static void check_cookies(void) {
+    char dir[] = "/tmp/siv-webview-test-XXXXXX";
+    char eph[] = "/tmp/siv-webview-test-XXXXXX";
+    CHECK(mkdtemp(dir) != NULL);
+    CHECK(mkdtemp(eph) != NULL);
+    struct fixture f;
+    struct answer a;
+    CHECK(start(&f, 0, dir));
+    CHECK(load(&f, "<p>x", "https://example.test/"));
+    CHECK(eval(&f, "document.cookie = 'siv=kept-across-exits; Max-Age=3600; Path=/'; document.cookie", &a));
+    CHECK(!strcmp(a.json, "\"siv=kept-across-exits\""));
+    /* The network process stores it in the background. */
+    double end = now() + 10;
+    while (!dir_has(dir, "cookies.sqlite", "kept-across-exits") && now() < end) pump(&f, 50);
+    stop(&f);
+    CHECK(start(&f, 0, dir));
+    CHECK(load(&f, "<p>x", "https://example.test/"));
+    CHECK(eval(&f, "document.cookie", &a));
+    if (strcmp(a.json, "\"siv=kept-across-exits\"")) fprintf(stderr, "document.cookie after a restart: %s\n", a.json);
+    CHECK(!strcmp(a.json, "\"siv=kept-across-exits\""));
+    stop(&f);
+    CHECK(start(&f, SIV_WEBVIEW_EPHEMERAL, eph));
+    CHECK(load(&f, "<p>x", "https://example.test/"));
+    CHECK(eval(&f, "document.cookie = 'siv=ephemeral; Max-Age=3600; Path=/'; document.cookie", &a));
+    CHECK(!strcmp(a.json, "\"siv=ephemeral\""));
+    pump(&f, 500);
+    stop(&f);
+    char db[64];
+    snprintf(db, sizeof db, "%s/cookies.sqlite", eph);
+    CHECK(access(db, F_OK) != 0);
+    char cmd[128];
+    snprintf(cmd, sizeof cmd, "rm -rf '%s' '%s'", dir, eph);
+    CHECK(system(cmd) == 0);
+}
+
 static void check_zoom_and_scheme(void) {
     struct fixture f;
     CHECK(start(&f, SIV_WEBVIEW_EPHEMERAL, NULL));
@@ -618,6 +663,7 @@ static const struct {
     {"input and new window", check_input_and_new_window},
     {"frames", check_frames},
     {"data dir", check_data_dir},
+    {"cookies", check_cookies},
     {"zoom and color scheme", check_zoom_and_scheme},
     {"history", check_history},
     {"drop", check_drop},

@@ -210,9 +210,11 @@ typedef struct siv_webview_desc {
     siv_destroy_fn destroy;
     siv_webview_flags flags;
     siv_webview_engine engine;
-    /** Where cookies, storage, and the like live; empty is
+    /** Where cookies, storage, and the like live, kept after the
+     *  application exits (cookies in cookies.sqlite); empty is
      *  $XDG_DATA_HOME/<program>/webview. Web views with the same directory
-     *  share them. Ignored with SIV_WEBVIEW_EPHEMERAL. */
+     *  share them. Ignored with SIV_WEBVIEW_EPHEMERAL, which keeps
+     *  everything in memory. */
     const char *data_dir;
     size_t data_dir_len;
     /** Where caches live; empty is $XDG_CACHE_HOME/<program>/webview. */
