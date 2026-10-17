@@ -2339,8 +2339,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       one (`siv_external_frame_desc.damage`, rectangles in its pixels;
       none is all of it, a lone empty one nothing). siv keeps up to four
       rectangles (`platform.FrameDamage`; more merge into the one they
-      grow least). A frame replaced before it showed (pending fences)
-      adds its damage to its successor's, and a new size damages all.
+      grow least), and while pixman would band them into more than eight
+      rectangles, the two whose union grows least merge: display
+      servers keep damage as pixman regions, which split rectangles at
+      every top and bottom edge, and Hyprland 0.56 repaints the bounding
+      box of a region of more than eight (`DamageRing.cpp`). Three live
+      dots down a sidebar and a scrollbar strip at the other edge band
+      into ten, so Hyprland redrew the whole web view at every refresh
+      (3.2% GPU on a Radeon 780M at 1280x800); with the two nearest dots
+      merged they band into seven (0.7%). A frame replaced before it
+      showed (pending fences) adds its damage to its successor's, and a
+      new size damages all.
       Promoted, the damage goes to the subsurface's
       `wl_surface.damage_buffer` (all of it when the subsurface showed
       nothing), and the window's layers are not touched, so a frame

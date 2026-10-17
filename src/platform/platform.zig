@@ -1184,25 +1184,85 @@ pub const FrameDamage = struct {
         return if (d.all) null else d.rects[0..d.len];
     }
 
+    /// Display servers keep damage as a pixman region, which splits
+    /// rectangles into horizontal bands, and some repaint the bounding box
+    /// of a region of more rectangles than this (Hyprland 0.56 past 8).
+    pub const max_banded = 8;
+
     /// Adds a rectangle; past `max_rects`, it merges into the one whose
-    /// area grows least.
+    /// area grows least. Then, while the rectangles band into more than
+    /// `max_banded`, the two whose union grows least merge.
     pub fn add(d: *FrameDamage, r: Rect) void {
         if (d.all or r.width <= 0 or r.height <= 0) return;
         if (d.len < max_rects) {
             d.rects[d.len] = r;
             d.len += 1;
-            return;
-        }
-        var best: usize = 0;
-        var growth: i64 = std.math.maxInt(i64);
-        for (d.rects, 0..) |q, i| {
-            const g = area(unite(q, r)) - area(q);
-            if (g < growth) {
-                best = i;
-                growth = g;
+        } else {
+            var best: usize = 0;
+            var growth: i64 = std.math.maxInt(i64);
+            for (d.rects, 0..) |q, i| {
+                const g = area(unite(q, r)) - area(q);
+                if (g < growth) {
+                    best = i;
+                    growth = g;
+                }
             }
+            d.rects[best] = unite(d.rects[best], r);
         }
-        d.rects[best] = unite(d.rects[best], r);
+        while (banded(d.rects[0..d.len]) > max_banded) {
+            var bi: usize = 0;
+            var bj: usize = 1;
+            var growth: i64 = std.math.maxInt(i64);
+            for (0..d.len) |i| for (i + 1..d.len) |j| {
+                const g = area(unite(d.rects[i], d.rects[j])) - area(d.rects[i]) - area(d.rects[j]);
+                if (g < growth) {
+                    bi, bj, growth = .{ i, j, g };
+                }
+            };
+            d.rects[bi] = unite(d.rects[bi], d.rects[bj]);
+            d.len -= 1;
+            d.rects[bj] = d.rects[d.len];
+            d.rects[d.len] = .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+        }
+    }
+
+    /// How many rectangles pixman makes of these: each band between
+    /// consecutive edges holds the spans covering it, overlapping and
+    /// touching ones joined, and a band with the same spans as the one
+    /// above extends it.
+    fn banded(rects: []const Rect) usize {
+        var ys: [2 * max_rects]i32 = undefined;
+        for (rects, 0..) |q, i| ys[2 * i], ys[2 * i + 1] = .{ q.y, q.y + q.height };
+        const edges = ys[0 .. 2 * rects.len];
+        std.mem.sort(i32, edges, {}, std.sort.asc(i32));
+        var count: usize = 0;
+        var prev: [max_rects][2]i32 = undefined;
+        var prev_len: usize = 0;
+        for (edges[0..edges.len -| 1], edges[@min(1, edges.len)..]) |y0, y1| {
+            if (y0 == y1) continue;
+            var spans: [max_rects][2]i32 = undefined;
+            var n: usize = 0;
+            for (rects) |q| if (q.y <= y0 and q.y + q.height >= y1) {
+                spans[n] = .{ q.x, q.x + q.width };
+                n += 1;
+            };
+            std.mem.sort([2]i32, spans[0..n], {}, struct {
+                fn lt(_: void, a: [2]i32, b: [2]i32) bool {
+                    return a[0] < b[0];
+                }
+            }.lt);
+            var m: usize = 0;
+            for (spans[0..n]) |s| {
+                if (m > 0 and s[0] <= spans[m - 1][1]) spans[m - 1][1] = @max(spans[m - 1][1], s[1]) else {
+                    spans[m] = s;
+                    m += 1;
+                }
+            }
+            if (m != prev_len or !std.mem.eql([2]i32, spans[0..m], prev[0..prev_len])) count += m;
+            prev = spans;
+            prev_len = m;
+        }
+        return count;
     }
 
     /// Adds everything `o` damages.
@@ -2170,4 +2230,24 @@ test "layer windows are placed by their anchors and margins, and reserve their s
     try std.testing.expect(!(LayerState{ .anchor = .{ .top = true, .left = true } }).valid());
     // Without auto, the zone is what was asked for, -1 included.
     try std.testing.expectEqual(@as(i32, -1), (LayerState{ .exclusive_zone = -1, .width = 1, .height = 1 }).zone(1, 1));
+}
+
+test "frame damage stays few rectangles in a display server's bands" {
+    // Three dots down a sidebar and a scrollbar strip: ten banded
+    // rectangles, which Hyprland would repaint as their bounding box (the
+    // whole window). The two nearest dots merge, leaving seven.
+    var d: FrameDamage = .none;
+    d.add(.{ .x = 1259, .y = 0, .width = 21, .height = 756 });
+    d.add(.{ .x = 16, .y = 53, .width = 8, .height = 9 });
+    d.add(.{ .x = 16, .y = 152, .width = 8, .height = 9 });
+    d.add(.{ .x = 16, .y = 251, .width = 8, .height = 9 });
+    try std.testing.expectEqualSlices(Rect, &.{
+        .{ .x = 1259, .y = 0, .width = 21, .height = 756 },
+        .{ .x = 16, .y = 53, .width = 8, .height = 108 },
+        .{ .x = 16, .y = 251, .width = 8, .height = 9 },
+    }, d.slice().?);
+    // Side by side in the same rows, they band into one rectangle each.
+    var row: FrameDamage = .none;
+    for (0..4) |i| row.add(.{ .x = @intCast(i * 100), .y = 10, .width = 10, .height = 10 });
+    try std.testing.expectEqual(@as(u8, 4), row.len);
 }
