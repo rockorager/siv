@@ -1002,11 +1002,22 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     lavapipe's 1); on pixman sway RADV cannot present and lavapipe,
     accepted in tests, is chosen. Not tried on a machine with two GPUs.
   - The device is one per process and is created on a thread of its own
-    when the first Wayland window opens (10 ms to find none, 116 ms on
-    lavapipe with pipelines, longer than the first-frame budget of D25);
-    windows present with the CPU renderer until it is ready and then
-    switch once. First frames stay on the CPU even with the pipeline cache
-    below: instance and device creation alone took 15 to 45 ms on lavapipe.
+    once the first Wayland window has shown its first frame (10 ms to
+    find none, 116 ms on lavapipe with pipelines, longer than the
+    first-frame budget of D25); windows present with the CPU renderer
+    until it is ready and then switch once. First frames stay on the CPU
+    even with the pipeline cache below: instance and device creation
+    alone took 15 to 45 ms on lavapipe. It started when the window
+    opened until loading the driver was found to hold up the first frame
+    from its thread: glibc (2.44) makes every `pthread_create` in the
+    process wait while `dlopen` loads RADV and libLLVM (7 to 9 ms in a
+    test program), and the first frame starts the pool's workers (a
+    font load, the CPU renderer's tiles). On a Radeon 760M under
+    headless sway (`bench/gpui-compare`), with Fontconfig no longer
+    loaded twice (D13), the first frame's commit came 22.0 ms after
+    `fork` instead of 26.4 (median of 11); either change alone gave
+    26.0 to 26.2, each waiting behind the other. The device starts
+    about 8 ms later, when that commit is made.
   - `exit` waits for a device thread that is still starting (up to 2 s).
     Loading the driver runs its libraries' static constructors on that
     thread: Mesa's drivers link libLLVM, whose constructors register about

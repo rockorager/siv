@@ -976,6 +976,12 @@ fn vulkanDevice(self: *Compositor, id: WindowId) ?*render_vulkan.Device {
         .starting, .failed, .lost => return null,
         .idle => {},
     }
+    // On a thread, the device starts once the window has shown its first
+    // frame: loading the driver holds glibc's loader lock, which creating
+    // any thread waits for, and the first frame starts the pool's workers.
+    if (self.threaded) if (self.getWindow(id)) |w| {
+        if (!w.shown) return null;
+    } else return null;
     const target = self.platform.vulkanSurface(id) orelse return null;
     self.vulkan_display = target.display;
     self.startVulkan();
@@ -1395,6 +1401,7 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
         if (!w.shown) {
             w.shown = true;
             self.releaseHold(w, f.time);
+            self.upgradeSurface(w);
         }
     }
     // A commit that changed nothing visible is on screen already.
