@@ -373,3 +373,71 @@ test "theme_changed: windows hear once when their resolved colors change, and on
 fn expectColor(want: t.Color, got: t.Color) !void {
     inline for (.{ "r", "g", "b", "a" }) |f| try testing.expectApproxEqAbs(@field(want, f), @field(got, f), 1e-4);
 }
+
+test "settings events and the settings they report: theme, fonts, motion" {
+    const Log = struct {
+        flags: [4]t.EventFlags = undefined,
+        n: usize = 0,
+        fn onSettings(ud: ?*anyopaque, _: t.Node, e: *const t.Event) callconv(.c) t.EventResult {
+            const self: *@This() = @ptrCast(@alignCast(ud.?));
+            if (e.type == .settings and self.n < self.flags.len) self.flags[self.n] = e.flags;
+            self.n += 1;
+            return .pass;
+        }
+    };
+    var log: Log = .{};
+    var h: Harness = .{};
+    try h.start(100, 60, null, null);
+    defer h.stop();
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_on(txn, c.siv_window_get_root(h.window), .settings, Log.onSettings, null, &log);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try testing.expectEqual(@as(usize, 0), log.n);
+
+    var name: [8]u8 = undefined;
+    var len: usize = 0;
+    try ok(c.siv_app_get_default_font(h.app, &name, name.len, &len));
+    try testing.expectEqualStrings("Droid", name[0..len]);
+
+    // Theme colors: one event for the burst, saying only that.
+    try ok(c.siv_app_set_theme_color(h.app, .all, .view_bg, .{ .r = 1, .g = 0, .b = 0, .a = 1 }));
+    try ok(c.siv_app_set_theme_color(h.app, .all, .accent, .{ .r = 0, .g = 0, .b = 1, .a = 1 }));
+    try h.settle();
+    try testing.expectEqual(@as(usize, 1), log.n);
+    try testing.expect(log.flags[0].theme_changed and !log.flags[0].fonts_changed and !log.flags[0].desktop_changed);
+
+    // The default family, which the getter reports, truncated to the
+    // buffer with the full length.
+    try ok(c.siv_app_set_default_font(h.app, "Sans Mono Wide", 14));
+    try h.settle();
+    try testing.expectEqual(@as(usize, 2), log.n);
+    try testing.expect(log.flags[1].fonts_changed and !log.flags[1].theme_changed and !log.flags[1].desktop_changed);
+    try ok(c.siv_app_get_default_font(h.app, &name, name.len, &len));
+    try testing.expectEqual(@as(usize, 14), len);
+    try testing.expectEqualStrings("Sans Mon", &name);
+
+    // The application's reduced motion stops carets blinking whatever
+    // the desktop says.
+    var reduced = false;
+    var ms: u32 = 0;
+    try ok(c.siv_app_get_reduced_motion(h.app, &reduced));
+    try testing.expect(reduced);
+    try ok(c.siv_app_get_caret_blink(h.app, &ms));
+    try testing.expectEqual(@as(u32, 0), ms);
+    try ok(c.siv_app_get_double_click_time(h.app, &ms));
+    try testing.expectEqual(@as(u32, 400), ms);
+}
+
+test "settings getters without reduced motion: the desktop's caret blink" {
+    var h: Harness = .{ .reduced_motion = false };
+    try h.start(100, 60, null, null);
+    defer h.stop();
+    var reduced = true;
+    var ms: u32 = 0;
+    try ok(c.siv_app_get_reduced_motion(h.app, &reduced));
+    try testing.expect(!reduced);
+    try ok(c.siv_app_get_caret_blink(h.app, &ms));
+    try testing.expectEqual(@as(u32, 1200), ms);
+}

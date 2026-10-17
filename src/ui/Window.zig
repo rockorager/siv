@@ -81,6 +81,8 @@ modals: std.ArrayList(NodeId) = .empty,
 /// layout changed one's viewport since it was last told.
 viewports: std.ArrayList(NodeId) = .empty,
 viewport_dirty: bool = false,
+/// What changed since settings handlers were last told (`settingsChanged`).
+settings_changed: node_mod.Settings = .{},
 /// Text nodes that painted only the lines near their scroll container's
 /// viewport (some may be gone); a scroll that leaves that band repaints
 /// them (D8).
@@ -629,7 +631,7 @@ pub fn markLayers(win: *Window) void {
 pub fn needsFrame(win: *const Window) bool {
     // Semantics alone need no frame: they rebuild on query or with the
     // next frame (`semanticsTree`), so scrolling makes no extra frames.
-    return win.state(.root).needs_layout or win.dirty.layers or win.dirty.props or win.viewport_dirty or
+    return win.state(.root).needs_layout or win.dirty.layers or win.dirty.props or win.viewport_dirty or win.settings_changed.any() or
         win.paint.anyDirty() or win.pending_input.items.len != 0 or win.input.tablet_pending.items.len != 0 or win.ime.dirty or win.pending_edits.items.len != 0 or
         win.dnd.pending != null or win.commit_held;
 }
@@ -733,6 +735,9 @@ pub fn frame(win: *Window) Error!void {
     win.viewport_dirty = false;
     win.deliverViewports();
     if (win.txn.open) return;
+    // What settings handlers change is laid out in this frame.
+    win.deliverSettings();
+    if (win.txn.open) return;
     defer _ = win.scratch.reset(.retain_capacity);
     var laid_out = win.state(.root).needs_layout;
     try layout.run(win);
@@ -811,6 +816,28 @@ pub fn deliverViewports(win: *Window) void {
         s.viewport = v;
         input_mod.callHandler(win, id, .viewport, &.{ .viewport = v });
         if (win.txn.open) return;
+    }
+}
+
+/// The theme colors, fonts, or desktop settings changed: nodes with a
+/// settings handler are told at the start of the next frame.
+pub fn settingsChanged(win: *Window, changes: node_mod.Settings) void {
+    win.settings_changed = win.settings_changed.merge(changes);
+    win.requestFrame();
+}
+
+/// Tells every node with a settings handler what changed since the last
+/// time, once. Handlers run here (D5) and may change the tree; nodes they
+/// add are not told.
+fn deliverSettings(win: *Window) void {
+    const changes = win.settings_changed;
+    if (!changes.any()) return;
+    win.settings_changed = .{};
+    const n = win.nodes.items.len;
+    for (0..n) |i| {
+        const id: NodeId = @enumFromInt(i);
+        if (!win.isLive(id) or win.node(id).handler(.settings) == null) continue;
+        input_mod.callHandler(win, id, .settings, &.{ .settings = changes });
     }
 }
 
@@ -1320,7 +1347,7 @@ pub fn setDesktop(win: *Window, d: Desktop) void {
     win.applyPalette();
     win.paint.restartBlink();
     win.dirty.props = true;
-    win.requestFrame();
+    win.settingsChanged(.{ .desktop = true });
 }
 
 /// Applies the application's theme choices (D29).
@@ -1346,7 +1373,10 @@ fn applyPalette(win: *Window) void {
     const colors = !p.eqlColors(&old);
     const size = p.body_px != old.body_px;
     if (!colors and !size) return;
-    if (colors) win.paint.repaintAll();
+    if (colors) {
+        win.paint.repaintAll();
+        win.settings_changed.theme = true;
+    }
     for (win.nodes.items, 0..) |n, i| {
         if (n.status != .live) continue;
         const id: NodeId = @enumFromInt(i);

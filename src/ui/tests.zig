@@ -2557,3 +2557,79 @@ test "set_value goes to nodes with a range, unless disabled" {
     try testing.expect(!ui.input.setValue(f.win, s, 4));
     try testing.expectEqual(@as(f64, 7), got);
 }
+
+const SettingsLog = struct {
+    events: std.ArrayList(struct { node: NodeId, changes: ui.Settings }) = .empty,
+    /// A node the first handler adds, with a handler of its own.
+    add_under: ?NodeId = null,
+    added: NodeId = .none,
+
+    fn onSettings(user: ?*anyopaque, win: *ui.Window, id: NodeId, ev: *const ui.Event) ui.HandlerResult {
+        const log: *SettingsLog = @ptrCast(@alignCast(user));
+        log.events.append(testing.allocator, .{ .node = id, .changes = ev.settings }) catch unreachable;
+        if (log.add_under) |parent| {
+            log.add_under = null;
+            const t = win.begin() catch unreachable;
+            log.added = t.create(parent, .box, .none) catch unreachable;
+            t.on(log.added, .settings, .{ .func = onSettings, .user = log }) catch unreachable;
+            t.commit();
+        }
+        return .pass;
+    }
+
+    fn expect(log: *SettingsLog, nodes: []const NodeId, changes: ui.Settings) !void {
+        defer log.events.clearRetainingCapacity();
+        try testing.expectEqual(nodes.len, log.events.items.len);
+        for (nodes, log.events.items) |n, e| {
+            try testing.expectEqual(n, e.node);
+            try testing.expectEqual(changes, e.changes);
+        }
+    }
+};
+
+test "settings events: every node with a handler, once a frame, with what changed" {
+    var f: Fixture = undefined;
+    try f.init(.{});
+    defer f.deinit();
+    var log: SettingsLog = .{};
+    defer log.events.deinit(testing.allocator);
+    const t = try f.win.begin();
+    const a = try box(t, .root, .box, .{});
+    _ = try box(t, a, .box, .{});
+    const b = try box(t, a, .box, .{});
+    try t.on(a, .settings, .{ .func = SettingsLog.onSettings, .user = &log });
+    try t.on(b, .settings, .{ .func = SettingsLog.onSettings, .user = &log });
+    t.commit();
+    try f.frame();
+    try log.expect(&.{}, .{});
+
+    // The same settings again change nothing.
+    f.win.setDesktop(.{});
+    try f.frame();
+    try log.expect(&.{}, .{});
+
+    // A desktop setting that leaves the colors alone, then nothing more.
+    const requested = f.frames_requested;
+    f.win.setDesktop(.{ .double_click_ms = 250 });
+    try testing.expect(f.frames_requested > requested);
+    try f.frame();
+    try log.expect(&.{ a, b }, .{ .desktop = true });
+    try f.frame();
+    try log.expect(&.{}, .{});
+
+    // The dark scheme changes colors too; with fonts in the same frame,
+    // one event says both.
+    f.win.setDesktop(.{ .double_click_ms = 250, .color_scheme = .dark });
+    f.win.settingsChanged(.{ .fonts = true });
+    try f.frame();
+    try log.expect(&.{ a, b }, .{ .theme = true, .fonts = true, .desktop = true });
+
+    // A node a handler adds hears of the next change, not this one.
+    log.add_under = a;
+    f.win.settingsChanged(.{ .fonts = true });
+    try f.frame();
+    try log.expect(&.{ a, b }, .{ .fonts = true });
+    f.win.settingsChanged(.{ .fonts = true });
+    try f.frame();
+    try log.expect(&.{ a, b, log.added }, .{ .fonts = true });
+}

@@ -944,6 +944,21 @@ static void wpe_set_dark(swv_webview *wv, bool dark) {
     wpe_settings_set_boolean(wpe_display_get_settings(wpe_display_get_primary()), WPE_SETTING_DARK_MODE, dark, WPE_SETTINGS_SOURCE_APPLICATION, NULL);
 }
 
+/* siv's settings, for the whole process too (D33). WPE's Wayland and DRM
+ * platforms fill none of them in, and its defaults are not siv's. */
+static void wpe_set_settings(swv_webview *wv, const swv_settings *st) {
+    (void)wv;
+    WPESettings *s = wpe_display_get_settings(wpe_display_get_primary());
+    /* A Pango description: WebKit drops the last word, the size, and makes
+     * the rest CSS's system-ui. */
+    char *font = g_strdup_printf("%s 11", st->font);
+    wpe_settings_set_string(s, WPE_SETTING_FONT_NAME, font, WPE_SETTINGS_SOURCE_APPLICATION, NULL);
+    g_free(font);
+    wpe_settings_set_boolean(s, WPE_SETTING_DISABLE_ANIMATIONS, st->reduced_motion, WPE_SETTINGS_SOURCE_APPLICATION, NULL);
+    wpe_settings_set_uint32(s, WPE_SETTING_CURSOR_BLINK_TIME, st->caret_blink_ms, WPE_SETTINGS_SOURCE_APPLICATION, NULL);
+    wpe_settings_set_uint32(s, WPE_SETTING_DOUBLE_CLICK_TIME, st->double_click_ms, WPE_SETTINGS_SOURCE_APPLICATION, NULL);
+}
+
 static void wpe_configure(swv_webview *wv, uint32_t width, uint32_t height, double scale) {
     wpe_wv *w = of(wv);
     if (scale > 0 && scale != w->scale) {
@@ -955,11 +970,6 @@ static void wpe_configure(swv_webview *wv, uint32_t width, uint32_t height, doub
         w->width = (int)width, w->height = (int)height;
         wpe_toplevel_resized(w->toplevel, w->width, w->height);
         wpe_view_resized(w->view, w->width, w->height);
-    }
-    /* The theme may have changed since: follow it. */
-    if (wv->scheme == SIV_COLOR_SCHEME_FOLLOW && !(wv->flags & SIV_WEBVIEW_NO_THEME)) {
-        bool dark = swv_theme_dark(wv);
-        if (dark != wv->dark) wpe_set_dark(wv, dark);
     }
 }
 
@@ -1291,6 +1301,7 @@ const swv_engine swv_engine_wpe = {
     .get_state = wpe_get_state,
     .set_zoom = wpe_set_zoom,
     .set_dark = wpe_set_dark,
+    .set_settings = wpe_set_settings,
     .run_script = wpe_run_script,
     .add_user_script = wpe_add_user_script,
     .remove_user_script = wpe_remove_user_script,

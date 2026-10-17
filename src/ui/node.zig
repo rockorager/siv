@@ -1139,6 +1139,30 @@ pub const Event = union(enum) {
     /// the compositor scrolled it or at the start of the frame after
     /// layout changed it).
     viewport: Viewport,
+    /// The window's theme colors, fonts, or desktop settings changed
+    /// (delivered to every node with a handler, at the start of the next
+    /// frame, once for everything that changed since the last).
+    settings: Settings,
+};
+
+/// What a `settings` event reports as changed.
+pub const Settings = packed struct(u8) {
+    /// The resolved theme colors (`Window.palette`).
+    theme: bool = false,
+    /// The default family, the desktop's monospace family, or
+    /// Fontconfig's configuration.
+    fonts: bool = false,
+    /// A desktop setting (`Window.desktop`).
+    desktop: bool = false,
+    _: u5 = 0,
+
+    pub fn any(s: Settings) bool {
+        return @as(u8, @bitCast(s)) != 0;
+    }
+
+    pub fn merge(a: Settings, b: Settings) Settings {
+        return @bitCast(@as(u8, @bitCast(a)) | @as(u8, @bitCast(b)));
+    }
 };
 
 /// What an edit replaced: `start..end` of the old text by `length` bytes
@@ -1152,10 +1176,10 @@ pub const Viewport = struct { x: f32, y: f32, width: f32, height: f32, zoom: f32
 
 /// `select`, `close`, and `sort` are never sent by the tree: widgets built
 /// on the C API emit them (`siv_node_emit`).
-/// The kinds of node handlers. The first eighteen match `siv_event_type`;
+/// The kinds of node handlers. The first nineteen match `siv_event_type`;
 /// `key_capture` holds a node's capture-phase key handler (D16), which
 /// sees keys on their way down to the focused node.
-pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll, change, drop, drag, set_value, select, close, viewport, sort, gesture, tablet, pad, touch, text_input, key_capture };
+pub const HandlerKind = enum(u8) { activate, pointer, key, focus, scroll, change, drop, drag, set_value, select, close, viewport, sort, gesture, tablet, pad, touch, text_input, settings, key_capture };
 
 /// What a handler did with an event: whether it stops bubbling and
 /// whether it prevents the default action (later default handlers and the

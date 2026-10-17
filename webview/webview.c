@@ -174,6 +174,35 @@ static siv_event_result on_input(void *user_data, siv_node node, const siv_event
     return wv->engine->input(wv, e);
 }
 
+/* Passes siv's settings to the engine (D33), and the theme to the page
+ * unless the application chose a scheme or turned that off. */
+static void follow_settings(swv_webview *wv) {
+    if (wv->scheme == SIV_COLOR_SCHEME_FOLLOW && !(wv->flags & SIV_WEBVIEW_NO_THEME)) {
+        bool dark = swv_theme_dark(wv);
+        if (dark != wv->dark) wv->engine->set_dark(wv, dark);
+    }
+    siv_app app = siv_window_get_app(wv->window);
+    size_t len = 0;
+    if (siv_app_get_default_font(app, NULL, 0, &len) != SIV_OK) return;
+    char *font = malloc(len + 1);
+    if (!font) return;
+    if (siv_app_get_default_font(app, font, len, &len) != SIV_OK) len = 0;
+    font[len] = 0;
+    swv_settings s = {.font = font, .double_click_ms = 400, .caret_blink_ms = 1200};
+    (void)siv_app_get_reduced_motion(app, &s.reduced_motion);
+    (void)siv_app_get_double_click_time(app, &s.double_click_ms);
+    (void)siv_app_get_caret_blink(app, &s.caret_blink_ms);
+    wv->engine->set_settings(wv, &s);
+    free(font);
+}
+
+static siv_event_result on_settings(void *user_data, siv_node node, const siv_event *e) {
+    (void)node, (void)e;
+    swv_webview *wv = get((siv_webview)(uintptr_t)user_data);
+    if (wv && wv->engine) follow_settings(wv);
+    return SIV_EVENT_RESULT_PASS;
+}
+
 /* Drops: text and URLs go to the page (files cannot: the engine has no
  * drag and drop of its own). */
 static siv_event_result on_drop(void *user_data, siv_node node, const siv_event *e) {
@@ -292,6 +321,7 @@ siv_result siv_webview_create(siv_window window, const siv_webview_desc *desc, s
     if (!(wv->flags & SIV_WEBVIEW_NO_THEME)) wv->engine->set_dark(wv, wv->dark);
     siv_window_states states = 0;
     if (siv_window_get_states(window, &states) == SIV_OK) wv->engine->set_states(wv, states);
+    follow_settings(wv);
     *out = wv->handle;
     return SIV_OK;
 }
@@ -326,6 +356,9 @@ siv_node siv_webview_view(siv_txn txn, siv_node parent, siv_webview webview) {
     for (size_t i = 0; i < sizeof kinds / sizeof *kinds; i++) siv_on(txn, n, kinds[i], on_input, NULL, id);
     siv_set_drop_target(txn, n, SIV_DESC(siv_drop_target_desc, .mimes = SIV_STR("text/uri-list\ntext/plain;charset=utf-8\ntext/plain")));
     siv_on(txn, n, SIV_EVENT_TYPE_DROP, on_drop, NULL, id);
+    siv_on(txn, n, SIV_EVENT_TYPE_SETTINGS, on_settings, NULL, id);
+    /* They may have changed while no node listened. */
+    follow_settings(wv);
     if (wv->node && wv->node != n) siv_remove(txn, wv->node);
     wv->node = n;
     wv->cursor = SIV_CURSOR_AUTO;

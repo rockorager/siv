@@ -35,6 +35,16 @@ typedef struct swv_scheme {
     struct swv_scheme *next;
 } swv_scheme;
 
+/* siv's settings that pages follow (D33). */
+typedef struct swv_settings {
+    /* The application's default family, NUL-terminated (CSS system-ui). */
+    const char *font;
+    bool reduced_motion;
+    uint32_t double_click_ms;
+    /* 0 when carets do not blink. */
+    uint32_t caret_blink_ms;
+} swv_settings;
+
 /* An engine: what the siv side needs from it. Engines keep their own state
  * in swv_webview.engine_data and swv_app.engine_data. */
 typedef struct swv_engine {
@@ -77,6 +87,7 @@ typedef struct swv_engine {
     void (*get_state)(struct swv_webview *wv, siv_webview_state *state);
     void (*set_zoom)(struct swv_webview *wv, double zoom);
     void (*set_dark)(struct swv_webview *wv, bool dark);
+    void (*set_settings)(struct swv_webview *wv, const swv_settings *settings);
     siv_result (*run_script)(struct swv_webview *wv, const char *script, size_t len, siv_webview_script_fn cb, siv_destroy_fn destroy, void *user_data);
     /* Flags checked by the siv side; *id is nonzero and unique within the
      * web view. */

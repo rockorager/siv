@@ -1672,6 +1672,11 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
             ev.height = v.height;
             ev.zoom = v.zoom;
         },
+        .settings => |s| {
+            ev.flags.theme_changed = s.theme;
+            ev.flags.fonts_changed = s.fonts;
+            ev.flags.desktop_changed = s.desktop;
+        },
     }
     // A capture handler stopped the key: only default handlers run.
     const skip = event.* == .key and event.key.stopped;

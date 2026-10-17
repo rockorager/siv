@@ -512,6 +512,21 @@ pub export fn siv_app_set_default_font(app: t.App, family: ?[*]const u8, family_
     return .ok;
 }
 
+pub export fn siv_app_get_default_font(app: t.App, name: ?[*]u8, name_cap: usize, len: ?*usize) t.Result {
+    return wrap(struct {
+        fn f(a: t.App, ptr: ?[*]u8, cap: usize, out: ?*usize) Error!void {
+            const self = try App.get(@backingInt(a));
+            const buf = try runtime.buffer(ptr, cap);
+            const dest = try runtime.out(usize, out);
+            const fonts = &self.app.fonts;
+            const s = fonts.name(fonts.default_family);
+            const k = @min(s.len, buf.len);
+            @memcpy(buf[0..k], s[0..k]);
+            dest.* = s.len;
+        }
+    }.f(app, name, name_cap, len));
+}
+
 pub export fn siv_app_has_fonts(app: t.App, has_fonts: ?*bool) t.Result {
     return wrap(struct {
         fn f(a: t.App, out: ?*bool) Error!void {
@@ -553,6 +568,28 @@ pub export fn siv_app_get_key_repeat(app: t.App, delay_ms: ?*u32, interval_ms: ?
     delay.* = r.delay_ms;
     // At least 1 ms: a rate above 1000 cannot repeat faster than that.
     interval.* = if (r.rate == 0) 0 else @max(1000 / r.rate, 1);
+    return .ok;
+}
+
+pub export fn siv_app_get_reduced_motion(app: t.App, reduced_motion: ?*bool) t.Result {
+    const self = App.get(@backingInt(app)) catch |err| return t.resultOf(err);
+    const dest = runtime.out(bool, reduced_motion) catch |err| return t.resultOf(err);
+    dest.* = self.app.reduced_motion or self.app.desktop.values.reduced_motion;
+    return .ok;
+}
+
+pub export fn siv_app_get_double_click_time(app: t.App, time_ms: ?*u32) t.Result {
+    const self = App.get(@backingInt(app)) catch |err| return t.resultOf(err);
+    const dest = runtime.out(u32, time_ms) catch |err| return t.resultOf(err);
+    dest.* = self.app.desktop.values.double_click_ms;
+    return .ok;
+}
+
+pub export fn siv_app_get_caret_blink(app: t.App, cycle_ms: ?*u32) t.Result {
+    const self = App.get(@backingInt(app)) catch |err| return t.resultOf(err);
+    const dest = runtime.out(u32, cycle_ms) catch |err| return t.resultOf(err);
+    const d = self.app.desktop.values;
+    dest.* = if (self.app.reduced_motion or d.reduced_motion or !d.cursor_blink) 0 else d.cursor_blink_ms;
     return .ok;
 }
 

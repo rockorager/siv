@@ -23,6 +23,11 @@
  * WebKit) runs inside siv's loop (siv_app_add_prepare), whether the
  * application runs siv_app_run or embeds siv's loop.
  *
+ * Pages follow siv's settings, live: CSS system-ui is the application's
+ * default family (siv_app_set_default_font, else siv's), and
+ * prefers-reduced-motion, the caret blink, and the double-click time are
+ * siv's (D33). WPE WebKit has one set of them per process.
+ *
  * Engines: WPE WebKit through its platform API (WPEPlatform, 2.50 or
  * later). The engine interface inside the library keeps room for others;
  * SIV_WEBVIEW_ENGINE_AUTO picks the first available. */

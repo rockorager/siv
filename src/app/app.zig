@@ -431,8 +431,8 @@ pub const App = struct {
     }
 
     /// Fonts or the text scale changed (the default or monospace family,
-    /// Fontconfig's configuration): text reshapes, and canvases measure
-    /// and draw again.
+    /// Fontconfig's configuration): text reshapes, canvases measure and
+    /// draw again, and settings handlers hear of it.
     pub fn refreshText(app: *App) void {
         for (app.windows.items) |w| if (w) |win| {
             const uw = win.ui;
@@ -447,7 +447,7 @@ pub const App = struct {
                     uw.markPaint(id);
                 }
             }
-            uw.requestFrame();
+            uw.settingsChanged(.{ .fonts = true });
         };
     }
 

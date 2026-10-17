@@ -3159,6 +3159,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     - In documents (docview, D32) CSS's `system-ui` is the window's
       default family, the one UI text uses, so a page can match the
       application's own text; `sans-serif` stays Fontconfig's.
+    - Content siv does not draw reads the same resolved values, so that
+      it matches siv's own text and motion rather than reading the
+      portal itself: `siv_app_get_default_font` (the family above, or
+      the application's), `siv_app_get_reduced_motion` (the
+      application's flag or the desktop's), `siv_app_get_double_click_time`,
+      and `siv_app_get_caret_blink` (0 when carets do not blink), beside
+      `siv_app_get_key_repeat`; settings events (D29) say when they
+      change. siv-webview passes them to WPE (D33).
     - Fontconfig's configuration is followed live (`src/app/fontconfig.zig`):
       the directories of every configuration file the last load read
       (`FcConfigGetConfigFiles`: fonts.conf, conf.d, what they include),
@@ -5537,6 +5545,33 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     event (colors are read per window); calling back from inside the
     call that changed the theme (it would re-enter the application from
     its own `siv_app_set_theme_color`, once per call of a burst).
+  - Widgets and embedders that copy settings out of siv hear of
+    changes with a node event, `SIV_EVENT_TYPE_SETTINGS` (October 2026),
+    because the window event goes to the one callback the application
+    gave `siv_window_create`, which a library inside the window never
+    sees. Every node of the window with a handler gets it, not bubbled,
+    at the start of the next frame (a safe point, D5, after viewport
+    handlers and before layout, so what a handler changes shows in that
+    frame), once for everything that changed since the last frame, with
+    flags saying what: `SIV_EVENT_THEME_CHANGED` when a color
+    `siv_window_get_color` returns differs (when the window event comes),
+    `SIV_EVENT_FONTS_CHANGED` when any family may resolve differently
+    (the default family, the desktop's monospace, Fontconfig's
+    configuration: `App.refreshText`), and `SIV_EVENT_DESKTOP_CHANGED`
+    when any desktop setting differs (`ui.Window.setDesktop`). Widgets
+    take it with `siv_on_default`, applications with `siv_on`, as for
+    any event. Ordinary nodes need none: they repaint and relayout on
+    their own. It is GTK's `css_changed` and `system_setting_changed`
+    and Qt's `changeEvent` (`PaletteChange`, `FontChange`) in siv's
+    terms. Found by siv-webview (D33), which passes the default family
+    and motion settings to WPE and could follow them only on its slot's
+    configures. Alternatives: an event on the external slot (only
+    external content would hear it, not widgets); having applications
+    forward window events to the libraries they use (easy to forget,
+    and nothing reported fonts or desktop settings); a way to add
+    window-event listeners (a second mechanism for what node handlers
+    already do). Other window events (activation, scale) become node
+    events the same way when a widget needs one.
   - Font families are not part of the theme: Fontconfig's generic
     families decide them, or the desktop's fonts on GNOME and KDE, live
     (D19). theme.toml has no font setting, since fonts.conf is where
@@ -6405,10 +6440,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     `siv_app_add_prepare` (D6), key codes, raw scrolling with value120
     and sources, and touch events (D16), `siv_set_text_input` (D15),
     `siv_set_accessible_embed` (D18), multi-plane dma-buf import (D17),
-    `close` from menus closed unchosen (D22), and `siv.handle` and
-    `siv.wrap` in Lua (D23). Popups, the file chooser, notifications, and
-    the clipboard are siv's own: `<select>` and the context menu are siv
-    menus, file inputs open the portal's file chooser.
+    `close` from menus closed unchosen (D22), `siv.handle` and
+    `siv.wrap` in Lua (D23), and settings events with the getters for
+    the settings they report (D19, D29). Popups, the file chooser,
+    notifications, and the clipboard are siv's own: `<select>` and the
+    context menu are siv menus, file inputs open the portal's file
+    chooser.
   - **Visibility.** WebKit takes the `WPEView` being mapped as the page
     being visible (WebKit 2.50 to 2.54 alike: `notify::mapped` sets
     `ActivityState::IsVisible`). The view is mapped while the frame slot
@@ -6569,10 +6606,31 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     siv is a desktop toolkit. No touchscreen, which would make
     `(any-pointer: coarse)` true on every desktop. Reverse if siv exposes
     the seat's capabilities and touch-only devices matter.
+  - **siv's settings, not the portal's.** Pages follow what siv's own
+    text and widgets follow, through WPE's settings: CSS `system-ui` is
+    the application's default family (`siv_app_get_default_font`, so
+    Fontconfig's `sans-serif` on sway, Hyprland, and niri, D19, as in
+    docview), `prefers-reduced-motion` is siv's reduced motion, and the
+    caret blink and double-click time are siv's; `prefers-color-scheme`
+    follows the window's theme unless the application chose a scheme.
+    The library sets them when a web view is made and its node shown,
+    and again on every settings event (D29). WPE fills in none of them
+    itself, and its defaults (Sans, which Fontconfig maps to whatever
+    it likes) match nothing. Chromium takes `system-ui` from GTK's font,
+    GNOME's default even where nobody chose it; an application that
+    wants that sets it as its default family, and its own text gets it
+    too. Antialiasing, hinting, and subpixel order keep WebKit's
+    defaults (grayscale, slight, none): siv draws unhinted text with
+    pixel-snapped baselines and stem darkening (D13), which Skia does
+    not, so unhinted web text would look softer, not closer. Font DPI
+    does nothing on WPE (WebKit's font scaling there is the screen's),
+    and the text scale is not applied: WebKit has only page zoom, which
+    is the application's (`siv_webview_set_zoom`).
   - **What the engine cannot do.** WPE 2.52's platform API has no drag
     and drop: text and URLs dropped on the node become DOM drag events,
     files cannot be dropped in, and drags do not start from a page. It has
-    one light or dark appearance per process. Its sandbox does not see a
+    one light or dark appearance, and one set of the settings above, per
+    process. Its sandbox does not see a
     `file://` page's directory, so media there fails; applications serve
     their pages with `siv_webview_register_scheme` (`app://`). Before
     2.54 its Ctrl+C and Ctrl+Insert copy only in editable content, and no

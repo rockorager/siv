@@ -869,6 +869,7 @@ pub const decls = [_]Decl{
         .{ .name = "pad", .value = 15, .doc = "A tablet pad's control (D16): pad_control says which kind, index which one, value its position for rings, strips, and dials, SIV_EVENT_PRESSED a button's state, SIV_EVENT_LIFTED that the finger left a ring or strip; group and mode name the control's group and its current mode, so an application can give a control one action per mode. From the focused node up, like a key." },
         .{ .name = "touch", .value = 16, .doc = "A touch point (D16) of a sequence that began on this node or a descendant, for nodes with a touch handler, which then get every event of the sequence (phase down, move, up, or cancel), in their coordinates, not bubbled; touch_id tells simultaneous touches apart. Touches that begin elsewhere drive the pointer, as they always did." },
         .{ .name = "text_input", .value = 17, .doc = "An input method's edit (D15) of a focused node whose text input is enabled (siv_set_text_input), delivered to the node only, which applies it in this order: delete delete_before bytes before the cursor and delete_after after it (around a selection, not counting it), insert text (the commit), then show preedit, the text being composed, with its cursor from byte preedit_cursor_begin to preedit_cursor_end (both -1 hide it). The preedit replaces the previous one; an event without one ends it. A long commit may come in several events, the last carrying the preedit. Afterwards, tell siv the new text with siv_set_text_input." },
+        .{ .name = "settings", .value = 18, .doc = "The window's theme colors, fonts, or desktop settings changed; flags say which (SIV_EVENT_THEME_CHANGED, SIV_EVENT_FONTS_CHANGED, SIV_EVENT_DESKTOP_CHANGED). Delivered to every node of the window with a handler, not bubbled, at the start of the next frame, once for everything that changed since the last, so that what the handler changes shows in that frame. Nodes repaint and relayout on their own; a widget or embedder that copies these settings elsewhere (a web page, a terminal's palette, a caret blink of its own) reads them again here: siv_window_get_color, siv_app_get_default_font, siv_app_get_reduced_motion, siv_app_get_double_click_time, siv_app_get_caret_blink." },
     }),
     enumeration("siv_tablet_tool", "A tablet tool's physical type.", &.{
         .{ .name = "pen", .value = 0, .doc = "A pen or stylus." },
@@ -994,6 +995,9 @@ pub const decls = [_]Decl{
         .{ .name = "relative", .bit = 8, .doc = "Pointer: relative motion (siv_window_set_pointer_constraint): dx, dy, raw_dx, and raw_dy hold it." },
         .{ .name = "capturing", .bit = 9, .doc = "Key: delivered to a capture handler (siv_on_capture), on the way down to the focused node." },
         .{ .name = "stop", .bit = 10, .doc = "Scroll: the fingers left the touchpad, or the wheel stopped; kinetic scrolling starts here. dx and dy may be zero." },
+        .{ .name = "theme_changed", .bit = 11, .doc = "Settings: the window's theme colors changed, as SIV_WINDOW_EVENT_TYPE_THEME_CHANGED reports them." },
+        .{ .name = "fonts_changed", .bit = 12, .doc = "Settings: the default family (siv_app_get_default_font), the desktop's monospace family, or Fontconfig's configuration changed, so any family may resolve to other fonts." },
+        .{ .name = "desktop_changed", .bit = 13, .doc = "Settings: a desktop setting changed (D19): reduced motion, double-click time, caret blinking, text scale, color scheme, contrast, accent, or the UI font's size." },
     }),
     openEnumeration("siv_key", "An XKB keysym (D16), as key events report it. Every keysym is valid, not only the named ones: a key that types a character reports its Unicode code point below 0x100 (0x61 for a, 0x41 for Shift+A) and 0x01000000 plus the code point above. The named keys are those applications commonly bind.", &.{
         .{ .name = "none", .value = 0, .doc = "No key (NoSymbol): the event is not a key event." },
@@ -1761,6 +1765,11 @@ pub const functions = [_]Function{
         app_param,
         .{ .name = "family", .type = .string, .doc = "Family name." },
     }),
+    call("siv_app_get_default_font", "Copies the name of the family text styles that name none use now: the one siv_app_set_default_font set, else the desktop's font on GNOME and KDE, else \"sans-serif\" (D19), for content drawn elsewhere that should match the application's text, such as a web page's system-ui. Settings events with SIV_EVENT_FONTS_CHANGED say when it may have changed.", &.{
+        app_param,
+        .{ .name = "name", .type = schema.text_buffer, .doc = "Receives at most name_cap bytes; may be NULL with name_cap 0." },
+        .{ .name = "len", .type = out(.usize), .doc = "The name's full length in bytes." },
+    }),
     call("siv_app_has_fonts", "Whether text in the default family (siv_app_set_default_font) has a font to draw with: one added with siv_app_add_font, or Fontconfig's, ready or still loading. Without one (SIV_APP_NO_SYSTEM_FONTS and no font added, or a system where Fontconfig finds none), text still lays out and draws, with siv's built-in last-resort face: a box for every character but spaces (D13).", &.{
         app_param,
         .{ .name = "has_fonts", .type = out(.bool), .doc = "A font resolves." },
@@ -1804,6 +1813,18 @@ pub const functions = [_]Function{
         app_param,
         .{ .name = "delay_ms", .type = out(.u32), .doc = "Delay before the first repeat." },
         .{ .name = "interval_ms", .type = out(.u32), .doc = "Interval between repeats; 0 when held keys do not repeat." },
+    }),
+    call("siv_app_get_reduced_motion", "Whether motion is off, so that carets do not blink and nothing animates: the application's SIV_APP_REDUCED_MOTION or the desktop's setting (D19). Settings events with SIV_EVENT_DESKTOP_CHANGED say when the desktop's may have changed.", &.{
+        app_param,
+        .{ .name = "reduced_motion", .type = out(.bool), .doc = "Motion is off." },
+    }),
+    call("siv_app_get_double_click_time", "The desktop's double-click time (D19), which siv's click counts follow: the most time between the presses of a double or triple click (400 ms until the desktop says).", &.{
+        app_param,
+        .{ .name = "time_ms", .type = out(.u32), .doc = "Milliseconds." },
+    }),
+    call("siv_app_get_caret_blink", "How carets blink, as siv's editors blink them (D19): one whole cycle, shown and hidden, from the desktop (1200 ms until it says), or 0 when they do not blink because the desktop turned blinking off or motion is off (siv_app_get_reduced_motion).", &.{
+        app_param,
+        .{ .name = "cycle_ms", .type = out(.u32), .doc = "Milliseconds per cycle; 0 for no blinking." },
     }),
     handleQuery("siv_window_get_focus", "siv_node", "The node that has keyboard focus in the window, as of the latest operation, or 0 when none has or the handle is invalid. Key events start there.", &.{
         window_param,
