@@ -1145,15 +1145,14 @@ fn createToplevel(self: *Wayland, options: platform.WindowOptions) Error!WindowI
     return w.id;
 }
 
-/// The scale, pacing, and background effect objects every window has
-/// when the compositor offers them.
+/// The scale and pacing objects every window has when the compositor
+/// offers them.
 fn addSurfaceExtensions(self: *Wayland, w: *Window) Error!void {
     if (self.fractional_manager != null and self.viewporter != null) {
         w.fractional = self.fractional_manager.?.getFractionalScale(w.surface) catch return error.OutOfMemory;
         w.viewport = self.viewporter.?.getViewport(w.surface) catch return error.OutOfMemory;
     }
     if (self.fifo_manager) |m| w.fifo = m.getFifo(w.surface) catch return error.OutOfMemory;
-    if (self.effect_manager) |m| w.effect = m.getBackgroundEffect(w.surface) catch return error.OutOfMemory;
 }
 
 fn dropSurfaceExtensions(_: *Wayland, w: *Window) void {
@@ -1418,9 +1417,14 @@ pub fn canBlur(self: *Wayland) bool {
     return self.blur_capable;
 }
 
+/// The window's background effect object exists only while it blurs
+/// something: Hyprland (0.56) damages the whole surface at every commit
+/// of a surface that has one, region or not, so a window committing a
+/// small change each frame (a web view's animation, its display link)
+/// was recomposited whole each frame.
 pub fn setBlurRegion(self: *Wayland, id: WindowId, region: []const Rect) void {
     const w = self.get(id);
-    const effect = w.effect orelse return;
+    const manager = self.effect_manager orelse return;
     if (!self.blur_capable and w.blur_region.items.len == 0) return;
     if (sameRects(w.blur_region.items, region)) return;
     w.blur_region.clearRetainingCapacity();
@@ -1428,7 +1432,14 @@ pub fn setBlurRegion(self: *Wayland, id: WindowId, region: []const Rect) void {
         // Without memory to remember it, send it anyway; the next call
         // sends it again.
     };
-    if (region.len == 0) return effect.setBlurRegion(null);
+    if (region.len == 0) {
+        // Gone with the next commit.
+        if (w.effect) |e| e.destroy();
+        w.effect = null;
+        return;
+    }
+    if (w.effect == null) w.effect = manager.getBackgroundEffect(w.surface) catch return self.queue.fail(error.OutOfMemory);
+    const effect = w.effect.?;
     const r = self.compositor.?.createRegion() catch return self.queue.fail(error.OutOfMemory);
     defer r.destroy();
     for (region) |rect| r.add(rect.x, rect.y, rect.width, rect.height);

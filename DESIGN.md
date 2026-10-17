@@ -4831,7 +4831,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     announces no blur capability there (KWin blurs only when it composites
     with OpenGL, which its virtual backend does on a DRM render node), and
     siv behaved as it should: `SIV_CAPABILITIES_BLUR` unset, an effect
-    object per surface, no region sent, no protocol error. What remains
+    object per surface (now none until a region is set, below), no
+    region sent, no protocol error. What remains
     unverified on a real compositor is the region itself, which needs a
     machine with a render node. To repeat it there: a scratch C program
     with a window whose root is translucent and a rounded child marked
@@ -5782,10 +5783,20 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     application to pick a more opaque background, as the example does.
     siv's own backdrop blur (D9, `siv_draw_backdrop_blur`) is separate:
     it blurs the window's own content. siv creates the surface's
-    ext_background_effect_surface_v1 with the window (one per surface is
-    the protocol's rule), so `siv_window_get_wayland` users must not
-    (D27), nor a layer or lock surface; that call's toplevel is NULL for
-    layer and lock windows.
+    ext_background_effect_surface_v1 when the window's region first
+    becomes non-empty and destroys it when it is empty again (one per
+    surface is the protocol's rule), so `siv_window_get_wayland` users
+    must not (D27), nor a layer or lock surface; that call's toplevel is
+    NULL for layer and lock windows. Before, every window had one from
+    the start, and Hyprland (0.56 to at least 25f09b2) damages a
+    surface's whole box at every commit while it has one, region or
+    not (`CBackgroundEffect`'s commit listener): a window committing
+    each frame for a small change, such as a web view's spinner or the
+    frame callbacks of its display link, was recomposited whole each
+    frame. Without one, Hyprland blurs behind a window it does not
+    find opaque (one with a visible subsurface, or no opaque region)
+    when its blur is on, which costs it only around the damage; that is
+    Hyprland's default for any such client.
   - **Shell windows and the run loop** (D27): layer windows keep
     `siv_app_run` running exactly as toplevels do, and a session lock
     keeps it running until it is unlocked, destroyed, denied, or finished
