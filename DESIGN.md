@@ -1282,7 +1282,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     none, which read every configuration file and cache a second time
     on the UI thread during the first layout (4 ms on Arch's 2.18). siv
     calls FcConfigSetDefaultSubstitute with its own configuration
-    where Fontconfig has it (a weak symbol; older releases need no
+    where Fontconfig has it (looked up with `dlsym`, since a weak
+    reference does not link against older releases, which need no
     configuration there).
   - HarfBuzz (built in, without FreeType, GLib, or ICU integration) for shaping.
   - SheenBidi for UAX #9; uucode plus siv's UAX #14 and UAX #29 scanners, gated
