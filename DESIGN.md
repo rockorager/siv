@@ -1264,7 +1264,15 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **Requirement:** correct complex-script text, async font loading, control over
   caching, and fixes without waiting on another project.
 - **Decision:** siv's own paragraph engine:
-  - Fontconfig for discovery and fallback candidates.
+  - Fontconfig for discovery and fallback candidates. Every query goes
+    to siv's own configuration (`text.fontconfig.Database`), default
+    substitution included: since Fontconfig 2.17, FcDefaultSubstitute
+    uses the process's default configuration and loads it if there is
+    none, which read every configuration file and cache a second time
+    on the UI thread during the first layout (4 ms on Arch's 2.18). siv
+    calls FcConfigSetDefaultSubstitute with its own configuration
+    where Fontconfig has it (a weak symbol; older releases need no
+    configuration there).
   - HarfBuzz (built in, without FreeType, GLib, or ICU integration) for shaping.
   - SheenBidi for UAX #9; uucode plus siv's UAX #14 and UAX #29 scanners, gated
     on the official conformance suites.

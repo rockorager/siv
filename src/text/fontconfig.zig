@@ -99,6 +99,13 @@ pub const Query = struct {
     size: ?f64 = null,
 };
 
+/// Since Fontconfig 2.17, FcDefaultSubstitute is this function with the
+/// process's default configuration, which it loads if there is none:
+/// every configuration file and cache read a second time, on the UI
+/// thread before the first frame (4 ms). Weak, since older releases lack
+/// it; their FcDefaultSubstitute uses no configuration.
+const setDefaultSubstitute = @extern(?*const fn (?*fc.FcConfig, ?*fc.FcPattern) callconv(.c) void, .{ .name = "FcConfigSetDefaultSubstitute", .linkage = .weak });
+
 /// A snapshot of the Fontconfig configuration and font list. Loading it
 /// reads configuration and cache files, so create it off the UI thread;
 /// queries afterwards are in memory.
@@ -154,7 +161,7 @@ pub const Database = struct {
         }
         if (query.size) |size| if (fc.FcPatternAddDouble(pattern, fc.FC_PIXEL_SIZE, size) == 0) return error.OutOfMemory;
         if (fc.FcConfigSubstitute(self.config, pattern, fc.FcMatchPattern) == 0) return error.OutOfMemory;
-        fc.FcDefaultSubstitute(pattern);
+        if (setDefaultSubstitute) |set| set(self.config, pattern) else fc.FcDefaultSubstitute(pattern);
 
         var result: fc.FcResult = undefined;
         const sorted = fc.FcFontSort(self.config, pattern, fc.FcTrue, null, &result) orelse return error.NoFonts;
