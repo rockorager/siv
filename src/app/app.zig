@@ -211,7 +211,19 @@ pub const App = struct {
         app.icons.pool = &app.pool;
         app.process_locale = options.backend != .headless;
         try app.applyLocale(options.language, options.rtl);
-        if (options.system_fonts) app.fonts.database = text.fontconfig.Database.init() catch null;
+        // Fontconfig reads its configuration and caches (4 to 7 ms) on a
+        // thread of its own while the bus handshake and the compositor's
+        // Wayland connection proceed below. Not before the process locale
+        // is set: Fontconfig parses numbers with localeconv.
+        var fc_load: FontconfigLoad = .{};
+        const fc_thread: ?std.Thread = if (!options.system_fonts) null else std.Thread.spawn(.{}, FontconfigLoad.run, .{&fc_load}) catch blk: {
+            fc_load.run();
+            break :blk null;
+        };
+        errdefer {
+            if (fc_thread) |t| t.join();
+            if (fc_load.database) |*db| db.deinit();
+        }
         app.clipboard = .init(gpa, &app.loop, .{ .ctx = app, .set_selection = setSelection, .receive = receiveSelection });
         errdefer app.clipboard.deinit();
         // The bus handshake and the settings read proceed while the
@@ -241,11 +253,22 @@ pub const App = struct {
             },
             .thread = options.compositor_thread,
         }) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable;
+        if (fc_thread) |t| t.join();
+        app.fonts.database = fc_load.database;
+        fc_load.database = null;
         // Read on the pool while the first window is made.
         if (options.user_theme) |o| app.user_theme.start(app, o);
         if (options.follow_fontconfig) if (app.fonts.database) |*db| app.fontconfig.start(app, db, null);
         return app;
     }
+
+    const FontconfigLoad = struct {
+        database: ?text.fontconfig.Database = null,
+
+        fn run(l: *FontconfigLoad) void {
+            l.database = text.fontconfig.Database.init() catch null;
+        }
+    };
 
     /// Tears everything down. Posted closures that have not run get their
     /// destroy function instead (D5). Not from inside `dispatch`.

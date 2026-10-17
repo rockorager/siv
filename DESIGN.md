@@ -1284,7 +1284,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     calls FcConfigSetDefaultSubstitute with its own configuration
     where Fontconfig has it (looked up with `dlsym`, since a weak
     reference does not link against older releases, which need no
-    configuration there).
+    configuration there). `App.create` loads the configuration
+    (`FcInitLoadConfigAndFonts`, 4 to 7 ms) on a thread of its own
+    while the bus handshake and the compositor's Wayland connection
+    proceed, and joins it before returning; it starts after the process
+    locale is set, since Fontconfig parses numbers with `localeconv`.
+    `App.create` now takes 7.6 ms instead of 9.4 (median of 15, headless
+    sway in an orb, ReleaseFast), and waits for Fontconfig alone.
   - HarfBuzz (built in, without FreeType, GLib, or ICU integration) for shaping.
   - SheenBidi for UAX #9; uucode plus siv's UAX #14 and UAX #29 scanners, gated
     on the official conformance suites.
