@@ -2511,18 +2511,21 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
         but released, a format the compositor takes is promoted, a frame
         with pending writes waits for them (a pipe stands in for its
         fences), and promoted frames are released after the compositor's
-        release. Verified on sway 1.12 headless with its Vulkan and GLES2
-        renderers on a Radeon 760M (`SIV_SWAY_RENDERER=vulkan zig build
-        test-integration`; pixman sway offers no `zwp_linux_dmabuf_v1`),
-        with udmabuf frames: linear XRGB8888 from the format table is
-        promoted through `create_immed` without protocol errors; a frame
-        gated by a vgem fence imported as its write fence
-        (`DMA_BUF_IOCTL_IMPORT_SYNC_FILE`, as Mesa's WSI does) stays off
-        screen until the fence signals (200 ms in the test) and shows
-        within a millisecond after; and with sway stopped (SIGSTOP), a
-        replaced frame stays in use until sway runs again and releases
-        it. A translucent placement composites through the Vulkan
-        renderer's explicit-modifier import there too.
+        release. Verified once on sway 1.12 headless with its Vulkan and
+        GLES2 renderers on a Radeon 760M (pixman sway offers no
+        `zwp_linux_dmabuf_v1`), with udmabuf frames: linear XRGB8888 from
+        the format table is promoted through `create_immed` without
+        protocol errors; a frame gated by a vgem fence imported as its
+        write fence (`DMA_BUF_IOCTL_IMPORT_SYNC_FILE`, as Mesa's WSI does)
+        stays off screen until the fence signals (200 ms) and shows within
+        a millisecond after; and with sway stopped (SIGSTOP), a replaced
+        frame stays in use until sway runs again and releases it. That
+        check was an integration test until it timed out on other
+        machines with GPUs; it was removed rather than kept flaky, and
+        `SIV_SWAY_RENDERER=vulkan zig build test-integration` still
+        promotes a udmabuf frame in its covering-frame test. A translucent
+        placement composites through the Vulkan renderer's
+        explicit-modifier import there too.
     - Frame callbacks under covering frames: compositors send frame
       callbacks only to surfaces that are visible (wlroots culls occluded
       scene buffers), and an opaque promoted frame over the whole window

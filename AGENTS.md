@@ -72,8 +72,8 @@ zig build test-integration-tray  # only the tray against dbus-daemon and gdbus
 zig build test-integration-lua # only the Lua binding and siv-lua on sway
 zig build test-integration-files  # only the file manager on sway with AT-SPI
 SIV_SWAY_RENDERER=vulkan zig build test-integration  # sway renders on the GPU: linux-dmabuf,
-                               #   hardware Vulkan presentation, dma-buf frames (gles2 works
-                               #   too; with vgem loaded, set WLR_RENDER_DRM_DEVICE as well)
+                               #   hardware Vulkan presentation, promoted dma-buf frames
+                               #   (gles2 works too; WLR_RENDER_DRM_DEVICE picks the GPU)
 zig build bench-pacing         # frame pacing on sway end to end (dropped frames,
                                #   wheel-to-photon, prediction error) against D12's
                                #   thresholds; needs a quiet machine
