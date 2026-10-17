@@ -954,7 +954,12 @@ static void wpe_set_settings(swv_webview *wv, const swv_settings *st) {
     char *font = g_strdup_printf("%s 11", st->font);
     wpe_settings_set_string(s, WPE_SETTING_FONT_NAME, font, WPE_SETTINGS_SOURCE_APPLICATION, NULL);
     g_free(font);
+    /* WebKit 2.54 renamed the setting. */
+#ifdef WPE_SETTING_REDUCED_MOTION
+    wpe_settings_set_boolean(s, WPE_SETTING_REDUCED_MOTION, st->reduced_motion, WPE_SETTINGS_SOURCE_APPLICATION, NULL);
+#else
     wpe_settings_set_boolean(s, WPE_SETTING_DISABLE_ANIMATIONS, st->reduced_motion, WPE_SETTINGS_SOURCE_APPLICATION, NULL);
+#endif
     wpe_settings_set_uint32(s, WPE_SETTING_CURSOR_BLINK_TIME, st->caret_blink_ms, WPE_SETTINGS_SOURCE_APPLICATION, NULL);
     wpe_settings_set_uint32(s, WPE_SETTING_DOUBLE_CLICK_TIME, st->double_click_ms, WPE_SETTINGS_SOURCE_APPLICATION, NULL);
 }
