@@ -2423,10 +2423,23 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
         which can be after siv replaces it (scan-out, or a repaint still
         reading it), so it is released only when every wl_buffer made from
         it has had `wl_buffer.release` (`Event.subsurface_released`,
-        `Platform.dmabufBusy`). Each wl_buffer is attached once: showing a
-        frame again after hiding it makes a new one, so a release always
-        ends one attachment (re-attaching a buffer whose release may be in
-        flight would make the release ambiguous).
+        `Platform.dmabufBusy`). A wl_buffer is attached again only once
+        released, so a release always ends one attachment (re-attaching a
+        buffer whose release may be in flight would make the release
+        ambiguous): showing a frame again after hiding it, before its
+        release, makes a new one. Released wl_buffers are kept (parked, up
+        to four per subsurface), and a frame in the same dma-buf (the same
+        key, first plane's inode, size, format, modifier, and layout)
+        attaches its parked one again. Producers render into a few
+        buffers in turn, and display servers import each new wl_buffer
+        (Hyprland 0.56 makes an EGLImage and a texture in
+        `create_immed`). Parked buffers of another size go at the next
+        frame, the longest parked past four, and all of a subsurface's
+        with it. Before, every frame made a wl_buffer and destroyed the
+        last; with siv-webview on Hyprland 0.56 (Radeon 780M, 1280x800,
+        WebKit 2.52.6, a page with small CSS animations), Hyprland's main
+        thread went from 6.2-6.8% CPU to 5.6-5.7%, and 7 wl_buffers were
+        made in 6 seconds instead of 354.
       - Composited (not promotable, or a format the compositor does not
         take): the Vulkan renderer imports it (D10), with every memory
         plane its modifier has laid out explicitly (compression metadata,

@@ -74,8 +74,10 @@ dmabuf_table: []align(std.heap.page_size_min) const u8 = &.{},
 /// feedback still arriving.
 dmabuf_formats: std.ArrayList(FormatModifier) = .empty,
 dmabuf_pending: std.ArrayList(FormatModifier) = .empty,
-/// Every dma-buf wl_buffer not yet released (D17).
+/// Every dma-buf wl_buffer not yet released, and the parked ones (D17).
 dmabuf_buffers: std.ArrayList(*DmabufBuffer) = .empty,
+/// Counts parkings, to evict the longest parked buffer first.
+park_clock: u64 = 0,
 /// Explicit synchronization of the dma-bufs subsurfaces show
 /// (linux-drm-syncobj-v1, D17), set up at the first one.
 syncobj_manager: ?*wp.LinuxDrmSyncobjManagerV1 = null,
@@ -147,16 +149,26 @@ const FormatModifier = struct { format: u32, modifier: u64 };
 /// A dma-buf frame's wl_buffer. The producer's frame is in use until the
 /// compositor releases every wl_buffer made from it, so each lives until
 /// its release even after a subsurface replaces it. A buffer is attached
-/// once: showing a frame again after hiding it makes a new one, so that a
-/// release always means the end of one attachment.
+/// again only once released, so that a release always means the end of
+/// one attachment: showing a frame again after hiding it, before its
+/// release, makes a new one. Released buffers are kept (parked) for the
+/// producer's next frame in the same dma-buf, since producers render into
+/// a few buffers in turn and a compositor imports each wl_buffer anew.
 const DmabufBuffer = struct {
     backend: *Wayland,
     buffer: *wl.Buffer,
     window: WindowId,
+    /// The subsurface it was made for, whose next frames may reuse it.
+    sub: platform.SubsurfaceId,
     key: u64,
+    /// The dma-buf and its layout, which a frame must match to reuse it;
+    /// null never matches.
+    identity: ?DmabufIdentity,
     /// No subsurface shows it any more.
     retired: bool = false,
     released: bool = false,
+    /// When it was last parked (retired and released), for eviction.
+    parked: u64 = 0,
     /// Attached with explicit synchronization: wl_buffer.release is
     /// undefined then, and the compositor signals this timeline point
     /// instead, which an eventfd in the loop watches.
@@ -164,6 +176,31 @@ const DmabufBuffer = struct {
     release_point: u64 = 0,
     source: Loop.Source = .{ .fd = -1, .events = linux.EPOLL.IN, .func = onReleasePoint },
 };
+
+const DmabufIdentity = struct {
+    /// The first plane's file (each dma-buf has an inode of its own), so
+    /// that a key the producer reuses for another dma-buf does not match.
+    ino: u64,
+    dev: [2]u32,
+    width: u32,
+    height: u32,
+    format: u32,
+    modifier: u64,
+    plane_count: u8,
+    layout: [4][2]u32 = @splat(.{ 0, 0 }),
+
+    fn of(frame: *const platform.ShmFrame) ?DmabufIdentity {
+        const d = frame.dmabuf.?;
+        var st: linux.Statx = undefined;
+        if (linux.errno(linux.statx(d.planes[0].fd, "", linux.AT.EMPTY_PATH, .{ .INO = true }, &st)) != .SUCCESS) return null;
+        var id: DmabufIdentity = .{ .ino = st.ino, .dev = .{ st.dev_major, st.dev_minor }, .width = frame.width, .height = frame.height, .format = d.format, .modifier = d.modifier, .plane_count = d.plane_count };
+        for (d.planes[0..d.plane_count], 0..) |p, i| id.layout[i] = .{ p.offset, p.stride };
+        return id;
+    }
+};
+
+/// Parked buffers kept per subsurface: enough for a producer's swapchain.
+const max_parked = 4;
 
 /// A DRM syncobj timeline imported into the compositor, and the last
 /// point used on it.
@@ -808,7 +845,8 @@ pub fn supportsDmabuf(self: *Wayland, format: u32, modifier: u64) bool {
 
 fn onDmabufRelease(_: *wl.Buffer, _: wl.Buffer.Event, b: *DmabufBuffer) void {
     // Undefined with explicit synchronization: the release point says.
-    if (b.release != null) return;
+    // A parked buffer is released already.
+    if (b.release != null or b.released) return;
     b.released = true;
     if (b.retired) b.backend.finishDmabuf(b);
 }
@@ -943,17 +981,45 @@ fn retireDmabuf(self: *Wayland, s: *Subsurface) void {
     if (b.released) self.finishDmabuf(b);
 }
 
-/// Destroys a released, retired buffer, and tells the compositor thread
-/// once no buffer of the frame remains in use.
+/// Parks a released, retired buffer for the frame's next use, evicting its
+/// subsurface's longest parked one past `max_parked`, and tells the
+/// compositor thread once no buffer of the frame remains in use.
 fn finishDmabuf(self: *Wayland, b: *DmabufBuffer) void {
     const window, const key = .{ b.window, b.key };
+    defer if (!self.dmabufBusy(window, key)) self.queue.push(.{ .subsurface_released = .{ .window = window, .key = key } });
+    // Its subsurface is gone: nothing will reuse it.
+    const w = if (window < self.windows.items.len) self.windows.items[window] else null;
+    if (w == null or b.sub >= w.?.subsurfaces.items.len or w.?.subsurfaces.items[b.sub] == null) return self.destroyDmabuf(b);
+    self.park_clock += 1;
+    b.parked = self.park_clock;
+    var parked: usize = 0;
+    var oldest: ?*DmabufBuffer = null;
+    for (self.dmabuf_buffers.items) |x| if (x.window == window and x.sub == b.sub and x.retired and x.released) {
+        parked += 1;
+        if (oldest == null or x.parked < oldest.?.parked) oldest = x;
+    };
+    if (parked > max_parked) self.destroyDmabuf(oldest.?);
+}
+
+/// Destroys the subsurface's parked buffers that a frame of this identity
+/// and key makes stale: another size (the producer made new buffers), or
+/// the key on another dma-buf. Null `identity` destroys them all.
+fn dropParked(self: *Wayland, window: WindowId, sub: platform.SubsurfaceId, identity: ?DmabufIdentity, key: u64) void {
+    var i: usize = 0;
+    while (i < self.dmabuf_buffers.items.len) {
+        const b = self.dmabuf_buffers.items[i];
+        const stale = if (identity) |id| (if (b.identity) |bi| bi.width != id.width or bi.height != id.height or (b.key == key and !std.meta.eql(bi, id)) else true) else true;
+        if (b.window == window and b.sub == sub and b.retired and b.released and stale) self.destroyDmabuf(b) else i += 1;
+    }
+}
+
+fn destroyDmabuf(self: *Wayland, b: *DmabufBuffer) void {
     for (self.dmabuf_buffers.items, 0..) |x, i| if (x == b) {
         _ = self.dmabuf_buffers.swapRemove(i);
         break;
     };
     b.buffer.destroy();
     self.allocator.destroy(b);
-    if (!self.dmabufBusy(window, key)) self.queue.push(.{ .subsurface_released = .{ .window = window, .key = key } });
 }
 
 /// Whether the compositor may still read the window's dma-buf frame with
@@ -1561,8 +1627,9 @@ pub fn destroyWindow(self: *Wayland, id: WindowId) void {
     if (w.fractional) |f| f.destroy();
     if (w.viewport) |v| v.destroy();
     if (w.decoration) |d| d.destroy();
-    for (w.subsurfaces.items) |sub| if (sub) |x| {
+    for (w.subsurfaces.items, 0..) |sub, i| if (sub) |x| {
         self.retireDmabuf(x);
+        self.dropParked(w.id, @intCast(i), null, 0);
         x.destroy(self.allocator);
     };
     if (w.exported) |e| e.destroy();
@@ -1826,6 +1893,7 @@ pub fn destroySubsurface(self: *Wayland, id: WindowId, sub: platform.SubsurfaceI
     const w = self.get(id);
     if (w.subsurfaces.items[sub]) |s| {
         self.retireDmabuf(s);
+        self.dropParked(id, sub, null, 0);
         s.destroy(self.allocator);
     }
     w.subsurfaces.items[sub] = null;
@@ -1848,7 +1916,23 @@ pub fn setSubsurface(self: *Wayland, id: WindowId, sub: platform.SubsurfaceId, s
     };
     // The surface shows a frame: a new one damages only what changed.
     const showing = s.attached;
-    if (s.buffer == null or s.key != frame.key) {
+    const identity = if (frame.dmabuf != null and (s.buffer == null or s.key != frame.key)) DmabufIdentity.of(&frame) else null;
+    if (identity) |i| self.dropParked(id, sub, i, frame.key);
+    if (s.buffer == null or s.key != frame.key) reuse: {
+        // The producer's dma-buf came back: its parked wl_buffer, which the
+        // compositor has imported already.
+        if (identity) |i| for (self.dmabuf_buffers.items) |b| {
+            if (b.window != id or b.sub != sub or b.key != frame.key or !(b.retired and b.released) or !std.meta.eql(b.identity orelse continue, i)) continue;
+            // Unparked before the shown one retires, which can evict.
+            b.retired = false;
+            b.released = false;
+            if (s.dmabuf != null) self.retireDmabuf(s) else if (s.buffer) |old| old.destroy();
+            s.buffer = b.buffer;
+            s.dmabuf = b;
+            s.key = frame.key;
+            s.attached = false;
+            break :reuse;
+        };
         const buffer = if (frame.dmabuf) |d| blk: {
             const params = (self.dmabuf orelse return error.MissingGlobal).createParams() catch return error.OutOfMemory;
             defer params.destroy();
@@ -1869,7 +1953,7 @@ pub fn setSubsurface(self: *Wayland, id: WindowId, sub: platform.SubsurfaceId, s
                 buffer.destroy();
                 return error.OutOfMemory;
             };
-            b.* = .{ .backend = self, .buffer = buffer, .window = id, .key = frame.key };
+            b.* = .{ .backend = self, .buffer = buffer, .window = id, .sub = sub, .key = frame.key, .identity = identity };
             self.dmabuf_buffers.append(self.allocator, b) catch {
                 self.allocator.destroy(b);
                 buffer.destroy();
