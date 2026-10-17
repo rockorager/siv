@@ -215,6 +215,76 @@ pub const Tracker = struct {
     };
 };
 
+/// Display servers keep damage as a pixman region, which splits rectangles
+/// into horizontal bands, and some repaint the bounding box of a region of
+/// more rectangles than this (Hyprland 0.56 past 8, D9).
+pub const max_banded = 8;
+
+/// Merges the two of `rects` whose union grows least while they would band
+/// into more than `max_banded` rectangles; returns how many are left, at
+/// the front. At most `max_rects`.
+pub fn mergeBands(rects: []IRect) usize {
+    var n = rects.len;
+    while (n > 1 and banded(rects[0..n]) > max_banded) {
+        var bi: usize = 0;
+        var bj: usize = 1;
+        var growth: i64 = std.math.maxInt(i64);
+        for (0..n) |i| for (i + 1..n) |j| {
+            const g = area(rects[i].unite(rects[j])) - area(rects[i]) - area(rects[j]);
+            if (g < growth) {
+                bi, bj, growth = .{ i, j, g };
+            }
+        };
+        rects[bi] = rects[bi].unite(rects[bj]);
+        n -= 1;
+        rects[bj] = rects[n];
+    }
+    return n;
+}
+
+fn area(r: IRect) i64 {
+    return @as(i64, r.width()) * r.height();
+}
+
+/// How many rectangles pixman makes of these: each band between
+/// consecutive edges holds the spans covering it, overlapping and touching
+/// ones joined, and a band with the same spans as the one above extends it.
+fn banded(rects: []const IRect) usize {
+    std.debug.assert(rects.len <= max_rects);
+    var ys: [2 * max_rects]i32 = undefined;
+    for (rects, 0..) |q, i| ys[2 * i], ys[2 * i + 1] = .{ q.y0, q.y1 };
+    const edges = ys[0 .. 2 * rects.len];
+    std.mem.sort(i32, edges, {}, std.sort.asc(i32));
+    var count: usize = 0;
+    var prev: [max_rects][2]i32 = undefined;
+    var prev_len: usize = 0;
+    for (edges[0..edges.len -| 1], edges[@min(1, edges.len)..]) |y0, y1| {
+        if (y0 == y1) continue;
+        var spans: [max_rects][2]i32 = undefined;
+        var n: usize = 0;
+        for (rects) |q| if (q.y0 <= y0 and q.y1 >= y1 and !q.isEmpty()) {
+            spans[n] = .{ q.x0, q.x1 };
+            n += 1;
+        };
+        std.mem.sort([2]i32, spans[0..n], {}, struct {
+            fn lt(_: void, a: [2]i32, b: [2]i32) bool {
+                return a[0] < b[0];
+            }
+        }.lt);
+        var m: usize = 0;
+        for (spans[0..n]) |s| {
+            if (m > 0 and s[0] <= spans[m - 1][1]) spans[m - 1][1] = @max(spans[m - 1][1], s[1]) else {
+                spans[m] = s;
+                m += 1;
+            }
+        }
+        if (m != prev_len or !std.mem.eql([2]i32, spans[0..m], prev[0..prev_len])) count += m;
+        prev = spans;
+        prev_len = m;
+    }
+    return count;
+}
+
 fn deviceBounds(m: Affine, r: Rect, clip: Rect) IRect {
     if (r.isEmpty()) return IRect.empty;
     const b = if (std.math.isInf(r.x0) or std.math.isInf(r.x1) or std.math.isInf(r.y0) or std.math.isInf(r.y1))
@@ -311,4 +381,31 @@ test "root version change damages everything drawn" {
     const l1 = try b1.finish(2);
     _ = try t.diff(null, l0, .identity, .xywh(0, 0, 100, 100));
     try testing.expectEqualSlices(IRect, &.{.xywh(0, 0, 50, 50)}, try t.diff(l0, l1, .identity, .xywh(0, 0, 100, 100)));
+}
+
+test "damage merges until a display server's bands keep it apart" {
+    // Five rows of two small spots at the window's edges band into ten
+    // rectangles, which Hyprland would repaint as their bounding box.
+    var rects: [10]IRect = undefined;
+    for (0..5) |row| for (0..2) |col| {
+        rects[row * 2 + col] = .xywh(if (col == 0) 16 else 1232, 16 + @as(i32, @intCast(row)) * 184, 32, 32);
+    };
+    const inputs = rects;
+    try testing.expectEqual(@as(usize, 10), banded(&rects));
+    const n = mergeBands(&rects);
+    try testing.expect(banded(rects[0..n]) <= max_banded);
+    for (inputs) |r| {
+        const covered = for (rects[0..n]) |m| {
+            if (m.contains(r)) break true;
+        } else false;
+        try testing.expect(covered);
+    }
+    // Columns merge, not rows: far less than the bounding box.
+    var total: i64 = 0;
+    for (rects[0..n]) |m| total += area(m);
+    try testing.expect(total < 50_000);
+    // Spots in rows of their own band one rectangle each and stay apart.
+    var apart = [_]IRect{ .xywh(0, 0, 4, 4), .xywh(100, 10, 4, 4), .xywh(200, 20, 4, 4), .xywh(300, 30, 4, 4), .xywh(400, 40, 4, 4), .xywh(500, 50, 4, 4), .xywh(600, 60, 4, 4), .xywh(700, 70, 4, 4), .xywh(800, 80, 4, 4) };
+    try testing.expectEqual(@as(usize, 9), banded(&apart));
+    try testing.expectEqual(@as(usize, 8), mergeBands(&apart));
 }

@@ -12,6 +12,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const raster = @import("raster");
+const scene = @import("scene");
 const vk = @import("vk.zig");
 const c = vk.c;
 const Device = @import("Device.zig");
@@ -225,9 +226,21 @@ pub fn present(s: *Swapchain, index: u32, damage: ?[]const raster.IRect) vk.Erro
     var next: ?*const anyopaque = null;
     if (d.incremental_present) if (damage) |rects| {
         s.rects.clearRetainingCapacity();
+        // Few enough for the display server's region to keep apart.
+        var kept: [scene.damage.max_rects]raster.IRect = undefined;
+        var n: usize = 0;
         for (rects) |rc| {
             const cr = rc.intersect(.xywh(0, 0, @intCast(s.width), @intCast(s.height)));
             if (cr.isEmpty()) continue;
+            if (n == kept.len) {
+                kept[n - 1] = kept[n - 1].unite(cr);
+                continue;
+            }
+            kept[n] = cr;
+            n += 1;
+        }
+        n = scene.damage.mergeBands(kept[0..n]);
+        for (kept[0..n]) |cr| {
             try s.rects.append(s.gpa, .{
                 .offset = .{ .x = cr.x0, .y = cr.y0 },
                 .extent = .{ .width = @intCast(cr.width()), .height = @intCast(cr.height()) },

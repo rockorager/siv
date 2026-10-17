@@ -261,8 +261,14 @@ pub const Cpu = struct {
             });
         }
 
+        // Few enough for the display server's region to keep apart (the
+        // tracker gives at most max_rects).
+        var kept: [scene.damage.max_rects]IRect = undefined;
+        const n = @min(damage.len, kept.len);
+        @memcpy(kept[0..n], damage[0..n]);
+        for (damage[n..]) |r| kept[n - 1] = kept[n - 1].unite(r);
         c.rects.clearRetainingCapacity();
-        for (damage) |r| try c.rects.append(c.gpa, .{ .x = r.x0, .y = r.y0, .width = r.width(), .height = r.height() });
+        for (kept[0..scene.damage.mergeBands(kept[0..n])]) |r| try c.rects.append(c.gpa, .{ .x = r.x0, .y = r.y0, .width = r.width(), .height = r.height() });
         p.present(id, buf, c.rects.items);
 
         const h = &c.history[c.frame % max_age];

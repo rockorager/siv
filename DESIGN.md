@@ -785,7 +785,21 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     rectangles (merged; more than 16 collapse to their bounds). Merging
     is one pass that collapses to the bounds as soon as more than 64 stay
     disjoint: 2,560 animated layers damage 5,120 rectangles a frame, and
-    pairwise merging took 65% of the process's time.
+    pairwise merging took 65% of the process's time. Where a window's
+    damage goes to the display server (VK_KHR_incremental_present in
+    `Swapchain.present`, wl_surface damage in `surface.Cpu`), the two
+    rectangles whose union grows least merge while pixman would band them
+    into more than eight (`scene.damage.mergeBands`), as external frames'
+    damage does (D17): Hyprland 0.56 repaints the bounding box of a
+    region of more. siv's own repaint keeps the tracker's rectangles. A
+    paint layer's damage is one rectangle (`ui/paint.zig`), so this
+    matters when animated spots each have a layer (canvases, nodes with
+    `SIV_VISUAL_LAYER`): five rows with a 32 px animated image at each
+    end of a 1280x800 window band into ten, and Hyprland repainted the
+    whole window at every frame. Measured on Hyprland 0.56 on a Radeon
+    780M panel: Hyprland 1.6-1.9% GPU before, 0.5% after (Vulkan); 2.0%
+    and 0.5% with the CPU renderer. A caret and spinners in three
+    corners band into six and were cheap already (0.5%).
   - PDF output composites in sRGB, not linear light. PDF blends in a
     transparency group's color space, so declaring a linear-light space
     (an ICCBased profile with sRGB primaries and identity curves, or
