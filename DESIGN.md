@@ -6457,8 +6457,31 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     its rectangle. WebKit 2.54 tracks damage by default on WPE
     (`PropagateDamagingInformation`, `UnifyDamagedRegions`, and
     `UseDamagingInformationForCompositing`, which also limits WebKit's
-    own composition to it); 2.52 does not by default and gives no
-    rectangles, so every frame is all new there, as before. With tracking on, a frame
+    own composition to it); 2.52 has the same preferences, off on WPE,
+    and then gives no rectangles, so every frame is all new. siv-webview
+    turns `PropagateDamagingInformation` on and `UnifyDamagedRegions`
+    off wherever WebKit has them: unified, the damage is one bounding
+    box, so a live dot at one edge of the Amp sidebar and a change at the
+    other edge (WebKit 2.52 repaints an overflow scrollbar's strip at
+    every frame while anything animates) redraw everything between;
+    siv merges rectangles itself, as display servers take them (D17).
+    `UseDamagingInformationForCompositing` stays as WebKit has it: on
+    2.52 it took WebKit's own GPU time for a spinner only from 2.1% to
+    1.9%, since WebKit's composition costs about the same per frame
+    whatever changed. Zero rectangles mean nothing changed on 2.52 as on
+    2.54 (WebKit sends full or unknown damage as one rectangle over the
+    whole frame). Measured on Hyprland 0.56 on the panel (DRM, 1280x800
+    at 60 Hz, Radeon 780M, WebKit 2.52.6) with the Amp thread view and
+    Amp's own `animate-breathing-dot` and `animate-running-pulse` dots
+    in a sidebar: Hyprland 3.2% GPU and 6.8% CPU before the three
+    changes (this, wl_buffer reuse, and banded damage, D17), 0.8% and
+    5.7% after; Chromium 152 on the same page 0.7% and 6.0%. With 2.54's
+    defaults emulated (`UnifyDamagedRegions` on), Hyprland went back to
+    3.1%. Checked for stale pixels on headless sway, whose screencopy
+    copies the frame it rendered: the Amp page scrolled by wheel notches
+    and hovered matched a build that damages everything, pixel for pixel
+    outside the animated sidebar, and a build that reports 1x1 damage
+    differed in 784,775 pixels. With tracking on, a frame
     without rectangles changed nothing (WebKit skips empty damage), as
     when an animation's `steps()` did not move this tick: siv-webview
     sends one empty rectangle, where WPE's own Wayland platform damages

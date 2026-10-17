@@ -50,7 +50,8 @@ typedef struct wpe_wv {
     /* siv shows the node (the view is mapped). */
     bool shown;
     /* WebKit reports each frame's damage (PropagateDamagingInformation,
-     * on by default since 2.54), so a frame without any changed nothing. */
+     * which siv-webview turns on where WebKit has it; its default since
+     * 2.54), so a frame without any changed nothing. */
     bool damage_known;
     /* Shared-memory frames: their count, and the bounding box of each
      * recent one's damage by its number, so that a buffer's copy takes
@@ -284,7 +285,7 @@ static void shm_copy_free(gpointer p) {
 /* WebKit's frame damage, what changed since its previous frame in buffer
  * pixels, goes to siv, so that siv and the display server redraw only
  * that. Without damage tracking a frame has no rectangles and changed
- * all over; with it (WebKit 2.54's default), a frame without any changed
+ * all over; with it (turned on in wpe_create), a frame without any changed
  * nothing, as when a running animation's step did not move: siv gets one
  * empty rectangle. */
 static gboolean swv_view_render_buffer(WPEView *view, WPEBuffer *buffer, const WPERectangle *damage, guint n_damage, GError **error) {
@@ -297,15 +298,23 @@ static gboolean swv_view_render_buffer(WPEView *view, WPEBuffer *buffer, const W
     siv_external_frame_desc f = {.size = sizeof f, .key = (uint64_t)(uintptr_t)buffer, .width = (uint32_t)width, .height = (uint32_t)height};
     siv_rect rects[16];
     struct box box = {0, 0, width, height};
-    if (n_damage && n_damage <= G_N_ELEMENTS(rects)) {
+    if (n_damage) {
+        /* WebKit merges its damage per 256 px cell, so a large view can
+         * have more rectangles than this: the rest join the last one. */
         box = (struct box){width, height, 0, 0};
         for (guint i = 0; i < n_damage; i++) {
             const WPERectangle *r = &damage[i];
-            rects[i] = (siv_rect){(float)r->x, (float)r->y, (float)r->width, (float)r->height};
+            siv_rect q = {(float)r->x, (float)r->y, (float)r->width, (float)r->height};
+            if (i >= G_N_ELEMENTS(rects)) {
+                siv_rect *l = &rects[G_N_ELEMENTS(rects) - 1];
+                float x1 = MAX(l->x + l->width, q.x + q.width), y1 = MAX(l->y + l->height, q.y + q.height);
+                q.x = MIN(l->x, q.x), q.y = MIN(l->y, q.y), q.width = x1 - q.x, q.height = y1 - q.y;
+            }
+            rects[MIN(i, G_N_ELEMENTS(rects) - 1)] = q;
             box = (struct box){MIN(box.x0, r->x), MIN(box.y0, r->y), MAX(box.x1, r->x + r->width), MAX(box.y1, r->y + r->height)};
         }
         f.damage = rects;
-        f.damage_count = n_damage;
+        f.damage_count = MIN(n_damage, G_N_ELEMENTS(rects));
     } else if (!n_damage && w->damage_known) {
         rects[0] = (siv_rect){0};
         box = (struct box){width, height, 0, 0};
