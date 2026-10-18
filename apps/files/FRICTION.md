@@ -332,6 +332,19 @@ above. What is left is noted below.
     one (its request). The rule is relaxed: given a callback the call
     returns its out values, and waiting in a coroutine drops them.
 
+31. **Shortcuts, menu labels, and check marks were kept in step by hand.**
+    The app menu listed "Ctrl+H" beside Show Hidden Files, the window's key
+    handler bound Ctrl+H separately, and every state change walked the
+    menu to set check marks. *Fixed:* window actions (D34): New Folder,
+    Show Hidden Files (a toggle), the view and the style (choices), and
+    Close carry their keys; the menu items bound to them take labels,
+    shortcuts, and check marks from them, and the app sets an action's
+    value when its state changes. Those keys now also work in the search
+    and location fields, which do not use them. The context menu stays as
+    it was: its keys act on the selection and must stay the editors' in
+    the rename field, which a focused editor's first refusal (D34) only
+    gives for keys the editor handles.
+
 ## Numbers
 
 `zig build bench-files -Doptimize=ReleaseFast` on this orb (x86-64,

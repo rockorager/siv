@@ -71,7 +71,6 @@ crumbs: Node = .null,
 location: Node = .null,
 search: Node = .null,
 mode_btn: Node = .null,
-app_menu: Node = .null,
 table: Node = .null,
 grid: Node = .null,
 empty: Node = .null,
@@ -82,6 +81,13 @@ ops_progress: Node = .null,
 ops_cancel: Node = .null,
 context: Node = .null,
 dialog: Node = .null,
+
+// The window's actions (D34): the app menu's items and their keys.
+act_new_folder: siv.Action = .null,
+act_hidden: siv.Action = .null,
+act_view: siv.Action = .null,
+act_style: siv.Action = .null,
+act_close: siv.Action = .null,
 
 // The folder.
 path: []u8 = &.{},
@@ -201,9 +207,41 @@ pub fn create(app: siv.App, opts: Options) !*Files {
         .settings = opts.state,
         .settings_key = "window",
     });
+    try self.addActions();
     try self.build();
     self.navigate(opts.path, .push);
     return self;
+}
+
+fn accel(key: u32, mods: siv.Modifiers, target: f64) siv.Accel {
+    return .{ .key = @enumFromInt(key), .modifiers = mods, .target = target };
+}
+
+/// The window's actions, which go with it.
+fn addActions(self: *Files) !void {
+    const ctrl: siv.Modifiers = .{ .ctrl = true };
+    const w = self.window;
+    self.act_new_folder = try siv.actionCreate(self.app, .{ .name = "new-folder", .label = "New Folder", .window = w, .accels = &.{accel('n', .{ .ctrl = true, .shift = true }, 0)} }, onAction, null, self);
+    self.act_hidden = try siv.actionCreate(self.app, .{ .name = "show-hidden", .label = "Show Hidden Files", .window = w, .kind = .toggle, .value = @floatFromInt(@intFromBool(self.show_hidden)), .accels = &.{accel('h', ctrl, 0)} }, onAction, null, self);
+    self.act_view = try siv.actionCreate(self.app, .{ .name = "view", .label = "View", .window = w, .kind = .choice, .value = @floatFromInt(@intFromEnum(self.mode)), .accels = &.{ accel('1', ctrl, 0), accel('2', ctrl, 1) } }, onAction, null, self);
+    self.act_style = try siv.actionCreate(self.app, .{ .name = "style", .label = "Style", .window = w, .kind = .choice, .value = @floatFromInt(@intFromEnum(self.theme)) }, onAction, null, self);
+    self.act_close = try siv.actionCreate(self.app, .{ .name = "close", .label = "Close", .window = w, .accels = &.{ accel('w', ctrl, 0), accel('q', ctrl, 0) } }, onAction, null, self);
+}
+
+fn onAction(ud: ?*anyopaque, ev: *const siv.ActionEvent) callconv(.c) void {
+    const self: *Files = @ptrCast(@alignCast(ud.?));
+    const a = ev.action;
+    if (a == self.act_new_folder) {
+        self.newFolder();
+    } else if (a == self.act_hidden) {
+        self.setShowHidden(ev.value != 0);
+    } else if (a == self.act_view) {
+        self.setMode(if (ev.value == 1) .grid else .list);
+    } else if (a == self.act_style) {
+        self.setTheme(std.enums.fromInt(siv.ColorScheme, @as(i32, @intFromFloat(ev.value))) orelse .follow);
+    } else if (a == self.act_close) {
+        self.close();
+    }
 }
 
 /// Frees what the window did not: called after the window is gone.
@@ -354,17 +392,30 @@ fn build(self: *Files) !void {
     const menu_btn = c.siv_menu_button(txn, bar, &.{ .label = "Menu", .label_len = 4, .style = .flat });
     var appm: Node = .null;
     appm = c.siv_widget_get_part(menu_btn, .menu, 0);
-    self.app_menu = menu_btn;
-    for (app_menu_items) |it| {
+    // Items take their action's label, first key, and check mark; a
+    // choice's items are named for their value.
+    const app_items = [_]struct { siv.Action, f64, []const u8 }{
+        .{ self.act_new_folder, 0, "" },
+        .{ self.act_hidden, 0, "" },
+        .{ .null, 0, "" },
+        .{ self.act_view, 0, "List View" },
+        .{ self.act_view, 1, "Grid View" },
+        .{ .null, 0, "" },
+        .{ self.act_style, @intFromEnum(siv.ColorScheme.follow), "Follow System Style" },
+        .{ self.act_style, @intFromEnum(siv.ColorScheme.light), "Light Style" },
+        .{ self.act_style, @intFromEnum(siv.ColorScheme.dark), "Dark Style" },
+        .{ .null, 0, "" },
+        .{ self.act_close, 0, "" },
+    };
+    for (app_items) |it| {
         _ = c.siv_menu_item(txn, appm, &.{
-            .label = it.label.ptr,
-            .label_len = it.label.len,
-            .shortcut = it.shortcut.ptr,
-            .shortcut_len = it.shortcut.len,
-            .flags = .{ .separator = it.label.len == 0, .checkable = it.check },
+            .label = it[2].ptr,
+            .label_len = it[2].len,
+            .action = it[0],
+            .action_target = it[1],
+            .flags = .{ .separator = it[0] == .null },
         });
     }
-    _ = c.siv_on(txn, menu_btn, .select, onAppMenu, null, self);
 
     const rule = c.siv_box(txn, column);
     _ = c.siv_set_layout(txn, rule, &.{ .height = px(1) });
@@ -476,7 +527,7 @@ const columns = [_]ColumnSpec{
     .{ .title = "Type", .width = .{ .unit = .px, .value = 100 }, .min = 60 },
 };
 
-const MenuSpec = struct { label: []const u8, shortcut: []const u8 = "", check: bool = false, mnemonic: u32 = 0 };
+const MenuSpec = struct { label: []const u8, shortcut: []const u8 = "", mnemonic: u32 = 0 };
 
 const ContextAction = enum { open, open_with, sep1, cut, copy, paste, sep2, rename, trash, delete, sep3, new_folder, select_all };
 const context_items = [_]MenuSpec{
@@ -495,46 +546,11 @@ const context_items = [_]MenuSpec{
     .{ .label = "Select All", .shortcut = "Ctrl+A", .mnemonic = 'a' },
 };
 
-const AppAction = enum { new_folder, hidden, sep1, list, grid, sep2, follow, light, dark, sep3, close };
-const app_menu_items = [_]MenuSpec{
-    .{ .label = "New Folder", .shortcut = "Ctrl+Shift+N" },
-    .{ .label = "Show Hidden Files", .shortcut = "Ctrl+H", .check = true },
-    .{ .label = "" },
-    .{ .label = "List View", .shortcut = "Ctrl+1", .check = true },
-    .{ .label = "Grid View", .shortcut = "Ctrl+2", .check = true },
-    .{ .label = "" },
-    .{ .label = "Follow System Style", .check = true },
-    .{ .label = "Light Style", .check = true },
-    .{ .label = "Dark Style", .check = true },
-    .{ .label = "" },
-    .{ .label = "Close", .shortcut = "Ctrl+W" },
-};
-
 /// The menu item node at `index` of a menu.
 fn menuItem(menu: Node, index: usize) Node {
     var item: Node = .null;
     item = c.siv_menu_get_item(menu, @intCast(index));
     return item;
-}
-
-fn appMenu(self: *Files) Node {
-    var m: Node = .null;
-    m = c.siv_widget_get_part(self.app_menu, .menu, 0);
-    return m;
-}
-
-/// Check marks in the app menu follow the state.
-fn syncAppMenu(self: *Files, txn: Txn) void {
-    const m = self.appMenu();
-    const checks = [_]struct { AppAction, bool }{
-        .{ .hidden, self.show_hidden },
-        .{ .list, self.mode == .list },
-        .{ .grid, self.mode == .grid },
-        .{ .follow, self.theme == .follow },
-        .{ .light, self.theme == .light },
-        .{ .dark, self.theme == .dark },
-    };
-    for (checks) |ch| _ = c.siv_widget_set_value(txn, menuItem(m, @intFromEnum(ch[0])), if (ch[1]) 1 else 0);
 }
 
 // The view --------------------------------------------------------------------------
@@ -551,7 +567,7 @@ fn applyMode(self: *Files) !void {
     _ = c.siv_widget_set_label(txn, self.mode_btn, label.ptr, label.len);
     const icon = if (self.mode == .list) "view-grid-symbolic" else "view-list-symbolic";
     _ = c.siv_widget_set_icon(txn, self.mode_btn, icon.ptr, icon.len);
-    self.syncAppMenu(txn);
+    _ = c.siv_action_set_value(self.act_view, @floatFromInt(@intFromEnum(self.mode)));
     try siv.check(c.siv_txn_commit(txn));
 }
 
@@ -1528,10 +1544,6 @@ fn onKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventR
             _ = c.siv_node_focus(self.search);
             return .handled;
         },
-        'w', 'W', 'q', 'Q' => {
-            self.close();
-            return .handled;
-        },
         else => {},
     };
     if (m.alt and !m.ctrl) switch (e.keysym) {
@@ -1588,24 +1600,8 @@ fn onKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventR
             self.paste();
             return .handled;
         },
-        'h', 'H' => {
-            self.setShowHidden(!self.show_hidden);
-            return .handled;
-        },
         'r', 'R' => {
             self.reload();
-            return .handled;
-        },
-        '1' => {
-            self.setMode(.list);
-            return .handled;
-        },
-        '2' => {
-            self.setMode(.grid);
-            return .handled;
-        },
-        'n', 'N' => if (m.shift) {
-            self.newFolder();
             return .handled;
         },
         else => {},
@@ -1673,9 +1669,7 @@ pub fn setShowHidden(self: *Files, on: bool) void {
     self.keepSelection(struct {
         fn apply(_: *Files) void {}
     });
-    const txn = self.begin() orelse return;
-    self.syncAppMenu(txn);
-    _ = commit(txn);
+    _ = c.siv_action_set_value(self.act_hidden, @floatFromInt(@intFromBool(on)));
 }
 
 fn onToggleMode(ud: ?*anyopaque, _: Node, _: *const siv.Event) callconv(.c) siv.EventResult {
@@ -1684,29 +1678,10 @@ fn onToggleMode(ud: ?*anyopaque, _: Node, _: *const siv.Event) callconv(.c) siv.
     return .handled;
 }
 
-fn onAppMenu(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
-    const self: *Files = @ptrCast(@alignCast(ud.?));
-    if (ev.index >= app_menu_items.len) return .handled;
-    switch (@as(AppAction, @enumFromInt(ev.index))) {
-        .new_folder => self.newFolder(),
-        .hidden => self.setShowHidden(!self.show_hidden),
-        .list => self.setMode(.list),
-        .grid => self.setMode(.grid),
-        .follow => self.setTheme(.follow),
-        .light => self.setTheme(.light),
-        .dark => self.setTheme(.dark),
-        .close => self.close(),
-        else => {},
-    }
-    return .handled;
-}
-
 pub fn setTheme(self: *Files, scheme: siv.ColorScheme) void {
     self.theme = scheme;
     _ = c.siv_app_set_theme(self.app, &.{ .scheme = scheme });
-    const txn = self.begin() orelse return;
-    self.syncAppMenu(txn);
-    _ = commit(txn);
+    _ = c.siv_action_set_value(self.act_style, @floatFromInt(@intFromEnum(scheme)));
 }
 
 // Context menu ----------------------------------------------------------------------

@@ -60,6 +60,16 @@ test "lists a folder, folders first in natural order, hidden files hidden" {
     const f = h.f();
     try testing.expect(f.frames >= 1);
     try testing.expect(f.first_frame_ns != 0 and f.rows_frame_ns >= f.first_frame_ns);
+    // The window's actions (D34): Ctrl+H flips Show Hidden Files, Ctrl+2
+    // and Ctrl+1 choose the view.
+    try h.key('h', "h", .{ .ctrl = true });
+    try testing.expectEqual(want.len + 1, names(&h, &buf));
+    try h.key('2', "2", .{ .ctrl = true });
+    try testing.expectEqual(.grid, f.mode);
+    try h.key('1', "1", .{ .ctrl = true });
+    try testing.expectEqual(.list, f.mode);
+    try h.key('h', "h", .{ .ctrl = true });
+    try testing.expectEqual(want.len, names(&h, &buf));
 }
 
 fn expectNames(want: []const []const u8, got: []const []const u8) !void {

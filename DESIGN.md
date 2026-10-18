@@ -6879,7 +6879,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     once per click or key, and show labels, keys, and checks; enumeration
     and formatting. AT-SPI's key binding and attribute in `src/a11y`'s
     tests; desktop invocation of enabled application actions in
-    test/abi/portal.zig.
+    test/abi/portal.zig. The file manager binds its app menu and its
+    keys to window actions (FRICTION.md item 31).
 - **Alternatives:** actions named by strings at every use, as GAction's
   "app.copy" (a typo binds nothing and fails silently, a destroyed action
   cannot be told from a missing one, and every binding needs a prefix
