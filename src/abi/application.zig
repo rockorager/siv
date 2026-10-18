@@ -29,6 +29,7 @@ const portal = @import("portal.zig");
 const watch = @import("watch.zig");
 const shell = @import("shell.zig");
 const dbus_abi = @import("dbus.zig");
+const settings = @import("settings.zig");
 
 const Root = runtime.Root;
 
@@ -100,6 +101,11 @@ pub const App = struct {
     epubs: std.ArrayList(?*@import("document.zig").Epub),
     /// Undo stacks (D35), by handle payload; null slots are reused.
     undos: std.ArrayList(?*@import("undo.zig").Stack),
+    /// Settings stores (D36).
+    settings: settings.State,
+    /// On the headless backend, stores without a directory keep values in
+    /// memory only (D36).
+    headless: bool,
     /// Tells the windows that fonts finished loading, once for a burst of
     /// loads.
     fonts_task: loop_mod.Loop.Task,
@@ -196,6 +202,8 @@ pub const Window = struct {
     /// Bumped by each siv_window_set_icon, so icon loads still on the way
     /// for an older one are dropped.
     icon_generation: u32 = 0,
+    /// Where the window keeps its size and states (D36).
+    settings: ?settings.Binding = null,
 
     pub const Popup = struct {
         anchor: ui.NodeId = .root,
@@ -221,6 +229,7 @@ pub const Window = struct {
 
     fn free(w: *Window) void {
         const gpa = w.owner.gpa();
+        if (w.settings) |*b| b.deinit(gpa);
         w.nodes.deinit(gpa);
         w.txn.deinit(gpa);
         gpa.destroy(w);
@@ -299,6 +308,8 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     self.shell = .{};
     self.epubs = .empty;
     self.undos = .empty;
+    self.settings = .{};
+    self.headless = backend == .headless;
     self.fonts_task = .{ .func = onFontsTask };
     const gpa = self.gpa();
     self.draw = .init(gpa);
@@ -385,6 +396,8 @@ fn destroyNow(self: *App) void {
     shell.teardown(self);
     @import("document.zig").teardown(self);
     @import("undo.zig").teardown(self);
+    // The coordinator writes what the stores have left (app.destroy).
+    settings.teardown(self);
     const gpa = self.gpa();
     for (self.timers.items) |slot| if (slot) |tm| tm.cancel();
     self.timers.deinit(gpa);
@@ -628,12 +641,19 @@ fn windowCreate(app: t.App, desc_ptr: ?*const t.WindowDesc, out: ?*t.Window) Err
     const foreign_parent: []const u8 = if (parent != null) "" else if (std.mem.startsWith(u8, parent_handle, "wayland:")) parent_handle["wayland:".len..] else if (std.mem.indexOfScalar(u8, parent_handle, ':') != null) "" else parent_handle;
     if (flags.modal and parent == null and parent_handle.len == 0) return error.InvalidArgument;
     const dest = try runtime.out(t.Window, out);
+    // A store's size and states win over the descriptor's (D36).
+    var binding = try settings.Binding.fromDesc(self, &desc);
+    errdefer if (binding) |*b| b.deinit(self.gpa());
+    var size: [2]u32 = .{ if (desc.width == 0) 640 else desc.width, if (desc.height == 0) 480 else desc.height };
+    var maximized = initial.maximized;
+    var fullscreen = initial.fullscreen;
+    if (binding) |*b| b.restore(&size, &maximized, &fullscreen, .{ desc.min_width, desc.min_height }, .{ desc.max_width, desc.max_height });
 
     const w = try newWindow(self, .{
         .title = title,
         .app_id = app_id,
-        .width = if (desc.width == 0) 640 else desc.width,
-        .height = if (desc.height == 0) 480 else desc.height,
+        .width = size[0],
+        .height = size[1],
         .client_decorations = flags.client_decorations,
         .rtl = if (flags.rtl) true else if (flags.ltr) false else null,
         .language = language,
@@ -650,8 +670,10 @@ fn windowCreate(app: t.App, desc_ptr: ?*const t.WindowDesc, out: ?*t.Window) Err
     if (desc.min_width != 0 or desc.min_height != 0 or desc.max_width != 0 or desc.max_height != 0) {
         try w.win.setSizeLimits(.{ .width = desc.min_width, .height = desc.min_height }, .{ .width = desc.max_width, .height = desc.max_height });
     }
-    if (initial.maximized) try w.win.setMaximized(true);
-    if (initial.fullscreen) try w.win.setFullscreen(true);
+    if (maximized) try w.win.setMaximized(true);
+    if (fullscreen) try w.win.setFullscreen(true);
+    w.settings = binding;
+    binding = null;
     dest.* = @fromBackingInt(w.handle);
 }
 
@@ -713,6 +735,7 @@ fn onWindowEvent(ctx: ?*anyopaque, _: *app_mod.Window, ev: *const app_mod.Window
             // Frame slots follow the window's states too (a web page's
             // focus), after the window's own callback.
             defer if (states(c.old.states) != states(c.new.states) and !w.dead) external.deliverAll(w, .{ .type = .states_changed });
+            if (w.settings) |*b| b.save(c.new);
             const cb = w.on_event orelse return false;
             self.enter();
             defer self.leave();

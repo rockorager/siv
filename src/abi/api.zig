@@ -308,6 +308,7 @@ const shell = @import("api_shell.zig");
 const dbus = @import("api_dbus.zig");
 const document = @import("api_document.zig");
 const undo = @import("api_undo.zig");
+const settings = @import("api_settings.zig");
 
 pub const decls = [_]Decl{
     result,
@@ -414,6 +415,7 @@ pub const decls = [_]Decl{
         .{ .name = "window", .type = ref("siv_window"), .doc = "The window." },
         .{ .name = "event", .type = .{ .desc = "siv_window_event" }, .doc = "The event, valid during the call." },
     }, .bool),
+    handle("siv_settings", "A store of the application's preferences or state in a file (D36). Valid until siv_settings_destroy or the application's destruction.", false),
     descriptor("siv_window_desc", "Options for siv_window_create.", &.{
         .{ .name = "title", .type = .string, .doc = "Title." },
         .{ .name = "app_id", .type = .string, .doc = "Application id for the desktop (reverse DNS, matching the .desktop file)." },
@@ -432,6 +434,8 @@ pub const decls = [_]Decl{
         .{ .name = "parent", .type = ref("siv_window"), .doc = "A window this one belongs to, as a native dialog (D17): the compositor keeps it above that window; with SIV_WINDOW_MODAL, it is modal. 0 for none. siv_dialog makes dialogs inside a window instead. Destroying the parent destroys it first." },
         .{ .name = "session_name", .type = .string, .doc = "The window's name in the session (siv_app_start_session), the same on every run and unique among the application's windows, such as \"main\" or a document's path; empty keeps it out of the session. A window created after the session started is restored by the compositor before it maps if the session knows its name." },
         .{ .name = "parent_handle", .type = .string, .doc = "Another application's window this one belongs to, by the handle that window exported (xdg-foreign v2), as portal requests name it: \"wayland:HANDLE\" or a bare handle. The compositor keeps this window above that one, and with SIV_WINDOW_MODAL it is modal to it (xdg-dialog-v1). An \"x11:\" or other handle, one the compositor does not know, and a compositor without xdg-foreign leave the window without a parent. Ignored with parent. Copied." },
+        .{ .name = "settings", .type = ref("siv_settings"), .doc = "A store to keep the window's size and maximized and fullscreen states in (D36), under settings_key: the window opens with what it holds (width and height are the defaults) and saves them there as they change, until it is destroyed. The size saved is the last one the window had while not maximized, fullscreen, or tiled. 0 for none." },
+        .{ .name = "settings_key", .type = .string, .doc = "With settings: the key the states go under, as settings_key.width, .height, .maximized, and .fullscreen (a table in the file); empty is \"window\". At most 244 bytes. Copied." },
     }),
 
     enumeration("siv_popup_placement", "Where a popup goes relative to its anchor (D17). Horizontal sides are logical: they mirror in right-to-left layouts.", &.{
@@ -2454,8 +2458,8 @@ pub const spec: schema.Schema = .{
     .source = "src/abi/api.zig",
     .doc = "siv: a GUI toolkit for Wayland.",
     .result = "siv_result",
-    .decls = &(decls ++ desktop.decls ++ dbus.decls ++ shell.decls ++ document.decls ++ undo.decls ++ testing.decls),
-    .functions = &(functions ++ desktop.functions ++ dbus.functions ++ shell.functions ++ document.functions ++ undo.functions ++ testing.functions),
+    .decls = &(decls ++ desktop.decls ++ dbus.decls ++ shell.decls ++ document.decls ++ undo.decls ++ settings.decls ++ testing.decls),
+    .functions = &(functions ++ desktop.functions ++ dbus.functions ++ shell.functions ++ document.functions ++ undo.functions ++ settings.functions ++ testing.functions),
 };
 
 /// Encodes a version as (major << 16) | (minor << 8) | patch.

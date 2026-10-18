@@ -126,7 +126,8 @@ owns its directories and does not edit another workstream's files.
 The theming workstream also owns `src/ui/theme.zig`,
 `src/ui/user_theme.zig`, and `src/app/user_theme.zig` (D29). The icons
 workstream owns `src/ui/icons.zig` and the test themes in
-`test/icons/` (D19). Stock widgets
+`test/icons/` (D19). The settings workstream owns `src/app/settings.zig`,
+`src/abi/settings.zig`, and `src/abi/api_settings.zig` (D36). Stock widgets
 use only the public C API; when one needs more, add a public primitive.
 
 Shared files have no single owner: `build.zig`, `build.zig.zon`,

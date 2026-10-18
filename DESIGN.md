@@ -2865,7 +2865,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       refused. `siv_app_remove_session` asks the compositor to forget it;
       without the protocol the callback gets `unavailable`. The headless
       backend keeps sessions process-wide, as a compositor outlives its
-      clients, so a test restores a window in a second application.
+      clients, so a test restores a window in a second application. Where
+      no compositor restores a window, `siv_window_desc.settings` keeps
+      its size and states in the application's own state file (D36).
       Compositors remember a toplevel's state when its xdg_toplevel is
       destroyed while it is still in the session (KWin 6.7 does), so a
       window destroys its xdg_toplevel before its toplevel session
@@ -6848,6 +6850,155 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   then an editor pushes its steps onto a stack attached above it instead
   of keeping its own. If steps that cannot be undone any more turn out
   common (file managers), a step callback reports it and the step goes.
+
+### D36. Settings and state
+
+- **Requirement:** applications keep preferences and what they remember
+  for the user (a window's size and maximized state, the last folder,
+  column widths, a view mode) between runs, in files people can read and
+  edit, where the XDG base directories and Flatpak put them, without the
+  UI thread waiting on a disk; an edit of the file or another instance's
+  change reaches a running application; C and Lua get the same API, and
+  tests never touch the user's files. Wayland gives windows no positions,
+  and session restore (D17) only exists on some compositors, so a
+  window's size and states need a home of their own.
+- **Decision:** a store (`siv_settings`, `src/abi/api_settings.zig`,
+  `src/abi/settings.zig` over `src/app/settings.zig`) is one TOML file of
+  typed values per application and name.
+  - **Where.** `siv_settings_open(app, desc)` with a kind: preferences
+    the user chose (`config`) in `$XDG_CONFIG_HOME/<app_id>/<name>.toml`,
+    and state the application keeps for the user (`state`: sizes, recent
+    folders, layout, what the XDG spec lists for it), which loses nothing
+    chosen when deleted, in `$XDG_STATE_HOME/<app_id>/<name>.toml`;
+    `~/.config` and `~/.local/state` without the variables, relative
+    values ignored as the spec says. The split keeps state out of the
+    dotfiles people back up and share. `name` defaults to `settings` and
+    `state`; an application may keep several stores. The directory is
+    named by `siv_app_desc.app_id`, which the store requires. Flatpak
+    points the variables into `~/.var/app/<id>/` (`XDG_STATE_HOME` since
+    Flatpak 1.13; older ones need `--persist=.local/state`), so a
+    sandboxed application needs no permission and no portal.
+    `desc.directory` names another directory (tests, portable installs).
+    On the headless backend without one the store keeps values in memory
+    only, as the headless backend ignores the user's theme (D29), so an
+    application's tests are hermetic by construction.
+  - **Typed values, defaults in code.** Values are booleans, 64-bit
+    integers, finite doubles, and UTF-8 strings of at most 4096 bytes,
+    under keys of names joined by dots (`window.main.width`). Getters
+    take the application's default (`siv_settings_get_int(s, "zoom", 1,
+    &v)`): an unset key, or one holding another type (a hand edit that
+    wrote `"800"` for 800), reads as the default; an integer reads as a
+    double, since people write `2` for `2.0`. The file holds only what was
+    set; `siv_settings_reset` removes a key so the default applies again,
+    and a new default in a new release reaches everyone who never changed
+    the value. This is QSettings' `value(key, default)` and SwiftUI's
+    `@AppStorage("key") var x = default`. Setting the value a key has
+    changes nothing.
+  - **The format** is the TOML subset siv already parses for theme.toml
+    (`ui.user_theme.Parser`, D29; strings of up to 4096 bytes there with a
+    caller's buffer), so there is no second parser: keys before their
+    last dot become tables, written sorted after the top-level keys, so
+    the file reads like one written by hand and diffs well; floats always
+    carry a point or an exponent, strings are basic strings with escapes.
+    A line that does not parse, an invalid key or value, an array, or an
+    inline table is skipped. A file over 1 MiB is neither read nor
+    replaced. siv rewrites the whole file, so comments a person adds are
+    not kept, which the file's header says.
+  - **Reads are from memory.** `siv_settings_open` reads the file on the
+    application's thread: values must be there for the first window's
+    size, and opening a 4.5 KB file of 250 keys takes 87 µs, its inotify
+    watch included (ReleaseFast, in an orb). After
+    that, every read of the file runs on the worker pool's blocking lane
+    (D6).
+  - **Writes.** A change applies in memory at once and is written 500 ms
+    after the first unsaved one, a timer not restarted by later changes:
+    a burst is one write, a drag that resizes every frame writes twice a
+    second, and one change is on disk within half a second. The write is
+    a blocking-lane job: it takes `flock` on the directory, reads the
+    file, applies this store's changes key by key, writes a temporary file
+    with the old file's permissions (0600 for a new one, in a directory
+    created 0700, as the spec asks), fsyncs it, renames it over the file,
+    and fsyncs the directory. So a crash leaves the old file or the new
+    one, two instances writing different keys both keep theirs (the lock
+    serializes them; for the same key the last write wins), and an edit
+    made before the write survives. A write that fails (a full disk, a
+    read-only file) keeps its changes for the next write, which the next
+    change or the application's exit starts, rather than retrying on a
+    timer. `siv_settings_destroy` writes what is left on the
+    pool; `siv_app_destroy` writes what is left of every store on its own
+    thread after the pool has stopped, the one blocking write, at exit.
+  - **Changes from outside.** The file is watched with inotify on the
+    loop (`app/watch.zig`, as D29 watches themes: the directory and its
+    parent, re-armed before each read, a 50 ms quiet timer), so an
+    editor's save, another instance's write, or the file's deletion is
+    read again on the pool and diffed with the values shown; changes this
+    store has not written yet win over the file's.
+  - **Notification** (`desc.on_change`, a `siv_settings_change` with the
+    key and its origin, application or outside) for every key whose value
+    changed, whoever changed it, at the next dispatch (D5), once per key
+    for a burst; the callback reads the key again. Changes the store
+    makes itself are reported too, so several parts of an application
+    that read one key follow each other as SwiftUI views do. Calling back
+    from inside the setter was rejected for the reason D29's
+    `theme_changed` rejects it: it would re-enter the application from its
+    own call. The callback and destroy-notify follow D2.
+  - **Windows** keep their size and states with two fields of
+    `siv_window_desc`, `settings` and `settings_key` (default
+    `window`): the window opens with `<key>.width`, `.height`,
+    `.maximized`, and `.fullscreen` from the store over the descriptor's
+    (sizes clamped to its limits), so a maximized window is maximized
+    before it maps, and every configure saves the states and, while the
+    window is neither maximized, fullscreen, nor tiled, its size: the size
+    to come back to, not the one the compositor imposed. Descriptor
+    fields rather than a call after creation, since the size must be known
+    when the window is made (xdg-shell lets the client choose only when
+    the compositor leaves it the choice) and one field does the whole job,
+    as `session_name` does for session restore, which also restores
+    positions where the compositor offers it. Destroying the store ends
+    the saving (the window holds its handle, which goes stale).
+  - **Lua** gets it from the schema (D23): `app:settings_open{ kind =
+    "state", on_change = fn }` returns an owned store, `st:get_int("zoom",
+    1)`, `st:set_string(k, v)`, and windows take `settings` and
+    `settings_key` in their table.
+  - **The file manager** (`apps/files`) keeps its window's size and states,
+    its view mode, and hidden files in `state.toml`; `--grid` and
+    `--hidden` win for one run.
+  - Not built yet: arrays (recent files, column orders; the parser skips
+    them today), listing a store's keys, and reporting a write that keeps
+    failing (a full disk).
+- **Alternatives:** GSettings over dconf. Its schemas are XML compiled
+  and installed system-wide (`glib-compile-schemas`), so an application
+  run from its build directory has none, and opening an unknown schema
+  aborts the process; dconf's database is a binary GVDB file that people
+  edit only through dconf-editor or `gsettings`, written by
+  `dconf-service` over D-Bus, and where dconf is not installed (desktops
+  other than GNOME often lack it) GLib keeps settings in memory and loses
+  them at exit; a Flatpak application reaches it only through holes in its
+  sandbox, and otherwise GLib already falls back to a keyfile in the
+  application's config directory; it has no split between preferences
+  and state; and it brings GLib and its main loop, LGPL code that D25
+  keeps out, beside siv's own loop (D6) and D-Bus (D19). Other formats:
+  GLib's keyfile and INI (values are untyped strings with their own
+  escapes) and JSON (no comments, unfriendly to edit by hand), against a
+  TOML parser siv already has and theme.toml users know. A schema of
+  declared keys with defaults (GSettings' model: typed keys, defaults in
+  one place, listings for a preferences UI) against defaults at each
+  read (needs no declarations, and dynamic keys such as per-folder state
+  just work; two reads with different defaults are the application's
+  bug). Writing the whole map without reading the file first (another
+  instance's keys would be reverted). Reading at open on the pool with
+  a loaded callback (every application would have to wait before making
+  its first window). Writing at once on every change (a write per frame
+  during a resize), or only at exit (a crash loses everything). A store
+  per window for window state (SwiftUI's `@SceneStorage`): one table per
+  key in the application's state file does the same with one file.
+- **Reverse if:** people ask to keep their comments (then rewrite the
+  file line by line: the parser knows each entry's line); applications
+  need arrays or a preferences UI that lists keys (add array values, or
+  declared keys, to the schema); the read at open shows up in startup
+  profiles, as on a network home (then hold first frames for a read on the
+  pool, as D29 does for themes); or a desktop gives settings a portal
+  that sandboxed applications must use.
 
 ## Lessons from ourokit
 

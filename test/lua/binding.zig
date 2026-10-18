@@ -442,6 +442,38 @@ test "undo stacks from Lua: closures as steps, groups, merging, changes, and the
     );
 }
 
+test "settings from Lua: typed values over defaults, changes, a window's size" {
+    _ = try run(prologue ++
+        \\local heard = {}
+        \\local st <close> = app:settings_open{ kind = "state", on_change = function(s, change)
+        \\  assert(s ~= nil)
+        \\  heard[change.key] = change.origin
+        \\end }
+        \\assert(st:get_int("width", 7) == 7 and st:get_type("width") == "none")
+        \\st:set_int("width", 5)
+        \\st:set_string("name", "h\u{e9}")
+        \\st:set_bool("on", true)
+        \\st:set_float("zoom", 1.5)
+        \\assert(st:get_int("width", 7) == 5 and st:get_string("name", "") == "h\u{e9}")
+        \\assert(st:get_bool("on", false) and st:get_float("zoom", 0) == 1.5)
+        \\assert(st:get_string("width", "fallback") == "fallback" and st:get_type("name") == "string")
+        \\local ok, err = pcall(st.set_int, st, "bad key", 1)
+        \\assert(not ok and err.code == "invalid_argument", tostring(err))
+        \\st:reset("width")
+        \\assert(st:get_int("width", 7) == 7)
+        \\assert(app:test_settle(5000))
+        \\assert(heard.name == "application" and heard.width == "application")
+        \\-- A window kept in the store opens at the size it holds.
+        \\st:set_int("main.width", 150)
+        \\local main = app:window_create{ width = 100, height = 50, settings = st, settings_key = "main" }
+        \\assert(app:test_settle(5000))
+        \\assert(main:get_size().width == 150)
+        \\main:test_resize(130, 60)
+        \\assert(app:test_settle(5000))
+        \\assert(st:get_int("main.height", 0) == 60)
+    );
+}
+
 test "the test API: scrolling, typing, queries, captures" {
     _ = try run(prologue ++
         \\local editor, scroll, last

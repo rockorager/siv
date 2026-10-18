@@ -39,6 +39,7 @@ const compositor = @import("compositor");
 const ui = @import("ui");
 const desktop_mod = @import("desktop.zig");
 pub const user_theme = @import("user_theme.zig");
+pub const settings = @import("settings.zig");
 const fontconfig = @import("fontconfig.zig");
 const a11y = @import("a11y");
 pub const portals = @import("portals.zig");
@@ -149,6 +150,8 @@ pub const App = struct {
     theme: ui.Theme = .{},
     /// The user's theme every window follows (D29).
     user_theme: user_theme.UserTheme = .{},
+    /// Open settings stores (D36), and closed ones still writing.
+    settings: std.ArrayList(*settings.Store) = .empty,
     /// Delivers `theme_changed` to the windows marked for it.
     theme_task: Loop.Task = .{ .func = onThemeTask },
     fontconfig: fontconfig.Fontconfig = .{},
@@ -291,11 +294,16 @@ pub const App = struct {
         app.clipboard.deinit();
         app.fonts.deinit();
         app.pool.deinit();
+        // With the pool stopped, what is left is written here.
+        for (app.settings.items) |s| s.finish();
         app.user_theme.deinit(app);
         app.fontconfig.deinit();
         // Loads the pool dropped release into the icons.
         app.icons.deinit();
+        // After the loop, which may cancel a store's undelivered write.
         app.loop.deinit();
+        for (app.settings.items) |s| s.free();
+        app.settings.deinit(gpa);
         gpa.destroy(app);
     }
 
