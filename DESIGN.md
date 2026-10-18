@@ -4192,7 +4192,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - **Reading numbers.** `siv_app_parse_number` reads what a user types:
     the locale's digits and decimal separator or ASCII ones, a minus
     sign, with group separators, spaces, and bidirectional marks
-    ignored; '.' is a decimal point too where it does not group.
+    ignored; '.' is a decimal point too where it does not group. Spin
+    buttons (D22) show their value with `siv_app_format_number`, their
+    digits as fraction digits and not grouped (as GTK's and Qt's are
+    not), read what is typed with `siv_app_parse_number`, and format
+    again on `SIV_EVENT_LOCALE_CHANGED`: "1234,50" in German, "١٢٫٢٥" in
+    Egyptian Arabic.
   - **gettext.** siv reads `.mo` files itself (`src/intl/gettext.zig`):
     libintl is LGPL, which D25 keeps out. The application binds a text
     domain to a directory (`siv_app_bind_text_domain`, as
@@ -4298,7 +4303,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     (`siv_app_get_font_family_count`, `siv_app_get_font_family_at`),
     the emoji catalogue (`siv_emoji_get`, `siv_emoji_get_name`,
     `siv_emoji_get_info`, `siv_emoji_find`), and the settings event's
-    `SIV_EVENT_LOCALE_CHANGED`.
+    `SIV_EVENT_LOCALE_CHANGED`; for spin buttons, numbers in that locale
+    (`siv_app_format_number`, `siv_app_parse_number`, D21).
   - **Creating:** one builder per widget, a transaction operation like the
     primitive builders (D27): `siv_push_button(txn, parent, &desc)` appends the
     widget and returns its root node, or 0 once the transaction has failed

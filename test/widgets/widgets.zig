@@ -724,6 +724,42 @@ test "widgets: spin buttons step, page, and parse what was typed" {
     try testing.expectEqual([2]u32{ 100, 0 }, [2]u32{ delay, interval });
 }
 
+test "widgets: spin buttons show and read numbers in the application's language" {
+    var h: Harness = .{};
+    try h.start(320, 120, null, null);
+    defer h.stop();
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const root = c.siv_window_get_root(h.window);
+    const spin = c.siv_spin_button(txn, root, &.{ .label = "Width", .label_len = 5, .min = 0, .max = 10000, .value = 1234.5, .step = 0.25, .digits = 2 });
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    const field = c.siv_node_get_related(spin, .first_child);
+    var buf: [64]u8 = undefined;
+    var len: usize = 0;
+    try ok(c.siv_node_get_text(field, &buf, buf.len, &len));
+    // Not grouped, as before; English when the application has no language.
+    try testing.expectEqualStrings("1234.50", buf[0..len]);
+    // The language changes: the field follows it (D21).
+    try ok(c.siv_app_set_language(h.app, "de", 2, .inherit));
+    try h.settle();
+    try ok(c.siv_node_get_text(field, &buf, buf.len, &len));
+    try testing.expectEqualStrings("1234,50", buf[0..len]);
+    // What is typed is read in the language too.
+    try ok(c.siv_node_focus(field));
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_set_selection(txn, field, 7, 0);
+    try ok(c.siv_txn_commit(txn));
+    for ("12,25") |ch| try h.typeKey(ch, &.{ch}, .{});
+    try h.typeKey(ks.@"return", "", .{});
+    try h.settle();
+    try testing.expectEqual(@as(f64, 12.25), try value(spin));
+    try ok(c.siv_app_set_language(h.app, "ar-EG", 5, .ltr));
+    try h.settle();
+    try ok(c.siv_node_get_text(field, &buf, buf.len, &len));
+    try testing.expectEqualStrings("١٢٫٢٥", buf[0..len]);
+}
+
 /// Runs the application's loop for about `ms`, timers included.
 fn dispatchFor(h: *Harness, ms: u64) !void {
     const end = Loop.now() + ms * std.time.ns_per_ms;

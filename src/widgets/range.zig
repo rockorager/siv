@@ -181,6 +181,7 @@ fn buildSpin(txn: Txn, r: *Range) void {
     w.onDefault(txn, field, .key, onKey, r);
     w.onDefault(txn, field, .focus, onFieldFocus, r);
     w.onDefault(txn, field, .set_value, onSetValue, r);
+    w.onDefault(txn, r.root, .settings, onSettings, r);
     showNumber(txn, r);
 }
 
@@ -268,11 +269,30 @@ pub fn apply(txn: Txn, r: *Range) void {
     });
 }
 
-/// A spin button's field shows the value with its decimals.
+/// A spin button's field shows the value with its decimals, as the
+/// application's language writes numbers (D21): "2,5" in German, "٢٫٥"
+/// in Egyptian Arabic. Not grouped, as other toolkits' spin buttons are
+/// not.
 fn showNumber(txn: Txn, r: *Range) void {
     var buf: [64]u8 = undefined;
-    const s = std.fmt.bufPrint(&buf, "{d:.[1]}", .{ r.value, r.digits }) catch return;
-    _ = c.siv_set_text(txn, r.target, s.ptr, s.len);
+    var len: usize = 0;
+    const app = w.appOf(w.windowOf(r.root));
+    if (c.siv_app_format_number(app, r.value, &.{
+        .flags = .{ .fraction_digits = true, .no_grouping = true },
+        .min_fraction_digits = r.digits,
+        .max_fraction_digits = r.digits,
+    }, &buf, buf.len, &len) != .ok or len > buf.len) return;
+    _ = c.siv_set_text(txn, r.target, &buf, len);
+}
+
+/// The language changed: the field shows the value in the new one.
+fn onSettings(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
+    const r: *Range = @ptrCast(@alignCast(ud.?));
+    if (!ev.flags.locale_changed) return .pass;
+    const txn = w.begin(w.windowOf(r.root)) orelse return .pass;
+    showNumber(txn, r);
+    _ = w.commit(txn);
+    return .pass;
 }
 
 pub fn setLabel(txn: Txn, r: *Range, label: []const u8) void {
@@ -460,15 +480,17 @@ fn onFieldFocus(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv
     return .pass;
 }
 
-/// Parses the field: a number sets the value (clamped and stepped), and
+/// Parses the field as a number in the application's language (or with
+/// ASCII digits): a number sets the value (clamped and stepped), and
 /// anything else puts the old value back.
 fn commitText(r: *Range, window: siv.Window) void {
     var buf: [128]u8 = undefined;
     var len: usize = 0;
     if (c.siv_node_get_text(r.target, &buf, buf.len, &len) != .ok) return;
-    const typed = std.mem.trim(u8, buf[0..@min(len, buf.len)], " \t");
-    const v = std.fmt.parseFloat(f64, typed) catch r.value;
-    const nv = if (std.math.isFinite(v)) r.snapped(v) else r.value;
+    var valid = false;
+    var v: f64 = 0;
+    if (c.siv_app_parse_number(w.appOf(window), &buf, @min(len, buf.len), &valid, &v) != .ok) valid = false;
+    const nv = if (valid) r.snapped(v) else r.value;
     const txn = w.begin(window) orelse return;
     const changed = nv != r.value;
     setValue(txn, r, nv);
