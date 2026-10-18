@@ -4188,7 +4188,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     in the unit's long form by plural category ("1 byte", "512 bytes",
     "5 байт") and kB and up in the short form with one fraction digit by
     default ("1.5 kB", "2.0 GB", "1,5 ko"), as GNOME's `g_format_size`
-    writes sizes.
+    writes sizes. The file manager in `apps/files` writes its sizes so.
   - **Reading numbers.** `siv_app_parse_number` reads what a user types:
     the locale's digits and decimal separator or ASCII ones, a minus
     sign, with group separators, spaces, and bidirectional marks

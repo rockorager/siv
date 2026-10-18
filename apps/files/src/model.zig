@@ -296,17 +296,6 @@ pub fn filter(l: *const Listing, order: []const u32, out: []u32, query: []const 
 
 // Formatting ------------------------------------------------------------------
 
-/// "1.2 MB" (decimal units, as GNOME and the SI do), "512 bytes".
-pub fn formatSize(buf: []u8, size: u64) []const u8 {
-    if (size < 1000) return std.fmt.bufPrint(buf, "{d} {s}", .{ size, if (size == 1) "byte" else "bytes" }) catch buf[0..0];
-    const units = [_][]const u8{ "kB", "MB", "GB", "TB", "PB" };
-    var v: f64 = @floatFromInt(size);
-    var u: usize = 0;
-    v /= 1000;
-    while (v >= 1000 and u + 1 < units.len) : (u += 1) v /= 1000;
-    return std.fmt.bufPrint(buf, "{d:.1} {s}", .{ v, units[u] }) catch buf[0..0];
-}
-
 /// "2026-10-13 14:05" in UTC offset `tz_offset_s` (local time comes from
 /// the caller, which reads /etc/localtime once).
 pub fn formatTime(buf: []u8, mtime_ns: i64, tz_offset_s: i64) []const u8 {
@@ -371,12 +360,8 @@ test "categories" {
     try testing.expectEqual(Category.code, categorize("main.zig", .file, 0o644));
 }
 
-test "sizes and times" {
+test "times" {
     var buf: [32]u8 = undefined;
-    try testing.expectEqualStrings("1 byte", formatSize(&buf, 1));
-    try testing.expectEqualStrings("999 bytes", formatSize(&buf, 999));
-    try testing.expectEqualStrings("1.5 kB", formatSize(&buf, 1500));
-    try testing.expectEqualStrings("2.0 GB", formatSize(&buf, 2_000_000_000));
     try testing.expectEqualStrings("2026-10-13 14:05", formatTime(&buf, 1_791_900_300 * std.time.ns_per_s, 0));
 }
 

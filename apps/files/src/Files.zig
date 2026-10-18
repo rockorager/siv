@@ -629,6 +629,14 @@ fn nameOf(self: *const Files, entry: u32) []const u8 {
     return l.name(l.entries[entry]);
 }
 
+/// A size as the application's language writes it (D21): "512 bytes",
+/// "1.5 kB", "1,5 ko".
+fn formatSize(self: *const Files, buf: []u8, size: u64) []const u8 {
+    var len: usize = 0;
+    if (c.siv_app_format_number(self.app, @floatFromInt(size), &.{ .style = .bytes }, buf.ptr, buf.len, &len) != .ok or len > buf.len) return "";
+    return buf[0..len];
+}
+
 fn rowParts(txn: Txn, row: Node) ?*RowParts {
     var p: ?*anyopaque = null;
     if (c.siv_node_get_data(row, &row_key, &p) == .ok and p != null) return @ptrCast(@alignCast(p));
@@ -668,7 +676,7 @@ fn bindRow(ud: ?*anyopaque, txn: Txn, row: Node, item: u64, _: u32, _: u32, _: b
     parts.entry = entry;
     _ = c.siv_set_text(txn, parts.name, l.name(e).ptr, l.name(e).len);
     var buf: [64]u8 = undefined;
-    const size = if (e.kind == .dir) "—" else model.formatSize(&buf, e.size);
+    const size = if (e.kind == .dir) "—" else self.formatSize(&buf, e.size);
     _ = c.siv_set_text(txn, parts.size, size.ptr, size.len);
     var tbuf: [64]u8 = undefined;
     const t = model.formatTime(&tbuf, e.mtime, self.opts.tz_offset_s);
@@ -1521,7 +1529,7 @@ fn showStatus(self: *Files) void {
     var buf: [256]u8 = undefined;
     const n = self.visible.items.len;
     var msg: []const u8 = "";
-    var sbuf: [32]u8 = undefined;
+    var sbuf: [64]u8 = undefined;
     if (self.listing == null) {
         msg = if (self.loading != null) "Loading…" else "";
     } else if (self.sel_count == 0) {
@@ -1535,9 +1543,9 @@ fn showStatus(self: *Files) void {
         msg = if (e.kind == .dir)
             std.fmt.bufPrint(&buf, "“{s}” selected", .{nm}) catch ""
         else
-            std.fmt.bufPrint(&buf, "“{s}” selected ({s})", .{ nm, model.formatSize(&sbuf, self.sel_bytes) }) catch "";
+            std.fmt.bufPrint(&buf, "“{s}” selected ({s})", .{ nm, self.formatSize(&sbuf, self.sel_bytes) }) catch "";
     } else {
-        msg = std.fmt.bufPrint(&buf, "{d} of {d} items selected ({s})", .{ self.sel_count, n, model.formatSize(&sbuf, self.sel_bytes) }) catch "";
+        msg = std.fmt.bufPrint(&buf, "{d} of {d} items selected ({s})", .{ self.sel_count, n, self.formatSize(&sbuf, self.sel_bytes) }) catch "";
     }
     const txn = self.begin() orelse return;
     _ = c.siv_set_text(txn, self.status, msg.ptr, msg.len);
@@ -2451,12 +2459,12 @@ pub fn updateOps(self: *Files) void {
         };
         var buf: [256]u8 = undefined;
         const frac: f64 = if (total > 0) @as(f64, @floatFromInt(done)) / @as(f64, @floatFromInt(total)) else if (items > 0) @as(f64, @floatFromInt(done_items)) / @as(f64, @floatFromInt(items)) else 0;
-        var sbuf: [32]u8 = undefined;
-        var tbuf: [32]u8 = undefined;
+        var sbuf: [64]u8 = undefined;
+        var tbuf: [64]u8 = undefined;
         const msg = if (scanning)
             std.fmt.bufPrint(&buf, "Preparing to {s}…", .{verb}) catch ""
         else if (total > 0)
-            std.fmt.bufPrint(&buf, "{s} {d} of {d} items — {s} of {s}", .{ verb, done_items, items, model.formatSize(&sbuf, done), model.formatSize(&tbuf, total) }) catch ""
+            std.fmt.bufPrint(&buf, "{s} {d} of {d} items — {s} of {s}", .{ verb, done_items, items, self.formatSize(&sbuf, done), self.formatSize(&tbuf, total) }) catch ""
         else
             std.fmt.bufPrint(&buf, "{s} {d} of {d} items", .{ verb, done_items, items }) catch "";
         _ = c.siv_set_text(txn, self.ops_label, msg.ptr, msg.len);
