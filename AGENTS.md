@@ -22,7 +22,7 @@ zig build test -j16            # every module's tests, the headless test binary 
 zig build test-text            # one module: test-abi, test-text, test-raster, test-scene, test-image, test-svg, test-icon, test-spell,
                                #   test-html, test-css, test-markdown, test-doc, test-docview, test-epub,
                                #   test-render-cpu, test-render-vulkan, test-pool, test-loop,
-                               #   test-dbus, test-portal, test-pdf, test-tray, test-platform,
+                               #   test-dbus, test-portal, test-pdf, test-tray, test-trash, test-platform,
                                #   test-compositor, test-ui, test-a11y, test-app
 zig build test-headless        # the headless test binary (tests.zig: test/headless.zig, the
                                #   guide's and the files app's tests), as 8 processes
@@ -108,6 +108,7 @@ owns its directories and does not edit another workstream's files.
 | `dbus` | `src/dbus/` | D-Bus and desktop settings | `loop` |
 | `portal` | `src/portal/` | Desktop integration | `dbus`, `loop` |
 | `tray` | `src/tray/` | Desktop integration | `dbus`, `loop` |
+| `trash` | `src/trash/` | Desktop integration | none |
 | `html` | `src/html/` | Document renderer | none |
 | `css` | `src/css/` | Document renderer | none |
 | `markdown` | `src/markdown/` | Document renderer | `html` |

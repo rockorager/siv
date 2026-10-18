@@ -102,6 +102,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "uucode", .module = uucode },
     });
     const icon = ctx.module("src/icon/icon.zig", &.{});
+    // The freedesktop.org trash (D42).
+    const trash = ctx.module("src/trash/trash.zig", &.{});
     // Spell checking (D37): siv's own Hunspell-format reader.
     const spell = ctx.module("src/spell/spell.zig", &.{
         .{ .name = "uucode", .module = uucode },
@@ -263,6 +265,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "pdf", .module = pdf },
         .{ .name = "tray", .module = tray },
         .{ .name = "dbus", .module = dbus },
+        .{ .name = "trash", .module = trash },
     };
     // Stock widgets (D22) import only the generated C API wrapper, which
     // src/abi/build_steps.zig adds as `siv`.
@@ -345,6 +348,7 @@ pub fn build(b: *std.Build) void {
         .{ "scene", scene },
         .{ "svg", svg },
         .{ "icon", icon },
+        .{ "trash", trash },
         .{ "spell", spell },
         .{ "html", html },
         .{ "css", css },
