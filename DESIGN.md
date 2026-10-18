@@ -5589,7 +5589,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       know where they came from.
   - Each window resolves a palette (`ui.theme.Palette`) from the desktop
     values and the application's choices, which the coordinator passes to
-    every window like the desktop settings (D19). A changed palette
+    every window like the desktop settings (D19); a subtree with a theme
+    of its own resolves another from the same inputs (D43). A changed palette
     repaints every layer and redraws canvases; a changed body size
     reshapes text that has a size role and measures canvases again. The
     core's own colors come from it too: focus rings, editor selections,
@@ -5620,7 +5621,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     handlers and before layout, so what a handler changes shows in that
     frame), once for everything that changed since the last frame, with
     flags saying what: `SIV_EVENT_THEME_CHANGED` when a color
-    `siv_window_get_color` returns differs (when the window event comes),
+    `siv_window_get_color` returns differs (when the window event comes)
+    or a subtree theme's colors do (D43),
     `SIV_EVENT_FONTS_CHANGED` when any family may resolve differently
     (the default family, the desktop's monospace, Fontconfig's
     configuration: `App.refreshText`), and `SIV_EVENT_DESKTOP_CHANGED`
@@ -5672,10 +5674,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   rebuilding on theme changes (every widget library would need a theme
   listener and the tree churns on every desktop change); CSS-like style
   sheets with selectors (a second system to match and cascade, far more
-  than tokens need); a theme per window (applications want one look).
-- **Reverse if:** applications need per-subtree themes (an always-dark
-  sidebar); then let a node carry a palette that its subtree resolves
-  against.
+  than tokens need); a theme per window (applications want one look, and
+  the parts that differ are subtrees, D43).
+- **Reverse if:** applications need to restyle widgets beyond colors and
+  text sizes at run time (shapes, metrics); then style sheets may earn
+  their cost. The earlier reverse-if, per-subtree themes for an
+  always-dark sidebar, came true in October 2026 and is D43.
 
 ### D30. The pre-1.0 API review
 
@@ -7465,6 +7469,103 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   opt-in path that relays out such a subtree per frame. Or if
   interactive gestures need to hand their velocity to a spring; then
   let an animation take an initial velocity.
+
+### D43. Per-subtree themes
+
+- **Requirement:** part of a window in another scheme, contrast, or
+  palette than the rest (an always-dark sidebar or media panel, an
+  inverse banner, an accent for one section), with the stock widgets and
+  popups inside it following, and with D29's properties intact: nothing
+  copies resolved colors into the tree, changes of the desktop's scheme,
+  contrast, and accent, of the user's theme, and of the application's
+  theme still reach it, a desktop change walks and rebuilds nothing that
+  does not change, and layout is untouched. libadwaita's style classes,
+  Qt's per-widget palettes, and SwiftUI's `preferredColorScheme` and
+  environment all allow it, and siv applications asked for it (D29's
+  reverse-if).
+- **Decision:** a node carries a theme for its subtree: choices, never
+  colors (`Node.theme`, a `ui.theme.Scope`).
+  - `siv_set_theme(txn, node, &desc)` chooses the scheme, `inherit` (the
+    default), `follow` (the desktop's, or the user's theme's, even where
+    the application or an enclosing subtree fixed one), `light`,
+    `dark`, or `inverse` (the opposite of the enclosing subtree's or the
+    window's), and `SIV_SUBTREE_THEME_HIGH_CONTRAST`;
+    `siv_set_theme_color(txn, node, variant, token, color)` overrides a
+    token in one variant or all, as `siv_app_set_theme_color` does for
+    the application. Like the application's calls, the first replaces
+    the choices and keeps the colors; a node with nothing chosen and no
+    colors carries no theme. Both are transaction operations (D4), so
+    they land atomically and an abort undoes them. `siv_node_get_color`
+    reads a color as a node resolves it, for canvases in a themed
+    subtree; `siv_window_get_color` stays the window's, and so does the
+    `theme_changed` window event. The schema gives Lua the same:
+    `theme = { scheme = "dark" }` in a builder's properties,
+    `txn:set_theme_color`, `node:get_color` (D23).
+  - The scopes from the root down to a node compose into a context
+    (`ui.theme.Context`): where the scheme comes from (the window's
+    choice, the desktop's, light, or dark) and whether it is inverted,
+    high contrast, and every scope's overrides with inner ones winning.
+    A scope that sets the accent drops the derived colors outer scopes
+    set and it does not, so composing equals stacking the scopes as
+    layers. The context's palette goes through D29's layers unchanged
+    in the variant the context picks (the compiled colors, the
+    application's defaults, the desktop's accent, the user's theme for
+    that variant, the application's overrides), then the context's
+    overrides, with colors derived from the final accent as D29 derives
+    them. A dark sidebar under a dark user theme takes the theme's
+    colors; under a light Omarchy theme, which fills only its own
+    variant, the compiled dark ones, as when an application fixes its
+    scheme (D29). The desktop's accent reaches it unless a scope sets
+    one.
+  - Contrast only rises: a subtree turns high contrast on, never off, so
+    a user who asked for high contrast gets it in every part of every
+    window (D18). The desktop's high contrast in a dark subtree is the
+    dark high-contrast variant. An application that shows a preview of
+    the normal theme draws it with literal colors.
+  - Text sizes stay the window's: they follow the desktop's font size
+    and text scale, the user's reading choice, everywhere. A subtree
+    theme therefore never reshapes or relays out anything; it is paint
+    only. A part that wants smaller text uses size roles as anywhere.
+  - Cost. A window keeps its themed nodes in a list and their contexts
+    and palettes in a map (`ui.Window.scopes`), refreshed at the start
+    of a frame after a theme was set or cleared, a node moved or was
+    removed while the window has themes, or the window's theme inputs
+    changed. Each scope finds the scope around it by walking up from its
+    node, so a refresh costs scopes times depth and visits nothing else.
+    Subtrees whose colors changed, or that gained or lost a theme,
+    repaint, and their settings handlers hear `SIV_EVENT_THEME_CHANGED`
+    in that frame (D29). Paint carries the palette down the walk it
+    already makes and looks one up only at themed nodes, so a window
+    without subtree themes pays a null check per painted node. Moving a
+    node in a window with themes repaints the node's subtree, since its
+    colors may change.
+  - Popups (D17) take their anchor's context in the parent window when
+    they are created: menus, submenus (anchored in a popup, so they
+    inherit it), combo box lists, popovers, and tooltips. A context is
+    choices, so a desktop change reaches an open menu; a change of the
+    anchor's own theme while it is open does not, which menus, rebuilt
+    on each opening, never notice. `siv_window_get_color` on a popup
+    answers with its anchor's colors.
+  - What AT-SPI reports as a span's fg-color (D18) is the color painted,
+    in the subtree's palette. The document view (D32) still takes the
+    window's palette for its page colors.
+  - Shown by the guide's sidebar sample (docs/guide/examples/sidebar.lua:
+    a dark sidebar, an inverse banner, a section with its own accent, and
+    the sidebar's menu), and checked in light, dark, and high contrast,
+    with the menu, against golden images (test/widgets/subtree_themes.zig).
+- **Alternatives:** a resolved palette on the node (widgets and the tree
+  would hold colors that every desktop change must rewrite, the copying
+  D29 rejected); style classes or selectors (libadwaita's `.osd`, CSS: a
+  cascade to match for what a scheme and a few overrides express); a
+  window or subsurface of its own for the panel (focus, layout, and
+  popups would cross windows); text sizes per subtree (a theme change
+  would relayout, and the size is the user's); lowering contrast in a
+  subtree (D18); resolving each node's palette when painted by walking
+  up from it (depth times every painted node, where carrying it down
+  costs nothing).
+- **Reverse if:** applications need text sizes or metrics per subtree (a
+  compact panel), or popups that follow their anchor's theme changes
+  while open.
 
 ### D44. Shortcuts on any layout
 

@@ -1029,7 +1029,7 @@ pub const decls = [_]Decl{
         .{ .name = "relative", .bit = 8, .doc = "Pointer: relative motion (siv_window_set_pointer_constraint): dx, dy, raw_dx, and raw_dy hold it." },
         .{ .name = "capturing", .bit = 9, .doc = "Key: delivered to a capture handler (siv_on_capture), on the way down to the focused node." },
         .{ .name = "stop", .bit = 10, .doc = "Scroll: the fingers left the touchpad, or the wheel stopped; kinetic scrolling starts here. dx and dy may be zero." },
-        .{ .name = "theme_changed", .bit = 11, .doc = "Settings: the window's theme colors changed, as SIV_WINDOW_EVENT_TYPE_THEME_CHANGED reports them." },
+        .{ .name = "theme_changed", .bit = 11, .doc = "Settings: the window's theme colors changed, as SIV_WINDOW_EVENT_TYPE_THEME_CHANGED reports them, or a subtree theme's (siv_set_theme)." },
         .{ .name = "fonts_changed", .bit = 12, .doc = "Settings: the default family (siv_app_get_default_font), the desktop's monospace family, or Fontconfig's configuration changed, so any family may resolve to other fonts." },
         .{ .name = "desktop_changed", .bit = 13, .doc = "Settings: a desktop setting changed (D19): reduced motion, double-click time, caret blinking, text scale, color scheme, contrast, accent, or the UI font's size." },
     }),
@@ -1188,6 +1188,20 @@ pub const decls = [_]Decl{
         .{ .name = "dark", .value = 2, .doc = "Dark, normal contrast." },
         .{ .name = "light_high_contrast", .value = 3, .doc = "Light, high contrast." },
         .{ .name = "dark_high_contrast", .value = 4, .doc = "Dark, high contrast." },
+    }),
+    enumeration("siv_subtree_scheme", "The light or dark variant a node's subtree takes (D43, siv_set_theme).", &.{
+        .{ .name = "inherit", .value = 0, .doc = "The enclosing subtree's, else the window's." },
+        .{ .name = "follow", .value = 1, .doc = "The desktop's preference (or the user's theme's), even where siv_app_set_theme or an enclosing subtree fixed one." },
+        .{ .name = "light", .value = 2, .doc = "Light." },
+        .{ .name = "dark", .value = 3, .doc = "Dark, as for an always-dark sidebar." },
+        .{ .name = "inverse", .value = 4, .doc = "The opposite of the enclosing subtree's or the window's: a dark panel in a light window, a light one in a dark window." },
+    }),
+    flags("siv_subtree_theme_flags", "Options of a subtree's theme.", &.{
+        .{ .name = "high_contrast", .bit = 0, .doc = "High contrast in the subtree. Nothing lowers the contrast the desktop or siv_app_set_theme asked for." },
+    }),
+    descriptor("siv_subtree_theme_desc", "A node's theme for its subtree (D43): its scheme and contrast.", &.{
+        .{ .name = "scheme", .type = ref("siv_subtree_scheme"), .doc = "Default inherit." },
+        .{ .name = "flags", .type = ref("siv_subtree_theme_flags"), .doc = "Options." },
     }),
     handle("siv_timer", "A one-shot timer on the application's loop. Valid until it fires or is cancelled.", false),
     flags("siv_job_flags", "How a job runs.", &.{
@@ -1843,7 +1857,7 @@ pub const functions = [_]Function{
         .{ .name = "min", .type = ref("siv_size"), .doc = "Smallest size." },
         .{ .name = "max", .type = ref("siv_size"), .doc = "Largest size." },
     }),
-    call("siv_popup_create", "Creates a popup of a window (an xdg_popup, D17): a window with its own tree that is mapped by siv_popup_show, once its content is built, so that it can size to it. Destroying the parent destroys its popups first.", &.{
+    call("siv_popup_create", "Creates a popup of a window (an xdg_popup, D17): a window with its own tree that is mapped by siv_popup_show, once its content is built, so that it can size to it. It takes the subtree theme of its anchor as it is now (siv_set_theme, D43). Destroying the parent destroys its popups first.", &.{
         window_param,
         .{ .name = "desc", .type = .{ .desc = "siv_popup_desc" }, .doc = "Anchor, placement, size, and callbacks; NULL anchors below the parent's root." },
         .{ .name = "popup", .type = out(ref("siv_window")), .doc = "The popup: a window handle." },
@@ -2078,8 +2092,21 @@ pub const functions = [_]Function{
         .{ .name = "token", .type = ref("siv_color_token"), .doc = "The color; not none." },
         .{ .name = "color", .type = ref("siv_color"), .doc = "sRGB with straight alpha." },
     }),
-    call("siv_window_get_color", "A themed color as the window resolves it now, for canvases; they are drawn again when the theme changes.", &.{
+    call("siv_window_get_color", "A themed color as the window resolves it now, for canvases; they are drawn again when the theme changes. Inside a subtree with its own theme, siv_node_get_color.", &.{
         window_param,
+        .{ .name = "token", .type = ref("siv_color_token"), .doc = "The color; not none." },
+        .{ .name = "color", .type = out(ref("siv_color")), .doc = "sRGB with straight alpha." },
+    }),
+    setter("siv_set_theme", "Gives a node's subtree a theme of its own (D43): themed colors in it, stock widgets' and those of popups opened from it included, resolve in the scheme and contrast chosen here, with siv_set_theme_color's colors over the window's and any enclosing subtree's. They keep following the desktop's accent, the user's theme for that scheme, and the application's theme, live, since siv keeps the choices, not resolved colors. Text sizes stay the window's. Replaces the node's earlier choices; its colors stay. A node with nothing chosen and no colors has no theme of its own.", &.{
+        .{ .name = "desc", .type = .{ .desc = "siv_subtree_theme_desc" }, .doc = "Choices; NULL inherits the scheme and contrast." },
+    }),
+    setter("siv_set_theme_color", "Overrides a themed color in a node's subtree (D43), in one variant or in all of them, over the application's overrides and an enclosing subtree's. Overriding accent also moves the colors derived from it (accent_hover, accent_active, accent_fg, focus_ring, selection) in the subtree, unless they are overridden too. A color of all zeros removes the override.", &.{
+        .{ .name = "variant", .type = ref("siv_theme_variant"), .doc = "The variant." },
+        .{ .name = "token", .type = ref("siv_color_token"), .doc = "The color; not none." },
+        .{ .name = "color", .type = ref("siv_color"), .doc = "sRGB with straight alpha." },
+    }),
+    call("siv_node_get_color", "A themed color as a node resolves it now (D43): with its nearest subtree theme (siv_set_theme, as of the latest operation), else as the window does. For canvases inside a themed subtree; they are drawn again when it changes.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
         .{ .name = "token", .type = ref("siv_color_token"), .doc = "The color; not none." },
         .{ .name = "color", .type = out(ref("siv_color")), .doc = "sRGB with straight alpha." },
     }),
