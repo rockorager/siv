@@ -5181,6 +5181,16 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     insets. Scroll lays out like a box in an unbounded content area.
   - There is no min-content size and no margin; gaps and padding space
     things. Borders draw over the padding and do not affect layout.
+    Adaptive layout (D39) was the second reason to reconsider
+    min-content and did not need it either.
+  - Variants (D39): a parent decides its children's variants from the
+    space its constraints offer, before it measures or reads any child,
+    and puts them into the children's properties; the pass goes on as
+    before. Max-content widths take descendants' variants as at
+    unbounded space (a node's own current variant counts), so what a
+    parent offers never depends on the variant that offer chose. A node
+    whose children have variants does not reuse a layout at the size
+    its last one chose, since the offer differs.
   - `SIV_VISUAL_CLIP` clips a node's own image or canvas content to its
     rounded border box, not only its descendants (external content
     already was), so a photo with rounded corners is one image node
@@ -5190,7 +5200,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   without intrinsic widths (shrink-wrapping needs explicit, quadratic
   intrinsic queries).
 - **Reverse if:** stock widgets need min-content sizing (for example,
-  tables that never wrap words) and cannot get it from explicit sizes.
+  tables that never wrap words) and cannot get it from explicit sizes,
+  or adaptive layouts need to switch where content stops fitting at its
+  narrowest rather than its widest (D39).
 
 ### D27. Shape of the public API
 
@@ -7386,7 +7398,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     jumps, since the two transforms are in different coordinates. So do
     the layouts of a frame in which the window's size changed: a window
     the user resizes relays out under the pointer, and content sliding
-    after the edge lags it.
+    after the edge lags it. Not when that resize switched a variant
+    (D39): the new arrangement is a change of its own, which motion is
+    for, and a tiling compositor resizes in one step.
   - Size: the content repaints at its new size at once, and growth is
     uncovered by a reveal, a clip from the old box to the new on the
     same timing, so siblings sliding out of the way and the box growing
@@ -7469,6 +7483,126 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   opt-in path that relays out such a subtree per frame. Or if
   interactive gestures need to hand their velocity to a spring; then
   let an animation take an initial velocity.
+
+### D39. Adaptive layout
+
+- **Requirement:** one tree arranges itself for the space it gets: a
+  sidebar goes, a row becomes a column, a field narrows, when the window
+  or the pane a widget sits in crosses a size, as libadwaita's
+  breakpoints, SwiftUI's size classes and `ViewThatFits`, and CSS
+  container queries allow. Narrow windows are routine on tiling
+  compositors (sway, Hyprland), which siv targets. The application
+  declares it rather than handling resizes (a handler shows a frame at
+  the old arrangement, and rebuilding drops widgets' state); the new
+  arrangement shows in the frame of the resize; layout stays one pass
+  (D26); it animates through motion (D38) and is reachable from C and
+  Lua (D23).
+- **Decision:** variants: values a node takes instead of its own while a
+  condition on its space holds, decided by layout.
+  - What a variant replaces: the layout (`siv_set_layout_when`), a flex
+    container's options (`siv_set_flex_when`), or visibility
+    (`siv_set_hidden_when`). These cover what adaptive interfaces change:
+    panes that go, rows that stack, sizes, padding, and grid placement
+    (a column and a span are layout). The same children rearranged keep
+    their state, which two subtrees, one shown at a time, would not.
+    A variant replaces the whole group, as `siv_set_layout` does, so it
+    can set a field to zero; a layout variant is merged with the node's
+    default layout as `siv_set_layout` is, as of the call. A node has up
+    to 32 conditions, applied in the order first set, later over earlier
+    where several hold; setting one with an equal condition changes it.
+  - Conditions (`siv_condition_desc`): a range of width and height, the
+    minimum included and the maximum not, so `max_width = 600` and
+    `min_width = 600` split narrow from wide with neither a gap nor an
+    overlap. The range is on the space the node's parent offers its
+    children: the parent's content box under its constraints, unbounded
+    along the axes a scroll node scrolls; the root's is the window. That
+    is a container query: a widget follows the pane it is in, nested
+    widgets compose, and nothing is named. `SIV_CONDITION_WINDOW` puts
+    the range on the window's size instead, as libadwaita's breakpoints
+    do, for a node inside rows that size to their content (which offer
+    only what their content takes) or a choice that follows the window
+    as a whole. `SIV_CONDITION_OVERFLOW` holds while the node's
+    max-content width is wider than the space: a row of buttons stacks
+    exactly when it would not fit, with no number written down, which
+    is `ViewThatFits` without a second subtree.
+  - One pass: the offer comes down before anything comes up. A parent
+    decides its children's variants at the start of its own layout, from
+    its constraints, and puts the values into the children's properties
+    before it measures or reads any child (D26). No variant changes what
+    decided it, so no second pass per frame and no fixed point. A
+    window resize lays out the root under new constraints, so every
+    offer that changed is decided again in that frame; a change of
+    window size also marks nodes with window conditions whose outcome
+    changed (`Window.adaptive_nodes`), since their parents may keep
+    their constraints. Nodes without variants cost nothing.
+  - Max-content widths, which parents that size to their content use to
+    decide what to offer, take every descendant's variants as at
+    unbounded space (window conditions at the window's size; overflow
+    never holds there), while a node's own current variant counts, since
+    its parent applied it. Taking the current ones instead makes the
+    arrangement depend on history: a parent that sizes to its content
+    offers a narrow child its narrow width, and the child stays narrow
+    at any window size. A node caches both widths (`max_content`,
+    `max_content_inf`); applying a variant clears only the node's own.
+  - State: the node keeps its own values and its variants
+    (`Node.adaptive`, part of a transaction's copies, D4) and shows its
+    own values with the variants its last layout applied
+    (`State.variant_mask`, derived). Setters change its own values and
+    show them with the same mask; no transaction changes the mask, so an
+    abort that restores the node restores values that match it.
+    `siv_node_is_hidden` reports the node's own visibility.
+  - Motion: a node a variant hides or shows exits or enters as with
+    `siv_set_hidden` (D38), and moves and growth animate even in a frame
+    that resized the window (`Window.variants_switched`). Focus leaves a
+    node a variant hid, and a modal one a variant showed takes it, at the
+    end of that frame, where hover handlers run (D5).
+  - Min-content, which D26's reverse-if names: still none. Adaptive
+    layout needs to know whether an arrangement fits, which max-content
+    tells (`overflow`), or a bound the application chooses. Min-content
+    (the narrowest width without overflow, a paragraph's longest word)
+    is a second intrinsic width per node, and for text a pass over break
+    opportunities, and nothing needs it yet.
+  - API: `siv_condition_desc` with `siv_condition_flags`,
+    `siv_set_layout_when`, `siv_set_flex_when`, `siv_set_hidden_when`
+    (each `txn, node, when, value`), and `siv_clear_variants`; schema in
+    `api_adaptive.zig`, exports in `adaptive.zig`, generated for Lua as
+    `txn:set_hidden_when(node, { max_width = 600 }, true)`. The files
+    app drops its places and narrows its search field below 600 pixels;
+    the guide's layout sample drops its sidebar and lays its cards one
+    per line (`layout-narrow.png`).
+  - Tests do not depend on timing: the tree's tests drive the window's
+    size with `configure` and count layouts (each node once in the frame
+    that switches), check bounds on both sides, history independence,
+    transactions and aborts, window conditions under constraints that
+    did not change, motion through the stand-in compositor, and focus;
+    the ABI's, the files app's, and the guide's compare narrow and wide
+    golden images after `siv_test_resize`.
+- **Alternatives:** conditions on the window only (libadwaita's
+  breakpoints, SwiftUI's size classes): a widget cannot follow its pane;
+  kept as a flag. Conditions on a container's final size (CSS container
+  queries): the size must not depend on the content, which CSS gets by
+  size containment (a container's intrinsic size ignores its content, so
+  one that sizes to its content collapses), or layout runs twice; the
+  offer is known before the content and needs neither. A bounded second
+  pass when an arrangement switches (libadwaita's breakpoint bin
+  measures again): doubles the frames that switch and still has to pick
+  which size to test. Named containers (CSS `container-name`):
+  references to keep valid through moves and removals, while the parent
+  and the window cover every case found. A container that shows the
+  first child that fits (`ViewThatFits`): duplicates content and loses
+  state on a switch. A transaction mode that makes every setter
+  conditional (libadwaita's setters on any property): every setter
+  would need a conditional path, and three groups cover the uses; more
+  can follow with the same condition. Max-content in the current
+  arrangement: depends on history, as above.
+- **Reverse if:** applications need conditions on the size a container
+  took rather than the space it was offered (a container sized to its
+  content that should adapt to what its content took); then add size
+  containment as CSS does. Or variants need other groups (grid tracks,
+  text styles, visuals); add `siv_set_<group>_when` with the same
+  condition. Or neither the parent's offer nor the window is where
+  applications want their bounds (a grandparent's space); then add
+  named containers.
 
 ### D43. Per-subtree themes
 
