@@ -73,7 +73,7 @@ pub const Harness = struct {
             // Pastes and drops read on the UI thread from data another
             // thread writes.
             const cb = &self.app.clipboard;
-            var busy = self.app.fonts.loading() or self.app.icons.loading() or cb.transfers.items.len != 0 or cb.ready.items.len != 0;
+            var busy = self.app.fonts.loading() or self.app.icons.loading() or self.app.spelling.busy() or cb.transfers.items.len != 0 or cb.ready.items.len != 0;
             for (self.windows.items) |slot| if (slot) |w| {
                 if (w.dead or !w.win.shown) continue;
                 busy = busy or w.win.presented_seq == 0 or !w.win.settled();
