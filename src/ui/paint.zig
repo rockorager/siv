@@ -592,7 +592,7 @@ pub const State = struct {
                     if (l.anim) |old| if (anim_prop != std.meta.activeTag(old.to)) switch (old.to) {
                         .transform => st.ops.appendAssumeCapacity(.{ .set_transform = .{ .layer = id(i), .transform = p.transform } }),
                         .opacity => st.ops.appendAssumeCapacity(.{ .set_opacity = .{ .layer = id(i), .opacity = p.opacity } }),
-                        .scroll => unreachable,
+                        .scroll, .reveal => unreachable,
                     };
                     if (anim) |a| {
                         var started = a;

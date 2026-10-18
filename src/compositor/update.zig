@@ -157,6 +157,12 @@ pub const Easing = union(enum) {
     linear,
     /// CSS cubic-bezier(x1, y1, x2, y2); x1 and x2 in [0, 1].
     cubic_bezier: [4]f32,
+    /// A damped spring (D38) whose response, the period it would
+    /// oscillate with undamped, is the animation's `duration_ns`: its
+    /// perceptual duration. It runs until it settles, which may be
+    /// later, starts with the velocity the property had in the
+    /// animation it replaces (when `from` is null), and runs once.
+    spring: Spring,
 
     pub const ease: Easing = .{ .cubic_bezier = .{ 0.25, 0.1, 0.25, 1 } };
     pub const ease_in: Easing = .{ .cubic_bezier = .{ 0.42, 0, 1, 1 } };
@@ -164,13 +170,29 @@ pub const Easing = union(enum) {
     pub const ease_in_out: Easing = .{ .cubic_bezier = .{ 0.42, 0, 0.58, 1 } };
 };
 
-pub const Property = enum { transform, opacity, scroll };
+/// A spring's shape (D38).
+pub const Spring = struct {
+    /// 0 is critically damped: the fastest approach without overshoot.
+    /// Up to (not including) 1, it overshoots and bounces back, more the
+    /// higher it is; the damping ratio is 1 - bounce.
+    bounce: f32 = 0,
+};
+
+pub const Property = enum { transform, opacity, scroll, reveal };
 
 pub const Value = union(Property) {
     transform: Transform,
     opacity: f32,
     /// Scroll offset.
     scroll: Point,
+    /// A clip that exists only while it animates (D38): it clips the
+    /// layer's content and descendants, inside the layer's own clip, and
+    /// goes away when the animation finishes. Growing layout boxes reveal
+    /// their new content with it. Radii come from `to`. Unlike other
+    /// properties, a reveal started while another runs continues from
+    /// the one shown, with its velocity, whatever its `from`; `from`
+    /// applies when none is shown.
+    reveal: Clip,
 };
 
 /// An animation of one layer property, run on the compositor thread and
@@ -312,6 +334,16 @@ pub const Op = union(enum) {
     /// and passes on, without racing the compositor's own scrolling.
     scroll_by: struct { layer: LayerId, delta: Point },
     animate: struct { layer: LayerId, animation: Animation },
+    /// The UI gives up a layer and its subtree (D38): the compositor
+    /// keeps drawing them where they are, without taking input over them,
+    /// and destroys them once the finite animations of every layer given
+    /// up this way in the subtree have finished, then reports
+    /// `Event.exited` for each. A layer given up inside one given up
+    /// earlier waits for the outer one. Destroying an ancestor destroys
+    /// them at once (and reports them). The UI must not name the layers
+    /// again, nor reuse their ids, until `exited`. Insertions around
+    /// them leave them below the siblings the UI inserts.
+    exit: LayerId,
     /// Sets a zoomable scroll container's zoom (clamped to its range),
     /// keeping `focus` (layer coordinates, inside the viewport) in place.
     zoom_to: struct { layer: LayerId, zoom: f32, focus: Point },
@@ -365,7 +397,7 @@ pub const Op = union(enum) {
     /// Checks what can be checked without the tree: ids and finite values.
     pub fn validate(op: Op) error{InvalidArgument}!void {
         const ok = switch (op) {
-            .create, .destroy, .detach => |id| id != 0,
+            .create, .destroy, .detach, .exit => |id| id != 0,
             .set_root, .set_background, .ack_configure => true,
             .insert => |i| i.layer != 0 and i.parent != 0 and i.layer != i.parent and i.before != i.layer,
             .set_content => |s| s.layer != 0 and (s.damage == null or finiteRect(s.damage.?)),
@@ -412,6 +444,8 @@ pub const Event = union(enum) {
     /// report older than the UI's own `scroll_to` can be told apart.
     scrolled: struct { window: WindowId, layer: LayerId, offset: Point, seq: u64, zoom: f32 = 1 },
     animation_finished: struct { window: WindowId, layer: LayerId, id: u32, property: Property },
+    /// A layer given up with `Op.exit` is destroyed; its id is free.
+    exited: struct { window: WindowId, layer: LayerId },
     /// No frame reads this builder's list any more; the UI may reset or
     /// free it and the fonts and images it referred to.
     released: *scene.Builder,
@@ -448,7 +482,7 @@ pub const Event = union(enum) {
         return switch (ev.*) {
             .platform => |*p| p.window(),
             .frame => |f| f.window,
-            inline .configure, .presented, .scrolled, .animation_finished, .external_released, .external_configure, .external_presented, .external_visibility, .external_frame => |e| e.window,
+            inline .configure, .presented, .scrolled, .animation_finished, .exited, .external_released, .external_configure, .external_presented, .external_visibility, .external_frame => |e| e.window,
             .released, .idle => null,
         };
     }
@@ -472,6 +506,7 @@ fn validValue(v: Value) bool {
         .transform => |t| t.finite(),
         .opacity => |o| std.math.isFinite(o),
         .scroll => |p| finitePoint(p),
+        .reveal => |c| finiteRect(c.rect),
     };
 }
 
@@ -483,6 +518,7 @@ fn validAnimation(a: Animation) bool {
         .cubic_bezier => |c| for (c) |v| {
             if (!std.math.isFinite(v)) break false;
         } else c[0] >= 0 and c[0] <= 1 and c[2] >= 0 and c[2] <= 1,
+        .spring => |sp| sp.bounce >= 0 and sp.bounce < 1 and a.iterations == 1 and !a.alternate,
     };
 }
 
@@ -526,4 +562,16 @@ test "ops validate ids and values" {
         .easing = .{ .cubic_bezier = .{ 1.5, 0, 0, 1 } },
     } } }).validate());
     try (Op{ .animate = .{ .layer = 1, .animation = .{ .to = .{ .transform = .offset(3, 4) }, .duration_ns = 1 } } }).validate();
+    // Springs settle once: no repeats, and a bounce below 1.
+    try testing.expectError(error.InvalidArgument, (Op{ .animate = .{ .layer = 1, .animation = .{
+        .to = .{ .opacity = 1 },
+        .duration_ns = 1,
+        .easing = .{ .spring = .{ .bounce = 1 } },
+    } } }).validate());
+    try testing.expectError(error.InvalidArgument, (Op{ .animate = .{ .layer = 1, .animation = .{
+        .to = .{ .opacity = 1 },
+        .duration_ns = 1,
+        .iterations = 0,
+        .easing = .{ .spring = .{} },
+    } } }).validate());
 }

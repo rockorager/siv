@@ -64,13 +64,25 @@ pub const Layer = struct {
     damage: ?Rect = null,
     damage_all: bool = false,
 
-    anims: [3]?anim.Running = @splat(null),
+    anims: [std.enums.values(Property).len]?anim.Running = @splat(null),
     fling: ?anim.Fling = null,
     animated: bool = false,
     scrolled: bool = false,
+    /// Shown while its animation runs (`update.Value.reveal`).
+    reveal: ?update.Clip = null,
+    /// Given up by the UI (`Op.exit`).
+    exiting: bool = false,
 
     fn animating(l: *const Layer) bool {
-        return l.fling != null or l.anims[0] != null or l.anims[1] != null or l.anims[2] != null;
+        if (l.fling != null) return true;
+        for (l.anims) |a| if (a != null) return true;
+        return false;
+    }
+
+    /// Runs an animation that ends.
+    fn ending(l: *const Layer) bool {
+        for (l.anims) |a| if (a) |r| if (r.anim.iterations != 0) return true;
+        return false;
     }
 };
 
@@ -173,6 +185,10 @@ pub const Tree = struct {
     animated: std.ArrayList(LayerId) = .empty,
     scrolled: std.ArrayList(LayerId) = .empty,
     finished: std.ArrayList(Finished) = .empty,
+    /// Layers given up with `Op.exit`, and those destroyed since the
+    /// last frame (reported in `Event.exited`).
+    exiting: std.ArrayList(LayerId) = .empty,
+    exited: std.ArrayList(LayerId) = .empty,
     /// Content replaced or removed since the last composition; the
     /// previous list may still point into it.
     retired: std.ArrayList(*scene.Builder) = .empty,
@@ -195,6 +211,8 @@ pub const Tree = struct {
         t.animated.deinit(t.gpa);
         t.scrolled.deinit(t.gpa);
         t.finished.deinit(t.gpa);
+        t.exiting.deinit(t.gpa);
+        t.exited.deinit(t.gpa);
         t.retired.deinit(t.gpa);
         t.releasing.deinit(t.gpa);
         for (&t.lists) |*l| l.deinit(t.gpa);
@@ -341,8 +359,22 @@ pub const Tree = struct {
                     if (l.scroll == null) return t.reject(op, "not a scroll container");
                     l.fling = null;
                 }
-                l.anims[@intFromEnum(prop)] = .init(s.animation);
+                var r: anim.Running = .init(s.animation);
+                // A reveal continues from the one shown (D38).
+                if (prop == .reveal and l.reveal != null) r.from = null;
+                // A spring keeps the velocity of what it replaces.
+                if (s.animation.easing == .spring and r.from == null) {
+                    if (l.anims[@intFromEnum(prop)]) |old| r.velocity = old.velocityNow();
+                }
+                l.anims[@intFromEnum(prop)] = r;
                 try t.markAnimated(s.layer);
+            },
+            .exit => |id| {
+                const l = t.get(id) orelse return t.reject(op, "no such layer");
+                if (l.exiting) return t.reject(op, "already given up");
+                if (id == t.root) return t.reject(op, "cannot give up the root");
+                l.exiting = true;
+                try t.exiting.append(t.gpa, id);
             },
             .set_wheel_region => |s| {
                 const l = t.get(s.layer) orelse return t.reject(op, "no such layer");
@@ -387,6 +419,10 @@ pub const Tree = struct {
         if (l.content) |c| try t.retired.append(t.gpa, c.builder);
         if (l.animated) removeId(&t.animated, id);
         if (l.scrolled) removeId(&t.scrolled, id);
+        if (l.exiting) {
+            removeId(&t.exiting, id);
+            try t.exited.append(t.gpa, id);
+        }
         if (l.blur != null) t.blurs -= 1;
         l.* = .{};
     }
@@ -584,9 +620,11 @@ pub const Tree = struct {
 
     fn routeLayer(t: *Tree, id: LayerId, parent_p: Point, want: Want) Hit {
         const l = &t.layers.items[id];
+        if (l.exiting) return .miss;
         const inv = l.transform.affine().invert() orelse return .miss;
         const p = inv.apply(parent_p);
         if (l.clip) |c| if (!contains(c.rect, p)) return .miss;
+        if (l.reveal) |c| if (!contains(c.rect, p)) return .miss;
         var hit: Hit = .miss;
         const in_viewport = if (l.scroll) |s| contains(s.viewport, p) else true;
         if (in_viewport) {
@@ -649,12 +687,19 @@ pub const Tree = struct {
                         .transform => .{ .transform = l.transform },
                         .opacity => .{ .opacity = l.opacity },
                         .scroll => .{ .scroll = l.offset },
+                        .reveal => .{ .reveal = l.reveal orelse r.anim.to.reveal },
                     };
                     const s = r.sample(t_ns, current);
                     switch (prop) {
                         .transform => l.transform = s.value.transform,
                         .opacity => l.opacity = std.math.clamp(s.value.opacity, 0, 1),
                         .scroll => try t.setOffset(id, s.value.scroll, true),
+                        .reveal => if (t_ns >= r.start_ns) {
+                            // A changed clip is a content change (D9).
+                            l.reveal = if (s.done) null else s.value.reveal;
+                            l.version +%= 1;
+                            l.damage_all = true;
+                        },
                     }
                     if (s.done) {
                         try t.finished.append(t.gpa, .{ .layer = id, .id = r.anim.id, .property = prop });
@@ -685,7 +730,34 @@ pub const Tree = struct {
                 _ = t.animated.swapRemove(i);
             }
         }
+        // Layers given up go once nothing given up in them still moves.
+        var k = t.exiting.items.len;
+        while (k > 0) {
+            k -= 1;
+            if (k >= t.exiting.items.len) continue;
+            const id = t.exiting.items[k];
+            const l = &t.layers.items[id];
+            if (l.parent != 0 and t.layers.items[l.parent].exiting) continue;
+            if (l.parent != 0 and t.exitPending(id)) {
+                result.holding = true;
+                continue;
+            }
+            if (l.parent != 0) t.unlink(id);
+            try t.destroyTree(id);
+        }
         return result;
+    }
+
+    /// Whether a layer given up, or one given up inside it, runs an
+    /// animation that ends.
+    fn exitPending(t: *const Tree, id: LayerId) bool {
+        const l = &t.layers.items[id];
+        if (l.exiting and l.ending()) return true;
+        var child = l.first;
+        while (child != 0) : (child = t.layers.items[child].next) {
+            if (t.exitPending(child)) return true;
+        }
+        return false;
     }
 
     // Composition -------------------------------------------------------
@@ -739,10 +811,10 @@ pub const Tree = struct {
         const opacity = parent_opacity * l.opacity;
         var clip = parent_clip;
         var round = parent_round;
-        if (l.clip) |c| {
+        for ([_]?update.Clip{ l.clip, l.reveal }) |lc| if (lc) |c| {
             clip = clip.intersect(m.applyRect(c.rect));
             round = round or !c.radii.eql(.{}) or !m.isAxisAligned();
-        }
+        };
         if (l.content) |c| occlude(out.items, m.applyRect(c.list.bounds).intersect(clip));
         if (l.external) |pl| {
             const r = m.applyRect(pl.rect);
@@ -802,6 +874,7 @@ pub const Tree = struct {
         if (opacity <= 0) return;
         var clip = parent_clip;
         if (l.clip) |c| clip = clip.intersect(m.applyRect(c.rect));
+        if (l.reveal) |c| clip = clip.intersect(m.applyRect(c.rect));
         if (clip.isEmpty()) return;
         if (l.blur) |b| try blurShape(t.gpa, out, b, m, clip);
         var cm = m;
@@ -855,7 +928,11 @@ pub const Tree = struct {
 
     fn emit(t: *Tree, out: *std.ArrayList(Command), id: LayerId) Allocator.Error!void {
         const l = &t.layers.items[id];
-        const clip: ?scene.Clip = if (l.clip) |c| .{ .shape = clipShape(c.rect, c.radii) } else null;
+        // A reveal inside the layer's own clip is a second, anonymous
+        // layer; its changes bump the layer's version.
+        const own = l.clip orelse l.reveal;
+        const inner = if (l.clip != null) l.reveal else null;
+        const clip: ?scene.Clip = if (own) |c| .{ .shape = clipShape(c.rect, c.radii) } else null;
         try t.push(out, .{
             .id = id,
             .version = l.version,
@@ -864,6 +941,7 @@ pub const Tree = struct {
             .clip = clip,
             .damage = if (l.damage_all) null else l.damage orelse Rect.empty,
         });
+        if (inner) |c| try t.push(out, .{ .clip = .{ .shape = clipShape(c.rect, c.radii) } });
         if (l.content) |c| {
             const base: u32 = @intCast(out.items.len);
             try out.ensureUnusedCapacity(t.gpa, c.list.commands.len);
@@ -909,6 +987,7 @@ pub const Tree = struct {
             try t.pop(out);
             try t.pop(out);
         }
+        if (inner != null) try t.pop(out);
         try t.pop(out);
     }
 
@@ -1310,6 +1389,121 @@ test "animations sample at frame times and finish" {
     tk = try f.tree.tick(2000);
     try testing.expect(!tk.active);
     try testing.expectEqual(@as(f32, 0.25), f.tree.get(1).?.opacity);
+}
+
+test "layers given up stay drawn without input until their animations end, then go and are reported" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    // Root 1; 2 exits with a fade and carries 3, which exits with a
+    // slower slide; 4 exits with nothing to wait for.
+    try f.apply(&.{
+        .{ .create = 1 },
+        .{ .set_root = 1 },
+        .{ .create = 2 },
+        .{ .create = 3 },
+        .{ .create = 4 },
+        .{ .insert = .{ .layer = 2, .parent = 1 } },
+        .{ .insert = .{ .layer = 3, .parent = 2 } },
+        .{ .insert = .{ .layer = 4, .parent = 1 } },
+        .{ .set_content = .{ .layer = 2, .content = try f.rect(0, .xywh(0, 0, 50, 50)) } },
+        .{ .set_wheel_region = .{ .layer = 2, .region = .xywh(0, 0, 50, 50) } },
+        .{ .set_content = .{ .layer = 4, .content = try f.rect(1, .xywh(100, 0, 50, 50)) } },
+    });
+    _ = try f.tree.tick(1000);
+    _ = try f.frame();
+    try testing.expectEqual(Route.ui, f.tree.route(.{ .x = 10, .y = 10 }, .{ .x = 0, .y = 1 }));
+    try f.apply(&.{
+        .{ .animate = .{ .layer = 2, .animation = .{ .to = .{ .opacity = 0 }, .duration_ns = 100, .easing = .linear } } },
+        .{ .exit = 2 },
+        .{ .animate = .{ .layer = 3, .animation = .{ .to = .{ .transform = .offset(0, 20) }, .duration_ns = 200, .easing = .linear } } },
+        .{ .exit = 3 },
+        .{ .exit = 4 },
+        // A repeating animation does not hold an exit back.
+        .{ .animate = .{ .layer = 4, .animation = .{ .to = .{ .opacity = 0.5 }, .duration_ns = 100, .iterations = 0 } } },
+    });
+    var tk = try f.tree.tick(2000);
+    try testing.expect(tk.holding);
+    try testing.expect(f.tree.get(4) == null);
+    try testing.expectEqualSlices(LayerId, &.{4}, f.tree.exited.items);
+    // Still drawn, fading, but no longer hit.
+    try testing.expect(f.tree.get(2) != null);
+    try testing.expectEqual(Route.ui, f.tree.route(.{ .x = 10, .y = 10 }, .{ .x = 0, .y = 1 }));
+    try testing.expect(f.tree.routeLayer(2, .{ .x = 10, .y = 10 }, .{ .wheel = .{ .x = 0, .y = 1 } }) == .miss);
+    tk = try f.tree.tick(2050);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), f.tree.get(2).?.opacity, 1e-6);
+    // 2's fade is done, but 3, given up inside it, still slides.
+    tk = try f.tree.tick(2150);
+    try testing.expect(f.tree.get(2) != null and tk.holding);
+    tk = try f.tree.tick(2250);
+    try testing.expect(f.tree.get(2) == null and f.tree.get(3) == null);
+    try testing.expectEqualSlices(LayerId, &.{ 4, 3, 2 }, f.tree.exited.items);
+    try testing.expectEqual(@as(usize, 0), f.tree.exiting.items.len);
+    try testing.expect(!tk.holding);
+
+    // Destroying an ancestor takes layers given up below it along.
+    f.tree.exited.clearRetainingCapacity();
+    try f.apply(&.{
+        .{ .create = 5 },
+        .{ .create = 6 },
+        .{ .insert = .{ .layer = 5, .parent = 1 } },
+        .{ .insert = .{ .layer = 6, .parent = 5 } },
+        .{ .animate = .{ .layer = 6, .animation = .{ .to = .{ .opacity = 0 }, .duration_ns = 100 } } },
+        .{ .exit = 6 },
+        .{ .destroy = 5 },
+    });
+    try testing.expectEqualSlices(LayerId, &.{6}, f.tree.exited.items);
+    try testing.expectEqual(@as(usize, 0), f.tree.exiting.items.len);
+}
+
+test "a reveal clips a layer inside its own clip while it animates, then goes" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    try f.apply(&.{
+        .{ .create = 1 },
+        .{ .set_root = 1 },
+        .{ .create = 2 },
+        .{ .insert = .{ .layer = 2, .parent = 1 } },
+        .{ .set_content = .{ .layer = 2, .content = try f.rect(0, .xywh(0, 0, 100, 100)) } },
+        .{ .set_clip = .{ .layer = 2, .clip = .{ .rect = .xywh(0, 0, 100, 100), .radii = .uniform(8, 8) } } },
+        .{ .animate = .{ .layer = 2, .animation = .{
+            .to = .{ .reveal = .{ .rect = .xywh(0, 0, 100, 100), .radii = .uniform(8, 8) } },
+            .from = .{ .reveal = .{ .rect = .xywh(0, 0, 100, 20) } },
+            .duration_ns = 100,
+            .easing = .linear,
+        } } },
+    });
+    _ = try f.tree.tick(1000);
+    _ = try f.frame();
+    _ = try f.tree.tick(1050);
+    try testing.expectEqual(Rect.xywh(0, 0, 100, 60), f.tree.get(2).?.reveal.?.rect);
+    var list = try f.tree.compose();
+    // push 1, push 2 (own clip), push (reveal), fill, pop, pop, pop.
+    try testing.expectEqual(@as(usize, 7), list.commands.len);
+    try testing.expectEqual(@as(u32, 0), list.commands[2].push.layer.id);
+    try testing.expectEqual(Rect.xywh(0, 0, 100, 60), list.commands[2].push.layer.clip.?.shape.bounds());
+    try testing.expectEqual(Rect.xywh(0, 0, 100, 60), list.bounds);
+    // The growing part is damaged though no content changed.
+    const d = try f.tracker.diff(f.tree.previous(), list, .identity, .xywh(0, 0, 200, 200));
+    _ = f.tree.endFrame();
+    try testing.expect(d.len != 0);
+
+    // Retargeted while it runs, it continues from the clip shown, not
+    // from the new animation's `from`.
+    try f.apply(&.{.{ .animate = .{ .layer = 2, .animation = .{
+        .to = .{ .reveal = .{ .rect = .xywh(0, 0, 100, 80) } },
+        .from = .{ .reveal = .{ .rect = .xywh(0, 0, 100, 0) } },
+        .duration_ns = 100,
+        .easing = .linear,
+    } } }});
+    _ = try f.tree.tick(1060);
+    try testing.expectEqual(Rect.xywh(0, 0, 100, 60), f.tree.get(2).?.reveal.?.rect);
+    _ = try f.tree.tick(1160);
+    try testing.expect(f.tree.get(2).?.reveal == null);
+    list = try f.tree.compose();
+    try testing.expectEqual(@as(usize, 5), list.commands.len);
+    _ = f.tree.endFrame();
 }
 
 test "the blur region follows transforms, scrolling, and clips, with rounded corners inside the curve" {

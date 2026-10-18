@@ -10,9 +10,11 @@ const Value = update.Value;
 const Animation = update.Animation;
 
 /// The timing curve at progress `x` in [0, 1].
+/// The timing curve at progress `x` in [0, 1]. Springs are not curves of
+/// progress (`Running` samples them); here they are linear.
 pub fn ease(e: Easing, x: f32) f32 {
     return switch (e) {
-        .linear => x,
+        .linear, .spring => x,
         .cubic_bezier => |c| cubicBezier(c[0], c[1], c[2], c[3], x),
     };
 }
@@ -59,6 +61,56 @@ pub fn lerp(a: Value, b: Value, t: f32) Value {
         .transform => |bt| .{ .transform = a.transform.lerp(bt, t) },
         .opacity => |bo| .{ .opacity = a.opacity + (bo - a.opacity) * t },
         .scroll => |bs| .{ .scroll = a.scroll.lerp(bs, t) },
+        .reveal => |br| {
+            const ar = a.reveal.rect;
+            const f = struct {
+                fn f(x: f32, y: f32, k: f32) f32 {
+                    return x + (y - x) * k;
+                }
+            }.f;
+            return .{ .reveal = .{ .rect = .{ .x0 = f(ar.x0, br.rect.x0, t), .y0 = f(ar.y0, br.rect.y0, t), .x1 = f(ar.x1, br.rect.x1, t), .y1 = f(ar.y1, br.rect.y1, t) }, .radii = br.radii } };
+        },
+    };
+}
+
+/// A value's components, which springs move independently: a
+/// transform's translation, scale, rotation, and origin; an opacity; an
+/// offset; a rectangle.
+pub const Vec = [7]f32;
+
+pub fn components(v: Value) Vec {
+    return switch (v) {
+        .transform => |t| .{ t.translate.x, t.translate.y, t.scale.x, t.scale.y, t.rotate, t.origin.x, t.origin.y },
+        .opacity => |o| .{ o, 0, 0, 0, 0, 0, 0 },
+        .scroll => |p| .{ p.x, p.y, 0, 0, 0, 0, 0 },
+        .reveal => |c| .{ c.rect.x0, c.rect.y0, c.rect.x1, c.rect.y1, 0, 0, 0 },
+    };
+}
+
+/// The value of `like`'s property with components `c` (a reveal keeps
+/// `like`'s radii).
+pub fn fromComponents(like: Value, c: Vec) Value {
+    return switch (like) {
+        .transform => .{ .transform = .{
+            .translate = .{ .x = c[0], .y = c[1] },
+            .scale = .{ .x = c[2], .y = c[3] },
+            .rotate = c[4],
+            .origin = .{ .x = c[5], .y = c[6] },
+        } },
+        .opacity => .{ .opacity = c[0] },
+        .scroll => .{ .scroll = .{ .x = c[0], .y = c[1] } },
+        .reveal => |r| .{ .reveal = .{ .rect = .{ .x0 = c[0], .y0 = c[1], .x1 = c[2], .y1 = c[3] }, .radii = r.radii } },
+    };
+}
+
+/// How close to its target, per component, a spring counts as settled:
+/// a twentieth of a pixel, or a ten-thousandth of a scale or radian, or
+/// a thousandth of opacity, which no frame can show.
+fn settleEpsilon(v: Value) Vec {
+    return switch (v) {
+        .transform => .{ 0.05, 0.05, 1e-4, 1e-4, 1e-4, 0.05, 0.05 },
+        .opacity => .{ 1e-3, 1, 1, 1, 1, 1, 1 },
+        .scroll, .reveal => .{ 0.05, 0.05, 0.05, 0.05, 1, 1, 1 },
     };
 }
 
@@ -73,6 +125,14 @@ pub const Running = struct {
     anim: Animation,
     from: ?Value,
     start_ns: u64,
+    /// A spring's velocity at its start, per component per second: the
+    /// velocity of the animation it replaced.
+    velocity: Vec = @splat(0),
+    /// Time of the last sample, 0 before the first.
+    last_ns: u64 = 0,
+
+    /// A spring settles by then whatever its velocity, in responses.
+    const max_responses = 20;
 
     pub fn init(a: Animation) Running {
         return .{ .anim = a, .from = a.from, .start_ns = a.start_ns };
@@ -82,11 +142,30 @@ pub const Running = struct {
     pub fn sample(r: *Running, t_ns: u64, current: Value) Sample {
         if (r.start_ns == 0) r.start_ns = t_ns;
         if (t_ns < r.start_ns) return .{ .value = current, .done = false };
-        const from = r.from orelse current;
-        r.from = from;
+        r.from = r.from orelse current;
+        r.last_ns = t_ns;
+        return r.at(t_ns);
+    }
+
+    /// The value at `t_ns`, at or after the resolved start.
+    fn at(r: *const Running, t_ns: u64) Sample {
+        const from = r.from.?;
         const a = r.anim;
         const elapsed = t_ns - r.start_ns;
         if (a.duration_ns == 0) return .{ .value = a.to, .done = true };
+        if (a.easing == .spring) {
+            const s = r.spring(elapsed);
+            if (elapsed >= max_responses * a.duration_ns) return .{ .value = a.to, .done = true };
+            const eps = settleEpsilon(a.to);
+            const omega = 2 * std.math.pi / seconds(a.duration_ns);
+            const settled = for (s.x, s.v, eps) |x, v, e| {
+                if (@abs(x) > e or @abs(v) > e * omega) break false;
+            } else true;
+            if (settled) return .{ .value = a.to, .done = true };
+            var c = components(a.to);
+            for (&c, s.x) |*ci, x| ci.* += x;
+            return .{ .value = fromComponents(a.to, c), .done = false };
+        }
         const iteration = elapsed / a.duration_ns;
         if (a.iterations != 0 and iteration >= a.iterations) {
             const back = a.alternate and a.iterations % 2 == 0;
@@ -96,7 +175,62 @@ pub const Running = struct {
         if (a.alternate and iteration % 2 == 1) x = 1 - x;
         return .{ .value = lerp(from, a.to, ease(a.easing, x)), .done = false };
     }
+
+    /// A spring's displacement from its target and its velocity, per
+    /// component, `elapsed_ns` after its start: the closed form of a
+    /// damped harmonic oscillator, so samples depend only on the time.
+    const Motion = struct { x: Vec, v: Vec };
+
+    fn spring(r: *const Running, elapsed_ns: u64) Motion {
+        const a = r.anim;
+        const zeta = 1 - a.easing.spring.bounce;
+        const w0 = 2 * std.math.pi / seconds(a.duration_ns);
+        const t = seconds(elapsed_ns);
+        const from = components(r.from.?);
+        const to = components(a.to);
+        var out: Motion = undefined;
+        for (0..from.len) |i| {
+            const x0 = from[i] - to[i];
+            const v0 = r.velocity[i];
+            if (zeta >= 1) {
+                const e = @exp(-w0 * t);
+                const b = v0 + w0 * x0;
+                out.x[i] = (x0 + b * t) * e;
+                out.v[i] = (v0 - w0 * b * t) * e;
+            } else {
+                const wd = w0 * @sqrt(1 - zeta * zeta);
+                const e = @exp(-zeta * w0 * t);
+                const c = (v0 + zeta * w0 * x0) / wd;
+                const cos = @cos(wd * t);
+                const sin = @sin(wd * t);
+                out.x[i] = e * (x0 * cos + c * sin);
+                out.v[i] = e * ((c * wd - zeta * w0 * x0) * cos - (x0 * wd + zeta * w0 * c) * sin);
+            }
+        }
+        return out;
+    }
+
+    /// The velocity per component per second at the last sample, for a
+    /// spring that replaces this animation; zero before the first sample
+    /// and after the end.
+    pub fn velocityNow(r: *const Running) Vec {
+        if (r.last_ns == 0 or r.from == null or r.last_ns < r.start_ns) return @splat(0);
+        const elapsed = r.last_ns - r.start_ns;
+        if (r.anim.easing == .spring) return r.spring(elapsed).v;
+        // Curves: a central difference over a millisecond.
+        const h = std.time.ns_per_ms;
+        if (elapsed < h or r.at(r.last_ns + h).done) return @splat(0);
+        const after = components(r.at(r.last_ns + h).value);
+        const before = components(r.at(r.last_ns - h).value);
+        var v: Vec = undefined;
+        for (&v, after, before) |*vi, x1, x0| vi.* = (x1 - x0) / seconds(2 * h);
+        return v;
+    }
 };
+
+fn seconds(ns: u64) f32 {
+    return @floatCast(@as(f64, @floatFromInt(ns)) / std.time.ns_per_s);
+}
 
 /// Kinetic scrolling: velocity decays exponentially, so the offset
 /// approaches `start + velocity * tau` and stops once the speed drops
@@ -198,6 +332,68 @@ test "animations resolve their start, iterate, alternate, and finish" {
     try testing.expectEqual(@as(f32, 0.3), later.sample(400, .{ .opacity = 0.3 }).value.opacity);
     try testing.expectApproxEqAbs(@as(f32, 0.65), later.sample(550, .{ .opacity = 0.3 }).value.opacity, 1e-6);
     try testing.expect(later.sample(600, .{ .opacity = 0.3 }).done);
+}
+
+test "springs settle on their target, bounce only when asked, and keep velocity when retargeted" {
+    const ms = std.time.ns_per_ms;
+    // Critically damped: monotonic, no overshoot, settled soon after
+    // its response, landing exactly on the target.
+    var r = Running.init(.{ .to = .{ .opacity = 1 }, .from = .{ .opacity = 0 }, .duration_ns = 300 * ms, .easing = .{ .spring = .{} } });
+    var prev: f32 = 0;
+    var t: u64 = 1000 * ms;
+    var done_at: ?u64 = null;
+    while (t < 3000 * ms) : (t += 4 * ms) {
+        const s = r.sample(t, .{ .opacity = 0 });
+        try testing.expect(s.value.opacity >= prev and s.value.opacity <= 1);
+        prev = s.value.opacity;
+        if (s.done) {
+            try testing.expectEqual(@as(f32, 1), s.value.opacity);
+            done_at = t;
+            break;
+        }
+    }
+    try testing.expect(done_at.? - 1000 * ms > 300 * ms and done_at.? - 1000 * ms < 900 * ms);
+    // About 98.6% of the way at its response: (1 + 2π)e^-2π from the end.
+    var half = Running.init(.{ .to = .{ .opacity = 1 }, .from = .{ .opacity = 0 }, .duration_ns = 300 * ms, .easing = .{ .spring = .{} } });
+    _ = half.sample(1000 * ms, .{ .opacity = 0 });
+    try testing.expectApproxEqAbs(@as(f32, 0.9864), half.sample(1300 * ms, .{ .opacity = 0 }).value.opacity, 1e-3);
+
+    // A bounce overshoots the target, then settles on it.
+    var b = Running.init(.{ .to = .{ .transform = .offset(100, 0) }, .from = .{ .transform = .identity }, .duration_ns = 300 * ms, .easing = .{ .spring = .{ .bounce = 0.5 } } });
+    var most: f32 = 0;
+    t = 1000 * ms;
+    while (t < 8000 * ms) : (t += 4 * ms) {
+        const s = b.sample(t, .{ .transform = .identity });
+        most = @max(most, s.value.transform.translate.x);
+        if (s.done) break;
+    }
+    try testing.expect(most > 105);
+    try testing.expect(t < 8000 * ms);
+
+    // Retargeted halfway, the new spring starts where the old one is,
+    // moving as fast: position and velocity are continuous.
+    var first = Running.init(.{ .to = .{ .transform = .offset(100, 0) }, .from = .{ .transform = .identity }, .duration_ns = 300 * ms, .easing = .{ .spring = .{} } });
+    _ = first.sample(1000 * ms, .{ .transform = .identity });
+    const mid = first.sample(1100 * ms, .{ .transform = .identity }).value;
+    const v = first.velocityNow();
+    try testing.expect(v[0] > 100); // px/s, still moving right
+    var second = Running.init(.{ .to = .{ .transform = .offset(0, 50) }, .duration_ns = 300 * ms, .easing = .{ .spring = .{} } });
+    second.velocity = v;
+    const s0 = second.sample(1100 * ms, mid).value.transform;
+    try testing.expectApproxEqAbs(mid.transform.translate.x, s0.translate.x, 1e-3);
+    try testing.expectEqual(v[0], second.velocityNow()[0]);
+    try testing.expectEqual(@as(f32, 0), second.velocityNow()[1]);
+    // Over the next 100 µs it keeps moving right at about the old speed,
+    // though its target is to the left.
+    const s1 = second.sample(1100 * ms + 100_000, mid).value.transform;
+    try testing.expectApproxEqRel(v[0] / 10_000, s1.translate.x - s0.translate.x, 0.05);
+
+    // Velocity of a curve, for a spring that replaces it: linear 0 to 100
+    // over 100 ms is 1000 per second.
+    var lin = Running.init(.{ .to = .{ .opacity = 100 }, .from = .{ .opacity = 0 }, .duration_ns = 100 * ms, .easing = .linear });
+    _ = lin.sample(1000 * ms, .{ .opacity = 0 });
+    _ = lin.sample(1050 * ms, .{ .opacity = 0 });
+    try testing.expectApproxEqRel(@as(f32, 1000), lin.velocityNow()[0], 1e-3);
 }
 
 test "flings decelerate and stop" {

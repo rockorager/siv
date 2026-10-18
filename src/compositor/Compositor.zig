@@ -1395,6 +1395,8 @@ fn renderFrame(self: *Compositor, f: platform_mod.Frame) void {
         self.outbox.push(.{ .animation_finished = .{ .window = w.id, .layer = fin.layer, .id = fin.id, .property = fin.property } });
     }
     w.tree.finished.clearRetainingCapacity();
+    for (w.tree.exited.items) |id| self.outbox.push(.{ .exited = .{ .window = w.id, .layer = id } });
+    w.tree.exited.clearRetainingCapacity();
     if (presented) {
         w.stats.history[w.stats.frames % w.stats.history.len] = t;
         w.stats.frames += 1;
