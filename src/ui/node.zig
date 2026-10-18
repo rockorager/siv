@@ -1195,7 +1195,7 @@ pub const Event = union(enum) {
 
 /// What a `settings` event reports as changed.
 pub const Settings = packed struct(u8) {
-    /// The resolved theme colors (`Window.palette`).
+    /// The resolved theme colors (`Window.palette`, or a subtree's).
     theme: bool = false,
     /// The default family, the desktop's monospace family, or
     /// Fontconfig's configuration.
@@ -1304,6 +1304,9 @@ pub const Node = struct {
     /// its key binding; keysym 0 for none, when a node bound to an action
     /// exposes the action's.
     shortcut: @import("accel.zig").Accel = .{},
+    /// A theme its subtree resolves themed colors against (D43), over the
+    /// enclosing one; null for none. Owned; replaced whole.
+    theme: ?*const theme.Scope = null,
 
     pub const Status = enum(u8) {
         /// On the free list (`next` links it).

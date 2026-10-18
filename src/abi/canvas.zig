@@ -57,6 +57,9 @@ pub const DrawState = struct {
     page_rtl: bool = false,
     page_language: u32 = 0,
     node: NodeId = .none,
+    /// The palette themed colors resolve against (`paletteOf`), once
+    /// asked for; reset with `window`.
+    palette: ?ui.theme.Palette = null,
     /// Fonts were still loading when text was drawn, or icons when icons
     /// were (D19): the drawing runs again once they load.
     wanted_fonts: bool = false,
@@ -195,6 +198,7 @@ fn drawCanvas(user: ?*anyopaque, uw: *ui.Window, id: NodeId, b: *scene.Builder, 
     d.depth = 0;
     d.window = w;
     d.node = id;
+    d.palette = null;
     d.wanted_fonts = false;
     defer d.dropImages(gpa);
     self.root.handles.ensureUnusedCapacity(gpa) catch return error.OutOfMemory;
@@ -225,6 +229,13 @@ pub fn lightPalette(self: *App) ui.theme.Palette {
     var theme = self.app.theme;
     theme.scheme = .light;
     return ui.theme.resolve(&theme, self.app.desktop.values.themeInput(), &.{});
+}
+
+/// The palette a drawing resolves themed colors against: its canvas's
+/// subtree theme's (D43) or its window's, or the light one for pages.
+fn paletteOf(self: *App, d: *DrawState) *const ui.theme.Palette {
+    if (d.palette == null) d.palette = if (d.window) |w| w.uiWin().paletteAt(d.node) else lightPalette(self);
+    return &d.palette.?;
 }
 
 /// Copies a finished list into another builder.
@@ -572,9 +583,9 @@ fn keepVector(self: *App, d: *DrawState, img: *ui.Image) Error!void {
 /// and `fg` (transparent: the window's text color) as the foreground.
 fn drawVector(self: *App, d: *DrawState, doc: *const @import("svg").Document, logical: [2]f32, dst: Rect, src: ?Rect, opacity: f32, fg: scene.Color) Error!void {
     if (dst.isEmpty()) return;
-    const palette = if (d.window) |w| w.uiWin().palette else lightPalette(self);
+    const palette = paletteOf(self, d);
     var colors: @import("svg").Colors = .{};
-    ui.iconColors(&colors, &palette, if (fg.a > 0) fg else palette.color(.window_fg));
+    ui.iconColors(&colors, palette, if (fg.a > 0) fg else palette.color(.window_fg));
     // The whole image's box, so that `src` lands on `dst`.
     var box = dst;
     if (src) |s| {
@@ -605,7 +616,7 @@ pub export fn siv_draw_text(handle: t.Draw, x: f32, y: f32, width: f32, str: ?[*
             defer shaped.deinit();
             if (shaped.wanted) d.wanted_fonts = true;
             const l = shaped.layout orelse return;
-            const palette = if (uw) |u| u.palette else lightPalette(self);
+            const palette = paletteOf(self, d);
             var glyphs: std.ArrayList(scene.Glyph) = .empty;
             defer glyphs.deinit(self.gpa());
             var clusters: std.ArrayList(u32) = .empty;
@@ -875,6 +886,7 @@ fn imageDraw(window: t.Window, ptr: ?*const t.ImageDrawDesc, out: ?*t.Image) Err
     d.window = w;
     // Text takes the window's direction, as at its root.
     d.node = .root;
+    d.palette = null;
     d.wanted_fonts = false;
     defer d.dropImages(gpa);
     try self.root.handles.ensureUnusedCapacity(gpa);

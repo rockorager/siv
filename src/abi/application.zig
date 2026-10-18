@@ -1111,7 +1111,7 @@ fn popupCreate(parent: t.Window, desc_ptr: ?*const t.PopupDesc, out: ?*t.Window)
     w.handle = try self.root.handles.insert(gpa, window_tag, index);
     errdefer _ = self.root.handles.remove(w.handle, window_tag) catch unreachable;
     try self.root.handles.ensureUnusedCapacity(gpa);
-    w.win = self.app.createPopup(pw.win, .{ .ctx = w, .func = onWindowEvent }) catch |err| return mapAppError(err);
+    w.win = self.app.createPopup(pw.win, anchor, .{ .ctx = w, .func = onWindowEvent }) catch |err| return mapAppError(err);
     w.nodes.adopt(self, w, .root) catch unreachable;
     actions.attach(w);
     self.windows.items[index] = w;

@@ -12,6 +12,11 @@
 //! and the application's overrides. A layer that sets `accent` also sets the
 //! colors derived from it (hover and active shades, the text on it, focus
 //! rings, selections), except those it sets itself.
+//!
+//! A node can carry a theme for its subtree (`Scope`, D43): a scheme, high
+//! contrast, and overrides per variant, composed with every scope above
+//! it into a `Context` that resolves over the same layers, so a dark
+//! sidebar still follows the desktop's accent and the user's theme.
 
 const std = @import("std");
 const scene = @import("scene");
@@ -127,6 +132,90 @@ pub const User = struct {
     }
 };
 
+/// The scheme a subtree takes (`Scope.scheme`).
+pub const SubtreeScheme = enum(u8) {
+    /// The enclosing subtree's, else the window's.
+    inherit,
+    /// The desktop's (or the user's theme's, as for a window that follows
+    /// it), whatever the application or an enclosing subtree fixed.
+    follow,
+    light,
+    dark,
+    /// The opposite of the enclosing subtree's or the window's.
+    inverse,
+};
+
+/// A node's theme for its subtree (`Node.theme`, D43): choices, never
+/// resolved colors, so the desktop, the user's theme, and the
+/// application's theme reach the subtree as they reach the window.
+/// Colors only: text sizes stay the window's.
+pub const Scope = struct {
+    scheme: SubtreeScheme = .inherit,
+    /// Raises contrast; nothing lowers what the desktop or the application
+    /// asked for (D18).
+    high_contrast: bool = false,
+    /// Over the application's overrides, per variant like them.
+    overrides: [4][token_count]?Color = @splat(@splat(null)),
+
+    pub fn isEmpty(s: *const Scope) bool {
+        if (s.scheme != .inherit or s.high_contrast) return false;
+        for (s.overrides) |v| for (v) |c| if (c != null) return false;
+        return true;
+    }
+
+    pub fn eql(a: *const Scope, b: *const Scope) bool {
+        return a.scheme == b.scheme and a.high_contrast == b.high_contrast and eqlOverrides(&a.overrides, &b.overrides);
+    }
+};
+
+/// The subtree choices in effect at a node: the scopes from the window's
+/// root down to it, composed (`within`). The window's own is empty, except
+/// in a popup, which takes its anchor's.
+pub const Context = struct {
+    /// Where the scheme comes from, before `invert`.
+    scheme: enum(u8) { window, desktop, light, dark } = .window,
+    invert: bool = false,
+    high_contrast: bool = false,
+    /// Every scope's overrides, inner ones winning. A scope that sets the
+    /// accent drops the derived colors outer ones set and it does not, so
+    /// that they derive from its accent, as one layer above another would.
+    overrides: [4][token_count]?Color = @splat(@splat(null)),
+
+    /// The context inside a node with scope `s`.
+    pub fn within(outer: *const Context, s: *const Scope) Context {
+        var c = outer.*;
+        switch (s.scheme) {
+            .inherit => {},
+            .follow => c = .{ .scheme = .desktop, .high_contrast = c.high_contrast, .overrides = c.overrides },
+            .light => c = .{ .scheme = .light, .high_contrast = c.high_contrast, .overrides = c.overrides },
+            .dark => c = .{ .scheme = .dark, .high_contrast = c.high_contrast, .overrides = c.overrides },
+            .inverse => c.invert = !c.invert,
+        }
+        c.high_contrast = c.high_contrast or s.high_contrast;
+        for (&c.overrides, &s.overrides) |*o, *mine| {
+            if (mine[@intFromEnum(ColorToken.accent)] != null) for (derived_tokens) |t| {
+                o[@intFromEnum(t)] = null;
+            };
+            for (o, mine) |*x, y| if (y) |v| {
+                x.* = v;
+            };
+        }
+        return c;
+    }
+
+    pub fn eql(a: *const Context, b: *const Context) bool {
+        return a.scheme == b.scheme and a.invert == b.invert and a.high_contrast == b.high_contrast and eqlOverrides(&a.overrides, &b.overrides);
+    }
+};
+
+fn eqlOverrides(a: *const [4][token_count]?Color, b: *const [4][token_count]?Color) bool {
+    for (a, b) |x, y| for (x, y) |p, q| {
+        if ((p == null) != (q == null)) return false;
+        if (p != null and !p.?.eql(q.?)) return false;
+    };
+    return true;
+}
+
 /// The desktop's part (from `Window.Desktop`).
 pub const DesktopInput = struct {
     dark: bool = false,
@@ -165,12 +254,25 @@ pub const Palette = struct {
 };
 
 pub fn resolve(theme: *const Theme, d: DesktopInput, user: *const User) Palette {
-    const dark = switch (theme.scheme) {
-        .follow => if (user.scheme) |s| s == .dark else d.dark,
+    return resolveIn(theme, d, user, &.{});
+}
+
+/// The palette of a subtree whose scopes compose to `ctx`: the window's
+/// layers in the variant `ctx` picks, then its overrides on top.
+pub fn resolveIn(theme: *const Theme, d: DesktopInput, user: *const User, ctx: *const Context) Palette {
+    const desktop_dark = if (user.scheme) |s| s == .dark else d.dark;
+    const window_dark = switch (theme.scheme) {
+        .follow => desktop_dark,
         .light => false,
         .dark => true,
     };
-    const high = switch (theme.contrast) {
+    const dark = ctx.invert != switch (ctx.scheme) {
+        .window => window_dark,
+        .desktop => desktop_dark,
+        .light => false,
+        .dark => true,
+    };
+    const high = ctx.high_contrast or switch (theme.contrast) {
         .follow => d.high_contrast,
         .normal => false,
         .high => true,
@@ -185,8 +287,9 @@ pub fn resolve(theme: *const Theme, d: DesktopInput, user: *const User) Palette 
     // In order: the application's defaults (all or nothing: a user
     // theme fills its gaps from the compiled palette, so every
     // application looks the same under it), the desktop (its accent,
-    // applied apart), the user's theme, the application's overrides.
-    const layers = [_]*const [token_count]?Color{ if (user.source == .none) &theme.defaults[v] else &none, &none, if (high) &none else &user.colors[@intFromBool(dark)], &theme.overrides[v] };
+    // applied apart), the user's theme, the application's overrides,
+    // the subtree's.
+    const layers = [_]*const [token_count]?Color{ if (user.source == .none) &theme.defaults[v] else &none, &none, if (high) &none else &user.colors[@intFromBool(dark)], &theme.overrides[v], &ctx.overrides[v] };
     const a = @intFromEnum(ColorToken.accent);
     const desktop_accent: ?Color = if (d.accent) |c| .srgb(@floatCast(c[0]), @floatCast(c[1]), @floatCast(c[2]), 1) else null;
     // The accent's layer: 0 compiled, else 1 + its index in `layers`.
@@ -207,6 +310,9 @@ pub fn resolve(theme: *const Theme, d: DesktopInput, user: *const User) Palette 
     return p;
 }
 
+/// The colors `derive` sets.
+const derived_tokens = [_]ColorToken{ .accent_hover, .accent_active, .accent_fg, .focus_ring, .selection_bg, .selection_fg };
+
 /// Colors derived from a replaced accent, over the final view background,
 /// except those one of `keep` sets.
 fn derive(p: *Palette, keep: []const *const [token_count]?Color, high: bool) void {
@@ -214,17 +320,17 @@ fn derive(p: *Palette, keep: []const *const [token_count]?Color, high: bool) voi
     const dark = p.variant == .dark or p.variant == .dark_high_contrast;
     const shade: Color = if (dark) .white else .black;
     const on = onColor(accent);
-    const derived = [_]struct { ColorToken, Color }{
-        .{ .accent_hover, mix(accent, shade, 0.12) },
-        .{ .accent_active, mix(accent, shade, 0.24) },
-        .{ .accent_fg, on },
-        .{ .focus_ring, accent },
-        .{ .selection_bg, if (high) accent else mix(p.color(.view_bg), accent, 0.3) },
-        .{ .selection_fg, if (high) on else p.color(.selection_fg) },
+    const values = [derived_tokens.len]Color{
+        mix(accent, shade, 0.12),
+        mix(accent, shade, 0.24),
+        on,
+        accent,
+        if (high) accent else mix(p.color(.view_bg), accent, 0.3),
+        if (high) on else p.color(.selection_fg),
     };
-    next: for (derived) |e| {
-        for (keep) |layer| if (layer[@intFromEnum(e[0])] != null) continue :next;
-        set(p, e[0], e[1]);
+    next: for (derived_tokens, values) |t, c| {
+        for (keep) |layer| if (layer[@intFromEnum(t)] != null) continue :next;
+        set(p, t, c);
     }
 }
 
@@ -469,4 +575,91 @@ test "sidebar surfaces are distinct steps from the view, with readable text, in 
             try std.testing.expect((a + 0.05) / (b + 0.05) >= want);
         }
     }
+}
+
+test "a subtree's scheme: forced, inverse of the enclosing one, or the desktop's" {
+    const tok = struct {
+        fn f(t: ColorToken) usize {
+            return @intFromEnum(t);
+        }
+    }.f;
+    var th: Theme = .{};
+    const light: DesktopInput = .{};
+    const dark: DesktopInput = .{ .dark = true };
+    const window: Context = .{};
+    const always_dark = window.within(&.{ .scheme = .dark });
+    const inverse = window.within(&.{ .scheme = .inverse });
+    try std.testing.expectEqual(Variant.dark, resolveIn(&th, light, &.{}, &always_dark).variant);
+    try std.testing.expectEqual(Variant.dark, resolveIn(&th, dark, &.{}, &always_dark).variant);
+    try std.testing.expectEqual(Variant.dark, resolveIn(&th, light, &.{}, &inverse).variant);
+    try std.testing.expectEqual(Variant.light, resolveIn(&th, dark, &.{}, &inverse).variant);
+    // Inverse inside inverse is the window's again; inside a forced
+    // scheme it is the opposite of that one.
+    try std.testing.expectEqual(Variant.dark, resolveIn(&th, dark, &.{}, &inverse.within(&.{ .scheme = .inverse })).variant);
+    try std.testing.expectEqual(Variant.light, resolveIn(&th, dark, &.{}, &always_dark.within(&.{ .scheme = .inverse })).variant);
+    // Inherit keeps the enclosing choice, inversion included.
+    try std.testing.expectEqual(Variant.light, resolveIn(&th, dark, &.{}, &inverse.within(&.{})).variant);
+    // Follow is the desktop's even where the application fixed the
+    // window's scheme and an enclosing subtree fixed its own.
+    th.scheme = .light;
+    const follow = always_dark.within(&.{ .scheme = .follow });
+    try std.testing.expectEqual(Variant.light, resolveIn(&th, dark, &.{}, &window).variant);
+    try std.testing.expectEqual(Variant.dark, resolveIn(&th, dark, &.{}, &follow).variant);
+    try std.testing.expectEqual(Variant.light, resolveIn(&th, light, &.{}, &follow).variant);
+    th.scheme = .follow;
+    // High contrast from the desktop reaches a dark subtree in its
+    // scheme; a subtree raises contrast but never lowers it.
+    try std.testing.expectEqual(Variant.dark_high_contrast, resolveIn(&th, .{ .high_contrast = true }, &.{}, &always_dark).variant);
+    try std.testing.expectEqual(Variant.light_high_contrast, resolveIn(&th, light, &.{}, &window.within(&.{ .high_contrast = true })).variant);
+    try std.testing.expectEqual(Variant.dark_high_contrast, resolveIn(&th, .{ .high_contrast = true }, &.{}, &always_dark.within(&.{})).variant);
+    // The desktop's accent and the user's theme reach the subtree in its
+    // variant; the compiled colors fill the rest.
+    const view = Color.srgb8(0x1a, 0x1b, 0x26, 0xff);
+    var u: User = .{ .source = .file };
+    u.colors[@intFromEnum(Scheme.dark)][tok(.view_bg)] = view;
+    const p = resolveIn(&th, .{ .accent = .{ 1, 0, 0 } }, &u, &always_dark);
+    try std.testing.expect(p.color(.view_bg).eql(view));
+    try std.testing.expect(p.color(.accent).eql(Color.srgb(1, 0, 0, 1)));
+    try std.testing.expect(p.color(.border).eql(compiled[1][tok(.border)]));
+}
+
+test "a subtree's colors override the application's, and its accent moves what derives from it" {
+    const tok = struct {
+        fn f(t: ColorToken) usize {
+            return @intFromEnum(t);
+        }
+    }.f;
+    const green = Color.srgb(0, 1, 0, 1);
+    const purple = Color.srgb8(0x7c, 0x3a, 0xed, 0xff);
+    const sel = Color.srgb8(0x33, 0x33, 0x33, 0xff);
+    var th: Theme = .{};
+    th.overrides[0][tok(.focus_ring)] = .white;
+    th.overrides[0][tok(.view_bg)] = .black;
+    var accent: Scope = .{};
+    for (&accent.overrides) |*o| o[tok(.accent)] = purple;
+    const outer = (Context{}).within(&accent);
+    var p = resolveIn(&th, .{ .accent = .{ 1, 0, 0 } }, &.{}, &outer);
+    // Over the desktop's accent and the application's focus ring.
+    try std.testing.expect(p.color(.accent).eql(purple));
+    try std.testing.expect(p.color(.focus_ring).eql(purple));
+    try std.testing.expect(p.color(.selection_bg).eql(mix(.black, purple, 0.3)));
+    try std.testing.expect(p.color(.view_bg).eql(.black));
+    // A nested scope keeps the accent; its own selection stays.
+    var inner: Scope = .{};
+    inner.overrides[0][tok(.selection_bg)] = sel;
+    const nested = outer.within(&inner);
+    p = resolveIn(&th, .{}, &.{}, &nested);
+    try std.testing.expect(p.color(.accent).eql(purple));
+    try std.testing.expect(p.color(.selection_bg).eql(sel));
+    // A scope's accent inside it moves the outer scope's selection.
+    var again: Scope = .{};
+    again.overrides[0][tok(.accent)] = green;
+    p = resolveIn(&th, .{}, &.{}, &nested.within(&again));
+    try std.testing.expect(p.color(.selection_bg).eql(mix(.black, green, 0.3)));
+    try std.testing.expect(p.color(.focus_ring).eql(green));
+    // Overrides apply to their variant only.
+    p = resolveIn(&th, .{ .dark = true }, &.{}, &nested);
+    try std.testing.expect(p.color(.selection_bg).eql(mix(compiled[1][tok(.view_bg)], purple, 0.3)));
+    // An empty context is the window's palette.
+    try std.testing.expect(resolveIn(&th, .{}, &.{}, &.{}).eqlColors(&resolve(&th, .{}, &.{})));
 }

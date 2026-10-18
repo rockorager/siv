@@ -237,6 +237,9 @@ pub const State = struct {
     /// The root's size at the last emit: a window resized by the user
     /// relays out without motion (D38).
     root_size: layout.Size = .{},
+    /// The palette of the node being painted: its subtree theme's (D29),
+    /// carried down the tree by `paintTree`.
+    palette: *const theme.Palette = undefined,
 
     pub fn init(st: *State, win: *Window) Error!void {
         try st.layers.append(win.gpa, .{ .kind = .root, .owner = .root, .pass = 0, .parent = no_layer });
@@ -636,7 +639,7 @@ pub const State = struct {
                 l.builder = null;
             }
         };
-        try st.paintTree(win, .root, .zero, 0);
+        try st.paintTree(win, .root, .zero, 0, &win.palette);
 
         for (st.order.items) |i| {
             const l = &st.layers.items[i];
@@ -663,26 +666,30 @@ pub const State = struct {
         st.dirty_count = 0;
     }
 
-    fn paintTree(st: *State, win: *Window, nid: NodeId, off: Point, level: usize) Error!void {
+    fn paintTree(st: *State, win: *Window, nid: NodeId, off: Point, level: usize, outer: *const theme.Palette) Error!void {
         const n = win.node(nid);
         const s = win.state(nid);
+        // A subtree theme's palette, resolved at the frame's start.
+        const pal = if (n.theme != null) if (win.scopes.getPtr(nid)) |sc| &sc.palette else outer else outer;
         if (st.ownsLayerNow(win, nid)) {
             const l = s.own_layer;
             if (!st.layers.items[l].subtree_dirty) return;
             const lvl = st.clips.items.len;
+            st.palette = pal;
             try st.paintNode(win, nid, .zero, lvl);
             const child_level = st.clips.items.len;
             var it = win.shown(nid);
-            while (it.next()) |ch| try st.paintTree(win, ch, win.state(ch).pos, child_level);
+            while (it.next()) |ch| try st.paintTree(win, ch, win.state(ch).pos, child_level, pal);
             return;
         }
+        st.palette = pal;
         try st.paintNode(win, nid, off, level);
         const clipped = n.visual.clip;
         if (clipped) try st.pushClip(win, nid, off);
         var it = win.shown(nid);
         while (it.next()) |ch| {
             const cp = win.state(ch).pos;
-            try st.paintTree(win, ch, .{ .x = off.x + cp.x, .y = off.y + cp.y }, level);
+            try st.paintTree(win, ch, .{ .x = off.x + cp.x, .y = off.y + cp.y }, level, pal);
         }
         if (clipped) _ = st.clips.pop();
     }
@@ -1200,7 +1207,7 @@ fn drawNode(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point
         while (i > 0) {
             i -= 1;
             const sh = v.shadows[i];
-            const color = win.palette.pick(sh.color, sh.color_token);
+            const color = st.palette.pick(sh.color, sh.color_token);
             if (color.a == 0) continue;
             const shadow: scene.Shadow = .{
                 .shape = .{ .rect = r, .radii = radii },
@@ -1214,8 +1221,8 @@ fn drawNode(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point
             bounds = bounds.unite(shadow.bounds());
         }
     }
-    const background = win.palette.pick(v.background, v.background_token);
-    const border_color = win.palette.pick(v.border_color, v.border_token);
+    const background = st.palette.pick(v.background, v.background_token);
+    const border_color = st.palette.pick(v.border_color, v.border_token);
     if (background.a > 0 and !r.isEmpty()) {
         if (rounded) try b.fillRoundedRect(r, radii, .color(background)) else try b.fillRect(r, .color(background));
         bounds = bounds.unite(r);
@@ -1238,7 +1245,7 @@ fn drawNode(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point
         // border box: a photo with rounded corners is one image node.
         .image => {
             if (v.clip) try b.pushLayer(.{ .clip = .{ .shape = if (rounded) .{ .rounded_rect = .{ .rect = r, .radii = radii } } else .{ .rect = r } } });
-            const drawn = drawImage(win, nid, b, off) catch |err| {
+            const drawn = drawImage(win, nid, b, off, st.palette) catch |err| {
                 if (v.clip) b.popLayer() catch {};
                 return err;
             };
@@ -1270,7 +1277,7 @@ fn drawNode(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point
             const inside = ring.intersect(extent.outset(-g / 2));
             if (!inside.isEmpty()) ring = inside;
         }
-        try b.stroke(.{ .rounded_rect = .{ .rect = ring, .radii = growRadii(radii, g / 2 + 1) } }, .{ .width = g }, .color(focusRingColor(win)));
+        try b.stroke(.{ .rounded_rect = .{ .rect = ring, .radii = growRadii(radii, g / 2 + 1) } }, .{ .width = g }, .color(st.palette.color(.focus_ring)));
         bounds = bounds.unite(ring.outset(g / 2));
     }
     return bounds;
@@ -1335,14 +1342,14 @@ fn drawEditor(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Poi
         for (rects.items) |r| {
             const line = try l.line(try l.lineAt(r.y + r.height / 2));
             const x = box.x0 - scroll + r.x + text_node.lineShift(win, nid, line, cw);
-            try b.fillRect(.xywh(x, box.y0 + r.y + r.height - 1.5, r.width, 1), .color(textColor(win, &e.text.props.style)));
+            try b.fillRect(.xywh(x, box.y0 + r.y + r.height - 1.5, r.width, 1), .color(textColor(st.palette, &e.text.props.style)));
         }
     } else if (e.caret != e.anchor) {
         var rects: std.ArrayList(text.layout.Rect) = .empty;
         defer rects.deinit(win.gpa);
         // A long text's selection is drawn where its lines are (D13).
         try l.selectionRects(win.gpa, @min(e.caret, e.anchor), @max(e.caret, e.anchor), &rects, try textBand(win, nid, l));
-        const color = if (focused) win.palette.color(.selection_bg) else win.palette.color(.control_hover);
+        const color = if (focused) st.palette.color(.selection_bg) else st.palette.color(.control_hover);
         // One path for all of it: rows that meet at a fractional device
         // pixel then cover it whole, where rectangles filled one by one
         // would each cover part of it and leave a seam (D13).
@@ -1368,7 +1375,7 @@ fn drawEditor(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Poi
         _ = try drawPlaceholder(st, win, nid, b, box);
     } else {
         _ = try drawText(st, win, nid, b, off, -scroll);
-        try drawMisspellings(win, nid, l, b, box.x0 - scroll, box.y0, cw);
+        try drawMisspellings(win, nid, l, b, box.x0 - scroll, box.y0, cw, st.palette.color(.destructive));
     }
     try b.popLayer();
 }
@@ -1376,7 +1383,7 @@ fn drawEditor(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Poi
 /// Misspelled words (D37): a wavy line under each, in the theme's
 /// destructive color, below the baseline in the line's descent. One path
 /// for all of them, its thickness whole device pixels.
-fn drawMisspellings(win: *Window, nid: NodeId, l: *const text.TextLayout, b: *scene.Builder, ox: f32, oy: f32, cw: f32) DrawError!void {
+fn drawMisspellings(win: *Window, nid: NodeId, l: *const text.TextLayout, b: *scene.Builder, ox: f32, oy: f32, cw: f32, color: scene.Color) DrawError!void {
     const words = spelling.misspellings(win, nid);
     if (words.len == 0) return;
     const band = try textBand(win, nid, l);
@@ -1406,7 +1413,7 @@ fn drawMisspellings(win: *Window, nid: NodeId, l: *const text.TextLayout, b: *sc
         }
     }
     if (path.points.items.len == 0) return;
-    try b.stroke(.{ .path = path.path() }, .{ .width = thick, .join = .round, .cap = .butt }, .color(win.palette.color(.destructive)));
+    try b.stroke(.{ .path = path.path() }, .{ .width = thick, .join = .round, .cap = .butt }, .color(color));
 }
 
 /// An empty editor's placeholder, in the muted color, at the start edge.
@@ -1414,7 +1421,7 @@ fn drawPlaceholder(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, box
     const l = (text_node.placeholder(win, nid) catch return Rect.empty) orelse return Rect.empty;
     const s = win.state(nid);
     const dx = if (s.rtl) box.width() - l.width() else 0;
-    return drawLayout(st, win, l, b, box.x0 + dx, box.y0, box.width(), win.palette.color(.muted_fg), null, null);
+    return drawLayout(st, win, l, b, box.x0 + dx, box.y0, box.width(), st.palette.color(.muted_fg), null, null);
 }
 
 /// How many halves of a blink (visible to hidden or back) fit in the
@@ -1432,7 +1439,7 @@ fn caretLook(win: *Window, nid: NodeId) struct { f32, f32, scene.Color, bool } {
     const l = text_node.current(win, nid) orelse return .{ 0, 0, .transparent, false };
     const c = editor.caretRect(win, nid, l) catch return .{ 0, 0, .transparent, false };
     const e = &win.node(nid).data.editor;
-    const color = textColor(win, &e.text.props.style);
+    const color = textColor(&win.paletteAt(nid), &e.text.props.style);
     const block = e.editor.block_caret and c.width() > layout.caret_width;
     if (!block) return .{ c.width(), c.height(), color, false };
     const in_selection = e.anchor != e.caret and win.ime.preeditFor(nid) == null;
@@ -1454,13 +1461,8 @@ fn drawCaret(b: *scene.Builder, l: *const Layer) !void {
 }
 
 /// A text style's color, themed or literal (D29).
-pub fn textColor(win: *const Window, style: *const node_mod.TextStyle) scene.Color {
-    return win.palette.pick(style.color, style.color_token);
-}
-
-/// The theme's focus ring: the desktop's accent, or the toolkit's blue.
-fn focusRingColor(win: *const Window) scene.Color {
-    return win.palette.color(.focus_ring);
+fn textColor(palette: *const theme.Palette, style: *const node_mod.TextStyle) scene.Color {
+    return palette.pick(style.color, style.color_token);
 }
 
 fn drawText(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point, dx: f32) DrawError!Rect {
@@ -1472,7 +1474,7 @@ fn drawText(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point
     const ox = off.x + pad.left(s.rtl) + dx;
     const oy = off.y + pad.top;
     const band = try textBand(win, nid, l);
-    return drawLayout(st, win, l, b, ox, oy, content_w, textColor(win, &n.textData().props.style), nid, band);
+    return drawLayout(st, win, l, b, ox, oy, content_w, textColor(st.palette, &n.textData().props.style), nid, band);
 }
 
 /// The band of layout coordinates a text paints: text taller than four
@@ -1551,7 +1553,7 @@ fn drawLayout(st: *State, win: *Window, l: *const text.TextLayout, b: *scene.Bui
             for (bl.lineRuns(block_line)) |run| {
                 const face = win.fonts.cache.face(run.font) orelse continue;
                 const sp: node_mod.SpanStyle = if (own) cache.?.runStyle(style_first + run.style) else .{};
-                const run_color = if (sp.color_token != .none) win.palette.color(sp.color_token) else sp.color orelse color;
+                const run_color = if (sp.color_token != .none) st.palette.color(sp.color_token) else sp.color orelse color;
                 st.glyphs.clearRetainingCapacity();
                 var x0: f32 = std.math.inf(f32);
                 var x1: f32 = -std.math.inf(f32);
@@ -1605,7 +1607,7 @@ fn drawLayout(st: *State, win: *Window, l: *const text.TextLayout, b: *scene.Bui
 /// relative to its top: floats are a sixteenth of a pixel apart there.
 const far_text = 1 << 19;
 
-fn drawImage(win: *Window, nid: NodeId, b: *scene.Builder, off: Point) DrawError!Rect {
+fn drawImage(win: *Window, nid: NodeId, b: *scene.Builder, off: Point, palette: *const theme.Palette) DrawError!Rect {
     const n = win.node(nid);
     const img = n.data.image;
     const image = win.nodeImage(nid) orelse return Rect.empty;
@@ -1620,7 +1622,7 @@ fn drawImage(win: *Window, nid: NodeId, b: *scene.Builder, off: Point) DrawError
             try images.ensureUnusedCapacity(win.gpa, 1);
             images.appendAssumeCapacity(image.retain());
         }
-        return drawVector(win, nid, b, doc, image.logicalSize(), box);
+        return drawVector(win, nid, b, doc, image.logicalSize(), box, palette);
     }
     const shown: struct { image: *Image, ref: scene.ImageRef } = if (img.icon.len != 0)
         .{ .image = image, .ref = image.sceneRef() }
@@ -1670,7 +1672,7 @@ fn drawImage(win: *Window, nid: NodeId, b: *scene.Builder, off: Point) DrawError
 /// as the fit says, its role colors from the theme (the foreground the
 /// node's color). The display list copies the paths, so only a document
 /// with embedded images, whose pixels it references, is kept alive.
-fn drawVector(win: *Window, nid: NodeId, b: *scene.Builder, doc: *const svg.Document, logical: [2]f32, box: Rect) DrawError!Rect {
+fn drawVector(win: *Window, nid: NodeId, b: *scene.Builder, doc: *const svg.Document, logical: [2]f32, box: Rect, palette: *const theme.Palette) DrawError!Rect {
     const v = win.node(nid).data.image;
     const lw, const lh = logical;
     var dst = box;
@@ -1696,8 +1698,8 @@ fn drawVector(win: *Window, nid: NodeId, b: *scene.Builder, doc: *const svg.Docu
     const pushed = mirror or clip;
     if (pushed) try b.pushLayer(layer);
     var colors: svg.Colors = .{};
-    const fg = if (v.color_token != .none) win.palette.color(v.color_token) else if (v.color.a > 0) v.color else win.palette.color(.window_fg);
-    iconColors(&colors, &win.palette, fg);
+    const fg = if (v.color_token != .none) palette.color(v.color_token) else if (v.color.a > 0) v.color else palette.color(.window_fg);
+    iconColors(&colors, palette, fg);
     // A document's own <svg> sizing maps its view box into the box.
     doc.draw(b, dst, if (doc.recolors) &colors else null) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,

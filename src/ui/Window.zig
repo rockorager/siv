@@ -79,8 +79,20 @@ theme_choice: theme.Theme = .{},
 /// The user's theme (D29), from `setUserTheme`.
 user_theme: theme.User = .{},
 /// Themed colors and sizes, resolved from `desktop`, `user_theme`, and
-/// `theme_choice`.
+/// `theme_choice`, in `context`.
 palette: theme.Palette = .{},
+/// The subtree choices the root resolves in (D43): none in a window; a
+/// popup's anchor's in its parent window, so that menus and popovers take
+/// the theme of the subtree they open from.
+context: theme.Context = .{},
+/// Nodes given a subtree theme (`Node.theme`); some may be gone or have
+/// none now.
+themed: std.ArrayList(NodeId) = .empty,
+/// Each subtree theme as resolved at the last frame's start, which paint
+/// uses; `scopes_dirty` when the themes, the tree around them, or the
+/// window's theme changed since.
+scopes: std.AutoHashMapUnmanaged(NodeId, ResolvedScope) = .empty,
+scopes_dirty: bool = false,
 /// Nodes made modal, in that order (some may be gone or no longer modal).
 modals: std.ArrayList(NodeId) = .empty,
 /// Scroll nodes with viewport handlers (some may be gone), and whether
@@ -253,6 +265,8 @@ pub const Options = struct {
     desktop: Desktop = .{},
     theme: theme.Theme = .{},
     user_theme: theme.User = .{},
+    /// A popup's anchor's subtree theme (`contextAt`).
+    context: theme.Context = .{},
     clipboard: ?*Clipboard = null,
     spelling: ?*spelling_mod = null,
     /// Drag and drop (`dnd.CompositorHost`); needs `clipboard` too.
@@ -391,7 +405,8 @@ pub fn init(gpa: std.mem.Allocator, options: Options) Error!*Window {
         .desktop = options.desktop,
         .theme_choice = options.theme,
         .user_theme = options.user_theme,
-        .palette = theme.resolve(&options.theme, options.desktop.themeInput(), &options.user_theme),
+        .palette = theme.resolveIn(&options.theme, options.desktop.themeInput(), &options.user_theme, &options.context),
+        .context = options.context,
         .clipboard = options.clipboard,
         .spelling = options.spelling,
         .drag_host = options.drag,
@@ -455,6 +470,8 @@ fn deinitStorage(win: *Window) void {
     win.ime.deinit(win.gpa);
     win.semantics.deinit(win.gpa);
     win.viewports.deinit(win.gpa);
+    win.themed.deinit(win.gpa);
+    win.scopes.deinit(win.gpa);
     win.bound.deinit(win.gpa);
     win.culled.deinit(win.gpa);
     win.long_texts.deinit(win.gpa);
@@ -471,6 +488,7 @@ pub fn freeNodeData(gpa: std.mem.Allocator, n: *const Node) void {
     gpa.free(n.text_input.surrounding);
     gpa.free(n.a11y_embed);
     gpa.free(n.drop.mimes);
+    if (n.theme) |th| gpa.destroy(th);
     switch (n.data) {
         .text => |t| {
             t.content.release(gpa);
@@ -664,6 +682,13 @@ pub fn markSubtreeLayout(win: *Window, id: NodeId) void {
     }
 }
 
+/// The node and its subtree repaint: canvases among them draw again.
+pub fn markSubtreePaint(win: *Window, id: NodeId) void {
+    win.markPaint(id);
+    var it = win.children(id);
+    while (it.next()) |c| win.markSubtreePaint(c);
+}
+
 /// The node's own painting changed; its layer repaints.
 pub fn markPaint(win: *Window, id: NodeId) void {
     const s = win.state(id);
@@ -686,7 +711,7 @@ pub fn needsFrame(win: *const Window) bool {
     // next frame (`semanticsTree`), so scrolling makes no extra frames.
     return win.state(.root).needs_layout or win.dirty.layers or win.dirty.props or win.viewport_dirty or win.settings_changed.any() or
         win.paint.anyDirty() or win.pending_input.items.len != 0 or win.input.tablet_pending.items.len != 0 or win.ime.dirty or win.pending_edits.items.len != 0 or
-        win.dnd.pending != null or win.commit_held;
+        win.dnd.pending != null or win.commit_held or win.scopes_dirty;
 }
 
 /// Whether to keep this frame's changes for a later commit: the window
@@ -788,6 +813,8 @@ pub fn frame(win: *Window) Error!void {
     win.viewport_dirty = false;
     win.deliverViewports();
     if (win.txn.open) return;
+    // Before settings handlers, which hear of what it changed.
+    try win.refreshScopes();
     // What settings handlers change is laid out in this frame.
     win.deliverSettings();
     if (win.txn.open) return;
@@ -810,6 +837,8 @@ pub fn frame(win: *Window) Error!void {
         try win.paint.assign(win);
         win.dirty.layers = false;
     }
+    // Again for themes that handlers above set.
+    try win.refreshScopes();
     try win.paint.build(win);
     if (!win.holdForIcons()) {
         try win.paint.emit(win);
@@ -1423,8 +1452,13 @@ pub fn setUserTheme(win: *Window, u: *const theme.User) void {
 
 /// Resolves the palette again: changed colors repaint every layer and
 /// redraw canvases; a changed body size reshapes text with a size role.
+/// Subtree themes resolve again at the next frame.
 fn applyPalette(win: *Window) void {
-    const p = theme.resolve(&win.theme_choice, win.desktop.themeInput(), &win.user_theme);
+    if (win.themed.items.len != 0) {
+        win.scopes_dirty = true;
+        win.requestFrame();
+    }
+    const p = theme.resolveIn(&win.theme_choice, win.desktop.themeInput(), &win.user_theme, &win.context);
     const old = win.palette;
     win.palette = p;
     const colors = !p.eqlColors(&old);
@@ -1444,6 +1478,77 @@ fn applyPalette(win: *Window) void {
         }
         if (size and n.isText() and n.textData().props.style.size_role != .fixed) win.markShape(id);
     }
+}
+
+/// A subtree theme as paint uses it: its composed choices and its colors.
+pub const ResolvedScope = struct {
+    context: theme.Context,
+    palette: theme.Palette,
+};
+
+/// Resolves every subtree theme again if anything they depend on changed,
+/// and repaints the subtrees whose colors changed (D43). Nothing else is
+/// walked: a theme's place in the tree is found from its node upwards.
+fn refreshScopes(win: *Window) Error!void {
+    if (!win.scopes_dirty) return;
+    var i: usize = 0;
+    while (i < win.themed.items.len) {
+        const id = win.themed.items[i];
+        if (win.isLive(id) and win.node(id).theme != null) i += 1 else _ = win.themed.swapRemove(i);
+    }
+    var next: std.AutoHashMapUnmanaged(NodeId, ResolvedScope) = .empty;
+    errdefer next.deinit(win.gpa);
+    try next.ensureTotalCapacity(win.gpa, @intCast(win.themed.items.len));
+    for (win.themed.items) |id| _ = win.resolveScope(&next, id);
+    var changed = false;
+    var it = next.iterator();
+    while (it.next()) |e| {
+        const old = win.scopes.getPtr(e.key_ptr.*);
+        if (old != null and old.?.palette.eqlColors(&e.value_ptr.palette)) continue;
+        changed = true;
+        win.markSubtreePaint(e.key_ptr.*);
+    }
+    var gone = win.scopes.keyIterator();
+    while (gone.next()) |id| if (!next.contains(id.*)) {
+        changed = true;
+        if (win.isLive(id.*)) win.markSubtreePaint(id.*);
+    };
+    win.scopes.deinit(win.gpa);
+    win.scopes = next;
+    win.scopes_dirty = false;
+    if (changed) win.settings_changed.theme = true;
+}
+
+/// Resolves a themed node's scope into `map`, after the scope around it.
+/// `map` has room for every themed node, so entries never move.
+fn resolveScope(win: *Window, map: *std.AutoHashMapUnmanaged(NodeId, ResolvedScope), id: NodeId) *const ResolvedScope {
+    if (map.getPtr(id)) |s| return s;
+    const outer: *const theme.Context = if (win.themedAncestor(win.node(id).parent)) |a| &win.resolveScope(map, a).context else &win.context;
+    const ctx = outer.within(win.node(id).theme.?);
+    map.putAssumeCapacityNoClobber(id, .{ .context = ctx, .palette = theme.resolveIn(&win.theme_choice, win.desktop.themeInput(), &win.user_theme, &ctx) });
+    return map.getPtr(id).?;
+}
+
+/// The node itself or its nearest ancestor with a subtree theme.
+fn themedAncestor(win: *const Window, from: NodeId) ?NodeId {
+    var a = from;
+    while (a != .none) : (a = win.node(a).parent) if (win.node(a).theme != null) return a;
+    return null;
+}
+
+/// The subtree choices in effect at a node now (D43), composed from its
+/// subtree themes and the window's context.
+pub fn contextAt(win: *const Window, id: NodeId) theme.Context {
+    const a = win.themedAncestor(id) orelse return win.context;
+    return win.contextAt(win.node(a).parent).within(win.node(a).theme.?);
+}
+
+/// The palette a node's themed colors resolve against now: its nearest
+/// subtree theme's, else the window's. Text sizes are the window's.
+pub fn paletteAt(win: *const Window, id: NodeId) theme.Palette {
+    if (win.themed.items.len == 0 or win.themedAncestor(id) == null) return win.palette;
+    const ctx = win.contextAt(id);
+    return theme.resolveIn(&win.theme_choice, win.desktop.themeInput(), &win.user_theme, &ctx);
 }
 
 /// Whether motion (caret blinking, animations) is off.

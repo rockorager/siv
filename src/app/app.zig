@@ -671,8 +671,10 @@ pub const App = struct {
 
     /// A popup of `parent` (D17): its own tree, shown with
     /// `Window.showPopup` once its content is built, so that it can size
-    /// to it. Until then the compositor knows nothing of it.
-    pub fn createPopup(app: *App, parent: *Window, listener: Listener) Error!*Window {
+    /// to it. Until then the compositor knows nothing of it. It takes the
+    /// subtree theme of `anchor`, a node of the parent, as it is now
+    /// (D43).
+    pub fn createPopup(app: *App, parent: *Window, anchor: ui.NodeId, listener: Listener) Error!*Window {
         const gpa = app.gpa;
         try app.zombies.ensureUnusedCapacity(gpa, 1);
         const win = try gpa.create(Window);
@@ -689,6 +691,7 @@ pub const App = struct {
             .desktop = app.desktop.values,
             .theme = app.theme,
             .user_theme = app.user_theme.value,
+            .context = parent.ui.contextAt(if (parent.ui.isLive(anchor)) anchor else .root),
             .width = 1,
             .height = 1,
             .scale = parent.ui.scale,
@@ -1441,7 +1444,7 @@ pub const Window = struct {
         const tip = win.ui.node(node).tooltip;
         if (tip.len == 0) return;
         const app = win.app;
-        const popup = try app.createPopup(win, .{});
+        const popup = try app.createPopup(win, node, .{});
         popup.is_tooltip = true;
         errdefer popup.destroy() catch {};
         const t = popup.ui.begin() catch return error.OutOfMemory;

@@ -225,6 +225,7 @@ const Job = struct {
         d.err = null;
         d.depth = 0;
         d.window = null;
+        d.palette = null;
         d.node = .none;
         d.page_rtl = j.rtl;
         d.page_language = j.language;

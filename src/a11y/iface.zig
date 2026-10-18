@@ -803,7 +803,7 @@ fn attributeRun(r: *Request, offset: i32) anyerror!void {
         // ATK's and GTK's name for a misspelled word.
         if (sp.misspelled) try entry(&m.body, "invalid", "spelling");
         if (st.color != null or st.color_token != .none) {
-            const c = x.w.ui.palette.pick(st.color orelse .black, st.color_token);
+            const c = x.w.ui.paletteAt(x.id()).pick(st.color orelse .black, st.color_token);
             const u16s = struct {
                 fn f(linear: f32) u32 {
                     const v = std.math.clamp(linear, 0, 1);

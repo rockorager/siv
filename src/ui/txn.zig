@@ -18,6 +18,7 @@ const secret = @import("secret.zig");
 const Image = @import("image.zig").Image;
 const spans_mod = @import("spans.zig");
 const Rope = @import("text").Rope;
+const theme = @import("theme.zig");
 
 const NodeId = node_mod.NodeId;
 const Node = node_mod.Node;
@@ -114,6 +115,8 @@ pub const Txn = struct {
         win.nodes.shrinkRetainingCapacity(t.saved_len);
         win.states.shrinkRetainingCapacity(t.saved_len);
         win.free_head = t.saved_free_head;
+        // Subtree themes may be back as they were (D43).
+        if (win.themed.items.len != 0) win.scopes_dirty = true;
         for (t.allocs.items) |a| a.free(win.gpa);
         t.finish();
         win.requestFrame();
@@ -298,6 +301,11 @@ pub const Txn = struct {
         t.link(parent, id, before);
         win.markSubtreeLayout(id);
         win.markLayers();
+        // Under other subtree themes, its colors may change (D43).
+        if (win.themed.items.len != 0) {
+            win.scopes_dirty = true;
+            win.markSubtreePaint(id);
+        }
     }
 
     /// Removes a node and its subtree; they are destroyed at commit.
@@ -314,6 +322,7 @@ pub const Txn = struct {
         t.removed.appendAssumeCapacity(id);
         t.removed_count += count;
         win.markLayers();
+        if (win.themed.items.len != 0) win.scopes_dirty = true;
     }
 
     fn subtreeSize(win: *const Window, id: NodeId) usize {
@@ -519,6 +528,24 @@ pub const Txn = struct {
         t.touch(id);
         n.shortcut = shortcut;
         t.win.dirty.semantics = true;
+    }
+
+    /// Gives the node's subtree a theme (D43), or with null or an empty
+    /// scope takes it away. Its colors resolve at the next frame, which
+    /// repaints the subtree if they changed.
+    pub fn setTheme(t: *Txn, id: NodeId, scope: ?*const theme.Scope) Error!void {
+        const n = try t.live(id);
+        const want: ?*const theme.Scope = if (scope) |s| (if (s.isEmpty()) null else s) else null;
+        if (n.theme == null and want == null) return;
+        if (n.theme != null and want != null and n.theme.?.eql(want.?)) return;
+        try t.reserve();
+        const win = t.win;
+        if (want != null and std.mem.indexOfScalar(NodeId, win.themed.items, id) == null) try win.themed.append(win.gpa, id);
+        const owned = try t.own(theme.Scope, if (want) |s| s[0..1] else &.{});
+        t.touch(id);
+        if (n.theme) |old| t.release(theme.Scope, old[0..1]);
+        n.theme = if (owned.len != 0) &owned[0] else null;
+        win.scopes_dirty = true;
     }
 
     /// Sets the node's tooltip text; empty removes it.
