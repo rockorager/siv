@@ -102,6 +102,10 @@ pub fn build(b: *std.Build) void {
         .{ .name = "uucode", .module = uucode },
     });
     const icon = ctx.module("src/icon/icon.zig", &.{});
+    // Spell checking (D37): siv's own Hunspell-format reader.
+    const spell = ctx.module("src/spell/spell.zig", &.{
+        .{ .name = "uucode", .module = uucode },
+    });
     // Documents (D32): HTML parsing.
     const html = ctx.module("src/html/html.zig", &.{});
     const css = ctx.module("src/css/css.zig", &.{});
@@ -339,6 +343,7 @@ pub fn build(b: *std.Build) void {
         .{ "scene", scene },
         .{ "svg", svg },
         .{ "icon", icon },
+        .{ "spell", spell },
         .{ "html", html },
         .{ "css", css },
         .{ "markdown", markdown_tests },

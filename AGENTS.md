@@ -19,7 +19,7 @@ on a 4-core orb, which doubles the time.
 zig build                      # zig-out: libsiv.so, libsiv.a, include/siv.h, lib/pkgconfig/siv.pc
 zig build test -j16            # every module's tests, the headless test binary (C API, guide,
                                #   files app, Lua), C ABI programs; JPEG XL only with -Djxl
-zig build test-text            # one module: test-abi, test-text, test-raster, test-scene, test-image, test-svg, test-icon,
+zig build test-text            # one module: test-abi, test-text, test-raster, test-scene, test-image, test-svg, test-icon, test-spell,
                                #   test-html, test-css, test-markdown, test-doc, test-docview, test-epub,
                                #   test-render-cpu, test-render-vulkan, test-pool, test-loop,
                                #   test-dbus, test-portal, test-pdf, test-tray, test-platform,
@@ -101,6 +101,7 @@ owns its directories and does not edit another workstream's files.
 | `image` | `src/image/` | Image decoding | `scene`, `image_c` (wuffs, lcms2, libwebp, libavif, dav1d, libjxl) |
 | `svg` | `src/svg/` | Icons and SVG | `scene`, `raster`, `image` |
 | `icon` | `src/icon/` | Icons and SVG | none |
+| `spell` | `src/spell/` | Spell checking (D37) | `uucode` |
 | `render_cpu` | `src/render/cpu/` | Rasterizer, display list, CPU renderer | `scene`, `raster`, `text`, `harfbuzz`, `pool`, `image` |
 | `render_vulkan` | `src/render/vulkan/` | Vulkan renderer | `scene`, `raster`, `render_cpu`, `pool`, `vulkan`, `shaders` |
 | `loop` | `src/loop/` | Event loop and Wayland platform | `pool` |

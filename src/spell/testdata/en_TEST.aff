@@ -1,0 +1,40 @@
+# A small English dictionary in Hunspell's format, written for siv's
+# tests (D37); not derived from any published dictionary.
+SET UTF-8
+TRY esiaénrtolcdugmfphbyvkw'
+KEY qwertyuiop|asdfghjkl|zxcvbnm
+ICONV 1
+ICONV ’ '
+NOSUGGEST !
+FORBIDDENWORD *
+KEEPCASE K
+WORDCHARS '
+
+REP 2
+REP f ph
+REP alot a_lot
+
+PFX U Y 1
+PFX U 0 un .
+
+PFX R Y 1
+PFX R 0 re .
+
+SFX S Y 4
+SFX S y ies [^aeiou]y
+SFX S 0 s [aeiou]y
+SFX S 0 es [sxzh]
+SFX S 0 s [^sxzhy]
+
+SFX D Y 4
+SFX D 0 d e
+SFX D y ied [^aeiou]y
+SFX D 0 ed [^ey]
+SFX D 0 ed [aeiou]y
+
+SFX G Y 2
+SFX G e ing e
+SFX G 0 ing [^e]
+
+SFX M Y 1
+SFX M 0 's .
