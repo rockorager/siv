@@ -100,7 +100,7 @@ fn resultNames() [api.result.@"enum".values.len]struct { i32, [:0]const u8 } {
 // Every schema function is exported here with the signature the schema
 // implies, and the schema follows the conventions.
 comptime {
-    @setEvalBranchQuota(1_000_000);
+    @setEvalBranchQuota(4_000_000);
     if (schema.validate(api.spec, version)) |p| @compileError(api.spec.source ++ ": " ++ p.where ++ ": " ++ p.what);
     for (api.spec.functions) |f| {
         var found = false;
