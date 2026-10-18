@@ -276,7 +276,7 @@ test "lua: hot reload of todo.lua keeps its window, items, and draft" {
     // The new code: another heading. Reloading runs it in the running
     // application; the window is the same and shows the kept items and
     // the draft in the editor.
-    const edited = try std.mem.replaceOwned(u8, testing.allocator, source, "txn:text(column, \"To do\"", "txn:text(column, \"Groceries\"");
+    const edited = try std.mem.replaceOwned(u8, testing.allocator, source, "ui.text(\"To do\"", "ui.text(\"Groceries\"");
     defer testing.allocator.free(edited);
     try testing.expect(!std.mem.eql(u8, edited, source));
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/todo.lua", .data = edited });

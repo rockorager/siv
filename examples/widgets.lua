@@ -1,12 +1,14 @@
 -- A settings form built from stock widgets (D22), in the desktop's theme.
--- The Lua version of widgets.c.
+-- The Lua version of widgets.c, written with siv.view.
 --
 --     zig build && ./zig-out/bin/siv-lua examples/widgets.lua
 --
--- Widgets are built like any node, driven with widget_set_value and
--- friends, and report what the user did through handlers on the node the
--- builder returned.
+-- Widgets are built like any node, report what the user did through
+-- handlers, and take their label, value, and disabled state from
+-- properties, which follow signals when given as functions.
 local siv = require("siv")
+local view = require("siv.view")
+local ui = view.ui
 
 local app = siv.app_create()
 local win = app:window_create{ title = "Settings", width = 420, height = 520 }
@@ -20,81 +22,80 @@ local function report(name)
 	end
 end
 
+local volume, set_volume = view.signal(40)
+
+local function Settings()
+	ui.flex({ axis = "column", gap = 14, align_items = "start" }, { layout = { padding = 24 } }, function()
+		ui.text("Settings", {
+			text_style = { color_token = "window_fg", size_role = "title", weight = "bold" },
+			semantics = { role = "heading" },
+		})
+
+		ui.text_field({ placeholder = "Your name" }, { on = { change = report("name") } })
+
+		ui.switch({ label = "Dark theme" }, {
+			on = {
+				-- The theme follows the desktop unless the application chooses.
+				change = function(_, ev)
+					app:set_theme{ scheme = ev.value ~= 0 and "dark" or "follow" }
+					return true
+				end,
+			},
+		})
+		ui.check_box({ label = "Install updates automatically", checked = "on" }, {
+			on = { change = report("updates") },
+		})
+
+		-- A widget's value is a property, set once its radios exist.
+		ui.radio_group({ label = "Quality", axis = "column" }, { value = 1, on = { change = report("quality") } }, function()
+			for _, label in ipairs{ "Low", "Balanced", "High" } do
+				ui.radio{ label = label }
+			end
+		end)
+
+		ui.combo_box({ label = "Format" }, { on = { change = report("format") } }, function()
+			for _, label in ipairs{ "PNG", "JPEG", "WebP" } do
+				ui.combo_box_item{ label = label }
+			end
+		end)
+
+		-- The slider sets the volume; the label and the level follow it.
+		-- Setting a value from the application does not report a change.
+		ui.text(function()
+			return ("Volume: %.0f"):format(volume())
+		end, { text_style = { color_token = "muted_fg", size_role = "caption" } })
+		ui.slider({ label = "Volume", value = 40, step = 1 }, {
+			layout = { width = 260 },
+			on = {
+				change = function(_, ev)
+					set_volume(ev.value)
+					return true
+				end,
+			},
+		})
+		ui.progress_bar({ label = "Level" }, { layout = { width = 260 }, value = volume })
+
+		ui.spin_button({ label = "Copies", min = 1, max = 10, value = 1 }, {
+			on = { change = report("copies") },
+		})
+
+		ui.flex({ gap = 8 }, function()
+			ui.push_button{ label = "Cancel" }
+			ui.push_button({ label = "Save", style = "primary" }, {
+				tooltip = "Saves the settings",
+				on = { activate = function()
+					print("saved")
+					return true
+				end },
+			})
+		end)
+	end)
+end
+
 win:update(function(txn, root)
 	-- Themed colors follow the desktop's scheme, contrast, and accent.
 	txn:set_visual(root, { background_token = "window_bg" })
-	local column = txn:flex(root, { axis = "column", gap = 14, align_items = "start" }, {
-		layout = { padding = 24 },
-	})
-
-	txn:text(column, "Settings", {
-		text_style = { color_token = "window_fg", size_role = "title", weight = "bold" },
-		semantics = { role = "heading" },
-	})
-
-	txn:text_field(column, { placeholder = "Your name" }, { on = { change = report("name") } })
-
-	txn:switch(column, { label = "Dark theme" }, {
-		on = {
-			-- The theme follows the desktop unless the application chooses.
-			change = function(_, ev)
-				app:set_theme{ scheme = ev.value ~= 0 and "dark" or "follow" }
-				return true
-			end,
-		},
-	})
-	txn:check_box(column, { label = "Install updates automatically", checked = "on" }, {
-		on = { change = report("updates") },
-	})
-
-	local quality = txn:radio_group(column, { label = "Quality", axis = "column" }, {
-		on = { change = report("quality") },
-	})
-	for _, label in ipairs{ "Low", "Balanced", "High" } do
-		txn:radio(quality, { label = label })
-	end
-	txn:widget_set_value(quality, 1)
-
-	local format = txn:combo_box(column, { label = "Format" }, {
-		on = { change = report("format") },
-	})
-	for _, label in ipairs{ "PNG", "JPEG", "WebP" } do
-		txn:combo_box_item(format, { label = label })
-	end
-
-	local volume_label = txn:text(column, "Volume: 40", {
-		text_style = { color_token = "muted_fg", size_role = "caption" },
-	})
-	local progress
-	txn:slider(column, { label = "Volume", value = 40, step = 1 }, {
-		layout = { width = 260 },
-		on = {
-			change = function(_, ev)
-				ev.window:update(function(t)
-					t:set_text(volume_label, ("Volume: %.0f"):format(ev.value))
-					-- Setting a value from the application does not report a
-					-- change.
-					t:widget_set_value(progress, ev.value)
-				end)
-				return true
-			end,
-		},
-	})
-	progress = txn:progress_bar(column, { label = "Level", value = 40 }, { layout = { width = 260 } })
-
-	txn:spin_button(column, { label = "Copies", min = 1, max = 10, value = 1 }, {
-		on = { change = report("copies") },
-	})
-
-	local buttons = txn:flex(column, { gap = 8 })
-	txn:push_button(buttons, { label = "Cancel" })
-	txn:push_button(buttons, { label = "Save", style = "primary" }, {
-		tooltip = "Saves the settings",
-		on = { activate = function()
-			print("saved")
-			return true
-		end },
-	})
 end)
+view.mount(win, Settings)
 
 app:run()
