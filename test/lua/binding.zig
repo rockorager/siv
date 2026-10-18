@@ -887,6 +887,69 @@ test "D-Bus from Lua: a service and a client on one bus" {
     _ = try run(script);
 }
 
+test "the trash and system signals from Lua" {
+    const linux = std.os.linux;
+    const S = struct {
+        extern "c" fn mkdtemp(template: [*:0]u8) ?[*:0]u8;
+        extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+        extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+    };
+    var template = "/tmp/siv-lua-trash-XXXXXX".*;
+    const dir = std.mem.span(S.mkdtemp(&template) orelse return error.Unexpected);
+    const old = std.c.getenv("XDG_DATA_HOME");
+    var old_buf: [4096]u8 = undefined;
+    const saved: ?[:0]u8 = if (old) |o| try std.fmt.bufPrintSentinel(&old_buf, "{s}", .{std.mem.span(o)}, 0) else null;
+    _ = S.setenv("XDG_DATA_HOME", dir.ptr, 1);
+    defer {
+        if (saved) |o| _ = S.setenv("XDG_DATA_HOME", o.ptr, 1) else _ = S.unsetenv("XDG_DATA_HOME");
+        var b: [256]u8 = undefined;
+        for ([_][]const u8{ "/doomed.txt", "/Trash/files/doomed.txt", "/Trash/info/doomed.txt.trashinfo" }) |f|
+            _ = linux.unlinkat(linux.AT.FDCWD, std.fmt.bufPrintSentinel(&b, "{s}{s}", .{ dir, f }, 0) catch continue, 0);
+        for ([_][]const u8{ "/Trash/files", "/Trash/info", "/Trash", "" }) |f|
+            _ = linux.unlinkat(linux.AT.FDCWD, std.fmt.bufPrintSentinel(&b, "{s}{s}", .{ dir, f }, 0) catch continue, linux.AT.REMOVEDIR);
+    }
+    const script = try std.mem.concat(testing.allocator, u8, &.{ prologue, "local dir = \"", dir, "\"\n",
+        \\local path = dir .. "/doomed.txt"
+        \\local f = assert(io.open(path, "w"))
+        \\f:write("x")
+        \\f:close()
+        \\local done
+        \\siv.spawn(function()
+        \\  local r = app:trash_file(path)
+        \\  assert(r.status == "ok", r.status)
+        \\  assert(r.id == dir .. "/Trash/files/doomed.txt", r.id)
+        \\  assert(io.open(path, "r") == nil)
+        \\  local seen
+        \\  for _, it in ipairs(app:trash_list().items) do
+        \\    if it.id == r.id then seen = it end
+        \\  end
+        \\  assert(seen and seen.path == path and seen.bytes == 1 and not seen.flags.directory)
+        \\  local back = app:trash_restore(r.id, "")
+        \\  assert(back.status == "ok" and back.path == path, back.status)
+        \\  assert(app:trash_restore(r.id, "").status == "not_found")
+        \\  done = true
+        \\end)
+        \\for _ = 1, 500 do
+        \\  if done then break end
+        \\  app:dispatch(5)
+        \\end
+        \\assert(done, "trash jobs did not finish")
+        \\local events = {}
+        \\local mon <close> = app:system_monitor_create{ on_event = function(m, ev) events[#events + 1] = ev end }
+        \\local state = app:get_system_state()
+        \\assert(state.flags.network_available and not state.flags.power_saver and state.connectivity == "full")
+        \\app:test_system_signal{ type = "power_saver", state = { flags = { "power_saver", "network_available" } } }
+        \\assert(#events == 1 and events[1].type == "power_saver" and events[1].state.flags.power_saver)
+        \\assert(app:get_system_state().flags.power_saver)
+        \\app:test_system_signal{ type = "memory", memory_pressure = "medium" }
+        \\assert(#events == 2 and events[2].type == "memory" and events[2].memory_pressure == "medium")
+        \\app:test_system_signal{ type = "network", state = { flags = { "power_saver" }, connectivity = "local" } }
+        \\assert(#events == 3 and events[3].state.connectivity == "local" and not events[3].state.flags.network_available)
+    });
+    defer testing.allocator.free(script);
+    _ = try run(script);
+}
+
 test "spell checking from Lua" {
     _ = try run(prologue ++
         \\local function read(path) local f <close> = assert(io.open(path, "rb")); return f:read("a") end

@@ -106,6 +106,10 @@ pub const App = struct {
     undos: std.ArrayList(?*@import("undo.zig").Stack),
     /// Settings stores (D36).
     settings: settings.State,
+    /// Trash operations waiting for the portal, and system monitors
+    /// (D42).
+    trash: @import("trash.zig").State,
+    system: @import("system.zig").State,
     /// On the headless backend, stores without a directory keep values in
     /// memory only (D36).
     headless: bool,
@@ -316,6 +320,8 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     self.epubs = .empty;
     self.undos = .empty;
     self.settings = .{};
+    self.trash = .{};
+    self.system = .{};
     self.headless = backend == .headless;
     self.fonts_task = .{ .func = onFontsTask };
     const gpa = self.gpa();
@@ -396,6 +402,8 @@ fn destroyNow(self: *App) void {
     self.root.retire();
     // Before the windows, whose destruction would start waiting requests.
     portal.teardown(self);
+    @import("trash.zig").teardown(self);
+    @import("system.zig").teardown(self);
     actions.teardown(self);
     dbus_abi.teardown(self);
     for (self.windows.items) |slot| if (slot) |w| {

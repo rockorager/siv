@@ -3344,6 +3344,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       real xdg-foreign export. 1.16 drops OpenFile's current_folder
       (version 4 of the interface, 1.18) and has no Registry. The
       hermetic tests use a stand-in frontend on the test bus.
+  - The trash and system signals are D42's: siv implements the
+    freedesktop.org Trash specification itself, since the Trash portal
+    can only trash (no restoring, listing, or emptying), and asks the
+    portal inside Flatpak for files out of the sandbox's reach; power
+    saving, low memory, and the network come from the PowerProfileMonitor,
+    MemoryMonitor, and NetworkMonitor portals, with power-profiles-daemon,
+    low-memory-monitor, and NetworkManager on the system bus without
+    them.
   - Clipboard and drag-and-drop negotiate MIME types, support primary
     selection, stream through the event loop, and enforce configurable size
     limits.
@@ -7603,6 +7611,160 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   condition. Or neither the parent's offer nor the window is where
   applications want their bounds (a grandparent's space); then add
   named containers.
+
+### D42. Trash and system signals
+
+- **Requirement:** applications move files to the trash and take the
+  move back (D35's undo), and a file manager lists, restores, and
+  empties the trash, inside Flatpak and outside it, without blocking the
+  UI thread (D6). Applications learn what GIO's GPowerProfileMonitor,
+  GMemoryMonitor, and GNetworkMonitor tell GTK applications: power
+  saving, low memory, and the network's state, and siv itself does what
+  the user would expect of the toolkit under power saving and memory
+  pressure. Only D-Bus, which siv speaks (D19), no new dependency (D25).
+- **Decision:**
+  - The trash is the freedesktop.org Trash specification 1.0,
+    implemented by siv in `src/trash` (imports nothing), not through the
+    Trash portal, because the portal only trashes:
+    org.freedesktop.portal.Trash has one method, TrashFile(fd), whose
+    result is 1 or 0. It says nothing of where the file went, so a
+    portal-trashed file cannot be restored by the application (no undo),
+    and it has no listing, restoring, deleting, or emptying, which a file
+    manager needs.
+    - Files on the home trash's file system ($XDG_DATA_HOME/Trash, else
+      ~/.local/share/Trash) go there, with absolute paths in their
+      information files. Other files go to the trash at the top of their
+      mount: `$topdir/.Trash/$uid` when `$topdir/.Trash` exists, is
+      sticky, and is not a symbolic link, else `$topdir/.Trash-$uid`
+      (created 0700), with paths relative to `$topdir`, as the
+      specification asks so that a disk mounted elsewhere restores. The
+      mount is the longest mount point of /proc/self/mountinfo (its
+      octal escapes undone, pseudo file systems skipped) that prefixes
+      the file's canonical parent; a file that no trash on its own file
+      system can take is `unsupported` (offer to delete it), never copied
+      to the home trash.
+    - `NAME.trashinfo` (Path percent-encoded, DeletionDate in local time
+      as YYYY-MM-DDThh:mm:ss) is created first with O_EXCL, which claims
+      the name, then the file moves with renameat2(RENAME_NOREPLACE), so
+      two processes trashing at once never share a name; a failed move
+      removes the information file. Clashing names become `name.2`,
+      `name.3` (after the whole name, as GIO names them), cut at a UTF-8
+      boundary to fit NAME_MAX. A symbolic link is trashed, not its
+      target.
+    - `directorysizes` caches each trashed directory's disk usage (bytes
+      as du -B1 counts them, the info file's mtime, the percent-encoded
+      name). Listing fills missing entries and drops stale ones, writing
+      the file through a temporary and rename; restoring and deleting
+      remove their entry.
+    - An item is named by its path in a trash's `files/` (its id): what
+      siv_trash_file returns and siv_trash_list reports, and what
+      siv_trash_restore and siv_trash_delete take, which check that an id
+      names an entry of a trash directory, so they touch nothing else.
+      Restoring creates missing parent folders and never replaces
+      anything (`exists`).
+  - Every operation is a job on the worker pool's blocking lane (D6),
+    counted like siv_job_start's and reported at a safe point (D5)
+    through a `siv_trash_fn` with a `siv_trash_result`; destroying the
+    application drops queued operations, waits for running ones, and
+    runs only their destroy-notifies. The environment ($XDG_DATA_HOME,
+    /.flatpak-info) is read on the application's thread when the
+    operation starts.
+  - Inside Flatpak (/.flatpak-info) siv still trashes by the
+    specification what the sandbox can reach: the home trash, from the
+    host's $XDG_DATA_HOME (`HOST_XDG_DATA_HOME`), when the application
+    has `--filesystem=xdg-data/Trash` or wider and the file is on its
+    file system; never a mount's trash, which the sandbox sees only in
+    part. Anything else goes to the Trash portal with an O_PATH fd, and
+    its result has an empty id: trashed, but not restorable. Listing,
+    restoring, deleting, and emptying need the home trash and report
+    `unavailable` without it. Portal calls in flight are cancelled when
+    the application goes.
+  - System signals come from xdg-desktop-portal's PowerProfileMonitor
+    (`power-saver-enabled`, followed through PropertiesChanged),
+    MemoryMonitor (LowMemoryWarning with low-memory-monitor's level),
+    and NetworkMonitor (GetStatus, again on `changed`), in
+    `portal.monitor` on the application's session bus. The portal
+    implements them itself, on the same system services, and answers
+    host applications as it answers sandboxed ones, so it is the one
+    path. A monitor whose portal call fails (no portal, or one too old)
+    connects to the system bus, once and only then: power-profiles-daemon
+    (org.freedesktop.UPower.PowerProfiles, else net.hadess.PowerProfiles,
+    which tuned-ppd also serves) for ActiveProfile `power-saver`,
+    low-memory-monitor for LowMemoryWarning, and NetworkManager's
+    Connectivity, Metered, and State. UPower itself adds nothing here
+    (battery levels are not power saving). Without any of them the
+    defaults stay, as GIO's are: power saving off, the network
+    available, unmetered, and with full connectivity. The headless
+    backend and SIV_APP_NO_DESKTOP_SETTINGS keep the defaults (App
+    option `system_signals`, which follows desktop settings).
+  - What siv does itself:
+    - Power saving stops caret blinking in every window, the one motion
+      siv runs while the user does nothing; it does not turn on reduced
+      motion. Reduced motion (D29) is an accessibility preference: it
+      replaces motion that helps people follow a change (D38) with jumps
+      and changes how the interface reads. Transitions run for a few
+      hundred milliseconds after input and then the compositor idles, so
+      they cost next to nothing, and siv draws no frame without damage
+      (D8), so there is no idle frame work to lower and no frame-rate
+      cap.
+    - A memory warning drops what siv can rebuild, before monitors hear
+      of it. At every level: the icon cache (D19's icons; what is on
+      screen stays in display lists), long texts' shaped blocks not used
+      in the last frame (D13's residency), documents' layout caches not
+      in the latest pass (D32; skipped while a job has the document), and
+      glibc's free heap pages (malloc_trim). From `medium` up also the
+      renderers' glyph caches and, on Vulkan, every texture the next
+      frame does not draw (D10). Decoded images belong to the
+      application (siv keeps no image cache of its own); the event tells
+      it to drop its own.
+  - C API (`src/abi/api_system.zig`, implemented in `src/abi/trash.zig`
+    and `src/abi/system.zig`): `siv_trash_file`, `siv_trash_restore`
+    (to where it was or to a destination), `siv_trash_delete`,
+    `siv_trash_list` (items with id, original path, deletion time,
+    bytes, and a directory flag), and `siv_trash_empty`, with
+    `siv_trash_status` (`ok`, `not_found`, `access_denied`, `exists`,
+    `unsupported`, `no_space`, `unavailable`, `failed`);
+    `siv_app_get_system_state` (`siv_system_state`: the `power_saver`,
+    `network_available`, and `network_metered` flags and a
+    `siv_network_connectivity`), and `siv_system_monitor_create`, whose
+    callback receives `siv_system_event`s (power saving, a memory
+    warning with its `siv_memory_pressure`, the network) until
+    `siv_system_monitor_destroy`. `siv_test_system_signal` plays a
+    signal on the headless backend (D27). Lua gets all of it from the
+    schema (D23): `app:trash_file(path, function(result) ... end)`, or
+    `local r = app:trash_file(path)` waiting in a coroutine.
+  - siv-files moves to the trash with siv_trash_file, one undo step per
+    command on a window undo stack attached to its root (Ctrl+Z and
+    Ctrl+Shift+Z), and the toast's Undo button undoes that step while it
+    is the newest.
+  - Tests: `src/trash` against temporary directories, with explicit
+    mount lists for the mounts' trashes (sticky `.Trash`, symbolic link,
+    `.Trash-$uid`, relative paths), name clashes, percent-encoding,
+    directorysizes, and invalid ids; the portal monitor against stand-in
+    portals and system services on the in-process test bus (portal
+    first, fallback when the portal is missing, defaults with neither);
+    the app's reactions (caret blinking, caches trimmed) and the C API,
+    Lua, and siv-files on the headless backend with $XDG_DATA_HOME in a
+    temporary directory.
+- **Alternatives:** the Trash portal everywhere (no undo, no listing or
+  restoring, and a portal round trip per file); copying files from other
+  file systems into the home trash, as some file managers did (slow, and
+  it doubles disk usage until emptied; GIO refuses too); finding a
+  file's top directory by walking up until st_dev changes (wrong for bind
+  mounts and btrfs subvolumes, which mountinfo names); system services
+  only, without the portals (sandboxed applications cannot reach the
+  system bus); the portals only (hosts without xdg-desktop-portal, or
+  with a version before 1.12 or so, would get no signals although the
+  services run); a memory monitor of siv's own on PSI
+  (/proc/pressure/memory), as GIO 2.80's fallback does (needs a
+  privileged trigger or polling, and low-memory-monitor already applies
+  the policy); power saving as reduced motion (above).
+- **Reverse if:** the Trash portal gains a way to name the trashed item
+  or restore it (then use it inside Flatpak for every file); desktops
+  start treating power saving as a request to stop animations (then
+  power saving joins reduced motion, as an application flag can already
+  force); or measurements show transitions cost noticeable power on
+  battery.
 
 ### D43. Per-subtree themes
 

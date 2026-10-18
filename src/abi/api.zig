@@ -312,6 +312,7 @@ const settings = @import("api_settings.zig");
 const actions = @import("api_actions.zig");
 const spelling = @import("api_spell.zig");
 const adaptive = @import("api_adaptive.zig");
+const system = @import("api_system.zig");
 
 pub const decls = [_]Decl{
     result,
@@ -2522,8 +2523,8 @@ pub const spec: schema.Schema = .{
     .source = "src/abi/api.zig",
     .doc = "siv: a GUI toolkit for Wayland.",
     .result = "siv_result",
-    .decls = &(decls ++ desktop.decls ++ dbus.decls ++ shell.decls ++ document.decls ++ actions.decls ++ undo.decls ++ settings.decls ++ spelling.decls ++ adaptive.decls ++ testing.decls),
-    .functions = &(functions ++ desktop.functions ++ dbus.functions ++ shell.functions ++ document.functions ++ actions.functions ++ undo.functions ++ settings.functions ++ spelling.functions ++ adaptive.functions ++ testing.functions),
+    .decls = &(decls ++ desktop.decls ++ dbus.decls ++ shell.decls ++ document.decls ++ actions.decls ++ undo.decls ++ settings.decls ++ spelling.decls ++ adaptive.decls ++ system.decls ++ testing.decls),
+    .functions = &(functions ++ desktop.functions ++ dbus.functions ++ shell.functions ++ document.functions ++ actions.functions ++ undo.functions ++ settings.functions ++ spelling.functions ++ adaptive.functions ++ system.functions ++ testing.functions),
 };
 
 /// Encodes a version as (major << 16) | (minor << 8) | patch.

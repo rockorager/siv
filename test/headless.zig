@@ -58,6 +58,7 @@ test {
     _ = @import("abi/docview.zig");
     _ = @import("abi/undo.zig");
     _ = @import("abi/layouts.zig");
+    _ = @import("abi/system.zig");
     _ = @import("abi/settings.zig");
     _ = @import("abi/adaptive.zig");
     _ = @import("doc/wpt.zig");

@@ -71,7 +71,7 @@ pub fn fieldAlias(st: []const u8, field: []const u8) ?[]const u8 {
 }
 
 /// Callbacks that run once to complete an asynchronous call.
-pub const async_callbacks = [_][]const u8{ "siv_image_load_fn", "siv_portal_fn", "siv_clipboard_fn" };
+pub const async_callbacks = [_][]const u8{ "siv_image_load_fn", "siv_portal_fn", "siv_clipboard_fn", "siv_trash_fn" };
 
 /// Handle types whose objects the Lua value owns: collecting it (or
 /// leaving the scope of a `<close>` variable) destroys the object, which
@@ -98,6 +98,7 @@ pub const owned = [_]struct { []const u8, []const u8 }{
     .{ "siv_dbus_object", "siv_dbus_object_destroy" },
     .{ "siv_epub", "siv_epub_destroy" },
     .{ "siv_settings", "siv_settings_destroy" },
+    .{ "siv_system_monitor", "siv_system_monitor_destroy" },
 };
 
 pub const borrowed = [_][]const u8{ "siv_window", "siv_txn", "siv_node", "siv_timer", "siv_watch", "siv_prepare", "siv_image_request", "siv_draw", "siv_external", "siv_output", "siv_toplevel", "siv_workspace", "siv_dbus_reader", "siv_dbus_invocation", "siv_action", "siv_undo" };
@@ -126,6 +127,7 @@ pub const constructors = [_][]const u8{
     "siv_dbus_export",
     "siv_epub_open",
     "siv_settings_open",
+    "siv_system_monitor_create",
 };
 
 pub fn isUnbound(name: []const u8) bool {
