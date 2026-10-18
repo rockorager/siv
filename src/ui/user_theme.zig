@@ -45,6 +45,9 @@ pub const Parser = struct {
     /// header that did not parse.
     in_table: bool = true,
     buf: [max_string]u8 = undefined,
+    /// Unescapes basic strings here instead of `buf`, for longer ones:
+    /// settings files hold paths (D36).
+    long: ?[]u8 = null,
 
     pub const max_string = 256;
 
@@ -211,13 +214,14 @@ pub const Parser = struct {
 
     fn basic(p: *Parser) ?Value {
         p.pos += 1;
+        const buf = p.long orelse &p.buf;
         var n: usize = 0;
         while (p.peek()) |ch| {
             p.pos += 1;
             var out: [4]u8 = undefined;
             var len: usize = 1;
             switch (ch) {
-                '"' => return .{ .string = p.buf[0..n] },
+                '"' => return .{ .string = buf[0..n] },
                 '\\' => {
                     const e = p.peek() orelse return null;
                     p.pos += 1;
@@ -245,8 +249,8 @@ pub const Parser = struct {
                     out[0] = ch;
                 },
             }
-            if (n + len > p.buf.len) return null;
-            @memcpy(p.buf[n..][0..len], out[0..len]);
+            if (n + len > buf.len) return null;
+            @memcpy(buf[n..][0..len], out[0..len]);
             n += len;
         }
         return null;
