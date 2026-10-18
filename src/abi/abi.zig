@@ -63,6 +63,8 @@ pub const document = @import("document.zig");
 pub const undo = @import("undo.zig");
 /// Settings and state (D36).
 pub const settings = @import("settings.zig");
+/// Spell checking (D37).
+pub const spell = @import("spell.zig");
 /// Driving and inspecting applications on the headless backend.
 pub const testing = @import("testing.zig");
 
@@ -70,7 +72,7 @@ pub const testing = @import("testing.zig");
 pub const types = t;
 
 /// The files that export schema functions.
-const implementations = .{ @This(), application, tree, canvas, external, dnd, clipboard, theme, cursor, portal, actions, print, tray, image_load, watch, icon, dbus, input, widget, shell, document, undo, settings, testing } ++ @import("widgets").implementations;
+const implementations = .{ @This(), application, tree, canvas, external, dnd, clipboard, theme, cursor, portal, actions, print, tray, image_load, watch, icon, dbus, input, widget, shell, document, undo, settings, spell, testing } ++ @import("widgets").implementations;
 
 const version = build_options.version;
 

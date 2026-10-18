@@ -866,3 +866,29 @@ test "D-Bus from Lua: a service and a client on one bus" {
     defer testing.allocator.free(script);
     _ = try run(script);
 }
+
+test "spell checking from Lua" {
+    _ = try run(prologue ++
+        \\local function read(path) local f <close> = assert(io.open(path, "rb")); return f:read("a") end
+        \\app:add_dictionary("en_ZZ", read("src/spell/testdata/en_TEST.aff"), read("src/spell/testdata/en_TEST.dic"))
+        \\assert(app:get_dictionaries() == "en_ZZ")
+        \\assert(app:check_spelling("", "quick") == true and app:check_spelling("en", "quikc") == false)
+        \\assert(app:suggest_spelling("", "quikc"):match("^quick"))
+        \\app:add_spelling_word("", "siv")
+        \\assert(app:check_spelling("", "Siv"))
+        \\local ok, err = pcall(app.check_spelling, app, "de", "Wort")
+        \\assert(not ok and err.code == "unavailable")
+        \\local ed
+        \\win:update(function(txn, root)
+        \\  ed = txn:editor(root, {})
+        \\  txn:set_text(ed, "teh quikc fox")
+        \\  txn:set_spell_check(ed, true)
+        \\end)
+        \\assert(app:test_settle(5000))
+        \\assert(ed:get_spell_language() == "en_ZZ")
+        \\local found, s, e = ed:find_misspelling(0, "next")
+        \\assert(found and s == 4 and e == 9, tostring(s))
+        \\ed:editor_replace(s, e, "quick")
+        \\assert(ed:get_text() == "teh quick fox")
+    );
+}
