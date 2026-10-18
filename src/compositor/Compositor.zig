@@ -705,6 +705,19 @@ pub fn destroyWindow(self: *Compositor, window: WindowId) Allocator.Error!void {
     self.outbox.purgeBatch(window);
 }
 
+/// Frees every window's renderer caches (glyphs, and on Vulkan the
+/// textures the next frame does not draw) on the compositor thread,
+/// under memory pressure (D42). Frames rasterize and upload again what
+/// they draw.
+pub fn trimCaches(self: *Compositor) Allocator.Error!void {
+    const S = struct {
+        fn run(_: ?*anyopaque, comp: *Compositor) void {
+            for (comp.windows.items) |w| if (w) |win| win.surface.trimCaches();
+        }
+    };
+    return self.post(null, S.run, null);
+}
+
 /// Runs `func(ctx, compositor)` on the compositor thread, in order with
 /// commits, and returns without waiting. `ctx` must stay valid until
 /// `func` or, if the compositor is destroyed first, `destroy` runs.

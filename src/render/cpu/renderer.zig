@@ -406,6 +406,11 @@ pub const Renderer = struct {
         return r.framebuffer;
     }
 
+    /// Frees the glyph cache under memory pressure (D42).
+    pub fn trimCaches(r: *Renderer) void {
+        r.glyphs.trim();
+    }
+
     /// Drops cached glyphs of a font that is going away.
     pub fn evictFont(r: *Renderer, key: u64) void {
         r.glyphs.evictFont(key);

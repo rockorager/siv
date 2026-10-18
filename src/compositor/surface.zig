@@ -71,6 +71,14 @@ pub const Surface = union(enum) {
         }
     }
 
+    /// Frees the renderer's caches under memory pressure (D42).
+    pub fn trimCaches(s: Surface) void {
+        switch (s) {
+            .cpu => |c| c.renderer.trimCaches(),
+            .vulkan => |v| v.renderer.trimCaches(),
+        }
+    }
+
     /// Presents `frame` on window `id`. Returns false when no buffer is
     /// free yet; try again shortly, with full damage.
     pub fn present(s: *Surface, p: platform.Platform, id: platform.WindowId, frame: Frame) Error!bool {

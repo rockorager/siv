@@ -240,6 +240,17 @@ pub fn parseUserAgentSheet(gpa: Allocator) Error!css.Sheet {
     return css.sheet.parse(gpa, ua.css, .{});
 }
 
+/// Drops the layout caches of IFCs not used in the latest pass or
+/// paint, under memory pressure (D42); they are rebuilt when painted
+/// again. Not while a job has the document.
+pub fn trimCaches(d: *Document) void {
+    const e = if (d.engine) |*e| e else return;
+    const budget = e.cache_budget;
+    e.cache_budget = 0;
+    e.trim(e.clock);
+    e.cache_budget = budget;
+}
+
 /// Memory the document holds (for budgets and reports).
 pub fn memory(d: *const Document) usize {
     var m = d.dom.memory() + d.arena.queryCapacity() + d.store.styles.capacity * @sizeOf(css.Style);

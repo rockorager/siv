@@ -132,6 +132,15 @@ pub const Cache = struct {
         c.colors.clearRetainingCapacity();
     }
 
+    /// Drops every entry and frees their memory, under memory pressure
+    /// (D42); glyphs rasterize again as frames draw them.
+    pub fn trim(c: *Cache) void {
+        c.map.clearAndFree(c.gpa);
+        c.entries.clearAndFree(c.gpa);
+        c.masks.clearAndFree(c.gpa);
+        c.colors.clearAndFree(c.gpa);
+    }
+
     pub fn evictFont(c: *Cache, key: u64) void {
         // Entries are packed; dropping one font means rebuilding. Fonts go
         // away rarely, so clearing everything is simpler and as correct.

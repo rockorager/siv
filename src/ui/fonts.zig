@@ -210,6 +210,16 @@ pub fn setDatabase(f: *Fonts, database: text.fontconfig.Database) void {
     f.dropChains(null);
 }
 
+/// Evicts the shaping and lines of long texts' blocks not used since
+/// the last frame, under memory pressure (D42); they shape again when
+/// shown.
+pub fn trim(f: *Fonts) void {
+    const budget = f.residency.budget;
+    f.residency.budget = 0;
+    f.residency.trim();
+    f.residency.budget = budget;
+}
+
 pub fn addListener(f: *Fonts, listener: Listener) error{OutOfMemory}!void {
     try f.listeners.append(f.gpa, listener);
 }

@@ -339,6 +339,8 @@ glyph_masks: Atlas,
 glyph_colors: Atlas,
 glyph_pos: std.ArrayList(AtlasPos) = .empty,
 textures: std.AutoHashMapUnmanaged(u64, Texture) = .empty,
+/// The next frame keeps only the textures it draws (`trimCaches`).
+trim_textures: bool = false,
 /// Bytes of all textures.
 texture_bytes: u64 = 0,
 /// Copies dma-bufs into textures.
@@ -488,6 +490,14 @@ pub fn resize(r: *Renderer, width: u32, height: u32) Error!void {
     r.stale = true;
     if (width == 0 or height == 0) return;
     r.working = try Image.init(d, width, height, Device.fp16, c.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | c.VK_IMAGE_USAGE_SAMPLED_BIT | c.VK_IMAGE_USAGE_TRANSFER_SRC_BIT | c.VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+}
+
+/// Frees the glyph cache under memory pressure (D42), and at the next
+/// frame every texture that frame does not draw (once no frame in flight
+/// reads them).
+pub fn trimCaches(r: *Renderer) void {
+    r.glyphs.trim();
+    r.trim_textures = true;
 }
 
 /// Drops cached glyphs of a font that is going away.
@@ -1602,7 +1612,9 @@ fn planPools(r: *Renderer) Error!void {
             it = r.textures.iterator();
         }
     }
-    while (r.texture_bytes > texture_budget) {
+    const budget: u64 = if (r.trim_textures) 0 else texture_budget;
+    r.trim_textures = false;
+    while (r.texture_bytes > budget) {
         var oldest: ?std.AutoHashMapUnmanaged(u64, Texture).Entry = null;
         var all = r.textures.iterator();
         while (all.next()) |e| {

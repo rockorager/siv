@@ -220,7 +220,7 @@ pub const View = struct {
             gpa.free(o.base_url);
             o.base_url = try std.mem.concat(gpa, u8, &.{ "epub:///", options.book_path });
         }
-        try t.setCanvas(id, .{ .draw = draw, .measure = measure, .user = v, .banded = true, .semantics = semantics });
+        try t.setCanvas(id, .{ .draw = draw, .measure = measure, .user = v, .banded = true, .semantics = semantics, .trim = trim });
         try t.on(id, .pointer, .{ .func = onPointer, .user = v });
         try t.setSemantics(id, .{ .role = .document });
         try v.startParse();
@@ -1272,6 +1272,14 @@ pub const View = struct {
     }
 
     // Accessibility -------------------------------------------------------------
+
+    /// Memory pressure (D42): the document's layout caches go, unless a
+    /// job has it.
+    fn trim(user: ?*anyopaque, _: *Window, _: NodeId) void {
+        const v: *View = @ptrCast(@alignCast(user));
+        if (v.busy) return;
+        if (v.d) |d| d.trimCaches();
+    }
 
     fn semantics(user: ?*anyopaque, win: *Window, node: NodeId, out: *ui.semantics.Virtual) Error!void {
         _ = win;

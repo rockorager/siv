@@ -1594,6 +1594,15 @@ pub fn paletteAt(win: *const Window, id: NodeId) theme.Palette {
     return theme.resolveIn(&win.theme_choice, win.desktop.themeInput(), &win.user_theme, &ctx);
 }
 
+/// Asks canvases to release what they can rebuild, under memory
+/// pressure (D42).
+pub fn trimMemory(win: *Window) void {
+    for (win.nodes.items, 0..) |*n, i| {
+        if (n.status != .live or n.kind != .canvas) continue;
+        if (n.data.canvas.trim) |f| f(n.data.canvas.user, win, @enumFromInt(i));
+    }
+}
+
 /// Whether motion (caret blinking, animations) is off.
 pub fn reducedMotion(win: *const Window) bool {
     return win.force_reduced_motion or win.desktop.reduced_motion;

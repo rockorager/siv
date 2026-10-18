@@ -711,6 +711,9 @@ pub const Canvas = struct {
     /// Adds the content's own accessible objects below the node (D18,
     /// D32), in node coordinates.
     semantics: ?*const fn (user: ?*anyopaque, win: *Window, node: NodeId, out: *@import("semantics.zig").Virtual) error{OutOfMemory}!void = null,
+    /// Releases what the content can rebuild, under memory pressure
+    /// (D42, `Window.trimMemory`), such as a document's layout caches.
+    trim: ?*const fn (user: ?*anyopaque, win: *Window, node: NodeId) void = null,
 };
 
 pub const CanvasSize = struct { width: f32 = 0, height: f32 = 0 };

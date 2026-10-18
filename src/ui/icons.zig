@@ -128,6 +128,23 @@ pub fn deinit(icons: *Icons) void {
     icons.gpa.destroy(icons.themes);
 }
 
+/// Drops every loaded icon under memory pressure (D42); loads in flight
+/// stay. What windows show stays on screen, since display lists keep
+/// paths and pixels; a node that paints an icon again loads it again.
+pub fn trim(icons: *Icons) void {
+    var it = icons.entries.iterator();
+    while (it.next()) |e| {
+        const v = e.value_ptr;
+        if (v.state == .loading) continue;
+        if (v.state == .ready) v.state.ready.release();
+        icons.bytes -= v.bytes;
+        const names = e.key_ptr.names;
+        icons.entries.removeByPtr(e.key_ptr);
+        icons.gpa.free(names);
+        it = icons.entries.iterator();
+    }
+}
+
 fn clear(icons: *Icons) void {
     var it = icons.entries.iterator();
     while (it.next()) |e| {
