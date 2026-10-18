@@ -71,11 +71,12 @@ fn position(st: *const Split) f64 {
     return st.position;
 }
 
-/// The start and end panes.
+/// The start and end panes, and the divider, which hides with either.
 fn part(st: *const Split, p: siv.WidgetPart, _: u32) Node {
     return switch (p) {
         .start => st.start,
         .end => st.end,
+        .divider => st.divider,
         else => .null,
     };
 }

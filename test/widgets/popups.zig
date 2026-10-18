@@ -557,8 +557,8 @@ test "split panes: the divider follows drags and keys within the panes' limits" 
         try ok(c.siv_node_get_rect(start, &r));
         try testing.expectEqual(@as(f32, 150), r.width);
         try testing.expectEqual(@as(f32, if (rtl) 250 else 0), r.x);
-        var divider: t.Node = .null;
-        divider = c.siv_node_get_related(start, .next);
+        const divider = c.siv_widget_get_part(split, .divider, 0);
+        try testing.expectEqual(c.siv_node_get_related(start, .next), divider);
         try ok(c.siv_node_focus(divider));
         try h.settle();
         const d = try sem(divider);

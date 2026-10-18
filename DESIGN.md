@@ -4389,7 +4389,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       control (`siv_event.shortcut_key`, D44).
     - Parts the application fills are reached with
       `siv_widget_get_part` (dialog content and actions, popover content,
-      tabs and panels, split panes, a menu button's menu, a table's
+      tabs and panels, split panes and their divider, a menu button's menu, a table's
       column header cells, a combo box's options, a header bar's start,
       end, and title boxes, a sidebar's items and the boxes above and
       below them, a sidebar item's end box, a navigation stack's pages).
@@ -7750,7 +7750,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       into a navigation stack instead, the sidebar as its first page and
       the content pushed when an item is chosen, as
       AdwNavigationSplitView does, moves nodes (`siv_move`) and is the
-      application's; it needs no sidebar code either.
+      application's; it needs no sidebar code either. A sidebar in a
+      split pane hides under the same condition together with the
+      pane's divider (`SIV_WIDGET_PART_DIVIDER`).
   - **Header bar** (`siv_header_bar`). A flex row: a start box and an
     end box that share what the title leaves equally (so the title is
     centered while both fit), the title between them in bold, cut with
