@@ -325,8 +325,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **Decision:** a retained tree of a small closed set of primitives (box, flex,
   grid, stack, text, editor, scroll/viewport, image, canvas, external surface).
   Mutations are batched in a transaction and applied atomically on commit.
-  Declarative diffing, if wanted, is a helper above the tree, not a layer every
-  update passes through.
+  A declarative layer, if wanted, is a helper above the tree that drives it
+  through the same transactions, never a second tree every update passes
+  through: Lua's is reactive (`siv.view`, D45), updating the properties
+  whose signals changed rather than diffing descriptions.
 
   ```c
   siv_txn *t = siv_txn_begin(win);
@@ -376,8 +378,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   state, and cycles and kinds can only be checked at commit, where failure
   is too late); descriptions lowered through several intermediate representations
   (ourokit: description → descriptor → instance → render object).
-- **Reverse if:** binding authors cannot express common UIs without a diffing
-  layer; then ship the diffing helper, not a second tree.
+- **Reverse if:** binding authors cannot express common UIs without a
+  declarative layer; then ship it above the tree (as D45 does for Lua), not a
+  second tree.
 
 ### D5. Callbacks run only at safe points on the UI thread
 
@@ -4835,7 +4838,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     an idle application pays nothing. The reload runs the chunk inside
     the running application: `siv.app_create` returns that application
     and `app:run()` returns at once. Applications opt in to keeping state
-    with `siv.keep(key, make)`, whose value survives reloads; windows
+    with `siv.keep(key, make)`, whose values (all that `make` returns,
+    so a signal's getter and setter, D45) survive reloads; windows
     created inside `make` are kept with it, so their size and focus stay
     and the chunk rebuilds their content (keeping models, drafts, or
     nodes as it chooses, and registering new handlers, which replace the
@@ -8439,6 +8443,181 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   layouts); applications need translated key names in labels (then a
   message catalog, D21); or applications need other layouts' keysyms
   for any key (then expose the keymap).
+
+### D45. Reactive Lua layer
+
+- **Requirement:** Lua applications describe their UI from state and
+  have the tree follow the state, without writing the transaction for
+  each change by hand, and without paying per update for the parts of
+  the UI that did not change: updating one label of a large window
+  costs about what the imperative update costs. Hot reload (D23)
+  rebuilds the UI from kept state. Every capability stays reachable
+  imperatively, and the layer adds nothing to libsiv (D4, D22).
+- **Decision:** `require("siv.view")`, a module in the style of SolidJS,
+  written in Lua over the generated binding (`src/lua/view.lua`) and
+  shipped with libsiv-lua and siv.so. The user chose this model over a
+  React-style diffing layer for performance.
+  - **Signals.** `local count, set_count = view.signal(0)`: reading the
+    getter inside a function the view runs subscribes that function;
+    setting a value equal to the current one (`==`, or `opts.equals`;
+    `equals = false` notifies always, for a table changed in place)
+    does nothing. `view.memo(fn)` is a derived value whose readers run
+    again only when its result changes; `view.effect(fn)` runs after the
+    flush's transactions commit; `view.batch`, `view.untrack`,
+    `view.peek`, `view.on_cleanup`, `view.on_mount`, and `view.root`
+    complete it. Updates are glitch-free: an out-of-date computation
+    first brings the memos it read up to date (marked check, then dirty,
+    as Reactively does), so a diamond runs its effect once with
+    consistent values.
+  - **Components run once and build real nodes.** `view.ui` has one
+    builder per siv builder, generated from the binding's list
+    (`internal.builders`): `txn:flex(parent, desc, props)` is
+    `ui.flex(desc, props, children)`, where `children(node)` builds the
+    node's children. They build under the component's current parent,
+    in its transaction, so there are no descriptions and no diffing.
+    `view.mount(target, Component)` builds into a window's root or a
+    node in one transaction and returns its disposer.
+  - **Bindings.** A property given as a function (`text = function()
+    return count() .. " items" end`, or `text = count`) is a binding: a
+    computation that reads it and, when its value differs from the last
+    one, calls that property's setter on that node (`siv_set_<key>`, the
+    widget interface's `siv_widget_set_label`, `_icon`, `_disabled`,
+    `_value`, and `_range` for those keys, D22) in the window's
+    transaction. Its first value goes into the builder's properties
+    table, so a node is still one call. A builder's first argument may
+    be a function where a setter for the builder exists (`ui.text(fn)`
+    is `siv_set_text`; `ui.flex(fn)` is `siv_set_flex`). Widget values
+    are set after the builder's children, since a radio group's value
+    needs its radios.
+  - **Control flow.** `view.show(when, Then, Else)` and
+    `view.switch(key, cases)` swap subtrees when the condition's
+    truthiness or the key changes. `view.each(list, Row, { key = fn })`
+    keys rows by `fn(item)` or the item: rows of new keys are built,
+    rows of keys gone are removed, and kept rows keep their nodes, moved
+    only off the longest increasing subsequence of their old positions
+    (one move to bring one row to the front, n - 1 to reverse). A key
+    whose item changed builds its row again; what changes in place
+    lives in signals inside the item. Insertion points come from the
+    parts after a region in its component's block (nodes, or other
+    regions' first nodes), so no marker nodes exist; the first build
+    appends in order. Since real nodes come and go, D38's enter, exit,
+    and layout motion runs where the layer inserts, removes, and moves
+    them, with nothing of its own.
+  - **Ownership.** Every computation and cleanup belongs to the scope
+    that made it: a mount, a branch of show or switch, a row of each, or
+    a computation (whose children go when it runs again). Removing a
+    subtree through the layer disposes its scope, which unsubscribes its
+    computations from their signals: Lua's collector cannot see a
+    subscription that a live signal holds, so disposal is structural.
+    `view.stats()` counts live computations and subscriptions, which
+    the tests check returns to its value after subtrees go. Nodes an
+    application removes itself keep their scope until the mount goes.
+    Computations made outside a component belong to the run of the main
+    chunk, disposed by the next successful reload. A mount whose window
+    is destroyed is disposed when the reload sweeps it or when a flush
+    finds the window gone.
+  - **Batching.** Writes outside callbacks and batches flush at once.
+    Writes during a callback flush when the outermost callback returns
+    to the binding: the binding's wrapper of every Lua callback (event
+    handlers, timers, posts, job completions, coroutines resumed by
+    completions, hot reload) runs a function the view registered
+    (`internal.set_after`) once its depth is back to 0, if the view
+    asked for it (`internal.defer`), so it costs nothing otherwise. Each
+    flush opens at most one transaction per window, lazily, for the
+    bindings and control flow of that window, commits them all, then
+    runs effects; effects that write signals start another round. Every
+    callback runs before the frame of its loop iteration (D5), and the
+    ones inside a frame (viewport and settings events, a view's bind)
+    may open transactions, so no C hook was needed: a "before the next
+    frame" call would have served only this module, against D22's rule
+    that primitives exist for widgets that need them. Where a window
+    has a transaction of the application's open (a write inside
+    `window:update`), its computations retry from a `siv_post`, at the
+    next dispatch.
+  - **Handlers** are passed to the builder once (`on = { ... }`) and
+    read signals when they run, so nothing re-registers `siv_on` as
+    state changes: components do not run again.
+  - **Editors are uncontrolled.** siv owns their text and the
+    application hears `change`. A `text` binding on an editor or text
+    field sets the text only when it differs from the editor's (D15
+    drops the undo history on application-set text), so a draft that
+    follows the user's typing does not echo back, and Ctrl+Z still
+    undoes it; clearing the draft sets the text.
+  - **Virtualized views stay data sources.** `ui.list_view`,
+    `tree_view`, `table_view`, and `grid_view` take `row(item, index,
+    depth)` in their descriptor: it builds a row node's content once,
+    with getters, and a recycled row only gets new values, so its
+    bindings update in place inside the view's transaction; `items`, a
+    getter for an array, sets the count (`siv_view_set_count`, or
+    `siv_view_refresh` when only items changed). Rows are never
+    children of the layer.
+  - **Hot reload.** Components run once, so a reload runs the chunk
+    again and its `view.mount` replaces the previous mount on the same
+    target. Signals kept with `siv.keep` (which now keeps every value
+    `make` returns, so a getter and its setter) survive. Nodes with a
+    `key` property get a key path (under their keyed ancestors and
+    rows' keys), and a remount restores focus, editors' text and
+    selection, and scroll offsets (from the viewport events of keyed
+    scroll nodes) by path. Anything else (a combo box's open popup, a
+    list view's cursor, an unkeyed editor's text) is rebuilt from the
+    new run; state that must survive belongs in kept signals.
+    Restoring runs after the remount's effects, so it wins over an
+    `on_mount` that focuses a default.
+  - **The pitfall.** SolidJS's best-known trap is reading a signal
+    eagerly (`text = "Count: " .. count()`), which silently builds a
+    constant. Here a signal read while a component builds, outside a
+    function the view runs, raises: "a signal was read while building
+    nodes, outside a function ... pass a function instead, or read its
+    current value on purpose with view.peek(count)". A getter passed
+    itself (`text = count`) is a binding, so the short form is the
+    reactive one.
+  - **Annotations.** `gen_types.zig` writes `share/siv/lua/siv/view.lua`
+    for lua-language-server: the core API (`view_types.lua`), the ui
+    builders from the schema, and `siv.view.properties`, every property
+    also typed as a function.
+  - **Measured** (`src/lua/bench_view.lua`, ReleaseFast, headless, the
+    Lua side of each update with its transaction and commit; the frame
+    that follows is the same work either way; medians of three runs,
+    which differ by up to 20%). Building 10,000 nodes with 5,000 bindings
+    in one transaction: 38 to 62 ms, against 20 ms imperatively.
+    Updating one bound label of that tree: 35 to 55 µs, against 31 to
+    46 µs for `window:update` with `set_text` on a kept node, whatever
+    the number of other bindings (a diffing layer would visit the
+    tree). 40 labels in one batch: 156 to 202 µs, against 60 to 93 µs.
+    A keyed list of 1,000 rows reversed: 1.5 to 2.1 ms; shuffled: 2.2 to
+    2.8 ms; one row moved: 1.0 to 1.5 ms; against 0.5 to 0.8 ms for the
+    generic hand-written reorder (every row moved, in order) and 2.6 to
+    3.4 ms for building the rows again. The layer's own cost in a
+    reorder is about 1 µs of Lua per row (keys, the subsequence, and
+    placement, after common runs at the start and end are skipped, which
+    makes an unchanged order cost 0.1 ms), so code that knows exactly
+    which row moved still does that one move faster by hand.
+  - Tests (`test/lua/view.zig`): reactivity and glitch-freedom, the
+    eager-read error, bindings and control flow, one transaction per
+    window per callback (events, clicks, timers, posts, coroutines) and
+    the busy retry, disposal back to zero after subtrees and mounts go,
+    keyed moves keeping node identity with the expected number of
+    moves, an editor's undo surviving its binding, virtualized rows
+    rebinding without rebuilding, and a hot reload keeping signals,
+    focus, and an editor's text and caret, a failed reload included.
+    `examples/todo.lua` and `examples/widgets.lua` are written with the
+    layer and still match their goldens, the hot reload one included.
+- **Alternatives:** a React-style layer that runs components again and
+  diffs descriptions (the cost of an update grows with the component,
+  and every node is described twice); keeping the imperative style only
+  (every application writes its own bookkeeping of which node shows
+  which state); flushing from a C "before the next frame" hook (a
+  primitive with one user, and callbacks already end before frames);
+  marker nodes for insertion points (extra nodes in the tree, its
+  semantics, and its layout); controlled editors (each keystroke would
+  echo back as `siv_set_text` and drop the undo history); silently
+  accepting eager reads, as SolidJS must (it cannot tell a component
+  body from an event handler; Lua's view can, since it runs the body).
+- **Reverse if:** the layer's overhead per binding shows in profiles of
+  real applications (then move computations into C behind a public
+  primitive); applications keep needing to restore state the key paths
+  cannot reach; or another binding wants the same layer (then its core
+  belongs in a shared form, not a second copy).
 
 ## Lessons from ourokit
 

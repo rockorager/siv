@@ -27,6 +27,7 @@ const L_ = lua.State;
 pub const c_api = c;
 
 const prelude = @embedFile("prelude.lua");
+const view_source = @embedFile("view.lua");
 
 /// libsiv-lua bundles Lua and exports the embedding API; siv.so, the Lua
 /// C module, has only luaopen_siv and takes Lua from its host.
@@ -34,6 +35,7 @@ const bundled = @import("lua_options").bundled;
 
 comptime {
     @export(&luaopen_siv, .{ .name = "luaopen_siv" });
+    @export(&luaopen_siv_view, .{ .name = "luaopen_siv_view" });
     if (bundled) {
         @export(&siv_lua_new, .{ .name = "siv_lua_new" });
         @export(&siv_lua_run, .{ .name = "siv_lua_run" });
@@ -195,6 +197,18 @@ pub fn luaopen_siv(Lq: ?*L_) callconv(.c) c_int {
     c.lua_setfield(L, internal, "defer");
     pushFn(L, st, inCallback);
     c.lua_setfield(L, internal, "in_callback");
+    // Builders and how many Lua arguments each takes between its parent
+    // and its properties table, for siv.view's ui table (D45).
+    c.lua_createtable(L, 0, 32);
+    inline for (spec.functions) |f| {
+        if (comptime !m.isUnbound(f.name) and m.isBuilder(spec, f) and f.params.len >= 2 and m.isHandle(spec, f.params[1].type) and
+            std.mem.eql(u8, f.params[1].type.ref, "siv_node"))
+        {
+            c.lua_pushinteger(L, comptime m.luaArgsBefore(spec, f, f.params.len) - 2);
+            c.lua_setfield(L, -2, comptime m.methodName(spec, f).ptr);
+        }
+    }
+    c.lua_setfield(L, internal, "builders");
     c.lua_pushvalue(L, internal);
     setRegistry(L, "siv.internal");
 
@@ -204,6 +218,28 @@ pub fn luaopen_siv(Lq: ?*L_) callconv(.c) c_int {
     lua.call(L, 2, 1);
     c.lua_pushvalue(L, -1);
     setRegistry(L, "siv.module");
+    // require("siv.view") wherever require("siv") ran.
+    _ = c.luaL_getsubtable(L, lua.registry, "_PRELOAD");
+    lua.pushcfunction(L, luaopen_siv_view);
+    c.lua_setfield(L, -2, "siv.view");
+    lua.pop(L, 1);
+    return 1;
+}
+
+/// require("siv.view"): the reactive layer written in Lua on top of the
+/// module (view.lua, D45). Also exported, so that a host's
+/// require("siv.view") finds it in siv.so before require("siv") ran.
+pub fn luaopen_siv_view(Lq: ?*L_) callconv(.c) c_int {
+    const L = Lq.?;
+    if (c.lua_getfield(L, lua.registry, "siv.view") == lua.ttable) return 1;
+    lua.pop(L, 1);
+    c.luaL_requiref(L, "siv", luaopen_siv, 0);
+    if (c.luaL_loadbufferx(L, view_source.ptr, view_source.len, "=[siv.view]", "t") != lua.ok) _ = c.lua_error(L);
+    lua.insert(L, -2);
+    _ = c.lua_getfield(L, lua.registry, "siv.internal");
+    lua.call(L, 2, 1);
+    c.lua_pushvalue(L, -1);
+    setRegistry(L, "siv.view");
     return 1;
 }
 

@@ -70,6 +70,20 @@ end
 assert(size and size.width > 0, "the image did not load")
 assert(pasted == "via siv.so", tostring(pasted))
 
+-- The reactive layer (D45), from require and from the module's export.
+local view = require("siv.view")
+local open_view = assert(package.loadlib(dir .. "/siv.so", "luaopen_siv_view"))
+assert(open_view() == view)
+local count, set_count = view.signal(1)
+local label
+view.mount(win, function()
+	label = view.ui.text(function()
+		return "count " .. count()
+	end)
+end)
+set_count(2)
+assert(label:get_text() == "count 2", label:get_text())
+
 -- Hot reload belongs to siv-lua, which owns the main chunk.
 ok, err = pcall(siv.reload)
 assert(not ok and tostring(err):find("siv%-lua"), tostring(err))

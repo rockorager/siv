@@ -14,6 +14,7 @@
 //!   bin/siv-lua                  runs a Lua application, with --watch for
 //!                                hot reload
 //!   share/siv/lua/siv.lua        annotations for lua-language-server
+//!   share/siv/lua/siv/view.lua   and for require("siv.view") (D45)
 //!   share/licenses/siv-lua/NOTICES
 //!
 //! Lua is compiled from its core and an explicit allowlist of standard
@@ -298,7 +299,9 @@ pub fn add(b: *std.Build, o: Options) Outputs {
     });
     const gen_run = b.addRunArtifact(gen);
     const types = gen_run.addOutputFileArg("siv.lua");
+    const view_types = gen_run.addOutputFileArg("view.lua");
     b.getInstallStep().dependOn(&b.addInstallFileWithDir(types, .prefix, "share/siv/lua/siv.lua").step);
+    b.getInstallStep().dependOn(&b.addInstallFileWithDir(view_types, .prefix, "share/siv/lua/siv/view.lua").step);
 
     // NOTICES (D25): siv, the Zig runtime, and the Lua compiled in.
     const notices = b.addExecutable(.{

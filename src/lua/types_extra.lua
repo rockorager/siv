@@ -81,13 +81,15 @@ function siv.job_start(app, flags, work, args, done) end
 ---@return ...
 function window:update(fn, ...) end
 
----Returns the value kept under `key`, making it with make() the first time.
----Values survive hot reloads (siv-lua --watch); windows created inside make()
----are kept with them.
+---Returns the values kept under `key`, making them with make() the first time
+---(every value make returns, so `siv.keep("n", function() return
+---view.signal(0) end)` keeps a signal's getter and setter). Values survive hot
+---reloads (siv-lua --watch); windows created inside make() are kept with them.
 ---@generic T
 ---@param key any
----@param make fun(): T
+---@param make fun(): T, ...
 ---@return T
+---@return ...
 function siv.keep(key, make) end
 
 ---Runs the main chunk again inside the running application (siv-lua --watch

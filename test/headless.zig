@@ -69,4 +69,5 @@ test {
     _ = @import("doc/epub.zig");
     _ = @import("lua/lua.zig");
     _ = @import("lua/binding.zig");
+    _ = @import("lua/view.zig");
 }

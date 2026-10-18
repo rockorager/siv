@@ -1,8 +1,10 @@
-/* siv.so, the Lua C module: only luaopen_siv. lua_* stay undefined and
- * resolve from the process that loads the module. */
+/* siv.so, the Lua C module: only luaopen_siv and luaopen_siv_view
+ * (require("siv.view"), D45). lua_* stay undefined and resolve from the
+ * process that loads the module. */
 SIV_LUA_MODULE_0.1 {
   global:
     luaopen_siv;
+    luaopen_siv_view;
   local:
     *;
 };

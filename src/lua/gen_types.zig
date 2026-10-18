@@ -1,9 +1,11 @@
 //! Generates lua-language-server annotations (LuaCATS) for require("siv")
 //! from the API schema, by the same rules as the binding (mapping.zig),
 //! so editors check Lua code against the API that libsiv-lua exposes.
-//! The prelude's additions are hand-written in types_extra.lua.
+//! The prelude's additions are hand-written in types_extra.lua. Also
+//! writes those of require("siv.view") (D45): its ui builders and
+//! reactive properties from the schema, the rest from view_types.lua.
 //!
-//! Usage: siv-lua-gen-types <output>
+//! Usage: siv-lua-gen-types <siv.lua> <view.lua>
 
 const std = @import("std");
 const m = @import("mapping.zig");
@@ -13,17 +15,117 @@ const Type = schema.Type;
 const Writer = std.Io.Writer;
 
 const extra = @embedFile("types_extra.lua");
+const view_extra = @embedFile("view_types.lua");
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
-    if (args.len != 2) {
-        std.log.err("usage: {s} <output>", .{args[0]});
+    if (args.len != 3) {
+        std.log.err("usage: {s} <siv.lua> <view.lua>", .{args[0]});
         std.process.exit(2);
     }
     var w: Writer.Allocating = .init(arena);
     try write(&w.writer, m.spec);
     try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = args[1], .data = w.written() });
+    var v: Writer.Allocating = .init(arena);
+    try writeView(&v.writer, m.spec);
+    try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = args[2], .data = v.written() });
+}
+
+/// Builders that siv.view's ui table wraps: a node under a parent node.
+fn isViewBuilder(s: Schema, f: schema.Function) bool {
+    return !m.isUnbound(f.name) and m.isBuilder(s, f) and f.params.len >= 2 and m.isHandle(s, f.params[1].type) and
+        std.mem.eql(u8, f.params[1].type.ref, "siv_node");
+}
+
+/// The setter a builder's first argument takes as a binding (ui.text's
+/// text is siv.set_text), if any.
+fn argSetter(s: Schema, f: schema.Function) ?schema.Function {
+    const name = m.methodName(s, f);
+    for (s.functions) |g| {
+        if (m.isUnbound(g.name) or !std.mem.startsWith(u8, g.name, "siv_set_")) continue;
+        if (std.mem.eql(u8, g.name["siv_set_".len..], name)) return g;
+    }
+    return null;
+}
+
+/// The siv.view annotations: view_types.lua, then the properties a ui
+/// builder takes, each also as a function (a binding), and the builders.
+pub fn writeView(w: *Writer, s: Schema) !void {
+    try w.print(
+        \\---@meta siv.view
+        \\-- Generated from {s} and src/lua/view_types.lua by
+        \\-- src/lua/gen_types.zig. Do not edit. require("siv.view") (D45).
+        \\
+        \\
+    , .{s.source});
+    try w.writeAll(view_extra);
+    try w.writeAll(
+        \\
+        \\---Properties of a node a ui builder makes: those of siv.properties, each
+        \\---also as a function, which makes it a binding; the widget interface's
+        \\---label, icon, disabled, value, and range (D22); and key, the node's name in
+        \\---the key paths that a remount (hot reload) restores state by.
+        \\---@class siv.view.properties
+        \\---@field on? table<siv.event_type, siv.event_fn> Event handlers (siv.on), set once: read signals inside them.
+        \\---@field on_capture? table<siv.event_type, siv.event_fn> Capture handlers (siv.on_capture).
+        \\---@field key? string|number Names the node in key paths.
+        \\---@field label? string|fun(): string siv.widget_set_label
+        \\---@field icon? string|fun(): string siv.widget_set_icon
+        \\---@field disabled? boolean|fun(): boolean siv.widget_set_disabled
+        \\---@field value? number|fun(): number siv.widget_set_value
+        \\---@field range? { min: number, max: number, step?: number }|fun(): { min: number, max: number, step?: number } siv.widget_set_range
+        \\
+    );
+    for (s.functions) |f| {
+        if (!std.mem.startsWith(u8, f.name, "siv_set_")) continue;
+        const key = f.name["siv_set_".len..];
+        const setter = m.propertySetter(s, key) orelse continue;
+        if (!std.mem.eql(u8, setter.name, f.name)) continue;
+        try w.print("---@field {s}? ", .{key});
+        try writeType(w, s, f.params[2].type, .input);
+        try w.writeAll("|fun(): ");
+        try writeType(w, s, f.params[2].type, .input);
+        try w.print(" siv.{s}\n", .{m.luaName(s, f.name)});
+    }
+    try w.writeAll("\n");
+    for (s.functions) |f| {
+        if (!isViewBuilder(s, f)) continue;
+        try writeDoc(w, f.doc);
+        const bindable = argSetter(s, f) != null;
+        const views = std.mem.eql(u8, f.name, "siv_list_view") or std.mem.eql(u8, f.name, "siv_tree_view") or
+            std.mem.eql(u8, f.name, "siv_table_view") or std.mem.eql(u8, f.name, "siv_grid_view");
+        var names: [16][]const u8 = undefined;
+        var n: usize = 0;
+        for (f.params, 0..) |p, i| {
+            if (i < 2) continue;
+            switch (m.role(s, f, i)) {
+                .input, .callback => {
+                    try w.print("---@param {s}? ", .{luaParam(p.name)});
+                    if (views and p.type == .desc) {
+                        try w.writeAll("siv.view.view_desc");
+                    } else try writeType(w, s, p.type, .input);
+                    if (n == 0 and bindable) {
+                        try w.writeAll("|fun(): ");
+                        try writeType(w, s, p.type, .input);
+                    }
+                    try w.writeByte(' ');
+                    try oneLine(w, p.doc);
+                    try w.writeByte('\n');
+                    names[n] = luaParam(p.name);
+                    n += 1;
+                },
+                else => {},
+            }
+        }
+        try w.writeAll("---@param props? siv.view.properties Properties of the new node.\n");
+        try w.writeAll("---@param children? fun(node: siv.node) Builds the node's children.\n");
+        try w.writeAll("---@return siv.node\n");
+        try w.print("function ui.{s}(", .{m.methodName(s, f)});
+        for (names[0..n]) |name| try w.print("{s}, ", .{name});
+        try w.writeAll("props, children) end\n\n");
+    }
+    try w.writeAll("return view\n");
 }
 
 /// Writes `doc` as `---` comment lines.
@@ -332,4 +434,17 @@ test "annotations name every bound function" {
     try std.testing.expect(std.mem.indexOf(u8, out, "---@return siv.app app\nfunction siv.app_create(desc) end") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "---@field layout? siv.layout_desc") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "siv_set_data") == null);
+}
+
+test "siv.view annotations: builders without txn and parent, bindable properties" {
+    var w: Writer.Allocating = .init(std.testing.allocator);
+    defer w.deinit();
+    try writeView(&w.writer, m.spec);
+    const out = w.written();
+    try std.testing.expect(std.mem.indexOf(u8, out, "function ui.flex(desc, props, children) end") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "function ui.box(props, children) end") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "---@param text? string|fun(): string") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "---@field visual? siv.visual_desc|fun(): siv.visual_desc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "---@param desc? siv.view.view_desc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "function view.signal(value, opts) end") != null);
 }

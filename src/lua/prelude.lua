@@ -222,10 +222,16 @@ local kept = {}
 local keeping = 0
 local windows = {} -- windows of the current run, not kept
 local file_modules = {} -- modules required from files: name -> path
+-- Functions told about each reload: hook("begin") before the chunk runs,
+-- hook("done") or hook("failed") after its windows were sorted out
+-- (siv.view disposes what the previous run made, D45).
+local reload_hooks = {}
+internal.reload_hooks = reload_hooks
 
---- Returns the value kept under `key`, making it with make() the first
---- time. Values survive hot reloads; windows created inside make() are
---- kept with them.
+--- Returns the values kept under `key`, making them with make() the
+--- first time: every value it returns, so a signal's getter and setter
+--- keep together (siv.view, D45). Values survive hot reloads; windows
+--- created inside make() are kept with them.
 function siv.keep(key, make)
 	local v = kept[key]
 	if v == nil then
@@ -233,10 +239,10 @@ function siv.keep(key, make)
 		local guard <close> = setmetatable({}, { __close = function()
 			keeping = keeping - 1
 		end })
-		v = make()
+		v = table.pack(make())
 		kept[key] = v
 	end
-	return v
+	return table.unpack(v, 1, v.n)
 end
 
 local function watching()
@@ -312,6 +318,9 @@ function siv.reload()
 	local old = windows
 	windows = {}
 	reloading = true
+	for _, hook in ipairs(reload_hooks) do
+		hook("begin")
+	end
 	local ok, err = xpcall(load_main, internal.traceback)
 	reloading = false
 	if ok then
@@ -319,6 +328,11 @@ function siv.reload()
 	else
 		destroy_windows(windows)
 		windows = old
+	end
+	for _, hook in ipairs(reload_hooks) do
+		hook(ok and "done" or "failed")
+	end
+	if not ok then
 		internal.report(err)
 	end
 end
