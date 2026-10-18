@@ -2944,7 +2944,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     style, and what the paragraph style changes from the node's
     paragraph defaults (justification, left-margin, right-margin, indent,
     pixels-above-lines, pixels-below-lines, with start and end resolved
-    by the node's direction); a run ends where either changes. Line
+    by the node's direction); a run ends where either changes. A
+    misspelled word of a spell-checked editor is a run of its own with
+    invalid:spelling (D37). Line
     spacing and tab stops are not reported. Default attributes stay
     empty.
   - The bridge (`src/a11y`, `a11y.Bridge`) follows org.a11y.Bus on the
@@ -4114,7 +4116,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     `siv_column_desc`), so an item gains options without a new function:
     a radio disabled from the start was the first (D30). Text fields and areas return the editor node
     itself, so every editor function (text, selection, change events)
-    works on them unchanged.
+    works on them unchanged. Text areas and styled-text editors are spell
+    checked, with a context menu on misspelled words (D37).
   - **Driving:** a few functions cover every widget instead of setters per
     widget kind: `siv_widget_set_label`, `siv_widget_set_icon`,
     `siv_widget_set_disabled`, `siv_widget_set_value` and
@@ -7182,6 +7185,150 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   profiles, as on a network home (then hold first frames for a read on the
   pool, as D29 does for themes); or a desktop gives settings a portal
   that sandboxed applications must use.
+
+### D37. Spell checking
+
+- **Requirement:** editors check spelling as the user types, as GTK
+  (libspelling), KDE (Sonnet), and macOS (NSSpellChecker) editors do:
+  misspelled words marked, corrections offered, words added to a
+  personal dictionary or ignored, misspellings told to assistive
+  technology, and the same checks open to applications. Typing in a
+  long document must not get slower for it (D15), checking must not
+  hold the UI thread (D6), and the dictionaries are the ones the user
+  already has.
+- **Decision:** siv reads the system's Hunspell dictionaries with its own
+  reader (`src/spell`, the `spell` module), the way it has its own
+  gettext reader and glyph rasterizer, and checks editors from the UI
+  module (`ui.Spelling`).
+  - **Dictionaries.** A dictionary is a pair `<name>.aff` and
+    `<name>.dic` found where Hunspell and Enchant look: `$DICPATH`,
+    Enchant's `$XDG_CONFIG_HOME/enchant/hunspell`, then `hunspell`,
+    `myspell`, and `myspell/dicts` under `$XDG_DATA_HOME` and each of
+    `$XDG_DATA_DIRS` and `/usr/share`; the first directory with a name
+    wins. siv ships none: the headless backend has none, and
+    applications add their own with `siv_app_add_dictionary` (which
+    takes precedence over a system one of the same name), as the tests
+    do with a dictionary written for them
+    (`src/spell/testdata/en_TEST.*`). A language picks the dictionary of
+    its name ("en_US" for en-US), else of the language alone ("fr" for
+    fr-CA), else of the language's own region ("de_DE" for de; en_US for
+    English), else the first in the language.
+  - **The reader** covers what real dictionaries use: SET (UTF-8 and the
+    ISO 8859, KOI8, cp1251, and TIS-620 code pages), the four flag types
+    (single characters, long, num, UTF-8), AF aliases, prefixes and
+    suffixes with strip strings, conditions, cross products, and
+    continuation classes (two suffix levels, a prefix with either),
+    CIRCUMFIX, NEEDAFFIX, FORBIDDENWORD, ONLYINCOMPOUND, KEEPCASE,
+    Hunspell's hidden all-caps homonyms, CHECKSHARPS, FULLSTRIP, IGNORE,
+    ICONV and OCONV, BREAK, capitalization (a capitalized or all-caps
+    form of a lowercase word, French elision in capitals), trailing dots
+    of abbreviations, numbers, and compounding by flags (COMPOUNDFLAG,
+    COMPOUNDBEGIN, MIDDLE, and END, COMPOUNDPERMITFLAG,
+    COMPOUNDFORBIDFLAG, COMPOUNDMIN, COMPOUNDWORDMAX, CHECKCOMPOUNDDUP,
+    REP, CASE, and TRIPLE, CHECKCOMPOUNDPATTERN without replacements) and
+    by COMPOUNDRULE. Not supported: COMPLEXPREFIXES (two prefix levels,
+    for right-to-left languages), FORCEUCASE, Hungarian's syllable rules,
+    LANG's dotted i for Turkish, PHONE, and morphology. Suggestions follow
+    Hunspell's order: REP and MAP replacements, swapped, missing, extra,
+    moved, and wrong characters (KEY's keyboard neighbors first, then
+    TRY's characters), doubled pairs, two words (unless NOSPLITSUGS),
+    then an n-gram search over the word list ranked by edit distance;
+    NOSUGGEST and forbidden words never appear,
+    nor words of Enchant's exclusion list. At most ten.
+  - **Measured** against libhunspell 1.7.1 with Debian's dictionaries
+    (ReleaseFast, words from each dictionary's own forms, their case
+    variants, random edits, and DESIGN.md): checks disagree on no word of
+    41,118 for en_US, 35,125 for de_DE (and 9,049 random German
+    compounds), and 36,206 for es_ES; on 8 of 35,795 for fr, words such
+    as "'ASC" that siv accepts by BREAK's leading apostrophe and Hunspell
+    rejects. Loading takes 14–20 ms (en_US's 79,000 entries 14–18 ms) on
+    a worker. A check costs about 1 µs a word in English and 9–15 µs in
+    Spanish, French, and German (Hunspell: German 0.25 s and siv 0.53 s
+    for one list, French 0.95 s and siv 0.39 s for another). For 300
+    misspellings siv's first suggestion is Hunspell's for 92% (en_US) and
+    91% (de_DE), and Hunspell's first is in siv's first three for 97% and
+    93%; for fr and es 63% and 62%, mostly where Hunspell's n-gram picks
+    for mutated forms differ; about 26 ms a word in English (Hunspell 22).
+  - **Words** are the text engine's UAX #29 words (D13). A word with a
+    digit ("mp3", "x86_64"), and the words of a URL, an e-mail address,
+    or a path, are not checked, as LibreOffice and Chromium leave them;
+    a dot after a word is passed with it, for abbreviations.
+  - **Editors.** `siv_set_spell_check` turns checking on or off and sets
+    the language; empty follows the editor's text language, else the
+    window's, which follows the application's (D21), and "en" without
+    any. The editor primitive is off by default, since a code editor or
+    a command line does not want it; the stock text areas and
+    styled-text editors turn it on, and single-line fields leave it off
+    (names, searches, and identifiers are not prose). Masked editors are
+    never checked. Each frame, before layout, an editor's text is diffed
+    against the rope it last checked (D15's shared ropes make the diff
+    cost the edit): misspellings before the change stay, those after it
+    move, those it touches go, and the change widened to whitespace on
+    both sides (at most 256 bytes; a longer token is not a word) is
+    checked again. Up to 512 dirty bytes are checked in the frame (a
+    keystroke checks a word or two); more, such as a document just
+    loaded, goes to the worker pool in 32 KB chunks, eight at a time per
+    editor, whose results are moved through the edits made meanwhile
+    when they arrive, the edited part checked again. A misspelled word
+    that ends at the caret of the focused editor, found by a check an
+    edit caused, is not marked until the caret leaves it, so the word
+    being typed is not underlined at every keystroke. On a 1.37 MB text
+    (DESIGN.md three times, ReleaseFast, four workers), en_US: the
+    first frame spends 1.3 ms handing out chunks and the whole text is
+    checked in 38 ms (14,964 misspellings); de_DE: 0.5 ms and 275 ms
+    (177,801); a keystroke in the middle costs 21 µs (en_US) and 214 µs
+    (de_DE, mostly moving that many misspellings) in the frame.
+  - **Drawing.** A wavy line under each misspelled word, two pixels high
+    with half-waves two pixels wide, a device pixel thick, below the
+    baseline in the line's descent, in the theme's `destructive` color
+    (D29), all of an editor's words in one path, after the text and only
+    for the lines it paints (D13's band).
+  - **Menu.** A secondary click on a misspelled word of a stock text
+    area, or the Menu key or Shift+F10 with the caret in one, opens a
+    menu (D22) of suggestions, Add to Dictionary, and Ignore; a
+    suggestion replaces the word as the user's edit, one undo step with
+    a change event (`siv_editor_replace`). Applications that build their
+    own menu use `siv_node_find_misspelling`,
+    `siv_node_get_spell_language`, and the application calls below.
+  - **Word lists.** Add to Dictionary appends the word to Enchant's
+    personal list for the dictionary, `~/.config/enchant/<name>.dic`
+    (on the pool's blocking lane), and the list is read with the
+    dictionary, so words added in GNOME applications are right in siv
+    and the other way round; Enchant's exclusions (`<name>.exc`) are
+    honored. Matching is Enchant's: a lowercase word allows its
+    capitalized and all-caps forms. Ignore lasts for the run, in every
+    editor. On the headless backend nothing is read or written.
+  - **Assistive technology** sees a misspelled word as a text attribute
+    run with `invalid` = `spelling` (ATK's and GTK's name, which Orca
+    announces), and TextAttributesChanged when the misspellings of
+    unchanged text change (D18).
+  - **API.** `siv_set_spell_check`, `siv_node_find_misspelling`,
+    `siv_node_get_spell_language`, `siv_editor_replace`,
+    `siv_app_check_spelling`, `siv_app_suggest_spelling`,
+    `siv_app_add_spelling_word`, `siv_app_ignore_spelling_word`,
+    `siv_app_add_dictionary`, and `siv_app_get_dictionaries`
+    (`src/abi/api_spell.zig`), in Lua as every function (D23). The
+    application's calls load a dictionary on the calling thread if no
+    editor has, and return SIV_ERROR_UNAVAILABLE without one.
+- **Alternatives:** linking Hunspell (MPL 1.1, GPL 2, or LGPL 2.1),
+  Enchant (LGPL 2.1 or later), or Nuspell (LGPL 3) (rejected: D25
+  allows only permissive licences, and a dlopen of the system's copy
+  makes spell checking depend on a library a static or Flatpak build may
+  not have, for the one function siv needs); talking to a spell
+  checking service over D-Bus (none is standard on Linux desktops);
+  shipping dictionaries (most are GPL or LGPL, they are large, and the
+  system's are the ones the user chose and keeps up to date); a separate
+  underline color token (`destructive` is the theme's error color, and
+  symbolic icons already use it so, D19; a theme that wants another can
+  add a token later without an API change); checking on the UI thread
+  only (a pasted or loaded document of a megabyte took 275 ms in German);
+  checking every editor by default (code editors, terminals, and command
+  lines would light up).
+- **Reverse if** dictionaries siv's reader gets wrong turn up that
+  Hunspell gets right and the format's corners make keeping up costlier
+  than a permissively licensed checker would be; if a desktop spell
+  checking service becomes standard; or if themes need the underline in
+  a color of its own.
 
 ### D38. Layout animation
 
