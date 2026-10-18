@@ -49,10 +49,10 @@ A test does not call `siv_app_run`. Input it injects is queued like a
 compositor's, and `siv_test_settle` dispatches until the application is
 idle: every shown window has presented what it committed and wants no
 frame, the compositor has presented every frame it owes (for the input,
-for a scroll or fling it runs itself, for a transition), and no font,
-icon, image load, job, paste, or drop is in flight. It waits for the
-events that end this work, however long the frames take, rather than
-for a moment of quiet. It gives up after a timeout and says whether it
+for a scroll or fling it runs itself, for motion, including a removed
+node's exit), and no font, icon, image load, job, paste, or drop is in
+flight. It waits for the events that end this work, however long the
+frames take, rather than for a moment of quiet. It gives up after a timeout and says whether it
 settled. It does not wait for timers, portal requests, or threads of
 your own; wait for what they show instead, dispatching with
 `siv_app_dispatch` until it appears.

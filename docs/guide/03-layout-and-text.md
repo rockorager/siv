@@ -143,10 +143,41 @@ node follows light, dark, and high-contrast themes (see
 Opacity and transforms have setters of their own (`siv_set_opacity`,
 `siv_set_transform`) because zero is a meaningful value for them. Moving,
 fading, or transforming a node changes only its layer, without repainting.
-`siv_set_transition` makes later changes of a node's opacity and transform
+`siv_set_motion` makes later changes of a node's opacity and transform
 animate on the compositor, and `siv_set_animation` runs a repeating
 animation there, such as a spinner, at no cost to your thread. Both turn
 into jumps when the user asks for reduced motion.
+
+### Motion
+
+Motion can also follow layout. A node whose motion has the `layout` flag
+slides to wherever layout puts it, whether its own size changed, a
+sibling came or went, or the list was sorted, and when it grows, its new
+content is uncovered from its old box rather than stretched. `enter` and
+`exit` animate it as it appears and disappears; a removed node keeps
+being drawn until its exit ends. Layout itself runs once, for the final
+state, and the compositor thread animates the rest, so a busy
+application drops no frames. The default curve is a spring: a change in
+flight turns around without stopping.
+[examples/motion.lua](examples/motion.lua) inserts rows at the top of a
+list and removes them when clicked:
+
+```lua
+-- Rows follow layout on a spring, grow in from 90%, and slide a width
+-- toward the end edge as they leave.
+local row_motion = {
+	flags = { "layout", "enter", "exit", "relative", "mirror_rtl" },
+	bounce = 0.15,
+	enter_scale = 0.9,
+	exit_x = 1,
+}
+```
+
+![A list of three planets under an Add a planet button, after one was added at the top and another removed](images/motion.png)
+
+Stock dialogs and toasts move this way already. Screenshots, like the
+one above, show the state after the motion; [Testing](17-testing.md)
+waits for it to end.
 
 ## Text
 

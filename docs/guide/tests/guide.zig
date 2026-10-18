@@ -103,6 +103,16 @@ test "guide: text.lua" {
     }.f);
 }
 
+test "guide: motion.lua adds rows at the top and removes them" {
+    try harness.runLua("docs/guide/examples/motion.lua", struct {
+        fn f(g: *Guide) !void {
+            try g.clickOn(.button, "Add a planet");
+            try g.clickOn(.list_item, "Venus");
+            try g.expectImage("motion");
+        }
+    }.f);
+}
+
 // Widgets and theming ---------------------------------------------------------
 
 test "guide: settings.zig in the light and dark themes" {
