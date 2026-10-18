@@ -50,3 +50,19 @@ pub const line_height: f32 = 20;
 pub const motion_ms: u32 = 150;
 /// Springs of layout motion, enters, and exits (D38): their response.
 pub const spring_ms: u32 = 300;
+
+/// Header bars (D17): padding around their controls, and their least
+/// height.
+pub const bar_pad: f32 = 6;
+pub const bar_height: f32 = 46;
+/// Glyphs siv draws in buttons (a header bar's back and window
+/// controls): their stroke.
+pub const glyph_stroke: f32 = 1.5;
+/// Sidebars: their width, the padding around their items, and the space
+/// above a section's title.
+pub const sidebar_width: f32 = 220;
+pub const sidebar_pad: f32 = 6;
+pub const section_gap: f32 = 12;
+/// Navigation stacks: how far the page below moves while a page slides
+/// over it or off it, in its widths (D38).
+pub const parallax: f32 = 0.3;

@@ -315,6 +315,7 @@ const actions = @import("api_actions.zig");
 const spelling = @import("api_spell.zig");
 const adaptive = @import("api_adaptive.zig");
 const system = @import("api_system.zig");
+const navigation = @import("api_navigation.zig");
 
 pub const decls = [_]Decl{
     result,
@@ -1313,15 +1314,15 @@ pub const decls = [_]Decl{
         .{ .name = "indeterminate", .bit = 1, .doc = "Progress bars: progress is unknown; the value is ignored." },
     }),
     openEnumeration("siv_widget_part", "A part of a widget that the application fills or handles, for siv_widget_get_part. Open (D2): an application's widget (siv_widget_desc) answers for these and may number parts of its own from 0x10000 up.", &.{
-        .{ .name = "content", .value = 0, .doc = "Dialogs and popovers: the container for their content." },
+        .{ .name = "content", .value = 0, .doc = "Dialogs and popovers: the container for their content. Header bars: the box of the title, for more beside it." },
         .{ .name = "actions", .value = 1, .doc = "Dialogs: the row for their buttons, at the end edge." },
         .{ .name = "tab", .value = 2, .doc = "Tabs: the tab at index." },
-        .{ .name = "panel", .value = 3, .doc = "Tabs: the panel at index." },
-        .{ .name = "start", .value = 4, .doc = "Split panes: the pane at the start (or top)." },
-        .{ .name = "end", .value = 5, .doc = "Split panes: the pane at the end (or bottom)." },
+        .{ .name = "panel", .value = 3, .doc = "Tabs: the panel at index. Navigation stacks: the page at index, from the first." },
+        .{ .name = "start", .value = 4, .doc = "Split panes: the pane at the start (or top). Header bars: the box for controls at the start. Sidebars: the box above the items." },
+        .{ .name = "end", .value = 5, .doc = "Split panes: the pane at the end (or bottom). Header bars: the box for controls at the end. Sidebars: the box below the items. Sidebar items: the box at the end of the row." },
         .{ .name = "menu", .value = 6, .doc = "Menu buttons, and any widget with a menu: their menu, for siv_menu_item, siv_menu_open, and siv_menu_get_item." },
         .{ .name = "column", .value = 7, .doc = "Table views: the header cell of the column at index (siv_table_column returned it), whose value is the column's width." },
-        .{ .name = "item", .value = 8, .doc = "Combo boxes: the option at index (siv_combo_box_item returned it)." },
+        .{ .name = "item", .value = 8, .doc = "Combo boxes: the option at index (siv_combo_box_item returned it). Sidebars: the item at index, counting every section's items in order." },
     }),
     // The widget interface (D22): how a widget, stock or the
     // application's, answers the generic siv_widget_* calls.
@@ -2551,8 +2552,8 @@ pub const spec: schema.Schema = .{
     .source = "src/abi/api.zig",
     .doc = "siv: a GUI toolkit for Wayland.",
     .result = "siv_result",
-    .decls = &(decls ++ desktop.decls ++ dbus.decls ++ shell.decls ++ document.decls ++ actions.decls ++ undo.decls ++ settings.decls ++ spelling.decls ++ adaptive.decls ++ system.decls ++ testing.decls),
-    .functions = &(functions ++ desktop.functions ++ dbus.functions ++ shell.functions ++ document.functions ++ actions.functions ++ undo.functions ++ settings.functions ++ spelling.functions ++ adaptive.functions ++ system.functions ++ testing.functions),
+    .decls = &(decls ++ desktop.decls ++ dbus.decls ++ shell.decls ++ document.decls ++ actions.decls ++ undo.decls ++ settings.decls ++ spelling.decls ++ adaptive.decls ++ system.decls ++ navigation.decls ++ testing.decls),
+    .functions = &(functions ++ desktop.functions ++ dbus.functions ++ shell.functions ++ document.functions ++ actions.functions ++ undo.functions ++ settings.functions ++ spelling.functions ++ adaptive.functions ++ system.functions ++ navigation.functions ++ testing.functions),
 };
 
 /// Encodes a version as (major << 16) | (minor << 8) | patch.

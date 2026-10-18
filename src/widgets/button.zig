@@ -36,6 +36,10 @@ pub const Button = extern struct {
     auto_tooltip: bool = false,
     /// The keysym that presses it in a dialog; 0 for none.
     mnemonic: u32 = 0,
+    /// A canvas drawing a glyph in place of an icon (`glyphButton`), and
+    /// which one, for its draw callback.
+    glyph: Node = .null,
+    glyph_kind: u8 = 0,
 };
 
 pub export fn siv_push_button(txn: Txn, parent: Node, desc: ?*const siv.ButtonDesc) Node {
@@ -133,6 +137,32 @@ fn menuPart(st: *const Button, part: siv.WidgetPart, _: u32) Node {
     return if (part == .menu) st.menu else .null;
 }
 
+/// A flat button showing a glyph that `draw` draws (16 pixels square,
+/// with `st.glyph_kind` saying which, in `foreground`'s color), alone, the
+/// label naming it as an icon-only button's does: a header bar's back
+/// button and window controls, which must show without an icon theme.
+pub fn glyphButton(txn: Txn, parent: Node, label: []const u8, kind: u8, draw: siv.DrawFn) Node {
+    const root = build(txn, parent, .button, label, "", .flat, .{ .icon_only = true }, false);
+    if (root == .null) return .null;
+    const st = w.stateOf(Button, root, &.{.button}).?;
+    st.glyph_kind = kind;
+    st.glyph = c.siv_canvas(txn, root, &.{ .user_data = st, .draw = draw, .width = tk.icon_size, .height = tk.icon_size });
+    _ = c.siv_set_semantics(txn, st.glyph, &.{ .role = .none });
+    layoutIcon(txn, st);
+    apply(txn, st);
+    return root;
+}
+
+/// The color of the label, icon, or glyph for the button's state.
+pub fn foreground(st: *const Button) siv.ColorToken {
+    const filled = st.style == .primary or (st.hdr.kind == .toggle_button and st.on);
+    if (st.hdr.disabled) return .disabled_fg;
+    return switch (st.style) {
+        .destructive => .destructive_fg,
+        else => if (filled) .accent_fg else .control_fg,
+    };
+}
+
 /// Shows the state: fill, border, label color, and semantics.
 pub fn apply(txn: Txn, st: *Button) void {
     const h = st.hdr;
@@ -164,6 +194,7 @@ pub fn apply(txn: Txn, st: *Button) void {
     });
     _ = c.siv_set_text_style(txn, st.label, &w.textStyle(fg, .body));
     if (st.icon != .null) w.setIcon(txn, st.icon, st.icon_name, tk.icon_size, fg);
+    if (st.glyph != .null) c.siv_invalidate(txn, st.glyph);
     // A hidden label does not name the button: say it outright.
     var buf: [1024]u8 = undefined;
     const name = if (alone(st)) w.textOf(st.label, &buf) else "";
@@ -218,6 +249,7 @@ fn setIconNodes(txn: Txn, st: *Button, icon: []const u8) void {
 
 /// Only the icon shows.
 fn alone(st: *const Button) bool {
+    if (st.icon_only and st.glyph != .null) return true;
     if (!st.icon_only or st.icon == .null) return false;
     var len: usize = 0;
     return c.siv_node_get_text(st.icon_name, null, 0, &len) == .ok and len != 0;

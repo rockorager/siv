@@ -4136,7 +4136,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **Decision:** stock widgets are written in Zig using only public primitives:
   buttons, text fields and areas, styled-text editor, virtualized list, tree,
   table, and grid with selection models, menus, combo boxes, popovers, dialogs,
-  tabs, split panes, sliders, spin buttons, progress, toasts. Theming uses compiled design
+  tabs, split panes, sliders, spin buttons, progress, toasts, and the
+  navigation widgets: sidebars, header bars, and navigation stacks (D40).
+  Theming uses compiled design
   tokens plus runtime overrides, follows the portal accent and color scheme, and
   includes a high-contrast variant (D29). Animation respects reduced motion.
   - **The boundary is enforced by the build.** `src/widgets` imports only
@@ -4167,7 +4169,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     aria-sort and aria-colindex), and actions bound to nodes with their
     shortcuts (`siv_set_action`, `siv_node_get_action`,
     `siv_set_shortcut`, D34), through which buttons, toggles, and menu
-    items follow and run an action.
+    items follow and run an action, and for the navigation widgets (D40)
+    the `navigation` role and the `current` semantic (aria-current,
+    D18), and what a header bar needs to be a title bar (D17): the
+    window controls a client-decorated window draws
+    (`siv_window_get_controls`), the window menu
+    (`siv_window_show_menu`), a close request like the compositor's
+    (`siv_window_request_close`), and settings events'
+    `window_changed`.
   - **Creating:** one builder per widget, a transaction operation like the
     primitive builders (D27): `siv_push_button(txn, parent, &desc)` appends the
     widget and returns its root node, or 0 once the transaction has failed
@@ -4381,7 +4390,16 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     - Parts the application fills are reached with
       `siv_widget_get_part` (dialog content and actions, popover content,
       tabs and panels, split panes, a menu button's menu, a table's
-      column header cells, a combo box's options).
+      column header cells, a combo box's options, a header bar's start,
+      end, and title boxes, a sidebar's items and the boxes above and
+      below them, a sidebar item's end box, a navigation stack's pages).
+  - **Navigation widgets** (D40): a sidebar of destinations in
+    sections, a header bar that is also the title bar of a window that
+    decorates itself (D17), and a navigation stack of pages with a back
+    affordance and page transitions. The application collapses a
+    sidebar: `siv_set_hidden`, or under a narrow window with D39's
+    `siv_set_hidden_when(txn, sidebar, &(siv_condition_desc){
+    .max_width = N, .flags = SIV_CONDITION_WINDOW }, true)`.
   - **Icons** (D19): push, toggle, and menu buttons take a themed icon
     name (`icon` in their descriptors), shown before the label in the
     label's color token, so it follows hover, press, disabled, and theme
@@ -7667,6 +7685,171 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   condition. Or neither the parent's offer nor the window is where
   applications want their bounds (a grandparent's space); then add
   named containers.
+
+### D40. Navigation widgets
+
+- **Requirement:** applications move between their places the way
+  desktop and mobile applications do, with stock widgets (D22): a
+  sidebar of destinations in sections (libadwaita's AdwSidebar, the
+  sidebar of SwiftUI's NavigationSplitView), a navigation stack that
+  pushes and pops pages with a back affordance and page transitions
+  (AdwNavigationView, SwiftUI's NavigationStack), and a header bar with a
+  title between start and end controls (AdwHeaderBar, QToolBar) that is
+  also the title bar when the window decorates itself (D17). Going back
+  works by Alt+Left, the Back key, the mouse's back button, and Escape;
+  keyboard and screen reader behavior follow WAI-ARIA; everything
+  mirrors in right-to-left layouts (D21); transitions are D38's motion
+  and turn into jumps under reduced motion; the look comes from the same
+  tokens as the other widgets (D29). Before, an application drew a
+  toolbar and a sidebar from flexes and a list view, and swapped
+  content by hand: the file manager's bar, sidebar, and history
+  (`apps/files`).
+- **Decision:** three widgets in `src/widgets` (`sidebar.zig`,
+  `header_bar.zig`, `navigation.zig`), schema in `api_navigation.zig`,
+  using only the public API; the primitives they lacked became public
+  first (D22's list).
+  - **Sidebar** (`siv_sidebar`, `siv_sidebar_section`,
+    `siv_sidebar_item`). A column on `sidebar_bg` with a separator at
+    its end edge, 220 px wide by default (`siv_set_layout` changes it),
+    and boxes above and below the items (the start and end parts) for a
+    header bar or a footer. Items have an icon, a label, and an end box
+    for a count or a button; items added to the sidebar itself go to a
+    first section without a title. Its value is the current item's
+    index among all items, or -1; choosing reports `change`.
+    - WAI-ARIA: the sidebar is a `navigation` landmark named by its
+      label, each section a `list` named by its title (the visible
+      title is presentational, so it is not read twice), each item a
+      `list_item`, the current one with `current` page, as the
+      navigation pattern marks the page shown. Focus roves: only the
+      current item, or the first enabled one, is a Tab stop; Up and Down
+      move between enabled, shown items across sections, Home and End to
+      the ends, and moving chooses, as tabs do (automatic activation,
+      which a file manager's or a settings window's sidebar expects;
+      the content follows the keys). Clicks, Enter, and Space choose.
+    - The current item takes `selection_bg` and `selection_fg`, as a
+      selected row of a view does; hover is `control_hover`. Up and Down
+      are not swapped in RTL, and the row is logical, so the icon and
+      separator mirror without code.
+    - Collapsing is `siv_set_hidden`, the call that hides any widget:
+      a hidden sidebar takes no space, keeps its state, and leaves focus
+      order and the semantics tree. It sets no motion of its own: D38's
+      enter and exit run whenever an ancestor appears or disappears too,
+      so a sidebar that slid in and out would also slide inside a page
+      that a navigation stack covers or uncovers, which is where a
+      collapsed sidebar goes in a narrow window (below). Content beside
+      it with `layout` motion slides into the space it leaves.
+    - Adaptive layout (D39) collapses it with a condition on the same
+      call: `siv_set_hidden_when(txn, sidebar, &(siv_condition_desc){
+      .max_width = N, .flags = SIV_CONDITION_WINDOW }, true)` hides the
+      sidebar while the window is at most N wide and shows it again
+      above, with no handler (without the window flag the condition
+      tests the space the sidebar's parent offers, for a sidebar inside
+      a pane). The explicit call stays for what conditions cannot say: a
+      sidebar toggle in the content's header bar, itself hidden while
+      the window is wider than N by the opposite condition. Collapsing
+      into a navigation stack instead, the sidebar as its first page and
+      the content pushed when an item is chosen, as
+      AdwNavigationSplitView does, moves nodes (`siv_move`) and is the
+      application's; it needs no sidebar code either.
+  - **Header bar** (`siv_header_bar`). A flex row: a start box and an
+    end box that share what the title leaves equally (so the title is
+    centered while both fit), the title between them in bold, cut with
+    an ellipsis, and a separator below; no background of its own, so it
+    takes its parent's color (a page's `window_bg`, a sidebar's
+    `sidebar_bg`). Parts: start, end, and content (the title's box,
+    for a control beside or instead of it). It is a `toolbar` named by
+    its title, whose visible text is presentational; Tab moves through
+    its controls. WAI-ARIA's toolbar pattern (one Tab stop, arrow keys
+    between controls) was rejected: a header bar holds search fields and
+    menu buttons where arrows have their own meaning, and GTK's and Qt's
+    bars are Tab-navigated. Its relation to decorations is D17's: the
+    window controls when the window decorates itself, and the title bar's
+    move, maximize, and window menu.
+    - Inside a navigation page other than a stack's first, a back button
+      comes first in its start box: a drawn chevron pointing to the start
+      edge (mirrored in RTL), named Back, exposing Alt+Left (Alt+Right in
+      RTL) as its key (`siv_set_shortcut`, D34). It asks its page to
+      close. A header bar without a title of its own shows its page's and
+      follows renames (`siv_widget_set_label` on the page).
+  - **Navigation stack** (`siv_navigation_stack`,
+    `siv_navigation_page`). Pages are columns on `window_bg`; pushing
+    one hides the page below, which keeps its state, as tab panels do.
+    The stack's value is its number of pages; `siv_widget_set_value`
+    with fewer removes the pages above at once without a report (an
+    application resetting the stack when a sidebar item is chosen), and
+    more than it has fails the transaction. `siv_widget_get_part`'s
+    panel part finds a page by index. Pages are removed when they go;
+    an application rebuilds a page it pushes again, as SwiftUI's stack
+    does.
+    - Going back is the last page's `close`, the event dialogs, toasts,
+      and popovers already report: the header bar's back button, and,
+      while focus is in the stack, Alt+Left (Alt+Right in RTL, as D21
+      swaps arrows), XF86Back, and Escape (unless
+      `SIV_NAVIGATION_NO_ESCAPE`), and the mouse's back button while the
+      pointer is over the stack, emit it on the page. Its default handler
+      removes the page and reports `change` on the stack with the number
+      of pages left and the index of the one shown; an application's
+      handler that returns handled keeps the page (unsaved changes), and
+      the stack reports nothing. On the first page the keys and button
+      pass, so an outer stack or the window gets them.
+    - Window-wide Back is the application's action (D34): the stack
+      does not create one, since two stacks in a window would compete
+      for one accelerator and actions are the application's command set;
+      an application's Back action emits `close` on the top page
+      (`siv_node_emit`, the page from `siv_widget_get_part`), which takes
+      the same path, keepers included.
+    - Transitions (D38): a pushed page slides in a whole width from the
+      end edge over the page below, which moves 30% of a width toward
+      the start edge as it is hidden; going back reverses both, the
+      leaving page sliding out to the end edge. The stack sets each
+      page's motion (`enter` and `exit`, relative, `mirror_rtl`, a
+      critically damped spring of `tokens.spring_ms`) just before the
+      change, since one motion has one enter and one exit state and a
+      page enters from the end when pushed but from the start when
+      uncovered. Every page has its motion, and so a layer, from the
+      start: a page covered in the frame that first gave it a layer had
+      no layer showing to slide away. The first page has no enter, so a
+      stack built after the window's first frame shows it at once. A
+      page has a soft shadow on its leading edge, which the stack's clip
+      hides once the page fills it; the clip also keeps pages from
+      sliding over what is beside the stack. Reduced motion makes it all
+      jump, with no code here.
+    - Levels: each depth has a level, a stack of its own with a layer and
+      no hit testing, which holds the page at that depth and is reused
+      by later pages there. D38 keeps an exiting layer below every live
+      sibling (the UI re-inserts live layers each frame; exiting ones are
+      not), so a page going back, removed from the stack's own children,
+      slid out under the page it uncovered, which drew over it. Inside
+      its level, which stays, the leaving page exits above the level
+      below. The alternative, an exiting layer keeping its place among
+      siblings shown in the same frame, is a change to D38's paint
+      order; levels cost one node and layer per depth reached.
+    - Focus: a page other than the first is a Tab stop of its own (a
+      `group` named by its title, without a focus ring), as a dialog
+      is. If focus was in the stack (or nowhere) when a page is pushed,
+      focus moves to the new page inside the pushing transaction, so a
+      screen reader announces it and Tab continues into it; focus outside
+      the stack stays (choosing in the sidebar by keys must not take the
+      keyboard away). Going back returns focus to what had it in the
+      uncovered page, else to that page. `siv_node_focus` on the stack
+      focuses the shown page's choice.
+- **Alternatives:** one split-view widget holding sidebar and content
+  (AdwOverlaySplitView), which would own collapsing (D39's conditions
+  already collapse a sidebar without one, and an overlay needs the
+  content in a stack the widget controls; add it if applications
+  repeat the overlay). A stack with one bar of its own instead
+  of a header bar per page (pages could not carry their own controls,
+  and the bar would not slide with its page). Pages that stay in the
+  tree when popped (an application's model already holds them; removing
+  matches SwiftUI and frees what is not shown). Transitions run by
+  timers on the UI thread (D38 already runs them on the compositor).
+  Sidebar items as links in the Tab order (one stop per destination;
+  roving focus is what GTK, Qt, and AppKit sidebars do).
+- **Reverse if:** applications need interactive back gestures (a
+  touchpad swipe dragging the page), which need the stack to drive
+  layer transforms from gesture events and hand the velocity to D38's
+  spring; or popped pages that keep their state; or the toolbar
+  pattern's arrow keys in header bars without text fields.
 
 ### D42. Trash and system signals
 
