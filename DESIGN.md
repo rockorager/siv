@@ -6850,7 +6850,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     clipboard for every application in the process, so copies go to the
     window of whichever web view last had focus, in any application, and
     the siv clipboard read ahead of a paste replaces the primary
-    display's contents.
+    display's contents. WebKit commits local storage to its data
+    directory 0.5 s after a write, and when a session goes it commits
+    pending writes asynchronously, with no GLib call to wait for that
+    (`WKWebsiteDataStoreSyncLocalStorage` is C API only). An application
+    that recreates its web views on the same directory within the
+    process right away may therefore miss its last half second of
+    writes; exiting loses none, since the network process commits when
+    its connection closes.
   - **Media off without an audio sink.** WebKit's media pipelines end in
     GStreamer's `autoaudiosink` (gst-plugins-good, only an optional
     dependency of Arch's wpewebkit); without it the web process aborts

@@ -351,6 +351,9 @@ static void check_data_dir(void) {
     CHECK(start(&f, 0, dir));
     CHECK(load(&f, "<p>x", "https://example.test/"));
     CHECK(eval(&f, "localStorage.setItem('k', 'kept'); 1", &a));
+    /* WebKit commits local storage 0.5 s after a write, and on teardown
+     * only asynchronously, which the next session can outrun (D33). */
+    pump(&f, 1000);
     stop(&f);
     CHECK(start(&f, 0, dir));
     CHECK(load(&f, "<p>x", "https://example.test/"));
