@@ -448,11 +448,10 @@ fn build(self: *Files) !void {
     // A narrow window, such as a third of a tiling compositor's screen,
     // has no room for the places: they go, with the divider after them,
     // and the files take the width (D39). The split pane offers both
-    // the same width, so they go together. It names no divider part;
-    // see FRICTION.md.
+    // the same width, so they go together.
     const narrow: siv.ConditionDesc = .{ .max_width = 600 };
     _ = c.siv_set_hidden_when(txn, start, &narrow, true);
-    _ = c.siv_set_hidden_when(txn, c.siv_node_get_related(start, .next), &narrow, true);
+    _ = c.siv_set_hidden_when(txn, c.siv_widget_get_part(split, .divider, 0), &narrow, true);
 
     self.sidebar = c.siv_list_view(txn, start, &.{
         .label = "Places",

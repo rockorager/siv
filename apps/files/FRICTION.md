@@ -314,6 +314,9 @@ Measurements are in [Numbers](#numbers) at the end.
     widget builds itself. A `divider` part, or a pane that collapses its
     divider with it, belongs to the navigation widgets (D40), which give
     sidebars a collapsed state of their own; the app moves to that.
+    *Fixed:* split panes have a divider part (commit "widgets: give
+    split panes a divider part", D22), which the app hides with the
+    start pane.
 
 34. **Delete could not be undone, and the trash was the app's own.**
     Delete moved files to `$XDG_DATA_HOME/Trash` with code of the app's

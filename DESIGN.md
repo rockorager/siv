@@ -7741,8 +7741,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     - Adaptive layout (D39) collapses it with a condition on the same
       call: `siv_set_hidden_when(txn, sidebar, &(siv_condition_desc){
       .max_width = N, .flags = SIV_CONDITION_WINDOW }, true)` hides the
-      sidebar while the window is at most N wide and shows it again
-      above, with no handler (without the window flag the condition
+      sidebar while the window is narrower than N and shows it again
+      from N up, with no handler (without the window flag the condition
       tests the space the sidebar's parent offers, for a sidebar inside
       a pane). The explicit call stays for what conditions cannot say: a
       sidebar toggle in the content's header bar, itself hidden while
