@@ -4136,20 +4136,113 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     base direction comes from its text for bidi ordering, but start and
     end alignment follow the canvas node's direction (a page's, when
     printing).
-  - Built so far of the CLDR part (October 2026, for the pickers, D41):
-    the Gregorian calendar's names and date and time patterns, the
-    hour cycle, the first day of the week by region, and each
-    numbering system's digits, generated at build time from the
-    cldr-json npm packages (`src/intl/gen.zig`, the `intl` module) for
-    the locales whose language CLDR covers at the modern or moderate
-    level, deduplicated. `siv_app_format_date`, `siv_app_format_time`,
-    and `siv_app_get_locale_info` read them for the application's
-    language, falling back to a shorter tag, then the likely script
-    ("zh-TW" is "zh-Hant"), then English. Not built yet: the gettext
-    `.mo` reader, plural rules, and number formatting. A window whose language changes
-    tells its nodes with a settings event flagged
+  - Built of the CLDR part (October 2026): for the pickers (D41), the
+    Gregorian calendar's names and date and time patterns, the hour
+    cycle, the first day of the week by region, and each numbering
+    system's digits; then plural rules, number formats, and byte units.
+    All are generated at build time from the cldr-json npm packages
+    (`src/intl/gen.zig`, the `intl` module) for the locales whose
+    language CLDR covers at the modern or moderate level, deduplicated,
+    and plural rules for every language CLDR has them for.
+    `siv_app_format_date`, `siv_app_format_time`,
+    `siv_app_get_locale_info`, `siv_app_format_number`,
+    `siv_app_parse_number`, and `siv_app_get_plural_category` read them
+    for the application's language, falling back to a shorter tag, then
+    the likely script ("zh-TW" is "zh-Hant"), then English. A window
+    whose language changes tells its nodes with a settings event flagged
     `SIV_EVENT_LOCALE_CHANGED`, so text formatted for the old one is
     formatted again.
+  - **Plural rules.** cldr-core's plurals.json and ordinals.json are
+    compiled at build time into a Zig function per distinct rule set
+    (TR35's operands n, i, v, w, f, t, and c or e; `and` binding tighter
+    than `or`; values and ranges): 40 cardinal and 25 ordinal sets for
+    224 languages. Compiled rather than interpreted, since the rules are
+    small and fixed per CLDR release. The operands come from the number
+    as written, not the double: `siv_app_get_plural_category` takes a
+    value and the format descriptor `siv_app_format_number` takes, so in
+    English 1 is one but "1.0" (one fraction digit) is other, and a
+    compact "1 M" is French many (c = 6). Languages without ordinal rules
+    count every ordinal as other. The tests check every rule set against
+    the @integer and @decimal samples CLDR ships with the rules, both as
+    written and as a double rounded to the sample's digits.
+  - **Numbers.** `siv_app_format_number` takes a value and a
+    `siv_number_format_desc`: a style, flags, and the fewest and most
+    fraction digits, which apply only with `SIV_NUMBER_FRACTION_DIGITS`
+    because zero is a real maximum and zero must also mean the default
+    (D2). Decimal follows the locale's standard pattern (grouping sizes,
+    Indian 3 then 2, and minimum grouping digits, so Spanish writes
+    "1234" but "12.345"; up to three fraction digits); percent multiplies
+    by 100 into the locale's pattern and sign ("%25" in Turkish); compact
+    is CLDR's short form by magnitude and plural category ("1.2K", "1,2
+    Mio."), with two significant digits below ten and whole numbers
+    above, as ICU, magnitudes a locale writes in full staying so (German
+    thousands), grouped from five digits. All write the default
+    numbering system's digits and symbols. Rounding is half to even on
+    the shortest decimal that reads back as the double, as ICU's (2.675
+    is "2.68"); a negative number that rounds to zero has no sign.
+    Currencies, scientific notation, the long compact form, other units,
+    and ranges are not built: nothing needs them yet.
+  - **Byte sizes** (`SIV_NUMBER_STYLE_BYTES`) take their units from
+    cldr-units-full, a fourth pinned CLDR package: decimal units of 1000,
+    kB to PB, as GNOME and the SI count (CLDR has no kibibytes); the byte
+    in the unit's long form by plural category ("1 byte", "512 bytes",
+    "5 байт") and kB and up in the short form with one fraction digit by
+    default ("1.5 kB", "2.0 GB", "1,5 ko"), as GNOME's `g_format_size`
+    writes sizes.
+  - **Reading numbers.** `siv_app_parse_number` reads what a user types:
+    the locale's digits and decimal separator or ASCII ones, a minus
+    sign, with group separators, spaces, and bidirectional marks
+    ignored; '.' is a decimal point too where it does not group.
+  - **gettext.** siv reads `.mo` files itself (`src/intl/gettext.zig`):
+    libintl is LGPL, which D25 keeps out. The application binds a text
+    domain to a directory (`siv_app_bind_text_domain`, as
+    bindtextdomain; the first bound is the default), and
+    `siv_app_translate` takes a `siv_translation_desc` (domain, context
+    for msgctxt, text for msgid, plural for msgid_plural, and a count)
+    and copies the translation into the caller's buffer, as siv's other
+    string queries do, since a catalog is dropped when the language
+    changes. Catalogs are where gettext looks for the application's
+    language, <dir>/<ll_CC>/LC_MESSAGES/<domain>.mo and then <ll>, with
+    @latin or @cyrillic from a Latn or Cyrl script subtag and zh_TW or
+    zh_CN for zh-Hant or zh-Hans; each is loaded when first needed and
+    again after `siv_app_set_language`, so translations follow the
+    language at run time. Both byte orders and revisions 0 and 1 are
+    read (system-dependent strings are ignored), offsets are checked,
+    and entries are indexed on load rather than trusting msgfmt's order
+    or hash table. Catalogs must be UTF-8: siv converts no charsets, and
+    ignores a catalog in another. Untranslated messages come back as the
+    text, or the plural when the count is not 1, as in gettext.
+    $LANGUAGE's list of fallback languages is not read: the application
+    has one language.
+  - **Plural forms of catalogs.** The catalog's Plural-Forms expression
+    picks the form, evaluated by a small C-expression evaluator
+    (gettext's operators on unsigned integers; division by zero is 0 and
+    an index out of range the first form, as GNU gettext has it).
+    Without one, the CLDR cardinal rules of the catalog's language pick
+    it, the forms taken as the categories integers take, in CLDR's order
+    (Russian one, few, many; Czech one, few, other), and a form beyond
+    the catalog's last its last (a two-form French catalog's second
+    form serves many and other). Plural-Forms wins because the
+    translator wrote it for the forms in the file; CLDR is the fallback
+    because without it a catalog would be read with English's two forms.
+    The tests build their catalogs with a writer of their own, so msgfmt
+    is not needed, and check the evaluator against CLDR's rules for 0 to
+    2000 in nine languages, with GNU gettext's documented expressions.
+  - siv's own strings (the stock widgets' "Previous month", "Hue",
+    "Search emoji") stay English for now: translating them needs a
+    "siv" domain with catalogs installed under the prefix, and there are
+    no translations to install. When there are, siv binds that domain to
+    its installed `share/locale` and the stock widgets call
+    `siv_app_translate` with it, as applications do.
+- **Alternatives:** GNU libintl (LGPL, D25) or ICU (tens of megabytes of
+  C++, D41); interpreting the plural rules at run time (the same rules,
+  parsed in every process); returning a pointer into the catalog from
+  `siv_app_translate` (it would dangle when the language changes and the
+  catalog goes); CLDR's rules ahead of a catalog's Plural-Forms (wrong
+  for catalogs whose translators merged or split forms otherwise).
+- **Reverse if:** applications need gettext's $LANGUAGE list of
+  fallback languages, then try each in turn; if siv's own strings get
+  translations, then ship them as the "siv" domain.
 
 ### D22. Stock widgets
 
@@ -8070,11 +8163,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   often not installed); ICU (tens of megabytes, and C++); a grid role
   of siv's own (AT-SPI maps it to table anyway); one month at a time
   with variable rows (the calendar's size would jump between months).
-- **Reverse if:** CLDR's plural rules and number formatting land (D21),
-  then move the generator to share their tables; if `siv_color` gains a
-  wide-gamut space, then the chooser offers it; if applications need
-  translated emoji names, then generate CLDR's annotations for the
-  modern-coverage languages.
+- **Reverse if:** `siv_color` gains a wide-gamut space, then the
+  chooser offers it; if applications need translated emoji names, then
+  generate CLDR's annotations for the modern-coverage languages.
 
 ### D42. Trash and system signals
 

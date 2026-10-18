@@ -106,6 +106,8 @@ pub const App = struct {
     undos: std.ArrayList(?*@import("undo.zig").Stack),
     /// Settings stores (D36).
     settings: settings.State,
+    /// Text domains and their gettext catalogs (D21).
+    translations: @import("intl").gettext.Domains,
     /// Trash operations waiting for the portal, and system monitors
     /// (D42).
     trash: @import("trash.zig").State,
@@ -320,6 +322,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     self.epubs = .empty;
     self.undos = .empty;
     self.settings = .{};
+    self.translations = .{};
     self.trash = .{};
     self.system = .{};
     self.headless = backend == .headless;
@@ -415,6 +418,7 @@ fn destroyNow(self: *App) void {
     // The coordinator writes what the stores have left (app.destroy).
     settings.teardown(self);
     const gpa = self.gpa();
+    self.translations.deinit(gpa);
     for (self.timers.items) |slot| if (slot) |tm| tm.cancel();
     self.timers.deinit(gpa);
     for (self.watches.items) |slot| if (slot) |w| w.remove();

@@ -1,6 +1,7 @@
-//! Exports for locale-aware dates and times, the installed font families,
-//! and the emoji catalogue (D41, api_pickers.zig): the intl module's
-//! tables, and the application's language and fonts.
+//! Exports for locale-aware dates, times, and numbers, plural rules, and
+//! gettext translations (D21, D41, api_pickers.zig and api_intl.zig), the
+//! installed font families, and the emoji catalogue: the intl module's
+//! tables, and the application's language, catalogs, and fonts.
 
 const std = @import("std");
 const t = @import("siv");
@@ -11,6 +12,7 @@ const application = @import("application.zig");
 const App = application.App;
 const Error = application.Error;
 const cldr = intl.cldr;
+const number = intl.number;
 const emoji = intl.emoji;
 
 fn copyOut(buf: []u8, s: []const u8, len: *usize) void {
@@ -19,8 +21,12 @@ fn copyOut(buf: []u8, s: []const u8, len: *usize) void {
     len.* = s.len;
 }
 
+fn languageOf(self: *App) []const u8 {
+    return self.app.fonts.name(self.app.language);
+}
+
 fn localeOf(self: *App) cldr.Locale {
-    return cldr.Locale.find(self.app.fonts.name(self.app.language));
+    return cldr.Locale.find(languageOf(self));
 }
 
 pub export fn siv_app_get_locale_info(app: t.App, info: ?*t.LocaleInfo) t.Result {
@@ -87,6 +93,91 @@ pub export fn siv_app_format_time(app: t.App, seconds: u32, style: t.TimeStyle, 
             format(buf, dest, Fmt.run, .{ l, secs, @as(cldr.TimeStyle, @enumFromInt(@backingInt(s))) });
         }
     }.f(app, seconds, style, buffer, buffer_cap, len));
+}
+
+fn numberOptions(desc: ?*const t.NumberFormatDesc) Error!number.Options {
+    const d = try runtime.readDesc(t.NumberFormatDesc, desc);
+    const style = try runtime.enumValue(t.NumberStyle, d.style);
+    const fl = try runtime.flags(t.NumberFlags, d.flags);
+    var o: number.Options = .{ .style = @enumFromInt(@backingInt(style)), .grouping = !fl.no_grouping };
+    if (fl.fraction_digits) {
+        if (d.max_fraction_digits > number.max_fraction or d.min_fraction_digits > d.max_fraction_digits) return error.InvalidArgument;
+        o.fraction = .{ @intCast(d.min_fraction_digits), @intCast(d.max_fraction_digits) };
+    }
+    return o;
+}
+
+pub export fn siv_app_format_number(app: t.App, value: f64, format_desc: ?*const t.NumberFormatDesc, buffer: ?[*]u8, buffer_cap: usize, len: ?*usize) t.Result {
+    return application.wrap(struct {
+        fn f(a: t.App, v: f64, desc: ?*const t.NumberFormatDesc, ptr: ?[*]u8, cap: usize, out: ?*usize) Error!void {
+            const self = try App.get(@backingInt(a));
+            const opts = try numberOptions(desc);
+            const buf = try runtime.buffer(ptr, cap);
+            const dest = try runtime.out(usize, out);
+            const Fmt = struct {
+                fn run(w: *std.Io.Writer, loc: cldr.Locale, x: f64, o: number.Options) std.Io.Writer.Error!void {
+                    try number.format(loc, w, x, o);
+                }
+            };
+            format(buf, dest, Fmt.run, .{ localeOf(self), v, opts });
+        }
+    }.f(app, value, format_desc, buffer, buffer_cap, len));
+}
+
+pub export fn siv_app_parse_number(app: t.App, text: ?[*]const u8, text_len: usize, valid: ?*bool, value: ?*f64) t.Result {
+    return application.wrap(struct {
+        fn f(a: t.App, ptr: ?[*]const u8, n: usize, valid_out: ?*bool, value_out: ?*f64) Error!void {
+            const self = try App.get(@backingInt(a));
+            const s = try runtime.string(ptr, n);
+            const v_dest = try runtime.out(bool, valid_out);
+            const x_dest = try runtime.out(f64, value_out);
+            const x = number.parse(localeOf(self), s);
+            v_dest.* = x != null;
+            x_dest.* = x orelse 0;
+        }
+    }.f(app, text, text_len, valid, value));
+}
+
+pub export fn siv_app_get_plural_category(app: t.App, value: f64, kind: t.PluralType, format_desc: ?*const t.NumberFormatDesc, category: ?*t.PluralCategory) t.Result {
+    return application.wrap(struct {
+        fn f(a: t.App, v: f64, k: t.PluralType, desc: ?*const t.NumberFormatDesc, out: ?*t.PluralCategory) Error!void {
+            const self = try App.get(@backingInt(a));
+            const kind_ = try runtime.enumValue(t.PluralType, k);
+            const opts = try numberOptions(desc);
+            const dest = try runtime.out(t.PluralCategory, out);
+            const cat = number.category(localeOf(self), intl.plural.Rules.find(languageOf(self)), @enumFromInt(@backingInt(kind_)), v, opts);
+            dest.* = @enumFromInt(@intFromEnum(cat));
+        }
+    }.f(app, value, kind, format_desc, category));
+}
+
+pub export fn siv_app_bind_text_domain(app: t.App, domain: ?[*]const u8, domain_len: usize, directory: ?[*]const u8, directory_len: usize) t.Result {
+    return application.wrap(struct {
+        fn f(a: t.App, d_ptr: ?[*]const u8, d_len: usize, dir_ptr: ?[*]const u8, dir_len: usize) Error!void {
+            const self = try App.get(@backingInt(a));
+            const name = try runtime.string(d_ptr, d_len);
+            const dir = try runtime.string(dir_ptr, dir_len);
+            if (name.len == 0 or std.mem.indexOfAny(u8, name, "/\x00") != null or std.mem.indexOfScalar(u8, dir, 0) != null) return error.InvalidArgument;
+            try self.translations.bind(self.gpa(), name, dir);
+        }
+    }.f(app, domain, domain_len, directory, directory_len));
+}
+
+pub export fn siv_app_translate(app: t.App, message: ?*const t.TranslationDesc, buffer: ?[*]u8, buffer_cap: usize, len: ?*usize) t.Result {
+    return application.wrap(struct {
+        fn f(a: t.App, desc: ?*const t.TranslationDesc, ptr: ?[*]u8, cap: usize, out: ?*usize) Error!void {
+            const self = try App.get(@backingInt(a));
+            const d = try runtime.readDesc(t.TranslationDesc, desc);
+            const domain = try runtime.string(d.domain, d.domain_len);
+            const context = try runtime.string(d.context, d.context_len);
+            const text = try runtime.string(d.text, d.text_len);
+            const plural = try runtime.string(d.plural, d.plural_len);
+            const buf = try runtime.buffer(ptr, cap);
+            const dest = try runtime.out(usize, out);
+            const s = try self.translations.translate(self.gpa(), languageOf(self), domain, context, text, plural.len > 0, plural, d.count);
+            copyOut(buf, s, dest);
+        }
+    }.f(app, message, buffer, buffer_cap, len));
 }
 
 pub export fn siv_app_get_font_family_count(app: t.App, count: ?*u32) t.Result {

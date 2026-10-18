@@ -369,6 +369,14 @@ static void test_app(const unsigned char *font, size_t font_len) {
 	CHECK(found && thumbs < siv_emoji_get_count());
 	EXPECT(siv_emoji_get(thumbs, SIV_SKIN_TONE_MEDIUM, date, sizeof date, &len), SIV_OK);
 	CHECK(len == 8 && memcmp(date, "\xf0\x9f\x91\x8d\xf0\x9f\x8f\xbd", 8) == 0);
+	/* Numbers, plural categories, and untranslated messages (D21). */
+	EXPECT(siv_app_format_number(app, 2e9, SIV_DESC(siv_number_format_desc, .style = SIV_NUMBER_STYLE_BYTES), date, sizeof date, &len), SIV_OK);
+	CHECK(len == 6 && memcmp(date, "2.0 GB", 6) == 0);
+	siv_plural_category plural = SIV_PLURAL_CATEGORY_OTHER;
+	EXPECT(siv_app_get_plural_category(app, 1, SIV_PLURAL_TYPE_CARDINAL, NULL, &plural), SIV_OK);
+	CHECK(plural == SIV_PLURAL_CATEGORY_ONE);
+	EXPECT(siv_app_translate(app, SIV_DESC(siv_translation_desc, .text = SIV_STR("%d file"), .plural = SIV_STR("%d files"), .count = 2), date, sizeof date, &len), SIV_OK);
+	CHECK(len == 8 && memcmp(date, "%d files", 8) == 0);
 	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
 	siv_node chooser = siv_color_chooser(txn, column, SIV_DESC(siv_color_chooser_desc, .color = {0.2f, 0.4f, 0.6f, 1}));
 	siv_node picker = siv_date_picker(txn, column, SIV_DESC(siv_date_picker_desc, .flags = SIV_PICKER_COMPACT));

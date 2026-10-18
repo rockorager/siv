@@ -530,6 +530,67 @@ test "pickers from Lua: locale formatting, the emoji catalogue, values, and colo
     );
 }
 
+test "intl from Lua: numbers, plural categories, and translations" {
+    // The catalog's directories; Lua writes the catalog itself.
+    const linux = std.os.linux;
+    var dir_buf: [64]u8 = undefined;
+    const dir = try std.fmt.bufPrint(&dir_buf, "/tmp/siv-lua-intl-{d}", .{linux.getpid()});
+    var buf: [128]u8 = undefined;
+    for ([_][]const u8{ "", "/ru", "/ru/LC_MESSAGES" }) |sub| _ = linux.mkdir(try std.fmt.bufPrintSentinel(&buf, "{s}{s}", .{ dir, sub }, 0), 0o700);
+    defer for ([_][]const u8{ "/ru/LC_MESSAGES/notes.mo", "/ru/LC_MESSAGES", "/ru", "" }, 0..) |sub, i| {
+        const path = std.fmt.bufPrintSentinel(&buf, "{s}{s}", .{ dir, sub }, 0) catch unreachable;
+        _ = if (i == 0) linux.unlink(path) else linux.rmdir(path);
+    };
+    const script = try std.mem.concat(testing.allocator, u8, &.{ prologue, "local dir = \"", dir, "\"\n",
+        \\-- Numbers and plural categories in the application's language (D21).
+        \\assert(app:format_number(1234.5) == "1,234.5")
+        \\assert(app:format_number(1500, { style = "bytes" }) == "1.5 kB")
+        \\assert(app:format_number(3.1, { flags = "fraction_digits", min_fraction_digits = 2, max_fraction_digits = 2 }) == "3.10")
+        \\assert(app:get_plural_category(1, "cardinal") == "one")
+        \\assert(app:get_plural_category(2, "ordinal") == "two")
+        \\app:set_language("de", "inherit")
+        \\assert(app:format_number(1234.5) == "1.234,5")
+        \\local valid, value = app:parse_number("1.234,5")
+        \\assert(valid and value == 1234.5)
+        \\assert(not app:parse_number("viel"))
+        \\-- A gettext catalog, written here: header, three entries in key
+        \\-- order, little-endian.
+        \\local entries = {
+        \\  { "", "Content-Type: text/plain; charset=UTF-8\nPlural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n" },
+        \\  { "%d note\0%d notes", "%d заметка\0%d заметки\0%d заметок" },
+        \\  { "Open", "Открыть" },
+        \\  { "verb\4Close", "Закрыть" },
+        \\}
+        \\local n = #entries
+        \\local at = 28 + 16 * n
+        \\local parts = { string.pack("<I4I4I4I4I4I4I4", 0x950412de, 0, n, 28, 28 + 8 * n, 0, at) }
+        \\for k = 1, 2 do
+        \\  for _, e in ipairs(entries) do
+        \\    parts[#parts + 1] = string.pack("<I4I4", #e[k], at)
+        \\    at = at + #e[k] + 1
+        \\  end
+        \\end
+        \\for k = 1, 2 do
+        \\  for _, e in ipairs(entries) do parts[#parts + 1] = e[k] .. "\0" end
+        \\end
+        \\local f = assert(io.open(dir .. "/ru/LC_MESSAGES/notes.mo", "wb"))
+        \\f:write(table.concat(parts))
+        \\f:close()
+        \\app:bind_text_domain("notes", dir)
+        \\assert(app:translate{ text = "Open" } == "Open")
+        \\app:set_language("ru", "inherit")
+        \\assert(app:translate{ text = "Open" } == "Открыть")
+        \\assert(app:translate{ domain = "notes", context = "verb", text = "Close" } == "Закрыть")
+        \\assert(app:translate{ text = "%d note", plural = "%d notes", count = 3 } == "%d заметки")
+        \\assert(app:translate{ text = "%d note", plural = "%d notes", count = 25 } == "%d заметок")
+        \\assert(app:translate{ text = "Save" } == "Save")
+        \\assert(app:get_plural_category(3, "cardinal") == "few")
+        \\
+    });
+    defer testing.allocator.free(script);
+    _ = try run(script);
+}
+
 test "the test API: scrolling, typing, queries, captures" {
     _ = try run(prologue ++
         \\local editor, scroll, last
