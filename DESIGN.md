@@ -3038,7 +3038,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     whose CurrentValue is writable: setting it sends the node a
     `set_value` event (`ui.input.setValue`), which a widget applies
     clamped and stepped (D22) or refuses, and the change reaches the
-    client through the next update like any other; Selection for lists,
+    client through the next update like any other, and whose Text is
+    the semantics' value text (`siv_semantics_desc.value_text`,
+    WAI-ARIA's aria-valuetext: "PM" for a day period that is 1, "220°"
+    for a hue; empty, a client reads the number), changes to which
+    raise accessible-value; Selection for lists,
     trees, tab lists, menus, tables, and combo boxes, where selecting a
     child activates it. Modal nodes have the modal state.
   - The root of a window without a title bar (a layer or lock window,

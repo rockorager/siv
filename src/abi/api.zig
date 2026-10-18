@@ -673,6 +673,7 @@ pub const decls = [_]Decl{
         .{ .name = "column", .type = .u32, .doc = "A table cell's or column header's column among all columns, from 1, exposed as the colindex attribute; 0 for none." },
         .{ .name = "current", .type = ref("siv_current"), .doc = "Whether the node is the current item of its set, and what kind (aria-current), exposed as the current attribute." },
         reserved("reserved0"),
+        .{ .name = "value_text", .type = .string, .doc = "The value as text, copied, where the number says too little: \"PM\" for a time picker's day period, \"220°\" for a hue (aria-valuetext, exposed as AT-SPI's Value.Text). Empty for none." },
     }),
 
     enumeration("siv_axis", "A flex main axis.", &.{

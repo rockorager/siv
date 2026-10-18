@@ -620,6 +620,8 @@ pub const SNode = struct {
     bounds: Rect,
     states: atspi.States,
     value: ?ui.Range,
+    /// The value as text (Value.Text).
+    value_text: Str = .{},
     live: ui.Live,
     actionable: bool,
     /// The key that does the same as its action (D34); keysym 0 for none.
@@ -843,6 +845,7 @@ pub const Win = struct {
                 .bounds = n.bounds,
                 .states = .{},
                 .value = n.value,
+                .value_text = try addStr(gpa, s, n.value_label),
                 .live = n.live,
                 .actionable = n.actionable,
                 .shortcut = n.shortcut,
@@ -995,7 +998,7 @@ pub const Win = struct {
             if (o.role != n.role or o.masked != n.masked) {
                 b.emitObject(p, "PropertyChange", "accessible-role", 0, 0, .{ .int = @intCast(@backingInt(roleOf(n))) });
             }
-            if (!std.meta.eql(o.value, n.value)) {
+            if (!std.meta.eql(o.value, n.value) or !std.mem.eql(u8, old.str(o.value_text), new.str(n.value_text))) {
                 b.emitObject(p, "PropertyChange", "accessible-value", 0, 0, .{ .double = if (n.value) |v| v.now else 0 });
             }
             if (n.has_text and o.has_text) try w.diffText(o, n, p);

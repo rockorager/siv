@@ -1055,9 +1055,14 @@ pub const value: Interface = .{
         .{ .name = "MaximumValue", .signature = "d", .get = valueMax },
         .{ .name = "MinimumIncrement", .signature = "d", .get = valueIncrement },
         .{ .name = "CurrentValue", .signature = "d", .access = .readwrite, .get = valueNow, .set = setValueNow },
-        .{ .name = "Text", .signature = "s", .get = propEmpty },
+        .{ .name = "Text", .signature = "s", .get = valueText },
     },
 };
+
+fn valueText(ctx: PropertyContext, out: *Encoder) anyerror!void {
+    const x = try propNode(ctx);
+    try out.writeString(x.snap().str(x.n().value_text));
+}
 
 fn rangeOf(ctx: PropertyContext) !ui.Range {
     const x = try propNode(ctx);

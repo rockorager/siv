@@ -699,6 +699,7 @@ pub export fn siv_set_semantics(txn: t.Txn, node: t.Node, desc: ?*const t.Semant
                     .item => .item,
                     _ => unreachable,
                 },
+                .value_text = try runtime.string(d.value_text, d.value_text_len),
             }) catch |err| return mapTxn(err);
         }
     }.f, .{ node, desc });

@@ -40,6 +40,8 @@ pub const Node = struct {
     selected: node_mod.Toggle,
     expanded: node_mod.Toggle,
     value: ?node_mod.Range,
+    /// The value as text (`Semantics.value_text`).
+    value_label: []const u8 = "",
     live: node_mod.Live,
     /// Has an activate handler or an action (D34): AT can invoke it.
     actionable: bool,
@@ -195,6 +197,7 @@ pub const Tree = struct {
                 .selected = sem.selected,
                 .expanded = sem.expanded,
                 .value = sem.value,
+                .value_label = sem.value_text,
                 .live = sem.live,
                 .actionable = (n.handler(.activate) != null or n.action != 0) and !sem.disabled,
                 .shortcut = if (n.shortcut.keysym != 0) n.shortcut else if (n.action != 0) win.actions.shortcut(win.actions.ctx, n.action, n.action_target) else .{},

@@ -519,6 +519,9 @@ pub const Semantics = struct {
     column: u32 = 0,
     /// The current item of its set, and what kind (aria-current).
     current: Current = .none,
+    /// The value as text, where the number alone says too little: a day
+    /// period's "PM" (aria-valuetext, AT-SPI's Value.Text).
+    value_text: []const u8 = "",
 };
 
 pub const Sort = enum(u8) { none, ascending, descending };

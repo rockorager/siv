@@ -502,6 +502,7 @@ fn deinitStorage(win: *Window) void {
 pub fn freeNodeData(gpa: std.mem.Allocator, n: *const Node) void {
     gpa.free(n.semantics.label);
     gpa.free(n.semantics.description);
+    gpa.free(n.semantics.value_text);
     gpa.free(n.tooltip);
     gpa.free(n.text_input.surrounding);
     gpa.free(n.a11y_embed);

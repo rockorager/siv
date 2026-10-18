@@ -404,7 +404,7 @@ pub const Txn = struct {
     pub fn setSemantics(t: *Txn, id: NodeId, sem: node_mod.Semantics) Error!void {
         const n = try t.live(id);
         if (sem.value) |r| if (!(r.min <= r.max) or !std.math.isFinite(r.now) or !(r.step >= 0) or !std.math.isFinite(r.step)) return error.InvalidArgument;
-        if (!std.unicode.utf8ValidateSlice(sem.label) or !std.unicode.utf8ValidateSlice(sem.description)) return error.InvalidArgument;
+        if (!std.unicode.utf8ValidateSlice(sem.label) or !std.unicode.utf8ValidateSlice(sem.description) or !std.unicode.utf8ValidateSlice(sem.value_text)) return error.InvalidArgument;
         try t.reserve();
         if (sem.modal and !n.semantics.modal) {
             // Made modal last, it is the active modal while shown.
@@ -414,12 +414,17 @@ pub const Txn = struct {
         }
         const label = try t.own(u8, sem.label);
         const description = try t.own(u8, sem.description);
+        const value_text = try t.own(u8, sem.value_text);
+        // `own` reserves two frees, and three strings are released.
+        try t.frees.ensureUnusedCapacity(t.win.gpa, 3);
         t.touch(id);
         t.release(u8, n.semantics.label);
         t.release(u8, n.semantics.description);
+        t.release(u8, n.semantics.value_text);
         n.semantics = sem;
         n.semantics.label = label;
         n.semantics.description = description;
+        n.semantics.value_text = value_text;
         t.win.dirty.semantics = true;
         // Focus rings follow focusability.
         t.win.markPaint(id);
