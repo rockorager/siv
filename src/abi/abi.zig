@@ -70,6 +70,8 @@ pub const adaptive = @import("adaptive.zig");
 /// The trash and system signals (D42).
 pub const trash = @import("trash.zig");
 pub const system = @import("system.zig");
+/// Dates and times by locale, font families, and emoji (D41).
+pub const intl = @import("intl.zig");
 /// Driving and inspecting applications on the headless backend.
 pub const testing = @import("testing.zig");
 
@@ -77,7 +79,7 @@ pub const testing = @import("testing.zig");
 pub const types = t;
 
 /// The files that export schema functions.
-const implementations = .{ @This(), application, tree, canvas, external, dnd, clipboard, theme, cursor, portal, actions, print, tray, image_load, watch, icon, dbus, input, widget, shell, document, undo, settings, spell, adaptive, trash, system, testing } ++ @import("widgets").implementations;
+const implementations = .{ @This(), application, tree, canvas, external, dnd, clipboard, theme, cursor, portal, actions, print, tray, image_load, watch, icon, dbus, input, widget, shell, document, undo, settings, spell, adaptive, trash, system, intl, testing } ++ @import("widgets").implementations;
 
 const version = build_options.version;
 
