@@ -596,6 +596,32 @@ pub const decls = [_]Decl{
         .{ .name = "flags", .type = ref("siv_animation_flags"), .doc = "Options." },
     }),
 
+    enumeration("siv_motion_curve", "How motion moves (D38).", &.{
+        .{ .name = "spring", .value = 0, .doc = "A damped spring: duration_ms is its response (its perceptual duration), bounce its overshoot; it settles when it settles, and a change in flight keeps the velocity it had." },
+        .{ .name = "ease_out", .value = 1, .doc = "The CSS ease-out curve over duration_ms; a change in flight starts over from where it is." },
+    }),
+    flags("siv_motion_flags", "What motion animates besides the node's own opacity and transform (D38).", &.{
+        .{ .name = "layout", .bit = 0, .doc = "Moves from layout within the node's parent layer (reflow, reorders, siblings inserted or removed) and growth, whose new content a clip uncovers from the old box. Moves into another layer's coordinates, and layouts of a resized window, jump." },
+        .{ .name = "enter", .bit = 1, .doc = "Appearing (created or shown, itself or with an ancestor, after the window's first frame) runs from the enter_ values to the node's own." },
+        .{ .name = "exit", .bit = 2, .doc = "Disappearing (removed or hidden, itself or with an ancestor) runs from the node's own values to the exit_ values; the compositor keeps drawing it, without input, until the motion ends." },
+        .{ .name = "relative", .bit = 3, .doc = "enter_x, enter_y, exit_x, and exit_y are multiples of the node's width and height." },
+        .{ .name = "mirror_rtl", .bit = 4, .doc = "enter_x and exit_x flip in right-to-left layouts (D21), so motion runs from or toward the start edge." },
+    }),
+    descriptor("siv_motion_desc", "How a node's changes animate on the compositor (D8, D38).", &.{
+        .{ .name = "flags", .type = ref("siv_motion_flags"), .doc = "What animates besides the node's own opacity and transform." },
+        .{ .name = "curve", .type = ref("siv_motion_curve"), .doc = "How it moves; default spring." },
+        .{ .name = "duration_ms", .type = .u32, .doc = "A spring's response, or the curve's length; 0 is 300." },
+        f32Field("bounce", "Springs: 0 (the default) is critically damped, the fastest approach without overshoot; up to 1 (not included) overshoots and bounces back, more the higher it is."),
+        f32Field("enter_opacity", "Opacity an entering node starts at, multiplying its own: 0 (the default) fades it in, 1 does not."),
+        f32Field("enter_scale", "Scale it starts at, about its center; 0 is 1 (none)."),
+        f32Field("enter_x", "Horizontal offset it starts at, in pixels (physical: positive is rightward) or, with relative, widths."),
+        f32Field("enter_y", "Vertical offset it starts at, in pixels or, with relative, heights."),
+        f32Field("exit_opacity", "Opacity an exiting node ends at, multiplying its own: 0 (the default) fades it out, 1 does not."),
+        f32Field("exit_scale", "Scale it ends at, about its center; 0 is 1 (none)."),
+        f32Field("exit_x", "Horizontal offset it ends at."),
+        f32Field("exit_y", "Vertical offset it ends at."),
+    }),
+
     enumeration("siv_role", "Accessibility roles (D18).", &role_values),
     enumeration("siv_toggle", "A tri-state semantic property.", toggle_values),
     flags("siv_semantics_flags", "Semantic options.", &.{
@@ -1906,7 +1932,8 @@ pub const functions = [_]Function{
     setter("siv_show_caret_at", "Draws an editor's caret at a byte offset apart from its selection's ends, the selection unchanged (D15): a modal editor's visual-line mode selects whole lines while its cursor stays at its column. It holds until the selection or the text next changes, by the user or the application, so set it after siv_set_selection and edits. A block caret (SIV_EDITOR_BLOCK_CARET) covers the character there. Masked editors take none (SIV_ERROR_INVALID_ARGUMENT).", &.{
         .{ .name = "offset", .type = .u32, .doc = "Byte offset, moved back to a character boundary and clamped to the text; UINT32_MAX draws the caret at the selection's caret again." },
     }),
-    setter("siv_set_transition", "Makes later changes of the node's opacity and transform animate on the compositor (D8) for duration_ms with an ease-out curve, instead of jumping; reduced motion turns it off (D29). The node needs its own layer for them to apply: give it SIV_VISUAL_LAYER.", &.{.{ .name = "duration_ms", .type = .u32, .doc = "Duration; 0 turns transitions off." }}),
+    setter("siv_set_transition", "Makes later changes of the node's opacity and transform animate on the compositor (D8) for duration_ms with an ease-out curve, instead of jumping; reduced motion turns it off (D29). It gives the node its own layer. Short for siv_set_motion with SIV_MOTION_CURVE_EASE_OUT and no flags, and replaces the node's motion as that does.", &.{.{ .name = "duration_ms", .type = .u32, .doc = "Duration; 0 turns transitions off." }}),
+    setter("siv_set_motion", "Sets how the node's changes animate on the compositor (D8, D38), at no cost to the application's thread per frame, and gives it its own layer: changes of its own opacity and transform, and as its flags say, moves and growth from layout and its appearance and disappearance. A change while one is in flight continues from what is shown. Reduced motion, from the desktop or SIV_APP_REDUCED_MOTION, turns all of it into jumps (D29). The first frame of a window shows nodes where they are.", &.{.{ .name = "desc", .type = .{ .desc = "siv_motion_desc" }, .doc = "The motion; NULL turns it off." }}),
     setter("siv_set_animation", "Runs an animation of one property of the node on the compositor (D8), which gives the node its own layer: repeating ones, such as an indeterminate progress bar, cost the application's thread nothing per frame. It runs while the node is shown and motion is not reduced (D29); otherwise, and once stopped, the node shows its own value. Hiding the node stops it and showing it starts it over, as do changes of the node's size (for relative translations), own opacity or transform, or the animation. A finite animation holds its last value until one of those changes.", &.{.{ .name = "desc", .type = .{ .desc = "siv_animation_desc" }, .doc = "The animation; NULL stops it." }}),
     setter("siv_set_text_spans", "Replaces the styled ranges of a text or editor node (D22): weight, slant, size, color, underline, and strikethrough over parts of its text, shaped as runs of their own and exposed to assistive technology as text attributes. siv_set_text clears them when the text changes; an editor moves them as the user edits, and typed text takes the style of the character before it (or the typing style, siv_editor_format). Masked editors take none (SIV_ERROR_INVALID_ARGUMENT).", &.{.{ .name = "desc", .type = .{ .desc = "siv_text_spans_desc" }, .doc = "The ranges; NULL clears them." }}),
     setter("siv_set_placeholder", "Sets the text an editor shows, in the theme's muted color, while it is empty. Exposed to assistive technology as the placeholder.", &.{.{ .name = "text", .type = .string, .doc = "UTF-8 without line breaks, copied." }}),

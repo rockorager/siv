@@ -35,6 +35,7 @@ pub const Layout = node.Layout;
 pub const Corners = node.Corners;
 pub const Visual = node.Visual;
 pub const Animation = node.Animation;
+pub const Motion = node.Motion;
 pub const Span = node.Span;
 pub const SpanStyle = node.SpanStyle;
 pub const ParagraphSpan = node.ParagraphSpan;

@@ -277,7 +277,7 @@ pub const Txn = struct {
             break :blk @enumFromInt(win.nodes.items.len - 1);
         };
         win.node(id).* = .{ .kind = kind, .data = .default(kind) };
-        win.state(id).* = .{ .touched = t.epoch };
+        win.state(id).* = .{ .touched = t.epoch, .appear = true };
         t.link(parent, id, before);
         win.markLayout(id);
         win.markLayers();
@@ -353,7 +353,8 @@ pub const Txn = struct {
         n.visual.opacity = std.math.clamp(v.opacity, 0, 1);
         const win = t.win;
         if (isLayerRoot(old) != isLayerRoot(n.visual) or old.clip != v.clip or (old.shadow_count != 0) != (v.shadow_count != 0)) win.markLayers();
-        if (old.opacity != n.visual.opacity or !old.transform.eql(v.transform) or !std.meta.eql(old.animation, v.animation))
+        if (old.opacity != n.visual.opacity or !old.transform.eql(v.transform) or !std.meta.eql(old.animation, v.animation) or
+            !std.meta.eql(old.motion, v.motion))
             win.dirty.props = true;
         if (!std.meta.eql(old.background, v.background) or old.border_width != v.border_width or
             !std.meta.eql(old.border_color, v.border_color) or !std.meta.eql(old.radius, v.radius) or old.clip != v.clip or
@@ -379,7 +380,7 @@ pub const Txn = struct {
     fn visibilityChanged(win: *Window, id: NodeId, hidden: bool) void {
         // Hidden subtrees take no space and paint nothing; what they
         // painted is damaged now, since no layer visits them.
-        if (hidden) hideSubtree(win, id);
+        if (hidden) hideSubtree(win, id) else win.state(id).appear = true;
         win.markLayout(id);
         win.markSubtreeLayout(id);
         win.markLayers();
@@ -949,7 +950,7 @@ fn charBoundary(s: Rope, offset: u32) u32 {
 pub const bullet = "\u{2022}";
 
 pub fn isLayerRoot(v: node_mod.Visual) bool {
-    return v.opacity < 1 or !v.transform.eql(.identity) or v.layer or v.animation.property != .none or v.window_blur;
+    return v.opacity < 1 or !v.transform.eql(.identity) or v.layer or v.animation.property != .none or v.window_blur or v.motion.needsLayer();
 }
 
 fn spansEql(a: []const node_mod.Span, b: []const node_mod.Span) bool {

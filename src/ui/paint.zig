@@ -14,6 +14,13 @@
 //! fading, or transforming a layer root, and scrolling, change layer
 //! properties only. Layer ids are layer indices plus one, reused after
 //! the layer is destroyed (the compositor's contract, D20).
+//!
+//! Motion (D38): a node's motion animates its layer's properties on the
+//! compositor: changes of its own opacity and transform, moves from
+//! layout within its parent layer and growth (revealed by a clip), and
+//! its enter and exit transitions. A layer that exits is given up to the
+//! compositor (`Op.exit`) with its subtree, whose ids stay reserved until
+//! the compositor reports them gone.
 
 const std = @import("std");
 const raster = @import("raster");
@@ -42,7 +49,17 @@ pub const no_layer: u32 = std.math.maxInt(u32);
 pub const focus_ring_color = scene.Color.srgb8(0x25, 0x63, 0xeb, 0xff);
 pub const focus_ring_width: f32 = 2;
 
-const LayerKind = enum { root, node, clip_content, scroll_content, chunk, caret };
+const LayerKind = enum {
+    root,
+    node,
+    clip_content,
+    scroll_content,
+    chunk,
+    caret,
+    /// Given up to the compositor to finish an exit (D38); reserved until
+    /// it reports `exit_root` gone.
+    exiting,
+};
 
 const Layer = struct {
     kind: LayerKind,
@@ -82,6 +99,16 @@ const Layer = struct {
     /// The owner's animation as last sent (with `start_ns` 0); it is sent
     /// again, restarting, when what it resolves to changes.
     anim: ?compositor.Animation = null,
+    /// The parent and the owner's size when properties were last sent:
+    /// moves from layout within one parent layer animate, and growth is
+    /// revealed (D38); a new parent jumps.
+    props_parent: u32 = no_layer,
+    size: layout.Size = .{},
+    /// Appeared in this assignment: its first properties come from its
+    /// owner's enter transition (D38).
+    entering: bool = false,
+    /// Exiting layers: the outermost layer given up with this one.
+    exit_root: u32 = no_layer,
     // Content.
     dirty: bool = true,
     subtree_dirty: bool = false,
@@ -105,6 +132,53 @@ pub const ScrollBy = struct {
     /// to content that shrank above (D13), before the container's new
     /// extent clamps the offset.
     early: bool = false,
+};
+
+/// How a node's motion runs on the compositor; none with reduced motion.
+const Timing = struct {
+    duration_ns: u64,
+    easing: compositor.Easing,
+
+    fn of(win: *const Window, v: node_mod.Visual) ?Timing {
+        const m = v.motion;
+        if (m.duration_ms == 0 or win.reducedMotion()) return null;
+        return .{
+            .duration_ns = @as(u64, m.duration_ms) * std.time.ns_per_ms,
+            .easing = switch (m.curve) {
+                .spring => .{ .spring = .{ .bounce = m.bounce } },
+                .ease_out => .ease_out,
+            },
+        };
+    }
+
+    /// An animation to `to` from whatever the layer shows, or `from`.
+    fn animation(tm: Timing, to: compositor.Value, from: ?compositor.Value) compositor.Animation {
+        return .{ .to = to, .from = from, .duration_ns = tm.duration_ns, .easing = tm.easing };
+    }
+};
+
+/// A layer's opacity and transform at a presence (D38): where an
+/// entering node comes from or an exiting one goes.
+const Look = struct {
+    transform: compositor.Transform,
+    opacity: f32,
+
+    fn at(base: Look, pres: node_mod.Motion.Presence, size: layout.Size, rtl: bool) Look {
+        var t = base.transform;
+        const flip: f32 = if (pres.mirror and rtl) -1 else 1;
+        t.translate.x += flip * if (pres.relative) pres.x * size.w else pres.x;
+        t.translate.y += if (pres.relative) pres.y * size.h else pres.y;
+        t.scale = .{ .x = t.scale.x * pres.scale, .y = t.scale.y * pres.scale };
+        return .{ .transform = t, .opacity = std.math.clamp(base.opacity * pres.opacity, 0, 1) };
+    }
+};
+
+/// The exit of a removed node's layer, worked out before the node dies.
+const Exit = struct {
+    layer: u32,
+    owner: NodeId,
+    to: Look,
+    timing: Timing,
 };
 
 const ClipEntry = struct {
@@ -157,6 +231,11 @@ pub const State = struct {
     blink_epoch: u32 = 0,
     root_sent: bool = false,
     dirty_count: u32 = 0,
+    /// Exits of nodes removed since the last assignment (`forget`).
+    exits: std.ArrayList(Exit) = .empty,
+    /// The root's size at the last emit: a window resized by the user
+    /// relays out without motion (D38).
+    root_size: layout.Size = .{},
 
     pub fn init(st: *State, win: *Window) Error!void {
         try st.layers.append(win.gpa, .{ .kind = .root, .owner = .root, .pass = 0, .parent = no_layer });
@@ -183,11 +262,13 @@ pub const State = struct {
         st.scroll_by.deinit(gpa);
         st.clips.deinit(gpa);
         st.glyphs.deinit(gpa);
+        st.exits.deinit(gpa);
     }
 
     pub fn markLayer(st: *State, index: u32) void {
         if (index == no_layer or index >= st.layers.items.len) return;
         const l = &st.layers.items[index];
+        if (l.kind == .exiting) return;
         if (!l.dirty) {
             l.dirty = true;
             st.dirty_count += 1;
@@ -197,6 +278,7 @@ pub const State = struct {
     /// Adds `r` (layer coordinates) to a layer's damage.
     pub fn damage(st: *State, index: u32, r: Rect) void {
         if (index == no_layer or index >= st.layers.items.len or r.isEmpty()) return;
+        if (st.layers.items[index].kind == .exiting) return;
         st.markLayer(index);
         const l = &st.layers.items[index];
         l.damage = l.damage.unite(r);
@@ -216,6 +298,40 @@ pub const State = struct {
 
     pub fn anyDirty(st: *const State) bool {
         return st.dirty_count != 0;
+    }
+
+    /// A removed node is about to die: if its layer has an exit
+    /// transition, work it out now, while the node's motion and size are
+    /// known; the layer exits at the next assignment.
+    pub fn forget(st: *State, win: *Window, nid: NodeId) void {
+        if (!st.ownsLayerNow(win, nid)) return;
+        const e = st.exitOf(win, nid, win.state(nid).own_layer) orelse return;
+        // Without memory the node disappears at once.
+        st.exits.append(win.gpa, e) catch {};
+    }
+
+    fn exitOf(st: *const State, win: *const Window, nid: NodeId, index: u32) ?Exit {
+        const n = win.node(nid);
+        const pres = n.visual.motion.exit orelse return null;
+        const tm = Timing.of(win, n.visual) orelse return null;
+        const l = st.layers.items[index];
+        if (l.kind != .node or !l.props_sent) return null;
+        const s = win.state(nid);
+        const base: Look = .{ .transform = l.transform, .opacity = l.opacity };
+        return .{ .layer = index, .owner = nid, .to = base.at(pres, s.size, s.rtl), .timing = tm };
+    }
+
+    /// The compositor destroyed a layer given up with `Op.exit`: when it
+    /// was the outermost, it and the layers given up with it are free.
+    pub fn exited(st: *State, gpa: std.mem.Allocator, index: u32) void {
+        if (index >= st.layers.items.len) return;
+        for (st.layers.items, 0..) |*l, i| {
+            if (l.kind != .exiting or l.exit_root != index) continue;
+            l.open.deinit(gpa);
+            l.* = .{ .kind = .chunk, .owner = .none, .pass = 0, .parent = no_layer, .dirty = false };
+            // Without memory the slot is not reused.
+            st.free.append(gpa, @intCast(i)) catch {};
+        }
     }
 
     /// A builder the compositor no longer reads.
@@ -242,11 +358,12 @@ pub const State = struct {
         try st.order.append(gpa, 0);
         var cur: Cursor = .{ .layer = 0 };
         var it = win.shown(.root);
-        while (it.next()) |ch| try st.visit(win, flags, ch, 0, &cur);
+        while (it.next()) |ch| try st.visit(win, flags, ch, 0, &cur, false);
 
         // Structural ops: move survivors out of dying parents, destroy the
-        // dead, create the new, then insert everything in paint order.
-        try st.ops.ensureUnusedCapacity(gpa, 2 * st.layers.items.len + 1);
+        // dead (or let them exit), create the new, then insert everything
+        // in paint order.
+        try st.ops.ensureUnusedCapacity(gpa, 4 * st.layers.items.len + 1);
         for (st.order.items) |i| {
             const l = &st.layers.items[i];
             if (l.created and l.sent_parent != l.parent and l.sent_parent != no_layer) {
@@ -254,16 +371,39 @@ pub const State = struct {
                 l.sent_parent = no_layer;
             }
         }
-        for (st.layers.items, 0..) |*l, i| {
-            if (l.pass == st.pass or l.kind == .root) continue;
-            if (l.pass == 0 and !l.created) continue; // free slot
-            const parent_dead = l.sent_parent != no_layer and st.layers.items[l.sent_parent].pass != st.pass;
-            if (l.created and !parent_dead) st.ops.appendAssumeCapacity(.{ .destroy = id(@intCast(i)) });
+        const fates = try a.alloc(Fate, st.layers.items.len);
+        @memset(fates, .undecided);
+        const exits = try a.alloc(?Exit, st.layers.items.len);
+        for (st.layers.items, 0..) |_, i| _ = st.fate(win, fates, exits, @intCast(i));
+        for (st.layers.items, fates, 0..) |*l, f, i_| {
+            const i: u32 = @intCast(i_);
+            switch (f) {
+                .undecided, .live => continue,
+                .destroy => st.ops.appendAssumeCapacity(.{ .destroy = id(i) }),
+                .gone => {},
+                .exit, .nested, .ride => {
+                    if (exits[i]) |e| {
+                        if (!e.to.transform.eql(l.transform)) st.ops.appendAssumeCapacity(.{ .animate = .{ .layer = id(i), .animation = e.timing.animation(.{ .transform = e.to.transform }, null) } });
+                        if (e.to.opacity != l.opacity) st.ops.appendAssumeCapacity(.{ .animate = .{ .layer = id(i), .animation = e.timing.animation(.{ .opacity = e.to.opacity }, null) } });
+                        st.ops.appendAssumeCapacity(.{ .exit = id(i) });
+                    }
+                    var root = i;
+                    while (fates[root] != .exit) root = st.layers.items[root].sent_parent;
+                    if (l.dirty) st.dirty_count -= 1;
+                    l.open.deinit(gpa);
+                    l.open = .empty;
+                    l.kind = .exiting;
+                    l.exit_root = root;
+                    l.dirty = false;
+                    continue;
+                },
+            }
             if (l.dirty) st.dirty_count -= 1;
             l.open.deinit(gpa);
             l.* = .{ .kind = .chunk, .owner = .none, .pass = 0, .parent = no_layer, .dirty = false };
-            try st.free.append(gpa, @intCast(i));
+            try st.free.append(gpa, i);
         }
+        st.exits.clearRetainingCapacity();
         for (st.order.items) |i| {
             const l = &st.layers.items[i];
             if (!l.created) {
@@ -282,6 +422,53 @@ pub const State = struct {
             st.root_sent = true;
         }
         win.dirty.props = true;
+    }
+
+    /// What happens to a layer in an assignment (D38).
+    const Fate = enum(u8) {
+        undecided,
+        /// Assigned again, a free slot, or exiting already.
+        live,
+        /// Destroyed, with the layers below it.
+        destroy,
+        /// Never created, or destroyed with its parent: no op.
+        gone,
+        /// Exits under a live parent, carrying its subtree.
+        exit,
+        /// Exits of its own inside an exiting layer.
+        nested,
+        /// Carried by an exiting layer above it.
+        ride,
+    };
+
+    fn fate(st: *State, win: *Window, fates: []Fate, exits: []?Exit, i: u32) Fate {
+        if (fates[i] != .undecided) return fates[i];
+        const l = st.layers.items[i];
+        exits[i] = null;
+        const f: Fate = blk: {
+            if (l.kind == .root or l.kind == .exiting or l.pass == st.pass or (l.pass == 0 and !l.created)) break :blk .live;
+            if (!l.created) break :blk .gone;
+            exits[i] = st.dyingExit(win, i);
+            if (l.sent_parent == no_layer) break :blk .destroy;
+            break :blk switch (st.fate(win, fates, exits, l.sent_parent)) {
+                .undecided => unreachable,
+                .live => if (exits[i] != null) .exit else .destroy,
+                .destroy, .gone => .gone,
+                .exit, .nested, .ride => if (exits[i] != null) .nested else .ride,
+            };
+        };
+        fates[i] = f;
+        return f;
+    }
+
+    /// The exit of a dying layer: recorded when its node was removed, or
+    /// worked out now when its node was hidden (itself or an ancestor).
+    /// Layers whose node stays shown, but stopped rooting a layer, go.
+    fn dyingExit(st: *const State, win: *const Window, i: u32) ?Exit {
+        const l = st.layers.items[i];
+        for (st.exits.items) |e| if (e.layer == i and e.owner == l.owner) return e;
+        if (l.kind != .node or !win.isLive(l.owner) or win.isShown(l.owner)) return null;
+        return st.exitOf(win, l.owner, i);
     }
 
     const Flags = packed struct(u8) {
@@ -329,11 +516,17 @@ pub const State = struct {
         after: NodeId = .none,
     };
 
-    fn visit(st: *State, win: *Window, flags: []const Flags, nid: NodeId, container: u32, cur: *Cursor) Error!void {
+    fn visit(st: *State, win: *Window, flags: []const Flags, nid: NodeId, container: u32, cur: *Cursor, parent_appears: bool) Error!void {
         const s = win.state(nid);
         const n = win.node(nid);
+        // Created or shown, itself or with an ancestor (D38).
+        const appears = parent_appears or s.appear;
+        s.appear = false;
         if (ownsLayer(win, nid, flags[nid.index()])) {
             const l = try st.claim(win, &s.own_layer, .node, nid, container);
+            // Not in the window's first frame, which shows it as it is.
+            if (appears and st.root_sent and !st.layers.items[l].created and n.visual.motion.enter != null)
+                st.layers.items[l].entering = true;
             st.setLayer(win, nid, l);
             var inner_container = l;
             if (clipsInChild(n.visual)) {
@@ -344,7 +537,7 @@ pub const State = struct {
             }
             var inner: Cursor = .{ .layer = inner_container };
             var it = win.shown(nid);
-            while (it.next()) |ch| try st.visit(win, flags, ch, inner_container, &inner);
+            while (it.next()) |ch| try st.visit(win, flags, ch, inner_container, &inner, appears);
             if (hasCaret(win, nid)) _ = try st.claim(win, &s.content_layer, .caret, nid, l);
             cur.after = nid;
             return;
@@ -356,7 +549,7 @@ pub const State = struct {
         }
         st.setLayer(win, nid, cur.layer);
         var it = win.shown(nid);
-        while (it.next()) |ch| try st.visit(win, flags, ch, container, cur);
+        while (it.next()) |ch| try st.visit(win, flags, ch, container, cur, appears);
     }
 
     fn claim(st: *State, win: *Window, slot: *u32, kind: LayerKind, owner: NodeId, parent: u32) Error!u32 {
@@ -555,26 +748,51 @@ pub const State = struct {
             try st.ops.insert(gpa, early, .{ .scroll_by = .{ .layer = id(win.state(sb.node).own_layer), .delta = sb.delta } });
             early += 1;
         }
+        // A window resized by the user relays out under the pointer:
+        // following the edge at once beats sliding after it (D38).
+        const root_size = win.state(.root).size;
+        const resized = !std.meta.eql(root_size, st.root_size);
+        st.root_size = root_size;
         if (win.dirty.props or st.ops.items.len != 0) {
-            try st.ops.ensureUnusedCapacity(gpa, 13 * st.order.items.len + st.scroll_by.items.len + 1);
+            try st.ops.ensureUnusedCapacity(gpa, 16 * st.order.items.len + st.scroll_by.items.len + 1);
             for (st.order.items) |i| {
                 const l = &st.layers.items[i];
                 const p = props(st, win, l.*);
-                // Transitions (D29): the node's own opacity and transform
-                // changes animate on the compositor unless motion is
-                // reduced.
+                // Motion (D29, D38): the node's own opacity and transform
+                // changes, and with `layout` its moves within its parent
+                // layer and its growth, animate on the compositor unless
+                // motion is reduced.
                 const owner_visual = if (l.kind == .node or l.kind == .root) win.node(l.owner).visual else null;
-                const ms: u32 = if (owner_visual) |v| (if (win.reducedMotion()) 0 else v.transition_ms) else 0;
+                const tm = if (owner_visual) |v| Timing.of(win, v) else null;
+                const motion = if (owner_visual) |v| v.motion else node_mod.Motion{};
                 const own_t = if (owner_visual) |v| v.transform else compositor.Transform.identity;
+                const in_place = l.props_sent and l.props_parent == l.parent and !resized;
+                const layout_moves = motion.layout and in_place;
                 // A running animation (D29) owns its property: changes of
                 // the base value send it again instead.
                 const anim = if (owner_visual) |v| animationOf(win, l.owner, v.animation, p) else null;
                 const anim_prop: ?compositor.Property = if (anim) |a| std.meta.activeTag(a.to) else null;
+                if (l.entering) enter: {
+                    l.entering = false;
+                    const timing = tm orelse break :enter;
+                    const pres = motion.enter orelse break :enter;
+                    if (l.props_sent) break :enter;
+                    const s = win.state(l.owner);
+                    const from = (Look{ .transform = p.transform, .opacity = p.opacity }).at(pres, s.size, s.rtl);
+                    if (anim_prop != .transform and !from.transform.eql(p.transform)) {
+                        st.ops.appendAssumeCapacity(.{ .animate = .{ .layer = id(i), .animation = timing.animation(.{ .transform = p.transform }, .{ .transform = from.transform }) } });
+                        l.transform = p.transform;
+                    }
+                    if (anim_prop != .opacity and from.opacity != p.opacity) {
+                        st.ops.appendAssumeCapacity(.{ .animate = .{ .layer = id(i), .animation = timing.animation(.{ .opacity = p.opacity }, .{ .opacity = from.opacity }) } });
+                        l.opacity = p.opacity;
+                    }
+                }
                 if (!l.transform.eql(p.transform) and anim_prop == .transform) {
                     l.transform = p.transform;
                 } else if (!l.transform.eql(p.transform)) {
-                    if (ms != 0 and l.props_sent and !own_t.eql(l.own_transform)) {
-                        st.ops.appendAssumeCapacity(.{ .animate = .{ .layer = id(i), .animation = transition(.{ .transform = p.transform }, ms) } });
+                    if (tm != null and l.props_sent and (!own_t.eql(l.own_transform) or layout_moves)) {
+                        st.ops.appendAssumeCapacity(.{ .animate = .{ .layer = id(i), .animation = tm.?.animation(.{ .transform = p.transform }, null) } });
                     } else st.ops.appendAssumeCapacity(.{ .set_transform = .{ .layer = id(i), .transform = p.transform } });
                     l.transform = p.transform;
                 }
@@ -582,11 +800,20 @@ pub const State = struct {
                 if (l.opacity != p.opacity and anim_prop == .opacity) {
                     l.opacity = p.opacity;
                 } else if (l.opacity != p.opacity) {
-                    if (ms != 0 and l.props_sent) {
-                        st.ops.appendAssumeCapacity(.{ .animate = .{ .layer = id(i), .animation = transition(.{ .opacity = p.opacity }, ms) } });
+                    if (tm != null and l.props_sent) {
+                        st.ops.appendAssumeCapacity(.{ .animate = .{ .layer = id(i), .animation = tm.?.animation(.{ .opacity = p.opacity }, null) } });
                     } else st.ops.appendAssumeCapacity(.{ .set_opacity = .{ .layer = id(i), .opacity = p.opacity } });
                     l.opacity = p.opacity;
                 }
+                if (owner_visual != null) {
+                    const s = win.state(l.owner);
+                    // Growth shows the content at its new size at once,
+                    // uncovered from the old box by a clip (D38).
+                    if (layout_moves and tm != null and (s.size.w > l.size.w or s.size.h > l.size.h))
+                        st.ops.appendAssumeCapacity(.{ .animate = .{ .layer = id(i), .animation = revealOf(tm.?, win, l.owner, l.size, s.size) } });
+                    l.size = s.size;
+                }
+                l.props_parent = l.parent;
                 if (!std.meta.eql(l.anim, anim)) {
                     // Setting a property cancels its animation.
                     if (l.anim) |old| if (anim_prop != std.meta.activeTag(old.to)) switch (old.to) {
@@ -749,7 +976,7 @@ pub const State = struct {
 
     fn props(st: *const State, win: *const Window, l: Layer) Props {
         switch (l.kind) {
-            .chunk => return .{},
+            .chunk, .exiting => return .{},
             .caret => {
                 const l_ = text_node.current(win, l.owner) orelse return .{};
                 const n = win.node(l.owner);
@@ -771,8 +998,21 @@ pub const State = struct {
                 const n = win.node(l.owner);
                 const s = win.state(l.owner);
                 var t = n.visual.transform;
+                // Enter and exit scales are about the center; a plain
+                // transform scales about it too, so they interpolate
+                // without moving the origin (D38).
+                const m = n.visual.motion;
+                const scales = (if (m.enter) |e| e.scale != 1 else false) or (if (m.exit) |e| e.scale != 1 else false);
+                if (scales and t.scale.eql(.{ .x = 1, .y = 1 }) and t.rotate == 0) t.origin = .{ .x = s.size.w / 2, .y = s.size.h / 2 };
                 if (l.kind == .node) {
-                    const off = st.offsetInContainer(win, l.owner);
+                    var off = st.offsetInContainer(win, l.owner);
+                    // Motion that places a node puts it on whole device
+                    // pixels, so that what its content snaps to pixels
+                    // (underlines, hairlines) stays crisp at rest (D38).
+                    if (m.layout or m.enter != null or m.exit != null) {
+                        const k: f32 = @floatCast(win.scale);
+                        off = .{ .x = @round(off.x * k) / k, .y = @round(off.y * k) / k };
+                    }
                     t.translate.x += off.x;
                     t.translate.y += off.y;
                 }
@@ -822,9 +1062,28 @@ pub const State = struct {
     }
 };
 
-/// A transition to `to` from whatever the layer shows.
-fn transition(to: compositor.Value, ms: u32) compositor.Animation {
-    return .{ .to = to, .duration_ns = @as(u64, ms) * std.time.ns_per_ms, .easing = .ease_out };
+/// A reveal of a node grown from `old` to `new` (D38): a clip of its
+/// rounded box from the old size to the new, kept at the start corner,
+/// outset by what it paints outside the box (shadows, a focus ring), so
+/// that only the growth is covered.
+fn revealOf(tm: Timing, win: *const Window, nid: NodeId, old: layout.Size, new: layout.Size) compositor.Animation {
+    const v = win.node(nid).visual;
+    const rtl = win.state(nid).rtl;
+    var out: f32 = 0;
+    for (v.shadowList()) |sh| {
+        if (!sh.inset) out = @max(out, @max(@abs(sh.offset_x), @abs(sh.offset_y)) + sh.spread + 3 * sh.sigma);
+    }
+    if (win.input.focus == nid and win.input.focus_visible and v.focus_ring) out = @max(out, 2 * focus_ring_width);
+    var radii = v.radius.physical(rtl);
+    for ([_]*Point{ &radii.tl, &radii.tr, &radii.br, &radii.bl }) |r| {
+        if (r.x > 0) r.* = .{ .x = r.x + out, .y = r.y + out };
+    }
+    const w = @min(old.w, new.w);
+    const h = @min(old.h, new.h);
+    const x0 = if (rtl) new.w - w else 0;
+    const from = Rect.xywh(x0 - out, -out, w + 2 * out, h + 2 * out);
+    const to = Rect.xywh(-out, -out, new.w + 2 * out, new.h + 2 * out);
+    return tm.animation(.{ .reveal = .{ .rect = to, .radii = radii } }, .{ .reveal = .{ .rect = from, .radii = radii } });
 }
 
 fn oom(err: scene.Error) Error {

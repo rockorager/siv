@@ -1133,10 +1133,48 @@ pub export fn siv_set_transition(txn: t.Txn, node: t.Node, duration_ms: u32) voi
         fn f(w: *Window, n: t.Node, ms: u32) Error!void {
             const id = try nodeIn(w, n);
             var v = w.uiWin().node(id).visual;
-            v.transition_ms = ms;
+            v.motion = .{ .duration_ms = ms, .curve = .ease_out };
             w.txn.ut.setVisual(id, v) catch |err| return mapTxn(err);
         }
     }.f, .{ node, duration_ms });
+}
+
+pub export fn siv_set_motion(txn: t.Txn, node: t.Node, desc: ?*const t.MotionDesc) void {
+    _ = run(txn, struct {
+        fn f(w: *Window, n: t.Node, d_ptr: ?*const t.MotionDesc) Error!void {
+            const id = try nodeIn(w, n);
+            var v = w.uiWin().node(id).visual;
+            if (d_ptr == null) {
+                v.motion = .{};
+                return w.txn.ut.setVisual(id, v) catch |err| mapTxn(err);
+            }
+            const d = try runtime.readDesc(t.MotionDesc, d_ptr);
+            const fl = try runtime.flags(t.MotionFlags, d.flags);
+            const values = [_]f32{ d.bounce, d.enter_opacity, d.enter_scale, d.enter_x, d.enter_y, d.exit_opacity, d.exit_scale, d.exit_x, d.exit_y };
+            for (values) |x| if (!std.math.isFinite(x)) return error.InvalidArgument;
+            if (!(d.bounce >= 0 and d.bounce < 1)) return error.InvalidArgument;
+            for ([_]f32{ d.enter_opacity, d.exit_opacity }) |o| if (!(o >= 0 and o <= 1)) return error.InvalidArgument;
+            for ([_]f32{ d.enter_scale, d.exit_scale }) |sc| if (sc < 0) return error.InvalidArgument;
+            const presence = struct {
+                fn f(opacity: f32, scale: f32, x: f32, y: f32, mf: t.MotionFlags) ui.Motion.Presence {
+                    return .{ .opacity = opacity, .scale = if (scale == 0) 1 else scale, .x = x, .y = y, .relative = mf.relative, .mirror = mf.mirror_rtl };
+                }
+            }.f;
+            v.motion = .{
+                .duration_ms = if (d.duration_ms == 0) 300 else d.duration_ms,
+                .curve = switch (try runtime.enumValue(t.MotionCurve, d.curve)) {
+                    .spring => .spring,
+                    .ease_out => .ease_out,
+                    _ => unreachable,
+                },
+                .bounce = d.bounce,
+                .layout = fl.layout,
+                .enter = if (fl.enter) presence(d.enter_opacity, d.enter_scale, d.enter_x, d.enter_y, fl) else null,
+                .exit = if (fl.exit) presence(d.exit_opacity, d.exit_scale, d.exit_x, d.exit_y, fl) else null,
+            };
+            w.txn.ut.setVisual(id, v) catch |err| return mapTxn(err);
+        }
+    }.f, .{ node, desc });
 }
 
 pub export fn siv_set_animation(txn: t.Txn, node: t.Node, desc: ?*const t.AnimationDesc) void {

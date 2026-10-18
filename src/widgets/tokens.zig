@@ -48,3 +48,5 @@ pub const line_height: f32 = 20;
 
 /// Transitions (D29), turned off by reduced motion.
 pub const motion_ms: u32 = 150;
+/// Springs of layout motion, enters, and exits (D38): their response.
+pub const spring_ms: u32 = 300;

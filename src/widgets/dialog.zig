@@ -3,7 +3,9 @@
 //! actions part at the end edge. The dialog is a modal node (D22), so the
 //! pointer and Tab stay inside it, and it takes focus when created, so
 //! screen readers announce it by its title. Escape and presses on the
-//! scrim report `close`; the default handler removes the dialog. A
+//! scrim report `close`; the default handler removes the dialog. The
+//! scrim fades in and out and the card scales into place and back, on
+//! the compositor (D38); a card whose content grows grows in place. A
 //! button, toggle button, check box, or switch with a mnemonic is pressed
 //! by its key alone (unless a text field has focus) or with Alt (D22).
 
@@ -38,11 +40,21 @@ pub export fn siv_dialog(txn: Txn, parent: Node, desc: ?*const siv.DialogDesc) N
         .padding = .{ .start = 24, .end = 24, .top = 24, .bottom = 24 },
     });
     _ = c.siv_set_visual(txn, root, &.{ .background_token = .scrim });
+    _ = c.siv_set_motion(txn, root, &.{ .flags = .{ .enter = true, .exit = true }, .duration_ms = tk.spring_ms });
     const st = w.create(Dialog, txn, root) orelse return .null;
     st.* = .{ .hdr = .{ .kind = .dialog }, .root = root, .card = .null, .title = .null, .text = .null, .content = .null, .actions = .null };
     st.card = c.siv_flex(txn, root, &.{ .axis = .column, .gap = 12 });
     _ = c.siv_set_layout(txn, st.card, &.{ .min_width = 280, .max_width = 560, .padding = .{ .start = 20, .end = 20, .top = 20, .bottom = 16 } });
     _ = c.siv_set_visual(txn, st.card, &.{ .radius = w.corners(tk.card_radius), .border_width = tk.border, .border_token = .border, .background_token = .card_bg });
+    // The scrim's fade carries the card's opacity; the card only scales.
+    _ = c.siv_set_motion(txn, st.card, &.{
+        .flags = .{ .layout = true, .enter = true, .exit = true },
+        .duration_ms = tk.spring_ms,
+        .enter_opacity = 1,
+        .enter_scale = 0.94,
+        .exit_opacity = 1,
+        .exit_scale = 0.94,
+    });
     st.title = c.siv_text(txn, st.card, title.ptr, title.len);
     _ = c.siv_set_text_style(txn, st.title, &.{ .color_token = .card_fg, .size_role = .heading, .weight = .bold });
     _ = c.siv_set_semantics(txn, st.title, &.{ .role = .heading });

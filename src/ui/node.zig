@@ -249,9 +249,9 @@ pub const Visual = struct {
     /// The node and its subtree are not laid out, painted, hit, focused,
     /// or in the semantics tree.
     hidden: bool = false,
-    /// Changes to opacity and transform animate over this long on the
-    /// compositor (ease-out), unless motion is reduced.
-    transition_ms: u32 = 0,
+    /// How changes of the node animate on the compositor (D38), unless
+    /// motion is reduced.
+    motion: Motion = .{},
     /// A running animation of one property on the compositor; one that
     /// runs gives the node its own layer.
     animation: Animation = .{},
@@ -260,6 +260,41 @@ pub const Visual = struct {
 
     pub fn shadowList(v: *const Visual) []const Shadow {
         return v.shadows[0..v.shadow_count];
+    }
+};
+
+/// How a node's changes animate on the compositor (D29, D38): its own
+/// opacity and transform always; with `layout`, moves from layout and
+/// growth (revealed by a clip); with `enter` and `exit`, its appearance
+/// and disappearance. Reduced motion turns all of it into jumps.
+pub const Motion = struct {
+    /// 0: no motion. A spring's response, or the curve's length.
+    duration_ms: u32 = 0,
+    curve: Curve = .spring,
+    /// Springs: 0 critically damped, up to (not including) 1 bouncier.
+    bounce: f32 = 0,
+    layout: bool = false,
+    enter: ?Presence = null,
+    exit: ?Presence = null,
+
+    pub const Curve = enum(u8) { spring, ease_out };
+
+    /// Where the node comes from or goes to, relative to its own
+    /// opacity and transform: opacity multiplies, scale is about its
+    /// center, and the offset is in pixels or multiples of its size.
+    pub const Presence = struct {
+        opacity: f32 = 0,
+        scale: f32 = 1,
+        x: f32 = 0,
+        y: f32 = 0,
+        relative: bool = false,
+        /// x flips in right-to-left layouts (D21).
+        mirror: bool = false,
+    };
+
+    /// Motion animates layer properties: the node needs a layer.
+    pub fn needsLayer(m: Motion) bool {
+        return m.duration_ms != 0;
     }
 };
 

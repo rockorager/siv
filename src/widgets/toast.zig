@@ -1,9 +1,10 @@
 //! Toasts: a brief message in the inverse colors at the bottom of its
 //! parent, a live region that assistive technology announces (status, or
-//! alert when assertive). After its timeout it reports `close`; the
-//! default handler fades it out with a transition (a jump under reduced
-//! motion, D29) and removes it. Timers carry the node's handle, not its
-//! state, so a toast the application removed early is simply not found.
+//! alert when assertive). It rises into place and, after its timeout,
+//! reports `close`; the default handler removes it, and it fades out on
+//! the compositor (D38; both jumps under reduced motion, D29). Timers
+//! carry the node's handle, not its state, so a toast the application
+//! removed early is simply not found.
 //! An action ("Undo") is a button in the card: pressing it reports
 //! `activate` on the toast, which then closes.
 
@@ -17,7 +18,6 @@ const Txn = siv.Txn;
 
 pub const Toast = extern struct {
     hdr: w.Header,
-    closing: bool = false,
     root: Node,
     text: Node,
     action: Node = .null,
@@ -38,8 +38,15 @@ pub export fn siv_toast(txn: Txn, parent: Node, desc: ?*const siv.ToastDesc) Nod
         .padding = .{ .start = 16, .end = 16, .top = 16, .bottom = 24 },
     });
     // Clicks pass through a toast, except to its action.
-    _ = c.siv_set_visual(txn, root, &.{ .flags = .{ .layer = true, .no_hit_test = action.len == 0 } });
-    _ = c.siv_set_transition(txn, root, tk.motion_ms);
+    _ = c.siv_set_visual(txn, root, &.{ .flags = .{ .no_hit_test = action.len == 0 } });
+    // It rises from below, and leaves fading and shrinking a little; a
+    // longer message grows it in place.
+    _ = c.siv_set_motion(txn, root, &.{
+        .flags = .{ .layout = true, .enter = true, .exit = true },
+        .duration_ms = tk.spring_ms,
+        .enter_y = 24,
+        .exit_scale = 0.9,
+    });
     _ = c.siv_set_semantics(txn, root, &.{
         .role = if (d.flags.assertive) .alert else .status,
         .flags = if (d.flags.assertive) .{ .live_assertive = true } else .{ .live_polite = true },
@@ -90,23 +97,10 @@ fn onTimeout(ud: ?*anyopaque) callconv(.c) void {
     _ = c.siv_node_emit(node, &.{ .type = .close }, &handled);
 }
 
-/// Fades out, then the removal timer takes it away.
-fn onClose(ud: ?*anyopaque, node: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
-    const st: *Toast = @ptrCast(@alignCast(ud.?));
-    if (st.closing) return .handled;
+/// Removes it; its exit transition fades it out.
+fn onClose(_: ?*anyopaque, node: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const txn = w.begin(ev.window) orelse return .pass;
-    st.closing = true;
-    _ = c.siv_set_opacity(txn, node, 0);
-    if (!w.commit(txn)) return .pass;
-    var timer: siv.Timer = .null;
-    _ = c.siv_timer_start(w.appOf(ev.window), tk.motion_ms, onRemove, null, w.handleData(node), &timer);
-    return .handled;
-}
-
-fn onRemove(ud: ?*anyopaque) callconv(.c) void {
-    const node = w.dataHandle(ud);
-    if (w.stateOf(Toast, node, &.{.toast}) == null) return;
-    const txn = w.begin(w.windowOf(node)) orelse return;
     _ = c.siv_remove(txn, node);
-    _ = w.commit(txn);
+    if (!w.commit(txn)) return .pass;
+    return .handled;
 }

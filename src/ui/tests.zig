@@ -140,6 +140,8 @@ const Fixture = struct {
             try f.win.handleEvent(&.{ .scrolled = .{ .window = 0, .layer = id, .offset = f.comp.get(id).offset, .seq = f.comp.seq, .zoom = f.comp.get(id).zoom } });
         }
         f.comp.tree.scrolled.clearRetainingCapacity();
+        for (f.comp.tree.exited.items) |id| try f.win.handleEvent(&.{ .exited = .{ .window = 0, .layer = id } });
+        f.comp.tree.exited.clearRetainingCapacity();
     }
 
     fn rect(f: *Fixture, id: NodeId) [4]f32 {
@@ -2336,14 +2338,14 @@ test "transitions animate a node's own opacity and transform, not its first valu
         f.win.force_reduced_motion = reduced;
         var t = try f.win.begin();
         const n = try box(t, .root, .box, .{ .width = .{ .px = 20 }, .height = .{ .px = 20 } });
-        try t.setVisual(n, .{ .background = .black, .layer = true, .transition_ms = 150 });
+        try t.setVisual(n, .{ .background = .black, .layer = true, .motion = .{ .duration_ms = 150, .curve = .ease_out } });
         t.commit();
         f.comp.keep_log = true;
         try f.frame();
         for (f.comp.log.items) |op| try testing.expect(op != .animate);
         f.comp.log.clearRetainingCapacity();
         t = try f.win.begin();
-        try t.setVisual(n, .{ .background = .black, .layer = true, .transition_ms = 150, .opacity = 0.5, .transform = .offset(30, 0) });
+        try t.setVisual(n, .{ .background = .black, .layer = true, .motion = .{ .duration_ms = 150, .curve = .ease_out }, .opacity = 0.5, .transform = .offset(30, 0) });
         t.commit();
         try f.frame();
         var animated: usize = 0;
@@ -2360,6 +2362,244 @@ test "transitions animate a node's own opacity and transform, not its first valu
         try testing.expectEqual(@as(usize, if (reduced) 0 else 2), animated);
         try testing.expectEqual(@as(usize, if (reduced) 2 else 0), set);
     }
+}
+
+fn findAnimateOf(ops: []const compositor.Op, layer: compositor.LayerId, prop: compositor.Property) ?compositor.Animation {
+    for (ops) |op| if (op == .animate and op.animate.layer == layer and op.animate.animation.to == prop) return op.animate.animation;
+    return null;
+}
+
+fn hasOp(ops: []const compositor.Op, comptime tag: std.meta.Tag(compositor.Op), layer: compositor.LayerId) bool {
+    for (ops) |op| if (op == tag) {
+        const l = switch (tag) {
+            .destroy, .exit, .create => @field(op, @tagName(tag)),
+            else => @field(op, @tagName(tag)).layer,
+        };
+        if (l == layer) return true;
+    };
+    return false;
+}
+
+test "layout motion springs moves within a parent layer and reveals growth; new parents, resizes, and reduced motion jump" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 200, .height = 200 });
+    defer f.deinit();
+    const spring: node_mod.Motion = .{ .duration_ms = 300, .bounce = 0.2, .layout = true };
+    var t = try f.win.begin();
+    const col = try box(t, .root, .box, .{ .align_x = .start, .align_y = .start });
+    const a = try box(t, col, .box, .{ .width = .{ .px = 40 }, .height = .{ .px = 40 } });
+    const b = try box(t, col, .box, .{ .width = .{ .px = 40 }, .height = .{ .px = 20 } });
+    try t.setVisual(b, .{ .background = .black, .motion = spring });
+    // Pinned to the window's bottom edge.
+    const pinned = try box(t, .root, .box, .{ .width = .{ .px = 10 }, .height = .{ .px = 10 }, .align_y = .end });
+    try t.setVisual(pinned, .{ .background = .black, .motion = spring });
+    const other = try box(t, .root, .box, .{ .align_x = .end, .align_y = .start, .width = .{ .px = 50 }, .height = .{ .px = 50 } });
+    try t.setVisual(other, .{ .layer = true });
+    t.commit();
+    f.comp.keep_log = true;
+    try f.frame();
+    // The first frame shows things where they are.
+    for (f.comp.log.items) |op| try testing.expect(op != .animate);
+    const lb = f.win.state(b).own_layer + 1;
+
+    // A sibling grows: b slides down on a spring from where it shows.
+    f.comp.log.clearRetainingCapacity();
+    t = try f.win.begin();
+    try t.setLayout(a, .{ .width = .{ .px = 40 }, .height = .{ .px = 60 } });
+    t.commit();
+    try f.frame();
+    var anim = findAnimate(f.comp.log.items, lb).?;
+    try testing.expectEqual(@as(f32, 60), anim.to.transform.translate.y);
+    try testing.expect(anim.from == null);
+    try testing.expectEqual(@as(f32, 0.2), anim.easing.spring.bounce);
+    try testing.expectEqual(@as(u64, 300 * std.time.ns_per_ms), anim.duration_ns);
+    try testing.expect(!hasOp(f.comp.log.items, .set_transform, lb));
+
+    // b grows: its content is at the new size at once, uncovered by a
+    // reveal from the old box kept at the top-left corner.
+    f.comp.log.clearRetainingCapacity();
+    t = try f.win.begin();
+    try t.setLayout(b, .{ .width = .{ .px = 40 }, .height = .{ .px = 50 } });
+    t.commit();
+    try f.frame();
+    anim = findAnimate(f.comp.log.items, lb).?;
+    try testing.expectEqual(raster.Rect.xywh(0, 0, 40, 20), anim.from.?.reveal.rect);
+    try testing.expectEqual(raster.Rect.xywh(0, 0, 40, 50), anim.to.reveal.rect);
+    // Shrinking needs none: what is left is drawn at once.
+    f.comp.log.clearRetainingCapacity();
+    t = try f.win.begin();
+    try t.setLayout(b, .{ .width = .{ .px = 40 }, .height = .{ .px = 30 } });
+    t.commit();
+    try f.frame();
+    try testing.expect(findAnimate(f.comp.log.items, lb) == null);
+
+    // A resized window relays out without motion.
+    const lp = f.win.state(pinned).own_layer + 1;
+    f.comp.log.clearRetainingCapacity();
+    f.win.configure(200, 150, 1);
+    try f.frame();
+    try testing.expect(findAnimate(f.comp.log.items, lp) == null);
+    try testing.expect(hasOp(f.comp.log.items, .set_transform, lp));
+    try testing.expectEqual(@as(f32, 140), f.comp.get(lp).transform.translate.y);
+
+    // A move to another layer's coordinates jumps.
+    f.comp.log.clearRetainingCapacity();
+    t = try f.win.begin();
+    try t.move(b, other, .none);
+    t.commit();
+    try f.frame();
+    const lb2 = f.win.state(b).own_layer + 1;
+    try testing.expect(findAnimate(f.comp.log.items, lb2) == null);
+    try testing.expectEqual(@as(f32, 0), f.comp.get(lb2).transform.translate.y);
+
+    // Reduced motion: moves jump.
+    f.win.force_reduced_motion = true;
+    f.comp.log.clearRetainingCapacity();
+    t = try f.win.begin();
+    try t.setLayout(other, .{ .align_x = .end, .align_y = .start, .width = .{ .px = 50 }, .height = .{ .px = 50 }, .padding = .{ .top = 10 } });
+    t.commit();
+    try f.frame();
+    try testing.expect(findAnimate(f.comp.log.items, lb2) == null);
+    try testing.expectEqual(@as(f32, 10), f.comp.get(lb2).transform.translate.y);
+}
+
+test "enter and exit transitions run as nodes appear and disappear; exiting layers stay reserved until the compositor lets them go" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 200, .height = 200 });
+    defer f.deinit();
+    const motion: node_mod.Motion = .{
+        .duration_ms = 200,
+        .curve = .ease_out,
+        .enter = .{ .opacity = 0, .y = 1, .relative = true },
+        .exit = .{ .opacity = 0, .scale = 0.5 },
+    };
+    var t = try f.win.begin();
+    const first = try box(t, .root, .box, .{ .align_x = .start, .align_y = .start, .width = .{ .px = 40 }, .height = .{ .px = 20 } });
+    try t.setVisual(first, .{ .background = .black, .motion = motion });
+    t.commit();
+    f.comp.keep_log = true;
+    try f.frame();
+    // Not in the first frame.
+    for (f.comp.log.items) |op| try testing.expect(op != .animate);
+
+    // Created later, it enters: from transparent, a height below.
+    f.comp.log.clearRetainingCapacity();
+    t = try f.win.begin();
+    const n = try box(t, .root, .box, .{ .align_x = .start, .align_y = .start, .width = .{ .px = 40 }, .height = .{ .px = 20 }, .padding = .{ .top = 0 } });
+    try t.setVisual(n, .{ .background = .black, .motion = motion });
+    t.commit();
+    try f.frame();
+    const ln = f.win.state(n).own_layer + 1;
+    var ops = f.comp.log.items;
+    var saw_opacity = false;
+    var saw_transform = false;
+    for (ops) |op| if (op == .animate and op.animate.layer == ln) switch (op.animate.animation.to) {
+        .opacity => |o| {
+            try testing.expectEqual(@as(f32, 1), o);
+            try testing.expectEqual(@as(f32, 0), op.animate.animation.from.?.opacity);
+            saw_opacity = true;
+        },
+        .transform => |tr| {
+            try testing.expectEqual(@as(f32, 0), tr.translate.y);
+            try testing.expectEqual(@as(f32, 20), op.animate.animation.from.?.transform.translate.y);
+            saw_transform = true;
+        },
+        else => {},
+    };
+    try testing.expect(saw_opacity and saw_transform);
+    // The first frame that shows it shows it at its start.
+    _ = try f.comp.tree.tick(1_000_000_000);
+    try testing.expectEqual(@as(f32, 0), f.comp.get(ln).opacity);
+    _ = try f.comp.tree.tick(2_000_000_000);
+    try testing.expectEqual(@as(f32, 1), f.comp.get(ln).opacity);
+
+    // Hidden, it exits: it fades and shrinks about its center, given up
+    // to the compositor, which keeps it while the UI uses other ids.
+    f.comp.log.clearRetainingCapacity();
+    var v = f.win.node(n).visual;
+    v.hidden = true;
+    t = try f.win.begin();
+    try t.setVisual(n, v);
+    t.commit();
+    try f.frame();
+    ops = f.comp.log.items;
+    try testing.expect(hasOp(ops, .exit, ln));
+    try testing.expect(!hasOp(ops, .destroy, ln));
+    var exit_anim = findAnimateOf(ops, ln, .opacity).?;
+    try testing.expectEqual(@as(f32, 0), exit_anim.to.opacity);
+    const shrink = findAnimateOf(ops, ln, .transform).?.to.transform;
+    try testing.expectEqual(@as(f32, 0.5), shrink.scale.x);
+    try testing.expectEqual(raster.Point{ .x = 20, .y = 10 }, shrink.origin);
+    try testing.expect(f.comp.tree.get(ln) != null);
+    t = try f.win.begin();
+    const other = try box(t, .root, .box, .{ .width = .{ .px = 10 }, .height = .{ .px = 10 } });
+    try t.setVisual(other, .{ .layer = true });
+    t.commit();
+    try f.frame();
+    try testing.expect(f.win.state(other).own_layer + 1 != ln);
+
+    // Once its animations end the compositor destroys it, and its id is
+    // free again.
+    _ = try f.comp.tree.tick(3_000_000_000);
+    _ = try f.comp.tree.tick(4_000_000_000);
+    try testing.expect(f.comp.tree.get(ln) == null);
+    try f.frame();
+    t = try f.win.begin();
+    const reuse = try box(t, .root, .box, .{ .width = .{ .px = 10 }, .height = .{ .px = 10 } });
+    try t.setVisual(reuse, .{ .layer = true });
+    t.commit();
+    try f.frame();
+    try testing.expectEqual(ln, f.win.state(reuse).own_layer + 1);
+
+    // Shown again, it enters again.
+    f.comp.log.clearRetainingCapacity();
+    v.hidden = false;
+    t = try f.win.begin();
+    try t.setVisual(n, v);
+    t.commit();
+    try f.frame();
+    try testing.expect(findAnimate(f.comp.log.items, f.win.state(n).own_layer + 1) != null);
+
+    // Removed with a child layer, it exits carrying the child, which is
+    // neither destroyed nor reused until the compositor reports the exit.
+    t = try f.win.begin();
+    const child = try box(t, first, .box, .{ .width = .{ .px = 5 }, .height = .{ .px = 5 } });
+    try t.setVisual(child, .{ .layer = true });
+    t.commit();
+    try f.frame();
+    const lf = f.win.state(first).own_layer + 1;
+    const lc = f.win.state(child).own_layer + 1;
+    f.comp.log.clearRetainingCapacity();
+    t = try f.win.begin();
+    try t.remove(first);
+    t.commit();
+    try f.frame();
+    ops = f.comp.log.items;
+    try testing.expect(hasOp(ops, .exit, lf));
+    try testing.expect(!hasOp(ops, .destroy, lc) and !hasOp(ops, .exit, lc));
+    exit_anim = findAnimateOf(ops, lf, .opacity).?;
+    try testing.expect(exit_anim.from == null);
+    try testing.expectEqual(@as(?compositor.LayerId, null), findLayerOwnedBy(&f, lc));
+
+    // Reduced motion: removal destroys at once.
+    f.win.force_reduced_motion = true;
+    f.comp.log.clearRetainingCapacity();
+    const ln2 = f.win.state(n).own_layer + 1;
+    t = try f.win.begin();
+    try t.remove(n);
+    t.commit();
+    try f.frame();
+    try testing.expect(hasOp(f.comp.log.items, .destroy, ln2));
+    try testing.expect(findAnimate(f.comp.log.items, ln2) == null);
+}
+
+/// The live node whose own layer has id `layer`, if any.
+fn findLayerOwnedBy(f: *Fixture, layer: compositor.LayerId) ?compositor.LayerId {
+    for (f.win.states.items, 0..) |s, i| {
+        const nid: NodeId = @enumFromInt(i);
+        if (f.win.isLive(nid) and s.own_layer + 1 == layer and f.win.paint.ownsLayerNow(f.win, nid)) return layer;
+    }
+    return null;
 }
 
 test "animations run on the compositor while shown, follow size and base, and stop with reduced motion" {

@@ -331,6 +331,9 @@ pub const State = struct {
     chunk_layer: u32 = paint_mod.no_layer,
     /// What the node painted last, in its layer's coordinates.
     bounds: Rect = Rect.empty,
+    /// Created or shown since the last layer assignment: the node and
+    /// its subtree appear, and enter transitions run (D38).
+    appear: bool = false,
     /// Scroll nodes with a viewport handler: what it was last told.
     viewport: ?node_mod.Viewport = null,
 };
@@ -907,6 +910,7 @@ pub fn forget(win: *Window, id: NodeId) void {
     }
     const s = win.state(id);
     win.paint.damage(s.layer, s.bounds);
+    win.paint.forget(win, id);
 }
 
 /// Where a popup goes relative to the node it belongs to. Horizontal sides
@@ -1010,8 +1014,9 @@ pub fn handleEvent(win: *Window, event: *const compositor.Event) Error!void {
         .frame => try win.frame(),
         .scrolled => |s| win.scrolled(s.layer, s.offset, s.zoom, s.seq),
         .released => |b| win.paint.released(win.gpa, b),
+        .exited => |e| win.paint.exited(win.gpa, paint_mod.indexOf(e.layer)),
         // External frames belong to their producer, not the window.
-        .presented, .animation_finished, .exited, .external_released, .external_configure, .external_presented, .external_visibility, .external_frame, .idle => {},
+        .presented, .animation_finished, .external_released, .external_configure, .external_presented, .external_visibility, .external_frame, .idle => {},
     }
 }
 

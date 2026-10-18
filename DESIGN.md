@@ -518,8 +518,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **Requirement:** scrolling and animation stay smooth while the UI thread is
   busy (application code, Lua, large layouts).
 - **Decision:** one compositor thread per process owns a layer tree and all
-  presentation. It runs scrolling and transform/opacity animations
-  independently. The UI thread sends layer updates, not whole frames.
+  presentation. It runs scrolling and transform, opacity, and reveal
+  animations independently, and finishes the exits of layers the UI
+  gave up (D38). The UI thread sends layer updates, not whole frames.
   The compositor thread renders CPU tiles through the application pool's
   fork-join mode and works on tiles itself, so it never blocks on the loop.
   Its helpers jump the compute queue, and blocking I/O has threads of its
@@ -528,7 +529,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Layer updates (`src/compositor/update.zig`): each window has a tree of
     layers with UI-chosen ids (plain indices, D20). The UI commits batches
     of ops (create, destroy, insert, detach, set content, transform,
-    opacity, clip, scroll container, scroll to, fling, animate,
+    opacity, clip, scroll container, scroll to, fling, animate, exit,
     background), applied atomically between frames. Content is a display
     list whose builder moves to the compositor and comes back in a
     `released` event once no frame reads it.
@@ -609,14 +610,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     A UI frame request or a commit that changes nothing visible costs no
     buffer; a pending configure ack goes out as a bare commit (D12).
   - Lowering (`src/ui/paint.zig`): layers are the root, every node with
-    opacity below 1, a transform, or a layer hint, every clipping node
-    with layers below it (so its clip, a layer property, applies to them),
-    and every scroll node. A scroll node's layer is the scroll container,
-    with its decoration as the container's own (unscrolled) content and
-    one child layer for the scrolled content. Content painted after a
-    child layer in the same parent goes into a "chunk" layer after it, so
-    paint order survives without node knowledge in the compositor. Layer
-    ids are layer indices plus one.
+    opacity below 1, a transform, a layer hint, or motion (D38), every
+    clipping node with layers below it (so its clip, a layer property,
+    applies to them), and every scroll node. A scroll node's layer is
+    the scroll container, with its decoration as the container's own
+    (unscrolled) content and one child layer for the scrolled content.
+    Content painted after a child layer in the same parent goes into a
+    "chunk" layer after it, so paint order survives without node
+    knowledge in the compositor. Layer ids are layer indices plus one.
   - Each layer's content is a display list in the coordinates of the node
     that roots it. Only layers whose nodes changed are repainted, and their
     `SetContent.damage` is the old and new painted bounds of the nodes that
@@ -5626,11 +5627,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Metrics (spacing, radii, control heights) are compiled design tokens
     of the widget library (`src/widgets/tokens.zig`); colors and text
     sizes are the runtime part.
-  - Motion: `siv_set_transition` makes later changes of a node's own
-    opacity and transform animate on the compositor (D8) with an ease-out
-    curve; moves from layout do not animate, and neither does the first
-    value. Reduced motion, from the desktop or `SIV_APP_REDUCED_MOTION`,
-    turns transitions into jumps, so widgets get it right by construction.
+  - Motion: `siv_set_motion` makes later changes of a node's own
+    opacity and transform animate on the compositor (D8), on a spring or
+    an ease-out curve, and as it asks, moves and growth from layout and
+    the node's appearance and disappearance (D38); `siv_set_transition`
+    is short for an ease-out with nothing else. The first value never
+    animates. Reduced motion, from the desktop or
+    `SIV_APP_REDUCED_MOTION`, turns all of it into jumps, so widgets get
+    it right by construction.
   - Repeating motion: `siv_set_animation` runs one animation of a
     node's opacity, x or y translation, scale, or rotation on the
     compositor, finite or repeating, applied on top of the node's own
@@ -6999,6 +7003,132 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   profiles, as on a network home (then hold first frames for a read on the
   pool, as D29 does for themes); or a desktop gives settings a portal
   that sandboxed applications must use.
+
+### D38. Layout animation
+
+- **Requirement:** nodes move, grow, appear, and disappear smoothly when
+  the application changes the tree (reflow, reorders, siblings inserted
+  or removed, a dialog or a toast coming and going), with motion that a
+  new change can interrupt and redirect without a jolt. It stays smooth
+  while the UI thread is busy (D8), costs the application's thread
+  nothing per frame, and turns into jumps under reduced motion without
+  each widget checking (D29). This is what SwiftUI does best and what
+  GTK and Qt applications write by hand.
+- **Decision:** a node's motion (`siv_set_motion`, `ui.Motion`) says how
+  its changes animate, and the UI turns each change into layer
+  animations on the compositor in the frame that makes it. Layout runs
+  once, on the UI thread, for the final state; the compositor animates
+  from what it shows to that state.
+  - Timing: a spring (the default) or the CSS ease-out curve, both
+    sampled as pure functions of the frame's predicted time (D12). A
+    spring's `duration_ms` is its response, the period it would
+    oscillate with undamped and its perceptual duration (300 ms by
+    default), and `bounce` is one minus its damping ratio, from 0
+    (critically damped) up to but not including 1. Each component (a
+    transform's translation, scale, rotation, and origin; an opacity; a
+    rectangle's edges) follows the closed form of a damped oscillator,
+    and the spring settles once every component is within a twentieth
+    of a pixel (a ten-thousandth of a scale or radian, a thousandth of
+    opacity) and nearly still, or after twenty responses. A spring that
+    replaces a running animation of the same property starts from the
+    value shown with that animation's velocity at its last sample
+    (exact for springs, a central difference over a millisecond for
+    curves), so a reversed move turns around rather than stopping dead,
+    as SwiftUI's springs do. Curves start over from the value shown, as
+    transitions did. `Easing.spring` in `compositor.Animation` carries
+    it.
+  - Moves: with `layout`, a change of the node's place in its parent
+    layer animates like a change of its own transform, since that place
+    is part of its layer's transform (D8). Whatever moved it counts: its
+    own layout, a sibling inserted, removed, or resized, a reorder, an
+    ancestor without a layer of its own moving. A move into another
+    parent layer (reparenting, an ancestor gaining or losing a layer)
+    jumps, since the two transforms are in different coordinates. So do
+    the layouts of a frame in which the window's size changed: a window
+    the user resizes relays out under the pointer, and content sliding
+    after the edge lags it.
+  - Size: the content repaints at its new size at once, and growth is
+    uncovered by a reveal, a clip from the old box to the new on the
+    same timing, so siblings sliding out of the way and the box growing
+    into the space they leave move together. A reveal is a compositor
+    property (`Value.reveal`) that exists only while it animates, clips
+    inside the layer's own clip, has the node's corner radii, stays at
+    the start corner (top right in right-to-left layouts, D21), and is
+    outset by what the node paints outside its box (shadows, the focus
+    ring) so that only the growth is covered. One started while another
+    runs continues from the clip shown. Shrinking needs none: what is
+    left is drawn at once, and siblings slide into the space. Scaling
+    the content between the sizes was rejected because it stretches
+    text, borders, and corners (FLIP's counter-scaled children fix only
+    one level); relaying out every frame (SwiftUI interpolates frames)
+    because it is layout per frame on the UI thread, against D8;
+    crossfading the old and new content because it needs both painted
+    at once and blurs text.
+  - Enter and exit: with `enter`, a node runs from its enter state
+    (opacity multiplied, scale about its center, an offset in pixels or
+    multiples of its size, mirrored in right-to-left layouts if asked)
+    to its own values when it appears: created or shown, itself or with
+    an ancestor, after the window's first frame, which shows the window
+    as it is. With `exit`, it runs from what it shows to its exit state
+    when it disappears: removed or hidden, itself or with an ancestor.
+    The exiting layer outlives the node: the UI gives it up with
+    `Op.exit`, and the compositor keeps drawing it, without input over
+    it, until the finite animations of every layer given up in its
+    subtree end, then destroys it and reports `Event.exited`. Its ids
+    stay reserved in the UI until then (`paint` layers of kind
+    `exiting`). A node exiting inside an exiting one runs its own exit
+    too, so a dialog's card shrinks while its scrim fades; a layer
+    without an exit rides along with an exiting parent and goes with a
+    destroyed one. A removed node's exit is worked out at commit, when
+    the transaction destroys it (`paint.State.forget`), since the node is
+    gone by the next frame. Exiting layers stay below the siblings the
+    UI inserts afterwards, so a removed row fades under the rows sliding
+    over it.
+  - Reduced motion sends no animations: moves and growth jump, entering
+    nodes show at once, and exiting layers are destroyed at once.
+  - Layers: motion gives the node a layer of its own. A node that
+    motion places (`layout`, `enter`, `exit`) sits on whole device
+    pixels: content snapped to pixels in its layer's coordinates
+    (underlines, hairlines) blurred across two rows at a fractional
+    offset, found by a dialog's mnemonic underlines once its centered
+    card became a layer. Other layer roots keep their fractional
+    offsets; snapping them all is the same improvement, but changes
+    goldens this decision has nothing to do with.
+  - API: `siv_set_motion` takes a `siv_motion_desc`: flags (`layout`,
+    `enter`, `exit`, `relative`, `mirror_rtl`), the curve, the duration,
+    the bounce, and the enter and exit opacity, scale, and offsets; NULL
+    turns motion off. It is generated for Lua (D23), where a node table
+    takes `motion = { flags = { "layout", "exit" } }`.
+    `siv_set_transition` stays as short for an ease-out with no flags.
+  - Stock widgets: a toast rises 24 px into place and fades in, and
+    leaves fading and shrinking to 90% (its close handler now removes it;
+    before, it faded it and removed it on a timer); one whose message
+    grows grows in place. A dialog's scrim fades in and out and its card
+    scales from 94% (its opacity follows the scrim's), and a card whose
+    content grows grows in place.
+  - Tests do not depend on timing: the sampler and the tree are tested
+    at given times (`src/compositor/anim.zig`, `tree.zig`), and the UI's
+    animations through the stand-in compositor (`src/ui/tests.zig`).
+    Golden images show the settled state, since the public test API
+    waits until no single-run animation is left (D24).
+- **Alternatives:** relaying out on the UI thread every frame (a stall
+  stops the motion, and every animated subtree costs a layout per
+  frame); interpolating layout constraints on the compositor (the
+  compositor would need layout and text); keeping exiting nodes in the
+  UI tree (focus, hit testing, semantics, and layout would all have to
+  skip them, while a layer the compositor keeps needs none of that);
+  moving exiting layers into an id space of the compositor's own, so the
+  UI could reuse their ids at once (its layer array is indexed by the
+  UI's ids; a reservation in the UI is one field); running transitions
+  only on the node inserted or removed itself, as SwiftUI does (a
+  dialog's card could not scale while its scrim fades without the
+  application ordering its inserts); per-property motion (one timing per
+  node has covered every widget so far).
+- **Reverse if:** applications need content that reflows as it resizes
+  (text rewrapping while a panel widens), not a reveal; then add an
+  opt-in path that relays out such a subtree per frame. Or if
+  interactive gestures need to hand their velocity to a spring; then
+  let an animation take an initial velocity.
 
 ## Lessons from ourokit
 
