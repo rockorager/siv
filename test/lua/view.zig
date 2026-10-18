@@ -289,6 +289,37 @@ test "view: removing a subtree disposes its effects and subscriptions" {
     );
 }
 
+test "view: a node the application removes itself drops its bindings, not the flush" {
+    try run(prologue ++
+        \\local win = app:window_create{ width = 200, height = 200 }
+        \\local label, set_label = view.signal("a")
+        \\local other, set_other = view.signal("x")
+        \\local doomed, kept
+        \\view.mount(win, function()
+        \\  ui.flex({ axis = "column" }, function()
+        \\    doomed = ui.text(label)
+        \\    kept = ui.text(other)
+        \\  end)
+        \\end)
+        \\settle()
+        \\local base = view.stats()
+        \\win:update(function(t) t:remove(doomed) end)
+        \\-- One flush updates both: the removed node's binding goes, and the
+        \\-- live one still lands.
+        \\view.batch(function()
+        \\  set_label("b")
+        \\  set_other("y")
+        \\end)
+        \\settle()
+        \\assert(kept:get_text() == "y", kept:get_text())
+        \\local now = view.stats()
+        \\assert(now.computations == base.computations - 1 and now.subscriptions == base.subscriptions - 1,
+        \\  ("%d/%d computations, %d/%d subscriptions"):format(now.computations, base.computations, now.subscriptions, base.subscriptions))
+        \\set_label("c")
+        \\assert(view.stats().computations == now.computations)
+    );
+}
+
 test "view: keyed lists keep their nodes and move only what changed" {
     try run(prologue ++
         \\local win = app:window_create{ width = 200, height = 300 }

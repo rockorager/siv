@@ -8510,8 +8510,15 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     computations from their signals: Lua's collector cannot see a
     subscription that a live signal holds, so disposal is structural.
     `view.stats()` counts live computations and subscriptions, which
-    the tests check returns to its value after subtrees go. Nodes an
-    application removes itself keep their scope until the mount goes.
+    the tests check returns to its value after subtrees go. A node the
+    application removes itself (`txn:remove`) is gone without the layer
+    knowing: each binding on it disposes itself the next time its value
+    changes (a stale handle, one `get_window` call per update) instead
+    of failing the flush's transaction, which had discarded every other
+    window update with it; its effects and cleanups stay until the mount
+    goes. Tracking every removal needs a destroy notification on nodes,
+    which siv does not have; reverse if long-lived mounts leak through
+    effects on nodes removed by hand.
     Computations made outside a component belong to the run of the main
     chunk, disposed by the next successful reload. A mount whose window
     is destroyed is disposed when the reload sweeps it or when a flush

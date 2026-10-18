@@ -1057,6 +1057,13 @@ local function binding(get, apply, win, convert)
 		end
 		local node = b.node
 		if node and v ~= last then
+			if node:get_window() == nil then
+				-- The application removed the node itself (txn:remove):
+				-- the binding goes with it rather than fail the flush's
+				-- transaction.
+				dispose(b)
+				return last
+			end
 			local t = txn_for(win)
 			if t == false then
 				busy(b, win)
