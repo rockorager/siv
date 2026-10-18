@@ -168,7 +168,7 @@ pub const functions = [_]Function{
         p("name", schema.text_buffer, "Receives at most name_cap bytes; may be NULL with name_cap 0."),
         p("len", out(.usize), "The name's full length in bytes."),
     }),
-    call("siv_test_dump", "Copies a window's semantics tree as text, for test failures and snapshots: a line per node in tree order, indented two spaces per level, with its role, quoted name, states, and bounds.", &.{
+    call("siv_test_dump", "Copies a window's semantics tree as text, for test failures and snapshots: a line per node in tree order, indented two spaces per level, with its role, quoted name, states, key binding (shortcut=Ctrl+C, D34), and bounds.", &.{
         window_param,
         p("text", schema.text_buffer, "Receives at most text_cap bytes; may be NULL with text_cap 0."),
         p("len", out(.usize), "The text's full length in bytes."),

@@ -30,6 +30,7 @@ const watch = @import("watch.zig");
 const shell = @import("shell.zig");
 const dbus_abi = @import("dbus.zig");
 const settings = @import("settings.zig");
+const actions = @import("actions.zig");
 
 const Root = runtime.Root;
 
@@ -88,8 +89,10 @@ pub const App = struct {
     /// Pending image loads by index (handle payload); null slots are
     /// reused. The pool owns them until they complete or are dropped.
     image_requests: std.ArrayList(?*@import("image_load.zig").Request),
-    /// Portal requests, choosers, and actions (D19).
+    /// Portal requests and choosers (D19).
     desktop: portal.State,
+    /// Actions and their accelerators (D34).
+    actions: actions.State,
     /// siv_job_start jobs not yet done or dropped, for siv_test_settle.
     jobs: u32,
     /// Outputs, layer windows, the lock, toplevels, workspaces, and idle
@@ -239,6 +242,9 @@ pub const Window = struct {
     /// and callbacks. The window must already be destroyed in `app`.
     fn teardown(w: *Window) void {
         const self = w.owner;
+        // Its actions first, so that nothing waits for the transaction
+        // aborted next.
+        actions.forgetWindow(w);
         tree.abortState(w);
         w.nodes.releaseAll(w);
         external.forgetWindow(w);
@@ -303,6 +309,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     self.prepares = .empty;
     self.image_requests = .empty;
     self.desktop = .{};
+    self.actions = .{};
     self.dbus = .{};
     self.jobs = 0;
     self.shell = .{};
@@ -389,6 +396,7 @@ fn destroyNow(self: *App) void {
     self.root.retire();
     // Before the windows, whose destruction would start waiting requests.
     portal.teardown(self);
+    actions.teardown(self);
     dbus_abi.teardown(self);
     for (self.windows.items) |slot| if (slot) |w| {
         w.destroyTree() catch {};
@@ -708,6 +716,7 @@ pub fn newWindow(self: *App, options: app_mod.WindowOptions, cb: Callbacks) Erro
     w.win = self.app.createWindow(options, .{ .ctx = w, .func = onWindowEvent }) catch |err| return mapAppError(err);
     // Nothing below fails.
     w.nodes.adopt(self, w, .root) catch unreachable;
+    actions.attach(w);
     self.windows.items[index] = w;
     return w;
 }
@@ -1104,6 +1113,7 @@ fn popupCreate(parent: t.Window, desc_ptr: ?*const t.PopupDesc, out: ?*t.Window)
     try self.root.handles.ensureUnusedCapacity(gpa);
     w.win = self.app.createPopup(pw.win, .{ .ctx = w, .func = onWindowEvent }) catch |err| return mapAppError(err);
     w.nodes.adopt(self, w, .root) catch unreachable;
+    actions.attach(w);
     self.windows.items[index] = w;
     dest.* = @fromBackingInt(w.handle);
 }

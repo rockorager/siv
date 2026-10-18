@@ -190,6 +190,7 @@ test "the public API on sway: present, pointer and keyboard input, resize, close
 
 const portal = @import("portal");
 const P = abi.portal;
+const abi_actions = abi.actions;
 const PortalDesktop = portal.testing.Desktop;
 const PortalBackend = portal.testing.Backend;
 
@@ -306,7 +307,7 @@ test "portals through the public API on sway: parented dialogs, OpenURI, notific
     try dispatchUntil(app, {}, Opened.f);
 
     // A notification whose button invokes an application action.
-    try ok(P.siv_app_add_action(app, "archive", 7, PortalLog.onAction, null, &log));
+    try ok(abi_actions.siv_action_create(app, &.{ .name = "archive", .name_len = 7 }, PortalLog.onAction, null, &log, null));
     const buttons = [_]t.NotificationButton{.{ .label = "Archive", .label_len = 7, .action = "archive", .action_len = 7, .target = "42", .target_len = 2 }};
     try ok(P.siv_notification_send(app, &.{ .id = "mail", .id_len = 4, .title = "New mail", .title_len = 8, .buttons = &buttons, .buttons_count = 1 }));
     const Added = struct {

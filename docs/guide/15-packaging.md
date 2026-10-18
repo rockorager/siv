@@ -49,7 +49,7 @@ if (r != SIV_OK) {
 	fprintf(stderr, "launch: %s\n", siv_result_name(r));
 	return 1;
 }
-r = siv_app_add_action(n.app, SIV_STR("new-note"), on_new_note, NULL, &n);
+r = siv_action_create(n.app, SIV_DESC(siv_action_desc, .name = SIV_STR("new-note"), .label = SIV_STR("New Note")), on_new_note, NULL, &n, NULL);
 if (r == SIV_OK) r = siv_app_launch(n.app, SIV_DESC(siv_launch_desc, .uris = uris, .uris_count = count, .on_activate = on_activate, .user_data = &n, .flags = service ? SIV_LAUNCH_SERVICE : 0, .idle_timeout_ms = 10000));
 /* A second instance forwards its activation and returns at once. */
 if (r == SIV_OK) r = siv_app_run(n.app);
@@ -60,8 +60,10 @@ it to `siv_window_activate`, as above. Without an application id or a
 session bus, every launch is primary, which is also how the guide's tests
 run the sample.
 
-Application actions, registered with `siv_app_add_action`, are invoked by
-notification buttons and by the desktop's actions on the desktop file:
+Application actions (`siv_action_create` without a window; see
+[Events and focus](05-events-and-focus.md) for the rest of what actions
+do) are invoked by notification buttons and by the desktop's actions on
+the desktop file:
 
 ```c
 /* An application action: a notification button or a desktop file action

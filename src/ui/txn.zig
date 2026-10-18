@@ -498,6 +498,29 @@ pub const Txn = struct {
         t.win.dirty.semantics = true;
     }
 
+    /// Binds the node to an action (D34), or with 0 unbinds it: activating
+    /// it invokes the action with `target` (`Window.actions`).
+    pub fn setAction(t: *Txn, id: NodeId, action: u64, target: f64) Error!void {
+        const n = try t.live(id);
+        if (!std.math.isFinite(target)) return error.InvalidArgument;
+        try t.reserve();
+        if (action != 0 and std.mem.indexOfScalar(NodeId, t.win.bound.items, id) == null) try t.win.bound.append(t.win.gpa, id);
+        t.touch(id);
+        n.action = action;
+        n.action_target = target;
+        t.win.dirty.semantics = true;
+    }
+
+    /// Names the key that does what activating the node does (D34), for
+    /// its semantics; keysym 0 for none.
+    pub fn setShortcut(t: *Txn, id: NodeId, shortcut: @import("accel.zig").Accel) Error!void {
+        const n = try t.live(id);
+        try t.reserve();
+        t.touch(id);
+        n.shortcut = shortcut;
+        t.win.dirty.semantics = true;
+    }
+
     /// Sets the node's tooltip text; empty removes it.
     pub fn setTooltip(t: *Txn, id: NodeId, text: []const u8) Error!void {
         const n = try t.live(id);

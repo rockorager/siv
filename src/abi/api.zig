@@ -309,6 +309,7 @@ const dbus = @import("api_dbus.zig");
 const document = @import("api_document.zig");
 const undo = @import("api_undo.zig");
 const settings = @import("api_settings.zig");
+const actions = @import("api_actions.zig");
 
 pub const decls = [_]Decl{
     result,
@@ -320,6 +321,7 @@ pub const decls = [_]Decl{
     handle("siv_window", "A top-level window.", false),
     handle("siv_txn", "An open transaction on a window's tree (D4). Valid until it is committed or aborted.", false),
     handle("siv_node", "A node of a window's tree. Valid until a committed transaction removes it or its window is destroyed.", false),
+    handle("siv_action", "A named command (D34, api_actions.zig): Copy, Show Hidden Files, List View. Menu items, buttons, and toggles bound to it (siv_set_action) and its accelerators invoke it and follow whether it is enabled and its value; the desktop invokes the application's by name. Valid until siv_action_destroy, the window it belongs to is destroyed, or the application is.", false),
 
     enumeration("siv_backend", "Where windows are shown.", &.{
         .{ .name = "wayland", .value = 0, .doc = "A Wayland compositor (the default)." },
@@ -1225,6 +1227,8 @@ pub const decls = [_]Decl{
         .{ .name = "icon", .type = .string, .doc = "A themed icon before the label (D19), as siv_image_view_desc.icon names it, in the label's color; with SIV_WIDGET_ICON_ONLY instead of it. Empty for none." },
         .{ .name = "mnemonic", .type = .u32, .doc = "A keysym that presses it inside a dialog (siv_dialog), letters in either case: the key alone unless a text field has focus, Alt and the key always. The label's first such letter is underlined. 0 for none." },
         reserved("reserved0"),
+        .{ .name = "action", .type = ref("siv_action"), .doc = "An action pressing it runs, which its disabled state follows (siv_set_action, D34); 0 for none." },
+        .{ .name = "action_target", .type = .f64, .doc = "The target pressing it passes the action." },
     }),
     descriptor("siv_toggle_desc", "A toggle button, check box, or switch.", &.{
         .{ .name = "label", .type = .string, .doc = "The label, copied; also the accessible name." },
@@ -1233,6 +1237,8 @@ pub const decls = [_]Decl{
         .{ .name = "icon", .type = .string, .doc = "Toggle buttons: a themed icon before the label, as for siv_button_desc." },
         .{ .name = "mnemonic", .type = .u32, .doc = "A keysym that presses it inside a dialog (siv_dialog), letters in either case: the key alone unless a text field has focus, Alt and the key always. The label's first such letter is underlined. 0 for none." },
         reserved("reserved0"),
+        .{ .name = "action", .type = ref("siv_action"), .doc = "A toggle or choice action it shows and flips (siv_set_action, D34): checked while a toggle is on or a choice's value is action_target; its disabled state follows the action too. 0 for none." },
+        .{ .name = "action_target", .type = .f64, .doc = "Choices: the value it stands for." },
     }),
     descriptor("siv_radio_group_desc", "A group of radio buttons, added with siv_radio. The first one starts selected.", &.{
         .{ .name = "label", .type = .string, .doc = "The group's accessible name, copied." },
@@ -1340,11 +1346,13 @@ pub const decls = [_]Decl{
     }),
     descriptor("siv_menu_item_desc", "A menu item.", &.{
         .{ .name = "label", .type = .string, .doc = "The label, copied." },
-        .{ .name = "shortcut", .type = .string, .doc = "A key binding to show at the end edge, copied; siv does not bind it." },
+        .{ .name = "shortcut", .type = .string, .doc = "A key binding to show at the end edge, copied; siv does not bind it (an action's accelerators do, D34)." },
         .{ .name = "flags", .type = ref("siv_menu_item_flags"), .doc = "Options." },
         .{ .name = "mnemonic", .type = .u32, .doc = "A keysym that chooses the item while its menu is open, letters in either case; 0 for none." },
         .{ .name = "icon", .type = .string, .doc = "A themed icon at the item's start (D19), as siv_image_view_desc.icon names it, in the item's text color. Items of a menu line up whether or not they have one. Empty for none." },
         .{ .name = "submenu", .type = ref("siv_node"), .doc = "A menu (siv_menu) the item opens beside itself, instead of being chosen: on hover, Enter, Space, a click, or the arrow toward the end edge; the arrow toward the start edge and Escape close it again. Choosing in it reports SIV_EVENT_SELECT on the submenu and closes every menu of the chain; 0 for none." },
+        .{ .name = "action", .type = ref("siv_action"), .doc = "An action choosing the item runs, after SIV_EVENT_SELECT (siv_set_action, D34). The item follows it: disabled with it, checked while a toggle is on or a choice's value is action_target, and showing its label when the item has none and its first accelerator when the item has no shortcut. 0 for none." },
+        .{ .name = "action_target", .type = .f64, .doc = "The target choosing it passes the action." },
     }),
     descriptor("siv_popover_desc", "A popover: a card in a popup next to its anchor.", &.{
         .{ .name = "label", .type = .string, .doc = "Accessible name, copied." },
@@ -2047,7 +2055,7 @@ pub const functions = [_]Function{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
         .{ .name = "rtl", .type = out(.bool), .doc = "Right to left." },
     }),
-    call("siv_node_emit", "Sends an event to a node's handlers as siv sends input: the siv_on handler, then, unless it returned handled or prevent, the siv_on_default handler. It does not bubble. This is how widgets report their own events (change, select). Not from a canvas callback (SIV_ERROR_BUSY).", &.{
+    call("siv_node_emit", "Sends an event to a node's handlers as siv sends input: the siv_on handler, then, unless it returned handled or prevent, the siv_on_default handler; an activate event that no handler prevented then runs the node's action (siv_set_action, D34). It does not bubble. This is how widgets report their own events (change, select). Not from a canvas callback (SIV_ERROR_BUSY).", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
         .{ .name = "event", .type = .{ .desc = "siv_event" }, .doc = "The event; window is filled in." },
         .{ .name = "handled", .type = out(.bool), .doc = "Whether a handler returned anything but pass.", .optional = true },
@@ -2485,8 +2493,8 @@ pub const spec: schema.Schema = .{
     .source = "src/abi/api.zig",
     .doc = "siv: a GUI toolkit for Wayland.",
     .result = "siv_result",
-    .decls = &(decls ++ desktop.decls ++ dbus.decls ++ shell.decls ++ document.decls ++ undo.decls ++ settings.decls ++ testing.decls),
-    .functions = &(functions ++ desktop.functions ++ dbus.functions ++ shell.functions ++ document.functions ++ undo.functions ++ settings.functions ++ testing.functions),
+    .decls = &(decls ++ desktop.decls ++ dbus.decls ++ shell.decls ++ document.decls ++ actions.decls ++ undo.decls ++ settings.decls ++ testing.decls),
+    .functions = &(functions ++ desktop.functions ++ dbus.functions ++ shell.functions ++ document.functions ++ actions.functions ++ undo.functions ++ settings.functions ++ testing.functions),
 };
 
 /// Encodes a version as (major << 16) | (minor << 8) | patch.

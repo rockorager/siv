@@ -290,6 +290,7 @@ pub fn abortState(w: *Window) void {
     if (w.uiWin().txn.open) s.ut.abort();
     for (s.created.items) |id| w.nodes.forget(w, id);
     s.finish(w);
+    @import("actions.zig").txnEnded(w);
 }
 
 fn unlinkData(head: *?*Data, d: *Data) void {
@@ -309,6 +310,7 @@ fn commitState(w: *Window) void {
     for (s.widget_undo.items) |u| if (u.old) |c| w.owner.release(c.destroy, c.user_data);
     s.ut.commit();
     s.finish(w);
+    @import("actions.zig").txnEnded(w);
 }
 
 fn forgetSubtree(w: *Window, id: NodeId) void {
@@ -1981,7 +1983,13 @@ pub export fn siv_node_emit(node: t.Node, event: ?*const t.Event, handled: ?*boo
             if (w.owner.painting != 0) return error.Busy;
             ev.size = @sizeOf(t.Event);
             ev.window = @fromBackingInt(w.handle);
-            dest.* = deliver(w, id, hk, &ev, false) != .pass;
+            const r = deliver(w, id, hk, &ev, false);
+            dest.* = r != .pass;
+            // An activation runs the node's action, as siv's own does (D34).
+            if (hk == .activate and !r.prevents() and !w.dead and w.nodes.handle(id) == @backingInt(n)) {
+                const uw = w.uiWin();
+                if (uw.node(id).action != 0) uw.actions.invoke(uw.actions.ctx, uw, id);
+            }
         }
     }.f(node, event, handled));
 }

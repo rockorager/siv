@@ -108,6 +108,25 @@ the default actions (a widget's default handler, an editor typing);
 prevent goes on but stops the default actions. Only keys have a capture
 phase.
 
+## Actions and accelerators
+
+Commands that a menu item, a toolbar button, and a key all run are
+actions (`siv_action_create`): a name, a label, accelerators
+(`siv_accel`, such as `'s'` with `SIV_MODIFIERS_CTRL`), an enabled state,
+and for toggles and choices a value. Pass an action as a button's,
+toggle's, or menu item's `action` (or bind any node with
+`siv_set_action`) and the widget runs it when activated, dims while it is
+disabled (`siv_action_set_enabled`), and shows its value as a check mark
+or a pressed state; a menu item also shows its label and key. siv runs an
+accelerator when the focused node leaves the key: an editor keeps Ctrl+A,
+Ctrl+C, and its typing, a list row its arrows, and a handler that returns
+prevent keeps a key from accelerators. An action without a window belongs
+to the application, and the desktop can invoke it by name; one with a
+window answers only that window's keys. `siv_app_get_action` lists what a
+window's keys reach, for a shortcuts window or a command palette, and
+assistive technology hears each bound control's key. The design is D34
+in DESIGN.md.
+
 ## Focus
 
 A node takes keyboard focus if its semantics say `SIV_SEMANTICS_FOCUSABLE`

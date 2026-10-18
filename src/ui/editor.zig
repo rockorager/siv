@@ -658,6 +658,9 @@ pub fn key(win: *Window, id: NodeId, k: *const platform.Key) bool {
     // The input method owns the keyboard while it composes; keys that
     // still arrive must not edit around its preedit.
     if (win.ime.preeditFor(id) != null) return k.keysym != keysym.tab and k.keysym != keysym.iso_left_tab;
+    // The editor's keys use Ctrl and Shift only: with Alt or Super held a
+    // key is the window's (Alt+Left going back, D34).
+    if (k.mods.alt or k.mods.super) return false;
     const l = fresh(win, id) orelse return false;
     // Without memory to lay out the blocks it needs, the key does nothing.
     return keyIn(win, id, k, l) catch true;

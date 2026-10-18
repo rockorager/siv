@@ -52,7 +52,7 @@ int main(int argc, char **argv) {
 
     const char *id = "org.siv.Test.Lifecycle";
     if (siv_app_create(SIV_DESC(siv_app_desc, .backend = SIV_BACKEND_HEADLESS, .flags = SIV_APP_NO_SYSTEM_FONTS, .app_id = id, .app_id_len = strlen(id)), &app) != SIV_OK) return 3;
-    if (siv_app_add_action(app, "quit", 4, on_action, NULL, NULL) != SIV_OK) return 4;
+    if (siv_action_create(app, SIV_DESC(siv_action_desc, .name = SIV_STR("quit")), on_action, NULL, NULL, NULL) != SIV_OK) return 4;
     if (siv_app_launch(app, SIV_DESC(siv_launch_desc, .uris = uris, .uris_count = uri_count, .on_activate = on_activate,
                                      .flags = service ? SIV_LAUNCH_SERVICE : 0, .idle_timeout_ms = 20000)) != SIV_OK) return 5;
     siv_result r = siv_app_run(app);

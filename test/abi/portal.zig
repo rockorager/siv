@@ -1,4 +1,4 @@
-//! Portals and actions through the exports (D19) on the headless backend,
+//! Portals and application actions through the exports (D19, D34) on the headless backend,
 //! which has no session bus: requests complete as unavailable at the next
 //! dispatch, never inside the call; argument checks, handle lifetimes,
 //! and destroy-notifies follow D2. The portal round trips run against
@@ -141,28 +141,41 @@ test "file choosers are built, shown once at a time, and cancelled" {
     try testing.expectEqual(t.Result.error_invalid_handle, P.siv_file_chooser_add_filter(c, "x", 1));
 }
 
-test "actions are replaced and removed with their destroy-notify, and inhibitions are handles" {
+test "the desktop invokes enabled application actions by name; actions and inhibitions are handles" {
+    const Act = abi.actions;
     var log: Log = .{};
     {
         var h: harness.Harness = .{};
         try h.start(64, 48, null, null);
         defer h.stop();
-        try ok(P.siv_app_add_action(h.app, "quit", 4, Log.onAction, Log.onDestroy, &log));
-        try ok(P.siv_app_add_action(h.app, "quit", 4, Log.onAction, Log.onDestroy, &log));
+        var quit: t.Action = .null;
+        try ok(Act.siv_action_create(h.app, &.{ .name = "quit", .name_len = 4 }, Log.onAction, Log.onDestroy, &log, &quit));
+        // A name its scope has: refused, and the destroy-notify runs.
+        var dup: t.Action = .null;
+        try testing.expectEqual(t.Result.error_invalid_argument, Act.siv_action_create(h.app, &.{ .name = "quit", .name_len = 4 }, Log.onAction, Log.onDestroy, &log, &dup));
         try testing.expectEqual(@as(u32, 1), log.destroys);
-        // The coordinator's registry runs it.
+        // The coordinator's registry (notifications, ActivateAction) runs
+        // it, unless it is disabled.
         const self = try h.internal();
         self.app.invokeAction("quit", "", "");
         try testing.expectEqual(@as(u32, 1), log.actions);
-        _ = P.siv_app_remove_action(h.app, "quit", 4);
-        try testing.expectEqual(@as(u32, 2), log.destroys);
+        try ok(Act.siv_action_set_enabled(quit, false));
         self.app.invokeAction("quit", "", "");
         try testing.expectEqual(@as(u32, 1), log.actions);
-        P.siv_app_remove_action(h.app, "quit", 4);
-        try testing.expectEqual(t.Result.error_invalid_argument, P.siv_app_add_action(h.app, "", 0, Log.onAction, Log.onDestroy, &log));
+        // A window's actions are not the desktop's.
+        var close: t.Action = .null;
+        try ok(Act.siv_action_create(h.app, &.{ .name = "close", .name_len = 5, .window = h.window }, Log.onAction, null, &log, &close));
+        self.app.invokeAction("close", "", "");
+        try testing.expectEqual(@as(u32, 1), log.actions);
+        _ = Act.siv_action_destroy(quit);
+        try testing.expectEqual(@as(u32, 2), log.destroys);
+        Act.siv_action_destroy(quit);
+        try testing.expectEqual(t.Result.error_invalid_handle, Act.siv_action_set_enabled(quit, true));
+        try testing.expectEqual(t.Result.error_invalid_argument, Act.siv_action_create(h.app, &.{}, Log.onAction, Log.onDestroy, &log, &dup));
         try testing.expectEqual(@as(u32, 3), log.destroys);
-        // Left registered: released with the application.
-        try ok(P.siv_app_add_action(h.app, "open", 4, Log.onAction, Log.onDestroy, &log));
+        // Left alive: released with the application.
+        var open: t.Action = .null;
+        try ok(Act.siv_action_create(h.app, &.{ .name = "open", .name_len = 4 }, Log.onAction, Log.onDestroy, &log, &open));
 
         var inh: t.Inhibition = .null;
         try testing.expectEqual(t.Result.error_invalid_argument, P.siv_inhibit(h.app, h.window, .{}, "x", 1, &inh));

@@ -340,6 +340,14 @@ pub fn arrowDirection(sym: siv.Key, rtl: bool) i2 {
 ///   focus:               fn (*T) Node
 ///   apply:               fn (Txn, *T) void; with it, siv_widget_set_disabled
 ///                        sets the header's disabled flag and shows it
+/// Binds a widget's root to the action its descriptor names (D34), after
+/// its interface is set, so the action's state reaches it at once.
+pub fn bindAction(txn: Txn, root: Node, action: siv.Action, target: f64) Node {
+    if (root == .null or action == .null) return root;
+    c.siv_set_action(txn, root, action, target);
+    return if (c.siv_txn_status(txn) == .ok) root else .null;
+}
+
 pub fn setInterface(txn: Txn, node: Node, comptime T: type, st: *T, comptime ops: anytype) void {
     const O = @TypeOf(ops);
     const I = struct {

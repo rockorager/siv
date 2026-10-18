@@ -1,7 +1,7 @@
-//! Exports for desktop portals and application actions (D19). The
-//! portal protocol is the `portal` module's and parent windows and
-//! actions are the coordinator's (app/portals.zig); this file maps
-//! handles, descriptors, and C callbacks onto them.
+//! Exports for desktop portals (D19). The portal protocol is the
+//! `portal` module's and parent windows are the coordinator's
+//! (app/portals.zig); this file maps handles, descriptors, and C
+//! callbacks onto them. Application actions are actions.zig's (D34).
 //!
 //! Requests complete through C callbacks at safe points (D5); a request
 //! that cannot start (no session bus) completes at the next dispatch, so
@@ -41,9 +41,6 @@ pub const State = struct {
     casts: Slots(Cast) = .{},
     /// One-shot requests in flight.
     ops: List = .{},
-    /// Registered actions by name; the coordinator's registry points at
-    /// these.
-    actions: std.StringHashMapUnmanaged(*ActionEntry) = .empty,
     /// siv_app_launch's handler.
     launch: ?Launch = null,
     /// Documents being printed or written as PDF (print.zig).
@@ -91,14 +88,6 @@ pub fn teardown(self: *App) void {
     st.inhibitions.items.deinit(gpa);
     st.shortcuts.items.deinit(gpa);
     st.casts.items.deinit(gpa);
-    var it = st.actions.iterator();
-    while (it.next()) |e| {
-        self.app.removeAction(e.key_ptr.*);
-        self.release(e.value_ptr.*.destroy, e.value_ptr.*.user_data);
-        gpa.free(e.key_ptr.*);
-        gpa.destroy(e.value_ptr.*);
-    }
-    st.actions.deinit(gpa);
     if (st.launch) |l| self.release(l.destroy, l.user_data);
     st.launch = null;
     if (st.session) |x| self.release(x.destroy, x.user_data);
@@ -414,71 +403,6 @@ pub export fn siv_notification_withdraw(app: t.App, id: ?[*]const u8, id_len: us
             portal.notification.remove(client, s) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable;
         }
     }.f(app, id, id_len));
-}
-
-const ActionEntry = struct {
-    self: *App,
-    callback: t.ActionFn,
-    destroy: ?t.DestroyFn,
-    user_data: ?*anyopaque,
-
-    fn run(ctx: ?*anyopaque, name: []const u8, target: []const u8, activation_token: []const u8) void {
-        const e: *ActionEntry = @ptrCast(@alignCast(ctx));
-        var ev: t.ActionEvent = .{
-            .name = name.ptr,
-            .name_len = name.len,
-            .target = target.ptr,
-            .target_len = target.len,
-            .activation_token = activation_token.ptr,
-            .activation_token_len = activation_token.len,
-        };
-        e.self.enter();
-        defer e.self.leave();
-        e.callback(e.user_data, &ev);
-    }
-};
-
-pub export fn siv_app_add_action(app: t.App, name: ?[*]const u8, name_len: usize, callback: ?t.ActionFn, destroy: ?t.DestroyFn, user_data: ?*anyopaque) t.Result {
-    const self = App.get(@backingInt(app)) catch |err| return failed(null, destroy, user_data, err);
-    const s = runtime.string(name, name_len) catch |err| return failed(self, destroy, user_data, err);
-    const cb = callback orelse return failed(self, destroy, user_data, error.InvalidArgument);
-    if (s.len == 0 or !std.unicode.utf8ValidateSlice(s)) return failed(self, destroy, user_data, error.InvalidArgument);
-    const gpa = self.gpa();
-    const st = &self.desktop;
-    const entry = gpa.create(ActionEntry) catch return failed(self, destroy, user_data, error.OutOfMemory);
-    entry.* = .{ .self = self, .callback = cb, .destroy = destroy, .user_data = user_data };
-    st.actions.ensureUnusedCapacity(gpa, 1) catch {
-        gpa.destroy(entry);
-        return failed(self, destroy, user_data, error.OutOfMemory);
-    };
-    const key = if (st.actions.getKey(s)) |k| k else gpa.dupe(u8, s) catch {
-        gpa.destroy(entry);
-        return failed(self, destroy, user_data, error.OutOfMemory);
-    };
-    self.app.addAction(s, .{ .ctx = entry, .func = ActionEntry.run }) catch {
-        if (st.actions.getKey(s) == null) gpa.free(key);
-        gpa.destroy(entry);
-        return failed(self, destroy, user_data, error.OutOfMemory);
-    };
-    const gop = st.actions.getOrPutAssumeCapacity(key);
-    if (gop.found_existing) {
-        const old = gop.value_ptr.*;
-        self.release(old.destroy, old.user_data);
-        gpa.destroy(old);
-    }
-    gop.value_ptr.* = entry;
-    return .ok;
-}
-
-pub export fn siv_app_remove_action(app: t.App, name: ?[*]const u8, name_len: usize) void {
-    const self = App.get(@backingInt(app)) catch return;
-    const s = runtime.string(name, name_len) catch return;
-    const kv = self.desktop.actions.fetchRemove(s) orelse return;
-    self.app.removeAction(s);
-    self.release(kv.value.destroy, kv.value.user_data);
-    self.gpa().free(kv.key);
-    self.gpa().destroy(kv.value);
-    return;
 }
 
 // Inhibition --------------------------------------------------------------------

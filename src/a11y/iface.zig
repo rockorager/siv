@@ -281,6 +281,12 @@ fn getAttributes(r: *Request) anyerror!void {
             // ARIA's aria-sort, as browsers expose it on column headers.
             if (n.sort != .none) try entry(&m.body, "sort", @tagName(n.sort));
             if (n.column != 0) try entry(&m.body, "colindex", std.fmt.bufPrint(&buf, "{d}", .{n.column}) catch unreachable);
+            // ARIA's aria-keyshortcuts, as browsers expose it (D34).
+            if (n.shortcut.keysym != 0) {
+                var kb: [64]u8 = undefined;
+                var kw: std.Io.Writer = .fixed(&kb);
+                try entry(&m.body, "keyshortcuts", if (ui.accel.format(n.shortcut, .aria, &kw)) kw.buffered() else |_| "");
+            }
             if (n.live != .off) {
                 const v = if (n.live == .polite) "polite" else "assertive";
                 try entry(&m.body, "live", v);
@@ -542,7 +548,7 @@ pub const action: Interface = .{
         .{ .name = "GetDescription", .in = "i", .out = "s", .func = actionEmpty },
         .{ .name = "GetName", .in = "i", .out = "s", .func = actionName },
         .{ .name = "GetLocalizedName", .in = "i", .out = "s", .func = actionName },
-        .{ .name = "GetKeyBinding", .in = "i", .out = "s", .func = actionEmpty },
+        .{ .name = "GetKeyBinding", .in = "i", .out = "s", .func = keyBinding },
         .{ .name = "GetActions", .out = "a(sss)", .func = getActions },
         .{ .name = "DoAction", .in = "i", .out = "b", .func = doAction },
     },
@@ -571,9 +577,28 @@ fn actionEmpty(r: *Request) anyerror!void {
     try r.reply(.{""});
 }
 
+/// ATK's key binding: "mnemonic;sequence;shortcut", the shortcut in
+/// GTK's accelerator names ("<Control>c"), which Orca reads (D34).
+fn bindingOf(n: *const Bridge.SNode, buf: []u8) []const u8 {
+    if (n.shortcut.keysym == 0) return "";
+    var w: std.Io.Writer = .fixed(buf);
+    w.writeAll(";;") catch return "";
+    ui.accel.format(n.shortcut, .gtk, &w) catch return "";
+    return w.buffered();
+}
+
+fn keyBinding(r: *Request) anyerror!void {
+    const x = try nodeObj(r);
+    var d = r.args();
+    const index = try d.readInt32();
+    var buf: [64]u8 = undefined;
+    try r.reply(.{if (index == 0) bindingOf(x.n(), &buf) else ""});
+}
+
 fn getActions(r: *Request) anyerror!void {
     const x = try nodeObj(r);
-    try r.reply(.{@as([]const struct { []const u8, []const u8, []const u8 }, &.{.{ actionNameOf(x.n().role), "", "" }})});
+    var buf: [64]u8 = undefined;
+    try r.reply(.{@as([]const struct { []const u8, []const u8, []const u8 }, &.{.{ actionNameOf(x.n().role), "", bindingOf(x.n(), &buf) }})});
 }
 
 fn doAction(r: *Request) anyerror!void {

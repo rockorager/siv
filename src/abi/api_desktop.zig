@@ -1,5 +1,5 @@
 //! The desktop integration part of the API schema (D19): portals,
-//! application actions, lifecycle, printing and PDF, and the tray.
+//! lifecycle, printing and PDF, and the tray.
 //! api.zig appends these declarations and functions to its own; the
 //! conventions are schema.zig's. Implemented in portal.zig, print.zig, and tray.zig.
 
@@ -126,7 +126,7 @@ pub const decls = [_]Decl{
     flags("siv_notification_flags", "Notification options.", &.{
         .{ .name = "transient", .bit = 0, .doc = "Show it without keeping it in the notification list. Needs version 2 of the portal's interface; older portals show it as usual." },
     }),
-    value("siv_notification_button", "A notification button: activating it invokes an application action (siv_app_add_action).", &.{
+    value("siv_notification_button", "A notification button: activating it invokes an application action (siv_action_create, D34).", &.{
         .{ .name = "label", .type = .string, .doc = "The button's label." },
         .{ .name = "action", .type = .string, .doc = "The action's name." },
         .{ .name = "target", .type = .string, .doc = "The action's parameter; empty for none." },
@@ -143,14 +143,6 @@ pub const decls = [_]Decl{
         .{ .name = "priority", .type = ref("siv_notification_priority"), .doc = "Default normal." },
         .{ .name = "flags", .type = ref("siv_notification_flags"), .doc = "Options." },
     }),
-    descriptor("siv_action_event", "An application action invoked by the desktop. Filled by siv; strings are valid during the call.", &.{
-        .{ .name = "name", .type = .string, .doc = "The action's name." },
-        .{ .name = "target", .type = .string, .doc = "Its parameter, or empty." },
-        .{ .name = "activation_token", .type = .string, .doc = "An xdg-activation token for showing a window, or empty." },
-    }),
-    callback("siv_action_fn", "Runs an application action at a safe point on the application's thread (D5).", &.{
-        p("event", .{ .desc = "siv_action_event" }, "The invocation, valid during the call."),
-    }, .void),
 
     // Inhibiting the session.
     handle("siv_inhibition", "Keeps the session from logging out, switching users, suspending, or going idle until destroyed."),
@@ -449,14 +441,6 @@ pub const functions = [_]Function{
         app_param, p("desc", .{ .desc = "siv_notification_desc" }, "The notification."),
     }),
     teardown("siv_notification_withdraw", "Takes a notification back.", &.{ app_param, p("id", .string, "Its id.") }),
-    call("siv_app_add_action", "Registers an application action, or replaces the one with the same name: notification buttons invoke it, and so does the desktop through D-Bus activation. The replaced callback's destroy-notify runs.", &.{
-        app_param,
-        p("name", .string, "The action's name."),
-        p("callback", ref("siv_action_fn"), "Runs the action."),
-        p("destroy", ref("siv_destroy_fn"), "Releases user_data when the action is removed or replaced or the application destroyed; may be NULL."),
-        p("user_data", .user_data, "Passed to both."),
-    }),
-    teardown("siv_app_remove_action", "Removes an application action; its destroy-notify runs.", &.{ app_param, p("name", .string, "The action's name.") }),
     call("siv_app_start_session", "Joins a session (D17, xdg-session-management): the compositor remembers the size, place, and states of windows with a session name (siv_window_desc.session_name), and restores them in the next run that joins the same session, before they map. Start it before creating the windows to restore; windows that already exist are only remembered. Replaces the application's earlier session and its callback.", &.{
         app_param,
         p("session_id", .string, "The id a created event gave in an earlier run, or empty for a new session; an unknown id starts a new one."),

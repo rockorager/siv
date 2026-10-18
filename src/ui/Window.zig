@@ -157,6 +157,11 @@ configure_serial: ?u64 = null,
 
 sink: layers.Sink,
 host: Host,
+/// Accelerators and bound nodes' actions (D34).
+actions: Actions = .{},
+/// Nodes ever bound to an action (some may be gone or unbound), so the
+/// owner updates bound nodes without walking the whole tree.
+bound: std.ArrayList(NodeId) = .empty,
 
 dirty: Dirty = .{},
 /// Per-frame scratch memory, reset after each frame (capacity kept).
@@ -191,6 +196,30 @@ pub const Host = struct {
     fn noop(_: ?*anyopaque) void {}
     fn noopTextInput(_: ?*anyopaque, _: platform.SeatId, _: *const platform.TextInputState) void {}
     fn noopCursor(_: ?*anyopaque, _: node_mod.CursorShape) void {}
+};
+
+/// What the window needs from the owner of its actions (D34). Nodes name
+/// actions by the owner's keys (`Node.action`), which the tree does not
+/// interpret.
+pub const Actions = struct {
+    ctx: ?*anyopaque = null,
+    /// Runs the accelerator a key matches, if one does and its action is
+    /// enabled; returns whether it ran one. `modal`: a modal node is
+    /// active, so only accelerators of the whole application apply.
+    key: *const fn (ctx: ?*anyopaque, win: *Window, keysym: u32, mods: platform.Mods, modal: bool) bool = noKey,
+    /// A bound node was activated: invoke its action with its target.
+    invoke: *const fn (ctx: ?*anyopaque, win: *Window, node: NodeId) void = noInvoke,
+    /// The accelerator of an action that a node bound to it with a
+    /// target exposes in its semantics; keysym 0 for none.
+    shortcut: *const fn (ctx: ?*anyopaque, action: u64, target: f64) @import("accel.zig").Accel = noShortcut,
+
+    fn noKey(_: ?*anyopaque, _: *Window, _: u32, _: platform.Mods, _: bool) bool {
+        return false;
+    }
+    fn noInvoke(_: ?*anyopaque, _: *Window, _: NodeId) void {}
+    fn noShortcut(_: ?*anyopaque, _: u64, _: f64) @import("accel.zig").Accel {
+        return .{};
+    }
 };
 
 pub const Constraint = struct {
@@ -415,6 +444,7 @@ fn deinitStorage(win: *Window) void {
     win.ime.deinit(win.gpa);
     win.semantics.deinit(win.gpa);
     win.viewports.deinit(win.gpa);
+    win.bound.deinit(win.gpa);
     win.culled.deinit(win.gpa);
     win.long_texts.deinit(win.gpa);
     win.modals.deinit(win.gpa);

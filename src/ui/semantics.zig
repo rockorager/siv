@@ -41,8 +41,10 @@ pub const Node = struct {
     expanded: node_mod.Toggle,
     value: ?node_mod.Range,
     live: node_mod.Live,
-    /// Has an activate handler: AT can invoke its action.
+    /// Has an activate handler or an action (D34): AT can invoke it.
     actionable: bool,
+    /// The key that does the same (D34); keysym 0 for none.
+    shortcut: @import("accel.zig").Accel = .{},
     /// An editor's text, caret, and selection anchor (byte offsets).
     value_text: text.Rope = .{},
     caret: ?u32 = null,
@@ -192,7 +194,8 @@ pub const Tree = struct {
                 .expanded = sem.expanded,
                 .value = sem.value,
                 .live = sem.live,
-                .actionable = n.handler(.activate) != null and !sem.disabled,
+                .actionable = (n.handler(.activate) != null or n.action != 0) and !sem.disabled,
+                .shortcut = if (n.shortcut.keysym != 0) n.shortcut else if (n.action != 0) win.actions.shortcut(win.actions.ctx, n.action, n.action_target) else .{},
                 // A masked editor exposes neither its text nor, through
                 // caret offsets, its length.
                 .value_text = if (editor) n.data.editor.text.content else .{},

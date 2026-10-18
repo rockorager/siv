@@ -621,6 +621,8 @@ pub const SNode = struct {
     value: ?ui.Range,
     live: ui.Live,
     actionable: bool,
+    /// The key that does the same as its action (D34); keysym 0 for none.
+    shortcut: ui.Accel = .{},
     focusable: bool,
     editable: bool,
     masked: bool,
@@ -840,6 +842,7 @@ pub const Win = struct {
                 .value = n.value,
                 .live = n.live,
                 .actionable = n.actionable,
+                .shortcut = n.shortcut,
                 .focusable = n.focusable,
                 .editable = editor and !n.masked and !n.disabled,
                 .masked = n.masked,

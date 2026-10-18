@@ -1282,6 +1282,15 @@ pub const Node = struct {
     /// The application undo stack the undo keys reach from here (D35),
     /// as `Window.undo_host` names it; 0 for none. Opaque to the tree.
     undo: u64 = 0,
+    /// The action the node is bound to (D34): the owner's key for it,
+    /// which the tree does not interpret (`Window.actions`); 0 for none.
+    /// Activating the node invokes it with `action_target`.
+    action: u64 = 0,
+    action_target: f64 = 0,
+    /// The key that does what activating the node does (D34), exposed as
+    /// its key binding; keysym 0 for none, when a node bound to an action
+    /// exposes the action's.
+    shortcut: @import("accel.zig").Accel = .{},
 
     pub const Status = enum(u8) {
         /// On the free list (`next` links it).

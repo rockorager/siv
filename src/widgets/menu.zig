@@ -10,7 +10,10 @@
 //! Home and End go to the ends, Enter, Space, and clicks choose, and
 //! Escape closes; the popup's grab makes a click outside dismiss it.
 //! Choosing reports `select` with the item's index on the menu (or the
-//! menu button that owns it) after the popup is gone.
+//! menu button that owns it) after the popup is gone, then runs the
+//! action the item is bound to (D34). A bound item follows its action
+//! through its interface (disabled, checked) and shows the action's
+//! label and accelerator when it has none of its own.
 //!
 //! A popover is a popup whose root is a themed card with a content part
 //! the application fills; Escape and dismissal report `close` on the
@@ -138,7 +141,40 @@ pub export fn siv_menu_item(txn: Txn, menu_node: Node, desc: ?*const siv.MenuIte
     };
     _ = c.siv_set_semantics(txn, root, &.{ .role = if (st.separator) .separator else .menu_item });
     w.setInterface(txn, root, Item, st, .{ .set_label = setItemLabel, .set_icon = setItemIcon, .set_value = setItemValue, .get_value = itemValue, .apply = applyItem });
-    return root;
+    return w.bindAction(txn, root, d.action, d.action_target);
+}
+
+/// The action a node is bound to, and its target (D34).
+fn actionOf(node: Node) struct { siv.Action, f64 } {
+    var a: siv.Action = .null;
+    var target: f64 = 0;
+    if (c.siv_node_get_action(node, &a, &target) != .ok) return .{ .null, 0 };
+    return .{ a, target };
+}
+
+/// The accelerator a node bound to `a` with `target` shows: the first,
+/// or a choice's first with the target.
+fn accelFor(a: siv.Action, target: f64) ?siv.Accel {
+    var st: siv.ActionState = undefined;
+    if (a == .null or c.siv_action_get_state(a, &st) != .ok) return null;
+    var i: u32 = 0;
+    while (i < st.accel_count) : (i += 1) {
+        var k: siv.Accel = undefined;
+        if (c.siv_action_get_accel(a, i, &k) != .ok) return null;
+        if (st.kind != .choice or k.target == target) return k;
+    }
+    return null;
+}
+
+/// An item's label, or its action's when it has none.
+fn itemLabel(it: *const Item, buf: []u8) []const u8 {
+    const own = textOf(it.label, buf);
+    if (own.len != 0) return own;
+    const a, _ = actionOf(it.root);
+    if (a == .null) return own;
+    var len: usize = 0;
+    if (c.siv_action_get_label(a, buf.ptr, buf.len, &len) != .ok) return own;
+    return buf[0..@min(len, buf.len)];
 }
 
 /// Items show their state when their menu opens.
@@ -157,10 +193,12 @@ pub fn itemValue(st: *const Item) f64 {
 }
 
 pub fn setItemValue(txn: Txn, st: *Item, v: f64) void {
-    if (!st.checkable) {
+    // An item bound to a toggle or a choice shows its check mark.
+    if (!st.checkable and actionOf(st.root)[0] == .null) {
         _ = c.siv_txn_fail(txn, .error_invalid_argument);
         return;
     }
+    st.checkable = true;
     st.checked = v >= 0.5;
 }
 
@@ -359,10 +397,20 @@ fn buildRow(txn: Txn, col: Node, m: *Menu, it: *Item, index: u32, checkable: boo
         st.icon = c.siv_image_view(txn, row, &.{ .icon_size = tk.icon_size });
         _ = c.siv_set_layout(txn, st.icon, &.{ .width = w.px(tk.icon_size), .height = w.px(tk.icon_size) });
     }
-    const label = textOf(it.label, buf);
+    const label = itemLabel(it, buf);
     st.label = c.siv_text(txn, row, label.ptr, label.len);
     _ = c.siv_set_layout(txn, st.label, &.{ .grow = 1 });
-    const shortcut = textOf(it.shortcut, buf);
+    var shortcut = textOf(it.shortcut, buf);
+    // A bound item shows its action's accelerator, and assistive
+    // technology hears it as the row's key binding.
+    const action, const target = actionOf(it.root);
+    if (accelFor(action, target)) |k| {
+        _ = c.siv_set_shortcut(txn, row, k);
+        if (shortcut.len == 0) {
+            var len: usize = 0;
+            if (c.siv_accel_format(k, buf.ptr, buf.len, &len) == .ok) shortcut = buf[0..@min(len, buf.len)];
+        }
+    }
     st.shortcut = c.siv_text(txn, row, shortcut.ptr, shortcut.len);
     _ = c.siv_set_visual(txn, st.shortcut, &.{ .flags = .{ .hidden = shortcut.len == 0 } });
     if (st.submenu != .null) {
@@ -389,7 +437,7 @@ fn applyRow(txn: Txn, st: *Row, focused: bool) void {
     const open = if (w.stateOf(Menu, st.submenu, &.{.menu})) |sub| w.windowAlive(sub.popup) else false;
     // Named by the label alone: the shortcut is not part of the name.
     var buf: [1024]u8 = undefined;
-    const label = if (it) |i| textOf(i.label, &buf) else "";
+    const label = if (it) |i| itemLabel(i, &buf) else "";
     _ = c.siv_set_semantics(txn, st.root, &.{
         .role = .menu_item,
         .label = label.ptr,
@@ -476,8 +524,12 @@ fn choose(menu_node: Node, item_node: Node, index: u32, _: siv.Window) void {
     if (itemOf(item_node)) |it| if (it.checkable) {
         it.checked = !it.checked;
     };
+    const action, const target = actionOf(item_node);
+    const window = w.windowOf(owner);
     var handled = false;
     _ = c.siv_node_emit(owner, &.{ .type = .select, .index = index, .value = @floatFromInt(index), .count = 1 }, &handled);
+    // A disabled action refuses; its item could not be chosen anyway.
+    if (action != .null) _ = c.siv_action_activate(action, window, target);
 }
 
 fn onRowKey(ud: ?*anyopaque, node: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {

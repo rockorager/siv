@@ -2136,6 +2136,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     `bool`, it had to track focus on each editor to leave Backspace to
     them. Alternative: two flag bits (a C `return true` would then mean
     stop alone, silently changing behavior).
+  - What the focused node and its ancestors leave of a key goes to the
+    window's accelerators (D34) before Tab traversal and scrolling, and
+    keys with Alt or Super held are never an editor's.
   - Keys have a capture phase. Before the focused node sees a key, it
     goes down from the root through the capture handlers of the focused
     node's ancestors and the node itself (`siv_on_capture`, so far keys
@@ -2973,8 +2976,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     are reported before additions; a reorder without a change of children
     sends nothing.
   - Interfaces per node: Accessible and Component always; Action for
-    nodes with an activate handler (one action, named like GTK's for the
-    role: click, toggle, jump, activate); Text for text nodes, editors,
+    nodes with an activate handler or an action (D34; one action, named
+    like GTK's for the role: click, toggle, jump, activate, whose key
+    binding is the node's shortcut); Text for text nodes, editors,
     and text roles; EditableText for unmasked enabled editors; Value for
     nodes with a range, whose MinimumIncrement is the semantics' step and
     whose CurrentValue is writable: setting it sends the node a
@@ -3290,8 +3294,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       (OpenURI) carry an xdg-activation token for the window's last key or
       button serial, so the opened application may take focus
       (`Platform.requestActivationToken`).
-    - Notifications: actions are application actions (`siv_app_add_action`,
-      shared with org.freedesktop.Application, see Lifecycle), sent as
+    - Notifications: actions are application actions (D34's actions of no
+      window, shared with org.freedesktop.Application, see Lifecycle), sent as
       "app.<name>", GLib's convention, which desktops that activate
       applications over D-Bus expect; ActionInvoked strips the prefix.
       Targets are strings. Version 2 keys (display hints) are sent only
@@ -3473,7 +3477,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       when the name request answers, so `siv_app_get_instance` reports
       `pending` until then, rather than a blocking register call.
     - Actions: ActivateAction runs the application actions notifications
-      use (portals, above), with the first parameter if it is a string.
+      use (portals, above, and D34), with the first parameter if it is a
+      string; disabled actions ignore it, and a choice takes the parameter
+      as its target when it is a number.
     - Activation tokens: the launcher's $XDG_ACTIVATION_TOKEN goes with
       the first activation (or is forwarded) and is removed from the
       environment so children do not reuse it; remote activations carry
@@ -4090,7 +4096,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     (`siv_app_get_key_repeat`), text spans with formatting commands, and
     a column header's sort order and a cell's column (`sort` and
     `column`, AT-SPI's sort and colindex attributes, as browsers expose
-    aria-sort and aria-colindex).
+    aria-sort and aria-colindex), and actions bound to nodes with their
+    shortcuts (`siv_set_action`, `siv_node_get_action`,
+    `siv_set_shortcut`, D34), through which buttons, toggles, and menu
+    items follow and run an action.
   - **Creating:** one builder per widget, a transaction operation like the
     primitive builders (D27): `siv_push_button(txn, parent, &desc)` appends the
     widget and returns its root node, or 0 once the transaction has failed
@@ -5691,7 +5700,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | `siv_size_role`, `SIV_SIZE_ROLE_*` | `siv_text_role`, `SIV_TEXT_ROLE_*` | a themed text size beside `siv_role`, the accessibility role, read as a role for text; it is the type of `size_role` |
   | `siv_screencast_cursor`, `siv_screencast_persist` | `siv_cursor_mode`, `siv_persist_mode` | they belong to the screen cast family; `siv_cursor` is the pointer's shape |
   | `siv_icon_load(..., &request)` (D19) | no request | icon loads cancel like image loads |
-  | transaction operations (`siv_set_*`, `siv_on`, `siv_move`, `siv_widget_set_*`, `siv_view_set_*`, ...), drawing operations, `siv_txn_fail`, and teardown (`*_destroy`, `*_cancel`, `siv_txn_abort`, `siv_app_remove_action`, `siv_notification_withdraw`, `siv_tray_item_remove_menu_item`) return void (D2) | `siv_result` that callers could ignore | the result rule: every `siv_result` warns when ignored, and functions that cannot fail return nothing; a transaction's failure is read from the transaction, as for builders |
+  | transaction operations (`siv_set_*`, `siv_on`, `siv_move`, `siv_widget_set_*`, `siv_view_set_*`, ...), drawing operations, `siv_txn_fail`, and teardown (`*_destroy`, `*_cancel`, `siv_txn_abort`, `siv_notification_withdraw`, `siv_tray_item_remove_menu_item`) return void (D2) | `siv_result` that callers could ignore | the result rule: every `siv_result` warns when ignored, and functions that cannot fail return nothing; a transaction's failure is read from the transaction, as for builders |
   | `siv_app_quit`, window requests, `siv_drop_finish`, `siv_app_set_transfer_limit`, `siv_window_activate`, `siv_txn_status`, `siv_draw_status` warn when ignored (D2) | ignorable | they can fail |
   | `siv_app_destroy` from a callback is deferred to the end of the dispatch (D2) | `SIV_ERROR_BUSY` | teardown cannot fail |
   | optional out parameters: `siv_node_emit`'s `handled`, `siv_image_load`'s and `siv_icon_load`'s `request`, `siv_timer_start`'s `timer`, `siv_popover_create`'s `content` (D2) | required | C callers do not declare values they throw away |
@@ -5729,6 +5738,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | an output watch keeps `siv_app_run` running with no window (D27, D31) | a bar ended with its last output | closing a laptop lid with only an external monitor, or a monitor vanishing during a dock or KVM switch, killed the bar instead of letting it come back on `added` |
   | `siv_test_find` after a transaction and before its frame keeps no stale bounds (D27) | bounds of the frame before the query, kept until the next change | a query between a transaction and its frame (on a display, where there is no settling) cleared the semantics tree's dirty flag, so the frame's layout never refreshed the bounds |
   | `siv_node_get_text_range` (D15) | reading a long text whole with `siv_node_get_text` | a text node's text is a rope; an application searching or saving 100 MB needed a buffer as long, and a copy of all of it each time |
+  | `siv_action_create`, `siv_action_destroy`, `siv_action_*`, `siv_set_action`, `siv_set_shortcut`, `siv_app_get_action`, `siv_accel_format`; `action` in button, toggle, and menu item descriptors (D34) | `siv_app_add_action`, `siv_app_remove_action`; window-wide key handlers; menu shortcuts as strings | one action that keys, widgets, the desktop, and assistive technology share, with its enabled state and value |
 
   Statements this document made that were no longer true are fixed where
   they stood: external nodes are built and in the C API (D4, D17);
@@ -6734,6 +6744,171 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   or if keeping the web view building slows siv's own work more than its
   tests catch.
 
+### D34. Actions and accelerators
+
+- **Requirement:** a command such as Copy, Show Hidden Files, or List
+  View is reachable from a menu item, a toolbar button, a toggle, a key,
+  the desktop (notification buttons, desktop file actions), and assistive
+  technology, and all of them agree on whether it can run now and on its
+  state, without the application keeping them in step by hand. Keys must
+  not take a focused text field's editing keys. An application can list
+  its commands with their keys, for a shortcuts window or a command
+  palette. Before, siv had application actions only for the desktop
+  (`siv_app_add_action`, by name), menu items showed a shortcut string
+  "siv does not bind", and applications wrote window-wide key handlers:
+  the file manager in `apps/files` switched on Ctrl+letters in a root
+  handler, checked whether focus was in one of its editors to leave them
+  Ctrl+A and Ctrl+C, and set the check marks of its app menu after every
+  change of mode.
+- **Decision:** an action is an object (`siv_action`, api_actions.zig,
+  `src/abi/actions.zig`): a name, a label, an enabled state, a kind and
+  a value, accelerators, and a callback (`siv_action_event`). It grows
+  the application actions the desktop already invoked; they are now the
+  actions that belong to no window (`siv_app_add_action` and
+  `siv_app_remove_action` are gone, D30).
+  - **Scope.** An action belongs to the application (`window` 0) or to
+    one window. A window's actions answer only its own keys (and its
+    popups', whose keys reach their toplevel's) and go with it; one with
+    the name of an application action shadows it in that window, keys
+    and all. The application's are also org.freedesktop.Application's
+    actions, which notification buttons and desktop file actions invoke
+    by name (D19), if enabled. Per-window actions are what multi-window
+    applications need: Paste is enabled in the window whose selection
+    allows it, Close closes this window, and nothing tracks which window
+    is active. Window actions name their window in the event; an
+    application action invoked by a key or a widget names the window too
+    (`siv_action_event.window`), so an application-wide Close can still
+    act on it.
+  - **Kinds and values.** `plain` runs; `toggle` (0 or 1) flips;
+    `choice` takes a target (a view mode, a zoom level) and nodes bound
+    with that target show it checked while the value equals it. The
+    value is one double, as a widget's is (D22). Running an action sets
+    the new value, brings bound nodes in line, then calls the callback,
+    so the callback reads the state it caused; `siv_action_set_value`
+    changes it without running it. Disabled actions do nothing: their
+    keys go on to siv's defaults (as GTK 4's and Qt's disabled actions
+    let the key propagate), the desktop's requests are ignored, and
+    `siv_action_activate` fails with `SIV_ERROR_BUSY`.
+  - **Binding nodes** is a core primitive, `siv_set_action(txn, node,
+    action, target)`, so an application's own widget binds as a stock
+    one does (D22). The tree keeps the action's handle on the node
+    (`ui.Node.action`, opaque to it) and asks the window's action hooks
+    (`ui.Window.Actions`) for the rest. Activating a bound node (a click,
+    Enter or Space, a mnemonic in a dialog, AT-SPI's DoAction) runs the
+    action with the node's target after its activate handlers, unless
+    one returned handled or prevent, as any default action. A bound node
+    follows its action through its widget interface: `set_disabled`, and
+    for toggles and choices `set_value` with 1 or 0. That happens in a
+    transaction of siv's own on the node's window, at once, or, when the
+    application holds a transaction open there, as soon as it ends
+    (frames do not run while it is open, so nothing shows the old state
+    meanwhile); a new binding gets the state inside the transaction that
+    binds it. A bound node is activatable and actionable without an
+    activate handler. Stock buttons, toggle buttons, check boxes,
+    switches, and menu items take `action` and `action_target` in their
+    descriptors; toggles' default activate handlers now return stop
+    rather than handled so their action runs after they flip (and the
+    action's state then wins: a pressed toggle bound to a choice it
+    already has stays pressed). Menu items bound to an action show its
+    label when they have none and its accelerator when they have no
+    shortcut of their own, become checkable for toggles and choices, and
+    run it after reporting `select`, from the menu's own choosing.
+    Destroying an action leaves its nodes as they are; they run nothing.
+  - **Accelerators** (`siv_accel`: a keysym, Shift, Ctrl, Alt, and Super,
+    and a target, so Ctrl+1 and Ctrl+2 choose two values of one choice,
+    as GTK's detailed action names do) are matched by siv
+    (`ui.accel`): letters in either case with Shift as written (Ctrl+N
+    and Ctrl+Shift+N are two keys, and the latter reports N), symbols
+    also without the Shift that typed them (Ctrl and + on a US layout is
+    Ctrl+Shift+=, reporting +), ISO_Left_Tab as Shift+Tab, repeats
+    included, Caps Lock and Num Lock ignored. Exact matches win over
+    those, the window's actions over the application's, and otherwise
+    the first action created. Keys are compared as keysyms, like the
+    editor's own keys, so on a non-Latin layout Ctrl+С is not Ctrl+C.
+  - **Precedence.** A key goes to the focused node first, and
+    accelerators get what it leaves. The order in a window is: capture
+    handlers (D16), root first; the focused node's and its ancestors'
+    `siv_on` handlers and widget defaults, bubbling; the focused
+    editor's typing and editing keys (Ctrl+A, Ctrl+C, Ctrl+V, Ctrl+X,
+    Ctrl+Z, Ctrl+Y, arrows, Home, Backspace); Enter and Space on a focused
+    node they activate; then accelerators; then siv's window defaults,
+    Tab traversal and scrolling. A handler's `prevent` (or `handled`)
+    keeps the key from accelerators, as from every default; `stop` does
+    not, so an editor's handler that stops its keys from the window's
+    `siv_on` handlers leaves Ctrl+S to the Save action. The editor's
+    keys use Ctrl and Shift only: with Alt or Super held a key is never
+    an editor's, so Alt+Left goes back from a search field (before, the
+    editor moved the caret). An editor without undo (`no_undo`, D15)
+    leaves Ctrl+Z and Ctrl+Y to bubble on: an undo stack attached above
+    it (D35) takes them before accelerators, and without one they reach
+    the application's Undo and Redo actions, so neither steals them from
+    editors that keep their own history.
+    While a modal node is active (D16), only the application's
+    accelerators apply: the window behind the dialog is inert. An
+    application that wants a key before the focused node (a vim keymap)
+    handles it in a capture handler on the root, as before.
+  - **Assistive technology.** A node names the key that does what
+    activating it does with `siv_set_shortcut`, or exposes its action's
+    accelerator (a choice's: the first with the node's target). AT-SPI
+    gets it twice: Action.GetKeyBinding and GetActions in ATK's
+    "mnemonic;sequence;shortcut" form with GTK's names (";;<Control>c",
+    which Orca reads and speaks), and the object attribute
+    `keyshortcuts` with ARIA's aria-keyshortcuts names
+    ("Control+C"), as browsers expose it. Menu rows set theirs from the
+    item's action. `siv_test_dump` prints it (`shortcut=Ctrl+C`). It is a
+    property of the node beside its semantics rather than in
+    `siv_semantics_desc`, which widgets set whole on every state change.
+  - **Labels.** `siv_accel_format` writes the key as menus show it,
+    "Ctrl+Shift+N", "Alt+Left", "Shift+Delete", "Ctrl++", modifiers in
+    the order Ctrl, Alt, Shift, Super, letters as capitals, in English.
+  - **Listing.** `siv_app_get_action(app, window, index)` walks the
+    actions a window's keys reach: its own in creation order, then the
+    application's it does not shadow (with window 0, the application's),
+    and `siv_action_get_state`, `_get_name`, `_get_label`, and
+    `_get_accel` read each, so a shortcuts window or a command palette
+    lists what the keys do; the palette runs one with
+    `siv_action_activate`. Accelerators change with
+    `siv_action_set_accels`, for user keymaps.
+  - **Verified** headless (test/abi/actions.zig): Ctrl+A selects an
+    editor's text and reaches the application's action elsewhere; Ctrl+S
+    and Alt+Left pass the editor; a disabled action's key goes on;
+    shadowing, prevent and stop, Enter on a focused button, and a modal
+    dialog; a push button, check box, toggle button, and menu items bound
+    to plain, toggle, and choice actions follow `set_enabled` and
+    `set_value` at once or after the open transaction, run their action
+    once per click or key, and show labels, keys, and checks; enumeration
+    and formatting. AT-SPI's key binding and attribute in `src/a11y`'s
+    tests; desktop invocation of enabled application actions in
+    test/abi/portal.zig.
+- **Alternatives:** actions named by strings at every use, as GAction's
+  "app.copy" (a typo binds nothing and fails silently, a destroyed action
+  cannot be told from a missing one, and every binding needs a prefix
+  scheme; names stay for the desktop and listing); accelerators before
+  the focused node, as GTK 4 does (its application accelerators run in
+  the window's capture phase, ahead of GtkText's bubble-phase bindings,
+  so an application binding Ctrl+A takes it from entries); Qt's
+  ShortcutOverride, where the focused widget is asked first which keys
+  it wants (the same order as siv's, but siv's editor is a core
+  primitive, so siv knows its keys without a second event); only
+  application actions plus the active window (SwiftUI's commands with
+  focused values; every application tracks focus, which per-window
+  actions make unnecessary); actions as nodes in the tree (an action is
+  not in any window, and the desktop's exist without one); following
+  through new events to bound nodes (a widget written in C would handle
+  two more event types; the widget interface already has the setters);
+  GVariant-like typed state (one double covers toggles and choices, as
+  for widgets); an accelerator string syntax ("<Control>s") parsed by
+  siv (a value struct is checked by the compiler and needs no grammar;
+  parsing can be added for keymap files).
+- **Reverse if:** applications need accelerators matched on non-Latin
+  layouts (then match through the keymap's first Latin layout as GTK
+  does, which needs the keymap in the platform's key events), localized
+  key names in labels, multi-key sequences (Emacs's C-x C-s), or the
+  desktop to read actions and their state (GTK's org.gtk.Actions, which
+  GNOME Shell used for application menus; nothing reads it now), or if a
+  common widget needs to follow an action in a way the widget interface
+  cannot express.
+
 ### D35. Undo
 
 - **Requirement:** applications undo their own changes (deleting,
@@ -6814,8 +6989,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     document behind it. Editors with `SIV_EDITOR_NO_UNDO` let them
     through, so an application that keeps its own text model (D15)
     pushes its edits onto its stack and Ctrl+Z works in the editor;
-    masked editors keep them and do nothing. Menu items and buttons call
-    `siv_undo_undo` themselves.
+    masked editors keep them and do nothing. An attached stack comes
+    before accelerators (D34), so an Undo action bound to Ctrl+Z gets
+    the key only where no stack is attached. Menu items, buttons, and
+    Undo and Redo actions call `siv_undo_undo` themselves, enabled from
+    `on_change`.
   - **Text stays the editor's.** An editor's edits do not join the
     application's stack. Its history belongs to the text it was recorded
     on (D15), and NSTextView's way, where fields share the window's undo

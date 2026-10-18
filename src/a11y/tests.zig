@@ -266,6 +266,7 @@ test "the tree, its roles, names, states, and interfaces" {
     {
         var t = try h.win.begin();
         try t.setSemantics(h.nodes.button, .{ .role = .column_header, .label = "OK", .focusable = true, .sort = .descending, .column = 2 });
+        try t.setShortcut(h.nodes.button, ui.Accel.of('S', .{ .ctrl = true, .shift = true }));
         t.commit();
         try h.frame();
         var reply = try h.call(h.path(h.nodes.button, &buf), atspi.iface.accessible, "GetAttributes", .{});
@@ -285,9 +286,18 @@ test "the tree, its roles, names, states, and interfaces" {
                 try testing.expectEqualStrings("2", v);
                 found += 1;
             }
+            // aria-keyshortcuts (D34).
+            if (std.mem.eql(u8, k, "keyshortcuts")) {
+                try testing.expectEqualStrings("Control+Shift+S", v);
+                found += 1;
+            }
         }
         try rd.endArray(attrs);
-        try testing.expectEqual(@as(u32, 2), found);
+        try testing.expectEqual(@as(u32, 3), found);
+        // ATK's "mnemonic;sequence;shortcut", which Orca reads.
+        var kb = try h.call(h.path(h.nodes.button, &buf), atspi.iface.action, "GetKeyBinding", .{@as(i32, 0)});
+        var kd = kb.decoder();
+        try testing.expectEqualStrings(";;<Control><Shift>s", try kd.readString());
         t = try h.win.begin();
         try t.setSemantics(h.nodes.button, .{ .role = .button, .label = "OK", .focusable = true });
         t.commit();

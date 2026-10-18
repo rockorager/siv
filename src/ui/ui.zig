@@ -114,6 +114,9 @@ pub const access = @import("access.zig");
 /// Text nodes' shaped paragraphs and layouts, for tests that check lines.
 pub const text_node = @import("text_node.zig");
 pub const keysym = input.keysym;
+/// Keyboard accelerators (D34).
+pub const accel = @import("accel.zig");
+pub const Accel = accel.Accel;
 
 test {
     std.testing.refAllDecls(@This());

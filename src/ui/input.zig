@@ -233,7 +233,7 @@ pub fn firstFocusable(win: *const Window, id: NodeId) NodeId {
 
 fn activatable(win: *const Window, id: NodeId) bool {
     const n = win.node(id);
-    return n.handler(.activate) != null and !n.semantics.disabled;
+    return (n.handler(.activate) != null or n.action != 0) and !n.semantics.disabled;
 }
 
 // Hit testing ----------------------------------------------------------------
@@ -376,10 +376,14 @@ fn capture(win: *Window, target: NodeId, event: Event) Result {
     return .of(false, prevented);
 }
 
-/// Sends `activate` to a node.
+/// Sends `activate` to a node, then, unless a handler prevented it,
+/// invokes the action the node is bound to (D34): after the widget's
+/// default handler, which may have changed the widget's own state.
 pub fn activate(win: *Window, id: NodeId) void {
     if (!win.isLive(id) or !activatable(win, id)) return;
-    _ = call(win, id, .activate, &.activate);
+    const r = call(win, id, .activate, &.activate);
+    if (r.prevents() or !win.isLive(id)) return;
+    if (win.node(id).action != 0) win.actions.invoke(win.actions.ctx, win, id);
 }
 
 /// Asks a node with a range for a new value, as assistive technology
@@ -764,12 +768,22 @@ fn key(win: *Window, k: *const platform.Key) void {
     if (!win.isLive(target) and target != .root) return;
     if (bubble(win, target, .key, bev).prevents()) return;
     if (bev.key.prevented) return;
+    // The focused node's own keys come before accelerators (D34): an
+    // editor's typing and editing keys (Ctrl+A, Ctrl+C, Ctrl+Z), and Enter
+    // and Space on a node they activate.
     if (target != .root and win.isLive(target) and win.node(target).kind == .editor and editor.key(win, target, k)) return;
     if (k.state == .released or k.composing) return;
     if (undoKey(win, target, k)) return;
     switch (k.keysym) {
+        keysym.@"return", keysym.kp_enter, keysym.space => if (st.focus != .none and win.isLive(st.focus) and activatable(win, st.focus)) {
+            if (k.state == .pressed) activate(win, st.focus);
+            return;
+        },
+        else => {},
+    }
+    if (win.actions.key(win.actions.ctx, win, k.keysym, k.mods, modalRoot(win) != .root)) return;
+    switch (k.keysym) {
         keysym.tab, keysym.iso_left_tab => traverse(win, k.keysym == keysym.tab and !k.mods.shift),
-        keysym.@"return", keysym.kp_enter, keysym.space => if (st.focus != .none and k.state == .pressed) activate(win, st.focus),
         keysym.up, keysym.down, keysym.page_up, keysym.page_down, keysym.home, keysym.end, keysym.left, keysym.right => {
             const s = nearestScroll(win, target) orelse return;
             const view_h = win.state(s).size.h;

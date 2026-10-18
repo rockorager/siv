@@ -150,8 +150,8 @@ you set up and show; their callback runs, then getters read the result.
 The callback never runs inside the call that started the request, even
 when the answer is immediate, so code after the call runs first.
 
-Notification buttons invoke application actions, registered with
-`siv_app_add_action`; the desktop can invoke them too (see
+Notification buttons invoke application actions, made with
+`siv_action_create`; the desktop can invoke them too (see
 [Packaging](15-packaging.md)).
 
 ## Coroutines in Lua

@@ -583,6 +583,10 @@ fn dump(wr: *std.Io.Writer, tree: *const ui.semantics.Tree) !void {
         try writeToggle(wr, "expanded", n.expanded);
         if (n.value) |v| try wr.print(" value={d}", .{v.now});
         if (n.level != 0) try wr.print(" level={d}", .{n.level});
+        if (n.shortcut.keysym != 0) {
+            try wr.writeAll(" shortcut=");
+            try ui.accel.format(n.shortcut, .label, wr);
+        }
         const b = n.bounds;
         try wr.print(" {d},{d} {d}x{d}\n", .{ b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0 });
     }

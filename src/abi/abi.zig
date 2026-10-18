@@ -34,8 +34,10 @@ pub const clipboard = @import("clipboard.zig");
 pub const theme = @import("theme.zig");
 /// Pointer cursors.
 pub const cursor = @import("cursor.zig");
-/// Desktop portals and application actions.
+/// Desktop portals.
 pub const portal = @import("portal.zig");
+/// Actions and accelerators (D34).
+pub const actions = @import("actions.zig");
 /// Printing and PDF output.
 pub const print = @import("print.zig");
 /// The system tray.
@@ -68,7 +70,7 @@ pub const testing = @import("testing.zig");
 pub const types = t;
 
 /// The files that export schema functions.
-const implementations = .{ @This(), application, tree, canvas, external, dnd, clipboard, theme, cursor, portal, print, tray, image_load, watch, icon, dbus, input, widget, shell, document, undo, settings, testing } ++ @import("widgets").implementations;
+const implementations = .{ @This(), application, tree, canvas, external, dnd, clipboard, theme, cursor, portal, actions, print, tray, image_load, watch, icon, dbus, input, widget, shell, document, undo, settings, testing } ++ @import("widgets").implementations;
 
 const version = build_options.version;
 

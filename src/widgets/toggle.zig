@@ -79,7 +79,7 @@ fn create(txn: Txn, parent: Node, desc: ?*const siv.ToggleDesc, kind: w.Kind) No
     st.mnemonic = d.mnemonic;
     w.underlineMnemonic(txn, st.label, st.mnemonic);
     apply(txn, st);
-    return root;
+    return w.bindAction(txn, root, d.action, d.action_target);
 }
 
 fn px(v: f32) siv.Dimension {
@@ -175,14 +175,15 @@ fn onPointer(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.Ev
     return .pass;
 }
 
-/// Flips the state; mixed becomes on.
+/// Flips the state; mixed becomes on. Stop rather than handled: the
+/// activation goes on to the action the toggle is bound to (D34).
 fn onActivate(ud: ?*anyopaque, node: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Toggle = @ptrCast(@alignCast(ud.?));
     if (st.hdr.disabled) return .pass;
     const txn = w.begin(ev.window) orelse return .pass;
     st.state = if (st.state == .on) .off else .on;
     apply(txn, st);
-    if (!w.commit(txn)) return .handled;
+    if (!w.commit(txn)) return .stop;
     w.emitChange(node, value(st), 0);
-    return .handled;
+    return .stop;
 }

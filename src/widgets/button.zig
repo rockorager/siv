@@ -44,7 +44,7 @@ pub export fn siv_push_button(txn: Txn, parent: Node, desc: ?*const siv.ButtonDe
     if (!validFlags(d.flags)) return w.fail(txn, .error_unsupported);
     const label = w.str(d.label, d.label_len) orelse return w.fail(txn, .error_invalid_argument);
     const icon = w.str(d.icon, d.icon_len) orelse return w.fail(txn, .error_invalid_argument);
-    return withMnemonic(txn, build(txn, parent, .button, label, icon, d.style, d.flags, false), d.mnemonic);
+    return w.bindAction(txn, withMnemonic(txn, build(txn, parent, .button, label, icon, d.style, d.flags, false), d.mnemonic), d.action, d.action_target);
 }
 
 fn withMnemonic(txn: Txn, root: Node, mnemonic: u32) Node {
@@ -60,7 +60,7 @@ pub export fn siv_toggle_button(txn: Txn, parent: Node, desc: ?*const siv.Toggle
     if (!validFlags(d.flags) or @backingInt(d.checked) < 0 or @backingInt(d.checked) > 2) return w.fail(txn, .error_unsupported);
     const label = w.str(d.label, d.label_len) orelse return w.fail(txn, .error_invalid_argument);
     const icon = w.str(d.icon, d.icon_len) orelse return w.fail(txn, .error_invalid_argument);
-    return withMnemonic(txn, build(txn, parent, .toggle_button, label, icon, .default, d.flags, d.checked == .on), d.mnemonic);
+    return w.bindAction(txn, withMnemonic(txn, build(txn, parent, .toggle_button, label, icon, .default, d.flags, d.checked == .on), d.mnemonic), d.action, d.action_target);
 }
 
 pub export fn siv_menu_button(txn: Txn, parent: Node, desc: ?*const siv.ButtonDesc) Node {
@@ -276,13 +276,15 @@ pub fn feedback(h: *w.Header, e: *const siv.Event) bool {
     return true;
 }
 
+/// Flips the state. Stop rather than handled: the activation goes on to
+/// the action the button is bound to (D34), which brings it back in line.
 fn onActivate(ud: ?*anyopaque, node: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Button = @ptrCast(@alignCast(ud.?));
     if (st.hdr.disabled) return .pass;
     const txn = w.begin(ev.window) orelse return .pass;
     st.on = !st.on;
     apply(txn, st);
-    if (!w.commit(txn)) return .handled;
+    if (!w.commit(txn)) return .stop;
     w.emitChange(node, value(st), 0);
-    return .handled;
+    return .stop;
 }

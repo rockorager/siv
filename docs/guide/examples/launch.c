@@ -78,7 +78,7 @@ int main(int argc, char **argv) {
 		fprintf(stderr, "launch: %s\n", siv_result_name(r));
 		return 1;
 	}
-	r = siv_app_add_action(n.app, SIV_STR("new-note"), on_new_note, NULL, &n);
+	r = siv_action_create(n.app, SIV_DESC(siv_action_desc, .name = SIV_STR("new-note"), .label = SIV_STR("New Note")), on_new_note, NULL, &n, NULL);
 	if (r == SIV_OK) r = siv_app_launch(n.app, SIV_DESC(siv_launch_desc, .uris = uris, .uris_count = count, .on_activate = on_activate, .user_data = &n, .flags = service ? SIV_LAUNCH_SERVICE : 0, .idle_timeout_ms = 10000));
 	/* A second instance forwards its activation and returns at once. */
 	if (r == SIV_OK) r = siv_app_run(n.app);

@@ -83,6 +83,19 @@ pub export fn siv_widget_set_range(txn: t.Txn, node: t.Node, min: f64, max: f64,
     return set(txn, "set_range", .{ node, min, max, step });
 }
 
+/// Hands a node bound to an action the action's state (D34, actions.zig)
+/// in a transaction on its window: set_disabled, and set_value when the
+/// action has a value, as far as its interface has them. A node without
+/// an interface keeps its own state.
+pub fn follow(w: *Window, txn: t.Txn, id: NodeId, disabled: bool, value: ?f64) void {
+    const iface = w.nodes.widgets.get(id.index()) orelse return;
+    const n: t.Node = @fromBackingInt(w.nodes.handle(id));
+    w.owner.enter();
+    defer w.owner.leave();
+    if (iface.set_disabled) |cb| cb(iface.user_data, txn, n, disabled);
+    if (value) |v| if (iface.set_value) |cb| cb(iface.user_data, txn, n, v);
+}
+
 /// The interface of any node, outside a transaction.
 fn query(n: t.Node) Error!struct { *Window, t.WidgetDesc } {
     const w, const id = try tree.lookup(n);
