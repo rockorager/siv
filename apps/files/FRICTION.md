@@ -296,10 +296,24 @@ Measurements are in [Numbers](#numbers) at the end.
     states), and saves `view.mode` and `view.show-hidden` when they
     change; `--grid` and `--hidden` win for one run.
 
+32. **A narrow window had no room for the places.** On a tiling
+    compositor the window is often a third of the screen; the sidebar
+    kept its 190 px, and the search field pushed the menu button off the
+    toolbar. A resize handler that rebuilt the tree would have shown one
+    frame at the old arrangement and thrown away the views' state.
+    *Fixed:* variants (commit "abi: add variants that change a node by
+    the space it gets", D39). Below 600 px the split pane's start pane
+    and divider are hidden and the search field is 140 px wide, in the
+    frame of the resize; `tests/golden/narrow.png`.
+
 ## Open API questions
 
-None: every question this work raised has been decided and is fixed
-above. What is left is noted below.
+33. **A split pane names no divider part.** Hiding the start pane
+    leaves its divider, so the app reaches the divider with
+    `siv_node_get_related(start, next)`, which depends on how the stock
+    widget builds itself. A `divider` part, or a pane that collapses its
+    divider with it, belongs to the navigation widgets (D40), which give
+    sidebars a collapsed state of their own; the app moves to that.
 
 ## Noted
 

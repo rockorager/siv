@@ -452,6 +452,20 @@ test "right to left" {
     try h.expectGolden("list-rtl");
 }
 
+test "a narrow window leaves out the places, and a wider one brings them back" {
+    var fx: Fixture = .{};
+    try fx.create(&sample);
+    defer fx.remove();
+    var h: Harness = .{};
+    try h.start(.{ .path = fx.path, .width = 480 });
+    defer h.stop();
+    try testing.expect((try h.semantics()).find(.list, "Places") == null);
+    try h.expectGolden("narrow");
+    try harness.ok(@import("abi").testing.siv_test_resize(h.window(), 900, 560));
+    try h.settle();
+    _ = try h.center(.list, "Places");
+}
+
 test "file operations: copy trees, name clashes, moves, the trash, deletion, cancelling" {
     const fsops = harness.Files.fsops;
     const gpa = std.heap.c_allocator;

@@ -382,6 +382,8 @@ fn build(self: *Files) !void {
 
     self.search = c.siv_text_field(txn, bar, &.{ .label = "Search", .label_len = 6, .placeholder = "Search", .placeholder_len = 6 });
     _ = c.siv_set_layout(txn, self.search, &.{ .width = px(200) });
+    // Narrower in a narrow window (D39), so the menu button stays on it.
+    _ = c.siv_set_layout_when(txn, self.search, &.{ .max_width = 600, .flags = .{ .window = true } }, &.{ .width = px(140) });
     _ = c.siv_on(txn, self.search, .change, onSearchChange, null, self);
     _ = c.siv_on(txn, self.search, .key, onSearchKey, null, self);
     _ = c.siv_on(txn, self.search, .focus, onEditorFocus, null, self);
@@ -428,6 +430,14 @@ fn build(self: *Files) !void {
     var end: Node = .null;
     start = c.siv_widget_get_part(split, .start, 0);
     end = c.siv_widget_get_part(split, .end, 0);
+    // A narrow window, such as a third of a tiling compositor's screen,
+    // has no room for the places: they go, with the divider after them,
+    // and the files take the width (D39). The split pane offers both
+    // the same width, so they go together. It names no divider part;
+    // see FRICTION.md.
+    const narrow: siv.ConditionDesc = .{ .max_width = 600 };
+    _ = c.siv_set_hidden_when(txn, start, &narrow, true);
+    _ = c.siv_set_hidden_when(txn, c.siv_node_get_related(start, .next), &narrow, true);
 
     self.sidebar = c.siv_list_view(txn, start, &.{
         .label = "Places",
