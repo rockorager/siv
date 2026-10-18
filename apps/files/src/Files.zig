@@ -144,6 +144,13 @@ sel_count: usize = 0,
 sel_bytes: u64 = 0,
 tokens: std.ArrayList(*Token) = .empty,
 op_jobs: std.ArrayList(*OpJob) = .empty,
+/// The window's undo stack (D35): moves to the trash.
+undo: siv.Undo = .null,
+/// Moves to the trash alive: in flight, or on the undo stack.
+trashed: std.ArrayList(*Trashed) = .empty,
+/// The newest move to the trash on the undo stack, which a toast's Undo
+/// takes back.
+last_trash: ?*Trashed = null,
 
 /// Row parts, kept in node data on each row body.
 const RowParts = extern struct {
@@ -208,6 +215,7 @@ pub fn create(app: siv.App, opts: Options) !*Files {
         .settings_key = "window",
     });
     try self.addActions();
+    try siv.check(c.siv_undo_create(app, &.{}, &self.undo));
     try self.build();
     self.navigate(opts.path, .push);
     return self;
@@ -258,6 +266,12 @@ fn deinit(self: *Files) void {
     // Callbacks still waiting free their tokens without the window.
     for (self.tokens.items) |t| t.files = null;
     self.tokens.deinit(gpa);
+    // Moves to the trash in flight finish without the window; the undo
+    // stack's steps go with it.
+    for (self.trashed.items) |r| r.files = null;
+    self.trashed.deinit(gpa);
+    self.last_trash = null;
+    c.siv_undo_destroy(self.undo);
     self.op_jobs.deinit(gpa);
     self.ops.deinit(gpa);
     self.thumbs.deinit();
@@ -352,6 +366,7 @@ fn build(self: *Files) !void {
     self.root = c.siv_window_get_root(self.window);
     _ = c.siv_set_visual(txn, self.root, &.{ .background_token = .window_bg });
     _ = c.siv_on(txn, self.root, .key, onKey, null, self);
+    c.siv_set_undo(txn, self.root, self.undo);
 
     const column = c.siv_flex(txn, self.root, &.{ .axis = .column });
     _ = c.siv_set_layout(txn, column, &.{ .width = .{ .unit = .fraction, .value = 1 }, .height = .{ .unit = .fraction, .value = 1 } });
@@ -1977,7 +1992,7 @@ pub fn trashSelection(self: *Files) void {
     if (paths.len == 0) return;
     // Items in the trash are deleted for good.
     const in_trash = std.mem.startsWith(u8, self.path, self.places.trash_dir);
-    self.startOp(if (in_trash) .delete else .trash, paths, "");
+    if (in_trash) self.startOp(.delete, paths, "") else self.trashPaths(paths);
 }
 
 fn confirmDelete(self: *Files) void {
@@ -2033,6 +2048,258 @@ fn onDialogDelete(ud: ?*anyopaque, _: Node, _: *const siv.Event) callconv(.c) si
     return .handled;
 }
 
+// The trash ----------------------------------------------------------------------------
+
+/// Moves the files to the trash with siv_trash_file (D42), as one step
+/// on the undo stack that restores them (D35).
+pub fn trashPaths(self: *Files, paths: []const []const u8) void {
+    const rec = Trashed.create(self, paths) catch return self.toast("Could not move to the trash: out of memory", true);
+    defer rec.unref();
+    rec.round(.trash);
+}
+
+/// Whether moves to the trash or back are waiting for results.
+pub fn trashBusy(self: *const Files) bool {
+    for (self.trashed.items) |r| if (r.pending != 0) return true;
+    return false;
+}
+
+fn trashReason(status: siv.TrashStatus) []const u8 {
+    return switch (status) {
+        .ok => "done",
+        .not_found => "it no longer exists",
+        .access_denied => "permission denied",
+        .exists => "something of that name is in the way",
+        .unsupported => "its file system has no trash (Shift+Delete deletes it)",
+        .no_space => "no space left",
+        .unavailable => "the trash is out of reach",
+        else => "something went wrong",
+    };
+}
+
+/// Files one command moved to the trash, and the undo step that restores
+/// them. Referenced by the command while it starts, by each operation in
+/// flight (through its item), by the step, and by the toast's Undo;
+/// freed with the last.
+const Trashed = struct {
+    files: ?*Files,
+    gpa: Allocator,
+    refs: u32 = 1,
+    items: []Item,
+    /// Operations whose results have not arrived.
+    pending: u32 = 0,
+    /// Where the current round of operations takes the items, and where
+    /// undo and redo want them: a change of mind while a round is in
+    /// flight starts another round when it finishes.
+    at: Where = .trash,
+    want: Where = .trash,
+    /// The step is on the undo stack.
+    pushed: bool = false,
+    /// The current round's first failure.
+    failed: ?*Item = null,
+    failure: siv.TrashStatus = .ok,
+
+    const Where = enum { trash, restored };
+
+    const Item = struct {
+        owner: *Trashed,
+        path: []u8,
+        /// The item's id in the trash, while it is there.
+        id: []u8 = &.{},
+        state: enum {
+            new,
+            /// Not trashed: the command failed for it.
+            failed,
+            trashed,
+            /// Trashed by the Trash portal, which says nowhere: it
+            /// cannot be restored.
+            portal,
+            restored,
+        } = .new,
+    };
+
+    fn create(files: *Files, paths: []const []const u8) !*Trashed {
+        const gpa = files.gpa;
+        const rec = try gpa.create(Trashed);
+        errdefer gpa.destroy(rec);
+        const items = try gpa.alloc(Item, paths.len);
+        var n: usize = 0;
+        errdefer {
+            for (items[0..n]) |it| gpa.free(it.path);
+            gpa.free(items);
+        }
+        rec.* = .{ .files = files, .gpa = gpa, .items = items };
+        for (paths) |p| {
+            items[n] = .{ .owner = rec, .path = try gpa.dupe(u8, p) };
+            n += 1;
+        }
+        try files.trashed.append(gpa, rec);
+        return rec;
+    }
+
+    fn unref(rec: *Trashed) void {
+        rec.refs -= 1;
+        if (rec.refs != 0) return;
+        if (rec.files) |files| {
+            if (files.last_trash == rec) files.last_trash = null;
+            for (files.trashed.items, 0..) |r, i| if (r == rec) {
+                _ = files.trashed.swapRemove(i);
+                break;
+            };
+        }
+        for (rec.items) |it| {
+            rec.gpa.free(it.path);
+            rec.gpa.free(it.id);
+        }
+        rec.gpa.free(rec.items);
+        rec.gpa.destroy(rec);
+    }
+
+    fn release(ud: ?*anyopaque) callconv(.c) void {
+        const rec: *Trashed = @ptrCast(@alignCast(ud.?));
+        rec.unref();
+    }
+
+    fn releaseItem(ud: ?*anyopaque) callconv(.c) void {
+        const it: *Item = @ptrCast(@alignCast(ud.?));
+        it.owner.unref();
+    }
+
+    /// Moves the items that are not `to` there.
+    fn round(rec: *Trashed, to: Where) void {
+        const files = rec.files orelse return;
+        rec.at = to;
+        rec.want = to;
+        rec.failed = null;
+        for (rec.items) |*it| {
+            const go = switch (to) {
+                .trash => it.state == .new or it.state == .restored,
+                .restored => it.state == .trashed,
+            };
+            if (!go) continue;
+            rec.refs += 1;
+            rec.pending += 1;
+            const r = switch (to) {
+                .trash => c.siv_trash_file(files.app, it.path.ptr, it.path.len, onResult, releaseItem, it),
+                .restored => c.siv_trash_restore(files.app, it.id.ptr, it.id.len, null, 0, onResult, releaseItem, it),
+            };
+            // A refused call released its reference already.
+            if (r != .ok) {
+                rec.pending -= 1;
+                rec.fail(it, .failed);
+            }
+        }
+        if (rec.pending == 0) rec.settled();
+    }
+
+    fn fail(rec: *Trashed, it: *Item, status: siv.TrashStatus) void {
+        if (it.state == .new) it.state = .failed;
+        if (rec.failed == null) {
+            rec.failed = it;
+            rec.failure = status;
+        }
+    }
+
+    fn onResult(ud: ?*anyopaque, result: *const siv.TrashResult) callconv(.c) void {
+        const it: *Item = @ptrCast(@alignCast(ud.?));
+        const rec = it.owner;
+        rec.pending -= 1;
+        if (result.status != .ok) {
+            rec.fail(it, result.status);
+        } else switch (rec.at) {
+            .trash => {
+                const id = if (result.id) |p| p[0..result.id_len] else "";
+                rec.gpa.free(it.id);
+                it.id = rec.gpa.dupe(u8, id) catch &.{};
+                it.state = if (it.id.len == 0) .portal else .trashed;
+            },
+            .restored => {
+                rec.gpa.free(it.id);
+                it.id = &.{};
+                it.state = .restored;
+                // Select what came back here.
+                const path = if (result.path) |p| p[0..result.path_len] else "";
+                if (rec.files) |files| if (std.mem.eql(u8, model.parent(path), files.path)) {
+                    files.pending_select.appendSlice(files.gpa, model.basename(path)) catch {};
+                    files.pending_select.append(files.gpa, '\n') catch {};
+                };
+            },
+        }
+        if (rec.pending == 0) rec.settled();
+    }
+
+    /// A round finished: on to the next if undo or redo came meanwhile,
+    /// else push the step after the first round, and say how it went.
+    fn settled(rec: *Trashed) void {
+        const files = rec.files orelse return;
+        if (rec.want != rec.at) return rec.round(rec.want);
+        var moved: u32 = 0;
+        var last: ?*Item = null;
+        for (rec.items) |*it| {
+            const here = switch (rec.at) {
+                .trash => it.state == .trashed or it.state == .portal,
+                .restored => it.state == .restored,
+            };
+            if (here) {
+                moved += 1;
+                last = it;
+            }
+        }
+        if (rec.at == .trash and !rec.pushed) {
+            const undoable = for (rec.items) |it| {
+                if (it.state == .trashed) break true;
+            } else false;
+            if (undoable) {
+                rec.refs += 1;
+                if (c.siv_undo_push(files.undo, &.{ .user_data = rec, .undo = onUndo, .redo = onRedo, .destroy = release, .label = "Move to Trash", .label_len = 13 }) == .ok) {
+                    rec.pushed = true;
+                    files.last_trash = rec;
+                }
+            }
+        }
+        var buf: [512]u8 = undefined;
+        const msg = if (rec.failed) |it| switch (rec.at) {
+            .trash => std.fmt.bufPrint(&buf, "Could not move “{s}” to the trash: {s}", .{ model.basename(it.path), trashReason(rec.failure) }),
+            .restored => std.fmt.bufPrint(&buf, "Could not restore “{s}”: {s}", .{ model.basename(it.path), trashReason(rec.failure) }),
+        } else switch (rec.at) {
+            .trash => if (moved == 1) std.fmt.bufPrint(&buf, "“{s}” moved to the trash", .{model.basename(last.?.path)}) else std.fmt.bufPrint(&buf, "{d} items moved to the trash", .{moved}),
+            .restored => if (moved == 1) std.fmt.bufPrint(&buf, "“{s}” restored", .{model.basename(last.?.path)}) else std.fmt.bufPrint(&buf, "{d} items restored", .{moved}),
+        };
+        const text_ = msg catch "";
+        // The toast's Undo takes this step back while it is the newest.
+        const undo = rec.at == .trash and rec.pushed and files.last_trash == rec;
+        if (files.begin()) |txn| {
+            const action: []const u8 = if (undo) "Undo" else "";
+            const t = c.siv_toast(txn, files.root, &.{ .text = text_.ptr, .text_len = text_.len, .action = action.ptr, .action_len = action.len, .flags = .{ .assertive = rec.failed != null } });
+            if (undo) {
+                rec.refs += 1;
+                c.siv_on(txn, t, .activate, onToastUndo, release, rec);
+            }
+            _ = commit(txn);
+        }
+        files.reloadSoon(0);
+    }
+
+    fn onUndo(ud: ?*anyopaque, _: siv.Undo) callconv(.c) void {
+        const rec: *Trashed = @ptrCast(@alignCast(ud.?));
+        rec.want = .restored;
+        if (rec.pending == 0) rec.round(.restored);
+    }
+
+    fn onRedo(ud: ?*anyopaque, _: siv.Undo) callconv(.c) void {
+        const rec: *Trashed = @ptrCast(@alignCast(ud.?));
+        rec.want = .trash;
+        if (rec.pending == 0) rec.round(.trash);
+    }
+
+    fn onToastUndo(ud: ?*anyopaque, _: Node, _: *const siv.Event) callconv(.c) siv.EventResult {
+        const rec: *Trashed = @ptrCast(@alignCast(ud.?));
+        const files = rec.files orelse return .handled;
+        if (files.last_trash == rec and rec.want == .trash) _ = c.siv_undo_undo(files.undo);
+        return .handled;
+    }
+};
+
 const OpJob = struct {
     files: ?*Files,
     op: *fsops.Op,
@@ -2060,7 +2327,6 @@ const OpJob = struct {
 pub fn startOp(self: *Files, kind: fsops.Kind, sources: []const []const u8, dest: []const u8) void {
     const gpa = self.gpa;
     const op = fsops.Op.create(gpa, kind, sources, dest) catch return;
-    if (kind == .trash) op.trash_dir = gpa.dupe(u8, self.places.trash_dir) catch &.{};
     const j = gpa.create(OpJob) catch {
         op.destroy();
         return;
@@ -2112,7 +2378,6 @@ fn opFinished(self: *Files, op: *fsops.Op) void {
             const verb = switch (op.kind) {
                 .copy => "copy",
                 .move => "move",
-                .trash => "move to the trash",
                 .delete => "delete",
             };
             self.toast(std.fmt.bufPrint(&buf, "Could not {s} “{s}”: {s}", .{ verb, model.basename(op.errPath()), fsops.describe(err) }) catch "The operation failed", true);
@@ -2123,7 +2388,6 @@ fn opFinished(self: *Files, op: *fsops.Op) void {
         const msg = switch (op.kind) {
             .copy => if (n == 1) std.fmt.bufPrint(&buf, "Copied “{s}”", .{what}) else std.fmt.bufPrint(&buf, "Copied {d} items", .{n}),
             .move => if (n == 1) std.fmt.bufPrint(&buf, "Moved “{s}”", .{what}) else std.fmt.bufPrint(&buf, "Moved {d} items", .{n}),
-            .trash => if (n == 1) std.fmt.bufPrint(&buf, "“{s}” moved to the trash", .{what}) else std.fmt.bufPrint(&buf, "{d} items moved to the trash", .{n}),
             .delete => if (n == 1) std.fmt.bufPrint(&buf, "“{s}” deleted", .{what}) else std.fmt.bufPrint(&buf, "{d} items deleted", .{n}),
         } catch "";
         self.toast(msg, false);
@@ -2158,7 +2422,6 @@ pub fn updateOps(self: *Files) void {
         const verb = switch (op.kind) {
             .copy => "Copying",
             .move => "Moving",
-            .trash => "Moving to the trash",
             .delete => "Deleting",
         };
         var buf: [256]u8 = undefined;
@@ -2417,7 +2680,7 @@ fn onPlaceDrop(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.
             const p = uri.filePath(&pb, u) orelse continue;
             paths.append(self.gpa, self.gpa.dupe(u8, p) catch continue) catch {};
         }
-        if (paths.items.len != 0) self.startOp(.trash, paths.items, "");
+        if (paths.items.len != 0) self.trashPaths(paths.items);
         return .handled;
     }
     return if (self.acceptDrop(ev, dest)) .handled else .pass;

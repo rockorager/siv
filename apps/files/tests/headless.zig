@@ -194,7 +194,7 @@ test "F2 renames in place; Enter applies, Escape cancels" {
     try testing.expect(fx.exists("my list.txt"));
 }
 
-test "new folder, then into the trash with Delete" {
+test "new folder, then into the trash with Delete, and back with Undo" {
     var fx: Fixture = .{};
     try fx.create(&sample);
     defer fx.remove();
@@ -215,6 +215,23 @@ test "new folder, then into the trash with Delete" {
     try testing.expect(!fx.exists("Inbox"));
     try testing.expect(fx.exists("Trash/files/Inbox"));
     try testing.expect(fx.exists("Trash/info/Inbox.trashinfo"));
+    // The toast's Undo restores it, selected (D35, D42).
+    try h.clickOn(.button, "Undo");
+    try testing.expect(fx.exists("Inbox"));
+    try testing.expect(!fx.exists("Trash/files/Inbox") and !fx.exists("Trash/info/Inbox.trashinfo"));
+    try expectNames(&.{"Inbox"}, try h.selected(&buf));
+    // Redo trashes it again, and Ctrl+Z takes that back too.
+    try h.key('Z', "Z", .{ .ctrl = true, .shift = true });
+    try testing.expect(!fx.exists("Inbox") and fx.exists("Trash/files/Inbox"));
+    try h.key('z', "z", .{ .ctrl = true });
+    try testing.expect(fx.exists("Inbox") and !fx.exists("Trash/files/Inbox"));
+    // Two at once are one step.
+    try h.clickItem("notes.txt");
+    try h.clickItemWith("Inbox", 0x110, .{ .ctrl = true });
+    try h.key(ks.delete, "", .{});
+    try testing.expect(!fx.exists("Inbox") and !fx.exists("notes.txt"));
+    try h.key('z', "z", .{ .ctrl = true });
+    try testing.expect(fx.exists("Inbox") and fx.exists("notes.txt"));
 }
 
 test "Shift+Delete asks before deleting for good" {
@@ -466,7 +483,7 @@ test "a narrow window leaves out the places, and a wider one brings them back" {
     _ = try h.center(.list, "Places");
 }
 
-test "file operations: copy trees, name clashes, moves, the trash, deletion, cancelling" {
+test "file operations: copy trees, name clashes, moves, deletion, cancelling" {
     const fsops = harness.Files.fsops;
     const gpa = std.heap.c_allocator;
     var fx: Fixture = .{};
@@ -512,17 +529,11 @@ test "file operations: copy trees, name clashes, moves, the trash, deletion, can
     try testing.expect(!fx.exists("dest/src (3)"));
     op.destroy();
 
-    // Move, then to the trash with its info file, then delete for good.
+    // Move, then delete for good.
     op = try fsops.Op.create(gpa, .move, &.{try std.fmt.bufPrint(&pbuf, "{s}/src/a.txt", .{fx.path})}, try std.fmt.bufPrint(&dbuf, "{s}/dest", .{fx.path}));
     op.run();
     try testing.expect(op.result == null);
     try testing.expect(fx.exists("dest/a.txt") and !fx.exists("src/a.txt"));
-    op.destroy();
-    op = try fsops.Op.create(gpa, .trash, &.{try std.fmt.bufPrint(&pbuf, "{s}/dest/a.txt", .{fx.path})}, "");
-    op.trash_dir = try std.fmt.allocPrint(gpa, "{s}/Trash", .{fx.path});
-    op.run();
-    try testing.expect(op.result == null);
-    try testing.expect(fx.exists("Trash/files/a.txt") and fx.exists("Trash/info/a.txt.trashinfo"));
     op.destroy();
     op = try fsops.Op.create(gpa, .delete, &.{src}, "");
     op.run();

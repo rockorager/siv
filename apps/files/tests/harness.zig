@@ -19,6 +19,9 @@ const testing = std.testing;
 pub const t = abi.types;
 const A = abi.application;
 
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+
 pub const golden_dir = "apps/files/tests/golden";
 const failure_dir = ".zig-cache/golden-failures";
 
@@ -112,6 +115,10 @@ pub const Harness = struct {
     last_w: u32 = 0,
     last_h: u32 = 0,
     state: t.Settings = .null,
+    /// $XDG_DATA_HOME before `start`, which points it at the data home
+    /// so that siv's trash (D42) is the fixture's.
+    old_data_home: ?[:0]u8 = null,
+    data_home_buf: [256]u8 = undefined,
 
     pub const Start = struct {
         path: []const u8,
@@ -138,6 +145,8 @@ pub const Harness = struct {
     }
 
     pub fn start(h: *Harness, s: Start) !void {
+        if (std.c.getenv("XDG_DATA_HOME")) |v| h.old_data_home = try std.heap.c_allocator.dupeSentinel(u8, std.mem.span(v), 0);
+        _ = setenv("XDG_DATA_HOME", try std.fmt.bufPrintSentinel(&h.data_home_buf, "{s}", .{s.data_home orelse s.path}, 0), 1);
         try ok(A.siv_app_create(&.{ .backend = .headless, .flags = .{ .no_system_fonts = true, .no_system_icons = true, .reduced_motion = true, .rtl = s.rtl } }, &h.app));
         const tf = text.font.test_fonts;
         for ([_][]const u8{ tf.latin, tf.arabic, tf.hebrew }) |font| try ok(A.siv_app_add_font(h.app, "Droid", 5, font.ptr, font.len));
@@ -177,6 +186,11 @@ pub const Harness = struct {
         _ = A.siv_app_destroy(h.app);
         h.app = .null;
         h.files = null;
+        if (h.old_data_home) |old| {
+            _ = setenv("XDG_DATA_HOME", old, 1);
+            std.heap.c_allocator.free(old);
+            h.old_data_home = null;
+        } else _ = unsetenv("XDG_DATA_HOME");
     }
 
     pub fn f(h: *Harness) *Files {
@@ -206,7 +220,7 @@ pub const Harness = struct {
             try ok(A.siv_app_dispatch(h.app, 2));
             const cb = &self.app.clipboard;
             var busy = self.app.fonts.loading() or self.app.icons.loading() or cb.transfers.items.len != 0 or cb.ready.items.len != 0;
-            if (h.files) |fl| busy = busy or fl.loading != null or (fl.ops.items.len != 0 and !h.ignore_ops) or fl.thumbs.busy() or fl.reload_timer != .null or fl.thumbs.notify_timer != .null;
+            if (h.files) |fl| busy = busy or fl.loading != null or (fl.ops.items.len != 0 and !h.ignore_ops) or fl.trashBusy() or fl.thumbs.busy() or fl.reload_timer != .null or fl.thumbs.notify_timer != .null;
             for (self.windows.items) |slot| if (slot) |w| {
                 if (w.dead or !w.win.shown) continue;
                 busy = busy or w.win.presented_seq == 0 or !w.win.settled();

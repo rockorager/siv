@@ -1,8 +1,8 @@
-//! File operations: copy, move, move to trash, delete, and creating and
-//! renaming. `Op.run` blocks and runs on a worker thread of siv's pool
-//! (siv_job_start); the UI thread reads its progress from atomics and asks
-//! it to stop with `cancel`, which it checks between files and between
-//! chunks of a large file.
+//! File operations: copy, move, delete, and creating and renaming; the
+//! trash is siv's (D42). `Op.run` blocks and runs on a worker thread of
+//! siv's pool (siv_job_start); the UI thread reads its progress from
+//! atomics and asks it to stop with `cancel`, which it checks between
+//! files and between chunks of a large file.
 //!
 //! Names that already exist in the destination are not overwritten: the
 //! copy gets " (2)", " (3)", ... before its extension, as GNOME Files
@@ -13,7 +13,7 @@ const linux = std.os.linux;
 const Allocator = std.mem.Allocator;
 const model = @import("model.zig");
 
-pub const Kind = enum { copy, move, trash, delete };
+pub const Kind = enum { copy, move, delete };
 
 pub const Error = error{
     Canceled,
@@ -50,8 +50,6 @@ pub const Op = struct {
     sources: [][]u8,
     /// The destination folder for copy and move (owned), else empty.
     dest: []u8,
-    /// Where the trash is ($XDG_DATA_HOME/Trash), for trash.
-    trash_dir: []u8 = &.{},
 
     cancel: std.atomic.Value(bool) = .init(false),
     total_bytes: std.atomic.Value(u64) = .init(0),
@@ -89,7 +87,6 @@ pub const Op = struct {
         for (op.sources) |s| gpa.free(s);
         gpa.free(op.sources);
         gpa.free(op.dest);
-        gpa.free(op.trash_dir);
         op.created.deinit(gpa);
         gpa.destroy(op);
     }
@@ -138,7 +135,7 @@ pub const Op = struct {
         if (linux.errno(linux.statx(linux.AT.FDCWD, path, linux.AT.SYMLINK_NOFOLLOW, .{ .TYPE = true, .SIZE = true }, &st)) != .SUCCESS) return;
         _ = op.total_items.fetchAdd(1, .monotonic);
         if (st.mode & linux.S.IFMT == linux.S.IFREG and bytes) _ = op.total_bytes.fetchAdd(st.size, .monotonic);
-        if (st.mode & linux.S.IFMT != linux.S.IFDIR or op.kind == .move or op.kind == .trash) return;
+        if (st.mode & linux.S.IFMT != linux.S.IFDIR or op.kind == .move) return;
         var it = DirIter.open(path) catch return;
         defer it.close();
         while (it.next()) |nm| {
@@ -168,7 +165,6 @@ pub const Op = struct {
                 try op.created.appendSlice(op.gpa, model.basename(target));
                 try op.created.append(op.gpa, '\n');
             },
-            .trash => try op.trash(src),
             .delete => try op.deleteTree(src),
         }
     }
@@ -352,58 +348,6 @@ pub const Op = struct {
             else => |e| return op.fail(path, mapErrno(e)),
         }
     }
-
-    /// The freedesktop.org trash: the file moves to Trash/files under a
-    /// free name, with Trash/info/<name>.trashinfo saying where it was
-    /// and when.
-    fn trash(op: *Op, src: []const u8) Error!void {
-        var dbuf: [linux.PATH_MAX]u8 = undefined;
-        const files = std.fmt.bufPrintSentinel(&dbuf, "{s}/files", .{op.trash_dir}, 0) catch return op.fail(src, error.NameTooLong);
-        try mkdirs(files);
-        var ibuf: [linux.PATH_MAX]u8 = undefined;
-        const info_dir = std.fmt.bufPrintSentinel(&ibuf, "{s}/info", .{op.trash_dir}, 0) catch return op.fail(src, error.NameTooLong);
-        try mkdirs(info_dir);
-        var tbuf: [linux.PATH_MAX]u8 = undefined;
-        const target = try op.freeName(&tbuf, files, model.basename(src));
-        const trashed = model.basename(target);
-
-        // The info file first, created exclusively, so that two trashes
-        // never claim the same name.
-        var info_buf: [linux.PATH_MAX]u8 = undefined;
-        const info_path = std.fmt.bufPrintSentinel(&info_buf, "{s}/{s}.trashinfo", .{ info_dir, trashed }, 0) catch return op.fail(src, error.NameTooLong);
-        var body: std.ArrayList(u8) = .empty;
-        defer body.deinit(op.gpa);
-        try body.appendSlice(op.gpa, "[Trash Info]\nPath=");
-        for (src) |b| {
-            if (std.ascii.isAlphanumeric(b) or std.mem.indexOfScalar(u8, "-._~/", b) != null) {
-                try body.append(op.gpa, b);
-            } else {
-                const hex = "0123456789ABCDEF";
-                try body.appendSlice(op.gpa, &.{ '%', hex[b >> 4], hex[b & 15] });
-            }
-        }
-        var now: linux.timespec = undefined;
-        _ = linux.clock_gettime(.REALTIME, &now);
-        const es: std.time.epoch.EpochSeconds = .{ .secs = @intCast(now.sec) };
-        const day = es.getEpochDay().calculateYearDay();
-        const md = day.calculateMonthDay();
-        const ds = es.getDaySeconds();
-        var date: [64]u8 = undefined;
-        try body.appendSlice(op.gpa, std.fmt.bufPrint(&date, "\nDeletionDate={d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}\n", .{
-            day.year, md.month.numeric(), md.day_index + 1, ds.getHoursIntoDay(), ds.getMinutesIntoHour(), ds.getSecondsIntoMinute(),
-        }) catch unreachable);
-        const fd_rc = linux.openat(linux.AT.FDCWD, info_path, .{ .ACCMODE = .WRONLY, .CREAT = true, .EXCL = true, .CLOEXEC = true }, 0o600);
-        const fd: i32 = switch (linux.errno(fd_rc)) {
-            .SUCCESS => @intCast(fd_rc),
-            else => |e| return op.fail(info_path, mapErrno(e)),
-        };
-        _ = linux.write(fd, body.items.ptr, body.items.len);
-        _ = linux.close(fd);
-        op.move(src, target) catch |err| {
-            _ = linux.unlinkat(linux.AT.FDCWD, info_path, 0);
-            return err;
-        };
-    }
 };
 
 /// Creates a folder `name` in `dir`.
@@ -442,22 +386,6 @@ fn zpath(buf: *[linux.PATH_MAX]u8, p: []const u8) error{NameTooLong}![:0]u8 {
 fn exists(p: [:0]const u8) bool {
     var st: linux.Statx = undefined;
     return linux.errno(linux.statx(linux.AT.FDCWD, p, linux.AT.SYMLINK_NOFOLLOW, .{ .TYPE = true }, &st)) == .SUCCESS;
-}
-
-fn mkdirs(p: [:0]const u8) Error!void {
-    switch (linux.errno(linux.mkdirat(linux.AT.FDCWD, p, 0o700))) {
-        .SUCCESS, .EXIST => return,
-        .NOENT => {},
-        else => |e| return mapErrno(e),
-    }
-    var buf: [linux.PATH_MAX]u8 = undefined;
-    const up = model.parent(p);
-    if (up.len == p.len) return error.FileNotFound;
-    try mkdirs(std.fmt.bufPrintSentinel(&buf, "{s}", .{up}, 0) catch return error.NameTooLong);
-    switch (linux.errno(linux.mkdirat(linux.AT.FDCWD, p, 0o700))) {
-        .SUCCESS, .EXIST => {},
-        else => |e| return mapErrno(e),
-    }
 }
 
 fn mapErrno(e: linux.E) Error {

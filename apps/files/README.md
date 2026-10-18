@@ -17,12 +17,13 @@ virtualized table with sortable, resizable columns, or a grid with image
 thumbnails decoded off the UI thread; multiple selection by keyboard and
 pointer; rename in place (F2); new folder (Ctrl+Shift+N); copy, cut, and
 paste (Ctrl+C, Ctrl+X, Ctrl+V) and drag and drop with other applications
-as text/uri-list; move to trash (Delete) and delete (Shift+Delete, after
-asking); copies and moves on siv's worker pool with progress and
-cancellation; open with the default application through the OpenURI
-portal (Enter, double click) or choose one (Open With…); a context menu
-(right click, Menu, Shift+F10); light and dark styles; right-to-left
-layout; and a screen reader's view of all of it through AT-SPI.
+as text/uri-list; move to trash (Delete), undone with the toast's Undo
+or Ctrl+Z, and delete (Shift+Delete, after asking); copies and moves on
+siv's worker pool with progress and cancellation; open with the default
+application through the OpenURI portal (Enter, double click) or choose
+one (Open With…); a context menu (right click, Menu, Shift+F10); light
+and dark styles; right-to-left layout; and a screen reader's view of all
+of it through AT-SPI.
 
 Keys: Alt+Left/Right/Up and Backspace navigate, Alt+Home goes home,
 Ctrl+H shows hidden files, Ctrl+1 and Ctrl+2 switch views, F5 reloads,

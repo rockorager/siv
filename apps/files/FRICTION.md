@@ -315,6 +315,26 @@ Measurements are in [Numbers](#numbers) at the end.
     divider with it, belongs to the navigation widgets (D40), which give
     sidebars a collapsed state of their own; the app moves to that.
 
+34. **Delete could not be undone, and the trash was the app's own.**
+    Delete moved files to `$XDG_DATA_HOME/Trash` with code of the app's
+    (only the home trash, so a file on another disk crossed file systems
+    by copying), and nothing took it back: siv had an undo stack (D35)
+    and toasts with an action button, but no way to restore a trashed
+    file, so the app used neither. Inside Flatpak only the Trash portal
+    can trash, and it cannot restore either.
+    *Fixed:* the trash (commit "abi: the trash and system signals",
+    D42). Delete and dropping on Trash call `siv_trash_file` per file;
+    when every result is in, the files trashed become one step on the
+    window's undo stack (`siv_undo_create`, attached to the root with
+    `siv_set_undo`, so Ctrl+Z and Ctrl+Shift+Z work), whose undo calls
+    `siv_trash_restore` with each id and whose redo trashes them again.
+    The toast says what moved and its Undo button undoes the step while
+    it is the newest; restored files are selected. A file the trash
+    cannot take says why (`unsupported` suggests Shift+Delete). The
+    app's trash code is gone. Deleting inside the trash folder still
+    deletes files for good with the app's own code, which leaves their
+    information files behind; `siv_trash_delete` would not.
+
 ## Noted
 
 23. **Fields must precede declarations in a Zig struct** (Zig 0.17), so an
