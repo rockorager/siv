@@ -172,6 +172,101 @@ pub const Layout = struct {
     inset: Insets = .{},
 };
 
+/// When a variant holds (D39): bounds on the space a node's parent offers
+/// its children (the root's: the window), or with `window` on the
+/// window's size, and with `overflow`, whether the node's max-content
+/// width is wider than that space. Widths hold from `min_width` up to but
+/// not including `max_width`, so one value splits narrow from wide;
+/// unbounded space is wider than any bound.
+pub const Condition = struct {
+    min_width: f32 = 0,
+    max_width: f32 = std.math.inf(f32),
+    min_height: f32 = 0,
+    max_height: f32 = std.math.inf(f32),
+    overflow: bool = false,
+    window: bool = false,
+
+    /// Whether it holds in `w` by `h`, for a node whose max-content
+    /// width at unbounded space is `max_content` (read only with
+    /// `overflow`).
+    pub fn holds(c: Condition, w: f32, h: f32, max_content: f32) bool {
+        if (!(w >= c.min_width and h >= c.min_height)) return false;
+        if (c.max_width != std.math.inf(f32) and !(w < c.max_width)) return false;
+        if (c.max_height != std.math.inf(f32) and !(h < c.max_height)) return false;
+        // A hundredth of a pixel absorbs rounding from padding taken
+        // off and put back.
+        return !c.overflow or max_content > w + 0.01;
+    }
+};
+
+/// Properties a condition replaces while it holds (D39); null keeps the
+/// node's own.
+pub const Variant = struct {
+    when: Condition,
+    layout: ?Layout = null,
+    /// Flex containers only.
+    flex: ?Flex = null,
+    hidden: ?bool = null,
+
+    pub const max = 32;
+};
+
+/// The values variants can replace.
+pub const Adaptable = struct {
+    layout: Layout,
+    flex: Flex,
+    hidden: bool,
+};
+
+/// A node's variants (D39) and its own values under them, which the node
+/// shows while none holds. The node's `layout`, `data.flex`, and `hidden`
+/// are these with the variants that held at its last layout applied
+/// (`State.variant_mask`). Owned; replaced whole by a transaction.
+pub const Adaptive = struct {
+    own: Adaptable,
+    variants: []const Variant = &.{},
+
+    /// The values with the variants in `mask` applied, later ones over
+    /// earlier ones.
+    pub fn resolve(a: *const Adaptive, mask: u32) Adaptable {
+        var r = a.own;
+        for (a.variants, 0..) |v, i| {
+            if (mask & (@as(u32, 1) << @intCast(i)) == 0) continue;
+            if (v.layout) |l| r.layout = l;
+            if (v.flex) |f| r.flex = f;
+            if (v.hidden) |h| r.hidden = h;
+        }
+        return r;
+    }
+
+    /// The variants that hold when the parent offers `w` by `h` and the
+    /// window is `win_w` by `win_h`.
+    pub fn holding(a: *const Adaptive, w: f32, h: f32, win_w: f32, win_h: f32, max_content: f32) u32 {
+        var m: u32 = 0;
+        for (a.variants, 0..) |v, i| {
+            const held = if (v.when.window) v.when.holds(win_w, win_h, max_content) else v.when.holds(w, h, max_content);
+            if (held) m |= @as(u32, 1) << @intCast(i);
+        }
+        return m;
+    }
+
+    /// The variants with `window` conditions that hold in a `w` by `h`
+    /// window, for a node whose max-content width at unbounded space is
+    /// `max_content`.
+    pub fn holdingInWindow(a: *const Adaptive, w: f32, h: f32, max_content: f32) u32 {
+        var m: u32 = 0;
+        for (a.variants, 0..) |v, i| {
+            if (v.when.window and v.when.holds(w, h, max_content)) m |= @as(u32, 1) << @intCast(i);
+        }
+        return m;
+    }
+
+    pub fn needsMaxContent(a: *const Adaptive) bool {
+        for (a.variants) |v| if (v.when.overflow) return true;
+        return false;
+    }
+};
+
 /// Logical corner radii.
 pub const Corners = struct {
     top_start: f32 = 0,
@@ -1286,6 +1381,10 @@ pub const Node = struct {
     /// visual's own `hidden`, so that hiding a widget never replaces the
     /// visual it draws itself with. Either one hides the subtree.
     hidden: bool = false,
+    /// Variants (D39): what changes when the space the parent offers
+    /// crosses a bound. `layout`, `data.flex`, and `hidden` above are
+    /// then resolved from it. Owned; null for none.
+    adaptive: ?*const Adaptive = null,
     /// A custom text widget's state for the input method.
     text_input: TextInput = .{},
     /// Another process's accessible object shown as the node's last

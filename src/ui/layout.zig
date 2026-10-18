@@ -14,6 +14,13 @@
 //! alignment (the default in boxes, flex cross axes, and grids) or an
 //! explicit size makes a child fill; flex free space and fr tracks only
 //! exist when the container is larger than its content.
+//!
+//! Variants (D39): a node's parent decides which of its variants hold
+//! from the space it offers its children, which its constraints fix
+//! before any child is measured, and applies them before reading the
+//! children, so a layout is still one pass. Max-content widths take
+//! descendants' variants at unbounded space, so that what a node is
+//! offered never depends on the variant that offer chose.
 
 const std = @import("std");
 const raster = @import("raster");
@@ -94,6 +101,8 @@ pub const Cell = struct { col: u16 = 0, row: u16 = 0, cols: u16 = 1, rows: u16 =
 pub fn run(win: *Window) Error!void {
     if (!win.state(.root).needs_layout) return;
     win.state(.root).rtl = win.rtl;
+    // The root's variants see the window.
+    try applyVariants(win, .root, win.width, win.height);
     const size = try place(win, .root, .tight(win.width, win.height));
     setPos(win, .root, .zero);
     _ = size;
@@ -116,7 +125,9 @@ pub fn place(win: *Window, id: NodeId, c: Constraints) Error!Size {
         if (f.eql(c)) return s.size;
         // Tight at the size the last layout chose under constraints that
         // allowed it: that layout already is this one.
-        if (c.tightW() and c.tightH() and c.min_w == s.size.w and c.min_h == s.size.h and f.admits(s.size)) return s.size;
+        // Not when its children's variants (D39) depend on what the
+        // constraints offer.
+        if (c.tightW() and c.tightH() and c.min_w == s.size.w and c.min_h == s.size.h and f.admits(s.size) and !s.variant_children) return s.size;
     };
     return compute(win, id, c);
 }
@@ -154,6 +165,7 @@ fn compute(win: *Window, id: NodeId, c: Constraints) Error!Size {
     const pad = n.layout.padding;
     const inner = cc.shrink(pad.horizontal(), pad.vertical());
     const origin: Point = .{ .x = pad.left(s.rtl), .y = pad.top };
+    if (s.variant_children) try applyChildVariants(win, id, inner);
     const content: Size = switch (n.kind) {
         .box => try block(win, id, inner, origin),
         .scroll => try scroll(win, id, inner),
@@ -227,33 +239,86 @@ fn resolve(d: node_mod.Dimension, available: f32) ?f32 {
 }
 
 /// Max-content border-box width: the widest the node gets without
-/// wrapping, which is what it takes when it sizes to its content.
+/// wrapping, which is what it takes when it sizes to its content. Its
+/// descendants' variants (D39) are those that hold at unbounded space,
+/// since the space they get is what this width decides.
 pub fn maxContent(win: *Window, id: NodeId) Error!f32 {
     const s = win.state(id);
     if (s.max_content >= 0) return s.max_content;
+    const n = win.node(id);
+    const r = try maxContentOf(win, id, n.layout, if (n.kind == .flex) n.data.flex else .{});
+    s.max_content = r;
+    return r;
+}
+
+/// The max-content width with the node's own variants at unbounded space
+/// too: what its parent's max-content width counts.
+fn maxContentInf(win: *Window, id: NodeId) Error!f32 {
+    const a = win.node(id).adaptive orelse return maxContent(win, id);
+    const s = win.state(id);
+    if (s.max_content_inf >= 0) return s.max_content_inf;
+    const v = atInf(win, a);
+    const r = try maxContentOf(win, id, v.layout, v.flex);
+    s.max_content_inf = r;
+    return r;
+}
+
+/// The node's layout with the variants that hold at unbounded space.
+fn layoutInf(win: *const Window, id: NodeId) node_mod.Layout {
+    const a = win.node(id).adaptive orelse return win.node(id).layout;
+    return atInf(win, a).layout;
+}
+
+/// A node's values with the variants that hold when its parent offers
+/// unbounded space; those on the window's size see the window.
+fn atInf(win: *const Window, a: *const node_mod.Adaptive) node_mod.Adaptable {
+    return a.resolve(a.holding(inf, inf, win.width, win.height, 0));
+}
+
+/// Children shown at unbounded space.
+const ShownInf = struct {
+    win: *const Window,
+    cur: NodeId,
+
+    fn next(it: *ShownInf) ?NodeId {
+        while (it.cur != .none) {
+            const id = it.cur;
+            const n = it.win.node(id);
+            it.cur = n.next;
+            const hidden = if (n.adaptive) |a| atInf(it.win, a).hidden else n.hidden;
+            if (!n.visual.hidden and !hidden) return id;
+        }
+        return null;
+    }
+};
+
+fn shownInf(win: *const Window, id: NodeId) ShownInf {
+    return .{ .win = win, .cur = win.node(id).first };
+}
+
+/// Max-content width with the node's layout `l` and flex options `f`.
+fn maxContentOf(win: *Window, id: NodeId, l: node_mod.Layout, f: node_mod.Flex) Error!f32 {
     resolveDirection(win, id);
     const n = win.node(id);
-    const l = n.layout;
     const w: f32 = if (l.width == .px) l.width.px else blk: {
         var content: f32 = 0;
         switch (n.kind) {
             .box, .scroll => {
-                var it = win.shown(id);
-                while (it.next()) |ch| content = @max(content, try maxContent(win, ch));
+                var it = shownInf(win, id);
+                while (it.next()) |ch| content = @max(content, try maxContentInf(win, ch));
             },
             .stack => {
-                var it = win.shown(id);
+                var it = shownInf(win, id);
                 while (it.next()) |ch| {
-                    const in = win.node(ch).layout.inset;
-                    content = @max(content, try maxContent(win, ch) + (in.start orelse 0) + (in.end orelse 0));
+                    const in = layoutInf(win, ch).inset;
+                    content = @max(content, try maxContentInf(win, ch) + (in.start orelse 0) + (in.end orelse 0));
                 }
             },
             .flex => {
-                const f = n.data.flex;
-                var it = win.shown(id);
+                var it = shownInf(win, id);
                 var count: f32 = 0;
                 while (it.next()) |ch| {
-                    const m = try maxContent(win, ch);
+                    const m = try maxContentInf(win, ch);
                     if (f.axis == .row) content += m else content = @max(content, m);
                     count += 1;
                 }
@@ -269,9 +334,91 @@ pub fn maxContent(win: *Window, id: NodeId) Error!f32 {
         }
         break :blk content + l.padding.horizontal();
     };
-    const r = @max(l.min_width, @min(w, l.max_width));
-    s.max_content = r;
-    return r;
+    return @max(l.min_width, @min(w, l.max_width));
+}
+
+// Variants (D39) ---------------------------------------------------------------
+
+/// Decides the variants of the node's children from the space it offers
+/// them: its content box under its constraints, unbounded along the axes
+/// a scroll node scrolls.
+fn applyChildVariants(win: *Window, id: NodeId, inner: Constraints) Error!void {
+    const n = win.node(id);
+    var w = inner.max_w;
+    var h = inner.max_h;
+    if (n.kind == .scroll) switch (n.data.scroll.axis) {
+        .vertical => h = inf,
+        .horizontal => w = inf,
+        .both => {
+            w = inf;
+            h = inf;
+        },
+    };
+    var any = false;
+    var it = win.children(id);
+    while (it.next()) |ch| {
+        if (win.node(ch).adaptive != null) any = true;
+        try applyVariants(win, ch, w, h);
+    }
+    win.state(id).variant_children = any;
+}
+
+/// Applies the variants of the node that hold in `w` by `h`. Its parent
+/// is laying it out, so it marks only the node and its subtree.
+fn applyVariants(win: *Window, id: NodeId, w: f32, h: f32) Error!void {
+    const n = win.node(id);
+    const s = win.state(id);
+    const a = n.adaptive orelse {
+        // Variants removed: the node already shows its own values.
+        s.variant_mask = 0;
+        return;
+    };
+    const max_content = if (a.needsMaxContent()) try maxContentInf(win, id) else 0;
+    const mask = a.holding(w, h, win.width, win.height, max_content);
+    if (mask == s.variant_mask) return;
+    s.variant_mask = mask;
+    win.variants_switched = true;
+    win.dirty.semantics = true;
+    const v = a.resolve(mask);
+    if (!std.meta.eql(n.layout, v.layout)) {
+        const direction_changed = n.layout.direction != v.layout.direction;
+        n.layout = v.layout;
+        dirty(win, id);
+        if (direction_changed) dirtySubtree(win, id);
+    }
+    if (n.kind == .flex and !std.meta.eql(n.data.flex, v.flex)) {
+        n.data.flex = v.flex;
+        dirty(win, id);
+    }
+    if (n.hidden != v.hidden) {
+        const was_hidden = n.isHidden();
+        n.hidden = v.hidden;
+        if (was_hidden != n.isHidden()) {
+            // As a transaction hides or shows it (`Txn.visibilityChanged`).
+            if (n.isHidden()) @import("txn.zig").Txn.hideSubtree(win, id) else s.appear = true;
+            dirty(win, id);
+            dirtySubtree(win, id);
+            win.markLayers();
+        }
+    }
+}
+
+fn dirty(win: *Window, id: NodeId) void {
+    const s = win.state(id);
+    s.needs_layout = true;
+    s.max_content = -1;
+}
+
+fn dirtySubtree(win: *Window, id: NodeId) void {
+    var it = win.children(id);
+    while (it.next()) |c| {
+        const s = win.state(c);
+        s.needs_layout = true;
+        s.max_content = -1;
+        s.max_content_inf = -1;
+        if (win.node(c).isText()) s.needs_shape = true;
+        dirtySubtree(win, c);
+    }
 }
 
 /// The content width a container takes: all of a tight constraint, else
@@ -568,25 +715,30 @@ const GridItem = struct { id: NodeId, cell: Cell };
 
 /// Places every child in a cell: explicit positions first, then auto items
 /// in row-major order into the first free cells that fit them.
-fn placeItems(win: *Window, id: NodeId) Error!struct { items: []GridItem, cols: usize, rows: usize } {
+/// With `inf`, as at unbounded space (max-content widths, D39), without
+/// keeping the cells.
+fn placeItems(win: *Window, id: NodeId, inf_space: bool) Error!struct { items: []GridItem, cols: usize, rows: usize } {
     const g = win.node(id).data.grid;
     const a = win.scratch.allocator();
     var count: usize = 0;
     var it = win.shown(id);
-    while (it.next()) |_| count += 1;
+    var it_inf = shownInf(win, id);
+    while (if (inf_space) it_inf.next() else it.next()) |_| count += 1;
     const items = try a.alloc(GridItem, count);
+    const layouts = try a.alloc(node_mod.Layout, count);
     var cols: usize = @max(g.columns.len, 1);
     var rows: usize = g.rows.len;
     var occupied: std.AutoHashMapUnmanaged(u32, void) = .empty;
     it = win.shown(id);
+    it_inf = shownInf(win, id);
     var i: usize = 0;
-    while (it.next()) |ch| : (i += 1) {
-        const l = win.node(ch).layout;
+    while (if (inf_space) it_inf.next() else it.next()) |ch| : (i += 1) {
+        const l = if (inf_space) layoutInf(win, ch) else win.node(ch).layout;
+        layouts[i] = l;
         items[i] = .{ .id = ch, .cell = .{ .col = l.column orelse 0, .row = l.row orelse 0, .cols = l.column_span, .rows = l.row_span } };
         if (l.column != null) cols = @max(cols, @as(usize, l.column.?) + l.column_span);
     }
-    for (items) |*item| {
-        const l = win.node(item.id).layout;
+    for (items, layouts) |*item, l| {
         if (l.column == null and l.row == null) continue;
         if (l.column == null or l.row == null) {
             item.cell.col = l.column orelse 0;
@@ -596,8 +748,7 @@ fn placeItems(win: *Window, id: NodeId) Error!struct { items: []GridItem, cols: 
         rows = @max(rows, @as(usize, item.cell.row) + item.cell.rows);
     }
     var cursor: usize = 0;
-    for (items) |*item| {
-        const l = win.node(item.id).layout;
+    for (items, layouts) |*item, l| {
         if (l.column != null or l.row != null) continue;
         const span: usize = @min(item.cell.cols, cols);
         item.cell.cols = @intCast(span);
@@ -617,7 +768,9 @@ fn placeItems(win: *Window, id: NodeId) Error!struct { items: []GridItem, cols: 
         try occupy(a, &occupied, item.cell);
         rows = @max(rows, @as(usize, item.cell.row) + item.cell.rows);
     }
-    for (items) |item| win.state(item.id).cell = item.cell;
+    if (!inf_space) for (items) |item| {
+        win.state(item.id).cell = item.cell;
+    };
     return .{ .items = items, .cols = cols, .rows = rows };
 }
 
@@ -726,10 +879,10 @@ fn total(sizes: []const f32, gap: f32) f32 {
 
 fn gridMaxContent(win: *Window, id: NodeId) Error!f32 {
     const g = win.node(id).data.grid;
-    const placed = try placeItems(win, id);
+    const placed = try placeItems(win, id, true);
     const a = win.scratch.allocator();
     const contrib = try a.alloc(f32, placed.items.len);
-    for (placed.items, contrib) |item, *c| c.* = try maxContent(win, item.id);
+    for (placed.items, contrib) |item, *c| c.* = try maxContentInf(win, item.id);
     const cols = try a.alloc(f32, placed.cols);
     sizeTracks(g.columns, cols, placed.items, contrib, false, g.column_gap, 0, inf);
     return total(cols, g.column_gap);
@@ -739,7 +892,7 @@ fn grid(win: *Window, id: NodeId, inner: Constraints, origin: Point) Error!Size 
     const g = win.node(id).data.grid;
     const rtl = win.state(id).rtl;
     const a = win.scratch.allocator();
-    const placed = try placeItems(win, id);
+    const placed = try placeItems(win, id, false);
     const items = placed.items;
 
     const contrib = try a.alloc(f32, items.len);

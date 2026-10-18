@@ -757,10 +757,13 @@ pub const State = struct {
             early += 1;
         }
         // A window resized by the user relays out under the pointer:
-        // following the edge at once beats sliding after it (D38).
+        // following the edge at once beats sliding after it (D38). Not
+        // when the resize switched variants (D39): the new arrangement
+        // is a change of its own, which motion is for.
         const root_size = win.state(.root).size;
-        const resized = !std.meta.eql(root_size, st.root_size);
+        const resized = !std.meta.eql(root_size, st.root_size) and !win.variants_switched;
         st.root_size = root_size;
+        win.variants_switched = false;
         if (win.dirty.props or st.ops.items.len != 0) {
             try st.ops.ensureUnusedCapacity(gpa, 16 * st.order.items.len + st.scroll_by.items.len + 1);
             for (st.order.items) |i| {

@@ -109,6 +109,14 @@ culled: std.ArrayList(NodeId) = .empty,
 /// compositor does not report back): the frame checks `culled` as a
 /// reported scroll would.
 app_scrolled: bool = false,
+/// Layout switched a node's variants (D39) since the last emit: moves
+/// animate even in a frame that resized the window, and focus leaves
+/// nodes the switch hid.
+variants_switched: bool = false,
+/// Nodes that had no variants when a transaction gave them some (some
+/// may have none now, or be gone): `configure` marks those whose window
+/// conditions change.
+adaptive_nodes: std.ArrayList(NodeId) = .empty,
 /// Long texts (D13), which `text_node.settle` keeps in place in their
 /// scroll containers after each layout.
 long_texts: std.ArrayList(NodeId) = .empty,
@@ -342,8 +350,17 @@ pub const State = struct {
     rtl: bool = false,
     cache: [2]?layout.Cached = .{ null, null },
     final: ?Constraints = null,
-    /// Max-content width, or negative when unknown.
+    /// Max-content width, or negative when unknown: with the node's own
+    /// properties and its descendants' variants at unbounded space (D39).
     max_content: f32 = -1,
+    /// Likewise with the node's own variants at unbounded space too; only
+    /// for nodes with variants.
+    max_content_inf: f32 = -1,
+    /// The variants applied to the node's properties (D39), as of its
+    /// last layout: bit i for `Node.adaptive.variants[i]`.
+    variant_mask: u32 = 0,
+    /// Some child may have variants, which this node's layout evaluates.
+    variant_children: bool = false,
     /// Position in the parent's coordinates (a scroll's children: its
     /// content coordinates), and border-box size.
     pos: Point = .zero,
@@ -476,6 +493,7 @@ fn deinitStorage(win: *Window) void {
     win.culled.deinit(win.gpa);
     win.long_texts.deinit(win.gpa);
     win.modals.deinit(win.gpa);
+    win.adaptive_nodes.deinit(win.gpa);
     win.animating.deinit(win.gpa);
     win.scratch.deinit();
 }
@@ -489,6 +507,10 @@ pub fn freeNodeData(gpa: std.mem.Allocator, n: *const Node) void {
     gpa.free(n.a11y_embed);
     gpa.free(n.drop.mimes);
     if (n.theme) |th| gpa.destroy(th);
+    if (n.adaptive) |a| {
+        gpa.free(a.variants);
+        gpa.destroy(a);
+    }
     switch (n.data) {
         .text => |t| {
             t.content.release(gpa);
@@ -664,6 +686,7 @@ pub fn markLayout(win: *Window, id: NodeId) void {
         if (s.needs_layout and cur != id) break;
         s.needs_layout = true;
         s.max_content = -1;
+        s.max_content_inf = -1;
         cur = win.node(cur).parent;
     }
     win.dirty.semantics = true;
@@ -677,6 +700,7 @@ pub fn markSubtreeLayout(win: *Window, id: NodeId) void {
         const s = win.state(c);
         s.needs_layout = true;
         s.max_content = -1;
+        s.max_content_inf = -1;
         if (win.node(c).isText()) s.needs_shape = true;
         win.markSubtreeLayout(c);
     }
@@ -759,6 +783,22 @@ pub fn begin(win: *Window) error{ OutOfMemory, TransactionOpen }!*Txn {
 /// through `handleEvent`, which also acknowledges them.
 pub fn configure(win: *Window, width: f32, height: f32, scale: f32) void {
     if (width != win.width or height != win.height) {
+        // Variants on the window's size (D39) whose parents keep their
+        // constraints are decided again, and their max-content widths
+        // change.
+        var k: usize = 0;
+        while (k < win.adaptive_nodes.items.len) {
+            const id = win.adaptive_nodes.items[k];
+            const a = (if (win.isLive(id)) win.node(id).adaptive else null) orelse {
+                _ = win.adaptive_nodes.swapRemove(k);
+                continue;
+            };
+            // Overflow needs the max-content width: unknown, the node is
+            // laid out again to be sure.
+            const mc = win.state(id).max_content_inf;
+            if ((mc < 0 and a.needsMaxContent()) or a.holdingInWindow(win.width, win.height, mc) != a.holdingInWindow(width, height, mc)) win.markLayout(id);
+            k += 1;
+        }
         win.width = width;
         win.height = height;
         win.markLayout(.root);
@@ -828,6 +868,7 @@ pub fn frame(win: *Window) Error!void {
         laid_out = true;
         try layout.run(win);
     }
+    const switched = win.variants_switched;
     if (laid_out or win.app_scrolled) {
         win.app_scrolled = false;
         win.checkViewports();
@@ -853,7 +894,9 @@ pub fn frame(win: *Window) Error!void {
     editor_mod.updatePrimary(win);
     // The tree may have changed under a pointer that did not move: hover
     // handlers run here, at the end of the frame (D5), and what they
-    // change shows in the next one.
+    // change shows in the next one. So do focus handlers when a variant
+    // hid the focused node or showed a modal one (D39).
+    if (switched) win.input.afterCommit(win);
     if (laid_out or win.input.hover_stale) {
         input_mod.refreshHover(win);
         // So does a drag's target.

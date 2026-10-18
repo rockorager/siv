@@ -299,6 +299,7 @@ pub const Txn = struct {
         win.markLayout(win.node(id).parent);
         t.unlink(id);
         t.link(parent, id, before);
+        if (win.node(id).adaptive != null) win.state(parent).variant_children = true;
         win.markSubtreeLayout(id);
         win.markLayers();
         // Under other subtree themes, its colors may change (D43).
@@ -337,12 +338,10 @@ pub const Txn = struct {
     pub fn setLayout(t: *Txn, id: NodeId, l: node_mod.Layout) Error!void {
         const n = try t.live(id);
         try checkLayout(l);
-        if (std.meta.eql(n.layout, l)) return;
-        try t.reserve();
-        t.touch(id);
-        const direction_changed = n.layout.direction != l.direction;
-        n.layout = l;
-        if (direction_changed) t.win.markSubtreeLayout(id) else t.win.markLayout(id);
+        var v = ownOf(n);
+        if (std.meta.eql(v.layout, l)) return;
+        v.layout = l;
+        try t.putOwn(id, v);
     }
 
     pub fn setVisual(t: *Txn, id: NodeId, v: node_mod.Visual) Error!void {
@@ -378,12 +377,10 @@ pub const Txn = struct {
     /// apart from its visual (`Node.hidden`).
     pub fn setHidden(t: *Txn, id: NodeId, hidden: bool) Error!void {
         const n = try t.live(id);
-        if (n.hidden == hidden) return;
-        try t.reserve();
-        t.touch(id);
-        const was_hidden = n.isHidden();
-        n.hidden = hidden;
-        if (was_hidden != n.isHidden()) visibilityChanged(t.win, id, n.isHidden());
+        var v = ownOf(n);
+        if (v.hidden == hidden) return;
+        v.hidden = hidden;
+        try t.putOwn(id, v);
     }
 
     fn visibilityChanged(win: *Window, id: NodeId, hidden: bool) void {
@@ -395,7 +392,7 @@ pub const Txn = struct {
         win.markLayers();
     }
 
-    fn hideSubtree(win: *Window, id: NodeId) void {
+    pub fn hideSubtree(win: *Window, id: NodeId) void {
         const s = win.state(id);
         win.paint.damage(s.layer, s.bounds);
         s.bounds = .empty;
@@ -885,12 +882,133 @@ pub const Txn = struct {
 
     pub fn setFlex(t: *Txn, id: NodeId, f: node_mod.Flex) Error!void {
         const n = try t.data(id, .flex);
-        if (!finite(f.gap) or f.gap < 0 or (f.line_gap != null and !(f.line_gap.? >= 0))) return error.InvalidArgument;
-        if (std.meta.eql(n.data.flex, f)) return;
+        try checkFlex(f);
+        var v = ownOf(n);
+        if (std.meta.eql(v.flex, f)) return;
+        v.flex = f;
+        try t.putOwn(id, v);
+    }
+
+    // Variants (D39) ---------------------------------------------------------
+
+    /// What a variant replaces.
+    pub const Part = union(enum) {
+        layout: node_mod.Layout,
+        flex: node_mod.Flex,
+        hidden: bool,
+    };
+
+    /// Makes `part` replace the node's own value while `when` holds:
+    /// in the variant with that condition, or a new one after the
+    /// others. Layout decides whether it holds (D39).
+    pub fn setVariant(t: *Txn, id: NodeId, when: node_mod.Condition, part: Part) Error!void {
+        const n = try t.live(id);
+        if (!(when.min_width >= 0) or !(when.min_height >= 0) or !(when.max_width > 0) or !(when.max_height > 0)) return error.InvalidArgument;
+        switch (part) {
+            .layout => |l| try checkLayout(l),
+            .flex => |f| {
+                if (n.kind != .flex) return error.InvalidNode;
+                try checkFlex(f);
+            },
+            .hidden => {},
+        }
+        const old: []const node_mod.Variant = if (n.adaptive) |a| a.variants else &.{};
+        var buf: [node_mod.Variant.max]node_mod.Variant = undefined;
+        @memcpy(buf[0..old.len], old);
+        var len = old.len;
+        const i = for (old, 0..) |v, k| {
+            if (std.meta.eql(v.when, when)) break k;
+        } else blk: {
+            // The ABI reports its own limit error first.
+            if (len == node_mod.Variant.max) return error.InvalidArgument;
+            buf[len] = .{ .when = when };
+            len += 1;
+            break :blk len - 1;
+        };
+        switch (part) {
+            .layout => |l| buf[i].layout = l,
+            .flex => |f| buf[i].flex = f,
+            .hidden => |h| buf[i].hidden = h,
+        }
+        if (len == old.len and std.meta.eql(buf[i], old[i])) return;
         try t.reserve();
+        try t.win.adaptive_nodes.ensureUnusedCapacity(t.win.gpa, 1);
+        const variants = try t.own(node_mod.Variant, buf[0..len]);
+        const copy = try t.own(node_mod.Adaptive, &.{.{ .own = ownOf(n), .variants = variants }});
         t.touch(id);
-        n.data.flex = f;
+        if (n.adaptive) |a| {
+            t.release(node_mod.Variant, a.variants);
+            t.release(node_mod.Adaptive, one(a));
+        } else t.win.adaptive_nodes.appendAssumeCapacity(id);
+        n.adaptive = &copy[0];
+        if (n.parent != .none) t.win.state(n.parent).variant_children = true;
+        t.show(id, copy[0].resolve(t.win.state(id).variant_mask));
+        // The parent's layout decides which variants hold.
         t.win.markLayout(id);
+    }
+
+    /// Removes the node's variants: it shows its own values.
+    pub fn clearVariants(t: *Txn, id: NodeId) Error!void {
+        const n = try t.live(id);
+        const a = n.adaptive orelse return;
+        try t.reserve();
+        try t.frees.ensureUnusedCapacity(t.win.gpa, 2);
+        t.touch(id);
+        t.release(node_mod.Variant, a.variants);
+        t.release(node_mod.Adaptive, one(a));
+        n.adaptive = null;
+        t.show(id, a.own);
+        t.win.markLayout(id);
+    }
+
+    /// The node's own values, apart from its variants.
+    fn ownOf(n: *const Node) node_mod.Adaptable {
+        if (n.adaptive) |a| return a.own;
+        return .{ .layout = n.layout, .flex = if (n.kind == .flex) n.data.flex else .{}, .hidden = n.hidden };
+    }
+
+    fn one(a: *const node_mod.Adaptive) []const node_mod.Adaptive {
+        return @as([*]const node_mod.Adaptive, @ptrCast(a))[0..1];
+    }
+
+    /// Sets the node's own values; it shows them with the variants its
+    /// last layout applied.
+    fn putOwn(t: *Txn, id: NodeId, v: node_mod.Adaptable) Error!void {
+        const n = t.win.node(id);
+        try t.reserve();
+        const a = n.adaptive orelse {
+            t.touch(id);
+            return t.show(id, v);
+        };
+        const copy = try t.own(node_mod.Adaptive, &.{.{ .own = v, .variants = a.variants }});
+        t.touch(id);
+        t.release(node_mod.Adaptive, one(a));
+        n.adaptive = &copy[0];
+        t.show(id, copy[0].resolve(t.win.state(id).variant_mask));
+        // What it shows may not have changed, but its max-content width
+        // at unbounded space, where its own values may show, has.
+        t.win.markLayout(id);
+    }
+
+    /// Puts resolved values into the node, marking what changed. The
+    /// caller touched it.
+    fn show(t: *Txn, id: NodeId, v: node_mod.Adaptable) void {
+        const win = t.win;
+        const n = win.node(id);
+        if (!std.meta.eql(n.layout, v.layout)) {
+            const direction_changed = n.layout.direction != v.layout.direction;
+            n.layout = v.layout;
+            if (direction_changed) win.markSubtreeLayout(id) else win.markLayout(id);
+        }
+        if (n.kind == .flex and !std.meta.eql(n.data.flex, v.flex)) {
+            n.data.flex = v.flex;
+            win.markLayout(id);
+        }
+        if (n.hidden != v.hidden) {
+            const was_hidden = n.isHidden();
+            n.hidden = v.hidden;
+            if (was_hidden != n.isHidden()) visibilityChanged(win, id, n.isHidden());
+        }
     }
 
     pub fn setGrid(t: *Txn, id: NodeId, g: node_mod.Grid) Error!void {
@@ -1046,6 +1164,10 @@ fn finite(v: f32) bool {
 fn finiteTransform(t: node_mod.Transform) bool {
     return finite(t.translate.x) and finite(t.translate.y) and finite(t.scale.x) and finite(t.scale.y) and
         finite(t.rotate) and finite(t.origin.x) and finite(t.origin.y);
+}
+
+fn checkFlex(f: node_mod.Flex) Error!void {
+    if (!finite(f.gap) or f.gap < 0 or (f.line_gap != null and !(f.line_gap.? >= 0))) return error.InvalidArgument;
 }
 
 fn checkLayout(l: node_mod.Layout) Error!void {

@@ -3017,3 +3017,228 @@ test "spelling: long texts are checked on the pool, through edits made meanwhile
     try testing.expectEqualStrings("qvick", content[got[0][0]..got[0][1]]);
     try testing.expectEqualStrings("lastt", content[got[got.len - 1][0]..got[got.len - 1][1]]);
 }
+
+test "variants switch with the space the parent offers, in the frame that changes it, laying each node out once" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 800, .height = 200 });
+    defer f.deinit();
+    const t = try f.win.begin();
+    // The root's variants see the window: padding only when wide.
+    try t.setVariant(.root, .{ .min_width = 700 }, .{ .layout = .{ .padding = ui.Edges.all(20) } });
+    const row = try box(t, .root, .flex, .{});
+    const side = try box(t, row, .box, .{ .width = .{ .px = 200 } });
+    const content = try box(t, row, .box, .{ .grow = 1 });
+    // The row offers its whole content box to the sidebar's condition.
+    try t.setVariant(side, .{ .max_width = 600 }, .{ .hidden = true });
+    t.commit();
+    try f.frame();
+    try testing.expectEqual([4]f32{ 20, 20, 200, 160 }, f.rect(side));
+    try testing.expectEqual([4]f32{ 220, 20, 560, 160 }, f.rect(content));
+
+    // Narrower than the bound in one configure: the sidebar is gone in
+    // that frame, laid out once each (root, row, content).
+    const before = f.win.stats.layouts;
+    f.win.configure(500, 200, 1);
+    try f.frame();
+    try testing.expect(!f.win.isShown(side));
+    try testing.expectEqual([4]f32{ 0, 0, 500, 200 }, f.rect(content));
+    try testing.expectEqual(@as(u64, 3), f.win.stats.layouts - before);
+
+    // A bound is the narrowest width of the wide side: 600 shows it,
+    // 599.5 does not.
+    f.win.configure(600, 200, 1);
+    try f.frame();
+    try testing.expect(f.win.isShown(side));
+    try testing.expectEqual([4]f32{ 200, 0, 400, 200 }, f.rect(content));
+    f.win.configure(599.5, 200, 1);
+    try f.frame();
+    try testing.expect(!f.win.isShown(side));
+
+    // Back: the first arrangement again.
+    f.win.configure(800, 200, 1);
+    try f.frame();
+    try testing.expectEqual([4]f32{ 20, 20, 200, 160 }, f.rect(side));
+    try testing.expectEqual([4]f32{ 220, 20, 560, 160 }, f.rect(content));
+    try testing.expect(!f.win.needsFrame());
+}
+
+test "variants keep the node's own values under them, through transactions and aborts" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 300, .height = 100 });
+    defer f.deinit();
+    var t = try f.win.begin();
+    const col = try box(t, .root, .box, .{});
+    const n = try box(t, col, .box, .{ .width = .{ .px = 100 }, .height = .{ .px = 10 } });
+    try t.setVariant(n, .{ .max_width = 400 }, .{ .layout = .{ .width = .{ .px = 50 }, .height = .{ .px = 10 } } });
+    // A later variant that also holds wins.
+    try t.setVariant(n, .{ .max_width = 350 }, .{ .layout = .{ .width = .{ .px = 70 }, .height = .{ .px = 10 } } });
+    t.commit();
+    try f.frame();
+    try testing.expectEqual(@as(f32, 70), f.rect(n)[2]);
+
+    // The same condition replaces its value rather than adding one.
+    t = try f.win.begin();
+    try t.setVariant(n, .{ .max_width = 350 }, .{ .layout = .{ .width = .{ .px = 80 }, .height = .{ .px = 10 } } });
+    t.commit();
+    try f.frame();
+    try testing.expectEqual(@as(usize, 2), f.win.node(n).adaptive.?.variants.len);
+    try testing.expectEqual(@as(f32, 80), f.rect(n)[2]);
+
+    // Its own layout changes under a variant that holds: the variant
+    // still shows, and the new own layout once none holds.
+    t = try f.win.begin();
+    try t.setLayout(n, .{ .width = .{ .px = 120 }, .height = .{ .px = 10 } });
+    t.commit();
+    try f.frame();
+    try testing.expectEqual(@as(f32, 80), f.rect(n)[2]);
+    f.win.configure(500, 100, 1);
+    try f.frame();
+    try testing.expectEqual(@as(f32, 120), f.rect(n)[2]);
+
+    // Aborted: a new variant that would hold, and a new own layout.
+    t = try f.win.begin();
+    try t.setVariant(n, .{ .min_width = 450 }, .{ .layout = .{ .width = .{ .px = 10 }, .height = .{ .px = 10 } } });
+    try t.setLayout(n, .{ .width = .{ .px = 140 }, .height = .{ .px = 10 } });
+    t.abort();
+    try f.frame();
+    try testing.expectEqual(@as(f32, 120), f.rect(n)[2]);
+    try testing.expectEqual(@as(usize, 2), f.win.node(n).adaptive.?.variants.len);
+    f.win.configure(300, 100, 1);
+    try f.frame();
+    try testing.expectEqual(@as(f32, 80), f.rect(n)[2]);
+
+    // Aborting a change while a variant holds restores what it showed.
+    t = try f.win.begin();
+    try t.clearVariants(n);
+    try testing.expectEqual(@as(f32, 120), f.win.node(n).layout.width.px);
+    t.abort();
+    try f.frame();
+    try testing.expectEqual(@as(f32, 80), f.rect(n)[2]);
+
+    // Cleared: its own layout, at any width.
+    t = try f.win.begin();
+    try t.clearVariants(n);
+    t.commit();
+    try f.frame();
+    try testing.expectEqual(@as(f32, 120), f.rect(n)[2]);
+    try testing.expect(f.win.node(n).adaptive == null);
+    // A variant added again starts from no variant held.
+    t = try f.win.begin();
+    try t.setVariant(n, .{ .min_width = 1000 }, .{ .hidden = true });
+    t.commit();
+    try f.frame();
+    try testing.expect(f.win.isShown(n));
+    t = try f.win.begin();
+    try testing.expectError(error.InvalidArgument, t.setVariant(n, .{ .max_width = std.math.nan(f32) }, .{ .hidden = true }));
+    try testing.expectError(error.InvalidNode, t.setVariant(n, .{}, .{ .flex = .{} }));
+    t.abort();
+}
+
+test "variants: max-content takes them at unbounded space, so the arrangement does not depend on the last one" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 400, .height = 300 });
+    defer f.deinit();
+    const t = try f.win.begin();
+    // Both containers size to their content.
+    const outer = try box(t, .root, .box, .{ .align_x = .start, .align_y = .start });
+    const inner = try box(t, outer, .box, .{});
+    const n = try box(t, inner, .box, .{ .width = .{ .px = 300 }, .height = .{ .px = 10 } });
+    try t.setVariant(n, .{ .min_width = 600 }, .{ .layout = .{ .width = .{ .px = 800 }, .height = .{ .px = 10 } } });
+    // A row that turns into a column when it does not fit.
+    const row = try box(t, inner, .flex, .{});
+    try t.setFlex(row, .{});
+    try t.setVariant(row, .{ .overflow = true }, .{ .flex = .{ .axis = .column } });
+    var items: [3]NodeId = undefined;
+    for (&items) |*it| it.* = try box(t, row, .box, .{ .width = .{ .px = 150 }, .height = .{ .px = 20 } });
+    t.commit();
+    try f.frame();
+    // 450 wide in 400: a column.
+    try testing.expectEqual(@as(f32, 300), f.rect(n)[2]);
+    try testing.expectEqual([4]f32{ 0, 30, 150, 20 }, f.rect(items[1]));
+
+    // Wide: the inner box is offered what n wants at unbounded space,
+    // not what it showed last.
+    f.win.configure(1000, 300, 1);
+    try f.frame();
+    try testing.expectEqual(@as(f32, 800), f.rect(n)[2]);
+    try testing.expectEqual([4]f32{ 150, 10, 150, 20 }, f.rect(items[1]));
+
+    f.win.configure(400, 300, 1);
+    try f.frame();
+    try testing.expectEqual(@as(f32, 300), f.rect(n)[2]);
+    try testing.expectEqual(@as(f32, 30), f.rect(items[1])[1]);
+}
+
+test "variant switches animate with motion, also in a frame that resized the window, and move focus off what they hide" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 800, .height = 200 });
+    defer f.deinit();
+    const motion: node_mod.Motion = .{ .duration_ms = 300, .layout = true, .exit = .{ .opacity = 0 } };
+    var t = try f.win.begin();
+    const row = try box(t, .root, .flex, .{});
+    const side = try box(t, row, .box, .{ .width = .{ .px = 200 } });
+    try t.setVisual(side, .{ .background = .black, .motion = motion });
+    try t.setSemantics(side, .{ .focusable = true });
+    const content = try box(t, row, .box, .{ .grow = 1 });
+    // At the end edge, so every resize moves it.
+    const tail = try box(t, row, .box, .{ .width = .{ .px = 50 } });
+    try t.setVisual(tail, .{ .background = .black, .motion = motion });
+    try t.setVariant(side, .{ .max_width = 600 }, .{ .hidden = true });
+    t.commit();
+    f.comp.keep_log = true;
+    try f.frame();
+    ui.input.setFocus(f.win, side, true);
+    const ls = f.win.state(side).own_layer + 1;
+    const lt = f.win.state(tail).own_layer + 1;
+
+    // A resize that switches nothing jumps (D38).
+    f.comp.log.clearRetainingCapacity();
+    f.win.configure(700, 200, 1);
+    try f.frame();
+    try testing.expect(findAnimate(f.comp.log.items, lt) == null);
+    try testing.expectEqual(@as(f32, 650), f.comp.get(lt).transform.translate.x);
+
+    // One that switches: the sidebar exits, what follows it slides, and
+    // focus leaves the hidden sidebar.
+    f.comp.log.clearRetainingCapacity();
+    f.win.configure(500, 200, 1);
+    try f.frame();
+    try testing.expect(hasOp(f.comp.log.items, .exit, ls));
+    try testing.expectEqual(@as(f32, 0), findAnimateOf(f.comp.log.items, ls, .opacity).?.to.opacity);
+    try testing.expectEqual(@as(f32, 450), findAnimate(f.comp.log.items, lt).?.to.transform.translate.x);
+    try testing.expectEqual(NodeId.none, f.win.input.focus);
+    try testing.expectEqual([4]f32{ 0, 0, 450, 200 }, f.rect(content));
+
+    // The next resize jumps again.
+    f.comp.log.clearRetainingCapacity();
+    f.win.configure(450, 200, 1);
+    try f.frame();
+    try testing.expect(findAnimate(f.comp.log.items, lt) == null);
+    try testing.expect(hasOp(f.comp.log.items, .set_transform, lt));
+}
+
+test "variants on the window's size see the window wherever the node is, also under constraints that did not change" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 800, .height = 200 });
+    defer f.deinit();
+    const t = try f.win.begin();
+    const outer = try box(t, .root, .box, .{ .width = .{ .px = 100 }, .height = .{ .px = 50 }, .align_x = .start, .align_y = .start });
+    const inner = try box(t, outer, .box, .{});
+    const n = try box(t, inner, .box, .{ .height = .{ .px = 10 } });
+    try t.setVariant(n, .{ .max_width = 500, .window = true }, .{ .hidden = true });
+    // Its parent offers 100: a plain condition holds at any window size.
+    const m = try box(t, inner, .box, .{ .height = .{ .px = 10 } });
+    try t.setVariant(m, .{ .max_width = 500 }, .{ .layout = .{ .height = .{ .px = 20 } } });
+    t.commit();
+    try f.frame();
+    try testing.expect(f.win.isShown(n));
+    try testing.expectEqual(@as(f32, 20), f.rect(m)[3]);
+
+    f.win.configure(400, 200, 1);
+    try f.frame();
+    try testing.expect(!f.win.isShown(n));
+    try testing.expectEqual([4]f32{ 0, 0, 100, 20 }, f.rect(m));
+    f.win.configure(500, 200, 1);
+    try f.frame();
+    try testing.expect(f.win.isShown(n));
+}
