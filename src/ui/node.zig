@@ -1313,7 +1313,10 @@ pub const Settings = packed struct(u8) {
     /// The window's maximized or fullscreen state, or the controls it
     /// draws itself (D17), which the window's host reports.
     window: bool = false,
-    _: u4 = 0,
+    /// The window's language (`Window.language`), so text formatted for
+    /// it (dates, D21) is out of date.
+    locale: bool = false,
+    _: u3 = 0,
 
     pub fn any(s: Settings) bool {
         return @as(u8, @bitCast(s)) != 0;

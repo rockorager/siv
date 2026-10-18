@@ -835,6 +835,7 @@ pub fn setLanguage(win: *Window, language: []const u8) error{OutOfMemory}!void {
             win.markPaint(nid);
         }
     }
+    win.settingsChanged(.{ .locale = true });
     win.requestFrame();
 }
 
