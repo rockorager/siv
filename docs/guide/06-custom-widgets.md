@@ -227,7 +227,9 @@ rounded rect, ellipse) consumed by fill, stroke, or clip; solid colors and
 linear, radial, and sweep gradients; images and themed icons; text shaped
 like any text node's, wrapped and aligned in a width; and layers for a
 transform, a clip, an opacity, or a blend mode, closed with
-`siv_draw_pop`. Colors come from the theme with `siv_window_get_color`:
+`siv_draw_pop`. Colors come from the theme with `siv_window_get_color`,
+or with `siv_node_get_color` on the canvas's node inside a subtree with
+a theme of its own (see [Themes for part of a window](04-widgets-and-theming.md#themes-for-part-of-a-window)):
 
 ```zig
 fn drawChart(chart: *Chart, d: siv.Draw, width: f32, height: f32) !void {

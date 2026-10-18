@@ -355,3 +355,48 @@ event.
 Motion follows the desktop too: with reduced motion (the desktop's
 setting, or `SIV_APP_REDUCED_MOTION`), transitions jump, animations stop,
 and carets stop blinking.
+
+### Themes for part of a window
+
+A node can carry a theme for its subtree: `siv_set_theme` chooses its
+scheme (`dark` for a sidebar that stays dark, `inverse` for the scheme
+opposite the window's, `follow` for the desktop's even where you fixed
+the window's) and high contrast, and `siv_set_theme_color` overrides
+tokens in it, over your application-wide overrides. Everything inside
+resolves its themed colors against it, stock widgets included, and so do
+menus, popovers, and tooltips opened from inside it. siv keeps your
+choices, not colors, so the subtree still follows the desktop's accent,
+the user's theme for its scheme, and high contrast, which a subtree can
+turn on but never off. Text sizes stay the window's.
+[examples/sidebar.lua](examples/sidebar.lua) has a dark sidebar, a banner
+in the opposite scheme, and a section with its own accent:
+
+```lua
+-- Dark whatever the desktop's scheme: every themed color in the
+-- sidebar resolves in the dark variant of the theme.
+local sidebar = txn:flex(row, { axis = "column", gap = 8 }, {
+	theme = { scheme = "dark" },
+	layout = { width = 170, padding = { 8, 8, 12, 12 } },
+	visual = { background_token = "sidebar_bg" },
+})
+```
+
+```lua
+-- An accent for one section: what derives from it (hover and pressed
+-- shades, focus rings, selections) follows, in every variant.
+local section = txn:flex(main, { gap = 12, align_items = "center" })
+txn:set_theme_color(section, "all", "accent", { r = 0.05, g = 0.58, b = 0.53, a = 1 })
+```
+
+![A notes window: a dark sidebar with a list of places and a More button beside a light view with check boxes, a dark banner, and a teal Add item button](images/sidebar.png)
+
+The menu the sidebar's More button opens is dark too. In a dark window
+the sidebar stays as it was and the banner turns light:
+
+![The sidebar's More menu, dark: New folder, Show counts checked, and Empty trash disabled](images/sidebar-menu.png)
+
+![The same window in the dark theme: the sidebar unchanged, the banner light](images/sidebar-dark.png)
+
+Canvases inside a themed subtree read its colors with
+`siv_node_get_color` on their own node; `siv_window_get_color` answers for
+the window.

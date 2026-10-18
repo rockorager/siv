@@ -7,6 +7,7 @@
 const std = @import("std");
 const abi = @import("abi");
 const harness = @import("harness.zig");
+const siv = @import("siv");
 const ui = @import("ui");
 
 const testing = std.testing;
@@ -135,6 +136,24 @@ test "guide: settings.zig under the user's theme.toml" {
             app.app.setUserTheme(&ui.user_theme.parseFile(@embedFile("../examples/theme.toml")).theme);
             try g.clickOn(.@"switch", "Dark theme");
             try g.expectImage("settings-theme");
+        }
+    }.f);
+}
+
+test "guide: sidebar.lua themes part of a window, and its menu" {
+    try harness.runLua("docs/guide/examples/sidebar.lua", struct {
+        fn f(g: *Guide) !void {
+            try g.expectImage("sidebar");
+            // A menu opened from the sidebar takes its theme.
+            try g.clickOn(.button, "More");
+            const menu = (try g.popup()) orelse return error.NoMenu;
+            try g.expectImageOf(menu, "sidebar-menu");
+            try g.keyIn(menu, ks.escape, "", .{});
+            // With the window dark, the sidebar stays dark and the banner
+            // turns light.
+            try harness.ok(siv.c.siv_app_set_theme(g.app, &.{ .scheme = .dark }));
+            try g.settle();
+            try g.expectImage("sidebar-dark");
         }
     }.f);
 }
