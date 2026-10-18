@@ -494,6 +494,42 @@ test "settings from Lua: typed values over defaults, changes, a window's size" {
     );
 }
 
+test "pickers from Lua: locale formatting, the emoji catalogue, values, and colors" {
+    _ = try run(prologue ++
+        \\-- 1999-03-15 in the locale's words and clock (D21).
+        \\assert(app:format_date(10665, "long") == "March 15, 1999")
+        \\assert(app:format_time(22 * 3600 + 30 * 60, "short") == "10:30\u{202f}PM")
+        \\app:set_language("de", "inherit")
+        \\assert(app:format_date(10665, "full") == "Montag, 15. März 1999")
+        \\local info = app:get_locale_info()
+        \\assert(info.first_weekday == 1 and info.hour_cycle == "h23", info.hour_cycle)
+        \\assert(app:get_font_family_count() == 1)
+        \\assert(app:get_font_family_name(app:get_font_family_at(0)) == "Droid")
+        \\-- The emoji catalogue (D41).
+        \\local found, thumbs = siv.emoji_find("thumbs up", 0)
+        \\assert(found and siv.emoji_get(thumbs, "medium") == "👍🏽")
+        \\assert(siv.emoji_get_name(thumbs, "dark") == "thumbs up: dark skin tone")
+        \\assert(siv.emoji_get_info(thumbs).group == "people_body")
+        \\assert(siv.emoji_get_count() > 1800)
+        \\local date, color, emoji
+        \\win:update(function(txn, root)
+        \\  date = txn:date_picker(root, { label = "Due", flags = "compact" })
+        \\  txn:widget_set_value(date, 10665)
+        \\  color = txn:color_chooser(root, { label = "Accent", color = "#336699", flags = { "alpha" } })
+        \\  emoji = txn:emoji_chooser(root, { label = "Reaction", tone = "light" })
+        \\  txn:time_picker(root, { label = "Alarm", flags = { "seconds" } })
+        \\  txn:font_chooser(root, { label = "Font" })
+        \\end)
+        \\assert(date:widget_get_value() == 10665)
+        \\assert(emoji:widget_get_value() == -1)
+        \\local col = color:color_chooser_get_color()
+        \\assert(math.abs(col.g - 0x66 / 255) < 1e-6 and col.a == 1)
+        \\win:update(function(txn) txn:color_chooser_set_color(color, { 1, 0, 0, 0.5 }) end)
+        \\assert(color:color_chooser_get_color().a == 0.5)
+        \\assert(not pcall(function() return color:widget_get_value() end))
+    );
+}
+
 test "the test API: scrolling, typing, queries, captures" {
     _ = try run(prologue ++
         \\local editor, scroll, last

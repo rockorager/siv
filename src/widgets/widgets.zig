@@ -41,13 +41,19 @@ pub const combo = @import("combo.zig");
 pub const header_bar = @import("header_bar.zig");
 pub const navigation = @import("navigation.zig");
 pub const sidebar = @import("sidebar.zig");
+pub const picker = @import("picker.zig");
+pub const date = @import("date.zig");
+pub const time = @import("time.zig");
+pub const color_chooser = @import("color.zig");
+pub const font = @import("font.zig");
+pub const emoji = @import("emoji.zig");
 
 const c = siv.c;
 const Node = siv.Node;
 const Txn = siv.Txn;
 
 /// The files that export schema functions, for src/abi/abi.zig.
-pub const implementations = .{ @This(), button, toggle, radio, field, range, menu, dialog, tabs, split, toast, views, combo, header_bar, navigation, sidebar };
+pub const implementations = .{ @This(), button, toggle, radio, field, range, menu, dialog, tabs, split, toast, views, combo, header_bar, navigation, sidebar, date, time, color_chooser, font, emoji };
 
 var key_byte: u8 = 0;
 
@@ -94,6 +100,18 @@ pub const Kind = enum(u8) {
     sidebar,
     sidebar_section,
     sidebar_item,
+    /// Pickers (D41), their parts, and their compact form.
+    date_picker,
+    date_cell,
+    time_picker,
+    time_field,
+    color_chooser,
+    /// A color chooser's area or strip.
+    color_part,
+    font_chooser,
+    emoji_chooser,
+    picker_button,
+    chevron,
 };
 
 /// The first field of every widget's state.

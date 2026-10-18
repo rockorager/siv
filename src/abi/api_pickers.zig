@@ -1,8 +1,9 @@
 //! The pickers part of the API schema (D41): dates and times as the
 //! application's locale writes them (D21), the installed font families,
-//! and the emoji catalogue. api.zig appends these declarations and
+//! the emoji catalogue, and the stock date, time, color, font, and emoji
+//! pickers built on them (D22). api.zig appends these declarations and
 //! functions to its own; the conventions are schema.zig's. Implemented in
-//! intl.zig.
+//! intl.zig and src/widgets/{date,time,color,font,emoji}.zig.
 
 const std = @import("std");
 const schema = @import("schema.zig");
@@ -49,10 +50,29 @@ fn p(comptime name: []const u8, comptime t: schema.Type, comptime doc: []const u
 }
 
 const app_param = p("app", ref("siv_app"), "The application.");
+const txn_param = p("txn", ref("siv_txn"), "An open transaction.");
 const buffer_out = [_]Param{
     p("buffer", schema.text_buffer, "Receives at most buffer_cap bytes; may be NULL with buffer_cap 0."),
     p("len", out(.usize), "The full length in bytes."),
 };
+
+/// A picker's builder: a transaction operation that appends it.
+fn builder(comptime name: []const u8, comptime desc: []const u8, comptime doc: []const u8) Function {
+    return .{
+        .name = name,
+        .doc = doc ++ " Appended as the parent's last child. Returns the node, or 0 if the transaction has failed (see siv_txn_commit).",
+        .since = v0_1,
+        .params = &.{
+            txn_param,
+            p("parent", ref("siv_node"), "A container node of the transaction's window: any, or a popover's content (siv_popover_create)."),
+            p("desc", .{ .desc = desc }, "Options; NULL for defaults."),
+        },
+        .ret = ref("siv_node"),
+    };
+}
+
+const label_field: schema.Field = .{ .name = "label", .type = .string, .doc = "The accessible name, copied (a visible label beside it says the same); with SIV_PICKER_COMPACT the button's." };
+const flags_field: schema.Field = .{ .name = "flags", .type = ref("siv_picker_flags"), .doc = "Options." };
 
 pub const decls = [_]Decl{
     enumeration("siv_date_style", "How siv_app_format_date writes a date, after CLDR's patterns and names for the locale (D21).", &.{
@@ -123,6 +143,31 @@ pub const decls = [_]Decl{
         reserved("reserved0"),
         reserved("reserved1"),
     }),
+    flags("siv_picker_flags", "Picker options. Bits for another kind of picker are ignored.", &.{
+        .{ .name = "disabled", .bit = 0, .doc = "Shown dimmed; neither focusable nor operable." },
+        .{ .name = "compact", .bit = 1, .doc = "A button showing the value, which opens the picker in a popover below it (D22); the value is the button's. Choosing a date or an emoji, or Enter, closes it; Escape and a click outside do too." },
+        .{ .name = "seconds", .bit = 2, .doc = "Time pickers: a field for seconds too." },
+        .{ .name = "alpha", .bit = 3, .doc = "Color choosers: a slider for opacity too." },
+    }),
+    descriptor("siv_date_picker_desc", "A date picker (siv_date_picker).", &.{ label_field, flags_field, reserved("reserved0") }),
+    descriptor("siv_time_picker_desc", "A time picker (siv_time_picker).", &.{ label_field, flags_field, reserved("reserved0") }),
+    descriptor("siv_color_chooser_desc", "A color chooser (siv_color_chooser).", &.{
+        label_field,
+        .{ .name = "color", .type = ref("siv_color"), .doc = "The color it starts with; all zero is opaque black." },
+        flags_field,
+        reserved("reserved0"),
+    }),
+    descriptor("siv_font_chooser_desc", "A font chooser (siv_font_chooser).", &.{
+        label_field,
+        .{ .name = "preview", .type = .string, .doc = "The text the preview shows in the chosen family, copied; empty shows a pangram and digits." },
+        flags_field,
+        reserved("reserved0"),
+    }),
+    descriptor("siv_emoji_chooser_desc", "An emoji chooser (siv_emoji_chooser).", &.{
+        label_field,
+        flags_field,
+        .{ .name = "tone", .type = ref("siv_skin_tone"), .doc = "The skin tone it starts with, as a change event reported it last time." },
+    }),
 };
 
 pub const functions = [_]Function{
@@ -168,4 +213,23 @@ pub const functions = [_]Function{
         p("found", out(.bool), "Whether one matched."),
         p("index", out(.u32), "Its index; the count when none did."),
     })),
+    builder("siv_date_picker", "siv_date_picker_desc", "Creates a date picker (D22, D41): a month's calendar in the application's locale (D21), with the month and year as its heading between previous- and next-month buttons, weekday columns from the locale's first day, and day numbers in its digits; mirrored in right-to-left layouts. Its value (siv_widget_get_value, siv_widget_set_value) is the selected date in days since 1970-01-01 (see siv_app_format_date), today's by default; siv_widget_set_range limits it, leaving other days disabled. Choosing a day (a click, Enter, or Space) reports SIV_EVENT_CHANGE with the date as value. The calendar is WAI-ARIA's date grid: a table of rows of cells named by their full date, one Tab stop at the selected day, which arrows move by a day (Left and Right mirrored in RTL) or a week, Home and End to the week's start and end, Page Up and Page Down by a month, and with Shift by a year, showing that month."),
+    builder("siv_time_picker", "siv_time_picker_desc", "Creates a time picker (D22, D41): fields for the hour, minutes, optional seconds, and a day period where the locale counts 12 hours, in the locale's order, digits, and separator (D21); the numbers read left to right in right-to-left layouts too. Each field is a spin button: Up and Down step it (wrapping), digits type it, Home and End go to its ends, Left and Right move to the field beside it on screen, Enter reports SIV_EVENT_ACTIVATE; A and P, or the period's first letter, set the period. Its value is the time in seconds since midnight, 0 by default; siv_widget_set_range sets its bounds and step (60 by default, 1 with seconds). The user's changes report SIV_EVENT_CHANGE with the seconds as value. Its role is group; the fields' spin_button, the period's with its text as the value text."),
+    builder("siv_color_chooser", "siv_color_chooser_desc", "Creates a color chooser (D22, D41): a saturation and value area over a hue slider, an optional opacity slider, a hexadecimal field, and a button that picks a color from the screen through the Screenshot portal (siv_pick_color), which disables itself where no portal provides it. Colors are sRGB (siv_color); the area and the sliders show what they choose exactly, as sRGB pixels, while siv composites in linear light (D11). It has no widget value, since a color is four numbers: siv_color_chooser_get_color and siv_color_chooser_set_color read and set it. The user's changes report SIV_EVENT_CHANGE (value 0). For assistive technology the area is a slider of saturation (Left and Right) whose brightness Up and Down change, and the hue and opacity are sliders, each with its values as text; all three stay left to right in right-to-left layouts."),
+    builder("siv_font_chooser", "siv_font_chooser_desc", "Creates a font chooser (D22, D41): a search field over a list of the installed families (siv_app_get_font_family_at), each named in its own face, and a preview of the chosen family. Its value is the chosen family's id (siv_app_get_font_family), for text styles and spans; 0 (the default family) until one is chosen. Selecting a family reports SIV_EVENT_CHANGE with its id as value. Typing in the field filters the families by what their names contain, ignoring case; Down moves to the list, where Enter reports SIV_EVENT_ACTIVATE on the chooser."),
+    builder("siv_emoji_chooser", "siv_emoji_chooser_desc", "Creates an emoji chooser (D22, D41): a search field, a skin tone menu, a tab per group of the catalogue (siv_emoji_get_info), and a grid of the group's emoji or of those whose names match the search (siv_emoji_find). Its value is the index of the emoji chosen last, -1 before one is (setting it shows that emoji's group). Choosing one (a click, Enter, or Space; arrows only move the selection) reports SIV_EVENT_CHANGE with its index as value and the skin tone as index; siv_emoji_get gives its characters. Emoji are named by their CLDR names (in English) for assistive technology; the grid's role is list, its arrows move in two dimensions."),
+    call("siv_color_chooser_get_color", "A color chooser's color, sRGB with straight alpha.", &.{
+        p("node", ref("siv_node"), "A color chooser."),
+        p("color", out(ref("siv_color")), "The color."),
+    }),
+    .{
+        .name = "siv_color_chooser_set_color",
+        .doc = "Sets a color chooser's color without reporting it. Components are clamped to [0, 1]. A failure is the transaction's (see siv_txn_commit).",
+        .since = v0_1,
+        .params = &.{
+            txn_param,
+            p("node", ref("siv_node"), "A color chooser of the transaction's window."),
+            p("color", ref("siv_color"), "sRGB with straight alpha."),
+        },
+    },
 };

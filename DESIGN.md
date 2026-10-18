@@ -4133,6 +4133,20 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     base direction comes from its text for bidi ordering, but start and
     end alignment follow the canvas node's direction (a page's, when
     printing).
+  - Built so far of the CLDR part (October 2026, for the pickers, D41):
+    the Gregorian calendar's names and date and time patterns, the
+    hour cycle, the first day of the week by region, and each
+    numbering system's digits, generated at build time from the
+    cldr-json npm packages (`src/intl/gen.zig`, the `intl` module) for
+    the locales whose language CLDR covers at the modern or moderate
+    level, deduplicated. `siv_app_format_date`, `siv_app_format_time`,
+    and `siv_app_get_locale_info` read them for the application's
+    language, falling back to a shorter tag, then the likely script
+    ("zh-TW" is "zh-Hant"), then English. Plural rules and number
+    formatting are not built yet. A window whose language changes
+    tells its nodes with a settings event flagged
+    `SIV_EVENT_LOCALE_CHANGED`, so text formatted for the old one is
+    formatted again.
 
 ### D22. Stock widgets
 
@@ -4140,9 +4154,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **Decision:** stock widgets are written in Zig using only public primitives:
   buttons, text fields and areas, styled-text editor, virtualized list, tree,
   table, and grid with selection models, menus, combo boxes, popovers, dialogs,
-  tabs, split panes, sliders, spin buttons, progress, toasts, and the
-  navigation widgets: sidebars, header bars, and navigation stacks (D40).
-  Theming uses compiled design
+  tabs, split panes, sliders, spin buttons, progress, toasts, the
+  navigation widgets: sidebars, header bars, and navigation stacks (D40),
+  and date, time, color, font, and emoji pickers (D41). Theming uses
+  compiled design
   tokens plus runtime overrides, follows the portal accent and color scheme, and
   includes a high-contrast variant (D29). Animation respects reduced motion.
   - **The boundary is enforced by the build.** `src/widgets` imports only
@@ -4180,7 +4195,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     (`siv_window_get_controls`), the window menu
     (`siv_window_show_menu`), a close request like the compositor's
     (`siv_window_request_close`), and settings events'
-    `window_changed`.
+    `window_changed`. For the pickers (D41): a value's
+    text (`value_text`, aria-valuetext), dates and times in the
+    application's locale (`siv_app_format_date`, `siv_app_format_time`,
+    `siv_app_get_locale_info`), the installed font families
+    (`siv_app_get_font_family_count`, `siv_app_get_font_family_at`),
+    the emoji catalogue (`siv_emoji_get`, `siv_emoji_get_name`,
+    `siv_emoji_get_info`, `siv_emoji_find`), and the settings event's
+    `SIV_EVENT_LOCALE_CHANGED`.
   - **Creating:** one builder per widget, a transaction operation like the
     primitive builders (D27): `siv_push_button(txn, parent, &desc)` appends the
     widget and returns its root node, or 0 once the transaction has failed
@@ -4639,6 +4661,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       typing starts. It used to show the style of the paragraph before
       it, then jumped to the node's own at the first keystroke. Lists
       (bullets and numbering) are not built.
+  - **Pickers** (D41): `siv_date_picker`, `siv_time_picker`,
+    `siv_color_chooser`, `siv_font_chooser`, and `siv_emoji_chooser`,
+    inline or, with `SIV_PICKER_COMPACT`, as a button that opens the
+    picker in a popover. Values that fit a double go through the
+    widget interface (days since 1970, seconds since midnight, a font
+    family id, an emoji's index); a color, four numbers, through
+    `siv_color_chooser_get_color` and `siv_color_chooser_set_color`.
 - **Non-goal:** a full document model with embedded tables and images.
 
 ### D23. Lua 5.5
@@ -7856,6 +7885,181 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   layer transforms from gesture events and hand the velocity to D38's
   spring; or popped pages that keep their state; or the toolbar
   pattern's arrow keys in header bars without text fields.
+
+### D41. Pickers
+
+- **Requirement:** the pickers GTK, Qt, and SwiftUI have: a calendar and
+  date picker, a time picker, a color chooser, a font chooser, and an
+  emoji chooser. Dates and times follow the locale (D21): first day of
+  the week, names, digits, 12 or 24 hours, right to left. Every picker
+  is keyboard-operable and reads correctly to a screen reader (D18),
+  works inline and in a popover, and is reachable from C and Lua.
+- **Decision:** five stock widgets (`src/widgets/{date,time,color,font,
+  emoji}.zig`, schema in `src/abi/api_pickers.zig`) built on public
+  primitives only (D22), with the data they need as public calls.
+  - **Values.** Where the value is one number it is the widget value
+    (`siv_widget_get_value`, `siv_widget_set_value`, `change` events):
+    a date is days since 1970-01-01 in the proleptic Gregorian calendar,
+    no time zone (an `i32` in `siv_app_format_date`; Unix time at UTC
+    midnight divided by 86400), today by default; a time is seconds
+    since midnight, 0 by default; a font is a family id
+    (`siv_app_get_font_family`), the same id text spans take, 0 the
+    default family until one is chosen; an emoji is its index in the
+    catalogue, -1 until one is chosen, with the skin tone as the change
+    event's `index`. `siv_widget_set_range` bounds dates (days outside
+    are disabled) and times (with a step: 60 s by default, 1 s with
+    seconds). A color is four numbers, so it has a typed getter and
+    setter, `siv_color_chooser_get_color` and
+    `siv_color_chooser_set_color`, and its change event's value is 0.
+    Packing a color into a double, or the date into a Julian day with a
+    time, were rejected: the first is unreadable from Lua, the second
+    puts time zones into a date.
+  - **Compact form.** `SIV_PICKER_COMPACT` builds a button showing the
+    value (the date in the medium style, the time, the hex color with a
+    swatch, the family's name, the emoji) that opens the inline picker
+    in a popover (`siv_popover_create`, D22) below it on a click, Enter,
+    Space, or Down, built afresh each time it opens. The button holds
+    the value and answers the same widget calls and color calls; the
+    picker's changes show on it at once and are reported on it.
+    Choosing a date or an emoji closes the popover, as does the inner
+    picker's `activate` (Enter in a time picker or on a font row);
+    Escape and a click outside close it too, and focus returns to the
+    button. Its role is button, named "label, value", expanded while
+    open.
+  - **Locale.** Dates and times come from CLDR through
+    `siv_app_format_date` (full, long, medium, short, month and year,
+    day, month, weekday, short and narrow weekday, year) and
+    `siv_app_format_time` (short, medium, and each field alone), and
+    `siv_app_get_locale_info` gives the first weekday, the hour cycle,
+    whether the day period comes first ("오후 10:30"), and the time
+    separator (D21). Pickers format again when the window's language
+    changes (`SIV_EVENT_LOCALE_CHANGED`). English UI strings ("Previous
+    month", "Hue", "Search emoji") are the stock widgets' own, as
+    elsewhere in D22, until siv's translations exist (D21).
+  - **Date picker.** A heading with the month and year between
+    previous- and next-month buttons (chevrons drawn on canvases, which
+    mirror in right-to-left layouts), then six weeks of seven day
+    cells under the weekday names from the locale's first day, so the
+    size never changes; days of the months around are dimmed, today is
+    outlined. Column headers take the short names where all seven fit
+    the 36 px column, else the narrow ones (Arabic's short names are
+    words). WAI-ARIA's date picker grid, with siv's roles: AT-SPI has no
+    grid role apart from table, as browsers map role=grid, so the
+    calendar is a table named by its month of rows of column headers
+    (named by the full weekday) and cells (named by the full date,
+    selected for the value, with their column index). One Tab stop at
+    the cursor's day: arrows move it by a day (Left and Right mirrored
+    in RTL, where the columns mirror by layout alone) or a week, Home
+    and End to the week's ends, Page Up and Page Down by a month, with
+    Shift by a year, and the calendar shows the cursor's month; a
+    click, Enter, or Space chooses. The heading is a polite live
+    region.
+  - **Time picker.** A field per part (hour, minutes, optional seconds,
+    day period where the locale counts 12 hours), in the order of the
+    locale's short time pattern, with its separator and digits. The
+    numbers sit in a left-to-right group, since "10:30" reads so in
+    right-to-left layouts too, and the period on the side the pattern
+    puts it, mirrored with the row. Each field is a spin button with
+    its own Tab stop: Up and Down step it with wrapping, Home and End
+    go to its ends, digits type it (ASCII and Arabic-Indic; two typed
+    within a second make one number, and a digit that cannot start a
+    longer number moves on to the next field), A and P or the period's
+    first letter set the period, Left and Right go to the field beside
+    it on screen (neither the row's order nor its mirror is the
+    screen's order once the numbers are isolated). Enter reports
+    `activate`. Fields carry their number as the value and what they
+    show as the value text, so the period reads "PM", not 1.
+  - **Color chooser.** A saturation-and-brightness area over a hue
+    strip, an optional opacity strip (`SIV_PICKER_ALPHA`), a swatch, a
+    hexadecimal field ("#RRGGBB", with alpha "#RRGGBBAA"; "#RGB" is
+    accepted), and "Pick from Screen", which calls `siv_pick_color`
+    (the Screenshot portal's PickColor, D19) and takes the color it
+    returns, keeping the opacity; when the portal answers unavailable
+    (no session bus, no backend; always on the headless backend) the
+    button disables itself. Colors are sRGB with straight alpha, the
+    space `siv_color` is in everywhere (D11): the area and strips are
+    images of sRGB pixels computed by the chooser, which siv composites
+    in linear light and writes back unchanged, so each shows exactly
+    the colors it chooses; gradient paints would interpolate in linear
+    light and disagree with HSV's sRGB arithmetic. Opacity is drawn
+    over a checkerboard composited in sRGB, as a transparent color
+    looks over one. The chooser keeps hue and saturation through grays
+    and black. The area and strips stay left to right in RTL layouts
+    (color geometry, not reading order; GTK and Qt do the same). For
+    assistive technology each is a slider with its value text (the
+    area "saturation 75%, brightness 80%", its value the saturation;
+    "220°"; "50%"): arrows step by one (Shift by ten), Page Up and Page
+    Down by ten, Home and End to the ends; in the area Up and Down
+    change the brightness. Wide-gamut choosing (Display P3, OKLCH) is
+    not built: `siv_color` has no wider space to return.
+  - **Font chooser.** A search field over a list view of the installed
+    families (`siv_app_get_font_family_count` and
+    `siv_app_get_font_family_at`: families added with `siv_app_add_font`
+    and Fontconfig's, each once, sorted ignoring ASCII case; cached
+    until the families change, D13), each row in its own face, and a
+    preview of the chosen family (the application's text, or a pangram
+    and digits). Typing filters by substring, ignoring case; Down
+    moves to the list, where selecting chooses (the preview follows the
+    selection, as GTK's does) and Enter reports `activate`. A settings
+    event with `SIV_EVENT_FONTS_CHANGED` reads the families again.
+  - **Emoji chooser.** A search field, a skin tone combo box, a tab per
+    UTS #51 group (WAI-ARIA tabs: one Tab stop, Left and Right mirrored
+    in RTL, Home and End, each tab an emoji named by its group), and a
+    grid view of the group's emoji or of the search results. A click,
+    Space, or Enter chooses; arrows only move the selection (the grid's
+    rows select as they move, so a capture handler on the grid tells
+    navigation from choosing). Cells are named by the emoji's CLDR name
+    with its tone ("waving hand: medium skin tone"), since screen
+    readers otherwise read the characters as best they can. The
+    catalogue is public, for applications with pickers of their own:
+    `siv_emoji_get_count`, `siv_emoji_get` (with a tone),
+    `siv_emoji_get_name`, `siv_emoji_get_info` (group, whether it takes
+    a tone), and `siv_emoji_find` (every query word starts a word of the
+    name, ignoring ASCII case), all callable from any thread. It is
+    every fully-qualified emoji of Emoji 18.0 without a skin tone, in
+    CLDR order, generated at build time from UTS #51's `emoji-test.txt`
+    as siv generates its other Unicode tables (`src/intl/gen.zig`);
+    each emoji that takes a tone keeps the file's five single-tone
+    sequences, and their names are formed from the base's by CLDR's
+    rule ("thumbs up: medium skin tone"), the 30 that CLDR forms
+    otherwise stored. Sequences with two different tones (couples) are
+    not offered: one tone applies to all, as in GNOME's chooser. Names
+    are English (CLDR's annotations in other languages are not
+    generated); search is English too. Emoji draw through the text engine's emoji
+    presentation and color glyphs (D13, D14).
+  - **Data and licences** (D25): CLDR 48.2's `cldr-core`,
+    `cldr-dates-full`, and `cldr-numbers-full` npm packages, pinned in
+    `build.zig.zon` (Unicode License v3); `emoji-test.txt` is vendored
+    in `src/intl/emoji/` with its hash, because unicode.org serves it
+    as plain text, which Zig's package manager cannot fetch, and no
+    archive carries it. Both have NOTICES entries. The generated
+    tables are about 200 KB of source each for CLDR and emoji. The
+    tests' color emoji font is a subset of Noto Color Emoji (OFL 1.1,
+    `test/golden/fonts`) to the emoji the goldens show; it is test data,
+    not shipped.
+  - **Accessibility primitive.** The value text the time and color
+    pickers need is `siv_semantics_desc.value_text` (aria-valuetext),
+    AT-SPI's Value.Text (D18), for any widget.
+  - **Tests:** `test/widgets/pickers.zig` drives each picker through the
+    C ABI on the headless backend with keys and clicks, checks values,
+    events, roles, names, and value texts, and compares goldens in
+    English, German, Egyptian Arabic, and Hebrew (calendars of March
+    1999, so no day is today); the compact forms open, choose, and
+    close in popovers. `src/intl` tests the formatter and catalogue
+    against CLDR's expected strings; `test/lua` and `test/c` call the
+    generated bindings.
+- **Alternatives:** wrapping the portal's color picker as the only
+  chooser (no portal off GNOME and KDE, and no way to type a color);
+  formatting dates with libc's `strftime` (the process locale, not the
+  application's, no first weekday or narrow names, and glibc locales are
+  often not installed); ICU (tens of megabytes, and C++); a grid role
+  of siv's own (AT-SPI maps it to table anyway); one month at a time
+  with variable rows (the calendar's size would jump between months).
+- **Reverse if:** CLDR's plural rules and number formatting land (D21),
+  then move the generator to share their tables; if `siv_color` gains a
+  wide-gamut space, then the chooser offers it; if applications need
+  translated emoji names, then generate CLDR's annotations for the
+  modern-coverage languages.
 
 ### D42. Trash and system signals
 

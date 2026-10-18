@@ -358,6 +358,30 @@ static void test_app(const unsigned char *font, size_t font_len) {
 	EXPECT(siv_app_measure_text(app, "Hello Hello Hello", 17, 60, NULL, &wrapped), SIV_OK);
 	CHECK(wrapped.width <= 60 && wrapped.height > metrics.height);
 
+	/* Pickers (D41): dates in the locale's words, the emoji catalogue,
+	 * and a color chooser's typed value. */
+	char date[64];
+	EXPECT(siv_app_format_date(app, 10665, SIV_DATE_STYLE_LONG, date, sizeof date, &len), SIV_OK);
+	CHECK(len == 14 && memcmp(date, "March 15, 1999", 14) == 0);
+	bool found = false;
+	uint32_t thumbs = 0;
+	EXPECT(siv_emoji_find("thumbs up", 9, 0, &found, &thumbs), SIV_OK);
+	CHECK(found && thumbs < siv_emoji_get_count());
+	EXPECT(siv_emoji_get(thumbs, SIV_SKIN_TONE_MEDIUM, date, sizeof date, &len), SIV_OK);
+	CHECK(len == 8 && memcmp(date, "\xf0\x9f\x91\x8d\xf0\x9f\x8f\xbd", 8) == 0);
+	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
+	siv_node chooser = siv_color_chooser(txn, column, SIV_DESC(siv_color_chooser_desc, .color = {0.2f, 0.4f, 0.6f, 1}));
+	siv_node picker = siv_date_picker(txn, column, SIV_DESC(siv_date_picker_desc, .flags = SIV_PICKER_COMPACT));
+	siv_widget_set_value(txn, picker, 10665);
+	EXPECT(siv_txn_commit(txn), SIV_OK);
+	siv_color picked = {0};
+	EXPECT(siv_color_chooser_get_color(chooser, &picked), SIV_OK);
+	CHECK(picked.b > 0.59f && picked.b < 0.61f && picked.a == 1);
+	double day = 0;
+	EXPECT(siv_widget_get_value(picker, &day), SIV_OK);
+	CHECK(day == 10665);
+	EXPECT(siv_color_chooser_get_color(picker, &picked), SIV_ERROR_INVALID_ARGUMENT);
+
 	/* An open transaction and the window's handlers go with the window. */
 	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
 	siv_on(txn, label, SIV_EVENT_TYPE_POINTER, on_activate, on_destroy, &handler_counts);
