@@ -198,6 +198,63 @@ Tabs show one panel at a time (`siv_tab` returns the panel to fill), and a
 split pane has start and end panes and a divider the user drags; both
 expose their parts through `siv_widget_get_part`.
 
+## Sidebars, header bars, and navigation stacks
+
+[examples/navigation.lua](examples/navigation.lua) is a settings window:
+a sidebar of destinations in sections beside a navigation stack, whose
+pages each start with a header bar.
+
+![A Settings window: a sidebar with Connections (Wi-Fi, Bluetooth chosen) and Device (Displays, Sound) sections, and a Bluetooth page with a switch and an Advanced button under a header bar with the window controls](images/navigation.png)
+
+A sidebar holds items, directly or in titled sections, and boxes above
+and below them (its start and end parts) for a header bar or a footer.
+Its value is the current item's index among all items; choosing one by
+a click or the arrow keys reports `change`. Screen readers hear a
+navigation landmark whose current item is marked as the current page:
+
+```lua
+-- The sidebar's own header bar sits above its items, without the
+-- window controls, which belong to the content's.
+txn:header_bar(sidebar:widget_get_part("start", 0), { title = "Settings", flags = "no_window_controls" })
+local connect = txn:sidebar_section(sidebar, { title = "Connections" })
+txn:sidebar_item(connect, { label = panels[1] })
+txn:sidebar_item(connect, { label = panels[2] })
+```
+
+A navigation stack shows the last page pushed onto it with
+`navigation_page`; its value is the number of pages, so setting it to 0
+starts over. A header bar inside a page shows the page's title when it
+has none of its own, and from the second page on it starts with a back
+button:
+
+```lua
+-- A destination's page, alone on the stack.
+local function show(t, index)
+	local name = panels[index]
+	t:widget_set_value(stack, 0)
+	local page = t:navigation_page(stack, { title = name })
+	t:header_bar(page)
+```
+
+![The Bluetooth Advanced page, slid in over the Bluetooth page, with a back button at the start of its header bar](images/navigation-pushed.png)
+
+Pages slide in from the end edge and back out on a spring (they jump
+under reduced motion). Going back is the back button, Escape, Alt+Left
+(Alt+Right in right-to-left layouts), the Back key, or the mouse's back
+button. Each reports `close` on the last page, so a `siv_on` handler
+that returns true keeps a page with unsaved changes; otherwise the page
+goes, and the stack reports `change` with the number of pages left.
+Pushing moves focus into the new page if it was in the stack, and going
+back returns it to where it was.
+
+A header bar's start and end parts hold its controls. When the window
+draws its own decorations (`SIV_WINDOW_CLIENT_DECORATIONS`, or a
+compositor that offers none), it also shows the window controls the
+compositor allows and acts as the title bar: drag it to move the window,
+double-click it to maximize. Under the compositor's decorations it is a
+toolbar with a title, so the same layout works on both. To collapse a
+sidebar, hide it with `siv_set_hidden`.
+
 ## Tooltips and combo boxes
 
 [examples/export.c](examples/export.c) has a toolbar of icon-only buttons

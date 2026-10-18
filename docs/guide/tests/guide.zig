@@ -134,6 +134,21 @@ test "guide: settings.zig in the light and dark themes" {
     }.f);
 }
 
+test "guide: navigation.lua chooses a destination, pushes a page, and goes back" {
+    try harness.runLua("docs/guide/examples/navigation.lua", struct {
+        fn f(g: *Guide) !void {
+            try g.clickOn(.list_item, "Bluetooth");
+            try g.expectImage("navigation");
+            try g.clickOn(.button, "Advanced");
+            try g.expectImage("navigation-pushed");
+            // Escape goes back to the destination's page.
+            try g.key(0xff1b, "", .{});
+            _ = try g.find(.button, "Advanced");
+            _ = try g.find(.toolbar, "Bluetooth");
+        }
+    }.f);
+}
+
 test "guide: settings.zig under the user's theme.toml" {
     try harness.runZig(@import("zig_settings"), struct {
         fn f(g: *Guide) !void {
