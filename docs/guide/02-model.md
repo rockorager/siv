@@ -205,6 +205,92 @@ static void ask_to_discard(struct notes *notes) {
 Discard destroys the window, which ends `siv_app_run`; the program then
 destroys the application and joins its worker thread.
 
+## Reactive views in Lua
+
+The tree is retained and you change it with transactions, so a program
+has to remember which node shows which state. In Lua, `require("siv.view")`
+does that bookkeeping for you, in the style of SolidJS
+([examples/reactive.lua](examples/reactive.lua)). State is signals, each a
+getter and a setter; a memo is a value derived from them:
+
+```lua
+-- The state: signals, each a getter and a setter.
+local items, set_items = view.signal({
+	{ name = "Apples" }, { name = "Bread" }, { name = "Coffee" }, { name = "Dates" },
+})
+local filter, set_filter = view.signal("")
+
+-- A derived value: runs again when items or the filter change.
+local shown = view.memo(function()
+	local out = {}
+	for _, item in ipairs(items()) do
+		if item.name:lower():find(filter():lower(), 1, true) then
+			out[#out + 1] = item
+		end
+	end
+	return out
+end)
+```
+
+Components are plain functions that run once. They build real nodes with
+`view.ui`, which has a builder for every siv builder without the
+transaction and the parent (`txn:flex(parent, desc, props)` becomes
+`ui.flex(desc, props, children)`), and `view.mount` runs one in a
+transaction on a window. A property given as a function is a binding: when
+a signal it read changes, siv.view sets that one property on that one node
+again. `view.each` builds a row per item, keyed by the item, and when the
+list changes it builds, removes, and moves only the rows that changed;
+`view.show` swaps a subtree in and out:
+
+```lua
+local function Groceries()
+	ui.flex({ axis = "column", gap = 8 }, { layout = { padding = 16 } }, function()
+		-- The field owns its text; the filter follows it.
+		ui.text_field({ placeholder = "Filter" }, {
+			key = "filter",
+			on = { change = function(_, ev)
+				set_filter(ev.text)
+				return true
+			end },
+		})
+		ui.text(function()
+			return ("%d of %d shown"):format(#shown(), #items())
+		end, { text_style = { size_role = "caption", color_token = "muted_fg" } })
+		view.each(shown, Row)
+		view.show(function()
+			return #shown() == 0
+		end, function()
+			ui.text("Nothing matches", { text_style = { color_token = "muted_fg" } })
+		end)
+	end)
+end
+```
+
+![The Groceries window filtered by "a": a field, "2 of 3 shown", and the rows Apples and Dates](images/reactive.png)
+
+A few rules make it work:
+
+- **Read signals inside functions.** `ui.text("Count: " .. count())` would
+  build a constant, so siv.view raises an error when a component reads a
+  signal while it builds. Write `ui.text(function() return "Count: " ..
+  count() end)`, or pass the getter itself (`ui.text(count)`); read a value
+  once on purpose with `view.peek(count)`.
+- **Handlers are set once** and read signals when they run. The writes a
+  handler, timer, or other callback makes are flushed when it returns, in
+  one transaction per window, before the next frame.
+- **Editors own their text.** A `text` binding on an editor sets the text
+  only when it differs from what the editor holds, so a draft that follows
+  the user's typing keeps the undo history.
+- **Removing a subtree disposes what it made**: its bindings and effects
+  stop listening. `view.on_cleanup` runs code then.
+- **Hot reload rebuilds components.** Keep signals with `siv.keep`; a node
+  with a `key` gets its focus, text, selection, and scroll offset back
+  when `siv-lua --watch` mounts the new tree.
+
+Virtualized views stay data sources: give `ui.list_view` a `row`
+function and an `items` getter, and it builds each row node's content
+once and rebinds it as rows scroll. DESIGN.md's D45 has the rest.
+
 ## Errors
 
 Functions that can fail return `siv_result`: `SIV_OK` (0) or a negative

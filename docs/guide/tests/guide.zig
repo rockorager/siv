@@ -120,6 +120,23 @@ test "guide: motion.lua adds rows at the top and removes them" {
     }.f);
 }
 
+test "guide: reactive.lua filters and removes rows from signals" {
+    try harness.runLua("docs/guide/examples/reactive.lua", struct {
+        fn f(g: *Guide) !void {
+            try g.expectText("4 of 4 shown");
+            try g.key(ks.tab, "", .{});
+            try g.typeText("a");
+            try g.expectText("3 of 4 shown");
+            try g.clickOn(.list_item, "Bread");
+            try g.expectText("2 of 3 shown");
+            try g.expectImage("reactive");
+            try g.clickOn(.text_input, "Filter");
+            try g.typeText("x");
+            try g.expectText("Nothing matches");
+        }
+    }.f);
+}
+
 // Widgets and theming ---------------------------------------------------------
 
 test "guide: settings.zig in the light and dark themes" {
