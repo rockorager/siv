@@ -1244,6 +1244,9 @@ pub const Node = struct {
     /// accessible child (D18): "BUS_NAME:/object/path". Owned; empty for
     /// none.
     a11y_embed: []const u8 = "",
+    /// The application undo stack the undo keys reach from here (D35),
+    /// as `Window.undo_host` names it; 0 for none. Opaque to the tree.
+    undo: u64 = 0,
 
     pub const Status = enum(u8) {
         /// On the free list (`next` links it).

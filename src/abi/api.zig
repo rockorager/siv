@@ -307,6 +307,7 @@ const testing = @import("api_testing.zig");
 const shell = @import("api_shell.zig");
 const dbus = @import("api_dbus.zig");
 const document = @import("api_document.zig");
+const undo = @import("api_undo.zig");
 
 pub const decls = [_]Decl{
     result,
@@ -817,7 +818,7 @@ pub const decls = [_]Decl{
     flags("siv_editor_flags", "Editor options.", &.{
         .{ .name = "multiline", .bit = 0, .doc = "Enter inserts a line break and lines wrap; otherwise one line that scrolls to keep the caret visible." },
         .{ .name = "masked", .bit = 1, .doc = "A password field (D15): the text lives in locked memory excluded from core dumps, shows one bullet per character, has no undo or input method, and is hidden from assistive technology. Offsets still index the real text." },
-        .{ .name = "no_undo", .bit = 2, .doc = "The application keeps the undo history (D15), as an editor with a model of its own does: the editor records no steps, Ctrl+Z, Ctrl+Shift+Z, and Ctrl+Y do nothing in it and bubble on, and change events (edit_start, edit_end, edit_length) say what each edit replaced." },
+        .{ .name = "no_undo", .bit = 2, .doc = "The application keeps the undo history (D15), as an editor with a model of its own does: the editor records no steps, Ctrl+Z, Ctrl+Shift+Z, and Ctrl+Y do nothing in it and bubble on (to an undo stack attached above it, siv_set_undo), and change events (edit_start, edit_end, edit_length) say what each edit replaced." },
         .{ .name = "block_caret", .bit = 3, .doc = "The caret covers the character after it, translucent, instead of standing between characters: a modal editor's normal mode (D15). Where there is no character (a line's end, an empty line), it is as wide as an x in the font and size there. At the end of a selection, it covers the selection's last character; in a selection it is as tall as the selection's highlight on its line and outlined in the text's color." },
         .{ .name = "no_input_method", .bit = 4, .doc = "The seat's input method stays disabled while the editor has focus, so keys arrive as keys: a modal editor's command mode (D15). Composed text from xkbcommon still types." },
     }),
@@ -2453,8 +2454,8 @@ pub const spec: schema.Schema = .{
     .source = "src/abi/api.zig",
     .doc = "siv: a GUI toolkit for Wayland.",
     .result = "siv_result",
-    .decls = &(decls ++ desktop.decls ++ dbus.decls ++ shell.decls ++ document.decls ++ testing.decls),
-    .functions = &(functions ++ desktop.functions ++ dbus.functions ++ shell.functions ++ document.functions ++ testing.functions),
+    .decls = &(decls ++ desktop.decls ++ dbus.decls ++ shell.decls ++ document.decls ++ undo.decls ++ testing.decls),
+    .functions = &(functions ++ desktop.functions ++ dbus.functions ++ shell.functions ++ document.functions ++ undo.functions ++ testing.functions),
 };
 
 /// Encodes a version as (major << 16) | (minor << 8) | patch.

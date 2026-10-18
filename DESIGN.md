@@ -1887,7 +1887,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       whole text: a copy of a long document per keystroke, and every
       span gone, so every block reshaped.
     - `SIV_EDITOR_NO_UNDO`: the editor records no steps and leaves the
-      undo keys to bubble. Its change events carry what each edit
+      undo keys to bubble, on to an undo stack attached above it (D35). Its change events carry what each edit
       replaced (`edit_start`, `edit_end` in the old text, `edit_length`
       in the new), so the application follows the user's typing, input
       method commits, pastes, and cuts in its own model without reading
@@ -6727,6 +6727,127 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   engine with an embedder frame API appears (the engine table takes it),
   or if keeping the web view building slows siv's own work more than its
   tests catch.
+
+### D35. Undo
+
+- **Requirement:** applications undo their own changes (deleting,
+  renaming, and moving files; edits to a model of their own; a form's
+  settings) with the keys users expect, labels for "Undo Rename", steps
+  that group and merge, a limit, and a "modified" state, and their
+  buttons, menu items, and actions follow whether undo and redo do
+  something. Text fields keep the editor's own history (D15). Before,
+  only editors had undo, and each application built its stack and its
+  key handling.
+- **Decision:** `siv_undo`, an undo stack the application creates
+  (`siv_undo_create`) and pushes steps onto (`src/abi/undo.zig`, its
+  schema in `api_undo.zig`).
+  - **A step records a change already made.** `siv_undo_push` takes
+    undo and redo callbacks sharing one user data and destroy-notify
+    (D2), a label, and a merge key. The application makes the change
+    and then pushes it, as with NSUndoManager, so a push never calls
+    back into the application. Pushing drops the steps undone before
+    it, releasing their user data.
+  - **Undo and redo** (`siv_undo_undo`, `siv_undo_redo`) run the step's
+    callbacks from the caller's safe point (D5); the stack moves first,
+    so a callback that queries it sees the result. While one of the
+    stack's callbacks runs (a step's, or `on_change`), calls that change
+    the stack fail with `SIV_ERROR_BUSY` and destroying it waits until
+    the callback returns: a step that pushed while undoing would leave
+    a history neither direction describes. Callbacks cannot fail: a step
+    whose change can no longer be taken back (a file the trash no longer
+    has) tells the user itself, and `siv_undo_clear` drops a history
+    that no longer applies.
+  - **Groups.** `siv_undo_begin_group` and `siv_undo_end_group` make
+    the steps between them one step, undone newest first and redone
+    oldest first, under the group's label (moving ten files). Inner
+    groups join the outer one; an empty group leaves nothing. Undo,
+    redo, marking clean, and clearing fail with `SIV_ERROR_BUSY` while
+    a group is open, since the position is between two of its steps.
+  - **Merging without a merge function.** A step whose nonzero merge
+    key equals the last step's merges into it: the merged step keeps the
+    first step's undo and its user data, and takes the new step's redo,
+    user data, and label, releasing the user data that one replaces. A
+    slider's drag pushes a step per move and undoes in one, without the
+    application writing QUndoCommand's `mergeWith` for each kind of
+    step. A step never merges into the clean step (the mark would then
+    name a state that no longer exists) or across a group's edge; a new
+    key starts a new run.
+  - **Limit.** `siv_undo_desc.limit` drops the oldest steps past it; 0
+    keeps every step, since the steps hold the application's data and
+    siv cannot pick a size for it as it does for an editor's 100.
+  - **Clean mark.** `siv_undo_set_clean` marks the position as saved;
+    `siv_undo_is_clean` and the change notification say whether the
+    stack is back there, and the mark is lost for good when its step is
+    dropped (past the limit, or from the redo list by a push).
+    `siv_undo_clear` keeps a clean stack clean and leaves a modified one
+    modified; QUndoStack's clear makes it clean, which calls an unsaved
+    document saved.
+  - **Change notification.** `siv_undo_desc.on_change` runs once per
+    loop iteration after any number of changes (a dispatch task, D5),
+    with what undo and redo would do (counts, labels) and the clean flag;
+    `siv_undo_get_count`, `siv_undo_get_label`, and `siv_undo_is_clean`
+    answer the same at any time. Once per iteration because a group or
+    a drag pushes many steps, and a menu needs the state they settle
+    in. Named actions with enabled states and labels connect their undo
+    and redo actions here.
+  - **A free object, attached to nodes.** A stack belongs to the
+    application, not to a window, and `siv_set_undo` attaches it to a
+    node in a transaction (an abort restores the attachment): the
+    window's root for the whole window, a tab's content for one
+    document, nodes of two windows that show one document. The tree
+    keeps the stack's handle (`ui.Node.undo`) and asks `undo.zig`
+    through `Window.undo_host`, so a destroyed stack is a stale handle
+    the keys pass over.
+  - **The keys.** Ctrl+Z undoes, Ctrl+Shift+Z and Ctrl+Y redo, as in
+    editors. Capture and key handlers see them first (an application
+    that binds them itself, or prevents them, still can), then a focused
+    editor, which keeps them for its own history even with nothing left
+    to undo, then the stack attached nearest the focused node (the
+    active modal node, else the root, when nothing has focus), looking
+    up as far as the active modal node: a dialog does not undo the
+    document behind it. Editors with `SIV_EDITOR_NO_UNDO` let them
+    through, so an application that keeps its own text model (D15)
+    pushes its edits onto its stack and Ctrl+Z works in the editor;
+    masked editors keep them and do nothing. Menu items and buttons call
+    `siv_undo_undo` themselves.
+  - **Text stays the editor's.** An editor's edits do not join the
+    application's stack. Its history belongs to the text it was recorded
+    on (D15), and NSTextView's way, where fields share the window's undo
+    manager, has Ctrl+Z after leaving a field undo typing in a field
+    that may be gone, interleaved with the application's steps. Neither
+    does an editor with an empty history pass the keys on (GTK 4 lets
+    its disabled `text.undo` action fall through to the window's):
+    undoing a deletion while the caret blinks in a search field is a
+    surprise. The user leaves the field (Escape, Tab, a click) to undo
+    the application's steps.
+  - **Lua.** `app:undo_create{ on_change = ... }`, `undo:push{ label =
+    "Rename", undo = function() ... end, redo = function() ... end }`,
+    and `txn:set_undo(node, undo)` or `undo = stack` in a builder's
+    properties, all generated (D23). The handle is borrowed, as timers
+    and watches are: a stack attached to a node keeps working after Lua
+    drops its variable, and `undo:destroy()` ends it.
+  - Tests: `test/abi/undo.zig` (steps, the limit, labels, the clean
+    mark, merging, groups, busy and destroyed stacks in callbacks, the
+    notification, and the keys with editors, `SIV_EDITOR_NO_UNDO`,
+    handlers, stale stacks, and modal nodes) and `test/lua/binding.zig`.
+- **Alternatives:** a stack per window (SwiftUI's environment, a
+  QUndoGroup's active stack): a tabbed or split window switches stacks
+  by hand, and two windows of one document cannot share one; one stack
+  per application: no history per document; a push that runs the step's
+  redo (QUndoStack): the change is written once, but every push calls
+  back into the application from inside a siv call; editors pushing onto
+  the application's stack (NSTextView): above; a merge callback and
+  obsolete steps (QUndoCommand's `mergeWith` and `setObsolete`): one
+  callback per kind of step for what keeping the first undo and the last
+  redo does, and a step callback's result that drops the step when a
+  Lua function forgets to return it; `on_change` called from every call
+  that changes the stack: a hundred calls for a group of a hundred
+  steps.
+- **Reverse if:** applications need their edits and an editor's text
+  in one history (a document editor with several editors on one model):
+  then an editor pushes its steps onto a stack attached above it instead
+  of keeping its own. If steps that cannot be undone any more turn out
+  common (file managers), a step callback reports it and the step goes.
 
 ## Lessons from ourokit
 

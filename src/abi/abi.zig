@@ -57,6 +57,8 @@ pub const widget = @import("widget.zig");
 pub const shell = @import("shell.zig");
 /// Documents: HTML, CSS, and Markdown (D32).
 pub const document = @import("document.zig");
+/// Undo stacks (D35).
+pub const undo = @import("undo.zig");
 /// Driving and inspecting applications on the headless backend.
 pub const testing = @import("testing.zig");
 
@@ -64,7 +66,7 @@ pub const testing = @import("testing.zig");
 pub const types = t;
 
 /// The files that export schema functions.
-const implementations = .{ @This(), application, tree, canvas, external, dnd, clipboard, theme, cursor, portal, print, tray, image_load, watch, icon, dbus, input, widget, shell, document, testing } ++ @import("widgets").implementations;
+const implementations = .{ @This(), application, tree, canvas, external, dnd, clipboard, theme, cursor, portal, print, tray, image_load, watch, icon, dbus, input, widget, shell, document, undo, testing } ++ @import("widgets").implementations;
 
 const version = build_options.version;
 

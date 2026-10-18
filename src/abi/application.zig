@@ -98,6 +98,8 @@ pub const App = struct {
     dbus: dbus_abi.State,
     /// Open EPUB publications (D32), by handle payload.
     epubs: std.ArrayList(?*@import("document.zig").Epub),
+    /// Undo stacks (D35), by handle payload; null slots are reused.
+    undos: std.ArrayList(?*@import("undo.zig").Stack),
     /// Tells the windows that fonts finished loading, once for a burst of
     /// loads.
     fonts_task: loop_mod.Loop.Task,
@@ -296,6 +298,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     self.jobs = 0;
     self.shell = .{};
     self.epubs = .empty;
+    self.undos = .empty;
     self.fonts_task = .{ .func = onFontsTask };
     const gpa = self.gpa();
     self.draw = .init(gpa);
@@ -381,6 +384,7 @@ fn destroyNow(self: *App) void {
     };
     shell.teardown(self);
     @import("document.zig").teardown(self);
+    @import("undo.zig").teardown(self);
     const gpa = self.gpa();
     for (self.timers.items) |slot| if (slot) |tm| tm.cancel();
     self.timers.deinit(gpa);

@@ -766,6 +766,7 @@ fn key(win: *Window, k: *const platform.Key) void {
     if (bev.key.prevented) return;
     if (target != .root and win.isLive(target) and win.node(target).kind == .editor and editor.key(win, target, k)) return;
     if (k.state == .released or k.composing) return;
+    if (undoKey(win, target, k)) return;
     switch (k.keysym) {
         keysym.tab, keysym.iso_left_tab => traverse(win, k.keysym == keysym.tab and !k.mods.shift),
         keysym.@"return", keysym.kp_enter, keysym.space => if (st.focus != .none and k.state == .pressed) activate(win, st.focus),
@@ -789,6 +790,29 @@ fn key(win: *Window, k: *const platform.Key) void {
         },
         else => {},
     }
+}
+
+/// Ctrl+Z, Ctrl+Shift+Z, and Ctrl+Y that no editor took undo or redo the
+/// application undo stack attached nearest `target` (D35), at or above
+/// it but not above the active modal node. Returns whether one took the
+/// key.
+fn undoKey(win: *Window, target: NodeId, k: *const platform.Key) bool {
+    const host = win.undo_host orelse return false;
+    const m = k.mods;
+    if (!m.ctrl or m.alt or m.super) return false;
+    const redo = switch (k.keysym) {
+        'z', 'Z' => m.shift,
+        'y', 'Y' => true,
+        else => return false,
+    };
+    const stop = modalRoot(win);
+    var cur = target;
+    while (cur != .none and win.isLive(cur)) : (cur = win.node(cur).parent) {
+        const u = win.node(cur).undo;
+        if (u != 0 and host.func(host.ctx, u, redo)) return true;
+        if (cur == stop) break;
+    }
+    return false;
 }
 
 fn nearestScroll(win: *const Window, from: NodeId) ?NodeId {

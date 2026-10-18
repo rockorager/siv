@@ -457,6 +457,15 @@ pub const Txn = struct {
         n.cursor = shape;
     }
 
+    /// Attaches an application undo stack to the node (D35), or with 0
+    /// detaches it.
+    pub fn setUndo(t: *Txn, id: NodeId, undo: u64) Error!void {
+        const n = try t.live(id);
+        try t.reserve();
+        t.touch(id);
+        n.undo = undo;
+    }
+
     /// Sets a custom text widget's state for the input method (D15).
     pub fn setTextInput(t: *Txn, id: NodeId, ti: node_mod.TextInput) Error!void {
         const n = try t.live(id);

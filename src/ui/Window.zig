@@ -48,6 +48,11 @@ const Rect = raster.Rect;
 
 pub const Error = error{OutOfMemory};
 
+pub const UndoHost = struct {
+    ctx: ?*anyopaque,
+    func: *const fn (ctx: ?*anyopaque, undo: u64, redo: bool) bool,
+};
+
 gpa: std.mem.Allocator,
 fonts: *Fonts,
 /// Themed icons, shared by the application's windows; without them
@@ -102,6 +107,10 @@ clipboard: ?*Clipboard = null,
 /// Drag-and-drop requests; without them drags neither start nor drop.
 drag_host: ?dnd_mod.Host = null,
 dnd: dnd_mod.State = .{},
+/// Undoes or redoes the application undo stack a node names
+/// (`Node.undo`, D35); false when the stack is gone. Without it the undo
+/// keys reach no stack.
+undo_host: ?UndoHost = null,
 /// A cursor for the whole window over every node's, such as a busy
 /// cursor; null for none.
 cursor_override: ?node_mod.CursorShape = null,

@@ -53,6 +53,7 @@ test {
     _ = @import("abi/shell_example.zig");
     _ = @import("abi/settle.zig");
     _ = @import("abi/docview.zig");
+    _ = @import("abi/undo.zig");
     _ = @import("doc/wpt.zig");
     _ = @import("doc/corpus.zig");
     _ = @import("doc/email.zig");

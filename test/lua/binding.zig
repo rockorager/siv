@@ -385,6 +385,63 @@ test "jobs from Lua: work in a state of its own, results at a safe point" {
     );
 }
 
+test "undo stacks from Lua: closures as steps, groups, merging, changes, and the keys" {
+    _ = try run(prologue ++
+        \\local changes, last = 0, nil
+        \\local undo = app:undo_create{ on_change = function(u, ev) changes = changes + 1; last = ev end }
+        \\local value = 1
+        \\local function set(v, label, merge)
+        \\  local old = value
+        \\  value = v
+        \\  undo:push{ label = label, merge = merge, undo = function() value = old end, redo = function() value = v end }
+        \\end
+        \\set(2, "Two")
+        \\set(3, "Three")
+        \\assert(undo:get_count(false) == 2 and undo:get_label(false) == "Three")
+        \\undo:undo()
+        \\assert(value == 2 and undo:get_label(true) == "Three")
+        \\undo:redo()
+        \\assert(value == 3)
+        \\undo:begin_group("Both")
+        \\set(4, "a")
+        \\set(5, "b")
+        \\undo:end_group()
+        \\undo:undo()
+        \\assert(value == 3 and undo:get_label(true) == "Both")
+        \\-- A drag is one step; the group undone before goes.
+        \\for v = 10, 12 do set(v, "Drag", 1) end
+        \\assert(undo:get_count(false) == 3 and undo:get_count(true) == 0)
+        \\undo:undo()
+        \\assert(value == 3)
+        \\undo:redo()
+        \\assert(value == 12)
+        \\undo:set_clean()
+        \\assert(undo:is_clean())
+        \\assert(app:test_settle(5000))
+        \\assert(changes == 1 and last.undo_label == "Drag" and last.undo_count == 3 and last.flags.clean, tostring(changes))
+        \\-- The stack is busy in its own callbacks.
+        \\local err
+        \\undo:push{ redo = function() end, undo = function(u)
+        \\  local ok, e = pcall(u.push, u, { undo = function() end, redo = function() end })
+        \\  assert(not ok)
+        \\  err = e.code
+        \\end }
+        \\undo:undo()
+        \\assert(err == "busy", tostring(err))
+        \\-- Attached to the root, it takes Ctrl+Z where no editor has focus.
+        \\win:update(function(txn, root) txn:box(root, { undo = undo }) end)
+        \\win:update(function(txn, root) txn:set_undo(root, undo) end)
+        \\win:test_key(string.byte("z"), "ctrl", "z")
+        \\assert(app:test_settle(5000))
+        \\assert(value == 3, tostring(value))
+        \\win:test_key(string.byte("y"), "ctrl", "y")
+        \\assert(app:test_settle(5000))
+        \\assert(value == 12, tostring(value))
+        \\undo:destroy()
+        \\assert(not pcall(undo.undo, undo))
+    );
+}
+
 test "the test API: scrolling, typing, queries, captures" {
     _ = try run(prologue ++
         \\local editor, scroll, last
