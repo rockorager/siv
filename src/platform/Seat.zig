@@ -309,11 +309,13 @@ fn handleKey(seat: *Seat, keycode: u32, pressed: bool, time: u32, serial: u32) v
     if (pressed) {
         const p = seat.keyboard.press(keycode);
         key.keysym = p.keysym;
+        key.latin = p.latin;
         key.text_buf = p.text_buf;
         key.text_len = p.text_len;
         key.composing = p.composing;
     } else {
         key.keysym = seat.keyboard.keysym(keycode);
+        key.latin = seat.keyboard.latin(keycode, key.keysym);
     }
     seat.push(.{ .key = key });
 

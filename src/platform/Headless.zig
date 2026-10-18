@@ -14,6 +14,8 @@ const platform = @import("platform.zig");
 const Loop = platform.Loop;
 const Timer = @import("loop").Timer;
 const FrameClock = platform.FrameClock;
+const Keyboard = @import("Keyboard.zig");
+const xkb = @import("xkbcommon");
 const Headless = @This();
 
 const Error = platform.Error;
@@ -72,6 +74,8 @@ idle_watches: std.ArrayList(SimIdle) = .empty,
 idle: bool = false,
 next_foreign: u32 = 1,
 blur_capable: bool,
+/// The seat's keymap, once a test sets one (`setKeymap`).
+keyboard: ?Keyboard = null,
 
 const LockState = enum { none, locked };
 
@@ -307,8 +311,59 @@ pub fn destroy(hl: *Headless) void {
     hl.idle_watches.deinit(hl.allocator);
     hl.outputs.deinit(hl.allocator);
     hl.dmabuf_formats.deinit(hl.allocator);
+    if (hl.keyboard) |*k| {
+        const context = k.context;
+        k.deinit();
+        xkb.xkb_context_unref(context);
+    }
     hl.queue.deinit();
     hl.allocator.destroy(hl);
+}
+
+/// Gives the seat a keymap compiled from XKB layout and variant names
+/// (`Keyboard.keymapFromNames`), through which `keyEvents` translates
+/// physical keys as the Wayland backend translates the compositor's.
+pub fn setKeymap(hl: *Headless, layout: [*:0]const u8, variant: [*:0]const u8) error{ InvalidKeymap, OutOfMemory }!void {
+    if (hl.keyboard == null) {
+        const context = xkb.xkb_context_new(xkb.XKB_CONTEXT_NO_ENVIRONMENT_NAMES) orelse return error.OutOfMemory;
+        hl.keyboard = .{ .context = context };
+    }
+    const k = &hl.keyboard.?;
+    const keymap = Keyboard.keymapFromNames(k.context, layout, variant) orelse return error.InvalidKeymap;
+    k.useKeymap(keymap) catch |err| {
+        xkb.xkb_keymap_unref(keymap);
+        return err;
+    };
+}
+
+/// A physical key's press and release through the seat's keymap
+/// (`setKeymap`), with a layout active and modifiers held.
+pub fn keyEvents(hl: *Headless, window: WindowId, keycode: u32, layout: u32, mods: platform.Mods, serial: u32) error{NoKeymap}![2]platform.Key {
+    const k = if (hl.keyboard) |*k| k else return error.NoKeymap;
+    if (k.keymap == null) return error.NoKeymap;
+    k.setMods(mods, layout);
+    const p = k.press(keycode);
+    const down: platform.Key = .{
+        .window = window,
+        .seat = 0,
+        .keycode = keycode,
+        .keysym = p.keysym,
+        .latin = p.latin,
+        .state = .pressed,
+        .mods = k.mods(),
+        .time = serial,
+        .serial = serial,
+        .text_buf = p.text_buf,
+        .text_len = p.text_len,
+        .composing = p.composing,
+    };
+    var up = down;
+    up.state = .released;
+    up.text_len = 0;
+    up.composing = false;
+    up.keysym = k.keysym(keycode);
+    up.latin = k.latin(keycode, up.keysym);
+    return .{ down, up };
 }
 
 fn get(hl: *Headless, id: WindowId) *Window {

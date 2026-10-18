@@ -1688,6 +1688,9 @@ pub const Key = struct {
     keycode: u32,
     /// XKB keysym; the composed keysym when a compose sequence completes.
     keysym: u32,
+    /// The key's Latin equivalent, which shortcuts match besides `keysym`
+    /// (`Keyboard.latin`, D44); 0 for none.
+    latin: u32 = 0,
     state: State,
     mods: Mods,
     time: u32,
