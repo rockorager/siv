@@ -694,6 +694,10 @@ pub const EditorData = struct {
     /// selected), until the caret moves; null takes the style of the
     /// character before the caret.
     typing: ?SpanStyle = null,
+    /// Spell checking (D37), in an interned language (Fonts names); 0
+    /// is the text's language, else the window's.
+    spell: bool = false,
+    spell_language: u32 = 0,
 };
 
 /// Stored text: content and style with interned family and language.

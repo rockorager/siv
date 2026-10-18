@@ -129,6 +129,9 @@ pub const App = struct {
     fonts: ui.Fonts,
     /// Themed icons (D19), shared by every window.
     icons: ui.Icons,
+    /// Dictionaries and word lists for spell checking (D37): the
+    /// system's except on the headless backend.
+    spelling: ui.Spelling,
     clipboard: ui.Clipboard,
     comp: *Compositor,
     /// Live windows by platform window id.
@@ -198,6 +201,7 @@ pub const App = struct {
             .pool = undefined,
             .fonts = undefined,
             .icons = undefined,
+            .spelling = undefined,
             .clipboard = undefined,
             .comp = undefined,
             .reduced_motion = options.reduced_motion,
@@ -212,6 +216,9 @@ pub const App = struct {
         app.icons = try .init(gpa, if (options.system_icons) ui.Icons.environment() else .{ .xdg_data_dirs = "", .pixmaps = false });
         errdefer app.icons.deinit();
         app.icons.pool = &app.pool;
+        app.spelling = try .init(gpa, .{ .pool = &app.pool, .system = options.backend != .headless });
+        errdefer app.spelling.deinit();
+        app.spelling.notify = .{ .ctx = app, .func = onSpelling };
         app.process_locale = options.backend != .headless;
         try app.applyLocale(options.language, options.rtl);
         // Fontconfig reads its configuration and caches (4 to 7 ms) on a
@@ -293,6 +300,7 @@ pub const App = struct {
         app.zombies.deinit(gpa);
         app.clipboard.deinit();
         app.fonts.deinit();
+        app.spelling.deinit();
         app.pool.deinit();
         // With the pool stopped, what is left is written here.
         for (app.settings.items) |s| s.finish();
@@ -414,6 +422,13 @@ pub const App = struct {
             win.ui.setUserTheme(&app.user_theme.value);
             win.paletteApplied(&old);
         };
+    }
+
+    /// A dictionary loaded or a word list changed: windows check their
+    /// editors again.
+    fn onSpelling(ctx: ?*anyopaque) void {
+        const app: *App = @ptrCast(@alignCast(ctx));
+        for (app.windows.items) |w| if (w) |win| ui.Spelling.wake(win.ui);
     }
 
     /// Windows whose resolved colors changed hear `theme_changed`, once
@@ -568,6 +583,7 @@ pub const App = struct {
             .sink = .{ .ctx = win, .commit = Window.commit },
             .host = .{ .ctx = win, .request_frame = Window.requestFrame, .text_input = Window.textInput, .set_cursor = Window.setCursor, .pointer_constraint = Window.pointerConstraint, .tooltip = Window.tooltip },
             .clipboard = &app.clipboard,
+            .spelling = &app.spelling,
             .drag = win.drag.host(),
             .loop = &app.loop,
             .reduced_motion = app.reduced_motion,
@@ -668,6 +684,7 @@ pub const App = struct {
             .sink = .{ .ctx = win, .commit = Window.commit },
             .host = .{ .ctx = win, .request_frame = Window.requestFrame, .text_input = Window.textInput, .tooltip = Window.tooltip },
             .clipboard = &app.clipboard,
+            .spelling = &app.spelling,
             .reduced_motion = app.reduced_motion,
             .desktop = app.desktop.values,
             .theme = app.theme,

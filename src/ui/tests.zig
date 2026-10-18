@@ -2873,3 +2873,147 @@ test "settings events: every node with a handler, once a frame, with what change
     try f.frame();
     try log.expect(&.{ a, b, log.added }, .{ .fonts = true });
 }
+
+fn expectMisspelled(win: *ui.Window, id: NodeId, want: []const [2]u32) !void {
+    try testing.expectEqualSlices([2]u32, want, ui.Spelling.misspellings(win, id));
+}
+
+test "spelling: editors mark misspelled words as text changes, holding the word being typed" {
+    const spell = @import("spell");
+    var sp = try ui.Spelling.init(testing.allocator, .{ .system = false });
+    defer sp.deinit();
+    try sp.addDictionary("en_ZZ", spell.test_dictionary.aff, spell.test_dictionary.dic);
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 400, .height = 100 });
+    defer f.deinit();
+    f.win.spelling = &sp;
+    var t = try f.win.begin();
+    const ed = try box(t, .root, .editor, .{ .padding = .all(4), .align_y = .start });
+    try t.setText(ed, "the quikc brown fox");
+    t.commit();
+    try f.frame();
+    // Off by default.
+    try expectMisspelled(f.win, ed, &.{});
+    t = try f.win.begin();
+    try t.setSpellCheck(ed, true, "");
+    t.commit();
+    try f.frame();
+    try expectMisspelled(f.win, ed, &.{.{ 4, 9 }});
+    // A word typed at the caret waits until the caret leaves it.
+    const k: Keys = .{ .f = &f };
+    k.press(ui.keysym.tab, .{});
+    k.press(ui.keysym.end, .{});
+    k.typeText(" jumpz");
+    try f.frame();
+    try expectMisspelled(f.win, ed, &.{.{ 4, 9 }});
+    k.typeText(" ");
+    try f.frame();
+    try expectMisspelled(f.win, ed, &.{ .{ 4, 9 }, .{ 20, 25 } });
+    k.typeText("ovr");
+    try f.frame();
+    try expectMisspelled(f.win, ed, &.{ .{ 4, 9 }, .{ 20, 25 } });
+    k.press(ui.keysym.home, .{});
+    try f.frame();
+    try expectMisspelled(f.win, ed, &.{ .{ 4, 9 }, .{ 20, 25 }, .{ 26, 29 } });
+    // Edits before them move them; an edit in one checks it again.
+    try ui.access.replaceText(f.win, ed, 0, 0, "a ");
+    try f.frame();
+    try expectMisspelled(f.win, ed, &.{ .{ 6, 11 }, .{ 22, 27 }, .{ 28, 31 } });
+    try ui.access.replaceText(f.win, ed, 6, 11, "quick");
+    k.press(ui.keysym.home, .{});
+    try f.frame();
+    try expectMisspelled(f.win, ed, &.{ .{ 22, 27 }, .{ 28, 31 } });
+    try testing.expectEqual(@as(?[2]u32, .{ 22, 27 }), ui.Spelling.find(f.win, ed, 27, .at));
+    try testing.expectEqual(@as(?[2]u32, .{ 28, 31 }), ui.Spelling.find(f.win, ed, 27, .next));
+    try testing.expectEqual(@as(?[2]u32, null), ui.Spelling.find(f.win, ed, 22, .previous));
+    // Words ignored or added are right in every editor at once.
+    const l = ui.Spelling.langOf(f.win, ed).?;
+    try testing.expectEqualStrings("en_ZZ", l.name);
+    try sp.ignoreWord(l, "jumpz");
+    try f.frame();
+    try expectMisspelled(f.win, ed, &.{.{ 28, 31 }});
+    // Masked editors and languages without a dictionary are not checked.
+    t = try f.win.begin();
+    try t.setSpellCheck(ed, true, "de");
+    t.commit();
+    try f.frame();
+    try expectMisspelled(f.win, ed, &.{});
+    try testing.expectEqual(null, ui.Spelling.langOf(f.win, ed));
+    t = try f.win.begin();
+    try t.setSpellCheck(ed, true, "en-US");
+    t.commit();
+    try f.frame();
+    try expectMisspelled(f.win, ed, &.{.{ 28, 31 }});
+    t = try f.win.begin();
+    try t.setSpellCheck(ed, false, "");
+    t.commit();
+    try f.frame();
+    try expectMisspelled(f.win, ed, &.{});
+}
+
+test "spelling: long texts are checked on the pool, through edits made meanwhile" {
+    const spell = @import("spell");
+    const loop = @import("loop");
+    var lp = try loop.Loop.init(std.heap.smp_allocator);
+    defer lp.deinit();
+    var pool = loop.Pool.init(&lp, testing.allocator, 3);
+    defer pool.deinit();
+    var sp = try ui.Spelling.init(testing.allocator, .{ .system = false, .pool = &pool });
+    defer sp.deinit();
+    try sp.addDictionary("en_ZZ", spell.test_dictionary.aff, spell.test_dictionary.dic);
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 400, .height = 100 });
+    defer f.deinit();
+    f.win.spelling = &sp;
+    var doc: std.ArrayList(u8) = .empty;
+    defer doc.deinit(testing.allocator);
+    const words = [_][]const u8{ "the ", "quikc ", "brown ", "fox ", "jumpz ", "over\n", "teh ", "lazy ", "dogz. " };
+    var i: usize = 0;
+    while (doc.items.len < 600 << 10) : (i += 1) try doc.appendSlice(testing.allocator, words[(i * 7) % words.len]);
+    var t = try f.win.begin();
+    const ed = try t.create(.root, .editor, .none);
+    try t.setEditor(ed, .{ .multiline = true });
+    try t.setText(ed, doc.items);
+    try t.setSpellCheck(ed, true, "en");
+    t.commit();
+    const settle = struct {
+        fn run(fx: *Fixture, s: *ui.Spelling, l: *loop.Loop, id: NodeId) !void {
+            while (true) {
+                try fx.frame();
+                const st = fx.win.spell.get(id).?;
+                if (!s.busy() and st.dirty.items.len == 0) return;
+                if (s.busy()) try l.dispatch(-1);
+            }
+        }
+    }.run;
+    try f.frame();
+    // The first frame checks nothing on this thread and sends chunks.
+    try expectMisspelled(f.win, ed, &.{});
+    try testing.expect(sp.busy());
+    // Edits while they are out: at the start, inside the first chunks,
+    // and at the end.
+    try ui.access.replaceText(f.win, ed, 0, 4, "qvick ");
+    try ui.access.replaceText(f.win, ed, 40_000, 40_000, " wrds ");
+    try f.frame();
+    try ui.access.replaceText(f.win, ed, 70_005, 70_105, "");
+    const len: u32 = @intCast(f.win.node(ed).data.editor.text.content.len());
+    try ui.access.replaceText(f.win, ed, len, len, " lastt");
+    try settle(&f, &sp, &lp, ed);
+    const got = try testing.allocator.dupe([2]u32, ui.Spelling.misspellings(f.win, ed));
+    defer testing.allocator.free(got);
+    try testing.expect(got.len > 1000);
+    // The same as checking the final text from scratch.
+    t = try f.win.begin();
+    try t.setSpellCheck(ed, false, "");
+    t.commit();
+    try f.frame();
+    t = try f.win.begin();
+    try t.setSpellCheck(ed, true, "en");
+    t.commit();
+    try settle(&f, &sp, &lp, ed);
+    try testing.expectEqualSlices([2]u32, ui.Spelling.misspellings(f.win, ed), got);
+    const content = try f.win.node(ed).data.editor.text.content.toOwned(testing.allocator);
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("qvick", content[got[0][0]..got[0][1]]);
+    try testing.expectEqualStrings("lastt", content[got[got.len - 1][0]..got[got.len - 1][1]]);
+}

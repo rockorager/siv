@@ -22,6 +22,7 @@ const node_mod = @import("node.zig");
 const text_node = @import("text_node.zig");
 const editor = @import("editor.zig");
 const spans = @import("spans.zig");
+const spelling = @import("spelling.zig");
 
 const NodeId = node_mod.NodeId;
 const Point = raster.Point;
@@ -159,6 +160,19 @@ pub fn paragraphStyleRun(win: *const Window, id: NodeId, offset: u32) ?node_mod.
     const d = win.node(id).textData();
     const len: u32 = @intCast(d.content.len());
     return spans.runAt(d.paragraphs, p.start, len);
+}
+
+/// The misspelled word (D37) of an editor containing byte `offset`, or
+/// the stretch between misspelled words around it, as of the last frame.
+pub fn spellingRun(win: *const Window, id: NodeId, offset: u32) struct { start: u32, end: u32, misspelled: bool } {
+    const words = spelling.misspellings(win, id);
+    var start: u32 = 0;
+    for (words) |r| {
+        if (r[0] > offset) return .{ .start = start, .end = r[0], .misspelled = false };
+        if (offset < r[1]) return .{ .start = r[0], .end = r[1], .misspelled = true };
+        start = r[1];
+    }
+    return .{ .start = start, .end = std.math.maxInt(u32), .misspelled = false };
 }
 
 /// Formatting commands on editors and the typing style (D22, D13).

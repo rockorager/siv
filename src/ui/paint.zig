@@ -31,6 +31,7 @@ const node_mod = @import("node.zig");
 const text_node = @import("text_node.zig");
 const text = @import("text");
 const editor = @import("editor.zig");
+const spelling = @import("spelling.zig");
 const layout = @import("layout.zig");
 const isLayerRoot = @import("txn.zig").isLayerRoot;
 const Image = @import("image.zig").Image;
@@ -1365,8 +1366,47 @@ fn drawEditor(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Poi
     }
     if (e.text.content.len() == 0 and e.placeholder.len != 0 and editor.preeditRange(win, nid) == null) {
         _ = try drawPlaceholder(st, win, nid, b, box);
-    } else _ = try drawText(st, win, nid, b, off, -scroll);
+    } else {
+        _ = try drawText(st, win, nid, b, off, -scroll);
+        try drawMisspellings(win, nid, l, b, box.x0 - scroll, box.y0, cw);
+    }
     try b.popLayer();
+}
+
+/// Misspelled words (D37): a wavy line under each, in the theme's
+/// destructive color, below the baseline in the line's descent. One path
+/// for all of them, its thickness whole device pixels.
+fn drawMisspellings(win: *Window, nid: NodeId, l: *const text.TextLayout, b: *scene.Builder, ox: f32, oy: f32, cw: f32) DrawError!void {
+    const words = spelling.misspellings(win, nid);
+    if (words.len == 0) return;
+    const band = try textBand(win, nid, l);
+    const k: f32 = @floatCast(win.scale);
+    const thick = @max(1, @round(k)) / k;
+    var rects: std.ArrayList(text.layout.Rect) = .empty;
+    defer rects.deinit(win.gpa);
+    var path = raster.PathBuilder.init(win.gpa);
+    defer path.deinit();
+    for (words) |r| try l.selectionRects(win.gpa, r[0], r[1], &rects, band);
+    for (rects.items) |r| {
+        if (!(r.width > 0)) continue;
+        const line = try l.line(try l.lineAt(r.y + r.height / 2));
+        const x0 = ox + r.x + text_node.lineShift(win, nid, line, cw);
+        // Half a wave is two pixels wide and two high.
+        const amp: f32 = 1;
+        const half: f32 = 2;
+        const y = oy + line.baseline + @max(amp + thick, @min(line.descent * 0.55, 3));
+        var x = x0;
+        var up = true;
+        try path.moveTo(x, y + amp);
+        while (x < x0 + r.width) {
+            x = @min(x + half, x0 + r.width);
+            const t = if (up) y - amp else y + amp;
+            try path.lineTo(x, t);
+            up = !up;
+        }
+    }
+    if (path.points.items.len == 0) return;
+    try b.stroke(.{ .path = path.path() }, .{ .width = thick, .join = .round, .cap = .butt }, .color(win.palette.color(.destructive)));
 }
 
 /// An empty editor's placeholder, in the muted color, at the start edge.

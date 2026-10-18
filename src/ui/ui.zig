@@ -67,6 +67,7 @@ pub const Text = node.Text;
 pub const Fit = node.Fit;
 pub const Image = @import("image.zig").Image;
 pub const Icons = @import("icons.zig");
+pub const Spelling = @import("spelling.zig");
 /// The colors symbolic icons take from a palette (D19).
 pub const iconColors = @import("paint.zig").iconColors;
 /// The band of a node's y coordinates its scroll container shows.
@@ -130,4 +131,5 @@ test {
     _ = @import("ime.zig");
     _ = @import("tests.zig");
     _ = @import("icons.zig");
+    _ = @import("spelling.zig");
 }

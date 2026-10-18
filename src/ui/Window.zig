@@ -36,6 +36,7 @@ const secret = @import("secret.zig");
 const ime_mod = @import("ime.zig");
 pub const Clipboard = @import("clipboard.zig");
 const dnd_mod = @import("dnd.zig");
+const spelling_mod = @import("spelling.zig");
 pub const theme = @import("theme.zig");
 
 const Window = @This();
@@ -137,6 +138,12 @@ commit_held: bool = false,
 /// Pastes and assistive technology edits that arrived while a transaction
 /// was open, applied in order at the next frame like queued input.
 pending_edits: std.ArrayList(editor_mod.Pending) = .empty,
+/// The application's dictionaries (D37); without them nothing is spell
+/// checked. Spell-checked editors' states, by node, and whether an
+/// editor turned spell checking on since the last frame.
+spelling: ?*spelling_mod = null,
+spell: std.AutoHashMapUnmanaged(NodeId, *spelling_mod.EditorState) = .empty,
+spell_scan: bool = false,
 /// What this window last offered as the primary selection.
 primary: struct { node: NodeId = .none, lo: u32 = 0, hi: u32 = 0, revision: u32 = 0 } = .{},
 txn: Txn = .{},
@@ -246,6 +253,7 @@ pub const Options = struct {
     theme: theme.Theme = .{},
     user_theme: theme.User = .{},
     clipboard: ?*Clipboard = null,
+    spelling: ?*spelling_mod = null,
     /// Drag and drop (`dnd.CompositorHost`); needs `clipboard` too.
     drag: ?dnd_mod.Host = null,
     /// Times animated images.
@@ -384,6 +392,7 @@ pub fn init(gpa: std.mem.Allocator, options: Options) Error!*Window {
         .user_theme = options.user_theme,
         .palette = theme.resolve(&options.theme, options.desktop.themeInput(), &options.user_theme),
         .clipboard = options.clipboard,
+        .spelling = options.spelling,
         .drag_host = options.drag,
         .loop = options.loop,
         .sink = options.sink,
@@ -438,6 +447,7 @@ fn deinitStorage(win: *Window) void {
     var hist = win.histories.valueIterator();
     while (hist.next()) |h| h.deinit(win.gpa);
     win.histories.deinit(win.gpa);
+    spelling_mod.deinitWindow(win);
     win.txn.deinit(win.gpa);
     win.paint.deinit(win.gpa);
     win.input.deinit(win.gpa);
@@ -781,6 +791,7 @@ pub fn frame(win: *Window) Error!void {
     win.deliverSettings();
     if (win.txn.open) return;
     defer _ = win.scratch.reset(.retain_capacity);
+    try spelling_mod.update(win);
     var laid_out = win.state(.root).needs_layout;
     try layout.run(win);
     // Long texts measure what their scroll containers show and stay in
@@ -938,6 +949,7 @@ pub fn forget(win: *Window, id: NodeId) void {
         var h = kv.value;
         h.deinit(win.gpa);
     }
+    spelling_mod.forget(win, id);
     const s = win.state(id);
     win.paint.damage(s.layer, s.bounds);
     win.paint.forget(win, id);

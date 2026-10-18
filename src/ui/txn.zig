@@ -756,6 +756,21 @@ pub const Txn = struct {
         t.win.dirty.semantics = true;
     }
 
+    /// Turns spell checking of an editor on or off (D37), in a language
+    /// (a BCP 47 tag; empty for the text's, else the window's).
+    pub fn setSpellCheck(t: *Txn, id: NodeId, enabled: bool, language: []const u8) Error!void {
+        const n = try t.data(id, .editor);
+        const e = &n.data.editor;
+        const lang = try t.win.fonts.intern(language);
+        if (e.spell == enabled and e.spell_language == lang) return;
+        try t.reserve();
+        t.touch(id);
+        e.spell = enabled;
+        e.spell_language = lang;
+        t.win.spell_scan = true;
+        t.win.markPaint(id);
+    }
+
     /// Moves an editor's caret and selection anchor (byte offsets, snapped
     /// back to character boundaries). Repaints only.
     pub fn setSelection(t: *Txn, id: NodeId, caret: u32, anchor: u32, affinity: @import("text").layout.Affinity) Error!void {

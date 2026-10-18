@@ -778,8 +778,9 @@ fn attributeRun(r: *Request, offset: i32) anyerror!void {
     var end: u32 = len;
     if (x.live()) if (ui.access.textRun(x.w.ui, x.id(), @intCast(textutil.byteOf(s, offset)))) |run| {
         const para = ui.access.paragraphStyleRun(x.w.ui, x.id(), @intCast(textutil.byteOf(s, offset))).?;
-        const from = @max(run.start, para.start);
-        const to = @min(run.end, para.end);
+        const sp = ui.access.spellingRun(x.w.ui, x.id(), @intCast(textutil.byteOf(s, offset)));
+        const from = @max(run.start, para.start, sp.start);
+        const to = @min(run.end, para.end, sp.end);
         start = textutil.charCount(s[0..@min(from, s.len)]);
         end = textutil.charCount(s[0..@min(to, s.len)]);
         const st = run.style;
@@ -799,6 +800,8 @@ fn attributeRun(r: *Request, offset: i32) anyerror!void {
         if (st.size) |z| try entry(&m.body, "size", try std.fmt.bufPrint(&buf, "{d}", .{z * 0.75}));
         if (st.underline) try entry(&m.body, "underline", "single");
         if (st.strikethrough) try entry(&m.body, "strikethrough", "true");
+        // ATK's and GTK's name for a misspelled word.
+        if (sp.misspelled) try entry(&m.body, "invalid", "spelling");
         if (st.color != null or st.color_token != .none) {
             const c = x.w.ui.palette.pick(st.color orelse .black, st.color_token);
             const u16s = struct {

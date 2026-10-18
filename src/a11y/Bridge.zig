@@ -659,11 +659,13 @@ pub fn roleOf(n: *const SNode) atspi.Role {
     return atspi.role(n.role, n.masked);
 }
 
-/// A hash of a text node's styled ranges and paragraph styles.
-fn attrsHash(d: *const ui.TextData) u64 {
+/// A hash of a text node's styled ranges, paragraph styles, and
+/// misspelled words (D37).
+fn attrsHash(d: *const ui.TextData, misspelled: []const [2]u32) u64 {
     var h = std.hash.Wyhash.init(0);
     hashValue(&h, d.spans);
     hashValue(&h, d.paragraphs);
+    h.update(std.mem.sliceAsBytes(misspelled));
     return h.final();
 }
 
@@ -861,7 +863,7 @@ pub const Win = struct {
             else if (un.kind == .text)
                 try addRope(gpa, s, un.data.text.content)
             else if (has_text) sn.name else .{};
-            if (un.isText()) sn.attrs = attrsHash(un.textData());
+            if (un.isText()) sn.attrs = attrsHash(un.textData(), ui.Spelling.misspellings(w.ui, n.node));
             sn.states = states(&n, w);
             if (n.parent == none) {
                 sn.child_index = s.top_count;

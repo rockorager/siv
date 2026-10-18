@@ -115,7 +115,7 @@ owns its directories and does not edit another workstream's files.
 | `pdf` | `src/pdf/` | Desktop integration | `scene`, `raster`, `render_cpu`, `text`, `harfbuzz_subset` |
 | `platform` | `src/platform/` | Event loop and Wayland platform | `loop`, `wayland`, `xkbcommon` |
 | `compositor` | `src/compositor/` | Compositor thread | `scene`, `raster`, `render_cpu`, `render_vulkan`, `pool`, `loop`, `platform` |
-| `ui` | `src/ui/` | UI core | `scene`, `svg`, `icon`, `raster`, `text`, `image`, `loop`, `platform`, `compositor` |
+| `ui` | `src/ui/` | UI core | `scene`, `svg`, `icon`, `spell`, `raster`, `text`, `image`, `loop`, `platform`, `compositor` |
 | `epub` | `src/epub/` | Document renderer | none |
 | `docview` | `src/docview/` | Document renderer | `ui`, `doc`, `css`, `text`, `scene`, `raster`, `loop`, `epub` |
 | `a11y` | `src/a11y/` | D-Bus and desktop settings (AT-SPI) | `dbus`, `ui`, `loop`, `raster`, `text` |

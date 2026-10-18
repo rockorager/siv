@@ -664,3 +664,51 @@ test "another process's object is a node's last child and learns its parent" {
     try testing.expectError(error.InvalidArgument, t.setAccessibleEmbed(node, "/no/bus"));
     t.abort();
 }
+
+test "misspelled words are the text attribute invalid:spelling" {
+    var sp = try ui.Spelling.init(gpa, .{ .system = false });
+    defer sp.deinit();
+    try sp.addDictionary("en_ZZ", ui.Spelling.test_dictionary.aff, ui.Spelling.test_dictionary.dic);
+    var h: Harness = undefined;
+    try h.init();
+    defer h.deinit();
+    h.win.spelling = &sp;
+    var t = try h.win.begin();
+    try t.setText(h.nodes.editor, "the quikc fox");
+    try t.setSpellCheck(h.nodes.editor, true, "en");
+    t.commit();
+    try h.frame();
+    var buf: [128]u8 = undefined;
+    const ed = h.path(h.nodes.editor, &buf);
+    const run = struct {
+        fn f(hh: *Harness, path: []const u8, offset: i32) !struct { ?[]const u8, [2]i32 } {
+            var reply = try hh.call(path, atspi.iface.text, "GetAttributeRun", .{ offset, false });
+            var rd = reply.decoder();
+            const attrs = try rd.beginArray();
+            var invalid: ?[]const u8 = null;
+            while (attrs.next(&rd)) {
+                try rd.beginDictEntry();
+                const k = try rd.readString();
+                const v = try rd.readString();
+                if (std.mem.eql(u8, k, "invalid")) invalid = v;
+                try rd.endDictEntry();
+            }
+            try rd.endArray(attrs);
+            return .{ invalid, .{ try rd.readInt32(), try rd.readInt32() } };
+        }
+    }.f;
+    const word = try run(&h, ed, 5);
+    try testing.expectEqualStrings("spelling", word[0].?);
+    try testing.expectEqual([2]i32{ 4, 9 }, word[1]);
+    const before = try run(&h, ed, 1);
+    try testing.expectEqual(null, before[0]);
+    try testing.expectEqual([2]i32{ 0, 4 }, before[1]);
+    const after = try run(&h, ed, 10);
+    try testing.expectEqual([2]i32{ 9, 13 }, after[1]);
+    // A word added to the dictionary: the attributes changed.
+    h.events.log.clearRetainingCapacity();
+    try sp.addWord(ui.Spelling.langOf(h.win, h.nodes.editor).?, "quikc");
+    try h.frame();
+    try testing.expect(h.events.has("TextAttributesChanged::0:"));
+    try testing.expectEqual(null, (try run(&h, ed, 5))[0]);
+}
