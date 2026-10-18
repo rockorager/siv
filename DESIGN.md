@@ -1996,6 +1996,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     keys are their Latin-1 code point (`'a'`). Found by the file manager
     in `apps/files`, which, like every program and the stock widgets,
     had written out its own keysym table.
+  - Key events also carry the key's Latin equivalent
+    (`siv_event.shortcut_key`), which the platform derives from the
+    keymap, so Ctrl+C works on Russian, Greek, or Hebrew layouts; the
+    rule and its users are D44.
   - Routing (`src/ui/input.zig`): pointer events go to the topmost
     hit-testable node (or the node a button press went to, until release)
     and bubble to the root until a handler stops them; keyboard events
@@ -2204,7 +2208,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       the compositor's keymap), which names the key whatever the layout:
       the web's `KeyboardEvent.code`, games' WASD on any layout. The
       keymap itself is not exposed yet; a widget that needs keysyms for
-      other keycodes builds one from the same RMLVO names.
+      other keycodes builds one from the same RMLVO names. Tests press
+      physical keys through a keymap compiled from XKB names
+      (`siv_test_set_keymap`, `siv_test_press_key`, D44).
     - Scroll events carry, besides siv's distance (`dx`, `dy`), the input
       as the compositor sent it: the distance in logical pixels
       (`raw_dx`, `raw_dy`, otherwise relative motion's), wheel detents
@@ -4309,7 +4315,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       dialog, the key alone presses the first enabled control with it
       (Alt and the key while a text field has focus, which types the
       letter otherwise), so a dialog is driven from the keyboard with its
-      accelerators in view, as menu items' mnemonics drive menus.
+      accelerators in view, as menu items' mnemonics drive menus. On a
+      layout without the letter, the key that stands for it presses the
+      control (`siv_event.shortcut_key`, D44).
     - Parts the application fills are reached with
       `siv_widget_get_part` (dialog content and actions, popover content,
       tabs and panels, split panes, a menu button's menu, a table's
@@ -6824,10 +6832,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     and Ctrl+Shift+N are two keys, and the latter reports N), symbols
     also without the Shift that typed them (Ctrl and + on a US layout is
     Ctrl+Shift+=, reporting +), ISO_Left_Tab as Shift+Tab, repeats
-    included, Caps Lock and Num Lock ignored. Exact matches win over
-    those, the window's actions over the application's, and otherwise
-    the first action created. Keys are compared as keysyms, like the
-    editor's own keys, so on a non-Latin layout Ctrl+С is not Ctrl+C.
+    included, Caps Lock and Num Lock ignored. On any layout a key also
+    matches through its Latin equivalent (D44), so Ctrl+С on a Russian
+    layout runs Ctrl+C. Exact matches win over those, matches of the
+    key's own keysym over its equivalent's, the window's actions over
+    the application's, and otherwise the first action created.
+    `siv_accel_matches` matches an event the same way for an
+    application's own handler.
   - **Precedence.** A key goes to the focused node first, and
     accelerators get what it leaves. The order in a window is: capture
     handlers (D16), root first; the focused node's and its ancestors'
@@ -6863,7 +6874,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     `siv_semantics_desc`, which widgets set whole on every state change.
   - **Labels.** `siv_accel_format` writes the key as menus show it,
     "Ctrl+Shift+N", "Alt+Left", "Shift+Delete", "Ctrl++", modifiers in
-    the order Ctrl, Alt, Shift, Super, letters as capitals, in English.
+    the order Ctrl, Alt, Shift, Super, letters as capitals, in English:
+    the accelerator's own key on every layout, not translated (D44).
   - **Listing.** `siv_app_get_action(app, window, index)` walks the
     actions a window's keys reach: its own in creation order, then the
     application's it does not shadow (with window 0, the application's),
@@ -6904,14 +6916,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   for widgets); an accelerator string syntax ("<Control>s") parsed by
   siv (a value struct is checked by the compiler and needs no grammar;
   parsing can be added for keymap files).
-- **Reverse if:** applications need accelerators matched on non-Latin
-  layouts (then match through the keymap's first Latin layout as GTK
-  does, which needs the keymap in the platform's key events), localized
-  key names in labels, multi-key sequences (Emacs's C-x C-s), or the
-  desktop to read actions and their state (GTK's org.gtk.Actions, which
-  GNOME Shell used for application menus; nothing reads it now), or if a
-  common widget needs to follow an action in a way the widget interface
-  cannot express.
+- **Reverse if:** applications need multi-key sequences (Emacs's
+  C-x C-s), or the desktop to read actions and their state (GTK's
+  org.gtk.Actions, which GNOME Shell used for application menus; nothing
+  reads it now), or if a common widget needs to follow an action in a
+  way the widget interface cannot express. Non-Latin layouts and
+  localized labels, once listed here, are D44.
 
 ### D35. Undo
 
@@ -7455,6 +7465,134 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   opt-in path that relays out such a subtree per frame. Or if
   interactive gestures need to hand their velocity to a spring; then
   let an animation take an initial velocity.
+
+### D44. Shortcuts on any layout
+
+- **Requirement:** shortcuts work whatever keyboard layout is active.
+  With a Russian, Greek, Hebrew, Arabic, or similar layout, Ctrl and the
+  key labeled C copy, as in GTK, Qt, and browsers: accelerators (D34),
+  the editor's keys (D15), the undo keys (D35), mnemonics (D22), and
+  stock widgets' letter keys. On Latin layouts whose letters sit
+  elsewhere (AZERTY, Dvorak), a shortcut follows the key's label, not
+  its position. Applications' own key handlers match the same way.
+  Before, keys were compared as keysyms: Ctrl+С (Cyrillic) produced
+  Cyrillic_es, and every one of those missed.
+- **Decision:** a key event carries its keysym and its Latin
+  equivalent. The platform works the equivalent out from the keymap
+  where it translates the key (`Keyboard.latin`, in
+  `src/platform/Keyboard.zig`). Every shortcut matches the keysym first
+  and the equivalent second.
+  - **The rule.** Only a key whose keysym is a character other than an
+    ASCII letter or digit has an equivalent. Letters, digits, and keys
+    that are not characters (arrows, function keys, dead keys) are just
+    their keysym. The equivalent is the first of these that is allowed:
+    - what the same key types at the same shift level in the first
+      other layout of the keymap, in the order the user set them, that
+      types a Latin-1 character there. On ru,us, С is c and Shift+С is
+      C. On us(dvorak),ru,us with Russian active, the X key is Dvorak's
+      q, as in Qt.
+    - else the US QWERTY character at the key's position (its evdev
+      code), as in Chromium. On ru alone, С is c and Х is [; AZERTY's &
+      is 1 and é is 2; Hebrew's / (on Q) is q; Greek's ; (on Q) is q.
+
+    Two limits keep a key's own label:
+    - a key that types a Latin-1 character itself (/, &, é, ü) stands
+      only for an ASCII letter or digit. Punctuation and a Latin
+      layout's own letters keep their meaning: German Ü is not [.
+    - the equivalent is never a character the active layout types
+      without Shift on some key. So AZERTY's Ctrl+Z is the key labeled
+      Z, Dvorak's apostrophe on the US Q key is not a second Ctrl+Q, and
+      the Turkish ı is not a second I. On a Russian layout, Ю is not
+      Ctrl+. (the layout types a period unshifted on the slash key), but
+      Б is Ctrl+, (the layout types a comma only with Shift).
+
+    The US position also gives AZERTY's number row its digits, as
+    Firefox and Chromium do, so Ctrl+1 switches tabs there; GTK and Qt
+    need Shift.
+  - **Matching.** Accelerators rank their matches, best first: the
+    keysym exactly; the keysym with the Shift that typed a symbol
+    ignored; the equivalent exactly; the equivalent with that Shift
+    ignored (`ui.accel.match`). The best match of all actions wins. An
+    application that binds Ctrl+С beside Ctrl+C keeps Ctrl+С, and on a
+    Hebrew layout Ctrl+/ beats Ctrl+Q. The editor's keys (Ctrl+A, C, V,
+    X, Z, Y), the undo keys, dialog and menu mnemonics, views' Ctrl+A,
+    and text areas' Ctrl+L, E, R, and J use the equivalent where there
+    is one. Typing does not change: the editor inserts the key's text.
+  - **Public API.**
+    - `siv_event.shortcut_key` is the equivalent if there is one, else
+      the keysym. It takes the event's reserved field (D2), so the
+      struct keeps its size. Handlers compare it for letter and digit
+      shortcuts: `ctrl && ev->shortcut_key == 'c'`. Stock widgets do
+      (D22).
+    - `siv_accel_matches(accel, event)` matches an event as accelerators
+      do and returns the rank (`siv_accel_match`). A handler matching a
+      keymap of its own, such as siv-columns' vim keys in a capture
+      handler, takes the best rank of its bindings.
+    - Lua: `ev.shortcut_key` and `siv.accel_matches`.
+  - **Tests.** `siv_test_set_keymap(app, layout, variant)` compiles a
+    keymap for the headless seat from XKB names, with the evdev rules,
+    the pc105 model, no options, and nothing from the environment.
+    `siv_test_press_key(window, keycode, layout, modifiers)` presses a
+    physical key through it as the Wayland backend translates the
+    compositor's keys. So an application can test its shortcuts on
+    other layouts without a compositor; it needs only xkeyboard-config.
+    siv's own tests:
+    - `src/platform/Keyboard.zig`: the rule on us, ru, gr, il,
+      fr(azerty), us(dvorak), ru,us, us(dvorak),ru,us, and tr.
+    - `test/abi/layouts.zig`: accelerators, editor keys, undo keys, and
+      dialog mnemonics on us, ru, gr, il, fr(azerty), us(dvorak), and
+      ru,us in both groups; the keysym beating its equivalent on
+      Hebrew; AZERTY's digits.
+    - `test/lua/binding.zig`.
+  - **Labels.** `siv_accel_format` still writes the accelerator's own
+    key in English: "Ctrl+C" on a Russian layout too, as GTK and Qt show
+    it. The key matches through its Latin equivalent, and most non-Latin
+    keyboards print the Latin letter as well. GTK, Qt, and Chromium
+    translate the names ("Strg" for Ctrl in German, "Page Up"). That
+    needs a message catalog, which siv does not have: its few strings
+    ("Add to Dictionary") are English. An application that translates
+    its labels formats them from `siv_action_get_accel`.
+  - **Elsewhere.**
+    - GTK 4 (`gdk_key_event_matches`) lets an accelerator's keyval match
+      a key in another group of the keymap with the same keycode and
+      shift level, when the active group has that keyval nowhere. It
+      has no fallback without a Latin group and no preference among
+      groups.
+    - Qt 6 (`QXkbCommon::possibleKeyCombinations`, `lookupLatinKeysym`)
+      looks a non-Latin-1 key up in the other layouts in order, at the
+      current level. It rejects a keysym that an earlier layout types
+      unshifted on any key; siv checks the active layout instead. Without a Latin layout it logs that shortcuts may not
+      work and blames the desktop.
+    - Chromium takes the Windows key code from the active layout's
+      character (AZERTY's A is VKEY_A). For a character outside ASCII it
+      falls back to the US key at that position, and it never reads
+      other groups. Its accelerators match key codes.
+    - Firefox (`KeymapWrapper::WillDispatchKeyboardEventInternal`,
+      `WidgetKeyboardEvent::GetShortcutKeyCandidates`) adds the first
+      Latin group's letter or digit to an event as alternative
+      characters, and lets an AZERTY digit match without Shift.
+    - GNOME does not add a Latin layout on its own: gnome-settings-daemon
+      adds us only when no layout is configured.
+- **Alternatives:**
+  - GTK's per-accelerator match through the keymap: the UI and every
+    application handler would need the keymap. One equivalent per event
+    is a value a handler compares.
+  - Chromium's US position alone: a Dvorak user with a Russian group
+    would get QWERTY shortcuts. The configured Latin layout is what the
+    user types Latin letters with.
+  - No fallback without a Latin group, as in GTK and Qt: Russian-only and
+    Greek-only keymaps, which people set by hand on compositors like
+    sway, would get no Ctrl+C.
+  - Physical keys always (keycodes): AZERTY and Dvorak users would press
+    Ctrl+Z on a key labeled W. Neither GTK, Qt, nor the browsers do that.
+  - Matching in the UI from the keymap: the UI never sees the keymap. The
+    platform translates keys where the keymap is, and the event carries
+    the result.
+- **Reverse if:** a family of layouts gets equivalents its users do not
+  expect (then tighten the two limits, as with Qt's check of earlier
+  layouts); applications need translated key names in labels (then a
+  message catalog, D21); or applications need other layouts' keysyms
+  for any key (then expose the keymap).
 
 ## Lessons from ourokit
 

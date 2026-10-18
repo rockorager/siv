@@ -55,12 +55,28 @@ fn isLetter(keysym: u32) bool {
     };
 }
 
-/// How well an accelerator matches a key event: exactly, or with the
-/// event's Shift ignored because it made the symbol (Ctrl and + typed
-/// as Ctrl+Shift+= on a US layout). Exact matches win.
-pub const Match = enum { none, shifted, exact };
+/// How well an accelerator matches a key event, best last: through the
+/// key's Latin equivalent (D44) with the event's Shift ignored, through
+/// the equivalent, with the event's Shift ignored because it made the
+/// symbol (Ctrl and + typed as Ctrl+Shift+= on a US layout), exactly.
+/// The best match of all accelerators wins, so the key's own keysym wins
+/// over its equivalent: an application that binds Ctrl+С beside Ctrl+C
+/// gets it on a Russian layout.
+pub const Match = enum { none, latin_shifted, latin, shifted, exact };
 
-pub fn match(a: Accel, keysym: u32, mods: Mods) Match {
+/// Matches a key event: its keysym, its Latin equivalent (0 for none),
+/// and the modifiers held.
+pub fn match(a: Accel, keysym: u32, latin: u32, mods: Mods) Match {
+    const own = matchKeysym(a, keysym, mods);
+    if (own != .none or latin == 0 or latin == keysym) return own;
+    return switch (matchKeysym(a, latin, mods)) {
+        .exact => .latin,
+        .shifted => .latin_shifted,
+        else => .none,
+    };
+}
+
+fn matchKeysym(a: Accel, keysym: u32, mods: Mods) Match {
     const ev = Accel.of(keysym, mods);
     if (a.keysym == 0 or a.keysym != ev.keysym) return .none;
     if (a.eql(ev)) return .exact;
@@ -164,20 +180,28 @@ pub fn format(a: Accel, style: Style, w: *std.Io.Writer) std.Io.Writer.Error!voi
 
 test "letters match in either case with Shift exact; symbols ignore the Shift that made them" {
     const ctrl_n = Accel.of('n', .{ .ctrl = true });
-    try std.testing.expectEqual(Match.exact, match(ctrl_n, 'n', .{ .ctrl = true, .num_lock = true }));
-    try std.testing.expectEqual(Match.none, match(ctrl_n, 'N', .{ .ctrl = true, .shift = true }));
+    try std.testing.expectEqual(Match.exact, match(ctrl_n, 'n', 0, .{ .ctrl = true, .num_lock = true }));
+    try std.testing.expectEqual(Match.none, match(ctrl_n, 'N', 0, .{ .ctrl = true, .shift = true }));
     const ctrl_shift_n = Accel.of('N', .{ .ctrl = true, .shift = true });
     try std.testing.expectEqual(@as(u32, 'n'), ctrl_shift_n.keysym);
-    try std.testing.expectEqual(Match.exact, match(ctrl_shift_n, 'N', .{ .ctrl = true, .shift = true }));
-    try std.testing.expectEqual(Match.none, match(ctrl_shift_n, 'n', .{ .ctrl = true }));
+    try std.testing.expectEqual(Match.exact, match(ctrl_shift_n, 'N', 0, .{ .ctrl = true, .shift = true }));
+    try std.testing.expectEqual(Match.none, match(ctrl_shift_n, 'n', 0, .{ .ctrl = true }));
     // Ctrl and + is Ctrl+Shift+= on a US layout, reporting +.
     const ctrl_plus = Accel.of('+', .{ .ctrl = true });
-    try std.testing.expectEqual(Match.shifted, match(ctrl_plus, '+', .{ .ctrl = true, .shift = true }));
-    try std.testing.expectEqual(Match.none, match(ctrl_plus, '+', .{ .ctrl = true, .alt = true }));
+    try std.testing.expectEqual(Match.shifted, match(ctrl_plus, '+', 0, .{ .ctrl = true, .shift = true }));
+    try std.testing.expectEqual(Match.none, match(ctrl_plus, '+', 0, .{ .ctrl = true, .alt = true }));
     // Shift+Tab reports ISO_Left_Tab; Tab alone does not match it.
     const shift_tab = Accel.of(tab, .{ .shift = true });
-    try std.testing.expectEqual(Match.exact, match(shift_tab, iso_left_tab, .{ .shift = true }));
-    try std.testing.expectEqual(Match.none, match(Accel.of(tab, .{}), iso_left_tab, .{ .shift = true }));
+    try std.testing.expectEqual(Match.exact, match(shift_tab, iso_left_tab, 0, .{ .shift = true }));
+    try std.testing.expectEqual(Match.none, match(Accel.of(tab, .{}), iso_left_tab, 0, .{ .shift = true }));
+    // Through the Latin equivalent (D44): Ctrl+С on a Russian layout is
+    // Ctrl+C, below a binding of the Cyrillic key itself; Ctrl+Shift+3
+    // types № there, whose equivalent # matches Ctrl+# as a shifted symbol.
+    const cyrillic_es = 0x6d3;
+    try std.testing.expectEqual(Match.latin, match(Accel.of('c', .{ .ctrl = true }), cyrillic_es, 'c', .{ .ctrl = true }));
+    try std.testing.expectEqual(Match.exact, match(Accel.of(cyrillic_es, .{ .ctrl = true }), cyrillic_es, 'c', .{ .ctrl = true }));
+    try std.testing.expectEqual(Match.none, match(Accel.of('c', .{ .ctrl = true }), cyrillic_es, 'C', .{ .ctrl = true, .shift = true }));
+    try std.testing.expectEqual(Match.latin_shifted, match(Accel.of('#', .{ .ctrl = true }), 0x6b0, '#', .{ .ctrl = true, .shift = true }));
 }
 
 test "accelerators are written for people, ARIA, and GTK" {

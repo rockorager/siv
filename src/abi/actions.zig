@@ -443,14 +443,15 @@ fn shadowed(self: *App, scope: *Window, a: *const Action) bool {
     return find(self, scope, a.name) != null;
 }
 
-fn onKey(ctx: ?*anyopaque, _: *ui.Window, keysym: u32, mods: ui.accel.Mods, modal: bool) bool {
+fn onKey(ctx: ?*anyopaque, _: *ui.Window, keysym: u32, latin: u32, mods: ui.accel.Mods, modal: bool) bool {
     const w: *Window = @ptrCast(@alignCast(ctx));
     if (w.dead) return false;
     const self = w.owner;
     const scope = scopeOf(w);
-    // Exact matches first, the window's before the application's, each
-    // in the order they were created.
-    for ([_]ui.accel.Match{ .exact, .shifted }) |want| {
+    // Exact matches first, then those through the key's Latin equivalent
+    // (D44), the window's before the application's, each in the order
+    // they were created.
+    for ([_]ui.accel.Match{ .exact, .shifted, .latin, .latin_shifted }) |want| {
         for ([_]bool{ true, false }) |own| {
             if (own and modal) continue;
             for (self.actions.list.items) |a| {
@@ -458,7 +459,7 @@ fn onKey(ctx: ?*anyopaque, _: *ui.Window, keysym: u32, mods: ui.accel.Mods, moda
                 if (own) {
                     if (a.window != scope) continue;
                 } else if (a.window != null or shadowed(self, scope, a)) continue;
-                for (a.keys) |k| if (ui.accel.match(k.accel, keysym, mods) == want) {
+                for (a.keys) |k| if (ui.accel.match(k.accel, keysym, latin, mods) == want) {
                     run(a, @fromBackingInt(scope.handle), k.target, .{});
                     return true;
                 };
@@ -549,6 +550,22 @@ pub export fn siv_app_get_action(app: t.App, window: t.Window, index: u32) t.Act
         i += 1;
     };
     return .null;
+}
+
+pub export fn siv_accel_matches(accel: t.Accel, event: ?*const t.Event) t.AccelMatch {
+    const k = shortcutOf(accel) catch return .none;
+    const ev = runtime.readDesc(t.Event, event) catch return .none;
+    if (ev.type != .key or !ev.flags.pressed or k.keysym == 0) return .none;
+    const mods = runtime.flags(t.Modifiers, ev.modifiers) catch return .none;
+    const keysym: u32 = @bitCast(@intFromEnum(ev.keysym));
+    const latin: u32 = @bitCast(@intFromEnum(ev.shortcut_key));
+    return switch (ui.accel.match(k, keysym, latin, .{ .shift = mods.shift, .ctrl = mods.ctrl, .alt = mods.alt, .super = mods.super })) {
+        .none => .none,
+        .latin_shifted => .latin_shifted,
+        .latin => .latin,
+        .shifted => .shifted,
+        .exact => .exact,
+    };
 }
 
 pub export fn siv_accel_format(accel: t.Accel, text: ?[*]u8, text_cap: usize, len: ?*usize) t.Result {

@@ -210,17 +210,18 @@ pub const Host = struct {
 /// interpret.
 pub const Actions = struct {
     ctx: ?*anyopaque = null,
-    /// Runs the accelerator a key matches, if one does and its action is
-    /// enabled; returns whether it ran one. `modal`: a modal node is
+    /// Runs the accelerator a key matches (its keysym, or its Latin
+    /// equivalent `latin`, 0 for none: D44), if one does and its action
+    /// is enabled; returns whether it ran one. `modal`: a modal node is
     /// active, so only accelerators of the whole application apply.
-    key: *const fn (ctx: ?*anyopaque, win: *Window, keysym: u32, mods: platform.Mods, modal: bool) bool = noKey,
+    key: *const fn (ctx: ?*anyopaque, win: *Window, keysym: u32, latin: u32, mods: platform.Mods, modal: bool) bool = noKey,
     /// A bound node was activated: invoke its action with its target.
     invoke: *const fn (ctx: ?*anyopaque, win: *Window, node: NodeId) void = noInvoke,
     /// The accelerator of an action that a node bound to it with a
     /// target exposes in its semantics; keysym 0 for none.
     shortcut: *const fn (ctx: ?*anyopaque, action: u64, target: f64) @import("accel.zig").Accel = noShortcut,
 
-    fn noKey(_: ?*anyopaque, _: *Window, _: u32, _: platform.Mods, _: bool) bool {
+    fn noKey(_: ?*anyopaque, _: *Window, _: u32, _: u32, _: platform.Mods, _: bool) bool {
         return false;
     }
     fn noInvoke(_: ?*anyopaque, _: *Window, _: NodeId) void {}

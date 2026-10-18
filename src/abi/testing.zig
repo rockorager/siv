@@ -232,6 +232,66 @@ pub export fn siv_test_key(window: t.Window, keysym: t.Key, modifiers: t.Modifie
     }.f(window, keysym, modifiers, text, text_len));
 }
 
+pub export fn siv_test_set_keymap(app: t.App, layout: ?[*]const u8, layout_len: usize, variant: ?[*]const u8, variant_len: usize) t.Result {
+    return wrap(struct {
+        fn f(a: t.App, lp: ?[*]const u8, ln: usize, vp: ?[*]const u8, vn: usize) Error!void {
+            const self = try App.get(@backingInt(a));
+            try headlessApp(self);
+            const C = struct {
+                layout: [256:0]u8 = undefined,
+                variant: [256:0]u8 = undefined,
+                result: Error!void = {},
+                fn run(hl: *platform.Headless, c: *@This()) void {
+                    hl.setKeymap(&c.layout, &c.variant) catch |err| {
+                        c.result = if (err == error.OutOfMemory) error.OutOfMemory else error.Unavailable;
+                    };
+                }
+            };
+            var c: C = .{};
+            for ([_][]const u8{ try runtime.string(lp, ln), try runtime.string(vp, vn) }, [_]*[256:0]u8{ &c.layout, &c.variant }) |s, buf| {
+                if (s.len > 255 or std.mem.indexOfScalar(u8, s, 0) != null) return error.InvalidArgument;
+                @memcpy(buf[0..s.len], s);
+                buf[s.len] = 0;
+            }
+            try onHeadless(self, &c, C.run);
+            return c.result;
+        }
+    }.f(app, layout, layout_len, variant, variant_len));
+}
+
+pub export fn siv_test_press_key(window: t.Window, keycode: u32, layout: u32, modifiers: t.Modifiers) t.Result {
+    return wrap(struct {
+        fn f(wh: t.Window, code: u32, group: u32, m: t.Modifiers) Error!void {
+            const w = try headlessWindow(wh);
+            const fl = try runtime.flags(t.Modifiers, m);
+            const C = struct {
+                window: platform.WindowId,
+                keycode: u32,
+                layout: u32,
+                mods: platform.Mods,
+                serial: u32,
+                result: Error!void = {},
+                fn run(hl: *platform.Headless, c: *@This()) void {
+                    const keys = hl.keyEvents(c.window, c.keycode, c.layout, c.mods, c.serial) catch {
+                        c.result = error.Busy;
+                        return;
+                    };
+                    for (keys) |k| hl.inject(.{ .key = k });
+                }
+            };
+            var c: C = .{
+                .window = w.win.id,
+                .keycode = code,
+                .layout = group,
+                .mods = .{ .shift = fl.shift, .ctrl = fl.ctrl, .alt = fl.alt, .super = fl.super, .caps_lock = fl.caps_lock, .num_lock = fl.num_lock },
+                .serial = nextSerial(),
+            };
+            try onHeadless(w.owner, &c, C.run);
+            return c.result;
+        }
+    }.f(window, keycode, layout, modifiers));
+}
+
 pub export fn siv_test_modifiers(window: t.Window, modifiers: t.Modifiers) t.Result {
     return wrap(struct {
         fn f(wh: t.Window, m: t.Modifiers) Error!void {

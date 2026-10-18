@@ -890,6 +890,9 @@ pub const Key = struct {
     /// The input's timestamp in milliseconds.
     time: u32 = 0,
     keysym: u32,
+    /// The key's Latin equivalent, which shortcuts match besides the
+    /// keysym (D44); 0 for none.
+    latin: u32 = 0,
     /// The XKB keycode (evdev code + 8) of the physical key, in the
     /// compositor's keymap; 0 for keys siv makes up (siv_test_key).
     keycode: u32 = 0,
@@ -906,6 +909,12 @@ pub const Key = struct {
     /// A capture handler stopped the key's propagation: the nodes on the
     /// way up run only their default handlers.
     stopped: bool = false,
+
+    /// The key as letter shortcuts see it: the Latin equivalent if it
+    /// has one, else the keysym (D44).
+    pub fn shortcut(k: *const Key) u32 {
+        return if (k.latin != 0) k.latin else k.keysym;
+    }
 };
 
 pub const FocusChange = struct {

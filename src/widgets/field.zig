@@ -83,7 +83,8 @@ fn onStyleKey(ud: ?*anyopaque, node: Node, ev: *const siv.Event) callconv(.c) si
     const st: *Field = @ptrCast(@alignCast(ud.?));
     const e = ev;
     if (st.hdr.disabled or !e.flags.pressed or !e.modifiers.ctrl or e.modifiers.alt or e.modifiers.super) return .pass;
-    const key: u32 = @bitCast(@intFromEnum(e.keysym));
+    // Through the key's Latin equivalent on any layout (D44).
+    const key: u32 = @bitCast(@intFromEnum(e.shortcut_key));
     switch (key) {
         'l', 'L', 'e', 'E', 'r', 'R', 'j', 'J' => {
             var rtl = false;

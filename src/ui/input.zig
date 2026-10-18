@@ -746,6 +746,7 @@ fn key(win: *Window, k: *const platform.Key) void {
     const ev: Event = .{ .key = .{
         .time = k.time,
         .keysym = k.keysym,
+        .latin = k.latin,
         .keycode = k.keycode,
         .pressed = k.state != .released,
         .repeat = k.state == .repeated,
@@ -781,7 +782,7 @@ fn key(win: *Window, k: *const platform.Key) void {
         },
         else => {},
     }
-    if (win.actions.key(win.actions.ctx, win, k.keysym, k.mods, modalRoot(win) != .root)) return;
+    if (win.actions.key(win.actions.ctx, win, k.keysym, k.latin, k.mods, modalRoot(win) != .root)) return;
     switch (k.keysym) {
         keysym.tab, keysym.iso_left_tab => traverse(win, k.keysym == keysym.tab and !k.mods.shift),
         keysym.up, keysym.down, keysym.page_up, keysym.page_down, keysym.home, keysym.end, keysym.left, keysym.right => {
@@ -808,13 +809,13 @@ fn key(win: *Window, k: *const platform.Key) void {
 
 /// Ctrl+Z, Ctrl+Shift+Z, and Ctrl+Y that no editor took undo or redo the
 /// application undo stack attached nearest `target` (D35), at or above
-/// it but not above the active modal node. Returns whether one took the
-/// key.
+/// it but not above the active modal node; on any layout, through the
+/// key's Latin equivalent (D44). Returns whether one took the key.
 fn undoKey(win: *Window, target: NodeId, k: *const platform.Key) bool {
     const host = win.undo_host orelse return false;
     const m = k.mods;
     if (!m.ctrl or m.alt or m.super) return false;
-    const redo = switch (k.keysym) {
+    const redo = switch (if (k.latin != 0) k.latin else k.keysym) {
         'z', 'Z' => m.shift,
         'y', 'Y' => true,
         else => return false,

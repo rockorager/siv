@@ -111,8 +111,9 @@ fn onKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventR
     }
     const m = e.modifiers;
     if (m.ctrl or m.super) return .pass;
-    const sym: u32 = @bitCast(@intFromEnum(e.keysym));
-    if (sym == 0 or sym >= 0x80) return .pass;
+    // The key's own character, else its Latin equivalent (D44): О on a
+    // Russian layout presses the control whose mnemonic is o.
+    const syms = [_]u32{ @bitCast(@intFromEnum(e.keysym)), @bitCast(@intFromEnum(e.shortcut_key)) };
     // A text field takes its letters, unless Alt asks for the mnemonic.
     if (!m.alt) {
         const focus = c.siv_window_get_focus(e.window);
@@ -120,10 +121,14 @@ fn onKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventR
         var anchor: u32 = 0;
         if (focus != .null and c.siv_node_get_selection(focus, &caret, &anchor) == .ok) return .pass;
     }
-    const target = findMnemonic(st.card, std.ascii.toLower(@intCast(sym))) orelse return .pass;
-    var handled = false;
-    _ = c.siv_node_emit(target, &.{ .type = .activate }, &handled);
-    return .handled;
+    for (syms) |sym| {
+        if (sym == 0 or sym >= 0x80) continue;
+        const target = findMnemonic(st.card, std.ascii.toLower(@intCast(sym))) orelse continue;
+        var handled = false;
+        _ = c.siv_node_emit(target, &.{ .type = .activate }, &handled);
+        return .handled;
+    }
+    return .pass;
 }
 
 /// The first enabled control under `node` (in tree order) whose mnemonic

@@ -277,6 +277,26 @@ test "capture handlers from Lua: a window's keys before the focused node" {
     );
 }
 
+test "shortcuts on any layout from Lua: the Latin equivalent and accel_matches" {
+    _ = try run(prologue ++
+        \\-- Needs xkeyboard-config; without it there is nothing to test.
+        \\if not pcall(app.test_set_keymap, app, "ru", "") then return end
+        \\local seen = {}
+        \\win:update(function(txn, root)
+        \\  txn:on(root, "key", function(_, ev)
+        \\    if not ev.flags.pressed then return end
+        \\    seen.keysym, seen.shortcut = ev.keysym, ev.shortcut_key
+        \\    seen.match = siv.accel_matches({ key = string.byte("c"), modifiers = "ctrl" }, ev)
+        \\  end)
+        \\end)
+        \\-- Ctrl and the key that types С on a Russian layout: KEY_C, 46 + 8.
+        \\win:test_press_key(54, 0, "ctrl")
+        \\assert(app:test_settle(5000))
+        \\assert(seen.keysym == 0x6d3 and seen.shortcut == string.byte("c"), tostring(seen.shortcut))
+        \\assert(seen.match == "latin", tostring(seen.match))
+    );
+}
+
 test "callbacks run at safe points and their errors reach the caller" {
     _ = try run(prologue ++
         \\local root = win:get_root()

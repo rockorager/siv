@@ -674,7 +674,10 @@ fn keyIn(win: *Window, id: NodeId, k: *const platform.Key, l: *const Layout) err
     const rtl = win.state(id).rtl;
     const pos: Position = .{ .offset = e.caret, .affinity = e.affinity };
     const extend = mods.shift;
-    switch (k.keysym) {
+    // Letters through the key's Latin equivalent, so Ctrl+C copies on a
+    // Russian or Greek layout (D44); keys with none are their keysym.
+    const sym = if (k.latin != 0) k.latin else k.keysym;
+    switch (sym) {
         keysym.left, keysym.right => {
             const forward = (k.keysym == keysym.right) != rtl;
             if (!extend and lo != hi and !mods.ctrl) {
@@ -732,7 +735,7 @@ fn keyIn(win: *Window, id: NodeId, k: *const platform.Key, l: *const Layout) err
         },
         'c', 'C', 'x', 'X' => {
             if (!mods.ctrl) return typed(win, id, k);
-            copySelection(win, id, k.keysym == 'x' or k.keysym == 'X');
+            copySelection(win, id, sym == 'x' or sym == 'X');
         },
         'v', 'V' => {
             if (!mods.ctrl) return typed(win, id, k);

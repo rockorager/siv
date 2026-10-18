@@ -66,10 +66,17 @@ pub const decls = [_]Decl{
     flags("siv_action_flags", "Action options.", &.{
         .{ .name = "disabled", .bit = 0, .doc = "Cannot run: its accelerators do nothing (the key goes on to siv's defaults), the desktop's requests are ignored, siv_action_activate fails, and nodes bound to it are disabled." },
     }),
-    value("siv_accel", "A keyboard accelerator: a key, the modifiers held with it, and for an action the target it passes (D34). Letters match in either case; write Shift when it must be held (Ctrl+Shift+N is n with ctrl and shift). A symbol typed with Shift, such as + on a US layout, matches without shift in its modifiers.", &.{
+    value("siv_accel", "A keyboard accelerator: a key, the modifiers held with it, and for an action the target it passes (D34). Letters match in either case; write Shift when it must be held (Ctrl+Shift+N is n with ctrl and shift). A symbol typed with Shift, such as + on a US layout, matches without shift in its modifiers. On any layout a key also matches through its Latin equivalent (siv_event.shortcut_key, D44): Ctrl+C is Ctrl+С on a Russian layout and Ctrl+1 is Ctrl+& on a French one.", &.{
         f("key", ref("siv_key"), "The keysym; not 0. Shift+Tab is SIV_KEY_TAB with shift."),
         f("modifiers", ref("siv_modifiers"), "Shift, Ctrl, Alt, and Super; Caps Lock and Num Lock are an invalid argument."),
         f("target", .f64, "Actions: what the key passes, as a bound node's target does, so that Ctrl+1 and Ctrl+2 choose two values of one choice action; finite. Ignored elsewhere."),
+    }),
+    enumeration("siv_accel_match", "How well a key event matches an accelerator (siv_accel_matches), worst first: siv runs the accelerator that matches a key best, so a binding of the key's own keysym wins over one its Latin equivalent matches.", &.{
+        .{ .name = "none", .value = 0, .doc = "No match." },
+        .{ .name = "latin_shifted", .value = 1, .doc = "Through the key's Latin equivalent (siv_event.shortcut_key), with the Shift that made the symbol ignored." },
+        .{ .name = "latin", .value = 2, .doc = "Through the key's Latin equivalent: Ctrl+C for Ctrl+С on a Russian layout." },
+        .{ .name = "shifted", .value = 3, .doc = "With the Shift that made the symbol ignored: Ctrl++ for Ctrl+Shift+= on a US layout." },
+        .{ .name = "exact", .value = 4, .doc = "The key and the modifiers as written." },
     }),
     descriptor("siv_action_desc", "An action.", &.{
         f("name", .string, "Identifies it in its scope: the application's, or its window's, where it shadows an application action with the same name. The desktop invokes application actions by it (notification buttons, desktop file actions). Not empty; copied."),
@@ -171,6 +178,17 @@ pub const functions = [_]Function{
             p("len", out(.usize), "The text's full length in bytes."),
         },
         .ret = ref("siv_result"),
+    },
+    .{
+        .name = "siv_accel_matches",
+        .doc = "Matches a key event against an accelerator as siv matches actions' accelerators (D34, D44), so an application's own key handler binds keys the same way on any layout: letters in either case with Shift as written, a symbol also without the Shift that typed it, Caps Lock and Num Lock ignored, and the key's keysym or else its Latin equivalent (siv_event.shortcut_key). Releases and other events match none. Of several bindings, take the best match.",
+        .since = v0_1,
+        .thread = .any,
+        .params = &.{
+            p("accel", ref("siv_accel"), "The accelerator; its target is ignored."),
+            .{ .name = "event", .type = .{ .desc = "siv_event" }, .doc = "The event, as a handler got it." },
+        },
+        .ret = ref("siv_accel_match"),
     },
     .{
         .name = "siv_set_action",

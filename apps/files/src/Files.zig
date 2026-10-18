@@ -1534,8 +1534,9 @@ fn onKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventR
     if (!e.flags.pressed) return .pass;
     const m = e.modifiers;
     const ctrl = m.ctrl and !m.alt;
-    // Shortcuts that work everywhere, editors included.
-    if (ctrl) switch (@intFromEnum(e.keysym)) {
+    // Shortcuts that work everywhere, editors included; letters through
+    // the key's Latin equivalent, so they work on any layout (D44).
+    if (ctrl) switch (@intFromEnum(e.shortcut_key)) {
         'l', 'L' => {
             self.showLocation(true);
             return .handled;
@@ -1583,7 +1584,7 @@ fn onKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventR
     }
     // The rest act on files; in an editor they are the editor's keys.
     if (self.inEditor()) return .pass;
-    if (ctrl) switch (@intFromEnum(e.keysym)) {
+    if (ctrl) switch (@intFromEnum(e.shortcut_key)) {
         'a', 'A' => {
             self.selectAll();
             return .handled;

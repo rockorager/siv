@@ -557,7 +557,9 @@ fn onRowKey(ud: ?*anyopaque, node: Node, ev: *const siv.Event) callconv(.c) siv.
         k.up, k.down => focusStep(node, if (e.keysym == k.down) .next else .previous, true),
         k.home => focusStep(w.related(node, .parent), .first_child, false),
         k.end => focusStep(w.related(node, .parent), .last_child, false),
-        else => return w.resultOf(chooseMnemonic(st, @bitCast(@intFromEnum(e.keysym)), e.window)),
+        // The key's own character, else its Latin equivalent (D44).
+        else => return w.resultOf(chooseMnemonic(st, @bitCast(@intFromEnum(e.keysym)), e.window) or
+            chooseMnemonic(st, @bitCast(@intFromEnum(e.shortcut_key)), e.window)),
     }
     return .handled;
 }

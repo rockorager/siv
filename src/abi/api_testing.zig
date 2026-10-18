@@ -104,6 +104,17 @@ pub const functions = [_]Function{
         p("modifiers", ref("siv_modifiers"), "Modifiers held."),
         p("text", .string, "The text the key produces, as a keymap would give it (\"a\" for SIV_KEY_A without Shift, \"\\r\" for Enter); empty for none. At most 32 bytes."),
     }),
+    call("siv_test_set_keymap", "Gives the headless seat a keymap compiled from XKB layout and variant names, as setxkbmap takes them (\"ru,us\" and \"\", \"us\" and \"dvorak\"), with the evdev rules, the pc105 model, no options, and nothing from the environment, so that siv_test_press_key translates physical keys as a compositor's keymap would: an application tests its shortcuts on other layouts (D44). Needs xkeyboard-config: SIV_ERROR_UNAVAILABLE when the names do not compile." ++ headless, &.{
+        app_param,
+        p("layout", .string, "Layouts, comma-separated, in the order of the keymap's groups."),
+        p("variant", .string, "Their variants, comma-separated; empty for the default ones."),
+    }),
+    call("siv_test_press_key", "Presses and releases a physical key through the keymap siv_test_set_keymap compiled, as the Wayland backend translates the compositor's: the events carry the keysym, text, and Latin equivalent (siv_event.shortcut_key) the keymap gives with the layout and modifiers. SIV_ERROR_BUSY before a keymap is set." ++ queued ++ headless, &.{
+        window_param,
+        p("keycode", .u32, "The XKB keycode: the Linux evdev code plus 8 (KEY_C is 46, so 54)."),
+        p("layout", .u32, "The active layout, from 0 in the order siv_test_set_keymap named them."),
+        p("modifiers", ref("siv_modifiers"), "Modifiers held."),
+    }),
     call("siv_test_type", "Types text into a window: a key press and release per character, its keysym the character's (Latin-1 as is, others 0x01000000 plus the code point), \\n as Enter and \\t as Tab." ++ queued ++ headless, &.{
         window_param,
         p("text", .string, "UTF-8 text."),

@@ -1531,6 +1531,7 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
         },
         .key => |k| {
             ev.keysym = @enumFromInt(@as(i32, @bitCast(k.keysym)));
+            ev.shortcut_key = @enumFromInt(@as(i32, @bitCast(k.shortcut())));
             ev.keycode = k.keycode;
             ev.time = k.time;
             ev.modifiers = modifiers(k.mods);

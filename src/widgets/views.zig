@@ -1169,7 +1169,9 @@ fn onRowKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.Eve
     const at: u32 = @intCast(std.math.clamp(cur, 0, @as(i64, v.count) - 1));
     const page_up: i64 = if (variable(v)) rowAt(v, rowTop(v, at) - v.view_h + rowHeight(v, at)) else cur - page;
     const page_down: i64 = if (variable(v)) rowAt(v, rowTop(v, at) + v.view_h) else cur + page;
-    switch (e.keysym) {
+    // Ctrl+A through the key's Latin equivalent on any layout (D44);
+    // the other keys have none.
+    switch (e.shortcut_key) {
         k.up => if (cur == 0 and v.mode == .table and v.header != .null) focusHeader(v) else moveCursor(v, cur - per, e.window, e.modifiers, false),
         k.down => moveCursor(v, cur + per, e.window, e.modifiers, false),
         k.page_up => moveCursor(v, @min(page_up, cur - 1), e.window, e.modifiers, false),
