@@ -311,6 +311,7 @@ const undo = @import("api_undo.zig");
 const settings = @import("api_settings.zig");
 const actions = @import("api_actions.zig");
 const spelling = @import("api_spell.zig");
+const adaptive = @import("api_adaptive.zig");
 
 pub const decls = [_]Decl{
     result,
@@ -2062,7 +2063,7 @@ pub const functions = [_]Function{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
         .{ .name = "relation", .type = ref("siv_relation"), .doc = "Which neighbor." },
     }),
-    call("siv_node_is_hidden", "Whether siv_set_hidden hid the node itself (not its visual, nor an ancestor), as of the latest operation.", &.{
+    call("siv_node_is_hidden", "Whether siv_set_hidden hid the node itself (not its visual, an ancestor, or a variant: siv_set_hidden_when), as of the latest operation.", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
         .{ .name = "hidden", .type = out(.bool), .doc = "Hidden by siv_set_hidden." },
     }),
@@ -2521,8 +2522,8 @@ pub const spec: schema.Schema = .{
     .source = "src/abi/api.zig",
     .doc = "siv: a GUI toolkit for Wayland.",
     .result = "siv_result",
-    .decls = &(decls ++ desktop.decls ++ dbus.decls ++ shell.decls ++ document.decls ++ actions.decls ++ undo.decls ++ settings.decls ++ spelling.decls ++ testing.decls),
-    .functions = &(functions ++ desktop.functions ++ dbus.functions ++ shell.functions ++ document.functions ++ actions.functions ++ undo.functions ++ settings.functions ++ spelling.functions ++ testing.functions),
+    .decls = &(decls ++ desktop.decls ++ dbus.decls ++ shell.decls ++ document.decls ++ actions.decls ++ undo.decls ++ settings.decls ++ spelling.decls ++ adaptive.decls ++ testing.decls),
+    .functions = &(functions ++ desktop.functions ++ dbus.functions ++ shell.functions ++ document.functions ++ actions.functions ++ undo.functions ++ settings.functions ++ spelling.functions ++ adaptive.functions ++ testing.functions),
 };
 
 /// Encodes a version as (major << 16) | (minor << 8) | patch.

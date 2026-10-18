@@ -569,7 +569,7 @@ fn setLayoutPair(w: *Window, id: NodeId, pair: LayoutPair) Error!void {
 
 /// Each field the application left zero takes the default's value; a
 /// dimension counts as one field, edges side by side, flags combine.
-fn mergeLayout(app: t.LayoutDesc, default: t.LayoutDesc) t.LayoutDesc {
+pub fn mergeLayout(app: t.LayoutDesc, default: t.LayoutDesc) t.LayoutDesc {
     var out = app;
     const info = @typeInfo(t.LayoutDesc).@"struct";
     inline for (info.field_names, info.field_types) |name, T| {
@@ -728,7 +728,8 @@ pub export fn siv_node_is_hidden(node: t.Node, hidden: ?*bool) t.Result {
         fn f(n: t.Node, out: ?*bool) Error!void {
             const w, const id = try lookup(n);
             const dest = try runtime.out(bool, out);
-            dest.* = w.uiWin().node(id).hidden;
+            const nd = w.uiWin().node(id);
+            dest.* = if (nd.adaptive) |a| a.own.hidden else nd.hidden;
         }
     }.f(node, hidden));
 }
@@ -2082,7 +2083,7 @@ fn span(v: u32) Error!u16 {
     return if (v == 0) 1 else @intCast(v);
 }
 
-fn layoutOf(ptr: ?*const t.LayoutDesc) Error!ui.Layout {
+pub fn layoutOf(ptr: ?*const t.LayoutDesc) Error!ui.Layout {
     const d = try runtime.readDesc(t.LayoutDesc, ptr);
     const fl = try runtime.flags(t.LayoutFlags, d.flags);
     return .{
@@ -2117,7 +2118,7 @@ fn layoutOf(ptr: ?*const t.LayoutDesc) Error!ui.Layout {
     };
 }
 
-fn flexOf(ptr: ?*const t.FlexDesc) Error!ui.Flex {
+pub fn flexOf(ptr: ?*const t.FlexDesc) Error!ui.Flex {
     const d = try runtime.readDesc(t.FlexDesc, ptr);
     const fl = try runtime.flags(t.FlexFlags, d.flags);
     return .{

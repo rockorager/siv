@@ -59,6 +59,7 @@ test {
     _ = @import("abi/undo.zig");
     _ = @import("abi/layouts.zig");
     _ = @import("abi/settings.zig");
+    _ = @import("abi/adaptive.zig");
     _ = @import("doc/wpt.zig");
     _ = @import("doc/corpus.zig");
     _ = @import("doc/email.zig");

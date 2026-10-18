@@ -912,3 +912,32 @@ test "spell checking from Lua" {
         \\assert(ed:get_text() == "teh quick fox")
     );
 }
+
+test "variants from Lua: a sidebar that goes on a narrow window, and a row that stacks when it does not fit" {
+    _ = try run(prologue ++
+        \\local side, row, a, b
+        \\win:update(function(txn, root)
+        \\  local main = txn:flex(root, {})
+        \\  side = txn:box(main, { layout = { width = 40 } })
+        \\  txn:set_hidden_when(side, { max_width = 100, flags = "window" }, true)
+        \\  row = txn:flex(main, { gap = 4 }, { layout = { grow = 1 } })
+        \\  txn:set_flex_when(row, { flags = { "overflow" } }, { axis = "column" })
+        \\  a = txn:box(row, { layout = { width = 30, height = 10 } })
+        \\  b = txn:box(row, { layout = { width = 30, height = 10 } })
+        \\end)
+        \\assert(app:test_settle(5000))
+        \\local r = row:get_rect()
+        \\assert(r.x == 40 and b:get_rect().y == a:get_rect().y, r.x)
+        \\win:test_resize(80, 80)
+        \\assert(app:test_settle(5000))
+        \\assert(row:get_rect().x == 0 and b:get_rect().y == a:get_rect().y)
+        \\win:test_resize(50, 80)
+        \\assert(app:test_settle(5000))
+        \\assert(b:get_rect().y == 10, b:get_rect().y)
+        \\win:update(function(txn) txn:clear_variants(side) end)
+        \\assert(app:test_settle(5000))
+        \\assert(row:get_rect().x > 0)
+        \\local ok, err = pcall(win.update, win, function(txn) txn:set_flex_when(side, nil, nil) end)
+        \\assert(not ok and err.code == "invalid_argument", tostring(err))
+    );
+}

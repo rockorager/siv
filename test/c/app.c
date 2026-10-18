@@ -274,6 +274,25 @@ static void test_app(const unsigned char *font, size_t font_len) {
 	siv_set_layout(txn, (siv_node)window, NULL); EXPECT(siv_txn_status(txn), SIV_ERROR_INVALID_HANDLE);
 	siv_txn_abort(txn);
 
+	/* Variants (D39): values taken while the space is in a range. */
+	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
+	siv_set_hidden_when(txn, label, SIV_DESC(siv_condition_desc, .max_width = 300, .flags = SIV_CONDITION_WINDOW), true);
+	siv_set_flex_when(txn, column, SIV_DESC(siv_condition_desc, .flags = SIV_CONDITION_OVERFLOW), SIV_DESC(siv_flex_desc, .axis = SIV_AXIS_COLUMN));
+	siv_set_layout_when(txn, editor, SIV_DESC(siv_condition_desc, .min_width = 100), SIV_DESC(siv_layout_desc, .padding = {4, 4, 4, 4}));
+	EXPECT(siv_txn_commit(txn), SIV_OK);
+	bool hidden = true;
+	EXPECT(siv_node_is_hidden(label, &hidden), SIV_OK);
+	CHECK(!hidden);
+	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
+	siv_clear_variants(txn, label);
+	siv_set_hidden_when(txn, label, SIV_DESC(siv_condition_desc, .min_width = -1), true); EXPECT(siv_txn_status(txn), SIV_ERROR_INVALID_ARGUMENT);
+	siv_txn_abort(txn);
+	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
+	siv_clear_variants(txn, label);
+	siv_clear_variants(txn, column);
+	siv_clear_variants(txn, editor);
+	EXPECT(siv_txn_commit(txn), SIV_OK);
+
 	/* Removing a node invalidates its handle at commit and releases its
 	 * handlers. Replacing a handler releases the old one at commit. */
 	EXPECT(siv_txn_begin(window, &txn), SIV_OK);
