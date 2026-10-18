@@ -467,3 +467,69 @@ test "undo keys: a focused editor keeps them; elsewhere the nearest attached sta
     c.siv_set_undo(txn, root, foreign);
     try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
 }
+
+/// Undo wired to an action (D34) the way an application does it: the
+/// action runs the stack, and the stack's on_change enables the action.
+const Wired = struct {
+    log: Log = .{},
+    stack: t.Undo = .null,
+    action: t.Action = .null,
+    runs: u32 = 0,
+
+    fn onChange(ud: ?*anyopaque, _: t.Undo, ev: *const t.UndoEvent) callconv(.c) void {
+        const w: *Wired = @ptrCast(@alignCast(ud.?));
+        ok(c.siv_action_set_enabled(w.action, ev.undo_count != 0)) catch unreachable;
+    }
+
+    fn onAction(ud: ?*anyopaque, _: *const t.ActionEvent) callconv(.c) void {
+        const w: *Wired = @ptrCast(@alignCast(ud.?));
+        w.runs += 1;
+        ok(c.siv_undo_undo(w.stack)) catch unreachable;
+    }
+
+    fn enabled(w: *const Wired) !bool {
+        var st: t.ActionState = .{};
+        try ok(c.siv_action_get_state(w.action, &st));
+        return !st.flags.disabled;
+    }
+};
+
+test "undo and actions: on_change enables an Undo action; an attached stack takes Ctrl+Z before its accelerator" {
+    var h: Harness = .{};
+    try h.start(200, 100, null, null);
+    defer h.stop();
+    var w: Wired = .{};
+    var rec: Rec = .{ .log = &w.log, .name = 'a' };
+    try ok(c.siv_undo_create(h.app, &.{ .on_change = Wired.onChange, .user_data = &w }, &w.stack));
+    const z: t.Accel = .{ .key = @enumFromInt('z'), .modifiers = .{ .ctrl = true } };
+    try ok(c.siv_action_create(h.app, &.{ .name = "undo", .name_len = 4, .flags = .{ .disabled = true }, .accels = &.{z}, .accels_count = 1 }, Wired.onAction, null, &w, &w.action));
+    try h.settle();
+
+    // A step enables the action; its key runs it, which undoes the step
+    // and disables it again, so the next Ctrl+Z does nothing.
+    try push(w.stack, &rec, "Rename", 0);
+    try h.settle();
+    try testing.expect(try w.enabled());
+    try h.typeKey('z', "z", ctrl);
+    try h.settle();
+    try testing.expectEqualStrings("-a", w.log.text());
+    try testing.expectEqual(1, w.runs);
+    try testing.expect(!try w.enabled());
+    try h.typeKey('z', "z", ctrl);
+    try h.settle();
+    try testing.expectEqual(1, w.runs);
+
+    // Attached to the root, the stack takes the key itself.
+    try ok(c.siv_undo_redo(w.stack));
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_set_undo(txn, c.siv_window_get_root(h.window), w.stack);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try testing.expect(try w.enabled());
+    try h.typeKey('z', "z", ctrl);
+    try h.settle();
+    try testing.expectEqualStrings("-a+a-a", w.log.text());
+    try testing.expectEqual(1, w.runs);
+    try testing.expect(!try w.enabled());
+}
