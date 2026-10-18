@@ -2999,7 +2999,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     D31) is AT-SPI's `window` rather than `frame`.
   - Roles follow ARIA's AT-SPI mapping where siv's roles are ARIA's;
     switches are toggle buttons, since the switch role (at-spi2-core 2.56)
-    is newer than current registries and screen readers. Text offsets are
+    is newer than current registries and screen readers. The
+    `navigation` landmark (a sidebar, D40) is AT-SPI's landmark role with
+    the object attribute `xml-roles:navigation`, and the `current`
+    semantic (aria-current: page, step, location, or item) the attribute
+    `current` (`true` for item), as Firefox and Chromium expose both, so
+    Orca announces a navigation landmark and "current page"; a dump
+    (`siv_test_dump`) prints `current=page`. Text offsets are
     characters, converted from siv's UTF-8 byte offsets.
   - Events: ChildrenChanged, PropertyChange (name, description, role,
     value), StateChanged (focus gained after every loss), TextChanged,

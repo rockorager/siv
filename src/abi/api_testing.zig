@@ -64,7 +64,7 @@ pub const decls = [_]Decl{
         .{ .name = "row", .type = .u32, .doc = "A table row's index from 1; 0 for none." },
         .{ .name = "column", .type = .u32, .doc = "A table cell's or column header's column from 1; 0 for none." },
         .{ .name = "sort", .type = ref("siv_sort"), .doc = "A column header's sort order." },
-        .{ .name = "reserved0", .type = .u32, .doc = "Reserved; zero.", .reserved = true },
+        .{ .name = "current", .type = ref("siv_current"), .doc = "Whether it is the current item of its set (aria-current)." },
         .{ .name = "reserved1", .type = .u32, .doc = "Reserved; zero.", .reserved = true },
         .{ .name = "reserved2", .type = .u32, .doc = "Reserved; zero.", .reserved = true },
         .{ .name = "reserved3", .type = .u32, .doc = "Reserved; zero.", .reserved = true },

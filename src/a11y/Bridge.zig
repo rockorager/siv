@@ -614,6 +614,7 @@ pub const SNode = struct {
     row: u32 = 0,
     sort: ui.Sort = .none,
     column: u32 = 0,
+    current: ui.Current = .none,
     caret: ?u32,
     anchor: ?u32,
     bounds: Rect,
@@ -855,6 +856,7 @@ pub const Win = struct {
                 .set_size = n.set_size,
                 .sort = n.sort,
                 .column = n.column,
+                .current = n.current,
                 .row = n.row,
                 .embed = try addStr(gpa, s, n.embed),
             };

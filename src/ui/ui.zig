@@ -49,6 +49,7 @@ pub const Role = node.Role;
 pub const Toggle = node.Toggle;
 pub const Live = node.Live;
 pub const Sort = node.Sort;
+pub const Current = node.Current;
 pub const Range = node.Range;
 pub const Semantics = node.Semantics;
 pub const TextInput = node.TextInput;

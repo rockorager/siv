@@ -202,7 +202,7 @@ const roles = [_][]const u8{
     "list",      "list_item",     "tree",        "tree_item",  "table",     "row",       "cell",        "column_header",
     "tab_list",  "tab",           "tab_panel",   "menu",       "menu_bar",  "menu_item", "toolbar",     "dialog",
     "alert",     "status",        "tooltip",     "slider",     "spin_button", "progress_bar", "separator", "combo_box",
-    "canvas",    "document",
+    "canvas",    "document",      "navigation",
 };
 
 const role_values: [roles.len + 1]schema.EnumValue = blk: {
@@ -212,6 +212,8 @@ const role_values: [roles.len + 1]schema.EnumValue = blk: {
         "Presentational: left out of the semantics tree, with its children promoted."
     else if (std.mem.eql(u8, r, "generic"))
         "A container without meaning of its own; left out of the semantics tree unless focusable or labelled."
+    else if (std.mem.eql(u8, r, "navigation"))
+        "A navigation landmark (WAI-ARIA's navigation): a sidebar or other set of links to the places of the application, named by its label."
     else
         "The " ++ r ++ " role." };
     break :blk vs;
@@ -637,6 +639,13 @@ pub const decls = [_]Decl{
         .{ .name = "live_assertive", .bit = 4, .doc = "A live region: changes are announced at once. Not with SIV_SEMANTICS_LIVE_POLITE." },
         .{ .name = "modal", .bit = 5, .doc = "While shown, the pointer reaches only this subtree and Tab stays in it (dialogs)." },
     }),
+    enumeration("siv_current", "Which item of a set is the current one (WAI-ARIA's aria-current), exposed to assistive technology as the current attribute.", &.{
+        .{ .name = "none", .value = 0, .doc = "Not the current item." },
+        .{ .name = "page", .value = 1, .doc = "The place shown now, among links to places: a sidebar's current destination." },
+        .{ .name = "step", .value = 2, .doc = "The current step of a process." },
+        .{ .name = "location", .value = 3, .doc = "The current location in a path, such as the last of a breadcrumb trail." },
+        .{ .name = "item", .value = 4, .doc = "The current item of another set (aria-current=\"true\")." },
+    }),
     enumeration("siv_sort", "The order a table column sorts in.", &.{
         .{ .name = "none", .value = 0, .doc = "Not sorted." },
         .{ .name = "ascending", .value = 1, .doc = "Ascending." },
@@ -661,6 +670,8 @@ pub const decls = [_]Decl{
         .{ .name = "row", .type = .u32, .doc = "A table row's index among all rows, from 1; 0 for none." },
         .{ .name = "sort", .type = ref("siv_sort"), .doc = "A column header's sort order, exposed as the sort attribute." },
         .{ .name = "column", .type = .u32, .doc = "A table cell's or column header's column among all columns, from 1, exposed as the colindex attribute; 0 for none." },
+        .{ .name = "current", .type = ref("siv_current"), .doc = "Whether the node is the current item of its set, and what kind (aria-current), exposed as the current attribute." },
+        reserved("reserved0"),
     }),
 
     enumeration("siv_axis", "A flex main axis.", &.{

@@ -472,6 +472,8 @@ pub const Role = enum(u8) {
     combo_box,
     canvas,
     document,
+    /// A navigation landmark: a sidebar of the application's places.
+    navigation,
 };
 
 pub const Toggle = enum(u8) { unset, off, on, mixed };
@@ -515,9 +517,14 @@ pub const Semantics = struct {
     sort: Sort = .none,
     /// A cell's or column header's 1-based column; 0 for none.
     column: u32 = 0,
+    /// The current item of its set, and what kind (aria-current).
+    current: Current = .none,
 };
 
 pub const Sort = enum(u8) { none, ascending, descending };
+
+/// WAI-ARIA's aria-current values; `item` is its "true".
+pub const Current = enum(u8) { none, page, step, location, item };
 
 pub const Axis = enum(u8) { row, column };
 

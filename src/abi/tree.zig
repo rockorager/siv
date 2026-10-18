@@ -691,6 +691,14 @@ pub export fn siv_set_semantics(txn: t.Txn, node: t.Node, desc: ?*const t.Semant
                     _ => unreachable,
                 },
                 .column = d.column,
+                .current = switch (try runtime.enumValue(t.Current, d.current)) {
+                    .none => .none,
+                    .page => .page,
+                    .step => .step,
+                    .location => .location,
+                    .item => .item,
+                    _ => unreachable,
+                },
             }) catch |err| return mapTxn(err);
         }
     }.f, .{ node, desc });

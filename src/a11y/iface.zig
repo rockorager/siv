@@ -281,6 +281,11 @@ fn getAttributes(r: *Request) anyerror!void {
             // ARIA's aria-sort, as browsers expose it on column headers.
             if (n.sort != .none) try entry(&m.body, "sort", @tagName(n.sort));
             if (n.column != 0) try entry(&m.body, "colindex", std.fmt.bufPrint(&buf, "{d}", .{n.column}) catch unreachable);
+            // ARIA's aria-current, as browsers expose it (Orca reads
+            // "current page").
+            if (n.current != .none) try entry(&m.body, "current", if (n.current == .item) "true" else @tagName(n.current));
+            // Landmarks say which, as browsers expose ARIA's roles.
+            if (n.role == .navigation) try entry(&m.body, "xml-roles", "navigation");
             // ARIA's aria-keyshortcuts, as browsers expose it (D34).
             if (n.shortcut.keysym != 0) {
                 var kb: [64]u8 = undefined;

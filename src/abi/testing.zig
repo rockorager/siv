@@ -557,6 +557,7 @@ fn describe(n: *const ui.semantics.Node) t.TestNode {
             .ascending => .ascending,
             .descending => .descending,
         },
+        .current = @fromBackingInt(@intFromEnum(n.current)),
     };
 }
 
@@ -643,6 +644,7 @@ fn dump(wr: *std.Io.Writer, tree: *const ui.semantics.Tree) !void {
         try writeToggle(wr, "expanded", n.expanded);
         if (n.value) |v| try wr.print(" value={d}", .{v.now});
         if (n.level != 0) try wr.print(" level={d}", .{n.level});
+        if (n.current != .none) try wr.print(" current={t}", .{n.current});
         if (n.shortcut.keysym != 0) {
             try wr.writeAll(" shortcut=");
             try ui.accel.format(n.shortcut, .label, wr);

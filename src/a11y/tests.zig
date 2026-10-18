@@ -303,6 +303,40 @@ test "the tree, its roles, names, states, and interfaces" {
         t.commit();
         try h.frame();
     }
+    // A navigation landmark with its current item: AT-SPI's landmark
+    // role with xml-roles, and aria-current as the current attribute, as
+    // browsers expose them (D18, D40).
+    {
+        var t = try h.win.begin();
+        try t.setSemantics(h.nodes.button, .{ .role = .navigation, .label = "Places" });
+        try t.setSemantics(h.nodes.check, .{ .role = .list_item, .label = "Home", .focusable = true, .current = .page });
+        t.commit();
+        try h.frame();
+        try testing.expectEqual(@as(u32, 110), try (try h.call(h.path(h.nodes.button, &buf), atspi.iface.accessible, "GetRole", .{})).read(u32));
+        for ([_]struct { ui.NodeId, []const u8, []const u8 }{ .{ h.nodes.button, "xml-roles", "navigation" }, .{ h.nodes.check, "current", "page" } }) |want| {
+            var reply = try h.call(h.path(want[0], &buf), atspi.iface.accessible, "GetAttributes", .{});
+            var rd = reply.decoder();
+            const attrs = try rd.beginArray();
+            var found = false;
+            while (attrs.next(&rd)) {
+                try rd.beginDictEntry();
+                const k = try rd.readString();
+                const v = try rd.readString();
+                try rd.endDictEntry();
+                if (std.mem.eql(u8, k, want[1])) {
+                    try testing.expectEqualStrings(want[2], v);
+                    found = true;
+                }
+            }
+            try rd.endArray(attrs);
+            try testing.expect(found);
+        }
+        t = try h.win.begin();
+        try t.setSemantics(h.nodes.button, .{ .role = .button, .label = "OK", .focusable = true });
+        try t.setSemantics(h.nodes.check, .{ .role = .checkbox, .label = "Remember", .focusable = true, .checked = .off });
+        t.commit();
+        try h.frame();
+    }
     const ifaces = try h.call(h.path(h.nodes.editor, &buf), atspi.iface.accessible, "GetInterfaces", .{});
     var id = ifaces.decoder();
     const ia = try id.beginArray();

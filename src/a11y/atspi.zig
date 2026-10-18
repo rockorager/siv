@@ -70,6 +70,7 @@ pub const Role = enum(u32) {
     tree_item = 91,
     grouping = 99,
     notification = 101,
+    landmark = 110,
     _,
 
     /// The role's name as libatspi spells it (GetRoleName).
@@ -120,6 +121,7 @@ pub const Role = enum(u32) {
             .tree_item => "tree item",
             .grouping => "grouping",
             .notification => "notification",
+            .landmark => "landmark",
             _ => "unknown",
         };
     }
@@ -169,6 +171,7 @@ pub fn role(r: ui.Role, masked: bool) Role {
         .combo_box => .combo_box,
         .canvas => .canvas,
         .document => .document_frame,
+        .navigation => .landmark,
     };
 }
 
