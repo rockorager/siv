@@ -205,7 +205,54 @@ pub const Database = struct {
         }
         return ids.toOwnedSlice(allocator);
     }
+
+    /// The installed families' names (each font's first, English, family
+    /// name), each once, unsorted (D41: font choosers list them). Caller
+    /// owns the slice and its strings.
+    pub fn families(self: *const Database, allocator: std.mem.Allocator) error{OutOfMemory}![][]u8 {
+        var out: std.ArrayList([]u8) = .empty;
+        errdefer {
+            for (out.items) |s| allocator.free(s);
+            out.deinit(allocator);
+        }
+        const pattern = fc.FcPatternCreate() orelse return error.OutOfMemory;
+        defer fc.FcPatternDestroy(pattern);
+        const objects = fc.FcObjectSetCreate() orelse return error.OutOfMemory;
+        defer fc.FcObjectSetDestroy(objects);
+        if (fc.FcObjectSetAdd(objects, fc.FC_FAMILY) == 0) return error.OutOfMemory;
+        const set = fc.FcFontList(self.config, pattern, objects) orelse return error.OutOfMemory;
+        defer fc.FcFontSetDestroy(set);
+        var seen: std.StringHashMapUnmanaged(void) = .empty;
+        defer seen.deinit(allocator);
+        for (set.*.fonts[0..@intCast(@max(set.*.nfont, 0))]) |p| {
+            var name: [*c]fc.FcChar8 = null;
+            if (fc.FcPatternGetString(p, fc.FC_FAMILY, 0, &name) != fc.FcResultMatch) continue;
+            const s = std.mem.span(@as([*:0]const u8, @ptrCast(name)));
+            if (s.len == 0 or seen.contains(s)) continue;
+            const owned = try allocator.dupe(u8, s);
+            out.append(allocator, owned) catch |err| {
+                allocator.free(owned);
+                return err;
+            };
+            try seen.put(allocator, owned, {});
+        }
+        return out.toOwnedSlice(allocator);
+    }
 };
+
+test "installed families are listed once each" {
+    var database = Database.init() catch return error.SkipZigTest;
+    defer database.deinit();
+    const names = try database.families(std.testing.allocator);
+    defer {
+        for (names) |n| std.testing.allocator.free(n);
+        std.testing.allocator.free(names);
+    }
+    for (names, 0..) |n, i| {
+        try std.testing.expect(n.len > 0);
+        for (names[0..i]) |m| try std.testing.expect(!std.mem.eql(u8, n, m));
+    }
+}
 
 test "generic sans-serif resolves to an ordered fallback chain" {
     var database = Database.init() catch return error.SkipZigTest;

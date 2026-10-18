@@ -39,6 +39,9 @@ resolved: std.AutoHashMapUnmanaged(Key, []const FontId) = .empty,
 /// chain may turn out to have one.
 sized: std.AutoHashMapUnmanaged(Key, []const FontId) = .empty,
 default_family: u32 = 0,
+/// The installed families, sorted (`installed`); null until asked for
+/// and after the families change.
+listed: ?[]u32 = null,
 /// "monospace", and the family it resolves to (`setMonospace`).
 monospace: u32 = 0,
 monospace_family: u32 = 0,
@@ -113,6 +116,7 @@ pub fn deinit(f: *Fonts) void {
         load.fonts = null;
     }
     f.loads.deinit(f.gpa);
+    if (f.listed) |l| f.gpa.free(l);
     f.listeners.deinit(f.gpa);
     var families = f.families.valueIterator();
     while (families.next()) |c| f.gpa.free(c.*);
@@ -152,6 +156,7 @@ pub fn register(f: *Fonts, family: []const u8, fonts: []const FontId) error{OutO
     if (gop.found_existing) f.gpa.free(gop.value_ptr.*);
     gop.value_ptr.* = owned;
     f.dropChains(id);
+    f.dropListed();
 }
 
 /// Adds font data (copied): each face of a collection joins `family`,
@@ -208,6 +213,43 @@ pub fn setDatabase(f: *Fonts, database: text.fontconfig.Database) void {
     if (f.database) |*db| db.deinit();
     f.database = database;
     f.dropChains(null);
+    f.dropListed();
+}
+
+fn dropListed(f: *Fonts) void {
+    if (f.listed) |l| f.gpa.free(l);
+    f.listed = null;
+}
+
+/// The families text can name (D41): those added from bytes and
+/// Fontconfig's, each once, as interned ids sorted by name, ignoring
+/// ASCII case. Kept until the families change.
+pub fn installed(f: *Fonts) error{OutOfMemory}![]const u32 {
+    if (f.listed) |l| return l;
+    var ids: std.AutoArrayHashMapUnmanaged(u32, void) = .empty;
+    defer ids.deinit(f.gpa);
+    var it = f.families.keyIterator();
+    while (it.next()) |k| try ids.put(f.gpa, k.*, {});
+    if (f.database) |*db| {
+        const names = try db.families(f.gpa);
+        defer {
+            for (names) |n| f.gpa.free(n);
+            f.gpa.free(names);
+        }
+        for (names) |n| try ids.put(f.gpa, try f.intern(n), {});
+    }
+    const list = try f.gpa.dupe(u32, ids.keys());
+    std.mem.sort(u32, list, f, struct {
+        fn less(fs: *Fonts, a: u32, b: u32) bool {
+            return switch (std.ascii.orderIgnoreCase(fs.name(a), fs.name(b))) {
+                .lt => true,
+                .gt => false,
+                .eq => std.mem.lessThan(u8, fs.name(a), fs.name(b)),
+            };
+        }
+    }.less);
+    f.listed = list;
+    return list;
 }
 
 /// Evicts the shaping and lines of long texts' blocks not used since
