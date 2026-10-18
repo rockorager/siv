@@ -1,6 +1,7 @@
 /* Layout: an application window built from flex, grid, scroll, and stack
  * containers. A header bar, a sidebar of fixed width beside content that
  * takes the rest, a wrapping set of cards that scrolls, and a status line.
+ * On a narrow window the sidebar goes and the content takes its place.
  *
  *     zig build guide && ./zig-out/bin/guide-layout
  */
@@ -35,6 +36,9 @@ static void card(siv_txn txn, siv_node parent, const char *title, const char *de
 	siv_set_layout(txn, box, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_PX, 180}, .padding = {12, 12, 10, 10}));
 	siv_set_visual(txn, box, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_VIEW_BG, .border_token = SIV_COLOR_TOKEN_BORDER, .border_width = 1, .radius = {8, 8, 8, 8}));
 	siv_set_semantics(txn, box, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_GROUP));
+	/* In a row without room for two cards and the gap, a card takes the
+	 * whole line: the condition is on the space the row offers. */
+	siv_set_layout_when(txn, box, SIV_DESC(siv_condition_desc, .max_width = 2 * 180 + 12), SIV_DESC(siv_layout_desc, .basis = {SIV_UNIT_FRACTION, 1}, .padding = {12, 12, 10, 10}));
 	label(txn, box, title, SIV_SIZE_ROLE_BODY, SIV_COLOR_TOKEN_VIEW_FG);
 	label(txn, box, detail, SIV_SIZE_ROLE_CAPTION, SIV_COLOR_TOKEN_MUTED_FG);
 }
@@ -53,9 +57,11 @@ static siv_result build(siv_window window) {
 	header(txn, page);
 
 	/* Two columns: 160 logical pixels, then the rest (1 fr). The grid
-	 * grows to fill the column's height. */
+	 * grows to fill the column's height, and its one row (1 fr) takes
+	 * all of it, so the content scrolls rather than run past it. */
 	siv_track columns[] = {{SIV_TRACK_UNIT_PX, 160}, {SIV_TRACK_UNIT_FR, 1}};
-	siv_node body = siv_grid(txn, page, SIV_DESC(siv_grid_desc, .columns = columns, .columns_count = 2));
+	siv_track rows[] = {{SIV_TRACK_UNIT_FR, 1}};
+	siv_node body = siv_grid(txn, page, SIV_DESC(siv_grid_desc, .columns = columns, .columns_count = 2, .rows = rows, .rows_count = 1));
 	siv_set_layout(txn, body, SIV_DESC(siv_layout_desc, .grow = 1, .basis = {SIV_UNIT_PX, 0}));
 
 	siv_node sidebar = siv_flex(txn, body, SIV_DESC(siv_flex_desc, .axis = SIV_AXIS_COLUMN, .gap = 6));
@@ -69,6 +75,14 @@ static siv_result build(siv_window window) {
 	siv_node scroll = siv_scroll(txn, body, SIV_SCROLL_AXIS_VERTICAL);
 	siv_node cards = siv_flex(txn, scroll, SIV_DESC(siv_flex_desc, .gap = 12, .flags = SIV_FLEX_WRAP));
 	siv_set_layout(txn, cards, SIV_DESC(siv_layout_desc, .padding = {12, 16, 12, 16}));
+
+	/* Narrower than 480: the sidebar goes, and the content spans both
+	 * columns. No resize handler: layout picks the values each time the
+	 * grid is laid out, in the frame of the resize. */
+	const siv_condition_desc *narrow = SIV_DESC(siv_condition_desc, .max_width = 480);
+	siv_set_hidden_when(txn, sidebar, narrow, true);
+	siv_set_layout_when(txn, scroll, narrow, SIV_DESC(siv_layout_desc, .column = 1, .column_span = 2));
+
 	card(txn, cards, "Website", "Updated today");
 	card(txn, cards, "Mobile app", "3 open tasks");
 	card(txn, cards, "Annual report", "Due Friday");

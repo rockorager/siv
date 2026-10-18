@@ -88,9 +88,15 @@ test "guide: model.c posts from a thread and asks before closing" {
 
 extern fn guide_main_layout() c_int;
 
-test "guide: layout.c" {
+test "guide: layout.c, wide and narrow" {
     try harness.runC(guide_main_layout, struct {
         fn f(g: *Guide) !void {
+            try g.expectImage("layout");
+            try harness.ok(abi.testing.siv_test_resize(g.window(), 360, 360));
+            try g.settle();
+            try g.expectImage("layout-narrow");
+            try harness.ok(abi.testing.siv_test_resize(g.window(), 640, 360));
+            try g.settle();
             try g.expectImage("layout");
         }
     }.f);

@@ -54,6 +54,9 @@ static void card(siv_txn txn, siv_node parent, const char *title, const char *de
 	siv_set_layout(txn, box, SIV_DESC(siv_layout_desc, .width = {SIV_UNIT_PX, 180}, .padding = {12, 12, 10, 10}));
 	siv_set_visual(txn, box, SIV_DESC(siv_visual_desc, .background_token = SIV_COLOR_TOKEN_VIEW_BG, .border_token = SIV_COLOR_TOKEN_BORDER, .border_width = 1, .radius = {8, 8, 8, 8}));
 	siv_set_semantics(txn, box, SIV_DESC(siv_semantics_desc, .role = SIV_ROLE_GROUP));
+	/* In a row without room for two cards and the gap, a card takes the
+	 * whole line: the condition is on the space the row offers. */
+	siv_set_layout_when(txn, box, SIV_DESC(siv_condition_desc, .max_width = 2 * 180 + 12), SIV_DESC(siv_layout_desc, .basis = {SIV_UNIT_FRACTION, 1}, .padding = {12, 12, 10, 10}));
 	label(txn, box, title, SIV_SIZE_ROLE_BODY, SIV_COLOR_TOKEN_VIEW_FG);
 	label(txn, box, detail, SIV_SIZE_ROLE_CAPTION, SIV_COLOR_TOKEN_MUTED_FG);
 }
@@ -65,13 +68,16 @@ for a fixed size, `SIV_TRACK_UNIT_FR` for a share of what is left, and
 reading order unless their layout names a `column` and `row` (counted from
 1, so 0 means automatic) with spans. The body is a fixed sidebar beside
 content that takes the rest; `grow` with a zero `basis` makes the grid
-take the column's leftover height:
+take the column's leftover height, and one fr row gives all of it to the
+content (an auto row would grow with the cards and run past the grid):
 
 ```c
 /* Two columns: 160 logical pixels, then the rest (1 fr). The grid
- * grows to fill the column's height. */
+ * grows to fill the column's height, and its one row (1 fr) takes
+ * all of it, so the content scrolls rather than run past it. */
 siv_track columns[] = {{SIV_TRACK_UNIT_PX, 160}, {SIV_TRACK_UNIT_FR, 1}};
-siv_node body = siv_grid(txn, page, SIV_DESC(siv_grid_desc, .columns = columns, .columns_count = 2));
+siv_track rows[] = {{SIV_TRACK_UNIT_FR, 1}};
+siv_node body = siv_grid(txn, page, SIV_DESC(siv_grid_desc, .columns = columns, .columns_count = 2, .rows = rows, .rows_count = 1));
 siv_set_layout(txn, body, SIV_DESC(siv_layout_desc, .grow = 1, .basis = {SIV_UNIT_PX, 0}));
 ```
 
@@ -127,6 +133,49 @@ own to place it elsewhere.
 padding and least sizes as a default layout (`siv_set_default_layout`), so
 setting a widget's width does not undo them (see
 [Custom widgets](06-custom-widgets.md)).
+
+## Narrow and wide
+
+Windows are often narrow, a third of the screen on a tiling compositor,
+and one tree can arrange itself for both. A *variant* is a value a node
+takes instead of its own while a condition holds: a layout
+(`siv_set_layout_when`), flex options (`siv_set_flex_when`, a row that
+becomes a column), or visibility (`siv_set_hidden_when`). The condition
+is a range of the space the node's parent offers its children, like a CSS
+container query, so a widget follows the pane it is in. Below 480 pixels
+the layout sample drops its sidebar and lets the content span both grid
+columns:
+
+```c
+/* Narrower than 480: the sidebar goes, and the content spans both
+ * columns. No resize handler: layout picks the values each time the
+ * grid is laid out, in the frame of the resize. */
+const siv_condition_desc *narrow = SIV_DESC(siv_condition_desc, .max_width = 480);
+siv_set_hidden_when(txn, sidebar, narrow, true);
+siv_set_layout_when(txn, scroll, narrow, SIV_DESC(siv_layout_desc, .column = 1, .column_span = 2));
+```
+
+and each card takes a whole line once its row has no room for two:
+
+```c
+/* In a row without room for two cards and the gap, a card takes the
+ * whole line: the condition is on the space the row offers. */
+siv_set_layout_when(txn, box, SIV_DESC(siv_condition_desc, .max_width = 2 * 180 + 12), SIV_DESC(siv_layout_desc, .basis = {SIV_UNIT_FRACTION, 1}, .padding = {12, 12, 10, 10}));
+```
+
+![The same Projects window at 360 pixels: no sidebar, and the cards one per line, scrolling above the status line](images/layout-narrow.png)
+
+`max_width` is where the condition stops holding, so `max_width = 480`
+and `min_width = 480` split narrow from wide with no gap or overlap.
+`SIV_CONDITION_WINDOW` puts the bounds on the window's size instead, for a
+node deep inside rows that size to their content (which offer only what
+their content needs). `SIV_CONDITION_OVERFLOW` holds when the node would
+not fit without wrapping, so a row of buttons stacks exactly when it must,
+with no number written down. Variants are part of the transaction like
+any other property; `siv_set_layout` and the others keep setting the
+node's own values, which show again when no variant holds. Nodes with
+motion animate the change (D38). In Lua:
+`txn:set_hidden_when(sidebar, { max_width = 480 }, true)`.
 
 ## Appearance
 
