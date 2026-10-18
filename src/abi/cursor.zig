@@ -1,6 +1,7 @@
 //! Exports for pointer cursors (D16): per-node cursors, a window-wide
-//! override for busy states, and interactive moves and resizes for
-//! client-side decorations.
+//! override for busy states, and what client-side decorations need
+//! (D17): interactive moves and resizes, the window menu, close
+//! requests, and the controls to draw.
 
 const std = @import("std");
 const t = @import("siv");
@@ -74,6 +75,35 @@ pub export fn siv_window_begin_resize(window: t.Window, edge: t.WindowEdge) t.Re
             try w.win.beginResize(pe);
         }
     }.f(window, edge));
+}
+
+pub export fn siv_window_show_menu(window: t.Window, x: f64, y: f64) t.Result {
+    return application.wrap(struct {
+        fn f(wh: t.Window, x_: f64, y_: f64) Error!void {
+            if (!std.math.isFinite(x_) or !std.math.isFinite(y_)) return error.InvalidArgument;
+            const w = try windowOf(wh);
+            const clamp = std.math.lossyCast;
+            try w.win.showWindowMenu(clamp(i32, @floor(x_)), clamp(i32, @floor(y_)));
+        }
+    }.f(window, x, y));
+}
+
+pub export fn siv_window_request_close(window: t.Window) t.Result {
+    return application.wrap(struct {
+        fn f(wh: t.Window) Error!void {
+            (try windowOf(wh)).win.requestClose();
+        }
+    }.f(window));
+}
+
+pub export fn siv_window_get_controls(window: t.Window, controls: ?*t.WindowControls) t.Result {
+    return application.wrap(struct {
+        fn f(wh: t.Window, out: ?*t.WindowControls) Error!void {
+            const dest = try runtime.out(t.WindowControls, out);
+            const c = (try windowOf(wh)).win.controls();
+            dest.* = .{ .close = c.close, .minimize = c.minimize, .maximize = c.maximize, .menu = c.menu };
+        }
+    }.f(window, controls));
 }
 
 comptime {

@@ -871,6 +871,12 @@ pub const decls = [_]Decl{
 
     // Pointer cursors (D16).
     enumeration("siv_cursor", "A pointer cursor shape, named as in CSS. Shown through the compositor's cursor-shape-v1 when it offers it, else from the desktop's cursor theme at its size and the window's scale.", &cursor_values),
+    flags("siv_window_controls", "The window controls an application draws itself, as client-side decorations (D17): none while the compositor decorates the window.", &.{
+        .{ .name = "close", .bit = 0, .doc = "A close button (siv_window_request_close)." },
+        .{ .name = "minimize", .bit = 1, .doc = "A minimize button (siv_window_minimize)." },
+        .{ .name = "maximize", .bit = 2, .doc = "A maximize and restore button (siv_window_set_maximized), and a double click on the title bar." },
+        .{ .name = "menu", .bit = 3, .doc = "The compositor's window menu on a secondary click on the title bar (siv_window_show_menu)." },
+    }),
     enumeration("siv_window_edge", "A window edge or corner, for resizing from client-side decorations.", &.{
         .{ .name = "none", .value = 0, .doc = "No edge." },
         .{ .name = "top", .value = 1, .doc = "Top." },
@@ -1045,6 +1051,7 @@ pub const decls = [_]Decl{
         .{ .name = "theme_changed", .bit = 11, .doc = "Settings: the window's theme colors changed, as SIV_WINDOW_EVENT_TYPE_THEME_CHANGED reports them, or a subtree theme's (siv_set_theme)." },
         .{ .name = "fonts_changed", .bit = 12, .doc = "Settings: the default family (siv_app_get_default_font), the desktop's monospace family, or Fontconfig's configuration changed, so any family may resolve to other fonts." },
         .{ .name = "desktop_changed", .bit = 13, .doc = "Settings: a desktop setting changed (D19): reduced motion, double-click time, caret blinking, text scale, color scheme, contrast, accent, or the UI font's size." },
+        .{ .name = "window_changed", .bit = 14, .doc = "Settings: the window was maximized, restored, or made fullscreen or not (siv_window_get_states), or the controls it draws itself changed (siv_window_get_controls), so a header bar shows its window controls, or its maximize button the restore glyph (D17)." },
     }),
     openEnumeration("siv_key", "An XKB keysym (D16), as key events report it. Every keysym is valid, not only the named ones: a key that types a character reports its Unicode code point below 0x100 (0x61 for a, 0x41 for Shift+A) and 0x01000000 plus the code point above. The named keys are those applications commonly bind.", &.{
         .{ .name = "none", .value = 0, .doc = "No key (NoSymbol): the event is not a key event." },
@@ -2388,6 +2395,16 @@ pub const functions = [_]Function{
         .{ .name = "inhibit", .type = .bool, .doc = "Inhibit, or stop inhibiting." },
     }),
     call("siv_window_begin_move", "Starts moving the window interactively, for client-side decorations: call from a pointer down handler, while the press is held.", &.{window_param}),
+    call("siv_window_get_controls", "The window controls the application draws itself (D17): close, and minimize, maximize, and the window menu where the compositor offers them, when the window is decorated client-side (SIV_WINDOW_CLIENT_DECORATIONS, or a compositor without xdg-decoration); none when the compositor draws the decorations. A header bar shows these (siv_header_bar). Settings events with SIV_EVENT_WINDOW_CHANGED say when they change.", &.{
+        window_param,
+        .{ .name = "controls", .type = out(ref("siv_window_controls")), .doc = "The controls." },
+    }),
+    call("siv_window_show_menu", "Shows the compositor's window menu (move, resize, always on top, and the like) at a point, for client-side decorations: call from a pointer down handler, while the press is held, as for siv_window_begin_move.", &.{
+        window_param,
+        .{ .name = "x", .type = .f64, .doc = "Where, in window coordinates (logical)." },
+        .{ .name = "y", .type = .f64, .doc = "Where, in window coordinates." },
+    }),
+    call("siv_window_request_close", "Asks to close the window as the compositor's close button does, for a close button of the application's own (a header bar's, D17): at the next dispatch, not inside the caller, its on_event gets SIV_WINDOW_EVENT_TYPE_CLOSE_REQUESTED, and unless that keeps it, siv destroys it.", &.{window_param}),
     call("siv_window_begin_resize", "Starts resizing the window interactively from an edge, like siv_window_begin_move. Show the matching resize cursor on the edge's node (siv_set_cursor).", &.{
         window_param,
         .{ .name = "edge", .type = ref("siv_window_edge"), .doc = "The edge or corner; not none." },

@@ -1307,7 +1307,10 @@ pub const Settings = packed struct(u8) {
     fonts: bool = false,
     /// A desktop setting (`Window.desktop`).
     desktop: bool = false,
-    _: u5 = 0,
+    /// The window's maximized or fullscreen state, or the controls it
+    /// draws itself (D17), which the window's host reports.
+    window: bool = false,
+    _: u4 = 0,
 
     pub fn any(s: Settings) bool {
         return @as(u8, @bitCast(s)) != 0;

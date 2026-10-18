@@ -1726,6 +1726,7 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
             ev.flags.theme_changed = s.theme;
             ev.flags.fonts_changed = s.fonts;
             ev.flags.desktop_changed = s.desktop;
+            ev.flags.window_changed = s.window;
         },
     }
     // A capture handler stopped the key: only default handlers run.

@@ -165,6 +165,9 @@ pub const App = struct {
     settings: std.ArrayList(*settings.Store) = .empty,
     /// Delivers `theme_changed` to the windows marked for it.
     theme_task: Loop.Task = .{ .func = onThemeTask },
+    /// Delivers `close_requested` to the windows that asked for it
+    /// themselves (`requestClose`).
+    close_task: Loop.Task = .{ .func = onCloseTask },
     fontconfig: fontconfig.Fontconfig = .{},
     /// The application chose the default font family, so the desktop's
     /// does not replace it.
@@ -466,6 +469,25 @@ pub const App = struct {
         }
     }
 
+    /// Windows that asked to close (a header bar's close button, D17)
+    /// hear `close_requested` as from the compositor, at a dispatch of
+    /// their own rather than inside the handler that asked.
+    fn onCloseTask(task: *Loop.Task) void {
+        const app: *App = @fieldParentPtr("close_task", task);
+        app.delivering += 1;
+        defer {
+            app.delivering -= 1;
+            app.freeZombies();
+        }
+        var i: usize = 0;
+        while (i < app.windows.items.len) : (i += 1) {
+            const win = app.windows.items[i] orelse continue;
+            if (!win.close_pending or win.closed) continue;
+            win.close_pending = false;
+            if (!win.notify(&.close_requested)) win.destroy() catch |err| app.fail(err);
+        }
+    }
+
     /// The palette windows resolve now, for work outside a window (text
     /// measured for canvases).
     pub fn palette(app: *const App) ui.theme.Palette {
@@ -593,6 +615,10 @@ pub const App = struct {
         errdefer app.comp.destroyWindow(id) catch {};
         if (id >= app.windows.items.len) try app.windows.appendNTimes(gpa, null, id + 1 - app.windows.items.len);
         win.* = .{ .app = app, .id = id, .ui = undefined, .listener = listener, .drag = .{ .comp = app.comp, .window = id, .gpa = gpa }, .follows_language = options.language.len == 0, .follows_direction = options.rtl == null, .owner = options.parent, .modal = options.parent != null and options.modal, .role = options.role };
+        // Until the first configure says otherwise, the decorations are
+        // the ones asked for, so that header bars built before it show
+        // the right controls (D17).
+        win.state.decoration = if (options.client_decorations) .client else .server;
         win.ui = try ui.Window.init(gpa, .{
             .fonts = &app.fonts,
             .icons = &app.icons,
@@ -902,6 +928,9 @@ pub const App = struct {
                 const old = win.state;
                 win.state = c.state;
                 win.handle(ev);
+                // Header bars follow maximizing and the controls (D17).
+                if (old.states.maximized != c.state.states.maximized or old.states.fullscreen != c.state.states.fullscreen or old.decoration != c.state.decoration or
+                    @as(u8, @bitCast(old.capabilities)) != @as(u8, @bitCast(c.state.capabilities))) win.ui.settingsChanged(.{ .window = true });
                 if (app.accessible and old.states.activated != c.state.states.activated) app.bridge.setActive(win.a11y_id, c.state.states.activated);
                 if (!win.closed) _ = win.notify(&.{ .configure = .{ .old = old, .new = c.state } });
             },
@@ -1141,6 +1170,9 @@ pub const Window = struct {
     role: std.meta.Tag(platform.Role) = .toplevel,
     /// Its resolved colors changed since it last heard `theme_changed`.
     theme_changed: bool = false,
+    /// It asked to close (`requestClose`) and has not heard
+    /// `close_requested` yet.
+    close_pending: bool = false,
 
     /// How long the pointer rests or keyboard focus stays before a
     /// tooltip shows. The desktop settings portal has no such setting;
@@ -1496,6 +1528,36 @@ pub const Window = struct {
                 p.beginMove(id, a.seat, a.serial);
             }
         }.f, Arg{ .seat = win.ui.input.seat, .serial = win.ui.input.press_serial });
+    }
+
+    /// Shows the compositor's window menu at a point of the window, for
+    /// client-side decorations (D17), during the press that is still
+    /// held.
+    pub fn showWindowMenu(win: *Window, x: i32, y: i32) Allocator.Error!void {
+        const Arg = struct { seat: platform.SeatId, serial: u32, x: i32, y: i32 };
+        try win.platformCall(struct {
+            fn f(p: platform.Platform, id: WindowId, a: Arg) void {
+                p.showWindowMenu(id, a.seat, a.serial, a.x, a.y);
+            }
+        }.f, Arg{ .seat = win.ui.input.seat, .serial = win.ui.input.press_serial, .x = x, .y = y });
+    }
+
+    /// Asks to close the window as the compositor's close button does:
+    /// it hears `close_requested` at the next dispatch, and unless its
+    /// listener keeps it, it is destroyed.
+    pub fn requestClose(win: *Window) void {
+        if (win.closed) return;
+        win.close_pending = true;
+        win.app.loop.schedule(&win.app.close_task, .dispatch);
+    }
+
+    /// The window controls the application draws itself (D17): none
+    /// while the compositor decorates the window, else close and what
+    /// the compositor offers.
+    pub fn controls(win: *const Window) struct { close: bool, minimize: bool, maximize: bool, menu: bool } {
+        if (win.role != .toplevel or win.parent != null or win.state.decoration == .server) return .{ .close = false, .minimize = false, .maximize = false, .menu = false };
+        const cap = win.state.capabilities;
+        return .{ .close = true, .minimize = cap.minimize, .maximize = cap.maximize, .menu = cap.window_menu };
     }
 
     /// Starts an interactive resize from an edge, like `beginMove`.

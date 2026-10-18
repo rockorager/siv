@@ -2261,6 +2261,52 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Server-side decorations when `xdg-decoration` offers them; fully featured
     client-side decorations otherwise (shadows, resize edges, input regions,
     window menu). Applications may opt into client-side for header-bar layouts.
+  - **A header bar is the title bar of a window that decorates itself**
+    (D22, D40). What a client-decorated window draws is its header
+    bar's: `siv_window_get_controls` says which window controls the
+    application draws, none while the compositor decorates the window
+    (xdg-decoration's server-side mode), otherwise close, and minimize,
+    maximize, and the window menu as `xdg_toplevel.wm_capabilities`
+    offers them (all of them on compositors without the event). The
+    stock header bar shows them at its end edge (mirrored in RTL) and is
+    the window's handle: a press on the bar itself, not on a control in
+    it, starts a move (`siv_window_begin_move`), a double click
+    maximizes or restores, and a secondary click opens the compositor's
+    window menu (`siv_window_show_menu`, `xdg_toplevel.show_window_menu`,
+    with the press's serial). Its close button calls
+    `siv_window_request_close`, which delivers `close_requested` to the
+    window at the next dispatch as the compositor's close does, so an
+    application's unsaved-changes prompt runs for both, and not inside
+    the button's handler, which the window's destruction would pull out
+    from under. A configure that maximizes, restores, or makes the
+    window fullscreen or not, or changes the decoration mode or the
+    capabilities, sends nodes a settings event with
+    `window_changed` (D29's settings events grew the flag), so the bar
+    shows the restore glyph while maximized and drops its controls if a
+    compositor switches to server-side decorations. With server-side
+    decorations the same header bar is a toolbar with a title, so one
+    layout serves sway's decorations and GNOME's lack of them. A header
+    bar that is not at the window's top end (a sidebar's) is created
+    with `SIV_HEADER_BAR_NO_WINDOW_CONTROLS`.
+    - Not decided by this: the frame around a client-decorated window
+      (shadows, resize edges, input regions) is not drawn yet; an
+      application that wants edge resizing adds edge nodes as below.
+      The buttons are minimize, maximize, and close at the end edge,
+      close last, not the desktop's button layout (GNOME's
+      `button-layout`, which the settings portal carries); follow it if
+      users ask.
+    - Alternatives: siv drawing a title bar above the root (a header-bar
+      layout would show two bars, and siv would own the title's look);
+      window controls opted into per header bar (every application with
+      a header bar would set the flag, and it would be wrong under
+      server-side decorations unless each also followed the mode);
+      themed icons for the controls (siv ships no icons, and a desktop
+      without the theme would show blank buttons; the glyphs are drawn
+      as the check marks and chevrons of other widgets are).
+    - Reverse if a compositor's decorations and a header bar can both be
+      wanted at once (a header bar that is only a toolbar under a
+      client-side frame siv draws), which would make the title bar a
+      separate part.
   - Every menu, tooltip, and combobox is an `xdg_popup` with positioner
     constraints and grabs.
     - A popup is a window of its own (`Platform.createPopup`,
@@ -5651,8 +5697,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     or a subtree theme's colors do (D43),
     `SIV_EVENT_FONTS_CHANGED` when any family may resolve differently
     (the default family, the desktop's monospace, Fontconfig's
-    configuration: `App.refreshText`), and `SIV_EVENT_DESKTOP_CHANGED`
-    when any desktop setting differs (`ui.Window.setDesktop`). Widgets
+    configuration: `App.refreshText`), `SIV_EVENT_DESKTOP_CHANGED`
+    when any desktop setting differs (`ui.Window.setDesktop`), and
+    `SIV_EVENT_WINDOW_CHANGED` when a configure changed whether the
+    window is maximized or fullscreen or the controls it draws itself
+    (D17), for header bars; the decorations before the first configure
+    are the ones asked for, so a fresh window hears nothing. Widgets
     take it with `siv_on_default`, applications with `siv_on`, as for
     any event. Ordinary nodes need none: they repaint and relayout on
     their own. It is GTK's `css_changed` and `system_setting_changed`
