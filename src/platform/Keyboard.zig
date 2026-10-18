@@ -55,6 +55,12 @@ pub fn useKeymap(k: *Keyboard, keymap: *xkb.struct_xkb_keymap) error{OutOfMemory
         for (k.unshifted[0..layouts], 0..) |*set, layout| {
             var syms: [*c]const xkb.xkb_keysym_t = null;
             if (xkb.xkb_keymap_key_get_syms_by_level(keymap, code, @intCast(layout), 0, &syms) != 1) continue;
+            // Only keys that type characters: Latin-1 and Unicode keysyms.
+            // libxkbcommon 1.13 gives keypad and vendor keysyms such as
+            // XF86Numeric2 and XF86NumericPound (a remote's keys, which
+            // xkeyboard-config maps on every layout) characters too, and
+            // they would hide every digit and # from the equivalents.
+            if (syms[0] > 0xff and syms[0] >> 24 != 0x01) continue;
             const cp = xkb.xkb_keysym_to_utf32(syms[0]);
             if (cp > 0x20 and cp <= 0xff) set.set(lower(cp));
         }
