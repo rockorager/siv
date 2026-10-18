@@ -1,16 +1,20 @@
 //! Generates the intl module's tables at build time (D21, D41), run by
 //! src/intl/build_steps.zig:
 //!
-//!   siv-intl-gen <cldr.zig> <emoji.zig> <cldr-core> <cldr-dates> <cldr-numbers> <emoji-test.txt>
+//!   siv-intl-gen <cldr.zig> <emoji.zig> <cldr-core> <cldr-dates> <cldr-numbers> <cldr-units> <emoji-test.txt>
 //!
-//! From CLDR's JSON (the cldr-core, cldr-dates-full, and cldr-numbers-full
-//! packages): for every locale whose language CLDR covers at the modern or
-//! moderate level, the Gregorian calendar's month, weekday, day period,
-//! and era names, its date and time patterns, its digits, and its first
-//! day of the week. Strings are pooled and each distinct locale record is
-//! written once. From UTS #51's emoji-test.txt: every fully-qualified
-//! emoji in CLDR order with its group and name, and the skin tone
-//! variants of those that take one tone.
+//! From CLDR's JSON (the cldr-core, cldr-dates-full, cldr-numbers-full,
+//! and cldr-units-full packages): for every locale whose language CLDR
+//! covers at the modern or moderate level, the Gregorian calendar's
+//! month, weekday, day period, and era names, its date and time
+//! patterns, its digits, and its first day of the week; its number
+//! symbols, decimal, percent, and short compact patterns, and the byte
+//! units' patterns. Strings are pooled and each distinct locale record
+//! is written once. For every language CLDR has plural rules for, its
+//! cardinal and ordinal rules, compiled into Zig functions, with the
+//! rules' samples for the tests. From UTS #51's emoji-test.txt: every
+//! fully-qualified emoji in CLDR order with its group and name, and the
+//! skin tone variants of those that take one tone.
 
 const std = @import("std");
 const Io = std.Io;
@@ -21,13 +25,13 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const io = init.io;
     const args = try init.minimal.args.toSlice(arena);
-    if (args.len != 7) {
-        std.log.err("usage: {s} <cldr.zig> <emoji.zig> <cldr-core> <cldr-dates> <cldr-numbers> <emoji-test.txt>", .{args[0]});
+    if (args.len != 8) {
+        std.log.err("usage: {s} <cldr.zig> <emoji.zig> <cldr-core> <cldr-dates> <cldr-numbers> <cldr-units> <emoji-test.txt>", .{args[0]});
         std.process.exit(2);
     }
-    const cldr_out = try cldr(io, arena, args[3], args[4], args[5]);
+    const cldr_out = try cldr(io, arena, args[3], args[4], args[5], args[6]);
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = args[1], .data = cldr_out });
-    const text = try Io.Dir.cwd().readFileAlloc(io, args[6], arena, .limited(16 << 20));
+    const text = try Io.Dir.cwd().readFileAlloc(io, args[7], arena, .limited(16 << 20));
     const emoji_out = try emoji(arena, text);
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = args[2], .data = emoji_out });
 }
@@ -41,6 +45,21 @@ const day_sets = [_][2][]const u8{ .{ "format", "wide" }, .{ "format", "abbrevia
 const date_formats = [_][]const u8{ "full", "long", "medium", "short" };
 const time_formats = [_][]const u8{ "medium", "short" };
 pub const field_count = month_sets.len * 12 + day_sets.len * 7 + 2 + 2 + date_formats.len + time_formats.len + 1;
+
+/// The order of a number record's fields; src/intl/number.zig names them.
+/// Symbols, then the decimal and percent patterns, then the minimum
+/// grouping digits (a number, not a string), then the short compact
+/// patterns for 10^3 to 10^14 by plural category, then the byte units'
+/// patterns (byte in the long form, kB to PB in the short) by category.
+/// Absent patterns are `none`.
+const symbol_keys = [_][]const u8{ "decimal", "group", "percentSign", "minusSign", "plusSign", "infinity", "nan" };
+const plural_categories = [_][]const u8{ "zero", "one", "two", "few", "many", "other" };
+const compact_magnitudes = 12;
+const byte_units = [_][2][]const u8{ .{ "long", "digital-byte" }, .{ "short", "digital-kilobyte" }, .{ "short", "digital-megabyte" }, .{ "short", "digital-gigabyte" }, .{ "short", "digital-terabyte" }, .{ "short", "digital-petabyte" } };
+const compact_at = symbol_keys.len + 3;
+const bytes_at = compact_at + compact_magnitudes * plural_categories.len;
+pub const number_field_count = bytes_at + byte_units.len * plural_categories.len;
+const none: u16 = 0xffff;
 
 fn readJson(io: Io, arena: Allocator, path: []const u8) !json.Value {
     const bytes = try Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 << 20));
@@ -106,7 +125,7 @@ fn regionOf(likely: json.ObjectMap, tag: []const u8) ?[]const u8 {
     }
 }
 
-fn cldr(io: Io, a: Allocator, core: []const u8, dates: []const u8, numbers: []const u8) ![]const u8 {
+fn cldr(io: Io, a: Allocator, core: []const u8, dates: []const u8, numbers: []const u8, units: []const u8) ![]const u8 {
     const coverage = (try readJson(io, a, try std.fs.path.join(a, &.{ core, "coverageLevels.json" }))).object.get("effectiveCoverageLevels").?.object;
     const likely = (try readJson(io, a, try std.fs.path.join(a, &.{ core, "supplemental", "likelySubtags.json" }))).object.get("supplemental").?.object.get("likelySubtags").?.object;
     const week = (try readJson(io, a, try std.fs.path.join(a, &.{ core, "supplemental", "weekData.json" }))).object.get("supplemental").?.object.get("weekData").?.object.get("firstDay").?.object;
@@ -134,6 +153,8 @@ fn cldr(io: Io, a: Allocator, core: []const u8, dates: []const u8, numbers: []co
     var digit_sets: std.ArrayList([]const u8) = .empty;
     var records: std.ArrayList([field_count]u16) = .empty;
     var record_index: std.AutoHashMapUnmanaged([field_count]u16, u16) = .empty;
+    var number_records: std.ArrayList([number_field_count]u16) = .empty;
+    var number_index: std.AutoHashMapUnmanaged([number_field_count]u16, u16) = .empty;
     var out: Io.Writer.Allocating = .init(a);
     const w = &out.writer;
     var locales: Io.Writer.Allocating = .init(a);
@@ -187,28 +208,42 @@ fn cldr(io: Io, a: Allocator, core: []const u8, dates: []const u8, numbers: []co
             try digit_sets.append(a, digits);
             break :blk digit_sets.items.len - 1;
         };
+        const nrec = try numberRecord(io, a, &pool, ndoc, units, tag, system);
+        const ngop = try number_index.getOrPut(a, nrec);
+        if (!ngop.found_existing) {
+            ngop.value_ptr.* = @intCast(number_records.items.len);
+            try number_records.append(a, nrec);
+        }
         const region = regionOf(likely, tag) orelse "001";
         const first = dayIndex((week.get(region) orelse week.get("001").?).string);
-        try lw.print("    .{{ .tag = \"{f}\", .record = {d}, .first_day = {d}, .digits = {d} }},\n", .{ std.zig.fmtString(tag), gop.value_ptr.*, first, di });
+        try lw.print("    .{{ .tag = \"{f}\", .record = {d}, .first_day = {d}, .digits = {d}, .numbers = {d} }},\n", .{ std.zig.fmtString(tag), gop.value_ptr.*, first, di, ngop.value_ptr.* });
     }
 
     try w.print(
         \\//! Generated by src/intl/gen.zig from CLDR {s} (Unicode License v3): the
-        \\//! Gregorian calendar data of {d} locales. Do not edit.
+        \\//! Gregorian calendar and number data of {d} locales, and the plural
+        \\//! rules of every language CLDR has them for. Do not edit.
         \\
         \\pub const version = "{s}";
         \\pub const field_count = {d};
-        \\pub const Locale = struct {{ tag: []const u8, record: u16, first_day: u8, digits: u8 }};
+        \\pub const number_field_count = {d};
+        \\pub const Locale = struct {{ tag: []const u8, record: u16, first_day: u8, digits: u8, numbers: u16 }};
         \\pub const Alias = struct {{ from: []const u8, to: []const u8 }};
         \\pub const Region = struct {{ region: []const u8, first_day: u8 }};
         \\
-    , .{ version, tags.items.len, version, field_count });
+    , .{ version, tags.items.len, version, field_count, number_field_count });
     try w.print("pub const pool = \"{f}\";\n", .{std.zig.fmtString(pool.bytes.items)});
     try w.writeAll("pub const offsets = [_]u32{");
     for (pool.offsets.items) |o| try w.print("{d},", .{o});
     try w.print("{d}}};\n", .{pool.bytes.items.len});
     try w.writeAll("pub const records = [_][field_count]u16{\n");
     for (records.items) |r| {
+        try w.writeAll("    .{");
+        for (r) |x| try w.print("{d},", .{x});
+        try w.writeAll("},\n");
+    }
+    try w.writeAll("};\npub const number_records = [_][number_field_count]u16{\n");
+    for (number_records.items) |r| {
         try w.writeAll("    .{");
         for (r) |x| try w.print("{d},", .{x});
         try w.writeAll("},\n");
@@ -242,7 +277,189 @@ fn cldr(io: Io, a: Allocator, core: []const u8, dates: []const u8, numbers: []co
     std.mem.sort([]const u8, regions.items, {}, lessIgnoreCase);
     for (regions.items) |k| try w.print("    .{{ .region = \"{f}\", .first_day = {d} }},\n", .{ std.zig.fmtString(k), dayIndex(week.get(k).?.string) });
     try w.writeAll("};\n");
+    try plurals(io, a, core, w);
     return out.written();
+}
+
+/// A locale's number symbols and patterns in its default numbering
+/// system, and its byte units (the order of `number_field_count`).
+fn numberRecord(io: Io, a: Allocator, pool: *Pool, ndoc: json.Value, units: []const u8, tag: []const u8, system: []const u8) ![number_field_count]u16 {
+    var rec: [number_field_count]u16 = @splat(none);
+    const nums = get(ndoc, &.{ "main", tag, "numbers" }).?;
+    const sym = get(nums, &.{try std.fmt.allocPrint(a, "symbols-numberSystem-{s}", .{system})}).?;
+    for (symbol_keys, 0..) |k, i| rec[i] = try pool.add(a, getStr(sym, &.{k}));
+    const dec = get(nums, &.{try std.fmt.allocPrint(a, "decimalFormats-numberSystem-{s}", .{system})}).?;
+    rec[symbol_keys.len] = try pool.add(a, getStr(dec, &.{"standard"}));
+    rec[symbol_keys.len + 1] = try pool.add(a, getStr(nums, &.{ try std.fmt.allocPrint(a, "percentFormats-numberSystem-{s}", .{system}), "standard" }));
+    rec[symbol_keys.len + 2] = try std.fmt.parseInt(u16, getStr(nums, &.{"minimumGroupingDigits"}), 10);
+    const short = get(dec, &.{ "short", "decimalFormat" }).?;
+    for (0..compact_magnitudes) |m| for (plural_categories, 0..) |cat, ci| {
+        var key: std.ArrayList(u8) = .empty;
+        try key.append(a, '1');
+        try key.appendNTimes(a, '0', m + 3);
+        try key.print(a, "-count-{s}", .{cat});
+        if (short.object.get(key.items)) |v| rec[compact_at + m * plural_categories.len + ci] = try pool.add(a, v.string);
+    };
+    const udoc = try readJson(io, a, try std.fs.path.join(a, &.{ units, "main", tag, "units.json" }));
+    const u = get(udoc, &.{ "main", tag, "units" }).?;
+    for (byte_units, 0..) |unit, ui| {
+        const e = get(u, &.{ unit[0], unit[1] }).?;
+        for (plural_categories, 0..) |cat, ci| {
+            const key = try std.fmt.allocPrint(a, "unitPattern-count-{s}", .{cat});
+            if (e.object.get(key)) |v| rec[bytes_at + ui * plural_categories.len + ci] = try pool.add(a, v.string);
+        }
+        if (rec[bytes_at + ui * plural_categories.len + 5] == none) std.debug.panic("{s}: {s} has no other", .{ tag, unit[1] });
+    }
+    return rec;
+}
+
+// Plural rules ----------------------------------------------------------------
+
+/// A rule set: each category's rule ("" where the language has none),
+/// with its samples, in the order of `plural_categories`.
+const RuleSet = [plural_categories.len][]const u8;
+
+fn ruleSet(rules: json.ObjectMap) RuleSet {
+    var set: RuleSet = @splat("");
+    for (plural_categories, 0..) |cat, ci| {
+        var buf: [64]u8 = undefined;
+        const key = std.fmt.bufPrint(&buf, "pluralRule-count-{s}", .{cat}) catch unreachable;
+        if (rules.get(key)) |v| set[ci] = v.string;
+    }
+    return set;
+}
+
+/// "i = 1 and v = 0 @integer 1": the condition and the samples.
+fn splitRule(rule: []const u8) struct { cond: []const u8, integer: []const u8, decimal: []const u8 } {
+    const at = std.mem.indexOfScalar(u8, rule, '@') orelse rule.len;
+    const int_at = std.mem.indexOf(u8, rule, "@integer");
+    const dec_at = std.mem.indexOf(u8, rule, "@decimal");
+    const int_end = dec_at orelse rule.len;
+    return .{
+        .cond = std.mem.trim(u8, rule[0..at], " "),
+        .integer = if (int_at) |i| std.mem.trim(u8, rule[i + "@integer".len .. int_end], " ") else "",
+        .decimal = if (dec_at) |i| std.mem.trim(u8, rule[i + "@decimal".len ..], " ") else "",
+    };
+}
+
+/// Compiles a rule's condition (TR35's syntax: relations of an operand,
+/// optionally modulo a number, = or != a list of values and ranges,
+/// joined by and, which binds tighter, and or) into a Zig expression
+/// on plural.zig's Operands.
+fn condition(a: Allocator, cond: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    var ors = std.mem.splitSequence(u8, cond, " or ");
+    var first_or = true;
+    while (ors.next()) |or_part| {
+        if (!first_or) try out.appendSlice(a, " or ");
+        first_or = false;
+        try out.append(a, '(');
+        var ands = std.mem.splitSequence(u8, or_part, " and ");
+        var first_and = true;
+        while (ands.next()) |rel_raw| {
+            if (!first_and) try out.appendSlice(a, " and ");
+            first_and = false;
+            const rel = std.mem.trim(u8, rel_raw, " ");
+            const neg = std.mem.indexOf(u8, rel, "!=");
+            const op_at = neg orelse std.mem.indexOfScalar(u8, rel, '=') orelse std.debug.panic("no relation in {s}", .{rel});
+            const lhs = std.mem.trim(u8, rel[0..op_at], " ");
+            const rhs = std.mem.trim(u8, rel[op_at + @as(usize, if (neg != null) 2 else 1) ..], " ");
+            const operand = lhs[0];
+            if (std.mem.indexOfScalar(u8, "nivwftce", operand) == null) std.debug.panic("unknown operand in {s}", .{rel});
+            var modulus: u64 = 0;
+            if (std.mem.indexOfScalar(u8, lhs, '%')) |p| modulus = try std.fmt.parseInt(u64, std.mem.trim(u8, lhs[p + 1 ..], " "), 10);
+            try out.print(a, "{s}o.in('{c}', {d}, &.{{", .{ if (neg != null) "!" else "", operand, modulus });
+            var ranges = std.mem.splitScalar(u8, rhs, ',');
+            while (ranges.next()) |r_raw| {
+                const r = std.mem.trim(u8, r_raw, " ");
+                const dots = std.mem.indexOf(u8, r, "..");
+                const lo = try std.fmt.parseInt(u64, r[0 .. dots orelse r.len], 10);
+                const hi = if (dots) |d| try std.fmt.parseInt(u64, r[d + 2 ..], 10) else lo;
+                try out.print(a, " .{{ {d}, {d} }},", .{ lo, hi });
+            }
+            try out.appendSlice(a, " })");
+        }
+        try out.append(a, ')');
+    }
+    return out.items;
+}
+
+fn plurals(io: Io, a: Allocator, core: []const u8, w: *Io.Writer) !void {
+    const cardinal = (try readJson(io, a, try std.fs.path.join(a, &.{ core, "supplemental", "plurals.json" }))).object.get("supplemental").?.object.get("plurals-type-cardinal").?.object;
+    const ordinal = (try readJson(io, a, try std.fs.path.join(a, &.{ core, "supplemental", "ordinals.json" }))).object.get("supplemental").?.object.get("plurals-type-ordinal").?.object;
+
+    // Set 0 is "everything is other", for languages without ordinal rules.
+    var sets: std.ArrayList(RuleSet) = .empty;
+    var set_index: std.StringHashMapUnmanaged(u16) = .empty;
+    try sets.append(a, @splat(""));
+    try set_index.put(a, "", 0);
+    const Lang = struct { cardinal: u16 = 0, ordinal: u16 = 0 };
+    var langs: std.StringArrayHashMapUnmanaged(Lang) = .empty;
+    for ([_]json.ObjectMap{ cardinal, ordinal }, 0..) |table, kind| {
+        for (table.keys(), table.values()) |tag, rules| {
+            const set = ruleSet(rules.object);
+            const key = try std.mem.join(a, "\x00", &set);
+            const gop = try set_index.getOrPut(a, key);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = @intCast(sets.items.len);
+                try sets.append(a, set);
+            }
+            const lang = try langs.getOrPut(a, tag);
+            if (!lang.found_existing) lang.value_ptr.* = .{};
+            if (kind == 0) lang.value_ptr.cardinal = gop.value_ptr.* else lang.value_ptr.ordinal = gop.value_ptr.*;
+        }
+    }
+
+    try w.writeAll(
+        \\
+        \\// Plural rules (TR35), compiled from plurals.json and ordinals.json.
+        \\// Categories: 0 zero, 1 one, 2 two, 3 few, 4 many, 5 other.
+        \\
+        \\pub const PluralLang = struct { tag: []const u8, cardinal: u16, ordinal: u16 };
+        \\pub const PluralSample = struct { set: u16, category: u8, integer: []const u8, decimal: []const u8 };
+        \\
+        \\/// The category of operands `o` (plural.zig's Operands) in rule set
+        \\/// `set`.
+        \\pub fn plural(set: u16, o: anytype) u8 {
+        \\    return switch (set) {
+        \\
+    );
+    for (0..sets.items.len) |i| try w.print("        {d} => p{d}(o),\n", .{ i, i });
+    try w.writeAll("        else => 5,\n    };\n}\n");
+    var masks: std.ArrayList(u8) = .empty;
+    var samples: Io.Writer.Allocating = .init(a);
+    for (sets.items, 0..) |set, i| {
+        try w.print("fn p{d}(o: anytype) u8 {{\n", .{i});
+        var used = false;
+        var mask: u8 = 0;
+        for (set, 0..) |rule, ci| {
+            if (rule.len == 0) continue;
+            const parts = splitRule(rule);
+            if (parts.integer.len > 0) mask |= @as(u8, 1) << @intCast(ci);
+            try samples.writer.print("    .{{ .set = {d}, .category = {d}, .integer = \"{f}\", .decimal = \"{f}\" }},\n", .{ i, ci, std.zig.fmtString(parts.integer), std.zig.fmtString(parts.decimal) });
+            if (ci == plural_categories.len - 1) {
+                if (parts.cond.len != 0) std.debug.panic("other has a condition: {s}", .{rule});
+                continue;
+            }
+            used = true;
+            try w.print("    if ({s}) return {d};\n", .{ try condition(a, parts.cond), ci });
+        }
+        if (!used) try w.writeAll("    _ = o;\n");
+        try w.writeAll("    return 5;\n}\n");
+        try masks.append(a, if (mask == 0) 1 << 5 else mask);
+    }
+    try w.writeAll("/// By rule set: the categories that integers take, a bit each.\npub const plural_integer = [_]u8{");
+    for (masks.items) |m| try w.print("{d},", .{m});
+    try w.writeAll("};\n/// Each rule's samples, by rule set and category.\npub const plural_samples = [_]PluralSample{\n");
+    try w.writeAll(samples.written());
+    try w.writeAll("};\n/// Sorted by tag, ignoring case.\npub const plural_langs = [_]PluralLang{\n");
+    const keys = try a.dupe([]const u8, langs.keys());
+    std.mem.sort([]const u8, keys, {}, lessIgnoreCase);
+    for (keys) |k| {
+        const l = langs.get(k).?;
+        try w.print("    .{{ .tag = \"{f}\", .cardinal = {d}, .ordinal = {d} }},\n", .{ std.zig.fmtString(k), l.cardinal, l.ordinal });
+    }
+    try w.writeAll("};\n");
 }
 
 fn hasTag(tags: []const []const u8, tag: []const u8) bool {

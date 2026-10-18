@@ -102,7 +102,7 @@ owns its directories and does not edit another workstream's files.
 | `svg` | `src/svg/` | Icons and SVG | `scene`, `raster`, `image` |
 | `icon` | `src/icon/` | Icons and SVG | none |
 | `spell` | `src/spell/` | Spell checking (D37) | `uucode` |
-| `intl` | `src/intl/` | Pickers (D41): CLDR dates and times, the emoji catalogue | none (generated `cldr_data`, `emoji_data`) |
+| `intl` | `src/intl/` | Internationalization (D21, D41): CLDR dates, times, numbers, and plural rules, gettext catalogs, the emoji catalogue | none (generated `cldr_data`, `emoji_data`) |
 | `render_cpu` | `src/render/cpu/` | Rasterizer, display list, CPU renderer | `scene`, `raster`, `text`, `harfbuzz`, `pool`, `image` |
 | `render_vulkan` | `src/render/vulkan/` | Vulkan renderer | `scene`, `raster`, `render_cpu`, `pool`, `vulkan`, `shaders` |
 | `loop` | `src/loop/` | Event loop and Wayland platform | `pool` |
@@ -162,7 +162,8 @@ commit message. In particular:
     modules, example browsers, and tests, and the pkg-config probe for
     `-Dwebview=auto`.
   - `src/intl/build_steps.zig`: the CLDR packages and emoji data, and
-    the generator that turns them into the intl module's tables (D41).
+    the generator that turns them into the intl module's tables (D21,
+    D41).
   - `src/lua/build_steps.zig`: Lua's sources and allowlist of standard
     libraries, libsiv-lua, the siv-lua runner, the generated annotations,
     and the Lua tests (D23).

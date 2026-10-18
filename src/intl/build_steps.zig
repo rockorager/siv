@@ -1,8 +1,9 @@
 //! The intl module's part of the build graph (D21, D41), called from
 //! build.zig: src/intl/gen.zig runs on the build host and writes the CLDR
-//! calendar tables and the emoji catalogue from the pinned CLDR packages
-//! (cldr_core, cldr_dates, cldr_numbers in build.zig.zon) and the emoji
-//! data kept in src/intl/emoji; the module embeds what it writes.
+//! calendar, number, and plural tables and the emoji catalogue from the
+//! pinned CLDR packages (cldr_core, cldr_dates, cldr_numbers, cldr_units
+//! in build.zig.zon) and the emoji data kept in src/intl/emoji; the
+//! module embeds what it writes.
 
 const std = @import("std");
 
@@ -27,6 +28,7 @@ pub fn add(b: *std.Build, o: Options) *std.Build.Module {
     run.addDirectoryArg(b.dependency("cldr_core", .{}).path("."));
     run.addDirectoryArg(b.dependency("cldr_dates", .{}).path("."));
     run.addDirectoryArg(b.dependency("cldr_numbers", .{}).path("."));
+    run.addDirectoryArg(b.dependency("cldr_units", .{}).path("."));
     run.addFileArg(b.path("src/intl/emoji/emoji-test.txt"));
     return b.createModule(.{
         .root_source_file = b.path("src/intl/intl.zig"),
