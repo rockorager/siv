@@ -295,7 +295,7 @@ fn done(ud: ?*anyopaque) callconv(.c) void {
     c.lua_pushlightuserdata(L, job);
     st.depth += 1;
     if (lua.pcall(L, 1, 0, top + 1) != lua.ok) st.report(L);
-    st.depth -= 1;
+    st.leave(L);
     c.lua_settop(L, top);
 }
 

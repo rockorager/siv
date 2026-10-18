@@ -88,6 +88,11 @@ pub const State = struct {
     pending: c_int = lua.noref,
     /// Callbacks now running.
     depth: u32 = 0,
+    /// Runs when the outermost callback returns, if `after_pending`:
+    /// siv.view's flush of the signal writes the callback made, before
+    /// the frame (D45). Set with internal.set_after.
+    after: c_int = lua.noref,
+    after_pending: bool = false,
     /// The application siv_app_run is running, quit when a callback fails.
     running: u64 = 0,
     apps: [max_apps]u64 = @splat(0),
@@ -153,6 +158,20 @@ pub const State = struct {
         const msg = c.luaL_tolstring(L, 1, null);
         std.debug.print("siv-lua: another error in a callback: {s}\n", .{std.mem.span(msg)});
         return 0;
+    }
+
+    /// Ends a callback started with `depth += 1`: when it was the
+    /// outermost and the after function was asked for, runs it.
+    pub fn leave(st: *State, L: *L_) void {
+        st.depth -= 1;
+        if (st.depth != 0 or !st.after_pending) return;
+        st.after_pending = false;
+        if (st.after == lua.noref or c.lua_checkstack(L, 4) == 0) return;
+        const top = c.lua_gettop(L);
+        st.pushTraceback(L);
+        _ = c.lua_rawgeti(L, lua.registry, st.after);
+        if (lua.pcall(L, 0, 0, top + 1) != lua.ok) st.report(L);
+        c.lua_settop(L, top);
     }
 
     /// Raises the pending callback error, if any, when no callback is
@@ -821,7 +840,7 @@ fn release(comptime slot: c_int) fn (?*anyopaque) callconv(.c) void {
                 if (c.lua_getiuservalue(L, -1, slot) == lua.tfunction) {
                     st.depth += 1;
                     if (lua.pcall(L, 0, 0, 0) != lua.ok) st.report(L);
-                    st.depth -= 1;
+                    st.leave(L);
                     lua.pop(L, 1);
                 } else lua.pop(L, 2);
             }
@@ -968,7 +987,7 @@ fn Invoke(comptime name: []const u8, comptime slot: c_int, comptime R: type, com
             c.lua_pushlightuserdata(L, &frame);
             st.depth += 1;
             if (lua.pcall(L, 1, 0, top + 1) != lua.ok) st.report(L);
-            st.depth -= 1;
+            st.leave(L);
             c.lua_settop(L, top);
             return frame.ret;
         }

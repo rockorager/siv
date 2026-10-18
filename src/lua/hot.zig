@@ -123,6 +123,6 @@ fn onChange(ud: ?*anyopaque) callconv(.c) void {
     lua.remove(L, -2);
     st.depth += 1;
     if (lua.pcall(L, 0, 0, top + 1) != lua.ok) st.report(L);
-    st.depth -= 1;
+    st.leave(L);
     c.lua_settop(L, top);
 }

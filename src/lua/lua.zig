@@ -189,6 +189,12 @@ pub fn luaopen_siv(Lq: ?*L_) callconv(.c) c_int {
     c.lua_setfield(L, internal, "handle_value");
     pushFn(L, st, job.start);
     c.lua_setfield(L, internal, "job_start");
+    pushFn(L, st, setAfter);
+    c.lua_setfield(L, internal, "set_after");
+    pushFn(L, st, deferAfter);
+    c.lua_setfield(L, internal, "defer");
+    pushFn(L, st, inCallback);
+    c.lua_setfield(L, internal, "in_callback");
     c.lua_pushvalue(L, internal);
     setRegistry(L, "siv.internal");
 
@@ -198,6 +204,30 @@ pub fn luaopen_siv(Lq: ?*L_) callconv(.c) c_int {
     lua.call(L, 2, 1);
     c.lua_pushvalue(L, -1);
     setRegistry(L, "siv.module");
+    return 1;
+}
+
+/// internal.set_after(fn): the function to run when the outermost
+/// callback returns after internal.defer() asked for it.
+fn setAfter(Lq: ?*L_) callconv(.c) c_int {
+    const L = Lq.?;
+    const st = State.get(L);
+    c.luaL_checktype(L, 1, lua.tfunction);
+    c.luaL_unref(L, lua.registry, st.after);
+    c.lua_settop(L, 1);
+    st.after = c.luaL_ref(L, lua.registry);
+    return 0;
+}
+
+fn deferAfter(Lq: ?*L_) callconv(.c) c_int {
+    State.get(Lq.?).after_pending = true;
+    return 0;
+}
+
+/// Whether a callback is running (one will return to the binding).
+fn inCallback(Lq: ?*L_) callconv(.c) c_int {
+    const L = Lq.?;
+    c.lua_pushboolean(L, @intFromBool(State.get(L).depth != 0));
     return 1;
 }
 
