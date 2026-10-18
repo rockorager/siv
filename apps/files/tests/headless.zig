@@ -72,6 +72,29 @@ fn expectNames(want: []const []const u8, got: []const []const u8) !void {
     for (want, got) |a, b| try testing.expectEqualStrings(a, b);
 }
 
+test "the window's size, the view's mode, and hidden files are kept in a state store" {
+    var fx: Fixture = .{};
+    try fx.create(&sample);
+    defer fx.remove();
+    const c = harness.t.c;
+    var h: Harness = .{};
+    try h.start(.{ .path = fx.path, .width = 700, .height = 500, .state = true });
+    defer h.stop();
+    var i: i64 = 0;
+    try harness.ok(c.siv_settings_get_int(h.state, "window.width", 12, 0, &i));
+    try testing.expectEqual(@as(i64, 700), i);
+    h.f().setMode(.grid);
+    h.f().setShowHidden(true);
+    try h.settle();
+    var buf: [8]u8 = undefined;
+    var len: usize = 0;
+    try harness.ok(c.siv_settings_get_string(h.state, "view.mode", 9, "list", 4, &buf, buf.len, &len));
+    try testing.expectEqualStrings("grid", buf[0..len]);
+    var hidden = false;
+    try harness.ok(c.siv_settings_get_bool(h.state, "view.show-hidden", 16, false, &hidden));
+    try testing.expect(hidden);
+}
+
 test "a column header sorts, then reverses, keeping the selection" {
     var fx: Fixture = .{};
     try fx.create(&sample);

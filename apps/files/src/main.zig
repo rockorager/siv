@@ -28,12 +28,16 @@ pub fn main(init: std.process.Init) !u8 {
     var opts: Files.Options = .{ .gpa = gpa, .path = "", .home = "" };
     var flags: siv.AppFlags = .{};
     var theme: siv.ColorScheme = .follow;
+    var mode_given = false;
+    var hidden_given = false;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     for (args[1..]) |a| {
         if (std.mem.eql(u8, a, "--grid")) {
             opts.mode = .grid;
+            mode_given = true;
         } else if (std.mem.eql(u8, a, "--hidden")) {
             opts.show_hidden = true;
+            hidden_given = true;
         } else if (std.mem.eql(u8, a, "--dark")) {
             theme = .dark;
         } else if (std.mem.eql(u8, a, "--light")) {
@@ -74,6 +78,20 @@ pub fn main(init: std.process.Init) !u8 {
     defer _ = c.siv_app_destroy(app);
     if (theme != .follow) _ = c.siv_app_set_theme(app, &.{ .scheme = theme });
 
+    // The window's size and the view's mode live in
+    // $XDG_STATE_HOME/org.siv.Files/state.toml (D36); --grid and --hidden
+    // win over it for this run.
+    const state = siv.settingsOpen(app, .{ .kind = .state }) catch .null;
+    defer if (state != .null) siv.settingsDestroy(state);
+    if (state != .null) {
+        var buf: [8]u8 = undefined;
+        if (!mode_given) {
+            const n = siv.settingsGetString(state, "view.mode", "list", &buf) catch 0;
+            opts.mode = std.meta.stringToEnum(Files.ViewMode, buf[0..@min(n, buf.len)]) orelse .list;
+        }
+        if (!hidden_given) opts.show_hidden = siv.settingsGetBool(state, "view.show-hidden", false) catch false;
+    }
+    opts.state = state;
     opts.on_closed = quit;
     // Installed with the executable: <prefix>/share/siv-files/icons.
     var icon_buf: [4096]u8 = undefined;

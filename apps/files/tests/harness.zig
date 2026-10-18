@@ -16,7 +16,7 @@ const png = @import("png");
 pub const Files = @import("files");
 
 const testing = std.testing;
-const t = abi.types;
+pub const t = abi.types;
 const A = abi.application;
 
 pub const golden_dir = "apps/files/tests/golden";
@@ -111,6 +111,7 @@ pub const Harness = struct {
     ignore_ops: bool = false,
     last_w: u32 = 0,
     last_h: u32 = 0,
+    state: t.Settings = .null,
 
     pub const Start = struct {
         path: []const u8,
@@ -126,6 +127,10 @@ pub const Harness = struct {
         config_home: ?[]const u8 = "/nonexistent-config",
         data_home: ?[]const u8 = null,
         watch: bool = false,
+        /// Keep the app's state in a store (D36), `Harness.state`: in
+        /// memory, as the headless backend keeps stores without a
+        /// directory.
+        state: bool = false,
     };
 
     fn onClosed(files: *Files) void {
@@ -138,6 +143,7 @@ pub const Harness = struct {
         for ([_][]const u8{ tf.latin, tf.arabic, tf.hebrew }) |font| try ok(A.siv_app_add_font(h.app, "Droid", 5, font.ptr, font.len));
         try ok(A.siv_app_set_default_font(h.app, "Droid", 5));
         try ok(abi.theme.siv_app_set_theme(h.app, &.{ .scheme = s.scheme }));
+        if (s.state) try ok(abi.settings.siv_settings_open(h.app, &.{ .kind = .state }, &h.state));
         h.files = try Files.create(@enumFromInt(@intFromEnum(h.app)), .{
             .gpa = std.heap.c_allocator,
             .path = s.path,
@@ -151,6 +157,7 @@ pub const Harness = struct {
             // Only the application's own icons, never the system's.
             .icon_dir = "apps/files/icons",
             .watch = s.watch,
+            .state = @enumFromInt(@intFromEnum(h.state)),
             .on_closed = onClosed,
         });
         try h.settle();

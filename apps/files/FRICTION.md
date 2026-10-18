@@ -284,6 +284,18 @@ Measurements are in [Numbers](#numbers) at the end.
     The header, Zig wrapper, JSON, reference, Lua binding (closed enums
     take only named integers), and Lua annotations follow the mark.
 
+31. **Nowhere to keep the window's size or the view mode.** Every run
+    opened at 1000×640 in list view with hidden files hidden, whatever
+    the user chose last time: siv had no settings or state storage, and
+    session restore (D17) depends on the compositor (sway has none).
+    The app would have had to write and watch a file of its own.
+    *Fixed:* settings and state stores (commit "abi: settings and state
+    stores", D36). The app opens `state.toml` in
+    `$XDG_STATE_HOME/org.siv.Files/`, gives the window
+    `siv_window_desc.settings` (its size and maximized and fullscreen
+    states), and saves `view.mode` and `view.show-hidden` when they
+    change; `--grid` and `--hidden` win for one run.
+
 ## Open API questions
 
 None: every question this work raised has been decided and is fixed

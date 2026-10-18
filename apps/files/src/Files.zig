@@ -49,6 +49,9 @@ pub const Options = struct {
     /// The application's own icons (apps/files/icons), searched after
     /// the icon theme for the names it lacks.
     icon_dir: ?[]const u8 = null,
+    /// Where the window's size is kept between runs, and the view's mode
+    /// and hidden files when they change (D36).
+    state: siv.Settings = .null,
 };
 
 gpa: Allocator,
@@ -195,6 +198,8 @@ pub fn create(app: siv.App, opts: Options) !*Files {
         .on_event = onWindowEvent,
         .destroy = onWindowDestroyed,
         .flags = opts.window_flags,
+        .settings = opts.state,
+        .settings_key = "window",
     });
     try self.build();
     self.navigate(opts.path, .push);
@@ -557,6 +562,7 @@ pub fn setMode(self: *Files, mode: ViewMode) void {
     const bits = self.selectionBits() catch return;
     defer self.gpa.free(bits);
     self.mode = mode;
+    if (self.opts.state != .null) siv.settingsSetString(self.opts.state, "view.mode", @tagName(mode)) catch {};
     self.applyMode() catch return;
     const to = self.activeView();
     const txn = self.begin() orelse return;
@@ -1663,6 +1669,7 @@ fn inEditor(self: *Files) bool {
 
 pub fn setShowHidden(self: *Files, on: bool) void {
     self.show_hidden = on;
+    if (self.opts.state != .null) siv.settingsSetBool(self.opts.state, "view.show-hidden", on) catch {};
     self.keepSelection(struct {
         fn apply(_: *Files) void {}
     });
