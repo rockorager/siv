@@ -1990,8 +1990,34 @@ pub fn trashSelection(self: *Files) void {
     defer self.freePaths(paths);
     if (paths.len == 0) return;
     // Items in the trash are deleted for good.
-    const in_trash = std.mem.startsWith(u8, self.path, self.places.trash_dir);
-    if (in_trash) self.startOp(.delete, paths, "") else self.trashPaths(paths);
+    if (!std.mem.startsWith(u8, self.path, self.places.trash_dir)) return self.trashPaths(paths);
+    // The trash's own items go through siv_trash_delete, which removes
+    // their information files too (D42); what is inside a trashed folder
+    // is deleted like any file.
+    var buf: [4096]u8 = undefined;
+    const files_dir = std.fmt.bufPrint(&buf, "{s}/files", .{self.places.trash_dir}) catch "";
+    var rest: std.ArrayList([]const u8) = .empty;
+    defer rest.deinit(self.gpa);
+    for (paths) |p| {
+        const top = files_dir.len != 0 and p.len > files_dir.len and std.mem.startsWith(u8, p, files_dir) and
+            p[files_dir.len] == '/' and std.mem.indexOfScalar(u8, p[files_dir.len + 1 ..], '/') == null;
+        if (!top) {
+            rest.append(self.gpa, p) catch {};
+            continue;
+        }
+        const tok = Token.create(self, p) orelse continue;
+        _ = c.siv_trash_delete(self.app, p.ptr, p.len, onTrashDeleted, Token.destroy, tok);
+    }
+    if (rest.items.len != 0) self.startOp(.delete, rest.items, "");
+}
+
+fn onTrashDeleted(ud: ?*anyopaque, result: *const siv.TrashResult) callconv(.c) void {
+    const t: *Token = @ptrCast(@alignCast(ud.?));
+    const self = t.files orelse return;
+    if (result.status == .ok) return;
+    var buf: [512]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "Could not delete “{s}”: {s}", .{ model.basename(t.dest), trashReason(result.status) }) catch "Could not delete";
+    self.toast(msg, true);
 }
 
 fn confirmDelete(self: *Files) void {

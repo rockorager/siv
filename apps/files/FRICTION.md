@@ -335,8 +335,10 @@ Measurements are in [Numbers](#numbers) at the end.
     it is the newest; restored files are selected. A file the trash
     cannot take says why (`unsupported` suggests Shift+Delete). The
     app's trash code is gone. Deleting inside the trash folder still
-    deletes files for good with the app's own code, which leaves their
-    information files behind; `siv_trash_delete` would not.
+    deleted files for good with the app's own code, which left their
+    information files behind. *Fixed:* the trash's own items go through
+    `siv_trash_delete`; what is inside a trashed folder is deleted like
+    any file.
 
 ## Noted
 

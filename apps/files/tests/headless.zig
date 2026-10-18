@@ -234,6 +234,26 @@ test "new folder, then into the trash with Delete, and back with Undo" {
     try testing.expect(fx.exists("Inbox") and fx.exists("notes.txt"));
 }
 
+test "Delete in the trash deletes items for good, with their information files" {
+    var fx: Fixture = .{};
+    try fx.create(&sample);
+    defer fx.remove();
+    var h: Harness = .{};
+    try h.start(.{ .path = fx.path });
+    defer h.stop();
+    try h.clickItem("notes.txt");
+    try h.key(ks.delete, "", .{});
+    try testing.expect(fx.exists("Trash/files/notes.txt") and fx.exists("Trash/info/notes.txt.trashinfo"));
+    var buf: [4096]u8 = undefined;
+    h.f().navigate(try std.fmt.bufPrint(&buf, "{s}/Trash/files", .{fx.path}), .push);
+    try h.settle();
+    try h.clickItem("notes.txt");
+    try h.key(ks.delete, "", .{});
+    try h.settle();
+    try testing.expect(!fx.exists("Trash/files/notes.txt"));
+    try testing.expect(!fx.exists("Trash/info/notes.txt.trashinfo"));
+}
+
 test "Shift+Delete asks before deleting for good" {
     var fx: Fixture = .{};
     try fx.create(&sample);
