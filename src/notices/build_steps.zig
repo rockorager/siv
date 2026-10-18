@@ -73,6 +73,10 @@ const entries = [_]Entry{
     .{ .title = "Wayland protocol (MIT)", .package = "wayland_core", .files = &.{"COPYING"} },
     .{ .title = "wayland-protocols (MIT)", .package = "wayland_protocols", .files = &.{"COPYING"} },
     .{ .title = "wlr-protocols (HPND)", .package = "wlr_protocols", .siv_files = &.{"src/notices/wlr-protocols-LICENSE.txt"} },
+    .{ .title = "Unicode CLDR supplemental data (Unicode License v3)", .package = "cldr_core", .files = &.{"LICENSE"} },
+    .{ .title = "Unicode CLDR calendars (Unicode License v3)", .package = "cldr_dates", .files = &.{"LICENSE"} },
+    .{ .title = "Unicode CLDR numbering systems (Unicode License v3)", .package = "cldr_numbers", .files = &.{"LICENSE"} },
+    .{ .title = "Unicode emoji data, emoji-test.txt (Unicode License v3)", .siv_files = &.{ "src/intl/emoji/README.md", "src/notices/unicode-LICENSE.txt" } },
     .{ .title = "Hyphenation patterns from hyph-utf8 (MIT, BSD-3-Clause, FSF all-permissive)", .siv_files = &hyphenation },
     .{ .title = "HTML named character references from the WHATWG HTML Living Standard (CC BY 4.0)", .siv_files = &.{"src/notices/whatwg-LICENSE.txt"} },
 };

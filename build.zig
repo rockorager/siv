@@ -108,6 +108,9 @@ pub fn build(b: *std.Build) void {
     const spell = ctx.module("src/spell/spell.zig", &.{
         .{ .name = "uucode", .module = uucode },
     });
+    // Dates, times, and emoji (D21, D41): tables generated from CLDR and
+    // UTS #51 data.
+    const intl = @import("src/intl/build_steps.zig").add(b, .{ .target = target, .optimize = optimize });
     // Documents (D32): HTML parsing.
     const html = ctx.module("src/html/html.zig", &.{});
     const css = ctx.module("src/css/css.zig", &.{});
@@ -251,6 +254,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "svg", .module = svg },
         .{ .name = "icon", .module = icon },
         .{ .name = "spell", .module = spell },
+        .{ .name = "intl", .module = intl },
         .{ .name = "raster", .module = raster },
         .{ .name = "text", .module = text },
         .{ .name = "image", .module = image },
@@ -350,6 +354,7 @@ pub fn build(b: *std.Build) void {
         .{ "icon", icon },
         .{ "trash", trash },
         .{ "spell", spell },
+        .{ "intl", intl },
         .{ "html", html },
         .{ "css", css },
         .{ "markdown", markdown_tests },

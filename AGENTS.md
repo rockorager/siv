@@ -19,7 +19,7 @@ on a 4-core orb, which doubles the time.
 zig build                      # zig-out: libsiv.so, libsiv.a, include/siv.h, lib/pkgconfig/siv.pc
 zig build test -j16            # every module's tests, the headless test binary (C API, guide,
                                #   files app, Lua), C ABI programs; JPEG XL only with -Djxl
-zig build test-text            # one module: test-abi, test-text, test-raster, test-scene, test-image, test-svg, test-icon, test-spell,
+zig build test-text            # one module: test-abi, test-text, test-raster, test-scene, test-image, test-svg, test-icon, test-spell, test-intl,
                                #   test-html, test-css, test-markdown, test-doc, test-docview, test-epub,
                                #   test-render-cpu, test-render-vulkan, test-pool, test-loop,
                                #   test-dbus, test-portal, test-pdf, test-tray, test-trash, test-platform,
@@ -102,6 +102,7 @@ owns its directories and does not edit another workstream's files.
 | `svg` | `src/svg/` | Icons and SVG | `scene`, `raster`, `image` |
 | `icon` | `src/icon/` | Icons and SVG | none |
 | `spell` | `src/spell/` | Spell checking (D37) | `uucode` |
+| `intl` | `src/intl/` | Pickers (D41): CLDR dates and times, the emoji catalogue | none (generated `cldr_data`, `emoji_data`) |
 | `render_cpu` | `src/render/cpu/` | Rasterizer, display list, CPU renderer | `scene`, `raster`, `text`, `harfbuzz`, `pool`, `image` |
 | `render_vulkan` | `src/render/vulkan/` | Vulkan renderer | `scene`, `raster`, `render_cpu`, `pool`, `vulkan`, `shaders` |
 | `loop` | `src/loop/` | Event loop and Wayland platform | `pool` |
@@ -160,6 +161,8 @@ commit message. In particular:
   - `webview/build_steps.zig`: siv-webview's libraries, Zig and Lua
     modules, example browsers, and tests, and the pkg-config probe for
     `-Dwebview=auto`.
+  - `src/intl/build_steps.zig`: the CLDR packages and emoji data, and
+    the generator that turns them into the intl module's tables (D41).
   - `src/lua/build_steps.zig`: Lua's sources and allowlist of standard
     libraries, libsiv-lua, the siv-lua runner, the generated annotations,
     and the Lua tests (D23).
