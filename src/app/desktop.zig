@@ -41,8 +41,10 @@ pub const Desktop = struct {
     /// First frames are held until the settings are ready.
     waiting: bool = false,
     timer: Timer = .{ .func = onTimeout },
-    /// What every window follows.
+    /// What every window follows: the desktop's values (`base`), with
+    /// caret blinking off while power saving is on (D42).
     values: ui.Desktop = .{},
+    base: ui.Desktop = .{},
     /// The portal's font names and size apply (`ownsFonts`).
     owns_fonts: bool = false,
     /// For measurements: application creation and the first read.
@@ -129,12 +131,8 @@ fn onChange(ctx: ?*anyopaque, s: *dbus.Settings, changed: dbus.Settings.Changed)
     const first = d.ready_ns == null;
     if (first) d.ready_ns = Loop.now();
     const v = effective(s.values, d.owns_fonts);
-    d.values = desktopOf(v);
-    for (app.windows.items) |w| if (w) |win| {
-        const old = win.ui.palette;
-        win.ui.setDesktop(d.values);
-        win.paletteApplied(&old);
-    };
+    d.base = desktopOf(v);
+    apply(app);
     if (first or changed.cursor_theme or changed.cursor_size) setCursorTheme(app, s.values.cursor_theme.slice(), s.values.cursor_size);
     if ((first or changed.icon_theme) and !app.icon_theme_overridden) app.icons.setTheme(s.values.icon_theme.slice()) catch app.fail(error.OutOfMemory);
     var refresh = changed.text_scale;
@@ -146,6 +144,21 @@ fn onChange(ctx: ?*anyopaque, s: *dbus.Settings, changed: dbus.Settings.Changed)
     }
     if (refresh) app.refreshText();
     release(app);
+}
+
+/// Copies the desktop's values into every window, with what power saving
+/// changes (D42): carets stop blinking, the one motion siv runs on its
+/// own while the user does nothing. Motion the user starts still runs;
+/// reduced motion is the user's accessibility setting, not power's.
+pub fn apply(app: *App) void {
+    const d = &app.desktop;
+    d.values = d.base;
+    if (app.system.powerSaver()) d.values.cursor_blink = false;
+    for (app.windows.items) |w| if (w) |win| {
+        const old = win.ui.palette;
+        win.ui.setDesktop(d.values);
+        win.paletteApplied(&old);
+    };
 }
 
 /// Themed cursors (D16) follow the desktop's theme and size, on the

@@ -45,6 +45,7 @@ const a11y = @import("a11y");
 pub const portals = @import("portals.zig");
 pub const lifecycle = @import("lifecycle.zig");
 pub const locale = @import("locale.zig");
+pub const system = @import("system.zig");
 
 const Loop = loop_mod.Loop;
 const Compositor = compositor.Compositor;
@@ -107,6 +108,13 @@ pub const Options = struct {
     bus_address: ?[]const u8 = null,
     /// A connected socket to the session bus instead (tests); taken over.
     bus_fd: ?i32 = null,
+    /// Follow power saving, memory pressure, and the network (D42); null
+    /// does with `desktop_settings`.
+    system_signals: ?bool = null,
+    /// A connected socket to the system bus for the system signals'
+    /// fallbacks (tests); taken over. Without one, applications that
+    /// follow the desktop settings use the system bus.
+    system_bus_fd: ?i32 = null,
     /// The application id (reverse DNS, the .desktop file's name): the
     /// default window app id, and the id portals and D-Bus activation use.
     app_id: []const u8 = "",
@@ -180,6 +188,8 @@ pub const App = struct {
     accessible: bool = false,
     portals: portals.Portals = .{},
     lifecycle: lifecycle.Lifecycle = .{},
+    /// Power saving, memory pressure, and the network (D42).
+    system: system.System = .{},
     app_id: platform.BoundedString(255) = .{},
     /// The application's language (interned in `fonts`) and direction,
     /// which windows follow unless they set their own (D21).
@@ -245,6 +255,11 @@ pub const App = struct {
         errdefer app.desktop.deinit(app);
         app.portals.start(app);
         errdefer app.portals.deinit(app);
+        if (options.system_signals orelse options.desktop_settings) {
+            const system_bus: @import("portal").monitor.SystemBus = if (options.system_bus_fd) |sfd| .{ .fd = sfd } else if (options.desktop_settings) .{ .address = @import("dbus").address.system() } else .none;
+            app.system.start(app, if (app.desktop.connected) &app.desktop.bus else null, system_bus);
+        } else if (options.system_bus_fd) |sfd| _ = std.os.linux.close(sfd);
+        errdefer app.system.deinit();
         if (options.accessibility and app.desktop.connected) {
             app.bridge.init(gpa, &app.loop, .{ .app_name = options.name, .toolkit_version = options.toolkit_version, .language = app.fonts.name(app.language), .on_active = onAccessibilityActive, .ctx = app });
             if (app.bridge.start(&app.desktop.bus)) {
@@ -293,6 +308,7 @@ pub const App = struct {
         }
         app.lifecycle.deinit(app);
         app.portals.deinit(app);
+        app.system.deinit();
         app.desktop.deinit(app);
         for (app.windows.items) |w| if (w) |win| win.free();
         for (app.zombies.items) |win| win.free();
@@ -1580,4 +1596,5 @@ test {
     std.testing.refAllDecls(@This());
     _ = @import("desktop.zig");
     _ = @import("tests.zig");
+    _ = @import("system_tests.zig");
 }
