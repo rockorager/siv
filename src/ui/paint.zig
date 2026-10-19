@@ -37,6 +37,7 @@ const isLayerRoot = @import("txn.zig").isLayerRoot;
 const Image = @import("image.zig").Image;
 const svg = @import("svg");
 const theme = @import("theme.zig");
+const inspect = @import("inspect.zig");
 
 const NodeId = node_mod.NodeId;
 const Point = raster.Point;
@@ -45,6 +46,9 @@ const Op = compositor.Op;
 const Error = Window.Error;
 
 pub const no_layer: u32 = std.math.maxInt(u32);
+
+/// How long the inspector's repaint flashes take to fade (D46).
+const flash_ns: u64 = 600 * std.time.ns_per_ms;
 
 /// The color of keyboard focus rings.
 pub const focus_ring_color = scene.Color.srgb8(0x25, 0x63, 0xeb, 0xff);
@@ -60,6 +64,10 @@ const LayerKind = enum {
     /// Given up to the compositor to finish an exit (D38); reserved until
     /// it reports `exit_root` gone.
     exiting,
+    /// The inspector's overlays and repaint flashes (D46), above every
+    /// other layer, in window coordinates.
+    overlay,
+    flash,
 };
 
 const Layer = struct {
@@ -240,6 +248,9 @@ pub const State = struct {
     /// The palette of the node being painted: its subtree theme's (D29),
     /// carried down the tree by `paintTree`.
     palette: *const theme.Palette = undefined,
+    /// The inspector's layers (D46), while it shows them.
+    overlay_layer: u32 = no_layer,
+    flash_layer: u32 = no_layer,
 
     pub fn init(st: *State, win: *Window) Error!void {
         try st.layers.append(win.gpa, .{ .kind = .root, .owner = .root, .pass = 0, .parent = no_layer });
@@ -363,6 +374,9 @@ pub const State = struct {
         var cur: Cursor = .{ .layer = 0 };
         var it = win.shown(.root);
         while (it.next()) |ch| try st.visit(win, flags, ch, 0, &cur, false);
+        // The inspector's layers go above everything else (D46).
+        if (win.inspect.overlay.repaints) _ = try st.claim(win, &st.flash_layer, .flash, .root, 0);
+        if (win.inspect.overlaid()) _ = try st.claim(win, &st.overlay_layer, .overlay, .root, 0);
 
         // Structural ops: move survivors out of dying parents, destroy the
         // dead (or let them exit), create the new, then insert everything
@@ -592,6 +606,12 @@ pub const State = struct {
 
     /// Repaints the layers whose content changed and queues their content.
     pub fn build(st: *State, win: *Window) Error!void {
+        // The inspector's overlay follows layout, scrolling, and its
+        // highlight, so it is drawn again in every frame; flashes when
+        // anything else repaints (D46).
+        const flashing = st.dirty_count != 0 and st.alive(st.flash_layer, .flash);
+        if (st.alive(st.overlay_layer, .overlay)) st.markLayer(st.overlay_layer);
+        if (flashing) st.markLayer(st.flash_layer);
         for (st.order.items) |i| {
             const l = &st.layers.items[i];
             if (l.kind != .caret) continue;
@@ -640,11 +660,14 @@ pub const State = struct {
             }
         };
         try st.paintTree(win, .root, .zero, 0, &win.palette);
+        if (flashing) _ = try inspect.takeDamage(win);
 
         for (st.order.items) |i| {
             const l = &st.layers.items[i];
             const b = l.builder orelse continue;
             if (l.kind == .caret and l.caret_h > 0) drawCaret(b, l) catch |e| return oom(e);
+            if (l.kind == .overlay) inspect.draw(win, b) catch |e| return oom(e);
+            if (l.kind == .flash) inspect.drawFlashes(win, b) catch |e| return oom(e);
             for (l.open.items) |_| b.popLayer() catch |e| return oom(e);
             l.open.clearRetainingCapacity();
             l.version +%= 1;
@@ -661,7 +684,7 @@ pub const State = struct {
             l.dirty = false;
             l.full_damage = false;
             l.damage = Rect.empty;
-            win.stats.layer_builds += 1;
+            if (l.kind != .overlay and l.kind != .flash) win.stats.layer_builds += 1;
         }
         st.dirty_count = 0;
     }
@@ -738,6 +761,7 @@ pub const State = struct {
         if (clipped.isEmpty()) clipped = Rect.empty;
         if (s.paint_dirty or !clipped.eql(s.bounds)) {
             l.damage = l.damage.unite(s.bounds).unite(clipped);
+            inspect.noteDamage(win, nid);
         }
         s.bounds = clipped;
         s.paint_dirty = false;
@@ -887,6 +911,17 @@ pub const State = struct {
                         } } });
                     }
                 }
+                if (l.kind == .flash and l.blink_key != win.inspect.flash_serial) {
+                    // New flashes show at once and fade out on the
+                    // compositor, which keeps the UI idle (D46).
+                    l.blink_key = win.inspect.flash_serial;
+                    st.ops.appendAssumeCapacity(.{ .animate = .{ .layer = id(i), .animation = .{
+                        .to = .{ .opacity = 0 },
+                        .from = .{ .opacity = 1 },
+                        .duration_ns = flash_ns,
+                        .easing = .ease_in,
+                    } } });
+                }
                 if (l.kind == .node and win.node(l.owner).kind == .scroll) {
                     const s = win.state(l.owner);
                     // A zoom the application set; the content at the
@@ -927,6 +962,7 @@ pub const State = struct {
         if (st.ops.items.len == 0) return;
         defer st.ops.clearRetainingCapacity();
         const seq = try win.sink.commit(win.sink.ctx, st.ops.items);
+        win.stats.commits += 1;
         for (scroll_layers.items) |i| st.layers.items[i].scroll_seq = seq;
     }
 
@@ -987,7 +1023,7 @@ pub const State = struct {
 
     fn props(st: *const State, win: *const Window, l: Layer) Props {
         switch (l.kind) {
-            .chunk, .exiting => return .{},
+            .chunk, .exiting, .overlay, .flash => return .{},
             .caret => {
                 const l_ = text_node.current(win, l.owner) orelse return .{};
                 const n = win.node(l.owner);
@@ -1049,6 +1085,13 @@ pub const State = struct {
                 return p;
             },
         }
+    }
+
+    /// Whether the layer in `slot` is of `kind` in the current assignment.
+    fn alive(st: *const State, slot: u32, kind: LayerKind) bool {
+        if (slot == no_layer or slot >= st.layers.items.len) return false;
+        const l = st.layers.items[slot];
+        return l.kind == kind and l.pass == st.pass;
     }
 
     /// Whether the node roots a layer in the current assignment.

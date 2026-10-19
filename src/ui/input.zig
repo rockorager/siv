@@ -240,14 +240,20 @@ fn activatable(win: *const Window, id: NodeId) bool {
 
 /// The topmost hit-testable node at a window point, or none.
 pub fn hitTest(win: *const Window, p: Point) NodeId {
-    const h = hit(win, .root, p) orelse return .none;
+    const h = hit(win, .root, p, false) orelse return .none;
     // Outside a modal node, the pointer reaches nothing.
     const m = modalRoot(win);
     if (m != .root and !win.isAncestor(m, h)) return .none;
     return h;
 }
 
-fn hit(win: *const Window, id: NodeId, parent_p: Point) ?NodeId {
+/// The topmost node at a window point whether or not it takes pointer
+/// input or a modal node is shown, for the inspector (D46).
+pub fn hitAll(win: *const Window, p: Point) ?NodeId {
+    return hit(win, .root, p, true);
+}
+
+fn hit(win: *const Window, id: NodeId, parent_p: Point, all: bool) ?NodeId {
     const n = win.node(id);
     if (n.isHidden()) return null;
     const s = win.state(id);
@@ -262,15 +268,15 @@ fn hit(win: *const Window, id: NodeId, parent_p: Point) ?NodeId {
     if (n.kind == .scroll) {
         const pad = n.layout.padding;
         if (p.x < pad.left(s.rtl) or p.x >= s.size.w - (if (s.rtl) pad.start else pad.end) or p.y < pad.top or p.y >= s.size.h - pad.bottom) {
-            return if (n.visual.hit_test) id else null;
+            return if (n.visual.hit_test or all) id else null;
         }
         cp = paint.toContent(win, id, p);
     }
     var c = n.last;
     while (c != .none) : (c = win.node(c).prev) {
-        if (hit(win, c, cp)) |h| return h;
+        if (hit(win, c, cp, all)) |h| return h;
     }
-    if (inside and n.visual.hit_test) return id;
+    if (inside and (n.visual.hit_test or all)) return id;
     return null;
 }
 
@@ -548,6 +554,8 @@ fn callPointer(win: *Window, id: NodeId, phase: node_mod.PointerPhase) void {
 
 pub fn handle(win: *Window, event: *const platform.Event) void {
     const st = &win.input;
+    // The inspector picking a node takes the pointer (D46).
+    if (@import("inspect.zig").pointer(win, event)) return;
     switch (event.*) {
         .pointer_enter, .pointer_motion => |m| {
             st.pointer = .{ .x = @floatCast(m.x), .y = @floatCast(m.y) };
@@ -732,6 +740,7 @@ fn touchSequence(win: *Window, t: *const platform.Touch, phase: node_mod.TouchPh
 
 fn key(win: *Window, k: *const platform.Key) void {
     const st = &win.input;
+    if (@import("inspect.zig").cancelKey(win, k)) return;
     if (k.state == .pressed) {
         st.seat = k.seat;
         st.serial = k.serial;

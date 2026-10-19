@@ -38,6 +38,7 @@ pub const Clipboard = @import("clipboard.zig");
 const dnd_mod = @import("dnd.zig");
 const spelling_mod = @import("spelling.zig");
 pub const theme = @import("theme.zig");
+pub const inspect_mod = @import("inspect.zig");
 
 const Window = @This();
 
@@ -198,6 +199,8 @@ input: input_mod.State = .{},
 ime: ime_mod.State = .{},
 semantics: semantics_mod.Tree = .{},
 stats: Stats = .{},
+/// The inspector's overlays and picking (D46).
+inspect: inspect_mod.State = .{},
 
 /// What the window needs from its owner.
 pub const Host = struct {
@@ -335,6 +338,11 @@ pub const Stats = struct {
     text_layouts: u64 = 0,
     /// Layer contents rebuilt.
     layer_builds: u64 = 0,
+    /// Layer tree commits sent to the compositor.
+    commits: u64 = 0,
+    /// Nodes created, moved, or removed (by aborted transactions too):
+    /// the structure may have changed when it grows.
+    tree_changes: u64 = 0,
 };
 
 pub const Size = layout.Size;
@@ -486,6 +494,7 @@ fn deinitStorage(win: *Window) void {
     win.input.deinit(win.gpa);
     win.ime.deinit(win.gpa);
     win.semantics.deinit(win.gpa);
+    win.inspect.deinit(win.gpa);
     win.viewports.deinit(win.gpa);
     win.themed.deinit(win.gpa);
     win.scopes.deinit(win.gpa);
@@ -1025,6 +1034,7 @@ pub fn forget(win: *Window, id: NodeId) void {
         h.deinit(win.gpa);
     }
     spelling_mod.forget(win, id);
+    inspect_mod.forget(win, id);
     const s = win.state(id);
     win.paint.damage(s.layer, s.bounds);
     win.paint.forget(win, id);
@@ -1626,6 +1636,8 @@ fn scrolled(win: *Window, layer: compositor.LayerId, offset: Point, zoom: f32, s
     text_node.scrolled(win, l.owner);
     if (win.node(l.owner).handler(.viewport) != null and !win.txn.open) win.deliverViewports();
     win.checkCulled();
+    // The inspector's overlays follow the content (D46).
+    if (win.inspect.overlaid() or win.inspect.overlay.repaints) win.requestFrame();
     // The content moved under the pointer: the next frame, after layout,
     // gives the hover to what is under it now.
     if (win.input.pointer != null) {

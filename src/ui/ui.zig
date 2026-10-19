@@ -115,6 +115,8 @@ pub const Sink = layers.Sink;
 pub const semantics = @import("semantics.zig");
 pub const input = @import("input.zig");
 pub const access = @import("access.zig");
+/// The inspector's overlays and picking (D46).
+pub const inspect = @import("inspect.zig");
 /// Text nodes' shaped paragraphs and layouts, for tests that check lines.
 pub const text_node = @import("text_node.zig");
 pub const keysym = input.keysym;

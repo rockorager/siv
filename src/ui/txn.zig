@@ -280,6 +280,7 @@ pub const Txn = struct {
             break :blk @enumFromInt(win.nodes.items.len - 1);
         };
         win.node(id).* = .{ .kind = kind, .data = .default(kind) };
+        win.stats.tree_changes += 1;
         win.state(id).* = .{ .touched = t.epoch, .appear = true };
         t.link(parent, id, before);
         win.markLayout(id);
@@ -299,6 +300,7 @@ pub const Txn = struct {
         win.markLayout(win.node(id).parent);
         t.unlink(id);
         t.link(parent, id, before);
+        win.stats.tree_changes += 1;
         if (win.node(id).adaptive != null) win.state(parent).variant_children = true;
         win.markSubtreeLayout(id);
         win.markLayers();
@@ -321,6 +323,7 @@ pub const Txn = struct {
         win.markLayout(win.node(id).parent);
         t.unlink(id);
         t.removed.appendAssumeCapacity(id);
+        win.stats.tree_changes += 1;
         t.removed_count += count;
         win.markLayers();
         if (win.themed.items.len != 0) win.scopes_dirty = true;
