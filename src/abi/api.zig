@@ -2088,9 +2088,13 @@ pub const functions = [_]Function{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
         .{ .name = "relation", .type = ref("siv_relation"), .doc = "Which neighbor." },
     }),
-    call("siv_node_is_hidden", "Whether siv_set_hidden hid the node itself (not its visual, an ancestor, or a variant: siv_set_hidden_when), as of the latest operation.", &.{
+    call("siv_node_is_hidden", "Whether siv_set_hidden hid the node itself (not its visual, an ancestor, or a variant: siv_set_hidden_when, which siv_node_is_shown includes), as of the latest operation.", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
         .{ .name = "hidden", .type = out(.bool), .doc = "Hidden by siv_set_hidden." },
+    }),
+    call("siv_node_is_shown", "Whether the node is shown: neither it nor an ancestor hidden by siv_set_hidden, its visual (SIV_VISUAL_HIDDEN), or a variant (siv_set_hidden_when). Visibility set by calls is as of the latest operation, what variants decide as of the last layout.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
+        .{ .name = "shown", .type = out(.bool), .doc = "Shown." },
     }),
     call("siv_node_is_rtl", "Whether the node lays out right to left (D21): the nearest direction set on it or an ancestor, else the window's, as of the latest operation.", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },

@@ -7790,7 +7790,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     (`State.variant_mask`, derived). Setters change its own values and
     show them with the same mask; no transaction changes the mask, so an
     abort that restores the node restores values that match it.
-    `siv_node_is_hidden` reports the node's own visibility.
+    `siv_node_is_hidden` reports the node's own visibility;
+    `siv_node_is_shown` whether it shows, its ancestors and the
+    variants of the last layout included, for a widget that acts
+    differently on a node a variant hid (the sidebar's overlay, D40).
   - Motion: a node a variant hides or shows exits or enters as with
     `siv_set_hidden` (D38), and moves and growth animate even in a frame
     that resized the window (`Window.variants_switched`). Focus leaves a

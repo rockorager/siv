@@ -79,10 +79,18 @@ test "variants: a sidebar goes and a header stacks on a narrow window, and come 
     const content = try rect(u.content);
     try testing.expectEqual(@as(f32, 0), content.x);
     try testing.expectEqual(@as(f32, 320), content.width);
-    // Hidden by its variant, not by siv_set_hidden.
+    // Hidden by its variant, not by siv_set_hidden: shown is false, and
+    // so for what it holds.
     var hidden = true;
     try ok(c.siv_node_is_hidden(u.sidebar, &hidden));
     try testing.expect(!hidden);
+    var shown = true;
+    try ok(c.siv_node_is_shown(u.sidebar, &shown));
+    try testing.expect(!shown);
+    try ok(c.siv_node_is_shown(c.siv_node_get_related(u.sidebar, .first_child), &shown));
+    try testing.expect(!shown);
+    try ok(c.siv_node_is_shown(u.content, &shown));
+    try testing.expect(shown);
     // The buttons went below the title.
     try testing.expect((try rect(u.buttons)).y >= (try rect(u.title)).y + (try rect(u.title)).height);
     const narrow_save = try rect(u.save);
@@ -94,6 +102,8 @@ test "variants: a sidebar goes and a header stacks on a narrow window, and come 
     try h.settle();
     try testing.expectEqual(@as(f32, 160), (try rect(u.content)).x);
     try testing.expectEqual(wide_save, try rect(u.save));
+    try ok(c.siv_node_is_shown(u.sidebar, &shown));
+    try testing.expect(shown);
 
     // Cleared: the sidebar stays at any width.
     var txn: t.Txn = .null;

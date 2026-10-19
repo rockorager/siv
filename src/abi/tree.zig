@@ -743,6 +743,16 @@ pub export fn siv_node_is_hidden(node: t.Node, hidden: ?*bool) t.Result {
     }.f(node, hidden));
 }
 
+pub export fn siv_node_is_shown(node: t.Node, shown: ?*bool) t.Result {
+    return application.wrap(struct {
+        fn f(n: t.Node, out: ?*bool) Error!void {
+            const w, const id = try lookup(n);
+            const dest = try runtime.out(bool, out);
+            dest.* = w.uiWin().isShown(id);
+        }
+    }.f(node, shown));
+}
+
 pub export fn siv_set_text_input(txn: t.Txn, node: t.Node, desc: ?*const t.TextInputDesc) void {
     _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, d: ?*const t.TextInputDesc) Error!void {
