@@ -446,6 +446,8 @@ fn shadowed(self: *App, scope: *Window, a: *const Action) bool {
 fn onKey(ctx: ?*anyopaque, _: *ui.Window, keysym: u32, latin: u32, mods: ui.accel.Mods, modal: bool) bool {
     const w: *Window = @ptrCast(@alignCast(ctx));
     if (w.dead) return false;
+    // The inspector's keys, when enabled, before the application's (D46).
+    if (@import("inspect.zig").key(w, if (latin != 0) latin else keysym, mods)) return true;
     const self = w.owner;
     const scope = scopeOf(w);
     // Exact matches first, then those through the key's Latin equivalent

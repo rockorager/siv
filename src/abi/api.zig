@@ -318,6 +318,7 @@ const system = @import("api_system.zig");
 const navigation = @import("api_navigation.zig");
 const pickers = @import("api_pickers.zig");
 const intl = @import("api_intl.zig");
+const inspect = @import("api_inspect.zig");
 
 pub const decls = [_]Decl{
     result,
@@ -342,6 +343,7 @@ pub const decls = [_]Decl{
         .{ .name = "ltr", .bit = 3, .doc = "Lay out left to right whatever the language (D21). Without ltr or rtl, the direction is the language's." },
         .{ .name = "rtl", .bit = 4, .doc = "Lay out right to left whatever the language (D21)." },
         .{ .name = "no_system_icons", .bit = 5, .doc = "Do not search the system's icon themes (D19); only directories added with siv_app_add_icon_path. For tests that must not depend on the installed themes." },
+        .{ .name = "inspector", .bit = 6, .doc = "Ctrl+Shift+I opens the inspector (siv_inspector_open) on the window it is pressed in, and Ctrl+Shift+D opens it on the node under the pointer (D46), as the SIV_INSPECTOR environment variable does on a display. For development builds; off by default, so the keys reach the application." },
     }),
     descriptor("siv_app_desc", "Options for siv_app_create.", &.{
         .{ .name = "allocator", .type = .{ .desc = "siv_allocator" }, .doc = "Allocator hooks for everything the application allocates, on any thread; NULL for the C library allocator." },
@@ -2561,8 +2563,8 @@ pub const spec: schema.Schema = .{
     .source = "src/abi/api.zig",
     .doc = "siv: a GUI toolkit for Wayland.",
     .result = "siv_result",
-    .decls = &(decls ++ desktop.decls ++ dbus.decls ++ shell.decls ++ document.decls ++ actions.decls ++ undo.decls ++ settings.decls ++ spelling.decls ++ adaptive.decls ++ system.decls ++ navigation.decls ++ pickers.decls ++ intl.decls ++ testing.decls),
-    .functions = &(functions ++ desktop.functions ++ dbus.functions ++ shell.functions ++ document.functions ++ actions.functions ++ undo.functions ++ settings.functions ++ spelling.functions ++ adaptive.functions ++ system.functions ++ navigation.functions ++ pickers.functions ++ intl.functions ++ testing.functions),
+    .decls = &(decls ++ desktop.decls ++ dbus.decls ++ shell.decls ++ document.decls ++ actions.decls ++ undo.decls ++ settings.decls ++ spelling.decls ++ adaptive.decls ++ system.decls ++ navigation.decls ++ pickers.decls ++ intl.decls ++ inspect.decls ++ testing.decls),
+    .functions = &(functions ++ desktop.functions ++ dbus.functions ++ shell.functions ++ document.functions ++ actions.functions ++ undo.functions ++ settings.functions ++ spelling.functions ++ adaptive.functions ++ system.functions ++ navigation.functions ++ pickers.functions ++ intl.functions ++ inspect.functions ++ testing.functions),
 };
 
 /// Encodes a version as (major << 16) | (minor << 8) | patch.

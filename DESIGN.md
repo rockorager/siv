@@ -5002,10 +5002,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 
 ### D24. Developer tooling and tests
 
-- **Decision:** the inspector is a separate siv application that attaches over a
-  socket the target opens only when an environment variable enables it (tree,
-  properties, semantics, layout overlays, repaint flashing, frame timing). Tests
-  run the real loop on the headless backend, compare CPU golden images, and diff
+- **Decision:** the inspector (tree, properties, semantics, layout overlays,
+  repaint flashing, frame timing) runs in the application's process, a stock
+  widget on a public introspection API (D46; this was a separate application
+  attached over a socket until D46 reversed it). Tests run the real loop on the headless backend, compare CPU golden images, and diff
   CPU against Vulkan output. `zig build test` stays hermetic, and it is the
   only gate: run it, and wait for it to pass, before every push; CI runs
   it and nothing else. `zig build test-integration` runs the Wayland
@@ -5171,9 +5171,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     rectangles matching the child's rounded box in the same commit as its
     frame, again when the child moves, and no protocol error; on screen,
     what is behind the child shows blurred.
-  - Not built yet: the inspector. The counters it would show exist
-    (`ui.Window`'s, the compositor's presentation timing), and tests and
-    benchmarks read them.
+  - The inspector (D46) shows the counters that tests and benchmarks
+    read (`ui.Window`'s, the compositor's presentation timing) through
+    `siv_window_get_stats` and `siv_window_get_frame_time`.
   - The user guide (`docs/guide`) is tested like code: every code block
     in it is quoted from a sample in `docs/guide/examples`, and `zig
     build guide` (part of `test`) builds each sample as a program and
@@ -8824,6 +8824,141 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   primitive); applications keep needing to restore state the key paths
   cannot reach; or another binding wants the same layer (then its core
   belongs in a shared form, not a second copy).
+
+### D46. The inspector
+
+- **Requirement:** a developer looks inside a running siv window the way
+  the GTK Inspector, Qt's GammaRay, and Xcode's view debugger allow:
+  browse its node tree; select a node, also by pointing at it in the
+  window; see its layout box, its layout and style properties, its role
+  and accessible name, and the theme colors it resolves (D43's subtree
+  themes included); watch the frame and presentation counters D24's
+  tests read; edit properties live; outline every node's bounds and
+  flash what each frame repaints. C and Lua programs reach the same
+  information (principle 4). An application without an inspector open
+  pays nothing measurable (principle 2), the keys that open it are not
+  taken from applications that did not ask, and it is tested headless
+  with golden images like everything else (D24).
+- **Decision:** a public introspection API in libsiv, and the inspector
+  a stock widget on it (D22) that siv shows in a window of its own.
+  - **The API** (`src/abi/api_inspect.zig`, implemented in
+    `src/abi/inspect.zig` over `src/ui/inspect.zig`):
+    `siv_node_get_info` (a value struct: the node's kind, its role as
+    assistive technology sees it, hidden, shown, focusable, focused,
+    disabled, layer, theme, widget, accessible and rtl flags, the
+    variant its colors resolve in, its border and content boxes in
+    window coordinates, and how many children and properties it has);
+    `siv_node_get_property`, `siv_node_get_property_name`,
+    `siv_node_get_property_value`, and `siv_set_property` (a
+    transaction operation); `siv_node_get_name` (the accessible name
+    D18 computes); `siv_window_get_node_at` (the deepest shown node at a
+    point, whether or not it takes pointer input or sits outside a
+    modal node); `siv_window_get_stats` (frames built, nodes laid out,
+    texts shaped and broken into lines, layer repaints, tree changes,
+    commits, frames presented, the latest presented commit's commit and
+    present times, nodes and layers) and `siv_window_get_frame_time`
+    (the last 128 predicted presentation times);
+    `siv_window_set_inspect_hook` (one per window: presented frames,
+    and what picking hovers and picks) and
+    `siv_window_set_inspect_overlay` (a highlighted node and the
+    bounds, repaints, and pick flags); `siv_inspector` and
+    `siv_inspector_inspect`, the stock widget; and
+    `siv_inspector_open`, siv's inspector window.
+  - **Properties are text.** A property has a group (layout, the
+    container's arrangement or content, visual, text, semantics,
+    subtree theme), a type for display (text, number, bool, choice,
+    length, color), and editable and set flags; its name and value are
+    copied out as strings in the form `siv_set_property` parses back:
+    `width` "120", "50%", or "auto"; `padding` "4 8", in CSS's edge
+    order; `background` "accent" (read back as "accent #3584e4ff");
+    `role` "button". The list follows the node: dozens, by its kind and its
+    parent's (flex items have grow and shrink, grid items a cell, stack
+    items an inset). The schema has getters write only value structs,
+    primitives, and handles (D2, `schema.zig`), a typed getter per property would be hundreds of functions
+    that every binding generates, and an inspector only shows and edits
+    them. `set` means the value differs from a new node's of the same
+    kind, so the application's and the widgets' choices stand out.
+    Unknown or read-only properties fail the transaction with
+    `SIV_ERROR_UNSUPPORTED`, malformed values with
+    `SIV_ERROR_INVALID_ARGUMENT`; both change nothing.
+  - **Overlays** are two layers of their own above every other (D8),
+    which exist only while shown: the overlay layer draws the
+    highlighted node's border box with its padding and content tinted,
+    and with bounds on, every shown node's border box, clipped where
+    clips and scrolls clip; it is drawn again every frame, since it
+    follows layout and scrolling, and a scroll on the compositor asks
+    for a frame while it shows. The flash layer covers the boxes of the
+    nodes the last repainting frame painted, from the damage paint
+    already computes, and fades them out over 600 ms as a compositor
+    animation, so the UI thread stays idle between frames. Neither
+    counts in `layer_builds`, so the counters show the application's
+    work. The fade ignores reduced motion: it is a tool the developer
+    turned on, and without it the boxes would stay until the next
+    repaint.
+  - **Picking** takes pointer motion and presses before the tree: the
+    node under the pointer is highlighted and reported as hovered, a
+    press picks it (its release goes nowhere either) and ends picking,
+    and Escape ends it with no node. Scrolling and other keys still
+    reach the window.
+  - **Opening.** `SIV_APP_INSPECTOR` (an application flag), or the
+    `SIV_INSPECTOR` environment variable on a display (any value but
+    empty or 0; `open` also opens the inspector on the first window),
+    turns on GTK's keys: Ctrl+Shift+I opens it on the window, Ctrl+Shift+D
+    on the node under the pointer. They are seen before the
+    application's shortcuts (D34) and are off by default, so no
+    application loses them unasked. The headless backend ignores the
+    variable, so tests do not depend on the environment.
+    `siv_inspector_open` opens it from code. An application has one
+    inspector window (960 × 640, titled Inspector) that the keys and
+    `siv_inspector_open` point at another window or node; it closes
+    with the window it inspects and refuses to inspect itself, and keys
+    in a popup open it on the popup's toplevel.
+  - **The widget** (`src/widgets/inspector.zig`) uses only the public
+    API: a toolbar (Pick, Bounds, Repaints toggle buttons and the
+    window's size, nodes, and layers), the node tree as a tree view
+    (items are node handles; a row names the kind, the role where the
+    kind does not imply it, the accessible name, and themed or hidden),
+    and tabs. Properties shows the box model (border box, padding on
+    each side, content size) and a row per property under its group,
+    an editable property as a text field that applies each edit as
+    typed (values that do not parse yet change nothing), its name in
+    bold when set. Theme shows the variant, the nearest subtree theme
+    around the node and its scheme, and each color token's swatch and
+    value, marked where the subtree's differs from the window's.
+    Frames shows the counters and a chart of the intervals between the
+    last 60 presented frames against a 60 Hz line. It refreshes when
+    the inspected window presents, reading the tree again when
+    `tree_changes` moved, and takes its hook and overlays off the window
+    when it goes or looks elsewhere.
+  - **Cost** without an inspector: a null check per presented frame, a
+    flag check per pointer event, key, and painted node, and a counter
+    increment per node created, moved, or removed.
+  - Tests (`test/widgets/inspector.zig`): node information, properties
+    read, set, and rejected, names, the node at a point, and the
+    counters; picking with no handler reached, Escape, the highlight and
+    bounds overlay against a golden (`inspector-overlay.png`), and the
+    repaint flashes from the window's state (settling waits for their
+    fade, D24, so no golden shows them); the keys, siv's inspector
+    window on the Properties and Theme tabs against goldens
+    (`inspector-properties.png`, `inspector-theme.png`, the dark
+    sidebar's colors), an edit typed into a property's field, and the
+    window closing with its target. The Frames tab's numbers depend on
+    timing and have no golden.
+- **Alternatives:** a separate inspector application attached over a
+  socket, which D24 had chosen (a wire protocol would be a second schema
+  beside D3's, picking and overlays need hooks in the process anyway,
+  and tests would need two processes); the inspector as private UI in
+  libsiv (stock widgets use public primitives, and C, Lua, and IDE
+  tooling could not build their own); typed getters per property (see
+  above); AT-SPI as the introspection channel (it carries semantics,
+  not layout or style, and D18 serves assistive technology); keys always
+  on, as GTK once had them (they collide with applications' shortcuts);
+  F12 (taken by many applications).
+- **Reverse if:** inspecting another process or device is needed (then
+  a socket transport over this API, the widget unchanged); tools need
+  typed values (then typed getters beside the text); or the overlay
+  layer's redraw in every frame shows in profiles with an inspector
+  open.
 
 ## Lessons from ourokit
 

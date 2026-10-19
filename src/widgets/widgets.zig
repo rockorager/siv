@@ -47,13 +47,14 @@ pub const time = @import("time.zig");
 pub const color_chooser = @import("color.zig");
 pub const font = @import("font.zig");
 pub const emoji = @import("emoji.zig");
+pub const inspector = @import("inspector.zig");
 
 const c = siv.c;
 const Node = siv.Node;
 const Txn = siv.Txn;
 
 /// The files that export schema functions, for src/abi/abi.zig.
-pub const implementations = .{ @This(), button, toggle, radio, field, range, menu, dialog, tabs, split, toast, views, combo, header_bar, navigation, sidebar, date, time, color_chooser, font, emoji };
+pub const implementations = .{ @This(), button, toggle, radio, field, range, menu, dialog, tabs, split, toast, views, combo, header_bar, navigation, sidebar, date, time, color_chooser, font, emoji, inspector };
 
 var key_byte: u8 = 0;
 
@@ -112,6 +113,8 @@ pub const Kind = enum(u8) {
     emoji_chooser,
     picker_button,
     chevron,
+    /// The inspector (D46).
+    inspector,
 };
 
 /// The first field of every widget's state.
@@ -212,7 +215,7 @@ pub fn textOf(node: Node, buf: []u8) []const u8 {
 
 /// The first `len` bytes of a string copied into `buf`, or what fits of
 /// it, cut before a code point that does not fit whole.
-fn fitUtf8(buf: []const u8, len: usize) []const u8 {
+pub fn fitUtf8(buf: []const u8, len: usize) []const u8 {
     if (len <= buf.len) return buf[0..len];
     var start = buf.len;
     while (start > 0 and buf[start - 1] & 0xc0 == 0x80) start -= 1;

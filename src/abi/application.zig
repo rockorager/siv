@@ -31,6 +31,7 @@ const shell = @import("shell.zig");
 const dbus_abi = @import("dbus.zig");
 const settings = @import("settings.zig");
 const actions = @import("actions.zig");
+const inspect = @import("inspect.zig");
 
 const Root = runtime.Root;
 
@@ -118,6 +119,8 @@ pub const App = struct {
     /// Tells the windows that fonts finished loading, once for a burst of
     /// loads.
     fonts_task: loop_mod.Loop.Task,
+    /// siv's inspector window and the keys that open it (D46).
+    inspector: inspect.Inspector,
 
     pub fn gpa(self: *App) std.mem.Allocator {
         return self.root.gpa;
@@ -213,6 +216,11 @@ pub const Window = struct {
     icon_generation: u32 = 0,
     /// Where the window keeps its size and states (D36).
     settings: ?settings.Binding = null,
+    /// An inspector's hook (D46), and when the latest presented commit was
+    /// made and presented.
+    inspect_hook: ?inspect.Hook = null,
+    commit_ns: u64 = 0,
+    present_ns: u64 = 0,
 
     pub const Popup = struct {
         anchor: ui.NodeId = .root,
@@ -251,6 +259,7 @@ pub const Window = struct {
         // Its actions first, so that nothing waits for the transaction
         // aborted next.
         actions.forgetWindow(w);
+        inspect.forgetWindow(w);
         tree.abortState(w);
         w.nodes.releaseAll(w);
         external.forgetWindow(w);
@@ -327,6 +336,10 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     self.system = .{};
     self.headless = backend == .headless;
     self.fonts_task = .{ .func = onFontsTask };
+    // SIV_INSPECTOR applies on a display only, so tests stay independent
+    // of the environment (D46).
+    self.inspector = .{ .keys = flags.inspector };
+    if (backend == .wayland) inspect.fromEnv(&self.inspector);
     const gpa = self.gpa();
     self.draw = .init(gpa);
     errdefer self.draw.deinit(gpa);
@@ -695,6 +708,7 @@ fn windowCreate(app: t.App, desc_ptr: ?*const t.WindowDesc, out: ?*t.Window) Err
     w.settings = binding;
     binding = null;
     dest.* = @fromBackingInt(w.handle);
+    inspect.windowCreated(w);
 }
 
 /// A window's callbacks, for `newWindow`.
@@ -791,6 +805,8 @@ fn onWindowEvent(ctx: ?*anyopaque, _: *app_mod.Window, ev: *const app_mod.Window
             return false;
         },
         .presented => |p| {
+            // An inspector hears of it after the application (D46).
+            defer if (!w.dead) inspect.presented(w, p.commit_ns, p.present_ns);
             const cb = w.on_event orelse return false;
             var e = windowEvent(.presented, w.win.state);
             e.frame = p.seq;
