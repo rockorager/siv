@@ -1588,8 +1588,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     words); badness 100 |r|³, demerits (10 + badness)² plus 50² for a
     hyphen and 3000 for consecutive hyphens; a paragraph's last line is
     free. A word no break makes fit gets a line of its own. Breaks are
-    chosen with tabs at their shaped advance and placed at their stops;
-    `break_words` applies to greedy breaking only. No fitness classes.
+    chosen with tabs at their shaped advance and placed at their stops.
+    With `break_words`, every grapheme boundary of a word too wide for a
+    line of its own is a candidate too, at a penalty of 100 (more than a
+    hyphen's), and a line ending at one must start in that word, so the
+    word starts a line as in greedy breaking; before, total fit ignored
+    `break_words` and the word overflowed. No fitness classes.
   - Not yet built: hyphenation in right-to-left text and Knuth–Plass's
     fitness classes and looseness.
   - Text nodes (`src/ui`) reuse a `Layout` built for another width when its

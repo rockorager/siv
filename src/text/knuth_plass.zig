@@ -21,6 +21,9 @@ pub const Candidate = struct {
     forced: bool = false,
     unsafe: bool = false,
     penalty: f64 = 0,
+    /// The earliest candidate a line ending here may start at: a break
+    /// inside a word too wide for a line ends a line started in that word.
+    first: u32 = 0,
 };
 
 /// The breaks minimizing the paragraph's demerits, by dynamic programming
@@ -46,7 +49,7 @@ pub fn breaks(scratch: std.mem.Allocator, c: []const Candidate, ctx: anytype, co
         best[k] = std.math.inf(f64);
         prev[k] = @intCast(k - 1);
         var a = k;
-        while (a > floor) {
+        while (a > @max(floor, c[k].first)) {
             a -= 1;
             const lim = limit(ctx, c[a].at);
             const natural = c[k].w_end - c[a].w_next + (c[k].hyphen orelse 0);

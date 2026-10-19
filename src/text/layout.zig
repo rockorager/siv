@@ -900,7 +900,9 @@ const Builder = struct {
     }
 
     /// Knuth and Plass's total-fit line breaking (`knuth_plass.zig`) over
-    /// every segment end and, when hyphenating, every hyphenation point.
+    /// every segment end, when hyphenating every hyphenation point, and
+    /// with `break_words` every grapheme boundary of a word too wide for
+    /// a line of its own.
     fn breakOptimal(self: *Builder) !void {
         const p = self.p;
         const segments = p.segments;
@@ -913,14 +915,34 @@ const Builder = struct {
         var points: std.ArrayList(u32) = .empty;
         for (segments, 0..) |seg, j| {
             const from: u32 = if (j == 0) 0 else segments[j - 1].end;
-            if (self.hyphenation != null) {
-                points.clearRetainingCapacity();
-                try self.hyphenPoints(from, paragraph_.hangingStart(p.text, from, seg.end), &points);
-                for (points.items) |at| {
-                    const hy = self.hyphenAt(at) orelse continue;
-                    const prefix: f64 = self.advanceOf(from, at);
-                    try cands.append(self.scratch, .{ .at = at, .w_end = w + prefix, .w_next = w + prefix, .s_end = s, .s_next = s, .hyphen = hy.advance, .unsafe = true, .penalty = 50 });
-                    try hyphens.append(self.scratch, hy);
+            const content_end = paragraph_.hangingStart(p.text, from, seg.end);
+            // The candidate the segment starts at.
+            const seg_first: u32 = @intCast(cands.items.len - 1);
+            points.clearRetainingCapacity();
+            if (self.hyphenation != null) try self.hyphenPoints(from, content_end, &points);
+            // In a word too wide for a line of its own, every grapheme
+            // boundary, as greedy breaking does: a line ending there
+            // starts in the word, and costs more than a hyphen.
+            const wide = self.break_words and !fits(self.frame(from).limit, seg.advance - seg.trailing);
+            var h: usize = 0;
+            var at = from;
+            var prefix: f64 = 0;
+            while (true) {
+                const grapheme = if (wide) @min(content_end, p.graphemes.after(at) orelse content_end) else content_end;
+                const next = if (h < points.items.len) @min(points.items[h], grapheme) else grapheme;
+                if (next >= content_end) break;
+                prefix += self.advanceOf(at, next);
+                at = next;
+                const hy: ?Hyphen = if (h < points.items.len and points.items[h] == at) blk: {
+                    h += 1;
+                    break :blk self.hyphenAt(at);
+                } else null;
+                if (hy) |x| {
+                    try cands.append(self.scratch, .{ .at = at, .w_end = w + prefix, .w_next = w + prefix, .s_end = s, .s_next = s, .hyphen = x.advance, .unsafe = true, .penalty = 50 });
+                    try hyphens.append(self.scratch, x);
+                } else if (wide) {
+                    try cands.append(self.scratch, .{ .at = at, .w_end = w + prefix, .w_next = w + prefix, .s_end = s, .s_next = s, .unsafe = true, .penalty = 100, .first = seg_first });
+                    try hyphens.append(self.scratch, null);
                 }
             }
             const hanging: f64 = seg.trailing;
@@ -1629,29 +1651,37 @@ test "words too wide for a line break between graphemes when asked" {
     var p = try fixture.shape(text, .auto_ltr);
     defer p.deinit();
     const width = 4 * p.glyphs[3].advance + 1;
-    var overflow = try layoutOf(&fixture, &p, .{ .width = width });
-    defer overflow.deinit();
-    try std.testing.expect(overflow.width > width);
-    var broken = try layoutOf(&fixture, &p, .{ .width = width, .break_words = true });
-    defer broken.deinit();
-    var covered: u32 = 0;
-    for (broken.lines) |line| {
-        try std.testing.expectEqual(covered, line.start);
-        try std.testing.expect(line.width <= width + 0.001);
-        covered = line.end;
+    // Greedy and total-fit breaking alike; total fit finds no better
+    // breaks than greedy's full lines.
+    var ends: [2][16]u32 = undefined;
+    for ([_]bool{ false, true }, &ends) |optimal, *line_ends| {
+        var overflow = try layoutOf(&fixture, &p, .{ .width = width, .optimal = optimal });
+        defer overflow.deinit();
+        try std.testing.expect(overflow.width > width);
+        var broken = try layoutOf(&fixture, &p, .{ .width = width, .break_words = true, .optimal = optimal });
+        defer broken.deinit();
+        var covered: u32 = 0;
+        for (broken.lines, 0..) |line, i| {
+            try std.testing.expectEqual(covered, line.start);
+            try std.testing.expect(line.width <= width + 0.001);
+            covered = line.end;
+            line_ends[i] = line.end;
+        }
+        try std.testing.expectEqual(text.len, covered);
+        // "go " stays whole; the long word starts a line and breaks inside.
+        try std.testing.expectEqual(3, broken.lines[0].end);
+        try std.testing.expect(broken.lines.len >= 5);
+        line_ends[broken.lines.len] = 0;
+        // Every glyph appears once.
+        var total: usize = 0;
+        for (broken.runs) |run| total += run.glyph_end - run.glyph_start;
+        try std.testing.expectEqual(p.glyphs.len, total);
+        // A line narrower than one grapheme still takes one.
+        var tiny = try layoutOf(&fixture, &p, .{ .width = 1, .break_words = true, .optimal = optimal });
+        defer tiny.deinit();
+        try std.testing.expect(tiny.lines.len > text.len / 2);
     }
-    try std.testing.expectEqual(text.len, covered);
-    // "go " stays whole; the long word starts a line and breaks inside.
-    try std.testing.expectEqual(3, broken.lines[0].end);
-    try std.testing.expect(broken.lines.len >= 5);
-    // Every glyph appears once.
-    var total: usize = 0;
-    for (broken.runs) |run| total += run.glyph_end - run.glyph_start;
-    try std.testing.expectEqual(p.glyphs.len, total);
-    // A line narrower than one grapheme still takes one.
-    var tiny = try layoutOf(&fixture, &p, .{ .width = 1, .break_words = true });
-    defer tiny.deinit();
-    try std.testing.expect(tiny.lines.len > text.len / 2);
+    try std.testing.expectEqualSlices(u32, std.mem.sliceTo(&ends[0], 0), std.mem.sliceTo(&ends[1], 0));
 }
 
 test "paragraph styles: indents, alignment, line and paragraph spacing" {
