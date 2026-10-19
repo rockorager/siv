@@ -38,6 +38,7 @@ test {
     _ = @import("widgets/widgets.zig");
     _ = @import("widgets/themes.zig");
     _ = @import("widgets/subtree_themes.zig");
+    _ = @import("widgets/inspector.zig");
     _ = @import("abi/cursor.zig");
     _ = @import("abi/portal.zig");
     _ = @import("abi/actions.zig");
