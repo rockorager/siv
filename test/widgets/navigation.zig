@@ -404,6 +404,126 @@ test "navigation: keys in the sidebar move the current item" {
     try testing.expectEqual(@as(f32, 600), r.width);
 }
 
+fn showOverlay(h: *Harness, sidebar: t.Node, show: bool) !void {
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_sidebar_show_overlay(txn, sidebar, show);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+}
+
+/// The mail window, with a sidebar that a narrow window hides (D39).
+fn narrowMail(h: *Harness, log: *Log, rtl: bool) !Mail {
+    try startMail(h, rtl);
+    const m = try buildMail(h, log);
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    _ = c.siv_set_hidden_when(txn, m.sidebar, &.{ .max_width = 500, .flags = .{ .window = true } }, true);
+    try ok(c.siv_txn_commit(txn));
+    try ok(c.siv_test_resize(h.window, 400, 300));
+    try h.settle();
+    var shown = true;
+    try ok(c.siv_node_is_shown(m.sidebar, &shown));
+    try testing.expect(!shown);
+    return m;
+}
+
+test "navigation: a sidebar a variant hides shows over the content on demand" {
+    var h: Harness = .{ .golden = "test/golden/widgets" };
+    defer h.stop();
+    var log: Log = .{};
+    const m = try narrowMail(&h, &log, false);
+    try ok(c.siv_node_focus(m.open));
+
+    // Over the content, modal, focused on the current item; the stack
+    // keeps the whole width.
+    try showOverlay(&h, m.sidebar, true);
+    const nav = (try find(&h, .navigation, "Mailboxes")).?;
+    try testing.expect(nav.flags.modal);
+    try testing.expectEqual(m.items[0], focused(&h));
+    var r: t.Rect = undefined;
+    try ok(c.siv_node_get_rect(m.stack, &r));
+    try testing.expectEqual(@as(f32, 0), r.x);
+    try testing.expectEqual(@as(f32, 400), r.width);
+    try h.expectGolden("navigation-overlay", 400, 300);
+
+    // Arrows move focus without choosing, which would close it.
+    try key(&h, ks.down, .{});
+    try testing.expectEqual(m.items[1], focused(&h));
+    try testing.expectEqual(@as(f64, 0), try value(m.sidebar));
+    // Escape closes it, and focus goes back.
+    try key(&h, ks.escape, .{});
+    try testing.expect((try find(&h, .navigation, "Mailboxes")) == null);
+    try testing.expectEqual(m.open, focused(&h));
+
+    // So does a press on the scrim.
+    try showOverlay(&h, m.sidebar, true);
+    try h.click(380, 150);
+    try h.settle();
+    try testing.expect((try find(&h, .navigation, "Mailboxes")) == null);
+
+    // Choosing an item reports it and closes the overlay.
+    try showOverlay(&h, m.sidebar, true);
+    const work = try center(m.items[2]);
+    try h.click(work[0], work[1]);
+    try h.settle();
+    try testing.expectEqual(@as(f64, 2), try value(m.sidebar));
+    try testing.expectEqual(@as(u32, 1), log.changes);
+    try testing.expect((try find(&h, .navigation, "Mailboxes")) == null);
+    try testing.expectEqual(m.open, focused(&h));
+
+    // A handler that returns handled keeps it open.
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    _ = c.siv_on(txn, m.sidebar, .close, Log.onClose, null, &log);
+    try ok(c.siv_txn_commit(txn));
+    log.keep = true;
+    try showOverlay(&h, m.sidebar, true);
+    try key(&h, ks.escape, .{});
+    try testing.expectEqual(@as(u32, 1), log.closes);
+    try testing.expect((try find(&h, .navigation, "Mailboxes")) != null);
+    // The application closes it.
+    try showOverlay(&h, m.sidebar, false);
+    try testing.expect((try find(&h, .navigation, "Mailboxes")) == null);
+
+    // A window that grows wide enough for the sidebar while the overlay
+    // shows keeps the overlay until it closes; the items come back then.
+    log.keep = false;
+    try showOverlay(&h, m.sidebar, true);
+    try ok(c.siv_test_resize(h.window, 600, 300));
+    try h.settle();
+    // The sidebar, empty, and the overlay.
+    var buf: [8192]u8 = undefined;
+    var len: usize = 0;
+    try ok(c.siv_test_dump(h.window, &buf, buf.len, &len));
+    try testing.expectEqual(@as(usize, 2), std.mem.count(u8, buf[0..len], "\"Mailboxes\""));
+    try key(&h, ks.escape, .{});
+    try ok(c.siv_test_dump(h.window, &buf, buf.len, &len));
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, buf[0..len], "\"Mailboxes\""));
+    try ok(c.siv_node_get_rect(c.siv_widget_get_part(m.sidebar, .start, 0), &r));
+    try testing.expectEqual(@as(f32, 0), r.x);
+    try testing.expectEqual(@as(f32, 219), r.width);
+
+    // Where the sidebar shows, there is nothing to show over the content.
+    try showOverlay(&h, m.sidebar, true);
+    try ok(c.siv_node_get_rect(m.stack, &r));
+    try testing.expectEqual(@as(f32, 220), r.x);
+    try ok(c.siv_test_dump(h.window, &buf, buf.len, &len));
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, buf[0..len], "\"Mailboxes\""));
+}
+
+test "navigation: the overlay comes from the start edge in right to left" {
+    var h: Harness = .{};
+    defer h.stop();
+    var log: Log = .{};
+    const m = try narrowMail(&h, &log, true);
+    try showOverlay(&h, m.sidebar, true);
+    var r: t.Rect = undefined;
+    try ok(c.siv_node_get_rect(c.siv_widget_get_part(m.sidebar, .start, 0), &r));
+    try testing.expectApproxEqAbs(@as(f32, 400), r.x + r.width, 0.5);
+    try testing.expectApproxEqAbs(@as(f32, 220), r.width, 0.5);
+}
+
 test "navigation: right to left mirrors the sidebar, the bars, and going back" {
     var h: Harness = .{ .golden = "test/golden/widgets" };
     try startMail(&h, true);

@@ -16,6 +16,17 @@
 //! since D38's enter and exit would also run whenever an ancestor
 //! appears or disappears (a navigation page holding it); content beside
 //! it with `layout` motion slides into the space it leaves.
+//!
+//! While it is hidden (siv_set_hidden, an ancestor, or a variant, D39),
+//! siv_sidebar_show_overlay shows it over the window's content: its
+//! panel (everything but the separator) moves into a modal overlay at
+//! the end of the window's root, a scrim with the panel sliding in from
+//! the start edge, and moves back when the overlay closes. The
+//! application's variants stay on the sidebar's root, which stays
+//! hidden. Escape and a press on the scrim report `close` on the
+//! sidebar, whose default handler closes the overlay; choosing an item
+//! closes it too. In the overlay, arrows move focus without choosing,
+//! since choosing closes it.
 
 const std = @import("std");
 const w = @import("widgets.zig");
@@ -35,6 +46,14 @@ pub const Sidebar = extern struct {
     end: Node,
     /// The separator at the end edge.
     rule: Node = .null,
+    /// Everything else: the start and end boxes and the items, which
+    /// move into the overlay.
+    panel: Node = .null,
+    /// The overlay while it shows (siv_sidebar_show_overlay), and the
+    /// item focus is on in it, by index, or -1 for the current one.
+    overlay: Node = .null,
+    slot: Node = .null,
+    roving: i32 = -1,
     /// Where items added to the sidebar itself go.
     first: Node = .null,
 };
@@ -67,6 +86,7 @@ pub export fn siv_sidebar(txn: Txn, parent: Node, desc: ?*const siv.SidebarDesc)
     st.* = .{ .hdr = .{ .kind = .sidebar }, .root = root, .start = .null, .sections = .null, .end = .null };
     const panel = c.siv_flex(txn, root, &.{ .axis = .column, .align_items = .stretch });
     _ = c.siv_set_layout(txn, panel, &.{ .grow = 1, .basis = w.px(0) });
+    st.panel = panel;
     st.start = c.siv_flex(txn, panel, &.{ .axis = .column, .align_items = .stretch });
     const scroll = c.siv_scroll(txn, panel, .vertical);
     _ = c.siv_set_layout(txn, scroll, &.{ .grow = 1, .basis = w.px(0) });
@@ -78,11 +98,13 @@ pub export fn siv_sidebar(txn: Txn, parent: Node, desc: ?*const siv.SidebarDesc)
     _ = c.siv_set_visual(txn, st.rule, &.{ .background_token = .separator });
     setLabel(txn, st, label);
     w.setInterface(txn, root, Sidebar, st, .{ .set_label = setLabel, .set_value = setValue, .get_value = getValue, .get_part = part, .focus = focusItem, .apply = apply });
+    w.onDefault(txn, root, .close, onClose, st);
     return root;
 }
 
 fn setLabel(txn: Txn, st: *Sidebar, label: []const u8) void {
     _ = c.siv_set_semantics(txn, st.root, &.{ .role = .navigation, .label = label.ptr, .label_len = label.len });
+    if (st.overlay != .null) overlaySemantics(txn, st.overlay, label);
 }
 
 pub export fn siv_sidebar_section(txn: Txn, sidebar: Node, desc: ?*const siv.SidebarSectionDesc) Node {
@@ -238,8 +260,10 @@ fn reachable(sb: *const Sidebar, it: *const Item) bool {
     return !hidden;
 }
 
-/// The item in the Tab order: the current one, else the first reachable.
+/// The item in the Tab order: in the overlay the one focus moved to,
+/// else the current one, else the first reachable.
 fn stop(sb: *const Sidebar) ?*Item {
+    if (sb.roving >= 0) if (nth(sb, @intCast(sb.roving))) |it| if (reachable(sb, it)) return it;
     if (sb.current >= 0) if (nth(sb, @intCast(sb.current))) |it| if (reachable(sb, it)) return it;
     const Ctx = struct { sb: *const Sidebar, found: ?*Item = null };
     var ctx: Ctx = .{ .sb = sb };
@@ -317,9 +341,13 @@ fn choose(sb: *Sidebar, it: *Item, window: siv.Window, focus: bool) void {
     const txn = w.begin(window) orelse return;
     const changed = sb.current != @as(i32, @intCast(index));
     sb.current = @intCast(index);
+    // Choosing in the overlay closes it; focus goes back to where it
+    // was before the overlay.
+    const overlaid = sb.overlay != .null;
+    if (overlaid) closeOverlay(txn, sb);
     apply(txn, sb);
     if (!w.commit(txn)) return;
-    if (focus) _ = c.siv_node_focus(it.root);
+    if (focus and !overlaid) _ = c.siv_node_focus(it.root);
     if (changed) w.emitChange(sb.root, @floatFromInt(index), index);
 }
 
@@ -368,8 +396,129 @@ fn onKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventR
     while (i >= 0 and i < n) : (i = if (dir == .forward) i + 1 else i - 1) {
         const target = nth(sb, @intCast(i)) orelse break;
         if (!reachable(sb, target)) continue;
-        choose(sb, target, ev.window, true);
+        if (sb.overlay != .null) rove(sb, i, target, ev.window) else choose(sb, target, ev.window, true);
         break;
     }
+    return .handled;
+}
+
+/// In the overlay, moves focus to an item without choosing it: it is the
+/// Tab stop until the overlay closes.
+fn rove(sb: *Sidebar, index: i64, it: *Item, window: siv.Window) void {
+    const txn = w.begin(window) orelse return;
+    sb.roving = @intCast(index);
+    apply(txn, sb);
+    if (!w.commit(txn)) return;
+    _ = c.siv_node_focus(it.root);
+}
+
+// The overlay ---------------------------------------------------------------
+
+/// Overlays carry their sidebar's handle in node data, not its state,
+/// which goes with the sidebar if the application removes it first.
+const Overlay = extern struct { sidebar: Node };
+var overlay_key: u8 = 0;
+
+pub export fn siv_sidebar_show_overlay(txn: Txn, sidebar: Node, on: bool) void {
+    const sb = w.stateOf(Sidebar, sidebar, &.{.sidebar}) orelse {
+        _ = w.fail(txn, .error_invalid_argument);
+        return;
+    };
+    if (!on) {
+        if (sb.overlay != .null) closeOverlay(txn, sb);
+        apply(txn, sb);
+        return;
+    }
+    if (sb.overlay != .null) return;
+    // A sidebar that shows needs no overlay.
+    var shown = false;
+    if (c.siv_node_is_shown(sb.root, &shown) != .ok or shown) return;
+    const window = w.windowOf(sb.root);
+    const wroot = c.siv_window_get_root(window);
+    const host = c.siv_stack(txn, wroot, &.{ .align_x = .start, .align_y = .stretch });
+    if (host == .null) return;
+    var p: ?*anyopaque = null;
+    if (c.siv_set_data(txn, host, &overlay_key, @sizeOf(Overlay), &p) != .ok) return;
+    const ov: *Overlay = @ptrCast(@alignCast(p.?));
+    ov.* = .{ .sidebar = sb.root };
+    _ = c.siv_set_visual(txn, host, &.{ .background_token = .scrim });
+    _ = c.siv_set_motion(txn, host, &.{ .flags = .{ .enter = true, .exit = true }, .duration_ms = tk.spring_ms });
+    var buf: [1024]u8 = undefined;
+    overlaySemantics(txn, host, w.labelOf(sb.root, &buf));
+    // The panel slides in from the start edge over a scrim that fades,
+    // as wide as the sidebar's default and leaving some scrim to press.
+    var r: siv.Rect = .{};
+    _ = c.siv_node_get_rect(wroot, &r);
+    const width = if (r.width > 0) @min(tk.sidebar_width, r.width * 0.85) else tk.sidebar_width;
+    const slot = c.siv_flex(txn, host, &.{ .axis = .row, .align_items = .stretch });
+    _ = c.siv_set_layout(txn, slot, &.{ .width = w.px(width) });
+    const shadow: siv.Shadow = .{ .blur = 16, .color_token = .shadow };
+    _ = c.siv_set_visual(txn, slot, &.{ .background_token = .sidebar_bg, .shadows = @ptrCast(&shadow), .shadows_count = 1 });
+    _ = c.siv_set_motion(txn, slot, &.{
+        .flags = .{ .enter = true, .relative = true, .mirror_rtl = true },
+        .duration_ms = tk.spring_ms,
+        .enter_opacity = 1,
+        .enter_x = -1,
+    });
+    _ = c.siv_move(txn, sb.panel, slot, .null);
+    w.onDefault(txn, host, .key, onOverlayKey, ov);
+    w.onDefault(txn, host, .pointer, onOverlayPointer, ov);
+    sb.overlay = host;
+    sb.slot = slot;
+    sb.roving = -1;
+    // A modal node that appears takes the focus, on its first focusable
+    // node: the Tab stop.
+    apply(txn, sb);
+}
+
+fn overlaySemantics(txn: Txn, host: Node, label: []const u8) void {
+    _ = c.siv_set_semantics(txn, host, &.{ .role = .navigation, .label = label.ptr, .label_len = label.len, .flags = .{ .modal = true } });
+}
+
+/// Moves the panel back and removes the overlay; the modal node going
+/// returns focus to what had it before.
+fn closeOverlay(txn: Txn, sb: *Sidebar) void {
+    _ = c.siv_move(txn, sb.panel, sb.root, sb.rule);
+    _ = c.siv_remove(txn, sb.overlay);
+    sb.overlay = .null;
+    sb.slot = .null;
+    sb.roving = -1;
+}
+
+fn onClose(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
+    const sb: *Sidebar = @ptrCast(@alignCast(ud.?));
+    if (sb.overlay == .null) return .pass;
+    const txn = w.begin(ev.window) orelse return .pass;
+    closeOverlay(txn, sb);
+    apply(txn, sb);
+    _ = w.commit(txn);
+    return .handled;
+}
+
+/// Asks the sidebar to close its overlay; an overlay whose sidebar is
+/// gone removes itself.
+fn askClose(ov: *const Overlay, host: Node, window: siv.Window) void {
+    if (w.stateOf(Sidebar, ov.sidebar, &.{.sidebar}) == null) {
+        const txn = w.begin(window) orelse return;
+        _ = c.siv_remove(txn, host);
+        _ = w.commit(txn);
+        return;
+    }
+    var handled = false;
+    _ = c.siv_node_emit(ov.sidebar, &.{ .type = .close }, &handled);
+}
+
+fn onOverlayKey(ud: ?*anyopaque, node: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
+    const ov: *Overlay = @ptrCast(@alignCast(ud.?));
+    if (!ev.flags.pressed or ev.keysym != w.keysym.escape) return .pass;
+    askClose(ov, node, ev.window);
+    return .handled;
+}
+
+/// A press on the scrim, outside the panel, asks to close.
+fn onOverlayPointer(ud: ?*anyopaque, node: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
+    const ov: *Overlay = @ptrCast(@alignCast(ud.?));
+    if (ev.phase != .down or ev.target != node) return .pass;
+    askClose(ov, node, ev.window);
     return .handled;
 }

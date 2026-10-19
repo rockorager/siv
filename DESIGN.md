@@ -4308,7 +4308,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     (`siv_window_get_controls`), the window menu
     (`siv_window_show_menu`), a close request like the compositor's
     (`siv_window_request_close`), and settings events'
-    `window_changed`. For the pickers (D41): a value's
+    `window_changed`, and for the sidebar's overlay whether a node
+    shows, variants included (`siv_node_is_shown`, D39). For the
+    pickers (D41): a value's
     text (`value_text`, aria-valuetext), dates and times in the
     application's locale (`siv_app_format_date`, `siv_app_format_time`,
     `siv_app_get_locale_info`), the installed font families
@@ -7909,9 +7911,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       sidebar while the window is narrower than N and shows it again
       from N up, with no handler (without the window flag the condition
       tests the space the sidebar's parent offers, for a sidebar inside
-      a pane). The explicit call stays for what conditions cannot say: a
-      sidebar toggle in the content's header bar, itself hidden while
-      the window is wider than N by the opposite condition. Collapsing
+      a pane). The explicit call stays for what conditions cannot say,
+      such as a sidebar toggle in a window wide enough for the sidebar;
+      it cannot bring back a sidebar a condition hides, since D39's
+      setters change the node's own value and show it with the
+      variants' mask, so a narrow window shows it as an overlay instead
+      (below). Collapsing
       into a navigation stack instead, the sidebar as its first page and
       the content pushed when an item is chosen, as
       AdwNavigationSplitView does, moves nodes (`siv_move`) and is the
@@ -7928,6 +7933,54 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       that took 1 pixel with a wider pointer area over the panes would
       need hit testing outside a node's box or an overlay in the split
       pane.
+    - **Overlay** (`siv_sidebar_show_overlay(txn, sidebar, show)`): a
+      sidebar that is hidden, by a variant above, `siv_set_hidden`, or
+      an ancestor, shows on demand over the window's content, as
+      libadwaita's AdwOverlaySplitView with `show-sidebar` and the
+      sidebar of SwiftUI's NavigationSplitView in a compact width do.
+      The application calls it from a button in the content's header
+      bar, which the opposite condition hides while the sidebar shows
+      (`min_width = N`). The sidebar's panel, everything but its
+      separator, so its header bar and items with their state, moves
+      (`siv_move`) into an overlay the sidebar appends to the window's
+      root: a modal `navigation` node named by the sidebar's label, on
+      the scrim, holding the panel at the start edge, 220 pixels wide
+      and at most 85% of the window, with a shadow, sliding in from the
+      start edge while the scrim fades (D38; mirrored in RTL, jumps
+      under reduced motion). Being modal, it takes the focus on its Tab
+      stop, the current item, and keeps the pointer and Tab inside.
+      Escape and a press on the scrim report `close` on the sidebar,
+      as dialogs and popovers do, whose default handler closes the
+      overlay (a handler that returns handled keeps it); choosing an
+      item reports `change` and closes it; `show` false closes it from
+      the application. In the overlay Up, Down, Home, and End move
+      focus without choosing (manual activation), since choosing
+      closes it. Closing moves the panel back into the sidebar, which
+      is still hidden, and removes the overlay, so focus returns to
+      what had it before, the button.
+      - D39 is unchanged: the application's variants stay on the
+        sidebar's root, which stays hidden while its panel shows
+        elsewhere, so no rule decides between a variant and an explicit
+        call. Showing on a sidebar that shows does nothing, which the
+        sidebar tells by `siv_node_is_shown` (D39), a primitive added
+        for it.
+      - A window that grows past N while the overlay shows shows the
+        sidebar's root again, empty beside its overlay, until the
+        overlay closes: nothing tells a widget that a variant switched,
+        and closing it then would need such an event. A subtree theme
+        set on the sidebar's root (D43) does not reach the panel in the
+        overlay, which is outside it. An overlay whose sidebar the
+        application removed removes itself on its next Escape or press.
+      - Alternatives: a split-view widget holding sidebar and content
+        (AdwOverlaySplitView), which would own the condition and could
+        lay out both arrangements in one container with no node moves;
+        it changes how applications build every sidebar, while this
+        keeps D39's condition on the sidebar as the guide and
+        applications already set it. A popup (D17) for the overlay: its
+        own window, so the panel's nodes could not move into it, and
+        popups grab only from input. Changing D39 so that an explicit
+        `siv_set_hidden(false)` wins until the next switch: the sidebar
+        would show in its row, squeezing the content, not over it.
   - **Header bar** (`siv_header_bar`). A flex row: a start box and an
     end box that share what the title leaves equally (so the title is
     centered while both fit), the title between them in bold, cut with
@@ -8026,9 +8079,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       focuses the shown page's choice.
 - **Alternatives:** one split-view widget holding sidebar and content
   (AdwOverlaySplitView), which would own collapsing (D39's conditions
-  already collapse a sidebar without one, and an overlay needs the
-  content in a stack the widget controls; add it if applications
-  repeat the overlay). A stack with one bar of its own instead
+  already collapse a sidebar without one, and the sidebar's overlay
+  moves its panel over the content instead of needing the content in
+  a stack the widget controls). A stack with one bar of its own instead
   of a header bar per page (pages could not carry their own controls,
   and the bar would not slide with its page). Pages that stay in the
   tree when popped (an application's model already holds them; removing
