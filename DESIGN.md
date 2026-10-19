@@ -7947,6 +7947,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     GTK's and Qt's bars are Tab-navigated. Its relation to decorations
     is D17's: the window controls when the window decorates itself, and
     the title bar's move, maximize, and window menu.
+    - `siv_header_bar_desc.label` names a bar apart from its title, for
+      one that shows breadcrumbs or a search field instead of a title:
+      a toolbar beside others needs a name (the sidebar's header bar is
+      one), and the semantics an application set on the bar's root were
+      replaced whenever its title changed. Titles set later leave the
+      name alone.
     - Inside a navigation page other than a stack's first, a back button
       comes first in its start box: a drawn chevron pointing to the start
       edge (mirrored in RTL), named Back, exposing Alt+Left (Alt+Right in

@@ -52,6 +52,8 @@ pub const HeaderBar = extern struct {
     page: Node = .null,
     page_title: bool = false,
     no_controls: bool = false,
+    /// It has an accessible name of its own, which titles do not change.
+    named: bool = false,
 };
 
 const Glyph = enum(u8) { back, minimize, maximize, restore, close };
@@ -60,10 +62,11 @@ pub export fn siv_header_bar(txn: Txn, parent: Node, desc: ?*const siv.HeaderBar
     const d = w.readDesc(siv.HeaderBarDesc, desc) orelse return w.fail(txn, .error_invalid_argument);
     if (@as(u32, @bitCast(d.flags)) & ~@as(u32, 3) != 0) return w.fail(txn, .error_unsupported);
     var title = w.str(d.title, d.title_len) orelse return w.fail(txn, .error_invalid_argument);
+    const label = w.str(d.label, d.label_len) orelse return w.fail(txn, .error_invalid_argument);
     const root = c.siv_flex(txn, parent, &.{ .axis = .column, .align_items = .stretch });
     if (root == .null) return .null;
     const st = w.create(HeaderBar, txn, root) orelse return .null;
-    st.* = .{ .hdr = .{ .kind = .header_bar }, .root = root, .bar = .null, .start = .null, .center = .null, .title = .null, .end_box = .null, .end = .null, .controls = .null, .no_controls = d.flags.no_window_controls };
+    st.* = .{ .hdr = .{ .kind = .header_bar }, .root = root, .bar = .null, .start = .null, .center = .null, .title = .null, .end_box = .null, .end = .null, .controls = .null, .no_controls = d.flags.no_window_controls, .named = label.len != 0 };
     // The sides share what the title leaves equally, so the title is
     // centered while both fit; or they size to their controls and the
     // content takes the rest.
@@ -99,8 +102,9 @@ pub export fn siv_header_bar(txn: Txn, parent: Node, desc: ?*const siv.HeaderBar
     }
     st.title = c.siv_text(txn, st.center, title.ptr, title.len);
     _ = c.siv_set_text_style(txn, st.title, &.{ .color_token = .window_fg, .size_role = .body, .weight = .bold, .flags = .{ .no_wrap = true, .ellipsize = true } });
-    // The bar carries the title as its name.
+    // The bar carries the title as its name, or its own.
     _ = c.siv_set_semantics(txn, st.title, &.{ .role = .none });
+    if (st.named) _ = c.siv_set_semantics(txn, root, &.{ .role = .toolbar, .label = label.ptr, .label_len = label.len });
     setTitle(txn, st, title);
 
     st.minimize = button.glyphButton(txn, st.controls, "Minimize", @intFromEnum(Glyph.minimize), drawGlyph);
@@ -127,7 +131,7 @@ fn part(st: *const HeaderBar, p: siv.WidgetPart, _: u32) Node {
 fn setTitle(txn: Txn, st: *HeaderBar, title: []const u8) void {
     _ = c.siv_set_text(txn, st.title, title.ptr, title.len);
     _ = c.siv_set_visual(txn, st.title, &.{ .flags = .{ .hidden = title.len == 0 } });
-    _ = c.siv_set_semantics(txn, st.root, &.{ .role = .toolbar, .label = title.ptr, .label_len = title.len });
+    if (!st.named) _ = c.siv_set_semantics(txn, st.root, &.{ .role = .toolbar, .label = title.ptr, .label_len = title.len });
 }
 
 /// The application's title replaces the page's for good.

@@ -419,7 +419,7 @@ test "navigation: right to left mirrors the sidebar, the bars, and going back" {
     try testing.expectEqual(@as(f64, 1), try value(m.stack));
 }
 
-test "navigation: a header bar's content can take the width its controls leave" {
+test "navigation: a header bar's content can take the width its controls leave, and a name" {
     var h: Harness = .{};
     try h.start(400, 120, null, null);
     defer h.stop();
@@ -429,8 +429,11 @@ test "navigation: a header bar's content can take the width its controls leave" 
     _ = c.siv_set_layout(txn, col, &.{ .width = .{ .unit = .fraction, .value = 1 } });
     // One with a centered title between equal sides, one with a path bar.
     var parts: [2][3]t.Node = undefined;
+    var bars: [2]t.Node = undefined;
     for ([_]bool{ false, true }, &parts) |expand, *p| {
-        const bar = c.siv_header_bar(txn, col, &.{ .flags = .{ .expand_content = expand } });
+        const label: []const u8 = if (expand) "Location" else "";
+        const bar = c.siv_header_bar(txn, col, &.{ .flags = .{ .expand_content = expand }, .label = label.ptr, .label_len = label.len });
+        bars[@intFromBool(expand)] = bar;
         p[0] = c.siv_widget_get_part(bar, .start, 0);
         p[1] = c.siv_widget_get_part(bar, .content, 0);
         p[2] = c.siv_widget_get_part(bar, .end, 0);
@@ -453,6 +456,17 @@ test "navigation: a header bar's content can take the width its controls leave" 
     try testing.expect(start.width < 100);
     try testing.expectApproxEqAbs(start.x + start.width + 6, content.x, 0.5);
     try testing.expectApproxEqAbs(content.x + content.width + 6, end.x, 0.5);
+    // The one showing a path instead of a title is named by its label,
+    // which a title set later does not replace.
+    try testing.expect((try find(&h, .toolbar, "Location")) != null);
+    try ok(c.siv_txn_begin(h.window, &txn));
+    _ = c.siv_widget_set_label(txn, bars[1], "Home", 4);
+    _ = c.siv_widget_set_label(txn, bars[0], "Notes", 5);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try testing.expect((try find(&h, .toolbar, "Location")) != null);
+    try testing.expect((try find(&h, .toolbar, "Notes")) != null);
+    try testing.expect((try find(&h, .toolbar, "Home")) == null);
     // Unknown flags are refused.
     try ok(c.siv_txn_begin(h.window, &txn));
     _ = c.siv_header_bar(txn, col, &.{ .flags = @bitCast(@as(u32, 4)) });
