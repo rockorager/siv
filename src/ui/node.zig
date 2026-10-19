@@ -629,7 +629,8 @@ pub const Text = struct {
     alignment: TextAlign = .start,
     /// Wrap at the available width.
     wrap: bool = true,
-    /// Break inside a word too wide for a line of its own.
+    /// Break inside a word too wide for a line of its own (wrapping
+    /// editors always do).
     break_words: bool = false,
     /// Paragraph defaults (D13); paragraph spans override them. Its
     /// alignment stays null: `alignment` is the node's.

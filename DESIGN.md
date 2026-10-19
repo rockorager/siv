@@ -1519,7 +1519,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     overflow-wrap: anywhere): a first segment that does not fit on a line
     of its own breaks at the last grapheme boundary that fits, taking at
     least one grapheme, and both edges are reshaped as at an unsafe
-    opportunity. Max-content widths are unchanged.
+    opportunity. Max-content widths are unchanged. Editors always break
+    so, as a textarea does (D15).
   - Truncation (`SIV_TEXT_ELLIPSIZE`, `siv_text_style_desc.max_lines`,
     CSS text-overflow and line-clamp) works in the text node, not the
     engine: when the layout has more lines than allowed, or a line wider
@@ -1731,6 +1732,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     the whole pixel, at any scale and on either renderer (both rasterize
     paths with the shared coverage rasterizer); a single rectangle stays
     a rectangle.
+  - A wrapping editor breaks a word too wide for its line between
+    graphemes at the edge (`break_words`, whatever its text style says),
+    as browsers' textareas do (overflow-wrap: break-word in their style
+    sheet). Before, a run with no break opportunity, such as a held key
+    repeating one letter, ran past the editor's padding and was clipped
+    with the caret in it; found in Vellum on Hyprland. An application
+    that wants long lines turns wrapping off and scrolls.
   - The editor node (`src/ui/editor.zig`) stores only its text, caret,
     anchor, and caret affinity; movement, hit testing, and selection
     rectangles come from the text's `TextLayout` (D13), which finds the

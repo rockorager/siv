@@ -776,7 +776,7 @@ pub const decls = [_]Decl{
         .{ .name = "no_wrap", .bit = 0, .doc = "Keep each paragraph on one line." },
         .{ .name = "hyphenate", .bit = 2, .doc = "Words break at hyphenation points of their language (D13): the built-in patterns or ones added with siv_app_add_hyphenation; lines broken inside a word end with a hyphen (CSS hyphens: auto)." },
         .{ .name = "optimal_breaks", .bit = 3, .doc = "Knuth and Plass's total-fit line breaking, for document views: lines chosen for the whole paragraph to even out their fill (and hyphenation), instead of filling each line in turn. Costs more per layout." },
-        .{ .name = "break_words", .bit = 1, .doc = "A word too wide for a line of its own breaks between characters (graphemes) instead of overflowing (CSS overflow-wrap: anywhere)." },
+        .{ .name = "break_words", .bit = 1, .doc = "A word too wide for a line of its own breaks between characters (graphemes) instead of overflowing (CSS overflow-wrap: anywhere). Wrapping editors always break so, as a textarea does." },
         .{ .name = "ellipsize", .bit = 4, .doc = "Text nodes: text cut short ends with an ellipsis (…) at a character boundary: the last line max_lines allows when more would follow, or, with no_wrap, a line wider than the node (CSS text-overflow: ellipsis). The node's text and accessible name stay whole." },
     }),
     enumeration("siv_text_direction", "The base direction of a text's paragraphs (D21), which orders its bidirectional runs.", &.{

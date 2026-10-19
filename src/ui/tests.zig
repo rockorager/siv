@@ -1315,6 +1315,62 @@ test "editor: typing, deleting, selecting, and change events" {
     try f.frame();
 }
 
+test "editor: a held key's run breaks at the edge, as the same text laid out whole" {
+    // Key repeat types one character faster than frames come: the run
+    // has no break opportunity, so it breaks between graphemes at the
+    // column's edge (a textarea's overflow-wrap) rather than running past
+    // it, and the lines and caret laid out edit by edit are those of the
+    // text laid out whole in a new window. At the end of a paragraph and
+    // in the middle of one, after words that fit, with greedy and
+    // total-fit breaking.
+    const start = "Some words, then more words that wrap.\n\nAnother paragraph follows here.";
+    const Editor = struct {
+        f: Fixture = undefined,
+        id: NodeId = undefined,
+
+        fn init(x: *@This(), content: []const u8, at: u32, optimal: bool) !void {
+            try x.f.init(.{ .width = 300, .height = 400 });
+            const t = try x.f.win.begin();
+            x.id = try box(t, .root, .editor, .{ .padding = .all(10), .align_y = .start });
+            try t.setEditor(x.id, .{ .multiline = true });
+            try t.setTextProps(x.id, .{ .optimal = optimal });
+            try t.setText(x.id, content);
+            try t.setSelection(x.id, at, at, .downstream);
+            t.commit();
+            try x.f.frame();
+        }
+    };
+    for ([_]bool{ false, true }) |optimal| for ([_]u32{ 38, 17 }) |at| {
+        var typing: Editor = .{};
+        try typing.init(start, at, optimal);
+        defer typing.f.deinit();
+        const k: Keys = .{ .f = &typing.f };
+        k.press(ui.keysym.tab, .{});
+        const e = &typing.f.win.node(typing.id).data.editor;
+        var typed: u32 = 0;
+        var step: u32 = 0;
+        while (typed < 90) : (step += 1) {
+            for (0..1 + step % 3) |_| k.typeText("a");
+            typed += 1 + step % 3;
+            try typing.f.frame();
+            try testing.expectEqual(at + typed, e.caret);
+            var whole: Editor = .{};
+            try whole.init(e.text.content.flat().?, e.caret, optimal);
+            defer whole.f.deinit();
+            const a = text_node.current(typing.f.win, typing.id).?;
+            const b = text_node.current(whole.f.win, whole.id).?;
+            const width = typing.f.win.state(typing.id).text.?.layout_width.?;
+            try testing.expectEqual(b.lineCount(), a.lineCount());
+            for (0..a.lineCount()) |i| {
+                const line = try a.line(@intCast(i));
+                try testing.expectEqual(try b.line(@intCast(i)), line);
+                try testing.expect(line.width <= width + 0.01);
+            }
+            try testing.expectEqual(try b.caret(.{ .offset = e.caret }), try a.caret(.{ .offset = e.caret }));
+        }
+    };
+}
+
 test "editor: visual movement through right-to-left text; multiline lines" {
     var f: Fixture = undefined;
     try f.init(.{ .width = 300, .height = 200 });
@@ -2596,7 +2652,7 @@ test "enter and exit transitions run as nodes appear and disappear; exiting laye
 /// The live node whose own layer has id `layer`, if any.
 fn findLayerOwnedBy(f: *Fixture, layer: compositor.LayerId) ?compositor.LayerId {
     for (f.win.states.items, 0..) |s, i| {
-        const nid: NodeId = @enumFromInt(i);
+        const nid: NodeId = @fromBackingInt(@intCast(i));
         if (f.win.isLive(nid) and s.own_layer + 1 == layer and f.win.paint.ownsLayerNow(f.win, nid)) return layer;
     }
     return null;
@@ -2700,12 +2756,12 @@ test "theme: tokens resolve at paint time and follow the desktop's scheme, contr
         }
     }.of;
     const theme = ui.theme;
-    try testing.expect(fill(&f.comp).?.eql(theme.compiled[0][@intFromEnum(ui.ColorToken.window_bg)]));
+    try testing.expect(fill(&f.comp).?.eql(theme.compiled[0][@backingInt(ui.ColorToken.window_bg)]));
     const h_body = f.rect(label)[3];
 
     f.win.setDesktop(.{ .color_scheme = .dark });
     try f.frame();
-    try testing.expect(fill(&f.comp).?.eql(theme.compiled[1][@intFromEnum(ui.ColorToken.window_bg)]));
+    try testing.expect(fill(&f.comp).?.eql(theme.compiled[1][@backingInt(ui.ColorToken.window_bg)]));
     f.win.setDesktop(.{ .color_scheme = .dark, .contrast = .high });
     try f.frame();
     try testing.expectEqual(theme.Variant.dark_high_contrast, f.win.palette.variant);
@@ -2713,7 +2769,7 @@ test "theme: tokens resolve at paint time and follow the desktop's scheme, contr
 
     // The application's choices win over the desktop's.
     var choice: ui.Theme = .{ .scheme = .light, .contrast = .normal };
-    choice.overrides[0][@intFromEnum(ui.ColorToken.window_bg)] = .srgb(1, 0, 0, 1);
+    choice.overrides[0][@backingInt(ui.ColorToken.window_bg)] = .srgb(1, 0, 0, 1);
     f.win.setTheme(&choice);
     try f.frame();
     try testing.expect(fill(&f.comp).?.eql(.srgb(1, 0, 0, 1)));

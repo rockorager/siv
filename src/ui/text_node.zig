@@ -532,7 +532,9 @@ pub fn layoutFor(win: *Window, id: NodeId, width: ?f32) error{OutOfMemory}!?*con
         .alignment = if (d.props.alignment == .justify) .justify else .start,
         .paragraphs = try paragraphRuns(win, id),
         .tab_stops = d.props.tab_stops,
-        .break_words = d.props.break_words,
+        // An editor's word too wide for the line breaks at its edge, as
+        // in a textarea, instead of running past it with the caret.
+        .break_words = d.props.break_words or n.kind == .editor,
         .hyphenate = d.props.hyphenate,
         .hyphenation = &win.fonts.hyphenation,
         .optimal = d.props.optimal,
