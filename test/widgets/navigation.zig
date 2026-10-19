@@ -380,13 +380,25 @@ test "navigation: keys in the sidebar move the current item" {
     try key(&h, ks.down, .{});
     try h.expectGolden("navigation-sidebar-focus", 600, 300);
 
-    // Hidden, the sidebar takes no space: the stack fills the window.
+    // Its separator is the divider part, which a sidebar in a split pane
+    // hides: the items take its pixel.
+    var r: t.Rect = undefined;
+    const start = c.siv_widget_get_part(m.sidebar, .start, 0);
+    try ok(c.siv_node_get_rect(start, &r));
+    try testing.expectEqual(@as(f32, 219), r.width);
     var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    _ = c.siv_set_hidden(txn, c.siv_widget_get_part(m.sidebar, .divider, 0), true);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try ok(c.siv_node_get_rect(start, &r));
+    try testing.expectEqual(@as(f32, 220), r.width);
+
+    // Hidden, the sidebar takes no space: the stack fills the window.
     try ok(c.siv_txn_begin(h.window, &txn));
     _ = c.siv_set_hidden(txn, m.sidebar, true);
     try ok(c.siv_txn_commit(txn));
     try h.settle();
-    var r: t.Rect = undefined;
     try ok(c.siv_node_get_rect(m.stack, &r));
     try testing.expectEqual(@as(f32, 0), r.x);
     try testing.expectEqual(@as(f32, 600), r.width);

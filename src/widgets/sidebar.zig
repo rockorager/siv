@@ -33,6 +33,8 @@ pub const Sidebar = extern struct {
     start: Node,
     sections: Node,
     end: Node,
+    /// The separator at the end edge.
+    rule: Node = .null,
     /// Where items added to the sidebar itself go.
     first: Node = .null,
 };
@@ -71,9 +73,9 @@ pub export fn siv_sidebar(txn: Txn, parent: Node, desc: ?*const siv.SidebarDesc)
     st.sections = c.siv_flex(txn, scroll, &.{ .axis = .column, .align_items = .stretch, .gap = 2 });
     _ = c.siv_set_layout(txn, st.sections, &.{ .padding = .{ .start = tk.sidebar_pad, .end = tk.sidebar_pad, .top = tk.sidebar_pad, .bottom = tk.sidebar_pad } });
     st.end = c.siv_flex(txn, panel, &.{ .axis = .column, .align_items = .stretch });
-    const rule = c.siv_box(txn, root);
-    _ = c.siv_set_layout(txn, rule, &.{ .width = w.px(tk.border) });
-    _ = c.siv_set_visual(txn, rule, &.{ .background_token = .separator });
+    st.rule = c.siv_box(txn, root);
+    _ = c.siv_set_layout(txn, st.rule, &.{ .width = w.px(tk.border) });
+    _ = c.siv_set_visual(txn, st.rule, &.{ .background_token = .separator });
     setLabel(txn, st, label);
     w.setInterface(txn, root, Sidebar, st, .{ .set_label = setLabel, .set_value = setValue, .get_value = getValue, .get_part = part, .focus = focusItem, .apply = apply });
     return root;
@@ -270,6 +272,7 @@ fn part(sb: *const Sidebar, p: siv.WidgetPart, index: u32) Node {
     return switch (p) {
         .start => sb.start,
         .end => sb.end,
+        .divider => sb.rule,
         .item => if (nth(sb, index)) |it| it.root else .null,
         else => .null,
     };

@@ -7913,8 +7913,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       the content pushed when an item is chosen, as
       AdwNavigationSplitView does, moves nodes (`siv_move`) and is the
       application's; it needs no sidebar code either. A sidebar in a
-      split pane hides under the same condition together with the
-      pane's divider (`SIV_WIDGET_PART_DIVIDER`).
+      split pane fills the start pane (`siv_set_layout` with fraction
+      sizes) and hides its own separator, the sidebar's divider part, in
+      favor of the pane's divider, which would draw a second line 3
+      pixels away (found by porting the file manager); the start pane
+      and its divider (`SIV_WIDGET_PART_DIVIDER`) hide under the
+      condition, since the pane has the divider's width and hiding only
+      the sidebar would leave it empty. The divider is 6 pixels of the
+      parent's color with its line in the middle, so a 2-pixel strip of
+      window color stays between the sidebar and the line; a divider
+      that took 1 pixel with a wider pointer area over the panes would
+      need hit testing outside a node's box or an overlay in the split
+      pane.
   - **Header bar** (`siv_header_bar`). A flex row: a start box and an
     end box that share what the title leaves equally (so the title is
     centered while both fit), the title between them in bold, cut with
