@@ -770,6 +770,14 @@ test "fonts: monospace follows Fontconfig's alias, live as fonts.conf changes" {
     var check: FontCheck = .{ .app = app, .win = win, .family = "monospace", .want = "SivTest-Regular.ttf" };
     try runUntil(app, &check, FontCheck.resolved);
     const before = try frameHash(app, win.id);
+    // The watches are armed by a job on the pool after the fonts loaded;
+    // a rewrite before they are would go unseen.
+    const Armed = struct {
+        fn f(a: *App) bool {
+            return !a.fontconfig.running;
+        }
+    };
+    try runUntil(app, app, Armed.f);
 
     // `omarchy font set "Droid Sans"` rewrites fonts.conf in place.
     try sh(conf, .{ dir, "Droid Sans", dir });
