@@ -1,5 +1,7 @@
 //! Header bars (D17, D22): a bar with a centered title between a start
-//! box and an end box that the application fills with controls. It has
+//! box and an end box that the application fills with controls, or,
+//! with `expand_content`, sides that size to their controls around
+//! content that takes the rest (a path bar in place of a title). It has
 //! no background of its own, so it takes the color of what it sits on (a
 //! page, a sidebar), and a separator under it.
 //!
@@ -56,22 +58,25 @@ const Glyph = enum(u8) { back, minimize, maximize, restore, close };
 
 pub export fn siv_header_bar(txn: Txn, parent: Node, desc: ?*const siv.HeaderBarDesc) Node {
     const d = w.readDesc(siv.HeaderBarDesc, desc) orelse return w.fail(txn, .error_invalid_argument);
-    if (@as(u32, @bitCast(d.flags)) & ~@as(u32, 1) != 0) return w.fail(txn, .error_unsupported);
+    if (@as(u32, @bitCast(d.flags)) & ~@as(u32, 3) != 0) return w.fail(txn, .error_unsupported);
     var title = w.str(d.title, d.title_len) orelse return w.fail(txn, .error_invalid_argument);
     const root = c.siv_flex(txn, parent, &.{ .axis = .column, .align_items = .stretch });
     if (root == .null) return .null;
     const st = w.create(HeaderBar, txn, root) orelse return .null;
     st.* = .{ .hdr = .{ .kind = .header_bar }, .root = root, .bar = .null, .start = .null, .center = .null, .title = .null, .end_box = .null, .end = .null, .controls = .null, .no_controls = d.flags.no_window_controls };
     // The sides share what the title leaves equally, so the title is
-    // centered while both fit.
+    // centered while both fit; or they size to their controls and the
+    // content takes the rest.
+    const expand = d.flags.expand_content;
+    const side: siv.LayoutDesc = if (expand) .{ .flags = .{ .no_shrink = true } } else .{ .grow = 1, .basis = w.px(0) };
     st.bar = c.siv_flex(txn, root, &.{ .axis = .row, .align_items = .center, .gap = tk.bar_pad });
     _ = c.siv_set_layout(txn, st.bar, &.{ .min_height = tk.bar_height - 1, .padding = .{ .start = tk.bar_pad, .end = tk.bar_pad, .top = tk.bar_pad, .bottom = tk.bar_pad } });
     st.start = c.siv_flex(txn, st.bar, &.{ .axis = .row, .align_items = .center, .gap = tk.bar_pad });
-    _ = c.siv_set_layout(txn, st.start, &.{ .grow = 1, .basis = w.px(0) });
+    _ = c.siv_set_layout(txn, st.start, &side);
     st.center = c.siv_flex(txn, st.bar, &.{ .axis = .row, .align_items = .center, .gap = tk.gap });
-    _ = c.siv_set_layout(txn, st.center, &.{ .shrink = 1 });
+    _ = c.siv_set_layout(txn, st.center, if (expand) &.{ .grow = 1, .basis = w.px(0) } else &.{ .shrink = 1 });
     st.end_box = c.siv_flex(txn, st.bar, &.{ .axis = .row, .justify = .end, .align_items = .center, .gap = tk.bar_pad });
-    _ = c.siv_set_layout(txn, st.end_box, &.{ .grow = 1, .basis = w.px(0) });
+    _ = c.siv_set_layout(txn, st.end_box, &side);
     st.end = c.siv_flex(txn, st.end_box, &.{ .axis = .row, .align_items = .center, .gap = tk.bar_pad });
     st.controls = c.siv_flex(txn, st.end_box, &.{ .axis = .row, .align_items = .center, .gap = 2 });
     const rule = c.siv_box(txn, root);

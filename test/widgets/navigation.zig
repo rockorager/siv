@@ -404,6 +404,46 @@ test "navigation: right to left mirrors the sidebar, the bars, and going back" {
     try testing.expectEqual(@as(f64, 1), try value(m.stack));
 }
 
+test "navigation: a header bar's content can take the width its controls leave" {
+    var h: Harness = .{};
+    try h.start(400, 120, null, null);
+    defer h.stop();
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const col = c.siv_flex(txn, c.siv_window_get_root(h.window), &.{ .axis = .column, .align_items = .stretch });
+    _ = c.siv_set_layout(txn, col, &.{ .width = .{ .unit = .fraction, .value = 1 } });
+    // One with a centered title between equal sides, one with a path bar.
+    var parts: [2][3]t.Node = undefined;
+    for ([_]bool{ false, true }, &parts) |expand, *p| {
+        const bar = c.siv_header_bar(txn, col, &.{ .flags = .{ .expand_content = expand } });
+        p[0] = c.siv_widget_get_part(bar, .start, 0);
+        p[1] = c.siv_widget_get_part(bar, .content, 0);
+        p[2] = c.siv_widget_get_part(bar, .end, 0);
+        for ([_]t.Node{ p[0], p[0], p[2] }) |box| _ = c.siv_push_button(txn, box, &.{ .label = "Go", .label_len = 2, .style = .flat, .icon = "folder", .icon_len = 6, .flags = .{ .icon_only = true } });
+        const path = c.siv_box(txn, p[1]);
+        _ = c.siv_set_layout(txn, path, &.{ .grow = 1, .height = .{ .unit = .px, .value = 20 } });
+    }
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    var r: [2][3]t.Rect = undefined;
+    for (parts, &r) |p, *rr| for (p, rr) |n, *x| try ok(c.siv_node_get_rect(n, x));
+    // Equal sides take half each and leave the content nothing; with
+    // expand_content the sides take their buttons' width and the content
+    // the rest, up to the gaps between them.
+    try testing.expectEqual(@as(f32, 0), r[0][1].width);
+    try testing.expect(r[0][0].width > 150);
+    const start = r[1][0];
+    const content = r[1][1];
+    const end = r[1][2];
+    try testing.expect(start.width < 100);
+    try testing.expectApproxEqAbs(start.x + start.width + 6, content.x, 0.5);
+    try testing.expectApproxEqAbs(content.x + content.width + 6, end.x, 0.5);
+    // Unknown flags are refused.
+    try ok(c.siv_txn_begin(h.window, &txn));
+    _ = c.siv_header_bar(txn, col, &.{ .flags = @bitCast(@as(u32, 4)) });
+    try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_commit(txn));
+}
+
 fn keepOpen(ud: ?*anyopaque, _: t.Window, ev: *const t.WindowEvent) callconv(.c) bool {
     const n: *u32 = @ptrCast(@alignCast(ud.?));
     if (ev.type == .close_requested) n.* += 1;

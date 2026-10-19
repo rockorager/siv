@@ -7916,15 +7916,23 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     centered while both fit), the title between them in bold, cut with
     an ellipsis, and a separator below; no background of its own, so it
     takes its parent's color (a page's `window_bg`, a sidebar's
-    `sidebar_bg`). Parts: start, end, and content (the title's box,
-    for a control beside or instead of it). It is a `toolbar` named by
-    its title, whose visible text is presentational; Tab moves through
-    its controls. WAI-ARIA's toolbar pattern (one Tab stop, arrow keys
-    between controls) was rejected: a header bar holds search fields and
-    menu buttons where arrows have their own meaning, and GTK's and Qt's
-    bars are Tab-navigated. Its relation to decorations is D17's: the
-    window controls when the window decorates itself, and the title bar's
-    move, maximize, and window menu.
+    `sidebar_bg`). Parts: start, end, and content (the title's box, for
+    a control beside or instead of it). With
+    `SIV_HEADER_BAR_EXPAND_CONTENT` the sides size to their controls and
+    the content takes the rest, for a path bar or a search field in
+    place of a title. With equal sides the content gets its max-content
+    width only: a path bar that grows into the space gets none, and
+    breadcrumbs wider than what the sides leave take the sides' width
+    from their controls (no min-content, D26); found by porting the file
+    manager, whose breadcrumbs would otherwise have shared the start
+    box, half the bar, with its history buttons. It is a `toolbar` named
+    by its title, whose visible text is presentational; Tab moves
+    through its controls. WAI-ARIA's toolbar pattern (one Tab stop,
+    arrow keys between controls) was rejected: a header bar holds search
+    fields and menu buttons where arrows have their own meaning, and
+    GTK's and Qt's bars are Tab-navigated. Its relation to decorations
+    is D17's: the window controls when the window decorates itself, and
+    the title bar's move, maximize, and window menu.
     - Inside a navigation page other than a stack's first, a back button
       comes first in its start box: a drawn chevron pointing to the start
       edge (mirrored in RTL), named Back, exposing Alt+Left (Alt+Right in

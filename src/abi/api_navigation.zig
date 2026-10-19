@@ -64,6 +64,7 @@ fn child(comptime name: []const u8, comptime doc: []const u8, comptime owner: []
 pub const decls = [_]Decl{
     flags("siv_header_bar_flags", "Header bar options.", &.{
         .{ .name = "no_window_controls", .bit = 0, .doc = "Never show the window controls, for a header bar that is not at the window's top end edge (a sidebar's)." },
+        .{ .name = "expand_content", .bit = 1, .doc = "The content part takes the width the start and end boxes leave, which size to their controls, instead of a title centered between sides that share the rest equally: for a path bar or a search field in place of the title." },
     }),
     descriptor("siv_header_bar_desc", "A header bar: a title between start and end boxes for controls (siv_header_bar).", &.{
         f("title", .string, "The title, copied, centered and the header bar's accessible name; empty in a navigation page shows the page's title."),
