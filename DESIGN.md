@@ -7883,7 +7883,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       move between enabled, shown items across sections, Home and End to
       the ends, and moving chooses, as tabs do (automatic activation,
       which a file manager's or a settings window's sidebar expects;
-      the content follows the keys). Clicks, Enter, and Space choose.
+      the content follows the keys). Clicks, Enter, and Space choose; a
+      click also focuses the item, which a press cannot while the item
+      is not the Tab stop (D16 focuses the nearest focusable ancestor),
+      so arrows go on from where the user clicked; found by porting the
+      file manager, where they went to the file view instead.
     - The current item takes `selection_bg` and `selection_fg`, as a
       selected row of a view does; hover is `control_hover`. Up and Down
       are not swapped in RTL, and the row is logical, so the icon and

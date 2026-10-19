@@ -9,8 +9,8 @@
 //! pattern marks the page shown. Focus roves: only the current item (or
 //! the first enabled one) is in the Tab order, Up, Down, Home, and End
 //! move between enabled, shown items across sections, and moving chooses
-//! (automatic activation, as tabs do). Choosing reports `change` with the
-//! item's index among all items.
+//! (automatic activation, as tabs do). A click chooses and focuses the
+//! item. Choosing reports `change` with the item's index among all items.
 //!
 //! Collapsing is siv_set_hidden: the sidebar sets no motion of its own,
 //! since D38's enter and exit would also run whenever an ancestor
@@ -336,7 +336,9 @@ fn onActivate(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.E
     const it: *Item = @ptrCast(@alignCast(ud.?));
     const sb = w.stateOf(Sidebar, it.sidebar, &.{.sidebar}) orelse return .pass;
     if (!reachable(sb, it)) return .pass;
-    choose(sb, it, ev.window, false);
+    // A clicked item takes the focus too, which a press could not give
+    // it while it was not the Tab stop, so keys go on from there.
+    choose(sb, it, ev.window, true);
     return .handled;
 }
 

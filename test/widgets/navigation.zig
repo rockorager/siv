@@ -359,11 +359,14 @@ test "navigation: keys in the sidebar move the current item" {
     try testing.expectEqual(@as(u32, 4), log.index);
     try testing.expectEqual(m.items[2], c.siv_widget_get_part(m.sidebar, .item, 2));
 
-    // A click chooses; one on the disabled item does nothing.
+    // A click chooses and focuses, so keys go on from the item clicked;
+    // one on the disabled item does nothing.
+    try ok(c.siv_node_focus(m.open));
     const drafts = try center(m.items[1]);
     try h.click(drafts[0], drafts[1]);
     try h.settle();
     try testing.expectEqual(@as(f64, 1), try value(m.sidebar));
+    try testing.expectEqual(m.items[1], focused(&h));
     const family = try center(m.items[3]);
     try h.click(family[0], family[1]);
     try h.settle();
