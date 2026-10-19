@@ -40,9 +40,12 @@ pub export fn siv_tabs(txn: Txn, parent: Node, desc: ?*const siv.TabsDesc) Node 
     st.* = .{ .hdr = .{ .kind = .tabs }, .root = root, .list = .null, .panels = .null };
     st.list = c.siv_flex(txn, root, &.{ .axis = .row, .gap = 4 });
     _ = c.siv_set_semantics(txn, st.list, &.{ .role = .tab_list, .label = label.ptr, .label_len = label.len });
+    // Panels that fill the tabs (a scroll of height 1 fraction) give
+    // up the overflow, not the tab list.
+    _ = c.siv_set_layout(txn, st.list, &.{ .flags = .{ .no_shrink = true } });
     // The line under the tab list.
     const rule = c.siv_box(txn, root);
-    _ = c.siv_set_layout(txn, rule, &.{ .height = w.px(1) });
+    _ = c.siv_set_layout(txn, rule, &.{ .height = w.px(1), .flags = .{ .no_shrink = true } });
     _ = c.siv_set_visual(txn, rule, &.{ .background_token = .separator });
     st.panels = c.siv_stack(txn, root, &.{ .align_x = .stretch, .align_y = .stretch });
     _ = c.siv_set_layout(txn, st.panels, &.{ .grow = 1, .padding = .{ .top = 12 } });
