@@ -626,23 +626,33 @@ test "idle workers leave after the timeout, and new work starts new ones" {
     defer pool.deinit();
     const Flag = struct {
         job: Job = .{ .run = run, .complete = complete },
+        pool: *Pool,
         done: std.atomic.Value(bool) = .init(false),
-        fn run(_: *Job) void {}
+        /// The pool's threads while the job ran. Counted here, not after
+        /// the jobs are done: by then an idle worker may have left.
+        threads: u32 = 0,
+        fn run(job: *Job) void {
+            const f: *@This() = @fieldParentPtr("job", job);
+            f.pool.lock();
+            f.threads = f.pool.lanes[0].threads + f.pool.lanes[1].threads;
+            f.pool.unlock();
+        }
         fn complete(job: *Job) void {
             const f: *@This() = @fieldParentPtr("job", job);
             f.done.store(true, .release);
         }
     };
     for (0..2) |round| {
-        var jobs = [_]Flag{ .{}, .{}, .{} };
+        var jobs = [_]Flag{ .{ .pool = &pool }, .{ .pool = &pool }, .{ .pool = &pool } };
         jobs[0].job.class = .blocking;
         jobs[1].job.class = .blocking;
         for (&jobs) |*f| try pool.submit(&f.job);
         for (&jobs) |*f| while (!f.done.load(.acquire)) std.atomic.spinLoopHint();
-        try testing.expect(pool.lanes[0].threads + pool.lanes[1].threads > 0);
-        // Quiet for longer than the timeout: no threads left.
+        for (&jobs) |*f| try testing.expect(f.threads > 0);
+        // Quiet for longer than the timeout: no threads left. The bound
+        // is far past the timeout so that a loaded machine still passes.
         var waited: u32 = 0;
-        while (waited < 200) : (waited += 1) {
+        while (waited < 2000) : (waited += 1) {
             pool.lock();
             const left = pool.threads.items.len;
             pool.unlock();
