@@ -18,14 +18,14 @@ on a 4-core orb, which doubles the time.
 ```sh
 zig build                      # zig-out: libsiv.so, libsiv.a, include/siv.h, lib/pkgconfig/siv.pc
 zig build test -j16            # every module's tests, the headless test binary (C API, guide,
-                               #   files app, Lua), C ABI programs; JPEG XL only with -Djxl
+                               #   Lua), C ABI programs; JPEG XL only with -Djxl
 zig build test-text            # one module: test-abi, test-text, test-raster, test-scene, test-image, test-svg, test-icon, test-spell, test-intl,
                                #   test-html, test-css, test-markdown, test-doc, test-docview, test-epub,
                                #   test-render-cpu, test-render-vulkan, test-pool, test-loop,
                                #   test-dbus, test-portal, test-pdf, test-tray, test-trash, test-platform,
                                #   test-compositor, test-ui, test-a11y, test-app
-zig build test-headless        # the headless test binary (tests.zig: test/headless.zig, the
-                               #   guide's and the files app's tests), as 8 processes
+zig build test-headless        # the headless test binary (tests.zig: test/headless.zig and
+                               #   the guide's tests), as 8 processes
 zig build test-abi             # abi unit tests, Zig wrappers, exported symbols, headless binary
 zig build test-lua             # Lua: headless binary, siv.so from the stock lua, annotations
 zig build test-notices         # NOTICES covers every shipped dependency (also in `test`)
@@ -63,14 +63,13 @@ qpdf, poppler, and the icon themes, which `.agents/setup` leaves out.
 
 ```sh
 zig build test-integration     # Wayland backend against headless sway, D-Bus against
-                               #   dbus-daemon, AT-SPI, portals, PDF, tray, Lua, files app
+                               #   dbus-daemon, AT-SPI, portals, PDF, tray, Lua
 zig build test-integration-dbus  # only the D-Bus part
 zig build test-integration-a11y  # only AT-SPI against the real registry
 zig build test-integration-portal  # only portals against xdg-desktop-portal
 zig build test-integration-pdf  # only PDF output against qpdf and poppler
 zig build test-integration-tray  # only the tray against dbus-daemon and gdbus
 zig build test-integration-lua # only the Lua binding and siv-lua on sway
-zig build test-integration-files  # only the file manager on sway with AT-SPI
 SIV_SWAY_RENDERER=vulkan zig build test-integration  # sway renders on the GPU: linux-dmabuf,
                                #   hardware Vulkan presentation, promoted dma-buf frames
                                #   (gles2 works too; WLR_RENDER_DRM_DEVICE picks the GPU)
@@ -198,9 +197,9 @@ commit message. In particular:
   `src/abi/` knows about handles.
 - Headless tests (test/headless.zig) may import every internal module; they
   run the real loop on the headless backend and compare CPU golden images
-  (D24). Golden images go under `test/golden/<area>/`. They, the guide's
-  tests, and the files app's tests build into one binary (tests.zig at
-  the root, so that it reaches docs/ and apps/); add tests there rather
+  (D24). Golden images go under `test/golden/<area>/`. They and the guide's
+  tests build into one binary (tests.zig at the root, so that it
+  reaches docs/); add tests there rather
   than a new test binary. Tests must not depend on timing: the binary
   runs as several processes beside the build. The Vulkan renderer
   is diffed against the same images on any Vulkan 1.3 device (lavapipe in

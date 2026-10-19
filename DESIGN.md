@@ -4200,7 +4200,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     in the unit's long form by plural category ("1 byte", "512 bytes",
     "5 байт") and kB and up in the short form with one fraction digit by
     default ("1.5 kB", "2.0 GB", "1,5 ko"), as GNOME's `g_format_size`
-    writes sizes. The file manager in `apps/files` writes its sizes so.
+    writes sizes.
   - **Reading numbers.** `siv_app_parse_number` reads what a user types:
     the locale's digits and decimal separator or ASCII ones, a minus
     sign, with group separators, spaces, and bidirectional marks
@@ -5038,14 +5038,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     libwebp, libavif, dav1d, and libjxl pass `zig build test` with
     `-fsys`. Its Vulkan tests run on lavapipe. Zig's global cache and the
     fetched packages are cached between runs. `test` already builds the
-    examples, apps, the guide, and the Lua module.
+    examples, the guide, and the Lua module.
   - What `zig build test` builds (consolidated 2026-10-13; there were
     29 test binaries and 45 programs, six of them compiling all of siv):
     - One headless test binary, rooted at `tests.zig` at the top of the
-      tree so that it reaches `docs/` and `apps/`: `test/headless.zig`
+      tree so that it reaches `docs/`: `test/headless.zig`
       (renderers, UI, compositor, the C API, widgets, Lua in process),
-      the guide's samples (`docs/guide/tests`), the files app's headless
-      tests, and the C examples compiled in with main renamed. It runs
+      the guide's samples (`docs/guide/tests`), and the C examples compiled in with main renamed. It runs
       as eight processes at once, each with every eighth test, through
       `test/runner.zig` (Zig's runner with `--shard`), and always runs:
       the guide reads files the build does not track.
@@ -5063,10 +5062,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       the export check of both libraries.
     - The build tools' own tests (`lua-gen-types` with the Lua mapping's
       checks, `notices`, `lua-notices`), built for the host.
-    - Programs compiled so that they keep up with the API: siv-lua,
-      siv-files, and the guide's Zig package sample. The guide's other
-      samples and the C examples build as programs only in `zig build
-      guide` and `zig build examples`.
+    - Programs compiled so that they keep up with the API: siv-lua
+      and the guide's Zig package sample. The guide's other samples and
+      the C examples build as programs only in `zig build guide` and
+      `zig build examples`.
+    - Removed 2026-10-19: the file manager in `apps/files` (siv-files),
+      with its tests, goldens, benchmarks, and FRICTION.md. Nothing used
+      it. The notes "found by the file manager" in this document refer
+      to it; the fixes it led to keep their own tests.
   - The suite (cut 2026-10-13, measured per test with `--time-report`):
     tests stay when they catch a plausible regression through public
     behavior. Removed as covered elsewhere: line breaking's "revision 57"
@@ -6709,8 +6712,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     fractions, no margins), which CSS defines differently.
   - Migration cost and risk: every application's layout changes, the
     C API's layout descriptors change meaning before 1.0's freeze (D30),
-    and the headless golden images of the widgets, the guide, and the
-    files app all move, for no user-visible gain today.
+    and the headless golden images of the widgets and the guide all
+    move, for no user-visible gain today.
   - **Decision:** no unification. The engines stay separate and share
     what is shared below them (text shaping, line breaking, display
     lists, images, SVG). If stock widgets come to need min-content or
@@ -7151,8 +7154,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     once per click or key, and show labels, keys, and checks; enumeration
     and formatting. AT-SPI's key binding and attribute in `src/a11y`'s
     tests; desktop invocation of enabled application actions in
-    test/abi/portal.zig. The file manager binds its app menu and its
-    keys to window actions (FRICTION.md item 31).
+    test/abi/portal.zig.
 - **Alternatives:** actions named by strings at every use, as GAction's
   "app.copy" (a typo binds nothing and fails silently, a destroyed action
   cannot be told from a missing one, and every binding needs a prefix
@@ -7413,9 +7415,6 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     "state", on_change = fn }` returns an owned store, `st:get_int("zoom",
     1)`, `st:set_string(k, v)`, and windows take `settings` and
     `settings_key` in their table.
-  - **The file manager** (`apps/files`) keeps its window's size and states,
-    its view mode, and hidden files in `state.toml`; `--grid` and
-    `--hidden` win for one run.
   - Not built yet: arrays (recent files, column orders; the parser skips
     them today), listing a store's keys, and reporting a write that keeps
     failing (a full disk).
@@ -7816,7 +7815,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     that switches), check bounds on both sides, history independence,
     transactions and aborts, window conditions under constraints that
     did not change, motion through the stand-in compositor, and focus;
-    the ABI's, the files app's, and the guide's compare narrow and wide
+    the ABI's and the guide's compare narrow and wide
     golden images after `siv_test_resize`.
 - **Alternatives:** conditions on the window only (libadwaita's
   breakpoints, SwiftUI's size classes): a widget cannot follow its pane;
@@ -8306,18 +8305,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     signal on the headless backend (D27). Lua gets all of it from the
     schema (D23): `app:trash_file(path, function(result) ... end)`, or
     `local r = app:trash_file(path)` waiting in a coroutine.
-  - siv-files moves to the trash with siv_trash_file, one undo step per
-    command on a window undo stack attached to its root (Ctrl+Z and
-    Ctrl+Shift+Z), and the toast's Undo button undoes that step while it
-    is the newest.
   - Tests: `src/trash` against temporary directories, with explicit
     mount lists for the mounts' trashes (sticky `.Trash`, symbolic link,
     `.Trash-$uid`, relative paths), name clashes, percent-encoding,
     directorysizes, and invalid ids; the portal monitor against stand-in
     portals and system services on the in-process test bus (portal
     first, fallback when the portal is missing, defaults with neither);
-    the app's reactions (caret blinking, caches trimmed) and the C API,
-    Lua, and siv-files on the headless backend with $XDG_DATA_HOME in a
+    the app's reactions (caret blinking, caches trimmed) and the C API
+    and Lua on the headless backend with $XDG_DATA_HOME in a
     temporary directory.
 - **Alternatives:** the Trash portal everywhere (no undo, no listing or
   restoring, and a portal round trip per file); copying files from other

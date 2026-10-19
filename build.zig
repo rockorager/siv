@@ -387,7 +387,7 @@ pub fn build(b: *std.Build) void {
 
     // The headless test binary (D24): the real loop on the headless
     // backend, CPU golden images, the C API, the Lua binding in process,
-    // the guide's samples, and the files app, in one compilation of siv
+    // and the guide's samples, in one compilation of siv
     // (tests.zig). Extend test/headless.zig. The build steps below add
     // their C sources and imports. It runs as `headless_shards` processes
     // at once, each with every Nth test (test/runner.zig).
@@ -403,7 +403,7 @@ pub fn build(b: *std.Build) void {
         .filters = test_filters,
         .test_runner = test_runner,
     });
-    const test_headless = b.step("test-headless", "Run the headless test binary (C API, guide, files app, Lua)");
+    const test_headless = b.step("test-headless", "Run the headless test binary (C API, guide, Lua)");
     // The guide's tests read its chapters, samples, and screenshots, which
     // the build does not track as inputs, so the runs are never cached.
     addShardedRuns(b, headless, test_headless, 8, true);
@@ -628,18 +628,6 @@ pub fn build(b: *std.Build) void {
         .integration_step = integration_step,
         .headless = headless,
         .test_headless = test_headless,
-    });
-
-    // The file manager (apps/files), built on the `siv` wrapper above.
-    @import("apps/files/build_steps.zig").add(b, .{
-        .target = target,
-        .optimize = optimize,
-        .test_filters = test_filters,
-        .abi = abi,
-        .headless = headless,
-        .test_headless = test_headless,
-        .test_step = test_step,
-        .integration_step = integration_step,
     });
 
     // The user guide's samples and screenshots (docs/guide), after the
