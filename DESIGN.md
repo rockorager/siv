@@ -564,7 +564,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     touchpad gesture keeps its first target until the scroll stops. UI
     handlers that decline an event pass it on with `scroll_by`, which is
     relative and so cannot race the compositor's own scrolling. Touch
-    drags go to the UI, which starts flings with `fling`.
+    drags go to the UI, which starts flings with `fling`. So does
+    touchpad scrolling the UI passes on: it tracks the velocity of what
+    it passed on to a scroll node as the compositor does, and flings that
+    node at the stop. Before, such a gesture stopped dead when the
+    fingers lifted: over a wheel region, or when its first event was one
+    no container could take (a touchpad's sideways start over a vertical
+    list), which kept the whole gesture on the UI.
   - Touchpad pinches route by the same rules (`update.Scroll`), with
     "can still move" read as "zooms": with ctrl, alt, or super held, or
     over a wheel region (nodes with scroll or gesture handlers), they go
@@ -2232,8 +2238,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       (`steps_x`, `steps_y`, value120 / 120), the device
       (`scroll_source`), and `SIV_EVENT_STOP` when the fingers lift or the
       wheel stops, the event kinetic scrolling starts from (dx and dy
-      zero). The compositor flings only scroll containers, so a handler
-      node sees no synthesized motion and does its own.
+      zero). Only scroll containers fling (on the compositor, or from
+      the UI for scrolling it passes on, D8), so a handler node sees no
+      synthesized motion and does its own.
     - Touch: a node with a touch handler (`SIV_EVENT_TYPE_TOUCH`) gets
       every event of each touch sequence that begins on it or a
       descendant (down, move, up, cancel; `touch_id`; its coordinates),

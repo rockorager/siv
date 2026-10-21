@@ -13,6 +13,8 @@
 const std = @import("std");
 const raster = @import("raster");
 const platform = @import("platform");
+const compositor = @import("compositor");
+const Loop = @import("loop").Loop;
 const Window = @import("Window.zig");
 const node_mod = @import("node.zig");
 const paint = @import("paint.zig");
@@ -110,6 +112,11 @@ pub const State = struct {
     /// per gesture kind; and the pinch scale last passed on as a zoom.
     gesture_target: [3]NodeId = @splat(.none),
     pinch_scale: f32 = 1,
+    /// The scroll node touchpad scrolling the compositor forwarded was
+    /// passed on to, and its recent motion there: it flings when the
+    /// fingers lift, as the compositor's own scrolling does.
+    kinetic: NodeId = .none,
+    kinetic_velocity: compositor.VelocityTracker = .{},
     /// Tablet tool motion not delivered yet: it goes out once per frame
     /// (`flushTablet`), as one move event per tool carrying every sample.
     tablet_pending: std.ArrayList(platform.TabletTool) = .empty,
@@ -859,6 +866,15 @@ pub fn scrollBy(win: *Window, id: NodeId, delta: Point) void {
 /// first, from the node under the pointer up; otherwise, without ctrl,
 /// alt, or super, the nearest scroll node with room scrolls.
 fn scroll(win: *Window, s: platform.Scroll) void {
+    // A touchpad gesture's scrolling the UI passes on flings when it
+    // stops, from the motion it passed on (`kinetic`).
+    const st = &win.input;
+    const touchpad = s.source == .finger or s.source == .continuous;
+    const stop = s.stop_x or s.stop_y;
+    defer if (!touchpad or stop) {
+        st.kinetic = .none;
+        st.kinetic_velocity.reset();
+    };
     requestTooltip(win, .none);
     const p = win.input.pointer orelse return;
     const target = hitTest(win, p);
@@ -877,7 +893,7 @@ fn scroll(win: *Window, s: platform.Scroll) void {
         .steps_x = @as(f32, @floatFromInt(s.v120_x)) / 120,
         .steps_y = @as(f32, @floatFromInt(s.v120_y)) / 120,
         .source = s.source,
-        .stop = s.stop_x or s.stop_y,
+        .stop = stop,
     } };
     if (bubble(win, target, .scroll, ev).prevents()) return;
     const mods = win.input.mods;
@@ -890,6 +906,7 @@ fn scroll(win: *Window, s: platform.Scroll) void {
     // Shift turns a vertical wheel horizontal, as in the compositor.
     const in = if (mods.shift and s.dx == 0 and s.v120_x == 0) s.shifted() else s;
     const dir = in.delta(1, 1);
+    const time_ms: u32 = if (s.time != 0) s.time else @truncate(Loop.now() / std.time.ns_per_ms);
     var cur: NodeId = if (win.isLive(target)) target else return;
     while (cur != .none) : (cur = win.node(cur).parent) {
         const n = win.node(cur);
@@ -900,9 +917,21 @@ fn scroll(win: *Window, s: platform.Scroll) void {
         const can_y = n.data.scroll.axis != .horizontal and ((dir.y > 0 and off.y < max.y) or (dir.y < 0 and off.y > 0));
         if (!can_x and !can_y) continue;
         const sd = scrollDelta(win, cur, in);
-        scrollBy(win, cur, .{ .x = if (can_x) sd.x else 0, .y = if (can_y) sd.y else 0 });
-        return;
+        const delta: Point = .{ .x = if (can_x) sd.x else 0, .y = if (can_y) sd.y else 0 };
+        scrollBy(win, cur, delta);
+        if (touchpad) {
+            if (st.kinetic != cur) st.kinetic_velocity.reset();
+            st.kinetic = cur;
+            st.kinetic_velocity.add(time_ms, delta);
+        }
+        break;
     }
+    if (!touchpad or !stop or st.kinetic == .none or !win.isLive(st.kinetic)) return;
+    const v = st.kinetic_velocity.velocity(time_ms);
+    if (v.length() < compositor.Fling.min_start_speed) return;
+    win.paint.scroll_by.append(win.gpa, .{ .node = st.kinetic, .fling = v }) catch return;
+    win.dirty.props = true;
+    win.requestFrame();
 }
 
 /// The distance scroll input moves scroll node `id` (`platform.Scroll.delta`

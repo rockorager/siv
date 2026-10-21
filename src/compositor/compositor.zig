@@ -55,6 +55,9 @@ pub const surface = @import("surface.zig");
 pub const Tree = @import("tree.zig").Tree;
 pub const tree = @import("tree.zig");
 pub const Route = @import("tree.zig").Route;
+/// Kinetic scrolling, for the UI to fling what it scrolls itself.
+pub const Fling = @import("anim.zig").Fling;
+pub const VelocityTracker = @import("anim.zig").VelocityTracker;
 
 test {
     if (comptime @import("integration").enabled) {

@@ -137,6 +137,8 @@ pub const ScrollBy = struct {
     delta: Point = .zero,
     zoom: f32 = 1,
     focus: Point = .zero,
+    /// Then flings at this velocity (logical pixels per second).
+    fling: ?Point = null,
     /// Goes before the commit's other ops: a correction that moves up
     /// to content that shrank above (D13), before the container's new
     /// extent clamps the offset.
@@ -947,12 +949,13 @@ pub const State = struct {
         }
         // Scroll input the UI passed on, relative to wherever the
         // compositor has the offset now.
-        try st.ops.ensureUnusedCapacity(gpa, 2 * st.scroll_by.items.len + 1);
+        try st.ops.ensureUnusedCapacity(gpa, 3 * st.scroll_by.items.len + 1);
         for (st.scroll_by.items) |sb| {
             if (sb.early or !win.isLive(sb.node) or !st.ownsLayerNow(win, sb.node)) continue;
             const layer = id(win.state(sb.node).own_layer);
             if (sb.zoom != 1) st.ops.appendAssumeCapacity(.{ .zoom_by = .{ .layer = layer, .factor = sb.zoom, .focus = sb.focus } });
             if (!sb.delta.eql(.zero)) st.ops.appendAssumeCapacity(.{ .scroll_by = .{ .layer = layer, .delta = sb.delta } });
+            if (sb.fling) |v| st.ops.appendAssumeCapacity(.{ .fling = .{ .layer = layer, .velocity = v } });
         }
         st.scroll_by.clearRetainingCapacity();
         if (win.configure_serial) |serial| {

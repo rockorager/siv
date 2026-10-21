@@ -982,7 +982,7 @@ test "scroll handlers get wheel regions; declined input passes on as scroll_by" 
     var taken: f32 = 0;
     const t = try f.win.begin();
     const sc = try box(t, .root, .scroll, .{});
-    const content = try box(t, sc, .box, .{ .height = .{ .px = 400 } });
+    const content = try box(t, sc, .box, .{ .height = .{ .px = 4000 } });
     const knob = try box(t, content, .box, .{ .width = .{ .px = 20 }, .height = .{ .px = 20 } });
     try t.on(knob, .scroll, .{ .func = takeScroll, .user = &taken });
     t.commit();
@@ -1014,6 +1014,19 @@ test "scroll handlers get wheel regions; declined input passes on as scroll_by" 
     f.win.handlePlatform(&.{ .scroll = .{ .window = 0, .seat = 0, .dy = 40 } });
     try f.frame();
     try testing.expectEqual(@as(f32, 100), f.comp.get(sl).offset.y);
+
+    // A touchpad gesture passed on flings when the fingers lift, as the
+    // compositor's own scrolling does: 32 px (8 × 4, D16) every 10 ms,
+    // lifted 10 ms after the last, is 160 px over 62.5 ms.
+    f.win.handlePlatform(&.{ .modifiers = .{ .window = 0, .seat = 0, .mods = .{} } });
+    for (0..5) |i| f.win.handlePlatform(&.{ .scroll = .{ .window = 0, .seat = 0, .dy = 8, .time = @intCast(1000 + i * 10), .source = .finger } });
+    f.win.handlePlatform(&.{ .scroll = .{ .window = 0, .seat = 0, .time = 1050, .source = .finger, .stop_y = true } });
+    try f.frame();
+    try testing.expectEqual(@as(f32, 260), f.comp.get(sl).offset.y);
+    try testing.expectApproxEqAbs(@as(f32, 2560), f.comp.get(sl).fling.?.velocity.y, 1);
+    _ = try f.comp.tree.tick(1);
+    _ = try f.comp.tree.tick(1 + std.time.ns_per_s);
+    try testing.expect(f.comp.get(sl).offset.y > 260 + 700);
 }
 
 const GestureLog = struct {
