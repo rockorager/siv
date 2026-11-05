@@ -144,14 +144,16 @@ fn setPos(win: *Window, id: NodeId, p: Point) void {
 /// property, its content in its own coordinates; anything else repaints,
 /// and so do its descendants up to the layers they root: they paint into
 /// layers the moved node does not root (its container's, or a chunk after
-/// a descendant's layer), at offsets that changed.
+/// a descendant's layer), at offsets that changed. A layer root paints
+/// nothing into its container's layer, and the compositor damages the old
+/// and new places of a layer it moves, so nothing repaints for it.
 fn markMoved(win: *Window, id: NodeId) void {
     const s = win.state(id);
-    win.markPaint(id);
     if (s.own_layer != @import("paint.zig").no_layer and s.layer == s.own_layer) {
         win.dirty.props = true;
         return;
     }
+    win.markPaint(id);
     var it = win.shown(id);
     while (it.next()) |ch| markMoved(win, ch);
 }

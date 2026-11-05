@@ -838,6 +838,19 @@ test "opacity animates as a layer property; content repaints only its layer" {
     const sc = f.comp.log.items[0].set_content;
     try testing.expectEqual(f.comp.tree.root, sc.layer);
     try testing.expect(sc.damage.?.eql(.xywh(0, 0, 200, 50)));
+
+    // The first box grows: the faded layer moves as a property, without
+    // content. The root (the grown box) and the chunk (the box after it,
+    // moved) repaint.
+    f.comp.log.clearRetainingCapacity();
+    const builds = f.win.stats.layer_builds;
+    t = try f.win.begin();
+    try t.setLayout(a, .{ .height = .{ .px = 70 } });
+    t.commit();
+    try f.frame();
+    try testing.expectEqual(builds + 2, f.win.stats.layer_builds);
+    try testing.expect(!hasOp(f.comp.log.items, .set_content, fl));
+    try testing.expectEqual(@as(f32, 70), f.comp.get(fl).transform.translate.y);
 }
 
 fn countActivate(user: ?*anyopaque, _: *ui.Window, _: NodeId, ev: *const ui.Event) ui.HandlerResult {
