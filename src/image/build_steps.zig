@@ -1,11 +1,11 @@
 //! Image decoding part of the build graph, called from build.zig: the
-//! `image` module and the C decoders behind it (D19). Owned by the image
-//! decoding workstream.
+//! `image` module, baskingspot's image package (PNG, APNG, JPEG, GIF,
+//! WebP, and JPEG XL in Zig), and the C libraries behind the rest (D19).
+//! Owned by the image decoding workstream.
 //!
-//! Every library is vendored from build.zig.zon and fetched lazily, or
-//! linked from the system with `-fsys=<name>`: lcms2, libwebp, dav1d,
-//! libavif, libjxl. wuffs is a single C file without a system library.
-//! siv reaches them only through its own small C interfaces in
+//! Every C library is vendored from build.zig.zon and fetched lazily, or
+//! linked from the system with `-fsys=<name>`: lcms2, dav1d, libavif. siv
+//! reaches them only through its own small C interfaces in
 //! src/image/*.h, compiled into the `image_c` module, so `-fsys` builds and
 //! vendored builds share every line of siv's code.
 
@@ -30,26 +30,6 @@ pub const Result = struct {
 /// `--fuzz`, C is not instrumented for coverage: Zig's fuzzer reads only
 /// the PC table its own backend writes, and clang's does not match it.
 const c_flags: []const []const u8 = &.{ "-fvisibility=hidden", "-fno-sanitize=fuzzer-no-link" };
-
-const webp_sources = [_][]const u8{
-    "dec/alpha_dec.c",                "dec/buffer_dec.c",                "dec/frame_dec.c",              "dec/idec_dec.c",
-    "dec/io_dec.c",                   "dec/quant_dec.c",                 "dec/tree_dec.c",               "dec/vp8_dec.c",
-    "dec/vp8l_dec.c",                 "dec/webp_dec.c",                  "demux/anim_decode.c",          "demux/demux.c",
-    "dsp/alpha_processing.c",         "dsp/alpha_processing_mips_dsp_r2.c", "dsp/alpha_processing_neon.c", "dsp/alpha_processing_sse2.c",
-    "dsp/alpha_processing_sse41.c",   "dsp/cpu.c",                       "dsp/dec.c",                    "dsp/dec_clip_tables.c",
-    "dsp/dec_mips32.c",               "dsp/dec_mips_dsp_r2.c",           "dsp/dec_msa.c",                "dsp/dec_neon.c",
-    "dsp/dec_sse2.c",                 "dsp/dec_sse41.c",                 "dsp/filters.c",                "dsp/filters_mips_dsp_r2.c",
-    "dsp/filters_msa.c",              "dsp/filters_neon.c",              "dsp/filters_sse2.c",           "dsp/lossless.c",
-    "dsp/lossless_mips_dsp_r2.c",     "dsp/lossless_msa.c",              "dsp/lossless_neon.c",          "dsp/lossless_sse2.c",
-    "dsp/lossless_sse41.c",           "dsp/rescaler.c",                  "dsp/rescaler_mips32.c",        "dsp/rescaler_mips_dsp_r2.c",
-    "dsp/rescaler_msa.c",             "dsp/rescaler_neon.c",             "dsp/rescaler_sse2.c",          "dsp/upsampling.c",
-    "dsp/upsampling_mips_dsp_r2.c",   "dsp/upsampling_msa.c",            "dsp/upsampling_neon.c",        "dsp/upsampling_sse2.c",
-    "dsp/upsampling_sse41.c",         "dsp/yuv.c",                       "dsp/yuv_mips32.c",             "dsp/yuv_mips_dsp_r2.c",
-    "dsp/yuv_neon.c",                 "dsp/yuv_sse2.c",                  "dsp/yuv_sse41.c",              "utils/bit_reader_utils.c",
-    "utils/color_cache_utils.c",      "utils/filters_utils.c",           "utils/huffman_utils.c",        "utils/palette.c",
-    "utils/quant_levels_dec_utils.c", "utils/random_utils.c",            "utils/rescaler_utils.c",       "utils/thread_utils.c",
-    "utils/utils.c",
-};
 
 /// dav1d with its assembly on x86-64 (NASM syntax, assembled by `nasm`
 /// built from source, see `addNasm`) and aarch64 (GNU syntax, assembled
@@ -343,92 +323,6 @@ const nasm_sources = [_][]const u8{
     "disasm/disasm.c",      "disasm/sync.c",
 };
 
-/// libjxl's decoder, without the boxes and JPEG reconstruction that need
-/// Brotli and without a CMS of its own: siv converts ICC profiles with
-/// Little CMS, and libjxl renders XYB to linear sRGB by itself.
-/// Each C++ file is an object of its own: Zig 0.17's linker crashes on a
-/// relocatable object merged from several C++ files (their COMDAT groups),
-/// written by itself or by LLD.
-fn addJxl(b: *std.Build, jxl: *std.Build.Dependency, hwy: *std.Build.Dependency, o: Options) void {
-    const gen = b.addWriteFiles();
-    _ = gen.add("jxl/version.h",
-        \\#ifndef JXL_VERSION_H_
-        \\#define JXL_VERSION_H_
-        \\#define JPEGXL_MAJOR_VERSION 0
-        \\#define JPEGXL_MINOR_VERSION 11
-        \\#define JPEGXL_PATCH_VERSION 1
-        \\#define JPEGXL_COMPUTE_NUMERIC_VERSION(major, minor, patch) (((major) << 24) | ((minor) << 16) | ((patch) << 8) | 0)
-        \\#define JPEGXL_NUMERIC_VERSION JPEGXL_COMPUTE_NUMERIC_VERSION(0, 11, 1)
-        \\#endif
-        \\
-    );
-    const export_h =
-        \\#define JXL_EXPORT
-        \\#define JXL_NO_EXPORT
-        \\#define JXL_DEPRECATED __attribute__((__deprecated__))
-        \\#define JXL_CMS_EXPORT
-        \\#define JXL_THREADS_EXPORT
-        \\
-    ;
-    _ = gen.add("jxl/jxl_export.h", export_h);
-    _ = gen.add("jxl/jxl_cms_export.h", export_h);
-    _ = gen.add("jxl/jxl_threads_export.h", export_h);
-    const includes = [_]std.Build.LazyPath{ gen.getDirectory(), jxl.path("lib/include"), jxl.path(""), hwy.path("") };
-    const shim = object(b, o, "jxl", false);
-    for (includes) |i| shim.addIncludePath(i);
-    shim.addCSourceFile(.{ .file = b.path("src/image/jxl.c"), .flags = c_flags ++ &[_][]const u8{"-std=c99"} });
-    const cxx_flags = c_flags ++ &[_][]const u8{
-        "-std=c++17",
-        "-fno-exceptions",
-        "-fno-rtti",
-        "-DJPEGXL_ENABLE_BOXES=0",
-        "-DJPEGXL_ENABLE_TRANSCODE_JPEG=0",
-        "-DJPEGXL_ENABLE_SKCMS=0",
-        "-DJXL_INTERNAL_LIBRARY_BUILD",
-        "-DHWY_DISABLE_FUTEX",
-    };
-    // Debug builds compile Highway's code for the target's baseline only,
-    // not once per instruction set it dispatches to (D25).
-    const cxx = if (o.optimize == .debug) cxx_flags ++ &[_][]const u8{"-DHWY_COMPILE_ONLY_STATIC=1"} else cxx_flags;
-    const sources = [_]struct { std.Build.LazyPath, []const []const u8 }{
-        .{ hwy.path("hwy"), &.{ "abort.cc", "aligned_allocator.cc", "per_target.cc", "print.cc", "targets.cc", "timer.cc" } },
-        .{ jxl.path("lib"), &jxl_sources },
-    };
-    for (sources) |entry| for (entry[1]) |file| {
-        const m = object(b, o, std.fs.path.stem(file), true);
-        for (includes) |i| m.addIncludePath(i);
-        m.addCSourceFile(.{ .file = entry[0].path(b, file), .flags = cxx });
-    };
-}
-
-const jxl_sources = [_][]const u8{
-    "jxl/ac_strategy.cc",                              "jxl/alpha.cc",                                "jxl/ans_common.cc",
-    "jxl/blending.cc",                                 "jxl/chroma_from_luma.cc",                     "jxl/coeff_order.cc",
-    "jxl/color_encoding_internal.cc",                  "jxl/compressed_dc.cc",                        "jxl/convolve_separable5.cc",
-    "jxl/convolve_slow.cc",                            "jxl/convolve_symmetric3.cc",                  "jxl/convolve_symmetric5.cc",
-    "jxl/dct_scales.cc",                               "jxl/dec_ans.cc",                              "jxl/dec_cache.cc",
-    "jxl/dec_context_map.cc",                          "jxl/dec_external_image.cc",                   "jxl/dec_frame.cc",
-    "jxl/dec_group.cc",                                "jxl/dec_group_border.cc",                     "jxl/dec_huffman.cc",
-    "jxl/dec_modular.cc",                              "jxl/dec_noise.cc",                            "jxl/dec_patch_dictionary.cc",
-    "jxl/dec_xyb.cc",                                  "jxl/decode.cc",                               "jxl/entropy_coder.cc",
-    "jxl/epf.cc",                                      "jxl/fields.cc",                               "jxl/frame_header.cc",
-    "jxl/headers.cc",                                  "jxl/huffman_table.cc",                        "jxl/icc_codec.cc",
-    "jxl/icc_codec_common.cc",                         "jxl/image.cc",                                "jxl/image_bundle.cc",
-    "jxl/image_metadata.cc",                           "jxl/image_ops.cc",                            "jxl/loop_filter.cc",
-    "jxl/luminance.cc",                                "jxl/memory_manager_internal.cc",              "jxl/modular/encoding/dec_ma.cc",
-    "jxl/modular/encoding/encoding.cc",                "jxl/modular/modular_image.cc",                "jxl/modular/transform/palette.cc",
-    "jxl/modular/transform/rct.cc",                    "jxl/modular/transform/squeeze.cc",            "jxl/modular/transform/transform.cc",
-    "jxl/opsin_params.cc",                             "jxl/passes_state.cc",                         "jxl/quant_weights.cc",
-    "jxl/quantizer.cc",                                "jxl/render_pipeline/low_memory_render_pipeline.cc", "jxl/render_pipeline/render_pipeline.cc",
-    "jxl/render_pipeline/simple_render_pipeline.cc",   "jxl/render_pipeline/stage_blending.cc",       "jxl/render_pipeline/stage_chroma_upsampling.cc",
-    "jxl/render_pipeline/stage_cms.cc",                "jxl/render_pipeline/stage_epf.cc",            "jxl/render_pipeline/stage_from_linear.cc",
-    "jxl/render_pipeline/stage_gaborish.cc",           "jxl/render_pipeline/stage_noise.cc",          "jxl/render_pipeline/stage_patches.cc",
-    "jxl/render_pipeline/stage_splines.cc",            "jxl/render_pipeline/stage_spot.cc",           "jxl/render_pipeline/stage_to_linear.cc",
-    "jxl/render_pipeline/stage_tone_mapping.cc",       "jxl/render_pipeline/stage_upsampling.cc",     "jxl/render_pipeline/stage_write.cc",
-    "jxl/render_pipeline/stage_xyb.cc",                "jxl/render_pipeline/stage_ycbcr.cc",          "jxl/simd_util.cc",
-    "jxl/splines.cc",                                  "jxl/toc.cc",
-};
-
 /// A C object, compiled once and linked into every
 /// artifact that imports `image`, libsiv.a included. C sources on a module
 /// are compiled again for each artifact (their cache entries are not
@@ -455,11 +349,8 @@ pub fn add(b: *std.Build, o_: Options) Result {
     var o = o_;
     const tc = b.addTranslateC(.{
         .root_source_file = b.addWriteFiles().add("image_c.h",
-            \\#include "wuffs.h"
             \\#include "color.h"
-            \\#include "webp.h"
             \\#include "avif.h"
-            \\#include "jxl.h"
             \\
         ),
         .target = o.target,
@@ -472,15 +363,6 @@ pub fn add(b: *std.Build, o_: Options) Result {
     o.image_c = c;
     var requires: std.ArrayList(u8) = .empty;
     const shim_flags = c_flags ++ &[_][]const u8{"-std=c99"};
-
-    // wuffs: PNG, APNG, JPEG, GIF.
-    if (b.lazyDependency("wuffs", .{})) |dep| {
-        const m = object(b, o, "wuffs", false);
-        m.addIncludePath(dep.path("release/c"));
-        // wuffs calls its codecs through vtables of type-erased function
-        // pointers, which -fsanitize=function (ReleaseSafe) traps.
-        m.addCSourceFile(.{ .file = b.path("src/image/wuffs.c"), .flags = c_flags ++ &[_][]const u8{ "-std=c99", "-fno-sanitize=function" } });
-    }
 
     // Little CMS: ICC profiles.
     if (b.systemIntegrationOption("lcms2", .{})) {
@@ -502,29 +384,6 @@ pub fn add(b: *std.Build, o_: Options) Result {
                 "cmsplugin.c", "cmsps2.c",  "cmssamp.c",  "cmssm.c",    "cmstypes.c", "cmsvirt.c",
                 "cmswtpnt.c", "cmsxform.c",
             },
-            .flags = shim_flags,
-        });
-    }
-
-    // libwebp: still and animated WebP.
-    if (b.systemIntegrationOption("libwebp", .{})) {
-        c.linkSystemLibrary("libwebpdemux", .{});
-        c.linkSystemLibrary("libwebp", .{});
-        requires.appendSlice(b.allocator, " libwebpdemux libwebp") catch @panic("OOM");
-        const m = object(b, o, "webp", false);
-        m.linkSystemLibrary("libwebpdemux", .{});
-        m.linkSystemLibrary("libwebp", .{});
-        m.addCSourceFile(.{ .file = b.path("src/image/webp.c"), .flags = shim_flags });
-    } else if (b.lazyDependency("libwebp", .{})) |dep| {
-        const m = object(b, o, "libwebp", false);
-        m.addIncludePath(dep.path("src"));
-        m.addIncludePath(dep.path(""));
-        m.addCSourceFile(.{ .file = b.path("src/image/webp.c"), .flags = shim_flags });
-        // The decoder and demuxer of libwebp's makefile.unix, without the
-        // encoder.
-        m.addCSourceFiles(.{
-            .root = dep.path("src"),
-            .files = &webp_sources,
             .flags = shim_flags,
         });
     }
@@ -569,27 +428,29 @@ pub fn add(b: *std.Build, o_: Options) Result {
         }
     }
 
-    // libjxl with Highway: still and animated JPEG XL. Debug builds leave
-    // it out unless -Djxl, since compiling it is most of a cold `zig build
-    // test` and only one test decodes JPEG XL (D19, D25); with -fsys it
-    // costs nothing, so it is in.
-    const system_jxl = b.systemIntegrationOption("libjxl", .{});
-    const want_jxl = b.option(bool, "jxl", "Decode JPEG XL (default: in all but Debug builds, and with -fsys=libjxl)") orelse (o.optimize != .debug or system_jxl);
-    const options = b.addOptions();
-    options.addOption(bool, "jxl", want_jxl);
-    if (!want_jxl) {} else if (system_jxl) {
-        c.linkSystemLibrary("libjxl", .{});
-        requires.appendSlice(b.allocator, " libjxl") catch @panic("OOM");
-        const m = object(b, o, "jxl", false);
-        m.linkSystemLibrary("libjxl", .{});
-        m.addCSourceFile(.{ .file = b.path("src/image/jxl.c"), .flags = shim_flags });
-    } else if (b.lazyDependency("libjxl", .{})) |jxl| {
-        if (b.lazyDependency("highway", .{})) |hwy| {
-            // libjxl's C++ needs the C++ runtime wherever it is linked.
-            c.link_libcpp = true;
-            addJxl(b, jxl, hwy, o);
-        }
-    }
+    // baskingspot's image package: PNG, APNG, JPEG, GIF, WebP, and JPEG
+    // XL. An object, like the C libraries, so that the decoders compile
+    // once per build rather than in every compilation that imports
+    // `image` (D25).
+    const native = b.addObject(.{
+        .name = "image-native",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/image/native.zig"),
+            .target = o.target,
+            .optimize = o.optimize,
+            .link_libc = true,
+            .pic = true,
+            .strip = true,
+            .imports = &.{.{ .name = "baskingspot_image", .module = b.dependency("baskingspot_image", .{
+                .target = o.target,
+                .optimize = o.optimize,
+            }).module("image") }},
+        }),
+    });
+    // LLVM writes it: the self-hosted backend's copy had its ELF header
+    // zeroed in an orb, after the checkout was copied (D19).
+    native.use_llvm = true;
+    c.addObject(native);
 
     const image = b.createModule(.{
         .root_source_file = b.path("src/image/image.zig"),
@@ -598,7 +459,6 @@ pub fn add(b: *std.Build, o_: Options) Result {
         .imports = &.{
             .{ .name = "scene", .module = o.scene },
             .{ .name = "image_c", .module = c },
-            .{ .name = "image_options", .module = options.createModule() },
         },
         .link_libc = true,
         .pic = true,

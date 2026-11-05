@@ -62,13 +62,14 @@ const entries = [_]Entry{
     .{ .title = "SheenBidi (Apache-2.0)", .package = "sheenbidi", .files = &.{"LICENSE"} },
     .{ .title = "uucode (MIT)", .package = "uucode", .files = &.{"LICENSE.md"} },
     .{ .title = "Unicode Character Database (Unicode License v3)", .package = "ucd", .siv_files = &.{"src/notices/unicode-LICENSE.txt"} },
-    .{ .title = "Wuffs (MIT and Apache-2.0)", .package = "wuffs", .files = &.{"LICENSE"} },
+    .{ .title = "baskingspot image (MIT)", .package = "baskingspot_image", .files = &.{"LICENSE"} },
+    // The package leaves its LICENSE out (build.zig.zon's paths), so siv
+    // keeps a copy, from the commit image pins.
+    .{ .title = "baskingspot compress (MIT)", .package = "baskingspot_image.compress", .siv_files = &.{"src/notices/compress-LICENSE.txt"} },
+    .{ .title = "baskingspot fastmem (MIT)", .package = "baskingspot_image.compress.fastmem", .files = &.{ "LICENSE", "THIRD_PARTY.md" } },
     .{ .title = "Little CMS (MIT)", .package = "lcms2", .files = &.{"LICENSE"} },
-    .{ .title = "libwebp (BSD-3-Clause, with a patent grant)", .package = "libwebp", .files = &.{ "COPYING", "PATENTS" } },
     .{ .title = "dav1d (BSD-2-Clause)", .package = "dav1d", .files = &.{"COPYING"} },
     .{ .title = "libavif and the libyuv it bundles (BSD-2-Clause, BSD-3-Clause)", .package = "libavif", .files = &.{"LICENSE"} },
-    .{ .title = "libjxl (BSD-3-Clause, with a patent grant)", .package = "libjxl", .files = &.{ "LICENSE", "PATENTS" } },
-    .{ .title = "Highway (BSD-3-Clause, chosen of Apache-2.0 or BSD-3-Clause)", .package = "highway", .files = &.{"LICENSE-BSD3"} },
     .{ .title = "zig-wayland (MIT)", .package = "wayland", .files = &.{"LICENSE"} },
     .{ .title = "Wayland protocol (MIT)", .package = "wayland_core", .files = &.{"COPYING"} },
     .{ .title = "wayland-protocols (MIT)", .package = "wayland_protocols", .files = &.{"COPYING"} },
@@ -187,7 +188,7 @@ const Walk = struct {
             .other_step => |c| w.module(c.root_module),
             .system_lib, .win32_resource_file => {},
         };
-        // Headers of a package may carry its code (wuffs is one file).
+        // Headers of a package may carry its code.
         if (compiles_c) for (m.include_dirs.items) |d| switch (d) {
             .path, .path_system, .path_after, .embed_path => |p| w.path(p),
             .other_step => |c| w.module(c.root_module),

@@ -9,12 +9,23 @@
 
 typedef struct siv_avif siv_avif;
 
-/* Results are those of wuffs.h. On success *depth16 says whether frames
+enum {
+    SIV_AVIF_OK = 0,
+    SIV_AVIF_END = 1,
+    SIV_AVIF_UNSUPPORTED = -1,
+    SIV_AVIF_INVALID = -2,
+    SIV_AVIF_TOO_LARGE = -3,
+    SIV_AVIF_NO_MEMORY = -4,
+};
+
+/* On success *depth16 says whether frames
  * are 16-bit; color is an ICC profile (valid until siv_avif_close) or,
  * without one, CICP primaries and transfer characteristics. */
 int siv_avif_open(const uint8_t *data, size_t len, uint64_t max_pixels, siv_avif **out, uint32_t *width,
                   uint32_t *height, int *depth16, const uint8_t **icc, size_t *icc_len, uint16_t *primaries,
                   uint16_t *transfer, uint32_t *loops);
+/* Decodes the next frame into rgba (width * height pixels). SIV_AVIF_END
+ * after the last frame. */
 int siv_avif_next(siv_avif *s, uint8_t *rgba, uint32_t *delay_ms);
 /* The number of frames, without decoding them. */
 uint32_t siv_avif_frames(const siv_avif *s);

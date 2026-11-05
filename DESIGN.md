@@ -1684,7 +1684,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     into a 16-bit bitmap; Vulkan uploads the same bitmaps. CBDT/sbix PNGs
     arrive through the same paint callbacks and decode through the D19
     image module (`render_cpu` imports `image`), straight to their device
-    size, box-filtered in linear light; one wuffs serves both.
+    size, box-filtered in linear light; one PNG decoder serves both.
   - At 32 px and below the x-height is scaled vertically to a whole pixel,
     rounding up from a fraction of 0.375 as FreeType's autohinter does
     (−8% to +12%). Stem darkening adds 0.25 px of stroke at 10 px and below,
@@ -3728,8 +3728,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       the layout's wire form); `zig build test-integration` reads the
       item through dbus-daemon with GLib's gdbus (introspection,
       GetAll, GetLayout, Event, Activate), also through the C API.
-  - Images: wuffs (PNG, JPEG, GIF), libwebp, libavif with dav1d, libjxl.
-    Decoding is async and decodes to the displayed size.
+  - Images: baskingspot's image package (PNG, APNG, JPEG, GIF, WebP, JPEG
+    XL; Zig), and libavif with dav1d. Decoding is async and decodes to the
+    displayed size.
     - `src/image` (`image.decode`) takes a whole file and returns frames;
       `ui.Image.load` runs it on the worker pool (reading a path there
       too) and delivers the image in the dispatch phase (D5), and
@@ -3742,23 +3743,48 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       view, so scrolling past thousands of photos decodes only those
       shown. Found by the file manager in `apps/files`, which kept its
       own queue, three in flight, to avoid decoding everything it bound.
-      Every decoder sits behind a small C interface of siv's own
-      (`src/image/*.h`), so `-fsys` builds (lcms2, libwebp, libavif,
-      dav1d, libjxl) and vendored ones share siv's code; the shims also
-      build against Debian 12's older libavif 0.11 and libjxl 0.7.
-    - Vendored builds: wuffs is built once, here, and also decodes the
-      CPU renderer's bitmap glyphs (D14); dav1d builds with meson's generated headers written by the build;
-      libavif uses the part of libyuv it
-      bundles; libjxl builds its decoder with Highway, without the boxes
-      and JPEG reconstruction that need Brotli and without a CMS, since
-      it renders XYB to linear sRGB itself and siv converts ICC profiles.
-      Debug builds leave libjxl out unless `-Djxl` (JPEG XL then fails
-      as unsupported, and its test skips): compiling it with Highway was
-      most of a cold `zig build test`, and one test decodes JPEG XL
-      (D25, Build cost). Release builds and `-fsys=libjxl` include it,
-      so CI, which links the system's, runs that test.
+      Every decoder sits behind a small interface of siv's own: the C
+      libraries behind `src/image/*.h`, so `-fsys` builds (lcms2,
+      libavif, dav1d) and vendored ones share siv's code (the shim also
+      builds against Debian 12's older libavif 0.11), and the Zig
+      decoders behind `src/image/native_abi.zig`.
+    - The Zig decoders are github.com/baskingspot/image (MIT, with its
+      compress and fastmem packages), pinned to a commit of its
+      `zig-0.17` branch, since its main branch and v0.1.0 build with
+      Zig 0.16 only. They replaced wuffs (PNG, APNG, JPEG, GIF), libwebp,
+      and libjxl with Highway (the user asked, 2026-11-05): each of its
+      decoders is checked against the reference library on the same
+      files (JPEG matches libjpeg-turbo and lossy WebP libwebp bit for
+      bit), nothing in it allocates, and JPEG XL, which Debug builds left
+      out because compiling libjxl and Highway was most of a cold
+      `zig build test` (D25), is in every build and tested. It reports
+      color and never applies it: an ICC profile (zlib-compressed in PNG,
+      inflated here), PNG's cICP, or a JPEG XL file's transfer function
+      and primaries, which `src/image/native.zig` maps to the conversions
+      below. An XYB JPEG XL image comes out in linear sRGB, as libjxl
+      wrote it here. A JPEG XL file's profile arrives with its first
+      frame, so a second decoder skims the frames' headers (the package's
+      `skim`) to have it before then. It does not decode AVIF, and has no
+      CMS, so libavif and Little CMS stay.
+    - `src/image/native.zig` is the root of an object compiled once per
+      build and linked through `image_c` like the C libraries (D25,
+      Build cost): imported as a module, the package added 8 s to
+      libsiv.so's LLVM compile and 2 s to the headless binary's after a
+      one-line change, since Zig 0.17 compiles a module again in every
+      compilation that includes it. Its functions are hidden, and it
+      sets the `std_options` libsiv does. LLVM compiles it (5 s in
+      Debug, against 2 s on the self-hosted backend), since the
+      self-hosted backend's object, built by `zig build test` in an
+      orb, had its 64-byte ELF header zeroed, its modification time
+      unchanged, after the checkout was copied with `cp -r` (four of
+      seven times; never for one built by `zig build test-image`, LLVM's,
+      or siv's other objects). Not understood.
+    - Vendored builds: the PNG decoder also decodes the CPU renderer's
+      bitmap glyphs (D14); dav1d builds with meson's generated headers
+      written by the build; libavif uses the part of libyuv it bundles.
       The decoders' internal memory comes from the C allocator, as
-      HarfBuzz's does; decoded pixels come from siv's allocator (D2).
+      HarfBuzz's does, the Zig decoders' too; decoded pixels come from
+      siv's allocator (D2).
     - dav1d's assembly is on for x86-64 and aarch64 (other targets use
       its C). x86-64's is NASM syntax: NASM 2.16.03 (BSD-2-Clause) is a
       pinned lazy dependency, its release tarball (which carries the
@@ -3789,9 +3815,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       into the image's logical size) are scaled down frame by frame while
       decoding, by area averaging in premultiplied linear light, so only
       the displayed size is kept; never up. Peak memory is one canvas at
-      the file's size: none of these decoders scales while decoding
-      except libwebp, and DCT scaling of JPEGs waits for a decoder that
-      offers it. Limits: 64 megapixels per frame and 512 MiB files; an
+      the file's size: none of these decoders scales while decoding.
+      The JPEG decoder can decode at 1/2, 1/4, or 1/8 of the size in the
+      DCT domain (`jpeg.Decoder.Options.scale`), which siv does not use
+      yet. Limits: 64 megapixels per frame and 512 MiB files; an
       animation keeps at most 32 MiB of decoded frames, or streams
       (below).
     - Color (D11): an embedded RGB ICC profile converts through Little
@@ -3807,9 +3834,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     - Animation (GIF, APNG, WebP, AVIF sequences, JPEG XL): frames are
       decoded at the displayed size, composited by the decoder. When all
       of them fit 32 MiB (`image.Options.max_bytes`; the count comes from
-      the file's headers without decoding: wuffs and libjxl read only
-      frame headers, libwebp and libavif report it) they are decoded up
-      front and kept, so loops cost nothing. Longer ones stream: the load
+      the file without decoding: APNG and AVIF headers state it, and
+      `src/image/native.zig` counts GIF image descriptors and WebP ANMF
+      chunks; a JPEG XL animation's frames are counted by decoding them
+      once, since nothing short of that says which frames are shown)
+      they are decoded up front and kept, so loops cost nothing. Longer ones stream: the load
       decodes only the first frame and keeps the file, and every image
       node showing it plays it through its own `ui.Player`, an
       `image.Decoder` on the worker pool that keeps two frames decoded
@@ -3828,16 +3857,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       animation shows its first frame, as canvases always do, and
       streamed ones decode nothing more.
     - The fuzz target (`zig build test-image --fuzz`) feeds every decoder
-      through `decode`. Zig's fuzzer only reads coverage from Zig code
-      (clang's PC table for C does not match the one it expects), so the
-      C decoders run uninstrumented: crashes and undefined behavior in
-      them are caught (ReleaseSafe traps it in C too), but coverage does
-      not guide mutation inside them; their upstreams fuzz them on
-      OSS-Fuzz. wuffs builds without `-fsanitize=function`, which traps
-      its type-erased vtable calls, and dav1d's `qm.c` without
-      array-bounds checks, on which clang crashes. Not yet: progressive
-      display while loading, and a test of an animated JPEG XL (ffmpeg
-      here writes only still ones).
+      through `decode`. Zig's fuzzer only reads coverage from the test's
+      own compilation, so the decoders run uninstrumented: the C ones
+      because clang's PC table does not match the one it expects, the
+      Zig ones because they are an object of their own. Crashes and
+      undefined behavior in them are caught (ReleaseSafe traps it in C
+      too), but coverage does not guide mutation inside them; libavif
+      and dav1d are fuzzed on OSS-Fuzz, and baskingspot/image fuzzes its
+      decoders in its CI. dav1d's `qm.c` builds without array-bounds
+      checks, on which clang crashes. Not yet: progressive display while
+      loading, and a test of an animated JPEG XL (ffmpeg here writes
+      only still ones).
   - Icons follow the freedesktop icon theme specification, rendered by siv's
     SVG parser for the subset icon themes use.
     - Two modules: `src/icon` (imports nothing) finds files, `src/svg`
@@ -5038,14 +5068,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - CI (`.github/workflows/ci.yml`, GitHub Actions) runs `zig build test
     -j16` on every push and pull request, with no compositor or desktop
     services, in an Arch Linux container: its packages are new enough
-    for every `-fsys` option (HarfBuzz 14.6, Lua 5.5, Little CMS, libwebp,
-    libavif, libjxl, glslang), so the job compiles none of the vendored C
-    and C++ libraries but SheenBidi, which no distribution packages, and
-    wuffs, which has no system library (D25, Build cost). Fedora 43 has
-    HarfBuzz 11.5 and Lua 5.4, too old; Debian 12, the orb base, has
-    HarfBuzz 6.0, no Lua 5.5, and no SheenBidi, and its older lcms2,
-    libwebp, libavif, dav1d, and libjxl pass `zig build test` with
-    `-fsys`. Its Vulkan tests run on lavapipe. Zig's global cache and the
+    for every `-fsys` option (HarfBuzz 14.6, Lua 5.5, Little CMS,
+    libavif, glslang), so the job compiles none of the vendored C and C++
+    libraries but SheenBidi, which no distribution packages (D25, Build
+    cost). Fedora 43 has HarfBuzz 11.5 and Lua 5.4, too old; Debian 12,
+    the orb base, has HarfBuzz 6.0, no Lua 5.5, and no SheenBidi, and its
+    older lcms2, libavif, and dav1d pass `zig build test` with `-fsys`. Its Vulkan tests run on lavapipe. Zig's global cache and the
     fetched packages are cached between runs. `test` already builds the
     examples, the guide, and the Lua module.
   - What `zig build test` builds (consolidated 2026-10-13; there were
@@ -5223,7 +5251,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - What ships is found, not listed by hand. The build walks libsiv's
     module graph and records every build.zig.zon package it reaches:
     sources, C and assembly files, include directories of modules that
-    compile C (wuffs is a header), imports, and the steps that generate
+    compile C, imports, and the steps that generate
     any of those, including the tools those steps run. zig-wayland's
     scanner copies its own code into the bindings; uucode's generator
     compiles the UCD into tables. A table in `src/notices/build_steps.zig`
@@ -5243,8 +5271,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     directory. Zig's own LICENSE is kept in `src/notices/`, since Zig's
     lib directory does not carry it. So is the Unicode License v3, since
     UCD.zip carries none.
-  - Of dual-licensed packages, Highway's BSD-3-Clause is the one taken.
-    Wuffs's LICENSE grants both MIT and Apache-2.0 and is copied whole.
+  - baskingspot's compress package leaves its LICENSE out of the files
+    it packages, so its MIT licence is kept in `src/notices/`, copied
+    from the commit baskingspot/image pins.
   - The generator (`src/notices/gen.zig`) writes nothing and fails the
     build, including `zig build test`, in three cases:
     - A reached package has no section.
@@ -5283,20 +5312,20 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   So:
   - Every vendored library is compiled into objects (`addObject`), once
     per build, without debug info, and linked through the module that
-    translates its header, so libsiv.a still contains it. Zig 0.17's
-    linker crashes on an object merged from several C++ files (their
-    COMDAT groups, whether merged by Zig or by LLD), so libjxl and
-    Highway get an object per file and HarfBuzz's subsetter one unity
-    file of its 18 files, which also parses HarfBuzz's headers once
+    translates its header, so libsiv.a still contains it; so are the Zig
+    image decoders (D19). Zig 0.17's linker crashes on an object merged
+    from several C++ files (their COMDAT groups, whether merged by Zig
+    or by LLD), so C++ libraries get an object per file (libjxl and
+    Highway did, until D19 replaced them) and HarfBuzz's subsetter one
+    unity file of its 18 files, which also parses HarfBuzz's headers once
     (24 s in Debug against 170 s per file optimized). HarfBuzz is
     compiled with libc++'s headers but nothing links libc++ for it.
   - C compiles in the build's mode, except HarfBuzz, optimized in Debug
     builds: shaping is most of the text and headless tests' run time,
     which optimized HarfBuzz cuts by a third, while the decoders' tests
-    take 0.1 s either way. Debug builds leave libjxl out unless `-Djxl`
-    (D19), compile Highway for the baseline target only when it is in,
-    and build dav1d without its assembly, so NASM is neither built nor
-    run.
+    take 0.1 s either way. Debug builds build dav1d without its
+    assembly, so NASM is neither built nor run. (They also left libjxl
+    out unless `-Djxl`, until Zig decoders replaced it, D19.)
   - The shaders' SPIR-V is committed (D10), so glslang is not built.
   - One headless test binary (D24) replaces six, and runs as eight
     processes. The Lua binding is linked into it, into libsiv-lua.so,
@@ -5318,6 +5347,15 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     file on the critical path; its subsetter 24 s; the decoders and Lua
     the rest). Arch with every `-fsys` option (CI) takes 3m29s with
     every cache empty, most of it Zig building its own tools.
+  - Replacing wuffs, libwebp, and libjxl with Highway by Zig decoders
+    (D19), 8-core orb, `-j16`, every cache empty, `zig build test-image`:
+    ReleaseFast took 534 s of CPU before and 319 s after (208 s and 185 s
+    wall; the decoders' object, 28 s, replaces libjxl's and Highway's
+    C++ files, an object each);
+    Debug, which left libjxl out, took 172 s of CPU either way, most of
+    it Zig's own tools. After a one-line change libsiv.so's LLVM compile
+    (40 s on this orb) and the headless binary (12 s) take as long as
+    before.
   - Not done: libsiv.so from a self-hosted object linked by LLD would
     save LLVM's 17 s on every change, but Zig 0.17 spent more than four
     minutes merging the C objects into that object without finishing;

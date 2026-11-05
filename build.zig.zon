@@ -16,25 +16,20 @@
             .hash = "N-V-__8AAIgBOAH6cmnBI9dBvLckCCTjAdqq4CChOBleYvO_",
             .lazy = true,
         },
-        // Image decoding (D14 CBDT/sbix glyphs, D19). Apache-2.0 or MIT.
-        // The single-file C release; there is no system library to link.
-        // Lazy, like the other vendored C code.
-        .wuffs = .{
-            .url = "https://github.com/google/wuffs-mirror-release-c/archive/refs/tags/v0.4.0-alpha.10.tar.gz",
-            .hash = "N-V-__8AAP5JWgDH1rExLB4QCFqm60SkW51_i6qOXTyhjsWv",
-            .lazy = true,
+        // Image decoding in Zig (D19): PNG, APNG, JPEG, GIF, WebP, and JPEG
+        // XL, replacing wuffs, libwebp, and libjxl with Highway. MIT, as are
+        // the compress and fastmem packages it depends on. The zig-0.17
+        // branch of github.com/baskingspot/image, after its v0.1.0 tag; main
+        // builds with Zig 0.16 only.
+        .baskingspot_image = .{
+            .url = "git+https://github.com/baskingspot/image#c595951e295beeb197d4fb5e256d50cb7330277e",
+            .hash = "image-0.1.0-wcK7jCGXJAAgOGaMw-uprGx7fS315gs6ZuD_NkdpBL3G",
         },
         // Color management for decoded images (D11, D19): ICC profiles to
         // the linear working space. MIT. Lazy: skipped with -fsys=lcms2.
         .lcms2 = .{
             .url = "https://github.com/mm2/Little-CMS/archive/refs/tags/lcms2.17.tar.gz",
             .hash = "N-V-__8AAFoTpADc6ISFB0o4tCLbYUI8NXZdYGCpgqAlQrsQ",
-            .lazy = true,
-        },
-        // WebP decoding (D19). BSD-3-Clause. Lazy: skipped with -fsys=libwebp.
-        .libwebp = .{
-            .url = "https://github.com/webmproject/libwebp/archive/refs/tags/v1.5.0.tar.gz",
-            .hash = "N-V-__8AAOM4egDNF1p7XMh92AC7yc-Da9ArradyeGsfMXkm",
             .lazy = true,
         },
         // AV1 decoding for AVIF (D19). BSD-2-Clause. The GitHub mirror of
@@ -57,19 +52,6 @@
         .libavif = .{
             .url = "https://github.com/AOMediaCodec/libavif/archive/refs/tags/v1.3.0.tar.gz",
             .hash = "N-V-__8AALrIMwFY8GwM-oX2rCUYbENqketjUJByUjoHLhZf",
-            .lazy = true,
-        },
-        // JPEG XL decoding (D19). BSD-3-Clause, with Highway (Apache-2.0 or
-        // BSD-3-Clause); built without the boxes that need Brotli. Lazy:
-        // skipped with -fsys=libjxl.
-        .libjxl = .{
-            .url = "https://github.com/libjxl/libjxl/archive/refs/tags/v0.11.1.tar.gz",
-            .hash = "N-V-__8AAO_HbgBGkewsrsmQxPPUEzKNRtvZGlyafTky-zOf",
-            .lazy = true,
-        },
-        .highway = .{
-            .url = "https://github.com/google/highway/archive/refs/tags/1.2.0.tar.gz",
-            .hash = "N-V-__8AAODLaQBqNvEIfh_2K_DEv5Ivn1EgOsrbhetLQpvS",
             .lazy = true,
         },
         // Shader compiler for the Vulkan renderer (D10), built for the host

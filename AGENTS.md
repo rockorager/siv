@@ -18,7 +18,7 @@ on a 4-core orb, which doubles the time.
 ```sh
 zig build                      # zig-out: libsiv.so, libsiv.a, include/siv.h, lib/pkgconfig/siv.pc
 zig build test -j16            # every module's tests, the headless test binary (C API, guide,
-                               #   Lua), C ABI programs; JPEG XL only with -Djxl
+                               #   Lua), C ABI programs
 zig build test-text            # one module: test-abi, test-text, test-raster, test-scene, test-image, test-svg, test-icon, test-spell, test-intl,
                                #   test-html, test-css, test-markdown, test-doc, test-docview, test-epub,
                                #   test-render-cpu, test-render-vulkan, test-pool, test-loop,
@@ -44,7 +44,6 @@ zig build examples             # build and install the C programs in examples/
 zig build -Dwebview=true       # require siv-webview (webview/, D33); auto (the default)
                                #   builds it when pkg-config finds WPE WebKit 2.50+, false skips it
 zig build test-webview         # its headless tests (also in `test` when it is built)
-zig build test -Djxl           # include libjxl in a Debug build, and its test
 zig build test-dbus --fuzz -Doptimize=ReleaseSafe  # fuzz a module's parsers
 zig build bench-text -Doptimize=ReleaseFast   # headless text engine benchmarks
 zig build bench-render-cpu -Doptimize=ReleaseFast  # CPU renderer benchmarks
@@ -53,7 +52,7 @@ zig build bench-latency        # input-to-photon and smoothness on the headless 
                                #   against D25's budget; quiet machine
 zig build -fsys=harfbuzz -fsys=sheenbidi   # link system copies instead of vendored ones
 zig build -fsys=lua            # link the system liblua5.5 into libsiv-lua
-zig build -fsys=lcms2 -fsys=libwebp -fsys=libavif -fsys=dav1d -fsys=libjxl  # system image decoders
+zig build -fsys=lcms2 -fsys=libavif -fsys=dav1d  # system Little CMS and AVIF decoders
 ```
 
 Opt in and by hand only, never a gate: the steps against real desktop
@@ -97,7 +96,7 @@ owns its directories and does not edit another workstream's files.
 | `text` | `src/text/` | Text engine | `raster`, `harfbuzz`, `sheenbidi`, `fontconfig`, `uucode` |
 | `raster` | `src/raster/` | Rasterizer, display list, CPU renderer | none |
 | `scene` | `src/scene/` | Rasterizer, display list, CPU renderer | `raster` |
-| `image` | `src/image/` | Image decoding | `scene`, `image_c` (wuffs, lcms2, libwebp, libavif, dav1d, libjxl) |
+| `image` | `src/image/` | Image decoding | `scene`, `baskingspot_image` (Zig: PNG, JPEG, GIF, WebP, JPEG XL), `image_c` (lcms2, libavif, dav1d) |
 | `svg` | `src/svg/` | Icons and SVG | `scene`, `raster`, `image` |
 | `icon` | `src/icon/` | Icons and SVG | none |
 | `spell` | `src/spell/` | Spell checking (D37) | `uucode` |

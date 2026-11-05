@@ -8,8 +8,8 @@
 # The job runs in Arch Linux, whose packages are new enough for every
 # `-fsys` option, so it compiles none of the vendored C and C++ libraries
 # (D25). Not covered by a system package: SheenBidi, which no distribution
-# packages, and wuffs, which has no system library; both are single C
-# files. The shaders' SPIR-V is committed, so no shader compiler runs.
+# packages, a single C file. The image decoders other than AVIF are Zig
+# (D19). The shaders' SPIR-V is committed, so no shader compiler runs.
 name: CI
 
 on:
@@ -43,7 +43,7 @@ jobs:
             git curl xz tar pkgconf \
             wayland libxkbcommon xkeyboard-config fontconfig ttf-dejavu \
             vulkan-headers vulkan-icd-loader vulkan-swrast vulkan-validation-layers \
-            harfbuzz lua lcms2 libwebp libavif dav1d libjxl
+            harfbuzz lua lcms2 libavif dav1d
           useradd -m -u "$(stat -c %u "$GITHUB_WORKSPACE")" ci
           # D-Bus's Peer.GetMachineId reads it; the image has none.
           systemd-machine-id-setup || tr -d - </proc/sys/kernel/random/uuid >/etc/machine-id
@@ -59,7 +59,7 @@ jobs:
           ln -s /opt/zig/zig /usr/local/bin/zig
 
       # Fetched packages and Zig's global cache (compiler-rt, libc++, the
-      # two vendored C files), once per set of pinned packages.
+      # vendored C file), once per set of pinned packages.
       - uses: actions/cache@v4
         with:
           path: |
@@ -70,8 +70,8 @@ jobs:
       - name: zig build test
         run: >-
           zig build test -j16 --summary failures
-          -fsys=harfbuzz -fsys=lua -fsys=lcms2 -fsys=libwebp -fsys=glslang
-          -fsys=libavif -fsys=libjxl
+          -fsys=harfbuzz -fsys=lua -fsys=lcms2 -fsys=glslang
+          -fsys=libavif
 
   # siv-webview (D33): its headless tests against Arch's WPE WebKit, with
   # the engine rendering in software (no GPU). -Dwebview=true, so a broken
@@ -97,7 +97,7 @@ jobs:
             git curl xz tar pkgconf \
             wayland libxkbcommon xkeyboard-config fontconfig ttf-dejavu \
             vulkan-headers vulkan-icd-loader \
-            harfbuzz lua lcms2 libwebp libavif dav1d libjxl \
+            harfbuzz lua lcms2 libavif dav1d \
             wpewebkit bubblewrap xdg-dbus-proxy
           useradd -m -u "$(stat -c %u "$GITHUB_WORKSPACE")" ci
           systemd-machine-id-setup || tr -d - </proc/sys/kernel/random/uuid >/etc/machine-id
@@ -122,5 +122,5 @@ jobs:
       - name: zig build test-webview
         run: >-
           zig build test-webview -Dwebview=true -j16 --summary failures
-          -fsys=harfbuzz -fsys=lua -fsys=lcms2 -fsys=libwebp
-          -fsys=libavif -fsys=libjxl
+          -fsys=harfbuzz -fsys=lua -fsys=lcms2
+          -fsys=libavif

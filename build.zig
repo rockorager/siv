@@ -31,7 +31,7 @@
 //!                             example browsers. auto (the default) builds it
 //!                             when pkg-config finds WPE WebKit 2.50+ with
 //!                             WPEPlatform, true requires it, false skips it
-//!   -fsys=lcms2, libwebp, libavif, dav1d, libjxl
+//!   -fsys=lcms2, libavif, dav1d
 //!                             link the system image decoders and Little CMS
 //!                             (src/image/build_steps.zig)
 //!

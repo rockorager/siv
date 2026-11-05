@@ -3,7 +3,6 @@
 
 #include "avif/avif.h"
 #include "avif.h"
-#include "wuffs.h"
 
 struct siv_avif {
     avifDecoder *dec;
@@ -24,28 +23,28 @@ int siv_avif_open(const uint8_t *data, size_t len, uint64_t max_pixels, siv_avif
     *icc = NULL;
     *icc_len = 0;
     siv_avif *s = calloc(1, sizeof(*s));
-    if (!s) return SIV_WUFFS_NO_MEMORY;
+    if (!s) return SIV_AVIF_NO_MEMORY;
     s->dec = avifDecoderCreate();
     if (!s->dec) {
         free(s);
-        return SIV_WUFFS_NO_MEMORY;
+        return SIV_AVIF_NO_MEMORY;
     }
     /* The caller decodes on a worker of its own. */
     s->dec->maxThreads = 1;
     s->dec->imageSizeLimit = max_pixels > AVIF_DEFAULT_IMAGE_SIZE_LIMIT ? AVIF_DEFAULT_IMAGE_SIZE_LIMIT : (uint32_t)max_pixels;
     s->dec->ignoreExif = AVIF_TRUE;
     s->dec->ignoreXMP = AVIF_TRUE;
-    int result = SIV_WUFFS_INVALID;
+    int result = SIV_AVIF_INVALID;
     if (avifDecoderSetIOMemory(s->dec, data, len) != AVIF_RESULT_OK) goto fail;
     avifResult r = avifDecoderParse(s->dec);
     if (r != AVIF_RESULT_OK) {
-        if (r == AVIF_RESULT_NOT_IMPLEMENTED || r == AVIF_RESULT_NO_CODEC_AVAILABLE) result = SIV_WUFFS_UNSUPPORTED;
+        if (r == AVIF_RESULT_NOT_IMPLEMENTED || r == AVIF_RESULT_NO_CODEC_AVAILABLE) result = SIV_AVIF_UNSUPPORTED;
         goto fail;
     }
     const avifImage *img = s->dec->image;
     if (img->width == 0 || img->height == 0) goto fail;
     if ((uint64_t)img->width * img->height > max_pixels) {
-        result = SIV_WUFFS_TOO_LARGE;
+        result = SIV_AVIF_TOO_LARGE;
         goto fail;
     }
     s->width = img->width;
@@ -69,7 +68,7 @@ int siv_avif_open(const uint8_t *data, size_t len, uint64_t max_pixels, siv_avif
     *loops = 0;
 #endif
     *out = s;
-    return SIV_WUFFS_OK;
+    return SIV_AVIF_OK;
 fail:
     siv_avif_close(s);
     return result;
@@ -77,20 +76,20 @@ fail:
 
 int siv_avif_next(siv_avif *s, uint8_t *rgba, uint32_t *delay_ms) {
     avifResult r = avifDecoderNextImage(s->dec);
-    if (r == AVIF_RESULT_NO_IMAGES_REMAINING) return SIV_WUFFS_END;
-    if (r != AVIF_RESULT_OK) return s->dec->imageIndex > 0 ? SIV_WUFFS_END : SIV_WUFFS_INVALID;
+    if (r == AVIF_RESULT_NO_IMAGES_REMAINING) return SIV_AVIF_END;
+    if (r != AVIF_RESULT_OK) return s->dec->imageIndex > 0 ? SIV_AVIF_END : SIV_AVIF_INVALID;
     const avifImage *img = s->dec->image;
-    if (img->width != s->width || img->height != s->height) return SIV_WUFFS_INVALID;
+    if (img->width != s->width || img->height != s->height) return SIV_AVIF_INVALID;
     avifRGBImage rgb;
     avifRGBImageSetDefaults(&rgb, img);
     rgb.format = AVIF_RGB_FORMAT_RGBA;
     rgb.depth = s->depth16 ? 16 : 8;
     rgb.pixels = rgba;
     rgb.rowBytes = s->width * (s->depth16 ? 8 : 4);
-    if (avifImageYUVToRGB(img, &rgb) != AVIF_RESULT_OK) return SIV_WUFFS_INVALID;
+    if (avifImageYUVToRGB(img, &rgb) != AVIF_RESULT_OK) return SIV_AVIF_INVALID;
     double ms = s->dec->imageTiming.duration * 1000.0;
     *delay_ms = ms > 0 && ms < 4e9 ? (uint32_t)(ms + 0.5) : 0;
-    return SIV_WUFFS_OK;
+    return SIV_AVIF_OK;
 }
 
 uint32_t siv_avif_frames(const siv_avif *s) {
