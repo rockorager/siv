@@ -129,6 +129,28 @@ pub fn add(b: *std.Build, o: Options) void {
     step.dependOn(&t_run.step);
     step.dependOn(&run.step);
     o.test_step.dependOn(&t_run.step);
+
+    // NOTICES of siv as another package's dependency, as the guide's
+    // zig-package sample installs it: the builders of siv and of its
+    // packages then carry that package's path to them. It reuses siv's
+    // fetched packages and cache, and runs only the generator.
+    const package = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "--build-file" });
+    package.addFileArg(b.path("src/notices/testdata/package/build.zig"));
+    package.addArg("--cache-dir");
+    package.addDirectoryArg2(std.Build.LazyPath.cache_root, .{ .make_absolute = true });
+    if (b.graph.environ_map.get("ZIG_LOCAL_PKG_DIR") == null) {
+        package.addArg("--pkg-dir");
+        package.addDirectoryArg2(b.path("zig-pkg"), .{ .make_absolute = true });
+    }
+    for (b.graph.system_integration_options.keys(), b.graph.system_integration_options.values()) |name, mode| {
+        if (mode == .user_enabled or mode == .declared_enabled) package.addArg(b.fmt("-fsys={s}", .{name}));
+    }
+    package.addArg("--prefix");
+    _ = package.addOutputDirectoryArg("prefix");
+    // It reads siv's tree, which Run does not hash.
+    package.has_side_effects = true;
+    step.dependOn(&package.step);
+    o.test_step.dependOn(&package.step);
 }
 
 fn addFile(run: *std.Build.Step.Run, path: std.Build.LazyPath) void {
@@ -148,13 +170,34 @@ fn urlOf(name: []const u8) []const u8 {
     return "";
 }
 
-/// A package's name in build.zig.zon, else its place among dependencies'
-/// dependencies.
-fn nameOf(owner: *std.Build) []const u8 {
-    inline for (@typeInfo(@TypeOf(zon.dependencies)).@"struct".field_names) |f| {
-        if (std.mem.eql(u8, @field(zon.dependencies, f).hash, owner.pkg_hash)) return f;
+/// A package's name in siv's build.zig.zon, else its place among
+/// dependencies' dependencies (`baskingspot_image.compress`), found by
+/// hash from siv's dependencies. Not from the builder's `dep_prefix`:
+/// when siv is itself a dependency, that starts with the other package's
+/// path to siv, or to the package if the two share its builder.
+fn nameOf(siv: *std.Build, owner: *std.Build) []const u8 {
+    return findDep(siv, siv.available_deps, owner.pkg_hash, "") orelse
+        std.mem.trimEnd(u8, owner.dep_prefix, ".");
+}
+
+fn findDep(siv: *std.Build, deps: []const struct { []const u8, []const u8 }, hash: []const u8, prefix: []const u8) ?[]const u8 {
+    for (deps) |d| if (std.mem.eql(u8, d[1], hash)) return siv.fmt("{s}{s}", .{ prefix, d[0] });
+    for (deps) |d| {
+        const sub = siv.fmt("{s}{s}.", .{ prefix, d[0] });
+        if (findDep(siv, depsOf(d[1]), hash, sub)) |name| return name;
     }
-    return std.mem.trimEnd(u8, owner.dep_prefix, ".");
+    return null;
+}
+
+/// A package's own dependencies, as the build runner lists them (none for
+/// a lazy one that is not fetched).
+fn depsOf(hash: []const u8) []const struct { []const u8, []const u8 } {
+    const packages = @import("root").dependencies.packages;
+    inline for (@typeInfo(packages).@"struct".decl_names) |h| {
+        const pkg = @field(packages, h);
+        if (@hasDecl(pkg, "deps") and std.mem.eql(u8, h, hash)) return pkg.deps;
+    }
+    return &.{};
 }
 
 const Package = struct {
@@ -211,7 +254,7 @@ const Walk = struct {
         // (its builder then has a hash and a name in that package).
         if (owner == w.b) return;
         const gpa = w.b.allocator;
-        const name = nameOf(owner);
+        const name = nameOf(w.b, owner);
         const entry = w.packages.getOrPut(gpa, name) catch @panic("OOM");
         if (!entry.found_existing) entry.value_ptr.* = .{ .builder = owner };
         entry.value_ptr.sources.put(gpa, sub_path, {}) catch @panic("OOM");

@@ -1,0 +1,10 @@
+.{
+    .name = .siv_notices_test,
+    .version = "0.0.0",
+    .fingerprint = 0x5607890f9fb44bbb,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .siv = .{ .path = "../../../.." },
+    },
+    .paths = .{ "build.zig", "build.zig.zon" },
+}

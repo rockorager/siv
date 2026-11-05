@@ -5386,7 +5386,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     the lack of a package hash, which siv has as a dependency: it failed
     the dependent's install, reporting siv as a package without a
     licence. Found by the user guide's package sample
-    (`docs/guide/examples/zig-package`).
+    (`docs/guide/examples/zig-package`). It names dependencies'
+    dependencies (baskingspot's compress and fastmem) by their path from
+    siv's build.zig.zon, found by hash, not by their builders' prefix:
+    as a dependency that prefix starts with the dependent's path to siv
+    (`siv.baskingspot_image.compress`), and the install failed again.
+    The sample's build script is not run by `zig build test`, since it
+    builds libsiv again; a package in `src/notices/testdata/package`
+    that installs only NOTICES is, with siv's fetched packages and cache.
   - A program that ships as one file links siv statically through the
     `siv-static` module: the same generated wrapper linked against
     libsiv.a. One that also embeds Lua for its users' scripts imports
