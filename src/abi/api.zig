@@ -202,7 +202,7 @@ const roles = [_][]const u8{
     "list",      "list_item",     "tree",        "tree_item",  "table",     "row",       "cell",        "column_header",
     "tab_list",  "tab",           "tab_panel",   "menu",       "menu_bar",  "menu_item", "toolbar",     "dialog",
     "alert",     "status",        "tooltip",     "slider",     "spin_button", "progress_bar", "separator", "combo_box",
-    "canvas",    "document",      "navigation",
+    "canvas",    "document",      "navigation",  "scroll_bar",
 };
 
 const role_values: [roles.len + 1]schema.EnumValue = blk: {

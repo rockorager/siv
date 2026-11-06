@@ -309,6 +309,9 @@ pub const Desktop = struct {
     contrast: Contrast = .normal,
     /// The UI font's size in points; themed text sizes follow it.
     font_size: f64 = 11,
+    /// Scrollbars overlay the content and hide when idle; false shows
+    /// them all the time in room beside the content (D47).
+    overlay_scrolling: bool = true,
 
     pub const ColorScheme = enum { no_preference, dark, light };
     pub const Contrast = enum { normal, high };
@@ -382,6 +385,9 @@ pub const State = struct {
     /// Editor: horizontal scroll of a single line that keeps the caret in
     /// view, and the x that vertical caret movement aims for.
     editor_scroll: f32 = 0,
+    /// Multi-line editor: how far it is scrolled down, as the compositor
+    /// last reported it or the UI moved it (D15, D47).
+    editor_scroll_y: f32 = 0,
     preferred_x: ?f32 = null,
     // Paint.
     paint_dirty: bool = true,
@@ -399,8 +405,11 @@ pub const State = struct {
     layer: u32 = paint_mod.no_layer,
     /// Layer the node roots.
     own_layer: u32 = paint_mod.no_layer,
-    /// Scroll: the layer of its scrolled content.
+    /// Scroll nodes and multi-line editors: the layer of their scrolled
+    /// content.
     content_layer: u32 = paint_mod.no_layer,
+    /// The focused editor: its caret's layer.
+    caret_layer: u32 = paint_mod.no_layer,
     /// A clipping node with shadows: the child layer that clips its
     /// children, so that its own layer does not clip the shadows.
     clip_layer: u32 = paint_mod.no_layer,
@@ -1485,6 +1494,10 @@ pub fn setDesktop(win: *Window, d: Desktop) void {
     if (win.desktop.text_scale != old.text_scale) {
         for (win.nodes.items, 0..) |n, i| if (n.status == .live and n.isText()) win.markShape(@enumFromInt(i));
     }
+    // Always-shown scrollbars take room beside the content (D47).
+    if (d.overlay_scrolling != old.overlay_scrolling) {
+        for (win.nodes.items, 0..) |n, i| if (n.status == .live and n.kind == .scroll) win.markLayout(@enumFromInt(i));
+    }
     win.applyPalette();
     win.paint.restartBlink();
     win.dirty.props = true;
@@ -1606,6 +1619,13 @@ pub fn paletteAt(win: *const Window, id: NodeId) theme.Palette {
     return theme.resolveIn(&win.theme_choice, win.desktop.themeInput(), &win.user_theme, &ctx);
 }
 
+/// The palette a node paints with: its subtree theme's, as resolved at
+/// the start of the frame (D43), or the window's.
+pub fn paletteOf(win: *const Window, id: NodeId) *const theme.Palette {
+    if (win.themed.items.len != 0) if (win.themedAncestor(id)) |a| if (win.scopes.getPtr(a)) |sc| return &sc.palette;
+    return &win.palette;
+}
+
 /// Asks canvases to release what they can rebuild, under memory
 /// pressure (D42).
 pub fn trimMemory(win: *Window) void {
@@ -1626,8 +1646,19 @@ fn scrolled(win: *Window, layer: compositor.LayerId, offset: Point, zoom: f32, s
     const index = paint_mod.indexOf(layer);
     if (index >= win.paint.layers.items.len) return;
     const l = &win.paint.layers.items[index];
-    if (seq < l.scroll_seq or !win.isLive(l.owner) or win.node(l.owner).kind != .scroll) return;
+    if (seq < l.scroll_seq or !win.isLive(l.owner)) return;
     if (!win.paint.ownsLayerNow(win, l.owner)) return;
+    if (paint_mod.scrollsText(win.node(l.owner))) {
+        // A multi-line editor's text moved (D15): hit testing, the input
+        // method's caret rectangle, and AT-SPI follow it.
+        l.scroll_offset = offset;
+        win.state(l.owner).editor_scroll_y = offset.y;
+        win.dirty.semantics = true;
+        if (win.input.pointer != null) win.input.hover_stale = true;
+        win.requestFrame();
+        return;
+    }
+    if (win.node(l.owner).kind != .scroll) return;
     l.scroll_offset = offset;
     l.zoom = zoom;
     win.node(l.owner).data.scroll.zoom = zoom;

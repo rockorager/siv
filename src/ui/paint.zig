@@ -514,7 +514,7 @@ pub const State = struct {
     /// first (D8).
     fn ownsLayer(win: *const Window, nid: NodeId, f: Flags) bool {
         const n = win.node(nid);
-        return nid == .root or n.kind == .scroll or isLayerRoot(n.visual) or (n.visual.clip and f.layer_below) or
+        return nid == .root or n.kind == .scroll or scrollsText(n) or isLayerRoot(n.visual) or (n.visual.clip and f.layer_below) or
             wantsWheel(n) or hasCaret(win, nid) or n.kind == .external;
     }
 
@@ -552,13 +552,14 @@ pub const State = struct {
             if (clipsInChild(n.visual)) {
                 inner_container = try st.claim(win, &s.clip_layer, .clip_content, nid, l);
             }
-            if (n.kind == .scroll) {
+            if (n.kind == .scroll or scrollsText(n)) {
                 inner_container = try st.claim(win, &s.content_layer, .scroll_content, nid, inner_container);
             }
             var inner: Cursor = .{ .layer = inner_container };
             var it = win.shown(nid);
             while (it.next()) |ch| try st.visit(win, flags, ch, inner_container, &inner, appears);
-            if (hasCaret(win, nid)) _ = try st.claim(win, &s.content_layer, .caret, nid, l);
+            // A multi-line editor's caret scrolls with its text.
+            if (hasCaret(win, nid)) _ = try st.claim(win, &s.caret_layer, .caret, nid, if (scrollsText(n)) inner_container else l);
             cur.after = nid;
             return;
         }
@@ -624,6 +625,15 @@ pub const State = struct {
                 l.caret_color = color;
                 l.caret_outline = outline;
                 st.markLayer(i);
+            }
+        }
+        // A multi-line editor paints its text into its scrolled layer
+        // whenever it repaints (D15).
+        for (st.order.items) |i| {
+            const l = &st.layers.items[i];
+            if (l.kind == .scroll_content and win.node(l.owner).kind == .editor and st.layers.items[l.parent].dirty) {
+                st.markLayer(i);
+                l.full_damage = true;
             }
         }
         if (st.dirty_count == 0) return;
@@ -924,6 +934,17 @@ pub const State = struct {
                         .easing = .ease_in,
                     } } });
                 }
+                if (l.kind == .node and win.node(l.owner).kind == .editor) {
+                    // A scrollbar drag moved a multi-line editor (D47).
+                    const s = win.state(l.owner);
+                    if (s.scroll_pending) {
+                        const phys = scrollTranslation(win, l.owner);
+                        st.ops.appendAssumeCapacity(.{ .scroll_to = .{ .layer = id(i), .offset = phys } });
+                        l.scroll_offset = phys;
+                        s.scroll_pending = false;
+                        try scroll_layers.append(win.scratch.allocator(), i);
+                    }
+                }
                 if (l.kind == .node and win.node(l.owner).kind == .scroll) {
                     const s = win.state(l.owner);
                     // A zoom the application set; the content at the
@@ -1041,7 +1062,11 @@ pub const State = struct {
             },
             .scroll_content => {
                 const s = win.state(l.owner);
-                const pad = win.node(l.owner).layout.padding;
+                const n = win.node(l.owner);
+                // A multi-line editor's text layer is in its own
+                // coordinates.
+                if (n.kind == .editor) return .{};
+                const pad = n.layout.padding;
                 return .{ .transform = .offset(pad.left(s.rtl), pad.top) };
             },
             .root, .node => {
@@ -1075,6 +1100,20 @@ pub const State = struct {
                         .content = .{ .width = s.content.w, .height = s.content.h },
                         .min_zoom = n.data.scroll.min_zoom,
                         .max_zoom = n.data.scroll.max_zoom,
+                        .bars = @import("scrollbar.zig").look(win, l.owner),
+                    };
+                }
+                if (scrollsText(n)) {
+                    // Inside its border; the extent is its height laid out
+                    // for all of its text (D15).
+                    const bw = n.visual.border_width;
+                    const ext = textExtent(win, l.owner);
+                    var bars = @import("scrollbar.zig").look(win, l.owner);
+                    bars.horizontal = false;
+                    p.scroll = .{
+                        .viewport = .xywh(bw, bw, @max(0, s.size.w - 2 * bw), @max(0, s.size.h - 2 * bw)),
+                        .content = .{ .width = @max(0, s.size.w - 2 * bw), .height = @max(0, ext - 2 * bw) },
+                        .bars = bars,
                     };
                 }
                 if (wantsWheel(n)) p.wheel = .xywh(0, 0, s.size.w, s.size.h);
@@ -1168,9 +1207,26 @@ fn wantsWheel(n: *const node_mod.Node) bool {
     return n.handler(.scroll) != null or n.handler(.gesture) != null;
 }
 
-/// Largest physical scroll offset of a scroll node, in zoomed pixels.
+/// Whether a node is a multi-line editor, which scrolls its text when it
+/// is shorter than the text (D15).
+pub fn scrollsText(n: *const node_mod.Node) bool {
+    return n.kind == .editor and n.data.editor.editor.multiline;
+}
+
+/// The height of a multi-line editor laid out for all of its text: what
+/// it scrolls over.
+pub fn textExtent(win: *const Window, nid: NodeId) f32 {
+    const s = win.state(nid);
+    const pad = win.node(nid).layout.padding;
+    const l = text_node.current(win, nid) orelse return s.size.h;
+    return @max(s.size.h, l.height() + pad.vertical());
+}
+
+/// Largest physical scroll offset of a scroll node (in zoomed pixels) or
+/// a multi-line editor.
 pub fn maxScroll(win: *const Window, nid: NodeId) Point {
     const s = win.state(nid);
+    if (scrollsText(win.node(nid))) return .{ .x = 0, .y = textExtent(win, nid) - s.size.h };
     const pad = win.node(nid).layout.padding;
     const z = zoomOf(win, nid);
     return .{
@@ -1200,6 +1256,7 @@ pub fn toContent(win: *const Window, nid: NodeId, p: Point) Point {
 /// the right edge of the content.
 pub fn scrollTranslation(win: *const Window, nid: NodeId) Point {
     const n = win.node(nid);
+    if (scrollsText(n)) return .{ .x = 0, .y = std.math.clamp(win.state(nid).editor_scroll_y, 0, maxScroll(win, nid).y) };
     if (n.kind != .scroll) return .zero;
     const max = maxScroll(win, nid);
     const off = n.data.scroll.offset;
@@ -1209,6 +1266,7 @@ pub fn scrollTranslation(win: *const Window, nid: NodeId) Point {
 
 /// The logical offset for a physical one reported by the compositor.
 pub fn logicalScroll(win: *const Window, nid: NodeId, physical: Point) Point {
+    if (win.node(nid).kind != .scroll) return physical;
     const max = maxScroll(win, nid);
     return .{ .x = if (win.state(nid).rtl) max.x - physical.x else physical.x, .y = physical.y };
 }
@@ -1287,7 +1345,13 @@ fn drawNode(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point
     switch (n.kind) {
         .text => bounds = bounds.unite(try drawText(st, win, nid, b, off, 0)),
         .editor => {
-            try drawEditor(st, win, nid, b, off);
+            // A multi-line editor's text goes in its scrolled layer, which
+            // repaints with it.
+            if (!scrollsText(n)) {
+                try drawEditor(st, win, nid, b, off);
+            } else if (s.content_layer < st.layers.items.len) {
+                if (st.layers.items[s.content_layer].builder) |tb| try drawEditor(st, win, nid, tb, .zero);
+            }
             bounds = bounds.unite(r);
         },
         // SIV_VISUAL_CLIP clips a node's own content too, to its rounded
@@ -1381,7 +1445,7 @@ fn drawEditor(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Poi
     // A multiline editor's text may hang into its padding (a negative
     // first-line indent: list markers, heading marks); a single-line
     // editor scrolls sideways, so it clips to its content box.
-    const clip = if (e.editor.multiline) Rect.xywh(off.x, off.y, s.size.w, s.size.h) else box.outset(layout.caret_width);
+    const clip = if (e.editor.multiline) Rect.xywh(off.x, off.y, s.size.w, textExtent(win, nid)) else box.outset(layout.caret_width);
     try b.pushLayer(.{ .clip = .{ .shape = .{ .rect = clip } } });
     if (editor.preeditRange(win, nid)) |range| {
         // The preedit is underlined; the selection waits behind it.
@@ -1536,6 +1600,8 @@ fn textBand(win: *Window, nid: NodeId, l: *const text.TextLayout) error{OutOfMem
     const s = win.state(nid);
     const pad = win.node(nid).layout.padding;
     s.painted_band = null;
+    // An editor that scrolls its own text paints all of it.
+    if (scrollsText(win.node(nid)) and maxScroll(win, nid).y > 0) return null;
     const shown = visibleBand(win, nid) orelse return null;
     const h = shown[1] - shown[0];
     if (!(h > 0 and l.height() > 4 * h)) return null;

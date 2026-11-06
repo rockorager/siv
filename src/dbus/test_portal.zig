@@ -67,6 +67,7 @@ pub const FakePortal = struct {
             // Contradicts reduced-motion above; the standard key wins.
             .{ .key = "enable-animations", .value = .{ .b = true } },
             .{ .key = "cursor-blink-time", .value = .{ .i = 1000 } },
+            .{ .key = "overlay-scrolling", .value = .{ .b = false } },
         };
         const mouse = [_]E{.{ .key = "double-click", .value = .{ .i = 300 } }};
         // KDE's portal sends kdeglobals entries as strings.

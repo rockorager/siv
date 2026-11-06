@@ -657,7 +657,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     the pointer; if none takes it, and no ctrl, alt, or super is held, it
     goes on to the nearest scroll node with room as `scroll_by`. Keyboard
     scrolling (arrows, page keys) is `scroll_by` too. Only offsets the
-    application sets in a transaction are `scroll_to`. Corrections that
+    application sets in a transaction, and scrollbar drags (D47), are
+    `scroll_to`. Corrections that
     keep a long text in place while its metrics change (D13) and the
     scrolls that show an editor's caret (D15) are `scroll_by` as well,
     in the commit with the content they answer: one that scrolls up goes
@@ -668,8 +669,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     is a scene layer with its own id, so `scene.damage.Tracker` diffs
     frames (D9); ids inside content are cleared, and content damage comes
     from `set_content`. A scroll container wraps its children in a second
-    scene layer (id with bit 31 set, so layer ids stay below 2^31) that
-    clips to the viewport and carries the offset. A reorder damages only
+    scene layer (id with bit 31 set) that clips to the viewport and
+    carries the offset, and draws its scrollbars in a third (bit 30, so
+    layer ids stay below 2^30; D47). A reorder damages only
     the moved layer's old and new bounds. Replaced content is released
     after the next frame, whose damage tracking still reads the old list.
   - The presentation boundary is `surface.Surface`: it takes the composed
@@ -1758,6 +1760,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     line's edges in reading order, Up and Down keep a preferred x. A
     single-line editor scrolls its text to keep the caret in view and
     drops line breaks from typed text.
+  - A multi-line editor shorter than its text scrolls it (November
+    2026): it roots a scroll container layer whose viewport is inside its
+    border and whose content layer holds its text and caret, scrolled by
+    the compositor like a scroll node's (D8), with a scrollbar (D47).
+    The offset is the UI's `editor_scroll_y`, updated from `scrolled`
+    reports and drags; hit testing, the caret rectangle given to input
+    methods and AT-SPI, and `siv_node_get_caret_rect` subtract it. Caret
+    moves reveal the caret in the editor first, then in the scroll node
+    around it. Before, an editor with a fixed height clipped the text
+    below it, and the caret went out of view (parcel's compose body). An
+    editor sized to its text, the usual case inside a scroll node, does
+    not overflow and scrolls nothing.
   - A text node's bytes are a rope (`text.Rope`, October 2026): a
     height-balanced tree of immutable leaves of up to 4 KB, shared by
     reference count between a text and the texts edits made from it. An
@@ -3084,7 +3098,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     semantic (aria-current: page, step, location, or item) the attribute
     `current` (`true` for item), as Firefox and Chromium expose both, so
     Orca announces a navigation landmark and "current page"; a dump
-    (`siv_test_dump`) prints `current=page`. Text offsets are
+    (`siv_test_dump`) prints `current=page`. Scrollbars are `scroll bar`
+    objects with the Value interface after their scroll node's children
+    (D47). Text offsets are
     characters, converted from siv's UTF-8 byte offsets.
   - Events: ChildrenChanged, PropertyChange (name, description, role,
     value), StateChanged (focus gained after every loss), TextChanged,
@@ -3261,7 +3277,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       settings backend) took 0.4–0.5 ms in the same setup.
     - The UI follows the settings through `ui.Desktop` (reduced motion,
       accent color, text scale, double-click time, caret blink cycle and
-      timeout, color scheme, contrast, and the UI font's size), whose
+      timeout, color scheme, contrast, the UI font's size, and overlay
+      scrolling, D47), whose
       fields have the names of `dbus.Settings.Values` and their types or
       enums with the same tags, applied per window with
       `ui.Window.setDesktop`: a text scale change reshapes text, theme
@@ -9036,6 +9053,113 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   typed values (then typed getters beside the text); or the overlay
   layer's redraw in every frame shows in profiles with an inspector
   open.
+
+### D47. Scrollbars
+
+- **Requirement:** every scrollable node shows how long its content is
+  and where the visible part is, while it overflows: scroll nodes, the
+  views built on them (list, grid, tree, table), and multi-line
+  editors. A bar can be dragged, a press on its track pages, it follows
+  the theme, reduced motion, high contrast, and the desktop's "always
+  show scrollbars", assistive technology sees and sets it, and it
+  follows offsets the compositor scrolls and those the application sets
+  with `siv_node_scroll_to`, with no work from the application.
+- **Decision:** overlay scrollbars that the compositor draws over the
+  viewport and hides when idle, as GNOME does; shown all the time, in
+  room the layout leaves, when the desktop asks for it.
+  - **Overlay by default.** GTK 4 and libadwaita (GtkScrolledWindow's
+    overlay scrolling, the GNOME default), macOS since 10.7 (with a
+    trackpad), Windows 11 (its "always show scrollbars" is off by
+    default), Android, and iOS put the bar over the content and fade it
+    when idle; classic Windows, Qt's styles, and KDE Breeze reserve a
+    gutter. siv targets the GNOME desktop first (D19, D29), and a bar
+    that takes no room keeps layout independent of overflow: a list
+    whose rows reach the bottom does not reflow narrower, and a scroll
+    node's content box is what the application sized. The bar sits 3 px
+    inside the viewport's end edge (the left edge in right-to-left
+    layouts, as GTK places it), 3 px thick (libadwaita's slider), and
+    widens to 8 px with its track behind it when the pointer comes
+    within 5 px of the track, staying wide until it is 10 px away
+    (GTK's distances). The thumb is as long as the visible share of the
+    content, at least 40 px (libadwaita's), and rounded.
+  - **Always shown.** GNOME's accessibility setting (`org.gnome.desktop.
+    interface overlay-scrolling` false, read with the other settings,
+    D19) shows every overflowing bar at full width with its track, and
+    the layout leaves a 14 px gutter for it (8 px and the margins) at
+    the end edge, and at the bottom for horizontal scrolling, so content
+    is never under it. Changing the setting lays scroll nodes out again.
+  - **Idle.** Bars appear when the content scrolls (by the compositor,
+    a drag, keys, `scroll_to`, a zoom) or the pointer moves over the
+    viewport, fade in over 200 ms, stay 2 s after the last of these
+    (GTK's delay), and fade out over 1 s. A bar near the pointer or
+    being dragged stays shown. Under reduced motion they appear and go
+    at once, and widen at once. The compositor runs all of it (D8), so
+    bars move with compositor scrolling while the UI thread is busy;
+    waiting out the delay holds no frames. On the headless backend the
+    delay is 0, so a bar shows only while pinned (near the pointer,
+    dragged, or always shown) and screenshots do not depend on time
+    (D24).
+  - **Look.** Colors come from the node's palette (D29, D43): the view's
+    foreground at 35 % for the thumb, 55 % near the pointer, 75 %
+    dragged, 12 % for the track, as libadwaita mixes them from
+    `currentColor`; high contrast uses 60, 80, 100, and 30 %. A 1 px
+    outline in the view's background keeps the thumb apart from content
+    of its own color.
+  - **Input.** A primary press on a thumb, or within the near distance
+    of its track, is the bar's before hit testing reaches nodes: on the
+    thumb it starts a drag that holds the pointer until release
+    (anywhere, as GTK does); on the track it pages toward the press by
+    what Page Down scrolls (90 % of the viewport), once per press, as
+    macOS (by default), Windows, and Qt do.
+    Presses beside a bar reach the content as before. Over a bar the
+    cursor is the default one. Drags set the node's offset as the
+    application's own offsets do: the tree's offset changes, and the
+    UI sends `scroll_to` (D8), so the compositor's offset, hit
+    testing, culled text, and viewport handlers (at the next frame) all
+    follow. An application that keeps its own copy of an offset, to
+    scroll from it with `siv_node_scroll_to`, updates it from the
+    node's viewport handler (`viewport.y`), or a drag would be undone by
+    its next scroll.
+  - **Geometry** is one function (`update.Scroll.barsAt`) that the
+    compositor draws with and the UI hit-tests and reports to AT-SPI
+    with, from the scroll properties the UI sends (`Scroll.bars`: axes,
+    side, always, the dragged bar, motion, colors). Bars are scene
+    layers of their own over the content (id `layer | 1 << 30`, so
+    layer ids stay below 2^30); a change of the bar properties alone
+    damages no content.
+  - **Accessibility** (D18): each overflowing bar is an AT-SPI
+    `scroll bar` object (role `scroll_bar`) after the scroll node's
+    children, with the vertical or horizontal state, its track as
+    bounds, and the Value interface: 0 to the largest offset, the
+    current logical offset (D21) as value; setting it scrolls the node
+    like a drag. GTK exposes its scrollbars the same way.
+  - **Multi-line editors** scroll their own text when they are shorter
+    than it (D15) and get a vertical bar in their padding, with no
+    gutter; single-line editors, which keep the caret in view
+    themselves, have none.
+  - Tests (`test/ui/golden.zig`, `src/compositor/tree.zig`,
+    `src/compositor/update.zig`): geometry; reveal, delay, hover, fade,
+    and reduced motion on the compositor's clock; widened near the
+    pointer, dragged (and heard by a viewport handler), paged, pressed
+    beside, set through the semantics tree, and always shown with the
+    application's own `scroll_to`, against goldens
+    (`scrollbar-hover.png`, `scrollbar-drag.png`, `scrollbar-always.png`,
+    `scrollbar-rtl-dark-hc.png`); a scrolled editor (`editor-scrolled.png`).
+- **Alternatives:** bars as nodes the UI lays out and paints (they would
+  lag compositor scrolling while the UI is busy, against D8, and every
+  view would need them); a gutter always, as classic Windows and Breeze
+  do (layout would depend on overflow, and GNOME, siv's first desktop,
+  overlays); stock widgets drawing their own bars (scroll nodes the
+  application builds directly would have none); a press on the track
+  moving the thumb to the pointer (GTK's default,
+  `gtk-primary-button-warps-slider`; paging is what was asked for, and
+  what Page Down already does from the keyboard, so siv has one meaning
+  for both; a Shift press warping is a later addition if asked for);
+  press-and-hold on the track repeating pages, as Windows and Qt do
+  (later if asked for).
+- **Reverse if:** GNOME moves away from overlay scrolling; touch users
+  need thicker bars (then a touch size, as libadwaita has none); or
+  applications need to hide bars per node (then a scroll node property).
 
 ## Lessons from ourokit
 

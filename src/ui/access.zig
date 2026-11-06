@@ -70,6 +70,7 @@ const Geometry = struct {
         };
         if (n.kind == .editor) {
             g.origin.x -= s.editor_scroll;
+            g.origin.y -= @import("paint.zig").scrollTranslation(win, id).y;
             if (editor.preeditRange(win, id)) |p| {
                 g.preedit_at = p[0];
                 g.preedit_len = p[1] - p[0];

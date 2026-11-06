@@ -1869,7 +1869,7 @@ test "caret blinks on the compositor, stops by itself, and not with reduced moti
     k.press(ui.keysym.tab, .{});
     try f.frame();
     // Focus gives the editor a layer with the caret in a child layer.
-    const caret = f.win.state(ed).content_layer + 1;
+    const caret = f.win.state(ed).caret_layer + 1;
     try testing.expectEqual(f.win.state(ed).own_layer + 1, f.comp.get(caret).parent);
     const a = findAnimate(f.comp.log.items, caret).?;
     try testing.expectEqual(@as(f32, 0), a.to.opacity);
@@ -2064,7 +2064,7 @@ test "desktop settings: blink timing, text scale, and the accent color" {
     const k: Keys = .{ .f = &f };
     k.press(ui.keysym.tab, .{});
     try f.frame();
-    const caret = f.win.state(ed).content_layer + 1;
+    const caret = f.win.state(ed).caret_layer + 1;
     // GTK's defaults: a 1.2 s cycle for 10 s, ending visible.
     var a = findAnimate(f.comp.log.items, caret).?;
     try testing.expectEqual(@as(u64, 600 * std.time.ns_per_ms), a.duration_ns);

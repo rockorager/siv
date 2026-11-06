@@ -26,11 +26,15 @@ const Op = update.Op;
 const Transform = update.Transform;
 const Value = update.Value;
 const Property = update.Property;
+const Scrollbars = update.Scrollbars;
+const Axis = update.Axis;
 
 const log = std.log.scoped(.compositor);
 
-/// Layer ids must stay below this; the bit marks scroll wrappers.
+/// The bit that marks scroll wrappers, and the one that marks a scroll
+/// container's scrollbars (D47); layer ids stay below both.
 pub const scroll_bit: u32 = 1 << 31;
+pub const bar_bit: u32 = 1 << 30;
 /// Retired content kept for damage tracking beyond this is released at
 /// once, at the cost of a full redraw (a window that stopped rendering).
 const max_retired = 64;
@@ -73,8 +77,22 @@ pub const Layer = struct {
     /// Given up by the UI (`Op.exit`).
     exiting: bool = false,
 
+    /// Scrollbars (D47): how far shown (0 to 1) and how far widened, per
+    /// axis, they are now; the frame that last showed what reveals them
+    /// (the offset changing, the pointer moving over the viewport), and
+    /// a reveal waiting for the next frame; the time their state was
+    /// last advanced (0 when it is at rest); their scene layer's version.
+    bar_shown: f32 = 0,
+    bar_wide: [2]f32 = .{ 0, 0 },
+    bar_seen_ns: u64 = 0,
+    bar_reveal: bool = false,
+    bar_ns: u64 = 0,
+    bar_version: u32 = 0,
+    /// The bars move, or wait to hide: `tick` visits them.
+    bar_busy: bool = false,
+
     fn animating(l: *const Layer) bool {
-        if (l.fling != null) return true;
+        if (l.fling != null or l.bar_busy) return true;
         for (l.anims) |a| if (a != null) return true;
         return false;
     }
@@ -181,6 +199,13 @@ pub const Tree = struct {
     acked_configure: u64 = 0,
     /// Layers with a blur shape.
     blurs: u32 = 0,
+    /// How long scrollbars stay after what revealed them (D47). Zero
+    /// shows them only while pinned (near the pointer, dragged, always
+    /// shown): the headless backend's, so that captures do not depend on
+    /// time (D24).
+    bar_delay_ns: u64 = Scrollbars.delay_ns,
+    /// The scrollbar near the pointer, widened.
+    bar_hover: ?BarRef = null,
 
     animated: std.ArrayList(LayerId) = .empty,
     scrolled: std.ArrayList(LayerId) = .empty,
@@ -201,6 +226,8 @@ pub const Tree = struct {
     stack: std.ArrayList(Open) = .empty,
 
     const Open = struct { index: u32, bounds: Rect };
+
+    pub const BarRef = struct { layer: LayerId, axis: Axis };
 
     pub fn init(gpa: Allocator) Tree {
         return .{ .gpa = gpa };
@@ -244,7 +271,7 @@ pub const Tree = struct {
     pub fn apply(t: *Tree, op: Op) Allocator.Error!bool {
         switch (op) {
             .create => |id| {
-                if (id & scroll_bit != 0) return t.reject(op, "id too large");
+                if (id >= bar_bit) return t.reject(op, "id too large");
                 if (t.get(id) != null) return t.reject(op, "layer exists");
                 if (id >= t.layers.items.len) try t.layers.appendNTimes(t.gpa, .{}, id + 1 - t.layers.items.len);
                 t.layers.items[id] = .{ .alive = true };
@@ -312,7 +339,17 @@ pub const Tree = struct {
             },
             .set_scroll => |s| {
                 const l = t.get(s.layer) orelse return t.reject(op, "no such layer");
+                // Only the scrollbars changed: their layer redraws, not
+                // the container's.
+                const bars_only = if (l.scroll) |old| if (s.scroll) |new| blk: {
+                    var o = old;
+                    o.bars = new.bars;
+                    break :blk std.meta.eql(o, new);
+                } else false else false;
                 l.scroll = s.scroll;
+                l.bar_version +%= 1;
+                try t.markBars(s.layer);
+                if (bars_only) return true;
                 if (s.scroll) |sc| {
                     l.zoom = sc.clampZoom(l.zoom);
                     try t.setOffset(s.layer, l.offset, false);
@@ -424,6 +461,9 @@ pub const Tree = struct {
             try t.exited.append(t.gpa, id);
         }
         if (l.blur != null) t.blurs -= 1;
+        if (t.bar_hover) |h| if (h.layer == id) {
+            t.bar_hover = null;
+        };
         l.* = .{};
     }
 
@@ -475,10 +515,7 @@ pub const Tree = struct {
     // Scrolling ---------------------------------------------------------
 
     fn maxOffset(s: update.Scroll, zoom: f32) Point {
-        return .{
-            .x = @max(0, s.content.width * zoom - s.viewport.width()),
-            .y = @max(0, s.content.height * zoom - s.viewport.height()),
-        };
+        return s.maxOffset(zoom);
     }
 
     fn clampOffset(s: update.Scroll, zoom: f32, p: Point) Point {
@@ -493,6 +530,7 @@ pub const Tree = struct {
         if (c.eql(l.offset)) return;
         l.offset = c;
         l.scroll_version +%= 1;
+        try t.revealBars(id);
         if (report) try t.markScrolled(id);
     }
 
@@ -519,6 +557,7 @@ pub const Tree = struct {
         l.zoom = z;
         l.scroll_version +%= 1;
         l.offset = clampOffset(s, z, off);
+        try t.revealBars(id);
         if (report) try t.markScrolled(id);
     }
 
@@ -661,6 +700,138 @@ pub const Tree = struct {
         return p.x >= r.x0 and p.x < r.x1 and p.y >= r.y0 and p.y < r.y1;
     }
 
+    // Scrollbars (D47) --------------------------------------------------
+
+    /// Something that shows a container's scrollbars happened: they show
+    /// from the next frame, for `bar_delay_ns`.
+    fn revealBars(t: *Tree, id: LayerId) Allocator.Error!void {
+        const l = &t.layers.items[id];
+        const s = l.scroll orelse return;
+        if (!s.bars.any()) return;
+        l.bar_reveal = true;
+        try t.markBars(id);
+    }
+
+    /// The bars' look or what pins them changed: `tick` brings them up
+    /// to date.
+    fn markBars(t: *Tree, id: LayerId) Allocator.Error!void {
+        const l = &t.layers.items[id];
+        const has = if (l.scroll) |s| s.bars.any() else false;
+        if (!has and l.bar_shown == 0) return;
+        l.bar_busy = true;
+        try t.markAnimated(id);
+    }
+
+    /// Moves a container's bars toward what they should show at `now`:
+    /// shown while they are pinned (always shown, dragged, near the
+    /// pointer) or within `bar_delay_ns` of the frame that revealed
+    /// them, and where the content overflows; widened while always
+    /// shown, dragged, or near the pointer.
+    fn tickBars(t: *Tree, id: LayerId, now: u64, result: *Tick) void {
+        const l = &t.layers.items[id];
+        if (l.bar_reveal) {
+            l.bar_reveal = false;
+            l.bar_seen_ns = now;
+        }
+        const s = l.scroll orelse update.Scroll{ .viewport = Rect.empty, .content = .{} };
+        const b = s.bars;
+        const bars = s.barsAt(l.zoom, l.offset);
+        const any = bars[0] != null or bars[1] != null;
+        const hover: ?Axis = if (t.bar_hover) |h| if (h.layer == id) h.axis else null else null;
+        const pinned = b.always or b.active != null or hover != null;
+        const timed = l.bar_seen_ns != 0 and now < l.bar_seen_ns +| t.bar_delay_ns;
+        const target: f32 = if (any and (pinned or timed)) 1 else 0;
+        const dt: u64 = if (l.bar_ns == 0 or now <= l.bar_ns) 0 else now - l.bar_ns;
+        // Always-shown bars are part of the layout: they do not fade.
+        const animate = b.animate and !b.always;
+        const before = .{ l.bar_shown, l.bar_wide };
+        l.bar_shown = approach(l.bar_shown, target, dt, if (target > l.bar_shown) Scrollbars.fade_in_ns else Scrollbars.fade_out_ns, animate);
+        var moving = l.bar_shown != target;
+        for (&l.bar_wide, [_]Axis{ .vertical, .horizontal }) |*w, axis| {
+            const wide: f32 = if (b.always or b.active == axis or hover == axis) 1 else 0;
+            w.* = approach(w.*, wide, dt, Scrollbars.widen_ns, animate);
+            if (w.* != wide) moving = true;
+        }
+        if (!std.meta.eql(before, .{ l.bar_shown, l.bar_wide })) l.bar_version +%= 1;
+        if (moving) {
+            l.bar_ns = now;
+            result.active = true;
+            result.holding = true;
+        } else l.bar_ns = 0;
+        // Shown for a while: wake to hide them, owing no frames meanwhile.
+        const waiting = !moving and target == 1 and !pinned;
+        if (waiting) {
+            const at = l.bar_seen_ns +| t.bar_delay_ns;
+            result.next_start_ns = @min(result.next_start_ns orelse at, at);
+        }
+        l.bar_busy = moving or waiting;
+    }
+
+    fn approach(v: f32, target: f32, dt: u64, duration_ns: u64, animate: bool) f32 {
+        if (!animate) return target;
+        const d = @as(f32, @floatFromInt(dt)) / @as(f32, @floatFromInt(duration_ns));
+        return if (v < target) @min(target, v + d) else @max(target, v - d);
+    }
+
+    /// The pointer moved to `p` (window coordinates), or left the window
+    /// (null): scroll containers on the topmost path under it show their
+    /// bars, and the bar it is near widens. Returns whether a frame
+    /// should show it.
+    pub fn pointerAt(t: *Tree, p: ?Point) Allocator.Error!bool {
+        var hover: ?BarRef = null;
+        var changed = false;
+        if (p) |pt| if (t.root != 0) {
+            _ = try t.pointerLayer(t.root, pt, &hover, &changed);
+        };
+        if (std.meta.eql(hover, t.bar_hover)) return changed;
+        const old = t.bar_hover;
+        t.bar_hover = hover;
+        if (old) |h| if (t.get(h.layer) != null) try t.markBars(h.layer);
+        if (hover) |h| try t.markBars(h.layer);
+        return true;
+    }
+
+    fn pointerLayer(t: *Tree, id: LayerId, parent_p: Point, hover: *?BarRef, changed: *bool) Allocator.Error!bool {
+        const l = &t.layers.items[id];
+        if (l.exiting) return false;
+        const inv = l.transform.affine().invert() orelse return false;
+        const p = inv.apply(parent_p);
+        if (l.clip) |c| if (!contains(c.rect, p)) return false;
+        if (l.reveal) |c| if (!contains(c.rect, p)) return false;
+        const in_viewport = if (l.scroll) |s| contains(s.viewport, p) else true;
+        var hit = false;
+        if (in_viewport) {
+            const cp = childPoint(l, p);
+            var child = l.last;
+            while (child != 0) : (child = t.layers.items[child].prev) {
+                if (try t.pointerLayer(child, cp, hover, changed)) {
+                    hit = true;
+                    break;
+                }
+            }
+        }
+        if (!hit) {
+            const on_content = if (l.content) |c| contains(c.list.bounds, p) else false;
+            const wheel = if (l.wheel) |w| contains(w, p) else false;
+            if (!on_content and !wheel and !(l.scroll != null and in_viewport)) return false;
+        }
+        const s = l.scroll orelse return true;
+        if (!in_viewport or !s.bars.any()) return true;
+        const bars = s.barsAt(l.zoom, l.offset);
+        if (bars[0] == null and bars[1] == null) return true;
+        if (t.bar_delay_ns > 0 and l.bar_shown < 1) changed.* = true;
+        try t.revealBars(id);
+        // The innermost container's bar wins.
+        if (hover.* == null) for (bars) |ob| if (ob) |bar| {
+            const was = if (t.bar_hover) |h| h.layer == id and h.axis == bar.axis else false;
+            if (bar.near(s.viewport, p, if (was) Scrollbars.far else Scrollbars.near)) {
+                hover.* = .{ .layer = id, .axis = bar.axis };
+                break;
+            }
+        };
+        return true;
+    }
+
     // Animation ---------------------------------------------------------
 
     pub const Tick = struct {
@@ -723,6 +894,7 @@ pub const Tree = struct {
                     result.holding = true;
                 }
             }
+            if (l.bar_busy) t.tickBars(id, t_ns, &result);
             if (l.animating()) {
                 i += 1;
             } else {
@@ -983,12 +1155,56 @@ pub const Tree = struct {
         }
         var child = l.first;
         while (child != 0) : (child = t.layers.items[child].next) try t.emit(out, child);
-        if (l.scroll != null) {
+        if (l.scroll) |s| {
             try t.pop(out);
             try t.pop(out);
+            if (l.bar_shown > 0) try t.emitBars(out, id, l, s);
         }
         if (inner != null) try t.pop(out);
         try t.pop(out);
+    }
+
+    /// A container's scrollbars, above its children and inside its
+    /// viewport, in a scene layer of their own so that fading and
+    /// widening redraw only them.
+    fn emitBars(t: *Tree, out: *std.ArrayList(Command), id: LayerId, l: *const Layer, s: update.Scroll) Allocator.Error!void {
+        const bars = s.barsAt(l.zoom, l.offset);
+        if (bars[0] == null and bars[1] == null) return;
+        const b = s.bars;
+        // Smoothstep: fades start and end gently.
+        const a = l.bar_shown * l.bar_shown * (3 - 2 * l.bar_shown);
+        try t.push(out, .{ .id = id | bar_bit, .version = l.bar_version, .clip = .{ .shape = .{ .rect = s.viewport } } });
+        for (bars, l.bar_wide) |ob, w| if (ob) |bar| {
+            const width = Scrollbars.thin + (Scrollbars.thick - Scrollbars.thin) * w;
+            if (w > 0 and b.track.a > 0) try t.pill(out, bar.track, Scrollbars.thick, b.track.withAlpha(b.track.a * a * w), null);
+            // The thumb narrows toward the viewport's edge.
+            var r = bar.thumb;
+            switch (bar.axis) {
+                .vertical => if (b.left) {
+                    r.x1 = r.x0 + width;
+                } else {
+                    r.x0 = r.x1 - width;
+                },
+                .horizontal => r.y0 = r.y1 - width,
+            }
+            const c = if (b.active == bar.axis) b.thumb_active else mix(b.thumb, b.thumb_hover, w);
+            try t.pill(out, r, width, c.withAlpha(c.a * a), b.outline.withAlpha(b.outline.a * a));
+        };
+        try t.pop(out);
+    }
+
+    /// A rounded bar `width` across, and a hairline around it.
+    fn pill(t: *Tree, out: *std.ArrayList(Command), r: Rect, width: f32, color: scene.Color, outline: ?scene.Color) Allocator.Error!void {
+        const radii = raster.Radii.uniform(width / 2, width / 2);
+        if (outline) |o| if (o.a > 0) {
+            const ring = r.outset(0.5);
+            try out.append(t.gpa, .{ .stroke = .{ .shape = .{ .rounded_rect = .{ .rect = ring, .radii = raster.Radii.uniform(width / 2 + 0.5, width / 2 + 0.5) } }, .style = .{ .width = 1 }, .paint = .color(o) } });
+            t.include(ring.outset(0.5));
+        };
+        if (color.a > 0) {
+            try out.append(t.gpa, .{ .fill = .{ .shape = .{ .rounded_rect = .{ .rect = r, .radii = radii } }, .paint = .color(color) } });
+            t.include(r);
+        }
     }
 
     fn emitExternal(t: *Tree, out: *std.ArrayList(Command), pl: update.ExternalPlacement, d: Draw) Allocator.Error!void {
@@ -1108,6 +1324,10 @@ fn appendRect(gpa: Allocator, out: *std.ArrayList(platform.Rect), r: Rect, clip:
     const y1: i32 = @intFromFloat(@floor(v.y1));
     if (x1 <= x0 or y1 <= y0) return;
     try out.append(gpa, .{ .x = x0, .y = y0, .width = x1 - x0, .height = y1 - y0 });
+}
+
+fn mix(a: scene.Color, b: scene.Color, k: f32) scene.Color {
+    return .{ .r = a.r + (b.r - a.r) * k, .g = a.g + (b.g - a.g) * k, .b = a.b + (b.b - a.b) * k, .a = a.a + (b.a - a.a) * k };
 }
 
 fn clipShape(r: Rect, radii: raster.Radii) scene.Shape {
@@ -1271,6 +1491,88 @@ test "scroll containers clamp, report, and route input" {
     try f.apply(&.{.{ .set_wheel_region = .{ .layer = 3, .region = .xywh(0, 200, 100, 50) } }});
     try testing.expectEqual(Route.ui, f.tree.route(.{ .x = 50, .y = 10 }, .{ .x = 0, .y = -10 }));
     try testing.expectEqual(Route{ .scroll = 2 }, f.tree.route(.{ .x = 50, .y = 60 }, .{ .x = 0, .y = -10 }));
+}
+
+test "scrollbars show on scrolling and pointer motion, widen near it, and fade when idle" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const bars: update.Scrollbars = .{ .vertical = true, .thumb = .black, .thumb_hover = .black, .track = .black };
+    const ms = std.time.ns_per_ms;
+    try f.apply(&.{
+        .{ .create = 1 },
+        .{ .create = 2 },
+        .{ .create = 3 },
+        .{ .set_root = 1 },
+        .{ .insert = .{ .layer = 2, .parent = 1 } },
+        .{ .insert = .{ .layer = 3, .parent = 2 } },
+        .{ .set_scroll = .{ .layer = 2, .scroll = .{ .viewport = .xywh(0, 0, 100, 100), .content = .{ .width = 100, .height = 400 }, .bars = bars } } },
+        .{ .set_content = .{ .layer = 3, .content = try f.rect(0, .xywh(0, 0, 100, 400)) } },
+    });
+    const l = f.tree.get(2).?;
+    var tk = try f.tree.tick(1000 * ms);
+    try testing.expectEqual(@as(f32, 0), l.bar_shown);
+    try testing.expect(!tk.holding);
+    // Scrolling reveals them: they fade in over 200 ms, from the frame
+    // that shows the scroll.
+    _ = try f.tree.scrollBy(2, .{ .x = 0, .y = 50 });
+    _ = try f.tree.tick(2000 * ms);
+    tk = try f.tree.tick(2100 * ms);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), l.bar_shown, 1e-3);
+    try testing.expect(tk.active and tk.holding);
+    // Drawn in a layer of their own above the children, thin.
+    const list = try f.tree.compose();
+    var found: ?usize = null;
+    for (list.commands, 0..) |c, i| if (c == .push and c.push.layer.id == 2 | bar_bit) {
+        found = i;
+    };
+    const fill = list.commands[found.? + 1].fill.shape.rounded_rect.rect;
+    try testing.expectApproxEqAbs(update.Scrollbars.thin, fill.width(), 1e-4);
+    _ = f.tree.endFrame();
+    // Shown, they owe no frames while they wait out the delay, and wake
+    // when it ends.
+    tk = try f.tree.tick(2200 * ms);
+    tk = try f.tree.tick(2300 * ms);
+    try testing.expectEqual(@as(f32, 1), l.bar_shown);
+    try testing.expect(!tk.active and !tk.holding);
+    try testing.expectEqual(@as(?u64, 4000 * ms), tk.next_start_ns);
+    // The pointer moving over the viewport shows them for longer, and
+    // near the bar widens it and keeps it.
+    try testing.expect(!try f.tree.pointerAt(.{ .x = 50, .y = 50 }));
+    _ = try f.tree.tick(3000 * ms);
+    tk = try f.tree.tick(4500 * ms);
+    try testing.expectEqual(@as(f32, 1), l.bar_shown);
+    try testing.expect(try f.tree.pointerAt(.{ .x = 86, .y = 50 }));
+    _ = try f.tree.tick(9000 * ms);
+    tk = try f.tree.tick(9300 * ms);
+    try testing.expectEqual(@as(f32, 1), l.bar_wide[0]);
+    try testing.expectEqual(@as(f32, 1), l.bar_shown);
+    // Away from it, it narrows and the bars fade over a second.
+    try testing.expect(try f.tree.pointerAt(.{ .x = 20, .y = 50 }));
+    _ = try f.tree.tick(9400 * ms);
+    _ = try f.tree.tick(9600 * ms);
+    try testing.expectEqual(@as(f32, 0), l.bar_wide[0]);
+    tk = try f.tree.tick(9700 * ms);
+    try testing.expectEqual(@as(?u64, 11_400 * ms), tk.next_start_ns);
+    _ = try f.tree.tick(11_400 * ms);
+    _ = try f.tree.tick(11_900 * ms);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), l.bar_shown, 1e-3);
+    tk = try f.tree.tick(12_400 * ms);
+    try testing.expectEqual(@as(f32, 0), l.bar_shown);
+    try testing.expect(!tk.active and !tk.holding and tk.next_start_ns == null);
+    // Without motion (reduced motion) they jump; with no delay (headless)
+    // only pinned bars show.
+    var no_motion = bars;
+    no_motion.animate = false;
+    f.tree.bar_delay_ns = 0;
+    try f.apply(&.{.{ .set_scroll = .{ .layer = 2, .scroll = .{ .viewport = .xywh(0, 0, 100, 100), .content = .{ .width = 100, .height = 400 }, .bars = no_motion } } }});
+    _ = try f.tree.scrollBy(2, .{ .x = 0, .y = 50 });
+    _ = try f.tree.tick(13_000 * ms);
+    try testing.expectEqual(@as(f32, 0), l.bar_shown);
+    _ = try f.tree.pointerAt(.{ .x = 95, .y = 50 });
+    _ = try f.tree.tick(13_100 * ms);
+    try testing.expectEqual(@as(f32, 1), l.bar_shown);
+    try testing.expectEqual(@as(f32, 1), l.bar_wide[0]);
 }
 
 test "a scroll container's viewport takes scroll input where nothing is drawn" {

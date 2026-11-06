@@ -232,7 +232,7 @@ fn fill(win: *Window, id: NodeId, state: *platform.TextInputState) void {
         const s = win.state(id);
         const c = editor.caretRect(win, id, l) catch return;
         const x = r.x0 + n.layout.padding.left(s.rtl) - s.editor_scroll + c.x0;
-        const y = r.y0 + n.layout.padding.top + c.y0;
+        const y = r.y0 + n.layout.padding.top - @import("paint.zig").scrollTranslation(win, id).y + c.y0;
         state.cursor_rect = .{ .x = @intFromFloat(@floor(x)), .y = @intFromFloat(@floor(y)), .width = @intFromFloat(@ceil(c.width())), .height = @intFromFloat(@ceil(c.height())) };
     }
 }

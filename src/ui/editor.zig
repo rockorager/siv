@@ -44,7 +44,7 @@ fn data(win: *const Window, id: NodeId) *node_mod.EditorData {
 fn contentOrigin(win: *const Window, id: NodeId) Point {
     const n = win.node(id);
     const s = win.state(id);
-    return .{ .x = n.layout.padding.left(s.rtl) - s.editor_scroll, .y = n.layout.padding.top };
+    return .{ .x = n.layout.padding.left(s.rtl) - s.editor_scroll, .y = n.layout.padding.top - @import("paint.zig").scrollTranslation(win, id).y };
 }
 
 fn contentWidth(win: *const Window, id: NodeId) f32 {

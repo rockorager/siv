@@ -17,6 +17,7 @@ const App = @import("harness.zig").App;
 const testing = std.testing;
 const NodeId = ui.NodeId;
 const Color = scene.Color;
+const Rect = @import("raster").Rect;
 
 const golden_dir = "test/golden/ui";
 const failure_dir = ".zig-cache/golden-failures";
@@ -317,6 +318,152 @@ test "scrolling on the compositor at 2x: no layout, no repaint, exact damage" {
     try testing.expectEqualStrings("Message 4", app.win.node(hit).data.text.content.flat().?);
 }
 
+/// A themed list of 20 rows in a bordered scroll node filling the window.
+fn scrolledList(win: *ui.Window) !NodeId {
+    const t = try win.begin();
+    errdefer t.abort();
+    const col = try node(t, .root, .flex, .{ .padding = .all(8) }, .{ .background_token = .window_bg });
+    try t.setFlex(col, .{ .axis = .column });
+    const list = try node(t, col, .scroll, .{ .grow = 1, .basis = .{ .px = 0 }, .padding = .all(1) }, .{ .background_token = .view_bg, .radius = .all(6), .clip = true, .border_width = 1, .border_token = .border });
+    for (0..20) |i| {
+        const item = try node(t, list, .box, .{ .padding = .symmetric(8, 5) }, .{ .background_token = if (i % 2 == 0) .view_bg else .card_bg });
+        var buf: [32]u8 = undefined;
+        _ = try label(t, item, try std.fmt.bufPrint(&buf, "Message {d} with a long subject", .{i + 1}), .{ .size = 12, .color_token = .view_fg }, .{});
+    }
+    t.commit();
+    return list;
+}
+
+fn pressPrimary(app: *App, pressed: bool) void {
+    app.inject(.{ .pointer_button = .{ .window = app.wid, .seat = 0, .button = 0x110, .pressed = pressed, .time = 0, .serial = 1 } });
+}
+
+fn moveTo(app: *App, x: f32, y: f32) void {
+    app.inject(.{ .pointer_motion = .{ .window = app.wid, .seat = 0, .x = x, .y = y } });
+}
+
+fn hearViewport(user: ?*anyopaque, win: *ui.Window, id: NodeId, ev: *const ui.Event) ui.HandlerResult {
+    _ = win;
+    _ = id;
+    const heard: *f32 = @ptrCast(@alignCast(user.?));
+    heard.* = ev.viewport.y;
+    return .handled;
+}
+
+test "scrollbars: widened near the pointer, dragged, paged, and always shown beside the content" {
+    var app: App = undefined;
+    try app.init(testing.allocator, .{ .width = 200, .height = 160 });
+    defer app.deinit();
+    const list = try scrolledList(app.win);
+    // What an application that keeps its own offset hears of drags.
+    var heard: f32 = -1;
+    {
+        const t = try app.win.begin();
+        try t.on(list, .viewport, .{ .func = hearViewport, .user = &heard });
+        t.commit();
+    }
+    try app.settle();
+    // The viewport: inside the border's padding.
+    const r = app.win.windowRect(list);
+    const vp: Rect = .{ .x0 = r.x0 + 1, .y0 = r.y0 + 1, .x1 = r.x1 - 1, .y1 = r.y1 - 1 };
+    const content_h = app.win.state(list).content.h;
+    const max = content_h - vp.height();
+    try testing.expect(max > 100);
+    const offset = struct {
+        fn y(a: *App, id: NodeId) f32 {
+            return a.win.node(id).data.scroll.offset.y;
+        }
+    }.y;
+    // Over the content the bar stays hidden on the headless backend (it
+    // would show for two seconds elsewhere, D47); near the end edge it
+    // widens, with its track, and the default cursor.
+    moveTo(&app, vp.x0 + 30, vp.y0 + 30);
+    try app.settle();
+    moveTo(&app, vp.x1 - 6, vp.y0 + 60);
+    try app.settle();
+    try expectGolden(&app, "scrollbar-hover");
+    try expectDamageExact(&app);
+    // The thumb, a share of the track as long as the share of the
+    // content in view, dragged by half its free length scrolls half way.
+    const track = vp.height() - 6;
+    const thumb = @max(40, track * vp.height() / content_h);
+    moveTo(&app, vp.x1 - 6, vp.y0 + 3 + thumb / 2);
+    pressPrimary(&app, true);
+    moveTo(&app, vp.x1 - 60, vp.y0 + 3 + thumb / 2 + (track - thumb) / 2);
+    try app.settle();
+    try testing.expectApproxEqAbs(max / 2, offset(&app, list), 0.01);
+    try testing.expectApproxEqAbs(max / 2, app.mirror.get(app.win.state(list).own_layer + 1).?.offset.y, 0.01);
+    try testing.expectApproxEqAbs(max / 2, heard, 0.01);
+    try expectGolden(&app, "scrollbar-drag");
+    try expectDamageExact(&app);
+    // Past the end it stops there; the release goes to no node.
+    moveTo(&app, vp.x1 - 6, vp.y1 + 50);
+    pressPrimary(&app, false);
+    try app.settle();
+    try testing.expectApproxEqAbs(max, offset(&app, list), 0.01);
+    // A press on the track above the thumb pages up by what Page Up
+    // scrolls.
+    moveTo(&app, vp.x1 - 6, vp.y0 + 10);
+    pressPrimary(&app, true);
+    pressPrimary(&app, false);
+    try app.settle();
+    try testing.expectApproxEqAbs(max - 0.9 * vp.height(), offset(&app, list), 0.01);
+    // A press beside the bar reaches the content as before.
+    moveTo(&app, vp.x1 - 30, vp.y0 + 10);
+    pressPrimary(&app, true);
+    pressPrimary(&app, false);
+    try app.settle();
+    try testing.expectApproxEqAbs(max - 0.9 * vp.height(), offset(&app, list), 0.01);
+    // Assistive technology sees a vertical scroll bar over the track,
+    // whose value is the offset, and scrolls the node by setting it.
+    {
+        const bar = (try app.win.semanticsTree()).find(.scroll_bar, "").?;
+        try testing.expect(bar.vertical);
+        try testing.expectEqual(list, bar.node);
+        try testing.expectEqual(vp.x1 - 3, bar.bounds.x1);
+        try testing.expectApproxEqAbs(max, bar.value.?.max, 0.01);
+        try testing.expectApproxEqAbs(max - 0.9 * vp.height(), bar.value.?.now, 0.01);
+    }
+    try testing.expect(ui.scrollbar.setValue(app.win, list, .vertical, 30));
+    try app.settle();
+    try testing.expectEqual(@as(f32, 30), offset(&app, list));
+    try testing.expectEqual(@as(f32, 30), app.mirror.get(app.win.state(list).own_layer + 1).?.offset.y);
+
+    // Always shown (GNOME's accessibility setting): in a gutter the rows
+    // leave, with the track, wherever the pointer is; the application's
+    // own scroll_to moves the thumb.
+    var d: ui.Window.Desktop = .{};
+    d.overlay_scrolling = false;
+    app.win.setDesktop(d);
+    {
+        const t = try app.win.begin();
+        try t.setScroll(list, .{ .offset = .{ .x = 0, .y = 60 } });
+        t.commit();
+    }
+    moveTo(&app, vp.x0 + 30, vp.y0 + 30);
+    try app.settle();
+    const row = app.win.node(list).first;
+    try testing.expectEqual(vp.width() - compositor.Scrollbars.gutter, app.win.state(row).size.w);
+    try expectGolden(&app, "scrollbar-always");
+    try expectDamageExact(&app);
+}
+
+test "scrollbars: always shown in right-to-left, dark, high-contrast layouts" {
+    var app: App = undefined;
+    try app.init(testing.allocator, .{ .width = 200, .height = 160, .rtl = true });
+    defer app.deinit();
+    var d: ui.Window.Desktop = .{ .color_scheme = .dark, .contrast = .high };
+    d.overlay_scrolling = false;
+    app.win.setDesktop(d);
+    const list = try scrolledList(app.win);
+    try app.settle();
+    // The gutter is at the left, under the bar.
+    const row = app.win.node(list).first;
+    try testing.expectEqual(compositor.Scrollbars.gutter, app.win.state(row).pos.x);
+    try expectGolden(&app, "scrollbar-rtl-dark-hc");
+    try expectDamageExact(&app);
+}
+
 test "a pending font loads on the pool and the text reshapes" {
     var app: App = undefined;
     try app.init(testing.allocator, .{ .width = 200, .height = 60 });
@@ -389,6 +536,61 @@ test "editors: selection, caret, horizontal scrolling, and RTL" {
     try testing.expect(app.win.state(eds[1]).editor_scroll > 0);
     try expectDamageExact(&app);
     try expectGolden(&app, "editors");
+}
+
+test "a multi-line editor shorter than its text scrolls it, with a scrollbar" {
+    var app: App = undefined;
+    try app.init(testing.allocator, .{ .width = 200, .height = 100 });
+    defer app.deinit();
+    var ed: NodeId = undefined;
+    {
+        const t = try app.win.begin();
+        const col = try node(t, .root, .box, .{ .padding = .all(10) }, .{ .background = panel });
+        ed = try node(t, col, .editor, .{ .height = .{ .px = 70 }, .padding = .symmetric(6, 4) }, .{ .background = .white, .border_width = 1, .border_color = border, .radius = .all(4) });
+        try t.setEditor(ed, .{ .multiline = true });
+        try t.setText(ed, "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10");
+        t.commit();
+    }
+    try app.settle();
+    const r = app.win.windowRect(ed);
+    const max = ui.maxScroll(app.win, ed).y;
+    try testing.expect(max > 40);
+    const layer = app.win.state(ed).own_layer + 1;
+    // Ctrl+End puts the caret on the last line, which the editor scrolls
+    // to; the compositor has the same offset.
+    app.click(r.x0 + 10, r.y0 + 10);
+    app.key(ui.keysym.end, .{ .ctrl = true });
+    try app.settle();
+    try testing.expectEqual(@as(u32, 70), app.win.node(ed).data.editor.caret);
+    try testing.expectApproxEqAbs(max, app.win.state(ed).editor_scroll_y, 0.01);
+    try testing.expectApproxEqAbs(max, app.mirror.get(layer).?.offset.y, 0.01);
+    // Near its end edge the bar widens.
+    moveTo(&app, r.x1 - 6, r.y0 + 30);
+    try app.settle();
+    try expectGolden(&app, "editor-scrolled");
+    try expectDamageExact(&app);
+    // A click lands on the line shown under it, not the one laid out there.
+    app.click(r.x0 + 10, r.y0 + 10);
+    try app.settle();
+    try testing.expect(app.win.node(ed).data.editor.caret > 30);
+    // Ctrl+Home scrolls back up; the wheel scrolls it on the compositor.
+    app.key(ui.keysym.home, .{ .ctrl = true });
+    try app.settle();
+    try testing.expectEqual(@as(f32, 0), app.win.state(ed).editor_scroll_y);
+    moveTo(&app, r.x0 + 30, r.y0 + 30);
+    app.inject(.{ .scroll = .{ .window = app.wid, .seat = 0, .dy = 20, .source = .wheel } });
+    try app.settle();
+    try testing.expectApproxEqAbs(@as(f32, 20), app.win.state(ed).editor_scroll_y, 0.01);
+    // Dragging its thumb to the end of the track scrolls to the end.
+    const thumb_y = r.y0 + 1 + 3 + 5;
+    moveTo(&app, r.x1 - 6, thumb_y);
+    pressPrimary(&app, true);
+    moveTo(&app, r.x1 - 6, thumb_y + 200);
+    pressPrimary(&app, false);
+    try app.settle();
+    try testing.expectApproxEqAbs(max, app.win.state(ed).editor_scroll_y, 0.01);
+    try testing.expectApproxEqAbs(max, app.mirror.get(layer).?.offset.y, 0.01);
+    try testing.expectEqual(@as(u32, 0), app.win.node(ed).data.editor.caret);
 }
 
 test "input method on the compositor: enable, inline preedit, commit" {

@@ -308,6 +308,9 @@ fn maxContentOf(win: *Window, id: NodeId, l: node_mod.Layout, f: node_mod.Flex) 
             .box, .scroll => {
                 var it = shownInf(win, id);
                 while (it.next()) |ch| content = @max(content, try maxContentInf(win, ch));
+                // Room for an always-shown vertical scrollbar (D47).
+                if (n.kind == .scroll and n.data.scroll.axis != .horizontal and !win.desktop.overlay_scrolling)
+                    content += @import("compositor").Scrollbars.gutter;
             },
             .stack => {
                 var it = shownInf(win, id);
@@ -500,18 +503,27 @@ fn stackBlock(win: *Window, id: NodeId, cw: f32, rtl: bool, origin: Point, ch_sp
 
 /// The viewport is the content box. Children flow as in a box, in content
 /// coordinates (origin at the content box's top-left corner, unscrolled).
+/// Always-shown scrollbars (D47) take a gutter at the end of each axis
+/// that scrolls: the children are laid out that much narrower (from the
+/// start edge, so in right-to-left layouts the gutter is at the left,
+/// under the bar), and the content ends that much lower, below the
+/// horizontal bar, whether or not it overflows, so that a bar coming and
+/// going never changes the layout.
 fn scroll(win: *Window, id: NodeId, inner: Constraints) Error!Size {
     const s = win.state(id);
     const axis = win.node(id).data.scroll.axis;
+    const gutter: f32 = if (win.desktop.overlay_scrolling) 0 else @import("compositor").Scrollbars.gutter;
+    const gv: f32 = if (axis != .horizontal) gutter else 0;
+    const gh: f32 = if (axis != .vertical) gutter else 0;
     const vw = try fitWidth(win, id, inner);
-    var content_w = vw;
+    var content_w = @max(0, vw - gv);
     if (axis != .vertical) {
         var it = win.shown(id);
         while (it.next()) |ch| content_w = @max(content_w, try maxContent(win, ch));
     }
-    const h = try stackBlock(win, id, content_w, s.rtl, .zero, std.math.inf(f32));
+    const h = try stackBlock(win, id, content_w, s.rtl, .{ .x = if (s.rtl) gv else 0, .y = 0 }, std.math.inf(f32)) + gh;
     const vh = inner.clampH(h);
-    s.content = .{ .w = content_w, .h = if (axis == .horizontal) @max(h, vh) else h };
+    s.content = .{ .w = content_w + gv, .h = if (axis == .horizontal) @max(h, vh) else h };
     return .{ .w = vw, .h = vh };
 }
 

@@ -9,6 +9,7 @@ const text = @import("text");
 const raster = @import("raster");
 const Window = @import("Window.zig");
 const node_mod = @import("node.zig");
+const scrollbar = @import("scrollbar.zig");
 
 const NodeId = node_mod.NodeId;
 const Role = node_mod.Role;
@@ -72,6 +73,8 @@ pub const Node = struct {
     /// Another process's object shown as the last child (D18):
     /// "BUS_NAME:/object/path", or empty.
     embed: []const u8 = "",
+    /// A scrollbar's axis (D47).
+    vertical: bool = false,
 };
 
 /// What a canvas lists of its content (`Canvas.semantics`): objects in
@@ -222,6 +225,7 @@ pub const Tree = struct {
         var it = win.shown(id);
         while (it.next()) |c| try t.visit(win, c, me);
         if (n.kind == .canvas) if (n.data.canvas.semantics) |f| try t.virtualChildren(win, id, f, me);
+        try t.scrollbars(win, id, me);
         if (included) t.nodes.items[me].end = @intCast(t.nodes.items.len);
     }
 
@@ -261,6 +265,39 @@ pub const Tree = struct {
                 .set_size = vn.set_size,
             });
         }
+    }
+
+    /// A scroll node's scrollbars, after its content (D47): virtual
+    /// objects 1 (vertical) and 2 (horizontal), shown while it overflows,
+    /// whose values are its logical offsets.
+    fn scrollbars(t: *Tree, win: *Window, id: NodeId, parent: u32) Window.Error!void {
+        const origin = win.windowRect(id);
+        for (scrollbar.ranges(win, id), 0..) |or_, i| if (or_) |r| {
+            const me: u32 = @intCast(t.nodes.items.len);
+            const b = r.track;
+            try t.nodes.append(win.gpa, .{
+                .node = id,
+                .virtual = @intCast(i + 1),
+                .role = .scroll_bar,
+                .parent = parent,
+                .end = me + 1,
+                .name_start = @intCast(t.names.items.len),
+                .name_len = 0,
+                .description = "",
+                .bounds = .{ .x0 = b.x0 + origin.x0, .y0 = b.y0 + origin.y0, .x1 = b.x1 + origin.x0, .y1 = b.y1 + origin.y0 },
+                .focusable = false,
+                .focused = false,
+                .disabled = false,
+                .checked = .unset,
+                .pressed = .unset,
+                .selected = .unset,
+                .expanded = .unset,
+                .value = r.range,
+                .live = .off,
+                .actionable = false,
+                .vertical = r.axis == .vertical,
+            });
+        };
     }
 
     /// Descendant text, space-separated: the name of a button or link.

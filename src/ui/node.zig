@@ -474,6 +474,8 @@ pub const Role = enum(u8) {
     document,
     /// A navigation landmark: a sidebar of the application's places.
     navigation,
+    /// A scroll node's scrollbar (D47), which siv adds itself.
+    scroll_bar,
 };
 
 pub const Toggle = enum(u8) { unset, off, on, mixed };

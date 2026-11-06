@@ -1088,6 +1088,11 @@ fn setValueNow(ctx: PropertyContext, in: *dbus.Decoder) anyerror!void {
     const x = try propNode(ctx);
     const v = try in.readDouble();
     if (x.n().value == null or !x.live()) return error.AccessDenied;
+    // A scrollbar scrolls its node (D47).
+    if (x.n().role == .scroll_bar) {
+        if (!ui.scrollbar.setValue(x.w.ui, x.id(), if (x.n().states.has(.vertical)) .vertical else .horizontal, v)) return error.AccessDenied;
+        return;
+    }
     if (!ui.input.setValue(x.w.ui, x.id(), v)) return error.AccessDenied;
 }
 

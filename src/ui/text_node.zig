@@ -943,21 +943,44 @@ fn settleText(win: *Window, id: NodeId, c: *Cache, l: *const text.TextLayout, sc
 /// container (a text that is not long).
 fn revealCaret(win: *Window, id: NodeId) error{OutOfMemory}!void {
     if (!win.isLive(id) or win.node(id).kind != .editor or !win.isShown(id)) return;
-    const sc = nearestScroll(win, id) orelse return;
     const l = current(win, id) orelse return;
-    try revealIn(win, id, l, sc);
+    try revealIn(win, id, l, nearestScroll(win, id));
 }
 
-fn revealIn(win: *Window, id: NodeId, l: *const text.TextLayout, sc: NodeId) error{OutOfMemory}!void {
+/// Shows the caret: a multi-line editor shorter than its text scrolls
+/// the caret's line into its content box first (D15), then the scroll
+/// container around it, if any, shows that.
+fn revealIn(win: *Window, id: NodeId, l: *const text.TextLayout, sc: ?NodeId) error{OutOfMemory}!void {
     const e = win.node(id).data.editor;
     const editor = @import("editor.zig");
+    const paint = @import("paint.zig");
     const caret = try l.caret(.{ .offset = editor.displayCaret(win, id), .affinity = e.affinity });
-    const view = shown(win, id, sc);
-    const top: f64 = caret.top;
-    const bottom = top + caret.height;
+    var top: f64 = caret.top;
+    var bottom = top + caret.height;
+    if (paint.scrollsText(win.node(id))) {
+        const s = win.state(id);
+        const pad = win.node(id).layout.padding;
+        const max: f64 = paint.maxScroll(win, id).y;
+        const y: f64 = paint.scrollTranslation(win, id).y;
+        const room: f64 = s.size.h - pad.vertical();
+        var to = y;
+        if (bottom - to > room) to = bottom - room;
+        if (top < to) to = top;
+        to = std.math.clamp(to, 0, max);
+        if (to != y) {
+            const d: f32 = @floatCast(to - y);
+            s.editor_scroll_y = @floatCast(to);
+            try win.paint.scroll_by.append(win.gpa, .{ .node = id, .delta = .{ .x = 0, .y = d }, .early = d < 0 });
+            win.dirty.props = true;
+        }
+        top -= to;
+        bottom -= to;
+    }
+    const container = sc orelse return;
+    const view = shown(win, id, container);
     if (top < view[0]) {
-        scrollText(win, sc, top - view[0]);
-    } else if (bottom > view[0] + view[1]) scrollText(win, sc, bottom - (view[0] + view[1]));
+        scrollText(win, container, top - view[0]);
+    } else if (bottom > view[0] + view[1]) scrollText(win, container, bottom - (view[0] + view[1]));
 }
 
 /// The compositor scrolled `sc`: long texts in it take their anchors

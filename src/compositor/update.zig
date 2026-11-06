@@ -142,6 +142,8 @@ pub const Scroll = struct {
     /// Zoom range; equal values (the default) never zoom.
     min_zoom: f32 = 1,
     max_zoom: f32 = 1,
+    /// The scrollbars drawn over the children (D47).
+    bars: Scrollbars = .{},
 
     pub fn zoomable(s: Scroll) bool {
         return s.max_zoom > s.min_zoom;
@@ -149,6 +151,136 @@ pub const Scroll = struct {
 
     pub fn clampZoom(s: Scroll, z: f32) f32 {
         return std.math.clamp(z, s.min_zoom, s.max_zoom);
+    }
+
+    /// The largest offset at `zoom` on each axis.
+    pub fn maxOffset(s: Scroll, zoom: f32) Point {
+        return .{
+            .x = @max(0, s.content.width * zoom - s.viewport.width()),
+            .y = @max(0, s.content.height * zoom - s.viewport.height()),
+        };
+    }
+
+    /// The bars shown at `zoom` and `offset`, vertical then horizontal:
+    /// one for each axis the container scrolls whose content overflows
+    /// by more than half a pixel, along the viewport's edge (the end
+    /// edge for the vertical one: right, or left with
+    /// `Scrollbars.left`; the bottom for the horizontal one). Each
+    /// thumb is as long as the track times the share of the content in
+    /// view, at least `Scrollbars.min_thumb`, placed by the offset. The
+    /// UI hit tests with the same geometry the compositor draws.
+    pub fn barsAt(s: Scroll, zoom: f32, offset: Point) [2]?Bar {
+        const b = s.bars;
+        const v = s.viewport;
+        const max = s.maxOffset(zoom);
+        const has_v = b.vertical and max.y > 0.5;
+        const has_h = b.horizontal and max.x > 0.5;
+        const m = Scrollbars.margin;
+        const k = Scrollbars.thick;
+        var out: [2]?Bar = .{ null, null };
+        if (has_v) {
+            const x0 = if (b.left) v.x0 + m else v.x1 - m - k;
+            const track: Rect = .{ .x0 = x0, .y0 = v.y0 + m, .x1 = x0 + k, .y1 = v.y1 - m - if (has_h) k + m else 0 };
+            out[0] = Bar.along(.vertical, track, v.height(), max.y, offset.y);
+        }
+        if (has_h) {
+            const left: f32 = if (has_v and b.left) k + m else 0;
+            const right: f32 = if (has_v and !b.left) k + m else 0;
+            const track: Rect = .{ .x0 = v.x0 + m + left, .y0 = v.y1 - m - k, .x1 = v.x1 - m - right, .y1 = v.y1 - m };
+            out[1] = Bar.along(.horizontal, track, v.width(), max.x, offset.x);
+        }
+        return out;
+    }
+};
+
+pub const Axis = enum(u1) { vertical, horizontal };
+
+/// How a scroll container's scrollbars look and behave (D47). The
+/// compositor draws them above the children, inside the viewport, and
+/// shows them while the offset changes, while the pointer moves over the
+/// viewport, and for `Tree.bar_delay_ns` after, while the pointer is
+/// near one (widened from `thin` to `thick`, with the track behind
+/// it), while the UI drags one (`active`), and always with `always`;
+/// otherwise they fade out. The UI handles presses on them.
+pub const Scrollbars = struct {
+    /// The axes that get a bar where the content overflows.
+    vertical: bool = false,
+    horizontal: bool = false,
+    /// The vertical bar is at the left edge (right-to-left layouts).
+    left: bool = false,
+    /// Shown all the time, thick and with its track, in room the layout
+    /// left for it (the desktop's "always show scrollbars").
+    always: bool = false,
+    /// The bar the pointer drags: thick, `thumb_active`, and shown until
+    /// the drag ends.
+    active: ?Axis = null,
+    /// Fades and widening run over time; false jumps (reduced motion).
+    animate: bool = true,
+    /// The thumb at rest, near the pointer, and dragged; the track behind
+    /// a widened thumb; a line around the thumb that keeps it apart from
+    /// content of its own color.
+    thumb: Color = .transparent,
+    thumb_hover: Color = .transparent,
+    thumb_active: Color = .transparent,
+    track: Color = .transparent,
+    outline: Color = .transparent,
+
+    /// Thumb widths at rest and near the pointer (libadwaita's 3 and 8).
+    pub const thin: f32 = 3;
+    pub const thick: f32 = 8;
+    /// Between a track and the viewport's edges.
+    pub const margin: f32 = 3;
+    /// The room a bar takes beside the content when always shown.
+    pub const gutter: f32 = thick + 2 * margin;
+    /// The shortest thumb (libadwaita's 40), unless the track is shorter.
+    pub const min_thumb: f32 = 40;
+    /// How near the pointer must come to a track for it to widen, and how
+    /// far it may go once widened (GTK's 5 and 10).
+    pub const near: f32 = 5;
+    pub const far: f32 = 10;
+    /// Fading in and out, and widening (D47).
+    pub const fade_in_ns: u64 = 200 * std.time.ns_per_ms;
+    pub const fade_out_ns: u64 = 1000 * std.time.ns_per_ms;
+    pub const widen_ns: u64 = 200 * std.time.ns_per_ms;
+    /// How long bars stay after what showed them (GTK's 2 s).
+    pub const delay_ns: u64 = 2 * std.time.ns_per_s;
+
+    pub fn any(b: Scrollbars) bool {
+        return b.vertical or b.horizontal;
+    }
+};
+
+/// One scrollbar: its track (as wide as a widened thumb) and its thumb,
+/// in the container's coordinates.
+pub const Bar = struct {
+    axis: Axis,
+    track: Rect,
+    thumb: Rect,
+    /// Offset per pixel of thumb movement: dragging the thumb by d
+    /// pixels scrolls by d times this.
+    scale: f32,
+
+    fn along(axis: Axis, track: Rect, view: f32, max: f32, offset: f32) ?Bar {
+        const len = if (axis == .vertical) track.height() else track.width();
+        if (!(len > 0) or !(max > 0)) return null;
+        const t = @min(len, @max(Scrollbars.min_thumb, len * view / (view + max)));
+        const pos = (len - t) * std.math.clamp(offset / max, 0, 1);
+        const thumb: Rect = if (axis == .vertical)
+            .{ .x0 = track.x0, .y0 = track.y0 + pos, .x1 = track.x1, .y1 = track.y0 + pos + t }
+        else
+            .{ .x0 = track.x0 + pos, .y0 = track.y0, .x1 = track.x0 + pos + t, .y1 = track.y1 };
+        return .{ .axis = axis, .track = track, .thumb = thumb, .scale = if (len > t) max / (len - t) else 0 };
+    }
+
+    /// Whether `p` is on the bar or within `reach` of its track, toward
+    /// the content, inside `viewport`: what widens it and what a press
+    /// takes.
+    pub fn near(b: Bar, viewport: Rect, p: Point, reach: f32) bool {
+        if (p.x < viewport.x0 or p.x >= viewport.x1 or p.y < viewport.y0 or p.y >= viewport.y1) return false;
+        return switch (b.axis) {
+            .vertical => p.x >= b.track.x0 - reach and p.x < b.track.x1 + Scrollbars.margin and p.y >= b.track.y0 - Scrollbars.margin and p.y < b.track.y1 + Scrollbars.margin,
+            .horizontal => p.y >= b.track.y0 - reach and p.y < b.track.y1 + Scrollbars.margin and p.x >= b.track.x0 - Scrollbars.margin and p.x < b.track.x1 + Scrollbars.margin,
+        };
     }
 };
 
@@ -499,6 +631,44 @@ fn finiteRect(r: Rect) bool {
 fn validScroll(s: Scroll) bool {
     return finiteRect(s.viewport) and std.math.isFinite(s.content.width) and std.math.isFinite(s.content.height) and
         std.math.isFinite(s.min_zoom) and std.math.isFinite(s.max_zoom) and s.min_zoom > 0 and s.max_zoom >= s.min_zoom;
+}
+
+test "scrollbars show where the content overflows, sized and placed by the view" {
+    var s: Scroll = .{
+        .viewport = .xywh(0, 0, 100, 200),
+        .content = .{ .width = 100, .height = 800 },
+        .bars = .{ .vertical = true, .horizontal = true },
+    };
+    // Only the vertical axis overflows: no horizontal bar, and the
+    // vertical track runs the viewport's height less the margins.
+    var bars = s.barsAt(1, .zero);
+    try testing.expect(bars[1] == null);
+    const v = bars[0].?;
+    try testing.expectEqual(Rect{ .x0 = 89, .y0 = 3, .x1 = 97, .y1 = 197 }, v.track);
+    // A quarter of the content is in view: the thumb is a quarter of the
+    // track, at its start, and reaches the end at the largest offset.
+    try testing.expectApproxEqAbs(@as(f32, 194.0 / 4.0), v.thumb.height(), 1e-4);
+    try testing.expectEqual(@as(f32, 3), v.thumb.y0);
+    bars = s.barsAt(1, .{ .x = 0, .y = 600 });
+    try testing.expectApproxEqAbs(@as(f32, 197), bars[0].?.thumb.y1, 1e-4);
+    // Dragging the thumb across its free length scrolls the whole range.
+    try testing.expectApproxEqAbs(@as(f32, 600), bars[0].?.scale * (194 - 194.0 / 4.0), 1e-3);
+    // Zoomed out to a half, half the content is in view.
+    bars = s.barsAt(0.5, .zero);
+    try testing.expectApproxEqAbs(@as(f32, 97), bars[0].?.thumb.height(), 1e-4);
+    // Long content keeps the thumb at its shortest; both axes overflowing
+    // leave the corner to neither, and right-to-left moves the vertical
+    // bar to the left.
+    s.content = .{ .width = 300, .height = 100_000 };
+    s.bars.left = true;
+    bars = s.barsAt(1, .zero);
+    try testing.expectEqual(Scrollbars.min_thumb, bars[0].?.thumb.height());
+    try testing.expectEqual(Rect{ .x0 = 3, .y0 = 3, .x1 = 11, .y1 = 186 }, bars[0].?.track);
+    try testing.expectEqual(Rect{ .x0 = 14, .y0 = 189, .x1 = 97, .y1 = 197 }, bars[1].?.track);
+    // A fraction of a pixel of overflow shows nothing.
+    s.content = .{ .width = 100.4, .height = 200.4 };
+    bars = s.barsAt(1, .zero);
+    try testing.expect(bars[0] == null and bars[1] == null);
 }
 
 fn validValue(v: Value) bool {

@@ -122,6 +122,9 @@ pub const Values = struct {
     /// The icon theme's directory name (D19); empty when no source names
     /// one, and the toolkit's default applies.
     icon_theme: Text(64) = .{},
+    /// Scrollbars overlay the content and hide when idle; false keeps
+    /// them shown beside it (GNOME's "always show scrollbars", D47).
+    overlay_scrolling: bool = true,
 };
 
 /// Which values changed.
@@ -140,7 +143,8 @@ pub const Changed = packed struct(u16) {
     /// Any of the three caret blink values.
     cursor_blink: bool = false,
     icon_theme: bool = false,
-    _: u3 = 0,
+    overlay_scrolling: bool = false,
+    _: u2 = 0,
 
     pub fn any(c: Changed) bool {
         return @as(u16, @bitCast(c)) != 0;
@@ -155,6 +159,7 @@ pub const Raw = struct {
     contrast: ?u32 = null,
     reduced_motion: ?u32 = null,
     gnome_enable_animations: ?bool = null,
+    gnome_overlay_scrolling: ?bool = null,
     gnome_high_contrast: ?bool = null,
     gnome_text_scale: ?f64 = null,
     gnome_font: ?Font = null,
@@ -192,6 +197,8 @@ pub const Raw = struct {
         } else if (eq(u8, namespace, ns_gnome)) {
             if (eq(u8, key, "enable-animations")) {
                 r.gnome_enable_animations = readBool(value_sig, d);
+            } else if (eq(u8, key, "overlay-scrolling")) {
+                r.gnome_overlay_scrolling = readBool(value_sig, d);
             } else if (eq(u8, key, "text-scaling-factor")) {
                 r.gnome_text_scale = readDouble(value_sig, d);
             } else if (eq(u8, key, "font-name")) {
@@ -262,6 +269,7 @@ pub const Raw = struct {
         v.cursor_blink = r.gnome_cursor_blink orelse if (r.kde_cursor_blink_rate) |k| k != 0 else def.cursor_blink;
         v.cursor_blink_ms = inRange(r.gnome_cursor_blink_time, 100, 10_000) orelse inRange(r.kde_cursor_blink_rate, 100, 10_000) orelse def.cursor_blink_ms;
         v.cursor_blink_timeout_s = inRange(r.gnome_cursor_blink_timeout, 1, 86_400) orelse def.cursor_blink_timeout_s;
+        v.overlay_scrolling = r.gnome_overlay_scrolling orelse def.overlay_scrolling;
         return v;
     }
 };
@@ -535,6 +543,7 @@ fn update(s: *Settings, always: bool) void {
         .double_click = old.double_click_ms != new.double_click_ms,
         .cursor_blink = old.cursor_blink != new.cursor_blink or old.cursor_blink_ms != new.cursor_blink_ms or
             old.cursor_blink_timeout_s != new.cursor_blink_timeout_s,
+        .overlay_scrolling = old.overlay_scrolling != new.overlay_scrolling,
     };
     if (!changed.any() and !always) return;
     if (s.on_change) |f| f(s.ctx, s, changed);

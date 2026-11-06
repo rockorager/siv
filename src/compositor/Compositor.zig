@@ -222,6 +222,13 @@ pub fn scrollOffset(self: *Compositor, id: WindowId, layer: LayerId) ?Point {
     return l.offset;
 }
 
+/// A window's layer tree, for tests that compare what it composes.
+/// Compositor thread only.
+pub fn windowTree(self: *Compositor, id: WindowId) ?*Tree {
+    const w = self.getWindow(id) orelse return null;
+    return &w.tree;
+}
+
 /// Code run on the compositor thread by `post` and `call`. It may use
 /// `compositor.platform`, e.g. for Wayland requests the UI owns logically.
 pub const Func = *const fn (ctx: ?*anyopaque, compositor: *Compositor) void;
@@ -926,6 +933,9 @@ fn openSurface(self: *Compositor, role: union(enum) { toplevel: platform_mod.Win
         parent.hold_for = id;
         parent.hold_until = Loop.now() + max_popup_hold_ns;
     };
+    // Scrollbars that hide after a delay would make captures depend on
+    // time (D24, D47).
+    if (self.platform == .headless) w.tree.bar_delay_ns = 0;
     w.externals.loop = self.loop;
     w.externals.on_ready = .{ .ctx = w, .func = onExternalReady };
     self.windows.items[id] = w;
@@ -1166,9 +1176,16 @@ fn handlePlatformEvent(self: *Compositor, ev: *const platform_mod.Event) void {
         .pointer_enter, .pointer_motion => |m| if (m.seat < max_seats) {
             self.seats[m.seat].window = m.window;
             self.seats[m.seat].pos = .{ .x = @floatCast(m.x), .y = @floatCast(m.y) };
+            // Scrollbars show and widen without the UI (D47).
+            if (self.getWindow(m.window)) |w| {
+                if (w.tree.pointerAt(self.seats[m.seat].pos) catch false) self.want(m.window);
+            }
         },
         .pointer_leave => |l| if (l.seat < max_seats) {
             self.seats[l.seat].window = null;
+            if (self.getWindow(l.window)) |w| {
+                if (w.tree.pointerAt(null) catch false) self.want(l.window);
+            }
         },
         .modifiers => |m| if (m.seat < max_seats) {
             self.seats[m.seat].mods = m.mods;

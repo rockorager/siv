@@ -20,6 +20,7 @@ const node_mod = @import("node.zig");
 const paint = @import("paint.zig");
 const editor = @import("editor.zig");
 const ime = @import("ime.zig");
+const scrollbar = @import("scrollbar.zig");
 
 const NodeId = node_mod.NodeId;
 const Event = node_mod.Event;
@@ -83,6 +84,9 @@ pub const State = struct {
     hover_stale: bool = false,
     /// The node a press went to; it receives the pointer until release.
     capture: NodeId = .none,
+    /// The scrollbar a primary press went to, which holds the pointer
+    /// until release instead of a node (D47).
+    bar: ?scrollbar.Grab = null,
     /// The evdev code of the button pressed or released last.
     button_code: u32 = 0,
     /// The activatable node a primary press went to.
@@ -151,6 +155,9 @@ pub const State = struct {
             win.dirty.semantics = true;
         }
         if (st.capture == id) st.capture = .none;
+        if (st.bar) |g| if (g.node == id) {
+            st.bar = null;
+        };
         if (st.pressed == id) st.pressed = .none;
         if (st.selecting == id) st.selecting = .none;
         if (st.tooltip_hover == id) st.tooltip_hover = .none;
@@ -537,7 +544,7 @@ fn hoverTooltip(win: *Window) void {
 pub fn updateCursor(win: *Window) void {
     const st = &win.input;
     const p = st.pointer orelse return;
-    const shape = win.cursor_override orelse blk: {
+    const shape = win.cursor_override orelse if (scrollbar.covers(win, p)) .default else blk: {
         var cur = if (st.capture != .none and win.isLive(st.capture)) st.capture else hitTest(win, p);
         while (cur != .none) : (cur = win.node(cur).parent) {
             const n = win.node(cur);
@@ -566,6 +573,10 @@ pub fn handle(win: *Window, event: *const platform.Event) void {
     switch (event.*) {
         .pointer_enter, .pointer_motion => |m| {
             st.pointer = .{ .x = @floatCast(m.x), .y = @floatCast(m.y) };
+            if (st.bar != null) {
+                scrollbar.drag(win, st.pointer.?);
+                return;
+            }
             const target = if (st.capture != .none) st.capture else hitTest(win, st.pointer.?);
             updateHover(win, if (st.capture != .none) hitTest(win, st.pointer.?) else target);
             if (st.capture == .none) hoverTooltip(win);
@@ -603,6 +614,7 @@ pub fn handle(win: *Window, event: *const platform.Event) void {
         .touch_motion => |t| {
             if (touchSequence(win, &t, .move)) return;
             st.pointer = .{ .x = @floatCast(t.x), .y = @floatCast(t.y) };
+            if (st.bar != null) return scrollbar.drag(win, st.pointer.?);
             if (st.capture != .none) _ = bubblePointer(win, st.capture, .move, .primary);
         },
         .touch_up => |t| {
@@ -614,6 +626,7 @@ pub fn handle(win: *Window, event: *const platform.Event) void {
                 ts.active = false;
                 if (win.isLive(ts.target)) callHandler(win, ts.target, .touch, &.{ .touch = .{ .phase = .cancel, .id = ts.id, .mods = st.mods } });
             };
+            scrollbar.release(win);
             if (st.capture != .none) _ = bubblePointer(win, st.capture, .cancel, .primary);
             st.capture = .none;
             st.pressed = .none;
@@ -669,6 +682,12 @@ fn pointerButton(win: *Window, code: u32, pressed: bool, time: u32) void {
         st.last_press_ms = time;
         st.last_press_at = p;
     }
+    // A scrollbar holds the pointer from its press to the release (D47).
+    if (st.bar != null) {
+        if (!pressed and button == .primary) scrollbar.release(win);
+        return;
+    }
+    if (pressed and button == .primary and scrollbar.press(win, p)) return;
     if (pressed) {
         const target = hitTest(win, p);
         if (target == .none) return;

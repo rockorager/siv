@@ -921,6 +921,8 @@ test "settings: defaults without a portal, then live values once it starts" {
     // GNOME's period, and KDE's string "0" turning blinking off.
     try testing.expectEqual(@as(u32, 1000), v.cursor_blink_ms);
     try testing.expect(!v.cursor_blink);
+    // GNOME's "always show scrollbars".
+    try testing.expect(!v.overlay_scrolling);
     try testing.expect(obs.last.color_scheme and obs.last.accent_color and obs.last.cursor_size and !obs.last.contrast);
 
     // Live changes.

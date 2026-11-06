@@ -46,6 +46,7 @@ pub const Role = enum(u32) {
     progress_bar = 42,
     button = 43,
     radio_button = 44,
+    scroll_bar = 48,
     scroll_pane = 49,
     separator = 50,
     slider = 51,
@@ -97,6 +98,7 @@ pub const Role = enum(u32) {
             .progress_bar => "progress bar",
             .button => "push button",
             .radio_button => "radio button",
+            .scroll_bar => "scroll bar",
             .scroll_pane => "scroll pane",
             .separator => "separator",
             .slider => "slider",
@@ -172,6 +174,7 @@ pub fn role(r: ui.Role, masked: bool) Role {
         .canvas => .canvas,
         .document => .document_frame,
         .navigation => .landmark,
+        .scroll_bar => .scroll_bar,
     };
 }
 
@@ -198,6 +201,7 @@ pub const State = enum(u6) {
     sensitive = 24,
     showing = 25,
     single_line = 26,
+    vertical = 29,
     visible = 30,
     indeterminate = 32,
     selectable_text = 38,

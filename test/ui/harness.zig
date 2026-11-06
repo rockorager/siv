@@ -512,6 +512,26 @@ pub const App = struct {
     /// Renders the committed layer tree from scratch at the presented size.
     /// RGBA bytes; caller frees.
     pub fn fullRender(app: *App, width: u32, height: u32) ![]u8 {
+        // Scrollbars show and hide on the compositor (D47): copy their
+        // state from its tree.
+        const Sync = struct {
+            app: *App,
+            fn run(ctx: ?*anyopaque, comp: *Compositor) void {
+                const s: *@This() = @ptrCast(@alignCast(ctx));
+                const real = comp.windowTree(s.app.wid) orelse return;
+                const m = &s.app.mirror;
+                m.bar_hover = real.bar_hover;
+                for (real.layers.items, 0..) |r, i| {
+                    const l = m.get(@intCast(i)) orelse continue;
+                    l.bar_shown = r.bar_shown;
+                    l.bar_wide = r.bar_wide;
+                    l.bar_version = r.bar_version;
+                    l.zoom = r.zoom;
+                }
+            }
+        };
+        var sync: Sync = .{ .app = app };
+        try app.comp.call(&sync, Sync.run);
         const list = try app.mirror.compose();
         // The mirror releases nothing: the compositor owns the builders.
         _ = app.mirror.endFrame();

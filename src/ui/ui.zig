@@ -75,6 +75,8 @@ pub const Spelling = @import("spelling.zig");
 pub const iconColors = @import("paint.zig").iconColors;
 /// The band of a node's y coordinates its scroll container shows.
 pub const visibleBand = @import("paint.zig").visibleBand;
+/// How far a scroll node or a multi-line editor can scroll (D47).
+pub const maxScroll = @import("paint.zig").maxScroll;
 pub const Player = @import("image.zig").Player;
 pub const ImageView = node.ImageView;
 pub const Canvas = node.Canvas;
@@ -115,6 +117,8 @@ pub const Sink = layers.Sink;
 pub const semantics = @import("semantics.zig");
 pub const input = @import("input.zig");
 pub const access = @import("access.zig");
+/// Scrollbars: their look and presses on them (D47).
+pub const scrollbar = @import("scrollbar.zig");
 /// The inspector's overlays and picking (D46).
 pub const inspect = @import("inspect.zig");
 /// Text nodes' shaped paragraphs and layouts, for tests that check lines.
