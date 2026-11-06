@@ -1543,7 +1543,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     the text changes. Ranges styled past the cut are dropped from the
     copy, and the range the cut ends covers the ellipsis, which so takes
     the style of the text before it (a mail list's muted snippet cut
-    mid-range crashed the shaper). The ellipsis is a neutral character at the logical
+    mid-range crashed the shaper). Since the copy's ranges are a prefix
+    of the node's, its style runs index the node's run styles, and
+    paint takes colors and decorations from them as for the whole text;
+    it had looked them up for the whole text's layout only, so cut text
+    kept its spans' weights and lost their colors (found by Parcel, a
+    mail client, whose rows are nearly all cut). The ellipsis is a neutral character at the logical
     end, so it lands on the visual end of the paragraph's direction. The
     node's text, accessible name, and max-content width stay whole, so a
     table cell grows back when its column does. Found by the file

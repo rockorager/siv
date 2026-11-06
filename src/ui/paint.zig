@@ -1576,7 +1576,10 @@ pub fn visibleBand(win: *const Window, nid: NodeId) ?[2]f32 {
 fn drawLayout(st: *State, win: *Window, l: *const text.TextLayout, b: *scene.Builder, ox: f32, oy: f32, content_w: f32, color: scene.Color, nid: ?NodeId, band: ?[2]f32) DrawError!Rect {
     var bounds = Rect.empty;
     const cache = if (nid) |n| win.state(n).text else null;
-    const own = if (cache) |c| (if (c.layout) |*cl| cl == l else false) else false;
+    // The cut copy (an ellipsis or a line clamp) is shaped from a prefix
+    // of the same spans, so its style runs are a prefix of the node's
+    // and index the same styles (`text_node.clipSpans`).
+    const own = if (cache) |c| (if (c.layout) |*cl| cl == l else false) or (if (c.cut) |*ct| &ct.layout == l else false) else false;
     const first: u32 = if (band) |bd| l.blockAtY(bd[0]) else 0;
     // Far down a long text, floats are coarser than a pixel: the band's
     // lines go in a layer at its first block's top, placed relative to it

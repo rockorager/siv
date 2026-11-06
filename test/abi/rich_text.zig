@@ -347,6 +347,61 @@ test "text: an ellipsis cuts through and before styled ranges" {
     try testing.expect(try width(nodes[1]) <= 100);
 }
 
+test "text: span colors survive an ellipsis" {
+    // A mail list's row: a muted line with the sender in a literal color
+    // and the subject in a themed one. Cut short, the spans kept their
+    // weight and lost their colors to the node's.
+    var h: Harness = .{};
+    try h.start(240, 80, null, null);
+    defer h.stop();
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const root = c.siv_window_get_root(h.window);
+    _ = c.siv_set_visual(txn, root, &.{ .background = .{ .r = 1, .g = 1, .b = 1, .a = 1 } });
+    const col = c.siv_flex(txn, root, &.{ .axis = .column, .gap = 8 });
+    _ = c.siv_set_layout(txn, col, &.{ .padding = .{ .start = 10, .top = 10 } });
+    const line = "Ada Lovelace  and a snippet much longer than the line";
+    const spans = [_]t.TextSpan{
+        .{ .start = 0, .end = 3, .flags = .{ .color = true }, .color = .{ .r = 1, .g = 0, .b = 0, .a = 1 } },
+        .{ .start = 4, .end = 12, .flags = .{ .color = true, .weight = true }, .color_token = .view_fg, .weight = .semibold },
+    };
+    // Cut after the spans, in the unstyled rest, and inside the second.
+    var nodes: [2]t.Node = undefined;
+    for (&nodes, [2]f32{ 200, 64 }) |*n, wpx| {
+        n.* = label(txn, col, line);
+        _ = c.siv_set_layout(txn, n.*, &.{ .width = .{ .unit = .px, .value = wpx } });
+        _ = c.siv_set_text_style(txn, n.*, &.{ .color_token = .muted_fg, .size_role = .body, .max_lines = 1, .flags = .{ .no_wrap = true, .ellipsize = true } });
+        _ = c.siv_set_text_spans(txn, n.*, &.{ .spans = &spans, .spans_count = spans.len });
+    }
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    const px = try h.capture();
+    defer testing.allocator.free(px);
+    const Find = struct {
+        /// Whether a pixel in columns x0..x1 of the node's box passes `f`.
+        fn any(p: []const u8, r: t.Rect, x0: f32, x1: f32, f: *const fn ([3]u8) bool) bool {
+            for (@intFromFloat(r.y)..@intFromFloat(r.y + r.height)) |y| for (@intFromFloat(r.x + x0)..@intFromFloat(r.x + x1)) |x| {
+                if (f(p[(y * 240 + x) * 4 ..][0..3].*)) return true;
+            };
+            return false;
+        }
+        fn red(v: [3]u8) bool {
+            return v[0] > 180 and v[1] < 90 and v[2] < 90;
+        }
+        // Darker than the muted color (#71717a) ever is: the view's text.
+        fn dark(v: [3]u8) bool {
+            return @max(v[0], v[1], v[2]) < 70;
+        }
+    };
+    for (nodes) |n| {
+        var r: t.Rect = undefined;
+        try ok(c.siv_node_get_rect(n, &r));
+        try testing.expect(r.width <= 200);
+        try testing.expect(Find.any(px, r, 0, 22, Find.red));
+        try testing.expect(Find.any(px, r, 30, 50, Find.dark));
+    }
+}
+
 test "editors: a hanging first line shows in the padding, and a focus ring can be left out" {
     var h: Harness = .{};
     try h.start(200, 80, null, null);
