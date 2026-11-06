@@ -2187,7 +2187,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Focus moved by the keyboard shows a ring drawn by the core (2 px,
     outside the node), so keyboard-only use works without widget code;
     focus from a pointer press shows none. Its color is the theme's
-    `focus_ring` (D29). Inside a scroll node the ring stays within the
+    `focus_ring` (D29). Nodes that show focus themselves leave it out
+    (`SIV_VISUAL_NO_FOCUS_RING`, D15): stock text fields and a view's
+    selected row with single selection (D22). Inside a scroll node the ring stays within the
     content's extent (the content box, or the viewport where the content
     is smaller), moving inside the node's box on the sides where it would
     pass that edge, so the viewport's clip cannot cut it: a view row is
@@ -4371,7 +4373,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     a radio disabled from the start was the first (D30). Text fields and areas return the editor node
     itself, so every editor function (text, selection, change events)
     works on them unchanged. Text areas and styled-text editors are spell
-    checked, with a context menu on misspelled words (D37).
+    checked, with a context menu on misspelled words (D37). A focused
+    field shows focus one way: its border turns 2 px in the theme's
+    `focus_ring` color, and it has no core ring
+    (`SIV_VISUAL_NO_FOCUS_RING`). A field takes typing whenever it has
+    focus, so it shows focus after a click too, as browsers match
+    `:focus-visible` on text inputs focused by the pointer, and the
+    core's ring shows only after a key (D16). Before, the field's
+    accent border and the ring outside it drew a double border after
+    any key (found by Parcel's search, command palette, and compose
+    fields). The ring's color keeps the field's focus like every other
+    control's in each theme, high contrast included. Alternative: the
+    ring alone (a clicked field would show only its caret).
   - **Driving:** a few functions cover every widget instead of setters per
     widget kind: `siv_widget_set_label`, `siv_widget_set_icon`,
     `siv_widget_set_disabled`, `siv_widget_set_value` and
@@ -4664,7 +4677,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     - Selection is a bitset in node data, resized with the count (node
       data of another size replaces the old and keeps what fits); none,
       single, or multiple with Ctrl, Shift, and Ctrl+A. The cursor's row is
-      the focused node (roving focus) and stays bound out of view. An
+      the focused node (roving focus) and stays bound out of view. With
+      single selection a selected row has no focus ring
+      (`SIV_VISUAL_NO_FOCUS_RING`): when focus is on it, its
+      `selection_bg` fill already marks where the keys go, and the ring
+      around the fill read as a second frame (found by Parcel, a mail
+      client). Multiple selection, no selection, and a cursor on an
+      unselected row keep the ring, since there the fill and the focus
+      can be on different rows. An
       empty view's scroll node (the list, tree, or table for assistive
       technology) is focusable while the view has no rows, so focus can
       rest in it: `siv_node_focus` on an empty view did nothing, and an

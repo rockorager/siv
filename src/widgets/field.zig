@@ -1,7 +1,8 @@
 //! Text fields and areas: the editor primitive (D15) framed in themed
 //! colors, with its placeholder. The builder returns the editor itself,
 //! so the application uses editor functions and `change` events on it
-//! directly. The border takes the accent while the field has focus.
+//! directly. The border takes the focus color while the field has focus,
+//! in place of the core's focus ring.
 //!
 //! Text areas and styled-text editors are spell checked (D37): a
 //! secondary click on a misspelled word, or the Menu key or Shift+F10
@@ -162,12 +163,14 @@ pub fn apply(txn: Txn, st: *Field) void {
         .min_height = min_h,
         .padding = .{ .start = tk.field_pad_x, .end = tk.field_pad_x, .top = tk.pad_y + 1, .bottom = tk.pad_y + 1 },
     });
-    const border: siv.ColorToken = if (h.disabled) .border else if (st.focused) .accent else .border;
+    const border: siv.ColorToken = if (h.disabled) .border else if (st.focused) .focus_ring else .border;
     _ = c.siv_set_visual(txn, st.root, &.{
         .radius = .{ .top_start = tk.radius, .top_end = tk.radius, .bottom_end = tk.radius, .bottom_start = tk.radius },
         .border_width = if (st.focused and !h.disabled) 2 * tk.border else tk.border,
         .border_token = border,
         .background_token = if (h.disabled) .control_bg else .view_bg,
+        // The border shows focus however it came, a click too (D22).
+        .flags = .{ .no_focus_ring = true },
     });
     _ = c.siv_set_text_style(txn, st.root, &.{ .color_token = if (h.disabled) .disabled_fg else .view_fg, .size_role = .body });
     var buf: [1024]u8 = undefined;

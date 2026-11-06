@@ -19,6 +19,7 @@ const ok = harness.ok;
 
 const ks = struct {
     const space: u32 = 0x20;
+    const tab: u32 = 0xff09;
     const @"return": u32 = 0xff0d;
     const home: u32 = 0xff50;
     const left: u32 = 0xff51;
@@ -1231,7 +1232,9 @@ test "table view: the focused row's ring shows whole inside the view, rows uncha
     var m: Model = .{ .columns = 2 };
     const txn = try begin(h.window);
     _ = c.siv_set_visual(txn, c.siv_window_get_root(h.window), &.{ .background_token = .window_bg });
-    const table = c.siv_table_view(txn, c.siv_window_get_root(h.window), &.{ .label = "People", .label_len = 6, .count = 1000, .selection = .single, .bind = Model.bind, .user_data = &m, .item_height = 28 });
+    // Multiple selection: with single selection the selected row has no
+    // ring.
+    const table = c.siv_table_view(txn, c.siv_window_get_root(h.window), &.{ .label = "People", .label_len = 6, .count = 1000, .selection = .multiple, .bind = Model.bind, .user_data = &m, .item_height = 28 });
     _ = c.siv_table_column(txn, table, &.{ .title = "Name", .title_len = 4 });
     _ = c.siv_table_column(txn, table, &.{ .title = "Size", .title_len = 4, .width = .{ .unit = .px, .value = 90 } });
     try ok(c.siv_txn_commit(txn));
@@ -1278,4 +1281,70 @@ test "table view: the focused row's ring shows whole inside the view, rows uncha
     try testing.expect(Px.isRing(pixels, b.x + b.width - 1.5, mid_y, w));
     try testing.expect(Px.isRing(pixels, mid_x, b.y + 0.5, w));
     try testing.expect(Px.isRing(pixels, mid_x, b.y + b.height - 1.5, w) or Px.isRing(pixels, mid_x, b.y + b.height + 1.5, w));
+}
+
+test "list view: a single selection's focused row shows its fill, no ring; the ring stays where the two can differ" {
+    const Px = struct {
+        /// Whether the focused row has the light theme's focus ring
+        /// (#2563eb) down both sides, inside its box.
+        fn ringed(h: *Harness) !bool {
+            var settled = false;
+            try ok(c.siv_test_settle(h.app, 5000, &settled));
+            var found = false;
+            var row: t.TestNode = undefined;
+            try ok(c.siv_test_find(h.window, &.{ .flags = .{ .focused = true } }, &found, &row));
+            try testing.expect(found and row.role == .list_item);
+            const px = try h.capture();
+            defer testing.allocator.free(px);
+            const width: usize = 240;
+            const b = row.bounds;
+            const y: usize = @intFromFloat(b.y + b.height / 2);
+            var sides: u32 = 0;
+            for ([_]f32{ b.x + 0.5, b.x + b.width - 1.5 }) |x| {
+                const i = (y * width + @as(usize, @intFromFloat(x))) * 4;
+                const want = [3]u8{ 0x25, 0x63, 0xeb };
+                var near = true;
+                for (0..3) |k| near = near and @abs(@as(i32, px[i + k]) - want[k]) <= 40;
+                if (near) sides += 1;
+            }
+            try testing.expect(sides != 1);
+            return sides == 2;
+        }
+    };
+    for ([_]t.SelectionMode{ .single, .multiple, .none }) |mode| {
+        var h: Harness = .{};
+        try h.start(240, 320, null, null);
+        defer h.stop();
+        var m: Model = .{};
+        const list = try listOf(&h, &m, 20, mode);
+        // Tab focuses the first row, selected in no mode: a ring.
+        try h.typeKey(ks.tab, "", .{});
+        try testing.expect(try Px.ringed(&h));
+        // Down moves the cursor and, but for none, selects its row.
+        try h.typeKey(ks.down, "", .{});
+        try h.settle();
+        var sel = false;
+        if (mode != .none) {
+            try ok(c.siv_view_is_selected(list, 1, &sel));
+            try testing.expect(sel);
+        }
+        try testing.expectEqual(mode != .single, try Px.ringed(&h));
+        if (mode != .single) continue;
+        // Ctrl+Down moves only the cursor, to an unselected row.
+        try h.typeKey(ks.down, "", .{ .ctrl = true });
+        try h.settle();
+        try ok(c.siv_view_is_selected(list, 2, &sel));
+        try testing.expect(!sel);
+        try testing.expect(try Px.ringed(&h));
+        // Selecting it from the application drops the ring again;
+        // unselecting brings it back.
+        var txn = try begin(h.window);
+        c.siv_view_set_selected(txn, list, 2, true);
+        try ok(c.siv_txn_commit(txn));
+        try testing.expect(!try Px.ringed(&h));
+        txn = try begin(h.window);
+        c.siv_view_set_selected(txn, list, 2, false);
+        try ok(c.siv_txn_commit(txn));
+        try testing.expect(try Px.ringed(&h));
+    }
 }

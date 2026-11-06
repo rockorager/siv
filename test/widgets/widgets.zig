@@ -787,7 +787,30 @@ test "widgets: text fields are editors with placeholders and themed frames" {
     try ok(c.siv_node_get_text(w.field, &buf, buf.len, &len));
     try testing.expectEqualStrings("hi", buf[0..len]);
     const uw, const id = try uiId(w.field);
-    try testing.expectEqual(ui.ColorToken.accent, uw.node(id).visual.border_token);
+    try testing.expectEqual(ui.ColorToken.focus_ring, uw.node(id).visual.border_token);
+    // Focus from a key shows the same border and no ring outside it: the
+    // two drew a double border.
+    try h.typeKey(0xff09, "", .{});
+    try h.settle();
+    const name = c.siv_node_get_related(w.field, .next);
+    try testing.expectEqual(c.siv_window_get_focus(h.window), name);
+    var r: t.Rect = undefined;
+    try ok(c.siv_node_get_rect(name, &r));
+    const px = try h.capture();
+    defer testing.allocator.free(px);
+    const at = struct {
+        fn ring(p: []const u8, x: f64, y: f64) bool {
+            const i = (@as(usize, @intFromFloat(y)) * 320 + @as(usize, @intFromFloat(x))) * 4;
+            const want = [3]u8{ 0x25, 0x63, 0xeb };
+            for (0..3) |k| if (@abs(@as(i32, p[i + k]) - want[k]) > 40) return false;
+            return true;
+        }
+    }.ring;
+    const mid = r.y + r.height / 2;
+    try testing.expect(at(px, r.x + 0.5, mid));
+    try testing.expect(!at(px, r.x - 2, mid));
+    try testing.expect(!at(px, r.x + r.width + 1, mid));
+    try testing.expect(!at(px, r.x + r.width / 2, r.y + r.height + 1));
     try testing.expectEqual(ui.Role.progress_bar, (try sem(w.progress)).role);
     try testing.expectEqual(@as(f64, 60), (try sem(w.progress)).value.?.now);
 }

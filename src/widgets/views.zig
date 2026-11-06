@@ -578,6 +578,10 @@ fn applyRow(txn: Txn, v: *View, r: *Row) void {
     _ = c.siv_set_visual(txn, r.root, &.{
         .radius = w.corners(if (v.mode == .grid) tk.radius else 0),
         .background_token = if (sel) .selection_bg else if (r.hdr.hover) .control_hover else .none,
+        // With single selection the selected row's fill already shows
+        // the focus when the cursor is on it (D22); a ring would frame it
+        // twice. Elsewhere the fill and the cursor can differ.
+        .flags = .{ .no_focus_ring = sel and v.selection == .single },
     });
     const stop = if (v.cursor >= 0) v.cursor == i else i == 0;
     _ = c.siv_set_semantics(txn, r.root, &.{
