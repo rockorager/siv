@@ -6695,7 +6695,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     Lua from the schema). A document node created from bytes, a kind
     (HTML, Markdown, plain text), a base URL, a user style sheet, a
     color scheme (the window's theme, light, or dark), flags (remote
-    images, no author styles), a font size, a loader callback that the
+    images, no author styles, converting colors to dark), a font size, a loader callback that the
     application answers with `siv_docview_supply` (now or later, for
     style sheets, images, and fonts; siv never fetches), and an event
     callback (link activation, loaded, size, find results, selection,
@@ -6730,6 +6730,64 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     mail) get quirks mode's table rules. The canvas takes the root's
     background, else the body's, else the theme's (the user agent's
     `html { background: Canvas }` had kept body colors from it).
+  - **Color schemes.** The node's color scheme is the reader's
+    preference; the document decides what it shows in, as browsers
+    let it, and a theme's colors are never mixed with the document's
+    own (black text from an Outlook reply on Tokyo Night's gray, a white
+    slab of a newsletter's table in a dark window). After styling, the
+    document reports what it declares (`Document.Colors`): the root's
+    `color-scheme`, else `<meta name=color-scheme>` (or Apple Mail's
+    `supported-color-schemes`); whether its style sheets have
+    `prefers-color-scheme: dark` rules; and whether it sets colors of its
+    own: a text color, background color, or background gradient that is
+    a color (not a system color, `currentcolor`, or transparent) from
+    its style sheets, style attributes, or presentational hints, on a
+    box, inline box, or text run (so not hidden preheaders; the user
+    agent's `hr` gray, Markdown's grays, and the application's user
+    sheet do not count). It shows in a scheme it declares (the
+    preferred one if it lists both); one that declares none shows
+    light, unless it has dark media rules (its own dark design, which
+    must keep working) or sets no colors at all, which follow the
+    preference: plain text made into HTML, a bare
+    `<div dir="ltr">hi</div>` from Gmail on the web, Markdown, where
+    nothing can clash. The theme's canvas, text, and control colors go
+    to a document only in the theme's scheme and only when it suits them
+    (declares a scheme, has dark media rules, or sets no colors); the
+    others get a browser's black on white (or the stock dark canvas),
+    even in a light theme, whose canvas need not be white. The
+    selection stays the theme's. Element-level `color-scheme` does not
+    change system colors in a subtree.
+  - **Converting to dark** (`siv_docview_flags.convert_colors`, off by
+    default; `src/doc/dark.zig`), for mail clients that want dark
+    everything: where the preference is dark and the document would
+    show light, it is painted with the stock light system colors, then
+    every color converted toward the theme's view background and text
+    (the stock dark ones without a theme), partial inversion as Outlook
+    and the Gmail app do it. It applies to computed colors as they are
+    painted, so style sheets, classes, inheritance, and
+    `currentcolor` are all covered, and turning it on only repaints. In
+    OKLab: a background lighter than a pivot gets lightness
+    `bg + 1.4 × (1 − L)` (plus a little for chroma, so a yellow button
+    stays golden), keeping its hue and 80 % of its chroma, neutral ones
+    taking the theme's tint, so white is the theme's background exactly
+    and a card stays a step above the page; the pivot is where that
+    meets the identity, and darker backgrounds (a saturated button, a
+    dark band) stay. Text darker than the background it had, when that
+    background is converted, becomes light at its contrast mapped from
+    WCAG's 1–21 onto 1 to the theme text's contrast (black becomes the
+    theme's text), never below what it had or 4.5, found by lightness
+    with its hue kept; text in front of a background that stays, and
+    light text, stay. Light borders and rules convert as backgrounds,
+    dark ones as text (against what is outside the box). The background
+    behind text is the nearest opaque one up the inline boxes and
+    boxes. Images, inline SVG, and shadows are left alone: a dark logo
+    on a transparent background stays dark. Documents that show dark
+    (they declare it or have dark media rules) and documents without
+    colors are not converted, and neither is anything in a light theme.
+    Tests: `test/abi/docview.zig` renders mail fixtures modelled on
+    Outlook mobile, a notification, a newsletter, bare and plain-text
+    mail, and a mail with dark styles (`test/doc/email/schemes`) under
+    Omarchy's Tokyo Night and the stock light theme.
   - **E-books.** `epub` (no imports): a zip reader (stored and deflated
     entries through `std.compress.flate`; siv had none), a small XML pull
     tokenizer, and EPUB 2 and 3 packages: `META-INF/container.xml`, the

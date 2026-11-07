@@ -237,6 +237,7 @@ fn create(w: *Window, parent: t.Node, ptr: ?*const t.DocviewDesc) Error!NodeId {
         .author_styles = !fl.no_author_styles,
         .untrusted = fl.untrusted,
         .collapse_quotes = fl.collapse_quotes,
+        .convert_colors = fl.convert_colors,
         .paged = fl.paged,
         .spread = fl.spread,
         .reading = fl.reading,

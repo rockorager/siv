@@ -64,10 +64,10 @@ pub const decls = [_]Decl{
         .{ .name = "markdown", .value = 1, .doc = "CommonMark with GitHub's tables, task lists, strikethrough, and autolinks; raw HTML in it is HTML." },
         .{ .name = "text", .value = 2, .doc = "Plain text, shown preformatted." },
     }),
-    enumeration("siv_docview_color_scheme", "The colors a document takes where it sets none, and what prefers-color-scheme says.", &.{
-        .{ .name = "theme", .value = 0, .doc = "The window's theme (D29): its background and text colors, and its light or dark scheme, following changes." },
-        .{ .name = "light", .value = 1, .doc = "Black on white, as browsers show documents." },
-        .{ .name = "dark", .value = 2, .doc = "Light text on a dark background, and prefers-color-scheme: dark." },
+    enumeration("siv_docview_color_scheme", "The reader's preference, light or dark: what prefers-color-scheme says, and the scheme a document shows in when it allows it (D32). A document that declares color-scheme shows in a scheme it lists; one that declares none shows light, as browsers show it, so that its own colors stay readable, unless it has prefers-color-scheme: dark styles or sets no colors at all (a plain text or bare HTML mail), which follow the preference. A theme's colors are never mixed with a document's own: the theme's background and text go only to documents in its scheme that declare one, have dark styles, or set no colors; the others get a browser's black on white (or light on dark). siv_docview_flags.convert_colors converts light documents instead.", &.{
+        .{ .name = "theme", .value = 0, .doc = "The window's theme (D29): its light or dark scheme and, where the document suits them, its background and text colors, following changes." },
+        .{ .name = "light", .value = 1, .doc = "Light: black on white, as browsers show documents." },
+        .{ .name = "dark", .value = 2, .doc = "Dark: light text on a dark background where the document allows it, and prefers-color-scheme: dark." },
     }),
     flags("siv_docview_flags", "Document options.", &.{
         .{ .name = "remote_images", .bit = 0, .doc = "Ask the loader for remote (http, https) images, style sheets, and fonts. Without it they are blocked, a blocked_images event counts them, and siv_docview_load_images asks for them later: the policy for email." },
@@ -77,6 +77,7 @@ pub const decls = [_]Decl{
         .{ .name = "spread", .bit = 5, .doc = "Paged: two pages side by side when the node is wider than tall." },
         .{ .name = "reading", .bit = 6, .doc = "A book's reading defaults: page margins, a measure of about 66 characters, and a serif face, 1.45 leading, justified text broken with Knuth and Plass, and hyphenation, which the publisher's CSS overrides where it sets them (user style sheet origin)." },
         .{ .name = "collapse_quotes", .bit = 3, .doc = "Collapse quoted replies (blockquote type=cite, Gmail's, Yahoo's, Proton's, and Outlook's quote markers) behind a toggle that shows and hides them." },
+        .{ .name = "convert_colors", .bit = 7, .doc = "Where the color scheme is dark and the document would show light (siv_docview_color_scheme), convert its colors to dark ones instead, as Outlook and the Gmail app do for mail: light backgrounds become dark ones near the theme's background, dark text becomes light at a readable contrast, borders follow, hues and some chroma are kept, and images, parts already dark, and documents with a dark scheme of their own are left alone." },
     }),
     enumeration("siv_resource_kind", "What a document asks its loader for.", &.{
         .{ .name = "stylesheet", .value = 0, .doc = "A style sheet (<link rel=stylesheet>, @import)." },

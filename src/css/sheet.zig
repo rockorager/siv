@@ -85,16 +85,22 @@ pub const Sheet = struct {
     }
 
     /// Whether any media query in the sheet depends on the color scheme
-    /// or the width (to know what a theme or resize change restyles).
-    pub fn mediaDepends(s: *const Sheet) struct { width: bool, scheme: bool } {
+    /// or the width (to know what a theme or resize change restyles), and
+    /// whether one asks for `prefers-color-scheme: dark` (styles of its
+    /// own for dark, D32).
+    pub fn mediaDepends(s: *const Sheet) struct { width: bool, scheme: bool, dark: bool } {
         var w = false;
         var sc = false;
+        var dark = false;
         for (s.media_lists) |l| for (l.nodes) |n| if (n.op == .feature) switch (n.feature) {
             .width, .height, .aspect_ratio, .orientation => w = true,
-            .color_scheme => sc = true,
+            .color_scheme => {
+                sc = true;
+                dark = dark or n.keyword == .dark;
+            },
             else => {},
         };
-        return .{ .width = w, .scheme = sc };
+        return .{ .width = w, .scheme = sc, .dark = dark };
     }
 };
 

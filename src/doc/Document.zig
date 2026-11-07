@@ -125,6 +125,42 @@ xml: bool = false,
 /// The width layout ran at, and whether it finished.
 width: f32 = 0,
 complete: bool = false,
+/// What the document says about color schemes, after styling.
+colors: Colors = .{},
+/// `<meta name=color-scheme>` (or Apple Mail's `supported-color-schemes`).
+meta_scheme: css.style.ColorScheme = .normal,
+
+/// What a document says about light and dark (D32): what it declares, and
+/// whether it has colors of its own that a theme's would clash with.
+pub const Colors = struct {
+    /// The root element's `color-scheme`, else `<meta name=color-scheme>`.
+    scheme: css.style.ColorScheme = .normal,
+    /// Its style sheets have `prefers-color-scheme: dark` rules.
+    dark_media: bool = false,
+    /// It sets a text color, background color, or background gradient of
+    /// its own (style sheets, style attributes, or presentational hints)
+    /// on something shown.
+    own: bool = false,
+
+    /// Whether it shows dark when the reader prefers dark (`dark`) or
+    /// light: as browsers decide, by its `color-scheme`, and otherwise
+    /// light, unless it has dark styles of its own or no colors at all,
+    /// which nothing can clash with.
+    pub fn usedDark(c: Colors, dark: bool) bool {
+        return switch (c.scheme) {
+            .dark => true,
+            .light => false,
+            .light_dark => dark,
+            .normal => dark and (c.dark_media or !c.own),
+        };
+    }
+
+    /// Whether the reader's colors (a theme's canvas and text) suit it:
+    /// it declares a scheme, has dark styles, or sets no colors.
+    pub fn adapts(c: Colors) bool {
+        return c.scheme != .normal or c.dark_media or !c.own;
+    }
+};
 
 /// A style sheet in document order: parsed, or a linked one by resource.
 const SheetRef = struct { sheet: ?*const css.Sheet, origin: cascade_mod.Origin, owned: bool, link: u32 = none };
@@ -297,6 +333,11 @@ fn collect(d: *Document) Error!void {
         const n = dom.node(cur);
         if (n.kind != .element or n.ns != .html) continue;
         switch (n.name) {
+            .meta => if (dom.attr(cur, .name)) |name| {
+                if (std.ascii.eqlIgnoreCase(name, "color-scheme") or std.ascii.eqlIgnoreCase(name, "supported-color-schemes")) {
+                    if (d.meta_scheme == .normal) d.meta_scheme = schemeOf(dom.attr(cur, .content) orelse "");
+                }
+            },
             .base => if (!have_base) if (dom.attr(cur, .href)) |h| {
                 d.base_url = try url_mod.resolve(d.arena.allocator(), d.base_url, h);
                 have_base = true;
@@ -353,6 +394,18 @@ fn collect(d: *Document) Error!void {
             else => {},
         }
     }
+}
+
+/// The schemes a `color-scheme` value lists.
+fn schemeOf(value: []const u8) css.style.ColorScheme {
+    var light = false;
+    var dark = false;
+    var it = std.mem.tokenizeAny(u8, value, " \t\r\n,");
+    while (it.next()) |w| {
+        if (std.ascii.eqlIgnoreCase(w, "light")) light = true;
+        if (std.ascii.eqlIgnoreCase(w, "dark")) dark = true;
+    }
+    return if (light and dark) .light_dark else if (dark) .dark else if (light) .light else .normal;
 }
 
 /// Supplies a stylesheet's text. Styles must run again afterwards.
@@ -630,7 +683,41 @@ pub fn styleAndBuild(d: *Document, media: css.media.Env) Error!void {
         const gop = try d.node_boxes.getOrPut(d.gpa, bx.node.index());
         if (!gop.found_existing) gop.value_ptr.* = @intCast(i);
     }
+    d.findColors();
     try d.linkResources();
+}
+
+/// Fills `colors` from the styled document.
+fn findColors(d: *Document) void {
+    const c = &d.cascade.?;
+    var info: Colors = .{ .scheme = d.meta_scheme };
+    const root = d.dom.documentElement();
+    if (root != .none) {
+        const s = d.store.get(d.styles.?.styles[root.index()]).inh.color_scheme;
+        if (s != .normal) info.scheme = s;
+    }
+    for (d.sheets.items) |s| if (s.origin == .author) {
+        const sh = s.sheet orelse if (s.link != none) d.resources.items[s.link].sheet orelse continue else continue;
+        info.dark_media = info.dark_media or sh.mediaDepends().dark;
+    };
+    // What is shown: boxes, and the inline boxes and text runs of IFCs.
+    if (c.own_colors.count() > 0) own: {
+        for (d.tree.boxes.items) |bx| if (c.own_colors.contains(bx.style)) {
+            info.own = true;
+            break :own;
+        };
+        for (d.tree.ifcs.items) |ifc| {
+            for (ifc.inline_boxes) |ib| if (c.own_colors.contains(ib.style)) {
+                info.own = true;
+                break :own;
+            };
+            for (ifc.runs) |r| if (c.own_colors.contains(r.style)) {
+                info.own = true;
+                break :own;
+            };
+        }
+    }
+    d.colors = info;
 }
 
 fn addSheetTree(d: *Document, c: *cascade_mod.Cascade, sheet: *const css.Sheet, base: []const u8, origin: cascade_mod.Origin, added: *std.DynamicBitSetUnmanaged) Error!void {
@@ -901,6 +988,7 @@ pub fn paint(d: *Document, b: *scene.Builder, y0: f32, y1: f32, palette: paint_m
         .highlights = highlights,
         .scratch = d.scratch.allocator(),
         .base_url = d.base_url,
+        .dark = if (palette.dark) |t| @import("dark.zig").Map.init(t) else null,
     };
     p.paint() catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,

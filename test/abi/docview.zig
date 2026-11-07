@@ -8,6 +8,7 @@
 const std = @import("std");
 const abi = @import("abi");
 const harness = @import("harness.zig");
+const ui_mod = @import("ui");
 const Loop = @import("loop").Loop;
 
 const testing = std.testing;
@@ -338,4 +339,95 @@ test "C API docview: system-ui is the application's default family" {
     defer testing.allocator.free(sans);
     try testing.expectEqualSlices(u8, named, ui);
     try testing.expect(!std.mem.eql(u8, sans, ui));
+}
+
+/// Mail as parcel shows it (untrusted, quotes collapsed, its user style
+/// sheet), in a 600 px wide window under Omarchy's Tokyo Night or the
+/// stock light theme, colors converted or not; checked against a golden
+/// image when `golden` names one. Returns what the window showed.
+fn renderMail(comptime name: []const u8, height: u32, tokyo: bool, convert: bool, golden: ?[]const u8) ![]u8 {
+    const Mail = struct {
+        const logo = @embedFile("../doc/email/schemes/cid/logo@lumen");
+        fn onLoad(_: ?*anyopaque, node: t.Node, request: u32, url: ?[*]const u8, len: usize, _: t.ResourceKind) callconv(.c) void {
+            const data: []const u8 = if (std.mem.eql(u8, url.?[0..len], "cid:logo@lumen")) logo else "";
+            ok(D.siv_docview_supply(node, request, data.ptr, data.len)) catch unreachable;
+        }
+    };
+    const source = @embedFile("../doc/email/schemes/" ++ name ++ ".html");
+    const css = "body { margin: 0; font-family: system-ui, sans-serif; line-height: 1.45 }";
+    var h: Harness = .{};
+    try h.start(600, height, null, null);
+    defer h.stop();
+    if (tokyo) {
+        (try h.internal()).app.setUserTheme(&ui_mod.user_theme.omarchy(@embedFile("../themes/omarchy/tokyo-night/colors.toml"), false));
+        try h.settle();
+    }
+    var ev: Events = .{};
+    const root = A.siv_window_get_root(h.window);
+    var txn: t.Txn = .null;
+    try ok(T.siv_txn_begin(h.window, &txn));
+    const sc = T.siv_scroll(txn, root, .vertical);
+    _ = T.siv_set_layout(txn, sc, &.{ .size = @sizeOf(t.LayoutDesc), .width = .{ .unit = .fraction, .value = 1 }, .height = .{ .unit = .fraction, .value = 1 } });
+    _ = D.siv_docview(txn, sc, &.{
+        .source = source.ptr,
+        .source_count = source.len,
+        .base_url = "cid:",
+        .base_url_len = 4,
+        .user_css = css,
+        .user_css_len = css.len,
+        .kind = .html,
+        .color_scheme = .theme,
+        .flags = .{ .untrusted = true, .collapse_quotes = true, .convert_colors = convert },
+        .user_data = &ev,
+        .on_event = Events.onEvent,
+        .load = Mail.onLoad,
+    });
+    try ok(T.siv_txn_commit(txn));
+    try waitLoaded(&h, &ev, 1);
+    if (golden) |g| try h.expectGolden(g, 600, height);
+    return h.capture();
+}
+
+test "C API docview: mail under a dark theme shows light unless it allows dark, and converts on request" {
+    const Case = struct { []const u8, u32, enum { light, theme, own_dark } };
+    inline for (.{
+        // Outlook mobile: every paragraph black, a white signature.
+        Case{ "outlook-mobile", 460, .light },
+        // A notification: white body and tables, a gray card, a logo.
+        Case{ "notification", 334, .light },
+        // A newsletter: a colored band, light and saturated buttons.
+        Case{ "newsletter", 430, .light },
+        // No colors at all: nothing to clash with, so the theme's.
+        Case{ "bare", 116, .theme },
+        Case{ "plain", 300, .theme },
+        // Dark styles of its own (prefers-color-scheme: dark).
+        Case{ "dark-styles", 260, .own_dark },
+    }) |c| {
+        const name, const height, const kind = c;
+        const gpa = testing.allocator;
+        // The stock light theme: converting changes nothing.
+        const light = try renderMail(name, height, false, false, null);
+        defer gpa.free(light);
+        const light_converted = try renderMail(name, height, false, true, null);
+        defer gpa.free(light_converted);
+        try testing.expectEqualSlices(u8, light, light_converted);
+        const dark = try renderMail(name, height, true, false, "docview-scheme-" ++ name);
+        defer gpa.free(dark);
+        switch (kind) {
+            // A document with colors of its own shows as in a light
+            // theme: none of Tokyo Night's colors mixed with its own.
+            .light => {
+                try testing.expectEqualSlices(u8, light, dark);
+                const converted = try renderMail(name, height, true, true, "docview-scheme-" ++ name ++ "-converted");
+                gpa.free(converted);
+            },
+            // Following the theme or dark already: left alone.
+            .theme, .own_dark => {
+                try testing.expect(!std.mem.eql(u8, light, dark));
+                const converted = try renderMail(name, height, true, true, null);
+                defer gpa.free(converted);
+                try testing.expectEqualSlices(u8, dark, converted);
+            },
+        }
+    }
 }

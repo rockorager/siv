@@ -159,12 +159,18 @@ pub const Cascade = struct {
     hint_parent: Style.Id = 0,
     /// Parsed hints by property name and attribute value.
     hint_memo: std.StringHashMapUnmanaged([]const props.Declaration) = .empty,
+    /// Styles whose text color, background color, or background gradient
+    /// the document set itself (D32: what a document's colors are mixed
+    /// with).
+    own_colors: std.AutoHashMapUnmanaged(Style.Id, void) = .empty,
     /// Per element: whether a quirks-mode or hint rule applies (unused
     /// in matching, kept for sharing keys).
     pub const ShareKey = struct { parent: Style.Id, rules: u64, extra: u64 };
 
     const Matched = struct { key: u64, source: u16, rule: u32, important: bool };
-    const Winner = struct { value: props.Value };
+    /// `author`: the document's (author origin, its hints, or its style
+    /// attributes), not the user agent's or the user's.
+    const Winner = struct { value: props.Value, author: bool };
 
     pub fn init(gpa: Allocator, arena: Allocator, dom: *Dom, store: *css.style.Store) Cascade {
         return .{ .gpa = gpa, .arena = arena, .dom = dom, .store = store };
@@ -172,6 +178,7 @@ pub const Cascade = struct {
 
     pub fn deinit(c: *Cascade) void {
         c.hint_memo.deinit(c.gpa);
+        c.own_colors.deinit(c.gpa);
         for (c.sources.items) |s| {
             c.gpa.free(s.bound);
             c.gpa.free(s.bound_lower);
@@ -825,14 +832,14 @@ pub const Cascade = struct {
         c.winner_len = 0;
         c.customs_scratch.clearRetainingCapacity();
         const P = struct {
-            fn set(cc: *Cascade, decls: []const props.Declaration, important: bool) void {
+            fn set(cc: *Cascade, decls: []const props.Declaration, important: bool, author: bool) void {
                 for (decls) |dd| if (dd.important == important) {
                     const pi = @intFromEnum(dd.id);
                     if (cc.winners[pi] == null) {
                         cc.winner_ids[cc.winner_len] = pi;
                         cc.winner_len += 1;
                     }
-                    cc.winners[pi] = .{ .value = dd.value };
+                    cc.winners[pi] = .{ .value = dd.value, .author = author };
                 };
             }
         };
@@ -845,17 +852,17 @@ pub const Cascade = struct {
         for (c.matched.items[0..first_author]) |m| {
             const src = &c.sources.items[m.source];
             const r = src.sheet.rules[m.rule];
-            P.set(c, src.sheet.ruleDecls(r), false);
+            P.set(c, src.sheet.ruleDecls(r), false, false);
             try c.customs_scratch.appendSlice(c.gpa, src.sheet.ruleCustoms(r));
         }
-        P.set(c, c.hint_decls.items, false);
+        P.set(c, c.hint_decls.items, false, true);
         for (c.matched.items[first_author..]) |m| {
             const src = &c.sources.items[m.source];
             const r = src.sheet.rules[m.rule];
-            P.set(c, src.sheet.ruleDecls(r), false);
+            P.set(c, src.sheet.ruleDecls(r), false, true);
             try c.customs_scratch.appendSlice(c.gpa, src.sheet.ruleCustoms(r));
         }
-        P.set(c, c.inline_decls.items, false);
+        P.set(c, c.inline_decls.items, false, true);
         try c.customs_scratch.appendSlice(c.gpa, c.inline_customs.items);
         // Important: author (layers reversed), inline, then user and UA
         // in reverse order so that the user agent's win.
@@ -874,15 +881,15 @@ pub const Cascade = struct {
         }.lt);
         for (imp.items) |m| {
             const src = &c.sources.items[m.source];
-            P.set(c, src.sheet.ruleDecls(src.sheet.rules[m.rule]), true);
+            P.set(c, src.sheet.ruleDecls(src.sheet.rules[m.rule]), true, true);
         }
-        P.set(c, c.inline_decls.items, true);
+        P.set(c, c.inline_decls.items, true, true);
         var i = first_author;
         while (i > 0) {
             i -= 1;
             const m = c.matched.items[i];
             const src = &c.sources.items[m.source];
-            P.set(c, src.sheet.ruleDecls(src.sheet.rules[m.rule]), true);
+            P.set(c, src.sheet.ruleDecls(src.sheet.rules[m.rule]), true, false);
         }
 
         // Compute.
@@ -910,7 +917,7 @@ pub const Cascade = struct {
         std.mem.sort(u8, c.winner_ids[0..c.winner_len], {}, std.sort.asc(u8));
         for (c.winner_ids[0..c.winner_len]) |pi| if (c.winners[pi]) |win| if (win.value == .unparsed) {
             const w = &c.winners[pi];
-            w.* = if (try c.substitute(win.value.unparsed, @enumFromInt(pi), s.custom)) |v| .{ .value = v } else .{ .value = .{ .wide = .unset } };
+            w.* = if (try c.substitute(win.value.unparsed, @enumFromInt(pi), s.custom)) |v| .{ .value = v, .author = win.author } else .{ .value = .{ .wide = .unset }, .author = win.author };
         };
         const fs = c.winners[@intFromEnum(props.Id.font_size)];
         s.inh.font_size = try props.computeFontSize(if (fs) |f| f.value else null, &cx);
@@ -932,8 +939,24 @@ pub const Cascade = struct {
         if (c.env.untrusted and (s.box.position == .fixed or s.box.position == .absolute)) s.box.position = .static;
         fixup(&s, parent, is_root);
         const out = try c.store.intern(c.gpa, &s);
+        if (c.ownColors(&s)) try c.own_colors.put(c.gpa, out, {});
         try c.share.put(c.gpa, key, out);
         return out;
+    }
+
+    /// Whether the winning text color, background color, or background
+    /// gradient is the document's own and a color (not a system color,
+    /// currentcolor, or transparent).
+    fn ownColors(c: *const Cascade, s: *const Style) bool {
+        const own = struct {
+            fn f(cc: *const Cascade, id: props.Id) bool {
+                return if (cc.winners[@intFromEnum(id)]) |w| w.author else false;
+            }
+        }.f;
+        if (own(c, .color) and s.inh.color.kind == .rgba) return true;
+        if (own(c, .background_color) and s.box.background_color.kind == .rgba and s.box.background_color.a > 0) return true;
+        if (own(c, .background_image)) if (s.box.background_image) |img| return img.* == .gradient;
+        return false;
     }
 
     fn internLanguage(c: *Cascade, l: []const u8) Error!u32 {

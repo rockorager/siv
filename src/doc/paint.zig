@@ -15,6 +15,7 @@ const box_mod = @import("box.zig");
 const layout = @import("layout.zig");
 const inline_mod = @import("inline.zig");
 const url_mod = @import("url.zig");
+const dark_mod = @import("dark.zig");
 
 const Rect = raster.Rect;
 const Color = css.Color;
@@ -47,6 +48,10 @@ pub const Palette = struct {
     find: Color = Color.rgb8(255, 230, 0),
     find_current: Color = Color.rgb8(255, 150, 50),
     selection: Color = .{ .r = 0.2, .g = 0.55, .b = 1, .a = 0.35 },
+    /// Converts the document's colors (and these, but for find and
+    /// selection) to dark ones toward this background and text (D32,
+    /// `dark.zig`).
+    dark: ?dark_mod.Target = null,
 };
 
 pub const Hooks = struct {
@@ -99,6 +104,10 @@ pub const Painter = struct {
     /// Where image URLs of style attributes resolve from (style sheets'
     /// are resolved when parsed).
     base_url: []const u8 = "",
+    /// Converting colors to dark (`Palette.dark`), and the background the
+    /// IFC being painted had.
+    dark: ?dark_mod.Map = null,
+    ifc_behind: Color = Color.white,
 
     const Positioned = struct { id: BoxId, x: f32, y: f32, z: i32, order: u32, clip: ?Rect };
 
@@ -143,6 +152,42 @@ pub const Painter = struct {
 
     fn textColor(p: *const Painter, st: *const Style) Color {
         return p.resolve(st.inh.color, Color.black);
+    }
+
+    /// A background color (resolved), converted to dark if asked.
+    fn darkBackground(p: *const Painter, c: Color) Color {
+        return if (p.dark) |*m| m.background(c) else c;
+    }
+
+    /// A text color (resolved) in front of `behind` (as the document had
+    /// it), converted to dark if asked.
+    fn darkText(p: *const Painter, c: Color, behind: Color) Color {
+        return if (p.dark) |*m| m.text(c, behind, 4.5) else c;
+    }
+
+    /// The opaque background a box's content is in front of, as the
+    /// document has it: its own, else its nearest ancestor's, else the
+    /// canvas's. A translucent one counts when at least half opaque.
+    fn behindBox(p: *const Painter, id_: BoxId) Color {
+        var id = id_;
+        while (id != none) : (id = p.tree().get(id).parent) {
+            const st = p.style(id);
+            const bg = p.resolve(st.box.background_color, p.textColor(st));
+            if (bg.a >= 0.5) return .{ .r = bg.r, .g = bg.g, .b = bg.b, .a = 1 };
+        }
+        return p.palette.canvas;
+    }
+
+    /// The background behind text of an IFC's inline box: the nearest
+    /// enclosing inline box's, else the IFC's.
+    fn inlineBehind(p: *const Painter, data: *const box_mod.Ifc, ib_: u32) Color {
+        var ib = ib_;
+        while (ib != none) : (ib = data.inline_boxes[ib].parent) {
+            const st = p.engine.store.get(data.inline_boxes[ib].style);
+            const bg = p.resolve(st.box.background_color, p.textColor(st));
+            if (bg.a >= 0.5) return .{ .r = bg.r, .g = bg.g, .b = bg.b, .a = 1 };
+        }
+        return p.ifc_behind;
     }
 
     /// Paints the document's boxes that reach the band.
@@ -360,6 +405,7 @@ pub const Painter = struct {
         var bg = p.resolve(st.box.background_color, p.textColor(st));
         // Neither has one: the theme's canvas color.
         if (bg.a == 0) bg = p.palette.canvas;
+        if (p.dark) |*m| bg = m.background(bg);
         if (bg.a > 0) try p.b.fillRect(band, .color(p.color(bg, Color.black)));
     }
 
@@ -503,7 +549,7 @@ pub const Painter = struct {
             .content_box => .{ .x0 = r.x0 + b.border[3] + b.padding[3], .y0 = r.y0 + b.border[0] + b.padding[0], .x1 = r.x1 - b.border[1] - b.padding[1], .y1 = r.y1 - b.border[2] - b.padding[2] },
         };
         const clip_rr = if (st.box.background_clip == .border_box) rr else shrink(rr, b.border);
-        const bg = p.resolve(st.box.background_color, current);
+        const bg = p.darkBackground(p.resolve(st.box.background_color, current));
         if (bg.a > 0) try p.b.fill(shape(clip_box, clip_rr), .nonzero, .color(p.color(bg, current)));
         const img = st.box.background_image orelse return;
         const origin: Rect = switch (st.box.background_origin) {
@@ -675,7 +721,7 @@ pub const Painter = struct {
             }
             pos = @max(pos, prev);
             prev = pos;
-            try stops.append(p.scratch, .{ .offset = pos, .color = p.color(s.color, current) });
+            try stops.append(p.scratch, .{ .offset = pos, .color = p.color(p.darkBackground(p.resolve(s.color, current)), current) });
         }
         const cx = r.x0 + w / 2;
         const cy = r.y0 + h / 2;
@@ -718,9 +764,16 @@ pub const Painter = struct {
 
     /// Borders: each side as a quad (trapezoid at the corners) or, with
     /// radii and one style and color, as a stroked rounded rectangle.
-    fn borders(p: *Painter, id: BoxId, r: Rect, rr: raster.Radii, current: Color, widths: [4]f32, styles: [4]css.style.BorderStyle, colors: [4]Color) Error!void {
-        _ = id;
+    fn borders(p: *Painter, id: BoxId, r: Rect, rr: raster.Radii, current: Color, widths: [4]f32, styles: [4]css.style.BorderStyle, colors_: [4]Color) Error!void {
         var any = false;
+        var colors = colors_;
+        if (p.dark) |*m| {
+            // In front of what is outside the box (an inline box's, the
+            // IFC's background).
+            const parent = if (id == none) none else p.tree().get(id).parent;
+            const behind = if (id == none) p.ifc_behind else p.behindBox(parent);
+            for (&colors) |*c| c.* = m.border(p.resolve(c.*, current), behind);
+        }
         for (widths, styles) |w, s| any = any or (w > 0 and s != .none and s != .hidden);
         if (!any) return;
         const same = widths[0] == widths[1] and widths[1] == widths[2] and widths[2] == widths[3] and styles[0] == styles[1] and styles[1] == styles[2] and styles[2] == styles[3] and colors[0].eql(colors[1]) and colors[1].eql(colors[2]) and colors[2].eql(colors[3]);
@@ -843,7 +896,7 @@ pub const Painter = struct {
         if (std.math.isNan(b.baseline)) return;
         const g = p.hooks.marker(p.hooks.ctx, b.marker) orelse return;
         const st = p.engine.store.get(m.style);
-        const c = p.color(st.inh.color, Color.black);
+        const c = p.color(if (p.dark != null) p.darkText(p.textColor(st), p.behindBox(id)) else st.inh.color, Color.black);
         const content_left = x + b.border[3] + b.padding[3];
         const rtl = st.inh.direction == .rtl;
         var pen = if (rtl) x + b.w - b.border[1] - b.padding[1] else content_left - g.width;
@@ -881,7 +934,7 @@ pub const Painter = struct {
                 // which contrasts with the canvas in every theme; the
                 // theme's control border is a hairline meant beside a
                 // field, and in a dark theme the box all but vanished.
-                const border = p.color(p.palette.gray, Color.black);
+                const border = p.color(if (p.dark) |*m| m.border(p.palette.gray, p.behindBox(id)) else p.palette.gray, Color.black);
                 const k = @min(content.width(), content.height());
                 const sq = Rect.xywh(content.x0 + (content.width() - k) / 2, content.y0 + (content.height() - k) / 2, k, k);
                 const rad: f32 = if (rep.kind == .radio) k / 2 else 2;
@@ -897,7 +950,7 @@ pub const Painter = struct {
                         try p.b.stroke(.{ .path = path }, .{ .width = @max(1.5, k / 7), .join = .round, .cap = .round }, .color(p.color(p.palette.accent_text, Color.black)));
                     } else try p.b.fillRoundedRect(sq.outset(-k * 0.3), .{ .tl = .{ .x = k, .y = k }, .tr = .{ .x = k, .y = k }, .br = .{ .x = k, .y = k }, .bl = .{ .x = k, .y = k } }, .color(p.color(p.palette.accent_text, Color.black)));
                 } else {
-                    try p.b.fillRoundedRect(sq, rr, .color(p.color(p.palette.field, Color.black)));
+                    try p.b.fillRoundedRect(sq, rr, .color(p.color(p.darkBackground(p.palette.field), Color.black)));
                     try p.b.stroke(.{ .rounded_rect = .{ .rect = sq.outset(-0.75), .radii = rr } }, .{ .width = 1.5 }, .color(border));
                 }
             },
@@ -939,6 +992,7 @@ pub const Painter = struct {
         const content_w = @max(0, b.w - b.border[1] - b.border[3] - b.padding[1] - b.padding[3]);
         const l = p.engine.laid(b.data, content_w) catch return error.OutOfMemory;
         const data = &p.tree().ifcs.items[b.data];
+        if (p.dark != null) p.ifc_behind = p.behindBox(id);
         // Lines in the band.
         var first: usize = 0;
         {
@@ -1001,7 +1055,7 @@ pub const Painter = struct {
             const bottom = baseline + fi.descent + st.box.padding[2].resolve(0) + st.borderWidth(2);
             const r = snap(.{ .x0 = cx + x0, .y0 = top, .x1 = cx + x1, .y1 = bottom });
             const current = p.textColor(st);
-            const bg = p.resolve(st.box.background_color, current);
+            const bg = p.darkBackground(p.resolve(st.box.background_color, current));
             const rr = p.inlineRadii(st, r, open_here, close_here);
             if (bg.a > 0) try p.b.fill(shape(r, rr), .nonzero, .color(p.color(bg, current)));
             // Background images (link icons, highlights) over the padding
@@ -1076,13 +1130,13 @@ pub const Painter = struct {
     }
 
     fn textLine(p: *Painter, data: *const box_mod.Ifc, l: *const inline_mod.Laid, line: inline_mod.Line, cx: f32, cy: f32) Error!void {
-        _ = data;
         for (l.lineFrags(line)) |f| {
             if (f.kind != .glyphs) continue;
             const st = p.engine.store.get(f.style);
             if (st.inh.visibility != .visible) continue;
             const face = p.engine.fonts.cache.face(f.font) orelse continue;
-            const c = p.textColor(st);
+            const behind = if (p.dark != null) p.inlineBehind(data, f.inline_box) else Color.white;
+            const c = p.darkText(p.textColor(st), behind);
             const paint_color = p.color(c, Color.black);
             const baseline = @round(cy + line.baseline + f.shift);
             const x = cx + f.x;
@@ -1105,9 +1159,9 @@ pub const Painter = struct {
             if (st.box.text_decoration_line.any()) {
                 const own = st.box.text_decoration_line;
                 deco = .{ .underline = deco.underline or own.underline, .overline = deco.overline or own.overline, .line_through = deco.line_through or own.line_through };
-                deco_color = if (st.box.text_decoration_color.kind == .current) c else st.box.text_decoration_color;
+                deco_color = if (st.box.text_decoration_color.kind == .current) c else p.darkText(p.resolve(st.box.text_decoration_color, c), behind);
                 deco_style = st.box.text_decoration_style;
-            }
+            } else if (deco_color.kind != .current) deco_color = p.darkText(p.resolve(deco_color, c), behind);
             if (!deco.any() or f.w <= 0) continue;
             const dc = p.color(deco_color, c);
             const thick: f32 = if (st.box.text_decoration_thickness.tag == .length) st.box.text_decoration_thickness.resolve(size) else @max(1, @round(size / 16));

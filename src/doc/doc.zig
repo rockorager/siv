@@ -15,6 +15,7 @@ pub const url = @import("url.zig");
 pub const ua = @import("ua.zig");
 pub const sysfonts = @import("sysfonts.zig");
 pub const email = @import("email.zig");
+pub const dark = @import("dark.zig");
 
 pub const Palette = paint.Palette;
 pub const Hooks = paint.Hooks;

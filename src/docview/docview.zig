@@ -27,6 +27,12 @@ const none = std.math.maxInt(u32);
 
 pub const Error = error{OutOfMemory};
 
+/// What the reader prefers (D32). A document shows in the scheme its
+/// CSS `color-scheme` declares; one that declares none shows light, so
+/// that its own colors stay readable, unless it has
+/// `prefers-color-scheme: dark` styles or no colors at all, which follow
+/// the preference. A theme's canvas and text colors go only to documents
+/// that suit them; the others get a browser's stock ones.
 pub const ColorScheme = enum(u8) {
     /// The window's theme: its light or dark variant and its colors.
     theme,
@@ -40,6 +46,10 @@ pub const Options = struct {
     /// A stylesheet the application adds after the user agent's.
     user_css: []const u8 = "",
     color_scheme: ColorScheme = .theme,
+    /// Where the scheme is dark and the document shows light, its colors
+    /// are converted to dark ones near the theme's instead (partial
+    /// inversion, `doc.dark`): for mail clients that want dark everything.
+    convert_colors: bool = false,
     /// Remote (http, https) images are asked for; otherwise they are
     /// blocked, counted in a `blocked_images` event, and loaded only after
     /// `loadImages`.
@@ -850,11 +860,17 @@ pub const View = struct {
         v.kick();
     }
 
+    /// The system colors the document paints with (`ColorScheme`): the
+    /// theme's where they suit it, else a browser's light or dark ones,
+    /// or the light ones converted toward the theme's (`convert_colors`).
     fn palette(v: *View) doc.Palette {
+        const theme = v.options.color_scheme == .theme;
+        const tp = &v.win.palette;
+        const want_dark = v.media_dark;
+        const info: Document.Colors = if (v.d) |d| d.colors else .{};
+        const dark = info.usedDark(want_dark);
         var p: doc.Palette = .{};
-        const dark = v.media_dark;
-        if (v.options.color_scheme == .theme) {
-            const tp = &v.win.palette;
+        if (theme and dark == want_dark and info.adapts()) {
             p.canvas = color(tp.color(.view_bg));
             p.canvas_text = color(tp.color(.view_fg));
             p.accent = color(tp.color(.accent));
@@ -867,19 +883,27 @@ pub const View = struct {
             p.button_text = color(tp.color(.control_fg));
             p.button_border = color(tp.color(.border));
             p.gray = color(tp.color(.muted_fg));
-            var sel = color(tp.color(.selection_bg));
-            sel.a = 0.45;
-            p.selection = sel;
         } else if (dark) {
-            p.canvas = .rgb8(0x1e, 0x1e, 0x1e);
-            p.canvas_text = .rgb8(0xe8, 0xe8, 0xe8);
+            p.canvas = stock_dark_bg;
+            p.canvas_text = stock_dark_fg;
+        } else if (v.options.convert_colors and want_dark) {
+            p.dark = if (theme) .{ .bg = color(tp.color(.view_bg)), .fg = color(tp.color(.view_fg)) } else .{ .bg = stock_dark_bg, .fg = stock_dark_fg };
         }
         if (dark) {
             p.link = .rgb8(0x78, 0xae, 0xed);
             p.visited = .rgb8(0xc0, 0x97, 0xf0);
         }
+        if (theme) {
+            // The selection is the application's, whatever the colors.
+            var sel = color(tp.color(.selection_bg));
+            sel.a = 0.45;
+            p.selection = sel;
+        }
         return p;
     }
+
+    const stock_dark_bg: css.Color = .rgb8(0x1e, 0x1e, 0x1e);
+    const stock_dark_fg: css.Color = .rgb8(0xe8, 0xe8, 0xe8);
 
     /// A theme color (linear, as scenes take them) as CSS has it (sRGB).
     fn color(c: scene.Color) css.Color {
@@ -916,7 +940,7 @@ pub const View = struct {
         const pal = v.palette();
         if (v.options.paged or v.options.reading) {
             // Margins in the page's color.
-            const bg = pal.canvas;
+            const bg = if (pal.dark) |t| t.bg else pal.canvas;
             try v.last.fillRect(.xywh(0, 0, width, height), .color(scene.Color.srgb(bg.r, bg.g, bg.b, bg.a)));
         }
         if (v.options.paged) {

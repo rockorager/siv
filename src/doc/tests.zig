@@ -523,3 +523,40 @@ test "an image with a percentage height against an auto one keeps its ratio" {
     try testing.expectEqual(@as(f32, 100), elementBox(d, .img, 0).w);
     try testing.expectEqual(@as(f32, 100), elementBox(d, .img, 0).h);
 }
+
+test "color schemes: what a document declares, and whether it has colors of its own" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+    const Case = struct { []const u8, Document.Kind, Document.Colors };
+    for ([_]Case{
+        // No colors: the user agent's (an hr's gray, Markdown's grays)
+        // and hidden ones do not count.
+        .{ "<div dir=ltr>hi</div><hr><p style='display:none;color:#fff'>preheader</p>", .html, .{} },
+        .{ "# Title\n\n> quote\n\n`code`", .markdown, .{} },
+        .{ "plain text", .text, .{} },
+        // Colors in style attributes, presentational hints, and sheets,
+        // and inherited into what is shown.
+        .{ "<div style='color: rgb(0, 0, 0)'>hi</div>", .html, .{ .own = true } },
+        .{ "<table bgcolor=white><tr><td>hi</table>", .html, .{ .own = true } },
+        .{ "<style>.x { background: linear-gradient(#fff, #eee) }</style><div class=x>hi</div>", .html, .{ .own = true } },
+        .{ "<p>a <font color=red>b</font>", .html, .{ .own = true } },
+        // Not colors: system colors, currentcolor, transparent.
+        .{ "<div style='color: CanvasText; background: transparent; border-color: currentcolor'>hi</div>", .html, .{} },
+        // Declarations: the root's color-scheme, else the meta tag.
+        .{ "<meta name=color-scheme content='light dark'><body style='color:#222'>hi", .html, .{ .scheme = .light_dark, .own = true } },
+        .{ "<meta name=color-scheme content='light dark'><style>:root { color-scheme: only light }</style>hi", .html, .{ .scheme = .light } },
+        .{ "<style>body { color: #222 } @media (prefers-color-scheme: dark) { body { color: #eee } }</style>hi", .html, .{ .dark_media = true, .own = true } },
+    }) |c| {
+        const d = try f.load(gpa, c[0], .{ .kind = c[1] }, 400);
+        defer d.destroy();
+        try testing.expectEqual(c[2], d.colors);
+    }
+    // Light unless it allows dark; a theme's colors only where they suit.
+    const own: Document.Colors = .{ .own = true };
+    try testing.expect(!own.usedDark(true) and !own.adapts());
+    try testing.expect((Document.Colors{}).usedDark(true));
+    try testing.expect((Document.Colors{ .own = true, .dark_media = true }).usedDark(true));
+    try testing.expect(!(Document.Colors{ .scheme = .light_dark, .own = true }).usedDark(false));
+    try testing.expect((Document.Colors{ .scheme = .dark, .own = true }).usedDark(false));
+}

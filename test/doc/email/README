@@ -3,3 +3,9 @@ against test/golden/doc/email-*.png. Written for this corpus to mimic the
 HTML that common senders and clients produce (a store's receipt, a
 Mailchimp-style newsletter, Gmail, Outlook, and Apple Mail replies); the
 names, addresses, and text are invented.
+
+schemes/ holds mail for the color scheme tests in test/abi/docview.zig
+(D32): an Outlook mobile reply, a notification with a logo for light
+backgrounds (cid/), a newsletter with a colored band and buttons, a bare
+Gmail-style mail and plain text made into HTML (no colors), and a mail
+with its own prefers-color-scheme: dark styles. Invented as well.
