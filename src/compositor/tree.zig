@@ -70,6 +70,8 @@ pub const Layer = struct {
 
     anims: [std.enums.values(Property).len]?anim.Running = @splat(null),
     fling: ?anim.Fling = null,
+    /// Smooth scrolling toward a target (`Op.scroll_by` with `smooth`).
+    glide: ?anim.Glide = null,
     animated: bool = false,
     scrolled: bool = false,
     /// Shown while its animation runs (`update.Value.reveal`).
@@ -92,7 +94,7 @@ pub const Layer = struct {
     bar_busy: bool = false,
 
     fn animating(l: *const Layer) bool {
-        if (l.fling != null or l.bar_busy) return true;
+        if (l.fling != null or l.glide != null or l.bar_busy) return true;
         for (l.anims) |a| if (a != null) return true;
         return false;
     }
@@ -356,8 +358,7 @@ pub const Tree = struct {
                 } else {
                     l.offset = .zero;
                     l.zoom = 1;
-                    l.fling = null;
-                    l.anims[@intFromEnum(Property.scroll)] = null;
+                    t.stopScrolling(l);
                 }
                 l.scroll_version +%= 1;
                 l.damage_all = true;
@@ -372,7 +373,7 @@ pub const Tree = struct {
             .scroll_by => |s| {
                 const l = t.get(s.layer) orelse return t.reject(op, "no such layer");
                 if (l.scroll == null) return t.reject(op, "not a scroll container");
-                _ = try t.scrollBy(s.layer, s.delta);
+                _ = try if (s.smooth) t.glideBy(s.layer, s.delta) else t.scrollBy(s.layer, s.delta);
             },
             .fling => |s| {
                 if (!try t.startFling(s.layer, s.velocity)) return t.reject(op, "not a scroll container");
@@ -395,6 +396,7 @@ pub const Tree = struct {
                 if (prop == .scroll) {
                     if (l.scroll == null) return t.reject(op, "not a scroll container");
                     l.fling = null;
+                    l.glide = null;
                 }
                 var r: anim.Running = .init(s.animation);
                 // A reveal continues from the one shown (D38).
@@ -561,10 +563,13 @@ pub const Tree = struct {
         if (report) try t.markScrolled(id);
     }
 
-    /// Stops every fling in the tree: fingers came to rest on a touchpad
-    /// (a hold gesture).
+    /// Stops every fling and glide in the tree: fingers came to rest on
+    /// a touchpad (a hold gesture).
     pub fn stopFlings(t: *Tree) void {
-        for (t.animated.items) |id| t.layers.items[id].fling = null;
+        for (t.animated.items) |id| {
+            t.layers.items[id].fling = null;
+            t.layers.items[id].glide = null;
+        }
     }
 
     /// A window point in a layer's coordinates, through every transform
@@ -582,7 +587,8 @@ pub const Tree = struct {
         return inv.apply(p);
     }
 
-    /// Stops a container's fling and scroll animation, as input does.
+    /// Stops a container's fling, glide, and scroll animation, as input
+    /// does.
     pub fn stopLayer(t: *Tree, id: LayerId) void {
         if (t.get(id)) |l| t.stopScrolling(l);
     }
@@ -590,6 +596,7 @@ pub const Tree = struct {
     fn stopScrolling(t: *Tree, l: *Layer) void {
         _ = t;
         l.fling = null;
+        l.glide = null;
         l.anims[@intFromEnum(Property.scroll)] = null;
     }
 
@@ -614,7 +621,28 @@ pub const Tree = struct {
         const l = t.get(id) orelse return false;
         if (l.scroll == null) return false;
         l.anims[@intFromEnum(Property.scroll)] = null;
+        l.glide = null;
         l.fling = .{ .start = l.offset, .velocity = velocity };
+        try t.markAnimated(id);
+        return true;
+    }
+
+    /// Glides the offset by `delta` (keys and the application's scrolls,
+    /// D47): from where a glide underway is heading, or else from the
+    /// offset, to there plus `delta`, clamped to the content. Stops a
+    /// fling or scroll animation. Returns whether it has somewhere to go.
+    pub fn glideBy(t: *Tree, id: LayerId, delta: Point) Allocator.Error!bool {
+        const l = t.get(id) orelse return false;
+        const s = l.scroll orelse return false;
+        l.fling = null;
+        l.anims[@intFromEnum(Property.scroll)] = null;
+        const to = clampOffset(s, l.zoom, (if (l.glide) |g| g.to else l.offset).add(delta));
+        if (l.glide) |*g| {
+            g.retarget(l.offset, to);
+        } else {
+            if (to.eql(l.offset)) return false;
+            l.glide = .{ .from = l.offset, .to = to };
+        }
         try t.markAnimated(id);
         return true;
     }
@@ -890,6 +918,14 @@ pub const Tree = struct {
                 // Stops at rest or once it runs into the edge.
                 const stuck = l.offset.eql(before) and f.start_ns != t_ns;
                 if (s.done or stuck) l.fling = null else {
+                    result.active = true;
+                    result.holding = true;
+                }
+            }
+            if (l.glide) |*g| {
+                const s = g.sample(t_ns);
+                try t.setOffset(id, s.offset, true);
+                if (s.done) l.glide = null else {
                     result.active = true;
                     result.holding = true;
                 }
@@ -1691,6 +1727,83 @@ test "animations sample at frame times and finish" {
     tk = try f.tree.tick(2000);
     try testing.expect(!tk.active);
     try testing.expectEqual(@as(f32, 0.25), f.tree.get(1).?.opacity);
+}
+
+test "smooth scrolls glide to their target, add up while they run, keep a held key steady, and stop for input" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const ms = std.time.ns_per_ms;
+    try f.apply(&.{
+        .{ .create = 1 },
+        .{ .create = 2 },
+        .{ .create = 3 },
+        .{ .set_root = 1 },
+        .{ .insert = .{ .layer = 2, .parent = 1 } },
+        .{ .insert = .{ .layer = 3, .parent = 2 } },
+        // 900 px of offset.
+        .{ .set_scroll = .{ .layer = 2, .scroll = .{ .viewport = .xywh(0, 0, 100, 100), .content = .{ .width = 100, .height = 1000 } } } },
+        .{ .set_content = .{ .layer = 3, .content = try f.rect(0, .xywh(0, 0, 100, 1000)) } },
+    });
+    const l = f.tree.get(2).?;
+    const glide: Op = .{ .scroll_by = .{ .layer = 2, .delta = .{ .x = 0, .y = 40 }, .smooth = true } };
+    // Nothing moves until a frame; the first one starts it.
+    try f.apply(&.{glide});
+    try testing.expectEqual(@as(f32, 0), l.offset.y);
+    var tk = try f.tree.tick(1000 * ms);
+    try testing.expectEqual(@as(f32, 0), l.offset.y);
+    try testing.expect(tk.active and tk.holding);
+    // From rest to rest, halfway in time is halfway there.
+    _ = try f.tree.tick(1060 * ms);
+    try testing.expectApproxEqAbs(@as(f32, 20), l.offset.y, 1e-3);
+    // Another request heads 40 past the first one's target, moving on at
+    // the speed it had (6 · ½ · ½ · 40 px / 120 ms = 500 px/s): half a
+    // pixel in the next millisecond, not a restart from rest.
+    try f.apply(&.{glide});
+    _ = try f.tree.tick(1061 * ms);
+    try testing.expectApproxEqAbs(@as(f32, 20.5), l.offset.y, 0.01);
+    tk = try f.tree.tick(1180 * ms);
+    try testing.expectEqual(@as(f32, 80), l.offset.y);
+    try testing.expect(l.glide == null);
+    try testing.expectEqualSlices(LayerId, &.{2}, f.tree.scrolled.items);
+
+    // Clamped to the content: past the end it stops at the end, and from
+    // there has nowhere to go.
+    try f.apply(&.{.{ .scroll_by = .{ .layer = 2, .delta = .{ .x = 0, .y = 5000 }, .smooth = true } }});
+    _ = try f.tree.tick(2000 * ms);
+    _ = try f.tree.tick(2200 * ms);
+    try testing.expectEqual(@as(f32, 900), l.offset.y);
+    try testing.expect(!try f.tree.glideBy(2, .{ .x = 0, .y = 40 }));
+    try testing.expect(l.glide == null);
+
+    // A held key (a line up every 40 ms, frames at 60 Hz) glides: every
+    // frame moves up by about the average speed, 1000 px/s, where
+    // restarting from rest would crawl after each repeat.
+    var t: u64 = 3000 * ms;
+    var next_key = t;
+    var prev = l.offset.y;
+    var frame: u64 = 0;
+    while (frame < 30) : (frame += 1) {
+        if (t >= next_key) {
+            try f.apply(&.{.{ .scroll_by = .{ .layer = 2, .delta = .{ .x = 0, .y = -40 }, .smooth = true } }});
+            next_key += 40 * ms;
+        }
+        _ = try f.tree.tick(t);
+        const step = prev - l.offset.y;
+        prev = l.offset.y;
+        if (frame >= 12) try testing.expect(step > 12 and step < 22);
+        t += 16_666_667;
+    }
+
+    // Wheel input takes over where the glide is.
+    try f.apply(&.{.{ .scroll_by = .{ .layer = 2, .delta = .{ .x = 0, .y = -300 }, .smooth = true } }});
+    _ = try f.tree.tick(t + 30 * ms);
+    const mid = l.offset.y;
+    try testing.expect(try f.tree.scrollBy(2, .{ .x = 0, .y = -10 }));
+    try testing.expectEqual(mid - 10, l.offset.y);
+    try testing.expect(l.glide == null);
+    _ = try f.tree.tick(t + 200 * ms);
+    try testing.expectEqual(mid - 10, l.offset.y);
 }
 
 test "layers given up stay drawn without input until their animations end, then go and are reported" {

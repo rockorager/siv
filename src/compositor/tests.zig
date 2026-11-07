@@ -392,6 +392,48 @@ test "pointer scroll moves containers in the compositor unless the UI wants it" 
     try testing.expect(flung > 30 + 40 + 20);
 }
 
+test "smooth scroll_by glides to its target, adding up requests; pointer scroll takes over" {
+    var h: Harness = .{};
+    try h.start(false);
+    defer h.stop();
+    const id = try h.window();
+    // 960 px of offset.
+    _ = try h.comp.commit(id, &.{
+        .{ .create = 2 },
+        .{ .create = 3 },
+        .{ .insert = .{ .layer = 2, .parent = 1 } },
+        .{ .insert = .{ .layer = 3, .parent = 2 } },
+        .{ .set_scroll = .{ .layer = 2, .scroll = .{ .viewport = .xywh(0, 0, 100, 40), .content = .{ .width = 100, .height = 1000 } } } },
+        .{ .set_content = .{ .layer = 3, .content = try h.rect(.xywh(0, 0, 100, 1000), blue) } },
+    });
+    const line: Op = .{ .scroll_by = .{ .layer = 2, .delta = .{ .x = 0, .y = 40 }, .smooth = true } };
+    _ = try h.comp.commit(id, &.{ line, line });
+    try h.run(&h, struct {
+        fn f(x: *Harness) bool {
+            const s = x.last(.scrolled) orelse return false;
+            return s.scrolled.offset.y == 80;
+        }
+    }.f);
+    try h.runMs(20);
+    try testing.expectEqual(@as(f32, 80), h.last(.scrolled).?.scrolled.offset.y);
+
+    // A wheel event while it glides stops it where it is: 10 px up from
+    // a frame or two into the glide toward 880, and no further.
+    _ = try h.comp.commit(id, &.{.{ .scroll_by = .{ .layer = 2, .delta = .{ .x = 0, .y = 800 }, .smooth = true } }});
+    // In non-threaded mode a call applies the commit before it.
+    try h.comp.call(null, struct {
+        fn f(_: ?*anyopaque, _: *Compositor) void {}
+    }.f);
+    const hl = h.headless();
+    hl.inject(.{ .pointer_motion = .{ .window = id, .seat = 0, .x = 50, .y = 20 } });
+    hl.inject(.{ .scroll = .{ .window = id, .seat = 0, .dy = -10, .source = .wheel } });
+    try h.runMs(200);
+    const held = h.last(.scrolled).?.scrolled.offset.y;
+    try testing.expect(held >= 70 and held < 100);
+    try h.runMs(50);
+    try testing.expectEqual(held, h.last(.scrolled).?.scrolled.offset.y);
+}
+
 test "pinches zoom containers in the compositor unless the UI wants them; holds stop flings" {
     var h: Harness = .{};
     try h.start(false);

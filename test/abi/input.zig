@@ -216,6 +216,117 @@ test "a reader scrolls by lines, pages, and edges, and shows a node, keeping no 
     try testing.expectEqual(@as(f32, 200 - 14), r.width);
 }
 
+/// Every offset a viewport handler heard.
+const Heard = struct {
+    ys: [1024]f32 = undefined,
+    n: usize = 0,
+
+    fn on(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
+        const v: *Heard = @ptrCast(@alignCast(ud.?));
+        if (v.n < v.ys.len) v.ys[v.n] = ev.y;
+        v.n += 1;
+        return .handled;
+    }
+
+    fn last(v: *const Heard) f32 {
+        return v.ys[@min(v.n, v.ys.len) - 1];
+    }
+};
+
+test "keys and the application's scrolls glide to where they head and add up; reduced motion jumps" {
+    for ([_]bool{ false, true }) |reduced| {
+        var h: Harness = .{ .reduced_motion = reduced };
+        try h.start(200, 100, null, null);
+        defer h.stop();
+        var heard: Heard = .{};
+        const root = c.siv_window_get_root(h.window);
+        var txn: t.Txn = .null;
+        try ok(c.siv_txn_begin(h.window, &txn));
+        const sc = c.siv_scroll(txn, root, .vertical);
+        c.siv_set_layout(txn, sc, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(200), .height = px(100) });
+        c.siv_on(txn, sc, .viewport, Heard.on, null, &heard);
+        const column = c.siv_box(txn, sc);
+        // A hundred 50 px blocks: 5000 px of content, 4900 of offset. Keys
+        // scroll the scroll node around the focus.
+        var first: t.Node = .null;
+        for (0..100) |i| {
+            const b = c.siv_box(txn, column);
+            c.siv_set_layout(txn, b, &.{ .size = @sizeOf(t.LayoutDesc), .height = px(50) });
+            if (i == 0) {
+                c.siv_set_semantics(txn, b, &.{ .size = @sizeOf(t.SemanticsDesc), .flags = .{ .focusable = true } });
+                first = b;
+            }
+        }
+        try ok(c.siv_txn_commit(txn));
+        try h.settle();
+        try ok(c.siv_node_focus(first));
+        try h.settle();
+
+        const Step = union(enum) { by: struct { t.ScrollUnit, f32 }, edge: t.ScrollEdge, key: t.Key };
+        // A request, how many of it at once, and where they end up.
+        const steps = [_]struct { Step, u32, f32 }{
+            .{ .{ .by = .{ .line, 1 } }, 1, 40 },
+            .{ .{ .by = .{ .line, 1 } }, 3, 160 }, // in one transaction
+            .{ .{ .by = .{ .page, 1 } }, 1, 250 },
+            .{ .{ .edge = .bottom }, 1, 4900 },
+            .{ .{ .by = .{ .pixel, -4000 } }, 1, 900 },
+            .{ .{ .key = .up }, 1, 860 },
+            .{ .{ .key = .down }, 3, 980 }, // pressed together
+            .{ .{ .key = .page_down }, 1, 1070 },
+            .{ .{ .key = .home }, 1, 0 },
+            .{ .{ .key = .end }, 1, 4900 },
+            .{ .{ .edge = .top }, 1, 0 },
+        };
+        var from: f32 = 0;
+        var on_the_way: usize = 0;
+        for (steps) |step| {
+            heard.n = 0;
+            switch (step[0]) {
+                .key => |k| for (0..step[1]) |_| try ok(c.siv_test_key(h.window, k, .{}, "", 0)),
+                else => {
+                    try ok(c.siv_txn_begin(h.window, &txn));
+                    for (0..step[1]) |_| switch (step[0]) {
+                        .by => |b| c.siv_scroll_by(txn, sc, b[0], 0, b[1]),
+                        .edge => |e| c.siv_scroll_to_edge(txn, sc, e),
+                        .key => unreachable,
+                    };
+                    try ok(c.siv_txn_commit(txn));
+                },
+            }
+            try h.settle();
+            try testing.expectEqual(step[2], heard.last());
+            const lo = @min(from, step[2]);
+            const hi = @max(from, step[2]);
+            for (heard.ys[0..@min(heard.n, heard.ys.len)]) |y| {
+                // Reduced motion jumps: the handler hears where a single
+                // request lands and nothing else.
+                if (reduced and step[1] == 1) try testing.expectEqual(step[2], y);
+                if (y > lo and y < hi) on_the_way += 1;
+            }
+            from = step[2];
+        }
+        // With motion the compositor reports the way there. (A glide
+        // that some frame skipped entirely reports none, but not all of
+        // them.)
+        if (!reduced) try testing.expect(on_the_way > 0);
+
+        // A request while one glides goes on from where that one heads.
+        try ok(c.siv_txn_begin(h.window, &txn));
+        c.siv_scroll_by(txn, sc, .line, 0, 1);
+        try ok(c.siv_txn_commit(txn));
+        heard.n = 0;
+        for (0..100) |_| {
+            if (heard.n >= 2) break;
+            try ok(c.siv_app_dispatch(h.app, 2));
+        }
+        try ok(c.siv_txn_begin(h.window, &txn));
+        c.siv_scroll_by(txn, sc, .line, 0, 1);
+        try ok(c.siv_txn_commit(txn));
+        try h.settle();
+        try testing.expectEqual(@as(f32, 80), heard.last());
+    }
+}
+
 const Pen = struct {
     events: [16]t.Event = undefined,
     samples: [16][8]t.TabletSample = undefined,

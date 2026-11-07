@@ -259,6 +259,79 @@ pub const Fling = struct {
     }
 };
 
+/// Smooth scrolling by keys and the application (D47): a cubic from the
+/// offset and velocity at its start to the target, where it arrives at
+/// rest after `duration_ns`. Retargeted, it starts again from where the
+/// last sample left it, moving as fast, so a held key glides at a steady
+/// speed where an ease restarted from rest would lurch at every repeat.
+pub const Glide = struct {
+    from: Point,
+    to: Point,
+    /// At the start, logical pixels per second.
+    velocity: Point = .zero,
+    /// 0 until the first sample.
+    start_ns: u64 = 0,
+    last_ns: u64 = 0,
+
+    pub const duration_ns: u64 = 120 * std.time.ns_per_ms;
+
+    pub fn sample(g: *Glide, t_ns: u64) struct { offset: Point, done: bool } {
+        if (g.start_ns == 0) g.start_ns = t_ns;
+        g.last_ns = @max(g.last_ns, t_ns);
+        if (t_ns -| g.start_ns >= duration_ns) return .{ .offset = g.to, .done = true };
+        return .{ .offset = g.at(t_ns).offset, .done = false };
+    }
+
+    /// Heads for `to` instead, from `offset` (where the last sample left
+    /// it) at the speed it moves there.
+    pub fn retarget(g: *Glide, offset: Point, to: Point) void {
+        if (g.start_ns == 0) {
+            g.from = offset;
+            g.to = to;
+            return;
+        }
+        const v = g.at(g.last_ns).velocity;
+        g.* = .{
+            .from = offset,
+            .to = to,
+            .velocity = .{ .x = cap(v.x, to.x - offset.x), .y = cap(v.y, to.y - offset.y) },
+            .start_ns = g.last_ns,
+            .last_ns = g.last_ns,
+        };
+    }
+
+    /// A cubic that arrives at rest overshoots its target when it starts
+    /// toward it faster than three times the average speed; moving away
+    /// from it, it turns back.
+    fn cap(v: f32, d: f32) f32 {
+        const most = 3 * d / seconds(duration_ns);
+        if (d == 0) return 0;
+        if (d > 0 and v > most) return most;
+        if (d < 0 and v < most) return most;
+        return v;
+    }
+
+    /// Hermite interpolation from `from` at `velocity` to `to` at rest.
+    fn at(g: *const Glide, t_ns: u64) struct { offset: Point, velocity: Point } {
+        const span = seconds(duration_ns);
+        const s = @min(seconds(t_ns -| g.start_ns) / span, 1);
+        const h00 = (2 * s - 3) * s * s + 1;
+        const h10 = ((s - 2) * s + 1) * s * span;
+        const h01 = (3 - 2 * s) * s * s;
+        const d01 = 6 * s * (1 - s) / span;
+        const d10 = (3 * s - 4) * s + 1;
+        const f = struct {
+            fn f(a: f32, v: f32, b: f32, k00: f32, k10: f32, k01: f32) f32 {
+                return a * k00 + v * k10 + b * k01;
+            }
+        }.f;
+        return .{
+            .offset = .{ .x = f(g.from.x, g.velocity.x, g.to.x, h00, h10, h01), .y = f(g.from.y, g.velocity.y, g.to.y, h00, h10, h01) },
+            .velocity = .{ .x = f(g.from.x, g.velocity.x, g.to.x, -d01, d10, d01), .y = f(g.from.y, g.velocity.y, g.to.y, -d01, d10, d01) },
+        };
+    }
+};
+
 /// Estimates scroll velocity from recent input deltas, for flings at the
 /// end of a touchpad gesture.
 pub const VelocityTracker = struct {

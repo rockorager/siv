@@ -825,19 +825,24 @@ fn key(win: *Window, k: *const platform.Key) void {
             const s = nearestScroll(win, target) orelse return;
             const view_h = win.state(s).size.h;
             const max = paint.maxScroll(win, s);
-            const off = paint.scrollTranslation(win, s);
+            // Home and End go by the whole extent, so that they reach the
+            // edge from wherever the compositor has the offset, or where
+            // a glide is heading.
             const delta: Point = switch (k.keysym) {
                 keysym.up => .{ .x = 0, .y = -line_step },
                 keysym.down => .{ .x = 0, .y = line_step },
                 keysym.page_up => .{ .x = 0, .y = -view_h * 0.9 },
                 keysym.page_down => .{ .x = 0, .y = view_h * 0.9 },
-                keysym.home => .{ .x = 0, .y = -off.y },
-                keysym.end => .{ .x = 0, .y = max.y - off.y },
+                keysym.home => .{ .x = 0, .y = -max.y },
+                keysym.end => .{ .x = 0, .y = max.y },
                 keysym.left => .{ .x = -line_step, .y = 0 },
                 keysym.right => .{ .x = line_step, .y = 0 },
                 else => unreachable,
             };
-            scrollBy(win, s, delta);
+            if (delta.eql(.zero)) return;
+            win.paint.scroll_by.append(win.gpa, .{ .node = s, .delta = delta, .smooth = !win.reducedMotion() }) catch return;
+            win.dirty.props = true;
+            win.requestFrame();
         },
         else => {},
     }
@@ -1023,8 +1028,10 @@ fn scrollFor(win: *Window, id: NodeId, to: Point, max: Point, push: Point) error
     }
     // Up goes before the content's new extent, which may clamp it; down
     // after, which may make room for it.
-    if (d.x != 0) win.paint.scroll_by.appendAssumeCapacity(.{ .node = id, .delta = .{ .x = d.x, .y = 0 }, .early = d.x < 0 });
-    if (d.y != 0) win.paint.scroll_by.appendAssumeCapacity(.{ .node = id, .delta = .{ .x = 0, .y = d.y }, .early = d.y < 0 });
+    // The compositor glides there (D47), unless motion is reduced.
+    const smooth = !win.reducedMotion();
+    if (d.x != 0) win.paint.scroll_by.appendAssumeCapacity(.{ .node = id, .delta = .{ .x = d.x, .y = 0 }, .early = d.x < 0, .smooth = smooth });
+    if (d.y != 0) win.paint.scroll_by.appendAssumeCapacity(.{ .node = id, .delta = .{ .x = 0, .y = d.y }, .early = d.y < 0, .smooth = smooth });
 }
 
 /// Scroll input the compositor forwarded: over a wheel region, with a

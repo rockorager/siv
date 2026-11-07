@@ -143,6 +143,9 @@ pub const ScrollBy = struct {
     /// to content that shrank above (D13), before the container's new
     /// extent clamps the offset.
     early: bool = false,
+    /// The compositor glides there (keys and the application's scrolls,
+    /// D47): false under reduced motion.
+    smooth: bool = false,
 };
 
 /// How a node's motion runs on the compositor; none with reduced motion.
@@ -789,7 +792,7 @@ pub const State = struct {
         var early: usize = 0;
         for (st.scroll_by.items) |sb| {
             if (!sb.early or !win.isLive(sb.node) or !st.ownsLayerNow(win, sb.node)) continue;
-            try st.ops.insert(gpa, early, .{ .scroll_by = .{ .layer = id(win.state(sb.node).own_layer), .delta = sb.delta } });
+            try st.ops.insert(gpa, early, .{ .scroll_by = .{ .layer = id(win.state(sb.node).own_layer), .delta = sb.delta, .smooth = sb.smooth } });
             early += 1;
         }
         // A window resized by the user relays out under the pointer:
@@ -975,7 +978,7 @@ pub const State = struct {
             if (sb.early or !win.isLive(sb.node) or !st.ownsLayerNow(win, sb.node)) continue;
             const layer = id(win.state(sb.node).own_layer);
             if (sb.zoom != 1) st.ops.appendAssumeCapacity(.{ .zoom_by = .{ .layer = layer, .factor = sb.zoom, .focus = sb.focus } });
-            if (!sb.delta.eql(.zero)) st.ops.appendAssumeCapacity(.{ .scroll_by = .{ .layer = layer, .delta = sb.delta } });
+            if (!sb.delta.eql(.zero)) st.ops.appendAssumeCapacity(.{ .scroll_by = .{ .layer = layer, .delta = sb.delta, .smooth = sb.smooth } });
             if (sb.fling) |v| st.ops.appendAssumeCapacity(.{ .fling = .{ .layer = layer, .velocity = v } });
         }
         st.scroll_by.clearRetainingCapacity();

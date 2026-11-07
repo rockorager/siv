@@ -464,7 +464,11 @@ pub const Op = union(enum) {
     /// Moves a scroll container's offset by `delta`, relative to wherever
     /// the compositor has it now. For scroll input the UI handled first
     /// and passes on, without racing the compositor's own scrolling.
-    scroll_by: struct { layer: LayerId, delta: Point },
+    /// `smooth` eases there over `anim.Glide.duration_ns` instead (keys
+    /// and the application's scrolls, D47), from where a glide underway
+    /// is heading, so that repeated requests add up; pointer scroll
+    /// input, `scroll_to`, flings, zooms, and plain `scroll_by` stop it.
+    scroll_by: struct { layer: LayerId, delta: Point, smooth: bool = false },
     animate: struct { layer: LayerId, animation: Animation },
     /// The UI gives up a layer and its subtree (D38): the compositor
     /// keeps drawing them where they are, without taking input over them,

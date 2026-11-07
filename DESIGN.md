@@ -658,8 +658,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     goes on to the nearest scroll node with room as `scroll_by`. Keyboard
     scrolling (arrows, page keys) is `scroll_by` too, and so are the
     application's relative scrolls (`siv_scroll_by`, `siv_scroll_to_edge`,
-    `siv_scroll_into_view`, D47). Only offsets the application sets with
-    `siv_scroll_to`, and scrollbar drags (D47), are `scroll_to`.
+    `siv_scroll_into_view`, D47), both smooth (below). Only offsets the
+    application sets with `siv_scroll_to`, and scrollbar drags (D47),
+    are `scroll_to`.
     Corrections that
     keep a long text in place while its metrics change (D13) and the
     scrolls that show an editor's caret (D15) are `scroll_by` as well,
@@ -694,6 +695,42 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     touchpad gesture stops faster than 100 px/s, from the last 100 ms of
     deltas, and decay with a 325 ms time constant (a first guess). A
     scroll container is hit anywhere in its viewport, drawn or not.
+  - Keys and the application's relative scrolls glide, as in browsers
+    and GTK: the UI sends them as `scroll_by` with `smooth`, and the
+    compositor eases from the offset to the target in 120 ms
+    (`anim.Glide`; Firefox takes 150 ms for a line, GTK 200 ms). A
+    request while one glides adds to where that one is heading, clamped
+    to the content, and starts a new curve from where the last frame
+    showed, at the speed it was moving: a cubic (Hermite) curve that
+    arrives at rest, its starting speed capped so that it never passes
+    its target. A held key thus glides at a steady speed: 40 px every
+    40 ms moves 16 to 18 px a frame at 60 Hz. Restarting an ease from
+    rest at each request, as GTK's `gtk_adjustment_animate_to_value`
+    does, lurches at every repeat; before, keys jumped 40 px at once,
+    which made parcel's j and k (`siv_scroll_by` by lines) coarse.
+    Pointer scroll input, touchpad holds and pinches, scrollbar drags
+    and assistive technology (`scroll_to`), flings, and plain
+    `scroll_by` stop a glide and go on from where it is. Under reduced
+    motion (D29) the UI sends plain `scroll_by`, which jumps. Home and
+    End scroll by the whole extent, so they reach the edge from
+    wherever the offset is or a glide heads. Corrections that keep text
+    in place (D13) and caret scrolls (D15) stay plain, landing with the
+    content they answer, and so does a press on a scrollbar's track
+    (D47). Tests: `src/compositor/tree.zig` (the curve at frame times:
+    halfway, a retarget keeping its speed, a held key's steady frames,
+    clamping, a wheel taking over); `src/compositor/tests.zig` (on the
+    headless backend: requests in one commit add up, a wheel event
+    stops a glide); `test/abi/input.zig` (keys and the application's
+    scrolls land where they head and add up, also while one glides,
+    and jump under reduced motion).
+    Alternatives: a critically damped spring, which the compositor
+    already runs (D38) and which also keeps its velocity when
+    retargeted, but a held key's frames moved between 8 and 21 px
+    (simulated, same keys) and it settles later; scrolling the UI
+    thread's offset per frame (against this decision's requirement);
+    durations that grow with the distance, as Chromium's do (Home and
+    End over a long document glide fast; revisit if long glides look
+    like a flash).
   - Measured (`zig build bench-latency` and `zig build bench-pacing`, 60
     Hz): on headless, key-to-photon with the
     compositor thread has a median of 7 ms against 7.6 ms rendering on the
@@ -9353,7 +9390,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     `scroll_by` (D8), relative to wherever it has the offset then,
     which may include wheel or fling scrolling the UI has not heard of;
     an edge overshoots by the whole extent so that it lands on the edge
-    from anywhere. A `siv_scroll_to` replaces requests on the node
+    from anywhere. The compositor glides there unless motion is reduced
+    (D8), and a request made while one glides is relative to where
+    that one is heading: three lines are three lines however fast they
+    come. The viewport handler hears the target at the next frame, as
+    before, then the offsets on the way as the compositor reports them
+    (as for any scrolling it does), ending on the target. A `siv_scroll_to` replaces requests on the node
     queued before it (`Scroll.sets`), so the transaction's order holds;
     an aborted transaction drops its requests. With these, an
     application keeps no copy of the offset, and neither a drag, a
