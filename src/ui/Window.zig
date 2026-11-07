@@ -45,6 +45,7 @@ const Window = @This();
 pub const NodeId = node_mod.NodeId;
 pub const Node = node_mod.Node;
 pub const Kind = node_mod.Kind;
+const ScrollRequest = node_mod.ScrollRequest;
 const Point = raster.Point;
 const Rect = raster.Rect;
 
@@ -124,6 +125,9 @@ long_texts: std.ArrayList(NodeId) = .empty,
 /// The editor whose caret moved by keys, input, or the application since
 /// the last frame: its scroll container scrolls it into view.
 reveal: NodeId = .none,
+/// The application's relative scrolls since the last frame, in order,
+/// applied after layout (`input.applyScrollRequests`).
+scroll_requests: std.ArrayList(ScrollRequest) = .empty,
 /// The application's clipboard, if it has one.
 clipboard: ?*Clipboard = null,
 /// Drag-and-drop requests; without them drags neither start nor drop.
@@ -510,6 +514,7 @@ fn deinitStorage(win: *Window) void {
     win.bound.deinit(win.gpa);
     win.culled.deinit(win.gpa);
     win.long_texts.deinit(win.gpa);
+    win.scroll_requests.deinit(win.gpa);
     win.modals.deinit(win.gpa);
     win.adaptive_nodes.deinit(win.gpa);
     win.animating.deinit(win.gpa);
@@ -754,7 +759,7 @@ pub fn needsFrame(win: *const Window) bool {
     // next frame (`semanticsTree`), so scrolling makes no extra frames.
     return win.state(.root).needs_layout or win.dirty.layers or win.dirty.props or win.viewport_dirty or win.settings_changed.any() or
         win.paint.anyDirty() or win.pending_input.items.len != 0 or win.input.tablet_pending.items.len != 0 or win.ime.dirty or win.pending_edits.items.len != 0 or
-        win.dnd.pending != null or win.commit_held or win.scopes_dirty;
+        win.dnd.pending != null or win.commit_held or win.scopes_dirty or win.scroll_requests.items.len != 0;
 }
 
 /// Whether to keep this frame's changes for a later commit: the window
@@ -888,6 +893,8 @@ pub fn frame(win: *Window) Error!void {
         laid_out = true;
         try layout.run(win);
     }
+    // The application's scrolls go from where layout left the nodes.
+    try input_mod.applyScrollRequests(win);
     const switched = win.variants_switched;
     if (laid_out or win.app_scrolled) {
         win.app_scrolled = false;
@@ -1044,6 +1051,10 @@ pub fn forget(win: *Window, id: NodeId) void {
     }
     spelling_mod.forget(win, id);
     inspect_mod.forget(win, id);
+    var i: usize = 0;
+    while (i < win.scroll_requests.items.len) {
+        if (win.scroll_requests.items[i].node == id) _ = win.scroll_requests.orderedRemove(i) else i += 1;
+    }
     const s = win.state(id);
     win.paint.damage(s.layer, s.bounds);
     win.paint.forget(win, id);

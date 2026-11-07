@@ -464,6 +464,213 @@ test "scrollbars: always shown in right-to-left, dark, high-contrast layouts" {
     try expectDamageExact(&app);
 }
 
+test "scrollbars: a gutter keeps rows clear of the overlay bar and of presses near it" {
+    var app: App = undefined;
+    try app.init(testing.allocator, .{ .width = 200, .height = 160 });
+    defer app.deinit();
+    const list = try scrolledList(app.win);
+    try app.settle();
+    const r = app.win.windowRect(list);
+    const vp: Rect = .{ .x0 = r.x0 + 1, .y0 = r.y0 + 1, .x1 = r.x1 - 1, .y1 = r.y1 - 1 };
+    const row = app.win.node(list).first;
+    const page = 0.9 * vp.height();
+    const S = struct {
+        fn press(a: *App, x: f32, y: f32) !f32 {
+            moveTo(a, x, y);
+            pressPrimary(a, true);
+            pressPrimary(a, false);
+            try a.settle();
+            return a.win.node(a.win.node(a.win.node(.root).first).first).data.scroll.offset.y;
+        }
+    };
+    // Overlay (the default): rows reach the end edge, under the bar, and
+    // a press 15 px from it is the bar's, which pages.
+    try testing.expectEqual(vp.width(), app.win.state(row).size.w);
+    try testing.expectApproxEqAbs(page, try S.press(&app, vp.x1 - 15, vp.y1 - 10), 0.01);
+    {
+        const t = try app.win.begin();
+        var s = app.win.node(list).data.scroll;
+        s.gutter = true;
+        s.offset = .zero;
+        try t.setScroll(list, s);
+        t.commit();
+    }
+    try app.settle();
+    // With a gutter, rows end before it, whether or not the bar shows,
+    // and the same press reaches the row; in the gutter it still pages.
+    try testing.expectEqual(vp.width() - compositor.Scrollbars.gutter, app.win.state(row).size.w);
+    try testing.expectEqual(@as(f32, 0), try S.press(&app, vp.x1 - 15, vp.y1 - 10));
+    try testing.expectApproxEqAbs(page, try S.press(&app, vp.x1 - 13, vp.y1 - 10), 0.01);
+    // The bar widens in the gutter, over no row.
+    moveTo(&app, vp.x1 - 6, vp.y0 + 60);
+    try app.settle();
+    try expectGolden(&app, "scrollbar-gutter");
+    try expectDamageExact(&app);
+}
+
+test "scroll_by and scroll_to_edge go from where the node is, not from a copy of its offset" {
+    var app: App = undefined;
+    try app.init(testing.allocator, .{ .width = 200, .height = 160 });
+    defer app.deinit();
+    const list = try scrolledList(app.win);
+    var heard: f32 = -1;
+    {
+        const t = try app.win.begin();
+        try t.on(list, .viewport, .{ .func = hearViewport, .user = &heard });
+        t.commit();
+    }
+    try app.settle();
+    const r = app.win.windowRect(list);
+    const vp_h = r.height() - 2;
+    const max = app.win.state(list).content.h - vp_h;
+    try testing.expect(max > 300);
+    const S = struct {
+        fn by(a: *App, id: NodeId, unit: ui.ScrollUnit, y: f32) !void {
+            const t = try a.win.begin();
+            try t.scrollBy(id, unit, .{ .x = 0, .y = y });
+            t.commit();
+        }
+        fn edge(a: *App, id: NodeId, e: ui.ScrollEdge) !void {
+            const t = try a.win.begin();
+            try t.scrollToEdge(id, e);
+            t.commit();
+        }
+        /// The offset the UI, the compositor, and a viewport handler have.
+        fn expectAt(a: *App, id: NodeId, told: f32, y: f32) !void {
+            try testing.expectApproxEqAbs(y, a.win.node(id).data.scroll.offset.y, 0.01);
+            try testing.expectApproxEqAbs(y, a.mirror.get(a.win.state(id).own_layer + 1).?.offset.y, 0.01);
+            try testing.expectApproxEqAbs(y, told, 0.01);
+        }
+    };
+    // Assistive technology moves the node, as a scrollbar drag would; a
+    // line goes on from there.
+    try testing.expect(ui.scrollbar.setValue(app.win, list, .vertical, 30));
+    try app.settle();
+    try S.by(&app, list, .line, 1);
+    try app.settle();
+    try S.expectAt(&app, list, heard, 30 + ui.input.line_step);
+    // The wheel scrolls on the compositor; a page asked for before the
+    // UI hears of it adds to it.
+    moveTo(&app, r.x0 + 30, r.y0 + 30);
+    app.inject(.{ .scroll = .{ .window = app.wid, .seat = 0, .dy = 80, .source = .wheel } });
+    try S.by(&app, list, .page, 1);
+    try app.settle();
+    try S.expectAt(&app, list, heard, 30 + ui.input.line_step + 80 + 0.9 * vp_h);
+    // Requests in one transaction apply in order, clamped as they go.
+    {
+        const t = try app.win.begin();
+        try t.scrollBy(list, .pixel, .{ .x = 0, .y = 10_000 });
+        try t.scrollBy(list, .line, .{ .x = 0, .y = -1 });
+        t.commit();
+    }
+    try app.settle();
+    try S.expectAt(&app, list, heard, max - ui.input.line_step);
+    try S.edge(&app, list, .bottom);
+    try app.settle();
+    try S.expectAt(&app, list, heard, max);
+    try S.edge(&app, list, .top);
+    try app.settle();
+    try S.expectAt(&app, list, heard, 0);
+    // A scroll_to after a relative scroll replaces it; one before it is
+    // where it goes from.
+    {
+        const t = try app.win.begin();
+        try t.scrollBy(list, .pixel, .{ .x = 0, .y = 50 });
+        try t.setScroll(list, .{ .offset = .{ .x = 0, .y = 20 } });
+        t.commit();
+    }
+    try app.settle();
+    try S.expectAt(&app, list, heard, 20);
+    {
+        const t = try app.win.begin();
+        try t.setScroll(list, .{ .offset = .{ .x = 0, .y = 10 } });
+        try t.scrollBy(list, .pixel, .{ .x = 0, .y = 50 });
+        t.commit();
+    }
+    try app.settle();
+    try S.expectAt(&app, list, heard, 60);
+    // An aborted transaction scrolls nothing.
+    {
+        const t = try app.win.begin();
+        try t.scrollBy(list, .page, .{ .x = 0, .y = 1 });
+        try t.scrollToEdge(list, .bottom);
+        t.abort();
+    }
+    try app.settle();
+    try S.expectAt(&app, list, heard, 60);
+    // The end of content added in the same transaction.
+    {
+        const t = try app.win.begin();
+        for (0..4) |_| _ = try node(t, list, .box, .{ .height = .{ .px = 50 } }, .{});
+        try t.scrollToEdge(list, .bottom);
+        t.commit();
+    }
+    try app.settle();
+    try S.expectAt(&app, list, heard, max + 200);
+}
+
+test "scroll_into_view: each scroll node around a node, innermost first, once it is laid out" {
+    var app: App = undefined;
+    try app.init(testing.allocator, .{ .width = 200, .height = 200 });
+    defer app.deinit();
+    // An outer scroll of 200 px: a 150 px header, an inner scroll of
+    // 100 px holding ten 30 px rows, and 300 px below it.
+    var outer: NodeId = undefined;
+    var inner: NodeId = undefined;
+    var rows: [10]NodeId = undefined;
+    {
+        const t = try app.win.begin();
+        outer = try node(t, .root, .scroll, .{ .height = .{ .px = 200 } }, .{});
+        _ = try node(t, outer, .box, .{ .height = .{ .px = 150 } }, .{});
+        inner = try node(t, outer, .scroll, .{ .height = .{ .px = 100 } }, .{});
+        for (&rows) |*row| row.* = try node(t, inner, .box, .{ .height = .{ .px = 30 } }, .{});
+        _ = try node(t, outer, .box, .{ .height = .{ .px = 300 } }, .{});
+        t.commit();
+    }
+    try app.settle();
+    const S = struct {
+        fn show(a: *App, id: NodeId, where: ui.ScrollAlign) !void {
+            const t = try a.win.begin();
+            try t.scrollIntoView(id, where);
+            t.commit();
+            try a.settle();
+        }
+        fn offsets(a: *App, o: NodeId, i: NodeId) [2]f32 {
+            return .{ a.win.node(o).data.scroll.offset.y, a.win.node(i).data.scroll.offset.y };
+        }
+    };
+    // Row 6 (180..210 in the inner content) comes up from below each
+    // viewport by the least: to the inner's bottom (offset 110), and the
+    // inner, at 150..250 in the outer, to the outer's bottom (50).
+    try S.show(&app, rows[6], .nearest);
+    try testing.expectEqual([2]f32{ 50, 110 }, S.offsets(&app, outer, inner));
+    try testing.expectEqual(@as(f32, 200), app.win.windowRect(rows[6]).y1);
+    try testing.expectEqual(@as(f32, 110), app.mirror.get(app.win.state(inner).own_layer + 1).?.offset.y);
+    // A row added in the same transaction, at the start: the inner stops
+    // at its end (230), where the row is at 70..100 of its viewport, and
+    // the outer puts that at its top (150 + 70).
+    var added: NodeId = undefined;
+    {
+        const t = try app.win.begin();
+        added = try node(t, inner, .box, .{ .height = .{ .px = 30 } }, .{});
+        try t.scrollIntoView(added, .start);
+        t.commit();
+    }
+    try app.settle();
+    try testing.expectEqual([2]f32{ 220, 230 }, S.offsets(&app, outer, inner));
+    try testing.expectEqual(@as(f32, 0), app.win.windowRect(added).y0);
+    // Shown already: nearest leaves it.
+    try S.show(&app, added, .nearest);
+    try testing.expectEqual([2]f32{ 220, 230 }, S.offsets(&app, outer, inner));
+    // Row 5 (150..180) to the middle of the inner (115), which is then
+    // at 185..215 in the outer, to the middle of that (100).
+    try S.show(&app, rows[5], .center);
+    try testing.expectEqual([2]f32{ 100, 115 }, S.offsets(&app, outer, inner));
+    // Row 0 to the end: neither can go above its top.
+    try S.show(&app, rows[0], .end);
+    try testing.expectEqual([2]f32{ 0, 0 }, S.offsets(&app, outer, inner));
+}
+
 test "a pending font loads on the pool and the text reshapes" {
     var app: App = undefined;
     try app.init(testing.allocator, .{ .width = 200, .height = 60 });

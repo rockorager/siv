@@ -1112,6 +1112,48 @@ pub export fn siv_scroll_to(txn: t.Txn, node: t.Node, x: f32, y: f32) void {
     }.f, .{ node, x, y });
 }
 
+pub export fn siv_scroll_by(txn: t.Txn, node: t.Node, unit: t.ScrollUnit, x: f32, y: f32) void {
+    _ = run(txn, struct {
+        fn f(w: *Window, n: t.Node, u: t.ScrollUnit, dx: f32, dy: f32) Error!void {
+            const id = try nodeIn(w, n);
+            if (w.uiWin().node(id).kind != .scroll) return error.InvalidArgument;
+            w.txn.ut.scrollBy(id, try uiEnum(ui.ScrollUnit, u), .{ .x = dx, .y = dy }) catch |err| return mapTxn(err);
+        }
+    }.f, .{ node, unit, x, y });
+}
+
+pub export fn siv_scroll_to_edge(txn: t.Txn, node: t.Node, edge: t.ScrollEdge) void {
+    _ = run(txn, struct {
+        fn f(w: *Window, n: t.Node, e: t.ScrollEdge) Error!void {
+            const id = try nodeIn(w, n);
+            if (w.uiWin().node(id).kind != .scroll) return error.InvalidArgument;
+            w.txn.ut.scrollToEdge(id, try uiEnum(ui.ScrollEdge, e)) catch |err| return mapTxn(err);
+        }
+    }.f, .{ node, edge });
+}
+
+pub export fn siv_scroll_into_view(txn: t.Txn, node: t.Node, where: t.ScrollAlign) void {
+    _ = run(txn, struct {
+        fn f(w: *Window, n: t.Node, a: t.ScrollAlign) Error!void {
+            const id = try nodeIn(w, n);
+            w.txn.ut.scrollIntoView(id, try uiEnum(ui.ScrollAlign, a)) catch |err| return mapTxn(err);
+        }
+    }.f, .{ node, where });
+}
+
+pub export fn siv_set_scroll_flags(txn: t.Txn, node: t.Node, flags: t.ScrollFlags) void {
+    _ = run(txn, struct {
+        fn f(w: *Window, n: t.Node, fl: t.ScrollFlags) Error!void {
+            const id = try nodeIn(w, n);
+            const un = w.uiWin().node(id);
+            if (un.kind != .scroll) return error.InvalidArgument;
+            var s = un.data.scroll;
+            s.gutter = (try runtime.flags(t.ScrollFlags, fl)).gutter;
+            w.txn.ut.setScroll(id, s) catch |err| return mapTxn(err);
+        }
+    }.f, .{ node, flags });
+}
+
 pub export fn siv_set_editor_flags(txn: t.Txn, node: t.Node, flags: t.EditorFlags) void {
     _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, fl: t.EditorFlags) Error!void {
@@ -2195,6 +2237,15 @@ fn track(tr: t.Track) Error!ui.Track {
         .fr => .{ .fr = tr.value },
         _ => unreachable,
     };
+}
+
+/// A C enum value as the UI's enum of the same names.
+fn uiEnum(comptime U: type, v: anytype) Error!U {
+    const e = try runtime.enumValue(@TypeOf(v), v);
+    inline for (@typeInfo(U).@"enum".field_names) |name| {
+        if (e == @field(@TypeOf(v), name)) return @field(U, name);
+    }
+    return error.Unsupported;
 }
 
 fn scrollAxis(a: t.ScrollAxis) Error!ui.ScrollAxis {

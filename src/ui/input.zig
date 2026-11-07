@@ -21,6 +21,7 @@ const paint = @import("paint.zig");
 const editor = @import("editor.zig");
 const ime = @import("ime.zig");
 const scrollbar = @import("scrollbar.zig");
+const text_node = @import("text_node.zig");
 
 const NodeId = node_mod.NodeId;
 const Event = node_mod.Event;
@@ -878,6 +879,152 @@ pub fn scrollBy(win: *Window, id: NodeId, delta: Point) void {
     win.paint.scroll_by.append(win.gpa, .{ .node = id, .delta = delta }) catch return;
     win.dirty.props = true;
     win.requestFrame();
+}
+
+/// After layout: the application's relative scrolls (`siv_scroll_by`,
+/// `siv_scroll_to_edge`, `siv_scroll_into_view`, D47), in order, from
+/// the offsets the UI knows, which each moves as it goes. The compositor
+/// gets them as `scroll_by`, relative to wherever it has the offset by
+/// then (D8), so they add to its own scrolling, a drag, or assistive
+/// technology instead of undoing it.
+pub fn applyScrollRequests(win: *Window) error{OutOfMemory}!void {
+    if (win.scroll_requests.items.len == 0) return;
+    defer win.scroll_requests.clearRetainingCapacity();
+    for (win.scroll_requests.items) |r| {
+        if (!win.isLive(r.node) or !win.isShown(r.node) or win.state(r.node).final == null) continue;
+        switch (r.what) {
+            .into_view => |a| try scrollIntoView(win, r.node, a),
+            .by, .edge => {
+                const n = win.node(r.node);
+                if (n.kind != .scroll or n.data.scroll.sets != r.sets) continue;
+                const off = paint.scrollTranslation(win, r.node);
+                const max = paint.maxScroll(win, r.node);
+                const rtl = win.state(r.node).rtl;
+                // Physical: x grows rightward whatever the direction.
+                var to = off;
+                var push: Point = .zero;
+                switch (r.what) {
+                    .by => |b| {
+                        const v = win.viewportOf(r.node);
+                        const k: Point = switch (b.unit) {
+                            .pixel => .{ .x = 1, .y = 1 },
+                            .line => .{ .x = line_step, .y = line_step },
+                            .page => .{ .x = 0.9 * v.width, .y = 0.9 * v.height },
+                        };
+                        to.x += b.amount.x * k.x * @as(f32, if (rtl) -1 else 1);
+                        to.y += b.amount.y * k.y;
+                    },
+                    .edge => |e| {
+                        switch (e) {
+                            .top => push.y = -1,
+                            .bottom => push.y = 1,
+                            .start => push.x = if (rtl) 1 else -1,
+                            .end => push.x = if (rtl) -1 else 1,
+                        }
+                        if (push.x != 0) to.x = if (push.x > 0) max.x else 0;
+                        if (push.y != 0) to.y = if (push.y > 0) max.y else 0;
+                    },
+                    .into_view => unreachable,
+                }
+                try scrollFor(win, r.node, to, max, push);
+            },
+        }
+    }
+}
+
+/// Scrolls the scroll nodes around `id`, innermost first, so that it
+/// shows: aligned in each viewport as `a` says, or for `nearest` by the
+/// least that shows it (its start when it does not fit).
+fn scrollIntoView(win: *Window, id: NodeId, a: node_mod.ScrollAlign) error{OutOfMemory}!void {
+    var sc = win.node(id).parent;
+    while (sc != .none) : (sc = win.node(sc).parent) {
+        const n = win.node(sc);
+        if (n.kind != .scroll) continue;
+        const s = win.state(sc);
+        // Window coordinates, where scroll nodes around this one may
+        // zoom by `k`; recomputed for each, after the inner ones moved.
+        const r = win.windowRect(id);
+        const box = win.windowRect(sc);
+        const k = if (s.size.w > 0) box.width() / s.size.w else 1;
+        const pad = n.layout.padding;
+        const view: raster.Rect = .{
+            .x0 = box.x0 + pad.left(s.rtl) * k,
+            .y0 = box.y0 + pad.top * k,
+            .x1 = box.x1 - pad.left(!s.rtl) * k,
+            .y1 = box.y1 - pad.bottom * k,
+        };
+        const off = paint.scrollTranslation(win, sc);
+        const max = paint.maxScroll(win, sc);
+        var to = off;
+        const axis = n.data.scroll.axis;
+        // The start edge is at the right in right-to-left layouts.
+        const ax: node_mod.ScrollAlign = if (!s.rtl) a else switch (a) {
+            .start => .end,
+            .end => .start,
+            else => a,
+        };
+        if (axis != .vertical) to.x += alignDelta(r.x0, r.x1, view.x0, view.x1, ax, s.rtl) / k;
+        if (axis != .horizontal) to.y += alignDelta(r.y0, r.y1, view.y0, view.y1, a, false) / k;
+        try scrollFor(win, sc, to, max, .zero);
+    }
+}
+
+/// How far to move a viewport `v0..v1` to show `r0..r1` as `a` says;
+/// `nearest` shows the far edge's start first, the right one when
+/// `reversed`.
+fn alignDelta(r0: f32, r1: f32, v0: f32, v1: f32, a: node_mod.ScrollAlign, reversed: bool) f32 {
+    return switch (a) {
+        .start => r0 - v0,
+        .end => r1 - v1,
+        .center => (r0 + r1 - v0 - v1) / 2,
+        .nearest => if (r1 - r0 > v1 - v0)
+            (if (reversed) r1 - v1 else r0 - v0)
+        else if (r0 < v0)
+            r0 - v0
+        else if (r1 > v1)
+            r1 - v1
+        else
+            0,
+    };
+}
+
+/// Moves scroll node `id` to physical offset `to` (clamped): the offset
+/// the UI knows at once, the compositor's by the difference (`scroll_by`),
+/// or by `scroll_to` when one goes out anyway or the node has no layer
+/// yet. `push` (-1, 0, or 1 per axis) overshoots toward an edge by the
+/// whole extent, so that the compositor reaches the edge from wherever
+/// it has the offset.
+fn scrollFor(win: *Window, id: NodeId, to: Point, max: Point, push: Point) error{OutOfMemory}!void {
+    const off = paint.scrollTranslation(win, id);
+    const n = win.node(id);
+    const s = win.state(id);
+    // Only the axes it scrolls.
+    const axis = n.data.scroll.axis;
+    const clamped: Point = .{
+        .x = if (axis == .vertical) off.x else std.math.clamp(to.x, 0, max.x),
+        .y = if (axis == .horizontal) off.y else std.math.clamp(to.y, 0, max.y),
+    };
+    const d: Point = .{
+        .x = if (axis == .vertical) 0 else clamped.x - off.x + push.x * max.x,
+        .y = if (axis == .horizontal) 0 else clamped.y - off.y + push.y * max.y,
+    };
+    if (d.eql(.zero)) return;
+    try win.paint.scroll_by.ensureUnusedCapacity(win.gpa, 2);
+    n.data.scroll.offset = paint.logicalScroll(win, id, clamped);
+    win.app_scrolled = true;
+    win.dirty.props = true;
+    win.dirty.semantics = true;
+    // Its viewport handler hears of it at the start of the next frame.
+    if (n.handler(.viewport) != null) win.viewport_dirty = true;
+    text_node.scrolled(win, id);
+    if (s.scroll_pending or !win.paint.ownsLayerNow(win, id)) {
+        s.scroll_pending = true;
+        return;
+    }
+    // Up goes before the content's new extent, which may clamp it; down
+    // after, which may make room for it.
+    if (d.x != 0) win.paint.scroll_by.appendAssumeCapacity(.{ .node = id, .delta = .{ .x = d.x, .y = 0 }, .early = d.x < 0 });
+    if (d.y != 0) win.paint.scroll_by.appendAssumeCapacity(.{ .node = id, .delta = .{ .x = 0, .y = d.y }, .early = d.y < 0 });
 }
 
 /// Scroll input the compositor forwarded: over a wheel region, with a

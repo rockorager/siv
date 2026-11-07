@@ -1,5 +1,6 @@
 //! Input devices through the exports on the headless backend (D16):
-//! touchpad gestures and zoomable scroll nodes, and mouse side buttons.
+//! touchpad gestures and zoomable scroll nodes, the application's own
+//! scrolling (D47), and mouse side buttons.
 
 const std = @import("std");
 const abi = @import("abi");
@@ -125,6 +126,94 @@ test "gestures reach handlers; pinches zoom scroll nodes on the compositor or th
     try testing.expectEqual(@as(f32, 30), log.gestures[1].dx);
     try testing.expectEqual(t.PointerPhase.cancel, log.gestures[2].phase);
     try testing.expectEqual(content, log.gestures[2].target);
+}
+
+const Viewport = struct {
+    y: f32 = -1,
+
+    fn on(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
+        const v: *Viewport = @ptrCast(@alignCast(ud.?));
+        v.y = ev.y;
+        return .handled;
+    }
+};
+
+test "a reader scrolls by lines, pages, and edges, and shows a node, keeping no offset of its own" {
+    var h: Harness = .{};
+    try h.start(200, 100, null, null);
+    defer h.stop();
+    var view: Viewport = .{};
+    const root = c.siv_window_get_root(h.window);
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const sc = c.siv_scroll(txn, root, .vertical);
+    c.siv_set_layout(txn, sc, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(200), .height = px(100) });
+    c.siv_on(txn, sc, .viewport, Viewport.on, null, &view);
+    const column = c.siv_box(txn, sc);
+    // Ten 50 px blocks: 500 px of content, 400 of offset.
+    var blocks: [10]t.Node = undefined;
+    for (&blocks) |*b| {
+        b.* = c.siv_box(txn, column);
+        c.siv_set_layout(txn, b.*, &.{ .size = @sizeOf(t.LayoutDesc), .height = px(50) });
+    }
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    const Step = union(enum) { by: struct { t.ScrollUnit, f32 }, edge: t.ScrollEdge, show: struct { t.Node, t.ScrollAlign } };
+    const steps = [_]struct { Step, f32 }{
+        .{ .{ .by = .{ .line, 1 } }, 40 }, // j
+        .{ .{ .by = .{ .page, 1 } }, 130 }, // Space: 90% of 100
+        .{ .{ .by = .{ .pixel, -30 } }, 100 },
+        .{ .{ .edge = .bottom }, 400 }, // G
+        .{ .{ .by = .{ .page, -1 } }, 310 }, // Shift+Space
+        .{ .{ .show = .{ blocks[2], .nearest } }, 100 }, // above: to its top
+        .{ .{ .show = .{ blocks[3], .nearest } }, 100 }, // shown already
+        .{ .{ .show = .{ blocks[6], .nearest } }, 250 }, // below: to its bottom
+        .{ .{ .show = .{ blocks[5], .start } }, 250 },
+        .{ .{ .show = .{ blocks[1], .center } }, 25 },
+        .{ .{ .edge = .top }, 0 }, // gg
+    };
+    for (steps) |step| {
+        try ok(c.siv_txn_begin(h.window, &txn));
+        switch (step[0]) {
+            .by => |b| c.siv_scroll_by(txn, sc, b[0], 0, b[1]),
+            .edge => |e| c.siv_scroll_to_edge(txn, sc, e),
+            .show => |s| c.siv_scroll_into_view(txn, s[0], s[1]),
+        }
+        try ok(c.siv_txn_commit(txn));
+        try h.settle();
+        try testing.expectEqual(step[1], view.y);
+    }
+    // Only scroll nodes scroll; values from outside the enums, distances
+    // that are not numbers, and options it does not know fail.
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_scroll_by(txn, column, .line, 0, 1);
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_scroll_to_edge(txn, column, .top);
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_scroll_by(txn, sc, @fromBackingInt(9), 0, 1);
+    try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_commit(txn));
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_scroll_into_view(txn, blocks[0], @fromBackingInt(9));
+    try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_commit(txn));
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_scroll_by(txn, sc, .pixel, std.math.nan(f32), 0);
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_set_scroll_flags(txn, sc, @bitCast(@as(u32, 2)));
+    try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_commit(txn));
+    try h.settle();
+    try testing.expectEqual(@as(f32, 0), view.y);
+
+    // A gutter: the content ends before the scrollbar's room.
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_set_scroll_flags(txn, sc, .{ .gutter = true });
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    var r: t.Rect = undefined;
+    try ok(c.siv_node_get_rect(blocks[0], &r));
+    try testing.expectEqual(@as(f32, 200 - 14), r.width);
 }
 
 const Pen = struct {

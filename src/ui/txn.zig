@@ -76,6 +76,7 @@ pub const Txn = struct {
     removed_count: usize = 0,
     saved_free_head: NodeId = .none,
     saved_len: usize = 0,
+    saved_requests: usize = 0,
 
     pub fn deinit(t: *Txn, gpa: std.mem.Allocator) void {
         t.snapshots.deinit(gpa);
@@ -91,6 +92,7 @@ pub const Txn = struct {
         if (t.epoch == 0) t.epoch = 1;
         t.saved_free_head = win.free_head;
         t.saved_len = win.nodes.items.len;
+        t.saved_requests = win.scroll_requests.items.len;
         t.removed_count = 0;
     }
 
@@ -115,6 +117,7 @@ pub const Txn = struct {
         win.nodes.shrinkRetainingCapacity(t.saved_len);
         win.states.shrinkRetainingCapacity(t.saved_len);
         win.free_head = t.saved_free_head;
+        win.scroll_requests.shrinkRetainingCapacity(t.saved_requests);
         // Subtree themes may be back as they were (D43).
         if (win.themed.items.len != 0) win.scopes_dirty = true;
         for (t.allocs.items) |a| a.free(win.gpa);
@@ -1058,7 +1061,8 @@ pub const Txn = struct {
         const old = n.data.scroll;
         n.data.scroll = s;
         n.data.scroll.zoom = std.math.clamp(s.zoom, s.min_zoom, s.max_zoom);
-        if (old.axis != s.axis) t.win.markLayout(id);
+        n.data.scroll.sets = old.sets +% @intFromBool(!old.offset.eql(s.offset));
+        if (old.axis != s.axis or old.gutter != s.gutter) t.win.markLayout(id);
         // The zoom range is a layer property; a new zoom goes out with them.
         if (old.min_zoom != s.min_zoom or old.max_zoom != s.max_zoom or old.zoom != n.data.scroll.zoom) t.win.dirty.props = true;
         if (!old.offset.eql(s.offset)) {
@@ -1066,6 +1070,31 @@ pub const Txn = struct {
             t.win.app_scrolled = true;
             t.win.dirty.props = true;
         }
+    }
+
+    /// Scrolls a scroll node by `amount` (logical) in `unit`s, from
+    /// wherever it is when the frame applies it (D47).
+    pub fn scrollBy(t: *Txn, id: NodeId, unit: node_mod.ScrollUnit, amount: node_mod.Point) Error!void {
+        const n = try t.data(id, .scroll);
+        if (!finite(amount.x) or !finite(amount.y)) return error.InvalidArgument;
+        try t.request(.{ .node = id, .sets = n.data.scroll.sets, .what = .{ .by = .{ .unit = unit, .amount = amount } } });
+    }
+
+    /// Scrolls a scroll node to an edge of its content along one axis.
+    pub fn scrollToEdge(t: *Txn, id: NodeId, edge: node_mod.ScrollEdge) Error!void {
+        const n = try t.data(id, .scroll);
+        try t.request(.{ .node = id, .sets = n.data.scroll.sets, .what = .{ .edge = edge } });
+    }
+
+    /// Scrolls the scroll nodes around a node so that it shows, once it
+    /// is laid out.
+    pub fn scrollIntoView(t: *Txn, id: NodeId, @"align": node_mod.ScrollAlign) Error!void {
+        _ = try t.live(id);
+        try t.request(.{ .node = id, .what = .{ .into_view = @"align" } });
+    }
+
+    fn request(t: *Txn, r: node_mod.ScrollRequest) Error!void {
+        try t.win.scroll_requests.append(t.win.gpa, r);
     }
 
     /// The node takes a reference to `view.image` and copies `view.icon`;

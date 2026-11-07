@@ -585,11 +585,46 @@ pub const Scroll = struct {
     /// Scale of the content about the viewport's top-left corner, within
     /// the range. The compositor changes it for pinches (D8).
     zoom: f32 = 1,
+    /// The layout leaves the scrollbar's gutter beside the content even
+    /// with overlay scrollbars (D47).
+    gutter: bool = false,
+    /// Counts the offsets the application set (`Txn.setScroll`): relative
+    /// scrolls queued before one are dropped (`Window.ScrollRequest`).
+    sets: u32 = 0,
 
     pub fn zoomable(s: Scroll) bool {
         return s.max_zoom > s.min_zoom;
     }
 };
+
+/// A scroll the application asked for relative to wherever the node is
+/// when the frame applies it, after layout (D47): by a distance, to an
+/// edge, or to show a node.
+pub const ScrollRequest = struct {
+    /// The scroll node, or for `into_view` the node to show.
+    node: NodeId,
+    /// The scroll node's `Scroll.sets` when asked: a later offset the
+    /// application set replaces the request.
+    sets: u32 = 0,
+    what: union(enum) {
+        /// Logical: x grows toward the end edge, in `unit`s.
+        by: struct { unit: ScrollUnit, amount: Point },
+        edge: ScrollEdge,
+        into_view: ScrollAlign,
+    },
+};
+
+pub const ScrollUnit = enum(u8) {
+    pixel,
+    /// What an arrow key scrolls.
+    line,
+    /// What Page Down scrolls: 90 % of the viewport.
+    page,
+};
+
+pub const ScrollEdge = enum(u8) { top, bottom, start, end };
+
+pub const ScrollAlign = enum(u8) { nearest, start, center, end };
 
 pub const TextAlign = text.layout.Alignment;
 

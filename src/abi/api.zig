@@ -730,6 +730,26 @@ pub const decls = [_]Decl{
         .{ .name = "horizontal", .value = 1, .doc = "Horizontally." },
         .{ .name = "both", .value = 2, .doc = "Both." },
     }),
+    flags("siv_scroll_flags", "Scroll node options.", &.{
+        .{ .name = "gutter", .bit = 0, .doc = "Leave the scrollbar a gutter beside the content (14 logical pixels at the end edge, and at the bottom when it scrolls horizontally), as always-shown scrollbars have, where scrollbars otherwise overlay the content (the default, as in GNOME; D47): the bar never covers the content, and presses beside it reach the content. For rows and text that reach the end edge, such as a list's; content with a margin of its own there can leave the bar over the margin instead." },
+    }),
+    enumeration("siv_scroll_unit", "What siv_scroll_by counts in.", &.{
+        .{ .name = "pixel", .value = 0, .doc = "Logical pixels, as offsets count them." },
+        .{ .name = "line", .value = 1, .doc = "Lines: what an arrow key scrolls, 40 logical pixels." },
+        .{ .name = "page", .value = 2, .doc = "Pages: what Page Down scrolls, 90% of the viewport along the axis." },
+    }),
+    enumeration("siv_scroll_edge", "An edge of a scroll node's content.", &.{
+        .{ .name = "top", .value = 0, .doc = "The top." },
+        .{ .name = "bottom", .value = 1, .doc = "The bottom." },
+        .{ .name = "start", .value = 2, .doc = "The start edge: the left, the right in right-to-left layouts." },
+        .{ .name = "end", .value = 3, .doc = "The end edge." },
+    }),
+    enumeration("siv_scroll_align", "Where siv_scroll_into_view puts a node in each viewport.", &.{
+        .{ .name = "nearest", .value = 0, .doc = "The least scrolling that shows it: none when it shows already, its top (and start edge) when it is larger than the viewport." },
+        .{ .name = "start", .value = 1, .doc = "Its top at the viewport's top, and its start edge at the viewport's." },
+        .{ .name = "center", .value = 2, .doc = "In the middle." },
+        .{ .name = "end", .value = 3, .doc = "Its bottom at the viewport's bottom, and its end edge at the viewport's." },
+    }),
 
     enumeration("siv_font_weight", "Font weight.", &.{
         .{ .name = "regular", .value = 0, .doc = "Regular (400)." },
@@ -1456,6 +1476,7 @@ pub const decls = [_]Decl{
     }, .f32),
     flags("siv_view_flags", "View options.", &.{
         .{ .name = "flat", .bit = 0, .doc = "No frame: no border, rounded corners, or inset, so the view's background and its rows reach its edges, square. For views that sit edge to edge on a surface of their own, such as the columns of a column browser; set its background with siv_set_visual. Framed is the default." },
+        .{ .name = "gutter", .bit = 1, .doc = "Rows end before the scrollbar's gutter, as SIV_SCROLL_FLAGS_GUTTER leaves it, instead of under an overlay scrollbar: presses near the end edge reach the rows, and what they show at their end stays clear of the bar (D47)." },
     }),
     descriptor("siv_view_desc", "A virtualized view: only the rows in view exist as nodes, filled by bind as they scroll in.", &.{
         .{ .name = "label", .type = .string, .doc = "The view's accessible name, copied." },
@@ -1971,10 +1992,22 @@ pub const functions = [_]Function{
     setter("siv_scroll_zoom_to", "Zooms a scroll node's content to a scale, clamped to its zoom range, keeping the content at the viewport's top-left corner in place.", &.{
         .{ .name = "zoom", .type = .f32, .doc = "The scale; 1 shows the content at its size." },
     }),
-    setter("siv_scroll_to", "Scrolls a scroll node to an offset from the start (logical: in right-to-left layouts x grows leftward), clamped to the content.", &.{
+    setter("siv_scroll_to", "Scrolls a scroll node to an offset from the start (logical: in right-to-left layouts x grows leftward), clamped to the content. To scroll from where the node is, use siv_scroll_by, siv_scroll_to_edge, or siv_scroll_into_view: an offset the application keeps to scroll from goes stale when the user scrolls, drags the scrollbar, or assistive technology sets it (D47).", &.{
         .{ .name = "x", .type = .f32, .doc = "Horizontal offset." },
         .{ .name = "y", .type = .f32, .doc = "Vertical offset." },
     }),
+    setter("siv_scroll_by", "Scrolls a scroll node by a distance from wherever it is when the frame applies it, after layout, so it adds to the compositor's scrolling, scrollbar drags, and assistive technology instead of undoing them (D47): for keys of the application's own, such as j and k or Space. Clamped to the content; axes the node does not scroll are ignored. siv_scroll_by, siv_scroll_to_edge, and siv_scroll_into_view apply in the order asked; a later siv_scroll_to on the node replaces those asked before it. The viewport event reports where the node went.", &.{
+        .{ .name = "unit", .type = ref("siv_scroll_unit"), .doc = "What x and y count." },
+        .{ .name = "x", .type = .f32, .doc = "Horizontal distance, toward the end edge (leftward in right-to-left layouts) when positive." },
+        .{ .name = "y", .type = .f32, .doc = "Vertical distance, downward when positive." },
+    }),
+    setter("siv_scroll_to_edge", "Scrolls a scroll node to an edge of its content along one axis, leaving the other as it is, as Home and End do: to the end of content added in the same transaction too, and from wherever the compositor has the node then. Applied as siv_scroll_by is.", &.{
+        .{ .name = "edge", .type = ref("siv_scroll_edge"), .doc = "The edge." },
+    }),
+    setter("siv_scroll_into_view", "Scrolls every scroll node around a node, innermost first, so that the node shows, once it is laid out (it may be new in the transaction): for the next message, a match, or an item the application moved to. Applied as siv_scroll_by is; a node that is hidden then scrolls nothing.", &.{
+        .{ .name = "where", .type = ref("siv_scroll_align"), .doc = "Where in each viewport." },
+    }),
+    setter("siv_set_scroll_flags", "Sets a scroll node's options.", &.{.{ .name = "flags", .type = ref("siv_scroll_flags"), .doc = "Options." }}),
     setter("siv_set_editor_flags", "Sets an editor's options.", &.{.{ .name = "flags", .type = ref("siv_editor_flags"), .doc = "Options." }}),
     setter("siv_set_selection", "Moves an editor's caret and selection anchor (byte offsets, moved back to character boundaries and clamped to the text).", &.{
         .{ .name = "caret", .type = .u32, .doc = "Caret offset." },

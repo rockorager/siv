@@ -70,6 +70,9 @@ pub const View = extern struct {
     view_y: f32 = 0,
     view_w: f32 = 0,
     view_h: f32 = 0,
+    /// The scrollbar's gutter that rows end before (SIV_VIEW_FLAGS_GUTTER:
+    /// 14 px, as SIV_SCROLL_FLAGS_GUTTER leaves it; D47), or 0.
+    gutter: f32 = 0,
     root: Node,
     header: Node = .null,
     scroll: Node,
@@ -158,7 +161,7 @@ pub export fn siv_grid_view(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc) 
 fn create(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc, mode: Mode) Node {
     const d = w.readDesc(siv.ViewDesc, desc) orelse return w.fail(txn, .error_invalid_argument);
     if (@backingInt(d.selection) < 0 or @backingInt(d.selection) > 2) return w.fail(txn, .error_unsupported);
-    if (@as(u32, @bitCast(d.flags)) & ~@as(u32, 1) != 0 or d.reserved0 != 0) return w.fail(txn, .error_unsupported);
+    if (@as(u32, @bitCast(d.flags)) & ~siv.ViewFlags.known_bits != 0 or d.reserved0 != 0) return w.fail(txn, .error_unsupported);
     const flat = d.flags.flat;
     const label = w.str(d.label, d.label_len) orelse return w.fail(txn, .error_invalid_argument);
     if (!std.math.isFinite(d.item_height) or !std.math.isFinite(d.item_width) or d.item_height < 0 or d.item_width < 0) return w.fail(txn, .error_invalid_argument);
@@ -181,6 +184,7 @@ fn create(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc, mode: Mode) Node {
         .count = if (mode == .tree) 0 else d.count,
         .item_h = if (d.item_height == 0) 32 else d.item_height,
         .item_w = if (d.item_width == 0) 96 else d.item_width,
+        .gutter = if (d.flags.gutter) 14 else 0,
         .root = root,
         .scroll = .null,
         .content = .null,
@@ -195,7 +199,8 @@ fn create(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc, mode: Mode) Node {
     _ = c.siv_on_default(txn, root, .close, never, d.destroy, d.user_data);
     if (mode == .table) {
         v.header = c.siv_grid(txn, root, null);
-        _ = c.siv_set_layout(txn, v.header, &.{ .min_height = 28, .padding = .{ .start = 8, .end = 8 } });
+        // Over the gutter too, so its columns line up with the rows'.
+        _ = c.siv_set_layout(txn, v.header, &.{ .min_height = 28, .padding = .{ .start = 8, .end = 8 + v.gutter } });
         _ = c.siv_set_visual(txn, v.header, &.{ .background_token = .control_bg, .radius = .{ .top_start = inner, .top_end = inner }, .flags = .{ .clip = true } });
         _ = c.siv_set_semantics(txn, v.header, &.{ .role = .row });
         const rule = c.siv_box(txn, root);
@@ -204,6 +209,7 @@ fn create(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc, mode: Mode) Node {
     }
     v.scroll = c.siv_scroll(txn, root, .vertical);
     _ = c.siv_set_layout(txn, v.scroll, &.{ .grow = 1, .basis = w.px(0) });
+    if (v.gutter > 0) _ = c.siv_set_scroll_flags(txn, v.scroll, .{ .gutter = true });
     {
         const top: f32 = if (mode == .table) 0 else inner;
         _ = c.siv_set_visual(txn, v.scroll, &.{ .radius = .{ .top_start = top, .top_end = top, .bottom_start = inner, .bottom_end = inner }, .flags = .{ .clip = true } });
@@ -456,7 +462,7 @@ fn rowAt(v: *const View, y: f32) u32 {
 
 /// Positions, height, and rows for the current count and viewport.
 fn update(txn: Txn, v: *View) void {
-    if (v.mode == .grid) v.columns = @max(1, @as(u32, @intFromFloat(@floor(v.view_w / v.item_w))));
+    if (v.mode == .grid) v.columns = @max(1, @as(u32, @intFromFloat(@floor((v.view_w - v.gutter) / v.item_w))));
     if (!buildHeights(txn, v)) return;
     _ = c.siv_set_layout(txn, v.content, &.{ .height = w.px(contentHeight(v)) });
     materialize(txn, v);

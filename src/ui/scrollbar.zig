@@ -4,7 +4,8 @@
 //! them when idle (`compositor.Scrollbars`), so they follow its own
 //! scrolling, flings, and the application's `scroll_to` without the UI.
 //! The UI gives them their look (from the node's palette), places them
-//! (the end edge, in a gutter when the desktop wants them always shown),
+//! (the end edge, in a gutter when the desktop wants them always shown or
+//! the node asks for one),
 //! and handles presses: dragging a thumb scrolls its node to where the
 //! thumb is, and a press on a track pages toward it.
 
@@ -16,6 +17,7 @@ const node_mod = @import("node.zig");
 const paint = @import("paint.zig");
 const input = @import("input.zig");
 const text_node = @import("text_node.zig");
+const layout = @import("layout.zig");
 
 const NodeId = node_mod.NodeId;
 const Point = raster.Point;
@@ -92,8 +94,10 @@ pub fn at(win: *const Window, p: Point) ?Found {
         if (m != .root and !win.isAncestor(m, cur)) return null;
         const sc, const bars = barsOf(win, cur) orelse continue;
         const local = input.toLocal(win, cur, p);
+        // Beside a gutter, presses reach the content it keeps clear.
+        const reach = if (layout.scrollGutter(win, cur) > 0) Bars.margin else Bars.near;
         for (bars) |ob| if (ob) |bar| {
-            if (bar.near(sc.viewport, local, Bars.near)) return .{ .node = cur, .bar = bar, .local = local, .viewport = sc.viewport };
+            if (bar.near(sc.viewport, local, reach)) return .{ .node = cur, .bar = bar, .local = local, .viewport = sc.viewport };
         };
     }
     return null;
@@ -186,7 +190,7 @@ pub fn drag(win: *Window, p: Point) void {
 }
 
 /// Assistive technology set a scrollbar's value (D47): its node's
-/// logical offset along `axis`, as `siv_node_scroll_to` takes it.
+/// logical offset along `axis`, as `siv_scroll_to` takes it.
 pub fn setValue(win: *Window, nid: NodeId, axis: Axis, value: f64) bool {
     if (!win.isLive(nid) or !std.math.isFinite(value) or !scrolls(win.node(nid))) return false;
     const max = paint.maxScroll(win, nid);

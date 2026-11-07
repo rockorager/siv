@@ -225,8 +225,21 @@ handler with `siv_window_begin_move` and `siv_window_begin_resize`.
 Scroll nodes scroll on the compositor thread without your code (D8).
 Scroll events reach your handlers first only where a node has a scroll
 handler, or while Ctrl, Alt, or Super is held, for zooming and the like.
-`siv_scroll_to` moves a scroll node; the viewport event reports where it
-is, for virtualized content (see [Lists, tables, and trees](08-lists-and-tables.md)).
+The node owns its position: to scroll from your own keys, use
+`siv_scroll_by` (by pixels, lines, or pages), `siv_scroll_to_edge` (top,
+bottom, start, or end), and `siv_scroll_into_view` (a node, which may be
+new in the transaction). They go from wherever the node is when the
+frame applies them, so the wheel, a scrollbar drag, and assistive
+technology are never undone, and you keep no offset of your own.
+`siv_scroll_to` sets an offset, such as one saved; the viewport event
+reports where the node is, for virtualized content (see
+[Lists, tables, and trees](08-lists-and-tables.md)).
+
+Scrollbars overlay the content's end edge, as in GNOME, and take presses
+near it. Content with a margin of its own there leaves the bar over the
+margin; rows that reach the edge, such as a list's dates, ask for a
+gutter instead (`SIV_SCROLL_FLAGS_GUTTER`, or `SIV_VIEW_FLAGS_GUTTER` on a
+view), which the layout leaves beside them.
 
 ## Timers
 

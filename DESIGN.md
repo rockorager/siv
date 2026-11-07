@@ -656,9 +656,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     the compositor) bubbles through scroll handlers from the node under
     the pointer; if none takes it, and no ctrl, alt, or super is held, it
     goes on to the nearest scroll node with room as `scroll_by`. Keyboard
-    scrolling (arrows, page keys) is `scroll_by` too. Only offsets the
-    application sets in a transaction, and scrollbar drags (D47), are
-    `scroll_to`. Corrections that
+    scrolling (arrows, page keys) is `scroll_by` too, and so are the
+    application's relative scrolls (`siv_scroll_by`, `siv_scroll_to_edge`,
+    `siv_scroll_into_view`, D47). Only offsets the application sets with
+    `siv_scroll_to`, and scrollbar drags (D47), are `scroll_to`.
+    Corrections that
     keep a long text in place while its metrics change (D13) and the
     scrolls that show an editor's caret (D15) are `scroll_by` as well,
     in the commit with the content they answer: one that scrolls up goes
@@ -9080,10 +9082,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   the theme, reduced motion, high contrast, and the desktop's "always
   show scrollbars", assistive technology sees and sets it, and it
   follows offsets the compositor scrolls and those the application sets
-  with `siv_node_scroll_to`, with no work from the application.
+  with `siv_scroll_to`, with no work from the application. The scroll
+  position has one owner, the node: an application scrolls it by a line
+  or a page, to an edge, or to show a node without keeping an offset of
+  its own that the user's scrolling would make stale. An application or
+  a list can keep its content clear of the bar.
 - **Decision:** overlay scrollbars that the compositor draws over the
   viewport and hides when idle, as GNOME does; shown all the time, in
-  room the layout leaves, when the desktop asks for it.
+  room the layout leaves, when the desktop asks for it, and in that room
+  without being shown all the time where a scroll node asks for a
+  gutter. Applications scroll relative to where the node is, after
+  layout, and the compositor applies it relative to its own offset.
   - **Overlay by default.** GTK 4 and libadwaita (GtkScrolledWindow's
     overlay scrolling, the GNOME default), macOS since 10.7 (with a
     trackpad), Windows 11 (its "always show scrollbars" is off by
@@ -9105,6 +9114,50 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     the layout leaves a 14 px gutter for it (8 px and the margins) at
     the end edge, and at the bottom for horizontal scrolling, so content
     is never under it. Changing the setting lays scroll nodes out again.
+  - **Content clear of the bar.** Overlay bars cover the content within
+    11 px of the end edge when widened, and presses within 16 px of it
+    are the bar's (the near distance, below). Where that is wrong, the
+    application chooses per scroll node, two ways:
+    - A gutter (`SIV_SCROLL_FLAGS_GUTTER`, and `SIV_VIEW_FLAGS_GUTTER`
+      for list, grid, tree, and table views, whose scroll node is
+      theirs): the layout leaves the 14 px gutter of always-shown bars
+      whether or not the content overflows, so nothing reflows when it
+      starts to, and the bar keeps its overlay look (thin, fading,
+      widened near the pointer) in it. Presses reach the bar only in the
+      gutter, not within the near distance beside it, which is the
+      content's; the same holds under always-shown bars. For rows and
+      text that reach the end edge: a mail list whose dates end there,
+      where a press near the edge must select the row.
+    - A margin of the content's own at the end edge, inside the scroll
+      node, which the bar floats over (parcel's reader, whose card
+      keeps 24 px there): what GNOME applications do with AdwClamp and
+      margins. It needs nothing from siv, and suits documents, whose
+      margin is part of the design; presses in the margin page.
+    Overlay stays the default: a gutter by default would make every
+    list narrower than GNOME's, also those whose rows end in nothing.
+    Themes (D29) carry colors, not layout, so the choice is the
+    application's, as its margins are.
+  - **The application's scrolling.** `siv_scroll_by` (by pixels, lines
+    of what an arrow key scrolls, or pages of what Page Down scrolls),
+    `siv_scroll_to_edge` (top, bottom, start, end: Home and End), and
+    `siv_scroll_into_view` (a node, nearest, start, center, or end in
+    each scroll node around it, innermost first, as CSS's
+    `scrollIntoView`) are transaction operations queued on the window
+    and applied in order at the next frame after layout, so pages and
+    edges use the viewport and extent that transaction made, and a node
+    it added can be shown. Each moves the offset the UI knows at once
+    (so later requests, culled text, hit testing, and the viewport
+    handler at the next frame follow it) and goes to the compositor as
+    `scroll_by` (D8), relative to wherever it has the offset then,
+    which may include wheel or fling scrolling the UI has not heard of;
+    an edge overshoots by the whole extent so that it lands on the edge
+    from anywhere. A `siv_scroll_to` replaces requests on the node
+    queued before it (`Scroll.sets`), so the transaction's order holds;
+    an aborted transaction drops its requests. With these, an
+    application keeps no copy of the offset, and neither a drag, a
+    track press, assistive technology, nor the wheel is undone by its
+    next scroll. `siv_scroll_to` stays for setting an offset, such as
+    restoring one saved.
   - **Idle.** Bars appear when the content scrolls (by the compositor,
     a drag, keys, `scroll_to`, a zoom) or the pointer moves over the
     viewport, fade in over 200 ms, stay 2 s after the last of these
@@ -9123,7 +9176,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     outline in the view's background keeps the thumb apart from content
     of its own color.
   - **Input.** A primary press on a thumb, or within the near distance
-    of its track, is the bar's before hit testing reaches nodes: on the
+    of its track (inside its gutter, where the layout leaves one), is
+    the bar's before hit testing reaches nodes: on the
     thumb it starts a drag that holds the pointer until release
     (anywhere, as GTK does); on the track it pages toward the press by
     what Page Down scrolls (90 % of the viewport), once per press, as
@@ -9134,9 +9188,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     UI sends `scroll_to` (D8), so the compositor's offset, hit
     testing, culled text, and viewport handlers (at the next frame) all
     follow. An application that keeps its own copy of an offset, to
-    scroll from it with `siv_node_scroll_to`, updates it from the
-    node's viewport handler (`viewport.y`), or a drag would be undone by
-    its next scroll.
+    scroll from it with `siv_scroll_to`, must update it from the node's
+    viewport handler (`viewport.y`), or a drag would be undone by its
+    next scroll; `siv_scroll_by` and the others make the copy needless.
   - **Geometry** is one function (`update.Scroll.barsAt`) that the
     compositor draws with and the UI hit-tests and reports to AT-SPI
     with, from the scroll properties the UI sends (`Scroll.bars`: axes,
@@ -9161,7 +9215,15 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     beside, set through the semantics tree, and always shown with the
     application's own `scroll_to`, against goldens
     (`scrollbar-hover.png`, `scrollbar-drag.png`, `scrollbar-always.png`,
-    `scrollbar-rtl-dark-hc.png`); a scrolled editor (`editor-scrolled.png`).
+    `scrollbar-rtl-dark-hc.png`), and a gutter that rows end before, with
+    a press beside it reaching the row (`scrollbar-gutter.png`); a
+    scrolled editor (`editor-scrolled.png`). The application's scrolling
+    (`test/ui/golden.zig`, `test/abi/input.zig`): lines after a value
+    set through AT-SPI, a page added to wheel scrolling the UI had not
+    heard of, order and clamping within a transaction, edges (of content
+    added in the same transaction too), `scroll_to` before and after,
+    aborts, and nodes shown through nested scroll nodes, one of them
+    added in the same transaction.
 - **Alternatives:** bars as nodes the UI lays out and paints (they would
   lag compositor scrolling while the UI is busy, against D8, and every
   view would need them); a gutter always, as classic Windows and Breeze
@@ -9173,10 +9235,22 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   what Page Down already does from the keyboard, so siv has one meaning
   for both; a Shift press warping is a later addition if asked for);
   press-and-hold on the track repeating pages, as Windows and Qt do
-  (later if asked for).
+  (later if asked for). For content under the bar: a gutter by default,
+  or for views by default (against the GNOME default, and lists in
+  libadwaita run under the bar); dropping presses near a bar that is
+  hidden (the UI does not know when the compositor has faded it, and on
+  a desktop the pointer coming near shows it); a padding property that
+  the bar's thickness fills in (a margin of the content's own does the
+  same with no new property). For the application's scrolling: offsets
+  read back synchronously (`siv_node_get_scroll`: stale while the
+  compositor scrolls, and an application would still compute from
+  them); a `content` unit for scroll_by whose ±1 reaches an edge
+  (clever, less clear than an edge); scrolling these immediately in the
+  transaction (pages, edges, and new nodes need the layout it makes).
 - **Reverse if:** GNOME moves away from overlay scrolling; touch users
   need thicker bars (then a touch size, as libadwaita has none); or
-  applications need to hide bars per node (then a scroll node property).
+  applications need to hide bars per node (then a bit of
+  `siv_scroll_flags`).
 
 ## Lessons from ourokit
 

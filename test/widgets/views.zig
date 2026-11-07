@@ -345,7 +345,7 @@ test "list view: a flat view has no frame, so a selected first row is square" {
     defer h.stop();
     var m: Model = .{};
     const txn = try begin(h.window);
-    const bad = c.siv_list_view(txn, c.siv_window_get_root(h.window), &.{ .label = "Bad", .label_len = 3, .bind = Model.bind, .user_data = &m, .flags = @bitCast(@as(u32, 2)) });
+    const bad = c.siv_list_view(txn, c.siv_window_get_root(h.window), &.{ .label = "Bad", .label_len = 3, .bind = Model.bind, .user_data = &m, .flags = @bitCast(@as(u32, 4)) });
     try testing.expectEqual(t.Node.null, bad);
     c.siv_txn_abort(txn);
 }
@@ -876,6 +876,40 @@ test "table view: a header over rows of cells" {
     try testing.expect(try rowCount(table) < 30);
     // Rows are named from their cells' text, as ARIA names them.
     try testing.expectEqual(@as(u32, 3), tree.find(.row, "Item 2 Item 2").?.row);
+}
+
+test "table view: with a gutter, rows and the header's columns end before the scrollbar, and presses at their end select" {
+    var ends: [2]f32 = undefined;
+    for ([_]bool{ false, true }, &ends) |gutter, *row_end| {
+        var h: Harness = .{};
+        try h.start(320, 200, null, null);
+        defer h.stop();
+        var m: Model = .{ .columns = 2 };
+        const txn = try begin(h.window);
+        const table = c.siv_table_view(txn, c.siv_window_get_root(h.window), &.{ .label = "People", .label_len = 6, .count = 1000, .selection = .single, .bind = Model.bind, .user_data = &m, .item_height = 28, .flags = .{ .gutter = gutter } });
+        _ = c.siv_table_column(txn, table, &.{ .title = "Name", .title_len = 4 });
+        _ = c.siv_table_column(txn, table, &.{ .title = "Size", .title_len = 4, .width = .{ .unit = .px, .value = 90 } });
+        _ = c.siv_on(txn, table, .select, Model.onSelect, null, &m);
+        try ok(c.siv_txn_commit(txn));
+        try h.settle();
+        var row: t.Rect = undefined;
+        try ok(c.siv_node_get_rect(c.siv_view_get_row(table, 1), &row));
+        row_end.* = row.x + row.width;
+        // The Size column ends at the same x in the header and in a row.
+        const header = c.siv_node_get_related(table, .first_child);
+        var head_cell: t.Rect = undefined;
+        try ok(c.siv_node_get_rect(c.siv_node_get_related(header, .last_child), &head_cell));
+        var row_cell: t.Rect = undefined;
+        try ok(c.siv_node_get_rect(c.siv_node_get_related(c.siv_view_get_row(table, 1), .last_child), &row_cell));
+        try testing.expectEqual(head_cell.x + head_cell.width, row_cell.x + row_cell.width);
+        // A press on the row's last pixel: under an overlay bar it is the
+        // bar's, beside a gutter the row's.
+        try h.click(row_end.* - 1, row.y + row.height / 2);
+        try h.settle();
+        try testing.expectEqual(@as(u32, @intFromBool(gutter)), m.selects);
+        if (gutter) try testing.expectEqual(@as(u32, 1), m.index);
+    }
+    try testing.expectEqual(ends[0] - 14, ends[1]);
 }
 
 test "grid view: cells in reading order, two-dimensional keys, mirrored in RTL" {

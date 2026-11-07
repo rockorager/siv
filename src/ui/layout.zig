@@ -309,8 +309,7 @@ fn maxContentOf(win: *Window, id: NodeId, l: node_mod.Layout, f: node_mod.Flex) 
                 var it = shownInf(win, id);
                 while (it.next()) |ch| content = @max(content, try maxContentInf(win, ch));
                 // Room for an always-shown vertical scrollbar (D47).
-                if (n.kind == .scroll and n.data.scroll.axis != .horizontal and !win.desktop.overlay_scrolling)
-                    content += @import("compositor").Scrollbars.gutter;
+                if (n.kind == .scroll and n.data.scroll.axis != .horizontal) content += scrollGutter(win, id);
             },
             .stack => {
                 var it = shownInf(win, id);
@@ -501,18 +500,27 @@ fn stackBlock(win: *Window, id: NodeId, cw: f32, rtl: bool, origin: Point, ch_sp
 
 // Scroll ---------------------------------------------------------------------
 
+/// The room left beside a scroll node's content for its scrollbars (D47):
+/// a gutter when the desktop shows them always or the node asks for one,
+/// none for overlay scrollbars.
+pub fn scrollGutter(win: *const Window, id: NodeId) f32 {
+    const n = win.node(id);
+    if (n.kind != .scroll or (win.desktop.overlay_scrolling and !n.data.scroll.gutter)) return 0;
+    return @import("compositor").Scrollbars.gutter;
+}
+
 /// The viewport is the content box. Children flow as in a box, in content
 /// coordinates (origin at the content box's top-left corner, unscrolled).
-/// Always-shown scrollbars (D47) take a gutter at the end of each axis
-/// that scrolls: the children are laid out that much narrower (from the
-/// start edge, so in right-to-left layouts the gutter is at the left,
-/// under the bar), and the content ends that much lower, below the
-/// horizontal bar, whether or not it overflows, so that a bar coming and
-/// going never changes the layout.
+/// Always-shown scrollbars, and those of a node with a gutter (D47), take
+/// a gutter at the end of each axis that scrolls: the children are laid
+/// out that much narrower (from the start edge, so in right-to-left
+/// layouts the gutter is at the left, under the bar), and the content
+/// ends that much lower, below the horizontal bar, whether or not it
+/// overflows, so that a bar coming and going never changes the layout.
 fn scroll(win: *Window, id: NodeId, inner: Constraints) Error!Size {
     const s = win.state(id);
     const axis = win.node(id).data.scroll.axis;
-    const gutter: f32 = if (win.desktop.overlay_scrolling) 0 else @import("compositor").Scrollbars.gutter;
+    const gutter = scrollGutter(win, id);
     const gv: f32 = if (axis != .horizontal) gutter else 0;
     const gh: f32 = if (axis != .vertical) gutter else 0;
     const vw = try fitWidth(win, id, inner);
