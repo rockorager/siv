@@ -10,8 +10,9 @@
 //! multiple instances allowed, every launch is primary.
 //!
 //! The launcher's xdg-activation token ($XDG_ACTIVATION_TOKEN) goes with
-//! the first activation, or is forwarded to the primary, and is removed
-//! from the environment so that children do not reuse it.
+//! the first activation, or is forwarded to the primary. It stays in the
+//! environment: siv never changes the process environment, because Zig's
+//! std caches the startup environment block and later walks it (D19).
 
 const std = @import("std");
 const portal = @import("portal");
@@ -83,8 +84,6 @@ pub const Lifecycle = struct {
     }
 };
 
-extern "c" fn unsetenv(name: [*:0]const u8) c_int;
-
 /// Starts the lifecycle; see the module comment. Once only.
 pub fn launch(app: *App, options: LaunchOptions, handler: Handler) Error!void {
     const l = &app.lifecycle;
@@ -102,10 +101,7 @@ pub fn launch(app: *App, options: LaunchOptions, handler: Handler) Error!void {
         .service = options.service,
         .idle_timeout_ms = options.idle_timeout_ms,
     };
-    if (std.c.getenv("XDG_ACTIVATION_TOKEN")) |t| {
-        l.token.set(std.mem.span(t));
-        _ = unsetenv("XDG_ACTIVATION_TOKEN");
-    }
+    if (std.c.getenv("XDG_ACTIVATION_TOKEN")) |t| l.token.set(std.mem.span(t));
     const id = app.app_id.slice();
     if (!options.multiple_instances and id.len > 0 and app.desktop.connected) {
         l.server = .{ .handler = .{ .ctx = app, .activate = remoteActivate, .open = remoteOpen, .action = remoteAction }, .on_name = onName };

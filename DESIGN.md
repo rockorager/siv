@@ -3599,14 +3599,31 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       string; disabled actions ignore it, and a choice takes the parameter
       as its target when it is a number.
     - Activation tokens: the launcher's $XDG_ACTIVATION_TOKEN goes with
-      the first activation (or is forwarded) and is removed from the
-      environment so children do not reuse it; remote activations carry
+      the first activation (or is forwarded) and stays in the
+      environment (below); remote activations carry
       platform data's "activation-token" (or X11's "desktop-startup-id").
       `siv_window_activate` hands it to xdg-activation; for a window not
       mapped yet the platform holds it until the first buffer, since
       compositors ignore activating unmapped surfaces.
       `siv_window_request_activation_token` gets one for applications the
       application starts itself.
+    - The process environment: siv never changes it (no setenv, unsetenv,
+      or putenv outside tests), because Zig's std caches it. start.zig
+      wraps the block the process starts with in a slice counted once,
+      and `Io.Threaded` walks that slice later: the first time stderr is
+      locked (`std.log`), and to build every child's environment.
+      glibc's unsetenv shifts the block in place, so the slice ends in a
+      null: the first `std.log` panics, and the panic's stack trace scans
+      again under the lock it holds, so the process hangs (Zig 0.17).
+      siv spawns no processes, so none inherits the consumed token from
+      siv; an application that starts others leaves XDG_ACTIVATION_TOKEN
+      and DESKTOP_STARTUP_ID out of the child's environment and passes a
+      token from `siv_window_request_activation_token` instead. The one
+      exception is siv-webview's `inspector_port` (D33): WebKit starts
+      its HTTP inspector only from WEBKIT_INSPECTOR_HTTP_SERVER, so
+      siv-webview adds that variable, when it is unset, before the first
+      web context. Adding never writes the startup block (glibc copies
+      it to a new array first), so the cached slice stays valid.
     - Services: D-Bus activation starts the process through the D-Bus
       service file's Exec line; siv cannot see the command line, so the
       application passes `SIV_LAUNCH_SERVICE` when its own argument says

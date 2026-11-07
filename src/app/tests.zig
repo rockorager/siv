@@ -459,6 +459,7 @@ test "the first instance activates; a second forwards its URIs and token to it" 
     const fd = try bt.start();
     defer bt.deinit();
     _ = setenv("XDG_ACTIVATION_TOKEN", "launch-token", 1);
+    defer _ = unsetenv("XDG_ACTIVATION_TOKEN");
 
     const first = try lifecycleApp(fd);
     defer first.destroy();
@@ -475,8 +476,8 @@ test "the first instance activates; a second forwards its URIs and token to it" 
     try testing.expectEqual(lifecycle.Kind.activate, acts.kind);
     try testing.expect(!acts.remote);
     try testing.expectEqualStrings("launch-token", acts.token[0..acts.token_len]);
-    // Taken from the environment so that children do not reuse it.
-    try testing.expect(std.c.getenv("XDG_ACTIVATION_TOKEN") == null);
+    // Read, not taken: siv leaves the process environment alone (D19).
+    try testing.expectEqualStrings("launch-token", std.mem.span(std.c.getenv("XDG_ACTIVATION_TOKEN").?));
     try testing.expectError(error.Busy, first.launch(.{}, .{ .func = Activations.cb }));
 
     _ = setenv("XDG_ACTIVATION_TOKEN", "second-token", 1);
@@ -501,6 +502,59 @@ test "the first instance activates; a second forwards its URIs and token to it" 
     try testing.expect(acts.remote);
     try testing.expectEqualStrings("file:///tmp/x.txt", acts.uri[0..acts.uri_len]);
     try testing.expectEqualStrings("second-token", acts.token[0..acts.token_len]);
+}
+
+test "a launch from a launcher leaves the environment block Zig cached intact" {
+    // A launcher's token is in the environment the process starts with.
+    // start.zig wraps that block in a slice counted once, and std.debug's
+    // Io scans it the first time stderr is locked. Unsetting the token in
+    // place would end the slice with a null: the first std.log panics, and
+    // the panic's stack trace scans again under the same lock and hangs.
+    // A child process gets a fresh block of its own, set up the same way.
+    const pid = std.c.fork();
+    try testing.expect(pid >= 0);
+    if (pid == 0) {
+        const gpa = std.heap.c_allocator;
+        var n: usize = 0;
+        while (std.c.environ[n] != null) n += 1;
+        const block = gpa.allocSentinel(?[*:0]u8, n + 1, null) catch std.c._exit(2);
+        block[0] = @constCast("XDG_ACTIVATION_TOKEN=launcher-token");
+        @memcpy(block[1..], std.c.environ[0..n]);
+        std.c.environ = block.ptr;
+        const t = std.Options.debug_threaded_io.?;
+        t.environ = .{ .process_environ = .{ .block = .{ .slice = block } } };
+        t.environ_initialized = false;
+
+        const app = App.create(gpa, .{
+            .backend = .headless,
+            .system_fonts = false,
+            .threads = 1,
+            .desktop_settings = false,
+            .accessibility = false,
+        }) catch std.c._exit(2);
+        var acts: Activations = .{};
+        app.launch(.{}, .{ .ctx = &acts, .func = Activations.cb }) catch std.c._exit(2);
+        if (!std.mem.eql(u8, app.lifecycle.token.slice(), "launcher-token")) std.c._exit(3);
+        for (block) |entry| if (entry == null) std.c._exit(4);
+        const env = std.c.getenv("XDG_ACTIVATION_TOKEN") orelse std.c._exit(5);
+        if (!std.mem.eql(u8, std.mem.span(env), "launcher-token")) std.c._exit(5);
+        const null_fd = std.c.open("/dev/null", .{ .ACCMODE = .WRONLY });
+        _ = std.c.dup2(null_fd, 2);
+        std.log.warn("launched with {s}", .{app.lifecycle.token.slice()});
+        std.c._exit(0);
+    }
+    var status: c_int = 0;
+    const deadline = Loop.now() + 10 * std.time.ns_per_s;
+    while (std.c.waitpid(pid, &status, 1) == 0) { // WNOHANG
+        if (Loop.now() > deadline) {
+            _ = std.c.kill(pid, .KILL);
+            _ = std.c.waitpid(pid, &status, 0);
+            return error.Timeout;
+        }
+        const ts: std.c.timespec = .{ .sec = 0, .nsec = 10 * std.time.ns_per_ms };
+        _ = std.c.nanosleep(&ts, null);
+    }
+    try testing.expectEqual(@as(c_int, 0), status);
 }
 
 test "without an application id every launch is primary, and services wait" {

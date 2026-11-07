@@ -811,7 +811,10 @@ static WebKitNetworkSession *session_for(wpe_app *wa, const siv_webview_desc *d)
 static siv_result wpe_create(swv_webview *wv, const siv_webview_desc *d) {
     wpe_app *wa = wv->app->engine_data;
     if (!wa->context) {
-        /* The inspector's server starts with the first context. */
+        /* The inspector's server starts with the first context, and only
+         * from this variable. The one change to the environment siv
+         * makes (D19): adding a variable leaves the block Zig cached at
+         * startup intact. */
         if ((d->flags & SIV_WEBVIEW_DEVELOPER_EXTRAS) && d->inspector_port && !getenv("WEBKIT_INSPECTOR_HTTP_SERVER")) {
             char addr[32];
             snprintf(addr, sizeof addr, "127.0.0.1:%u", (unsigned)d->inspector_port);
