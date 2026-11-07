@@ -391,8 +391,9 @@ fn renderMail(comptime name: []const u8, height: u32, tokyo: bool, convert: bool
 test "C API docview: mail under a dark theme shows light unless it allows dark, and converts on request" {
     const Case = struct { []const u8, u32, enum { light, theme, own_dark } };
     inline for (.{
-        // Outlook mobile: every paragraph black, a white signature.
-        Case{ "outlook-mobile", 460, .light },
+        // Outlook mobile: every paragraph black, a white signature, the
+        // quote collapsed.
+        Case{ "outlook-mobile", 234, .light },
         // A notification: white body and tables, a gray card, a logo.
         Case{ "notification", 334, .light },
         // A newsletter: a colored band, light and saturated buttons.

@@ -73,7 +73,8 @@ fn neuter(dom: *Dom, id: NodeId, name: html.Atom) void {
 /// Finds quoted replies (Apple Mail's and Thunderbird's
 /// `blockquote type=cite`, Gmail's `.gmail_quote`, Yahoo's
 /// `.yahoo_quoted`, Outlook's `#divRplyFwdMsg` and the reply header that
-/// starts with a top border, with what follows them) and wraps each
+/// starts with a top border, with what follows them, and Outlook mobile's
+/// `#mail-editor-reference-message-container`) and wraps each
 /// outermost one in `<div data-siv-quote=N>` after a toggle link to
 /// `siv:quote/N`. Returns the wrappers, in order.
 pub fn wrapQuotes(gpa: Allocator, dom: *Dom) error{OutOfMemory}![]NodeId {
@@ -137,6 +138,9 @@ fn quoteKind(dom: *const Dom, id: NodeId) Kind {
         }
     }
     if (dom.attr(id, .id)) |v| {
+        // Outlook mobile: the quoted message, its From/Sent/To/Subject
+        // header first, in one container.
+        if (std.mem.eql(u8, v, "mail-editor-reference-message-container")) return .block;
         if (std.mem.eql(u8, v, "divRplyFwdMsg") or std.mem.eql(u8, v, "appendonsend")) return .tail;
     }
     // Outlook for Windows: the reply header is a div with a top border
@@ -154,6 +158,7 @@ test "quotes from Gmail, Apple Mail, and Outlook are wrapped once" {
         \\<div class="gmail_quote"><div>On Mon, Ann wrote:</div><blockquote class="gmail_quote" type="cite">Lunch?</blockquote></div>
         \\<blockquote type=cite>Apple <blockquote type=cite>nested</blockquote></blockquote>
         \\<div><div id="divRplyFwdMsg">From: Bob</div><div>Old text</div><p>more</p></div>
+        \\<div id="mail-editor-reference-message-container"><div class="ms-outlook-mobile-reference-message" style="border-top: 1pt solid rgb(181, 196, 223)"><b>From: </b>Cy<br><b>Subject: </b>Plans</div><div dir="ltr">Older text</div></div>
         \\<a href="javascript:alert(1)">x</a><a href=" JaVa&#x09;script:1">y</a><a href="https://example.com/">z</a><script>bad()</script>
     , .{});
     defer dom.deinit();
@@ -161,7 +166,7 @@ test "quotes from Gmail, Apple Mail, and Outlook are wrapped once" {
     sanitize(&dom);
     const wrappers = try wrapQuotes(gpa, &dom);
     defer gpa.free(wrappers);
-    try std.testing.expectEqual(3, wrappers.len);
+    try std.testing.expectEqual(4, wrappers.len);
     // Outlook's header took the rest of its parent.
     try std.testing.expectEqual(@as(usize, 3), blk: {
         var n: usize = 0;
@@ -182,5 +187,12 @@ test "quotes from Gmail, Apple Mail, and Outlook are wrapped once" {
         std.debug.print("{s}\n", .{out});
         return err;
     };
-    try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, out, "class=\"siv-quote-toggle\""));
+    try std.testing.expectEqual(@as(usize, 4), std.mem.count(u8, out, "class=\"siv-quote-toggle\""));
+    // Outlook mobile's container went whole, its header with it.
+    var q: std.Io.Writer.Allocating = .init(gpa);
+    defer q.deinit();
+    try html.serialize.outer(&dom, &q.writer, wrappers[3]);
+    try std.testing.expect(std.mem.indexOf(u8, q.written(), "id=\"mail-editor-reference-message-container\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, q.written(), "<b>From: </b>Cy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, q.written(), "Older text") != null);
 }

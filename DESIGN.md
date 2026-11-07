@@ -6714,7 +6714,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     Mail and Thunderbird, `.gmail_quote`, `.yahoo_quoted`,
     `.protonmail_quote`, Outlook's `#divRplyFwdMsg`, `#appendonsend`, and
     the reply header with a top border that Outlook for Windows writes,
-    with everything after it) after a `•••` link to `siv:quote/N`; the
+    with everything after it, and Outlook mobile's
+    `#mail-editor-reference-message-container`, header and all) after a `•••` link to `siv:quote/N`; the
     box builder leaves closed ones out, and the link toggles them and
     styles again. Remote images, style sheets, and fonts are blocked
     unless the application allows them (a blocked style sheet reports an
