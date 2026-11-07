@@ -3104,6 +3104,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     objects with the Value interface after their scroll node's children
     (D47). Text offsets are
     characters, converted from siv's UTF-8 byte offsets.
+  - `SIV_SEMANTICS_BUSY` (aria-busy) is AT-SPI's busy state: spinners
+    and indeterminate progress bars set it, so a screen reader says the
+    content is loading (November 2026, found by Parcel's spinner).
   - Events: ChildrenChanged, PropertyChange (name, description, role,
     value), StateChanged (focus gained after every loss), TextChanged,
     TextCaretMoved, TextSelectionChanged, TextAttributesChanged (a
@@ -4349,7 +4352,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   table, and grid with selection models, menus, combo boxes, popovers, dialogs,
   tabs, split panes, sliders, spin buttons, progress, toasts, the
   navigation widgets: sidebars, header bars, and navigation stacks (D40),
-  and date, time, color, font, and emoji pickers (D41). Theming uses
+  date, time, color, font, and emoji pickers (D41), and spinners, chips,
+  avatars, cards, and suggestion lists. Theming uses
   compiled design
   tokens plus runtime overrides, follows the portal accent and color scheme, and
   includes a high-contrast variant (D29). Animation respects reduced motion.
@@ -4398,7 +4402,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     the emoji catalogue (`siv_emoji_get`, `siv_emoji_get_name`,
     `siv_emoji_get_info`, `siv_emoji_find`), and the settings event's
     `SIV_EVENT_LOCALE_CHANGED`; for spin buttons, numbers in that locale
-    (`siv_app_format_number`, `siv_app_parse_number`, D21).
+    (`siv_app_format_number`, `siv_app_parse_number`, D21). For
+    spinners, chips, avatars, and suggestion lists: the busy semantic
+    (D18), the hue tokens and their tints (D29), and anchored placement
+    (`siv_set_anchor`, D26).
   - **Creating:** one builder per widget, a transaction operation like the
     primitive builders (D27): `siv_push_button(txn, parent, &desc)` appends the
     widget and returns its root node, or 0 once the transaction has failed
@@ -4603,8 +4610,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       - Alternatives: a menu button whose menu items are radio-checked
         (no selected value to read or set, and screen readers announce a
         menu rather than a choice); an editable combo box (a text field
-        with completion, which the editor and a popup already allow;
-        reverse if applications keep building one).
+        with completion; when Parcel built one, the reusable part became
+        the suggestion list below).
     - A popover is a popup whose root is a card with a content part.
       Dialogs are modal overlays over a parent stack (a scrim and a card
       with title, text, content, and actions parts) that take focus.
@@ -4625,7 +4632,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       tabs and panels, split panes and their divider, a menu button's menu, a table's
       column header cells, a combo box's options, a header bar's start,
       end, and title boxes, a sidebar's items and the boxes above and
-      below them, a sidebar item's end box, a navigation stack's pages).
+      below them, a sidebar item's end box, a navigation stack's pages,
+      an avatar's image, a suggestion list's items).
   - **Navigation widgets** (D40): a sidebar of destinations in
     sections, a header bar that is also the title bar of a window that
     decorates itself (D17), and a navigation stack of pages with a back
@@ -4875,6 +4883,88 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       typing starts. It used to show the style of the paragraph before
       it, then jumped to the node's own at the first keystroke. Lists
       (bullets and numbering) are not built.
+  - **Spinners, chips, avatars, cards, and suggestion lists** (November
+    2026). Parcel, a mail client, drew all five from boxes in a kit of
+    its own, as most applications would; they are stock widgets now
+    (`src/widgets/display.zig`, `chip.zig`, `suggestions.zig`), colored
+    by tokens only.
+    - A spinner (`siv_spinner`) is a bead of the accent circling a ring
+      in the track color, turned by a compositor animation (D8): Adwaita
+      no longer ships process-working-symbolic, and a drawn spinner
+      needs no icon theme. Hidden, it stops; under reduced motion it
+      holds still with the bead at the top, which still reads as working
+      beside its busy state. It is a `progress_bar` without a value,
+      busy (D18), named "Loading" unless its label says otherwise.
+      Alternative: a canvas drawing an arc (a redraw per theme change
+      for what two themed boxes do).
+    - A chip (`siv_chip`) is a label, optionally after an icon, in a
+      pill: neutral (the control fill with an outline, since a dark
+      card's surface is the control color) or tinted with a hue's tint,
+      with the surface's text color. Clickable chips are buttons that
+      report `activate`; removable ones carry a remove button (a drawn
+      cross) and report `close` for it, Delete, or BackSpace, removed by
+      the default handler unless a handler keeps them, as dialogs and
+      toasts are. A chip that is removable and not clickable removes
+      itself on activation too: Parcel's search filters go with a click,
+      and Enter or Space does the same. Hover outlines a chip in its hue
+      (the border color for neutral ones, which also darken), press
+      thickens the outline (darkens neutral ones), and focus is the
+      core's ring. Only interactive chips are focusable buttons; a label
+      chip is text. Alternatives: a separate focusable remove button (two
+      Tab stops per filter, where Delete does it from the chip); chips
+      in literal colors (they would ignore the user's theme).
+    - An avatar (`siv_avatar`) is a circle tinted with one of the six
+      hues, chosen by FNV-1a of the name with ASCII folded, so a person
+      has one color in every application, with the initials of the
+      name's first and last words (one for one word, addresses in angle
+      brackets skipped), as libadwaita's AdwAvatar shows two. Its image
+      part is an image node over the initials, clipped to the circle and
+      empty until the application shows a picture (`siv_image_load`,
+      fit cover); the initials stay beneath as the fallback. It is an
+      `image` named by the name.
+    - A card (`siv_card`) is a column on `card_bg` (or another surface
+      token) with a 1 px border, the controls' radius, a clip, and a
+      shadow; `SIV_CARD_ACCENT` frames it in the accent, as Omarchy's
+      compositor frames the focused window, and `SIV_CARD_FLAT` drops
+      the shadow. It has no padding of its own, since cards hold edge to
+      edge content (a header bar, a list) as often as padded text; a
+      label makes it a group.
+    - A suggestion list (`siv_suggestion_list`) is WAI-ARIA's combobox
+      list for a node that keeps the focus, usually a text field: a card
+      in a stack placed under the anchor by `siv_set_anchor` (as wide as
+      it, above it when only that fits, slid and clamped inside the
+      stack, D26), items added with `siv_suggestion_list_item` (a label
+      and a muted detail: a name and an address) and removed with
+      `siv_suggestion_list_clear`, which also hides it. Adding an enabled
+      item shows it with the first enabled item highlighted. Down and Up
+      move the highlight, wrapping and skipping disabled items; Enter and
+      Tab choose (Shift+Tab, or no highlight, leave them to the field);
+      Escape reports `close`; the anchor losing focus reports `close`
+      too; the default handler hides the list. The pointer highlights on
+      hover and chooses on release; the press is handled, so the focus
+      stays in the field. Choosing hides the list and reports `select`
+      with the index, after which the application replaces what was
+      typed. Its value is the highlighted index (-1 for none).
+      - The anchor's keys come to the list first. A stock text field's
+        default key and focus handlers forward them (`Field.list`), since
+        those slots are the field's; any other anchor gets the list's
+        own default handlers. The application's `siv_on` and capture
+        handlers still run first, so an application keymap that binds
+        Escape checks `siv_node_is_shown` on the list before it.
+      - Semantics: the list is a `list` of `list_item`s with positions,
+        the highlighted one selected; a stock text field anchor is
+        `expanded` while it shows. Focus never leaves the field and siv
+        has no active-descendant relation, so a live status inside the
+        list, named after the highlighted item and its place ("Mark Ito,
+        mark@example.com, 2 of 4"), makes AT-SPI announce each move.
+        Alternative: an active-descendant relation in the semantics
+        (reverse to it if a screen reader needs more than the
+        announcement).
+      - Alternatives: an editable combo box (the list is the part
+        applications differ in least; the field, its parsing of address
+        lists, and what a choice does are theirs); a popup (D26's
+        alternatives); items the application fills itself (the
+        highlight's text colors would be the application's to switch).
   - **Pickers** (D41): `siv_date_picker`, `siv_time_picker`,
     `siv_color_chooser`, `siv_font_chooser`, and `siv_emoji_chooser`,
     inline or, with `SIV_PICKER_COMPACT`, as a button that opens the
@@ -5543,6 +5633,36 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     rounded border box, not only its descendants (external content
     already was), so a photo with rounded corners is one image node
     rather than an image in a clipping box; found by the user guide.
+  - **Anchored placement** (November 2026): `siv_set_anchor` places a
+    stack's child against another node inside the stack instead of by
+    its insets: below the anchor at its start edge (mirrored in RTL), or
+    above with `SIV_ANCHOR_ABOVE`; on the other side when it fits only
+    there; when it fits on neither, on the roomier side with its height
+    limited to that room; slid along the stack to stay inside it; as wide
+    as the anchor with `SIV_ANCHOR_MATCH_WIDTH`. The stack places it in
+    its second pass, after the children before it, so the anchor's
+    offset is a walk up from the anchor summing positions (scroll
+    offsets and transforms included, as `windowRect` does) as this pass
+    left them, and it follows the anchor in the same frame through any
+    layout that moves it, since such a layout dirties every ancestor
+    of the anchor, the stack included. It takes no room in the stack
+    and adds nothing to its max-content width. The anchor is kept
+    apart from `Node.layout`, so the application's `siv_set_layout` on
+    the node (its padding, its largest height) does not undo it.
+    Scrolling that the compositor does alone (D8) moves the node only at
+    the next layout; an anchor that is not shown, or not inside the
+    stack, puts it at the stack's top start corner. Found by Parcel,
+    whose compose card computed its address suggestions' place from
+    `siv_node_get_rect` (the last frame's) and set insets, a frame late
+    and wrong once the window resized while they showed. Alternatives:
+    an `xdg_popup` without a grab (D17), which leaves the window and
+    places against the output rather than the window, needs a resize
+    for every keystroke that changes the list, and keeps its first
+    placement on compositors without `xdg_wm_base` 3; insets the widget
+    recomputes from rects (a frame late, and nothing tells a widget the
+    anchor moved); a general constraint system (one rule covers the
+    overlays applications build). Reverse if overlays need to be placed
+    against nodes outside their stack, or beside an anchor.
 - **Alternatives:** CSS block, flex, and grid in full (intrinsic min and
   max sizes per axis, margins, multiple layout passes); Flutter's model
   without intrinsic widths (shrink-wrapping needs explicit, quadratic
@@ -5829,7 +5949,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     lists, the outer columns of a column browser, each a step from the
     view and readable with view text, distinct in high contrast too), and
     the shadow color under raised surfaces (translucent black, deeper in
-    dark variants, where a faint one would vanish). Visual descriptors take
+    dark variants, where a faint one would vanish), and six hues with a
+    translucent tint of each (below). Visual descriptors take
     `background_token`, `border_token`, and shadows' `color_token`, and text styles `color_token`,
     each replacing the literal color when set. Text styles take a
     `size_role` (body, caption, heading, title) relative to the desktop's
@@ -5947,6 +6068,28 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     - No API names the active theme: applications see its colors through
       the tokens and `siv_window_get_color`, and none has needed to
       know where they came from.
+  - **Hues** (November 2026): `red`, `yellow`, `green`, `cyan`, `blue`,
+    and `magenta`, the terminal's six, for colors that carry meaning or
+    identity rather than a role: label chips, avatars, status. Omarchy's
+    colors.toml names them (`red` ... `magenta`, else `color1` to
+    `color6`, `purple` for `magenta`), so they follow its theme live like
+    every token; the compiled ones are Tailwind's 600 shades in light and
+    400 in dark. Each has a tint, `red_bg` ... `magenta_bg`: the hue at
+    40% opacity in light variants and 30% in dark (20% in dark high
+    contrast, to keep 7:1 for its white text), translucent so that one
+    token reads on a card, a sidebar, or a selected row alike, with the
+    text color of the surface beneath; blending is in linear light, where
+    the light variants need more of the hue not to look washed out. A
+    tint derives from its hue unless a layer at or above the hue's sets
+    it, as the accent's shades do. Found by Parcel, whose Gmail label
+    chips and avatars tinted literal colors and the accent: there was no
+    themed color for "red" that was not `destructive`. Alternatives:
+    solid hues with a text token each (twelve tokens and a chip whose
+    text color changes with its hue); an alpha on token references in
+    visual descriptors (every descriptor that names a token would grow
+    one, for a need these widgets have); the existing success, warning,
+    and destructive tokens (three colors, which say something a label
+    does not mean).
   - Each window resolves a palette (`ui.theme.Palette`) from the desktop
     values and the application's choices, which the coordinator passes to
     every window like the desktop settings (D19); a subtree with a theme

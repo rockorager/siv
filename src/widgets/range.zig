@@ -265,6 +265,7 @@ pub fn apply(txn: Txn, r: *Range) void {
             .focusable = h.kind == .slider and !h.disabled,
             .disabled = h.disabled,
             .has_value = !r.indeterminate,
+            .busy = r.indeterminate,
         },
     });
 }

@@ -379,6 +379,23 @@ pub const Txn = struct {
         if (was_hidden != n.isHidden()) visibilityChanged(win, id, n.isHidden());
     }
 
+    /// Places the node against another in its stack (D26), or with a
+    /// `none` anchor as its stack places it. The anchor cannot be the
+    /// node or inside it.
+    pub fn setAnchor(t: *Txn, id: NodeId, a: node_mod.Anchor) Error!void {
+        const n = try t.live(id);
+        if (a.node != .none) {
+            _ = try t.live(a.node);
+            if (a.node == id or t.win.isAncestor(id, a.node)) return error.InvalidArgument;
+        }
+        if (!finite(a.gap) or a.gap < 0) return error.InvalidArgument;
+        if (std.meta.eql(n.anchor, a)) return;
+        try t.reserve();
+        t.touch(id);
+        n.anchor = a;
+        t.win.markLayout(id);
+    }
+
     /// Hides or shows a node and its subtree as the application asks,
     /// apart from its visual (`Node.hidden`).
     pub fn setHidden(t: *Txn, id: NodeId, hidden: bool) Error!void {

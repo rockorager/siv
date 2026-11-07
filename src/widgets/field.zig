@@ -13,6 +13,7 @@ const std = @import("std");
 const w = @import("widgets.zig");
 const button = @import("button.zig");
 const menu = @import("menu.zig");
+const suggestions = @import("suggestions.zig");
 const siv = w.siv;
 const tk = w.tokens;
 const c = siv.c;
@@ -26,6 +27,9 @@ pub const Field = extern struct {
     rows: u32 = 3,
     styled: bool = false,
     root: Node,
+    /// A suggestion list for it (suggestions.zig), which takes its keys
+    /// first; null for none.
+    list: Node = .null,
 };
 
 pub export fn siv_text_field(txn: Txn, parent: Node, desc: ?*const siv.TextFieldDesc) Node {
@@ -61,6 +65,7 @@ pub export fn siv_text_field(txn: Txn, parent: Node, desc: ?*const siv.TextField
 fn onKey(ud: ?*anyopaque, node: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const st: *Field = @ptrCast(@alignCast(ud.?));
     const e = ev;
+    if (st.list != .null and suggestions.anchorKey(st.list, ev)) return .handled;
     if (!st.hdr.disabled and e.flags.pressed and (e.keysym == w.keysym.menu or (e.keysym == w.keysym.f10 and e.modifiers.shift and !e.modifiers.ctrl and !e.modifiers.alt))) {
         var caret: u32 = 0;
         var anchor: u32 = 0;
@@ -175,11 +180,14 @@ pub fn apply(txn: Txn, st: *Field) void {
     _ = c.siv_set_text_style(txn, st.root, &.{ .color_token = if (h.disabled) .disabled_fg else .view_fg, .size_role = .body });
     var buf: [1024]u8 = undefined;
     const label = w.labelOf(st.root, &buf);
-    _ = c.siv_set_semantics(txn, st.root, &.{ .label = label.ptr, .label_len = label.len, .flags = .{ .disabled = h.disabled } });
+    setLabel(txn, st, label);
 }
 
 pub fn setLabel(txn: Txn, st: *Field, label: []const u8) void {
-    _ = c.siv_set_semantics(txn, st.root, &.{ .label = label.ptr, .label_len = label.len, .flags = .{ .disabled = st.hdr.disabled } });
+    // With a suggestion list it is expanded while the list shows, as
+    // WAI-ARIA's combobox input is.
+    const expanded: siv.Toggle = if (st.list == .null) .unset else if (suggestions.isOpen(st.list)) .on else .off;
+    _ = c.siv_set_semantics(txn, st.root, &.{ .label = label.ptr, .label_len = label.len, .expanded = expanded, .flags = .{ .disabled = st.hdr.disabled } });
 }
 
 fn onPointer(ud: ?*anyopaque, node: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
@@ -298,5 +306,6 @@ fn onFocus(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.Even
     const txn = w.begin(e.window) orelse return .pass;
     apply(txn, st);
     _ = w.commit(txn);
+    if (st.list != .null) suggestions.anchorFocus(st.list, e.flags.gained);
     return .pass;
 }

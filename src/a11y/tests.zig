@@ -259,6 +259,19 @@ test "the tree, its roles, names, states, and interfaces" {
     const hi = std.mem.readInt(u32, words[4..8], .little);
     const s: atspi.States = .{ .bits = lo | @as(u64, hi) << 32 };
     try testing.expect(s.has(.checkable) and s.has(.focusable) and s.has(.enabled) and !s.has(.checked));
+    try testing.expect(!s.has(.busy));
+    // Busy (aria-busy), as a spinner sets it.
+    {
+        var t = try h.win.begin();
+        try t.setSemantics(h.nodes.status, .{ .role = .progress_bar, .label = "Loading", .busy = true });
+        t.commit();
+        try h.frame();
+        const busy = try h.call(h.path(h.nodes.status, &buf), atspi.iface.accessible, "GetState", .{});
+        var bd = busy.decoder();
+        const bw = try bd.readFixedArray();
+        const bs: atspi.States = .{ .bits = std.mem.readInt(u32, bw[0..4], .little) | @as(u64, std.mem.readInt(u32, bw[4..8], .little)) << 32 };
+        try testing.expect(bs.has(.busy));
+    }
 
     // Interfaces follow the node.
     // A sorted column header's object attributes, as browsers expose

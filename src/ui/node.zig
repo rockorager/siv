@@ -143,6 +143,19 @@ pub const Insets = struct {
     }
 };
 
+/// A stack child placed against another node of the stack rather than
+/// by its insets or alignment (D26): an overlay under a text field.
+pub const Anchor = struct {
+    /// None: the stack places it as usual.
+    node: NodeId = .none,
+    /// Space between the anchor and the node.
+    gap: f32 = 0,
+    /// Above the anchor rather than below, unless it fits only below.
+    above: bool = false,
+    /// As wide as the anchor.
+    match_width: bool = false,
+};
+
 /// Sizing and placement. Changing it relayouts the node.
 pub const Layout = struct {
     width: Dimension = .auto,
@@ -508,6 +521,9 @@ pub const Semantics = struct {
     level: u8 = 0,
     /// While shown, input and focus stay inside it (dialogs).
     modal: bool = false,
+    /// Working: content is loading or updating (aria-busy), as spinners
+    /// and indeterminate progress say.
+    busy: bool = false,
     /// An item's 1-based position among its set and the set's size, for
     /// items whose siblings are not all in the tree (virtualized views);
     /// 0 for none.
@@ -1463,6 +1479,9 @@ pub const Node = struct {
     /// A theme its subtree resolves themed colors against (D43), over the
     /// enclosing one; null for none. Owned; replaced whole.
     theme: ?*const theme.Scope = null,
+    /// What it is placed against in its stack (D26); apart from `layout`,
+    /// which the application replaces whole.
+    anchor: Anchor = .{},
 
     pub const Status = enum(u8) {
         /// On the free list (`next` links it).

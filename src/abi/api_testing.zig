@@ -46,6 +46,7 @@ pub const decls = [_]Decl{
         .{ .name = "actionable", .bit = 3, .doc = "Has an action assistive technology can invoke." },
         .{ .name = "has_value", .bit = 4, .doc = "value_min, value_max, and value_now apply." },
         .{ .name = "modal", .bit = 5, .doc = "Modal (a dialog)." },
+        .{ .name = "busy", .bit = 6, .doc = "Busy (a spinner)." },
     } } },
     .{ .@"struct" = .{ .name = "siv_test_node", .doc = "A node of a window's semantics tree as assistive technology sees it (D18).", .since = v0_1, .kind = .value, .fields = &.{
         .{ .name = "bounds", .type = ref("siv_rect"), .doc = "Where it is, in window coordinates." },

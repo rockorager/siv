@@ -277,6 +277,18 @@ const color_token_values = [_]schema.EnumValue{
     .{ .name = "sidebar_bg", .value = 31, .doc = "Panes recessed from the view: sidebars, the outer columns of a column browser. Text on it is view_fg." },
     .{ .name = "secondary_sidebar_bg", .value = 32, .doc = "Panes between sidebar_bg and view_bg: a second sidebar, a column browser's middle column. Text on it is view_fg." },
     .{ .name = "shadow", .value = 33, .doc = "Box shadows under raised surfaces (siv_visual_desc.shadows): translucent black, deeper in dark variants, where a faint one would vanish." },
+    .{ .name = "red", .value = 34, .doc = "A hue for colors that carry meaning or identity (labels, avatars, status), as the user's theme names it (Omarchy's red, else its color1)." },
+    .{ .name = "yellow", .value = 35, .doc = "A hue, as for red (Omarchy's yellow, else color3)." },
+    .{ .name = "green", .value = 36, .doc = "A hue, as for red (Omarchy's green, else color2)." },
+    .{ .name = "cyan", .value = 37, .doc = "A hue, as for red (Omarchy's cyan, else color6)." },
+    .{ .name = "blue", .value = 38, .doc = "A hue, as for red (Omarchy's blue, else color4)." },
+    .{ .name = "magenta", .value = 39, .doc = "A hue, as for red (Omarchy's magenta or purple, else color5)." },
+    .{ .name = "red_bg", .value = 40, .doc = "A translucent tint of red for fills that carry it (chips, avatars), readable with the text color of the surface beneath: derived from red unless a theme sets it." },
+    .{ .name = "yellow_bg", .value = 41, .doc = "A translucent tint of yellow, as red_bg." },
+    .{ .name = "green_bg", .value = 42, .doc = "A translucent tint of green, as red_bg." },
+    .{ .name = "cyan_bg", .value = 43, .doc = "A translucent tint of cyan, as red_bg." },
+    .{ .name = "blue_bg", .value = 44, .doc = "A translucent tint of blue, as red_bg." },
+    .{ .name = "magenta_bg", .value = 45, .doc = "A translucent tint of magenta, as red_bg." },
 };
 
 fn param(comptime name: []const u8, comptime t: schema.Type, comptime doc: []const u8) Param {
@@ -317,6 +329,7 @@ const adaptive = @import("api_adaptive.zig");
 const system = @import("api_system.zig");
 const navigation = @import("api_navigation.zig");
 const pickers = @import("api_pickers.zig");
+const display = @import("api_display.zig");
 const intl = @import("api_intl.zig");
 const inspect = @import("api_inspect.zig");
 
@@ -643,6 +656,7 @@ pub const decls = [_]Decl{
         .{ .name = "live_polite", .bit = 3, .doc = "A live region: changes are announced when the user is idle." },
         .{ .name = "live_assertive", .bit = 4, .doc = "A live region: changes are announced at once. Not with SIV_SEMANTICS_LIVE_POLITE." },
         .{ .name = "modal", .bit = 5, .doc = "While shown, the pointer reaches only this subtree and Tab stays in it (dialogs)." },
+        .{ .name = "busy", .bit = 6, .doc = "Working: the node's content is loading or updating (aria-busy), exposed as AT-SPI's busy state; spinners and indeterminate progress bars set it." },
     }),
     enumeration("siv_current", "Which item of a set is the current one (WAI-ARIA's aria-current), exposed to assistive technology as the current attribute.", &.{
         .{ .name = "none", .value = 0, .doc = "Not the current item." },
@@ -724,6 +738,15 @@ pub const decls = [_]Decl{
     descriptor("siv_stack_desc", "A stack container: children on top of each other.", &.{
         .{ .name = "align_x", .type = ref("siv_align"), .doc = "Default horizontal alignment; auto is start." },
         .{ .name = "align_y", .type = ref("siv_align"), .doc = "Default vertical alignment; auto is start." },
+    }),
+    flags("siv_anchor_flags", "How a node is placed against its anchor (siv_set_anchor).", &.{
+        .{ .name = "above", .bit = 0, .doc = "Above the anchor rather than below, unless it fits only below." },
+        .{ .name = "match_width", .bit = 1, .doc = "As wide as the anchor (a suggestion list under its text field), at most the stack's width." },
+    }),
+    descriptor("siv_anchor_desc", "Where a stack's child goes relative to another node in the stack (siv_set_anchor, D26).", &.{
+        .{ .name = "anchor", .type = ref("siv_node"), .doc = "A node inside an earlier child of the same stack; 0 places the node as the stack does." },
+        f32Field("gap", "Space between the anchor and the node, at least 0."),
+        .{ .name = "flags", .type = ref("siv_anchor_flags"), .doc = "Options." },
     }),
     enumeration("siv_scroll_axis", "The axes a scroll node scrolls.", &.{
         .{ .name = "vertical", .value = 0, .doc = "Vertically." },
@@ -1348,8 +1371,9 @@ pub const decls = [_]Decl{
         .{ .name = "end", .value = 5, .doc = "Split panes: the pane at the end (or bottom). Header bars: the box for controls at the end. Sidebars: the box below the items. Sidebar items: the box at the end of the row." },
         .{ .name = "menu", .value = 6, .doc = "Menu buttons, and any widget with a menu: their menu, for siv_menu_item, siv_menu_open, and siv_menu_get_item." },
         .{ .name = "column", .value = 7, .doc = "Table views: the header cell of the column at index (siv_table_column returned it), whose value is the column's width." },
-        .{ .name = "item", .value = 8, .doc = "Combo boxes: the option at index (siv_combo_box_item returned it). Sidebars: the item at index, counting every section's items in order." },
+        .{ .name = "item", .value = 8, .doc = "Combo boxes: the option at index (siv_combo_box_item returned it). Sidebars: the item at index, counting every section's items in order. Suggestion lists: the item at index." },
         .{ .name = "divider", .value = 9, .doc = "Split panes: the divider between the panes, to hide with one of them (siv_set_hidden) so that the other takes the whole width." },
+        .{ .name = "image", .value = 10, .doc = "Avatars: the image node over the initials, empty until the application shows a picture in it (siv_set_image_view)." },
     }),
     // The widget interface (D22): how a widget, stock or the
     // application's, answers the generic siv_widget_* calls.
@@ -2418,6 +2442,7 @@ pub const functions = [_]Function{
     setter("siv_set_text_input", "Makes a node a text widget for input methods (D15), such as a terminal, a code editor, or a web page's field: while it has focus (SIV_SEMANTICS_FOCUSABLE), siv enables the seat's input method, tells it the surrounding text, cursor, purpose, and the caret's rectangle, and delivers its edits as SIV_EVENT_TYPE_TEXT_INPUT events. Set it again after every change of the text, cursor, or caret position; NULL turns it off. siv's editors do this themselves.", &.{.{ .name = "desc", .type = .{ .desc = "siv_text_input_desc" }, .doc = "The text and cursor; NULL turns text input off." }}),
     setter("siv_set_accessible_embed", "Shows another process's accessible object under the node in siv's AT-SPI tree (D18), as its last child: content rendered out of process, such as a web engine's page, keeps its own accessibility tree, and screen readers walk from the window into it. siv tells the object its parent (org.a11y.atspi.Socket.Embedded, the protocol of AT-SPI sockets and plugs).", &.{.{ .name = "plug", .type = .string, .doc = "The object as \"BUS_NAME:/object/path\" on the accessibility bus (an AT-SPI plug id, as WebKit gives it), copied; empty removes it." }}),
     setter("siv_set_tooltip", "Sets the text of a node's tooltip (D17): a small popup shown when the pointer rests on the node or a descendant without one, or when the keyboard focuses it, after half a second (at once while the user moves between tooltips); a press, a key, or scrolling hides it. It is also the node's accessible description unless the node has one or the text repeats its name. Stock icon-only buttons show their label this way.", &.{.{ .name = "text", .type = .string, .doc = "UTF-8, copied; empty removes the tooltip." }}),
+    setter("siv_set_anchor", "Places a child of a stack against another node in the stack instead of by its insets and alignment (D26): an overlay that belongs to a node, such as suggestions under a text field or a popover inside the window. Layout puts it below the anchor at its start edge (mirrored in RTL), or above with SIV_ANCHOR_ABOVE; on the other side when it fits only there; when it fits on neither, on the side with more room, its height limited to that room (a scroll node in it scrolls the rest). It slides along the stack to stay inside it, and follows the anchor through every layout, in the same frame. It takes no room in the stack. Scrolling the compositor does without the application (D8) moves it at the next layout. Without a shown anchor inside the stack it sits at the stack's top start corner. Not undone by siv_set_layout.", &.{.{ .name = "desc", .type = .{ .desc = "siv_anchor_desc" }, .doc = "The anchor; NULL, or a 0 anchor, places the node as its stack does." }}),
     setter("siv_set_hidden", "Hides or shows a node and its subtree: hidden, it takes no space and is not painted, hit, focused, or in the semantics tree, and keeps its state. Apart from SIV_VISUAL_HIDDEN, so hiding a widget never replaces the visual it draws itself with; either one hides. A hidden menu item is left out of its menu when it opens.", &.{.{ .name = "hidden", .type = .bool, .doc = "Hidden." }}),
     setter("siv_set_cursor", "Sets the pointer cursor over a node and its descendants that set none. While a press is held the cursor stays that of the node that got it.", &.{.{ .name = "cursor", .type = ref("siv_cursor"), .doc = "The cursor; auto inherits." }}),
     call("siv_window_set_cursor", "Shows a cursor over the whole window whatever its nodes set, such as SIV_CURSOR_PROGRESS while the application is busy; auto stops.", &.{
@@ -2596,8 +2621,8 @@ pub const spec: schema.Schema = .{
     .source = "src/abi/api.zig",
     .doc = "siv: a GUI toolkit for Wayland.",
     .result = "siv_result",
-    .decls = &(decls ++ desktop.decls ++ dbus.decls ++ shell.decls ++ document.decls ++ actions.decls ++ undo.decls ++ settings.decls ++ spelling.decls ++ adaptive.decls ++ system.decls ++ navigation.decls ++ pickers.decls ++ intl.decls ++ inspect.decls ++ testing.decls),
-    .functions = &(functions ++ desktop.functions ++ dbus.functions ++ shell.functions ++ document.functions ++ actions.functions ++ undo.functions ++ settings.functions ++ spelling.functions ++ adaptive.functions ++ system.functions ++ navigation.functions ++ pickers.functions ++ intl.functions ++ inspect.functions ++ testing.functions),
+    .decls = &(decls ++ desktop.decls ++ dbus.decls ++ shell.decls ++ document.decls ++ actions.decls ++ undo.decls ++ settings.decls ++ spelling.decls ++ adaptive.decls ++ system.decls ++ navigation.decls ++ pickers.decls ++ display.decls ++ intl.decls ++ inspect.decls ++ testing.decls),
+    .functions = &(functions ++ desktop.functions ++ dbus.functions ++ shell.functions ++ document.functions ++ actions.functions ++ undo.functions ++ settings.functions ++ spelling.functions ++ adaptive.functions ++ system.functions ++ navigation.functions ++ pickers.functions ++ display.functions ++ intl.functions ++ inspect.functions ++ testing.functions),
 };
 
 /// Encodes a version as (major << 16) | (minor << 8) | patch.

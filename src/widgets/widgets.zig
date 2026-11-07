@@ -48,13 +48,16 @@ pub const color_chooser = @import("color.zig");
 pub const font = @import("font.zig");
 pub const emoji = @import("emoji.zig");
 pub const inspector = @import("inspector.zig");
+pub const display = @import("display.zig");
+pub const chip = @import("chip.zig");
+pub const suggestions = @import("suggestions.zig");
 
 const c = siv.c;
 const Node = siv.Node;
 const Txn = siv.Txn;
 
 /// The files that export schema functions, for src/abi/abi.zig.
-pub const implementations = .{ @This(), button, toggle, radio, field, range, menu, dialog, tabs, split, toast, views, combo, header_bar, navigation, sidebar, date, time, color_chooser, font, emoji, inspector };
+pub const implementations = .{ @This(), button, toggle, radio, field, range, menu, dialog, tabs, split, toast, views, combo, header_bar, navigation, sidebar, date, time, color_chooser, font, emoji, inspector, display, chip, suggestions };
 
 var key_byte: u8 = 0;
 
@@ -115,6 +118,12 @@ pub const Kind = enum(u8) {
     chevron,
     /// The inspector (D46).
     inspector,
+    spinner,
+    chip,
+    avatar,
+    card,
+    suggestion_list,
+    suggestion_item,
 };
 
 /// The first field of every widget's state.

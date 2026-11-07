@@ -27,6 +27,7 @@ const raster = @import("raster");
 const Window = @import("Window.zig");
 const node_mod = @import("node.zig");
 const text_node = @import("text_node.zig");
+const paint_mod = @import("paint.zig");
 
 const NodeId = node_mod.NodeId;
 const Node = node_mod.Node;
@@ -314,6 +315,8 @@ fn maxContentOf(win: *Window, id: NodeId, l: node_mod.Layout, f: node_mod.Flex) 
             .stack => {
                 var it = shownInf(win, id);
                 while (it.next()) |ch| {
+                    // An anchored overlay takes no room of its own.
+                    if (win.node(ch).anchor.node != .none) continue;
                     const in = layoutInf(win, ch).inset;
                     content = @max(content, try maxContentInf(win, ch) + (in.start orelse 0) + (in.end orelse 0));
                 }
@@ -957,7 +960,7 @@ fn stack(win: *Window, id: NodeId, inner: Constraints, origin: Point) Error!Size
     if (!inner.tightW()) {
         var w: f32 = 0;
         var it = win.shown(id);
-        while (it.next()) |ch| if (!win.node(ch).layout.inset.any()) {
+        while (it.next()) |ch| if (!positioned(win, ch)) {
             w = @max(w, try maxContent(win, ch));
         };
         cw = inner.clampW(w);
@@ -967,7 +970,7 @@ fn stack(win: *Window, id: NodeId, inner: Constraints, origin: Point) Error!Size
     var it = win.shown(id);
     while (it.next()) |ch| {
         const l = win.node(ch).layout;
-        if (l.inset.any()) continue;
+        if (positioned(win, ch)) continue;
         const ax = resolveAlign(l.align_x, st.align_x);
         const ay = resolveAlign(l.align_y, st.align_y);
         const c = both(widthFor(win, ch, ax, cw), if (inner.tightH()) heightFor(win, ch, ay, inner.max_h) else .{});
@@ -976,6 +979,10 @@ fn stack(win: *Window, id: NodeId, inner: Constraints, origin: Point) Error!Size
     const height = inner.clampH(ch_h);
     it = win.shown(id);
     while (it.next()) |ch| {
+        if (win.node(ch).anchor.node != .none) {
+            try anchored(win, id, ch, cw, height, rtl, origin);
+            continue;
+        }
         const l = win.node(ch).layout;
         const in = l.inset;
         const ax = resolveAlign(l.align_x, st.align_x);
@@ -1003,6 +1010,77 @@ fn stack(win: *Window, id: NodeId, inner: Constraints, origin: Point) Error!Size
         setPos(win, ch, .{ .x = origin.x + x, .y = origin.y + y });
     }
     return .{ .w = cw, .h = height };
+}
+
+/// A stack child placed by its insets or its anchor, not in the flow.
+fn positioned(win: *const Window, ch: NodeId) bool {
+    const n = win.node(ch);
+    return n.layout.inset.any() or n.anchor.node != .none;
+}
+
+/// Places a stack child against its anchor (D26): below it (above with
+/// `above`) at its start edge, `gap` away; on the other side when it fits
+/// only there; on the roomier side, as tall as the room, when it fits on
+/// neither; slid along the stack to stay inside it, and as wide as the
+/// anchor with `match_width`. Without a shown anchor inside the stack
+/// (laid out earlier in this pass), it sits at the top start corner.
+fn anchored(win: *Window, stack_id: NodeId, ch: NodeId, cw: f32, height: f32, rtl: bool, origin: Point) Error!void {
+    const a = win.node(ch).anchor;
+    const r = anchorRect(win, stack_id, a.node, origin) orelse {
+        const sz = try place(win, ch, .{ .max_w = cw, .max_h = height });
+        setPos(win, ch, .{ .x = origin.x + (if (rtl) cw - sz.w else 0), .y = origin.y });
+        return;
+    };
+    var c: Constraints = .{ .max_w = cw, .max_h = height };
+    if (a.match_width) {
+        c.min_w = @min(r.w, cw);
+        c.max_w = c.min_w;
+    }
+    const want = (try measure(win, ch, c)).h;
+    const below = @max(0, height - (r.y + r.h + a.gap));
+    const above = @max(0, r.y - a.gap);
+    const first = if (a.above) above else below;
+    const second = if (a.above) below else above;
+    const up = if (want <= first) a.above else if (want <= second) !a.above else (if (first >= second) a.above else !a.above);
+    c.max_h = if (up) above else below;
+    const sz = try place(win, ch, c);
+    const y = if (up) r.y - a.gap - sz.h else r.y + r.h + a.gap;
+    const start = if (rtl) r.x + r.w - sz.w else r.x;
+    const x = std.math.clamp(start, 0, @max(0, cw - sz.w));
+    setPos(win, ch, .{ .x = origin.x + x, .y = origin.y + y });
+}
+
+/// The anchor's border box in the stack's content box, as this pass laid
+/// it out, or null when it is not a shown node inside the stack.
+fn anchorRect(win: *const Window, stack_id: NodeId, anchor: NodeId, origin: Point) ?struct { x: f32, y: f32, w: f32, h: f32 } {
+    if (!win.isLive(anchor) or anchor == stack_id) return null;
+    const s = win.state(anchor);
+    var p = s.pos;
+    var k: f32 = 1;
+    var cur = win.node(anchor).parent;
+    var prev = anchor;
+    while (cur != stack_id) : ({
+        prev = cur;
+        cur = win.node(cur).parent;
+    }) {
+        if (cur == .none) return null;
+        const n = win.node(cur);
+        if (n.isHidden()) return null;
+        const cs = win.state(cur);
+        if (n.kind == .scroll) {
+            const pad = n.layout.padding;
+            const z = n.data.scroll.zoom;
+            p.x = pad.left(cs.rtl) + p.x * z - paint_mod.scrollTranslation(win, cur).x;
+            p.y = pad.top + p.y * z - paint_mod.scrollTranslation(win, cur).y;
+            k *= z;
+        }
+        const t = n.visual.transform;
+        if (!t.eql(.identity)) p = t.affine().apply(p);
+        p.x += cs.pos.x;
+        p.y += cs.pos.y;
+    }
+    if (win.node(anchor).isHidden() or win.node(prev).anchor.node != .none) return null;
+    return .{ .x = p.x - origin.x, .y = p.y - origin.y, .w = s.size.w * k, .h = s.size.h * k };
 }
 
 // Leaves ---------------------------------------------------------------------

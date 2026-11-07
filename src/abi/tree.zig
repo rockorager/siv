@@ -680,6 +680,7 @@ pub export fn siv_set_semantics(txn: t.Txn, node: t.Node, desc: ?*const t.Semant
                 .value = if (fl.has_value) .{ .min = d.value_min, .max = d.value_max, .now = d.value_now, .step = d.value_step } else null,
                 .live = if (fl.live_assertive) .assertive else if (fl.live_polite) .polite else .off,
                 .modal = fl.modal,
+                .busy = fl.busy,
                 .level = @intCast(@min(d.level, 255)),
                 .position = d.position,
                 .set_size = d.set_size,
@@ -730,6 +731,18 @@ pub export fn siv_set_hidden(txn: t.Txn, node: t.Node, hidden: bool) void {
             w.txn.ut.setHidden(id, h) catch |err| return mapTxn(err);
         }
     }.f, .{ node, hidden });
+}
+
+pub export fn siv_set_anchor(txn: t.Txn, node: t.Node, desc: ?*const t.AnchorDesc) void {
+    _ = run(txn, struct {
+        fn f(w: *Window, n: t.Node, d_ptr: ?*const t.AnchorDesc) Error!void {
+            const id = try nodeIn(w, n);
+            const d = try runtime.readDesc(t.AnchorDesc, d_ptr);
+            const fl = try runtime.flags(t.AnchorFlags, d.flags);
+            const anchor: NodeId = if (d.anchor == .null) .none else try nodeIn(w, d.anchor);
+            w.txn.ut.setAnchor(id, .{ .node = anchor, .gap = d.gap, .above = fl.above, .match_width = fl.match_width }) catch |err| return mapTxn(err);
+        }
+    }.f, .{ node, desc });
 }
 
 pub export fn siv_node_is_hidden(node: t.Node, hidden: ?*bool) t.Result {

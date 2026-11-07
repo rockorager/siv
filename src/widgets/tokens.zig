@@ -66,3 +66,17 @@ pub const section_gap: f32 = 12;
 /// Navigation stacks: how far the page below moves while a page slides
 /// over it or off it, in its widths (D38).
 pub const parallax: f32 = 0.3;
+
+/// Spinners (D22): their default size and one turn.
+pub const spinner_size: f32 = 16;
+pub const spinner_ms: u32 = 900;
+/// Avatars: their default diameter.
+pub const avatar_size: f32 = 32;
+/// Chips: height, padding at the ends, and the remove button's size.
+pub const chip_height: f32 = 24;
+pub const chip_pad_x: f32 = 10;
+pub const chip_remove: f32 = 16;
+/// Suggestion lists: the space between the anchor and the list, and a
+/// row's least height.
+pub const suggestion_gap: f32 = 4;
+pub const suggestion_row: f32 = 30;

@@ -67,7 +67,37 @@ pub const ColorToken = enum(u8) {
     /// Box shadows under raised surfaces (`Visual.shadows`): translucent
     /// black, deeper in dark variants, where a faint one would vanish.
     shadow,
+    /// Hues (the terminal's six, as a theme's palette names them), for
+    /// colors that carry meaning or identity: labels, avatars, status.
+    red,
+    yellow,
+    green,
+    cyan,
+    blue,
+    magenta,
+    /// Translucent tints of the hues, for fills that carry them (chips,
+    /// avatars): readable with the text color of the surface beneath.
+    /// Derived from the hue unless a layer sets them (`hue_tints`).
+    red_bg,
+    yellow_bg,
+    green_bg,
+    cyan_bg,
+    blue_bg,
+    magenta_bg,
 };
+
+/// Each hue and its tint.
+pub const hues = [_]ColorToken{ .red, .yellow, .green, .cyan, .blue, .magenta };
+pub const hue_tints = [_]ColorToken{ .red_bg, .yellow_bg, .green_bg, .cyan_bg, .blue_bg, .magenta_bg };
+
+/// A hue's tint: the hue at a fixed opacity, so it blends with whatever
+/// surface it sits on. Light text on a dark surface takes less of it than
+/// dark text on a light one (blending is in linear light, where a little
+/// of a hue over white still looks pale), and high contrast's light text
+/// less again, to keep 7:1.
+pub fn tint(hue: Color, dark: bool, high: bool) Color {
+    return .{ .r = hue.r, .g = hue.g, .b = hue.b, .a = if (!dark) 0.4 else if (high) 0.2 else 0.3 };
+}
 
 pub const token_count = @typeInfo(ColorToken).@"enum".field_names.len;
 
@@ -307,6 +337,19 @@ pub fn resolveIn(theme: *const Theme, d: DesktopInput, user: *const User, ctx: *
     // Layers at or above the accent's keep the derived colors they set;
     // those below it give way to the accent.
     if (level > 0) derive(&p, layers[level - 1 ..], high);
+    // A hue a layer replaced takes its tint along, unless a layer at or
+    // above it set the tint too.
+    for (hues, hue_tints) |hue, t| {
+        var at: usize = 0;
+        for (layers, 1..) |layer, l| if (layer[@intFromEnum(hue)] != null) {
+            at = l;
+        };
+        if (at == 0) continue;
+        const kept = for (layers[at - 1 ..]) |layer| {
+            if (layer[@intFromEnum(t)] != null) break true;
+        } else false;
+        if (!kept) set(&p, t, tint(p.color(hue), dark, high));
+    }
     return p;
 }
 
@@ -363,7 +406,8 @@ pub const compiled: [4][token_count]Color = .{
         .destructive_fg = 0xffffff, .scrim = .{ 0x000000, 0x66 }, .inverse_bg = 0x27272a, .inverse_fg = 0xfafafa,
         .success = 0x16a34a, .warning = 0xd97706,
         .sidebar_bg = 0xededf0, .secondary_sidebar_bg = 0xf6f6f8, .shadow = .{ 0x000000, 0x2e },
-    }),
+        .red = 0xdc2626, .yellow = 0xca8a04, .green = 0x16a34a, .cyan = 0x0891b2, .blue = 0x2563eb, .magenta = 0x9333ea,
+    }, false, false),
     palette(.{
         .window_bg = 0x18181b, .window_fg = 0xf4f4f5, .view_bg = 0x09090b, .view_fg = 0xf4f4f5,
         .card_bg = 0x27272a, .card_fg = 0xf4f4f5, .muted_fg = 0xa1a1aa, .disabled_fg = 0x52525b,
@@ -374,7 +418,8 @@ pub const compiled: [4][token_count]Color = .{
         .destructive_fg = 0xffffff, .scrim = .{ 0x000000, 0x99 }, .inverse_bg = 0xf4f4f5, .inverse_fg = 0x18181b,
         .success = 0x22c55e, .warning = 0xf59e0b,
         .sidebar_bg = 0x1c1c20, .secondary_sidebar_bg = 0x131316, .shadow = .{ 0x000000, 0xa6 },
-    }),
+        .red = 0xf87171, .yellow = 0xfacc15, .green = 0x4ade80, .cyan = 0x22d3ee, .blue = 0x60a5fa, .magenta = 0xc084fc,
+    }, true, false),
     palette(.{
         .window_bg = 0xffffff, .window_fg = 0x000000, .view_bg = 0xffffff, .view_fg = 0x000000,
         .card_bg = 0xffffff, .card_fg = 0x000000, .muted_fg = 0x333333, .disabled_fg = 0x595959,
@@ -385,7 +430,8 @@ pub const compiled: [4][token_count]Color = .{
         .destructive_fg = 0xffffff, .scrim = .{ 0x000000, 0xb3 }, .inverse_bg = 0x000000, .inverse_fg = 0xffffff,
         .success = 0x006b1f, .warning = 0x8a4b00,
         .sidebar_bg = 0xe6e6e6, .secondary_sidebar_bg = 0xf2f2f2, .shadow = .{ 0x000000, 0x40 },
-    }),
+        .red = 0xa00000, .yellow = 0x7a5200, .green = 0x006b1f, .cyan = 0x00606e, .blue = 0x0040c0, .magenta = 0x7a1fa2,
+    }, false, true),
     palette(.{
         .window_bg = 0x000000, .window_fg = 0xffffff, .view_bg = 0x000000, .view_fg = 0xffffff,
         .card_bg = 0x000000, .card_fg = 0xffffff, .muted_fg = 0xe0e0e0, .disabled_fg = 0xa6a6a6,
@@ -396,20 +442,51 @@ pub const compiled: [4][token_count]Color = .{
         .destructive_fg = 0x000000, .scrim = .{ 0x000000, 0xb3 }, .inverse_bg = 0xffffff, .inverse_fg = 0x000000,
         .success = 0x66ff99, .warning = 0xffcc33,
         .sidebar_bg = 0x1f1f1f, .secondary_sidebar_bg = 0x101010, .shadow = .{ 0x000000, 0xb3 },
-    }),
+        .red = 0xff7070, .yellow = 0xffd23f, .green = 0x66ff99, .cyan = 0x5ce1ff, .blue = 0x7cb4ff, .magenta = 0xe08cff,
+    }, true, true),
 };
 
-/// Colors per token: 0xRRGGBB opaque, or .{ 0xRRGGBB, alpha }.
-fn palette(comptime hex: anytype) [token_count]Color {
+/// Colors per token: 0xRRGGBB opaque, or .{ 0xRRGGBB, alpha }. The hues'
+/// tints derive from the hues.
+fn palette(comptime hex: anytype, comptime dark: bool, comptime high: bool) [token_count]Color {
     @setEvalBranchQuota(1_000_000);
     var out: [token_count]Color = undefined;
     out[0] = .transparent;
     for (@typeInfo(ColorToken).@"enum".field_names[1..], 1..) |name, i| {
+        if (std.mem.indexOfScalar(ColorToken, &hue_tints, @field(ColorToken, name)) != null) continue;
         const f = @field(hex, name);
         const v: u32, const a: u8 = if (@typeInfo(@TypeOf(f)) == .@"struct") .{ f[0], f[1] } else .{ f, 0xff };
         out[i] = .srgb8(@truncate(v >> 16), @truncate(v >> 8), @truncate(v), a);
     }
+    for (hues, hue_tints) |hue, t| out[@intFromEnum(t)] = tint(out[@intFromEnum(hue)], dark, high);
     return out;
+}
+
+test "a hue's tint follows the hue a layer replaces, unless the layer sets the tint" {
+    const tok = struct {
+        fn f(t: ColorToken) usize {
+            return @intFromEnum(t);
+        }
+    }.f;
+    const red = Color.srgb8(0xf7, 0x76, 0x8e, 0xff);
+    var u: User = .{ .source = .omarchy, .scheme = .dark };
+    u.colors[1][tok(.red)] = red;
+    var th: Theme = .{};
+    var p = resolve(&th, .{}, &u);
+    try std.testing.expect(p.color(.red).eql(red));
+    try std.testing.expect(p.color(.red_bg).eql(tint(red, true, false)));
+    // Untouched hues keep their compiled tints.
+    try std.testing.expect(p.color(.blue_bg).eql(compiled[1][tok(.blue_bg)]));
+    // A tint set above the hue's layer stays.
+    th.overrides[1][tok(.red_bg)] = .black;
+    p = resolve(&th, .{}, &u);
+    try std.testing.expect(p.color(.red_bg).eql(.black));
+    // A hue set above a tint moves it.
+    th.overrides = @splat(@splat(null));
+    u.colors[1][tok(.red_bg)] = .white;
+    th.overrides[1][tok(.red)] = .black;
+    p = resolve(&th, .{}, &u);
+    try std.testing.expect(p.color(.red_bg).eql(tint(.black, true, false)));
 }
 
 test "translucent tokens keep their color and alpha" {

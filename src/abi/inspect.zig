@@ -1075,6 +1075,7 @@ const props = [_]Prop{
     semanticsField("current", "current", .choice),
     semanticsField("live", "live", .choice),
     semanticsField("modal", "modal", .bool),
+    semanticsField("busy", "busy", .bool),
 
     // The subtree's theme (D43).
     .{ .name = "scheme", .group = .theme, .type = .choice, .when = .themed, .get = struct {

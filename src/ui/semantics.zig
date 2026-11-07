@@ -58,6 +58,8 @@ pub const Node = struct {
     level: u8 = 0,
     /// Input stays inside it while it is shown (dialogs).
     modal: bool = false,
+    /// Working (`Semantics.busy`).
+    busy: bool = false,
     /// An empty editor's placeholder text.
     placeholder: []const u8 = "",
     /// Position in a set and its size, and a table row's index, 1-based;
@@ -212,6 +214,7 @@ pub const Tree = struct {
                 .masked = n.kind == .editor and n.data.editor.editor.masked,
                 .level = sem.level,
                 .modal = sem.modal,
+                .busy = sem.busy,
                 .position = sem.position,
                 .set_size = sem.set_size,
                 .row = sem.row,

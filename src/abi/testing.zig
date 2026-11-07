@@ -539,7 +539,7 @@ fn describe(n: *const ui.semantics.Node) t.TestNode {
     return .{
         .bounds = .{ .x = b.x0, .y = b.y0, .width = b.x1 - b.x0, .height = b.y1 - b.y0 },
         .role = @fromBackingInt(@intFromEnum(n.role) + 1),
-        .flags = .{ .focusable = n.focusable, .focused = n.focused, .disabled = n.disabled, .actionable = n.actionable, .has_value = n.value != null, .modal = n.modal },
+        .flags = .{ .focusable = n.focusable, .focused = n.focused, .disabled = n.disabled, .actionable = n.actionable, .has_value = n.value != null, .modal = n.modal, .busy = n.busy },
         .checked = toggle(n.checked),
         .pressed = toggle(n.pressed),
         .selected = toggle(n.selected),
@@ -638,6 +638,7 @@ fn dump(wr: *std.Io.Writer, tree: *const ui.semantics.Tree) !void {
         try wr.print("{t} \"{s}\"", .{ n.role, tree.name(n.*) });
         if (n.focused) try wr.writeAll(" focused");
         if (n.disabled) try wr.writeAll(" disabled");
+        if (n.busy) try wr.writeAll(" busy");
         try writeToggle(wr, "checked", n.checked);
         try writeToggle(wr, "pressed", n.pressed);
         try writeToggle(wr, "selected", n.selected);

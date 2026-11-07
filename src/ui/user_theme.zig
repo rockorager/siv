@@ -570,6 +570,10 @@ fn mapOmarchy(pal: *const Palette, scheme: Scheme, out: *[token_count]?Color) vo
     }
     if (pal.get(.green)) |g| set(out, .success, g);
     if (pal.get(.yellow)) |y| set(out, .warning, y);
+    // The hues as they are; their tints follow (theme.resolveIn).
+    inline for (.{ "red", "yellow", "green", "cyan", "blue", "magenta" }) |name| {
+        if (pal.get(@field(Key, name))) |col| set(out, @field(ColorToken, name), col);
+    }
     // Surfaces and text need both ends of the ramp.
     const bg = pal.get(.background) orelse return;
     const fg = pal.get(.foreground) orelse return;
@@ -776,6 +780,10 @@ test "omarchy: colors.toml maps to tokens for its mode" {
     try testing.expect(tok(&u, .dark, .selection_fg).?.eql(hex(0xc0caf5)));
     try testing.expect(tok(&u, .dark, .destructive).?.eql(hex(0xf7768e)));
     try testing.expect(tok(&u, .dark, .success).?.eql(hex(0x9ece6a)));
+    // The hues as named; one it leaves out stays compiled.
+    try testing.expect(tok(&u, .dark, .red).?.eql(hex(0xf7768e)));
+    try testing.expect(tok(&u, .dark, .blue).?.eql(hex(0x7aa2f7)));
+    try testing.expect(tok(&u, .dark, .magenta) == null);
     // The accent's shades are siv's, derived when the palette resolves.
     try testing.expect(tok(&u, .dark, .accent_hover) == null);
     // Muted text is dimmer than the text but readable on every surface.
@@ -798,6 +806,7 @@ test "omarchy: legacy names, ANSI fallbacks, and the mode without a mode key" {
     try testing.expectEqual(Scheme.light, u.scheme.?);
     try testing.expect(tok(&u, .light, .view_bg).?.eql(hex(0xeff1f5)));
     try testing.expect(tok(&u, .light, .destructive).?.eql(hex(0xd20f39)));
+    try testing.expect(tok(&u, .light, .red).?.eql(hex(0xd20f39)));
     // The accent falls back to blue, which falls back to color4.
     try testing.expect(tok(&u, .light, .accent).?.eql(hex(0x1e66f5)));
     // Missing shades are Omarchy's: the background mixed 25% toward black.

@@ -933,6 +933,7 @@ pub const Win = struct {
         if (n.role == .slider) s = s.with(.horizontal);
         if (n.role == .scroll_bar) s = s.with(if (n.vertical) .vertical else .horizontal);
         if (n.modal) s = s.with(.modal);
+        if (n.busy) s = s.with(.busy);
         if (n.role == .window) {
             s = s.with(.resizable);
             if (w.active) s = s.with(.active);
