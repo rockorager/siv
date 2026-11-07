@@ -703,8 +703,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     to the content, and starts a new curve from where the last frame
     showed, at the speed it was moving: a cubic (Hermite) curve that
     arrives at rest, its starting speed capped so that it never passes
-    its target. A held key thus glides at a steady speed: 40 px every
-    40 ms moves 16 to 18 px a frame at 60 Hz. Restarting an ease from
+    its target. Repeated requests thus glide at a steady speed: 40 px
+    every 40 ms moves 16 to 18 px a frame at 60 Hz. Restarting an ease from
     rest at each request, as GTK's `gtk_adjustment_animate_to_value`
     does, lurches at every repeat; before, keys jumped 40 px at once,
     which made parcel's j and k (`siv_scroll_by` by lines) coarse.
@@ -731,6 +731,61 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     durations that grow with the distance, as Chromium's do (Home and
     End over a long document glide fast; revisit if long glides look
     like a flash).
+  - Held keys scroll on by themselves, from the press, not from the
+    desktop's key repeat: before, holding Down (or parcel's j) showed
+    the press's glide, then stood still for the repeat delay (600 ms
+    on sway and GNOME) before the repeats' glides began, which read as
+    slow to start. A key's press that scrolls is `scroll_hold`: the
+    press's step glides as above, so a tap still moves one step, and
+    if the key is still down 150 ms after it went down
+    (`anim.Hold.delay_ns`, longer than a tap) the offset speeds up
+    over 100 ms (speed easing out, 2x - x², so it gets going as soon
+    as the step comes to rest) to the step per repeat interval (40 px
+    at 25 Hz: 1000 px/s, about what the repeats gave, at the speed the
+    user set the desktop's repeat to) and goes on at that speed. Every
+    stepping key holds on: arrows, Page Up and Down (a page per repeat
+    interval, as their repeats went); Home and End, which reach an
+    edge, do not. The compositor keeps which keys are down on each
+    seat, and when, since the input passes through it (above): a key
+    coming up or the window losing the keyboard stops the scroll from
+    where the last frame showed it, slowing to rest within 60 ms (a
+    third of the way the speed would go: 20 px at 1000 px/s, half a
+    line, so it stops where it was let go without a cut); the
+    content's end stops it there, clamped, without passing it; pointer
+    scroll input, touchpad holds and pinches, `scroll_to`, flings, and
+    other requests stop it as they stop a glide (a smooth request goes
+    on from its speed). While a key scrolls on, the compositor drops
+    its repeats, so neither siv's key handling nor the application's
+    handlers see them; a key already up when its `scroll_hold` arrives
+    gets the step alone. So a stalled UI thread neither delays the
+    stop nor lets the scroll run on past the release, as D8 requires.
+    Applications ask for the same for their own keys with
+    `siv_scroll_while_held` (D47). Under reduced motion (D29) keys stay
+    as they were: each press and repeat jumps a step, at the desktop's
+    repeat timing, which the user controls; scrolling on by itself is
+    motion that setting asks against. Desktops that turn repeat off
+    (rate 0) get the step alone, as their repeats did. Measured on
+    headless sway at 60 Hz (holding Down 2.5 s with wtype, recorded
+    with wf-recorder, offsets per frame): before, the step's 7 frames,
+    then 29 frames without motion; after, the step's 7 frames, one
+    frame at rest, 6 frames speeding up, then 16 to 17 px every frame
+    until the release, then 12, 6, and 2 px. Tests:
+    `src/compositor/tree.zig` (only the step until the delay, the
+    speed building without overshoot, a steady 16.7 px a frame, the
+    stop's distance and its slowing, a tap, the content's end, a wheel
+    taking over); `src/compositor/tests.zig` (on the headless backend:
+    a held key scrolls on, its repeats are dropped and another key's
+    are not, release and keyboard leave stop it, a key already up gets
+    the step); `test/abi/input.zig` (Down and the application's j
+    through `siv_scroll_while_held`: scroll on while down, no repeats
+    delivered, stop on release; reduced motion steps per repeat).
+    Alternatives: the repeats themselves with a shorter delay (the
+    delay and rate are the user's, and other applications keep them);
+    the UI thread timing the delay and sending start and stop (a
+    stalled UI thread would let it run to the end); smoothstep in
+    speed from rest (two frames all but still between the step and the
+    motion); stopping dead on release (a 17 px-a-frame cut) or gliding
+    the 120 ms of a step (40 px past the release).
   - Measured (`zig build bench-latency` and `zig build bench-pacing`, 60
     Hz): on headless, key-to-photon with the
     compositor thread has a median of 7 ms against 7.6 ms rendering on the
@@ -9395,7 +9450,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     that one is heading: three lines are three lines however fast they
     come. The viewport handler hears the target at the next frame, as
     before, then the offsets on the way as the compositor reports them
-    (as for any scrolling it does), ending on the target. A `siv_scroll_to` replaces requests on the node
+    (as for any scrolling it does), ending on the target.
+    `siv_scroll_while_held` is `siv_scroll_by` for the press of a key
+    the application binds to scrolling (parcel's j and k, Space in its
+    reader), named by the keycode of its press event: the node scrolls
+    on while the key stays down, as the arrow keys do (D8), and the
+    key's repeats are not delivered meanwhile. The application calls it
+    for the key's press and repeats alike; repeats reach it only under
+    reduced motion, where each jumps a step. A `siv_scroll_to` replaces requests on the node
     queued before it (`Scroll.sets`), so the transaction's order holds;
     an aborted transaction drops its requests. With these, an
     application keeps no copy of the offset, and neither a drag, a
@@ -9491,6 +9553,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   them); a `content` unit for scroll_by whose ±1 reaches an edge
   (clever, less clear than an edge); scrolling these immediately in the
   transaction (pages, edges, and new nodes need the layout it makes).
+  For keys held: the key taken from the key event being dispatched
+  (no argument to get wrong, but a transaction made outside the handler
+  would lose it, and a call is clearer about which key it waits for);
+  `siv_scroll_by` holding on whenever called from a key press (every
+  application at once, including keys that scroll by once on purpose
+  or check `repeat`); start and stop calls with a speed (the
+  application would have to stop it on release and focus loss itself,
+  and a busy UI thread would stop it late).
 - **Reverse if:** GNOME moves away from overlay scrolling; touch users
   need thicker bars (then a touch size, as libadwaita has none); or
   applications need to hide bars per node (then a bit of

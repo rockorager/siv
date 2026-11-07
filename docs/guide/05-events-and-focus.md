@@ -230,7 +230,11 @@ The node owns its position: to scroll from your own keys, use
 bottom, start, or end), and `siv_scroll_into_view` (a node, which may be
 new in the transaction). They go from wherever the node is when the
 frame applies them, so the wheel, a scrollbar drag, and assistive
-technology are never undone, and you keep no offset of your own.
+technology are never undone, and you keep no offset of your own. For a
+key that scrolls, such as j or Space, call `siv_scroll_while_held` with
+the event's keycode instead of `siv_scroll_by`: a tap moves one step,
+and held, the node scrolls on smoothly until the key comes up, as the
+arrow keys do.
 `siv_scroll_to` sets an offset, such as one saved; the viewport event
 reports where the node is, for virtualized content (see
 [Lists, tables, and trees](08-lists-and-tables.md)).

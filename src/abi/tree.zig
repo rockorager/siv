@@ -1135,6 +1135,16 @@ pub export fn siv_scroll_by(txn: t.Txn, node: t.Node, unit: t.ScrollUnit, x: f32
     }.f, .{ node, unit, x, y });
 }
 
+pub export fn siv_scroll_while_held(txn: t.Txn, node: t.Node, keycode: u32, unit: t.ScrollUnit, x: f32, y: f32) void {
+    _ = run(txn, struct {
+        fn f(w: *Window, n: t.Node, k: u32, u: t.ScrollUnit, dx: f32, dy: f32) Error!void {
+            const id = try nodeIn(w, n);
+            if (w.uiWin().node(id).kind != .scroll) return error.InvalidArgument;
+            w.txn.ut.scrollWhileHeld(id, k, try uiEnum(ui.ScrollUnit, u), .{ .x = dx, .y = dy }) catch |err| return mapTxn(err);
+        }
+    }.f, .{ node, keycode, unit, x, y });
+}
+
 pub export fn siv_scroll_to_edge(txn: t.Txn, node: t.Node, edge: t.ScrollEdge) void {
     _ = run(txn, struct {
         fn f(w: *Window, n: t.Node, e: t.ScrollEdge) Error!void {

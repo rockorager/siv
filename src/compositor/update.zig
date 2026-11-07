@@ -464,11 +464,20 @@ pub const Op = union(enum) {
     /// Moves a scroll container's offset by `delta`, relative to wherever
     /// the compositor has it now. For scroll input the UI handled first
     /// and passes on, without racing the compositor's own scrolling.
-    /// `smooth` eases there over `anim.Glide.duration_ns` instead (keys
+    /// `smooth` eases there over `anim.Glide.default_ns` instead (keys
     /// and the application's scrolls, D47), from where a glide underway
     /// is heading, so that repeated requests add up; pointer scroll
     /// input, `scroll_to`, flings, zooms, and plain `scroll_by` stop it.
     scroll_by: struct { layer: LayerId, delta: Point, smooth: bool = false },
+    /// A key's press that scrolls (D8): `scroll_by` with `smooth`, and
+    /// while the key (`keycode` on `seat`) stays down, scrolling on
+    /// (`anim.Hold`): from `anim.Hold.delay_ns` after it went down, at
+    /// `delta` per key-repeat interval, until it comes up, the window
+    /// loses the keyboard, input or a request that stops a glide stops
+    /// it, or it reaches the content's end. The key's repeats are not
+    /// forwarded meanwhile. A key already up, or keys that do not repeat
+    /// (rate 0), get the step alone.
+    scroll_hold: struct { layer: LayerId, delta: Point, seat: platform.SeatId, keycode: u32 },
     animate: struct { layer: LayerId, animation: Animation },
     /// The UI gives up a layer and its subtree (D38): the compositor
     /// keeps drawing them where they are, without taking input over them,
@@ -546,6 +555,7 @@ pub const Op = union(enum) {
             .scroll_to => |s| s.layer != 0 and finitePoint(s.offset),
             .fling => |s| s.layer != 0 and finitePoint(s.velocity),
             .scroll_by => |s| s.layer != 0 and finitePoint(s.delta),
+            .scroll_hold => |s| s.layer != 0 and finitePoint(s.delta),
             .set_wheel_region => |s| s.layer != 0 and (s.region == null or finiteRect(s.region.?)),
             .set_blur => |s| s.layer != 0 and (s.shape == null or finiteRect(s.shape.?.rect)),
             .set_external => |s| s.layer != 0 and (s.external == null or (s.external.?.id != 0 and finiteRect(s.external.?.rect) and (s.external.?.background.a == 0 or finiteRect(s.external.?.box)))),

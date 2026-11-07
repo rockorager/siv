@@ -272,6 +272,29 @@ const Seat = struct {
     pinch: ?LayerId = null,
     pinch_window: WindowId = 0,
     pinch_zoom: f32 = 1,
+    /// Keys down, and when they went down (`Op.scroll_hold`).
+    keys: [8]struct { code: u32, down_ns: u64 } = undefined,
+    keys_len: u8 = 0,
+    /// Key repeats per second (`platform.KeyRepeat`); the Wayland
+    /// backend's default until the display server says.
+    repeat_rate: u32 = 25,
+    /// The key that a `scroll_hold` scrolls with: its repeats are not
+    /// forwarded until it comes up.
+    held: ?u32 = null,
+
+    fn downSince(seat: *const Seat, code: u32) ?u64 {
+        for (seat.keys[0..seat.keys_len]) |k| if (k.code == code) return k.down_ns;
+        return null;
+    }
+
+    fn keyUp(seat: *Seat, code: u32) void {
+        for (seat.keys[0..seat.keys_len], 0..) |k, i| if (k.code == code) {
+            seat.keys[i] = seat.keys[seat.keys_len - 1];
+            seat.keys_len -= 1;
+            break;
+        };
+        if (seat.held == code) seat.held = null;
+    }
 };
 
 const Window = struct {
@@ -837,13 +860,45 @@ fn drain(self: *Compositor) void {
 
 fn applyCommit(self: *Compositor, id: WindowId, seq: u64, ops: []const Op) void {
     const w = self.getWindow(id) orelse return;
-    for (ops) |op| _ = w.tree.apply(op) catch {
-        self.outbox.push(.{ .platform = .{ .failed = error.OutOfMemory } });
-        break;
-    };
+    for (ops) |op| {
+        _ = w.tree.apply(op) catch {
+            self.outbox.push(.{ .platform = .{ .failed = error.OutOfMemory } });
+            break;
+        };
+        if (op == .scroll_hold) self.holdKey(w, op.scroll_hold) catch {
+            self.outbox.push(.{ .platform = .{ .failed = error.OutOfMemory } });
+            break;
+        };
+    }
     w.seq = seq;
     self.releaseAll(w.tree.trimRetired());
     self.want(id);
+}
+
+/// After a `scroll_hold`'s step: if its key is still down, and held keys
+/// repeat, the container scrolls on while it stays down (D8), at the
+/// step per repeat interval.
+fn holdKey(self: *Compositor, w: *Window, h: @FieldType(Op, "scroll_hold")) error{OutOfMemory}!void {
+    if (h.seat >= max_seats) return;
+    const seat = &self.seats[h.seat];
+    const down_ns = seat.downSince(h.keycode) orelse return;
+    if (seat.repeat_rate == 0) return;
+    const rate: f32 = @floatFromInt(seat.repeat_rate);
+    if (!try w.tree.holdKey(h.layer, .{
+        .seat = h.seat,
+        .keycode = h.keycode,
+        .velocity = h.delta.scale(rate),
+        .begin_ns = down_ns + anim.Hold.delay_ns,
+    })) return;
+    seat.held = h.keycode;
+}
+
+/// A key came up, or every key on the seat (null) when a window lost the
+/// keyboard: what it held on scrolling stops.
+fn releaseKey(self: *Compositor, seat: platform_mod.SeatId, keycode: ?u32) void {
+    for (self.windows.items) |slot| if (slot) |w| {
+        if (w.tree.releaseKey(seat, keycode)) self.want(w.id);
+    };
 }
 
 // Windows -------------------------------------------------------------------
@@ -1189,6 +1244,30 @@ fn handlePlatformEvent(self: *Compositor, ev: *const platform_mod.Event) void {
         },
         .modifiers => |m| if (m.seat < max_seats) {
             self.seats[m.seat].mods = m.mods;
+        },
+        // Which keys are down, for `scroll_hold`, whose key's repeats go
+        // no further.
+        .key => |k| if (k.seat < max_seats) {
+            const seat = &self.seats[k.seat];
+            switch (k.state) {
+                .repeated => if (seat.held == k.keycode) return,
+                .pressed => if (seat.downSince(k.keycode) == null and seat.keys_len < seat.keys.len) {
+                    seat.keys[seat.keys_len] = .{ .code = k.keycode, .down_ns = Loop.now() };
+                    seat.keys_len += 1;
+                },
+                .released => {
+                    seat.keyUp(k.keycode);
+                    self.releaseKey(k.seat, k.keycode);
+                },
+            }
+        },
+        .keyboard_leave => |f| if (f.seat < max_seats) {
+            self.seats[f.seat].keys_len = 0;
+            self.seats[f.seat].held = null;
+            self.releaseKey(f.seat, null);
+        },
+        .key_repeat => |r| if (r.seat < max_seats) {
+            self.seats[r.seat].repeat_rate = r.rate;
         },
         .scroll => |s| if (self.scroll(s)) return,
         .gesture => |g| if (self.routeGesture(g)) return,

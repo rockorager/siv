@@ -262,12 +262,13 @@ test "keys and the application's scrolls glide to where they head and add up; re
         try ok(c.siv_node_focus(first));
         try h.settle();
 
-        const Step = union(enum) { by: struct { t.ScrollUnit, f32 }, edge: t.ScrollEdge, key: t.Key };
+        const Step = union(enum) { by: struct { t.ScrollUnit, f32 }, held: struct { t.ScrollUnit, f32 }, edge: t.ScrollEdge, key: t.Key };
         // A request, how many of it at once, and where they end up.
         const steps = [_]struct { Step, u32, f32 }{
             .{ .{ .by = .{ .line, 1 } }, 1, 40 },
             .{ .{ .by = .{ .line, 1 } }, 3, 160 }, // in one transaction
             .{ .{ .by = .{ .page, 1 } }, 1, 250 },
+            .{ .{ .held = .{ .line, 1 } }, 1, 290 }, // a key that is not down
             .{ .{ .edge = .bottom }, 1, 4900 },
             .{ .{ .by = .{ .pixel, -4000 } }, 1, 900 },
             .{ .{ .key = .up }, 1, 860 },
@@ -287,6 +288,7 @@ test "keys and the application's scrolls glide to where they head and add up; re
                     try ok(c.siv_txn_begin(h.window, &txn));
                     for (0..step[1]) |_| switch (step[0]) {
                         .by => |b| c.siv_scroll_by(txn, sc, b[0], 0, b[1]),
+                        .held => |b| c.siv_scroll_while_held(txn, sc, 0, b[0], 0, b[1]),
                         .edge => |e| c.siv_scroll_to_edge(txn, sc, e),
                         .key => unreachable,
                     };
@@ -324,6 +326,99 @@ test "keys and the application's scrolls glide to where they head and add up; re
         try ok(c.siv_txn_commit(txn));
         try h.settle();
         try testing.expectEqual(@as(f32, 80), heard.last());
+    }
+}
+
+/// The application's j: siv_scroll_while_held for its presses and
+/// repeats.
+const Reader = struct {
+    sc: t.Node = .null,
+    presses: usize = 0,
+    repeats: usize = 0,
+
+    const j = 44; // KEY_J is evdev 36
+
+    fn on(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
+        const r: *Reader = @ptrCast(@alignCast(ud.?));
+        if (ev.keycode != j or !ev.flags.pressed) return .pass;
+        if (ev.flags.repeat) r.repeats += 1 else r.presses += 1;
+        var txn: t.Txn = .null;
+        if (c.siv_txn_begin(ev.window, &txn) != .ok) return .pass;
+        c.siv_scroll_while_held(txn, r.sc, ev.keycode, .line, 0, 1);
+        _ = c.siv_txn_commit(txn);
+        return .handled;
+    }
+};
+
+test "held keys scroll on until they come up, the arrows and the application's own, without their repeats; reduced motion steps per repeat" {
+    for ([_]bool{ false, true }) |reduced| {
+        var h: Harness = .{ .reduced_motion = reduced };
+        try h.start(200, 100, null, null);
+        defer h.stop();
+        var heard: Heard = .{};
+        var reader: Reader = .{};
+        const root = c.siv_window_get_root(h.window);
+        var txn: t.Txn = .null;
+        try ok(c.siv_txn_begin(h.window, &txn));
+        const sc = c.siv_scroll(txn, root, .vertical);
+        reader.sc = sc;
+        c.siv_set_layout(txn, sc, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(200), .height = px(100) });
+        c.siv_on(txn, sc, .viewport, Heard.on, null, &heard);
+        c.siv_on(txn, sc, .key, Reader.on, null, &reader);
+        const column = c.siv_box(txn, sc);
+        // 5000 px of content, 4900 of offset; keys go to the first block.
+        var first: t.Node = .null;
+        for (0..100) |i| {
+            const b = c.siv_box(txn, column);
+            c.siv_set_layout(txn, b, &.{ .size = @sizeOf(t.LayoutDesc), .height = px(50) });
+            if (i == 0) {
+                c.siv_set_semantics(txn, b, &.{ .size = @sizeOf(t.SemanticsDesc), .flags = .{ .focusable = true } });
+                first = b;
+            }
+        }
+        try ok(c.siv_txn_commit(txn));
+        try h.settle();
+        try ok(c.siv_node_focus(first));
+        try h.settle();
+        const id = (try h.win()).win.id;
+
+        var from: f32 = 0;
+        // Down (KEY_DOWN is evdev 108), then j.
+        for ([_][2]u32{ .{ 116, 0xff54 }, .{ Reader.j, 'j' } }) |k| {
+            const down: platform.Key = .{ .window = id, .seat = 0, .keycode = k[0], .keysym = k[1], .state = .pressed, .mods = .{}, .time = 1, .serial = 1 };
+            var repeat = down;
+            repeat.state = .repeated;
+            var up = down;
+            up.state = .released;
+            try h.inject(&.{.{ .key = down }});
+            if (reduced) {
+                // A line at the press and at each repeat, at once.
+                try h.settle();
+                try testing.expectEqual(from + 40, heard.last());
+                try h.inject(&.{.{ .key = repeat }});
+                try h.settle();
+                try testing.expectEqual(from + 80, heard.last());
+                try h.inject(&.{.{ .key = up }});
+                try h.settle();
+                from += 80;
+                continue;
+            }
+            // The headless seat does not repeat: past the press's line,
+            // the node scrolls on by itself while the key is down.
+            const deadline = std.time.ns_per_s * 5 + @import("loop").Loop.now();
+            while (heard.n == 0 or heard.last() < from + 300) {
+                if (@import("loop").Loop.now() > deadline) return error.Timeout;
+                try ok(c.siv_app_dispatch(h.app, 2));
+            }
+            // Its repeats are not delivered; up, it stops short of the end.
+            try h.inject(&.{ .{ .key = repeat }, .{ .key = up } });
+            try h.settle();
+            const stopped = heard.last();
+            try testing.expect(stopped > from + 300 and stopped < 4900);
+            from = stopped;
+        }
+        try testing.expectEqual(@as(usize, 1), reader.presses);
+        try testing.expectEqual(@as(usize, if (reduced) 1 else 0), reader.repeats);
     }
 }
 

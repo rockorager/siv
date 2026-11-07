@@ -840,7 +840,11 @@ fn key(win: *Window, k: *const platform.Key) void {
                 else => unreachable,
             };
             if (delta.eql(.zero)) return;
-            win.paint.scroll_by.append(win.gpa, .{ .node = s, .delta = delta, .smooth = !win.reducedMotion() }) catch return;
+            // A press of a key that steps scrolls on while it stays down
+            // (D8); Home and End have nowhere further to go.
+            const steps = k.keysym != keysym.home and k.keysym != keysym.end;
+            const held: ?node_mod.HeldKey = if (steps and k.state == .pressed) .{ .seat = k.seat, .keycode = k.keycode } else null;
+            win.paint.scroll_by.append(win.gpa, .{ .node = s, .delta = delta, .smooth = !win.reducedMotion(), .key = held }) catch return;
             win.dirty.props = true;
             win.requestFrame();
         },
@@ -908,6 +912,7 @@ pub fn applyScrollRequests(win: *Window) error{OutOfMemory}!void {
                 // Physical: x grows rightward whatever the direction.
                 var to = off;
                 var push: Point = .zero;
+                var held: ?node_mod.HeldKey = null;
                 switch (r.what) {
                     .by => |b| {
                         const v = win.viewportOf(r.node);
@@ -918,6 +923,7 @@ pub fn applyScrollRequests(win: *Window) error{OutOfMemory}!void {
                         };
                         to.x += b.amount.x * k.x * @as(f32, if (rtl) -1 else 1);
                         to.y += b.amount.y * k.y;
+                        held = b.key;
                     },
                     .edge => |e| {
                         switch (e) {
@@ -931,7 +937,7 @@ pub fn applyScrollRequests(win: *Window) error{OutOfMemory}!void {
                     },
                     .into_view => unreachable,
                 }
-                try scrollFor(win, r.node, to, max, push);
+                try scrollFor(win, r.node, to, max, push, held);
             },
         }
     }
@@ -970,7 +976,7 @@ fn scrollIntoView(win: *Window, id: NodeId, a: node_mod.ScrollAlign) error{OutOf
         };
         if (axis != .vertical) to.x += alignDelta(r.x0, r.x1, view.x0, view.x1, ax, s.rtl) / k;
         if (axis != .horizontal) to.y += alignDelta(r.y0, r.y1, view.y0, view.y1, a, false) / k;
-        try scrollFor(win, sc, to, max, .zero);
+        try scrollFor(win, sc, to, max, .zero, null);
     }
 }
 
@@ -998,8 +1004,8 @@ fn alignDelta(r0: f32, r1: f32, v0: f32, v1: f32, a: node_mod.ScrollAlign, rever
 /// or by `scroll_to` when one goes out anyway or the node has no layer
 /// yet. `push` (-1, 0, or 1 per axis) overshoots toward an edge by the
 /// whole extent, so that the compositor reaches the edge from wherever
-/// it has the offset.
-fn scrollFor(win: *Window, id: NodeId, to: Point, max: Point, push: Point) error{OutOfMemory}!void {
+/// it has the offset. `held` scrolls on while that key stays down (D8).
+fn scrollFor(win: *Window, id: NodeId, to: Point, max: Point, push: Point, held: ?node_mod.HeldKey) error{OutOfMemory}!void {
     const off = paint.scrollTranslation(win, id);
     const n = win.node(id);
     const s = win.state(id);
@@ -1028,8 +1034,14 @@ fn scrollFor(win: *Window, id: NodeId, to: Point, max: Point, push: Point) error
     }
     // Up goes before the content's new extent, which may clamp it; down
     // after, which may make room for it.
-    // The compositor glides there (D47), unless motion is reduced.
+    // The compositor glides there (D47), unless motion is reduced. A
+    // key's scroll stays one request, so that it holds on along both
+    // axes.
     const smooth = !win.reducedMotion();
+    if (held != null and smooth) {
+        win.paint.scroll_by.appendAssumeCapacity(.{ .node = id, .delta = d, .early = d.x < 0 or d.y < 0, .smooth = true, .key = held });
+        return;
+    }
     if (d.x != 0) win.paint.scroll_by.appendAssumeCapacity(.{ .node = id, .delta = .{ .x = d.x, .y = 0 }, .early = d.x < 0, .smooth = smooth });
     if (d.y != 0) win.paint.scroll_by.appendAssumeCapacity(.{ .node = id, .delta = .{ .x = 0, .y = d.y }, .early = d.y < 0, .smooth = smooth });
 }

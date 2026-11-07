@@ -272,48 +272,62 @@ pub const Glide = struct {
     /// 0 until the first sample.
     start_ns: u64 = 0,
     last_ns: u64 = 0,
+    duration_ns: u64 = default_ns,
 
-    pub const duration_ns: u64 = 120 * std.time.ns_per_ms;
+    pub const default_ns: u64 = 120 * std.time.ns_per_ms;
 
     pub fn sample(g: *Glide, t_ns: u64) struct { offset: Point, done: bool } {
         if (g.start_ns == 0) g.start_ns = t_ns;
         g.last_ns = @max(g.last_ns, t_ns);
-        if (t_ns -| g.start_ns >= duration_ns) return .{ .offset = g.to, .done = true };
+        if (t_ns -| g.start_ns >= g.duration_ns) return .{ .offset = g.to, .done = true };
         return .{ .offset = g.at(t_ns).offset, .done = false };
     }
 
     /// Heads for `to` instead, from `offset` (where the last sample left
-    /// it) at the speed it moves there.
+    /// it) at the speed it moves there, taking `default_ns`.
     pub fn retarget(g: *Glide, offset: Point, to: Point) void {
         if (g.start_ns == 0) {
             g.from = offset;
             g.to = to;
             return;
         }
-        const v = g.at(g.last_ns).velocity;
-        g.* = .{
-            .from = offset,
-            .to = to,
-            .velocity = .{ .x = cap(v.x, to.x - offset.x), .y = cap(v.y, to.y - offset.y) },
-            .start_ns = g.last_ns,
-            .last_ns = g.last_ns,
-        };
+        g.* = .moving(offset, to, g.velocityNow(), g.last_ns, default_ns);
+    }
+
+    /// From `from` at `t_ns`, moving at `velocity` (capped so that it
+    /// does not pass `to`), to `to` in `duration_ns`.
+    pub fn moving(from: Point, to: Point, velocity: Point, t_ns: u64, duration_ns: u64) Glide {
+        var g: Glide = .{ .from = from, .to = to, .start_ns = t_ns, .last_ns = t_ns, .duration_ns = duration_ns };
+        g.velocity = g.capped(velocity);
+        return g;
+    }
+
+    /// The velocity at the last sample; zero before the first.
+    pub fn velocityNow(g: *const Glide) Point {
+        if (g.start_ns == 0) return .zero;
+        return g.at(g.last_ns).velocity;
     }
 
     /// A cubic that arrives at rest overshoots its target when it starts
     /// toward it faster than three times the average speed; moving away
     /// from it, it turns back.
-    fn cap(v: f32, d: f32) f32 {
-        const most = 3 * d / seconds(duration_ns);
-        if (d == 0) return 0;
-        if (d > 0 and v > most) return most;
-        if (d < 0 and v < most) return most;
-        return v;
+    fn capped(g: *const Glide, v: Point) Point {
+        const f = struct {
+            fn f(span: f32, x: f32, d: f32) f32 {
+                const most = 3 * d / span;
+                if (d == 0) return 0;
+                if (d > 0 and x > most) return most;
+                if (d < 0 and x < most) return most;
+                return x;
+            }
+        }.f;
+        const span = seconds(g.duration_ns);
+        return .{ .x = f(span, v.x, g.to.x - g.from.x), .y = f(span, v.y, g.to.y - g.from.y) };
     }
 
     /// Hermite interpolation from `from` at `velocity` to `to` at rest.
     fn at(g: *const Glide, t_ns: u64) struct { offset: Point, velocity: Point } {
-        const span = seconds(duration_ns);
+        const span = seconds(g.duration_ns);
         const s = @min(seconds(t_ns -| g.start_ns) / span, 1);
         const h00 = (2 * s - 3) * s * s + 1;
         const h10 = ((s - 2) * s + 1) * s * span;
@@ -329,6 +343,79 @@ pub const Glide = struct {
             .offset = .{ .x = f(g.from.x, g.velocity.x, g.to.x, h00, h10, h01), .y = f(g.from.y, g.velocity.y, g.to.y, h00, h10, h01) },
             .velocity = .{ .x = f(g.from.x, g.velocity.x, g.to.x, -d01, d10, d01), .y = f(g.from.y, g.velocity.y, g.to.y, -d01, d10, d01) },
         };
+    }
+};
+
+/// Scrolling while a key stays down (`Op.scroll_hold`, D8): from
+/// `begin_ns`, `delay_ns` after the key went down, the offset speeds up
+/// from the speed it had to `velocity` over `ramp_ns` and goes on at that speed until the key comes up (`stop`).
+pub const Hold = struct {
+    seat: u32,
+    keycode: u32,
+    /// Logical pixels per second, once up to speed.
+    velocity: Point,
+    begin_ns: u64,
+    /// Set by `start`, at the first frame from `begin_ns`.
+    started: bool = false,
+    start_ns: u64 = 0,
+    from: Point = .zero,
+    initial: Point = .zero,
+    last_ns: u64 = 0,
+
+    /// How long a key stays down before it scrolls on: longer than a
+    /// tap, which keeps its single step.
+    pub const delay_ns: u64 = 150 * std.time.ns_per_ms;
+    pub const ramp_ns: u64 = 100 * std.time.ns_per_ms;
+    /// How long it takes to stop once the key comes up.
+    pub const stop_ns: u64 = 60 * std.time.ns_per_ms;
+
+    /// Starts moving at `t_ns` from `offset` at `velocity`.
+    pub fn start(h: *Hold, t_ns: u64, offset: Point, velocity: Point) void {
+        h.started = true;
+        h.start_ns = t_ns;
+        h.last_ns = t_ns;
+        h.from = offset;
+        h.initial = velocity;
+    }
+
+    pub fn sample(h: *Hold, t_ns: u64) Point {
+        h.last_ns = @max(h.last_ns, t_ns);
+        return h.at(t_ns).offset;
+    }
+
+    /// The velocity at the last sample.
+    pub fn velocityNow(h: *const Hold) Point {
+        return h.at(h.last_ns).velocity;
+    }
+
+    /// The glide that stops it from `offset`, where the last sample left
+    /// it: at rest within `stop_ns`, slowing all the way (a third of the
+    /// way a constant speed would go, so its curve never speeds up), and
+    /// no further than the content's end, `max` (the largest offset).
+    pub fn stop(h: *const Hold, offset: Point, max: Point) Glide {
+        const v = h.velocityNow();
+        const to = offset.add(v.scale(seconds(stop_ns) / 3));
+        const end: Point = .{ .x = std.math.clamp(to.x, 0, max.x), .y = std.math.clamp(to.y, 0, max.y) };
+        return .moving(offset, end, v, h.last_ns, stop_ns);
+    }
+
+    fn at(h: *const Hold, t_ns: u64) struct { offset: Point, velocity: Point } {
+        const ramp = seconds(ramp_ns);
+        const tau = seconds(t_ns -| h.start_ns);
+        const x = tau / ramp;
+        // The speed eases out from `initial` to `velocity`, 2x - x², so
+        // that it gets going at once after the press's step came to rest;
+        // its integral is x² - x³/3 (in ramps). Then the full speed.
+        const r = if (x < 1) (2 - x) * x else 1;
+        const g = if (x < 1) x * x * (1 - x / 3) else x - 1.0 / 3.0;
+        const f = struct {
+            fn f(a: f32, u: f32, v: f32, t: f32, sg: f32, sr: f32, span: f32) [2]f32 {
+                return .{ a + u * t + (v - u) * span * sg, u + (v - u) * sr };
+            }
+        }.f;
+        const px = f(h.from.x, h.initial.x, h.velocity.x, tau, g, r, ramp);
+        const py = f(h.from.y, h.initial.y, h.velocity.y, tau, g, r, ramp);
+        return .{ .offset = .{ .x = px[0], .y = py[0] }, .velocity = .{ .x = px[1], .y = py[1] } };
     }
 };
 

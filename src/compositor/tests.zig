@@ -434,6 +434,125 @@ test "smooth scroll_by glides to its target, adding up requests; pointer scroll 
     try testing.expectEqual(held, h.last(.scrolled).?.scrolled.offset.y);
 }
 
+test "a key still down after its scroll_hold's delay scrolls on until it comes up or the window loses the keyboard; its repeats stay here" {
+    var h: Harness = .{};
+    try h.start(false);
+    defer h.stop();
+    const id = try h.window();
+    // 4960 px of offset.
+    _ = try h.comp.commit(id, &.{
+        .{ .create = 2 },
+        .{ .create = 3 },
+        .{ .insert = .{ .layer = 2, .parent = 1 } },
+        .{ .insert = .{ .layer = 3, .parent = 2 } },
+        .{ .set_scroll = .{ .layer = 2, .scroll = .{ .viewport = .xywh(0, 0, 100, 40), .content = .{ .width = 100, .height = 5000 } } } },
+        .{ .set_content = .{ .layer = 3, .content = try h.rect(.xywh(0, 0, 100, 5000), blue) } },
+    });
+    const hl = h.headless();
+    const down: platform.Key = .{ .window = id, .seat = 0, .keycode = 116, .keysym = 0xff54, .state = .pressed, .mods = .{}, .time = 0, .serial = 1 };
+    var repeat = down;
+    repeat.state = .repeated;
+    var up = down;
+    up.state = .released;
+    const press: Op = .{ .scroll_hold = .{ .layer = 2, .delta = .{ .x = 0, .y = 40 }, .seat = 0, .keycode = 116 } };
+    const Offset = struct {
+        fn y(x: *const Harness) f32 {
+            return if (x.last(.scrolled)) |e| e.scrolled.offset.y else 0;
+        }
+        fn idle(x: *Harness) bool {
+            return !x.comp.owesFrames(false);
+        }
+        fn keys(x: *const Harness, state: platform.Key.State) usize {
+            var n: usize = 0;
+            for (x.events.items) |e| if (e == .platform and e.platform == .key and e.platform.key.state == state) {
+                n += 1;
+            };
+            return n;
+        }
+    };
+
+    // Held, the press's 40 px go on (the headless seat does not repeat).
+    hl.inject(.{ .key = down });
+    try h.run(&h, struct {
+        fn f(x: *Harness) bool {
+            return Offset.keys(x, .pressed) == 1;
+        }
+    }.f);
+    _ = try h.comp.commit(id, &.{press});
+    try h.run(&h, struct {
+        fn f(x: *Harness) bool {
+            return Offset.y(x) > 200;
+        }
+    }.f);
+    // Its repeats go no further; others' do.
+    hl.inject(.{ .key = repeat });
+    var other = repeat;
+    other.keycode = 117;
+    hl.inject(.{ .key = other });
+    try h.run(&h, struct {
+        fn f(x: *Harness) bool {
+            return Offset.keys(x, .repeated) > 0;
+        }
+    }.f);
+    try testing.expectEqual(@as(usize, 1), Offset.keys(&h, .repeated));
+    try testing.expectEqual(@as(u32, 117), h.last(.platform).?.platform.key.keycode);
+    // Up, it stops within the next few frames, and stays.
+    hl.inject(.{ .key = up });
+    try h.run(&h, Offset.idle);
+    const stopped = Offset.y(&h);
+    try testing.expect(stopped < 4960);
+    try h.runMs(100);
+    try testing.expectEqual(stopped, Offset.y(&h));
+    try testing.expectEqual(@as(usize, 1), Offset.keys(&h, .released));
+    // Repeats pass again.
+    hl.inject(.{ .key = repeat });
+    try h.run(&h, struct {
+        fn f(x: *Harness) bool {
+            return Offset.keys(x, .repeated) == 2;
+        }
+    }.f);
+
+    // A key already up when the step applies moves the step alone.
+    hl.inject(.{ .key = down });
+    hl.inject(.{ .key = up });
+    try h.run(&h, struct {
+        fn f(x: *Harness) bool {
+            return Offset.keys(x, .released) == 2;
+        }
+    }.f);
+    _ = try h.comp.commit(id, &.{press});
+    try h.comp.call(null, struct {
+        fn f(_: ?*anyopaque, _: *Compositor) void {}
+    }.f);
+    try h.run(&h, Offset.idle);
+    try h.runMs(200);
+    try testing.expectEqual(stopped + 40, Offset.y(&h));
+
+    // Losing the keyboard stops it as the key coming up does.
+    hl.inject(.{ .key = down });
+    try h.run(&h, struct {
+        fn f(x: *Harness) bool {
+            return Offset.keys(x, .pressed) == 3;
+        }
+    }.f);
+    _ = try h.comp.commit(id, &.{press});
+    const from = stopped + 40;
+    const Ctx = struct {
+        h: *Harness,
+        from: f32,
+        fn f(c: @This()) bool {
+            return Offset.y(c.h) > c.from + 200;
+        }
+    };
+    try h.run(Ctx{ .h = &h, .from = from }, Ctx.f);
+    hl.inject(.{ .keyboard_leave = .{ .window = id, .seat = 0, .serial = 2 } });
+    try h.run(&h, Offset.idle);
+    const left = Offset.y(&h);
+    try h.runMs(100);
+    try testing.expectEqual(left, Offset.y(&h));
+    try testing.expect(left < 4960);
+}
+
 test "pinches zoom containers in the compositor unless the UI wants them; holds stop flings" {
     var h: Harness = .{};
     try h.start(false);

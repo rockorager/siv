@@ -623,12 +623,17 @@ pub const ScrollRequest = struct {
     /// application set replaces the request.
     sets: u32 = 0,
     what: union(enum) {
-        /// Logical: x grows toward the end edge, in `unit`s.
-        by: struct { unit: ScrollUnit, amount: Point },
+        /// Logical: x grows toward the end edge, in `unit`s. With `key`,
+        /// for that key's press: the node scrolls on while it stays down
+        /// (`paint.ScrollBy.key`).
+        by: struct { unit: ScrollUnit, amount: Point, key: ?HeldKey = null },
         edge: ScrollEdge,
         into_view: ScrollAlign,
     },
 };
+
+/// A key on a seat, by its keycode.
+pub const HeldKey = struct { seat: u32, keycode: u32 };
 
 pub const ScrollUnit = enum(u8) {
     pixel,

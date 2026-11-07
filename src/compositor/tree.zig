@@ -72,6 +72,8 @@ pub const Layer = struct {
     fling: ?anim.Fling = null,
     /// Smooth scrolling toward a target (`Op.scroll_by` with `smooth`).
     glide: ?anim.Glide = null,
+    /// Scrolling on while a key stays down (`Op.scroll_hold`).
+    hold: ?anim.Hold = null,
     animated: bool = false,
     scrolled: bool = false,
     /// Shown while its animation runs (`update.Value.reveal`).
@@ -94,7 +96,7 @@ pub const Layer = struct {
     bar_busy: bool = false,
 
     fn animating(l: *const Layer) bool {
-        if (l.fling != null or l.glide != null or l.bar_busy) return true;
+        if (l.fling != null or l.glide != null or l.hold != null or l.bar_busy) return true;
         for (l.anims) |a| if (a != null) return true;
         return false;
     }
@@ -375,6 +377,13 @@ pub const Tree = struct {
                 if (l.scroll == null) return t.reject(op, "not a scroll container");
                 _ = try if (s.smooth) t.glideBy(s.layer, s.delta) else t.scrollBy(s.layer, s.delta);
             },
+            // The step; the compositor, which knows which keys are down,
+            // adds the hold (`holdKey`).
+            .scroll_hold => |s| {
+                const l = t.get(s.layer) orelse return t.reject(op, "no such layer");
+                if (l.scroll == null) return t.reject(op, "not a scroll container");
+                _ = try t.glideBy(s.layer, s.delta);
+            },
             .fling => |s| {
                 if (!try t.startFling(s.layer, s.velocity)) return t.reject(op, "not a scroll container");
             },
@@ -397,6 +406,7 @@ pub const Tree = struct {
                     if (l.scroll == null) return t.reject(op, "not a scroll container");
                     l.fling = null;
                     l.glide = null;
+                    l.hold = null;
                 }
                 var r: anim.Running = .init(s.animation);
                 // A reveal continues from the one shown (D38).
@@ -563,12 +573,13 @@ pub const Tree = struct {
         if (report) try t.markScrolled(id);
     }
 
-    /// Stops every fling and glide in the tree: fingers came to rest on
-    /// a touchpad (a hold gesture).
+    /// Stops every fling, glide, and held key's scrolling in the tree:
+    /// fingers came to rest on a touchpad (a hold gesture).
     pub fn stopFlings(t: *Tree) void {
         for (t.animated.items) |id| {
             t.layers.items[id].fling = null;
             t.layers.items[id].glide = null;
+            t.layers.items[id].hold = null;
         }
     }
 
@@ -587,8 +598,8 @@ pub const Tree = struct {
         return inv.apply(p);
     }
 
-    /// Stops a container's fling, glide, and scroll animation, as input
-    /// does.
+    /// Stops a container's fling, glide, held key's scrolling, and scroll
+    /// animation, as input does.
     pub fn stopLayer(t: *Tree, id: LayerId) void {
         if (t.get(id)) |l| t.stopScrolling(l);
     }
@@ -597,6 +608,7 @@ pub const Tree = struct {
         _ = t;
         l.fling = null;
         l.glide = null;
+        l.hold = null;
         l.anims[@intFromEnum(Property.scroll)] = null;
     }
 
@@ -622,6 +634,7 @@ pub const Tree = struct {
         if (l.scroll == null) return false;
         l.anims[@intFromEnum(Property.scroll)] = null;
         l.glide = null;
+        l.hold = null;
         l.fling = .{ .start = l.offset, .velocity = velocity };
         try t.markAnimated(id);
         return true;
@@ -630,21 +643,53 @@ pub const Tree = struct {
     /// Glides the offset by `delta` (keys and the application's scrolls,
     /// D47): from where a glide underway is heading, or else from the
     /// offset, to there plus `delta`, clamped to the content. Stops a
-    /// fling or scroll animation. Returns whether it has somewhere to go.
+    /// fling, a held key's scrolling (going on at its speed), or a scroll
+    /// animation. Returns whether it has somewhere to go.
     pub fn glideBy(t: *Tree, id: LayerId, delta: Point) Allocator.Error!bool {
         const l = t.get(id) orelse return false;
         const s = l.scroll orelse return false;
         l.fling = null;
         l.anims[@intFromEnum(Property.scroll)] = null;
+        const hold = l.hold;
+        l.hold = null;
         const to = clampOffset(s, l.zoom, (if (l.glide) |g| g.to else l.offset).add(delta));
         if (l.glide) |*g| {
             g.retarget(l.offset, to);
+        } else if (hold != null and hold.?.started) {
+            l.glide = .moving(l.offset, to, hold.?.velocityNow(), hold.?.last_ns, anim.Glide.default_ns);
         } else {
             if (to.eql(l.offset)) return false;
             l.glide = .{ .from = l.offset, .to = to };
         }
         try t.markAnimated(id);
         return true;
+    }
+
+    /// Scrolls a container on while a key stays down (`Op.scroll_hold`),
+    /// after the step its op glides. Returns whether it is a container.
+    pub fn holdKey(t: *Tree, id: LayerId, hold: anim.Hold) Allocator.Error!bool {
+        const l = t.get(id) orelse return false;
+        if (l.scroll == null) return false;
+        l.hold = hold;
+        try t.markAnimated(id);
+        return true;
+    }
+
+    /// Key `keycode` on `seat` came up, or with null the window lost the
+    /// keyboard: scrolling it held on stops, from where the last frame
+    /// showed it, within `anim.Hold.stop_ns`; one that has not started
+    /// leaves the press's step to finish. Returns whether any stopped.
+    pub fn releaseKey(t: *Tree, seat: u32, keycode: ?u32) bool {
+        var any = false;
+        for (t.animated.items) |id| {
+            const l = &t.layers.items[id];
+            const h = l.hold orelse continue;
+            if (h.seat != seat or (keycode != null and h.keycode != keycode.?)) continue;
+            if (h.started) l.glide = h.stop(l.offset, maxOffset(l.scroll.?, l.zoom));
+            l.hold = null;
+            any = true;
+        }
+        return any;
     }
 
     /// Where a pointer scroll by `delta` at `p` (window coordinates) goes,
@@ -926,6 +971,26 @@ pub const Tree = struct {
                 const s = g.sample(t_ns);
                 try t.setOffset(id, s.offset, true);
                 if (s.done) l.glide = null else {
+                    result.active = true;
+                    result.holding = true;
+                }
+            }
+            if (l.hold) |*h| {
+                // Held to the end of its delay, it takes over from the
+                // press's step, moving on at the speed that had.
+                if (!h.started and t_ns >= h.begin_ns) {
+                    h.start(h.begin_ns, l.offset, if (l.glide) |g| g.velocityNow() else .zero);
+                    l.glide = null;
+                }
+                if (h.started) {
+                    const to = h.sample(t_ns);
+                    try t.setOffset(id, to, true);
+                    // It stops at the content's end, where the offset
+                    // clamps.
+                    if (!clampOffset(l.scroll.?, l.zoom, to).eql(to)) l.hold = null;
+                }
+                // Frames go on through the delay too, whose end needs one.
+                if (l.hold != null) {
                     result.active = true;
                     result.holding = true;
                 }
@@ -1804,6 +1869,112 @@ test "smooth scrolls glide to their target, add up while they run, keep a held k
     try testing.expect(l.glide == null);
     _ = try f.tree.tick(t + 200 * ms);
     try testing.expectEqual(mid - 10, l.offset.y);
+}
+
+test "a held key's scroll goes on from its delay at a steady speed and stops on release, at the end, and for input" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const ms = std.time.ns_per_ms;
+    try f.apply(&.{
+        .{ .create = 1 },
+        .{ .create = 2 },
+        .{ .create = 3 },
+        .{ .set_root = 1 },
+        .{ .insert = .{ .layer = 2, .parent = 1 } },
+        .{ .insert = .{ .layer = 3, .parent = 2 } },
+        // 1900 px of offset.
+        .{ .set_scroll = .{ .layer = 2, .scroll = .{ .viewport = .xywh(0, 0, 100, 100), .content = .{ .width = 100, .height = 2000 } } } },
+        .{ .set_content = .{ .layer = 3, .content = try f.rect(0, .xywh(0, 0, 100, 2000)) } },
+    });
+    const l = f.tree.get(2).?;
+    const frame: u64 = 16_666_667;
+    const press: Op = .{ .scroll_hold = .{ .layer = 2, .delta = .{ .x = 0, .y = 40 }, .seat = 0, .keycode = 50 } };
+    // 40 px at 25 repeats a second, as the compositor computes it.
+    const hold = struct {
+        fn at(down_ns: u64) anim.Hold {
+            return .{ .seat = 0, .keycode = 50, .velocity = .{ .x = 0, .y = 1000 }, .begin_ns = down_ns + anim.Hold.delay_ns };
+        }
+    }.at;
+
+    // Down at 1000 ms, the press's step a frame later. Until 1150 ms
+    // only the step moves; then the speed builds to 1000 px/s, 16.7 px a
+    // frame, without a frame that goes back or overshoots.
+    try f.apply(&.{press});
+    try testing.expect(try f.tree.holdKey(2, hold(1000 * ms)));
+    var t: u64 = 1016 * ms;
+    var prev: f32 = 0;
+    while (t < 2000 * ms) : (t += frame) {
+        const tk = try f.tree.tick(t);
+        try testing.expect(tk.holding);
+        const step = l.offset.y - prev;
+        prev = l.offset.y;
+        try testing.expect(step >= 0 and step < 16.7);
+        if (t < 1150 * ms) try testing.expect(l.offset.y <= 40);
+        if (t >= 1150 * ms + anim.Hold.ramp_ns + frame) try testing.expectApproxEqAbs(@as(f32, 1000.0 / 60.0), step, 0.05);
+    }
+    // 40, then 850 ms at full speed less a third of the ramp's 100 ms.
+    const held_s: f32 = @floatCast(@as(f64, @floatFromInt(t - frame - 1150 * ms)) / std.time.ns_per_s);
+    try testing.expectApproxEqAbs(40 + 1000 * held_s - 100.0 / 3.0, l.offset.y, 0.5);
+
+    // Released: from where the last frame showed, it stops within 60 ms,
+    // slowing all the way, a third of the way the speed would go (20 px).
+    // Another key coming up changes nothing.
+    try testing.expect(!f.tree.releaseKey(0, 51));
+    try testing.expect(f.tree.releaseKey(0, 50));
+    const released = l.offset.y;
+    var last_step: f32 = 1000.0 / 60.0;
+    for (0..6) |_| {
+        _ = try f.tree.tick(t);
+        const step = l.offset.y - prev;
+        prev = l.offset.y;
+        try testing.expect(step >= 0 and step <= last_step);
+        last_step = step;
+        t += frame;
+    }
+    try testing.expectApproxEqAbs(released + 20, l.offset.y, 0.01);
+    try testing.expect(l.hold == null and l.glide == null);
+
+    // A tap: up before the delay, it moves the step alone.
+    try f.apply(&.{press});
+    try testing.expect(try f.tree.holdKey(2, hold(t)));
+    const tap_from = l.offset.y;
+    _ = try f.tree.tick(t + frame);
+    try testing.expect(f.tree.releaseKey(0, 50));
+    _ = try f.tree.tick(t + 5 * frame);
+    _ = try f.tree.tick(t + 30 * frame);
+    try testing.expectEqual(tap_from + 40, l.offset.y);
+    t += 31 * frame;
+
+    // Held to the end, it stops there: no frame passes it, and nothing
+    // moves after.
+    try f.apply(&.{press});
+    try testing.expect(try f.tree.holdKey(2, hold(t)));
+    var end_tick = t;
+    while (l.hold != null) : (end_tick += frame) {
+        _ = try f.tree.tick(end_tick);
+        try testing.expect(l.offset.y <= 1900);
+        try testing.expect(end_tick < t + 3 * std.time.ns_per_s);
+    }
+    try testing.expectEqual(@as(f32, 1900), l.offset.y);
+    const tk = try f.tree.tick(end_tick + frame);
+    try testing.expect(!tk.active and !tk.holding);
+    try testing.expect(!f.tree.releaseKey(0, 50));
+
+    // A wheel event stops it where it is.
+    t = end_tick + 10 * frame;
+    try f.apply(&.{.{ .scroll_hold = .{ .layer = 2, .delta = .{ .x = 0, .y = -40 }, .seat = 0, .keycode = 50 } }});
+    var up = hold(t);
+    up.velocity.y = -1000;
+    try testing.expect(try f.tree.holdKey(2, up));
+    var k: u64 = 1;
+    while (k < 30) : (k += 1) _ = try f.tree.tick(t + k * frame);
+    try testing.expect(try f.tree.scrollBy(2, .{ .x = 0, .y = 10 }));
+    const wheeled = l.offset.y;
+    try testing.expect(wheeled < 1900 - 40 - 100);
+    try testing.expect(l.hold == null);
+    _ = try f.tree.tick(t + 40 * frame);
+    try testing.expectEqual(wheeled, l.offset.y);
 }
 
 test "layers given up stay drawn without input until their animations end, then go and are reported" {

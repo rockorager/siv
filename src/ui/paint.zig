@@ -146,7 +146,15 @@ pub const ScrollBy = struct {
     /// The compositor glides there (keys and the application's scrolls,
     /// D47): false under reduced motion.
     smooth: bool = false,
+    /// With `smooth`, a key's press: the compositor scrolls on while the
+    /// key stays down (`Op.scroll_hold`).
+    key: ?node_mod.HeldKey = null,
 };
+
+fn scrollOp(layer: compositor.LayerId, sb: ScrollBy) Op {
+    if (sb.smooth) if (sb.key) |k| return .{ .scroll_hold = .{ .layer = layer, .delta = sb.delta, .seat = k.seat, .keycode = k.keycode } };
+    return .{ .scroll_by = .{ .layer = layer, .delta = sb.delta, .smooth = sb.smooth } };
+}
 
 /// How a node's motion runs on the compositor; none with reduced motion.
 const Timing = struct {
@@ -792,7 +800,7 @@ pub const State = struct {
         var early: usize = 0;
         for (st.scroll_by.items) |sb| {
             if (!sb.early or !win.isLive(sb.node) or !st.ownsLayerNow(win, sb.node)) continue;
-            try st.ops.insert(gpa, early, .{ .scroll_by = .{ .layer = id(win.state(sb.node).own_layer), .delta = sb.delta, .smooth = sb.smooth } });
+            try st.ops.insert(gpa, early, scrollOp(id(win.state(sb.node).own_layer), sb));
             early += 1;
         }
         // A window resized by the user relays out under the pointer:
@@ -978,7 +986,7 @@ pub const State = struct {
             if (sb.early or !win.isLive(sb.node) or !st.ownsLayerNow(win, sb.node)) continue;
             const layer = id(win.state(sb.node).own_layer);
             if (sb.zoom != 1) st.ops.appendAssumeCapacity(.{ .zoom_by = .{ .layer = layer, .factor = sb.zoom, .focus = sb.focus } });
-            if (!sb.delta.eql(.zero)) st.ops.appendAssumeCapacity(.{ .scroll_by = .{ .layer = layer, .delta = sb.delta, .smooth = sb.smooth } });
+            if (!sb.delta.eql(.zero)) st.ops.appendAssumeCapacity(scrollOp(layer, sb));
             if (sb.fling) |v| st.ops.appendAssumeCapacity(.{ .fling = .{ .layer = layer, .velocity = v } });
         }
         st.scroll_by.clearRetainingCapacity();
