@@ -6626,7 +6626,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     rules bucketed by id, class, tag, attribute name, and `:root`, with
     `:is()`/`:where()` of plain tags filed under each tag, rules for
     pseudo-elements apart, media queries evaluated when a sheet is
-    added, and selectors that need a dynamic state such as `:hover`
+    added, and selectors that need a dynamic state other than `:hover`
     dropped), the box tree, layout, painting,
     hit testing, find, selection, locators, and the accessibility tree.
     `docview` (imports `ui`, `doc`, and the low-level modules): the widget.
@@ -6807,7 +6807,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     `.protonmail_quote`, Outlook's `#divRplyFwdMsg`, `#appendonsend`, and
     the reply header with a top border that Outlook for Windows writes,
     with everything after it, and Outlook mobile's
-    `#mail-editor-reference-message-container`, header and all) after a `•••` link to `siv:quote/N`; the
+    `#mail-editor-reference-message-container`, header and all)) after a `•••` link to `siv:quote/N`; the
     box builder leaves closed ones out, and the link toggles them and
     styles again. Remote images, style sheets, and fonts are blocked
     unless the application allows them (a blocked style sheet reports an
@@ -6823,6 +6823,26 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     mail) get quirks mode's table rules. The canvas takes the root's
     background, else the body's, else the theme's (the user agent's
     `html { background: Canvas }` had kept body colors from it).
+  - **Hover.** `:hover` matches the element under the pointer and its
+    ancestors (in the DOM). Base styles, the box tree, and layout never
+    depend on it: when the pointer moves to another element
+    (`Document.setHover`, from the node's pointer events, and after
+    layout moves content), the cascade styles again only what the
+    change can reach (`Cascade.restyleHover`): the elements entering or
+    leaving the hovered chain, their descendants when inheritance
+    carries a change or a `:hover` sits in an ancestor compound
+    (`.menu:hover li`), and the whole document when one sits among
+    siblings or inside `:is()`, `:not()`, or `:has()`; a document with
+    no `:hover` rule does nothing. The paint properties of the styles
+    with hover (colors, backgrounds, borders' colors, decorations,
+    outlines, shadows, opacity, cursor) replace the base styles' per
+    element at paint time, and the node repaints only when they changed.
+    Simplified: layout properties under `:hover` (a bolder weight,
+    padding) are ignored, and pseudo-elements keep their styles, so
+    nothing moves under the pointer and no layout runs. Browsers give
+    links no hover style of their own, only `cursor: pointer`, which the
+    node shows over them (the CSS cursor of the hovered element: pointer,
+    text, or default).
   - **Color schemes.** The node's color scheme is the reader's
     preference; the document decides what it shows in, as browsers
     let it, and a theme's colors are never mixed with the document's

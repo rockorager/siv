@@ -163,9 +163,21 @@ pub const Cascade = struct {
     /// the document set itself (D32: what a document's colors are mixed
     /// with).
     own_colors: std.AutoHashMapUnmanaged(Style.Id, void) = .empty,
+    /// The hovered elements (the one under the pointer and its
+    /// ancestors) while `restyleHover` runs; null matches no `:hover`.
+    hovered: ?*const std.DynamicBitSetUnmanaged = null,
+    /// What a change of the hovered elements can restyle, from the
+    /// `:hover` selectors of the sheets added.
+    hover_scope: HoverScope = .none,
     /// Per element: whether a quirks-mode or hint rule applies (unused
     /// in matching, kept for sharing keys).
     pub const ShareKey = struct { parent: Style.Id, rules: u64, extra: u64 };
+
+    /// Which elements' styles a `:hover` can change, besides inheritance:
+    /// none; the hovered element (`a:hover`); its descendants
+    /// (`.menu:hover li`); or any (`:hover` among siblings, in `:is()`,
+    /// `:not()`, or `:has()`).
+    pub const HoverScope = enum(u8) { none, self, subtree, document };
 
     const Matched = struct { key: u64, source: u16, rule: u32, important: bool };
     /// `author`: the document's (author origin, its hints, or its style
@@ -298,6 +310,8 @@ pub const Cascade = struct {
                 const compounds = sheet.store.compoundsOf(s);
                 // Unmatchable when a needed name is absent.
                 if (!c.possible(src, s)) continue;
+                const hs = hoverScope(&sheet.store, s);
+                if (@intFromEnum(hs) > @intFromEnum(c.hover_scope)) c.hover_scope = hs;
                 // Ancestor atoms for the Bloom filter.
                 var nh: usize = 0;
                 var ancestor = false;
@@ -408,7 +422,7 @@ pub const Cascade = struct {
 
     /// Whether every id, class, and type the selector needs exists in the
     /// document (outside :not and other lists), and it needs no state a
-    /// document never has (:hover and the other user actions).
+    /// document never has (the user actions but :hover).
     fn possible(c: *const Cascade, src: *const Source, s: sel.Selector) bool {
         _ = c;
         const store = &src.sheet.store;
@@ -416,12 +430,111 @@ pub const Cascade = struct {
             .id, .class => if (src.bound[simple.name] == unbound) return false,
             .type => if (src.bound_lower[simple.name] == unbound) return false,
             .pseudo => switch (simple.pseudo) {
-                .visited, .hover, .active, .focus, .focus_visible, .focus_within, .target, .never, .placeholder_shown => return false,
+                .visited, .active, .focus, .focus_visible, .focus_within, .target, .never, .placeholder_shown => return false,
                 else => {},
             },
             else => {},
         };
         return true;
+    }
+
+    fn hoverScope(store: *const sel.Store, s: sel.Selector) HoverScope {
+        var out: HoverScope = .none;
+        var upward = true;
+        for (store.compoundsOf(s), 0..) |cp, k| {
+            for (store.simplesOf(cp)) |simple| {
+                if (simple.kind == .pseudo and simple.pseudo == .hover) {
+                    const here: HoverScope = if (k == 0) .self else if (upward) .subtree else .document;
+                    if (@intFromEnum(here) > @intFromEnum(out)) out = here;
+                } else if (simple.list_len > 0) {
+                    for (store.listOf(simple)) |inner| if (hoverScope(store, inner) != .none) return .document;
+                }
+            }
+            upward = upward and (cp.combinator == .descendant or cp.combinator == .child);
+        }
+        return out;
+    }
+
+    /// Styles again what a change of the hovered elements (`hovered`, set
+    /// by the caller; it changed at `changed`) can change: the changed
+    /// elements, their descendants when a `:hover` selector reaches them
+    /// or inheritance carries a change, or every element. `full` holds,
+    /// by node index, the styles with hover where they differ from
+    /// `result`'s, and is updated. Pseudo-elements keep their styles.
+    pub fn restyleHover(c: *Cascade, result: *const Result, changed: []const NodeId, full: *std.AutoHashMapUnmanaged(u32, Style.Id)) Error!void {
+        const d = c.dom;
+        const doc_root = d.documentElement();
+        if (c.hover_scope == .none or doc_root == .none) return;
+        var roots: std.ArrayList(NodeId) = .empty;
+        defer roots.deinit(c.gpa);
+        if (c.hover_scope == .document) try roots.append(c.gpa, doc_root) else try roots.appendSlice(c.gpa, changed);
+        var stack: std.ArrayList(NodeId) = .empty;
+        defer stack.deinit(c.gpa);
+        for (roots.items, 0..) |root, ri| {
+            // A root inside another's subtree is styled with it.
+            if (c.hover_scope != .self) {
+                var inside = false;
+                for (roots.items[0..ri]) |o| {
+                    var a = root;
+                    while (a != .none) : (a = c.parentElement(a)) if (a == o) {
+                        inside = true;
+                        break;
+                    };
+                }
+                if (inside) continue;
+            }
+            // The ancestors, for descendant selectors.
+            c.bloom = .{};
+            stack.clearRetainingCapacity();
+            var a = c.parentElement(root);
+            while (a != .none) : (a = c.parentElement(a)) try stack.append(c.gpa, a);
+            std.mem.reverse(NodeId, stack.items);
+            for (stack.items) |x| c.pushBloom(x);
+            const base_depth = stack.items.len;
+            var cur = root;
+            while (cur != .none) {
+                const n = d.node(cur);
+                var descend = false;
+                if (n.kind == .element) {
+                    const parent = c.parentElement(cur);
+                    const parent_style = if (parent == .none) @as(Style.Id, 0) else full.get(parent.index()) orelse result.styles[parent.index()];
+                    const was = full.get(cur.index()) orelse result.styles[cur.index()];
+                    try c.match(cur, .none);
+                    const st = try c.computeMatched(cur, parent_style, true, cur == doc_root);
+                    if (st == result.styles[cur.index()]) {
+                        _ = full.remove(cur.index());
+                    } else try full.put(c.gpa, cur.index(), st);
+                    descend = n.first != .none and (st != was or c.hover_scope != .self);
+                }
+                if (descend) {
+                    c.pushBloom(cur);
+                    try stack.append(c.gpa, cur);
+                    cur = n.first;
+                    continue;
+                }
+                if (cur == root) break;
+                // Next: sibling, else pop up (not past the root).
+                while (true) {
+                    const x = d.node(cur);
+                    if (x.next != .none) {
+                        cur = x.next;
+                        break;
+                    }
+                    if (stack.items.len == base_depth) {
+                        cur = .none;
+                        break;
+                    }
+                    const p = stack.pop().?;
+                    c.popBloom(p);
+                    cur = p;
+                    if (cur == root) {
+                        cur = .none;
+                        break;
+                    }
+                }
+            }
+        }
+        c.bloom = .{};
     }
 
     // Matching.
@@ -578,7 +691,8 @@ pub const Cascade = struct {
             .placeholder_shown => false,
             .defined => true,
             .scope => id == d.documentElement(),
-            .visited, .hover, .active, .focus, .focus_visible, .focus_within, .target, .never => false,
+            .hover => if (c.hovered) |h| h.isSet(id.index()) else false,
+            .visited, .active, .focus, .focus_visible, .focus_within, .target, .never => false,
         };
     }
 

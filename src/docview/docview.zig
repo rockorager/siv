@@ -188,6 +188,8 @@ pub const View = struct {
     focus: ?Document.Pos = null,
     selecting: bool = false,
     press: ?[2]f32 = null,
+    /// Where the pointer is over the node, for `:hover`; null outside.
+    pointer: ?[2]f32 = null,
     highlights: std.ArrayList(doc.paint.Highlight) = .empty,
     wanted: std.ArrayList(text.FontId) = .empty,
     listening: bool = false,
@@ -515,6 +517,7 @@ pub const View = struct {
                 // count and the page event come when it is (`paginate`).
                 if (v.options.paged and !v.complete and std.math.isFinite(j.stop_y)) d.pageBreaks(v.geo.page_h, j.stop_y, &v.pages, v.gpa) catch {};
                 v.repaint();
+                if (v.pointer) |pt| v.hoverAt(pt);
                 v.wanted.clearRetainingCapacity();
                 d.wantedFonts(&v.wanted) catch {};
                 if (v.wanted.items.len > 0) {
@@ -1079,7 +1082,12 @@ pub const View = struct {
                 }
                 return .handled;
             },
+            .enter, .leave => {
+                v.hoverAt(if (p.phase == .enter) .{ p.x, p.y } else null);
+                return .pass;
+            },
             .move => {
+                v.hoverAt(.{ p.x, p.y });
                 if (!v.selecting) return .pass;
                 const at = v.toDoc(p.x, p.y) orelse return .handled;
                 const hit = d.hitTest(at[0], at[1]) catch return .pass;
@@ -1112,6 +1120,32 @@ pub const View = struct {
                 return .handled;
             },
             else => return .pass,
+        }
+    }
+
+    /// The pointer moved to `at` (node coordinates) or left: the element
+    /// under it is hovered (D32), repainted when that changes what shows,
+    /// and its CSS cursor shown (a link's pointer). While a job has the
+    /// document this waits for it.
+    fn hoverAt(v: *View, at: ?[2]f32) void {
+        v.pointer = at;
+        const d = v.document() orelse return;
+        var node: Document.NodeId = .none;
+        if (at) |pt| if (v.toDoc(pt[0], pt[1])) |dp| {
+            node = (d.hitTest(dp[0], dp[1]) catch return).node;
+        };
+        if (d.setHover(node) catch false) v.repaint();
+        if (v.dead or !v.win.isLive(v.node)) return;
+        const shape: ?ui.CursorShape = switch (d.cursorAt(node)) {
+            .pointer => .pointer,
+            .text => .text,
+            .default => .default,
+            else => null,
+        };
+        const n = v.win.node(v.node);
+        if (n.cursor != shape) {
+            n.cursor = shape;
+            ui.input.updateCursor(v.win);
         }
     }
 

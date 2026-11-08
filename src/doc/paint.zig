@@ -11,6 +11,7 @@ const css = @import("css");
 const text = @import("text");
 const scene = @import("scene");
 const raster = @import("raster");
+const html_mod = @import("html");
 const box_mod = @import("box.zig");
 const layout = @import("layout.zig");
 const inline_mod = @import("inline.zig");
@@ -74,6 +75,10 @@ pub const MarkerGlyphs = struct {
     pub const Run = struct { font: text.FontId, size: f32, glyphs: []const scene.Glyph };
 };
 
+/// An element's style while hovered (`Document.setHover`): what painting
+/// takes instead of `base` wherever the element is painted with it.
+pub const Hovered = struct { base: css.Style.Id, painted: css.Style.Id };
+
 /// A text range in an IFC, highlighted.
 pub const Highlight = struct { ifc: u32, start: u32, end: u32, color: Color };
 
@@ -108,6 +113,10 @@ pub const Painter = struct {
     /// IFC being painted had.
     dark: ?dark_mod.Map = null,
     ifc_behind: Color = Color.white,
+    /// Hovered elements' styles by node index, and the element of the
+    /// IFC being painted (whose text outside inline boxes is its own).
+    hover: ?*const std.AutoHashMapUnmanaged(u32, Hovered) = null,
+    ifc_node: html_mod.NodeId = .none,
 
     const Positioned = struct { id: BoxId, x: f32, y: f32, z: i32, order: u32, clip: ?Rect };
 
@@ -116,7 +125,17 @@ pub const Painter = struct {
     }
 
     fn style(p: *const Painter, id: BoxId) *const Style {
-        return p.engine.style(id);
+        const b = p.tree().get(id);
+        return p.engine.store.get(p.hovered(b.node, b.style));
+    }
+
+    /// The style an element is painted with in place of `s`: its hovered
+    /// one, if it is hovered and `s` is its own.
+    fn hovered(p: *const Painter, node: html_mod.NodeId, s: css.Style.Id) css.Style.Id {
+        const map = p.hover orelse return s;
+        if (map.count() == 0 or node == .none) return s;
+        const o = map.get(node.index()) orelse return s;
+        return if (o.base == s) o.painted else s;
     }
 
     pub fn color(p: *const Painter, c: Color, current: Color) scene.Color {
@@ -183,7 +202,7 @@ pub const Painter = struct {
     fn inlineBehind(p: *const Painter, data: *const box_mod.Ifc, ib_: u32) Color {
         var ib = ib_;
         while (ib != none) : (ib = data.inline_boxes[ib].parent) {
-            const st = p.engine.store.get(data.inline_boxes[ib].style);
+            const st = p.engine.store.get(p.hovered(data.inline_boxes[ib].node, data.inline_boxes[ib].style));
             const bg = p.resolve(st.box.background_color, p.textColor(st));
             if (bg.a >= 0.5) return .{ .r = bg.r, .g = bg.g, .b = bg.b, .a = 1 };
         }
@@ -993,6 +1012,8 @@ pub const Painter = struct {
         const l = p.engine.laid(b.data, content_w) catch return error.OutOfMemory;
         const data = &p.tree().ifcs.items[b.data];
         if (p.dark != null) p.ifc_behind = p.behindBox(id);
+        // An anonymous block's text is its parent's element's.
+        p.ifc_node = if (b.node != .none or b.parent == none) b.node else p.tree().get(b.parent).node;
         // Lines in the band.
         var first: usize = 0;
         {
@@ -1021,7 +1042,7 @@ pub const Painter = struct {
         const frags = l.lineFrags(line);
         for (data.inline_boxes, 0..) |ib, i| {
             if (ib.end < line.start or ib.start > line.end) continue;
-            const st = p.engine.store.get(ib.style);
+            const st = p.engine.store.get(p.hovered(ib.node, ib.style));
             const has_bg = st.box.background_color.a > 0 or st.box.background_color.kind != .rgba or st.box.background_image != null;
             var has_border = false;
             for (0..4) |s| has_border = has_border or st.borderWidth(s) > 0;
@@ -1132,7 +1153,7 @@ pub const Painter = struct {
     fn textLine(p: *Painter, data: *const box_mod.Ifc, l: *const inline_mod.Laid, line: inline_mod.Line, cx: f32, cy: f32) Error!void {
         for (l.lineFrags(line)) |f| {
             if (f.kind != .glyphs) continue;
-            const st = p.engine.store.get(f.style);
+            const st = p.engine.store.get(p.hovered(if (f.inline_box != none) data.inline_boxes[f.inline_box].node else p.ifc_node, f.style));
             if (st.inh.visibility != .visible) continue;
             const face = p.engine.fonts.cache.face(f.font) orelse continue;
             const behind = if (p.dark != null) p.inlineBehind(data, f.inline_box) else Color.white;

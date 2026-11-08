@@ -432,3 +432,89 @@ test "C API docview: mail under a dark theme shows light unless it allows dark, 
         }
     }
 }
+
+test "C API docview: :hover restyles what the pointer is over, and links show the pointer cursor" {
+    var h: Harness = .{};
+    try h.start(300, 160, null, null);
+    defer h.stop();
+    var ev: Events = .{};
+    const mail =
+        \\<style>a:hover { color: rgb(220 0 0) } .row:hover td { background: rgb(0 0 220) }</style>
+        \\<p style="margin: 8px"><a href="https://example.com/">Link</a> and text</p>
+        \\<table style="margin: 8px"><tr class="row"><td>Cell</td><td>More</td></tr></table>
+    ;
+    _ = try build(&h, &ev, .html, mail, .{}, "file:///mail/");
+    try waitLoaded(&h, &ev, 1);
+    const w = try h.win();
+    const sem = try w.uiWin().semanticsTree();
+    const link = (sem.find(.link, "Link") orelse return error.NoLink).bounds;
+    const cell = (sem.find(.cell, "Cell") orelse return error.NoCell).bounds;
+    const wid = w.win.id;
+    const Count = struct {
+        /// Pixels in `r` mostly of one channel (0 red, 2 blue).
+        fn of(img: []const u8, r: anytype, ch: usize) usize {
+            var n: usize = 0;
+            var y: usize = @intFromFloat(r.y0);
+            while (y < @as(usize, @intFromFloat(r.y1))) : (y += 1) {
+                var x: usize = @intFromFloat(r.x0);
+                while (x < @as(usize, @intFromFloat(r.x1))) : (x += 1) {
+                    const px = img[(y * 300 + x) * 4 ..][0..4];
+                    var others: u32 = 0;
+                    for (0..3) |k| if (k != ch) {
+                        others = @max(others, px[k]);
+                    };
+                    if (px[ch] > 150 and others < 60) n += 1;
+                }
+            }
+            return n;
+        }
+    };
+    const move = struct {
+        fn f(hh: *Harness, id: anytype, x: f32, y: f32) !void {
+            try hh.inject(&.{.{ .pointer_motion = .{ .window = id, .seat = 0, .x = x, .y = y } }});
+            try hh.settle();
+        }
+    }.f;
+    const cursor = struct {
+        fn f(hh: *Harness) !@import("platform").CursorShape {
+            const Ctx = struct {
+                wid: @import("platform").WindowId,
+                out: @import("platform").CursorShape = .default,
+                fn run(c: ?*anyopaque, comp: *@import("compositor").Compositor) void {
+                    const s: *@This() = @ptrCast(@alignCast(c));
+                    s.out = comp.platform.headless.cursorOf(s.wid);
+                }
+            };
+            var c: Ctx = .{ .wid = (try hh.win()).win.id };
+            try (try hh.internal()).app.comp.call(&c, Ctx.run);
+            return c.out;
+        }
+    }.f;
+
+    // Off the link: neither is restyled.
+    try move(&h, wid, 280, 150);
+    var img = try h.capture();
+    try testing.expectEqual(0, Count.of(img, link, 0));
+    try testing.expectEqual(0, Count.of(img, cell, 2));
+    testing.allocator.free(img);
+    // Over the link: it turns red and shows the pointer cursor.
+    try move(&h, wid, (link.x0 + link.x1) / 2, (link.y0 + link.y1) / 2);
+    img = try h.capture();
+    try testing.expect(Count.of(img, link, 0) > 10);
+    try testing.expectEqual(0, Count.of(img, cell, 2));
+    try testing.expectEqual(@import("platform").CursorShape.pointer, try cursor(&h));
+    testing.allocator.free(img);
+    // Over the cell: the row's descendant rule, and the link is back.
+    try move(&h, wid, (cell.x0 + cell.x1) / 2, (cell.y0 + cell.y1) / 2);
+    img = try h.capture();
+    try testing.expectEqual(0, Count.of(img, link, 0));
+    try testing.expect(Count.of(img, cell, 2) > 50);
+    try testing.expectEqual(@import("platform").CursorShape.default, try cursor(&h));
+    testing.allocator.free(img);
+    // Out of the window: nothing hovered.
+    try h.inject(&.{.{ .pointer_leave = .{ .window = wid, .seat = 0, .serial = 9 } }});
+    try h.settle();
+    img = try h.capture();
+    defer testing.allocator.free(img);
+    try testing.expectEqual(0, Count.of(img, cell, 2));
+}

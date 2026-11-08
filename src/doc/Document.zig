@@ -22,7 +22,7 @@ pub const markdown = @import("markdown");
 
 const Document = @This();
 const Allocator = std.mem.Allocator;
-const NodeId = html.NodeId;
+pub const NodeId = html.NodeId;
 const BoxId = box_mod.BoxId;
 const none = box_mod.none;
 pub const Error = error{OutOfMemory};
@@ -129,6 +129,13 @@ complete: bool = false,
 colors: Colors = .{},
 /// `<meta name=color-scheme>` (or Apple Mail's `supported-color-schemes`).
 meta_scheme: css.style.ColorScheme = .normal,
+/// The element under the pointer (`setHover`), it and its ancestors as a
+/// set, their styles with `:hover` where those differ from the base
+/// ones, and what painting takes from them.
+hover: NodeId = .none,
+hover_chain: std.DynamicBitSetUnmanaged = .{},
+hover_full: std.AutoHashMapUnmanaged(u32, css.Style.Id) = .empty,
+hover_paint: std.AutoHashMapUnmanaged(u32, paint_mod.Hovered) = .empty,
 
 /// What a document says about light and dark (D32): what it declares, and
 /// whether it has colors of its own that a theme's would clash with.
@@ -260,6 +267,9 @@ pub fn destroy(d: *Document) void {
     }
     d.markers.deinit(gpa);
     d.node_boxes.deinit(gpa);
+    d.hover_chain.deinit(gpa);
+    d.hover_full.deinit(gpa);
+    d.hover_paint.deinit(gpa);
     gpa.free(d.quotes);
     d.quote_open.deinit(gpa);
     d.font_table.deinit(gpa);
@@ -685,6 +695,117 @@ pub fn styleAndBuild(d: *Document, media: css.media.Env) Error!void {
     }
     d.findColors();
     try d.linkResources();
+    // Base styles have nothing hovered; what is hovered is styled again.
+    d.hover_chain.unsetAll();
+    d.hover_full.clearRetainingCapacity();
+    d.hover_paint.clearRetainingCapacity();
+    const hovered = d.hover;
+    d.hover = .none;
+    _ = try d.setHover(hovered);
+}
+
+/// Moves the pointer onto `node` (an element, or the text in one; none
+/// when it leaves the document): elements whose hover state changed
+/// (D32) are styled again, only those, and their descendants that
+/// depend on it. What `:hover` changes is painted, not laid out: the
+/// colors, backgrounds, borders' colors, decorations, outlines, shadows,
+/// opacity, and cursor of the styles with hover replace the base
+/// styles' at paint time (`hover_paint`), and their other properties are
+/// ignored. Returns whether painting changed.
+pub fn setHover(d: *Document, node: NodeId) Error!bool {
+    var el = node;
+    while (el != .none and d.dom.node(el).kind != .element) el = d.dom.node(el).parent;
+    if (el == d.hover) return false;
+    const gpa = d.gpa;
+    if (d.hover_chain.bit_length < d.dom.len()) try d.hover_chain.resize(gpa, d.dom.len(), false);
+    // The elements in one chain and not the other.
+    var old: std.ArrayList(NodeId) = .empty;
+    defer old.deinit(gpa);
+    var cur = d.hover;
+    while (cur != .none) : (cur = d.dom.node(cur).parent) {
+        try old.append(gpa, cur);
+        d.hover_chain.unset(cur.index());
+    }
+    var changed: std.ArrayList(NodeId) = .empty;
+    defer changed.deinit(gpa);
+    cur = el;
+    while (cur != .none) : (cur = d.dom.node(cur).parent) {
+        d.hover_chain.set(cur.index());
+        if (std.mem.indexOfScalar(NodeId, old.items, cur) == null) try changed.append(gpa, cur);
+    }
+    for (old.items) |o| if (!d.hover_chain.isSet(o.index())) try changed.append(gpa, o);
+    d.hover = el;
+    const c = &(d.cascade orelse return false);
+    const styles = &(d.styles orelse return false);
+    if (c.hover_scope == .none) return false;
+    // Parents first, as a rule (node order is parse order, but for
+    // wrappers added later): a parent restyled after its child styles
+    // that child again, so the order only saves work.
+    std.mem.sort(NodeId, changed.items, {}, struct {
+        fn lt(_: void, a: NodeId, b: NodeId) bool {
+            return a.index() < b.index();
+        }
+    }.lt);
+    c.hovered = &d.hover_chain;
+    defer c.hovered = null;
+    try c.restyleHover(styles, changed.items, &d.hover_full);
+    // What painting takes.
+    var next: std.AutoHashMapUnmanaged(u32, paint_mod.Hovered) = .empty;
+    errdefer next.deinit(gpa);
+    var it = d.hover_full.iterator();
+    while (it.next()) |e| {
+        const base = styles.styles[e.key_ptr.*];
+        var st = d.store.get(base).*;
+        const full = d.store.get(e.value_ptr.*);
+        st.inh.color = full.inh.color;
+        st.inh.cursor = full.inh.cursor;
+        st.inh.visibility = full.inh.visibility;
+        st.inh.decorations = full.inh.decorations;
+        st.inh.decoration_color = full.inh.decoration_color;
+        st.inh.decoration_style = full.inh.decoration_style;
+        st.box.background_color = full.box.background_color;
+        st.box.background_image = full.box.background_image;
+        st.box.border_color = full.box.border_color;
+        st.box.box_shadow = full.box.box_shadow;
+        st.box.opacity = full.box.opacity;
+        st.box.text_decoration_line = full.box.text_decoration_line;
+        st.box.text_decoration_style = full.box.text_decoration_style;
+        st.box.text_decoration_color = full.box.text_decoration_color;
+        st.box.text_decoration_thickness = full.box.text_decoration_thickness;
+        st.box.outline_width = full.box.outline_width;
+        st.box.outline_style = full.box.outline_style;
+        st.box.outline_color = full.box.outline_color;
+        st.box.outline_offset = full.box.outline_offset;
+        const painted = try d.store.intern(gpa, &st);
+        if (painted != base) try next.put(gpa, e.key_ptr.*, .{ .base = base, .painted = painted });
+    }
+    var same = next.count() == d.hover_paint.count();
+    if (same) {
+        var ni = next.iterator();
+        while (ni.next()) |e| {
+            const o = d.hover_paint.get(e.key_ptr.*) orelse {
+                same = false;
+                break;
+            };
+            if (o.painted != e.value_ptr.painted) {
+                same = false;
+                break;
+            }
+        }
+    }
+    d.hover_paint.deinit(gpa);
+    d.hover_paint = next;
+    return !same;
+}
+
+/// The cursor CSS asks for over an element (`cursor`, with hover).
+pub fn cursorAt(d: *const Document, node: NodeId) css.style.Cursor {
+    var el = node;
+    while (el != .none and d.dom.node(el).kind != .element) el = d.dom.node(el).parent;
+    if (el == .none) return .auto;
+    const styles = d.styles orelse return .auto;
+    const id = d.hover_full.get(el.index()) orelse styles.styles[el.index()];
+    return d.store.get(id).inh.cursor;
 }
 
 /// Fills `colors` from the styled document.
@@ -989,6 +1110,7 @@ pub fn paint(d: *Document, b: *scene.Builder, y0: f32, y1: f32, palette: paint_m
         .scratch = d.scratch.allocator(),
         .base_url = d.base_url,
         .dark = if (palette.dark) |t| @import("dark.zig").Map.init(t) else null,
+        .hover = &d.hover_paint,
     };
     p.paint() catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
