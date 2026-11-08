@@ -1,5 +1,5 @@
-//! Numbers, plural categories, and gettext translations through the C
-//! ABI (D21), in the application's language and following it when it
+//! Numbers, dates without the year, durations in the past, plural
+//! categories, and gettext translations through the C ABI (D21), in the application's language and following it when it
 //! changes. The catalogs are written by the test (intl's .mo writer), so
 //! no gettext tools are needed.
 
@@ -70,6 +70,54 @@ test "numbers in the application's language" {
     try testing.expect(valid and value == 1234.5);
     try ok(c.siv_app_parse_number(app, "zwölf", "zwölf".len, &valid, &value));
     try testing.expect(!valid and value == 0);
+}
+
+fn date(app: t.App, days: i32, style: t.DateStyle) ![]const u8 {
+    var len: usize = 0;
+    try ok(c.siv_app_format_date(app, days, style, &out_buf, out_buf.len, &len));
+    return out_buf[0..len];
+}
+
+fn ago(app: t.App, seconds: u64, style: t.TimeAgoStyle) ![]const u8 {
+    var len: usize = 0;
+    try ok(c.siv_app_format_time_ago(app, seconds, style, &out_buf, out_buf.len, &len));
+    return out_buf[0..len];
+}
+
+test "a mail list's dates: days and months, and how long ago" {
+    const app = try newApp();
+    defer c.siv_app_destroy(app);
+    // 2026-10-20 and 2025-11-03.
+    const oct20 = 20746;
+    const nov3 = 20395;
+    try testing.expectEqualStrings("Oct 20", try date(app, oct20, .month_day));
+    try testing.expectEqualStrings("Nov 3, 2025", try date(app, nov3, .month_day_year));
+    try testing.expectEqualStrings("7m ago", try ago(app, 7 * 60 + 30, .narrow));
+    try testing.expectEqualStrings("3h ago", try ago(app, 3 * 3600, .narrow));
+    try testing.expectEqualStrings("5d ago", try ago(app, 5 * 86400 + 3600, .narrow));
+    try testing.expectEqualStrings("3 hours ago", try ago(app, 3 * 3600, .long));
+    try testing.expectEqualStrings("1 hour ago", try ago(app, 3600 + 59 * 60, .long));
+    try testing.expectEqualStrings("3 hr. ago", try ago(app, 3 * 3600, .short));
+    try testing.expectEqualStrings("now", try ago(app, 0, .narrow));
+    var len: usize = 0;
+    try ok(c.siv_app_format_time_ago(app, 3 * 3600, .long, null, 0, &len));
+    try testing.expectEqual(@as(usize, 11), len);
+    try testing.expectEqual(t.Result.error_unsupported, c.siv_app_format_time_ago(app, 1, @enumFromInt(3), &out_buf, out_buf.len, &len));
+
+    try setLanguage(app, "de-DE");
+    try testing.expectEqualStrings("20. Okt.", try date(app, oct20, .month_day));
+    try testing.expectEqualStrings("3. Nov. 2025", try date(app, nov3, .month_day_year));
+    try testing.expectEqualStrings("vor 3 Std.", try ago(app, 3 * 3600, .narrow));
+    try testing.expectEqualStrings("vor 3 Stunden", try ago(app, 3 * 3600, .long));
+    try testing.expectEqualStrings("vor 1 Tag", try ago(app, 86400, .long));
+    try setLanguage(app, "ja");
+    try testing.expectEqualStrings("10月20日", try date(app, oct20, .month_day));
+    try testing.expectEqualStrings("2025年11月3日", try date(app, nov3, .month_day_year));
+    try testing.expectEqualStrings("3時間前", try ago(app, 3 * 3600, .narrow));
+    try setLanguage(app, "ar-EG");
+    try testing.expectEqualStrings("٢٠ أكتوبر", try date(app, oct20, .month_day));
+    try testing.expectEqualStrings("٣ نوفمبر ٢٠٢٥", try date(app, nov3, .month_day_year));
+    try testing.expectEqualStrings("قبل ٥ أيام", try ago(app, 5 * 86400, .long));
 }
 
 test "plural categories in the application's language" {

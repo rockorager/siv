@@ -4376,14 +4376,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Built of the CLDR part (October 2026): for the pickers (D41), the
     Gregorian calendar's names and date and time patterns, the hour
     cycle, the first day of the week by region, and each numbering
-    system's digits; then plural rules, number formats, and byte units.
+    system's digits; then plural rules, number formats, and byte units;
+    then, for a mail client's list (parcel, November 2026), dates
+    without the year and relative times.
     All are generated at build time from the cldr-json npm packages
     (`src/intl/gen.zig`, the `intl` module) for the locales whose
     language CLDR covers at the modern or moderate level, deduplicated,
     and plural rules for every language CLDR has them for.
     `siv_app_format_date`, `siv_app_format_time`,
     `siv_app_get_locale_info`, `siv_app_format_number`,
-    `siv_app_parse_number`, and `siv_app_get_plural_category` read them
+    `siv_app_parse_number`, `siv_app_get_plural_category`, and
+    `siv_app_format_time_ago` read them
     for the application's language, falling back to a shorter tag, then
     the likely script ("zh-TW" is "zh-Hant"), then English. A window
     whose language changes tells its nodes with a settings event flagged
@@ -4426,6 +4429,41 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     "5 байт") and kB and up in the short form with one fraction digit by
     default ("1.5 kB", "2.0 GB", "1,5 ko"), as GNOME's `g_format_size`
     writes sizes.
+  - **Dates without the year.** `SIV_DATE_STYLE_MONTH_DAY` writes
+    CLDR's availableFormats `MMMd` ("Oct 20", "20. Okt.", "10月20日",
+    "٢٠ أكتوبر"), which cldr-dates-full already had, for a date in the
+    current year; the caller decides when the year is needed and writes
+    `SIV_DATE_STYLE_MONTH_DAY_YEAR` then, CLDR's `yMMMd` ("Nov 3,
+    2025", "3. Nov. 2025", "2025年11月3日"). The medium style is not
+    that: it is numeric in many locales ("03.11.2025", "2025/11/03"),
+    which reads oddly beside "20. Okt.". Only the skeletons a style
+    uses are generated (`yMMMM`, `MMMd`, `yMMMd`), not a skeleton
+    matcher.
+  - **Relative times.** `siv_app_format_time_ago` takes a duration in
+    the past in seconds and a width (`siv_time_ago_style`: long,
+    short, narrow, CLDR's three) and writes it with the locale's past
+    pattern for the count's plural category: "3 hours ago", "3 hr.
+    ago", "3h ago"; "vor 3 Stunden", "vor 3 Std."; "3 時間前",
+    "3時間前"; "قبل ٣ ساعات", and "قبل ساعة واحدة" where the
+    category's pattern spells the number out. The patterns come from
+    cldr-dates-full's dateFields.json, already pinned, as a third
+    record per locale beside the calendar and number ones. siv picks
+    the unit, the largest the duration holds a whole one of, counted
+    down: seconds, minutes from 60 s, hours from 60 min, days from
+    24 h, weeks from 7 days, months from a twelfth of 365.2425 days
+    (30.44), years from 365.2425 days. So "59 minutes ago" is followed
+    by "1 hour ago", and a label never claims more time than has
+    passed; a duration has no calendar, so months and years are the
+    Gregorian averages (exactly 365 days is still "11 months ago").
+    Zero is the locale's word for now ("now", "jetzt"); a list that
+    updates once a minute passes the duration rounded down to minutes,
+    so under a minute it reads "now". Days are 24 hours, so it never
+    writes "yesterday" (CLDR's relative-type -1), which means the
+    calendar day before and needs a time zone: 30 hours ago at 1 AM is
+    two calendar days back. The count is a decimal in the locale's
+    digits and grouping. Only the past is built: a mail client's ages,
+    a file's modification, a message's edit; scheduling ("in 3 days")
+    would take an `i64` function of its own.
   - **Reading numbers.** `siv_app_parse_number` reads what a user types:
     the locale's digits and decimal separator or ASCII ones, a minus
     sign, with group separators, spaces, and bidirectional marks
@@ -4481,10 +4519,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   parsed in every process); returning a pointer into the catalog from
   `siv_app_translate` (it would dangle when the language changes and the
   catalog goes); CLDR's rules ahead of a catalog's Plural-Forms (wrong
-  for catalogs whose translators merged or split forms otherwise).
+  for catalogs whose translators merged or split forms otherwise); for
+  relative times, ICU's and `Intl.RelativeTimeFormat`'s value and unit
+  (every caller would write the same thresholds, and the C API would
+  need a unit enum for a choice siv can make), rounding to the nearest
+  unit as moment.js does ("an hour ago" at 45 minutes, which
+  overstates an age), and calendar days with "yesterday" (a time zone
+  in a call that otherwise has none).
 - **Reverse if:** applications need gettext's $LANGUAGE list of
   fallback languages, then try each in turn; if siv's own strings get
-  translations, then ship them as the "siv" domain.
+  translations, then ship them as the "siv" domain; if an application
+  needs relative times in other units than siv picks (a column that
+  stays in days), then add a call that takes the unit.
 
 ### D22. Stock widgets
 
@@ -8627,7 +8673,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     open.
   - **Locale.** Dates and times come from CLDR through
     `siv_app_format_date` (full, long, medium, short, month and year,
-    day, month, weekday, short and narrow weekday, year) and
+    day, month, weekday, short and narrow weekday, year, month and day,
+    and month, day, and year) and
     `siv_app_format_time` (short, medium, and each field alone), and
     `siv_app_get_locale_info` gives the first weekday, the hour cycle,
     whether the day period comes first ("오후 10:30"), and the time

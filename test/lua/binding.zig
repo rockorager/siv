@@ -499,8 +499,13 @@ test "pickers from Lua: locale formatting, the emoji catalogue, values, and colo
         \\-- 1999-03-15 in the locale's words and clock (D21).
         \\assert(app:format_date(10665, "long") == "March 15, 1999")
         \\assert(app:format_time(22 * 3600 + 30 * 60, "short") == "10:30\u{202f}PM")
+        \\assert(app:format_date(10665, "month_day") == "Mar 15")
+        \\assert(app:format_date(10665, "month_day_year") == "Mar 15, 1999")
+        \\assert(app:format_time_ago(3 * 3600, "narrow") == "3h ago")
+        \\assert(app:format_time_ago(3 * 3600, "long") == "3 hours ago")
         \\app:set_language("de", "inherit")
         \\assert(app:format_date(10665, "full") == "Montag, 15. März 1999")
+        \\assert(app:format_time_ago(5 * 86400, "long") == "vor 5 Tagen")
         \\local info = app:get_locale_info()
         \\assert(info.first_weekday == 1 and info.hour_cycle == "h23", info.hour_cycle)
         \\assert(app:get_font_family_count() == 1)

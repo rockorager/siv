@@ -363,6 +363,12 @@ static void test_app(const unsigned char *font, size_t font_len) {
 	char date[64];
 	EXPECT(siv_app_format_date(app, 10665, SIV_DATE_STYLE_LONG, date, sizeof date, &len), SIV_OK);
 	CHECK(len == 14 && memcmp(date, "March 15, 1999", 14) == 0);
+	EXPECT(siv_app_format_date(app, 10665, SIV_DATE_STYLE_MONTH_DAY, date, sizeof date, &len), SIV_OK);
+	CHECK(len == 6 && memcmp(date, "Mar 15", 6) == 0);
+	EXPECT(siv_app_format_date(app, 10665, SIV_DATE_STYLE_MONTH_DAY_YEAR, date, sizeof date, &len), SIV_OK);
+	CHECK(len == 12 && memcmp(date, "Mar 15, 1999", 12) == 0);
+	EXPECT(siv_app_format_time_ago(app, 3 * 3600, SIV_TIME_AGO_STYLE_NARROW, date, sizeof date, &len), SIV_OK);
+	CHECK(len == 6 && memcmp(date, "3h ago", 6) == 0);
 	bool found = false;
 	uint32_t thumbs = 0;
 	EXPECT(siv_emoji_find("thumbs up", 9, 0, &found, &thumbs), SIV_OK);

@@ -12,6 +12,7 @@ const std = @import("std");
 pub const cldr = @import("cldr.zig");
 pub const number = @import("number.zig");
 pub const plural = @import("plural.zig");
+pub const relative = @import("relative.zig");
 pub const gettext = @import("gettext.zig");
 pub const emoji = @import("emoji.zig");
 

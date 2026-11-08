@@ -1,7 +1,8 @@
-//! Exports for locale-aware dates, times, and numbers, plural rules, and
-//! gettext translations (D21, D41, api_pickers.zig and api_intl.zig), the
-//! installed font families, and the emoji catalogue: the intl module's
-//! tables, and the application's language, catalogs, and fonts.
+//! Exports for locale-aware dates, times, durations in the past, and
+//! numbers, plural rules, and gettext translations (D21, D41,
+//! api_pickers.zig and api_intl.zig), the installed font families, and
+//! the emoji catalogue: the intl module's tables, and the application's
+//! language, catalogs, and fonts.
 
 const std = @import("std");
 const t = @import("siv");
@@ -91,6 +92,23 @@ pub export fn siv_app_format_time(app: t.App, seconds: u32, style: t.TimeStyle, 
                 }
             };
             format(buf, dest, Fmt.run, .{ l, secs, @as(cldr.TimeStyle, @enumFromInt(@backingInt(s))) });
+        }
+    }.f(app, seconds, style, buffer, buffer_cap, len));
+}
+
+pub export fn siv_app_format_time_ago(app: t.App, seconds: u64, style: t.TimeAgoStyle, buffer: ?[*]u8, buffer_cap: usize, len: ?*usize) t.Result {
+    return application.wrap(struct {
+        fn f(a: t.App, secs: u64, st: t.TimeAgoStyle, ptr: ?[*]u8, cap: usize, out: ?*usize) Error!void {
+            const self = try App.get(@backingInt(a));
+            const s = try runtime.enumValue(t.TimeAgoStyle, st);
+            const buf = try runtime.buffer(ptr, cap);
+            const dest = try runtime.out(usize, out);
+            const Fmt = struct {
+                fn run(w: *std.Io.Writer, loc: cldr.Locale, x: u64, style_: intl.relative.Style) std.Io.Writer.Error!void {
+                    try intl.relative.formatAgo(loc, w, x, style_);
+                }
+            };
+            format(buf, dest, Fmt.run, .{ localeOf(self), secs, @as(intl.relative.Style, @enumFromInt(@backingInt(s))) });
         }
     }.f(app, seconds, style, buffer, buffer_cap, len));
 }

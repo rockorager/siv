@@ -36,10 +36,12 @@ const F = struct {
     const time_medium: usize = 98;
     const time_short: usize = 99;
     const year_month: usize = 100;
+    const month_day: usize = 101;
+    const month_day_year: usize = 102;
 };
 
 comptime {
-    std.debug.assert(data.field_count == 101);
+    std.debug.assert(data.field_count == 103);
 }
 
 pub const DateStyle = enum(u8) {
@@ -66,6 +68,12 @@ pub const DateStyle = enum(u8) {
     /// The weekday's narrowest name, for a calendar's column where the
     /// short one does not fit: "S", "س".
     weekday_narrow,
+    /// The day and the month's short name, without the year: "Oct 18",
+    /// "18. Okt.", "10月18日" (CLDR's MMMd).
+    month_day,
+    /// The day, the month's short name, and the year: "Oct 18, 2026",
+    /// "18. Okt. 2026", "2026年10月18日" (CLDR's yMMMd).
+    month_day_year,
 };
 
 pub const TimeStyle = enum(u8) {
@@ -98,6 +106,8 @@ pub const Locale = struct {
     record: *const [data.field_count]u16,
     /// Number symbols and patterns (number.zig).
     numbers: *const [data.number_field_count]u16,
+    /// Past relative-time patterns (relative.zig).
+    relative: *const [data.relative_field_count]u16,
     /// 0 is Sunday.
     first_day: u3,
     /// Ten code points, UTF-8.
@@ -122,7 +132,7 @@ pub const Locale = struct {
         } else lookup("en").?;
         var first: u3 = @intCast(entry.first_day);
         if (region) |r| first = regionFirstDay(r) orelse first;
-        return .{ .record = &data.records[entry.record], .numbers = &data.number_records[entry.numbers], .first_day = first, .digits = data.digits[entry.digits], .tag = entry.tag };
+        return .{ .record = &data.records[entry.record], .numbers = &data.number_records[entry.numbers], .relative = &data.relative_records[entry.relative], .first_day = first, .digits = data.digits[entry.digits], .tag = entry.tag };
     }
 
     pub fn str(l: Locale, at: usize) []const u8 {
@@ -201,6 +211,8 @@ pub const Locale = struct {
             .weekday_short => try w.writeAll(l.str(F.day_standalone_short + @as(usize, wd))),
             .year => try l.number(w, @abs(date.year), 1),
             .weekday_narrow => try w.writeAll(l.str(F.day_standalone_narrow + @as(usize, wd))),
+            .month_day => try l.pattern(w, l.str(F.month_day), date, wd, 0),
+            .month_day_year => try l.pattern(w, l.str(F.month_day_year), date, wd, 0),
         }
     }
 
@@ -457,14 +469,26 @@ test "dates in English, German, Arabic (Egypt), and Hebrew" {
     try testing.expectEqualStrings("October 2026", try fmtDate(en, day, .month_year));
     try testing.expectEqualStrings("Su", try fmtDate(en, day, .weekday_short));
     try testing.expectEqualStrings("S", try fmtDate(en, day, .weekday_narrow));
+    try testing.expectEqualStrings("Oct 18", try fmtDate(en, day, .month_day));
+    try testing.expectEqualStrings("Mar 5", try fmtDate(en, Date.toDays(.{ .year = 2025, .month = 3, .day = 5 }), .month_day));
+    const nov3 = Date.toDays(.{ .year = 2025, .month = 11, .day = 3 });
+    try testing.expectEqualStrings("Nov 3, 2025", try fmtDate(en, nov3, .month_day_year));
     try testing.expectEqual(@as(u3, 0), en.first_day);
     const de = Locale.find("de_DE.UTF-8");
     try testing.expectEqualStrings("Sonntag, 18. Oktober 2026", try fmtDate(de, day, .full));
+    try testing.expectEqualStrings("18. Okt.", try fmtDate(de, day, .month_day));
+    // Unlike the medium style ("03.11.2025", "2025/11/03").
+    try testing.expectEqualStrings("3. Nov. 2025", try fmtDate(de, nov3, .month_day_year));
+    try testing.expectEqualStrings("10月18日", try fmtDate(Locale.find("ja"), day, .month_day));
+    try testing.expectEqualStrings("2025年11月3日", try fmtDate(Locale.find("ja"), nov3, .month_day_year));
+    try testing.expectEqualStrings("18 בנוב׳", try fmtDate(Locale.find("he"), Date.toDays(.{ .year = 2026, .month = 11, .day = 18 }), .month_day));
     try testing.expectEqualStrings("Oktober 2026", try fmtDate(de, day, .month_year));
     try testing.expectEqual(@as(u3, 1), de.first_day);
     const ar = Locale.find("ar-EG");
     try testing.expectEqualStrings("١٨", try fmtDate(ar, day, .day));
     try testing.expectEqualStrings("الأحد، ١٨ أكتوبر ٢٠٢٦", try fmtDate(ar, day, .full));
+    try testing.expectEqualStrings("١٨ أكتوبر", try fmtDate(ar, day, .month_day));
+    try testing.expectEqualStrings("٣ نوفمبر ٢٠٢٥", try fmtDate(ar, Date.toDays(.{ .year = 2025, .month = 11, .day = 3 }), .month_day_year));
     try testing.expectEqual(@as(u3, 6), ar.first_day);
     const he = Locale.find("he");
     try testing.expectEqualStrings("אוקטובר 2026", try fmtDate(he, day, .month_year));

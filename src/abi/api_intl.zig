@@ -1,7 +1,8 @@
-//! The internationalization part of the API schema (D21): numbers as the
-//! application's language writes them, its plural rules, and gettext
-//! message catalogs. api.zig appends these declarations and functions to
-//! its own; the conventions are schema.zig's. Implemented in intl.zig.
+//! The internationalization part of the API schema (D21): numbers and
+//! durations in the past as the application's language writes them, its
+//! plural rules, and gettext message catalogs. api.zig appends these
+//! declarations and functions to its own; the conventions are
+//! schema.zig's. Implemented in intl.zig.
 
 const std = @import("std");
 const schema = @import("schema.zig");
@@ -69,6 +70,11 @@ pub const decls = [_]Decl{
         .{ .name = "many", .value = 4, .doc = "Many (Russian 5 to 20, Arabic 11 to 99, French 1000000)." },
         .{ .name = "other", .value = 5, .doc = "Everything else (English 0, 2, and 1.0)." },
     }),
+    enumeration("siv_time_ago_style", "How siv_app_format_time_ago writes a duration in the past: CLDR's widths of relative times (D21).", &.{
+        .{ .name = "long", .value = 0, .doc = "For a sentence: \"3 hours ago\", \"vor 3 Stunden\" (de), \"3 時間前\" (ja)." },
+        .{ .name = "short", .value = 1, .doc = "Abbreviated: \"3 hr. ago\", \"vor 3 Std.\" (de)." },
+        .{ .name = "narrow", .value = 2, .doc = "For a list's column: \"3h ago\", \"vor 3 Std.\" (de), \"3時間前\" (ja); as long as short where the locale abbreviates no further." },
+    }),
     descriptor("siv_translation_desc", "A message for siv_app_translate (D21): gettext's msgctxt, msgid, msgid_plural, and count.", &.{
         .{ .name = "domain", .type = .string, .doc = "The text domain (siv_app_bind_text_domain); empty is the first one bound." },
         .{ .name = "context", .type = .string, .doc = "The context that tells identical messages apart (msgctxt): \"verb\" for \"Close\"; empty for none." },
@@ -97,6 +103,11 @@ pub const functions = [_]Function{
         format_param,
         p("category", out(ref("siv_plural_category")), "Its category."),
     }),
+    call("siv_app_format_time_ago", "Writes how long ago something happened as the application's language does, from CLDR's past relative-time patterns (D21): \"3 hours ago\", \"vor 3 Stunden\", \"قبل ٣ ساعات\" (ar-EG). The duration picks the unit, the largest it holds a whole one of, counted down: seconds, then minutes from 60 s, hours from 60 min, days from 24 h, weeks from 7 days, months from 30.44 days (a twelfth of 365.2425), and years from 365.2425 days; so 59 minutes is \"59 minutes ago\" and 90 minutes \"1 hour ago\". The count is in the locale's digits and grouping, with the pattern for its plural category. Zero is the locale's word for now (\"now\", \"jetzt\"); pass the duration rounded down to whole minutes for a label that changes once a minute. Days are counted as 24 hours, not calendar days, so it never says \"yesterday\". Languages fall back as siv_app_format_date's do.", &([_]Param{
+        app_param,
+        p("seconds", .u64, "How long ago, in seconds; a time in the future (a clock that is ahead) should pass 0."),
+        p("style", ref("siv_time_ago_style"), "Long, short, or narrow."),
+    } ++ buffer_out)),
     call("siv_app_bind_text_domain", "Says where a text domain's gettext message catalogs are (D21), as bindtextdomain does: siv_app_translate reads <directory>/<ll_CC>/LC_MESSAGES/<domain>.mo, else <ll>, for the application's language (\"pt-BR\" tries pt_BR, then pt; \"sr-Latn-RS\" sr_RS@latin, sr@latin, sr_RS, sr), when it first needs one and again after the language changes. Catalogs must be UTF-8. Binding a domain again changes its directory; an empty directory forgets it. The first domain bound is the default.", &.{
         app_param,
         p("domain", .string, "The domain, usually the application's name: \"notes\". Not empty, without '/' (SIV_ERROR_INVALID_ARGUMENT otherwise)."),

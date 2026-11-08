@@ -87,6 +87,8 @@ pub const decls = [_]Decl{
         .{ .name = "weekday_short", .value = 8, .doc = "The weekday's short name, a calendar's column heading: \"Su\", \"So\"." },
         .{ .name = "year", .value = 9, .doc = "The year as a number in the locale's digits." },
         .{ .name = "weekday_narrow", .value = 10, .doc = "The weekday's narrowest name, for a calendar's column where the short one does not fit: \"S\", \"س\"." },
+        .{ .name = "month_day", .value = 11, .doc = "The day and the month's short name, without the year (CLDR's MMMd), for dates in the current year: \"Oct 18\", \"18. Okt.\" (de), \"10月18日\" (ja), \"١٨ أكتوبر\" (ar-EG)." },
+        .{ .name = "month_day_year", .value = 12, .doc = "month_day with the year (CLDR's yMMMd), for dates in other years: \"Nov 3, 2025\", \"3. Nov. 2025\" (de), \"2025年11月3日\" (ja), where medium may be numeric (\"03.11.2025\", \"2025/11/03\")." },
     }),
     enumeration("siv_time_style", "How siv_app_format_time writes a time of day (D21).", &.{
         .{ .name = "short", .value = 0, .doc = "Hours and minutes: \"10:30 PM\", \"22:30\", \"오후 10:30\"." },

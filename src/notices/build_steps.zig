@@ -75,7 +75,7 @@ const entries = [_]Entry{
     .{ .title = "wayland-protocols (MIT)", .package = "wayland_protocols", .files = &.{"COPYING"} },
     .{ .title = "wlr-protocols (HPND)", .package = "wlr_protocols", .siv_files = &.{"src/notices/wlr-protocols-LICENSE.txt"} },
     .{ .title = "Unicode CLDR supplemental data (Unicode License v3)", .package = "cldr_core", .files = &.{"LICENSE"} },
-    .{ .title = "Unicode CLDR calendars (Unicode License v3)", .package = "cldr_dates", .files = &.{"LICENSE"} },
+    .{ .title = "Unicode CLDR calendars and relative times (Unicode License v3)", .package = "cldr_dates", .files = &.{"LICENSE"} },
     .{ .title = "Unicode CLDR number formats (Unicode License v3)", .package = "cldr_numbers", .files = &.{"LICENSE"} },
     .{ .title = "Unicode CLDR units (Unicode License v3)", .package = "cldr_units", .files = &.{"LICENSE"} },
     .{ .title = "Unicode emoji data, emoji-test.txt (Unicode License v3)", .siv_files = &.{ "src/intl/emoji/README.md", "src/notices/unicode-LICENSE.txt" } },
