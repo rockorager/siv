@@ -542,6 +542,9 @@ pub const Tree = struct {
         if (c.eql(l.offset)) return;
         l.offset = c;
         l.scroll_version +%= 1;
+        // The thumbs move: their layer redraws, since the children's
+        // damage need not reach under them (a margin at the end edge).
+        l.bar_version +%= 1;
         try t.revealBars(id);
         if (report) try t.markScrolled(id);
     }
@@ -568,6 +571,7 @@ pub const Tree = struct {
         };
         l.zoom = z;
         l.scroll_version +%= 1;
+        l.bar_version +%= 1;
         l.offset = clampOffset(s, z, off);
         try t.revealBars(id);
         if (report) try t.markScrolled(id);
@@ -1693,6 +1697,43 @@ test "scrollbars show on scrolling and pointer motion, widen near it, and fade w
     _ = try f.tree.tick(13_100 * ms);
     try testing.expectEqual(@as(f32, 1), l.bar_shown);
     try testing.expectEqual(@as(f32, 1), l.bar_wide[0]);
+}
+
+test "scrolling redraws the thumbs where the children draw nothing" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    // The child keeps a 20 px margin at the end edge, under the bar, as
+    // parcel's reader does: its damage does not reach the thumb.
+    const s: update.Scroll = .{ .viewport = .xywh(0, 0, 100, 100), .content = .{ .width = 100, .height = 400 }, .bars = .{ .vertical = true, .always = true, .thumb = .black, .thumb_hover = .black } };
+    try f.apply(&.{
+        .{ .create = 1 },
+        .{ .create = 2 },
+        .{ .create = 3 },
+        .{ .set_root = 1 },
+        .{ .insert = .{ .layer = 2, .parent = 1 } },
+        .{ .insert = .{ .layer = 3, .parent = 2 } },
+        .{ .set_scroll = .{ .layer = 2, .scroll = s } },
+        .{ .set_content = .{ .layer = 3, .content = try f.rect(0, .xywh(0, 0, 80, 400)) } },
+    });
+    _ = try f.tree.tick(0);
+    _ = try f.frame();
+    // Scrolled by the compositor (a wheel, a glide, a held key) and by
+    // the application: the thumb's old and new places are damaged.
+    for ([_]bool{ false, true }) |scroll_to| {
+        const from = f.tree.get(2).?.offset;
+        if (scroll_to) {
+            try f.apply(&.{.{ .scroll_to = .{ .layer = 2, .offset = .zero } }});
+        } else _ = try f.tree.scrollBy(2, .{ .x = 0, .y = 150 });
+        _ = try f.tree.tick(0);
+        const damage = try f.frame();
+        for ([_]Point{ from, f.tree.get(2).?.offset }) |at| {
+            const thumb = s.barsAt(1, at)[0].?.thumb.roundOut();
+            for (damage) |d| {
+                if (d.contains(thumb)) break;
+            } else return error.ThumbNotDamaged;
+        }
+    }
 }
 
 test "a scroll container's viewport takes scroll input where nothing is drawn" {

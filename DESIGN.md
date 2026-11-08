@@ -9637,7 +9637,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     side, always, the dragged bar, motion, colors). Bars are scene
     layers of their own over the content (id `layer | 1 << 30`, so
     layer ids stay below 2^30); a change of the bar properties alone
-    damages no content.
+    damages no content, and a change of the offset or zoom redraws the
+    bars' layer as well as the content, whose damage need not reach
+    under them (parcel's reader keeps a margin there).
   - **Accessibility** (D18): each overflowing bar is an AT-SPI
     `scroll bar` object (role `scroll_bar`) after the scroll node's
     children, with the vertical or horizontal state, its track as
@@ -9656,8 +9658,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     application's own `scroll_to`, against goldens
     (`scrollbar-hover.png`, `scrollbar-drag.png`, `scrollbar-always.png`,
     `scrollbar-rtl-dark-hc.png`), and a gutter that rows end before, with
-    a press beside it reaching the row (`scrollbar-gutter.png`); a
-    scrolled editor (`editor-scrolled.png`). The application's scrolling
+    a press beside it reaching the row (`scrollbar-gutter.png`); thumbs
+    redrawn when the content scrolls under a margin that draws nothing;
+    a scrolled editor (`editor-scrolled.png`). The application's scrolling
     (`test/ui/golden.zig`, `test/abi/input.zig`): lines after a value
     set through AT-SPI, a page added to wheel scrolling the UI had not
     heard of, order and clamping within a transaction, edges (of content
