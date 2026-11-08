@@ -518,3 +518,135 @@ test "C API docview: :hover restyles what the pointer is over, and links show th
     defer testing.allocator.free(img);
     try testing.expectEqual(0, Count.of(img, cell, 2));
 }
+
+test "C API docview: flags change in place, keeping the place, open quotes, selection, and images" {
+    var h: Harness = .{};
+    try h.start(300, 150, null, null);
+    defer h.stop();
+    const Loader = struct {
+        var requests: u32 = 0;
+        var remote: u32 = 0;
+        fn onLoad(_: ?*anyopaque, node: t.Node, request: u32, url: ?[*]const u8, len: usize, _: t.ResourceKind) callconv(.c) void {
+            requests += 1;
+            const u = url.?[0..len];
+            if (std.mem.startsWith(u8, u, "https:")) remote += 1;
+            const svg = "<svg xmlns='http://www.w3.org/2000/svg' width='40' height='20'><rect width='40' height='20' fill='#2a7'/></svg>";
+            const data: []const u8 = if (std.mem.eql(u8, u, "cid:logo")) svg else "";
+            ok(D.siv_docview_supply(node, request, data.ptr, data.len)) catch unreachable;
+        }
+    };
+    // Mail with colors of its own, so that a dark preference converts it.
+    const mail =
+        \\<body style="margin: 8px; background: white; color: black"><p>See you then.</p>
+        \\<div class="gmail_quote"><div>On Mon, Ann wrote:</div><blockquote class="gmail_quote">Lunch at noon?<br>Ann</blockquote></div>
+        \\<p><img src="cid:logo" alt="logo" width=40 height=20><img src="https://tracker.example/p.gif" width=1 height=1>
+        \\<p style="height: 400px">Tall</p><p>End</p>
+    ;
+    const created: t.DocviewFlags = .{ .untrusted = true, .collapse_quotes = true };
+    var ev: Events = .{};
+    const root = A.siv_window_get_root(h.window);
+    var txn: t.Txn = .null;
+    try ok(T.siv_txn_begin(h.window, &txn));
+    const sc = T.siv_scroll(txn, root, .vertical);
+    _ = T.siv_set_layout(txn, sc, &.{ .size = @sizeOf(t.LayoutDesc), .width = .{ .unit = .fraction, .value = 1 }, .height = .{ .unit = .fraction, .value = 1 } });
+    const node = D.siv_docview(txn, sc, &.{
+        .source = mail.ptr,
+        .source_count = mail.len,
+        .base_url = "cid:",
+        .base_url_len = 4,
+        .kind = .html,
+        .color_scheme = .dark,
+        .flags = created,
+        .user_data = &ev,
+        .on_event = Events.onEvent,
+        .load = Loader.onLoad,
+    });
+    try ok(T.siv_txn_commit(txn));
+    try waitLoaded(&h, &ev, 1);
+    try testing.expectEqual(@as(u32, 1), ev.blocked);
+
+    // The reader opens the quote, selects, and scrolls down.
+    const w = try h.win();
+    const toggle = (try w.uiWin().semanticsTree()).find(.link, "\u{2022}\u{2022}\u{2022}") orelse return error.NoToggle;
+    try h.click((toggle.bounds.x0 + toggle.bounds.x1) / 2, (toggle.bounds.y0 + toggle.bounds.y1) / 2);
+    try waitLoaded(&h, &ev, ev.loaded + 1);
+    try ok(D.siv_docview_select_all(node));
+    var before: [256]u8 = undefined;
+    var before_len: usize = 0;
+    try ok(D.siv_docview_get_selection(node, &before, before.len, &before_len));
+    try testing.expect(std.mem.indexOf(u8, before[0..before_len], "Lunch at noon?") != null);
+    try ok(T.siv_txn_begin(h.window, &txn));
+    T.siv_scroll_to(txn, sc, 0, 100);
+    try ok(T.siv_txn_commit(txn));
+    try h.settle();
+    const original = try h.capture();
+    defer testing.allocator.free(original);
+    const loaded = ev.loaded;
+    const requests = Loader.requests;
+    try testing.expect(requests > 0);
+
+    // The right margin, in the page's color.
+    const margin = struct {
+        fn f(img: []const u8) [3]u8 {
+            const px = img[(140 * 300 + 296) * 4 ..][0..3];
+            return px.*;
+        }
+    }.f;
+    try testing.expectEqual([3]u8{ 255, 255, 255 }, margin(original));
+
+    // Converting repaints: the page turns the stock dark background, and
+    // nothing is parsed, styled, laid out, or loaded again.
+    var on = created;
+    on.convert_colors = true;
+    try ok(D.siv_docview_set_flags(node, on));
+    try h.settle();
+    const converted = try h.capture();
+    defer testing.allocator.free(converted);
+    try testing.expectEqual([3]u8{ 0x1e, 0x1e, 0x1e }, margin(converted));
+    try testing.expectEqual(loaded, ev.loaded);
+    try testing.expectEqual(requests, Loader.requests);
+    var after: [256]u8 = undefined;
+    var after_len: usize = 0;
+    try ok(D.siv_docview_get_selection(node, &after, after.len, &after_len));
+    try testing.expectEqualStrings(before[0..before_len], after[0..after_len]);
+    var ox: f32 = 0;
+    var oy: f32 = 0;
+    try ok(T.siv_scroll_get_offset(sc, &ox, &oy));
+    try testing.expectEqual(@as(f32, 100), oy);
+
+    // And back: what showed before, exactly.
+    try ok(D.siv_docview_set_flags(node, created));
+    try h.settle();
+    const back = try h.capture();
+    defer testing.allocator.free(back);
+    try testing.expectEqualSlices(u8, original, back);
+
+    // Flags that parsing or page layout used are fixed: the call fails
+    // and changes nothing, convert_colors with them included.
+    for ([_]t.DocviewFlags{
+        .{ .collapse_quotes = true, .convert_colors = true },
+        .{ .untrusted = true, .convert_colors = true },
+        .{ .untrusted = true, .collapse_quotes = true, .no_author_styles = true },
+        .{ .untrusted = true, .collapse_quotes = true, .paged = true },
+        .{ .untrusted = true, .collapse_quotes = true, .reading = true },
+    }) |fl| try testing.expectEqual(t.Result.error_invalid_argument, D.siv_docview_set_flags(node, fl));
+    try testing.expectEqual(t.Result.error_unsupported, D.siv_docview_set_flags(node, @bitCast(@as(u32, 1 << 20))));
+    try testing.expectEqual(t.Result.error_invalid_argument, D.siv_docview_set_flags(root, created));
+    try h.settle();
+    const unchanged = try h.capture();
+    defer testing.allocator.free(unchanged);
+    try testing.expectEqualSlices(u8, original, unchanged);
+
+    // Remote images can be allowed later, as siv_docview_load_images
+    // allows them, but not taken back.
+    var remote = created;
+    remote.remote_images = true;
+    try ok(D.siv_docview_set_flags(node, remote));
+    const deadline = Loop.now() + 10 * std.time.ns_per_s;
+    while (Loader.remote < 1) {
+        if (Loop.now() > deadline) return error.Timeout;
+        try ok(A.siv_app_dispatch(h.app, 2));
+    }
+    try h.settle();
+    try testing.expectEqual(t.Result.error_invalid_argument, D.siv_docview_set_flags(node, created));
+}

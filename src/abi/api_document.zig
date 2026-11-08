@@ -69,7 +69,7 @@ pub const decls = [_]Decl{
         .{ .name = "light", .value = 1, .doc = "Light: black on white, as browsers show documents." },
         .{ .name = "dark", .value = 2, .doc = "Dark: light text on a dark background where the document allows it, and prefers-color-scheme: dark." },
     }),
-    flags("siv_docview_flags", "Document options.", &.{
+    flags("siv_docview_flags", "Document options, given at creation; siv_docview_set_flags changes convert_colors and turns remote_images on later.", &.{
         .{ .name = "remote_images", .bit = 0, .doc = "Ask the loader for remote (http, https) images, style sheets, and fonts. Without it they are blocked, a blocked_images event counts them, and siv_docview_load_images asks for them later: the policy for email." },
         .{ .name = "no_author_styles", .bit = 1, .doc = "Ignore the document's own style sheets and style attributes." },
         .{ .name = "untrusted", .bit = 2, .doc = "The HTML comes from a stranger (email): scripts, embedded frames and objects, links with schemes other than http, https, mailto, tel, cid, mid, news, and ftp, <base>, and <meta http-equiv> are dropped, and nothing is positioned over the page." },
@@ -224,6 +224,9 @@ pub const functions = [_]Function{
     }),
     call("siv_docview_set_user_css", "Replaces the application's style sheet (siv_docview_desc.user_css), as when the user picks another face, size, leading, or justification; the document is styled and laid out again at the same reading position. The reading defaults stay before it.", &.{
         p("css", .string, "The style sheet."),
+    }),
+    call("siv_docview_set_flags", "Changes a document's flags (siv_docview_desc.flags) in place, keeping the reading position, the quotes the user opened, and the images loaded: for a reader's switch between converted and original colors. Pass every flag, changed or not. convert_colors changes either way, and only repaints, so the selection and find stay too. remote_images can be turned on, which asks the loader for what the policy blocked, as siv_docview_load_images does (the document is styled again, which clears the selection); turning it off is SIV_ERROR_INVALID_ARGUMENT, since what was fetched has been seen by its sender. The others are fixed when the document is created, because parsing or the page layout used them: changing untrusted, no_author_styles, collapse_quotes, paged, spread, or reading is SIV_ERROR_INVALID_ARGUMENT and changes nothing; create another document for those.", &.{
+        p("flags", ref("siv_docview_flags"), "The flags: the current ones, with those to change."),
     }),
     call("siv_docview_get_element_html", "The markup of the element with an id, such as a footnote a noteref link points to, to show in a popup. SIV_ERROR_INVALID_ARGUMENT when there is none." ++ busy, &.{
         p("id", .string, "The id, without '#'."),

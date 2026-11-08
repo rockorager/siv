@@ -6889,10 +6889,38 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     callback (link activation, loaded, size, find results, selection,
     blocked remote images). Calls: supply, load the blocked images, find
     (next and previous), selected text, select all, scroll to a
-    fragment, locator at a y and the y of a locator, title. The node
+    fragment, locator at a y and the y of a locator, title, the user
+    style sheet, and the flags. The node
     sizes to its content at its width; applications put it in a scroll
     node. `siv_docview_*` is named so because the document portal owns
     `siv_document_*` (D19).
+  - **Flags after creation** (`siv_docview_set_flags`): a reader
+    switches an open message between converted and original colors, and
+    re-creating the node for it parsed the mail again, lost the scroll
+    position, and closed the quotes the user had opened. The call takes
+    the whole set and changes in place only what can change without
+    parsing again. `convert_colors` changes either way and repaints, as
+    the conversion happens at paint time (below): the position, open
+    quotes, the selection, find, and loaded images stay, and nothing is
+    styled, laid out, or loaded again. `remote_images` can be turned on,
+    which is `siv_docview_load_images` (styled again with the blocked
+    resources asked for; quotes, position, and images stay, the
+    selection goes, as with a quote's toggle); turning it off is refused
+    (`SIV_ERROR_INVALID_ARGUMENT`), since what was fetched has told its
+    sender already and unloading images would only hide that. The rest
+    are fixed at creation and refused when they differ, with nothing
+    changed: `untrusted` (sanitizing happens at parse time; loosening it
+    would trust markup already judged a stranger's, and tightening it
+    would mean parsing again, which is what re-creating does),
+    `collapse_quotes` (it wraps the quotes in the DOM at parse time),
+    `no_author_styles` (author sheets are collected, and linked ones
+    requested, at parse time), and `paged`, `spread`, and `reading`,
+    which decide how the node measures and lays out pages and add the
+    reading style sheet; an e-reader re-creates the chapter's node for
+    those, keeping its place with `siv_docview_get_position`. `spread`
+    could change in place by breaking the pages again; nothing has asked
+    for it. Applications pass the flags they created the node with,
+    changed; refused calls change nothing, so a mistake shows at once.
   - **Email** (`src/doc/email.zig`): `siv_docview_flags.untrusted`
     drops scripts, embedded frames and objects, links whose scheme is not
     http, https, mailto, tel, cid, mid, news, or ftp, `<base>`, and
@@ -6989,7 +7017,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     (the stock dark ones without a theme), partial inversion as Outlook
     and the Gmail app do it. It applies to computed colors as they are
     painted, so style sheets, classes, inheritance, and
-    `currentcolor` are all covered, and turning it on only repaints. In
+    `currentcolor` are all covered, and turning it on or off
+    (`siv_docview_set_flags`) only repaints. In
     OKLab: a background lighter than a pivot gets lightness
     `bg + 1.4 × (1 − L)` (plus a little for chroma, so a yellow button
     stays golden), keeping its hue and 80 % of its chroma, neutral ones
@@ -7011,7 +7040,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     Tests: `test/abi/docview.zig` renders mail fixtures modelled on
     Outlook mobile, a notification, a newsletter, bare and plain-text
     mail, and a mail with dark styles (`test/doc/email/schemes`) under
-    Omarchy's Tokyo Night and the stock light theme.
+    Omarchy's Tokyo Night and the stock light theme, and converts an
+    open mail in place and back: the same pixels as before, with its
+    opened quote, selection, scroll offset, and image kept and no
+    layout or load again; fixed flags refused, remote images allowed
+    later but not taken back.
   - **E-books.** `epub` (no imports): a zip reader (stored and deflated
     entries through `std.compress.flate`; siv had none), a small XML pull
     tokenizer, and EPUB 2 and 3 packages: `META-INF/container.xml`, the

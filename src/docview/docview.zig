@@ -599,6 +599,16 @@ pub const View = struct {
         v.reparse();
     }
 
+    /// Converts a light document's colors to dark ones, or stops
+    /// (`Options.convert_colors`). Colors convert as they are painted, so
+    /// this repaints and nothing else: the reading position, open quotes,
+    /// the selection, find, and images stay as they are.
+    pub fn setConvertColors(v: *View, on: bool) void {
+        if (v.options.convert_colors == on) return;
+        v.options.convert_colors = on;
+        v.repaint();
+    }
+
     fn reparse(v: *View) void {
         v.want_reparse = false;
         if (v.d) |d| d.destroy();

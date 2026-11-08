@@ -73,6 +73,7 @@ const stub = struct {
         }
         pub fn positionLocator(_: *View, _: *std.ArrayList(u8)) error{OutOfMemory}!void {}
         pub fn setUserCss(_: *View, _: []const u8) error{OutOfMemory}!void {}
+        pub fn setConvertColors(_: *View, _: bool) void {}
         pub fn elementHtml(_: *View, _: []const u8, _: *std.ArrayList(u8)) error{OutOfMemory}!bool {
             return false;
         }
@@ -129,6 +130,9 @@ const Doc = struct {
     destroy: ?t.DestroyFn,
     user_data: ?*anyopaque,
     epub: ?*Epub = null,
+    /// The flags as created, and as siv_docview_set_flags and
+    /// siv_docview_load_images changed them since.
+    flags: t.DocviewFlags,
 
     fn node(d: *Doc) t.Node {
         return @fromBackingInt(d.w.nodes.handle(d.id));
@@ -212,7 +216,7 @@ fn create(w: *Window, parent: t.Node, ptr: ?*const t.DocviewDesc) Error!NodeId {
     const id = try tree.create(w, parent, .canvas);
     const d = try gpa.create(Doc);
     errdefer gpa.destroy(d);
-    d.* = .{ .app = self, .w = w, .id = id, .view = undefined, .load = desc.load, .on_event = desc.on_event, .destroy = desc.destroy, .user_data = desc.user_data };
+    d.* = .{ .app = self, .w = w, .id = id, .view = undefined, .load = desc.load, .on_event = desc.on_event, .destroy = desc.destroy, .user_data = desc.user_data, .flags = fl };
     if (pub_) |e| {
         e.refs += 1;
         d.epub = e;
@@ -294,7 +298,9 @@ pub export fn siv_docview_supply(node: t.Node, request: u32, data: ?[*]const u8,
 pub export fn siv_docview_load_images(node: t.Node) t.Result {
     return application.wrap(struct {
         fn f(n: t.Node) Error!void {
-            (try docOf(n)).view.loadImages();
+            const d = try docOf(n);
+            d.flags.remote_images = true;
+            d.view.loadImages();
         }
     }.f(node));
 }
@@ -539,6 +545,27 @@ pub export fn siv_docview_set_user_css(node: t.Node, css: ?[*]const u8, css_len:
             try (try docOf(n)).view.setUserCss(s);
         }
     }.f(node, css, css_len));
+}
+
+/// Flags that only the document's creation can set (D32): what parsing
+/// (sanitizing, wrapping quotes, collecting style sheets) and the page
+/// geometry and reading style sheet already used.
+const fixed_flags: t.DocviewFlags = .{ .no_author_styles = true, .untrusted = true, .collapse_quotes = true, .paged = true, .spread = true, .reading = true };
+
+pub export fn siv_docview_set_flags(node: t.Node, flags: t.DocviewFlags) t.Result {
+    return application.wrap(struct {
+        fn f(n: t.Node, raw: t.DocviewFlags) Error!void {
+            const d = try docOf(n);
+            const fl = try runtime.flags(t.DocviewFlags, raw);
+            const changed = @as(u32, @bitCast(fl)) ^ @as(u32, @bitCast(d.flags));
+            if (changed & @as(u32, @bitCast(fixed_flags)) != 0) return error.InvalidArgument;
+            // What was fetched was seen by its sender.
+            if (d.flags.remote_images and !fl.remote_images) return error.InvalidArgument;
+            d.flags = fl;
+            d.view.setConvertColors(fl.convert_colors);
+            if (fl.remote_images) d.view.loadImages();
+        }
+    }.f(node, flags));
 }
 
 pub export fn siv_docview_get_element_html(node: t.Node, id: ?[*]const u8, id_len: usize, html: ?[*]u8, html_cap: usize, len: ?*usize) t.Result {
