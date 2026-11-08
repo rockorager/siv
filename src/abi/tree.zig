@@ -1998,6 +1998,43 @@ pub export fn siv_node_get_rect(node: t.Node, rect: ?*t.Rect) t.Result {
     }.f(node, rect));
 }
 
+pub export fn siv_scroll_get_offset(node: t.Node, x: ?*f32, y: ?*f32) t.Result {
+    return application.wrap(struct {
+        fn f(n: t.Node, xp: ?*f32, yp: ?*f32) Error!void {
+            const w, const id = try lookup(n);
+            const dx = try runtime.out(f32, xp);
+            const dy = try runtime.out(f32, yp);
+            const uw = w.uiWin();
+            if (uw.node(id).kind != .scroll) return error.InvalidArgument;
+            // What the compositor last reported, or the UI last applied
+            // (`Window.scrolled`), as viewport handlers hear it, clamped
+            // as the compositor clamps it (`paint.scrollTranslation`): an
+            // offset set past the end stays in the tree.
+            const v = uw.viewportOf(id);
+            const s = uw.state(id);
+            dx.* = std.math.clamp(v.x, 0, @max(0, s.content.w * v.zoom - v.width));
+            dy.* = std.math.clamp(v.y, 0, @max(0, s.content.h * v.zoom - v.height));
+        }
+    }.f(node, x, y));
+}
+
+pub export fn siv_scroll_get_sizes(node: t.Node, viewport: ?*t.Size, content: ?*t.Size) t.Result {
+    return application.wrap(struct {
+        fn f(n: t.Node, vp: ?*t.Size, cp: ?*t.Size) Error!void {
+            const w, const id = try lookup(n);
+            const dv = try runtime.out(t.Size, vp);
+            const dc = try runtime.out(t.Size, cp);
+            const uw = w.uiWin();
+            const un = uw.node(id);
+            if (un.kind != .scroll) return error.InvalidArgument;
+            const v = uw.viewportOf(id);
+            const s = uw.state(id);
+            dv.* = .{ .width = v.width, .height = v.height };
+            dc.* = .{ .width = s.content.w * v.zoom, .height = s.content.h * v.zoom };
+        }
+    }.f(node, viewport, content));
+}
+
 pub export fn siv_node_get_data(node: t.Node, key: ?*anyopaque, data: ?*?*anyopaque) t.Result {
     return application.wrap(struct {
         fn f(n: t.Node, k: ?*anyopaque, out: ?*?*anyopaque) Error!void {

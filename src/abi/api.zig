@@ -2133,6 +2133,16 @@ pub const functions = [_]Function{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
         .{ .name = "rect", .type = out(ref("siv_rect")), .doc = "The box." },
     }),
+    call("siv_scroll_get_offset", "A scroll node's offset as siv_scroll_to takes it (from the start, logical: in right-to-left layouts x grows leftward; in zoomed pixels), to save where the reader was and restore it later. It is where the node is, not where it is heading: the offset the compositor last reported (D8), so during a glide or a fling a point on the way, at most a frame old. Scrolls the application asks for count once siv applies them: siv_scroll_to's at once; siv_scroll_by's, siv_scroll_to_edge's, and siv_scroll_into_view's at the frame that applies them, as their target until the compositor's first report of the glide there. Clamped to the content as last laid out (an offset set past the end reads as the end), and 0 before the first layout; otherwise the offset the viewport event reports.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "A scroll node." },
+        .{ .name = "x", .type = out(.f32), .doc = "Horizontal offset." },
+        .{ .name = "y", .type = out(.f32), .doc = "Vertical offset." },
+    }),
+    call("siv_scroll_get_sizes", "A scroll node's viewport and content sizes as of the last layout (zero before its first): the largest offset on each axis is the content's size less the viewport's.", &.{
+        .{ .name = "node", .type = ref("siv_node"), .doc = "A scroll node." },
+        .{ .name = "viewport", .type = out(ref("siv_size")), .doc = "What shows: the node's box inside its padding, as the viewport event's width and height." },
+        .{ .name = "content", .type = out(ref("siv_size")), .doc = "The content's size, zoomed (siv_set_scroll_zoom_range)." },
+    }),
     call("siv_node_focus", "Moves keyboard focus to a node that can take it (SIV_SEMANTICS_FOCUSABLE, or an editor), or for a widget whose interface chooses (siv_widget_desc.focus: a view's cursor row, the selected tab or radio) to the node it chooses. It shows the focus ring when the window's latest input was a key, as focus that Tab moves does, so focus moved from a key handler (arrow keys in a composite widget) is marked and focus moved after a click is not. Its focus handler runs before this returns. Not from a canvas callback (SIV_ERROR_BUSY).", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
     }),

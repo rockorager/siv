@@ -9595,7 +9595,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     application keeps no copy of the offset, and neither a drag, a
     track press, assistive technology, nor the wheel is undone by its
     next scroll. `siv_scroll_to` stays for setting an offset, such as
-    restoring one saved.
+    restoring one saved, and `siv_scroll_get_offset` reads one to save
+    (a mail reader keeping each message's place): the offset the UI
+    knows, so the current position the compositor last reported, a
+    point on the way during a glide or fling rather than its target
+    (the target only from the frame that asks for it until the glide's
+    first report), clamped to the content as last laid out, since an
+    offset `siv_scroll_to` set past the end stays in the tree. Reading
+    the compositor's own offset across threads would save at most a
+    frame. `siv_scroll_get_sizes` gives the viewport and the zoomed
+    content size of the last layout, from which the largest offset
+    follows.
   - **Idle.** Bars appear when the content scrolls (by the compositor,
     a drag, keys, `scroll_to`, a zoom) or the pointer moves over the
     viewport, fade in over 200 ms, stay 2 s after the last of these
@@ -9666,7 +9676,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     heard of, order and clamping within a transaction, edges (of content
     added in the same transaction too), `scroll_to` before and after,
     aborts, and nodes shown through nested scroll nodes, one of them
-    added in the same transaction.
+    added in the same transaction; the offset and sizes read back after
+    each, clamped past the end, and on the way during a glide.
 - **Alternatives:** bars as nodes the UI lays out and paints (they would
   lag compositor scrolling while the UI is busy, against D8, and every
   view would need them); a gutter always, as classic Windows and Breeze

@@ -235,6 +235,8 @@ key that scrolls, such as j or Space, call `siv_scroll_while_held` with
 the event's keycode instead of `siv_scroll_by`: a tap moves one step,
 and held, the node scrolls on smoothly until the key comes up, as the
 arrow keys do.
+`siv_scroll_get_offset` reads where the node is, to save it (during a
+glide, where it has got to, not where it is heading), and
 `siv_scroll_to` sets an offset, such as one saved; the viewport event
 reports where the node is, for virtualized content (see
 [Lists, tables, and trees](08-lists-and-tables.md)).

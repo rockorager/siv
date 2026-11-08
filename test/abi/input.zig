@@ -158,6 +158,14 @@ test "a reader scrolls by lines, pages, and edges, and shows a node, keeping no 
     }
     try ok(c.siv_txn_commit(txn));
     try h.settle();
+    // What shows and how far it goes.
+    var vsize: t.Size = undefined;
+    var csize: t.Size = undefined;
+    try ok(c.siv_scroll_get_sizes(sc, &vsize, &csize));
+    try testing.expectEqual(t.Size{ .width = 200, .height = 100 }, vsize);
+    try testing.expectEqual(t.Size{ .width = 200, .height = 500 }, csize);
+    var ox: f32 = -1;
+    var oy: f32 = -1;
     const Step = union(enum) { by: struct { t.ScrollUnit, f32 }, edge: t.ScrollEdge, show: struct { t.Node, t.ScrollAlign } };
     const steps = [_]struct { Step, f32 }{
         .{ .{ .by = .{ .line, 1 } }, 40 }, // j
@@ -182,7 +190,23 @@ test "a reader scrolls by lines, pages, and edges, and shows a node, keeping no 
         try ok(c.siv_txn_commit(txn));
         try h.settle();
         try testing.expectEqual(step[1], view.y);
+        // The node reports where it is, for saving and restoring.
+        try ok(c.siv_scroll_get_offset(sc, &ox, &oy));
+        try testing.expectEqual(@as(f32, 0), ox);
+        try testing.expectEqual(step[1], oy);
     }
+    // An offset set comes back once laid out, clamped to the content.
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_scroll_to(txn, sc, 0, 1000);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try ok(c.siv_scroll_get_offset(sc, &ox, &oy));
+    try testing.expectEqual(@as(f32, 400), oy);
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_scroll_get_offset(column, &ox, &oy));
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_scroll_get_sizes(column, &vsize, &csize));
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_scroll_to(txn, sc, 0, 0);
+    try ok(c.siv_txn_commit(txn));
     // Only scroll nodes scroll; values from outside the enums, distances
     // that are not numbers, and options it does not know fail.
     try ok(c.siv_txn_begin(h.window, &txn));
@@ -321,6 +345,14 @@ test "keys and the application's scrolls glide to where they head and add up; re
             if (heard.n >= 2) break;
             try ok(c.siv_app_dispatch(h.app, 2));
         }
+        // Read while it glides: where it is, as the compositor last
+        // reported it (on the way unless the glide already ended), not
+        // where it heads.
+        var gx: f32 = -1;
+        var gy: f32 = -1;
+        try ok(c.siv_scroll_get_offset(sc, &gx, &gy));
+        try testing.expectEqual(heard.last(), gy);
+        try testing.expect(gy <= 40);
         try ok(c.siv_txn_begin(h.window, &txn));
         c.siv_scroll_by(txn, sc, .line, 0, 1);
         try ok(c.siv_txn_commit(txn));
