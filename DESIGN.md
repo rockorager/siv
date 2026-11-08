@@ -6807,7 +6807,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     `.protonmail_quote`, Outlook's `#divRplyFwdMsg`, `#appendonsend`, and
     the reply header with a top border that Outlook for Windows writes,
     with everything after it, and Outlook mobile's
-    `#mail-editor-reference-message-container`, header and all)) after a `•••` link to `siv:quote/N`; the
+    `#mail-editor-reference-message-container`, header and all), with
+    the attribution line before it when that is apart (Thunderbird's
+    `div.moz-cite-prefix`; else a short element or text ending in a
+    colon right before the quote, past line breaks: Fastmail's and older
+    Apple Mail's "On …, Priya wrote:", "schrieb:", "a écrit :"; Gmail,
+    Yahoo, Proton, and today's Apple Mail put it inside their quote
+    markup), after a `•••` link to `siv:quote/N`; the
     box builder leaves closed ones out, and the link toggles them and
     styles again. The toggle is drawn as siv's buttons are in the theme
     (`ButtonFace`, `ButtonBorder`, `ButtonText`, a 6 px radius), a gray

@@ -100,6 +100,8 @@ pub fn wrapQuotes(gpa: Allocator, dom: *Dom) error{OutOfMemory}![]NodeId {
     errdefer wrappers.deinit(gpa);
     for (found.items, tails.items, 0..) |q, tail, k| {
         const parent = dom.node(q).parent;
+        // The attribution line before it goes with it.
+        const start = if (tail) q else try attribution(gpa, dom, q);
         var num: [16]u8 = undefined;
         const ks = std.fmt.bufPrint(&num, "{d}", .{k}) catch unreachable;
         const href = try std.fmt.allocPrint(gpa, "siv:quote/{d}", .{k});
@@ -107,15 +109,18 @@ pub fn wrapQuotes(gpa: Allocator, dom: *Dom) error{OutOfMemory}![]NodeId {
         const toggle = try dom.createElement(.html, .a, &.{ .{ .name = .href, .value = href }, .{ .name = .class, .value = "siv-quote-toggle" }, .{ .name = .title, .value = "Show quoted text" } });
         dom.append(toggle, try dom.createText("\u{2022}\u{2022}\u{2022}"));
         const wrapper = try dom.createElement(.html, .div, &.{ .{ .name = try dom.atom("data-siv-quote"), .value = ks }, .{ .name = .class, .value = "siv-quote" } });
-        dom.insertBefore(parent, toggle, q);
-        dom.insertBefore(parent, wrapper, q);
-        // Move the quote (and for a reply header, what follows it).
-        var m = q;
+        dom.insertBefore(parent, toggle, start);
+        dom.insertBefore(parent, wrapper, start);
+        // Move the quote with its attribution (and for a reply header,
+        // what follows it).
+        var m = start;
+        var past = false;
         while (m != .none) {
             const next = dom.node(m).next;
+            past = past or m == q;
             dom.detach(m);
             dom.append(wrapper, m);
-            if (!tail) break;
+            if (past and !tail) break;
             m = next;
         }
         try wrappers.append(gpa, wrapper);
@@ -124,6 +129,34 @@ pub fn wrapQuotes(gpa: Allocator, dom: *Dom) error{OutOfMemory}![]NodeId {
 }
 
 const Kind = enum { none, block, tail };
+
+/// The attribution line ("On Tuesday, Priya wrote:") right before a quote,
+/// past line breaks and blank text, when it is apart from it: Thunderbird's
+/// `div.moz-cite-prefix`, else a short element or text ending in a colon
+/// (Fastmail's, older Apple Mail's, and most clients' in any language).
+/// The quote itself when there is none.
+fn attribution(gpa: Allocator, dom: *const Dom, q: NodeId) error{OutOfMemory}!NodeId {
+    var cur = dom.node(q).prev;
+    while (cur != .none) : (cur = dom.node(cur).prev) {
+        const n = dom.node(cur);
+        if (n.kind == .text and std.mem.trim(u8, dom.text(cur), " \t\r\n\u{a0}").len == 0) continue;
+        if (n.kind == .comment) continue;
+        if (n.kind == .element and n.ns == .html and n.name == .br) continue;
+        break;
+    }
+    if (cur == .none) return q;
+    const n = dom.node(cur);
+    if (n.kind == .element) if (dom.attr(cur, .class)) |cls| {
+        var it = std.mem.tokenizeAny(u8, cls, " \t\n");
+        while (it.next()) |c| if (std.mem.eql(u8, c, "moz-cite-prefix")) return cur;
+    };
+    if (n.kind != .text and !(n.kind == .element and n.ns == .html and (n.name == .div or n.name == .p or n.name == .span))) return q;
+    var t: std.ArrayList(u8) = .empty;
+    defer t.deinit(gpa);
+    if (n.kind == .text) try t.appendSlice(gpa, dom.text(cur)) else try dom.textContent(gpa, cur, &t);
+    const line = std.mem.trim(u8, t.items, " \t\r\n\u{a0}");
+    return if (line.len > 0 and line.len <= 300 and line[line.len - 1] == ':') cur else q;
+}
 
 fn quoteKind(dom: *const Dom, id: NodeId) Kind {
     const n = dom.node(id);
@@ -195,4 +228,67 @@ test "quotes from Gmail, Apple Mail, and Outlook are wrapped once" {
     try std.testing.expect(std.mem.indexOf(u8, q.written(), "id=\"mail-editor-reference-message-container\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, q.written(), "<b>From: </b>Cy") != null);
     try std.testing.expect(std.mem.indexOf(u8, q.written(), "Older text") != null);
+}
+
+
+test "quotes from each client go behind the toggle with their attribution line" {
+    const gpa = std.testing.allocator;
+    // Invented messages in each client's markup: the reply, then the
+    // attribution and the quote.
+    const cases = [_][]const u8{
+        // Apple Mail: the attribution inside the quote.
+        \\<div>See you there.</div><div><br><blockquote type="cite"><div>On Oct 6, 2026, at 16:12, Priya Raman &lt;priya@example.com&gt; wrote:</div><br class="Apple-interchange-newline"><div><div>Old text</div></div></blockquote></div>
+        ,
+        // Apple Mail, older versions: before it.
+        \\<div>See you there.</div><div><br><div>On Oct 6, 2026, at 16:12, Priya Raman &lt;priya@example.com&gt; wrote:</div><br class="Apple-interchange-newline"><blockquote type="cite"><div>Old text</div></blockquote></div>
+        ,
+        // Thunderbird: div.moz-cite-prefix before blockquote[type=cite].
+        \\<p>See you there.</p><div class="moz-cite-prefix">On 10/6/26 16:12, Priya Raman wrote:<br></div><blockquote type="cite" cite="mid:abc@example.com"><p>Old text</p></blockquote>
+        ,
+        // Gmail: gmail_attr inside div.gmail_quote.
+        \\<div dir="ltr">See you there.</div><br><div class="gmail_quote gmail_quote_container"><div dir="ltr" class="gmail_attr">On Tue, Oct 6, 2026 at 4:12 PM Priya Raman &lt;<a href="mailto:priya@example.com">priya@example.com</a>&gt; wrote:<br></div><blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex"><div dir="ltr">Old text</div></blockquote></div>
+        ,
+        // Yahoo: the attribution inside div.yahoo_quoted.
+        \\<div class="ydp1"><div>See you there.</div></div><div id="yahoo_quoted_123" class="yahoo_quoted"><div style="font-family:Helvetica"><div>On Tuesday, October 6, 2026 at 04:12:08 PM EDT, Priya Raman &lt;priya@example.com&gt; wrote:</div><div><br></div><div><div dir="ltr">Old text</div></div></div></div>
+        ,
+        // Proton: text inside div.protonmail_quote, before its blockquote.
+        \\<div>See you there.</div><div class="protonmail_quote">On Tuesday, October 6th, 2026 at 4:12 PM, Priya Raman &lt;priya@example.com&gt; wrote:<br><blockquote class="protonmail_quote" type="cite"><div>Old text</div></blockquote><br></div>
+        ,
+        // Fastmail: a plain div before blockquote#qt.
+        \\<div>See you there.</div><div><br></div><div>On Tue, Oct 6, 2026, at 16:12, Priya Raman wrote:</div><blockquote type="cite" id="qt" style="overflow-wrap:break-word;"><div>Old text</div></blockquote><div><br></div>
+        ,
+        // German, with the attribution as bare text before the quote.
+        \\<div>Bis dann.</div>Am 06.10.2026 um 16:12 schrieb Priya Raman:<br><blockquote type="cite">Old text</blockquote>
+        ,
+    };
+    for (cases) |src| {
+        var dom = try html.parse(gpa, src, .{});
+        defer dom.deinit();
+        const wrappers = try wrapQuotes(gpa, &dom);
+        defer gpa.free(wrappers);
+        try std.testing.expectEqual(1, wrappers.len);
+        var q: std.Io.Writer.Allocating = .init(gpa);
+        defer q.deinit();
+        try html.serialize.outer(&dom, &q.writer, wrappers[0]);
+        // What stays out: the reply and the toggle, not the attribution.
+        const quote = q.written();
+        var all: std.Io.Writer.Allocating = .init(gpa);
+        defer all.deinit();
+        try html.serialize.outer(&dom, &all.writer, dom.body());
+        const rest = try std.mem.replaceOwned(u8, gpa, all.written(), quote, "");
+        defer gpa.free(rest);
+        std.testing.expect(std.mem.indexOf(u8, quote, "Old text") != null and std.mem.indexOf(u8, quote, "Priya Raman") != null and std.mem.indexOf(u8, rest, "Priya") == null and std.mem.indexOf(u8, rest, "16:12") == null) catch |err| {
+            std.debug.print("quote: {s}\nrest: {s}\n", .{ quote, rest });
+            return err;
+        };
+        try std.testing.expect(std.mem.indexOf(u8, rest, "See you there.") != null or std.mem.indexOf(u8, rest, "Bis dann.") != null);
+    }
+    // A line ending in a colon that is not right before the quote stays.
+    var dom = try html.parse(gpa, "<div>Notes:</div><p>One</p><blockquote type=cite>Old text</blockquote>", .{});
+    defer dom.deinit();
+    const one = try wrapQuotes(gpa, &dom);
+    defer gpa.free(one);
+    try std.testing.expectEqual(1, one.len);
+    // Before its toggle: the paragraph, not the line.
+    try std.testing.expectEqual(dom.childElement(dom.body(), .p), dom.node(dom.node(one[0]).prev).prev);
 }
