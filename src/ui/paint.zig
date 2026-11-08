@@ -146,13 +146,21 @@ pub const ScrollBy = struct {
     /// The compositor glides there (keys and the application's scrolls,
     /// D47): false under reduced motion.
     smooth: bool = false,
-    /// With `smooth`, a key's press: the compositor scrolls on while the
-    /// key stays down (`Op.scroll_hold`).
+    /// With `smooth`, a key's press or a press on a scrollbar's track:
+    /// the compositor scrolls on while it stays down (`Op.scroll_hold`),
+    /// no further than `limit` (physical).
     key: ?node_mod.HeldKey = null,
+    limit: ?Point = null,
 };
 
 fn scrollOp(layer: compositor.LayerId, sb: ScrollBy) Op {
-    if (sb.smooth) if (sb.key) |k| return .{ .scroll_hold = .{ .layer = layer, .delta = sb.delta, .seat = k.seat, .keycode = k.keycode } };
+    if (sb.smooth) if (sb.key) |k| return .{ .scroll_hold = .{
+        .layer = layer,
+        .delta = sb.delta,
+        .seat = k.seat,
+        .trigger = .{ .code = k.code, .button = k.button },
+        .limit = sb.limit,
+    } };
     return .{ .scroll_by = .{ .layer = layer, .delta = sb.delta, .smooth = sb.smooth } };
 }
 

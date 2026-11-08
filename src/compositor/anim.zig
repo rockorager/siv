@@ -261,9 +261,10 @@ pub const Fling = struct {
 
 /// Smooth scrolling by keys and the application (D47): a cubic from the
 /// offset and velocity at its start to the target, where it arrives at
-/// rest after `duration_ns`. Retargeted, it starts again from where the
-/// last sample left it, moving as fast, so a held key glides at a steady
-/// speed where an ease restarted from rest would lurch at every repeat.
+/// rest after `duration_ns`, which grows with the distance (`durationFor`).
+/// Retargeted, it starts again from where the last sample left it,
+/// moving as fast, so repeated requests glide at a steady speed where an
+/// ease restarted from rest would lurch at every one.
 pub const Glide = struct {
     from: Point,
     to: Point,
@@ -275,6 +276,26 @@ pub const Glide = struct {
     duration_ns: u64 = default_ns,
 
     pub const default_ns: u64 = 120 * std.time.ns_per_ms;
+    pub const max_ns: u64 = 400 * std.time.ns_per_ms;
+    /// The longest distance that still takes `default_ns`.
+    pub const short_px: f32 = 200;
+
+    /// How long a glide over `d` takes: `default_ns` up to `short_px`
+    /// (arrows, j and k, a few lines at once), then growing with the
+    /// square root of the distance, as Chromium's programmatic scrolls
+    /// do, at about half their length, up to `max_ns`: a page takes about
+    /// 200 ms, Home and End over more than about 2200 px take 400.
+    pub fn durationFor(d: Point) u64 {
+        const px: f64 = @max(@abs(d.x), @abs(d.y));
+        if (!(px > short_px)) return default_ns;
+        const ns = @as(f64, default_ns) * @sqrt(px / short_px);
+        return @intFromFloat(@min(ns, @as(f64, max_ns)));
+    }
+
+    /// From `from` toward `to`, at rest, taking `durationFor` the way.
+    pub fn init(from: Point, to: Point) Glide {
+        return .{ .from = from, .to = to, .duration_ns = durationFor(to.sub(from)) };
+    }
 
     pub fn sample(g: *Glide, t_ns: u64) struct { offset: Point, done: bool } {
         if (g.start_ns == 0) g.start_ns = t_ns;
@@ -284,14 +305,22 @@ pub const Glide = struct {
     }
 
     /// Heads for `to` instead, from `offset` (where the last sample left
-    /// it) at the speed it moves there, taking `default_ns`.
+    /// it) at the speed it moves there, taking `durationFor` the rest of
+    /// the way.
     pub fn retarget(g: *Glide, offset: Point, to: Point) void {
         if (g.start_ns == 0) {
-            g.from = offset;
-            g.to = to;
+            g.* = .init(offset, to);
             return;
         }
-        g.* = .moving(offset, to, g.velocityNow(), g.last_ns, default_ns);
+        g.* = .moving(offset, to, g.velocityNow(), g.last_ns, durationFor(to.sub(offset)));
+    }
+
+    /// Arrives at `end_ns` instead, from where it is at `t_ns` and as
+    /// fast, unless it arrives later already.
+    pub fn stretch(g: *Glide, t_ns: u64, end_ns: u64) void {
+        if (g.start_ns == 0 or g.start_ns + g.duration_ns >= end_ns or t_ns >= end_ns) return;
+        const s = g.at(t_ns);
+        g.* = .moving(s.offset, g.to, s.velocity, t_ns, end_ns - t_ns);
     }
 
     /// From `from` at `t_ns`, moving at `velocity` (capped so that it
@@ -346,15 +375,22 @@ pub const Glide = struct {
     }
 };
 
-/// Scrolling while a key stays down (`Op.scroll_hold`, D8): from
-/// `begin_ns`, `delay_ns` after the key went down, the offset speeds up
-/// from the speed it had to `velocity` over `ramp_ns` and goes on at that speed until the key comes up (`stop`).
+/// Scrolling while a key or button stays down (`Op.scroll_hold`, D8):
+/// from `begin_ns`, `delay_ns` after it went down, the offset speeds up
+/// from the speed it had to `velocity` over `ramp_ns` and goes on at that
+/// speed until it comes up (`stop`), or until the offset reaches `limit`
+/// or the content's end.
 pub const Hold = struct {
     seat: u32,
-    keycode: u32,
+    trigger: update.Trigger,
     /// Logical pixels per second, once up to speed.
     velocity: Point,
     begin_ns: u64,
+    /// Where it stops along the axes it moves on (a scrollbar's thumb
+    /// reaching the pointer), if anywhere before the content's end.
+    limit: ?Point = null,
+    /// The press's step was made to last past `begin_ns`.
+    fitted: bool = false,
     /// Set by `start`, at the first frame from `begin_ns`.
     started: bool = false,
     start_ns: u64 = 0,
@@ -366,8 +402,23 @@ pub const Hold = struct {
     /// tap, which keeps its single step.
     pub const delay_ns: u64 = 150 * std.time.ns_per_ms;
     pub const ramp_ns: u64 = 100 * std.time.ns_per_ms;
-    /// How long it takes to stop once the key comes up.
+    /// How long after `begin_ns` the press's step arrives at the
+    /// earliest: then it still moves at about a fifth of its fastest
+    /// when the hold takes over.
+    pub const overlap_ns: u64 = 30 * std.time.ns_per_ms;
+    /// How long it takes to stop once it comes up.
     pub const stop_ns: u64 = 60 * std.time.ns_per_ms;
+    /// The fastest it goes, logical pixels per second: Page Down's page
+    /// per repeat interval would be 13 500 px/s in a 600 px view.
+    pub const max_speed: f32 = 4000;
+
+    /// The velocity for a step of `step` at `rate` steps per second,
+    /// capped at `max_speed`.
+    pub fn speedFor(step: Point, rate: f32) Point {
+        const v = step.scale(rate);
+        const len = v.length();
+        return if (len > max_speed) v.scale(max_speed / len) else v;
+    }
 
     /// Starts moving at `t_ns` from `offset` at `velocity`.
     pub fn start(h: *Hold, t_ns: u64, offset: Point, velocity: Point) void {
@@ -378,9 +429,22 @@ pub const Hold = struct {
         h.initial = velocity;
     }
 
-    pub fn sample(h: *Hold, t_ns: u64) Point {
+    /// The offset at `t_ns`, and whether it reached `limit` there (where
+    /// the offset is then, never back past where it started).
+    pub fn sample(h: *Hold, t_ns: u64) struct { offset: Point, limited: bool } {
         h.last_ns = @max(h.last_ns, t_ns);
-        return h.at(t_ns).offset;
+        var p = h.at(t_ns).offset;
+        const lim = h.limit orelse return .{ .offset = p, .limited = false };
+        const f = struct {
+            fn f(x: *f32, v: f32, l: f32, from: f32) bool {
+                if (v == 0 or (v > 0 and x.* < l) or (v < 0 and x.* > l)) return false;
+                x.* = if (v > 0) @max(l, from) else @min(l, from);
+                return true;
+            }
+        }.f;
+        const lx = f(&p.x, h.velocity.x, lim.x, h.from.x);
+        const ly = f(&p.y, h.velocity.y, lim.y, h.from.y);
+        return .{ .offset = p, .limited = lx or ly };
     }
 
     /// The velocity at the last sample.
@@ -391,11 +455,18 @@ pub const Hold = struct {
     /// The glide that stops it from `offset`, where the last sample left
     /// it: at rest within `stop_ns`, slowing all the way (a third of the
     /// way a constant speed would go, so its curve never speeds up), and
-    /// no further than the content's end, `max` (the largest offset).
+    /// no further than the content's end, `max` (the largest offset), or
+    /// `limit`.
     pub fn stop(h: *const Hold, offset: Point, max: Point) Glide {
         const v = h.velocityNow();
         const to = offset.add(v.scale(seconds(stop_ns) / 3));
-        const end: Point = .{ .x = std.math.clamp(to.x, 0, max.x), .y = std.math.clamp(to.y, 0, max.y) };
+        var end: Point = .{ .x = std.math.clamp(to.x, 0, max.x), .y = std.math.clamp(to.y, 0, max.y) };
+        if (h.limit) |lim| {
+            if (v.x > 0) end.x = @min(end.x, @max(lim.x, offset.x));
+            if (v.x < 0) end.x = @max(end.x, @min(lim.x, offset.x));
+            if (v.y > 0) end.y = @min(end.y, @max(lim.y, offset.y));
+            if (v.y < 0) end.y = @max(end.y, @min(lim.y, offset.y));
+        }
         return .moving(offset, end, v, h.last_ns, stop_ns);
     }
 

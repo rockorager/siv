@@ -1102,7 +1102,7 @@ pub const Txn = struct {
     pub fn scrollWhileHeld(t: *Txn, id: NodeId, keycode: u32, unit: node_mod.ScrollUnit, amount: node_mod.Point) Error!void {
         const n = try t.data(id, .scroll);
         if (!finite(amount.x) or !finite(amount.y)) return error.InvalidArgument;
-        const key: node_mod.HeldKey = .{ .seat = t.win.input.seat, .keycode = keycode };
+        const key: node_mod.HeldKey = .{ .seat = t.win.input.seat, .code = keycode };
         try t.request(.{ .node = id, .sets = n.data.scroll.sets, .what = .{ .by = .{ .unit = unit, .amount = amount, .key = key } } });
     }
 

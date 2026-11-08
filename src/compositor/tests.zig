@@ -454,7 +454,7 @@ test "a key still down after its scroll_hold's delay scrolls on until it comes u
     repeat.state = .repeated;
     var up = down;
     up.state = .released;
-    const press: Op = .{ .scroll_hold = .{ .layer = 2, .delta = .{ .x = 0, .y = 40 }, .seat = 0, .keycode = 116 } };
+    const press: Op = .{ .scroll_hold = .{ .layer = 2, .delta = .{ .x = 0, .y = 40 }, .seat = 0, .trigger = .{ .code = 116 } } };
     const Offset = struct {
         fn y(x: *const Harness) f32 {
             return if (x.last(.scrolled)) |e| e.scrolled.offset.y else 0;
@@ -551,6 +551,29 @@ test "a key still down after its scroll_hold's delay scrolls on until it comes u
     try h.runMs(100);
     try testing.expectEqual(left, Offset.y(&h));
     try testing.expect(left < 4960);
+
+    // A held press on a scrollbar's track scrolls on to its limit, where
+    // the thumb reaches the pointer, and stops there; then its release
+    // changes nothing.
+    hl.inject(.{ .pointer_motion = .{ .window = id, .seat = 0, .x = 95, .y = 30 } });
+    hl.inject(.{ .pointer_button = .{ .window = id, .seat = 0, .button = 0x110, .pressed = true, .time = 0, .serial = 3 } });
+    try h.run(&h, struct {
+        fn f(x: *Harness) bool {
+            for (x.events.items) |e| if (e == .platform and e.platform == .pointer_button) return true;
+            return false;
+        }
+    }.f);
+    const limit = left + 600;
+    _ = try h.comp.commit(id, &.{.{ .scroll_hold = .{ .layer = 2, .delta = .{ .x = 0, .y = 36 }, .seat = 0, .trigger = .{ .code = 0x110, .button = true }, .limit = .{ .x = 0, .y = limit } } }});
+    try h.comp.call(null, struct {
+        fn f(_: ?*anyopaque, _: *Compositor) void {}
+    }.f);
+    try h.run(&h, Offset.idle);
+    try testing.expectEqual(limit, Offset.y(&h));
+    hl.inject(.{ .pointer_button = .{ .window = id, .seat = 0, .button = 0x110, .pressed = false, .time = 0, .serial = 4 } });
+    try h.runMs(50);
+    try h.run(&h, Offset.idle);
+    try testing.expectEqual(limit, Offset.y(&h));
 }
 
 test "pinches zoom containers in the compositor unless the UI wants them; holds stop flings" {

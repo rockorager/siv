@@ -843,7 +843,7 @@ fn key(win: *Window, k: *const platform.Key) void {
             // A press of a key that steps scrolls on while it stays down
             // (D8); Home and End have nowhere further to go.
             const steps = k.keysym != keysym.home and k.keysym != keysym.end;
-            const held: ?node_mod.HeldKey = if (steps and k.state == .pressed) .{ .seat = k.seat, .keycode = k.keycode } else null;
+            const held: ?node_mod.HeldKey = if (steps and k.state == .pressed) .{ .seat = k.seat, .code = k.keycode } else null;
             win.paint.scroll_by.append(win.gpa, .{ .node = s, .delta = delta, .smooth = !win.reducedMotion(), .key = held }) catch return;
             win.dirty.props = true;
             win.requestFrame();

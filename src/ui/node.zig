@@ -632,8 +632,9 @@ pub const ScrollRequest = struct {
     },
 };
 
-/// A key on a seat, by its keycode.
-pub const HeldKey = struct { seat: u32, keycode: u32 };
+/// A key on a seat, by its keycode, or with `button` a pointer button,
+/// by its evdev code.
+pub const HeldKey = struct { seat: u32, code: u32, button: bool = false };
 
 pub const ScrollUnit = enum(u8) {
     pixel,

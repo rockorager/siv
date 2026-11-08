@@ -656,17 +656,18 @@ pub const Tree = struct {
         if (l.glide) |*g| {
             g.retarget(l.offset, to);
         } else if (hold != null and hold.?.started) {
-            l.glide = .moving(l.offset, to, hold.?.velocityNow(), hold.?.last_ns, anim.Glide.default_ns);
+            l.glide = .moving(l.offset, to, hold.?.velocityNow(), hold.?.last_ns, anim.Glide.durationFor(to.sub(l.offset)));
         } else {
             if (to.eql(l.offset)) return false;
-            l.glide = .{ .from = l.offset, .to = to };
+            l.glide = .init(l.offset, to);
         }
         try t.markAnimated(id);
         return true;
     }
 
-    /// Scrolls a container on while a key stays down (`Op.scroll_hold`),
-    /// after the step its op glides. Returns whether it is a container.
+    /// Scrolls a container on while a key or button stays down
+    /// (`Op.scroll_hold`), after the step its op glides. Returns whether
+    /// it is a container.
     pub fn holdKey(t: *Tree, id: LayerId, hold: anim.Hold) Allocator.Error!bool {
         const l = t.get(id) orelse return false;
         if (l.scroll == null) return false;
@@ -675,16 +676,20 @@ pub const Tree = struct {
         return true;
     }
 
-    /// Key `keycode` on `seat` came up, or with null the window lost the
-    /// keyboard: scrolling it held on stops, from where the last frame
-    /// showed it, within `anim.Hold.stop_ns`; one that has not started
-    /// leaves the press's step to finish. Returns whether any stopped.
-    pub fn releaseKey(t: *Tree, seat: u32, keycode: ?u32) bool {
+    /// `trigger` on `seat` came up, or with null the window lost the
+    /// keyboard (which ends the holds of keys): scrolling it held on
+    /// stops, from where the last frame showed it, within
+    /// `anim.Hold.stop_ns`; one that has not started leaves the press's
+    /// step to finish. Returns whether any stopped.
+    pub fn release(t: *Tree, seat: u32, trigger: ?update.Trigger) bool {
         var any = false;
         for (t.animated.items) |id| {
             const l = &t.layers.items[id];
             const h = l.hold orelse continue;
-            if (h.seat != seat or (keycode != null and h.keycode != keycode.?)) continue;
+            if (h.seat != seat) continue;
+            if (trigger) |tr| {
+                if (!std.meta.eql(h.trigger, tr)) continue;
+            } else if (h.trigger.button) continue;
             if (h.started) l.glide = h.stop(l.offset, maxOffset(l.scroll.?, l.zoom));
             l.hold = null;
             any = true;
@@ -967,6 +972,19 @@ pub const Tree = struct {
                     result.holding = true;
                 }
             }
+            // A press's step lasts until a little after its hold can
+            // begin, so that it still moves when the hold takes over:
+            // no frame at rest between them. A tap still ends on the step.
+            if (l.hold) |*h| if (!h.fitted) {
+                h.fitted = true;
+                if (l.glide) |*g| {
+                    if (g.start_ns == 0) {
+                        g.start_ns = t_ns;
+                        g.last_ns = t_ns;
+                    }
+                    g.stretch(t_ns, h.begin_ns + anim.Hold.overlap_ns);
+                }
+            };
             if (l.glide) |*g| {
                 const s = g.sample(t_ns);
                 try t.setOffset(id, s.offset, true);
@@ -977,17 +995,18 @@ pub const Tree = struct {
             }
             if (l.hold) |*h| {
                 // Held to the end of its delay, it takes over from the
-                // press's step, moving on at the speed that had.
+                // press's step where this frame shows it, moving on at
+                // the speed that had.
                 if (!h.started and t_ns >= h.begin_ns) {
-                    h.start(h.begin_ns, l.offset, if (l.glide) |g| g.velocityNow() else .zero);
+                    h.start(t_ns, l.offset, if (l.glide) |g| g.velocityNow() else .zero);
                     l.glide = null;
                 }
                 if (h.started) {
-                    const to = h.sample(t_ns);
-                    try t.setOffset(id, to, true);
-                    // It stops at the content's end, where the offset
-                    // clamps.
-                    if (!clampOffset(l.scroll.?, l.zoom, to).eql(to)) l.hold = null;
+                    const s = h.sample(t_ns);
+                    try t.setOffset(id, s.offset, true);
+                    // It stops at its limit, or at the content's end,
+                    // where the offset clamps.
+                    if (s.limited or !clampOffset(l.scroll.?, l.zoom, s.offset).eql(s.offset)) l.hold = null;
                 }
                 // Frames go on through the delay too, whose end needs one.
                 if (l.hold != null) {
@@ -1833,10 +1852,10 @@ test "smooth scrolls glide to their target, add up while they run, keep a held k
     try testing.expectEqualSlices(LayerId, &.{2}, f.tree.scrolled.items);
 
     // Clamped to the content: past the end it stops at the end, and from
-    // there has nowhere to go.
+    // there has nowhere to go. (900 px take 255 ms.)
     try f.apply(&.{.{ .scroll_by = .{ .layer = 2, .delta = .{ .x = 0, .y = 5000 }, .smooth = true } }});
     _ = try f.tree.tick(2000 * ms);
-    _ = try f.tree.tick(2200 * ms);
+    _ = try f.tree.tick(2300 * ms);
     try testing.expectEqual(@as(f32, 900), l.offset.y);
     try testing.expect(!try f.tree.glideBy(2, .{ .x = 0, .y = 40 }));
     try testing.expect(l.glide == null);
@@ -1871,7 +1890,56 @@ test "smooth scrolls glide to their target, add up while they run, keep a held k
     try testing.expectEqual(mid - 10, l.offset.y);
 }
 
-test "a held key's scroll goes on from its delay at a steady speed and stops on release, at the end, and for input" {
+test "glides take longer the farther they go: 120 ms up to 200 px, then with the square root, up to 400 ms" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const ms = std.time.ns_per_ms;
+    try f.apply(&.{
+        .{ .create = 1 },
+        .{ .create = 2 },
+        .{ .create = 3 },
+        .{ .set_root = 1 },
+        .{ .insert = .{ .layer = 2, .parent = 1 } },
+        .{ .insert = .{ .layer = 3, .parent = 2 } },
+        // 10 000 px of offset.
+        .{ .set_scroll = .{ .layer = 2, .scroll = .{ .viewport = .xywh(0, 0, 100, 100), .content = .{ .width = 100, .height = 10100 } } } },
+        .{ .set_content = .{ .layer = 3, .content = try f.rect(0, .xywh(0, 0, 100, 10100)) } },
+    });
+    const l = f.tree.get(2).?;
+    // A distance, and how long it takes: 120 ms · √(d / 200 px), at
+    // least 120 and at most 400.
+    const cases = [_]struct { f32, u64 }{
+        .{ 40, 120 }, // an arrow or j
+        .{ 200, 120 },
+        .{ 800, 240 },
+        .{ 540, 197 }, // Page Down in a 600 px view: 197.2 ms
+        .{ 8000, 400 }, // End
+    };
+    var t: u64 = 1000 * ms;
+    for (cases) |c| {
+        const from = l.offset.y;
+        try f.apply(&.{.{ .scroll_by = .{ .layer = 2, .delta = .{ .x = 0, .y = c[0] }, .smooth = true } }});
+        _ = try f.tree.tick(t);
+        // From rest to rest, halfway in time is halfway there.
+        _ = try f.tree.tick(t + c[1] * ms / 2);
+        try testing.expectApproxEqAbs(from + c[0] / 2, l.offset.y, c[0] * 0.01);
+        _ = try f.tree.tick(t + c[1] * ms - 2 * ms);
+        try testing.expect(l.offset.y < from + c[0]);
+        _ = try f.tree.tick(t + c[1] * ms + ms);
+        try testing.expectEqual(from + c[0], l.offset.y);
+        t += 1000 * ms;
+    }
+    // Back to the top (Home over 8780 px) in 400 ms too.
+    try f.apply(&.{.{ .scroll_by = .{ .layer = 2, .delta = .{ .x = 0, .y = -10000 }, .smooth = true } }});
+    _ = try f.tree.tick(t);
+    _ = try f.tree.tick(t + 398 * ms);
+    try testing.expect(l.offset.y > 0);
+    _ = try f.tree.tick(t + 400 * ms);
+    try testing.expectEqual(@as(f32, 0), l.offset.y);
+}
+
+test "a held key's scroll takes over from its step without a frame at rest, goes on at a steady speed, and stops on release, at the end, and for input" {
     var f: Fixture = undefined;
     f.init();
     defer f.deinit();
@@ -1889,40 +1957,54 @@ test "a held key's scroll goes on from its delay at a steady speed and stops on 
     });
     const l = f.tree.get(2).?;
     const frame: u64 = 16_666_667;
-    const press: Op = .{ .scroll_hold = .{ .layer = 2, .delta = .{ .x = 0, .y = 40 }, .seat = 0, .keycode = 50 } };
+    const press: Op = .{ .scroll_hold = .{ .layer = 2, .delta = .{ .x = 0, .y = 40 }, .seat = 0, .trigger = .{ .code = 50 } } };
     // 40 px at 25 repeats a second, as the compositor computes it.
     const hold = struct {
         fn at(down_ns: u64) anim.Hold {
-            return .{ .seat = 0, .keycode = 50, .velocity = .{ .x = 0, .y = 1000 }, .begin_ns = down_ns + anim.Hold.delay_ns };
+            return .{ .seat = 0, .trigger = .{ .code = 50 }, .velocity = anim.Hold.speedFor(.{ .x = 0, .y = 40 }, 25), .begin_ns = down_ns + anim.Hold.delay_ns };
         }
     }.at;
 
-    // Down at 1000 ms, the press's step a frame later. Until 1150 ms
-    // only the step moves; then the speed builds to 1000 px/s, 16.7 px a
-    // frame, without a frame that goes back or overshoots.
-    try f.apply(&.{press});
-    try testing.expect(try f.tree.holdKey(2, hold(1000 * ms)));
-    var t: u64 = 1016 * ms;
-    var prev: f32 = 0;
-    while (t < 2000 * ms) : (t += frame) {
-        const tk = try f.tree.tick(t);
-        try testing.expect(tk.holding);
-        const step = l.offset.y - prev;
-        prev = l.offset.y;
-        try testing.expect(step >= 0 and step < 16.7);
-        if (t < 1150 * ms) try testing.expect(l.offset.y <= 40);
-        if (t >= 1150 * ms + anim.Hold.ramp_ns + frame) try testing.expectApproxEqAbs(@as(f32, 1000.0 / 60.0), step, 0.05);
+    // Down at 1000 ms, at each phase of the frames against the press.
+    // Until 1150 ms only the step moves; then the speed builds to
+    // 1000 px/s, 16.7 px a frame. From the first frame that moves, every
+    // frame moves at least 2 px (a frame at rest between the step and
+    // the hold moved 0), and none goes back or faster than full speed.
+    for (0..4) |phase| {
+        try f.apply(&.{.{ .scroll_to = .{ .layer = 2, .offset = .zero } }});
+        _ = try f.tree.tick(500 * ms);
+        try f.apply(&.{press});
+        try testing.expect(try f.tree.holdKey(2, hold(1000 * ms)));
+        var t: u64 = 1000 * ms + phase * frame / 4;
+        var prev: f32 = 0;
+        var moving = false;
+        while (t < 1600 * ms) : (t += frame) {
+            const tk = try f.tree.tick(t);
+            try testing.expect(tk.holding);
+            const step = l.offset.y - prev;
+            prev = l.offset.y;
+            if (moving) try testing.expect(step >= 2);
+            moving = moving or step > 0;
+            try testing.expect(step < 1000.0 / 60.0 + 0.01);
+            if (t < 1150 * ms) try testing.expect(l.offset.y <= 40);
+            if (t >= 1150 * ms + anim.Hold.ramp_ns + frame) try testing.expectApproxEqAbs(@as(f32, 1000.0 / 60.0), step, 0.05);
+        }
+        try testing.expect(f.tree.release(0, .{ .code = 50 }));
+        _ = try f.tree.tick(t + 10 * frame);
     }
-    // 40, then 850 ms at full speed less a third of the ramp's 100 ms.
-    const held_s: f32 = @floatCast(@as(f64, @floatFromInt(t - frame - 1150 * ms)) / std.time.ns_per_s);
-    try testing.expectApproxEqAbs(40 + 1000 * held_s - 100.0 / 3.0, l.offset.y, 0.5);
 
-    // Released: from where the last frame showed, it stops within 60 ms,
-    // slowing all the way, a third of the way the speed would go (20 px).
-    // Another key coming up changes nothing.
-    try testing.expect(!f.tree.releaseKey(0, 51));
-    try testing.expect(f.tree.releaseKey(0, 50));
+    // Released at full speed: from where the last frame showed, it stops
+    // within 60 ms, slowing all the way, a third of the way the speed
+    // would go (20 px). Another key coming up changes nothing.
+    try f.apply(&.{.{ .scroll_to = .{ .layer = 2, .offset = .zero } }});
+    try f.apply(&.{press});
+    try testing.expect(try f.tree.holdKey(2, hold(2000 * ms)));
+    var t: u64 = 2000 * ms;
+    while (t < 2500 * ms) : (t += frame) _ = try f.tree.tick(t);
+    try testing.expect(!f.tree.release(0, .{ .code = 51 }));
+    try testing.expect(f.tree.release(0, .{ .code = 50 }));
     const released = l.offset.y;
+    var prev = released;
     var last_step: f32 = 1000.0 / 60.0;
     for (0..6) |_| {
         _ = try f.tree.tick(t);
@@ -1935,16 +2017,19 @@ test "a held key's scroll goes on from its delay at a steady speed and stops on 
     try testing.expectApproxEqAbs(released + 20, l.offset.y, 0.01);
     try testing.expect(l.hold == null and l.glide == null);
 
-    // A tap: up before the delay, it moves the step alone.
-    try f.apply(&.{press});
-    try testing.expect(try f.tree.holdKey(2, hold(t)));
-    const tap_from = l.offset.y;
-    _ = try f.tree.tick(t + frame);
-    try testing.expect(f.tree.releaseKey(0, 50));
-    _ = try f.tree.tick(t + 5 * frame);
-    _ = try f.tree.tick(t + 30 * frame);
-    try testing.expectEqual(tap_from + 40, l.offset.y);
-    t += 31 * frame;
+    // A tap, let go at 100 ms or at 140, ends on the step: never past it.
+    for ([_]u64{ 6, 8 }) |frames| {
+        try f.apply(&.{press});
+        try testing.expect(try f.tree.holdKey(2, hold(t)));
+        const tap_from = l.offset.y;
+        for (0..30) |k| {
+            if (k == frames) try testing.expect(f.tree.release(0, .{ .code = 50 }));
+            _ = try f.tree.tick(t + k * frame);
+            try testing.expect(l.offset.y <= tap_from + 40);
+        }
+        try testing.expectEqual(tap_from + 40, l.offset.y);
+        t += 31 * frame;
+    }
 
     // Held to the end, it stops there: no frame passes it, and nothing
     // moves after.
@@ -1959,11 +2044,11 @@ test "a held key's scroll goes on from its delay at a steady speed and stops on 
     try testing.expectEqual(@as(f32, 1900), l.offset.y);
     const tk = try f.tree.tick(end_tick + frame);
     try testing.expect(!tk.active and !tk.holding);
-    try testing.expect(!f.tree.releaseKey(0, 50));
+    try testing.expect(!f.tree.release(0, .{ .code = 50 }));
 
     // A wheel event stops it where it is.
     t = end_tick + 10 * frame;
-    try f.apply(&.{.{ .scroll_hold = .{ .layer = 2, .delta = .{ .x = 0, .y = -40 }, .seat = 0, .keycode = 50 } }});
+    try f.apply(&.{.{ .scroll_hold = .{ .layer = 2, .delta = .{ .x = 0, .y = -40 }, .seat = 0, .trigger = .{ .code = 50 } } }});
     var up = hold(t);
     up.velocity.y = -1000;
     try testing.expect(try f.tree.holdKey(2, up));
@@ -1975,6 +2060,87 @@ test "a held key's scroll goes on from its delay at a steady speed and stops on 
     try testing.expect(l.hold == null);
     _ = try f.tree.tick(t + 40 * frame);
     try testing.expectEqual(wheeled, l.offset.y);
+}
+
+test "held pages go at most 4000 px/s, and a held scrollbar press stops where its limit is" {
+    var f: Fixture = undefined;
+    f.init();
+    defer f.deinit();
+    const ms = std.time.ns_per_ms;
+    try f.apply(&.{
+        .{ .create = 1 },
+        .{ .create = 2 },
+        .{ .create = 3 },
+        .{ .set_root = 1 },
+        .{ .insert = .{ .layer = 2, .parent = 1 } },
+        .{ .insert = .{ .layer = 3, .parent = 2 } },
+        // A 600 px view over 40 000 px.
+        .{ .set_scroll = .{ .layer = 2, .scroll = .{ .viewport = .xywh(0, 0, 100, 600), .content = .{ .width = 100, .height = 40600 } } } },
+        .{ .set_content = .{ .layer = 3, .content = try f.rect(0, .xywh(0, 0, 100, 40600)) } },
+    });
+    const l = f.tree.get(2).?;
+    const frame: u64 = 16_666_667;
+    const page: update.Point = .{ .x = 0, .y = 540 };
+    // A page per repeat interval would be 13 500 px/s; lines stay as
+    // they are, and so does a page at 5 repeats a second.
+    try testing.expectEqual(@as(f32, 4000), anim.Hold.speedFor(page, 25).y);
+    try testing.expectEqual(@as(f32, 1000), anim.Hold.speedFor(.{ .x = 0, .y = 40 }, 25).y);
+    try testing.expectEqual(@as(f32, 2700), anim.Hold.speedFor(page, 5).y);
+    try testing.expectEqual(@as(f32, -4000), anim.Hold.speedFor(.{ .x = -540, .y = 0 }, 25).x);
+
+    // Held Page Down: the step (197 ms) runs past the delay, so the hold
+    // takes over while it moves; then 66.7 px a frame.
+    try f.apply(&.{.{ .scroll_hold = .{ .layer = 2, .delta = page, .seat = 0, .trigger = .{ .code = 117 } } }});
+    try testing.expect(try f.tree.holdKey(2, .{ .seat = 0, .trigger = .{ .code = 117 }, .velocity = anim.Hold.speedFor(page, 25), .begin_ns = 1150 * ms }));
+    var t: u64 = 1016 * ms;
+    var prev: f32 = 0;
+    var moving = false;
+    while (t < 2000 * ms) : (t += frame) {
+        _ = try f.tree.tick(t);
+        const step = l.offset.y - prev;
+        prev = l.offset.y;
+        if (moving) try testing.expect(step >= 2);
+        moving = moving or step > 0;
+        if (t >= 1150 * ms + anim.Hold.ramp_ns + frame) try testing.expectApproxEqAbs(@as(f32, 4000.0 / 60.0), step, 0.1);
+    }
+    try testing.expect(f.tree.release(0, .{ .code = 117 }));
+    _ = try f.tree.tick(t + 10 * frame);
+
+    // A press on the track below the thumb, held: a page, then on until
+    // the limit (the thumb under the pointer), exactly, and no further.
+    const button: update.Trigger = .{ .code = 0x110, .button = true };
+    t += 20 * frame;
+    const from = l.offset.y;
+    const limit = from + 3000;
+    try f.apply(&.{.{ .scroll_hold = .{ .layer = 2, .delta = page, .seat = 0, .trigger = button, .limit = .{ .x = 0, .y = limit } } }});
+    try testing.expect(try f.tree.holdKey(2, .{ .seat = 0, .trigger = button, .velocity = anim.Hold.speedFor(page, 25), .begin_ns = t + 150 * ms, .limit = .{ .x = 0, .y = limit } }));
+    // Losing the keyboard ends keys' holds, not a button's.
+    try testing.expect(!f.tree.release(0, null));
+    const t0 = t;
+    while (l.hold != null) : (t += frame) {
+        _ = try f.tree.tick(t);
+        try testing.expect(l.offset.y <= limit);
+        try testing.expect(t < t0 + 3 * std.time.ns_per_s);
+    }
+    try testing.expectEqual(limit, l.offset.y);
+    _ = try f.tree.tick(t + 10 * frame);
+    try testing.expectEqual(limit, l.offset.y);
+
+    // When the page itself passes the limit, the hold goes no further and
+    // does not come back: the step lands.
+    const near = l.offset.y + 200;
+    try f.apply(&.{.{ .scroll_hold = .{ .layer = 2, .delta = page, .seat = 0, .trigger = button, .limit = .{ .x = 0, .y = near } } }});
+    try testing.expect(try f.tree.holdKey(2, .{ .seat = 0, .trigger = button, .velocity = anim.Hold.speedFor(page, 25), .begin_ns = t + 150 * ms, .limit = .{ .x = 0, .y = near } }));
+    const step_from = l.offset.y;
+    var k: u64 = 0;
+    prev = step_from;
+    while (k < 40) : (k += 1) {
+        _ = try f.tree.tick(t + k * frame);
+        try testing.expect(l.offset.y >= prev);
+        prev = l.offset.y;
+    }
+    try testing.expect(l.hold == null);
+    try testing.expect(l.offset.y >= near and l.offset.y <= step_from + 540);
 }
 
 test "layers given up stay drawn without input until their animations end, then go and are reported" {

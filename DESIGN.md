@@ -697,8 +697,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     scroll container is hit anywhere in its viewport, drawn or not.
   - Keys and the application's relative scrolls glide, as in browsers
     and GTK: the UI sends them as `scroll_by` with `smooth`, and the
-    compositor eases from the offset to the target in 120 ms
-    (`anim.Glide`; Firefox takes 150 ms for a line, GTK 200 ms). A
+    compositor eases from the offset to the target (`anim.Glide`) in
+    120 ms up to 200 px (Firefox takes 150 ms for a line, GTK 200 ms),
+    and beyond that in a time that grows with the square root of the
+    distance, as Chromium's programmatic scrolls do (√px frames, up to
+    1.5 s) but half as long, up to 400 ms (`anim.Glide.durationFor`):
+    a page in a 600 px view takes 197 ms, Home and End over more than
+    2200 px take 400. Arrows, j and k, and a few lines at once keep
+    120 ms; End over 59 400 px, which took 7 frames (12 500 px in one
+    of them), takes 24, at most 3700 px a frame. Chromium's full length
+    made End over a long document take more than a second, too long for
+    a key; 400 ms reads as going far without feeling slow. A
     request while one glides adds to where that one is heading, clamped
     to the content, and starts a new curve from where the last frame
     showed, at the speed it was moving: a cubic (Hermite) curve that
@@ -715,10 +724,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     End scroll by the whole extent, so they reach the edge from
     wherever the offset is or a glide heads. Corrections that keep text
     in place (D13) and caret scrolls (D15) stay plain, landing with the
-    content they answer, and so does a press on a scrollbar's track
-    (D47). Tests: `src/compositor/tree.zig` (the curve at frame times:
-    halfway, a retarget keeping its speed, a held key's steady frames,
-    clamping, a wheel taking over); `src/compositor/tests.zig` (on the
+    content they answer. A press on a scrollbar's track glides as Page
+    Down does, and held, scrolls on (below; D47). Tests:
+    `src/compositor/tree.zig` (the curve at frame times: halfway, a
+    retarget keeping its speed, a held key's steady frames, clamping,
+    a wheel taking over; durations from 40 px to 8000, halfway in time
+    halfway there, arriving on time and not before);
+    `src/compositor/tests.zig` (on the
     headless backend: requests in one commit add up, a wheel event
     stops a glide); `test/abi/input.zig` (keys and the application's
     scrolls land where they head and add up, also while one glides,
@@ -727,10 +739,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     already runs (D38) and which also keeps its velocity when
     retargeted, but a held key's frames moved between 8 and 21 px
     (simulated, same keys) and it settles later; scrolling the UI
-    thread's offset per frame (against this decision's requirement);
-    durations that grow with the distance, as Chromium's do (Home and
-    End over a long document glide fast; revisit if long glides look
-    like a flash).
+    thread's offset per frame (against this decision's requirement); a
+    fixed 120 ms for every distance (Home and End over a long document
+    were a flash); Chromium's durations unchanged (over a second for
+    End).
   - Held keys scroll on by themselves, from the press, not from the
     desktop's key repeat: before, holding Down (or parcel's j) showed
     the press's glide, then stood still for the repeat delay (600 ms
@@ -739,13 +751,26 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     press's step glides as above, so a tap still moves one step, and
     if the key is still down 150 ms after it went down
     (`anim.Hold.delay_ns`, longer than a tap) the offset speeds up
-    over 100 ms (speed easing out, 2x - x², so it gets going as soon
-    as the step comes to rest) to the step per repeat interval (40 px
-    at 25 Hz: 1000 px/s, about what the repeats gave, at the speed the
-    user set the desktop's repeat to) and goes on at that speed. Every
-    stepping key holds on: arrows, Page Up and Down (a page per repeat
-    interval, as their repeats went); Home and End, which reach an
-    edge, do not. The compositor keeps which keys are down on each
+    over 100 ms (speed easing out, 2x - x²) to the step per repeat
+    interval (40 px at 25 Hz: 1000 px/s, about what the repeats gave,
+    at the speed the user set the desktop's repeat to), at most
+    4000 px/s (`anim.Hold.max_speed`), and goes on at that speed. The
+    press's step is made to arrive no sooner than 30 ms after the
+    delay ends (`anim.Hold.overlap_ns`), so it still moves, at about a
+    fifth of its fastest, when the hold takes over from where the frame
+    shows it and as fast: there is no frame at rest between them (one
+    before, as the step came to rest at 120 ms and the hold began at
+    150). A tap still ends on its step, but its step now takes up to
+    180 ms instead of 120 (150 + 30 less the time to the first frame:
+    about 165 ms on sway), near Firefox's 150 for a line. Every stepping key
+    holds on: arrows, Page Up and Down; Home and End, which reach an
+    edge, do not. Page Up and Down went a page per repeat interval, as
+    their repeats did, 13 500 px/s in a 600 px view, faster than one
+    can follow and a page every frame and a half; 4000 px/s is 67 px a
+    frame at 60 Hz, a 600 px page every 150 ms, so that consecutive
+    frames share nine tenths of what they show and the eye follows the
+    content while it still runs through a long document fast. Lines (1000 px/s) stay
+    under the cap at any repeat rate up to 100 Hz. The compositor keeps which keys are down on each
     seat, and when, since the input passes through it (above): a key
     coming up or the window losing the keyboard stops the scroll from
     where the last frame showed it, slowing to rest within 60 ms (a
@@ -760,32 +785,57 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     gets the step alone. So a stalled UI thread neither delays the
     stop nor lets the scroll run on past the release, as D8 requires.
     Applications ask for the same for their own keys with
-    `siv_scroll_while_held` (D47). Under reduced motion (D29) keys stay
+    `siv_scroll_while_held` (D47). A press on a scrollbar's track is
+    `scroll_hold` too, for the pointer button: the compositor tracks
+    buttons down as it does keys, and the hold scrolls a page per
+    repeat interval (the cap applies) until the button comes up, or
+    until the thumb reaches the pointer (`limit`, the offset the UI
+    computes from the bar's geometry at the press), as Windows and Qt
+    repeat pages; a step that already passes it lands, and the hold
+    goes no further. Losing the keyboard does not stop it, and a touch
+    on a track (not a pointer button) gets the step alone. Under reduced motion (D29) keys stay
     as they were: each press and repeat jumps a step, at the desktop's
     repeat timing, which the user controls; scrolling on by itself is
     motion that setting asks against. Desktops that turn repeat off
     (rate 0) get the step alone, as their repeats did. Measured on
     headless sway at 60 Hz (holding Down 2.5 s with wtype, recorded
-    with wf-recorder, offsets per frame): before, the step's 7 frames,
-    then 29 frames without motion; after, the step's 7 frames, one
-    frame at rest, 6 frames speeding up, then 16 to 17 px every frame
-    until the release, then 12, 6, and 2 px. Tests:
-    `src/compositor/tree.zig` (only the step until the delay, the
-    speed building without overshoot, a steady 16.7 px a frame, the
-    stop's distance and its slowing, a tap, the content's end, a wheel
-    taking over); `src/compositor/tests.zig` (on the headless backend:
-    a held key scrolls on, its repeats are dropped and another key's
-    are not, release and keyboard leave stop it, a key already up gets
-    the step); `test/abi/input.zig` (Down and the application's j
+    with wf-recorder, offsets per frame): before held keys scrolled on,
+    the step's 7 frames, then 29 frames without motion; with them, the
+    step's 7 frames, one frame at rest, 6 frames speeding up, then 16
+    to 17 px every frame until the release, then 12, 6, and 2 px; with
+    the step overlapping the hold, 1, 6, 4, 6, 6, 5, 5, 4, 5, 8, 12,
+    14, 16, then 16 to 17 px. Holding Page Down in a 600 px view went
+    224 px a frame; capped, 66 to 67. Tests:
+    `src/compositor/tree.zig` (only the step until the delay, at four
+    phases of the frames against the press every frame from the first
+    moving at least 2 px and none faster than full speed, a steady
+    16.7 px a frame, the stop's distance and its slowing, taps let go
+    at 100 and 140 ms ending on the step, the content's end, a wheel
+    taking over; held pages at 66.7 px a frame and the cap's
+    arithmetic; a held track press stopping exactly at its limit, and
+    a step past it not coming back); `src/compositor/tests.zig` (on
+    the headless backend: a held key scrolls on, its repeats are
+    dropped and another key's are not, release and keyboard leave stop
+    it, a key already up gets the step; a held pointer button scrolls
+    to its limit); `test/abi/input.zig` (Down and the application's j
     through `siv_scroll_while_held`: scroll on while down, no repeats
-    delivered, stop on release; reduced motion steps per repeat).
+    delivered, stop on release; reduced motion steps per repeat; a
+    held press on a track scrolling on to near where the thumb meets
+    the pointer, and a tap paging exactly; reduced motion jumps a
+    page).
     Alternatives: the repeats themselves with a shorter delay (the
     delay and rate are the user's, and other applications keep them);
     the UI thread timing the delay and sending start and stop (a
     stalled UI thread would let it run to the end); smoothstep in
     speed from rest (two frames all but still between the step and the
     motion); stopping dead on release (a 17 px-a-frame cut) or gliding
-    the 120 ms of a step (40 px past the release).
+    the 120 ms of a step (40 px past the release); a shorter delay so
+    that the step still moves at 150 ms (taps of 100 to 150 ms, which
+    are common, would scroll on); stretching the step only at its last
+    frame (it then has under a pixel left, so that frame is still at
+    rest to the eye); a cap relative to the viewport (a page view of
+    any height reads at the same pixels a frame, so an absolute cap is
+    simpler and as right).
   - Measured (`zig build bench-latency` and `zig build bench-pacing`, 60
     Hz): on headless, key-to-photon with the
     compositor thread has a median of 7 ms against 7.6 ms rendering on the
@@ -9519,8 +9569,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     the bar's before hit testing reaches nodes: on the
     thumb it starts a drag that holds the pointer until release
     (anywhere, as GTK does); on the track it pages toward the press by
-    what Page Down scrolls (90 % of the viewport), once per press, as
-    macOS (by default), Windows, and Qt do.
+    what Page Down scrolls (90 % of the viewport), gliding as Page Down
+    does, and held, scrolls on as a held key does until the thumb
+    reaches the pointer or the button comes up (D8), as Windows and Qt
+    repeat pages; under reduced motion one page, at once.
     Presses beside a bar reach the content as before. Over a bar the
     cursor is the default one. Drags set the node's offset as the
     application's own offsets do: the tree's offset changes, and the
@@ -9573,8 +9625,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   `gtk-primary-button-warps-slider`; paging is what was asked for, and
   what Page Down already does from the keyboard, so siv has one meaning
   for both; a Shift press warping is a later addition if asked for);
-  press-and-hold on the track repeating pages, as Windows and Qt do
-  (later if asked for). For content under the bar: a gutter by default,
+  for a held press on the track, repeating whole pages at the key
+  repeat's timing, as Windows and Qt do (it would stand still for the
+  repeat delay, as keys did, and then jump). For content under the bar: a gutter by default,
   or for views by default (against the GNOME default, and lists in
   libadwaita run under the bar); dropping presses near a bar that is
   hidden (the UI does not know when the compositor has faded it, and on

@@ -7,7 +7,7 @@
 //! (the end edge, in a gutter when the desktop wants them always shown or
 //! the node asks for one),
 //! and handles presses: dragging a thumb scrolls its node to where the
-//! thumb is, and a press on a track pages toward it.
+//! thumb is, and a press on a track pages toward it, and on while held.
 
 const std = @import("std");
 const raster = @import("raster");
@@ -142,7 +142,8 @@ fn scrolls(n: *const node_mod.Node) bool {
 
 /// A primary press at window point `p`: on a thumb, starts dragging it;
 /// elsewhere on a track, pages toward the press, by what Page Down
-/// scrolls. Returns whether a scrollbar took it.
+/// scrolls, and held, scrolls on toward it. Returns whether a scrollbar
+/// took it.
 pub fn press(win: *Window, p: Point) bool {
     const f = at(win, p) orelse return false;
     const v = f.bar.axis;
@@ -168,7 +169,28 @@ pub fn press(win: *Window, p: Point) bool {
     const page = 0.9 * if (v == .vertical) f.viewport.height() else f.viewport.width();
     // Physical, as the compositor scrolls: in right-to-left layouts too.
     const d = if (along < thumb0) -page else page;
-    input.scrollBy(win, f.node, if (v == .vertical) .{ .x = 0, .y = d } else .{ .x = d, .y = 0 });
+    const delta: Point = if (v == .vertical) .{ .x = 0, .y = d } else .{ .x = d, .y = 0 };
+    // Multi-line editors scroll their text in the UI, and reduced motion
+    // jumps (D29).
+    if (win.node(f.node).kind != .scroll or win.reducedMotion()) {
+        input.scrollBy(win, f.node, delta);
+        return true;
+    }
+    // A page glides as Page Down's does, and held, the node scrolls on
+    // as a held key does until the thumb reaches the press (D8).
+    const reach = if (along < thumb0) along - thumb0 else along - thumb1;
+    var limit = offset;
+    if (v == .vertical) limit.y += reach * f.bar.scale else limit.x += reach * f.bar.scale;
+    const st = &win.input;
+    win.paint.scroll_by.append(win.gpa, .{
+        .node = f.node,
+        .delta = delta,
+        .smooth = true,
+        .key = .{ .seat = st.seat, .code = st.button_code, .button = true },
+        .limit = limit,
+    }) catch return true;
+    win.dirty.props = true;
+    win.requestFrame();
     return true;
 }
 

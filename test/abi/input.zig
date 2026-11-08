@@ -422,6 +422,61 @@ test "held keys scroll on until they come up, the arrows and the application's o
     }
 }
 
+test "a press on a scrollbar's track glides a page, and held, scrolls on until the thumb reaches it; reduced motion jumps a page" {
+    for ([_]bool{ false, true }) |reduced| {
+        var h: Harness = .{ .reduced_motion = reduced };
+        try h.start(200, 100, null, null);
+        defer h.stop();
+        var heard: Heard = .{};
+        const root = c.siv_window_get_root(h.window);
+        var txn: t.Txn = .null;
+        try ok(c.siv_txn_begin(h.window, &txn));
+        const sc = c.siv_scroll(txn, root, .vertical);
+        c.siv_set_layout(txn, sc, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(200), .height = px(100) });
+        c.siv_on(txn, sc, .viewport, Heard.on, null, &heard);
+        const column = c.siv_box(txn, sc);
+        // 5000 px of content, 4900 of offset.
+        for (0..100) |_| {
+            const b = c.siv_box(txn, column);
+            c.siv_set_layout(txn, b, &.{ .size = @sizeOf(t.LayoutDesc), .height = px(50) });
+        }
+        try ok(c.siv_txn_commit(txn));
+        try h.settle();
+        const id = (try h.win()).win.id;
+        const press = struct {
+            fn at(hh: *Harness, wid: platform.WindowId, y: f64, down: bool) !void {
+                try hh.inject(&.{
+                    .{ .pointer_motion = .{ .window = wid, .seat = 0, .x = 197, .y = y } },
+                    .{ .pointer_button = .{ .window = wid, .seat = 0, .button = 0x110, .pressed = down, .time = 0, .serial = 1 } },
+                });
+            }
+        }.at;
+
+        // Held near the track's end, below the thumb at the top.
+        try press(&h, id, 90, true);
+        try h.settle();
+        const held = heard.last();
+        if (reduced) {
+            // A page, at once, however long it is held.
+            try testing.expectEqual(@as(f32, 90), held);
+        } else {
+            // Past the page, short of the end: where the thumb's end
+            // reaches the pointer, 90 px down a 100 px track.
+            try testing.expect(held > 90 and held < 4900);
+            try testing.expectApproxEqAbs(@as(f32, 4900 * 0.9), held, 4900 * 0.06);
+        }
+        try press(&h, id, 90, false);
+        try h.settle();
+        try testing.expectEqual(held, heard.last());
+
+        // A tap above the thumb: a page up, exactly.
+        try press(&h, id, 2, true);
+        try press(&h, id, 2, false);
+        try h.settle();
+        try testing.expectEqual(held - 90, heard.last());
+    }
+}
+
 const Pen = struct {
     events: [16]t.Event = undefined,
     samples: [16][8]t.TabletSample = undefined,
