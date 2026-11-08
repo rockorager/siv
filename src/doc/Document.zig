@@ -211,7 +211,7 @@ pub fn create(gpa: Allocator, bytes: []const u8, options: Options, ua_sheet: *co
         if (d.quotes.len > 0) {
             const s = try gpa.create(css.Sheet);
             s.* = try css.sheet.parse(gpa, ua.email_css, .{});
-            try d.sheets.append(gpa, .{ .sheet = s, .origin = .user_agent, .owned = true });
+            try d.sheets.append(gpa, .{ .sheet = s, .origin = .user, .owned = true });
         }
     }
     try d.sheets.append(gpa, .{ .sheet = ua_sheet, .origin = .user_agent, .owned = false });

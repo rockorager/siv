@@ -978,8 +978,7 @@ pub const Cascade = struct {
         }
         P.set(c, c.inline_decls.items, false, true);
         try c.customs_scratch.appendSlice(c.gpa, c.inline_customs.items);
-        // Important: author (layers reversed), inline, then user and UA
-        // in reverse order so that the user agent's win.
+        // Important: author (layers reversed), inline, then user and UA.
         var imp: std.ArrayList(Matched) = .empty;
         defer imp.deinit(c.gpa);
         for (c.matched.items[first_author..]) |m| {
@@ -998,13 +997,13 @@ pub const Cascade = struct {
             P.set(c, src.sheet.ruleDecls(src.sheet.rules[m.rule]), true, true);
         }
         P.set(c, c.inline_decls.items, true, true);
-        var i = first_author;
-        while (i > 0) {
-            i -= 1;
-            const m = c.matched.items[i];
+        // The user's important declarations over the author's, and the
+        // user agent's over those; within an origin, by specificity and
+        // order as normal ones.
+        for ([_]Origin{ .user, .user_agent }) |o| for (c.matched.items[0..first_author]) |m| {
             const src = &c.sources.items[m.source];
-            P.set(c, src.sheet.ruleDecls(src.sheet.rules[m.rule]), true, false);
-        }
+            if (src.origin == o) P.set(c, src.sheet.ruleDecls(src.sheet.rules[m.rule]), true, false);
+        };
 
         // Compute.
         const parent = c.store.get(parent_id);

@@ -560,3 +560,31 @@ test "color schemes: what a document declares, and whether it has colors of its 
     try testing.expect(!(Document.Colors{ .scheme = .light_dark, .own = true }).usedDark(false));
     try testing.expect((Document.Colors{ .scheme = .dark, .own = true }).usedDark(false));
 }
+
+test "the quote toggle: a message's rules cannot restyle it, the application's user sheet can" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+    const mail = "<style>a { color: rgb(0 128 0) !important; background: yellow; border: 0 }</style><p>Hi</p><blockquote type=cite>Old</blockquote>";
+    const toggleStyle = struct {
+        fn of(d: *const Document) *const css.Style {
+            const toggle = d.dom.node(d.quotes[0]).prev;
+            return d.store.get(d.styles.?.styles[toggle.index()]);
+        }
+    }.of;
+    {
+        const d = try f.load(gpa, mail, .{ .collapse_quotes = true }, 400);
+        defer d.destroy();
+        const st = toggleStyle(d);
+        try testing.expectEqual(css.Color.Kind.system, st.inh.color.kind);
+        try testing.expectEqual(css.color.System.button_face, st.box.background_color.system);
+        try testing.expectEqual(@as(f32, 1), st.box.border_width[0]);
+    }
+    {
+        const d = try f.load(gpa, mail, .{ .collapse_quotes = true, .user_css = "a.siv-quote-toggle { color: rgb(200 0 0) !important; background: none !important }" }, 400);
+        defer d.destroy();
+        const st = toggleStyle(d);
+        try testing.expect(st.inh.color.eql(.rgb8(200, 0, 0)));
+        try testing.expectEqual(@as(f32, 0), st.box.background_color.a);
+    }
+}

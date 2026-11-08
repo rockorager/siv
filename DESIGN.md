@@ -6809,7 +6809,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     with everything after it, and Outlook mobile's
     `#mail-editor-reference-message-container`, header and all)) after a `•••` link to `siv:quote/N`; the
     box builder leaves closed ones out, and the link toggles them and
-    styles again. Remote images, style sheets, and fonts are blocked
+    styles again. The toggle is drawn as siv's buttons are in the theme
+    (`ButtonFace`, `ButtonBorder`, `ButtonText`, a 6 px radius), a gray
+    tint over it under the pointer, from a user-origin sheet of siv's
+    with `!important` (`ua.email_css`): a message's rules for links
+    (`a { color: … }`, which beat user agent rules) cannot restyle it,
+    and the application's user sheet, later in the same origin, can with
+    `!important` (important user declarations now follow specificity and
+    order within the origin, as normal ones do; they had run in reverse). Remote images, style sheets, and fonts are blocked
     unless the application allows them (a blocked style sheet reports an
     open as surely as a tracking pixel), counted in an event; `cid:` URLs
     reach the loader like any other. Presentational attributes are hints

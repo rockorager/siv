@@ -157,7 +157,12 @@ pub const quirks_css =
     \\img[align=right i] { margin-left: 3px }
 ;
 
-/// The toggles of collapsed quoted replies in email.
+/// The toggles of collapsed quoted replies in email, drawn as siv's
+/// buttons are in the theme (system colors), lighter or darker under the
+/// pointer. A user style sheet of siv's (D32), so that a message's own
+/// rules for links cannot restyle them, while the application's user
+/// style sheet, which comes after it, can with `!important`.
 pub const email_css =
-    \\a.siv-quote-toggle { display: inline-block; margin: 0.5em 0; padding: 0 0.5em; border-radius: 0.4em; background: rgb(128 128 128 / 0.2); color: inherit !important; text-decoration: none !important; font-size: 0.85em; line-height: 1.4; letter-spacing: 0.1em }
+    \\a.siv-quote-toggle { display: inline-block !important; margin: 0.5em 0 !important; padding: 0.1em 0.8em !important; border: 1px solid ButtonBorder !important; border-radius: 6px !important; background: ButtonFace !important; color: ButtonText !important; text-decoration: none !important; font-size: 0.85em !important; line-height: 1.5 !important; letter-spacing: 0.1em !important; cursor: pointer !important }
+    \\a.siv-quote-toggle:hover { background-image: linear-gradient(rgb(128 128 128 / 0.2), rgb(128 128 128 / 0.2)) !important }
 ;
