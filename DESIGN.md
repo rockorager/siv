@@ -6912,8 +6912,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     markup), after a `•••` link to `siv:quote/N`; the
     box builder leaves closed ones out, and the link toggles them and
     styles again. The toggle is drawn as siv's buttons are in the theme
-    (`ButtonFace`, `ButtonBorder`, `ButtonText`, a 6 px radius), a gray
-    tint over it under the pointer, from a user-origin sheet of siv's
+    (`ButtonFace`, `ButtonBorder`, `ButtonText`, a 6 px radius), with
+    their face under the pointer (`-siv-buttonhover`, a system color of
+    siv's: the theme's `control_hover`, else #e5e5e5 as browsers' stock
+    buttons have it), from a user-origin sheet of siv's
     with `!important` (`ua.email_css`): a message's rules for links
     (`a { color: … }`, which beat user agent rules) cannot restyle it,
     and the application's user sheet, later in the same origin, can with

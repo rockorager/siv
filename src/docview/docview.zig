@@ -883,6 +883,7 @@ pub const View = struct {
             p.field = color(tp.color(.control_bg));
             p.field_text = color(tp.color(.control_fg));
             p.button_face = color(tp.color(.control_bg));
+            p.button_hover = color(tp.color(.control_hover));
             p.button_text = color(tp.color(.control_fg));
             p.button_border = color(tp.color(.border));
             p.gray = color(tp.color(.muted_fg));

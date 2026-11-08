@@ -579,6 +579,11 @@ test "the quote toggle: a message's rules cannot restyle it, the application's u
         try testing.expectEqual(css.Color.Kind.system, st.inh.color.kind);
         try testing.expectEqual(css.color.System.button_face, st.box.background_color.system);
         try testing.expectEqual(@as(f32, 1), st.box.border_width[0]);
+        // Under the pointer, the face siv's buttons have when hovered.
+        const toggle = d.dom.node(d.quotes[0]).prev;
+        try testing.expect(try d.setHover(toggle));
+        const hovered = d.store.get(d.hover_paint.get(toggle.index()).?.painted);
+        try testing.expectEqual(css.color.System.button_hover, hovered.box.background_color.system);
     }
     {
         const d = try f.load(gpa, mail, .{ .collapse_quotes = true, .user_css = "a.siv-quote-toggle { color: rgb(200 0 0) !important; background: none !important }" }, 400);

@@ -36,6 +36,8 @@ pub const Palette = struct {
     button_face: Color = Color.rgb8(240, 240, 240),
     button_text: Color = Color.black,
     button_border: Color = Color.rgb8(118, 118, 118),
+    /// A button's face under the pointer (`-siv-buttonhover`).
+    button_hover: Color = Color.rgb8(229, 229, 229),
     field: Color = Color.white,
     field_text: Color = Color.black,
     highlight: Color = Color.rgb8(51, 142, 255),
@@ -165,6 +167,7 @@ pub const Painter = struct {
                 .gray_text => p.palette.gray,
                 .accent_color => p.palette.accent,
                 .accent_color_text => p.palette.accent_text,
+                .button_hover => p.palette.button_hover,
             },
         };
     }

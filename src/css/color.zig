@@ -27,6 +27,9 @@ pub const System = enum(u8) {
     gray_text,
     accent_color,
     accent_color_text,
+    /// siv's own (`-siv-buttonhover`): a button's face under the pointer,
+    /// as siv's buttons have it in the theme.
+    button_hover,
 };
 
 pub const Color = struct {
@@ -98,7 +101,7 @@ const system_map = std.StaticStringMap(System).initComptime(.{
     .{ "fieldtext", .field_text },          .{ "highlight", .highlight },        .{ "highlighttext", .highlight_text },
     .{ "mark", .mark },                     .{ "marktext", .mark_text },         .{ "graytext", .gray_text },
     .{ "accentcolor", .accent_color },      .{ "accentcolortext", .accent_color_text },
-    .{ "window", .canvas },                 .{ "windowtext", .canvas_text },
+    .{ "window", .canvas },                 .{ "windowtext", .canvas_text },     .{ "-siv-buttonhover", .button_hover },
 });
 
 const named_map = std.StaticStringMap(u32).initComptime(.{
