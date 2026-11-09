@@ -15,6 +15,7 @@ const c = t.c;
 const Harness = harness.Harness;
 const ok = harness.ok;
 const Value = std.json.Value;
+const A = abi.application;
 
 const ks = struct {
     const @"return": u32 = 0xff0d;
@@ -23,6 +24,9 @@ const ks = struct {
     const iso_left_tab: u32 = 0xfe20;
     const home: u32 = 0xff50;
     const end: u32 = 0xff57;
+    const left: u32 = 0xff51;
+    const right: u32 = 0xff53;
+    const backspace: u32 = 0xff08;
 };
 
 /// Every block type EmDash's Portable Text has, with a field the editor
@@ -419,4 +423,384 @@ test "rich text: a custom schema, invalid descriptors and documents" {
     try ok(c.siv_txn_begin(h.window, &txn));
     try testing.expectEqual(t.Result.error_busy, c.siv_rich_text_run(node, .strong));
     try ok(c.siv_txn_commit(txn));
+}
+
+/// The document's links in short: blocks separated by " | ", linked
+/// spans as [text](href). Checks that every link is a link markDef of
+/// its block named by the span's mark.
+fn links(node: t.Node) ![]u8 {
+    const a = testing.allocator;
+    const json = try document(node);
+    defer a.free(json);
+    const parsed = try std.json.parseFromSlice(Value, a, json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(a);
+    for (parsed.value.array.items, 0..) |b, i| {
+        if (i > 0) try out.appendSlice(a, " | ");
+        if (!std.mem.eql(u8, get(b, "_type").string, "block")) continue;
+        const defs = get(b, "markDefs").array.items;
+        for (get(b, "children").array.items) |span| {
+            const text = get(span, "text").string;
+            const def: ?Value = blk: for (get(span, "marks").array.items) |m| {
+                for (defs) |d| if (std.mem.eql(u8, get(d, "_key").string, m.string)) break :blk d;
+            } else null;
+            if (def) |d| {
+                try testing.expectEqualStrings("link", get(d, "_type").string);
+                try out.print(a, "[{s}]({s})", .{ text, get(d, "href").string });
+            } else try out.appendSlice(a, text);
+        }
+    }
+    return out.toOwnedSlice(a);
+}
+
+fn expectLinks(node: t.Node, want: []const u8) !void {
+    const got = try links(node);
+    defer testing.allocator.free(got);
+    try testing.expectEqualStrings(want, got);
+}
+
+/// The _key of the first link markDef in the document.
+fn firstLinkKey(node: t.Node, buf: []u8) ![]const u8 {
+    const a = testing.allocator;
+    const json = try document(node);
+    defer a.free(json);
+    const parsed = try std.json.parseFromSlice(Value, a, json, .{});
+    defer parsed.deinit();
+    for (parsed.value.array.items) |b| {
+        if (get(b, "markDefs") != .array) continue;
+        for (get(b, "markDefs").array.items) |d| {
+            const k = get(d, "_key").string;
+            @memcpy(buf[0..k.len], k);
+            return buf[0..k.len];
+        }
+    }
+    return error.NoLink;
+}
+
+/// The link at the caret: its href and range.
+fn linkAtCaret(node: t.Node, buf: []u8) !struct { []const u8, u32, u32 } {
+    var len: usize = 0;
+    var start: u32 = 0;
+    var end: u32 = 0;
+    try ok(c.siv_rich_text_get_link(node, buf.ptr, buf.len, &len, &start, &end));
+    return .{ buf[0..len], start, end };
+}
+
+/// The application's open popup, if any.
+fn openPopup(h: *Harness) !?t.Window {
+    const self = try h.internal();
+    var found: ?t.Window = null;
+    for (self.windows.items) |slot| if (slot) |pw| {
+        if (!pw.dead and pw.parent != null and pw.win.shown) found = @fromBackingInt(pw.handle);
+    };
+    return found;
+}
+
+fn typeTextIn(h: *Harness, window: t.Window, s: []const u8) !void {
+    for (s) |ch| {
+        try h.typeKeyIn(window, ch, &.{ch}, .{});
+        try h.settle();
+    }
+}
+
+fn pressIn(h: *Harness, window: t.Window, sym: u32, mods: platform.Mods) !void {
+    try h.typeKeyIn(window, sym, "", mods);
+    try h.settle();
+}
+
+/// Selects n characters from `at` with Home, Right, and Shift+Right.
+fn selectChars(h: *Harness, at: u32, n: u32) !void {
+    try press(h, ks.home, .{});
+    for (0..at) |_| try press(h, ks.right, .{});
+    for (0..n) |_| try press(h, ks.right, .{ .shift = true });
+}
+
+/// The editor inside a rich text editor: the root stack's last child.
+fn editorOf(node: t.Node) t.Node {
+    return c.siv_node_get_related(node, .last_child);
+}
+
+test "rich text: Ctrl+K links a selection, edits and removes a link, and inserts one" {
+    var h: Harness = .{ .golden = "test/golden/widgets" };
+    try h.start(480, 320, null, null);
+    defer h.stop();
+    var log: Log = .{};
+    const node = try build(&h, .{}, &log);
+    try typeText(&h, "Read the docs today");
+
+    // A selection: the popover asks for a URL; one without a scheme gets
+    // https://.
+    try selectChars(&h, 9, 4);
+    try press(&h, 'k', .{ .ctrl = true });
+    var popup = (try openPopup(&h)) orelse return error.NoPopup;
+    // Under the selected word, at its start.
+    var word: t.Rect = .{};
+    try ok(c.siv_node_get_caret_rect(editorOf(node), 9, &word));
+    const placed = (try A.App.window(@backingInt(popup), A.window_tag)).win.state.popup.?;
+    try testing.expectApproxEqAbs(word.x, @as(f32, @floatFromInt(placed.x)), 2);
+    try testing.expectApproxEqAbs(word.y + word.height, @as(f32, @floatFromInt(placed.y)), 2);
+    try typeTextIn(&h, popup, "example.com");
+    try pressIn(&h, popup, ks.@"return", .{});
+    try testing.expectEqual(@as(?t.Window, null), try openPopup(&h));
+    try expectLinks(node, "Read the [docs](https://example.com) today");
+    try testing.expect((try state(node)).marks.link);
+    var key_buf: [32]u8 = undefined;
+    const key = try testing.allocator.dupe(u8, try firstLinkKey(node, &key_buf));
+    defer testing.allocator.free(key);
+
+    // On the link, with nothing selected, it shows the URL to change; the
+    // whole link changes and keeps its key.
+    try selectChars(&h, 11, 0);
+    var buf: [128]u8 = undefined;
+    const at = try linkAtCaret(node, &buf);
+    try testing.expectEqualStrings("https://example.com", at[0]);
+    try testing.expectEqual(@as(u32, 9), at[1]);
+    try testing.expectEqual(@as(u32, 13), at[2]);
+    try press(&h, 'k', .{ .ctrl = true });
+    popup = (try openPopup(&h)) orelse return error.NoPopup;
+    var size: t.Size = .{};
+    try ok(c.siv_window_get_size(popup, &size));
+    try h.expectGoldenOf(popup, "rich-text-link-popover", @intFromFloat(size.width), @intFromFloat(size.height));
+    // The URL is selected: typing replaces it.
+    try typeTextIn(&h, popup, "https://parcel.app");
+    try pressIn(&h, popup, ks.@"return", .{});
+    try expectLinks(node, "Read the [docs](https://parcel.app) today");
+    try testing.expectEqualStrings(key, try firstLinkKey(node, &key_buf));
+
+    // Escape cancels.
+    try press(&h, 'k', .{ .ctrl = true });
+    popup = (try openPopup(&h)) orelse return error.NoPopup;
+    try typeTextIn(&h, popup, "nope");
+    try pressIn(&h, popup, ks.escape, .{});
+    try testing.expectEqual(@as(?t.Window, null), try openPopup(&h));
+    try expectLinks(node, "Read the [docs](https://parcel.app) today");
+
+    // Clearing the URL removes the link, and so does Remove; undo brings
+    // it back.
+    try press(&h, 'k', .{ .ctrl = true });
+    popup = (try openPopup(&h)) orelse return error.NoPopup;
+    try pressIn(&h, popup, ks.backspace, .{});
+    try pressIn(&h, popup, ks.@"return", .{});
+    try expectLinks(node, "Read the docs today");
+    try press(&h, 'z', .{ .ctrl = true });
+    try expectLinks(node, "Read the [docs](https://parcel.app) today");
+    try press(&h, 'k', .{ .ctrl = true });
+    popup = (try openPopup(&h)) orelse return error.NoPopup;
+    try pressIn(&h, popup, ks.tab, .{});
+    try pressIn(&h, popup, ks.@"return", .{});
+    try expectLinks(node, "Read the docs today");
+    try testing.expect(!(try state(node)).marks.link);
+
+    // With nothing selected off a link: a URL and the text to show; what
+    // is typed after it is not linked.
+    try press(&h, ks.end, .{});
+    try typeText(&h, " at ");
+    try press(&h, 'k', .{ .ctrl = true });
+    popup = (try openPopup(&h)) orelse return error.NoPopup;
+    try typeTextIn(&h, popup, "https://siv.dev");
+    try pressIn(&h, popup, ks.tab, .{});
+    try typeTextIn(&h, popup, "siv");
+    try pressIn(&h, popup, ks.@"return", .{});
+    try typeText(&h, "!");
+    try expectLinks(node, "Read the docs today at [siv](https://siv.dev)!");
+    // An empty text shows the URL itself.
+    try press(&h, 'k', .{ .ctrl = true });
+    popup = (try openPopup(&h)) orelse return error.NoPopup;
+    try typeTextIn(&h, popup, "a.example");
+    try pressIn(&h, popup, ks.@"return", .{});
+    try expectLinks(node, "Read the docs today at [siv](https://siv.dev)![a.example](https://a.example)");
+
+    // A click on a link places the caret in it and opens nothing.
+    const changes = log.changes;
+    log.command_len = 0;
+    var r: t.Rect = .{};
+    try ok(c.siv_node_get_caret_rect(editorOf(node), 25, &r));
+    try h.click(r.x + 1, r.y + r.height / 2);
+    try h.settle();
+    var caret: u32 = 0;
+    var anchor: u32 = 0;
+    try ok(c.siv_rich_text_get_selection(node, &caret, &anchor));
+    try testing.expectEqual(caret, anchor);
+    try testing.expect(caret >= 23 and caret <= 26);
+    try testing.expectEqualStrings("https://siv.dev", (try linkAtCaret(node, &buf))[0]);
+    try testing.expectEqual(changes, log.changes);
+    try testing.expectEqual(@as(usize, 0), log.command_len);
+    try testing.expectEqual(@as(?t.Window, null), try openPopup(&h));
+}
+
+test "rich text: typed and pasted URLs become links" {
+    var h: Harness = .{};
+    try h.start(480, 320, null, null);
+    defer h.stop();
+    var log: Log = .{};
+    const node = try build(&h, .{}, &log);
+
+    // A URL and a space: linked without the punctuation after it; the
+    // link is an undo step of its own.
+    try typeText(&h, "See https://siv.dev/docs. ");
+    try expectLinks(node, "See [https://siv.dev/docs](https://siv.dev/docs). ");
+    try press(&h, 'z', .{ .ctrl = true });
+    try expectLinks(node, "See https://siv.dev/docs. ");
+    try press(&h, 'z', .{ .ctrl = true, .shift = true });
+    // Brackets around it, www. without a scheme, Enter after it; words
+    // that are not URLs stay text.
+    try typeText(&h, "(https://a.example/x_(y)) and www.example.org\nmailto:me@example.com not.a.url ");
+    try expectLinks(node, "See [https://siv.dev/docs](https://siv.dev/docs). ([https://a.example/x_(y)](https://a.example/x_(y))) and [www.example.org](https://www.example.org) | [mailto:me@example.com](mailto:me@example.com) not.a.url ");
+
+    // A URL pasted over a selection links it instead of replacing it,
+    // and undo takes the link back.
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_rich_text_set_document(txn, node, "", 0);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try typeText(&h, "Docs are here.");
+    try selectChars(&h, 9, 4);
+    try ok(c.siv_clipboard_write(h.window, .clipboard, "https://siv.dev/docs", 20));
+    try h.settle();
+    try press(&h, 'v', .{ .ctrl = true });
+    try h.settle();
+    try expectLinks(node, "Docs are [here](https://siv.dev/docs).");
+    try press(&h, 'z', .{ .ctrl = true });
+    try expectLinks(node, "Docs are here.");
+    // Other text pasted over it replaces it, as ever.
+    try selectChars(&h, 9, 4);
+    try ok(c.siv_clipboard_write(h.window, .clipboard, "not a URL", 9));
+    try h.settle();
+    try press(&h, 'v', .{ .ctrl = true });
+    try h.settle();
+    try expectLinks(node, "Docs are not a URL.");
+}
+
+test "rich text: links through the API, round-tripping markDefs" {
+    var h: Harness = .{};
+    try h.start(520, 400, null, null);
+    defer h.stop();
+    var log: Log = .{};
+    const node = try build(&h, .{ .document = sample, .document_len = sample.len }, &log);
+    var buf: [128]u8 = undefined;
+
+    // A link read from the document ("EmDash" is 25..31): an offset in
+    // it unlinks it whole, and undo links it again.
+    try ok(c.siv_rich_text_set_link_range(node, 28, 28, "", 0));
+    var got = try links(node);
+    try testing.expect(std.mem.startsWith(u8, got, "Release notes | Written in EmDash, with"));
+    testing.allocator.free(got);
+    try press(&h, 'z', .{ .ctrl = true });
+    // Its href changes and its key and other fields stay.
+    try ok(c.siv_rich_text_set_link_range(node, 28, 28, "https://emdashcms.com/docs", 26));
+    {
+        const json = try document(node);
+        defer testing.allocator.free(json);
+        const parsed = try std.json.parseFromSlice(Value, testing.allocator, json, .{});
+        defer parsed.deinit();
+        const def = get(parsed.value.array.items[1], "markDefs").array.items[0];
+        try testing.expectEqualStrings("ln", get(def, "_key").string);
+        try testing.expectEqualStrings("https://emdashcms.com/docs", get(def, "href").string);
+        try testing.expect(get(def, "blank").bool);
+        const span = get(parsed.value.array.items[1], "children").array.items[1];
+        try testing.expectEqualStrings("EmDash", get(span, "text").string);
+        try testing.expectEqualStrings("ln", get(span, "marks").array.items[0].string);
+    }
+    // A range across marks and two blocks; an empty href removes links.
+    try ok(c.siv_rich_text_set_link_range(node, 42, 14, "https://example.com", 19));
+    got = try links(node);
+    try testing.expect(std.mem.startsWith(u8, got, "Release notes | [Written in EmDash, with ](https://example.com)[bold](https://example.com), italic"));
+    testing.allocator.free(got);
+    try ok(c.siv_rich_text_set_link_range(node, 0, 60, "", 0));
+    got = try links(node);
+    try testing.expect(std.mem.startsWith(u8, got, "Release notes | Written in EmDash, with bold, italic, and code. | Changes"));
+    testing.allocator.free(got);
+    try press(&h, 'z', .{ .ctrl = true });
+    try press(&h, 'z', .{ .ctrl = true });
+    got = try links(node);
+    try testing.expect(std.mem.startsWith(u8, got, "Release notes | Written in [EmDash](https://emdashcms.com/docs), with"));
+    testing.allocator.free(got);
+
+    // The selection: link it, or at a caret off a link insert the URL as
+    // linked text; reading the link and the selection back.
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_rich_text_set_document(txn, node, "", 0);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try typeText(&h, "Mail me ");
+    try ok(c.siv_rich_text_set_link(node, "mailto:me@example.com", 21));
+    try expectLinks(node, "Mail me [mailto:me@example.com](mailto:me@example.com)");
+    var caret: u32 = 0;
+    var anchor: u32 = 0;
+    try ok(c.siv_rich_text_get_selection(node, &caret, &anchor));
+    try testing.expectEqual(@as(u32, 29), caret);
+    try testing.expectEqual(caret, anchor);
+    const at = try linkAtCaret(node, &buf);
+    try testing.expectEqualStrings("mailto:me@example.com", at[0]);
+    try testing.expectEqual(@as(u32, 8), at[1]);
+    try testing.expectEqual(@as(u32, 29), at[2]);
+    try selectChars(&h, 0, 4);
+    try ok(c.siv_rich_text_set_link(node, "https://example.com", 19));
+    try expectLinks(node, "[Mail](https://example.com) me [mailto:me@example.com](mailto:me@example.com)");
+    try ok(c.siv_rich_text_set_link(node, "", 0));
+    try expectLinks(node, "Mail me [mailto:me@example.com](mailto:me@example.com)");
+    try press(&h, ks.home, .{});
+    try testing.expectEqual(@as(usize, 0), (try linkAtCaret(node, &buf))[0].len);
+    try testing.expect(log.changes > 0);
+
+    // Errors: offsets past the end, inside a transaction, a schema
+    // without links.
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_rich_text_set_link_range(node, 0, 999, "x", 1));
+    try ok(c.siv_txn_begin(h.window, &txn));
+    try testing.expectEqual(t.Result.error_busy, c.siv_rich_text_set_link(node, "x", 1));
+    try ok(c.siv_txn_commit(txn));
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const plain = c.siv_rich_text(txn, c.siv_window_get_root(h.window), &.{ .schema = .custom, .marks = .{ .strong = true } });
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try testing.expectEqual(t.Result.error_unsupported, c.siv_rich_text_set_link(plain, "x", 1));
+    try testing.expectEqual(t.Result.error_unsupported, c.siv_rich_text_run(plain, .link));
+}
+
+test "rich text: links with Vim's keys" {
+    var h: Harness = .{};
+    try h.start(480, 300, null, null);
+    defer h.stop();
+    var log: Log = .{};
+    const node = try build(&h, .{ .flags = .{ .vim = true } }, &log);
+    try typeText(&h, "ivisit the site now");
+    try press(&h, ks.escape, .{});
+
+    // :link URL links the word under the cursor; on a link it changes
+    // the link; :unlink removes it.
+    try typeText(&h, "0w");
+    try typeText(&h, ":link example.com");
+    try press(&h, ks.@"return", .{});
+    try expectLinks(node, "visit [the](https://example.com) site now");
+    try typeText(&h, ":link https://siv.dev");
+    try press(&h, ks.@"return", .{});
+    try expectLinks(node, "visit [the](https://siv.dev) site now");
+    try typeText(&h, ":unlink");
+    try press(&h, ks.@"return", .{});
+    try expectLinks(node, "visit the site now");
+    try testing.expectEqual(@as(usize, 0), log.command_len);
+
+    // On the visual selection.
+    try typeText(&h, "wve:link https://a.example");
+    try press(&h, ks.@"return", .{});
+    try expectLinks(node, "visit the [site](https://a.example) now");
+    try testing.expectEqual(t.RichTextMode.normal, (try state(node)).mode);
+
+    // Ctrl+K in normal mode edits the link under the cursor.
+    try press(&h, 'k', .{ .ctrl = true });
+    const popup = (try openPopup(&h)) orelse return error.NoPopup;
+    try typeTextIn(&h, popup, "b.example");
+    try pressIn(&h, popup, ks.@"return", .{});
+    try expectLinks(node, "visit the [site](https://b.example) now");
+    try testing.expectEqual(t.RichTextMode.normal, (try state(node)).mode);
+    // In insert mode, a URL typed before a space links; u undoes the
+    // insert with it.
+    try typeText(&h, "A see www.siv.dev ");
+    try press(&h, ks.escape, .{});
+    try expectLinks(node, "visit the [site](https://b.example) now see [www.siv.dev](https://www.siv.dev) ");
+    try typeText(&h, "u");
+    try expectLinks(node, "visit the [site](https://b.example) now");
 }

@@ -636,12 +636,20 @@ fn dismiss(m: *Menu) void {
 
 pub export fn siv_popover_create(anchor: Node, desc: ?*const siv.PopoverDesc, popup_out: ?*siv.Window, content_out: ?*Node) siv.Result {
     const d = w.readDesc(siv.PopoverDesc, desc) orelse return .error_invalid_argument;
+    return popoverAt(anchor, d, null, popup_out orelse return .error_invalid_argument, content_out);
+}
+
+/// A popover against a rectangle in the anchor (siv_popup_desc's
+/// anchor_rect) when one is given, such as the rich text editor's link
+/// editor at its selection; else against the whole anchor.
+pub fn popoverAt(anchor: Node, d: siv.PopoverDesc, rect: ?siv.Rect, popup_out: *siv.Window, content_out: ?*Node) siv.Result {
     const label = w.str(d.label, d.label_len) orelse return .error_invalid_argument;
-    if (popup_out == null) return .error_invalid_argument;
     const parent_window = w.windowOf(anchor);
     if (parent_window == .null) return .error_invalid_handle;
     var popup: siv.Window = .null;
-    var r = c.siv_popup_create(parent_window, &.{ .anchor = anchor, .placement = d.placement, .flags = d.flags, .on_event = onPopoverEvent }, &popup);
+    var flags = d.flags;
+    if (rect != null) flags.at_rect = true;
+    var r = c.siv_popup_create(parent_window, &.{ .anchor = anchor, .placement = d.placement, .flags = flags, .anchor_rect = rect orelse .{}, .on_event = onPopoverEvent }, &popup);
     if (r != .ok) return r;
     var txn: Txn = .null;
     r = c.siv_txn_begin(popup, &txn);
@@ -665,7 +673,7 @@ pub export fn siv_popover_create(anchor: Node, desc: ?*const siv.PopoverDesc, po
         _ = c.siv_window_destroy(popup);
         return r;
     }
-    popup_out.?.* = popup;
+    popup_out.* = popup;
     if (content_out) |p| p.* = content;
     return .ok;
 }

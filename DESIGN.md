@@ -5375,13 +5375,43 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       command; dot repeat; search; and a command line, which reports
       `activate` with what was typed (`w` for `:w`). A line is a block;
       j and k move by displayed lines, as gj and gk do.
+    - Links (November 2026, for Parcel's compose body): Ctrl+K opens a
+      popover at the selection (a popover against a rectangle of the
+      editor, as a context menu's popup is placed), keyboard first:
+      Enter applies, Escape cancels. With text selected it asks for a
+      URL; on a link (a selection inside one too) it shows the URL to
+      change, or clear or Remove to unlink the whole link; at a caret
+      elsewhere it asks for a URL and the text to show, the URL when
+      that is empty. A URL typed without a scheme gets https:// (mailto:
+      for an address), as word processors do. Typing a URL (http://,
+      https://, mailto:, www.) and a space or Enter links it, without
+      the brackets and punctuation around it, as an undo step of its
+      own, so Ctrl+Z takes back the link and not the typing; a URL
+      pasted over selected text links that text instead of replacing it,
+      as mail and chat editors do. A link is a `link` markDef with an
+      `href`; a new URL for a whole link copies its markDef, so it keeps
+      its `_key` and fields such as `blank`. Clicking a link places the
+      caret: the editor has no notion of following links, and an
+      application that wants it reads `siv_rich_text_get_link`. The
+      API (`siv_rich_text_set_link` for the selection,
+      `siv_rich_text_set_link_range`, `siv_rich_text_get_link`,
+      `siv_rich_text_get_selection`, and `SIV_RICH_TEXT_COMMAND_LINK`
+      to open the popover from a toolbar) counts byte offsets in the
+      editor's text, the blocks joined by "\n". In Vim, Ctrl+K works in
+      every mode (Vim's own Ctrl+K, digraphs, does not exist here), and
+      `:link URL`, `:link`, and `:unlink` act on the visual selection or
+      the link or word under the cursor; the widget takes those command
+      names from the application's. Alternatives: an inline field in
+      the editor (a field inside the document's text would be text);
+      autolinking pasted URLs at a caret too (they link once a space
+      follows).
     - What the primitives lack, found building it: application data on
       spans and paragraphs (the tags above); styling an empty last
       paragraph (the widget keeps its block until text is typed); a
       selection-change event (the widget reports `select` after each
       input it handles); inline objects. A baseline shift was missing
       too, and spans have one now.
-    - Not built: editing links and code block languages, showing images
+    - Not built: editing code block languages, showing images
       and tables, text alignment (EmDash's `textAlign` is kept, not
       shown), and turning the formatting keys off.
 - **Non-goal:** a full document model with embedded tables and images

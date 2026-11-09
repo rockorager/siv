@@ -1339,6 +1339,7 @@ pub const Vim = struct {
             v.draw(st, v.searchFrom(st, p, 1, false) orelse p);
             return;
         }
+        if (v.linkCommand(st, text)) return;
         v.draw(st, p);
         if (std.fmt.parseInt(u32, text, 10)) |n| {
             const s = st.text();
@@ -1346,6 +1347,52 @@ pub const Vim = struct {
             return;
         } else |_| {}
         st.command(text);
+    }
+
+    /// The link editor applied: a visual selection it linked ends.
+    pub fn afterLink(v: *Vim, st: *State) void {
+        if (v.visual()) v.leaveVisual(st) else v.afterChange(st);
+    }
+
+    /// :link URL, :link, and :unlink, on the visual selection (:'<,'>)
+    /// or at the cursor; whether text was one of them.
+    fn linkCommand(v: *Vim, st: *State, text: []const u8) bool {
+        const ranged = std.mem.startsWith(u8, text, "'<,'>");
+        const name = if (ranged) text[5..] else text;
+        const unlink = std.mem.eql(u8, name, "unlink");
+        if (!unlink and !std.mem.eql(u8, name, "link") and !std.mem.startsWith(u8, name, "link ")) return false;
+        const s = st.text();
+        const sel = st.selection();
+        const p = sel[0];
+        // The command line kept the visual selection.
+        if (ranged) v.mode = .visual;
+        const typed = if (unlink) "" else std.mem.trim(u8, name[4..], " ");
+        if (!unlink and typed.len == 0) {
+            st.openLink();
+            return true;
+        }
+        var lo = @min(sel[0], sel[1]);
+        var hi = @max(sel[0], sel[1]);
+        if (!ranged) {
+            if (st.caretLink(p, p)) |l| {
+                lo = l.start;
+                hi = l.stop;
+            } else if (unlink or cls(char(s, p), false) == 0) {
+                st.setMessage(if (unlink) "No link under the cursor" else "No word under the cursor");
+                v.draw(st, p);
+                return true;
+            } else {
+                const r = v.object(s, p, 1, Tok.of("w").?, true) orelse return true;
+                lo = r[0];
+                hi = r[1];
+            }
+        }
+        const href = rt.hrefOf(typed);
+        defer if (href) |h| gpa.free(h);
+        _ = st.setLink(lo, hi, href orelse "");
+        v.mode = .normal;
+        v.draw(st, if (ranged) lo else p);
+        return true;
     }
 
     /// The user typed (insert mode) or pasted.

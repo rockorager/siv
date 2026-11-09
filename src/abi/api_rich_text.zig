@@ -51,6 +51,7 @@ fn txnOp(comptime name: []const u8, comptime doc: []const u8, comptime params: [
 
 const txn_param = p("txn", ref("siv_txn"), "An open transaction.");
 const node_param = p("node", ref("siv_node"), "A rich text editor (siv_rich_text).");
+const offsets_doc = "Byte offsets count in the editor's text: the blocks' text joined by \"\\n\", a line break inside a block as U+2028, and a block the editor does not edit as one U+00A0.";
 const buffer_out = [_]Param{
     p("buffer", schema.text_buffer, "Receives at most buffer_cap bytes; may be NULL with buffer_cap 0."),
     p("len", out(.usize), "The full length in bytes."),
@@ -124,6 +125,7 @@ pub const decls = [_]Decl{
         .{ .name = "redo", .value = 19, .doc = "Redoes the last edit undone." },
         .{ .name = "superscript", .value = 20, .doc = "Toggles superscript, which replaces subscript." },
         .{ .name = "subscript", .value = 21, .doc = "Toggles subscript, which replaces superscript." },
+        .{ .name = "link", .value = 22, .doc = "Opens the link editor at the selection, as Ctrl+K does (siv_rich_text). Run it while handling a press or key, such as a toolbar button's activation, since its popover takes the keyboard." },
     }),
     enumeration("siv_rich_text_mode", "What a rich text editor's keys do now.", &.{
         .{ .name = "edit", .value = 0, .doc = "The usual keys: no Vim (SIV_RICH_TEXT_FLAGS_VIM off)." },
@@ -167,7 +169,7 @@ pub const decls = [_]Decl{
 pub const functions = [_]Function{
     .{
         .name = "siv_rich_text",
-        .doc = "Creates a rich text editor (D22): an editor showing a Portable Text document as it reads, headings, quotes, lists with their markers, code blocks, and marks, edited with the usual keys and the mouse or, with SIV_RICH_TEXT_FLAGS_VIM, with Vim's keys. Ctrl+B, Ctrl+I, Ctrl+U, Ctrl+E, Ctrl+Shift+X, Ctrl+., and Ctrl+, toggle bold, italic, underline, code, strike-through, superscript, and subscript; Ctrl+Alt+0 to 6 set normal text and headings; Ctrl+Shift+7, 8, and 9 numbered and bulleted lists and quotes, Ctrl+Alt+C a code block; Tab and Shift+Tab nest list items; Shift+Enter breaks a line inside a block; Markdown at the start of a paragraph (\"# \" to \"###### \", \"- \", \"1. \", \"> \", \"``` \") formats it; Ctrl+Z and Ctrl+Shift+Z undo and redo. The user's edits report SIV_EVENT_CHANGE on it, changes of what siv_rich_text_get_state and siv_rich_text_get_status tell SIV_EVENT_SELECT, and a Vim command line (:w) SIV_EVENT_ACTIVATE with the command in text. The root is a stack the application lays out, as tall as its document (put it in a scroll); siv_node_focus on it gives its text the focus, and siv_widget_set_label and siv_widget_set_disabled apply. Appended as the parent's last child. Returns the node, or 0 if the transaction has failed (see siv_txn_commit).",
+        .doc = "Creates a rich text editor (D22): an editor showing a Portable Text document as it reads, headings, quotes, lists with their markers, code blocks, and marks, edited with the usual keys and the mouse or, with SIV_RICH_TEXT_FLAGS_VIM, with Vim's keys. Ctrl+B, Ctrl+I, Ctrl+U, Ctrl+E, Ctrl+Shift+X, Ctrl+., and Ctrl+, toggle bold, italic, underline, code, strike-through, superscript, and subscript; Ctrl+Alt+0 to 6 set normal text and headings; Ctrl+Shift+7, 8, and 9 numbered and bulleted lists and quotes, Ctrl+Alt+C a code block; Tab and Shift+Tab nest list items; Shift+Enter breaks a line inside a block; Markdown at the start of a paragraph (\"# \" to \"###### \", \"- \", \"1. \", \"> \", \"``` \") formats it; Ctrl+Z and Ctrl+Shift+Z undo and redo. Ctrl+K edits links in a popover at the selection, Enter applying and Escape cancelling: with text selected it asks for a URL to link it to, on a link it shows the link's URL to change (or clear, or Remove, to unlink it), and at a caret elsewhere it asks for a URL and the text to show (the URL itself when empty); a URL typed without a scheme gets https:// (mailto: for an address). Typing a URL (http://, https://, mailto:, or www.) and then a space or Enter links it, an undo step of its own, and pasting a URL over selected text links that text instead of replacing it. Clicking a link places the caret; it never opens. With Vim's keys, Ctrl+K works in every mode, :link URL links the visual selection (:'<,'>link), else changes the link or links the word under the cursor, :link alone opens the popover, and :unlink removes the link under the cursor or the links in the visual selection. The user's edits report SIV_EVENT_CHANGE on it, changes of what siv_rich_text_get_state and siv_rich_text_get_status tell SIV_EVENT_SELECT, and a Vim command line (:w) SIV_EVENT_ACTIVATE with the command in text. The root is a stack the application lays out, as tall as its document (put it in a scroll); siv_node_focus on it gives its text the focus, and siv_widget_set_label and siv_widget_set_disabled apply. Appended as the parent's last child. Returns the node, or 0 if the transaction has failed (see siv_txn_commit).",
         .since = v0_1,
         .params = &.{
             txn_param,
@@ -196,5 +198,27 @@ pub const functions = [_]Function{
         p("state", out(ref("siv_rich_text_state")), "The state."),
     }),
     call("siv_rich_text_get_status", "A rich text editor's status line: in Vim, the keys of a command typed so far (\"2d\"), the command line or search being typed (\":w\"), or its last message (\"Pattern not found\"); empty when there is none.", &([_]Param{node_param} ++ buffer_out)),
+    call("siv_rich_text_get_selection", "A rich text editor's selection. " ++ offsets_doc, &.{
+        node_param,
+        p("caret", out(.u32), "Where the caret is, the end the user moves."),
+        p("anchor", out(.u32), "The other end; the caret when nothing is selected."),
+    }),
+    call("siv_rich_text_get_link", "The link at a rich text editor's caret, for an application's own link UI: the one over the first selected character, else (nothing selected) the one over the character before the caret or, failing that, after it; in Vim's normal mode the one under the cursor. " ++ offsets_doc, &.{
+        node_param,
+        p("href", schema.text_buffer, "Receives at most href_cap bytes of the link's href; may be NULL with href_cap 0."),
+        p("len", out(.usize), "The href's full length; 0 when there is no link there."),
+        .{ .name = "start", .type = out(.u32), .doc = "Where the link's text starts; the caret when there is no link.", .optional = true },
+        .{ .name = "end", .type = out(.u32), .doc = "Where the link's text ends; the caret when there is no link.", .optional = true },
+    }),
+    call("siv_rich_text_set_link", "Links a rich text editor's selection, as its link editor does: the selected text to href; with nothing selected, the link at the caret (siv_rich_text_get_link), whole, gets href, keeping its other fields and _key, or, when there is none, href is inserted at the caret as linked text. An empty href removes the links in the selection or the link at the caret. href is kept as given (no scheme is added). One undo step, followed by SIV_EVENT_CHANGE when the document changed. Code blocks and objects are not linked. SIV_ERROR_UNSUPPORTED when the editor's schema has no links (SIV_RICH_TEXT_MARKS_LINK); not inside an open transaction of the window (SIV_ERROR_BUSY).", &.{
+        node_param,
+        p("href", .string, "The URL, copied; empty to unlink."),
+    }),
+    call("siv_rich_text_set_link_range", "Links the text of a rich text editor between two offsets to href, as siv_rich_text_set_link does the selection; with start equal to end, the link at that offset (the one over the character before it, else after it) gets href or, with an empty href, is removed, and nothing is inserted. " ++ offsets_doc ++ " SIV_ERROR_INVALID_ARGUMENT for an offset past the text's end; an offset inside a character counts as its start.", &.{
+        node_param,
+        p("start", .u32, "One end of the text, in either order with end."),
+        p("end", .u32, "The other end."),
+        p("href", .string, "The URL, copied; empty to unlink."),
+    }),
     call("siv_rich_text_mark_saved", "Marks a rich text editor's document as saved: siv_rich_text_state.modified is false until the user changes it again.", &.{node_param}),
 };

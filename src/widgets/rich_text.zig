@@ -17,6 +17,10 @@
 //! definition in the registry, and an annotation's (a link's) color
 //! carries its index in the red channel, too small a difference to see.
 //!
+//! Links are annotations made with Ctrl+K's popover (a popover at the
+//! selection), by typing or pasting a URL, or through the API; a link
+//! given a new URL keeps its markDef's _key and other fields.
+//!
 //! The root is a stack of a canvas, which draws list markers, quote bars,
 //! code block grounds, and object placeholders behind the text where the
 //! paragraphs' indents leave room, and the editor. The state lives on the
@@ -26,6 +30,9 @@ const std = @import("std");
 const w = @import("widgets.zig");
 const pt = @import("portable_text.zig");
 const vim_mod = @import("vim.zig");
+const menu = @import("menu.zig");
+const field = @import("field.zig");
+const button = @import("button.zig");
 const siv = w.siv;
 const c = siv.c;
 const Node = siv.Node;
@@ -60,6 +67,11 @@ const Data = extern struct {
 };
 
 const Tail = struct { count: usize, def: u32 };
+/// A link: its annotation and the stretch of text it covers.
+pub const Link = struct { ann: u32, start: u32, stop: u32 };
+/// The open link editor (Ctrl+K): its popover, its fields, and the text
+/// it links (lo == hi inserts a link there).
+const LinkEditor = struct { popup: siv.Window = .null, url: Node = .null, text: Node = .null, lo: u32 = 0, hi: u32 = 0 };
 const Step = struct { model: pt.Model, caret: u32, anchor: u32 };
 const GroupKind = enum { insert, delete, replace };
 const Group = struct { kind: GroupKind, pos: u32, space: bool = false };
@@ -99,6 +111,7 @@ pub const State = struct {
     posted: bool = false,
     reported: siv.RichTextState = .{},
     reported_status: std.ArrayList(u8) = .empty,
+    link: LinkEditor = .{},
 
     fn deinit(st: *State) void {
         st.model.deinit(gpa);
@@ -633,7 +646,7 @@ pub const State = struct {
             return;
         }
         const on = !st.allMarked(lo, hi, mark);
-        const runs = mapMarks(st, lo, hi, mark, on) catch return;
+        const runs = mapRuns(st, lo, hi, .{ .mark = .{ .mark = mark, .on = on } }) catch return;
         const sel = st.selection();
         st.checkpoint(sel[0], sel[1]);
         const t = gpa.dupe(u8, st.model.text) catch return;
@@ -724,6 +737,233 @@ pub const State = struct {
         return true;
     }
 
+    // Links ---------------------------------------------------------------
+
+    /// The link over the character at lo when hi > lo (a selection), else
+    /// over the character before lo or, failing that, after it; with its
+    /// extent, the stretch of its annotation around it.
+    pub fn linkAt(st: *const State, lo: u32, hi: u32) ?Link {
+        const runs = st.model.runs;
+        // Runs are in order, so the one ending at a caret comes before the
+        // one starting there.
+        const i = for (runs, 0..) |r, i| {
+            if (r.ann == 0) continue;
+            if (r.start <= lo and lo < r.stop) break i;
+            if (hi == lo and r.start < lo and lo <= r.stop) break i;
+        } else return null;
+        const ann = runs[i].ann;
+        var s = i;
+        while (s > 0 and runs[s - 1].ann == ann and runs[s - 1].stop == runs[s].start) s -= 1;
+        var e = i;
+        while (e + 1 < runs.len and runs[e + 1].ann == ann and runs[e + 1].start == runs[e].stop) e += 1;
+        return .{ .ann = ann, .start = runs[s].start, .stop = runs[e].stop };
+    }
+
+    /// The link at a selection, as Ctrl+K edits it: in Vim's modes with a
+    /// block cursor, the one under the cursor.
+    pub fn caretLink(st: *const State, lo: u32, hi: u32) ?Link {
+        if (lo == hi and st.vim_on and st.vim.modal() and lo < st.model.text.len) {
+            const n = std.unicode.utf8ByteSequenceLength(st.model.text[lo]) catch 1;
+            return st.linkAt(lo, lo + n);
+        }
+        return st.linkAt(lo, hi);
+    }
+
+    /// Links lo..hi to url, or unlinks it when url is empty, as one undo
+    /// step; with lo == hi, the link at lo, whole. A link given a new URL
+    /// over its whole extent keeps its _key and other fields. Whether the
+    /// document changed.
+    pub fn setLink(st: *State, lo0: u32, hi0: u32, url: []const u8) bool {
+        if (!st.allow.link) return false;
+        var lo = lo0;
+        var hi = hi0;
+        var ann: u32 = 0;
+        if (st.linkAt(lo, hi)) |l| {
+            if (lo == hi) {
+                lo = l.start;
+                hi = l.stop;
+            }
+            if (url.len > 0 and l.start <= lo and hi <= l.stop) {
+                ann = if (std.mem.eql(u8, st.reg.href(l.ann), url)) l.ann else st.reg.link(url, st.reg.annotationValue(l.ann)) catch return false;
+            }
+        } else if (lo == hi) return false;
+        if (url.len > 0 and ann == 0) ann = st.reg.link(url, null) catch return false;
+        const runs = mapRuns(st, lo, hi, .{ .ann = ann }) catch return false;
+        if (runsEql(runs, st.model.runs)) {
+            gpa.free(runs);
+            return false;
+        }
+        const sel = st.selection();
+        st.checkpoint(sel[0], sel[1]);
+        st.edited();
+        st.applyRuns(runs, sel);
+        return true;
+    }
+
+    /// Shows the model with other runs (taking them).
+    fn applyRuns(st: *State, runs: []pt.Run, sel: ?[2]u32) void {
+        const t = gpa.dupe(u8, st.model.text) catch return gpa.free(runs);
+        const b = gpa.dupe(pt.Block, st.model.blocks) catch {
+            gpa.free(t);
+            return gpa.free(runs);
+        };
+        st.apply(.{ .text = t, .blocks = b, .runs = runs }, sel);
+    }
+
+    /// Replaces lo..hi with text linked to url, as one undo step, with the
+    /// caret after it; what is typed next is not linked.
+    pub fn insertLink(st: *State, lo: u32, hi: u32, s: []const u8, url: []const u8) void {
+        const b, _ = st.blockAt(lo);
+        if (!st.allow.link or st.def(b).kind != .text or s.len == 0) return;
+        const sel = st.selection();
+        st.checkpoint(sel[0], sel[1]);
+        st.replace(lo, hi, s, null);
+        const e: u32 = lo + @as(u32, @intCast(s.len));
+        const ann = st.reg.link(url, null) catch return;
+        const runs = mapRuns(st, lo, e, .{ .ann = ann }) catch return;
+        st.applyRuns(runs, .{ e, e });
+        _ = c.siv_editor_format(st.editor, .{}, .{ .color = true });
+    }
+
+    /// Links the URL typed before a space or Enter at `end`, as an undo
+    /// step of its own (in Vim, of the insert's), as mail and chat editors
+    /// do: the word before it, without the brackets, quotes, and
+    /// punctuation around it.
+    fn autolink(st: *State, end: u32) void {
+        if (!st.allow.link) return;
+        const b, _ = st.blockAt(end);
+        if (st.def(b).kind != .text or end > b.stop or end <= b.start) return;
+        const t = st.model.text;
+        var lo = end;
+        while (lo > b.start) {
+            if (t[lo - 1] == ' ' or t[lo - 1] == '\t') break;
+            if (std.mem.endsWith(u8, t[b.start..lo], pt.line_separator) or std.mem.endsWith(u8, t[b.start..lo], pt.object_char)) break;
+            lo -= 1;
+        }
+        var hi = end;
+        while (lo < hi and std.mem.indexOfScalar(u8, "(<[\"'", t[lo]) != null) lo += 1;
+        while (hi > lo) {
+            const ch = t[hi - 1];
+            const open_paren = ch == ')' and std.mem.count(u8, t[lo..hi], "(") < std.mem.count(u8, t[lo..hi], ")");
+            if (std.mem.indexOfScalar(u8, ".,;:!?\"'>]", ch) == null and !open_paren) break;
+            hi -= 1;
+        }
+        const url = urlHref(t[lo..hi]) orelse return;
+        defer gpa.free(url);
+        for (st.model.runs) |r| if (r.ann != 0 and r.start < hi and r.stop > lo) return;
+        const ann = st.reg.link(url, null) catch return;
+        const runs = mapRuns(st, lo, hi, .{ .ann = ann }) catch return;
+        if (!(st.vim_on and st.vim.undo_held)) {
+            const sel = st.selection();
+            st.checkpoint(sel[0], sel[1]);
+        }
+        st.applyRuns(runs, null);
+    }
+
+    /// A URL pasted over text (lo..hi before the paste) links that text
+    /// instead of replacing it, as one undo step back to the selection;
+    /// whether it did.
+    fn pasteLink(st: *State, lo: u32, hi: u32, pasted: []const u8) bool {
+        if (!st.allow.link) return false;
+        const b, _ = st.blockAt(lo);
+        if (st.def(b).kind != .text or hi > b.stop) return false;
+        const url = urlHref(std.mem.trim(u8, pasted, " \t\r\n")) orelse return false;
+        defer gpa.free(url);
+        const old = st.model.text[lo..hi];
+        st.checkpoint(hi, lo);
+        const txn = w.begin(st.window) orelse return false;
+        c.siv_replace_text(txn, st.editor, lo, lo + @as(u32, @intCast(pasted.len)), old.ptr, old.len);
+        _ = w.commit(txn);
+        st.edited();
+        const ann = st.reg.link(url, null) catch return true;
+        const runs = mapRuns(st, lo, hi, .{ .ann = ann }) catch return true;
+        st.applyRuns(runs, .{ hi, hi });
+        return true;
+    }
+
+    /// Opens the link editor (Ctrl+K) in a popover at the selection: a URL
+    /// for selected text; the URL of the link at the caret, to change or
+    /// remove; else a URL and the text to insert.
+    pub fn openLink(st: *State) void {
+        if (!st.allow.link or st.data.hdr.disabled or w.windowAlive(st.link.popup)) return;
+        const sel = st.selection();
+        var lo = @min(sel[0], sel[1]);
+        var hi = @max(sel[0], sel[1]);
+        const b, _ = st.blockAt(lo);
+        if (st.def(b).kind != .text) return;
+        var url: []const u8 = "";
+        var editing = false;
+        if (st.caretLink(lo, hi)) |l| {
+            if (lo == hi or (l.start <= lo and hi <= l.stop)) {
+                lo = l.start;
+                hi = l.stop;
+            }
+            url = st.reg.href(l.ann);
+            editing = true;
+        }
+        const r0 = st.caretRect(lo);
+        const r1 = st.caretRect(hi);
+        const rect: siv.Rect = if (@abs(r1.y - r0.y) < 1)
+            .{ .x = @min(r0.x, r1.x), .y = r0.y, .width = @max(1, @abs(r1.x - r0.x)), .height = r0.height }
+        else
+            .{ .x = r0.x, .y = r0.y, .width = 1, .height = r0.height };
+        var popup: siv.Window = .null;
+        var content: Node = .null;
+        if (menu.popoverAt(st.editor, .{ .label = "Link", .label_len = 4 }, rect, &popup, &content) != .ok) return;
+        const txn = w.begin(popup) orelse {
+            c.siv_window_destroy(popup);
+            return;
+        };
+        const ud = w.handleData(st.root);
+        const col = c.siv_flex(txn, content, &.{ .axis = .column, .gap = 8 });
+        c.siv_set_layout(txn, col, &.{ .width = w.px(300) });
+        const url_field = field.siv_text_field(txn, col, &.{ .text = url.ptr, .text_len = url.len, .placeholder = "Paste or type a link", .placeholder_len = 20, .label = "Link address", .label_len = 12 });
+        const text_field: Node = if (lo == hi) field.siv_text_field(txn, col, &.{ .placeholder = "Text to show", .placeholder_len = 12, .label = "Link text", .label_len = 9 }) else .null;
+        const row = c.siv_flex(txn, col, &.{ .axis = .row, .justify = .end, .gap = 8 });
+        if (editing) {
+            const remove = button.siv_push_button(txn, row, &.{ .label = "Remove", .label_len = 6 });
+            c.siv_on(txn, remove, .activate, onLinkRemove, null, ud);
+        }
+        const apply_ = button.siv_push_button(txn, row, &.{ .label = "Apply", .label_len = 5, .style = .primary });
+        c.siv_on(txn, apply_, .activate, onLinkApply, null, ud);
+        c.siv_on(txn, col, .key, onLinkKey, null, ud);
+        c.siv_set_selection(txn, url_field, @intCast(url.len), 0);
+        if (!w.commit(txn) or c.siv_popup_show(popup) != .ok) {
+            c.siv_window_destroy(popup);
+            return;
+        }
+        st.link = .{ .popup = popup, .url = url_field, .text = text_field, .lo = lo, .hi = hi };
+        _ = c.siv_node_focus(url_field);
+    }
+
+    /// Closes the link editor, applying what it holds or removing the
+    /// link.
+    fn finishLink(st: *State, remove: bool) void {
+        const ed = st.link;
+        if (!w.windowAlive(ed.popup)) return;
+        var buf: [2][]u8 = .{ &.{}, &.{} };
+        defer for (buf) |x| gpa.free(x);
+        if (!remove) for ([_]Node{ ed.url, ed.text }, &buf) |n, *out| {
+            if (n == .null) continue;
+            var len: usize = 0;
+            _ = c.siv_node_get_text(n, null, 0, &len);
+            out.* = gpa.alloc(u8, len) catch continue;
+            _ = c.siv_node_get_text(n, out.*.ptr, len, &len);
+        };
+        c.siv_window_destroy(ed.popup);
+        st.link = .{};
+        const href = hrefOf(buf[0]);
+        defer if (href) |h| gpa.free(h);
+        if (ed.lo == ed.hi) {
+            const shown = std.mem.trim(u8, buf[1], " \t");
+            if (href) |h| st.insertLink(ed.lo, ed.lo, if (shown.len > 0) shown else std.mem.trim(u8, buf[0], " \t\r\n"), h);
+        } else _ = st.setLink(ed.lo, ed.hi, href orelse "");
+        _ = c.siv_node_focus(st.editor);
+        if (st.vim_on) st.vim.afterLink(st);
+        st.flushChange();
+        st.notify();
+    }
+
     /// Runs a command as the toolbar gives it.
     pub fn run(st: *State, cmd: siv.RichTextCommand) siv.Result {
         const sel = st.selection();
@@ -764,6 +1004,10 @@ pub const State = struct {
             },
             .undo => _ = st.undo(),
             .redo => _ = st.redo(),
+            .link => {
+                if (!st.allow.link) return .error_unsupported;
+                st.openLink();
+            },
             else => return .error_unsupported,
         }
         st.flushChange();
@@ -814,6 +1058,7 @@ pub const State = struct {
             'e' => st.toggleMark(.{ .code = true }, lo, hi),
             'z' => _ = st.undo(),
             'y' => _ = st.redo(),
+            'k' => st.openLink(),
             else => return false,
         }
         st.notifyLater();
@@ -858,6 +1103,7 @@ pub const State = struct {
         if (st.group) |*g| g.pos = after;
         st.edited();
         st.sync();
+        if (std.mem.eql(u8, s, pt.line_separator)) st.autolink(lo);
     }
 
     /// Starts a new undo step unless the edit continues the last one:
@@ -896,6 +1142,11 @@ pub const State = struct {
         const full = w.str(ev.text, ev.text_len) orelse "";
         const es = ev.edit_start;
         const inserted = if (es + ev.edit_length <= full.len) full[es .. es + ev.edit_length] else "";
+        if (ev.edit_end > es and ev.edit_length > 1 and st.pasteLink(es, ev.edit_end, inserted)) {
+            if (st.vim_on) st.vim.afterChange(st);
+            st.flushChange();
+            return .handled;
+        }
         // The block the edit began in, before it.
         var old: ?pt.Block = null;
         var old_last_of_def = false;
@@ -915,8 +1166,14 @@ pub const State = struct {
         st.edited();
         st.sync();
 
-        if (std.mem.eql(u8, inserted, "\n")) if (old) |o| st.enterRules(o, old_last_of_def, es);
-        if (std.mem.eql(u8, inserted, " ")) st.markdownPrefix(es);
+        if (std.mem.eql(u8, inserted, "\n")) {
+            if (old) |o| st.enterRules(o, old_last_of_def, es);
+            st.autolink(es);
+        }
+        if (std.mem.eql(u8, inserted, " ")) {
+            st.autolink(es);
+            st.markdownPrefix(es);
+        }
         if (st.vim_on) st.vim.afterChange(st);
         st.flushChange();
         return .handled;
@@ -1235,6 +1492,47 @@ fn parasMatch(read: []const siv.ParagraphSpan, want: []const siv.ParagraphSpan) 
     return j == want.len;
 }
 
+fn runsEql(a: []const pt.Run, b: []const pt.Run) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |x, y| if (x.start != y.start or x.stop != y.stop or !x.marks.eql(y.marks) or x.ann != y.ann) return false;
+    return true;
+}
+
+fn startsWithAny(s: []const u8, prefix: []const u8) bool {
+    return s.len >= prefix.len and std.ascii.eqlIgnoreCase(s[0..prefix.len], prefix);
+}
+
+/// The href of text that is a URL as typed or pasted, owned by the
+/// caller: http://, https://, and mailto: ones as they are, www. ones
+/// with https://; null for other text.
+fn urlHref(s: []const u8) ?[]u8 {
+    for (s) |ch| if (ch <= ' ' or ch == 0x7f) return null;
+    if (std.mem.indexOf(u8, s, pt.line_separator) != null or std.mem.indexOf(u8, s, pt.object_char) != null) return null;
+    for ([_][]const u8{ "https://", "http://" }) |scheme| {
+        if (startsWithAny(s, scheme) and s.len > scheme.len and std.ascii.isAlphanumeric(s[scheme.len])) return gpa.dupe(u8, s) catch null;
+    }
+    if (startsWithAny(s, "mailto:") and std.mem.indexOfScalarPos(u8, s, 8, '@') != null) return gpa.dupe(u8, s) catch null;
+    if (startsWithAny(s, "www.") and s.len > 4 and std.ascii.isAlphanumeric(s[4]) and std.mem.indexOfScalarPos(u8, s, 5, '.') != null) {
+        return std.mem.concat(gpa, u8, &.{ "https://", s }) catch null;
+    }
+    return null;
+}
+
+/// What the user typed into the link editor or :link as an href, owned
+/// by the caller: trimmed; with a scheme (RFC 3986) or as a relative
+/// reference ("/", "#", "?") as it is, an address with mailto:, anything
+/// else with https://. Null when empty.
+pub fn hrefOf(s: []const u8) ?[]u8 {
+    const t = std.mem.trim(u8, s, " \t\r\n");
+    if (t.len == 0) return null;
+    const scheme = if (std.mem.indexOfScalar(u8, t, ':')) |colon| colon > 0 and std.ascii.isAlphabetic(t[0]) and for (t[1..colon]) |ch| {
+        if (!std.ascii.isAlphanumeric(ch) and ch != '+' and ch != '-' and ch != '.') break false;
+    } else true else false;
+    if (scheme or t[0] == '/' or t[0] == '#' or t[0] == '?') return gpa.dupe(u8, t) catch null;
+    const mail = std.mem.indexOfScalar(u8, t, '@') != null and std.mem.indexOfScalar(u8, t, '/') == null;
+    return std.mem.concat(gpa, u8, &.{ if (mail) "mailto:" else "https://", t }) catch null;
+}
+
 /// Runs kept only where they lie in text blocks.
 fn clipRuns(st: *const State, runs: []const pt.Run, blocks: []const pt.Block) ![]pt.Run {
     var out: std.ArrayList(pt.Run) = .empty;
@@ -1256,8 +1554,15 @@ fn clipRuns(st: *const State, runs: []const pt.Run, blocks: []const pt.Block) ![
     return out.toOwnedSlice(gpa);
 }
 
-/// Runs with a mark set or cleared on every character of lo..hi.
-fn mapMarks(st: *const State, lo: u32, hi: u32, mark: pt.Marks, on: bool) ![]pt.Run {
+/// What mapRuns does to every character of a range: sets or clears a
+/// decorator, or gives it an annotation (0 for none).
+const RunChange = union(enum) {
+    mark: struct { mark: pt.Marks, on: bool },
+    ann: u32,
+};
+
+/// Runs with a change made to every character of lo..hi.
+fn mapRuns(st: *const State, lo: u32, hi: u32, change: RunChange) ![]pt.Run {
     const m = st.model;
     var out: std.ArrayList(pt.Run) = .empty;
     errdefer out.deinit(gpa);
@@ -1299,8 +1604,11 @@ fn mapMarks(st: *const State, lo: u32, hi: u32, mark: pt.Marks, on: bool) ![]pt.
             next = m.runs[ri].stop;
         } else if (ri < m.runs.len) next = m.runs[ri].start;
         if (at < lo) next = @min(next, lo) else if (at < hi) next = @min(next, hi);
-        const inside = at >= lo and at < hi;
-        try add(&out, at, next, if (inside) set(marks, mark, on) else marks, ann);
+        if (at >= lo and at < hi) switch (change) {
+            .mark => |m_| marks = set(marks, m_.mark, m_.on),
+            .ann => |a| ann = a,
+        };
+        try add(&out, at, next, marks, ann);
         at = next;
     }
     const runs = try out.toOwnedSlice(gpa);
@@ -1361,6 +1669,28 @@ fn postNotify(ud: ?*anyopaque) callconv(.c) void {
     const st = stateOf(w.dataHandle(ud)) orelse return;
     st.posted = false;
     st.notify();
+}
+
+/// Enter in a link editor's field applies it (on its buttons, Enter
+/// presses them).
+fn onLinkKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
+    if (!ev.flags.pressed or (ev.keysym != w.keysym.@"return" and ev.keysym != w.keysym.kp_enter)) return .pass;
+    const st = stateOf(w.dataHandle(ud)) orelse return .pass;
+    if (ev.target != st.link.url and (ev.target != st.link.text or st.link.text == .null)) return .pass;
+    st.finishLink(false);
+    return .handled;
+}
+
+fn onLinkApply(ud: ?*anyopaque, _: Node, _: *const siv.Event) callconv(.c) siv.EventResult {
+    const st = stateOf(w.dataHandle(ud)) orelse return .pass;
+    st.finishLink(false);
+    return .handled;
+}
+
+fn onLinkRemove(ud: ?*anyopaque, _: Node, _: *const siv.Event) callconv(.c) siv.EventResult {
+    const st = stateOf(w.dataHandle(ud)) orelse return .pass;
+    st.finishLink(true);
+    return .handled;
 }
 
 fn postPointer(ud: ?*anyopaque) callconv(.c) void {
@@ -1572,7 +1902,7 @@ pub export fn siv_rich_text_get_document(node: Node, buffer: ?[*]u8, buffer_cap:
 
 pub export fn siv_rich_text_run(node: Node, command: siv.RichTextCommand) siv.Result {
     const st = stateOf(node) orelse return .error_invalid_argument;
-    if (@intFromEnum(command) < 0 or @intFromEnum(command) > @intFromEnum(siv.RichTextCommand.subscript)) return .error_unsupported;
+    if (@intFromEnum(command) < 0 or @intFromEnum(command) > @intFromEnum(siv.RichTextCommand.link)) return .error_unsupported;
     // Not inside an open transaction of the window.
     const probe = w.begin(st.window) orelse return .error_busy;
     _ = w.commit(probe);
@@ -1591,6 +1921,75 @@ pub export fn siv_rich_text_get_status(node: Node, buffer: ?[*]u8, buffer_cap: u
     defer s.deinit(gpa);
     st.status(&s);
     return copyOut(s.items, buffer, buffer_cap, len);
+}
+
+pub export fn siv_rich_text_get_selection(node: Node, caret: ?*u32, anchor: ?*u32) siv.Result {
+    const st = stateOf(node) orelse return .error_invalid_argument;
+    if (caret == null or anchor == null) return .error_invalid_argument;
+    const sel = st.selection();
+    caret.?.* = sel[0];
+    anchor.?.* = sel[1];
+    return .ok;
+}
+
+pub export fn siv_rich_text_get_link(node: Node, href: ?[*]u8, href_cap: usize, len: ?*usize, start: ?*u32, end: ?*u32) siv.Result {
+    const st = stateOf(node) orelse return .error_invalid_argument;
+    if ((href_cap > 0 and href == null) or len == null) return .error_invalid_argument;
+    const sel = st.selection();
+    const l = st.caretLink(@min(sel[0], sel[1]), @max(sel[0], sel[1]));
+    if (start) |p| p.* = if (l) |x| x.start else sel[0];
+    if (end) |p| p.* = if (l) |x| x.stop else sel[0];
+    return copyOut(if (l) |x| st.reg.href(x.ann) else "", href, href_cap, len);
+}
+
+/// The state for a link call: not inside an open transaction of the
+/// window, and with links in the schema.
+fn linkState(node: Node, href: ?[*]const u8, href_len: usize) union(enum) { ok: struct { *State, []const u8 }, err: siv.Result } {
+    const st = stateOf(node) orelse return .{ .err = .error_invalid_argument };
+    const url = w.str(href, href_len) orelse return .{ .err = .error_invalid_argument };
+    if (!st.allow.link) return .{ .err = .error_unsupported };
+    const probe = w.begin(st.window) orelse return .{ .err = .error_busy };
+    _ = w.commit(probe);
+    return .{ .ok = .{ st, url } };
+}
+
+fn linked(st: *State) siv.Result {
+    if (st.vim_on) st.vim.afterChange(st);
+    st.flushChange();
+    st.notify();
+    return .ok;
+}
+
+pub export fn siv_rich_text_set_link(node: Node, href: ?[*]const u8, href_len: usize) siv.Result {
+    const st, const url = switch (linkState(node, href, href_len)) {
+        .ok => |x| x,
+        .err => |e| return e,
+    };
+    const sel = st.selection();
+    const lo = @min(sel[0], sel[1]);
+    const hi = @max(sel[0], sel[1]);
+    if (lo != hi) {
+        _ = st.setLink(lo, hi, url);
+    } else if (st.caretLink(lo, hi)) |l| {
+        _ = st.setLink(l.start, l.stop, url);
+    } else if (url.len > 0) st.insertLink(lo, lo, url, url);
+    return linked(st);
+}
+
+pub export fn siv_rich_text_set_link_range(node: Node, start: u32, end: u32, href: ?[*]const u8, href_len: usize) siv.Result {
+    const st, const url = switch (linkState(node, href, href_len)) {
+        .ok => |x| x,
+        .err => |e| return e,
+    };
+    const t = st.model.text;
+    if (start > t.len or end > t.len) return .error_invalid_argument;
+    var ends = [2]u32{ @min(start, end), @max(start, end) };
+    // An offset inside a character counts as its start.
+    for (&ends) |*o| while (o.* > 0 and o.* < t.len and t[o.*] & 0xc0 == 0x80) {
+        o.* -= 1;
+    };
+    _ = st.setLink(ends[0], ends[1], url);
+    return linked(st);
 }
 
 pub export fn siv_rich_text_mark_saved(node: Node) siv.Result {

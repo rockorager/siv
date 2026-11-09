@@ -214,6 +214,33 @@ pub const Registry = struct {
         return if (ann > 0 and ann <= r.annotations.items.len) r.annotations.items[ann - 1] else null;
     }
 
+    /// A new link annotation to url, and its index plus one: a copy of
+    /// `base` with its href replaced, so an edited link keeps its _key
+    /// and fields such as blank, or { _type: "link", _key, href }.
+    pub fn link(r: *Registry, url: []const u8, base: ?*const Value) !u32 {
+        const a = r.arena.allocator();
+        var o: json.ObjectMap = .empty;
+        if (base != null and base.?.* == .object) {
+            var it = base.?.object.iterator();
+            while (it.next()) |e| try o.put(a, e.key_ptr.*, e.value_ptr.*);
+        } else {
+            var used: std.StringHashMap(void) = .init(r.gpa);
+            defer used.deinit();
+            try o.put(a, "_type", .{ .string = "link" });
+            try o.put(a, "_key", .{ .string = try r.newKey(a, &used) });
+        }
+        try o.put(a, "href", .{ .string = try a.dupe(u8, url) });
+        const v = try a.create(Value);
+        v.* = .{ .object = o };
+        return r.annotation(v);
+    }
+
+    /// The href of an annotation, or "" for none.
+    pub fn href(r: *const Registry, ann: u32) []const u8 {
+        const v = r.annotationValue(ann) orelse return "";
+        return string(v.*, "href") orelse "";
+    }
+
     fn newKey(r: *Registry, a: Allocator, used: *std.StringHashMap(void)) ![]const u8 {
         while (true) {
             r.seed +%= 0x9e3779b97f4a7c15;
