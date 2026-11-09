@@ -883,6 +883,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     images, box shadows, and backdrop blurs draw into the innermost layer.
     The stack form maps to PDF's q/Q, clipping paths, and transparency
     groups.
+  - Glyph runs carry the opaque color behind them for the text contrast
+    correction (D11). `Builder.finish` fills it in: walking the list, the
+    latest opaque solid rectangle or rounded rectangle (without its
+    corners) drawn into the same buffer that contains the run, with
+    nothing but text drawn over the run since, among the last 64 draws;
+    under an axis-aligned transform and rectangular clips only. Isolated
+    layers start from transparency. Callers may set it themselves.
   - A box shadow (`scene.Shadow`) is CSS box-shadow for a rounded
     rectangle: offset, Gaussian sigma (half the CSS blur radius), spread,
     color, outset or inset. Outset shadows are not drawn under their

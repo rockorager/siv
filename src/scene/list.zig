@@ -292,6 +292,12 @@ pub const GlyphRun = struct {
     /// The text the glyphs show, for output that keeps text (PDF's
     /// ToUnicode maps); the renderers ignore it.
     text: ?GlyphText = null,
+    /// The opaque color behind the run, for the renderers' text contrast
+    /// correction (D11). `Builder.finish` fills it in when an opaque solid
+    /// rectangle or rounded rectangle drawn earlier in the same buffer
+    /// covers the run and nothing drawn since overlaps it; null leaves the
+    /// renderers to assume a contrasting background.
+    background: ?Color = null,
 };
 
 /// The text of a glyph run: `clusters[i]` is the byte offset in `bytes`
@@ -482,6 +488,9 @@ pub const Builder = struct {
     /// Open pushes: command index and accumulated content bounds.
     stack: std.ArrayList(Open) = .empty,
     root_bounds: Rect = Rect.empty,
+    /// Scratch for `inferBackgrounds`.
+    bg_entries: std.ArrayList(BgEntry) = .empty,
+    bg_frames: std.ArrayList(BgFrame) = .empty,
 
     const Open = struct { index: u32, bounds: Rect };
 
@@ -492,6 +501,8 @@ pub const Builder = struct {
     pub fn deinit(b: *Builder) void {
         b.commands.deinit(b.gpa);
         b.stack.deinit(b.gpa);
+        b.bg_entries.deinit(b.gpa);
+        b.bg_frames.deinit(b.gpa);
         b.arena.deinit();
         b.* = undefined;
     }
@@ -609,7 +620,121 @@ pub const Builder = struct {
     /// The finished list. Fails if a layer is still open.
     pub fn finish(b: *Builder, version: u32) Error!DisplayList {
         if (b.stack.items.len != 0) return error.Unbalanced;
+        try b.inferBackgrounds();
         return .{ .commands = b.commands.items, .version = version, .bounds = b.root_bounds };
+    }
+
+    /// What was drawn, in root coordinates: an opaque solid box that text
+    /// may sit on (`color` set), or anything else (`color` null).
+    const BgEntry = struct {
+        bounds: Rect,
+        /// The box without its corners: inset horizontally by its largest
+        /// horizontal radius, and vertically by its largest vertical one.
+        inner_h: Rect = Rect.empty,
+        inner_v: Rect = Rect.empty,
+        color: ?Color = null,
+    };
+
+    const BgFrame = struct {
+        m: Affine,
+        /// Clip bounds in root coordinates.
+        clip: Rect,
+        /// Fills can be backgrounds: axis-aligned transform and only
+        /// rectangular clips.
+        boxes: bool,
+        /// First entry drawn into this frame's buffer.
+        base: u32,
+        isolated: bool,
+    };
+
+    /// Entries searched back from a glyph run.
+    const bg_search = 64;
+
+    /// Sets `background` on glyph runs that lack one (see GlyphRun).
+    fn inferBackgrounds(b: *Builder) Error!void {
+        const entries = &b.bg_entries;
+        const frames = &b.bg_frames;
+        entries.clearRetainingCapacity();
+        frames.clearRetainingCapacity();
+        try frames.append(b.gpa, .{ .m = .identity, .clip = infinite, .boxes = true, .base = 0, .isolated = true });
+        for (b.commands.items) |*cmd| {
+            const top = frames.items[frames.items.len - 1];
+            switch (cmd.*) {
+                .push => |p| {
+                    const l = p.layer;
+                    const m = l.transform.then(top.m);
+                    var f: BgFrame = .{ .m = m, .clip = top.clip, .boxes = top.boxes and m.isAxisAligned(), .base = top.base, .isolated = l.isIsolated() };
+                    if (l.clip) |c| {
+                        f.clip = f.clip.intersect(m.applyRect(c.shape.bounds()));
+                        if (c.shape != .rect) f.boxes = false;
+                    }
+                    if (f.isolated) f.base = @intCast(entries.items.len);
+                    try frames.append(b.gpa, f);
+                },
+                .pop => {
+                    const f = frames.pop().?;
+                    if (!f.isolated) continue;
+                    // What the layer drew is gone from view; its result is
+                    // one opaque-or-not draw in the parent.
+                    var bounds = Rect.empty;
+                    for (entries.items[f.base..]) |e| bounds = bounds.unite(e.bounds);
+                    entries.shrinkRetainingCapacity(f.base);
+                    if (!bounds.isEmpty()) try entries.append(b.gpa, .{ .bounds = bounds.intersect(f.clip) });
+                },
+                .fill => |fl| {
+                    const bounds = top.m.applyRect(fl.shape.bounds()).intersect(top.clip);
+                    var e: BgEntry = .{ .bounds = bounds };
+                    const opaque_solid = switch (fl.paint) {
+                        .solid => |c| c.a >= 1,
+                        .gradient => false,
+                    };
+                    if (opaque_solid and top.boxes) switch (fl.shape) {
+                        .rect => {
+                            e.inner_h = bounds;
+                            e.inner_v = bounds;
+                            e.color = fl.paint.solid;
+                        },
+                        .rounded_rect => |rr| {
+                            const rd = rr.radii;
+                            const rx = @max(@max(rd.tl.x, rd.tr.x), @max(rd.br.x, rd.bl.x));
+                            const ry = @max(@max(rd.tl.y, rd.tr.y), @max(rd.br.y, rd.bl.y));
+                            const r = rr.rect;
+                            e.inner_h = top.m.applyRect(.{ .x0 = r.x0 + rx, .y0 = r.y0, .x1 = r.x1 - rx, .y1 = r.y1 }).intersect(top.clip);
+                            e.inner_v = top.m.applyRect(.{ .x0 = r.x0, .y0 = r.y0 + ry, .x1 = r.x1, .y1 = r.y1 - ry }).intersect(top.clip);
+                            e.color = fl.paint.solid;
+                        },
+                        .path => {},
+                    };
+                    try entries.append(b.gpa, e);
+                },
+                .stroke => |st| try entries.append(b.gpa, .{ .bounds = top.m.applyRect(st.shape.bounds().outset(st.style.outset())) }),
+                .image => |img| try entries.append(b.gpa, .{ .bounds = top.m.applyRect(img.dst) }),
+                .shadow => |sh| try entries.append(b.gpa, .{ .bounds = top.m.applyRect(sh.bounds()) }),
+                .backdrop_blur => |bl| try entries.append(b.gpa, .{ .bounds = top.m.applyRect(bl.shape.bounds()) }),
+                .glyphs => |*run| {
+                    // Text does not count as what is behind other text.
+                    if (run.background != null) continue;
+                    const r = top.m.applyRect(run.bounds);
+                    var i = entries.items.len;
+                    const stop = @max(top.base, i -| bg_search);
+                    while (i > stop) {
+                        i -= 1;
+                        const e = entries.items[i];
+                        if (!overlaps(e.bounds, r)) continue;
+                        if (e.color != null and (containsRect(e.inner_h, r) or containsRect(e.inner_v, r))) run.background = e.color;
+                        break;
+                    }
+                },
+            }
+        }
+    }
+
+    fn overlaps(a: Rect, r: Rect) bool {
+        return a.x0 < r.x1 and r.x0 < a.x1 and a.y0 < r.y1 and r.y0 < a.y1;
+    }
+
+    fn containsRect(a: Rect, r: Rect) bool {
+        return a.x0 <= r.x0 and a.y0 <= r.y0 and r.x1 <= a.x1 and r.y1 <= a.y1;
     }
 
     fn include(b: *Builder, r: Rect) void {
@@ -790,4 +915,61 @@ test "color conversions round trip" {
         try testing.expectApproxEqAbs(v, linearToSrgb(srgbToLinear(v)), 1e-5);
     }
     try testing.expectApproxEqAbs(@as(f32, 0.21586), Color.srgb8(0x80, 0, 0, 0xff).r, 1e-4);
+}
+
+test "glyph runs learn the opaque box behind them" {
+    var b = Builder.init(testing.allocator);
+    defer b.deinit();
+    var font_data: u8 = 0;
+    const font: Font = .{ .handle = &font_data, .key = 1 };
+    const g = [_]Glyph{.{ .id = 1, .x = 0, .y = 0 }};
+    const blue = Color.srgb8(0x25, 0x63, 0xeb, 0xff);
+    const card = Color.srgb8(0xf4, 0xf4, 0xf5, 0xff);
+    const Run = struct {
+        fn at(f: Font, glyphs: []const Glyph, r: Rect) GlyphRun {
+            return .{ .font = f, .size = 12, .glyphs = glyphs, .paint = .color(.white), .bounds = r };
+        }
+    };
+    try b.fillRect(.xywh(0, 0, 200, 100), .color(card));
+    // A pill button: the label clears its corners horizontally.
+    try b.fillRoundedRect(.xywh(10, 10, 80, 24), .uniform(12, 12), .color(blue));
+    try b.glyphs(Run.at(font, &g, .xywh(24, 14, 50, 16)));
+    // Text reaching into the rounded corner is not known to be on it.
+    try b.glyphs(Run.at(font, &g, .xywh(11, 11, 20, 8)));
+    // Translucent boxes and images hide what is below.
+    try b.fillRect(.xywh(100, 10, 40, 20), .color(Color.black.withAlpha(0.5)));
+    try b.glyphs(Run.at(font, &g, .xywh(105, 12, 20, 10)));
+    // A translated layer still draws into the same buffer.
+    try b.pushLayer(.{ .transform = .translate(0, 50) });
+    try b.glyphs(Run.at(font, &g, .xywh(150, 10, 20, 10)));
+    try b.popLayer();
+    // An isolated layer starts from transparency: its text sees its own
+    // boxes only.
+    try b.pushLayer(.{ .opacity = 0.5 });
+    try b.glyphs(Run.at(font, &g, .xywh(150, 70, 20, 10)));
+    try b.fillRect(.xywh(145, 65, 40, 20), .color(.black));
+    try b.glyphs(Run.at(font, &g, .xywh(150, 70, 20, 10)));
+    try b.popLayer();
+    // Its result overlaps the earlier box for later text.
+    try b.glyphs(Run.at(font, &g, .xywh(155, 72, 10, 6)));
+    // A background given by the caller is kept.
+    var given = Run.at(font, &g, .xywh(150, 10, 20, 10));
+    given.background = .black;
+    try b.glyphs(given);
+    const list = try b.finish(0);
+    var got: [9]?Color = undefined;
+    var n: usize = 0;
+    for (list.commands) |c| if (c == .glyphs) {
+        got[n] = c.glyphs.background;
+        n += 1;
+    };
+    try testing.expectEqual(@as(usize, 8), n);
+    try testing.expectEqual(@as(?Color, blue), got[0]);
+    try testing.expectEqual(@as(?Color, null), got[1]);
+    try testing.expectEqual(@as(?Color, null), got[2]);
+    try testing.expectEqual(@as(?Color, card), got[3]);
+    try testing.expectEqual(@as(?Color, null), got[4]);
+    try testing.expectEqual(@as(?Color, .black), got[5]);
+    try testing.expectEqual(@as(?Color, null), got[6]);
+    try testing.expectEqual(@as(?Color, .black), got[7]);
 }
