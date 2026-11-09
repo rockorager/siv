@@ -375,6 +375,88 @@ test "rich text: Vim's keys" {
     try expectOutline(node, "normal:strong(hello) world xoo");
 }
 
+test "rich text: Vim's lines end at soft line breaks inside a block" {
+    var h: Harness = .{};
+    try h.start(480, 300, null, null);
+    defer h.stop();
+    var log: Log = .{};
+    // A greeting, a signature of three soft-broken lines in one block (as
+    // Parcel's compose makes one), and a block after it.
+    const doc =
+        \\[{"_type": "block", "style": "normal", "markDefs": [], "children": [{"_type": "span", "text": "Hi Tim,", "marks": []}]},
+        \\ {"_type": "block", "style": "normal", "markDefs": [], "children": [{"_type": "span", "text": "-- \nAna Lee\nana.example", "marks": []}]},
+        \\ {"_type": "block", "style": "normal", "markDefs": [], "children": [{"_type": "span", "text": "after", "marks": []}]}]
+    ;
+    const node = try build(&h, .{ .flags = .{ .vim = true }, .document = doc, .document_len = doc.len }, &log);
+    const original = "normal:Hi Tim, | normal:-- \nAna Lee\nana.example | normal:after";
+    try expectOutline(node, original);
+    const Case = struct { keys: []const u8, want: []const u8 };
+    const cases = [_]Case{
+        // :N counts soft lines; D, dd, and cc stop at a soft break.
+        .{ .keys = ":2\rD", .want = "normal:Hi Tim, | normal:\nAna Lee\nana.example | normal:after" },
+        .{ .keys = ":3\rdd", .want = "normal:Hi Tim, | normal:-- \nana.example | normal:after" },
+        .{ .keys = ":3\rccAnn\x1b", .want = "normal:Hi Tim, | normal:-- \nAnn\nana.example | normal:after" },
+        // The last line of the block goes with the soft break before it,
+        // so the next block stays one; the cursor goes to that block.
+        .{ .keys = ":4\rddx", .want = "normal:Hi Tim, | normal:-- \nAna Lee | normal:fter" },
+        // The first line goes with the soft break after it.
+        .{ .keys = ":2\rdd", .want = "normal:Hi Tim, | normal:Ana Lee\nana.example | normal:after" },
+        // V selects a line; visual-line operators take lines.
+        .{ .keys = ":3\rVd", .want = "normal:Hi Tim, | normal:-- \nana.example | normal:after" },
+        // 0 and $ stop at soft breaks: $ is the line's last character.
+        .{ .keys = ":3\r$x0x", .want = "normal:Hi Tim, | normal:-- \nna Le\nana.example | normal:after" },
+        // yy and p put a line among the block's lines; so does a line of
+        // another block, which joins it.
+        .{ .keys = ":3\ryyp", .want = "normal:Hi Tim, | normal:-- \nAna Lee\nAna Lee\nana.example | normal:after" },
+        .{ .keys = ":4\ryyP", .want = "normal:Hi Tim, | normal:-- \nAna Lee\nana.example\nana.example | normal:after" },
+        .{ .keys = ":1\ryy:3\rp", .want = "normal:Hi Tim, | normal:-- \nAna Lee\nHi Tim,\nana.example | normal:after" },
+        // o and O open a line of the block.
+        .{ .keys = ":3\roLee Co\x1b", .want = "normal:Hi Tim, | normal:-- \nAna Lee\nLee Co\nana.example | normal:after" },
+        .{ .keys = ":2\rOThanks\x1b", .want = "normal:Hi Tim, | normal:Thanks\n-- \nAna Lee\nana.example | normal:after" },
+        // J joins a line to the next across a soft break.
+        .{ .keys = ":3\rJ", .want = "normal:Hi Tim, | normal:-- \nAna Lee ana.example | normal:after" },
+        // A block without soft breaks is a line as before: o opens a
+        // block, and its line goes with a block's end.
+        .{ .keys = ":1\roThere\x1b", .want = "normal:Hi Tim, | normal:There | normal:-- \nAna Lee\nana.example | normal:after" },
+        .{ .keys = ":1\rdd", .want = "normal:-- \nAna Lee\nana.example | normal:after" },
+        .{ .keys = ":5\rdd", .want = "normal:Hi Tim, | normal:-- \nAna Lee\nana.example" },
+    };
+    for (cases) |cs| {
+        var txn: t.Txn = .null;
+        try ok(c.siv_txn_begin(h.window, &txn));
+        c.siv_rich_text_set_document(txn, node, doc, doc.len);
+        try ok(c.siv_txn_commit(txn));
+        try h.settle();
+        for (cs.keys) |ch| switch (ch) {
+            '\r' => try press(&h, ks.@"return", .{}),
+            0x1b => try press(&h, ks.escape, .{}),
+            else => try typeText(&h, &.{ch}),
+        };
+        const got = try outline(node);
+        defer testing.allocator.free(got);
+        testing.expectEqualStrings(cs.want, got) catch |e| {
+            std.debug.print("keys: {s}\n", .{cs.keys});
+            return e;
+        };
+        try testing.expectEqual(t.RichTextMode.normal, (try state(node)).mode);
+    }
+    // V on a soft line selects that line only.
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_rich_text_set_document(txn, node, doc, doc.len);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try typeText(&h, ":3");
+    try press(&h, ks.@"return", .{});
+    try typeText(&h, "V");
+    var caret: u32 = 0;
+    var anchor: u32 = 0;
+    try ok(c.siv_rich_text_get_selection(node, &caret, &anchor));
+    // "Hi Tim,\n-- \u{2028}" is 14 bytes; "Ana Lee" ends at 21.
+    try testing.expectEqual(@as(u32, 14), @min(caret, anchor));
+    try testing.expectEqual(@as(u32, 21), @max(caret, anchor));
+}
+
 test "rich text: a custom schema, invalid descriptors and documents" {
     var h: Harness = .{};
     try h.start(320, 200, null, null);

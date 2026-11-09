@@ -3,9 +3,17 @@
 //! and text objects, a register that keeps marks and blocks, undo by
 //! command, dot repeat, search, and a command line.
 //!
-//! A "line" is a block (a paragraph): 0, $, dd, yy, and o work on blocks,
-//! while j and k move by displayed lines, as gj and gk do, since a block
-//! usually wraps. { and } go to the previous and next block.
+//! A line ends at a block's end ("\n") or at a soft line break inside a
+//! block (U+2028, Shift+Enter), as at a newline in Vim: 0, $, D, dd, yy,
+//! p, o, J, and V work on those lines, so a block of short lines (a mail
+//! signature, a quoted paragraph) is several lines. j and k move by
+//! displayed lines, as gj and gk do, since a block usually wraps. { and }
+//! go to the previous and next block, and ip is a block.
+//!
+//! Lines that share a block stay in it: deleting some removes a soft
+//! break next to them rather than a block's end, and o, O, and putting
+//! lines among them add soft-broken lines to the block, where in a block
+//! without soft breaks they add blocks.
 //!
 //! Keys reach the editor's key handler before siv's editing; in every
 //! mode but insert, the handler takes every key that would type.
@@ -116,14 +124,51 @@ fn char(s: []const u8, p: u32) []const u8 {
     return s[@min(p, s.len)..@min(p + clen(s, p), s.len)];
 }
 
+/// The length of the line break at p: 1 for a block's end, 3 for a soft
+/// break (U+2028), 0 for none.
+fn brkAt(s: []const u8, p: u32) u32 {
+    if (p >= s.len) return 0;
+    if (s[p] == '\n') return 1;
+    return if (std.mem.startsWith(u8, s[p..], pt.line_separator)) 3 else 0;
+}
+
+/// The length of the line break that ends at p.
+fn brkBefore(s: []const u8, p: u32) u32 {
+    if (p == 0 or p > s.len) return 0;
+    if (s[p - 1] == '\n') return 1;
+    return if (p >= 3 and std.mem.eql(u8, s[p - 3 .. p], pt.line_separator)) 3 else 0;
+}
+
+/// The start of p's line.
 fn bol(s: []const u8, p: u32) u32 {
-    var q = @min(p, @as(u32, @intCast(s.len)));
+    var q = @min(p, len32(s));
+    while (q > 0 and brkBefore(s, q) == 0) q -= 1;
+    return q;
+}
+
+/// The end of p's line, before its break.
+fn eol(s: []const u8, p: u32) u32 {
+    var q = @min(p, len32(s));
+    while (q < s.len and brkAt(s, q) == 0) q += 1;
+    return q;
+}
+
+/// The start of p's block.
+fn blockStart(s: []const u8, p: u32) u32 {
+    var q = @min(p, len32(s));
     while (q > 0 and s[q - 1] != '\n') q -= 1;
     return q;
 }
 
-fn eol(s: []const u8, p: u32) u32 {
+/// The end of p's block.
+fn blockEnd(s: []const u8, p: u32) u32 {
     return @intCast(std.mem.indexOfScalarPos(u8, s, @min(p, s.len), '\n') orelse s.len);
+}
+
+/// Whether p's line shares its block with others: a soft break ends it
+/// or the line before.
+fn softLine(s: []const u8, p: u32) bool {
+    return brkBefore(s, bol(s, p)) == 3 or brkAt(s, eol(s, p)) == 3;
 }
 
 fn isSpace(ch: []const u8) bool {
@@ -145,19 +190,33 @@ fn firstNonblank(s: []const u8, p: u32) u32 {
     return q;
 }
 
-/// The block (line) of an offset, from 1.
+/// The line of an offset, from 1.
 fn lineOf(s: []const u8, p: u32) u32 {
-    return @intCast(std.mem.count(u8, s[0..@min(p, s.len)], "\n") + 1);
+    const t = s[0..@min(p, s.len)];
+    return @intCast(std.mem.count(u8, t, "\n") + std.mem.count(u8, t, pt.line_separator) + 1);
 }
 
 fn lineStart(s: []const u8, n: u32) u32 {
     var p: u32 = 0;
     var i: u32 = 2;
     while (i <= n) : (i += 1) {
-        const e = std.mem.indexOfScalarPos(u8, s, p, '\n') orelse break;
-        p = @intCast(e + 1);
+        const e = eol(s, p);
+        if (e >= s.len) break;
+        p = e + brkAt(s, e);
     }
     return p;
+}
+
+/// The start of the line after p's, or null on the last line.
+fn nextLine(s: []const u8, p: u32) ?u32 {
+    const e = eol(s, p);
+    return if (e < s.len) e + brkAt(s, e) else null;
+}
+
+/// The start of the line before p's, or null on the first line.
+fn prevLine(s: []const u8, p: u32) ?u32 {
+    const b = bol(s, p);
+    return if (b > 0) bol(s, b - brkBefore(s, b)) else null;
 }
 
 fn len32(s: []const u8) u32 {
@@ -168,7 +227,7 @@ fn len32(s: []const u8) u32 {
 /// unless the line is empty.
 fn clamp(s: []const u8, p: u32) u32 {
     const q = @min(p, len32(s));
-    if ((q == s.len or s[q] == '\n') and q > bol(s, q)) return prevc(s, q);
+    if ((q == s.len or brkAt(s, q) != 0) and q > bol(s, q)) return prevc(s, q);
     return q;
 }
 
@@ -180,7 +239,7 @@ fn wordForward(s: []const u8, p0: u32, big: bool) u32 {
     };
     while (p < s.len and cls(char(s, p), big) == 0) {
         // An empty line is a word.
-        if (s[p] == '\n' and p > 0 and s[p - 1] == '\n') break;
+        if (brkAt(s, p) != 0 and brkBefore(s, p) != 0) break;
         p = nextc(s, p);
     }
     return p;
@@ -232,14 +291,19 @@ fn findChar(s: []const u8, p: u32, count: u32, arg: []const u8, forward: bool, t
     return q;
 }
 
-/// The range of whole blocks from p to q, with the break that joins them
-/// to the document.
+/// The range of whole lines from p to q, and the range that deletes them
+/// with a break that joins them to the rest: a soft break next to them
+/// before a block's end, so that deleting lines inside a block does not
+/// join it to the next; else the break after them, or before them at
+/// the end.
 fn lineRange(s: []const u8, p: u32, q: u32) [4]u32 {
     const b = bol(s, @min(p, q));
     const e = eol(s, @max(p, q));
+    const after = brkAt(s, e);
+    const before = brkBefore(s, b);
     var del_lo = b;
     var del_hi = e;
-    if (e < s.len) del_hi = e + 1 else if (b > 0) del_lo = b - 1;
+    if (after == 3 or (after == 1 and before != 3)) del_hi = e + after else del_lo = b - before;
     return .{ b, e, del_lo, del_hi };
 }
 
@@ -268,6 +332,40 @@ fn shifted(f: pt.Model, prefix: []const u8, text: []const u8) !pt.Model {
         r.stop += by;
     }
     return .{ .text = t, .blocks = blocks, .runs = runs };
+}
+
+/// Lines of a linewise register put `count` times among a block's lines:
+/// their breaks soft ones, a soft break before each copy (`lead`, below a
+/// line) or after it (above one), keeping their marks but not their
+/// blocks, since they join the block they are put in.
+fn softLines(f: pt.Model, count: u32, lead: bool) !pt.Model {
+    const body = f.text[0 .. f.text.len - 1];
+    var one: std.ArrayList(u8) = .empty;
+    defer one.deinit(gpa);
+    // Where each byte of the body went, for the marks.
+    const at = try gpa.alloc(u32, body.len + 1);
+    defer gpa.free(at);
+    for (body, 0..) |ch, i| {
+        at[i] = len32(one.items);
+        if (ch == '\n') try one.appendSlice(gpa, pt.line_separator) else try one.append(gpa, ch);
+    }
+    at[body.len] = len32(one.items);
+    var t: std.ArrayList(u8) = .empty;
+    errdefer t.deinit(gpa);
+    var runs: std.ArrayList(pt.Run) = .empty;
+    errdefer runs.deinit(gpa);
+    for (0..count) |_| {
+        if (lead) try t.appendSlice(gpa, pt.line_separator);
+        const off = len32(t.items);
+        try t.appendSlice(gpa, one.items);
+        for (f.runs) |r| if (r.start < body.len) try runs.append(gpa, .{ .start = off + at[r.start], .stop = off + at[@min(r.stop, body.len)], .marks = r.marks, .ann = r.ann });
+        if (!lead) try t.appendSlice(gpa, pt.line_separator);
+    }
+    const tt = try t.toOwnedSlice(gpa);
+    errdefer gpa.free(tt);
+    const rr = try runs.toOwnedSlice(gpa);
+    errdefer gpa.free(rr);
+    return .{ .text = tt, .blocks = try gpa.alloc(pt.Block, 0), .runs = rr };
 }
 
 /// A fragment repeated `count` times.
@@ -700,10 +798,14 @@ pub const Vim = struct {
                 v.enterInsert(st, r[0]);
                 return;
             }
+            // The cursor goes to the line that took their place: after a
+            // break deleted before them, past the break after them, or to
+            // the line before at the end.
+            const after = brkAt(s, r[1]);
             st.replace(r[2], r[3], "", null);
             v.mode = .normal;
             const t = st.text();
-            v.draw(st, firstNonblank(t, @min(if (r[2] == r[0]) r[0] else r[2] + 1, len32(t))));
+            v.draw(st, firstNonblank(t, @min(if (r[2] == r[0]) r[0] else r[2] + after, len32(t))));
             v.endChange();
             return;
         }
@@ -729,7 +831,15 @@ pub const Vim = struct {
         v.beginChange(st, null, p);
         var frag = repeated(reg.frag, @max(count, 1)) catch return;
         defer frag.deinit(gpa);
-        if (reg.linewise) {
+        if (reg.linewise and softLine(s, p)) {
+            // Among a block's lines: soft-broken lines of that block.
+            const lines = softLines(reg.frag, @max(count, 1), !before) catch return;
+            frag.deinit(gpa);
+            frag = lines;
+            const at = if (before) bol(s, p) else eol(s, p);
+            st.replace(at, at, frag.text, &frag);
+            v.draw(st, firstNonblank(st.text(), if (before) at else at + 3));
+        } else if (reg.linewise) {
             var at: u32 = undefined;
             var lead = false;
             if (before) {
@@ -748,7 +858,7 @@ pub const Vim = struct {
             st.replace(at, at, frag.text, &frag);
             v.draw(st, firstNonblank(st.text(), at + @intFromBool(lead)));
         } else {
-            const at = if (before or p >= s.len or s[p] == '\n') p else nextc(s, p);
+            const at = if (before or p >= s.len or brkAt(s, p) != 0) p else nextc(s, p);
             st.replace(at, at, frag.text, &frag);
             v.draw(st, prevc(st.text(), at + len32(frag.text)));
         }
@@ -844,10 +954,7 @@ pub const Vim = struct {
         if (eq(name, "0") or eq(name, "<Home>")) return .{ .pos = bol(s, p) };
         if (eq(name, "^")) return .{ .pos = firstNonblank(s, p) };
         if (eq(name, "$") or eq(name, "<End>")) {
-            for (1..count) |_| {
-                const e = eol(s, p);
-                if (e < s.len) p = e + 1;
-            }
+            for (1..count) |_| p = nextLine(s, p) orelse p;
             const e = eol(s, p);
             return .{ .pos = if (operating or v.mode == .visual) e else clamp(s, e) };
         }
@@ -857,7 +964,7 @@ pub const Vim = struct {
         }
         if (eq(name, "}")) {
             for (0..count) |_| {
-                const e = eol(s, p);
+                const e = blockEnd(s, p);
                 if (e >= s.len) {
                     p = len32(s);
                     break;
@@ -868,8 +975,8 @@ pub const Vim = struct {
         }
         if (eq(name, "{")) {
             for (0..count) |_| {
-                var b = bol(s, p);
-                if (b == p and b > 0) b = bol(s, b - 1);
+                var b = blockStart(s, p);
+                if (b == p and b > 0) b = blockStart(s, b - 1);
                 p = b;
             }
             return .{ .pos = p };
@@ -891,19 +998,9 @@ pub const Vim = struct {
             const down = eq(name, "j") or eq(name, "gj") or eq(name, "<Down>") or eq(name, "<C-d>") or eq(name, "<CR>");
             const n = if (eq(name, "<C-d>") or eq(name, "<C-u>")) 12 * count else count;
             if (operating or eq(name, "<CR>")) {
-                // With an operator, by blocks.
+                // With an operator, by lines.
                 var q = p;
-                for (0..n) |_| {
-                    if (down) {
-                        const e = eol(s, q);
-                        if (e >= s.len) break;
-                        q = e + 1;
-                    } else {
-                        const b = bol(s, q);
-                        if (b == 0) break;
-                        q = bol(s, b - 1);
-                    }
-                }
+                for (0..n) |_| q = (if (down) nextLine(s, q) else prevLine(s, q)) orelse break;
                 if (eq(name, "<CR>")) return .{ .pos = firstNonblank(s, q) };
                 return .{ .pos = q, .kind = .linewise };
             }
@@ -945,7 +1042,7 @@ pub const Vim = struct {
             }
             return .{ lo, @min(hi, e), false };
         }
-        if (o.is("p")) return .{ b, e, true };
+        if (o.is("p")) return .{ blockStart(s, p), blockEnd(s, p), true };
         if (o.is("s")) {
             const ends = ".!?";
             var lo = b;
@@ -1053,9 +1150,8 @@ pub const Vim = struct {
                         if (cls(char(s, p), m.is("W")) != cls(char(s, nextc(s, p)), m.is("W"))) hi = nextc(s, p);
                     }
                     // dw stops at the end of the line.
-                    if (std.mem.indexOfScalarPos(u8, s, lo, '\n')) |brk| if (brk < hi and brk > lo) {
-                        hi = @intCast(brk);
-                    };
+                    const brk = eol(s, lo);
+                    if (brk < hi and brk > lo) hi = brk;
                 }
                 v.operate(st, op, lo, hi, t.kind == .linewise, keys, cmd.count);
                 return;
@@ -1090,11 +1186,7 @@ pub const Vim = struct {
             } else {
                 lo = p;
                 hi = p;
-                for (1..count) |_| {
-                    const e = eol(s, hi);
-                    if (e >= s.len) break;
-                    hi = e + 1;
-                }
+                for (1..count) |_| hi = nextLine(s, hi) orelse break;
             }
             v.operate(st, op, lo, hi, linewise, if (vis) null else keys, cmd.count);
             return;
@@ -1110,7 +1202,7 @@ pub const Vim = struct {
         if (c.is("i") or c.is("<Insert>") or c.is("a") or c.is("I") or c.is("A")) {
             v.beginChange(st, change_keys, p);
             v.undo_held = true;
-            const at = if (c.is("a")) (if (p >= s.len or s[p] == '\n') p else nextc(s, p)) else if (c.is("I")) firstNonblank(s, p) else if (c.is("A")) eol(s, p) else p;
+            const at = if (c.is("a")) (if (p >= s.len or brkAt(s, p) != 0) p else nextc(s, p)) else if (c.is("I")) firstNonblank(s, p) else if (c.is("A")) eol(s, p) else p;
             v.enterInsert(st, at);
         } else if (c.is("o") or c.is("O")) {
             v.beginChange(st, change_keys, p);
@@ -1118,10 +1210,12 @@ pub const Vim = struct {
             const b, _ = st.blockAt(p);
             const d = st.def(b);
             const at = if (c.is("o")) eol(s, p) else bol(s, p);
-            st.replace(at, at, "\n", null);
-            const start = if (c.is("o")) at + 1 else at;
+            // Among a block's lines, a line of that block.
+            const sep = if (softLine(s, p)) pt.line_separator else "\n";
+            st.replace(at, at, sep, null);
+            const start = if (c.is("o")) at + len32(sep) else at;
             // A new line below a heading is normal text, as Enter makes it.
-            if (c.is("o") and d.kind == .text and d.style.heading() > 0) {
+            if (c.is("o") and sep.len == 1 and d.kind == .text and d.style.heading() > 0) {
                 if (st.setBlock(.{ .style = .normal }, start, start)) st.dropCheckpoint();
             }
             v.enterInsert(st, start);
@@ -1152,7 +1246,7 @@ pub const Vim = struct {
         } else if (c.is("D") or c.is("C")) {
             var e = eol(s, p);
             for (1..count) |_| if (e < s.len) {
-                e = eol(s, e + 1);
+                e = eol(s, e + brkAt(s, e));
             };
             v.operate(st, Tok.of(if (c.is("D")) "d" else "c").?, p, e, false, keys, null);
         } else if (c.is("S")) {
@@ -1169,9 +1263,9 @@ pub const Vim = struct {
                 const t = st.text();
                 const e = eol(t, q);
                 if (e >= t.len) break;
-                var n = e + 1;
+                var n = e + brkAt(t, e);
                 while (n < t.len and (t[n] == ' ' or t[n] == '\t')) n += 1;
-                const sep: []const u8 = if (e > bol(t, e) and t[e - 1] != ' ' and n < t.len and t[n] != '\n') " " else "";
+                const sep: []const u8 = if (e > bol(t, e) and t[e - 1] != ' ' and n < t.len and brkAt(t, n) == 0) " " else "";
                 st.replace(e, n, sep, null);
                 q = e;
             }

@@ -5373,8 +5373,23 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       counts; operators (d, c, y, >, <, g~, gu, gU) with motions and
       text objects; a register that keeps marks and blocks; undo by
       command; dot repeat; search; and a command line, which reports
-      `activate` with what was typed (`w` for `:w`). A line is a block;
-      j and k move by displayed lines, as gj and gk do.
+      `activate` with what was typed (`w` for `:w`). j and k move by
+      displayed lines, as gj and gk do.
+    - Vim's lines end at a block's end and at soft line breaks inside a
+      block (U+2028, Shift+Enter), as at a newline in Vim: 0, ^, $, D,
+      C, dd, cc, yy, p and P of lines, o, O, J, V and visual-line
+      operators, linewise j and k after an operator, and :N count them,
+      so a block of short lines (a signature, a quoted paragraph of a
+      reply, as Parcel's compose makes them) is several lines. Lines
+      that share a block stay in it: deleting some removes a soft break
+      next to them before the block's end, so the next block keeps its
+      own; o, O, and putting lines among them add soft-broken lines to
+      the block (lines put there join it, without the blocks they were
+      yanked with), since the lines belong to the block they sit in. A
+      block without soft breaks is one line as before, and o after it
+      opens a block. { and } and ip stay blocks, Vim's paragraphs. Was:
+      a line was a block, so D on a signature's first line deleted the
+      signature and V selected all of it (found in Parcel).
     - Links (November 2026, for Parcel's compose body): Ctrl+K opens a
       popover at the selection (a popover against a rectangle of the
       editor, as a context menu's popup is placed), keyboard first:
