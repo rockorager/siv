@@ -68,6 +68,10 @@ pub const Rasterizer = struct {
     /// Per row, the first and last cell that received area, so resolving
     /// coverage skips the empty and constant parts of each row.
     spans: [][2]u32 = &.{},
+    /// Scratch for `fillOverlapping`.
+    edges: std.ArrayList(Edge) = .empty,
+    active: std.ArrayList(u32) = .empty,
+    crossings: std.ArrayList(Crossing) = .empty,
 
     pub fn init(gpa: std.mem.Allocator) Rasterizer {
         return .{ .gpa = gpa };
@@ -76,6 +80,9 @@ pub const Rasterizer = struct {
     pub fn deinit(r: *Rasterizer) void {
         r.gpa.free(r.cells);
         r.gpa.free(r.spans);
+        r.edges.deinit(r.gpa);
+        r.active.deinit(r.gpa);
+        r.crossings.deinit(r.gpa);
         r.* = undefined;
     }
 
@@ -236,6 +243,20 @@ pub const Rasterizer = struct {
     /// Writes coverage for every pixel of the window into `out` (row y at
     /// out[y * out_stride ..]) and clears the accumulation buffer.
     pub fn finish(r: *Rasterizer, rule: FillRule, out: []u8, out_stride: usize) void {
+        _ = r.resolve(rule, false, out, out_stride);
+    }
+
+    /// `finish` with the nonzero rule, also telling whether any pixel's
+    /// summed area exceeded 1: parts of the shape overlap there (or the
+    /// winding number reached 2), and the coverage of partly covered
+    /// pixels near the overlap may be too high (see `fillOverlapping`).
+    pub fn finishDetectingOverlap(r: *Rasterizer, out: []u8, out_stride: usize) bool {
+        return r.resolve(.nonzero, true, out, out_stride) > 1.002;
+    }
+
+    /// Returns the largest absolute summed area when `track`, else 0.
+    fn resolve(r: *Rasterizer, rule: FillRule, comptime track: bool, out: []u8, out_stride: usize) f32 {
+        var max: f32 = 0;
         const w: usize = r.width;
         for (0..r.height) |y| {
             const dst = out[y * out_stride ..][0..w];
@@ -250,11 +271,12 @@ pub const Rasterizer = struct {
                 continue;
             }
             switch (rule) {
-                inline else => |ct_rule| accumulateRow(ct_rule, cells, dst, span[0], span[1] + 1),
+                inline else => |ct_rule| max = @max(max, accumulateRow(ct_rule, track, cells, dst, span[0], span[1] + 1)),
             }
         }
         r.row_min = r.height;
         r.row_max = 0;
+        return max;
     }
 
     /// Like `finish` but returns the coverage in a Mask view of `out`.
@@ -275,12 +297,122 @@ pub const Rasterizer = struct {
     pub fn touchedRows(r: *const Rasterizer) [2]u32 {
         return .{ r.row_min, @max(r.row_min, r.row_max) };
     }
+
+    /// Sub-scanlines per pixel row in `fillOverlapping`.
+    pub const overlap_samples = 16;
+
+    /// Nonzero coverage of closed polygons whose parts may overlap, written
+    /// like `finish`. Contour i is points[ends[i-1]..ends[i]] in device
+    /// coordinates. Accumulating area counts the overlap of two parts twice
+    /// where both edges cross one pixel; this instead walks
+    /// `overlap_samples` scanlines per row, tracks the winding number
+    /// across each, and adds the exact width of every span inside the
+    /// shape. Exact horizontally, sampled vertically.
+    pub fn fillOverlapping(r: *Rasterizer, window: IRect, points: []const Point, ends: []const u32, out: []u8, out_stride: usize) error{OutOfMemory}!void {
+        try r.begin(window);
+        const ox: f32 = @floatFromInt(window.x0);
+        const oy: f32 = @floatFromInt(window.y0);
+        r.edges.clearRetainingCapacity();
+        var start: u32 = 0;
+        for (ends) |end| {
+            const pts = points[start..end];
+            for (pts, 0..) |a, i| {
+                const b = pts[(i + 1) % pts.len];
+                if (a.y == b.y or !(std.math.isFinite(a.x) and std.math.isFinite(a.y) and std.math.isFinite(b.x) and std.math.isFinite(b.y))) continue;
+                const lo = if (a.y < b.y) a else b;
+                const hi = if (a.y < b.y) b else a;
+                try r.edges.append(r.gpa, .{
+                    .y0 = lo.y - oy,
+                    .y1 = hi.y - oy,
+                    .x0 = lo.x - ox,
+                    .dxdy = (hi.x - lo.x) / (hi.y - lo.y),
+                    .dir = if (a.y < b.y) 1 else -1,
+                });
+            }
+            start = end;
+        }
+        std.mem.sort(Edge, r.edges.items, {}, struct {
+            fn lt(_: void, a: Edge, b: Edge) bool {
+                return a.y0 < b.y0;
+            }
+        }.lt);
+
+        const w: f32 = @floatFromInt(r.width);
+        const weight: f32 = 1.0 / @as(f32, overlap_samples);
+        var next: usize = 0; // first edge not yet active
+        r.active.clearRetainingCapacity();
+        for (0..r.height) |y| {
+            const cells = r.cells[y * r.stride ..][0..r.stride];
+            var touched = false;
+            for (0..overlap_samples) |s| {
+                const sy = @as(f32, @floatFromInt(y)) + (@as(f32, @floatFromInt(s)) + 0.5) * weight;
+                while (next < r.edges.items.len and r.edges.items[next].y0 <= sy) : (next += 1) try r.active.append(r.gpa, @intCast(next));
+                r.crossings.clearRetainingCapacity();
+                var k: usize = 0;
+                while (k < r.active.items.len) {
+                    const e = r.edges.items[r.active.items[k]];
+                    if (e.y1 <= sy) {
+                        _ = r.active.swapRemove(k);
+                        continue;
+                    }
+                    if (e.y0 <= sy) try r.crossings.append(r.gpa, .{ .x = e.x0 + (sy - e.y0) * e.dxdy, .dir = e.dir });
+                    k += 1;
+                }
+                std.mem.sort(Crossing, r.crossings.items, {}, struct {
+                    fn lt(_: void, a: Crossing, b: Crossing) bool {
+                        return a.x < b.x;
+                    }
+                }.lt);
+                var winding: i32 = 0;
+                var span_start: f32 = 0;
+                for (r.crossings.items) |cr| {
+                    const before = winding;
+                    winding += cr.dir;
+                    if (before == 0 and winding != 0) {
+                        span_start = cr.x;
+                    } else if (before != 0 and winding == 0) {
+                        addSpan(cells, std.math.clamp(span_start, 0, w), std.math.clamp(cr.x, 0, w), weight);
+                        touched = true;
+                    }
+                }
+            }
+            const dst = out[y * out_stride ..][0..r.width];
+            if (!touched) {
+                @memset(dst, 0);
+                continue;
+            }
+            for (dst, cells[0..r.width]) |*o, *cv| {
+                o.* = @intFromFloat(@min(cv.*, 1) * 255 + 0.5);
+                cv.* = 0;
+            }
+        }
+    }
+
+    const Edge = struct { y0: f32, y1: f32, x0: f32, dxdy: f32, dir: i32 };
+    const Crossing = struct { x: f32, dir: i32 };
 };
+
+/// Adds `weight` times the covered width of [x0, x1) to each cell.
+fn addSpan(cells: []f32, x0: f32, x1: f32, weight: f32) void {
+    if (!(x1 > x0)) return;
+    const ia: usize = @intFromFloat(@floor(x0));
+    const ib: usize = @intFromFloat(@floor(x1));
+    if (ia == ib) {
+        cells[ia] += (x1 - x0) * weight;
+        return;
+    }
+    cells[ia] += (@as(f32, @floatFromInt(ia + 1)) - x0) * weight;
+    var i = ia + 1;
+    while (i < ib) : (i += 1) cells[i] += weight;
+    cells[ib] += (x1 - @as(f32, @floatFromInt(ib))) * weight;
+}
 
 /// Resolves one row whose nonzero cells lie in [lo, hi): zero before, a
 /// running sum inside (eight cells at a time), and the final constant after.
-/// Clears the cells it read.
-fn accumulateRow(comptime rule: FillRule, cells: []f32, dst: []u8, lo: usize, hi: usize) void {
+/// Clears the cells it read. With `track`, returns the largest absolute
+/// sum; otherwise 0.
+fn accumulateRow(comptime rule: FillRule, comptime track: bool, cells: []f32, dst: []u8, lo: usize, hi: usize) f32 {
+    var max: f32 = 0;
     const w = dst.len;
     const start = @min(lo, w);
     const end = @min(hi, w);
@@ -297,16 +429,19 @@ fn accumulateRow(comptime rule: FillRule, cells: []f32, dst: []u8, lo: usize, hi
         v += @shuffle(f32, v, zero, [8]i32{ -1, -1, -1, -1, 0, 1, 2, 3 });
         v += @as(V, @splat(acc));
         acc = v[7];
+        if (track) max = @max(max, @reduce(.Max, @abs(v)));
         dst[x..][0..8].* = coverageBytes(rule, v);
     }
     while (x < end) : (x += 1) {
         acc += cells[x];
+        if (track) max = @max(max, @abs(acc));
         dst[x] = coverageByte(rule, acc);
     }
     // Area beyond the window's right edge is in cells w and w + 1 and
     // never affects visible pixels.
     if (end < w) @memset(dst[end..w], coverageByte(rule, acc));
     @memset(cells[@min(lo, cells.len)..@min(hi, cells.len)], 0);
+    return max;
 }
 
 inline fn coverageBytes(comptime rule: FillRule, acc: @Vector(8, f32)) @Vector(8, u8) {
@@ -517,4 +652,62 @@ test "rasterizer is reusable and its buffer stays clean" {
     r.finish(.nonzero, &second, 12);
     try testing.expectEqualSlices(u8, &first, &second);
     for (r.cells) |c| try testing.expectEqual(@as(f32, 0), c);
+}
+
+test "overlapping parts cover their union, not their sum" {
+    // Two same-orientation rectangles whose right edges end in one pixel:
+    // [0, 1.5] and [0.2, 1.75] (two rows tall). Pixel 1 is covered over
+    // [1, 1.75], 0.75; accumulating area would count 0.5 + 0.75.
+    const pts = [_]Point{
+        .{ .x = 0, .y = 0 },   .{ .x = 1.5, .y = 0 },   .{ .x = 1.5, .y = 2 },  .{ .x = 0, .y = 2 },
+        .{ .x = 0.2, .y = 0 }, .{ .x = 1.75, .y = 0 }, .{ .x = 1.75, .y = 2 }, .{ .x = 0.2, .y = 2 },
+    };
+    var r = Rasterizer.init(testing.allocator);
+    defer r.deinit();
+    var out: [3 * 2]u8 = undefined;
+    try r.fillOverlapping(.xywh(0, 0, 3, 2), &pts, &.{ 4, 8 }, &out, 3);
+    try testing.expectEqualSlices(u8, &.{ 255, 191, 0, 255, 191, 0 }, &out);
+
+    // The accumulating path gets this pixel wrong, which is why glyphs
+    // with overlaps take the other one.
+    try r.begin(.xywh(0, 0, 3, 2));
+    for ([_][2]u32{ .{ 0, 4 }, .{ 4, 8 } }) |c| {
+        const q = pts[c[0]..c[1]];
+        for (q, 0..) |p, i| r.addLine(p, q[(i + 1) % q.len]);
+    }
+    try testing.expect(r.finishDetectingOverlap(&out, 3));
+    try testing.expectEqual(@as(u8, 255), out[1]);
+    // A shape without overlaps is not reported.
+    try r.begin(.xywh(0, 0, 3, 2));
+    const q = pts[4..8];
+    for (q, 0..) |p, i| r.addLine(p, q[(i + 1) % q.len]);
+    try testing.expect(!r.finishDetectingOverlap(&out, 3));
+
+    // An inner contour of opposite orientation is still a hole, and its
+    // fractional edges are exact horizontally.
+    const holed = [_]Point{
+        .{ .x = 0, .y = 0 },    .{ .x = 4, .y = 0 },    .{ .x = 4, .y = 1 },    .{ .x = 0, .y = 1 },
+        .{ .x = 1.25, .y = 0 }, .{ .x = 1.25, .y = 1 }, .{ .x = 2.5, .y = 1 },  .{ .x = 2.5, .y = 0 },
+    };
+    var row: [4]u8 = undefined;
+    try r.fillOverlapping(.xywh(0, 0, 4, 1), &holed, &.{ 4, 8 }, &row, 4);
+    try testing.expectEqualSlices(u8, &.{ 255, 64, 128, 255 }, &row);
+    for (r.cells) |c| try testing.expectEqual(@as(f32, 0), c);
+}
+
+test "sampled coverage of a circle keeps its area" {
+    var pts: [256]Point = undefined;
+    const rad: f32 = 9.3;
+    for (&pts, 0..) |*p, i| {
+        const a = @as(f32, @floatFromInt(i)) / pts.len * 2 * std.math.pi;
+        p.* = .{ .x = 12.4 + rad * @cos(a), .y = 11.7 + rad * @sin(a) };
+    }
+    var r = Rasterizer.init(testing.allocator);
+    defer r.deinit();
+    var out: [24 * 24]u8 = undefined;
+    try r.fillOverlapping(.xywh(0, 0, 24, 24), &pts, &.{pts.len}, &out, 24);
+    // The polygon's own area (the circle's, less the chords).
+    const n: f64 = pts.len;
+    const area = 0.5 * n * @as(f64, rad) * rad * @sin(2 * std.math.pi / n);
+    try testing.expectApproxEqRel(area, sum(&out), 3e-3);
 }
