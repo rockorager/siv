@@ -172,12 +172,14 @@ pub const Engine = struct {
         var order: std.ArrayList(u32) = .empty;
         defer order.deinit(e.gpa);
         for (e.ifc_cache, 0..) |c, i| if (c.shaped != null and c.used < keep_since) order.append(e.gpa, @intCast(i)) catch return;
+        // Ties go to the lower index, as the list starts, so heap sort
+        // gives a stable sort's order (D25).
         const S = struct {
             fn lt(cache: []const IfcCache, a: u32, b: u32) bool {
-                return cache[a].used < cache[b].used;
+                return cache[a].used < cache[b].used or (cache[a].used == cache[b].used and a < b);
             }
         };
-        std.mem.sort(u32, order.items, @as([]const IfcCache, e.ifc_cache), S.lt);
+        std.sort.heap(u32, order.items, @as([]const IfcCache, e.ifc_cache), S.lt);
         for (order.items) |i| {
             if (e.cache_bytes <= e.cache_budget) break;
             e.drop(&e.ifc_cache[i]);

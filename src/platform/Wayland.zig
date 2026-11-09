@@ -823,7 +823,8 @@ fn onDmabufFeedback(_: *zwp.LinuxDmabufFeedbackV1, event: zwp.LinuxDmabufFeedbac
         .done => {
             std.mem.swap(std.ArrayList(FormatModifier), &self.dmabuf_formats, &self.dmabuf_pending);
             self.dmabuf_pending.clearRetainingCapacity();
-            std.mem.sort(FormatModifier, self.dmabuf_formats.items, {}, lessFormat);
+            // Equal pairs are alike, so any sort gives this order (D25).
+            std.sort.heap(FormatModifier, self.dmabuf_formats.items, {}, lessFormat);
         },
         else => {},
     }

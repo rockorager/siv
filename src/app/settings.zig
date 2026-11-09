@@ -695,7 +695,8 @@ pub fn parse(gpa: Allocator, src: []const u8) Allocator.Error!Map {
 pub fn serialize(gpa: Allocator, out: *std.ArrayList(u8), map: *const Map) Allocator.Error!void {
     const keys = try gpa.dupe([]const u8, map.keys());
     defer gpa.free(keys);
-    std.mem.sort([]const u8, keys, {}, struct {
+    // Keys are unique, so any sort gives this order (D25).
+    std.sort.heap([]const u8, keys, {}, struct {
         fn lessThan(_: void, a: []const u8, b: []const u8) bool {
             const ta = table(a);
             const tb = table(b);

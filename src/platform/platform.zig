@@ -1234,7 +1234,7 @@ pub const FrameDamage = struct {
         var ys: [2 * max_rects]i32 = undefined;
         for (rects, 0..) |q, i| ys[2 * i], ys[2 * i + 1] = .{ q.y, q.y + q.height };
         const edges = ys[0 .. 2 * rects.len];
-        std.mem.sort(i32, edges, {}, std.sort.asc(i32));
+        std.sort.insertion(i32, edges, {}, std.sort.asc(i32));
         var count: usize = 0;
         var prev: [max_rects][2]i32 = undefined;
         var prev_len: usize = 0;
@@ -1246,7 +1246,7 @@ pub const FrameDamage = struct {
                 spans[n] = .{ q.x, q.x + q.width };
                 n += 1;
             };
-            std.mem.sort([2]i32, spans[0..n], {}, struct {
+            std.sort.insertion([2]i32, spans[0..n], {}, struct {
                 fn lt(_: void, a: [2]i32, b: [2]i32) bool {
                     return a[0] < b[0];
                 }

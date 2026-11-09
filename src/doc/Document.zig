@@ -741,7 +741,8 @@ pub fn setHover(d: *Document, node: NodeId) Error!bool {
     // Parents first, as a rule (node order is parse order, but for
     // wrappers added later): a parent restyled after its child styles
     // that child again, so the order only saves work.
-    std.mem.sort(NodeId, changed.items, {}, struct {
+    // Nodes are unique, so any sort gives this order (D25).
+    std.sort.heap(NodeId, changed.items, {}, struct {
         fn lt(_: void, a: NodeId, b: NodeId) bool {
             return a.index() < b.index();
         }
@@ -1560,9 +1561,12 @@ pub fn pageBreaks(d: *Document, page_h: f32, through: f32, out: *std.ArrayList(f
     var cands: std.ArrayList(Cand) = .empty;
     defer cands.deinit(gpa);
     try d.breakCands(e, d.tree.root, 0, false, through, &cands, gpa);
-    std.mem.sort(Cand, cands.items, {}, struct {
+    // Candidates at one y keep their order: the position breaks ties, so
+    // pdqsort gives a stable sort's order (D25).
+    for (cands.items, 0..) |*c, k| c.seq = @intCast(k);
+    std.mem.sortUnstable(Cand, cands.items, {}, struct {
         fn lt(_: void, a: Cand, b: Cand) bool {
-            return a.y < b.y;
+            return a.y < b.y or (a.y == b.y and a.seq < b.seq);
         }
     }.lt);
     const end = d.height();
@@ -1593,7 +1597,7 @@ pub fn pageBreaks(d: *Document, page_h: f32, through: f32, out: *std.ArrayList(f
     }
 }
 
-const Cand = struct { y: f32, forced: bool = false, avoid: bool = false };
+const Cand = struct { y: f32, forced: bool = false, avoid: bool = false, seq: u32 = 0 };
 
 fn forcesBreak(b: css.style.Break) bool {
     return switch (b) {

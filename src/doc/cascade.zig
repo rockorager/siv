@@ -1034,7 +1034,7 @@ pub const Cascade = struct {
             .medium = c.env.font_size,
         };
         // var() substitution, in property order.
-        std.mem.sort(u8, c.winner_ids[0..c.winner_len], {}, std.sort.asc(u8));
+        std.sort.insertion(u8, c.winner_ids[0..c.winner_len], {}, std.sort.asc(u8));
         for (c.winner_ids[0..c.winner_len]) |pi| if (c.winners[pi]) |win| if (win.value == .unparsed) {
             const w = &c.winners[pi];
             w.* = if (try c.substitute(win.value.unparsed, @enumFromInt(pi), s.custom)) |v| .{ .value = v, .author = win.author } else .{ .value = .{ .wide = .unset }, .author = win.author };

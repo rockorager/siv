@@ -264,7 +264,8 @@ fn embed(gpa: Allocator, w: *Writer, e: *Entry) Writer.Error!void {
     try e.used.put(gpa, 0, {});
     const gids = try gpa.dupe(u32, e.used.keys());
     defer gpa.free(gids);
-    std.mem.sort(u32, gids, {}, std.sort.asc(u32));
+    // Glyph ids are unique, so any sort gives this order (D25).
+    std.sort.heap(u32, gids, {}, std.sort.asc(u32));
     const face = hb.hb_font_get_face(e.font);
     const upem: f32 = @floatFromInt(hb.hb_face_get_upem(face));
 

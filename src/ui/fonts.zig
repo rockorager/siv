@@ -241,7 +241,8 @@ pub fn installed(f: *Fonts) error{OutOfMemory}![]const u32 {
         for (names) |n| try ids.put(f.gpa, try f.intern(n), {});
     }
     const list = try f.gpa.dupe(u32, ids.keys());
-    std.mem.sort(u32, list, f, struct {
+    // Names are unique, so any sort gives this order (D25).
+    std.sort.heap(u32, list, f, struct {
         fn less(fs: *Fonts, a: u32, b: u32) bool {
             return switch (std.ascii.orderIgnoreCase(fs.name(a), fs.name(b))) {
                 .lt => true,

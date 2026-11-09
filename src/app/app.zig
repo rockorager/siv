@@ -767,7 +767,7 @@ pub const App = struct {
             }
         };
         if (n == 0) return false;
-        std.mem.sort(*Window, grabs[0..n], {}, struct {
+        std.sort.insertion(*Window, grabs[0..n], {}, struct {
             fn deeper(_: void, a: *Window, b: *Window) bool {
                 return a.depth() > b.depth();
             }

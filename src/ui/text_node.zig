@@ -621,15 +621,17 @@ fn cutText(win: *Window, id: NodeId, c: *Cache, full: *const text.TextLayout, la
     const bi = full.blockOfLine(@intCast(last));
     const base = full.shaped.starts[bi];
     const block = try full.measure(bi);
-    const Edge = struct { offset: u32, x: f32 };
+    const Edge = struct { offset: u32, x: f32, seq: u32 };
     var found: std.ArrayList(Edge) = .empty;
     for (block.lineCarets(block.lines[last - full.line_starts[bi]])) |k| {
         const offset = base + k.offset;
-        if (offset > line.start and offset <= end) try found.append(a, .{ .offset = offset, .x = k.x });
+        if (offset > line.start and offset <= end) try found.append(a, .{ .offset = offset, .x = k.x, .seq = @intCast(found.items.len) });
     }
-    std.mem.sort(Edge, found.items, {}, struct {
+    // An offset's two carets keep their order: the position breaks ties,
+    // so pdqsort gives a stable sort's order (D25).
+    std.mem.sortUnstable(Edge, found.items, {}, struct {
         fn lt(_: void, x: Edge, y: Edge) bool {
-            return x.offset < y.offset;
+            return x.offset < y.offset or (x.offset == y.offset and x.seq < y.seq);
         }
     }.lt);
     for (found.items) |e| {

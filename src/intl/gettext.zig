@@ -68,7 +68,9 @@ pub const Catalog = struct {
         c.order = try gpa.alloc(u32, c.count);
         errdefer gpa.free(c.order);
         for (c.order, 0..) |*o, i| o.* = @intCast(i);
-        std.mem.sort(u32, c.order, &c, lessKey);
+        // Equal keys keep their order: lessKey breaks ties by index, so
+        // heap sort gives a stable sort's order (D25).
+        std.sort.heap(u32, c.order, &c, lessKey);
         try c.readHeader();
         return c;
     }
@@ -99,7 +101,11 @@ pub const Catalog = struct {
     }
 
     fn lessKey(c: *const Catalog, x: u32, y: u32) bool {
-        return std.mem.order(u8, c.key(x), c.key(y)) == .lt;
+        return switch (std.mem.order(u8, c.key(x), c.key(y))) {
+            .lt => true,
+            .gt => false,
+            .eq => x < y,
+        };
     }
 
     /// Orders `stored` against the key of `context` and `text` (context,

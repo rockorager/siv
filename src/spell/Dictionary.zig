@@ -227,7 +227,7 @@ const Parser = struct {
         }
         if (p.set_ids.get(s)) |id| return id;
         const fl = try p.decodeFlags(s);
-        std.mem.sort(Flag, fl, {}, std.sort.asc(Flag));
+        std.sort.insertion(Flag, fl, {}, std.sort.asc(Flag));
         const id = try p.intern(fl);
         try p.set_ids.put(p.gpa, try p.a.dupe(u8, s), id);
         return id;
@@ -248,7 +248,7 @@ const Parser = struct {
         const s = p.sets.items[base];
         try p.scratch.appendSlice(p.gpa, p.flags.items[s.start..][0..s.len]);
         try p.scratch.append(p.gpa, only_upcase);
-        std.mem.sort(Flag, p.scratch.items, {}, std.sort.asc(Flag));
+        std.sort.insertion(Flag, p.scratch.items, {}, std.sort.asc(Flag));
         const id = try p.intern(p.scratch.items);
         try p.upcase_sets.put(p.gpa, base, id);
         return id;
@@ -1593,7 +1593,7 @@ const Suggester = struct {
             }
         }
         // Each root and its forms with one affix, by edit distance.
-        const Cand = struct { dist: u32, score: i32, text: []u8 };
+        const Cand = struct { dist: u32, score: i32, text: []u8, seq: u32 = 0 };
         var cands: std.ArrayList(Cand) = .empty;
         defer {
             for (cands.items) |c| gpa.free(c.text);
@@ -1621,10 +1621,14 @@ const Suggester = struct {
                 try s.consider(&cands, target, form_buf[0 .. pf.add.len + rest.len]);
             }
         }
-        std.mem.sort(Cand, cands.items, {}, struct {
+        // Ties keep the order found: the position breaks them, so heap
+        // sort gives a stable sort's order (D25).
+        for (cands.items, 0..) |*c, i| c.seq = @intCast(i);
+        std.sort.heap(Cand, cands.items, {}, struct {
             fn lt(_: void, a: Cand, b: Cand) bool {
                 if (a.dist != b.dist) return a.dist < b.dist;
-                return a.score > b.score;
+                if (a.score != b.score) return a.score > b.score;
+                return a.seq < b.seq;
             }
         }.lt);
         const max_dist: u32 = @intCast(@max(2, target.len / 3 + 1));

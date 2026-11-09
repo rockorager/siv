@@ -1457,7 +1457,7 @@ fn ligatureCarets(face: *const font_.Face, glyph: u32, rtl: bool, size: f32, out
     if (total != out.len or count != out.len) return false;
     const scale = face.scale(size);
     for (out, positions[0..out.len]) |*o, position| o.* = @as(f32, @floatFromInt(position)) * scale;
-    std.mem.sort(f32, out, {}, std.sort.asc(f32));
+    std.sort.insertion(f32, out, {}, std.sort.asc(f32));
     return true;
 }
 

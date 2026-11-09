@@ -86,7 +86,8 @@ pub const Hyphenator = struct {
         var kit = kids.iterator();
         var ei: usize = 0;
         while (kit.next()) |kv| : (ei += 1) edges[ei] = .{ .key = kv.key_ptr.*, .child = kv.value_ptr.* };
-        std.mem.sort(Edge, edges, {}, struct {
+        // Keys are unique, so any sort gives this order (D25).
+        std.sort.heap(Edge, edges, {}, struct {
             fn lt(_: void, x: Edge, y: Edge) bool {
                 return x.key < y.key;
             }

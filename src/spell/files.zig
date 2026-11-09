@@ -192,7 +192,8 @@ pub fn listDictionaries(gpa: Allocator, dirs: []const []const u8) error{OutOfMem
         ctx.names.deinit(gpa);
     }
     for (dirs) |d| try eachDictionary(d, &ctx, Ctx.add);
-    std.mem.sort([]u8, ctx.names.items, {}, struct {
+    // Equal names are alike, so any sort gives this order (D25).
+    std.sort.heap([]u8, ctx.names.items, {}, struct {
         fn lt(_: void, a: []u8, b: []u8) bool {
             return std.mem.lessThan(u8, a, b);
         }

@@ -152,7 +152,7 @@ pub const Rasterizer = struct {
         }
         ts[n] = 1;
         n += 1;
-        std.mem.sort(f32, ts[0..n], {}, std.sort.asc(f32));
+        std.sort.insertion(f32, ts[0..n], {}, std.sort.asc(f32));
         for (0..n - 1) |i| {
             const t0 = ts[i];
             const t1 = ts[i + 1];

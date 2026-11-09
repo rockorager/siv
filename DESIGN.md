@@ -5842,6 +5842,24 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   `bench-render-cpu`, and `bench-image -- FILE...` (all with
   `-Doptimize=ReleaseFast`) print timings to compare with the budgets and
   with earlier results before a change that could affect them lands.
+- **Code size: sorting.** Each `std.mem.sort` with its own element type,
+  context, or comparator compiles a whole block sort, 18 to 77 KB of
+  `.text` in a ReleaseFast x86_64_v3 build; pdqsort takes 7 to 10 KB,
+  heap sort and insertion sort under 1 KB. So siv sorts a list that is
+  small or nearly sorted with `std.sort.insertion` (stable), a list
+  sorted rarely (a catalog, a dictionary, the font list, the settings
+  file, a PDF subset, the layout cache to trim) with `std.sort.heap`,
+  and a hot one with `std.mem.sortUnstable`. Where ties must keep their
+  order and the sort is not stable, the comparator breaks them by
+  original position, which gives the stable order. `std.mem.sort`
+  stays on hot paths where block sort is fastest, four times pdqsort on
+  32 random items: the cascade's matched rules of each element and the
+  rasterizer's edges and crossings for overlapping contours, whose ties
+  keep their order. Measured 2026-11-09 with
+  `-Doptimize=ReleaseFast -Dcpu=x86_64_v3`: libsiv.so's sort code fell
+  from 766 KB (23 block sorts of siv's, 2 of std.debug's) to 206 KB
+  (3 of siv's), its `.text` from 8.87 MB to 8.30 MB; 114 KB of what
+  remains is std.debug's, for stack traces.
 
 ### D26. Layout
 

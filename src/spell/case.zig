@@ -82,7 +82,8 @@ fn buildUpper() void {
         upper_pairs[upper_len] = .{ @intCast(l), @intCast(cp) };
         upper_len += 1;
     }
-    std.mem.sort([2]u16, upper_pairs[0..upper_len], {}, struct {
+    // Lowercase letters are unique, so any sort gives this order (D25).
+    std.sort.heap([2]u16, upper_pairs[0..upper_len], {}, struct {
         fn lt(_: void, a: [2]u16, b: [2]u16) bool {
             return a[0] < b[0];
         }

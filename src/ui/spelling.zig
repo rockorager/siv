@@ -482,7 +482,8 @@ pub fn dictionaryNames(s: *Spelling, gpa: Allocator) Allocator.Error![][]const u
         for (out.items) |o| if (std.mem.eql(u8, o, n)) continue :outer;
         try out.append(gpa, n);
     }
-    std.mem.sort([]const u8, out.items, {}, struct {
+    // Names are unique, so any sort gives this order (D25).
+    std.sort.heap([]const u8, out.items, {}, struct {
         fn lt(_: void, a: []const u8, b: []const u8) bool {
             return std.mem.lessThan(u8, a, b);
         }
@@ -780,7 +781,8 @@ fn addDirty(gpa: Allocator, st: *EditorState, r: [2]u32) Allocator.Error!void {
     if (r[0] >= r[1]) return;
     try st.dirty.append(gpa, r);
     const items = st.dirty.items;
-    std.mem.sort([2]u32, items, {}, struct {
+    // Sorted but for the new range: insertion sort, in linear time.
+    std.sort.insertion([2]u32, items, {}, struct {
         fn lt(_: void, a: [2]u32, b: [2]u32) bool {
             return a[0] < b[0];
         }
