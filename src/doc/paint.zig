@@ -430,7 +430,8 @@ pub const Painter = struct {
         // Neither has one: the theme's canvas color.
         if (bg.a == 0) bg = p.palette.canvas;
         if (p.dark) |*m| bg = m.background(bg);
-        if (bg.a > 0) try p.b.fillRect(band, .color(p.color(bg, Color.black)));
+        // On device pixels, as the node's clip is (ui.paint).
+        if (bg.a > 0) try p.b.fillSnapped(.box(band), .color(p.color(bg, Color.black)));
     }
 
     fn radii(p: *const Painter, id: BoxId, r: Rect) raster.Radii {

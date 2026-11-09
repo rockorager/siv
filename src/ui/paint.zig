@@ -1394,7 +1394,8 @@ fn drawNode(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Point
             if (n.data.canvas.banded) try canvasBand(win, nid);
             const box = Rect.xywh(0, 0, s.size.w, s.size.h);
             const shape: scene.Shape = if (v.clip and rounded) .{ .rounded_rect = .{ .rect = box, .radii = radii } } else .{ .rect = box };
-            try b.pushLayer(.{ .transform = .translate(off.x, off.y), .clip = .{ .shape = shape } });
+            const snap: ?scene.Snap = if (n.data.canvas.snap_clip and shape == .rect) .box(box) else null;
+            try b.pushLayer(.{ .transform = .translate(off.x, off.y), .clip = .{ .shape = shape, .snap = snap } });
             // Keep the builder balanced when the content fails.
             draw(n.data.canvas.user, win, nid, b, s.size.w, s.size.h) catch |err| {
                 b.popLayer() catch {};

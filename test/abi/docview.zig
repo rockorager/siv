@@ -766,9 +766,11 @@ test "C API docview: flags change in place, keeping the place, open quotes, sele
 test "C API docview: 1px borders are whole device pixels of one shade at fractional scales and zooms" {
     // An email's table (parcel, Austrian Airlines): a 1px border around
     // it, cells with borders just inside it, and rules of other grays.
+    // The table fills the docview, so its border lies on the node's
+    // edges, which the padding around it puts at fractions of a pixel.
     const source =
-        \\<body style="margin:5px;background:#fff">
-        \\<table width="170" cellpadding="0" cellspacing="0" style="border:1px solid #cccccc">
+        \\<body style="margin:0;background:#fff">
+        \\<table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #cccccc">
         \\<tr><td><table width="100%" cellpadding="0" cellspacing="0">
         \\<tr><td style="border-right:1px solid #cccccc;height:33px"></td></tr>
         \\<tr><td style="border-right:1px solid #cccccc;height:17.5px;border-top:1px solid #dddddd"></td></tr>
@@ -811,7 +813,11 @@ test "C API docview: 1px borders are whole device pixels of one shade at fractio
         const sc = T.siv_scroll(txn, root, .vertical);
         _ = T.siv_set_layout(txn, sc, &.{ .size = @sizeOf(t.LayoutDesc), .width = .{ .unit = .fraction, .value = 1 }, .height = .{ .unit = .fraction, .value = 1 } });
         T.siv_set_scroll_zoom_range(txn, sc, 0.5, 4);
-        _ = D.siv_docview(txn, sc, &.{ .source = source.ptr, .source_count = source.len, .kind = .html, .color_scheme = .light, .flags = .{ .untrusted = true }, .user_data = &ev, .on_event = Events.onEvent });
+        _ = T.siv_set_visual(txn, root, &.{ .background = .{ .r = 1, .g = 1, .b = 1, .a = 1 } });
+        const pad = T.siv_box(txn, sc);
+        _ = T.siv_set_layout(txn, pad, &.{ .size = @sizeOf(t.LayoutDesc), .width = .{ .unit = .fraction, .value = 1 }, .padding = .{ .start = 5, .end = 5, .top = 5, .bottom = 5 } });
+        const view = D.siv_docview(txn, pad, &.{ .source = source.ptr, .source_count = source.len, .kind = .html, .color_scheme = .light, .flags = .{ .untrusted = true }, .user_data = &ev, .on_event = Events.onEvent });
+        _ = T.siv_set_layout(txn, view, &.{ .size = @sizeOf(t.LayoutDesc), .width = .{ .unit = .px, .value = 170 } });
         try ok(T.siv_txn_commit(txn));
         try waitLoaded(&h, &ev, 1);
         if (c.zoom != 1) {

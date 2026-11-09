@@ -783,6 +783,12 @@ pub const Canvas = struct {
     /// out of it draws again. For content much taller than the screen,
     /// such as documents (D32).
     banded: bool = false,
+    /// Clips the content to the node's box on device pixels (scene.Snap),
+    /// for content that snaps its own rectangles to them, such as
+    /// documents (D32): at a fraction of a pixel, the unsnapped clip
+    /// would shave the border on the node's edge. Other content keeps its
+    /// antialiased edges where the node lands.
+    snap_clip: bool = false,
     /// Adds the content's own accessible objects below the node (D18,
     /// D32), in node coordinates.
     semantics: ?*const fn (user: ?*anyopaque, win: *Window, node: NodeId, out: *@import("semantics.zig").Virtual) error{OutOfMemory}!void = null,

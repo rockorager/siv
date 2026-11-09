@@ -6992,7 +6992,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     as in browsers, wherever the box lands and however the reader zooms.
     Borders with radii or other styles stay paths, and so do solid sides
     of different colors both wider than 1px that meet at a corner, whose
-    diagonal join shows (CSS triangles). Stacking contexts (CSS 2.1 Appendix
+    diagonal join shows (CSS triangles). The docview node's own clip to
+    its box snaps too (`Canvas.snap_clip`): a table filling the docview
+    has its border on the node's edge, and a node at a fraction of a
+    device pixel (parcel's padded reader at 150%) shaved that border to
+    a partial pixel; the page background snaps with it. Other
+    canvases keep an unsnapped clip, since their
+    content does not snap and a snapped clip would cut its antialiasing
+    on one side only. Stacking contexts (CSS 2.1 Appendix
     E): positioned boxes, flex and grid items with a `z-index`, and boxes
     with `opacity` below 1 are deferred to their stacking context and
     painted after its flow in `z-index` order, negative ones under it

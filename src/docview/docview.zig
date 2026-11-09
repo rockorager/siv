@@ -232,7 +232,7 @@ pub const View = struct {
             gpa.free(o.base_url);
             o.base_url = try std.mem.concat(gpa, u8, &.{ "epub:///", options.book_path });
         }
-        try t.setCanvas(id, .{ .draw = draw, .measure = measure, .user = v, .banded = true, .semantics = semantics, .trim = trim });
+        try t.setCanvas(id, .{ .draw = draw, .measure = measure, .user = v, .banded = true, .snap_clip = true, .semantics = semantics, .trim = trim });
         try t.on(id, .pointer, .{ .func = onPointer, .user = v });
         try t.setSemantics(id, .{ .role = .document });
         try v.startParse();
@@ -955,7 +955,7 @@ pub const View = struct {
         if (v.options.paged or v.options.reading) {
             // Margins in the page's color.
             const bg = if (pal.dark) |t| t.bg else pal.canvas;
-            try v.last.fillRect(.xywh(0, 0, width, height), .color(scene.Color.srgb(bg.r, bg.g, bg.b, bg.a)));
+            try v.last.fillSnapped(.box(.xywh(0, 0, width, height)), .color(scene.Color.srgb(bg.r, bg.g, bg.b, bg.a)));
         }
         if (v.options.paged) {
             for (0..g.columns) |c| {
