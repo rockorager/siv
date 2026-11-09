@@ -523,22 +523,108 @@ pub fn scrollGutter(win: *const Window, id: NodeId) f32 {
 /// layouts the gutter is at the left, under the bar), and the content
 /// ends that much lower, below the horizontal bar, whether or not it
 /// overflows, so that a bar coming and going never changes the layout.
+///
+/// A vertical scroll node that reflows (`Scroll.reflow`) divides its
+/// width less the gutter, and the gutter, by its zoom, which the
+/// compositor's zoom brings back to the viewport's width (D8). When
+/// the zoom changed since the children were last laid out, what showed
+/// at the viewport's top stays there (`ZoomAnchor`).
 fn scroll(win: *Window, id: NodeId, inner: Constraints) Error!Size {
     const s = win.state(id);
-    const axis = win.node(id).data.scroll.axis;
+    const sd = win.node(id).data.scroll;
+    const axis = sd.axis;
+    const z: f32 = if (sd.reflows()) sd.zoom else 1;
     const gutter = scrollGutter(win, id);
     const gv: f32 = if (axis != .horizontal) gutter else 0;
     const gh: f32 = if (axis != .vertical) gutter else 0;
     const vw = try fitWidth(win, id, inner);
-    var content_w = @max(0, vw - gv);
+    var content_w = unzoomed(@max(0, vw - gv), z);
     if (axis != .vertical) {
         var it = win.shown(id);
         while (it.next()) |ch| content_w = @max(content_w, try maxContent(win, ch));
     }
-    const h = try stackBlock(win, id, content_w, s.rtl, .{ .x = if (s.rtl) gv else 0, .y = 0 }, std.math.inf(f32)) + gh;
+    const anchor: ?ZoomAnchor = if (sd.reflows() and s.laid_zoom != 0 and s.laid_zoom != z and !s.offset_set)
+        zoomAnchor(win, id, paint_mod.clampedScroll(win, id).y / z)
+    else
+        null;
+    s.laid_zoom = if (sd.reflows()) z else 0;
+    const g = unzoomed(gv, z);
+    const h = try stackBlock(win, id, content_w, s.rtl, .{ .x = if (s.rtl) g else 0, .y = 0 }, std.math.inf(f32)) + gh;
     const vh = inner.clampH(h);
-    s.content = .{ .w = content_w + gv, .h = if (axis == .horizontal) @max(h, vh) else h };
+    s.content = .{ .w = if (z == 1) content_w + gv else unzoomed(vw, z), .h = if (axis == .horizontal) @max(h, vh) else h };
+    if (anchor) |a| keepZoomAnchor(win, id, a);
     return .{ .w = vw, .h = vh };
+}
+
+/// A length at zoom `z` in the unzoomed coordinates of a scroll node's
+/// content, rounded so that zooming it does not come out longer.
+fn unzoomed(len: f32, z: f32) f32 {
+    if (z == 1) return len;
+    const u = len / z;
+    return if (u * z > len) std.math.nextAfter(f32, u, 0) else u;
+}
+
+/// What a reflowing scroll node showed at its viewport's top, in its
+/// children's last layout: the innermost node there, and how far below
+/// its top. A layout at a new zoom puts that point back at the top,
+/// moved down within the node in proportion to its new height. Within a
+/// long text, the text's own anchor finds the line again instead
+/// (`text_node.settle`), so the point keeps its distance from the text's
+/// top.
+const ZoomAnchor = struct {
+    /// The viewport's top in content coordinates, as shown.
+    y: f32,
+    node: NodeId,
+    dy: f32,
+    h: f32,
+};
+
+/// The anchor for content coordinate `y` of scroll node `id`, from its
+/// children's positions as last laid out. Does not look into nested
+/// scroll nodes or transformed nodes, whose children have coordinates of
+/// their own.
+fn zoomAnchor(win: *Window, id: NodeId, y: f32) ?ZoomAnchor {
+    var found: ?ZoomAnchor = null;
+    var cur = id;
+    var top: f32 = 0;
+    descend: while (true) {
+        var it = win.shown(cur);
+        while (it.next()) |ch| {
+            const cs = win.state(ch);
+            const ch_top = top + cs.pos.y;
+            if (y < ch_top or y >= ch_top + cs.size.h) continue;
+            found = .{ .y = y, .node = ch, .dy = y - ch_top, .h = cs.size.h };
+            const n = win.node(ch);
+            if (n.kind == .scroll or !n.visual.transform.eql(.identity)) break :descend;
+            cur = ch;
+            top = ch_top;
+            continue :descend;
+        }
+        break;
+    }
+    return found;
+}
+
+/// Scrolls `id` so that its anchor's point is at the viewport's top
+/// again, after its children's layout at a new zoom.
+fn keepZoomAnchor(win: *Window, id: NodeId, a: ZoomAnchor) void {
+    if (!win.isLive(a.node) or !win.isShown(a.node)) return;
+    var top: f32 = 0;
+    var cur = a.node;
+    while (cur != id) : (cur = win.node(cur).parent) {
+        if (cur == .none) return;
+        top += win.state(cur).pos.y;
+    }
+    const long = std.mem.indexOfScalar(NodeId, win.long_texts.items, a.node) != null;
+    const h = win.state(a.node).size.h;
+    const dy = if (long or a.h <= 0) a.dy else a.dy * h / a.h;
+    const d = top + dy - a.y;
+    if (@abs(d) <= 0.001) return;
+    // From what was shown: an offset past the old content's end moves
+    // from that end, as the compositor clamped it.
+    const sd = &win.node(id).data.scroll;
+    sd.offset.y = a.y * sd.zoom;
+    text_node.scrollText(win, id, d);
 }
 
 // Flex -----------------------------------------------------------------------

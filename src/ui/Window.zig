@@ -386,6 +386,13 @@ pub const State = struct {
     text: ?*text_node.Cache = null,
     /// Scroll: the node's offset changed and the compositor must be told.
     scroll_pending: bool = false,
+    /// Scroll: the application set an offset for the layout to come
+    /// (`Txn.setScroll` without a new zoom), until it is sent: a reflow
+    /// (`Scroll.reflow`) keeps it instead of what the viewport showed.
+    offset_set: bool = false,
+    /// Scroll with `Scroll.reflow`: the zoom its children were last laid
+    /// out at, or 0.
+    laid_zoom: f32 = 0,
     /// Editor: horizontal scroll of a single line that keeps the caret in
     /// view, and the x that vertical caret movement aims for.
     editor_scroll: f32 = 0,
@@ -1678,7 +1685,14 @@ fn scrolled(win: *Window, layer: compositor.LayerId, offset: Point, zoom: f32, s
     if (win.node(l.owner).kind != .scroll) return;
     l.scroll_offset = offset;
     l.zoom = zoom;
-    win.node(l.owner).data.scroll.zoom = zoom;
+    // Children that reflow at the zoom are laid out at the new one in
+    // the next frame (D8).
+    const sd = &win.node(l.owner).data.scroll;
+    if (sd.reflows() and sd.zoom != zoom) {
+        win.markLayout(l.owner);
+        win.requestFrame();
+    }
+    sd.zoom = zoom;
     win.node(l.owner).data.scroll.offset = paint_mod.logicalScroll(win, l.owner, offset);
     win.dirty.semantics = true;
     text_node.scrolled(win, l.owner);

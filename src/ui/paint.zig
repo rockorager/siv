@@ -984,6 +984,7 @@ pub const State = struct {
                         s.scroll_pending = false;
                         try scroll_layers.append(win.scratch.allocator(), i);
                     }
+                    s.offset_set = false;
                 }
             }
         }

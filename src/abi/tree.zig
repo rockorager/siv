@@ -1171,7 +1171,9 @@ pub export fn siv_set_scroll_flags(txn: t.Txn, node: t.Node, flags: t.ScrollFlag
             const un = w.uiWin().node(id);
             if (un.kind != .scroll) return error.InvalidArgument;
             var s = un.data.scroll;
-            s.gutter = (try runtime.flags(t.ScrollFlags, fl)).gutter;
+            const o = try runtime.flags(t.ScrollFlags, fl);
+            s.gutter = o.gutter;
+            s.reflow = o.reflow;
             w.txn.ut.setScroll(id, s) catch |err| return mapTxn(err);
         }
     }.f, .{ node, flags });

@@ -605,12 +605,21 @@ pub const Scroll = struct {
     /// The layout leaves the scrollbar's gutter beside the content even
     /// with overlay scrollbars (D47).
     gutter: bool = false,
+    /// A vertical scroll node lays its children out at its width divided
+    /// by the zoom, so that the zoom reflows them to fill the viewport,
+    /// as a browser zooms a page, instead of only magnifying them (D8).
+    reflow: bool = false,
     /// Counts the offsets the application set (`Txn.setScroll`): relative
     /// scrolls queued before one are dropped (`Window.ScrollRequest`).
     sets: u32 = 0,
 
     pub fn zoomable(s: Scroll) bool {
         return s.max_zoom > s.min_zoom;
+    }
+
+    /// Whether the zoom changes the children's layout (`reflow`).
+    pub fn reflows(s: Scroll) bool {
+        return s.reflow and s.axis == .vertical;
     }
 };
 

@@ -874,10 +874,12 @@ fn shown(win: *const Window, id: NodeId, sc: NodeId) [2]f64 {
 }
 
 /// Scrolls `sc` by `dy` text pixels, relative to wherever the compositor
-/// has it (D8), and moves the offset the UI knows with it.
-fn scrollText(win: *Window, sc: NodeId, dy: f64) void {
+/// has it (D8), and moves the offset the UI knows with it. An offset not
+/// sent yet goes out with the correction in it.
+pub fn scrollText(win: *Window, sc: NodeId, dy: f64) void {
     const d: f32 = @floatCast(dy * @import("paint.zig").zoomOf(win, sc));
     win.node(sc).data.scroll.offset.y += d;
+    if (win.state(sc).scroll_pending) return;
     // Up goes before the container's new extent, which may clamp it;
     // down after, which may make room for it.
     win.paint.scroll_by.append(win.gpa, .{ .node = sc, .delta = .{ .x = 0, .y = d }, .early = d < 0 }) catch return;

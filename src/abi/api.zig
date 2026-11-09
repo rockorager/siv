@@ -755,6 +755,7 @@ pub const decls = [_]Decl{
     }),
     flags("siv_scroll_flags", "Scroll node options.", &.{
         .{ .name = "gutter", .bit = 0, .doc = "Leave the scrollbar a gutter beside the content (14 logical pixels at the end edge, and at the bottom when it scrolls horizontally), as always-shown scrollbars have, where scrollbars otherwise overlay the content (the default, as in GNOME; D47): the bar never covers the content, and presses beside it reach the content. For rows and text that reach the end edge, such as a list's; content with a margin of its own there can leave the bar over the margin instead." },
+        .{ .name = "reflow", .bit = 1, .doc = "Zoom reflows the content, as a browser zooms a page, instead of only magnifying it (D8): the children lay out at the viewport's width, less any gutter, divided by the zoom, so that zoomed they fill the viewport at every zoom and never scroll sideways, and text wraps again rather than running off the side or leaving the viewport part empty. Layout follows the zoom the compositor last reported, as the viewport event does: a pinch lays out again for each zoom it reports, a frame behind it, and the content at the viewport's top stays there. Vertical scroll nodes only; others ignore it." },
     }),
     enumeration("siv_scroll_unit", "What siv_scroll_by counts in.", &.{
         .{ .name = "pixel", .value = 0, .doc = "Logical pixels, as offsets count them." },
@@ -2009,11 +2010,11 @@ pub const functions = [_]Function{
     setter("siv_set_grid", "Sets a grid container's tracks and options.", &.{.{ .name = "desc", .type = .{ .desc = "siv_grid_desc" }, .doc = "Options; NULL for defaults." }}),
     setter("siv_set_stack", "Sets a stack container's options.", &.{.{ .name = "desc", .type = .{ .desc = "siv_stack_desc" }, .doc = "Options; NULL for defaults." }}),
     setter("siv_set_scroll_axis", "Sets the axes a scroll node scrolls.", &.{.{ .name = "axis", .type = ref("siv_scroll_axis"), .doc = "Axes." }}),
-    setter("siv_set_scroll_zoom_range", "Lets a scroll node zoom its content between two scales (D8, D16): touchpad pinches over it zoom on the compositor thread about the fingers, Ctrl+wheel zooms by 10% a step, and siv_scroll_zoom_to sets the zoom. Equal values (1 and 1 by default) never zoom. Offsets are in zoomed pixels.", &.{
+    setter("siv_set_scroll_zoom_range", "Lets a scroll node zoom its content between two scales (D8, D16): touchpad pinches over it zoom on the compositor thread about the fingers, Ctrl+wheel zooms by 10% a step, and siv_scroll_zoom_to sets the zoom. Equal values (1 and 1 by default) never zoom. Offsets are in zoomed pixels. The zoom magnifies the content as laid out; with SIV_SCROLL_REFLOW it lays out again to fit the viewport, as a browser zooms a page.", &.{
         .{ .name = "min_zoom", .type = .f32, .doc = "Smallest zoom, above 0." },
         .{ .name = "max_zoom", .type = .f32, .doc = "Largest zoom, at least min_zoom." },
     }),
-    setter("siv_scroll_zoom_to", "Zooms a scroll node's content to a scale, clamped to its zoom range, keeping the content at the viewport's top-left corner in place.", &.{
+    setter("siv_scroll_zoom_to", "Zooms a scroll node's content to a scale, clamped to its zoom range, keeping the content at the viewport's top-left corner in place. With SIV_SCROLL_REFLOW the content lays out again at the zoom, and what was at the viewport's top stays there, unless siv_scroll_to sets an offset after it in the transaction, which counts in the new layout.", &.{
         .{ .name = "zoom", .type = .f32, .doc = "The scale; 1 shows the content at its size." },
     }),
     setter("siv_scroll_to", "Scrolls a scroll node to an offset from the start (logical: in right-to-left layouts x grows leftward), clamped to the content once laid out, so content added in the same transaction makes room for it; content that grows later leaves the clamped offset where it is. To scroll from where the node is, use siv_scroll_by, siv_scroll_to_edge, or siv_scroll_into_view: an offset the application keeps to scroll from goes stale when the user scrolls, drags the scrollbar, or assistive technology sets it (D47).", &.{

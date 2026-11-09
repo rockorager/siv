@@ -593,6 +593,25 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     Alternative: zoom only in UI handlers, relaying out per step (a busy
     UI thread would freeze the pinch, against this decision's
     requirement).
+  - Zoom magnifies a scroll container's content as laid out. A vertical
+    scroll node with `Scroll.reflow` (`SIV_SCROLL_REFLOW`) reflows
+    it instead, as a browser zooms a page: its children lay out at the
+    viewport's width, less the gutter, divided by the zoom, so that
+    zoomed they fill the viewport at every zoom, wrap again, and never
+    scroll sideways. Layout takes the zoom the compositor last reported
+    (or the application set), as the viewport event does: a pinch still
+    zooms on the compositor at once, the old layout magnified, and the UI
+    lays out again for each zoom reported, a frame behind. When the zoom
+    changed since the children were laid out, the layout keeps what the
+    viewport showed at its top: it finds the innermost node there in the
+    old layout and scrolls, by a relative correction like a long text's
+    (D13), to the same fraction of that node's new height (within a long
+    text, to the same line, by the text's own anchor). An offset the
+    application sets with no new zoom counts in the new layout and stays.
+    Alternative: the application sets its content's width to the
+    viewport's over the zoom from the viewport event; but a scroll node
+    lays its children out no wider than its viewport, so that cannot zoom
+    out, and an axis of `both` lets zoomed-in content scroll sideways.
   - Configure acks follow content: configures reach the UI as events
     with serials, and a commit names the serial its layout answers
     (`ack_configure`). A configure that changes the logical size is
@@ -2341,9 +2360,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     Ctrl+wheel, by 10% a detent, so a zoomable view zooms the same with
     a mouse. Nodes with a gesture handler get a wheel region, like nodes
     with a scroll handler, so pinches over them reach the UI first.
-    Viewport events carry the zoom. Sway cannot make gestures on its
-    headless backend: the integration test binds the real gesture
-    objects (version 3) and feeds their listeners, as for touch.
+    Viewport events carry the zoom. With `SIV_SCROLL_REFLOW` the
+    zoom reflows a vertical scroll node's content to the viewport's width
+    instead of magnifying it (D8), so a reader zoomed by a pinch,
+    Ctrl+wheel, or its own Ctrl+= keys wraps its text as a browser does.
+    Sway cannot make gestures on its headless backend: the integration
+    test binds the real gesture objects (version 3) and feeds their
+    listeners, as for touch.
   - Tablets (tablet-v2, `src/platform/Tablet.zig`): each seat's tablet
     seat tracks tools and pads. A tool's events are collected until its
     `frame` and become `platform.TabletTool` events in the order

@@ -128,6 +128,93 @@ test "gestures reach handlers; pinches zoom scroll nodes on the compositor or th
     try testing.expectEqual(content, log.gestures[2].target);
 }
 
+test "a scroll node that reflows lays its content out at the viewport's width over the zoom" {
+    var h: Harness = .{};
+    try h.start(300, 200, null, null);
+    defer h.stop();
+    var view: Log = .{};
+    const root = c.siv_window_get_root(h.window);
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const sc = c.siv_scroll(txn, root, .vertical);
+    c.siv_set_layout(txn, sc, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(300), .height = px(200) });
+    c.siv_set_scroll_zoom_range(txn, sc, 0.5, 4);
+    c.siv_set_scroll_flags(txn, sc, .{ .reflow = true });
+    c.siv_on(txn, sc, .viewport, Log.onViewport, null, &view);
+    // A column of auto width, of paragraphs whose heights follow the
+    // width they wrap in.
+    const column = c.siv_flex(txn, sc, &.{ .axis = .column });
+    const words = "Zooming a page in a browser wraps its text again at the new size, so that nothing runs off the side and no room is left over. " ++
+        "Each paragraph takes as many lines as its width needs, more when the zoom makes the room narrower and fewer when it widens it.";
+    var paras: [12]t.Node = undefined;
+    for (&paras) |*p| p.* = c.siv_text(txn, column, words, words.len);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+
+    var box: t.Rect = undefined;
+    try ok(c.siv_node_get_rect(sc, &box));
+    var vsize: t.Size = undefined;
+    var csize: t.Size = undefined;
+    var r: t.Rect = undefined;
+    for ([_]f32{ 0.75, 1.5 }) |zoom| {
+        // Halfway down the seventh paragraph at the viewport's top.
+        try ok(c.siv_node_get_rect(paras[6], &r));
+        var ox: f32 = 0;
+        var oy: f32 = 0;
+        try ok(c.siv_scroll_get_offset(sc, &ox, &oy));
+        try ok(c.siv_txn_begin(h.window, &txn));
+        c.siv_scroll_to(txn, sc, 0, oy + (r.y - box.y) + r.height / 2);
+        try ok(c.siv_txn_commit(txn));
+        try h.settle();
+        try ok(c.siv_node_get_rect(paras[6], &r));
+        try testing.expectApproxEqAbs(box.y, r.y + r.height / 2, 0.01);
+        const before = r.height / view.zoom;
+        const was = view.zoom;
+
+        try ok(c.siv_txn_begin(h.window, &txn));
+        c.siv_scroll_zoom_to(txn, sc, zoom);
+        try ok(c.siv_txn_commit(txn));
+        try h.settle();
+        try testing.expectEqual(zoom, view.zoom);
+        // Zoomed, the column is as wide as the viewport, which shows all
+        // of the content's width.
+        try ok(c.siv_scroll_get_sizes(sc, &vsize, &csize));
+        try ok(c.siv_node_get_rect(column, &r));
+        try testing.expectApproxEqAbs(vsize.width, r.width, 0.01);
+        try testing.expect(csize.width <= vsize.width);
+        // The paragraph wrapped again, to fewer lines zoomed out and more
+        // zoomed in, and its middle stayed at the viewport's top.
+        try ok(c.siv_node_get_rect(paras[6], &r));
+        const after = r.height / zoom;
+        try testing.expect(if (zoom < was) after < before else after > before);
+        try testing.expectApproxEqAbs(box.y, r.y + r.height / 2, 1);
+    }
+
+    // A pinch the compositor zooms by itself lays the content out again
+    // too, at the zoom it reports.
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_scroll_zoom_to(txn, sc, 1);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    const id = (try h.win()).win.id;
+    try h.inject(&.{
+        .{ .pointer_motion = .{ .window = id, .seat = 0, .x = 20, .y = 20 } },
+        .{ .gesture = .{ .window = id, .seat = 0, .kind = .pinch, .phase = .begin, .fingers = 2 } },
+        .{ .gesture = .{ .window = id, .seat = 0, .kind = .pinch, .phase = .update, .fingers = 2, .scale = 2 } },
+        .{ .gesture = .{ .window = id, .seat = 0, .kind = .pinch, .phase = .end, .fingers = 2 } },
+    });
+    const deadline = @import("loop").Loop.now() + 5 * std.time.ns_per_s;
+    while (view.zoom != 2) {
+        if (@import("loop").Loop.now() > deadline) return error.Timeout;
+        try ok(c.siv_app_dispatch(h.app, 5));
+    }
+    try h.settle();
+    try ok(c.siv_scroll_get_sizes(sc, &vsize, &csize));
+    try ok(c.siv_node_get_rect(column, &r));
+    try testing.expectApproxEqAbs(vsize.width, r.width, 0.01);
+    try testing.expect(csize.width <= vsize.width);
+}
+
 test "a reader scrolls by lines, pages, and edges, and shows a node, keeping no offset of its own" {
     var h: Harness = .{};
     try h.start(200, 100, null, null);
@@ -243,7 +330,7 @@ test "a reader scrolls by lines, pages, and edges, and shows a node, keeping no 
     c.siv_scroll_by(txn, sc, .pixel, std.math.nan(f32), 0);
     try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
     try ok(c.siv_txn_begin(h.window, &txn));
-    c.siv_set_scroll_flags(txn, sc, @bitCast(@as(u32, 2)));
+    c.siv_set_scroll_flags(txn, sc, @bitCast(@as(u32, 4)));
     try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_commit(txn));
     try h.settle();
     try testing.expectEqual(@as(f32, 0), view.last());

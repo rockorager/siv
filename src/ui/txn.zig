@@ -1080,7 +1080,13 @@ pub const Txn = struct {
         n.data.scroll = s;
         n.data.scroll.zoom = std.math.clamp(s.zoom, s.min_zoom, s.max_zoom);
         n.data.scroll.sets = old.sets +% @intFromBool(!old.offset.eql(s.offset));
-        if (old.axis != s.axis or old.gutter != s.gutter) t.win.markLayout(id);
+        const new = n.data.scroll;
+        if (old.axis != s.axis or old.gutter != s.gutter or old.reflows() != new.reflows() or (new.reflows() and old.zoom != new.zoom)) t.win.markLayout(id);
+        // An offset set alone is for the layout to come; one a new zoom
+        // scaled keeps what the viewport showed.
+        if (old.zoom != new.zoom) {
+            t.win.state(id).offset_set = false;
+        } else if (!old.offset.eql(s.offset)) t.win.state(id).offset_set = true;
         // The zoom range is a layer property; a new zoom goes out with them.
         if (old.min_zoom != s.min_zoom or old.max_zoom != s.max_zoom or old.zoom != n.data.scroll.zoom) t.win.dirty.props = true;
         if (!old.offset.eql(s.offset)) {
