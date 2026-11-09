@@ -910,3 +910,130 @@ test "C API docview: 1px borders are whole device pixels of one shade at fractio
         }
     }
 }
+
+test "C API docview: a double click selects the word under the pointer, scaled, scrolled, zoomed" {
+    // Parcel's reader (Tim's report: the previous line was selected
+    // too): mail in a flex column under a header, in a vertical scroll
+    // node that reflows at its zoom, at fractional scales, scrolled by
+    // the wheel, and zoomed.
+    const css = "body { margin: 0; font-family: system-ui, sans-serif; line-height: 1.45 }";
+    const words = [_][]const u8{ "amber", "basil", "cedar", "dahlia", "ember", "fennel", "garnet", "hazel", "indigo", "juniper", "kelp", "lilac", "maple", "nutmeg", "olive", "pepper", "quince", "russet", "saffron", "thistle", "umber", "violet", "willow", "xenon", "yarrow", "zinnia" };
+    const wrapped = comptime blk: {
+        var s: []const u8 = "";
+        for (words, 0..) |w, i| s = s ++ (if (i == 0) "" else " ") ++ w;
+        break :blk s ++ " " ++ s;
+    };
+    // A paragraph that wraps, and lines broken with <br>, as mail breaks
+    // them.
+    const source = "<p>Short.</p><div style=\"height: 20px\"></div><p>Thanks, see you soon<br>tomorrow at noon</p><p>" ++ wrapped ++ "</p><div style=\"height: 400px\"></div>";
+    const Case = struct { v120: u32, zoom: f32, scroll: f32 };
+    for ([_]Case{
+        .{ .v120 = 120, .zoom = 1, .scroll = 0 },
+        .{ .v120 = 150, .zoom = 1, .scroll = 0 },
+        .{ .v120 = 180, .zoom = 1, .scroll = 0 },
+        .{ .v120 = 180, .zoom = 1, .scroll = 57.3 },
+        .{ .v120 = 120, .zoom = 1.25, .scroll = 0 },
+        .{ .v120 = 150, .zoom = 1.25, .scroll = 57.3 },
+        .{ .v120 = 180, .zoom = 1.25, .scroll = 57.3 },
+    }) |c| {
+        var h: Harness = .{};
+        try h.start(400, 300, null, null);
+        defer h.stop();
+        const Scale = struct {
+            id: @import("platform").WindowId,
+            v120: u32,
+            fn run(ctx: ?*anyopaque, comp: *@import("compositor").Compositor) void {
+                const s: *@This() = @ptrCast(@alignCast(ctx));
+                comp.platform.headless.setScale(s.id, .{ .v120 = s.v120 });
+            }
+        };
+        const wid = (try h.win()).win.id;
+        var scale: Scale = .{ .id = wid, .v120 = c.v120 };
+        try (try h.internal()).app.comp.call(&scale, Scale.run);
+        try h.settle();
+        var ev: Events = .{};
+        const root = A.siv_window_get_root(h.window);
+        var txn: t.Txn = .null;
+        try ok(T.siv_txn_begin(h.window, &txn));
+        const sc = T.siv_scroll(txn, root, .vertical);
+        _ = T.siv_set_layout(txn, sc, &.{ .size = @sizeOf(t.LayoutDesc), .width = .{ .unit = .fraction, .value = 1 }, .height = .{ .unit = .fraction, .value = 1 } });
+        T.siv_set_scroll_zoom_range(txn, sc, 0.5, 3);
+        T.siv_set_scroll_flags(txn, sc, .{ .reflow = true });
+        const column = T.siv_flex(txn, sc, &.{ .axis = .column });
+        _ = T.siv_text(txn, column, "Subject", 7);
+        const view = D.siv_docview(txn, column, &.{
+            .source = source.ptr,
+            .source_count = source.len,
+            .user_css = css,
+            .user_css_len = css.len,
+            .system_font = "sans-serif",
+            .system_font_len = 10,
+            .kind = .html,
+            .color_scheme = .light,
+            .flags = .{ .untrusted = true },
+            .user_data = &ev,
+            .on_event = Events.onEvent,
+        });
+        try ok(T.siv_txn_commit(txn));
+        try waitLoaded(&h, &ev, 1);
+        if (c.zoom != 1) {
+            try ok(T.siv_txn_begin(h.window, &txn));
+            T.siv_scroll_zoom_to(txn, sc, c.zoom);
+            try ok(T.siv_txn_commit(txn));
+            try h.settle();
+        }
+        if (c.scroll != 0) {
+            try h.inject(&.{
+                .{ .pointer_motion = .{ .window = wid, .seat = 0, .x = 200, .y = 150 } },
+                .{ .scroll = .{ .window = wid, .seat = 0, .dy = c.scroll, .source = .wheel } },
+            });
+            try h.settle();
+        }
+
+        // The short paragraph is one line; each paragraph's second line
+        // is that far below its top. The document places its nodes
+        // unzoomed.
+        const sem = try (try h.win()).uiWin().semanticsTree();
+        const Para = struct {
+            fn top(s: anytype, prefix: []const u8) !@TypeOf(s.nodes.items[0].bounds) {
+                for (s.nodes.items) |n| if (n.role == .paragraph and std.mem.startsWith(u8, s.name(n), prefix)) return n.bounds;
+                return error.NoParagraph;
+            }
+        };
+        const short = try Para.top(sem, "Short.");
+        const line = short.y1 - short.y0;
+        var r: t.Rect = undefined;
+        try ok(T.siv_node_get_rect(view, &r));
+        for ([_][]const u8{ "amber basil", "Thanks," }, 0..) |prefix, k| {
+            const p = try Para.top(sem, prefix);
+            try testing.expect(p.y1 - p.y0 > 1.5 * line);
+            const x = r.x + (p.x0 - r.x + 6) * c.zoom;
+            const y = r.y + (p.y0 - r.y + 1.5 * line) * c.zoom;
+            // A double click, the pointer moving a fraction of a pixel
+            // as the button goes down the second time.
+            const time: u32 = @intCast(1000 + 2000 * k);
+            try h.inject(&.{
+                .{ .pointer_motion = .{ .window = wid, .seat = 0, .x = x, .y = y } },
+                .{ .pointer_button = .{ .window = wid, .seat = 0, .button = 0x110, .pressed = true, .time = time, .serial = 1 } },
+                .{ .pointer_button = .{ .window = wid, .seat = 0, .button = 0x110, .pressed = false, .time = time + 60, .serial = 2 } },
+                .{ .pointer_button = .{ .window = wid, .seat = 0, .button = 0x110, .pressed = true, .time = time + 150, .serial = 3 } },
+                .{ .pointer_motion = .{ .window = wid, .seat = 0, .x = x + 0.4, .y = y + 0.3 } },
+                .{ .pointer_button = .{ .window = wid, .seat = 0, .button = 0x110, .pressed = false, .time = time + 210, .serial = 4 } },
+            });
+            try h.settle();
+            var buf: [512]u8 = undefined;
+            var len: usize = 0;
+            try ok(D.siv_docview_get_selection(view, &buf, buf.len, &len));
+            const got = buf[0..len];
+            // The wrapped paragraph's second line starts with one of its
+            // words, not its first; the broken one's with "tomorrow".
+            const right = if (k == 0) for (words[1..]) |w| {
+                if (std.mem.eql(u8, w, got)) break true;
+            } else false else std.mem.eql(u8, got, "tomorrow");
+            if (!right) {
+                std.debug.print("scale {d}/120 zoom {d} scroll {d}: double click in \"{s}\" selected \"{s}\"\n", .{ c.v120, c.zoom, c.scroll, prefix, got });
+                return error.TestUnexpectedResult;
+            }
+        }
+    }
+}

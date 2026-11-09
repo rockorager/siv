@@ -1288,7 +1288,8 @@ pub fn fontsLoaded(d: *Document) void {
 /// A text position: an IFC and a byte offset in its text.
 pub const Pos = struct { ifc: u32, offset: u32 };
 
-fn before(a: Pos, b: Pos) bool {
+/// Whether `a` comes before `b` in the document.
+pub fn before(a: Pos, b: Pos) bool {
     return a.ifc < b.ifc or (a.ifc == b.ifc and a.offset < b.offset);
 }
 

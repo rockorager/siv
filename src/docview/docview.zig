@@ -192,6 +192,10 @@ pub const View = struct {
     focus: ?Document.Pos = null,
     selecting: bool = false,
     press: ?[2]f32 = null,
+    /// What the press selected (a double click's word, a triple click's
+    /// paragraph), which a drag extends by whole units.
+    unit: Unit = .char,
+    gesture: [2]Document.Pos = undefined,
     /// Where the pointer is over the node, for `:hover`; null outside.
     pointer: ?[2]f32 = null,
     highlights: std.ArrayList(doc.paint.Highlight) = .empty,
@@ -1094,7 +1098,12 @@ pub const View = struct {
                         v.anchor = pos;
                         v.focus = pos;
                     }
-                    if (p.clicks >= 2) v.selectWord(pos, p.clicks >= 3);
+                    v.unit = if (p.clicks >= 3) .paragraph else if (p.clicks == 2) .word else .char;
+                    if (v.unit != .char) {
+                        v.gesture = v.unitAt(pos, v.unit);
+                        v.anchor = v.gesture[0];
+                        v.focus = v.gesture[1];
+                    }
                     v.selecting = true;
                     v.repaint();
                 } else if (v.anchor != null) {
@@ -1115,7 +1124,23 @@ pub const View = struct {
                 const at = v.toDoc(p.x, p.y) orelse return .handled;
                 const hit = d.hitTest(at[0], at[1]) catch return .pass;
                 if (hit.ifc != none) {
-                    v.focus = .{ .ifc = hit.ifc, .offset = hit.offset };
+                    const pos: Document.Pos = .{ .ifc = hit.ifc, .offset = hit.offset };
+                    if (v.unit == .char) {
+                        v.focus = pos;
+                    } else {
+                        // By whole words or paragraphs, keeping what the
+                        // press selected: a pointer that moves a little
+                        // as the button goes down changes nothing.
+                        const r = v.unitAt(pos, v.unit);
+                        const g = v.gesture;
+                        if (Document.before(r[0], g[0])) {
+                            v.anchor = g[1];
+                            v.focus = r[0];
+                        } else {
+                            v.anchor = g[0];
+                            v.focus = if (Document.before(r[1], g[1])) g[1] else r[1];
+                        }
+                    }
                     v.repaint();
                 }
                 return .handled;
@@ -1172,24 +1197,33 @@ pub const View = struct {
         }
     }
 
-    fn selectWord(v: *View, pos: Document.Pos, paragraph: bool) void {
-        const d = v.d orelse return;
-        const t = d.tree.ifcs.items[pos.ifc].text;
-        var s: u32 = pos.offset;
-        var e: u32 = pos.offset;
-        if (paragraph) {
-            s = 0;
-            e = @intCast(t.len);
-        } else {
-            while (s > 0 and isWord(t[s - 1])) s -= 1;
-            while (e < t.len and isWord(t[e])) e += 1;
-        }
-        v.anchor = .{ .ifc = pos.ifc, .offset = s };
-        v.focus = .{ .ifc = pos.ifc, .offset = e };
-    }
+    const Unit = enum { char, word, paragraph };
 
-    fn isWord(c: u8) bool {
-        return std.ascii.isAlphanumeric(c) or c >= 0x80 or c == '_' or c == '\'';
+    /// The word (UAX #29 segment: a word, or a run of spaces or
+    /// punctuation) or the paragraph (the IFC) at a position, as the
+    /// editor selects them. Words never span a line break (`<br>` is
+    /// U+2028 in the IFC's text, a preserved newline is itself), so only
+    /// the line around the position is segmented.
+    fn unitAt(v: *View, pos: Document.Pos, unit: Unit) [2]Document.Pos {
+        const t = v.d.?.tree.ifcs.items[pos.ifc].text;
+        var s: u32 = 0;
+        var e: u32 = @intCast(t.len);
+        if (unit == .word) {
+            s = pos.offset;
+            while (s > 0 and t[s - 1] != '\n' and !std.mem.endsWith(u8, t[0..s], "\u{2028}")) s -= 1;
+            e = pos.offset;
+            while (e < t.len and t[e] != '\n' and !std.mem.startsWith(u8, t[e..], "\u{2028}")) e += 1;
+            var words = text.segmentation.words(v.gpa, t[s..e]) catch return .{ pos, pos };
+            defer words.deinit(v.gpa);
+            const len = e - s;
+            // Past the line's end: its last segment.
+            var a = words.boundaries.atOrBefore(pos.offset - s) orelse 0;
+            if (a == len and len > 0) a = words.boundaries.before(len) orelse 0;
+            const b = words.boundaries.after(a) orelse len;
+            e = s + b;
+            s += a;
+        }
+        return .{ .{ .ifc = pos.ifc, .offset = s }, .{ .ifc = pos.ifc, .offset = e } };
     }
 
     /// Follows a link: a fragment of this document scrolls to its target;

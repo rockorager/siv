@@ -7190,6 +7190,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     sizes to its content at its width; applications put it in a scroll
     node. `siv_docview_*` is named so because the document portal owns
     `siv_document_*` (D19).
+  - **Selecting with the pointer** works as in editors (D15): a double
+    click selects the UAX #29 segment under the pointer, a triple click
+    the paragraph (its IFC), and dragging after either extends by whole
+    segments or paragraphs from what the press selected. Until November
+    2026 a word was the run of ASCII letters, digits, `_`, `'`, and any
+    byte from 0x80, and a drag after a double click moved the focus to
+    the pointer: `<br>` is U+2028 in an IFC's text, so double-clicking
+    the first word of a mail's line selected the last word of the line
+    before too (parcel, Tim's report), as did nonbreaking spaces and
+    U+FFFC, and the pointer moving a fraction of a pixel as the button
+    went down cut the word to its start. Segmenting runs over the line
+    around the position only, since UAX #29 always breaks at newlines.
   - **Flags after creation** (`siv_docview_set_flags`): a reader
     switches an open message between converted and original colors, and
     re-creating the node for it parsed the mail again, lost the scroll
