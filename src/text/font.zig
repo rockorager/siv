@@ -59,8 +59,8 @@ pub const Synthetic = struct {
     }
 };
 
-/// Axis values set on a face's HarfBuzz font, on top of its variation
-/// string, and synthetic styles: a face instance (`FontCache.instance`).
+/// Axis values set on a face's HarfBuzz font, and synthetic styles: a
+/// face instance (`FontCache.instance`).
 pub const Instance = struct {
     wght: ?f32 = null,
     wdth: ?f32 = null,
@@ -166,7 +166,7 @@ pub const Description = struct {
 pub const Face = struct {
     font: *hb.hb_font_t,
     upem: u32,
-    /// Identifies the face's content (bytes, index, variations); equal keys
+    /// Identifies the face's content (bytes, index, instance); equal keys
     /// mean identical glyphs, so glyph caches can key on it across caches.
     key: u64,
     color: bool,
@@ -275,7 +275,7 @@ pub const Face = struct {
         return fresh.ptr;
     }
 
-    fn init(bytes: []const u8, index: u32, variations: []const u8, instance: Instance) !Face {
+    fn init(bytes: []const u8, index: u32, instance: Instance) !Face {
         if (bytes.len > std.math.maxInt(c_uint)) return error.InvalidFont;
         const blob = hb.hb_blob_create(bytes.ptr, @intCast(bytes.len), hb.HB_MEMORY_MODE_READONLY, null, null) orelse return error.OutOfMemory;
         defer hb.hb_blob_destroy(blob);
@@ -290,12 +290,6 @@ pub const Face = struct {
         if (font == hb.hb_font_get_empty()) return error.OutOfMemory;
         errdefer hb.hb_font_destroy(font);
 
-        var tokens = std.mem.tokenizeAny(u8, variations, ", ");
-        while (tokens.next()) |token| {
-            var variation: hb.hb_variation_t = undefined;
-            if (hb.hb_variation_from_string(token.ptr, @intCast(token.len), &variation) == 0) return error.InvalidVariations;
-            hb.hb_font_set_variation(font, variation.tag, variation.value);
-        }
         var extra: [5]hb.hb_variation_t = undefined;
         for (instance.variations(&extra)) |v| hb.hb_font_set_variation(font, v.tag, v.value);
         const description: Description = .read(font);
@@ -309,7 +303,6 @@ pub const Face = struct {
         var hasher = std.hash.Wyhash.init(0);
         hasher.update(bytes);
         hasher.update(std.mem.asBytes(&index));
-        hasher.update(variations);
         instance.hash(&hasher);
         return .{
             .font = font,
@@ -352,11 +345,9 @@ pub const Source = struct {
     path: []const u8,
     /// Face index in Fontconfig's encoding (upper 16 bits: named instance).
     index: u32 = 0,
-    /// Fontconfig variation settings, e.g. "wght=700".
-    variations: []const u8 = "",
-    /// Fontconfig's synthetic emboldening and shear (FC_EMBOLDEN and
-    /// FC_MATRIX, set by its synthetic-style rules).
-    synthetic: Synthetic = .{},
+    /// The instance the font loads as: the style it was matched for
+    /// (`text.family.instanceFor`).
+    instance: Instance = .{},
 };
 
 pub const State = enum { pending, ready, failed };
@@ -368,7 +359,6 @@ const Entry = struct {
     ownership: Ownership = .borrowed,
     /// Owned copies; empty for fonts added from bytes.
     path: []const u8 = "",
-    variations: []const u8 = "",
     index: u32 = 0,
     /// Fontconfig's coverage, owned; lets shaping skip pending fonts that
     /// cannot help.
@@ -428,7 +418,6 @@ pub const FontCache = struct {
         if (entry.ownership == .owned and entry.base == null) self.gpa.free(entry.bytes);
         if (entry.charset) |charset| fc.FcCharSetDestroy(charset);
         self.gpa.free(entry.path);
-        self.gpa.free(entry.variations);
     }
 
     /// Adds a font from bytes. On error, owned bytes are freed.
@@ -437,7 +426,7 @@ pub const FontCache = struct {
         self.lockExclusive();
         defer self.unlockExclusive();
         try self.entries.ensureUnusedCapacity(self.gpa, 1);
-        const loaded: Face = try .init(bytes, index, "", .{});
+        const loaded: Face = try .init(bytes, index, .{});
         self.entries.appendAssumeCapacity(.{ .state = .ready, .face = loaded, .bytes = bytes, .ownership = ownership, .index = index });
         return @enumFromInt(self.entries.items.len - 1);
     }
@@ -452,9 +441,8 @@ pub const FontCache = struct {
     }
 
     /// A ready font with other axis values or synthetic styles: `instance`
-    /// replaces the font's own (a Fontconfig variation string still
-    /// applies beneath it). Sharing the font's bytes, an instance is
-    /// created once and found again; the default instance is the font.
+    /// replaces the font's own. Sharing the font's bytes, an instance is
+    /// created once and found again; the font's own instance is the font.
     pub fn instance(self: *FontCache, id: FontId, inst: Instance) !FontId {
         const base = self.entries.items[@intFromEnum(id)].base orelse id;
         // A copy: growing the list moves entries.
@@ -467,10 +455,8 @@ pub const FontCache = struct {
         self.lockExclusive();
         defer self.unlockExclusive();
         try self.entries.ensureUnusedCapacity(self.gpa, 1);
-        const variations = try self.gpa.dupe(u8, root.variations);
-        errdefer self.gpa.free(variations);
-        const loaded: Face = try .init(root.bytes, root.index, variations, inst);
-        self.entries.appendAssumeCapacity(.{ .state = .ready, .face = loaded, .bytes = root.bytes, .variations = variations, .index = root.index, .base = base, .instance = inst });
+        const loaded: Face = try .init(root.bytes, root.index, inst);
+        self.entries.appendAssumeCapacity(.{ .state = .ready, .face = loaded, .bytes = root.bytes, .index = root.index, .base = base, .instance = inst });
         return @enumFromInt(self.entries.items.len - 1);
     }
 
@@ -489,17 +475,25 @@ pub const FontCache = struct {
         try self.entries.ensureUnusedCapacity(self.gpa, 1);
         const path = try self.gpa.dupe(u8, src.path);
         errdefer self.gpa.free(path);
-        const variations = try self.gpa.dupe(u8, src.variations);
-        errdefer self.gpa.free(variations);
         const copy = if (charset) |c| fc.FcCharSetCopy(@constCast(c)) orelse return error.OutOfMemory else null;
-        self.entries.appendAssumeCapacity(.{ .state = .pending, .path = path, .variations = variations, .index = src.index, .charset = copy, .instance = .{ .synthetic = src.synthetic } });
+        self.entries.appendAssumeCapacity(.{ .state = .pending, .path = path, .index = src.index, .charset = copy, .instance = src.instance });
         return @enumFromInt(self.entries.items.len - 1);
     }
 
     pub fn find(self: *const FontCache, src: Source) ?FontId {
         for (self.entries.items, 0..) |entry, i| {
             if (entry.base == null and entry.index == src.index and std.mem.eql(u8, entry.path, src.path) and
-                std.mem.eql(u8, entry.variations, src.variations) and entry.instance.synthetic.eql(src.synthetic)) return @enumFromInt(i);
+                entry.instance.eql(src.instance)) return @enumFromInt(i);
+        }
+        return null;
+    }
+
+    /// A ready font read from the face at `path` and `index`, in any
+    /// instance, so that another instance of it needs no second read.
+    pub fn findReady(self: *const FontCache, path: []const u8, index: u32) ?FontId {
+        for (self.entries.items, 0..) |entry, i| {
+            if (entry.base == null and entry.state == .ready and entry.index == index and std.mem.eql(u8, entry.path, path))
+                return @enumFromInt(i);
         }
         return null;
     }
@@ -511,7 +505,7 @@ pub const FontCache = struct {
         defer self.unlockExclusive();
         const entry = &self.entries.items[@intFromEnum(id)];
         std.debug.assert(entry.state == .pending);
-        entry.face = Face.init(bytes, entry.index, entry.variations, entry.instance) catch |err| {
+        entry.face = Face.init(bytes, entry.index, entry.instance) catch |err| {
             if (ownership == .owned) self.gpa.free(bytes);
             if (err == error.OutOfMemory) return err;
             entry.state = .failed;
@@ -533,9 +527,11 @@ pub const FontCache = struct {
         return self.entries.items[@intFromEnum(id)].state;
     }
 
+    /// Where a font's bytes come from; an instance's are its base's.
     pub fn source(self: *const FontCache, id: FontId) Source {
         const entry = &self.entries.items[@intFromEnum(id)];
-        return .{ .path = entry.path, .index = entry.index, .variations = entry.variations, .synthetic = entry.instance.synthetic };
+        const root = if (entry.base) |b| &self.entries.items[@intFromEnum(b)] else entry;
+        return .{ .path = root.path, .index = entry.index, .instance = entry.instance };
     }
 
     /// The face of a ready font.

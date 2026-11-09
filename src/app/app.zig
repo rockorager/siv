@@ -238,7 +238,7 @@ pub const App = struct {
         // thread of its own while the bus handshake and the compositor's
         // Wayland connection proceed below. Not before the process locale
         // is set: Fontconfig parses numbers with localeconv.
-        var fc_load: FontconfigLoad = .{};
+        var fc_load: FontconfigLoad = .{ .gpa = gpa };
         const fc_thread: ?std.Thread = if (!options.system_fonts) null else std.Thread.spawn(.{}, FontconfigLoad.run, .{&fc_load}) catch blk: {
             fc_load.run();
             break :blk null;
@@ -291,10 +291,11 @@ pub const App = struct {
     }
 
     const FontconfigLoad = struct {
+        gpa: std.mem.Allocator,
         database: ?text.fontconfig.Database = null,
 
         fn run(l: *FontconfigLoad) void {
-            l.database = text.fontconfig.Database.init() catch null;
+            l.database = text.fontconfig.Database.init(l.gpa) catch null;
         }
     };
 

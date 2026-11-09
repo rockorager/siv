@@ -1,8 +1,8 @@
-//! Matching styles within a family of faces the application added (D13):
-//! CSS Fonts 4 §5.2's font matching, with each face's styles read from
-//! its data (`font.Description`), variable faces covering their axis
-//! ranges, and synthetic bold and oblique where the chosen face lacks the
-//! style.
+//! Matching styles within a family of faces, added by the application or
+//! installed (D13): CSS Fonts 4 §5.2's font matching, with each face's
+//! styles read from its data (`font.Description`), variable faces
+//! covering their axis ranges, and synthetic bold and oblique where the
+//! chosen face lacks the style.
 
 const std = @import("std");
 const font = @import("font.zig");
@@ -25,7 +25,7 @@ pub const Request = struct {
 /// The oblique angle CSS uses for `oblique` and for italic requests that
 /// only an oblique face (or slnt axis) can serve: 14 degrees, leaning
 /// right, so -14 in slnt's counter-clockwise degrees.
-const oblique_angle: f32 = -14;
+pub const oblique_angle: f32 = -14;
 
 /// Weights from 600 up ask for synthetic bold from lighter faces, as in
 /// browsers.
@@ -51,7 +51,9 @@ pub fn rank(faces: []const Description, request: Request, out: []u32) void {
     std.sort.insertion(u32, out, Ctx{ .faces = faces, .request = request }, Ctx.lessThan);
 }
 
-fn key(d: Description, r: Request) [3]f32 {
+/// How far a face is from a request, as `rank` orders faces: lower is
+/// closer.
+pub fn key(d: Description, r: Request) [3]f32 {
     return .{ widthScore(d.width, r.width), slantScore(d, r.slant), weightScore(d.weight, r.weight) };
 }
 

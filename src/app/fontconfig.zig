@@ -124,7 +124,7 @@ fn run(job: *Pool.Job) void {
     addDirs(fc, a, &dirs, fc.dirs) catch return;
     fc.entries = watch.arm(fc.watch.fd, fc.gpa, dirs.items) catch &.{};
     if (!fc.load) return;
-    var db = Database.init() catch return;
+    var db = Database.init(fc.gpa) catch return;
     const new_dirs = db.configDirs(fc.gpa) catch {
         db.deinit();
         return;

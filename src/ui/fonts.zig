@@ -31,8 +31,10 @@ names: std.StringArrayHashMapUnmanaged(void) = .empty,
 /// order they were added.
 families: std.AutoHashMapUnmanaged(u32, []const FontId) = .empty,
 /// Chains per query without a size: a registered family's faces ranked
-/// for the style, or Fontconfig's sort, so that reshaping does not match
-/// or sort fonts again. Fonts themselves live only in the cache.
+/// for the style, or the system's chain (`Database.candidates`), so that
+/// reshaping does not match fonts again; dropped when a font loads, since
+/// its data may rank or instance it differently than Fontconfig's
+/// description did. Fonts themselves live only in the cache.
 resolved: std.AutoHashMapUnmanaged(Key, []const FontId) = .empty,
 /// Chains per query with a size, for chains with variable faces that have
 /// an opsz axis; dropped when a font loads, since a pending font in a
@@ -274,7 +276,7 @@ pub fn removeListener(f: *Fonts, ctx: *anyopaque) void {
 }
 
 /// The fallback chain for a query: a registered family's faces ranked by
-/// style, else Fontconfig's coverage-trimmed sort, else the default
+/// style, else the system's chain (`Database.candidates`), else the default
 /// family's faces. Faces with an opsz axis are instanced at the query's
 /// size. May be empty. Valid until fonts are added or a font loads.
 pub fn chain(f: *Fonts, query: Query) error{OutOfMemory}![]const FontId {
@@ -449,10 +451,9 @@ const Load = struct {
             // Bytes that do not parse mark the font failed.
             f.cache.load(load.id, bytes, .owned) catch {};
         } else |_| f.cache.fail(load.id);
-        // A loaded font may have an opsz axis.
-        var sized = f.sized.valueIterator();
-        while (sized.next()) |c| f.gpa.free(c.*);
-        f.sized.clearRetainingCapacity();
+        // The chains resolve again: a system font is ranked and instanced
+        // from its own data now, and may have an opsz axis.
+        f.dropChains(null);
         f.serial +%= 1;
         for (f.listeners.items) |l| l.func(l.ctx);
     }

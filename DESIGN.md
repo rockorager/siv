@@ -1457,6 +1457,45 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     locale is set, since Fontconfig parses numbers with `localeconv`.
     `App.create` now takes 7.6 ms instead of 9.4 (median of 15, headless
     sway in an orb, ReleaseFast), and waits for Fontconfig alone.
+  - Fontconfig supplies the configuration and the font list; siv matches
+    (`text.fontconfig.Database.candidates`). Loading the database also
+    indexes the list: each face Fontconfig's sets hold, by every family
+    name it lists (ASCII case and spaces ignored, as Fontconfig compares
+    them), with its charset, languages, and styles. Named instances and
+    the static copy Fontconfig lists of a variable font's default
+    instance are left out (siv sets the axes itself), and so are formats
+    HarfBuzz cannot read (Type 1, PCF, BDF). A query is substituted by
+    Fontconfig's configuration (FcConfigSubstitute and the default
+    substitution), which keeps generic families, aliases (Arial to
+    Liberation Sans), languages, and the user's fonts.conf; the families
+    of the result are then ordered as FcFontSort orders them: strongly
+    bound families first (the one asked for, and same-binding aliases),
+    then the first families supporting the pattern's languages (each
+    face claims one language, as FcFontSort's nodes are faces), then
+    weakly bound aliases, then every other family; ties go to the family
+    whose closest face is closest to the style, then to font-list order
+    (Fontconfig's last tie-break, the font's version, put FreeSerif
+    ahead of Noto Sans CJK for CJK text, and is left out). Within
+    a family, faces are ranked by CSS font matching and instanced for
+    the style, as added families are (below), and a face joins the
+    chain only if it covers characters the faces before it do not, as
+    in Fontconfig's trimmed sort. A test checks the chains against
+    FcFontSort's on siv's test fonts. Pending faces are ranked and
+    instanced from what Fontconfig says of them (it has the wght and
+    wdth ranges of variable fonts but not slnt or ital); when a font
+    loads, chains resolve again from its own data. Fontconfig's
+    font-side rules (FcFontRenderPrepare: 90-synthetic.conf's
+    emboldening and shear, hinting) no longer apply. Before, the chain
+    was FcFontSort's: Fontconfig's style scoring instead of CSS's, named
+    instances instead of axes, and a sort of every installed face for
+    each new style. With 1,895 faces (Debian's Noto core, extra, and UI
+    sets, ReleaseFast, in an orb), indexing adds 3 to 5 ms to loading
+    the database (on its thread, which `App.create` joins), and a chain
+    takes 2.7 to 3.2 ms instead of 7.0 to 8.1 for FcFontSort and
+    FcFontRenderPrepare; the chains' first families are the same.
+    Alternatives: Fontconfig's sort with only the first
+    family re-ranked (two matchers); siv's own font scanning and
+    configuration (fonts.conf would have to be reimplemented).
   - HarfBuzz (built in, without FreeType, GLib, or ICU integration) for shaping.
   - SheenBidi for UAX #9; uucode plus siv's UAX #14 and UAX #29 scanners, gated
     on the official conformance suites.
@@ -1611,8 +1650,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - The font cache never reads files. Fonts enter with caller-supplied bytes or
     as pending Fontconfig sources; shaping skips pending fonts and lists the
     ones it wanted, and the text node loads them on the worker pool and
-    rebuilds its `ShapedParagraph`. A style's fallback chain is Fontconfig's
-    coverage-trimmed sort for the query. Shaping asks for the first
+    rebuilds its `ShapedParagraph`. A style's fallback chain is the
+    database's coverage-trimmed chain for the query. Shaping asks for the first
     pending font of a chain and for a fallback only when a grapheme
     needs it: asking for every pending font before the first was ready
     read the whole chain, CJK and color emoji included, to show "Hello"
@@ -1807,9 +1846,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     glyphs. Bold adds 1/24 em of stroke horizontally and vertically and
     widens advances by as much: FreeType's FT_GlyphSlot_Embolden
     strength, which Cairo and Pango use. The oblique shear is tan 14°,
-    CSS's default oblique angle. Fontconfig fonts keep Fontconfig's own
-    matching; its synthetic-style rules (FC_EMBOLDEN and the FC_MATRIX
-    shear from 90-synthetic.conf) become the same instance styles.
+    CSS's default oblique angle. Installed families are matched the same
+    way (above).
   - Optical size: every ready face with an opsz axis (added or from
     Fontconfig) is instanced at the run's size in logical pixels after
     text scaling, as CSS's font-optical-sizing does with CSS pixels,

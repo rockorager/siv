@@ -17,7 +17,7 @@ pub const SystemFonts = struct {
 
     pub fn init(gpa: std.mem.Allocator, io: std.Io) !*SystemFonts {
         const s = try gpa.create(SystemFonts);
-        s.* = .{ .gpa = gpa, .io = io, .cache = .init(gpa), .db = try text.fontconfig.Database.init() };
+        s.* = .{ .gpa = gpa, .io = io, .cache = .init(gpa), .db = try text.fontconfig.Database.init(gpa) };
         try s.cache.addLastResort();
         return s;
     }
