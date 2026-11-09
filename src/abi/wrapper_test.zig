@@ -13,7 +13,7 @@ test "wrapper layouts match the C headers" {
         .{ @import("test_api.zig").spec, sivtest, @import("sivtest_h") },
     }) |entry| {
         const s, const W, const H = entry;
-        @setEvalBranchQuota(100_000);
+        @setEvalBranchQuota(200_000);
         inline for (comptime s.decls) |d| {
             const Z = comptime @field(W, zigName(d.name()));
             const C = @field(H, d.name());

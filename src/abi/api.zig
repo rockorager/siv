@@ -330,6 +330,7 @@ const system = @import("api_system.zig");
 const navigation = @import("api_navigation.zig");
 const pickers = @import("api_pickers.zig");
 const display = @import("api_display.zig");
+const rich_text = @import("api_rich_text.zig");
 const intl = @import("api_intl.zig");
 const inspect = @import("api_inspect.zig");
 
@@ -2645,8 +2646,8 @@ pub const spec: schema.Schema = .{
     .source = "src/abi/api.zig",
     .doc = "siv: a GUI toolkit for Wayland.",
     .result = "siv_result",
-    .decls = &(decls ++ desktop.decls ++ dbus.decls ++ shell.decls ++ document.decls ++ actions.decls ++ undo.decls ++ settings.decls ++ spelling.decls ++ adaptive.decls ++ system.decls ++ navigation.decls ++ pickers.decls ++ display.decls ++ intl.decls ++ inspect.decls ++ testing.decls),
-    .functions = &(functions ++ desktop.functions ++ dbus.functions ++ shell.functions ++ document.functions ++ actions.functions ++ undo.functions ++ settings.functions ++ spelling.functions ++ adaptive.functions ++ system.functions ++ navigation.functions ++ pickers.functions ++ display.functions ++ intl.functions ++ inspect.functions ++ testing.functions),
+    .decls = &(decls ++ desktop.decls ++ dbus.decls ++ shell.decls ++ document.decls ++ actions.decls ++ undo.decls ++ settings.decls ++ spelling.decls ++ adaptive.decls ++ system.decls ++ navigation.decls ++ pickers.decls ++ display.decls ++ rich_text.decls ++ intl.decls ++ inspect.decls ++ testing.decls),
+    .functions = &(functions ++ desktop.functions ++ dbus.functions ++ shell.functions ++ document.functions ++ actions.functions ++ undo.functions ++ settings.functions ++ spelling.functions ++ adaptive.functions ++ system.functions ++ navigation.functions ++ pickers.functions ++ display.functions ++ rich_text.functions ++ intl.functions ++ inspect.functions ++ testing.functions),
 };
 
 /// Encodes a version as (major << 16) | (minor << 8) | patch.

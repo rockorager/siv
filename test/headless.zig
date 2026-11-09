@@ -49,6 +49,7 @@ test {
     _ = @import("widgets/navigation.zig");
     _ = @import("widgets/pickers.zig");
     _ = @import("widgets/display.zig");
+    _ = @import("widgets/rich_text.zig");
     _ = @import("abi/print.zig");
     _ = @import("abi/image.zig");
     _ = @import("abi/fonts.zig");

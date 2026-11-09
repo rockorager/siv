@@ -1,0 +1,108 @@
+[
+  {
+    "_type": "block",
+    "_key": "intro-title",
+    "style": "h1",
+    "markDefs": [],
+    "children": [{ "_type": "span", "_key": "s1", "text": "siv's rich text editor", "marks": [] }]
+  },
+  {
+    "_type": "block",
+    "_key": "intro",
+    "style": "normal",
+    "markDefs": [{ "_type": "link", "_key": "pt", "href": "https://portabletext.org" }],
+    "children": [
+      { "_type": "span", "_key": "s2", "text": "This is ", "marks": [] },
+      { "_type": "span", "_key": "s3", "text": "Portable Text", "marks": ["pt"] },
+      { "_type": "span", "_key": "s4", "text": " as EmDash writes it, edited as it reads: ", "marks": [] },
+      { "_type": "span", "_key": "s5", "text": "bold", "marks": ["strong"] },
+      { "_type": "span", "_key": "s6", "text": ", ", "marks": [] },
+      { "_type": "span", "_key": "s7", "text": "italic", "marks": ["em"] },
+      { "_type": "span", "_key": "s8", "text": ", ", "marks": [] },
+      { "_type": "span", "_key": "s9", "text": "underline", "marks": ["underline"] },
+      { "_type": "span", "_key": "s10", "text": ", ", "marks": [] },
+      { "_type": "span", "_key": "s11", "text": "struck", "marks": ["strike-through"] },
+      { "_type": "span", "_key": "s12", "text": ", and ", "marks": [] },
+      { "_type": "span", "_key": "s13", "text": "code", "marks": ["code"] },
+      { "_type": "span", "_key": "s14", "text": ".", "marks": [] }
+    ]
+  },
+  {
+    "_type": "block",
+    "_key": "keys-title",
+    "style": "h2",
+    "markDefs": [],
+    "children": [{ "_type": "span", "_key": "s15", "text": "Keys", "marks": [] }]
+  },
+  {
+    "_type": "block",
+    "_key": "k1",
+    "style": "normal",
+    "listItem": "bullet",
+    "level": 1,
+    "markDefs": [],
+    "children": [{ "_type": "span", "_key": "s16", "text": "Type \"# \", \"- \", \"1. \", \"> \", or \"``` \" at the start of a paragraph", "marks": [] }]
+  },
+  {
+    "_type": "block",
+    "_key": "k2",
+    "style": "normal",
+    "listItem": "bullet",
+    "level": 2,
+    "markDefs": [],
+    "children": [{ "_type": "span", "_key": "s17", "text": "Tab and Shift+Tab nest list items", "marks": [] }]
+  },
+  {
+    "_type": "block",
+    "_key": "k3",
+    "style": "normal",
+    "listItem": "number",
+    "level": 1,
+    "markDefs": [],
+    "children": [{ "_type": "span", "_key": "s18", "text": "Turn on Vim keys in the toolbar", "marks": [] }]
+  },
+  {
+    "_type": "block",
+    "_key": "k4",
+    "style": "normal",
+    "listItem": "number",
+    "level": 1,
+    "markDefs": [],
+    "children": [
+      { "_type": "span", "_key": "s19", "text": "Try ", "marks": [] },
+      { "_type": "span", "_key": "s20", "text": "ciw", "marks": ["code"] },
+      { "_type": "span", "_key": "s21", "text": ", ", "marks": [] },
+      { "_type": "span", "_key": "s22", "text": "dap", "marks": ["code"] },
+      { "_type": "span", "_key": "s23", "text": ", ", "marks": [] },
+      { "_type": "span", "_key": "s24", "text": ".", "marks": ["code"] },
+      { "_type": "span", "_key": "s25", "text": ", and ", "marks": [] },
+      { "_type": "span", "_key": "s26", "text": ":w", "marks": ["code"] }
+    ]
+  },
+  {
+    "_type": "block",
+    "_key": "quote",
+    "style": "blockquote",
+    "markDefs": [],
+    "children": [{ "_type": "span", "_key": "s27", "text": "Shift+Enter breaks a line\ninside a block.", "marks": [] }]
+  },
+  {
+    "_type": "code",
+    "_key": "code",
+    "language": "zig",
+    "code": "const doc = try editor.document(gpa);\ndefer gpa.free(doc);"
+  },
+  {
+    "_type": "image",
+    "_key": "shot",
+    "alt": "Blocks the editor does not edit are kept as they are",
+    "asset": { "_ref": "image-example-800x600-png" }
+  },
+  {
+    "_type": "block",
+    "_key": "end",
+    "style": "normal",
+    "markDefs": [],
+    "children": [{ "_type": "span", "_key": "s28", "text": "Ctrl+S saves.", "marks": [] }]
+  }
+]

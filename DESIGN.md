@@ -4678,8 +4678,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   table, and grid with selection models, menus, combo boxes, popovers, dialogs,
   tabs, split panes, sliders, spin buttons, progress, toasts, the
   navigation widgets: sidebars, header bars, and navigation stacks (D40),
-  date, time, color, font, and emoji pickers (D41), and spinners, chips,
-  avatars, cards, and suggestion lists. Theming uses
+  date, time, color, font, and emoji pickers (D41), spinners, chips,
+  avatars, cards, and suggestion lists, and a rich text editor. Theming uses
   compiled design
   tokens plus runtime overrides, follows the portal accent and color scheme, and
   includes a high-contrast variant (D29). Animation respects reduced motion.
@@ -5220,7 +5220,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       offset, so the line Enter opens after a heading stays put when
       typing starts. It used to show the style of the paragraph before
       it, then jumped to the node's own at the first keystroke. Lists
-      (bullets and numbering) are not built.
+      (bullets and numbering) are not built into the primitives; the
+      rich text editor below draws its own.
   - **Spinners, chips, avatars, cards, and suggestion lists** (November
     2026). Parcel, a mail client, drew all five from boxes in a kit of
     its own, as most applications would; they are stock widgets now
@@ -5310,7 +5311,70 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     widget interface (days since 1970, seconds since midnight, a font
     family id, an emoji's index); a color, four numbers, through
     `siv_color_chooser_get_color` and `siv_color_chooser_set_color`.
-- **Non-goal:** a full document model with embedded tables and images.
+  - **Rich text editor** (November 2026, a prototype): `siv_rich_text`
+    (`src/widgets/rich_text.zig`, `portable_text.zig`, `vim.zig`) edits
+    a Portable Text document WYSIWYG, with the usual keys and the mouse
+    or, with `SIV_RICH_TEXT_FLAGS_VIM`, with Vim's. Documents go in and
+    out as JSON (`siv_rich_text_set_document`,
+    `siv_rich_text_get_document`); a toolbar runs
+    `siv_rich_text_run` and follows `siv_rich_text_get_state`.
+    - What a document may hold is a schema: EmDash's preset (the CMS
+      its first user publishes with) or a subset the application names.
+      Portable Text's specification standardizes only blocks and spans;
+      the styles, decorators, link annotations, lists, `code` blocks
+      (`code`, `language`), and `image` objects are conventions Sanity
+      began and EmDash follows. The preset is normal text, h1 to h6,
+      quotes; strong, em, underline, strike-through, code, superscript,
+      and subscript (the span baselines above); links;
+      bulleted and numbered lists 8 levels deep; and code blocks. Other
+      block types (image, table, htmlBlock) are kept whole and shown as a
+      placeholder, which no edit but deleting it changes. Alternative:
+      a fixed schema (CMSs differ in what they allow).
+    - The editor node holds the document: siv keeps text, spans, and
+      paragraph styles through the user's edits, and after each edit
+      the widget reads the whole node back into its model (text,
+      blocks, marked runs), writes the canonical spans and paragraph
+      styles for it, and keeps the model before the edit for undo (its
+      own steps, by word or by Vim command; the editor's undo is off).
+      Reading the whole node costs time linear in the document per
+      edit: fine for articles. Alternative: a model of the widget's own
+      that drives the node (every edit the editor primitive already
+      does, from input methods to drags, would be done twice).
+    - A paragraph's block is a tag in its style: indent_end, in steps
+      of a hundred-thousandth of a pixel, indexes a registry of block
+      definitions (kind, style, list and level, the JSON it was read
+      from), so blocks keep their keys and fields the editor does not
+      edit. A link's color carries its annotation's index in its red
+      channel. Alternatives: tab_width as the tag (tabs in code blocks
+      need it); application data on spans and paragraphs (a primitive
+      siv does not have, the clean fix).
+    - A code block is a paragraph per line, consecutive lines of one
+      definition one block, so Vim's lines and Enter work in it; Enter
+      on its empty last line ends it, as in an empty list item. An
+      object is one no-break space with its placeholder drawn over it
+      (U+FFFC draws as a box in fonts without it).
+    - List markers, quote bars, code grounds, and placeholders are
+      drawn by a canvas behind the editor from its caret rectangles,
+      where the paragraphs' indents leave room. Alternative: a text
+      node per marker (a node per list item, laid out again on every
+      edit).
+    - Vim's keys: normal, insert, visual, and visual line modes;
+      counts; operators (d, c, y, >, <, g~, gu, gU) with motions and
+      text objects; a register that keeps marks and blocks; undo by
+      command; dot repeat; search; and a command line, which reports
+      `activate` with what was typed (`w` for `:w`). A line is a block;
+      j and k move by displayed lines, as gj and gk do.
+    - What the primitives lack, found building it: application data on
+      spans and paragraphs (the tags above); styling an empty last
+      paragraph (the widget keeps its block until text is typed); a
+      selection-change event (the widget reports `select` after each
+      input it handles); inline objects. A baseline shift was missing
+      too, and spans have one now.
+    - Not built: editing links and code block languages, showing images
+      and tables, text alignment (EmDash's `textAlign` is kept, not
+      shown), and turning the formatting keys off.
+- **Non-goal:** a full document model with embedded tables and images
+  (the rich text editor keeps them whole, as placeholders).
 
 ### D23. Lua 5.5
 
