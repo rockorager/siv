@@ -433,6 +433,21 @@ test "C API docview: mail under a dark theme shows light unless it allows dark, 
     }
 }
 
+/// The cursor the headless backend shows over the harness's window.
+fn cursor(h: *Harness) !@import("platform").CursorShape {
+    const Ctx = struct {
+        wid: @import("platform").WindowId,
+        out: @import("platform").CursorShape = .default,
+        fn run(c: ?*anyopaque, comp: *@import("compositor").Compositor) void {
+            const s: *@This() = @ptrCast(@alignCast(c));
+            s.out = comp.platform.headless.cursorOf(s.wid);
+        }
+    };
+    var c: Ctx = .{ .wid = (try h.win()).win.id };
+    try (try h.internal()).app.comp.call(&c, Ctx.run);
+    return c.out;
+}
+
 test "C API docview: :hover restyles what the pointer is over, and links show the pointer cursor" {
     var h: Harness = .{};
     try h.start(300, 160, null, null);
@@ -475,22 +490,6 @@ test "C API docview: :hover restyles what the pointer is over, and links show th
             try hh.settle();
         }
     }.f;
-    const cursor = struct {
-        fn f(hh: *Harness) !@import("platform").CursorShape {
-            const Ctx = struct {
-                wid: @import("platform").WindowId,
-                out: @import("platform").CursorShape = .default,
-                fn run(c: ?*anyopaque, comp: *@import("compositor").Compositor) void {
-                    const s: *@This() = @ptrCast(@alignCast(c));
-                    s.out = comp.platform.headless.cursorOf(s.wid);
-                }
-            };
-            var c: Ctx = .{ .wid = (try hh.win()).win.id };
-            try (try hh.internal()).app.comp.call(&c, Ctx.run);
-            return c.out;
-        }
-    }.f;
-
     // Off the link: neither is restyled.
     try move(&h, wid, 280, 150);
     var img = try h.capture();
@@ -517,6 +516,87 @@ test "C API docview: :hover restyles what the pointer is over, and links show th
     img = try h.capture();
     defer testing.allocator.free(img);
     try testing.expectEqual(0, Count.of(img, cell, 2));
+}
+
+test "C API docview: content scrolled under a resting pointer takes the hover and the cursor" {
+    var h: Harness = .{};
+    try h.start(300, 160, null, null);
+    defer h.stop();
+    var ev: Events = .{};
+    // Links 320 pixels apart in a document four windows tall.
+    const page =
+        \\<style>a:hover { color: rgb(220 0 0) }</style>
+        \\<body style="margin: 0">
+        \\<p style="margin: 0; line-height: 20px"><a href="https://example.com/top">Top</a></p>
+        \\<div style="height: 300px"></div>
+        \\<p style="margin: 0; line-height: 20px"><a href="https://example.com/bottom">Bottom</a></p>
+        \\<div style="height: 300px"></div>
+    ;
+    const root = A.siv_window_get_root(h.window);
+    var txn: t.Txn = .null;
+    try ok(T.siv_txn_begin(h.window, &txn));
+    const sc = T.siv_scroll(txn, root, .vertical);
+    _ = T.siv_set_layout(txn, sc, &.{ .size = @sizeOf(t.LayoutDesc), .width = .{ .unit = .fraction, .value = 1 }, .height = .{ .unit = .fraction, .value = 1 } });
+    _ = D.siv_docview(txn, sc, &.{
+        .source = page.ptr,
+        .source_count = page.len,
+        .kind = .html,
+        .color_scheme = .light,
+        .user_data = &ev,
+        .on_event = Events.onEvent,
+        .load = Events.onLoad,
+    });
+    try ok(T.siv_txn_commit(txn));
+    try waitLoaded(&h, &ev, 1);
+    const wid = (try h.win()).win.id;
+    const top = ((try (try h.win()).uiWin().semanticsTree()).find(.link, "Top") orelse return error.NoLink).bounds;
+    const at: [2]f32 = .{ top.x0 + 4, (top.y0 + top.y1) / 2 };
+    const reds = struct {
+        /// Pixels of the hovered links' red.
+        fn f(hh: *Harness) !usize {
+            const img = try hh.capture();
+            defer testing.allocator.free(img);
+            var n: usize = 0;
+            var i: usize = 0;
+            while (i < img.len) : (i += 4) {
+                if (img[i] > 150 and img[i + 1] < 60 and img[i + 2] < 60) n += 1;
+            }
+            return n;
+        }
+    }.f;
+
+    // Over the top link: hovered, the hand.
+    try h.inject(&.{.{ .pointer_motion = .{ .window = wid, .seat = 0, .x = at[0], .y = at[1] } }});
+    try h.settle();
+    try testing.expectEqual(@import("platform").CursorShape.pointer, try cursor(&h));
+    try testing.expect(try reds(&h) > 10);
+    // The wheel scrolls it out from under the pointer, which rests on
+    // the space below it: no hover, the arrow.
+    try h.inject(&.{.{ .scroll = .{ .window = wid, .seat = 0, .dy = 80, .source = .wheel } }});
+    try h.settle();
+    var ox: f32 = 0;
+    var oy: f32 = 0;
+    try ok(T.siv_scroll_get_offset(sc, &ox, &oy));
+    try testing.expect(oy > 20 and oy < 300);
+    try testing.expectEqual(@import("platform").CursorShape.default, try cursor(&h));
+    try testing.expectEqual(0, try reds(&h));
+    // The application scrolls the bottom link under it: hovered, the
+    // hand.
+    try ok(T.siv_txn_begin(h.window, &txn));
+    T.siv_scroll_by(txn, sc, .pixel, 0, 320 - oy);
+    try ok(T.siv_txn_commit(txn));
+    try h.settle();
+    try ok(T.siv_scroll_get_offset(sc, &ox, &oy));
+    try testing.expectEqual(@as(f32, 320), oy);
+    try testing.expectEqual(@import("platform").CursorShape.pointer, try cursor(&h));
+    try testing.expect(try reds(&h) > 10);
+    // And sets an offset that leaves the space under it.
+    try ok(T.siv_txn_begin(h.window, &txn));
+    T.siv_scroll_to(txn, sc, 0, 160);
+    try ok(T.siv_txn_commit(txn));
+    try h.settle();
+    try testing.expectEqual(@import("platform").CursorShape.default, try cursor(&h));
+    try testing.expectEqual(0, try reds(&h));
 }
 
 test "C API docview: no_author_styles ignores style sheets and style attributes" {

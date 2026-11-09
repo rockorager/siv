@@ -83,6 +83,11 @@ pub const State = struct {
     pointer: ?Point = null,
     /// Content moved under the pointer since the hover was last found.
     hover_stale: bool = false,
+    /// The node the last pointer move went to, and where in its
+    /// coordinates: content that moves under a resting pointer moves it
+    /// within the node, which hears of it as a move (`refreshHover`).
+    moved: NodeId = .none,
+    moved_at: Point = .zero,
     /// The node a press went to; it receives the pointer until release.
     capture: NodeId = .none,
     /// The scrollbar a primary press went to, which holds the pointer
@@ -476,15 +481,29 @@ fn collectFocusable(win: *const Window, id: NodeId, a: std.mem.Allocator, out: *
 }
 
 /// Content moved under a pointer that did not (the compositor scrolled
-/// it, D8): the hover goes to what is under the pointer now, as if it had
-/// moved. A captured pointer keeps its target.
+/// it, D8, or layout moved it): the hover goes to what is under the
+/// pointer now, as if it had moved, and the node under it hears a move
+/// when the pointer is somewhere else in it, so that a node that hovers
+/// parts of itself (a document's links) follows. A captured pointer keeps
+/// its target.
 pub fn refreshHover(win: *Window) void {
     const st = &win.input;
     st.hover_stale = false;
     const p = st.pointer orelse return;
     if (st.capture != .none) return;
-    updateHover(win, hitTest(win, p));
+    const target = hitTest(win, p);
+    updateHover(win, target);
+    hoverTooltip(win);
+    if (target != .none and (target != st.moved or !toLocal(win, target, p).eql(st.moved_at))) movePointer(win, target);
     updateCursor(win);
+}
+
+/// Bubbles a pointer move from `target`, remembering where it went.
+fn movePointer(win: *Window, target: NodeId) void {
+    const st = &win.input;
+    st.moved = target;
+    st.moved_at = toLocal(win, target, st.pointer.?);
+    _ = bubblePointer(win, target, .move, .primary);
 }
 
 fn updateHover(win: *Window, target: NodeId) void {
@@ -581,13 +600,14 @@ pub fn handle(win: *Window, event: *const platform.Event) void {
             const target = if (st.capture != .none) st.capture else hitTest(win, st.pointer.?);
             updateHover(win, if (st.capture != .none) hitTest(win, st.pointer.?) else target);
             if (st.capture == .none) hoverTooltip(win);
-            if (target != .none) _ = bubblePointer(win, target, .move, .primary);
+            if (target != .none) movePointer(win, target);
             if (st.selecting != .none and win.isLive(st.selecting)) editor.pointerDrag(win, st.selecting, st.pointer.?);
             updateCursor(win);
         },
         .pointer_leave => {
             updateHover(win, .none);
             st.pointer = null;
+            st.moved = .none;
             st.tooltip_hover = .none;
             requestTooltip(win, .none);
         },

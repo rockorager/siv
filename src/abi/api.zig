@@ -1061,7 +1061,7 @@ pub const decls = [_]Decl{
     enumeration("siv_pointer_phase", "What a pointer event reports.", &.{
         .{ .name = "down", .value = 0, .doc = "A button was pressed." },
         .{ .name = "up", .value = 1, .doc = "A button was released." },
-        .{ .name = "move", .value = 2, .doc = "The pointer moved." },
+        .{ .name = "move", .value = 2, .doc = "The pointer moved, or the content under a still pointer did (scrolling, layout), so that it is somewhere else in the node." },
         .{ .name = "enter", .value = 3, .doc = "The pointer entered the node." },
         .{ .name = "leave", .value = 4, .doc = "The pointer left the node." },
         .{ .name = "cancel", .value = 5, .doc = "The press was taken away (a touch sequence the compositor claimed, or a drag started)." },

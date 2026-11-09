@@ -759,7 +759,7 @@ pub fn needsFrame(win: *const Window) bool {
     // next frame (`semanticsTree`), so scrolling makes no extra frames.
     return win.state(.root).needs_layout or win.dirty.layers or win.dirty.props or win.viewport_dirty or win.settings_changed.any() or
         win.paint.anyDirty() or win.pending_input.items.len != 0 or win.input.tablet_pending.items.len != 0 or win.ime.dirty or win.pending_edits.items.len != 0 or
-        win.dnd.pending != null or win.commit_held or win.scopes_dirty or win.scroll_requests.items.len != 0;
+        win.dnd.pending != null or win.commit_held or win.scopes_dirty or win.scroll_requests.items.len != 0 or win.input.hover_stale;
 }
 
 /// Whether to keep this frame's changes for a later commit: the window
@@ -896,7 +896,8 @@ pub fn frame(win: *Window) Error!void {
     // The application's scrolls go from where layout left the nodes.
     try input_mod.applyScrollRequests(win);
     const switched = win.variants_switched;
-    if (laid_out or win.app_scrolled) {
+    const app_scrolled = win.app_scrolled;
+    if (laid_out or app_scrolled) {
         win.app_scrolled = false;
         win.checkViewports();
         win.checkCulled();
@@ -924,7 +925,7 @@ pub fn frame(win: *Window) Error!void {
     // change shows in the next one. So do focus handlers when a variant
     // hid the focused node or showed a modal one (D39).
     if (switched) win.input.afterCommit(win);
-    if (laid_out or win.input.hover_stale) {
+    if (laid_out or app_scrolled or win.input.hover_stale) {
         input_mod.refreshHover(win);
         // So does a drag's target.
         dnd_mod.refresh(win);

@@ -2530,6 +2530,15 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     window-wide override wins over every node, for busy states. The UI
     resolves it after pointer input, commits, and frames (the tree can
     change under a still pointer) and sends the platform a change only.
+  - Content that moves under a still pointer (layout, the compositor's
+    scrolling and zooming, the application's scrolls) moves the hover
+    as motion would, at the end of the frame (D5): the nodes the pointer
+    leaves and enters hear so, and the node under it hears a move when
+    the pointer is somewhere else in it, so a node that hovers parts of
+    itself (a document's links, their cursor) follows. Found in parcel's
+    reader on sway: a wheel scroll alone made no UI frame, and the
+    docview under the pointer, still the same node, heard nothing, so a
+    link scrolled under the pointer showed the arrow until it moved.
   - The platform keeps a cursor per window and shows it on every
     pointer enter: through cursor-shape-v1 when the compositor offers it
     (version 2's shapes fall back to copy and move on version 1),
@@ -7065,10 +7074,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - **Hover.** `:hover` matches the element under the pointer and its
     ancestors (in the DOM). Base styles, the box tree, and layout never
     depend on it: when the pointer moves to another element
-    (`Document.setHover`, from the node's pointer events, and after
-    layout moves content), the cascade styles again only what the
-    change can reach (`Cascade.restyleHover`): the elements entering or
-    leaving the hovered chain, their descendants when inheritance
+    (`Document.setHover`, from the node's pointer events, including the
+    move it hears when scrolling or layout moves content under a still
+    pointer, and after its own layout), the cascade styles again only
+    what the change can reach (`Cascade.restyleHover`): the elements
+    entering or leaving the hovered chain, their descendants when inheritance
     carries a change or a `:hover` sits in an ancestor compound
     (`.menu:hover li`), and the whole document when one sits among
     siblings or inside `:is()`, `:not()`, or `:has()`; a document with
