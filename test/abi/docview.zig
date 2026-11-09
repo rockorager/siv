@@ -519,6 +519,38 @@ test "C API docview: :hover restyles what the pointer is over, and links show th
     try testing.expectEqual(0, Count.of(img, cell, 2));
 }
 
+test "C API docview: no_author_styles ignores style sheets and style attributes" {
+    const source =
+        \\<style>div { height: 20px; background: rgb(0 0 200) }</style>
+        \\<body style="margin: 0"><p style="margin: 0; height: 30px; background: rgb(200 0 0)">x</p><div></div>
+    ;
+    const red: [3]u8 = .{ 200, 0, 0 };
+    const blue: [3]u8 = .{ 0, 0, 200 };
+    for ([_]bool{ false, true }) |off| {
+        var h: Harness = .{};
+        try h.start(100, 60, null, null);
+        defer h.stop();
+        var ev: Events = .{};
+        _ = try build(&h, &ev, .html, source, .{ .no_author_styles = off }, "file:///");
+        try waitLoaded(&h, &ev, 1);
+        const img = try h.capture();
+        defer testing.allocator.free(img);
+        if (!off) {
+            // The paragraph's background from its attribute, the div's
+            // from the sheet.
+            try testing.expectEqual(red, img[(15 * 100 + 90) * 4 ..][0..3].*);
+            try testing.expectEqual(blue, img[(40 * 100 + 90) * 4 ..][0..3].*);
+        } else {
+            // Neither anywhere.
+            var i: usize = 0;
+            while (i < img.len) : (i += 4) {
+                try testing.expect(!std.mem.eql(u8, img[i..][0..3], &red));
+                try testing.expect(!std.mem.eql(u8, img[i..][0..3], &blue));
+            }
+        }
+    }
+}
+
 test "C API docview: flags change in place, keeping the place, open quotes, selection, and images" {
     var h: Harness = .{};
     try h.start(300, 150, null, null);

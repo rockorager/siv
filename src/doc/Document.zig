@@ -665,7 +665,7 @@ pub fn styleAndBuild(d: *Document, media: css.media.Env) Error!void {
     const a = d.arena.allocator();
     d.cascade = cascade_mod.Cascade.init(d.gpa, a, &d.dom, &d.store);
     const c = &d.cascade.?;
-    c.env = .{ .media = media, .font_size = d.options.font_size, .untrusted = d.options.untrusted };
+    c.env = .{ .media = media, .font_size = d.options.font_size, .untrusted = d.options.untrusted, .author_styles = d.options.author_styles };
     try c.prepare();
     // Sheets in document order, each after the sheets it imports (CSS
     // Cascade 4, 6.4); imports found only later go last.

@@ -103,6 +103,9 @@ pub const Env = struct {
     font_size: f32 = 16,
     /// Untrusted HTML (email): nothing is positioned over the page.
     untrusted: bool = false,
+    /// Style attributes apply (`Document.Options.author_styles`; the
+    /// document's own sheets are left out where they are collected).
+    author_styles: bool = true,
 };
 
 /// The styles of a document's elements.
@@ -917,7 +920,11 @@ pub const Cascade = struct {
         c.hint_decls.clearRetainingCapacity();
         var inline_text: []const u8 = "";
         if (element_decls) {
-            if (d.attr(id, .style)) |v| inline_text = v;
+            if (c.env.author_styles) if (d.attr(id, .style)) |v| {
+                inline_text = v;
+            };
+            // Presentational hints (bgcolor, width) are neither sheets
+            // nor style attributes, and stay.
             c.hint_parent = parent_id;
             try c.hints(id);
             if (inline_text.len > 0) try css.sheet.parseInline(c.arena, inline_text, &c.inline_decls, &c.inline_customs);
