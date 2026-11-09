@@ -1074,6 +1074,7 @@ pub const Txn = struct {
         if (!finite(s.offset.x) or !finite(s.offset.y)) return error.InvalidArgument;
         if (!finite(s.min_zoom) or !finite(s.max_zoom) or !finite(s.zoom) or !(s.min_zoom > 0) or s.max_zoom < s.min_zoom) return error.InvalidArgument;
         try t.reserve();
+        if (!n.data.scroll.offset.eql(s.offset) or n.data.scroll.zoom != s.zoom) try t.request(.{ .node = id, .what = .clamp });
         t.touch(id);
         const old = n.data.scroll;
         n.data.scroll = s;

@@ -592,7 +592,8 @@ pub const ScrollAxis = enum(u8) { vertical, horizontal, both };
 pub const Scroll = struct {
     axis: ScrollAxis = .vertical,
     /// Distance scrolled from the start (logical: in RTL, x grows to the
-    /// left), in zoomed pixels. Clamped to the content at layout.
+    /// left), in zoomed pixels. Clamped to the content after layout
+    /// (`ScrollRequest.clamp`).
     offset: Point = .zero,
     /// Zoom range for pinches and Ctrl+wheel (D16); equal values (the
     /// default) never zoom.
@@ -629,6 +630,10 @@ pub const ScrollRequest = struct {
         by: struct { unit: ScrollUnit, amount: Point, key: ?HeldKey = null },
         edge: ScrollEdge,
         into_view: ScrollAlign,
+        /// The offset clamped to the content once laid out: one the
+        /// application set (content added with it makes room first), or
+        /// one a layout left past the end.
+        clamp,
     },
 };
 

@@ -2016,7 +2016,7 @@ pub const functions = [_]Function{
     setter("siv_scroll_zoom_to", "Zooms a scroll node's content to a scale, clamped to its zoom range, keeping the content at the viewport's top-left corner in place.", &.{
         .{ .name = "zoom", .type = .f32, .doc = "The scale; 1 shows the content at its size." },
     }),
-    setter("siv_scroll_to", "Scrolls a scroll node to an offset from the start (logical: in right-to-left layouts x grows leftward), clamped to the content. To scroll from where the node is, use siv_scroll_by, siv_scroll_to_edge, or siv_scroll_into_view: an offset the application keeps to scroll from goes stale when the user scrolls, drags the scrollbar, or assistive technology sets it (D47).", &.{
+    setter("siv_scroll_to", "Scrolls a scroll node to an offset from the start (logical: in right-to-left layouts x grows leftward), clamped to the content once laid out, so content added in the same transaction makes room for it; content that grows later leaves the clamped offset where it is. To scroll from where the node is, use siv_scroll_by, siv_scroll_to_edge, or siv_scroll_into_view: an offset the application keeps to scroll from goes stale when the user scrolls, drags the scrollbar, or assistive technology sets it (D47).", &.{
         .{ .name = "x", .type = .f32, .doc = "Horizontal offset." },
         .{ .name = "y", .type = .f32, .doc = "Vertical offset." },
     }),
@@ -2133,7 +2133,7 @@ pub const functions = [_]Function{
         .{ .name = "node", .type = ref("siv_node"), .doc = "The node." },
         .{ .name = "rect", .type = out(ref("siv_rect")), .doc = "The box." },
     }),
-    call("siv_scroll_get_offset", "A scroll node's offset as siv_scroll_to takes it (from the start, logical: in right-to-left layouts x grows leftward; in zoomed pixels), to save where the reader was and restore it later. It is where the node is, not where it is heading: the offset the compositor last reported (D8), so during a glide or a fling a point on the way, at most a frame old. Scrolls the application asks for count once siv applies them: siv_scroll_to's at once; siv_scroll_by's, siv_scroll_to_edge's, and siv_scroll_into_view's at the frame that applies them, as their target until the compositor's first report of the glide there. Clamped to the content as last laid out (an offset set past the end reads as the end), and 0 before the first layout; otherwise the offset the viewport event reports.", &.{
+    call("siv_scroll_get_offset", "A scroll node's offset as siv_scroll_to takes it (from the start, logical: in right-to-left layouts x grows leftward; in zoomed pixels), to save where the reader was and restore it later. It is where the node is, not where it is heading: the offset the compositor last reported (D8), so during a glide or a fling a point on the way, at most a frame old. Scrolls the application asks for count once siv applies them: siv_scroll_to's at once; siv_scroll_by's, siv_scroll_to_edge's, and siv_scroll_into_view's at the frame that applies them, as their target until the compositor's first report of the glide there. Clamped to the content as last laid out (an offset set past the end reads as the end, and stays there when the content grows later), and 0 before the first layout: the offset the viewport event reports.", &.{
         .{ .name = "node", .type = ref("siv_node"), .doc = "A scroll node." },
         .{ .name = "x", .type = out(.f32), .doc = "Horizontal offset." },
         .{ .name = "y", .type = out(.f32), .doc = "Vertical offset." },

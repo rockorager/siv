@@ -487,7 +487,7 @@ test "scroll content scrolls on the compositor; offsets are logical" {
         try testing.expectEqual(@as(f32, 410), f.comp.get(li + 1).offset.y);
         // A stale report (from before the scroll_to) is ignored.
         try f.win.handleEvent(&.{ .scrolled = .{ .window = 0, .layer = li + 1, .offset = .{ .x = 0, .y = 3 }, .seq = 1 } });
-        try testing.expectEqual(@as(f32, 1000), f.win.node(sc).data.scroll.offset.y);
+        try testing.expectEqual(@as(f32, 410), f.win.node(sc).data.scroll.offset.y);
     }
 }
 

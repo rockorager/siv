@@ -934,15 +934,16 @@ pub fn frame(win: *Window) Error!void {
     win.stats.frames += 1;
 }
 
-/// The node's visible region: its logical scroll offset and the size of
-/// its content box.
+/// The node's visible region: its logical scroll offset, clamped to the
+/// content as last laid out, and the size of its content box.
 pub fn viewportOf(win: *const Window, id: NodeId) node_mod.Viewport {
     const n = win.node(id);
     const s = win.state(id);
     const pad = n.layout.padding;
+    const off = paint_mod.clampedScroll(win, id);
     return .{
-        .x = n.data.scroll.offset.x,
-        .y = n.data.scroll.offset.y,
+        .x = off.x,
+        .y = off.y,
         .width = @max(0, s.size.w - pad.horizontal()),
         .height = @max(0, s.size.h - pad.vertical()),
         .zoom = n.data.scroll.zoom,
@@ -965,6 +966,9 @@ pub fn deliverViewports(win: *Window) void {
         if (!win.isShown(id) or win.state(id).final == null) continue;
         const v = win.viewportOf(id);
         const s = win.state(id);
+        // An offset past the content waits for the layout, which may
+        // make room for it (`checkViewports` tells it after).
+        if (s.needs_layout and (v.x != win.node(id).data.scroll.offset.x or v.y != win.node(id).data.scroll.offset.y)) continue;
         if (s.viewport) |old| if (std.meta.eql(old, v)) continue;
         s.viewport = v;
         input_mod.callHandler(win, id, .viewport, &.{ .viewport = v });
@@ -994,7 +998,8 @@ fn deliverSettings(win: *Window) void {
     }
 }
 
-/// After layout: a viewport that changed size is told at the next frame.
+/// After layout: a viewport that changed size, or whose offset was
+/// clamped or waited for the layout, is told at the next frame.
 fn checkViewports(win: *Window) void {
     for (win.viewports.items) |id| {
         if (!win.isLive(id) or win.node(id).kind != .scroll or !win.isShown(id)) continue;
@@ -1003,7 +1008,7 @@ fn checkViewports(win: *Window) void {
             continue;
         };
         const v = win.viewportOf(id);
-        if (old.width != v.width or old.height != v.height) win.viewport_dirty = true;
+        if (!std.meta.eql(old, v)) win.viewport_dirty = true;
     }
     if (win.viewport_dirty) win.requestFrame();
 }

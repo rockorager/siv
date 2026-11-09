@@ -190,6 +190,9 @@ fn compute(win: *Window, id: NodeId, c: Constraints) Error!Size {
         win.markPaint(id);
         if (s.own_layer != @import("paint.zig").no_layer) win.dirty.props = true;
     }
+    // An offset the new content or viewport leaves past the end, as the
+    // compositor clamps it.
+    if (n.kind == .scroll and !paint_mod.clampedScroll(win, id).eql(n.data.scroll.offset)) try win.scroll_requests.append(win.gpa, .{ .node = id, .what = .clamp });
     s.needs_layout = false;
     s.final = c;
     s.cache = .{ .{ .c = c, .size = size }, if (s.cache[0]) |e| (if (e.c.eql(c)) s.cache[1] else e) else s.cache[1] };

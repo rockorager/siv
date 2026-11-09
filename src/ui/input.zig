@@ -890,7 +890,8 @@ pub fn scrollBy(win: *Window, id: NodeId, delta: Point) void {
     win.requestFrame();
 }
 
-/// After layout: the application's relative scrolls (`siv_scroll_by`,
+/// After layout: offsets clamped to the new content, and the
+/// application's relative scrolls (`siv_scroll_by`,
 /// `siv_scroll_to_edge`, `siv_scroll_into_view`, D47), in order, from
 /// the offsets the UI knows, which each moves as it goes. The compositor
 /// gets them as `scroll_by`, relative to wherever it has the offset by
@@ -903,6 +904,9 @@ pub fn applyScrollRequests(win: *Window) error{OutOfMemory}!void {
         if (!win.isLive(r.node) or !win.isShown(r.node) or win.state(r.node).final == null) continue;
         switch (r.what) {
             .into_view => |a| try scrollIntoView(win, r.node, a),
+            .clamp => if (win.node(r.node).kind == .scroll) {
+                win.node(r.node).data.scroll.offset = paint.clampedScroll(win, r.node);
+            },
             .by, .edge => {
                 const n = win.node(r.node);
                 if (n.kind != .scroll or n.data.scroll.sets != r.sets) continue;
@@ -935,7 +939,7 @@ pub fn applyScrollRequests(win: *Window) error{OutOfMemory}!void {
                         if (push.x != 0) to.x = if (push.x > 0) max.x else 0;
                         if (push.y != 0) to.y = if (push.y > 0) max.y else 0;
                     },
-                    .into_view => unreachable,
+                    .into_view, .clamp => unreachable,
                 }
                 try scrollFor(win, r.node, to, max, push, held);
             },

@@ -128,27 +128,17 @@ test "gestures reach handlers; pinches zoom scroll nodes on the compositor or th
     try testing.expectEqual(content, log.gestures[2].target);
 }
 
-const Viewport = struct {
-    y: f32 = -1,
-
-    fn on(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
-        const v: *Viewport = @ptrCast(@alignCast(ud.?));
-        v.y = ev.y;
-        return .handled;
-    }
-};
-
 test "a reader scrolls by lines, pages, and edges, and shows a node, keeping no offset of its own" {
     var h: Harness = .{};
     try h.start(200, 100, null, null);
     defer h.stop();
-    var view: Viewport = .{};
+    var view: Heard = .{};
     const root = c.siv_window_get_root(h.window);
     var txn: t.Txn = .null;
     try ok(c.siv_txn_begin(h.window, &txn));
     const sc = c.siv_scroll(txn, root, .vertical);
     c.siv_set_layout(txn, sc, &.{ .size = @sizeOf(t.LayoutDesc), .width = px(200), .height = px(100) });
-    c.siv_on(txn, sc, .viewport, Viewport.on, null, &view);
+    c.siv_on(txn, sc, .viewport, Heard.on, null, &view);
     const column = c.siv_box(txn, sc);
     // Ten 50 px blocks: 500 px of content, 400 of offset.
     var blocks: [10]t.Node = undefined;
@@ -189,19 +179,47 @@ test "a reader scrolls by lines, pages, and edges, and shows a node, keeping no 
         }
         try ok(c.siv_txn_commit(txn));
         try h.settle();
-        try testing.expectEqual(step[1], view.y);
+        try testing.expectEqual(step[1], view.last());
         // The node reports where it is, for saving and restoring.
         try ok(c.siv_scroll_get_offset(sc, &ox, &oy));
         try testing.expectEqual(@as(f32, 0), ox);
         try testing.expectEqual(step[1], oy);
     }
-    // An offset set comes back once laid out, clamped to the content.
+    // An offset set comes back once laid out, clamped to the content,
+    // and the viewport handler hears it so.
     try ok(c.siv_txn_begin(h.window, &txn));
     c.siv_scroll_to(txn, sc, 0, 1000);
     try ok(c.siv_txn_commit(txn));
     try h.settle();
     try ok(c.siv_scroll_get_offset(sc, &ox, &oy));
     try testing.expectEqual(@as(f32, 400), oy);
+    try testing.expectEqual(@as(f32, 400), view.last());
+    // Content that grows later leaves it there.
+    var more: [15]t.Node = undefined;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    for (more[0..5]) |*b| {
+        b.* = c.siv_box(txn, column);
+        c.siv_set_layout(txn, b.*, &.{ .size = @sizeOf(t.LayoutDesc), .height = px(50) });
+    }
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try ok(c.siv_scroll_get_offset(sc, &ox, &oy));
+    try testing.expectEqual(@as(f32, 400), oy);
+    try testing.expectEqual(@as(f32, 400), view.last());
+    // Content added with the offset makes room for it first: the
+    // handler hears only where it lands.
+    const heard = view.n;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_scroll_to(txn, sc, 0, 1000);
+    for (more[5..]) |*b| {
+        b.* = c.siv_box(txn, column);
+        c.siv_set_layout(txn, b.*, &.{ .size = @sizeOf(t.LayoutDesc), .height = px(50) });
+    }
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try ok(c.siv_scroll_get_offset(sc, &ox, &oy));
+    try testing.expectEqual(@as(f32, 1000), oy);
+    try testing.expectEqualSlices(f32, &.{1000}, view.ys[heard..view.n]);
     try testing.expectEqual(t.Result.error_invalid_argument, c.siv_scroll_get_offset(column, &ox, &oy));
     try testing.expectEqual(t.Result.error_invalid_argument, c.siv_scroll_get_sizes(column, &vsize, &csize));
     try ok(c.siv_txn_begin(h.window, &txn));
@@ -228,7 +246,7 @@ test "a reader scrolls by lines, pages, and edges, and shows a node, keeping no 
     c.siv_set_scroll_flags(txn, sc, @bitCast(@as(u32, 2)));
     try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_commit(txn));
     try h.settle();
-    try testing.expectEqual(@as(f32, 0), view.y);
+    try testing.expectEqual(@as(f32, 0), view.last());
 
     // A gutter: the content ends before the scrollbar's room.
     try ok(c.siv_txn_begin(h.window, &txn));

@@ -661,6 +661,16 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     `siv_scroll_into_view`, D47), both smooth (below). Only offsets the
     application sets with `siv_scroll_to`, and scrollbar drags (D47),
     are `scroll_to`.
+  - The offset the UI keeps is clamped to the content as the compositor
+    clamps its own (`ScrollRequest.clamp`), after layout: one
+    `siv_scroll_to` set past the end, so that content added in the same
+    transaction makes room for it first, and one that smaller content
+    or a larger viewport leaves past the end. Content that grows later
+    leaves a clamped offset where it is, on both sides. The viewport
+    event and `siv_scroll_get_offset` report it clamped to the content
+    as last laid out; at the start of a frame, an offset past the end
+    of a node that is to be laid out is told after the layout instead,
+    clamped to the new content.
     Corrections that
     keep a long text in place while its metrics change (D13) and the
     scrolls that show an editor's caret (D15) are `scroll_by` as well,
@@ -9633,8 +9643,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     knows, so the current position the compositor last reported, a
     point on the way during a glide or fling rather than its target
     (the target only from the frame that asks for it until the glide's
-    first report), clamped to the content as last laid out, since an
-    offset `siv_scroll_to` set past the end stays in the tree. Reading
+    first report), clamped to the content as last laid out. Reading
     the compositor's own offset across threads would save at most a
     frame. `siv_scroll_get_sizes` gives the viewport and the zoomed
     content size of the last layout, from which the largest offset

@@ -1277,10 +1277,16 @@ pub fn scrollTranslation(win: *const Window, nid: NodeId) Point {
     const n = win.node(nid);
     if (scrollsText(n)) return .{ .x = 0, .y = std.math.clamp(win.state(nid).editor_scroll_y, 0, maxScroll(win, nid).y) };
     if (n.kind != .scroll) return .zero;
+    const off = clampedScroll(win, nid);
+    return .{ .x = if (win.state(nid).rtl) maxScroll(win, nid).x - off.x else off.x, .y = off.y };
+}
+
+/// A scroll node's logical offset clamped to its content as last laid
+/// out (0 before its first layout), as the compositor clamps it.
+pub fn clampedScroll(win: *const Window, nid: NodeId) Point {
     const max = maxScroll(win, nid);
-    const off = n.data.scroll.offset;
-    const lx = std.math.clamp(off.x, 0, max.x);
-    return .{ .x = if (win.state(nid).rtl) max.x - lx else lx, .y = std.math.clamp(off.y, 0, max.y) };
+    const off = win.node(nid).data.scroll.offset;
+    return .{ .x = std.math.clamp(off.x, 0, max.x), .y = std.math.clamp(off.y, 0, max.y) };
 }
 
 /// The logical offset for a physical one reported by the compositor.

@@ -2006,14 +2006,11 @@ pub export fn siv_scroll_get_offset(node: t.Node, x: ?*f32, y: ?*f32) t.Result {
             const dy = try runtime.out(f32, yp);
             const uw = w.uiWin();
             if (uw.node(id).kind != .scroll) return error.InvalidArgument;
-            // What the compositor last reported, or the UI last applied
-            // (`Window.scrolled`), as viewport handlers hear it, clamped
-            // as the compositor clamps it (`paint.scrollTranslation`): an
-            // offset set past the end stays in the tree.
+            // As viewport handlers hear it: clamped to the content as
+            // last laid out.
             const v = uw.viewportOf(id);
-            const s = uw.state(id);
-            dx.* = std.math.clamp(v.x, 0, @max(0, s.content.w * v.zoom - v.width));
-            dy.* = std.math.clamp(v.y, 0, @max(0, s.content.h * v.zoom - v.height));
+            dx.* = v.x;
+            dy.* = v.y;
         }
     }.f(node, x, y));
 }
