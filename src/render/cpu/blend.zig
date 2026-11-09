@@ -20,6 +20,18 @@ pub inline fn srcOver(d: *Pixel, s: Pixel, cov16: u32) void {
     d.* = color.narrow(sv + color.div65535v(dv * @as(V4, @splat(inv))));
 }
 
+/// Source-over with a coverage per channel (`cov`: red, green, blue,
+/// alpha, 0..65535), for text whose contrast correction differs by
+/// channel (D11): each color channel blends with its own coverage, alpha
+/// with `cov[3]`. Equal coverages give exactly `srcOver`.
+pub inline fn srcOverComponent(d: *Pixel, s: Pixel, cov: V4) void {
+    const sv: V4 = s;
+    const scaled = color.div65535v(sv * cov);
+    const inv = @as(V4, @splat(65535)) - color.div65535v(@as(V4, @splat(sv[3])) * cov);
+    const dv: V4 = d.*;
+    d.* = color.narrow(scaled + color.div65535v(dv * inv));
+}
+
 /// d = lerp(d, s, cov16 / 65535).
 pub inline fn lerp(d: *Pixel, s: Pixel, cov16: u32) void {
     const sv: V4 = s;

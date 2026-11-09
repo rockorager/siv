@@ -1036,9 +1036,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - Golden images live in test/golden/render and are compared with a small
     tolerance (every channel within 3/255, at most 0.5% of pixels off by more
     than 1) to absorb cross-CPU rounding.
-  - Vulkan 1.3 (dynamic rendering, synchronization2): instanced quads, analytic
-    rounded rectangles and shadows, glyph and image atlases. Presentation uses
-    the standard Vulkan Wayland swapchain.
+  - Vulkan 1.3 (dynamic rendering, synchronization2) with dual-source
+    blending (text blends each channel with its own coverage, D11):
+    instanced quads, analytic rounded rectangles and shadows, glyph and
+    image atlases. Presentation uses the standard Vulkan Wayland
+    swapchain.
   - Vulkan frames (`src/render/vulkan`) mirror CPU frames: the same prepare
     walk (transforms, clip bounds, culling) produces one instance per draw
     in a storage buffer, drawn as instanced quads by one fragment shader
@@ -1162,18 +1164,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     back to Vulkan once a device can be created again. Device selection on
     multi-GPU systems follows dma-buf feedback.
   - Device selection: Vulkan 1.3 with dynamic rendering, synchronization2,
-    Wayland presentation, and the FP16 and FP32 render formats. The
-    compositor's main device from linux-dmabuf default feedback (the
-    platform binds `zwp_linux_dmabuf_v1` version 4 only for it) wins,
-    matched through VK_EXT_physical_device_drm, so buffers never cross
-    GPUs; then discrete, integrated, and virtual GPUs. CPU implementations
-    (lavapipe) are never chosen by default: the CPU renderer is faster
-    there and is the oracle. `Compositor.Options.renderer` forces the CPU
-    renderer or accepts CPU implementations (tests). Verified on sway with
-    a GPU renderer and lavapipe installed beside RADV: feedback names
-    226:128 (renderD128), which RADV matches (score 19 against
-    lavapipe's 1); on pixman sway RADV cannot present and lavapipe,
-    accepted in tests, is chosen. Not tried on a machine with two GPUs.
+    dual-source blending, Wayland presentation, and the FP16 and FP32 render
+    formats. The compositor's main device from linux-dmabuf default feedback
+    (the platform binds `zwp_linux_dmabuf_v1` version 4 only for it) wins,
+    matched through VK_EXT_physical_device_drm, so buffers never cross GPUs;
+    then discrete, integrated, and virtual GPUs. CPU implementations
+    (lavapipe) are never chosen by default: the CPU renderer is faster there
+    and is the oracle. `Compositor.Options.renderer` forces the CPU renderer
+    or accepts CPU implementations (tests). Verified on sway with a GPU
+    renderer and lavapipe installed beside RADV: feedback names 226:128
+    (renderD128), which RADV matches (score 19 against lavapipe's 1); on
+    pixman sway RADV cannot present and lavapipe, accepted in tests, is
+    chosen. Not tried on a machine with two GPUs.
   - The device is one per process and is created on a thread of its own
     once the first Wayland window has shown its first frame (10 ms to
     find none, 116 ms on lavapipe with pipelines, longer than the
@@ -1321,12 +1323,25 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **Requirement:** correct compositing, HDR and wide-gamut output.
 - **Decision:** linear-light working space (FP16 on Vulkan, 16-bit on CPU) and
   `wp_color_management_v1` for HDR and wide gamut. Text coverage gets a
-  perceptual correction, because users compare text with gamma-space Linux text.
-  - The text correction maps coverage so that linear blending reproduces
-    gamma-space blending against a contrasting background (white behind
-    dark text; #181818, a dark theme's background, behind light text),
-    from a table per foreground luminance (16 levels). Color glyphs are
-    not corrected.
+  perceptual correction, because users compare text with gamma-space text
+  (Core Text and Linux toolkits blend text in sRGB-encoded space).
+  - The text correction maps coverage, per color channel, so that linear
+    blending reproduces blending of the encoded values over the text's
+    background: a table per encoded foreground and background channel
+    value (16 levels each, 256 tables). Each channel blends with its own
+    coverage and alpha with the largest; on Vulkan through dual-source
+    blending (D10). A glyph run's background is the opaque solid
+    rectangle or rounded rectangle drawn under it in the same buffer,
+    found by the display list builder (D9); without one, text assumes a
+    contrasting background (white behind dark text; #181818, a dark
+    theme's background, behind light text). Color glyphs are not
+    corrected.
+  - One table per foreground luminance used to serve every channel and
+    background. At half coverage it put white text on #2563eb 5–18
+    levels below sRGB blending (green channel), on #3a3a3c 11 below, and
+    #2563eb text on white 19 above in red (thinner colored text); the
+    per-channel tables over the found background land within the
+    16-level quantization.
   - Light text first assumed black behind it. On real dark backgrounds
     that thinned it by about a tenth at half coverage. Measured against a
     GTK 4.22 app at 11–13 px (D14), GTK's light and dark text carry the
@@ -1878,11 +1893,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
 - **Requirement:** identical CPU and Vulkan output, color glyphs, variable fonts.
 - **Decision:** glyph outlines and COLRv1 paint go through HarfBuzz's draw and
   paint APIs into siv's coverage rasterizer, shared with paths. CBDT/sbix emoji
-  decode through the image module (D19). Glyphs are cached by face, glyph, pixel size, and 1/4-
-  pixel horizontal phase; Vulkan uploads CPU-rasterized coverage. Without
-  hinting, baselines (and ideally x-heights) snap to pixels, small sizes get
-  slight stem darkening, and text coverage gets a contrast correction. No LCD
-  subpixel antialiasing.
+  decode through the image module (D19). Glyphs are cached by face, glyph,
+  pixel size, 1/4-pixel horizontal phase, and dilation class; Vulkan
+  uploads CPU-rasterized coverage. Without hinting, baselines and x-heights
+  snap to pixels, outlines are dilated as macOS's font smoothing dilates
+  them, and text coverage gets a contrast correction (D11). No LCD subpixel
+  antialiasing.
   - The glyph cache belongs to the renderer and keys on the text engine's
     face content hash, so it never needs invalidation when faces are
     recreated. Color glyphs also key on the foreground color.
@@ -1891,10 +1907,32 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     arrive through the same paint callbacks and decode through the D19
     image module (`render_cpu` imports `image`), straight to their device
     size, box-filtered in linear light; one PNG decoder serves both.
-  - At 32 px and below the x-height is scaled vertically to a whole pixel,
-    rounding up from a fraction of 0.375 as FreeType's autohinter does
-    (−8% to +12%). Stem darkening adds 0.25 px of stroke at 10 px and below,
-    falling to none at 18 px.
+  - Dilation, measured from Core Text on macOS 27.2 (font smoothing on, its
+    default): strokes grow by 0.0113 px per pixel of size for dark text,
+    times 1, 1.43, 1.85, 2.3, or 2.7 by the foreground's class (encoded
+    luminance from 0.4, 0.64, 0.8, and 0.96 up; Core Text picks its masks
+    by foreground gray in five steps), and by at most 0.6 px. They grow
+    by half on each side horizontally and upward only, so bottom edges and
+    the baseline stay where they are. Core Text blends text as a plain
+    lerp of encoded values (within 0.5 levels for every color pair tried),
+    which D11's correction reproduces.
+  - At 32 px and below the x-height is scaled vertically so that its
+    dilated top lands on a whole pixel, rounding up from a fraction of
+    0.375 as FreeType's autohinter does (−8% to +12%). It uses dark text's
+    dilation, so every foreground gets the same proportions and light
+    text's extra dilation shows as a fainter row above.
+  - The glyph cache's `smoothing` switch turns dilation off, as browsers'
+    test runners turn font smoothing off (WebKitTestRunner does): the
+    WPT reftests (D32) compare Ahem's square glyphs with boxes, and
+    dilated squares spill past them (css-text passed 81 of its 123
+    tests with it on). Everything else draws with it on.
+  - Glyphs whose contours overlap (variable fonts keep overlaps: 29 of 66
+    ASCII letters, digits, and symbols in InterVariable) rasterize with
+    per-sample winding (16 scanlines per pixel, exact horizontally):
+    accumulating area counts both parts where two edges cross a pixel,
+    which made about 250 pixels of a 560 px line of InterVariable up to 73
+    levels too dark. Any two contours of one orientation with overlapping
+    bounds take that path.
   - Evaluation, October 2026: Inter 4.1 and Noto Sans at 11–13 px on a 1×
     output, against FreeType (the font's hinting and the light
     autohinter) and a GTK 4.22 app on headless sway with GTK's default
@@ -1909,14 +1947,28 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     (it used to round to nearest, within ±8%), which lifts light text to
     1.16–1.27× GTK's ink, the same as dark text, and gives Noto Sans at
     12 px GTK's x-height in both schemes (its dark text goes from 1.06×
-    to 1.23×, in line with the other sizes). Stem darkening stays: it
-    applies to every foreground, and more of it would make dark text
-    heavier. Advances and line widths are unchanged.
+    to 1.23×, in line with the other sizes). Advances and line widths are
+    unchanged.
+  - Evaluation, November 2026, against Core Text on macOS 27.2 (Inter 4.1
+    and Noto Sans, 9–24 px, at 1×, 1.5×, and 2×, black on white and white
+    on #1e1e1e): siv's rasterization, positions, and blending matched,
+    but its stem darkening (0.25 px at 10 px and below, none from 18
+    device px, the same for every color) left it light. At 1.5× and 2×
+    dark text carried 0.84–0.89× Core Text's ink and light text
+    0.70–0.85×; at 1×, dark text at 9–12 px carried 1.07–1.21× and light
+    text 0.71–0.96×. With the dilation above, every size, scale, and
+    scheme is within about ±4%; the exception is Inter at 13 px on 1×,
+    where Core Text rounds the x-height from 7.1 up to 8 px (it rounds
+    cap heights and x-heights up at some integer sizes up to 17 px, which
+    siv does not copy). Dark 1× text at 9–11 px is lighter than before,
+    about 1.15× GTK's ink, inside the range October's evaluation found
+    good. Edges at the x-height and baseline drop from 4–11% gray rows to
+    1–2%.
   - Runs under rotation, skew, non-uniform scale, or above 256 px draw their
     outlines as paths; color glyphs lose their colors there.
   - Synthetic bold and oblique (D13) arrive in the face's HarfBuzz font,
     so the glyph cache draws them like any face, keyed by the instance's
-    own key, with stem darkening and x-height snapping on top. The
+    own key, with dilation and x-height snapping on top. The
     Vulkan renderer uploads the same bitmaps, so both renderers match
     (`test/golden/render/families.png`, including a rotated run drawn as
     outlines).
@@ -7265,7 +7317,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   imported by `test/wpt/import.py` (BSD-3-Clause; reftests without
   scripts or resources other than style sheets, images, and the Ahem
   font, at most 400 per suite and 400 more that use images, rendered at
-  800 × 600 with Ahem and siv's Droid test font, images (files and
+  800 × 600 with Ahem and siv's Droid test font and font smoothing off
+  (D14), images (files and
   `data:` URLs) decoded with siv's decoders and SVG with its SVG
   module, test and reference compared allowing 20 pixels to differ by
   more than 32 in a channel, or what a test's fuzzy metadata allows
@@ -7297,7 +7350,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   <!-- wpt-rates -->
   | Suite | Without images | All (with images) |
   | --- | --- | --- |
-  | css2 (normal flow, box, margins, colors, borders, positioning, line box, lists) | 252 of 316 | 464 of 569 |
+  | css2 (normal flow, box, margins, colors, borders, positioning, line box, lists) | 253 of 316 | 465 of 569 |
   | css-flexbox | 362 of 395 | 429 of 482 |
   | css-grid | 176 of 198 | 188 of 218 |
   | css-values | 65 of 119 | 67 of 122 |
@@ -7307,7 +7360,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   | css-sizing | 181 of 278 | 244 of 366 |
   | css-display | 60 of 106 | 60 of 109 |
   | css-pseudo | 42 of 72 | 43 of 74 |
-  | css-lists (and CSS2 generated content) | 180 of 326 | 182 of 334 |
+  | css-lists (and CSS2 generated content) | 181 of 326 | 183 of 334 |
   | css-text (white space, transforms, spacing, breaking, indents, alignment) | 117 of 320 | 123 of 333 |
   | css-backgrounds (and css-borders) | 110 of 223 | 211 of 440 |
   | css-overflow | 69 of 310 | 73 of 324 |
@@ -7572,7 +7625,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     wants that sets it as its default family, and its own text gets it
     too. Antialiasing, hinting, and subpixel order keep WebKit's
     defaults (grayscale, slight, none): siv draws unhinted text with
-    pixel-snapped baselines and stem darkening (D13), which Skia does
+    pixel-snapped baselines and dilation (D14), which Skia does
     not, so unhinted web text would look softer, not closer. Font DPI
     does nothing on WPE (WebKit's font scaling there is the screen's),
     and the text scale is not applied: WebKit has only page zoom, which

@@ -66,6 +66,8 @@ pub fn main(init: std.process.Init) !void {
     defer gpa.free(skip);
     const r = try Runner.init(gpa, io, root, "http://wpt", W, H);
     defer r.deinit();
+    // Font smoothing off, as browsers' test runners have it (D14).
+    r.renderer.glyphs.smoothing = false;
     const filter_is_suite = try gpa.alloc(bool, filters.items.len);
     defer gpa.free(filter_is_suite);
     for (filters.items, filter_is_suite) |f, *is| is.* = isSuite(manifest, f);

@@ -1,13 +1,16 @@
 // Every draw: coverage (analytic rectangles and rounded rectangles, masks
 // of CPU-rasterized coverage, glyph masks) times the clip chain, times a
-// paint. The draw pipeline blends premultiplied source-over; the replace
-// pipeline writes PAINT_BLEND and PAINT_BLUR results as they are, and a
-// discarded fragment keeps the destination.
+// paint. The draw pipeline blends premultiplied source-over with dual-source
+// blending, dst = o_color + dst * (1 - o_src1), so that text can blend each
+// channel with its own coverage (D11); every other draw has o_src1 = its
+// alpha. The replace pipeline writes PAINT_BLEND and PAINT_BLUR results as
+// they are, and a discarded fragment keeps the destination.
 //
 // Formulas follow src/render/cpu: coverage.zig, paint.zig, blend.zig.
 
 layout(location = 0) flat in uint v_inst;
-layout(location = 0) out vec4 o_color;
+layout(location = 0, index = 0) out vec4 o_color;
+layout(location = 0, index = 1) out vec4 o_src1;
 
 // 1: the pipeline for the common draws (Renderer.simpleDraw): a solid
 // paint with analytic or glyph coverage and at most two analytic clips.
@@ -62,6 +65,24 @@ float maskCoverage(ivec4 tex, vec2 px) {
     ivec2 size = ivec2(tex.w & 0xffff, tex.w >> 16);
     if (any(lessThan(p, ivec2(0))) || any(greaterThanEqual(p, size))) return 0.0;
     return floor(texelFetch(masks, ivec3(p, tex.x), 0).r * 255.0 + 0.5);
+}
+
+// Glyph coverage per channel (red, green, blue; alpha is their largest)
+// through the three contrast tables packed in tex.w (glyph.ContrastLuts,
+// CPU: renderer.runGlyphs).
+uvec4 glyphCoverage4(ivec4 tex, uint a) {
+    uint t = uint(tex.w);
+    uint r = luts[(t & 255u) * 256u + a];
+    uint g = luts[((t >> 8) & 255u) * 256u + a];
+    uint b = luts[((t >> 16) & 255u) * 256u + a];
+    return uvec4(r, g, b, max(r, max(g, b)));
+}
+
+// The source-over outputs of premultiplied `s` with per-channel coverage.
+void emit(vec4 s, uvec4 cov) {
+    vec4 c = vec4(cov) / 65535.0;
+    o_color = s * c;
+    o_src1 = s.a * c;
 }
 
 float glyphCoverage(ivec4 tex, vec2 px) {
@@ -454,19 +475,19 @@ float clipCoverage2(uint index, vec2 px) {
 void simpleMain() {
     Inst it = insts[v_inst];
     vec2 px = floor(gl_FragCoord.xy) + pc.origin;
-    uint cov16;
+    uvec4 cov;
     if (it.cov == COV_GLYPH) {
         uint a = uint(glyphCoverage(it.tex, px));
         if (a == 0u) discard;
-        cov16 = luts[uint(it.tex.w) * 256u + a];
-        if (it.clip != 0u) cov16 = div65535(cov16 * (uint(clipCoverage2(it.clip, px)) * 257u));
+        cov = glyphCoverage4(it.tex, a);
+        if (it.clip != 0u) cov = div65535v(cov * (uint(clipCoverage2(it.clip, px)) * 257u));
     } else {
         float c = analyticCoverage(it.cov, it.g0, it.g1, it.g2, px);
         if (it.clip != 0u) c = floor((c * clipCoverage2(it.clip, px) + 127.0) / 255.0);
-        cov16 = uint(c) * 257u;
+        cov = uvec4(uint(c) * 257u);
     }
-    if (cov16 == 0u) discard;
-    o_color = it.color * (float(cov16) / 65535.0);
+    if (cov.a == 0u) discard;
+    emit(it.color, cov);
 }
 
 void main() {
@@ -478,8 +499,9 @@ void main() {
     vec2 px = floor(gl_FragCoord.xy) + pc.origin;
     vec2 pos = px + 0.5;
 
-    // Coverage, 16 bits (0..65535).
+    // Coverage, 16 bits (0..65535); glyphs have one per channel.
     uint cov16;
+    uvec4 glyph_cov = uvec4(0u);
     if (it.cov == COV_SHADOW) {
         cov16 = uint(clamp(shadowAlpha(paints[it.aux], paints[it.aux + 1u], pos), 0.0, 1.0) * 65535.0 + 0.5);
         if (it.clip != 0u) cov16 = div65535(cov16 * (uint(clipCoverage(it.clip, px)) * 257u));
@@ -487,8 +509,9 @@ void main() {
     } else if (it.cov == COV_GLYPH) {
         uint a = uint(glyphCoverage(it.tex, px));
         if (a == 0u) discard;
-        cov16 = luts[uint(it.tex.w) * 256u + a];
-        if (it.clip != 0u) cov16 = div65535(cov16 * (uint(clipCoverage(it.clip, px)) * 257u));
+        glyph_cov = glyphCoverage4(it.tex, a);
+        if (it.clip != 0u) glyph_cov = div65535v(glyph_cov * (uint(clipCoverage(it.clip, px)) * 257u));
+        cov16 = glyph_cov.a;
     } else {
         float c = shapeCoverage(it.cov, it.g0, it.g1, it.g2, it.tex, px);
         if (it.clip != 0u) c = floor((c * clipCoverage(it.clip, px) + 127.0) / 255.0);
@@ -504,6 +527,7 @@ void main() {
         uvec4 o = fromF(blendModes(mode, vec4(s) / 65535.0, vec4(d) / 65535.0));
         if (isUnbounded(mode) && cov16 != 65535u) o = lerp16(d, o, cov16);
         o_color = vec4(o) / 65535.0;
+        o_src1 = vec4(o_color.a);
         return;
     }
     if (cov16 == 0u) discard;
@@ -511,6 +535,7 @@ void main() {
         uvec4 s = fromF(texelFetch(tex_a, ivec2(px) - it.ptex.yz, 0));
         uvec4 d = texelB(it.btex, px);
         o_color = vec4(lerp16(d, s, cov16)) / 65535.0;
+        o_src1 = vec4(o_color.a);
         return;
     }
 
@@ -528,5 +553,5 @@ void main() {
         s *= it.color.a;
         break;
     }
-    o_color = s * (float(cov16) / 65535.0);
+    emit(s, it.cov == COV_GLYPH ? glyph_cov : uvec4(cov16));
 }

@@ -92,7 +92,7 @@ layout(set = 0, binding = 8) uniform sampler2DArray masks;
 layout(set = 1, binding = 0) uniform sampler2D tex_a;
 layout(set = 1, binding = 1) uniform sampler2D tex_b;
 
-const uint LUT_SRGB8 = 16u * 256u;
+const uint LUT_SRGB8 = 256u * 256u; // after the text contrast tables (glyph.ContrastLuts.count)
 const uint LUT_TO_SRGB16 = LUT_SRGB8 + 256u;
 const uint LUT_TO_SRGB8_8 = LUT_TO_SRGB16 + 65536u;
 const uint LUT_FROM_SRGB16 = LUT_TO_SRGB8_8 + 65536u;

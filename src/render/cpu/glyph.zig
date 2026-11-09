@@ -10,12 +10,15 @@
 //!   composite groups; gradient fills) and rendered by a CPU renderer into a
 //!   16-bit linear premultiplied bitmap. The same lowering serves Vulkan,
 //!   which uploads these bitmaps.
-//! - Entries are keyed by font key, glyph, pixel size (1/64 px), and 1/4-
-//!   pixel horizontal phase; color glyphs also by foreground color.
+//! - Entries are keyed by font key, glyph, pixel size (1/64 px), 1/4-
+//!   pixel horizontal phase, and dilation class; color glyphs also by
+//!   foreground color.
 //! - Mitigations for unhinted text: baselines snap to whole pixels, the
-//!   x-height is scaled vertically to a whole pixel at small sizes, small
-//!   sizes get slight stem darkening (outline emboldening), and coverage is
-//!   corrected for contrast when composited (ContrastLuts).
+//!   x-height is scaled vertically to a whole pixel at small sizes,
+//!   outlines are dilated as macOS's font smoothing does (`dilation`), and
+//!   coverage is corrected for contrast when composited (ContrastLuts).
+//! - Glyphs whose contours overlap (common in variable fonts) rasterize
+//!   with per-sample winding, so overlaps do not add up coverage.
 //!
 //! Runs whose transform is not a uniform positive scale plus translation,
 //! or whose glyphs exceed `max_cached_size`, are drawn as paths instead.
@@ -71,6 +74,8 @@ const Key = struct {
     /// Pixel size in 1/64 px.
     size: u32,
     phase: u8,
+    /// Dilation class (see `dilationClass`) for outline glyphs.
+    class: u8,
     /// Foreground color (RGBA8) for color glyphs, else 0.
     fg: u32,
 };
@@ -87,6 +92,7 @@ pub const Cache = struct {
     path: raster.PathBuilder,
     contour_points: std.ArrayList(Point) = .empty,
     contour_ends: std.ArrayList(u32) = .empty,
+    contour_info: std.ArrayList(ContourInfo) = .empty,
     draw_funcs: ?*hb.hb_draw_funcs_t = null,
     paint_funcs: ?*hb.hb_paint_funcs_t = null,
     // Color glyphs: built lazily on first use.
@@ -95,6 +101,10 @@ pub const Cache = struct {
     stops: std.ArrayList(scene.Stop) = .empty,
     /// Bitmap glyph images for the glyph being rasterized.
     images: std.ArrayList([]Pixel) = .empty,
+    /// Font smoothing: outlines are dilated (`dilation`). Off, as
+    /// browsers' test runners turn it off, glyphs keep their outlines'
+    /// exact edges, which reftests compare against boxes (D14).
+    smoothing: bool = true,
 
     pub fn init(gpa: std.mem.Allocator) Cache {
         return .{ .gpa = gpa, .rasterizer = .init(gpa), .path = .init(gpa) };
@@ -109,6 +119,7 @@ pub const Cache = struct {
         c.path.deinit();
         c.contour_points.deinit(c.gpa);
         c.contour_ends.deinit(c.gpa);
+        c.contour_info.deinit(c.gpa);
         c.stops.deinit(c.gpa);
         c.freeImages();
         c.images.deinit(c.gpa);
@@ -170,13 +181,14 @@ pub const Cache = struct {
         const font: *hb.hb_font_t = @ptrCast(run.font.handle);
         const size_key: u32 = @intFromFloat(@round(px_size * 64));
         const fg_key = rgba8(fg);
-        const y_scale = xHeightScale(font, px_size);
+        const class = dilationClass(fg);
+        const y_scale = xHeightScale(font, px_size, c.dilationAt(px_size, 0));
         try out.ensureUnusedCapacity(c.gpa, run.glyphs.len);
         for (run.glyphs) |g| {
             const o = m.apply(.{ .x = g.x, .y = g.y });
             const q: i32 = @intFromFloat(@floor(o.x * 4 + 0.5));
             const phase: u8 = @intCast(@mod(q, 4));
-            var key: Key = .{ .font = run.font.key, .glyph = g.id, .size = size_key, .phase = phase, .fg = 0 };
+            var key: Key = .{ .font = run.font.key, .glyph = g.id, .size = size_key, .phase = phase, .class = class, .fg = 0 };
             var index = c.map.get(key) orelse try c.add(key, font, px_size, y_scale, fg);
             if (c.entries.items[index].kind == .redirect) {
                 key.fg = fg_key;
@@ -248,6 +260,10 @@ pub const Cache = struct {
         if (ctx.failed) return error.OutOfMemory;
     }
 
+    fn dilationAt(c: *const Cache, px_size: f32, class: u8) f32 {
+        return if (c.smoothing) dilation(px_size, class) else 0;
+    }
+
     fn rasterizeMask(c: *Cache, key: Key, font: *hb.hb_font_t, px_size: f32, y_scale: f32) Error!u32 {
         var xs: c_int = 0;
         var ys: c_int = 0;
@@ -262,27 +278,34 @@ pub const Cache = struct {
             .d = -px_size * y_scale / @as(f32, @floatFromInt(ys)),
             .e = @as(f32, @floatFromInt(key.phase)) / 4,
         };
-        const darken = stemDarkening(px_size);
-        const window = c.path.path().transformedBounds(m).outset(darken + 1).roundOut();
+        const d = c.dilationAt(px_size, key.class);
+        const window = c.path.path().transformedBounds(m).outset(d + 1).roundOut();
         if (window.isEmpty()) return c.push(empty);
-        try c.rasterizer.begin(window);
-        if (darken > 0) {
-            try c.collectContours(m);
-            embolden(c.contour_points.items, c.contour_ends.items, darken / 2);
+        try c.collectContours(m);
+        // Strokes grow by d: half on each side, then up by half, so bottom
+        // edges (the baseline) stay and tops rise by d.
+        embolden(c.contour_points.items, c.contour_ends.items, d / 2);
+        for (c.contour_points.items) |*p| p.y -= d / 2;
+        const w: usize = @intCast(window.width());
+        const h: usize = @intCast(window.height());
+        const offset = c.masks.items.len;
+        try c.masks.resize(c.gpa, offset + w * h);
+        const out = c.masks.items[offset..];
+        // Overlapping parts (several contours, or one crossing itself)
+        // take the per-sample path; exact accumulation reveals the second
+        // kind by summing past full coverage.
+        var overlapping = try c.contoursOverlap();
+        if (!overlapping) {
+            try c.rasterizer.begin(window);
             var start: u32 = 0;
             for (c.contour_ends.items) |end| {
                 const pts = c.contour_points.items[start..end];
                 for (pts, 0..) |p, i| c.rasterizer.addLine(p, pts[(i + 1) % pts.len]);
                 start = end;
             }
-        } else {
-            c.rasterizer.addPath(c.path.path(), m, raster.default_tolerance);
+            overlapping = c.rasterizer.finishDetectingOverlap(out, w);
         }
-        const w: usize = @intCast(window.width());
-        const h: usize = @intCast(window.height());
-        const offset = c.masks.items.len;
-        try c.masks.resize(c.gpa, offset + w * h);
-        c.rasterizer.finish(.nonzero, c.masks.items[offset..], w);
+        if (overlapping) try c.rasterizer.fillOverlapping(window, c.contour_points.items, c.contour_ends.items, out, w);
         return c.push(.{ .kind = .mask, .left = window.x0, .top = window.y0, .width = @intCast(w), .height = @intCast(h), .offset = offset });
     }
 
@@ -291,6 +314,35 @@ pub const Cache = struct {
         c.contour_ends.clearRetainingCapacity();
         var sink: ContourSink = .{ .c = c };
         try raster.flatten(c.path.path(), m, raster.default_tolerance, &sink);
+    }
+
+    /// Whether two contours of the same orientation have intersecting
+    /// bounds: overlapping parts of a glyph (variable fonts keep them),
+    /// which exact-area accumulation would count twice. Islands inside
+    /// counters also match; drawing them the slower way is still correct.
+    fn contoursOverlap(c: *Cache) Error!bool {
+        const ends = c.contour_ends.items;
+        if (ends.len < 2) return false;
+        c.contour_info.clearRetainingCapacity();
+        try c.contour_info.ensureTotalCapacity(c.gpa, ends.len);
+        var start: u32 = 0;
+        for (ends) |end| {
+            const pts = c.contour_points.items[start..end];
+            var info: ContourInfo = .{ .bounds = .{ .x0 = pts[0].x, .y0 = pts[0].y, .x1 = pts[0].x, .y1 = pts[0].y }, .area = 0 };
+            for (pts, 0..) |p, i| {
+                const q = pts[(i + 1) % pts.len];
+                info.area += p.x * q.y - q.x * p.y;
+                info.bounds = info.bounds.unite(.{ .x0 = p.x, .y0 = p.y, .x1 = p.x, .y1 = p.y });
+            }
+            c.contour_info.appendAssumeCapacity(info);
+            start = end;
+        }
+        const infos = c.contour_info.items;
+        for (infos, 0..) |a, i| for (infos[i + 1 ..]) |b| {
+            if ((a.area > 0) != (b.area > 0)) continue;
+            if (a.bounds.x0 < b.bounds.x1 and b.bounds.x0 < a.bounds.x1 and a.bounds.y0 < b.bounds.y1 and b.bounds.y0 < a.bounds.y1) return true;
+        };
+        return false;
     }
 
     const ContourSink = struct {
@@ -394,6 +446,8 @@ pub const Cache = struct {
         return f;
     }
 };
+
+const ContourInfo = struct { bounds: Rect, area: f32 };
 
 /// HarfBuzz draw callbacks into a PathBuilder.
 const Draw = struct {
@@ -671,11 +725,13 @@ fn rgba8(c: scene.Color) u32 {
 }
 
 /// Vertical scale that puts the x-height on a whole pixel at text sizes,
-/// so the tops of lowercase letters are crisp. Rounds up from a fraction of
-/// 0.375, like FreeType's autohinter (which GTK's default hintslight uses):
-/// Noto Sans at 12 px gets a 7 px x-height (+8.8%) instead of 6 (-6.7%),
-/// as in GTK. Bounded to -8%..+12%.
-pub fn xHeightScale(font: *hb.hb_font_t, px_size: f32) f32 {
+/// so the tops of lowercase letters are crisp. The top is the dilated one
+/// (`dilation` raises tops by `d`), with dark text's dilation so that every
+/// color gets the same proportions. Rounds up from a fraction of 0.375, like
+/// FreeType's autohinter (which GTK's default hintslight uses): Noto Sans
+/// at 12 px gets a 7 px x-height instead of 6, as in GTK. Bounded to
+/// -8%..+12%.
+pub fn xHeightScale(font: *hb.hb_font_t, px_size: f32, d: f32) f32 {
     if (px_size > 32) return 1;
     var pos: hb.hb_position_t = 0;
     if (hb.hb_ot_metrics_get_position(font, hb.HB_OT_METRICS_TAG_X_HEIGHT, &pos) == 0 or pos <= 0) return 1;
@@ -685,20 +741,28 @@ pub fn xHeightScale(font: *hb.hb_font_t, px_size: f32) f32 {
     if (ys == 0) return 1;
     const xh = @as(f32, @floatFromInt(pos)) * px_size / @as(f32, @floatFromInt(ys));
     if (xh < 2) return 1;
-    return std.math.clamp(@floor(xh + 0.625) / xh, 0.92, 1.12);
+    return std.math.clamp((@floor(xh + d + 0.625) - d) / xh, 0.92, 1.12);
 }
 
-/// Stem darkening for small unhinted sizes: total stroke width added, in
-/// pixels. It applies to every foreground, and dark text at 11-13 px is
-/// already heavier than GTK's (D14), so light text gets its weight from
-/// ContrastLuts instead.
-pub fn stemDarkening(px_size: f32) f32 {
-    const max: f32 = 0.25;
-    const full: f32 = 10;
-    const none: f32 = 18;
-    if (px_size <= full) return max;
-    if (px_size >= none) return 0;
-    return max * (none - px_size) / (none - full);
+/// Stroke width added to outlines, in pixels, as macOS's font smoothing
+/// adds it (measured on macOS 27, D14): proportional to the pixel size,
+/// more for lighter text (`dilationClass`), and at most 0.6 px.
+pub fn dilation(px_size: f32, class: u8) f32 {
+    const per_px: f32 = 0.0113;
+    const factors = [dilation_classes]f32{ 1, 1.43, 1.85, 2.3, 2.7 };
+    return @min(0.6, per_px * factors[class] * px_size);
+}
+
+pub const dilation_classes = 5;
+
+/// The dilation class of a foreground, from its encoded luminance: Core
+/// Text picks its masks by foreground gray in five steps.
+pub fn dilationClass(fg: scene.Color) u8 {
+    const e = scene.linearToSrgb(std.math.clamp(fg.luminance(), 0, 1));
+    const bounds = [dilation_classes - 1]f32{ 0.4, 0.64, 0.8, 0.96 };
+    var class: u8 = 0;
+    for (bounds) |b| class += @intFromBool(e >= b);
+    return class;
 }
 
 /// Offsets every contour vertex outward (away from the filled side) by
@@ -742,57 +806,97 @@ fn outward(dir: Point, sign: f32) Point {
 }
 
 /// Coverage correction for text composited in linear light (D11): maps
-/// coverage so that text looks as it does with gamma-space blending, which
-/// Linux users compare against. Indexed by the foreground's encoded
-/// luminance, assuming a contrasting background: white behind dark text,
-/// and a dark theme's background (#181818, near siv's #18181b) behind light
-/// text. Assuming black there thinned light text on real dark backgrounds
-/// by about a tenth at half coverage.
+/// coverage, per color channel, so that linear blending reproduces
+/// blending in sRGB-encoded space, as Core Text blends and as Linux users
+/// are used to. A table per encoded foreground and background channel
+/// value (16 levels each). Text with no known background
+/// (`scene.GlyphRun.background`) assumes a contrasting one: white behind
+/// dark text, and a dark theme's background (#181818, near siv's #18181b)
+/// behind light text.
 pub const ContrastLuts = struct {
     pub const levels = 16;
+    pub const count = levels * levels;
     const dark_bg: f32 = 24.0 / 255.0;
-    tables: [levels][256]u16,
+    tables: [count][256]u16,
 
     pub fn init(l: *ContrastLuts) void {
-        for (&l.tables, 0..) |*t, i| {
-            const fe = @as(f32, @floatFromInt(i)) / (levels - 1);
-            const be: f32 = if (fe < 0.5) 1 else dark_bg;
+        for (0..levels) |fi| for (0..levels) |bi| {
+            const fe = @as(f32, @floatFromInt(fi)) / (levels - 1);
+            const be = @as(f32, @floatFromInt(bi)) / (levels - 1);
             const f = scene.srgbToLinear(fe);
             const bg = scene.srgbToLinear(be);
-            for (t, 0..) |*v, a| {
+            for (&l.tables[fi * levels + bi], 0..) |*v, a| {
                 const af = @as(f32, @floatFromInt(a)) / 255;
                 const lin = scene.srgbToLinear(af * fe + (1 - af) * be);
                 const corrected = if (@abs(f - bg) > 1e-4) (lin - bg) / (f - bg) else af;
                 v.* = color.toU16(corrected);
             }
-        }
+        };
     }
 
-    pub fn index(fg: scene.Color) u8 {
-        const e = scene.linearToSrgb(std.math.clamp(fg.luminance(), 0, 1));
+    /// The tables, built by the first caller and shared by every renderer.
+    pub fn shared() *const ContrastLuts {
+        if (shared_contrast_state.load(.acquire) != 2) {
+            if (shared_contrast_state.cmpxchgStrong(0, 1, .acquire, .acquire) == null) {
+                shared_contrast.init();
+                shared_contrast_state.store(2, .release);
+            } else while (shared_contrast_state.load(.acquire) != 2) std.atomic.spinLoopHint();
+        }
+        return &shared_contrast;
+    }
+
+    /// The tables for the red, green, and blue channels of text in `fg`
+    /// over `bg`, or over the assumed background.
+    pub fn indices(fg: scene.Color, bg: ?scene.Color) [3]u8 {
+        const assumed: f32 = if (scene.linearToSrgb(std.math.clamp(fg.luminance(), 0, 1)) < 0.5) 1 else dark_bg;
+        const fs = [3]f32{ fg.r, fg.g, fg.b };
+        var out: [3]u8 = undefined;
+        for (&out, fs, 0..) |*o, f, i| {
+            const be = if (bg) |b| scene.linearToSrgb(std.math.clamp(([3]f32{ b.r, b.g, b.b })[i], 0, 1)) else assumed;
+            o.* = level(scene.linearToSrgb(std.math.clamp(f, 0, 1))) * levels + level(be);
+        }
+        return out;
+    }
+
+    fn level(e: f32) u8 {
         return @intFromFloat(@round(e * (levels - 1)));
     }
 };
 
-test "contrast tables" {
-    var l: ContrastLuts = undefined;
-    l.init();
-    // Dark text gains coverage, light text loses it, ends are fixed.
-    try std.testing.expect(l.tables[0][128] > 128 * 257);
-    try std.testing.expect(l.tables[levels_last][128] < 128 * 257);
+var shared_contrast: ContrastLuts = undefined;
+/// 0: not built, 1: being built, 2: built.
+var shared_contrast_state: std.atomic.Value(u8) = .init(0);
+
+test "contrast tables reproduce sRGB-space blending per channel" {
+    const l = ContrastLuts.shared();
     for (l.tables) |t| {
         try std.testing.expectEqual(@as(u16, 0), t[0]);
         try std.testing.expectEqual(@as(u16, 65535), t[255]);
     }
-    // White text at half coverage on #181818, blended in linear light,
-    // lands where gamma-space blending puts it.
-    const c = @as(f32, @floatFromInt(l.tables[levels_last][128])) / 65535;
-    const bg = scene.srgbToLinear(24.0 / 255.0);
-    const want = (128 + (255 - 128) * @as(f32, 0x18) / 255) / 255;
-    try std.testing.expectApproxEqAbs(want, scene.linearToSrgb(c + (1 - c) * bg), 0.003);
+    // Dark text on white gains coverage, white text on dark loses it.
+    const black_on_white = ContrastLuts.indices(.black, null);
+    const white_on_dark = ContrastLuts.indices(.white, null);
+    try std.testing.expect(l.tables[black_on_white[0]][128] > 128 * 257);
+    try std.testing.expect(l.tables[white_on_dark[0]][128] < 128 * 257);
+    // A saturated color over a mid-tone background, blended in linear
+    // light with each channel's coverage, lands where blending the encoded
+    // values puts it: #3366cc over #a0a0a0 at 25% coverage. The channels
+    // need different coverage.
+    const fg = scene.Color.srgb8(0x33, 0x66, 0xcc, 0xff);
+    const bg = scene.Color.srgb8(0xa0, 0xa0, 0xa0, 0xff);
+    const idx = ContrastLuts.indices(fg, bg);
+    const fe = [3]f32{ 0x33, 0x66, 0xcc };
+    const fl = [3]f32{ fg.r, fg.g, fg.b };
+    for (idx, fe, fl) |i, e, f| {
+        const c = @as(f32, @floatFromInt(l.tables[i][64])) / 65535;
+        const got = scene.linearToSrgb(c * f + (1 - c) * bg.r);
+        const want = (64 * e + (255 - 64) * @as(f32, 0xa0)) / 255 / 255;
+        // Within the 16-level quantization of the channel values.
+        try std.testing.expectApproxEqAbs(want, got, 0.012);
+    }
+    try std.testing.expect(idx[0] != idx[2]);
 }
 
-const levels_last = ContrastLuts.levels - 1;
 
 test "embolden grows a square by d on each side" {
     // Clockwise square (y down).

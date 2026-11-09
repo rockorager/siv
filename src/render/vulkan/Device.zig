@@ -404,9 +404,15 @@ fn selectDevice(d: *Device, gpa: Allocator, options: Options) vk.Error!void {
         exts[n] = e[1];
         n += 1;
     };
+    // Dual-source blending: text blends per channel (draw.frag, D11).
+    var f2: c.VkPhysicalDeviceFeatures2 = .{
+        .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        .pNext = &f13,
+        .features = .{ .dualSrcBlend = c.VK_TRUE },
+    };
     const info: c.VkDeviceCreateInfo = .{
         .sType = c.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .pNext = &f13,
+        .pNext = &f2,
         .queueCreateInfoCount = 1,
         .pQueueCreateInfos = &queue_info,
         .enabledExtensionCount = n,
@@ -433,7 +439,7 @@ fn evaluate(d: *Device, gpa: Allocator, pd: c.VkPhysicalDevice, options: Options
     var f13: c.VkPhysicalDeviceVulkan13Features = .{ .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
     var f2: c.VkPhysicalDeviceFeatures2 = .{ .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f13 };
     k.vkGetPhysicalDeviceFeatures2.?(pd, &f2);
-    if (f13.dynamicRendering == 0 or f13.synchronization2 == 0) {
+    if (f13.dynamicRendering == 0 or f13.synchronization2 == 0 or f2.features.dualSrcBlend == 0) {
         log.debug("{s}: skipped, missing features", .{name});
         return null;
     }
@@ -585,15 +591,13 @@ fn createShared(d: *Device) vk.Error!void {
     d.encode_pipelines[@backingInt(Output.bgra8)] = try d.pipeline(d.encode_frag, outputFormat(.bgra8), false, 0);
     d.encode_pipelines[@backingInt(Output.rgba8)] = try d.pipeline(d.encode_frag, outputFormat(.rgba8), false, 0);
 
-    // Constant tables, one u32 per entry: 16 text contrast tables of 256,
-    // then the CPU renderer's transfer tables (sRGB byte to linear u16,
-    // linear u16 to sRGB u16, linear u16 to sRGB 8.8 fixed point, sRGB u16
-    // to linear u16).
-    const contrast = try d.gpa.create(render_cpu.glyph.ContrastLuts);
-    defer d.gpa.destroy(contrast);
-    contrast.init();
+    // Constant tables, one u32 per entry: the 256 text contrast tables of
+    // 256 (common.glsl's LUT_SRGB8 follows them), then the CPU renderer's
+    // transfer tables (sRGB byte to linear u16, linear u16 to sRGB u16,
+    // linear u16 to sRGB 8.8 fixed point, sRGB u16 to linear u16).
+    const contrast = render_cpu.glyph.ContrastLuts.shared();
     const transfer = render_cpu.Luts.shared();
-    const levels = render_cpu.glyph.ContrastLuts.levels;
+    const levels = render_cpu.glyph.ContrastLuts.count;
     const count = levels * 256 + 256 + 3 * 65536;
     d.luts = try Buffer.init(d, count * 4, c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     const out: [*]u32 = @ptrCast(@alignCast(d.luts.mapped.?));
@@ -671,13 +675,16 @@ fn pipeline(d: *Device, frag: c.VkShaderModule, format: c.VkFormat, blend: bool,
         .rasterizationSamples = c.VK_SAMPLE_COUNT_1_BIT,
     };
     // Premultiplied source-over.
+    const dual = blend and frag == d.draw_frag;
     const attachment: c.VkPipelineColorBlendAttachmentState = .{
         .blendEnable = if (blend) c.VK_TRUE else c.VK_FALSE,
         .srcColorBlendFactor = c.VK_BLEND_FACTOR_ONE,
-        .dstColorBlendFactor = c.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        // The second output is the source's alpha per channel (draw.frag),
+        // so that text blends each channel with its own coverage (D11).
+        .dstColorBlendFactor = if (dual) c.VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR else c.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
         .colorBlendOp = c.VK_BLEND_OP_ADD,
         .srcAlphaBlendFactor = c.VK_BLEND_FACTOR_ONE,
-        .dstAlphaBlendFactor = c.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .dstAlphaBlendFactor = if (dual) c.VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA else c.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
         .alphaBlendOp = c.VK_BLEND_OP_ADD,
         .colorWriteMask = c.VK_COLOR_COMPONENT_R_BIT | c.VK_COLOR_COMPONENT_G_BIT | c.VK_COLOR_COMPONENT_B_BIT | c.VK_COLOR_COMPONENT_A_BIT,
     };

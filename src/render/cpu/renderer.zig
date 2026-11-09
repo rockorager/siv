@@ -152,8 +152,8 @@ const Glyphs = struct {
     start: u32,
     end: u32,
     paint: Paint,
-    /// Text contrast table (see glyph.ContrastLuts).
-    contrast: u8,
+    /// Text contrast tables for red, green, and blue (glyph.ContrastLuts).
+    contrast: [3]u8,
     /// Encode color glyph pixels to sRGB (an sRGB layer, D11).
     encode: bool,
 };
@@ -302,7 +302,7 @@ pub const Renderer = struct {
     gpa: std.mem.Allocator,
     executor: Executor,
     luts: *const color.Luts,
-    contrast: glyph.ContrastLuts,
+    contrast: *const glyph.ContrastLuts,
     glyphs: glyph.Cache,
     workers: []Worker,
 
@@ -348,12 +348,11 @@ pub const Renderer = struct {
             .gpa = gpa,
             .executor = executor,
             .luts = color.Luts.shared(),
-            .contrast = undefined,
+            .contrast = glyph.ContrastLuts.shared(),
             .glyphs = .init(gpa),
             .workers = workers,
             .path = .init(gpa),
         };
-        r.contrast.init();
         return r;
     }
 
@@ -834,7 +833,7 @@ pub const Renderer = struct {
                 .start = start,
                 .end = @intCast(r.placements.items.len),
                 .paint = r.preparePaint(g.paint, m, srgb),
-                .contrast = glyph.ContrastLuts.index(fg),
+                .contrast = glyph.ContrastLuts.indices(fg, g.background),
                 .encode = srgb,
             } });
         } else {
@@ -1354,7 +1353,11 @@ pub const Renderer = struct {
     fn runGlyphs(r: *Renderer, w: *Worker, lv: *const Level, tile: IRect, g: *const Glyphs) void {
         const region = lv.scissor.intersect(g.bbox);
         if (region.isEmpty()) return;
-        const lut = &r.contrast.tables[g.contrast];
+        const lut = &r.contrast.tables[g.contrast[0]];
+        // Gray text over gray needs one coverage for every channel.
+        const per_channel = g.contrast[0] != g.contrast[1] or g.contrast[0] != g.contrast[2];
+        const lut_g = &r.contrast.tables[g.contrast[1]];
+        const lut_b = &r.contrast.tables[g.contrast[2]];
         for (r.placements.items[g.start..g.end]) |pl| {
             const e = r.glyphs.entry(pl.entry);
             const gr = IRect.xywh(pl.x + e.left, pl.y + e.top, @intCast(e.width), @intCast(e.height));
@@ -1373,9 +1376,16 @@ pub const Renderer = struct {
                         if (g.paint != .solid) paint_mod.shadeRow(&g.paint, r.luts, c.x0, y, w.shade[0..width]);
                         for (dst, src, 0..) |*px, a, xi| {
                             if (a == 0) continue;
+                            const s = if (g.paint == .solid) g.paint.solid else w.shade[xi];
+                            if (per_channel) {
+                                var cov: @Vector(4, u32) = .{ lut[a], lut_g[a], lut_b[a], 0 };
+                                cov[3] = @max(cov[0], @max(cov[1], cov[2]));
+                                if (clip_row) |cr| cov = color.div65535v(cov * @as(@Vector(4, u32), @splat(@as(u32, cr[xi]) * 257)));
+                                blend.srcOverComponent(px, s, cov);
+                                continue;
+                            }
                             var cov16: u32 = lut[a];
                             if (clip_row) |cr| cov16 = color.div65535(cov16 * (@as(u32, cr[xi]) * 257));
-                            const s = if (g.paint == .solid) g.paint.solid else w.shade[xi];
                             blend.srcOver(px, s, cov16);
                         }
                     },

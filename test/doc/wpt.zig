@@ -18,7 +18,7 @@ const origin = "http://wpt";
 /// Passing tests per suite, recorded: all of them, and those without
 /// images; fewer fails the test.
 const floors = .{
-    .{ "css2", 464, 252 },
+    .{ "css2", 465, 253 },
     .{ "css-flexbox", 429, 362 },
     .{ "css-grid", 188, 176 },
     .{ "css-values", 67, 65 },
@@ -28,7 +28,7 @@ const floors = .{
     .{ "css-sizing", 244, 181 },
     .{ "css-display", 60, 60 },
     .{ "css-pseudo", 43, 42 },
-    .{ "css-lists", 182, 180 },
+    .{ "css-lists", 183, 181 },
     .{ "css-text", 123, 117 },
     .{ "css-backgrounds", 211, 110 },
     .{ "css-overflow", 73, 69 },
@@ -59,6 +59,8 @@ fn runSuite(comptime suite: []const u8) !void {
     defer gpa.free(skip);
     const r = try Runner.init(gpa, io, root, origin, W, H);
     defer r.deinit();
+    // Font smoothing off, as browsers' test runners have it (D14).
+    r.renderer.glyphs.smoothing = false;
     const verbose = testing.environ.getPosix("SIV_WPT_VERBOSE") != null;
     const dump = testing.environ.getPosix("SIV_WPT_DUMP");
     var total: usize = 0;

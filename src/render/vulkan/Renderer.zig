@@ -1049,7 +1049,8 @@ fn prepareGlyphs(r: *Renderer, g: scene.GlyphRun, top: State) Error!void {
     const start = r.placements.items.len;
     if (try r.glyphs.place(g, m, fg, &r.placements)) {
         const template = try r.paintInst(g.paint, m, region, top.chain, top.srgb);
-        const contrast = glyph.ContrastLuts.index(fg);
+        const t = glyph.ContrastLuts.indices(fg, g.background);
+        const contrast: i32 = @as(i32, t[0]) | @as(i32, t[1]) << 8 | @as(i32, t[2]) << 16;
         try r.glyph_pos.ensureTotalCapacity(r.gpa, r.glyphs.entries.items.len);
         while (r.glyph_pos.items.len < r.glyphs.entries.items.len) r.glyph_pos.appendAssumeCapacity(.{});
         for (r.placements.items[start..]) |pl| {
