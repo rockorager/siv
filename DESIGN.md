@@ -890,6 +890,27 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     nothing but text drawn over the run since, among the last 64 draws;
     under an axis-aligned transform and rectangular clips only. Isolated
     layers start from transparency. Callers may set it themselves.
+  - A fill or clip rectangle can snap to device pixels (`scene.Snap`):
+    each edge is an anchor (a box edge) plus an offset (a border width).
+    The renderers know the whole transform to device pixels, the window's
+    scale times a scroll node's zoom and every offset, which the code
+    that builds a list does not: the compositor zooms and scrolls
+    without repainting (D8). So they snap, both through one function
+    (`Snap.device`): under a transform that keeps axes, each anchor
+    rounds to the nearest pixel boundary (floor(x + 0.5), the same on
+    both sides of zero) and each offset becomes whole pixels as CSS
+    snaps a border width, down but at least one when not zero; then the
+    rectangle draws as an ordinary one in device space. Rectangles that
+    share anchors meet without seams or overlaps, and a 1px border is one
+    line of whole pixels at 125%, 150%, or any zoom. Under a rotation or
+    skew, and in PDF, the rectangle draws as it is. Anchors move to a
+    boundary of a pixel they touch and offsets only shrink toward them,
+    except widths below a pixel, which grow to one, so what a box's
+    rectangles draw stays inside the pixels of its unsnapped box, and
+    bounds and damage need no slack. Found in parcel
+    at 150%: an email table's 1px borders were two or four partial
+    pixels whose shade changed along the line, wherever a cell's border
+    met the table's at a different fraction.
   - A box shadow (`scene.Shadow`) is CSS box-shadow for a rounded
     rectangle: offset, Gaussian sigma (half the CSS blur radius), spread,
     color, outset or inset. Outset shadows are not drawn under their

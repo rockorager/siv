@@ -716,11 +716,12 @@ fn prepare(r: *Renderer, list: scene.DisplayList, root: Affine) Error!void {
                 var clip_bounds = top.clip;
                 var chain = top.chain;
                 if (l.clip) |cl| {
-                    const cb = lm.applyRect(cl.shape.bounds());
+                    const pc = scene.placed(cl.shape, cl.snap, lm);
+                    const cb = pc.m.applyRect(pc.shape.bounds());
                     clip_bounds = clip_bounds.intersect(cb);
                     const clip_scissor = cb.roundOut().intersect(vp);
                     scissor = scissor.intersect(clip_scissor);
-                    chain = try r.addClip(cl.shape, cl.rule, lm, top.chain, clip_scissor.intersect(scissor));
+                    chain = try r.addClip(pc.shape, cl.rule, pc.m, top.chain, clip_scissor.intersect(scissor));
                 }
                 if (scissor.isEmpty()) {
                     i = p.end;
@@ -767,11 +768,12 @@ fn prepare(r: *Renderer, list: scene.DisplayList, root: Affine) Error!void {
             },
             .fill => |fl| {
                 if (fl.paint.isInvisible()) continue;
-                const bbox = m.applyRect(fl.shape.bounds()).intersect(top.clip).roundOut().intersect(vp);
+                const pf = scene.placed(fl.shape, fl.snap, m);
+                const bbox = pf.m.applyRect(pf.shape.bounds()).intersect(top.clip).roundOut().intersect(vp);
                 const quad = bbox.intersect(top.scissor);
                 if (quad.isEmpty()) continue;
                 var inst = try r.paintInst(fl.paint, m, quad, top.chain, top.srgb);
-                try r.coverage(&inst, fl.shape, fl.rule, m, null);
+                try r.coverage(&inst, pf.shape, fl.rule, pf.m, null);
                 try r.pushInst(inst);
             },
             .stroke => |s| {

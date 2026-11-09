@@ -489,9 +489,10 @@ pub const Renderer = struct {
                     var clip_bounds = top.clip;
                     var clip: ?Clip = null;
                     if (l.clip) |c| {
-                        const cb = lm.applyRect(c.shape.bounds());
+                        const pc = scene.placed(c.shape, c.snap, lm);
+                        const cb = pc.m.applyRect(pc.shape.bounds());
                         clip_bounds = clip_bounds.intersect(cb);
-                        const cov = try r.coverageFor(c.shape, c.rule, lm, .clip);
+                        const cov = try r.coverageFor(pc.shape, c.rule, pc.m, .clip);
                         clip = .{ .scissor = cb.roundOut().intersect(vp), .coverage = cov };
                         if (cov == .rect and isPixelAligned(cov.rect)) clip.?.coverage = null;
                     }
@@ -518,9 +519,10 @@ pub const Renderer = struct {
                 },
                 .fill => |f| {
                     if (f.paint.isInvisible()) continue;
-                    const bbox = m.applyRect(f.shape.bounds()).intersect(top.clip).roundOut().intersect(vp);
+                    const pf = scene.placed(f.shape, f.snap, m);
+                    const bbox = pf.m.applyRect(pf.shape.bounds()).intersect(top.clip).roundOut().intersect(vp);
                     if (bbox.isEmpty()) continue;
-                    const cov = try r.coverageFor(f.shape, f.rule, m, .draw);
+                    const cov = try r.coverageFor(pf.shape, f.rule, pf.m, .draw);
                     try r.ops.append(r.gpa, .{ .draw = .{ .bbox = bbox, .coverage = cov, .paint = r.preparePaint(f.paint, m, top.srgb) } });
                 },
                 .stroke => |s| {

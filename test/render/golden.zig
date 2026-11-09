@@ -712,6 +712,39 @@ fn srgbLayers(c: *Ctx, b: *Builder) !void {
     }
 }
 
+/// Rectangles snapped to device pixels (scene.Snap, D32), as documents
+/// draw borders and backgrounds: a box with a 1-unit border, a 2-unit one
+/// beside it sharing its right edge, a background on the borders' inner
+/// edges, and a snapped clip, at 150%, at 150% zoomed to 110%, mirrored,
+/// all at fractions of a pixel; rotated, where nothing snaps.
+fn snapped(c: *Ctx, b: *Builder) !void {
+    _ = c;
+    const gray = Color.srgb8(0xcc, 0xcc, 0xcc, 0xff);
+    const transforms = [_]Affine{
+        Affine.scale(1.5, 1.5).then(.translate(4.3, 6.2)),
+        Affine.scale(1.65, 1.65).then(.translate(70.4, 5.7)),
+        Affine.scale(-1.5, 1.5).then(.translate(220.6, 6.5)),
+        Affine.rotate(0.1).then(.scale(1.5, 1.5)).then(.translate(240.3, 6.2)),
+    };
+    for (transforms) |m| {
+        try b.pushLayer(.{ .transform = m });
+        for ([_]f32{ 1, 2 }, 0..) |w, i| {
+            const box: Rect = .xywh(@as(f32, @floatFromInt(i)) * 13, 0, 13, 20);
+            try b.fillSnapped(.{ .anchor = box, .offset = .{ w, w, -w, -w } }, .color(if (i == 0) orange else green));
+            try b.fillSnapped(.{ .anchor = .{ .x0 = box.x0, .y0 = box.y0, .x1 = box.x1, .y1 = box.y0 }, .offset = .{ 0, 0, 0, w } }, .color(ink));
+            try b.fillSnapped(.{ .anchor = .{ .x0 = box.x0, .y0 = box.y1, .x1 = box.x1, .y1 = box.y1 }, .offset = .{ 0, -w, 0, 0 } }, .color(ink));
+            try b.fillSnapped(.{ .anchor = .{ .x0 = box.x0, .y0 = box.y0, .x1 = box.x0, .y1 = box.y1 }, .offset = .{ 0, w, w, -w } }, .color(ink));
+            try b.fillSnapped(.{ .anchor = .{ .x0 = box.x1, .y0 = box.y0, .x1 = box.x1, .y1 = box.y1 }, .offset = .{ -w, w, 0, -w } }, .color(ink));
+        }
+        const cell: Rect = .xywh(0, 24, 26, 10);
+        try b.pushLayer(.{ .clip = .{ .shape = .{ .rect = cell }, .snap = .box(cell) } });
+        try b.fillRect(.xywh(-5, 20, 40, 20), .color(blue));
+        try b.popLayer();
+        try b.fillSnapped(.{ .anchor = .{ .x0 = 0, .y0 = 36, .x1 = 26, .y1 = 36 }, .offset = .{ 0, 0, 0, 0.5 } }, .color(gray));
+        try b.popLayer();
+    }
+}
+
 fn loadIcon(gpa: std.mem.Allocator, dir: []const u8, name: []const u8) !*svg.Document {
     const io = std.testing.io;
     const path = try std.mem.concat(gpa, u8, &.{ dir, name });
@@ -742,6 +775,7 @@ pub const cases = [_]Case{
     .{ .name = "families", .width = 400, .height = 210, .build = families },
     .{ .name = "icons", .width = 400, .height = 420, .build = icons },
     .{ .name = "srgb", .width = 400, .height = 300, .build = srgbLayers },
+    .{ .name = "snapped", .width = 300, .height = 70, .build = snapped },
 };
 
 test "golden images" {

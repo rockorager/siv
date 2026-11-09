@@ -148,6 +148,65 @@ pub const Shape = union(enum) {
     }
 };
 
+/// A rectangle whose edges go on the device pixel grid, as browsers place
+/// box edges and borders (D32). Each edge lies an offset from an anchor,
+/// a box edge (edge = anchor + offset): through the transform to device
+/// pixels, the anchor rounds to the nearest pixel boundary, and the offset
+/// becomes whole pixels as a border width does (CSS Values 4: down, but at
+/// least one pixel when it is not zero). Rectangles that share anchors and
+/// offsets meet without seams or overlaps, and a 1px border is one line of
+/// whole pixels at any scale and zoom. The renderers snap only under
+/// transforms that keep axes; under a rotation or skew, and in PDF, the
+/// rectangle draws as it is.
+pub const Snap = struct {
+    /// The anchors of the left, top, right, and bottom edges.
+    anchor: Rect,
+    /// Each edge's offset from its anchor, in the same order.
+    offset: [4]f32 = .{ 0, 0, 0, 0 },
+
+    /// A rectangle whose edges are its anchors (a box's background).
+    pub fn box(r: Rect) Snap {
+        return .{ .anchor = r };
+    }
+
+    /// The rectangle unsnapped.
+    pub fn rect(s: Snap) Rect {
+        return .{ .x0 = s.anchor.x0 + s.offset[0], .y0 = s.anchor.y0 + s.offset[1], .x1 = s.anchor.x1 + s.offset[2], .y1 = s.anchor.y1 + s.offset[3] };
+    }
+
+    /// The rectangle snapped through `m`, in device pixels; null when `m`
+    /// rotates or skews.
+    pub fn device(s: Snap, m: Affine) ?Rect {
+        if (!m.isAxisAligned()) return null;
+        const xa = edge(s.anchor.x0, s.offset[0], m.a, m.e);
+        const xb = edge(s.anchor.x1, s.offset[2], m.a, m.e);
+        const ya = edge(s.anchor.y0, s.offset[1], m.d, m.f);
+        const yb = edge(s.anchor.y1, s.offset[3], m.d, m.f);
+        return .{ .x0 = @min(xa, xb), .y0 = @min(ya, yb), .x1 = @max(xa, xb), .y1 = @max(ya, yb) };
+    }
+
+    fn edge(anchor: f32, offset: f32, scale: f32, translate: f32) f32 {
+        // floor(x + 0.5) rounds the same way on both sides of zero, so
+        // scrolling by whole pixels does not change where edges go.
+        const at = @floor(scale * anchor + translate + 0.5);
+        const d = scale * offset;
+        // Slack for widths that are whole pixels but for float error
+        // (1.6px at 125%).
+        const whole = if (d == 0) 0 else @max(1, @floor(@abs(d) + 1e-3));
+        return if (d < 0) at - whole else at + whole;
+    }
+};
+
+/// A fill or clip shape as a renderer draws it through `m`: a snapped
+/// rectangle (`Snap`) in device pixels, through the identity, or the shape
+/// itself through `m`. Paint still maps through `m`.
+pub const Placed = struct { shape: Shape, m: Affine };
+
+pub fn placed(shape: Shape, snap: ?Snap, m: Affine) Placed {
+    if (snap) |s| if (s.device(m)) |d| return .{ .shape = .{ .rect = d }, .m = .identity };
+    return .{ .shape = shape, .m = m };
+}
+
 /// Compositing operators, in the order of COLRv1 CompositeMode and
 /// hb_paint_composite_mode_t. Porter-Duff operators first, then the
 /// separable and non-separable blend modes (which composite source-over).
@@ -195,6 +254,9 @@ pub const BlendMode = enum(u8) {
 pub const Clip = struct {
     shape: Shape,
     rule: FillRule = .nonzero,
+    /// Snaps a rectangle's edges to device pixels; `shape` is then
+    /// `snap.rect()`.
+    snap: ?Snap = null,
 };
 
 /// A layer: everything between its push and pop is drawn through it.
@@ -251,6 +313,9 @@ pub const Fill = struct {
     shape: Shape,
     rule: FillRule = .nonzero,
     paint: Paint,
+    /// Snaps a rectangle's edges to device pixels (`Builder.fillSnapped`);
+    /// `shape` is then `snap.rect()`.
+    snap: ?Snap = null,
 };
 
 pub const Stroke = struct {
@@ -519,7 +584,7 @@ pub const Builder = struct {
         var l = layer;
         if (!finiteAffine(l.transform) or !std.math.isFinite(l.opacity)) return error.InvalidArgument;
         l.opacity = std.math.clamp(l.opacity, 0, 1);
-        if (l.clip) |*c| c.shape = try b.copyShape(c.shape);
+        if (l.clip) |*c| c.shape = try b.copyShape(if (c.snap) |sn| .{ .rect = sn.rect() } else c.shape);
         try b.stack.ensureUnusedCapacity(b.gpa, 1);
         try b.commands.append(b.gpa, .{ .push = .{ .layer = l, .end = 0, .bounds = Rect.empty } });
         b.stack.appendAssumeCapacity(.{ .index = @intCast(b.commands.items.len - 1), .bounds = Rect.empty });
@@ -547,6 +612,14 @@ pub const Builder = struct {
 
     pub fn fillRect(b: *Builder, r: Rect, paint: Paint) Error!void {
         return b.fill(.{ .rect = r }, .nonzero, paint);
+    }
+
+    /// A rectangle with its edges snapped to device pixels (`Snap`).
+    pub fn fillSnapped(b: *Builder, snap: Snap, paint: Paint) Error!void {
+        const s = try b.copyShape(.{ .rect = snap.rect() });
+        const p = try b.copyPaint(paint);
+        try b.commands.append(b.gpa, .{ .fill = .{ .shape = s, .paint = p, .snap = snap } });
+        b.include(s.rect);
     }
 
     pub fn fillRoundedRect(b: *Builder, r: Rect, radii: Radii, paint: Paint) Error!void {
@@ -796,6 +869,29 @@ fn finiteAffine(m: Affine) bool {
 // Tests ---------------------------------------------------------------------
 
 const testing = std.testing;
+
+test "snapped rectangles: box edges round to pixels, offsets become whole pixels" {
+    const at150 = Affine.scale(1.5, 1.5).then(.translate(0.3, 0.2));
+    // A box from 5 to 45 at 150%: 7.8 rounds to 8, 67.8 to 68.
+    try testing.expectEqual(Rect{ .x0 = 8, .y0 = 8, .x1 = 68, .y1 = 68 }, Snap.box(.{ .x0 = 5, .y0 = 5, .x1 = 45, .y1 = 45 }).device(at150).?);
+    // Its 1px left and right borders are one pixel each, inside it; a
+    // 2px border is three pixels.
+    try testing.expectEqual(Rect{ .x0 = 8, .y0 = 8, .x1 = 9, .y1 = 68 }, (Snap{ .anchor = .{ .x0 = 5, .y0 = 5, .x1 = 5, .y1 = 45 }, .offset = .{ 0, 0, 1, 0 } }).device(at150).?);
+    try testing.expectEqual(Rect{ .x0 = 67, .y0 = 8, .x1 = 68, .y1 = 68 }, (Snap{ .anchor = .{ .x0 = 45, .y0 = 5, .x1 = 45, .y1 = 45 }, .offset = .{ -1, 0, 0, 0 } }).device(at150).?);
+    try testing.expectEqual(Rect{ .x0 = 8, .y0 = 8, .x1 = 11, .y1 = 68 }, (Snap{ .anchor = .{ .x0 = 5, .y0 = 5, .x1 = 5, .y1 = 45 }, .offset = .{ 0, 0, 2, 0 } }).device(at150).?);
+    // Zoomed to 110% (165%), 1px is still one pixel; at 100%, half a
+    // pixel is one; 1.6px at 125% is two, not one for float error.
+    try testing.expectEqual(Rect{ .x0 = 17, .y0 = 0, .x1 = 18, .y1 = 33 }, (Snap{ .anchor = .{ .x0 = 10, .y0 = 0, .x1 = 10, .y1 = 20 }, .offset = .{ 0, 0, 1, 0 } }).device(Affine.scale(1.65, 1.65).then(.translate(0.2, 0))).?);
+    try testing.expectEqual(Rect{ .x0 = 10, .y0 = 0, .x1 = 11, .y1 = 20 }, (Snap{ .anchor = .{ .x0 = 10, .y0 = 0, .x1 = 10, .y1 = 20 }, .offset = .{ 0, 0, 0.5, 0 } }).device(.identity).?);
+    try testing.expectEqual(@as(f32, 2), (Snap{ .anchor = .{ .x0 = 0, .y0 = 0, .x1 = 0, .y1 = 8 }, .offset = .{ 0, 0, 1.6, 0 } }).device(.scale(1.25, 1.25)).?.width());
+    // Mirrored, the border stays inside the box: 92.5 rounds to 93, and
+    // the border grows toward 92.
+    try testing.expectEqual(Rect{ .x0 = 92, .y0 = 0, .x1 = 93, .y1 = 30 }, (Snap{ .anchor = .{ .x0 = 5, .y0 = 0, .x1 = 5, .y1 = 20 }, .offset = .{ 0, 0, 1, 0 } }).device(Affine.scale(-1.5, 1.5).then(.translate(100, 0))).?);
+    // Moving by whole pixels moves edges by as much, past zero too.
+    try testing.expectEqual(Rect{ .x0 = -7, .y0 = 0, .x1 = 53, .y1 = 30 }, Snap.box(.{ .x0 = 5, .y0 = 0, .x1 = 45, .y1 = 20 }).device(Affine.scale(1.5, 1.5).then(.translate(-15, 0))).?);
+    // A rotation does not snap.
+    try testing.expectEqual(@as(?Rect, null), Snap.box(.{ .x0 = 5, .y0 = 0, .x1 = 45, .y1 = 20 }).device(.rotate(0.1)));
+}
 
 test "builder nests layers and computes bounds" {
     var b = Builder.init(testing.allocator);
