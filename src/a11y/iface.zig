@@ -805,6 +805,8 @@ fn attributeRun(r: *Request, offset: i32) anyerror!void {
         if (st.size) |z| try entry(&m.body, "size", try std.fmt.bufPrint(&buf, "{d}", .{z * 0.75}));
         if (st.underline) try entry(&m.body, "underline", "single");
         if (st.strikethrough) try entry(&m.body, "strikethrough", "true");
+        // Firefox's name over AT-SPI (IAccessible2's text-position).
+        if (st.baseline) |bl| if (bl != .normal) try entry(&m.body, "text-position", if (bl == .superscript) "super" else "sub");
         // ATK's and GTK's name for a misspelled word.
         if (sp.misspelled) try entry(&m.body, "invalid", "spelling");
         if (st.color != null or st.color_token != .none) {

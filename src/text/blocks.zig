@@ -270,7 +270,7 @@ pub const ShapedBlock = struct {
                 gpa.free(fonts);
                 return err;
             };
-            run.* = .{ .end = @intCast(@min(src.end, e) - s), .style = .{ .fonts = fonts, .size = src.style.size, .language = language } };
+            run.* = .{ .end = @intCast(@min(src.end, e) - s), .style = .{ .fonts = fonts, .size = src.style.size, .language = language, .rise = src.style.rise } };
             made += 1;
             k += 1;
         }
@@ -868,7 +868,7 @@ pub const ShapedText = struct {
         if (styles.len == 1) {
             const fonts = try gpa.dupe(FontId, styles[0].style.fonts);
             errdefer gpa.free(fonts);
-            only_style = .{ .fonts = fonts, .size = styles[0].style.size, .language = try gpa.dupe(u8, styles[0].style.language) };
+            only_style = .{ .fonts = fonts, .size = styles[0].style.size, .language = try gpa.dupe(u8, styles[0].style.language), .rise = styles[0].style.rise };
         }
         errdefer if (only_style) |st| {
             gpa.free(st.fonts);
@@ -902,7 +902,7 @@ fn validate(cache: *const FontCache, text: Source, styles: []const StyleRun) Bui
     for (styles, 0..) |run, i| {
         if ((run.end <= previous and !(i == 0 and run.end == 0)) or run.end > text.len) return error.InvalidStyles;
         if (run.end < text.len and text.byteAt(run.end) & 0xc0 == 0x80) return error.InvalidStyles;
-        if ((run.style.fonts.len == 0 and cache.last_resort == null) or !std.math.isFinite(run.style.size) or run.style.size <= 0) return error.InvalidStyles;
+        if ((run.style.fonts.len == 0 and cache.last_resort == null) or !std.math.isFinite(run.style.size) or run.style.size <= 0 or !std.math.isFinite(run.style.rise)) return error.InvalidStyles;
         previous = run.end;
     }
 }
@@ -1035,7 +1035,7 @@ fn sameStyles(b: *const ShapedBlock, styles: []const StyleRun, start: usize) boo
         const run = styles[k];
         const local_end = @min(run.end, start + blen) - start;
         if (local_end != o.end) return false;
-        if (run.style.size != o.style.size or !std.mem.eql(FontId, run.style.fonts, o.style.fonts) or !std.mem.eql(u8, run.style.language, o.style.language)) return false;
+        if (run.style.size != o.style.size or run.style.rise != o.style.rise or !std.mem.eql(FontId, run.style.fonts, o.style.fonts) or !std.mem.eql(u8, run.style.language, o.style.language)) return false;
         if (i + 1 == b.styles.len) return run.end >= start + blen;
         k += 1;
     }

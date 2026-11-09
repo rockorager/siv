@@ -29,6 +29,10 @@ pub const Style = struct {
     size: f32,
     /// BCP 47 language tag passed to shaping (D21).
     language: []const u8 = "und",
+    /// Pixels the glyphs sit above the line's baseline, negative below
+    /// (superscripts and subscripts). Layout applies it; shaping does not
+    /// see it.
+    rise: f32 = 0,
 };
 
 /// A style applying up to byte offset `end` (exclusive), from the previous
@@ -136,7 +140,7 @@ pub const ShapedParagraph = struct {
         const copied = try a.alloc(Style, styles.len);
         const ends = try a.alloc(u32, styles.len);
         for (styles, copied, ends) |run, *style, *end| {
-            style.* = .{ .fonts = try a.dupe(FontId, run.style.fonts), .size = run.style.size, .language = try a.dupe(u8, run.style.language) };
+            style.* = .{ .fonts = try a.dupe(FontId, run.style.fonts), .size = run.style.size, .language = try a.dupe(u8, run.style.language), .rise = run.style.rise };
             end.* = run.end;
         }
         self.styles = copied;
@@ -218,7 +222,7 @@ pub const ShapedParagraph = struct {
         // outside the redone bytes must not have changed.
         if (styles.len != old.styles.len) return init(gpa, scratch, cache, text, styles, direction);
         for (styles, old.styles, old.style_ends) |new, o, old_style_end| {
-            if (new.style.size != o.size or !std.mem.eql(FontId, new.style.fonts, o.fonts) or !std.mem.eql(u8, new.style.language, o.language))
+            if (new.style.size != o.size or new.style.rise != o.rise or !std.mem.eql(FontId, new.style.fonts, o.fonts) or !std.mem.eql(u8, new.style.language, o.language))
                 return init(gpa, scratch, cache, text, styles, direction);
             const moved: i64 = if (old_style_end >= old_end) old_style_end + delta else old_style_end;
             if ((old_style_end <= start or old_style_end >= old_end) and new.end != moved)
@@ -247,7 +251,7 @@ pub const ShapedParagraph = struct {
         const copied = try a.alloc(Style, styles.len);
         const ends = try a.alloc(u32, styles.len);
         for (styles, copied, ends) |run, *style, *end| {
-            style.* = .{ .fonts = try a.dupe(FontId, run.style.fonts), .size = run.style.size, .language = try a.dupe(u8, run.style.language) };
+            style.* = .{ .fonts = try a.dupe(FontId, run.style.fonts), .size = run.style.size, .language = try a.dupe(u8, run.style.language), .rise = run.style.rise };
             end.* = run.end;
         }
         self.styles = copied;
@@ -413,7 +417,7 @@ pub fn validateStyles(cache: *const FontCache, text: []const u8, styles: []const
     for (styles, 0..) |run, i| {
         if ((run.end <= previous and !(i == 0 and run.end == 0)) or run.end > text.len) return error.InvalidStyles;
         if (run.end < text.len and text[run.end] & 0xc0 == 0x80) return error.InvalidStyles;
-        if ((run.style.fonts.len == 0 and cache.last_resort == null) or !std.math.isFinite(run.style.size) or run.style.size <= 0) return error.InvalidStyles;
+        if ((run.style.fonts.len == 0 and cache.last_resort == null) or !std.math.isFinite(run.style.size) or run.style.size <= 0 or !std.math.isFinite(run.style.rise)) return error.InvalidStyles;
         previous = run.end;
     }
 }

@@ -112,7 +112,7 @@ test "rich text: families per span, paragraph styles, tab stops, and broken word
     // Reserved fields of frozen value structs are zero until a version
     // gives them a meaning (D2), and siv fills them with zero.
     try ok(c.siv_txn_begin(h.window, &txn));
-    const reserved_span = [_]t.TextSpan{.{ .start = 0, .end = 1, .flags = .{ .underline = true }, .reserved7 = 1 }};
+    const reserved_span = [_]t.TextSpan{.{ .start = 0, .end = 1, .flags = .{ .underline = true }, .reserved6 = 1 }};
     _ = c.siv_set_text_spans(txn, mixed, &.{ .spans = &reserved_span, .spans_count = 1 });
     try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_commit(txn));
     try ok(c.siv_txn_begin(h.window, &txn));
@@ -126,7 +126,7 @@ test "rich text: families per span, paragraph styles, tab stops, and broken word
     var filled: t.TextSpan = undefined;
     @memset(std.mem.asBytes(&filled), 0xaa);
     try ok(c.siv_node_get_text_run(mixed, 0, &filled));
-    for ([_]u32{ filled.reserved0, filled.reserved1, filled.reserved2, filled.reserved3, filled.reserved4, filled.reserved5, filled.reserved6, filled.reserved7 }) |r| try testing.expectEqual(@as(u32, 0), r);
+    for ([_]u32{ filled.reserved0, filled.reserved1, filled.reserved2, filled.reserved3, filled.reserved4, filled.reserved5, filled.reserved6 }) |r| try testing.expectEqual(@as(u32, 0), r);
 
     // Measured text takes the paragraph defaults: double spacing doubles
     // the height of two lines.
@@ -139,6 +139,71 @@ test "rich text: families per span, paragraph styles, tab stops, and broken word
     const stop = [_]t.TabStop{.{ .position = 200 }};
     try ok(c.siv_app_measure_text(h.app, "a\tb", 3, 0, &.{ .font_size = 20, .tab_stops = &stop, .tab_stops_count = 1 }, &tabbed));
     try testing.expect(tabbed.width > 200 and tabbed.width < 220);
+}
+
+test "rich text: superscripts and subscripts sit above and below the baseline" {
+    var h: Harness = .{};
+    try h.start(220, 130, null, null);
+    defer h.stop();
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const root = c.siv_window_get_root(h.window);
+    _ = c.siv_set_visual(txn, root, &.{ .background = .{ .r = 1, .g = 1, .b = 1, .a = 1 } });
+    const col = c.siv_flex(txn, root, &.{ .axis = .column, .gap = 8, .align_items = .start });
+    _ = c.siv_set_layout(txn, col, &.{ .padding = .{ .start = 10, .end = 10, .top = 10, .bottom = 10 } });
+    const s = "E = mc2 and H2O";
+    const plain = label(txn, col, s);
+    // The 2 of mc2 raised and underlined with the rest of mc2, which
+    // follows it up; the 2 of H2O lowered.
+    const shifted = label(txn, col, s);
+    const spans = [_]t.TextSpan{
+        .{ .start = 4, .end = 6, .flags = .{ .underline = true } },
+        .{ .start = 6, .end = 7, .flags = .{ .underline = true, .baseline = true }, .baseline = .superscript },
+        .{ .start = 13, .end = 14, .flags = .{ .baseline = true }, .baseline = .subscript },
+    };
+    _ = c.siv_set_text_spans(txn, shifted, &.{ .spans = &spans, .spans_count = spans.len });
+    const editor = c.siv_editor(txn, col, .{});
+    c.siv_set_text(txn, editor, "x2", 2);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try h.expectGolden("rich-text-baseline", 220, 130);
+
+    var run: t.TextSpan = undefined;
+    try ok(c.siv_node_get_text_run(shifted, 6, &run));
+    try testing.expect(run.flags.baseline and run.flags.underline and run.baseline == .superscript);
+    try testing.expectEqual([2]u32{ 6, 7 }, [2]u32{ run.start, run.end });
+    try ok(c.siv_node_get_text_run(shifted, 13, &run));
+    try testing.expect(run.flags.baseline and run.baseline == .subscript);
+    try ok(c.siv_node_get_text_run(shifted, 0, &run));
+    try testing.expect(!run.flags.baseline);
+    // The line grows to fit them.
+    var a: t.Rect = undefined;
+    var b: t.Rect = undefined;
+    try ok(c.siv_node_get_rect(plain, &a));
+    try ok(c.siv_node_get_rect(shifted, &b));
+    try testing.expect(b.height > a.height);
+
+    // The user's formatting command over a selection, then as the typing
+    // style.
+    try ok(c.siv_node_focus(editor));
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_set_selection(txn, editor, 2, 1);
+    try ok(c.siv_txn_commit(txn));
+    try ok(c.siv_editor_format(editor, .{ .flags = .{ .baseline = true }, .baseline = .superscript }, .{ .baseline = true }));
+    try ok(c.siv_node_get_text_run(editor, 1, &run));
+    try testing.expect(run.flags.baseline and run.baseline == .superscript and run.start == 1);
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_set_selection(txn, editor, 2, 2);
+    try ok(c.siv_txn_commit(txn));
+    try ok(c.siv_editor_format(editor, .{}, .{ .baseline = true }));
+    try ok(c.siv_node_get_typing_style(editor, &run));
+    try testing.expect(!run.flags.baseline);
+
+    // A value siv does not know fails the transaction.
+    try ok(c.siv_txn_begin(h.window, &txn));
+    const bad = [_]t.TextSpan{.{ .start = 0, .end = 1, .flags = .{ .baseline = true }, .baseline = @fromBackingInt(3) }};
+    _ = c.siv_set_text_spans(txn, plain, &.{ .spans = &bad, .spans_count = 1 });
+    try testing.expectEqual(t.Result.error_unsupported, c.siv_txn_commit(txn));
 }
 
 test "styled-text editors align paragraphs by keys, undoably" {

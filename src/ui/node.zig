@@ -668,6 +668,27 @@ pub const Weight = text.fontconfig.Weight;
 pub const Slant = text.fontconfig.Slant;
 pub const Width = text.fontconfig.Width;
 
+/// Where a span's glyphs sit (D22's styled text): superscripts and
+/// subscripts are smaller (CSS's font-size: smaller) and raised or
+/// lowered as siv's document renderer places sup and sub.
+pub const Baseline = enum(u8) {
+    normal,
+    superscript,
+    subscript,
+
+    pub const scale: f32 = 1.0 / 1.2;
+
+    /// Pixels above the baseline for text whose size before the
+    /// baseline's scale is `size`.
+    pub fn rise(b: Baseline, size: f32) f32 {
+        return switch (b) {
+            .normal => 0,
+            .superscript => size * 0.34,
+            .subscript => -size * 0.2,
+        };
+    }
+};
+
 /// The CSS weight a style and its span's weight ask for.
 pub fn cssWeight(style: TextStyle, span: ?Weight) u16 {
     if (span) |w| return @intFromFloat(w.css());
@@ -923,6 +944,7 @@ pub const SpanStyle = struct {
     color_token: ColorToken = .none,
     underline: bool = false,
     strikethrough: bool = false,
+    baseline: ?Baseline = null,
 
     pub fn isDefault(s: SpanStyle) bool {
         return std.meta.eql(s, SpanStyle{});
@@ -933,7 +955,7 @@ pub const SpanStyle = struct {
     }
 
     /// Which attributes a style change sets.
-    pub const Mask = packed struct(u8) {
+    pub const Mask = packed struct(u16) {
         weight: bool = false,
         slant: bool = false,
         size: bool = false,
@@ -942,6 +964,8 @@ pub const SpanStyle = struct {
         strikethrough: bool = false,
         family: bool = false,
         width: bool = false,
+        baseline: bool = false,
+        _: u7 = 0,
     };
 
     /// `s` with the attributes in `mask` taken from `values`.
@@ -958,6 +982,7 @@ pub const SpanStyle = struct {
         if (mask.strikethrough) out.strikethrough = values.strikethrough;
         if (mask.family) out.family = values.family;
         if (mask.width) out.width = values.width;
+        if (mask.baseline) out.baseline = values.baseline;
         return out;
     }
 };

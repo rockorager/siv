@@ -1720,8 +1720,12 @@ fn drawLayout(st: *State, win: *Window, l: *const text.TextLayout, b: *scene.Bui
                 if ((sp.underline or sp.strikethrough) and x1 > x0) {
                     // Whole device pixels, so the lines stay crisp.
                     const k: f32 = @floatCast(win.scale);
-                    const thick = @max(1, @round(run.size / 16 * k)) / k;
-                    for ([_]struct { bool, f32 }{ .{ sp.underline, baseline + run.size / 10 }, .{ sp.strikethrough, baseline - run.size * 0.28 } }) |deco| {
+                    // A superscript's or subscript's underline stays on
+                    // the line with its neighbors', as word processors
+                    // draw it; its strikethrough goes through its glyphs.
+                    const base_size = if (run.rise != 0) run.size / node_mod.Baseline.scale else run.size;
+                    const thick = @max(1, @round(base_size / 16 * k)) / k;
+                    for ([_]struct { bool, f32 }{ .{ sp.underline, baseline + base_size / 10 }, .{ sp.strikethrough, baseline - run.rise - run.size * 0.28 } }) |deco| {
                         if (!deco[0]) continue;
                         const r = Rect.xywh(x0, @round((deco[1] - thick / 2) * k) / k, x1 - x0, thick);
                         try b.fillRect(r, .color(run_color));

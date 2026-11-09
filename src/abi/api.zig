@@ -800,6 +800,11 @@ pub const decls = [_]Decl{
         .{ .name = "extra_expanded", .value = 7, .doc = "Extra-expanded (150%)." },
         .{ .name = "ultra_expanded", .value = 8, .doc = "Ultra-expanded (200%)." },
     }),
+    enumeration("siv_text_baseline", "Where a styled range's glyphs sit on the line (D22).", &.{
+        .{ .name = "normal", .value = 0, .doc = "On the line's baseline." },
+        .{ .name = "superscript", .value = 1, .doc = "A superscript: at 1/1.2 of the size (CSS's font-size: smaller), raised 0.34 of the size around it, as the document renderer places HTML's sup. The line grows to fit it." },
+        .{ .name = "subscript", .value = 2, .doc = "A subscript: at 1/1.2 of the size, lowered 0.2 of the size around it, as HTML's sub. The line grows to fit it." },
+    }),
     enumeration("siv_text_align", "Alignment of lines in a text node.", &.{
         .{ .name = "start", .value = 0, .doc = "The start edge of the node's direction." },
         .{ .name = "end", .value = 1, .doc = "The end edge." },
@@ -864,6 +869,7 @@ pub const decls = [_]Decl{
         .{ .name = "strikethrough", .bit = 5, .doc = "Struck through." },
         .{ .name = "family", .bit = 6, .doc = "family applies." },
         .{ .name = "width", .bit = 7, .doc = "width applies." },
+        .{ .name = "baseline", .bit = 8, .doc = "baseline applies." },
     }),
     value("siv_text_span", "A styled range of a text or editor node (D22): attributes that replace the node's style over start..end. Attributes whose flag is clear keep the node's.", &([_]schema.Field{
         .{ .name = "start", .type = .u32, .doc = "First byte, at a character boundary." },
@@ -876,7 +882,8 @@ pub const decls = [_]Decl{
         .{ .name = "color", .type = ref("siv_color"), .doc = "Text and decoration color, with SIV_TEXT_SPAN_COLOR." },
         .{ .name = "family", .type = .u32, .doc = "A font family from siv_app_get_font_family, with SIV_TEXT_SPAN_FAMILY; 0 is the application's default family." },
         .{ .name = "width", .type = ref("siv_font_width"), .doc = "Font width, with SIV_TEXT_SPAN_WIDTH." },
-    } ++ reservedRun(8))),
+        .{ .name = "baseline", .type = ref("siv_text_baseline"), .doc = "Superscript or subscript, with SIV_TEXT_SPAN_BASELINE; it scales the span's size (font_size, or the node's) and raises or lowers the glyphs and their strikethrough; an underline stays on the line, continuous with its neighbors'." },
+    } ++ reservedRun(7))),
     descriptor("siv_hyphenation_desc", "Hyphenation patterns for a language.", &.{
         .{ .name = "language", .type = .string, .doc = "BCP 47 tag; text whose language matches it, or whose language and region or language alone match it, uses the patterns." },
         .{ .name = "patterns", .type = .string, .doc = "TeX hyphenation patterns, whitespace-separated (such as .ab4c); copied." },

@@ -126,6 +126,9 @@ pub const GlyphRun = struct {
     size: f32,
     /// Index into `ShapedParagraph.styles`.
     style: u32,
+    /// The style's rise: the glyphs' `y` and `ink` already have it;
+    /// decorations drawn for the run may follow it.
+    rise: f32 = 0,
     /// Logical byte range the glyphs cover.
     start: u32,
     end: u32,
@@ -1106,11 +1109,13 @@ const Builder = struct {
             const run = p.runs[part.run];
             const style = p.styles[run.style];
             const face = self.cache.face(run.font);
-            if (face) |f| metrics = metrics.max(f.metrics(style.size));
+            // A raised or lowered run stretches the line as far as its
+            // glyphs go (CSS's vertical-align: super and sub).
+            if (face) |f| metrics = metrics.max(risen(f.metrics(style.size), style.rise));
             const part_x = pen;
             const glyph_start: u32 = @intCast(self.glyphs.items.len);
             for (part.glyphs) |glyph| {
-                try self.glyphs.append(self.lists, .{ .id = glyph.id, .x = pen + glyph.x_offset, .y = glyph.y_offset, .advance = glyph.advance, .cluster = glyph.cluster });
+                try self.glyphs.append(self.lists, .{ .id = glyph.id, .x = pen + glyph.x_offset, .y = glyph.y_offset - style.rise, .advance = glyph.advance, .cluster = glyph.cluster });
                 pen += glyph.advance;
             }
             try self.appendCarets(part, run, face, style.size, part_x);
@@ -1130,6 +1135,7 @@ const Builder = struct {
                 .font = run.font,
                 .size = style.size,
                 .style = run.style,
+                .rise = style.rise,
                 .start = part.start,
                 .end = part.end,
                 .rtl = run.rtl(),
@@ -1142,16 +1148,17 @@ const Builder = struct {
             // At the visual end of the (left-to-right) line, after its
             // last caret stop: it is shown, not text.
             const at: u32 = @intCast(self.glyphs.items.len);
-            try self.glyphs.append(self.lists, .{ .id = hy.id, .x = pen, .y = 0, .advance = hy.advance, .cluster = hy.cluster });
+            const hy_rise = p.styles[hy.style].rise;
+            try self.glyphs.append(self.lists, .{ .id = hy.id, .x = pen, .y = -hy_rise, .advance = hy.advance, .cluster = hy.cluster });
             pen += hy.advance;
             const merge = self.runs.items.len > run_start and blk: {
                 const last = self.runs.items[self.runs.items.len - 1];
-                break :blk last.font == hy.font and last.size == hy.size and !last.rtl and last.glyph_end == at;
+                break :blk last.font == hy.font and last.size == hy.size and last.rise == hy_rise and !last.rtl and last.glyph_end == at;
             };
             if (merge) {
                 self.runs.items[self.runs.items.len - 1].glyph_end = at + 1;
             } else {
-                try self.runs.append(self.lists, .{ .font = hy.font, .size = hy.size, .style = hy.style, .start = hy.cluster, .end = end, .rtl = false, .glyph_start = at, .glyph_end = at + 1 });
+                try self.runs.append(self.lists, .{ .font = hy.font, .size = hy.size, .style = hy.style, .rise = hy_rise, .start = hy.cluster, .end = end, .rtl = false, .glyph_start = at, .glyph_end = at + 1 });
             }
         }
 
@@ -1202,6 +1209,11 @@ const Builder = struct {
             }
             run.ink = if (x1 > x0) .{ .x = x0, .y = y0, .width = x1 - x0, .height = y1 - y0 } else .{ .x = 0, .y = 0, .width = 0, .height = 0 };
         }
+    }
+
+    /// A font's metrics for glyphs `rise` above the baseline.
+    fn risen(m: font_.Metrics, rise: f32) font_.Metrics {
+        return .{ .ascent = m.ascent + rise, .descent = m.descent - rise, .line_gap = m.line_gap };
     }
 
     fn strut(self: *const Builder, style_index: u32) font_.Metrics {
@@ -1475,6 +1487,46 @@ fn visualClusters(l: *const Layout, line: Line, out: []u32) []u32 {
         n += 1;
     };
     return out[0..n];
+}
+
+test "a run's rise moves its glyphs and stretches the line" {
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    const a = fixture.arena.allocator();
+    const fonts = [_]FontId{fixture.latin};
+    const small: f32 = 16.0 / 1.2;
+    const face = fixture.cache.face(fixture.latin).?;
+    const big = face.metrics(16);
+    const little = face.metrics(small);
+    // "x2" with a superscript 2, then "y2" with a subscript 2.
+    const text = "x2 y2";
+    var p = try ShapedParagraph.init(std.testing.allocator, a, &fixture.cache, text, &.{
+        .{ .end = 1, .style = .{ .fonts = &fonts, .size = 16 } },
+        .{ .end = 2, .style = .{ .fonts = &fonts, .size = small, .rise = 5 } },
+        .{ .end = 4, .style = .{ .fonts = &fonts, .size = 16 } },
+        .{ .end = 5, .style = .{ .fonts = &fonts, .size = small, .rise = -3 } },
+    }, .auto_ltr);
+    defer p.deinit();
+    var l = try layoutOf(&fixture, &p, .{});
+    defer l.deinit();
+    const line = l.lines[0];
+    var raised: ?GlyphRun = null;
+    var lowered: ?GlyphRun = null;
+    for (l.lineRuns(line)) |run| {
+        if (run.start == 1) raised = run;
+        if (run.start == 4) lowered = run;
+    }
+    try std.testing.expectEqual(5, raised.?.rise);
+    try std.testing.expectEqual(-3, lowered.?.rise);
+    try std.testing.expectEqual(-5, l.runGlyphs(raised.?)[0].y);
+    try std.testing.expectEqual(3, l.runGlyphs(lowered.?)[0].y);
+    // The ink moved with the glyphs: the raised 2's top is 5 px higher
+    // than a 2 of its size on the baseline would be.
+    const bounds = face.glyphBounds(l.runGlyphs(raised.?)[0].id, small).?;
+    try std.testing.expectApproxEqAbs(bounds.y - 5, raised.?.ink.y, 0.01);
+    try std.testing.expectApproxEqAbs(@max(big.ascent, little.ascent + 5), line.ascent, 0.01);
+    try std.testing.expectApproxEqAbs(@max(big.descent, little.descent + 3), line.descent, 0.01);
+    try std.testing.expect(line.ascent > big.ascent and line.descent > big.descent);
 }
 
 test "greedy breaking lets trailing whitespace hang" {

@@ -5186,6 +5186,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       string: `siv_text_span` is a fixed-size value that arrays hold and
       `siv_node_get_text_run` returns through an out parameter, so a
       pointer in it would have no owner.
+    - Spans also place their glyphs (November 2026): a superscript or
+      subscript baseline shrinks the span to 1/1.2 of its size and raises
+      it 0.34 or lowers it 0.2 of the size around it, the numbers the
+      document renderer gives HTML's sup and sub, so both renderers agree.
+      The text engine's style carries the rise: layout moves the glyphs
+      and their ink by it and grows the line to fit them, so shaping,
+      carets, and hit testing are unchanged. A strikethrough follows the
+      raised glyphs, while an underline stays on the line, continuous
+      with its neighbors', as word processors draw it. AT-SPI exposes it
+      as text-position, as Firefox does. Alternative: a rise in pixels
+      (applications would each pick the numbers, and none would match
+      the document renderer).
     - Paragraph styles (`siv_set_paragraph_spans`, D13's layout options)
       are ranges like spans, but each paragraph takes the style at its
       first character, and they are kept snapped to whole paragraphs

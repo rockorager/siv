@@ -253,7 +253,9 @@ fn styleRuns(win: *Window, id: NodeId, content_len: usize, list: []const node_mo
             i += 1;
         } else if (i < list.len) run.end = list[i].start;
         const sp = run.style;
-        const run_size = if (sp.size) |z| z * scale else size;
+        const baseline = sp.baseline orelse .normal;
+        const unscaled = if (sp.size) |z| z * scale else size;
+        const run_size = if (baseline == .normal) unscaled else unscaled * node_mod.Baseline.scale;
         const query: Fonts.Query = .{ .family = sp.family orelse d.family, .language = language, .weight = node_mod.cssWeight(style, sp.weight), .slant = sp.slant orelse style.slant, .width = sp.width orelse style.width, .size = run_size };
         const chain = for (memo) |m| {
             if (m) |x| if (std.meta.eql(x.query, query)) break x.chain;
@@ -263,7 +265,7 @@ fn styleRuns(win: *Window, id: NodeId, content_len: usize, list: []const node_mo
             memo_next = (memo_next + 1) % memo.len;
             break :blk ch;
         };
-        runs.appendAssumeCapacity(.{ .end = run.end, .style = .{ .fonts = chain, .size = run_size, .language = lang_name } });
+        runs.appendAssumeCapacity(.{ .end = run.end, .style = .{ .fonts = chain, .size = run_size, .language = lang_name, .rise = baseline.rise(unscaled) } });
         if (run_styles) |rs| try rs.append(win.gpa, sp);
         if (run.end >= len) break;
         at = run.end;

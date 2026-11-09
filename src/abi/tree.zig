@@ -1317,6 +1317,12 @@ fn spanStyleOf(w: *Window, sp: t.TextSpan) Error!ui.SpanStyle {
         out.family = sp.family;
     }
     if (fl.width) out.width = try widthOf(sp.width);
+    if (fl.baseline) out.baseline = switch (try runtime.enumValue(t.TextBaseline, sp.baseline)) {
+        .normal => .normal,
+        .superscript => .superscript,
+        .subscript => .subscript,
+        _ => unreachable,
+    };
     if (fl.weight) out.weight = switch (try runtime.enumValue(t.FontWeight, sp.weight)) {
         .regular => .regular,
         .thin => .thin,
@@ -1389,6 +1395,14 @@ fn textSpanOf(start: u32, end: u32, st: ui.SpanStyle) t.TextSpan {
         out.flags.size = true;
         out.font_size = z;
     }
+    if (st.baseline) |bl| {
+        out.flags.baseline = true;
+        out.baseline = switch (bl) {
+            .normal => .normal,
+            .superscript => .superscript,
+            .subscript => .subscript,
+        };
+    }
     if (st.color != null or st.color_token != .none) {
         out.flags.color = true;
         out.color_token = @fromBackingInt(@intFromEnum(st.color_token));
@@ -1444,7 +1458,7 @@ pub export fn siv_editor_format(node: t.Node, values: t.TextSpan, mask: t.TextSp
             const fl = try runtime.flags(t.TextSpanFlags, m);
             const style = try spanStyleOf(w, v);
             if (uw.txn.open) return error.Busy;
-            if (!ui.access.format(uw, id, style, .{ .weight = fl.weight, .slant = fl.slant, .size = fl.size, .color = fl.color, .underline = fl.underline, .strikethrough = fl.strikethrough, .family = fl.family, .width = fl.width }))
+            if (!ui.access.format(uw, id, style, .{ .weight = fl.weight, .slant = fl.slant, .size = fl.size, .color = fl.color, .underline = fl.underline, .strikethrough = fl.strikethrough, .family = fl.family, .width = fl.width, .baseline = fl.baseline }))
                 return error.OutOfMemory;
         }
     }.f(node, values, mask));
