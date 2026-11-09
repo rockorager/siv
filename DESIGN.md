@@ -3625,7 +3625,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       still wins for the default family.
     - In documents (docview, D32) CSS's `system-ui` is the window's
       default family, the one UI text uses, so a page can match the
-      application's own text; `sans-serif` stays Fontconfig's.
+      application's own text; `sans-serif` stays Fontconfig's. An
+      application whose default family is not a reading face opts out
+      per document with `siv_docview_desc.system_font` (docview
+      `Options.system_font`), the family `system-ui` resolves to
+      instead: parcel sets its default family to `monospace` to match
+      the user's terminal, and mail naming `-apple-system,
+      BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif`
+      (GitHub's notifications, most transactional mail) then showed in
+      the monospace face, much larger beside mail naming Arial; its
+      user style sheet cannot help, since author styles name
+      `-apple-system` first. With "sans-serif" there, `system-ui` is
+      Fontconfig's sans-serif. Empty keeps the default family.
     - Content siv does not draw reads the same resolved values, so that
       it matches siv's own text and motion rather than reading the
       portal itself: `siv_app_get_default_font` (the family above, or
@@ -7131,7 +7142,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     Lua from the schema). A document node created from bytes, a kind
     (HTML, Markdown, plain text), a base URL, a user style sheet, a
     color scheme (the window's theme, light, or dark), flags (remote
-    images, no author styles, converting colors to dark), a font size, a loader callback that the
+    images, no author styles, converting colors to dark), a font size,
+    the family `system-ui` resolves to (D19), a loader callback that the
     application answers with `siv_docview_supply` (now or later, for
     style sheets, images, and fonts; siv never fetches), and an event
     callback (link activation, loaded, size, find results, selection,

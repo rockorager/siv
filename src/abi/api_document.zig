@@ -125,6 +125,7 @@ pub const decls = [_]Decl{
         f("color_scheme", ref("siv_docview_color_scheme"), "Default theme."),
         f("flags", ref("siv_docview_flags"), "Options."),
         f("font_size", .f32, "The size of CSS medium, in logical pixels; 0 follows the window's text size."),
+        f("system_font", .string, "The family CSS system-ui (and -apple-system, BlinkMacSystemFont) resolves to, such as \"sans-serif\" for mail that should not take an application's monospace face; empty is the application's default family (siv_app_get_default_font), so that a page can match the application's text (D19)."),
     }),
 };
 

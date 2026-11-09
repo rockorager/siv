@@ -209,6 +209,7 @@ fn create(w: *Window, parent: t.Node, ptr: ?*const t.DocviewDesc) Error!NodeId {
     const scheme = try runtime.enumValue(t.DocviewColorScheme, desc.color_scheme);
     const fl = try runtime.flags(t.DocviewFlags, desc.flags);
     const epub_path = try runtime.string(desc.epub_path, desc.epub_path_len);
+    const system_font = try runtime.string(desc.system_font, desc.system_font_len);
     const pub_: ?*Epub = if (@backingInt(desc.epub) != 0) try epubOf(desc.epub) else null;
     if (!std.math.isFinite(desc.font_size) or desc.font_size < 0) return error.InvalidArgument;
     const self = w.owner;
@@ -248,6 +249,7 @@ fn create(w: *Window, parent: t.Node, ptr: ?*const t.DocviewDesc) Error!NodeId {
         .book = if (pub_) |e| e.book else null,
         .book_path = epub_path,
         .font_size = desc.font_size,
+        .system_font = system_font,
     }, .{ .ctx = d, .event = Doc.onEvent, .load = Doc.onLoad }) catch |err| return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         else => |e| tree.mapTxn(e),

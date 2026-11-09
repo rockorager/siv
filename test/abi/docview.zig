@@ -312,33 +312,71 @@ test "C API docview: Markdown rendered to HTML for export" {
     try testing.expectEqualStrings("<h1>Notes</h1>\n<ul>\n<li class=\"task-list-item\"><input type=\"checkbox\" checked=\"\" disabled=\"\" /> <em>done</em></li>\n</ul>\n", buf[0..len]);
 }
 
-/// A page of "HIOn" in `family`, rendered with the default font set to
-/// SivTest and Droid standing in for Fontconfig's sans-serif.
-fn renderFamily(family: []const u8) ![]u8 {
+/// A page of "HIOn" in `family`, rendered with SivTest standing in for
+/// Fontconfig's monospace and Droid for its sans-serif, the default
+/// font set to `default`, and `system_font` passed to the document.
+fn renderFamily(family: []const u8, default: []const u8, system_font: []const u8) ![]u8 {
     var h: Harness = .{};
     try h.start(120, 40, null, null);
     defer h.stop();
     const tf = @import("text").font.test_fonts;
     try ok(A.siv_app_add_font(h.app, "SivTest", 7, tf.siv_regular.ptr, tf.siv_regular.len));
+    try ok(A.siv_app_add_font(h.app, "monospace", 9, tf.siv_regular.ptr, tf.siv_regular.len));
     try ok(A.siv_app_add_font(h.app, "sans-serif", 10, tf.latin.ptr, tf.latin.len));
-    try ok(A.siv_app_set_default_font(h.app, "SivTest", 7));
+    try ok(A.siv_app_set_default_font(h.app, default.ptr, default.len));
     var ev: Events = .{};
-    var buf: [128]u8 = undefined;
+    var buf: [256]u8 = undefined;
     const html = try std.fmt.bufPrint(&buf, "<p style=\"font: 20px {s}; margin: 4px\">HIOn HIOn</p>", .{family});
-    _ = try build(&h, &ev, .html, html, .{}, "file:///");
+    const root = A.siv_window_get_root(h.window);
+    var txn: t.Txn = .null;
+    try ok(T.siv_txn_begin(h.window, &txn));
+    const sc = T.siv_scroll(txn, root, .vertical);
+    _ = T.siv_set_layout(txn, sc, &.{ .size = @sizeOf(t.LayoutDesc), .width = .{ .unit = .fraction, .value = 1 }, .height = .{ .unit = .fraction, .value = 1 } });
+    _ = D.siv_docview(txn, sc, &.{
+        .source = html.ptr,
+        .source_count = html.len,
+        .system_font = system_font.ptr,
+        .system_font_len = system_font.len,
+        .kind = .html,
+        .color_scheme = .light,
+        .user_data = &ev,
+        .on_event = Events.onEvent,
+        .load = Events.onLoad,
+    });
+    try ok(T.siv_txn_commit(txn));
     try waitLoaded(&h, &ev, 1);
     return h.capture();
 }
 
 test "C API docview: system-ui is the application's default family" {
-    const ui = try renderFamily("system-ui");
-    defer testing.allocator.free(ui);
-    const named = try renderFamily("SivTest");
-    defer testing.allocator.free(named);
-    const sans = try renderFamily("sans-serif");
-    defer testing.allocator.free(sans);
+    const gpa = testing.allocator;
+    const ui = try renderFamily("system-ui", "SivTest", "");
+    defer gpa.free(ui);
+    const named = try renderFamily("SivTest", "SivTest", "");
+    defer gpa.free(named);
+    const sans = try renderFamily("sans-serif", "SivTest", "");
+    defer gpa.free(sans);
     try testing.expectEqualSlices(u8, named, ui);
     try testing.expect(!std.mem.eql(u8, sans, ui));
+}
+
+test "C API docview: system_font chooses what system-ui is" {
+    const gpa = testing.allocator;
+    // Parcel's case: the application's text is monospace, and mail
+    // naming -apple-system first should get a sans face, as mail naming
+    // Arial does.
+    const sans = try renderFamily("sans-serif", "monospace", "");
+    defer gpa.free(sans);
+    const mono = try renderFamily("monospace", "monospace", "");
+    defer gpa.free(mono);
+    try testing.expect(!std.mem.eql(u8, sans, mono));
+    const chosen = try renderFamily("-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif", "monospace", "sans-serif");
+    defer gpa.free(chosen);
+    try testing.expectEqualSlices(u8, sans, chosen);
+    // Without it, system-ui stays the default family.
+    const default = try renderFamily("-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif", "monospace", "");
+    defer gpa.free(default);
+    try testing.expectEqualSlices(u8, mono, default);
 }
 
 /// Mail as parcel shows it (untrusted, quotes collapsed, its user style

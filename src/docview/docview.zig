@@ -61,6 +61,10 @@ pub const Options = struct {
     collapse_quotes: bool = false,
     /// CSS `medium`; 0 follows the window's text size.
     font_size: f32 = 0,
+    /// The family CSS `system-ui` (and `-apple-system`,
+    /// `BlinkMacSystemFont`) resolves to, such as "sans-serif"; empty is
+    /// the window's default family, the one UI text uses (D19).
+    system_font: []const u8 = "",
     /// Pages instead of scrolling: the node fills the space it is given
     /// and shows one page (two side by side with `spread` when wider than
     /// tall), turned with `setPage`.
@@ -222,6 +226,7 @@ pub const View = struct {
         o.base_url = try gpa.dupe(u8, options.base_url);
         o.user_css = if (options.reading) try std.mem.concat(gpa, u8, &.{ reading_css, "\n", options.user_css }) else try gpa.dupe(u8, options.user_css);
         o.book_path = try gpa.dupe(u8, options.book_path);
+        o.system_font = try gpa.dupe(u8, options.system_font);
         if (options.book) |book| {
             // A chapter (or, with a source, a fragment of one): its
             // bytes, and URLs in the container.
@@ -273,6 +278,7 @@ pub const View = struct {
         gpa.free(v.options.base_url);
         gpa.free(v.options.user_css);
         gpa.free(v.options.book_path);
+        gpa.free(v.options.system_font);
         v.pages.deinit(gpa);
         v.reading_anchor.deinit(gpa);
         gpa.free(v.source);
@@ -641,9 +647,15 @@ pub const View = struct {
         const v: *View = @ptrCast(@alignCast(ctx));
         const f = v.win.fonts;
         return f.chain(.{
-            // system-ui is the window's default family: the desktop's
-            // font, else Fontconfig's sans-serif (D19).
-            .family = if (std.ascii.eqlIgnoreCase(family, "system-ui")) 0 else try f.intern(family),
+            // system-ui is the application's choice, else the window's
+            // default family: the desktop's font, else Fontconfig's
+            // sans-serif (D19).
+            .family = if (!std.ascii.eqlIgnoreCase(family, "system-ui"))
+                try f.intern(family)
+            else if (v.options.system_font.len > 0)
+                try f.intern(v.options.system_font)
+            else
+                0,
             .language = try f.intern(language),
             .weight = weight,
             .slant = if (italic) .italic else .roman,
