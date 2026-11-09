@@ -83,7 +83,6 @@ test "streamed animations decode frame by frame, the same as whole, and rewind" 
         @embedFile("testdata/anim.gif"),
         @embedFile("testdata/anim.png"),
         @embedFile("testdata/anim.webp"),
-        @embedFile("testdata/anim.avif"),
     };
     for (files) |bytes| {
         // Scaled, so that conversion runs too.
@@ -155,8 +154,6 @@ test "fuzz: every decoder" {
         @embedFile("testdata/linear-icc.png"),
         @embedFile("testdata/still.webp"),
         @embedFile("testdata/anim.webp"),
-        @embedFile("testdata/still.avif"),
-        @embedFile("testdata/deep.avif"),
         @embedFile("testdata/lossy.jxl"),
         @embedFile("testdata/lossless.jxl"),
     } });
@@ -184,29 +181,6 @@ test "WebP, still and animated" {
     try testing.expectEqual(@as(u32, 3), anim.loops);
     try testing.expectEqual([3]u32{ 100, 200, 300 }, .{ anim.frames[0].delay_ms, anim.frames[1].delay_ms, anim.frames[2].delay_ms });
     try testing.expectEqual([4]u8{ 0, 255, 0, 255 }, px8(&anim, 1, 8, 8));
-}
-
-test "AVIF: 8-bit, 10-bit, and an image sequence" {
-    const still = try image.decode(gpa, @embedFile("testdata/still.avif"), .{});
-    defer still.deinit(gpa);
-    try testing.expectEqual(@as(u32, 64), still.width);
-    try testing.expectEqual(.rgba8_srgb, still.format);
-    try near([4]u8{ 255, 0, 0, 255 }, px8(&still, 0, 4, 24), 8);
-    try near([4]u8{ 0, 0, 255, 128 }, px8(&still, 0, 56, 24), 8);
-
-    // 10 bits per channel: linear 16-bit, red stays red.
-    const deep = try image.decode(gpa, @embedFile("testdata/deep.avif"), .{});
-    defer deep.deinit(gpa);
-    try testing.expectEqual(.rgba16_linear_premul, deep.format);
-    try near([4]u16{ 65535, 0, 0, 65535 }, px16(&deep, 0, 8, 8), 1200);
-
-    const anim = try image.decode(gpa, @embedFile("testdata/anim.avif"), .{});
-    defer anim.deinit(gpa);
-    try testing.expectEqual(@as(usize, 6), anim.frames.len);
-    try testing.expectEqual(@as(u32, 100), anim.frames[0].delay_ms);
-    try near([4]u8{ 255, 0, 0, 255 }, px8(&anim, 0, 8, 8), 10);
-    try near([4]u8{ 0, 255, 0, 255 }, px8(&anim, 2, 8, 8), 10);
-    try near([4]u8{ 0, 0, 255, 255 }, px8(&anim, 5, 8, 8), 10);
 }
 
 test "JPEG XL: lossy (XYB, rendered to linear light) and lossless" {

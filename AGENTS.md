@@ -52,7 +52,7 @@ zig build bench-latency        # input-to-photon and smoothness on the headless 
                                #   against D25's budget; quiet machine
 zig build -fsys=harfbuzz -fsys=sheenbidi   # link system copies instead of vendored ones
 zig build -fsys=lua            # link the system liblua5.5 into libsiv-lua
-zig build -fsys=lcms2 -fsys=libavif -fsys=dav1d  # system Little CMS and AVIF decoders
+zig build -fsys=lcms2          # system Little CMS
 ```
 
 Opt in and by hand only, never a gate: the steps against real desktop
@@ -96,7 +96,7 @@ owns its directories and does not edit another workstream's files.
 | `text` | `src/text/` | Text engine | `raster`, `harfbuzz`, `sheenbidi`, `fontconfig`, `uucode` |
 | `raster` | `src/raster/` | Rasterizer, display list, CPU renderer | none |
 | `scene` | `src/scene/` | Rasterizer, display list, CPU renderer | `raster` |
-| `image` | `src/image/` | Image decoding | `scene`, `baskingspot_image` (Zig: PNG, JPEG, GIF, WebP, JPEG XL), `image_c` (lcms2, libavif, dav1d) |
+| `image` | `src/image/` | Image decoding | `scene`, `baskingspot_image` (Zig: PNG, JPEG, GIF, WebP, JPEG XL), `image_c` (lcms2) |
 | `svg` | `src/svg/` | Icons and SVG | `scene`, `raster`, `image` |
 | `icon` | `src/icon/` | Icons and SVG | none |
 | `spell` | `src/spell/` | Spell checking (D37) | `uucode` |
@@ -154,8 +154,8 @@ commit message. In particular:
   - `src/render/vulkan/build_steps.zig`: the Vulkan headers module, the
     shader list, and `zig build shaders` with the glslang compiler that
     writes the committed SPIR-V.
-  - `src/image/build_steps.zig`: the image decoders' C sources, generated
-    headers, `-fsys` options, and NASM (built from source for dav1d).
+  - `src/image/build_steps.zig`: the image decoders and Little CMS with
+    its `-fsys` option.
   - `webview/build_steps.zig`: siv-webview's libraries, Zig and Lua
     modules, example browsers, and tests, and the pkg-config probe for
     `-Dwebview=auto`.

@@ -76,7 +76,7 @@ REASONS = [
 WRITING_MODES = "writing modes and right-to-left"
 # Images the harness decodes: <img>, inline <svg>, and image URLs in CSS.
 IMAGES = re.compile(r"<img|<svg|<picture", re.I)
-IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".avif")
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")
 SRC = re.compile(r"<img[^>]*?\ssrc=(?:\"([^\"]*)\"|'([^']*)'|([^\s>]+))", re.I | re.S)
 URL = re.compile(r"url\(\s*['\"]?([^'\")]+)", re.I)
 LINK = re.compile(r"<link[^>]*rel=['\"]?stylesheet['\"]?[^>]*>", re.I)

@@ -13,7 +13,7 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     if (@import("builtin").mode == .debug) std.debug.print("warning: build with -Doptimize=ReleaseFast for meaningful numbers\n", .{});
     const args = try init.minimal.args.toSlice(init.arena.allocator());
-    const defaults = [_][:0]const u8{ "src/image/testdata/still.avif", "src/image/testdata/deep.avif", "src/image/testdata/anim.avif" };
+    const defaults = [_][:0]const u8{ "src/image/testdata/photo.jpg", "src/image/testdata/still.webp", "src/image/testdata/anim.webp", "src/image/testdata/lossy.jxl" };
     const files: []const [:0]const u8 = if (args.len > 1) args[1..] else &defaults;
     for (files) |path| {
         const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(512 << 20));

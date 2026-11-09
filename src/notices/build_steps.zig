@@ -68,8 +68,6 @@ const entries = [_]Entry{
     .{ .title = "baskingspot compress (MIT)", .package = "baskingspot_image.compress", .siv_files = &.{"src/notices/compress-LICENSE.txt"} },
     .{ .title = "baskingspot fastmem (MIT)", .package = "baskingspot_image.compress.fastmem", .files = &.{ "LICENSE", "THIRD_PARTY.md" } },
     .{ .title = "Little CMS (MIT)", .package = "lcms2", .files = &.{"LICENSE"} },
-    .{ .title = "dav1d (BSD-2-Clause)", .package = "dav1d", .files = &.{"COPYING"} },
-    .{ .title = "libavif and the libyuv it bundles (BSD-2-Clause, BSD-3-Clause)", .package = "libavif", .files = &.{"LICENSE"} },
     .{ .title = "zig-wayland (MIT)", .package = "wayland", .files = &.{"LICENSE"} },
     .{ .title = "Wayland protocol (MIT)", .package = "wayland_core", .files = &.{"COPYING"} },
     .{ .title = "wayland-protocols (MIT)", .package = "wayland_protocols", .files = &.{"COPYING"} },
@@ -84,8 +82,8 @@ const entries = [_]Entry{
 };
 
 /// Packages whose tools run at build time and whose output is not derived
-/// from them: NASM assembles dav1d, glslang compiles siv's shaders.
-const build_only = [_][]const u8{ "nasm", "glslang" };
+/// from them: glslang compiles siv's shaders.
+const build_only = [_][]const u8{"glslang"};
 
 pub fn add(b: *std.Build, o: Options) void {
     var walk: Walk = .{ .b = b };

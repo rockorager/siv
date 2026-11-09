@@ -1,6 +1,5 @@
 //! Image decoding (D19): PNG, APNG, JPEG, GIF, WebP, and JPEG XL through
-//! baskingspot's image package (Zig), and AVIF through libavif and dav1d,
-//! into pixels the renderers draw (D9).
+//! baskingspot's image package (Zig), into pixels the renderers draw (D9).
 //!
 //! `decode` takes a whole file in memory and runs on the calling thread;
 //! the UI runs it on the worker pool (`ui.Image.load`). Animations too
@@ -9,7 +8,7 @@
 //! down to the size they are displayed at while they are decoded, frame by
 //! frame, so only that size is kept. Color is converted to the working
 //! space (D11): embedded ICC profiles through Little CMS, CICP encodings
-//! (AVIF, JPEG XL) by their transfer function and primaries. 8-bit sRGB
+//! (PNG's cICP, JPEG XL) by their transfer function and primaries. 8-bit sRGB
 //! images that are not scaled stay 8-bit sRGB (`rgba8_srgb`); everything
 //! else becomes linear, premultiplied 16-bit (`rgba16_linear_premul`),
 //! clipped to sRGB primaries.
@@ -26,7 +25,7 @@ const c = @import("image_c");
 
 const Allocator = std.mem.Allocator;
 
-pub const Format = enum { png, jpeg, gif, webp, avif, jxl };
+pub const Format = enum { png, jpeg, gif, webp, jxl };
 
 /// The format of a file, from its first bytes.
 pub fn sniff(bytes: []const u8) ?Format {
@@ -34,17 +33,6 @@ pub fn sniff(bytes: []const u8) ?Format {
     if (std.mem.startsWith(u8, bytes, "\xff\xd8\xff")) return .jpeg;
     if (std.mem.startsWith(u8, bytes, "GIF87a") or std.mem.startsWith(u8, bytes, "GIF89a")) return .gif;
     if (bytes.len >= 12 and std.mem.eql(u8, bytes[0..4], "RIFF") and std.mem.eql(u8, bytes[8..12], "WEBP")) return .webp;
-    if (bytes.len >= 12 and std.mem.eql(u8, bytes[4..8], "ftyp")) {
-        const brand = bytes[8..12];
-        if (std.mem.eql(u8, brand, "avif") or std.mem.eql(u8, brand, "avis")) return .avif;
-        // Compatible brands, for files whose major brand is generic.
-        const size = std.mem.readInt(u32, bytes[0..4], .big);
-        var i: usize = 16;
-        while (i + 4 <= @min(size, bytes.len)) : (i += 4) {
-            const b = bytes[i..][0..4];
-            if (std.mem.eql(u8, b, "avif") or std.mem.eql(u8, b, "avis")) return .avif;
-        }
-    }
     if (std.mem.startsWith(u8, bytes, "\xff\x0a")) return .jxl;
     if (std.mem.startsWith(u8, bytes, "\x00\x00\x00\x0cJXL \x0d\x0a\x87\x0a")) return .jxl;
     return null;
@@ -160,15 +148,6 @@ const Source = struct {
     close: *const fn (ctx: *anyopaque) void,
 };
 
-fn mapAvif(r: c_int) Error {
-    return switch (r) {
-        c.SIV_AVIF_UNSUPPORTED => error.Unsupported,
-        c.SIV_AVIF_TOO_LARGE => error.TooLarge,
-        c.SIV_AVIF_NO_MEMORY => error.OutOfMemory,
-        else => error.InvalidImage,
-    };
-}
-
 /// PNG, APNG, JPEG, GIF, WebP, and JPEG XL, decoded in Zig by baskingspot's
 /// image package in an object of their own (src/image/native.zig).
 const native = struct {
@@ -188,8 +167,7 @@ const native = struct {
 
     fn open(format: Format, bytes: []const u8, max_pixels: u64, count: bool) Error!Source {
         const f: abi.Format = switch (format) {
-            inline .png, .jpeg, .gif, .webp, .jxl => |t| @field(abi.Format, @tagName(t)),
-            .avif => unreachable,
+            inline else => |t| @field(abi.Format, @tagName(t)),
         };
         var info: abi.Info = .{};
         const r = siv_native_open(f, bytes.ptr, bytes.len, max_pixels, count, &info);
@@ -223,51 +201,6 @@ const native = struct {
         siv_native_close(ctx);
     }
 };
-
-const avif = struct {
-    fn open(bytes: []const u8, max_pixels: u64) Error!Source {
-        var s: ?*c.siv_avif = null;
-        var w: u32 = 0;
-        var h: u32 = 0;
-        var depth16: c_int = 0;
-        var icc: [*c]const u8 = null;
-        var icc_len: usize = 0;
-        var primaries: u16 = 2;
-        var transfer: u16 = 2;
-        var loops: u32 = 0;
-        const r = c.siv_avif_open(bytes.ptr, bytes.len, max_pixels, &s, &w, &h, &depth16, &icc, &icc_len, &primaries, &transfer, &loops);
-        if (r != c.SIV_AVIF_OK) return mapAvif(r);
-        return .{
-            .width = w,
-            .height = h,
-            .depth = if (depth16 != 0) .rgba16 else .rgba8,
-            .color = if (icc != null and icc_len != 0) .{ .icc = icc[0..icc_len] } else .{ .cicp = .{ .primaries = primaries, .transfer = transfer } },
-            .loops = loops,
-            .frames = c.siv_avif_frames(s),
-            .ctx = s.?,
-            .next = next,
-            .close = close,
-        };
-    }
-
-    fn next(ctx: *anyopaque, out: []u8, delay_ms: *u32) Error!bool {
-        const r = c.siv_avif_next(@ptrCast(ctx), out.ptr, delay_ms);
-        if (r == c.SIV_AVIF_END) return false;
-        if (r != c.SIV_AVIF_OK) return mapAvif(r);
-        return true;
-    }
-
-    fn close(ctx: *anyopaque) void {
-        c.siv_avif_close(@ptrCast(ctx));
-    }
-};
-
-fn open(format: Format, bytes: []const u8, max_pixels: u64, count: bool) Error!Source {
-    return switch (format) {
-        .png, .jpeg, .gif, .webp, .jxl => native.open(format, bytes, max_pixels, count),
-        .avif => avif.open(bytes, max_pixels),
-    };
-}
 
 // Decoding --------------------------------------------------------------------
 
@@ -345,7 +278,7 @@ pub const Decoder = struct {
 
     pub fn init(gpa: Allocator, bytes: []const u8, options: Options) Error!Decoder {
         const format = sniff(bytes) orelse return error.Unsupported;
-        var src = try open(format, bytes, options.max_pixels, true);
+        var src = try native.open(format, bytes, options.max_pixels, true);
         errdefer src.close(src.ctx);
         if (src.width == 0 or src.height == 0) return error.InvalidImage;
         if (@as(u64, src.width) * src.height > options.max_pixels) return error.TooLarge;
@@ -389,7 +322,7 @@ pub const Decoder = struct {
 
     /// Starts again from the first frame.
     pub fn rewind(d: *Decoder) Error!void {
-        const src = try open(sniff(d.bytes).?, d.bytes, d.max_pixels, false);
+        const src = try native.open(sniff(d.bytes).?, d.bytes, d.max_pixels, false);
         if (src.width != d.src.width or src.height != d.src.height or src.depth != d.src.depth) {
             src.close(src.ctx);
             return error.InvalidImage;
@@ -648,8 +581,6 @@ test "formats are told apart by their first bytes" {
     try testing.expectEqual(Format.jpeg, sniff("\xff\xd8\xff\xe0").?);
     try testing.expectEqual(Format.gif, sniff("GIF89a...").?);
     try testing.expectEqual(Format.webp, sniff("RIFF\x00\x00\x00\x00WEBPVP8 ").?);
-    try testing.expectEqual(Format.avif, sniff("\x00\x00\x00\x1cftypavif\x00\x00\x00\x00").?);
-    try testing.expectEqual(Format.avif, sniff("\x00\x00\x00\x1cftypmif1\x00\x00\x00\x00avifmiaf").?);
     try testing.expectEqual(Format.jxl, sniff("\xff\x0a\x00").?);
     try testing.expect(sniff("hello") == null);
     try testing.expectError(error.Unsupported, decode(testing.allocator, "hello", .{}));

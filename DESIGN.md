@@ -4024,8 +4024,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       item through dbus-daemon with GLib's gdbus (introspection,
       GetAll, GetLayout, Event, Activate), also through the C API.
   - Images: baskingspot's image package (PNG, APNG, JPEG, GIF, WebP, JPEG
-    XL; Zig), and libavif with dav1d. Decoding is async and decodes to the
-    displayed size.
+    XL; Zig). Decoding is async and decodes to the displayed size.
     - `src/image` (`image.decode`) takes a whole file and returns frames;
       `ui.Image.load` runs it on the worker pool (reading a path there
       too) and delivers the image in the dispatch phase (D5), and
@@ -4038,11 +4037,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       view, so scrolling past thousands of photos decodes only those
       shown. Found by the file manager in `apps/files`, which kept its
       own queue, three in flight, to avoid decoding everything it bound.
-      Every decoder sits behind a small interface of siv's own: the C
-      libraries behind `src/image/*.h`, so `-fsys` builds (lcms2,
-      libavif, dav1d) and vendored ones share siv's code (the shim also
-      builds against Debian 12's older libavif 0.11), and the Zig
-      decoders behind `src/image/native_abi.zig`.
+      The decoders sit behind a small interface of siv's own
+      (`src/image/native_abi.zig`), and Little CMS behind
+      `src/image/color.h`, so `-fsys=lcms2` builds and vendored ones
+      share siv's code.
     - The Zig decoders are github.com/baskingspot/image (MIT, with its
       compress and fastmem packages), pinned to a commit of its
       `zig-0.17` branch, since its main branch and v0.1.0 build with
@@ -4059,8 +4057,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       below. An XYB JPEG XL image comes out in linear sRGB, as libjxl
       wrote it here. A JPEG XL file's profile arrives with its first
       frame, so a second decoder skims the frames' headers (the package's
-      `skim`) to have it before then. It does not decode AVIF, and has no
-      CMS, so libavif and Little CMS stay.
+      `skim`) to have it before then. It has no CMS, so Little CMS
+      stays.
+    - No AVIF (the user asked, 2026-11-09). It was the one format that
+      needed C: libavif with the part of libyuv it bundles, dav1d, and
+      NASM built from source for dav1d's x86-64 assembly, three pinned
+      dependencies with two `-fsys` options, for a format desktop
+      applications rarely meet. An AVIF file fails to load as any
+      unknown format does (`SIV_ERROR_UNSUPPORTED`); an application that
+      needs one decodes it and hands siv the pixels (`siv_image_create`).
+      Reverse if applications need AVIF: then a Zig decoder beside the
+      others, or the system libavif alone.
     - `src/image/native.zig` is the root of an object compiled once per
       build and linked through `image_c` like the C libraries (D25,
       Build cost): imported as a module, the package added 8 s to
@@ -4074,37 +4081,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       unchanged, after the checkout was copied with `cp -r` (four of
       seven times; never for one built by `zig build test-image`, LLVM's,
       or siv's other objects). Not understood.
-    - Vendored builds: the PNG decoder also decodes the CPU renderer's
-      bitmap glyphs (D14); dav1d builds with meson's generated headers
-      written by the build; libavif uses the part of libyuv it bundles.
-      The decoders' internal memory comes from the C allocator, as
+    - The PNG decoder also decodes the CPU renderer's bitmap glyphs
+      (D14). The decoders' internal memory comes from the C allocator, as
       HarfBuzz's does, the Zig decoders' too; decoded pixels come from
       siv's allocator (D2).
-    - dav1d's assembly is on for x86-64 and aarch64 (other targets use
-      its C). x86-64's is NASM syntax: NASM 2.16.03 (BSD-2-Clause) is a
-      pinned lazy dependency, its release tarball (which carries the
-      files its perl scripts generate) compiled by Zig for the build
-      machine with a configuration written in `build_steps.zig`, and run
-      once per `.asm` file; aarch64's is GNU syntax that clang assembles.
-      No system assembler, perl, or meson is involved, so the build stays
-      reproducible, and nothing is fetched for other targets or with
-      `-fsys=dav1d`. The aarch64 build passes `test-image` under
-      qemu-user (`-Dtarget=aarch64-linux-musl -fqemu`) but was not timed.
-    - Measured with `zig build bench-image -Doptimize=ReleaseFast --
-      FILE...` (one thread, whole decode to pixels including libavif's
-      YUV to RGB, best of 15) on this orb's x86-64 (AVX2), October 2026,
-      before and after the assembly: a 1920×1080 4:2:0 still 100 → 42 ms,
-      the same at 4:4:4 142 → 32 ms, a 3840×2160 10-bit 4:2:0 still
-      590 → 287 ms, a 60-frame 1280×720 sequence 1455 → 1219 ms. The
-      inputs were ffmpeg's `mandelbrot` source with `noise=alls=12`
-      (stills) and its zooming `mandelbrot` with `noise=alls=8` (the
-      sequence), encoded by libaom at CRF 28 and 32. After the
-      assembly most of a sequence's time is libavif's portable YUV to
-      RGB conversion (for a 60-frame 1280×720 `testsrc2` sequence siv
-      takes 1030 ms, of which ffmpeg with the system dav1d needs 205 ms
-      to decode the AV1): libavif uses libyuv's SIMD
-      paths when built with all of libyuv, which siv does not vendor
-      yet; that is the next step for AVIF speed.
     - Size: images larger than the bounds the caller gives (logical
       pixels times the window's scale, which then divides the pixel size
       into the image's logical size) are scaled down frame by frame while
@@ -4119,17 +4099,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     - Color (D11): an embedded RGB ICC profile converts through Little
       CMS to linear light with sRGB primaries, unless it is sRGB (matrix
       and curves within rounding), which keeps 8-bit pixels as they are;
-      gray and CMYK profiles are ignored. AVIF and JPEG XL color given as
-      CICP converts by transfer function (sRGB, BT.709, gamma, linear,
+      gray and CMYK profiles are ignored. Color given as CICP (PNG's cICP,
+      JPEG XL) converts by transfer function (sRGB, BT.709, gamma, linear,
       PQ, HLG) and primaries (BT.2020 and Display P3 to sRGB). PQ and HLG
       map reference white (203 cd/m²) to 1 and clip above it, and wide
       gamuts clip to sRGB, until HDR and wide-gamut output exist. 8-bit
       sRGB images at their own size stay `rgba8_srgb`; everything else
       is `rgba16_linear_premul`.
-    - Animation (GIF, APNG, WebP, AVIF sequences, JPEG XL): frames are
+    - Animation (GIF, APNG, WebP, JPEG XL): frames are
       decoded at the displayed size, composited by the decoder. When all
       of them fit 32 MiB (`image.Options.max_bytes`; the count comes from
-      the file without decoding: APNG and AVIF headers state it, and
+      the file without decoding: APNG headers state it, and
       `src/image/native.zig` counts GIF image descriptors and WebP ANMF
       chunks; a JPEG XL animation's frames are counted by decoding them
       once, since nothing short of that says which frames are shown)
@@ -4157,10 +4137,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       because clang's PC table does not match the one it expects, the
       Zig ones because they are an object of their own. Crashes and
       undefined behavior in them are caught (ReleaseSafe traps it in C
-      too), but coverage does not guide mutation inside them; libavif
-      and dav1d are fuzzed on OSS-Fuzz, and baskingspot/image fuzzes its
-      decoders in its CI. dav1d's `qm.c` builds without array-bounds
-      checks, on which clang crashes. Not yet: progressive display while
+      too), but coverage does not guide mutation inside them;
+      baskingspot/image fuzzes its decoders in its CI. Not yet: progressive display while
       loading, and a test of an animated JPEG XL (ffmpeg here writes
       only still ones).
   - Icons follow the freedesktop icon theme specification, rendered by siv's
@@ -5515,11 +5493,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     -j16` on every push and pull request, with no compositor or desktop
     services, in an Arch Linux container: its packages are new enough
     for every `-fsys` option (HarfBuzz 14.6, Lua 5.5, Little CMS,
-    libavif, glslang), so the job compiles none of the vendored C and C++
+    glslang), so the job compiles none of the vendored C and C++
     libraries but SheenBidi, which no distribution packages (D25, Build
     cost). Fedora 43 has HarfBuzz 11.5 and Lua 5.4, too old; Debian 12,
     the orb base, has HarfBuzz 6.0, no Lua 5.5, and no SheenBidi, and its
-    older lcms2, libavif, and dav1d pass `zig build test` with `-fsys`. Its Vulkan tests run on lavapipe. Zig's global cache and the
+    older lcms2 passes `zig build test` with `-fsys`. Its Vulkan tests run on lavapipe. Zig's global cache and the
     fetched packages are cached between runs. `test` already builds the
     examples, the guide, and the Lua module.
   - What `zig build test` builds (consolidated 2026-10-13; there were
@@ -5707,8 +5685,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     and libvulkan loaded at run time) are not part of libsiv. Neither are
     the declarations translated from their headers.
   - Packages whose tools only run at build time are excluded by name:
-    NASM and glslang, whose outputs (dav1d's objects, siv's SPIR-V) are not
-    derived from them. Test-only fonts in `testdata/` are embedded only by
+    glslang, whose output (siv's SPIR-V) is not derived from it. Test-only fonts in `testdata/` are embedded only by
     tests and are not reached.
   - Zig's runtime ships with every build: the standard library,
     compiler-rt, and the UBSan runtime libsiv.a bundles, all under Zig's
@@ -5727,8 +5704,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       the first directory, going up from the file, that holds a LICENSE,
       LICENCE, or COPYING file. That catches bundled libraries with
       licences of their own, and every NOTICE file in that directory is
-      required as Apache-2.0 4(d) asks. libavif's root LICENSE covers the
-      libyuv it bundles.
+      required as Apache-2.0 4(d) asks.
     - A licence file in siv's own tree (outside `testdata/`) is in no
       section.
   - SheenBidi 3.0.0 has no NOTICE file, so its section is its Apache-2.0
@@ -5769,9 +5745,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - C compiles in the build's mode, except HarfBuzz, optimized in Debug
     builds: shaping is most of the text and headless tests' run time,
     which optimized HarfBuzz cuts by a third, while the decoders' tests
-    take 0.1 s either way. Debug builds build dav1d without its
-    assembly, so NASM is neither built nor run. (They also left libjxl
-    out unless `-Djxl`, until Zig decoders replaced it, D19.)
+    take 0.1 s either way. (Debug builds left libjxl out unless
+    `-Djxl`, until Zig decoders replaced it, D19.)
   - The shaders' SPIR-V is committed (D10), so glslang is not built.
   - One headless test binary (D24) replaces six, and runs as eight
     processes. The Lua binding is linked into it, into libsiv-lua.so,

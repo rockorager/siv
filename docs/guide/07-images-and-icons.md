@@ -51,7 +51,7 @@ directional pictures.
 
 ## Loading files
 
-`siv_image_load` decodes PNG, APNG, JPEG, GIF, WebP, AVIF, and JPEG XL on
+`siv_image_load` decodes PNG, APNG, JPEG, GIF, WebP, and JPEG XL on
 a worker thread, and parses SVG into a vector image that stays sharp at
 any size. Give it the largest size the image is shown at and the window's
 scale: it decodes straight to that size, so a 24-megapixel photo shown as
@@ -110,7 +110,7 @@ never decodes. A grid of thumbnails asks for what is on screen, newest
 first, and cancels what scrolled away, so scrolling past thousands of
 photos decodes only those shown.
 
-Image nodes play animations (GIF, APNG, animated WebP and AVIF, JPEG XL),
+Image nodes play animations (GIF, APNG, animated WebP, JPEG XL),
 streaming long ones from the file, unless the user asked for reduced
 motion; canvases draw the first frame.
 

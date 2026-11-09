@@ -31,8 +31,7 @@
 //!                             example browsers. auto (the default) builds it
 //!                             when pkg-config finds WPE WebKit 2.50+ with
 //!                             WPEPlatform, true requires it, false skips it
-//!   -fsys=lcms2, libavif, dav1d
-//!                             link the system image decoders and Little CMS
+//!   -fsys=lcms2               link the system Little CMS for image color
 //!                             (src/image/build_steps.zig)
 //!
 //! libwayland-client, xkbcommon, and Fontconfig are always system libraries.
