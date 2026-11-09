@@ -612,7 +612,7 @@ fn mapOmarchy(pal: *const Palette, scheme: Scheme, out: *[token_count]?Color) vo
     // is its control color).
     set(out, .disabled_fg, mix(fg, bg, 0.5));
     set(out, .muted_fg, readable(fg, bg, &.{ bg, dbg, ddbg }));
-    const sel = selection(pal.get(.selection).?, accent, &.{ bg, dbg, ddbg });
+    const sel = selection(pal.get(.selection).?, accent, &.{ bg, dbg, ddbg, lbg });
     set(out, .selection_bg, sel);
     const on_sel = if (contrast(bright, sel) >= contrast(fg, sel)) bright else fg;
     set(out, .selection_fg, if (contrast(on_sel, sel) >= 4.5) on_sel else onColor(sel));
@@ -621,15 +621,18 @@ fn mapOmarchy(pal: *const Palette, scheme: Scheme, out: *[token_count]?Color) vo
 }
 
 /// Omarchy's selection is a stop on its ramp for selected text on the
-/// background; selected rows also sit on the sidebars, which in light
-/// themes can be as dark. Tinted toward the accent until it stands out
-/// (1.2:1) from every one of `under`.
+/// background, often barely off it (Tokyo Night's #292e42 is 1.27:1 on
+/// #1a1b26); selected rows also sit on the sidebars, which in light
+/// themes can be as dark, and selected text in editors on cards and
+/// controls (`lighter_background`, which Tokyo Night's selection all but
+/// matches). Tinted toward the accent until it stands out (1.5:1) from
+/// every one of `under`.
 fn selection(sel: Rgba, accent: Rgba, under: []const Rgba) Rgba {
     var k: f32 = 0;
     while (k <= 0.6 + 1e-3) : (k += 0.05) {
         const c = mix(sel, accent, k);
         for (under) |u| {
-            if (contrast(c, u) < 1.2) break;
+            if (contrast(c, u) < 1.5) break;
         } else return c;
     }
     return mix(sel, accent, 0.6);
@@ -776,8 +779,18 @@ test "omarchy: colors.toml maps to tokens for its mode" {
     try testing.expect(tok(&u, .dark, .card_bg).?.eql(hex(0x24283b)));
     try testing.expect(tok(&u, .dark, .border).?.eql(hex(0x414868)));
     try testing.expect(tok(&u, .dark, .accent).?.eql(hex(0x7aa2f7)));
-    try testing.expect(tok(&u, .dark, .selection_bg).?.eql(hex(0x292e42)));
+    // Its selection (#292e42) all but matches its cards and controls
+    // (#24283b), where editors sit: tinted toward the accent until it
+    // stands out from every surface, with its brightest text on it.
+    const sel = tok(&u, .dark, .selection_bg).?;
+    for ([_]u24{ 0x1a1b26, 0x13141c, 0x0e0e14, 0x24283b }) |b| {
+        const hi = @max(sel.luminance(), hex(b).luminance());
+        const lo = @min(sel.luminance(), hex(b).luminance());
+        try testing.expect((hi + 0.05) / (lo + 0.05) >= 1.5);
+    }
+    try testing.expect(sel.b > sel.r);
     try testing.expect(tok(&u, .dark, .selection_fg).?.eql(hex(0xc0caf5)));
+    try testing.expect((hex(0xc0caf5).luminance() + 0.05) / (sel.luminance() + 0.05) >= 4.5);
     try testing.expect(tok(&u, .dark, .destructive).?.eql(hex(0xf7768e)));
     try testing.expect(tok(&u, .dark, .success).?.eql(hex(0x9ece6a)));
     // The hues as named; one it leaves out stays compiled.

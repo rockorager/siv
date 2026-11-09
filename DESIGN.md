@@ -6510,10 +6510,15 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       in those whose is not, such as white's); `muted` → borders, with
       separators 60% of it over the background and tracks halfway
       between it and `lighter_background`; `accent` → accent, with
-      siv's shades; `selection` → selected rows, tinted toward the
-      accent until it stands 1.2:1 from the view and both sidebars
-      (light themes' selection is as dark as their sidebars: catppuccin
-      latte, rose pine), with `bright_foreground` or the foreground on
+      siv's shades; `selection` → selected rows and text, tinted toward
+      the accent until it stands 1.5:1 from the view, both sidebars, and
+      `lighter_background`, the cards and controls editors sit on (light
+      themes' selection is as dark as their sidebars: catppuccin latte,
+      rose pine; Tokyo Night's #292e42 is 1.27:1 on its view and 1.08:1
+      on its cards, where Parcel's compose showed a selection all but
+      invisible, and becomes #384669, 1.56:1 on cards, near the
+      #33467c of Tokyo Night's own editor themes. It was 1.2:1 from the
+      view and sidebars only), with `bright_foreground` or the foreground on
       it, whichever contrasts more, black or white below 4.5:1; `red`,
       `green`, `yellow` → destructive (with black or white on it),
       success, and warning, which applications use for syntax and
