@@ -316,8 +316,10 @@ pub const Painter = struct {
         if (b.marker != none and st.inh.visibility == .visible) try p.marker(id, x, y);
         const clip = (st.box.overflow_x != .visible or st.box.overflow_y != .visible) and b.kind != .replaced and !p.propagated(id);
         if (clip) {
-            const inner = snap(Rect.xywh(x + b.border[3], y + b.border[0], b.w - b.border[1] - b.border[3], b.h - b.border[0] - b.border[2]));
-            try p.b.pushLayer(.{ .clip = .{ .shape = .{ .rect = inner } } });
+            // The padding box, on the borders' inner edges as they snap.
+            const padding: scene.Snap = .{ .anchor = r, .offset = .{ b.border[3], b.border[0], -b.border[1], -b.border[2] } };
+            const inner = padding.rect();
+            try p.b.pushLayer(.{ .clip = .{ .shape = .{ .rect = inner }, .snap = padding } });
             try p.clips.append(p.scratch, inner);
         }
         defer if (clip) {
@@ -403,7 +405,7 @@ pub const Painter = struct {
     }
 
     fn layer(p: *Painter, d: Positioned) Error!void {
-        if (d.clip) |c| try p.b.pushLayer(.{ .clip = .{ .shape = .{ .rect = c } } });
+        if (d.clip) |c| try p.b.pushLayer(.{ .clip = .{ .shape = .{ .rect = c }, .snap = .box(c) } });
         defer if (d.clip != null) p.b.popLayer() catch {};
         try p.boxContent(d.id, d.x, d.y, 1, true);
     }
@@ -454,6 +456,13 @@ pub const Painter = struct {
 
     fn isZero(rr: raster.Radii) bool {
         return rr.tl.x == 0 and rr.tl.y == 0 and rr.tr.x == 0 and rr.tr.y == 0 and rr.br.x == 0 and rr.br.y == 0 and rr.bl.x == 0 and rr.bl.y == 0;
+    }
+
+    /// A background: a rectangle with its edges snapped to device pixels
+    /// (scene.Snap), as browsers snap box edges, or a rounded one.
+    fn fillBox(p: *Painter, s: scene.Snap, rr: raster.Radii, with: scene.Paint) Error!void {
+        if (isZero(rr)) return p.b.fillSnapped(s, with);
+        try p.b.fill(shape(s.rect(), rr), .nonzero, with);
     }
 
     fn shape(r: Rect, rr: raster.Radii) scene.Shape {
@@ -556,7 +565,8 @@ pub const Painter = struct {
         while (c != none) : (c = p.tree().get(c).next) {
             const cb = p.tree().get(c);
             if (cb.kind != .table_cell) continue;
-            try p.b.pushLayer(.{ .clip = .{ .shape = .{ .rect = snap(Rect.xywh(x + cb.x, y + cb.y, cb.w, cb.h)) } } });
+            const cell = snap(Rect.xywh(x + cb.x, y + cb.y, cb.w, cb.h));
+            try p.b.pushLayer(.{ .clip = .{ .shape = .{ .rect = cell }, .snap = .box(cell) } });
             defer p.b.popLayer() catch {};
             try p.background(id, r, rr, current);
         }
@@ -572,7 +582,12 @@ pub const Painter = struct {
         };
         const clip_rr = if (st.box.background_clip == .border_box) rr else shrink(rr, b.border);
         const bg = p.darkBackground(p.resolve(st.box.background_color, current));
-        if (bg.a > 0) try p.b.fill(shape(clip_box, clip_rr), .nonzero, .color(p.color(bg, current)));
+        // A padding box's edges are the borders' inner edges as they snap.
+        const snapped: scene.Snap = switch (st.box.background_clip) {
+            .padding_box => .{ .anchor = r, .offset = .{ b.border[3], b.border[0], -b.border[1], -b.border[2] } },
+            else => .box(clip_box),
+        };
+        if (bg.a > 0) try p.fillBox(snapped, clip_rr, .color(p.color(bg, current)));
         const img = st.box.background_image orelse return;
         const origin: Rect = switch (st.box.background_origin) {
             .border_box => r,
@@ -798,6 +813,7 @@ pub const Painter = struct {
         }
         for (widths, styles) |w, s| any = any or (w > 0 and s != .none and s != .hidden);
         if (!any) return;
+        if (isZero(rr) and try p.snappedSides(r, widths, styles, colors, current)) return;
         const same = widths[0] == widths[1] and widths[1] == widths[2] and widths[2] == widths[3] and styles[0] == styles[1] and styles[1] == styles[2] and styles[2] == styles[3] and colors[0].eql(colors[1]) and colors[1].eql(colors[2]) and colors[2].eql(colors[3]);
         if (same and (styles[0] == .solid or styles[0] == .dashed or styles[0] == .dotted or styles[0] == .inset or styles[0] == .outset or styles[0] == .groove or styles[0] == .ridge)) {
             const w = widths[0];
@@ -833,6 +849,43 @@ pub const Painter = struct {
             return;
         }
         try p.sides(r, widths, styles, colors, current);
+    }
+
+    /// Solid borders without radii (and inset and outset ones, a color
+    /// per side, such as `<hr>`'s) as rectangles snapped to device pixels
+    /// (scene.Snap), as browsers draw them: each side's outer edge on the
+    /// box's edge as it snaps, its width whole device pixels and at least
+    /// one, so a 1px border is one crisp line at any scale or zoom. The
+    /// top and bottom sides take the corners. Not when sides of different
+    /// colors both wider than 1px meet at a corner, where their diagonal
+    /// join shows (CSS triangles); paths draw those. Returns whether it
+    /// drew the borders.
+    fn snappedSides(p: *Painter, r: Rect, w: [4]f32, styles: [4]css.style.BorderStyle, colors_: [4]Color, current: Color) Error!bool {
+        var shown: [4]bool = undefined;
+        var colors: [4]Color = undefined;
+        for (0..4) |s| {
+            shown[s] = w[s] > 0 and styles[s] != .none and styles[s] != .hidden;
+            if (shown[s] and styles[s] != .solid and styles[s] != .inset and styles[s] != .outset) return false;
+            colors[s] = shade(colors_[s], styles[s], s);
+        }
+        for (0..4) |s| {
+            const n = (s + 1) % 4;
+            if (shown[s] and shown[n] and w[s] > 1 and w[n] > 1 and !colors[s].eql(colors[n])) return false;
+        }
+        const top = if (shown[0]) w[0] else 0;
+        const bottom = if (shown[2]) w[2] else 0;
+        // Top, right, bottom, left: offsets left, top, right, bottom.
+        const rects = [4]scene.Snap{
+            .{ .anchor = .{ .x0 = r.x0, .y0 = r.y0, .x1 = r.x1, .y1 = r.y0 }, .offset = .{ 0, 0, 0, w[0] } },
+            .{ .anchor = .{ .x0 = r.x1, .y0 = r.y0, .x1 = r.x1, .y1 = r.y1 }, .offset = .{ -w[1], top, 0, -bottom } },
+            .{ .anchor = .{ .x0 = r.x0, .y0 = r.y1, .x1 = r.x1, .y1 = r.y1 }, .offset = .{ 0, -w[2], 0, 0 } },
+            .{ .anchor = .{ .x0 = r.x0, .y0 = r.y0, .x1 = r.x0, .y1 = r.y1 }, .offset = .{ 0, top, w[3], -bottom } },
+        };
+        for (rects, 0..) |sn, s| {
+            if (!shown[s] or sn.rect().isEmpty()) continue;
+            try p.b.fillSnapped(sn, .color(p.color(colors[s], current)));
+        }
+        return true;
     }
 
     fn shade(c: Color, s: css.style.BorderStyle, side: usize) Color {
@@ -1081,7 +1134,7 @@ pub const Painter = struct {
             const current = p.textColor(st);
             const bg = p.darkBackground(p.resolve(st.box.background_color, current));
             const rr = p.inlineRadii(st, r, open_here, close_here);
-            if (bg.a > 0) try p.b.fill(shape(r, rr), .nonzero, .color(p.color(bg, current)));
+            if (bg.a > 0) try p.fillBox(.box(r), rr, .color(p.color(bg, current)));
             // Background images (link icons, highlights) over the padding
             // box of this line's fragment.
             if (st.box.background_image) |img| {

@@ -6980,7 +6980,19 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     with `banded` draws the viewport plus a screen above and below, and
     scrolling out of that band draws again (`Window.checkCulled`, as long
     texts do, D8). Box edges and text baselines are snapped to whole CSS
-    pixels as browsers snap them. Stacking contexts (CSS 2.1 Appendix
+    pixels as browsers snap them, and borders and backgrounds to device
+    pixels as browsers draw them (D9, `scene.Snap`): a background
+    without radii is a rectangle on its box's edges (a padding box's on
+    the borders' inner edges), solid borders without radii (and inset
+    and outset ones, a color per side, as `<hr>`'s) are a rectangle per
+    side, its outer edge on the box's edge and its width
+    whole device pixels, at least one (top and bottom take the
+    corners), and overflow clips and the cell clips of row backgrounds
+    snap the same way. So at 150% a 1px border is one crisp device pixel,
+    as in browsers, wherever the box lands and however the reader zooms.
+    Borders with radii or other styles stay paths, and so do solid sides
+    of different colors both wider than 1px that meet at a corner, whose
+    diagonal join shows (CSS triangles). Stacking contexts (CSS 2.1 Appendix
     E): positioned boxes, flex and grid items with a `z-index`, and boxes
     with `opacity` below 1 are deferred to their stacking context and
     painted after its flow in `z-index` order, negative ones under it

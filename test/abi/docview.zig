@@ -762,3 +762,107 @@ test "C API docview: flags change in place, keeping the place, open quotes, sele
     try h.settle();
     try testing.expectEqual(t.Result.error_invalid_argument, D.siv_docview_set_flags(node, created));
 }
+
+test "C API docview: 1px borders are whole device pixels of one shade at fractional scales and zooms" {
+    // An email's table (parcel, Austrian Airlines): a 1px border around
+    // it, cells with borders just inside it, and rules of other grays.
+    const source =
+        \\<body style="margin:5px;background:#fff">
+        \\<table width="170" cellpadding="0" cellspacing="0" style="border:1px solid #cccccc">
+        \\<tr><td><table width="100%" cellpadding="0" cellspacing="0">
+        \\<tr><td style="border-right:1px solid #cccccc;height:33px"></td></tr>
+        \\<tr><td style="border-right:1px solid #cccccc;height:17.5px;border-top:1px solid #dddddd"></td></tr>
+        \\<tr><td style="border-right:1px solid #cccccc;height:41px"></td></tr>
+        \\<tr><td style="border-right:1px solid #cccccc;height:23px"></td></tr>
+        \\</table></td></tr>
+        \\<tr><td style="border-top:1px solid #cccccc;padding:13px 27px">
+        \\<table width="100%" cellpadding="0" cellspacing="0"><tr>
+        \\<td width="60" style="border-top:1px solid #999999;height:10px"></td>
+        \\<td style="border-top:1px solid #dddddd;height:10px"></td>
+        \\</tr></table></td></tr>
+        \\</table>
+    ;
+    const Case = struct { v120: u32, zoom: f32, offset: f32 };
+    for ([_]Case{
+        .{ .v120 = 180, .zoom = 1, .offset = 0 },
+        .{ .v120 = 150, .zoom = 1, .offset = 0 },
+        // parcel zooms its reader in the compositor; the offset leaves the
+        // content at a fraction of a pixel too.
+        .{ .v120 = 180, .zoom = 1.1, .offset = 0.7 },
+    }) |c| {
+        var h: Harness = .{};
+        try h.start(200, 150, null, null);
+        defer h.stop();
+        const Scale = struct {
+            id: @import("platform").WindowId,
+            v120: u32,
+            fn run(ctx: ?*anyopaque, comp: *@import("compositor").Compositor) void {
+                const s: *@This() = @ptrCast(@alignCast(ctx));
+                comp.platform.headless.setScale(s.id, .{ .v120 = s.v120 });
+            }
+        };
+        var scale: Scale = .{ .id = (try h.win()).win.id, .v120 = c.v120 };
+        try (try h.internal()).app.comp.call(&scale, Scale.run);
+        try h.settle();
+        var ev: Events = .{};
+        const root = A.siv_window_get_root(h.window);
+        var txn: t.Txn = .null;
+        try ok(T.siv_txn_begin(h.window, &txn));
+        const sc = T.siv_scroll(txn, root, .vertical);
+        _ = T.siv_set_layout(txn, sc, &.{ .size = @sizeOf(t.LayoutDesc), .width = .{ .unit = .fraction, .value = 1 }, .height = .{ .unit = .fraction, .value = 1 } });
+        T.siv_set_scroll_zoom_range(txn, sc, 0.5, 4);
+        _ = D.siv_docview(txn, sc, &.{ .source = source.ptr, .source_count = source.len, .kind = .html, .color_scheme = .light, .flags = .{ .untrusted = true }, .user_data = &ev, .on_event = Events.onEvent });
+        try ok(T.siv_txn_commit(txn));
+        try waitLoaded(&h, &ev, 1);
+        if (c.zoom != 1) {
+            try ok(T.siv_txn_begin(h.window, &txn));
+            T.siv_scroll_zoom_to(txn, sc, c.zoom);
+            T.siv_scroll_to(txn, sc, 0, c.offset);
+            try ok(T.siv_txn_commit(txn));
+            try h.settle();
+        }
+        const img = try h.capture();
+        defer testing.allocator.free(img);
+        const w: usize = (200 * c.v120 + 60) / 120;
+        const ht: usize = (150 * c.v120 + 60) / 120;
+        try testing.expectEqual(w * ht * 4, img.len);
+        const Px = struct {
+            /// White, or within 1 of one of the borders' grays (dithering);
+            /// anything between is a border smeared over partial pixels.
+            fn kind(p: []const u8) ?u8 {
+                for ([_]u8{ 0xff, 0xcc, 0xdd, 0x99 }) |g| {
+                    const ok_ = for (p[0..3]) |ch| {
+                        if (@abs(@as(i16, ch) - g) > 1) break false;
+                    } else true;
+                    if (ok_) return g;
+                }
+                return null;
+            }
+        };
+        // Rows through the first cell cross the table's left border, the
+        // cell's right border, and the table's right border; columns
+        // through the middle cross every horizontal rule. Each line is
+        // whole pixels of its gray, in the same place along its length.
+        var first: [512]u8 = undefined;
+        for (0..2) |axis| {
+            const n = if (axis == 0) w else ht - 2;
+            const along: [2]usize = if (axis == 0) .{ 16, 44 } else .{ w * 6 / 10, w * 7 / 10 };
+            for (along[0]..along[1]) |a| {
+                for (0..n) |i| {
+                    const x, const y = if (axis == 0) .{ i, a } else .{ a, i };
+                    const g = Px.kind(img[(y * w + x) * 4 ..][0..4]) orelse {
+                        std.debug.print("scale {d}/120 zoom {d}: partial pixel {x} at {d},{d}\n", .{ c.v120, c.zoom, img[(y * w + x) * 4 ..][0..3], x, y });
+                        return error.TestUnexpectedResult;
+                    };
+                    if (a == along[0]) first[i] = g else try testing.expectEqual(first[i], g);
+                }
+            }
+            // Every border shows.
+            var lines: usize = 0;
+            for (0..n) |i| {
+                if (first[i] != 0xff and (i == 0 or first[i - 1] == 0xff)) lines += 1;
+            }
+            try testing.expect(lines >= 2);
+        }
+    }
+}

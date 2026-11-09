@@ -988,7 +988,7 @@ pub const View = struct {
         for (list.commands) |cmd| switch (cmd) {
             .push => |p| try b.pushLayer(p.layer),
             .pop => try b.popLayer(),
-            .fill => |f| try b.fill(f.shape, f.rule, f.paint),
+            .fill => |f| if (f.snap) |s| try b.fillSnapped(s, f.paint) else try b.fill(f.shape, f.rule, f.paint),
             .stroke => |s| try b.stroke(s.shape, s.style, s.paint),
             .glyphs => |g| try b.glyphs(g),
             .image => |i| try b.image(i),
