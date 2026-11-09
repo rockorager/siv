@@ -629,6 +629,49 @@ test "rich text: Ctrl+K links a selection, edits and removes a link, and inserts
     try testing.expectEqual(@as(?t.Window, null), try openPopup(&h));
 }
 
+test "rich text: typing after an applied link, or at a link's end, is not linked" {
+    var h: Harness = .{};
+    try h.start(480, 320, null, null);
+    defer h.stop();
+    var log: Log = .{};
+    const node = try build(&h, .{}, &log);
+
+    // Apply leaves the caret collapsed at the end of the linked word, so
+    // typing goes on after it instead of replacing it.
+    try typeText(&h, "Read the plan");
+    try selectChars(&h, 9, 4);
+    try press(&h, 'k', .{ .ctrl = true });
+    const popup = (try openPopup(&h)) orelse return error.NoPopup;
+    try typeTextIn(&h, popup, "example.org/plan");
+    try pressIn(&h, popup, ks.@"return", .{});
+    var caret: u32 = 0;
+    var anchor: u32 = 0;
+    try ok(c.siv_rich_text_get_selection(node, &caret, &anchor));
+    try testing.expectEqual(@as(u32, 13), caret);
+    try testing.expectEqual(@as(u32, 13), anchor);
+    try typeText(&h, " and ok");
+    try expectLinks(node, "Read the [plan](https://example.org/plan) and ok");
+
+    // At a link's end, with no space after it; inside it, typing stays
+    // in the link.
+    try selectChars(&h, 13, 0);
+    try typeText(&h, "s");
+    try expectLinks(node, "Read the [plan](https://example.org/plan)s and ok");
+    try selectChars(&h, 11, 0);
+    try typeText(&h, "AN");
+    try expectLinks(node, "Read the [plANan](https://example.org/plan)s and ok");
+
+    // An autolink: what follows its space, and what is typed back at its
+    // end, are text.
+    try press(&h, ks.end, .{});
+    try typeText(&h, " https://siv.dev then");
+    try expectLinks(node, "Read the [plANan](https://example.org/plan)s and ok [https://siv.dev](https://siv.dev) then");
+    try press(&h, ks.end, .{});
+    for (0..5) |_| try press(&h, ks.left, .{});
+    try typeText(&h, "!");
+    try expectLinks(node, "Read the [plANan](https://example.org/plan)s and ok [https://siv.dev](https://siv.dev)! then");
+}
+
 test "rich text: typed and pasted URLs become links" {
     var h: Harness = .{};
     try h.start(480, 320, null, null);

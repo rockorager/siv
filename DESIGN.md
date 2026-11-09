@@ -5388,7 +5388,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       the brackets and punctuation around it, as an undo step of its
       own, so Ctrl+Z takes back the link and not the typing; a URL
       pasted over selected text links that text instead of replacing it,
-      as mail and chat editors do. A link is a `link` markDef with an
+      as mail and chat editors do. Applying the popover leaves the caret
+      at the end of the linked text, and text typed at a link's end is
+      not part of the link, though siv gives typed text the style of the
+      character before it: the widget takes the link off what an edit
+      inserted there (found in Parcel, where typing on after Apply
+      replaced the linked word, then extended the link). A link is a
+      `link` markDef with an
       `href`; a new URL for a whole link copies its markDef, so it keeps
       its `_key` and fields such as `blank`. Clicking a link places the
       caret: the editor has no notion of following links, and an

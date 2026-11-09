@@ -811,7 +811,7 @@ pub const State = struct {
     }
 
     /// Replaces lo..hi with text linked to url, as one undo step, with the
-    /// caret after it; what is typed next is not linked.
+    /// caret after it.
     pub fn insertLink(st: *State, lo: u32, hi: u32, s: []const u8, url: []const u8) void {
         const b, _ = st.blockAt(lo);
         if (!st.allow.link or st.def(b).kind != .text or s.len == 0) return;
@@ -822,7 +822,6 @@ pub const State = struct {
         const ann = st.reg.link(url, null) catch return;
         const runs = mapRuns(st, lo, e, .{ .ann = ann }) catch return;
         st.applyRuns(runs, .{ e, e });
-        _ = c.siv_editor_format(st.editor, .{}, .{ .color = true });
     }
 
     /// Links the URL typed before a space or Enter at `end`, as an undo
@@ -957,7 +956,12 @@ pub const State = struct {
         if (ed.lo == ed.hi) {
             const shown = std.mem.trim(u8, buf[1], " \t");
             if (href) |h| st.insertLink(ed.lo, ed.lo, if (shown.len > 0) shown else std.mem.trim(u8, buf[0], " \t\r\n"), h);
-        } else _ = st.setLink(ed.lo, ed.hi, href orelse "");
+        } else {
+            _ = st.setLink(ed.lo, ed.hi, href orelse "");
+            // The caret at the end of the text, as word processors leave
+            // it, so typing goes on after the link (Vim's cursor stays).
+            if (!(st.vim_on and st.vim.modal())) st.select(ed.hi, ed.hi, null);
+        }
         _ = c.siv_node_focus(st.editor);
         if (st.vim_on) st.vim.afterLink(st);
         st.flushChange();
@@ -1155,6 +1159,13 @@ pub const State = struct {
             old_last_of_def = i + 1 == st.model.blocks.len or st.model.blocks[i + 1].def != b.def;
             break;
         };
+        // Text typed at a link's end is not part of it, as in word
+        // processors, though siv gives it the style before it.
+        const after_link = ev.edit_length > 0 and for (st.model.runs, 0..) |r, i| {
+            if (r.ann == 0 or r.stop != es) continue;
+            const next = if (i + 1 < st.model.runs.len) st.model.runs[i + 1] else null;
+            break next == null or next.?.start != es or next.?.ann != r.ann;
+        } else false;
         if (ev.edit_length > 0 and ev.edit_end == es) {
             st.editGroup(.insert, es, inserted);
             st.group.?.pos = es + ev.edit_length;
@@ -1165,6 +1176,11 @@ pub const State = struct {
         } else st.editGroup(.replace, std.math.maxInt(u32), null);
         st.edited();
         st.sync();
+        if (after_link) {
+            if (mapRuns(st, es, es + ev.edit_length, .{ .ann = 0 })) |runs| {
+                if (runsEql(runs, st.model.runs)) gpa.free(runs) else st.applyRuns(runs, null);
+            } else |_| {}
+        }
 
         if (std.mem.eql(u8, inserted, "\n")) {
             if (old) |o| st.enterRules(o, old_last_of_def, es);
