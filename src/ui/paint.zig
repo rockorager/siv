@@ -1487,8 +1487,9 @@ fn drawEditor(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Poi
     } else if (e.caret != e.anchor) {
         var rects: std.ArrayList(text.layout.Rect) = .empty;
         defer rects.deinit(win.gpa);
+        const hi = @max(e.caret, e.anchor);
         // A long text's selection is drawn where its lines are (D13).
-        try l.selectionRects(win.gpa, @min(e.caret, e.anchor), @max(e.caret, e.anchor), &rects, try textBand(win, nid, l));
+        try l.selectionRects(win.gpa, @min(e.caret, e.anchor), hi, &rects, try textBand(win, nid, l));
         const color = if (focused) st.palette.color(.selection_bg) else st.palette.color(.control_hover);
         // One path for all of it: rows that meet at a fractional device
         // pixel then cover it whole, where rectangles filled one by one
@@ -1496,20 +1497,20 @@ fn drawEditor(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Poi
         var path = raster.PathBuilder.init(win.gpa);
         defer path.deinit();
         for (rects.items) |r| {
-            const line = try l.line(try l.lineAt(r.y + r.height / 2));
+            const index = try l.lineAt(r.y + r.height / 2);
+            const line = try l.line(index);
             const x = box.x0 - scroll + r.x + text_node.lineShift(win, nid, line, cw);
-            const y = box.y0 + r.y;
-            try path.moveTo(x, y);
-            try path.lineTo(x + r.width, y);
-            try path.lineTo(x + r.width, y + r.height);
-            try path.lineTo(x, y + r.height);
-            try path.close();
+            // A selection that runs on past a line is one region (D15):
+            // the line's rows reach down to the next line, over the line
+            // and paragraph spacing.
+            var bottom = r.y + r.height;
+            if (hi > line.end and index + 1 < l.lineCount()) bottom = @max(bottom, (try l.line(index + 1)).top);
+            try addRect(&path, x, box.y0 + r.y, x + r.width, box.y0 + bottom);
         }
-        if (rects.items.len == 1) {
-            const r = rects.items[0];
-            const p = path.points.items[0];
-            try b.fillRect(.xywh(p.x, p.y, r.width, r.height), .color(color));
-        } else if (rects.items.len > 1) try b.fillPath(path.path(), .nonzero, .color(color));
+        if (path.points.items.len == 4) {
+            const p = path.points.items;
+            try b.fillRect(.{ .x0 = p[0].x, .y0 = p[0].y, .x1 = p[2].x, .y1 = p[2].y }, .color(color));
+        } else if (path.points.items.len > 4) try b.fillPath(path.path(), .nonzero, .color(color));
     }
     if (e.text.content.len() == 0 and e.placeholder.len != 0 and editor.preeditRange(win, nid) == null) {
         _ = try drawPlaceholder(st, win, nid, b, box);
@@ -1518,6 +1519,14 @@ fn drawEditor(st: *State, win: *Window, nid: NodeId, b: *scene.Builder, off: Poi
         try drawMisspellings(win, nid, l, b, box.x0 - scroll, box.y0, cw, st.palette.color(.destructive));
     }
     try b.popLayer();
+}
+
+fn addRect(path: *raster.PathBuilder, x0: f32, y0: f32, x1: f32, y1: f32) !void {
+    try path.moveTo(x0, y0);
+    try path.lineTo(x1, y0);
+    try path.lineTo(x1, y1);
+    try path.lineTo(x0, y1);
+    try path.close();
 }
 
 /// Misspelled words (D37): a wavy line under each, in the theme's

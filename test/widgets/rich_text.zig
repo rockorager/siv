@@ -929,3 +929,198 @@ test "rich text: links with Vim's keys" {
     try typeText(&h, "u");
     try expectLinks(node, "visit the [site](https://b.example) now");
 }
+
+/// A signature as Parcel's compose writes one: a block of soft-broken
+/// lines after an empty block, below a paragraph that wraps at 300 pixels.
+const signature_doc =
+    \\[{"_type": "block", "style": "normal", "markDefs": [], "children": [{"_type": "span", "text": "Hi Ana, this line wraps around the edge.", "marks": []}]},
+    \\ {"_type": "block", "style": "normal", "markDefs": [], "children": [{"_type": "span", "text": "", "marks": []}]},
+    \\ {"_type": "block", "style": "normal", "markDefs": [], "children": [{"_type": "span", "text": "-- \nTim Culverhouse", "marks": []}]},
+    \\ {"_type": "block", "style": "normal", "markDefs": [], "children": [{"_type": "span", "text": "after", "marks": []}]}]
+;
+
+/// Offsets in signature_doc's text: the wrapped line's last space (the
+/// next line starts after it), the empty block, the soft break after
+/// "-- ", the name, and "after".
+const sig = struct {
+    const wrap_space: u32 = 34;
+    const empty: u32 = 41;
+    const dashes: u32 = 42;
+    const soft_break: u32 = 45;
+    const name: u32 = 48;
+    const name_end: u32 = 63;
+    const after: u32 = 64;
+};
+
+/// Pointer input with its own times, a second apart, so that clicks do
+/// not count as double clicks.
+const Pointer = struct {
+    h: *Harness,
+    time: u32 = 0,
+
+    fn send(p: *Pointer, x: f64, y: f64, pressed: ?bool) !void {
+        const id = (try A.App.window(@backingInt(p.h.window), A.window_tag)).win.id;
+        p.time += 1000;
+        try p.h.inject(&.{.{ .pointer_motion = .{ .window = id, .seat = 0, .x = x, .y = y, .time = p.time } }});
+        if (pressed) |down| try p.h.inject(&.{.{ .pointer_button = .{ .window = id, .seat = 0, .button = 0x110, .pressed = down, .time = p.time, .serial = p.time } }});
+    }
+
+    fn click(p: *Pointer, x: f64, y: f64) !void {
+        try p.send(x, y, true);
+        try p.send(x, y, false);
+        try p.h.settle();
+    }
+
+    fn drag(p: *Pointer, x0: f64, y0: f64, x1: f64, y1: f64) !void {
+        try p.send(x0, y0, true);
+        try p.send((x0 + x1) / 2, (y0 + y1) / 2, null);
+        try p.send(x1, y1, null);
+        try p.send(x1, y1, false);
+        try p.h.settle();
+    }
+};
+
+/// In window coordinates, the line holding offset from the caret there
+/// to the editor's end.
+fn lineRect(node: t.Node, offset: u32) !t.Rect {
+    const ed = editorOf(node);
+    var er: t.Rect = .{};
+    try ok(c.siv_node_get_rect(ed, &er));
+    var r: t.Rect = .{};
+    try ok(c.siv_node_get_caret_rect(ed, offset, &r));
+    return .{ .x = er.x + r.x, .y = er.y + r.y, .width = er.width - r.x, .height = r.height };
+}
+
+fn setDocument(h: *Harness, node: t.Node, doc: []const u8) !void {
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_rich_text_set_document(txn, node, doc.ptr, doc.len);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+}
+
+fn caretOf(node: t.Node) !u32 {
+    var caret: u32 = 0;
+    var anchor: u32 = 0;
+    try ok(c.siv_rich_text_get_selection(node, &caret, &anchor));
+    try testing.expectEqual(caret, anchor);
+    return caret;
+}
+
+test "rich text: a click past a line's end keeps the caret on that line" {
+    var h: Harness = .{};
+    try h.start(300, 220, null, null);
+    defer h.stop();
+    var log: Log = .{};
+    const node = try build(&h, .{ .document = signature_doc, .document_len = signature_doc.len }, &log);
+    var pointer: Pointer = .{ .h = &h };
+    // Past "-- ": before its soft break, not at the name's start; past a
+    // block's last line: before the block's end; past a wrapped line: at
+    // the wrap, the caret drawn at the line's end.
+    const Case = struct { line: u32, plain: u32, vim: u32 };
+    const cases = [_]Case{
+        .{ .line = sig.dashes, .plain = sig.soft_break, .vim = sig.soft_break - 1 },
+        .{ .line = sig.name, .plain = sig.name_end, .vim = sig.name_end - 1 },
+        .{ .line = 0, .plain = sig.wrap_space + 1, .vim = sig.wrap_space },
+    };
+    for ([_]bool{ false, true }) |vim| {
+        var txn: t.Txn = .null;
+        try ok(c.siv_txn_begin(h.window, &txn));
+        c.siv_rich_text_set_flags(txn, node, .{ .vim = vim });
+        try ok(c.siv_txn_commit(txn));
+        try h.settle();
+        for (cases) |cs| {
+            const r = try lineRect(node, cs.line);
+            try pointer.click(r.x + r.width - 20, r.y + r.height / 2);
+            // In Vim's normal mode on the line's last character, as in Vim.
+            testing.expectEqual(if (vim) cs.vim else cs.plain, try caretOf(node)) catch |e| {
+                std.debug.print("vim: {}, line of {d}\n", .{ vim, cs.line });
+                return e;
+            };
+        }
+    }
+}
+
+test "rich text: a selection across lines is one region" {
+    var h: Harness = .{ .golden = "test/golden/widgets" };
+    try h.start(300, 220, null, null);
+    defer h.stop();
+    var log: Log = .{};
+    const node = try build(&h, .{ .flags = .{ .vim = true }, .document = signature_doc, .document_len = signature_doc.len }, &log);
+    try @import("themes.zig").useOmarchy(&h, @embedFile("../themes/omarchy/tokyo-night/colors.toml"));
+    var pointer: Pointer = .{ .h = &h };
+    const first = try lineRect(node, 0);
+    const wrapped = try lineRect(node, sig.wrap_space + 1);
+    const empty = try lineRect(node, sig.empty);
+    const dashes = try lineRect(node, sig.dashes);
+    const name = try lineRect(node, sig.name);
+    const after = try lineRect(node, sig.after);
+    // From the first line into the name: in visual-line mode, in visual
+    // mode, and dragged with the mouse.
+    const Case = struct { keys: []const u8, golden: ?[]const u8 = null };
+    const cases = [_]Case{
+        .{ .keys = "ggVjjjj", .golden = "rich-text-selection" },
+        .{ .keys = "ggvjjjj" },
+        .{ .keys = "" },
+    };
+    for (cases) |cs| {
+        try press(&h, ks.escape, .{});
+        try setDocument(&h, node, signature_doc);
+        if (cs.keys.len == 0) {
+            try pointer.drag(first.x + 1, first.y + first.height / 2, name.x + 60, name.y + name.height / 2);
+        } else try typeText(&h, cs.keys);
+        var caret: u32 = 0;
+        var anchor: u32 = 0;
+        try ok(c.siv_rich_text_get_selection(node, &caret, &anchor));
+        try testing.expect(@min(caret, anchor) <= 1 and @max(caret, anchor) > sig.name);
+        if (cs.golden) |g| try h.expectGolden(g, 300, 220);
+        const px = try h.capture();
+        defer testing.allocator.free(px);
+        const at = struct {
+            fn f(img: []const u8, x: f32, y: f32) [3]u8 {
+                const i = (@as(usize, @intFromFloat(y)) * 300 + @as(usize, @intFromFloat(x))) * 4;
+                return img[i..][0..3].*;
+            }
+        }.f;
+        // Selected: inside the first line, before its text; unselected:
+        // the window's corner.
+        const sel = at(px, first.x + 2, first.y + 1);
+        const bg = at(px, 298, 218);
+        try testing.expect(!std.mem.eql(u8, &sel, &bg));
+        const Probe = struct { x: f32, y: f32, what: []const u8 };
+        const selected = [_]Probe{
+            // The spacing between blocks, under the wrapped line's text.
+            .{ .x = wrapped.x + 2, .y = (wrapped.y + wrapped.height + empty.y) / 2, .what = "gap under a block" },
+            // The empty block's cell and the spacing after it.
+            .{ .x = empty.x + 2, .y = empty.y + empty.height / 2, .what = "empty block" },
+            .{ .x = empty.x + 2, .y = (empty.y + empty.height + dashes.y) / 2, .what = "gap under the empty block" },
+            // The line spacing below "-- " at its soft break (the caret
+            // is as tall as the text, not the line).
+            .{ .x = dashes.x + 2, .y = dashes.y + dashes.height + 1, .what = "line spacing at a soft break" },
+        };
+        for (selected) |pr| {
+            const got = at(px, pr.x, pr.y);
+            testing.expectEqualSlices(u8, &sel, &got) catch |e| {
+                std.debug.print("{s}: not selected ({s})\n", .{ pr.what, if (cs.keys.len == 0) "drag" else cs.keys });
+                return e;
+            };
+        }
+        // Lines end where their text does: past them, short of the
+        // editor's end, nothing is selected (an empty line is one cell),
+        // nor after or below the selection's last line.
+        const right = first.x + first.width - 40;
+        for ([_]Probe{
+            .{ .x = right, .y = (wrapped.y + wrapped.height + empty.y) / 2, .what = "gap under a block, past its text" },
+            .{ .x = empty.x + 30, .y = empty.y + empty.height / 2, .what = "empty block, past its cell" },
+            .{ .x = right, .y = dashes.y + dashes.height / 2, .what = "soft-broken line, past its end" },
+            .{ .x = right, .y = name.y + name.height / 2, .what = "past the selection's last line" },
+            .{ .x = after.x + 2, .y = (name.y + name.height + after.y) / 2, .what = "under the selection's last line" },
+        }) |pr| {
+            const got = at(px, pr.x, pr.y);
+            testing.expect(!std.mem.eql(u8, &sel, &got)) catch |e| {
+                std.debug.print("{s}: selected ({s})\n", .{ pr.what, if (cs.keys.len == 0) "drag" else cs.keys });
+                return e;
+            };
+        }
+    }
+}

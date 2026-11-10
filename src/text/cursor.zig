@@ -419,3 +419,26 @@ test "word movement and selection rectangles" {
     try ml.selectionRects(std.testing.allocator, 1, 5, &rects, {});
     try std.testing.expectEqual(2, rects.items.len);
 }
+
+test "past a line ending in a line separator, the caret stays on that line" {
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    // "-- " U+2028 "Tim": the break ends line 0 at offset 3; offset 6
+    // starts line 1.
+    var p = try fixture.shape("-- \u{2028}Tim", .auto_ltr);
+    defer p.deinit();
+    var l = try layoutOf(&fixture, &p, null);
+    defer l.deinit();
+    try std.testing.expectEqual(2, l.lines.len);
+    const y0 = l.lines[0].top + 1;
+    // A click past the end, End, and Up from the longer line below all
+    // land before the break, drawn on line 0.
+    try std.testing.expectEqual(3, l.hitTest(500, y0).offset);
+    try std.testing.expectEqual(3, l.lineBoundary(.{ .offset = 0 }, .end).offset);
+    try std.testing.expectEqual(3, l.moveVertical(.{ .offset = 9 }, null, .up).position.offset);
+    try std.testing.expectEqual(0, l.caret(l.hitTest(500, y0)).line);
+    // Right from there goes to the next line's start, drawn there.
+    const next = l.moveVisual(.{ .offset = 3 }, .right);
+    try std.testing.expectEqual(6, next.offset);
+    try std.testing.expectEqual(1, l.caret(next).line);
+}

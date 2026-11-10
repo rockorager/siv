@@ -110,7 +110,10 @@ pub fn caretRect(win: *const Window, id: NodeId, l: *const Layout) error{OutOfMe
     const r = try caretRectAt(win, id, l, pos, block);
     if (!in_selection) return r;
     const c = try l.caret(pos);
-    return .{ .x0 = r.x0, .y0 = c.top, .x1 = r.x1, .y1 = c.top + c.height };
+    // A highlight that runs on past the line reaches the next line.
+    var bottom = c.top + c.height;
+    if (@max(e.anchor, e.caret) > (try l.line(c.line)).end and c.line + 1 < l.lineCount()) bottom = @max(bottom, (try l.line(c.line + 1)).top);
+    return .{ .x0 = r.x0, .y0 = c.top, .x1 = r.x1, .y1 = bottom };
 }
 
 /// The caret rectangle at `pos` in content coordinates. It is as tall as

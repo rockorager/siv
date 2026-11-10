@@ -179,6 +179,7 @@ pub const State = struct {
             y += @as(f32, @floatFromInt(dir)) * 3;
             var o: u32 = 0;
             if (c.siv_node_get_offset_at(st.editor, x, y, &o) != .ok) return null;
+            o = vim_mod.onDisplayedLine(st, o, y);
             const q = st.caretRect(o);
             if ((dir > 0 and q.y > r.y + 1) or (dir < 0 and q.y < r.y - 1)) return o;
         }
@@ -1271,6 +1272,7 @@ pub const State = struct {
 
     fn onPointer(st: *State, ev: *const siv.Event) siv.EventResult {
         if (ev.phase == .up) {
+            st.vim.pointer_y = ev.y;
             st.notifyLater();
             if (st.vim_on) _ = c.siv_post(st.app, postPointer, null, w.handleData(st.root));
         }

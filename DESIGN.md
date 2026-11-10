@@ -1755,7 +1755,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
   - One `hb_font_t` per face at font-unit scale, scaled per run, so sizes cost
     nothing. `ptem`-dependent shaping (`trak`) is not applied.
   - The cluster map is two caret stops per grapheme in visual order; ligatures
-    split at GDEF caret positions, else evenly.
+    split at GDEF caret positions, else evenly. A line break inside a
+    paragraph (U+2028, VT, FF) has none, as a paragraph separator has
+    none: the stop after it was the next line's start drawn at this
+    line's end, so a click or End past the line, or Up onto it, put the
+    caret on the next line (found in Parcel, November 2026).
   - Paragraph styles (`text.layout.ParagraphStyle`, per bidi paragraph:
     the text up to a paragraph separator) are layout options, since none
     changes shaping: start and end indents and a first-line indent
@@ -2145,8 +2149,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     elsewhere on the line make it no taller, a larger run makes it
     taller. That character is the one after the caret on its line, else
     the line's last, else the line break, the same one that sets a block
-    caret's width. Selection highlights keep the line's full height, so
-    lines of a selection meet, and a block caret in a selection (a modal
+    caret's width. Selection highlights keep the line's full height, and
+    a selection that runs on past a line is one region (November 2026):
+    the line's highlight reaches down to the next line, over line and
+    paragraph spacing, whether the line wraps, breaks at U+2028, or ends
+    a paragraph. Across, it ends with the line's text. Was: rows as tall
+    as their lines, which left the spacing between paragraphs bare and
+    cut an empty line's cell off from the line below (found in Parcel's
+    compose, Vim's visual modes over a signature). Alternative: rows
+    that also run on to the line's end edge, as GTK's and Qt's text
+    views draw them (tried; Tim preferred lines ending at their text,
+    an empty line one cell). A block caret in a selection (a modal
     editor's visual modes) takes the highlight's top and bottom on its
     line, so it reads as part of the selection rather than a stub in a
     taller box. There it is drawn as a solid outline in the text's color
@@ -5374,7 +5387,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       text objects; a register that keeps marks and blocks; undo by
       command; dot repeat; search; and a command line, which reports
       `activate` with what was typed (`w` for `:w`). j and k move by
-      displayed lines, as gj and gk do.
+      displayed lines, as gj and gk do. A click past a wrapped line's
+      end, or j or k there, puts the cursor on that line's last
+      character, as in Vim, not on the next displayed line's first,
+      where siv's offset at the wrap is drawn.
     - Vim's lines end at a block's end and at soft line breaks inside a
       block (U+2028, Shift+Enter), as at a newline in Vim: 0, ^, $, D,
       C, dd, cc, yy, p and P of lines, o, O, J, V and visual-line

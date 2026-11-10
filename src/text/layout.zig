@@ -1260,7 +1260,12 @@ const Builder = struct {
                 const logical = if (rtl) count - 1 - k else k;
                 const g_start = nthBoundary(graphemes, group_start, logical);
                 const g_end = @min(graphemes.after(g_start) orelse group_end, group_end);
-                if (rtl) {
+                if (isLineSeparator(self.p.text[g_start..g_end])) {
+                    // A line break inside a paragraph (U+2028) has no stops,
+                    // as a paragraph separator has none: the stop after it
+                    // would be the next line's start shown at this line's
+                    // end, where a click or End past the line put the caret.
+                } else if (rtl) {
                     try self.carets.append(self.lists, .{ .offset = g_end, .x = edge_left, .affinity = .upstream });
                     try self.carets.append(self.lists, .{ .offset = g_start, .x = edge_right, .affinity = .downstream });
                 } else {
@@ -1356,6 +1361,12 @@ const Builder = struct {
         return .{ .top = top, .previous = previous };
     }
 };
+
+/// Whether a grapheme is a mandatory line break that does not end the
+/// paragraph (UAX #14's BK other than the bidi paragraph separators).
+fn isLineSeparator(g: []const u8) bool {
+    return std.mem.eql(u8, g, "\u{2028}") or std.mem.eql(u8, g, "\x0b") or std.mem.eql(u8, g, "\x0c");
+}
 
 /// Whether a character is a word separator that justification widens.
 fn isSeparator(ch: []const u8) bool {

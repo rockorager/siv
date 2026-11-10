@@ -139,6 +139,16 @@ fn brkBefore(s: []const u8, p: u32) u32 {
     return if (p >= 3 and std.mem.eql(u8, s[p - 3 .. p], pt.line_separator)) 3 else 0;
 }
 
+/// The character meant at p, the offset siv finds at height y: past a
+/// wrapped line's end that offset starts the displayed line below, and
+/// the cursor goes on the wrapped line's last character instead, as in
+/// Vim (a click there, or j and k moving by displayed lines).
+pub fn onDisplayedLine(st: *const State, p: u32, y: f32) u32 {
+    const s = st.text();
+    if (p == bol(s, p) or st.caretRect(p).y <= y) return p;
+    return prevc(s, p);
+}
+
 /// The start of p's line.
 fn bol(s: []const u8, p: u32) u32 {
     var q = @min(p, len32(s));
@@ -393,6 +403,8 @@ pub const Vim = struct {
     mode: Mode = .normal,
     keys: Keys = .{},
     goal_x: ?f32 = null,
+    /// Where the last click or drag ended, in the editor's coordinates.
+    pointer_y: f32 = 0,
     anchor: u32 = 0,
     cur: u32 = 0,
     prompt: u8 = 0,
@@ -1516,7 +1528,7 @@ pub const Vim = struct {
         } else {
             v.mode = .normal;
             v.goal_x = null;
-            v.draw(st, sel[0]);
+            v.draw(st, onDisplayedLine(st, sel[0], v.pointer_y));
         }
         st.notify();
     }
