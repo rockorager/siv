@@ -467,9 +467,11 @@ fn update(txn: Txn, v: *View) void {
     _ = c.siv_set_layout(txn, v.content, &.{ .height = w.px(contentHeight(v)) });
     materialize(txn, v);
     syncEmptyStop(txn, v);
+    followFocus(v);
 }
 
-/// Binds the rows of the range in view (plus overscan) from the pool.
+/// Binds the rows of the range in view (plus overscan) from the pool,
+/// and the cursor's row wherever it is, so that it can take the focus.
 fn materialize(txn: Txn, v: *View) void {
     const per = if (v.mode == .grid) v.columns else 1;
     var lo: u32 = 0;
@@ -489,6 +491,7 @@ fn materialize(txn: Txn, v: *View) void {
     // Rows that stay; the cursor's row stays even out of range.
     var free: [max_range + 1]Node = undefined;
     var nfree: usize = 0;
+    var cursor_bound = v.cursor < 0 or v.cursor >= v.count or (v.cursor >= lo and v.cursor < hi);
     var cur = w.related(v.content, .first_child);
     while (cur != .null) : (cur = w.related(cur, .next)) {
         const r = rowOf(cur) orelse continue;
@@ -496,6 +499,7 @@ fn materialize(txn: Txn, v: *View) void {
             ((r.index >= lo and r.index < hi) or r.index == v.cursor);
         if (keep) {
             if (r.index >= lo and r.index < hi) present[@intCast(r.index - lo)] = true;
+            if (r.index == v.cursor) cursor_bound = true;
             // A row keeps its index across a rebind of everything, so
             // the focused row stays where it was.
             if (r.gen != v.gen) bindRow(txn, v, r, @intCast(r.index)) else applyRow(txn, v, r);
@@ -513,6 +517,15 @@ fn materialize(txn: Txn, v: *View) void {
         } else createRow(txn, v);
         const r = rowOf(node) orelse return;
         bindRow(txn, v, r, i);
+    }
+    // The cursor moved out of view without a row (the application selected
+    // an item far away, or items arrived before it).
+    if (!cursor_bound) {
+        const node = if (nfree > 0) blk: {
+            nfree -= 1;
+            break :blk free[nfree];
+        } else createRow(txn, v);
+        if (rowOf(node)) |r| bindRow(txn, v, r, @intCast(v.cursor));
     }
     for (free[0..nfree]) |n| if (rowOf(n)) |r| {
         _ = c.siv_set_visual(txn, n, &.{ .flags = .{ .hidden = true } });
@@ -589,7 +602,7 @@ fn applyRow(txn: Txn, v: *View, r: *Row) void {
         // twice. Elsewhere the fill and the cursor can differ.
         .flags = .{ .no_focus_ring = sel and v.selection == .single },
     });
-    const stop = if (v.cursor >= 0) v.cursor == i else i == 0;
+    const stop = isStop(v, i);
     _ = c.siv_set_semantics(txn, r.root, &.{
         .role = switch (v.mode) {
             .tree => .tree_item,
@@ -607,6 +620,23 @@ fn applyRow(txn: Txn, v: *View, r: *Row) void {
         .row = if (v.mode == .table) i + 1 else 0,
     });
     if (r.disclosure != .null) _ = c.siv_invalidate(txn, r.disclosure);
+}
+
+/// Whether row `i` is the view's focus stop: the cursor's, or the first
+/// without a cursor.
+fn isStop(v: *const View, i: i64) bool {
+    return i >= 0 and i < v.count and (if (v.cursor >= 0) v.cursor == i else i == 0);
+}
+
+/// After the cursor or the rows changed: focus on a row that is no
+/// longer the stop (the cursor moved, the row went back to the pool)
+/// would leave it at the commit for no node at all, and keys reach only
+/// the root. It moves to the cursor's row instead once the transaction
+/// commits, as it follows the cursor moved by keys.
+fn followFocus(v: *const View) void {
+    const r = rowOf(c.siv_window_get_focus(w.windowOf(v.root))) orelse return;
+    if (r.view != v.root or isStop(v, r.index)) return;
+    _ = c.siv_post(w.appOf(w.windowOf(v.root)), focusLater, null, @ptrFromInt(@as(usize, @intCast(@intFromEnum(v.root)))));
 }
 
 fn applyAll(txn: Txn, v: *View) void {
@@ -1267,7 +1297,9 @@ pub export fn siv_view_set_selected(txn: Txn, view: Node, index: u32, selected: 
         v.cursor = @intCast(index);
         setSelected(v, index, selected);
         resetChanged(v);
-        applyAll(txn, v);
+        // The cursor's row may be out of view: bind it, and focus follows.
+        materialize(txn, v);
+        followFocus(v);
         return;
     }
     setSelected(v, index, selected);
@@ -1477,6 +1509,7 @@ pub fn setCursor(txn: Txn, v: *View, to: f64) void {
     v.anchor = v.cursor;
     if (v.cursor >= 0) reveal(txn, v, @intCast(v.cursor));
     applyAll(txn, v);
+    followFocus(v);
 }
 
 pub fn apply(txn: Txn, v: *View) void {

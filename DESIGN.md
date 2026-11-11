@@ -5091,7 +5091,15 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       path could not reach an empty folder). Focus in the view follows
       the count after the commit: to the cursor's row when rows arrive,
       to the view when they go. With rows it is not a stop, so Tab
-      still stops once. Rows
+      still stops once. Focus on a row follows the cursor the same way
+      when the application moves it (`siv_view_set_selected` on a
+      single selection, `siv_view_set_cursor`) or the count clamps it,
+      and the cursor's row is bound wherever the cursor is: selecting an
+      item out of view in the transaction that added items before it
+      unfocused the old row at the commit and bound no row to take the
+      focus, so keys reached only the window's root and
+      `siv_node_focus` on the view failed until a scroll (found by
+      Parcel, whose search results grew under the selected thread). Rows
       handle only keys aimed at themselves (`siv_event.target`, D16) and
       leave presses in an editor inside them alone, so an application can
       rename an item in place with an editor in its row; presses on a

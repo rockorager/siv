@@ -626,6 +626,40 @@ test "list view: the cursor is read, moved, and focused; rows are reachable" {
     c.siv_txn_abort(txn);
 }
 
+test "list view: focus on the cursor's row follows the cursor when the rows change under it" {
+    var h: Harness = .{};
+    try h.start(240, 320, null, null);
+    defer h.stop();
+    var m: Model = .{};
+    const list = try listOf(&h, &m, 100, .single);
+    const uw, _ = try uiId(list);
+    try ok(c.siv_node_focus(list));
+    for (0..5) |_| try h.typeKey(ks.down, "", .{});
+    try h.settle();
+    try testing.expectEqualStrings("Item 5", (try uw.semanticsTree()).name((try focusedRole(&h)).?));
+    // More items arrive, 25 of them before the selected one, which the
+    // application selects again where it went: out of view, in one
+    // transaction with the count and a refresh.
+    var txn = try begin(h.window);
+    c.siv_view_set_count(txn, list, 125);
+    c.siv_view_refresh(txn, list);
+    c.siv_view_set_selected(txn, list, 30, true);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try testing.expectEqualStrings("Item 30", (try uw.semanticsTree()).name((try focusedRole(&h)).?));
+    try h.typeKey(ks.down, "", .{});
+    try h.settle();
+    try testing.expectEqual(@as(u32, 31), m.index);
+    try testing.expectEqualStrings("Item 31", (try uw.semanticsTree()).name((try focusedRole(&h)).?));
+    // Fewer items: the focused row goes, and the clamped cursor's row
+    // takes the focus.
+    txn = try begin(h.window);
+    c.siv_view_set_count(txn, list, 3);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try testing.expectEqualStrings("Item 2", (try uw.semanticsTree()).name((try focusedRole(&h)).?));
+}
+
 test "list view: an empty view takes the focus, from an editor beside it; rows arriving take it over" {
     var h: Harness = .{};
     try h.start(240, 320, null, null);
