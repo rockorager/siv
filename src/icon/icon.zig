@@ -1,12 +1,13 @@
 //! Icon theme lookup (D19), following the freedesktop icon theme
 //! specification: themes found in the icon base directories, their
-//! index.theme parents and the hicolor fallback, directories matched by
-//! size and scale (exactly, else the closest), PNG and SVG files, and
-//! unthemed icons in /usr/share/pixmaps. `Themes` keeps every theme it
-//! has read, with the names each of its directories holds, so a lookup
-//! after the first touches no files. Lookups block on the file system
-//! the first time a theme is used, so the UI runs them on its worker pool;
-//! a mutex makes them safe from any thread.
+//! index.theme parents and GTK's fallbacks (Adwaita, gnome, hicolor),
+//! directories matched by size and scale (exactly, else the closest),
+//! PNG and SVG files, and unthemed icons in /usr/share/pixmaps.
+//! `Themes` keeps every theme it has read, with the names each of its
+//! directories holds, so a lookup after the first touches no files.
+//! Lookups block on the file system the first time a theme is used, so
+//! the UI runs them on its worker pool; a mutex makes them safe from any
+//! thread.
 //!
 //! Imports: none.
 
@@ -128,8 +129,12 @@ pub const Themes = struct {
     }
 
     /// FindIcon for the first of `names` that any theme in the chain has:
-    /// `theme`, its parents, then hicolor, each trying every name (and
-    /// the names' fallbacks) before the next theme; then unthemed icons.
+    /// `theme`, its parents, then Adwaita, gnome, and hicolor (GTK's
+    /// chain: Adwaita has the symbolic icons applications name, which a
+    /// theme that is missing or lacks them, such as a desktop's own
+    /// variant of Yaru, does not), each trying every name (and the
+    /// names' fallbacks) before the next theme and skipping themes
+    /// already searched; then unthemed icons.
     /// `size` is in logical pixels at `scale`.
     pub fn lookup(t: *Themes, theme: []const u8, names: []const []const u8, size: u32, scale: u32, options: Options) error{OutOfMemory}!?Found {
         var arena: std.heap.ArenaAllocator = .init(t.gpa);
@@ -142,8 +147,9 @@ pub const Themes = struct {
         _ = c.pthread_mutex_lock(&t.mutex);
         defer _ = c.pthread_mutex_unlock(&t.mutex);
         var visited: std.ArrayList(*Theme) = .empty;
-        if (try t.findIn(arena.allocator(), theme, candidates, sz, sc, &visited, 0)) |f| return f;
-        if (try t.findIn(arena.allocator(), "hicolor", candidates, sz, sc, &visited, 0)) |f| return f;
+        for ([_][]const u8{ theme, "Adwaita", "gnome", "hicolor" }) |name| {
+            if (try t.findIn(arena.allocator(), name, candidates, sz, sc, &visited, 0)) |f| return f;
+        }
         return t.findLoose(candidates);
     }
 

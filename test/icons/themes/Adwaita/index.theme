@@ -1,0 +1,15 @@
+# Stands in for Adwaita, which the lookup searches after any theme and
+# its parents, as GTK does: one icon of its own, and one SivTest has too.
+# Test data written for siv.
+[Icon Theme]
+Name=Adwaita
+Comment=siv's test stand-in for Adwaita
+Inherits=hicolor
+Directories=scalable/actions
+
+[scalable/actions]
+Size=16
+MinSize=8
+MaxSize=512
+Context=Actions
+Type=Scalable

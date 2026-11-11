@@ -4226,9 +4226,16 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       code of their own. `ui.Icons` (one per application, like
       `ui.Fonts`) holds the theme name and a cache and loads on the
       worker pool; `ui.Image` gains a vector variant (`Image.vector`).
-    - Lookup (`icon.Themes`) is the specification's FindIcon: the theme,
-      its index.theme parents, hicolor, then unthemed files in the base
-      directories and /usr/share/pixmaps. Base directories, in order:
+    - Lookup (`icon.Themes`) is the specification's FindIcon with GTK's
+      fallbacks: the theme, its index.theme parents, then Adwaita,
+      gnome, and hicolor (with their parents, a theme searched once),
+      then unthemed files in the base directories and /usr/share/pixmaps.
+      Adwaita is there for the symbolic icons applications name: with
+      hicolor alone after the theme, a theme set but installed nowhere
+      (Omarchy's White theme sets Yaru-grey, which no Yaru ships) left
+      Parcel's mail-reply-sender-symbolic, mail-reply-all-symbolic, and
+      mail-attachment-symbolic buttons empty where GTK applications on
+      the same desktop drew them from Adwaita. Base directories, in order:
       directories the application adds (`siv_app_add_icon_path`, its own
       icons), $XDG_DATA_HOME/icons, ~/.icons, $XDG_DATA_DIRS/icons. A
       directory matches by Size, Scale, and Type (Fixed, Scalable,
@@ -4262,7 +4269,7 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       are not watched for newly installed icons.
     - The theme comes from the portal: GNOME's icon-theme, else KDE's
       org.kde.kdeglobals.Icons Theme (D19 settings), else Adwaita, GTK's
-      default (hicolor follows every theme anyway);
+      default (Adwaita and hicolor follow every theme anyway);
       `siv_app_set_icon_theme` fixes one. A new theme or search path
       drops the cache, and image nodes showing icons load them again.
     - Cache: loaded icons by names, logical size (rounded), scale,

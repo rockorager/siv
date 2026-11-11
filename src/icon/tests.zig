@@ -1,5 +1,6 @@
 //! Lookup against siv's test themes in test/icons/themes (run from the
-//! repository root): SivColor inherits SivTest, which inherits hicolor.
+//! repository root): SivColor inherits SivTest, which inherits hicolor;
+//! Adwaita stands in for the theme searched after every other.
 
 const std = @import("std");
 const icon = @import("icon.zig");
@@ -73,6 +74,23 @@ test "inheritance, hicolor, fallbacks, and RTL variants" {
     try expectFound(&t, "SivTest", "../SivTest/index", 16, 1, .{}, null);
     try testing.expect(try t.has("SivColor"));
     try testing.expect(!try t.has("NoSuchTheme"));
+}
+
+test "Adwaita after a theme and its parents, as GTK searches it" {
+    var t = try themes();
+    defer t.deinit();
+    // A theme set but installed nowhere (Omarchy's Yaru-grey): Adwaita
+    // still has the symbolic icons applications name.
+    try testing.expect(!try t.has("Yaru-grey"));
+    try expectFound(&t, "Yaru-grey", "mail-attachment-symbolic", 16, 1, .{}, "Adwaita/scalable/actions/mail-attachment-symbolic.svg");
+    // So does an installed theme that lacks one, after its parents.
+    try expectFound(&t, "SivColor", "mail-attachment-symbolic", 16, 1, .{}, "Adwaita/scalable/actions/mail-attachment-symbolic.svg");
+    // An icon the theme or its parents have wins over Adwaita's.
+    try expectFound(&t, "SivTest", "edit-copy-symbolic", 16, 1, .{}, "SivTest/scalable/actions/edit-copy-symbolic.svg");
+    try expectFound(&t, "SivColor", "edit-copy-symbolic", 16, 1, .{}, "SivTest/scalable/actions/edit-copy-symbolic.svg");
+    try expectFound(&t, "Yaru-grey", "edit-copy-symbolic", 16, 1, .{}, "Adwaita/scalable/actions/edit-copy-symbolic.svg");
+    // hicolor still after Adwaita, which lacks the application's icon.
+    try expectFound(&t, "Yaru-grey", "siv-test-app", 48, 1, .{}, "hicolor/48x48/apps/siv-test-app.png");
 }
 
 test "unthemed icons in base directories" {
