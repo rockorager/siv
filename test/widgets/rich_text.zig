@@ -144,6 +144,8 @@ fn outline(node: t.Node) ![]u8 {
         }
         if (get(b, "listItem") == .string) {
             try out.print(a, "{s}{d}:", .{ get(b, "listItem").string, get(b, "level").integer });
+        } else if (get(b, "level") == .integer) {
+            try out.print(a, "{s}{d}:", .{ get(b, "style").string, get(b, "level").integer });
         } else try out.print(a, "{s}:", .{get(b, "style").string});
         for (get(b, "children").array.items) |span| {
             const marks = get(span, "marks").array.items;
@@ -236,6 +238,90 @@ test "rich text: Portable Text comes back as it went in, and every block shows" 
     try ok(c.siv_app_set_theme(h.app, &.{ .scheme = .dark }));
     try h.settle();
     try h.expectGolden("rich-text-dark", 520, 720);
+}
+
+/// A reply quoting a message that quotes earlier ones.
+const quotes =
+    \\[
+    \\  {"_type": "block", "_key": "q0", "style": "normal", "markDefs": [], "children": [
+    \\    {"_type": "span", "_key": "q0s", "text": "Thursday works.", "marks": []}]},
+    \\  {"_type": "block", "_key": "q1", "style": "blockquote", "markDefs": [], "children": [
+    \\    {"_type": "span", "_key": "q1s", "text": "Are you free on Thursday?", "marks": []}]},
+    \\  {"_type": "block", "_key": "q2", "style": "blockquote", "level": 2, "markDefs": [], "children": [
+    \\    {"_type": "span", "_key": "q2s", "text": "Numbers are in the shared folder, with the slides for the quarter.", "marks": []}]},
+    \\  {"_type": "block", "_key": "q3", "style": "blockquote", "level": 3, "markDefs": [], "children": [
+    \\    {"_type": "span", "_key": "q3s", "text": "Where are the numbers?", "marks": []}]},
+    \\  {"_type": "block", "_key": "q4", "style": "blockquote", "level": 2, "markDefs": [], "children": [
+    \\    {"_type": "span", "_key": "q4s", "text": "Ben", "marks": []}]},
+    \\  {"_type": "block", "_key": "q5", "style": "blockquote", "level": 1, "markDefs": [], "children": [
+    \\    {"_type": "span", "_key": "q5s", "text": "Ann", "marks": []}]}
+    \\]
+;
+
+test "rich text: quotes nest by level, round-trip, and edit a level at a time" {
+    var h: Harness = .{ .golden = "test/golden/widgets" };
+    try h.start(420, 300, null, null);
+    defer h.stop();
+    var log: Log = .{};
+    const node = try build(&h, .{ .document = quotes, .document_len = quotes.len }, &log);
+    // Three levels draw three bars, blue, green, and red, over tints.
+    try h.expectGolden("rich-text-quotes-light", 420, 300);
+    try ok(c.siv_app_set_theme(h.app, &.{ .scheme = .dark }));
+    try h.settle();
+    try h.expectGolden("rich-text-quotes-dark", 420, 300);
+
+    // Levels come back as they went in; a quote without one has none.
+    const out = try document(node);
+    defer testing.allocator.free(out);
+    const want = try std.json.parseFromSlice(Value, testing.allocator, quotes, .{});
+    defer want.deinit();
+    const got = try std.json.parseFromSlice(Value, testing.allocator, out, .{});
+    defer got.deinit();
+    try testing.expect(jsonEql(want.value, got.value));
+
+    // The Quote command quotes normal text once; Tab and Shift+Tab (and
+    // indent and outdent) quote deeper and shallower, within 1 to 8;
+    // Enter keeps the level; Backspace at a quote's start takes one off.
+    var txn: t.Txn = .null;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_rich_text_set_document(txn, node, "", 0);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try typeText(&h, "a");
+    try ok(c.siv_rich_text_run(node, .blockquote));
+    try h.settle();
+    try expectOutline(node, "blockquote:a");
+    try press(&h, ks.tab, .{});
+    try testing.expectEqual(@as(u32, 2), (try state(node)).level);
+    try typeText(&h, "\nb");
+    try expectOutline(node, "blockquote2:a | blockquote2:b");
+    try ok(c.siv_rich_text_run(node, .indent));
+    try h.settle();
+    try expectOutline(node, "blockquote2:a | blockquote3:b");
+    try press(&h, ks.iso_left_tab, .{ .shift = true });
+    try press(&h, ks.home, .{});
+    try press(&h, ks.backspace, .{});
+    try expectOutline(node, "blockquote2:a | blockquote:b");
+    try press(&h, ks.backspace, .{});
+    try expectOutline(node, "blockquote2:a | normal:b");
+    // At normal text's start it joins the line above, as before.
+    try press(&h, ks.backspace, .{});
+    try expectOutline(node, "blockquote2:ab");
+    // One undo step per change.
+    try press(&h, 'z', .{ .ctrl = true });
+    try press(&h, 'z', .{ .ctrl = true });
+    try expectOutline(node, "blockquote2:a | blockquote:b");
+
+    // A level past 8 is 8.
+    const deep =
+        \\[{"_type": "block", "_key": "d", "style": "blockquote", "level": 12, "markDefs": [], "children": [
+        \\  {"_type": "span", "_key": "ds", "text": "deep", "marks": []}]}]
+    ;
+    try ok(c.siv_txn_begin(h.window, &txn));
+    c.siv_rich_text_set_document(txn, node, deep, deep.len);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try expectOutline(node, "blockquote8:deep");
 }
 
 test "rich text: typing, Markdown, Enter, lists, code blocks, marks, and undo" {

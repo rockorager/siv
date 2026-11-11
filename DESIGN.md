@@ -5390,6 +5390,27 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       where the paragraphs' indents leave room. Alternative: a text
       node per marker (a node per list item, laid out again on every
       edit).
+    - Quotes have levels 1 to 8, as list items do: Portable Text's
+      `level` on a `blockquote` block, 1 when missing (and then not
+      written back, so a document without levels comes back as it went
+      in). Each level indents a step and draws its own bar, in the
+      theme's `blue`, `green`, and `red` hues in turn, over a tint of
+      that hue, the innermost level's reaching the text's end, so the
+      quotes of a quoted reply nest as mail readers show them. The
+      tint's opacity differs on light and dark surfaces (canvas fills
+      blend in linear light, where one opacity reads far stronger on
+      dark), to look about as a browser's 12% does. Quote makes normal
+      text a level-1 quote; Tab and Shift+Tab, indent and outdent, and
+      Vim's `>` and `<` move quotes a level as they nest lists; Enter
+      keeps the level; Backspace at a quote's start takes one level off,
+      to normal text from level 1, before it would join the line above.
+      Found by Parcel, whose replies quote messages that quote earlier
+      ones: with one level, the quoted message's own quotes stayed
+      "> " text inside a single quote. Alternatives: nested quote blocks
+      (Portable Text has no nesting; lists already use `level`); the
+      accent, success, and destructive tokens for the bars (the accent
+      follows the desktop and may match another level's hue, and the
+      others mean something a quote does not).
     - Vim's keys: normal, insert, visual, and visual line modes;
       counts; operators (d, c, y, >, <, g~, gu, gU) with motions and
       text objects; a register that keeps marks and blocks; undo by

@@ -403,14 +403,16 @@ pub fn import(r: *Registry, gpa: Allocator, source: []const u8, allow: Allow, wa
                 list = .none;
             }
         }
+        // A list item's nesting, or how deep a quote is quoted (a reply's
+        // quote of a reply); 1 when missing.
         var level: u8 = 0;
-        if (list != .none) {
+        if (list != .none or style == .blockquote) {
             level = 1;
             if (field(block.*, "level")) |l| switch (l) {
                 .integer => |n| level = @intCast(std.math.clamp(n, 1, max_level)),
                 else => {},
             };
-            style = .normal;
+            if (list != .none) style = .normal;
         }
         try blocks.append(gpa, .{ .start = start, .stop = @intCast(text.items.len), .def = try r.intern(.{ .style = style, .list = list, .level = level, .raw = block }) });
     }
@@ -546,6 +548,10 @@ fn exportTextBlock(r: *Registry, a: Allocator, m: Model, b: Block, d: Def, ri: *
     try o.put(a, "style", .{ .string = d.style.name() });
     if (d.list != .none) {
         try o.put(a, "listItem", .{ .string = @tagName(d.list) });
+        try o.put(a, "level", .{ .integer = d.level });
+    } else if (d.style == .blockquote and (d.level > 1 or (d.raw != null and field(d.raw.?.*, "level") != null))) {
+        // A quote's level only when it says something, or was there:
+        // a quote read without one comes back as it went in.
         try o.put(a, "level", .{ .integer = d.level });
     }
     if (d.raw) |raw| if (raw.* == .object) {

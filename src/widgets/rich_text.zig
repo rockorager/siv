@@ -45,6 +45,12 @@ const pad_y: f32 = 16;
 const list_indent: f32 = 26;
 const quote_indent: f32 = 22;
 const code_indent: f32 = 14;
+/// A quote's bar per level, in the theme's hues (as Parcel's reader
+/// draws quoted mail), over a tint of this opacity on light and dark
+/// surfaces.
+const quote_hues = [_]siv.ColorToken{ .blue, .green, .red };
+const quote_tint_light: f32 = 0.2;
+const quote_tint_dark: f32 = 0.04;
 const tag_step: f32 = 1e-5;
 const link_g: f32 = 0.36;
 const link_b: f32 = 0.80;
@@ -267,7 +273,7 @@ pub const State = struct {
                     p.space_before = 2;
                     p.space_after = 2;
                 } else if (d.style == .blockquote) {
-                    p.indent_start = quote_indent;
+                    p.indent_start = quote_indent * @as(f32, @floatFromInt(@max(d.level, 1)));
                 } else if (d.style.heading() > 0) {
                     const h = headings[d.style.heading() - 1];
                     p.flags.paragraph_spacing = true;
@@ -712,9 +718,11 @@ pub const State = struct {
             if (d.kind == .object) continue;
             const raw = if (d.kind == .text) d.raw else null;
             const nd: pt.Def = switch (change) {
-                .style => |s| .{ .style = s, .raw = raw },
+                // A quote made from other text is quoted once; one
+                // already quoted keeps its level.
+                .style => |s| .{ .style = s, .level = if (s != .blockquote) 0 else if (d.style == .blockquote) d.level else 1, .raw = raw },
                 .list => |l| if (touched_all_list or l == .none) .{ .raw = raw } else .{ .list = l, .level = @max(d.level, 1), .raw = raw },
-                .indent => |n| if (d.list == .none) d else blk: {
+                .indent => |n| if (d.list == .none and d.style != .blockquote) d else blk: {
                     var x = d;
                     x.level = @intCast(std.math.clamp(@as(i32, d.level) + n, 1, pt.max_level));
                     break :blk x;
@@ -1004,7 +1012,7 @@ pub const State = struct {
                 _ = st.setBlock(.code, lo, hi);
             },
             .indent, .outdent => {
-                if (!st.allow.bullet and !st.allow.number) return .error_unsupported;
+                if (!st.allow.bullet and !st.allow.number and !st.allow.style(.blockquote)) return .error_unsupported;
                 _ = st.setBlock(.{ .indent = if (cmd == .indent) 1 else -1 }, lo, hi);
             },
             .undo => _ = st.undo(),
@@ -1080,7 +1088,7 @@ pub const State = struct {
             const b, _ = st.blockAt(sel[0]);
             const d = st.def(b);
             const back = k == w.keysym.iso_left_tab or m.shift;
-            if (d.list != .none) {
+            if (d.list != .none or (d.kind == .text and d.style == .blockquote)) {
                 _ = st.setBlock(.{ .indent = if (back) -1 else 1 }, @min(sel[0], sel[1]), @max(sel[0], sel[1]));
                 return true;
             }
@@ -1092,6 +1100,18 @@ pub const State = struct {
         if ((k == w.keysym.@"return" or k == w.keysym.kp_enter) and m.shift and !m.ctrl) {
             st.insertAtSelection(pt.line_separator);
             return true;
+        }
+        // Backspace at the start of a quote unquotes it one level, to
+        // normal text from the first, before it joins the line above.
+        if (k == w.keysym.backspace and !m.ctrl and !m.alt) {
+            const sel = st.selection();
+            const b, _ = st.blockAt(sel[0]);
+            const d = st.def(b);
+            if (sel[0] == sel[1] and sel[0] == b.start and d.kind == .text and d.style == .blockquote) {
+                const change: BlockChange = if (d.level > 1) .{ .indent = -1 } else .{ .style = .normal };
+                _ = st.setBlock(change, b.start, b.start);
+                return true;
+            }
         }
         return false;
     }
@@ -1370,9 +1390,13 @@ pub const State = struct {
 
     fn draw(st: *const State, d: siv.Draw, width: f32) void {
         const muted = w.color(st.window, .muted_fg);
-        const accent = w.color(st.window, .accent);
         const ground = w.color(st.window, .control_bg);
         const border = w.color(st.window, .border);
+        // Fills blend in linear light, where one opacity reads far
+        // stronger on a dark surface than on a light one: these read
+        // about as a 12% tint blended in sRGB (a browser's) does.
+        const fg = w.color(st.window, .view_fg);
+        const tint: f32 = if (fg.r + fg.g + fg.b > 1.5) quote_tint_dark else quote_tint_light;
         var counters: [pt.max_level + 1]u32 = @splat(0);
         const blocks = st.model.blocks;
         var bi: usize = 0;
@@ -1413,10 +1437,30 @@ pub const State = struct {
                             }
                         }
                     } else if (def_.style == .blockquote) {
+                        // A bar per level, each in its hue over a faint
+                        // tint of it, the innermost level's reaching the
+                        // text's end, so the quotes of a quoted reply
+                        // nest as mail readers show them. Levels the
+                        // block above has too go on up across the gap.
                         const r = st.caretRect(b.start);
                         const e = st.caretRect(b.stop);
-                        c.siv_draw_rounded_rect(d, .{ .x = r.x - 14, .y = r.y, .width = 3, .height = e.y + e.height - r.y }, .{ .top_left = 1.5, .top_right = 1.5, .bottom_right = 1.5, .bottom_left = 1.5 });
-                        c.siv_draw_fill(d, &.{ .color = accent }, .{});
+                        const level = @max(def_.level, 1);
+                        const above = if (bi > 0) st.def(blocks[bi - 1]) else pt.Def{};
+                        const prev: u8 = if (above.kind == .text and above.style == .blockquote) @max(above.level, 1) else 0;
+                        const prev_bottom = if (prev > 0) blk: {
+                            const p = st.caretRect(blocks[bi - 1].stop);
+                            break :blk p.y + p.height;
+                        } else 0;
+                        for (0..level) |k| {
+                            const x = r.x - 14 - quote_indent * @as(f32, @floatFromInt(level - 1 - k));
+                            const top = if (prev > k) prev_bottom else r.y;
+                            const end_x = if (k + 1 == level) width - pad_x else x + quote_indent;
+                            const hue = w.color(st.window, quote_hues[k % quote_hues.len]);
+                            c.siv_draw_rect(d, .{ .x = x, .y = top, .width = end_x - x, .height = e.y + e.height - top });
+                            c.siv_draw_fill(d, &.{ .color = .{ .r = hue.r, .g = hue.g, .b = hue.b, .a = tint } }, .{});
+                            c.siv_draw_rounded_rect(d, .{ .x = x, .y = top, .width = 3, .height = e.y + e.height - top }, .{ .top_left = 1.5, .top_right = 1.5, .bottom_right = 1.5, .bottom_left = 1.5 });
+                            c.siv_draw_fill(d, &.{ .color = hue }, .{});
+                        }
                     }
                 },
                 .code => {
