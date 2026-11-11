@@ -254,7 +254,9 @@ const quotes =
     \\  {"_type": "block", "_key": "q4", "style": "blockquote", "level": 2, "markDefs": [], "children": [
     \\    {"_type": "span", "_key": "q4s", "text": "Ben", "marks": []}]},
     \\  {"_type": "block", "_key": "q5", "style": "blockquote", "level": 1, "markDefs": [], "children": [
-    \\    {"_type": "span", "_key": "q5s", "text": "Ann", "marks": []}]}
+    \\    {"_type": "span", "_key": "q5s", "text": "Thanks,", "marks": []}]},
+    \\  {"_type": "block", "_key": "q6", "style": "blockquote", "markDefs": [], "children": [
+    \\    {"_type": "span", "_key": "q6s", "text": "Ann", "marks": []}]}
     \\]
 ;
 
@@ -265,6 +267,9 @@ test "rich text: quotes nest by level, round-trip, and edit a level at a time" {
     var log: Log = .{};
     const node = try build(&h, .{ .document = quotes, .document_len = quotes.len }, &log);
     // Three levels draw three bars, blue, green, and red, over tints.
+    // A deeper level starts right under the line above, and the outer
+    // one goes on right under it; paragraphs of one level keep their
+    // space between them, tinted.
     try h.expectGolden("rich-text-quotes-light", 420, 300);
     try ok(c.siv_app_set_theme(h.app, &.{ .scheme = .dark }));
     try h.settle();

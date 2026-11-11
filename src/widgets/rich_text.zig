@@ -51,6 +51,8 @@ const code_indent: f32 = 14;
 const quote_hues = [_]siv.ColorToken{ .blue, .green, .red };
 const quote_tint_light: f32 = 0.2;
 const quote_tint_dark: f32 = 0.04;
+/// The editor's line height, as a multiple of the font's.
+const line_spacing: f32 = 1.5;
 const tag_step: f32 = 1e-5;
 const link_g: f32 = 0.36;
 const link_b: f32 = 0.80;
@@ -274,6 +276,16 @@ pub const State = struct {
                     p.space_after = 2;
                 } else if (d.style == .blockquote) {
                     p.indent_start = quote_indent * @as(f32, @floatFromInt(@max(d.level, 1)));
+                    // A quote of another level right below starts under
+                    // this one's last line, without the space between
+                    // paragraphs, so a deeper quote reads as a box inside
+                    // this one and a shallower one goes on under it.
+                    const next = if (bi + 1 < m.blocks.len) quoteLevel(st.def(m.blocks[bi + 1])) else 0;
+                    if (next > 0 and next != quoteLevel(d)) {
+                        p.flags.paragraph_spacing = true;
+                        p.space_before = 0;
+                        p.space_after = 0;
+                    }
                 } else if (d.style.heading() > 0) {
                     const h = headings[d.style.heading() - 1];
                     p.flags.paragraph_spacing = true;
@@ -1440,25 +1452,43 @@ pub const State = struct {
                         // A bar per level, each in its hue over a faint
                         // tint of it, the innermost level's reaching the
                         // text's end, so the quotes of a quoted reply
-                        // nest as mail readers show them. Levels the
-                        // block above has too go on up across the gap.
+                        // nest as mail readers show them. They cover the
+                        // lines' leading, so quotes of other levels,
+                        // which have no space between them, touch.
+                        // Levels the block above has too go on up across
+                        // the space after it (between quotes of a level),
+                        // the innermost of them to the text's end.
                         const r = st.caretRect(b.start);
                         const e = st.caretRect(b.stop);
-                        const level = @max(def_.level, 1);
-                        const above = if (bi > 0) st.def(blocks[bi - 1]) else pt.Def{};
-                        const prev: u8 = if (above.kind == .text and above.style == .blockquote) @max(above.level, 1) else 0;
+                        const lead = r.height * (line_spacing - 1) / 2;
+                        // Whole pixels, so that where blocks meet their
+                        // tints' edges do not blend into a seam.
+                        const y0 = @round(r.y - lead);
+                        const y1 = @round(e.y + e.height + lead);
+                        const level = quoteLevel(def_);
+                        const prev = if (bi > 0) quoteLevel(st.def(blocks[bi - 1])) else 0;
+                        const next = if (bi + 1 < blocks.len) quoteLevel(st.def(blocks[bi + 1])) else 0;
                         const prev_bottom = if (prev > 0) blk: {
                             const p = st.caretRect(blocks[bi - 1].stop);
-                            break :blk p.y + p.height;
-                        } else 0;
+                            break :blk @round(p.y + p.height * (line_spacing + 1) / 2);
+                        } else y0;
                         for (0..level) |k| {
                             const x = r.x - 14 - quote_indent * @as(f32, @floatFromInt(level - 1 - k));
-                            const top = if (prev > k) prev_bottom else r.y;
+                            const top = if (prev > k) @min(prev_bottom, y0) else y0;
                             const end_x = if (k + 1 == level) width - pad_x else x + quote_indent;
+                            const gap_end = if (k + 1 == @min(prev, level)) width - pad_x else x + quote_indent;
                             const hue = w.color(st.window, quote_hues[k % quote_hues.len]);
-                            c.siv_draw_rect(d, .{ .x = x, .y = top, .width = end_x - x, .height = e.y + e.height - top });
-                            c.siv_draw_fill(d, &.{ .color = .{ .r = hue.r, .g = hue.g, .b = hue.b, .a = tint } }, .{});
-                            c.siv_draw_rounded_rect(d, .{ .x = x, .y = top, .width = 3, .height = e.y + e.height - top }, .{ .top_left = 1.5, .top_right = 1.5, .bottom_right = 1.5, .bottom_left = 1.5 });
+                            const fill: siv.Color = .{ .r = hue.r, .g = hue.g, .b = hue.b, .a = tint };
+                            c.siv_draw_rect(d, .{ .x = x, .y = y0, .width = end_x - x, .height = y1 - y0 });
+                            c.siv_draw_fill(d, &.{ .color = fill }, .{});
+                            if (top < y0) {
+                                c.siv_draw_rect(d, .{ .x = x, .y = top, .width = gap_end - x, .height = y0 - top });
+                                c.siv_draw_fill(d, &.{ .color = fill }, .{});
+                            }
+                            // A bar is round only where its level starts and ends.
+                            const t: f32 = if (prev > k) 0 else 1.5;
+                            const u: f32 = if (next > k) 0 else 1.5;
+                            c.siv_draw_rounded_rect(d, .{ .x = x, .y = top, .width = 3, .height = y1 - top }, .{ .top_left = t, .top_right = t, .bottom_right = u, .bottom_left = u });
                             c.siv_draw_fill(d, &.{ .color = hue }, .{});
                         }
                     }
@@ -1492,6 +1522,11 @@ pub const State = struct {
         }
     }
 };
+
+/// How deeply a block is quoted; 0 when it is no quote.
+fn quoteLevel(d: pt.Def) u8 {
+    return if (d.kind == .text and d.style == .blockquote) @max(d.level, 1) else 0;
+}
 
 fn stateOf(node: Node) ?*State {
     const h = w.header(node) orelse return null;
@@ -1777,7 +1812,7 @@ fn setLabel(txn: Txn, data: *Data, label: []const u8) void {
 
 fn applyDisabled(txn: Txn, data: *Data) void {
     const st = data.st;
-    c.siv_set_text_style(txn, st.editor, &.{ .font_size = st.font_size, .line_spacing = 1.5, .space_after = 10, .color_token = if (data.hdr.disabled) .disabled_fg else .view_fg });
+    c.siv_set_text_style(txn, st.editor, &.{ .font_size = st.font_size, .line_spacing = line_spacing, .space_after = 10, .color_token = if (data.hdr.disabled) .disabled_fg else .view_fg });
     var buf: [1024]u8 = undefined;
     setLabel(txn, data, w.labelOf(st.editor, &buf));
 }

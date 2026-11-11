@@ -5396,10 +5396,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       in). Each level indents a step and draws its own bar, in the
       theme's `blue`, `green`, and `red` hues in turn, over a tint of
       that hue, the innermost level's reaching the text's end, so the
-      quotes of a quoted reply nest as mail readers show them. The
-      tint's opacity differs on light and dark surfaces (canvas fills
-      blend in linear light, where one opacity reads far stronger on
-      dark), to look about as a browser's 12% does. Quote makes normal
+      quotes of a quoted reply nest as mail readers show them. A quote
+      followed by a quote of another level has no space after it, and
+      tints and bars cover the lines' leading, so a deeper level starts
+      right under the line above (about 5 px under its text, as
+      Fastmail's reader does) and a shallower one goes on right under
+      the inner box: with the editor's 10 px between paragraphs, each
+      deeper level sat under a bare band as tall as a line (found by
+      Parcel's reply writer). Paragraphs of one level keep that space,
+      tinted. The tint's opacity differs on light and dark surfaces
+      (canvas fills blend in linear light, where one opacity reads far
+      stronger on dark), to look about as a browser's 12% does. Quote makes normal
       text a level-1 quote; Tab and Shift+Tab, indent and outdent, and
       Vim's `>` and `<` move quotes a level as they nest lists; Enter
       keeps the level; Backspace at a quote's start takes one level off,
