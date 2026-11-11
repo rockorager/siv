@@ -1437,6 +1437,54 @@ test "list view: a row's heading band stays out of its selection and hover fills
     defer testing.allocator.free(px);
     try testing.expect(Px.is(px, x, b.y0 + 12, bg));
     try testing.expect(Px.is(px, x, b.y0 + 40, try Px.color(&h, .control_hover)));
+
+    // j and k move the selection as an application's keymap does (a
+    // capture handler on the root selecting the next item, focus
+    // following): with single selection no row shows a ring, neither the
+    // one left nor the one selected.
+    const Keys = struct {
+        list: t.Node,
+        fn onKey(ud: ?*anyopaque, _: t.Node, ev: *const t.Event) callconv(.c) t.EventResult {
+            const k: *@This() = @ptrCast(@alignCast(ud.?));
+            if (!ev.flags.pressed) return .pass;
+            const step: i32 = switch (@backingInt(ev.keysym)) {
+                'j' => 1,
+                'k' => -1,
+                else => return .pass,
+            };
+            var cur: i32 = 0;
+            _ = c.siv_view_get_cursor(k.list, &cur);
+            var tx: t.Txn = .null;
+            if (c.siv_txn_begin(c.siv_node_get_window(k.list), &tx) != .ok) return .pass;
+            c.siv_view_set_selected(tx, k.list, @intCast(@max(0, cur + step)), true);
+            _ = c.siv_txn_commit(tx);
+            _ = c.siv_node_focus(k.list);
+            return .handled;
+        }
+    };
+    var keys: Keys = .{ .list = list };
+    txn = try begin(h.window);
+    c.siv_on_capture(txn, c.siv_window_get_root(h.window), .key, Keys.onKey, null, &keys);
+    c.siv_view_set_selected(txn, list, 0, true);
+    try ok(c.siv_txn_commit(txn));
+    try ok(c.siv_node_focus(list));
+    for ("jjjjkkj", [_]u32{ 1, 2, 3, 4, 3, 2, 3 }) |key, want| {
+        try h.typeKey(key, &.{key}, .{});
+        try h.settle();
+        var cur: i32 = -1;
+        try ok(c.siv_view_get_cursor(list, &cur));
+        try testing.expectEqual(@as(i32, @intCast(want)), cur);
+        const shot = try h.capture();
+        defer testing.allocator.free(shot);
+        var buf: [16]u8 = undefined;
+        for (0..7) |i| {
+            const name = try std.fmt.bufPrint(&buf, "Item {d}", .{i});
+            const rb = (try uw.semanticsTree()).find(.list_item, name).?.bounds;
+            // The left edge of the part below the band, where a ring is.
+            const y = if (i == 0) rb.y0 + 40 else (rb.y0 + rb.y1) / 2;
+            try testing.expect(!Px.is(shot, rb.x0 + 0.5, y, ring));
+        }
+    }
 }
 
 test "list view: a single selection's focused row shows its fill, no ring; the ring stays where the two can differ" {

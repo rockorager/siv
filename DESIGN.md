@@ -5061,8 +5061,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       band that shows the fills and, as a border, the ring, under the
       flex of the row's parts; the row itself, which keeps the focus
       and semantics, draws no ring (the core's would frame the band),
-      so the box draws it from the row's focus events. Rows of views
-      without the callback stay one flex. Presses and hover in the band
+      so the box draws it from the row's focus events, and only while
+      the row is the view's focus stop: focus that leaves at a commit
+      (the application selecting the next row, focus following) is
+      reported inside it, too late for that commit, and the row it
+      left kept a ring until the next move (found by Parcel's j and
+      k). Rows of views without the callback stay one flex. Presses and hover in the band
       are the row's. Found by Parcel, which could not mask the fill:
       the row's padding left strips of it at both ends of a child with
       its own background. Alternatives: section headings as rows of

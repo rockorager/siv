@@ -584,10 +584,25 @@ fn onRowFocus(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.E
     const v = viewOf(r.view) orelse return .pass;
     r.ring = ev.flags.gained and ev.flags.visible;
     if (r.index < 0 or r.index >= v.count) return .pass;
-    const txn = w.begin(ev.window) orelse return .pass;
+    // Focus that leaves at a commit (the row no longer the stop, a modal
+    // node taking it) comes inside that commit, where no transaction
+    // opens: restyle once it is done.
+    const txn = w.begin(ev.window) orelse {
+        _ = c.siv_post(w.appOf(ev.window), restyleRow, null, w.handleData(r.root));
+        return .pass;
+    };
     applyRow(txn, v, r);
     _ = w.commit(txn);
     return .pass;
+}
+
+fn restyleRow(ud: ?*anyopaque) callconv(.c) void {
+    const r = rowOf(w.dataHandle(ud)) orelse return;
+    const v = viewOf(r.view) orelse return;
+    if (r.index < 0 or r.index >= v.count) return;
+    const txn = w.begin(w.windowOf(v.root)) orelse return;
+    applyRow(txn, v, r);
+    _ = w.commit(txn);
 }
 
 fn bindRow(txn: Txn, v: *View, r: *Row, index: u32) void {
@@ -655,7 +670,9 @@ fn applyRow(txn: Txn, v: *View, r: *Row) void {
         // The fills and the ring start below the heading band: the root
         // has no ring of its own, the mark draws it as a border.
         _ = c.siv_set_visual(txn, r.root, &.{ .flags = .{ .no_focus_ring = true } });
-        const ring = r.ring and !no_ring;
+        // Only on the stop: a row the cursor left loses the focus at the
+        // commit, so it must not keep the ring until it hears so.
+        const ring = r.ring and !no_ring and isStop(v, i);
         _ = c.siv_set_visual(txn, r.mark, &.{ .background_token = fill, .border_width = if (ring) 2 else 0, .border_token = .focus_ring });
     }
     const stop = isStop(v, i);
