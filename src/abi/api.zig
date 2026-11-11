@@ -1525,6 +1525,7 @@ pub const decls = [_]Decl{
         .{ .name = "height", .type = ref("siv_view_height_fn"), .doc = "Lists, trees, and tables: each row's height (0 is item_height); NULL makes every row item_height. Rows are still placed by arithmetic, never measured, so the compositor scrolls them as before." },
         .{ .name = "flags", .type = ref("siv_view_flags"), .doc = "Options." },
         reserved("reserved0"),
+        .{ .name = "heading_height", .type = ref("siv_view_height_fn"), .doc = "Lists, trees, and tables: the height of a band at the top of each row that the row's selection and hover fills and its focus ring leave out (0 for none; at most the row's height), for a section heading that bind draws there, in the row's top part. The row keeps its whole height, and bind fills all of it. Asked as each row is bound. NULL: no row has one." },
     }),
     flags("siv_column_flags", "Table column options.", &.{
         .{ .name = "sortable", .bit = 0, .doc = "The header sorts: a click, or Enter or Space, reports SIV_EVENT_SORT." },

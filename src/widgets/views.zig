@@ -15,7 +15,9 @@
 //! the rows' tops are prefix sums in node data, rebuilt when the rows
 //! change (count, refresh, a tree item expanding) and searched by
 //! bisection for the range in view, so rows are still placed by
-//! arithmetic and the compositor scrolls them as before.
+//! arithmetic and the compositor scrolls them as before. A row may begin
+//! with a heading band (a section's name) that its fills and focus ring
+//! leave out.
 //!
 //! Table columns have header cells that sort (reporting `sort`; the
 //! header shows the order the application accepts) and a handle at their
@@ -82,6 +84,8 @@ pub const View = extern struct {
     children: ?siv.TreeCountFn,
     child: ?siv.TreeChildFn,
     height: ?siv.ViewHeightFn,
+    /// Each row's heading band, which its fills and ring leave out.
+    heading_height: ?siv.ViewHeightFn,
     /// The gen and count the row tops were built for.
     heights_gen: u32 = 0,
     heights_count: u32 = 0,
@@ -124,6 +128,16 @@ pub const Row = extern struct {
     bound: bool = false,
     view: Node,
     root: Node,
+    /// With a heading band: the flex that holds the row's parts, over
+    /// the whole row, and the box below the band that shows the fills
+    /// and the ring. The root, a stack, holds them. Else both the root.
+    inner: Node,
+    mark: Node,
+    /// The heading band's height, asked at bind.
+    band: f32 = 0,
+    /// Focused by the keyboard: the mark shows the ring the root does
+    /// not (a banded row's root has none, since it would frame the band).
+    ring: bool = false,
     disclosure: Node = .null,
     body: Node,
 };
@@ -193,6 +207,7 @@ fn create(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc, mode: Mode) Node {
         .children = d.children,
         .child = d.child,
         .height = if (mode == .grid) null else d.height,
+        .heading_height = if (mode == .grid) null else d.heading_height,
     };
     // The application's user data goes with the view: a handler that
     // never runs carries its destroy-notify.
@@ -538,21 +553,41 @@ fn rowOf(node: Node) ?*Row {
 }
 
 fn createRow(txn: Txn, v: *View) Node {
-    const row = c.siv_flex(txn, v.content, &.{ .axis = .row, .align_items = .stretch });
+    // With heading bands a row is a stack of the box that shows its fills
+    // below the band and, over it, the flex of its parts as tall as the
+    // row; else the flex is the row.
+    const banded = v.heading_height != null;
+    const row = if (banded) c.siv_stack(txn, v.content, null) else c.siv_flex(txn, v.content, &.{ .axis = .row, .align_items = .stretch });
     if (row == .null) return .null;
     const r = w.create(Row, txn, row) orelse return .null;
-    r.* = .{ .hdr = .{ .kind = .view_row }, .view = v.root, .root = row, .body = .null };
+    r.* = .{ .hdr = .{ .kind = .view_row }, .view = v.root, .root = row, .inner = row, .mark = row, .body = .null };
+    if (banded) {
+        r.mark = c.siv_box(txn, row);
+        r.inner = c.siv_flex(txn, row, &.{ .axis = .row, .align_items = .stretch });
+        w.onDefault(txn, row, .focus, onRowFocus, r);
+    }
     if (v.mode == .tree) {
-        r.disclosure = c.siv_canvas(txn, row, &.{ .user_data = r, .draw = drawDisclosure, .width = indent, .height = indent });
+        r.disclosure = c.siv_canvas(txn, r.inner, &.{ .user_data = r, .draw = drawDisclosure, .width = indent, .height = indent });
         _ = c.siv_set_layout(txn, r.disclosure, &.{ .width = w.px(indent + 4), .flags = .{ .no_shrink = true } });
     }
-    r.body = if (v.mode == .table) c.siv_grid(txn, row, &.{ .align_y = .center }) else c.siv_box(txn, row);
+    r.body = if (v.mode == .table) c.siv_grid(txn, r.inner, &.{ .align_y = .center }) else c.siv_box(txn, r.inner);
     _ = c.siv_set_layout(txn, r.body, &.{ .grow = 1, .align_y = .center });
     if (v.mode == .table) setColumns(txn, v, r.body);
     w.onDefault(txn, row, .pointer, onRowPointer, r);
     w.onDefault(txn, row, .key, onRowKey, r);
     w.onDefault(txn, row, .activate, onRowActivate, r);
     return row;
+}
+
+fn onRowFocus(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
+    const r: *Row = @ptrCast(@alignCast(ud.?));
+    const v = viewOf(r.view) orelse return .pass;
+    r.ring = ev.flags.gained and ev.flags.visible;
+    if (r.index < 0 or r.index >= v.count) return .pass;
+    const txn = w.begin(ev.window) orelse return .pass;
+    applyRow(txn, v, r);
+    _ = w.commit(txn);
+    return .pass;
 }
 
 fn bindRow(txn: Txn, v: *View, r: *Row, index: u32) void {
@@ -562,6 +597,10 @@ fn bindRow(txn: Txn, v: *View, r: *Row, index: u32) void {
     r.index = index;
     r.gen = v.gen;
     const item: u64, const depth: u32 = if (v.mode == .tree) .{ treeRows(v)[index].id, treeRows(v)[index].depth } else .{ index, 0 };
+    if (v.heading_height) |f| {
+        const b = f(v.user_data, item, index, depth);
+        r.band = if (std.math.isFinite(b)) std.math.clamp(b, 0, rowHeight(v, index)) else 0;
+    }
     applyRow(txn, v, r);
     if (v.bind) |bind| bind(v.user_data, txn, r.body, item, index, depth, recycled);
 }
@@ -584,24 +623,41 @@ fn applyRow(txn: Txn, v: *View, r: *Row) void {
             .flags = .{ .inset_top = true, .inset_start = true },
         });
     } else {
+        const banded = r.mark != r.root;
+        const padding: siv.Edges = .{ .start = pad_start, .end = 8 };
         _ = c.siv_set_layout(txn, r.root, &.{
             .height = w.px(rowHeight(v, i)),
             .inset_top = rowTop(v, i),
             .inset_start = 0,
             .inset_end = 0,
-            .padding = .{ .start = pad_start, .end = 8 },
+            .padding = if (banded) .{} else padding,
             .flags = .{ .inset_top = true, .inset_start = true, .inset_end = true },
         });
+        if (banded) {
+            const all: siv.LayoutFlags = .{ .inset_top = true, .inset_bottom = true, .inset_start = true, .inset_end = true };
+            _ = c.siv_set_layout(txn, r.mark, &.{ .inset_top = r.band, .flags = all });
+            _ = c.siv_set_layout(txn, r.inner, &.{ .padding = padding, .flags = all });
+        }
     }
     const sel = isSelected(v, i);
-    _ = c.siv_set_visual(txn, r.root, &.{
-        .radius = w.corners(if (v.mode == .grid) tk.radius else 0),
-        .background_token = if (sel) .selection_bg else if (r.hdr.hover) .control_hover else .none,
-        // With single selection the selected row's fill already shows
-        // the focus when the cursor is on it (D22); a ring would frame it
-        // twice. Elsewhere the fill and the cursor can differ.
-        .flags = .{ .no_focus_ring = sel and v.selection == .single },
-    });
+    const fill: siv.ColorToken = if (sel) .selection_bg else if (r.hdr.hover) .control_hover else .none;
+    // With single selection the selected row's fill already shows the
+    // focus when the cursor is on it (D22); a ring would frame it twice.
+    // Elsewhere the fill and the cursor can differ.
+    const no_ring = sel and v.selection == .single;
+    if (r.mark == r.root) {
+        _ = c.siv_set_visual(txn, r.root, &.{
+            .radius = w.corners(if (v.mode == .grid) tk.radius else 0),
+            .background_token = fill,
+            .flags = .{ .no_focus_ring = no_ring },
+        });
+    } else {
+        // The fills and the ring start below the heading band: the root
+        // has no ring of its own, the mark draws it as a border.
+        _ = c.siv_set_visual(txn, r.root, &.{ .flags = .{ .no_focus_ring = true } });
+        const ring = r.ring and !no_ring;
+        _ = c.siv_set_visual(txn, r.mark, &.{ .background_token = fill, .border_width = if (ring) 2 else 0, .border_token = .focus_ring });
+    }
     const stop = isStop(v, i);
     _ = c.siv_set_semantics(txn, r.root, &.{
         .role = switch (v.mode) {

@@ -1351,6 +1351,94 @@ test "table view: the focused row's ring shows whole inside the view, rows uncha
     try testing.expect(Px.isRing(pixels, mid_x, b.y + b.height - 1.5, w) or Px.isRing(pixels, mid_x, b.y + b.height + 1.5, w));
 }
 
+/// Rows for a section heading: the first is taller, its top a band.
+const Sections = struct {
+    fn height(_: ?*anyopaque, _: u64, index: u32, _: u32) callconv(.c) f32 {
+        return if (index == 0) 56 else 0;
+    }
+    fn heading(_: ?*anyopaque, _: u64, index: u32, _: u32) callconv(.c) f32 {
+        return if (index == 0) 24 else 0;
+    }
+};
+
+test "list view: a row's heading band stays out of its selection and hover fills and its ring" {
+    var h: Harness = .{};
+    try h.start(240, 320, null, null);
+    defer h.stop();
+    var m: Model = .{};
+    var txn = try begin(h.window);
+    const list = c.siv_list_view(txn, c.siv_window_get_root(h.window), &.{
+        .count = 20,
+        .selection = .single,
+        .bind = Model.bind,
+        .user_data = &m,
+        .height = Sections.height,
+        .heading_height = Sections.heading,
+    });
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    const uw, _ = try uiId(list);
+    const b = (try uw.semanticsTree()).find(.list_item, "Item 0").?.bounds;
+    // The row keeps its whole height.
+    try testing.expectApproxEqAbs(@as(f32, 56), b.y1 - b.y0, 0.5);
+    const Px = struct {
+        fn color(h_: *Harness, token: t.ColorToken) ![3]u8 {
+            var col: t.Color = undefined;
+            try ok(c.siv_window_get_color(h_.window, token, &col));
+            return .{ @intFromFloat(@round(col.r * 255)), @intFromFloat(@round(col.g * 255)), @intFromFloat(@round(col.b * 255)) };
+        }
+        /// Whether the pixel at (x, y) is `want`, within 3 per channel.
+        fn is(px: []const u8, x: f32, y: f32, want: [3]u8) bool {
+            const i = (@as(usize, @intFromFloat(y)) * 240 + @as(usize, @intFromFloat(x))) * 4;
+            for (0..3) |k| if (@abs(@as(i32, px[i + k]) - want[k]) > 3) return false;
+            return true;
+        }
+    };
+    const bg = try Px.color(&h, .view_bg);
+    // Right of the label, which bind put across the band.
+    const x = b.x1 - 20;
+
+    // Tab focuses the unselected first row: the ring frames the part
+    // below the band, and the band stays the view's background.
+    try h.typeKey(ks.tab, "", .{});
+    try h.settle();
+    const ring = try Px.color(&h, .focus_ring);
+    {
+        const px = try h.capture();
+        defer testing.allocator.free(px);
+        try testing.expect(Px.is(px, x, b.y0 + 12, bg));
+        try testing.expect(Px.is(px, x, b.y0 + 24.5, ring));
+        try testing.expect(Px.is(px, b.x0 + 0.5, b.y0 + 40, ring));
+        try testing.expect(!Px.is(px, b.x0 + 0.5, b.y0 + 12, ring));
+    }
+
+    // Selected, the fill starts below the band.
+    txn = try begin(h.window);
+    c.siv_view_set_selected(txn, list, 0, true);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    {
+        const px = try h.capture();
+        defer testing.allocator.free(px);
+        try testing.expect(Px.is(px, x, b.y0 + 2, bg));
+        try testing.expect(Px.is(px, x, b.y0 + 22, bg));
+        try testing.expect(Px.is(px, x, b.y0 + 30, try Px.color(&h, .selection_bg)));
+        try testing.expect(Px.is(px, x, b.y1 - 2, try Px.color(&h, .selection_bg)));
+    }
+
+    // Hovered while another row is selected, the same: the pointer over
+    // the band hovers the row, whose fill starts below it.
+    txn = try begin(h.window);
+    c.siv_view_set_selected(txn, list, 2, true);
+    try ok(c.siv_txn_commit(txn));
+    try h.inject(&.{.{ .pointer_motion = .{ .window = (try h.win()).win.id, .seat = 0, .x = x, .y = b.y0 + 12 } }});
+    try h.settle();
+    const px = try h.capture();
+    defer testing.allocator.free(px);
+    try testing.expect(Px.is(px, x, b.y0 + 12, bg));
+    try testing.expect(Px.is(px, x, b.y0 + 40, try Px.color(&h, .control_hover)));
+}
+
 test "list view: a single selection's focused row shows its fill, no ring; the ring stays where the two can differ" {
     const Px = struct {
         /// Whether the focused row has the light theme's focus ring

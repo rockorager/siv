@@ -5051,6 +5051,25 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       that size rows by text measure it with `siv_app_measure_text`.
       Reverse if applications need rows sized by content they cannot
       measure, such as embedded widgets.
+    - A row may begin with a heading band (`siv_view_desc.heading_height`,
+      a callback shaped like the height callback, asked as each row is
+      bound): the row keeps its whole height and bind fills all of it,
+      but its selection and hover fills and its focus ring start below
+      the band, so a section's name drawn there (Parcel's "Top results"
+      over its search list) reads as a heading, not as part of the
+      selected row. Such a view's rows are stacks of a box below the
+      band that shows the fills and, as a border, the ring, under the
+      flex of the row's parts; the row itself, which keeps the focus
+      and semantics, draws no ring (the core's would frame the band),
+      so the box draws it from the row's focus events. Rows of views
+      without the callback stay one flex. Presses and hover in the band
+      are the row's. Found by Parcel, which could not mask the fill:
+      the row's padding left strips of it at both ends of a child with
+      its own background. Alternatives: section headings as rows of
+      their own (they would take the cursor, the selection, and
+      positions among the items, and every application would skip
+      them); headers in the view between items (a second kind of row
+      the arithmetic placement would have to know).
     - The frame (border, rounded corners, clip) is the view's root; its
       header and scroll sit inside the border, the header's top corners
       and the scroll's open corners rounded to the border's inner curve.
