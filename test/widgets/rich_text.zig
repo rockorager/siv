@@ -580,6 +580,7 @@ test "rich text: a custom schema, invalid descriptors and documents" {
         .{ .desc = .{ .styles = .{ .h1 = true } }, .want = .error_invalid_argument },
         .{ .desc = .{ .flags = @bitCast(@as(u32, 2)) }, .want = .error_unsupported },
         .{ .desc = .{ .font_size = -1 }, .want = .error_invalid_argument },
+        .{ .desc = .{ .line_spacing = -1 }, .want = .error_invalid_argument },
     };
     for (cases) |cs| {
         var txn: t.Txn = .null;
@@ -1130,6 +1131,46 @@ test "rich text: a click past a line's end keeps the caret on that line" {
             };
         }
     }
+}
+
+test "rich text: normal text follows the application's font size, at the line spacing asked for" {
+    var h: Harness = .{};
+    try h.start(300, 400, null, null);
+    defer h.stop();
+    var log: Log = .{};
+    const node = try build(&h, .{ .document = signature_doc, .document_len = signature_doc.len }, &log);
+    // From the soft-broken line "-- " to the name under it.
+    const Pitch = struct {
+        fn of(n: t.Node) !f32 {
+            return (try lineRect(n, sig.name)).y - (try lineRect(n, sig.dashes)).y;
+        }
+    };
+    const at_11 = try Pitch.of(node);
+    var points: f64 = 0;
+    try ok(c.siv_app_get_font_size(h.app, &points));
+    try testing.expectEqual(11, points);
+    try ok(c.siv_app_set_font_size(h.app, 22));
+    try h.settle();
+    try ok(c.siv_app_get_font_size(h.app, &points));
+    try testing.expectEqual(22, points);
+    try testing.expectApproxEqRel(2 * at_11, try Pitch.of(node), 0.05);
+    for ([_]f64{ -1, 3, 97, std.math.nan(f64) }) |bad| {
+        try testing.expectEqual(t.Result.error_invalid_argument, c.siv_app_set_font_size(h.app, bad));
+    }
+    try ok(c.siv_app_set_font_size(h.app, 0));
+    try h.settle();
+    try ok(c.siv_app_get_font_size(h.app, &points));
+    try testing.expectEqual(11, points);
+    try testing.expectApproxEqAbs(at_11, try Pitch.of(node), 0.5);
+
+    // A size of its own stays; lines at 1 rather than 1.5 sit closer.
+    const fixed = try build(&h, .{ .document = signature_doc, .document_len = signature_doc.len, .font_size = 16, .line_spacing = 1 }, &log);
+    const tight = try Pitch.of(fixed);
+    try testing.expectApproxEqRel(at_11 / 1.5, tight, 0.1);
+    try ok(c.siv_app_set_font_size(h.app, 22));
+    try h.settle();
+    try testing.expectApproxEqAbs(tight, try Pitch.of(fixed), 0.5);
+    try ok(c.siv_app_set_font_size(h.app, 0));
 }
 
 test "rich text: a selection across lines is one region" {

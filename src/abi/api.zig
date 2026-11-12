@@ -1907,6 +1907,14 @@ pub const functions = [_]Function{
         .{ .name = "name", .type = schema.text_buffer, .doc = "Receives at most name_cap bytes; may be NULL with name_cap 0." },
         .{ .name = "len", .type = out(.usize), .doc = "The name's full length in bytes." },
     }),
+    call("siv_app_set_font_size", "Sets the UI font's size in points, which themed text sizes (siv_text_style's size_role), documents' medium (siv_docview_desc's font_size 0), and the rich text editor (siv_rich_text_desc's font_size 0) follow, in place of the desktop's: 11 pt by default, or the desktop's font size on GNOME and KDE (D19). The desktop's text scale still multiplies it. An application that zooms its text as a browser zooms a page sets it at each step; 0 follows the desktop again. Text reshapes and lays out again in every window, and settings handlers hear SIV_EVENT_DESKTOP_CHANGED.", &.{
+        app_param,
+        .{ .name = "points", .type = .f64, .doc = "The size, 4 to 96 points, or 0; others are SIV_ERROR_INVALID_ARGUMENT." },
+    }),
+    call("siv_app_get_font_size", "The UI font's size in points that themed text sizes follow now: siv_app_set_font_size's, else the desktop's (D19), before the text scale multiplies it; for text drawn at sizes of its own that should grow and shrink with the application's. Settings events with SIV_EVENT_DESKTOP_CHANGED say when it may have changed.", &.{
+        app_param,
+        .{ .name = "points", .type = out(.f64), .doc = "The size in points." },
+    }),
     call("siv_app_has_fonts", "Whether text in the default family (siv_app_set_default_font) has a font to draw with: one added with siv_app_add_font, or Fontconfig's, ready or still loading. Without one (SIV_APP_NO_SYSTEM_FONTS and no font added, or a system where Fontconfig finds none), text still lays out and draws, with siv's built-in last-resort face: a box for every character but spaces (D13).", &.{
         app_param,
         .{ .name = "has_fonts", .type = out(.bool), .doc = "A font resolves." },

@@ -51,8 +51,9 @@ const code_indent: f32 = 14;
 const quote_hues = [_]siv.ColorToken{ .blue, .green, .red };
 const quote_tint_light: f32 = 0.2;
 const quote_tint_dark: f32 = 0.04;
-/// The editor's line height, as a multiple of the font's.
-const line_spacing: f32 = 1.5;
+/// The editor's line height, as a multiple of the font's, unless the
+/// application gives one.
+const default_line_spacing: f32 = 1.5;
 const tag_step: f32 = 1e-5;
 const link_g: f32 = 0.36;
 const link_b: f32 = 0.80;
@@ -103,6 +104,9 @@ pub const State = struct {
     data: *Data = undefined,
     allow: pt.Allow,
     font_size: f32,
+    /// The font size follows the UI font's (`followedSize`).
+    follows: bool,
+    line_spacing: f32,
     mono: u32 = 0,
     vim_on: bool = false,
     reg: pt.Registry,
@@ -1460,7 +1464,7 @@ pub const State = struct {
                         // the innermost of them to the text's end.
                         const r = st.caretRect(b.start);
                         const e = st.caretRect(b.stop);
-                        const lead = r.height * (line_spacing - 1) / 2;
+                        const lead = r.height * (st.line_spacing - 1) / 2;
                         // Whole pixels, so that where blocks meet their
                         // tints' edges do not blend into a seam.
                         const y0 = @round(r.y - lead);
@@ -1470,7 +1474,7 @@ pub const State = struct {
                         const next = if (bi + 1 < blocks.len) quoteLevel(st.def(blocks[bi + 1])) else 0;
                         const prev_bottom = if (prev > 0) blk: {
                             const p = st.caretRect(blocks[bi - 1].stop);
-                            break :blk @round(p.y + p.height * (line_spacing + 1) / 2);
+                            break :blk @round(p.y + p.height * (st.line_spacing + 1) / 2);
                         } else y0;
                         for (0..level) |k| {
                             const x = r.x - 14 - quote_indent * @as(f32, @floatFromInt(level - 1 - k));
@@ -1812,9 +1816,31 @@ fn setLabel(txn: Txn, data: *Data, label: []const u8) void {
 
 fn applyDisabled(txn: Txn, data: *Data) void {
     const st = data.st;
-    c.siv_set_text_style(txn, st.editor, &.{ .font_size = st.font_size, .line_spacing = line_spacing, .space_after = 10, .color_token = if (data.hdr.disabled) .disabled_fg else .view_fg });
+    c.siv_set_text_style(txn, st.editor, &.{ .font_size = st.font_size, .line_spacing = st.line_spacing, .space_after = 10, .color_token = if (data.hdr.disabled) .disabled_fg else .view_fg });
     var buf: [1024]u8 = undefined;
     setLabel(txn, data, w.labelOf(st.editor, &buf));
+}
+
+/// The size normal text follows unless the application gives one: the UI
+/// font's, as documents' medium follows it (docview), 16 px at 11 pt.
+fn followedSize(app: siv.App) f32 {
+    var points: f64 = 11;
+    _ = c.siv_app_get_font_size(app, &points);
+    return @floatCast(points * 16.0 / 11.0);
+}
+
+/// The UI font's size changed: normal text and headings follow it.
+fn onSettings(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
+    const st: *State = @ptrCast(@alignCast(ud.?));
+    if (!ev.flags.desktop_changed) return .pass;
+    const size = followedSize(st.app);
+    if (size == st.font_size) return .pass;
+    st.font_size = size;
+    const txn = w.begin(st.window) orelse return .pass;
+    applyDisabled(txn, st.data);
+    st.write(txn, st.model, false);
+    _ = w.commit(txn);
+    return .pass;
 }
 
 fn focusOf(data: *Data) Node {
@@ -1847,7 +1873,7 @@ fn allowOf(d: siv.RichTextDesc) pt.Allow {
 
 pub export fn siv_rich_text(txn: Txn, parent: Node, desc: ?*const siv.RichTextDesc) Node {
     const d = w.readDesc(siv.RichTextDesc, desc) orelse return w.fail(txn, .error_invalid_argument);
-    if (@as(u32, @bitCast(d.flags)) & ~@as(u32, 1) != 0 or d.reserved0 != 0 or d.reserved1 != 0) return w.fail(txn, .error_unsupported);
+    if (@as(u32, @bitCast(d.flags)) & ~@as(u32, 1) != 0 or d.reserved1 != 0) return w.fail(txn, .error_unsupported);
     const styles: u32 = @bitCast(d.styles);
     const marks: u32 = @bitCast(d.marks);
     const blocks: u32 = @bitCast(d.blocks);
@@ -1857,17 +1883,21 @@ pub export fn siv_rich_text(txn: Txn, parent: Node, desc: ?*const siv.RichTextDe
         _ => return w.fail(txn, .error_unsupported),
     }
     if (!(d.font_size >= 0) or d.font_size > 1000) return w.fail(txn, .error_invalid_argument);
+    if (!(d.line_spacing >= 0) or d.line_spacing > 10) return w.fail(txn, .error_invalid_argument);
     const label = w.str(d.label, d.label_len) orelse return w.fail(txn, .error_invalid_argument);
     const placeholder = w.str(d.placeholder, d.placeholder_len) orelse return w.fail(txn, .error_invalid_argument);
     const document = w.str(d.document, d.document_len) orelse return w.fail(txn, .error_invalid_argument);
     const window = w.windowOf(parent);
+    const app = w.appOf(window);
     const st = gpa.create(State) catch return w.fail(txn, .error_out_of_memory);
     st.* = .{
         .root = .null,
         .window = window,
-        .app = w.appOf(window),
+        .app = app,
         .allow = allowOf(d),
-        .font_size = if (d.font_size == 0) 16 else d.font_size,
+        .font_size = if (d.font_size == 0) followedSize(app) else d.font_size,
+        .follows = d.font_size == 0,
+        .line_spacing = if (d.line_spacing == 0) default_line_spacing else d.line_spacing,
         .vim_on = d.flags.vim,
         .reg = pt.Registry.init(gpa) catch {
             gpa.destroy(st);
@@ -1918,6 +1948,7 @@ pub export fn siv_rich_text(txn: Txn, parent: Node, desc: ?*const siv.RichTextDe
     w.onDefault(txn, st.editor, .change, onChange, st);
     w.onDefault(txn, st.editor, .pointer, onPointer, st);
     w.onDefault(txn, st.editor, .focus, onFocus, st);
+    if (st.follows) w.onDefault(txn, root, .settings, onSettings, st);
     w.setInterface(txn, root, Data, data, .{ .set_label = setLabel, .apply = applyDisabled, .focus = focusOf });
     applyDisabled(txn, data);
     setLabel(txn, data, label);

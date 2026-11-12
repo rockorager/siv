@@ -95,11 +95,11 @@ pub const decls = [_]Decl{
         f("styles", ref("siv_rich_text_styles"), "With SIV_RICH_TEXT_SCHEMA_CUSTOM, the block styles allowed; must be 0 otherwise."),
         f("marks", ref("siv_rich_text_marks"), "With SIV_RICH_TEXT_SCHEMA_CUSTOM, the marks allowed; must be 0 otherwise."),
         f("blocks", ref("siv_rich_text_blocks"), "With SIV_RICH_TEXT_SCHEMA_CUSTOM, the lists and block types allowed; must be 0 otherwise."),
-        f("font_size", .f32, "The size of normal text in logical pixels, which headings scale; 0 is 16."),
+        f("font_size", .f32, "The size of normal text in logical pixels, which headings scale; 0 follows the UI font's size (siv_app_get_font_size) as documents' medium does, 16 at 11 pt."),
         f("label", .string, "The accessible name, copied; empty is \"Document\"."),
         f("placeholder", .string, "Shown while the document is empty, copied; empty for none."),
         f("document", .string, "The Portable Text document it starts with, as JSON (an array of blocks), copied; empty starts empty. Invalid JSON fails the transaction (SIV_ERROR_INVALID_ARGUMENT)."),
-        reserved("reserved0"),
+        f("line_spacing", .f32, "Normal text's line height as a multiple of the font's (siv_text_style's line_spacing); 0 is 1.5."),
         reserved("reserved1"),
     }),
     enumeration("siv_rich_text_command", "A formatting or editing command of a rich text editor (siv_rich_text_run), as its toolbar and menus give it.", &.{

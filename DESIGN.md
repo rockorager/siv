@@ -3650,6 +3650,19 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       user style sheet cannot help, since author styles name
       `-apple-system` first. With "sans-serif" there, `system-ui` is
       Fontconfig's sans-serif. Empty keeps the default family.
+    - The application may set the UI font's size too
+      (`siv_app_set_font_size`), in place of the desktop's, as
+      `siv_app_set_default_font` sets the family: parcel's monospace
+      face runs wider than the sans-serif 11 pt suits, so it sets 10 pt,
+      and it zooms every window's text as a browser zooms a page, each
+      Ctrl+= or Ctrl+- setting the size again. Themed text sizes,
+      documents' medium (`size × 16 / 11` px, 16 px at 11 pt), and the
+      rich text editor's normal text follow it, and the desktop's text
+      scale still multiplies it; 0 follows the desktop again.
+      `siv_app_get_font_size` reads the size in effect. Until November
+      2026 a document's root took the style store's 16 px whatever
+      medium was, so neither the desktop's size nor
+      `siv_docview_desc.font_size` reached the text.
     - Content siv does not draw reads the same resolved values, so that
       it matches siv's own text and motion rather than reading the
       portal itself: `siv_app_get_default_font` (the family above, or
@@ -5415,6 +5428,14 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       on its empty last line ends it, as in an empty list item. An
       object is one no-break space with its placeholder drawn over it
       (U+FFFC draws as a box in fonts without it).
+    - Normal text is `siv_rich_text_desc.font_size` or, at 0, the UI
+      font's size as documents' medium follows it (16 px at 11 pt),
+      followed through settings events, so that an application's zoom
+      (`siv_app_set_font_size`) reaches what is being written as it
+      reaches what is read; headings scale it. Lines are
+      `line_spacing` times the font's height, 1.5 unless the
+      application asks for another: parcel's compose matches its
+      reader's 1.25, which 1.5 left looser than the mail it quotes.
     - List markers, quote bars, code grounds, and placeholders are
       drawn by a canvas behind the editor from its caret rectangles,
       where the paragraphs' indents leave room. Alternative: a text
@@ -6515,8 +6536,9 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     `background_token`, `border_token`, and shadows' `color_token`, and text styles `color_token`,
     each replacing the literal color when set. Text styles take a
     `size_role` (body, caption, heading, title) relative to the desktop's
-    UI font size (11 pt by default, 1 pt = 4/3 logical px), multiplied by
-    the text scale like every size.
+    UI font size (11 pt by default, 1 pt = 4/3 logical px) or the
+    application's (`siv_app_set_font_size`), multiplied by the text scale
+    like every size.
   - Four compiled variants (light, dark, and high contrast of each), picked
     by the portal's color scheme and contrast unless the application fixes
     either (`siv_app_set_theme`). The portal's accent replaces `accent`,
@@ -9455,7 +9477,8 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     dark high-contrast variant. An application that shows a preview of
     the normal theme draws it with literal colors.
   - Text sizes stay the window's: they follow the desktop's font size
-    and text scale, the user's reading choice, everywhere. A subtree
+    (or the application's) and text scale, the user's reading choice,
+    everywhere. A subtree
     theme therefore never reshapes or relays out anything; it is paint
     only. A part that wants smaller text uses size roles as anywhere.
   - Cost. A window keeps its themed nodes in a list and their contexts

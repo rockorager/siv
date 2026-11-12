@@ -172,6 +172,9 @@ pub const App = struct {
     /// The application chose the default font family, so the desktop's
     /// does not replace it.
     font_overridden: bool = false,
+    /// The UI font's size in points the application chose in place of
+    /// the desktop's (`setFontSize`), or 0.
+    font_size: f64 = 0,
     /// The application chose the icon theme, so the desktop's does not
     /// replace it.
     icon_theme_overridden: bool = false,
@@ -513,6 +516,13 @@ pub const App = struct {
         try app.fonts.setDefault(family);
         app.font_overridden = true;
         app.refreshText();
+    }
+
+    /// Overrides the desktop's UI font size (D19) with `points`, or
+    /// follows it again with 0: themed text sizes and documents follow.
+    pub fn setFontSize(app: *App, points: f64) void {
+        app.font_size = points;
+        desktop_mod.apply(app);
     }
 
     /// Fonts or the text scale changed (the default or monospace family,

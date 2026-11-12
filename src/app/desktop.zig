@@ -146,13 +146,15 @@ fn onChange(ctx: ?*anyopaque, s: *dbus.Settings, changed: dbus.Settings.Changed)
     release(app);
 }
 
-/// Copies the desktop's values into every window, with what power saving
-/// changes (D42): carets stop blinking, the one motion siv runs on its
-/// own while the user does nothing. Motion the user starts still runs;
-/// reduced motion is the user's accessibility setting, not power's.
+/// Copies the desktop's values into every window, with the application's
+/// font size in place of the desktop's when it set one, and what power
+/// saving changes (D42): carets stop blinking, the one motion siv runs on
+/// its own while the user does nothing. Motion the user starts still
+/// runs; reduced motion is the user's accessibility setting, not power's.
 pub fn apply(app: *App) void {
     const d = &app.desktop;
     d.values = d.base;
+    if (app.font_size > 0) d.values.font_size = app.font_size;
     if (app.system.powerSaver()) d.values.cursor_blink = false;
     for (app.windows.items) |w| if (w) |win| {
         const old = win.ui.palette;

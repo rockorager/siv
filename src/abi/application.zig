@@ -577,6 +577,22 @@ pub export fn siv_app_get_default_font(app: t.App, name: ?[*]u8, name_cap: usize
     }.f(app, name, name_cap, len));
 }
 
+pub export fn siv_app_set_font_size(app: t.App, points: f64) t.Result {
+    const self = App.get(@backingInt(app)) catch |err| return t.resultOf(err);
+    if (!(points == 0 or (points >= 4 and points <= 96))) return .error_invalid_argument;
+    self.app.setFontSize(points);
+    return .ok;
+}
+
+pub export fn siv_app_get_font_size(app: t.App, points: ?*f64) t.Result {
+    const self = App.get(@backingInt(app)) catch |err| return t.resultOf(err);
+    const dest = runtime.out(f64, points) catch |err| return t.resultOf(err);
+    // As the theme resolves it (ui.theme.resolveIn).
+    const size = self.app.desktop.values.font_size;
+    dest.* = if (size > 0 and std.math.isFinite(size)) std.math.clamp(size, 4, 96) else 11;
+    return .ok;
+}
+
 pub export fn siv_app_has_fonts(app: t.App, has_fonts: ?*bool) t.Result {
     return wrap(struct {
         fn f(a: t.App, out: ?*bool) Error!void {
