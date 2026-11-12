@@ -1012,10 +1012,15 @@ pub const Cascade = struct {
             if (src.origin == o) P.set(c, src.sheet.ruleDecls(src.sheet.rules[m.rule]), true, false);
         };
 
-        // Compute.
-        const parent = c.store.get(parent_id);
+        // Compute. The root inherits the user's default size (CSS medium),
+        // which its font-size, when no rule sets one, and its ems take.
+        var root_parent: Style = undefined;
+        const parent = if (parent_id != 0) c.store.get(parent_id) else blk: {
+            root_parent = c.store.get(0).*;
+            root_parent.inh.font_size = c.env.font_size;
+            break :blk &root_parent;
+        };
         var s: Style = .{ .inh = parent.inh, .custom = parent.custom };
-        if (parent_id == 0) s.inh.font_size = c.env.font_size;
         // Decorations propagate to descendants' text.
         if (parent.box.text_decoration_line.any()) {
             const pd = parent.box.text_decoration_line;
@@ -1560,4 +1565,37 @@ test "matching and the cascade" {
     try std.testing.expect(sa.box.text_decoration_line.underline);
     try std.testing.expectEqual(css.color.System.link_text, sa.inh.color.system);
     try std.testing.expect(store.count() < 20);
+}
+
+test "the root takes the user's default size, which ems and keywords follow" {
+    const gpa = std.testing.allocator;
+    var dom = try html.parse(gpa,
+        \\<!doctype html><html><body><p>plain</p><p style="font-size: 1.5em">em</p><font size=5>keyword</font></body></html>
+    , .{});
+    defer dom.deinit();
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    var store = try css.style.Store.init(gpa);
+    defer store.deinit(gpa);
+    var c = Cascade.init(gpa, arena.allocator(), &dom, &store);
+    defer c.deinit();
+    try c.prepare();
+    var ua = try css.sheet.parse(gpa, @import("ua.zig").css, .{});
+    defer ua.deinit();
+    c.env.media.width = 800;
+    c.env.font_size = 20;
+    try c.addSheet(&ua, .user_agent);
+    var r = try c.run();
+    defer {
+        gpa.free(r.styles);
+        r.pseudo.deinit(gpa);
+    }
+    var sizes: [3]f32 = undefined;
+    var n: usize = 0;
+    for (dom.nodes.items, 0..) |x, i| if (x.kind == .element and (x.name == .p or x.name == .font)) {
+        sizes[n] = store.get(r.styles[i]).inh.font_size;
+        n += 1;
+    };
+    try std.testing.expectEqual(3, n);
+    try std.testing.expectEqual([3]f32{ 20, 30, 30 }, sizes);
 }
