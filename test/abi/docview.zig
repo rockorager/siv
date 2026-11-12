@@ -245,9 +245,9 @@ test "C API docview: email with a collapsed quote that a click opens" {
     defer h.stop();
     var ev: Events = .{};
     const mail =
-        \\<div dir=ltr>See you then.</div><div class="gmail_quote"><div>On Mon, Ann wrote:</div>
+        \\<div dir=ltr>See you then.</div><script>alert(1)</script><a href="javascript:alert(2)">no link</a>
+        \\<div class="gmail_quote"><div>On Mon, Ann wrote:</div>
         \\<blockquote class="gmail_quote">Lunch at noon?<br>Ann</blockquote></div>
-        \\<script>alert(1)</script><a href="javascript:alert(2)">no link</a>
     ;
     const node = try build(&h, &ev, .html, mail, .{ .untrusted = true, .collapse_quotes = true }, "file:///mail/");
     try waitLoaded(&h, &ev, 1);
@@ -690,7 +690,7 @@ test "C API docview: flags change in place, keeping the place, open quotes, sele
         \\<body style="margin: 8px; background: white; color: black"><p>See you then.</p>
         \\<div class="gmail_quote"><div>On Mon, Ann wrote:</div><blockquote class="gmail_quote">Lunch at noon?<br>Ann</blockquote></div>
         \\<p><img src="cid:logo" alt="logo" width=40 height=20><img src="https://tracker.example/p.gif" width=1 height=1>
-        \\<p style="height: 400px">Tall</p><p>End</p>
+        \\<div style="height: 400px"></div>
     ;
     const created: t.DocviewFlags = .{ .untrusted = true, .collapse_quotes = true };
     var ev: Events = .{};

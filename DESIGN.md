@@ -7369,7 +7369,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     colon right before the quote, past line breaks: Fastmail's and older
     Apple Mail's "On …, Priya wrote:", "schrieb:", "a écrit :"; Gmail,
     Yahoo, Proton, and today's Apple Mail put it inside their quote
-    markup), after a `•••` link to `siv:quote/N`; the
+    markup), after a `•••` link to `siv:quote/N`. Only the quotes that
+    end the message are wrapped: those that nothing but blank text,
+    images, style sheets, and other such quotes follow. A quote with
+    writing after it, as bottom posting and replies between quotes
+    leave, is part of what is being read, and a toggle per quote there
+    hid the conversation behind a row of buttons (found by Parcel). The
     box builder leaves closed ones out, and the link toggles them and
     styles again. The toggle is drawn as siv's buttons are in the theme
     (`ButtonFace`, `ButtonBorder`, `ButtonText`, a 6 px radius), with

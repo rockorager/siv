@@ -75,8 +75,9 @@ fn neuter(dom: *Dom, id: NodeId, name: html.Atom) void {
 /// `.yahoo_quoted`, Outlook's `#divRplyFwdMsg` and the reply header that
 /// starts with a top border, with what follows them, and Outlook mobile's
 /// `#mail-editor-reference-message-container`) and wraps each
-/// outermost one in `<div data-siv-quote=N>` after a toggle link to
-/// `siv:quote/N`. Returns the wrappers, in order.
+/// outermost one that only blank text and other quotes follow in
+/// `<div data-siv-quote=N>` after a toggle link to `siv:quote/N`.
+/// Returns the wrappers, in order.
 pub fn wrapQuotes(gpa: Allocator, dom: *Dom) error{OutOfMemory}![]NodeId {
     var found: std.ArrayList(NodeId) = .empty;
     defer found.deinit(gpa);
@@ -96,9 +97,18 @@ pub fn wrapQuotes(gpa: Allocator, dom: *Dom) error{OutOfMemory}![]NodeId {
         }
         cur = dom.following(cur, body);
     }
+    // Only the quotes that end the message collapse: a quote with writing
+    // after it, as bottom posting and replies between quotes leave, is
+    // part of what is being read.
+    var first = found.items.len;
+    while (first > 0) : (first -= 1) {
+        const q = found.items[first - 1];
+        const end = if (first < found.items.len) try attribution(gpa, dom, found.items[first]) else .none;
+        if (!blankBetween(dom, after(dom, q, tails.items[first - 1], body), end, body)) break;
+    }
     var wrappers: std.ArrayList(NodeId) = .empty;
     errdefer wrappers.deinit(gpa);
-    for (found.items, tails.items, 0..) |q, tail, k| {
+    for (found.items[first..], tails.items[first..], 0..) |q, tail, k| {
         const parent = dom.node(q).parent;
         // The attribution line before it goes with it.
         const start = if (tail) q else try attribution(gpa, dom, q);
@@ -129,6 +139,24 @@ pub fn wrapQuotes(gpa: Allocator, dom: *Dom) error{OutOfMemory}![]NodeId {
 }
 
 const Kind = enum { none, block, tail };
+
+/// The first node after a quote: past its element, or for a reply header,
+/// which takes the rest of its parent, past the parent.
+fn after(dom: *const Dom, q: NodeId, tail: bool, body: NodeId) NodeId {
+    return dom.followingSkip(if (tail) dom.node(q).parent else q, body);
+}
+
+/// Whether nothing is written from `from` up to `end` (none for the end
+/// of the body): only blank text, line breaks, images, and style sheets.
+fn blankBetween(dom: *const Dom, from: NodeId, end: NodeId, body: NodeId) bool {
+    var cur = from;
+    while (cur != .none and cur != end) {
+        const n = dom.node(cur);
+        if (n.kind == .text and std.mem.trim(u8, dom.text(cur), " \t\r\n\u{a0}").len > 0) return false;
+        cur = if (dom.isHtml(cur, .style)) dom.followingSkip(cur, body) else dom.following(cur, body);
+    }
+    return true;
+}
 
 /// The attribution line ("On Tuesday, Priya wrote:") right before a quote,
 /// past line breaks and blank text, when it is apart from it: Thunderbird's
@@ -188,11 +216,11 @@ test "quotes from Gmail, Apple Mail, and Outlook are wrapped once" {
     const gpa = std.testing.allocator;
     var dom = try html.parse(gpa,
         \\<p>Sounds good.</p>
+        \\<a href="javascript:alert(1)">x</a><a href=" JaVa&#x09;script:1">y</a><a href="https://example.com/">z</a><script>bad()</script>
         \\<div class="gmail_quote"><div>On Mon, Ann wrote:</div><blockquote class="gmail_quote" type="cite">Lunch?</blockquote></div>
         \\<blockquote type=cite>Apple <blockquote type=cite>nested</blockquote></blockquote>
         \\<div><div id="divRplyFwdMsg">From: Bob</div><div>Old text</div><p>more</p></div>
         \\<div id="mail-editor-reference-message-container"><div class="ms-outlook-mobile-reference-message" style="border-top: 1pt solid rgb(181, 196, 223)"><b>From: </b>Cy<br><b>Subject: </b>Plans</div><div dir="ltr">Older text</div></div>
-        \\<a href="javascript:alert(1)">x</a><a href=" JaVa&#x09;script:1">y</a><a href="https://example.com/">z</a><script>bad()</script>
     , .{});
     defer dom.deinit();
     // As the document does: clean first, then wrap.
@@ -291,4 +319,43 @@ test "quotes from each client go behind the toggle with their attribution line" 
     try std.testing.expectEqual(1, one.len);
     // Before its toggle: the paragraph, not the line.
     try std.testing.expectEqual(dom.childElement(dom.body(), .p), dom.node(dom.node(one[0]).prev).prev);
+}
+
+test "only the quotes that end a message collapse" {
+    const gpa = std.testing.allocator;
+    const Case = struct { src: []const u8, quotes: usize, open: []const u8 = "" };
+    const cases = [_]Case{
+        // Bottom posting: the reply after the quote.
+        .{ .src = "<blockquote type=cite>Old</blockquote><p>Reply</p>", .quotes = 0 },
+        // Replies between quotes, and a signature after the last.
+        .{ .src = "<div>Arnt,</div><blockquote type=cite>One</blockquote><div>First</div><blockquote type=cite>Two</blockquote><div>Second</div><div>Mark</div>", .quotes = 0 },
+        // Replies between quotes, ending in one: that one goes.
+        .{ .src = "<blockquote type=cite>One</blockquote><p>First</p><blockquote type=cite>Two</blockquote><div><br></div>", .quotes = 1, .open = "One" },
+        // Top posting over two quotes, each with its attribution before it.
+        .{ .src = "<div>Reply</div><div>On Mon, Ann wrote:</div><blockquote type=cite>A</blockquote><div><br></div><div>On Sun, Bob wrote:</div><blockquote type=cite>B</blockquote>", .quotes = 2 },
+        // Outlook's reply header takes the rest of its parent; what
+        // follows the parent is a reply.
+        .{ .src = "<div><div id=divRplyFwdMsg>From: Bob</div><div>Old</div></div><p>Reply</p>", .quotes = 0 },
+        // A style sheet after it is not writing.
+        .{ .src = "<p>Reply</p><div><div id=divRplyFwdMsg>From: Bob</div><div>Old</div></div><style>p { margin: 0 }</style>", .quotes = 1, .open = "Reply" },
+    };
+    for (cases) |c| {
+        var dom = try html.parse(gpa, c.src, .{});
+        defer dom.deinit();
+        const wrappers = try wrapQuotes(gpa, &dom);
+        defer gpa.free(wrappers);
+        std.testing.expectEqual(c.quotes, wrappers.len) catch |err| {
+            std.debug.print("{s}\n", .{c.src});
+            return err;
+        };
+        if (c.open.len == 0) continue;
+        // What stayed out of the wrappers.
+        var all: std.Io.Writer.Allocating = .init(gpa);
+        defer all.deinit();
+        try html.serialize.outer(&dom, &all.writer, dom.body());
+        var rest: []const u8 = all.written();
+        const start = std.mem.indexOf(u8, rest, "<div data-siv-quote").?;
+        rest = rest[0..start];
+        try std.testing.expect(std.mem.indexOf(u8, rest, c.open) != null);
+    }
 }
