@@ -655,7 +655,7 @@ fn applyRow(txn: Txn, v: *View, r: *Row) void {
         }
     }
     const sel = isSelected(v, i);
-    const fill: siv.ColorToken = if (sel) .selection_bg else if (r.hdr.hover) .control_hover else .none;
+    const fill: siv.ColorToken = if (sel) .selection_bg else if (r.hdr.hover and !v.hdr.disabled) .control_hover else .none;
     // With single selection the selected row's fill already shows the
     // focus when the cursor is on it (D22); a ring would frame it twice.
     // Elsewhere the fill and the cursor can differ.
@@ -1160,15 +1160,20 @@ fn onRowPointer(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv
     const r: *Row = @ptrCast(@alignCast(ud.?));
     const e = ev;
     const v = viewOf(r.view) orelse return .pass;
+    // Hover follows the core's hover path always: a leave dropped while
+    // the row was in the pool (a search shrank the count under the
+    // pointer) or the view disabled left the flag set, and the row
+    // showed the hover fill wherever it was bound next.
+    if (e.phase == .enter or e.phase == .leave) {
+        r.hdr.hover = e.phase == .enter;
+        if (r.index < 0 or r.index >= v.count) return .pass;
+        const txn = w.begin(e.window) orelse return .pass;
+        applyRow(txn, v, r);
+        _ = w.commit(txn);
+        return .pass;
+    }
     if (v.hdr.disabled or r.index < 0) return .pass;
     switch (e.phase) {
-        .enter, .leave => {
-            r.hdr.hover = e.phase == .enter;
-            const txn = w.begin(e.window) orelse return .pass;
-            applyRow(txn, v, r);
-            _ = w.commit(txn);
-            return .pass;
-        },
         .down => {
             if (e.button != .primary) return .pass;
             // A press in an editor inside the row (renaming an item) is

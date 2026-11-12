@@ -1487,6 +1487,72 @@ test "list view: a row's heading band stays out of its selection and hover fills
     }
 }
 
+test "list view: a row the pointer left while it was pooled or the view disabled keeps no hover fill" {
+    var h: Harness = .{};
+    try h.start(240, 700, null, null);
+    defer h.stop();
+    var m: Model = .{};
+    const list = try listOf(&h, &m, 20, .single);
+    const uw, _ = try uiId(list);
+    const id = (try h.win()).win.id;
+    var hover_col: t.Color = undefined;
+    try ok(c.siv_window_get_color(h.window, .control_hover, &hover_col));
+    const hover = [3]u8{ @intFromFloat(@round(hover_col.r * 255)), @intFromFloat(@round(hover_col.g * 255)), @intFromFloat(@round(hover_col.b * 255)) };
+    const Check = struct {
+        /// The rows (all 20 in view) whose end shows the hover fill, as bits.
+        fn hovered(h_: *Harness, uw_: *ui.Window, want: [3]u8) !u32 {
+            try h_.settle();
+            const px = try h_.capture();
+            defer testing.allocator.free(px);
+            var bits: u32 = 0;
+            var buf: [16]u8 = undefined;
+            for (0..20) |i| {
+                const name = try std.fmt.bufPrint(&buf, "Item {d}", .{i});
+                const b = (uw_.semanticsTree() catch unreachable).find(.list_item, name) orelse continue;
+                const k = (@as(usize, @intFromFloat((b.bounds.y0 + b.bounds.y1) / 2)) * 240 + @as(usize, @intFromFloat(b.bounds.x1 - 12))) * 4;
+                var same = true;
+                for (0..3) |ch| same = same and @abs(@as(i32, px[k + ch]) - want[ch]) <= 3;
+                if (same) bits |= @as(u32, 1) << @intCast(i);
+            }
+            return bits;
+        }
+    };
+    const move = struct {
+        fn f(h_: *Harness, wid: anytype, y: f64) !void {
+            try h_.inject(&.{.{ .pointer_motion = .{ .window = wid, .seat = 0, .x = 200, .y = y } }});
+        }
+    }.f;
+    // The pointer on row 5 hovers it.
+    try move(&h, id, 5 * 32 + 16);
+    try testing.expectEqual(@as(u32, 1 << 5), try Check.hovered(&h, uw, hover));
+    // A search narrows the list: row 5 goes to the pool under the
+    // pointer, which then moves to row 1 and back the rows come.
+    var txn = try begin(h.window);
+    c.siv_view_set_count(txn, list, 3);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try move(&h, id, 1 * 32 + 16);
+    try h.settle();
+    txn = try begin(h.window);
+    c.siv_view_set_count(txn, list, 20);
+    try ok(c.siv_txn_commit(txn));
+    try testing.expectEqual(@as(u32, 1 << 1), try Check.hovered(&h, uw, hover));
+    // The pointer leaves row 1 while the view is disabled.
+    txn = try begin(h.window);
+    c.siv_widget_set_disabled(txn, list, true);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try move(&h, id, 3 * 32 + 16);
+    try h.settle();
+    try move(&h, id, 7 * 32 + 16);
+    // Disabled, no row shows it; enabled again, the one under the pointer.
+    try testing.expectEqual(@as(u32, 0), try Check.hovered(&h, uw, hover));
+    txn = try begin(h.window);
+    c.siv_widget_set_disabled(txn, list, false);
+    try ok(c.siv_txn_commit(txn));
+    try testing.expectEqual(@as(u32, 1 << 7), try Check.hovered(&h, uw, hover));
+}
+
 test "list view: a single selection's focused row shows its fill, no ring; the ring stays where the two can differ" {
     const Px = struct {
         /// Whether the focused row has the light theme's focus ring
