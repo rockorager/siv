@@ -1658,6 +1658,7 @@ fn dispatch(user: ?*anyopaque, uw: *ui.Window, id: NodeId, event: *const ui.Even
             };
             ev.flags.prevented = s.prevented;
             ev.flags.stop = s.stop;
+            ev.modifiers = modifiers(s.mods);
             if (s.target != .none and uw.isLive(s.target)) ev.target = @fromBackingInt(w.nodes.handle(s.target));
         },
         .gesture => |g| {

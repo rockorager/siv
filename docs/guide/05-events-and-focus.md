@@ -224,7 +224,8 @@ handler with `siv_window_begin_move` and `siv_window_begin_resize`.
 
 Scroll nodes scroll on the compositor thread without your code (D8).
 Scroll events reach your handlers first only where a node has a scroll
-handler, or while Ctrl, Alt, or Super is held, for zooming and the like.
+handler, or while Ctrl, Alt, or Super is held, for zooming and the like:
+the event's `modifiers` say which is held.
 The node owns its position: to scroll from your own keys, use
 `siv_scroll_by` (by pixels, lines, or pages), `siv_scroll_to_edge` (top,
 bottom, start, or end), and `siv_scroll_into_view` (a node, which may be

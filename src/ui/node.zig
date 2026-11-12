@@ -1153,6 +1153,8 @@ pub const ScrollDelta = struct {
     steps_y: f32 = 0,
     source: @import("platform").ScrollSource = .unknown,
     stop: bool = false,
+    /// The modifiers held, so that a handler can zoom on Ctrl+wheel.
+    mods: Mods = .{},
 };
 
 /// An input method's edit of a custom text widget (D15): delete around

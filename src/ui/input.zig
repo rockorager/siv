@@ -1103,6 +1103,7 @@ fn scroll(win: *Window, s: platform.Scroll) void {
         .steps_y = @as(f32, @floatFromInt(s.v120_y)) / 120,
         .source = s.source,
         .stop = stop,
+        .mods = win.input.mods,
     } };
     if (bubble(win, target, .scroll, ev).prevents()) return;
     const mods = win.input.mods;

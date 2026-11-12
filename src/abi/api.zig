@@ -1170,7 +1170,7 @@ pub const decls = [_]Decl{
         .{ .name = "type", .type = ref("siv_event_type"), .doc = "What happened." },
         .{ .name = "phase", .type = ref("siv_pointer_phase"), .doc = "Pointer and touch: what happened." },
         .{ .name = "button", .type = ref("siv_pointer_button"), .doc = "Pointer: the button pressed or released." },
-        .{ .name = "modifiers", .type = ref("siv_modifiers"), .doc = "Pointer, key, and drop: modifiers held." },
+        .{ .name = "modifiers", .type = ref("siv_modifiers"), .doc = "Pointer, key, scroll, and drop: modifiers held." },
         .{ .name = "flags", .type = ref("siv_event_flags"), .doc = "Details." },
         .{ .name = "keysym", .type = ref("siv_key"), .doc = "Key: the XKB keysym, named (SIV_KEY_ESCAPE) or not (siv_key)." },
         f32Field("x", "Pointer and touch: position in the node's coordinates."),

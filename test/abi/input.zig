@@ -970,6 +970,15 @@ test "custom widgets get raw input: keycodes, scroll as the compositor sent it, 
     try testing.expectEqual(@as(f32, 0), finger.steps_y);
     try testing.expect(scrolls.events[2].flags.stop);
     try testing.expectEqual(@as(f32, 0), scrolls.events[2].dy);
+    try testing.expect(!wheel.modifiers.ctrl);
+    // Ctrl held: the handler can tell Ctrl+wheel, to zoom.
+    try h.inject(&.{.{ .modifiers = .{ .window = id, .seat = 0, .mods = .{ .ctrl = true } } }});
+    try h.inject(&.{.{ .scroll = .{ .window = id, .seat = 0, .dy = 15, .v120_y = 120, .source = .wheel } }});
+    try h.inject(&.{.{ .modifiers = .{ .window = id, .seat = 0, .mods = .{} } }});
+    try h.settle();
+    try testing.expectEqual(@as(usize, 4), scrolls.n);
+    try testing.expect(scrolls.events[3].modifiers.ctrl);
+    try testing.expect(!scrolls.events[3].modifiers.shift);
 
     // Two fingers on the widget: each sequence goes to it, in its
     // coordinates, and no pointer press is emulated.
