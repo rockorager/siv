@@ -1037,3 +1037,83 @@ test "C API docview: a double click selects the word under the pointer, scaled, 
         }
     }
 }
+
+test "C API docview: switching documents while their images decode" {
+    var h: Harness = .{};
+    try h.start(300, 200, null, null);
+    defer h.stop();
+    const app = (try h.internal()).app;
+    // One compute worker, which a job holds below, so that what runs
+    // before it is done and what comes after waits in the queue. None
+    // has started yet, or the limit would not hold.
+    try testing.expectEqual(@as(u32, 0), app.pool.workers.lanes[0].threads);
+    app.pool.workers.max_threads = 1;
+    const Images = struct {
+        ev: Events = .{},
+        requests: [3]u32 = undefined,
+        count: u32 = 0,
+
+        fn onLoad(user: ?*anyopaque, _: t.Node, request: u32, _: ?[*]const u8, _: usize, _: t.ResourceKind) callconv(.c) void {
+            const self: *@This() = @ptrCast(@alignCast(user));
+            self.requests[self.count] = request;
+            self.count += 1;
+        }
+
+        fn desc(self: *@This(), source: []const u8) t.DocviewDesc {
+            return .{ .source = source.ptr, .source_count = source.len, .base_url = "cid:", .base_url_len = 4, .kind = .html, .color_scheme = .light, .flags = .{}, .user_data = self, .on_event = Events.onEvent, .load = onLoad };
+        }
+
+        fn waitRequests(self: *const @This(), hh: *Harness, n: u32) !void {
+            try waitLoaded(hh, &self.ev, 1);
+            try testing.expectEqual(n, self.count);
+        }
+    };
+    const Gate = struct {
+        open: std.atomic.Value(bool) = .init(false),
+        started: std.atomic.Value(bool) = .init(false),
+
+        fn work(user: ?*anyopaque) callconv(.c) void {
+            const g: *@This() = @ptrCast(@alignCast(user));
+            g.started.store(true, .release);
+            while (!g.open.load(.acquire)) std.Thread.yield() catch {};
+        }
+    };
+    const png = @embedFile("testdata/rgba.png");
+
+    // The message the reader shows first, with three inline images.
+    var first: Images = .{};
+    const root = A.siv_window_get_root(h.window);
+    var txn: t.Txn = .null;
+    try ok(T.siv_txn_begin(h.window, &txn));
+    const sc = T.siv_scroll(txn, root, .vertical);
+    _ = T.siv_set_layout(txn, sc, &.{ .size = @sizeOf(t.LayoutDesc), .width = .{ .unit = .fraction, .value = 1 }, .height = .{ .unit = .fraction, .value = 1 } });
+    const old = D.siv_docview(txn, sc, &first.desc("<p><img src=cid:a><img src=cid:b><img src=cid:c>"));
+    try ok(T.siv_txn_commit(txn));
+    try first.waitRequests(&h, 3);
+
+    // The first image decodes and its completion waits for the loop; the
+    // others queue behind the job holding the worker.
+    try ok(D.siv_docview_supply(old, first.requests[0], png, png.len));
+    var gate: Gate = .{};
+    try ok(A.siv_job_start(h.app, .{ .compute = true }, Gate.work, null, null, &gate));
+    while (!gate.started.load(.acquire)) std.Thread.yield() catch {};
+    for (first.requests[1..]) |r| try ok(D.siv_docview_supply(old, r, png, png.len));
+
+    // The reader moves to the next message: the old document goes, with
+    // a decoded image undelivered and two queued.
+    var next: Images = .{};
+    try ok(T.siv_txn_begin(h.window, &txn));
+    T.siv_remove(txn, old);
+    const new = D.siv_docview(txn, sc, &next.desc("<p><img src=cid:d>"));
+    try ok(T.siv_txn_commit(txn));
+    gate.open.store(true, .release);
+    try next.waitRequests(&h, 1);
+
+    // The old document's decoded image was dropped without it, and the
+    // new one shows its own: red, inside the body's margin.
+    try ok(D.siv_docview_supply(new, next.requests[0], png, png.len));
+    try waitLoaded(&h, &next.ev, 2);
+    const shot = try h.capture();
+    defer testing.allocator.free(shot);
+    try testing.expectEqual([3]u8{ 255, 0, 0 }, shot[(16 * 300 + 16) * 4 ..][0..3].*);
+}
