@@ -23,6 +23,32 @@ pub fn ok(r: t.Result) !void {
     return error.Unexpected;
 }
 
+/// Allocator hooks that give every block pages of its own and, while
+/// armed, take the pages away on free instead of reusing them, so that a
+/// read of a freed block faults.
+pub const Guard = struct {
+    pub var armed: std.atomic.Value(bool) = .init(false);
+    pub const hooks: t.Allocator = .{ .alloc = Guard.alloc, .free = Guard.free };
+
+    fn pages(size: usize) usize {
+        return std.mem.alignForward(usize, @max(size, 1), std.heap.pageSize());
+    }
+
+    fn alloc(_: ?*anyopaque, size: usize, alignment: usize) callconv(.c) ?*anyopaque {
+        if (alignment > std.heap.pageSize()) return null;
+        const m = std.posix.mmap(null, pages(size), .{ .READ = true, .WRITE = true }, .{ .TYPE = .PRIVATE, .ANONYMOUS = true }, -1, 0) catch return null;
+        return m.ptr;
+    }
+
+    fn free(_: ?*anyopaque, ptr: ?*anyopaque, size: usize, _: usize) callconv(.c) void {
+        const p: [*]align(std.heap.page_size_min) u8 = @ptrCast(@alignCast(ptr.?));
+        const block = p[0..pages(size)];
+        if (armed.load(.seq_cst)) {
+            _ = std.os.linux.mprotect(block.ptr, block.len, .{});
+        } else std.posix.munmap(block);
+    }
+};
+
 pub const Harness = struct {
     app: t.App = .null,
     window: t.Window = .null,
@@ -31,13 +57,15 @@ pub const Harness = struct {
     /// Reduced motion: no caret blinking or animations to race the
     /// captures.
     reduced_motion: bool = true,
+    /// The application's allocator hooks (`Guard.hooks`), or siv's own.
+    allocator: ?*const t.Allocator = null,
 
     pub fn start(h: *Harness, width: u32, height: u32, on_event: ?t.WindowEventFn, user_data: ?*anyopaque) !void {
         try h.startWith(.{ .width = width, .height = height, .on_event = on_event, .user_data = user_data });
     }
 
     pub fn startWith(h: *Harness, desc: t.WindowDesc) !void {
-        try ok(A.siv_app_create(&.{ .backend = .headless, .flags = .{ .no_system_fonts = true, .no_system_icons = true, .reduced_motion = h.reduced_motion } }, &h.app));
+        try ok(A.siv_app_create(&.{ .allocator = h.allocator, .backend = .headless, .flags = .{ .no_system_fonts = true, .no_system_icons = true, .reduced_motion = h.reduced_motion } }, &h.app));
         // siv's test icon themes (test/icons/themes), never the system's.
         try ok(abi.icon.siv_app_add_icon_path(h.app, "test/icons/themes", 17));
         try ok(abi.icon.siv_app_set_icon_theme(h.app, "SivTest", 7));

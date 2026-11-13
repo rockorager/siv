@@ -1194,3 +1194,90 @@ test "C API docview: new user CSS while an image decodes and another is fetched"
     defer testing.allocator.free(shot);
     try testing.expectEqual([3]u8{ 255, 0, 0 }, shot[(16 * 300 + 16) * 4 ..][0..3].*);
 }
+
+/// Where an application removes its document node: the view's own
+/// callbacks, which the view returns from into its own code.
+const RemovedIn = enum { link, size, load };
+
+fn removeFromCallback(comptime where: RemovedIn) !void {
+    const Guard = harness.Guard;
+    const S = struct {
+        var window: t.Window = .null;
+        var removed: bool = false;
+        var loaded: u32 = 0;
+
+        fn remove(node: t.Node) void {
+            if (removed) return;
+            removed = true;
+            var txn: t.Txn = .null;
+            _ = T.siv_txn_begin(window, &txn);
+            T.siv_remove(txn, node);
+            _ = T.siv_txn_commit(txn);
+        }
+
+        fn onEvent(_: ?*anyopaque, node: t.Node, e: *const t.DocviewEvent) callconv(.c) void {
+            switch (e.type) {
+                .loaded => loaded += 1,
+                .link => if (where == .link) remove(node),
+                .size => if (where == .size) remove(node),
+                else => {},
+            }
+        }
+
+        fn onLoad(_: ?*anyopaque, node: t.Node, _: u32, _: ?[*]const u8, _: usize, _: t.ResourceKind) callconv(.c) void {
+            if (where == .load) remove(node);
+        }
+    };
+    S.removed = false;
+    S.loaded = 0;
+    Guard.armed.store(false, .seq_cst);
+    var h: Harness = .{ .allocator = &Guard.hooks };
+    try h.start(400, 300, null, null);
+    defer {
+        Guard.armed.store(false, .seq_cst);
+        h.stop();
+    }
+    S.window = h.window;
+    try h.settle();
+    if (where != .link) Guard.armed.store(true, .seq_cst);
+
+    const source = if (where == .load)
+        "<!doctype html><link rel=stylesheet href=\"a.css\"><p>Text</p>"
+    else
+        "<!doctype html><p><a href=\"next.html\">Next</a></p>";
+    const base = "file:///doc/";
+    const root = A.siv_window_get_root(h.window);
+    var txn: t.Txn = .null;
+    try ok(T.siv_txn_begin(h.window, &txn));
+    const sc = T.siv_scroll(txn, root, .vertical);
+    _ = T.siv_set_layout(txn, sc, &.{ .size = @sizeOf(t.LayoutDesc), .width = .{ .unit = .fraction, .value = 1 }, .height = .{ .unit = .fraction, .value = 1 } });
+    const node = D.siv_docview(txn, sc, &.{ .source = source.ptr, .source_count = source.len, .base_url = base.ptr, .base_url_len = base.len, .kind = .html, .color_scheme = .light, .on_event = S.onEvent, .load = S.onLoad });
+    try ok(T.siv_txn_commit(txn));
+
+    const deadline = Loop.now() + 10 * std.time.ns_per_s;
+    while (if (where == .link) S.loaded == 0 else !S.removed) {
+        if (Loop.now() > deadline) return error.Timeout;
+        try ok(A.siv_app_dispatch(h.app, 2));
+    }
+    try h.settle();
+    if (where == .link) {
+        const link = ((try (try h.win()).uiWin().semanticsTree()).find(.link, "Next") orelse return error.NoLink).bounds;
+        Guard.armed.store(true, .seq_cst);
+        try h.click((link.x0 + link.x1) / 2, (link.y0 + link.y1) / 2);
+        try h.settle();
+    }
+    try testing.expect(S.removed);
+    try testing.expectEqual(t.Result.error_invalid_handle, D.siv_docview_find(node, "x", 1, false));
+}
+
+test "C API docview: a document removed from its link event is not used after it is freed" {
+    try removeFromCallback(.link);
+}
+
+test "C API docview: a document removed from its size event is not used after it is freed" {
+    try removeFromCallback(.size);
+}
+
+test "C API docview: a document removed from its loader is not used after it is freed" {
+    try removeFromCallback(.load);
+}

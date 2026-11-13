@@ -160,8 +160,12 @@ pub const View = struct {
     job: Job = .{},
     /// A job has the document.
     busy: bool = false,
-    /// The node is gone: the view goes when its job is done.
+    /// The node is gone: the view goes when its job is done and nothing
+    /// holds it.
     dead: bool = false,
+    /// Functions on the stack that use the view after calling the host
+    /// (`hold`).
+    held: u32 = 0,
     /// Inside the loader callbacks: supplies wait for `schedule`.
     requesting: bool = false,
     /// Work waiting for the document to be free.
@@ -252,7 +256,9 @@ pub const View = struct {
         return v;
     }
 
-    /// The node is gone. A job in flight finishes first.
+    /// The node is gone. A job in flight finishes first, and so does a
+    /// function of the view's that is calling the host: the host may
+    /// destroy the view from `Host.event` or `Host.load`.
     pub fn destroy(v: *View) void {
         v.dead = true;
         if (v.listening) v.win.fonts.removeListener(v);
@@ -263,7 +269,25 @@ pub const View = struct {
                 v.busy = false;
             };
         }
-        if (!v.busy) v.free();
+        v.reap();
+    }
+
+    /// Keeps the view allocated until `unhold`. The host's callbacks may
+    /// destroy the view, so a function that uses it after `emit`, after
+    /// `Host.load`, or after a function that holds, holds it for as long
+    /// and checks `dead` before it touches the window.
+    fn hold(v: *View) void {
+        v.held += 1;
+    }
+
+    fn unhold(v: *View) void {
+        v.held -= 1;
+        v.reap();
+    }
+
+    /// Frees a destroyed view once no job has it and nothing holds it.
+    fn reap(v: *View) void {
+        if (v.dead and !v.busy and v.held == 0) v.free();
     }
 
     fn free(v: *View) void {
@@ -363,7 +387,10 @@ pub const View = struct {
         if (v.busy or v.dead) return;
         if (v.want_reparse) return v.reparse();
         const d = v.d orelse return;
+        v.hold();
+        defer v.unhold();
         v.applySupplies() catch {};
+        if (v.dead) return;
         if (v.want_fonts_loaded) {
             v.want_fonts_loaded = false;
             d.fontsLoaded();
@@ -502,7 +529,9 @@ pub const View = struct {
 
     fn jobDone(v: *View) void {
         v.busy = false;
-        if (v.dead) return v.free();
+        if (v.dead) return v.reap();
+        v.hold();
+        defer v.unhold();
         const j = &v.job;
         switch (j.kind) {
             .parse => {
@@ -511,10 +540,12 @@ pub const View = struct {
                 const d = v.d orelse return;
                 if (d.blocked_images > 0) v.emit(.{ .blocked_images = d.blocked_images });
                 v.requestResources();
+                if (v.dead) return;
                 v.afterStyle();
             },
             .style => {
                 v.requestResources();
+                if (v.dead) return;
                 v.afterStyle();
             },
             .layout => {
@@ -525,6 +556,7 @@ pub const View = struct {
                     v.reported_height = h;
                     v.relayoutNode();
                     v.emit(.{ .size = h });
+                    if (v.dead) return;
                 }
                 // The first pages show while the rest is laid out; the
                 // count and the page event come when it is (`paginate`).
@@ -546,6 +578,7 @@ pub const View = struct {
                         if (v.locatorY(v.reading_anchor.items)) |y| v.reveal(y, 0, true);
                         v.reading_anchor.clearRetainingCapacity();
                     }
+                    if (v.dead) return;
                     v.refreshFind();
                     v.emit(.loaded);
                 }
@@ -696,7 +729,10 @@ pub const View = struct {
     // Resources -----------------------------------------------------------------
 
     fn requestResources(v: *View) void {
+        if (v.dead) return;
         const d = v.d orelse return;
+        v.hold();
+        defer v.unhold();
         v.requesting = true;
         defer v.requesting = false;
         var i: u32 = 0;
@@ -729,6 +765,8 @@ pub const View = struct {
         const copy = if (bytes) |b| try v.gpa.dupe(u8, b) else null;
         errdefer if (copy) |c| v.gpa.free(c);
         try v.supplies.append(v.gpa, .{ .request = request - v.first_request, .bytes = copy });
+        v.hold();
+        defer v.unhold();
         if (!v.busy and !v.requesting) {
             try v.applySupplies();
             v.schedule();
@@ -737,6 +775,8 @@ pub const View = struct {
 
     fn applySupplies(v: *View) Error!void {
         const d = v.d orelse return;
+        v.hold();
+        defer v.unhold();
         var restyle = false;
         var relayout = false;
         // After the list below is emptied (defers run last to first), so
@@ -1256,6 +1296,8 @@ pub const View = struct {
     /// anything else goes to the application.
     pub fn activate(v: *View, href: []const u8) void {
         const d = v.d orelse return;
+        v.hold();
+        defer v.unhold();
         if (std.mem.startsWith(u8, href, "siv:quote/")) {
             // A quoted reply's toggle.
             const k = std.fmt.parseInt(usize, href["siv:quote/".len..], 10) catch return;
@@ -1352,6 +1394,8 @@ pub const View = struct {
     }
 
     fn showCurrent(v: *View) void {
+        v.hold();
+        defer v.unhold();
         v.repaint();
         const count: u32 = @intCast(v.matches.items.len);
         if (count > 0) if (v.d) |d| if ((d.offsetRect(v.matches.items[v.current]) catch null)) |r| v.reveal(r[1], r[3], false);
@@ -1533,7 +1577,7 @@ pub const Job = struct {
         const j: *Job = @fieldParentPtr("job", job);
         const v = j.view;
         v.busy = false;
-        if (v.dead) v.free();
+        v.reap();
     }
 };
 

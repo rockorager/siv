@@ -11,6 +11,7 @@ const t = abi.types;
 const A = abi.application;
 const T = abi.tree;
 const ok = harness.ok;
+const Guard = harness.Guard;
 
 fn alloc(_: ?*anyopaque, size: usize, alignment: usize) callconv(.c) ?*anyopaque {
     const a = std.mem.Alignment.fromByteUnits(alignment);
@@ -79,32 +80,6 @@ test "C API: destroying the application from a callback waits for the dispatch t
     // A second destroy of the stale handle does nothing.
     A.siv_app_destroy(app);
 }
-
-/// Allocator hooks that give every block pages of its own and, while
-/// armed, take the pages away on free instead of reusing them, so that a
-/// read of a freed block faults.
-const Guard = struct {
-    var armed: std.atomic.Value(bool) = .init(false);
-    const hooks: t.Allocator = .{ .alloc = Guard.alloc, .free = Guard.free };
-
-    fn pages(size: usize) usize {
-        return std.mem.alignForward(usize, @max(size, 1), std.heap.pageSize());
-    }
-
-    fn alloc(_: ?*anyopaque, size: usize, alignment: usize) callconv(.c) ?*anyopaque {
-        if (alignment > std.heap.pageSize()) return null;
-        const m = std.posix.mmap(null, pages(size), .{ .READ = true, .WRITE = true }, .{ .TYPE = .PRIVATE, .ANONYMOUS = true }, -1, 0) catch return null;
-        return m.ptr;
-    }
-
-    fn free(_: ?*anyopaque, ptr: ?*anyopaque, size: usize, _: usize) callconv(.c) void {
-        const p: [*]align(std.heap.page_size_min) u8 = @ptrCast(@alignCast(ptr.?));
-        const block = p[0..pages(size)];
-        if (armed.load(.seq_cst)) {
-            _ = std.os.linux.mprotect(block.ptr, block.len, .{});
-        } else std.posix.munmap(block);
-    }
-};
 
 /// Where a window destroys itself: siv has the window in hand around
 /// each of these callbacks, and reads it again once they return.
