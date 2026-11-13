@@ -9327,6 +9327,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       siv_trash_file returns and siv_trash_list reports, and what
       siv_trash_restore and siv_trash_delete take, which check that an id
       names an entry of a trash directory, so they touch nothing else.
+      A trash's `files` and `info` must be directories owned by the
+      user, not symbolic links, as the trash directory itself must: a
+      trash where one is a link (a volume prepared elsewhere) lists
+      nothing, takes nothing (`unsupported`), and its ids are invalid.
       Restoring creates missing parent folders and never replaces
       anything (`exists`).
   - Every operation is a job on the worker pool's blocking lane (D6),

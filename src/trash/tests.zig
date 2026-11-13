@@ -364,6 +364,64 @@ test "ids must name trash entries; deleting one and emptying remove everything" 
     try testing.expect(d.exists("docs/keep"));
 }
 
+test "a trash whose files or info directory is a link is not used" {
+    const uid = linux.getuid();
+    var pbuf: [4096]u8 = undefined;
+    var tbuf: [4096]u8 = undefined;
+    var rel: [128]u8 = undefined;
+    // A volume prepared elsewhere: its trash's `files` is a link to a
+    // folder of the user's, with an info file naming something there.
+    for ([_][]const u8{ "files", "info" }) |linked| {
+        var d: Dir = .{};
+        try d.init();
+        defer d.deinit();
+        try d.mkdir("docs/victim");
+        try d.write("docs/victim/precious", "p");
+        try d.write("docs/victim.trashinfo", "[Trash Info]\nPath=victim\nDeletionDate=2026-01-01T00:00:00\n");
+        try d.write("vol/v", "v");
+        try d.mkdir(try std.fmt.bufPrint(&rel, "vol/.Trash-{d}", .{uid}));
+        const other: []const u8 = if (std.mem.eql(u8, linked, "files")) "info" else "files";
+        try d.mkdir(try std.fmt.bufPrint(&rel, "vol/.Trash-{d}/{s}", .{ uid, other }));
+        if (std.mem.eql(u8, other, "info")) {
+            try d.write(try std.fmt.bufPrint(&rel, "vol/.Trash-{d}/info/victim.trashinfo", .{uid}), "[Trash Info]\nPath=victim\nDeletionDate=2026-01-01T00:00:00\n");
+        } else {
+            try d.mkdir(try std.fmt.bufPrint(&rel, "vol/.Trash-{d}/files/victim", .{uid}));
+        }
+        const link = d.path(&pbuf, try std.fmt.bufPrint(&rel, "vol/.Trash-{d}/{s}", .{ uid, linked }));
+        try testing.expectEqual(linux.E.SUCCESS, linux.errno(linux.symlinkat(d.path(&tbuf, "docs"), linux.AT.FDCWD, link)));
+
+        // Nothing of it is listed, and its ids are refused.
+        var list = try d.t.list(gpa);
+        defer list.deinit();
+        try testing.expectEqual(@as(usize, 0), list.items.len);
+        const id = d.path(&pbuf, try std.fmt.bufPrint(&rel, "vol/.Trash-{d}/files/victim", .{uid}));
+        try testing.expectError(error.InvalidId, d.t.delete(gpa, id));
+        try testing.expectError(error.InvalidId, d.t.restore(gpa, id, d.path(&tbuf, "docs/moved")));
+        try testing.expect(d.exists("docs/victim/precious"));
+        try testing.expect(!d.exists("docs/moved"));
+
+        // Nothing is trashed into it: no file or info file lands in the
+        // folder the link names.
+        try testing.expectError(error.Unsupported, d.t.trash(gpa, d.path(&pbuf, "vol/v")));
+        try testing.expect(d.exists("vol/v"));
+        try testing.expect(!d.exists("docs/v"));
+        try testing.expect(!d.exists("docs/v.trashinfo"));
+    }
+
+    // The trash directory itself a link: an id through it is refused.
+    var d: Dir = .{};
+    try d.init();
+    defer d.deinit();
+    try d.mkdir("docs/files");
+    try d.mkdir("docs/info");
+    try d.write("docs/files/precious", "p");
+    try d.mkdir("vol/sub");
+    const link = d.path(&pbuf, try std.fmt.bufPrint(&rel, "vol/sub/.Trash-{d}", .{uid}));
+    try testing.expectEqual(linux.E.SUCCESS, linux.errno(linux.symlinkat(d.path(&tbuf, "docs"), linux.AT.FDCWD, link)));
+    try testing.expectError(error.InvalidId, d.t.delete(gpa, d.path(&pbuf, try std.fmt.bufPrint(&rel, "vol/sub/.Trash-{d}/files/precious", .{uid}))));
+    try testing.expect(d.exists("docs/files/precious"));
+}
+
 test "the trash itself, and what is in it, cannot be trashed; links are trashed, not their targets" {
     var d: Dir = .{};
     try d.init();

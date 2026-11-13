@@ -102,8 +102,8 @@ pub const Trash = struct {
         var rbuf: PathBuf = undefined;
         const real_dir = canonicalDir(&rbuf, dir) catch dir;
         if (isWithin(canon, real_dir) or isWithin(real_dir, canon)) return error.Unsupported;
-        try ensureSub(dir, "files");
-        try ensureSub(dir, "info");
+        try ensureSub(dir, "files", t.uid);
+        try ensureSub(dir, "info", t.uid);
 
         var body_buf: [linux.PATH_MAX * 3 + 128]u8 = undefined;
         const body = try infoBody(&body_buf, if (topdir) |td| relativeTo(canon, td) else canon, now());
@@ -206,7 +206,7 @@ pub const Trash = struct {
         var items: std.ArrayList(Item) = .empty;
         var dirs = try t.trashDirs(gpa);
         defer dirs.deinit(gpa);
-        for (dirs.items()) |dir| try listDir(gpa, arena, &items, dir, topdirOf(dir, t.home));
+        for (dirs.items()) |dir| try listDir(gpa, arena, &items, dir, topdirOf(dir, t.home), t.uid);
         out.items = items.items;
         return out;
     }
@@ -243,9 +243,16 @@ pub const Trash = struct {
         if (!std.mem.eql(u8, std.fs.path.basename(files), "files")) return error.InvalidId;
         const dir = std.fs.path.dirname(files) orelse return error.InvalidId;
         if (std.mem.indexOf(u8, dir, "/../") != null or std.mem.endsWith(u8, dir, "/..")) return error.InvalidId;
-        if (!std.mem.eql(u8, dir, t.home) and topdirOfTrash(dir, t.uid) == null) return error.InvalidId;
         var st: linux.Statx = undefined;
         var buf: PathBuf = undefined;
+        if (!std.mem.eql(u8, dir, t.home)) {
+            if (topdirOfTrash(dir, t.uid) == null) return error.InvalidId;
+            // Named like a trash is not enough: a link there leads
+            // anywhere.
+            statPath(try join(&buf, &.{dir}), &st) catch return error.InvalidId;
+            if (st.mode & linux.S.IFMT != linux.S.IFDIR or st.uid != t.uid) return error.InvalidId;
+        }
+        if (!ownSub(dir, "files", t.uid) or !ownSub(dir, "info", t.uid)) return error.InvalidId;
         statPath(try join(&buf, &.{id}), &st) catch |err| return if (err == error.FileNotFound) error.FileNotFound else err;
         return .{ .dir = dir, .name = name };
     }
@@ -620,7 +627,8 @@ fn relativeTo(path: []const u8, topdir: []const u8) []const u8 {
 
 const SizeEntry = struct { size: u64, mtime: i64 };
 
-fn listDir(gpa: Allocator, arena: Allocator, items: *std.ArrayList(Item), dir: []const u8, topdir: ?[]const u8) Error!void {
+fn listDir(gpa: Allocator, arena: Allocator, items: *std.ArrayList(Item), dir: []const u8, topdir: ?[]const u8, uid: u32) Error!void {
+    if (!ownSub(dir, "files", uid) or !ownSub(dir, "info", uid)) return;
     var ibuf: PathBuf = undefined;
     const info_dir = try join(&ibuf, &.{ dir, "/info" });
     var names = readNames(gpa, info_dir) catch |err| return if (err == error.FileNotFound or err == error.AccessDenied) {} else err;
@@ -905,12 +913,25 @@ fn makeDirsMode(path: []const u8, mode: u32) Error!void {
     }
 }
 
-fn ensureSub(dir: []const u8, sub: []const u8) Error!void {
+/// Makes a trash's `files` or `info` if it is missing. One that is
+/// there but not the trash's own (`ownSub`) makes the trash unusable.
+fn ensureSub(dir: []const u8, sub: []const u8, uid: u32) Error!void {
     var buf: PathBuf = undefined;
     switch (linux.errno(linux.mkdirat(linux.AT.FDCWD, try join(&buf, &.{ dir, "/", sub }), 0o700))) {
-        .SUCCESS, .EXIST => {},
+        .SUCCESS => {},
+        .EXIST => if (!ownSub(dir, sub, uid)) return error.Unsupported,
         else => |e| return mapErrno(e),
     }
+}
+
+/// A trash's `files` or `info` is a directory owned by `uid`, not a
+/// link: a link there (on a volume prepared elsewhere) would have every
+/// operation on the trash act on the directory it names.
+fn ownSub(dir: []const u8, sub: []const u8, uid: u32) bool {
+    var buf: PathBuf = undefined;
+    var st: linux.Statx = undefined;
+    statPath(join(&buf, &.{ dir, "/", sub }) catch return false, &st) catch return false;
+    return st.mode & linux.S.IFMT == linux.S.IFDIR and st.uid == uid;
 }
 
 fn statPath(path: [:0]const u8, st: *linux.Statx) Error!void {
