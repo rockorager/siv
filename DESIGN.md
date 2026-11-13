@@ -345,7 +345,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     before it changes anything, so a failed operation has no effect and
     `commit` cannot fail. One transaction per window is open at a time.
   - Nodes are always created under a parent (no orphans to leak), and
-    removing a node destroys its subtree at commit. Removed slots are
+    removing a node destroys its subtree at commit. Until then the
+    removed node cannot be removed again or moved, and nothing is created
+    under or moved into its subtree (each fails as an invalid node); a
+    node inside it can still be moved out or removed. Removed slots are
     recycled only after the next frame, so a node index held while events
     are dispatched never names a different node.
   - Derived state (dirty flags, layout caches, layer assignment) is kept

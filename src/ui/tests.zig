@@ -258,6 +258,52 @@ test "aborted transactions leave no trace; failed operations have no effect" {
     try testing.expect(reused == a or reused == label);
 }
 
+test "a node removed in a transaction takes no further structure changes" {
+    var f: Fixture = undefined;
+    try f.init(.{});
+    defer f.deinit();
+    var t = try f.win.begin();
+    const a = try t.create(.root, .box, .none);
+    const inner = try t.create(a, .box, .none);
+    const leaf = try t.create(inner, .box, .none);
+    const b = try t.create(.root, .box, .none);
+    const c = try t.create(.root, .box, .none);
+    t.commit();
+    try f.frame();
+
+    t = try f.win.begin();
+    try t.remove(a);
+    try testing.expectError(error.InvalidNode, t.remove(a));
+    try testing.expectError(error.InvalidNode, t.move(a, .root, .none));
+    // Nothing joins the removed subtree: commit reserved room for the
+    // nodes it had when it was removed.
+    try testing.expectError(error.InvalidNode, t.create(a, .box, .none));
+    try testing.expectError(error.InvalidNode, t.create(inner, .box, .none));
+    try testing.expectError(error.InvalidNode, t.move(b, inner, .none));
+    // A node inside it can still leave, or go on its own.
+    try t.move(leaf, .root, .none);
+    try t.remove(inner);
+    try t.remove(c);
+    t.commit();
+    try testing.expect(!f.win.isLive(a));
+    try testing.expect(!f.win.isLive(inner));
+    try testing.expect(!f.win.isLive(c));
+    try testing.expect(f.win.isLive(leaf));
+    try testing.expectEqual(b, f.win.node(.root).first);
+    try testing.expectEqual(leaf, f.win.node(.root).last);
+    // Each slot is free once.
+    try testing.expectEqual(@as(usize, 3), f.win.dead.items.len);
+    try f.frame();
+    t = try f.win.begin();
+    var made: [4]NodeId = undefined;
+    for (&made) |*id| id.* = try t.create(.root, .box, .none);
+    t.commit();
+    for (made, 0..) |id, i| {
+        try testing.expect(id != b and id != leaf);
+        for (made[0..i]) |other| try testing.expect(id != other);
+    }
+}
+
 test "box flows vertically; stack aligns and insets; grid tracks" {
     var f: Fixture = undefined;
     try f.init(.{ .width = 400, .height = 300 });

@@ -221,6 +221,14 @@ pub const Txn = struct {
         return n;
     }
 
+    /// A container that is still in the tree. A subtree this transaction
+    /// removed takes no new nodes: `remove` reserved room in `Window.dead`
+    /// for the nodes it had.
+    fn attachedContainer(t: *Txn, id: NodeId) Error!void {
+        _ = try t.container(id);
+        if (t.removed.items.len != 0 and !t.win.isAncestor(.root, id)) return error.InvalidNode;
+    }
+
     fn link(t: *Txn, parent: NodeId, id: NodeId, before: NodeId) void {
         const win = t.win;
         const p = win.node(parent);
@@ -266,7 +274,7 @@ pub const Txn = struct {
     /// (or last).
     pub fn create(t: *Txn, parent: NodeId, kind: Kind, before: NodeId) Error!NodeId {
         std.debug.assert(t.open);
-        _ = try t.container(parent);
+        try t.attachedContainer(parent);
         try t.checkBefore(parent, before);
         try t.reserve();
         const win = t.win;
@@ -293,9 +301,11 @@ pub const Txn = struct {
 
     /// Moves a node (with its subtree) under `parent`, before `before`.
     pub fn move(t: *Txn, id: NodeId, parent: NodeId, before: NodeId) Error!void {
-        _ = try t.live(id);
-        if (id == .root or before == id) return error.InvalidNode;
-        _ = try t.container(parent);
+        const n = try t.live(id);
+        // Without a parent it is the root, or the root of a subtree this
+        // transaction removed, which commit destroys.
+        if (n.parent == .none or before == id) return error.InvalidNode;
+        try t.attachedContainer(parent);
         if (t.win.isAncestor(id, parent)) return error.InvalidNode;
         try t.checkBefore(parent, before);
         try t.reserve();
@@ -316,8 +326,10 @@ pub const Txn = struct {
 
     /// Removes a node and its subtree; they are destroyed at commit.
     pub fn remove(t: *Txn, id: NodeId) Error!void {
-        _ = try t.live(id);
-        if (id == .root) return error.InvalidNode;
+        const n = try t.live(id);
+        // The root, or a node this transaction already removed: destroying
+        // it twice would free its slot twice.
+        if (n.parent == .none) return error.InvalidNode;
         try t.reserve();
         const win = t.win;
         const count = subtreeSize(win, id);
