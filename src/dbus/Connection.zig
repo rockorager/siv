@@ -635,11 +635,17 @@ fn close(c: *Connection) void {
     for (c.out.items[c.out_head..]) |*o| o.deinit(c.gpa);
     c.out.clearRetainingCapacity();
     c.out_head = 0;
-    var pending = c.pending;
-    c.pending = .empty;
-    defer pending.deinit(c.gpa);
-    var it = pending.valueIterator();
-    while (it.next()) |p| p.func(p.ctx, .{ .failed = error.Disconnected });
+    // One at a time, from the map `cancelCall` looks in: a callback may
+    // cancel other calls (those of an object it frees), which must then
+    // not complete. No call is added meanwhile: the connection is closed.
+    while (true) {
+        var it = c.pending.iterator();
+        const e = it.next() orelse break;
+        const p = e.value_ptr.*;
+        c.pending.removeByPtr(e.key_ptr);
+        p.func(p.ctx, .{ .failed = error.Disconnected });
+    }
+    c.pending.clearAndFree(c.gpa);
     c.emit(.disconnected);
 }
 

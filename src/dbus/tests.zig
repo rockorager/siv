@@ -825,6 +825,27 @@ test "a closed connection fails pending calls and reports it" {
 
     var r: Result = .{};
     _ = try a.callMethod(b.uniqueName(), "/calc", null, "Later", .{}, Result.cb, &r);
+    // Two calls whose owner cancels the other when one fails, as an object
+    // does that is freed from the first callback.
+    const Pair = struct {
+        conn: *Connection,
+        serial: [2]u32 = .{ 0, 0 },
+        failed: [2]bool = .{ false, false },
+        fn first(ctx: ?*anyopaque, reply: Connection.Reply) void {
+            done(ctx, reply, 0);
+        }
+        fn second(ctx: ?*anyopaque, reply: Connection.Reply) void {
+            done(ctx, reply, 1);
+        }
+        fn done(ctx: ?*anyopaque, reply: Connection.Reply, i: usize) void {
+            const p: *@This() = @ptrCast(@alignCast(ctx));
+            p.failed[i] = reply == .failed;
+            p.conn.cancelCall(p.serial[1 - i]);
+        }
+    };
+    var pair: Pair = .{ .conn = &a };
+    pair.serial[0] = try a.callMethod(b.uniqueName(), "/calc", null, "Later", .{}, Pair.first, &pair);
+    pair.serial[1] = try a.callMethod(b.uniqueName(), "/calc", null, "Later", .{}, Pair.second, &pair);
     try h.until(&calc, struct {
         fn f(c: *Calc) bool {
             return c.deferred != null;
@@ -833,6 +854,8 @@ test "a closed connection fails pending calls and reports it" {
     h.bus.kill(a.uniqueName());
     try h.until(&ev, Events.gone);
     try testing.expect(r.done and r.kind == .failed and r.failure.? == error.Disconnected);
+    // A call cancelled while the others fail does not complete.
+    try testing.expect(pair.failed[0] != pair.failed[1]);
     try testing.expect(!a.connected());
     try testing.expectError(error.Disconnected, a.callMethod(b.uniqueName(), "/calc", null, "Echo", .{"x"}, Result.cb, &r));
 }
