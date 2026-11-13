@@ -1117,3 +1117,80 @@ test "C API docview: switching documents while their images decode" {
     defer testing.allocator.free(shot);
     try testing.expectEqual([3]u8{ 255, 0, 0 }, shot[(16 * 300 + 16) * 4 ..][0..3].*);
 }
+
+test "C API docview: new user CSS while an image decodes and another is fetched" {
+    var h: Harness = .{};
+    try h.start(300, 200, null, null);
+    defer h.stop();
+    const app = (try h.internal()).app;
+    // One compute worker, held by a job below, as in the test above.
+    try testing.expectEqual(@as(u32, 0), app.pool.workers.lanes[0].threads);
+    app.pool.workers.max_threads = 1;
+    const Loader = struct {
+        ev: Events = .{},
+        requests: [3]u32 = undefined,
+        count: u32 = 0,
+
+        fn onLoad(user: ?*anyopaque, _: t.Node, request: u32, _: ?[*]const u8, _: usize, _: t.ResourceKind) callconv(.c) void {
+            const self: *@This() = @ptrCast(@alignCast(user));
+            self.requests[self.count] = request;
+            self.count += 1;
+        }
+    };
+    const Gate = struct {
+        open: std.atomic.Value(bool) = .init(false),
+        started: std.atomic.Value(bool) = .init(false),
+
+        fn work(user: ?*anyopaque) callconv(.c) void {
+            const g: *@This() = @ptrCast(@alignCast(user));
+            g.started.store(true, .release);
+            while (!g.open.load(.acquire)) std.Thread.yield() catch {};
+        }
+    };
+    // Red, 32 by 48 px.
+    const png = @embedFile("testdata/rgba.png");
+    const source = "<body style=\"margin: 0\"><img src=cid:a><img src=cid:b>";
+    var loader: Loader = .{};
+    const root = A.siv_window_get_root(h.window);
+    var txn: t.Txn = .null;
+    try ok(T.siv_txn_begin(h.window, &txn));
+    const sc = T.siv_scroll(txn, root, .vertical);
+    _ = T.siv_set_layout(txn, sc, &.{ .size = @sizeOf(t.LayoutDesc), .width = .{ .unit = .fraction, .value = 1 }, .height = .{ .unit = .fraction, .value = 1 } });
+    const node = D.siv_docview(txn, sc, &.{ .source = source.ptr, .source_count = source.len, .base_url = "cid:", .base_url_len = 4, .kind = .html, .color_scheme = .light, .flags = .{}, .user_data = &loader, .on_event = Events.onEvent, .load = Loader.onLoad });
+    try ok(T.siv_txn_commit(txn));
+    try waitLoaded(&h, &loader.ev, 1);
+    try testing.expectEqual(@as(u32, 2), loader.count);
+    const old_a, const old_b = .{ loader.requests[0], loader.requests[1] };
+
+    // The second image decodes and its completion waits for the loop; the
+    // first is still being fetched when a user style sheet hides it,
+    // which parses the document again behind the job holding the worker.
+    // The new document has the second image alone.
+    try ok(D.siv_docview_supply(node, old_b, png, png.len));
+    var gate: Gate = .{};
+    try ok(A.siv_job_start(h.app, .{ .compute = true }, Gate.work, null, null, &gate));
+    while (!gate.started.load(.acquire)) std.Thread.yield() catch {};
+    const user_css = "img[src=\"cid:a\"] { display: none }";
+    try ok(D.siv_docview_set_user_css(node, user_css, user_css.len));
+    gate.open.store(true, .release);
+
+    // It asks for the image again, as a new request, and shows it.
+    try waitLoaded(&h, &loader.ev, 2);
+    try testing.expectEqual(@as(u32, 3), loader.count);
+    const new_b = loader.requests[2];
+    try testing.expect(new_b != old_a and new_b != old_b);
+    try ok(D.siv_docview_supply(node, new_b, png, png.len));
+    try waitLoaded(&h, &loader.ev, 3);
+
+    // The old document's answer for the hidden image comes late (a green
+    // SVG would draw over the red) and is ignored.
+    const green = "<svg xmlns='http://www.w3.org/2000/svg' width='32' height='48'><rect width='32' height='48' fill='#0f0'/></svg>";
+    try ok(D.siv_docview_supply(node, old_a, green, green.len));
+    var len: usize = 0;
+    var buf: [64]u8 = undefined;
+    while (D.siv_docview_get_position(node, &buf, buf.len, &len) == .error_busy) try ok(A.siv_app_dispatch(h.app, 2));
+    try h.settle();
+    const shot = try h.capture();
+    defer testing.allocator.free(shot);
+    try testing.expectEqual([3]u8{ 255, 0, 0 }, shot[(16 * 300 + 16) * 4 ..][0..3].*);
+}
