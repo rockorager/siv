@@ -124,7 +124,12 @@ pub const Loop = struct {
                     drainFd(loop.wake_fd);
                     loop.wake_pending.store(false, .seq_cst);
                 },
-                timer_tag => drainFd(loop.timer_fd),
+                timer_tag => {
+                    // It fired, so it is disarmed: a timer started for
+                    // the same deadline has to arm it again.
+                    drainFd(loop.timer_fd);
+                    loop.armed_deadline = null;
+                },
                 else => |ptr| {
                     const source: *Source = @ptrFromInt(ptr);
                     source.func(source, ev.events);
@@ -629,6 +634,48 @@ test "timers fire in deadline order, repeat, and cancel" {
     try testing.expect(!c.b.armed());
     try testing.expect(!c.c.armed());
     try testing.expectEqual(@as(?u64, null), loop.armed_deadline);
+}
+
+test "a timer started for the deadline that just fired wakes the loop" {
+    // An animation that is not ready at its start time asks to be woken
+    // at that time again, from the frame phase of the iteration its
+    // timer fired in.
+    var loop = try Loop.init(testing.allocator);
+    defer loop.deinit();
+
+    const Ctx = struct {
+        loop: *Loop,
+        deadline: u64,
+        fired: usize = 0,
+        a: Timer = .{ .func = onA },
+        b: Timer = .{ .func = onB },
+        task: Loop.Task = .{ .func = onTask },
+        fn onA(t: *Timer) void {
+            const c: *@This() = @fieldParentPtr("a", t);
+            c.loop.schedule(&c.task, .frame);
+        }
+        fn onTask(t: *Loop.Task) void {
+            const c: *@This() = @fieldParentPtr("task", t);
+            c.loop.startTimer(&c.b, c.deadline, 0) catch unreachable;
+        }
+        fn onB(t: *Timer) void {
+            const c: *@This() = @fieldParentPtr("b", t);
+            c.fired += 1;
+        }
+    };
+    // The deadline has passed, so nothing here waits for the clock.
+    var c: Ctx = .{ .loop = &loop, .deadline = Loop.now() - std.time.ns_per_ms };
+    try loop.startTimer(&c.a, c.deadline, 0);
+    try loop.dispatch(-1);
+    try testing.expect(c.b.armed());
+    try testing.expectEqual(@as(usize, 0), c.fired);
+
+    // b is due, so the loop's fd turns readable; the timeout only keeps
+    // a loop that never wakes from hanging the test.
+    var pfd = [_]linux.pollfd{.{ .fd = loop.fd(), .events = linux.POLL.IN, .revents = 0 }};
+    try testing.expectEqual(@as(usize, 1), linux.poll(&pfd, 1, 10_000));
+    try loop.dispatch(0);
+    try testing.expectEqual(@as(usize, 1), c.fired);
 }
 
 test "post from other threads runs every closure once in the dispatch phase" {
