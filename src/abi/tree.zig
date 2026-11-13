@@ -2122,6 +2122,10 @@ pub export fn siv_node_emit(node: t.Node, event: ?*const t.Event, handled: ?*boo
             if (w.owner.painting != 0) return error.Busy;
             ev.size = @sizeOf(t.Event);
             ev.window = @fromBackingInt(w.handle);
+            // A handler may destroy the window, which is read below.
+            const self = w.owner;
+            self.enter();
+            defer self.leave();
             const r = deliver(w, id, hk, &ev, false);
             dest.* = r != .pass;
             // An activation runs the node's action, as siv's own does (D34).

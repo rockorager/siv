@@ -10,7 +10,9 @@
 //!   released while it runs, even if it replaces its handler or destroys
 //!   its window.
 //! - A window destroyed during a callback keeps its `Window` record (marked
-//!   dead, so later events skip it) until then too.
+//!   dead, so later events skip it) until the callback returns and, in a
+//!   loop iteration, until the task that ran it has returned too: the
+//!   dispatch that called the callback reads the window again after it.
 
 const std = @import("std");
 const t = @import("siv");
@@ -68,8 +70,11 @@ pub const App = struct {
     destroy_requested: bool,
     /// Destroy-notifies waiting for `depth` to reach zero.
     pending: std.ArrayList(Release),
-    /// Windows destroyed while `depth` was nonzero.
+    /// Windows destroyed while `depth` was nonzero or the loop was in an
+    /// iteration, until neither holds (`reap`).
     dead: std.ArrayList(*Window),
+    /// Frees `dead` between two tasks of the loop.
+    reap_task: loop_mod.Loop.Task,
     /// Nesting of canvas measure and draw callbacks, during which the tree
     /// must not change.
     painting: u32,
@@ -142,6 +147,25 @@ pub const App = struct {
         self.depth -= 1;
         if (self.depth != 0) return;
         while (self.pending.pop()) |r| r.func(r.user_data);
+        self.reap();
+    }
+
+    /// Frees the dead windows once nothing on the stack can hold one.
+    /// The outermost callback returning is not enough inside a loop
+    /// iteration: what delivered the event (a window event's switch, the
+    /// tree bubbling to the next handler) checks `dead` afterwards. A
+    /// task of the loop's own frees them there.
+    fn reap(self: *App) void {
+        if (self.dead.items.len == 0) return;
+        if (self.app.loop.isDispatching()) return self.app.loop.schedule(&self.reap_task, .dispatch);
+        while (self.dead.pop()) |w| w.free();
+    }
+
+    fn onReapTask(task: *loop_mod.Loop.Task) void {
+        const self: *App = @fieldParentPtr("reap_task", task);
+        // A callback that dispatches has its window in hand; `leave`
+        // comes back here.
+        if (self.depth != 0) return;
         while (self.dead.pop()) |w| w.free();
     }
 
@@ -267,7 +291,7 @@ pub const Window = struct {
         self.windows.items[w.index] = null;
         self.release(w.destroy, w.user_data);
         w.dead = true;
-        if (self.depth == 0) {
+        if (self.depth == 0 and !self.app.loop.isDispatching()) {
             w.free();
         } else {
             self.dead.append(self.gpa(), w) catch {
@@ -275,6 +299,7 @@ pub const Window = struct {
                 // it once callbacks return, but it may still be on the
                 // stack now.
             };
+            if (self.depth == 0) self.reap();
         }
     }
 };
@@ -336,6 +361,7 @@ fn appCreate(desc_ptr: ?*const t.AppDesc, out: ?*t.App) Error!void {
     self.system = .{};
     self.headless = backend == .headless;
     self.fonts_task = .{ .func = onFontsTask };
+    self.reap_task = .{ .func = App.onReapTask };
     // SIV_INSPECTOR applies on a display only, so tests stay independent
     // of the environment (D46).
     self.inspector = .{ .keys = flags.inspector };
@@ -440,6 +466,7 @@ fn destroyNow(self: *App) void {
     self.prepares.deinit(gpa);
     self.app.fonts.removeListener(self);
     self.app.loop.unschedule(&self.fonts_task);
+    self.app.loop.unschedule(&self.reap_task);
     for (self.images.items) |img| if (img) |i| i.release();
     // Runs the destroy-notify of posted work that never ran (D5).
     self.app.destroy();
