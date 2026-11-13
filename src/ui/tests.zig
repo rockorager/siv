@@ -2043,6 +2043,42 @@ test "input method: enable, preedit inline, commit with undo, masked fields stay
     try testing.expectEqual(sent, f.text_inputs.items.len);
 }
 
+test "input method: deletions past the ends of the text stop there" {
+    var f: Fixture = undefined;
+    try f.init(.{ .width = 300, .height = 100 });
+    defer f.deinit();
+    var t = try f.win.begin();
+    const ed = try box(t, .root, .editor, .{});
+    var changes: usize = 0;
+    try t.on(ed, .change, .{ .func = countChange, .user = &changes });
+    t.commit();
+    try f.frame();
+    const k: Keys = .{ .f = &f };
+    k.press(ui.keysym.tab, .{});
+    f.win.handlePlatform(&.{ .text_input_enter = .{ .window = 0, .seat = 0, .serial = 0 } });
+    try f.frame();
+    const e = &f.win.node(ed).data.editor;
+
+    // An on-screen keyboard's Backspace in an empty field deletes nothing:
+    // no change, and no undo step for the typing after it to join.
+    imeEvent(&f, .{ .window = 0, .seat = 0, .delete_before = 1 });
+    try testing.expectEqual(@as(usize, 0), changes);
+    k.typeText(" ");
+    try testing.expectEqualStrings(" ", e.text.content.flat().?);
+    k.press('z', .{ .ctrl = true });
+    try testing.expectEqualStrings("", e.text.content.flat().?);
+
+    // Lengths are the compositor's: the largest ones reach the ends.
+    k.typeText("ab\u{304b}cd");
+    k.press(ui.keysym.left, .{});
+    k.press(ui.keysym.left, .{});
+    k.press(ui.keysym.left, .{ .shift = true });
+    imeEvent(&f, .{ .window = 0, .seat = 0, .delete_after = 0xffff_ffff });
+    try testing.expectEqualStrings("ab", e.text.content.flat().?);
+    imeEvent(&f, .{ .window = 0, .seat = 0, .delete_before = 0xffff_ffff, .delete_after = 0xffff_ffff });
+    try testing.expectEqualStrings("", e.text.content.flat().?);
+}
+
 test "editor: double click selects a word, triple a paragraph, dragging extends by them" {
     var f: Fixture = undefined;
     try f.init(.{ .width = 400, .height = 100 });

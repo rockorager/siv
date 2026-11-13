@@ -87,8 +87,12 @@ pub fn imeCommit(win: *Window, id: NodeId, before: u32, after: u32, str: []const
     const lo, const hi = selection(e);
     var start = lo -| before;
     while (start > 0 and start < len and rd.at(start) & 0xc0 == 0x80) start -= 1;
-    var end = @min(len, hi + after);
+    // The lengths are the compositor's: any u32.
+    var end = hi + @min(after, len - hi);
     while (end < len and rd.at(end) & 0xc0 == 0x80) end += 1;
+    // A deletion at an end of the text (an on-screen keyboard's Backspace
+    // in an empty field) changes nothing.
+    if (start == end and str.len == 0) return;
     replace(win, id, start, end, str, if (start == end) .typing else .other);
 }
 
@@ -458,8 +462,9 @@ fn remember(win: *Window, id: NodeId, before: Snapshot, edit: Edit) void {
     if (h.undo.items.len != 0) {
         const last = &h.undo.items[h.undo.items.len - 1];
         // Typing merges until a space follows a word; deleting merges
-        // runs of Backspace or Delete.
-        const typing = edit.kind == .typing and last.kind == .typing and edit.removed.len == 0 and
+        // runs of Backspace or Delete. A step that inserted nothing has no
+        // last character to compare, and nothing merges with it.
+        const typing = edit.kind == .typing and last.kind == .typing and edit.removed.len == 0 and last.inserted.len != 0 and
             last.start + last.inserted.len == edit.start and !(isSpace(edit.inserted) and !isSpace(last.inserted[last.inserted.len - 1 ..]));
         const backspacing = edit.kind == .deleting and last.kind == .deleting and edit.inserted.len == 0 and
             edit.start + edit.removed.len == last.start;
