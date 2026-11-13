@@ -168,6 +168,10 @@ pub const View = struct {
     want_style: bool = false,
     want_fonts_loaded: bool = false,
     supplies: std.ArrayList(Supply) = .empty,
+    /// The host's request for the document's resource 0; resource i is
+    /// request first_request + i, so that requests of documents parsed
+    /// before (`reparse`) are below it.
+    first_request: u32 = 0,
     /// Width layout runs at, and how far it has gone.
     width: f32 = 0,
     stop_y: f32 = 0,
@@ -253,14 +257,7 @@ pub const View = struct {
         v.dead = true;
         if (v.listening) v.win.fonts.removeListener(v);
         v.listening = false;
-        // A load cancels at once while queued, else when it is decoded,
-        // which may be after the view is freed: either way it frees
-        // itself, apart from the view.
-        for (v.loads.items) |l| {
-            l.view = null;
-            l.cancel();
-        }
-        v.loads.clearRetainingCapacity();
+        v.cancelLoads();
         if (v.busy) {
             if (v.win.fonts.pool) |pool| if (pool.cancel(&v.job.job)) {
                 v.busy = false;
@@ -627,7 +624,18 @@ pub const View = struct {
 
     fn reparse(v: *View) void {
         v.want_reparse = false;
-        if (v.d) |d| d.destroy();
+        // The new document numbers its resources from 0 again: what the
+        // old one asked for, decoded, or was given is dropped, and the
+        // host's late answers to its requests are told apart (`supply`).
+        v.cancelLoads();
+        for (v.supplies.items) |s| if (s.bytes) |b| v.gpa.free(b);
+        v.supplies.clearRetainingCapacity();
+        for (v.images.items) |img| if (img) |i| i.release();
+        v.images.clearRetainingCapacity();
+        if (v.d) |d| {
+            v.first_request += @intCast(d.resources.items.len);
+            d.destroy();
+        }
         v.d = null;
         v.complete = false;
         v.stop_y = 0;
@@ -704,7 +712,7 @@ pub const View = struct {
             };
             const load = v.host.load orelse continue;
             r.state = .loading;
-            load(v.host.ctx, v, i, r.url, switch (r.kind) {
+            load(v.host.ctx, v, v.first_request + i, r.url, switch (r.kind) {
                 .stylesheet => .stylesheet,
                 .image => .image,
                 .font => .font,
@@ -714,11 +722,13 @@ pub const View = struct {
         }
     }
 
-    /// A resource's bytes (copied); null fails it.
+    /// A resource's bytes (copied); null fails it. A request of a
+    /// document since parsed again is ignored.
     pub fn supply(v: *View, request: u32, bytes: ?[]const u8) Error!void {
+        if (request < v.first_request) return;
         const copy = if (bytes) |b| try v.gpa.dupe(u8, b) else null;
         errdefer if (copy) |c| v.gpa.free(c);
-        try v.supplies.append(v.gpa, .{ .request = request, .bytes = copy });
+        try v.supplies.append(v.gpa, .{ .request = request - v.first_request, .bytes = copy });
         if (!v.busy and !v.requesting) {
             try v.applySupplies();
             v.schedule();
@@ -795,8 +805,19 @@ pub const View = struct {
         return std.mem.startsWith(u8, head, "<") and std.mem.indexOf(u8, b[0..@min(b.len, 4096)], "<svg") != null;
     }
 
+    /// A load cancels at once while queued, else when it is decoded,
+    /// which may be after the view is freed or its document replaced:
+    /// either way it frees itself, apart from the view.
+    fn cancelLoads(v: *View) void {
+        for (v.loads.items) |l| {
+            l.view = null;
+            l.cancel();
+        }
+        v.loads.clearRetainingCapacity();
+    }
+
     const ImageLoad = struct {
-        /// Null once the view is destroyed (`View.destroy`).
+        /// Null once the view is destroyed or its document replaced.
         view: ?*View,
         gpa: Allocator,
         request: u32,
@@ -808,7 +829,8 @@ pub const View = struct {
 
         fn done(ctx: ?*anyopaque, result: ui.Image.LoadError!*ui.Image) void {
             const l: *ImageLoad = @ptrCast(@alignCast(ctx));
-            // The view's end cancelled its loads, which never call back.
+            // Loads lose their view only as `cancelLoads` cancels them,
+            // and a cancelled load never calls back.
             const v = l.view.?;
             const img = result catch {
                 if (v.d) |d| if (!v.busy) d.failResource(l.request);
