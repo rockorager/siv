@@ -420,18 +420,23 @@ fn schemeOf(value: []const u8) css.style.ColorScheme {
 
 /// Supplies a stylesheet's text. Styles must run again afterwards.
 pub fn supplyStylesheet(d: *Document, index: u32, bytes: []const u8) Error!void {
-    const r = &d.resources.items[index];
+    // The arena's, unlike the resource, which moves when an import adds
+    // one.
+    const url = d.resources.items[index].url;
     const s = try d.gpa.create(css.Sheet);
     errdefer d.gpa.destroy(s);
     s.* = try css.sheet.parse(d.gpa, bytes, .{});
-    try absolutize(s, r.url);
-    r.sheet = s;
-    r.state = .ready;
+    errdefer s.deinit();
+    try absolutize(s, url);
     for (s.imports) |imp| {
         // Relative to the sheet's URL.
-        const u = try url_mod.resolve(d.arena.allocator(), r.url, imp.url);
+        const u = try url_mod.resolve(d.arena.allocator(), url, imp.url);
         _ = try d.addResource(.stylesheet, u);
     }
+    // Last: a failure above frees the sheet.
+    const r = &d.resources.items[index];
+    r.sheet = s;
+    r.state = .ready;
 }
 
 /// Resolves a sheet's image URLs against the sheet's own URL (CSS Values

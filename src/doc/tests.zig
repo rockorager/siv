@@ -391,6 +391,30 @@ test "linked and inline style sheets cascade in document order" {
     try testing.expectEqual(@as(f32, 50), elementBox(d, .div, 0).w);
 }
 
+test "a sheet's imports are resources named against the sheet's URL" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+    const d = try Document.create(gpa, "<link rel=stylesheet href=css/a.css><p>x</p>", .{ .base_url = "file:///s/" }, &f.ua);
+    defer d.destroy();
+    try d.styleAndBuild(.{ .width = 400, .height = 600 });
+    try testing.expectEqual(@as(usize, 1), d.resources.items.len);
+    // More imports than the resource list has room for: it grows, and
+    // moves, while they are added.
+    try d.supplyStylesheet(0, "@import 'b.css'; @import 'c.css'; @import 'sub/d.css'; @import '/e.css'; p { width: 10px }");
+    const urls = [_][]const u8{ "file:///s/css/a.css", "file:///s/css/b.css", "file:///s/css/c.css", "file:///s/css/sub/d.css", "file:///e.css" };
+    try testing.expectEqual(urls.len, d.resources.items.len);
+    for (urls, d.resources.items) |u, r| try testing.expectEqualStrings(u, r.url);
+    try testing.expect(d.resources.items[0].sheet != null);
+    // An imported sheet comes before the sheet that imports it.
+    var i: u32 = 1;
+    while (i < d.resources.items.len) : (i += 1) try d.supplyStylesheet(i, "p { width: 20px }");
+    try d.styleAndBuild(.{ .width = 400, .height = 600 });
+    try d.resolveFonts(f.resolver());
+    _ = try d.layout(&f.cache, 400, 600, std.math.inf(f32));
+    try testing.expectEqual(@as(f32, 10), elementBox(d, .p, 0).w);
+}
+
 test "text at font-size 0 lays out to finite geometry" {
     // Mail's spacer cells: `font-size: 0; line-height: 0` around a
     // no-break space.
