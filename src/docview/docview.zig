@@ -253,7 +253,13 @@ pub const View = struct {
         v.dead = true;
         if (v.listening) v.win.fonts.removeListener(v);
         v.listening = false;
-        for (v.loads.items) |l| l.cancel();
+        // A load cancels at once while queued, else when it is decoded,
+        // which may be after the view is freed: either way it frees
+        // itself, apart from the view.
+        for (v.loads.items) |l| {
+            l.view = null;
+            l.cancel();
+        }
         v.loads.clearRetainingCapacity();
         if (v.busy) {
             if (v.win.fonts.pool) |pool| if (pool.cancel(&v.job.job)) {
@@ -771,7 +777,7 @@ pub const View = struct {
                         continue;
                     };
                     const l = try v.gpa.create(ImageLoad);
-                    l.* = .{ .view = v, .request = s.request };
+                    l.* = .{ .view = v, .gpa = v.gpa, .request = s.request };
                     try v.loads.append(v.gpa, l);
                     l.loading = ui.Image.load(pool, v.gpa, .{ .bytes = bytes }, .{ .scale = v.win.scale }, .{ .ctx = l, .func = ImageLoad.done, .destroy = ImageLoad.drop }) catch {
                         _ = v.loads.pop();
@@ -790,7 +796,9 @@ pub const View = struct {
     }
 
     const ImageLoad = struct {
-        view: *View,
+        /// Null once the view is destroyed (`View.destroy`).
+        view: ?*View,
+        gpa: Allocator,
         request: u32,
         loading: ?*ui.Image.Loading = null,
 
@@ -800,15 +808,12 @@ pub const View = struct {
 
         fn done(ctx: ?*anyopaque, result: ui.Image.LoadError!*ui.Image) void {
             const l: *ImageLoad = @ptrCast(@alignCast(ctx));
-            const v = l.view;
+            // The view's end cancelled its loads, which never call back.
+            const v = l.view.?;
             const img = result catch {
                 if (v.d) |d| if (!v.busy) d.failResource(l.request);
                 return;
             };
-            if (v.dead) {
-                img.release();
-                return;
-            }
             while (v.images.items.len <= l.request) v.images.append(v.gpa, null) catch {
                 img.release();
                 return;
@@ -826,12 +831,11 @@ pub const View = struct {
 
         fn drop(ctx: ?*anyopaque) void {
             const l: *ImageLoad = @ptrCast(@alignCast(ctx));
-            const v = l.view;
-            for (v.loads.items, 0..) |x, i| if (x == l) {
+            if (l.view) |v| for (v.loads.items, 0..) |x, i| if (x == l) {
                 _ = v.loads.swapRemove(i);
                 break;
             };
-            v.gpa.destroy(l);
+            l.gpa.destroy(l);
         }
     };
 
