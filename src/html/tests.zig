@@ -177,6 +177,37 @@ test "formatting elements moved into a block do not nest past the depth limit" {
     try testing.expectEqual(60, bold);
 }
 
+test "a paragraph gets the last 32 unclosed formatting elements again, not all" {
+    const gpa = testing.allocator;
+    const count = 200;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(gpa);
+    // The end of a paragraph ends the formatting elements in it, and the
+    // text of the next one makes each again: 200 elements and 200
+    // paragraphs made 40,000 clones, and 2,000 of each 4,000,000.
+    try src.appendSlice(gpa, "<p>");
+    for (0..count) |k| try src.print(gpa, "<b id={d}>", .{k});
+    for (0..count) |_| try src.appendSlice(gpa, "</p><p>x");
+    var dom = try html.parse(gpa, src.items, .{});
+    defer dom.deinit();
+    var bold: usize = 0;
+    var id = dom.following(dom.body(), dom.body());
+    while (id != .none) : (id = dom.following(id, dom.body())) {
+        if (dom.isHtml(id, .b)) bold += 1;
+    }
+    try testing.expectEqual(count + count * html.max_formatting, bold);
+    // The last paragraph: the 32 opened last, outermost first, around the
+    // text.
+    var b = dom.node(dom.node(dom.body()).last).first;
+    for (count - html.max_formatting..count) |k| {
+        var buf: [8]u8 = undefined;
+        try testing.expect(dom.isHtml(b, .b));
+        try testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{d}", .{k}), dom.attr(b, .id).?);
+        b = dom.node(b).first;
+    }
+    try testing.expectEqualStrings("x", dom.text(b));
+}
+
 test "a tag costs the same however many elements are open" {
     // Each of these made the parser walk the stack of open elements for
     // every tag, so 50,000 tags took the time of 2,500,000,000 steps. The

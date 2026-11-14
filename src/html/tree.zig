@@ -19,6 +19,14 @@ const Error = error{OutOfMemory};
 /// Blink does), so the code that walks the tree by recursion has a bound.
 pub const max_depth = 512;
 
+/// The most active formatting elements after a marker. One more takes
+/// the earliest off the list, as a fourth equal one does (Noah's Ark):
+/// that one stays open, and is no longer made again where a block ended
+/// it. Every text after such a block gets a clone of each element in the
+/// list, so without a limit n unclosed `<b id=...>`s and n paragraphs
+/// make n squared elements.
+pub const max_formatting = 32;
+
 pub const Mode = enum {
     initial,
     before_html,
@@ -94,8 +102,12 @@ pub fn Builder(comptime Tokenizer: type) type {
         tops: [2]std.ArrayList(u32) = .{ .empty, .empty },
         /// By node: on the stack of open elements.
         is_open: std.DynamicBitSetUnmanaged = .{},
-        /// Active formatting elements; `.none` is a marker.
+        /// Active formatting elements; `.none` is a marker. Changed only
+        /// with `listAppend`, `listInsert`, `listRemove`, and `listReplace`,
+        /// which keep `is_listed` true.
         formatting: std.ArrayList(NodeId) = .empty,
+        /// By node: in the list of active formatting elements.
+        is_listed: std.DynamicBitSetUnmanaged = .{},
         head: NodeId = .none,
         form: NodeId = .none,
         frameset_ok: bool = true,
@@ -117,6 +129,7 @@ pub fn Builder(comptime Tokenizer: type) type {
             for (&b.tops) |*t| t.deinit(b.gpa);
             b.is_open.deinit(b.gpa);
             b.formatting.deinit(b.gpa);
+            b.is_listed.deinit(b.gpa);
             b.pending_table_text.deinit(b.gpa);
             b.attrs_scratch.deinit(b.gpa);
         }
@@ -661,22 +674,60 @@ pub fn Builder(comptime Tokenizer: type) type {
 
         // Active formatting elements.
 
+        fn setListed(b: *B, id: NodeId, listed: bool) Error!void {
+            if (id == .none) return;
+            const node = @intFromEnum(id);
+            if (node >= b.is_listed.bit_length) {
+                if (!listed) return;
+                try b.is_listed.resize(b.gpa, @max(node + 1, b.is_listed.bit_length * 2), false);
+            }
+            b.is_listed.setValue(node, listed);
+        }
+
+        fn isListed(b: *const B, id: NodeId) bool {
+            return @intFromEnum(id) < b.is_listed.bit_length and b.is_listed.isSet(@intFromEnum(id));
+        }
+
+        fn listAppend(b: *B, id: NodeId) Error!void {
+            try b.setListed(id, true);
+            try b.formatting.append(b.gpa, id);
+        }
+
+        fn listInsert(b: *B, i: usize, id: NodeId) Error!void {
+            try b.setListed(id, true);
+            try b.formatting.insert(b.gpa, i, id);
+        }
+
+        fn listRemove(b: *B, i: usize) void {
+            b.setListed(b.formatting.orderedRemove(i), false) catch unreachable;
+        }
+
+        fn listReplace(b: *B, i: usize, id: NodeId) Error!void {
+            try b.setListed(id, true);
+            b.setListed(b.formatting.items[i], false) catch unreachable;
+            b.formatting.items[i] = id;
+        }
+
         fn pushFormatting(b: *B, id: NodeId) Error!void {
             // Noah's Ark: at most three equal entries after the last marker.
             var count: usize = 0;
             var earliest: ?usize = null;
-            var i = b.formatting.items.len;
-            while (i > 0) {
-                i -= 1;
-                const e = b.formatting.items[i];
+            var first = b.formatting.items.len;
+            while (first > 0) {
+                const e = b.formatting.items[first - 1];
                 if (e == .none) break;
+                first -= 1;
                 if (b.sameElement(e, id)) {
                     count += 1;
-                    earliest = i;
+                    earliest = first;
                 }
             }
-            if (count >= 3) _ = b.formatting.orderedRemove(earliest.?);
-            try b.formatting.append(b.gpa, id);
+            if (count >= 3) {
+                b.listRemove(earliest.?);
+            } else if (b.formatting.items.len - first >= max_formatting) {
+                b.listRemove(first);
+            }
+            try b.listAppend(id);
         }
 
         fn sameElement(b: *const B, x: NodeId, y: NodeId) bool {
@@ -707,21 +758,28 @@ pub fn Builder(comptime Tokenizer: type) type {
                 const c = try b.cloneElement(b.formatting.items[i]);
                 b.insertAt(b.appropriatePlace(.none), c);
                 try b.push(c);
-                b.formatting.items[i] = c;
+                try b.listReplace(i, c);
             }
         }
 
         fn clearFormattingToMarker(b: *B) void {
-            while (b.formatting.pop()) |e| if (e == .none) return;
+            while (b.formatting.pop()) |e| {
+                if (e == .none) return;
+                b.setListed(e, false) catch unreachable;
+            }
         }
 
+        /// Where an element is in the list. An element that is not in it
+        /// costs no look through it, and the others asked for are near
+        /// its end.
         fn formattingIndex(b: *const B, id: NodeId) ?usize {
+            if (!b.isListed(id)) return null;
             var i = b.formatting.items.len;
             while (i > 0) {
                 i -= 1;
                 if (b.formatting.items[i] == id) return i;
             }
-            return null;
+            unreachable;
         }
 
         /// The last element with `name` after the last marker.
@@ -749,7 +807,7 @@ pub fn Builder(comptime Tokenizer: type) type {
                 const fi = b.formattingAfterMarker(subject) orelse return false;
                 const fe = b.formatting.items[fi];
                 if (!b.isOpen(fe)) {
-                    _ = b.formatting.orderedRemove(fi);
+                    b.listRemove(fi);
                     return true;
                 }
                 // The steps below cost the open elements above the
@@ -767,7 +825,7 @@ pub fn Builder(comptime Tokenizer: type) type {
                 };
                 var fb_i = furthest orelse {
                     b.truncate(si);
-                    _ = b.formatting.orderedRemove(fi);
+                    b.listRemove(fi);
                     return true;
                 };
                 const common = b.open.items[si - 1];
@@ -783,7 +841,7 @@ pub fn Builder(comptime Tokenizer: type) type {
                     if (node == fe) break;
                     var nfi = b.formattingIndex(node);
                     if (inner > 3 and nfi != null) {
-                        _ = b.formatting.orderedRemove(nfi.?);
+                        b.listRemove(nfi.?);
                         if (nfi.? < bookmark) bookmark -= 1;
                         nfi = null;
                     }
@@ -793,7 +851,7 @@ pub fn Builder(comptime Tokenizer: type) type {
                         continue;
                     }
                     const clone = try b.cloneElement(node);
-                    b.formatting.items[nfi.?] = clone;
+                    try b.listReplace(nfi.?, clone);
                     try b.replaceAt(node_i, clone);
                     node = clone;
                     if (last == fb) bookmark = nfi.? + 1;
@@ -809,9 +867,9 @@ pub fn Builder(comptime Tokenizer: type) type {
                 b.dom.append(fb, clone);
                 // Replace in the formatting list at the bookmark.
                 const old_fi = b.formattingIndex(fe).?;
-                _ = b.formatting.orderedRemove(old_fi);
+                b.listRemove(old_fi);
                 if (old_fi < bookmark) bookmark -= 1;
-                try b.formatting.insert(b.gpa, @min(bookmark, b.formatting.items.len), clone);
+                try b.listInsert(@min(bookmark, b.formatting.items.len), clone);
                 // The formatting element leaves the stack, and its clone
                 // goes in above the furthest block.
                 b.removeAt(si);
@@ -1286,7 +1344,7 @@ pub fn Builder(comptime Tokenizer: type) type {
                     .script => return b.genericText(s, .script_data),
                     .template => {
                         _ = try b.insertHtml(s);
-                        try b.formatting.append(b.gpa, .none);
+                        try b.listAppend(.none);
                         b.frameset_ok = false;
                         b.mode = .in_template;
                         try b.template_modes.append(b.gpa, .in_template);
@@ -1444,7 +1502,7 @@ pub fn Builder(comptime Tokenizer: type) type {
                     if (b.formattingAfterMarker(.a)) |i| {
                         const el = b.formatting.items[i];
                         _ = try b.adoptionAgency(.a);
-                        if (b.formattingIndex(el)) |j| _ = b.formatting.orderedRemove(j);
+                        if (b.formattingIndex(el)) |j| b.listRemove(j);
                         b.removeFromStack(el);
                     }
                     try b.reconstructFormatting();
@@ -1465,7 +1523,7 @@ pub fn Builder(comptime Tokenizer: type) type {
                 .applet, .marquee, .object => {
                     try b.reconstructFormatting();
                     _ = try b.insertHtml(s);
-                    try b.formatting.append(b.gpa, .none);
+                    try b.listAppend(.none);
                     b.frameset_ok = false;
                 },
                 .table => {
@@ -1652,7 +1710,7 @@ pub fn Builder(comptime Tokenizer: type) type {
                 .start => |s| switch (s.name) {
                     .caption => {
                         b.clearToTableContext();
-                        try b.formatting.append(b.gpa, .none);
+                        try b.listAppend(.none);
                         _ = try b.insertHtml(s);
                         b.mode = .in_caption;
                         return;
@@ -1854,7 +1912,7 @@ pub fn Builder(comptime Tokenizer: type) type {
                         b.clearToRowContext();
                         _ = try b.insertHtml(s);
                         b.mode = .in_cell;
-                        try b.formatting.append(b.gpa, .none);
+                        try b.listAppend(.none);
                         return;
                     },
                     .caption, .col, .colgroup, .tbody, .tfoot, .thead, .tr => {

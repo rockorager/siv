@@ -7275,6 +7275,15 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       512 ancestors follow it as siblings instead, each with its text.
       The box builder, layout, and painting recurse once per level of
       the tree and rely on this.
+    - *Formatting elements.* The list of active formatting elements
+      holds 32 after its last marker (`html.max_formatting`); one more
+      takes the earliest off, as a fourth equal one does in the
+      specification (Noah's Ark). That element stays open but is not
+      made again after a block that ends it. Text after such a block
+      gets a clone of every element in the list, so n unclosed
+      `<b id=...>`s and n paragraphs made n squared elements (29 KB
+      made 2,560,000). Whether an element is in the list is a bit per
+      node, not a look through the list.
     - *Open elements.* A tag costs the same however many elements are
       open. What the parser asks of the stack of open elements (an
       element in a scope, the open element an end tag names with no
