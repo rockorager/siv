@@ -97,21 +97,39 @@ pub fn wrapQuotes(gpa: Allocator, dom: *Dom) error{OutOfMemory}![]NodeId {
         }
         cur = dom.following(cur, body);
     }
+    if (found.items.len == 0) return &.{};
     // Only the quotes that end the message collapse: a quote with writing
     // after it, as bottom posting and replies between quotes leave, is
     // part of what is being read.
+    const order = try Order.init(gpa, dom, body);
+    defer order.deinit(gpa);
+    // Where each quote starts: the attribution line before it goes with
+    // it. Found before anything moves.
+    const starts = try gpa.alloc(NodeId, found.items.len);
+    defer gpa.free(starts);
+    for (starts, found.items, tails.items, 0..) |*start, q, tail, i| {
+        start.* = if (tail) q else try attribution(gpa, dom, q);
+        // A quote is not the line before the next one.
+        if (i > 0 and start.* == found.items[i - 1]) start.* = q;
+    }
     var first = found.items.len;
     while (first > 0) : (first -= 1) {
         const q = found.items[first - 1];
-        const end = if (first < found.items.len) try attribution(gpa, dom, found.items[first]) else .none;
-        if (!blankBetween(dom, after(dom, q, tails.items[first - 1], body), end, body)) break;
+        const end = if (first < found.items.len) starts[first] else .none;
+        if (!order.blankBetween(after(dom, q, tails.items[first - 1], body), end)) break;
     }
-    var wrappers: std.ArrayList(NodeId) = .empty;
-    errdefer wrappers.deinit(gpa);
-    for (found.items[first..], tails.items[first..], 0..) |q, tail, k| {
-        const parent = dom.node(q).parent;
-        // The attribution line before it goes with it.
-        const start = if (tail) q else try attribution(gpa, dom, q);
+    const wrappers = try gpa.alloc(NodeId, found.items.len - first);
+    errdefer gpa.free(wrappers);
+    // From the last one back: a reply header takes the rest of its parent,
+    // and that is then the quotes after it in their wrappers, not each
+    // node of theirs once more.
+    var k = wrappers.len;
+    while (k > 0) {
+        k -= 1;
+        const q = found.items[first + k];
+        const tail = tails.items[first + k];
+        const start = starts[first + k];
+        const parent = dom.node(start).parent;
         var num: [16]u8 = undefined;
         const ks = std.fmt.bufPrint(&num, "{d}", .{k}) catch unreachable;
         const href = try std.fmt.allocPrint(gpa, "siv:quote/{d}", .{k});
@@ -133,10 +151,62 @@ pub fn wrapQuotes(gpa: Allocator, dom: *Dom) error{OutOfMemory}![]NodeId {
             if (past and !tail) break;
             m = next;
         }
-        try wrappers.append(gpa, wrapper);
+        wrappers[k] = wrapper;
     }
-    return wrappers.toOwnedSlice(gpa);
+    // Reply headers one after the other are wrappers one inside the other.
+    dom.limitDepth(html.max_depth);
+    return wrappers;
 }
+
+/// Where the body's nodes are in tree order, and how much is written
+/// before each, so that "is anything written between these two" does not
+/// walk from one to the other for every quote.
+const Order = struct {
+    /// By node: its place in tree order, and the texts that are not blank
+    /// (and not a style sheet's) before it.
+    at: []At,
+    written: u32,
+
+    const At = struct { place: u32 = 0, before: u32 = 0 };
+
+    fn init(gpa: Allocator, dom: *const Dom, body: NodeId) error{OutOfMemory}!Order {
+        const at = try gpa.alloc(At, dom.nodes.items.len);
+        @memset(at, .{});
+        var place: u32 = 0;
+        var written: u32 = 0;
+        // Past the style sheet the walk is in, if it is in one.
+        var sheet_end: NodeId = .none;
+        var in_sheet = false;
+        var cur = dom.node(body).first;
+        while (cur != .none) : (cur = dom.following(cur, body)) {
+            if (in_sheet and cur == sheet_end) in_sheet = false;
+            place += 1;
+            at[cur.index()] = .{ .place = place, .before = written };
+            if (in_sheet) continue;
+            if (dom.isHtml(cur, .style)) {
+                sheet_end = dom.followingSkip(cur, body);
+                in_sheet = dom.node(cur).first != .none;
+            } else if (dom.node(cur).kind == .text and std.mem.trim(u8, dom.text(cur), " \t\r\n\u{a0}").len > 0) {
+                written += 1;
+            }
+        }
+        return .{ .at = at, .written = written };
+    }
+
+    fn deinit(o: Order, gpa: Allocator) void {
+        gpa.free(o.at);
+    }
+
+    /// Whether nothing is written from `from` up to `end` (the end of the
+    /// body when `end` is none or does not come after `from`): only blank
+    /// text, line breaks, images, and style sheets.
+    fn blankBetween(o: Order, from: NodeId, end: NodeId) bool {
+        if (from == .none) return true;
+        const a = o.at[from.index()];
+        const to = if (end != .none and o.at[end.index()].place >= a.place) o.at[end.index()].before else o.written;
+        return to == a.before;
+    }
+};
 
 const Kind = enum { none, block, tail };
 
@@ -144,18 +214,6 @@ const Kind = enum { none, block, tail };
 /// which takes the rest of its parent, past the parent.
 fn after(dom: *const Dom, q: NodeId, tail: bool, body: NodeId) NodeId {
     return dom.followingSkip(if (tail) dom.node(q).parent else q, body);
-}
-
-/// Whether nothing is written from `from` up to `end` (none for the end
-/// of the body): only blank text, line breaks, images, and style sheets.
-fn blankBetween(dom: *const Dom, from: NodeId, end: NodeId, body: NodeId) bool {
-    var cur = from;
-    while (cur != .none and cur != end) {
-        const n = dom.node(cur);
-        if (n.kind == .text and std.mem.trim(u8, dom.text(cur), " \t\r\n\u{a0}").len > 0) return false;
-        cur = if (dom.isHtml(cur, .style)) dom.followingSkip(cur, body) else dom.following(cur, body);
-    }
-    return true;
 }
 
 /// The attribution line ("On Tuesday, Priya wrote:") right before a quote,
@@ -319,6 +377,48 @@ test "quotes from each client go behind the toggle with their attribution line" 
     try std.testing.expectEqual(1, one.len);
     // Before its toggle: the paragraph, not the line.
     try std.testing.expectEqual(dom.childElement(dom.body(), .p), dom.node(dom.node(one[0]).prev).prev);
+}
+
+test "reply headers one after the other cost their number, and nest no deeper than the parser does" {
+    const gpa = std.testing.allocator;
+    // Each takes the rest of its parent into its wrapper, the next header
+    // and its wrapper included: each node was moved once for every
+    // header before it (20,000 headers: 400,000,000 moves), and the
+    // wrappers were 20,000 deep.
+    const count = 20_000;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(gpa);
+    try src.appendSlice(gpa, "<p>Reply</p><div>");
+    for (0..count) |_| try src.appendSlice(gpa, "<div id=divRplyFwdMsg>From: Bob</div><p>Old</p>");
+    try src.appendSlice(gpa, "</div>");
+    // Nothing written after them, at some length.
+    for (0..count) |_| try src.appendSlice(gpa, "<br>");
+    var dom = try html.parse(gpa, src.items, .{});
+    defer dom.deinit();
+    const wrappers = try wrapQuotes(gpa, &dom);
+    defer gpa.free(wrappers);
+    try std.testing.expectEqual(count, wrappers.len);
+    const body = dom.body();
+    var old: usize = 0;
+    var cur = dom.following(body, body);
+    while (cur != .none) : (cur = dom.following(cur, body)) {
+        if (dom.node(cur).kind == .text) {
+            if (std.mem.eql(u8, dom.text(cur), "Old")) old += 1;
+            continue;
+        }
+        var ancestors: usize = 0;
+        var p = dom.node(cur).parent;
+        while (p != .document) : (p = dom.node(p).parent) ancestors += 1;
+        try std.testing.expect(ancestors <= html.max_depth);
+    }
+    try std.testing.expectEqual(count, old);
+    // The first wrapper is still in the element after the reply, after
+    // its toggle, with the first header in it and the second header's
+    // wrapper.
+    try std.testing.expectEqual(dom.childElement(body, .p), dom.node(dom.node(wrappers[0]).parent).prev);
+    try std.testing.expect(dom.isHtml(dom.node(wrappers[0]).prev, .a));
+    try std.testing.expectEqualStrings("divRplyFwdMsg", dom.attr(dom.node(wrappers[0]).first, .id).?);
+    try std.testing.expectEqual(wrappers[0], dom.node(wrappers[1]).parent);
 }
 
 test "only the quotes that end a message collapse" {

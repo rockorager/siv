@@ -7275,6 +7275,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       512 ancestors follow it as siblings instead, each with its text.
       The box builder, layout, and painting recurse once per level of
       the tree and rely on this.
+    - *Quoted replies.* Collapsing them (`email.wrapQuotes`) costs the
+      body once. Whether anything is written between two quotes is read
+      off counts made in one walk, and the wrappers are made from the
+      last quote back, so that a reply header, which takes the rest of
+      its parent, takes the wrappers after it and not their nodes
+      again. Reply headers one after the other are wrappers one inside
+      the other, so `Dom.limitDepth` runs after them too.
     - *Formatting elements.* The list of active formatting elements
       holds 32 after its last marker (`html.max_formatting`); one more
       takes the earliest off, as a fourth equal one does in the
