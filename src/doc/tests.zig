@@ -780,6 +780,45 @@ test "collapsed borders against cells that span in from another row or column" {
     try testing.expectEqual(@as(f32, 1 + 10 + 1 + 10 + 7 + 10 + 1), elementBox(d, .table, 0).h);
 }
 
+test "grid: items locked to a row take the next free column, past the columns there are" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+    // Positions as Chromium lays these out. 10px tracks count them.
+    const style = "<style>body { margin: 0 } div { display: grid; grid-template-columns: 10px 10px; grid-auto-columns: 10px; grid-auto-rows: 10px; width: 200px } p, i { margin: 0 }</style>";
+    const row = "<p style='grid-row: 1'>x</p>";
+    {
+        // Five in the first row of two columns: three columns are made,
+        // one after the other, and the rest of the items fill rows of
+        // five.
+        const d = try f.load(gpa, style ++ "<div>" ++ row ++ row ++ row ++ row ++ row ++ "<i>x</i><i>x</i><i>x</i><i>x</i><i>x</i><i>x</i></div>", .{}, 400);
+        defer d.destroy();
+        for (0..5) |k| {
+            try testing.expectEqual(@as(f32, @floatFromInt(k * 10)), absX(d, elementBox(d, .p, k)));
+            try testing.expectEqual(@as(f32, 0), absY(d, elementBox(d, .p, k)));
+            try testing.expectEqual(@as(f32, @floatFromInt(k * 10)), absX(d, elementBox(d, .i, k)));
+            try testing.expectEqual(@as(f32, 10), absY(d, elementBox(d, .i, k)));
+        }
+        try testing.expectEqual(@as(f32, 0), absX(d, elementBox(d, .i, 5)));
+        try testing.expectEqual(@as(f32, 20), absY(d, elementBox(d, .i, 5)));
+    }
+    {
+        // Dense packing looks from the row's start each time, and finds
+        // the columns the items before made taken.
+        const d = try f.load(gpa, style ++ "<div style='grid-auto-flow: row dense'>" ++ row ++ row ++ row ++ row ++ "</div>", .{}, 400);
+        defer d.destroy();
+        for (0..4) |k| try testing.expectEqual(@as(f32, @floatFromInt(k * 10)), absX(d, elementBox(d, .p, k)));
+    }
+    {
+        // Two columns wide, with the first and third of three taken: not
+        // over the third, but after it; the next item goes on from there.
+        const d = try f.load(gpa, style ++ "<div style='grid-template-columns: 10px 10px 10px'><p style='grid-row: 1; grid-column: 1'>x</p><p style='grid-row: 1; grid-column: 3'>x</p><p style='grid-row: 1; grid-column: span 2'>x</p>" ++ row ++ "</div>", .{}, 400);
+        defer d.destroy();
+        try testing.expectEqual(@as(f32, 30), absX(d, elementBox(d, .p, 2)));
+        try testing.expectEqual(@as(f32, 50), absX(d, elementBox(d, .p, 3)));
+    }
+}
+
 test "grid: lines and spans beyond the limit take the last track" {
     const gpa = testing.allocator;
     const f = try Fixture.init(gpa);

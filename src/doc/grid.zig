@@ -324,28 +324,34 @@ fn limited(ax: *const Axis, a: i64, b: i64) Lines {
     return .{ .start = start, .span = @intCast(end - start) };
 }
 
-/// Occupied cells while auto placing, rows of a bitmap that grows.
+/// Occupied cells while auto placing, rows of a bitmap that grows. The
+/// grid has `cols` columns so far, and the bitmap room for `stride`:
+/// items locked to a row make columns after the last (8.5, step 2).
 const Cells = struct {
     bits: std.DynamicBitSetUnmanaged = .{},
     cols: usize,
+    stride: usize,
     rows: usize = 0,
 
     fn ensure(c: *Cells, a: std.mem.Allocator, rows: usize) Error!void {
         if (rows <= c.rows) return;
-        try c.bits.resize(a, rows * c.cols, false);
+        try c.bits.resize(a, rows * c.stride, false);
         c.rows = rows;
     }
+    /// Whether no cell of the area is taken. Nothing is in the columns
+    /// past the grid's.
     fn free(c: *Cells, r: usize, col: usize, rs: usize, cs: usize) bool {
-        if (col + cs > c.cols) return false;
         for (r..r + rs) |rr| {
             if (rr >= c.rows) return true;
-            for (col..col + cs) |cc| if (c.bits.isSet(rr * c.cols + cc)) return false;
+            for (@min(col, c.cols)..@min(col + cs, c.cols)) |cc| if (c.bits.isSet(rr * c.stride + cc)) return false;
         }
         return true;
     }
+    /// Takes the area, with the columns it needs past the grid's.
     fn mark(c: *Cells, a: std.mem.Allocator, r: usize, col: usize, rs: usize, cs: usize) Error!void {
+        c.cols = @min(c.stride, @max(c.cols, col + cs));
         try c.ensure(a, r + rs);
-        for (r..r + rs) |rr| c.bits.setRangeValue(.{ .start = rr * c.cols + col, .end = rr * c.cols + @min(col + cs, c.cols) }, true);
+        for (r..r + rs) |rr| c.bits.setRangeValue(.{ .start = rr * c.stride + @min(col, c.cols), .end = rr * c.stride + @min(col + cs, c.cols) }, true);
     }
 };
 
@@ -436,7 +442,14 @@ fn place(e: *Engine, id: BoxId, content_w: ?f32, content_h: ?f32, min_w: ?f32, m
     }.f;
     const minor_limit: i64 = lastLine(if (column_flow) &g.rows else &g.cols) + minor_off;
     const major_limit: i64 = lastLine(if (column_flow) &g.cols else &g.rows) + major_off;
-    var cells: Cells = .{ .cols = @intCast(minor_count) };
+    // Room for the columns step 2 makes: each item there adds its span
+    // at most, up to the limit.
+    var stride = minor_count;
+    for (pending.items) |*p| {
+        if (MajorMinor.major(p, column_flow).start != null and MajorMinor.minor(p, column_flow).start == null) stride += MajorMinor.minor(p, column_flow).span;
+    }
+    stride = @min(stride, @max(minor_count, minor_limit));
+    var cells: Cells = .{ .cols = @intCast(minor_count), .stride = @intCast(stride) };
     var placed: std.ArrayList(struct { id: BoxId, major: i64, minor: i64, major_span: u32, minor_span: u32 }) = .empty;
     // 1. Items with both positions definite.
     for (pending.items) |p| {
@@ -456,17 +469,13 @@ fn place(e: *Engine, id: BoxId, content_w: ?f32, content_h: ?f32, min_w: ?f32, m
             const mn = MajorMinor.minor(&p, column_flow);
             if (mj.start == null or mn.start != null) continue;
             const r = mj.start.? + major_off;
+            // The first column from which nothing is in its way: at the
+            // latest the one after the grid's last, as an implicit track.
             var c: i64 = if (dense) 0 else cursors.get(r) orelse 0;
-            while (!cells.free(@intCast(r), @intCast(c), mj.span, mn.span)) {
-                c += 1;
-                if (c + mn.span > cells.cols) {
-                    // Wider than the grid: past the end, as implicit tracks.
-                    break;
-                }
-            }
+            while (!cells.free(@intCast(r), @intCast(c), mj.span, mn.span)) c += 1;
             var span = mn.span;
             keepWithin(&c, &span, minor_limit);
-            try cells.mark(e.scratch, @intCast(r), @intCast(@min(c, @as(i64, @intCast(cells.cols)))), mj.span, span);
+            try cells.mark(e.scratch, @intCast(r), @intCast(c), mj.span, span);
             try placed.append(e.scratch, .{ .id = p.id, .major = r, .minor = c, .major_span = mj.span, .minor_span = span });
             try cursors.put(e.scratch, r, c + span);
         }
