@@ -2,7 +2,7 @@
 //! (`repeat()` with counts, `auto-fill`, and `auto-fit`, line names, and
 //! named areas with their implicit `-start`/`-end` lines); line-based
 //! placement with integers, names, negative indices, and spans, implicit
-//! tracks on both sides; auto placement (8.5: row or column, sparse or
+//! tracks on both sides (a thousand at most, 5.4); auto placement (8.5: row or column, sparse or
 //! dense); the track sizing algorithm (12.3 to 12.8: fixed, percentage,
 //! intrinsic, `minmax()`, `fit-content()`, and flexible tracks; items of
 //! one span, then by increasing span with the distribution of extra
@@ -100,8 +100,16 @@ fn breadthFixed(b: S.Breadth, basis: ?f32) ?f32 {
     };
 }
 
+/// The tracks of an axis on each side of the explicit grid's first line,
+/// and the longest span (5.4, "Limiting Large Grids"): the cost of a grid
+/// is in its tracks, and a line number or a span asks for a thousand
+/// million of them in a few bytes. The specification suggests ten times
+/// as many; the cells of a grid are a bitmap here, of 4 million bits at
+/// most with this limit.
+const max_tracks = 1000;
+
 /// The explicit tracks of one axis (7.2), with auto repetitions as many
-/// as fit (7.2.3.2).
+/// as fit (7.2.3.2), `max_tracks` at most.
 fn explicit(e: *Engine, ax: *Axis, tracks: ?*const S.Tracks, avail: ?f32, min_avail: ?f32) Error!void {
     const t = tracks orelse {
         try ax.names.append(e.scratch, &.{});
@@ -118,6 +126,7 @@ fn explicit(e: *Engine, ax: *Axis, tracks: ?*const S.Tracks, avail: ?f32, min_av
     for (t.items) |item| switch (item) {
         .names => |n| names = try join(e.scratch, names, n),
         .size => |s| {
+            if (ax.tracks.items.len >= max_tracks) break;
             try ax.names.append(e.scratch, names);
             names = &.{};
             try ax.tracks.append(e.scratch, .{ .min = s.min, .max = s.max, .fit = s.fit_content });
@@ -157,7 +166,8 @@ fn explicit(e: *Engine, ax: *Axis, tracks: ?*const S.Tracks, avail: ?f32, min_av
                     }
                 }
             }
-            for (0..@min(count, 10000)) |_| for (r.sizes, 0..) |s, k| {
+            for (0..@min(count, max_tracks)) |_| for (r.sizes, 0..) |s, k| {
+                if (ax.tracks.items.len >= max_tracks) break;
                 const before: []const []const u8 = if (k < r.names.len) r.names[k] else &.{};
                 try ax.names.append(e.scratch, try join(e.scratch, names, before));
                 names = &.{};
@@ -290,15 +300,28 @@ fn resolve(ax: *const Axis, areas: ?*const S.Areas, horizontal: bool, start: S.G
         var b = en.?;
         if (b < a) std.mem.swap(i64, &a, &b);
         if (b == a) b = a + 1;
-        return .{ .start = a, .span = @intCast(@min(b - a, 10000)) };
+        return limited(ax, a, b);
     }
-    if (s) |a| return .{ .start = a, .span = span_of(end) };
-    if (en) |b| {
-        const sp = span_of(start);
-        return .{ .start = b - sp, .span = sp };
-    }
+    if (s) |a| return limited(ax, a, a + span_of(end));
+    if (en) |b| return limited(ax, b - span_of(start), b);
     // Both automatic: the start's span wins.
-    return .{ .start = null, .span = if (start.kind == .span) span_of(start) else span_of(end) };
+    return .{ .start = null, .span = @min(if (start.kind == .span) span_of(start) else span_of(end), max_tracks) };
+}
+
+/// The last line an item may end at, in the explicit grid's numbering
+/// (the first is -max_tracks).
+fn lastLine(ax: *const Axis) i64 {
+    return @intCast(@max(max_tracks, ax.names.items.len - 1));
+}
+
+/// The placement from line `a` to line `b` within the grid's limits
+/// (5.4): one that crosses a limit ends there, and one beyond a limit
+/// takes the last track on that side.
+fn limited(ax: *const Axis, a: i64, b: i64) Lines {
+    const last = lastLine(ax);
+    const start = std.math.clamp(a, -max_tracks, last - 1);
+    const end = std.math.clamp(b, start + 1, last);
+    return .{ .start = start, .span = @intCast(end - start) };
 }
 
 /// Occupied cells while auto placing, rows of a bitmap that grows.
@@ -322,7 +345,7 @@ const Cells = struct {
     }
     fn mark(c: *Cells, a: std.mem.Allocator, r: usize, col: usize, rs: usize, cs: usize) Error!void {
         try c.ensure(a, r + rs);
-        for (r..r + rs) |rr| for (col..@min(col + cs, c.cols)) |cc| c.bits.set(rr * c.cols + cc);
+        for (r..r + rs) |rr| c.bits.setRangeValue(.{ .start = rr * c.cols + col, .end = rr * c.cols + @min(col + cs, c.cols) }, true);
     }
 };
 
@@ -400,8 +423,21 @@ fn place(e: *Engine, id: BoxId, content_w: ?f32, content_h: ?f32, min_w: ?f32, m
         } else minor_count = @max(minor_count, mn.span);
     }
     minor_count = @max(minor_count, 1);
+    // Where the grid ends for auto placement (5.4): an item whose place
+    // crosses the limit ends there, and one whose place is beyond it
+    // takes the last track, over what is there.
+    const keepWithin = struct {
+        fn f(at: *i64, span: *u32, limit: i64) void {
+            if (at.* >= limit) {
+                at.* = limit - 1;
+                span.* = 1;
+            } else span.* = @intCast(@min(span.*, limit - at.*));
+        }
+    }.f;
+    const minor_limit: i64 = lastLine(if (column_flow) &g.rows else &g.cols) + minor_off;
+    const major_limit: i64 = lastLine(if (column_flow) &g.cols else &g.rows) + major_off;
     var cells: Cells = .{ .cols = @intCast(minor_count) };
-    var placed: std.ArrayList(struct { p: Pending, major: i64, minor: i64 }) = .empty;
+    var placed: std.ArrayList(struct { id: BoxId, major: i64, minor: i64, major_span: u32, minor_span: u32 }) = .empty;
     // 1. Items with both positions definite.
     for (pending.items) |p| {
         const mj = MajorMinor.major(&p, column_flow);
@@ -410,7 +446,7 @@ fn place(e: *Engine, id: BoxId, content_w: ?f32, content_h: ?f32, min_w: ?f32, m
         const r = mj.start.? + major_off;
         const c = mn.start.? + minor_off;
         try cells.mark(e.scratch, @intCast(r), @intCast(c), mj.span, mn.span);
-        try placed.append(e.scratch, .{ .p = p, .major = r, .minor = c });
+        try placed.append(e.scratch, .{ .id = p.id, .major = r, .minor = c, .major_span = mj.span, .minor_span = mn.span });
     }
     // 2. Items locked to a major line (a row, in row flow).
     {
@@ -428,9 +464,11 @@ fn place(e: *Engine, id: BoxId, content_w: ?f32, content_h: ?f32, min_w: ?f32, m
                     break;
                 }
             }
-            try cells.mark(e.scratch, @intCast(r), @intCast(@min(c, @as(i64, @intCast(cells.cols)))), mj.span, mn.span);
-            try placed.append(e.scratch, .{ .p = p, .major = r, .minor = c });
-            try cursors.put(e.scratch, r, c + mn.span);
+            var span = mn.span;
+            keepWithin(&c, &span, minor_limit);
+            try cells.mark(e.scratch, @intCast(r), @intCast(@min(c, @as(i64, @intCast(cells.cols)))), mj.span, span);
+            try placed.append(e.scratch, .{ .id = p.id, .major = r, .minor = c, .major_span = mj.span, .minor_span = span });
+            try cursors.put(e.scratch, r, c + span);
         }
     }
     // 3. The rest, with the auto-placement cursor.
@@ -449,8 +487,10 @@ fn place(e: *Engine, id: BoxId, content_w: ?f32, content_h: ?f32, min_w: ?f32, m
             if (!dense and c < cur_minor) cur_major += 1;
             var r = cur_major;
             while (!cells.free(@intCast(r), @intCast(c), mj.span, mn.span)) r += 1;
-            try cells.mark(e.scratch, @intCast(r), @intCast(c), mj.span, mn.span);
-            try placed.append(e.scratch, .{ .p = p, .major = r, .minor = c });
+            var span = mj.span;
+            keepWithin(&r, &span, major_limit);
+            try cells.mark(e.scratch, @intCast(r), @intCast(c), span, mn.span);
+            try placed.append(e.scratch, .{ .id = p.id, .major = r, .minor = c, .major_span = span, .minor_span = mn.span });
             cur_major = r;
             cur_minor = c;
         } else {
@@ -465,8 +505,10 @@ fn place(e: *Engine, id: BoxId, content_w: ?f32, content_h: ?f32, min_w: ?f32, m
                 if (cells.free(@intCast(r), @intCast(c), mj.span, mn.span)) break;
                 c += 1;
             }
-            try cells.mark(e.scratch, @intCast(r), @intCast(c), mj.span, mn.span);
-            try placed.append(e.scratch, .{ .p = p, .major = r, .minor = c });
+            var span = mj.span;
+            keepWithin(&r, &span, major_limit);
+            try cells.mark(e.scratch, @intCast(r), @intCast(c), span, mn.span);
+            try placed.append(e.scratch, .{ .id = p.id, .major = r, .minor = c, .major_span = span, .minor_span = mn.span });
             cur_major = r;
             cur_minor = c + mn.span;
         }
@@ -475,11 +517,13 @@ fn place(e: *Engine, id: BoxId, content_w: ?f32, content_h: ?f32, min_w: ?f32, m
     var max_c: i64 = @as(i64, g.cols.explicit) + g.cols.offset;
     var max_r: i64 = @as(i64, g.rows.explicit) + g.rows.offset;
     for (placed.items) |pl| {
-        const col: [2]i64 = if (column_flow) .{ pl.major, pl.major + pl.p.col.span } else .{ pl.minor, pl.minor + pl.p.col.span };
-        const row: [2]i64 = if (column_flow) .{ pl.minor, pl.minor + pl.p.row.span } else .{ pl.major, pl.major + pl.p.row.span };
+        const major: [2]i64 = .{ pl.major, pl.major + pl.major_span };
+        const minor: [2]i64 = .{ pl.minor, pl.minor + pl.minor_span };
+        const col = if (column_flow) major else minor;
+        const row = if (column_flow) minor else major;
         max_c = @max(max_c, col[1]);
         max_r = @max(max_r, row[1]);
-        try g.items.append(e.scratch, .{ .id = pl.p.id, .col = .{ @intCast(col[0]), @intCast(col[1]) }, .row = .{ @intCast(row[0]), @intCast(row[1]) } });
+        try g.items.append(e.scratch, .{ .id = pl.id, .col = .{ @intCast(col[0]), @intCast(col[1]) }, .row = .{ @intCast(row[0]), @intCast(row[1]) } });
     }
     try implicitTracks(e, &g.cols, st.box.grid_auto_columns, @intCast(max_c));
     try implicitTracks(e, &g.rows, st.box.grid_auto_rows, @intCast(max_r));

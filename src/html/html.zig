@@ -15,6 +15,7 @@ pub const tokenizer = @import("tokenizer.zig");
 pub const encoding = @import("encoding.zig");
 pub const serialize = @import("serialize.zig");
 const tree = @import("tree.zig");
+pub const max_depth = tree.max_depth;
 
 pub const Options = struct {
     /// A charset label from outside the document (an email part's

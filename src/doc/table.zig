@@ -44,8 +44,10 @@ fn build(e: *Engine, table: BoxId) Error!Grid {
             else => {},
         }
     }
-    // The cell (an index into `cells`) at each row and column.
-    var occupied: std.AutoHashMapUnmanaged(u64, u32) = .empty;
+    // The first row in which each column is free again: what the cells
+    // so far cover, at a cost of a cell's columns rather than its columns
+    // times its rows.
+    var free_from: std.ArrayList(u32) = .empty;
     for (groups) |list| for (list.items) |grp| {
         var rit = e.tree.children(grp);
         while (rit.next()) |row| {
@@ -58,10 +60,11 @@ fn build(e: *Engine, table: BoxId) Error!Grid {
             while (cit.next()) |cell| {
                 const cb = e.tree.get(cell);
                 if (cb.kind != .table_cell) continue;
-                while (occupied.contains(@as(u64, r) << 32 | col)) col += 1;
+                while (col < free_from.items.len and free_from.items[col] > r) col += 1;
                 const cs: u32 = cb.colspan;
                 const rs: u32 = cb.rowspan;
-                for (0..rs) |dr| for (0..cs) |dc| try occupied.put(e.scratch, @as(u64, r + @as(u32, @intCast(dr))) << 32 | (col + @as(u32, @intCast(dc))), @intCast(g.cells.items.len));
+                if (free_from.items.len < col + cs) try free_from.appendNTimes(e.scratch, 0, col + cs - free_from.items.len);
+                for (free_from.items[col..][0..cs]) |*f| f.* = @max(f.*, r + rs);
                 try g.cells.append(e.scratch, .{ .id = cell, .row = r, .col = col, .rows = rs, .cols = cs });
                 col += cs;
                 g.ncols = @max(g.ncols, col);
@@ -71,9 +74,56 @@ fn build(e: *Engine, table: BoxId) Error!Grid {
     // Spans past the last row end there.
     const nrows: u32 = @intCast(g.rows.items.len);
     for (g.cells.items) |*c| c.rows = @max(1, @min(c.rows, nrows - c.row));
-    if (e.style(table).inh.border_collapse == .collapse) try collapse(e, table, &g, &occupied);
+    if (e.style(table).inh.border_collapse == .collapse) try collapse(e, table, &g);
     return g;
 }
+
+/// The cells in each row, those spanning into it from above included, to
+/// find the cell at a row and column. It holds an entry for each row a
+/// cell covers, not for each row and column.
+const Covering = struct {
+    /// Row r's entries are `spans[starts[r]..starts[r + 1]]`, by column.
+    starts: []u32,
+    spans: []Span,
+
+    const Span = struct { col: u32, end: u32, cell: u32 };
+
+    fn init(e: *Engine, g: *const Grid) Error!Covering {
+        const nrows = g.rows.items.len;
+        const starts = try e.scratch.alloc(u32, nrows + 1);
+        @memset(starts, 0);
+        for (g.cells.items) |c| {
+            for (starts[c.row + 1 ..][0..c.rows]) |*n| n.* += 1;
+        }
+        for (starts[1..], starts[0..nrows]) |*n, before| n.* += before;
+        const spans = try e.scratch.alloc(Span, starts[nrows]);
+        const next = try e.scratch.dupe(u32, starts[0..nrows]);
+        for (g.cells.items, 0..) |c, k| for (next[c.row..][0..c.rows]) |*n| {
+            spans[n.*] = .{ .col = c.col, .end = c.col + c.cols, .cell = @intCast(k) };
+            n.* += 1;
+        };
+        for (0..nrows) |r| std.mem.sort(Span, spans[starts[r]..starts[r + 1]], {}, struct {
+            fn lessThan(_: void, a: Span, b: Span) bool {
+                return a.col < b.col;
+            }
+        }.lessThan);
+        return .{ .starts = starts, .spans = spans };
+    }
+
+    /// The cell (an index into `Grid.cells`) at `row` and `col`.
+    fn at(cv: *const Covering, row: u32, col: u32) ?u32 {
+        const spans = cv.spans[cv.starts[row]..cv.starts[row + 1]];
+        // The last one that starts at or before the column.
+        var lo: usize = 0;
+        var hi: usize = spans.len;
+        while (lo < hi) {
+            const mid = lo + (hi - lo) / 2;
+            if (spans[mid].col <= col) lo = mid + 1 else hi = mid;
+        }
+        if (lo == 0 or spans[lo - 1].end <= col) return null;
+        return spans[lo - 1].cell;
+    }
+};
 
 /// A border competing in the collapsing border model.
 const Candidate = struct {
@@ -130,8 +180,9 @@ pub fn tablePart(st: *const css.Style, side: usize) f32 {
 /// Resolves every cell's collapsed borders (CSS 2.1 17.6.2) against its
 /// neighbors, rows, row groups, and the table, into `Tree.collapsed`.
 /// Columns have no boxes and take no part.
-fn collapse(e: *Engine, table: BoxId, g: *const Grid, occupied: *const std.AutoHashMapUnmanaged(u64, u32)) Error!void {
+fn collapse(e: *Engine, table: BoxId, g: *const Grid) Error!void {
     const nrows: u32 = @intCast(g.rows.items.len);
+    const covering: Covering = try .init(e, g);
     const tst = e.style(table);
     for (g.cells.items) |c| {
         const b = e.tree.get(c.id);
@@ -153,7 +204,7 @@ fn collapse(e: *Engine, table: BoxId, g: *const Grid, occupied: *const std.AutoH
                 else => if (c.col > 0) .{ c.row, c.col - 1 } else null,
             };
             const edge = at == null;
-            if (at) |rc| if (occupied.get(@as(u64, rc[0]) << 32 | rc[1])) |k| {
+            if (at) |rc| if (covering.at(rc[0], rc[1])) |k| {
                 // Between two cells, ties go to the one above or left.
                 const n = Candidate.of(e, g.cells.items[k].id, opposite);
                 if (if (side == 0 or side == 3) !best.beats(n) else n.beats(best)) best = n;

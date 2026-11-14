@@ -117,6 +117,35 @@ test "email-grade broken markup recovers like browsers" {
     try testing.expectEqualStrings("<table><tbody><tr><td>a<b>bold</b></td><td>b</td></tr></tbody></table><p>one</p><p>two</p><div><font color=\"red\"><i>x</i></font></div><font color=\"red\"><i>y</i></font>", out.written());
 }
 
+test "elements nested past the depth limit go in beside the last one within it" {
+    const gpa = testing.allocator;
+    const count = 16_000;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(gpa);
+    for (0..count) |_| try src.appendSlice(gpa, "<div>");
+    try src.appendSlice(gpa, "deep");
+    var dom = try html.parse(gpa, src.items, .{});
+    defer dom.deinit();
+    // Every element is in the tree; html, body and 510 divs are the most
+    // ancestors any has.
+    var divs: usize = 0;
+    var deepest: usize = 0;
+    var text: html.NodeId = .none;
+    var id = dom.following(dom.body(), dom.body());
+    while (id != .none) : (id = dom.following(id, dom.body())) {
+        if (dom.node(id).kind == .text) text = id;
+        if (!dom.isHtml(id, .div)) continue;
+        divs += 1;
+        var ancestors: usize = 0;
+        var p = dom.node(id).parent;
+        while (p != .document) : (p = dom.node(p).parent) ancestors += 1;
+        deepest = @max(deepest, ancestors);
+    }
+    try testing.expectEqual(count, divs);
+    try testing.expectEqual(512, deepest);
+    try testing.expectEqualStrings("deep", dom.text(text));
+}
+
 test "XHTML: self-closing tags end their elements" {
     const src = "<p><a id=\"n1\"/>Note<span/>text</p><div/><title/><p>after</p><svg><circle/></svg>";
     var dom = try html.parse(testing.allocator, src, .{ .xml = true });

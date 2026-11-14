@@ -617,3 +617,208 @@ test "the quote toggle: a message's rules cannot restyle it, the application's u
         try testing.expectEqual(@as(f32, 0), st.box.background_color.a);
     }
 }
+
+test "elements nested past the parser's limit build boxes and lay out" {
+    // The box builder, layout, and painting recurse once per level of
+    // the tree: 16,000 unclosed <div>s overflowed the stack.
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(gpa);
+    try src.appendSlice(gpa, "<style>body { margin: 0 } div { padding-left: 1px }</style>");
+    for (0..16_000) |_| try src.appendSlice(gpa, "<div>");
+    try src.appendSlice(gpa, "x");
+    const d = try f.load(gpa, src.items, .{}, 4000);
+    defer d.destroy();
+    // html, body, and 510 <div>s above the deepest ones, which are
+    // siblings there.
+    const depth = @import("html").max_depth - 2;
+    try testing.expectEqual(@as(f32, depth - 1), absX(d, elementBox(d, .div, depth - 1)));
+    try testing.expectEqual(@as(f32, depth), absX(d, elementBox(d, .div, depth)));
+    try testing.expectEqual(@as(f32, depth), absX(d, elementBox(d, .div, 15_999)));
+}
+
+test "a selector that cannot match fails without trying every placement of its compounds" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+    // No <div> is above the <section>, so the rule matches nothing. With
+    // k descendant combinators over 2k <div>s there are (2k choose k)
+    // ways to find that out: 10 seconds for k = 13, and for 40 never.
+    {
+        var src: std.ArrayList(u8) = .empty;
+        defer src.deinit(gpa);
+        try src.appendSlice(gpa, "<style>h6 { width: 20px } div section");
+        for (0..40) |_| try src.appendSlice(gpa, " div");
+        try src.appendSlice(gpa, " h6 { width: 10px } section");
+        for (0..40) |_| try src.appendSlice(gpa, " div");
+        try src.appendSlice(gpa, " h6 { height: 30px }</style><section>");
+        for (0..80) |_| try src.appendSlice(gpa, "<div>");
+        try src.appendSlice(gpa, "<h6>x</h6>");
+        const d = try f.load(gpa, src.items, .{}, 400);
+        defer d.destroy();
+        try testing.expectEqual(@as(f32, 20), elementBox(d, .h6, 0).w);
+        try testing.expectEqual(@as(f32, 30), elementBox(d, .h6, 0).h);
+    }
+    // What stops a search early must not stop one that a farther
+    // ancestor or sibling completes.
+    const cases = [_]struct { selector: []const u8, body: []const u8, matches: bool }{
+        // The nearest .b has the wrong parent; the next one has .a.
+        .{ .selector = ".a > .b h6", .body = "<div class=a><div class=b><div><div class=b><h6>", .matches = true },
+        .{ .selector = ".a > .b h6", .body = "<div class=a><div><div class=b><div><div class=b><h6>", .matches = false },
+        // The nearest .b has no sibling before it; the next one has .a.
+        .{ .selector = ".a ~ .b h6", .body = "<div class=a></div><div class=b><div class=b><h6>", .matches = true },
+        .{ .selector = ".a ~ .b h6", .body = "<div class=b><div class=a></div><div><div class=b><h6>", .matches = false },
+        // The nearest .b follows something else; the first follows .a.
+        .{ .selector = ".a + .b ~ h6", .body = "<div class=a></div><div class=b></div><div></div><div class=b></div><h6>", .matches = true },
+        .{ .selector = ".a + .b ~ h6", .body = "<div class=b></div><div class=a></div><div></div><div class=b></div><h6>", .matches = false },
+        // The nearest .c has a .b before it under the wrong parent.
+        .{ .selector = ".a > .b ~ .c h6", .body = "<div class=a><div class=b></div><div class=c><div><div class=b></div><div class=c><h6>", .matches = true },
+        .{ .selector = ".a > .b ~ .c h6", .body = "<div><div class=b></div><div class=c><div class=a><div></div><div class=c><h6>", .matches = false },
+        // The nearest .c has no .b before it.
+        .{ .selector = ".a .b ~ .c h6", .body = "<div class=a><div class=b></div><div class=c><div class=x></div><div class=c><h6>", .matches = true },
+        .{ .selector = ".a .b + .c > h6", .body = "<div class=a><div></div><div class=b></div><div class=c><h6>", .matches = true },
+        .{ .selector = ".a .b + .c > h6", .body = "<div class=b></div><div class=c><div class=a></div><h6>", .matches = false },
+    };
+    for (cases) |case| {
+        const src = try std.fmt.allocPrint(gpa, "<style>h6 {{ width: 20px }} {s} {{ width: 10px }}</style>{s}x", .{ case.selector, case.body });
+        defer gpa.free(src);
+        const d = try f.load(gpa, src, .{}, 400);
+        defer d.destroy();
+        testing.expectEqual(@as(f32, if (case.matches) 10 else 20), elementBox(d, .h6, 0).w) catch |err| {
+            std.debug.print("{s} on {s}\n", .{ case.selector, case.body });
+            return err;
+        };
+    }
+}
+
+test "var() substitution reads a bounded amount of text" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+    // Each variable is the one before it four times over, so the last is
+    // --v0 4^levels times: the columns of a grid whose second item shows
+    // whether the declaration applied.
+    const Case = struct {
+        fn second(fx: *Fixture, a: std.mem.Allocator, v0: []const u8, levels: u32, columns: []const u8) !f32 {
+            var src: std.ArrayList(u8) = .empty;
+            defer src.deinit(a);
+            try src.print(a, "<body style='margin:0'><div style='display:grid;--v0:{s};", .{v0});
+            for (1..levels + 1) |i| try src.print(a, "--v{d}:var(--v{d}) var(--v{d}) var(--v{d}) var(--v{d});", .{ i, i - 1, i - 1, i - 1, i - 1 });
+            try src.print(a, "grid-template-columns:var(--v{d}) {s}'><p style='margin:0'>a</p><p style='margin:0'>b</p></div>", .{ levels, columns });
+            const d = try fx.load(a, src.items, .{}, 400);
+            defer d.destroy();
+            // A megabyte is far above what these documents need and far
+            // below what the largest substitutions wrote.
+            try testing.expect(d.memory() < 1 << 20);
+            return absX(d, elementBox(d, .p, 1));
+        }
+    };
+    // 16 columns of 10px: the second item is in the second one.
+    try testing.expectEqual(@as(f32, 10), try Case.second(f, gpa, "10px", 2, ""));
+    // 4^8 columns are 327 KB of text: the declaration is invalid, the
+    // grid has one column, and the second item is under the first.
+    try testing.expectEqual(@as(f32, 0), try Case.second(f, gpa, "10px", 8, ""));
+    // 4^16 columns would be 21 GB.
+    try testing.expectEqual(@as(f32, 0), try Case.second(f, gpa, "10px", 16, ""));
+    // Uses that write nothing count too: 4^16 empty fallbacks.
+    try testing.expectEqual(@as(f32, 10), try Case.second(f, gpa, "var(--none,)", 2, "10px 10px"));
+    try testing.expectEqual(@as(f32, 0), try Case.second(f, gpa, "var(--none,)", 16, "10px 10px"));
+}
+
+test "table cells that span a thousand rows and columns cost their columns, not their slots" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+    // Sixteen such cells in a row took 76 seconds.
+    {
+        var src: std.ArrayList(u8) = .empty;
+        defer src.deinit(gpa);
+        try src.appendSlice(gpa, "<table><tr>");
+        for (0..16) |_| try src.appendSlice(gpa, "<td rowspan=1000 colspan=1000>x");
+        try src.appendSlice(gpa, "</table>");
+        const d = try f.load(gpa, src.items, .{}, 400);
+        defer d.destroy();
+        try testing.expect(absX(d, elementBox(d, .td, 15)) > absX(d, elementBox(d, .td, 14)));
+        try testing.expectEqual(absY(d, elementBox(d, .td, 0)), absY(d, elementBox(d, .td, 15)));
+    }
+    // And with rows for them to span, a cell in each of 300, each cell
+    // beside the ones from the rows above: 45 million slots.
+    {
+        var src: std.ArrayList(u8) = .empty;
+        defer src.deinit(gpa);
+        try src.appendSlice(gpa, "<table style='border-collapse:collapse'>");
+        for (0..300) |_| try src.appendSlice(gpa, "<tr><td rowspan=1000 colspan=1000>x");
+        try src.appendSlice(gpa, "</table>");
+        const d = try f.load(gpa, src.items, .{}, 400);
+        defer d.destroy();
+        for (1..300) |k| {
+            try testing.expect(absX(d, elementBox(d, .td, k)) > absX(d, elementBox(d, .td, k - 1)));
+        }
+    }
+}
+
+test "collapsed borders against cells that span in from another row or column" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+    const d = try f.load(gpa,
+        \\<style>body { margin: 0 } table { border-collapse: collapse } td { border: 1px solid; padding: 0 } div { width: 50px; height: 10px }</style>
+        \\<table><tr><td rowspan=2 style="border-right-width: 5px"><div></div><td><div></div>
+        \\<tr><td><div></div><tr><td colspan=2 style="border-top-width: 7px"><div></div></table>
+    , .{}, 800);
+    defer d.destroy();
+    try testing.expectEqual(@as(f32, 1 + 50 + 5 + 50 + 1), elementBox(d, .table, 0).w);
+    // The second row's cell has the first row's first cell on its left,
+    // and its 5px border.
+    try testing.expectEqual(@as(f32, 1 + 50 + 5), absX(d, elementBox(d, .div, 1)));
+    try testing.expectEqual(@as(f32, 1 + 50 + 5), absX(d, elementBox(d, .div, 2)));
+    try testing.expectEqual(@as(f32, 1 + 10 + 1), absY(d, elementBox(d, .div, 2)));
+    // And the third row's cell below it, with its 7px border.
+    try testing.expectEqual(@as(f32, 1 + 10 + 1 + 10 + 7), absY(d, elementBox(d, .div, 3)));
+    try testing.expectEqual(@as(f32, 1 + 10 + 1 + 10 + 7 + 10 + 1), elementBox(d, .table, 0).h);
+}
+
+test "grid: lines and spans beyond the limit take the last track" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+    // 1px implicit tracks, so that positions count them.
+    const style = "<style>body { margin: 0 } div { display: grid; grid-auto-columns: 1px; grid-auto-rows: 1px; width: 0 } p { margin: 0 }</style>";
+    {
+        // A line number made that many tracks: 2,000,000 here, and
+        // 1,000,000,000 as readily.
+        const d = try f.load(gpa, style ++ "<div><p style='grid-column: 2000000'>x</p><p style='grid-column: 900 / 2000000'>x</p><p style='grid-column: 3 / span 2000000'>x</p></div>", .{}, 400);
+        defer d.destroy();
+        // Beyond the last line: the last track. Across it: up to it.
+        try testing.expectEqual(@as(f32, 999), absX(d, elementBox(d, .p, 0)));
+        try testing.expectEqual(@as(f32, 899), absX(d, elementBox(d, .p, 1)));
+        try testing.expectEqual(@as(f32, 2), absX(d, elementBox(d, .p, 2)));
+    }
+    {
+        // Before the explicit grid: a thousand tracks, which the item
+        // at line 1 comes after.
+        const d = try f.load(gpa, style ++ "<div><p style='grid-column: -2000000'>x</p><p style='grid-column: 1; grid-row: 1'>x</p></div>", .{}, 400);
+        defer d.destroy();
+        try testing.expectEqual(@as(f32, 0), absX(d, elementBox(d, .p, 0)));
+        try testing.expectEqual(@as(f32, 1000), absX(d, elementBox(d, .p, 1)));
+    }
+    {
+        // Auto placement: each item would start a thousand rows below
+        // the one before, and each row would be a row of the bitmap.
+        var src: std.ArrayList(u8) = .empty;
+        defer src.deinit(gpa);
+        try src.appendSlice(gpa, style ++ "<div>");
+        for (0..200) |_| try src.appendSlice(gpa, "<p style='grid-row: span 600000'>x</p>");
+        const d = try f.load(gpa, src.items, .{}, 400);
+        defer d.destroy();
+        try testing.expectEqual(@as(f32, 0), absY(d, elementBox(d, .p, 0)));
+        try testing.expectEqual(@as(f32, 999), absY(d, elementBox(d, .p, 1)));
+        try testing.expectEqual(@as(f32, 999), absY(d, elementBox(d, .p, 199)));
+        // A template is as long at most: its last track is the 1000th.
+        const t = try f.load(gpa, style ++ "<div style='grid-template-columns: repeat(10000, 1px) repeat(10000, 1px)'><p style='grid-column: -2'>x</p></div>", .{}, 400);
+        defer t.destroy();
+        try testing.expectEqual(@as(f32, 999), absX(t, elementBox(t, .p, 0)));
+    }
+}

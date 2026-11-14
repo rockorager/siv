@@ -7248,6 +7248,42 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     text field's inset border, padding, and background for them, and an
     unchecked one is outlined in the muted text color, not the theme's
     control border, so it stands out from the canvas in dark themes too.
+  - **Limits.** A document may be a stranger's (an email), and a few
+    bytes of one must not ask for unbounded time, memory, or stack. Where
+    the specifications leave a bound to the implementation, these are
+    siv's:
+    - *Depth.* The HTML parser nests elements 512 deep
+      (`html.max_depth`, Blink's number and rule): with more open
+      elements than that, a node goes in beside the current node, not
+      under it. The stack of open elements is not cut short, so end tags
+      still close what they name. The box builder, layout, and painting
+      recurse once per level of the tree and rely on this.
+    - *Selectors.* A failed match says how far it reaches: this element
+      only, it and the siblings before it, or those and its ancestors
+      too. A combinator's loop stops when the elements it has left
+      cannot do better (as in WebKit's and Blink's selector checkers),
+      so a selector that cannot match costs its compounds times the
+      depth, not every way of placing them on the ancestors.
+    - *`var()`.* One substitution reads 64 KiB of text at most, counting
+      the declaration and each variable and fallback as often as it is
+      used, whether or not the use writes anything; over that the
+      declaration is invalid at computed-value time (CSS Variables 1,
+      3.3, which leaves the number open). The bound is per substitution,
+      not per document.
+    - *Tables.* The grid of cells is kept per column (the first row in
+      which it is free again), and collapsed borders find their
+      neighbors in a list per row, so a cell costs its columns, or the
+      rows it covers, and never rows times columns (`rowspan` and
+      `colspan` go to 1000 each).
+    - *Style sheets.* `@media`, `@supports`, and `@layer` blocks nest 32
+      deep; the rules inside deeper ones are dropped.
+    - *Grids.* A thousand tracks on each side of the explicit grid's
+      first line, in the template, by line numbers, by spans, and by
+      auto placement (CSS Grid 5.4: a placement across the limit ends at
+      it, and one beyond it takes the last track). The specification
+      suggests room for ten thousand lines; the cells auto placement
+      marks are a bitmap of rows times columns here, which a thousand
+      keeps to half a megabyte.
   - **Painting.** Into `scene.Builder`, so documents render on the CPU
     and Vulkan renderers and into PDF. Only a band is painted: a canvas
     with `banded` draws the viewport plus a screen above and below, and

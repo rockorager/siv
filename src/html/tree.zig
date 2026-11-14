@@ -14,6 +14,11 @@ const NodeId = Dom.NodeId;
 const Namespace = Dom.Namespace;
 const Error = error{OutOfMemory};
 
+/// The deepest the parser nests elements. With more open elements than
+/// this, a node goes in beside the current node rather than under it (as
+/// Blink does), so the code that walks the tree by recursion has a bound.
+pub const max_depth = 512;
+
 pub const Mode = enum {
     initial,
     before_html,
@@ -346,6 +351,8 @@ pub fn Builder(comptime Tokenizer: type) type {
                         place = .{ .parent = b.open.items[last_table.? - 1], .before = .none };
                     }
                 }
+            } else if (override == .none and b.open.items.len > max_depth and b.nd(target).parent != .none) {
+                place.parent = b.nd(target).parent;
             }
             return place;
         }

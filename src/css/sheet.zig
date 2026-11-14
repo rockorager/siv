@@ -120,7 +120,7 @@ pub fn parse(gpa: Allocator, src_: []const u8, options: Options) Error!Sheet {
     const src = try a.dupe(u8, src_);
     const tokens = try tk.tokenizeInto(a, scratch.allocator(), src);
     var p: Parser = .{ .a = a, .sheet = &sheet, .tokens = tokens, .options = options, .src = src };
-    try p.ruleList(0, tokens.len, none, std.math.maxInt(u16), true);
+    try p.ruleList(0, tokens.len, none, std.math.maxInt(u16), 0);
     sheet.rules = p.rules.items;
     sheet.decls = p.decls.items;
     sheet.customs = p.customs.items;
@@ -176,17 +176,25 @@ const Parser = struct {
         return end;
     }
 
-    fn ruleList(p: *Parser, start: usize, end: usize, media_set: u32, layer: u16, top: bool) Error!void {
+    /// How deep conditional rules and layer blocks nest; the rules inside
+    /// deeper ones are dropped. Each level costs a stack frame, another
+    /// pass over its tokens to find its end, and a media set as long as
+    /// the nesting, so a sheet of nothing but `@media{` would take time
+    /// and memory by the square of its length.
+    const max_nesting = 32;
+
+    /// The rules in `tokens[start..end]`, inside `depth` blocks.
+    fn ruleList(p: *Parser, start: usize, end: usize, media_set: u32, layer: u16, depth: u32) Error!void {
         var i = start;
         while (i < end) {
             const t = p.tokens[i];
             switch (t.kind) {
                 .whitespace, .semicolon => i += 1,
                 .cdo, .cdc => {
-                    if (top) i += 1 else i = try p.qualified(i, end, media_set, layer);
+                    if (depth == 0) i += 1 else i = try p.qualified(i, end, media_set, layer);
                 },
                 .eof => return,
-                .at_keyword => i = try p.atRule(i, end, media_set, layer),
+                .at_keyword => i = try p.atRule(i, end, media_set, layer, depth),
                 else => i = try p.qualified(i, end, media_set, layer),
             }
         }
@@ -326,7 +334,7 @@ const Parser = struct {
         return @intCast(@min(p.layers.items.len - 1, std.math.maxInt(u16) - 1));
     }
 
-    fn atRule(p: *Parser, start: usize, end: usize, media_set: u32, layer: u16) Error!usize {
+    fn atRule(p: *Parser, start: usize, end: usize, media_set: u32, layer: u16, depth: u32) Error!usize {
         const name = p.tokens[start].text;
         var i = start + 1;
         // Prelude up to `{` or `;`.
@@ -342,12 +350,15 @@ const Parser = struct {
         const inner_start = i + 1;
         const inner_end = if (has_block) block_end - 1 else inner_start;
         const eq = std.ascii.eqlIgnoreCase;
+        const nests = depth < max_nesting;
         if (eq(name, "media") and has_block) {
-            const list = try p.mediaList(prelude);
-            try p.ruleList(inner_start, inner_end, try p.withMedia(media_set, list), layer, false);
+            if (nests) {
+                const list = try p.mediaList(prelude);
+                try p.ruleList(inner_start, inner_end, try p.withMedia(media_set, list), layer, depth + 1);
+            }
         } else if (eq(name, "supports") and has_block) {
             var c: Cond = .{ .p = p, .t = prelude };
-            if (c.condition()) try p.ruleList(inner_start, inner_end, media_set, layer, false);
+            if (nests and c.condition()) try p.ruleList(inner_start, inner_end, media_set, layer, depth + 1);
         } else if (eq(name, "layer")) {
             var lname: std.ArrayList(u8) = .empty;
             var names_done = false;
@@ -366,7 +377,7 @@ const Parser = struct {
                     p.anon_layers += 1;
                     break :blk try p.layerOrder(try std.fmt.allocPrint(p.a, "\x00anon{d}", .{p.anon_layers}));
                 } else try p.layerOrder(lname.items);
-                try p.ruleList(inner_start, inner_end, media_set, order, false);
+                if (nests) try p.ruleList(inner_start, inner_end, media_set, order, depth + 1);
             } else if (lname.items.len > 0) _ = try p.layerOrder(lname.items);
         } else if (eq(name, "import") and !has_block) {
             var j: usize = 0;
@@ -651,4 +662,29 @@ test "stylesheet" {
     try std.testing.expectEqual(@as(u16, 0), s.rules[5].layer);
     // nav keeps its own declaration, not the nested rule's.
     try std.testing.expectEqual(@as(usize, 1), s.ruleDecls(s.rules[7]).len);
+}
+
+test "conditional rules nest to a limit, and deeper ones are dropped" {
+    const gpa = std.testing.allocator;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(gpa);
+    // The deepest rule that is kept: all of its conditions apply.
+    for (0..Parser.max_nesting / 2) |_| try src.appendSlice(gpa, "@media screen{@supports (color:red){");
+    try src.appendSlice(gpa, "p{color:red}@layer{b{color:red}}@media{i{color:red}}@supports (color:red){u{color:red}}");
+    {
+        var s = try parse(gpa, src.items, .{});
+        defer s.deinit();
+        try std.testing.expectEqual(@as(usize, 1), s.rules.len);
+        try std.testing.expectEqual(@as(usize, Parser.max_nesting / 2), s.media_sets[s.rules[0].media].len);
+    }
+    // A sheet of nothing but openings: its memory was the square of
+    // its length (370 MB for these 112 KB).
+    src.clearRetainingCapacity();
+    for (0..16_000) |_| try src.appendSlice(gpa, "@media{");
+    try src.appendSlice(gpa, "p{color:red}");
+    var s = try parse(gpa, src.items, .{});
+    defer s.deinit();
+    try std.testing.expectEqual(@as(usize, 0), s.rules.len);
+    try std.testing.expectEqual(@as(usize, Parser.max_nesting), s.media_sets.len);
+    try std.testing.expectEqual(@as(usize, Parser.max_nesting), s.media_sets[s.media_sets.len - 1].len);
 }

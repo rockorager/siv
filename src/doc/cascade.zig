@@ -711,33 +711,59 @@ pub const Cascade = struct {
     }
 
     pub fn matchComplex(c: *Cascade, src: *const Source, s: sel.Selector, id: NodeId) bool {
-        return c.matchFrom(src, src.sheet.store.compoundsOf(s), 0, id);
+        return c.matchFrom(src, src.sheet.store.compoundsOf(s), 0, id) == .matches;
     }
 
+    /// How far a failure reaches, so that a combinator's loop stops when
+    /// the elements it has left cannot do better (as Blink's selector
+    /// checker does). Without it a selector that fails at its left end
+    /// tries every way of placing its compounds on the ancestors, which
+    /// is exponential in the number of descendant combinators.
+    const Match = enum {
+        matches,
+        /// This element fails; another may match.
+        fails,
+        /// So does every sibling before it: the rest looked at all the
+        /// siblings before some element, in vain.
+        fails_siblings,
+        /// So does every sibling before it and every ancestor: the rest
+        /// looked at all the ancestors of some element, in vain.
+        fails_ancestors,
+    };
+
     /// Matches compounds[k..] with compounds[k] at `id`.
-    fn matchFrom(c: *Cascade, src: *const Source, compounds: []const sel.Compound, k: usize, id: NodeId) bool {
-        if (!c.matchCompound(src, compounds[k], id)) return false;
-        if (k + 1 == compounds.len) return true;
+    fn matchFrom(c: *Cascade, src: *const Source, compounds: []const sel.Compound, k: usize, id: NodeId) Match {
+        if (!c.matchCompound(src, compounds[k], id)) return .fails;
+        if (k + 1 == compounds.len) return .matches;
         switch (compounds[k].combinator) {
             .child => {
                 const p = c.parentElement(id);
-                return p != .none and c.matchFrom(src, compounds, k + 1, p);
+                return if (p == .none) .fails_ancestors else c.matchFrom(src, compounds, k + 1, p);
             },
             .descendant => {
                 var p = c.parentElement(id);
-                while (p != .none) : (p = c.parentElement(p)) if (c.matchFrom(src, compounds, k + 1, p)) return true;
-                return false;
+                while (p != .none) : (p = c.parentElement(p)) switch (c.matchFrom(src, compounds, k + 1, p)) {
+                    .matches => return .matches,
+                    .fails_ancestors => break,
+                    .fails, .fails_siblings => {},
+                };
+                return .fails_ancestors;
             },
             .next_sibling => {
                 const p = c.prevElement(id);
-                return p != .none and c.matchFrom(src, compounds, k + 1, p);
+                return if (p == .none) .fails_siblings else c.matchFrom(src, compounds, k + 1, p);
             },
             .subsequent_sibling => {
                 var p = c.prevElement(id);
-                while (p != .none) : (p = c.prevElement(p)) if (c.matchFrom(src, compounds, k + 1, p)) return true;
-                return false;
+                while (p != .none) : (p = c.prevElement(p)) switch (c.matchFrom(src, compounds, k + 1, p)) {
+                    .matches => return .matches,
+                    .fails_ancestors => return .fails_ancestors,
+                    .fails_siblings => break,
+                    .fails => {},
+                };
+                return .fails_siblings;
             },
-            .none => return true,
+            .none => return .matches,
         }
     }
 
@@ -1116,7 +1142,9 @@ pub const Cascade = struct {
         const key: [2]usize = .{ @intFromPtr(u) ^ (@as(usize, @intFromEnum(id)) << 56), @intFromPtr(custom) };
         if (c.substituted.get(key)) |v| return v;
         var out: std.ArrayList(u8) = .empty;
-        const ok = try c.expand(u.text, custom, &out, 0);
+        defer out.deinit(c.gpa);
+        var budget: usize = max_substitution;
+        const ok = try c.expand(u.text, custom, &out, 0, &budget);
         var result: ?props.Value = null;
         if (ok) {
             var decls: std.ArrayList(props.Declaration) = .empty;
@@ -1131,16 +1159,24 @@ pub const Cascade = struct {
                 result = dd.value;
             };
         }
-        out.deinit(c.gpa);
         try c.substituted.put(c.gpa, key, result);
         return result;
     }
 
+    /// The text one substitution may read, over the declaration and every
+    /// variable and fallback it goes through, each counted as often as
+    /// it is used. Variables that each use another several times
+    /// multiply: 4^16 uses from a few hundred bytes, whether or not they
+    /// write anything (an empty fallback does not).
+    const max_substitution = 64 * 1024;
+
     /// Writes `text` with var(--x[, fallback]) replaced; false when a
-    /// variable is missing without a fallback (the declaration is then
-    /// invalid at computed-value time).
-    fn expand(c: *Cascade, text: []const u8, custom: ?*const css.style.Custom, out: *std.ArrayList(u8), depth: u32) Error!bool {
+    /// variable is missing without a fallback or `budget` runs out (the
+    /// declaration is then invalid at computed-value time).
+    fn expand(c: *Cascade, text: []const u8, custom: ?*const css.style.Custom, out: *std.ArrayList(u8), depth: u32, budget: *usize) Error!bool {
         if (depth > 16) return false;
+        if (text.len >= budget.*) return false;
+        budget.* -= text.len + 1;
         var i: usize = 0;
         while (i < text.len) {
             const k = std.ascii.findIgnoreCasePos(text, i, "var(") orelse {
@@ -1186,14 +1222,14 @@ pub const Cascade = struct {
             if (value) |v| {
                 if (v.len == 0 or std.mem.eql(u8, std.mem.trim(u8, v, " "), "initial")) {
                     if (comma) |x| {
-                        if (!try c.expand(inner[x + 1 ..], custom, out, depth + 1)) return false;
+                        if (!try c.expand(inner[x + 1 ..], custom, out, depth + 1, budget)) return false;
                         continue;
                     }
                     return false;
                 }
-                if (!try c.expand(v, custom, out, depth + 1)) return false;
+                if (!try c.expand(v, custom, out, depth + 1, budget)) return false;
             } else if (comma) |x| {
-                if (!try c.expand(inner[x + 1 ..], custom, out, depth + 1)) return false;
+                if (!try c.expand(inner[x + 1 ..], custom, out, depth + 1, budget)) return false;
             } else return false;
         }
         return true;
