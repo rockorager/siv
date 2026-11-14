@@ -71,6 +71,64 @@ test "GFM tables, task lists, strikethrough, autolinks" {
     try expectHtml("mail foo.bar@example.com now\n", "<p>mail <a href=\"mailto:foo.bar@example.com\">foo.bar@example.com</a> now</p>\n");
 }
 
+fn count(haystack: []const u8, needle: []const u8) usize {
+    return std.mem.count(u8, haystack, needle);
+}
+
+/// `unit` repeated `n` times.
+fn repeated(gpa: std.mem.Allocator, unit: []const u8, n: usize) ![]u8 {
+    const out = try gpa.alloc(u8, unit.len * n);
+    for (0..n) |i| @memcpy(out[i * unit.len ..][0..unit.len], unit);
+    return out;
+}
+
+test "inlines that find no match cost their length, not its square" {
+    const gpa = testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const n = 40_000;
+    // Each of these was read again, to its end or back to its start, for
+    // every piece of it. What they render as stays as it was.
+    const Case = struct { src: []const u8, want: ?[]const u8 = null, has: []const u8 = "", times: usize = 0 };
+    var ticks: std.ArrayList(u8) = .empty;
+    for (1..2000) |i| {
+        try ticks.append(a, 'x');
+        try ticks.appendNTimes(a, '`', i);
+    }
+    const brackets = try std.mem.concat(a, u8, &.{ try repeated(a, "[", n), "a", try repeated(a, "]", n) });
+    const closers = try repeated(a, "a]", 5 * n);
+    const parens = try repeated(a, ")", n);
+    const cases = [_]Case{
+        // Code spans opened with runs of every length, none closed.
+        .{ .src = ticks.items, .want = try std.mem.concat(a, u8, &.{ "<p>", ticks.items, "</p>\n" }) },
+        // Brackets in brackets that are no link: each was looked up as
+        // a reference, with everything inside it as the label.
+        .{ .src = brackets, .want = try std.mem.concat(a, u8, &.{ "<p>", brackets, "</p>\n" }) },
+        // Text in many pieces, joined by copying all of it again.
+        .{ .src = closers, .want = try std.mem.concat(a, u8, &.{ "<p>", closers, "</p>\n" }) },
+        // Comments that never end.
+        .{ .src = try std.mem.concat(a, u8, &.{ "a", try repeated(a, "<!--", n) }), .has = "&lt;!--", .times = n },
+        // Emphasis closers whose openers are of the other character.
+        .{ .src = try repeated(a, "*a_ ", n), .has = "<em>", .times = 0 },
+        // Emphasis that closes, across the delimiters used before it.
+        .{ .src = try std.mem.concat(a, u8, &.{ try repeated(a, "*a* ", n), try repeated(a, "_b_ ", n) }), .has = "<em>", .times = 2 * n },
+        // Links inside image brackets that stay open.
+        .{ .src = try repeated(a, "![[]()", n), .has = "<a href=\"\"></a>", .times = n },
+        // Links after link brackets that stay open.
+        .{ .src = try std.mem.concat(a, u8, &.{ try repeated(a, "[", n), try repeated(a, "[a](b) ", n) }), .has = "<a href=\"b\">a</a>", .times = n },
+        // An autolink that ends in parentheses it does not own.
+        .{ .src = try std.mem.concat(a, u8, &.{ "www.a.b", parens }), .want = try std.mem.concat(a, u8, &.{ "<p><a href=\"http://www.a.b\">www.a.b</a>", parens, "</p>\n" }) },
+    };
+    for (cases) |case| {
+        const out = try md.toHtml(gpa, case.src, .{});
+        defer gpa.free(out);
+        if (case.want) |want| {
+            try testing.expect(std.mem.eql(u8, want, out));
+        } else try testing.expectEqual(case.times, count(out, case.has));
+    }
+}
+
 test "fuzz the parser" {
     try testing.fuzz({}, fuzzParse, .{ .corpus = &.{
         "# Title\n\n> quote *em* **strong** `code`\n\n- a\n  - b\n1. c\n\n```zig\nconst x = 1;\n```\n",

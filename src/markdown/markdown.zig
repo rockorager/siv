@@ -127,7 +127,12 @@ const Node = struct {
     next: u32 = none,
     prev: u32 = none,
     open: bool = true,
-    /// Raw content: paragraph and heading text, code and HTML lines.
+    /// A text node that is a delimiter run or a bracket still on the
+    /// inline parser's stacks: text after it is not joined to it.
+    marker: bool = false,
+    /// Raw content: paragraph and heading text, code and HTML lines. Of
+    /// a text node, the buffer its literal is in once text was joined to
+    /// it that did not follow it in the source.
     content: std.ArrayList(u8) = .empty,
     literal: []const u8 = "",
     // Lists and items.
@@ -1286,6 +1291,11 @@ const Delim = struct {
     can_open: bool,
     can_close: bool,
     active: bool = true,
+    /// The delimiters before and after it that emphasis has not used up
+    /// or passed over, while it is processed (indexes; `none` at the
+    /// ends).
+    prev: usize = none,
+    next: usize = none,
 };
 
 const Bracket = struct {
@@ -1295,7 +1305,11 @@ const Bracket = struct {
     /// Delimiters below this index were before the bracket.
     delim_base: usize,
     pos: usize,
+    /// A bracket was opened after this one, inside it.
     bracket_after: bool = false,
+    /// The nearest link opener (not an image's) below this one on the
+    /// stack, or `none`.
+    link_below: usize = none,
 };
 
 const InlineParser = struct {
@@ -1305,25 +1319,40 @@ const InlineParser = struct {
     block: u32,
     delims: std.ArrayList(Delim) = .empty,
     brackets: std.ArrayList(Bracket) = .empty,
+    /// The topmost link opener on the bracket stack, or `none`.
+    top_link: usize = none,
+    /// Where the last run of each length of backticks starts, once a
+    /// code span was looked for.
+    ticks: ?std.AutoHashMapUnmanaged(usize, usize) = null,
+    /// No `-->`, `?>`, `]]>`, or `>` (of a declaration) was found from
+    /// some point on: there is none after it either.
+    no_end: [4]bool = @splat(false),
 
     fn text(ip: *InlineParser, t: []const u8) Error!void {
         if (t.len == 0) return;
         const p = ip.p;
         const last = p.n(ip.block).last;
-        if (last != none and p.n(last).kind == .text and !ip.isDelimNode(last)) {
-            const lit = p.n(last).literal;
-            // Join adjacent text.
-            p.n(last).literal = try std.mem.concat(p.a, u8, &.{ lit, t });
+        if (last != none and p.n(last).kind == .text and !p.n(last).marker) {
+            // Join adjacent text, without copying what is there again
+            // for every piece: text that follows it in the source
+            // lengthens the slice, other text goes to a buffer that
+            // grows.
+            const x = p.n(last);
+            const lit = x.literal;
+            if (lit.ptr + lit.len == t.ptr) {
+                x.literal = lit.ptr[0 .. lit.len + t.len];
+                return;
+            }
+            if (x.content.items.len != lit.len or x.content.items.ptr != lit.ptr) {
+                x.content = .empty;
+                try x.content.appendSlice(p.a, lit);
+            }
+            try x.content.appendSlice(p.a, t);
+            x.literal = x.content.items;
             return;
         }
         const id = try ip.node(.text);
         p.n(id).literal = t;
-    }
-
-    fn isDelimNode(ip: *const InlineParser, id: u32) bool {
-        for (ip.delims.items) |d| if (d.node == id) return true;
-        for (ip.brackets.items) |b| if (b.node == id) return true;
-        return false;
     }
 
     fn node(ip: *InlineParser, kind: Kind) Error!u32 {
@@ -1440,7 +1469,7 @@ const InlineParser = struct {
                     ip.p.n(id).literal = s[ip.i + 1 .. ip.i + 2];
                     ip.i += 2;
                 } else {
-                    try ip.text("\\");
+                    try ip.text(s[ip.i .. ip.i + 1]);
                     ip.i += 1;
                 }
             },
@@ -1448,8 +1477,19 @@ const InlineParser = struct {
                 var k = ip.i;
                 while (k < s.len and s[k] == '`') k += 1;
                 const n = k - ip.i;
-                // The closing run of the same length.
-                var j = k;
+                // The closing run of the same length: none unless a run
+                // of that length starts after this one. Runs of many
+                // lengths would each be looked for to the end.
+                if (ip.ticks == null) {
+                    ip.ticks = .empty;
+                    var j = ip.i;
+                    while (std.mem.indexOfScalarPos(u8, s, j, '`')) |start| {
+                        j = start;
+                        while (j < s.len and s[j] == '`') j += 1;
+                        try ip.ticks.?.put(ip.p.a, j - start, start);
+                    }
+                }
+                var j = if ((ip.ticks.?.get(n) orelse 0) >= k) k else s.len;
                 while (j < s.len) {
                     if (s[j] != '`') {
                         j += 1;
@@ -1475,20 +1515,12 @@ const InlineParser = struct {
                 ip.i = k;
             },
             '*', '_', '~' => try ip.delimiterRun(c),
-            '[' => {
-                const id = try ip.node(.text);
-                ip.p.n(id).literal = "[";
-                try ip.brackets.append(ip.p.a, .{ .node = id, .image = false, .delim_base = ip.delims.items.len, .pos = ip.i + 1 });
-                ip.i += 1;
-            },
+            '[' => try ip.pushBracket(false, 1),
             '!' => {
                 if (ip.i + 1 < s.len and s[ip.i + 1] == '[') {
-                    const id = try ip.node(.text);
-                    ip.p.n(id).literal = "![";
-                    try ip.brackets.append(ip.p.a, .{ .node = id, .image = true, .delim_base = ip.delims.items.len, .pos = ip.i + 2 });
-                    ip.i += 2;
+                    try ip.pushBracket(true, 2);
                 } else {
-                    try ip.text("!");
+                    try ip.text(s[ip.i .. ip.i + 1]);
                     ip.i += 1;
                 }
             },
@@ -1502,12 +1534,12 @@ const InlineParser = struct {
                     try ip.p.nodes.append(ip.p.a, .{ .kind = .text, .open = false, .literal = dest });
                     ip.p.appendChild(id, t);
                     ip.i += al.len;
-                } else if (htmlTag(s[ip.i..])) |len| {
+                } else if (ip.htmlTagHere()) |len| {
                     const id = try ip.node(.html_inline);
                     ip.p.n(id).literal = s[ip.i .. ip.i + len];
                     ip.i += len;
                 } else {
-                    try ip.text("<");
+                    try ip.text(s[ip.i .. ip.i + 1]);
                     ip.i += 1;
                 }
             },
@@ -1520,7 +1552,7 @@ const InlineParser = struct {
                     ip.p.n(id).literal = buf.items;
                     ip.i += e.len;
                 } else {
-                    try ip.text("&");
+                    try ip.text(s[ip.i .. ip.i + 1]);
                     ip.i += 1;
                 }
             },
@@ -1555,21 +1587,23 @@ const InlineParser = struct {
         }
         const id = try ip.node(.text);
         ip.p.n(id).literal = s[ip.i..k];
+        ip.p.n(id).marker = true;
         try ip.delims.append(ip.p.a, .{ .node = id, .char = c, .count = count, .orig = count, .can_open = can_open, .can_close = can_close });
         ip.i = k;
     }
 
     fn closeBracket(ip: *InlineParser) Error!void {
         const s = ip.s;
+        const close = s[ip.i .. ip.i + 1];
         ip.i += 1;
         if (ip.brackets.items.len == 0) {
-            try ip.text("]");
+            try ip.text(close);
             return;
         }
         const opener = ip.brackets.items[ip.brackets.items.len - 1];
         if (!opener.active) {
-            _ = ip.brackets.pop();
-            try ip.text("]");
+            ip.popBracket();
+            try ip.text(close);
             return;
         }
         var dest: []const u8 = "";
@@ -1607,19 +1641,25 @@ const InlineParser = struct {
             } else if (after + 1 < s.len and s[after] == '[' and s[after + 1] == ']') {
                 label_end = after + 2;
             }
-            if (label.len == 0) label = s[opener.pos .. after - 1];
-            const norm = try normalizeLabel(ip.p.a, label);
-            if (ip.p.refs.get(norm)) |r| {
-                dest = r.dest;
-                title = r.title;
-                matched = true;
-                ip.i = label_end;
+            // The link's text as the label, unless a bracket follows the
+            // opener: a label has none, and looking up the text of
+            // every bracket around brackets reads it once per level.
+            if (label.len == 0 and !opener.bracket_after) label = s[opener.pos .. after - 1];
+            // No definition has a label of a thousand characters.
+            if (label.len > 0 and label.len < 1000) {
+                const norm = try normalizeLabel(ip.p.a, label);
+                if (ip.p.refs.get(norm)) |r| {
+                    dest = r.dest;
+                    title = r.title;
+                    matched = true;
+                    ip.i = label_end;
+                }
             }
         }
         if (!matched) {
-            _ = ip.brackets.pop();
+            ip.popBracket();
             ip.i = after;
-            try ip.text("]");
+            try ip.text(close);
             return;
         }
         // Make the link: everything after the opener becomes its content.
@@ -1635,31 +1675,84 @@ const InlineParser = struct {
         }
         p.insertAfter(opener.node, link);
         // Emphasis inside the link.
-        try ip.processEmphasisIn(opener.delim_base);
+        try ip.processEmphasis(opener.delim_base);
         p.unlink(opener.node);
-        _ = ip.brackets.pop();
-        // No links in links: deactivate earlier link openers.
-        if (!opener.image) for (ip.brackets.items) |*b| {
-            if (!b.image) b.active = false;
-        };
+        ip.popBracket();
+        // No links in links: deactivate earlier link openers. Those
+        // before an inactive one are inactive already.
+        if (!opener.image) {
+            var k = ip.top_link;
+            while (k != none) : (k = ip.brackets.items[k].link_below) {
+                const b = &ip.brackets.items[k];
+                if (!b.active) break;
+                b.active = false;
+            }
+        }
     }
 
-    fn processEmphasisIn(ip: *InlineParser, base: usize) Error!void {
-        try ip.processEmphasis(base);
+    /// An HTML tag at `ip.i`, as htmlTag finds it, without looking for
+    /// the end of a comment, instruction, declaration, or CDATA section
+    /// again where none was found before.
+    fn htmlTagHere(ip: *InlineParser) ?usize {
+        const rest = ip.s[ip.i..];
+        const kind: ?usize = if (std.mem.startsWith(u8, rest, "<!-->") or std.mem.startsWith(u8, rest, "<!--->"))
+            null
+        else if (std.mem.startsWith(u8, rest, "<!--"))
+            0
+        else if (std.mem.startsWith(u8, rest, "<?"))
+            1
+        else if (std.mem.startsWith(u8, rest, "<![CDATA["))
+            2
+        else if (rest.len > 2 and rest[1] == '!' and std.ascii.isAlphabetic(rest[2]))
+            3
+        else
+            null;
+        if (kind) |k| if (ip.no_end[k]) return null;
+        const len = htmlTag(rest);
+        if (len == null) if (kind) |k| {
+            ip.no_end[k] = true;
+        };
+        return len;
+    }
+
+    /// Takes the last bracket off the stack; its node is text like any
+    /// other from here.
+    fn popBracket(ip: *InlineParser) void {
+        const b = ip.brackets.pop().?;
+        ip.p.n(b.node).marker = false;
+        if (!b.image) ip.top_link = b.link_below;
+    }
+
+    fn pushBracket(ip: *InlineParser, image: bool, len: usize) Error!void {
+        const id = try ip.node(.text);
+        ip.p.n(id).literal = ip.s[ip.i .. ip.i + len];
+        ip.p.n(id).marker = true;
+        if (ip.brackets.items.len > 0) ip.brackets.items[ip.brackets.items.len - 1].bracket_after = true;
+        try ip.brackets.append(ip.p.a, .{ .node = id, .image = image, .delim_base = ip.delims.items.len, .pos = ip.i + len, .link_below = ip.top_link });
+        if (!image) ip.top_link = ip.brackets.items.len - 1;
+        ip.i += len;
     }
 
     /// CommonMark's "process emphasis" over delimiters from `base` on.
+    /// Delimiters that are used up or passed over leave a list of the
+    /// rest, so a closer looks for its opener among those that can still
+    /// open, not across every delimiter there was.
     fn processEmphasis(ip: *InlineParser, base: usize) Error!void {
         const p = ip.p;
+        const ds = ip.delims.items;
         var openers_bottom: [3][3][2]usize = undefined;
         for (&openers_bottom) |*x| for (x) |*y| {
             y.* = .{ base, base };
         };
-        var closer = base;
-        while (closer < ip.delims.items.len) {
-            const cd = ip.delims.items[closer];
-            if (!cd.can_close or cd.count == 0) {
-                closer += 1;
+        for (ds[base..], base..) |*d, i| {
+            d.prev = if (i == base) none else i - 1;
+            d.next = if (i + 1 == ds.len) none else i + 1;
+        }
+        var closer: usize = if (base < ds.len) base else none;
+        while (closer != none) {
+            const cd = ds[closer];
+            if (!cd.can_close) {
+                closer = cd.next;
                 continue;
             }
             const ci: usize = switch (cd.char) {
@@ -1669,11 +1762,10 @@ const InlineParser = struct {
             };
             const bottom = openers_bottom[ci][cd.orig % 3][@intFromBool(cd.can_open)];
             var opener_found: ?usize = null;
-            var k = closer;
-            while (k > bottom) {
-                k -= 1;
-                const od = ip.delims.items[k];
-                if (od.char != cd.char or !od.can_open or od.count == 0) continue;
+            var k = cd.prev;
+            while (k != none and k >= bottom) : (k = ds[k].prev) {
+                const od = ds[k];
+                if (od.char != cd.char or !od.can_open) continue;
                 if (cd.char == '~') {
                     if (od.count != cd.count) continue;
                 } else if ((od.can_close or cd.can_open) and (od.orig + cd.orig) % 3 == 0 and !(od.orig % 3 == 0 and cd.orig % 3 == 0)) continue;
@@ -1681,8 +1773,8 @@ const InlineParser = struct {
                 break;
             }
             if (opener_found) |oi| {
-                const od = &ip.delims.items[oi];
-                const cdp = &ip.delims.items[closer];
+                const od = &ds[oi];
+                const cdp = &ds[closer];
                 const use: usize = if (cd.char == '~') od.count else if (od.count >= 2 and cdp.count >= 2) 2 else 1;
                 od.count -= use;
                 cdp.count -= use;
@@ -1700,20 +1792,36 @@ const InlineParser = struct {
                 }
                 p.insertAfter(od.node, em);
                 // Delimiters between them are gone.
-                var j = oi + 1;
-                while (j < closer) : (j += 1) ip.delims.items[j].count = 0;
-                if (od.count == 0) p.unlink(od.node);
+                od.next = closer;
+                cdp.prev = oi;
+                if (od.count == 0) {
+                    p.unlink(od.node);
+                    ip.dropDelim(oi);
+                }
                 if (cdp.count == 0) {
                     p.unlink(cdp.node);
-                    closer += 1;
+                    const next = cdp.next;
+                    ip.dropDelim(closer);
+                    closer = next;
                 }
             } else {
                 openers_bottom[ci][cd.orig % 3][@intFromBool(cd.can_open)] = closer;
-                if (!cd.can_open) ip.delims.items[closer].count = ip.delims.items[closer].count; // stays text
-                closer += 1;
+                // One that cannot open either is text from here.
+                const next = cd.next;
+                if (!cd.can_open) ip.dropDelim(closer);
+                closer = next;
             }
         }
+        for (ds[base..]) |d| p.n(d.node).marker = false;
         ip.delims.shrinkRetainingCapacity(base);
+    }
+
+    /// Takes a delimiter out of the list processEmphasis walks.
+    fn dropDelim(ip: *InlineParser, i: usize) void {
+        const ds = ip.delims.items;
+        const d = ds[i];
+        if (d.prev != none) ds[d.prev].next = d.next;
+        if (d.next != none) ds[d.next].prev = d.prev;
     }
 
     fn extendedAutolink(ip: *InlineParser) Error!void {
@@ -1760,6 +1868,12 @@ const InlineParser = struct {
         // Path: up to white space or '<'.
         while (k < rest.len and !isWs(rest[k]) and rest[k] != '<') k += 1;
         var end = k;
+        var open: usize = 0;
+        var close: usize = 0;
+        for (rest[0..end]) |x| {
+            if (x == '(') open += 1;
+            if (x == ')') close += 1;
+        }
         // Trailing punctuation is not part of it.
         while (end > 0) {
             const ch = rest[end - 1];
@@ -1768,14 +1882,10 @@ const InlineParser = struct {
                 continue;
             }
             if (ch == ')') {
-                var open: usize = 0;
-                var close: usize = 0;
-                for (rest[0..end]) |x| {
-                    if (x == '(') open += 1;
-                    if (x == ')') close += 1;
-                }
+                // More closing than opening in what is left of it.
                 if (close > open) {
                     end -= 1;
+                    close -= 1;
                     continue;
                 }
             }

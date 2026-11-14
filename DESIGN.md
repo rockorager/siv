@@ -7297,6 +7297,20 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       suggests room for ten thousand lines; the cells auto placement
       marks are a bitmap of rows times columns here, which a thousand
       keeps to half a megabyte.
+    - *Markdown.* A paragraph's inlines cost its length, with no limit
+      of siv's own on what Markdown says: text pieces join without
+      being copied again for each (a slice that grows over the source,
+      or a buffer), "process emphasis" keeps a list of the delimiters
+      still usable and takes out those used up or passed over, a code
+      span is looked for only when a later run of backticks has its
+      opener's length, a comment, instruction, declaration, or CDATA
+      section that did not end is not looked for again, a bracket with
+      brackets inside it or more than 999 characters is not looked up
+      as a reference (no label is either), and a link deactivates the
+      link openers before it down to the first inactive one. cmark
+      has the same answers for brackets (`bracket_after`), unclosed
+      HTML (`FLAG_SKIP_HTML_*`), and backticks (a table of runs up to
+      1,000 long; here a map, with no longest run).
   - **Painting.** Into `scene.Builder`, so documents render on the CPU
     and Vulkan renderers and into PDF. Only a band is painted: a canvas
     with `banded` draws the viewport plus a screen above and below, and
