@@ -1204,7 +1204,8 @@ fn checkMode(d: *const Dictionary, word_in: []const u8, mode: Mode, depth: u32) 
     const ct = case.captype(base);
     if (d.checkCased(base, ct, mode)) return true;
     if (base.len < word.len) {
-        var dot_buf: [max_word + 1]u8 = undefined;
+        // ICONV may have lengthened the word to what `conv_buf` holds.
+        var dot_buf: [max_word * 2]u8 = undefined;
         @memcpy(dot_buf[0..base.len], base);
         dot_buf[base.len] = '.';
         if (d.checkCased(dot_buf[0 .. base.len + 1], ct, mode)) return true;
@@ -1260,7 +1261,7 @@ fn checkCased(d: *const Dictionary, word: []const u8, ct: case.Captype, mode: Mo
                 if (d.checkWord(both, m)[0] == .yes) return true;
             };
             if (d.opts.check_sharps and std.mem.indexOf(u8, lower, "ss") != null) {
-                if (d.sharps(lower, 0, false, m)) return true;
+                if (d.sharps(lower, 0, 0, false, m)) return true;
             }
             const capital = case.convertBuf(&buf2, lower, .capitalize) orelse return false;
             const c = d.checkWord(capital, m);
@@ -1272,10 +1273,16 @@ fn checkCased(d: *const Dictionary, word: []const u8, ct: case.Captype, mode: Mo
     }
 }
 
+/// The "ss" of a word that CHECKSHARPS tries as ß (Hunspell's
+/// MAXSHARPS): each doubles the spellings to look up.
+const max_sharps = 5;
+
 /// CHECKSHARPS: "STRASSE" is "Straße" in capitals, so each "ss" of the
-/// lowered word may stand for ß (KEEPCASE words included).
-fn sharps(d: *const Dictionary, word: []const u8, from: usize, changed: bool, mode: Mode) bool {
-    const i = std.mem.indexOfPos(u8, word, from, "ss") orelse {
+/// lowered word may stand for ß (KEEPCASE words included), for the
+/// first `max_sharps` of them; `tried` counts those before `from`.
+fn sharps(d: *const Dictionary, word: []const u8, from: usize, tried: u32, changed: bool, mode: Mode) bool {
+    const next = if (tried < max_sharps) std.mem.indexOfPos(u8, word, from, "ss") else null;
+    const i = next orelse {
         if (!changed) return false;
         if (d.checkWord(word, mode)[0] == .yes) return true;
         var buf: [max_word * 2]u8 = undefined;
@@ -1288,8 +1295,8 @@ fn sharps(d: *const Dictionary, word: []const u8, from: usize, changed: bool, mo
     @memcpy(buf[0..word.len], word);
     buf[i] = 0xc3;
     buf[i + 1] = 0x9f;
-    if (d.sharps(buf[0..word.len], i + 2, true, mode)) return true;
-    return d.sharps(word, i + 2, changed, mode);
+    if (d.sharps(buf[0..word.len], i + 2, tried + 1, true, mode)) return true;
+    return d.sharps(word, i + 2, tried + 1, changed, mode);
 }
 
 /// Whether a dictionary entry spelled `word` exists (any homonym).

@@ -281,3 +281,44 @@ test "words beyond the dictionary: personal lists and parse failures" {
     defer gpa.free(s);
     try testing.expectEqual(@as(usize, 0), s.len);
 }
+
+test "CHECKSHARPS tries the first five ss of a word, as Hunspell does" {
+    const aff =
+        \\SET UTF-8
+        \\CHECKSHARPS
+    ;
+    const dic =
+        \\2
+        \\Maßmaßmaßmaßmaß
+        \\Maßmaßmaßmaßmaßmaß
+    ;
+    var d = try Dictionary.parse(gpa, aff, dic);
+    defer d.deinit();
+    // Hunspell's MAXSHARPS: every way of writing the first five as ß or
+    // ss, 32 words, and the rest as they are. Without a limit a word of
+    // thirty costs a thousand million lookups.
+    const capitals: [200]u8 = @splat('S');
+    try expectWords(&d, &.{ "MASSMASSMASSMASSMASS", "Maßmaßmaßmaßmaßmaß" }, &.{
+        "MASSMASSMASSMASSMASSMASS",
+        capitals[0..60],
+        &capitals,
+    });
+}
+
+test "a word that ICONV lengthens keeps its abbreviation dot in bounds" {
+    const aff =
+        \\SET UTF-8
+        \\ICONV 1
+        \\ICONV a aa
+    ;
+    const dic =
+        \\1
+        \\aaaa
+    ;
+    var d = try Dictionary.parse(gpa, aff, dic);
+    defer d.deinit();
+    // 150 letters become 300, more than the longest word.
+    const long = @as([150]u8, @splat('a')) ++ ".";
+    const longest = @as([199]u8, @splat('a')) ++ ".";
+    try expectWords(&d, &.{ "aa", "aa." }, &.{ long[0..150], long, longest });
+}
