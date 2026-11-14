@@ -466,6 +466,26 @@ test "rich text: Vim's keys" {
     try expectOutline(node, "normal:strong(hello) world xoo");
 }
 
+test "rich text: Vim's visual selection stays inside a text that an undo shortened" {
+    var h: Harness = .{};
+    try h.start(480, 300, null, null);
+    defer h.stop();
+    var log: Log = .{};
+    const node = try build(&h, .{ .flags = .{ .vim = true } }, &log);
+    try typeText(&h, "iabc");
+    try press(&h, ks.escape, .{});
+    try typeText(&h, "A defghij");
+    try press(&h, ks.escape, .{});
+    // The selection is the j, eight bytes past what the undo leaves.
+    try typeText(&h, "v");
+    try press(&h, 'z', .{ .ctrl = true });
+    try expectOutline(node, "normal:abc");
+    try testing.expectEqual(t.RichTextMode.visual, (try state(node)).mode);
+    // It is on the last character now: h extends it to "bc".
+    try typeText(&h, "hd");
+    try expectOutline(node, "normal:a");
+}
+
 test "rich text: Vim's lines end at soft line breaks inside a block" {
     var h: Harness = .{};
     try h.start(480, 300, null, null);

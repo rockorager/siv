@@ -612,12 +612,14 @@ pub const Vim = struct {
             if (tok) |t| v.cmdlineKey(st, if (esc) Tok.of("<Esc>").? else t);
             return true;
         }
+        v.bound(st);
         if (ev.modifiers.ctrl) {
             const own = if (tok) |t| t.is("<C-r>") or t.is("<C-d>") or t.is("<C-u>") or esc else false;
             if (!own) {
                 // Formatting keys work on the visual selection; others
                 // (Ctrl+S) are the application's.
                 const took = st.formatKey(ev);
+                v.bound(st);
                 if (took and v.visual()) v.draw(st, v.cur);
                 return took;
             }
@@ -626,6 +628,20 @@ pub const Vim = struct {
         if (esc) tok = Tok.of("<Esc>");
         v.feed(st, tok.?);
         return true;
+    }
+
+    /// Keeps a visual selection's ends on characters of the text. Vim's
+    /// keys move them with it, but the text also changes by other hands
+    /// while the mode stays: Ctrl+Z and Ctrl+Y here, a command the
+    /// application runs. An end the text no longer reaches goes to its
+    /// last character; one inside a character goes to its start.
+    fn bound(v: *Vim, st: *const State) void {
+        if (!v.visual()) return;
+        const s = st.text();
+        for ([_]*u32{ &v.anchor, &v.cur }) |p| {
+            if (p.* > s.len) p.* = clamp(s, len32(s));
+            while (p.* > 0 and p.* < s.len and s[p.*] & 0xc0 == 0x80) p.* -= 1;
+        }
     }
 
     fn feed(v: *Vim, st: *State, tok: Tok) void {
