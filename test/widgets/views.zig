@@ -545,6 +545,112 @@ test "list and tree view: a transaction that already failed leaves a view its it
     try testing.expectEqual(@as(u64, 1002), item);
 }
 
+test "list, tree, and table view: an aborted transaction takes back its items and columns" {
+    var h: Harness = .{};
+    try h.start(240, 320, null, null);
+    defer h.stop();
+    var m: Model = .{};
+    const list = try listOf(&h, &m, 4, .multiple);
+    var txn = try begin(h.window);
+    c.siv_view_set_selected(txn, list, 1, true);
+    try ok(c.siv_txn_commit(txn));
+    var len: usize = 0;
+    var back: [16]u8 = undefined;
+    var sel = false;
+    var cursor: i32 = 0;
+    // Two more items, whose bits fit the byte the selection has.
+    txn = try begin(h.window);
+    c.siv_view_set_count(txn, list, 6);
+    c.siv_view_set_selected(txn, list, 5, true);
+    c.siv_view_set_cursor(txn, list, 5);
+    try ok(c.siv_txn_status(txn));
+    c.siv_txn_abort(txn);
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_view_is_selected(list, 5, &sel));
+    try ok(c.siv_view_get_selection(list, &back, back.len, &len));
+    try testing.expectEqual(@as(usize, 1), len);
+    try testing.expectEqual(@as(u8, 0x02), back[0]);
+    try ok(c.siv_view_get_cursor(list, &cursor));
+    try testing.expectEqual(@as(i32, -1), cursor);
+    // A million, whose selection is memory the abort frees.
+    txn = try begin(h.window);
+    c.siv_view_set_count(txn, list, 1_000_000);
+    c.siv_view_set_selected(txn, list, 999_999, true);
+    try ok(c.siv_txn_status(txn));
+    c.siv_txn_abort(txn);
+    try ok(c.siv_view_get_selection(list, &back, back.len, &len));
+    try testing.expectEqual(@as(usize, 1), len);
+    txn = try begin(h.window);
+    c.siv_view_set_selected(txn, list, 999_999, true);
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
+    // Fewer: the items that went are back, selected as they were.
+    txn = try begin(h.window);
+    c.siv_view_set_count(txn, list, 100);
+    c.siv_view_set_selected(txn, list, 90, true);
+    try ok(c.siv_txn_commit(txn));
+    txn = try begin(h.window);
+    c.siv_view_set_count(txn, list, 4);
+    try ok(c.siv_txn_status(txn));
+    c.siv_txn_abort(txn);
+    try ok(c.siv_view_is_selected(list, 90, &sel));
+    try testing.expect(sel);
+    try ok(c.siv_view_get_selection(list, &back, back.len, &len));
+    try testing.expectEqual(@as(usize, 13), len);
+
+    // A tree's rows: 1000 open over its four children, then 1001 (the
+    // selected one) and 1002.
+    var m2: Model = .{};
+    txn = try begin(h.window);
+    const tree = c.siv_tree_view(txn, c.siv_window_get_root(h.window), &.{
+        .label = "Tree",
+        .label_len = 4,
+        .selection = .multiple,
+        .bind = Model.bind,
+        .children = Model.children,
+        .child = Model.child,
+        .user_data = &m2,
+    });
+    c.siv_view_set_expanded(txn, tree, 0, true);
+    c.siv_view_set_selected(txn, tree, 5, true);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    const rows = [_]u64{ 1000, 2000, 2001, 2002, 2003, 1001, 1002 };
+    // Collapsing moves 1001 and 1002 up, and opening 2001 moves them
+    // down; aborted, every row and the selection are where they were.
+    for ([_]struct { u32, bool }{ .{ 0, false }, .{ 2, true } }) |change| {
+        txn = try begin(h.window);
+        c.siv_view_set_expanded(txn, tree, change[0], change[1]);
+        c.siv_view_set_selected(txn, tree, 2, true);
+        try ok(c.siv_txn_status(txn));
+        c.siv_txn_abort(txn);
+        var item: u64 = 0;
+        for (rows, 0..) |want, i| {
+            try ok(c.siv_view_get_item(tree, @intCast(i), &item));
+            try testing.expectEqual(want, item);
+            try ok(c.siv_view_is_selected(tree, @intCast(i), &sel));
+            try testing.expectEqual(i == 5, sel);
+        }
+        try testing.expectEqual(t.Result.error_invalid_argument, c.siv_view_get_item(tree, 7, &item));
+    }
+
+    // A table's columns: one aborted, the next takes its place.
+    var m3: Model = .{ .columns = 2 };
+    txn = try begin(h.window);
+    const table = c.siv_table_view(txn, c.siv_window_get_root(h.window), &.{ .label = "People", .label_len = 6, .count = 3, .bind = Model.bind, .user_data = &m3 });
+    _ = c.siv_table_column(txn, table, &.{ .title = "Name", .title_len = 4 });
+    try ok(c.siv_txn_commit(txn));
+    txn = try begin(h.window);
+    _ = c.siv_table_column(txn, table, &.{ .title = "Gone", .title_len = 4 });
+    try ok(c.siv_txn_status(txn));
+    c.siv_txn_abort(txn);
+    try testing.expectEqual(t.Node.null, c.siv_widget_get_part(table, .column, 1));
+    txn = try begin(h.window);
+    const size = c.siv_table_column(txn, table, &.{ .title = "Size", .title_len = 4, .width = .{ .unit = .px, .value = 90 } });
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try testing.expectEqual(size, c.siv_widget_get_part(table, .column, 1));
+    try testing.expectApproxEqAbs(@as(f32, 90), try columnWidth(table, 1), 0.01);
+}
+
 /// Starts a drag from the next move once armed (the view keeps the
 /// press itself, so the test arms it after pressing).
 const Dragger = struct {

@@ -57,12 +57,9 @@ pub const View = extern struct {
     hdr: w.Header,
     mode: Mode,
     selection: siv.SelectionMode,
-    count: u32,
     cursor: i32 = -1,
     anchor: i32 = -1,
-    selected: u32 = 0,
     columns: u32 = 1,
-    column_count: u32 = 0,
     /// Bumped when every row must be bound again.
     gen: u32 = 0,
     /// The scroll node takes focus: the view has no rows to focus.
@@ -86,10 +83,6 @@ pub const View = extern struct {
     height: ?siv.ViewHeightFn,
     /// Each row's heading band, which its fills and ring leave out.
     heading_height: ?siv.ViewHeightFn,
-    /// The gen and count the row tops were built for.
-    heights_gen: u32 = 0,
-    heights_count: u32 = 0,
-    heights_built: bool = false,
     /// The header cell that takes focus (roving).
     header_focus: u32 = 0,
     /// A plain press on an item of a larger selection keeps the selection
@@ -195,7 +188,6 @@ fn create(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc, mode: Mode) Node {
         .hdr = .{ .kind = .view },
         .mode = mode,
         .selection = d.selection,
-        .count = 0,
         .item_h = if (d.item_height == 0) 32 else d.item_height,
         .item_w = if (d.item_width == 0) 96 else d.item_width,
         .gutter = if (d.flags.gutter) 14 else 0,
@@ -251,68 +243,135 @@ fn never(_: ?*anyopaque, _: Node, _: *const siv.Event) callconv(.c) siv.EventRes
 }
 
 fn viewOf(node: Node) ?*View {
-    return w.stateOf(View, node, &.{.view});
+    const v = w.stateOf(View, node, &.{.view}) orelse return null;
+    settle(v);
+    return v;
 }
 
 // Storage -----------------------------------------------------------------------
+//
+// A view's count lives in the memory it sizes, not in `View`. siv gives
+// node data of another size as new memory and brings the old memory back
+// when the transaction aborts (D22), so a count kept at the start of
+// memory that changes size with it comes back with that memory. A count
+// in `View` stayed and ran past the memory. Each block also says what it
+// holds, and nothing is sliced by a number kept elsewhere.
+
+/// The start of the selection's memory; a bit per item follows.
+const Selection = extern struct {
+    /// The view's items.
+    count: u32,
+    /// The bits set.
+    selected: u32,
+    /// The bytes of bits that follow.
+    bytes: u32,
+    _: u32 = 0,
+};
+
+/// The start of a tree's rows: how many follow.
+const Tree = extern struct { count: u32, _: u32 = 0 };
+
+/// The start of the rows' tops: `count + 1` of them follow, the last the
+/// total height, as built for `gen`.
+const Tops = extern struct { count: u32, gen: u32 };
+
+fn dataOf(comptime T: type, v: *const View, key: *u8) ?*T {
+    var p: ?*anyopaque = null;
+    _ = c.siv_node_get_data(v.root, key, &p);
+    return @ptrCast(@alignCast(p orelse return null));
+}
+
+/// What follows a block's start.
+fn after(comptime T: type, head: anytype) [*]T {
+    return @ptrCast(@alignCast(@as([*]u8, @ptrCast(head)) + @sizeOf(@TypeOf(head.*))));
+}
+
+/// The number of items: never more than the selection has bits for, or
+/// a tree has rows for.
+fn countOf(v: *const View) u32 {
+    const s = dataOf(Selection, v, &selection_key) orelse return 0;
+    const n = @min(s.count, s.bytes *| 8);
+    if (v.mode != .tree) return n;
+    return @min(n, if (dataOf(Tree, v, &tree_key)) |t| t.count else 0);
+}
+
+fn selectedCount(v: *const View) u32 {
+    return if (dataOf(Selection, v, &selection_key)) |s| s.selected else 0;
+}
 
 fn bits(v: *const View) []u8 {
-    var p: ?*anyopaque = null;
-    _ = c.siv_node_get_data(v.root, &selection_key, &p);
-    const ptr: [*]u8 = @ptrCast(p orelse return &.{});
-    return ptr[0..bitBytes(v.count)];
+    const s = dataOf(Selection, v, &selection_key) orelse return &.{};
+    return after(u8, s)[0..s.bytes];
 }
 
-fn bitBytes(count: u32) usize {
-    return @max(1, (@as(usize, count) + 7) / 8);
+fn bitBytes(count: u32) u32 {
+    return @max(1, count / 8 + @intFromBool(count % 8 != 0));
 }
 
-/// Sets the count and sizes the selection to it, dropping bits past it.
-/// `bits` and `treeRows` slice their memory by the count, so it changes
-/// only here, once the selection has its size: when the transaction has
-/// failed (an earlier operation, or no memory now), the view keeps the
-/// count its memory holds.
+/// Sets the count and sizes the selection to it. Items that arrive are
+/// not selected. When the transaction has failed (an earlier operation,
+/// or no memory now), nothing changes.
 fn resizeSelection(txn: Txn, v: *View, count: u32) bool {
+    var bytes = bitBytes(count);
+    var was: u32 = 0;
+    if (dataOf(Selection, v, &selection_key)) |old| {
+        was = @min(old.count, old.bytes *| 8);
+        // Another count is other memory even when its bits fit the
+        // memory there is: a byte more makes it another size, and an
+        // abort brings back the old memory with the old count.
+        if (old.count == count) bytes = old.bytes else if (old.bytes == bytes) bytes += 1;
+    }
     var p: ?*anyopaque = null;
-    if (c.siv_set_data(txn, v.root, &selection_key, bitBytes(count), &p) != .ok) return false;
-    v.count = count;
-    const b: [*]u8 = @ptrCast(p.?);
-    const n = bitBytes(v.count);
-    const used = v.count % 8;
-    if (used != 0) b[n - 1] &= @as(u8, 0xff) >> @intCast(8 - used);
-    if (v.count == 0) b[0] = 0;
+    if (c.siv_set_data(txn, v.root, &selection_key, @sizeOf(Selection) + @as(usize, bytes), &p) != .ok) return false;
+    const s: *Selection = @ptrCast(@alignCast(p.?));
+    s.count = count;
+    s.bytes = bytes;
+    // The bits of the items that went, and the tally.
+    const from = @min(was, count);
+    const b = after(u8, s)[0..bytes];
+    if (from / 8 < bytes) {
+        b[from / 8] &= ~(@as(u8, 0xff) << @intCast(from % 8));
+        @memset(b[from / 8 + 1 ..], 0);
+    }
     var total: u32 = 0;
-    for (b[0..n]) |x| total += @popCount(x);
-    v.selected = total;
+    for (b) |x| total += @popCount(x);
+    s.selected = total;
     return true;
 }
 
+/// An aborted transaction undoes the count and the rows, not the cursor
+/// it moved, which may be past them now.
+fn settle(v: *View) void {
+    const n = countOf(v);
+    if (v.cursor >= @as(i64, n)) v.cursor = -1;
+    if (v.anchor >= @as(i64, n)) v.anchor = v.cursor;
+}
+
 fn isSelected(v: *const View, i: u32) bool {
-    if (i >= v.count) return false;
-    const b = bits(v);
-    return b[i / 8] & (@as(u8, 1) << @intCast(i % 8)) != 0;
+    return i < countOf(v) and bits(v)[i / 8] & (@as(u8, 1) << @intCast(i % 8)) != 0;
 }
 
 fn setSelected(v: *View, i: u32, on: bool) void {
-    if (i >= v.count) return;
-    const b = bits(v);
+    if (i >= countOf(v)) return;
+    const s = dataOf(Selection, v, &selection_key) orelse return;
+    const b = after(u8, s);
     const mask = @as(u8, 1) << @intCast(i % 8);
     const was = b[i / 8] & mask != 0;
     if (was == on) return;
     if (on) b[i / 8] |= mask else b[i / 8] &= ~mask;
-    if (on) v.selected += 1 else v.selected -= 1;
+    if (on) s.selected += 1 else s.selected -= 1;
     markChanged(v, i, i);
 }
 
 fn clearSelection(v: *View) void {
-    const b = bits(v);
-    if (v.selected != 0) {
-        const first = std.mem.indexOfNone(u8, b, &.{0}).?;
+    const s = dataOf(Selection, v, &selection_key) orelse return;
+    const b = after(u8, s)[0..s.bytes];
+    if (std.mem.indexOfNone(u8, b, &.{0})) |first| {
         const last = std.mem.lastIndexOfNone(u8, b, &.{0}).?;
         markChanged(v, @intCast(first * 8 + @ctz(b[first])), @intCast(last * 8 + 7 - @clz(b[last])));
     }
     @memset(b, 0);
-    v.selected = 0;
+    s.selected = 0;
 }
 
 fn markChanged(v: *View, lo: u32, hi: u32) void {
@@ -327,17 +386,19 @@ fn resetChanged(v: *View) void {
 }
 
 fn treeRows(v: *const View) []TreeRow {
-    var p: ?*anyopaque = null;
-    _ = c.siv_node_get_data(v.root, &tree_key, &p);
-    const ptr: [*]TreeRow = @ptrCast(@alignCast(p orelse return &.{}));
-    return ptr[0..v.count];
+    const t = dataOf(Tree, v, &tree_key) orelse return &.{};
+    return after(TreeRow, t)[0..@min(t.count, countOf(v))];
 }
 
-/// Room for `n` tree rows (at least one, as node data cannot be empty).
+/// Memory for exactly `n` tree rows, with the rows that fit kept. Every
+/// other count is other memory, so the rows there were stay where they
+/// were, readable until the transaction ends and back if it aborts.
 fn reserveTree(txn: Txn, v: *View, n: u32) ?[*]TreeRow {
     var p: ?*anyopaque = null;
-    if (c.siv_set_data(txn, v.root, &tree_key, @max(1, n) * @sizeOf(TreeRow), &p) != .ok) return null;
-    return @ptrCast(@alignCast(p.?));
+    if (c.siv_set_data(txn, v.root, &tree_key, @sizeOf(Tree) + @as(usize, n) * @sizeOf(TreeRow), &p) != .ok) return null;
+    const t: *Tree = @ptrCast(@alignCast(p.?));
+    t.count = n;
+    return after(TreeRow, t);
 }
 
 fn treeRow(v: *const View, parent: u64, i: u32, siblings: u32, depth: u32) TreeRow {
@@ -345,11 +406,12 @@ fn treeRow(v: *const View, parent: u64, i: u32, siblings: u32, depth: u32) TreeR
     return .{ .id = id, .depth = depth, .flags = .{ .parent = v.children.?(v.user_data, id) != 0 }, .position = i, .siblings = siblings };
 }
 
+// A tree's count is its selection's, and it has a row for each item at
+// every step: the rows grow before the count does and shrink after it.
+
 fn buildTop(txn: Txn, v: *View) bool {
     const n = v.children.?(v.user_data, 0);
-    // The count never passes the rows there is memory for: it shrinks
-    // before their memory does and grows after.
-    if (n < v.count and !resizeSelection(txn, v, n)) return false;
+    if (n < countOf(v) and !resizeSelection(txn, v, n)) return false;
     const rows = reserveTree(txn, v, n) orelse return false;
     if (!resizeSelection(txn, v, n)) return false;
     for (0..n) |i| rows[i] = treeRow(v, 0, @intCast(i), n, 0);
@@ -360,12 +422,11 @@ fn buildTop(txn: Txn, v: *View) bool {
 
 /// Inserts `k` rows after `at`, shifting selection bits and the cursor.
 fn insertRows(txn: Txn, v: *View, at: u32, k: u32) ?[*]TreeRow {
-    const old = v.count;
+    const old = countOf(v);
     const rows = reserveTree(txn, v, old + k) orelse return null;
-    // Before a row moves, so that a failure leaves the rows as they were.
     if (!resizeSelection(txn, v, old + k)) return null;
     std.mem.copyBackwards(TreeRow, rows[at + 1 + k .. old + k], rows[at + 1 .. old]);
-    var i = v.count;
+    var i = old + k;
     while (i > at + 1 + k) {
         i -= 1;
         setSelected(v, i, isSelected(v, i - k));
@@ -376,30 +437,28 @@ fn insertRows(txn: Txn, v: *View, at: u32, k: u32) ?[*]TreeRow {
     return rows;
 }
 
-fn removeRows(txn: Txn, v: *View, at: u32, k: u32) void {
-    const rows = treeRows(v);
-    for (at + 1 + k..v.count) |i| setSelected(v, @intCast(i - k), isSelected(v, @intCast(i)));
-    std.mem.copyForwards(TreeRow, rows[at + 1 .. v.count - k], rows[at + 1 + k .. v.count]);
-    // Fewer rows fit the memory there is, so the count shrinks whether or
-    // not the selection's memory does. The bits past it go here: a
-    // selection that stayed its size would show them again once it grew.
-    const b = bits(v);
-    for (v.count - k..v.count) |i| {
-        const mask = @as(u8, 1) << @intCast(i % 8);
-        if (b[i / 8] & mask != 0) v.selected -= 1;
-        b[i / 8] &= ~mask;
-    }
-    v.count -= k;
-    _ = resizeSelection(txn, v, v.count);
+/// Removes the `k` rows after `at`. The rows and bits that stay move
+/// into the new memory from the memory they had, which is left as it
+/// was for an abort to bring back.
+fn removeRows(txn: Txn, v: *View, at: u32, k: u32) bool {
+    if (k == 0) return true;
+    const old = treeRows(v);
+    const old_bits = bits(v);
+    const n: u32 = @intCast(old.len);
+    if (!resizeSelection(txn, v, n - k)) return false;
+    for (at + 1 + k..n) |i| setSelected(v, @intCast(i - k), old_bits[i / 8] & (@as(u8, 1) << @intCast(i % 8)) != 0);
+    const rows = reserveTree(txn, v, n - k) orelse return false;
+    @memcpy(rows[at + 1 .. n - k], old[at + 1 + k ..]);
     if (v.cursor > at + k) v.cursor -= @intCast(k) else if (v.cursor > at) v.cursor = @intCast(at);
     if (v.anchor > at + k) v.anchor -= @intCast(k) else if (v.anchor > at) v.anchor = @intCast(at);
+    return true;
 }
 
 fn setExpanded(txn: Txn, v: *View, at: u32, on: bool) void {
-    if (v.mode != .tree or at >= v.count) return;
+    if (v.mode != .tree or at >= countOf(v)) return;
     // A failed transaction is discarded: its operations do nothing (D4).
     if (c.siv_txn_status(txn) != .ok) return;
-    var r = treeRows(v)[at];
+    const r = treeRows(v)[at];
     if (!r.flags.parent or r.flags.expanded == on) return;
     if (on) {
         const k = v.children.?(v.user_data, r.id);
@@ -409,9 +468,8 @@ fn setExpanded(txn: Txn, v: *View, at: u32, on: bool) void {
     } else {
         var end = at + 1;
         const rows = treeRows(v);
-        while (end < v.count and rows[end].depth > r.depth) end += 1;
-        removeRows(txn, v, at, end - at - 1);
-        r = treeRows(v)[at];
+        while (end < rows.len and rows[end].depth > r.depth) end += 1;
+        if (!removeRows(txn, v, at, end - at - 1)) return;
         treeRows(v)[at].flags.expanded = false;
     }
     v.gen +%= 1;
@@ -420,7 +478,7 @@ fn setExpanded(txn: Txn, v: *View, at: u32, on: bool) void {
 // Rows ------------------------------------------------------------------------------
 
 fn lines(v: *const View) u32 {
-    return if (v.mode == .grid) (v.count + v.columns - 1) / v.columns else v.count;
+    return if (v.mode == .grid) (countOf(v) + v.columns - 1) / v.columns else countOf(v);
 }
 
 // Row heights -----------------------------------------------------------------
@@ -428,34 +486,39 @@ fn lines(v: *const View) u32 {
 /// The rows' tops with a height callback: count + 1 of them, the last the
 /// total height.
 fn tops(v: *const View) []f64 {
-    var p: ?*anyopaque = null;
-    _ = c.siv_node_get_data(v.root, &heights_key, &p);
-    const ptr: [*]f64 = @ptrCast(@alignCast(p orelse return &.{}));
-    return ptr[0 .. v.heights_count + 1];
+    const t = dataOf(Tops, v, &heights_key) orelse return &.{};
+    return after(f64, t)[0 .. t.count + 1];
 }
 
+/// Whether the rows have tops: built, and for the rows there are now.
 fn variable(v: *const View) bool {
-    return v.height != null and v.heights_built and v.heights_count == v.count;
+    if (v.height == null) return false;
+    const t = dataOf(Tops, v, &heights_key) orelse return false;
+    return t.count == countOf(v);
 }
 
 /// Asks every row's height when the rows changed since the last time.
 fn buildHeights(txn: Txn, v: *View) bool {
     const height = v.height orelse return true;
-    if (v.heights_built and v.heights_gen == v.gen and v.heights_count == v.count) return true;
+    const n = countOf(v);
+    if (dataOf(Tops, v, &heights_key)) |t| if (t.gen == v.gen and t.count == n) return true;
     var p: ?*anyopaque = null;
-    if (c.siv_set_data(txn, v.root, &heights_key, (@as(usize, v.count) + 1) * @sizeOf(f64), &p) != .ok) return false;
-    const out: [*]f64 = @ptrCast(@alignCast(p.?));
+    if (c.siv_set_data(txn, v.root, &heights_key, @sizeOf(Tops) + (@as(usize, n) + 1) * @sizeOf(f64), &p) != .ok) return false;
+    const t: *Tops = @ptrCast(@alignCast(p.?));
+    // Not the new count yet: until every top is written, these are not
+    // the tops of the rows there are.
+    t.* = .{ .count = 0, .gen = v.gen -% 1 };
+    const out = after(f64, t);
+    const rows = treeRows(v);
     var y: f64 = 0;
-    for (0..v.count) |i| {
+    for (0..n) |i| {
         out[i] = y;
-        const item: u64, const depth: u32 = if (v.mode == .tree) .{ treeRows(v)[i].id, treeRows(v)[i].depth } else .{ i, 0 };
+        const item: u64, const depth: u32 = if (v.mode == .tree) .{ rows[i].id, rows[i].depth } else .{ i, 0 };
         const h = height(v.user_data, item, @intCast(i), depth);
         y += if (h > 0 and std.math.isFinite(h)) h else v.item_h;
     }
-    out[v.count] = y;
-    v.heights_gen = v.gen;
-    v.heights_count = v.count;
-    v.heights_built = true;
+    out[n] = y;
+    t.* = .{ .count = n, .gen = v.gen };
     return true;
 }
 
@@ -472,19 +535,19 @@ fn rowHeight(v: *const View, i: u32) f32 {
 }
 
 fn contentHeight(v: *const View) f32 {
-    if (variable(v)) return @floatCast(tops(v)[v.count]);
+    if (variable(v)) return @floatCast(tops(v)[countOf(v)]);
     return @as(f32, @floatFromInt(lines(v))) * v.item_h;
 }
 
 /// The row at `y` from the top: the last whose top is at or above it.
 fn rowAt(v: *const View, y: f32) u32 {
-    if (v.count == 0) return 0;
+    if (countOf(v) == 0) return 0;
     if (!variable(v)) {
         const per: u32 = if (v.mode == .grid) v.columns else 1;
         const line: u32 = @intFromFloat(@max(0, @floor(y / v.item_h)));
-        return @min(v.count - 1, line * per);
+        return @min(countOf(v) - 1, line * per);
     }
-    const t = tops(v)[0..v.count];
+    const t = tops(v)[0..countOf(v)];
     var low: usize = 0;
     var high = t.len;
     while (low < high) {
@@ -513,23 +576,23 @@ fn materialize(txn: Txn, v: *View) void {
     if (variable(v)) {
         const first = rowAt(v, v.view_y);
         const last = rowAt(v, v.view_y + v.view_h) + 1;
-        lo = @min(v.count, first -| overscan);
-        hi = @min(v.count, @min(lo + max_range, last + overscan));
+        lo = @min(countOf(v), first -| overscan);
+        hi = @min(countOf(v), @min(lo + max_range, last + overscan));
     } else {
         const first_line: u32 = @intFromFloat(@max(0, @floor(v.view_y / v.item_h)));
         const last_line: u32 = @intFromFloat(@max(0, @ceil((v.view_y + v.view_h) / v.item_h)));
-        lo = @min(v.count, (first_line -| overscan) * per);
-        hi = @min(v.count, @min(lo + max_range, (last_line + overscan) * per));
+        lo = @min(countOf(v), (first_line -| overscan) * per);
+        hi = @min(countOf(v), @min(lo + max_range, (last_line + overscan) * per));
     }
     var present: [max_range]bool = @splat(false);
     // Rows that stay; the cursor's row stays even out of range.
     var free: [max_range + 1]Node = undefined;
     var nfree: usize = 0;
-    var cursor_bound = v.cursor < 0 or v.cursor >= v.count or (v.cursor >= lo and v.cursor < hi);
+    var cursor_bound = v.cursor < 0 or v.cursor >= countOf(v) or (v.cursor >= lo and v.cursor < hi);
     var cur = w.related(v.content, .first_child);
     while (cur != .null) : (cur = w.related(cur, .next)) {
         const r = rowOf(cur) orelse continue;
-        const keep = r.index >= 0 and r.index < v.count and
+        const keep = r.index >= 0 and r.index < countOf(v) and
             ((r.index >= lo and r.index < hi) or r.index == v.cursor);
         if (keep) {
             if (r.index >= lo and r.index < hi) present[@intCast(r.index - lo)] = true;
@@ -602,7 +665,7 @@ fn onRowFocus(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.E
     const r: *Row = @ptrCast(@alignCast(ud.?));
     const v = viewOf(r.view) orelse return .pass;
     r.ring = ev.flags.gained and ev.flags.visible;
-    if (r.index < 0 or r.index >= v.count) return .pass;
+    if (r.index < 0 or r.index >= countOf(v)) return .pass;
     // Focus that leaves at a commit (the row no longer the stop, a modal
     // node taking it) comes inside that commit, where no transaction
     // opens: restyle once it is done.
@@ -618,7 +681,7 @@ fn onRowFocus(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.E
 fn restyleRow(ud: ?*anyopaque) callconv(.c) void {
     const r = rowOf(w.dataHandle(ud)) orelse return;
     const v = viewOf(r.view) orelse return;
-    if (r.index < 0 or r.index >= v.count) return;
+    if (r.index < 0 or r.index >= countOf(v)) return;
     const txn = w.begin(w.windowOf(v.root)) orelse return;
     applyRow(txn, v, r);
     _ = w.commit(txn);
@@ -708,7 +771,7 @@ fn applyRow(txn: Txn, v: *View, r: *Row) void {
         // a tree item's among its siblings.
         .level = if (tr) |t| t.depth + 1 else 0,
         .position = if (tr) |t| t.position + 1 else if (v.mode == .list or v.mode == .grid) i + 1 else 0,
-        .set_size = if (tr) |t| t.siblings else if (v.mode == .table) 0 else v.count,
+        .set_size = if (tr) |t| t.siblings else if (v.mode == .table) 0 else countOf(v),
         .row = if (v.mode == .table) i + 1 else 0,
     });
     if (r.disclosure != .null) _ = c.siv_invalidate(txn, r.disclosure);
@@ -717,7 +780,7 @@ fn applyRow(txn: Txn, v: *View, r: *Row) void {
 /// Whether row `i` is the view's focus stop: the cursor's, or the first
 /// without a cursor.
 fn isStop(v: *const View, i: i64) bool {
-    return i >= 0 and i < v.count and (if (v.cursor >= 0) v.cursor == i else i == 0);
+    return i >= 0 and i < countOf(v) and (if (v.cursor >= 0) v.cursor == i else i == 0);
 }
 
 /// After the cursor or the rows changed: focus on a row that is no
@@ -735,7 +798,7 @@ fn applyAll(txn: Txn, v: *View) void {
     var cur = w.related(v.content, .first_child);
     while (cur != .null) : (cur = w.related(cur, .next)) {
         const r = rowOf(cur) orelse continue;
-        if (r.index >= 0 and r.index < v.count and r.gen == v.gen) applyRow(txn, v, r);
+        if (r.index >= 0 and r.index < countOf(v) and r.gen == v.gen) applyRow(txn, v, r);
     }
 }
 
@@ -743,7 +806,7 @@ fn applyAll(txn: Txn, v: *View) void {
 fn drawDisclosure(ud: ?*anyopaque, node: Node, draw: siv.Draw, width: f32, height: f32) callconv(.c) void {
     const r: *Row = @ptrCast(@alignCast(ud.?));
     const v = viewOf(r.view) orelse return;
-    if (r.index < 0 or r.index >= v.count) return;
+    if (r.index < 0 or r.index >= countOf(v)) return;
     const t = treeRows(v)[@intCast(r.index)];
     if (!t.flags.parent) return;
     const cx = width / 2 + 2;
@@ -769,7 +832,19 @@ fn columnTracks(v: *const View) []siv.Track {
     var p: ?*anyopaque = null;
     _ = c.siv_node_get_data(v.root, &columns_key, &p);
     const ptr: [*]siv.Track = @ptrCast(@alignCast(p orelse return &.{}));
-    return ptr[0..v.column_count];
+    return ptr[0..columnCount(v)];
+}
+
+/// The table's columns: its header's cells, which an abort takes back
+/// with the column.
+fn columnCount(v: *const View) u32 {
+    if (v.header == .null) return 0;
+    var n: u32 = 0;
+    var cur = w.related(v.header, .first_child);
+    while (cur != .null) : (cur = w.related(cur, .next)) {
+        if (columnOf(cur) != null) n += 1;
+    }
+    return @min(n, max_columns);
 }
 
 fn setColumns(txn: Txn, v: *const View, grid: Node) void {
@@ -784,11 +859,12 @@ pub export fn siv_table_column(txn: Txn, table: Node, desc: ?*const siv.ColumnDe
     const title = w.str(d.title, d.title_len) orelse return w.fail(txn, .error_invalid_argument);
     if (@as(u32, @bitCast(d.flags)) & ~@as(u32, 3) != 0) return w.fail(txn, .error_unsupported);
     if (!std.math.isFinite(d.min_width) or d.min_width < 0) return w.fail(txn, .error_invalid_argument);
-    if (v.column_count >= max_columns) return w.fail(txn, .error_limit_exceeded);
+    const index = columnCount(v);
+    if (index >= max_columns) return w.fail(txn, .error_limit_exceeded);
     var p: ?*anyopaque = null;
     if (c.siv_set_data(txn, v.root, &columns_key, max_columns * @sizeOf(siv.Track), &p) != .ok) return .null;
     const tracks: [*]siv.Track = @ptrCast(@alignCast(p.?));
-    tracks[v.column_count] = if (d.width.unit == .auto) .{ .unit = .fr, .value = 1 } else d.width;
+    tracks[index] = if (d.width.unit == .auto) .{ .unit = .fr, .value = 1 } else d.width;
     // A row of the title, the sort indicator, and the resize handle at
     // the end edge.
     const cell = c.siv_flex(txn, v.header, &.{ .axis = .row, .align_items = .stretch, .gap = 4 });
@@ -796,7 +872,7 @@ pub export fn siv_table_column(txn: Txn, table: Node, desc: ?*const siv.ColumnDe
     col.* = .{
         .hdr = .{ .kind = .view_column },
         .view = v.root,
-        .index = v.column_count,
+        .index = index,
         .sortable = d.flags.sortable,
         .fixed = d.flags.fixed,
         .min = if (d.min_width == 0) 32 else d.min_width,
@@ -804,7 +880,6 @@ pub export fn siv_table_column(txn: Txn, table: Node, desc: ?*const siv.ColumnDe
         .title = c.siv_text(txn, cell, title.ptr, title.len),
         .arrow = .null,
     };
-    v.column_count += 1;
     _ = c.siv_set_layout(txn, col.title, &.{ .grow = 1, .basis = w.px(0), .align_y = .center });
     _ = c.siv_set_text_style(txn, col.title, &.{ .color_token = .muted_fg, .size_role = .caption, .weight = .semibold, .flags = .{ .no_wrap = true } });
     col.arrow = c.siv_canvas(txn, cell, &.{ .user_data = col, .draw = drawSortArrow, .width = 10, .height = 10 });
@@ -943,7 +1018,7 @@ fn focusHeader(v: *View) void {
 }
 
 fn moveHeaderFocus(v: *View, k: u32, window: siv.Window) void {
-    if (k >= v.column_count) return;
+    if (k >= columnCount(v)) return;
     v.header_focus = k;
     const txn = w.begin(window) orelse return;
     applyHeader(txn, v);
@@ -1003,9 +1078,9 @@ fn onHeaderKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.
             }
         },
         k.home => moveHeaderFocus(v, 0, e.window),
-        k.end => moveHeaderFocus(v, v.column_count -| 1, e.window),
+        k.end => moveHeaderFocus(v, columnCount(v) -| 1, e.window),
         k.down => {
-            if (v.count == 0) return .handled;
+            if (countOf(v) == 0) return .handled;
             moveCursor(v, if (v.cursor >= 0) v.cursor else 0, e.window, .{}, false);
         },
         else => return .pass,
@@ -1074,15 +1149,15 @@ fn restyleHeader(v: *View, window: siv.Window) void {
 /// Moves the cursor to `to`, selecting per the mode and modifiers, keeps
 /// it in view and focused, and reports the selection.
 fn moveCursor(v: *View, to: i64, window: siv.Window, mods: siv.Modifiers, toggle: bool) void {
-    if (v.count == 0) return;
-    const target: u32 = @intCast(std.math.clamp(to, 0, @as(i64, v.count) - 1));
+    if (countOf(v) == 0) return;
+    const target: u32 = @intCast(std.math.clamp(to, 0, @as(i64, countOf(v)) - 1));
     const txn = w.begin(window) orelse return;
     v.cursor = @intCast(target);
-    const before = v.selected;
+    const before = selectedCount(v);
     var changed = false;
     switch (v.selection) {
         .single => if (!mods.ctrl or toggle) {
-            changed = !isSelected(v, target) or v.selected != 1;
+            changed = !isSelected(v, target) or selectedCount(v) != 1;
             clearSelection(v);
             setSelected(v, target, true);
         },
@@ -1097,7 +1172,7 @@ fn moveCursor(v: *View, to: i64, window: siv.Window, mods: siv.Modifiers, toggle
             while (i <= @max(a, target)) : (i += 1) setSelected(v, i, true);
             changed = true;
         } else if (!mods.ctrl) {
-            changed = !isSelected(v, target) or v.selected != 1;
+            changed = !isSelected(v, target) or selectedCount(v) != 1;
             clearSelection(v);
             setSelected(v, target, true);
             v.anchor = @intCast(target);
@@ -1109,7 +1184,7 @@ fn moveCursor(v: *View, to: i64, window: siv.Window, mods: siv.Modifiers, toggle
     applyAll(txn, v);
     if (!w.commit(txn)) return;
     focusCursor(v);
-    if (changed or before != v.selected) emitSelect(v);
+    if (changed or before != selectedCount(v)) emitSelect(v);
 }
 
 fn emitSelect(v: *View) void {
@@ -1117,7 +1192,7 @@ fn emitSelect(v: *View) void {
     const i: u32 = if (v.cursor >= 0) @intCast(v.cursor) else 0;
     const lo, const n = if (v.changed_lo <= v.changed_hi) .{ v.changed_lo, v.changed_hi - v.changed_lo + 1 } else .{ i, 0 };
     resetChanged(v);
-    _ = c.siv_node_emit(v.root, &.{ .type = .select, .index = i, .value = @floatFromInt(v.cursor), .count = v.selected, .changed_index = lo, .changed_count = n }, &handled);
+    _ = c.siv_node_emit(v.root, &.{ .type = .select, .index = i, .value = @floatFromInt(v.cursor), .count = selectedCount(v), .changed_index = lo, .changed_count = n }, &handled);
 }
 
 /// Moves the cursor to `to` and focuses it without changing the
@@ -1165,6 +1240,7 @@ fn onEmptyPointer(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) s
 
 fn onViewport(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const v: *View = @ptrCast(@alignCast(ud.?));
+    settle(v);
     const e = ev;
     v.view_y = e.y;
     v.view_w = e.width;
@@ -1185,13 +1261,13 @@ fn onRowPointer(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv
     // showed the hover fill wherever it was bound next.
     if (e.phase == .enter or e.phase == .leave) {
         r.hdr.hover = e.phase == .enter;
-        if (r.index < 0 or r.index >= v.count) return .pass;
+        if (r.index < 0 or r.index >= countOf(v)) return .pass;
         const txn = w.begin(e.window) orelse return .pass;
         applyRow(txn, v, r);
         _ = w.commit(txn);
         return .pass;
     }
-    if (v.hdr.disabled or r.index < 0) return .pass;
+    if (v.hdr.disabled or r.index < 0 or r.index >= countOf(v)) return .pass;
     switch (e.phase) {
         .down => {
             if (e.button != .primary) return .pass;
@@ -1214,7 +1290,7 @@ fn onRowPointer(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv
             }
             const index = r.index;
             const plain = !e.modifiers.ctrl and !e.modifiers.shift;
-            if (plain and v.selection == .multiple and v.selected > 1 and isSelected(v, @intCast(index))) {
+            if (plain and v.selection == .multiple and selectedCount(v) > 1 and isSelected(v, @intCast(index))) {
                 // Keep the selection for a drag; the release collapses it.
                 v.pending = @intCast(index);
                 moveCursorOnly(v, @intCast(index), e.window);
@@ -1278,7 +1354,7 @@ fn toggleExpanded(v: *View, at: u32, window: siv.Window) void {
 fn onRowActivate(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const r: *Row = @ptrCast(@alignCast(ud.?));
     const v = viewOf(r.view) orelse return .pass;
-    if (v.hdr.disabled or r.index < 0) return .pass;
+    if (v.hdr.disabled or r.index < 0 or r.index >= countOf(v)) return .pass;
     moveCursor(v, r.index, ev.window, .{}, false);
     return .handled;
 }
@@ -1287,7 +1363,7 @@ fn onRowKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.Eve
     const r: *Row = @ptrCast(@alignCast(ud.?));
     const e = ev;
     const v = viewOf(r.view) orelse return .pass;
-    if (!e.flags.pressed or v.hdr.disabled or v.count == 0) return .pass;
+    if (!e.flags.pressed or v.hdr.disabled or countOf(v) == 0) return .pass;
     // Keys for a focused node inside the row (an editor renaming the item,
     // a button) are that node's: Space types a space, arrows move the
     // caret.
@@ -1298,12 +1374,13 @@ fn onRowKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.Eve
     if (e.modifiers.alt or e.modifiers.super) return .pass;
     const k = w.keysym;
     const cur: i64 = if (v.cursor >= 0) v.cursor else r.index;
+    if (cur < 0 or cur >= countOf(v)) return .pass;
     const per: i64 = if (v.mode == .grid) v.columns else 1;
     const page: i64 = @max(1, @as(i64, @intFromFloat(@floor(v.view_h / v.item_h)))) * per;
     const rtl = w.isRtl(v.root);
     const forward_key = if (rtl) k.left else k.right;
     // With rows of their own heights, a page is the view's height.
-    const at: u32 = @intCast(std.math.clamp(cur, 0, @as(i64, v.count) - 1));
+    const at: u32 = @intCast(std.math.clamp(cur, 0, @as(i64, countOf(v)) - 1));
     const page_up: i64 = if (variable(v)) rowAt(v, rowTop(v, at) - v.view_h + rowHeight(v, at)) else cur - page;
     const page_down: i64 = if (variable(v)) rowAt(v, rowTop(v, at) + v.view_h) else cur + page;
     // Ctrl+A through the key's Latin equivalent on any layout (D44);
@@ -1314,7 +1391,7 @@ fn onRowKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.Eve
         k.page_up => moveCursor(v, @min(page_up, cur - 1), e.window, e.modifiers, false),
         k.page_down => moveCursor(v, @max(page_down, cur + 1), e.window, e.modifiers, false),
         k.home => moveCursor(v, 0, e.window, e.modifiers, false),
-        k.end => moveCursor(v, @as(i64, v.count) - 1, e.window, e.modifiers, false),
+        k.end => moveCursor(v, @as(i64, countOf(v)) - 1, e.window, e.modifiers, false),
         k.left, k.right => {
             const forward = e.keysym == forward_key;
             switch (v.mode) {
@@ -1335,7 +1412,7 @@ fn onRowKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.Eve
         @as(siv.Key, @enumFromInt('a')), @as(siv.Key, @enumFromInt('A')) => {
             if (!e.modifiers.ctrl or v.selection != .multiple) return .pass;
             const txn = w.begin(e.window) orelse return .handled;
-            for (0..v.count) |i| setSelected(v, @intCast(i), true);
+            for (0..countOf(v)) |i| setSelected(v, @intCast(i), true);
             applyAll(txn, v);
             if (w.commit(txn)) emitSelect(v);
         },
@@ -1350,7 +1427,7 @@ fn treeKey(v: *View, at: u32, forward: bool, window: siv.Window) void {
     const t = treeRows(v)[at];
     if (forward) {
         if (t.flags.parent and !t.flags.expanded) return toggleExpanded(v, at, window);
-        if (t.flags.expanded and at + 1 < v.count) return moveCursor(v, at + 1, window, .{}, false);
+        if (t.flags.expanded and at + 1 < countOf(v)) return moveCursor(v, at + 1, window, .{}, false);
     } else {
         if (t.flags.expanded) return toggleExpanded(v, at, window);
         var p = at;
@@ -1387,7 +1464,7 @@ pub export fn siv_view_refresh(txn: Txn, view: Node) void {
 
 pub export fn siv_view_set_selected(txn: Txn, view: Node, index: u32, selected: bool) void {
     const v = viewOf(view) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
-    if (index >= v.count or v.selection == .none) return c.siv_txn_fail(txn, .error_invalid_argument);
+    if (index >= countOf(v) or v.selection == .none) return c.siv_txn_fail(txn, .error_invalid_argument);
     if (v.selection == .single and selected) {
         clearSelection(v);
         v.cursor = @intCast(index);
@@ -1412,7 +1489,7 @@ pub export fn siv_view_set_selected(txn: Txn, view: Node, index: u32, selected: 
 
 pub export fn siv_view_set_expanded(txn: Txn, view: Node, index: u32, expanded: bool) void {
     const v = viewOf(view) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
-    if (v.mode != .tree or index >= v.count) return c.siv_txn_fail(txn, .error_invalid_argument);
+    if (v.mode != .tree or index >= countOf(v)) return c.siv_txn_fail(txn, .error_invalid_argument);
     setExpanded(txn, v, index, expanded);
     update(txn, v);
     return;
@@ -1420,14 +1497,14 @@ pub export fn siv_view_set_expanded(txn: Txn, view: Node, index: u32, expanded: 
 
 pub export fn siv_view_scroll_to(txn: Txn, view: Node, index: u32) void {
     const v = viewOf(view) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
-    if (index >= v.count) return c.siv_txn_fail(txn, .error_invalid_argument);
+    if (index >= countOf(v)) return c.siv_txn_fail(txn, .error_invalid_argument);
     reveal(txn, v, index);
     return;
 }
 
 pub export fn siv_view_set_sort(txn: Txn, view: Node, column: u32, sort: siv.Sort) void {
     const v = viewOf(view) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
-    if (v.mode != .table or column >= v.column_count) return c.siv_txn_fail(txn, .error_invalid_argument);
+    if (v.mode != .table or column >= columnCount(v)) return c.siv_txn_fail(txn, .error_invalid_argument);
     if (@backingInt(sort) < 0 or @backingInt(sort) > 2) return c.siv_txn_fail(txn, .error_unsupported);
     setSort(txn, v, column, sort);
     return;
@@ -1436,7 +1513,7 @@ pub export fn siv_view_set_sort(txn: Txn, view: Node, column: u32, sort: siv.Sor
 pub export fn siv_view_is_selected(view: Node, index: u32, selected: ?*bool) siv.Result {
     const out = selected orelse return .error_invalid_argument;
     const v = viewOf(view) orelse return .error_invalid_argument;
-    if (index >= v.count) return .error_invalid_argument;
+    if (index >= countOf(v)) return .error_invalid_argument;
     out.* = isSelected(v, index);
     return .ok;
 }
@@ -1445,22 +1522,24 @@ pub export fn siv_view_set_selection(txn: Txn, view: Node, bitset: ?[*]const u8,
     const v = viewOf(view) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
     if (bitset_count != 0 and bitset == null) return c.siv_txn_fail(txn, .error_invalid_argument);
     const src = if (bitset_count == 0) &[_]u8{} else bitset.?[0..bitset_count];
+    const sel = dataOf(Selection, v, &selection_key) orelse return;
     const b = bits(v);
-    const n = @min(src.len, (@as(usize, v.count) + 7) / 8);
+    const count = countOf(v);
+    const n = @min(src.len, (@as(usize, count) + 7) / 8);
     var total: u32 = 0;
     for (src[0..n], 0..) |x, i| {
         // Bits past the count are not items.
-        const keep: u8 = if ((i + 1) * 8 <= v.count) 0xff else @as(u8, 0xff) >> @intCast((i + 1) * 8 - v.count);
+        const keep: u8 = if ((i + 1) * 8 <= count) 0xff else @as(u8, 0xff) >> @intCast((i + 1) * 8 - count);
         total += @popCount(x & keep);
     }
     if (total != 0 and v.selection == .none) return c.siv_txn_fail(txn, .error_invalid_argument);
     if (total > 1 and v.selection == .single) return c.siv_txn_fail(txn, .error_invalid_argument);
     @memset(b, 0);
     for (src[0..n], 0..) |x, i| {
-        const keep: u8 = if ((i + 1) * 8 <= v.count) 0xff else @as(u8, 0xff) >> @intCast((i + 1) * 8 - v.count);
+        const keep: u8 = if ((i + 1) * 8 <= count) 0xff else @as(u8, 0xff) >> @intCast((i + 1) * 8 - count);
         b[i] = x & keep;
     }
-    v.selected = total;
+    sel.selected = total;
     resetChanged(v);
     applyAll(txn, v);
     return;
@@ -1470,7 +1549,7 @@ pub export fn siv_view_get_selection(view: Node, out: ?[*]u8, out_cap: usize, le
     const total = len orelse return .error_invalid_argument;
     if (out_cap != 0 and out == null) return .error_invalid_argument;
     const v = viewOf(view) orelse return .error_invalid_argument;
-    const n = (@as(usize, v.count) + 7) / 8;
+    const n = (@as(usize, countOf(v)) + 7) / 8;
     const k = @min(n, out_cap);
     if (k != 0) @memcpy(out.?[0..k], bits(v)[0..k]);
     total.* = n;
@@ -1486,7 +1565,7 @@ pub export fn siv_view_get_cursor(view: Node, index: ?*i32) siv.Result {
 
 pub export fn siv_view_set_cursor(txn: Txn, view: Node, index: i32) void {
     const v = viewOf(view) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
-    if (index >= @as(i64, v.count) or index < -1) return c.siv_txn_fail(txn, .error_invalid_argument);
+    if (index >= @as(i64, countOf(v)) or index < -1) return c.siv_txn_fail(txn, .error_invalid_argument);
     setCursor(txn, v, @floatFromInt(index));
     return;
 }
@@ -1496,7 +1575,7 @@ pub export fn siv_view_set_cursor(txn: Txn, view: Node, index: i32) void {
 /// scroll node.
 fn focusTarget(v: *View) Node {
     if (v.hdr.disabled) return .null;
-    if (v.count == 0) return v.scroll;
+    if (countOf(v) == 0) return v.scroll;
     if (v.cursor < 0) {
         const txn = w.begin(w.windowOf(v.root)) orelse return .null;
         setCursor(txn, v, 0);
@@ -1515,7 +1594,7 @@ fn viewPart(v: *const View, p: siv.WidgetPart, index: u32) Node {
 
 pub export fn siv_view_get_row(view: Node, index: u32) Node {
     const v = viewOf(view) orelse return .null;
-    if (index >= v.count) return .null;
+    if (index >= countOf(v)) return .null;
     return if (boundRow(v, index)) |r| r.body else .null;
 }
 
@@ -1532,7 +1611,7 @@ fn boundRow(v: *const View, i: u32) ?*Row {
 pub export fn siv_view_get_item(view: Node, index: u32, item: ?*u64) siv.Result {
     const out = item orelse return .error_invalid_argument;
     const v = viewOf(view) orelse return .error_invalid_argument;
-    if (index >= v.count) return .error_invalid_argument;
+    if (index >= countOf(v)) return .error_invalid_argument;
     out.* = if (v.mode == .tree) treeRows(v)[index].id else index;
     return .ok;
 }
@@ -1565,7 +1644,7 @@ fn scrollSemantics(txn: Txn, v: *View, label: []const u8) void {
     var role: siv.Role = .list;
     if (v.mode == .tree) role = .tree;
     if (v.mode == .table) role = .table;
-    v.empty_stop = v.count == 0 and !v.hdr.disabled;
+    v.empty_stop = countOf(v) == 0 and !v.hdr.disabled;
     _ = c.siv_set_semantics(txn, v.scroll, &.{ .role = role, .label = label.ptr, .label_len = label.len, .flags = .{ .focusable = v.empty_stop } });
 }
 
@@ -1574,7 +1653,7 @@ fn scrollSemantics(txn: Txn, v: *View, label: []const u8) void {
 /// commits: to the cursor's row when rows arrive, to the view itself
 /// when its rows go.
 fn syncEmptyStop(txn: Txn, v: *View) void {
-    if (v.empty_stop == (v.count == 0 and !v.hdr.disabled)) return;
+    if (v.empty_stop == (countOf(v) == 0 and !v.hdr.disabled)) return;
     const focused = focusWithin(v);
     var buf: [1024]u8 = undefined;
     scrollSemantics(txn, v, w.labelOf(v.scroll, &buf));
@@ -1601,7 +1680,7 @@ fn focusLater(ud: ?*anyopaque) callconv(.c) void {
 
 pub fn setCursor(txn: Txn, v: *View, to: f64) void {
     const i: i64 = @intFromFloat(@round(to));
-    v.cursor = if (i >= 0 and i < v.count) @intCast(i) else -1;
+    v.cursor = if (i >= 0 and i < countOf(v)) @intCast(i) else -1;
     v.anchor = v.cursor;
     if (v.cursor >= 0) reveal(txn, v, @intCast(v.cursor));
     applyAll(txn, v);

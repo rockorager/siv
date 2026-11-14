@@ -5121,7 +5121,18 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       as a box. Reverse if flat views need a frame's focus treatment.
     - Selection is a bitset in node data, resized with the count (node
       data of another size replaces the old and keeps what fits); none,
-      single, or multiple with Ctrl, Shift, and Ctrl+A. The cursor's row is
+      single, or multiple with Ctrl, Shift, and Ctrl+A. The count lives
+      at the start of that memory, a tree's rows and the rows' tops
+      begin with theirs, and a table's columns are its header's cells: a
+      widget's state is not part of a transaction, but node data of
+      another size and nodes are, so an abort brings back the old memory
+      and with it the old count, rows, and selection. Every other count
+      is another size (a byte more when the bits would fit the memory
+      there is). Was: the counts were fields of the view's state, which
+      an abort left ahead of the memory it restored, and the next click
+      wrote past a one-byte selection. What an abort does not undo: the
+      cursor (a cursor past the count goes), and selection changed
+      before the count in the same transaction. The cursor's row is
       the focused node (roving focus) and stays bound out of view. With
       single selection a selected row has no focus ring
       (`SIV_VISUAL_NO_FOCUS_RING`): when focus is on it, its
