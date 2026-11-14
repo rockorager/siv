@@ -7279,9 +7279,11 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       still open) is answered from a mark per entry: the entry below of
       the same name, and the topmost entry at or below it of each kind
       a question stops at. A walk per tag made 50,000 nested `<div>`s
-      2,500,000,000 steps. The adoption agency algorithm still moves
-      the entries above the formatting element, so `<b>`, n blocks, and
-      n `</b>` cost n squared.
+      2,500,000,000 steps. The adoption agency algorithm costs the
+      entries above the formatting element and leaves it under all but
+      one of them, so with more than `html.max_depth` of them the end
+      tag is ignored, as it is for a formatting element out of scope
+      (`<b>`, n blocks, and n `</b>` cost n squared).
     - *Selectors.* A failed match says how far it reaches: this element
       only, it and the siblings before it, or those and its ancestors
       too. A combinator's loop stops when the elements it has left

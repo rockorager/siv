@@ -196,6 +196,39 @@ test "a tag costs the same however many elements are open" {
     }
 }
 
+test "an end tag leaves a formatting element under more elements than the depth limit open" {
+    const gpa = testing.allocator;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(gpa);
+    // The adoption agency algorithm costs the elements above the `<b>` for
+    // each `</b>`, and leaves it one block further in: 50,000 blocks and
+    // end tags were 1,250,000,000 steps. With 512 blocks above it the
+    // algorithm runs, eight times for the one tag (a `<b>` in each of the
+    // first eight blocks); with 513, and with 50,000, the `<b>` stays
+    // open and no tag adds another.
+    for ([_][3]usize{ .{ 512, 1, 9 }, .{ 513, 1, 1 }, .{ 50_000, 50_000, 1 } }) |case| {
+        src.clearRetainingCapacity();
+        try src.appendSlice(gpa, "<b>");
+        for (0..case[0]) |_| try src.appendSlice(gpa, "<div>");
+        for (0..case[1]) |_| try src.appendSlice(gpa, "</b>");
+        try src.appendSlice(gpa, "<q>");
+        var dom = try html.parse(gpa, src.items, .{});
+        defer dom.deinit();
+        var bold: usize = 0;
+        var q: html.NodeId = .none;
+        var id = dom.following(dom.body(), dom.body());
+        while (id != .none) : (id = dom.following(id, dom.body())) {
+            if (dom.isHtml(id, .b)) bold += 1;
+            if (dom.isHtml(id, .q)) q = id;
+        }
+        try testing.expectEqual(case[2], bold);
+        // Text after the tags is bold only where the `<b>` is still open
+        // or was opened again in the block.
+        var p = dom.node(q).parent;
+        while (!dom.isHtml(p, .b)) p = dom.node(p).parent;
+    }
+}
+
 test "XHTML: self-closing tags end their elements" {
     const src = "<p><a id=\"n1\"/>Note<span/>text</p><div/><title/><p>after</p><svg><circle/></svg>";
     var dom = try html.parse(testing.allocator, src, .{ .xml = true });

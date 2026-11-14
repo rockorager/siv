@@ -378,6 +378,17 @@ pub fn Builder(comptime Tokenizer: type) type {
             unreachable;
         }
 
+        /// The index of an open node, or null when more than `limit` open
+        /// elements are above it. Looks no further down than that.
+        fn indexNear(b: *B, id: NodeId, limit: usize) ?usize {
+            const x = b.nd(id);
+            var h = b.topOf(x.name, x.ns != .html);
+            while (h != 0 and b.open.items.len - h <= limit) : (h = b.marks.items[h - 1].below) {
+                if (b.open.items[h - 1] == id) return h - 1;
+            }
+            return null;
+        }
+
         fn removeFromStack(b: *B, id: NodeId) void {
             if (b.indexInStack(id)) |i| b.removeAt(i);
         }
@@ -737,10 +748,16 @@ pub fn Builder(comptime Tokenizer: type) type {
             while (outer < 8) : (outer += 1) {
                 const fi = b.formattingAfterMarker(subject) orelse return false;
                 const fe = b.formatting.items[fi];
-                const si = b.indexInStack(fe) orelse {
+                if (!b.isOpen(fe)) {
                     _ = b.formatting.orderedRemove(fi);
                     return true;
-                };
+                }
+                // The steps below cost the open elements above the
+                // formatting element, and the element stays under them
+                // for the next end tag. With more of them than the parser
+                // nests (`max_depth`), the tag is ignored, as it is for a
+                // formatting element that is not in scope.
+                const si = b.indexNear(fe, max_depth) orelse return true;
                 if (si + 1 < b.lastOf(.default)) return true;
                 // The furthest block: the topmost special element below.
                 var furthest: ?usize = null;
