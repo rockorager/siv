@@ -88,6 +88,7 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: Options) error{
         b.resetMode();
     }
     try t.run();
+    dom.limitDepth(max_depth);
     return dom;
 }
 

@@ -146,6 +146,37 @@ test "elements nested past the depth limit go in beside the last one within it" 
     try testing.expectEqualStrings("deep", dom.text(text));
 }
 
+test "formatting elements moved into a block do not nest past the depth limit" {
+    const gpa = testing.allocator;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(gpa);
+    // Past the limit elements go in beside each other: thirty `<b>`s and
+    // a block here. An end tag then puts the block into the `<b>` before
+    // it and a clone of the `<b>` into the block, around the clones
+    // already there, whatever the depth (30,000 of them overflowed the
+    // stack in layout).
+    for (0..520) |_| try src.appendSlice(gpa, "<div>");
+    for (0..30) |k| try src.print(gpa, "<b id={d}>", .{k});
+    try src.appendSlice(gpa, "<div>");
+    // One tag moves an element into the block, the next ends its clone.
+    for (0..60) |_| try src.appendSlice(gpa, "</b>");
+    var dom = try html.parse(gpa, src.items, .{});
+    defer dom.deinit();
+    var divs: usize = 0;
+    var bold: usize = 0;
+    var id = dom.following(dom.body(), dom.body());
+    while (id != .none) : (id = dom.following(id, dom.body())) {
+        if (dom.isHtml(id, .div)) divs += 1 else bold += 1;
+        var ancestors: usize = 0;
+        var p = dom.node(id).parent;
+        while (p != .document) : (p = dom.node(p).parent) ancestors += 1;
+        try testing.expect(ancestors <= html.max_depth);
+    }
+    // Every element and every clone is still there.
+    try testing.expectEqual(521, divs);
+    try testing.expectEqual(60, bold);
+}
+
 test "a tag costs the same however many elements are open" {
     // Each of these made the parser walk the stack of open elements for
     // every tag, so 50,000 tags took the time of 2,500,000,000 steps. The

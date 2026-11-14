@@ -7269,8 +7269,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       (`html.max_depth`, Blink's number and rule): with more open
       elements than that, a node goes in beside the current node, not
       under it. The stack of open elements is not cut short, so end tags
-      still close what they name. The box builder, layout, and painting
-      recurse once per level of the tree and rely on this.
+      still close what they name. The adoption agency algorithm moves
+      a block and puts a clone into it wherever they are, so the parser
+      ends with `Dom.limitDepth`: the child elements of an element with
+      512 ancestors follow it as siblings instead, each with its text.
+      The box builder, layout, and painting recurse once per level of
+      the tree and rely on this.
     - *Open elements.* A tag costs the same however many elements are
       open. What the parser asks of the stack of open elements (an
       element in a scope, the open element an end tag names with no

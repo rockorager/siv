@@ -302,6 +302,40 @@ pub fn moveChildren(d: *Dom, from: NodeId, to: NodeId) void {
     while (d.node(from).first != .none) d.append(to, d.node(from).first);
 }
 
+/// Leaves no element more than `max` ancestors (the document not
+/// counted): the child elements of an element that has that many follow
+/// it as siblings instead, in order, each with its text. The parser nests
+/// only so deep itself (`html.max_depth`), but the adoption agency
+/// algorithm puts a clone between a block and its children, and a caller
+/// may wrap the nodes it finds.
+pub fn limitDepth(d: *Dom, max: usize) void {
+    var id = d.node(.document).first;
+    var depth: usize = 0;
+    while (id != .none) {
+        if (depth < max and d.node(id).first != .none) {
+            id = d.node(id).first;
+            depth += 1;
+            continue;
+        }
+        if (depth == max) {
+            const parent = d.node(id).parent;
+            const after = d.node(id).next;
+            var child = d.node(id).first;
+            while (child != .none) {
+                const next = d.node(child).next;
+                if (d.node(child).kind == .element) d.insertBefore(parent, child, after);
+                child = next;
+            }
+        }
+        while (d.node(id).next == .none) {
+            id = d.node(id).parent;
+            if (id == .document) return;
+            depth -= 1;
+        }
+        id = d.node(id).next;
+    }
+}
+
 // Reading.
 
 pub fn children(d: *const Dom, id: NodeId) ChildIterator {
