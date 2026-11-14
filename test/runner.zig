@@ -18,9 +18,11 @@ pub const std_options: std.Options = .{
 };
 
 var log_err_count: usize = 0;
-// siv: the shard to run, and the indices of its tests.
+// siv: the shard to run. Its tests are those at index, index + count,
+// and so on: computed, since the build runner starts the process again
+// after a test crashed and asks for the next test without asking for
+// the metadata first.
 var shard: struct { index: usize = 0, count: usize = 1 } = .{};
-var shard_tests: []u32 = &.{};
 var fba: std.heap.FixedBufferAllocator = .init(&fba_buffer);
 var fba_buffer: [8192]u8 = undefined;
 var stdin_buffer: [4096]u8 = undefined;
@@ -112,20 +114,15 @@ fn mainServer(init: std.process.Init.Minimal) !void {
                 defer string_bytes.deinit(gpa);
                 try string_bytes.append(gpa, 0); // Reserve 0 for null.
 
-                // siv: only this shard's tests, by index.
-                shard_tests = try std.heap.page_allocator.alloc(u32, builtin.test_functions.len);
-                var shard_len: usize = 0;
-                for (0..builtin.test_functions.len) |i| if (i % shard.count == shard.index) {
-                    shard_tests[shard_len] = @intCast(i);
-                    shard_len += 1;
-                };
+                // siv: only this shard's tests.
+                const shard_len = (builtin.test_functions.len + shard.count - 1 -| shard.index) / shard.count;
                 const names = try gpa.alloc(u32, shard_len);
                 defer gpa.free(names);
                 const expected_panic_msgs = try gpa.alloc(u32, shard_len);
                 defer gpa.free(expected_panic_msgs);
 
-                for (shard_tests[0..shard_len], names, expected_panic_msgs) |test_index, *name, *expected_panic_msg| {
-                    const test_fn = builtin.test_functions[test_index];
+                for (names, expected_panic_msgs, 0..) |*name, *expected_panic_msg, k| {
+                    const test_fn = builtin.test_functions[shard.index + k * shard.count]; // siv: by shard
                     name.* = @intCast(string_bytes.items.len);
                     try string_bytes.ensureUnusedCapacity(gpa, test_fn.name.len + 1);
                     string_bytes.appendSliceAssumeCapacity(test_fn.name);
@@ -152,7 +149,7 @@ fn mainServer(init: std.process.Init.Minimal) !void {
                 });
                 log_err_count = 0;
                 const index = try server.receiveBody_u32();
-                const test_fn = builtin.test_functions[shard_tests[index]]; // siv: by shard
+                const test_fn = builtin.test_functions[shard.index + index * shard.count]; // siv: by shard
                 is_fuzz_test = false;
 
                 // let the build server know we're starting the test now
