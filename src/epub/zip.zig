@@ -11,6 +11,10 @@ pub const Error = error{ OutOfMemory, InvalidZip, Unsupported, TooLarge };
 /// The most an entry may inflate to.
 pub const max_entry = 256 << 20;
 
+/// The most deflate expands its input by: a match of 258 bytes takes two
+/// bits at least (a length code and a distance code of one bit each).
+const max_ratio = 1032;
+
 pub const Entry = struct {
     name: []const u8,
     method: u16,
@@ -50,17 +54,25 @@ pub const Archive = struct {
                 return gpa.dupe(u8, data);
             },
             8 => {
+                // The recorded size is the archive's word. Deflate
+                // writes at most 258 bytes for two bits of input, 1032
+                // to 1, so a size beyond that is wrong whatever the
+                // stream holds, and is not allocated.
+                if (e.size > @as(u64, e.compressed) * max_ratio) return error.InvalidZip;
+                const out = try gpa.alloc(u8, e.size);
+                errdefer gpa.free(out);
                 var in: std.Io.Reader = .fixed(data);
-                var aw: std.Io.Writer.Allocating = try .initCapacity(gpa, e.size);
-                errdefer aw.deinit();
                 var buf: [std.compress.flate.max_window_len]u8 = undefined;
                 var d: std.compress.flate.Decompress = .init(&in, .raw, &buf);
-                _ = d.reader.streamRemaining(&aw.writer) catch |err| switch (err) {
-                    error.WriteFailed => return error.OutOfMemory,
-                    else => return error.InvalidZip,
-                };
-                if (aw.written().len != e.size) return error.InvalidZip;
-                return aw.toOwnedSlice() catch error.OutOfMemory;
+                // Exactly the recorded size: the stream ends short of
+                // it, or has a byte more.
+                const n = d.reader.readSliceShort(out) catch return error.InvalidZip;
+                if (n != out.len) return error.InvalidZip;
+                if (d.reader.peekByte()) |_| return error.InvalidZip else |err| switch (err) {
+                    error.EndOfStream => {},
+                    error.ReadFailed => return error.InvalidZip,
+                }
+                return out;
             },
             else => return error.Unsupported,
         }
@@ -126,4 +138,87 @@ test "stored and deflated entries" {
     defer gpa.free(b);
     try std.testing.expectEqualStrings("xyz", b);
     try std.testing.expectError(error.InvalidZip, open(gpa, bytes[0 .. bytes.len - 30]));
+}
+
+/// A zip of one entry for tests: `data` is what the archive holds for
+/// it, `size` what the headers say it inflates to.
+fn oneEntry(gpa: Allocator, method: u16, data: []const u8, size: u32) ![]u8 {
+    const name = "a";
+    const put = std.mem.writeInt;
+    var local: [30]u8 = @splat(0);
+    local[0..4].* = "PK\x03\x04".*;
+    put(u16, local[8..10], method, .little);
+    put(u32, local[18..22], @intCast(data.len), .little);
+    put(u32, local[22..26], size, .little);
+    put(u16, local[26..28], name.len, .little);
+    var dir: [46]u8 = @splat(0);
+    dir[0..4].* = "PK\x01\x02".*;
+    put(u16, dir[10..12], method, .little);
+    put(u32, dir[20..24], @intCast(data.len), .little);
+    put(u32, dir[24..28], size, .little);
+    put(u16, dir[28..30], name.len, .little);
+    var end: [22]u8 = @splat(0);
+    end[0..4].* = "PK\x05\x06".*;
+    put(u16, end[8..10], 1, .little);
+    put(u16, end[10..12], 1, .little);
+    put(u32, end[12..16], dir.len + name.len, .little);
+    put(u32, end[16..20], @intCast(local.len + name.len + data.len), .little);
+    return std.mem.concat(gpa, u8, &.{ &local, name, data, &dir, name, &end });
+}
+
+test "an entry does not inflate past its recorded size" {
+    const gpa = std.testing.allocator;
+    // A megabyte of zeros as deflate's stored blocks: a final-block bit
+    // and type 0, the length, and its complement.
+    var stream: std.ArrayList(u8) = .empty;
+    defer stream.deinit(gpa);
+    const blocks = 16;
+    for (0..blocks) |k| {
+        try stream.appendSlice(gpa, &.{ @intFromBool(k + 1 == blocks), 0xff, 0xff, 0x00, 0x00 });
+        try stream.appendNTimes(gpa, 0, 0xffff);
+    }
+    const total = blocks * 0xffff;
+    // Reading may allocate what the entry records and no more: the
+    // allocator has 64 KiB.
+    const room = try gpa.alloc(u8, 64 << 10);
+    defer gpa.free(room);
+    for ([_]u32{ 0, 16, 40_000 }) |size| {
+        const bytes = try oneEntry(gpa, 8, stream.items, size);
+        defer gpa.free(bytes);
+        var z = try open(gpa, bytes);
+        defer z.deinit(gpa);
+        var limited: std.heap.FixedBufferAllocator = .init(room);
+        try std.testing.expectError(error.InvalidZip, z.read(limited.allocator(), &z.entries[0]));
+    }
+    // With room, the whole entry and nothing else is the entry.
+    {
+        const bytes = try oneEntry(gpa, 8, stream.items, total);
+        defer gpa.free(bytes);
+        var z = try open(gpa, bytes);
+        defer z.deinit(gpa);
+        const data = try z.read(gpa, &z.entries[0]);
+        defer gpa.free(data);
+        try std.testing.expectEqual(total, data.len);
+        try std.testing.expect(std.mem.allEqual(u8, data, 0));
+    }
+    // An entry that ends short of its recorded size.
+    {
+        const bytes = try oneEntry(gpa, 8, stream.items, total + 1);
+        defer gpa.free(bytes);
+        var z = try open(gpa, bytes);
+        defer z.deinit(gpa);
+        try std.testing.expectError(error.InvalidZip, z.read(gpa, &z.entries[0]));
+    }
+}
+
+test "an entry's recorded size is checked against what deflate can hold" {
+    const gpa = std.testing.allocator;
+    // An empty stored block, recorded as 200 MiB: no stream of 5 bytes
+    // inflates to that, so nothing is allocated for it.
+    const bytes = try oneEntry(gpa, 8, &.{ 1, 0, 0, 0xff, 0xff }, 200 << 20);
+    defer gpa.free(bytes);
+    var z = try open(gpa, bytes);
+    defer z.deinit(gpa);
+    var none: std.heap.FixedBufferAllocator = .init(&.{});
+    try std.testing.expectError(error.InvalidZip, z.read(none.allocator(), &z.entries[0]));
 }
