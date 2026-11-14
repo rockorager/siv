@@ -5130,9 +5130,26 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       is another size (a byte more when the bits would fit the memory
       there is). Was: the counts were fields of the view's state, which
       an abort left ahead of the memory it restored, and the next click
-      wrote past a one-byte selection. What an abort does not undo: the
-      cursor (a cursor past the count goes), and selection changed
-      before the count in the same transaction. The cursor's row is
+      wrote past a one-byte selection. The rest of a view's state (the
+      cursor, the anchor, the scroll position it binds rows for) and
+      its rows' (the item each shows) is of one size, so a transaction
+      that changes any of it first leaves a stamp, a number in node
+      data of another size, and keeps what the view was; the
+      selection's bits move to memory of another size at a
+      transaction's first write. An abort brings back the old stamp:
+      the view finds it at its next use and takes back what it kept,
+      and every row is bound again by the transaction that changes the
+      view next or by one of the view's own from a posted callback,
+      whichever is first. Until then no row counts as bound, and an
+      event at a row is dropped: the row's state names the item the
+      aborted transaction bound it to while its nodes show the one
+      before. Was: the cursor, and selection bits changed without the
+      count, stayed as the aborted transaction left them, and a click
+      after an aborted scroll selected item 73 on the row that showed
+      item 0. Not undone: a table column's sort, and a tree item
+      expanded to no children. Reverse (drop the stamp) if siv gains
+      node data that a transaction keeps a copy of at its first write.
+      The cursor's row is
       the focused node (roving focus) and stays bound out of view. With
       single selection a selected row has no focus ring
       (`SIV_VISUAL_NO_FOCUS_RING`): when focus is on it, its

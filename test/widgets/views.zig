@@ -651,6 +651,126 @@ test "list, tree, and table view: an aborted transaction takes back its items an
     try testing.expectApproxEqAbs(@as(f32, 90), try columnWidth(table, 1), 0.01);
 }
 
+test "list and tree view: an aborted transaction takes back its cursor, selection, and rows" {
+    var h: Harness = .{};
+    try h.start(240, 320, null, null);
+    defer h.stop();
+    var m: Model = .{};
+    const list = try listOf(&h, &m, 100, .multiple);
+    var txn = try begin(h.window);
+    c.siv_view_set_selected(txn, list, 1, true);
+    c.siv_view_set_cursor(txn, list, 2);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    var cursor: i32 = 0;
+    var back: [16]u8 = undefined;
+    var len: usize = 0;
+    const none: [13]u8 = @splat(0);
+    // The count stays, so the selection is as large as it was: its bits
+    // and the cursor come back all the same, one by one or all at once.
+    for (0..2) |all| {
+        txn = try begin(h.window);
+        if (all == 1) {
+            c.siv_view_set_selection(txn, list, &@as([13]u8, @splat(0x55)), 13);
+        } else {
+            c.siv_view_set_selected(txn, list, 3, true);
+            c.siv_view_set_selected(txn, list, 1, false);
+        }
+        c.siv_view_set_cursor(txn, list, 90);
+        try ok(c.siv_txn_status(txn));
+        c.siv_txn_abort(txn);
+        try ok(c.siv_view_get_cursor(list, &cursor));
+        try testing.expectEqual(@as(i32, 2), cursor);
+        try ok(c.siv_view_get_selection(list, &back, back.len, &len));
+        try testing.expectEqual(@as(usize, 13), len);
+        try testing.expectEqual(@as(u8, 0x02), back[0]);
+        try testing.expectEqualSlices(u8, none[1..], back[1..13]);
+    }
+    // A committed change after it stays.
+    txn = try begin(h.window);
+    c.siv_view_set_selected(txn, list, 4, true);
+    try ok(c.siv_txn_commit(txn));
+    try ok(c.siv_view_get_selection(list, &back, back.len, &len));
+    try testing.expectEqual(@as(u8, 0x12), back[0]);
+
+    // An aborted scroll bound the rows to items 80 and up; the nodes
+    // show the first items again. The next scroll binds every row it
+    // shows, though the view had rows for them already as it saw it.
+    txn = try begin(h.window);
+    c.siv_view_scroll_to(txn, list, 90);
+    try ok(c.siv_txn_status(txn));
+    c.siv_txn_abort(txn);
+    txn = try begin(h.window);
+    c.siv_view_scroll_to(txn, list, 85);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    {
+        const uw, _ = try uiId(list);
+        const tree = try uw.semanticsTree();
+        try testing.expectEqual(@as(u32, 86), tree.find(.list_item, "Item 85").?.position);
+    }
+    txn = try begin(h.window);
+    c.siv_view_scroll_to(txn, list, 0);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    // A click right after the abort is on a row that names another item
+    // than it shows. It selects the item under it, or nothing when the
+    // rows are not bound again yet, as the next click finds them.
+    txn = try begin(h.window);
+    c.siv_view_scroll_to(txn, list, 90);
+    try ok(c.siv_txn_status(txn));
+    c.siv_txn_abort(txn);
+    try h.click(100, 16);
+    try h.settle();
+    try ok(c.siv_view_get_selection(list, &back, back.len, &len));
+    try testing.expect(back[0] == 0x12 or back[0] == 0x01);
+    try testing.expectEqualSlices(u8, none[1..], back[1..13]);
+    try h.click(100, 16);
+    try h.settle();
+    try ok(c.siv_view_get_selection(list, &back, back.len, &len));
+    try testing.expectEqual(@as(u8, 0x01), back[0]);
+    try testing.expectEqualSlices(u8, none[1..], back[1..13]);
+    try ok(c.siv_view_get_cursor(list, &cursor));
+    try testing.expectEqual(@as(i32, 0), cursor);
+    {
+        const uw, _ = try uiId(list);
+        const tree = try uw.semanticsTree();
+        try testing.expectEqual(@as(u32, 1), tree.find(.list_item, "Item 0").?.position);
+    }
+    // The row an aborted transaction bound is not the item's row.
+    txn = try begin(h.window);
+    c.siv_view_set_cursor(txn, list, 90);
+    try ok(c.siv_txn_status(txn));
+    c.siv_txn_abort(txn);
+    try testing.expectEqual(t.Node.null, c.siv_view_get_row(list, 90));
+    try testing.expect(c.siv_view_get_row(list, 0) != t.Node.null);
+
+    // A tree's cursor moves with the rows a collapse takes away, and
+    // back with them.
+    var m2: Model = .{};
+    txn = try begin(h.window);
+    const tree = c.siv_tree_view(txn, c.siv_window_get_root(h.window), &.{
+        .label = "Tree",
+        .label_len = 4,
+        .bind = Model.bind,
+        .children = Model.children,
+        .child = Model.child,
+        .user_data = &m2,
+    });
+    c.siv_view_set_expanded(txn, tree, 0, true);
+    c.siv_view_set_cursor(txn, tree, 5);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    txn = try begin(h.window);
+    c.siv_view_set_expanded(txn, tree, 0, false);
+    try ok(c.siv_view_get_cursor(tree, &cursor));
+    try testing.expectEqual(@as(i32, 1), cursor);
+    try ok(c.siv_txn_status(txn));
+    c.siv_txn_abort(txn);
+    try ok(c.siv_view_get_cursor(tree, &cursor));
+    try testing.expectEqual(@as(i32, 5), cursor);
+}
+
 /// Starts a drag from the next move once armed (the view keeps the
 /// press itself, so the test arms it after pressing).
 const Dragger = struct {

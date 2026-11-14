@@ -93,6 +93,24 @@ pub const View = extern struct {
     /// one lies in changed_lo..changed_hi (empty when lo > hi).
     changed_lo: u32 = std.math.maxInt(u32),
     changed_hi: u32 = 0,
+    /// The transaction that changed the view or its rows last, the number
+    /// it left in the stamp, and what the view was before it (`own`).
+    txn: Txn = .null,
+    serial: u32 = 0,
+    undo: Undo = .{},
+    /// The transaction whose own memory the selection is (`ownBits`).
+    bits_txn: Txn = .null,
+    /// An abort took back what the rows show: none counts as bound until
+    /// an update binds them again.
+    stale: bool = false,
+};
+
+/// What an abort brings back that is not in node data.
+const Undo = extern struct {
+    cursor: i32 = -1,
+    anchor: i32 = -1,
+    view_y: f32 = 0,
+    empty_stop: bool = false,
 };
 
 /// A table column's header cell.
@@ -148,6 +166,7 @@ var selection_key: u8 = 0;
 var tree_key: u8 = 0;
 var columns_key: u8 = 0;
 var heights_key: u8 = 0;
+var stamp_key: u8 = 0;
 
 pub export fn siv_list_view(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc) Node {
     return create(txn, parent, desc, .list);
@@ -244,8 +263,16 @@ fn never(_: ?*anyopaque, _: Node, _: *const siv.Event) callconv(.c) siv.EventRes
 
 fn viewOf(node: Node) ?*View {
     const v = w.stateOf(View, node, &.{.view}) orelse return null;
-    settle(v);
+    restore(v);
     return v;
+}
+
+/// The view of a row an event came to. None after an abort took back
+/// what the rows show: the row then names another item than it shows,
+/// so the event is dropped, and the rows are bound again for the next.
+fn viewOfRow(r: *Row) ?*View {
+    const v = viewOf(r.view) orelse return null;
+    return if (v.stale) null else v;
 }
 
 // Storage -----------------------------------------------------------------------
@@ -256,6 +283,81 @@ fn viewOf(node: Node) ?*View {
 // memory that changes size with it comes back with that memory. A count
 // in `View` stayed and ran past the memory. Each block also says what it
 // holds, and nothing is sliced by a number kept elsewhere.
+//
+// The rest of a view's state, and its rows', is of one size and stays as
+// an aborted transaction left it. So every transaction that changes any
+// of it first owns the view (`own`): it leaves a stamp in memory of
+// another size and keeps what the view was. An abort brings back the old
+// stamp, and the view, finding a stamp that is not its last, takes back
+// what it kept and binds its rows again (`restore`).
+
+/// A number that each transaction that owns the view replaces, in memory
+/// of another size: one byte longer, then as long as it was.
+const Stamp = extern struct { serial: u32, long: u32 };
+
+/// Before a transaction changes the view's state or its rows': false
+/// when it has failed, and then nothing may change.
+fn own(txn: Txn, v: *View) bool {
+    if (c.siv_txn_status(txn) != .ok) return false;
+    if (v.txn == txn) return true;
+    restore(v);
+    const long = if (dataOf(Stamp, v, &stamp_key)) |s| s.long == 0 else false;
+    var p: ?*anyopaque = null;
+    if (c.siv_set_data(txn, v.root, &stamp_key, @sizeOf(Stamp) + @as(usize, @intFromBool(long)), &p) != .ok) return false;
+    const s: *Stamp = @ptrCast(@alignCast(p.?));
+    v.serial +%= 1;
+    s.* = .{ .serial = v.serial, .long = @intFromBool(long) };
+    v.txn = txn;
+    v.undo = .{ .cursor = v.cursor, .anchor = v.anchor, .view_y = v.view_y, .empty_stop = v.empty_stop };
+    return true;
+}
+
+/// A transaction of the view's own, which owns it.
+fn begin(v: *View, window: siv.Window) ?Txn {
+    const txn = w.begin(window) orelse return null;
+    if (own(txn, v)) return txn;
+    _ = w.commit(txn);
+    return null;
+}
+
+/// Wherever the view is looked at: when the transaction that owned it
+/// last was aborted, the view is again what it was before it. The nodes
+/// show what they did then, but each row's state names the item the
+/// aborted transaction bound it to, so every row is bound again: by the
+/// transaction that changes the view next, or by one of the view's own
+/// from the loop, whichever comes first.
+fn restore(v: *View) void {
+    if (dataOf(Stamp, v, &stamp_key)) |s| if (s.serial != v.serial) {
+        v.serial = s.serial;
+        v.cursor = v.undo.cursor;
+        v.anchor = v.undo.anchor;
+        v.view_y = v.undo.view_y;
+        v.empty_stop = v.undo.empty_stop;
+        v.pending = -1;
+        resetChanged(v);
+        v.gen +%= 1;
+        if (!v.stale) _ = c.siv_post(w.appOf(w.windowOf(v.root)), mendLater, null, w.handleData(v.root));
+        v.stale = true;
+    };
+    // A transaction that failed halfway (no memory for a tree's rows
+    // after its selection shrank) leaves the cursor past the count until
+    // it ends.
+    const n = countOf(v);
+    if (v.cursor >= @as(i64, n)) v.cursor = -1;
+    if (v.anchor >= @as(i64, n)) v.anchor = v.cursor;
+}
+
+/// Binds the rows again after an abort, when a transaction opens.
+fn mend(v: *View) void {
+    if (!v.stale) return;
+    const txn = begin(v, w.windowOf(v.root)) orelse return;
+    update(txn, v);
+    _ = w.commit(txn);
+}
+
+fn mendLater(ud: ?*anyopaque) callconv(.c) void {
+    if (viewOf(w.dataHandle(ud))) |v| mend(v);
+}
 
 /// The start of the selection's memory; a bit per item follows.
 const Selection = extern struct {
@@ -312,17 +414,22 @@ fn bitBytes(count: u32) u32 {
 /// not selected. When the transaction has failed (an earlier operation,
 /// or no memory now), nothing changes.
 fn resizeSelection(txn: Txn, v: *View, count: u32) bool {
+    if (!own(txn, v)) return false;
     var bytes = bitBytes(count);
     var was: u32 = 0;
+    var same = false;
     if (dataOf(Selection, v, &selection_key)) |old| {
         was = @min(old.count, old.bytes *| 8);
+        same = old.count == count;
         // Another count is other memory even when its bits fit the
         // memory there is: a byte more makes it another size, and an
         // abort brings back the old memory with the old count.
-        if (old.count == count) bytes = old.bytes else if (old.bytes == bytes) bytes += 1;
+        if (same) bytes = old.bytes else if (old.bytes == bytes) bytes += 1;
     }
     var p: ?*anyopaque = null;
     if (c.siv_set_data(txn, v.root, &selection_key, @sizeOf(Selection) + @as(usize, bytes), &p) != .ok) return false;
+    // Other memory is the transaction's own (`ownBits`).
+    if (!same) v.bits_txn = txn;
     const s: *Selection = @ptrCast(@alignCast(p.?));
     s.count = count;
     s.bytes = bytes;
@@ -339,32 +446,41 @@ fn resizeSelection(txn: Txn, v: *View, count: u32) bool {
     return true;
 }
 
-/// An aborted transaction undoes the count and the rows, not the cursor
-/// it moved, which may be past them now.
-fn settle(v: *View) void {
-    const n = countOf(v);
-    if (v.cursor >= @as(i64, n)) v.cursor = -1;
-    if (v.anchor >= @as(i64, n)) v.anchor = v.cursor;
-}
-
 fn isSelected(v: *const View, i: u32) bool {
     return i < countOf(v) and bits(v)[i / 8] & (@as(u8, 1) << @intCast(i % 8)) != 0;
 }
 
-fn setSelected(v: *View, i: u32, on: bool) void {
-    if (i >= countOf(v)) return;
-    const s = dataOf(Selection, v, &selection_key) orelse return;
+/// The selection for a transaction to write: memory of its own, so that
+/// an abort brings back the bits there were. The first write of a
+/// transaction moves them to memory a byte longer, or back to memory
+/// that just holds them. Null when the transaction has failed.
+fn ownBits(txn: Txn, v: *View) ?*Selection {
+    if (!own(txn, v)) return null;
+    const old = dataOf(Selection, v, &selection_key) orelse return null;
+    if (v.bits_txn == txn) return old;
+    const tight = bitBytes(old.count);
+    const bytes = if (old.bytes == tight) tight + 1 else tight;
+    var p: ?*anyopaque = null;
+    if (c.siv_set_data(txn, v.root, &selection_key, @sizeOf(Selection) + @as(usize, bytes), &p) != .ok) return null;
+    const s: *Selection = @ptrCast(@alignCast(p.?));
+    s.bytes = bytes;
+    v.bits_txn = txn;
+    return s;
+}
+
+fn setSelected(txn: Txn, v: *View, i: u32, on: bool) void {
+    if (i >= countOf(v) or isSelected(v, i) == on) return;
+    const s = ownBits(txn, v) orelse return;
     const b = after(u8, s);
     const mask = @as(u8, 1) << @intCast(i % 8);
-    const was = b[i / 8] & mask != 0;
-    if (was == on) return;
     if (on) b[i / 8] |= mask else b[i / 8] &= ~mask;
     if (on) s.selected += 1 else s.selected -= 1;
     markChanged(v, i, i);
 }
 
-fn clearSelection(v: *View) void {
-    const s = dataOf(Selection, v, &selection_key) orelse return;
+fn clearSelection(txn: Txn, v: *View) void {
+    if (selectedCount(v) == 0) return;
+    const s = ownBits(txn, v) orelse return;
     const b = after(u8, s)[0..s.bytes];
     if (std.mem.indexOfNone(u8, b, &.{0})) |first| {
         const last = std.mem.lastIndexOfNone(u8, b, &.{0}).?;
@@ -410,6 +526,7 @@ fn treeRow(v: *const View, parent: u64, i: u32, siblings: u32, depth: u32) TreeR
 // every step: the rows grow before the count does and shrink after it.
 
 fn buildTop(txn: Txn, v: *View) bool {
+    if (!own(txn, v)) return false;
     const n = v.children.?(v.user_data, 0);
     if (n < countOf(v) and !resizeSelection(txn, v, n)) return false;
     const rows = reserveTree(txn, v, n) orelse return false;
@@ -422,6 +539,7 @@ fn buildTop(txn: Txn, v: *View) bool {
 
 /// Inserts `k` rows after `at`, shifting selection bits and the cursor.
 fn insertRows(txn: Txn, v: *View, at: u32, k: u32) ?[*]TreeRow {
+    if (!own(txn, v)) return null;
     const old = countOf(v);
     const rows = reserveTree(txn, v, old + k) orelse return null;
     if (!resizeSelection(txn, v, old + k)) return null;
@@ -429,9 +547,9 @@ fn insertRows(txn: Txn, v: *View, at: u32, k: u32) ?[*]TreeRow {
     var i = old + k;
     while (i > at + 1 + k) {
         i -= 1;
-        setSelected(v, i, isSelected(v, i - k));
+        setSelected(txn, v, i, isSelected(v, i - k));
     }
-    for (at + 1..at + 1 + k) |j| setSelected(v, @intCast(j), false);
+    for (at + 1..at + 1 + k) |j| setSelected(txn, v, @intCast(j), false);
     if (v.cursor > at) v.cursor += @intCast(k);
     if (v.anchor > at) v.anchor += @intCast(k);
     return rows;
@@ -442,11 +560,12 @@ fn insertRows(txn: Txn, v: *View, at: u32, k: u32) ?[*]TreeRow {
 /// was for an abort to bring back.
 fn removeRows(txn: Txn, v: *View, at: u32, k: u32) bool {
     if (k == 0) return true;
+    if (!own(txn, v)) return false;
     const old = treeRows(v);
     const old_bits = bits(v);
     const n: u32 = @intCast(old.len);
     if (!resizeSelection(txn, v, n - k)) return false;
-    for (at + 1 + k..n) |i| setSelected(v, @intCast(i - k), old_bits[i / 8] & (@as(u8, 1) << @intCast(i % 8)) != 0);
+    for (at + 1 + k..n) |i| setSelected(txn, v, @intCast(i - k), old_bits[i / 8] & (@as(u8, 1) << @intCast(i % 8)) != 0);
     const rows = reserveTree(txn, v, n - k) orelse return false;
     @memcpy(rows[at + 1 .. n - k], old[at + 1 + k ..]);
     if (v.cursor > at + k) v.cursor -= @intCast(k) else if (v.cursor > at) v.cursor = @intCast(at);
@@ -457,7 +576,7 @@ fn removeRows(txn: Txn, v: *View, at: u32, k: u32) bool {
 fn setExpanded(txn: Txn, v: *View, at: u32, on: bool) void {
     if (v.mode != .tree or at >= countOf(v)) return;
     // A failed transaction is discarded: its operations do nothing (D4).
-    if (c.siv_txn_status(txn) != .ok) return;
+    if (c.siv_txn_status(txn) != .ok or !own(txn, v)) return;
     const r = treeRows(v)[at];
     if (!r.flags.parent or r.flags.expanded == on) return;
     if (on) {
@@ -559,6 +678,7 @@ fn rowAt(v: *const View, y: f32) u32 {
 
 /// Positions, height, and rows for the current count and viewport.
 fn update(txn: Txn, v: *View) void {
+    if (!own(txn, v)) return;
     if (v.mode == .grid) v.columns = @max(1, @as(u32, @intFromFloat(@floor((v.view_w - v.gutter) / v.item_w))));
     if (!buildHeights(txn, v)) return;
     _ = c.siv_set_layout(txn, v.content, &.{ .height = w.px(contentHeight(v)) });
@@ -570,6 +690,8 @@ fn update(txn: Txn, v: *View) void {
 /// Binds the rows of the range in view (plus overscan) from the pool,
 /// and the cursor's row wherever it is, so that it can take the focus.
 fn materialize(txn: Txn, v: *View) void {
+    if (!own(txn, v)) return;
+    v.stale = false;
     const per = if (v.mode == .grid) v.columns else 1;
     var lo: u32 = 0;
     var hi: u32 = 0;
@@ -663,8 +785,8 @@ fn createRow(txn: Txn, v: *View) Node {
 
 fn onRowFocus(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const r: *Row = @ptrCast(@alignCast(ud.?));
-    const v = viewOf(r.view) orelse return .pass;
     r.ring = ev.flags.gained and ev.flags.visible;
+    const v = viewOfRow(r) orelse return .pass;
     if (r.index < 0 or r.index >= countOf(v)) return .pass;
     // Focus that leaves at a commit (the row no longer the stop, a modal
     // node taking it) comes inside that commit, where no transaction
@@ -680,7 +802,7 @@ fn onRowFocus(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.E
 
 fn restyleRow(ud: ?*anyopaque) callconv(.c) void {
     const r = rowOf(w.dataHandle(ud)) orelse return;
-    const v = viewOf(r.view) orelse return;
+    const v = viewOfRow(r) orelse return;
     if (r.index < 0 or r.index >= countOf(v)) return;
     const txn = w.begin(w.windowOf(v.root)) orelse return;
     applyRow(txn, v, r);
@@ -795,6 +917,8 @@ fn followFocus(v: *const View) void {
 }
 
 fn applyAll(txn: Txn, v: *View) void {
+    // After an abort no row is bound: bind them.
+    if (v.stale) return update(txn, v);
     var cur = w.related(v.content, .first_child);
     while (cur != .null) : (cur = w.related(cur, .next)) {
         const r = rowOf(cur) orelse continue;
@@ -1151,30 +1275,30 @@ fn restyleHeader(v: *View, window: siv.Window) void {
 fn moveCursor(v: *View, to: i64, window: siv.Window, mods: siv.Modifiers, toggle: bool) void {
     if (countOf(v) == 0) return;
     const target: u32 = @intCast(std.math.clamp(to, 0, @as(i64, countOf(v)) - 1));
-    const txn = w.begin(window) orelse return;
+    const txn = begin(v, window) orelse return;
     v.cursor = @intCast(target);
     const before = selectedCount(v);
     var changed = false;
     switch (v.selection) {
         .single => if (!mods.ctrl or toggle) {
             changed = !isSelected(v, target) or selectedCount(v) != 1;
-            clearSelection(v);
-            setSelected(v, target, true);
+            clearSelection(txn, v);
+            setSelected(txn, v, target, true);
         },
         .multiple => if (toggle) {
-            setSelected(v, target, !isSelected(v, target));
+            setSelected(txn, v, target, !isSelected(v, target));
             changed = true;
             v.anchor = @intCast(target);
         } else if (mods.shift and v.anchor >= 0) {
-            if (!mods.ctrl) clearSelection(v);
+            if (!mods.ctrl) clearSelection(txn, v);
             const a: u32 = @intCast(v.anchor);
             var i = @min(a, target);
-            while (i <= @max(a, target)) : (i += 1) setSelected(v, i, true);
+            while (i <= @max(a, target)) : (i += 1) setSelected(txn, v, i, true);
             changed = true;
         } else if (!mods.ctrl) {
             changed = !isSelected(v, target) or selectedCount(v) != 1;
-            clearSelection(v);
-            setSelected(v, target, true);
+            clearSelection(txn, v);
+            setSelected(txn, v, target, true);
             v.anchor = @intCast(target);
         },
         else => {},
@@ -1198,7 +1322,7 @@ fn emitSelect(v: *View) void {
 /// Moves the cursor to `to` and focuses it without changing the
 /// selection.
 fn moveCursorOnly(v: *View, to: u32, window: siv.Window) void {
-    const txn = w.begin(window) orelse return;
+    const txn = begin(v, window) orelse return;
     v.cursor = @intCast(to);
     v.anchor = @intCast(to);
     reveal(txn, v, to);
@@ -1209,6 +1333,7 @@ fn moveCursorOnly(v: *View, to: u32, window: siv.Window) void {
 
 /// Scrolls so that row `i` is in view, and binds rows for the new range.
 fn reveal(txn: Txn, v: *View, i: u32) void {
+    if (!own(txn, v)) return;
     const top = rowTop(v, i);
     const h = rowHeight(v, i);
     var y = v.view_y;
@@ -1240,12 +1365,15 @@ fn onEmptyPointer(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) s
 
 fn onViewport(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const v: *View = @ptrCast(@alignCast(ud.?));
-    settle(v);
+    restore(v);
     const e = ev;
+    // Where the compositor has the view, whatever becomes of a
+    // transaction: one open now keeps it too.
     v.view_y = e.y;
+    v.undo.view_y = e.y;
     v.view_w = e.width;
     v.view_h = e.height;
-    const txn = w.begin(e.window) orelse return .pass;
+    const txn = begin(v, e.window) orelse return .pass;
     update(txn, v);
     _ = w.commit(txn);
     return .handled;
@@ -1254,13 +1382,13 @@ fn onViewport(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.E
 fn onRowPointer(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const r: *Row = @ptrCast(@alignCast(ud.?));
     const e = ev;
-    const v = viewOf(r.view) orelse return .pass;
     // Hover follows the core's hover path always: a leave dropped while
     // the row was in the pool (a search shrank the count under the
     // pointer) or the view disabled left the flag set, and the row
     // showed the hover fill wherever it was bound next.
+    if (e.phase == .enter or e.phase == .leave) r.hdr.hover = e.phase == .enter;
+    const v = viewOfRow(r) orelse return .pass;
     if (e.phase == .enter or e.phase == .leave) {
-        r.hdr.hover = e.phase == .enter;
         if (r.index < 0 or r.index >= countOf(v)) return .pass;
         const txn = w.begin(e.window) orelse return .pass;
         applyRow(txn, v, r);
@@ -1342,18 +1470,18 @@ fn isEditor(n: Node) bool {
 }
 
 fn toggleExpanded(v: *View, at: u32, window: siv.Window) void {
-    const txn = w.begin(window) orelse return;
+    const txn = begin(v, window) orelse return;
     v.cursor = @intCast(at);
     setExpanded(txn, v, at, !treeRows(v)[at].flags.expanded);
     update(txn, v);
-    _ = w.commit(txn);
+    if (!w.commit(txn)) return;
     focusCursor(v);
 }
 
 /// Assistive technology's SelectChild activates a row: it selects it.
 fn onRowActivate(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const r: *Row = @ptrCast(@alignCast(ud.?));
-    const v = viewOf(r.view) orelse return .pass;
+    const v = viewOfRow(r) orelse return .pass;
     if (v.hdr.disabled or r.index < 0 or r.index >= countOf(v)) return .pass;
     moveCursor(v, r.index, ev.window, .{}, false);
     return .handled;
@@ -1362,7 +1490,7 @@ fn onRowActivate(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) si
 fn onRowKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.EventResult {
     const r: *Row = @ptrCast(@alignCast(ud.?));
     const e = ev;
-    const v = viewOf(r.view) orelse return .pass;
+    const v = viewOfRow(r) orelse return .pass;
     if (!e.flags.pressed or v.hdr.disabled or countOf(v) == 0) return .pass;
     // Keys for a focused node inside the row (an editor renaming the item,
     // a button) are that node's: Space types a space, arrows move the
@@ -1411,8 +1539,8 @@ fn onRowKey(ud: ?*anyopaque, _: Node, ev: *const siv.Event) callconv(.c) siv.Eve
         },
         @as(siv.Key, @enumFromInt('a')), @as(siv.Key, @enumFromInt('A')) => {
             if (!e.modifiers.ctrl or v.selection != .multiple) return .pass;
-            const txn = w.begin(e.window) orelse return .handled;
-            for (0..countOf(v)) |i| setSelected(v, @intCast(i), true);
+            const txn = begin(v, e.window) orelse return .handled;
+            for (0..countOf(v)) |i| setSelected(txn, v, @intCast(i), true);
             applyAll(txn, v);
             if (w.commit(txn)) emitSelect(v);
         },
@@ -1442,6 +1570,7 @@ fn treeKey(v: *View, at: u32, forward: bool, window: siv.Window) void {
 
 pub export fn siv_view_set_count(txn: Txn, view: Node, count: u32) void {
     const v = viewOf(view) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
+    if (!own(txn, v)) return;
     if (v.mode == .tree) {
         if (!buildTop(txn, v)) return;
     } else {
@@ -1457,6 +1586,7 @@ pub export fn siv_view_set_count(txn: Txn, view: Node, count: u32) void {
 
 pub export fn siv_view_refresh(txn: Txn, view: Node) void {
     const v = viewOf(view) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
+    if (!own(txn, v)) return;
     v.gen +%= 1;
     update(txn, v);
     return;
@@ -1465,18 +1595,20 @@ pub export fn siv_view_refresh(txn: Txn, view: Node) void {
 pub export fn siv_view_set_selected(txn: Txn, view: Node, index: u32, selected: bool) void {
     const v = viewOf(view) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
     if (index >= countOf(v) or v.selection == .none) return c.siv_txn_fail(txn, .error_invalid_argument);
+    if (!own(txn, v)) return;
     if (v.selection == .single and selected) {
-        clearSelection(v);
+        clearSelection(txn, v);
         v.cursor = @intCast(index);
-        setSelected(v, index, selected);
+        setSelected(txn, v, index, selected);
         resetChanged(v);
         // The cursor's row may be out of view: bind it, and focus follows.
         materialize(txn, v);
         followFocus(v);
         return;
     }
-    setSelected(v, index, selected);
+    setSelected(txn, v, index, selected);
     resetChanged(v);
+    if (v.stale) return update(txn, v);
     // Only the row showing the item changes, if it is bound: restyling
     // every row per call made selecting many items one by one quadratic.
     var cur = w.related(v.content, .first_child);
@@ -1522,8 +1654,6 @@ pub export fn siv_view_set_selection(txn: Txn, view: Node, bitset: ?[*]const u8,
     const v = viewOf(view) orelse return c.siv_txn_fail(txn, .error_invalid_argument);
     if (bitset_count != 0 and bitset == null) return c.siv_txn_fail(txn, .error_invalid_argument);
     const src = if (bitset_count == 0) &[_]u8{} else bitset.?[0..bitset_count];
-    const sel = dataOf(Selection, v, &selection_key) orelse return;
-    const b = bits(v);
     const count = countOf(v);
     const n = @min(src.len, (@as(usize, count) + 7) / 8);
     var total: u32 = 0;
@@ -1534,6 +1664,8 @@ pub export fn siv_view_set_selection(txn: Txn, view: Node, bitset: ?[*]const u8,
     }
     if (total != 0 and v.selection == .none) return c.siv_txn_fail(txn, .error_invalid_argument);
     if (total > 1 and v.selection == .single) return c.siv_txn_fail(txn, .error_invalid_argument);
+    const sel = ownBits(txn, v) orelse return;
+    const b = bits(v);
     @memset(b, 0);
     for (src[0..n], 0..) |x, i| {
         const keep: u8 = if ((i + 1) * 8 <= count) 0xff else @as(u8, 0xff) >> @intCast((i + 1) * 8 - count);
@@ -1574,10 +1706,12 @@ pub export fn siv_view_set_cursor(txn: Txn, view: Node, index: i32) void {
 /// cursor to the first row if it has none; an empty view focuses its
 /// scroll node.
 fn focusTarget(v: *View) Node {
+    restore(v);
+    mend(v);
     if (v.hdr.disabled) return .null;
     if (countOf(v) == 0) return v.scroll;
     if (v.cursor < 0) {
-        const txn = w.begin(w.windowOf(v.root)) orelse return .null;
+        const txn = begin(v, w.windowOf(v.root)) orelse return .null;
         setCursor(txn, v, 0);
         if (!w.commit(txn)) return .null;
     }
@@ -1594,6 +1728,7 @@ fn viewPart(v: *const View, p: siv.WidgetPart, index: u32) Node {
 
 pub export fn siv_view_get_row(view: Node, index: u32) Node {
     const v = viewOf(view) orelse return .null;
+    mend(v);
     if (index >= countOf(v)) return .null;
     return if (boundRow(v, index)) |r| r.body else .null;
 }
@@ -1644,6 +1779,7 @@ fn scrollSemantics(txn: Txn, v: *View, label: []const u8) void {
     var role: siv.Role = .list;
     if (v.mode == .tree) role = .tree;
     if (v.mode == .table) role = .table;
+    if (!own(txn, v)) return;
     v.empty_stop = countOf(v) == 0 and !v.hdr.disabled;
     _ = c.siv_set_semantics(txn, v.scroll, &.{ .role = role, .label = label.ptr, .label_len = label.len, .flags = .{ .focusable = v.empty_stop } });
 }
@@ -1679,6 +1815,7 @@ fn focusLater(ud: ?*anyopaque) callconv(.c) void {
 }
 
 pub fn setCursor(txn: Txn, v: *View, to: f64) void {
+    if (!own(txn, v)) return;
     const i: i64 = @intFromFloat(@round(to));
     v.cursor = if (i >= 0 and i < countOf(v)) @intCast(i) else -1;
     v.anchor = v.cursor;
@@ -1688,6 +1825,7 @@ pub fn setCursor(txn: Txn, v: *View, to: f64) void {
 }
 
 pub fn apply(txn: Txn, v: *View) void {
+    if (!own(txn, v)) return;
     syncEmptyStop(txn, v);
     applyAll(txn, v);
     if (v.header != .null) applyHeader(txn, v);
