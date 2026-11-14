@@ -77,7 +77,23 @@ pub fn Builder(comptime Tokenizer: type) type {
         mode: Mode = .initial,
         original_mode: Mode = .initial,
         template_modes: std.ArrayList(Mode) = .empty,
+        /// The stack of open elements. Read it freely; change it only
+        /// with `push`, `pop`, `popUntil`, `truncate`, `removeAt`,
+        /// `insertOpen`, and `replaceAt`, which keep `marks` and `is_open`
+        /// true.
         open: std.ArrayList(NodeId) = .empty,
+        /// `marks.items[i]` says what `open.items[i]` and the entries below
+        /// it are, so that a question about the stack ("is a `p` in button
+        /// scope?") reads the top mark and walks nothing: one walk per tag
+        /// made a document of nested elements cost its depth squared. The
+        /// list may be shorter than the stack after a change to it; `sync`
+        /// marks the rest when a question comes.
+        marks: std.ArrayList(Mark) = .empty,
+        /// The height (index + 1; 0 is none) of the topmost marked element
+        /// of each name, by atom: HTML elements, and foreign ones.
+        tops: [2]std.ArrayList(u32) = .{ .empty, .empty },
+        /// By node: on the stack of open elements.
+        is_open: std.DynamicBitSetUnmanaged = .{},
         /// Active formatting elements; `.none` is a marker.
         formatting: std.ArrayList(NodeId) = .empty,
         head: NodeId = .none,
@@ -97,6 +113,9 @@ pub fn Builder(comptime Tokenizer: type) type {
         pub fn deinit(b: *B) void {
             b.template_modes.deinit(b.gpa);
             b.open.deinit(b.gpa);
+            b.marks.deinit(b.gpa);
+            for (&b.tops) |*t| t.deinit(b.gpa);
+            b.is_open.deinit(b.gpa);
             b.formatting.deinit(b.gpa);
             b.pending_table_text.deinit(b.gpa);
             b.attrs_scratch.deinit(b.gpa);
@@ -188,106 +207,235 @@ pub fn Builder(comptime Tokenizer: type) type {
             return std.mem.indexOfScalar(Atom, names, b.nd(c).name) != null;
         }
 
+        /// Kinds of open element that a question about the stack stops
+        /// at: the boundaries of the five scopes, the special elements,
+        /// those that end the search for an open `li`, `dd`, or `dt`,
+        /// those that "reset the insertion mode" reads, and the HTML
+        /// elements (where an end tag in foreign content stops).
+        const Kind = enum { default, list_item, button, table, select, special, item_end, reset, html };
+
+        const Scope = enum { default, list_item, button, table, select };
+
+        const Mark = struct {
+            name: Atom,
+            foreign: bool,
+            /// Height of the next element down with the same name and
+            /// `foreign`.
+            below: u32,
+            /// Height of the topmost element of each kind at or below
+            /// this one.
+            last: std.EnumArray(Kind, u32),
+        };
+
+        fn isKind(ns: Namespace, name: Atom, kind: Kind) bool {
+            return switch (kind) {
+                .default => isScopeBoundary(ns, name, .default),
+                .list_item => isScopeBoundary(ns, name, .list_item),
+                .button => isScopeBoundary(ns, name, .button),
+                .table => isScopeBoundary(ns, name, .table),
+                .select => isScopeBoundary(ns, name, .select),
+                .special => isSpecialName(ns, name),
+                .item_end => isSpecialName(ns, name) and !(ns == .html and (name == .address or name == .div or name == .p)),
+                .reset => ns == .html and switch (name) {
+                    .select, .td, .th, .tr, .tbody, .thead, .tfoot, .caption, .colgroup, .table, .template, .head, .body, .frameset, .html => true,
+                    else => false,
+                },
+                .html => ns == .html,
+            };
+        }
+
+        /// The kinds of the elements with static names. Entry 0, no name,
+        /// serves every other name: no kind lists one.
+        const kinds: [std.enums.values(Namespace).len][atoms.first_dynamic]std.EnumSet(Kind) = blk: {
+            @setEvalBranchQuota(1_000_000);
+            var table: [std.enums.values(Namespace).len][atoms.first_dynamic]std.EnumSet(Kind) = undefined;
+            for (std.enums.values(Namespace)) |ns| for (0..atoms.first_dynamic) |name| {
+                var set: std.EnumSet(Kind) = .empty;
+                for (std.enums.values(Kind)) |kind| if (isKind(ns, @enumFromInt(name), kind)) set.insert(kind);
+                table[@intFromEnum(ns)][name] = set;
+            };
+            break :blk table;
+        };
+
+        /// Room for the marks of a stack with `id` on it too, so that
+        /// `sync` allocates nothing.
+        fn reserve(b: *B, id: NodeId) Error!void {
+            try b.marks.ensureTotalCapacity(b.gpa, b.open.items.len + 1);
+            const x = b.nd(id);
+            const tops = &b.tops[@intFromBool(x.ns != .html)];
+            const name = @intFromEnum(x.name);
+            if (name >= tops.items.len) try tops.appendNTimes(b.gpa, 0, name + 1 - tops.items.len);
+            const node = @intFromEnum(id);
+            if (node >= b.is_open.bit_length) try b.is_open.resize(b.gpa, @max(node + 1, b.is_open.bit_length * 2), false);
+        }
+
+        fn sync(b: *B) void {
+            while (b.marks.items.len < b.open.items.len) {
+                const i = b.marks.items.len;
+                const id = b.open.items[i];
+                const x = b.nd(id);
+                const height: u32 = @intCast(i + 1);
+                const top = &b.tops[@intFromBool(x.ns != .html)].items[@intFromEnum(x.name)];
+                var m: Mark = .{
+                    .name = x.name,
+                    .foreign = x.ns != .html,
+                    .below = top.*,
+                    .last = if (i == 0) .initFill(0) else b.marks.items[i - 1].last,
+                };
+                const set = kinds[@intFromEnum(x.ns)][if (x.name.isStatic()) @intFromEnum(x.name) else 0];
+                inline for (comptime std.enums.values(Kind)) |kind| if (set.contains(kind)) m.last.set(kind, height);
+                top.* = height;
+                b.marks.appendAssumeCapacity(m);
+            }
+        }
+
+        /// Forgets the marks of the entries from `len` up, which change.
+        fn unmark(b: *B, len: usize) void {
+            while (b.marks.items.len > len) {
+                const m = b.marks.pop().?;
+                b.tops[@intFromBool(m.foreign)].items[@intFromEnum(m.name)] = m.below;
+            }
+        }
+
+        /// Height of the topmost open element of a name, 0 without one.
+        fn topOf(b: *B, name: Atom, foreign_: bool) u32 {
+            b.sync();
+            const tops = b.tops[@intFromBool(foreign_)].items;
+            return if (@intFromEnum(name) < tops.len) tops[@intFromEnum(name)] else 0;
+        }
+
+        /// Height of the topmost open element of a kind, 0 without one.
+        fn lastOf(b: *B, kind: Kind) u32 {
+            b.sync();
+            return if (b.marks.items.len == 0) 0 else b.marks.items[b.marks.items.len - 1].last.get(kind);
+        }
+
+        pub fn push(b: *B, id: NodeId) Error!void {
+            try b.reserve(id);
+            try b.open.append(b.gpa, id);
+            b.is_open.set(@intFromEnum(id));
+        }
+
         fn pop(b: *B) void {
-            _ = b.open.pop();
+            b.is_open.unset(@intFromEnum(b.open.pop().?));
+            b.unmark(b.open.items.len);
         }
 
         fn popUntil(b: *B, name: Atom) void {
             while (b.open.items.len > 0) {
-                const c = b.open.pop().?;
+                const c = b.current();
+                b.pop();
                 if (b.isH(c, name)) return;
             }
         }
 
         fn popUntilAny(b: *B, names: []const Atom) void {
             while (b.open.items.len > 0) {
-                const c = b.open.pop().?;
+                const c = b.current();
+                b.pop();
                 if (b.nd(c).ns == .html and std.mem.indexOfScalar(Atom, names, b.nd(c).name) != null) return;
             }
         }
 
-        fn indexInStack(b: *const B, id: NodeId) ?usize {
-            var i = b.open.items.len;
-            while (i > 0) {
-                i -= 1;
-                if (b.open.items[i] == id) return i;
-            }
-            return null;
+        /// Pops down to `len` open elements.
+        fn truncate(b: *B, len: usize) void {
+            for (b.open.items[len..]) |id| b.is_open.unset(@intFromEnum(id));
+            b.open.shrinkRetainingCapacity(len);
+            b.unmark(len);
+        }
+
+        fn removeAt(b: *B, i: usize) void {
+            b.is_open.unset(@intFromEnum(b.open.orderedRemove(i)));
+            b.unmark(i);
+        }
+
+        fn insertOpen(b: *B, i: usize, id: NodeId) Error!void {
+            try b.reserve(id);
+            try b.open.insert(b.gpa, i, id);
+            b.is_open.set(@intFromEnum(id));
+            b.unmark(i);
+        }
+
+        fn replaceAt(b: *B, i: usize, id: NodeId) Error!void {
+            try b.reserve(id);
+            b.is_open.unset(@intFromEnum(b.open.items[i]));
+            b.open.items[i] = id;
+            b.is_open.set(@intFromEnum(id));
+            b.unmark(i);
+        }
+
+        fn isOpen(b: *const B, id: NodeId) bool {
+            return @intFromEnum(id) < b.is_open.bit_length and b.is_open.isSet(@intFromEnum(id));
+        }
+
+        /// Looks at the open elements of the node's name only, from the
+        /// top.
+        fn indexInStack(b: *B, id: NodeId) ?usize {
+            if (!b.isOpen(id)) return null;
+            const x = b.nd(id);
+            var h = b.topOf(x.name, x.ns != .html);
+            while (h != 0) : (h = b.marks.items[h - 1].below) if (b.open.items[h - 1] == id) return h - 1;
+            unreachable;
         }
 
         fn removeFromStack(b: *B, id: NodeId) void {
-            if (b.indexInStack(id)) |i| _ = b.open.orderedRemove(i);
+            if (b.indexInStack(id)) |i| b.removeAt(i);
         }
 
-        fn stackHas(b: *const B, name: Atom) bool {
-            for (b.open.items) |id| if (b.isH(id, name)) return true;
-            return false;
+        fn stackHas(b: *B, name: Atom) bool {
+            return b.topOf(name, false) != 0;
         }
 
-        const Scope = enum { default, list_item, button, table, select };
-
-        fn isScopeBoundary(b: *const B, id: NodeId, scope: Scope) bool {
-            const x = b.nd(id);
+        fn isScopeBoundary(ns: Namespace, name: Atom, scope: Scope) bool {
             switch (scope) {
-                .select => return !(x.ns == .html and (x.name == .optgroup or x.name == .option)),
-                .table => return x.ns == .html and (x.name == .html or x.name == .table or x.name == .template),
+                .select => return !(ns == .html and (name == .optgroup or name == .option)),
+                .table => return ns == .html and (name == .html or name == .table or name == .template),
                 else => {},
             }
-            const base = switch (x.ns) {
-                .html => switch (x.name) {
+            const base = switch (ns) {
+                .html => switch (name) {
                     .applet, .caption, .html, .table, .td, .th, .marquee, .object, .template => true,
                     else => false,
                 },
-                .mathml => switch (x.name) {
+                .mathml => switch (name) {
                     .mi, .mo, .mn, .ms, .mtext, .@"annotation-xml" => true,
                     else => false,
                 },
-                .svg => switch (x.name) {
+                .svg => switch (name) {
                     .foreignObject, .desc, .title => true,
                     else => false,
                 },
             };
             if (base) return true;
-            if (x.ns != .html) return false;
+            if (ns != .html) return false;
             return switch (scope) {
-                .list_item => x.name == .ol or x.name == .ul,
-                .button => x.name == .button,
+                .list_item => name == .ol or name == .ul,
+                .button => name == .button,
                 else => false,
             };
         }
 
-        fn inScope(b: *const B, name: Atom, scope: Scope) bool {
-            var i = b.open.items.len;
-            while (i > 0) {
-                i -= 1;
-                const id = b.open.items[i];
-                if (b.isH(id, name)) return true;
-                if (b.isScopeBoundary(id, scope)) return false;
-            }
+        fn scopeKind(scope: Scope) Kind {
+            return switch (scope) {
+                inline else => |s| @field(Kind, @tagName(s)),
+            };
+        }
+
+        /// An element of the name is open with no boundary of the scope
+        /// above it.
+        fn inScope(b: *B, name: Atom, scope: Scope) bool {
+            const h = b.topOf(name, false);
+            return h != 0 and h >= b.lastOf(scopeKind(scope));
+        }
+
+        fn inScopeAny(b: *B, names: []const Atom, scope: Scope) bool {
+            for (names) |name| if (b.inScope(name, scope)) return true;
             return false;
         }
 
-        fn inScopeAny(b: *const B, names: []const Atom, scope: Scope) bool {
-            var i = b.open.items.len;
-            while (i > 0) {
-                i -= 1;
-                const id = b.open.items[i];
-                const x = b.nd(id);
-                if (x.ns == .html and std.mem.indexOfScalar(Atom, names, x.name) != null) return true;
-                if (b.isScopeBoundary(id, scope)) return false;
-            }
-            return false;
-        }
-
-        fn nodeInScope(b: *const B, target: NodeId) bool {
-            var i = b.open.items.len;
-            while (i > 0) {
-                i -= 1;
-                const id = b.open.items[i];
-                if (id == target) return true;
-                if (b.isScopeBoundary(id, .default)) return false;
-            }
-            return false;
+        fn nodeInScope(b: *B, target: NodeId) bool {
+            const i = b.indexInStack(target) orelse return false;
+            return i + 1 >= b.lastOf(.default);
         }
 
         const implied = [_]Atom{ .dd, .dt, .li, .optgroup, .option, .p, .rb, .rp, .rt, .rtc };
@@ -303,16 +451,20 @@ pub fn Builder(comptime Tokenizer: type) type {
 
         fn isSpecial(b: *const B, id: NodeId) bool {
             const x = b.nd(id);
-            return switch (x.ns) {
-                .html => switch (x.name) {
+            return isSpecialName(x.ns, x.name);
+        }
+
+        fn isSpecialName(ns: Namespace, name: Atom) bool {
+            return switch (ns) {
+                .html => switch (name) {
                     .address, .applet, .area, .article, .aside, .base, .basefont, .bgsound, .blockquote, .body, .br, .button, .caption, .center, .col, .colgroup, .dd, .details, .dir, .div, .dl, .dt, .embed, .fieldset, .figcaption, .figure, .footer, .form, .frame, .frameset, .h1, .h2, .h3, .h4, .h5, .h6, .head, .header, .hgroup, .hr, .html, .iframe, .img, .input, .keygen, .li, .link, .listing, .main, .marquee, .menu, .meta, .nav, .noembed, .noframes, .noscript, .object, .ol, .p, .param, .plaintext, .pre, .script, .search, .section, .select, .source, .style, .summary, .table, .tbody, .td, .template, .textarea, .tfoot, .th, .thead, .title, .tr, .track, .ul, .wbr, .xmp => true,
                     else => false,
                 },
-                .mathml => switch (x.name) {
+                .mathml => switch (name) {
                     .mi, .mo, .mn, .ms, .mtext, .@"annotation-xml" => true,
                     else => false,
                 },
-                .svg => switch (x.name) {
+                .svg => switch (name) {
                     .foreignObject, .desc, .title => true,
                     else => false,
                 },
@@ -331,14 +483,10 @@ pub fn Builder(comptime Tokenizer: type) type {
                 else => false,
             }) {
                 // Foster parenting.
-                var last_template: ?usize = null;
-                var last_table: ?usize = null;
-                var i = b.open.items.len;
-                while (i > 0) {
-                    i -= 1;
-                    if (last_template == null and b.isH(b.open.items[i], .template)) last_template = i;
-                    if (last_table == null and b.isH(b.open.items[i], .table)) last_table = i;
-                }
+                const template = b.topOf(.template, false);
+                const table_ = b.topOf(.table, false);
+                const last_template: ?usize = if (template == 0) null else template - 1;
+                const last_table: ?usize = if (table_ == 0) null else table_ - 1;
                 if (last_template != null and (last_table == null or last_template.? > last_table.?)) {
                     place = .{ .parent = b.open.items[last_template.?], .before = .none };
                 } else if (last_table == null) {
@@ -458,7 +606,7 @@ pub fn Builder(comptime Tokenizer: type) type {
         fn insertElement(b: *B, tag: StartTag, ns: Namespace) Error!NodeId {
             const id = try b.createElement(tag, ns);
             b.insertAt(b.appropriatePlace(.none), id);
-            try b.open.append(b.gpa, id);
+            try b.push(id);
             return id;
         }
 
@@ -537,17 +685,17 @@ pub fn Builder(comptime Tokenizer: type) type {
             const list = b.formatting.items;
             if (list.len == 0) return;
             const last = list[list.len - 1];
-            if (last == .none or b.indexInStack(last) != null) return;
+            if (last == .none or b.isOpen(last)) return;
             var i = list.len - 1;
             while (i > 0) {
                 const e = b.formatting.items[i - 1];
-                if (e == .none or b.indexInStack(e) != null) break;
+                if (e == .none or b.isOpen(e)) break;
                 i -= 1;
             }
             while (i < b.formatting.items.len) : (i += 1) {
                 const c = try b.cloneElement(b.formatting.items[i]);
                 b.insertAt(b.appropriatePlace(.none), c);
-                try b.open.append(b.gpa, c);
+                try b.push(c);
                 b.formatting.items[i] = c;
             }
         }
@@ -593,15 +741,15 @@ pub fn Builder(comptime Tokenizer: type) type {
                     _ = b.formatting.orderedRemove(fi);
                     return true;
                 };
-                if (!b.nodeInScope(fe)) return true;
+                if (si + 1 < b.lastOf(.default)) return true;
                 // The furthest block: the topmost special element below.
                 var furthest: ?usize = null;
                 for (b.open.items[si + 1 ..], si + 1..) |id, k| if (b.isSpecial(id)) {
                     furthest = k;
                     break;
                 };
-                const fb_i = furthest orelse {
-                    b.open.shrinkRetainingCapacity(si);
+                var fb_i = furthest orelse {
+                    b.truncate(si);
                     _ = b.formatting.orderedRemove(fi);
                     return true;
                 };
@@ -623,12 +771,13 @@ pub fn Builder(comptime Tokenizer: type) type {
                         nfi = null;
                     }
                     if (nfi == null) {
-                        _ = b.open.orderedRemove(node_i);
+                        b.removeAt(node_i);
+                        fb_i -= 1;
                         continue;
                     }
                     const clone = try b.cloneElement(node);
                     b.formatting.items[nfi.?] = clone;
-                    b.open.items[node_i] = clone;
+                    try b.replaceAt(node_i, clone);
                     node = clone;
                     if (last == fb) bookmark = nfi.? + 1;
                     b.dom.append(node, last);
@@ -646,9 +795,10 @@ pub fn Builder(comptime Tokenizer: type) type {
                 _ = b.formatting.orderedRemove(old_fi);
                 if (old_fi < bookmark) bookmark -= 1;
                 try b.formatting.insert(b.gpa, @min(bookmark, b.formatting.items.len), clone);
-                b.removeFromStack(fe);
-                const fb_pos = b.indexInStack(fb).?;
-                try b.open.insert(b.gpa, fb_pos + 1, clone);
+                // The formatting element leaves the stack, and its clone
+                // goes in above the furthest block.
+                b.removeAt(si);
+                try b.insertOpen(fb_i, clone);
             }
             return true;
         }
@@ -744,27 +894,28 @@ pub fn Builder(comptime Tokenizer: type) type {
                         b.pop();
                         return;
                     }
-                    var i = b.open.items.len;
-                    while (i > 0) {
-                        i -= 1;
-                        const id = b.open.items[i];
-                        if (i == 0) return;
-                        if (std.ascii.eqlIgnoreCase(b.dom.nameOf(b.nd(id).name), b.dom.nameOf(name))) {
-                            b.open.shrinkRetainingCapacity(i);
-                            return;
-                        }
-                        if (b.nd(b.open.items[i - 1]).ns == .html) {
-                            // The rest goes to the insertion mode.
-                            return b.process(b.mode, t);
-                        }
-                    }
+                    // A fragment's root alone: the tag is ignored.
+                    if (b.open.items.len < 2) return;
+                    // The foreign elements above the topmost HTML one (the
+                    // root is one), whose names are the tag's but for
+                    // letter case: a tag's name is in lower case, and only
+                    // SVG's element names (`svg_tag_fix`) are not.
+                    const html_top = b.lastOf(.html);
+                    var found = b.topOf(name, true);
+                    if (svg_tag_fix.get(b.dom.nameOf(name))) |f| if (b.dom.lookup(f)) |fixed| {
+                        found = @max(found, b.topOf(fixed, true));
+                    };
+                    if (found > html_top) return b.truncate(found - 1);
+                    // The rest goes to the insertion mode.
+                    return b.process(b.mode, t);
                 },
                 .eof => unreachable,
             }
         }
 
         pub fn resetMode(b: *B) void {
-            var i = b.open.items.len;
+            // Only these elements say anything, so start at the topmost.
+            var i: usize = @max(b.lastOf(.reset), 1);
             while (i > 0) {
                 i -= 1;
                 var node = b.open.items[i];
@@ -773,17 +924,12 @@ pub fn Builder(comptime Tokenizer: type) type {
                 const x = b.nd(node);
                 if (x.ns == .html) switch (x.name) {
                     .select => {
-                        if (!last) {
-                            var j = i;
-                            while (j > 0) {
-                                j -= 1;
-                                const anc = b.open.items[j];
-                                if (b.isH(anc, .template)) break;
-                                if (b.isH(anc, .table)) {
-                                    b.mode = .in_select_in_table;
-                                    return;
-                                }
-                            }
+                        // A table below it with no template between: both
+                        // are elements this walk stops at, so the topmost
+                        // of each is below the select.
+                        if (!last and b.topOf(.table, false) > b.topOf(.template, false)) {
+                            b.mode = .in_select_in_table;
+                            return;
                         }
                         b.mode = .in_select;
                         return;
@@ -886,7 +1032,7 @@ pub fn Builder(comptime Tokenizer: type) type {
                     .start => |s| if (s.name == .html) {
                         const id = try b.createElement(s, .html);
                         b.dom.append(.document, id);
-                        try b.open.append(b.gpa, id);
+                        try b.push(id);
                         b.mode = .before_head;
                     } else return b.beforeHtmlElse(t),
                     .end => |name| switch (name) {
@@ -931,7 +1077,7 @@ pub fn Builder(comptime Tokenizer: type) type {
                             b.mode = .in_frameset;
                         },
                         .base, .basefont, .bgsound, .link, .meta, .noframes, .script, .style, .template, .title => {
-                            try b.open.append(b.gpa, b.head);
+                            try b.push(b.head);
                             try b.inHead(t);
                             b.removeFromStack(b.head);
                         },
@@ -1088,7 +1234,7 @@ pub fn Builder(comptime Tokenizer: type) type {
         fn beforeHtmlElse(b: *B, t: Tok) Error!void {
             const id = try b.dom.createElement(.html, .html, &.{});
             b.dom.append(.document, id);
-            try b.open.append(b.gpa, id);
+            try b.push(id);
             b.mode = .before_head;
             return b.process(.before_head, t);
         }
@@ -1224,7 +1370,7 @@ pub fn Builder(comptime Tokenizer: type) type {
                 .frameset => {
                     if (b.open.items.len < 2 or !b.isH(b.open.items[1], .body) or !b.frameset_ok) return;
                     b.dom.detach(b.open.items[1]);
-                    b.open.shrinkRetainingCapacity(1);
+                    b.truncate(1);
                     _ = try b.insertHtml(s);
                     b.mode = .in_frameset;
                 },
@@ -1252,18 +1398,13 @@ pub fn Builder(comptime Tokenizer: type) type {
                 },
                 .li, .dd, .dt => {
                     b.frameset_ok = false;
-                    var i = b.open.items.len;
-                    while (i > 0) {
-                        i -= 1;
-                        const node = b.open.items[i];
-                        const matches = if (s.name == .li) b.isH(node, .li) else (b.isH(node, .dd) or b.isH(node, .dt));
-                        if (matches) {
-                            const name = b.nd(node).name;
-                            b.generateImpliedEndTags(name);
-                            b.popUntil(name);
-                            break;
-                        }
-                        if (b.isSpecial(node) and !(b.isH(node, .address) or b.isH(node, .div) or b.isH(node, .p))) break;
+                    // The topmost open item, unless a special element
+                    // other than address, div, and p is above it.
+                    const item = if (s.name == .li) b.topOf(.li, false) else @max(b.topOf(.dd, false), b.topOf(.dt, false));
+                    if (item != 0 and item >= b.lastOf(.item_end)) {
+                        const name = b.nd(b.open.items[item - 1]).name;
+                        b.generateImpliedEndTags(name);
+                        b.popUntil(name);
                     }
                     b.closePInButtonScope();
                     _ = try b.insertHtml(s);
@@ -1460,17 +1601,12 @@ pub fn Builder(comptime Tokenizer: type) type {
         }
 
         fn anyOtherEnd(b: *B, name: Atom) Error!void {
-            var i = b.open.items.len;
-            while (i > 0) {
-                i -= 1;
-                const node = b.open.items[i];
-                if (b.isH(node, name)) {
-                    b.generateImpliedEndTags(name);
-                    b.open.shrinkRetainingCapacity(i);
-                    return;
-                }
-                if (b.isSpecial(node)) return;
-            }
+            // The topmost open element of the name, unless a special
+            // element is above it.
+            const h = b.topOf(name, false);
+            if (h == 0 or h < b.lastOf(.special)) return;
+            b.generateImpliedEndTags(name);
+            b.truncate(h - 1);
         }
 
         fn clearToTableContext(b: *B) void {

@@ -74,7 +74,7 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, options: Options) error{
         b.context = try dom.createElement(ctx.ns, name, &.{});
         const root = try dom.createElement(.html, .html, &.{});
         dom.append(.document, root);
-        try b.open.append(gpa, root);
+        try b.push(root);
         if (ctx.ns == .html) {
             t.state = switch (name) {
                 .title, .textarea => .rcdata,

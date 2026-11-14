@@ -7271,6 +7271,17 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       under it. The stack of open elements is not cut short, so end tags
       still close what they name. The box builder, layout, and painting
       recurse once per level of the tree and rely on this.
+    - *Open elements.* A tag costs the same however many elements are
+      open. What the parser asks of the stack of open elements (an
+      element in a scope, the open element an end tag names with no
+      special element above it, the open item, the element that resets
+      the insertion mode, a template, whether a formatting element is
+      still open) is answered from a mark per entry: the entry below of
+      the same name, and the topmost entry at or below it of each kind
+      a question stops at. A walk per tag made 50,000 nested `<div>`s
+      2,500,000,000 steps. The adoption agency algorithm still moves
+      the entries above the formatting element, so `<b>`, n blocks, and
+      n `</b>` cost n squared.
     - *Selectors.* A failed match says how far it reaches: this element
       only, it and the siblings before it, or those and its ancestors
       too. A combinator's loop stops when the elements it has left

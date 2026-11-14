@@ -146,6 +146,56 @@ test "elements nested past the depth limit go in beside the last one within it" 
     try testing.expectEqualStrings("deep", dom.text(text));
 }
 
+test "a tag costs the same however many elements are open" {
+    // Each of these made the parser walk the stack of open elements for
+    // every tag, so 50,000 tags took the time of 2,500,000,000 steps. The
+    // `<q>` at the end goes in beside the current node (the depth limit),
+    // so the sibling before it is the element the tags left on top, or the
+    // last one they closed there.
+    const gpa = testing.allocator;
+    const count = 50_000;
+    const Pattern = struct { before: []const u8 = "", open: []const u8, then: []const u8 = "", name: html.Atom, elements: usize, prev: html.Atom };
+    const cases = [_]Pattern{
+        // "A p element in button scope", which every block asks for.
+        .{ .open = "<blockquote>", .name = .blockquote, .elements = count, .prev = .blockquote },
+        .{ .before = "<p><button>", .open = "<div>", .name = .p, .elements = 1, .prev = .div },
+        // An end tag that ends nothing, in HTML and in foreign content.
+        .{ .open = "<span>", .then = "</x>", .name = .span, .elements = count, .prev = .span },
+        .{ .before = "<svg>", .open = "<g>", .then = "</x>", .name = .g, .elements = count, .prev = .g },
+        // An item ends the item open before it.
+        .{ .open = "<span>", .then = "<li>", .name = .li, .elements = count, .prev = .li },
+        // "Reset the insertion mode" after each table.
+        .{ .open = "<span>", .then = "<table></table>", .name = .table, .elements = count, .prev = .table },
+        // Text asks whether the last formatting element is still open.
+        .{ .before = "<b>", .open = "x<span>", .name = .b, .elements = 1, .prev = .span },
+        // A form asks for a template among the open elements.
+        .{ .open = "<span>", .then = "<form>", .name = .form, .elements = 1, .prev = .form },
+    };
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(gpa);
+    for (cases) |case| {
+        src.clearRetainingCapacity();
+        try src.appendSlice(gpa, case.before);
+        for (0..count) |_| try src.appendSlice(gpa, case.open);
+        for (0..count) |_| try src.appendSlice(gpa, case.then);
+        try src.appendSlice(gpa, "<q>");
+        var dom = try html.parse(gpa, src.items, .{});
+        defer dom.deinit();
+        var elements: usize = 0;
+        var q: html.NodeId = .none;
+        var id = dom.following(dom.body(), dom.body());
+        while (id != .none) : (id = dom.following(id, dom.body())) {
+            const node = dom.node(id);
+            if (node.kind != .element) continue;
+            if (node.name == case.name) elements += 1;
+            if (node.name == .q) q = id;
+        }
+        errdefer std.debug.print("{s}{s}... {s}...\n", .{ case.before, case.open, case.then });
+        try testing.expectEqual(case.elements, elements);
+        try testing.expectEqual(case.prev, dom.node(dom.node(q).prev).name);
+    }
+}
+
 test "XHTML: self-closing tags end their elements" {
     const src = "<p><a id=\"n1\"/>Note<span/>text</p><div/><title/><p>after</p><svg><circle/></svg>";
     var dom = try html.parse(testing.allocator, src, .{ .xml = true });
