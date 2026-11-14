@@ -7307,7 +7307,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       it, and one beyond it takes the last track). The specification
       suggests room for ten thousand lines; the cells auto placement
       marks are a bitmap of rows times columns here, which a thousand
-      keeps to half a megabyte.
+      keeps to half a megabyte. A search for a free area costs the rows
+      it passes times the words of a row, not the area's cells at each
+      place tried: the rows the area covers are or-ed as it moves down
+      (the rest of a block of rows from each row on, and what it has
+      of the next block), and the first run of clear bits as long as
+      the area is wide is looked for in the result.
     - *Markdown.* A paragraph's inlines cost its length, with no limit
       of siv's own on what Markdown says: text pieces join without
       being copied again for each (a slice that grows over the source,

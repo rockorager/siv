@@ -328,30 +328,148 @@ fn limited(ax: *const Axis, a: i64, b: i64) Lines {
 /// grid has `cols` columns so far, and the bitmap room for `stride`:
 /// items locked to a row make columns after the last (8.5, step 2).
 const Cells = struct {
-    bits: std.DynamicBitSetUnmanaged = .{},
+    /// A bit per cell, each row in words of its own, so that an area is
+    /// asked about and taken a word at a time.
+    words: std.ArrayList(usize) = .empty,
+    /// For `place`: the rows of a window, or-ed.
+    window: std.ArrayList(usize) = .empty,
     cols: usize,
     stride: usize,
     rows: usize = 0,
 
+    const word_bits = @bitSizeOf(usize);
+
+    fn rowWords(c: *const Cells) usize {
+        return (c.stride + word_bits - 1) / word_bits;
+    }
+    fn row(c: *const Cells, r: usize) []usize {
+        return c.words.items[r * c.rowWords() ..][0..c.rowWords()];
+    }
     fn ensure(c: *Cells, a: std.mem.Allocator, rows: usize) Error!void {
         if (rows <= c.rows) return;
-        try c.bits.resize(a, rows * c.stride, false);
+        try c.words.appendNTimes(a, 0, (rows - c.rows) * c.rowWords());
         c.rows = rows;
-    }
-    /// Whether no cell of the area is taken. Nothing is in the columns
-    /// past the grid's.
-    fn free(c: *Cells, r: usize, col: usize, rs: usize, cs: usize) bool {
-        for (r..r + rs) |rr| {
-            if (rr >= c.rows) return true;
-            for (@min(col, c.cols)..@min(col + cs, c.cols)) |cc| if (c.bits.isSet(rr * c.stride + cc)) return false;
-        }
-        return true;
     }
     /// Takes the area, with the columns it needs past the grid's.
     fn mark(c: *Cells, a: std.mem.Allocator, r: usize, col: usize, rs: usize, cs: usize) Error!void {
         c.cols = @min(c.stride, @max(c.cols, col + cs));
         try c.ensure(a, r + rs);
-        for (r..r + rs) |rr| c.bits.setRangeValue(.{ .start = rr * c.stride + @min(col, c.cols), .end = rr * c.stride + @min(col + cs, c.cols) }, true);
+        for (r..r + rs) |rr| setRange(c.row(rr), @min(col, c.cols), @min(col + cs, c.cols));
+    }
+
+    // Where an area is free. Each search costs the rows it passes times
+    // the words of a row, not the cells of the area at every place it
+    // tries: one item 500 by 500 below a row with something in it was
+    // 30,000,000,000 cells looked at. Nothing is in the columns past the
+    // grid's or in the rows past the last.
+
+    /// The first column from `from` on at which the rows from `r` have
+    /// `cs` columns free.
+    fn columnIn(c: *Cells, a: std.mem.Allocator, r: usize, rs: usize, cs: usize, from: usize) Error!usize {
+        try c.window.resize(a, c.rowWords());
+        const band = c.window.items;
+        @memset(band, 0);
+        for (r..@max(r, @min(r + rs, c.rows))) |rr| {
+            for (band, c.row(rr)) |*x, y| x.* |= y;
+        }
+        return clearRun(band, from, cs);
+    }
+    /// The first row from `from` on at which the columns from `col` have
+    /// `rs` rows free.
+    fn rowIn(c: *const Cells, col: usize, rs: usize, cs: usize, from: usize) usize {
+        var start = from;
+        var r = from;
+        while (r < c.rows and r - start < rs) : (r += 1) {
+            if (anyIn(c.row(r), @min(col, c.cols), @min(col + cs, c.cols))) start = r + 1;
+        }
+        return start;
+    }
+    /// The first row from `from_r` on, and the first column in it (from
+    /// `from_c` on in that first row), at which the area is free and
+    /// ends within the grid's columns.
+    fn place(c: *Cells, a: std.mem.Allocator, rs: usize, cs: usize, from_r: usize, from_c: usize) Error!struct { usize, usize } {
+        std.debug.assert(cs <= c.cols);
+        // The rows of the area or-ed, as the area moves down a row at a
+        // time: the rows come in blocks as long as the area, `back`
+        // holds what is left of the block the area starts in from each
+        // of its rows on, and `front` what the area has of the next.
+        const w = c.rowWords();
+        const n = @min(rs, c.rows);
+        try c.window.resize(a, (n + 2) * w);
+        const back = c.window.items[0 .. n * w];
+        const front = c.window.items[n * w ..][0..w];
+        const band = c.window.items[(n + 1) * w ..][0..w];
+        var block = from_r;
+        var r = from_r;
+        while (r < c.rows) : (r += 1) {
+            if (r == from_r or r == block + n) {
+                block = r;
+                @memset(front, 0);
+                var i = n;
+                while (i > 0) {
+                    i -= 1;
+                    const below = back[i * w ..][0..w];
+                    if (block + i < c.rows) @memcpy(below, c.row(block + i)) else @memset(below, 0);
+                    if (i + 1 < n) for (below, back[(i + 1) * w ..][0..w]) |*x, y| {
+                        x.* |= y;
+                    };
+                }
+            } else if (r + n - 1 < c.rows) {
+                for (front, c.row(r + n - 1)) |*x, y| x.* |= y;
+            }
+            for (band, back[(r - block) * w ..][0..w], front) |*x, y, z| x.* = y | z;
+            const col = clearRun(band, if (r == from_r) from_c else 0, cs);
+            if (col + cs <= c.cols) return .{ r, col };
+        }
+        if (r == from_r) return if (from_c + cs <= c.cols) .{ r, from_c } else .{ r + 1, 0 };
+        return .{ r, 0 };
+    }
+
+    fn mask(bit: usize, len: usize) usize {
+        const ones = if (len == word_bits) ~@as(usize, 0) else (@as(usize, 1) << @intCast(len)) - 1;
+        return ones << @intCast(bit);
+    }
+    fn setRange(words: []usize, lo: usize, hi: usize) void {
+        var i = lo;
+        while (i < hi) {
+            const len = @min(word_bits - i % word_bits, hi - i);
+            words[i / word_bits] |= mask(i % word_bits, len);
+            i += len;
+        }
+    }
+    fn anyIn(words: []const usize, lo: usize, hi: usize) bool {
+        var i = lo;
+        while (i < hi) {
+            const len = @min(word_bits - i % word_bits, hi - i);
+            if (words[i / word_bits] & mask(i % word_bits, len) != 0) return true;
+            i += len;
+        }
+        return false;
+    }
+    /// The first bit at or after `from` that is set (`set`) or clear;
+    /// null when the words end first.
+    fn nextBit(words: []const usize, from: usize, set: bool) ?usize {
+        var i = from / word_bits;
+        if (i >= words.len) return null;
+        const flip: usize = if (set) 0 else ~@as(usize, 0);
+        var word = (words[i] ^ flip) & ~mask(0, from % word_bits);
+        while (word == 0) {
+            i += 1;
+            if (i == words.len) return null;
+            word = words[i] ^ flip;
+        }
+        return i * word_bits + @ctz(word);
+    }
+    /// The first bit at or after `from` with `len` clear bits from it
+    /// on. The bits past the words are clear.
+    fn clearRun(words: []const usize, from: usize, len: usize) usize {
+        var at = from;
+        while (true) {
+            at = nextBit(words, at, false) orelse return @max(at, words.len * word_bits);
+            const taken = nextBit(words, at, true) orelse return at;
+            if (taken - at >= len) return at;
+            at = taken;
+        }
     }
 };
 
@@ -471,8 +589,7 @@ fn place(e: *Engine, id: BoxId, content_w: ?f32, content_h: ?f32, min_w: ?f32, m
             const r = mj.start.? + major_off;
             // The first column from which nothing is in its way: at the
             // latest the one after the grid's last, as an implicit track.
-            var c: i64 = if (dense) 0 else cursors.get(r) orelse 0;
-            while (!cells.free(@intCast(r), @intCast(c), mj.span, mn.span)) c += 1;
+            var c: i64 = @intCast(try cells.columnIn(e.scratch, @intCast(r), mj.span, mn.span, if (dense) 0 else @intCast(cursors.get(r) orelse 0)));
             var span = mn.span;
             keepWithin(&c, &span, minor_limit);
             try cells.mark(e.scratch, @intCast(r), @intCast(c), mj.span, span);
@@ -494,8 +611,7 @@ fn place(e: *Engine, id: BoxId, content_w: ?f32, content_h: ?f32, min_w: ?f32, m
         if (mn.start) |s| {
             const c = s + minor_off;
             if (!dense and c < cur_minor) cur_major += 1;
-            var r = cur_major;
-            while (!cells.free(@intCast(r), @intCast(c), mj.span, mn.span)) r += 1;
+            var r: i64 = @intCast(cells.rowIn(@intCast(c), mj.span, mn.span, @intCast(cur_major)));
             var span = mj.span;
             keepWithin(&r, &span, major_limit);
             try cells.mark(e.scratch, @intCast(r), @intCast(c), span, mn.span);
@@ -503,17 +619,9 @@ fn place(e: *Engine, id: BoxId, content_w: ?f32, content_h: ?f32, min_w: ?f32, m
             cur_major = r;
             cur_minor = c;
         } else {
-            var r = cur_major;
-            var c = cur_minor;
-            while (true) {
-                if (c + mn.span > cells.cols) {
-                    c = 0;
-                    r += 1;
-                    continue;
-                }
-                if (cells.free(@intCast(r), @intCast(c), mj.span, mn.span)) break;
-                c += 1;
-            }
+            const at = try cells.place(e.scratch, mj.span, mn.span, @intCast(cur_major), @intCast(cur_minor));
+            var r: i64 = @intCast(at[0]);
+            const c: i64 = @intCast(at[1]);
             var span = mj.span;
             keepWithin(&r, &span, major_limit);
             try cells.mark(e.scratch, @intCast(r), @intCast(c), span, mn.span);

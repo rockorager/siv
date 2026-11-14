@@ -819,6 +819,32 @@ test "grid: items locked to a row take the next free column, past the columns th
     }
 }
 
+test "grid: auto placement looks for a free area a row of the bitmap at a time" {
+    const gpa = testing.allocator;
+    const f = try Fixture.init(gpa);
+    defer f.deinit(gpa);
+    // Something in the right half of row k, and items k by k: the first
+    // fits nowhere above that row, and every place tried there was looked
+    // at cell by cell up to it: k to the fourth power cells, 1 min 46 s
+    // for 400. The second goes beside the first, the third below both.
+    for ([_]u32{ 50, 400 }) |k| {
+        var src: std.ArrayList(u8) = .empty;
+        defer src.deinit(gpa);
+        try src.print(gpa, "<style>body {{ margin: 0 }} div {{ display: grid; grid-template-columns: repeat({d}, 1px); grid-auto-rows: 1px; width: 0 }} p {{ margin: 0 }}</style>" ++
+            "<div><i style='grid-row: {d}; grid-column: {d} / {d}'></i>", .{ 2 * k, k, k, 2 * k + 1 });
+        for (0..3) |_| try src.print(gpa, "<p style='grid-area: span {d} / span {d}'>x</p>", .{ k, k });
+        const d = try f.load(gpa, src.items, .{}, 400);
+        defer d.destroy();
+        const at: f32 = @floatFromInt(k);
+        try testing.expectEqual(@as(f32, 0), absX(d, elementBox(d, .p, 0)));
+        try testing.expectEqual(at, absY(d, elementBox(d, .p, 0)));
+        try testing.expectEqual(at, absX(d, elementBox(d, .p, 1)));
+        try testing.expectEqual(at, absY(d, elementBox(d, .p, 1)));
+        try testing.expectEqual(@as(f32, 0), absX(d, elementBox(d, .p, 2)));
+        try testing.expectEqual(2 * at, absY(d, elementBox(d, .p, 2)));
+    }
+}
+
 test "grid: lines and spans beyond the limit take the last track" {
     const gpa = testing.allocator;
     const f = try Fixture.init(gpa);
