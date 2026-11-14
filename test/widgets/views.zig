@@ -488,6 +488,63 @@ test "list view: the whole selection as a bitset, set and read in one call" {
     c.siv_txn_abort(txn);
 }
 
+test "list and tree view: a transaction that already failed leaves a view its items" {
+    var h: Harness = .{};
+    try h.start(240, 320, null, null);
+    defer h.stop();
+    var m: Model = .{};
+    const list = try listOf(&h, &m, 4, .multiple);
+    // The transaction failed before the count: the selection cannot grow,
+    // so the view still has four items and one byte of selection.
+    var txn = try begin(h.window);
+    c.siv_txn_fail(txn, .error_invalid_argument);
+    c.siv_view_set_count(txn, list, 1_000_000);
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
+    var len: usize = 0;
+    try ok(c.siv_view_get_selection(list, null, 0, &len));
+    try testing.expectEqual(@as(usize, 1), len);
+    var sel = false;
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_view_is_selected(list, 999_999, &sel));
+    txn = try begin(h.window);
+    c.siv_view_set_selected(txn, list, 999_999, true);
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
+    // A later transaction grows it.
+    txn = try begin(h.window);
+    c.siv_view_set_count(txn, list, 20);
+    c.siv_view_set_selected(txn, list, 19, true);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    try ok(c.siv_view_is_selected(list, 19, &sel));
+    try testing.expect(sel);
+    try ok(c.siv_view_get_selection(list, null, 0, &len));
+    try testing.expectEqual(@as(usize, 3), len);
+    // A tree's rows stay too: collapsing in a failed transaction, which
+    // is discarded, removes none.
+    var m2: Model = .{};
+    txn = try begin(h.window);
+    const tree = c.siv_tree_view(txn, c.siv_window_get_root(h.window), &.{
+        .label = "Tree",
+        .label_len = 4,
+        .selection = .multiple,
+        .bind = Model.bind,
+        .children = Model.children,
+        .child = Model.child,
+        .user_data = &m2,
+    });
+    c.siv_view_set_expanded(txn, tree, 0, true);
+    try ok(c.siv_txn_commit(txn));
+    try h.settle();
+    txn = try begin(h.window);
+    c.siv_txn_fail(txn, .error_invalid_argument);
+    c.siv_view_set_expanded(txn, tree, 0, false);
+    try testing.expectEqual(t.Result.error_invalid_argument, c.siv_txn_commit(txn));
+    var item: u64 = 0;
+    try ok(c.siv_view_get_item(tree, 1, &item));
+    try testing.expectEqual(@as(u64, 2000), item);
+    try ok(c.siv_view_get_item(tree, 6, &item));
+    try testing.expectEqual(@as(u64, 1002), item);
+}
+
 /// Starts a drag from the next move once armed (the view keeps the
 /// press itself, so the test arms it after pressing).
 const Dragger = struct {

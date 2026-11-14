@@ -195,7 +195,7 @@ fn create(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc, mode: Mode) Node {
         .hdr = .{ .kind = .view },
         .mode = mode,
         .selection = d.selection,
-        .count = if (mode == .tree) 0 else d.count,
+        .count = 0,
         .item_h = if (d.item_height == 0) 32 else d.item_height,
         .item_w = if (d.item_width == 0) 96 else d.item_width,
         .gutter = if (d.flags.gutter) 14 else 0,
@@ -234,7 +234,7 @@ fn create(txn: Txn, parent: Node, desc: ?*const siv.ViewDesc, mode: Mode) Node {
     w.onDefault(txn, v.scroll, .viewport, onViewport, v);
     w.onDefault(txn, root, .pointer, onEmptyPointer, v);
     w.setInterface(txn, root, View, v, .{ .set_label = setLabel, .get_part = viewPart, .apply = apply, .focus = focusTarget });
-    if (!resizeSelection(txn, v)) return .null;
+    if (!resizeSelection(txn, v, if (mode == .tree) 0 else d.count)) return .null;
     if (mode == .tree and !buildTop(txn, v)) return .null;
     // The first rows are bound at once against the window's height, so
     // the first frame shows them; the viewport event refines the range.
@@ -267,10 +267,15 @@ fn bitBytes(count: u32) usize {
     return @max(1, (@as(usize, count) + 7) / 8);
 }
 
-/// Sizes the selection to the count, dropping bits past it.
-fn resizeSelection(txn: Txn, v: *View) bool {
+/// Sets the count and sizes the selection to it, dropping bits past it.
+/// `bits` and `treeRows` slice their memory by the count, so it changes
+/// only here, once the selection has its size: when the transaction has
+/// failed (an earlier operation, or no memory now), the view keeps the
+/// count its memory holds.
+fn resizeSelection(txn: Txn, v: *View, count: u32) bool {
     var p: ?*anyopaque = null;
-    if (c.siv_set_data(txn, v.root, &selection_key, bitBytes(v.count), &p) != .ok) return false;
+    if (c.siv_set_data(txn, v.root, &selection_key, bitBytes(count), &p) != .ok) return false;
+    v.count = count;
     const b: [*]u8 = @ptrCast(p.?);
     const n = bitBytes(v.count);
     const used = v.count % 8;
@@ -342,21 +347,24 @@ fn treeRow(v: *const View, parent: u64, i: u32, siblings: u32, depth: u32) TreeR
 
 fn buildTop(txn: Txn, v: *View) bool {
     const n = v.children.?(v.user_data, 0);
+    // The count never passes the rows there is memory for: it shrinks
+    // before their memory does and grows after.
+    if (n < v.count and !resizeSelection(txn, v, n)) return false;
     const rows = reserveTree(txn, v, n) orelse return false;
+    if (!resizeSelection(txn, v, n)) return false;
     for (0..n) |i| rows[i] = treeRow(v, 0, @intCast(i), n, 0);
-    v.count = n;
     if (v.cursor >= @as(i64, n)) v.cursor = -1;
     v.anchor = v.cursor;
-    return resizeSelection(txn, v);
+    return true;
 }
 
 /// Inserts `k` rows after `at`, shifting selection bits and the cursor.
 fn insertRows(txn: Txn, v: *View, at: u32, k: u32) ?[*]TreeRow {
     const old = v.count;
     const rows = reserveTree(txn, v, old + k) orelse return null;
+    // Before a row moves, so that a failure leaves the rows as they were.
+    if (!resizeSelection(txn, v, old + k)) return null;
     std.mem.copyBackwards(TreeRow, rows[at + 1 + k .. old + k], rows[at + 1 .. old]);
-    v.count = old + k;
-    if (!resizeSelection(txn, v)) return null;
     var i = v.count;
     while (i > at + 1 + k) {
         i -= 1;
@@ -372,14 +380,25 @@ fn removeRows(txn: Txn, v: *View, at: u32, k: u32) void {
     const rows = treeRows(v);
     for (at + 1 + k..v.count) |i| setSelected(v, @intCast(i - k), isSelected(v, @intCast(i)));
     std.mem.copyForwards(TreeRow, rows[at + 1 .. v.count - k], rows[at + 1 + k .. v.count]);
+    // Fewer rows fit the memory there is, so the count shrinks whether or
+    // not the selection's memory does. The bits past it go here: a
+    // selection that stayed its size would show them again once it grew.
+    const b = bits(v);
+    for (v.count - k..v.count) |i| {
+        const mask = @as(u8, 1) << @intCast(i % 8);
+        if (b[i / 8] & mask != 0) v.selected -= 1;
+        b[i / 8] &= ~mask;
+    }
     v.count -= k;
-    _ = resizeSelection(txn, v);
+    _ = resizeSelection(txn, v, v.count);
     if (v.cursor > at + k) v.cursor -= @intCast(k) else if (v.cursor > at) v.cursor = @intCast(at);
     if (v.anchor > at + k) v.anchor -= @intCast(k) else if (v.anchor > at) v.anchor = @intCast(at);
 }
 
 fn setExpanded(txn: Txn, v: *View, at: u32, on: bool) void {
     if (v.mode != .tree or at >= v.count) return;
+    // A failed transaction is discarded: its operations do nothing (D4).
+    if (c.siv_txn_status(txn) != .ok) return;
     var r = treeRows(v)[at];
     if (!r.flags.parent or r.flags.expanded == on) return;
     if (on) {
@@ -1349,8 +1368,7 @@ pub export fn siv_view_set_count(txn: Txn, view: Node, count: u32) void {
     if (v.mode == .tree) {
         if (!buildTop(txn, v)) return;
     } else {
-        v.count = count;
-        if (!resizeSelection(txn, v)) return;
+        if (!resizeSelection(txn, v, count)) return;
         if (v.cursor >= @as(i64, count)) v.cursor = if (count == 0) -1 else @intCast(count - 1);
         if (v.anchor >= @as(i64, count)) v.anchor = v.cursor;
     }
