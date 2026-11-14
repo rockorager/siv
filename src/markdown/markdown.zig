@@ -146,6 +146,8 @@ const Node = struct {
     /// The item started empty (marker then end of line).
     empty_start: bool = false,
     last_line_blank: bool = false,
+    /// Whether it ends with a blank line, once a list that closed asked.
+    ends_blank: enum(u8) { unknown, no, yes } = .unknown,
     start_line: usize = 0,
     task: enum(u8) { none, unchecked, checked } = .none,
     // Headings.
@@ -191,6 +193,10 @@ const Parser = struct {
     line_no: usize = 0,
     last_matched: u32 = 0,
     last_line_length: usize = 0,
+    /// On the current line, no thematic break of this character starts
+    /// before this offset.
+    no_break_char: u8 = 0,
+    no_break_at: usize = 0,
 
     fn init(p: *Parser) Error!void {
         try p.nodes.append(p.a, .{ .kind = .document });
@@ -416,6 +422,7 @@ const Parser = struct {
         p.partially_consumed_tab = false;
         p.old_tip = p.tip;
         p.all_closed = true;
+        p.no_break_at = 0;
         // Descend through open blocks that continue.
         var container: u32 = 0;
         while (true) {
@@ -610,8 +617,13 @@ const Parser = struct {
             }
         }
         // Thematic break.
-        if (c == '*' or c == '-' or c == '_') {
-            if (isThematicBreak(p.ln[p.next_nonspace..])) {
+        // A line of list markers ("- - - a") asks at every marker: what
+        // stopped the last answer stops this one too, while it is ahead.
+        if ((c == '*' or c == '-' or c == '_') and !(c == p.no_break_char and p.next_nonspace < p.no_break_at)) {
+            if (thematicBreakStop(p.ln[p.next_nonspace..])) |stop| {
+                p.no_break_char = c;
+                p.no_break_at = p.next_nonspace + stop;
+            } else {
                 p.closeUnmatched();
                 _ = try p.add(.thematic_break, container);
                 p.advanceOffset(p.ln.len - p.offset, false);
@@ -831,32 +843,58 @@ const Parser = struct {
 
     // Inlines.
 
-    fn inlines(p: *Parser, id: u32) Error!void {
-        var cur = p.n(id).first;
+    /// Parses the inlines of every paragraph, heading, and table cell
+    /// under `root`. The tree is walked along its links, not by calls:
+    /// block quotes nest as deep as a line is long.
+    fn inlines(p: *Parser, root: u32) Error!void {
+        var cur = p.n(root).first;
         while (cur != none) {
-            const next = p.n(cur).next;
-            switch (p.n(cur).kind) {
-                .paragraph, .heading, .table_cell => {
-                    const raw = std.mem.trim(u8, p.n(cur).content.items, " \t\n");
-                    var ip: InlineParser = .{ .p = p, .s = raw, .block = cur };
-                    if (p.gfm and p.n(cur).kind == .paragraph) ip.taskItem();
-                    try ip.parse();
-                },
-                else => try p.inlines(cur),
+            const block = switch (p.n(cur).kind) {
+                .paragraph, .heading, .table_cell => true,
+                else => false,
+            };
+            if (!block and p.n(cur).first != none) {
+                cur = p.n(cur).first;
+                continue;
             }
-            cur = next;
+            // Where the walk goes on, before the inlines change the block.
+            var after = cur;
+            while (after != root and p.n(after).next == none) after = p.n(after).parent;
+            after = if (after == root) none else p.n(after).next;
+            if (block) {
+                const raw = std.mem.trim(u8, p.n(cur).content.items, " \t\n");
+                var ip: InlineParser = .{ .p = p, .s = raw, .block = cur };
+                if (p.gfm and p.n(cur).kind == .paragraph) ip.taskItem();
+                try ip.parse();
+            }
+            cur = after;
         }
     }
 };
 
+/// Whether a block of a list that closed ends with a blank line: its
+/// own, or that of the last block in it while that is a list or an item.
+/// The answer is kept for every block on the way down, so lists in lists
+/// are not walked to the bottom once per level.
 fn endsWithBlank(p: *Parser, id: u32) bool {
     var cur = id;
+    const blank = while (cur != none) {
+        const x = p.n(cur);
+        if (x.ends_blank != .unknown) break x.ends_blank == .yes;
+        if (x.last_line_blank) break true;
+        if (x.kind != .list and x.kind != .item) break false;
+        cur = x.last;
+    } else false;
+    const stop = cur;
+    cur = id;
     while (cur != none) {
-        if (p.n(cur).last_line_blank) return true;
-        const k = p.n(cur).kind;
-        if (k == .list or k == .item) cur = p.n(cur).last else return false;
+        const x = p.n(cur);
+        if (x.ends_blank != .unknown) break;
+        x.ends_blank = if (blank) .yes else .no;
+        if (cur == stop) break;
+        cur = x.last;
     }
-    return false;
+    return blank;
 }
 
 fn isSpaceOrTab(c: u8) bool {
@@ -875,15 +913,18 @@ fn isSpecialStart(c: u8) bool {
     };
 }
 
-fn isThematicBreak(s: []const u8) bool {
+/// Why `s`, which starts with *, -, or _, is not a thematic break: where
+/// its first character is that is neither that one nor white space, or
+/// its end if it has fewer than three. null if it is one.
+fn thematicBreakStop(s: []const u8) ?usize {
     const c = s[0];
     var count: usize = 0;
-    for (s) |ch| {
+    for (s, 0..) |ch, i| {
         if (ch == c) {
             count += 1;
-        } else if (ch != ' ' and ch != '\t') return false;
+        } else if (ch != ' ' and ch != '\t') return i;
     }
-    return count >= 3;
+    return if (count >= 3) null else s.len;
 }
 
 const block_tags = [_][]const u8{
@@ -2008,7 +2049,8 @@ const Renderer = struct {
     p: *Parser,
     out: *std.ArrayList(u8),
     gpa: Allocator,
-    tight: bool = false,
+    /// Inside a table, after its header: its body is open.
+    in_body: bool = false,
 
     fn w(r: *Renderer, s: []const u8) Error!void {
         try r.out.appendSlice(r.gpa, s);
@@ -2047,22 +2089,26 @@ const Renderer = struct {
         }
     }
 
-    fn children(r: *Renderer, id: u32) Error!void {
-        var cur = r.p.n(id).first;
-        while (cur != none) : (cur = r.p.n(cur).next) try r.render(cur);
-    }
-
+    /// Alt text: the text of the content, no markup.
     fn plain(r: *Renderer, id: u32) Error!void {
-        // Alt text: the text of the content, no markup.
         var cur = r.p.n(id).first;
-        while (cur != none) : (cur = r.p.n(cur).next) {
+        while (cur != none) {
             const x = r.p.n(cur);
             switch (x.kind) {
                 .text, .code => try r.esc(x.literal),
                 .softbreak, .hardbreak => try r.w(" "),
-                .html_inline => {},
-                else => try r.plain(cur),
+                else => {},
             }
+            const leaf = switch (x.kind) {
+                .text, .code, .softbreak, .hardbreak, .html_inline => true,
+                else => false,
+            };
+            if (!leaf and x.first != none) {
+                cur = x.first;
+                continue;
+            }
+            while (cur != id and r.p.n(cur).next == none) cur = r.p.n(cur).parent;
+            cur = if (cur == id) none else r.p.n(cur).next;
         }
     }
 
@@ -2077,16 +2123,35 @@ const Renderer = struct {
         return list != none and r.p.n(list).tight;
     }
 
-    fn render(r: *Renderer, id: u32) Error!void {
+    /// Writes `root` and what is under it. The tree is walked along its
+    /// links, not by calls: block quotes and emphasis nest as deep as the
+    /// input is long, far deeper than the stack holds calls.
+    fn render(r: *Renderer, root: u32) Error!void {
+        var id = root;
+        while (true) {
+            if (try r.enter(id) and r.p.n(id).first != none) {
+                id = r.p.n(id).first;
+                continue;
+            }
+            while (true) {
+                try r.leave(id);
+                if (id == root) return;
+                if (r.p.n(id).next != none) break;
+                id = r.p.n(id).parent;
+            }
+            id = r.p.n(id).next;
+        }
+    }
+
+    /// What comes before a node's children; false when it wrote all of
+    /// the node.
+    fn enter(r: *Renderer, id: u32) Error!bool {
         const x = r.p.n(id);
         switch (x.kind) {
-            .document => try r.children(id),
+            .document => {},
             .block_quote => {
                 try r.cr();
                 try r.w("<blockquote>\n");
-                try r.children(id);
-                try r.cr();
-                try r.w("</blockquote>\n");
             },
             .list => {
                 try r.cr();
@@ -2096,33 +2161,20 @@ const Renderer = struct {
                         try r.w(std.fmt.bufPrint(&buf, "<ol start=\"{d}\">\n", .{x.start}) catch "<ol>\n");
                     } else try r.w("<ol>\n");
                 } else try r.w("<ul>\n");
-                try r.children(id);
-                try r.cr();
-                try r.w(if (x.ordered) "</ol>\n" else "</ul>\n");
             },
             .item => {
                 if (x.task != .none) {
                     try r.w(if (x.task == .checked) "<li class=\"task-list-item\"><input type=\"checkbox\" checked=\"\" disabled=\"\" /> " else "<li class=\"task-list-item\"><input type=\"checkbox\" disabled=\"\" /> ");
                 } else try r.w("<li>");
-                try r.children(id);
-                try r.w("</li>\n");
             },
-            .paragraph => {
-                if (r.inTightList(id)) {
-                    try r.children(id);
-                } else {
-                    try r.cr();
-                    try r.w("<p>");
-                    try r.children(id);
-                    try r.w("</p>\n");
-                }
+            .paragraph => if (!r.inTightList(id)) {
+                try r.cr();
+                try r.w("<p>");
             },
             .heading => {
                 try r.cr();
                 var buf: [8]u8 = undefined;
                 try r.w(std.fmt.bufPrint(&buf, "<h{d}>", .{x.level}) catch "<h1>");
-                try r.children(id);
-                try r.w(std.fmt.bufPrint(&buf, "</h{d}>\n", .{x.level}) catch "</h1>\n");
             },
             .thematic_break => {
                 try r.cr();
@@ -2140,41 +2192,30 @@ const Renderer = struct {
                 try r.w(">");
                 try r.esc(x.content.items);
                 try r.w("</code></pre>\n");
+                return false;
             },
             .html_block => {
                 try r.cr();
                 try r.w(std.mem.trimEnd(u8, x.content.items, "\n"));
                 try r.w("\n");
+                return false;
             },
             .table => {
                 try r.cr();
                 try r.w("<table>\n");
-                var cur = x.first;
-                var in_body = false;
-                while (cur != none) : (cur = r.p.n(cur).next) {
-                    const row = r.p.n(cur);
-                    if (row.header) {
-                        try r.w("<thead>\n");
-                        try r.render(cur);
-                        try r.w("</thead>\n");
-                    } else {
-                        if (!in_body) try r.w("<tbody>\n");
-                        in_body = true;
-                        try r.render(cur);
-                    }
-                }
-                if (in_body) try r.w("</tbody>\n");
-                try r.w("</table>\n");
+                r.in_body = false;
             },
             .table_row => {
+                if (x.header) {
+                    try r.w("<thead>\n");
+                } else if (!r.in_body) {
+                    try r.w("<tbody>\n");
+                    r.in_body = true;
+                }
                 try r.w("<tr>\n");
-                try r.children(id);
-                try r.w("</tr>\n");
             },
             .table_cell => {
-                const tag = if (x.header) "th" else "td";
-                try r.w("<");
-                try r.w(tag);
+                try r.w(if (x.header) "<th" else "<td");
                 switch (x.cell_align) {
                     .left => try r.w(" align=\"left\""),
                     .center => try r.w(" align=\"center\""),
@@ -2182,10 +2223,6 @@ const Renderer = struct {
                     .none => {},
                 }
                 try r.w(">");
-                try r.children(id);
-                try r.w("</");
-                try r.w(tag);
-                try r.w(">\n");
             },
             .text => try r.esc(x.literal),
             .softbreak => try r.w("\n"),
@@ -2194,22 +2231,11 @@ const Renderer = struct {
                 try r.w("<code>");
                 try r.esc(x.literal);
                 try r.w("</code>");
+                return false;
             },
-            .emph => {
-                try r.w("<em>");
-                try r.children(id);
-                try r.w("</em>");
-            },
-            .strong => {
-                try r.w("<strong>");
-                try r.children(id);
-                try r.w("</strong>");
-            },
-            .del => {
-                try r.w("<del>");
-                try r.children(id);
-                try r.w("</del>");
-            },
+            .emph => try r.w("<em>"),
+            .strong => try r.w("<strong>"),
+            .del => try r.w("<del>"),
             .link => {
                 try r.w("<a href=\"");
                 try r.url(x.destination);
@@ -2220,8 +2246,6 @@ const Renderer = struct {
                     try r.w("\"");
                 }
                 try r.w(">");
-                try r.children(id);
-                try r.w("</a>");
             },
             .image => {
                 try r.w("<img src=\"");
@@ -2235,8 +2259,42 @@ const Renderer = struct {
                     try r.w("\"");
                 }
                 try r.w(" />");
+                return false;
             },
             .html_inline => try r.w(x.literal),
+        }
+        return true;
+    }
+
+    /// What comes after a node's children.
+    fn leave(r: *Renderer, id: u32) Error!void {
+        const x = r.p.n(id);
+        switch (x.kind) {
+            .block_quote => {
+                try r.cr();
+                try r.w("</blockquote>\n");
+            },
+            .list => {
+                try r.cr();
+                try r.w(if (x.ordered) "</ol>\n" else "</ul>\n");
+            },
+            .item => try r.w("</li>\n"),
+            .paragraph => if (!r.inTightList(id)) try r.w("</p>\n"),
+            .heading => {
+                var buf: [8]u8 = undefined;
+                try r.w(std.fmt.bufPrint(&buf, "</h{d}>\n", .{x.level}) catch "</h1>\n");
+            },
+            .table => {
+                if (r.in_body) try r.w("</tbody>\n");
+                try r.w("</table>\n");
+            },
+            .table_row => try r.w(if (x.header) "</tr>\n</thead>\n" else "</tr>\n"),
+            .table_cell => try r.w(if (x.header) "</th>\n" else "</td>\n"),
+            .emph => try r.w("</em>"),
+            .strong => try r.w("</strong>"),
+            .del => try r.w("</del>"),
+            .link => try r.w("</a>"),
+            .document, .thematic_break, .code_block, .html_block, .text, .softbreak, .hardbreak, .code, .image, .html_inline => {},
         }
     }
 };

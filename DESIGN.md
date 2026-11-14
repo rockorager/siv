@@ -7311,6 +7311,13 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       has the same answers for brackets (`bracket_after`), unclosed
       HTML (`FLAG_SKIP_HTML_*`), and backticks (a table of runs up to
       1,000 long; here a map, with no longest run).
+      Blocks nest as deep as the input says: the inlines are found
+      and the HTML is written by walking the tree along its links, not
+      by a call per level (200,000 block quotes on a line overflowed
+      the stack), a list that closes asks each block once whether it
+      ends with a blank line, and a line of list markers ("- - - a")
+      is read once for a thematic break, not once per marker. The HTML
+      parser's depth limit then holds the document's.
   - **Painting.** Into `scene.Builder`, so documents render on the CPU
     and Vulkan renderers and into PDF. Only a band is painted: a canvas
     with `banded` draws the viewport plus a screen above and below, and

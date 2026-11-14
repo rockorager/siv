@@ -129,6 +129,61 @@ test "inlines that find no match cost their length, not its square" {
     }
 }
 
+test "nesting far deeper than the stack holds calls" {
+    const gpa = testing.allocator;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(gpa);
+    // Block quotes in block quotes.
+    const quotes = 200_000;
+    for (0..quotes) |_| try src.appendSlice(gpa, "> ");
+    try src.appendSlice(gpa, "x\n");
+    {
+        const out = try md.toHtml(gpa, src.items, .{});
+        defer gpa.free(out);
+        try testing.expectEqual(quotes, count(out, "<blockquote>\n"));
+        try testing.expectEqual(quotes, count(out, "</blockquote>\n"));
+        try testing.expectEqual(@as(usize, 1), count(out, "<p>x</p>"));
+    }
+    // Lists in lists, each a marker on one line.
+    const lists = 50_000;
+    src.clearRetainingCapacity();
+    for (0..lists) |_| try src.appendSlice(gpa, "- ");
+    try src.appendSlice(gpa, "x\n");
+    {
+        const out = try md.toHtml(gpa, src.items, .{});
+        defer gpa.free(out);
+        try testing.expectEqual(lists, count(out, "<ul>\n<li>"));
+        try testing.expectEqual(lists, count(out, "</li>\n</ul>\n"));
+        try testing.expectEqual(@as(usize, 1), count(out, "<li>x</li>"));
+    }
+    // Emphasis in strong emphasis in emphasis, as text and as an
+    // image's alternative text, which is the text without the markup.
+    const pairs = 50_000;
+    src.clearRetainingCapacity();
+    for (0..pairs) |_| try src.appendSlice(gpa, "*a **b ");
+    try src.appendSlice(gpa, "x");
+    for (0..pairs) |_| try src.appendSlice(gpa, " c** d*");
+    const text = try gpa.dupe(u8, src.items);
+    defer gpa.free(text);
+    {
+        const out = try md.toHtml(gpa, text, .{});
+        defer gpa.free(out);
+        try testing.expectEqual(pairs, count(out, "<em>a <strong>b "));
+        try testing.expectEqual(pairs, count(out, " c</strong> d</em>"));
+    }
+    src.clearRetainingCapacity();
+    try src.appendSlice(gpa, "![");
+    try src.appendSlice(gpa, text);
+    try src.appendSlice(gpa, "](i.png)\n");
+    {
+        const out = try md.toHtml(gpa, src.items, .{});
+        defer gpa.free(out);
+        try testing.expect(std.mem.startsWith(u8, out, "<p><img src=\"i.png\" alt=\"a b a b "));
+        try testing.expect(std.mem.endsWith(u8, out, " c d c d\" /></p>\n"));
+        try testing.expectEqual(@as(usize, 0), count(out, "<em>"));
+    }
+}
+
 test "fuzz the parser" {
     try testing.fuzz({}, fuzzParse, .{ .corpus = &.{
         "# Title\n\n> quote *em* **strong** `code`\n\n- a\n  - b\n1. c\n\n```zig\nconst x = 1;\n```\n",
