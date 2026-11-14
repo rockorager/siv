@@ -197,6 +197,11 @@ const Parser = struct {
     /// before this offset.
     no_break_char: u8 = 0,
     no_break_at: usize = 0,
+    /// The tip after a blank line that every open block down to it took,
+    /// a list item among them, and that left it the tip: the next line,
+    /// when it is blank too, does to this block what that one did, with
+    /// no walk down to it (`none` otherwise).
+    blank_tip: u32 = none,
 
     fn init(p: *Parser) Error!void {
         try p.nodes.append(p.a, .{ .kind = .document });
@@ -423,15 +428,31 @@ const Parser = struct {
         p.old_tip = p.tip;
         p.all_closed = true;
         p.no_break_at = 0;
+        const raw_blank = isBlankFrom(raw, 0);
+        const blank_tip = p.blank_tip;
+        p.blank_tip = none;
+        if (raw_blank and blank_tip == p.tip) {
+            // The blocks above the tip took the line before, an item took
+            // its white space, and their last lines are marked blank: all
+            // that is left is the line a code or HTML block keeps.
+            p.offset = raw.len;
+            p.blank = true;
+            p.last_matched = p.tip;
+            if (acceptsLines(p.n(p.tip).kind)) try p.addLine();
+            p.last_line_length = raw.len;
+            p.blank_tip = blank_tip;
+            return;
+        }
         // Descend through open blocks that continue.
         var container: u32 = 0;
+        var item_matched = false;
         while (true) {
             const last = p.n(container).last;
             if (last == none or !p.n(last).open) break;
             container = last;
             p.findNextNonspace();
             switch (p.continues(container)) {
-                .matched => {},
+                .matched => item_matched = item_matched or p.n(container).kind == .item,
                 .failed => {
                     container = p.n(container).parent;
                     break;
@@ -441,6 +462,11 @@ const Parser = struct {
         }
         p.all_closed = container == p.old_tip;
         p.last_matched = container;
+        const tip = p.tip;
+        const took_blank = raw_blank and item_matched and container == tip;
+        defer if (took_blank and p.tip == tip) {
+            p.blank_tip = tip;
+        };
         var matched_leaf = p.n(container).kind != .paragraph and acceptsLines(p.n(container).kind);
         // Start new blocks.
         while (!matched_leaf) {

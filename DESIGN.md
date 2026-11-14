@@ -7354,8 +7354,12 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
       by a call per level (200,000 block quotes on a line overflowed
       the stack), a list that closes asks each block once whether it
       ends with a blank line, and a line of list markers ("- - - a")
-      is read once for a thematic break, not once per marker. The HTML
-      parser's depth limit then holds the document's.
+      is read once for a thematic break, not once per marker. A blank
+      line after a blank line that every open block took, a list item
+      among them, goes to the innermost block alone: the walk down the
+      open blocks and the marks back up them would be the same again
+      (50,000 nested lists and as many blank lines took five minutes).
+      The HTML parser's depth limit then holds the document's.
   - **Painting.** Into `scene.Builder`, so documents render on the CPU
     and Vulkan renderers and into PDF. Only a band is painted: a canvas
     with `banded` draws the viewport plus a screen above and below, and

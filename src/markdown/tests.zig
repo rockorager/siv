@@ -184,6 +184,40 @@ test "nesting far deeper than the stack holds calls" {
     }
 }
 
+test "a blank line costs the same however many lists are open" {
+    const gpa = testing.allocator;
+    // Every open list item takes a blank line, so each one walked down
+    // all of them and back up: 50,000 nested lists and 50,000 blank lines
+    // were 5,000,000,000 steps for 150 KB.
+    const lists = 50_000;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(gpa);
+    for (0..lists) |_| try src.appendSlice(gpa, "- ");
+    try src.appendSlice(gpa, "a\n");
+    for (0..lists) |_| try src.appendSlice(gpa, "\n");
+    try src.appendSlice(gpa, "b\n");
+    {
+        const out = try md.toHtml(gpa, src.items, .{});
+        defer gpa.free(out);
+        try testing.expectEqual(lists, count(out, "<ul>"));
+        // The text after the blank lines ends every list.
+        try testing.expect(std.mem.endsWith(u8, out, "</ul>\n<p>b</p>\n"));
+    }
+    // A code block in the innermost item keeps each of the lines.
+    src.clearRetainingCapacity();
+    for (0..lists) |_| try src.appendSlice(gpa, "- ");
+    try src.appendSlice(gpa, "```\n");
+    for (0..lists) |_| try src.appendSlice(gpa, " \n");
+    try src.appendSlice(gpa, "b\n");
+    const out = try md.toHtml(gpa, src.items, .{});
+    defer gpa.free(out);
+    const code = std.mem.indexOf(u8, out, "<pre><code>").? + "<pre><code>".len;
+    const end = std.mem.indexOfPos(u8, out, code, "</code></pre>").?;
+    try testing.expectEqual(lists, end - code);
+    try testing.expectEqual(lists, count(out[code..end], "\n"));
+    try testing.expect(std.mem.endsWith(u8, out, "</ul>\n<p>b</p>\n"));
+}
+
 test "fuzz the parser" {
     try testing.fuzz({}, fuzzParse, .{ .corpus = &.{
         "# Title\n\n> quote *em* **strong** `code`\n\n- a\n  - b\n1. c\n\n```zig\nconst x = 1;\n```\n",
