@@ -7,8 +7,8 @@ local siv, internal = ...
 local methods = siv.methods
 
 local coroutine, table, math, string, package = coroutine, table, math, string, package
-local error, ipairs, pairs, pcall, select, setmetatable, tostring, type, loadfile =
-	error, ipairs, pairs, pcall, select, setmetatable, tostring, type, loadfile
+local error, getmetatable, ipairs, pairs, pcall, select, setmetatable, tostring, type, loadfile =
+	error, getmetatable, ipairs, pairs, pcall, select, setmetatable, tostring, type, loadfile
 
 -- Errors --------------------------------------------------------------
 
@@ -209,7 +209,9 @@ siv.job_start = methods.app.job_start
 --
 -- siv-lua --watch runs the main chunk again when it or a Lua module it
 -- required changes. The chunk runs inside the running application:
--- siv.app_create returns that application and app:run returns at once.
+-- siv.app_create returns that application, app:run returns at once, and
+-- the chunk does not end it: app:destroy and leaving the scope of a
+-- <close> variable that holds it do nothing during the run.
 -- Windows the previous run created are destroyed once the new run
 -- succeeds, except those made inside siv.keep, which keeps any value
 -- across runs. If the new run fails, its windows go and the old ones
@@ -257,6 +259,16 @@ function siv.app_create(desc)
 	local app = app_create(desc)
 	if first_app == nil then
 		first_app = app
+		-- A reloaded chunk gets this application in the variable its
+		-- first run closed over; closing that variable must not end it.
+		local mt = getmetatable(app)
+		local close = mt.__close
+		mt.__close = function(a)
+			if reloading and a == first_app then
+				return
+			end
+			return close(a)
+		end
 		if watching() then
 			internal.watch_start(app)
 			internal.watch_add(main.path)
@@ -277,6 +289,16 @@ local function run_app(app)
 end
 siv.app_run = run_app
 methods.app.run = run_app
+
+local destroy = siv.app_destroy
+local function destroy_app(app)
+	if reloading and app == first_app then
+		return
+	end
+	return destroy(app)
+end
+siv.app_destroy = destroy_app
+methods.app.destroy = destroy_app
 
 local window_create = siv.window_create
 local function create_window(app, desc)

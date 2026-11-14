@@ -1297,6 +1297,12 @@ local function virtual(name)
 			end
 			return item
 		end
+		-- Closes after a row's binding that set the window's transaction,
+		-- so that a row that raises does not leave it set: the next
+		-- update would write to a transaction that has ended.
+		local unset = setmetatable({}, { __close = function()
+			txns[win] = nil
+		end })
 		local function sweep()
 			for node, rec in pairs(rows) do
 				if node:get_window() == nil then
@@ -1316,6 +1322,7 @@ local function virtual(name)
 			if mine then
 				txns[win] = t
 			end
+			local _ <close> = mine and unset or nil
 			if rec and recycled then
 				batching = batching + 1
 				rec.set_item(value)
@@ -1344,9 +1351,6 @@ local function virtual(name)
 			listener, owner = nil, nil
 			run_render()
 			listener, owner = l, o
-			if mine then
-				txns[win] = nil
-			end
 			internal.defer()
 		end
 		local user_destroy = d.destroy

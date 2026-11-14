@@ -455,6 +455,38 @@ test "view: virtualized lists build rows once and rebind them in place" {
     );
 }
 
+test "view: an error in a row while the view binds it leaves the window's updates working" {
+    try run(prologue ++
+        \\local win = app:window_create{ width = 200, height = 100 }
+        \\local errors = 0
+        \\siv.set_error_handler(function() errors = errors + 1 end)
+        \\local title, set_title = view.signal("before")
+        \\local list
+        \\view.mount(win, function()
+        \\  ui.flex({ axis = "column" }, { layout = { width = { "fraction", 1 }, height = { "fraction", 1 } } }, function()
+        \\    ui.text(title)
+        \\    list = ui.list_view({
+        \\      label = "Items", item_height = 20, count = 1000,
+        \\      row = function(_, index)
+        \\        if view.peek(index) >= 500 then error("row " .. view.peek(index)) end
+        \\        ui.text(function() return "item " .. index() end)
+        \\      end,
+        \\    }, { layout = { width = { "fraction", 1 }, grow = 1 } })
+        \\  end)
+        \\end)
+        \\settle()
+        \\assert(win:test_find{ name = "item 0" } and errors == 0, win:test_dump())
+        \\-- Scrolling binds rows in the view's own transaction; theirs raise.
+        \\win:update(function(t) t:view_scroll_to(list, 600) end)
+        \\settle()
+        \\assert(errors > 0, "no row raised")
+        \\-- The window's bindings still update, in a transaction of their own.
+        \\set_title("after")
+        \\settle()
+        \\assert(win:test_find{ name = "after" }, win:test_dump())
+    );
+}
+
 test "view: hot reload rebuilds components and keeps signals, focus, and editors" {
     const io = testing.io;
     const dir = ".zig-cache/lua-view-reload";

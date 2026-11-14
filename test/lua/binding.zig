@@ -852,6 +852,37 @@ test "hot reload: a changed module runs again, kept values stay" {
     try testing.expectEqual(0, root.siv_lua_run(L, dir ++ "/main.lua", 1, &args, 1));
 }
 
+test "hot reload: a chunk that closes or destroys its application leaves it running" {
+    const io = testing.io;
+    const dir = ".zig-cache/lua-reload-close-test";
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    // The chunk holds the application as D23 says to, in a <close>
+    // variable, and destroys it after app:run() as well. The first run
+    // reloads itself: the second run's `app` is the first's.
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/main.lua", .data = 
+        \\local siv = require("siv")
+        \\local app <close> = siv.app_create{ backend = "headless", flags = { "no_system_fonts" } }
+        \\local state = siv.keep("state", function() return { runs = 0 } end)
+        \\state.runs = state.runs + 1
+        \\if state.runs == 1 then
+        \\  siv.reload()
+        \\  assert(state.runs == 2, "no reload")
+        \\  local w = app:window_create{ width = 40, height = 40 }
+        \\  assert(w:get_size().width == 40)
+        \\  -- Outside a reload, destroying it ends it.
+        \\  app:destroy()
+        \\  assert(not pcall(app.window_create, app, { width = 40, height = 40 }))
+        \\else
+        \\  app:run()
+        \\  app:destroy()
+        \\end
+    });
+    const L = try newState();
+    defer c.lua_close(L);
+    const args = [_:null]?[*:0]const u8{};
+    try testing.expectEqual(0, root.siv_lua_run(L, dir ++ "/main.lua", 0, &args, 0));
+}
+
 test "portal requests from a coroutine: the file chooser without a bus" {
     _ = try run(prologue ++
         \\local result

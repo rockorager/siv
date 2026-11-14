@@ -5707,8 +5707,10 @@ reverse it. "Another toolkit does it this way" is evidence, never a reason.
     blocks on inotify for their directories and, after 50 ms without
     changes, calls `siv_post`, the one call safe from any thread (D5), so
     an idle application pays nothing. The reload runs the chunk inside
-    the running application: `siv.app_create` returns that application
-    and `app:run()` returns at once. Applications opt in to keeping state
+    the running application: `siv.app_create` returns that application,
+    `app:run()` returns at once, and neither `app:destroy()` nor leaving
+    the scope of a `<close>` variable that holds the application ends it
+    during the run. Applications opt in to keeping state
     with `siv.keep(key, make)`, whose values (all that `make` returns,
     so a signal's getter and setter, D45) survive reloads; windows
     created inside `make` are kept with it, so their size and focus stay
