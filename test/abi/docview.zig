@@ -1281,3 +1281,71 @@ test "C API docview: a document removed from its size event is not used after it
 test "C API docview: a document removed from its loader is not used after it is freed" {
     try removeFromCallback(.load);
 }
+
+/// An application that sets its style sheet from the view's own
+/// callbacks: the document is parsed again, and the callback returns
+/// into code that was using the one before.
+fn restyleFromCallback(comptime where: enum { size, load }) !void {
+    const Guard = harness.Guard;
+    const S = struct {
+        var set: bool = false;
+        var height: f32 = 0;
+
+        fn restyle(node: t.Node) void {
+            if (set) return;
+            set = true;
+            const css = "body { margin: 0 } p { margin: 0; height: 500px }";
+            ok(D.siv_docview_set_user_css(node, css, css.len)) catch unreachable;
+        }
+
+        fn onEvent(_: ?*anyopaque, node: t.Node, e: *const t.DocviewEvent) callconv(.c) void {
+            if (e.type != .size) return;
+            height = e.height;
+            if (where == .size) restyle(node);
+        }
+
+        fn onLoad(_: ?*anyopaque, node: t.Node, request: u32, _: ?[*]const u8, _: usize, _: t.ResourceKind) callconv(.c) void {
+            if (where == .load) restyle(node);
+            _ = D.siv_docview_supply(node, request, "", 0);
+        }
+    };
+    S.set = false;
+    S.height = 0;
+    Guard.armed.store(false, .seq_cst);
+    var h: Harness = .{ .allocator = &Guard.hooks };
+    try h.start(400, 300, null, null);
+    defer {
+        Guard.armed.store(false, .seq_cst);
+        h.stop();
+    }
+    try h.settle();
+    Guard.armed.store(true, .seq_cst);
+
+    const source = "<!doctype html><link rel=stylesheet href=\"a.css\"><p>Text</p>";
+    const base = "file:///doc/";
+    const root = A.siv_window_get_root(h.window);
+    var txn: t.Txn = .null;
+    try ok(T.siv_txn_begin(h.window, &txn));
+    const sc = T.siv_scroll(txn, root, .vertical);
+    _ = T.siv_set_layout(txn, sc, &.{ .size = @sizeOf(t.LayoutDesc), .width = .{ .unit = .fraction, .value = 1 }, .height = .{ .unit = .fraction, .value = 1 } });
+    _ = D.siv_docview(txn, sc, &.{ .source = source.ptr, .source_count = source.len, .base_url = base.ptr, .base_url_len = base.len, .kind = .html, .color_scheme = .light, .on_event = S.onEvent, .load = S.onLoad });
+    try ok(T.siv_txn_commit(txn));
+
+    // The document as the new sheet lays it out.
+    const deadline = Loop.now() + 10 * std.time.ns_per_s;
+    while (S.height != 500) {
+        if (Loop.now() > deadline) return error.Timeout;
+        try ok(A.siv_app_dispatch(h.app, 2));
+    }
+    try h.settle();
+    try testing.expect(S.set);
+    try testing.expectEqual(@as(f32, 500), S.height);
+}
+
+test "C API docview: a style sheet set from the size event is taken up after the event" {
+    try restyleFromCallback(.size);
+}
+
+test "C API docview: a style sheet set from the loader is taken up after it returns" {
+    try restyleFromCallback(.load);
+}

@@ -272,16 +272,19 @@ pub const View = struct {
         v.reap();
     }
 
-    /// Keeps the view allocated until `unhold`. The host's callbacks may
-    /// destroy the view, so a function that uses it after `emit`, after
-    /// `Host.load`, or after a function that holds, holds it for as long
-    /// and checks `dead` before it touches the window.
+    /// Keeps the view allocated, and its document, until `unhold`. The
+    /// host's callbacks may destroy the view or give it another style
+    /// sheet, which parses the document again. So a function that uses
+    /// the view or the document after `emit`, after `Host.load`, or after
+    /// a function that holds, holds for as long, and checks `dead`
+    /// before it touches the window.
     fn hold(v: *View) void {
         v.held += 1;
     }
 
     fn unhold(v: *View) void {
         v.held -= 1;
+        if (v.held == 0 and v.want_reparse and !v.busy and !v.dead) v.reparse();
         v.reap();
     }
 
@@ -637,8 +640,10 @@ pub const View = struct {
         v.gpa.free(v.options.user_css);
         v.options.user_css = next;
         v.keepPosition();
-        // The user sheet is parsed with the document: parse it again.
-        if (v.busy) {
+        // The user sheet is parsed with the document: parse it again,
+        // once no job has the document and no function that called the
+        // host is still using it.
+        if (v.busy or v.held > 0) {
             v.want_reparse = true;
             return;
         }
